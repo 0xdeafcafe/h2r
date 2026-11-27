@@ -19,6 +19,7 @@ use sim_sound::feed::{Host, NullHost};
 use sim_sound::schedule::Schedule;
 
 pub mod levels;
+pub mod entries;
 pub mod mixer_feed;
 pub mod owner_host;
 pub mod owners;
@@ -433,7 +434,9 @@ impl Feature for SimSoundEvents {
             move || lock(&save).save(),
             move |bytes, _| lock(&load).load(bytes),
         ));
-        if !b.switches().implementation(EVENTS, true) {
+        // The table (`impl.sim.sound-events.table`, entries.rs) owns the
+        // sound entries when it is on, and this arm stands down.
+        if !b.switches().implementation(EVENTS, true) || entries::on(b.switches()) {
             return Ok(());
         }
         let sim = Arc::clone(&self.sim);

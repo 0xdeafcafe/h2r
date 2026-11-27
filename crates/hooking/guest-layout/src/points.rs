@@ -1924,6 +1924,48 @@ points! { ALL;
     SOUND_OWNER_USER @ 0x0018_d4f0: [fn(object: stack 0, kind: stack 1, user: stack 2) ret 12]; "docs/game/bots.md";
     /// Start a spatial sound at an object marker. Returns the sound instance.
     SOUND_START_AT_MARKER @ 0x0018_91d0: [fn(marker: eax, object: esi, parameters: stack 0) -> eax ret 4]; "docs/game/ai-networking.md";
+    // The sound manager's outside entries: each has a Rust body under
+    // `impl.sim.sound-events.table` (docs/engine/sound-instances.md, "Entries").
+    /// Make the sound manager: globals, the instance pool, channels, loops, the start layer.
+    SOUND_MANAGER_CREATE @ 0x0012_53d0: [fn() ret 0]; "docs/engine/sound-instances.md";
+    /// Drop the sound manager: every global back to 0.
+    SOUND_MANAGER_DISPOSE @ 0x0012_5600: [fn() ret 0]; "docs/engine/sound-instances.md";
+    /// Ask the sound cache for a tag's first permutation (`0x218850`, mode 2).
+    SOUND_PREFETCH @ 0x0012_5f10: [fn(tag: edx) ret 0]; "docs/engine/sound-instances.md";
+    /// Start a sound from a request record: the gate, the promotion rule, then the admission.
+    SOUND_START_RECORD @ 0x0021_d110: [fn(record: eax, tag: stack 0) -> eax ret 4]; "docs/engine/sound-instances.md";
+    /// Walk the start layer (`[0x51ebe0]`): free finished starts, play delayed ones.
+    SOUND_STARTS_UPDATE @ 0x0021_d390: [fn() ret 0]; "docs/engine/sound-instances.md";
+    /// Make a start layer record for a tag.
+    SOUND_START_LAYER_NEW @ 0x0021_d2c0: [fn(tag: ecx, scale: xmm0, arg: stack 0) -> eax ret 4]; "docs/engine/sound-instances.md";
+    /// Mark a start layer record to play and run it.
+    SOUND_START_LAYER_PLAY @ 0x0021_d360: [fn(start: ecx) ret 0]; "docs/engine/sound-instances.md";
+    /// Run a start layer record: the gate, the admission or the looping sound.
+    SOUND_START_LAYER_RUN @ 0x0021_d630: [fn(start: stack 0, mode: stack 1) -> eax ret 8]; "docs/engine/sound-instances.md";
+    /// Finish every sound instance with reason `0xA`.
+    SOUND_STOP_ALL @ 0x0012_6400: [fn() ret 0]; "docs/engine/sound-instances.md";
+    /// Choose the background ambience sounds from a candidate list (sound globals `+0x1ac`).
+    SOUND_AMBIENCE_SELECT @ 0x0012_6660: [fn(candidates: eax) ret 0]; "docs/engine/sound-instances.md";
+    /// Set the sound environment: current, previous and blend at sound globals `+0x1f8`.
+    SOUND_ENVIRONMENT_SET @ 0x0012_72c0: [fn(environment: ecx) ret 0]; "docs/engine/sound-instances.md";
+    /// The first mapped local user's listener, or 0 when it is inactive.
+    SOUND_FIRST_LISTENER @ 0x0012_5360: [fn() -> eax ret 0]; "docs/engine/sound-instances.md";
+    /// Pause (1) or resume (0) the sound channels.
+    SOUND_SET_PAUSED @ 0x0012_5a90: [fn(paused: eax) ret 0]; "docs/engine/sound-instances.md";
+    /// The sound pump during a long load: mixes the channels when the game has waited.
+    SOUND_LOAD_PUMP @ 0x0012_5d60: [fn() ret 0]; "docs/engine/sound-instances.md";
+    /// Start or update an object's looping sound.
+    SOUND_LOOP_UPDATE @ 0x0021_a250: [fn(tag: stack 0, owner: stack 1, a: stack 2, b: stack 3, source: stack 4, mode: stack 5, c: stack 6, scale: stack 7) -> al ret 32]; "docs/engine/sound-instances.md";
+    /// Move a looping sound's source.
+    SOUND_LOOP_SOURCE @ 0x0021_9c30: [fn(looping: eax, source: stack 0) ret 4]; "docs/engine/sound-instances.md";
+    /// Choose a permutation of a tag's pitch range (`Chooser::choose`).
+    SOUND_CHOOSE @ 0x0021_9070: [fn(tag: edi, range: stack 0) -> eax ret 4]; "docs/engine/sound-instances.md";
+    /// The chooser's try loop (`chooser::pick`).
+    SOUND_PICK @ 0x0021_9110: [fn(tag: eax, range: ecx, used: esi, last: stack 0, seed: stack 1, exhausted: stack 2, invert: stack 3) -> eax ret 16]; "docs/engine/sound-instances.md";
+    /// A pitch range's history word, when the tag's class keeps one.
+    SOUND_HISTORY_LAST @ 0x0021_9430: [fn(range: stack 0, tag: stack 1) -> eax ret 8]; "docs/engine/sound-instances.md";
+    /// A tag's promotion bank, or 0 when it has none.
+    SOUND_PROMOTION_BANK @ 0x0021_94a0: [fn(tag: eax) -> eax ret 0]; "docs/engine/sound-instances.md";
     /// Bind the sound instance to the speaking biped's mouth animation.
     BIPED_DIALOGUE_LIP_SYNC @ 0x0010_9220: [fn(unit: ebx, sound: stack 0, instance: stack 1) ret 8]; "docs/game/ai-networking.md";
     /// Per-type file bound called by the cache header validator (0x1228b8).

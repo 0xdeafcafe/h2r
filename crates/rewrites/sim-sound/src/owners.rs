@@ -96,12 +96,15 @@ pub enum Reason {
     OwnerGone = 3,
     /// A stop's fade reached the floor.
     Faded = 4,
+    /// The stop-all walk `0x126400` finished every sound.
+    Cleared = 0xA,
     /// Another sound took its place.
     Superseded = 0xF,
 }
 
 impl Reason {
-    pub const ALL: [Reason; 4] = [Reason::PlayedOut, Reason::OwnerGone, Reason::Faded, Reason::Superseded];
+    pub const ALL: [Reason; 5] =
+        [Reason::PlayedOut, Reason::OwnerGone, Reason::Faded, Reason::Cleared, Reason::Superseded];
 
     pub fn code(self) -> u8 {
         self as u8
@@ -112,6 +115,7 @@ impl Reason {
             Reason::PlayedOut => "played_out",
             Reason::OwnerGone => "owner_gone",
             Reason::Faded => "faded",
+            Reason::Cleared => "cleared",
             Reason::Superseded => "superseded",
         }
     }

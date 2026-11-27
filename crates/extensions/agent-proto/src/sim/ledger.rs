@@ -2,6 +2,8 @@
 //! calls (`engine::sim_tick`, docs/engine/sim-rewrite.md, "The tick
 //! driver"). The goal is `guest_total` 0.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// One phase of the tick, in retail order.
@@ -46,6 +48,11 @@ pub struct LedgerReply {
     pub loops: u64,
     /// Phases owned by the guest: what `tick-ledger.toml` bounds, per tick.
     pub guest_total: u32,
+    /// The sound table's counters by name (`sound.admitted`,
+    /// `sound.phase_runs`, ...; docs/engine/sound-instances.md, "Counters"):
+    /// the tick's 30th phase, the sound phase. Empty while the table is off.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub sound: BTreeMap<String, u64>,
 }
 
 #[cfg(test)]
@@ -81,10 +88,12 @@ mod tests {
             loop_last_ns: 15_000_000,
             loops: 40,
             guest_total: 1,
+            sound: [("sound.phase_runs".to_owned(), 40)].into(),
         };
         let json = serde_json::to_value(&reply).unwrap();
         assert_eq!(json["phases"][0]["entry"], "0x0014d3a0");
         assert_eq!(json["guest_total"], 1);
+        assert_eq!(json["sound"]["sound.phase_runs"], 40);
         assert_eq!(json["phases"][0]["ns"], 82_000_000);
         assert_eq!(json["phases"][0]["last_ns"], 2_100_000);
         assert_eq!((json["tick_ns"].as_u64(), json["loops"].as_u64()), (Some(120_000_000), Some(40)));

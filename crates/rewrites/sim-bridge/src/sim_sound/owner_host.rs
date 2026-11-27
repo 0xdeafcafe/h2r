@@ -51,6 +51,11 @@ impl<'a> GuestUnits<'a> {
         Self { m, gone: BTreeSet::new(), calls: Vec::new(), counters: OwnerCounters::default() }
     }
 
+    /// The guest memory the host writes, for reads beside the step.
+    pub fn memory(&mut self) -> &mut dyn GuestMemory {
+        self.m
+    }
+
     fn call(&mut self, call: UnitCall) {
         self.counters.guest_calls += 1;
         self.calls.push(call);

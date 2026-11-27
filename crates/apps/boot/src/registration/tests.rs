@@ -552,6 +552,10 @@ fn the_plan_builds_with_every_hook_switch_on() {
     // Forge is on by default; `-forge` leaves it out.
     assert_builds(&Case::full(ALL_ON));
     assert_builds(&Case::full(&format!("{ALL_ON},-forge")));
+    // The sound table in place of the events arm: every entry it answers,
+    // the listeners' before first among the bots' map swap.
+    assert_builds(&Case::none(&format!("{ALL_ON},impl.sim.sound-events.table")));
+    assert_builds(&Case::full(&format!("{ALL_ON},impl.sim.sound-events.table")));
 }
 
 /// The biggest plans a test can build, every switch on, leave at least a

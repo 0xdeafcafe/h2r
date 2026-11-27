@@ -13,7 +13,7 @@
 //! [`LEDGER`] counts and times each guest phase the body calls. `sim.ledger` reads it
 //! and `tick-ledger.toml` is its ratchet.
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use engine::points;
 use engine::sim_tick::{self, Ledger};
@@ -30,6 +30,23 @@ pub fn ledger() -> Ledger {
 }
 
 pub struct TickDriver;
+
+/// The tick: the 29 phases, then with the sound table on the 30th, the
+/// sound phase (`crate::sim_sound::entries::phase`, docs/engine/sound-instances.md,
+/// "The sound phase"). It runs once per tick number, so a tick whose
+/// run flag held the count does not step the sounds again.
+pub async fn run(
+    cx: engine::entry::Cx,
+    present: sim_tick::Present,
+    bodies: sim_tick::Bodies,
+    sound: Option<crate::sim_sound::entries::Shared>,
+) -> engine::entry::EntryResult {
+    let ret = sim_tick::run_with(cx.clone(), &LEDGER, present, bodies).await?;
+    if let Some(table) = sound {
+        crate::sim_sound::entries::phase(&cx, &table).await?;
+    }
+    Ok(ret)
+}
 
 /// The Rust phase bodies the switches leave on: the effects phase with
 /// `impl.sim.effects-parts` (on by default; off, the guest runs it).
@@ -48,8 +65,9 @@ impl Feature for TickDriver {
         b.snapshot(SnapshotPolicy::Stateless);
         let present = crate::present::mode(b.switches());
         let bodies = bodies(b.switches());
+        let sound = crate::sim_sound::entries::on(b.switches()).then(|| Arc::clone(&crate::sim_sound::entries::SHARED));
         b.raw().implement_async(&points::GAME_TICK, "tick driver", move |cx| -> EntryFuture {
-            Box::pin(sim_tick::run_with(cx, &LEDGER, present, bodies))
+            Box::pin(run(cx, present, bodies, sound.clone()))
         });
         Ok(())
     }
@@ -176,6 +194,43 @@ mod tests {
         assert_eq!(run.calls.len(), 4 + PHASES.len());
         assert_eq!(run.guest.u32(TIME + 8), Ok(5));
         assert_eq!(run.guest.u32(CLOCK + 0x14), Ok(4));
+    }
+
+    /// With the table on, the tick steps the sound phase after the 29 and
+    /// once per tick number: a tick whose close held the count does not
+    /// step it again.
+    #[test]
+    fn the_sound_phase_runs_after_the_phases_once_per_tick_number() {
+        use crate::sim_sound::entries::{Table, lock};
+        let table = Arc::new(Mutex::new(Table::headless()));
+        let regs = Regs { esp: STACK, ..Default::default() };
+        let mut g = guest(5);
+        g.map(0x004e_0000, 0x1_0000).put_u32(points::RANDOM_SEEDS.base, TIME + 0x200);
+        let callee = |c: &engine::entry::GuestCall, m: &mut dyn GuestMemory| {
+            let at = RECORD + sim_tick::RUN_FLAG;
+            if c.target == sim_tick::RECORD_BEFORE {
+                m.set_u8(at, 1).unwrap();
+            } else if c.target == sim_tick::RECORD_AFTER {
+                m.set_u8(at, 0).unwrap();
+            }
+            Regs::default()
+        };
+        for _ in 0..2 {
+            let t = Arc::clone(&table);
+            let f = move |cx: engine::entry::Cx| -> EntryFuture {
+                Box::pin(run(cx, sim_tick::Present::Always, sim_tick::Bodies::NONE, Some(Arc::clone(&t))))
+            };
+            let r = entry::testing::run(&f, g.clone(), regs, callee);
+            assert_eq!(r.result, Ok(hooks::Ret::new(0, 0)));
+            assert_eq!(r.calls.last().map(|c| c.target), Some(sim_tick::RECORD_AFTER), "the phase makes no guest call");
+        }
+        assert_eq!(lock(&table).ledger.phase_runs, 1, "tick 5 twice steps once");
+        let on = |spec: &str| {
+            let mut r = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
+            r.add(&TickDriver).unwrap();
+            r.build(&hooks::Base).is_ok()
+        };
+        assert!(on("") && on("impl.sim.sound-events.table"));
     }
 
     /// The ledger's phase table is at or under `tick-ledger.toml` for
