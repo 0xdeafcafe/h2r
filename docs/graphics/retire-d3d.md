@@ -19,7 +19,9 @@ Switch: `impl.render.native` (on), removed with the crate; `impl.render.native-h
 | R5, layers 2 and 17 | structure and object items draw from the scene's plan as layers 1, 5, 7, 8 and 20 do (layer 2 at the main, alternate and first-person calls); both are cut world layers (`cut::LAYER_CUTS`, layer 17 in slot 12) | [native-renderer.md](native-renderer.md) |
 | R5, sky | the sky stage draws supported strips with the view's node palette, the material inputs at issue and the draw's own cull mode | [native-renderer.md](native-renderer.md) |
 | R5, earlier stages | fog, water, layers 18, 19 and 21, the flares' colour fans and the post | "By caller" |
-| R5, what is kept | every layer 2, 6, 16 and 17 item and every sky strip left to its guest draw is a `scene_kept_*` count by cause | [retire-d3d-remainders.md](retire-d3d-remainders.md#r5s-remainder) |
+| R5, fog and water per item | layers 16 and 6 draw every item their stage takes in the guest's sorted order, interleaved with the items it keeps (`late_sorted`) | [retire-d3d-r5.md](retire-d3d-r5.md) |
+| R5, layers 2 and 17 per item | the items the order rule holds back draw in the sorted order the same way; no layer-2 draw is admitted at its resolved inputs | [retire-d3d-r5.md](retire-d3d-r5.md) |
+| R5, what is kept | every layer 2, 6, 16 and 17 item and every sky strip left to its guest draw is a `scene_kept_*` count by cause | [retire-d3d-r5.md](retire-d3d-r5.md) |
 | R6, HUD bitmap widgets | a widget quad whose shader's Rust material is proven against the guest's draws is drawn at `0x0022a7b3` with no guest shader setup or draw | [native-hud-overlay.md](native-hud-overlay.md#the-material-in-rust) |
 | R6, the other HUD quads | the training frame, the navpoints' arrows and outlines, the waypoint markers and the indicator are captured and proven as the widgets are | [native-hud-overlay.md](native-hud-overlay.md#bitmap-widgets) |
 | R6, what is kept | every HUD item a producer offers and the overlay does not draw, and every HUD draw no producer offered, is a `scene_kept_overlay_*` count by kind and cause | "R6's remainder" |
@@ -85,7 +87,7 @@ these per caller with every stage on: the column "Count" says what exists.
 |---|---|---|---|---|
 | Layer draw `0x00044550`, layer 3, from `0x0002bed0` | indexed lists and strips, world and objects | world and object parts including passes with all colour writes masked and opaque One/Zero/Add blends, object templates with inherited blend and depth-write fields or instance-driven states, model decorators | parts whose material pass does not translate; objects the walk returns (`walk_unsupported`: a bit-11 part whose auxiliary state toggle does not read, a bit-6 part whose visible subparts do not read or number more than 64); decorators with an engine-driven state from a per-draw source or a lightmap stage whose globals bitmap is not uniform, whose skip would leave a render state other than the device holds (one the pass sets and its restore list does not write back, or one the restore list writes another value to: `scene_decorator_draws_state`), or whose layer-3 view's stage palettes, stencil or inherited cull do not read or hold; any view where one copy refuses. Setup (kind 2) for the resolved-draw remainder | 8.26 ms, 1,882 D3D entries a frame on the D3D path [a]; about 14 objects a frame returned [b] |
 | Layer draw, layers 1, 5, 7, 8, 20 | indexed | the structure's static items and the objects' items of layers 1, 5, 7, 8 and 20, layer 5's with the PRT stream the draw adds (the first person's 1, 7, 8 and 20) from the scene's plan (`frame-scene.layers`), under the stencil the geometry draw's prologue sets (`layer_pass::item_stencil`) | layer 5's object items whose PRT stream does not read or supplies incompatible registers or components, items whose pass leaves a render state other than the device holds (one it sets and its restore list does not write back, or one the restore list writes another value to: `layer_pass::skip_holds`), object items extraction names a cause for or whose passes do not plan, animated and per-draw items, every item after the first the plan cannot take, and every item with `frame-scene.layers=off` (kind 2 setup for all of it) | layer 1: 0.32 ms, 56 entries [a]; others under 0.3 ms |
-| Layer 2 (`0x0002c05b`; the alternate view's `0x0002bda3`; the first person's `0x00040284`) and the sky `0x0003ede0` (strip at `0x0004c976`) | indexed | layer 2's structure and object items at the main, alternate and first-person calls from the scene's plan (`frame-scene.layers`, `layer_pass::OVERLAY_LAYER`), under the device's stencil; the sky strip, culled or not, with per-view node rows, material bindings and the mode-2 stencil state; the remaining standard layer-2 geometry as packets | what layers 1, 5, 7, 8 and 20 refuse (`scene_kept_2_*`); other callers (`scene_kept_2_*_caller`); unresolved sky geometry, transforms, materials or stencil state (`scene_kept_sky_*`); guest sky selection and setup | 0.29 ms, 120 entries [a] |
+| Layer 2 (`0x0002c05b`; the alternate view's `0x0002bda3`; the first person's `0x00040284`) and the sky `0x0003ede0` (strip at `0x0004c976`) | indexed | layer 2's structure and object items at the main, alternate and first-person calls from the scene's plan (`frame-scene.layers`, `layer_pass::OVERLAY_LAYER`), under the device's stencil; the sky strip, culled or not, with per-view node rows, material bindings and the mode-2 stencil state; the items the order rule holds back, per item in the sorted order ([retire-d3d-r5.md](retire-d3d-r5.md)) | what layers 1, 5, 7, 8 and 20 refuse (`scene_kept_2_*`); other callers (`scene_kept_2_*_caller`); unresolved sky geometry, transforms, materials or stencil state (`scene_kept_sky_*`); guest sky selection and setup | 0.29 ms, 120 entries [a] |
 | Object shadows `0x000335e0`, `0x00032350` (both partial, as are their caster and receiver layers 10 and 11) | indexed into shadow targets, then receivers | object lists, histories and admitted mask caster bodies ([native-light-gather.md](native-light-gather.md), L7), whole groups of layers 10, 11 and 14 from the scene with no geometry handler, the filter's native quads; sorted BSP and model draws of layers 10, 11 and 14, at 1x on one backend | scaled and E3 display copies, interpolated replay, a missing freeze or resource, a pending callback, an animated gel, guest creature shadows, and the mask chain's target and device setup | 1.24 ms, 182 entries [a] |
 | Dynamic lights `0x00031c80`, per light `0x00031170` | indexed, layers 10 to 14; gel quads into target 13 | `dynamic_lights` and `light_passes` are partial. The Rust gather supplies ordered lights. Eligible diffuse and specular groups draw together over structure and models. | A refused gather runs the guest loop. A light whose groups do not read whole keeps its guest passes (`scene_kept_light_<cause>`). Shadow and opacity targets, shader gels, incomplete groups and unavailable device copies keep their layer handlers | 1.88 ms without the per-light passes [a]; per-light time not broken out |
 | First person `0x0003fdf0(0)`, `(1)` and its lights `0x000404b0` | cut | `0x0003fdf0(0)` and `(1)`: the scene's first-person parts in slot 10, a part that does not draw a named drop ([native-objects.md](native-objects.md), "First person"); its lights' layers 12 and 13 whose groups the scene holds whole, from the scene ([native-lights.md](native-lights.md)) | the lights' list rebuilds, constants and layers 11 and 14, a group the scene does not hold whole, a light with a shader gel | 0.84 ms, 404 entries; lights 0.39 ms, 173 entries [a] |
@@ -316,7 +318,7 @@ classified readers, 73 read run state and 30 start from it.
 | World | the layer draws of 1, 3, 5, 7, 8, 20 over structure | `native_render::world` and `layer_pass` from tags, whole-call (framescene.md slice 4) | built for layer 3; for 1, 5, 7, 8 and 20 the structure's static items, and objects' items of 1, 5, 7, 8 and 20 |
 | Objects | `OBJECT_RENDER_SETUP` `0x00133790`, the layer-3 handlers, the first person | the Rust object setup and typed instances; an object the walk cannot take keeps its guest handler's draw (`scene_kept_3_object_*`) | built, with a remainder |
 | Decorators | builds `0x0004de20`, draw `0x0004e260` | `native_render::decorators` ([native-decorators.md](native-decorators.md)) | built, not verified |
-| Sky, layer 2 | `0x0003ede0`, the layer-2 handlers | a sky stage from the scenario's sky and its model; layer 2 from the scene's plan | layer 2 from the plan at the main, alternate and first-person calls; per-view sky model strips with resolved materials and stencil, with packet fallback |
+| Sky, layer 2 | `0x0003ede0`, the layer-2 handlers | a sky stage from the scenario's sky and its model; layer 2 from the scene's plan | layer 2 from the plan at the main, alternate and first-person calls; per-view sky model strips with resolved materials and stencil |
 | Lights and shadows | `0x00031c80`, `0x00031170`, `0x000335e0`, `0x00032350`, `0x000404b0`, gels | typed light groups and shadow layers ([native-lights.md](native-lights.md), [native-shadow-layers.md](native-shadow-layers.md)), the entries as Rust bodies ([native-light-gather.md](native-light-gather.md)); the renderer's own selection in E3 mode ([e3-lighting.md](e3-lighting.md)) | partly built |
 | Effects and particles | the producers, their property evaluation, ribbon construction, `0x00174420`, the sorted dispatch `0x0001e370` | a Rust effect pass that walks the effect and particle datums, makes the same draws from the effects seed, writes the same stamps and emits instanced quads and ribbons | packet; the stamps and the dispatch's state made in Rust beside the guest and compared ("R2's shadow arm") |
 | Decals | the D3D backend draw when admission succeeds | a native quad packet from the callback's resolved array draw ([native-decals-research.md](native-decals-research.md)) | packet only. The guest walks and maintains the decal pool. |
@@ -421,95 +423,12 @@ D3D entry calls.
 
 ### R2's first slice
 
-Built (**Code**): the display queue's order as a plan.
-`DisplayTransparentQueue::runs` (`frame-scene/src/transparent.rs`) groups
-display geometry by the reference ordinal it sorts after, and refuses a
-queue that is not `order_exact` or has an unresolved cluster. Tests:
-`display_geometry_runs_follow_the_reference_ordinal_they_sort_after`,
-`a_queue_the_guest_must_order_has_no_runs`. `render.stats` carries
-`layer_plan_15_display_queue_{built,geometry,unresolved_clusters,inexact}`.
-
-The display water draws from the plan (**Code**):
-`render-bridge/src/native_water/display_runs.rs` plans the queue's water
-parts at the queue's build, draws the head run, and draws the run after
-each ordinal at `TRANSPARENT_DISPATCH_NEXT` (`0x0001e3f9`, the join after
-each entry of the loop `0x0001e370`, handler or null). Tests:
-`runs_draw_in_order_between_the_entries_the_guest_dispatches`,
-`a_refused_queue_draws_nothing_and_leaves_the_old_path`,
-`parts_the_layer_6_pass_drew_and_another_frame_are_not_drawn_again`,
-`a_host_that_refuses_a_run_is_counted_and_the_loop_goes_on`,
-`the_plan_takes_a_late_run_in_order`. `render.stats` carries
-`layer_plan_15_display_queue_{runs_planned,runs_drawn,parts_drawn,runs_refused,runs_undrawn,old_path,hook_foreign_frame}`
-(native-renderer.md).
-
-The guest's loop still dispatches every entry, so the loop's residual
-count does not drop yet. What blocks replacing it is made in Rust beside
-the guest in "R2's shadow arm".
+The display queue's runs: [retire-d3d-r2.md](retire-d3d-r2.md), "R2's first slice".
 
 ### R2's shadow arm
 
-Built (**Code**): `render-bridge/src/effects_shadow.rs`. The state that
-blocks replacing `0x0001e370`, made in Rust and compared with the guest's.
-Switch `frame-scene.effects-shadow` (on).
-
-| Arm | Rust | Compared at the return with |
-|---|---|---|
-| Stamps | `effects_shadow/view_update.rs`: each outermost `0x00174420` call, its callees `0x001751d0`, `0x00137bd0`, `0x0003eb20`, `0x00165010`, `0x00181800`, `0x00249bb0` and its queue call `0x0001e4e0` | systems, particles, the two particle-model singletons, the list's end and overflow byte, the rows it queues, the seeds |
-| Dispatch | `effects_shadow/dispatch.rs`: the loop's entries in order, each handler named | the Rust sort's order (at `TRANSPARENT_ORDER_READY`); seeds, systems, particles, the list and its live rows unchanged across the loop |
-| Effects seed | no path under `0x00174420` or the named handlers loads `[0x004e7408]` (the lifted image's call graph) | both arms: the seeds do not move |
-
-What the stamps arm writes:
-
-| Field | Write |
-|---|---|
-| system `+0xd` bit 2 | set when forced (the view's cluster, or `+0xc` bit `0x400`); cleared when culled in |
-| child `+0xc` bit `0x400` | the parent's, before the child's update |
-| particle `+0x30` | the frame counter `0x004ba034`, for a particle of the other view or one the cull keeps |
-| singletons `0x00479868`, `0x00479874` `+4`, `+8` | the tag and tag data `0x00137bd0` sets before each read |
-| list row | class 3, depth, handler `0x00173c90`, payload (system, particle), position, for shader flag `0x8000` |
-
-The dispatch arm leaves the singletons out: `0x00137bd0` sets one before
-every read, so the loop's last value is never read. The handlers' other
-writes (`0x00035b00`'s `0x004670bc`, D3D state) are not compared.
-
-The gate, per frame of `0x004ba034`:
-
-| Rule | Value |
-|---|---|
-| frames compared | 1 in 64 (`SAMPLE`) |
-| answers after | 8 sampled frames in a row compared clean (`CLEAN`); a sampled frame with nothing to compare neither counts nor breaks the run |
-| stops answering | at the first difference or refusal |
-| while answering | each run of consecutive particle or decal entries (handlers `0x00173c90`; `0x00041cc0`, `0x000423c0`) goes to `RunHost::draw_display_entries` at `TRANSPARENT_DISPATCH_NEXT` after its last entry |
-
-The model refuses, by name: `fault`, `layout`, `no_definition`,
-`no_model`, `singleton_vtable`, `object_path` (a shader flag besides
-`0x8000` calls `0x00040e30`), `x87` (the distance sum at 64-bit precision
-or another rounding mode), `distance_range`, `depth`, `cycle`, `mxcsr`.
-
-`render.stats`, each `layer_plan_15_effects_shadow_<outcome>`:
-
-| Counter | Counts |
-|---|---|
-| `stamps_matched`, `stamps_mismatched_{seed,systems,particles,singletons,list,entries}`, `stamps_refused_<reason>`, `stamps_unbalanced`, `stamps_entries_queued` | outermost `0x00174420` calls on sampled frames |
-| `dispatch_matched`, `dispatch_mismatched_{order,seed,systems,particles,list,rows}`, `dispatch_refused_{plan,order,mxcsr,<reason>}`, `dispatch_unbalanced` | sorted dispatches on sampled frames |
-| `dispatch_entries_{geometry,particle,contrail,decal,null,other}` | entries of sampled dispatches, by handler |
-| `frames_sampled`, `frames_clean`, `frames_unclean`, `frames_empty`, `opened`, `fallback`, `answering_frames` | the gate |
-| `entry_runs_planned_<kind>`, `entry_runs_drawn_<kind>`, `entry_runs_entries_<kind>`, `entry_runs_refused_<kind>`, `entry_runs_no_host_<kind>`, `entry_runs_undrawn` | the runs while answering |
-
-Tests: `view_update.rs` (`a_forced_system_stamps_and_queues_each_particle`,
-`the_other_view_stamps_only_and_a_rejected_particle_is_not_stamped`,
-`children_take_the_parents_forced_bit_and_are_updated`,
-`what_the_model_cannot_make_is_a_named_refusal`,
-`the_distance_keeps_the_x87_precision_or_refuses`,
-`the_fade_and_the_frustum_follow_the_guests_compares`), `dispatch.rs`,
-`effects_shadow.rs` (the gate, a matching and a differing call and
-dispatch, the runs).
-
-Still the guest's: every handler body (the particle draw `0x00174f80` and
-its property evaluation, `0x00035b00`, the decal-list replays), the calls
-of `0x00174420` themselves, and `0x00040e30`. No `RunHost` is installed,
-so every run counts `entry_runs_no_host_<kind>`: the display copy's own
-particles and decals need a host that draws them.
+The stamps, the effects seed and the dispatch state made in Rust and
+compared: [retire-d3d-r2.md](retire-d3d-r2.md), "R2's shadow arm".
 
 What R10 and R11 delete is listed in [retire-d3d-remainders.md](retire-d3d-remainders.md#what-r10-and-r11-delete).
 

@@ -108,8 +108,8 @@ pub fn layer_draws(mem: &dyn GuestRead) -> Option<bool> {
 
 /// Items left to the guest by the late-layer walk, grouped by cause, and
 /// each item's list slot with its cause (`build`, `handler`, `record`,
-/// `subparts`, `object`, `material`, `order`): what its
-/// `scene_kept_<layer>_<kind>_<cause>` names.
+/// `subparts`, `object`, `material`, `order`; the sorted runs' `state`
+/// and `entry`): what its `scene_kept_<layer>_<kind>_<cause>` names.
 #[derive(Default)]
 pub struct LateRefusals {
     pub build: u64,
@@ -119,7 +119,31 @@ pub struct LateRefusals {
     pub object: u64,
     pub material: u64,
     pub order: u64,
+    /// A sorted run: skipping the item's draw would leave the device
+    /// other than drawing it does (`layer_pass::skip_holds`).
+    pub state: u64,
+    /// A sorted run: an entry whose item the walk reads as building none.
+    pub entry: u64,
     pub kept: Vec<(u32, &'static str)>,
+}
+
+impl LateRefusals {
+    /// Slot `slot` keeps its guest draw under `cause`.
+    pub fn keep(&mut self, slot: u32, cause: &'static str) {
+        let n = match cause {
+            "build" => &mut self.build,
+            "handler" => &mut self.handler,
+            "record" => &mut self.record,
+            "subparts" => &mut self.subparts,
+            "object" => &mut self.object,
+            "order" => &mut self.order,
+            "state" => &mut self.state,
+            "entry" => &mut self.entry,
+            _ => &mut self.material,
+        };
+        *n += 1;
+        self.kept.push((slot, cause));
+    }
 }
 
 /// The items of the current list the guest's layer draw still draws for
@@ -145,16 +169,27 @@ pub fn guest_items(mem: &dyn GuestRead, layer: u32) -> Option<Vec<crate::layer_i
     Some(held.into_iter().filter(|h| entry(h.slot) != Some(false)).collect())
 }
 
-/// Clears the layer bit for accepted geometry. A layer-16 geometry build
-/// can omit the entry for either an object or structure record. Such a
-/// record leaves no entry for the layer sort and keeps its mask unchanged.
-/// When a real guest entry shares the layer with accepted items, keep the entire list
-/// for the guest sort. Callers preview the writes until reservation commits.
-pub fn clear_fog(
-    mem: &mut dyn GuestWrite,
-    layer: u32,
-    native: &dyn Fn(FogItem) -> bool,
-) -> Option<(Vec<FogItem>, Cleared, LateRefusals)> {
+/// What the walk makes of one list item of the late layer.
+enum Class {
+    /// Not in the layer, or a record the layer builds no entry for: the
+    /// layer draws nothing of it.
+    None,
+    /// The guest draws it, for this cause.
+    Kept(&'static str),
+    /// The host draws it: the item's address, its mask and what it draws.
+    Native(u32, u32, FogItem),
+}
+
+/// The current list of `layer` as the walk reads it: its items' base,
+/// the first and the end slot, and the planar gate for layer 16.
+struct List {
+    items: u32,
+    first: u32,
+    count: u32,
+    planar: Option<bool>,
+}
+
+fn list(mem: &dyn GuestRead, layer: u32) -> Option<List> {
     if mem.read_u32(CURRENT_LAYER)? != layer || layer >= 32 {
         return None;
     }
@@ -169,99 +204,181 @@ pub fn clear_fog(
         return None;
     }
     items.checked_add(count.checked_mul(ITEM_SIZE)?)?;
+    let planar = if layer == FOG_LAYER as u32 { Some(planar_gate(mem)?) } else { None };
+    Some(List { items, first, count, planar })
+}
+
+/// Slot `i` of `list` for `layer`: kept with its cause, the host's, or
+/// nothing the layer draws. `native` names why the host does not draw an
+/// item it reads. `None` when a word does not read.
+fn classify(
+    mem: &dyn GuestRead,
+    list: &List,
+    layer: u32,
+    i: u32,
+    native: &dyn Fn(FogItem) -> Result<(), &'static str>,
+) -> Option<Class> {
+    let item = list.items + ITEM_SIZE * i;
+    let mask = mem.read_u32(item + 0x10)?;
+    if mask & (1u32 << layer) == 0 {
+        return Some(Class::None);
+    }
+    if mem.read_u32(item)? != GEOMETRY_BUILD {
+        return Some(Class::Kept("build"));
+    }
+    let arg = mem.read_u32(item + 0xc)?;
+    let record = (arg >> 8) as u16 as i16;
+    if record < 0 {
+        return Some(Class::Kept("record"));
+    }
+    let base = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
+    let flags = mem.read_u32(base)?;
+    let implementation = match list.planar {
+        Some(planar) => match layer_implementation(flags, planar) {
+            Some(i) => Some(i),
+            None => return Some(Class::None),
+        },
+        None => None,
+    };
+    if mem.read_u32(item + 4)? != GEOMETRY_DRAW {
+        return Some(Class::Kept("handler"));
+    }
+    // This handler returns before drawing layer 16 when bit 14 is
+    // set (0x0004d14e). It still writes the current shader on entry.
+    if list.planar.is_some() && flags & (1 << 14) != 0 {
+        return Some(Class::Kept("record"));
+    }
+    if mem.read_u32(base + 4)? != u32::MAX {
+        return Some(Class::Kept("object"));
+    }
+    // The batch owns a complete part. Let the emitter choose its
+    // ranges when the render record enables subpart selection.
+    if flags & scene_extract::layout::object_walk::RECORD_SUBPARTS != 0 {
+        return Some(Class::Kept("subparts"));
+    }
+    let packed = mem.read_u32(base + 0xc)?;
+    let owner = if flags & (1 << 12) == 0 {
+        Owner::Cluster((packed >> 9) & 0x1ff)
+    } else {
+        Owner::Instance((packed >> 18) & 0x7ff)
+    };
+    let shader = mem.read_u32(item + 8)? as u16;
+    let fog_item = FogItem { owner, part: arg as u8, shader, implementation };
+    Some(match native(fog_item) {
+        Ok(()) => Class::Native(item, mask, fog_item),
+        Err(why) => Class::Kept(why),
+    })
+}
+
+/// Clears `layer`'s bit on `accepted` (address, mask, item), in order.
+fn clear(mem: &mut dyn GuestWrite, layer: u32, accepted: Vec<(u32, u32, FogItem)>) -> (Vec<FogItem>, Cleared) {
     let bit = 1u32 << layer;
-    let planar = if layer == FOG_LAYER as u32 { Some(planar_gate(&*mem)?) } else { None };
-    let mut accepted = Vec::new();
-    let mut refused = LateRefusals::default();
-    let mut guest_remainder = false;
-    for i in first..count {
-        let item = items + ITEM_SIZE * i;
-        let mask = mem.read_u32(item + 0x10)?;
-        if mask & bit == 0 {
-            continue;
-        }
-        if mem.read_u32(item)? != GEOMETRY_BUILD {
-            refused.build += 1;
-            refused.kept.push((i, "build"));
-            guest_remainder = true;
-            continue;
-        }
-        let arg = mem.read_u32(item + 0xc)?;
-        let record = (arg >> 8) as u16 as i16;
-        if record < 0 {
-            refused.record += 1;
-            refused.kept.push((i, "record"));
-            guest_remainder = true;
-            continue;
-        }
-        let base = RENDER_RECORDS + RENDER_RECORD_SIZE * record as u32;
-        let flags = mem.read_u32(base)?;
-        let implementation = match planar {
-            Some(planar) => match layer_implementation(flags, planar) {
-                Some(i) => Some(i),
-                None => continue,
-            },
-            None => None,
-        };
-        if mem.read_u32(item + 4)? != GEOMETRY_DRAW {
-            refused.handler += 1;
-            refused.kept.push((i, "handler"));
-            guest_remainder = true;
-            continue;
-        }
-        // This handler returns before drawing layer 16 when bit 14 is
-        // set (0x0004d14e). It still writes the current shader on entry.
-        if planar.is_some() && flags & (1 << 14) != 0 {
-            refused.record += 1;
-            refused.kept.push((i, "record"));
-            guest_remainder = true;
-            continue;
-        }
-        if mem.read_u32(base + 4)? != u32::MAX {
-            refused.object += 1;
-            refused.kept.push((i, "object"));
-            guest_remainder = true;
-            continue;
-        }
-        // The batch owns a complete part. Let the emitter choose its
-        // ranges when the render record enables subpart selection.
-        if flags & scene_extract::layout::object_walk::RECORD_SUBPARTS != 0 {
-            refused.subparts += 1;
-            refused.kept.push((i, "subparts"));
-            guest_remainder = true;
-            continue;
-        }
-        let packed = mem.read_u32(base + 0xc)?;
-        let owner = if flags & (1 << 12) == 0 {
-            Owner::Cluster((packed >> 9) & 0x1ff)
-        } else {
-            Owner::Instance((packed >> 18) & 0x7ff)
-        };
-        let shader = mem.read_u32(item + 8)? as u16;
-        let fog_item = FogItem { owner, part: arg as u8, shader, implementation };
-        if !native(fog_item) {
-            refused.material += 1;
-            refused.kept.push((i, "material"));
-            guest_remainder = true;
-            continue;
-        }
-        accepted.push((i, item, mask, fog_item));
-    }
-    if guest_remainder {
-        refused.order = accepted.len() as u64;
-        refused.kept.extend(accepted.iter().map(|&(i, ..)| (i, "order")));
-        accepted.clear();
-    }
     let mut cleared = Cleared { layer, items: Vec::with_capacity(accepted.len()) };
     let mut drawn = Vec::with_capacity(accepted.len());
-    for (_, item, mask, fog_item) in accepted {
+    for (item, mask, fog_item) in accepted {
         if mem.write_u32(item + 0x10, mask & !bit).is_none() {
             break;
         }
         cleared.items.push(item);
         drawn.push(fog_item);
     }
+    (drawn, cleared)
+}
+
+/// Clears the layer bit for accepted geometry, before the layer's build.
+/// A layer-16 geometry build can omit the entry for either an object or
+/// structure record. Such a record leaves no entry for the layer sort and
+/// keeps its mask unchanged. When a real guest entry shares the layer with
+/// accepted items, nothing is cleared here and the accepted items are
+/// `order`: the guest's sort decides where each goes, and the bridge
+/// draws them over the sorted entries ([`sorted_run`]).
+/// Callers preview the writes until reservation commits.
+pub fn clear_fog(
+    mem: &mut dyn GuestWrite,
+    layer: u32,
+    native: &dyn Fn(FogItem) -> bool,
+) -> Option<(Vec<FogItem>, Cleared, LateRefusals)> {
+    let list = list(&*mem, layer)?;
+    let native = |item: FogItem| if native(item) { Ok(()) } else { Err("material") };
+    let mut accepted = Vec::new();
+    let mut refused = LateRefusals::default();
+    let mut guest_remainder = false;
+    for i in list.first..list.count {
+        match classify(&*mem, &list, layer, i, &native)? {
+            Class::None => {}
+            Class::Kept(why) => {
+                refused.keep(i, why);
+                guest_remainder = true;
+            }
+            Class::Native(item, mask, fog_item) => accepted.push((i, item, mask, fog_item)),
+        }
+    }
+    if guest_remainder {
+        for &(i, ..) in &accepted {
+            refused.keep(i, "order");
+        }
+        accepted.clear();
+    }
+    let (drawn, cleared) = clear(mem, layer, accepted.into_iter().map(|(_, item, mask, f)| (item, mask, f)).collect());
     Some((drawn, cleared, refused))
+}
+
+/// One run of `layer`'s sorted entries the host draws, from entry `from`
+/// ([`sorted_run`]): its items in the guest's order, with their list
+/// slots and entry indices, and the entry that ends it, which the guest
+/// draws, with its cause.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct SortedRun {
+    pub drawn: Vec<FogItem>,
+    pub slots: Vec<u32>,
+    pub entries: Vec<u32>,
+    pub stop: Option<(u32, &'static str)>,
+}
+
+/// The run of `layer`'s sorted entries (`sorted`, read at the dispatch
+/// boundary or after an entry) from entry `from`: each entry whose item
+/// the host draws (`native`), up to the first the guest keeps, whose slot
+/// and cause end the run (`entry` for one whose item reads as building
+/// none). Entries the loop passes over are passed by. Nothing is written:
+/// the caller passes the run's entries over once its pass commits
+/// ([`crate::sorted_entries::Sorted::pass_over`]), and the guest draws the
+/// entry that ended it, then the next run starts after it. `None` when the
+/// list or an entry does not read, or an entry names a slot outside the
+/// list.
+pub fn sorted_run(
+    mem: &dyn GuestRead,
+    layer: u32,
+    sorted: &crate::sorted_entries::Sorted,
+    from: u32,
+    native: &dyn Fn(FogItem) -> Result<(), &'static str>,
+) -> Option<SortedRun> {
+    let list = list(mem, layer)?;
+    let mut run = SortedRun::default();
+    for k in from..sorted.count {
+        let e = sorted.entry(mem, k)?;
+        if e.passed {
+            continue;
+        }
+        if e.slot < list.first || e.slot >= list.count {
+            return None;
+        }
+        match classify(mem, &list, layer, e.slot, native)? {
+            Class::Native(_, _, item) => {
+                run.drawn.push(item);
+                run.slots.push(e.slot);
+                run.entries.push(k);
+            }
+            Class::Kept(why) => {
+                run.stop = Some((e.slot, why));
+                break;
+            }
+            Class::None => {
+                run.stop = Some((e.slot, "entry"));
+                break;
+            }
+        }
+    }
+    Some(run)
 }
 
 /// Sets the bits [`clear_fog`] cleared back.
@@ -498,6 +615,61 @@ mod tests {
         m.w(CURRENT_LIST, 0);
         assert!(clear_fog(&mut m, 16, &|_| true).is_none());
         assert_eq!(mask(&m, 0), 1 << 16 | 1 << 3);
+    }
+
+    /// The sorted entries of the test list at the dispatch boundary, by
+    /// item slot in draw order.
+    fn sorted(m: &mut Mem, slots: &[u32]) -> crate::sorted_entries::Sorted {
+        const ESP: u32 = 0x0070_0000;
+        const TARGET: u32 = 0x0071_0000;
+        m.w(TARGET + 0x100, 0);
+        let s = crate::sorted_entries::Sorted::at(ESP, slots.len() as u32).unwrap();
+        for (k, &slot) in slots.iter().enumerate() {
+            let e = s.buffer + crate::sorted_entries::ENTRY_SIZE * k as u32;
+            for w in 0..6 {
+                m.w(e + 4 * w, 0);
+            }
+            m.w(e, slot);
+            m.w(e + 0x10, TARGET);
+        }
+        s
+    }
+
+    /// The guest's sort put the placement first, the object's fog next and
+    /// the cluster last: the first run is the placement, ended by the
+    /// object, which the guest draws; the next run, after it, is the
+    /// cluster.
+    #[test]
+    fn a_sorted_run_ends_at_the_entry_the_guest_keeps_and_the_next_starts_after_it() {
+        let mut m = scene();
+        m.w(RENDER_RECORDS + 0x20 * 5, RECORD_FOG);
+        let s = sorted(&mut m, &[2, 1, 0]);
+        let run = sorted_run(&m, 16, &s, 0, &|_| Ok(())).unwrap();
+        assert_eq!(run.drawn.iter().map(|i| i.owner).collect::<Vec<_>>(), vec![Owner::Instance(140)]);
+        assert_eq!((run.slots, run.entries, run.stop), (vec![2], vec![0], Some((1, "object"))));
+        let run = sorted_run(&m, 16, &s, 2, &|_| Ok(())).unwrap();
+        assert_eq!((run.slots, run.entries, run.stop), (vec![0], vec![2], None));
+        assert_eq!(mask(&m, 0), 1 << 16 | 1 << 3, "nothing written");
+    }
+
+    /// The host's own cause ends a run; a run from past the end is empty.
+    #[test]
+    fn a_sorted_run_stops_at_the_hosts_cause() {
+        let mut m = scene();
+        m.w(ITEMS + ITEM_SIZE + 0x10, 1 << 3);
+        let s = sorted(&mut m, &[2, 0]);
+        let state = |i: FogItem| if i.owner == Owner::Instance(140) { Err("state") } else { Ok(()) };
+        let run = sorted_run(&m, 16, &s, 0, &state).unwrap();
+        assert_eq!((run.drawn.len(), run.stop), (0, Some((2, "state"))));
+        assert_eq!(sorted_run(&m, 16, &s, 2, &state).unwrap(), SortedRun::default());
+    }
+
+    /// An entry naming a slot outside the list refuses the run.
+    #[test]
+    fn a_sorted_run_refuses_an_entry_outside_the_list() {
+        let mut m = scene();
+        let s = sorted(&mut m, &[0, 9]);
+        assert!(sorted_run(&m, 16, &s, 0, &|_| Ok(())).is_none());
     }
 
     /// Each item the walk leaves to the guest names its slot and cause,

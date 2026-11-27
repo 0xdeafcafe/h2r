@@ -62,6 +62,10 @@ pub trait Host: Send + Sync {
     /// `left` takes why the items it does not clear keep their guest draw.
     fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16], left: &mut crate::native_layers::Left) -> Option<Cleared>;
 
+    /// One run of the layer's sorted entries, as the fog's
+    /// (`crate::native_fog::Host::ask_run`).
+    fn ask_run(&self, mem: &mut dyn GuestMemory, at: &crate::late_sorted::RunAt<'_>, left: &mut crate::native_layers::Left) -> crate::late_sorted::Run;
+
     /// Whether the display pass draws this part of the sorted display
     /// queue: a water part the native set holds, whose live shader is the
     /// queue's. Default: none.
@@ -111,6 +115,8 @@ pub(crate) fn end_display_runs() {
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
+/// Layer 6 held for its sorted entries (`crate::late_sorted`).
+static SORTED: Mutex<Option<crate::late_sorted::Deferred>> = Mutex::new(None);
 /// Bits cleared at the last layer 6, with each item's mask as it was
 /// left, until the next layer draw sets them back.
 static CLEARED: Mutex<Option<Pending>> = Mutex::new(None);
@@ -171,6 +177,7 @@ pub fn restore_pending(mem: &mut dyn GuestMemory) {
 /// layer draw's return address (`[esp]` at entry).
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
+    crate::late_sorted::stale(&SORTED, &*mem);
     if crate::native_fog::Mem(&mut *mem).read_u32(CURRENT_LAYER) != Some(WATER_LAYER) {
         return;
     }
@@ -226,6 +233,10 @@ fn claim(mem: &mut dyn GuestMemory, ret: u32, left: &mut crate::native_layers::L
         return true;
     };
     let Some(cleared) = host.ask(&mut *m.0, clusters, left) else {
+        // Items beside a kept one: drawn per item over the sorted entries.
+        if crate::late_sorted::wants(left) && crate::late_sorted::defer(&SORTED, &m, WATER_LAYER, left) {
+            return false;
+        }
         crate::scene_step::late_kept(&*m.0, WATER_LAYER as u8, true);
         return true;
     };
@@ -246,6 +257,18 @@ fn claim(mem: &mut dyn GuestMemory, ret: u32, left: &mut crate::native_layers::L
 
 pub(crate) fn forget_pending() {
     CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
+    crate::late_sorted::forget(&SORTED);
+}
+
+/// The host's ask for a run of layer 6's sorted entries.
+fn ask_run(mem: &mut dyn GuestMemory, at: &crate::late_sorted::RunAt<'_>, left: &mut crate::native_layers::Left) -> crate::late_sorted::Run {
+    match HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        Some(host) => host.ask_run(mem, at, left),
+        None => {
+            left.all("host");
+            crate::late_sorted::Run::Refused
+        }
+    }
 }
 
 pub struct NativeWater;
@@ -272,6 +295,20 @@ impl Feature for NativeWater {
             .after_feature(crate::render_timing::ID)
             .after_feature(crate::native_world::ID)
             .after_feature(crate::native_fog::ID)
+            .context_only();
+        // Layer 6 per item, as the fog's (`crate::late_sorted`).
+        b.raw()
+            .observe_before(&points::scene_effects::LAYER_BUILT, "native_water_sorted", |o| {
+                let mut g = o.guest();
+                crate::late_sorted::at_built(&SORTED, &mut *g, o.cpu.esp, o.cpu.eax, &mut ask_run);
+            })
+            .after_feature(crate::native_world::ID)
+            .context_only();
+        b.raw()
+            .observe_before(&points::scene_effects::LAYER_ENTRY_DONE, "native_water_entry", |o| {
+                let mut g = o.guest();
+                crate::late_sorted::after_entry(&SORTED, &mut *g, o.cpu.esi, &mut ask_run);
+            })
             .context_only();
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())

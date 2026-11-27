@@ -106,41 +106,7 @@ keeps a guest draw, by the counter that names it (**Code**):
 
 ## R5's remainder
 
-What keeps a guest draw in R5's stages, by counter (**Code**; causes in
-[native-world-walk.md](native-world-walk.md), "What the scene cannot draw
-keeps its guest draw"):
-
-| Stage | Counter | Kept |
-|---|---|---|
-| Layer 2, scene and alternate view | `scene_kept_2_*`, `scene_kept_alt2_*` | what the plan refuses, as layers 1, 5, 7, 8 and 20 |
-| Layer 17 | `scene_kept_17_*` | the same, at the scene's call only |
-| Layers 2 and 17, other callers | `scene_kept_{2,17}_<kind>_caller` | every item (`native_layers::UNTAKEN_CALLER`) |
-| Fog, layer 16 | `scene_kept_16_*` | the walk's per-slot causes; one refused item keeps the list (`order`), since the guest sorts it; objects' items; other callers; view refusals. A record with no layer-16 entry draws nothing and is not counted (`fog::guest_items`) |
-| Water, layer 6 | `scene_kept_6_*` | as the fog's, plus `target_view` and `no_parts` |
-| Sky strip | `scene_kept_sky_*` | extraction, view and range refusals, then `IndexedPass::for_sky`'s |
-
-Not built:
-
-- **The sky from the scene.** The strip is still admitted at its resolved
-  draw (`native_residual_glue`), so the guest's sky selection, its node
-  palette upload and the strip's setup run. Drawing it from a
-  `FrameScene` sky item needs the material's evaluated constants in the
-  scene.
-- **Fog and water beside a kept item.** The layer draw sorts its entries
-  and the passes blend, so the native pass cannot draw ahead of one item it
-  leaves without changing the result. An object's fog item keeps the whole
-  layer 16 until objects' fog draws from the scene.
-- **Layer 2's packets.** The standard geometry the plan leaves at the main
-  and alternate calls is admitted at its resolved draw, kind 2 setup
-  included.
-
-Tests: `layer_17_and_an_untaken_callers_layer_2_count_what_they_keep`
-(`native_layers`), `what_the_guest_still_draws_is_counted_scene_kept_by_cause`
-(`tests/native_fog.rs`),
-`each_kept_item_names_its_slot_and_an_entryless_record_is_not_drawn`
-(`native_render::fog`), `a_sky_strip_keeps_its_cull_and_each_refusal_is_named`
-(`tests/world_layers_gpu.rs`), `a_kept_strip_is_counted_scene_kept_by_its_cause`
-(`native_sky`), `the_world_layers_are_cut_in_their_slots` (`tests/cut.rs`).
+What keeps a guest draw in R5's stages, and how fog and water draw per item in the guest's order: [retire-d3d-r5.md](retire-d3d-r5.md).
 
 ## External pass refusals
 

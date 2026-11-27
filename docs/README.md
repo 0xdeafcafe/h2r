@@ -149,6 +149,8 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [retire-d3d-menus.md](graphics/retire-d3d-menus.md): retire-d3d R7: which menu-frame draws come from the overlay, bars as strips, and the `scene_kept_ui_<kind>_<cause>` counts of the UI draws that do not
 - [retire-d3d-display.md](graphics/retire-d3d-display.md): retire-d3d R8: `0x00223240` as the Rust frame step, the movie's picture drawn from the overlay, the frames outside a game view and the display
 - [retire-d3d-remainders.md](graphics/retire-d3d-remainders.md): what the built retire-d3d slices leave on the guest's draws by counter, the inventory's missing data, and what R10 and R11 delete
+- [retire-d3d-r2.md](graphics/retire-d3d-r2.md): retire-d3d R2's built slices: the display queue's runs and the effects shadow arm
+- [retire-d3d-r5.md](graphics/retire-d3d-r5.md): retire-d3d R5, the rest of a game view: what is kept by cause, fog and water per item over the sorted entries, the sky and layer 2 from the scene
 - [shaders.md](graphics/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/formats/shaders`)
 - [shaders-pixel.md](graphics/shaders-pixel.md): the pixel side: combiners, final combiner, texture modes, HILO, COLORSIGN
 - [shaders-fog.md](graphics/shaders-fog.md): the NV2A fog unit and how D3D state maps to it

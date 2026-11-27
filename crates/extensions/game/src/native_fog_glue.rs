@@ -37,6 +37,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use engine::memory::GuestMemory;
+use render_bridge::late_sorted::{Run, RunAt};
 use render_bridge::native_fog::Host;
 use render_bridge::native_layers::Left;
 use map::{Map, TagId};
@@ -75,9 +76,25 @@ pub struct FogView {
     /// material whose passes all have one is not here and draws for any
     /// item's implementation.
     pub chosen: HashMap<u16, u8>,
+    /// Each drawn material's shader (tag index) with the implementation
+    /// each of its layer-16 passes binds ([`LOADED_IMPLEMENTATION`] where
+    /// a pass has more than one): what skipping its guest draw is checked
+    /// against when a kept entry follows ([`FogView::skip_holds`]).
+    pub implementations: HashMap<u16, Vec<tags::material::ResolvedImplementation>>,
 }
 
 impl FogView {
+    /// Whether skipping the guest's draw of an item of `shader` leaves the
+    /// device as drawing it would, over the device's render states
+    /// (`read`, by guest state index): every pass's implementation holds
+    /// (`layer_pass::skip_holds`). The sorted walk checks it, where a
+    /// kept entry's draw follows the skipped ones.
+    pub fn skip_holds(&self, shader: u16, read: &dyn Fn(u32) -> Option<u32>) -> bool {
+        self.implementations
+            .get(&shader)
+            .is_some_and(|imps| imps.iter().all(|imp| native_render::layer_pass::skip_holds(imp, read)))
+    }
+
     /// Whether the pass draws `part` of `owner` with `shader` (the item's
     /// `+8` low word) for an item whose record binds `implementation`
     /// (`FogItem::implementation`): the skip's acceptance.
@@ -103,6 +120,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
     let mut programs: HashMap<u16, Vec<FogProgram>> = HashMap::new();
     let mut words: HashMap<u16, FogWords> = HashMap::new();
     let mut chosen: HashMap<u16, u8> = HashMap::new();
+    let mut implementations = HashMap::new();
     let mut parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))> = Vec::new();
     let materials: Vec<u16> = world.draws.iter().map(|d| d.material).collect::<BTreeSet<_>>().into_iter().collect();
     if !materials.is_empty() {
@@ -144,6 +162,11 @@ pub fn load<R: std::io::Read + std::io::Seek>(
                 for (m, shader, mat) in resolved {
                     if mat.as_ref().is_ok_and(|mat| fog_gpu::layer_has_choice(mat, native_render::fog::FOG_LAYER)) {
                         chosen.insert(shader.0 as u16, LOADED_IMPLEMENTATION);
+                    }
+                    if let Some(imps) = mat.as_ref().ok().and_then(|mat| {
+                        fog_gpu::layer_implementations(mat, native_render::fog::FOG_LAYER, Some(usize::from(LOADED_IMPLEMENTATION)))
+                    }) {
+                        implementations.insert(shader.0 as u16, imps);
                     }
                     let compiled = mat
                         .and_then(|mat| {
@@ -236,7 +259,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         .iter()
         .filter_map(|&(k, (_, _, _, m))| Some((k, shaders.get(usize::from(m))?.0 as u16)))
         .collect();
-    FogView { programs, words, parts, part_set, chosen }
+    FogView { programs, words, parts, part_set, chosen, implementations }
 }
 
 /// Builds the fog resources on the BSP loader's device.
@@ -307,6 +330,25 @@ pub(super) fn display_late_part(
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16], left: &mut Left) -> Option<native_render::skip::Cleared> {
+        self.ask_at(mem, display_clusters, left, None, &mut Run::Refused)
+    }
+
+    fn ask_run(&self, mem: &mut dyn GuestMemory, at: &RunAt<'_>, left: &mut Left) -> Run {
+        let mut run = Run::Refused;
+        self.ask_at(mem, &[], left, Some(at), &mut run);
+        run
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// The ask before the layer's build (`at` `None`: the walk clears
+    /// bits, `clear_fog`), or for one run of the sorted entries
+    /// (`native_render::fog::sorted_run`, `render_bridge::late_sorted`),
+    /// whose outcome goes to `out`.
+    fn ask_at(
+        &self, mem: &mut dyn GuestMemory, display_clusters: &[u16], left: &mut Left,
+        at: Option<&RunAt<'_>>, out: &mut Run,
+    ) -> Option<native_render::skip::Cleared> {
         use timeline::native::{Metric, Stage};
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -403,15 +445,45 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // (`native_render::skip::MaskPreview`).
         let read = ReadMemory(mem);
         let Some(mut preview) = native_render::skip::MaskPreview::new(&read) else { return kept(left, "list") };
-        let Some((selected, cleared, refused)) = native_render::fog::clear_fog(&mut preview, native_render::fog::FOG_LAYER as u32, &|item| {
-            let accepted = fog.draws(item.owner, item.part, item.shader, item.implementation);
-            if !accepted {
-                Stage::Fog.count(Metric::Examined, 1);
-                Stage::Fog.count(Metric::RefusedOwnership, 1);
+        let layer = native_render::fog::FOG_LAYER as u32;
+        let (selected, cleared, run) = match at {
+            None => {
+                let Some((selected, cleared, refused)) = native_render::fog::clear_fog(&mut preview, layer, &|item| {
+                    let accepted = fog.draws(item.owner, item.part, item.shader, item.implementation);
+                    if !accepted {
+                        Stage::Fog.count(Metric::Examined, 1);
+                        Stage::Fog.count(Metric::RefusedOwnership, 1);
+                    }
+                    accepted
+                }) else { return kept(left, "list") };
+                count_late_refusals(layer, refused, left);
+                (selected, cleared, None)
             }
-            accepted
-        }) else { return kept(left, "list") };
-        count_late_refusals(FOG_LATE_LAYER.into(), refused, left);
+            // A kept entry's draw follows the run, so skipping the run's
+            // draws must leave the device as drawing them would, from the
+            // state the next implementation switch leaves.
+            Some(at) => {
+                let Some(restore) = native_render::sorted_entries::cached_restore(&read) else { return kept(left, "cached_state") };
+                let device = |slot: u32| d.render_state(&read, slot);
+                let state = native_render::sorted_entries::after_restore(&restore, &device);
+                let Some(run) = native_render::fog::sorted_run(&read, layer, &at.sorted, at.from, &|item| {
+                    if !fog.draws(item.owner, item.part, item.shader, item.implementation) {
+                        Err("material")
+                    } else if !fog.skip_holds(item.shader, &state) {
+                        Err("state")
+                    } else {
+                        Ok(())
+                    }
+                }) else { return kept(left, "list") };
+                run_stop(layer, run.stop, left);
+                if run.drawn.is_empty() {
+                    *out = Run::Stopped;
+                    return None;
+                }
+                let cleared = native_render::skip::Cleared { layer, items: Vec::new() };
+                (run.drawn.clone(), cleared, Some((at, run)))
+            }
+        };
         let Some(masks) = preview.finish() else { return kept(left, "list") };
         if selected.is_empty() {
             return None;
@@ -421,21 +493,40 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }).is_none() {
             return kept(left, "pipeline");
         }
-        // The view's fog into the frame step's scene; the stage draws the
-        // scene's copy. A view the scene cannot take stays on the D3D path.
-        let parts: Vec<LatePart> = selected.iter().map(|item| LatePart { owner: item.owner, part: item.part }).collect();
+        // The view's fog into the frame step's scene, the layer's earlier
+        // runs first; the stage draws the scene's copy of this run. A view
+        // the scene cannot take stays on the D3D path.
+        let prior = run.as_ref().map_or(&[][..], |(at, _)| at.prior);
+        let mut parts: Vec<LatePart> = prior.to_vec();
+        parts.extend(selected.iter().map(|item| LatePart { owner: item.owner, part: item.part }));
         let Some(late) = render_bridge::scene_step::late_layer(&*mem, FOG_LATE_LAYER, true, device_words, &materials, &parts) else {
             return kept(left, "scene");
         };
         let fogs = late_fogs(&late.materials);
-        let selected = late_selected(&late.parts);
+        let Some(this_run) = late.parts.get(prior.len()..) else { return kept(left, "scene") };
+        let selected = late_selected(this_run);
         let ranges = selected.len();
         drop(planning);
         if !commit_late(&mut d, mem, &self.state, &ready, scene, plan(ranges), &|| pass(selected.clone(), fogs.clone(), false), &masks) {
             return kept(left, "reservation");
         }
         render_bridge::scene_step::late_drawn(late.key, FOG_LATE_LAYER);
+        if let Some((_, run)) = run {
+            *out = Run::Drawn { slots: run.slots, entries: run.entries, parts: this_run.to_vec() };
+        }
         Some(cleared)
+    }
+}
+
+/// The entry that ended a sorted run keeps its guest draw: its cause named
+/// for its slot, and counted `layer_plan_<layer>_refused_<cause>` when the
+/// run decided it (`state`, `entry`); the walk before the build counted
+/// the rest.
+pub(super) fn run_stop(layer: u32, stop: Option<(u32, &'static str)>, left: &mut Left) {
+    let Some((slot, why)) = stop else { return };
+    left.item(slot, why);
+    if matches!(why, "state" | "entry") {
+        render_bridge::native_layers::count(layer, &format!("refused_{why}"), 1);
     }
 }
 
@@ -481,6 +572,10 @@ pub(super) fn refuse_view(left: &mut Left, layer: u8, cause: &'static str) -> Op
 
 /// The walk's refusals: counted `layer_plan_<layer>_refused_<cause>`, and
 /// each item's cause named for its slot in `left`.
+///
+/// An `order` item is not counted: the bridge draws it per item over the
+/// sorted entries (`render_bridge::late_sorted`), and what it keeps is
+/// counted there by its own cause.
 pub(super) fn count_late_refusals(layer: u32, refused: native_render::fog::LateRefusals, left: &mut Left) {
     for &(slot, why) in &refused.kept {
         left.item(slot, why);
@@ -492,7 +587,6 @@ pub(super) fn count_late_refusals(layer: u32, refused: native_render::fog::LateR
         ("refused_object", refused.object),
         ("refused_subparts", refused.subparts),
         ("refused_material", refused.material),
-        ("refused_order", refused.order),
     ] {
         render_bridge::native_layers::count(layer, cause, n);
     }

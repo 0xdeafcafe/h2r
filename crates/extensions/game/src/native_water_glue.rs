@@ -28,6 +28,7 @@ use native_render::program::ViewInputs;
 use native_render::water_gpu::{self, Supply, WaterSet, WATER_LAYER};
 use native_render::world::{LightmapKey, Owner, World};
 use frame_scene::LatePart;
+use render_bridge::late_sorted::{Run, RunAt};
 
 use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, State, current_ready, palettes_hold};
 
@@ -54,6 +55,19 @@ pub struct WaterData {
     pub targets: Vec<u32>,
     /// Whether any pass samples the view's own target.
     pub samples_view: bool,
+    /// Each edge material's shader (tag index) with the implementation
+    /// each of its layer-6 passes binds: what skipping its guest draw is
+    /// checked against when a kept entry follows ([`WaterData::skip_holds`]).
+    pub implementations: HashMap<u16, Vec<tags::material::ResolvedImplementation>>,
+}
+
+impl WaterData {
+    /// As `native_fog_glue::FogView::skip_holds`, for layer 6.
+    pub fn skip_holds(&self, shader: u16, read: &dyn Fn(u32) -> Option<u32>) -> bool {
+        self.implementations
+            .get(&shader)
+            .is_some_and(|imps| imps.iter().all(|imp| native_render::layer_pass::skip_holds(imp, read)))
+    }
 }
 
 /// The embedded texture header returned by `0x0001dcc0` for a live target.
@@ -85,6 +99,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
     let mut parts: Vec<((Owner, u8), (u32, u32, Option<LightmapKey>, u16))> = Vec::new();
     let materials: Vec<u16> = world.transparents.iter().map(|t| t.material).collect::<BTreeSet<_>>().into_iter().collect();
     let mut pools = BTreeSet::new();
+    let mut implementations = HashMap::new();
     if !materials.is_empty() {
         if let Ok(mut lib) = tags::material::ShaderLibrary::read(map) {
             let rasterizer = map.tags().iter().find(|tag| tag.group.0 == *b"matg")
@@ -121,7 +136,13 @@ pub fn load<R: std::io::Read + std::io::Seek>(
                 if !edge { continue; }
                 edge_materials += 1;
                 let compiled = lib.material(shader, None).map_err(|e| format!("material: {e}"))
-                    .and_then(|mat| water_gpu::water_passes(&mat, rasterizer).map_err(|r| r.describe()))
+                    .and_then(|mat| {
+                        // A water pass has one implementation (`supplied_layer_passes`).
+                        if let Some(imps) = native_render::fog_gpu::layer_implementations(&mat, WATER_LAYER, None) {
+                            implementations.insert(shader.0 as u16, imps);
+                        }
+                        water_gpu::water_passes(&mat, rasterizer).map_err(|r| r.describe())
+                    })
                     .and_then(|ps| {
                         ps.iter()
                             .map(|p| {
@@ -226,6 +247,7 @@ pub fn load<R: std::io::Read + std::io::Seek>(
         part_set,
         targets,
         samples_view,
+        implementations,
     }
 }
 
@@ -363,8 +385,28 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16], left: &mut render_bridge::native_layers::Left) -> Option<native_render::skip::Cleared> {
+        self.ask_at(mem, display_clusters, left, None, &mut Run::Refused)
+    }
+
+    fn ask_run(&self, mem: &mut dyn GuestMemory, at: &RunAt<'_>, left: &mut render_bridge::native_layers::Left) -> Run {
+        let mut run = Run::Refused;
+        self.ask_at(mem, &[], left, Some(at), &mut run);
+        run
+    }
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+    /// As the fog's (`native_fog_glue`): before the build, or for one run
+    /// of the sorted entries, whose outcome goes to `out`. The display
+    /// part stays the ask's before the build.
+    fn ask_at(
+        &self, mem: &mut dyn GuestMemory, display_clusters: &[u16], left: &mut render_bridge::native_layers::Left,
+        at: Option<&RunAt<'_>>, out: &mut Run,
+    ) -> Option<native_render::skip::Cleared> {
         use timeline::native::{Metric, Stage};
-        self.layer6_display.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        if at.is_none() {
+            self.layer6_display.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        }
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             let Some(ready) = current_ready(&state, mem) else { return crate::native_fog_glue::kept(left, "unloaded") };
@@ -455,15 +497,43 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         // reservation has recorded on every copy.
         let read = ReadMemory(mem);
         let Some(mut preview) = native_render::skip::MaskPreview::new(&read) else { return crate::native_fog_glue::kept(left, "list") };
-        let Some((selected, cleared, refused)) = native_render::fog::clear_fog(&mut preview, WATER_LAYER as u32, &|item| {
-            let accepted = water.part_set.get(&(item.owner, item.part)) == Some(&(item.shader));
-            if !accepted {
-                Stage::Water.count(Metric::Examined, 1);
-                Stage::Water.count(Metric::RefusedOwnership, 1);
+        let (selected, cleared, run) = match at {
+            None => {
+                let Some((selected, cleared, refused)) = native_render::fog::clear_fog(&mut preview, WATER_LAYER as u32, &|item| {
+                    let accepted = water.part_set.get(&(item.owner, item.part)) == Some(&(item.shader));
+                    if !accepted {
+                        Stage::Water.count(Metric::Examined, 1);
+                        Stage::Water.count(Metric::RefusedOwnership, 1);
+                    }
+                    accepted
+                }) else { return crate::native_fog_glue::kept(left, "list") };
+                crate::native_fog_glue::count_late_refusals(WATER_LAYER as u32, refused, left);
+                (selected, cleared, None)
             }
-            accepted
-        }) else { return crate::native_fog_glue::kept(left, "list") };
-        crate::native_fog_glue::count_late_refusals(WATER_LAYER as u32, refused, left);
+            Some(at) => {
+                let Some(restore) = native_render::sorted_entries::cached_restore(&read) else {
+                    return crate::native_fog_glue::kept(left, "cached_state");
+                };
+                let device = |slot: u32| d.render_state(&read, slot);
+                let state = native_render::sorted_entries::after_restore(&restore, &device);
+                let Some(run) = native_render::fog::sorted_run(&read, WATER_LAYER as u32, &at.sorted, at.from, &|item| {
+                    if water.part_set.get(&(item.owner, item.part)) != Some(&item.shader) {
+                        Err("material")
+                    } else if !water.skip_holds(item.shader, &state) {
+                        Err("state")
+                    } else {
+                        Ok(())
+                    }
+                }) else { return crate::native_fog_glue::kept(left, "list") };
+                crate::native_fog_glue::run_stop(WATER_LAYER as u32, run.stop, left);
+                if run.drawn.is_empty() {
+                    *out = Run::Stopped;
+                    return None;
+                }
+                let cleared = native_render::skip::Cleared { layer: WATER_LAYER as u32, items: Vec::new() };
+                (run.drawn.clone(), cleared, Some((at, run)))
+            }
+        };
         let Some(masks) = preview.finish() else { return crate::native_fog_glue::kept(left, "list") };
         if selected.is_empty() {
             return None;
@@ -473,21 +543,27 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }).is_none() {
             return crate::native_fog_glue::kept(left, "pipeline");
         }
-        // The view's water into the frame step's scene; the stage draws
-        // the scene's copy. A view the scene cannot take stays on the D3D
-        // path.
-        let parts: Vec<LatePart> = selected.iter().map(|item| LatePart { owner: item.owner, part: item.part }).collect();
+        // The view's water into the frame step's scene, the layer's
+        // earlier runs first; the stage draws the scene's copy of this run.
+        // A view the scene cannot take stays on the D3D path.
+        let prior = run.as_ref().map_or(&[][..], |(at, _)| at.prior);
+        let mut parts: Vec<LatePart> = prior.to_vec();
+        parts.extend(selected.iter().map(|item| LatePart { owner: item.owner, part: item.part }));
         let Some(late) = render_bridge::scene_step::late_layer(&*mem, WATER_LATE_LAYER, true, device_words, &materials, &parts) else {
             return crate::native_fog_glue::kept(left, "scene");
         };
         let fogs = crate::native_fog_glue::late_fogs(&late.materials);
-        let selected = crate::native_fog_glue::late_selected(&late.parts);
+        let Some(this_run) = late.parts.get(prior.len()..) else { return crate::native_fog_glue::kept(left, "scene") };
+        let selected = crate::native_fog_glue::late_selected(this_run);
         let ranges = selected.len();
         drop(planning);
         if !crate::native_fog_glue::commit_late(&mut d, mem, &self.state, &ready, scene, plan(ranges), &|| pass(selected.clone(), fogs.clone(), false), &masks) {
             return crate::native_fog_glue::kept(left, "reservation");
         }
         render_bridge::scene_step::late_drawn(late.key, WATER_LATE_LAYER);
+        if let Some((_, run)) = run {
+            *out = Run::Drawn { slots: run.slots, entries: run.entries, parts: this_run.to_vec() };
+        }
         Some(cleared)
     }
 }

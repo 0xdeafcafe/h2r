@@ -138,6 +138,69 @@ pub trait Host: Send + Sync {
     /// the layer to the D3D path. `left` takes why each item it does not
     /// draw keeps its guest draw ([`Left`]).
     fn ask(&self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene, left: &mut Left) -> Option<Cleared>;
+
+    /// One run of [`RUN_LAYERS`]' sorted entries (`crate::late_sorted`),
+    /// `scene` extracted for it: the items from `at.from` the plan draws,
+    /// up to the first it keeps, reserved and committed, or why not (in
+    /// `left`).
+    fn ask_run(
+        &self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene,
+        at: &crate::late_sorted::RunAt<'_>, left: &mut Left,
+    ) -> crate::late_sorted::Run;
+}
+
+/// The layers whose items the plan takes but the order rule holds back
+/// (`order`: after a kept item they do not commute with) draw per item
+/// over the guest's sorted entries, between the items it keeps
+/// (`crate::late_sorted`; docs/graphics/retire-d3d-r5.md, "Layer 2 from
+/// the plan"): R5's blended overlay and late layers, at the scene's and
+/// the alternate view's calls.
+pub const RUN_LAYERS: [u32; 2] = [2, 17];
+
+/// A run layer held for its sorted entries, and its caller.
+static SORTED: Mutex<Option<crate::late_sorted::Deferred>> = Mutex::new(None);
+static SORTED_CALLER: Mutex<Option<LayerCaller>> = Mutex::new(None);
+
+/// The host's ask for a run of the held layer's sorted entries.
+fn ask_run(mem: &mut dyn GuestMemory, at: &crate::late_sorted::RunAt<'_>, left: &mut Left) -> crate::late_sorted::Run {
+    use crate::late_sorted::Run;
+    let caller = *SORTED_CALLER.lock().unwrap_or_else(|e| e.into_inner());
+    let (Some(caller), Some(layer)) = (caller, Ro(&*mem).read_u32(skip::CURRENT_LAYER)) else {
+        left.all("unread");
+        return Run::Refused;
+    };
+    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        left.all("host");
+        return Run::Refused;
+    };
+    let Some(scene) = extract(&*mem, layer as u8, caller) else {
+        left.all("unread");
+        return Run::Refused;
+    };
+    host.ask_run(mem, layer, caller, &scene, at, left)
+}
+
+/// Holds `layer` of `caller` for its sorted entries when the plan left
+/// items to the order rule: every item the guest's layer draw holds, each
+/// with its cause as [`count_kept`] names it. `false` when nothing is held.
+fn hold_for_runs(mem: &dyn GuestMemory, layer: u32, caller: LayerCaller, left: &mut Left, extracted: Option<&HashSet<u32>>) -> bool {
+    if !RUN_LAYERS.contains(&layer) || !scene_only(layer, caller) || !crate::late_sorted::wants(left) {
+        return false;
+    }
+    let ro = Ro(mem);
+    let (Some(list), Some(held)) = (ro.read_u32(skip::CURRENT_LIST), native_render::layer_items::held_items(&ro, layer, true)) else {
+        return false;
+    };
+    for h in &held {
+        if h.item.is_some() && !left.items.contains_key(&h.slot) && extracted.is_some_and(|e| !e.contains(&h.slot)) {
+            left.item(h.slot, "remainder");
+        }
+    }
+    let held = held.into_iter().map(|h| (h.slot, h.kind(), h.item.is_some())).collect();
+    let hold = crate::late_sorted::Hold { layer, list, site: site(caller), late: false, held };
+    crate::late_sorted::hold(&SORTED, hold, left);
+    *SORTED_CALLER.lock().unwrap_or_else(|e| e.into_inner()) = Some(caller);
+    true
 }
 
 /// Why the host left items of a layer to the guest: by list slot, and for
@@ -339,6 +402,7 @@ impl GuestWrite for Mem<'_> {
 /// layer's skip. `ret` is the layer draw's return address.
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
+    crate::late_sorted::stale(&SORTED, &*mem);
     let Some(layer) = Mem(mem).read_u32(skip::CURRENT_LAYER) else { return };
     let Some(caller) = caller(layer, ret) else {
         if UNTAKEN_CALLER.contains(&layer) {
@@ -373,6 +437,10 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         DRAWN.fetch_add(1, Ordering::Relaxed);
         ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);
         remember(mem, cleared);
+    }
+    if hold_for_runs(&*mem, layer, caller, &mut left, extracted.as_ref()) {
+        // Counted when the layer is done (`crate::late_sorted`).
+        return;
     }
     if scene_only(layer, caller) {
         count_kept(&Ro(&*mem), layer, site(caller), true, &left, extracted.as_ref());
@@ -410,6 +478,7 @@ pub fn restore_pending(mem: &mut dyn GuestMemory) {
 
 pub(crate) fn forget_pending() {
     CLEARED.lock().unwrap_or_else(|e| e.into_inner()).take();
+    crate::late_sorted::forget(&SORTED);
 }
 
 /// The site prefix of a layer draw of the opaque block: `""` the scene's,
@@ -506,6 +575,23 @@ impl Feature for NativeLayers {
                     }
                 }
                 original(cpu, ctx, addr)
+            })
+            .context_only();
+        // Layers 2 and 17 per item over the sorted entries.
+        b.raw()
+            .observe_before(&points::scene_effects::LAYER_BUILT, "native_layers_sorted", |o| {
+                if crate::native_map_work::Stage::World.standing_down() {
+                    return;
+                }
+                let mut g = o.guest();
+                crate::late_sorted::at_built(&SORTED, &mut *g, o.cpu.esp, o.cpu.eax, &mut ask_run);
+            })
+            .after_feature(crate::native_world::ID)
+            .context_only();
+        b.raw()
+            .observe_before(&points::scene_effects::LAYER_ENTRY_DONE, "native_layers_entry", |o| {
+                let mut g = o.guest();
+                crate::late_sorted::after_entry(&SORTED, &mut *g, o.cpu.esi, &mut ask_run);
             })
             .context_only();
         b.snapshot(hooks::SnapshotPolicy::Stateless);
@@ -636,6 +722,35 @@ mod tests {
             left.all("device");
             None
         }
+
+        fn ask_run(
+            &self, _: &mut dyn GuestMemory, _: u32, _: LayerCaller, _: &FrameScene,
+            _: &crate::late_sorted::RunAt<'_>, left: &mut Left,
+        ) -> crate::late_sorted::Run {
+            left.all("device");
+            crate::late_sorted::Run::Refused
+        }
+    }
+
+    /// A layer-2 item the plan leaves to the order rule holds the layer
+    /// for its sorted entries: nothing is counted kept until it is done,
+    /// then every item the runs did not draw, by its cause.
+    #[test]
+    fn an_order_item_of_layer_2_holds_the_layer_for_its_sorted_entries() {
+        let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let m = list(2, &[(1, false), (2, false)]);
+        let mut left = Left::default();
+        left.item(0, "state");
+        left.item(1, crate::late_sorted::ORDER);
+        let extracted: HashSet<u32> = [0, 1].into_iter().collect();
+        assert!(!hold_for_runs(&m, 5, LayerCaller::Scene, &mut left.clone(), Some(&extracted)), "not a run layer");
+        assert!(!hold_for_runs(&m, 2, LayerCaller::FirstPerson, &mut left.clone(), Some(&extracted)), "not cut to the scene");
+        let (state, unnamed) = (kept("scene_kept_2_world_state"), kept("scene_kept_2_world_unnamed"));
+        assert!(hold_for_runs(&m, 2, LayerCaller::Scene, &mut left, Some(&extracted)));
+        assert_eq!(kept("scene_kept_2_world_state"), state, "counted when done");
+        crate::late_sorted::stale(&SORTED, &m);
+        assert_eq!(kept("scene_kept_2_world_state"), state + 1);
+        assert_eq!(kept("scene_kept_2_world_unnamed"), unnamed + 1, "no run decided the order item");
     }
 
     /// A scene layer the host does not draw (here its view does not

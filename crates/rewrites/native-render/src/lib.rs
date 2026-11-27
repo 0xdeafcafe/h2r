@@ -124,6 +124,7 @@ pub mod shadow_look;
 pub mod shadow_scene;
 pub mod shadows;
 pub mod showcase;
+pub mod sorted_entries;
 #[cfg(feature = "gpu")]
 pub mod showcase_gpu;
 #[cfg(feature = "gpu")]

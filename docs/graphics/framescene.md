@@ -163,7 +163,7 @@ A text run is shaped in Rust (`native-render/src/text.rs`: `FontFace::from_tag` 
 | Gels | the template and quad sites | carried, then typed | 6, 9 |
 | Transparents | the sorted list `0x0001e370` dispatches | carried, then typed | 6, 9 |
 | Decals, particles, contrails, effects | the producers' draws | carried, then typed | 6, 9 |
-| Sky model | per-view node rows, section part and layer-15 material at its indexed strip ([native-renderer.md](native-renderer.md)) | typed with packet fallback | 6 |
+| Sky model | per-view node rows, section part and layer-15 material at its indexed strip ([native-renderer.md](native-renderer.md)) | typed; a refused strip keeps its guest draw | 6 |
 | Other layer-15 draws, layers 18, 19, 21 | their draws | carried | 6 |
 | Lens flares and their visibility tests | the flare writer `0x00020bb0` and reader `0x00020770` | typed (a native query) | 6 |
 | HUD, menus, loading screens, movies | the UI dispatch `0x00147af1`, the fallback view `0x002232a0` | carried | 6 |
