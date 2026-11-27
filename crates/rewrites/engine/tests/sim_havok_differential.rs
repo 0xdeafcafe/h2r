@@ -2696,6 +2696,8 @@ fn the_edge_case_matches_the_lifted_case() {
         *seen.entry((fresh & 0xff != 0, edge.eax)).or_insert(0) += 1;
     }
     assert!(seen.len() >= 5, "{seen:?}");
+}
+
 // The convex shapes' support virtuals (sim_havok::shape_support,
 // docs/engine/havok-convex.md, "Support virtuals") against the lifted
 // functions: 1024 seeds each under every rounding mode, the x87 state
@@ -2888,4 +2890,152 @@ fn the_polygon_support_matches_the_lifted_support() {
         *chosen.entry(index).or_insert(0) += 1;
     }
     assert!(chosen.len() >= 6, "{chosen:?}");
+}
+
+// The closest-feature query (sim_havok::gjk::query,
+// docs/engine/havok-convex.md, "The query path") against the lifted
+// 0x003048a0, on capsules and convex polygons through the ported
+// virtuals: 1024 seeds under every rounding mode.
+
+const POLYGON_VTABLE: u32 = 0x0045_60b8;
+const QUERY_A: u32 = 0x0077_4000;
+const QUERY_B: u32 = 0x0077_4200;
+const QUERY_T: u32 = 0x0077_4400;
+const QUERY_CACHE: u32 = 0x0077_4500;
+const QUERY_OUT: u32 = 0x0077_4600;
+
+fn query_code(image: &Image) -> lifted::Original {
+    let mut code = gjk_code(image);
+    for f in [0x3048a0, shape::CAPSULE_SUPPORT, shape::POLYGON_SUPPORT, shape::CAPSULE_VERTICES, shape::POLYGON_VERTICES] {
+        code.prime(f);
+    }
+    code
+}
+
+/// A capsule (two ends), or a convex polygon of three to eight vertices
+/// with each `w` its index; returns the IDs a cache may name.
+fn seed_query_shape(r: &mut Rng, m: &mut FlatMemory, at: u32, polygon: bool) -> Vec<u16> {
+    if !polygon {
+        word(m, at, CAPSULE_VTABLE);
+        seed_vector(r, m, at + 0x10);
+        seed_vector(r, m, at + 0x20);
+        return vec![0, 0x10];
+    }
+    word(m, at, POLYGON_VTABLE);
+    let n = 3 + r.below(6);
+    word(m, at + 0x14, n);
+    for i in 0..n {
+        put_lanes(m, at + 0x20 + 16 * i, [coord(r), coord(r), coord(r), 0.0]);
+        word(m, at + 0x2c + 16 * i, i);
+    }
+    (0..n as u16).collect()
+}
+
+/// The shapes' virtuals by vtable through the ported functions; the
+/// triangle case declines.
+struct QueryCalls {
+    fpu: Fpu,
+    triangle: bool,
+}
+
+impl gjk::Calls for QueryCalls {
+    fn vertices(&mut self, j: &mut Journal, shape: u32, ids: u32, count: u32, out: u32, _: u32) -> Result<(), sim_havok::convex::Fallback> {
+        match j.get(shape) {
+            Some(CAPSULE_VTABLE) => shape::capsule_vertices(j, shape, ids, count, out),
+            Some(POLYGON_VTABLE) => shape::polygon_vertices(j, shape, ids, count, out),
+            _ => Err(sim_havok::convex::Fallback::Memory),
+        }
+    }
+
+    fn support(&mut self, j: &mut Journal, shape: u32, dir: u32, out: u32, _: u32) -> Result<(), sim_havok::convex::Fallback> {
+        let mut x = X87State::default();
+        x87::abi::init(&mut x);
+        x.control = self.fpu.control;
+        let mut m = self.fpu.mxcsr;
+        match j.get(shape) {
+            Some(CAPSULE_VTABLE) => shape::capsule(j, shape, dir, out, &mut m, &mut x).map(|_| ()),
+            Some(POLYGON_VTABLE) => shape::polygon(j, shape, dir, out, &mut m).map(|_| ()),
+            _ => Err(sim_havok::convex::Fallback::Memory),
+        }
+    }
+
+    fn triangle_case(&mut self, _: &mut Journal, _: u32, _: gjk::Args, _: u32) -> Result<u32, sim_havok::convex::Fallback> {
+        self.triangle = true;
+        Err(sim_havok::convex::Fallback::Closest)
+    }
+}
+
+/// Seeded pairs of capsules and polygons, a transform sometimes a pure
+/// translation, cached simplices of one to three vertices each, the
+/// state's normal and sides left over: eax, ecx and edx equal the lifted
+/// query's, ebx, ebp, esi and edi are kept, and every byte outside its
+/// frame (the state, the cache, the output) matches. A query that
+/// stalls with the `+0x0c` byte clear reaches the triangle case, which
+/// the model declines.
+#[test]
+fn the_query_matches_the_lifted_query() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = query_code(image);
+    let (mut sizes, mut answers, mut declined) = (std::collections::BTreeMap::new(), std::collections::BTreeMap::new(), 0);
+    for seed in 0..1024u64 {
+        let mut r = Rng(0x3048_0000 + seed);
+        let mut mem = base.clone();
+        let ids_a = seed_query_shape(&mut r, &mut mem, QUERY_A, seed & 1 != 0);
+        let ids_b = seed_query_shape(&mut r, &mut mem, QUERY_B, seed & 2 != 0);
+        for i in 0..4 {
+            seed_vector(&mut r, &mut mem, QUERY_T + 16 * i);
+        }
+        if seed % 4 == 3 {
+            for (i, column) in [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]].into_iter().enumerate() {
+                put_lanes(&mut mem, QUERY_T + 16 * i as u32, column);
+            }
+        }
+        // Consecutive IDs from a seeded start, A's then B's.
+        let mut pick = |ids: &[u16]| -> Vec<u16> {
+            let n = 1 + r.below(ids.len().min(3) as u32) as usize;
+            let start = r.below(ids.len() as u32) as usize;
+            (0..n).map(|k| ids[(start + k) % ids.len()]).collect()
+        };
+        let (cached_a, cached_b) = (pick(&ids_a), pick(&ids_b));
+        let mut halves = [0u16; 8];
+        for (slot, id) in halves.iter_mut().zip(cached_a.iter().chain(&cached_b)) {
+            *slot = *id;
+        }
+        for i in 0..4 {
+            word(&mut mem, QUERY_CACHE + 4 * i as u32, u32::from(halves[2 * i]) | u32::from(halves[2 * i + 1]) << 16);
+        }
+        let (max_a, max_b) = (2 + r.below(3), 2 + r.below(3));
+        word(&mut mem, QUERY_CACHE + 8, cached_a.len() as u32 | (cached_b.len() as u32) << 8 | max_a << 16 | max_b << 24);
+        for off in [gjk::state::NORMAL, gjk::state::SIDES] {
+            seed_vector(&mut r, &mut mem, GJK_STATE + off);
+        }
+        word(&mut mem, GJK_STATE + gjk::state::LAST_B, 1 + r.below(3));
+        word(&mut mem, GJK_STATE + gjk::state::SETTLE, if seed % 8 == 7 { 0 } else { 1 + r.below(255) });
+        let fpu = test_fpu(seed);
+        let why = format!("seed {seed} ({}, {}) {fpu:x?}", cached_a.len(), cached_b.len());
+        let args = gjk::Args { a: QUERY_A, b: QUERY_B, transform: QUERY_T, cache: QUERY_CACHE, out: QUERY_OUT };
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let mut calls = QueryCalls { fpu, triangle: false };
+        let answer = match gjk::query(&mut j, GJK_STATE, STACK, args, fpu, &mut calls) {
+            Ok(q) => q,
+            Err(f) => {
+                assert!(calls.triangle, "{why}: declined {f:?}");
+                declined += 1;
+                continue;
+            }
+        };
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        let after = run_this(&mut code, &mut mem, 0x3048a0, GJK_STATE, &[QUERY_A, QUERY_B, QUERY_T, QUERY_CACHE, QUERY_OUT], fpu);
+        assert_eq!((after.eax, after.ecx, after.edx, after.esp), (answer.eax, answer.ecx, answer.edx, STACK + 0x18), "{why}: eax, ecx, edx, ret 0x14");
+        assert_eq!((after.ebx, after.ebp, after.esi, after.edi), (0x1111, 0x2222, 0x3333, 0x4444), "{why}: kept");
+        clear_frame([&mut mem, &mut expected], 0x14);
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+        let counts = mem.read_u32(QUERY_CACHE + 8).unwrap();
+        *sizes.entry((counts & 0xff, counts >> 8 & 0xff)).or_insert(0) += 1;
+        *answers.entry(answer.eax).or_insert(0) += 1;
+    }
+    assert!(sizes.len() >= 4 && answers.len() >= 2 && declined < 128, "{sizes:?} {answers:?}, {declined} declined");
 }

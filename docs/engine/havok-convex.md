@@ -1,7 +1,7 @@
 # The Havok convex agent: separated pairs
 
-Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; seven leaves of the closest-feature query and three shape types' support virtuals are ported and compared with the lifted code; the query, the manifold update and the contact commit stay guest code.
-Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query's leaves), `crates/rewrites/sim-havok/src/shape_support.rs` (the support virtuals), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`, `gjk.rs` and `shape_support.rs`.
+Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; the closest-feature query `0x003048a0` with its seven leaves, three shape types' support virtuals and two types' vertex virtuals are ported and compared with the lifted code; the query's triangle case `0x00303dd0`, the manifold update and the contact commit stay guest code, and no arm calls the query yet.
+Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query and its leaves), `crates/rewrites/sim-havok/src/shape_support.rs` (the support and vertex virtuals), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`, `gjk.rs` and `shape_support.rs`.
 Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
 
 A convex pair's agent keeps a separating axis and a bound on the
@@ -83,9 +83,9 @@ frame and runs the closest-feature query. **E**
 | Function | Does | Ported |
 |---|---|---|
 | `0x002da4d0` (thiscall out; A, B; `ret 8`) | B's four columns by A's transposed rotation, then A's translation taken off | `gjk::relative` |
-| `0x003048a0` (thiscall state; shape A, shape B, transform, feature cache, out; `ret 0x14`) | the query: seeds the simplex from the cached feature IDs through each shape's `vt[+0x34]`, then a case per simplex size pair (`(nA << 3 \| nB) - 9`, a 25-entry table at `0x0030567c`), new support points through `vt[+0x30]` | no |
+| `0x003048a0` (thiscall state; shape A, shape B, transform, feature cache, out; `ret 0x14`) | the query: seeds the simplex from the cached feature IDs through each shape's `vt[+0x34]`, then a case per simplex size pair (`(nA << 3 \| nB) - 9`, a 25-entry table at `0x0030567c`), new support points through `vt[+0x30]` ("The query" below) | `gjk::query` |
 | `0x003037a0` (thiscall state; segment, triangle, segment count, triangle count, fresh, feature; `ret 0x18`) | the edge case, a segment against a triangle: fresh, the triangle's own normal, else the state's normal and sides; a crossing inside answers 1; the nearer end (fresh) or the second vertex inside drops the segment to it, 0; else `t2` overwrites the vertex off the nearer edge (by `gjk::segments` fresh, by the edge mask and the old sides otherwise), 2 | `gjk::edge` |
-| `0x00303dd0` | the query's triangle case, with the penetration path `0x00303b80`, `0x0030a6b0` | no |
+| `0x00303dd0` | the query's triangle case, for a stalled query with the state's `+0x0c` byte clear, with the penetration path `0x00303b80`, `0x0030a6b0` | no (`gjk::Calls`) |
 | `0x00303540` (eax the four vertices, ebx the point, one stack word `s`; `ret`), with `0x00303110` (edi the vertices; point, tests) | the tetrahedron face the point lies beyond: each face's `n . s (p - v3)` signed-squared over `\|n\|^2`; `-1` below `1e-6`, the largest past `1.1` times the next, else `0x00303110` strikes edges by projection | `gjk::tetrahedron` |
 | `0x00303360` (thiscall state; point, triangle, orient; `ret 0xc`) | the triangle's normal and the point's three edge signs (mask in eax); with `orient`, the normal faces the support difference, swapping the first two vertices to do it | `gjk::triangle` |
 | `0x00308590` (cdecl; p1, d1, p2, d2, out) | the closest points of two segments, x87 solve, flags for each clamp | `gjk::segments` |
@@ -93,11 +93,66 @@ frame and runs the closest-feature query. **E**
 | `0x002da6e0` (thiscall out; transform, vector; `ret 8`) | the separating direction back into the world | `gjk::rotate` |
 | `0x00302c70`, `0x00302eb0` | the manifold: add a point through the manager's `vt[+0x04]` (then Halo's contact callback), refresh and drop points through `vt[+0x08]` | no |
 
-The ported leaves are compared with the lifted functions in
+The ported functions are compared with the lifted ones in
 `sim_havok_differential.rs`. The arm still declines the query path
 (`closest`): it answers only when the query, every shape class's support
 virtuals and the manifold calls it makes are in Rust, and a call that
 adds or removes a point runs Halo's callback, which stays the guest's.
+
+## The query
+
+`gjk::query` runs `0x003048a0` on a journal. The calls it makes out,
+each shape's `vt[+0x34]` and `vt[+0x30]` and the triangle case, go
+through the caller's `gjk::Calls`. **E**
+
+```mermaid
+flowchart TD
+    S[sizes from the cache; vertices via vt+0x34; B's placed in A's frame] --> P[pass: tolerance x2]
+    P --> C[case for the sizes, until one leaves the loop]
+    C --> T{left with 1, or the gap stalled?}
+    T -- yes --> X[stall]
+    T -- no --> G{new support point of A or B?}
+    G -- yes --> P
+    G -- no --> F[unit normal, distance, cache]
+    X --> F
+```
+
+| Sizes (A, B) | At | Case |
+|---|---|---|
+| (1, 1) | `0x003051c3` | the normal is `B0 - A0`; out with 0 |
+| (1, 2), (2, 1) | `0x00304fd6`, `0x003050e5` | ends either side: the segment's perpendicular toward the point; else the segment drops to an end |
+| (1, 3), (3, 1) | `0x00304ae6`, `0x00304c43` | `gjk::triangle` (orient 1 and -1): inside, out with 0; past one edge, a vertex drops and (1, 2) runs; past a vertex, the triangle drops to an edge or the vertex |
+| (1, 4), (4, 1) | `0x00304aa1`, `0x00304c12` | `gjk::tetrahedron` (`s` -1 and 1): no face, out with 1; else that face and (1, 3) |
+| (2, 2) | `0x003049fe` | `gjk::segments` into `+0x130`: unclamped, the edges' cross product toward B; else each clamped segment drops to its end |
+| (2, 3), (3, 2) | `0x003049ae`, `0x003049cc` | `gjk::edge` (feature 1 and -1, fresh when `+0x08` is 2): 1 out with 1, 2 the (2, 2) case, 0 out with 0 |
+| any other | | out with 1 |
+
+- Out with 0 also stores B's size at `+0x08`.
+- The tolerance starts at `0x2edbe6ff` (about `1e-10`) and doubles on
+  every pass (x87, stored to binary32). `FLT_EPSILON` is at `0x0041359c`.
+- Odd passes try A's support point first, even ones B's. A's direction
+  is the normal; B's is the normal into B's frame, negated. A point
+  joins its simplex when `|d| d` beats `|n|^2` times the tolerance, `d`
+  its offset from vertex 0 along the direction, and does not fall below
+  it against vertex 1 (a simplex of two) or vertices 2 and 1 (three). A side at its cached limit (`+0x0a`,
+  `+0x0b`) or the feature word `+0x10` (1 for A, -1 for B) is skipped.
+- The gap stalls when its cube is not below the tolerance times
+  `FLT_EPSILON` times `|n|^2` (x87, `fcompp`).
+- A stall with the `+0x0c` byte clear calls the triangle case, whose
+  eax the query returns. Set, sizes over four become (3, 1) or (1, 3)
+  and eax is 3.
+- The end: the normal scaled by one Newton step on `rsqrtss`, the
+  distance in `w`, the sizes and each vertex's ID (its `w`, low 16 bits)
+  back in the cache. ecx is B's size and edx how many IDs B wrote.
+
+| State word | Holds |
+|---|---|
+| `+0x00`, `+0x04` | the sizes |
+| `+0x08`, `+0x0c` | B's size at the last case exit, the stall byte |
+| `+0x10` | the feature word `gjk::edge` sets |
+| `+0x20`, `+0x60` | A's vertices, a parallel array |
+| `+0xa0`, `+0xe0` | B's vertices in A's frame and in B's |
+| `+0x120`, `+0x130`, `+0x160` | the normal, the closest points, the edge tests |
 
 ## Support virtuals
 
@@ -111,6 +166,15 @@ The query takes new support points through each shape's `vt[+0x30]`
 | `0x17`, biped wrapper | `0x004122f0`; `0x002dbd40` | the pill at `+0x30` answers through its own `vt[+0x30]`; then when `offset . d` is above zero (`test ah, 0x41`), the offset `+0x10` is added to `out`, all four lanes, and `out.w` goes back through `fld`, `fstp` as the child left it | ax the x87 status word over the child's eax, ecx the aligned frame word, the child's edx | `shape_support::biped` |
 | `0x18`, convex polygon | `0x004560b8`; `0x001ee350` | over the signed count `+0x14`, the vertex at `+0x20 + 16 i` whose `v . d` `comiss`es above the best so far, starting at `-FLT_MAX` (`0x004409d4`): the first on ties, none for NaN; no vertices reads vertex 0 | eax `out`, ecx the shape, edx the count | `shape_support::polygon` |
 
+The query seeds its simplex through `vt[+0x34]` (thiscall shape; IDs,
+count, out; `ret 0xc`), a vertex per 16-bit ID. **E**
+
+| Type | `vt[+0x34]` | Does | Ported |
+|---|---|---|---|
+| 7, capsule | `0x002dddb0` | the end at `+0x10 + id`, `w` the ID with `0x3f000000` | `shape_support::capsule_vertices` |
+| `0x17`, biped wrapper | `0x002dbdb0` | the child's, then the offset added to each (`w` through the x87) | no |
+| `0x18`, convex polygon | `0x001ee3d0` | vertex `id` whole, last ID first | `shape_support::polygon_vertices` |
+
 - The biped wrapper takes its child as a callback; the port answers for
   whichever child the caller dispatches, and the differential test gives
   it a capsule.
@@ -119,7 +183,9 @@ The query takes new support points through each shape's `vt[+0x30]`
   polygon count over 256 declines.
 
 The support virtuals are compared with the lifted functions in
-`sim_havok_differential.rs`, 1024 seeds each. No arm calls them yet.
+`sim_havok_differential.rs`, 1024 seeds each; the vertex virtuals run
+inside the query's comparison, 1024 seeds of capsules and polygons, where
+a stall that reaches the triangle case declines. No arm calls them yet.
 
 ## Not verified
 
