@@ -1419,6 +1419,7 @@ mod tests {
                 } else if matches!(
                     r.name,
                     "object_setup"
+                        | "first_person"
                         | "game_view"
                         | "alternate_view"
                         | "scene_passes"
