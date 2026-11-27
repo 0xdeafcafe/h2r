@@ -76,9 +76,9 @@ What keeps an item, by stage (**Code**):
   native pass draws before the guest's body, so an item after a kept one
   is taken only when both are order-free and every kept item before it
   restores what it sets (`layer_pass::clear_layer_items`, `order_free`);
-  at the scene and the alternate view the rest's structure items draw
-  between the kept sorted entries, the objects kept `object_sorted`
-  ([retire-d3d-r5.md](retire-d3d-r5.md), "Layer 2 from the plan").
+  at the scene and the alternate view the rest draw between the kept
+  sorted entries ([retire-d3d-r5.md](retire-d3d-r5.md), "Layer 2 from
+  the plan").
 - **Layer 3's world**: untranslated passes and missing program inputs ([native-world.md](native-world.md)).
 - **Layer 3's objects** draw before the call where the gate answers
   ("Layer 3's objects before the call", below), else inside the body: the

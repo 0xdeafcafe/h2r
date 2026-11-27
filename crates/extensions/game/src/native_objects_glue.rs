@@ -132,10 +132,16 @@ static STATE_TABLE: std::sync::LazyLock<gfx::xdk::RenderStateTable> =
 
 impl LayerEntry {
     fn read<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> Self {
-        let table = &*STATE_TABLE;
         let read = crate::native_world_glue::ReadMemory(mem);
+        Self::read_with(device, &|g| device.render_state(&read, g))
+    }
+
+    /// The render states from `states`, by guest slot; the W buffer the
+    /// device's.
+    fn read_with<B: d3d::backend::Backend>(device: &d3d::Device<B>, states: &dyn Fn(u32) -> Option<u32>) -> Self {
+        let table = &*STATE_TABLE;
         Self {
-            states: EntryStates::read(|t| table.canonical_to_guest(t.index()).and_then(|g| device.render_state(&read, g))),
+            states: EntryStates::read(|t| table.canonical_to_guest(t.index()).and_then(states)),
             w_buffered: device.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE != 0),
         }
     }
@@ -1117,9 +1123,20 @@ pub(crate) fn install_function_tables(mem: &dyn GuestMemory) {
 pub(crate) fn entry_states<B: d3d::backend::Backend>(
     device: &d3d::Device<B>, mem: &dyn GuestMemory,
 ) -> (native_render::object_program_gpu::ObjectLayerEntry, bool) {
+    let read = crate::native_world_glue::ReadMemory(mem);
+    entry_states_with(device, mem, &|g| device.render_state(&read, g))
+}
+
+/// [`entry_states`] with the render states from `states`, by guest slot:
+/// a device as a restore list leaves it
+/// (`native_render::sorted_entries::after_restore`), for a draw in a
+/// layer's sorted entries.
+pub(crate) fn entry_states_with<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>, mem: &dyn GuestMemory, states: &dyn Fn(u32) -> Option<u32>,
+) -> (native_render::object_program_gpu::ObjectLayerEntry, bool) {
     use native_render::object_program_gpu::{MaterialConstant18, ObjectLayerEntry};
     use engine::render_loop::layer::SETUP_CONTEXT;
-    let entry = LayerEntry::read(device, mem);
+    let entry = LayerEntry::read_with(device, states);
     let bank = (|| {
         let mut row = [0; 4];
         for (lane, word) in row.iter_mut().enumerate() {
@@ -1168,7 +1185,31 @@ pub(crate) fn apply_layer_begin_zenable<B: d3d::backend::Backend>(
 /// takes ([`object_fog`]).
 pub(crate) fn device_specular<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> Option<u32> {
     let read = crate::native_world_glue::ReadMemory(mem);
-    STATE_TABLE.canonical_to_guest(SPECULAR_ENABLE).and_then(|g| device.render_state(&read, g))
+    specular_with(&|g| device.render_state(&read, g))
+}
+
+/// [`device_specular`] from `states`, by guest slot.
+pub(crate) fn specular_with(states: &dyn Fn(u32) -> Option<u32>) -> Option<u32> {
+    STATE_TABLE.canonical_to_guest(SPECULAR_ENABLE).and_then(states)
+}
+
+/// The guest slots of the render states an object's checks read outside
+/// the state array a restore list overlays: the stencil
+/// (`Device::stencil_state`), the stipple switch (`device_stipple`, which
+/// takes the pushed control first), `ZENABLE` (the W buffer is the pushed
+/// control's) and the fog colour (`structure_at_rest`).
+pub(crate) fn read_outside_states() -> Vec<u32> {
+    use gfx::state::RenderStateType as R;
+    let typed = [
+        R::StencilEnable, R::StencilFail, R::StencilZFail, R::StencilPass, R::StencilFunc,
+        R::StencilRef, R::StencilMask, R::StencilWriteMask, R::ZEnable, R::FogColor,
+    ];
+    typed
+        .iter()
+        .map(|t| t.index())
+        .chain([STIPPLE_ENABLE])
+        .filter_map(|c| STATE_TABLE.canonical_to_guest(c))
+        .collect()
 }
 
 /// Puts the fog of `draw`'s pass in, as layer 3's walk does: the

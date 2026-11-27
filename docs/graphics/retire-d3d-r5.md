@@ -18,7 +18,7 @@ keeps its guest draw").
 
 | Stage | Counter | Kept |
 |---|---|---|
-| Layer 2, scene and alternate view | `scene_kept_2_*`, `scene_kept_alt2_*` | what the plan refuses, as layers 1, 5, 7, 8 and 20, plus `object_sorted`, `set` and `entry` from the sorted runs |
+| Layer 2, scene and alternate view | `scene_kept_2_*`, `scene_kept_alt2_*` | what the plan refuses, as layers 1, 5, 7, 8 and 20, plus `object_sorted_*`, `set` and `entry` from the sorted runs |
 | Layer 17 | `scene_kept_17_*` | the same, at the scene's call only |
 | Layers 18, 19, 21 (sorted handlers) | `scene_kept_{18,19,21}_*` | as layer 17's (`native_layers::kept_counted`) |
 | Layers 2, 17, 18, 19, 21, other callers | `scene_kept_<layer>_<kind>_caller` | every item (`native_layers::UNTAKEN_CALLER`) |
@@ -93,7 +93,7 @@ ask in four ways.
 |---|---|---|
 | Items | the list, by the order rule (`clear_layer_items`) | the sorted entries from `from`, up to the first kept (`layer_pass::sorted_layer_run`) |
 | Skip check | `skip_holds` against the device | against the device after the cached restore |
-| Objects | planned with the structure | kept, `object_sorted` (their checks read the device at the call) |
+| Objects | planned with the structure | planned with the restore over the device's state array (entry states, fog, skip); kept `object_sorted_restore` when the restore moves a state read elsewhere (stencil, stipple, `ZENABLE`, fog colour), `object_sorted_target` (a copy flag) or `object_sorted_view` (a copy of the bound colour) |
 | Outcomes | `layer_plan_<layer>_*` | none; the held layer's `scene_kept_*` once, when done (the layer draw's own turn leaves them) |
 
 No layer-2 draw is admitted at its resolved inputs: what no run takes
