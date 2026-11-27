@@ -205,10 +205,10 @@ mod tests {
         assert!(plan(&vm, &seats, 5).is_some());
         assert_eq!(plan(&vm, &seats, 6), None);
         assert!(report(0, 0));
-        spawned(0);
+        super::spawned(0);
         let again = plan(&vm, &seats, 7).expect("the next spawn opens the dialog again");
         assert_eq!((again.player, again.slot), (0, 0));
-        spawned(9);
+        super::spawned(9);
     }
 
     #[test]
