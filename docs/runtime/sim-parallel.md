@@ -66,7 +66,7 @@ params = "tuning/aggressive.toml"
   per skill.
 - **Detail.** `detail = "training"` or `"spatial"` in the batch file
   sets every run's `detail` (the match file's own is the default; see
-  "Finding the first differing state" and [The spatial trace](#the-spatial-trace)).
+  "Finding the first differing state" and [The spatial trace](sim-metrics.md#the-spatial-trace)).
   A spatial run writes `spatial.bin` beside its `report.json`.
 - `h2 sim batch --dry-run` prints the runs and stops.
 

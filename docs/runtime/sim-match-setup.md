@@ -132,13 +132,13 @@ reaction = 5
 A `[rules]` table makes the match play a rules script
 ([Rules scripts](#rules-scripts)). `[rules] script = "superbounce"` plays the
 Superbounce script, which turns the superbounce mode on: the bots practise bounces instead of fighting
-([Bounce practice](#bounce-practice)). A `[drill]` table (with
+([Bounce practice](sim-bounce.md#bounce-practice)). A `[drill]` table (with
 `[rules] script = "superbounce"`) makes them try one site only
-([The bounce drill](#the-bounce-drill)). A `[train]` table (with
+([The bounce drill](sim-bounce.md#the-bounce-drill)). A `[train]` table (with
 the Superbounce script, and no `[drill]`) makes the run one shard of a
-bounce site training batch ([Training the bounce sites](#training-the-bounce-sites)). A
+bounce site training batch ([Training the bounce sites](sim-bounce.md#training-the-bounce-sites)). A
 `[drops]` table (without the Superbounce script) drops every seat onto candidate
-seams ([Seam drops](#seam-drops)). `game_type = "firefight"` with a
+seams ([Seam drops](sim-bounce.md#seam-drops)). `game_type = "firefight"` with a
 `[firefight]` table plays Firefight ([Firefight](#firefight)).
 
 ### Rules scripts
@@ -170,14 +170,14 @@ options = { round_count = 2, phase_time = 60 }  # by name: a number, a bool, or 
   empty `script`, or in a Firefight match, is refused when the file is
   read.
 - **`script = "superbounce"`** (any case) is the bounce practice, with
-  everything [Bounce practice](#bounce-practice) says.
+  everything [Bounce practice](sim-bounce.md#bounce-practice) says.
 - **The scores at each round** are in the report's `rounds`
   ([Rounds](#rounds)).
 
 [sim-examples/siege-zanzibar-rounds.toml](sim-examples/siege-zanzibar-rounds.toml)
 is two-round Siege on Zanzibar, two phantoms a side and a minute a phase.
 The run makes Zanzibar's nav mesh in its data first when it is not there
-("The nav mesh" in [Determinism](#8-determinism)):
+("The nav mesh" in [Determinism](sim.md#8-determinism)):
 
 ```sh
 h2 sim run docs/runtime/sim-examples/siege-zanzibar-rounds.toml
@@ -296,7 +296,7 @@ naming the kit and the exit status. A package that does not stage
 - host work intervals in game ticks (1–30 each): `foot_plan_ticks`
   (default 6), `vehicle_plan_ticks` (8) and `vehicle_lookahead_ticks` (3).
   Older files can still specify `player_los_ticks`. Player sight is
-  sampled each tick. See [Bot navigation performance](#bot-navigation-performance)
+  sampled each tick. See [Bot navigation performance](sim-determinism.md#bot-navigation-performance)
   for the active intervals;
 - `aim_model`: `code` (the hand-written tracking, the default) or `net`
   (the aim net; [bots.md §3.4.1](../game/bots.md#341-the-aim-net-compared-the-code-aim-stays));
