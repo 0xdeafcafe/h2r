@@ -14,7 +14,7 @@
 //! combiner at `0x00484f68` for `0x00015180`. The stipple pattern is not
 //! a state word and is not compared.
 
-use crate::effect_material::{MATRIX_REGISTER, Material, Texture, WORDS};
+use crate::effect_material::{MATRIX_SLOT, Material, Texture, WORDS};
 
 /// The setup's entry, where the game reads [`Inputs`].
 pub const SETUP: u32 = 0x0004_3720;
@@ -215,7 +215,7 @@ pub fn material(i: &Inputs, vertex_shader: u32) -> Result<Material, Refused> {
         combiner: c,
         combiner_driven: 0,
         textures: [Some(Texture::Bitmap { bitmap: i.bitmap, image: i32::from(i.image) }), None, None, None],
-        constants: identity.iter().enumerate().map(|(n, row)| (MATRIX_REGISTER + n, *row)).collect(),
+        constants: identity.iter().enumerate().map(|(n, row)| (MATRIX_SLOT + n, *row)).collect(),
         program: (vertex_shader, 0),
     })
 }
@@ -293,7 +293,7 @@ mod tests {
     fn the_texture_matrix_and_program_are_stage_zeros_the_identity_and_slot_fours() {
         let m = material_of(&Inputs { image: 3, ..inputs(0, 0, 0) }).unwrap();
         assert_eq!(m.textures[0], Some(Texture::Bitmap { bitmap: 0xe000_0002, image: 3 }));
-        assert_eq!(m.constants, [(78, [1.0, 0.0, 0.0, 0.0]), (79, [0.0, 1.0, 0.0, 0.0]), (80, [0.0, 0.0, 1.0, 0.0])]);
+        assert_eq!(m.constants, [(174, [1.0, 0.0, 0.0, 0.0]), (175, [0.0, 1.0, 0.0, 0.0]), (176, [0.0, 0.0, 1.0, 0.0])]);
         assert_eq!(m.program, (0xe000_0005, 0));
     }
 }
