@@ -37,6 +37,7 @@
 //! paths, quirks reproduced on purpose) is in `docs/engine/`.
 
 pub mod colour_pass;
+pub mod contrail_ribbon;
 pub mod campaign_squad_pool;
 pub mod function_eval;
 pub mod gel;

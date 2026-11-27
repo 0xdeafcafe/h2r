@@ -44,6 +44,7 @@ Switch `frame-scene.effects-shadow` (on).
 | Stamps | `effects_shadow/view_update.rs`: each outermost `0x00174420` call, its callees `0x001751d0`, `0x00137bd0`, `0x0003eb20`, `0x00165010`, `0x00181800`, `0x00249bb0` and its queue call `0x0001e4e0` | systems, particles, the two particle-model singletons, the list's end and overflow byte, the rows it queues, the seeds |
 | Dispatch | `effects_shadow/dispatch.rs`: the loop's entries in order, each handler named | the Rust sort's order (at `TRANSPARENT_ORDER_READY`); seeds, systems, particles, the list and its live rows unchanged across the loop |
 | Emission | `engine/src/particle_emission.rs`: the particle callback `0x00224550` to its emitter call, its callees `0x00173ba0`, `0x00248df0`, `0x0004efb0`, `0x00246cd0`, `0x00246d80`, `0x00131bb0`, `0x00131e50`, `0x00016ae0` | at the emitter `0x0023ed30` called from `0x00224cd7`: the eight words, EBX, the two windows and the corners they point at, the input block and the draw context |
+| Ribbon | `engine/src/contrail_ribbon.rs`: the contrail builder `0x00042cf0` to its return, its callees `0x000bad50`, `0x00042c50`, `0x0017ca10` ("R2's ribbon arm") | at its return: the vertices from its first argument, AL, every other byte it wrote, the draw context |
 | Effects seed | no path under `0x00174420` or the named handlers loads `[0x004e7408]` (the lifted image's call graph) | both arms: the seeds do not move |
 
 What the stamps arm writes:
@@ -81,6 +82,8 @@ or another rounding mode), `distance_range`, `depth`, `cycle`, `mxcsr`.
 | `stamps_matched`, `stamps_mismatched_{seed,systems,particles,singletons,list,entries}`, `stamps_refused_<reason>`, `stamps_unbalanced`, `stamps_entries_queued` | outermost `0x00174420` calls on sampled frames |
 | `dispatch_matched`, `dispatch_mismatched_{order,seed,systems,particles,list,rows}`, `dispatch_refused_{plan,order,mxcsr,<reason>}`, `dispatch_unbalanced` | sorted dispatches on sampled frames |
 | `dispatch_entries_{geometry,particle,contrail,decal,null,other}` | entries of sampled dispatches, by handler |
+| `emission_matched`, `emission_mismatched_{words,window,corners,inputs,sequence,writes}`, `emission_refused_<reason>`, `emission_unbalanced` | particle callbacks on sampled frames |
+| `ribbon_matched`, `ribbon_mismatched_{vertices,return,writes,context}`, `ribbon_refused_<reason>`, `ribbon_unbalanced` | contrail builds on sampled frames |
 ++ b/docs/graphics/retire-d3d.md
 | `frames_sampled`, `frames_clean`, `frames_unclean`, `frames_empty`, `opened`, `fallback`, `answering_frames` | the gate |
 | `entry_runs_planned_<kind>`, `entry_runs_drawn_<kind>`, `entry_runs_entries_<kind>`, `entry_runs_refused_<kind>`, `entry_runs_no_host_<kind>`, `entry_runs_undrawn` | the runs while answering |
@@ -169,4 +172,44 @@ Tests: `particle_emission/tests.rs`
 `effects_shadow/emission.rs` (a match, a differing word and input, another
 caller, a refusal), and against the lifted original
 `engine/tests/particle_emission_differential.rs` (feature `differential`,
+needs the XBE).
+
+### R2's ribbon arm
+
+`engine::contrail_ribbon::predict` makes, from the builder's entry, what
+`0x00042cf0(out, bytes, ribbon)` leaves: two vertices of 24 bytes a point
+(position, along, across, packed colour), AL, and every other write. The
+sorted handler `0x00035b00` reaches it through `0x0004b220` (stride 24).
+SSE in the original's operand order under the guest's MXCSR, x87 under its
+control word, constants from the image; the colour is packed as
+`colour_pass::pack_colour`, the ease is `function_eval`'s `0x0017ca10`.
+
+| Step | Guest |
+|---|---|
+| along and across words | the contrail's `+0x1c`, `+0x20`; the definition's `+0x1c` step and `+0x20` width, scaled by the contrail's `+0x14` (definition `+2` bits `0x40`, `0x80`) |
+| colour and width | the point's stage (`+3`, the definition's `+0xe8` stages at `+0xec`) lerped by its `+0xc`, blended to the next by `+4` (point flag 2); out of range black and thin |
+| tint | the contrail's object (`+8`) function source `0x000bad50`, else `[[0x00468710]]`; not with definition bit `0x80` |
+| facing (definition `+0x18`) | 0 vertical; 1 and 2 flat in x and y; 4 across the step and the view `0x004b9da0`; 3 and above 4 return AL 0 after the texture words |
+| fade | `0x00042c50`: mode `[[ribbon + 0xc] + 0x2c]` 1 or 2, by the view's angle to the normal the facing leaves (`ribbon + 0x10`); the stack's old bytes otherwise |
+| ends | definition bits 1 and 2 clear unless set: the first pair's alpha (the contrail's `+0x30` word above 2), the last pair's (`ribbon + 0x14` vertices back) |
+
+| Refusal | Why |
+|---|---|
+| `unbounded` | a list longer than 4096 points (`BUDGET`): the original would run on through a cycle |
+| `fault`, `simd`, `x87` | an unreadable record, an unmasked SSE or x87 exception |
+
+Tests: `contrail_ribbon/tests.rs`
+(`a_ribbon_has_two_vertices_per_point_facing_the_camera`,
+`the_texture_words_step_along_and_span_the_width`, `the_end_points_fade`,
+`the_vertical_facing_stacks_the_pair_and_the_flat_one_spreads_it`,
+`the_fade_is_the_views_angle_to_the_normal`,
+`a_stage_out_of_range_is_black_and_thin`,
+`a_point_blends_its_stage_into_the_next`,
+`an_object_tints_the_colour_by_its_function_source`,
+`an_unknown_facing_returns_zero_after_the_texture_words`,
+`an_empty_list_still_clears_the_ends_it_is_told_of`,
+`a_cycle_and_a_fault_are_named_refusals`), `effects_shadow/ribbon.rs` (a
+match, a differing vertex, result and context, an unseen return, a
+refusal), and against the lifted original
+`engine/tests/contrail_ribbon_differential.rs` (feature `differential`,
 needs the XBE).

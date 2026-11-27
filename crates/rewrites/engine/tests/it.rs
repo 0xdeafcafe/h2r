@@ -9,6 +9,8 @@
 
 #[path = "colour_pass_differential.rs"]
 mod colour_pass_differential;
+#[path = "contrail_ribbon_differential.rs"]
+mod contrail_ribbon_differential;
 #[path = "differential.rs"]
 mod differential;
 #[path = "glow_differential.rs"]

@@ -5,8 +5,7 @@ Code: `crates/platform/d3d/src` (what is deleted), `crates/rewrites/scene-extrac
 Switch: `impl.render.native` (on), removed with the crate; `impl.render.native-hud` (on), R6's, removed with the guest HUD walk; R4's producers have `impl.render.native.visibility` (on), which only turns them off. All in [switches.md](../runtime/switches.md).
 
 | Slice | Built | Where it is specified |
-|---|---|---|
-| R0 | `render.residual` and the three frame counters | [agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work) |
+|---| R0 | `render.residual` and the three frame counters | [agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work) |
 | R1, structure | static items of layers 1, 5, 7, 8 and 20 draw from the scene's plan by default | framescene.md slice 4, "The stage" |
 | R1, objects | items of the scene's layers 1, 5, 7, 8 and 20 (layer 5's with the model's PRT stream) and the first person's layers 1, 7, 8 and 20 | framescene.md slice 4, "The stage" |
 | R1, object items with auxiliary state | draw with the rows and clip the toggle sets for their view where the device holds it off; those sampling the texture accumulation target bind its level outside layer 1; the first person's layer-3 items do both | [native-objects.md](native-objects.md) |
@@ -69,8 +68,7 @@ nobody has measured. Addresses are research points. No game data.
 ## Inventory: what the native stages do not claim
 
 | Kind | What | Where it shows |
-|---|---|---|
-| 1. Draws | A resolved draw reaches the backend unless an admission or a native producer committed a replacement | `d3d::device::backend_draws` counts the ones that do |
+|---| 1. Draws | A resolved draw reaches the backend unless an admission or a native producer committed a replacement | `d3d::device::backend_draws` counts the ones that do |
 | 2. Draw setup the guest still runs for a claimed draw | The stages on the resolved-draw path replace the packet only: the guest's shader setup, state writes and stencil tail still run and go through `d3d` ([native-renderer.md](native-renderer.md), "Admission"). This is most of the front-end's CPU time | no draw count shows it |
 | 3. Everything that is not a draw | Clears, target binds, viewport and scissor fragments, visibility tests, texture and palette binds, resource reference counting and busy checks, fences, `KickOff`, the gamma ramp, vblank and `Swap` | entry counts |
 
