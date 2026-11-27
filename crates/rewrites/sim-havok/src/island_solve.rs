@@ -3,14 +3,16 @@
 //!
 //! [`solve`] runs the entry on a [`Journal`]. It returns the guest's `eax`,
 //! or the [`Fallback`] that sends the island to the lifted entry; on a
-//! fallback the journal is discarded, so nothing has been written. Only
-//! persistent words are journalled: `motion+0x08`, the motions' fields the
-//! virtuals write ([`motion_solve`]), the pair words, the
-//! contact builder's point properties and friction blocks, the write-back
-//! pass's outputs, the solver buffer's busy byte, and the LIFO
-//! descriptor's words and the allocator's when an island spills into a
-//! block ([`place`]). The buffer's and the block's contents (accumulators,
-//! rows, impulses, schemas) are scratch and stay in Rust ([`Scratch`]).
+//! fallback the journal is discarded, so nothing has been written. The
+//! journal holds `motion+0x08`, the motions' fields the virtuals write
+//! ([`motion_solve`]), the pair words, the contact builder's point
+//! properties and friction blocks, the write-back pass's outputs, the
+//! solver buffer's busy byte, the LIFO descriptor's words and the
+//! allocator's when an island spills into a block ([`place`]), and every
+//! word retail's solve leaves in the buffer and the block (accumulators,
+//! rows with their corrected right-hand sides, impulses, schemas), which
+//! the stages build in a [`Scratch`] first: the next island's fixed
+//! accumulators keep the bytes this one left.
 use crate::jacobian::{self, Cursor, Fpu, Scratch};
 use crate::layout as l;
 use crate::mem::{self, Journal, System};
@@ -523,10 +525,14 @@ pub fn solve(j: &mut Journal, a: &Args, fpu: Fpu) -> Result<u32, Fallback> {
             return Err(Overflow);
         }
     }
-    // 0x0031c3a3: the end schema; the impulses are zero (Rust's buffer).
+    // 0x0031c3a3: the end schema, and the impulse words zeroed
+    // (0x0031c3c0).
     s.put(cursor.schemas, solver::SCHEMA_END).ok_or(Memory)?;
     let params = Params::read(|at| j.get(at), a.info).ok_or(Memory)?;
     let impulse_words = j.get(a.island.wrapping_add(ISLAND_IMPULSES)).ok_or(Memory)?;
+    for i in 0..impulse_words {
+        s.put(l.impulses.wrapping_add(4 * i), 0).ok_or(Memory)?;
+    }
     let areas = Areas {
         accumulators: base,
         count: island.bodies.len() as u32,
@@ -554,12 +560,21 @@ pub fn solve(j: &mut Journal, a: &Args, fpu: Fpu) -> Result<u32, Fallback> {
             s.put_vector(addr + off, v).ok_or(Memory)?;
         }
     }
+    for (addr, word) in decoded.row_words(&solved, l.impulses) {
+        s.put(addr, word).ok_or(Memory)?;
+    }
     // 0x0031c414: each motion's export, in entity order, from its
     // accumulator as the solve left it.
     for (i, body) in island.bodies.iter().enumerate() {
         let at = base + ACCUMULATOR_BYTES * (i as u32 + 1);
         let solved = Solved::read(|w| s.get(w), at).ok_or(Memory)?;
         motion_solve::export(j, body.class, body.motion, a.step, params.scale, &solved, fpu)?;
+    }
+    // What the solve leaves in the buffer and the block: the next
+    // island's accumulators keep these bytes where its builders write
+    // none (the flag of a fixed one, the kind word's upper bytes).
+    for (addr, word) in s.written() {
+        j.put(addr, word).ok_or(Memory)?;
     }
     // 0x0031c457: the busy byte, set to 1 on entry, is 0 again.
     let busy = island.buffer.wrapping_add(BUFFER_BUSY);

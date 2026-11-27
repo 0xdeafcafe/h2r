@@ -113,12 +113,14 @@ impl Fpu {
 }
 
 /// The solver buffer while one island solves (accumulators, rows,
-/// impulses, schemas), addressed as the guest's but owned by Rust: the
-/// guest's copy is scratch and is never written. An island that spills
-/// into a LIFO block covers two ranges, the buffer's and the block's.
+/// impulses, schemas), addressed as the guest's and built in Rust. Every
+/// word put is recorded, and [`Scratch::written`] gives them back, so the
+/// island solve stores exactly the words retail's solve leaves in the
+/// buffer and nothing else. An island that spills into a LIFO block
+/// covers two ranges, the buffer's and the block's.
 #[derive(Clone, Debug)]
 pub struct Scratch {
-    segments: Vec<(u32, Vec<u32>)>,
+    segments: Vec<(u32, Vec<u32>, Vec<bool>)>,
 }
 
 impl Scratch {
@@ -141,7 +143,8 @@ impl Scratch {
             if ranges[..i].iter().any(|&(b, e)| base < e && b < end) {
                 return None;
             }
-            segments.push((base, vec![0; bytes.div_ceil(4) as usize]));
+            let words = bytes.div_ceil(4) as usize;
+            segments.push((base, vec![0; words], vec![false; words]));
         }
         Some(Self { segments })
     }
@@ -150,7 +153,7 @@ impl Scratch {
         if addr & 3 != 0 {
             return None;
         }
-        self.segments.iter().enumerate().find_map(|(k, (base, words))| {
+        self.segments.iter().enumerate().find_map(|(k, (base, words, _))| {
             let i = (addr.checked_sub(*base)? / 4) as usize;
             (i < words.len()).then_some((k, i))
         })
@@ -164,7 +167,16 @@ impl Scratch {
     pub fn put(&mut self, addr: u32, value: u32) -> Option<()> {
         let (k, i) = self.index(addr)?;
         self.segments[k].1[i] = value;
+        self.segments[k].2[i] = true;
         Some(())
+    }
+
+    /// Every word put, `(address, word)` in address order within each
+    /// range.
+    pub fn written(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.segments.iter().flat_map(|(base, words, put)| {
+            words.iter().zip(put).enumerate().filter(|(_, (_, p))| **p).map(move |(i, (w, _))| (base + 4 * i as u32, *w))
+        })
     }
 
     /// A `movaps` operand: 16-byte aligned, as the guest requires.

@@ -52,8 +52,9 @@ Evidence labels: **Code** (read from the disassembly at the address given),
   transient SoA working set, computes with no guest access, and writes
   results back at the point in the retail sequence where retail wrote
   them. Three things follow, and the whole design rests on them:
-  1. scratch memory (the solver buffer, the LIFO stack) never needs to be
-     written;
+  1. scratch memory (the solver buffer, the LIFO stack) is built in Rust
+     and stored once, at the solve's end, with the bytes retail leaves
+     there, because the next island's fixed accumulators read them;
   2. a fast-path float guard that fails can restart the kernel on the
      exact path, because nothing was written yet;
   3. computation may run early, in lanes or on workers, when its captured
@@ -650,8 +651,12 @@ contract page; the differential harness compares all of memory):
   the overflow stacks' counters.
 - Halo's globals `0x0055e4fc..0x0055e50c`, by the hooks themselves.
 
-**Not written:** the solver buffer's contents, LIFO block contents, the
-monitor stream (off), the guest stack.
+- The solver buffer's and the LIFO block's contents as the solve leaves
+  them: the accumulators, the rows with their corrected right-hand sides,
+  the impulses and the schemas. A later island's fixed and leading
+  accumulators keep their flag byte from these.
+
+**Not written:** the monitor stream (off), the guest stack.
 
 **Guest readers kept fed:** the Halo wrapper's post-step walk
 (`0x001c4260`, `0x001c4a20`, the iterator `0x002797a0`); body fetches
@@ -835,7 +840,7 @@ since start and whether the arm is proven or ended since the map load.
   and `physics.island.integrate` answered above zero and mismatched zero
   (`havok.islands` gives the integrate's counts). A take-over drops no
   write only if its spans or words cover every byte retail writes outside
-  the stack below `esp` and the solver buffer's scratch; the comparison
+  the stack below `esp`; the comparison
   checks those, and this run checks the rest.
 
 ## 10. Threads

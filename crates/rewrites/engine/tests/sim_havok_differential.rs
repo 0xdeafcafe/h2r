@@ -6,9 +6,10 @@
 //! Seeded islands are laid out in the image's RAM. The lifted entry runs to
 //! its return, stepping into every callee; a constraint's `vt[+0x24]` is a
 //! synthetic address the harness answers with `ret 8`, so the frame runs
-//! with no rows. The model's persistent writes (`motion+0x08`, the pair
-//! words) must leave memory as the lifted entry does, outside the solver
-//! buffer (scratch) and the dead stack, and `eax` must match. Islands the
+//! with no rows. The model's writes must leave memory as the lifted entry
+//! does outside the dead stack, the solver buffer and the LIFO block
+//! included (the next island reads what a solve leaves there), and `eax`
+//! must match; the frame-stage test, which has no solve, skips the buffer. Islands the
 //! model does not cover must be declined with nothing written. Without the
 //! image the tests return.
 #![cfg(feature = "differential")]
@@ -499,8 +500,8 @@ fn the_contact_builder_matches_the_lifted_builder() {
 
 /// Islands of fixed bodies joined by contact constraints, run whole: the
 /// builder, the schema solve over one to three iterations and its
-/// write-back pass, the exports and the busy byte. Memory outside the
-/// solver buffer and the dead stack equals the lifted entry's.
+/// write-back pass, the exports and the busy byte. Memory outside the dead
+/// stack, the solver buffer included, equals the lifted entry's.
 #[test]
 fn contact_islands_match_the_lifted_entry() {
     let Some((image, base)) = ram() else { return };
@@ -554,7 +555,6 @@ fn contact_islands_match_the_lifted_entry() {
         assert_eq!(after.esp, STACK + 4, "seed {seed}: cdecl");
         assert_eq!((after.ebx, after.ebp, after.esi, after.edi), (0x1111, 0x2222, 0x3333, 0x4444));
         for m in [&mut mem, &mut expected] {
-            m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
             m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
         }
         assert_eq!(first_difference(&mem, &expected), None, "seed {seed}: first different byte");
@@ -769,7 +769,7 @@ fn contact_island(r: &mut Rng, mem: &mut FlatMemory, entities: u32, constraints:
 
 /// Islands of bodies of every motion class joined by contacts, run whole:
 /// the force integration, the builder, the solve, the write-back and the
-/// exports. Memory outside the solver buffer and the dead stack equals the
+/// exports. Memory outside the dead stack, the solver buffer included, equals the
 /// lifted entry's, and no island declines for its motions.
 #[test]
 fn dynamic_contact_islands_match_the_lifted_entry() {
@@ -804,7 +804,6 @@ fn dynamic_contact_islands_match_the_lifted_entry() {
         assert_eq!(after.eax, eax, "seed {seed}: eax");
         assert_eq!(after.esp, STACK + 4, "seed {seed}: cdecl");
         for m in [&mut mem, &mut expected] {
-            m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
             m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
         }
         let classes: Vec<_> = (0..entities)
@@ -837,7 +836,8 @@ fn seed_lifo(m: &mut FlatMemory, remaining: u32) {
 /// starting past it (every area in the block), only the impulses and
 /// schemas past it, and the rows' tail past it (the cursor moving to the
 /// block). The block is taken and given back inline; memory outside the
-/// buffer, the block and the dead stack equals the lifted entry's, and
+/// dead stack, the buffer and the block included, equals the lifted
+/// entry's, and
 /// `eax` is the block.
 #[test]
 fn islands_past_the_buffer_spill_into_a_lifo_block_as_the_lifted_entry_does() {
@@ -954,21 +954,10 @@ fn spill_islands(code: &mut lifted::Original, base: &FlatMemory, salt: u64, from
         if !from_heap {
             assert_eq!(after.eax, eax, "seed {seed} case {case}: eax");
         }
-        // The block the model took, its contents scratch.
-        let block = {
-            let mut j = Journal::new(&view);
-            let island = island::gather(&j, &args).unwrap();
-            island::place(&mut j, ISLAND, island.layout).unwrap().spill.unwrap().block
-        };
         assert_eq!(after.esp, STACK + 4, "seed {seed}: cdecl");
-        // The block is scratch: the inline one, or the chunk's payload
-        // (`max(request, 0x1000)` bytes; these islands ask for less).
-        let bytes = if from_heap { 0x1000 } else { LIFO_BYTES };
-        for m in [&mut mem, &mut expected] {
-            m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
-            m.bytes[block as usize..(block + bytes) as usize].fill(0);
-            m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
-        }
+        // The buffer and the block hold what the lifted solve left there:
+        // compared with the rest.
+        clear_dead_stack([&mut mem, &mut expected]);
         assert_eq!(first_difference(&mem, &expected), None, "seed {seed} case {case}: first different byte");
     }
     assert!(solved.iter().all(|&n| n > 0), "solved by case {solved:?}, declined {why:?}");
@@ -1154,7 +1143,6 @@ fn joint_islands_match_the_lifted_entry() {
         let after = run_cpu(&mut code, &mut mem, 0x31c100, fpu);
         assert_eq!(after.eax, eax, "seed {seed}: eax");
         for m in [&mut mem, &mut expected] {
-            m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
             m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
         }
         assert_eq!(first_difference(&mem, &expected), None, "seed {seed} {joint:?}: first different byte");
@@ -1310,11 +1298,10 @@ fn run_integrate(code: &mut lifted::Original, mem: &mut FlatMemory, fpu: Fpu, wh
     assert_eq!((after.ecx, after.ebx, after.ebp, after.esi, after.edi), (ISLAND, 0x1111, 0x2222, 0x3333, 0x4444), "{why}");
 }
 
+/// The dead stack only: the solver buffer is compared too, since the
+/// next island reads the bytes a solve leaves there.
 fn clear_scratch(ms: [&mut FlatMemory; 2]) {
-    for m in ms {
-        m.bytes[BUFFER as usize..(BUFFER + BUFFER_BYTES) as usize].fill(0);
-        m.bytes[(STACK - 0x1000) as usize..STACK as usize].fill(0);
-    }
+    clear_dead_stack(ms);
 }
 
 /// Islands with no constraint, one to five bodies of every motion type:
@@ -1347,8 +1334,8 @@ fn unconstrained_islands_match_the_lifted_integrate() {
 }
 
 /// Islands of every motion type joined by contacts: the integrate passes
-/// the solve its nine arguments, and memory outside the solver buffer and
-/// the dead stack equals the lifted entry's.
+/// the solve its nine arguments, and memory outside the dead stack, the
+/// solver buffer included, equals the lifted entry's.
 #[test]
 fn contact_islands_match_the_lifted_integrate() {
     let Some((image, base)) = ram() else { return };

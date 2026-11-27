@@ -440,8 +440,13 @@ pass, the exports and the busy byte. An island past the buffer's end
 takes its LIFO block as retail does (`island_solve::place`): inline from
 the descriptor, or through `0x002d7020` and `0x002d7090` as `sim_havok::mem`
 models them, the scratch then covering the buffer and the block and the
-decode following the rows into the block. Persistent words only are
-journalled; the buffer's and the block's contents stay in Rust. The
+decode following the rows into the block. The scratch records every word
+it is given; after the solve it takes the solved accumulators, each row's
+corrected right-hand side (`Decoded::row_words`) and the impulses, and
+every recorded word goes to the journal before the block is given back,
+so the buffer and the block hold what retail's solve leaves there. Words
+no stage writes keep the guest's older bytes, as in retail; a later
+island's fixed and leading accumulators read their flag from them. The
 decline is decided before any write, so the guest runs from untouched
 memory. An island falls back to the lifted entry, counted by reason
 (`island_solve::fallbacks`, read with `havok.islands`), when its block would come from a route the
@@ -605,12 +610,6 @@ where physics differs.
 - Which motion types, joint classes, agents and shapes a multiplayer
   match and a co-op campaign level build: `havok.bodies`, `havok.agents`
   and `havok.contacts` in a run.
-- The guest's solver buffer after a solve the Rust answered: the buffer
-  keeps the bytes the last guest-run solve left, so a later island's
-  type 7 or leading accumulator reads its flag byte `+0x0c` from those,
-  where retail reads the previous island's. Whether any persistent word
-  can depend on it (a signed zero through a fixed body's rows) is open;
-  the run-parity digest is the check.
 - That the per-island listener arrays stay empty, and that `W+0x6c` and
   `W+0x78` are not read in the step.
 - The meaning of the save and revert flag bits.
