@@ -125,7 +125,7 @@ For frame or pass layout, use `frame` (the CLI arms and reads
 `render.frame`). For where each draw lands on the display, with raster and
 texture coordinates (stretching, pillarbox and edge stripes), use
 `render.frame_layout {"arm":true,"max_draws":2000}`
-([agent-api.md](../../../docs/runtime/agent-api.md#renderframe_layout)).
+([agent-api.md](../../../docs/runtime/agent-api-render.md#renderframe_layout)).
 `render.scene` inspects the last sealed scene when a source is wired.
 Check `session.methods` for these views.
 
@@ -147,7 +147,7 @@ h2 agent frame snap 0
 
 Capture replies include a tick or present number you can cite to tie the
 image to the check. For readback requirements, clip capture and result
-fields, see the [render API](../../../docs/runtime/agent-api.md#render-the-frame-and-the-pipeline).
+fields, see the [render API](../../../docs/runtime/agent-api-render.md#render-the-frame-and-the-pipeline).
 
 ## Use the debug menu's controls and live edits
 
@@ -200,7 +200,7 @@ since a recorded uptime. `host.memory.heap` needs the process started
 with `H2_MEM_SAMPLE=1M`. A process that has already died, or a lab job
 killed for memory, is read offline with `h2 mem postmortem` or
 `h2 lab mem <id>`. The editor answers the same methods on its socket.
-See [Finding a leak after the fact](../../../docs/runtime/agent-api.md#finding-a-leak-after-the-fact).
+See [Finding a leak after the fact](../../../docs/runtime/agent-api-host.md#finding-a-leak-after-the-fact).
 
 ## Attach to the editor
 

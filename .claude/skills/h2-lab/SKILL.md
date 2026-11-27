@@ -187,7 +187,7 @@ The default destination is `$RUSH_KEEP/lab` when set, otherwise `./lab`.
   summary in `meta.json`. `h2 lab mem --host "$lab_host" "$lab_id"`
   fetches only `mem/` and prints the largest growers. Add
   `--env H2_MEM_SAMPLE=1M` to a run to record allocation stacks. See
-  [Finding a leak after the fact](../../../docs/runtime/agent-api.md#finding-a-leak-after-the-fact).
+  [Finding a leak after the fact](../../../docs/runtime/agent-api-host.md#finding-a-leak-after-the-fact).
 
 If the job fails, use its state and the last relevant section of the
 logs to tell a build failure from a runtime failure. Keep the fetched
