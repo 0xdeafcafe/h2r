@@ -452,6 +452,23 @@ as runtime before).
   as bodies in `native_sound_sources/channels.rs`, deciding through
   `sim_sound::{sources::VoicePriority, scheduling::CappedSelection}`. Their
   synthetic differential cases are in `tests/sim_sound_differential/channel_choice.rs`.
+- *Voice update.* `sim_sound::voices::Voices` owns the running voices: a
+  one-shot plays out on `end_tick(start, ms)`, a loop (or flags `+4` without
+  bits 9 and 6) never does, and a stop or a finish for another reason than
+  2 interrupts it. Each tick it reports its starts in admission order and
+  its play-outs in pool slot order, the order of the walk `128020`. The arm
+  (`sim_sound/voice_arm.rs`) feeds it the admissions (`126000`, after), the
+  stops (`126360`) and the finishes (`127320`) and compares per tick:
+
+  | Tick | Turn | Counted |
+  |---|---|---|
+  | `tick % 64 == 0` | compare the whole report | `matched`, `mismatched`, `quiet` (no voices), `declined` (a voice it never saw start, or of unknown length) |
+  | other, not proven | the update steps only | `skipped` |
+  | other, proven (64 matched ticks with voices, no difference) | the update finishes its play-outs at the service `125b40`, then the guest's report must hold the rest | `answered`, `stale`, `mismatched` |
+
+  Interruptions are counted (`interrupted`) and are inputs, never
+  differences. One difference ends the answers for the process. The voices
+  are saved with snapshots; the tick going back forgets them.
 - *Verification.* Full sim reports with arena hashes include the ordered
   `sound.voices` component. Compare complete reports from the lifted and
   native arms with `h2 sim diff`. A quiet tick has an empty event list.
@@ -545,7 +562,7 @@ still uses them.
 | **1d** | Animation manager and graph resolve (`1c66a0`, `1c6f60`, `1cd590`, `1daea0`, `1dd9d0`, `1ddb40`). 3.4%. | same switch | Ladder clean. Cumulative **≥ 1.2 ms**. The animation switch owns graph resolution. |
 | **2** | Collision world and queries, with the Havok ray path | `impl.sim.native.collision` | Ladder clean. ≥ 0.45 ms more. Retires `native_point_to_leaf`, `native_geometry_test`, `native_bsp_segment`, `native_collision_query`, `native_mopp_ray`, `native_spatial_visit` and `native_spatial_portal`. The subsystem owns collision dispatch and the per-function bodies serve as differential oracles. |
 | **3** | Object update walk, function evaluator, lights, per-type callbacks type by type (units, then bipeds, vehicles, weapons) | `impl.sim.native.objects` | Ladder clean. ≥ 1.5 ms more. Retires `native_object_import`, `native_object_value`, `native_base_object_import`, `native_object_pre_update`, `native_object_post_update`, `native_objects_pre_physics`, `native_objects_post_physics`, `native_object_change_colors`, `native_unit_update`, `native_light_record` and `static-light`. |
-| **4** | Sound sim | `impl.sim.native.sound` | Opt-in native arm. Promote after the ladder matches, including voice start and completion order per tick, and Waterworks saves ≥ 0.6 ms/tick. |
+| **4** | Sound sim | `impl.sim.native.sound` | Opt-in native arm; the voice update is its shadow arm (`sound.voices` in `sim.arms`). Promote after the ladder matches, including voice start and completion order per tick (`sound.voices` clean with answers), and Waterworks saves ≥ 0.6 ms/tick. |
 | **5** | Havok world and glue, with the MOPP box query | `impl.sim.native.physics` | Bar E (decision 8.1). Behaviour suites pass. Cross-arch hashes identical. ≥ 1.0 ms more. Retires `native_havok_solver`, `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`. |
 | **6** | Effects, particles, decals | `impl.sim.native.effects` | Ladder clean. ≥ 0.4 ms more. **Waterworks ≤ 7.5 ms/tick** if *k* ≥ 3.3; otherwise after phase 7. |
 | **7** | Seats and rules: observer and cameras, player control, aim assist, HUD state | `impl.sim.native.seats` (built) | Ladder clean. ≥ 0.9 ms more on four local seats. Retires `native_observer_camera` (done) and, when the seats default on, `observer-resources`. Skipped for hosts if phantom seats do not run it. |

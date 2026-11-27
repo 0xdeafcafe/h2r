@@ -5844,7 +5844,7 @@ wire types in `crates/extensions/agent-proto/src/sim_arms.rs`.
 
 | Method | Access | Params and result |
 |---|---|---|
-| `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, in that order. |
+| `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, `sound`, in that order. |
 
 Each subsystem has `name`, `switch` (`impl.sim.native.<name>`), `on` (the
 switch in this process), `arms` and `clean`: `checked > 0 && mismatched
@@ -5853,12 +5853,14 @@ switch in this process), `arms` and `clean`: `checked > 0 && mismatched
 `declined` (calls left to the guest unchecked, summed over reasons). The
 sources are `sim_physics::parity::status`, `sim_objects::functions::parity::status`,
 the graph walk's `arm_stats` and `stats`, `sim_anim::manager::arm::stats`,
-`sim_collision::WORLD.stats` and the shadow registry's `sim.seats` and
-`sim.effects` groups. A source without a counter reports 0 for that
+`sim_collision::WORLD.stats`, the shadow registry's `sim.seats` and
+`sim.effects` groups, and `sim_sound::voice_arm::stats` (`sound.voices`). A source without a counter reports 0 for that
 field: physics and collision have no `checked` (it is `matched` plus
 `mismatched`) and no `answered`; `anim.manager`'s `differed` is
 `mismatched`; shadow ports have no `answered` and their
-`skipped` is `declined`. A subsystem with its switch off reads zeros, so
+`skipped` is `declined`; `sound.voices` counts ticks for `checked`
+(sampled ticks with voices), `matched` and `mismatched`, and voices for
+`answered`. A subsystem with its switch off reads zeros, so
 `clean` is false.
 
 ```sh
