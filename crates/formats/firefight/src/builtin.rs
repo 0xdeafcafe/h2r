@@ -1,11 +1,15 @@
-//! Authored wave sets for the Elite-only stage-one kit: the built-ins,
-//! and the map-specific sets ([`MAP_SETS`]).
+//! Authored wave sets: the built-ins, and the map-specific sets
+//! ([`MAP_SETS`]). The first five need only the authored Elite; Outbreak
+//! and Endless's allies need classes the kit may have cut
+//! ([`missing_classes`]).
 //!
 //! The sets are the `rules` items of the `modes` package
 //! (`content/modes/firefight/*.firefight.json` and
 //! `content/modes/firefight/maps/<map>/*.firefight.json`,
 //! docs/game/firefight.md, "The definition" and "Map-specific sets");
 //! the game and the tools read the same files the package carries.
+
+use std::collections::BTreeSet;
 
 use crate::{Def, MAX_TEAMS};
 
@@ -14,9 +18,10 @@ use crate::{Def, MAX_TEAMS};
 pub const PLAYER_KILL_POINTS: u16 = 50;
 
 /// The `modes` package's built-in wave set files, in store-value order:
-/// three finite sets for one team, Crossfire for two, then Endless (sets
-/// of three rounds, one after another until the team is out).
-pub const SETS: [(&str, &str); 5] = [
+/// three finite sets for one team, Crossfire for two, Endless (sets
+/// of three rounds, one after another until the team is out, with Marine
+/// allies), then Outbreak (Flood rounds, Covenant boss waves, Marine allies).
+pub const SETS: [(&str, &str); 6] = [
     (
         "firefight/holdout.firefight.json",
         include_str!("../../../../content/modes/firefight/holdout.firefight.json"),
@@ -37,6 +42,10 @@ pub const SETS: [(&str, &str); 5] = [
         "firefight/endless.firefight.json",
         include_str!("../../../../content/modes/firefight/endless.firefight.json"),
     ),
+    (
+        "firefight/outbreak.firefight.json",
+        include_str!("../../../../content/modes/firefight/outbreak.firefight.json"),
+    ),
 ];
 
 /// The `modes` package's map-specific wave set files, as
@@ -54,10 +63,29 @@ pub const MAP_SETS: [(&str, &str, &str); 1] = [(
 pub const MAP_SET_BASE: i64 = SETS.len() as i64;
 
 /// The built-in wave sets, in menu order ([`SETS`]).
-pub fn definitions() -> [Def; 5] {
+pub fn definitions() -> [Def; 6] {
     SETS.map(|(file, text)| {
         serde_json::from_str(text).unwrap_or_else(|e| panic!("{file} is not a Firefight set: {e}"))
     })
+}
+
+/// The classes `def` needs the kit to carry besides the authored Elite:
+/// every squad's and ally's class and every scored one, in name order.
+pub fn required_classes(def: &Def) -> BTreeSet<String> {
+    def.rounds
+        .iter()
+        .flat_map(|round| round.waves.iter().flat_map(|wave| &wave.squads).chain(&round.allies))
+        .map(|squad| squad.class.clone())
+        .chain(def.scoring.by_class.keys().cloned())
+        .filter(|class| class != "elite")
+        .collect()
+}
+
+/// The classes `def` needs that a kit with `have` lacks, in name order.
+/// The lobby greys a set out with these named; the host refuses a set the
+/// same way when it starts ([`crate::validate`]).
+pub fn missing_classes(def: &Def, have: &BTreeSet<String>) -> Vec<String> {
+    required_classes(def).into_iter().filter(|c| !have.contains(c)).collect()
 }
 
 /// `map`'s own wave sets, in file order: the sets the `modes` package
@@ -195,7 +223,7 @@ mod tests {
     };
 
     /// The sets written as Rust: the reference the package files are held to.
-    fn reference() -> [Def; 5] {
+    fn reference() -> [Def; 6] {
         [
             Preset {
                 name: "Holdout",
@@ -207,6 +235,7 @@ mod tests {
                 skulls: [Skull::Ghost, Skull::Famine, Skull::Thunderstorm],
                 set: SetRules::finite(),
                 teams: 1,
+                allies: false,
             },
             Preset {
                 name: "Attrition",
@@ -218,6 +247,7 @@ mod tests {
                 skulls: [Skull::Catch, Skull::Angry, Skull::Mythic],
                 set: SetRules::finite(),
                 teams: 1,
+                allies: false,
             },
             Preset {
                 name: "Last Stand",
@@ -229,6 +259,7 @@ mod tests {
                 skulls: [Skull::Ghost, Skull::Thunderstorm, Skull::Assassins],
                 set: SetRules::finite(),
                 teams: 1,
+                allies: false,
             },
             Preset {
                 name: "Crossfire",
@@ -240,6 +271,7 @@ mod tests {
                 skulls: [Skull::Famine, Skull::Catch, Skull::Angry],
                 set: SetRules::finite(),
                 teams: 2,
+                allies: false,
             },
             Preset {
                 name: "Endless",
@@ -255,9 +287,110 @@ mod tests {
                     skulls: vec![Skull::Thunderstorm, Skull::Famine, Skull::Mythic],
                 },
                 teams: 1,
+                allies: true,
             },
         ]
         .map(Preset::definition)
+        .into_iter()
+        .chain([outbreak()])
+        .collect::<Vec<_>>()
+        .try_into()
+        .expect("six sets")
+    }
+
+    /// Outbreak written as Rust: three rounds of Flood waves, a Covenant
+    /// boss wave to close each, and Marines on the players' side.
+    fn outbreak() -> Def {
+        let squad = |class: &str, per_player: u8, min: u16| SquadSpec {
+            class: class.into(),
+            count: Count { per_player, min, max: 4 },
+            drop: Drop::Edge,
+            weapon_tier: 0,
+            side: Side::Enemy,
+            arrival: crate::Arrival::Auto,
+        };
+        let skulls = [Skull::Famine, Skull::Catch, Skull::Angry];
+        let rounds = skulls
+            .iter()
+            .enumerate()
+            .map(|(i, &skull)| {
+                let i = i as u16;
+                let plans: [Vec<SquadSpec>; 5] = [
+                    vec![squad("flood_combat_human", 1, i + 2)],
+                    vec![squad("flood_combat_human", 1, i + 2), squad("flood_carrier", 1, 1)],
+                    vec![squad("flood_combat_elite", 1, i + 1), squad("flood_carrier", 1, 2)],
+                    vec![
+                        squad("flood_combat_elite", 1, i + 2),
+                        squad("flood_combat_human", 1, i + 2),
+                        squad("flood_carrier", 1, 2),
+                    ],
+                    vec![squad("elite", 2, i + 1), squad("flood_combat_elite", 1, 1)],
+                ];
+                Round {
+                    waves: plans
+                        .into_iter()
+                        .enumerate()
+                        .map(|(wave, squads)| Wave {
+                            squads,
+                            boss: wave == 4,
+                            gap_ticks: 450,
+                        })
+                        .collect(),
+                    skulls_on: vec![skull],
+                    allies: vec![SquadSpec {
+                        class: "marine".into(),
+                        count: Count { per_player: 1, min: 2, max: 3 },
+                        side: Side::Ally,
+                        ..squad("marine", 1, 2)
+                    }],
+                }
+            })
+            .collect();
+        Def {
+            format: FORMAT,
+            name: "Outbreak".into(),
+            teams: 1,
+            rounds,
+            set: SetRules::finite(),
+            lives: Lives { pool_start: 10, per_round_bonus: 3, shared: true, zero_holds: false },
+            caps: Caps { live_actors_by_players: [4, 8, 16].into_iter().zip([16, 16, 16]).collect() },
+            scoring: Scoring {
+                by_class: [
+                    ("elite".into(), 100),
+                    ("flood_combat_elite".into(), 100),
+                    ("flood_combat_human".into(), 50),
+                    ("flood_carrier".into(), 75),
+                ]
+                .into(),
+                player_kill: 0,
+                difficulty_multiplier: DifficultyMultipliers {
+                    easy: 750,
+                    normal: 1_000,
+                    heroic: 1_250,
+                    legendary: 1_500,
+                },
+                skull_multipliers: skulls.into_iter().map(|skull| (skull, 1_100)).collect(),
+                assist: 250,
+            },
+            bonus: None,
+        }
+    }
+
+    #[test]
+    fn outbreak_needs_the_flood_and_marine_classes_and_endless_the_marine() {
+        let [.., endless, outbreak] = definitions();
+        let all = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<BTreeSet<_>>();
+        assert_eq!(
+            required_classes(&outbreak),
+            all(&["flood_carrier", "flood_combat_elite", "flood_combat_human", "marine"])
+        );
+        assert_eq!(required_classes(&endless), all(&["marine"]));
+        assert_eq!(missing_classes(&outbreak, &all(&["marine"])).len(), 3);
+        assert!(missing_classes(&outbreak, &required_classes(&outbreak)).is_empty());
+        // The five before them need the Elite alone, except Endless.
+        for def in &definitions()[..4] {
+            assert!(required_classes(def).is_empty(), "{}", def.name);
+        }
     }
 
     #[test]
@@ -281,6 +414,7 @@ mod tests {
             skulls: [Skull::Catch, Skull::Angry, Skull::Ghost],
             set: SetRules::finite(),
             teams: 1,
+            allies: false,
         }
         .definition()]
     }
@@ -324,6 +458,8 @@ mod tests {
         skulls: [Skull; 3],
         set: SetRules,
         teams: u8,
+        /// A Marine ally squad in every round.
+        allies: bool,
     }
 
     impl Preset {
@@ -351,7 +487,14 @@ mod tests {
                     Round {
                         waves,
                         skulls_on: vec![skull],
-                        allies: Vec::new(),
+                        allies: if self.allies {
+                            vec![SquadSpec {
+                                side: Side::Ally,
+                                ..self.ally()
+                            }]
+                        } else {
+                            Vec::new()
+                        },
                     }
                 })
                 .collect();
@@ -393,6 +536,18 @@ mod tests {
                     assist: 250,
                 },
                 bonus: None,
+            }
+        }
+
+        /// One Marine at least, two at most, on the players' side.
+        fn ally(&self) -> SquadSpec {
+            SquadSpec {
+                class: "marine".into(),
+                count: Count { per_player: 1, min: 1, max: 2 },
+                drop: Drop::Edge,
+                weapon_tier: 0,
+                side: Side::Ally,
+                arrival: crate::Arrival::Auto,
             }
         }
 

@@ -1,0 +1,504 @@
+{
+ "format": 3,
+ "name": "Outbreak",
+ "teams": 1,
+ "rounds": [
+  {
+   "waves": [
+    {
+     "squads": [
+      {
+       "class": "flood_combat_human",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "flood_combat_human",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_carrier",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "flood_combat_elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_carrier",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "flood_combat_elite",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_combat_human",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_carrier",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 2,
+        "min": 1,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_combat_elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": true,
+     "gap_ticks": 450
+    }
+   ],
+   "skulls_on": [
+    "famine"
+   ],
+   "allies": [
+    {
+     "class": "marine",
+     "count": {
+      "per_player": 1,
+      "min": 2,
+      "max": 3
+     },
+     "drop": "edge",
+     "weapon_tier": 0,
+     "side": "ally"
+    }
+   ]
+  },
+  {
+   "waves": [
+    {
+     "squads": [
+      {
+       "class": "flood_combat_human",
+       "count": {
+        "per_player": 1,
+        "min": 3,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "flood_combat_human",
+       "count": {
+        "per_player": 1,
+        "min": 3,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_carrier",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "flood_combat_elite",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_carrier",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "flood_combat_elite",
+       "count": {
+        "per_player": 1,
+        "min": 3,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_combat_human",
+       "count": {
+        "per_player": 1,
+        "min": 3,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_carrier",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 2,
+        "min": 2,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_combat_elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": true,
+     "gap_ticks": 450
+    }
+   ],
+   "skulls_on": [
+    "catch"
+   ],
+   "allies": [
+    {
+     "class": "marine",
+     "count": {
+      "per_player": 1,
+      "min": 2,
+      "max": 3
+     },
+     "drop": "edge",
+     "weapon_tier": 0,
+     "side": "ally"
+    }
+   ]
+  },
+  {
+   "waves": [
+    {
+     "squads": [
+      {
+       "class": "flood_combat_human",
+       "count": {
+        "per_player": 1,
+        "min": 4,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "flood_combat_human",
+       "count": {
+        "per_player": 1,
+        "min": 4,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_carrier",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "flood_combat_elite",
+       "count": {
+        "per_player": 1,
+        "min": 3,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_carrier",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "flood_combat_elite",
+       "count": {
+        "per_player": 1,
+        "min": 4,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_combat_human",
+       "count": {
+        "per_player": 1,
+        "min": 4,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_carrier",
+       "count": {
+        "per_player": 1,
+        "min": 2,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": false,
+     "gap_ticks": 450
+    },
+    {
+     "squads": [
+      {
+       "class": "elite",
+       "count": {
+        "per_player": 2,
+        "min": 3,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      },
+      {
+       "class": "flood_combat_elite",
+       "count": {
+        "per_player": 1,
+        "min": 1,
+        "max": 4
+       },
+       "drop": "edge",
+       "weapon_tier": 0
+      }
+     ],
+     "boss": true,
+     "gap_ticks": 450
+    }
+   ],
+   "skulls_on": [
+    "angry"
+   ],
+   "allies": [
+    {
+     "class": "marine",
+     "count": {
+      "per_player": 1,
+      "min": 2,
+      "max": 3
+     },
+     "drop": "edge",
+     "weapon_tier": 0,
+     "side": "ally"
+    }
+   ]
+  }
+ ],
+ "lives": {
+  "pool_start": 10,
+  "per_round_bonus": 3,
+  "shared": true
+ },
+ "caps": {
+  "live_actors_by_players": [
+   [
+    4,
+    16
+   ],
+   [
+    8,
+    16
+   ],
+   [
+    16,
+    16
+   ]
+  ]
+ },
+ "scoring": {
+  "by_class": {
+   "elite": 100,
+   "flood_combat_elite": 100,
+   "flood_combat_human": 50,
+   "flood_carrier": 75
+  },
+  "player_kill": 0,
+  "difficulty_multiplier": {
+   "easy": 750,
+   "normal": 1000,
+   "heroic": 1250,
+   "legendary": 1500
+  },
+  "skull_multipliers": {
+   "angry": 1100,
+   "catch": 1100,
+   "famine": 1100
+  },
+  "assist": 250
+ },
+ "set": {
+  "endless": false,
+  "scale": 0,
+  "skulls": []
+ }
+}

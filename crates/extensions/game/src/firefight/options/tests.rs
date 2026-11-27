@@ -389,7 +389,9 @@ fn the_choices_reach_the_definition_and_the_difficulty() {
 
 #[test]
 fn every_wave_set_and_lives_choice_makes_a_valid_definition() {
-    let limits = ::firefight::Limits::new(["elite".to_string()]);
+    let limits = ::firefight::Limits::new(
+        ["elite", "marine", "flood_combat_human", "flood_combat_elite", "flood_carrier"].map(String::from),
+    );
     for wave_set in 0..builtin::definitions().len() {
         for teams in [None, Some(1), Some(2)] {
             for lives in lives_choices() {
@@ -442,7 +444,7 @@ fn the_wave_set_row_offers_the_maps_set_first_on_its_map() {
     let pick = picker::current().expect("a pick");
     assert_eq!(
         pick.values,
-        ["Endless", "Basin", "Holdout", "Attrition", "Last Stand", "Crossfire"]
+        ["Endless", "Basin", "Holdout", "Attrition", "Last Stand", "Crossfire", "Outbreak"]
     );
     assert_eq!(pick.opener, Opener::GAME_SETUP_FIREFIGHT);
     assert_eq!(

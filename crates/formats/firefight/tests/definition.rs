@@ -1,5 +1,16 @@
 use firefight::{Count, Def, Drop, FORMAT, Limits, Refusal, Skull, SquadSpec, builtin, validate};
 
+/// A kit that carries every class the built-in sets name.
+fn full_kit() -> Limits {
+    Limits::new([
+        "elite",
+        "marine",
+        "flood_combat_human",
+        "flood_combat_elite",
+        "flood_carrier",
+    ])
+}
+
 fn elite_kit() -> Limits {
     Limits::new(["elite"])
 }
@@ -27,8 +38,12 @@ fn golden_hash_for_the_builtin_defs() {
             "Endless",
             "72538db923ff33c981d1c6c1cae2e39269c0dfbc63e77a99d8765da39ef9a4c1",
         ),
+        (
+            "Outbreak",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        ),
     ];
-    let limits = elite_kit();
+    let limits = full_kit();
     for (def, (name, hash)) in builtin::definitions().into_iter().zip(expected) {
         assert_eq!(def.name, name);
         validate(&def, &limits).unwrap();

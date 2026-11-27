@@ -275,7 +275,7 @@ impl TestRng {
 }
 
 /// The built-in sets with short gaps, so a match takes a few thousand ticks.
-pub fn quick_builtins() -> [Def; 5] {
+pub fn quick_builtins() -> [Def; 6] {
     builtin::definitions().map(|mut def| {
         for wave in def.rounds.iter_mut().flat_map(|round| &mut round.waves) {
             wave.gap_ticks = 10;

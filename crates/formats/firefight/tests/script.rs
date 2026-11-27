@@ -253,7 +253,7 @@ fn the_built_ins_as_authored_replay_the_same_commands() {
 
 #[test]
 fn starting_skulls_and_difficulty_replay_the_same_commands() {
-    let skulls = [Skull::Famine, Skull::Angry, Skull::Ghost, Skull::BlackEye, Skull::Mythic];
+    let skulls = [Skull::Famine, Skull::Angry, Skull::Ghost, Skull::BlackEye, Skull::Mythic, Skull::Catch];
     for (i, def) in quick_builtins().into_iter().enumerate() {
         let settings = with(7 + i as u64, Difficulty::Heroic, &skulls[..=i]);
         check(&def, &settings, 3, eight_zones(), 50_000, random_script(9 + i as u64));

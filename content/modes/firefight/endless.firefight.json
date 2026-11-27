@@ -118,6 +118,19 @@
    ],
    "skulls_on": [
     "ghost"
+   ],
+   "allies": [
+    {
+     "class": "marine",
+     "count": {
+      "per_player": 1,
+      "min": 1,
+      "max": 2
+     },
+     "drop": "edge",
+     "weapon_tier": 0,
+     "side": "ally"
+    }
    ]
   },
   {
@@ -235,6 +248,19 @@
    ],
    "skulls_on": [
     "catch"
+   ],
+   "allies": [
+    {
+     "class": "marine",
+     "count": {
+      "per_player": 1,
+      "min": 1,
+      "max": 2
+     },
+     "drop": "edge",
+     "weapon_tier": 0,
+     "side": "ally"
+    }
    ]
   },
   {
@@ -352,6 +378,19 @@
    ],
    "skulls_on": [
     "black_eye"
+   ],
+   "allies": [
+    {
+     "class": "marine",
+     "count": {
+      "per_player": 1,
+      "min": 1,
+      "max": 2
+     },
+     "drop": "edge",
+     "weapon_tier": 0,
+     "side": "ally"
+    }
    ]
   }
  ],

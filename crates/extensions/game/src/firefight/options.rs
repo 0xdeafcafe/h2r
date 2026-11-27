@@ -113,6 +113,7 @@ pub static WAVE_SET: Setting = setting(
         choice(2, "last_stand", "Last Stand"),
         choice(3, "crossfire", "Crossfire"),
         choice(4, "endless", "Endless"),
+        choice(5, "outbreak", "Outbreak"),
         choice(builtin::MAP_SET_BASE, "basin", "Basin"),
     ]),
     Value::Int(0),

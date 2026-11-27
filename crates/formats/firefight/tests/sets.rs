@@ -305,9 +305,9 @@ fn sets_give_the_same_commands() {
         assert!(commands(&run).contains(&Command::Set { index: 2 }));
         assert_eq!(replay(&def, &settings, &run.observed), run.commands);
     }
-    let endless = builtin::definitions().into_iter().last().unwrap();
+    let endless = builtin::definitions().into_iter().find(|def| def.set.endless).unwrap();
     assert_eq!(endless.name, "Endless");
-    let quick = quick_builtins().into_iter().last().unwrap();
+    let quick = quick_builtins().into_iter().find(|def| def.name == "Endless").unwrap();
     let mut director = ScriptDirector::new(quick.clone(), settings(5)).unwrap();
     let mut world = World::new(3, eight_zones());
     let run = run(&mut director, &mut world, 40_000, random_script(5), |_, _, _, _, _| {});
