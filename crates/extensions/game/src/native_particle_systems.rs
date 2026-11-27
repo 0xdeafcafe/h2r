@@ -10,7 +10,9 @@
 //! blend from the tag's shader template, and the sprites' image decoded
 //! from the map (`SpriteBitmap`). A walk with a system that does not
 //! build is refused by name (`layer_plan_15_particle_walk_refused_<name>`)
-//! and the guest walks it.
+//! and the guest walks it. The refusal is kept (`Refused`), so the next
+//! walk of that system is refused at the walk's entry by one lookup
+//! (`Host::refused`), before the walk is modelled.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -49,9 +51,35 @@ struct Opened {
     bitmaps: HashMap<(u32, i16), Arc<SpriteBitmap>>,
 }
 
+/// The systems refused this map, by definition and bitmap, with the
+/// name. A new map (`native_map_work::generation`) lets them go.
+#[derive(Default)]
+struct Refused {
+    generation: Option<u64>,
+    names: HashMap<(u32, u32), &'static str>,
+}
+
+impl Refused {
+    fn keep(&mut self, generation: u64, key: (u32, u32), name: &'static str) {
+        if self.generation != Some(generation) {
+            self.generation = Some(generation);
+            self.names.clear();
+        }
+        self.names.insert(key, name);
+    }
+
+    fn get(&self, generation: u64, key: (u32, u32)) -> Option<&'static str> {
+        if self.generation != Some(generation) {
+            return None;
+        }
+        self.names.get(&key).copied()
+    }
+}
+
 #[derive(Default)]
 pub struct Systems {
     parts: Mutex<Definitions<Part>>,
+    refused: Mutex<Refused>,
     map: Mutex<Option<Opened>>,
 }
 
@@ -160,9 +188,18 @@ impl render_bridge::native_particle_walk::Host for Systems {
         let generation = render_bridge::native_map_work::generation();
         let mut parts = self.parts.lock().unwrap_or_else(|e| e.into_inner());
         for b in batches {
-            parts.get(generation, &b.key, || self.build(m, generation, &b.key))?;
+            if let Err(name) = parts.get(generation, &b.key, || self.build(m, generation, &b.key)) {
+                let mut refused = self.refused.lock().unwrap_or_else(|e| e.into_inner());
+                refused.keep(generation, (b.key.definition, b.key.bitmap), name);
+                return Err(name);
+            }
         }
         Ok(())
+    }
+
+    fn refused(&self, definition: u32, bitmap: u32) -> Option<&'static str> {
+        let generation = render_bridge::native_map_work::generation();
+        self.refused.lock().unwrap_or_else(|e| e.into_inner()).get(generation, (definition, bitmap))
     }
 
     fn publish(&self, batches: Vec<Batch>) {
@@ -207,6 +244,18 @@ mod tests {
         assert_eq!(blend(Some(&ADDITIVE_TEMPLATE.to_uppercase())), Ok(Blend::Additive));
         assert_eq!(blend(Some("shaders\\shader_templates\\opaque\\tex_bump")), Err("template"));
         assert_eq!(blend(None), Err("template_unnamed"));
+    }
+
+    #[test]
+    fn a_refusal_is_kept_for_its_system_until_the_map_changes() {
+        let mut r = Refused::default();
+        assert_eq!(r.get(1, (2, 3)), None);
+        r.keep(1, (2, 3), "input_the_gpu_lacks_12");
+        assert_eq!(r.get(1, (2, 3)), Some("input_the_gpu_lacks_12"));
+        assert_eq!(r.get(1, (2, 4)), None, "another bitmap is another system");
+        assert_eq!(r.get(2, (2, 3)), None, "a new map's addresses are its own");
+        r.keep(2, (5, 6), "template");
+        assert_eq!(r.get(2, (2, 3)), None, "the last map's let go");
     }
 
     const BITMAP: u32 = 0x1000;

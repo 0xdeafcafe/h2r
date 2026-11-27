@@ -432,7 +432,7 @@ reads a count back or writes a vertex
 
 | Buffer | Holds |
 |---|---|
-| particles, two | 128-byte `Particle`: state, then what the update evaluated for the draw. They swap each update |
+| particles, two | 144-byte `Particle`: state, then what the update evaluated for the draw. They swap each update |
 | scan, blocks | each particle's place in its block (bit 31 alive), each block's total then offset |
 | counts | `Counts`: `count`, `old`, `alive`, `spawned` |
 | indirect | the next update's dispatch (`args::UPDATE`), this scatter's (`args::SCATTER`), the draw (`args::DRAW`: 6 vertices, `count` instances) |
@@ -454,7 +454,7 @@ flowchart LR
   Births past the room the survivors leave are dropped.
 - **Integration.** `age += dt`; a particle with `age >= lifetime` dies.
   Otherwise `velocity = (velocity + gravity * dt) * max(0, 1 - drag * dt)`,
-  then `position += velocity * dt`. Births are evaluated, not aged, on the
+  then `position += velocity * dt` and `spin += spin_rate * dt`. Births are evaluated, not aged, on the
   frame they arrive, at their `Spawn::age` (0 for a new particle).
 - **Mirror.** `GpuParticles::mirror` keeps no survivor: the system is the
   staged births alone, a mirror of particles the guest owns. Its births
@@ -465,7 +465,7 @@ flowchart LR
 
 | Step | GPU form |
 |---|---|
-| inputs | `Input`: life (age over lifetime), age, four random lanes fixed at birth, one, zero |
+| inputs | `Input`: life (age over lifetime), age, four random lanes fixed at birth, one, zero, spin (the phase `spin` in turns, wrapped to 0..1 as `0x002490f4` does) |
 | property (`0x00246cd0`) | two 16-sample curves (the function at range 0 and 1), lerped by the range input; `map` clamps to 0..1 and maps to `lo..hi`; modifier adds or multiplies another input |
 | colour (`0x00246d80`) | the same function's value into an 8-stop gradient |
 | alpha, colour | alpha times `tint.x`; RGB times `tint.yzw` and, with flag `0x180`, the particle's packed tint; clamped, packed RGBA (`pack4x8unorm`) |
@@ -484,7 +484,7 @@ a type 3 bitmap) and the values the guest reads from its image:
 | `+8`, `+0xa` | `sequence_first`, `sequence_pick` (at least 1) |
 | `+0x1c` colour | `colour`: curves, and the function's colour stops sampled at the 8 gradient stops |
 | `+0x2c`, `+0x3c`, `+0x4c`, `+0x5c` | `alpha`, `size`, `rotation`, `frame`: the function at range 0 and 1 over 16 samples, `lo`/`hi` its output range, `map` unless its output is raw |
-| property `+0`, `+2`, `+6` | `input`, `range`, `modifier_input`: guest input 0, 1, 2, 3, 14, 15 to life, age, random 0 to 3 |
+| property `+0`, `+2`, `+6` | `input`, `range`, `modifier_input`: guest input 0, 1, 2, 3, 14, 15 to life, age, random 0 to 3; 11 to spin |
 | property `+4` | `modifier` (add, multiply; else none) |
 | `+0x98` | checked: every input a property reads is in the mask |
 | `+0x9c`, `+0xac` | `fixed_corners`, `fixed_window` |
@@ -494,15 +494,24 @@ a type 3 bitmap) and the values the guest reads from its image:
 An input the function's value does not depend on reads `Zero`. The
 emitter's and movement's `tint`, `size_scale`, `gravity` and `drag` are
 one and zero for the system's owner to set. `Refused` names the tags with
-no exact GPU form: an input the GPU lacks (4 to 13, 16 up, negative) or
+no exact GPU form: an input the GPU lacks (4 to 10, 12, 13, 16 up,
+negative) or
 the mask leaves uncomputed, a function of the age that does not hold its
 value past 1 (only identity and transition do), a wave or shape not in the
 tables, a missing or unparsable function the callback reads, and sequences
 of different sprite counts. An input the GPU lacks is counted by its
-index (`input_the_gpu_lacks_4` to `_13`, `_16`, else `_other`). Two bakes
-are approximate: a ranged function whose sets leave 0..1 is clamped after
-the blend, not per curve, and three or four colour stops fall between
-gradient stops.
+index (`input_the_gpu_lacks_4` to `_10`, `_12`, `_13`, `_16`, else
+`_other`). Two bakes are approximate: a ranged function whose sets leave
+0..1 is clamped after the blend, not per curve, and three or four colour
+stops fall between gradient stops.
+
+Input 11 is the particle's spin phase: `0x00248df0` case 11 wraps the
+particle's `+0x38`. The phase is random 0..1 at birth (`0x002481bc`), and
+the update adds `+0x34` times `dt` (`0x00247307`), `+0x34` being the
+emitter's `+0x38` property over 360 (`0x00249b10`): degrees a second as
+turns. `Particle` and `Spawn` carry it as `spin` and `spin_rate`. A
+mirrored birth's `spin` is its cached input 11, already wrapped, and its
+`spin_rate` zero; a guest phase that wraps to exactly 1 reads 0 on the GPU.
 
 The draw (`ParticleDraw::draw`) is the entry a render pass calls: it binds
 the system's current buffer, the `View` uniform (clip from world, the
@@ -532,8 +541,10 @@ with the native renderer (`impl.render.native`).
 
 ```mermaid
 flowchart LR
-  W[walk entry] -->|callback 0x00224550| B[births]
+  W[walk entry] -->|callback 0x00224550| K[known refusal?]
   W -->|other callback| G[guest walk]
+  K -->|name| G
+  K -->|none| B[births]
   B -->|Err name| G
   B -->|Ok| A[host accept]
   A -->|Err name| G
@@ -544,6 +555,7 @@ flowchart LR
 
 | Step | What it does |
 |---|---|
+| known | `known_refusal`: `[draw]`'s flags and class fail `particle_mirror::check`, or the host kept a refusal for `[draw]`, `[draw + 4]` this map (`Host::refused`). Refused at once, the model not walked; a draw that does not read goes on to the walk |
 | births | `particle_births::births`: the batches and the walk's writes, nothing written yet |
 | accept | the host (`native_particle_systems` in the game) builds each `Key`'s system once a map, or names why not |
 | answer | the writes go to the guest and the walk returns `ret 0x10` without running: the callback never runs, so nothing reaches the D3D emitter, the admission or the effects mirror |
@@ -551,10 +563,13 @@ flowchart LR
 | frame | at `scene_step::seal` the frame's batches go to the host's `publish`; a frame `render_views` opens again before a seal drops them |
 
 The host builds a system from the `prt3` tag and its bitmap in guest
-memory (`mirror_host::build`: `Definition` and sprites), the blend from the
-tag's shader template (`particle_alpha_blend` alpha, `particle_additive`
-additive) and the sprites' image from the running map, found by its tag
-data address (`SpriteBitmap`, one a bitmap and image).
+memory (`mirror_host::build`: `Definition` and sprites) once a map, and
+keeps a refusal by definition and bitmap for `Host::refused`, so a system
+that does not build costs one lookup a walk after its first. The blend
+comes from the tag's shader template (`particle_alpha_blend` alpha,
+`particle_additive` additive) and the sprites' image from the running
+map, found by its tag data address (`SpriteBitmap`, one a bitmap and
+image).
 
 Counters, `layer_plan_15_particle_walk_<outcome>`:
 

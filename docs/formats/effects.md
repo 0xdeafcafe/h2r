@@ -239,8 +239,10 @@ Further **E** (the emitter update `0x00247470`, the particle creator
 - `+0x18` lifespan: `1 / max(value, 0.01)` (`[0x45dc7c]`).
 - `+0x28` initial speed: it scales the unit direction the shape gives
   (`0x00249a35`).
-- `+0x38` initial rotation in degrees: times `1/360` (`[0x45e28c]`) into
-  the particle's rotation in turns (`+0x34`).
+- `+0x38` spin rate in degrees a second: times `1/360` (`[0x45e28c]`)
+  into the particle's `+0x34`, turns a second, which the update adds to
+  its phase `+0x38` (`0x00247307`; random 0..1 at birth, `0x002481bc`).
+  Particle input 11 is that phase wrapped to 0..1.
 - `+0x8c` in shape 0 is a cone angle in degrees: times `pi/180`
   (`[0x45dc54]`) against a random azimuth times `2 pi`.
 

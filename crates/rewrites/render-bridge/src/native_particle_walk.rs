@@ -9,18 +9,23 @@
 //! (`native_render::particle_set`) for the frame graph's slot 9 stage.
 //!
 //! A refusal runs the guest's walk and is counted by name:
-//! `layer_plan_15_particle_walk_refused_<name>`.
+//! `layer_plan_15_particle_walk_refused_<name>`. A draw whose definition
+//! is known not to build ([`known_refusal`]: the mirror's check, or the
+//! host's kept refusal) is refused at the entry, before the model walks.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
 #[cfg(not(test))]
 use std::sync::Mutex;
 
+use engine::function_eval::constant::BYTE;
 use engine::memory::GuestMemory;
 use engine::particle_emission as pe;
+use engine::particle_emission::constant::TINT;
 use engine::particle_walk::{self as pw, Call};
 use engine::points::{Loc, Point, Sig};
 use hooks::{Builder, Flow};
+use native_render::particle_mirror as nm;
 
 use crate::particle_births::{self, Batch, Births};
 
@@ -46,6 +51,10 @@ pub trait Host: Send + Sync {
     /// built (definition, sprites, blend, bitmap). `Err` names why not,
     /// and the guest's walk runs.
     fn accept(&self, m: &dyn GuestMemory, batches: &[Batch]) -> Result<(), &'static str>;
+    /// The refusal kept this map for the system of `definition` and
+    /// `bitmap` (`[draw]`, `[draw + 4]`), if one was refused: one lookup,
+    /// nothing built.
+    fn refused(&self, definition: u32, bitmap: u32) -> Option<&'static str>;
     /// The frame's taken batches, in the guest's order, at the scene's
     /// seal: published as the frame's set (none when empty).
     fn publish(&self, batches: Vec<Batch>);
@@ -124,6 +133,10 @@ pub fn answer(mem: &mut dyn GuestMemory, esp: u32, edi: u32, mxcsr: u32, fcw: u1
         count("other_callback", 1);
         return false;
     }
+    if let Some(name) = known_refusal(&*mem, call.draw) {
+        count(&format!("refused_{name}"), 1);
+        return false;
+    }
     let taken = particle_births::births(&*mem, call, mxcsr, fcw).and_then(|b| {
         host().ok_or("no_host")?.accept(&*mem, &b.batches)?;
         Ok(b)
@@ -144,6 +157,21 @@ pub fn answer(mem: &mut dyn GuestMemory, esp: u32, edi: u32, mxcsr: u32, fcw: u1
     count("particles", batches.iter().map(|b| b.spawns.len() as u64).sum());
     with_frame(|f| f.extend(batches));
     true
+}
+
+/// Why the draw `draw`'s system cannot be taken, known before the walk:
+/// its definition's flags and class fail the mirror's check
+/// (`particle_mirror::check`), or the host kept a refusal for it. `None`
+/// when neither, or when the draw does not read (the walk names that).
+pub fn known_refusal(m: &dyn GuestMemory, draw: u32) -> Option<&'static str> {
+    let r = |at: u32| m.u32(at).ok();
+    let (definition, bitmap) = (r(draw)?, r(draw.wrapping_add(4))?);
+    let (flags, class) = (r(definition)?, r(definition.wrapping_add(4))? as u16);
+    let (byte, tint) = (f32::from_bits(r(BYTE)?), f32::from_bits(r(TINT)?));
+    if let Err(e) = nm::check(flags, class, byte, tint) {
+        return Some(e.name());
+    }
+    host()?.refused(definition, bitmap)
 }
 
 /// The block's bytes, in runs.
@@ -211,6 +239,8 @@ mod tests {
     const LOCATION: u32 = 0x0050_3000;
     const DRAW: u32 = 0x0050_4000;
     const TAG_TABLE: u32 = 0x0050_5000;
+    const DEF: u32 = 0x0050_6000;
+    const BITMAP: u32 = 0x0050_7000;
 
     /// A call of the walk with `callback`; `tags` false leaves the tag
     /// table unset, so the definition's read faults.
@@ -232,12 +262,19 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         refuse: Option<&'static str>,
+        /// What `refused` answers for `(DEF, BITMAP)`.
+        kept: Option<&'static str>,
+        accepted: Mutex<usize>,
         published: Mutex<Vec<Vec<Batch>>>,
     }
 
     impl Host for Recorder {
         fn accept(&self, _: &dyn GuestMemory, _: &[Batch]) -> Result<(), &'static str> {
+            *self.accepted.lock().unwrap() += 1;
             self.refuse.map_or(Ok(()), Err)
+        }
+        fn refused(&self, definition: u32, bitmap: u32) -> Option<&'static str> {
+            self.kept.filter(|_| (definition, bitmap) == (DEF, BITMAP))
         }
         fn publish(&self, batches: Vec<Batch>) {
             self.published.lock().unwrap().push(batches);
@@ -262,6 +299,38 @@ mod tests {
         assert!(!answer(&mut m, ESP, STATE, 0x1f80, 0x027f));
         assert_eq!(tested("other_callback"), 1);
         assert_eq!(tested("taken"), 0);
+    }
+
+    /// A walk whose tag table faults, so the model's walk would refuse
+    /// `fault`, drawn through a readable definition of `class`.
+    fn drawn(class: u16) -> FlatMemory {
+        let mut m = world(pe::ENTRY, false);
+        m.set_u32(DRAW, DEF).unwrap();
+        m.set_u32(DRAW + 4, BITMAP).unwrap();
+        m.set_u16(DEF + 4, class).unwrap();
+        m
+    }
+
+    #[test]
+    fn a_definition_known_refused_is_refused_at_the_entry_without_the_model() {
+        let host = Arc::new(Recorder { kept: Some("input_the_gpu_lacks_12"), ..Default::default() });
+        set_host(host.clone());
+        let mut m = drawn(0);
+        assert!(!answer(&mut m, ESP, STATE, 0x1f80, 0x027f), "the guest walks");
+        assert_eq!(tested("refused_input_the_gpu_lacks_12"), 1, "the kept name");
+        assert_eq!(tested("refused_fault"), 0, "the model never walked");
+        assert_eq!(*host.accepted.lock().unwrap(), 0, "nor the host built");
+        assert_eq!(m.u32(STATE + 0x48).unwrap(), 0, "nothing written");
+        // The mirror's check needs no host: a class other than 0.
+        let mut m = drawn(2);
+        assert!(!answer(&mut m, ESP, STATE, 0x1f80, 0x027f));
+        assert_eq!(tested("refused_orientation"), 1);
+        assert_eq!(tested("refused_fault"), 0);
+        // Not known: the walk runs, and names its own refusal.
+        set_host(Arc::new(Recorder::default()));
+        let mut m = drawn(0);
+        assert!(!answer(&mut m, ESP, STATE, 0x1f80, 0x027f));
+        assert_eq!(tested("refused_fault"), 1);
     }
 
     #[test]
