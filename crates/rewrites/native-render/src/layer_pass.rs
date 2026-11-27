@@ -46,7 +46,10 @@ mod animation;
 mod pixel;
 mod texture_transform;
 
-pub use animation::{PassAnimation, StageFrames, frame_image, property_value, render_time, sample_constants, sample_with_frames};
+pub use animation::{
+    ObjectInputs, PassAnimation, StageFrames, frame_image, property_value, render_time, sample_constants, sample_with_frames,
+    sample_with_inputs,
+};
 
 use std::ops::Range;
 use std::sync::Arc;

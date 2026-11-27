@@ -10,6 +10,9 @@ pub struct HudTagQuad {
     pub image: u16,
     pub shader: u32,
     pub hud_input: [f32; 4],
+    /// A HUD bitmap widget's quad ([`tag_quad`]), not a menu shader
+    /// bitmap's ([`menu_shader_quad`]) or a text widget's.
+    pub widget: bool,
 }
 
 pub const MATERIAL_INPUTS: u32 = 0x004e_6980;
@@ -64,7 +67,7 @@ pub fn tag_quad(mem: &dyn GuestMemory, frame: u32) -> Option<HudTagQuad> {
     }
     let (bitmap, image, shader) = arguments(mem, frame)?;
     let hud_input = inputs(mem)?;
-    Some(HudTagQuad { bitmap, image, shader, hud_input })
+    Some(HudTagQuad { bitmap, image, shader, hud_input, widget: true })
 }
 
 /// A menu shader bitmap widget's quad (type 9): its definition's bitmap,
@@ -76,7 +79,7 @@ pub fn menu_shader_quad(mem: &dyn GuestMemory, frame: u32) -> Option<HudTagQuad>
     }
     let (bitmap, image, shader) = arguments(mem, frame)?;
     let hud_input = ui_inputs(mem)?;
-    Some(HudTagQuad { bitmap, image, shader, hud_input })
+    Some(HudTagQuad { bitmap, image, shader, hud_input, widget: false })
 }
 
 /// A pointer to the record whose `+0x3fc` is the datum of the `unic` tag
@@ -179,6 +182,7 @@ mod tests {
         let quad = tag_quad(&m, frame).unwrap();
         assert_eq!((quad.bitmap, quad.image, quad.shader), (0xaa00_0001, 1, 0xbb00_0002));
         assert_eq!(quad.hud_input, [0.25, 0.5, -1.0, 2.0]);
+        assert!(quad.widget);
         m.put_u32(frame + 12, u32::MAX);
         assert!(tag_quad(&m, frame).is_none());
         m.put_u32(frame + 12, 1).put_u32(frame + 4, 0x1234);
@@ -265,6 +269,7 @@ mod tests {
         let quad = menu_shader_quad(&m, frame).unwrap();
         assert_eq!((quad.bitmap, quad.image, quad.shader), (0xaa00_0003, 2, 0xbb00_0004));
         assert_eq!(quad.hud_input, [0.75, 0.0, 1.0, -0.5]);
+        assert!(!quad.widget);
         assert!(tag_quad(&m, frame).is_none(), "not a HUD widget's call");
         m.put_u32(frame + 16, u32::MAX);
         assert!(menu_shader_quad(&m, frame).is_none(), "no shader");

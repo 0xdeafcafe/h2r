@@ -40,15 +40,27 @@ use crate::native_map::NativeMap;
 
 /// A HUD bitmap widget's quad, or a menu shader bitmap's: drawn from the
 /// overlay with its tag shader's evaluated combiner. Whether it was taken.
+///
+/// With the Rust HUD on (`render_bridge::native_hud::rust_hud`), a HUD
+/// widget's quad is also predicted from its shader's Rust material before
+/// the capture and checked against what the capture took
+/// ([`crate::hud_native`]): a shader that matches is proven, and its
+/// later quads skip the guest's setup.
 pub fn draw_tag_quad<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
     mem: &mut dyn GuestMemory,
     at: &HudTagQuad,
     vertices: &HudVertices,
 ) -> bool {
-    capture(device, mem, Source::Tag(at), |d, m, a| {
+    let check = render_bridge::native_hud::rust_hud() && at.widget && crate::hud_native::wants_check(at.shader);
+    let predicted = if check { Some(crate::hud_native::predict(&*mem, at, vertices)) } else { None };
+    let (taken, item) = capture_item(device, mem, Source::Tag(at), |d, m, a| {
         d.try_native_immediate_draw(m, gfx::vertex::PrimitiveType::TriangleFan, vertices, a)
-    })
+    });
+    if let (true, Some(predicted), Some(item)) = (taken, predicted, item) {
+        crate::hud_native::check(at, predicted, &item);
+    }
+    taken
 }
 
 /// A HUD text widget's glyph quad, over the live glyph cache.
@@ -115,27 +127,41 @@ where
     B: d3d::Backend + Send + 'static,
     F: FnOnce(&mut d3d::device::Device<B>, &mut dyn d3d::GuestMemory, &dyn DrawAdmission) -> Result<bool, d3d::D3dError>,
 {
+    capture_item(device, mem, source, issue).0
+}
+
+/// [`capture`], and the one-quad overlay the capture took.
+fn capture_item<B, F>(
+    device: &d3d::abi::SharedDevice<B>,
+    mem: &mut dyn GuestMemory,
+    source: Source<'_>,
+    issue: F,
+) -> (bool, Option<Arc<Overlay>>)
+where
+    B: d3d::Backend + Send + 'static,
+    F: FnOnce(&mut d3d::device::Device<B>, &mut dyn d3d::GuestMemory, &dyn DrawAdmission) -> Result<bool, d3d::D3dError>,
+{
     let admission = Widget {
         source,
         captured: Mutex::new(None),
     };
     let Ok(mut device) = device.lock() else {
-        return false;
+        return (false, None);
     };
     let mut mem = DeviceMemory(mem);
     let taken = issue(&mut *device, &mut mem, &admission);
     drop(device);
     if taken.ok() != Some(true) {
-        return false;
+        return (false, None);
     }
-    if let Some(overlay) = admission
+    let captured = admission
         .captured
         .into_inner()
-        .unwrap_or_else(|e| e.into_inner())
-    {
-        let _ = render_bridge::scene_step::with_overlay(|o| o.append(&overlay));
+        .unwrap_or_else(|e| e.into_inner());
+    if let Some(overlay) = &captured {
+        let _ = render_bridge::scene_step::with_overlay(|o| o.append(overlay));
     }
-    true
+    (true, captured)
 }
 
 /// What a captured draw is, and so what its item names.
@@ -645,10 +671,43 @@ fn spawn_load(name: String, generation: u64) {
     }
 }
 
-/// Decodes the images `part`'s quads name into `assets`: whether each did.
+/// Runs `f` on the map read for the overlay's images (the loaded map's):
+/// `None` while it loads or with no map loaded.
+pub(crate) fn with_art_map<T>(mem: &dyn GuestMemory, f: impl FnOnce(&mut NativeMap) -> T) -> Option<T> {
+    let (art, _) = slot(mem)?;
+    let art = art?;
+    let mut a = art.lock().unwrap_or_else(|e| e.into_inner());
+    Some(f(&mut a.map))
+}
+
+/// Places `part` (HUD quads whose stages name bitmap images) at this
+/// point in the frame with the map's assets, its images decoded first:
+/// whether it was placed. While the map loads, or when an image does
+/// not decode, nothing is placed.
+pub(crate) fn place_hud<B: d3d::Backend + Send + 'static>(
+    device: &d3d::abi::SharedDevice<B>,
+    mem: &mut dyn GuestMemory,
+    part: Overlay,
+) -> bool {
+    let Some((Some(art), assets)) = slot(mem) else { return false };
+    {
+        let mut a = art.lock().unwrap_or_else(|e| e.into_inner());
+        if !decode_images(&mut a, &part, &mut assets.lock().unwrap_or_else(|e| e.into_inner())) {
+            return false;
+        }
+    }
+    let _ = render_bridge::scene_step::with_overlay(|o| o.append(&part));
+    place(device, mem, Arc::new(part), assets)
+}
+
+/// Decodes the images `part`'s quads name into `assets`, their material's
+/// and their shader stages': whether each did.
 fn decode_images(a: &mut MenuArt, part: &Overlay, assets: &mut OverlayAssets) -> bool {
-    for item in &part.items {
-        let OverlayTexture::Bitmap { tag, image } = item.material.texture else { continue };
+    let named = part.items.iter().flat_map(|item| {
+        std::iter::once(item.material.texture).chain(item.shader_stages.iter().flatten().copied())
+    });
+    for texture in named {
+        let OverlayTexture::Bitmap { tag, image } = texture else { continue };
         if assets.images.contains_key(&(tag, image)) {
             continue;
         }
@@ -1002,7 +1061,7 @@ mod tests {
     /// and names it; a screen draw names its first bound stage, or none.
     #[test]
     fn each_source_names_its_texture() {
-        let at = HudTagQuad { bitmap: 0x40, image: 3, shader: 0xe000_0001, hud_input: [0.5; 4] };
+        let at = HudTagQuad { bitmap: 0x40, image: 3, shader: 0xe000_0001, hud_input: [0.5; 4], widget: true };
         let bound = [None, Some(OverlayTexture::Bound { header: 0x40 }), None, None];
         assert_eq!(
             Source::Tag(&at).texture(&bound, Some(1)),

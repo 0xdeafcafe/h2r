@@ -63,6 +63,8 @@ pub mod glow;
 #[cfg(feature = "gpu")]
 pub mod gpu;
 pub mod hud;
+#[cfg(feature = "gpu")]
+pub mod hud_material;
 pub mod instances;
 pub mod layer_items;
 #[cfg(feature = "gpu")]

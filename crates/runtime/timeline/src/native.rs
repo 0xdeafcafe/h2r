@@ -659,7 +659,7 @@ impl SceneList {
     }
 }
 
-const UI_COLUMNS: [&str; Ui::OverlayModalBlurRefusedTargets as usize + 1] = [
+const UI_COLUMNS: [&str; Ui::OverlayHudRustRecheckFailed as usize + 1] = [
     "items",
     "item_refused",
     "fallback_geometry",
@@ -739,6 +739,15 @@ const UI_COLUMNS: [&str; Ui::OverlayModalBlurRefusedTargets as usize + 1] = [
     "overlay_modal_blur_refused_steps",
     "overlay_modal_blur_refused_combiner",
     "overlay_modal_blur_refused_targets",
+    "overlay_hud_rust_drawn",
+    "overlay_hud_rust_matched",
+    "overlay_hud_rust_proven",
+    "overlay_hud_rust_mismatch_words",
+    "overlay_hud_rust_mismatch_state",
+    "overlay_hud_rust_mismatch_stages",
+    "overlay_hud_rust_mismatch_corners",
+    "overlay_hud_rust_refused",
+    "overlay_hud_rust_recheck_failed",
 ];
 const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
 const ANIMATION_OFFSET: usize = UI_OFFSET + UI_COLUMNS.len();
@@ -897,6 +906,23 @@ pub enum Ui {
     OverlayModalBlurRefusedSteps,
     OverlayModalBlurRefusedCombiner,
     OverlayModalBlurRefusedTargets,
+    /// The HUD's widget quads with their material read in Rust
+    /// (docs/graphics/native-hud-overlay.md, "The material in Rust"):
+    /// quads drawn with no guest shader setup; captured quads whose Rust
+    /// material matched the guest's, and shaders proven by them; captured
+    /// quads that did not match, by the first part that differed (the
+    /// combiner words, the blend and write state, the stages and
+    /// samplers, the corners); quads whose shader the material refused;
+    /// proven shaders a later check found different.
+    OverlayHudRustDrawn,
+    OverlayHudRustMatched,
+    OverlayHudRustProven,
+    OverlayHudRustMismatchWords,
+    OverlayHudRustMismatchState,
+    OverlayHudRustMismatchStages,
+    OverlayHudRustMismatchCorners,
+    OverlayHudRustRefused,
+    OverlayHudRustRecheckFailed,
 }
 
 impl Ui {

@@ -1,8 +1,8 @@
 # The HUD on the overlay
 
-Status: Partly built. HUD bitmap and text widgets draw from the overlay with the shader state the guest sets; widgets the overlay cannot match stay on the guest's quads. Pixel parity needs a live check.
-Code: `crates/rewrites/render-bridge/src/native_hud/hud_overlay.rs`, `crates/extensions/game/src/hud_overlay.rs`, `crates/rewrites/native-render/src/ui_gpu.rs`, `overlay.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`.
-Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
+Status: Partly built. HUD bitmap and text widgets draw from the overlay with the shader state the guest sets; widgets the overlay cannot match stay on the guest's quads. A bitmap widget whose shader's Rust material is proven against the guest's draws with no guest shader setup. Pixel parity needs a live check.
+Code: `crates/rewrites/render-bridge/src/native_hud/hud_overlay.rs`, `hud_inputs.rs`, `crates/extensions/game/src/hud_overlay.rs`, `hud_native.rs`, `crates/rewrites/native-render/src/hud_material.rs`, `ui_gpu.rs`, `overlay.rs`, `layer_pass/animation.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`, the unit tests of `hud_material.rs`, `hud_inputs.rs` and `hud_native.rs`.
+Switch: `impl.render.native` (on); `impl.render.native-hud` (on) for [the material in Rust](#the-material-in-rust). Both in [switches.md](../runtime/switches.md).
 
 The guest gates and places each HUD bitmap or text widget. The overlay captures the quad at the shader quad, with the pixel shader definition and constants the guest has bound, and draws it in place of the guest's draw. The producers and the fallback rules are in [native-ui-producers.md](native-ui-producers.md).
 
@@ -43,6 +43,54 @@ Admission handles affine fans and projected 2D texture stages. Each stage uses i
 
 A reserved draw keeps its resolved packet for replay if the worker cannot record the overlay. A kept scene carries the widget's pass with its packet and records it again (`WidgetPass::replays_scene`), so its `Bound` textures are the recording's own stage views. The `native_ui_overlay_hud_*` counters distinguish bitmap and glyph reservations and refusals, display recordings and failed recordings.
 
+## The material in Rust
+
+A HUD bitmap widget's quad can draw with no guest shader setup: its material is read from the map, not from the device after `0x0001bbf0` has run. Each shader is proven against the guest's own draws first.
+
+```mermaid
+flowchart LR
+  S[HUD_QUAD_SETUP 0x0022a7b3] -->|shader proven| R[Rust item: words, state, stages, corners]
+  R --> P[place_hud: overlay pass]
+  P --> T[resume 0x0022a854: setup and draw left out]
+  S -->|unproven, or 1 in 32| G[guest setup 0x0001bbf0]
+  G --> C[HUD_QUAD_READY: capture]
+  C --> K[check: prediction against capture]
+  K -->|8 matches| S
+```
+
+| Step | Symbol | What |
+|---|---|---|
+| Material | `native_render::hud_material::HudShader::resolve` | the shader's one pass implementation across its template's layers; its stages, samplers, alpha kill and entry render states |
+| Inputs | `render_bridge::native_hud::hud_inputs::function_input` | the HUD's function inputs, the callback `0x0022ace7` in Rust |
+| Constants | `HudShader::words`, `layer_pass::sample_with_inputs` | the definition's words with animated constants at the render clock `0x004858a0`; each property's `x` from its `input`, the range input `y` from `input_a` (`0x0001b230` with a provider) |
+| Prediction | `game::hud_native::predict` | the item but for its target and clip; corners from the quad's own vertices |
+| Check | `game::hud_native::check`, `compare` | at each captured widget quad: words, then blend and write state, then stages and sampler, then corners and coordinates |
+| Draw | `game::hud_native::draw`, `hud_overlay::place_hud` | a proven shader's quad as one overlay pass at the setup site, with the proof's target and clip |
+
+The callback's names (string IDs) and values (Code, `h2 disasm 0x22ace7 100`):
+
+| Name | Value |
+|---|---|
+| `0x0a0005cf`..`0x0a0005d2` | `hud_input1`..`4`, `[0x004e6980]`.. (the widget helper writes them, `0x0022b380`) |
+| `0x0d0005ca`, `0x0c0005cb`, `0x0c0005cc`, `0x0e0005cd` | `[0x004e6968]`, `[0x004e696c]`, `[0x004e6970]`, `[0x004e6974]` |
+| `0x11000600` | the short at `[0x00510c4c] + 0x1d0` times `[0x0045de4c]` |
+| `0x090005ce`; `0x0d0005ff`, `0x170005fa`, `0x170005fb`, `0x180005fc`, `0x1d0005fd`, `0x1d0005fe` | a call (the user's unit state `0x0022acb4`; the UI's `0x0014cca0`, `0x0014ccf0`): not read, the shader stays on the guest's setup |
+| any other | 1.0 (`[0x0045dbc0]`) |
+
+The widget's bitmap is engine texture 16 (`0x00019530`'s entry `0x00019817` binds `[0x004e6978]`, `[0x004e697c]`).
+
+| Rule | Why |
+|---|---|
+| A shader is proven by 8 matching quads (`PROOF_DRAWS`) | a prediction is drawn only where it has been the guest's draw |
+| One mismatch keeps the shader on the guest's setup for the map | no item differs from the guest's on purpose |
+| A proven shader's quads drawn on a second target or clip fail it | the setup site does not read the viewport (split screen) |
+| One proven quad in 32 (`RECHECK`) runs the guest's setup and is checked again | a later difference is caught |
+| Refused: more than one pass implementation, per-draw engine inputs, engine-driven or animated states, a stage that is not the widget's bitmap, an instance bitmap or none, a blend the implementation does not set | each is something the guest's setup reads that the material does not |
+
+Skipping the setup leaves the shader cache at `0x00485b48` as the last guest setup left it, which is what the device holds, so the next guest setup compares against the right state.
+
+Counters (`render.stats`, `native_ui_overlay_hud_rust_*`): `drawn`, `matched`, `proven`, `mismatch_words`, `mismatch_state`, `mismatch_stages`, `mismatch_corners`, `refused`, `recheck_failed`.
+
 ## Glyphs
 
 The overlay's text runs sample glyph pages (`native_render::overlay::GlyphPages`, one per engine font), which the host fills from the disc's fonts as the game serves them.
@@ -60,6 +108,9 @@ The overlay's text runs sample glyph pages (`native_render::overlay::GlyphPages`
 A page keeps coverage alone, so a glyph with colours of its own (a medal, a button icon) draws in its run's colour.
 
 ## Not verified
+
+- That any retail HUD shader proves: the corners are predicted from the quad's own vertices with no vertex program, the sampler from the tag's stage states as D3D values, the blend from the implementation's states over `gfx`'s defaults. `mismatch_*` names the first part that differs.
+- That an overlay pass (`OverlayPass`) places a quad on the same pixels as the widget pass: it does not snap positions to sixteenths (`raster_position`).
 
 - HUD pixel parity on the lab. From the same saved camera and tick, capture `render.frame` with `impl.render.native` off and on. Compare empty, partial and full ammo and shield meters, a flashing ammo count and a two-colour waypoint emblem, including a split-screen view and a scaled display copy. Compare RGBA in each widget rectangle and check `render.stats` for bitmap and text reservations, display recordings and zero fallback or failed recordings for the exercised widgets.
 

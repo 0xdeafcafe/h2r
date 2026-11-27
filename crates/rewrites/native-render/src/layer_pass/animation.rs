@@ -13,32 +13,70 @@ struct Sample {
     raw: f32,
 }
 
+/// An input provider's values by function name: what `0x0001b230` asks
+/// the provider at `[0x00485a58]` for (`[provider]` its context,
+/// `[provider + 4]` its callback). `None` where the provider's value does
+/// not read.
+pub type ObjectInputs<'a> = &'a dyn Fn(u32) -> Option<f32>;
+
 impl Sample {
     fn read(property: &AnimatedProperty, index: usize, time: Option<f64>, object: bool) -> Result<Self, LayerRefusal> {
+        Self::read_with(property, index, time, object, None)
+    }
+
+    /// `0x0001b230`. With an input provider (`inputs`) both of its calls
+    /// run: `x` is the provider's value of `input` and the range input
+    /// `y` its value of `input_a`; a property driven by game time
+    /// (`input` 0) then takes `x` from the clock. Without one `x` must be
+    /// the clock's and `y` is 0.
+    fn read_with(
+        property: &AnimatedProperty,
+        index: usize,
+        time: Option<f64>,
+        object: bool,
+        inputs: Option<ObjectInputs<'_>>,
+    ) -> Result<Self, LayerRefusal> {
         let bad = LayerRefusal::Property { property: index };
-        if property.input != 0 {
-            return Err(LayerRefusal::ObjectAnimation { property: index });
+        let unread = LayerRefusal::ObjectAnimation { property: index };
+        if inputs.is_none() && property.input != 0 {
+            return Err(unread);
         }
         let function = Function::parse(&property.function).map_err(|_| bad.clone())?;
-        if object && function.is_ranged() {
-            return Err(LayerRefusal::ObjectAnimation { property: index });
+        if inputs.is_none() && object && function.is_ranged() {
+            return Err(unread);
         }
-        let time = time.ok_or(LayerRefusal::NoTime)?;
-        let period = f32::from_bits(property.input_b);
-        if !(period.is_finite() && period > 0.0 && time.is_finite()) {
-            return Err(bad);
-        }
-        let mut x = (time / f64::from(period)) as f32;
+        let (x, y) = match inputs {
+            Some(provider) => {
+                let y = provider(property.input_a).ok_or_else(|| unread.clone())?;
+                let x = if property.input != 0 {
+                    provider(property.input).ok_or(unread)?
+                } else {
+                    Self::clock(property, &function, time, &bad)?
+                };
+                (x, y)
+            }
+            None => (Self::clock(property, &function, time, &bad)?, 0.0),
+        };
         if function.kind == FunctionType::Periodic {
             let wave = function.sub_types[0];
             if !Tables::engine().has_wave(wave) {
                 return Err(LayerRefusal::Wave { property: index, wave });
             }
-        } else {
-            x = (f64::from(x) % 1.0) as f32;
         }
-        let raw = function.evaluate_with(x, 0.0, Tables::engine());
+        let raw = function.evaluate_with(x, y, Tables::engine());
         Ok(Self { raw, function })
+    }
+
+    /// A game-time property's input: the clock over its period
+    /// (`input_b`), wrapped to one unless the curve is periodic.
+    fn clock(property: &AnimatedProperty, function: &Function, time: Option<f64>, bad: &LayerRefusal) -> Result<f32, LayerRefusal> {
+        let time = time.ok_or(LayerRefusal::NoTime)?;
+        let period = f32::from_bits(property.input_b);
+        if !(period.is_finite() && period > 0.0 && time.is_finite()) {
+            return Err(bad.clone());
+        }
+        let x = (time / f64::from(period)) as f32;
+        Ok(if function.kind == FunctionType::Periodic { x } else { (f64::from(x) % 1.0) as f32 })
     }
 
     fn scalar(&self) -> f32 {
@@ -121,7 +159,22 @@ pub fn sample_constants(
     object: bool,
     pass: usize,
 ) -> Result<ResolvedImplementation, LayerRefusal> {
-    sample_at(imp, properties, time, object, pass, None)
+    sample_at(imp, properties, time, object, pass, None, None)
+}
+
+/// [`sample_constants`] with an input provider for the properties an
+/// object function drives (the HUD's, `0x0022ace7`): each property's
+/// `x` and range input `y` are the provider's (`ObjectInputs`), a
+/// game-time property's `x` the clock's. A value the provider does not
+/// read refuses ([`LayerRefusal::ObjectAnimation`]).
+pub fn sample_with_inputs(
+    imp: &ResolvedImplementation,
+    properties: &[AnimatedProperty],
+    time: Option<f64>,
+    inputs: ObjectInputs<'_>,
+    pass: usize,
+) -> Result<ResolvedImplementation, LayerRefusal> {
+    sample_at(imp, properties, time, false, pass, None, Some(inputs))
 }
 
 /// [`sample_constants`] for a caller that binds the image an animated
@@ -134,10 +187,11 @@ pub fn sample_with_frames(
     pass: usize,
 ) -> Result<(ResolvedImplementation, StageFrames), LayerRefusal> {
     let mut frames = StageFrames::default();
-    let out = sample_at(imp, properties, time, object, pass, Some(&mut frames))?;
+    let out = sample_at(imp, properties, time, object, pass, Some(&mut frames), None)?;
     Ok((out, frames))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sample_at(
     imp: &ResolvedImplementation,
     properties: &[AnimatedProperty],
@@ -145,12 +199,13 @@ fn sample_at(
     object: bool,
     pass: usize,
     mut frames: Option<&mut StageFrames>,
+    inputs: Option<ObjectInputs<'_>>,
 ) -> Result<ResolvedImplementation, LayerRefusal> {
     let mut out = imp.clone();
     let mut transforms = TextureTransforms::default();
     let sample = |property: i16| {
         let index = usize::try_from(property).map_err(|_| LayerRefusal::Property { property: usize::MAX })?;
-        Sample::read(properties.get(index).ok_or(LayerRefusal::Property { property: index })?, index, time, object)
+        Sample::read_with(properties.get(index).ok_or(LayerRefusal::Property { property: index })?, index, time, object, inputs)
     };
     for target in &imp.animated {
         let binding = target.binding;
@@ -273,7 +328,7 @@ impl PassAnimation {
             return Ok((imp.clone(), None));
         }
         let mut scratch = StageFrames::default();
-        let mut baseline = sample_at(imp, properties, Some(0.0), object, pass, frames.then_some(&mut scratch))?;
+        let mut baseline = sample_at(imp, properties, Some(0.0), object, pass, frames.then_some(&mut scratch), None)?;
         baseline.animated.clear();
         let animation = Self { implementation: imp.clone(), properties: properties.into(), object, pass, frames };
         Ok((baseline, Some(animation)))
@@ -294,6 +349,7 @@ impl PassAnimation {
         let at = sample_at(
             &self.implementation, &self.properties, time, self.object, self.pass,
             self.frames.then_some(&mut frames),
+            None,
         )?;
         Ok((crate::fog_gpu::LayerConstants::from_implementation(&at), frames))
     }

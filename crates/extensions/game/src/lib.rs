@@ -89,6 +89,8 @@ pub mod host_perf;
 pub mod hot_glue;
 pub mod hud;
 #[cfg(feature = "gpu")]
+pub mod hud_native;
+#[cfg(feature = "gpu")]
 pub mod hud_overlay;
 pub mod hud_kit;
 pub mod hud_kit_world;
