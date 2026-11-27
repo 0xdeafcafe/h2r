@@ -605,12 +605,16 @@ fn after_visibility(c: &mut CpuAbi, m: &mut impl Memory, visible: bool) -> Resul
         // dead zone.
         logic(c, u32::from(visible), 0x80);
         let active = visible || {
+            // xmm1 keeps the horizontal rate and xmm2 the squared length.
             load(c, 0, m.u32(at(c.edi, 4))?);
-            let y = sse::ss(c, Ss::Mul, 0, m.u32(at(c.edi, 4))?);
-            load(c, 0, m.u32(c.edi)?);
-            sse::ss(c, Ss::Mul, 0, m.u32(c.edi)?);
-            let square = sse::ss(c, Ss::Add, 0, y);
-            sse::comiss(c, m.u32(0x0045_dc20)?, square) & 0x41 == 0
+            load(c, 1, m.u32(c.edi)?);
+            movaps(c, 2, 0);
+            ss_reg(c, Ss::Mul, 2, 0);
+            movaps(c, 0, 1);
+            ss_reg(c, Ss::Mul, 0, 1);
+            ss_reg(c, Ss::Add, 2, 0);
+            load(c, 0, m.u32(0x0045_dc20)?);
+            sse::comiss(c, lane0(c, 0), lane0(c, 2)) & 0x41 == 0
         };
         if active {
             m.set_u8(at(c.ebp, 0x88), 1)?;
