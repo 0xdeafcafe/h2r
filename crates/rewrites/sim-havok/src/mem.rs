@@ -154,6 +154,12 @@ impl<'a> Journal<'a> {
         Some(())
     }
 
+    /// The words put so far, in address order: what a call out run on
+    /// another copy of the guest's memory starts from.
+    pub fn writes(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.writes.iter().map(|(&a, &v)| (a, v))
+    }
+
     /// The words to store, in address order.
     pub fn finish(self) -> BTreeMap<u32, u32> {
         self.writes

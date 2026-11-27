@@ -3039,3 +3039,141 @@ fn the_query_matches_the_lifted_query() {
     }
     assert!(sizes.len() >= 4 && answers.len() >= 2 && declined < 128, "{sizes:?} {answers:?}, {declined} declined");
 }
+
+// The query's triangle case (sim_havok::gjk::triangle_case,
+// docs/engine/havok-convex.md, "The triangle case") against the lifted
+// 0x00303dd0, on capsules and convex polygons, every pair of sizes up to
+// four, under every rounding mode. The penetration call 0x0030a6b0 runs
+// lifted for both.
+
+const TRIANGLE_CASE: u32 = 0x0030_3dd0;
+const PENETRATION: u32 = 0x0030_a6b0;
+/// The stack below `STACK` the case and its penetration call use as
+/// scratch: the latter's `_alloca` alone takes 0x3004 bytes.
+const TRIANGLE_STACK: u32 = 0x1_0000;
+
+/// The penetration call run lifted on a copy of the guest's memory as
+/// the model has it so far; every word it changes, its frame included,
+/// goes into the journal.
+struct LiftedPenetration<'c> {
+    code: &'c mut lifted::Original,
+    base: &'c FlatMemory,
+    fpu: Fpu,
+}
+
+impl gjk::Penetration for LiftedPenetration<'_> {
+    fn penetration(&mut self, j: &mut Journal, args: [u32; 6], esp: u32) -> Result<u32, sim_havok::convex::Fallback> {
+        let mut mem = self.base.clone();
+        for (a, v) in j.writes() {
+            word(&mut mem, a, v);
+        }
+        for (i, v) in std::iter::once(EXIT).chain(args).enumerate() {
+            word(&mut mem, esp + 4 * i as u32, v);
+        }
+        let before = mem.clone();
+        let mut cpu = Cpu { gpr: [0, 0, 0, 0x1111, esp, 0x2222, 0x3333, 0x4444], eip: PENETRATION, ..Cpu::default() };
+        cpu.mxcsr = self.fpu.mxcsr;
+        cpu.x87.control = self.fpu.control;
+        run(self.code, &mut cpu, &mut mem);
+        const PAGE: usize = 4096;
+        for (p, (now, was)) in mem.bytes.chunks(PAGE).zip(before.bytes.chunks(PAGE)).enumerate() {
+            if now == was {
+                continue;
+            }
+            for k in (0..now.len()).step_by(4) {
+                if now[k..k + 4] != was[k..k + 4] {
+                    let v = u32::from_le_bytes(now[k..k + 4].try_into().unwrap());
+                    j.put((p * PAGE + k) as u32, v).ok_or(sim_havok::convex::Fallback::Memory)?;
+                }
+            }
+        }
+        Ok(cpu.gpr[0])
+    }
+}
+
+/// Vertex `i` of a shape [`seed_query_shape`] laid out: a capsule's end
+/// or a polygon's corner, its `w` as stored.
+fn shape_vertex(m: &FlatMemory, at: u32, i: u32) -> [f32; 4] {
+    let v = if m.read_u32(at) == Some(CAPSULE_VTABLE) {
+        at + 0x10 + 16 * (i % 2)
+    } else {
+        at + 0x20 + 16 * (i % m.read_u32(at + 0x14).unwrap())
+    };
+    std::array::from_fn(|k| f32::from_bits(m.read_u32(v + 4 * k as u32).unwrap()))
+}
+
+/// Seeded simplices of one to four vertices each, from the shapes'
+/// vertices (B's placed into A's frame on the host), with the state's
+/// normal, sides, parallel array and last size left over: eax equals the
+/// lifted case's, ebx, ebp, esi and edi are kept, and every byte outside
+/// the stack (the state, the shapes) matches. The penetration call is
+/// the lifted one on both sides, so this pins the case's own code: the
+/// pairs it hands over, the duplicate tests, the cut to four
+/// (`0x00303b80`) and the query's cases after.
+#[test]
+fn the_triangle_case_matches_the_lifted_triangle_case() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = query_code(image);
+    for f in [TRIANGLE_CASE, 0x303b80, PENETRATION, 0x309b50] {
+        code.prime(f);
+    }
+    let sizes_in = [(1, 1), (1, 2), (2, 1), (1, 3), (3, 1), (2, 2), (2, 3), (3, 2), (3, 3), (1, 4), (4, 1)];
+    let mut sizes = std::collections::BTreeMap::new();
+    for seed in 0..512u64 {
+        let mut r = Rng(0x303d_0000 + seed);
+        let mut mem = base.clone();
+        seed_query_shape(&mut r, &mut mem, QUERY_A, seed & 1 != 0);
+        seed_query_shape(&mut r, &mut mem, QUERY_B, seed & 2 != 0);
+        let mut t = [[0f32; 4]; 4];
+        for (i, column) in t.iter_mut().enumerate() {
+            *column = seed_vector(&mut r, &mut mem, QUERY_T + 16 * i as u32);
+        }
+        if seed % 4 == 3 {
+            for (i, column) in [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]].into_iter().enumerate() {
+                put_lanes(&mut mem, QUERY_T + 16 * i as u32, column);
+                t[i] = column;
+            }
+        }
+        let (na, nb) = sizes_in[seed as usize % sizes_in.len()];
+        word(&mut mem, GJK_STATE + gjk::state::COUNT_A, na);
+        word(&mut mem, GJK_STATE + gjk::state::COUNT_B, nb);
+        // Consecutive vertices from a seeded start; sometimes one twice.
+        let (start_a, start_b) = (r.below(8), r.below(8));
+        let twice = seed % 8 == 5;
+        for i in 0..4u32 {
+            let k = if twice && i == 2 { 1 } else { i };
+            let v = shape_vertex(&mem, QUERY_A, start_a + k);
+            put_lanes(&mut mem, GJK_STATE + gjk::state::SUPPORT_A + 16 * i, v);
+            let l = shape_vertex(&mem, QUERY_B, start_b + k);
+            put_lanes(&mut mem, GJK_STATE + gjk::state::LOCAL_B + 16 * i, l);
+            let placed: [f32; 4] = std::array::from_fn(|c| t[0][c] * l[0] + t[1][c] * l[1] + (t[2][c] * l[2] + t[3][c]));
+            put_lanes(&mut mem, GJK_STATE + gjk::state::SUPPORT_B + 16 * i, placed);
+            seed_vector(&mut r, &mut mem, GJK_STATE + gjk::state::PARALLEL_A + 16 * i);
+        }
+        for off in [gjk::state::NORMAL, gjk::state::SIDES, gjk::state::MIDPOINT] {
+            seed_vector(&mut r, &mut mem, GJK_STATE + off);
+        }
+        word(&mut mem, GJK_STATE + gjk::state::LAST_B, 1 + r.below(3));
+        word(&mut mem, GJK_STATE + gjk::state::FEATURE, r.below(3));
+        let fpu = test_fpu(seed);
+        let why = format!("seed {seed} ({na}, {nb}) {fpu:x?}");
+        let args = gjk::Args { a: QUERY_A, b: QUERY_B, transform: QUERY_T, cache: QUERY_CACHE, out: 0 };
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let mut calls = LiftedPenetration { code: &mut code, base: &before, fpu };
+        let eax = gjk::triangle_case(&mut j, GJK_STATE, STACK, args, fpu, &mut calls).unwrap_or_else(|f| panic!("{why}: declined {f:?}"));
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        let after = run_this(&mut code, &mut mem, TRIANGLE_CASE, GJK_STATE, &[QUERY_A, QUERY_B, QUERY_T, QUERY_CACHE], fpu);
+        assert_eq!((after.eax, after.esp), (eax, STACK + 0x14), "{why}: eax, ret 0x10");
+        assert_eq!((after.ebx, after.ebp, after.esi, after.edi), (0x1111, 0x2222, 0x3333, 0x4444), "{why}: kept");
+        for m in [&mut mem, &mut expected] {
+            m.bytes[(STACK - TRIANGLE_STACK) as usize..(STACK + 0x14) as usize].fill(0);
+        }
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+        let counts = (mem.read_u32(GJK_STATE + gjk::state::COUNT_A).unwrap(), mem.read_u32(GJK_STATE + gjk::state::COUNT_B).unwrap());
+        *sizes.entry(counts).or_insert(0) += 1;
+    }
+    assert!(sizes.len() >= 4, "{sizes:?}");
+}

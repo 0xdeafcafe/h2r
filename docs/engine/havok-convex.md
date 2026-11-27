@@ -1,6 +1,6 @@
 # The Havok convex agent: separated pairs
 
-Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; the closest-feature query `0x003048a0` with its seven leaves, three shape types' support virtuals and two types' vertex virtuals are ported and compared with the lifted code; the query's triangle case `0x00303dd0`, the manifold update and the contact commit stay guest code, and no arm calls the query yet.
+Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; the closest-feature query `0x003048a0` with its seven leaves, its triangle case `0x00303dd0`, three shape types' support virtuals and two types' vertex virtuals are ported and compared with the lifted code; the triangle case's penetration call `0x0030a6b0`, the manifold update and the contact commit stay guest code, and no arm calls the query yet.
 Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query and its leaves), `crates/rewrites/sim-havok/src/shape_support.rs` (the support and vertex virtuals), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`, `gjk.rs` and `shape_support.rs`.
 Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
 
@@ -85,7 +85,7 @@ frame and runs the closest-feature query. **E**
 | `0x002da4d0` (thiscall out; A, B; `ret 8`) | B's four columns by A's transposed rotation, then A's translation taken off | `gjk::relative` |
 | `0x003048a0` (thiscall state; shape A, shape B, transform, feature cache, out; `ret 0x14`) | the query: seeds the simplex from the cached feature IDs through each shape's `vt[+0x34]`, then a case per simplex size pair (`(nA << 3 \| nB) - 9`, a 25-entry table at `0x0030567c`), new support points through `vt[+0x30]` ("The query" below) | `gjk::query` |
 | `0x003037a0` (thiscall state; segment, triangle, segment count, triangle count, fresh, feature; `ret 0x18`) | the edge case, a segment against a triangle: fresh, the triangle's own normal, else the state's normal and sides; a crossing inside answers 1; the nearer end (fresh) or the second vertex inside drops the segment to it, 0; else `t2` overwrites the vertex off the nearer edge (by `gjk::segments` fresh, by the edge mask and the old sides otherwise), 2 | `gjk::edge` |
-| `0x00303dd0` | the query's triangle case, for a stalled query with the state's `+0x0c` byte clear, with the penetration path `0x00303b80`, `0x0030a6b0` | no (`gjk::Calls`) |
+| `0x00303dd0` (thiscall state; shape A, shape B, transform, cache; `ret 0x10`; the cache is not read), with `0x00303b80` (thiscall state; `ret`) | the query's triangle case, for a stalled query with the state's `+0x0c` byte clear ("The triangle case" below) | `gjk::triangle_case`; its call `0x0030a6b0` is not (`gjk::Penetration`) |
 | `0x00303540` (eax the four vertices, ebx the point, one stack word `s`; `ret`), with `0x00303110` (edi the vertices; point, tests) | the tetrahedron face the point lies beyond: each face's `n . s (p - v3)` signed-squared over `\|n\|^2`; `-1` below `1e-6`, the largest past `1.1` times the next, else `0x00303110` strikes edges by projection | `gjk::tetrahedron` |
 | `0x00303360` (thiscall state; point, triangle, orient; `ret 0xc`) | the triangle's normal and the point's three edge signs (mask in eax); with `orient`, the normal faces the support difference, swapping the first two vertices to do it | `gjk::triangle` |
 | `0x00308590` (cdecl; p1, d1, p2, d2, out) | the closest points of two segments, x87 solve, flags for each clamp | `gjk::segments` |
@@ -153,6 +153,58 @@ flowchart TD
 | `+0x20`, `+0x60` | A's vertices, a parallel array |
 | `+0xa0`, `+0xe0` | B's vertices in A's frame and in B's |
 | `+0x120`, `+0x130`, `+0x160` | the normal, the closest points, the edge tests |
+
+## The triangle case
+
+`gjk::triangle_case` runs `0x00303dd0` on a journal. Its one call out,
+the penetration call `0x0030a6b0` (cdecl; shape A, shape B, transform,
+simplex, differences, direction; a profiled wrapper of `0x00309b50`),
+goes through the caller's `gjk::Penetration`. **E**
+
+```mermaid
+flowchart TD
+    S[up to four vertex pairs to the frame] --> P[penetration call 0x0030a6b0]
+    P --> O{one pair left?}
+    O -- yes --> X[normal 1,0,0,0; sizes 1, 1]
+    O -- no --> D[sizes 3, 3 less duplicates; B's placed in A's frame]
+    D --> R{over four vertices?}
+    R -- yes --> C[cut to four 0x00303b80]
+    R -- no --> Q[the query's cases, until one leaves the loop]
+    C --> Q
+    Q --> N[normal = -direction]
+```
+
+| Sizes at entry | Pairs handed over (A's vertex, B's) |
+|---|---|
+| B three or more | `(A0, Bi)` for B's first three, then `(A0, B3)` (B four) or `(A1, B0)` (A two or more) |
+| A three or more | `(Ai, B0)` for A's first three, then `(A3, B0)` (A four) or `(A0, B1)` (B two or more) |
+| otherwise | `(A0, B0)` |
+
+- The frame holds A's four vertices at `+0x20`, B's four in B's frame
+  at `+0x60`, the count at `+0xa0`, `A - B` (B's in A's frame) at
+  `+0xd0` and the direction at `+0x110` (`gjk::tri_frame`).
+- After the call A's and B's first three vertices come back from the
+  frame; A's parallel array and B's placed vertices do not.
+- Duplicates: two vertices are one when `cmpltps` finds no lane of `x`,
+  `y`, `z` of their difference's magnitude past the vector at
+  `0x004801e0`. A's third against its second, else its first, drops it;
+  then its first against its second gives the first the last vertex's
+  place. B's the same in B's frame, the last test only with two left.
+- The cut (`0x00303b80`, more than four vertices): a vertex inside the
+  other side's triangle (`gjk::triangle`, not oriented, A's first) is
+  that side's only vertex. Otherwise every pair of edges, one of each
+  side, goes to `gjk::segments`; the nearest pair (strictly, first on a
+  tie) keeps its triangle edges and each triangle's third vertex takes
+  its last's place. B's arrays both follow.
+- The cases are the query's table (the jump table at `0x0030484c` by the
+  bytes at `0x00304878`), with the feature word cleared once before the
+  first. Out with 0 stores B's size at `+0x08`, as in the query.
+- Every exit but the one-pair one stores the direction, negated, as the
+  normal. eax is the penetration call's.
+
+`sim_havok_differential.rs` compares it with the lifted function, 512
+seeds of capsules and polygons over every pair of sizes up to four, the
+penetration call run lifted for both sides.
 
 ## Support virtuals
 
