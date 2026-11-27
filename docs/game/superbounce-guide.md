@@ -474,14 +474,17 @@ lift the mode reads to a row before it reads the depth.
   measured here. The sweep's threshold is a speed and its length one
   tick ([the bounce rule](superbounce.md#the-bounce-rule-code-trace)), so a 60 Hz tick
   would move every window.
-- **The launch rule's code.** The size of the launch is fitted
-  (`superbounce::rule::launch`, `Verdict::launch`: the solver's push by
-  fall speed, less the fall speed, by the lean of the drift;
-  [notes](notes/2026-11-23-why-bounces-work.md)). How the convex agent
-  (`0x002eeb40`) picks the sideways normal, and how the solver (the step
-  at `0x00311100`) turns two impulses of 24,000 to 134,000 into the push,
-  are not decoded, and the fit is held flat outside 5.4 to 13 units/s of
-  fall and 0.1 to 0.6 of drift.
+- **The launch rule's normal.** The launch is the island solve's
+  ([the launch](superbounce.md#the-launch-code-trace); `superbounce::rule::pinch`):
+  eight passes of a coupled two-row solve, which the traced impulses
+  and launches near the sweep threshold confirm. `rule::launch` stays
+  the fit (`Verdict::launch`: the push by fall speed, less the fall
+  speed, by the lean of the drift;
+  [notes](notes/2026-11-23-why-bounces-work.md)), held flat outside 5.4 to
+  13 units/s of fall and 0.1 to 0.6 of drift. Not decoded: how the convex
+  agent (`0x002eeb40`) picks the sideways normal, the model taking it
+  square to the velocity, and the two depths of a fast fall, where the
+  solver model is 3 to 8 units/s short.
 - **Lunges.** Whether a landing on the crease during the 1.5 s after a
   lunge (body offset from the origin) bounces differently is not
   traced.

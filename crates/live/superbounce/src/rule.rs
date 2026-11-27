@@ -122,6 +122,122 @@ pub fn launch(speed: f32, across: f32) -> f32 {
     ((table(&PUSH, speed) - speed) * table(&LEAN, across)).max(0.0)
 }
 
+/// The contact solver's constants for a body against the level (the
+/// world constructor `0x003101c0` from the info Halo builds in
+/// `0x001c2d40`; docs/game/superbounce.md, "The launch").
+pub mod solver {
+    /// Passes of the island solve (`W+0x17c`, info `+0x4c`).
+    pub const ITERATIONS: usize = 8;
+    /// The row's push scale (info `+0x44`, `0x0044ae8c`): the target speed
+    /// is this times the row's recovery.
+    pub const RHS_SCALE: f64 = 0.6;
+    /// Recovery per metre of error: iterations over the step, 8 × 30.
+    pub const Q_RHS: f64 = 240.0;
+    /// The share of the penetration the row recovers (`0x004155a4`).
+    pub const RECOVERY: f64 = 0.05;
+    /// The recovery cap, one step (`pair+0x10`: iterations × step / 8).
+    pub const CAP: f64 = 1.0 / 30.0;
+    /// Added to a row's effective mass (`0x0041559c`).
+    pub const SOFTNESS: f64 = 1.192_092_9e-7;
+    /// Scales the coupling of the two rows of a pair (`W+0x178`).
+    pub const COUPLING: f64 = 0.99;
+    /// The biped's inverse mass (`havok.bodies`: mass 125).
+    pub const INVERSE_MASS: f64 = 0.008;
+}
+
+/// What the solver leaves a body pinched between two level faces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pinch {
+    /// The impulse each row gathers over the passes (mass × velocity).
+    pub impulses: [f64; 2],
+    /// The body's velocity as the last pass leaves it.
+    pub last: [f64; 3],
+    /// The velocity the step exports: the mean over the passes of the
+    /// velocity after each. Its `z` is the launch.
+    pub mean: [f64; 3],
+}
+
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+/// The contact solver (docs/game/superbounce.md, "The launch") on a body
+/// of [`solver::INVERSE_MASS`] against the fixed level, touching two
+/// faces at once. `normals` point from each face to the body, `sep` is
+/// each contact's separation (negative in the floor) and `v` the body's
+/// velocity as the tick starts, gravity in.
+///
+/// The two points are one pair, solved together: each row's target speed
+/// is `RHS_SCALE × Q_RHS × h` for `h` the recovery
+/// (`RECOVERY × |sep|`, capped), the pair's 2×2 block is
+/// `[t, m; m, t]` for `t` the inverse mass plus the softness and `m` the
+/// inverse mass × the normals' dot × [`solver::COUPLING`], and each pass
+/// adds the block's solution `K⁻¹(target − v·n)` when both parts are
+/// positive. A pass ends by taking the speed along each normal off its
+/// target. Two faces that nearly oppose make `K` nearly singular, which
+/// is the impulses of 20,000 to 134,000; the 0.99 leaves the first pass
+/// short of both targets, and the part of the push that doesn't cancel
+/// is the launch.
+pub fn pinch(normals: [[f64; 3]; 2], sep: [f64; 2], v: [f64; 3]) -> Pinch {
+    use solver::*;
+    let t = INVERSE_MASS + SOFTNESS;
+    let m = INVERSE_MASS * dot3(normals[0], normals[1]) * COUPLING;
+    let det = t * t - m * m;
+    let mut rhs = [0.0; 2];
+    for i in 0..2 {
+        let stored = sep[i];
+        let h = (stored * -RECOVERY).min(CAP);
+        rhs[i] = h * Q_RHS;
+    }
+    let mut v = v;
+    let mut sum = [0.0; 3];
+    let mut impulses = [0.0; 2];
+    for _ in 0..ITERATIONS {
+        let r = [
+            rhs[0] * RHS_SCALE - dot3(v, normals[0]),
+            rhs[1] * RHS_SCALE - dot3(v, normals[1]),
+        ];
+        let g = [(t * r[0] - m * r[1]) / det, (t * r[1] - m * r[0]) / det];
+        let apply = if g[0] > 0.0 && g[1] > 0.0 {
+            g
+        } else if !(g[0] > 0.0) && r[1] / t > 0.0 {
+            [0.0, r[1] / t]
+        } else if r[0] / t > 0.0 {
+            [r[0] / t, 0.0]
+        } else {
+            [0.0, 0.0]
+        };
+        for (gain, n) in apply.iter().zip(&normals) {
+            for k in 0..3 {
+                v[k] += INVERSE_MASS * gain * n[k];
+            }
+        }
+        impulses[0] += apply[0];
+        impulses[1] += apply[1];
+        for k in 0..3 {
+            sum[k] += v[k];
+        }
+        rhs[0] -= dot3(v, normals[0]);
+        rhs[1] -= dot3(v, normals[1]);
+    }
+    let n = ITERATIONS as f64;
+    Pinch { impulses, last: v, mean: [sum[0] / n, sum[1] / n, sum[2] / n] }
+}
+
+/// The pinch a fall of `speed` with `across` units/s over an edge makes
+/// at the polygon `de` from it: the polygon the axis is through (normal
+/// up the edge's way, depth the capsule's radius plus `de`) and the one
+/// across it, whose normal is square to the velocity so leans up by the
+/// drift over the fall (the convex agent's choice, `0x002eeb40`, which is
+/// not decoded). `speed` and `across` are as the contact tick starts,
+/// gravity in; the launch is `pinch(..).mean[2]`.
+pub fn pinch_at(speed: f64, across: f64, de: f64) -> Pinch {
+    let len = (speed * speed + across * across).sqrt();
+    let n1 = [0.0, 1.0, 0.0];
+    let n2 = [0.0, -speed / len, across / len];
+    pinch([n1, n2], [-(0.175 + de), -(0.199 - de)], [0.0, across, -speed])
+}
+
 impl Verdict {
     /// The launch a bounce verdict gives ([`launch`] at its speed and its
     /// speed across the edge); `None` for any other outcome.
