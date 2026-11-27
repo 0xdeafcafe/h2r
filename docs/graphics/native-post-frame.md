@@ -55,7 +55,7 @@ Its prologue sets `[0x004670bc]` to 1, resets the shader draw state (`0x00016b10
 | 2. Scenario screen effects | a scenario `[0x004e0350]`, view kind outside 5..7, `[0x00485607]` and `[0x004850c8]` clear, `0x00022710` true | reads a rectangle from `0x004b9dd0..`, walks the scenario block (`+0x3d0` count, `+0x3d4` address, `0x24` bytes an entry) and draws each entry through `0x0002d140` ([native-screen-effects.md](native-screen-effects.md)). S: the map holds one `egor`, `effects\screen_effects\blur` |
 | 3. Lens flares `0x0002df00` | `late` | binds the same target; colour writes on (`0x10101`); blending on with factors `0x302` and 1 and equation `0x8006`; depth writes off; the viewport (`0x003f6390`, `0x003f6190`); a two-stage combiner (`0x0048503c` `0x11002`) through `0x0001ccf0`; the same bitmap; then the flare writer `0x00020bb0` (mask `0xf`, callback `0x0002e9e0`) |
 
-The writer collects up to its count `[0x004c1a04]` entries of `0x10` bytes at `0x004c19c4`. Each can issue the filtered fan sequence at `0x00046ea0`, and the callback draws ordinary reflections ([retail trace](notes/2026-11-24-lens-flares.md)).
+The writer collects up to its count `[0x004c1a04]` entries of `0x10` bytes at `0x004c19c4`. Each can issue the filtered fan sequence at `0x00046ea0`, and the callback draws ordinary reflections ([retail trace](notes/2026-11-24-lens-flares.md)). With the native renderer the glows are drawn in Rust (`native-flare-draw`, [d3d-visibility.md](d3d-visibility.md#the-glow-in-rust)).
 
 ## After the scene
 

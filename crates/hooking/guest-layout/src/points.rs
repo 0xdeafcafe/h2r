@@ -1075,6 +1075,9 @@ points! { ALL;
     /// The flare array's reader: each entry's byte from its test two
     /// frames back. No arguments, `ret`.
     VISIBILITY_READ @ 0x0002_0770: [opaque]; "docs/graphics/d3d-visibility.md";
+    /// One late-list glow of the flare draw pass (`eax` the lens datum,
+    /// `ecx` its position), called from `0x0002e1c5`. `ret`.
+    FLARE_GLOW @ 0x0004_6ea0: [opaque]; "docs/graphics/d3d-visibility.md";
     /// Resets the record counters immediately before the two structure walks.
     RESET_SCENE_RECORDS @ 0x0002_cb30: [fn() ret 0]; "docs/graphics/occlusion-culling.md";
     /// Main view's visible structure cluster and placement record walks.
