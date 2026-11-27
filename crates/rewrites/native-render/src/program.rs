@@ -1119,6 +1119,21 @@ pub fn pipeline_state(
     (primitive, depth)
 }
 
+/// `cull` (over `state`'s own, as [`pipeline_state`] takes them) with the
+/// winding that faces front reversed, for a draw whose triangles wind the
+/// other way round than the native index buffer holds them: an odd-start
+/// sub-strip of a visible subpart (`crate::subpart_map`). A pass that
+/// culls nothing keeps `cull`.
+pub fn reversed_winding(state: Option<&PassState>, cull: Option<Cull>) -> Option<Cull> {
+    let (primitive, _) = pipeline_state(state, cull);
+    let Some(face) = primitive.cull_mode else { return cull };
+    let front = match primitive.front_face {
+        wgpu::FrontFace::Ccw => wgpu::FrontFace::Cw,
+        wgpu::FrontFace::Cw => wgpu::FrontFace::Ccw,
+    };
+    Some((Some(face), front))
+}
+
 /// What an image is uploaded as on a device that takes BC textures
 /// (`bc`) or not ([`crate::gpu::texture`]): format, size, levels and an
 /// FNV-1a hash of level 0's bytes.
@@ -4577,6 +4592,35 @@ mod tests {
             inherits_cull: false,
             texaccum_dimensions: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_reversed_winding_flips_the_culled_face_s_front_and_leaves_an_unculled_pass() {
+        let cw: Cull = (Some(wgpu::Face::Back), wgpu::FrontFace::Cw);
+        assert_eq!(
+            reversed_winding(None, Some(cw)),
+            Some((Some(wgpu::Face::Back), wgpu::FrontFace::Ccw)),
+            "an inherited cull"
+        );
+        assert_eq!(reversed_winding(None, None), None, "nothing culled stays so");
+        let own = PassState {
+            blend: None,
+            blend_constant: wgpu::Color::BLACK,
+            color_writes: wgpu::ColorWrites::ALL,
+            depth_write: true,
+            depth_compare: wgpu::CompareFunction::LessEqual,
+            primitive: wgpu::PrimitiveState {
+                cull_mode: Some(wgpu::Face::Front),
+                front_face: wgpu::FrontFace::Ccw,
+                ..Default::default()
+            },
+            alpha_test: None,
+        };
+        assert_eq!(
+            reversed_winding(Some(&own), None),
+            Some((Some(wgpu::Face::Front), wgpu::FrontFace::Cw)),
+            "the pass's own cull"
+        );
     }
 
     #[test]

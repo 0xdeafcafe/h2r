@@ -662,6 +662,10 @@ pub struct LightDraw<'a> {
     pub program: &'a LightProgram,
     pub gpu: &'a Mutex<LightGpu>,
     pub cull: Option<Cull>,
+    /// The pass's animation sampled at this draw's clock
+    /// ([`LightProgram::animation`]); `None` draws the program's own
+    /// constants.
+    pub sample: Option<&'a crate::fog_gpu::LayerConstants>,
     /// Colours A and B (engine vectors 5 and 6).
     pub colours: [[f32; 3]; 2],
     pub frame: &'a [u32; FRAME_DWORDS],
@@ -687,7 +691,16 @@ impl LightDraw<'_> {
     /// Used by both the GPU upload and its reference comparison.
     pub fn uniforms(&self, view: &ViewInputs) -> (VertexUniforms, PixelUniforms) {
         let [a, b] = self.colours;
-        let (vertex, pixel) = colour_uniforms(self.program, a, b);
+        let (vertex, pixel) = match self.sample {
+            Some(sample) => crate::light_look::colour_uniforms_over(
+                self.program,
+                sample.vertex(&self.program.vertex),
+                sample.pixel(&self.program.pixel),
+                a,
+                b,
+            ),
+            None => colour_uniforms(self.program, a, b),
+        };
         let mut pixel = frame_pixel(&pixel, view);
         apply_gel_scale(&mut pixel, &self.program.stages, self.gel_scale);
         let vertex = match self.placement {
@@ -1192,6 +1205,8 @@ mod tests {
                 alpha_test: None,
             },
             inherits_cull: false,
+            copies_target: false,
+            animation: None,
         };
         let view = ViewInputs {
             constants: [[0.; 4]; d3d::VIEW_CONSTANTS],
@@ -1207,6 +1222,7 @@ mod tests {
             program: &program,
             gpu: &gpu,
             cull: None,
+            sample: None,
             colours: [[0.; 3]; 2],
             frame: &[0; FRAME_DWORDS],
             projection: None,
@@ -1341,6 +1357,8 @@ mod tests {
                 alpha_test: None,
             },
             inherits_cull: false,
+            copies_target: false,
+            animation: None,
         }
     }
 
@@ -1394,6 +1412,7 @@ mod tests {
                 program,
                 gpu,
                 cull: None,
+                sample: None,
                 colours: [[0.; 3]; 2],
                 frame: &[0; FRAME_DWORDS],
                 projection: None,
@@ -1635,6 +1654,7 @@ mod tests {
             program: &program,
             gpu: &gpu,
             cull: None,
+            sample: None,
             colours: [[0.; 3]; 2],
             frame: &[0; FRAME_DWORDS],
             projection: Some(&projection),
@@ -1797,6 +1817,8 @@ mod tests {
                 alpha_test: None,
             },
             inherits_cull: false,
+            copies_target: false,
+            animation: None,
         };
         let gpu = prepared_gpu(device, queue, &set, &program);
         let view = ViewInputs {
@@ -1840,6 +1862,7 @@ mod tests {
             program: &program,
             gpu: &gpu,
             cull: None,
+            sample: None,
             colours: [[0.; 3]; 2],
             frame: &[0; FRAME_DWORDS],
             projection: None,

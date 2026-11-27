@@ -39,9 +39,11 @@
 //! - What the handler does beyond binding the material and drawing the
 //!   part, which the scene does not carry, and so is the entry's
 //!   remainder ([`Cause`]): a structure record's toggle, the toggle or
-//!   the fade byte or partial subparts on a shadow layer, the shader's `+0x16` bit 0, a material animation (the
-//!   shader's `+0x24` block `+0x3c`), and a template callback (the
-//!   shader's `stem` `+0x44`, `+0x50`).
+//!   the fade byte or partial subparts on a shadow layer, and a template
+//!   callback (the shader's `stem` `+0x44`, `+0x50`). The shader's `+0x16`
+//!   bit 0 is entry state ([`EntryState::shader_flag`]), and a material
+//!   animation (the shader's `+0x24` block `+0x3c`) is the host's to
+//!   sample.
 //! - The shadow projection block [`SHADOW_PROJECTION`] (`0x00048ee0`'s
 //!   36 words for `c[40..48]`) is written before layer 10 begins; layers
 //!   10 and 11 read it. **S**: the additional casters' pair `0x00030ed0`
@@ -112,7 +114,8 @@ pub enum Cause {
     /// The record's visible subparts do not read or run past its part,
     /// or a shadow layer or the per-handler path would draw them.
     Subparts,
-    /// A shader flag, a material animation or a template callback.
+    /// A template callback, or a shader whose tag or flagged inputs do not
+    /// read.
     Material,
     /// The object's node rows do not read.
     Pose,
@@ -205,16 +208,15 @@ fn tag(mem: &dyn GuestRead, datum: u32, group: &[u8; 4]) -> R<u32> {
     ptr(mem, slot, 8)
 }
 
-/// What the handler would do beyond binding and drawing: refused by
-/// name ([`Cause::Material`]).
-fn material(mem: &dyn GuestRead, shader: u32) -> R<()> {
+/// What the handler would do beyond binding and drawing that the entry
+/// does not carry: refused by name ([`Cause::Material`]). A template
+/// callback (the stem's `+0x44`, `+0x50`) can invoke another template
+/// per bind. The shader's flag bit 0 ([`EntryState::shader_flag`]) and a
+/// material animation (the shader's `+0x24` block `+0x3c`) are not
+/// refused: the entry carries the first, and the host samples the second
+/// at its draw's clock.
+fn material(mem: &dyn GuestRead, shader: u32) -> R<EntryState> {
     let shad = tag(mem, shader, b"shad").map_err(|_| Cause::Material)?;
-    if byte(mem, at(shad, 0x16)?)? & 1 != 0 {
-        return Err(Cause::Material);
-    }
-    if word(mem, at(ptr(mem, shad, 0x24)?, 0x3c)?)? != 0 {
-        return Err(Cause::Material);
-    }
     let stem = tag(mem, word(mem, at(shad, 4)?)?, b"stem").map_err(|_| Cause::Material)?;
     if [0x44, 0x50]
         .into_iter()
@@ -222,7 +224,15 @@ fn material(mem: &dyn GuestRead, shader: u32) -> R<()> {
     {
         return Err(Cause::Material);
     }
-    Ok(())
+    let mut state = EntryState::default();
+    if byte(mem, at(shad, 0x16)?)? & 1 != 0 {
+        // The prologue's parameter block upload, and whether the frame's
+        // structure target copy is made (`object_walk::layer_part`).
+        let uploads = crate::layout::structure_parameters::uploads(mem).ok_or(Cause::Material)?;
+        let copied = word(mem, crate::layout::object_walk::BSP_TARGET_READY)? & 0xff != 0;
+        state = EntryState { shader_flag: true, structure: uploads, uncopied: !copied, ..state };
+    }
+    Ok(state)
 }
 
 /// One sorted entry of the list whose items are at `items`, with the
@@ -277,7 +287,7 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
     if aux_depth && (model == u32::MAX || crate::layout::aux_depth::read(mem).is_none()) {
         return Err(Cause::State);
     }
-    let state = EntryState { aux_depth, fade: byte(mem, at(rec, 0x1a)?)? != 0xff };
+    let state = EntryState { aux_depth, fade: byte(mem, at(rec, 0x1a)?)? != 0xff, ..EntryState::default() };
     let section = (key >> 9) & 0x1ff;
     let (owner, stream_section, data, pose) = if model == u32::MAX {
         let bsp = ptr(mem, ACTIVE_BSP, 0)?;
@@ -344,7 +354,8 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
             }
         }
     }
-    material(mem, shader)?;
+    let m = material(mem, shader)?;
+    let state = EntryState { shader_flag: m.shader_flag, structure: m.structure, uncopied: m.uncopied, ..state };
     let rows = match pose {
         LightPose::Rows(_) => record_rows(mem, record).map_err(|_| Cause::Pose)?,
         _ => Vec::new(),
@@ -382,8 +393,8 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
 
 /// Whether a group of `layer` can hold an entry with `state`: only the
 /// diffuse and specular layers draw an entry's state (the auxiliary
-/// depth rows, the fade's unmasked draw); the shadow layers and their
-/// casters keep such an entry's handler.
+/// depth rows, the fade's unmasked draw, a flagged shader's prologue);
+/// the shadow layers and their casters keep such an entry's handler.
 pub fn state_taken(layer: u8, state: EntryState) -> bool {
     state.plain() || matches!(layer, 12 | 13)
 }
@@ -561,6 +572,7 @@ mod tests {
     use frame_scene::{LightStep, LightTarget, SceneId, SceneLight, Stamp, ViewKey, ViewKind};
 
     use super::*;
+    use crate::layout::object_walk::BSP_TARGET_READY;
     use crate::layout::object_nodes::RECORD_MATRIX;
     use crate::testing::{Mem, camera_record, lighting, object, record};
 
@@ -772,14 +784,14 @@ mod tests {
         assert_eq!(entry(&m, ITEMS, sorted(2)).unwrap_err(), Cause::State, "the toggle's values do not read");
         aux_view(&mut m);
         let (e, _) = entry(&m, ITEMS, sorted(2)).unwrap();
-        assert_eq!(e.state, EntryState { aux_depth: true, fade: false });
+        assert_eq!(e.state, EntryState { aux_depth: true, fade: false, ..EntryState::default() });
         // A structure record's toggle stays the guest's.
         m.w(RENDER_RECORDS + RENDER_RECORD_SIZE, 1 << 11);
         assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap_err(), Cause::State);
         m.w(RENDER_RECORDS + RENDER_RECORD_SIZE, 0);
         m.w(RENDER_RECORDS + RENDER_RECORD_SIZE + 0x18, 0x0080_0000);
         let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
-        assert_eq!(e.state, EntryState { aux_depth: false, fade: true });
+        assert_eq!(e.state, EntryState { aux_depth: false, fade: true, ..EntryState::default() });
         // The per-handler path carries no state.
         let slot = 0x0067_0000;
         m.w(slot, 0);
@@ -791,7 +803,7 @@ mod tests {
             assert!(!state_taken(layer, e.state), "layer {layer}");
             assert!(state_taken(layer, EntryState::default()));
         }
-        assert!(state_taken(12, e.state) && state_taken(13, EntryState { aux_depth: true, fade: true }));
+        assert!(state_taken(12, e.state) && state_taken(13, EntryState { aux_depth: true, fade: true, ..EntryState::default() }));
     }
 
     #[test]
@@ -915,12 +927,11 @@ mod tests {
     #[test]
     fn what_the_handler_does_beyond_binding_and_drawing_is_a_named_remainder() {
         let rec = RENDER_RECORDS + RENDER_RECORD_SIZE;
-        let cases: [(&dyn Fn(&mut Mem), Cause); 7] = [
+        let cases: [(&dyn Fn(&mut Mem), Cause); 6] = [
             (&|m| m.w(ITEMS, 0x8484), Cause::Callback),
             (&|m| m.w(rec, 1 << 11), Cause::State),
             (&|m| set_half(m, PARTS + 8, 2), Cause::Range),
             (&|m| m.w(DATA + 0x20, 4), Cause::Range),
-            (&|m| m.w(POST + 0x3c, 1), Cause::Material),
             (&|m| m.w(STEM + 0x50, 7), Cause::Material),
             (
                 &|m| {
@@ -936,13 +947,40 @@ mod tests {
             change(&mut m);
             assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap_err(), cause, "case {n}");
         }
+    }
+
+    #[test]
+    fn a_material_animation_is_not_a_remainder_the_host_samples_it() {
+        let mut m = fixture();
+        let plain = entry(&m, ITEMS, sorted(0)).unwrap();
+        m.w(POST + 0x3c, 1);
+        assert_eq!(entry(&m, ITEMS, sorted(0)), Ok(plain), "the entry is the same with the animation");
+    }
+
+    #[test]
+    fn a_flagged_shader_is_entry_state_with_the_structures_block_and_the_frames_target_copy() {
         let mut m = fixture();
         m.w(SHAD + 0x14, 1 << 16);
-        assert_eq!(
-            entry(&m, ITEMS, sorted(0)).unwrap_err(),
-            Cause::Material,
-            "shader +0x16 bit 0"
-        );
+        m.w(BSP_TARGET_READY, 1);
+        let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
+        assert_eq!(e.state, EntryState { shader_flag: true, ..EntryState::default() }, "no block, the copy made");
+        assert!(!e.state.plain());
+        m.w(BSP_TARGET_READY, 0);
+        let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
+        assert_eq!(e.state, EntryState { shader_flag: true, uncopied: true, ..EntryState::default() });
+        m.w(BSP + 0x214, 1);
+        let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
+        assert!(e.state.structure, "a parameter block the prologue uploads");
+        for layer in [10, 11, 14] {
+            assert!(!state_taken(layer, e.state), "layer {layer} keeps a flagged shader's handler");
+        }
+        assert!(state_taken(12, e.state) && state_taken(13, e.state));
+        // The per-handler path carries no state.
+        let slot = 0x0067_0000;
+        m.w(slot, 0);
+        m.w(slot + 4, 2);
+        m.w(slot + 8, 1);
+        assert_eq!(dispatched_entry(&m, ITEMS, Sorted::read(&m, slot).unwrap()).unwrap_err(), Cause::State);
     }
 
     #[test]

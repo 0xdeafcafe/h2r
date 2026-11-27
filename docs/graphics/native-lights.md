@@ -203,8 +203,8 @@ Tests: `a_light_the_scene_cannot_take_runs_the_guests_passes`,
 
 ### Entry state
 
-The geometry draw's prologue `0x0004d640` sets two things beyond an
-entry's bindings, and its epilogue `0x0004d720` puts both back. The
+The geometry draw's prologue `0x0004d640` sets three things beyond an
+entry's bindings, and its epilogue `0x0004d720` puts them back. The
 entry carries them (`frame_scene::EntryState`, read by
 `scene_extract::light_groups::entry`):
 
@@ -212,22 +212,29 @@ entry carries them (`frame_scene::EntryState`, read by
 |---|---|---|---|
 | `aux_depth` | bit 11 on an object's record: the auxiliary state toggle `0x00012d50` (the first person's arms and weapon) | the toggle's `c[0..3]` and clip range (`light_gpu::model_part`, `object_program_gpu::with_aux_depth`) | the device holds the toggle's values off (`native_objects_glue::aux_depth_at_rest`) |
 | `fade` | the record's fade byte `+0x1a` below `0xff`: a stipple pattern | nothing: unmasked | the stipple is off and at rest (`stipple_off`, `stipple_at_rest`) |
+| `shader_flag`, `structure`, `uncopied` | the shader's flag bit 0 (`+0x16`); the active structure's parameter block (`+0x214` above 0); the frame's structure target copy not made (`0x00509430`) | nothing: the guest's prologue uploads the block (`0x0003c650`, `0x0003d000`) and a program with flag bit 20 makes the copy (`0x0003bea0`) | `structure`: the device and the engine hold every word of the upload (`native_objects_glue::structure_at_rest`). `uncopied`: no pass of the layer's draws has flag bit 20 (`LightProgram::copies_target`) |
 
+- `shader_flag` alone always holds (its residency request sets no device
+  state); the rest is the R1 object items' rule
+  ([native-objects-fade.md](native-objects-fade.md)).
 - Only layers 12 and 13 take an entry with state
   (`light_groups::state_taken`). In layers 10, 11 and 14, and on the
-  per-handler path (`dispatched_entry`), it stays `State`.
-- A structure record's toggle, or a toggle whose values do not read,
-  stays `State`.
+  per-handler path (`dispatched_entry`), it stays `State`, as does a
+  structure record's toggle or a toggle whose values do not read.
 - The cut asks the host once per light, and only for an entry with
   state (`Host::held_state`, `typed_groups::plan_or_refusal`). Not held:
   `scene_kept_light_group_entry_state`, and the guest's passes draw the
   light.
-- The host checks again at the draw (`gathered_draws`).
+- The host checks again at the draw (`gathered_draws`), and a flagged
+  entry before the frame's copy keeps the light when a program of the
+  layer has flag bit 20 (`scene_kept_light_host`).
 
 Tests: `an_objects_toggle_and_a_fade_byte_are_the_entrys_state_and_only_diffuse_and_specular_take_it`
 (`scene_extract::light_groups`),
-`a_faded_entry_draws_in_diffuse_only_while_the_host_holds_the_stipple_at_rest`
+`a_faded_entry_draws_in_diffuse_only_while_the_host_holds_the_stipple_at_rest`,
+`a_flagged_entry_draws_in_diffuse_and_specular_and_asks_the_host_for_the_structure_upload_only_when_it_has_one`
 (`native_lights/walk.rs`),
+`a_flagged_shader_is_entry_state_with_the_structures_block_and_the_frames_target_copy`,
 `a_part_toggling_the_auxiliary_state_draws_with_its_rows_and_clip`
 (`native_render::light_gpu`).
 
@@ -248,20 +255,26 @@ triangles before each source position, so each span is one native range:
 | Topology | A span maps when | Else |
 |---|---|---|
 | list | it starts and ends on a triangle | no range |
-| strip | it starts at an even position (an odd one winds every triangle the other way) | no range |
+| strip | it starts at an even position | the span's native triangles |
+| strip | it starts at an odd position: a sub-strip winds each window by its parity from its own start, so every triangle winds the other way | the same native triangles, drawn with the front face reversed |
 
 - Only layers 12 and 13 take an entry with subparts
   (`light_groups::taken`); the per-handler path and the shadow layers
   stay `Subparts`.
 - The host draws a structure entry's spans from
-  `world::light_parts::ResidentRanges::subpart_draws`, an object's from
-  `LightModels::part`. A span with no range refuses the light at its
-  draw, and the guest's passes draw it (`scene_kept_light_host`).
+  `world::light_parts::ResidentRanges::subpart_draws_wound`, an object's
+  from `LightModels::part_wound`, each range with whether it winds the
+  other way. Such a range is a draw of its own, its pass's cull with the
+  front face reversed (`program::reversed_winding`, `Planned::cull`); a
+  pass that culls nothing is unchanged.
+- A span past the part or off a triangle has no range: the guest's
+  passes draw the light (`scene_kept_light_host`).
 
 Tests: `visible_subparts_short_of_the_whole_part_are_the_entrys_spans_for_diffuse_and_specular`
 (`scene_extract::light_groups`),
 `a_strip_with_degenerates_maps_each_even_sub_strip_to_its_own_native_triangles`
-(`subpart_map`),
+(`subpart_map`; its odd start is `wound`'s reversed range),
+`a_reversed_winding_flips_the_culled_face_s_front_and_leaves_an_unculled_pass`,
 `visible_subparts_of_a_strip_with_degenerates_draw_their_own_native_triangles`
 (`world/light_parts.rs`),
 `an_object_entrys_visible_subparts_draw_their_own_triangles_of_a_strip_with_degenerates`
@@ -383,10 +396,9 @@ part, vertex class, index range and topology), its pose (world, the
 placement by index, or the object's node rows) and its bindings
 (shader, pass selector, variant, implementation), and for layers 10 and
 11 the shadow projection block. The additional casters' layers are
-groups of their own site. An entry the handler would do more for (the
-state around one part, a
-shader flag, a material animation, a template callback) is the group's
-remainder, counted by cause in `render.scene`
+groups of their own site. An entry the handler would do more for (a
+template callback, or a toggle the view's values do not read) is the
+group's remainder, counted by cause in `render.scene`
 (`scene_light_entry_remainder_<cause>`). Each object shadow
 (`0x00032350`, matched to its caster entry as the shadow stage matches
 it) is a `frame_scene::ObjectShadow` of the view with its call's two
@@ -527,28 +539,48 @@ the layers drawn this way in `scene_first_person_light_layers_alone`
   one span covering that entire part.
 - **At indexed emission.** The host matches the sorted slot, render
   record, owner, shader selection, index address, topology and count
-  before substituting a resident draw. Posed draws also check the live
+  before substituting a resident draw; posed draws also check the live
   transform constants. When a dynamic light needs its handler, the
-  native indexed path can record the actual emitted range with the
-  handler's streams, shader constants, textures and raster state. This
-  covers partial visibility and per-part state changes. Sampling a
-  generated gel requires the light's producer and matching texture view
-  on each target copy. A failed reservation retains the original draw.
+  native indexed path can record the emitted range with the handler's
+  streams, constants, textures and raster state (partial visibility,
+  per-part state). A generated gel needs the light's producer and a
+  matching texture view on each copy. A failed reservation retains the
+  original draw.
 - **Shading.** Each draw takes its view constants and W range at issue,
   the light's 36 frame words in `c[31..39]`, material colours and
   inherited device culling. The sphere projection supplies six float
   words in guest memory. The device scissor comes from the render state
-  at the draw. Binding the view target for layers 12 and 13 resets it
-  to the viewport. The host intersects it with the viewport and scales the
-  half-open pixel rectangle independently for each copy. Empty
-  rectangles cover no pixels.
-
+  at the draw, reset to the viewport when layers 12 and 13 bind the view
+  target, intersected with the viewport and scaled per copy as a
+  half-open pixel rectangle; empty rectangles cover no pixels.
+- **Material animation.** A shader whose `+0x24` block `+0x3c` is set
+  animates its passes' constants. A lit pass compiles from its baseline
+  and keeps the animation (`light_look::animated_light_look`,
+  `LightProgram::animation`, `layer_pass::PassAnimation`); each light's
+  preparation samples it at the render clock (`prepare_planned`), and the
+  draw puts the sampled constants under the light's colours
+  (`LightDraw::sample`). A pass the sampler cannot apply is refused by its
+  name (`LightRefusal::AnimationSample`) and the guest's passes draw the
+  light; the shadow layers' passes are not sampled. Test: `an_animated_pass_is_refused_unless_sampled_and_then_compiles_from_its_baseline`
+  (`light_look.rs`).
 - **Shadows.** Layer 10's casters draw into a depth texture of our own from the light's projection (`0x00048ee0`, ported as a pure function), as [native-shadows.md](native-shadows.md) describes. Applying the shadow term inside the light's own pass (`GREATER`, one tap as the D3D path's), instead of layer 11's alpha marks, is not built; layers 10, 11 and 14 are the shadow stage's or D3D's, in their place before layers 12 and 13.
+
+## The layer draw's return
+
+The layer draw `0x00044550` of layers 10 to 14 returns without its body
+on the opaque block's terms ([retire-d3d.md](retire-d3d.md), "R1's
+remainder") when no item of the list still holds the layer's bit.
+`render.scene` counts `layer_return_<site><layer>_returned` or
+`_guest_<cause>`, the site `light`, `extra` (additional casters), `shadow`
+(an object shadow) or `fplight` (first-person lights)
+(`native_layers::light_site`, over `passes::caller`). The light stage
+clears no bit, so a layer with items keeps the body. Test:
+`the_light_passes_layer_draws_return_or_run_the_guest_counted_by_site_and_cause`.
 
 ## Rules and limits
 
 - A whole scene group of layer 12 or 13 can skip its handlers for both structure and model entries. Individual indexed emissions keep the handler's ordering and use its resolved draw as the fallback.
-- A material with an unsupplied input, animation or unsupported shadow map binding can decline the resident plan. The indexed path requires a supported resolved shader and state and all sampled resources on each target copy.
+- A material with an unsupplied input or unsupported shadow map binding can decline the resident plan. The indexed path requires a supported resolved shader and state and all sampled resources on each target copy.
 - The visible-light gather, first-person record replay and ranked object-shadow list run as Rust bodies. The dynamic pass body offers the current light after its item lists are ready. A complete admission takes every supported draw and the tail together. A refusal continues at the next guest step with the same lists. The per-layer path keeps the original calls for shader setup, targets and draws. See [native-light-gather.md](native-light-gather.md).
 - Diagnostics print as `native-lights:` on stderr: at load, each light texture with its size or why it did not load, plus resident structure parts and unread materials; at run time, each refusal reason on its first occurrence, and counts by reason every 1800 host decisions.
 

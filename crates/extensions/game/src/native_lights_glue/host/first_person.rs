@@ -174,7 +174,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 continue;
             };
             match world.resolve_model(c, lights, layer, &entry, &part.rows, None, false) {
-                Ok(next) => planned.push(next),
+                Ok(next) => planned.extend(next),
                 Err(Keep::MaterialPending) => pending = true,
                 Err(_) => {}
             }

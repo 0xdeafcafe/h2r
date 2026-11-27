@@ -129,7 +129,7 @@ const PROGRAM_FLAGS: u32 = 0x118;
 /// structure target copy flag `0x0003bea0` sets (a byte).
 const ACTIVE_BSP: u32 = 0x004e_0348;
 const BSP_PARAMETER_COUNT: u32 = 0x214;
-const BSP_TARGET_READY: u32 = 0x0050_9430;
+pub(crate) const BSP_TARGET_READY: u32 = 0x0050_9430;
 const HANDLER_COUNTER: u32 = 0x28;
 const RECORD_DRAW_FLAGS: u32 = 0x1a;
 const SECTION_COUNT: u32 = MODEL_SECTIONS - 4;

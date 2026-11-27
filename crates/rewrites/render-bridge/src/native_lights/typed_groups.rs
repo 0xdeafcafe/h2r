@@ -204,7 +204,7 @@ pub(super) fn state_drawn(layer: u8, state: EntryState, held: &mut dyn FnMut() -
         return false;
     }
     let held = held();
-    (!state.aux_depth || held.aux_depth) && (!state.fade || held.fade)
+    (!state.aux_depth || held.aux_depth) && (!state.fade || held.fade) && (!state.structure || held.structure)
 }
 
 /// [`plan_or_refusal`] with what the host holds given by `held`.

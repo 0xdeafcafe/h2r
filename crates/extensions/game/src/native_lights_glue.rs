@@ -241,7 +241,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         mem: &dyn GuestMemory,
         ready: Arc<Ready>,
         constants: LightConstants,
-        draws: Vec<Planned>,
+        mut draws: Vec<Planned>,
         binding: Option<Binding>,
         colour_only: bool,
         typed_rect: Option<[u32; 4]>,
@@ -253,6 +253,19 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             ));
         }
         let memory = ReadMemory(mem);
+        // A pass the instance animates draws with its constants at the
+        // render clock of this call.
+        let time = draws
+            .iter()
+            .any(|p| p.compiled.program.animation.is_some())
+            .then(|| native_render::layer_pass::render_time(&memory));
+        for p in &mut draws {
+            if let (Some(a), Some(time)) = (&p.compiled.program.animation, time) {
+                p.sample = Some(a.sample(time).map_err(|_| {
+                    Keep::Unsupported("a light pass's animation does not sample at the render clock")
+                })?);
+            }
+        }
         let target = d
             .external_ready(&memory, colour_only)
             .map_err(|why| Keep::Unsupported(why.describe()))?;
@@ -323,7 +336,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 None => None,
             };
             if let Ok(mut pass) = draw.compiled.gpu.try_lock() {
-                let inherited = cull.of(draw.compiled.program.inherits_cull, true);
+                let inherited = draw.cull(&cull);
                 let (_, compiled) = pass.pipeline(&device, color, depth, inherited, model);
                 pipelines_ready &= compiled.previous_frame().is_some_and(Option::is_some);
             } else {
@@ -399,8 +412,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         // list's do; each object entry is a draw of its own (its rows).
         let mut draws: Vec<Planned> = Vec::new();
         let mut run = Vec::new();
+        // A flagged shader's entry before the frame's structure target
+        // copy: a pass of the layer with flag bit 20 would make the copy
+        // (`0x0003bea0`), which no native stage does.
+        let mut uncopied = false;
         for (entry, rows) in entries {
             let binding = entry.binding;
+            uncopied |= entry.state.shader_flag && entry.state.uncopied;
             let selection = Some((binding.variant, binding.selector));
             // An entry's state: the toggle's values it draws with, and an
             // unmasked fade, only while the device holds what the
@@ -410,6 +428,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 let (now, values) = *held.get_or_insert_with(|| (held_state(device, mem), held_aux(device, mem)));
                 if entry.state.fade && !now.fade {
                     return Err(Keep::Unsupported("a faded entry, where the stipple is on or not at rest"));
+                }
+                if entry.state.structure && !now.structure {
+                    return Err(Keep::Unsupported(
+                        "a flagged entry whose structure parameter upload the device does not hold",
+                    ));
                 }
                 if entry.state.aux_depth {
                     aux = Some(values.ok_or(Keep::Unsupported(
@@ -421,8 +444,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 if aux.is_some() {
                     return Err(Keep::Unsupported("a structure entry toggling the auxiliary state"));
                 }
-                for draw in world.structure_entry(entry)? {
-                    run.push((layer, usize::from(binding.implementation), draw, selection));
+                for (draw, flipped) in world.structure_entry(entry)? {
+                    run.push((layer, usize::from(binding.implementation), draw, selection, flipped));
                 }
                 continue;
             }
@@ -433,14 +456,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 .get_or_insert_with(|| self.model_lights(device, mem, ready))
                 .as_ref()
                 .map_err(Clone::clone)?;
-            let mut planned = world.resolve_model(c, lights, layer, entry, rows, selection, produced_gel)?;
-            if let Some(model) = &mut planned.model {
-                model.aux_depth = aux;
+            for mut planned in world.resolve_model(c, lights, layer, entry, rows, selection, produced_gel)? {
+                if let Some(model) = &mut planned.model {
+                    model.aux_depth = aux;
+                }
+                draws.push(planned);
             }
-            draws.push(planned);
         }
         if !run.is_empty() {
             draws.extend(world.resolve_world_parts(c, run, produced_gel)?);
+        }
+        if uncopied && draws.iter().any(|p| p.compiled.program.copies_target) {
+            return Err(Keep::Unsupported(
+                "a flagged shader's pass with flag bit 20, before the frame's structure target copy",
+            ));
         }
         Ok(draws)
     }
@@ -575,7 +604,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         for e in &group.entries {
             let imp = usize::from(e.binding.implementation);
             if structure_key(e).is_some() {
-                run.extend(world.structure_entry(e)?.into_iter().map(|d| (imp, d)));
+                run.extend(world.structure_entry(e)?.into_iter().map(|(d, _)| (imp, d)));
                 continue;
             }
             if !run.is_empty() {
@@ -798,7 +827,7 @@ impl native_render::light_scene::Resident for Held<'_> {
                 indices,
             });
         }
-        let [d] = <[_; 1]>::try_from(self.world.structure_entry(e).ok()?).ok()?;
+        let [(d, false)] = <[_; 1]>::try_from(self.world.structure_entry(e).ok()?).ok()? else { return None };
         Some(native_render::light_scene::ResidentPart {
             stream: 0,
             indices: d.first_index..d.first_index.checked_add(d.index_count)?,
@@ -809,13 +838,23 @@ impl native_render::light_scene::Resident for Held<'_> {
 /// What the device holds for an entry's state
 /// (`frame_scene::EntryState`): the auxiliary state toggle's values off,
 /// as layer 3's objects need them ([`crate::native_objects_glue::aux_depth_at_rest`]),
-/// and the stipple off and at rest, as a faded object's
-/// ([`crate::native_objects_glue::stipple_off`], `stipple_at_rest`).
+/// the stipple off and at rest, as a faded object's
+/// ([`crate::native_objects_glue::stipple_off`], `stipple_at_rest`), and
+/// the device and the engine holding the structure's parameter block
+/// upload a flagged shader's prologue makes
+/// ([`crate::native_objects_glue::structure_at_rest`]).
 /// Skipping a handler then leaves what its prologue and epilogue would.
 fn held_state<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> frame_scene::EntryState {
     frame_scene::EntryState {
         aux_depth: held_aux(d, mem).is_some(),
         fade: crate::native_objects_glue::stipple_off(d, mem) && crate::native_objects_glue::stipple_at_rest(d, mem),
+        // A flagged shader asks for residency, which sets no device state.
+        shader_flag: true,
+        structure: native_render::structure_parameters::read(&ReadMemory(mem))
+            .is_some_and(|p| crate::native_objects_glue::structure_at_rest(d, mem, &p)),
+        // Whether the frame's copy is made is the entry's own; a pass with
+        // flag bit 20 is checked where the entry's draws resolve.
+        uncopied: false,
     }
 }
 
@@ -1200,6 +1239,8 @@ impl LightLayer {
                             implementation: pass.implementation,
                             compiled: Arc::clone(&pass.compiled),
                             ranges: vec![range],
+                            flipped: pass.flipped,
+                            sample: pass.sample.clone(),
                             model: pass.model.clone(),
                             placement: pass.placement,
                         },
@@ -1713,10 +1754,30 @@ pub struct Planned {
     pub compiled: Arc<Compiled>,
     /// Ranges of the world's indices, or of the model section's.
     pub ranges: Vec<Range<u32>>,
+    /// The ranges' triangles wind the other way round than the buffer
+    /// holds them (a visible subpart at an odd strip start): drawn with
+    /// the front face reversed ([`Planned::cull`]).
+    flipped: bool,
+    /// The program's animation sampled at the light's draw clock
+    /// ([`LightProgram::animation`]), set where the light is prepared.
+    sample: Option<native_render::fog_gpu::LayerConstants>,
     /// Rows uploaded by the structure handler for a rigid placement.
     placement: Option<ModelRows>,
     /// A model's part: what it draws over.
     model: Option<ModelDraw>,
+}
+
+impl Planned {
+    /// The cull this draw takes over the light's inherited one.
+    fn cull(&self, inherited: &InheritedCull) -> Option<native_render::program::Cull> {
+        let program = &self.compiled.program;
+        let cull = inherited.of(program.inherits_cull, true);
+        if self.flipped {
+            native_render::program::reversed_winding(Some(&program.state), cull)
+        } else {
+            cull
+        }
+    }
 }
 
 /// [`Planned::material`] of a model's part.
@@ -1796,8 +1857,10 @@ pub struct LightsWorld {
 impl LightsWorld {
     /// A gathered structure entry's draws: its part's triangles in the
     /// record's topology, or each of its visible subparts' native ranges
-    /// (docs/graphics/native-lights.md, "Visible subparts").
-    fn structure_entry(&self, e: &LightEntry) -> Result<Vec<WorldDraw>, Keep> {
+    /// (docs/graphics/native-lights.md, "Visible subparts"), each with
+    /// whether it winds the other way round than the buffer holds it
+    /// (a strip span at an odd start).
+    fn structure_entry(&self, e: &LightEntry) -> Result<Vec<(WorldDraw, bool)>, Keep> {
         let key = structure_key(e).ok_or(Keep::Unsupported("expected a gathered structure part"))?;
         let (shader, draw) = self.clusters.get(&key)
             .ok_or(Keep::Unsupported("structure part has no resident lit material or geometry"))?;
@@ -1810,8 +1873,8 @@ impl LightsWorld {
         let ranges = self.structure_ranges.get(&key)
             .ok_or(Keep::Unsupported("structure source index range unavailable"))?;
         match &e.subparts {
-            None => ranges.draw(&e.stream, *draw).map(|d| vec![d]),
-            Some(spans) => ranges.subpart_draws(&e.stream, spans, *draw),
+            None => ranges.draw(&e.stream, *draw).map(|d| vec![(d, false)]),
+            Some(spans) => ranges.subpart_draws_wound(&e.stream, spans, *draw),
         }
         .map_err(Keep::Unsupported)
     }
@@ -1905,14 +1968,14 @@ impl LightsWorld {
         parts: impl IntoIterator<Item = (usize, usize, WorldDraw)>,
         produced_gel: bool,
     ) -> Result<Vec<Planned>, Keep> {
-        let parts = parts.into_iter().map(|(layer, imp, draw)| (layer, imp, draw, None));
+        let parts = parts.into_iter().map(|(layer, imp, draw)| (layer, imp, draw, None, false));
         self.resolve_world_parts(c, parts, produced_gel)
     }
 
     fn resolve_world_parts(
         &self,
         c: &LightConstants,
-        parts: impl IntoIterator<Item = (usize, usize, WorldDraw, Option<(u8, u8)>)>,
+        parts: impl IntoIterator<Item = (usize, usize, WorldDraw, Option<(u8, u8)>, bool)>,
         produced_gel: bool,
     ) -> Result<Vec<Planned>, Keep> {
         // Resolved without the colours, which each light's uniforms take
@@ -1920,7 +1983,7 @@ impl LightsWorld {
         let inputs = LightInputs::from_constants(c).without_colours();
         let mut out: Vec<Planned> = Vec::new();
         let mut pending = false;
-        for (layer, imp, draw, selection) in parts {
+        for (layer, imp, draw, selection, flipped) in parts {
             let m = draw.material;
             let end = draw
                 .first_index
@@ -1950,6 +2013,7 @@ impl LightsWorld {
                 && previous.placement.is_none()
                 && previous.material == m
                 && previous.layer == layer
+                && previous.flipped == flipped
                 && Arc::ptr_eq(&previous.compiled, &compiled)
             {
                 previous.ranges.push(range);
@@ -1961,6 +2025,8 @@ impl LightsWorld {
                 layer,
                 implementation: imp,
                 ranges: vec![range],
+                flipped,
+                sample: None,
                 placement,
                 model: None,
             });
@@ -1972,10 +2038,12 @@ impl LightsWorld {
         }
     }
 
-    /// A model part's draw for one light ([`models`]): `entry`'s part,
+    /// A model part's draws for one light ([`models`]): `entry`'s part,
     /// its material resolved with the light's inputs, compiled for the
     /// section's buffer of the program the pass names at the entry's
-    /// classification, with the entry's node rows.
+    /// classification, with the entry's node rows. The visible subparts
+    /// at an odd strip start are a draw of their own, with the front
+    /// face reversed.
     fn resolve_model(
         &self,
         c: &LightConstants,
@@ -1985,10 +2053,13 @@ impl LightsWorld {
         rows: &[Row],
         selection: Option<(u8, u8)>,
         produced_gel: bool,
-    ) -> Result<Planned, Keep> {
-        let (section, indices) = lights.models.part(entry).ok_or(Keep::Unsupported(
+    ) -> Result<Vec<Planned>, Keep> {
+        let (section, wound) = lights.models.part_wound(entry).ok_or(Keep::Unsupported(
             "scene group entry has no native light stream",
         ))?;
+        let (reversed, indices): (Vec<_>, Vec<_>) = wound.into_iter().partition(|&(_, reversed)| reversed);
+        let indices: Vec<Range<u32>> = indices.into_iter().map(|(r, _)| r).collect();
+        let reversed: Vec<Range<u32>> = reversed.into_iter().map(|(r, _)| r).collect();
         let (shader, instance) = lights
             .instances
             .get(&entry.binding.shader)
@@ -2017,12 +2088,14 @@ impl LightsWorld {
             ));
         }
         self.binds(&compiled.program, c.gel, produced_gel, &lights.images)?;
-        Ok(Planned {
+        let forward = Planned {
             material: MODEL_MATERIAL,
             layer,
             implementation: imp,
             compiled,
             ranges: indices,
+            flipped: false,
+            sample: None,
             placement: None,
             model: Some(ModelDraw {
                 lights: Arc::clone(lights),
@@ -2032,7 +2105,12 @@ impl LightsWorld {
                 rows: rows.to_vec(),
                 aux_depth: None,
             }),
-        })
+        };
+        if reversed.is_empty() {
+            return Ok(vec![forward]);
+        }
+        let backward = Planned { ranges: reversed, flipped: true, ..forward.clone() };
+        Ok(if forward.ranges.is_empty() { vec![backward] } else { vec![forward, backward] })
     }
 
     /// Structure caster parts resolved with their instance inputs alone.
@@ -2077,6 +2155,8 @@ impl LightsWorld {
                 layer: CASTER_LAYER,
                 implementation: imp,
                 ranges: vec![range],
+                flipped: false,
+                sample: None,
                 placement,
                 model: None,
             });
@@ -2131,6 +2211,8 @@ impl LightsWorld {
             implementation: usize::from(entry.binding.implementation),
             compiled,
             ranges: indices,
+            flipped: false,
+            sample: None,
             placement: None,
             model: Some(ModelDraw {
                 lights: Arc::clone(lights),
@@ -2190,6 +2272,8 @@ impl LightsWorld {
                 layer,
                 implementation: imp,
                 ranges: vec![range],
+                flipped: false,
+                sample: None,
                 placement,
                 model: None,
             });
@@ -2245,6 +2329,8 @@ impl LightsWorld {
             implementation: usize::from(entry.binding.implementation),
             compiled,
             ranges: indices,
+            flipped: false,
+            sample: None,
             placement: None,
             model: Some(ModelDraw {
                 lights: Arc::clone(lights),
@@ -2492,7 +2578,7 @@ impl PreparedLight {
         }
         let (primitive, (writes_depth, depth_compare)) = native_render::program::pipeline_state(
             Some(&program.state),
-            self.cull.of(program.inherits_cull, true),
+            planned.cull(&self.cull),
         );
         let live_primitive = gfx::translate::primitive_state(
             r,
@@ -2530,7 +2616,8 @@ impl PreparedLight {
         LightDraw {
             program: &p.compiled.program,
             gpu: &p.compiled.gpu,
-            cull: self.cull.of(p.compiled.program.inherits_cull, true),
+            cull: p.cull(&self.cull),
+            sample: p.sample.as_ref(),
             colours: [inputs.colour_a, inputs.colour_b],
             frame: &c.frame,
             projection: self.projection.as_ref(),

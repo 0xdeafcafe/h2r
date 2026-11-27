@@ -1007,18 +1007,35 @@ mod tests {
             };
             typed_groups::plan_held(&m, GroupSite::Light, &steps, 0, 32, None, &mut ask)
         };
-        let all = EntryState { aux_depth: true, fade: true };
+        let all = EntryState { aux_depth: true, fade: true, ..EntryState::default() };
         let groups = held(all).unwrap();
-        assert!(groups[0].entries.iter().all(|e| e.state == EntryState { aux_depth: false, fade: true }));
-        assert_eq!(held(EntryState { aux_depth: true, fade: false }).err(), Some(GroupRefusal::Entry(Cause::State)));
+        assert!(groups[0].entries.iter().all(|e| e.state == EntryState { aux_depth: false, fade: true, ..EntryState::default() }));
+        assert_eq!(held(EntryState { aux_depth: true, fade: false, ..EntryState::default() }).err(), Some(GroupRefusal::Entry(Cause::State)));
         assert_eq!(asked, 4, "asked for each entry with state, up to the first refused");
         // Only diffuse and specular take it; the shadow layers keep the handler.
-        let fade = EntryState { aux_depth: false, fade: true };
+        let fade = EntryState { aux_depth: false, fade: true, ..EntryState::default() };
         for layer in [10, 11, 14] {
             assert!(!typed_groups::state_drawn(layer, fade, &mut || all), "layer {layer}");
         }
         assert!(typed_groups::state_drawn(13, all, &mut || all));
         assert!(typed_groups::state_drawn(14, EntryState::default(), &mut || unreachable!("a plain entry asks nothing")));
+    }
+
+    #[test]
+    fn a_flagged_entry_draws_in_diffuse_and_specular_and_asks_the_host_for_the_structure_upload_only_when_it_has_one() {
+        use crate::native_lights::typed_groups;
+        use frame_scene::EntryState;
+
+        let flagged = EntryState { shader_flag: true, ..EntryState::default() };
+        let uploading = EntryState { structure: true, ..flagged };
+        let nothing_held = EntryState::default();
+        let upload_held = EntryState { structure: true, ..nothing_held };
+        assert!(typed_groups::state_drawn(12, flagged, &mut || nothing_held), "no block, nothing to hold");
+        assert!(!typed_groups::state_drawn(13, uploading, &mut || nothing_held), "a block the device does not hold");
+        assert!(typed_groups::state_drawn(13, uploading, &mut || upload_held));
+        for layer in [10, 11, 14] {
+            assert!(!typed_groups::state_drawn(layer, flagged, &mut || upload_held), "layer {layer} keeps its handler");
+        }
     }
 
     #[test]

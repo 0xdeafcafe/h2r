@@ -87,6 +87,8 @@ fn program(layer: u8) -> LightProgram {
             alpha_test: None,
         },
         inherits_cull: false,
+        copies_target: false,
+        animation: None,
     }
 }
 
@@ -118,6 +120,7 @@ impl d3d::ExternalPass for PacketRun {
                 program: &group.program,
                 gpu: &group.gpu,
                 cull: None,
+                sample: None,
                 colours: [
                     self.constants.colour_a.map(f32::from_bits),
                     self.constants.colour_b.map(f32::from_bits),
