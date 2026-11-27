@@ -281,6 +281,31 @@ compare raster cost with retail geometry choices, record both settings
 with the timings.
 [Lab benchmarks](../runtime/lab.md#--serve-and-bench).
 
+## Window shapes
+
+`crates/platform/canvas-fit` holds the one rule that turns a window's shape
+into a lens and a uniform fit. The device (`UiFit::about`,
+`ScaledBackend::anamorphic_guest_frame`) and the hooks
+(`render_bridge::ui_layout`, `render_aspect::projection_factor`) all call it.
+It depends on the aspect alone: a render scale of 0.5, 1 or 2 multiplies the
+raster, not its shape, so `(w, h)` and `(w*k, h*k)` give the same lens and
+fit (tests `the_lens_follows_the_aspect_at_every_render_scale` and
+`the_uniform_fit_is_the_largest_centred_4_by_3_box_at_every_render_scale`).
+
+| Aspect | Lens (`Lens::for_window`) | Uniform fit of the 640x480 canvas |
+|---|---|---|
+| 4:3 | `x` 1, `y` 1 | none |
+| 16:9 | `x` 0.75, `y` 1 | 4:3 box, full height, 1/8 of the width as margin each side |
+| 21:9 | `x` 0.571, `y` 1 | 4:3 box, full height |
+| 32:9 | `x` 0.375, `y` 1 | 4:3 box, full height |
+| 3:4 | `x` 1, `y` 0.5625 | 4:3 box, full width, centred vertically |
+| 9:16 | `x` 1, `y` 0.316 | 4:3 box, full width, centred vertically |
+
+A wider window grows the horizontal lens; a narrower one grows the vertical
+lens. The frame is anamorphic only while the guest raster is the 640x480
+canvas (render scale 1) and the presentation is not 4:3
+(`canvas_fit::anamorphic_guest_frame`).
+
 ## Single-copy readbacks
 
 The policy is selected at launch (`d3d_glue::single_copy`,
@@ -1158,13 +1183,13 @@ The wide view's remaining work, in order:
    (`VisibilityLens::Display`), with the same object limits and with
    clusters left out whole when a layer has no display draw. The gather
    lens needs every peer to take it.
-3. **One aspect rule in the device.** `d3d::backend::UiFit::about` and
-   `ScaledBackend::anamorphic_guest_frame` repeat the canvas-shape test
-   and the uniform ratio of `render_bridge::ui_layout`; the rule belongs
-   in a crate both can use.
-4. **Windows narrower than 4:3.** The fit narrows the horizontal lens and
-   keeps the vertical one; a portrait window wants the vertical lens to
-   grow instead.
+3. **A vertical term in the projection.** `canvas_fit::Lens` gives a window
+   narrower than 4:3 a vertical lens (`y` below 1, `x` 1), but the
+   projection pipeline (`widen_projection_rows`, `display_camera`, the
+   frustum and scissor reprojection) carries a horizontal factor only.
+   `projection_factor` therefore takes `Lens::horizontal_only`, which
+   narrows the horizontal lens on a portrait window; the vertical term
+   replaces it once those paths carry `y`.
 
 ## Not verified
 
