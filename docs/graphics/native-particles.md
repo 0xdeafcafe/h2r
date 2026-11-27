@@ -506,6 +506,10 @@ billboard's right and up) and the sprite texture, and records one
 `draw_indirect` at `args::DRAW`. The vertex shader expands six corners with
 the D3D diagonal, scales by size, turns by rotation and samples both frame
 windows; `Blend::Alpha` or `Blend::Additive`, depth tested, never written.
+`ParticleDraw::w_buffered` tests the guest's W-buffer instead of the clip's
+z: the `View`'s `w_row` and `depth` (full scale, clip range, floor and
+clamp flags) give each fragment the depth the guest's programs store
+(`fs_w`, [R2's particle mirror](retire-d3d-r2.md#r2s-particle-mirror)).
 
 Particles are visual only. A system's state is in its own buffers; nothing
 reads or writes the sim arena or enters its hash. The CPU evaluator is a

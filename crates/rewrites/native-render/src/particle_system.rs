@@ -230,7 +230,9 @@ pub struct Step {
     pub mirror: u32,
 }
 
-/// The draw's view uniform: clip from world, and the billboard axes.
+/// The draw's view uniform: clip from world, the billboard axes, and the
+/// W-buffer depth a [`crate::particle_compute::ParticleDraw::w_buffered`]
+/// draw stores.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct View {
@@ -238,6 +240,29 @@ pub struct View {
     pub clip_from_world: [[f32; 4]; 4],
     pub right: [f32; 4],
     pub up: [f32; 4],
+    /// The W-buffer value of a world position `p` is `w_row · (p, 1)`
+    /// (the guest's `c[3]`, already in depth units).
+    pub w_row: [f32; 4],
+    /// `(full scale, clip min, clip max, flags)`: the stored depth is the
+    /// W value held to the clip range, floored with [`depth::FLOOR`],
+    /// over the full scale; out of range it is culled, or clamped with
+    /// [`depth::CLAMP`]. Read only by the W-buffered draw.
+    pub depth: [f32; 4],
+}
+
+impl View {
+    /// The uniform's bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        bytemuck::bytes_of(self)
+    }
+}
+
+/// [`View::depth`]'s flags.
+pub mod depth {
+    /// The integer depth format's floor.
+    pub const FLOOR: u32 = 1;
+    /// Out-of-range W is clamped to the clip range, not culled.
+    pub const CLAMP: u32 = 2;
 }
 
 /// The system's counters on the GPU (`State` in WGSL).
@@ -286,7 +311,7 @@ mod tests {
         assert_eq!(size_of::<Particle>(), 128);
         assert_eq!(size_of::<Spawn>(), 64);
         assert_eq!(size_of::<Sprite>(), 32);
-        assert_eq!(size_of::<View>(), 96);
+        assert_eq!(size_of::<View>(), 128);
         assert_eq!(MAX_CAPACITY, 65_536);
     }
 }

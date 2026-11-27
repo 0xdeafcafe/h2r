@@ -38,9 +38,10 @@ pub trait MirrorHost: Send + Sync {
     /// Whether particles of `key` can be drawn: the definition built from
     /// the tag and its bitmap resident. `Err` names why not.
     fn accepts(&self, m: &dyn GuestMemory, key: &Key) -> Result<(), &'static str>;
-    /// Draws `batch` where the particle draw would have. `Err` names why
-    /// nothing was drawn.
-    fn draw(&self, m: &dyn GuestMemory, batch: &Batch) -> Result<(), &'static str>;
+    /// Draws `batch` where the particle draw would have (through the
+    /// device, which drains the guest's push buffer: `m` is mutable).
+    /// `Err` names why nothing was drawn.
+    fn draw(&self, m: &mut dyn GuestMemory, batch: &Batch) -> Result<(), &'static str>;
 }
 
 #[cfg(not(test))]
@@ -130,13 +131,13 @@ pub(super) fn take(m: &mut dyn GuestMemory, esp: u32, p: &Prediction) -> bool {
     let (key, spawn) = match particle(&*m, esp, p).and_then(|(k, s)| host.accepts(&*m, &k).map(|()| (k, s))) {
         Ok(v) => v,
         Err(cause) => {
-            finish(&*m);
+            finish(m);
             kept(cause);
             return false;
         }
     };
     if HELD.with(|h| h.borrow().as_ref().is_some_and(|b| b.key != key)) {
-        finish(&*m);
+        finish(m);
     }
     HELD.with(|h| h.borrow_mut().get_or_insert_with(|| Batch { key, spawns: Vec::new() }).spawns.push(spawn));
     true
@@ -144,7 +145,7 @@ pub(super) fn take(m: &mut dyn GuestMemory, esp: u32, p: &Prediction) -> bool {
 
 /// Draws the held batch: at the particle draw's return, and before a
 /// particle drawn on its own.
-pub(super) fn finish(m: &dyn GuestMemory) {
+pub(super) fn finish(m: &mut dyn GuestMemory) {
     let Some(batch) = HELD.with(|h| h.borrow_mut().take()) else {
         return;
     };
@@ -187,7 +188,7 @@ pub(crate) mod tests {
         fn accepts(&self, _: &dyn GuestMemory, key: &Key) -> Result<(), &'static str> {
             if self.refuse_definition == Some(key.definition) { Err("definition") } else { Ok(()) }
         }
-        fn draw(&self, _: &dyn GuestMemory, batch: &Batch) -> Result<(), &'static str> {
+        fn draw(&self, _: &mut dyn GuestMemory, batch: &Batch) -> Result<(), &'static str> {
             if self.refuse_draw {
                 return Err("target");
             }
@@ -226,7 +227,7 @@ pub(crate) mod tests {
         assert!(take(&mut m, ESP, &p));
         assert!(take(&mut m, ESP, &p), "a second particle of the same system joins the batch");
         assert!(host.batches.lock().unwrap().is_empty(), "nothing draws before the return");
-        finish(&m);
+        finish(&mut m);
         let batches = host.batches.lock().unwrap();
         assert_eq!(batches.len(), 1);
         let life = f32::from_bits(word(&m, &p, state).unwrap());
@@ -267,7 +268,7 @@ pub(crate) mod tests {
         set_host(Arc::new(Records { refuse_draw: true, ..Records::default() }));
         with_gate(|g| g.answering = true);
         assert!(take(&mut m, ESP, &p));
-        finish(&m);
+        finish(&mut m);
         assert!(!with_gate(|g| g.answering()), "a dropped batch closes the gate");
     }
 }

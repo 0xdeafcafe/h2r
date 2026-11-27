@@ -8,6 +8,9 @@ struct View {
     clip_from_world: mat4x4<f32>,
     right: vec4<f32>,
     up: vec4<f32>,
+    w_row: vec4<f32>,
+    // (full scale, clip min, clip max, flags: 1 floor, 2 clamp).
+    depth: vec4<f32>,
 }
 
 @group(0) @binding(0) var<storage, read> particles: array<Particle>;
@@ -21,6 +24,8 @@ struct Out {
     @location(1) next_uv: vec2<f32>,
     @location(2) colour: vec4<f32>,
     @location(3) blend: f32,
+    // The W-buffer value (fs_w).
+    @location(4) w: f32,
 }
 
 // The D3D diagonal: (0,1,2), (0,2,3).
@@ -45,12 +50,47 @@ fn vs(@builtin(vertex_index) v: u32, @builtin(instance_index) i: u32) -> Out {
     out.next_uv = p.next_window.xy + c * p.next_window.zw;
     out.colour = unpack4x8unorm(p.colour);
     out.blend = p.blend;
+    out.w = dot(view.w_row, vec4<f32>(world, 1.0));
     return out;
+}
+
+fn sprite_colour(in: Out) -> vec4<f32> {
+    let a = textureSample(sprite, sprite_sampler, in.uv);
+    let b = textureSample(sprite, sprite_sampler, in.next_uv);
+    return mix(a, b, in.blend) * in.colour;
 }
 
 @fragment
 fn fs(in: Out) -> @location(0) vec4<f32> {
-    let a = textureSample(sprite, sprite_sampler, in.uv);
-    let b = textureSample(sprite, sprite_sampler, in.next_uv);
-    return mix(a, b, in.blend) * in.colour;
+    return sprite_colour(in);
+}
+
+struct Stored {
+    @location(0) colour: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+}
+
+// The W-buffered draw: the depth tested is the guest's W-buffer value, as
+// its programs store it (cull_gpu.rs `DepthModel::program`): W held to
+// the clip range (out of it culled, or clamped), floored for an integer
+// format, over the full scale.
+@fragment
+fn fs_w(in: Out) -> Stored {
+    // Sampled first, in uniform control flow.
+    let colour = sprite_colour(in);
+    let flags = u32(view.depth.w);
+    var w = in.w;
+    if (w < view.depth.y || w > view.depth.z) {
+        if ((flags & 2u) == 0u) {
+            discard;
+        }
+        w = clamp(w, view.depth.y, view.depth.z);
+    }
+    if ((flags & 1u) != 0u) {
+        w = floor(w);
+    }
+    var out: Stored;
+    out.colour = colour;
+    out.depth = clamp(w / view.depth.x, 0.0, 1.0);
+    return out;
 }
