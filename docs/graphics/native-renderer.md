@@ -545,9 +545,10 @@ view's node block, and reconstructs position and UV decompression from the
 model bounds and section flags.
 
 `IndexedPass::for_sky` checks those rows against the draw's vertex constants
-and supplies them to the vertex program. The material uses the program,
-textures and other evaluated constants bound at issue, and the pipeline the
-draw's own cull mode. A strip it refuses keeps its guest draw, counted
+and supplies them to the vertex program. The material's constants are the
+plan's, checked against the bound ones ([retire-d3d-r5.md](retire-d3d-r5.md),
+"The sky from the plan"); the program and textures are the ones bound at
+issue, and the pipeline takes the draw's own cull mode. A strip it refuses keeps its guest draw, counted
 `scene_kept_sky_<cause>`.
 
 The scene sets stencil mode 2 before the sky call at `0x0002c0bc` and

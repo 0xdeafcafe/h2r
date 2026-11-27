@@ -1,7 +1,7 @@
 # Retiring D3D: R5, the rest of a game view
 
-Status: Partly built. Fog, water and layers 2 and 17 draw per item; the sky from the scene is the section below that says "not built".
-Code: `crates/rewrites/render-bridge/src/late_sorted.rs` (the sorted runs), `crates/rewrites/native-render/src/sorted_entries.rs`, `crates/rewrites/native-render/src/fog.rs` (`clear_fog`, `sorted_run`), `crates/rewrites/native-render/src/layer_pass.rs` (`sorted_layer_run`), `crates/rewrites/render-bridge/src/native_layers.rs` (`RUN_LAYERS`). Tests: in those files, `crates/rewrites/render-bridge/tests/native_fog.rs`.
+Status: Partly built. Fog, water and layers 2 and 17 draw per item; the sky's constants come from the plan; cutting the guest's sky setup is the section below that says "not built".
+Code: `crates/rewrites/render-bridge/src/late_sorted.rs` (the sorted runs), `crates/rewrites/native-render/src/sorted_entries.rs`, `crates/rewrites/native-render/src/fog.rs` (`clear_fog`, `sorted_run`), `crates/rewrites/native-render/src/layer_pass.rs` (`sorted_layer_run`), `crates/rewrites/render-bridge/src/native_layers.rs` (`RUN_LAYERS`), `crates/rewrites/native-render/src/sky_material.rs`, `crates/extensions/game/src/native_sky_glue.rs`. Tests: in those files, `crates/rewrites/render-bridge/tests/native_fog.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 R5 of [retire-d3d.md](retire-d3d.md) moves the rest of a game view off the
@@ -98,11 +98,39 @@ keeps its guest draw and its count.
 Counters: `layer_plan_{2,17}_sorted_views`, `_sorted_taken`,
 `_sorted_pass_failed`.
 
+## The sky from the plan
+
+```mermaid
+flowchart LR
+  W[world worker] -->|sky tags, models, shaders| M[SkyMaterials]
+  M --> E[strip issue: layer-15 pass at the render clock]
+  E --> P[IndexedPass::for_sky]
+  G[bound constants] --> P
+  P -->|same| D[draws with the plan's constants]
+  P -->|differ| K[scene_kept_sky_constants]
+```
+
+| Step | Code | What it does |
+|---|---|---|
+| Load | `native_sky_glue::load` (world worker, `Ready::sky`) | every `sky ` tag's model (`+0x4`), its materials (`mode +0x60`, shader at `+0xc`), each shader's `Material` and animated properties |
+| Evaluate | `native_sky_glue::evaluate`, `sky_material::evaluate` | at the strip's issue, the section part's shader, layer 15, the pass the guest pushed, implementation 0, sampled at the render clock |
+| Compare | `SkyConstants::difference` | every instance vertex register and every written combiner constant, bit for bit, against the draw's constants and combiner state (and the retail constants) |
+| Draw | `SkyRows::apply` | the view's node rows, the decompression and the plan's constants over the draw's uniforms |
+
+Engine vertex registers (`Origin::Engine`) and the view's rows stay the
+draw's. Causes, as `scene_kept_sky_<cause>`: `unloaded`, `shader`,
+`layer`, `pass`, `animation`, `constants`.
+
 ## Not built
 
-- **The sky from the scene.** The strip is admitted at its resolved draw
-  (`native_residual_glue`), so the guest's sky selection, its node palette
-  upload and the strip's setup run.
+- **Cutting the guest's sky setup.** The strip is admitted at its
+  resolved draw, so the guest's sky selection, its node palette upload and
+  the strip's setup still run. A cut needs the view's node rows from the
+  sky's transform natively (scale `+0x14`, rotation, camera translation
+  scale; checked against `SkyItem::rows` while the guest still runs), the
+  strip's program and textures from the material instead of the draw, and
+  the section's geometry from the load rather than the first strip's
+  capture.
 
 ## Not verified
 
@@ -119,7 +147,11 @@ Tests: `the_stage_draws_around_the_entry_the_guest_keeps`,
 `a_refused_view_asks_no_later_run` (`late_sorted`);
 `a_sorted_run_ends_at_the_entry_the_guest_keeps_and_the_next_starts_after_it`
 (`native_render::fog`); `a_sorted_layer_run_ends_at_the_entry_the_guest_keeps`
-(`layer_pass`), `an_order_item_of_layer_2_holds_the_layer_for_its_sorted_entries`
+(`layer_pass`), `the_evaluated_constants_match_what_the_guest_bound_and_each_difference_is_named`,
+`an_animated_sky_pass_is_sampled_at_the_render_clock`,
+`a_sky_without_the_pass_names_what_is_missing` (`sky_material`),
+`each_skys_model_names_its_shaders_once` (`native_sky_glue`),
+`an_order_item_of_layer_2_holds_the_layer_for_its_sorted_entries`
 (`native_layers`); `a_passed_over_entry_reads_as_passed_and_keeps_its_slot_and_neighbours`,
 `the_cached_restore_list_reads_from_the_descriptor_table` (`sorted_entries`);
 `layer_17_and_an_untaken_callers_layer_2_count_what_they_keep`

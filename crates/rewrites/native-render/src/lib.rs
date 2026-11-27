@@ -129,6 +129,8 @@ pub mod shadows;
 pub mod showcase;
 pub mod sorted_entries;
 #[cfg(feature = "gpu")]
+pub mod sky_material;
+#[cfg(feature = "gpu")]
 pub mod showcase_gpu;
 #[cfg(feature = "gpu")]
 pub mod stage_images;

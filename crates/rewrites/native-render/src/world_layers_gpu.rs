@@ -376,14 +376,35 @@ fn section_charge(count: u64, used: u64, payload: u64) -> Option<u64> {
     (count < SECTION_WINDOWS && payload <= SECTION_BYTES.saturating_sub(used)).then_some(payload)
 }
 
-/// Section node matrices in hardware register order, scoped to one sky draw.
+/// Section node matrices in hardware register order, scoped to one sky draw,
+/// and the material's constants evaluated from the plan
+/// (`crate::sky_material`).
 #[derive(Clone)]
 struct SkyRows {
     nodes: Arc<[frame_scene::Row]>,
     decompression: [frame_scene::Row; 3],
+    material: Arc<crate::sky_material::SkyConstants>,
 }
 
 impl SkyRows {
+    /// The draw holds the view's rows and the evaluated material: each of
+    /// its constant sets the rows, and the bound constants every register
+    /// the material writes (`constants` where one differs).
+    fn holds(&self, draw: &ResolvedDraw) -> Result<(), &'static str> {
+        self.check(&draw.shader.constants[..])?;
+        let combiner = &draw.shader.combiner_state[..];
+        if self.material.difference(&draw.shader.constants[..], combiner).is_some() {
+            return Err("constants");
+        }
+        if let Some((constants, _)) = &draw.retail_constants {
+            self.check(&constants[..])?;
+            if self.material.difference(&constants[..], combiner).is_some() {
+                return Err("constants");
+            }
+        }
+        Ok(())
+    }
+
     fn check(&self, constants: &[frame_scene::Row]) -> Result<(), &'static str> {
         let start = crate::program::MODEL_ROWS;
         let compression = crate::program::POSITION_DECOMPRESSION;
@@ -402,11 +423,14 @@ impl SkyRows {
         Ok(())
     }
 
-    fn apply(&self, vertex: &mut VertexUniforms) {
+    /// The view's rows and the evaluated material over the draw's
+    /// uniforms: the pass draws the plan's constants.
+    fn apply(&self, vertex: &mut VertexUniforms, pixel: &mut PixelUniforms) {
         let start = crate::program::MODEL_ROWS;
         vertex.constants[start..start + self.nodes.len()].copy_from_slice(&self.nodes);
         let compression = crate::program::POSITION_DECOMPRESSION;
         vertex.constants[compression..compression + 3].copy_from_slice(&self.decompression);
+        self.material.apply(&mut vertex.constants[..], &mut pixel.c0, &mut pixel.c1);
     }
 }
 
@@ -523,7 +547,7 @@ impl IndexedPass {
     /// The node palette is the sky model's for the current view.
     pub fn for_sky(
         draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64, generation: u64,
-        item: scene_extract::layout::sky::SkyItem,
+        item: scene_extract::layout::sky::SkyItem, constants: crate::sky_material::SkyConstants,
     ) -> Result<Self, &'static str> {
         // Each refusal is the strip's `scene_kept_sky_<cause>`
         // (`render_bridge::native_sky`). The cull mode is the draw's own:
@@ -552,11 +576,8 @@ impl IndexedPass {
         {
             return Err("texture");
         }
-        let sky = SkyRows { nodes: item.rows.into(), decompression: item.decompression };
-        sky.check(&draw.shader.constants[..])?;
-        if let Some((constants, _)) = &draw.retail_constants {
-            sky.check(&constants[..])?;
-        }
+        let sky = SkyRows { nodes: item.rows.into(), decompression: item.decompression, material: Arc::new(constants) };
+        sky.holds(draw)?;
         let key = SectionKey::Sky {
             model: item.model, section: item.section, part: item.part,
             shader: item.shader, pass: item.pass,
@@ -866,8 +887,8 @@ impl IndexedPass {
         }
         let streams = section.streams.clone();
         let indices = section.indices.clone();
-        let (mut vertex, pixel) = program.uniforms(draw, scale);
-        if let Some(rows) = &self.sky { rows.apply(&mut vertex); }
+        let (mut vertex, mut pixel) = program.uniforms(draw, scale);
+        if let Some(rows) = &self.sky { rows.apply(&mut vertex, &mut pixel); }
         let sizes = [VertexUniforms::SIZE, PixelUniforms::SIZE];
         let fill = |_: usize, v: &mut [u8], p: &mut [u8]| {
             vertex.write_bytes(v);
@@ -1084,9 +1105,7 @@ impl ExternalPass for IndexedPass {
         // A display frame between ticks changes the constants only
         // (`d3d::scene_sink::Retarget`): the geometry and state the
         // candidate checks accepted stay.
-        if draw.streams.len() != self.draw.streams.len() || self.sky.as_ref().is_some_and(|rows|
-            rows.check(&draw.shader.constants[..]).is_err() || draw.retail_constants.as_ref()
-                .is_some_and(|(c, _)| rows.check(&c[..]).is_err())) {
+        if draw.streams.len() != self.draw.streams.len() || self.sky.as_ref().is_some_and(|rows| rows.holds(&draw).is_err()) {
             return None;
         }
         // A retargeted original quad needs its expanded index stream too.
@@ -1214,12 +1233,19 @@ mod tests {
     fn sky_palettes_and_section_compression_preserve_other_material_constants() {
         let mut v = VertexUniforms::default();
         v.constants.fill([7.0; 4]);
-        let first = SkyRows { nodes: vec![[3.5; 4]; 6].into(), decompression: [[2.0; 4]; 3] };
-        let second = SkyRows { nodes: vec![[-1.25; 4]; 6].into(), decompression: [[8.5; 4]; 3] };
-        first.apply(&mut v);
+        let mut p = PixelUniforms::default();
+        let material = Arc::new(crate::sky_material::SkyConstants {
+            vertex: vec![tags::material::Register { index: 30, value: [4.0; 4], written: 0b0001, origin: tags::material::Origin::Instance }],
+            pixel: vec![(0, 2, 0xff00_0000)],
+        });
+        let first = SkyRows { nodes: vec![[3.5; 4]; 6].into(), decompression: [[2.0; 4]; 3], material: Arc::clone(&material) };
+        let second = SkyRows { nodes: vec![[-1.25; 4]; 6].into(), decompression: [[8.5; 4]; 3], material };
+        first.apply(&mut v, &mut p);
         assert_eq!(first.check(&v.constants), Ok(()));
+        assert_eq!(v.constants[30], [4.0, 7.0, 7.0, 7.0], "the plan's register, written components only");
+        assert_eq!(p.c0[2], [0.0, 0.0, 0.0, 1.0], "the plan's combiner constant");
         assert_eq!(second.check(&v.constants), Err("transform"));
-        second.apply(&mut v);
+        second.apply(&mut v, &mut p);
         assert_eq!(second.check(&v.constants), Ok(()));
         let start = crate::program::MODEL_ROWS;
         assert_eq!(v.constants[start - 1], [7.0; 4]);

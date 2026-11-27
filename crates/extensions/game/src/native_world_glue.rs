@@ -106,6 +106,9 @@ pub struct Ready {
     pub layers: OnceLock<(Arc<crate::native_layers_glue::LayersView>, StagePalettes)>,
     /// The model decorators' passes of this load (`native_decorators_glue`).
     pub decorators: OnceLock<Arc<crate::native_decorators_glue::DecoratorLooks>>,
+    /// The materials of the map's skies (`native_sky_glue`): what the sky
+    /// strip's constants are evaluated from.
+    pub sky: OnceLock<Arc<crate::native_sky_glue::SkyMaterials>>,
     /// What the native lights draw over this world
     /// (`native_lights_glue`), once the light resource worker publishes.
     pub lights: OnceLock<Arc<crate::native_lights_glue::LightsWorld>>,
@@ -1035,6 +1038,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     crate::native_water_glue::install(device, Arc::clone(&state));
     crate::native_layers_glue::install(device, Arc::clone(&state));
     crate::native_decorators_glue::install(device, Arc::clone(&state));
+    crate::native_sky_glue::install(Arc::clone(&state));
     let gels = crate::native_gels_glue::install(device);
     crate::native_lights_glue::install(device, state, gels);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
@@ -1573,7 +1577,7 @@ fn load_ready(
         layer3, pages: page_set,
         upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
         fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
-        decorators: OnceLock::new(), lights: OnceLock::new(),
+        decorators: OnceLock::new(), sky: OnceLock::new(), lights: OnceLock::new(),
         lightmaps: lightmap_bitmap.map(|bitmap| (bitmap, lightmap_palettes.clone())),
     }))) { return Ok(()); }
     drop(world_setup);
@@ -1647,6 +1651,14 @@ fn load_ready(
         let sets = crate::native_layers_glue::upload_layers(&mut layers, &device, &queue, &stage_world,
             &mut |s| stage_bitmap(&stage_images, s), &mut |k| lightmaps.get(&k).cloned());
         if !send(StageReady::Layers(Arc::new(layers), decoder.used().clone(), sets)) {
+            return Ok(());
+        }
+    }
+    if !key.current() { return Ok(()); }
+
+    {
+        let _scope = mem_watch::scope("native.sky.load");
+        if !send(StageReady::Sky(crate::native_sky_glue::load(&mut map))) {
             return Ok(());
         }
     }
