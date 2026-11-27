@@ -238,7 +238,6 @@ pub(crate) fn prepare<R: Read + Seek>(
         arena.zones.truncate(FEWEST_DROPS);
     }
     // The ship's way into each zone, from the arena's own collision.
-    let ship_walls = open_walls;
     let ship_bsp = arena.bsp;
     // The pods' falls: over each drop zone's first area's mean and each
     // start, where the column to the top of the collision is open.
@@ -321,7 +320,7 @@ pub(crate) fn prepare<R: Read + Seek>(
         problems,
         refused,
         snapped,
-        ship_walls,
+        ship_walls: open_walls,
         ship_bsp,
         falls,
     })

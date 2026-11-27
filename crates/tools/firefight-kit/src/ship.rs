@@ -156,7 +156,7 @@ impl Dropship {
 }
 
 /// What a build says of the dropship (`Package::ship`).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ShipReport {
     pub kind: ShipKind,
     pub kept: bool,
