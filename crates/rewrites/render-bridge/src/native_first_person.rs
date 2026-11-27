@@ -37,9 +37,7 @@ use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-first-person";
 
-/// The first-person list the guest built at `0x004c8740` (the transparent
-/// stage still tells it apart from the world's).
-pub(crate) const FIRST_PERSON_ITEMS: u32 = 0x004c_8740;
+pub(crate) use crate::native_transparents::FIRST_PERSON_ITEMS;
 
 /// The cut: `0x0003fdf0` takes the view in `eax` and the call (0 or 1) on
 /// the stack, `ret 4`; its answer is `al = 1`, which no caller reads.
