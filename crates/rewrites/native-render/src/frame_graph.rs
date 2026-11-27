@@ -318,7 +318,7 @@ pub fn draw_private(
     backend: &mut GfxBackend,
     scene: &FrameScene,
     replay: &ReplayFrame,
-    scale: u32,
+    scale: impl Into<gfx::raster::RenderScale>,
     lighting: Lighting,
 ) -> Result<CapturedFrame, String> {
     draw_private_with_observer(backend, scene, replay, scale, lighting, None)
@@ -328,15 +328,16 @@ pub fn draw_private_with_observer(
     backend: &mut GfxBackend,
     scene: &FrameScene,
     replay: &ReplayFrame,
-    scale: u32,
+    scale: impl Into<gfx::raster::RenderScale>,
     lighting: Lighting,
     observer: Option<&mut dyn PassObserver>,
 ) -> Result<CapturedFrame, String> {
-    if scale > 1 && replay.has_mixed_target_sizes() {
+    let scale = scale.into();
+    if scale != gfx::raster::RenderScale::ONE && replay.has_mixed_target_sizes() {
         return private::draw_mixed(backend, scene, replay, scale, lighting, observer);
     }
     let before = backend.batch_stats();
-    let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, scale, lighting);
+    let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, scale.vertical_rounded(), lighting);
     let mut pass = GuestDrawPass::new_lit(backend, replay, scale, lighting)?;
     let e3 = record(&mut pass, scene, replay, true, lighting, observer, sun_replay, None)?;
     let (size, rgba) = pass.read_rgba()?;

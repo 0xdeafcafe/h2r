@@ -115,7 +115,9 @@ h2 agent render.parity '{"arm": true}'
   the latest sealed scene. An explicit `tick` selects that exact scene
   tick, up to 240 ticks ahead of the latest seal. The draw uses the
   resolution shown for that particular present, including a frame the
-  backend showed from its 1x reference. The answer includes the tick,
+  backend showed from its 1x reference, on the display's own grid when
+  `RenderScale::replayable_display` accepts it (3440x1440 and 5120x1440
+  included; `docs/graphics/high-resolution.md`). The answer includes the tick,
   present, summary hash, lighting and a fresh PNG path. The most recent
   successful private capture retains its scene for another request with
   the same tick. A failed original Swap gives `UNAVAILABLE` with

@@ -22,7 +22,7 @@ pub(super) fn draw_mixed(
     backend: &mut GfxBackend,
     scene: &FrameScene,
     replay: &ReplayFrame,
-    scale: u32,
+    scale: gfx::raster::RenderScale,
     lighting: Lighting,
     observer: Option<&mut dyn PassObserver>,
 ) -> Result<CapturedFrame, String> {
