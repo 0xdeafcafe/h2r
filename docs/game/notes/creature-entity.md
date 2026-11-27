@@ -2,7 +2,7 @@
 
 Static evidence for the [AI networking design](../ai-networking.md#creature-entity).
 
-## 2026-11-21 — Retail registration, replication and admission
+## 2026-11-21 - Retail registration, replication and admission
 
 **Verdict.** Use entity type **17** for AN12. Both ends of the retail
 creation codec can represent it. The host scheduler has tuning for

@@ -175,7 +175,7 @@ fields = { team = 1 }
 - Bases are disc maps. Map Pack and converted maps are not offered.
 - The variant is the game's default Slayer; `variant` accepts only
   `slayer`.
-- A test map needs a free multiplayer slot ([maps.md](maps.md#map-ids-and-offer-ids));
+- A test map needs a free multiplayer slot ([maps.md](maps-new-maps.md#map-ids-and-offer-ids));
   with the list full, `maps.test.load` says so.
 - A reused object entry keeps its scenario object name, if it had one.
 - Recipes and their tests carry names, tag path fragments and offsets.
