@@ -415,7 +415,6 @@ pub fn ui_kept(counter: Ui) -> Option<(UiKind, &'static str)> {
         Ui::OutlineReservation => (Outline, "reservation"),
         Ui::OverlayMenuRefusedFrame => (List, "frame"),
         Ui::OverlayMenuRefusedMismatched => (List, "mismatched"),
-        Ui::OverlayMenuRefusedBitmapMeter => (Widget, "bitmap_meter"),
         Ui::OverlayMenuRefusedBitmapScroll => (Widget, "bitmap_scroll"),
         Ui::OverlayMenuRefusedBitmapState => (Widget, "bitmap_state"),
         Ui::OverlayMenuRefusedText => (Widget, "text"),
@@ -553,7 +552,6 @@ mod tests {
     #[test]
     fn a_kept_ui_counter_counts_its_draw() {
         let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        assert_eq!(ui_kept(Ui::OverlayMenuRefusedBitmapMeter), Some((UiKind::Widget, "bitmap_meter")));
         assert_eq!(ui_kept(Ui::OverlayMenuClaimed), None, "a claimed draw is the overlay's");
         assert_eq!(ui_kept(Ui::OverlayMenuRefusedPass), None, "counted per draw of the run");
         let name = "scene_kept_ui_outline_inputs";

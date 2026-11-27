@@ -726,7 +726,6 @@ const UI_COLUMNS: [&str; Ui::MovieRefusedPass as usize + 1] = [
     "overlay_menu_mismatch",
     "overlay_menu_refused_frame",
     "overlay_menu_refused_mismatched",
-    "overlay_menu_refused_bitmap_meter",
     "overlay_menu_refused_bitmap_scroll",
     "overlay_menu_refused_bitmap_state",
     "overlay_menu_refused_text",
@@ -886,11 +885,10 @@ pub enum Ui {
     /// full screen; a screen that mismatched before.
     OverlayMenuRefusedFrame,
     OverlayMenuRefusedMismatched,
-    /// Drawn bitmap widgets the game keeps: a meter; a scrolling bitmap;
-    /// one whose state the overlay does not draw as the game does (the
-    /// debug labels on, an image set from elsewhere, a texture not
-    /// resident, a tint constant not white).
-    OverlayMenuRefusedBitmapMeter,
+    /// Drawn bitmap widgets the game keeps: a scrolling bitmap; one whose
+    /// state the overlay does not draw as the game does (the debug labels
+    /// on, an image set from elsewhere, a texture not resident, a tint
+    /// constant not white, a meter's bitmap with no second image).
     OverlayMenuRefusedBitmapScroll,
     OverlayMenuRefusedBitmapState,
     /// Drawn widgets the game keeps, by the draw not read yet: text, a
