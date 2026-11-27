@@ -203,10 +203,22 @@ pub(crate) fn prepare<R: Read + Seek>(
             best = Some(arena);
             open_walls = Some(bots::cache::walls_without_sky(&collision));
         }
-        roofs.push(
-            (!config.sky_materials.is_empty())
-                .then(|| crate::sky::split(&collision, config.sky_materials)),
-        );
+        // The materials whose shader is a sky, and those the config adds.
+        let (at, stride) = crate::sky::MATERIALS;
+        let shaders: Vec<Option<String>> = v
+            .block(root, at, stride)
+            .map(|rows| {
+                rows.iter()
+                    .map(|r| {
+                        let datum = TagId(u32::from_le_bytes(r[12..16].try_into().unwrap()));
+                        map.tag(datum).ok().and_then(|t| t.name.clone())
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        let mut sky = crate::sky::sky_materials(shaders.iter().map(|n| n.as_deref()));
+        sky.extend_from_slice(config.sky_materials);
+        roofs.push((!sky.is_empty()).then(|| crate::sky::split(&collision, &sky)));
         generated.push((id, pf, data));
     }
     ensure!(!generated.is_empty(), "scenario has no structure BSP");

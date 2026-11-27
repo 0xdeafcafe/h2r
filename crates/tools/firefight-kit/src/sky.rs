@@ -97,6 +97,33 @@ impl Roof<'_> {
     }
 }
 
+/// The structure BSP's materials block (`sbsp+0xa4`), 0x20 bytes an element:
+/// the material's shader is the tag reference at `+8`, whose datum is at
+/// `+0xc`. Collision surfaces index it by `Surface::material`.
+pub(crate) const MATERIALS: (usize, usize) = (0xa4, 0x20);
+
+/// The material indices whose shader is a sky: `names` is each material's
+/// shader tag name, in material order. A shader is a sky when a component
+/// of its path is `sky`, or its last one is `sky` or starts with `sky_`.
+/// Read from the retail multiplayer maps (Coagulation, Zanzibar, Beaver
+/// Creek, Lockout, Warlock): none of their collision uses such a shader, so
+/// the set is empty there and open sky is a ray that hits nothing. A map
+/// that does mark sky this way gets the ray's pass through it.
+pub(crate) fn sky_materials<'a>(names: impl IntoIterator<Item = Option<&'a str>>) -> Vec<u16> {
+    names
+        .into_iter()
+        .enumerate()
+        .filter(|(_, name)| {
+            name.is_some_and(|n| {
+                let mut parts: Vec<&str> = n.split('\\').collect();
+                let last = parts.pop().unwrap_or_default();
+                parts.contains(&"sky") || last == "sky" || last.starts_with("sky_")
+            })
+        })
+        .filter_map(|(i, _)| u16::try_from(i).ok())
+        .collect()
+}
+
 /// `bsp`'s surfaces split by material: the solid ones and the ones whose
 /// material index is in `sky`.
 pub(crate) fn split(bsp: &Bsp, sky: &[u16]) -> (Walls, Walls) {
