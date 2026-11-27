@@ -275,7 +275,7 @@ The kit names retail art by the widget that draws it, never by pixels.
 - Each widget has three offsets, sequences and fonts: fullscreen, half
   and quarter screen.
 - **Our renderer.** The guest always draws in 640 by 480. The host fits
-  each HUD draw scope to the window: Centered keeps the corners in a
+  each HUD draw scope to the window: Centred keeps the corners in a
   4:3 area, Pinned moves each corner group to its viewport edge at the
   same scale ([high-resolution.md](../graphics/high-resolution.md),
   "HUD and UI"; `points::render_aspect::GROUPS`). A kit widget is inside
@@ -1916,7 +1916,7 @@ particular:
 - Whether a `bipd` naming one `nhdt` twice draws it twice.
 - That the training draw is inside a HUD fit scope
   (`points::render_aspect::GROUPS` has none for it), so the box sits
-  right under Pinned and Centered at wide aspects.
+  right under Pinned and Centred at wide aspects.
 - Whether lockstep and co-op hashes cover the tag memory and the
   training state the kit writes.
 - The exact spacing of a navpoint's arrow and marker (the marker's
@@ -2000,7 +2000,7 @@ Each slice is code and tests only; the coordinator compiles and runs.
    id, kind, widget address, text, fill and whether the gate last drew
    it. Then, on the lab Mac, each item of "Not verified" with `hud.kit`
    and `render.frame` against the preview's JSON, at 4:3 and 16:9,
-   Pinned and Centered, fullscreen and split; the widget cap and the
+   Pinned and Centred, fullscreen and split; the widget cap and the
    text shader's colour.
 2. **Styles and the pointer.** The colour hook (`HUD_TEXT_SETUP`,
    `HUD_SHADER_QUAD`) and the flash (`hud_kit_core::flash`), so `Dim`,

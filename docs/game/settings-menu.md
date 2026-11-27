@@ -169,7 +169,7 @@ and **Voice**. Selecting Video opens the display options below.
 | Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | at once | `--fps`, `H2_FPS` |
 | Resolution | Native (render width x height), then fixed sizes at the viewport aspect | `[graphics] resolution` (`"native"` or `"WxH"`) | next frame | `H2_RESOLUTION`, legacy `H2_RENDER_SCALE` |
 | Lighting | Retail, E3 (default Retail). A [BSP review launch](../graphics/relighting-review.md) displays its locked lamp state | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
-| HUD Position | Pinned (default), Centered | `[graphics] hud_position` (`"pinned"`, `"centered"`) | live | `H2_HUD_POSITION` |
+| HUD Position | Pinned (default), Centred | `[graphics] hud_position` (`"pinned"`, `"centered"`) | live | `H2_HUD_POSITION` |
 | LOD Distance | Retail, 0.5x, 1x, 1.5x, 2x, 3x, 4x, Highest (default) | `[graphics] lod_distance` (number, `"retail"` or `"highest"`) | next view | `H2_LOD_DISTANCE` |
 
 A on Resolution, HUD Position or LOD Distance opens a select dialog. A confirms the
@@ -198,7 +198,7 @@ records.
 [Projected size and level of detail](../graphics/occlusion-culling.md#projected-size-and-level-of-detail).
 
 Pinned keeps corner-anchored HUD groups near the edges of each player's
-viewport. Centered keeps those groups inside a centred 4:3 safe area.
+viewport. Centred keeps those groups inside a centred 4:3 safe area.
 HUD Position does not change menus. Menu widgets stay centred and keep
 their proportions. Full-width menu background art and the scene backdrop
 fill the viewport. See

@@ -670,7 +670,7 @@ Limits:
   pack (`pack_info`), so the game can group a pack's maps. The
   contents report (`live_proto::maps::Contents`) is read off the patched
   map against its base (`cli::live_mod_contents`, `h2 live maps
-  analyze`): per tag class how many tags are new, changed or removed;
+  analyse`): per tag class how many tags are new, changed or removed;
   each reference of a tag both maps have that names another tag now,
   classified by what it names (projectile, model, render model,
   collision, physics, animation, shader, texture, damage, effect, sound,

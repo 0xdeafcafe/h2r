@@ -2902,7 +2902,7 @@ blip disc's own radius is not decoded). The range is the `hudg`'s
 one. The host moves the HUD's bottom-left group for the window's aspect
 and the HUD Position setting; the view reads that fit
 (`render_aspect::hud_bottom_left_fit`, the first view's) and applies it,
-so its marks stay on the tracker in Centered and Pinned. In a split
+so its marks stay on the tracker in Centred and Pinned. In a split
 screen it follows the view at the frame's top left (S: the first local
 player's). The map's growth keeps the bottom-left corner of its box on
 the tracker's; it covers the shield meter while held, which stays where
@@ -2933,7 +2933,7 @@ map's counts. `superbounce.view_test {"mode": "pulse"|"hold"|"none"}`
   Bumper Jumper the same on X; on a converted Halo 1 map the light comes
   on too. `superbounce.view`'s `button` follows the press.
 - **The tracker's place.** `render.frame` with blips and the map shown,
-  4:3, 16:9 Centered and 16:9 Pinned: the blips sit on the tracker and
+  4:3, 16:9 Centred and 16:9 Pinned: the blips sit on the tracker and
   turn with the game's own on a fast turn.
 - **The blip disc's radius.** A bot at the edge of the tracker's range
   against a spot blip at the same distance.
