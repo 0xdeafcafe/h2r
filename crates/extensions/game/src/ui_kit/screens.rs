@@ -462,6 +462,21 @@ pub fn picker_sample() -> crate::ui_kit::picker::Pick {
     .over(crate::ui_kit::view::Opener::GAME_SETUP_CLANKERS)
 }
 
+/// The picker screen `name` (`kit.picker` or `kit.picker.game`) as a game
+/// offers it: titled `title`, with `rows` for its values, over the
+/// setup dialog. A script's `offer_pick`/`pick_row` labels are the title
+/// and rows (`rules::world::choice`). None for another screen or no rows.
+pub fn live_offer(name: &str, title: &str, rows: &[String]) -> Option<Box<dyn Live>> {
+    if !matches!(name, "kit.picker" | "kit.picker.game") || rows.is_empty() {
+        return None;
+    }
+    let pick = crate::ui_kit::picker::Pick::new(title, rows.to_vec(), 0, "", Arc::new(|_| String::new()))
+        .over(crate::ui_kit::view::Opener::GAME_SETUP_CLANKERS);
+    crate::ui_kit::picker::offer_list(pick)?;
+    let p = Arc::new(crate::ui_kit::picker::Picker::new(name == crate::ui_kit::picker::GAME_NAME));
+    Some(list(ListPage::new(p.class(), described(&p))))
+}
+
 /// The lobby's pickers' samples: [`MAP_VARIANT_PICKER`], Original and
 /// three map variants, the second usable one held and the last unusable; [`MODE_PICKER`], the GAME MODE picker X
 /// opens (`crate::lobby_tabs::picker::pick`) for the leader of an Xbox

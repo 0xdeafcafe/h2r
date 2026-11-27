@@ -284,6 +284,13 @@ named. An unknown screen or state, a `sample` the screen has no variant
 of (the message lists the ones it has), or a `sample` with `screen` is
 `INVALID_PARAMS`.
 
+`ui.pick {screen, title, rows}` on `kit.picker` or `kit.picker.game` shows
+the picker with a script's own offer: `title` and `rows` (1 to 16 strings;
+the labels `offer_pick` and `pick_row` give, as `rules::world::choice` opens
+them) in place of the kit's sample count rows. The offer is for that pick
+alone; `title` without `rows`, `rows` on another screen, no rows, more than
+16 and a row that is no string are `INVALID_PARAMS`.
+
 `ui.sheet {folder?, root?, states?, columns?, out?}` writes that grid to
 one labelled contact-sheet PNG (default: the grid shown; `states` draws
 every state of our screens, not only each one's first; `columns` defaults
