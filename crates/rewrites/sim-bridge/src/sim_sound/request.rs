@@ -5,11 +5,14 @@
 //! tag, a channel byte, the record, a promotion rule. Field by field the
 //! reads are the native port's (`engine::native_sound_impulse`). The
 //! callback table at `+0x58` (flag bit 5) is classified into an
-//! [`Owner`]; a table that is neither known table refuses the request.
+//! [`Owner`]: the unit and script line tables by their finish slot, the
+//! start layer's two tables by address. A table that is none of them
+//! refuses the request.
 
 use engine::memory::GuestMemory;
-use sim_sound::instances::{Request, SourceParams, TagIndex};
-use sim_sound::owners::Owner;
+use sim_sound::instances::{Handle, Request, SourceParams, TagIndex};
+use sim_sound::owners::{Own, Owner};
+use sim_sound::starts::{STARTED_TABLE, SOUND_TABLE};
 
 /// Finish slot (`+0x10`) of the unit dialogue table: `0x18c8c0`.
 pub const UNIT_FINISH: u32 = 0x0018_c8c0;
@@ -63,11 +66,34 @@ pub fn read(m: &dyn GuestMemory, args: [u32; 4]) -> Result<Request, RequestError
     })
 }
 
+/// Payload `+0x28` (record `+0x84`): the start a start layer table names.
+pub const START_AT: u32 = 0x84;
+/// Payload `+0x2c` (record `+0x88`): the table a start's sound had before
+/// `0x21dc60` took it over, 0 for none.
+pub const OWN_TABLE_AT: u32 = 0x88;
+
 /// The owner a callback table names. The payload's first word is the
 /// object (Not verified in the design page: the payload layout).
 fn owner(m: &dyn GuestMemory, table: u32, record: u32) -> Result<Owner, RequestError> {
-    let finish = m.u32(table.wrapping_add(0x10)).map_err(|_| RequestError::Unreadable(table.wrapping_add(0x10)))?;
-    let object = m.u32(record.wrapping_add(0x5c)).map_err(|_| RequestError::Unreadable(record.wrapping_add(0x5c)))?;
+    let u32_at = |a: u32| m.u32(a).map_err(|_| RequestError::Unreadable(a));
+    match table {
+        STARTED_TABLE => return Ok(Owner::Started(Handle::from_raw(u32_at(record.wrapping_add(START_AT))?))),
+        SOUND_TABLE => {
+            let start = Handle::from_raw(u32_at(record.wrapping_add(START_AT))?);
+            let own = match u32_at(record.wrapping_add(OWN_TABLE_AT))? {
+                0 => Own::None,
+                inner => match owner(m, inner, record)? {
+                    Owner::Unit(object) => Own::Unit(object),
+                    Owner::ScriptLine(object) => Own::ScriptLine(object),
+                    _ => return Err(RequestError::UnknownOwner { table: inner, finish: 0 }),
+                },
+            };
+            return Ok(Owner::Start { start, own });
+        }
+        _ => {}
+    }
+    let finish = u32_at(table.wrapping_add(0x10))?;
+    let object = u32_at(record.wrapping_add(0x5c))?;
     match finish {
         UNIT_FINISH => Ok(Owner::Unit(object)),
         SCRIPT_LINE_FINISH => Ok(Owner::ScriptLine((object != NONE).then_some(object))),
@@ -116,6 +142,24 @@ mod tests {
         let mut g = guest(1 << 5, SCRIPT_LINE_FINISH);
         g.put_u32(RECORD + 0x5c, NONE);
         assert_eq!(read(&g, [1, 0, RECORD, 0]).unwrap().owner, Owner::ScriptLine(None));
+    }
+
+    #[test]
+    fn the_start_layer_tables_name_a_start() {
+        // `0x44a1e0`: a sound a start's component admitted.
+        let mut g = guest(1 << 5, 0);
+        g.put_u32(RECORD + 0x58, STARTED_TABLE).put_u32(RECORD + START_AT, 0xef73_0002);
+        assert_eq!(read(&g, [1, 0, RECORD, 0]).unwrap().owner, Owner::Started(Handle::from_raw(0xef73_0002)));
+        // `0x44a1c0`: a start's own sound, keeping the unit table it had.
+        g.put_u32(RECORD + 0x58, SOUND_TABLE).put_u32(RECORD + OWN_TABLE_AT, TABLE).put_u32(TABLE + 0x10, UNIT_FINISH);
+        let start = Handle::from_raw(0xef73_0002);
+        assert_eq!(read(&g, [1, 0, RECORD, 0]).unwrap().owner, Owner::Start { start, own: Own::Unit(0xe001_0007) });
+        // No table of its own.
+        g.put_u32(RECORD + OWN_TABLE_AT, 0);
+        assert_eq!(read(&g, [1, 0, RECORD, 0]).unwrap().owner, Owner::Start { start, own: Own::None });
+        // A start layer table inside another is not a request's owner.
+        g.put_u32(RECORD + OWN_TABLE_AT, STARTED_TABLE);
+        assert_eq!(read(&g, [1, 0, RECORD, 0]), Err(RequestError::UnknownOwner { table: STARTED_TABLE, finish: 0 }));
     }
 
     #[test]

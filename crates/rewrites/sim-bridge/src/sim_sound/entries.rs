@@ -6,7 +6,8 @@
 //! caller outside the sound code reaches, each with its [`Body`]. Under
 //! `impl.sim.sound-events.table` ([`on`]) [`SoundTable`] installs every
 //! body, and nothing behind them is reached: the starts read the request
-//! record ([`super::request::read`]) and admit into [`Sounds`], the stop
+//! record ([`super::request::read`]) and admit into [`Sounds`], the start
+//! layer runs its rows ([`start_layer`]), the stop
 //! and the stop-all walk end sounds in the table, the chooser entries run
 //! [`Chooser`](sim_sound::chooser::Chooser) and [`chooser::pick`], and the create body leaves the pool
 //! and channel globals 0, so a guest function that still reads the pool
@@ -37,7 +38,9 @@ use sim_sound::schedule::duration_ticks;
 use super::guest_tags::{self, Snapshot};
 use super::levels::GuestLevels;
 use super::owner_host::{GuestUnits, OwnerCounters, UnitCall};
-use super::request::{self, RequestError};
+use super::request::RequestError;
+
+pub mod start_layer;
 
 /// The table's sub-switch, without its `impl.` prefix. Off until `h2 sim
 /// diff` parity; it runs only under `impl.sim.sound-events`.
@@ -101,11 +104,17 @@ pub enum Body {
     Service,
     /// `0x125f10`: nothing in the sim; the clip source decodes on demand.
     Prefetch,
-    /// `0x21d110`: the gate and rule, then [`request::read`] and `admit`.
+    /// `0x21d110`: a start row for the sound's effect, the gate and rule,
+    /// [`super::request::read`] and `admit`, then the row's `Mode::Start`
+    /// ([`start_layer::start_record`]).
     StartRecord,
+    /// `0x21d390`: the start rows' walk ([`start_layer::starts_update`]).
     StartsUpdate,
+    /// `0x21d2c0`: a tag's start ([`start_layer::tag_start`]).
     StartLayerNew,
+    /// `0x21d360`: a start's stop ([`start_layer::stop_start`]).
     StartLayerPlay,
+    /// `0x21d630`: a start's components in a mode ([`start_layer::run_start`]).
     StartLayerRun,
     /// `0x126360`: `stopping`, then the 300 ms fade.
     Stop,
@@ -144,14 +153,10 @@ pub enum Body {
 }
 
 impl Body {
-    /// Why a body refuses every call, naming the state the table lacks.
+    /// Why a body refuses every call, naming the state the table lacks
+    /// ([`REFUSING`]).
     pub fn refusal(self) -> Option<&'static str> {
-        match self {
-            Body::StartsUpdate | Body::StartLayerNew | Body::StartLayerPlay | Body::StartLayerRun => {
-                Some("the start layer's bodies over its rows (Sounds::starts) are not built")
-            }
-            _ => None,
-        }
+        REFUSING.iter().find(|(b, _)| *b == self).map(|(_, why)| *why)
     }
 
     /// The body calls the guest function it replaces (pool-free work).
@@ -159,6 +164,10 @@ impl Body {
         matches!(self, Body::Create | Body::Drop | Body::Listeners | Body::Ambience)
     }
 }
+
+/// The bodies that refuse every call, with the state the table lacks: none
+/// today.
+pub static REFUSING: &[(Body, &str)] = &[];
 
 /// One outside entry.
 pub struct Entry {
@@ -459,6 +468,7 @@ pub async fn phase(cx: &Cx, table: &Shared) -> EntryResult {
     }
     let (_, calls) = with_units(cx, table, |t, host, tick| t.step_phase(host, tick))?;
     unit_calls(cx, table, calls).await?;
+    start_layer::drain_stops(cx, table).await?;
     let mut t = lock(table);
     t.ledger.phase_runs += 1;
     t.ledger.phase_ns += started.elapsed().as_nanos() as u64;
@@ -797,42 +807,12 @@ async fn pick(cx: &Cx, table: &Shared) -> EntryResult {
     Ok(Ret::new(index, 16))
 }
 
-/// `0x21d110`: the gate and the rule (guest, pool-free), then the record
-/// read and admitted. The start layer's record is not made.
-async fn start_record(cx: &Cx, table: &Shared) -> EntryResult {
-    let entry = cx.entry();
-    let (record, tag) = (entry.eax, cx.arg(0)?);
-    if !cx.read(sound_on) {
-        return Ok(Ret::new(NONE, 4));
-    }
-    // Two scratch words below the entry's stack: the gate's channel, the
-    // rule's out.
-    let slot = entry.esp.wrapping_sub(8);
-    let gate = cx.call(GuestCall::new(START_GATE).eax(record).args([tag, slot, 0]).reserve(8)).await?.eax;
-    lock(table).ledger.entry_guest_calls += 1;
-    if gate & 0xff == 0 {
-        return Ok(Ret::new(NONE, 4));
-    }
-    let refused = cx.call(GuestCall::new(START_RULE).ecx(tag).args([slot.wrapping_add(4)]).reserve(8)).await?.eax;
-    lock(table).ledger.entry_guest_calls += 1;
-    if refused != 0 {
-        return Ok(Ret::new(NONE, 4));
-    }
-    let handle = cx.write(|m| {
-        let channel = m.u32(slot).unwrap_or(0);
-        let rule = m.u32(slot.wrapping_add(4)).unwrap_or(NONE);
-        let request = request::read(&*m, [tag, channel, record, rule]);
-        let tick = tick_of(m).unwrap_or(0);
-        lock(table).admit(m, request, tick)
-    });
-    Ok(Ret::new(handle, 4))
-}
-
 async fn stop(cx: &Cx, table: &Shared) -> EntryResult {
     let handle = cx.entry().ebx;
     if handle != NONE {
         let fade = duration_ticks(STOP_FADE_MS);
         with_units(cx, table, |t, host, tick| t.sounds.stop(Handle::from_raw(handle), tick, fade, host))?;
+        start_layer::drain_stops(cx, table).await?;
     }
     Ok(Ret::new(0, 0))
 }
@@ -992,7 +972,22 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
             Ok(Ret::new(0, 0))
         }
         Body::Prefetch | Body::LoadPump => Ok(Ret::new(0, 0)),
-        Body::StartRecord => start_record(&cx, &table).await,
+        Body::StartRecord => Ok(Ret::new(start_layer::start_record(&cx, &table).await?, 4)),
+        Body::StartLayerNew => Ok(Ret::new(start_layer::tag_start(&cx, &table).await?, 4)),
+        Body::StartLayerPlay => {
+            let start = Handle::from_raw(cx.entry().ecx);
+            start_layer::stop_start(&cx, &table, start).await?;
+            Ok(Ret::new(0, 0))
+        }
+        Body::StartLayerRun => {
+            let (start, mode) = (Handle::from_raw(cx.arg(0)?), cx.arg(1)?);
+            start_layer::run_entry(&cx, &table, start, mode).await?;
+            Ok(Ret::new(0, 8))
+        }
+        Body::StartsUpdate => {
+            start_layer::starts_update(&cx, &table).await?;
+            Ok(Ret::new(0, 0))
+        }
         Body::Stop => stop(&cx, &table).await,
         Body::StopAll => stop_all(&cx, &table).await,
         Body::Environment => {
@@ -1028,10 +1023,6 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
             let (range, tag) = (cx.arg(0)?, cx.arg(1)?);
             Ok(Ret::new(cx.read(|m| range_word(m, range, tag))?, 8))
         }
-        Body::StartsUpdate
-        | Body::StartLayerNew
-        | Body::StartLayerPlay
-        | Body::StartLayerRun => unreachable!("refused above"),
     }
 }
 

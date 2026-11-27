@@ -28,6 +28,36 @@ pub enum Owner {
     /// One track of a looping sound (the track's list, `+0x6C`). Its end
     /// unlinks it from the track; the host hears nothing.
     Loop { looping: Handle, track: u8 },
+    /// A sound a start belongs to (`0x44a1c0`, made by `0x21dc60`): the
+    /// start (payload `+0x28`) and the owner the request named (its table
+    /// kept at payload `+0x2c`). Alive while the start is not stopping
+    /// (`0x21d9f0`); the mouth goes to `own` (`0x21da50`); its end tells
+    /// `own` and stops the start (`0x21da90`); its stop does the same with
+    /// reason 1 and gives the sound back to `own` (`0x21db30`).
+    Start { start: Handle, own: Own },
+    /// A sound a start's component admitted (`0x44a1e0`): alive while its
+    /// start is live and not done (`0x21d970`); nothing hears its end.
+    Started(Handle),
+}
+
+/// The owner a start's sound had before the start took it over: the ones a
+/// request record can name (finish `0x18c8c0`, `0x18c910`, or no table).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Own {
+    #[default]
+    None,
+    Unit(u32),
+    ScriptLine(Option<u32>),
+}
+
+impl Own {
+    pub fn owner(self) -> Owner {
+        match self {
+            Own::None => Owner::None,
+            Own::Unit(object) => Owner::Unit(object),
+            Own::ScriptLine(object) => Owner::ScriptLine(object),
+        }
+    }
 }
 
 impl Owner {
@@ -37,13 +67,24 @@ impl Owner {
         match *self {
             Owner::Unit(object) => Some(object),
             Owner::ScriptLine(object) => object,
-            Owner::None | Owner::Loop { .. } => None,
+            Owner::Start { own, .. } => own.owner().unit(),
+            Owner::None | Owner::Loop { .. } | Owner::Started(_) => None,
         }
     }
 
     /// True for the owners [`OwnerHost`] is called for.
     pub fn has_host(&self) -> bool {
         matches!(self, Owner::Unit(_) | Owner::ScriptLine(_))
+    }
+
+    /// The owner [`OwnerHost`] hears for this one, if any: itself, or the
+    /// owner a start's sound keeps.
+    pub fn host(&self) -> Option<Owner> {
+        let owner = match *self {
+            Owner::Start { own, .. } => own.owner(),
+            other => other,
+        };
+        owner.has_host().then_some(owner)
     }
 
     pub(crate) fn write(&self, w: &mut Writer) {
@@ -63,6 +104,15 @@ impl Owner {
                 w.u32(looping.raw());
                 w.u8(track);
             }
+            Owner::Start { start, own } => {
+                w.u8(4);
+                w.u32(start.raw());
+                own.owner().write(w);
+            }
+            Owner::Started(start) => {
+                w.u8(5);
+                w.u32(start.raw());
+            }
         }
     }
 
@@ -80,6 +130,17 @@ impl Owner {
                 }
             }
             3 => Owner::Loop { looping: Handle::from_raw(r.u32()?), track: r.u8()? },
+            4 => {
+                let start = Handle::from_raw(r.u32()?);
+                let own = match Owner::read(r)? {
+                    Owner::None => Own::None,
+                    Owner::Unit(object) => Own::Unit(object),
+                    Owner::ScriptLine(object) => Own::ScriptLine(object),
+                    _ => return Err(bad("start owner's own owner")),
+                };
+                Owner::Start { start, own }
+            }
+            5 => Owner::Started(Handle::from_raw(r.u32()?)),
             _ => return Err(bad("owner kind")),
         })
     }
@@ -90,6 +151,9 @@ impl Owner {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
 pub enum Reason {
+    /// A start's sound was stopped (`0x21db30`): told to the owner the
+    /// start keeps, never a sound's end, so not in [`Reason::ALL`].
+    Stopped = 1,
     /// Its computed end tick came.
     PlayedOut = 2,
     /// [`OwnerHost::alive`] said the owner is gone.
@@ -112,6 +176,7 @@ impl Reason {
 
     pub fn name(self) -> &'static str {
         match self {
+            Reason::Stopped => "stopped",
             Reason::PlayedOut => "played_out",
             Reason::OwnerGone => "owner_gone",
             Reason::Faded => "faded",
@@ -189,6 +254,9 @@ mod tests {
             Owner::ScriptLine(None),
             Owner::ScriptLine(Some(7)),
             Owner::Loop { looping: Handle::new(0x8001, 3), track: 2 },
+            Owner::Start { start: Handle::new(0xef73, 1), own: Own::ScriptLine(Some(9)) },
+            Owner::Start { start: Handle::new(0xef73, 1), own: Own::None },
+            Owner::Started(Handle::new(0xef74, 2)),
         ];
         for owner in all {
             let mut w = Writer::new();
@@ -201,6 +269,10 @@ mod tests {
         assert_eq!(Owner::ScriptLine(Some(7)).unit(), Some(7));
         assert_eq!(Owner::Loop { looping: Handle::NONE, track: 0 }.unit(), None);
         assert!(!Owner::None.has_host());
+        // A start's sound speaks through the owner it keeps.
+        let wrapped = Owner::Start { start: Handle::new(0xef73, 1), own: Own::Unit(4) };
+        assert_eq!((wrapped.unit(), wrapped.host(), wrapped.has_host()), (Some(4), Some(Owner::Unit(4)), false));
+        assert_eq!(Owner::Started(Handle::NONE).host(), None);
     }
 
     #[test]
