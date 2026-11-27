@@ -34,6 +34,15 @@ pub struct FakeGame {
     /// The script's carrier engine index, for the stock record's fields.
     pub carrier: u8,
     pub round_time_left: i32,
+    /// The clock each round starts with: `round_time_left` at a round's
+    /// start ([`FakeGame::next_round`]).
+    pub round_time: i32,
+    /// The rounds played before this one: the engine globals' `E+0x6e`.
+    pub rounds_played: u32,
+    /// Whether the script called `next_round` this round: the engine's
+    /// round state asked for the round's end. [`FakeGame::take_round_end`]
+    /// takes it.
+    pub round_ending: bool,
     pub squad_alive: [i32; 16],
     /// Whether each kit squad is fighting, and its strength as a raw
     /// `fixed` fraction of its full count (`squad_fighting`,
@@ -729,6 +738,31 @@ impl FakeGame {
         self.variant("lives") > 0 && self.players.get(&p).is_some_and(|v| v.lives <= 0)
     }
 
+    /// Whether the script ended the round with `next_round` since the last
+    /// call: `scenario::step` then ends it and starts the next.
+    pub fn take_round_end(&mut self) -> bool {
+        std::mem::take(&mut self.round_ending)
+    }
+
+    /// The next round begins, as the engine's round reset makes it
+    /// (docs/engine/notes/2026-11-27-next-round.md): one more round played,
+    /// the round's clock from the start, every player alive with the
+    /// variant's lives and out of every zone, nothing carried. Scores,
+    /// kills and deaths carry on.
+    pub fn next_round(&mut self) {
+        self.rounds_played += 1;
+        self.round_time_left = self.round_time;
+        let lives = self.variant("lives");
+        let slots: Vec<u8> = self.players.keys().copied().collect();
+        for p in slots {
+            self.down(p);
+            if let Some(q) = self.players.get_mut(&p) {
+                q.alive = true;
+                q.lives = lives;
+            }
+        }
+    }
+
     /// What the engine does after the handler of `input`: a quit removes
     /// the player and its unit, and the round's end ends the teams' spawn
     /// rules and bodies, as the VM's state does.
@@ -967,6 +1001,16 @@ impl Game for FakeGame {
         ) {
             if let Err(why) = self.drive(call) {
                 self.refused.push((call.entry.name, why.into()));
+            }
+            return;
+        }
+        // The engine asks for the round's end once: a second call in the
+        // same round is refused, as the host refuses it.
+        if call.entry.id == id::NEXT_ROUND {
+            if self.round_ending {
+                self.refused.push((call.entry.name, "the round is already ending".into()));
+            } else {
+                self.round_ending = true;
             }
             return;
         }
