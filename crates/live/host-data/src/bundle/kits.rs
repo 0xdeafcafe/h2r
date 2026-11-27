@@ -28,9 +28,12 @@ pub(super) struct Staged {
 }
 
 /// Build each map's kit into `staging/firefight`, add the packages and the
-/// index to `payload`.
+/// index to `payload`. `elite` is the disc's campaign map the kits' Elite
+/// takes its behaviour rows from (`firefight_kit::ELITE_DONOR_MAP`);
+/// without it, every map is refused by name.
 pub(super) fn stage(
     maps: &[KitMap],
+    elite: Option<&Source>,
     staging: &Path,
     payload: &mut Vec<Payload>,
 ) -> Result<Staged, Error> {
@@ -38,6 +41,18 @@ pub(super) fn stage(
     crate::private_dir(&out, false)?;
     let mut index = KitIndex { kit: firefight_kit::KIT_VERSION, maps: BTreeMap::new() };
     let mut refused = Vec::new();
+    let elite = match elite {
+        Some(source) => {
+            let mut bytes = Vec::new();
+            source.open()?.read_to_end(&mut bytes)?;
+            Some(bytes)
+        }
+        None => None,
+    };
+    let elite = elite.as_deref().map(|bytes| firefight_kit::Donor {
+        name: firefight_kit::ELITE_DONOR_MAP,
+        bytes,
+    });
     for map in maps {
         let mut base = Vec::new();
         map.source.open()?.read_to_end(&mut base)?;
@@ -47,6 +62,7 @@ pub(super) fn stage(
             &map.key,
             firefight_kit::Mode::Kit,
             &firefight_kit::Config::default(),
+            elite.as_ref(),
             &out,
             &dir,
             false,

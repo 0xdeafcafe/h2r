@@ -335,7 +335,11 @@ mod tests {
             .filter(|t| [*b"scnr", *b"sbsp", *b"char"].contains(&t.group.0))
             .map(|t| (t.id, t.location.expect("a local tag")))
             .collect();
-        assert_eq!(ai_tags.len(), 4, "the scenario, two BSPs and the kit's character");
+        assert_eq!(
+            ai_tags.len(),
+            6,
+            "the scenario, two BSPs, the kit's character and the court's campaign Elite and its parent"
+        );
         for (id, loc) in &ai_tags {
             let at = loc.space.file_offset + u64::from(loc.address - loc.space.virtual_base);
             assert!(covered(&(at..at + u64::from(loc.size))), "{id}");

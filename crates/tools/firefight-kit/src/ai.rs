@@ -8,7 +8,7 @@ use h1campaign::scripts::compile::{Compiled, add_startup_squad, field};
 use map::build::Block;
 use map::{FourCC, Map, TagId, TagQuery};
 
-mod character;
+pub(crate) mod character;
 #[cfg(test)]
 mod tests;
 
@@ -55,6 +55,7 @@ pub(crate) fn prepare<R: Read + Seek>(
     drops: Vec<Zone>,
     bases: Vec<Zone>,
     elite: TagId,
+    elite_rows: &character::DonorRows,
     classes: &[(&str, TagId, Faction)],
     probe: bool,
 ) -> Result<AiBlocks, String> {
@@ -91,7 +92,8 @@ pub(crate) fn prepare<R: Read + Seek>(
         .find_map(|path| map.tag(TagQuery::NameInGroup(path, FourCC(*b"weap"))).ok())
         .ok_or("the base has no supported Elite weapon (plasma rifle, needler, plasma pistol or battle rifle)")?
         .id;
-    let character = character::elite(unit, weapon).map_err(|e| format!("author Elite: {e}"))?;
+    let character =
+        character::elite(unit, weapon, elite_rows).map_err(|e| format!("author Elite: {e}"))?;
     let mut fields = ScenarioBlocks { fields: Vec::new() };
     let weapon_index = weapon_slot(map, &root, weapon, &mut fields)?;
     let mut squads = squads(&drops, weapon_index, probe)?;
