@@ -5,8 +5,9 @@
 //! (`d3d::Device::prepare_external_sequence`), with nothing rebound:
 //!
 //! - layer 10: target 9's depth cleared to 1 and stencil 0 (the begin's
-//!   `0x00014b60`), the casters drawn into it, and its depth frozen into a
-//!   map (`native_shadows_draw::Gpu::freeze_depth_into`);
+//!   `0x00014b60`), the casters drawn into it, and the region they drew
+//!   frozen into a map on each target copy ([`Frozen`],
+//!   `gfx::depth_bits::DepthBits::convert_region`);
 //! - layer 11: the receivers on the view's target, sampling that map;
 //! - layer 14: target 1;
 //! - layers 12 and 13: the view's target.
@@ -127,11 +128,56 @@ impl d3d::ExternalPass for ClearDepth {
     }
 }
 
-/// Freezes a caster map's depth into `out`, which the receivers of the
-/// same sequence already bind.
+/// The caster maps a light froze, one per target copy: each copy records
+/// the whole sequence on its own attachments, its freeze before its
+/// receivers, so a receiver samples the map of the copy it records on.
+#[derive(Clone, Default)]
+pub(super) struct Frozen(Arc<Mutex<Vec<(d3d::TargetCopy, SampledMap)>>>);
+
+impl Frozen {
+    fn put(&self, copy: d3d::TargetCopy, map: SampledMap) {
+        let mut maps = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        maps.retain(|(c, _)| *c != copy);
+        maps.push((copy, map));
+    }
+
+    /// The map last frozen on `copy`.
+    pub(super) fn on(&self, copy: d3d::TargetCopy) -> Option<SampledMap> {
+        let maps = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        maps.iter().find(|(c, _)| *c == copy).map(|(_, map)| map.clone())
+    }
+}
+
+/// The texels of a copy's caster map: the caster's guest rect (from the
+/// target's top-left) scaled from the target's guest size to the copy's
+/// `texels`. `None` for an empty or offset rect, or one past the target.
+pub(super) fn frozen_size(request: &d3d::ExternalPassRequest, texels: (u32, u32)) -> Option<(u32, u32)> {
+    let (x, y, w, h) = request.rect;
+    let (gw, gh) = request.surface_size;
+    if x != 0 || y != 0 || w == 0 || h == 0 || w > gw || h > gh {
+        return None;
+    }
+    let [_, _, sw, sh] = d3d::external_viewport(request, texels);
+    let size = (sw as u32, sh as u32);
+    (size.0 != 0 && size.1 != 0 && size.0 <= texels.0 && size.1 <= texels.1).then_some(size)
+}
+
+/// The depth-bits pipeline of `device`, made once per device.
+fn depth_bits(device: &wgpu::Device) -> Arc<gfx::depth_bits::DepthBits> {
+    static BITS: Mutex<Vec<(wgpu::Device, Arc<gfx::depth_bits::DepthBits>)>> = Mutex::new(Vec::new());
+    let mut bits = BITS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, b)) = bits.iter().find(|(d, _)| d == device) {
+        return Arc::clone(b);
+    }
+    let b = Arc::new(gfx::depth_bits::DepthBits::on_device(device));
+    bits.push((device.clone(), Arc::clone(&b)));
+    b
+}
+
+/// Freezes the region of a caster map's depth its casters drew, on each
+/// copy at that copy's texels, for the receivers after it ([`Frozen`]).
 struct FreezeDepth {
-    gpu: crate::native_shadows_draw::SharedGpu,
-    out: wgpu::Texture,
+    frozen: Frozen,
 }
 
 impl d3d::ExternalPass for FreezeDepth {
@@ -156,27 +202,33 @@ impl d3d::ExternalPass for FreezeDepth {
         request: d3d::ExternalPassRequest,
     ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
         let depth = t.depth.texture().clone();
-        if t.size != request.surface_size
-            || (depth.width(), depth.height()) != (self.out.width(), self.out.height())
-        {
-            return Some(Err("a scaled scene light caster map"));
-        }
+        let Some(size) = frozen_size(&request, t.size)
+            .filter(|&(w, h)| w <= depth.width() && h <= depth.height())
+        else {
+            return Some(Err("a scene light caster map outside its target"));
+        };
         if depth.format() != wgpu::TextureFormat::Depth32FloatStencil8
             || !depth.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
+            || depth.sample_count() != 1
         {
             return Some(Err("a scene light caster map that cannot be sampled"));
         }
-        let (gpu, out, device) = (self.gpu.clone(), self.out.clone(), t.device.clone());
-        if gpu.lock().map_or(true, |g| g.context().device != device) {
-            return Some(Err("a scene light caster map on another device"));
-        }
+        let out = gfx::depth_bits::DepthBits::output(&t.device, size);
+        self.frozen.put(
+            t.copy,
+            SampledMap {
+                kind: MapKind::Depth,
+                view: out.create_view(&Default::default()),
+                size,
+            },
+        );
+        let (bits, device, queue) = (depth_bits(&t.device), t.device.clone(), t.queue.clone());
         Some(Ok(d3d::backend::ExternalEncoded {
             ranges: 1,
             draws: 1,
             passes: 0,
             commands: Box::new(move |encoder| {
-                let gpu = gpu.lock().unwrap_or_else(|e| e.into_inner());
-                gpu.freeze_depth_into(&device, encoder, &depth, &out);
+                bits.convert_region(&device, &queue, encoder, &depth, &out);
             }),
         }))
     }
@@ -245,26 +297,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 rect: (0, 0, w, h),
             })
         };
-        // The frozen map, made now so the receivers can bind it.
-        let frozen = match caster_size {
-            Some((w, h)) => {
-                let gpu = crate::native_shadows_glue::scene_gpu().ok_or(Keep::Shadow("device"))?;
-                let device = gpu
-                    .lock()
-                    .map_err(|_| Keep::Shadow("device"))?
-                    .context()
-                    .device;
-                let out = gfx::depth_bits::DepthBits::output(&device, (w, h));
-                let map = SampledMap {
-                    kind: MapKind::Depth,
-                    view: out.create_view(&Default::default()),
-                    size: (w, h),
-                };
-                Some((gpu, out, map))
-            }
-            None => None,
-        };
-        let map = frozen.as_ref().map(|(_, _, map)| map.clone());
+        // Each copy's frozen map, filled as that copy records its freeze.
+        let frozen = caster_size.map(|_| Frozen::default());
         let plan = |ranges| d3d::ExternalPlan {
             stage: timeline::native::Stage::Lights,
             view,
@@ -280,17 +314,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                     plan: plan(1),
                     pass: Box::new(ClearDepth),
                 },
-                Op::Freeze(n) => {
-                    let (gpu, out, _) = frozen.as_ref().ok_or(Keep::Shadow("state"))?;
-                    d3d::ExternalStep {
-                        targets: targets(n)?,
-                        plan: plan(1),
-                        pass: Box::new(FreezeDepth {
-                            gpu: gpu.clone(),
-                            out: out.clone(),
-                        }),
-                    }
-                }
+                Op::Freeze(n) => d3d::ExternalStep {
+                    targets: targets(n)?,
+                    plan: plan(1),
+                    pass: Box::new(FreezeDepth {
+                        frozen: frozen.clone().ok_or(Keep::Shadow("state"))?,
+                    }),
+                },
                 Op::Draw(n, attach) => {
                     let group = &passes[n].group;
                     if group.entries.is_empty() {
@@ -314,7 +344,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                             view,
                             group,
                             Some(c),
-                            ShadowMap::Given(map.clone()),
+                            ShadowMap::Frozen(frozen.clone()),
                             rect,
                         )?,
                     };
@@ -397,6 +427,54 @@ mod tests {
             ops(&layers).unwrap(),
             [Op::Draw(0, Attach::View), Op::Draw(1, Attach::Target(1)), Op::Draw(2, Attach::View)]
         );
+    }
+
+    fn request(rect: (u32, u32, u32, u32), surface: (u32, u32)) -> d3d::ExternalPassRequest {
+        d3d::ExternalPassRequest {
+            rect,
+            surface_size: surface,
+            z_scale: 1.0,
+            display_projection_factor: 1.0,
+        }
+    }
+
+    #[test]
+    fn each_copy_freezes_the_casters_region_at_its_own_scale() {
+        // A 1x copy of a target the casters fill.
+        assert_eq!(frozen_size(&request((0, 0, 512, 512), (512, 512)), (512, 512)), Some((512, 512)));
+        // The display copy at render scale 2 freezes twice the texels.
+        assert_eq!(frozen_size(&request((0, 0, 512, 512), (512, 512)), (1024, 1024)), Some((1024, 1024)));
+        // A caster map smaller than its target (the shadow setup's size)
+        // takes the top-left region, at 1x and scaled.
+        assert_eq!(frozen_size(&request((0, 0, 256, 128), (512, 512)), (512, 512)), Some((256, 128)));
+        assert_eq!(frozen_size(&request((0, 0, 256, 128), (512, 512)), (1536, 1536)), Some((768, 384)));
+    }
+
+    #[test]
+    fn a_caster_region_off_its_targets_corner_or_past_it_freezes_nothing() {
+        assert_eq!(frozen_size(&request((8, 0, 256, 256), (512, 512)), (512, 512)), None);
+        assert_eq!(frozen_size(&request((0, 0, 1024, 512), (512, 512)), (512, 512)), None);
+        assert_eq!(frozen_size(&request((0, 0, 0, 512), (512, 512)), (512, 512)), None);
+    }
+
+    #[test]
+    fn a_receiver_samples_the_map_frozen_on_its_own_copy() {
+        let Ok(ctx) = gfx::GfxContext::headless() else { return };
+        let map = |size| SampledMap {
+            kind: MapKind::Depth,
+            view: gfx::depth_bits::DepthBits::output(&ctx.device, size).create_view(&Default::default()),
+            size,
+        };
+        let frozen = Frozen::default();
+        assert!(frozen.on(d3d::TargetCopy::Display).is_none(), "nothing frozen yet");
+        frozen.put(d3d::TargetCopy::Reference, map((512, 512)));
+        frozen.put(d3d::TargetCopy::Display, map((1024, 1024)));
+        assert_eq!(frozen.on(d3d::TargetCopy::Reference).unwrap().size, (512, 512));
+        assert_eq!(frozen.on(d3d::TargetCopy::Display).unwrap().size, (1024, 1024));
+        // A replay freezes again: the copy's map is the newest.
+        frozen.put(d3d::TargetCopy::Display, map((1024, 512)));
+        assert_eq!(frozen.on(d3d::TargetCopy::Display).unwrap().size, (1024, 512));
+        assert_eq!(frozen.0.lock().unwrap().len(), 2);
     }
 
     #[test]

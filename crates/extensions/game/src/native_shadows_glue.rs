@@ -70,7 +70,8 @@ struct Glue<B: d3d::backend::Backend> {
     gate: Arc<Gate>,
     sequence: AtomicU64,
 }
-fn enabled() -> bool {
+/// Whether the native shadows are on (`native_shadows::on`).
+pub(crate) fn enabled() -> bool {
     hooks::Switches::from_env().is_ok_and(|s| native_shadows::on(&s))
 }
 
@@ -95,7 +96,6 @@ pub fn install<B: d3d::backend::Backend + 'static>(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .add_draw_admission(gate.clone());
-        *SCENE_GPU.lock().unwrap_or_else(|e| e.into_inner()) = gate.gpu.clone();
         native_shadows::set_host(Arc::new(Glue {
             device: Arc::clone(device),
             gate: Arc::clone(&gate),
@@ -103,19 +103,9 @@ pub fn install<B: d3d::backend::Backend + 'static>(
         }));
         Some(gate)
     } else {
-        *SCENE_GPU.lock().unwrap_or_else(|e| e.into_inner()) = None;
         native_shadows::clear_host();
         None
     }
-}
-
-static SCENE_GPU: Mutex<Option<SharedGpu>> = Mutex::new(None);
-
-/// The shadow stage's GPU, for a light drawn from the scene that freezes
-/// its own caster map (`native_lights_glue::scene`); `None` off a single
-/// 1x backend.
-pub(crate) fn scene_gpu() -> Option<SharedGpu> {
-    SCENE_GPU.lock().ok()?.clone()
 }
 
 fn format(mem: &DeviceMemory<'_>, header: u32) -> Option<gfx::D3DFormat> {

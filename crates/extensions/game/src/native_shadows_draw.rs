@@ -65,29 +65,6 @@ impl Gpu {
         self.ctx.clone()
     }
 
-    /// Records the conversion of the caster depth `depth` (a
-    /// `Depth32FloatStencil8` attachment that can be sampled) into `out`,
-    /// a [`gfx::depth_bits::DepthBits::output`] of its size: the frozen
-    /// map a receiver of the same sequence samples. `false`, nothing
-    /// recorded, for another device, format or size.
-    pub fn freeze_depth_into(
-        &self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        depth: &wgpu::Texture,
-        out: &wgpu::Texture,
-    ) -> bool {
-        if device != &self.ctx.device
-            || depth.format() != wgpu::TextureFormat::Depth32FloatStencil8
-            || !depth.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
-            || (depth.width(), depth.height()) != (out.width(), out.height())
-        {
-            return false;
-        }
-        self.bits.convert_into(&self.ctx, encoder, depth, out);
-        true
-    }
-
     fn flush_uploads(&mut self) {
         self.renderer.flush_uploads(&self.ctx.queue);
         self.shaders.flush_uploads(&self.ctx);
