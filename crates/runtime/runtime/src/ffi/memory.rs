@@ -57,11 +57,15 @@ thread_local! {
 const GATE_HELD: u32 = 1;
 const GATE_WANTED: u32 = 2;
 
+/// One dirty bit per 4 KiB physical page of guest RAM, 64 to a word
+/// (`H2_DIRTY_WORDS` in `h2fastmem.h`).
+pub(crate) const DIRTY_WORDS: usize = crate::guest::RAM_SIZE / 4096 / 64;
+
 #[repr(C)]
 pub struct MemoryData {
     pages: *const crate::guest::FastPage,
     ram: *mut u8,
-    dirty: [u64; 256],
+    dirty: [u64; DIRTY_WORDS],
     dirty_lo: u32,
     dirty_hi: u32,
     watching: u32,
@@ -73,8 +77,8 @@ impl Default for MemoryData {
         Self {
             pages: std::ptr::null(),
             ram: std::ptr::null_mut(),
-            dirty: [0; 256],
-            dirty_lo: 256,
+            dirty: [0; DIRTY_WORDS],
+            dirty_lo: DIRTY_WORDS as u32,
             dirty_hi: 0,
             watching: 0,
             #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
@@ -219,7 +223,7 @@ impl Memory {
                 bits &= bits - 1;
             }
         }
-        data.dirty_lo = 256;
+        data.dirty_lo = DIRTY_WORDS as u32;
         data.dirty_hi = 0;
         result
     }
@@ -654,16 +658,16 @@ pub unsafe extern "C" fn h2abi_v1_fast_release(exec: *mut crate::ExecCtxOpaque) 
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(std::mem::offset_of!(MemoryData, watching) == 2072);
+    assert!(std::mem::offset_of!(MemoryData, watching) == 16 + 8 * DIRTY_WORDS + 8);
     #[cfg(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64")))]
     {
-        assert!(std::mem::offset_of!(MemoryData, flat) == 2080);
+        assert!(std::mem::offset_of!(MemoryData, flat) == 32 + 8 * DIRTY_WORDS);
         assert!(size_of::<crate::flat::View>() == 40);
         assert!(std::mem::offset_of!(crate::flat::View, cold_stores) == 24);
-        assert!(size_of::<MemoryData>() == 2120);
+        assert!(size_of::<MemoryData>() == 72 + 8 * DIRTY_WORDS);
     }
     #[cfg(not(any(target_os = "macos", all(target_os = "linux", target_arch = "x86_64"))))]
-    assert!(size_of::<MemoryData>() == 2080);
+    assert!(size_of::<MemoryData>() == 32 + 8 * DIRTY_WORDS);
     assert!(std::mem::offset_of!(MemoryShared, data) == 8);
     assert!(size_of::<FastAccess>() == 32);
 };

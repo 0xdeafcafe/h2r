@@ -14,11 +14,19 @@
 #define H2FASTMEM_H
 #include "h2abi.h"
 #include <string.h>
+/* Guest RAM in bytes: the bound on a fast page's physical address, and the
+ * stride between the watched-store mirror's planes. Equals
+ * runtime::guest::RAM_SIZE (map::arena::RAM); a runtime test pins it. */
+#ifndef H2_RAM_SIZE
+#define H2_RAM_SIZE UINT32_C(0x04800000)
+#endif
+/* One dirty bit per 4 KiB physical page of guest RAM, 64 to a word. */
+#define H2_DIRTY_WORDS (H2_RAM_SIZE >> 18)
 typedef struct H2FastPage { uint32_t physical, permissions; } H2FastPage;
 typedef struct H2MemoryData {
     const H2FastPage *pages;
     uint8_t *ram;
-    uint64_t dirty[256];
+    uint64_t dirty[H2_DIRTY_WORDS];
     uint32_t dirty_lo, dirty_hi, watching;
 } H2MemoryData;
 typedef struct H2MemoryShared { uint32_t gate; H2MemoryData data; } H2MemoryShared;
@@ -28,7 +36,7 @@ struct H2FastAccess {
     uint32_t *preempt;
 };
 #if UINTPTR_MAX == UINT64_MAX
-_Static_assert(sizeof(H2MemoryData) == 2080 && sizeof(H2MemoryShared) == 2088, "fast memory layout");
+_Static_assert(sizeof(H2MemoryData) == 32 + 8 * H2_DIRTY_WORDS && sizeof(H2MemoryShared) == 40 + 8 * H2_DIRTY_WORDS, "fast memory layout");
 _Static_assert(offsetof(H2MemoryShared, data) == 8 && sizeof(H2FastAccess) == 32, "fast context layout");
 #endif
 #ifndef H2_ACCOUNTING
@@ -237,12 +245,6 @@ static inline H2Mem *h2_mem_block(ExecCtxOpaque *ctx) {
 #else
 #define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = NULL; H2Gate h2g_ = {.dirtied = UINT32_MAX}; (void)h2_mem_
 #define H2_FAST_RELEASE() ((void)0)
-#endif
-/* Guest RAM in bytes: the bound on a fast page's physical address, and the
- * stride between the watched-store mirror's planes. Equals
- * runtime::guest::RAM_SIZE (map::arena::RAM); a runtime test pins it. */
-#ifndef H2_RAM_SIZE
-#define H2_RAM_SIZE UINT32_C(0x04800000)
 #endif
 
 static inline void h2_fast_charge(H2View *f) {
@@ -734,8 +736,8 @@ typedef struct H2FlatMemoryData {
     const uint64_t *software_pages;
 } H2FlatMemoryData;
 #if UINTPTR_MAX == UINT64_MAX
-_Static_assert(offsetof(H2FlatMemoryData, flat) == 2080 && sizeof(H2FlatView) == 24, "flat memory layout");
-_Static_assert(offsetof(H2FlatMemoryData, cold_stores) == 2104 && sizeof(H2FlatMemoryData) == 2120, "flat watch layout");
+_Static_assert(offsetof(H2FlatMemoryData, flat) == 32 + 8 * H2_DIRTY_WORDS && sizeof(H2FlatView) == 24, "flat memory layout");
+_Static_assert(offsetof(H2FlatMemoryData, cold_stores) == 56 + 8 * H2_DIRTY_WORDS && sizeof(H2FlatMemoryData) == 72 + 8 * H2_DIRTY_WORDS, "flat watch layout");
 #endif
 
 static H2_ALWAYS_INLINE uint8_t *h2_flat_span(const H2Gate *g, uint32_t addr,

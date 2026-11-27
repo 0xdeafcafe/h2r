@@ -41,7 +41,7 @@ static void translated_spans(H2FastAccess *f, H2FastPage *pages, uint8_t *ram) {
     /* Drain, remap, and reverse permissions between two holds. No cached
      * permission, pointer or previous dirty mark can survive adoption. */
     d->dirty[0] = 0;
-    d->dirty_lo = 256;
+    d->dirty_lo = H2_DIRTY_WORDS;
     d->dirty_hi = 0;
     pages[0] = (H2FastPage){0, 2};
     pages[0xfffff] = (H2FastPage){0, 1};
@@ -54,7 +54,7 @@ static void translated_spans(H2FastAccess *f, H2FastPage *pages, uint8_t *ram) {
     h2_gate_drop(f, &g);
     f->accesses = 0;
     d->dirty[0] = 0;
-    d->dirty_lo = 256;
+    d->dirty_lo = H2_DIRTY_WORDS;
     d->dirty_hi = 0;
 }
 
@@ -95,7 +95,7 @@ static void flat_spans(H2FastPage *pages, uint8_t *ram) {
     H2FastAccess f = {.budget = UINT64_MAX};
     ext.prefix.watching |= UINT32_C(0x40000000);
     ext.prefix.ram = ram;
-    ext.prefix.dirty_lo = 256;
+    ext.prefix.dirty_lo = H2_DIRTY_WORDS;
     ext.flat.stores = NULL;
     ext.cold_stores = ram;
     ext.software_pages = software;
@@ -120,7 +120,7 @@ int main(void) {
     pages[3] = pages[1]; /* a virtual alias */
     H2MemoryShared m = {0};
     m.data.pages = pages; m.data.ram = ram; m.data.watching = 1;
-    m.data.dirty_lo = 256;
+    m.data.dirty_lo = H2_DIRTY_WORDS;
     uint32_t preempt = 0;
     H2FastAccess f = {&m, 0, 100, &preempt};
     flat_spans(pages, ram);
