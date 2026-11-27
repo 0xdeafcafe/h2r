@@ -101,6 +101,48 @@ Still the guest's: the handlers' material setup (`0x00174f80`,
 `0x00174420` and `0x00040e30`.
 
 
+## R2's geometry arm
+
+Built (**Code**): `render-bridge/src/effects_shadow/geometry.rs`. The
+standard transparent handler `0x00041020` runs `0x00040f60` with the build
+`0x0004cbf0` and the draw `0x0004d0b0`: it takes the shader datum (`+0x24`)
+and render argument (`+0x28`), reads the template's layer-15 word (pass
+count `>> 9`), and per pass `i` calls the build `(shader, 0, 0, 15, i,
+argument, slot)` and, when its AL is set, the draw. Layer 15 takes the
+build's generic arm (the jump table `0x0004d054` sends layers 4 to 15 to
+`0x0004ce0f`), which `native_world::scene_build::build` ports for layers 1,
+3, 5 to 8 and 16 and now for 15.
+
+| Compared | Rust | At |
+|---|---|---|
+| Passes | the template's layer-15 count | the handler's return: the builds it called, their pass numbers in order |
+| Build | `scene_build::build` for layer 15 | each build's return (`0x00040ff7`): the 24-byte sort slot and AL |
+
+The arm opens on sampled frames (the shared 1 in 64) and has a gate of its
+own: 16 sampled frames in a row compared clean, then it answers.
+
+A difference stops it
+(`geometry_fallback`); a refusal is counted and leaves that build to the
+guest. While it answers, on the frames not sampled, the handler's build does
+not run: the slot and AL are made in Rust and the build returns. The draw
+`0x0004d0b0`, the material's textures, samplers and constants stay the
+guest's. The build's answer hooks in `native_world/scene_walk.rs`
+(`native_world_build_entry`), so the arm runs where the native world is on.
+
+Refusals, by name, `geometry_refused_<name>`: `fault`, `particle_material`
+(`PRTM`, `prt3`: a virtual call, left to the particle lane), `not_shader`,
+`record`, `passes`, `layout`. `render.stats`, each
+`layer_plan_15_effects_shadow_<outcome>`: `geometry_{build,passes}_matched`,
+`geometry_{build,passes}_mismatched_<field>` (`slot`, `return`, `fault`,
+`count`, `order`), `geometry_refused_<name>`, `geometry_opened`,
+`geometry_fallback`, `answer_geometry`, `geometry_{handler,build}_unbalanced`;
+kept builds count `scene_kept_15_geometry_<name>`.
+
+Not built: the draw's state. The shader datum's textures, samplers and
+constants are still made by the guest's `0x0004d0b0`; the native material
+translation (`native_world_materials.md`) is the Rust form to compare them
+with. Tests: `effects_shadow/geometry/tests.rs`.
+
 ## R2's decals and weather
 
 Built (**Code**): the scene holds both as typed items, read at the view's
