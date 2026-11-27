@@ -854,3 +854,46 @@ fn query_statistics_checks_length_and_counts_what_the_allocators_hold() {
     assert_eq!(after[3] - before[3], 0x2000, "committed bytes");
     assert_eq!(after[4] - before[4], 0x1_0000, "reserved bytes");
 }
+
+/// The flat RAM window holds a 16 KiB host page only when its guest pages
+/// sit in one physical host page at their own offsets
+/// (`Guest::physical_beside`), so committed pages are placed that way,
+/// whether they come in one commit or several with other allocations
+/// between them.
+#[test]
+fn committed_pages_of_one_host_page_share_one_physical_host_page() {
+    let mut h = Harness::new();
+    let (base, size) = (DATA, DATA + 4);
+    let allocate = |h: &mut Harness, va: u32, len: u32, flags: u32| {
+        h.set(base, va);
+        h.set(size, len);
+        assert_eq!(h.success(184, &[base, 0, size, flags, PAGE_READWRITE]), status::SUCCESS);
+    };
+    let physical = |h: &Harness, va: u32| {
+        let memory = h.runtime.memory();
+        let m = memory.mappings().iter().find(|m| m.virtual_start == va).cloned().unwrap();
+        m.physical_start
+    };
+    allocate(&mut h, 0x1200_0000, 0x1_0000, MEM_RESERVE);
+    allocate(&mut h, 0x1200_1000, 0x1000, MEM_COMMIT);
+    // Another allocation takes physical memory in between.
+    allocate(&mut h, 0x1300_0000, 0x1000, MEM_RESERVE | MEM_COMMIT);
+    for va in [0x1200_2000, 0x1200_0000, 0x1200_3000] {
+        allocate(&mut h, va, 0x1000, MEM_COMMIT);
+    }
+    let first = physical(&h, 0x1200_0000);
+    assert_eq!(first % 0x4000, 0, "congruent with its virtual address");
+    for i in 1..4 {
+        assert_eq!(physical(&h, 0x1200_0000 + i * 0x1000), first + i * 0x1000, "page {i}");
+    }
+    assert_ne!(physical(&h, 0x1300_0000) & !0x3fff, first, "the other allocation's own block");
+    // One commit of two host pages: each is one physical host page.
+    allocate(&mut h, 0x1400_0000, 0x8000, MEM_RESERVE | MEM_COMMIT);
+    for group in [0x1400_0000u32, 0x1400_4000] {
+        let p = physical(&h, group);
+        assert_eq!(p % 0x4000, 0);
+        for i in 1..4 {
+            assert_eq!(physical(&h, group + i * 0x1000), p + i * 0x1000, "{group:#x} page {i}");
+        }
+    }
+}

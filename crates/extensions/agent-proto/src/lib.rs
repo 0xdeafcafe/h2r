@@ -254,6 +254,11 @@ pub mod method {
     /// mapped pages outside the window, bytes the congruent allocator
     /// skipped; where a slow page shows.
     pub const PROFILE_MEMORY: &str = "profile.memory";
+    /// The pages outside the flat RAM window by reason and owner, and the
+    /// slow-access census (`{"top": 20, "census": true}`): the guest pages
+    /// generated code reached the checked helpers for, and why
+    /// (`runtime::slow_pages`).
+    pub const PROFILE_MEMORY_PAGES: &str = "profile.memory.pages";
     /// The fault census (`{"top": 20}`): every guest memory fault, who
     /// raised it, and whether guest execution went on from its state
     /// (`runtime::fault_census`).

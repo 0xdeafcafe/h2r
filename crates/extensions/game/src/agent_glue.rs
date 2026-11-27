@@ -668,10 +668,101 @@ pub fn add_runtime_methods(agent: &agent::Agent, rt: &std::sync::Arc<runtime::Ru
     agent::collision_trace_query::install(agent, rt);
     agent::collision_sources::install(agent, rt);
     let rt = std::sync::Arc::clone(rt);
+    let faults = std::sync::Arc::clone(&rt);
     agent.add_method(method::PROFILE_FAULTS, Access::Read, move |v| {
         let top = top_param(&v, 20)?;
-        Ok(faults_json(&rt.fault_census().snapshot(), rt.module_features(), top))
+        Ok(faults_json(&faults.fault_census().snapshot(), faults.module_features(), top))
     });
+    agent.add_method(method::PROFILE_MEMORY_PAGES, Access::Read, move |v| {
+        memory_pages(&rt, &v)
+    });
+}
+
+/// `profile.memory.pages {top, census}`: the pages outside the flat RAM
+/// window by reason and owner, and the slow-access census's `top` pages
+/// (`runtime::slow_pages`), each as the inline paths see it. `census: true`
+/// starts the census from zero, `false` stops it; absent leaves it.
+fn memory_pages(rt: &runtime::Runtime, v: &Value) -> std::result::Result<Value, RpcError> {
+    let mut rest = v.clone();
+    let census = match rest.as_object_mut().and_then(|o| o.remove("census")) {
+        None => None,
+        Some(Value::Bool(b)) => Some(b),
+        Some(_) => return Err(RpcError::new(code::INVALID_PARAMS, "census: true or false")),
+    };
+    let top = top_param(&rest, 20)?;
+    if let Some(on) = census {
+        runtime::slow_pages::arm(on);
+    }
+    let slow = runtime::slow_pages::snapshot(top);
+    let memory = rt.memory();
+    let mapping = |m: &runtime::guest::Mapping| {
+        json!({
+            "va": format!("{:#010x}", m.virtual_start),
+            "len": m.len,
+            "physical": format!("{:#010x}", m.physical_start),
+        })
+    };
+    let runs = memory.outside_runs();
+    let mut by_reason = serde_json::Map::new();
+    for r in &runs {
+        let n = by_reason.entry(r.reason.name()).or_insert(json!(0));
+        *n = json!(n.as_u64().unwrap_or(0) + u64::from(r.pages));
+    }
+    let mut largest: Vec<_> = runs.iter().collect();
+    largest.sort_by_key(|r| (std::cmp::Reverse(r.pages), r.va));
+    let outside: Vec<Value> = largest
+        .into_iter()
+        .take(top)
+        .map(|r| {
+            json!({
+                "va": format!("{:#010x}", r.va),
+                "pages": r.pages,
+                "reason": r.reason.name(),
+                "owner": r.owner,
+                "mapping": mapping(&r.mapping),
+            })
+        })
+        .collect();
+    let pages: Vec<Value> = slow
+        .top
+        .iter()
+        .map(|p| {
+            let view = memory.page_view(p.va);
+            json!({
+                "va": format!("{:#010x}", p.va),
+                "reads": p.reads,
+                "writes": p.writes,
+                "crossings": p.crossings,
+                "gate_busy": p.gate_busy,
+                "no_view": p.no_view,
+                "pc": format!("{:#010x}", p.pc),
+                "fast": view.fast.map(|(physical, permissions)| json!({
+                    "physical": format!("{physical:#010x}"),
+                    "read": permissions & 1 != 0,
+                    "write": permissions & 2 != 0,
+                })),
+                "trapped": {"read": view.trapped.0, "write": view.trapped.1},
+                "outside": view.outside.map(|r| r.name()),
+                "owner": view.owner,
+                "mapping": view.mapping.as_ref().map(mapping),
+            })
+        })
+        .collect();
+    Ok(json!({
+        "outside": {
+            "pages": runs.iter().map(|r| u64::from(r.pages)).sum::<u64>(),
+            "runs": runs.len(),
+            "by_reason": by_reason,
+            "largest": outside,
+        },
+        "census": {
+            "armed": slow.armed,
+            "reads": slow.reads,
+            "writes": slow.writes,
+            "pages": slow.pages,
+            "top": pages,
+        },
+    }))
 }
 
 /// `{"top": n}` (1 to 500, `default` when absent), and no other field.
@@ -1331,6 +1422,26 @@ mod tests {
         assert_eq!(r["result"]["imprecise_faults"], false, "{r}");
         assert!(r["result"]["top"].is_array(), "{r}");
         let r = call(method::PROFILE_FAULTS, json!({"top": 3, "x": 1}));
+        assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        {
+            let mut g = rt.memory();
+            // Residue 0x1000 under a residue-0 page: outside on any host
+            // with 16 KiB pages, inside on 4 KiB ones.
+            g.map(0x0002_0000, 0x1000, 0x0020_1000, runtime::guest::Permissions::RW).unwrap();
+        }
+        let r = call(method::PROFILE_MEMORY_PAGES, json!({"top": 5, "census": false}));
+        assert_eq!(r["result"]["census"]["armed"], false, "{r}");
+        assert!(r["result"]["census"]["top"].is_array(), "{r}");
+        assert!(r["result"]["outside"]["largest"].is_array(), "{r}");
+        let outside = r["result"]["outside"]["pages"].as_u64().unwrap();
+        assert!(outside <= 1, "{r}");
+        if outside == 1 {
+            assert_eq!(r["result"]["outside"]["by_reason"]["non_congruent"], 1, "{r}");
+            assert_eq!(r["result"]["outside"]["largest"][0]["va"], "0x00020000", "{r}");
+        }
+        let r = call(method::PROFILE_MEMORY_PAGES, json!({"census": 1}));
+        assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
+        let r = call(method::PROFILE_MEMORY_PAGES, json!({"x": 1}));
         assert_eq!(r["error"]["code"], code::INVALID_PARAMS, "{r}");
         let r = call(method::RENDER_FRAME, Value::Null);
         assert_eq!(r["result"]["armed"], false, "{r}");

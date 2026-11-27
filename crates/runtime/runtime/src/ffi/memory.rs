@@ -223,6 +223,12 @@ impl Memory {
         data.dirty_hi = 0;
         result
     }
+    /// Another thread holds the inline-memory gate, or a guard waits for
+    /// it: what a generated access that fell to the helper found
+    /// ([`crate::slow_pages`]).
+    pub(crate) fn gate_busy(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed) && self.shared.gate.load(Ordering::Relaxed) != 0
+    }
     /// Take the gate without the Guest mutex, if it is entirely clear.
     fn try_gate(&self) -> bool {
         self.enabled.load(Ordering::Acquire)

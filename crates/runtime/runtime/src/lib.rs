@@ -36,6 +36,7 @@ pub mod preempt;
 mod return_observers;
 pub mod runner;
 pub mod services;
+pub mod slow_pages;
 pub mod trap;
 pub mod tsc;
 pub mod watch;

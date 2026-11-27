@@ -76,6 +76,16 @@ pub(crate) unsafe fn with_context<R>(
     unsafe { f(&mut *cpu, &mut *exec.cast::<ExecCtx>()) }
 }
 
+/// What a helper call from generated code found, for the slow-access
+/// census ([`crate::slow_pages`]): another thread's gate, or no RAM view.
+fn helper_seen(ctx: &ExecCtx) -> crate::slow_pages::Seen {
+    let rt = ctx.runtime();
+    crate::slow_pages::Seen {
+        gate_busy: rt.memory_state().gate_busy(),
+        no_view: !ctx.fast_memory_enabled || rt.flat_ram(),
+    }
+}
+
 fn status(ctx: &mut ExecCtx, pc: u32, result: Result<(), crate::GuestFault>) -> u32 {
     match result {
         Ok(()) => 0,
@@ -189,6 +199,7 @@ unsafe fn read(
     // Guest preflights the entire span before copying, so faults leave output
     // untouched without staging through a second host buffer.
     let out = unsafe { std::slice::from_raw_parts_mut(out, width as usize) };
+    crate::slow_pages::note(pc, addr, width, false, || helper_seen(&*ctx));
     // `_from`: the access trap (crate::trap) attributes it to `pc`.
     let result = ctx.memory().read_bytes_from(pc, addr, out, alignment);
     status(ctx, pc, result)
@@ -320,6 +331,7 @@ unsafe fn write(
     // SAFETY: the ABI guarantees width readable bytes disjoint from context.
     // Guest validates the complete write and retains its alias-aware barrier.
     let value = unsafe { std::slice::from_raw_parts(value, width as usize) };
+    crate::slow_pages::note(pc, addr, width, true, || helper_seen(&*ctx));
     let result = ctx.memory().write_bytes_from(pc, addr, value, alignment);
     status(ctx, pc, result)
 }
