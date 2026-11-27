@@ -780,8 +780,8 @@ const SETUP_ROWS: [&str; 5] = [
 /// The presses from the lobby's rows (the focus on `focus`) to Game
 /// Setup; its dialog line follows.
 fn to_game_setup(d: &mut Driver, focus: u32) -> Vec<String> {
+    assert!(presses(d, 8300, 11_000).is_empty(), "nothing is pressed before the lobby's rows");
     assert!(d.wants_rows(), "the drive waits on the lobby's rows");
-    assert!(presses(d, 8300, 11_000).is_empty(), "and presses nothing before them");
     d.rows(rows(&LOBBY_ROWS, focus));
     let p = presses(d, 11_100, 13_000);
     d.line(14_000, GAME_SETUP_DIALOG);
