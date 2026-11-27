@@ -27,6 +27,7 @@ use engine::testing::FakeGuest;
 use engine::entry::EntryFuture;
 use engine::points;
 use ir::interp::{Cpu, FlatMemory, Flow};
+use lifted::Code;
 use std::sync::Mutex;
 
 const RAM: usize = 8 << 20;
