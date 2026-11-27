@@ -1,10 +1,10 @@
 # Native shadows
 
-Status: Built. Replaces sorted BSP and model draws in layers 10, 11 and 14 on a single 1x retail GPU backend, draws whole groups of all three layers from the scene without guest geometry handlers, and replaces the object filter's quads; pixel parity and timing are not verified.
+Status: Built. Replaces sorted BSP and model draws in layers 10, 11 and 14 at any render scale, draws whole groups of all three layers from the scene without guest geometry handlers, and replaces the object filter's quads; pixel parity and timing are not verified.
 Code: `crates/rewrites/render-bridge/src/native_shadows.rs`, `crates/extensions/game/src/native_shadows_glue.rs`, `native_shadows_scope.rs`, `native_shadows_draw.rs`, `native_lights_glue.rs`, `crates/rewrites/native-render/src/shadows.rs`, `shadow_gpu.rs`, `shadow_look.rs`, `shadow_scene.rs`, `shadow_filter_gpu.rs`, `shadow_chain.rs`, `crates/extensions/game/src/native_shadow_chain.rs`. Tests: `crates/rewrites/native-render/tests/shadow_gpu.rs`, `native_render::shadow_look`, `shadow_scene`, `shadow_filter_gpu`, `light_gpu`, `crates/rewrites/render-bridge/tests/native_shadows.rs`, `crates/rewrites/engine/tests/shadow_constants*.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-The shadow draw stage consumes the gathered lists from [native-light-gather.md](native-light-gather.md). It keeps template selection, material setup, push-buffer decoding and vertex resolution, and replaces the resolved draws with independent GPU packets recorded into the D3D frame. A draw the stage cannot prove stays on D3D. At each layer's build, a whole scene group instead goes through `shadow_look` and `shadow_scene`: structure and model parts compile from the map, the group's projection fills `c[40..48]`, and `native_lights_glue::shadow_alone` seals the packet run before the guest entry loop is emptied. Receivers bind the boundary's frozen map. An object mask drawn alone takes a private chain: its casters, filter quads and final copy go into a pair the stage owns, and its receivers bind that mask with no freeze ([native-shadow-layers.md](native-shadow-layers.md), "A private chain"). The guest's target begin, clear and end still run. Part of [native-renderer.md](native-renderer.md); the light path it sits in is [native-lights.md](native-lights.md).
+The shadow draw stage consumes the gathered lists from [native-light-gather.md](native-light-gather.md). It keeps template selection, material setup, push-buffer decoding and vertex resolution, and replaces the resolved draws with independent GPU packets recorded into the D3D frame. A draw the stage cannot prove stays on D3D. At each layer's build, a whole scene group instead goes through `shadow_look` and `shadow_scene`: structure and model parts compile from the map, the group's projection fills `c[40..48]`, and `native_lights_glue::shadow_alone` seals the packet run before the guest entry loop is emptied. Receivers bind the boundary's frozen map. An object mask drawn alone takes a private chain: its casters, filter quads and final copy go into a pair the stage owns, and its receivers bind that mask with no freeze ([native-shadow-layers.md](native-shadow-layers.md), "A private chain"). The guest's target begin, clear and end still run. The object shadow list `0x000335e0` is a cut producer (`render_bridge::cut`, row `object_shadows`): the Rust list answers every call, its layers draw in slot 3 before layer 7, and a list, row gather or caster it cannot take is `scene_dropped_object_shadows`, never a guest body or a D3D draw. Part of [native-renderer.md](native-renderer.md); the light path it sits in is [native-lights.md](native-lights.md).
 
 ## How it works
 
@@ -93,6 +93,46 @@ the gather row and resolved sample in
 
 The main branch sets pass flags `0x14`, renders the layer-10 silhouette, calls `0x000222a0` for the two filter passes through targets 10 → 11 → 10, and applies layer 11 with the filtered target 10. The native freeze is ordered at the start of 11. A native caster can therefore share its map with D3D casters and with the guest filter. `light_gather::object_shadows::caster` drives admitted mask casters through projection setup and the tail at `0x0004a780`. A refused caster runs the guest function whole, including creature shadows. `object_shadows::run` restores both mode bytes after the last caster. Each object and each additional-caster suffix at `0x00030ed0` starts a new generation.
 
+### The object shadows from the scene
+
+`render_bridge::native_lights::object_shadow_scene` gathers the open
+view's object shadows (each `0x00032350`: its layer 10 and 11 groups and
+the filter between them) and hands them to the host in slot 3, ahead of
+layer 7's draw (`native_layers::before_layer`). The game host
+(`native_lights_glue`'s `draw_object_shadows`,
+`native_lights_glue/scene.rs`, `object_ops`) makes each shadow one
+external sequence, committed whole or not at all:
+
+- target 10 cleared to white with zero alpha;
+- the caster group drawn into it, colour only;
+- the filter quads over targets 10 and 11 (`native_shadows_glue`'s
+  `ShadowFilterPass` with `FilterDrawer::Scene`, one quad drawer per
+  device);
+- target 10's colour copied into a map on each target copy at its own
+  texels;
+- the layer 11 receivers on the view's target, sampling that copy's map.
+
+Under the scene path (`native_lights::scene_path_ready`) the caster body
+`0x00032350` (`engine::render::light_gather::object_shadows::caster`,
+`run_with`) stops after its item lists `0x00040e90`: its layer 10 begin,
+draw and end, the filter `0x000222a0`, layer 11 and the tail
+`0x0004a780` do not run. The volume, records, constants and shadow
+setup before them still run, so the lists, pass flags, definition and
+projection block are this caster's. `object_shadow_scene::cut` then plans
+the shadow from them as the cut light passes plan theirs
+(`typed_groups::plan` with `GroupSite::ObjectShadow`): layer 10 into
+target 10 and layer 11 on the view's target, when the casters hold layer
+10 and the receivers layer 11, with the published weight and the filter
+`scene_extract::light_groups::shadow_filter` computes. A shadow that does
+not plan is `scene_dropped_object_shadows`. Off the scene path the guest
+body draws its own layers and the host is not asked, so each shadow
+draws once. A creature's ground shadow, a shadow that is not a mask
+caster followed by its receivers, or a caster region off its target's
+corner refuses the shadow.
+`the_cut_casters_object_shadow_groups_equal_the_guests_layer_build`
+(`native_lights/walk.rs`) checks the planned groups against the guest's
+layer build.
+
 ## Interfaces
 
 `native_render::shadow_gpu::Producer` accepts the ordered caster batches on their encoder and returns a generation-owned `SampledMap`. The GPU differential (`crates/rewrites/native-render/tests/shadow_gpu.rs`) compares all four channels, including stencil for D24.
@@ -105,7 +145,7 @@ The shared sorted point is `LIGHT_GEOMETRY_DRAW` at `0x0004d0b0`; its seven stac
 
 ## Rules and limits
 
-Range admission requires the original sorted entry, matching shader and part, a proven target and pipeline, and every texture and scissor range. A missing freeze or resource, a changed owner or projection, a pending guest callback or an incomplete external recording leaves the draw with D3D. Scaled and E3 display copies and interpolated replay use the original renderer. The mixed GPU fixture runs a shadowed receiver, guest draws and a typed diffuse/specular light on one target. It compares the pixels against seven original D3D draws. A missing shadow map keeps its receiver on D3D. Missing specular indices return both layers of the typed light to their guest slots.
+Range admission requires the original sorted entry, matching shader and part, a proven target and pipeline, and every texture and scissor range. A missing freeze or resource, a changed owner or projection, a pending guest callback or an incomplete external recording leaves the draw with D3D. A scaled view draws its shadow layers from the scene like an unscaled one, and the device side records on each target copy at its own size: a range's scissors scale with `RenderScale` from the guest surface to the copy, `Freeze` and a private chain's filter keep one map per copy size (`native_shadows_draw::Maps`), and a private chain owns one `Pair` per copy (`Pair::scaled`, whose filter quads stay in guest units). The mixed GPU fixture runs a shadowed receiver, guest draws and a typed diffuse/specular light on one target. It compares the pixels against seven original D3D draws. A missing shadow map keeps its receiver on D3D. Missing specular indices return both layers of the typed light to their guest slots.
 
 ## Not verified
 

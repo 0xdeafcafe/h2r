@@ -5,10 +5,14 @@
 //!
 //! Registers: ebx, esi, edi, ebp and esp are as retail leaves them (cdecl,
 //! the caller pops the nine arguments). eax is the entry's return. ecx,
-//! edx and the arithmetic flags are scratch and left undefined.
+//! edx and the arithmetic flags are scratch and left undefined. The x87
+//! stack is empty on both sides; the sticky exception flags of the x87
+//! status word and the MXCSR are not modelled (every exception is masked,
+//! or the island declines).
 use super::*;
 use super::alloc::View;
-use sim_havok::island::{self, Args};
+use sim_havok::island_solve::{self as island, Args};
+use sim_havok::jacobian::Fpu;
 use sim_havok::mem::Journal;
 use std::collections::BTreeMap;
 
@@ -16,7 +20,8 @@ fn model(c: &CpuAbi, g: &Guest) -> std::result::Result<(BTreeMap<u32, u32>, u32)
     let view = View(g);
     let mut j = Journal::new(&view);
     let args = Args::read(&j, c.esp).ok_or(island::Fallback::Memory)?;
-    let eax = island::solve(&mut j, &args)?;
+    let fpu = Fpu { mxcsr: c.mxcsr, control: c.x87.control };
+    let eax = island::solve(&mut j, &args, fpu)?;
     Ok((j.finish(), eax))
 }
 

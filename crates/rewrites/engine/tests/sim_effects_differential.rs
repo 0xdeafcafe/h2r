@@ -7,6 +7,7 @@
 use engine::points;
 use engine::sim_effects::{Port, ports};
 use ir::interp::{Cpu, FlatMemory, Flow};
+use lifted::Code;
 use lifted::cpu::from_interp as abi_cpu;
 use runtime::{Guest, TransferAbi, guest::Permissions};
 

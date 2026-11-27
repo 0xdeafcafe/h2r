@@ -808,6 +808,18 @@ fn open_light_passes() -> Vec<crate::native_lights::ScenePass> {
     })
 }
 
+/// The open game view's object shadows, owned, outside the step's lock
+/// ([`crate::native_lights::object_shadow_scene::gather`]).
+pub(crate) fn open_object_shadow_passes() -> Vec<crate::native_lights::object_shadow_scene::ObjectShadowPass> {
+    with_step(|step| {
+        let Some((scene, view)) = step.builder.open() else { return Vec::new() };
+        if view.key.kind != ViewKind::Game {
+            return Vec::new();
+        }
+        crate::native_lights::object_shadow_scene::gather(scene, view)
+    })
+}
+
 /// The clip the light gather takes for the guest's visibility `mode`: the
 /// window frusta of the mode 0 flood (when the Rust visibility held), the
 /// view's sphere (mode 1), none (mode 2). `None` when the mode's inputs
@@ -982,6 +994,46 @@ pub fn shadow_filter(
         }
         step.builder.set_shadow_filter(filter.clone()).ok()?;
         Some(filter)
+    })
+}
+
+/// The groups of the open object shadow as the cut caster planned them
+/// from its item lists ([`crate::native_lights::object_shadow_scene::cut`]),
+/// with its light weight and filter. Ends the shadow's ops: no layer of
+/// it runs on the guest. False when no shadow is open or the builder
+/// refuses a group.
+pub(crate) fn object_shadow_groups(
+    groups: Vec<crate::native_lights::SceneGroup>,
+    weight: Option<f32>,
+    filter: Option<frame_scene::ShadowFilter>,
+) -> bool {
+    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
+    with_step(|step| {
+        if !step.shadow_open || step.builder.view().is_none() {
+            return false;
+        }
+        step.shadow_open = false;
+        for group in groups {
+            let entries: Vec<_> = group.entries.into_iter().zip(group.rows).collect();
+            if step.builder.push_shadow_group(group.group, &entries).is_err() {
+                REFUSED.fetch_add(1, Ordering::Relaxed);
+                return false;
+            }
+            LIGHT_GROUPS.fetch_add(1, Ordering::Relaxed);
+            LIGHT_GROUPS_WHOLE.fetch_add(1, Ordering::Relaxed);
+            LIGHT_ENTRIES.fetch_add(entries.len() as u64, Ordering::Relaxed);
+        }
+        if let Some(weight) = weight
+            && step.builder.set_shadow_weight(weight).is_err()
+        {
+            return false;
+        }
+        if let Some(filter) = filter
+            && step.builder.set_shadow_filter(filter).is_err()
+        {
+            return false;
+        }
+        true
     })
 }
 

@@ -78,7 +78,10 @@ fn two_builds_of_one_map_are_byte_equal() {
         assert_eq!(zone.name, want);
     }
     let orders: Vec<_> = ai.orders.iter().map(|o| o.name.as_str()).collect();
-    assert_eq!(orders, ["ff_hunt_00", "ff_hunt_01"]);
+    assert_eq!(
+        orders,
+        ["ff_hunt_00", "ff_hunt_01", "ff_hold_00", "ff_hold_01"]
+    );
     assert_eq!(start_teams(&mut map), [0, 1, 0]);
     assert!(
         ai.squads

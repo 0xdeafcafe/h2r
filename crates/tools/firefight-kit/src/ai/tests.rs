@@ -308,8 +308,8 @@ fn each_base_has_a_hunt_order_over_its_area() {
     for probe in [false, true] {
         let mut map = kit_map(probe);
         let ai = ScenarioAi::read_map(&mut map).unwrap();
-        assert_eq!(ai.orders.len(), 2);
-        for (n, order) in ai.orders.iter().enumerate() {
+        assert_eq!(ai.orders.len(), 4);
+        for (n, order) in ai.orders[..2].iter().enumerate() {
             assert_eq!(order.name, hunt_name(n));
             assert_eq!(order.name, format!("ff_hunt_{n:02}"));
             assert_eq!(
@@ -358,4 +358,22 @@ fn a_hunt_order_spans_only_its_base_and_a_base_without_areas_is_refused() {
             .unwrap_err()
             .contains("ff_hunt_00")
     );
+}
+
+#[test]
+fn each_base_has_a_hold_order_on_its_first_area() {
+    let mut zones = vec![zone(), base(0), zone(), base(1)];
+    let second = zones[1].areas[0].clone();
+    zones[1].areas.push(second);
+    let orders = hold_orders(&zones, &[1, 3]).unwrap();
+    let names: Vec<_> = orders.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(names, ["ff_hold_00", "ff_hold_01"]);
+    let spans: Vec<Vec<(i16, i16)>> = orders
+        .iter()
+        .map(|o| o.primary_areas.iter().map(|a| (a.zone, a.area)).collect())
+        .collect();
+    assert_eq!(spans, [vec![(1, 0)], vec![(3, 0)]]);
+    zones[3].areas.clear();
+    assert!(hold_orders(&zones, &[1, 3]).unwrap_err().contains("ff_hold_01"));
+    assert!(hold_orders(&zones, &[]).unwrap_err().contains("Hold"));
 }

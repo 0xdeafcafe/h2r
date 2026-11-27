@@ -2,13 +2,44 @@
 //! original packet until this recording is complete on every live copy.
 use d3d::backend::{ExternalAttachments, ExternalDraws, ExternalPassRequest};
 use d3d::{ExternalTarget, ResolvedDraw, ShaderProvider};
+use gfx::renderer::RenderScale;
 use gfx::{Draw, GfxContext, RenderTarget, Renderer, VertexStream};
 use native_render::shadow_gpu::{MapKind, SampledMap};
 use std::sync::{Arc, Mutex};
 
+/// The maps one caster call froze, one per target copy: a scaled backend
+/// records a reference copy and a display copy of different sizes, and a
+/// receiver binds the map of the copy it records on.
+#[derive(Default)]
+pub struct Maps(Vec<SampledMap>);
+
+impl Maps {
+    pub fn of(map: Option<SampledMap>) -> Self {
+        Self(map.into_iter().collect())
+    }
+
+    /// Replace the copy's map. A failed capture (`None`) leaves that copy
+    /// with none; `size` is the copy's target size.
+    pub fn put(&mut self, size: (u32, u32), map: Option<SampledMap>) {
+        let size = map.as_ref().map_or(size, |m| m.size);
+        self.0.retain(|m| m.size != size);
+        self.0.extend(map);
+    }
+
+    /// The map whose texture is `size` texels.
+    pub fn at(&self, size: (u32, u32)) -> Option<&SampledMap> {
+        self.0.iter().find(|m| m.size == size)
+    }
+
+    /// The last map put, for a consumer that records on one copy.
+    pub fn latest(&self) -> Option<&SampledMap> {
+        self.0.last()
+    }
+}
+
 /// A per-caster-call value. Only this call's receiver and freeze marker
-/// hold it. A failed capture leaves it empty.
-pub type Output = Arc<Mutex<Option<SampledMap>>>;
+/// hold it. A failed capture leaves its copy empty.
+pub type Output = Arc<Mutex<Maps>>;
 pub struct Gpu {
     ctx: GfxContext,
     renderer: Renderer,
@@ -20,8 +51,8 @@ pub struct Gpu {
 
 pub type SharedGpu = Arc<Mutex<Gpu>>;
 
-/// Called only for a single, retail, 1x backend. The scaled backend has
-/// a separate E3 caster target that a generic external pass cannot name.
+/// The stage's device state. Its passes record on any target copy, at any
+/// render scale: sizes come from the copy they are given.
 fn new(ctx: GfxContext, defer_uploads: bool) -> SharedGpu {
     let mut renderer = Renderer::new(&ctx);
     renderer.set_staged_uploads(false);
@@ -65,29 +96,6 @@ impl Gpu {
         self.ctx.clone()
     }
 
-    /// Records the conversion of the caster depth `depth` (a
-    /// `Depth32FloatStencil8` attachment that can be sampled) into `out`,
-    /// a [`gfx::depth_bits::DepthBits::output`] of its size: the frozen
-    /// map a receiver of the same sequence samples. `false`, nothing
-    /// recorded, for another device, format or size.
-    pub fn freeze_depth_into(
-        &self,
-        device: &wgpu::Device,
-        encoder: &mut wgpu::CommandEncoder,
-        depth: &wgpu::Texture,
-        out: &wgpu::Texture,
-    ) -> bool {
-        if device != &self.ctx.device
-            || depth.format() != wgpu::TextureFormat::Depth32FloatStencil8
-            || !depth.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
-            || (depth.width(), depth.height()) != (out.width(), out.height())
-        {
-            return false;
-        }
-        self.bits.convert_into(&self.ctx, encoder, depth, out);
-        true
-    }
-
     fn flush_uploads(&mut self) {
         self.renderer.flush_uploads(&self.ctx.queue);
         self.shaders.flush_uploads(&self.ctx);
@@ -118,7 +126,7 @@ impl d3d::ExternalPass for Freeze {
     }
     fn encode(&mut self, t: ExternalTarget<'_>) {
         let gpu = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
-        if t.device != &gpu.ctx.device || t.size != t.guest_size {
+        if t.device != &gpu.ctx.device {
             return;
         }
         let source = match self.kind {
@@ -130,8 +138,19 @@ impl d3d::ExternalPass for Freeze {
         };
         // Snapshot the actual result after all native and D3D casters.
         let map = SampledMap::snapshot(&gpu.ctx, t.encoder, &gpu.bits, self.kind, source);
-        *self.output.lock().unwrap_or_else(|e| e.into_inner()) = map;
+        self.output
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .put(t.size, map);
     }
+}
+
+/// A scissor in guest pixels, clamped to the guest surface and scaled to
+/// the copy's texels.
+fn scale_rect(grid: RenderScale, guest: (u32, u32), r: d3d::PixelRect) -> [u32; 4] {
+    let x = r.x.min(guest.0);
+    let y = r.y.min(guest.1);
+    grid.rect(x, y, r.width.min(guest.0 - x), r.height.min(guest.1 - y))
 }
 
 pub struct Range {
@@ -159,9 +178,11 @@ impl Range {
         } = &mut *gpu;
         let draw = self.draw.for_copy(copy);
         let draw = draw.as_ref();
+        // The copy's grid over the guest's: the identity at 1x.
+        let grid = RenderScale::between(guest_size, target.size);
         if &ctx.device != device
-            || target.size != guest_size
-            || target.size != (draw.target.width, draw.target.height)
+            || grid.is_none()
+            || guest_size != (draw.target.width, draw.target.height)
             || (draw.state.render.stencil.enable
                 && !target
                     .depth_format
@@ -169,7 +190,8 @@ impl Range {
         {
             return None;
         }
-        let map = self.map.as_ref().and_then(|(out, _, _)| out.lock().ok());
+        let grid = grid?;
+        let maps = self.map.as_ref().and_then(|(out, _, _)| out.lock().ok());
         // Shortened to the map guard's lifetime: a stage may sample its view.
         let mut stages: [Option<&wgpu::TextureView>; 4] = stages;
         for (i, info) in draw.texture_info.iter().enumerate() {
@@ -178,7 +200,8 @@ impl Range {
             }
             if let (Some(info), Some((_, kind, header))) = (info, &self.map) {
                 if info.header == *header {
-                    let source = map.as_deref()?.as_ref()?;
+                    let bound = stages[i]?.texture();
+                    let source = maps.as_deref()?.at((bound.width(), bound.height()))?;
                     let guest_format = match kind {
                         MapKind::Depth => matches!(
                             info.format,
@@ -189,13 +212,12 @@ impl Range {
                             gfx::D3DFormat::A8R8G8B8 | gfx::D3DFormat::LinA8R8G8B8
                         ),
                     };
-                    let bound = stages[i]?.texture();
                     if !guest_format
                         || info.kind != gfx::texture::TextureKind::D2
                         || info.levels != 1
                         || source.kind != *kind
-                        || source.size != (info.width, info.height)
-                        || source.size != (bound.width(), bound.height())
+                        || (source.size != (info.width, info.height)
+                            && source.size != grid.size(info.width, info.height))
                     {
                         return None;
                     }
@@ -257,12 +279,12 @@ impl Range {
         };
         let mut packets = Vec::with_capacity(rects.len());
         for &rect in rects {
-            let r = draw.display_rect(rect);
+            let [x, y, width, height] = scale_rect(grid, guest_size, draw.display_rect(rect));
             d.scissor = Some(gfx::renderer::ScissorRect {
-                x: r.x,
-                y: r.y,
-                width: r.width,
-                height: r.height,
+                x,
+                y,
+                width,
+                height,
             });
             let packet = renderer.record(ctx, &target, &d).ok()?;
             if !packet.pipeline_valid() {
@@ -338,6 +360,78 @@ impl d3d::ExternalPass for Range {
             discards,
             writes: Vec::new(),
         }))
+    }
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    fn map(ctx: &GfxContext, size: (u32, u32)) -> SampledMap {
+        let view = ctx
+            .device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("scaled map"),
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        SampledMap {
+            kind: MapKind::ColourMask,
+            view,
+            size,
+        }
+    }
+
+    #[test]
+    fn each_copy_of_a_scaled_view_keeps_its_own_map() {
+        let Ok(ctx) = GfxContext::headless() else {
+            return;
+        };
+        let mut maps = Maps::default();
+        maps.put((256, 256), Some(map(&ctx, (256, 256))));
+        maps.put((512, 512), Some(map(&ctx, (512, 512))));
+        assert_eq!(maps.at((256, 256)).unwrap().size, (256, 256));
+        assert_eq!(maps.at((512, 512)).unwrap().size, (512, 512));
+        assert_eq!(maps.latest().unwrap().size, (512, 512));
+        assert!(maps.at((128, 128)).is_none());
+        // A failed capture on one copy leaves only that copy without a map.
+        maps.put((512, 512), None);
+        assert!(maps.at((512, 512)).is_none());
+        assert!(maps.at((256, 256)).is_some());
+    }
+
+    #[test]
+    fn a_scissor_scales_to_the_copy_and_stays_inside_the_guest_surface() {
+        let guest = (640, 480);
+        let at = |scale: u32, r: d3d::PixelRect| {
+            scale_rect(RenderScale::between(guest, (640 * scale, 480 * scale)).unwrap(), guest, r)
+        };
+        let rect = d3d::PixelRect {
+            x: 10,
+            y: 20,
+            width: 100,
+            height: 50,
+        };
+        assert_eq!(at(1, rect), [10, 20, 100, 50]);
+        assert_eq!(at(2, rect), [20, 40, 200, 100]);
+        assert_eq!(at(3, rect), [30, 60, 300, 150]);
+        let wide = d3d::PixelRect {
+            x: 600,
+            y: 400,
+            width: 400,
+            height: 400,
+        };
+        assert_eq!(at(2, wide), [1200, 800, 80, 160]);
     }
 }
 

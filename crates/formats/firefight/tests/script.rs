@@ -680,3 +680,46 @@ fn ally_rules_give_the_same_commands() {
         assert_eq!(sides, BTreeSet::from([0, 1]), "seed {seed}");
     }
 }
+
+#[test]
+fn an_ally_placement_is_followed_by_the_team_it_serves() {
+    let run = check(&ally_def(1), &settings(3), 1, two_zones(), 200, kill_enemies_at_age_three);
+    let places = places(&run, "marine");
+    assert_eq!(places.len(), 1);
+    let (slot, team) = match run.commands[places[0] + 1].1 {
+        Command::Ally { slot, team } => (slot, team),
+        ref other => panic!("{other:?} follows the ally's placement"),
+    };
+    assert_eq!(team, 0);
+    assert!(matches!(&run.commands[places[0]].1, Command::PlaceSquad { slot: placed, .. } if *placed == slot));
+    // Enemy squads are never given an ally command.
+    let allies = run.commands.iter().filter(|(_, c)| matches!(c, Command::Ally { .. })).count();
+    assert_eq!(allies, 1);
+}
+
+#[test]
+fn state_reports_allies_apart_from_enemies() {
+    let def = ally_def(1);
+    let mut director = ScriptDirector::new(def, settings(3)).unwrap();
+    let mut world = World::new(3, two_zones());
+    let (mut apart, mut most_allies, mut most_enemies) = (false, 0, 0);
+    run(
+        &mut director,
+        &mut world,
+        200,
+        kill_enemies_at_age_three,
+        |_, director, world, _, _| {
+            let enemies_in_world: u16 = (0..world.squads.len())
+                .filter(|&slot| world.classes[slot] != "marine")
+                .map(|slot| world.squads[slot].0)
+                .sum();
+            // The enemy count never includes a marine.
+            assert!(director.live_actors() <= enemies_in_world.max(2 * 2), "enemies");
+            apart |= director.live_allies() > 0 && director.live_actors() > 0;
+            most_allies = most_allies.max(director.live_allies());
+            most_enemies = most_enemies.max(director.live_actors());
+        },
+    );
+    assert_eq!(most_allies, 2, "the two marines are counted as allies");
+    assert!(most_enemies > 0 && apart);
+}

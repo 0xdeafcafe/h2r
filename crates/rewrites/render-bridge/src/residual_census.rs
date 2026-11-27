@@ -288,19 +288,20 @@ pub const REGISTRY: &[Row] = &[
         status: Status::Partial,
         slot: "opaque",
     },
-    // The cut is held (`native_first_person::HELD`): the guest body
-    // draws the first person (docs/graphics/native-objects.md, "First
-    // person").
+    // The cut is held until a frame's check passes
+    // (`native_first_person::held`): until then the guest body draws the
+    // first person, after it the scene does (docs/graphics/native-objects.md,
+    // "First person").
     Row {
         name: "first_person",
         entry: 0x0003_fdf0,
-        status: Status::D3d,
+        status: Status::Partial,
         slot: "transparents",
     },
     Row {
         name: "object_shadows",
         entry: 0x0003_35e0,
-        status: Status::Partial,
+        status: Status::Native,
         slot: "opaque",
     },
     Row {
@@ -1413,14 +1414,15 @@ mod tests {
         for r in REGISTRY {
             assert_eq!(
                 r.status,
-                if matches!(
+                if r.name == "object_shadows" {
+                    Status::Native
+                } else if matches!(
                     r.name,
                     "object_setup"
                         | "game_view"
                         | "alternate_view"
                         | "scene_passes"
                         | "object_shadow"
-                        | "object_shadows"
                         | "water_teardown"
                         | "sky"
                         | "scene_clear"

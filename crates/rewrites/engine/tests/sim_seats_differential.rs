@@ -29,7 +29,7 @@ use engine::sim_seats::{self, Seat};
 use ir::interp::{Cpu, FlatMemory, Flow};
 use lifted::Code;
 use lifted::cpu::from_interp as abi_cpu;
-use runtime::{CpuAbi, Guest, TransferAbi, abi, guest::Permissions};
+use runtime::{Guest, TransferAbi, abi, guest::Permissions};
 use std::collections::BTreeSet;
 
 const RAM: usize = 8 << 20;

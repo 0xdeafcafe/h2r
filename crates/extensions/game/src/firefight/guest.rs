@@ -111,6 +111,9 @@ const BASE_PREFIX: &str = "ff_base_";
 /// The orders a kit authors for `Hunt`: `ff_hunt_NN` sends a squad at
 /// base NN.
 pub const HUNT_PREFIX: &str = "ff_hunt_";
+/// The orders a kit authors for an allied squad: `ff_hold_NN` keeps it at
+/// base NN.
+pub const HOLD_PREFIX: &str = "ff_hold_";
 /// The kit's parked drop ship, an object name, and a zone's flight path,
 /// the point set `ff_path_NN` for `ff_drop_NN`, with the points
 /// `run_in`, `hover` and `run_out` (`crates/tools/firefight-kit/src/ship.rs`).
@@ -136,6 +139,10 @@ pub struct PodFall {
 /// The name of the order that hunts at `base`.
 pub fn hunt_order_name(base: u8) -> String {
     format!("{HUNT_PREFIX}{base:02}")
+}
+/// The name of the order that holds `base`.
+pub fn hold_order_name(base: u8) -> String {
+    format!("{HOLD_PREFIX}{base:02}")
 }
 /// The kit's record of the classes it built: a squad `ff_class_<name>`
 /// per character palette row, whose character is that row
@@ -184,6 +191,8 @@ pub struct KitLayout {
     /// Each base's hunt order, `ff_hunt_NN`, by base: the scenario
     /// order index, none where the scenario has no order of that name.
     pub hunt_orders: Vec<Option<u16>>,
+    /// Each base's hold order, `ff_hold_NN`, the same way.
+    pub hold_orders: Vec<Option<u16>>,
     /// The parked drop ship, `ff_ship`: its index among the scenario's
     /// vehicle placements. None on a map whose kit carries no ship.
     pub ship: Option<i16>,
@@ -347,14 +356,20 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         .map(|(_, (_, zone))| zone)
         .collect();
     let mut hunt_orders: Vec<Option<u16>> = Vec::new();
+    let mut hold_orders: Vec<Option<u16>> = Vec::new();
     for (index, at) in block(m, scnr, scenario::ORDERS)?.into_iter().enumerate() {
-        let Some(base) = ordinal(&name(m, at)?, HUNT_PREFIX) else {
-            continue;
+        let order = name(m, at)?;
+        let (orders, base) = match ordinal(&order, HUNT_PREFIX) {
+            Some(base) => (&mut hunt_orders, base),
+            None => match ordinal(&order, HOLD_PREFIX) {
+                Some(base) => (&mut hold_orders, base),
+                None => continue,
+            },
         };
-        if hunt_orders.len() <= base {
-            hunt_orders.resize(base + 1, None);
+        if orders.len() <= base {
+            orders.resize(base + 1, None);
         }
-        hunt_orders[base].get_or_insert(index as u16);
+        orders[base].get_or_insert(index as u16);
     }
     let ship = read_ship(m, scnr)?;
     let found = read_paths(m, scnr)?;
@@ -376,6 +391,7 @@ pub fn read_kit(m: &dyn GuestMemory) -> Result<Option<KitLayout>, MemFault> {
         factions,
         team,
         hunt_orders,
+        hold_orders,
         ship,
         paths,
         pods,
@@ -585,6 +601,35 @@ pub async fn hunt(cx: &Cx, kit: &KitLayout, slot: u8, base: u8) -> anyhow::Resul
         .copied()
         .flatten()
         .ok_or_else(|| anyhow::anyhow!("the kit has no {} order", hunt_order_name(base)))?;
+    call(
+        cx,
+        GuestCall::new(points::AI_SET_ORDERS.base)
+            .eax(u32::from(squad))
+            .ecx(u32::from(order)),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Make a slot's squad an ally: its actors join the engine team `team`
+/// (the player team it serves), then are given the kit's hold order for
+/// `base`, `ff_hold_NN`, in place of any hunt. A kit without that order is
+/// an error naming it: no other order stands in.
+pub async fn ally(cx: &Cx, kit: &KitLayout, slot: u8, team: u8, base: u8) -> anyhow::Result<()> {
+    let squad = squad_index(kit, slot)?;
+    let order = kit
+        .hold_orders
+        .get(usize::from(base))
+        .copied()
+        .flatten()
+        .ok_or_else(|| anyhow::anyhow!("the kit has no {} order", hold_order_name(base)))?;
+    call(
+        cx,
+        GuestCall::new(points::AI_SET_TEAM.base)
+            .eax(u32::from(squad))
+            .ebx(u32::from(team)),
+    )
+    .await?;
     call(
         cx,
         GuestCall::new(points::AI_SET_ORDERS.base)

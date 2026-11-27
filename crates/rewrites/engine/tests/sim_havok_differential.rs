@@ -19,7 +19,7 @@ use lifted::Code;
 use lifted::cpu::from_interp as abi_cpu;
 use lifted::image::{Image, Rng};
 use runtime::{Guest, guest::Permissions};
-use sim_havok::island::{self, Args, Body, Fallback, Island, Layout};
+use sim_havok::island_solve::{self as island, Args, Body, Fallback, Island, Layout};
 use sim_havok::mem::{Journal, Words};
 use sim_havok::motion::{self, Accumulator, SolverClass};
 
@@ -234,6 +234,7 @@ fn the_frame_writes_match_the_lifted_entry() {
         let layout = Layout::read(&j, ISLAND, BUFFER, BUFFER_BYTES).unwrap();
         assert!(layout.fits());
         let model = Island {
+            buffer: BUFFER_OBJECT,
             layout,
             bodies: (0..entities)
                 .map(|i| Body { motion: MOTION + 0x200 * i, class: SolverClass::Fixed, accumulator: motion::fixed_accumulator() })
@@ -275,13 +276,12 @@ fn guest(m: &FlatMemory) -> Guest {
     g
 }
 
-/// The contact class (and any unported builder) and an island too large
-/// for the buffer: the port declines, writes nothing and counts why.
+/// An unported builder and an island too large for the buffer: the port
+/// declines, writes nothing and counts why.
 #[test]
 fn islands_the_model_does_not_cover_are_declined_and_counted() {
     let Some((_, base)) = ram() else { return };
     for (build, buffer, reason) in [
-        (sim_havok::jacobian::CONTACT_BUILD, BUFFER_BYTES, Fallback::Constraint),
         (BUILD_STUB, BUFFER_BYTES, Fallback::Constraint),
         (sim_havok::jacobian::CONTACT_BUILD, 0x100, Fallback::Overflow),
     ] {

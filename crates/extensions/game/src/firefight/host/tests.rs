@@ -1719,3 +1719,36 @@ fn the_director_is_told_of_the_ship_and_the_zones_it_can_fly_to() {
     let seen = observe(&kit, &BTreeMap::new(), 1, &FakeGame::new());
     assert_eq!(seen.ship, ShipSeen { ready: false, paths: vec![false, false] });
 }
+
+#[test]
+fn an_ally_squad_takes_the_home_team_and_the_hold_order() {
+    // Crossfire's players are on engine teams 0 and 1: an ally of Firefight
+    // team 1 joins engine team 1 and holds base 1; team 0's holds base 0.
+    let mut game = FakeGame::two_teams();
+    let mut host = Host::start(Role::Replica, crossfire(), settings(), &game).unwrap();
+    feed(
+        &mut host,
+        [
+            (1, place(5, 2, 0, 0)),
+            (1, Command::Ally { slot: 5, team: 1 }),
+            (1, Command::Ally { slot: 6, team: 0 }),
+            // No third base: refused.
+            (2, Command::Ally { slot: 7, team: 2 }),
+        ],
+    );
+    assert!(host.pre_tick(1, &mut game).is_empty());
+    assert_eq!(
+        game.calls[1..],
+        [
+            Call::Squad(SquadOp::Ally { slot: 5, team: 1, base: 1 }),
+            Call::Squad(SquadOp::Ally { slot: 6, team: 0, base: 0 }),
+        ]
+    );
+    let errors = host.pre_tick(2, &mut game);
+    assert_eq!(errors.len(), 1);
+    // Nobody on the team to serve: refused, not placed on a guess.
+    game.players.retain(|p| p.team == 0);
+    feed(&mut host, [(3, Command::Ally { slot: 5, team: 1 })]);
+    assert_eq!(host.pre_tick(3, &mut game).len(), 1);
+    assert_eq!(game.calls.len(), 3);
+}
