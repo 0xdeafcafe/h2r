@@ -129,6 +129,37 @@ impl hooks::Feature for Firefight {
         use std::sync::atomic::Ordering;
         // The two points of a line-of-sight test.
         let scratch = b.guest_alloc(0x20, ::runtime::guest::Permissions::RW)?;
+        // AI on a Firefight map: retail's `ai_initialize_for_new_map`
+        // leaves the AI uninitialised in every multiplayer game, and then
+        // the engine places no actor. A kit map takes the campaign's path
+        // past the multiplayer return (`engine::points::ai_gates`,
+        // `runtime::initialises_ai`). Optional: an image built without the
+        // gate's entries drops it with a note.
+        b.raw()
+            .before(
+                &engine::points::ai_gates::AI_NEW_MAP_MULTIPLAYER,
+                "firefight: a Firefight map initialises its AI",
+                move |c| {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let kit = {
+                        let mem = rt.memory();
+                        runtime::initialises_ai(&*mem)
+                    };
+                    if !kit {
+                        return Ok(Flow::Continue);
+                    }
+                    let to = engine::points::ai_gates::AI_NEW_MAP_INITIALISE;
+                    let Some(transfer) = rt.read_dispatch(|d| crate::skulls_mp::gate_transfer(d, to))
+                    else {
+                        eprintln!(
+                            "firefight: the AI's initialisation {to:#010x} is not an entry of this image; the map's AI stays off and no squad can be placed"
+                        );
+                        return Ok(Flow::Continue);
+                    };
+                    Ok(Flow::Return(transfer))
+                },
+            )
+            .optional();
         // The drop pods' spawn preference: as `PLAYER_SPAWN_LOCATION`
         // starts, the spawning team's open starts become the pick's
         // filter, cleared as it returns; the free-spot test answers "taken"
@@ -179,11 +210,11 @@ impl hooks::Feature for Firefight {
                 move |c| {
                     let rt = Arc::clone(c.ctx.runtime());
                     let options = c.cpu.eax;
-                    let line = {
+                    let lines = {
                         let mut mem = rt.memory();
                         s.lock().activate(&mut *mem, options, s.film)
                     };
-                    if let Some(line) = line {
+                    for line in lines {
                         eprintln!("{line}");
                     }
                     Ok(Flow::Continue)

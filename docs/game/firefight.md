@@ -535,11 +535,24 @@ invented guest memory with fake engine callees.
 only:
 
 - a `before` on `GAME_ACTIVATE`, while the options block (EAX) is not
-  yet the game's, turns the variant's team play on when Game Setup's
-  choices are two teams with Firefight on and the map carries the kit
-  (`Runtime::activate`); one team, another mode, a film's playback and a
-  map without the kit leave the options alone. So a two-team match is a
-  team game without the player setting Team Play.
+  yet the game's (`Runtime::activate`). With Firefight on and a map that
+  carries the kit it sets the variant's lives to 1
+  (`OPTIONS_VARIANT_LIVES`, `with_held_respawns`), so the engine holds
+  every respawn for the director ("Lives, rounds and skulls"), and with
+  two teams it turns the variant's team play on. Firefight off, another
+  mode, a film's playback and a map without the kit leave the options
+  alone. So a two-team match is a team game without the player setting
+  Team Play, and no variant's own lives reach a Firefight match.
+- a `before` at the multiplayer gate of `ai_initialize_for_new_map`
+  (`AI_NEW_MAP_MULTIPLAYER`, `0x1c79e9`, in
+  `guest_layout::points::ai_gates`). Retail clears the AI globals'
+  initialised byte and returns there in every multiplayer game, and while
+  that byte is clear `AI_SQUAD_PLACE` places nothing and `ai_update`
+  skips its tick. On a map that carries the kit
+  (`runtime::initialises_ai`) the hook jumps to the campaign's path
+  (`AI_NEW_MAP_INITIALISE`, `0x1c79f6`), which initialises the AI for
+  the map and sets the byte. Both addresses are image entries
+  (`boot::image_entries`).
 - an observer after a successful `GAME_ACTIVATE` starts the mode in a
   multiplayer game (options mode 2) through `Host::start`. Outside one
   the runtime is idle; on a map without the kit the refusal is kept with
@@ -588,7 +601,8 @@ A snapshot is refused while a match runs.
    team unless a player holds it, else the lowest team no player holds;
    with two player teams that is a third team. The host log starts at a genesis hash of
    the definition's id and the match seed.
-2. **The AI switch.** At the first tick boundary after the AI globals are
+2. **The AI switch.** The kit map's AI is initialised by the gate above.
+   At the first tick boundary after the AI globals are
    initialised, a machine that applies entries sets the globals' on byte
    if it is off, and never writes it again
    (`game::firefight::guest::switch_ai_on`, `[0x4f55d0]+0`). Probe P2
@@ -616,7 +630,20 @@ A snapshot is refused while a match runs.
    own game end.
    `Round` and `Wave` change nothing in the game: the HUD reads them from
    the mode blob.
-4. **After each game tick** (`Host::post_tick`, the host only), `Observed`
+4. **A wave nobody can fight.** The host keeps the current wave's
+   placements (`PlaceSquad`, a `DropSquad` on foot or by ship, a pod's
+   landing; a `Wave` entry starts the next) and the engine's refusal of
+   each, made at once or by the runtime after the tick's calls
+   (`Host::refused_entry`). When the director has placed the whole wave
+   (`Fighting` or `Cleanup`) and the engine refused every placement,
+   the wave has no actor to clear. The director would count it as
+   cleared at its slot timeout and announce the next, so the host stops
+   it there instead (`Host::stopped`): it steps the director no more,
+   and one error row names the refusal ("round 1 wave 1 is refused, not
+   cleared: the engine placed none of its 1 squad (...); the director is
+   stopped"). The match has no result. One placement the engine takes is
+   enough for the wave to be fought.
+5. **After each game tick** (`Host::post_tick`, the host only), `Observed`
    is built from the game: each player's roster slot, game team and
    whether it is alive, live actors by kit squad slot, each zone's
    visibility and its distance in hundredths of a world unit from the
@@ -630,16 +657,16 @@ A snapshot is refused while a match runs.
    ticks on the host while the director is stepped. The director's commands are
    appended as host log entries at the next tick, so clients and films
    replay them.
-5. **Received entries** (`Host::receive`) are checked against the chain.
+6. **Received entries** (`Host::receive`) are checked against the chain.
    The host refuses them: it writes its own log.
-6. **The mode state** rides in the log. After each step the host
+7. **The mode state** rides in the log. After each step the host
    appends the HUD's mode blob as a `ModeState` entry for the next tick
    when it differs from the last one it appended (`Host::note_mode`,
    from `runtime::post_tick`). Applying one makes no engine call; it
    sets the blob the machine holds (`Host::mode_state`), which a replica
    publishes for its HUD after each pre-tick. The operator cannot append
    one: the agent API's commands have no such variant.
-7. **The Clankers** are told of the match (`runtime::bot_context`,
+8. **The Clankers** are told of the match (`runtime::bot_context`,
    `bots::firefight::set_context`): the player teams, the actors' team,
    the bases, each team's lives and whether a wave is on. The runtime
    sends it at the start and whenever it changes, and clears it when the
@@ -1264,9 +1291,11 @@ through a fresh script for the same commands.
   the next grant (a round's `per_round_bonus`, or the bonus round's lives,
   or its end), and between waves an empty pool holds the respawn. `Lives.shared = false` gives each player their own
   count instead, announced when the player first appears. The engine's
-  own respawn stays off: the variant's lives setting is 1, so a death
-  leaves the player with none and the engine holds the respawn, and
-  `Respawn` gives back the one life ("Guest boundary").
+  own respawn stays off: the runtime sets the variant's lives to 1 at
+  activation ("The host runtime"), so a death leaves the player with none
+  and the engine holds the respawn, and `Respawn` gives back the one life
+  ("Guest boundary"). With the variant's unlimited lives the engine
+  respawned every player itself, whatever the pool said.
 - **Rounds.** Five waves, the last a boss wave; an intermission between
   rounds refills ammunition crates (a kit placement the director
   re-enables) and adds `per_round_bonus` lives. An endless definition's
@@ -1716,7 +1745,7 @@ boundary. Every address below is **E** unless the row says otherwise.
 | Entry | Points | Body | State | Evidence |
 |---|---|---|---|---|
 | AI on | `AI_GLOBALS` `+0` | `switch_ai_on` | built | the script switch 278 stores its boolean there (`0x2a4d31`, [ai-control.md](../halo1/ai-control.md)) |
-| Place a squad with a count | `AI_SQUAD_PLACE` (`0x201520`), behind `HS_AI_PLACE_COUNTED` (291) | `place_squad` | traced; run R1 | Evaluator 291 resolves its two arguments, keeps the `ai` value only for a plain squad (top two bits clear, `0x2a5045`), and calls `0x201520` with the count in EAX and four stack words: the squad index, start -1, 0 and 1 (`0x2a5052`); it then stores the `ai` value at AI globals `+0x364`. The one-argument overload (290) reaches the same routine through `0x273480` with the count -1, which takes the squad's normal or legendary count by difficulty (`0x2015c5`). The routine returns at once while AI globals `+1` is clear (`0x20152e`). Start -1 lets `AI_CHOOSE_SQUAD_START` pick each actor's start, and the pool of starts refills when it runs out (`0x203ac5`), so a count over the squad's starts reuses them. The third word, when set, skips the given start's availability check and its emitter's deferred placement action. The fourth goes to `AI_SPAWN_AT_SQUAD_START` as its flags. The later seat attempt chooses a vehicle by palette. `place_squad` counts the squad's AI units (`sim_state::visit_ai_units`, by scenario squad index, with or without a replication entity, since a local game publishes none) before and after the call and refuses a placement that added none, naming the slot, the class row and the zone; the runtime's `read_actors` counts the same way for `Observed`, and `Host::post_tick` reports a placement whose slot shows no actor 90 ticks later (`placements_unseen`). [Retail trace](notes/2026-11-24-vehicle-actions.md). |
+| Place a squad with a count | `AI_SQUAD_PLACE` (`0x201520`), behind `HS_AI_PLACE_COUNTED` (291) | `place_squad` | traced; run R1 | Evaluator 291 resolves its two arguments, keeps the `ai` value only for a plain squad (top two bits clear, `0x2a5045`), and calls `0x201520` with the count in EAX and four stack words: the squad index, start -1, 0 and 1 (`0x2a5052`); it then stores the `ai` value at AI globals `+0x364`. The one-argument overload (290) reaches the same routine through `0x273480` with the count -1, which takes the squad's normal or legendary count by difficulty (`0x2015c5`). The routine returns at once while AI globals `+1` is clear (`0x20152e`), which retail leaves clear on every multiplayer map (`ai_initialize_for_new_map`, `0x1c79e5`); the `firefight` feature's gate hook initialises a kit map's AI ("The host runtime"). Start -1 lets `AI_CHOOSE_SQUAD_START` pick each actor's start, and the pool of starts refills when it runs out (`0x203ac5`), so a count over the squad's starts reuses them. The third word, when set, skips the given start's availability check and its emitter's deferred placement action. The fourth goes to `AI_SPAWN_AT_SQUAD_START` as its flags. The later seat attempt chooses a vehicle by palette. `place_squad` counts the squad's AI units (`sim_state::visit_ai_units`, by scenario squad index, with or without a replication entity, since a local game publishes none) before and after the call and refuses a placement that added none, naming the slot, the class row and the zone; the runtime's `read_actors` counts the same way for `Observed`, and `Host::post_tick` reports a placement whose slot shows no actor 90 ticks later (`placements_unseen`). [Retail trace](notes/2026-11-24-vehicle-actions.md). |
 | ... its character and zone | scenario squad `+0x36` and `+0x38`, its starts' positions | `place_squad` | traced | Nothing chooses them at the call. `AI_SPAWN_AT_SQUAD_START` reads, for each actor, the start's character (`+0x20`) or else the squad's (`+0x36`), as an index into the character palette (scenario `+0x178`, `0x2037cc`); a squad with neither places nobody. The squad's areas while it has no order come from its zone `+0x38` (`0x204f93`), and its actors appear at its starts' positions. So `place_squad` writes the palette index, the zone, and the zone's firing positions into the slot squad's starts, then places: tag memory every applying machine writes the same way. The weapon tier is not applied, since the stage-one kit authors one weapon |
 | Actors' team | `AI_SET_TEAM` (`0x275b60`), behind `HS_AI_SET_TEAM` (322) | `place_squad`, after the placement | traced | The evaluator passes the `ai` value in EAX and the team in BX (`0x2a587a`). The routine accepts a squad or a group, writes the runtime squad's team byte (`+0x76`, `0x275bf4`), then each actor's team (`+0x24`, which `world.ai` reports) and its unit's (`+0x138`, `0x275c99`). Placement copies a nonzero squad team byte onto each new unit (`0x20187a`), but team 0 reads as unset there, so the body sets the team after every placement |
 | Hunt | `AI_SET_ORDERS` (`0x275cb0`), behind `HS_AI_SET_ORDERS` (333) | `hunt` | built | The evaluator passes the `ai` value in EAX and the order index in CX (`0x2a5c39`). The routine ignores an index outside the scenario's order block (`+0x240`, `0x275ce6`) and hands a squad to `0x202e90`, a group to `0x203120`. There is no built-in hunt: it is an order the kit authors, which `hunt` finds by its name `ff_hunt`. The kit writes it as order 0 of an empty block (`ai::hunt_order`): no style, script or follow target, and every area of every drop zone as its primary area set, so a squad sent to it engages from across the arena. A base map that already has orders is refused, since the kit does not merge into another block's child arrays. A kit with no zone areas is refused with the Hunt order named |
