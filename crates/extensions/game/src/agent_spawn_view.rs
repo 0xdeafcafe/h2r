@@ -131,43 +131,59 @@ fn current(
     })
 }
 
-fn spawn(m: &dyn GuestMemory, index: u32, yaw_offset: f32) -> Result<View, RpcError> {
-    // The same block the scenario editor calls StartingLocations.
-    let scenario = loaded_scenario(m).ok_or_else(unreadable)?;
-    let block = scenario
-        .checked_add(SCENARIO_STARTS)
-        .ok_or_else(unreadable)?;
-    let count = m.u32(block).map_err(|_| unreadable())?;
-    if count == 0 {
-        return Err(unreadable());
+/// The loaded scenario's player starting locations: the same block the
+/// scenario editor calls StartingLocations.
+pub(crate) struct Starts {
+    scenario: u32,
+    count: u32,
+    data: u32,
+}
+
+impl Starts {
+    /// The loaded scenario's starts, if it has a readable, nonempty block.
+    pub(crate) fn read(m: &dyn GuestMemory) -> Option<Self> {
+        let scenario = loaded_scenario(m)?;
+        let block = scenario.checked_add(SCENARIO_STARTS)?;
+        let count = m.u32(block).ok().filter(|&n| n > 0)?;
+        let data = m.u32(block.checked_add(4)?).ok()?;
+        Some(Self { scenario, count, data })
     }
-    if index >= count {
-        return Err(invalid(format!("spawn index {index} outside 0..{count}")));
-    }
-    let data = m
-        .u32(block.checked_add(4).ok_or_else(unreadable)?)
-        .map_err(|_| unreadable())?;
-    let at = index
-        .checked_mul(0x34)
-        .and_then(|off| data.checked_add(off))
-        .ok_or_else(unreadable)?;
-    if data == 0 || at.checked_add(15).is_none() {
-        return Err(unreadable());
-    }
-    let mut position = m.vec3(at).map_err(|_| unreadable())?;
-    position[2] += 0.64; // Standing eye height, as in Theater's player camera.
-    let yaw = m.f32(at + 12).map_err(|_| unreadable())? + yaw_offset;
-    if !position.into_iter().chain([yaw]).all(f32::is_finite) {
-        return Err(unreadable());
-    }
-    Ok(View {
-        origin: Origin::Start { index, count },
-        scenario,
-        pose: Pose {
+
+    /// The standing eye at start `index`: 0.64 above it, level, along its
+    /// facing. `None` for an index outside the block or an unreadable or
+    /// non-finite start.
+    pub(crate) fn eye(&self, m: &dyn GuestMemory, index: u32) -> Option<Pose> {
+        if index >= self.count || self.data == 0 {
+            return None;
+        }
+        let at = index.checked_mul(0x34)?.checked_add(self.data)?;
+        at.checked_add(15)?;
+        let mut position = m.vec3(at).ok()?;
+        position[2] += 0.64; // Standing eye height, as in Theater's player camera.
+        let yaw = m.f32(at + 12).ok()?;
+        position.into_iter().chain([yaw]).all(f32::is_finite).then(|| Pose {
             position,
             yaw: yaw.rem_euclid(std::f32::consts::TAU),
             pitch: 0.0,
-        },
+        })
+    }
+}
+
+fn spawn(m: &dyn GuestMemory, index: u32, yaw_offset: f32) -> Result<View, RpcError> {
+    let starts = Starts::read(m).ok_or_else(unreadable)?;
+    if index >= starts.count {
+        return Err(invalid(format!("spawn index {index} outside 0..{}", starts.count)));
+    }
+    let mut pose = starts.eye(m, index).ok_or_else(unreadable)?;
+    pose.yaw += yaw_offset;
+    if !pose.yaw.is_finite() {
+        return Err(unreadable());
+    }
+    pose.yaw = pose.yaw.rem_euclid(std::f32::consts::TAU);
+    Ok(View {
+        origin: Origin::Start { index, count: starts.count },
+        scenario: starts.scenario,
+        pose,
         fov: None,
         drawn: AtomicBool::new(false),
     })

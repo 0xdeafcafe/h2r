@@ -2179,6 +2179,55 @@ fn a_spawners_spare_clips_row_sets_the_property_and_stages_the_games_step() {
     assert_eq!(e.session.spare_clips(id), None);
 }
 
+/// The session's first monitor comes up at the map's first start, a
+/// standing eye along its facing, not at the game's pregame view; a later
+/// toggle takes the player's eye. The pose reaches the private world view
+/// with no player in it, as the render hook draws it every frame.
+#[test]
+fn the_first_monitor_starts_at_the_map_start_with_a_drawn_view() {
+    use crate::coop_players::layout::SCENARIO_STARTS;
+    use crate::spectator_view::{Pose, WORLD_VIEW_RETURN, blank_view, replace_world_view};
+    use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE, testing::FakeGuest};
+    const STACK: u32 = 0x5000;
+    const ORIGINAL: u32 = 0x6000;
+    const SCRATCH: u32 = 0x7000;
+    let mut m = FakeGuest::new();
+    m.put_u32(points::SCENARIO.base, 0x1000)
+        .put_u32(0x1000 + SCENARIO_STARTS, 2)
+        .put_u32(0x1004 + SCENARIO_STARTS, 0x2000)
+        .put_f32(0x2000, 12.0)
+        .put_f32(0x2004, -3.0)
+        .put_f32(0x2008, 1.5)
+        .put_f32(0x200c, 2.0);
+    let pregame = Camera { position: [0.0; 3], yaw: 0.0, pitch: 0.0 };
+    let first = monitor_camera(&m, true, Some(pregame)).unwrap();
+    assert_eq!(first.position, [12.0, -3.0, 1.5 + 0.64]);
+    assert_eq!((first.yaw, first.pitch), (2.0, 0.0));
+    let player = Camera { position: [5.0, 6.0, 7.0], yaw: 1.0, pitch: 0.2 };
+    assert_eq!(monitor_camera(&m, false, Some(player)), Some(player), "a toggle");
+    assert_eq!(monitor_camera(&m, false, None), Some(first), "no eye: the start");
+    assert_eq!(monitor_camera(&FakeGuest::new(), true, Some(player)), Some(player), "no starts");
+    assert_eq!(monitor_camera(&FakeGuest::new(), true, None), None);
+
+    // The render hook's private view: the start's eye, no local player.
+    let mut original = blank_view();
+    original[8..12].copy_from_slice(&0u32.to_le_bytes());
+    m.put_u32(STACK, WORLD_VIEW_RETURN)
+        .put_u32(STACK + 12, ORIGINAL)
+        .put(ORIGINAL, &original)
+        .map(SCRATCH, VIEW_STRIDE);
+    let pose = Pose { position: first.position, yaw: first.yaw, pitch: first.pitch };
+    assert!(replace_world_view(&mut m, STACK, 1, SCRATCH, |_, _| Some((pose, None))));
+    assert_eq!(m.u32(STACK + 12).unwrap(), SCRATCH);
+    assert_eq!(m.u32(SCRATCH + 8).unwrap(), u32::MAX);
+    for camera in [0x0c, 0x80] {
+        assert_eq!(m.vec3(SCRATCH + camera).unwrap(), first.position);
+        assert_eq!(m.vec3(SCRATCH + camera + 0x0c).unwrap(), pose.axes().0);
+        let [near, far] = [m.f32(SCRATCH + camera + 0x40).unwrap(), m.f32(SCRATCH + camera + 0x44).unwrap()];
+        assert!(0.0 < near && near < far, "{near} {far}");
+    }
+}
+
 /// The Spare clips row is a spawner's of a collection that holds a weapon:
 /// an equipment collection's, a vehicle's and an object's have none.
 #[test]
