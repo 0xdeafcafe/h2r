@@ -80,7 +80,7 @@ at it, and a table per skill.
 --provider local is the default. --max-parallel also works for local batches.
 --provider cloud runs unpaced on dedicated hosts through Live.
 --dry-run lists the runs.
-A run whose match has `[rules] script = "superbounce"` plays on its own copy of each map's
+A run whose match has [rules] script = \"superbounce\" plays on its own copy of each map's
 verified and ghosts files, kept in <out>/runs/<id>/harvest/{start,end}
 (docs/runtime/sim.md, \"Bounce practice\").
 

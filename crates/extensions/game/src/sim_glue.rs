@@ -721,14 +721,18 @@ impl Sim {
                 .set_options(crate::firefight::options::source(&store));
             *lock_ended() = None;
         }
+        // The match's script (docs/runtime/sim.md, "Rules scripts"): the
+        // block of a lobby choosing that game type, on the game's record
+        // at its start.
+        if let Some(rules) = &self.0.matched.config.rules {
+            let block = crate::sim_rules::block_for(rules).map_err(anyhow::Error::msg)?;
+            crate::game_variants::inject::set_sim_block(Some(block));
+        }
         if self.0.matched.superbounce {
             // Bounce practice (docs/runtime/sim.md, "Bounce practice"): the
             // game plays the Superbounce script, which turns the mode on;
             // the bots' route reads its pair word, and the tally counts
             // the bounces.
-            let sb = crate::community_variants::listed_named("Superbounce")
-                .context("sim: the built-in Superbounce script is not listed")?;
-            crate::game_variants::inject::set_sim_block(Some(sb.block()));
             crate::superbounce_mode::collect_awards(true);
             crate::sim_bots::install_pair_reader();
             self.0.lock().tally.track_bounces();
