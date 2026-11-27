@@ -65,6 +65,7 @@ fn plate(mem: &dyn GuestRead, at: u32, index: u16, player: u8, window: [i16; 4])
         extent: [f(0x80)?, f(0x84)?],
         size: [s(0x134)?, s(0x138)?, s(0x13c)?],
         tint: [clamp01(s(0xec)? * gain), clamp01(s(0xf0)? * gain), clamp01(s(0xf4)? * gain)],
+        fill: [clamp01(f(0x98)?), clamp01(f(0x9c)?), clamp01(f(0xa0)?)],
     })
 }
 

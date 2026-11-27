@@ -44,6 +44,7 @@ pub mod decal;
 pub mod decal_material;
 pub mod decal_scene;
 pub mod weather_place;
+pub mod weather_quad;
 #[cfg(feature = "gpu")]
 pub mod decal_gpu;
 pub mod decorators;
