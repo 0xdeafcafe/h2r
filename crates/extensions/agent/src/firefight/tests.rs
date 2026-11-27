@@ -162,6 +162,7 @@ impl Source for Fake {
             bases: vec![[4.0, 5.0, 6.0], [-4.0, -5.0, 6.0]],
             characters: 1,
             hunt_orders: vec![Some(0), None],
+            hold_orders: vec![Some(1), None],
         })
     }
 }

@@ -573,14 +573,24 @@ impl ScriptDirector {
         }
     }
 
-    /// Actors the script counts as alive.
+    /// Enemy actors the script counts as alive: an ally is counted apart
+    /// ([`ScriptDirector::live_allies`]).
     pub fn live_actors(&self) -> u16 {
+        self.live(false)
+    }
+
+    /// Ally actors the script counts as alive.
+    pub fn live_allies(&self) -> u16 {
+        self.live(true)
+    }
+
+    fn live(&self, allies: bool) -> u16 {
         self.state()
             .slots
             .iter()
             .map(|slot| match *slot {
-                Slot::Placed { alive, .. } => alive,
-                Slot::Free | Slot::Draining { .. } => 0,
+                Slot::Placed { alive, ally, .. } if ally == allies => alive,
+                _ => 0,
             })
             .sum()
     }
@@ -830,6 +840,10 @@ fn command(call: &Call) -> Option<Command> {
             outcome: if *won { Outcome::Won } else { Outcome::Lost },
         },
         (id::FF_TARGET, [Arg::Squad(slot), Arg::Team(Some(team))]) => Command::Target {
+            slot: *slot,
+            team: *team,
+        },
+        (id::FF_ALLY, [Arg::Squad(slot), Arg::Team(Some(team))]) => Command::Ally {
             slot: *slot,
             team: *team,
         },

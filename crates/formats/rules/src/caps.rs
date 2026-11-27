@@ -369,9 +369,10 @@ pub mod id {
     pub const FF_SHIP_HOVER: u16 = 139;
     pub const FF_SHIP_UNLOAD: u16 = 140;
     pub const FF_SHIP_LEAVE: u16 = 141;
-    pub const ZONE_FALL: u16 = 142;
-    pub const PODS_FREE: u16 = 143;
-    pub const POD_CLASS: u16 = 144;
+    pub const FF_ALLY: u16 = 142;
+    pub const ZONE_FALL: u16 = 143;
+    pub const PODS_FREE: u16 = 144;
+    pub const POD_CLASS: u16 = 145;
 }
 
 /// Every entry of [`API_VERSION`], indexed by number.
@@ -726,6 +727,13 @@ pub const ENTRIES: &[Entry] = &[
     read(id::ZONE_PATH, "zone_path", &[Int], Bool, Named),
     read(id::SHIP_READY, "ship_ready", &[], Bool, Named),
     act(id::FF_DROP_SQUAD, "ff_drop_squad", &[Squad, Class, Int, Int, Int, Int], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_HOVER, "ff_ship_hover", &[Bool], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_UNLOAD, "ff_ship_unload", &[], Some("firefight.director"), Queued, Named),
+    act(id::FF_SHIP_LEAVE, "ff_ship_leave", &[Int], Some("firefight.director"), Queued, Named),
+    // Right after the `place_squad_at` of an allied squad
+    // (`Command::Ally`): the player team it serves, whose team the actors
+    // join and whose `ff_hold_NN` order they are given (`game::firefight`).
+    act(id::FF_ALLY, "ff_ally", &[Squad, Team], Some("firefight.director"), Queued, Named),
     // Firefight's drop pods (docs/game/firefight.md, "Drop pods"): whether
     // kit zone `n` has a fall, how many squad pods are parked and free,
     // and whether a class's `auto` arrival is a pod
@@ -734,9 +742,6 @@ pub const ENTRIES: &[Entry] = &[
     read(id::ZONE_FALL, "zone_fall", &[Int], Bool, Named),
     read(id::PODS_FREE, "pods_free", &[], Int, Named),
     read(id::POD_CLASS, "pod_class", &[Class], Bool, Named),
-    act(id::FF_SHIP_HOVER, "ff_ship_hover", &[Bool], Some("firefight.director"), Queued, Named),
-    act(id::FF_SHIP_UNLOAD, "ff_ship_unload", &[], Some("firefight.director"), Queued, Named),
-    act(id::FF_SHIP_LEAVE, "ff_ship_leave", &[Int], Some("firefight.director"), Queued, Named),
 ];
 
 /// The word `message(to, text)` takes for everyone.

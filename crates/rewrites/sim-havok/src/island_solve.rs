@@ -5,11 +5,14 @@
 //! or the [`Fallback`] that sends the island to the lifted entry; on a
 //! fallback the journal is discarded, so nothing has been written. Only
 //! persistent words are journalled: `motion+0x08`, the pair words, the
-//! solver buffer's busy byte. The buffer's contents (accumulators, rows,
-//! impulses, schemas) are scratch and stay in Rust.
-use crate::jacobian::{self, Cursor};
+//! contact builder's point properties and friction blocks, the write-back
+//! pass's outputs, the solver buffer's busy byte. The buffer's contents
+//! (accumulators, rows, impulses, schemas) are scratch and stay in Rust
+//! ([`Scratch`]).
+use crate::jacobian::{self, Cursor, Fpu, Scratch};
 use crate::mem::Journal;
-use crate::motion::{Accumulator, SolverClass, ACCUMULATOR_BYTES};
+use crate::solver::{self, Areas, Params};
+use crate::motion::{Accumulator, SolverClass, ACCUMULATOR_BYTES, ACCUMULATOR_END, ACCUMULATOR_KIND};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The solver buffer object: base `+0x08`, size `+0x0c`, busy byte `+0x10`.
@@ -83,22 +86,29 @@ pub enum Fallback {
     Overflow,
     /// A motion whose solver virtuals are not ported.
     Motion,
-    /// A constraint whose `vt[+0x24]` is not ported.
+    /// A constraint whose `vt[+0x24]` is not ported, or a contact the
+    /// builder does not cover (a point shape retail would corrupt, a
+    /// friction axis retail would spin on, too many points).
     Constraint,
     /// The solver tables are not built (`[0x00480c60] == 0`).
     Tables,
-    /// The schema solve `0x0031c940` and the export pass are not modelled.
+    /// The schema solve declined the stream: a non-finite operand, or a
+    /// stream shape its decode does not cover.
     Solver,
+    /// An unmasked float exception, or a non-finite float the builder's
+    /// x87 code would load from memory.
+    Float,
 }
 
 impl Fallback {
-    pub const ALL: [Fallback; 6] = [
+    pub const ALL: [Fallback; 7] = [
         Self::Memory,
         Self::Overflow,
         Self::Motion,
         Self::Constraint,
         Self::Tables,
         Self::Solver,
+        Self::Float,
     ];
 
     pub fn name(self) -> &'static str {
@@ -109,11 +119,12 @@ impl Fallback {
             Self::Constraint => "constraint",
             Self::Tables => "tables",
             Self::Solver => "solver",
+            Self::Float => "float",
         }
     }
 }
 
-static FALLBACKS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+static FALLBACKS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 static SOLVED: AtomicU64 = AtomicU64::new(0);
 
 /// Count an island sent to the guest.
@@ -127,7 +138,7 @@ pub fn count_solved() {
 }
 
 /// The island fallback counters, by reason, and the solved count.
-pub fn fallbacks() -> ([(&'static str, u64); 6], u64) {
+pub fn fallbacks() -> ([(&'static str, u64); 7], u64) {
     (
         Fallback::ALL.map(|f| (f.name(), FALLBACKS[f as usize].load(Ordering::Relaxed))),
         SOLVED.load(Ordering::Relaxed),
@@ -187,6 +198,8 @@ pub struct Body {
 /// What the gather stage found: everything the later stages read.
 #[derive(Debug)]
 pub struct Island {
+    /// The solver buffer object `[0x00484b38]`.
+    pub buffer: u32,
     pub layout: Layout,
     pub bodies: Vec<Body>,
     pub constraints: Vec<(u32, jacobian::Class)>,
@@ -225,7 +238,7 @@ pub fn gather(j: &Journal, a: &Args) -> Result<Island, Fallback> {
     if j.byte(TABLES_READY).ok_or(Memory)? == 0 {
         return Err(Tables);
     }
-    Ok(Island { layout, bodies, constraints })
+    Ok(Island { buffer, layout, bodies, constraints })
 }
 
 /// The accumulator stage (`0x0031c2a2..0x0031c31c`): each entity's
@@ -258,27 +271,117 @@ pub fn pair(j: &mut Journal, a: &Args, base: u32, constraint: u32) -> Option<[u3
     Some(out)
 }
 
-/// The whole entry. `Ok` is the guest's `eax` (0: no LIFO block was taken).
-pub fn solve(j: &mut Journal, a: &Args) -> Result<u32, Fallback> {
-    let island = gather(j, a)?;
-    place_accumulators(j, &island).ok_or(Fallback::Memory)?;
+/// The schema solve's image constant: its comparand zero.
+pub const SOLVER_ZERO: u32 = 0x0045_dbd8;
+/// More iterations than this decline (retail's parameters hold a few).
+pub const MAX_ITERATIONS: u32 = 64;
+
+/// Lay the accumulators into the scratch buffer as the frame and each
+/// motion's `vt[+0x0c]` leave them (`0x0031c2a2..0x0031c31c`): kind 2 at
+/// byte 0, the flag at `+0x0c` as the class writes it or as the guest's
+/// buffer holds it, the seven vectors, and the end byte 3 after the last.
+pub fn lay_accumulators(j: &Journal, s: &mut Scratch, island: &Island) -> Option<()> {
     let base = island.layout.accumulators;
-    let mut cursor = Cursor {
-        rows: island.layout.rows,
-        schemas: island.layout.schemas,
-        limit: island.layout.impulses,
-        overflow: 0,
-    };
-    for &(constraint, class) in &island.constraints {
-        pair(j, a, base, constraint).ok_or(Fallback::Memory)?;
-        cursor.before_constraint();
-        class.build(j, constraint, &mut cursor).ok_or(Fallback::Memory)?;
+    let leading = Body { motion: 0, class: SolverClass::Fixed, accumulator: crate::motion::fixed_accumulator() };
+    for (i, body) in std::iter::once(&leading).chain(&island.bodies).enumerate() {
+        let at = base.checked_add(ACCUMULATOR_BYTES * i as u32)?;
+        let kind = j.get(at)? & !0xff | u32::from(ACCUMULATOR_KIND);
+        s.put(at, kind)?;
+        for off in [4, 8] {
+            s.put(at + off, j.get(at + off)?)?;
+        }
+        let flag = j.get(at + 0x0c)?;
+        let flag = match body.accumulator.flag {
+            Some(f) => flag & !0xff | u32::from(f),
+            None => flag,
+        };
+        s.put(at + 0x0c, flag)?;
+        for (k, v) in body.accumulator.vectors.iter().enumerate() {
+            s.put_vector(at + 0x10 + 0x10 * k as u32, *v)?;
+        }
     }
-    // An island always has a constraint (`0x00316a20` calls this entry
-    // only when `I+0x5c` is not zero), so with no class ported the solve
-    // never gets here. The solve (`0x0031c940` over the schemas), the
-    // exports and the busy byte's release come with the first class.
-    Err(Fallback::Solver)
+    let end = base.checked_add(ACCUMULATOR_BYTES * (island.bodies.len() as u32 + 1))?;
+    s.put(end, j.get(end)? & !0xff | u32::from(ACCUMULATOR_END))
+}
+
+/// The whole entry. `Ok` is the guest's `eax` (0: no LIFO block was taken).
+pub fn solve(j: &mut Journal, a: &Args, fpu: Fpu) -> Result<u32, Fallback> {
+    use Fallback::*;
+    let island = gather(j, a)?;
+    if !fpu.masked() {
+        return Err(Float);
+    }
+    if island.constraints.is_empty() {
+        // `0x00316a20` never calls the entry so; the solve would read the
+        // end schema as a header.
+        return Err(Constraint);
+    }
+    let l = island.layout;
+    let accumulators_end = l.accumulators.wrapping_add(ACCUMULATOR_BYTES * (island.bodies.len() as u32 + 1));
+    if accumulators_end >= l.rows || l.rows < l.accumulators {
+        return Err(Overflow);
+    }
+    place_accumulators(j, &island).ok_or(Memory)?;
+    let mut s = Scratch::new(l.accumulators, l.end).ok_or(Memory)?;
+    lay_accumulators(j, &mut s, &island).ok_or(Memory)?;
+    let base = l.accumulators;
+    let mut cursor = Cursor { rows: l.rows, schemas: l.schemas, limit: l.impulses, overflow: 0 };
+    for &(constraint, class) in &island.constraints {
+        let pair = pair(j, a, base, constraint).ok_or(Memory)?;
+        if pair.iter().any(|&p| p < base || p.wrapping_sub(base) % ACCUMULATOR_BYTES != 0 || p >= accumulators_end) {
+            return Err(Memory);
+        }
+        cursor.before_constraint();
+        if cursor.limit == u32::MAX {
+            // The rows would continue in the overflow block.
+            return Err(Overflow);
+        }
+        class.build(j, &mut s, fpu, constraint, a.pairs, &mut cursor)?;
+        if cursor.rows > l.impulses || cursor.schemas.wrapping_add(4) > l.end || cursor.schemas < l.schemas {
+            return Err(Overflow);
+        }
+    }
+    // 0x0031c3a3: the end schema; the impulses are zero (Rust's buffer).
+    s.put(cursor.schemas, solver::SCHEMA_END).ok_or(Memory)?;
+    let params = Params::read(|at| j.get(at), a.info).ok_or(Memory)?;
+    let impulse_words = j.get(a.island.wrapping_add(ISLAND_IMPULSES)).ok_or(Memory)?;
+    let areas = Areas {
+        accumulators: base,
+        count: island.bodies.len() as u32,
+        rows: l.rows,
+        rows_end: cursor.rows,
+        impulse_words,
+    };
+    let decoded = solver::decode(&s, l.schemas, areas, params).ok_or(Solver)?;
+    let iterations = (params.iterations as i32).max(0) as u32;
+    if iterations > MAX_ITERATIONS {
+        return Err(Solver);
+    }
+    let zero = j.get(SOLVER_ZERO).ok_or(Memory)?;
+    let solved = decoded
+        .stream
+        .clone()
+        .solve(iterations as usize, params.bias, zero, fpu.mxcsr, fpu.control)
+        .ok_or(Solver)?;
+    for (addr, value) in decoded.writeback(&solved, params.export, fpu.control) {
+        j.put(addr, value).ok_or(Memory)?;
+    }
+    for (addr, b) in decoded.accumulators.iter().zip(&solved.bodies) {
+        for (off, v) in [(0x10, b.linear), (0x20, b.angular), (0x40, b.linear_sum), (0x50, b.angular_sum)] {
+            s.put_vector(addr + off, v).ok_or(Memory)?;
+        }
+    }
+    // 0x0031c414: each motion's export; the fixed class writes nothing.
+    for body in &island.bodies {
+        match body.class {
+            SolverClass::Fixed => {}
+        }
+    }
+    // 0x0031c457: the busy byte, set to 1 on entry, is 0 again.
+    let busy = island.buffer.wrapping_add(BUFFER_BUSY);
+    let word = j.get(busy & !3).ok_or(Memory)?;
+    j.put(busy & !3, word & !(0xff << (8 * (busy & 3)))).ok_or(Memory)?;
+    Ok(0)
 }
 
 #[cfg(test)]
@@ -370,16 +473,30 @@ mod tests {
     fn an_island_that_overflows_the_buffer_falls_back_first() {
         let h = heap(2, 0x100);
         let mut j = Journal::new(&h);
-        assert_eq!(solve(&mut j, &args(2)), Err(Fallback::Overflow));
+        assert_eq!(solve(&mut j, &args(2), FPU), Err(Fallback::Overflow));
+        assert!(j.finish().is_empty());
+    }
+
+    const FPU: Fpu = Fpu { mxcsr: 0x1f80, control: 0x027f };
+
+    #[test]
+    fn an_unported_constraint_falls_back_with_nothing_written() {
+        let mut h = heap(2, 0x1000);
+        h.0.insert(CONTACT_VT + CONSTRAINT_BUILD_SLOT, 0x0031_be20);
+        assert_eq!(gather(&Journal::new(&h), &args(2)).unwrap_err(), Fallback::Constraint);
+        let mut j = Journal::new(&h);
+        assert_eq!(solve(&mut j, &args(2), FPU), Err(Fallback::Constraint));
         assert!(j.finish().is_empty());
     }
 
     #[test]
-    fn a_contact_island_falls_back_with_nothing_written() {
+    fn a_contact_island_is_gathered_and_unmasked_floats_decline() {
         let h = heap(2, 0x1000);
-        assert_eq!(gather(&Journal::new(&h), &args(2)).unwrap_err(), Fallback::Constraint);
+        let island = gather(&Journal::new(&h), &args(2)).unwrap();
+        assert_eq!(island.constraints, vec![(0x7000, jacobian::Class::Contact)]);
         let mut j = Journal::new(&h);
-        assert_eq!(solve(&mut j, &args(2)), Err(Fallback::Constraint));
+        let unmasked = Fpu { mxcsr: 0x1f00, control: 0x027f };
+        assert_eq!(solve(&mut j, &args(2), unmasked), Err(Fallback::Float));
         assert!(j.finish().is_empty());
     }
 
@@ -398,6 +515,7 @@ mod tests {
         h.0.insert(MOTIONS + 0x100 + MOTION_ACCUMULATOR, 0x100);
         let mut j = Journal::new(&h);
         let island = Island {
+            buffer: BUFFER,
             layout: Layout::read(&j, ISLAND, BASE, 0x1000).unwrap(),
             bodies: (0..3)
                 .map(|i| Body {

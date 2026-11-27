@@ -341,7 +341,19 @@ pub enum Outcome { Won, Lost, TeamWon { team }, Draw }
   its `Hunt` and `EraseSquad` look at enemy slots only, so a wave clears
   while allies live, and a standing ally stays through the next wave.
   `Slot::Placed::ally` marks an ally's slot, and its `target` is the
-  team it serves. No `Target` follows an ally's `PlaceSquad`.
+  team it serves. No `Target` follows an ally's `PlaceSquad`; an
+  `Ally { slot, team }` does (`ff_ally(s, team)` in the script), and only
+  an ally's. The host answers it with `SquadOp::Ally`: the engine team of
+  the first player on Firefight team `team` (`firefight_team`), then the
+  kit's `ff_hold_NN` order for base `team`, so the squad stands with its
+  players' side and holds that base. It is refused, and the squad stays
+  as placed, when the kit has no base or no hold order for that team, or
+  no player is on it. The director counts allies apart:
+  `ScriptDirector::live_actors` is enemies only (the last wave's clear
+  reads it) and `live_allies` is the allies, shown as `live_allies` in
+  `firefight.state`. A Clanker drops the actors on its own player team
+  from what it sees, so it never targets an ally (docs/game/bots.md,
+  "Firefight").
 - **Where a squad enters.** The kit gives each map drop zones. The
   director honours an unseen preferred zone when the kit has it.
   Otherwise it takes the zones no player has line of sight to (all zones
@@ -466,6 +478,7 @@ scenarios ([rules-engine.md](rules-engine.md#firefight-ai-and-bounces)).
   target sits in its `squad_side` field. `on kill`
   scores player kills (only in a two-team blob with `player_kill` above
   0). The entries `zone_team_distance(z, team)`, `ff_target(s, team)`,
+  `ff_ally(s, team)` (an ally squad's team, after its `place_squad_at`),
   `ff_team_lives(team, n)`, `ff_player_score(p, n)` and
   `ff_team_finish(winner)` (`none` a draw) stand for the two-team parts
   of `Observed` and `Command`. The blob's header has `teams` 1 or 2.
@@ -956,7 +969,10 @@ firing positions, preferring cover that faces the nearer base. After the
 drops come `ff_base_00` and `ff_base_01`, each one area with up to 8
 firing positions around its base, and the orders `ff_hunt_00` and
 `ff_hunt_01`, whose primary areas are that base's area only, so a squad
-hunted at team N pushes into base N. The kit refuses maps without six
+hunted at team N pushes into base N, then `ff_hold_00` and `ff_hold_01`,
+whose one primary area is the first area of the base's zone: the order an
+allied squad is given, to stay on that ground (`firefight-kit/src/ai.rs`
+`hold_orders`; the engine's reading of the one-area order is not run). The kit refuses maps without six
 suitable drops or without the required local tags. `KIT_VERSION` is 4.
 
 **Built-in layouts.** A map with an authored layout takes its drops from
@@ -1562,6 +1578,7 @@ boundary. Every address below is **E** unless the row says otherwise.
 | ... its character and zone | scenario squad `+0x36` and `+0x38`, its starts' positions | `place_squad` | traced | Nothing chooses them at the call. `AI_SPAWN_AT_SQUAD_START` reads, for each actor, the start's character (`+0x20`) or else the squad's (`+0x36`), as an index into the character palette (scenario `+0x178`, `0x2037cc`); a squad with neither places nobody. The squad's areas while it has no order come from its zone `+0x38` (`0x204f93`), and its actors appear at its starts' positions. So `place_squad` writes the palette index, the zone, and the zone's firing positions into the slot squad's starts, then places: tag memory every applying machine writes the same way. The weapon tier is not applied, since the stage-one kit authors one weapon |
 | Actors' team | `AI_SET_TEAM` (`0x275b60`), behind `HS_AI_SET_TEAM` (322) | `place_squad`, after the placement | traced | The evaluator passes the `ai` value in EAX and the team in BX (`0x2a587a`). The routine accepts a squad or a group, writes the runtime squad's team byte (`+0x76`, `0x275bf4`), then each actor's team (`+0x24`, which `world.ai` reports) and its unit's (`+0x138`, `0x275c99`). Placement copies a nonzero squad team byte onto each new unit (`0x20187a`), but team 0 reads as unset there, so the body sets the team after every placement |
 | Hunt | `AI_SET_ORDERS` (`0x275cb0`), behind `HS_AI_SET_ORDERS` (333) | `hunt` | built | The evaluator passes the `ai` value in EAX and the order index in CX (`0x2a5c39`). The routine ignores an index outside the scenario's order block (`+0x240`, `0x275ce6`) and hands a squad to `0x202e90`, a group to `0x203120`. There is no built-in hunt: it is an order the kit authors, which `hunt` finds by its name `ff_hunt`. The kit writes it as order 0 of an empty block (`ai::hunt_order`): no style, script or follow target, and every area of every drop zone as its primary area set, so a squad sent to it engages from across the arena. A base map that already has orders is refused, since the kit does not merge into another block's child arrays. A kit with no zone areas is refused with the Hunt order named |
+| An ally's team and hold | `AI_SET_TEAM` (`0x275b60`) then `AI_SET_ORDERS` (`0x275cb0`), as above | `ally` | built; not run | The kit's `ff_hold_NN` order, found by name as `ff_hunt_NN` is (`KitLayout::hold_orders`). The team is the players' engine team, not a faction's. A base with no such order is an error naming it |
 | Erase a squad | `AI_ERASE` (`0x2736c0`), behind `HS_AI_ERASE` (297) | `erase_squad` | traced; run R2 for bodies | `ai_erase` passes the `ai` value as its one stack argument (`0x2a523b`). For each actor the routine deletes the actor (`0x1e2a90`) and then its unit (`OBJECT_DELETE`) or swarm (`0x28e200`); an actor the AI is updating at that moment is marked instead (`+0x0d`, `0x2736fc`). It then walks the objects the squad placed (runtime squad `+0x70`, linked through object `+0x3a4`) and deletes each one `0xbeb30` does not keep. Whether a dead actor's body is still on that list is what R2 settles |
 | Fly a ship along its path | `OBJECT_SET_TRANSFORM` (`0xb7430`), the pose of `rules::vehicles::Flight` | `fly` (`Game::fly`), `Flights` (`rules/world/vehicles/flight.rs`), `put_ship` | built; rules-world R7 and R3 | The host flies the ship along a keyed path with no AI pilot. `Game::fly` hands the match the ship, the path's points and the ticks; the match begins a flight on the tick it applies the entry and every tick after puts the ship at the flight's pose, facing the path's tangent, as a put at the boundary (`put_ship`: the object's own `up` made perpendicular to the tangent, `notify` set). The pose is 16.16 integer math, so every machine and a film put the ship in the same place. A flight that has run its ticks puts the ship on the last point once and is reported as an arrival (`Match::take_arrived`). At most 4 ships fly at once; a second flight of a ship replaces its first with no arrival. The next physics step can move the body again, with riders aboard and with contacts, which only a run settles ([R7](notes/2026-11-24-vehicle-actions.md)). Whether a client sees the ship move is rules-world R3 |
 | Place a squad into a ship | `VEHICLE_LOAD` (`0x11b0c0`), `OBJECT_LIST_FROM_AI` (`0x272ea0`), `OBJECT_DELETE` | `place_squad_in` (`Game::drop_squad` through `drop_squad`) | built; rules-world R7 | Retail placement cannot seat into a given ship ([R6](notes/2026-11-24-vehicle-actions.md)), so the body places `min(count, free seats)` actors with every start of the slot squad at the ship's position, then loads the squad's actor list into the ship through the retail `vehicle_load_magic` body with the all-seats mapping. The free seats are the capacity the caller names less the bipeds attached to the ship. An actor the load left unattached is deleted, so none stands under the ship; a load that seats none is refused. The actors are read from the actors pool and not from the replicated ones, since a new actor has no entity until the tick's replication. The two register and stack layouts of the load and the list cast are read from the call at `0x2a411c` and the HS cast table and are confirmed by the run |

@@ -183,6 +183,7 @@ pub fn read_actors(m: &dyn GuestMemory, out: &mut Vec<Seen>) -> Result<(), MemFa
 /// [`Context::actor_team`], never a player's team.
 pub fn normalise(p: &mut Perception, ctx: &Context) {
     p.teams = true;
+    drop_allies(p, ctx);
     if let [team] = ctx.player_teams[..] {
         if let Some(me) = &mut p.me {
             me.team = team;
@@ -198,6 +199,25 @@ pub fn normalise(p: &mut Perception, ctx: &Context) {
     for o in p.others.iter_mut().filter(|o| is_actor(o.id)) {
         o.team = actors;
     }
+}
+
+/// Removes the actors that serve the bot's own side: an ally squad's actors
+/// are on a player team (`Command::Ally`), the one the bot is on, or with
+/// one player team the only one. They are never a target, never in the
+/// sight pass. With two teams the other team's ally stays an actor, an
+/// enemy as the engine has it. When the AI's own team is a player team
+/// (a misassignment) no actor can be told from an ally, and none is dropped.
+fn drop_allies(p: &mut Perception, ctx: &Context) {
+    if ctx.player_teams.contains(&ctx.ai_team) {
+        return;
+    }
+    let single = ctx.player_teams.len() == 1;
+    let mine = p.me.map(|m| m.team);
+    p.others.retain(|o| {
+        !(is_actor(o.id)
+            && ctx.player_teams.contains(&o.team)
+            && (single || mine == Some(o.team)))
+    });
 }
 
 /// Whether `o` is an enemy of a bot on `team` in perception `p`: an

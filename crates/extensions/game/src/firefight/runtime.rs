@@ -1554,7 +1554,7 @@ impl Runtime {
                     )));
                 }
             }
-            Some(Command::Target { team, .. })
+            Some(Command::Target { team, .. } | Command::Ally { team, .. })
                 if usize::from(*team) >= kit.bases.len().min(MAX_TEAMS) =>
             {
                 return Err(Refused::Invalid(format!(
@@ -1681,6 +1681,7 @@ pub fn kit_reply(m: &dyn GuestMemory) -> Result<wire::Kit, MemFault> {
         bases: kit.kit().bases,
         characters: kit.characters,
         hunt_orders: kit.hunt_orders.clone(),
+        hold_orders: kit.hold_orders.clone(),
     })
 }
 
@@ -1757,6 +1758,7 @@ fn director(d: &::firefight::ScriptDirector, game: &Match) -> wire::Director {
         pools: s.pools[..teams].to_vec(),
         scores: s.scores[..teams].to_vec(),
         live_actors: d.live_actors(),
+        live_allies: d.live_allies(),
         cap: d.cap(game.players),
         players: game.players,
         skulls: s
@@ -1786,6 +1788,9 @@ pub async fn make_calls(
             Call::Squad(SquadOp::Place(p)) => guest::place_squad(cx, &work.kit, p).await,
             Call::Squad(SquadOp::Hunt { slot, base }) => {
                 guest::hunt(cx, &work.kit, slot, base).await
+            }
+            Call::Squad(SquadOp::Ally { slot, team, base }) => {
+                guest::ally(cx, &work.kit, slot, team, base).await
             }
             Call::Squad(SquadOp::Erase { slot }) => guest::erase_squad(cx, &work.kit, slot).await,
             Call::Score { player, points } => guest::credit_score(cx, player, points).await,

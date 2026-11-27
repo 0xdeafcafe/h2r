@@ -147,7 +147,7 @@ impl Math {
     }
 }
 
-fn load(bits: u32) -> F80 {
+pub(crate) fn load(bits: u32) -> F80 {
     let mut x = F80::from_f32_bits(bits);
     if x.is_snan() {
         x.sig |= 1 << 62;
@@ -155,7 +155,7 @@ fn load(bits: u32) -> F80 {
     x
 }
 
-fn finite(value: u32) -> bool {
+pub(crate) fn finite(value: u32) -> bool {
     value & 0x7f80_0000 != 0x7f80_0000
 }
 
@@ -473,6 +473,221 @@ impl Stream {
 pub fn export(rhs: u32, scale: u32, control: u16) -> u32 {
     let mode = Mode::from_cw(control);
     x87::mul(load(rhs), load(scale), mode).0.to_f32_bits(mode).0
+}
+
+// ---- the schema stream `0x0031c940` reads -----------------------------------
+//
+// A contact island's schemas, as `jacobian::contact` writes them, decoded
+// into a [`Stream`]: each header names the rows that follow and the two
+// accumulators; each command its rows. The write-back pass after the
+// iterations (`0x0031e4da` to `0x0031e696`) stores each row's impulse and
+// its corrected right-hand side times the export scale, in schema order:
+// implicit forms at the header's output pointer, stepping by its stride;
+// the friction forms at their own pointer and stride.
+
+use crate::jacobian::{
+    SCHEMA_CONTACT, SCHEMA_CONTACT_HEADER, SCHEMA_CONTACT_PAIR, SCHEMA_FRICTION, SCHEMA_FRICTION_TWIST,
+    Scratch,
+};
+
+/// The end schema (id 0, size 4, pass 0), after the last constraint's.
+pub const SCHEMA_END: u32 = 0x0000_0400;
+const ACCUMULATOR_BYTES: u32 = 0x80;
+
+/// The solver parameters `W+0x160` the solve reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Params {
+    /// `+0x04` and `+0x08`, every command's scales (no contact schema
+    /// overrides them).
+    pub rhs_scale: u32,
+    pub velocity_scale: u32,
+    /// `+0x0c`.
+    pub bias: u32,
+    /// `+0x10`: the write-back pass multiplies each right-hand side by it.
+    pub export: u32,
+    /// `+0x1c`, signed: none at or below zero.
+    pub iterations: u32,
+    /// `+0x20`, passed to each motion's export.
+    pub scale: u32,
+}
+
+impl Params {
+    pub fn read(read: impl Fn(u32) -> Option<u32>, at: u32) -> Option<Self> {
+        let w = |off: u32| read(at.wrapping_add(off));
+        Some(Self {
+            rhs_scale: w(0x04)?,
+            velocity_scale: w(0x08)?,
+            bias: w(0x0c)?,
+            export: w(0x10)?,
+            iterations: w(0x1c)?,
+            scale: w(0x20)?,
+        })
+    }
+}
+
+/// Where the write-back pass stores one command's rows: the first row's
+/// impulse word, then `stride` on for each further row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Output {
+    pub dest: u32,
+    pub stride: u32,
+}
+
+/// A decoded stream: body `i` is the accumulator at `accumulators[i]`,
+/// command `i` writes back through `outputs[i]`.
+#[derive(Clone)]
+pub struct Decoded {
+    pub stream: Stream,
+    pub accumulators: Vec<u32>,
+    pub outputs: Vec<Output>,
+}
+
+/// The island's areas as the decode checks them.
+#[derive(Clone, Copy, Debug)]
+pub struct Areas {
+    /// The leading accumulator; the island's are the `count` after it.
+    pub accumulators: u32,
+    pub count: u32,
+    /// The row area: the first header's rows start here and every row
+    /// ends at or before `rows_end`.
+    pub rows: u32,
+    pub rows_end: u32,
+    /// How many impulse words the frame zeroes (`I+0x18`).
+    pub impulse_words: u32,
+}
+
+/// Decode the schemas from `start`. `None` for a stream the kernel does
+/// not cover: an id other than the contact builder's, rows that are not
+/// one run from the row area's start, an accumulator outside the island,
+/// or more rows than zeroed impulse words.
+pub fn decode(s: &Scratch, start: u32, areas: Areas, params: Params) -> Option<Decoded> {
+    let mut d = Decoded { stream: Stream::default(), accumulators: Vec::new(), outputs: Vec::new() };
+    let body = |d: &mut Decoded, addr: u32| -> Option<usize> {
+        let off = addr.checked_sub(areas.accumulators)?;
+        if off % ACCUMULATOR_BYTES != 0 || off / ACCUMULATOR_BYTES > areas.count {
+            return None;
+        }
+        if let Some(i) = d.accumulators.iter().position(|&a| a == addr) {
+            return Some(i);
+        }
+        d.stream.bodies.push(Body {
+            linear: s.vector(addr + 0x10)?,
+            angular: s.vector(addr + 0x20)?,
+            inverse_mass: s.vector(addr + 0x30)?,
+            linear_sum: s.vector(addr + 0x40)?,
+            angular_sum: s.vector(addr + 0x50)?,
+        });
+        d.accumulators.push(addr);
+        Some(d.accumulators.len() - 1)
+    };
+    let mut p = start;
+    let mut row_at = areas.rows;
+    let mut bodies = [0; 2];
+    let mut out = Output { dest: 0, stride: 0 };
+    // The first schema is read as a header whatever its id (`0x0031c9a0`
+    // is entered directly); the builder always writes one there.
+    if s.get(p)? != SCHEMA_CONTACT_HEADER {
+        return None;
+    }
+    loop {
+        let tag = s.get(p)?;
+        let (constraint, linear, angular, size) = match tag {
+            SCHEMA_END => break,
+            SCHEMA_CONTACT_HEADER => {
+                if s.get(p.checked_add(4)?)? != row_at {
+                    return None;
+                }
+                bodies = [body(&mut d, s.get(p + 0x0c)?)?, body(&mut d, s.get(p + 0x10)?)?];
+                out = Output { dest: s.get(p + 8)?, stride: s.get(p + 0x14)? };
+                p += 0x18;
+                continue;
+            }
+            SCHEMA_CONTACT => (Constraint::Single(Limit::Positive), 1, 0, 4),
+            SCHEMA_CONTACT_PAIR => (Constraint::PositivePair { cross: s.get(p.checked_add(4)?)? }, 2, 0, 8),
+            SCHEMA_FRICTION | SCHEMA_FRICTION_TWIST => {
+                let w = |off: u32| s.get(p.checked_add(off)?);
+                let twist = tag == SCHEMA_FRICTION_TWIST;
+                (
+                    Constraint::Friction {
+                        cross: w(8)?,
+                        limit: w(0x0c)?,
+                        twist_scale: if twist { Some(w(0x14)?) } else { None },
+                    },
+                    2,
+                    u32::from(twist),
+                    if twist { 0x18 } else { 0x14 },
+                )
+            }
+            _ => return None,
+        };
+        let output = match constraint {
+            Constraint::Friction { .. } => Output { dest: s.get(p + 4)?, stride: s.get(p + 0x10)? },
+            _ => {
+                let o = out;
+                out.dest = out.dest.wrapping_add(out.stride.wrapping_mul(linear));
+                o
+            }
+        };
+        if angular == 1 {
+            // The three-row write-back leaves the header's pointer zero
+            // (`0x0031e631`).
+            out.dest = 0;
+        }
+        let first_row = d.stream.rows.len();
+        for i in 0..linear + angular {
+            let row = if i < linear {
+                let r = Row {
+                    normal: Some(s.vector(row_at)?),
+                    angular_a: s.vector(row_at.checked_add(0x10)?)?,
+                    angular_b: s.vector(row_at + 0x20)?,
+                    impulse: 0,
+                };
+                row_at += 0x30;
+                r
+            } else {
+                let r = Row {
+                    normal: None,
+                    angular_a: s.vector(row_at)?,
+                    angular_b: s.vector(row_at.checked_add(0x10)?)?,
+                    impulse: 0,
+                };
+                row_at += 0x20;
+                r
+            };
+            if row_at > areas.rows_end {
+                return None;
+            }
+            d.stream.rows.push(row);
+        }
+        d.stream.commands.push(Command {
+            constraint,
+            first_row,
+            bodies,
+            rhs_scale: params.rhs_scale,
+            velocity_scale: params.velocity_scale,
+        });
+        d.outputs.push(output);
+        p = p.checked_add(size)?;
+    }
+    // Impulses start zeroed (`0x0031c3c0`) for `I+0x18` words; the rows'
+    // read past that would be the guest's padding and schemas.
+    (d.stream.rows.len() <= areas.impulse_words as usize).then_some(d)
+}
+
+impl Decoded {
+    /// The write-back pass: `(address, word)` in store order.
+    pub fn writeback(&self, solved: &Stream, export_scale: u32, control: u16) -> Vec<(u32, u32)> {
+        let mut writes = Vec::new();
+        for (cmd, out) in solved.commands.iter().zip(&self.outputs) {
+            let mut dest = out.dest;
+            for row in &solved.rows[cmd.first_row..cmd.first_row + cmd.constraint.rows()] {
+                writes.push((dest, row.impulse));
+                writes.push((dest.wrapping_add(4), export(row.rhs(), export_scale, control)));
+                dest = dest.wrapping_add(out.stride);
+            }
+        }
+        writes
+    }
 }
 
 #[cfg(test)]

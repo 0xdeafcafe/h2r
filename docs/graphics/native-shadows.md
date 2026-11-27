@@ -93,6 +93,33 @@ the gather row and resolved sample in
 
 The main branch sets pass flags `0x14`, renders the layer-10 silhouette, calls `0x000222a0` for the two filter passes through targets 10 → 11 → 10, and applies layer 11 with the filtered target 10. The native freeze is ordered at the start of 11. A native caster can therefore share its map with D3D casters and with the guest filter. `light_gather::object_shadows::caster` drives admitted mask casters through projection setup and the tail at `0x0004a780`. A refused caster runs the guest function whole, including creature shadows. `object_shadows::run` restores both mode bytes after the last caster. Each object and each additional-caster suffix at `0x00030ed0` starts a new generation.
 
+### The object shadows from the scene
+
+`render_bridge::native_lights::object_shadow_scene` gathers the open
+view's object shadows (each `0x00032350`: its layer 10 and 11 groups and
+the filter between them) and hands them to the host in slot 3, ahead of
+layer 7's draw (`native_layers::before_layer`). The game host
+(`native_lights_glue`'s `draw_object_shadows`,
+`native_lights_glue/scene.rs`, `object_ops`) makes each shadow one
+external sequence, committed whole or not at all:
+
+- target 10 cleared to white with zero alpha;
+- the caster group drawn into it, colour only;
+- the filter quads over targets 10 and 11 (`native_shadows_glue`'s
+  `ShadowFilterPass` with `FilterDrawer::Scene`, one quad drawer per
+  device);
+- target 10's colour copied into a map on each target copy at its own
+  texels;
+- the layer 11 receivers on the view's target, sampling that copy's map.
+
+A creature's ground shadow, a shadow that is not a mask caster followed
+by its receivers, or a caster region off its target's corner refuses the
+shadow. The hand-off is held (`object_shadow_scene::HELD`): the
+caster body `0x00032350` (`engine::render::light_gather::object_shadows::caster`,
+`layers`) still makes the guest's layer 10 begin, draw and end, the
+filter and layer 11 as it gathers the groups, so the host is not asked
+until that body stops after its item lists.
+
 ## Interfaces
 
 `native_render::shadow_gpu::Producer` accepts the ordered caster batches on their encoder and returns a generation-owned `SampledMap`. The GPU differential (`crates/rewrites/native-render/tests/shadow_gpu.rs`) compares all four channels, including stencil for D24.
