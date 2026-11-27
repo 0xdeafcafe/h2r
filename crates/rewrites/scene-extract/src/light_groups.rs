@@ -896,7 +896,7 @@ mod tests {
     }
 
     #[test]
-    fn a_light_accepts_visible_subparts_only_when_the_emitter_draws_one_whole_part() {
+    fn a_lights_visible_subparts_are_one_whole_part_or_the_spans_the_emitter_draws() {
         let mut m = fixture();
         let rec = RENDER_RECORDS + RENDER_RECORD_SIZE;
         let (bitmap, descriptors) = (0x0067_0000, 0x0068_0000);
@@ -912,13 +912,15 @@ mod tests {
         m.w(bitmap + 4, 1);
         let part = entry(&m, ITEMS, sorted(0)).unwrap().0;
         assert_eq!((part.stream.first_index, part.stream.index_count), (0, 6));
+        assert_eq!(part.subparts, None, "the two slices join into the whole part");
 
+        // Only the second slice visible: its span, for layers 12 and 13.
         m.w(bitmap, 0);
-        assert_eq!(entry(&m, ITEMS, sorted(0)), Err(Cause::Subparts));
+        assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap().0.subparts, Some(vec![2..6]));
         m.w(bitmap, 1 << 31);
         m.w(rec, (1 << 6) | (1 << 9));
         set_half(&mut m, PARTS + 2, 0);
-        assert_eq!(entry(&m, ITEMS, sorted(0)), Err(Cause::Subparts), "two separate strips");
+        assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap().0.subparts, Some(vec![0..2, 2..6]), "two separate strips");
         m.w(bitmap + 4, 0);
         m.w(descriptors + 31 * 8, 6 << 16);
         assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap().0.stream.topology, Topology::Strip);
@@ -961,6 +963,9 @@ mod tests {
     fn a_flagged_shader_is_entry_state_with_the_structures_block_and_the_frames_target_copy() {
         let mut m = fixture();
         m.w(SHAD + 0x14, 1 << 16);
+        // The structure's parameter count reads 0: no block to upload (a
+        // count that does not read declines, `structure_parameters::uploads`).
+        m.w(BSP + 0x214, 0);
         m.w(BSP_TARGET_READY, 1);
         let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
         assert_eq!(e.state, EntryState { shader_flag: true, ..EntryState::default() }, "no block, the copy made");
@@ -969,6 +974,7 @@ mod tests {
         let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
         assert_eq!(e.state, EntryState { shader_flag: true, uncopied: true, ..EntryState::default() });
         m.w(BSP + 0x214, 1);
+        m.w(BSP + 0x218, 0x0063_0000);
         let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
         assert!(e.state.structure, "a parameter block the prologue uploads");
         for layer in [10, 11, 14] {

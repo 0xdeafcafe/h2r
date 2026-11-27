@@ -20,8 +20,7 @@ const ARGUMENT: u32 = (RECORD_INDEX << 8) | 2;
 const SHADER: u32 = 1;
 
 fn counter(name: &str) -> u64 {
-    let key = format!("layer_plan_15_effects_shadow_{name}");
-    crate::native_layers::counters().into_iter().find(|(k, _)| *k == key).map_or(0, |(_, v)| v)
+    super::super::tested(name)
 }
 
 /// A BSP part drawn by a shader whose template has two layer-15 passes.

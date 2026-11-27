@@ -155,11 +155,7 @@ mod tests {
     }
 
     fn counter(name: &str) -> u64 {
-        let key = format!("layer_plan_15_effects_shadow_{name}");
-        crate::native_layers::counters()
-            .into_iter()
-            .find(|(k, _)| *k == key)
-            .map_or(0, |(_, v)| v)
+        super::super::tested(name)
     }
 
     #[test]
