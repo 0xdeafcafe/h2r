@@ -1592,6 +1592,7 @@ fn delete_and_restore_original_on_the_properties_page() {
     // Restore asks, and No leaves the log as it was.
     let log = e.session.log().len();
     e.choose(5, Choice::Restore(added)).unwrap();
+    screens::take_request();
     assert_eq!(e.restore_asked, Some(added));
     e.choose(
         6,
@@ -1679,11 +1680,13 @@ fn restore_original_puts_an_own_thing_back_through_its_question() {
     assert!(labels(&e).contains(&"Restore original".to_string()), "{:?}", labels(&e));
     // The row asks first; No writes nothing.
     e.choose(4, Choice::Restore(spawn)).unwrap();
+    screens::take_request();
     e.choose(5, Choice::Answer { ask: Ask::Restore, yes: false }).unwrap();
     assert!(calls::lock(&e.calls).drain().is_empty());
     assert_eq!(e.session.log().len(), 1);
     // Yes is one reset, and the world is told the team is the map's again.
     e.choose(6, Choice::Restore(spawn)).unwrap();
+    screens::take_request();
     e.choose(7, Choice::Answer { ask: Ask::Restore, yes: true }).unwrap();
     let (ticket, call) = calls::lock(&e.calls).drain().pop().unwrap();
     assert!(

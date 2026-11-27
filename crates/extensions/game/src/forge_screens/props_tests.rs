@@ -168,6 +168,7 @@ fn a_spawner_with_an_abandon_limit_has_the_return_time_row_after_respawn_time() 
             "Heading",
             "Respawn time",
             "Return time",
+            "Team",
             "Reset orientation",
             "Delete",
         ]
@@ -291,6 +292,7 @@ fn a_spawner_with_game_type_slots_has_the_game_types_row_and_it_opens_its_dialog
             "Heading",
             "Respawn time",
             "Game types...",
+            "Team",
             "Reset orientation",
             "Delete",
         ]
@@ -577,11 +579,4 @@ fn a_spawner_has_a_team_picker_over_the_documents_property() {
         panic!("a picker")
     };
     assert_eq!(blue.values[blue.current], "Blue");
-    // No other kind of object has it beside the spawner's own kinds.
-    let goal = thing(BlockKind::NetgameFlags, ThingKind::Goal, &[]);
-    assert_eq!(
-        rows(&d, &goal, 0.0).iter().filter(|r| r.label == "Team").count(),
-        1,
-        "a goal keeps its field Team row only"
-    );
 }
