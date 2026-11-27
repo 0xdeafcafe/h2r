@@ -337,7 +337,8 @@ fn the_kit_parks_one_ship_per_kind_kept() {
         assert_eq!(names, ["run_in", "hover_phantom", "hover_pelican", "run_out"]);
     }
     // A Pelican the donors lack is cut, and the Phantom is kept.
-    let none = classes(&testkit::donor(), &schema, &[]);
+    let plain = testkit::donor();
+    let none = classes(&plain, &schema, &[]);
     let built = kit(&base, Dropship::Auto, Some(&none)).unwrap();
     assert!(built.ship.unwrap().kept);
     assert!(!built.pelican.clone().unwrap().kept, "{:?}", built.pelican);
