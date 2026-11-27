@@ -1040,11 +1040,13 @@ to the guest's draws (**Code**):
     lighting `0x00023690` under the object setup (`0x0004b5d0`). So the
     cycle reaches a layer's draws only through the object items'
     lighting, read after it; the world's items draw without one.
-  - **The plan** (`native_render::layer_pass`). Per item: the one pass
-    the item names, its `+0x14` at the shader level its `+0x15` names
-    (`frame_scene::LayerItem::pass`, `level`; the guest's list holds an
-    item per pass, and `0x00016b90` sets up that pass alone; one without
-    a vertex shader draws nothing), the
+  - **The plan** (`native_render::layer_pass`). Per item: for an
+    object's, the one pass the item names, its `+0x14` at the shader
+    level its `+0x15` names (`frame_scene::LayerItem::pass`, `level`;
+    the guest's list holds an item per pass, and `0x00016b90` sets up
+    that pass alone); for a structure item, every pass of the first
+    level, which its layer set draws for the part (`layer_pass::item_pass`).
+    A pass without a vertex shader draws nothing. Then the
     implementation (the only one, or the item's), the engine inputs
     (the view's, the lighting's from the item's owner, none for the
     structure's, and the shader's own) with the material resolved again
