@@ -1,7 +1,7 @@
 //! Shapes menu labels from the same font records their overlay pages contain.
 use font::Font;
 use frame_scene::OverlayGlyph;
-use render_bridge::native_hud::ui_overlay::{Justify, UiText};
+use render_bridge::native_hud::ui_overlay::{BUTTON_GLYPHS, Justify, UiText};
 
 use crate::ui_kit::preview::text_layout;
 
@@ -16,7 +16,18 @@ impl UiText for MenuText {
         alignment: Justify,
     ) -> Option<Vec<OverlayGlyph>> {
         let face = self.0.font(i16::try_from(font).ok()?)?;
-        shape(&face, units, rect, alignment)
+        shape(&face, units, rect, alignment, false)
+    }
+
+    fn shape_buttons(
+        &self,
+        font: u16,
+        units: &[u16],
+        rect: [f32; 4],
+        alignment: Justify,
+    ) -> Option<Vec<OverlayGlyph>> {
+        let face = self.0.font(i16::try_from(font).ok()?)?;
+        shape(&face, units, rect, alignment, true)
     }
 }
 
@@ -30,16 +41,20 @@ fn origin(left: i32, room: i32, line: i32, alignment: Justify) -> f32 {
 
 /// The line scanner handles private-use substitutions, tabs and inline
 /// formatting separately. The ordinary label path accepts basic Latin and alphabetic European text
-/// and the engine's line separator, including its CRLF spelling.
+/// and the engine's line separator, including its CRLF spelling. With
+/// `buttons`, a button glyph is a character too: the scanner takes it as
+/// any other (`0x0013f5a0`: type 4).
 fn shape(
     font: &Font<'_>,
     units: &[u16],
     rect: [f32; 4],
     alignment: Justify,
+    buttons: bool,
 ) -> Option<Vec<OverlayGlyph>> {
+    let button = |u: &u16| buttons && BUTTON_GLYPHS.contains(u);
     if font.header.unknown[0] != 0 || !units
         .iter()
-        .all(|u| matches!(*u, 10 | 13 | 32..=123 | 125..=126 | 0x00a0..=0x052f))
+        .all(|u| matches!(*u, 10 | 13 | 32..=123 | 125..=126 | 0x00a0..=0x052f) || button(u))
         || !rect
             .iter()
             .all(|v| v.is_finite() && v.fract() == 0.0 && v.abs() < 65536.0)
@@ -115,7 +130,7 @@ mod tests {
         bytes[r + 12..r + 16].copy_from_slice(&(data as u32).to_le_bytes());
         let face = Font::parse(&bytes).unwrap();
         let label: Vec<u16> = "x x".encode_utf16().collect();
-        let run = shape(&face, &label, [10., 20., 14., 27.], Justify::Right).unwrap();
+        let run = shape(&face, &label, [10., 20., 14., 27.], Justify::Right, false).unwrap();
         assert_eq!(
             run,
             [OverlayGlyph {
@@ -123,9 +138,13 @@ mod tests {
                 rect: [11., 21., 12., 22.]
             }]
         );
-        let run = shape(&face, &label, [10., 20., 14., 28.], Justify::Right).unwrap();
+        let run = shape(&face, &label, [10., 20., 14., 28.], Justify::Right, false).unwrap();
         assert_eq!(run[1].rect, [12., 25., 13., 26.]);
-        assert!(shape(&face, &[0xe501], [0.; 4], Justify::Left).is_none());
+        assert!(shape(&face, &[0xe501], [0.; 4], Justify::Left, false).is_none());
+        // A button glyph is a character only where the caller checks the result.
+        assert!(shape(&face, &[0xe100], [0.; 4], Justify::Left, false).is_none());
+        assert_eq!(shape(&face, &[0xe100], [0.; 4], Justify::Left, true), Some(Vec::new()), "the font's empty glyph");
+        assert!(shape(&face, &[0xe501], [0.; 4], Justify::Left, true).is_none(), "not a button");
     }
 
     #[test]

@@ -852,6 +852,22 @@ pub fn atlas_state() -> (u32, u32) {
     (ATLAS_SCALE.load(Ordering::Relaxed), ATLAS_SIDE.load(Ordering::Relaxed))
 }
 
+/// A coloured glyph's page texels: each texel of the `wide` page copy
+/// takes the colour of the ARGB4444 pixel it lies in (`pixels`, `width`
+/// to a row, `scale` texels to a pixel, each nibble times 17) and its
+/// own byte of `coverage`.
+fn coloured(pixels: &[u16], width: u16, coverage: &[u8], wide: u16, scale: u32) -> Vec<u8> {
+    let (width, wide, scale) = (usize::from(width), usize::from(wide), scale.max(1) as usize);
+    let mut rgba = Vec::with_capacity(coverage.len() * 4);
+    for (at, &alpha) in coverage.iter().enumerate() {
+        let (row, col) = (at / wide.max(1) / scale, at % wide.max(1) / scale);
+        let px = pixels.get(row * width + col).copied().unwrap_or(0xfff);
+        let channel = |shift: u16| ((px >> shift & 0xf) * 17) as u8;
+        rgba.extend([channel(8), channel(4), channel(0), alpha]);
+    }
+    rgba
+}
+
 /// Puts every glyph of `overlay`'s text runs into their pages at
 /// `atlas_scale` times its size: for each engine font (the run's
 /// material's) and glyph index not in its page, the glyph decoded from
@@ -899,7 +915,13 @@ pub fn fill_glyphs(
                 glyph.record.width.saturating_mul(atlas_scale as u16),
                 glyph.record.height.saturating_mul(atlas_scale as u16),
             );
-            if !pages.insert(font, index, width, height, &coverage) {
+            // The decoder's colour is white until a glyph sets its own.
+            let placed = if glyph.pixels.iter().all(|&px| px & 0xfff == 0xfff) {
+                pages.insert(font, index, width, height, &coverage)
+            } else {
+                pages.insert_rgba(font, index, width, height, &coloured(&glyph.pixels, glyph.record.width, &coverage, width, atlas_scale))
+            };
+            if !placed {
                 return Err(missing(GlyphMissing::Room));
             }
         }
@@ -1113,6 +1135,17 @@ impl d3d::ExternalPass for OverlayPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_coloured_glyphs_texels_take_their_pixels_colour_and_their_own_coverage() {
+        // A green pixel beside a red one, two texels to a pixel.
+        let coverage = [255, 200, 100, 0, 255, 200, 100, 0];
+        let rgba = coloured(&[0xf0f0, 0x7f00], 2, &coverage, 4, 2);
+        assert_eq!(rgba.len(), 32);
+        assert_eq!(rgba[..8], [0, 255, 0, 255, 0, 255, 0, 200]);
+        assert_eq!(rgba[8..16], [255, 0, 0, 100, 255, 0, 0, 0]);
+        assert_eq!(rgba[16..24], rgba[..8], "the second row of the same pixels");
+    }
+
     #[test]
     fn scaled_raster_keeps_far_edges_and_reference_snaps_to_sixteenths() {
         assert_eq!(raster_position(3.09375, 8, 0.0), 3.0625);

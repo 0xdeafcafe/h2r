@@ -166,7 +166,28 @@ pub trait UiText {
         rect: [f32; 4],
         justify: Justify,
     ) -> Option<Vec<OverlayGlyph>>;
+
+    /// As [`UiText::shape`], with the fonts' button glyphs
+    /// ([`BUTTON_GLYPHS`]) laid out as characters. The caller checks the
+    /// glyphs against the guest's before it draws them. Fonts that do not
+    /// lay a button out give `None` for a text with one.
+    fn shape_buttons(
+        &self,
+        font: u16,
+        text: &[u16],
+        rect: [f32; 4],
+        justify: Justify,
+    ) -> Option<Vec<OverlayGlyph>> {
+        if text.iter().any(|unit| BUTTON_GLYPHS.contains(unit)) {
+            return None;
+        }
+        self.shape(font, text, rect, justify)
+    }
 }
+
+/// The button glyphs a string holds as characters: the entries of the
+/// string draw's table (`0x00470204`) with no handler.
+pub const BUTTON_GLYPHS: std::ops::RangeInclusive<u16> = 0xe100..=0xe12b;
 
 /// No fonts: no text is listed.
 pub struct NoText;

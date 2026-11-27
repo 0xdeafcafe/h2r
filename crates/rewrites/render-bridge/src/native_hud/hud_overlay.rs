@@ -108,20 +108,25 @@ pub const WIDGET_STRING: u32 = 0x28;
 const REPLACEMENTS: u32 = 0x0044_a3f0;
 const REPLACEMENT_COUNT: u32 = 18;
 const REPLACEMENT_STRIDE: u32 = 8;
-/// The button glyphs the draw swaps for the player's controls
+/// The characters the draw looks up in its glyph table
 /// (`0x22d318`..`0x22d32a`).
 const SUBSTITUTED: std::ops::RangeInclusive<u16> = 0xe000..=0xf8ff;
+/// The glyph table (`0x22d336`): 131 entries of a character, the handler
+/// that writes what takes its place (the player's control for an action,
+/// a name) or none, and its name.
+const GLYPHS: u32 = 0x0047_0204;
+const GLYPH_COUNT: u32 = 131;
+const GLYPH_STRIDE: u32 = 12;
 /// The lookup's output holds 0xff units (`0x1a0379`).
 const MAX_UNITS: usize = 0xff;
 
 /// A text widget's localized string as the game's string tables hold it
 /// (`0x22a97b`: `0x13925f` finds the string ID `key` in the language's
 /// range of the HUD's `unic`, `0x140440` decodes its UTF-8): `None` when
-/// the lookup is not ready (no language chosen, no tables), or when the
-/// string draw would change it before drawing, which is not read: button
-/// glyphs and the replacement patterns (`0x22d2ee`), a character outside
-/// the basic plane or text that is not UTF-8. A string the tables lack is
-/// the empty one, as in the game.
+/// the lookup is not ready (no language chosen, no tables), for a
+/// character outside the basic plane or text that is not UTF-8, or when
+/// the string draw's changes are not read ([`substituted`]). A string
+/// the tables lack is the empty one, as in the game.
 pub fn localized(mem: &dyn GuestMemory, key: u32) -> Option<String> {
     use engine::locale::{LocaleTable, StringId};
 
@@ -150,12 +155,22 @@ pub fn localized(mem: &dyn GuestMemory, key: u32) -> Option<String> {
         }
     }
     let text = String::from_utf8(bytes).ok()?;
-    let units: Vec<u16> = text.chars().map(|c| u16::try_from(u32::from(c)).ok()).collect::<Option<_>>()?;
-    if units.iter().any(|u| SUBSTITUTED.contains(u)) {
-        return None;
-    }
+    let mut units: Vec<u16> = text.chars().map(|c| u16::try_from(u32::from(c)).ok()).collect::<Option<_>>()?;
+    units.truncate(MAX_UNITS);
+    Some(String::from_utf16_lossy(&substituted(mem, units)?))
+}
+
+/// The string draw's changes to `units` (`0x22d2ee`, on a buffer of 0x100
+/// units). At each unit in turn: a character of the glyph table with a
+/// handler is replaced by what the handler writes, which is not read
+/// (`None`); otherwise the last replacement pattern that starts there is
+/// replaced by its character, when the result fits. A button glyph with
+/// no handler stays a character of the string.
+fn substituted(mem: &dyn GuestMemory, mut units: Vec<u16>) -> Option<Vec<u16>> {
+    let mut patterns = Vec::new();
     for entry in 0..REPLACEMENT_COUNT {
-        let pattern = mem.u32(REPLACEMENTS + entry * REPLACEMENT_STRIDE).ok()?;
+        let at = REPLACEMENTS + entry * REPLACEMENT_STRIDE;
+        let pattern = mem.u32(at).ok()?;
         let mut wide = Vec::new();
         for unit in 0..16 {
             match mem.u16(pattern.checked_add(2 * unit)?).ok()? {
@@ -163,11 +178,33 @@ pub fn localized(mem: &dyn GuestMemory, key: u32) -> Option<String> {
                 u => wide.push(u),
             }
         }
-        if !wide.is_empty() && units.windows(wide.len()).any(|w| w == wide) {
-            return None;
-        }
+        // An empty pattern or a null character is not the table's.
+        let with = mem.u16(at + 4).ok().filter(|&c| c != 0 && !wide.is_empty() && wide.len() < 16)?;
+        patterns.push((wide, with));
     }
-    Some(String::from_utf16_lossy(&units[..units.len().min(MAX_UNITS)]))
+    let mut at = 0;
+    while at < units.len() {
+        let unit = units[at];
+        if SUBSTITUTED.contains(&unit) {
+            for entry in 0..GLYPH_COUNT {
+                let glyph = GLYPHS + entry * GLYPH_STRIDE;
+                if mem.u32(glyph).ok()? == u32::from(unit) {
+                    if mem.u32(glyph + 4).ok()? != 0 {
+                        return None;
+                    }
+                    break;
+                }
+            }
+        }
+        let hit = patterns.iter().rev().find(|(wide, _)| units[at..].starts_with(wide));
+        if let Some(&(ref wide, with)) = hit {
+            if units.len() + 1 - wide.len() <= MAX_UNITS {
+                drop(units.splice(at..at + wide.len(), [with]));
+            }
+        }
+        at += 1;
+    }
+    Some(units)
 }
 
 #[cfg(test)]
@@ -233,12 +270,15 @@ mod tests {
         }
         m.put(blob, b"zero\0").put(blob + 8, b"Ammo\0").put(blob + 16, "Zur\u{fc}ck\0".as_bytes());
         m.put_u8(engine::locale::EMPTY_STRING, 0);
-        // A replacement table whose only pattern is "[x]".
-        m.put_u32(REPLACEMENTS, 0x7000).put(0x7000, &[b'[', 0, b'x', 0, b']', 0, 0, 0]);
-        for entry in 1..REPLACEMENT_COUNT {
-            m.put_u32(REPLACEMENTS + entry * REPLACEMENT_STRIDE, 0x7100);
+        // A replacement table of "[x]" to '#', then "[x" to '<' and "x]" to '>'.
+        m.put(0x7000, &[b'[', 0, b'x', 0, b']', 0, 0, 0]).put(0x7010, &[b'[', 0, b'x', 0, 0, 0]).put(0x7020, &[b'x', 0, b']', 0, 0, 0]);
+        for entry in 0..REPLACEMENT_COUNT {
+            let (pattern, with) = [(0x7000, b'#'), (0x7010, b'<'), (0x7020, b'>')][entry.min(2) as usize];
+            m.put_u32(REPLACEMENTS + entry * REPLACEMENT_STRIDE, pattern).put_u16(REPLACEMENTS + entry * REPLACEMENT_STRIDE + 4, u16::from(with));
         }
-        m.put_u16(0x7100, 0);
+        // A glyph table of a button (0xe100, no handler) and a control (0xe409, a handler).
+        m.map(GLYPHS, GLYPH_COUNT * GLYPH_STRIDE);
+        m.put_u32(GLYPHS, 0xe100).put_u32(GLYPHS + GLYPH_STRIDE, 0xe409).put_u32(GLYPHS + GLYPH_STRIDE + 4, 0x0022_d456);
         m
     }
 
@@ -263,19 +303,31 @@ mod tests {
     }
 
     #[test]
-    fn text_the_string_draw_would_change_is_not_read() {
+    fn the_string_draws_replacements_are_made_and_a_button_glyph_stays() {
         let mut m = tables();
-        // A button glyph, a pattern the draw replaces, a character past the basic plane.
-        m.put(0x6008, "A\u{e001}\0".as_bytes());
-        assert_eq!(localized(&m, 0x0500_0abc), None);
+        // A button with no handler, and one the table lacks, stay characters.
+        m.put(0x6008, "A\u{e100}\u{e001}\0".as_bytes());
+        assert_eq!(localized(&m, 0x0500_0abc).as_deref(), Some("A\u{e100}\u{e001}"));
+        // The last pattern that starts at a unit takes its place: "[x" here,
+        // then "x]" does not start at the units left.
         m.put(0x6008, b"a[x]b\0");
+        assert_eq!(localized(&m, 0x0500_0abc).as_deref(), Some("a<]b"));
+        m.put(0x6008, b"x][x\0");
+        assert_eq!(localized(&m, 0x0500_0abc).as_deref(), Some("><"));
+    }
+
+    #[test]
+    fn text_the_string_draw_would_change_by_a_handler_is_not_read() {
+        let mut m = tables();
+        // A control's glyph, a character past the basic plane, bytes that are not UTF-8.
+        m.put(0x6008, "A\u{e409}\0".as_bytes());
         assert_eq!(localized(&m, 0x0500_0abc), None);
         m.put(0x6008, "\u{1f600}\0".as_bytes());
         assert_eq!(localized(&m, 0x0500_0abc), None);
         m.put(0x6008, &[0xff, 0]);
         assert_eq!(localized(&m, 0x0500_0abc), None);
-        m.put(0x6008, b"[x\0");
-        assert_eq!(localized(&m, 0x0500_0abc).as_deref(), Some("[x"));
+        m.put(0x6008, b"[y\0");
+        assert_eq!(localized(&m, 0x0500_0abc).as_deref(), Some("[y"));
     }
 
     /// A menu shader bitmap's quad names its definition's bitmap, image and
