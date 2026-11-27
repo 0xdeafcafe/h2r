@@ -139,7 +139,8 @@ draw's. Causes, as `scene_kept_sky_<cause>`: `unloaded`, `shader`,
   passes draw into the device's live targets at the guest's calls. Cutting
   them needs the graph to own the view's targets. Layers 18, 19 and 21
   draw at their sorted entry in slot 9 or 10, after the view snapshot
-  (`native_render::snapshot_gpu`).
+  (`native_render::snapshot_gpu`). The water's full-size colour copy is
+  there too (`snapshot_gpu::ColourCopies`).
 
 ## Not verified
 

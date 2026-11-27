@@ -1219,7 +1219,7 @@ impl GpuWorld {
                 encoder.copy_buffer_to_buffer(src, *at, dst, *offset, *len);
             }
             if let Some(scene) = &scene {
-                encoder.copy_texture_to_texture(scene.from.as_image_copy(), scene.to.as_image_copy(), scene.extent);
+                scene.record(encoder);
             }
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("native water"),
