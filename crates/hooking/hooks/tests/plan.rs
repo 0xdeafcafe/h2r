@@ -630,3 +630,192 @@ fn render_timing_is_off_by_default_and_observes_every_stage() {
         "only the stages run something after the body"
     );
 }
+
+/// The replaced list (docs/lifter/lift-pruning.md, "The replaced list").
+mod replaced {
+    use std::collections::BTreeSet;
+
+    use guest_layout::points::{self, Point};
+    use hooks::{Base, Flow, Plan, Registry, Remap, Switches, from_fn, replaced_in_every};
+
+    fn port(b: &mut hooks::Builder, p: &'static Point) {
+        b.raw()
+            .implement(p, "port", |_, _, _| unreachable!("never run"))
+            .replaces_guest();
+    }
+
+    fn entries(ps: &[&'static Point]) -> BTreeSet<u32> {
+        ps.iter().map(|p| p.base).collect()
+    }
+
+    fn names(plan: &Plan, ps: &[&'static Point]) -> Vec<&'static str> {
+        plan.replaced(&entries(ps)).values().map(|p| p.name).collect()
+    }
+
+    static ALL: [&Point; 4] = [
+        &points::CONTROLS_ROW_TEXT,
+        &points::CONTROLS_ROW_CHOSEN,
+        &points::ITEM_TEXT,
+        &points::TEXT_SET,
+    ];
+
+    #[test]
+    fn only_a_marked_implementation_replaces_its_entry() {
+        let mut r = Registry::new(Switches::defaults());
+        // Marked, with a refusing `before` and a wrapper around it: they
+        // wrap the port, not the guest body.
+        r.add(&from_fn("port", |b| {
+            port(b, &points::CONTROLS_ROW_TEXT);
+            Ok(())
+        }))
+        .unwrap();
+        r.add(&from_fn("rows", |b| {
+            b.raw()
+                .before(&points::CONTROLS_ROW_TEXT, "refuses", |_| Ok(Flow::Continue));
+            b.raw().after(&points::CONTROLS_ROW_TEXT, "done", |_| Ok(()));
+            Ok(())
+        }))
+        .unwrap();
+        // A refusing arm alone: the body runs when it refuses.
+        r.add(&from_fn("refusing", |b| {
+            b.raw()
+                .before(&points::CONTROLS_ROW_CHOSEN, "model", |_| Ok(Flow::Continue));
+            Ok(())
+        }))
+        .unwrap();
+        // A compare arm: the body runs and the result is checked after it.
+        r.add(&from_fn("compare", |b| {
+            b.raw().before(&points::ITEM_TEXT, "sample", |_| Ok(Flow::Continue));
+            b.raw().after(&points::ITEM_TEXT, "check", |_| Ok(()));
+            Ok(())
+        }))
+        .unwrap();
+        // An implementation that is not marked: kept, the default is safe.
+        r.add(&from_fn("unmarked", |b| {
+            b.raw()
+                .implement(&points::TEXT_SET, "port", |_, _, _| unreachable!("never run"));
+            Ok(())
+        }))
+        .unwrap();
+        let plan = r.build(&Base).unwrap();
+        assert_eq!(names(&plan, &ALL), ["CONTROLS_ROW_TEXT"]);
+        // Not a function entry the analyser found: kept.
+        assert!(plan.replaced(&entries(&ALL[1..])).is_empty());
+    }
+
+    #[test]
+    fn observers_alone_keep_the_body() {
+        let mut r = Registry::new(Switches::defaults());
+        r.add(&from_fn("wrap", |b| {
+            b.raw()
+                .observe_before(&points::CONTROLS_ROW_TEXT, "seen", |_| {});
+            b.raw()
+                .observe_after(&points::CONTROLS_ROW_TEXT, "seen after", |_| {});
+            Ok(())
+        }))
+        .unwrap();
+        let plan = r.build(&Base).unwrap();
+        assert!(names(&plan, &ALL).is_empty());
+    }
+
+    #[test]
+    fn a_marked_implementation_that_resumes_generated_code_is_kept() {
+        static SITES: [u32; 1] = [0x002c_8600];
+        let mut r = Registry::new(Switches::defaults());
+        r.add(&from_fn("port", |b| {
+            b.raw()
+                .implement(&points::CONTROLS_ROW_TEXT, "port", |_, _, _| unreachable!("never run"))
+                .replaces_guest()
+                .generated_resumes(&SITES);
+            Ok(())
+        }))
+        .unwrap();
+        let plan = r.build(&Base).unwrap();
+        assert!(names(&plan, &ALL).is_empty());
+    }
+
+    #[test]
+    fn the_mark_on_anything_but_an_implementation_refuses_the_feature() {
+        let mut r = Registry::new(Switches::defaults());
+        let err = r
+            .add(&from_fn("bad", |b| {
+                b.raw()
+                    .before(&points::CONTROLS_ROW_TEXT, "model", |_| Ok(Flow::Continue))
+                    .replaces_guest();
+                Ok(())
+            }))
+            .unwrap_err();
+        assert!(err.0.contains("replaces_guest"), "{err}");
+        let plan = r.build(&Base).unwrap();
+        assert!(plan.chains.is_empty(), "a refused feature contributes nothing");
+        assert!(!plan.is_on("bad"));
+    }
+
+    #[test]
+    fn a_switch_that_turns_the_feature_off_removes_its_entry() {
+        let build = |switches: &str| {
+            let mut r = Registry::new(Switches::parse(switches).unwrap());
+            r.add(&from_fn("port", |b| {
+                port(b, &points::CONTROLS_ROW_TEXT);
+                Ok(())
+            }))
+            .unwrap();
+            r.build(&Base).unwrap()
+        };
+        assert_eq!(names(&build(""), &ALL), ["CONTROLS_ROW_TEXT"]);
+        assert!(names(&build("-port"), &ALL).is_empty());
+    }
+
+    #[test]
+    fn an_entry_replaced_in_one_profile_and_not_another_stays() {
+        let profile = |both: bool| {
+            let mut r = Registry::new(Switches::defaults());
+            r.add(&from_fn("port", move |b| {
+                port(b, &points::CONTROLS_ROW_TEXT);
+                if both {
+                    port(b, &points::CONTROLS_ROW_CHOSEN);
+                }
+                Ok(())
+            }))
+            .unwrap();
+            r.build(&Base).unwrap()
+        };
+        let (window, host) = (profile(true), profile(false));
+        assert_eq!(names(&window, &ALL), ["CONTROLS_ROW_TEXT", "CONTROLS_ROW_CHOSEN"]);
+        let every: Vec<_> = replaced_in_every([&window, &host], &entries(&ALL))
+            .values()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(every, ["CONTROLS_ROW_TEXT"]);
+        assert!(replaced_in_every([] as [&Plan; 0], &entries(&ALL)).is_empty());
+    }
+
+    #[test]
+    fn called_guest_functions_are_in_the_plan_and_a_missing_one_turns_the_feature_off() {
+        let feature = from_fn("caller", |b| {
+            b.calls_guest(&points::ITEM_TEXT);
+            b.calls_guest(&points::TEXT_SET);
+            b.calls_guest(&points::ITEM_TEXT);
+            Ok(())
+        });
+        let mut r = Registry::new(Switches::defaults());
+        r.add(&feature).unwrap();
+        let plan = r.build(&Base).unwrap();
+        assert_eq!(
+            plan.calls_guest.keys().copied().collect::<Vec<_>>(),
+            [points::ITEM_TEXT.base, points::TEXT_SET.base]
+        );
+
+        let mut r = Registry::new(Switches::parse("-caller").unwrap());
+        r.add(&feature).unwrap();
+        assert!(r.build(&Base).unwrap().calls_guest.is_empty());
+
+        let mut r = Registry::new(Switches::defaults());
+        r.add(&feature).unwrap();
+        let plan = r
+            .build(&Remap::new(&[(&points::ITEM_TEXT, 0x1000)]))
+            .unwrap();
+        assert!(!plan.is_on("caller"));
+        assert!(plan.calls_guest.is_empty());
+    }
+}

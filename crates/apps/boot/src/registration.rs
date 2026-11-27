@@ -1126,5 +1126,8 @@ pub(crate) fn register_late_for_profile(
     Ok(Late { harness, agent, snapshot_probe })
 }
 
+mod profiles;
+pub use profiles::replaced_entries;
+
 #[cfg(test)]
 pub(crate) mod tests;

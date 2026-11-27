@@ -233,6 +233,9 @@ pub struct Plan {
     pub locale: Vec<String>,
     /// Each built feature's snapshot policy, in build order.
     pub snapshot: Vec<crate::FeatureSnapshot>,
+    /// Guest functions the on features' Rust calls, by this image's
+    /// address ([`crate::Builder::calls_guest`]): lift roots.
+    pub calls_guest: BTreeMap<u32, &'static Point>,
 }
 
 /// The `locale` facade's declarations (see [`crate::locale`]).
@@ -299,6 +302,7 @@ fn place_locale(
                         context_only: true,
                         resume_sites: &[],
                         generated_sites: &[],
+                        replaces_guest: false,
                         when_shared: None,
                     },
                 ));
@@ -321,6 +325,7 @@ fn place_locale(
 pub(crate) fn build(
     mut features: Vec<FeatureState>,
     hooks: Vec<Hook>,
+    calls: Vec<crate::GuestCallDecl>,
     mut allocs: Vec<Alloc>,
     mut entries: Vec<crate::Entry>,
     mut arena: Arena,
@@ -355,6 +360,21 @@ pub(crate) fn build(
             }
         }
     }
+    let mut called = Vec::new();
+    for c in calls {
+        match addrs.resolve(c.point) {
+            Some(addr) => called.push((addr, c)),
+            None => {
+                off.entry(c.feature)
+                    .or_insert_with(|| format!("{} (called) is not in this image", c.point.name));
+            }
+        }
+    }
+    let calls_guest = called
+        .into_iter()
+        .filter(|(_, c)| !off.contains_key(c.feature))
+        .map(|(addr, c)| (addr, c.point))
+        .collect();
     for f in &mut features {
         if let Some(reason) = off.get(f.id) {
             notes.push(format!("{}: off: {reason}", f.id));
@@ -478,6 +498,7 @@ pub(crate) fn build(
             warnings,
             locale: locale_lines,
             snapshot: Vec::new(),
+            calls_guest,
         })
     } else {
         Err(conflicts)
@@ -691,10 +712,53 @@ impl Plan {
         self.mappings(|_| true).iter().map(|m| m.len).sum()
     }
 
+    /// The function entries whose guest bodies no chain can reach, so the
+    /// lift may leave them out (docs/lifter/lift-pruning.md, "The replaced
+    /// list"): the chain's implementation is marked
+    /// [`replaces_guest`](crate::HookRef::replaces_guest), the address is
+    /// one of `entries` (the analyser's function entries), and no hook in
+    /// the chain resumes into generated code. Anything else at the point
+    /// (`before`, `after`, observers) wraps the implementation, not the
+    /// guest body. Off features have no chains, so a switch that turns the
+    /// replacing feature off removes its entry.
+    pub fn replaced(&self, entries: &BTreeSet<u32>) -> BTreeMap<u32, &'static Point> {
+        self.chains
+            .values()
+            .filter(|c| entries.contains(&c.addr))
+            .filter(|c| c.implement.as_ref().is_some_and(|h| h.replaces_guest))
+            .filter(|c| {
+                c.hooks()
+                    .all(|h| h.resume_sites.is_empty() && h.generated_sites.is_empty())
+            })
+            .map(|c| (c.addr, c.point))
+            .collect()
+    }
+
     /// Whether `feature` is in the plan and on.
     pub fn is_on(&self, feature: &str) -> bool {
         self.features
             .iter()
             .any(|f| f.id == feature && f.off.is_none())
     }
+}
+
+/// [`Plan::replaced`] in every one of `plans` (one per boot profile): an
+/// entry replaced in one profile and kept in another stays lifted, since
+/// one image serves them all. No plans, nothing replaced.
+pub fn replaced_in_every<'a>(
+    plans: impl IntoIterator<Item = &'a Plan>,
+    entries: &BTreeSet<u32>,
+) -> BTreeMap<u32, &'static Point> {
+    let mut out: Option<BTreeMap<u32, &'static Point>> = None;
+    for plan in plans {
+        let here = plan.replaced(entries);
+        out = Some(match out {
+            None => here,
+            Some(mut acc) => {
+                acc.retain(|addr, p| here.get(addr).is_some_and(|q| q.name == p.name));
+                acc
+            }
+        });
+    }
+    out.unwrap_or_default()
 }

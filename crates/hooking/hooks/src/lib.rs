@@ -37,7 +37,7 @@ pub use bridge::{Frame, Game};
 pub use guest_layout::entry::{Cx, EntryFuture, GuestCall, Ret};
 pub use entry::Entry;
 pub use install::{InstallError, Installed};
-pub use plan::{Base, Conflict, ImageAddrs, Plan, Remap};
+pub use plan::{Base, Conflict, ImageAddrs, Plan, Remap, replaced_in_every};
 pub use snapshot::{FeatureSnapshot, SnapshotPolicy};
 pub use switches::Switches;
 
@@ -317,6 +317,10 @@ pub struct Hook {
     pub context_only: bool,
     pub(crate) resume_sites: &'static [u32],
     pub(crate) generated_sites: &'static [u32],
+    /// An implementation that never transfers to its own guest body: the
+    /// lift may leave that body out ([`HookRef::replaces_guest`],
+    /// [`Plan::replaced`], docs/lifter/lift-pruning.md).
+    pub(crate) replaces_guest: bool,
     /// Told the point's address when the installed chain holds other
     /// hooks besides this implementation ([`HookRef::when_shared`]).
     pub(crate) when_shared: Option<SharedFn>,
@@ -335,6 +339,11 @@ impl Hook {
     /// hands control back to the generated image, respectively.
     pub fn continuation_sites(&self) -> (&[u32], &[u32]) {
         (self.resume_sites, self.generated_sites)
+    }
+
+    /// Whether the hook is marked [`HookRef::replaces_guest`].
+    pub fn replaces_guest(&self) -> bool {
+        self.replaces_guest
     }
 }
 
@@ -390,6 +399,22 @@ impl HookRef<'_> {
         self.0.when_shared = Some(Arc::new(f));
         self
     }
+    /// For an implementation: the author's statement that it never
+    /// transfers to its own guest body (no refusing arm, no compare arm,
+    /// no fallback), so the lift may leave that body out
+    /// (docs/lifter/lift-pruning.md, "The replaced list"). The feature is
+    /// refused at build when any other kind carries it.
+    pub fn replaces_guest(self) -> Self {
+        self.0.replaces_guest = true;
+        self
+    }
+}
+
+/// A guest function a feature's Rust calls ([`Builder::calls_guest`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuestCallDecl {
+    pub feature: &'static str,
+    pub point: &'static Point,
 }
 
 /// A guest allocation the plan maps at install.
@@ -427,6 +452,8 @@ pub struct Registry {
     locale_server: Option<&'static str>,
     /// Each built feature's snapshot policy ([`Builder::snapshot`]).
     snapshot: Vec<snapshot::FeatureSnapshot>,
+    /// Guest functions built features' Rust calls ([`Builder::calls_guest`]).
+    calls: Vec<GuestCallDecl>,
 }
 
 impl Registry {
@@ -442,6 +469,7 @@ impl Registry {
             locale: locale::Sources::default(),
             locale_server: None,
             snapshot: Vec::new(),
+            calls: Vec::new(),
         }
     }
 
@@ -477,8 +505,21 @@ impl Registry {
             locale: self.locale.clone(),
             serves_locale: false,
             snapshot: None,
+            calls: Vec::new(),
         };
-        match feature.build(&mut b) {
+        let built = feature.build(&mut b).and_then(|()| {
+            match b.hooks.iter().find(|h| h.replaces_guest && h.kind() != Kind::Implement) {
+                Some(h) => Err(BuildError(format!(
+                    "{}: {} {} on {} is marked replaces_guest; only an implement can be",
+                    m.id,
+                    h.kind().as_str(),
+                    h.label,
+                    h.point.name
+                ))),
+                None => Ok(()),
+            }
+        });
+        match built {
             Ok(()) => {
                 let Builder {
                     hooks,
@@ -488,8 +529,13 @@ impl Registry {
                     sources,
                     serves_locale,
                     snapshot,
+                    calls,
                     ..
                 } = b;
+                self.calls.extend(calls.into_iter().map(|point| GuestCallDecl {
+                    feature: m.id,
+                    point,
+                }));
                 self.snapshot.push(snapshot::FeatureSnapshot {
                     id: m.id,
                     policy: snapshot.unwrap_or(SnapshotPolicy::Unaudited),
@@ -528,6 +574,7 @@ impl Registry {
         plan::build(
             self.features,
             self.hooks,
+            self.calls,
             self.allocs,
             self.entries,
             self.arena,
@@ -554,9 +601,19 @@ pub struct Builder<'r> {
     locale: locale::Sources,
     serves_locale: bool,
     snapshot: Option<SnapshotPolicy>,
+    calls: Vec<&'static Point>,
 }
 
 impl<'r> Builder<'r> {
+    /// Declares a guest function this feature's Rust calls. It stays in
+    /// the lift whatever replaced code alone reaches it
+    /// (docs/lifter/lift-pruning.md, "Reachability"); a point missing from
+    /// the image turns the feature off, as a hook's does.
+    pub fn calls_guest(&mut self, point: &'static Point) {
+        if !self.calls.iter().any(|p| p.name == point.name) {
+            self.calls.push(point);
+        }
+    }
     /// What this feature holds outside guest RAM, for machine snapshots
     /// (docs/runtime/snapshots.md). A feature that never says is
     /// [`SnapshotPolicy::Unaudited`] and blocks every snapshot.
@@ -647,6 +704,7 @@ impl<'r> Builder<'r> {
             context_only: false,
             resume_sites: &[],
             generated_sites: &[],
+            replaces_guest: false,
             when_shared: None,
         });
         HookRef(self.hooks.last_mut().expect("just pushed"))

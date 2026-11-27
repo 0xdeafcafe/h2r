@@ -44,9 +44,9 @@ exists.
 |---|---|
 | `chain.implement` is set and its hook carries `HookRef::replaces_guest()` | `Kind::Implement` runs instead of the body; the mark is the author's statement that the closure never transfers to its own guest body |
 | the point is a function entry (`analysis.functions` key), not an instruction entry | a mid-function point leaves the rest of the function live |
-| no hook in the chain names `resume_sites` or `generated_sites` inside the function | those resume generated code in the body |
+| no hook in the chain names `resume_sites` or `generated_sites` | those resume generated code in the body; the plan has no function bounds, so any site keeps the entry |
 | the feature has no switch that restores the guest in a shipped profile, or the build accepts that the switch then refuses to boot ("Boot safety") | the plan is built with defaults |
-| the entry is replaced in every profile `registration` can build (window, Theater playback, headless host) | one image serves all of them |
+| the entry is replaced in every profile `registration` can build (window, Theater playback, headless host) | one image serves all of them; `hooks::replaced_in_every` intersects by address and point name |
 
 What keeps its guest body:
 
@@ -58,7 +58,12 @@ What keeps its guest body:
 | `implement` without `replaces_guest()` | unmarked is kept; the default is safe |
 
 `replaces_guest()` is added to a hook in the same commit that deletes its
-refusing and comparing arms. A feature that refuses to build
+refusing and comparing arms. Marked so far:
+
+| Point | Feature | Why it qualifies |
+|---|---|---|
+| `CONTROLS_ROW_TEXT` (`0x2c8548`) | `controls-text` (`crates/extensions/game/src/controls_text.rs`) | the port reads the body's immediates and jump table as data and calls only `ITEM_TEXT` and `TEXT_SET` (declared with `calls_guest`); no arm runs the body |
+ A feature that refuses to build
 (`BuildError`) contributes nothing, so its entries stay lifted.
 
 ### Reachability
@@ -146,10 +151,12 @@ set, so a pruned function still lifts on demand. **Code**:
 
 | Interface | Shape |
 |---|---|
-| `HookRef::replaces_guest(self) -> Self` | marks an `implement` hook; refused at build on any other kind |
-| `Builder::calls_guest(&mut self, point: &'static Point)` | declares a guest function the feature's Rust calls |
+| `HookRef::replaces_guest(self) -> Self` | marks an `implement` hook; any other kind carrying it fails the feature's build (`BuildError`) |
+| `Builder::calls_guest(&mut self, point: &'static Point)` | declares a guest function the feature's Rust calls; a point missing from the image turns the feature off, as a hook's does |
+| `Plan::calls_guest: BTreeMap<u32, &'static Point>` | the on features' declared calls, by address: roots for `prune::keep` |
 | `Plan::replaced(&self, entries: &BTreeSet<u32>) -> BTreeMap<u32, &'static Point>` | the conditions above |
-| `boot::registration::replaced_entries() -> BTreeMap<u32, &'static Point>` | every profile, default switches |
+| `hooks::replaced_in_every(plans, entries) -> BTreeMap<u32, &'static Point>` | `Plan::replaced` in every plan; none given, none replaced |
+| `boot::registration::replaced_entries(entries: &BTreeSet<u32>) -> BTreeMap<u32, &'static Point>` | the window, playback and light-host cases of `registration/profiles.rs`, default switches; panics if a profile's registration or plan fails |
 | `analyze::prune::keep(xbe, analysis, replaced: &BTreeSet<u32>, extra_roots: &BTreeSet<u32>) -> Keep` | `Keep { kept: BTreeSet<u32>, dropped: BTreeMap<u32, Dropped>, digest: u64 }`; `Dropped { by, bytes }`, `by` the replaced entries whose cut bodies reach it through dropped code; digest FNV-1a over replaced then dropped |
 | `emit::plan_image(analysis, xbe, passes, keep: Option<&Keep>)` | `None` lifts everything |
 | pruned table in the module | rows of entry, end, owning point; read by both tiers' boot bridge |
@@ -190,7 +197,7 @@ same pruned table.
 | # | Slice | Tests |
 |---|---|---|
 | 1 | `h2 analyze --prune-report` over a hand-given entry list: `analyze::prune::keep`, report only, nothing dropped. Gives the win before anything is built on it | invented graphs in `prune.rs`: a chain cut at a replaced entry; an address-taken callee, a gap-scan root and a callee reached from two sides stay; an interior entry keeps its owner; the entry point stays; nested cuts; determinism and digest; report rows. One synthetic image checks `Graph::build` |
-| 2 | `HookRef::replaces_guest`, `Builder::calls_guest`, `Plan::replaced`, `registration::replaced_entries`. Mark the first finished pieces | plan tests beside `native_particles.rs`: marked implement is replaced; a refusing `before` or a compare arm is not; switch off is not; profile intersection |
+| 2 | `HookRef::replaces_guest`, `Builder::calls_guest`, `Plan::replaced`, `registration::replaced_entries`. Marks `controls-text` | `crates/hooking/hooks/tests/plan.rs` (`mod replaced`): marked implement is replaced; a refusing `before`, a compare arm, observers and an unmarked implement are not; a resuming port is not; the mark on a `before` refuses the feature; switch off is not; profile intersection; `calls_guest` roots. `controls_text.rs` and `registration/tests.rs`: `CONTROLS_ROW_TEXT` is replaced in every profile |
 | 3 | `plan_image` takes the keep set; pruned table; `Stop::Pruned`; fallback refuses; boot check; `H2_LIFT_PRUNE` | `emit/tests/prune.rs`: A calls replaced B, only B reaches C; module builds on both tiers; a call of C stops naming B; a return into B's body stops by name. Boot test: a pruned table with the feature off refuses and names it |
 | 4 | Cache keys: receipt settings, fast stamp, slim split | receipt misses on a changed digest; an untouched shard's object key is unchanged; an emptied shard's file and object go |
 | 5 | Narrow `CodeRef` roots to immediates held by kept functions, to a fixed point | synthetic: a callback referenced only from a dropped function is dropped; referenced from data, kept |

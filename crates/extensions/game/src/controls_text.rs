@@ -169,11 +169,19 @@ impl hooks::Feature for ControlsText {
         Manifest::new(ID, "The Controls list's row text, ported").doc("docs/game/settings-menu.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        b.raw().implement_async(
-            &points::CONTROLS_ROW_TEXT,
-            "ported row text",
-            |cx| -> EntryFuture { Box::pin(row_text(cx)) },
-        );
+        // The port never calls the retail body: it reads the body's
+        // immediates and jump table as data and calls only ITEM_TEXT and
+        // TEXT_SET, so the lift may leave the body out
+        // (docs/lifter/lift-pruning.md, "The replaced list").
+        b.raw()
+            .implement_async(
+                &points::CONTROLS_ROW_TEXT,
+                "ported row text",
+                |cx| -> EntryFuture { Box::pin(row_text(cx)) },
+            )
+            .replaces_guest();
+        b.calls_guest(&points::ITEM_TEXT);
+        b.calls_guest(&points::TEXT_SET);
         // The port's state is its future, parked in a continuation the
         // machine's quiescence check reports.
         b.snapshot(hooks::SnapshotPolicy::Stateless);
@@ -354,7 +362,8 @@ mod tests {
             model,
         })
         .unwrap();
-        let text = r.build(&hooks::Base).unwrap().text();
+        let plan = r.build(&hooks::Base).unwrap();
+        let text = plan.text();
         let line = text
             .lines()
             .find(|l| l.starts_with("0x002c8548"))
@@ -364,6 +373,15 @@ mod tests {
             "0x002c8548 CONTROLS_ROW_TEXT: before [controls-rows:our rows' text, \
              layouts-value:layout value pending] -> implement controls-text:ported row text \
              -> after [layouts-value:layout value done]"
+        );
+        // The hooks around the port wrap it, not the retail body: the body
+        // is replaced, and the two functions the port calls are roots.
+        let entry = points::CONTROLS_ROW_TEXT.base;
+        let replaced = plan.replaced(&[entry].into_iter().collect());
+        assert_eq!(replaced.keys().copied().collect::<Vec<_>>(), [entry]);
+        assert_eq!(
+            plan.calls_guest.keys().copied().collect::<Vec<_>>(),
+            [points::ITEM_TEXT.base, points::TEXT_SET.base]
         );
     }
 }
