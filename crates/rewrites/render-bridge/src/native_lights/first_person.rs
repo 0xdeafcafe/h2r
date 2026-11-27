@@ -119,19 +119,20 @@ pub(super) fn install(b: &mut Builder) {
                         return original(cpu, ctx, addr);
                     }
                 };
-                // Under the scene path each slot stops after its records
-                // and goes into the scene; the loop's exit draws them.
+                // Under the scene path each slot stops after its records,
+                // draws from its groups at once on the first person's
+                // target (bound as the loop begins) and goes into the
+                // scene; a slot the host does not draw runs its steps.
                 if super::scene_path_ready() {
+                    let target = super::bound_target();
                     return hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
                         Box::pin(async move {
                             let (ret, slots) = first_person::run_scene(
                                 &cx,
                                 plan,
-                                &mut |m, p, call| scene_slot(m, p, call),
-                                &mut |m, cut| {
-                                    let passes = crate::scene_step::open_first_person_passes(cut);
-                                    super::draw_first_person_scene(m, &passes);
-                                },
+                                &mut |m, p, call| scene_slot(m, p, call, target),
+                                // Each taken slot drew at its place in the loop.
+                                &mut |_, _| {},
                             )
                             .await?;
                             SCENE_SLOTS.fetch_add(slots.cut.len() as u64, Ordering::Relaxed);
@@ -330,10 +331,18 @@ pub fn scene_slots() -> u64 {
     SCENE_SLOTS.load(Ordering::Relaxed)
 }
 
+static KEPT_HOST: AtomicU64 = AtomicU64::new(0);
+
+/// First-person slots the host did not draw, whose steps the guest made
+/// (`scene_first_person_kept_host`).
+pub fn kept_host_slots() -> u64 {
+    KEPT_HOST.load(Ordering::Relaxed)
+}
+
 /// The scene's candidate for a first-person slot's light: its record,
 /// its constants as [`Slot::read`] computed them (no shadow, so both
 /// variants are the same), and its definition's gels.
-fn first_person_candidate(
+pub(super) fn candidate(
     mem: &dyn GuestMemory,
     light: &super::Light,
     definition: u32,
@@ -370,9 +379,10 @@ fn first_person_candidate(
 
 /// A first-person slot under the scene path, its records replayed: the
 /// slot planned as [`Slot::read`] plans it, its light (with its
-/// constants) and groups into the first person's view. False leaves the
-/// slot to the guest's steps.
-fn scene_slot(mem: &mut dyn GuestMemory, plan: &first_person::Plan, call: &Call) -> bool {
+/// constants) into the first person's view, its layers drawn now on
+/// `target` ([`super::draw_cut_light`]) and only then its groups put in.
+/// False leaves the slot to the guest's steps.
+fn scene_slot(mem: &mut dyn GuestMemory, plan: &first_person::Plan, call: &Call, target: Option<[u32; 8]>) -> bool {
     let slot = match Slot::read(&*mem, call, plan.fpu) {
         Ok(slot) => slot,
         Err(why) => {
@@ -386,8 +396,16 @@ fn scene_slot(mem: &mut dyn GuestMemory, plan: &first_person::Plan, call: &Call)
         return true;
     }
     let mut light = slot.scene_light;
-    light.candidate = Some(first_person_candidate(&*mem, &slot.light, call.definition, slot.constants));
+    light.candidate = Some(candidate(&*mem, &slot.light, call.definition, slot.constants));
     if !crate::scene_step::first_person_light(&*mem, light, slot.steps.as_slice()) {
+        return false;
+    }
+    let Some(light) = crate::scene_step::current_light() else {
+        return false;
+    };
+    let passes = super::scene_frame::cut_passes(super::FIRST_PERSON_SLOT, &light, &slot.groups);
+    if !super::draw_cut_light(mem, &passes, target) {
+        KEPT_HOST.fetch_add(1, Ordering::Relaxed);
         return false;
     }
     crate::scene_step::typed_light_groups(slot.groups);
@@ -548,7 +566,7 @@ mod tests {
             gel: None,
             animated_gel: true,
         };
-        let c = first_person_candidate(&m, &light, definition, constants);
+        let c = candidate(&m, &light, definition, constants);
         assert_eq!((c.position, c.weight, c.definition_kind), ([1.0, 2.0, 3.0], 1.0, 3));
         assert_eq!((c.gel_bitmap, c.gel_shader), (None, Some(0x00e1_0007)));
         let v = c.constants.unwrap();

@@ -29,6 +29,9 @@
 //!   `+4` parts (`0x48` each: `+2` flags, bit 3 a triangle list; `+6` the
 //!   first index; `+8` the index count), `+8` subparts, `+0x20` the
 //!   index count and `+0x24` the pointer to their u16 stream.
+//! - A record's visible subparts (bit 6 with a mask) that are not the
+//!   whole part: the entry carries the spans the emitter draws
+//!   (`LightEntry::subparts`), for layers 12 and 13 ([`taken`]).
 //! - What the prologue sets beyond the bindings, which the entry carries
 //!   ([`EntryState`]) for layers 12 and 13 ([`state_taken`]): an object
 //!   record's auxiliary state toggle (bit 11, while the toggle's values
@@ -36,8 +39,7 @@
 //! - What the handler does beyond binding the material and drawing the
 //!   part, which the scene does not carry, and so is the entry's
 //!   remainder ([`Cause`]): a structure record's toggle, the toggle or
-//!   the fade byte on a shadow layer, subparts selecting less than one
-//!   full draw, the shader's `+0x16` bit 0, a material animation (the
+//!   the fade byte or partial subparts on a shadow layer, the shader's `+0x16` bit 0, a material animation (the
 //!   shader's `+0x24` block `+0x3c`), and a template callback (the
 //!   shader's `stem` `+0x44`, `+0x50`).
 //! - The shadow projection block [`SHADOW_PROJECTION`] (`0x00048ee0`'s
@@ -107,7 +109,8 @@ pub enum Cause {
     /// structure record, or the fade byte or the toggle where the site
     /// does not take them ([`state_taken`]).
     State,
-    /// The record draws chosen subparts.
+    /// The record's visible subparts do not read or run past its part,
+    /// or a shadow layer or the per-handler path would draw them.
     Subparts,
     /// A shader flag, a material animation or a template callback.
     Material,
@@ -240,6 +243,9 @@ pub fn dispatched_entry(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(Li
     if !entry.state.plain() {
         return Err(Cause::State);
     }
+    if entry.subparts.is_some() {
+        return Err(Cause::Subparts);
+    }
     let indices = ptr(mem, data, 0x24)?;
     let address = index(indices, entry.stream.first_index, 2)?;
     index(address, entry.stream.index_count - 1, 2)?.checked_add(1).ok_or(Cause::Range)?;
@@ -321,13 +327,20 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
         return Err(Cause::Range);
     }
     let strip = flags & (1 << 9) != 0 && part_flags & 8 == 0;
+    // The visible subparts: the spans the emitter draws, carried when
+    // they are not the whole part.
+    let mut subparts = None;
     if flags & (1 << 6) != 0 {
         let bitmap = word(mem, at(rec, 0x14)?)?;
         if bitmap != 0 {
             let spans = crate::layout::world_ranges::emissions(mem, data, part, flags, bitmap, strip)
                 .map_err(|_| Cause::Subparts)?;
-            if !matches!(spans.as_slice(), [span] if span.start == first_index && span.end == first_index + index_count) {
-                return Err(Cause::Subparts);
+            let end = first_index + index_count;
+            if !matches!(spans.as_slice(), [span] if span.start == first_index && span.end == end) {
+                if spans.iter().any(|s| s.start < first_index || s.end > end || s.start > s.end) {
+                    return Err(Cause::Subparts);
+                }
+                subparts = Some(spans);
             }
         }
     }
@@ -362,6 +375,7 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
             implementation: sorted.implementation,
         },
         state,
+        subparts,
     };
     Ok((entry, rows, data))
 }
@@ -372,6 +386,19 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
 /// casters keep such an entry's handler.
 pub fn state_taken(layer: u8, state: EntryState) -> bool {
     state.plain() || matches!(layer, 12 | 13)
+}
+
+/// Whether a group of `layer` can hold `entry`: its state
+/// ([`state_taken`]) and its visible subparts, which only the diffuse and
+/// specular layers draw (the shadow layers draw whole parts), or why not.
+pub fn taken(layer: u8, entry: &LightEntry) -> R<()> {
+    if !state_taken(layer, entry.state) {
+        return Err(Cause::State);
+    }
+    if entry.subparts.is_some() && !matches!(layer, 12 | 13) {
+        return Err(Cause::Subparts);
+    }
+    Ok(())
 }
 
 /// The shadow projection block as nine registers; `None` when a word
@@ -488,7 +515,7 @@ pub fn push(
         match items
             .ok_or(Cause::Memory)
             .and_then(|items| entry(mem, items, s))
-            .and_then(|e| if state_taken(layer, e.0.state) { Ok(e) } else { Err(Cause::State) })
+            .and_then(|e| taken(layer, &e.0).map(|()| e))
         {
             Ok(e) => entries.push(e),
             Err(cause) => {
@@ -768,6 +795,48 @@ mod tests {
     }
 
     #[test]
+    fn visible_subparts_short_of_the_whole_part_are_the_entrys_spans_for_diffuse_and_specular() {
+        let mut m = fixture();
+        let rec = RENDER_RECORDS + RENDER_RECORD_SIZE;
+        let (bitmap, subparts) = (0x0069_0000, 0x0069_1000);
+        m.w(rec, 1 << 6);
+        m.w(rec + 0x14, bitmap);
+        m.w(DATA + 8, 2);
+        m.w(DATA + 12, subparts);
+        set_half(&mut m, PARTS + 10, 0);
+        set_half(&mut m, PARTS + 12, 2);
+        // Part 0 is indices 0..6: subpart 0 is 0..3, subpart 1 is 3..6.
+        m.w(subparts, 3 << 16);
+        m.w(subparts + 8, 3 << 16 | 3);
+        let spans = |m: &Mem| entry(m, ITEMS, sorted(0)).map(|(e, _)| e.subparts);
+        m.w(bitmap, 0b10);
+        assert_eq!(spans(&m), Ok(Some(vec![3..6])));
+        let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
+        assert_eq!(taken(12, &e), Ok(()));
+        assert_eq!(taken(13, &e), Ok(()));
+        for layer in [10, 11, 14] {
+            assert_eq!(taken(layer, &e), Err(Cause::Subparts), "layer {layer} draws whole parts");
+        }
+        m.w(bitmap, 0b11);
+        assert_eq!(spans(&m), Ok(None), "both visible: the whole part");
+        m.w(bitmap, 0b01);
+        assert_eq!(spans(&m), Ok(Some(vec![0..3])));
+        m.w(DATA + 0x24, 0x0068_0000);
+        let slot = 0x0067_0000;
+        m.w(slot, 0);
+        m.w(slot + 4, 2);
+        m.w(slot + 8, 1);
+        assert_eq!(
+            dispatched_entry(&m, ITEMS, Sorted::read(&m, slot).unwrap()).unwrap_err(),
+            Cause::Subparts,
+            "the per-handler path draws whole parts"
+        );
+        m.w(subparts + 8, 9 << 16 | 3);
+        m.w(bitmap, 0b10);
+        assert_eq!(spans(&m), Err(Cause::Subparts), "a span past its part");
+    }
+
+    #[test]
     fn dispatched_model_uses_the_sorted_class_and_the_same_pose_as_the_gather() {
         let mut m = fixture();
         let handle = placement_and_object(&mut m);
@@ -846,17 +915,9 @@ mod tests {
     #[test]
     fn what_the_handler_does_beyond_binding_and_drawing_is_a_named_remainder() {
         let rec = RENDER_RECORDS + RENDER_RECORD_SIZE;
-        let cases: [(&dyn Fn(&mut Mem), Cause); 8] = [
+        let cases: [(&dyn Fn(&mut Mem), Cause); 7] = [
             (&|m| m.w(ITEMS, 0x8484), Cause::Callback),
             (&|m| m.w(rec, 1 << 11), Cause::State),
-            (
-                &|m| {
-                    m.w(rec, 1 << 6);
-                    m.w(rec + 0x14, 1);
-                    m.w(DATA + 8, 2);
-                },
-                Cause::Subparts,
-            ),
             (&|m| set_half(m, PARTS + 8, 2), Cause::Range),
             (&|m| m.w(DATA + 0x20, 4), Cause::Range),
             (&|m| m.w(POST + 0x3c, 1), Cause::Material),

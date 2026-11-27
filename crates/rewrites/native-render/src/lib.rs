@@ -140,6 +140,7 @@ pub mod transparent_streams;
 pub mod ui_gpu;
 #[cfg(feature = "gpu")]
 pub mod water_gpu;
+pub mod subpart_map;
 pub mod world;
 #[cfg(feature = "gpu")]
 pub mod world_layers_gpu;

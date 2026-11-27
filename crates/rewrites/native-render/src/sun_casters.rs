@@ -693,6 +693,7 @@ mod tests {
                 implementation: 3,
             },
             state: Default::default(),
+            subparts: None,
         };
         (entry, Vec::new())
     }

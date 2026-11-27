@@ -247,6 +247,7 @@ pub(super) fn plan_held(
         let mut rows = Vec::with_capacity(sorted.len());
         for slot in sorted {
             let (entry, pose) = light_groups::entry(&Ro(mem), items, slot).map_err(R::Entry)?;
+            light_groups::taken(step.layer, &entry).map_err(R::Entry)?;
             if !state_drawn(step.layer, entry.state, held) {
                 return Err(R::Entry(light_groups::Cause::State));
             }

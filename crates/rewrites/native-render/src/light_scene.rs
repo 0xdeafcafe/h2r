@@ -137,6 +137,11 @@ pub fn plan_entries<'r>(
     let mut draws: Vec<Draw> = Vec::with_capacity(entries.len());
     let mut last: Option<&LightEntry> = None;
     for (n, e) in entries.iter().enumerate() {
+        // The resident part is whole; visible subparts draw through the
+        // light host's own ranges (`subpart_map`).
+        if e.subparts.is_some() {
+            return Err(Refusal::Stream);
+        }
         let part = resident.part(e).ok_or(Refusal::Stream)?;
         if matches!(e.pose, LightPose::Rows(_)) && rows(e).is_empty() {
             return Err(Refusal::Pose);
@@ -330,6 +335,7 @@ mod tests {
                 implementation: 3,
             },
             state: Default::default(),
+            subparts: None,
         }
     }
 

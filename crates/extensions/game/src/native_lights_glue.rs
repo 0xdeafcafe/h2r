@@ -421,8 +421,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 if aux.is_some() {
                     return Err(Keep::Unsupported("a structure entry toggling the auxiliary state"));
                 }
-                let draw = world.structure_entry(entry)?;
-                run.push((layer, usize::from(binding.implementation), draw, selection));
+                for draw in world.structure_entry(entry)? {
+                    run.push((layer, usize::from(binding.implementation), draw, selection));
+                }
                 continue;
             }
             if !run.is_empty() {
@@ -574,7 +575,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         for e in &group.entries {
             let imp = usize::from(e.binding.implementation);
             if structure_key(e).is_some() {
-                run.push((imp, world.structure_entry(e)?));
+                run.extend(world.structure_entry(e)?.into_iter().map(|d| (imp, d)));
                 continue;
             }
             if !run.is_empty() {
@@ -790,13 +791,14 @@ struct Held<'a> {
 impl native_render::light_scene::Resident for Held<'_> {
     fn part(&self, e: &LightEntry) -> Option<native_render::light_scene::ResidentPart> {
         if structure_key(e).is_none() {
-            let (_, indices) = self.models?.part(e)?;
+            let (_, ranges) = self.models?.part(e)?;
+            let [indices] = <[_; 1]>::try_from(ranges).ok()?;
             return Some(native_render::light_scene::ResidentPart {
                 stream: LightModels::stream(e),
                 indices,
             });
         }
-        let d = self.world.structure_entry(e).ok()?;
+        let [d] = <[_; 1]>::try_from(self.world.structure_entry(e).ok()?).ok()?;
         Some(native_render::light_scene::ResidentPart {
             stream: 0,
             indices: d.first_index..d.first_index.checked_add(d.index_count)?,
@@ -1077,6 +1079,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
         }
         drawn
+    }
+
+    fn draw_scene_light(
+        &self,
+        mem: &mut dyn GuestMemory,
+        draw: render_bridge::native_lights::SceneDraw<'_>,
+    ) -> bool {
+        let result = self.scene_light_passes(mem, draw.passes, draw.view_target);
+        let ok = result.is_ok();
+        let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
+        for msg in t.count(result.map(drop)) {
+            eprintln!("{msg}");
+        }
+        ok
     }
 
     /// Each object shadow of the open view is one sequence
@@ -1778,7 +1794,10 @@ pub struct LightsWorld {
 }
 
 impl LightsWorld {
-    fn structure_entry(&self, e: &LightEntry) -> Result<WorldDraw, Keep> {
+    /// A gathered structure entry's draws: its part's triangles in the
+    /// record's topology, or each of its visible subparts' native ranges
+    /// (docs/graphics/native-lights.md, "Visible subparts").
+    fn structure_entry(&self, e: &LightEntry) -> Result<Vec<WorldDraw>, Keep> {
         let key = structure_key(e).ok_or(Keep::Unsupported("expected a gathered structure part"))?;
         let (shader, draw) = self.clusters.get(&key)
             .ok_or(Keep::Unsupported("structure part has no resident lit material or geometry"))?;
@@ -1788,10 +1807,13 @@ impl LightsWorld {
         if e.stream.vertex_class != residency::classification(draw.owner) {
             return Err(Keep::Unsupported("gathered structure vertex class differs from the loaded geometry"));
         }
-        self.structure_ranges.get(&key)
-            .ok_or(Keep::Unsupported("structure source index range unavailable"))?
-            .draw(&e.stream, *draw)
-            .map_err(Keep::Unsupported)
+        let ranges = self.structure_ranges.get(&key)
+            .ok_or(Keep::Unsupported("structure source index range unavailable"))?;
+        match &e.subparts {
+            None => ranges.draw(&e.stream, *draw).map(|d| vec![d]),
+            Some(spans) => ranges.subpart_draws(&e.stream, spans, *draw),
+        }
+        .map_err(Keep::Unsupported)
     }
 
     fn placement(&self, owner: Owner) -> Result<Option<ModelRows>, Keep> {
@@ -2000,7 +2022,7 @@ impl LightsWorld {
             layer,
             implementation: imp,
             compiled,
-            ranges: vec![indices],
+            ranges: indices,
             placement: None,
             model: Some(ModelDraw {
                 lights: Arc::clone(lights),
@@ -2108,7 +2130,7 @@ impl LightsWorld {
             layer: CASTER_LAYER,
             implementation: usize::from(entry.binding.implementation),
             compiled,
-            ranges: vec![indices],
+            ranges: indices,
             placement: None,
             model: Some(ModelDraw {
                 lights: Arc::clone(lights),
@@ -2222,7 +2244,7 @@ impl LightsWorld {
             layer,
             implementation: usize::from(entry.binding.implementation),
             compiled,
-            ranges: vec![indices],
+            ranges: indices,
             placement: None,
             model: Some(ModelDraw {
                 lights: Arc::clone(lights),
@@ -2832,6 +2854,7 @@ mod tests {
             pose: LightPose::Rows(0..6),
             binding: LightBinding { shader: 64, selector: 2, variant: 1, implementation: 4 },
             state: Default::default(),
+            subparts: None,
         };
         let slot = LightSlot::new(8, 72, &entry);
         let owner = |handle, model, section| ResolvedOwner::Object { handle, model, section };
