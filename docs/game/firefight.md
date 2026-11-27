@@ -1457,8 +1457,10 @@ without ground with "No AI ground." and does not choose them
 
 ### The HUD
 
-The HUD shows the score, the lives, where the match is, a meter of the
-enemies left, a slot for each skull on and a banner for what begins
+The HUD shows what Halo 3: ODST's Firefight HUD shows, in Halo 2's pieces
+and pictures of ours: the score, the lives, the set's numeral with a circle
+a round and a bar a wave, a meter of the enemies left, a slot for each skull
+on and a centred line for what begins
 (`firefight/hud.rs`). All of it is a function of the **mode blob**,
 `hud::Mode`: the stage (warmup, spawning, fighting, cleanup,
 intermission, won, lost, team 0 won, team 1 won, draw), the round and
@@ -1506,10 +1508,24 @@ score plate:
 |---|---|---|
 | `score` | `SCORE 1234567`; two teams `RED a BLUE b`; hidden if the plate shows the total (`PLATE_SHOWS_TOTAL`) | hidden |
 | `lives` | `LIVES 7`, `LAST LIFE` at 1, `NO LIVES` (warning look) at 0; the viewer's own count when unshared; none in a test or at the end | one line down |
-| `progress` | endless `SET 2 ROUND 1 WAVE 3`; finite `ROUND 2 OF 3 WAVE 3`; bonus `BONUS 0:42` | `WAVE 3` |
+| `progress` | words only for what the pips cannot say: `BONUS 0:42` in a bonus round, `ROUND 7 OF 12` in a definition with over three rounds (`layout::progress_text`) | one line down |
 | `enemies` | a 92 by 8 meter (the battery strip): actors left over the wave's total; in a bonus round the time left | hidden |
-| `skull_0..6` | seven fixed slots, 16 px on an 18 px pitch from the right (14 px on 14 at half): Ghost, Catch, Black Eye, Thunderstorm, Famine, Mythic, Iron (no skull of ours yet). A skull on is shown in its slot, off is hidden; a slot never moves (`a_skull_slot_never_moves`). The picture is 14 px square in either size | none |
-| `banner` | centred at the top, 60 px below the frame's top (48 at half) | hidden |
+| `set`, `round_0..2`, `wave_0..4` | the pips' row between the meter and the skulls, right-justified: the set's numeral (endless only), a circle a round (8 by 10 on a 9 px pitch; only with three rounds or fewer), a slanted bar a wave (6 by 10 on 7; none in a bonus round). Lit for the one on and those done, faint for those to come | one line down |
+| `skull_0..6` | seven fixed slots over the pips, 16 px on an 18 px pitch from the right (14 px on 14 at half): Ghost, Catch, Black Eye, Thunderstorm, Famine, Mythic, Iron (no skull of ours yet). A skull on is shown in its slot, off is hidden; a slot never moves (`a_skull_slot_never_moves`). The picture is 14 px square in either size | none |
+| `banner` | the game's own timed centred line, 40 px above the frame's bottom, over the respawn timer: the game places, draws and fades it | hidden |
+
+```
+                      WAVE 3                       <- banner (the game's line)
+                   Respawn in 4                    <- the game's own
+
+                                [s][s][s][s][s][s][s]   skull slots
+                                    2  o o o  / / / / /   set, rounds, waves
+                                   [=========----]      enemies left
+                                           BONUS 0:42   only when the pips cannot say it
+                                              LIVES 7
+                                           SCORE 3400
+                                        [ score plate ]
+```
 
 `Screen::retail` holds the weapon, grenades, tracker and plate
 rectangles, assumed from the census and marked to verify in the code;
@@ -1517,14 +1533,16 @@ rectangles, assumed from the census and marked to verify in the code;
 of them or on another, or a skull off its slot
 (`every_state_passes_the_layout_checks`,
 `no_element_overlaps_a_retail_rectangle`). A monitor sees the banner
-alone, a biped no lives.
+alone, a biped no lives (`the_pips_show_the_set_the_round_and_the_wave`
+holds the pips in each).
 
 **Banners** (`hud/banners.rs`). `banners::events` reads what began between
 two blobs, in the order set, round, skull, wave, after what completed
 (`WAVE CLEAR`, `ROUND COMPLETE`, `SET COMPLETE`) and the bonus round
 (`BONUS ROUND`, `BONUS OVER 2 LIVES`); `LAST LIFE` comes before the wave.
 A skull is `CATCH ON`, from its name. The match's end (`VICTORY`,
-`GAME OVER`, `RED TEAM WINS`, `BLUE TEAM WINS`, `DRAW`) stays up.
+`GAME OVER`, `RED TEAM WINS`, `BLUE TEAM WINS`, `DRAW`) stays published;
+the game shows its line once ("Motion").
 `Banners::tick` shows each for 3 s at 30 ticks a second, easing in and
 out over 200 ms; events from a newer tick replace the banner up and the
 queue (`banners_queue_set_round_skull_wave`).
@@ -1532,12 +1550,15 @@ queue (`banners_queue_set_round_skull_wave`).
 The HUD is the HUD kit's `firefight` HUD
 (`hud_kit_core::views::firefight`, `content/modes/huds/firefight.hud.yaml`;
 [hud-kit.md](hud-kit.md), "The Firefight HUD"), drawn by Halo 2's own HUD
-code. It is twelve elements, one layout: `ff.score`, `ff.lives` and
+code. It is twenty-one elements, one layout: `ff.score`, `ff.lives` and
 `ff.progress` (text, right-justified, in the HUD font), `ff.enemies` (the
-battery strip as a meter), `ff.skull.0` to `ff.skull.6` (gauges of two
-pictures, off and on) and `ff.banner` (text, centred). The offsets in the
-YAML are the layout's numbers; the half screen gives the lines the same
-places, a quarter gives only the lives and progress lines, one line lower.
+battery strip as a meter), `ff.set` (text), `ff.round.0` to `ff.round.2`
+and `ff.wave.0` to `ff.wave.4` (gauges of two pictures, faint and lit),
+`ff.skull.0` to `ff.skull.6` (gauges of two pictures, off and on) and
+`ff.banner` (the kit's `Banner` channel: the game's timed centred line).
+The offsets in the YAML are the layout's numbers; the half screen gives the
+lines the same places, a quarter gives only the lives and progress lines
+and the pips, one line lower.
 `hud::state_of` reads the layout's elements into the kit's `State` and
 `hud::view_on` into its `Values`, for one roster slot, scope and screen.
 
@@ -1546,16 +1567,21 @@ strokes the skull menu's model picture also uses, `game::skull_glyphs`);
 `font::skulls` rasterises the seven slots' skulls to 14 px, off faint and on
 lit, at U+E600 to U+E60D, and the font rewrite adds them to every font file
 (`bot_mark::GearRewrite`), as it adds the charge ring
-(`skull_pictures_come_from_our_strokes`). No disc or ODST art.
+(`skull_pictures_come_from_our_strokes`). The pips are ours too
+(`font::skulls::Pip`, U+E60E to U+E611: a disc for a round, five discs in a
+leaning row for a wave's bar; `a_pip_is_a_circle_or_a_slanted_bar_off_or_on`).
+No disc or ODST art: ODST gives what is shown and in what order, not a pixel.
 
 **Motion.** A skull switched on blinks three times in half a second and
 stays lit (`Motion::Arrive`; `a_skull_blinks_three_times_when_switched_on`):
 the kit restamps a value whose shown, fill or motion changed, so a skull
 that goes from hidden to shown starts the blink and the others keep their
-own. The line at the last life blinks the same way, no lives left shows in
-the warning colour, and the meter eases. The banner is on for its three
-seconds at full strength: the ease in and out of `Banners` is computed, but
-a fade needs the kit's colour hook, which is not built.
+own. A pip blinks the same way as its round or wave begins, and so does
+the line at the last life; no lives left shows in the warning colour, and
+the meter eases. The banner is the game's timed line, so the game fades it:
+`Banners` publishes each text for its three seconds, the kit writes the line
+when a user's text changes (`hud_kit::banner_for`), and the game shows it for
+`BANNER_TICKS`. The match's end is written once and fades like any other.
 
 The kit's checks (`h2 hud preview firefight --state all --mode all`) hold
 it in every state and screen mode, and the kit's runtime draws it. The HUD
@@ -1570,7 +1596,8 @@ user full, two half, three or four quarter), one `hud::Feed` a user
 (`hud::tick_all`): each feed keeps its user's last blob and banner queue.
 Local user 0's values are the HUD's shared ones and each other local
 user's are its own (`Handle::publish_for`), so each split-screen player
-sees its own lives and its own banners. With no match, no player for the
+sees its own lives and its own banners (the banner channel reads each user's
+own values, `a_local_users_banner_is_its_own_values`). With no match, no player for the
 user or a blob it cannot read, that user's elements are hidden and its
 banners forgotten; the reason for an unreadable blob is logged once. A
 wave test gives the biped no lives and no "LAST LIFE" banner. A replica, a
@@ -1795,7 +1822,7 @@ are slices of [ai-networking.md](ai-networking.md); P numbers its probes.
 | **FF5** | Agent API: `firefight.state`, `firefight.command`, `firefight.kit`; `lives` and `score` on `sim.view`'s `player` root | S | FF4 | `crates/extensions/agent/src/firefight.rs`, `crates/extensions/agent-proto/src/firefight.rs`, `crates/extensions/agent/src/sim/state.rs`, [agent-api.md](../runtime/agent-api.md#firefight) | `state_reports_the_director`, `command_is_refused_on_a_client_and_in_playback`, `kit_reads_the_loaded_scenario`, `the_view_reports_each_players_lives`, `the_view_reports_each_players_score` | the methods answer over a fake game |
 | **FF6** | Stats: `Score` and `ActorKilled` to film events, the Live projection's Firefight summary, the web stats page | M | FF2, AN6 | `crates/live/live-proto/src/{film/events,firefight}.rs`, `crates/live/live-server/`, `crates/live/live-worker/`, `web/` | `a_scripted_match_projects_to_the_golden_summary`, `the_firefight_summary_is_the_golden_one_and_players_cannot_write_it`, `the_firefight_summary_is_the_same_on_the_worker`, `firefight_scores_do_not_touch_ranks`, `a_two_team_match_projects_wins_by_team`, `credits_pair_each_kill_with_its_class_and_assist`, `a_firefight_score_is_a_game_event_and_a_running_objective_score_in_the_film`, `firefight_scores_become_running_objective_scores`, `reads the server's golden summary as it is` (web) | both homes give the same summary |
 | **FF7** | Skulls: the host-only AI set, the round schedule, multipliers, the AI readers' campaign gate | S | FF4 | `crates/extensions/game/src/skulls_mp.rs`, `crates/formats/firefight/tests/skulls.rs`, `crates/hooking/guest-layout/src/points/skull_gates.rs`, `crates/rewrites/engine/src/skull_gate.rs` | `ai_skulls_apply_on_the_host_only`, `a_round_switches_its_skulls_on`, `multipliers_multiply` | skulls.md's "In Firefight" table gives each skull's scope with a test. Built, tests only, with the campaign gate answered at each AI reader's `jne` on the host (`a_hosts_ai_skulls_pass_each_readers_campaign_gate`, `every_ai_skull_gate_has_the_multiplayer_skulls_before_unless_turned_off`, `assassins_cloaks_an_actor_in_the_campaign_and_where_the_gate_is_answered`, and the XBE checks in `crates/apps/boot/tests/skull_gates_xbe.rs`). Also tested: `the_skull_array_gets_exactly_the_hosts_ai_set`, `every_firefight_skull_has_a_scope_and_an_engine_index`, `a_skull_already_on_is_not_switched_on_again`, `a_round_skull_scores_from_its_first_wave` |
-| **FF8** | HUD and screens: wave banner, enemies left, lives, the Game Setup row and its options page | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/{hud,options}.rs`, `crates/rewrites/hud-kit-core/src/views/firefight.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page (`the_options_page_steps_and_opens_pickers`, `the_wave_set_row_offers_the_maps_set_first_on_its_map`, `a_map_set_value_plays_on_its_map_and_falls_back`); `the_hud_reads_only_the_mode_blob`; the kit's checks in every state and mode (`the_firefight_hud_draws_and_passes_on_the_synthetic_sheet`, `every_blob_gives_the_kits_one_layout`, `the_firefight_hud_compiles_to_records_in_every_mode`) | a client with only the mode blob draws the same HUD as the host |
+| **FF8** | HUD and screens: wave banner, enemies left, lives, the set, round and wave pips, the Game Setup row and its options page (**built**) | M | FF2, AN4, AN5 | `crates/extensions/game/src/firefight/{hud,options}.rs`, `crates/rewrites/hud-kit-core/src/views/firefight.rs`, `crates/extensions/game/src/ui_kit/` | `Page` tables for the options page (`the_options_page_steps_and_opens_pickers`, `the_wave_set_row_offers_the_maps_set_first_on_its_map`, `a_map_set_value_plays_on_its_map_and_falls_back`); `the_hud_reads_only_the_mode_blob`; the kit's checks in every state and mode (`the_firefight_hud_draws_and_passes_on_the_synthetic_sheet`, `every_blob_gives_the_kits_one_layout`, `the_firefight_hud_compiles_to_records_in_every_mode`, `the_pips_show_the_set_the_round_and_the_wave`, `the_pips_fill_from_the_left`, `a_local_users_banner_is_its_own_values`) | a client with only the mode blob draws the same HUD as the host |
 | **FF9** | Live: the variant bytes, `NewSession.firefight`, 1-to-4-player hopper entries, the lobby's local kit check | M | FF1 | `crates/formats/variants/src/ext.rs`, `crates/live/live-proto/`, `crates/live/live-server/`, `crates/live/live-worker/`, `crates/tools/hopper-edit/` | `the_mode_bytes_round_trip_and_leave_the_crc_valid`, `a_joiner_without_the_kit_map_is_refused_before_load`, `first_playlist_accepts_one_to_four_players`, `an_oversize_def_is_refused`, the parity suite; built: `firefight_match_round_trips_and_is_left_out_when_none`, `firefight_match_is_validated`, `sessions_carry_the_hosts_firefight_match`, `guests_read_the_firefight_match_their_host_advertises`, `each_multiplayer_start_names_its_match_for_the_session`, `each_builtin_is_found_by_its_hash_prefix`, `a_hopper_takes_the_builtin_firefight_sets`, `a_crossfire_variant_is_accepted_by_its_hash_prefix`, `the_builtin_firefight_sets_are_offered_crossfire_with_teams`, `firefight_seats_balance_two_teams_and_fill_one`, `firefight_sessions_seat_clankers_on_player_teams_only`, `a_firefight_session_seats_balanced_clankers_on_the_worker` | both homes offer 1 to 4 players and refuse unsupported sizes and missing local kits. A retail variant is unchanged |
 | **FF10** | Dedicated host: the Firefight host class and admission, the kit in the host's map set, the strip keeping AI data | S | FF3, FF4, P5 | `crates/live/live-proto/src/{hosts,host_pack}.rs`, `crates/apps/cli/src/host_cmd/{pack,process}.rs`, `crates/apps/cli/src/server_map.rs`, `crates/live/host-data/`, [dedicated-host.md](../live/dedicated-host.md) | `a_firefight_match_takes_a_whole_slot_class`, `strip_keeps_squads_and_sectors`; built: `a_whole_slot_class_needs_an_empty_pack_and_keeps_it`, `a_firefight_lease_takes_the_whole_slot_class`, `the_bundle_carries_each_maps_firefight_kit_and_the_host_places_it`, `only_kit_packages_and_their_index_are_firefight_payload` | admission tests; the coordinator's host run in notes |
 | **FF11** | `h2 sim run` Firefight matches: Clankers as the players, on one team or balanced across two (the `[firefight]` table: `set`, `difficulty`, `teams`, `lives`, `skulls`; examples `docs/runtime/sim-examples/firefight-beavercreek.toml` and `firefight-beavercreek-crossfire.toml`), a report with rounds, score and tick times. `host.metrics` reports `game_cpu_ms_per_tick_p99` over the last 30 steady gameplay seconds from per-tick game-thread CPU deltas | M | FF4 | `crates/live/sim-bench/`, `crates/extensions/game/src/host_metrics.rs`, [sim.md](../runtime/sim.md), [agent-api.md](../runtime/agent-api.md#hostmetrics) | `a_firefight_match_toml_parses`, `firefight_bots_are_on_player_teams_only`, `two_team_firefight_balances_omitted_teams`, `the_report_has_rounds_and_score`, `a_firefight_match_finds_its_kit_package`, `a_firefight_table_becomes_the_pages_choices`, `the_firefight_examples_load`, `rolling_p99_counts_individual_gameplay_intervals_and_expires_at_30s` | a match file runs headless (coordinator) and feeds P5. The p99 comes from individual gameplay samples and resets between matches |
@@ -1844,7 +1871,9 @@ point: it needs the kit, the director and probe P2.
   names on retail maps.
 - That Beaver Creek yields six drops away from both bases.
 - Whether team 1 reads as blue in the game, as the HUD's "BLUE" assumes.
-- The HUD in a game: the lines, the meter, the skull slots and the banner
+- The HUD in a game: the lines, the meter, the pips, the skull slots and
+  the banner (that the game's timed line draws over the respawn timer
+  without covering it, and for a user in monitor mode)
   through `hud.render` and a live match on the lab Mac, clear of the retail
   score plate, weapon, grenades and tracker in every screen mode (the
   rectangles and the plate's 44 px are assumed from the census), and the

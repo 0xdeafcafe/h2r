@@ -1,29 +1,38 @@
 //! The Firefight HUD (docs/game/firefight.md, "The HUD"): the block at the
 //! bottom right, above Halo 2's score plate, as kit elements, in Halo 2's
-//! own HUD font and colour.
+//! own HUD font and colour. What it shows and how is Halo 3: ODST's
+//! Firefight (a lives count, the set's numeral, a circle a round and a
+//! bar a wave filling from the left, the skulls on, a centred line for
+//! what begins); every piece is Halo 2's or drawn from strokes of ours.
 //!
 //! - `ff.score`, `ff.lives`, `ff.progress`: three right-justified lines,
-//!   14 pixels apart, from the frame's bottom right corner up;
+//!   14 pixels apart, from the frame's bottom right corner up. The
+//!   progress line has words only for what the pips cannot say: a bonus
+//!   round's clock, and the round of a definition with over three;
 //! - `ff.enemies`: a strip meter (`Art::StripMeter`, 92 by 8) over them,
 //!   the enemies left over the wave's total, or the bonus round's time;
+//! - `ff.set`, `ff.round.0..2`, `ff.wave.0..4`: the set's numeral, then a
+//!   circle a round and a slanted bar a wave ([`pip_glyphs`],
+//!   `font::skulls::Pip`), each a gauge of two steps: faint for a round or
+//!   wave to come, lit for the one on and those done;
 //! - `ff.skull.0..6`: seven gauges of two steps, off and on, one fixed slot
 //!   a skull ([`SKULL_SLOTS`]), the pictures drawn from the skulls' strokes
 //!   (`font::skulls`, from `game::skull_glyphs`'s strokes);
-//! - `ff.banner`: the centred line at the top, the set, the round, the
-//!   skull or the wave that begins, and the ends.
+//! - `ff.banner`: the game's own timed centred line (`Kind::Banner`, the
+//!   line the respawn timer sits under): the set, the round, the skull or
+//!   the wave that begins, and the ends. The game draws and fades it.
 //!
 //! One layout: a state never adds, removes or moves an element, so the
-//! skull slots and the meter keep their places. The quarter screen (three
-//! or four players) draws the lives and progress lines alone, one line
-//! lower. Where the lines' words and the places differ by screen the game
-//! (`game::firefight::hud::layout`) is the source and the HUD takes its
-//! numbers; the game gives one [`State`] for each local user's screen.
+//! skull slots, the pips and the meter keep their places. The quarter
+//! screen (three or four players) draws the lives and progress lines and
+//! the pips alone, one line lower. Where the lines' words and the places
+//! differ by screen the game (`game::firefight::hud::layout`) is the
+//! source and the HUD takes its numbers; the game gives one [`State`] for
+//! each local user's screen.
 //!
 //! A skull switched on blinks three times ([`Motion::Arrive`]) and stays
-//! lit; the last life blinks the same way; the meter eases. The banner's
-//! ease in and out is not drawn: a fade needs the colour hook
-//! (docs/game/hud-kit.md, "Colours"), so the banner is at full strength
-//! for the three seconds it is up.
+//! lit, and so does a pip as its round or wave begins; the last life
+//! blinks the same way; the meter eases.
 //!
 //! The forge monitor's pills ([`super::forge`]) keep this module's count
 //! constants ([`COUNT_MAX`], [`COUNT_LONGEST`], [`PILL_STEP`]).
@@ -54,18 +63,37 @@ pub const SKULLS: [&str; SKULL_SLOTS] = [
     "ff.skull.6",
 ];
 
+/// The set's numeral, left of the pips.
+pub const SET: &str = "ff.set";
+/// The round pips: a set's rounds, ODST's three.
+pub const ROUND_PIPS: usize = 3;
+pub const ROUNDS: [&str; ROUND_PIPS] = ["ff.round.0", "ff.round.1", "ff.round.2"];
+/// The wave pips: a round's waves, five in every definition
+/// (`firefight::validate`).
+pub const WAVE_PIPS: usize = 5;
+pub const WAVES: [&str; WAVE_PIPS] = [
+    "ff.wave.0",
+    "ff.wave.1",
+    "ff.wave.2",
+    "ff.wave.3",
+    "ff.wave.4",
+];
+
 /// The elements' ids, in draw order.
-pub const IDS: [&str; 4 + SKULL_SLOTS + 1] = [
+pub const IDS: [&str; 4 + SKULL_SLOTS + 1 + 1 + ROUND_PIPS + WAVE_PIPS] = [
     SCORE, LIVES, PROGRESS, ENEMIES, SKULLS[0], SKULLS[1], SKULLS[2], SKULLS[3], SKULLS[4],
-    SKULLS[5], SKULLS[6], BANNER,
+    SKULLS[5], SKULLS[6], BANNER, SET, ROUNDS[0], ROUNDS[1], ROUNDS[2], WAVES[0], WAVES[1],
+    WAVES[2], WAVES[3], WAVES[4],
 ];
 
 /// The widest score line: two teams at the most points.
 pub const SCORE_LONGEST: &str = "RED 9999999 BLUE 9999999";
 /// The widest lives line.
 pub const LIVES_LONGEST: &str = "LIVES 999";
-/// The widest progress line: an endless set's.
-pub const PROGRESS_LONGEST: &str = "SET 256 ROUND 12 WAVE 16";
+/// The widest progress line: the round of a definition with the most.
+pub const PROGRESS_LONGEST: &str = "ROUND 12 OF 12";
+/// The widest set numeral.
+pub const SET_LONGEST: &str = "256";
 /// The widest banner.
 pub const BANNER_LONGEST: &str = "BONUS OVER 99 LIVES";
 
@@ -81,6 +109,15 @@ pub const fn skull_glyphs(slot: usize) -> Glyphs {
         first: font::skulls::unit(slot, false),
         steps: 1,
         size: (SKULL_PICTURE, SKULL_PICTURE),
+    }
+}
+
+/// A pip's pictures: step 0 faint, step 1 lit (`font::skulls::Pip`).
+pub const fn pip_glyphs(pip: font::skulls::Pip) -> Glyphs {
+    Glyphs {
+        first: pip.unit(false),
+        steps: 1,
+        size: (pip.width() as i16, font::skulls::PIP as i16),
     }
 }
 
@@ -199,6 +236,13 @@ pub struct State {
     pub skulls: [bool; SKULL_SLOTS],
     /// The banner's words.
     pub banner: Option<String>,
+    /// The set's numeral; none in a definition whose sets do not repeat.
+    pub set: Option<String>,
+    /// The round pips: none for one not shown, else whether it is lit
+    /// (the round on, or one done).
+    pub rounds: [Option<bool>; ROUND_PIPS],
+    /// The wave pips, as the rounds'.
+    pub waves: [Option<bool>; WAVE_PIPS],
 }
 
 /// Every element hidden: no match runs.
@@ -241,6 +285,18 @@ pub fn values(state: &State) -> Values {
         );
     }
     out.set(BANNER, text(&state.banner));
+    out.set(SET, text(&state.set));
+    let pips = ROUNDS.into_iter().zip(state.rounds).chain(WAVES.into_iter().zip(state.waves));
+    for (id, lit) in pips {
+        out.set(
+            id,
+            match lit {
+                Some(true) => Value::fill(1.0).moving(Motion::Arrive),
+                Some(false) => Value::fill(0.0),
+                None => Value::hidden(),
+            },
+        );
+    }
     out
 }
 
@@ -259,10 +315,14 @@ pub fn states() -> Vec<(&'static str, State)> {
     let fighting = State {
         score: some("SCORE 3400"),
         lives: Some(("LIVES 4".into(), LivesLook::Normal)),
-        progress: some("SET 2 ROUND 2 WAVE 3"),
+        progress: None,
         enemies: Some(0.75),
         skulls: [true, false, false, false, false, true, false],
         banner: None,
+        // Set 2, round 2, wave 3.
+        set: some("2"),
+        rounds: [Some(true), Some(true), Some(false)],
+        waves: [Some(true), Some(true), Some(true), Some(false), Some(false)],
     };
     let with = |f: &dyn Fn(&mut State)| {
         let mut s = fighting.clone();
@@ -282,12 +342,18 @@ pub fn states() -> Vec<(&'static str, State)> {
         ("no-own-lives", with(&|s| s.lives = None)),
         ("bonus", with(&|s| {
             s.progress = some("BONUS 0:42");
+            s.waves = [None; WAVE_PIPS];
             s.enemies = Some(0.4);
             s.banner = some("BONUS ROUND");
         })),
         ("two-teams", with(&|s| {
             s.score = some("RED 450 BLUE 1100");
-            s.progress = some("ROUND 2 OF 3 WAVE 3");
+            s.set = None;
+        })),
+        ("many-rounds", with(&|s| {
+            s.progress = some("ROUND 7 OF 12");
+            s.set = None;
+            s.rounds = [None; ROUND_PIPS];
         })),
         ("all-skulls", with(&|s| s.skulls = [true; SKULL_SLOTS])),
         ("game-over", State {
@@ -303,6 +369,9 @@ pub fn states() -> Vec<(&'static str, State)> {
             enemies: Some(1.0),
             skulls: [true; SKULL_SLOTS],
             banner: some(BANNER_LONGEST),
+            set: some(SET_LONGEST),
+            rounds: [Some(true); ROUND_PIPS],
+            waves: [Some(true); WAVE_PIPS],
         }),
     ]
 }
@@ -378,12 +447,12 @@ mod tests {
         }
     }
 
-    /// The HUD compiles against the player's templates: eleven text
-    /// records (three lines, seven skull gauges, the banner), the meter's
-    /// bitmap, no channel; each text has its font in the modes it has an
-    /// offset in and none in the others (the quarter screen draws the
-    /// lives and progress lines alone); every place is from the bottom
-    /// right corner but the banner's, from the top left.
+    /// The HUD compiles against the player's templates: nineteen text
+    /// records (three lines, seven skull gauges, the set's numeral, eight
+    /// pips), the meter's bitmap and one channel, the banner; each text
+    /// has its font in the modes it has an offset in and none in the
+    /// others (the quarter screen draws the lives and progress lines and
+    /// the pips alone); every place is from the bottom right corner.
     #[test]
     fn the_firefight_hud_compiles_to_records_in_every_mode() {
         let hud = hud();
@@ -391,8 +460,13 @@ mod tests {
         assert_eq!(hud.elements.iter().map(|e| e.id).collect::<Vec<_>>(), IDS);
         assert!(!hud.uses_grenade_row() && hud.has_text());
         let c = compile(&hud, &templates()).unwrap();
-        assert!(c.channels.is_empty());
-        assert_eq!(c.widgets.len(), 12);
+        assert_eq!(c.channels, [BANNER]);
+        assert_eq!(c.widgets.len(), 20);
+        // The banner is the game's timed line, at full and half size.
+        let banner = hud.element(BANNER).unwrap();
+        assert_eq!(banner.kind, Kind::Banner { longest: BANNER_LONGEST });
+        let modes = Mode::ALL.map(|m| banner.at.offset(m).is_some());
+        assert_eq!(modes, [true, true, false]);
         let meter = c.widgets.iter().find(|w| w.id == ENEMIES).unwrap();
         assert_eq!(meter.kind, WidgetKind::Bitmap);
         let font = |w: &records::Widget, mode: Mode| w.bytes[tf::FONTS + mode.index()] as i8;
@@ -404,7 +478,9 @@ mod tests {
         assert_eq!(shown(SCORE), [true, true, false]);
         assert_eq!(shown(LIVES), [true, true, true]);
         assert_eq!(shown(PROGRESS), [true, true, true]);
-        assert_eq!(shown(BANNER), [true, true, false]);
+        for id in [SET].into_iter().chain(ROUNDS).chain(WAVES) {
+            assert_eq!(shown(id), [true, true, true], "{id}");
+        }
         for id in SKULLS {
             assert_eq!(shown(id), [true, true, false], "{id}");
         }
@@ -420,19 +496,32 @@ mod tests {
         assert_eq!(at(SCORE).1[0], (0, -58));
         assert_eq!(at(LIVES).1, [(0, -72), (0, -72), (0, -58)]);
         assert_eq!(at(PROGRESS).1, [(0, -86), (0, -86), (0, -72)]);
-        assert_eq!(at(BANNER).0, Anchor::TopLeft as u16);
-        assert_eq!(at(BANNER).1[0], (272, 60));
-        assert_eq!(at(BANNER).1[1], (272, 48));
-        // Every line is right-justified at the corner, the banner centred.
-        for (id, justify) in [(SCORE, Justify::End), (LIVES, Justify::End), (BANNER, Justify::Centre)] {
+        // The pips' row, right to left: the waves' bars 6 wide on a 7
+        // pixel pitch, a gap of 6, the rounds' circles 8 wide on 9, a gap
+        // of 6, the set's numeral; one line lower in a quarter.
+        for (i, id) in WAVES.into_iter().enumerate() {
+            let x = -(6 + 7 * (WAVE_PIPS - 1 - i) as i16);
+            assert_eq!(at(id), (corner, [(x, -108), (x, -108), (x, -84)]), "{id}");
+            let e = hud.element(id).unwrap();
+            assert_eq!(e.kind, Kind::Gauge { glyphs: pip_glyphs(font::skulls::Pip::Wave) });
+        }
+        for (i, id) in ROUNDS.into_iter().enumerate() {
+            let x = -(48 + 9 * (ROUND_PIPS - 1 - i) as i16);
+            assert_eq!(at(id), (corner, [(x, -108), (x, -108), (x, -84)]), "{id}");
+            let e = hud.element(id).unwrap();
+            assert_eq!(e.kind, Kind::Gauge { glyphs: pip_glyphs(font::skulls::Pip::Round) });
+        }
+        assert_eq!(at(SET), (corner, [(-72, -110), (-72, -110), (-72, -86)]));
+        // Every line is right-justified at the corner.
+        for (id, justify) in [(SCORE, Justify::End), (LIVES, Justify::End), (SET, Justify::End)] {
             let e = hud.element(id).unwrap();
             assert!(matches!(e.kind, Kind::Text { font: Font::Hud, justify: j, .. } if j == justify), "{id}");
         }
         for (i, id) in SKULLS.into_iter().enumerate() {
             assert_eq!(at(id).0, corner, "{id}");
             // A fixed slot a skull: 18 pixels on at full size, 14 at half.
-            let (x, y) = (-(18 * i as i16 + 15), -113);
-            let (hx, hy) = (-(14 * i as i16 + 14), -110);
+            let (x, y) = (-(18 * i as i16 + 15), -125);
+            let (hx, hy) = (-(14 * i as i16 + 14), -124);
             assert_eq!(at(id).1[..2], [(x, y), (hx, hy)], "{id}");
             let e = hud.element(id).unwrap();
             assert_eq!(e.kind, Kind::Gauge { glyphs: skull_glyphs(i) });
@@ -490,6 +579,40 @@ mod tests {
         });
         assert_eq!(out.get(LIVES).unwrap().style, Style::Flash(Pulse::TimeWarning));
         assert_eq!(out.get(LIVES).unwrap().motion, Motion::None);
+    }
+
+    /// A pip is lit for the round or wave on and those done (it blinks as
+    /// it lights), faint for one to come and hidden when it is not shown;
+    /// the set's numeral is its words.
+    #[test]
+    fn the_pips_fill_from_the_left() {
+        let v = values(&State {
+            set: Some("2".into()),
+            rounds: [Some(true), Some(false), None],
+            waves: [Some(true), Some(true), Some(false), Some(false), Some(false)],
+            ..State::default()
+        });
+        assert_eq!(v.get(SET).unwrap().text, "2");
+        let pip = |id: &str| {
+            let p = v.get(id).unwrap();
+            (p.shown, p.fill, p.motion)
+        };
+        assert_eq!(pip(ROUNDS[0]), (true, 1.0, Motion::Arrive));
+        assert_eq!(pip(ROUNDS[1]), (true, 0.0, Motion::None));
+        assert!(!pip(ROUNDS[2]).0);
+        assert_eq!(pip(WAVES[1]), (true, 1.0, Motion::Arrive));
+        assert_eq!(pip(WAVES[4]), (true, 0.0, Motion::None));
+        // Faint is the first picture, lit the second, of the pip's two.
+        let g = pip_glyphs(font::skulls::Pip::Wave);
+        assert_eq!((g.unit(0.0), g.unit(1.0)), (0xe610, 0xe611));
+        assert_eq!(g.size, (6, 10));
+        let g = pip_glyphs(font::skulls::Pip::Round);
+        assert_eq!((g.unit(0.0), g.unit(1.0)), (0xe60e, 0xe60f));
+        assert!(g.picture(1.0).is_some() && g.picture(0.0).is_some());
+        // Hidden with no match.
+        for id in [SET].into_iter().chain(ROUNDS).chain(WAVES) {
+            assert!(!hidden().get(id).unwrap().shown, "{id}");
+        }
     }
 
     /// A skull switched on blinks three times in half a second and stays
