@@ -275,7 +275,8 @@ opens a picker; an action row acts and closes.
 | item entry | Return time | the entry's abandon limit (`+0x10`, **E**, [scenario-editor.md](../editor/scenario-editor.md) section 2), typed as the engine counts it | Live | built (P3) |
 | item entry | Game types | the entry's four game-type slots | Live, from the next spawn | built (P3) |
 | item entry | Place at start | none: the reset spawns every matching entry at the start whatever its respawn mode ([forge-map-variants.md](forge-map-variants.md), "Fields by kind"), so there is no row | | left out |
-| item entry of a collection | Spare clips | the document's `spare_clips` property; the game fills each weapon the entry makes, and the one it has out (`World::spare_clips`, [forge-map-variants.md](forge-map-variants.md), "Properties without a retail field") | Live, from the next spawn | built (D5) |
+| item entry whose collection holds a weapon | Spare clips | the document's `spare_clips` property; the game fills each weapon the entry makes, and the one it has out (`World::spare_clips`, [forge-map-variants.md](forge-map-variants.md), "Properties without a retail field") | Live, from the next spawn | built (D5) |
+| spawn | Weight | the document's `weight` property: Low, Normal, High; the game adds its bias to the spawn chooser's weight for the location (`World::spawn_weight`, [forge-map-variants.md](forge-map-variants.md), "Properties without a retail field") | Live, from the next spawn | built (D5) |
 | goal, spawn | Team | the flag's or location's team | built | P2 |
 | goal | Role | the netgame flag's type | built | P2 |
 | goal | Order | the flag's identifier, for hills and territories | built | P2 |
@@ -307,8 +308,8 @@ opens a picker; an action row acts and closes.
   (**C**). The row matters only for kinds that do simulate.
 - The built page has Coordinates... and Heading for any object, Team for
   starting points and goals, Role and Order for goals, and Respawn time,
-  Return time, Game types, Team and Spare clips (the document's properties) for item spawners. Heading is Coordinates' Yaw; the rotation step is the
-  Rotation snap setting, on Tool settings (`sheet::SETTINGS`). Team, Spare clips, Role
+  Return time, Game types, Team and Spare clips (the document's properties) for item spawners, and Weight for starting points. Heading is Coordinates' Yaw; the rotation step is the
+  Rotation snap setting, on Tool settings (`sheet::SETTINGS`). Team, Spare clips, Weight, Role
   and Order open pickers; Respawn time and Return time open the game's
   keyboard. The keyboard sends the `return time` property to
   `Session::set_field`, which writes `abandon limit`. A spawner whose

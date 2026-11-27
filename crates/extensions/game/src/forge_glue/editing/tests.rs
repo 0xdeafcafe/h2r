@@ -92,7 +92,8 @@ fn opened_with(own: Option<forge::BaseRows>) -> Opened {
         }),
         base_counts: [(item.block, 2)]
             .into_iter()
-            .chain(own.iter().flat_map(|b| b.rows.iter().map(|r| (r.block, 1))))
+            // Each block counts its rows; they come in index order.
+            .chain(own.iter().flat_map(|b| b.rows.iter().map(|r| (r.block, r.index + 1))))
             .collect(),
         ..Limits::default()
     };
@@ -127,6 +128,8 @@ fn opened_with(own: Option<forge::BaseRows>) -> Opened {
         refused: vec![r"test\hum: sound scenery has no body to place or see".into()],
         walls: vec![],
         names: Default::default(),
+        // The rifles hold a weapon; the grenades do not.
+        armed: [r"test\rifles".to_string()].into(),
     }
 }
 
@@ -2173,4 +2176,55 @@ fn a_spawners_spare_clips_row_sets_the_property_and_stages_the_games_step() {
     calls::lock(&e.calls).finish(ticket, Ok(json!({"handles":[]})));
     e.poll(4);
     assert_eq!(e.session.spare_clips(id), None);
+}
+
+/// The Spare clips row is a spawner's of a collection that holds a weapon:
+/// an equipment collection's, a vehicle's and an object's have none.
+#[test]
+fn spare_clips_rows_by_kind_and_collection() {
+    use forge::{BaseRow, BaseRows};
+    use forge_doc::{F32, Value};
+    let spawner = |group: &str, path: &str| {
+        let mut fields = vec![Value::Int(0)];
+        fields.extend([12, 12, 12, 12, 0, 30, 0].map(Value::Int));
+        fields.extend([
+            Value::Int(0),
+            Value::Vec3([0., 6., 0.].map(|c| F32::new(c).unwrap())),
+            Value::Vec3([0.; 3].map(|c| F32::new(c).unwrap())),
+            Value::Tag(Some(TagKey {
+                group: group.into(),
+                path: path.into(),
+            })),
+        ]);
+        fields
+    };
+    let block = BlockKind::NetgameEquipment;
+    let stride = map::scenario_layout::block(block).stride as usize;
+    let rows = [
+        spawner("itmc", r"test\rifles"),
+        spawner("itmc", r"test\grenades"),
+        spawner("vehc", r"test\hogs"),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, fields)| BaseRow {
+        block,
+        index: i as u32,
+        raw: vec![i as u8 + 1; stride],
+        print: forge_doc::print(block, &fields).unwrap(),
+        fields,
+    })
+    .collect();
+    let e = Editor::new(
+        opened_with(Some(BaseRows { rows, left_out: vec![] })),
+        Path::new("."),
+        1,
+        calls::shared(),
+    );
+    let row = |i| e.spare_clips_row(Endpoint::base(block, i));
+    assert_eq!(
+        [row(0), row(1), row(2)],
+        [Some(None), None, None],
+        "weapons, equipment, a vehicle"
+    );
 }

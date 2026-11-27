@@ -23,6 +23,7 @@ pub mod forge_hud;
 pub mod forge_readout;
 pub mod forge_screens;
 pub mod forge_spare_clips;
+pub mod forge_spawn_weight;
 mod forge_map;
 mod agent_route;
 pub mod aim_assist;

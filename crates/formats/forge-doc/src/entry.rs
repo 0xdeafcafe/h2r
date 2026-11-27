@@ -163,12 +163,24 @@ pub enum Property {
     /// weapon the spawner makes
     /// (docs/engine/notes/2026-11-27-forge-spawner-rows.md).
     SpareClips(Option<u8>),
+    /// A starting point's weight, or none for Normal. The game adds its
+    /// bias to the weight the spawn chooser gives the location
+    /// (docs/engine/notes/2026-11-27-forge-spawner-rows.md).
+    Weight(Option<SpawnWeight>),
     /// The game types an object is in ([`OBJECT_BLOCKS`]), or none for
     /// every game type. A retail object has no game-type field: the
     /// materialiser leaves the placement out of a map built for an engine
     /// the set lacks ([`for_game`]). A set is never empty and never every
     /// engine, which is a clear.
     Games(Option<GameSet>),
+}
+
+/// A starting point's weight other than Normal.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpawnWeight {
+    Low,
+    High,
 }
 
 /// How many teams a team property names.
@@ -285,6 +297,12 @@ fn check_property(block: BlockKind, property: Property, what: &'static str) -> R
             }
             if team.is_some_and(|t| t >= PROPERTY_TEAMS) {
                 return Err(Refusal::invalid(what, "a team is 0 to 7"));
+            }
+            Ok(())
+        }
+        Property::Weight(_) => {
+            if block != BlockKind::StartingLocations {
+                return Err(Refusal::invalid(what, "a weight is a starting point's"));
             }
             Ok(())
         }
@@ -421,6 +439,15 @@ pub fn teams(ops: &[Op]) -> std::collections::BTreeMap<Endpoint, u8> {
 pub fn spare_clips(ops: &[Op]) -> std::collections::BTreeMap<Endpoint, u8> {
     last_property(ops, |p| match p {
         Property::SpareClips(clips) => Some(*clips),
+        _ => None,
+    })
+}
+
+/// The weight each starting point has by the document's ops, by identity,
+/// as [`teams`] reads teams; Normal is none.
+pub fn spawn_weights(ops: &[Op]) -> std::collections::BTreeMap<Endpoint, SpawnWeight> {
+    last_property(ops, |p| match p {
+        Property::Weight(weight) => Some(*weight),
         _ => None,
     })
 }
