@@ -99,7 +99,7 @@ fn enter(
                 return Some(transfer);
             }
             scope = UiScope::Model;
-            super::model::begin(c, stack);
+            super::model::begin(c, &*mem, stack);
         }
         (stack, eligible)
     } else {

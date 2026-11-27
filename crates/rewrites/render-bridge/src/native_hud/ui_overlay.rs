@@ -24,7 +24,7 @@
 pub mod bitmaps;
 
 mod list;
-mod model;
+pub(super) mod model;
 mod text;
 
 pub use scene_extract::ui::{BUTTON_GLYPHS, Justify, UiText};
@@ -177,7 +177,7 @@ thread_local! {
     static REFUSED: RefCell<HashSet<u32>> = RefCell::new(HashSet::new());
 }
 
-struct Ro<'a>(&'a dyn GuestMemory);
+pub(super) struct Ro<'a>(pub(super) &'a dyn GuestMemory);
 
 impl GuestRead for Ro<'_> {
     fn read_u32(&self, addr: u32) -> Option<u32> {
