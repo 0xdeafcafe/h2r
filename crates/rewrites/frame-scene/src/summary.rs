@@ -267,6 +267,8 @@ pub fn summary_hash(scene: &FrameScene) -> u64 {
             }
         }
         crate::decorator::summary_words(scene, v, &mut |w| h.word(w));
+        crate::decal::summary_words(scene, v, &mut |w| h.word(w));
+        crate::effect::summary_words(&v.effects, &mut |w| h.word(w));
         crate::late::summary_words(scene, v, &mut |w| h.word(w));
     }
     crate::overlay::summary_words(&scene.overlay, &mut |w| h.word(w));

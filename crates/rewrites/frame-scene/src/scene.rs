@@ -17,7 +17,9 @@ use serde::Serialize;
 pub use frame_types::keys::{InstanceKey, ViewKey, ViewKind};
 
 use crate::camera::Camera;
+use crate::decal::{DecalItem, DecalVertex};
 use crate::decorator::{DecoratorDraw, DecoratorInstance};
+use crate::effect::Effects;
 use crate::late::{FogState, LateMaterial, LatePart, PostEffect, PostParams, WaterState};
 use crate::layer::{LayerItem, LayerPass};
 use crate::light::{Light, LightStep};
@@ -200,6 +202,12 @@ pub struct View {
     pub decorators: Range<u32>,
     /// Decorator draws extraction refused: the guest still draws them.
     pub decorator_remainder: u32,
+    /// Into [`FrameScene::decals`], in the guest's order.
+    pub decals: Range<u32>,
+    /// Decal records extraction refused: named drops, never a D3D draw.
+    pub decal_remainder: u32,
+    /// The view's effects in the guest's order: weather plates today.
+    pub effects: Effects,
     /// The view's layer 16 (slice 5).
     pub fog: Option<FogState>,
     /// The view's layer 6.
@@ -460,6 +468,10 @@ pub struct FrameScene {
     pub decorators: Vec<DecoratorDraw>,
     /// Each decorator draw's instances; draws index ranges of it.
     pub decorator_instances: Vec<DecoratorInstance>,
+    /// The views' decals; views index ranges of it.
+    pub decals: Vec<DecalItem>,
+    /// Each decal's quad-list vertices; decals index ranges of it.
+    pub decal_vertices: Vec<DecalVertex>,
     /// Each light's gathered groups, in light order then the passes'
     /// order ([`crate::light_group`]).
     pub light_groups: Vec<LightGroup>,
@@ -505,6 +517,8 @@ impl FrameScene {
         self.layer_items.clear();
         self.decorators.clear();
         self.decorator_instances.clear();
+        self.decals.clear();
+        self.decal_vertices.clear();
         self.light_groups.clear();
         self.light_entries.clear();
         self.object_shadows.clear();
@@ -686,6 +700,7 @@ impl FrameScene {
             }
         }
         crate::decorator::check(self)?;
+        crate::decal::check(self)?;
         crate::late::check(self)?;
         self.overlay.check()?;
         Ok(())

@@ -13,7 +13,7 @@
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -60,6 +60,22 @@ impl PresentSample {
 static LAST_LOG: Mutex<Option<(Instant, PresentSample)>> = Mutex::new(None);
 const LOG_EVERY: Duration = Duration::from_secs(10);
 const DECAL_DATUM_ARRAY: u32 = 0x004e_a950;
+
+/// Whether the scene's decal pass draws the view's decals: the guest's
+/// decal callback `0x00044040` is then cut, and nothing else of the decal
+/// path (the sorted-list replays `0x00041cc0` and `0x000423c0` draw
+/// object and camouflage layers, not decals) is the decals'. A host sets
+/// it when it reserves the pass in slots 2, 5 and 7
+/// (`native_render::decal_scene`); it stays false until one does.
+static SCENE_DRAWS: AtomicBool = AtomicBool::new(false);
+
+pub fn scene_draws() -> bool {
+    SCENE_DRAWS.load(Ordering::Relaxed)
+}
+
+pub fn set_scene_draws(on: bool) {
+    SCENE_DRAWS.store(on, Ordering::Relaxed);
+}
 
 /// `(examined draws, native candidates)` and the running refusal tally.
 pub fn counts() -> ((u64, u64), BTreeMap<Cow<'static, str>, u64>) {
