@@ -3478,12 +3478,22 @@ impl<B: Backend> Device<B> {
         // entry textures; such a pass takes its entry from its slots
         // ([`SwallowPass::entry_samples`]).
         if replays && self.backend.can_commit_carried() {
-            let stage = crate::SceneStage {
+            let stage = || crate::SceneStage {
                 surfaces: surfaces.clone(),
                 request,
                 plan: plan.clone(),
                 pass: Arc::clone(&pass),
             };
+            // Queued as the world's stages are, the render thread prepares
+            // and records it in order and the game thread does not wait for
+            // that thread to drain. What it cannot record is dropped and
+            // counted, and the stage then stands down to the sealed path
+            // below ([`crate::scene_stage`]).
+            if self.queues_scene_stages(Stage::Post) && self.backend.queue_scene_stage(stage()) {
+                self.swallow_committed(&s.surfaces, s.packets, plan.ranges);
+                return Ok(());
+            }
+            let stage = stage();
             if let Ok(Some(copies)) = self.backend.prepare_carried_stage(&stage)
                 && complete_recordings(&plan, &copies)
             {
