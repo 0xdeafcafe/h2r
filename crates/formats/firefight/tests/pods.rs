@@ -9,7 +9,7 @@ use firefight::director::PodsSeen;
 use firefight::{Arrival, Command, ScriptDirector};
 
 fn pods(free: u8, falls: Vec<bool>) -> PodsSeen {
-    PodsSeen { free, falls, classes: ["elite".to_string()].into() }
+    PodsSeen { free, free_flood: free, falls, classes: ["elite".to_string()].into(), flood_classes: Default::default() }
 }
 
 fn first_arrival(pods: PodsSeen) -> Command {

@@ -727,7 +727,16 @@ impl Game for Host<'_> {
                     .copied()
                     .unwrap_or(false),
             ),
-            (id::PODS_FREE, []) => i32::from(self.seen.pods.free),
+            (id::PODS_FREE, [Arg::Class(Some(class))]) => i32::from(
+                if self.seen.pods.flood_classes.contains(class) {
+                    self.seen.pods.free_flood
+                } else {
+                    self.seen.pods.free
+                },
+            ),
+            (id::POD_FLOOD, [Arg::Class(Some(class))]) => {
+                i32::from(self.seen.pods.flood_classes.contains(class))
+            }
             (id::POD_CLASS, [Arg::Class(Some(class))]) => {
                 i32::from(self.seen.pods.classes.contains(class))
             }

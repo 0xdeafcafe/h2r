@@ -170,6 +170,7 @@ fn kit() -> Kit {
         team: KIT_TEAM,
         bases: vec![[0.0, 0.0, 0.0]],
         pod_classes: BTreeSet::new(),
+        flood_classes: BTreeSet::new(),
     }
 }
 
@@ -857,7 +858,7 @@ fn observed_carries_each_players_team_and_player_kills() {
             victim: 4,
         },
     ];
-    let seen = observe(&kit(), &BTreeMap::new(), 2, &SquadPods::new(0), &game);
+    let seen = observe(&kit(), &BTreeMap::new(), 2, &SquadPods::new(0, 0), &game);
     assert_eq!(
         seen.players,
         [
@@ -912,21 +913,21 @@ fn zone_team_distance_is_from_each_teams_centre() {
         },
     ];
     let zone = kit().zones[0];
-    let seen = observe(&kit(), &BTreeMap::new(), 2, &SquadPods::new(0), &game);
+    let seen = observe(&kit(), &BTreeMap::new(), 2, &SquadPods::new(0, 0), &game);
     // All four units' centre is x 35: 5 world units from the zone at 40.
     assert_eq!(seen.zones[0].distance, 500);
     assert_eq!(seen.zones[0].team_distance, [3_000, 2_000]);
     assert_eq!(zone, [40.0, 0.0, 0.0]);
     // A team with no unit is as far as can be.
     game.players.retain(|p| p.team == 0);
-    let seen = observe(&kit(), &BTreeMap::new(), 2, &SquadPods::new(0), &game);
+    let seen = observe(&kit(), &BTreeMap::new(), 2, &SquadPods::new(0, 0), &game);
     assert_eq!(seen.zones[0].team_distance, [3_000, u32::MAX]);
     // One team: every player is team 0's.
     game.players.push(PlayerView {
         position: Some([60.0, 0.0, 0.0]),
         ..player(2, 1)
     });
-    let seen = observe(&kit(), &BTreeMap::new(), 1, &SquadPods::new(0), &game);
+    let seen = observe(&kit(), &BTreeMap::new(), 1, &SquadPods::new(0, 0), &game);
     assert_eq!(seen.zones[0].team_distance, [seen.zones[0].distance, u32::MAX]);
 }
 
@@ -1732,9 +1733,9 @@ fn the_director_is_told_of_the_ship_and_the_zones_it_can_fly_to() {
     });
     game.paths = vec![Some(ship_path()), None];
     let kit = game.kit().unwrap();
-    let seen = observe(&kit, &BTreeMap::new(), 1, &SquadPods::new(0), &game);
+    let seen = observe(&kit, &BTreeMap::new(), 1, &SquadPods::new(0, 0), &game);
     assert_eq!(seen.ship, ShipSeen { ready: true, paths: vec![true, false] });
-    let seen = observe(&kit, &BTreeMap::new(), 1, &SquadPods::new(0), &FakeGame::new());
+    let seen = observe(&kit, &BTreeMap::new(), 1, &SquadPods::new(0, 0), &FakeGame::new());
     assert_eq!(seen.ship, ShipSeen { ready: false, paths: vec![false, false] });
 }
 

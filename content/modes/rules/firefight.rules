@@ -85,6 +85,8 @@ global var ship_tick: int = 0
 global var ship_zone: int = 0
 // Pods this tick's placements have taken, past the free ones the host saw.
 global var pods_taken: int = 0
+global var flood_taken: int = 0
+global var pod_ok: bool = false
 // The round's allies arrive when it starts and after a boss wave: due is
 // set, and each tick places the next one that is not already alive.
 global var allies_due: bool = true
@@ -712,8 +714,19 @@ fn place_next(tick: int, players_in_match: int, cap: int, here_0: bool, here_1: 
                     // out, arrive on foot.
                     let by_pod = entry.arrival == arrive_pod or (entry.arrival == arrive_auto and pod_class(entry.kind))
                     if by_pod {
-                        if zone_fall(chosen_zone) and pods_free() > pods_taken {
-                            pods_taken = pods_taken + 1
+                        pod_ok = false
+                        if zone_fall(chosen_zone) {
+                            if pod_flood(entry.kind) {
+                                if pods_free(entry.kind) > flood_taken {
+                                    flood_taken = flood_taken + 1
+                                    pod_ok = true
+                                }
+                            } else if pods_free(entry.kind) > pods_taken {
+                                pods_taken = pods_taken + 1
+                                pod_ok = true
+                            }
+                        }
+                        if pod_ok {
                             s.squad_tick = tick + ticks(fall_time)
                             ff_drop_squad(id, entry.kind, size, chosen_zone, entry.tier, arrive_pod)
                         } else {
@@ -827,6 +840,7 @@ on tick {
     if phase != done {
         let tick = ticks(now())
         pods_taken = 0
+        flood_taken = 0
         observe_squads(tick)
         ship_step(tick)
         let here_0 = count(players p where p.side == 0) > 0
