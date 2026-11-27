@@ -210,6 +210,7 @@ fn read_source(source: FileSource) -> Option<Vec<u8>> {
             Some(bytes)
         }
         FileSource::Memory(bytes) => Some(bytes.to_vec()),
+        FileSource::Spliced(file) => file.read_all().ok(),
     }
 }
 
@@ -323,6 +324,10 @@ fn open_resolved(
             let reader: Box<dyn MapReader> = Box::new(Cursor::new(Arc::clone(bytes)));
             Map::from_reader(served(reader, 0)?)?
         }
+        FileSource::Spliced(file) => {
+            let reader: Box<dyn MapReader> = Box::new(BufReader::new(file.reader()?));
+            Map::from_reader(served(reader, 0)?)?
+        }
     };
     let mut files = ResourceFiles::new();
     register(&mut files, ResourceFile::Local, local)?;
@@ -382,6 +387,36 @@ fn register(files: &mut ResourceFiles, file: ResourceFile, source: FileSource) -
             files.set_bytes(file, bytes);
             Ok(())
         }
+        FileSource::Spliced(spliced) => {
+            files.set_source(file, Arc::new(Spliced::new(spliced)));
+            Ok(())
+        }
+    }
+}
+
+/// A spliced map's served bytes as a resource file, its base opened once.
+struct Spliced {
+    file: vfs::SplicedFile,
+    open: Mutex<Option<vfs::SplicedSource>>,
+}
+
+impl Spliced {
+    fn new(file: vfs::SplicedFile) -> Self {
+        Self { file, open: Mutex::new(None) }
+    }
+}
+
+impl assets::ResourceSource for Spliced {
+    fn len(&self) -> u64 {
+        self.file.len()
+    }
+    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        if open.is_none() {
+            *open = Some(self.file.open()?);
+        }
+        let source = open.as_mut().expect("opened above");
+        content::patch::Source::read_exact_at(source, offset, buf)
     }
 }
 

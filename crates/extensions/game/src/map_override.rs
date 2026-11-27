@@ -175,6 +175,13 @@ pub fn active_map_source(
             format!("{name}.map (rewritten in memory)"),
             bytes,
         )),
+        vfs::FileSource::Spliced(file) => Some(crate::telemetry::MapFile::opened(
+            format!("{name}.map (rewritten over the disc's)"),
+            file.len(),
+            std::sync::Arc::new(move || -> std::io::Result<Box<dyn crate::telemetry::MapRead>> {
+                Ok(Box::new(std::io::BufReader::new(file.reader()?)))
+            }),
+        )),
     }
 }
 
@@ -185,25 +192,38 @@ pub fn map_source(vfs: &mut vfs::Vfs, name: &str, slot: Option<&str>) -> Option<
         return Some(vfs::FileSource::Host(file));
     }
     let dir = format!("{}\\maps", vfs::CDROM_DEVICE);
-    let memory = |vfs: &mut vfs::Vfs, path: &str| match vfs.file_source(path)? {
-        vfs::FileSource::Memory(bytes) => Some(bytes),
+    // What the VFS rewrites: whole in memory, or spliced over its original.
+    let rewritten = |vfs: &mut vfs::Vfs, path: &str| match vfs.file_source(path)? {
         vfs::FileSource::Host(_) => None,
+        other => Some(other),
     };
     let named = slot
         .map(str::to_owned)
         .into_iter()
         .chain(vfs.content_map_path(name))
         .chain([format!("{dir}\\{name}.map")])
-        .find_map(|path| memory(vfs, &path));
-    let bytes = named.or_else(|| {
+        .find_map(|path| rewritten(vfs, &path));
+    named.or_else(|| {
         disc_map_paths(vfs, &dir).into_iter().find_map(|path| {
-            let bytes = memory(vfs, &path)?;
-            header_name_of(&bytes)
+            let source = rewritten(vfs, &path)?;
+            source_header_name(&source)
                 .is_some_and(|n| n.eq_ignore_ascii_case(name))
-                .then_some(bytes)
+                .then_some(source)
         })
-    })?;
-    Some(vfs::FileSource::Memory(bytes))
+    })
+}
+
+/// The internal name in a rewritten file's header.
+fn source_header_name(source: &vfs::FileSource) -> Option<String> {
+    match source {
+        vfs::FileSource::Memory(bytes) => header_name_of(bytes),
+        vfs::FileSource::Spliced(file) => {
+            let mut header = vec![0; 0x198 + 32];
+            content::patch::Source::read_exact_at(&mut file.open().ok()?, 0, &mut header).ok()?;
+            header_name_of(&header)
+        }
+        vfs::FileSource::Host(_) => None,
+    }
 }
 
 /// Candidate DVD paths for a map whose on-disc filename differs from its header.
@@ -604,6 +624,46 @@ pub mod tests {
         fn rewrite(&mut self, _: &str, _: &[u8]) -> Option<Vec<u8>> {
             Some(named_map("level"))
         }
+    }
+
+    /// Serves every map as an overlay over the disc's: its last byte
+    /// written as `!`, the rest read from the disc by offset.
+    struct Spliced;
+    impl vfs::Rewrite for Spliced {
+        fn wants(&self, path: &str) -> bool {
+            path.to_ascii_lowercase().starts_with("maps\\")
+        }
+        fn rewrite(&mut self, _: &str, _: &[u8]) -> Option<Vec<u8>> {
+            unreachable!("the VFS asks for the streamed rewrite")
+        }
+        fn rewrite_streamed(
+            &mut self,
+            _: &str,
+            source: &mut dyn content::patch::Source,
+        ) -> std::io::Result<Option<vfs::Rewritten>> {
+            let mut o = content::patch::Overlay::new(source.size());
+            o.write(source.size() - 1, b"!");
+            Ok(Some(vfs::Rewritten::Over(o)))
+        }
+    }
+
+    #[test]
+    fn a_map_the_vfs_splices_is_read_over_the_disc_image() {
+        let t = Temp::new();
+        let cfg = vfs::Config::new(t.0.join("data"), 0x4D530064);
+        let mut v = mount(cfg, &iso(&t), Some(Spliced), None, &[]).unwrap();
+        assert!(map_file(&mut v, "level").is_none());
+        let Some(vfs::FileSource::Spliced(file)) = map_source(&mut v, "level", None) else {
+            panic!("no spliced map")
+        };
+        // The base is the entry inside the image, not the image's start.
+        assert!(file.base.offset > 0);
+        assert_eq!(file.read_all().unwrap(), b"disc ma!");
+        let mut r = file.reader().unwrap();
+        let mut tail = [0; 3];
+        std::io::Seek::seek(&mut r, std::io::SeekFrom::End(-3)).unwrap();
+        std::io::Read::read_exact(&mut r, &mut tail).unwrap();
+        assert_eq!(&tail, b"ma!");
     }
 
     #[test]

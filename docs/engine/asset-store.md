@@ -27,7 +27,7 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 | Re-extraction of only what moved | `extract.toml`, `tags::repo::extract::{plan, update}`, `TagRepo::settle` | built |
 | The store in Studio: first start, `tags_root`, the browser over it | `crates/apps/studio/src/api/workspace.rs`, `app/assets.rs` ([tag-workspace.md](../editor/tag-workspace.md), W3) | built |
 | Content as packages: manifest, `PackageId`, the set and its order, builders, edit lines with `was` | `content::package`, `crates/tools/workspace` ([studio-redesign.md](../editor/studio-redesign.md), "Packages") | built (PK1 to PK12) |
-| Packages applied to a map the game reads | `workspace::PackageRewrite` over `workspace::build_map`: the whole map read, rebuilt onto its pinned tags, and kept as a whole map under `<data>/packages/cache/` | built |
+| Packages applied to a map the game reads | `workspace::PackageRewrite` over `workspace::build_map_streamed`: the map read by offset, rebuilt onto its pinned tags with its raw data and BSP regions left on the disc, and kept as an overlay under `<data>/packages/cache/` | built |
 | A map file served from something other than a file | `vfs::packages` (byte runs over a base as it streams), `vfs::sim_store` (a map served from recorded ranges, byte for byte at the same offsets) | built |
 | A stale cache slot dropped when its source changes | `crates/extensions/game/src/map_slots.rs` ([cache-slots.md](../runtime/cache-slots.md), "Changed maps") | built |
 | Live edits of a loaded map's tags | `crates/extensions/hot-tags`, `edit.batch` ([live-mirror.md](../editor/live-mirror.md)) | built |
@@ -213,7 +213,7 @@ maps:
 |---|---|---|
 | The Halo 2 image | 4.66 GB | 0.56 GB of non-map files, once extracted |
 | Converted Halo 1 maps and campaign, whole maps under `<data>/maps/` and `<data>/campaigns/` | 0.67 GB and 3.6 GB | layers holding only what differs from the store (**S**: not measured) |
-| A rebuilt whole map per map a package touches (`<data>/packages/cache/`), every multiplayer map for the Pogo | about the size of the maps touched | one image of 5 to 15 MB each |
+| An overlay per map a package touches (`<data>/packages/cache/`), every multiplayer map for the Pogo | the header, tables, index and metadata of the maps touched | one image of 5 to 15 MB each |
 | Materialised patched maps (`<data>/maps/cache/`, capped at 4 GiB) | up to the cap | images |
 | The guest's cache slots (`<data>/disk/`) | 1.1 GB | the same: the guest still copies a level into its slot |
 

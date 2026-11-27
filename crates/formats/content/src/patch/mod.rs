@@ -24,7 +24,7 @@ pub mod write;
 
 pub use bps::{Bps, crc32};
 pub use ips::parse_ips;
-pub use overlay::{MAX_LEN, OffsetPatch, Overlay, OverlayView, Run};
+pub use overlay::{MAX_LEN, OffsetPatch, Overlay, OverlayView, Reader, Run};
 pub use ppf::{BlockCheck, Ppf};
 pub use write::{Format, Written, diff};
 
@@ -78,6 +78,15 @@ pub trait Source {
         let mut out = vec![0; len];
         self.read_exact_at(0, &mut out)?;
         Ok(out)
+    }
+}
+
+impl<S: Source + ?Sized> Source for &mut S {
+    fn size(&self) -> u64 {
+        (**self).size()
+    }
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> io::Result<usize> {
+        (**self).read_at(offset, buf)
     }
 }
 

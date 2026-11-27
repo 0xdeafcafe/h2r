@@ -84,6 +84,10 @@ pub fn install_map(source: Option<vfs::FileSource>) {
             let m = map::Map::from_region(file, f.offset, f.len).ok()?;
             Some(sounds_of(&m))
         }
+        vfs::FileSource::Spliced(f) => {
+            let m = map::Map::from_reader(f.reader().ok()?).ok()?;
+            Some(sounds_of(&m))
+        }
     });
     set_resolver(table.map(|t| Box::new(move |path: &str| t.get(path).copied()) as Resolver));
 }

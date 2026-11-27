@@ -18,14 +18,24 @@ use std::io::{BufReader, Read, Seek};
 /// guard to keep its path alive until the worker has finished with it.
 ///
 /// A map the VFS rewrites in memory (the pogo kit, the screens) has no host
-/// region; [`MapFile::memory`] carries its bytes instead.
+/// region; [`MapFile::memory`] carries its bytes instead, and
+/// [`MapFile::opened`] a way to open a map the VFS serves spliced over its
+/// original.
 pub struct MapFile {
     pub path: std::path::PathBuf,
     pub offset: u64,
     pub len: u64,
     bytes: Option<std::sync::Arc<[u8]>>,
+    open: Option<OpenMap>,
     _guard: Option<Box<dyn Send + Sync>>,
 }
+
+/// A reader of a map's bytes, for [`MapFile::opened`].
+pub trait MapRead: Read + Seek + Send {}
+impl<T: Read + Seek + Send> MapRead for T {}
+
+/// Opens a reader of a map's bytes.
+pub type OpenMap = std::sync::Arc<dyn Fn() -> std::io::Result<Box<dyn MapRead>> + Send + Sync>;
 
 impl MapFile {
     pub fn new<G: Send + Sync + 'static>(
@@ -39,7 +49,20 @@ impl MapFile {
             offset,
             len,
             bytes: None,
+            open: None,
             _guard: guard.map(|g| Box::new(g) as Box<dyn Send + Sync>),
+        }
+    }
+
+    /// A map read through `open`, `len` bytes; `label` names it in messages.
+    pub fn opened(label: impl Into<std::path::PathBuf>, len: u64, open: OpenMap) -> Self {
+        Self {
+            path: label.into(),
+            offset: 0,
+            len,
+            bytes: None,
+            open: Some(open),
+            _guard: None,
         }
     }
 
@@ -50,6 +73,7 @@ impl MapFile {
             offset: 0,
             len: bytes.len() as u64,
             bytes: Some(bytes),
+            open: None,
             _guard: None,
         }
     }
@@ -212,6 +236,11 @@ impl TagNames {
     pub fn load(file: &MapFile) -> Result<Self, String> {
         let fail = |e: &dyn std::fmt::Display| format!("{}: {e}", file.path.display());
         let no_scenario = || format!("{}: no scenario tag", file.path.display());
+        if let Some(open) = &file.open {
+            let reader = open().map_err(|e| fail(&e))?;
+            let mut map = map::Map::from_region(reader, 0, file.len).map_err(|e| fail(&e))?;
+            return Self::from_map(&mut map).ok_or_else(no_scenario);
+        }
         match &file.bytes {
             Some(bytes) => {
                 let mut map = map::Map::from_region(std::io::Cursor::new(bytes.clone()), 0, file.len)

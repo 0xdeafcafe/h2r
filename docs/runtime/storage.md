@@ -187,13 +187,33 @@ without failing the whole mount. Structural XISO corruption still fails.
 
 `RewriteBackend::new(inner, rewrite)` serves some of another backend's files
 with different contents (`Vfs::with_disc_rewrite` wraps the disc in one). For
-a path the `Rewrite` wants, the whole inner file is read once and handed to
-it; the result is kept in memory and gives the file's size in `stat` and
-listings and its bytes in `read_at`. Other paths, and files over 64 MiB, pass
-through, with a `Rewrite::skipped` notification so dependent substitutions
-can stop. A short source read is rejected instead of rewriting a truncated
-file. It is read-only and never writes the inner backend. The runner uses
-it for the font files ([button-icons.md](../input/button-icons.md)).
+a path the `Rewrite` wants, `Rewrite::rewrite_streamed` gets the inner file
+as a `content::patch::Source` and reads what it needs. What it returns
+(`vfs::Rewritten`) gives the file's size in `stat` and listings and its
+bytes in `read_at`:
+
+| Result | Held | Served | Outside the VFS (`file_source`) |
+|---|---|---|---|
+| `Whole(bytes)` | the bytes | from memory | `FileSource::Memory` |
+| `Over(overlay)` | the overlay's runs | runs from memory, the rest from the inner file by offset (`Overlay::read_at`) | `FileSource::Spliced`: the inner file's host region with the overlay, or none without one |
+
+| Rewrite | Returns |
+|---|---|
+| the default (fonts, mainmenu's level pictures) | reads the whole file, `Whole` |
+| `workspace::PackageRewrite` on a map | `Over`: only what the package build changes ([studio-redesign.md](../editor/studio-redesign.md), "How the game consumes packages") |
+| `Chain(a, b)` | `b` reads `a`'s output; two overlays compose into one (`Overlay::then`) |
+
+There is no size limit: a map of any size takes its packages. A short
+source read is rejected instead of rewriting a truncated file. A failed
+inner read fails the `stat` or `read_at` with the inner backend's error.
+The backend is read-only and never writes the inner one.
+
+Idle level payloads are kept up to 64 MiB of held bytes
+(`assets.rewritten_map_cache_bytes`); open levels and the shared maps are
+kept apart. An evicted map keeps its size for listings and is rebuilt, or
+read from the package cache, at its next read. Test:
+`crates/runtime/vfs/src/rewrite.rs`
+(`an_overlay_serves_the_unchanged_ranges_from_the_inner_file`).
 
 ### Map overrides
 

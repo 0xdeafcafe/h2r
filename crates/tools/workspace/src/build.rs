@@ -757,6 +757,17 @@ fn run(
             };
             cx.state.refusal = None;
             let failed = (builder.apply)(&mut cx, &job).err();
+            // A streamed map leaves its file prefix in the source: an item
+            // that wrote it in memory cannot be served, so its package is
+            // refused for the map, by name. The item changed the set, so a
+            // refusing build starts again without the package.
+            let wrote_prefix = failed.is_none() && prefix_written(set);
+            let failed = failed.or_else(|| {
+                wrote_prefix.then(|| {
+                    state.refusal = Some(());
+                    Failure::from(STREAMED_PREFIX)
+                })
+            });
             let Some(f) = failed else {
                 ran += 1;
                 continue;
@@ -768,7 +779,7 @@ fn run(
                 Some((strict, off)) if refused && !strict.contains(name) => off,
                 _ => return Err(Stopped::Failed(fail(f.line, f.why))),
             };
-            if ran > 0 {
+            if ran > 0 || wrote_prefix {
                 return Err(Stopped::Again {
                     package: name.to_owned(),
                     why: f.why,
@@ -783,6 +794,17 @@ fn run(
         }
     }
     Ok(state.report)
+}
+
+/// Why a package is refused for a streamed map ([`prefix_written`]).
+pub(crate) const STREAMED_PREFIX: &str = "it writes the map's raw data or BSP regions in memory, which a streamed map leaves in its file";
+
+/// Whether a builder wrote the file prefix of a set that leaves it in its
+/// source (`map::build::TagSet::from_map_streamed`).
+fn prefix_written(set: &TagSet) -> bool {
+    set.pinned
+        .as_ref()
+        .is_some_and(|p| p.file_in_source > 0 && !p.file.is_empty())
 }
 
 fn source_of<'a>(loaded: &'a Loaded, item: &Item) -> Result<&'a [u8], String> {
