@@ -148,13 +148,40 @@ declined, `palette`. Counters: `sky_rows_{exact,close,differ,skipped,answering}`
 `sky_rows_declined_<why>`. The strip draws the guest's rows in every state
 until the cut.
 
+## The sky's program and textures
+
+The world worker makes each sky shader's layer-15 passes from the material
+(`native_sky_glue::load`): `decorators_load::decorator_look` at layer 15,
+the `vrtx`'s rigid classification (1), and every bitmap stage decoded into
+`SkyMaterials::images`. A stage the load cannot supply (the lightmap, an
+engine texture) leaves the pass without a look, named at the load.
+
+At the strip, `SkyLook::check` compares it with the guest's draw: the
+program's instruction words and the stages sampled. Counted
+`sky_plan_<outcome>`: `matched`, `program`, `textures`, or why there is no
+look (`unloaded`, `shader`, `look`, `extraction`). The strip draws with
+the draw's program and textures until the cut binds the look's.
+
+The load also reads each sky render model's sections from the map
+(`tags::model::RenderModelGeometry`, the section raw blocks) into
+`SkySection`: every vertex stream's stride and bytes and every part's
+index run. At the strip, `SkySection::check` compares the draw's index
+list (absolute, or rebased by the part's smallest index) and each stream
+over the part's vertex window. Counted `sky_geometry_<outcome>`:
+`matched`, `indices`, `window`, `streams`, `part`, or why there is no
+section (`unloaded`, `model`, `section`, `extraction`).
+
 ## Not built
 
 - **Cutting the guest's sky setup.** The strip is admitted at its
   resolved draw, so the guest's sky selection, its node palette upload and
   the strip's setup still run. The rows are made in Rust beside the
-  guest's (below); the strip's program and textures from the material and
-  the section's geometry from the load are still to come.
+  guest's, and the pass's program and textures from the material
+  (below), and the section's geometry read at the load and checked
+  (below). The upload into `SectionKey::Sky` is still to come: the strip
+  cache (`world_layers_gpu::ResidentSection`) is filled from a draw's own
+  streams, keyed by its snapshot, so the load's sections need a resident
+  entry made without a draw.
 - **The flare passes, the post and layers 18, 19 and 21 from the scene.**
   `0x0002dd30`, `0x0002df00` and `0x00013870` still run, and their native
   passes draw into the device's live targets at the guest's calls. Cutting
@@ -184,6 +211,8 @@ Tests: `the_stage_draws_around_the_entry_the_guest_keeps`,
 `each_skys_model_names_its_shaders_once` (`native_sky_glue`),
 `the_strips_rows_are_made_from_the_skys_tag_and_the_rest_pose`,
 `the_product_is_the_guests_composition` (`sky_rows`),
+`the_sky_look_from_the_material_is_checked_against_the_strip`,
+`the_sky_section_from_the_load_is_checked_against_the_strip` (`tests/world_layers_gpu.rs`),
 `the_rows_arm_answers_after_its_matches_and_stops_at_a_difference` (`native_sky`),
 `an_order_item_of_layer_2_holds_the_layer_for_its_sorted_entries`
 (`native_layers`); `a_passed_over_entry_reads_as_passed_and_keeps_its_slot_and_neighbours`,

@@ -126,6 +126,95 @@ pub fn evaluate(
     Ok(SkyConstants::of(&sampled))
 }
 
+/// A sky pass's program and textures from the material, as the load made
+/// them (`native_sky_glue::load`, through `decorators_load::decorator_look`
+/// at layer 15): the classification-1 program's instruction words and the
+/// stages the pass samples, each a bitmap image the load decoded.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SkyLook {
+    pub words: Vec<u32>,
+    pub stages: [crate::look::Stage; 4],
+}
+
+impl SkyLook {
+    /// `None` when the program does not parse.
+    pub fn new(microcode: &[u8], stages: [crate::look::Stage; 4]) -> Option<Self> {
+        let program = shaders::vsh::Program::parse(microcode).ok()?;
+        Some(Self { words: program.instructions.iter().flat_map(|i| i.words).collect(), stages })
+    }
+
+    /// Whether the guest's draw runs this program and samples these
+    /// stages: `matched`, or the first that differs, `program` or
+    /// `textures` (the plan's look stands beside the draw's until the cut
+    /// binds it; counted `sky_plan_<outcome>`).
+    pub fn check(&self, draw: &d3d::ResolvedDraw) -> &'static str {
+        let d3d::shader::VertexProcessing::Program { microcode, .. } = &draw.shader.vertex else { return "program" };
+        if microcode[..] != self.words[..] {
+            return "program";
+        }
+        let sampled = draw.sampled_texture_stages();
+        let planned = self.stages.map(|s| !matches!(s, crate::look::Stage::Empty));
+        if sampled != planned {
+            return "textures";
+        }
+        "matched"
+    }
+}
+
+/// A sky model section's geometry as the load read it from the map
+/// (`tags::model::RenderModelGeometry`, the section's raw block): each
+/// vertex stream's stride and bytes, in descriptor order, and each part's
+/// index run. The strip's section key (`SectionKey::Sky`) is filled from
+/// the guest's draw until the cut uploads these.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SkySection {
+    pub streams: Vec<(u32, Vec<u8>)>,
+    pub parts: Vec<Vec<u16>>,
+}
+
+impl SkySection {
+    pub fn of(section: &tags::geometry::Section) -> Self {
+        let streams = section.vertex_buffers.iter().map(|v| (u32::from(v.stride), section.data(v).to_vec())).collect();
+        let parts = section.parts.iter().map(|p| {
+            let first = usize::from(p.first_index);
+            section.indices.get(first..first + usize::from(p.index_count)).map_or_else(Vec::new, <[u16]>::to_vec)
+        }).collect();
+        Self { streams, parts }
+    }
+
+    /// Whether the guest's draw of part `part` is this section's: its
+    /// index list (absolute, or rebased by the part's smallest index) and
+    /// each of its streams the section stream of its stride over the
+    /// part's vertex window. `matched`, or the first that differs: `part`
+    /// (no such part, or an empty one), `indices`, `window` (the part
+    /// indexes past a stream), `streams`. Counted `sky_geometry_<outcome>`.
+    pub fn check(&self, part: u32, draw: &d3d::ResolvedDraw) -> &'static str {
+        let Some(run) = usize::try_from(part).ok().and_then(|p| self.parts.get(p)).filter(|r| !r.is_empty()) else { return "part" };
+        let lo = run.iter().copied().min().unwrap_or(0);
+        let hi = run.iter().copied().max().unwrap_or(0);
+        let Some(indices) = draw.indices.as_deref() else { return "indices" };
+        let absolute = indices.len() == run.len() && indices.iter().zip(run).all(|(&d, &r)| d == u32::from(r));
+        let rebased = indices.len() == run.len() && indices.iter().zip(run).all(|(&d, &r)| d == u32::from(r - lo));
+        if !absolute && !rebased {
+            return "indices";
+        }
+        let first = if rebased { usize::from(lo) } else { 0 };
+        let count = usize::from(hi) + 1 - first;
+        for stream in &draw.streams {
+            let stride = stream.stride as usize;
+            let windows: Vec<&[u8]> = self.streams.iter().filter(|(s, _)| *s == stream.stride)
+                .filter_map(|(_, bytes)| bytes.get(first * stride..(first + count) * stride)).collect();
+            if windows.is_empty() {
+                return if self.streams.iter().any(|(s, _)| *s == stream.stride) { "window" } else { "streams" };
+            }
+            if !windows.iter().any(|w| stream.data.get(..w.len()) == Some(*w)) {
+                return "streams";
+            }
+        }
+        "matched"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

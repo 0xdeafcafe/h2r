@@ -32,7 +32,7 @@ pub fn counters() -> Vec<(String, u64)> {
 pub fn counter_name(outcome: &str) -> String {
     if outcome == "admitted" {
         "sky_plan_admitted".to_owned()
-    } else if outcome.starts_with("rows_") {
+    } else if outcome.starts_with("rows_") || outcome.starts_with("plan_") || outcome.starts_with("geometry_") {
         format!("sky_{outcome}")
     } else {
         format!("scene_kept_sky_{outcome}")
@@ -128,6 +128,41 @@ fn declined_name(why: &'static str) -> &'static str {
     }
 }
 
+/// Counts one strip's look from the material against the draw:
+/// `sky_plan_<outcome>`, `matched`, `program`, `textures`, or why the
+/// load has no look (`unloaded`, `shader`, `look`, `extraction`).
+pub fn count_plan(outcome: &'static str) {
+    let name = match outcome {
+        "matched" => "plan_matched",
+        "program" => "plan_program",
+        "textures" => "plan_textures",
+        "unloaded" => "plan_unloaded",
+        "shader" => "plan_shader",
+        "extraction" => "plan_extraction",
+        _ => "plan_look",
+    };
+    *OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).entry(name).or_default() += 1;
+}
+
+/// Counts one strip's section geometry from the load against the draw:
+/// `sky_geometry_<outcome>`, `matched`, `indices`, `window`, `streams`,
+/// `part`, or why the load has none (`unloaded`, `model`, `section`,
+/// `extraction`).
+pub fn count_geometry(outcome: &'static str) {
+    let name = match outcome {
+        "matched" => "geometry_matched",
+        "indices" => "geometry_indices",
+        "window" => "geometry_window",
+        "streams" => "geometry_streams",
+        "part" => "geometry_part",
+        "unloaded" => "geometry_unloaded",
+        "model" => "geometry_model",
+        "extraction" => "geometry_extraction",
+        _ => "geometry_section",
+    };
+    *OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).entry(name).or_default() += 1;
+}
+
 /// The draw has to consume the entire captured strip for this model part.
 fn strip_count(expected: Option<u32>, resolved: Option<usize>) -> Result<(), &'static str> {
     match (expected, resolved) {
@@ -185,7 +220,11 @@ mod tests {
         let before = read("scene_kept_sky_range");
         count("range");
         assert_eq!(read("scene_kept_sky_range"), before + 1);
-        assert!(counters().iter().all(|(k, _)| k == "sky_plan_admitted" || k.starts_with("scene_kept_sky_") || k.starts_with("sky_rows_")));
+        assert!(counters().iter().all(|(k, _)| k == "sky_plan_admitted" || k.starts_with("scene_kept_sky_") || k.starts_with("sky_rows_") || k.starts_with("sky_plan_") || k.starts_with("sky_geometry_")));
+        let before = read("sky_geometry_window");
+        count_geometry("window");
+        assert_eq!(read("sky_geometry_window"), before + 1);
+        assert_eq!(counter_name("geometry_matched"), "sky_geometry_matched");
     }
 
     /// The made rows answer after enough matching strips, are then sampled,

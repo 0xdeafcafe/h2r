@@ -1732,7 +1732,7 @@ fn load_ready(
 
     {
         let _scope = mem_watch::scope("native.sky.load");
-        if !send(StageReady::Sky(crate::native_sky_glue::load(&mut map))) {
+        if !send(StageReady::Sky(crate::native_sky_glue::load(&mut map, &mut files, &mut decoder))) {
             return Ok(());
         }
     }
