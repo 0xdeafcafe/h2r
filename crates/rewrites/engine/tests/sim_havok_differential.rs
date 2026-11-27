@@ -2646,3 +2646,197 @@ fn the_tetrahedron_face_matches_the_lifted_choice() {
     }
     assert!(seen.len() >= 6, "{seen:?}");
 }
+
+// The convex shapes' support virtuals (sim_havok::shape_support,
+// docs/engine/havok-convex.md, "Support virtuals") against the lifted
+// functions: 1024 seeds each under every rounding mode, the x87 state
+// sometimes holding a value and a sticky flag at the entry.
+
+use sim_havok::shape_support::{self as shape, Exit};
+use x87::abi::X87Abi as X87State;
+
+const SHAPE: u32 = 0x0077_3000;
+const SHAPE_CHILD: u32 = 0x0077_3100;
+const SHAPE_DIR: u32 = 0x0077_3200;
+const SHAPE_OUT: u32 = 0x0077_3300;
+/// Halo's tag capsule vtable (type 7), the pill a biped wrapper holds.
+const CAPSULE_VTABLE: u32 = 0x0045_5500;
+const SUPPORT_EDX: u32 = 0x5555;
+
+fn support_code(image: &Image) -> lifted::Original {
+    let mut code = image.original();
+    for f in [shape::CAPSULE_SUPPORT, shape::BIPED_SUPPORT, shape::POLYGON_SUPPORT] {
+        code.prime(f);
+    }
+    code
+}
+
+fn support_x87(r: &mut Rng, seed: u64) -> X87State {
+    let mut x = X87State::default();
+    x.control = test_fpu(seed).control;
+    if seed % 3 == 1 {
+        x87::abi::ld_f32(&mut x, float(r, -2.0, 2.0).to_bits());
+    }
+    if seed % 7 == 2 {
+        x.status |= 0x0020;
+    }
+    x
+}
+
+/// A capsule at `at`: the vtable, two ends with their radius in `w`; in
+/// one seed of 8 both ends the same, so every direction is perpendicular.
+fn seed_capsule(r: &mut Rng, m: &mut FlatMemory, at: u32, seed: u64) {
+    word(m, at, CAPSULE_VTABLE);
+    let a = seed_vector(r, m, at + 0x10);
+    let b = seed_vector(r, m, at + 0x20);
+    put_lanes(m, at + 0x20, if seed % 8 == 2 { a } else { b });
+}
+
+/// A direction: sometimes zero, sometimes with a NaN lane.
+fn seed_direction(r: &mut Rng, m: &mut FlatMemory, seed: u64) {
+    let mut d = seed_vector(r, m, SHAPE_DIR);
+    match seed % 8 {
+        0 => d = [0.0, 0.0, 0.0, d[3]],
+        1 => d[r.below(3) as usize] = f32::NAN,
+        _ => {}
+    }
+    put_lanes(m, SHAPE_DIR, d);
+}
+
+/// Run the model on a journal over `mem`, then the lifted function at
+/// `eip` (ecx `this`, the direction and the output on the stack): the
+/// registers it leaves, the MXCSR, the x87 registers, status and tags,
+/// and every byte outside its frame must agree.
+fn support_compare(
+    code: &mut lifted::Original,
+    mem: &mut FlatMemory,
+    eip: u32,
+    seed: u64,
+    x87: X87State,
+    model: impl FnOnce(&mut Journal, &mut u32, &mut X87State) -> Result<Exit, sim_havok::convex::Fallback>,
+    why: &str,
+) -> FlatMemory {
+    let fpu = test_fpu(seed);
+    let before = mem.clone();
+    let view = Flat(&before);
+    let mut j = Journal::new(&view);
+    let (mut mxcsr, mut x) = (fpu.mxcsr, x87);
+    let exit = model(&mut j, &mut mxcsr, &mut x).unwrap_or_else(|f| panic!("{why}: declined {f:?}"));
+    let mut expected = before.clone();
+    apply(&mut expected, j);
+    for (i, v) in [EXIT, SHAPE_DIR, SHAPE_OUT].into_iter().enumerate() {
+        word(mem, STACK + 4 * i as u32, v);
+    }
+    let mut cpu = Cpu { gpr: [0, SHAPE, SUPPORT_EDX, 0x1111, STACK, 0x2222, 0x3333, 0x4444], eip, ..Cpu::default() };
+    cpu.mxcsr = fpu.mxcsr;
+    cpu.x87 = ir::interp::X87 {
+        st: x87.st,
+        control: x87.control,
+        status: x87.status,
+        tag: x87.tag,
+        opcode: x87.opcode,
+        instruction_pointer: x87.instruction_pointer,
+        data_pointer: x87.data_pointer,
+        instruction_selector: x87.instruction_selector,
+        data_selector: x87.data_selector,
+    };
+    run(code, &mut cpu, mem);
+    let after = abi_cpu(&cpu);
+    assert_eq!((after.eax, after.ecx, after.edx), (exit.eax, exit.ecx, exit.edx), "{why}: eax, ecx, edx");
+    assert_eq!((after.ebx, after.ebp, after.esi, after.edi, after.esp), (0x1111, 0x2222, 0x3333, 0x4444, STACK + 12), "{why}: kept, ret 8");
+    assert_eq!(after.mxcsr, mxcsr, "{why}: mxcsr");
+    assert_eq!((after.x87.st, after.x87.status, after.x87.tag), (x.st, x.status, x.tag), "{why}: x87");
+    clear_frame([&mut *mem, &mut expected], 8);
+    assert_eq!(first_difference(mem, &expected), None, "{why}: first different byte");
+    expected
+}
+
+fn capsule_model(j: &mut Journal, this: u32, m: &mut u32, x: &mut X87State) -> Result<Exit, sim_havok::convex::Fallback> {
+    shape::capsule(j, this, SHAPE_DIR, SHAPE_OUT, m, x).map(|eax| Exit { eax, ecx: SHAPE_OUT, edx: SUPPORT_EDX })
+}
+
+#[test]
+fn the_capsule_support_matches_the_lifted_support() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = support_code(image);
+    let mut ends = [0u32; 2];
+    for seed in 0..1024u64 {
+        let mut r = Rng(0x2ddd_0000 + seed);
+        let mut mem = base.clone();
+        seed_capsule(&mut r, &mut mem, SHAPE, seed);
+        seed_direction(&mut r, &mut mem, seed);
+        let x87 = support_x87(&mut r, seed);
+        let why = format!("capsule seed {seed}");
+        let out = support_compare(&mut code, &mut mem, shape::CAPSULE_SUPPORT, seed, x87, |j, m, x| capsule_model(j, SHAPE, m, x), &why);
+        ends[(out.read_u32(SHAPE_OUT + 0xc).unwrap() & 0x10 != 0) as usize] += 1;
+    }
+    assert!(ends.iter().all(|&n| n > 200), "{ends:?}");
+}
+
+#[test]
+fn the_biped_support_matches_the_lifted_support() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = support_code(image);
+    let mut moved = [0u32; 2];
+    for seed in 0..1024u64 {
+        let mut r = Rng(0x2dbd_0000 + seed);
+        let mut mem = base.clone();
+        seed_capsule(&mut r, &mut mem, SHAPE_CHILD, seed / 8);
+        word(&mut mem, SHAPE + shape::biped_field::CHILD, SHAPE_CHILD);
+        let offset = seed_vector(&mut r, &mut mem, SHAPE + shape::biped_field::OFFSET);
+        if seed % 16 == 5 {
+            put_lanes(&mut mem, SHAPE + shape::biped_field::OFFSET, [0.0, 0.0, 0.0, offset[3]]);
+        }
+        seed_direction(&mut r, &mut mem, seed);
+        let x87 = support_x87(&mut r, seed);
+        let why = format!("biped seed {seed}");
+        let child = mem.clone();
+        let out = support_compare(
+            &mut code,
+            &mut mem,
+            shape::BIPED_SUPPORT,
+            seed,
+            x87,
+            |j, m, x| shape::biped(j, SHAPE, SHAPE_DIR, SHAPE_OUT, STACK, m, x, |j, at, _, m, x| capsule_model(j, at, m, x)),
+            &why,
+        );
+        let end = SHAPE_CHILD + 0x10 + (out.read_u32(SHAPE_OUT + 0xc).unwrap() & 0x10);
+        let xyz = |m: &FlatMemory, at: u32| [0, 4, 8].map(|k| m.read_u32(at + k).unwrap());
+        moved[(xyz(&out, SHAPE_OUT) != xyz(&child, end)) as usize] += 1;
+    }
+    assert!(moved.iter().all(|&n| n > 200), "{moved:?}");
+}
+
+#[test]
+fn the_polygon_support_matches_the_lifted_support() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = support_code(image);
+    let mut chosen = std::collections::BTreeMap::new();
+    for seed in 0..1024u64 {
+        let mut r = Rng(0x1ee3_0000 + seed);
+        let mut mem = base.clone();
+        let count = match seed % 8 {
+            0 => 0,
+            1 => u32::MAX,
+            _ => 1 + r.below(8) as u32,
+        };
+        word(&mut mem, SHAPE + 0x14, count);
+        let vertex = |i: u32| SHAPE + 0x20 + 16 * i;
+        let first = seed_vector(&mut r, &mut mem, vertex(0));
+        for i in 1..9 {
+            seed_vector(&mut r, &mut mem, vertex(i));
+        }
+        // A tie with vertex 0 at the end of the ring.
+        if seed % 8 == 2 {
+            put_lanes(&mut mem, vertex(count - 1), first);
+        }
+        seed_direction(&mut r, &mut mem, seed);
+        let x87 = support_x87(&mut r, seed);
+        let why = format!("polygon seed {seed}");
+        let out = support_compare(&mut code, &mut mem, shape::POLYGON_SUPPORT, seed, x87, |j, m, _| shape::polygon(j, SHAPE, SHAPE_DIR, SHAPE_OUT, m), &why);
+        let words = |at: u32| [0, 4, 8, 12].map(|k| out.read_u32(at + k).unwrap());
+        let index = (0..9).position(|i| words(vertex(i)) == words(SHAPE_OUT));
+        *chosen.entry(index).or_insert(0) += 1;
+    }
+    assert!(chosen.len() >= 6, "{chosen:?}");
+}

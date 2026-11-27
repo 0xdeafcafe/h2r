@@ -1,7 +1,7 @@
 # The Havok convex agent: separated pairs
 
-Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; six leaves of the closest-feature query are ported and compared with the lifted code; the query, the manifold update and the contact commit stay guest code.
-Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query's leaves), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`.
+Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; six leaves of the closest-feature query and three shape types' support virtuals are ported and compared with the lifted code; the query, the manifold update and the contact commit stay guest code.
+Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query's leaves), `crates/rewrites/sim-havok/src/shape_support.rs` (the support virtuals), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`, `gjk.rs` and `shape_support.rs`.
 Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
 
 A convex pair's agent keeps a separating axis and a bound on the
@@ -97,6 +97,28 @@ The ported leaves are compared with the lifted functions in
 (`closest`): it answers only when the query, every shape class's support
 virtuals and the manifold calls it makes are in Rust, and a call that
 adds or removes a point runs Halo's callback, which stays the guest's.
+
+## Support virtuals
+
+The query takes new support points through each shape's `vt[+0x30]`
+(thiscall shape; direction, out; `ret 8`). A shape's type is its
+`vt[+0x14]`, a `mov eax, type; ret`. **E**
+
+| Type | Vtable, support | Does | Leaves | Ported |
+|---|---|---|---|---|
+| 7, capsule | `0x00455500` (Halo's), `0x00455458` (Havok's); `0x002ddd30` | `(B - A) . d` (packed, `y + x` then `z +`), spilled and compared with `0.0` on the x87 (`fcomp`); end A `+0x10` only when below, else end B `+0x20` (equal and unordered too); the end to `out`, `w` the ID `0x3f000000` (A) or `0x3f000010` (B) | eax the ID, ecx `out` | `shape_support::capsule` |
+| `0x17`, biped wrapper | `0x004122f0`; `0x002dbd40` | the pill at `+0x30` answers through its own `vt[+0x30]`; then when `offset . d` is above zero (`test ah, 0x41`), the offset `+0x10` is added to `out`, all four lanes, and `out.w` goes back through `fld`, `fstp` as the child left it | ax the x87 status word over the child's eax, ecx the aligned frame word, the child's edx | `shape_support::biped` |
+| `0x18`, convex polygon | `0x004560b8`; `0x001ee350` | over the signed count `+0x14`, the vertex at `+0x20 + 16 i` whose `v . d` `comiss`es above the best so far, starting at `-FLT_MAX` (`0x004409d4`): the first on ties, none for NaN; no vertices reads vertex 0 | eax `out`, ecx the shape, edx the count | `shape_support::polygon` |
+
+- The biped wrapper takes its child as a callback; the port answers for
+  whichever child the caller dispatches, and the differential test gives
+  it a capsule.
+- The x87 work runs through the `x87::abi` helpers on the guest's state,
+  so the status word, the tags and the popped registers match. A
+  polygon count over 256 declines.
+
+The support virtuals are compared with the lifted functions in
+`sim_havok_differential.rs`, 1024 seeds each. No arm calls them yet.
 
 ## Not verified
 
