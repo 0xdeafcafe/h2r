@@ -668,7 +668,11 @@ points! { ALL;
     HS_GLOBAL_READ @ 0x0020_9bc0: [fn(index: esi) -> eax ret 0], Optional; "docs/engine/hs_vm.md";
     HS_EVALUATE_ARGUMENTS @ 0x0020_9d50: [fn(thread: stack 0, count: stack 1, parameters: stack 2, first: stack 3) -> eax ret 16], Optional; "docs/engine/hs_vm.md";
     SCRIPT_UPDATE @ 0x0020_9310: [opaque], Optional; "docs/engine/engine-map.md";
-    EFFECT_PART_CREATE @ 0x0017_a8a0: [opaque], Optional; "docs/engine/engine-map.md";
+    /// The effect part switch: EAX and ECX name the part's source (EDI
+    /// reads through EAX at `0x17aba2`, ECX `+2` and `+8` at `0x17a8fb`),
+    /// the stack the effect (`+0x48`, `+0x64`), the part record (`+8` its
+    /// group, `+0x10` its tag), and three more words (`0x17a91f`, `0x17a9d1`).
+    EFFECT_PART_CREATE @ 0x0017_a8a0: [fn(source: eax, location: ecx, effect: stack 0, part: stack 1, a: stack 2, b: stack 3, c: stack 4) ret 20], Optional; "docs/engine/engine-map.md";
     PARTICLE_SYSTEM_UPDATE @ 0x0024_7140: [opaque], Optional; "docs/engine/engine-map.md";
     /// `animation_resource_get`: EAX a graph's resource record; loads it
     /// through the animation cache when needed and stamps the cache entry's
