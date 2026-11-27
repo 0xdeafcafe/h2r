@@ -6620,6 +6620,12 @@ impl<B: Backend> Device<B> {
                 });
             }
             if let Some(fallback) = fallback {
+                // A retaining replay keeps a native producer's pass as its
+                // carried packets: begun before queuing, so the sink takes
+                // the queued draw, and recorded in its slot once queued. The
+                // game thread then never waits on the render thread for it.
+                let carry = native.is_some()
+                    && retained.as_ref().is_some_and(|a| self.backend.begin_native_carry(color, depth, a));
                 let material = prepared.map(|p| p.material);
                 let stats = Arc::clone(&self.queued_external_stats);
                 let queued = crate::backend::QueuedExternalDraw {
@@ -6645,6 +6651,10 @@ impl<B: Backend> Device<B> {
                     }),
                 };
                 if self.backend.queue_external_draw(queued, textures) {
+                    if carry {
+                        self.backend.record_native_carry(color, depth, textures);
+                        self.backend.end_native_carry();
+                    }
                     if writes_color {
                         self.color_surface_written(color);
                         self.mark_color_written(self.render_target);
@@ -6658,6 +6668,9 @@ impl<B: Backend> Device<B> {
                     }
                     *streams = draw.streams;
                     return Ok(());
+                }
+                if carry {
+                    self.backend.end_native_carry();
                 }
             }
             // A native producer has no guest draw to carry its pass into a

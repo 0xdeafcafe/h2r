@@ -983,9 +983,11 @@ impl<B: Backend> Backend for SceneSink<B> {
     // A one-shot replacement cannot draw again into a private target.
     // Declining before commit leaves its original packet in this slot; the
     // draw's typed admission, when it has one, travels with that packet
-    // ([`Backend::draw_admitted`]).
+    // ([`Backend::draw_admitted`]). A native producer whose carry has begun
+    // ([`Backend::begin_native_carry`]) is queued: the device records its
+    // carried packets in this slot once it is.
     fn queue_external_draw(&mut self, candidate: QueuedExternalDraw<Self::Surface>, textures: [Option<&Self::Texture>; 4]) -> bool {
-        if self.replaying() { return false; }
+        if self.replaying() && self.carry.is_none() { return false; }
         self.untracked_write();
         self.inner.queue_external_draw(candidate, textures.map(|t| t.map(|t| &t.inner)))
     }
