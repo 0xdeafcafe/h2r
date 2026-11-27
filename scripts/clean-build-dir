@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Remove build directories an agent made, without a permission prompt.
+#
+#   scripts/clean-build-dir <dir>...         remove each dir
+#   scripts/clean-build-dir --worktree <wt>  remove a landed worktree: its
+#                                            target (the symlink's dir) too
+#
+# Only these are removed: dirs under /Volumes/Builds/targets/h2recomp/,
+# under $TMPDIR, or a worktree under .claude/worktrees/. Anything a
+# process has open (lsof +D) is skipped and named. The caller passes only
+# its own dirs; this never picks dirs itself.
+set -u
+
+builds=/Volumes/Builds/targets/h2recomp
+tmp=${TMPDIR:-/nonexistent}
+tmp=${tmp%/}
+
+allowed() {
+	case "$1" in
+	"$builds"/?*) return 0 ;;
+	"$tmp"/?*) return 0 ;;
+	*/.claude/worktrees/?*) return 0 ;;
+	esac
+	return 1
+}
+
+remove() {
+	local d
+	d=$(cd "$1" 2>/dev/null && pwd -P) || { echo "gone: $1"; return 0; }
+	if ! allowed "$d"; then
+		echo "refused (not a build dir): $d"
+		return 1
+	fi
+	if [ -n "$(lsof +D "$d" 2>/dev/null | head -2 | tail -n +2)" ]; then
+		echo "in use, kept: $d"
+		return 1
+	fi
+	/bin/rm -rf -- "$d" && echo "removed: $d"
+}
+
+status=0
+if [ "${1:-}" = --worktree ]; then
+	shift
+	for wt in "$@"; do
+		wt=$(cd "$wt" 2>/dev/null && pwd -P) || { echo "gone: $wt"; continue; }
+		case "$wt" in */.claude/worktrees/?*) ;; *) echo "refused (not a worktree): $wt"; status=1; continue ;; esac
+		if [ -L "$wt/target" ]; then
+			remove "$(readlink "$wt/target")" || { status=1; continue; }
+		fi
+		git -C "$wt" worktree remove --force "$wt" && echo "removed worktree: $wt" || status=1
+	done
+	exit $status
+fi
+for d in "$@"; do remove "$d" || status=1; done
+exit $status
