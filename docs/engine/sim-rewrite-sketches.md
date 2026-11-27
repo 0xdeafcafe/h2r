@@ -304,20 +304,24 @@ only what their registers name, are kernels in
 | `user_test` | `14ddc0` | the HUD update's `USER_TESTED` | the user slot has a player |
 | `user_player` | `14de70` | the HUD update's `PLAYER_FOUND` | the user slot's player |
 | `submit` | `187b30` | `0x186a94` | the input record's flags into the control globals' held word, the latches and the record's latch bits, the yaw's sign (x87) and the axis clamps |
-| `weapon_ready` | `100f70` | `0x1866b3` | the weapon can be readied; its callee `100880` stays a guest call |
+| `weapon_ready` | `100f70` | `0x1866b3` | the weapon can be readied: no magazine holds 1 to 6 rounds (its callee `100880`, in the same kernel) and the definition has a zoom level |
 
 At the call the kernel predicts `eax`, `ecx`, `edx`, `xmm0`, the x87 stack
 and the leaf's stores. Unproven, the guest's leaf runs and the body compares
 at the return site; after 4096 matches the kernel answers in place and the
 body goes on at the site in the same segment, one call in 64 still the
 guest's. A mismatch returns that leaf to the guest until the next map.
-`weapon_ready` has two halves around its guest call of `100880`: the frame
-and saved registers at the call, compared at `0x100fab` (a site of the
-control update's body), and the return, compared at `0x1866b3`. Answered,
-the body lays the frame down, calls `100880` from it, and finishes `100f70`
-at `0x100fab`; another caller's `100f70` reaching `0x100fab` is left to the
-generated code. `sim.arms` reports `seats.leaf.<name>`;
-`seat_leaves_match_lifted` and `weapon_ready_matches_lifted` put each
-applied answer against the lifted function. The bodies' other callees (the
-look curve and the bodies that are seats themselves aside) call further
-guest code and stay guest calls.
+Declines are counted by name: `float` (the float environment or an
+operand) and `fault` (a read that faults, a store that would, or a
+`weapon_ready` magazine count over `0x7fff`, which `100880`'s 16-bit index
+would wrap). An answer leaves what retail leaves except the arithmetic
+flags and the dead frame below the return. `sim.arms` reports
+`seats.leaf.<name>`; `seat_leaves_match_lifted` and
+`weapon_ready_matches_lifted` (magazine counts, rounds on both sides of 1
+to 6, zoom levels) put each applied answer against the lifted function,
+and `weapon_ready_declines_a_wrapping_count` the decline.
+
+The packet builders' `c6ef0` calls nothing, but lays down a whole 0x7c-byte
+packet, more stores than a leaf effect carries. The bodies' other callees
+(the look curve and the bodies that are seats themselves aside) call
+further guest code. Both stay guest calls.
