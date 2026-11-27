@@ -6695,6 +6695,7 @@ dependencies = [
  "ir",
  "lifted",
  "runtime",
+ "sim-effects",
  "sim-ext",
  "sim-sound",
 ]
@@ -6718,6 +6719,10 @@ dependencies = [
  "simd",
  "x87",
 ]
+
+[[package]]
+name = "sim-effects"
+version = "0.1.0"
 
 [[package]]
 name = "sim-ext"
