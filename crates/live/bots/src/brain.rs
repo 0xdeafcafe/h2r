@@ -168,6 +168,10 @@ pub struct Perception {
     /// flags, balls, bombs and the hill. `None` in Slayer, or when it
     /// could not be read; the bot then plays as in Slayer.
     pub objective: Option<crate::objective::Objective>,
+    /// The places a rules script names for each team
+    /// ([`crate::objective::script`]): while the bot's team has one, they
+    /// are its objective in place of [`Self::objective`]'s plan.
+    pub goals: crate::objective::script::ScriptGoals,
 }
 
 /// The trivial brain's tuning.
@@ -306,6 +310,7 @@ mod tests {
                 tick: 0,
                 pickups: vec![],
                 objective: None,
+                goals: Default::default(),
             },
             &Params::default(),
         )
@@ -368,6 +373,7 @@ mod tests {
                 tick: 0,
                 pickups: vec![],
                 objective: None,
+                goals: Default::default(),
             },
             &Params::default(),
         );
@@ -392,6 +398,7 @@ mod tests {
             tick: 0,
             pickups: vec![],
             objective: None,
+            goals: Default::default(),
         };
         assert_eq!(target(&p), Some(2));
     }

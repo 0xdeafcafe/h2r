@@ -539,6 +539,12 @@ pub(crate) fn perception_with(
         // The objective is extra too: a fault leaves the bot playing as in
         // Slayer (section 3.7).
         out.objective = crate::objective::read(m, me).ok().flatten();
+        // A rules script's places, which no guest memory holds: the host's
+        // table (objective::script).
+        out.goals = crate::objective::script::ScriptGoals {
+            me,
+            list: crate::objective::script::goals(),
+        };
         if unzoomed && let Some(sensor) = sensor
             && radar::enabled(m, globals, flags, out.objective.as_ref())
         {

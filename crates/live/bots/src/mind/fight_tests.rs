@@ -52,6 +52,7 @@ fn step(m: &mut Mind, me: Me, others: Vec<Seen>, teams: bool, tick: u32) -> Host
             tick,
             pickups: vec![],
             objective: None,
+            goals: Default::default(),
         },
         None,
     )

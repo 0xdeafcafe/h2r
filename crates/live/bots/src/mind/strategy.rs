@@ -13,12 +13,20 @@ impl Mind {
         map: Option<&MapData>,
     ) -> (Option<Goal>, Intent) {
         // An outside order (rules-world-api.md, "Bots") is the goal while
-        // it stands, in place of Firefight's and the objective's.
+        // it stands, in place of Firefight's, a script's goals' and the
+        // objective's.
         // Firefight's (crate::firefight) holds the bot near its home base.
         let weights = self.profile_weights();
         let firefight = self.firefight.plan(p, &me, weights);
         let ordered = self.decisions.ordered_goal(p).or(firefight);
         let goal = ordered.or_else(|| {
+            // A rules script's places for the bot's team are its objective
+            // while there are any (objective::script), planned as a retail
+            // objective's are.
+            let temper = objective::Temper::from(self.decisions.personality);
+            if let Some(g) = objective::script::plan(&p.goals, &me, &p.others, p.teams, temper) {
+                return Some(g);
+            }
             let o = p.objective.as_ref()?;
             let others = juggernaut_quarry(o, seen, &p.others);
             // Flags and bombs out of view are remembered or presumed at

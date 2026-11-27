@@ -36,6 +36,7 @@ fn look(
             tick,
             pickups: vec![],
             objective: None,
+            goals: Default::default(),
         },
         map,
     )
@@ -115,6 +116,7 @@ fn an_outside_hold_order_is_the_goal_and_plans_to_the_zone() {
         tick: 1,
         pickups: vec![],
         objective: None,
+        goals: Default::default(),
     };
     let pad = mind.step(&p, Some(&map));
     assert_eq!(mind.doing, Doing::Play(Goal::Hold(zone, 1.0)));
@@ -127,6 +129,48 @@ fn an_outside_hold_order_is_the_goal_and_plans_to_the_zone() {
         pad.left_stick.0.hypot(pad.left_stick.1) > 0.1,
         "walking to the zone: {pad:?}"
     );
+}
+
+#[test]
+fn a_scripts_goal_for_its_team_is_the_objective_and_plans_to_the_site() {
+    use crate::objective::script::{Aim, ScriptGoal, ScriptGoals};
+    let map = MapData {
+        nav: floor(),
+        ..Default::default()
+    };
+    let site = [15.0, 5.0, 0.0];
+    let goal = |team, aim| ScriptGoal {
+        team,
+        aim,
+        zone: 10,
+        at: site,
+        yaw: 0.0,
+        area: game_markers::Area::radius(3.0),
+    };
+    let mut mind = Mind::new(Skill::Normal, 1);
+    let p = Perception {
+        observations: Default::default(),
+        me: me([2.0, 5.0, 0.0], X),
+        others: vec![],
+        teams: true,
+        tick: 1,
+        pickups: vec![],
+        objective: None,
+        // Team 0 (the bot's) attacks the site; team 1 defends it.
+        goals: ScriptGoals {
+            me: 0,
+            list: vec![goal(0, Aim::Attack), goal(1, Aim::Defend)],
+        },
+    };
+    let pad = mind.step(&p, Some(&map));
+    let middle = [15.0, 5.0, 0.5];
+    assert_eq!(mind.doing, Doing::Play(Goal::Go(middle)));
+    assert_eq!(mind.follower.as_ref().and_then(Follower::goal), Some(middle));
+    assert!(pad.left_stick.0.hypot(pad.left_stick.1) > 0.1, "walking to the site: {pad:?}");
+    // An outside order still comes first.
+    mind.decisions.set_order(Some(crate::brain::Order::Hold([2.0, 5.0, 0.0], 1.0)));
+    mind.step(&Perception { tick: 2, ..p }, Some(&map));
+    assert_eq!(mind.doing, Doing::Play(Goal::Hold([2.0, 5.0, 0.0], 1.0)));
 }
 
 #[test]
@@ -146,6 +190,7 @@ fn freeing_the_order_plays_the_map_again() {
         tick: 1,
         pickups: vec![],
         objective: None,
+        goals: Default::default(),
     };
     mind.decisions.set_order(Some(Order::Hold(zone, 1.0)));
     mind.step(&p, Some(&map));
@@ -197,6 +242,7 @@ fn a_wall_hides_an_enemy_and_so_does_its_back() {
         tick: 0,
         pickups: vec![],
         objective: None,
+        goals: Default::default(),
     };
     assert_eq!(
         Mind::visible(&p(X, [8.0, 0.0, 0.0]), Some(&map)).len(),
@@ -430,6 +476,7 @@ fn with_a_nav_mesh_it_roams_somewhere_it_can_reach() {
         tick: 0,
         pickups: vec![],
         objective: None,
+        goals: Default::default(),
     };
     let pad = m.step(&p, Some(&map));
     assert_eq!(m.doing, Doing::Roam);
@@ -454,6 +501,7 @@ fn a_teammate_is_never_a_target() {
         tick: 0,
         pickups: vec![],
         objective: None,
+        goals: Default::default(),
     };
     for t in 0..20 {
         let pad = m.step(
@@ -540,6 +588,7 @@ fn with(
             tick,
             pickups,
             objective: None,
+            goals: Default::default(),
         },
         None,
     )
@@ -735,6 +784,7 @@ fn shields_down_it_backs_off_instead_of_chasing() {
         tick,
         pickups: vec![],
         objective: None,
+        goals: Default::default(),
     };
     m.step(&p(1.0, vec![enemy(1, [6.0, 0.0, 0.0])], 0), None);
     let pad = m.step(&p(0.1, vec![], 5), None);
@@ -872,6 +922,7 @@ fn a_bot_that_gets_free_walks_on() {
             tick: w + 3,
             pickups: vec![],
             objective: None,
+            goals: Default::default(),
         },
         None,
     );
@@ -964,6 +1015,7 @@ fn roaming_goes_where_it_last_saw_an_enemy() {
         tick,
         pickups: vec![],
         objective: None,
+        goals: Default::default(),
     };
     m.step(&p(vec![enemy(1, [17.0, 5.0, 0.0])], 0), Some(&map));
     // Long after the chase is forgotten, it roams back there.
@@ -990,6 +1042,7 @@ fn it_chases_someone_last_seen_in_the_air() {
         tick,
         pickups: vec![],
         objective: None,
+        goals: Default::default(),
     };
     let air = [14.0, 5.0, 2.5];
     m.step(&p(vec![enemy(1, air)], 0), Some(&map));
@@ -1015,6 +1068,7 @@ fn fighting_on_a_narrow_bridge_it_does_not_strafe_off() {
                 tick: t,
                 pickups: vec![],
                 objective: None,
+                goals: Default::default(),
             },
             Some(&map),
         );
@@ -1225,6 +1279,7 @@ fn play(
             tick,
             pickups: vec![],
             objective: Some(objective),
+            goals: Default::default(),
         },
         map,
     )
@@ -1336,6 +1391,7 @@ fn without_the_flag_a_dry_bot_still_rearms_first() {
             tick: 0,
             pickups: vec![gun],
             objective: Some(carrying(None, [40.0, 5.0, 0.0])),
+            goals: Default::default(),
         },
         None,
     );
@@ -1758,6 +1814,7 @@ fn a_teammates_call_far_across_a_large_map_becomes_the_roam_goal() {
                 tick: 91,
                 pickups: vec![],
                 objective: None,
+                goals: Default::default(),
             },
             Some(&map),
         );
@@ -1795,6 +1852,7 @@ fn a_killed_targets_respawn_guess_hunts_past_the_search_window() {
         tick: 5,
         pickups: vec![],
         objective: None,
+        goals: Default::default(),
     };
     m.hear_deaths(
         &p,

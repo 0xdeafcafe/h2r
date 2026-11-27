@@ -28,6 +28,7 @@ use crate::brain::{Me, Seen, Vec3};
 
 pub mod belief;
 mod lean;
+pub mod script;
 
 pub use belief::{Belief, Outlook};
 pub use lean::Lean;
