@@ -1399,8 +1399,9 @@ pub(crate) mod tests {
         }
         assert_eq!(world_slot(7), Some(ViewSlot::ShadowsAndLayer7), "after the object shadows");
         assert_eq!(world_slot(2), Some(ViewSlot::Layer2));
-        assert!(world_slot(7) > world_slot(1) && world_slot(2) > world_slot(7));
-        for layer in [4, 6, 10, 15, 16, 17, 18] {
+        assert_eq!(world_slot(17), Some(ViewSlot::Layer17), "after the flare query, before the post");
+        assert!(world_slot(7) > world_slot(1) && world_slot(2) > world_slot(7) && world_slot(17) > world_slot(2));
+        for layer in [4, 6, 10, 15, 16, 18] {
             assert_eq!(world_slot(layer), None, "layer {layer} is not a world layer");
         }
         assert!(WORLD_LAYERS.iter().all(|&l| world_slot(l).is_some()));
