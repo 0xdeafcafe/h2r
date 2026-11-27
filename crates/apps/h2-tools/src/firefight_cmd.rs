@@ -272,7 +272,7 @@ fn parse(words: Vec<String>) -> Result<Option<Args>> {
 }
 
 pub fn run(words: Vec<String>) -> Result<()> {
-    let Some(args) = parse(words)? else {
+    let Some(mut args) = parse(words)? else {
         println!("{USAGE}");
         return Ok(());
     };

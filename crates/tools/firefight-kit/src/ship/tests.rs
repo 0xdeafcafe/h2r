@@ -207,7 +207,7 @@ fn a_zone_under_a_roof_gets_no_path() {
     let walls = Walls::new(tris);
     let under = zone([10.0, 10.0, 0.0]);
     let open = zone([80.0, 80.0, 0.0]);
-    let runs = plan(&walls, &[under, open], 0.0);
+    let runs = plan(&walls, &[under, open], 0.0, DROP_HEIGHT);
     assert_eq!(runs[0], None, "the roof is over the first zone");
     let run = runs[1].expect("the open zone has a path");
     assert_eq!(run.points[1], [80.0, 80.0, DROP_HEIGHT]);
@@ -217,7 +217,7 @@ fn a_zone_under_a_roof_gets_no_path() {
         assert!(p[..2].iter().any(|c| !(0.0..=100.0).contains(c)), "{p:?}");
     }
     // A zone with no collision at all has none either.
-    assert_eq!(plan(&Walls::new(Vec::new()), &[zone([0.0; 3])], 0.0), [None]);
+    assert_eq!(plan(&Walls::new(Vec::new()), &[zone([0.0; 3])], 0.0, DROP_HEIGHT), [None]);
 }
 
 #[test]
@@ -308,7 +308,7 @@ fn a_column_clear_of_roofs_is_flown_steeply_when_cliffs_block_the_long_run() {
     // Cliffs 25 round, 40 high: the long shallow run from
     // the sky at 50 meets them, a dive from 30 away does not.
     let walls = Walls::new(canyon());
-    let run = plan(&walls, &[zone([0.0, 0.0, 0.0])], 0.0)[0].expect("a steep run gets in");
+    let run = plan(&walls, &[zone([0.0, 0.0, 0.0])], 0.0, DROP_HEIGHT)[0].expect("a steep run gets in");
     assert_eq!(run.points[1], [0.0, 0.0, DROP_HEIGHT]);
     let along = libm::hypotf(run.points[0][0], run.points[0][1]);
     assert!(along <= STEEP_REACH[0] + 1e-3, "{along}");
@@ -318,7 +318,7 @@ fn a_column_clear_of_roofs_is_flown_steeply_when_cliffs_block_the_long_run() {
 fn a_zone_boxed_in_by_a_roof_the_height_of_the_cliffs_has_no_path() {
     let mut tris = canyon();
     tris.extend(square(30.0, -30.0, 30.0));
-    assert_eq!(plan(&Walls::new(tris), &[zone([0.0, 0.0, 0.0])], 0.0), [None]);
+    assert_eq!(plan(&Walls::new(tris), &[zone([0.0, 0.0, 0.0])], 0.0, DROP_HEIGHT), [None]);
 }
 
 #[test]
@@ -354,8 +354,8 @@ fn a_path_too_narrow_for_the_pelican_keeps_the_phantom_only() {
     tris.push([[7.0, -1.0, 20.0], [9.0, 1.0, 20.0], [7.0, 1.0, 20.0]]);
     let walls = Walls::new(tris);
     let at = [0.0, 0.0, 0.0];
-    let phantom = plan(&walls, &[zone(at)], Dims::default_for(ShipKind::Phantom).radius);
-    let pelican = plan(&walls, &[zone(at)], Dims::default_for(ShipKind::Pelican).radius);
+    let phantom = plan(&walls, &[zone(at)], Dims::default_for(ShipKind::Phantom).radius, DROP_HEIGHT);
+    let pelican = plan(&walls, &[zone(at)], Dims::default_for(ShipKind::Pelican).radius, DROP_HEIGHT);
     assert!(phantom[0].is_some(), "the Phantom gets in");
     assert_eq!(pelican, [None], "the Pelican does not");
     // The kit reads it the same way: no run, the Pelican cut by name.

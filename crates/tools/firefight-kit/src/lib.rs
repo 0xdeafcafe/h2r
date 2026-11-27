@@ -564,7 +564,7 @@ fn assemble(
     let mut ship_runs: Vec<(ShipKind, ship::Dims, Vec<Option<ship::Run>>)> = Vec::new();
     for (kind, pick, dims) in asked {
         let runs = match &nav.ship_walls {
-            Some(walls) => ship::plan(walls, &nav.zones, dims.radius),
+            Some(walls) => ship::plan(walls, &nav.zones, dims.radius, dims.hover),
             None => vec![None; nav.zones.len()],
         };
         if runs.iter().any(Option::is_some) {

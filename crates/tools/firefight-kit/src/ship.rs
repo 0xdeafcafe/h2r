@@ -224,10 +224,7 @@ impl std::fmt::Display for ShipReport {
                 self.bytes,
                 self.paths,
                 match self.hover_source.as_deref() {
-                    Some(source) => format!(
-                        "; hover {} ({source})",
-                        self.dims.map_or(0.0, |d| d.hover)
-                    ),
+                    Some(source) => format!("; hover from {source}"),
                     None => String::new(),
                 },
                 match self.dims {
@@ -302,13 +299,15 @@ fn clear_wide(walls: &Walls, a: V3, b: V3, radius: f32) -> bool {
 pub(crate) struct Run {
     pub points: [V3; 3],
     pub yaw: f32,
+    /// How far over the zone's mean the hover point was planned.
+    pub lift: f32,
 }
 
 /// Each zone's run, none where the collision leaves no clear column.
 ///
 /// A zone's point is its first area's mean. The ship hovers
-/// [`DROP_HEIGHT`] above it (a kind's own hover is set when the path is
-/// written, [`path_sets`]). A zone gets a run only when
+/// `lift` above it (a kind's own hover is set when the path is written,
+/// [`path_sets`]). A zone gets a run only when
 /// - a ray from just above its floor to the sky (the tallest collision plus
 ///   [`SKY_CLEARANCE`]) is clear, so no roof is over it, and
 /// - for one of eight compass directions, the ray from the run-in down to the hover point and the ray from
@@ -318,7 +317,7 @@ pub(crate) struct Run {
 /// collision's horizontal bounds by [`RUN_MARGIN`]. Directions are tried
 /// from the one pointing away from the map's middle, so the same zone on
 /// the same map always gets the same run.
-pub(crate) fn plan(walls: &Walls, zones: &[Zone], radius: f32) -> Vec<Option<Run>> {
+pub(crate) fn plan(walls: &Walls, zones: &[Zone], radius: f32, lift: f32) -> Vec<Option<Run>> {
     let mut lo = [f32::INFINITY; 3];
     let mut hi = [f32::NEG_INFINITY; 3];
     for v in walls.tris.iter().flatten() {
@@ -340,7 +339,7 @@ pub(crate) fn plan(walls: &Walls, zones: &[Zone], radius: f32) -> Vec<Option<Run
             if !mean.iter().all(|x| x.is_finite()) {
                 return None;
             }
-            let hover = [mean[0], mean[1], mean[2] + DROP_HEIGHT];
+            let hover = [mean[0], mean[1], mean[2] + lift];
             if hover[2] >= sky
                 || !clear_wide(walls, [mean[0], mean[1], mean[2] + FLOOR_LIFT], [mean[0], mean[1], sky], radius)
             {
@@ -363,6 +362,7 @@ pub(crate) fn plan(walls: &Walls, zones: &[Zone], radius: f32) -> Vec<Option<Run
                     (clear_wide(walls, run_in, hover, radius) && clear_wide(walls, hover, run_out, radius)).then_some(Run {
                         points: [run_in, hover, run_out],
                         yaw: libm::atan2f(-dy, -dx),
+                        lift,
                     })
                 })
             })
@@ -390,7 +390,7 @@ pub(crate) fn path_sets(runs: &[Option<Run>], bsp: i16, kinds: &[(ShipKind, Dims
                 let mut points = vec![at(RUN_IN.to_owned(), run.points[0])];
                 for (kind, dims) in kinds {
                     let mut hover = run.points[1];
-                    hover[2] += dims.hover - DROP_HEIGHT;
+                    hover[2] += dims.hover - run.lift;
                     points.push(at(hover_name(*kind), hover));
                 }
                 points.push(at(RUN_OUT.to_owned(), run.points[2]));

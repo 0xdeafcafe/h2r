@@ -516,7 +516,7 @@ fn the_built_in_layouts_keep_their_drops_and_a_zone_has_a_column_for_the_ship() 
         let walls = nav.ship_walls.as_ref().expect("the arena's walls");
         let phantom = crate::ship::Dims::default_for(firefight::ShipKind::Phantom);
         assert!(
-            crate::ship::plan(walls, &nav.zones, phantom.radius).iter().any(Option::is_some),
+            crate::ship::plan(walls, &nav.zones, phantom.radius, phantom.hover).iter().any(Option::is_some),
             "{name}: no zone has a clear column for the ship"
         );
     }
