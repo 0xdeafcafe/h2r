@@ -362,7 +362,7 @@ fn compile_with_textures(
         w_buffer: true,
         shadow: [None; 4],
     };
-    let t = translate_program(&parts, psh::translate, true)?;
+    let t = translate_program(&parts, psh::translate, Unsupplied::UnusedDiffuse)?;
     Ok(MaterialProgram {
         wgsl: t.wgsl,
         stages: look.textures,
@@ -445,10 +445,15 @@ pub(crate) fn combiner_reads(c: &psh::Combiners, reg: psh::Reg) -> bool {
 /// Coordinates ignored by the fragment shader. PASSTHRU copies oTn into tn
 /// without sampling. Its result matters only if the fragment program reads it.
 pub(crate) fn dead_texcoords(look: &PassLook) -> [bool; 4] {
-    use psh::TexMode;
     let Ok(def) = PixelShaderDef::from_bytes(&look.pixel_shader) else {
         return [false; 4];
     };
+    dead_texcoords_of(&def)
+}
+
+/// [`dead_texcoords`] of a decoded definition.
+fn dead_texcoords_of(def: &PixelShaderDef) -> [bool; 4] {
+    use psh::TexMode;
     let c = def.decode();
     std::array::from_fn(|n| {
         // Reflection can read other stages' interpolants directly (the
@@ -836,19 +841,45 @@ pub(crate) fn translate_pass_with_pixel(
     p: &PassParts<'_>,
     translate_pixel: fn(&PixelShaderDef, &PixelOptions) -> psh::PixelShader,
 ) -> Result<Translated, String> {
-    translate_program(p, translate_pixel, false)
+    translate_program(p, translate_pixel, Unsupplied::Refused)
+}
+
+/// [`translate_pass_with_pixel`] for an object pass: a vertex register the
+/// streams do not supply may be read where its value reaches only outputs
+/// the pixel shader ignores ([`only_dead_outputs`]).
+pub(crate) fn translate_object_pass(
+    p: &PassParts<'_>,
+    translate_pixel: fn(&PixelShaderDef, &PixelOptions) -> psh::PixelShader,
+) -> Result<Translated, String> {
+    translate_program(p, translate_pixel, Unsupplied::DeadOutputs)
+}
+
+/// Where a vertex program may read a register the streams do not supply.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Unsupplied {
+    Refused,
+    /// Into a diffuse colour the pixel shader does not read ([`only_unused_diffuse`]).
+    UnusedDiffuse,
+    /// Into the diffuse colour or texture coordinates the pixel shader
+    /// does not read ([`only_dead_outputs`]).
+    DeadOutputs,
 }
 
 fn translate_program(
     p: &PassParts<'_>,
     translate_pixel: fn(&PixelShaderDef, &PixelOptions) -> psh::PixelShader,
-    allow_unused_diffuse: bool,
+    allowed: Unsupplied,
 ) -> Result<Translated, String> {
     let program = vsh::Program::parse(p.microcode).map_err(|e| format!("vertex program: {e:?}"))?;
     let unsupplied = program.inputs_read() & !p.provided_inputs & !defaults_mask(p.vertex_defaults);
     let def =
         PixelShaderDef::from_bytes(p.pixel_shader).map_err(|e| format!("pixel shader: {e:?}"))?;
-    if unsupplied != 0 && !(allow_unused_diffuse && only_unused_diffuse(&program, unsupplied, &def)) {
+    let dead = match allowed {
+        Unsupplied::Refused => false,
+        Unsupplied::UnusedDiffuse => only_unused_diffuse(&program, unsupplied, &def),
+        Unsupplied::DeadOutputs => only_dead_outputs(&program, unsupplied, &def),
+    };
+    if unsupplied != 0 && !dead {
         return Err(format!(
             "vertex program reads registers we do not supply ({unsupplied:#06x})"
         ));
@@ -952,12 +983,7 @@ fn translate_program(
 /// projected fetches the texture units read oT, and only a combiner can
 /// consume diffuse. A missing input reaching any other output stays live.
 fn only_unused_diffuse(program: &vsh::Program, missing: u16, def: &PixelShaderDef) -> bool {
-    let c = def.decode();
-    c.final_combiner.is_some()
-        && c.texture_modes.iter().all(|m| {
-            matches!(m, psh::TexMode::None | psh::TexMode::Project2d)
-        })
-        && !combiner_reads(&c, psh::Reg::V0)
+    diffuse_unread(def)
         && live_source_read(
             program,
             |reg| match reg {
@@ -966,6 +992,40 @@ fn only_unused_diffuse(program: &vsh::Program, missing: u16, def: &PixelShaderDe
             },
             |out| out == vsh::OutReg::D0,
         ).is_none()
+}
+
+/// Whether the pixel shader leaves the diffuse colour unread: an explicit
+/// final combiner, stages that fetch plainly or not at all, and no
+/// combiner input of `v0`.
+fn diffuse_unread(def: &PixelShaderDef) -> bool {
+    let c = def.decode();
+    c.final_combiner.is_some()
+        && c.texture_modes.iter().all(|m| {
+            matches!(m, psh::TexMode::None | psh::TexMode::Project2d)
+        })
+        && !combiner_reads(&c, psh::Reg::V0)
+}
+
+/// Whether the `missing` registers reach only outputs the pixel shader
+/// ignores: the diffuse colour where [`diffuse_unread`], and the
+/// coordinates of [`dead_texcoords`]. The stencil and transparent object
+/// programs copy the vertex colours `v10`, `v11` into `oD0` whether or not
+/// the pass reads it, and the object streams supply neither.
+fn only_dead_outputs(program: &vsh::Program, missing: u16, def: &PixelShaderDef) -> bool {
+    let diffuse = diffuse_unread(def);
+    let dead = dead_texcoords_of(def);
+    live_source_read(
+        program,
+        |reg| match reg {
+            vsh::SrcReg::Input(n) if missing & (1 << n) != 0 => Some(n),
+            _ => None,
+        },
+        |out| match out {
+            vsh::OutReg::D0 => diffuse,
+            vsh::OutReg::T(k) => dead.get(usize::from(k)) == Some(&true),
+            _ => false,
+        },
+    ).is_none()
 }
 
 /// Each stage's `D3DTSS_MIPMAPLODBIAS` (f32 bits), zero when not finite,
