@@ -286,6 +286,19 @@ fn op(id: usize, block: &str, index: u32, text: &str, number: Option<i32>) -> Va
     })
 }
 
+/// The longest title a map variant's name takes, as the built-in layouts
+/// keep it (`rules::builtin`'s layout test).
+const TITLE_CHARS: usize = 16;
+
+/// The layout's title: "Siege <Map>", or the map's name alone when that
+/// is over [`TITLE_CHARS`].
+fn title(map: &str) -> String {
+    let mut chars = map.chars();
+    let name: String = chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default();
+    let siege = format!("Siege {name}");
+    if siege.chars().count() <= TITLE_CHARS { siege } else { name.chars().take(TITLE_CHARS).collect() }
+}
+
 /// The plan as a labels-only document of `map` (its short name), in the
 /// built-in layouts' form.
 pub fn document(map: &str, plan: &Plan, description: &str) -> Value {
@@ -318,6 +331,9 @@ pub fn document(map: &str, plan: &Plan, description: &str) -> Value {
         "format": 2,
         "imports": [],
         "ops": ops,
+        "recipes": [],
+        "sources": [],
+        "title": title(map),
     })
 }
 
@@ -519,6 +535,8 @@ mod tests {
         let plan = plan(&line_map(), &recipe).unwrap();
         let doc = document("line", &plan, "test");
         let text = to_text(&doc);
+        assert_eq!(doc["title"], "Siege Line");
+        assert_eq!(title("coagulation"), "Coagulation", "Siege Coagulation is 17");
         let read = crate::ForgeDoc::from_bytes(text.as_bytes(), &crate::Limits::default()).unwrap();
         assert_eq!(read.ops.len(), 4 + 1 + plan.attack.len() + plan.defend.len() + 1);
         let counts = [

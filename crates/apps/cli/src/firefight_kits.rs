@@ -172,16 +172,19 @@ mod tests {
         let lazy = script("lazy", "exit 0");
         let disc = root.join("disc");
         let data = root.join("data");
-        assert!(ensure_map_with(&good, &disc, &data, "firefight-beavercreek").is_ok());
-        assert!(data.join("maps/firefight-beavercreek/manifest.toml").is_file());
+        // Maps that are not built-in kits (`builtin::MAPS`), which are
+        // staged from the disc instead of by a child.
+        assert!(!builtin::MAPS.contains(&"elongation") && !builtin::MAPS.contains(&"turf"));
+        assert!(ensure_map_with(&good, &disc, &data, "firefight-elongation").is_ok());
+        assert!(data.join("maps/firefight-elongation/manifest.toml").is_file());
         // Present already: the child is not run.
-        assert!(ensure_map_with(&bad, &disc, &data, "firefight-beavercreek").is_ok());
+        assert!(ensure_map_with(&bad, &disc, &data, "firefight-elongation").is_ok());
         let other = root.join("other");
-        let e = ensure_map_with(&bad, &disc, &other, "firefight-headlong").unwrap_err().to_string();
-        assert!(e.contains("firefight-headlong") && e.contains("did not build") && e.contains("3"), "{e}");
-        let e = ensure_map_with(&lazy, &disc, &other, "firefight-headlong").unwrap_err().to_string();
+        let e = ensure_map_with(&bad, &disc, &other, "firefight-turf").unwrap_err().to_string();
+        assert!(e.contains("firefight-turf") && e.contains("did not build") && e.contains("3"), "{e}");
+        let e = ensure_map_with(&lazy, &disc, &other, "firefight-turf").unwrap_err().to_string();
         assert!(e.contains("left no package"), "{e}");
-        assert!(ensure_map_with(&bad, &disc, &other, "headlong").is_ok());
+        assert!(ensure_map_with(&bad, &disc, &other, "turf").is_ok());
         let _ = std::fs::remove_dir_all(&root);
     }
 }
