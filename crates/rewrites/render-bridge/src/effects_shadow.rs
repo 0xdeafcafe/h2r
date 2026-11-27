@@ -32,6 +32,7 @@
 mod answer;
 pub mod dispatch;
 mod emission;
+pub mod geometry;
 mod overlay;
 mod ribbon;
 pub mod view_update;
@@ -554,6 +555,7 @@ pub fn forget() {
     DISPATCH.with(|d| d.borrow_mut().take());
     emission::forget();
     ribbon::forget();
+    geometry::forget();
 }
 
 /// Installs the arm's observers (the frame step's build, unless [`ID`] is
@@ -620,6 +622,28 @@ pub fn install(b: &mut Builder) {
         .observe_after(&points::CONTRAIL_RIBBON, "effects_shadow_ribbon_end", |o| {
             let g = o.guest();
             ribbon::end(&*g, o.cpu.esp, o.cpu.eax);
+        })
+        .context_only()
+        .optional();
+    // The standard handler's own entry and return; its build call is the
+    // arm's through `native_world`'s hook on the build (`geometry::build`).
+    b.raw()
+        .observe_before(&points::TRANSPARENT_GEOMETRY, "effects_shadow_geometry", |o| {
+            let g = o.guest();
+            geometry::begin_handler(&*g, o.cpu.esp);
+        })
+        .context_only()
+        .optional();
+    b.raw()
+        .observe_after(&points::TRANSPARENT_GEOMETRY, "effects_shadow_geometry_end", |o| {
+            geometry::end_handler(o.cpu.esp);
+        })
+        .context_only()
+        .optional();
+    b.raw()
+        .observe_after(&points::WORLD_GEOMETRY_BUILD, "effects_shadow_geometry_build_end", |o| {
+            let g = o.guest();
+            geometry::end_build(&*g, o.cpu.esp, o.cpu.eax);
         })
         .context_only()
         .optional();

@@ -26,7 +26,7 @@ fn tag(m: &dyn GuestMemory, table: u32, datum: u32) -> Option<u32> {
 /// even compares one such word, so zero-initializing it would change order.
 pub fn build(m: &dyn GuestMemory, shader: u32, lod: u8, layer: u32, selector: u8,
     argument: u32, mut old: [u8; 24], models: bool) -> Option<Entry> {
-    if !matches!(layer, 1 | 3 | 5 | 6 | 7 | 8 | 16) { return None; }
+    if !matches!(layer, 1 | 3 | 5 | 6 | 7 | 8 | 15 | 16) { return None; }
     let index = (argument >> 8) as u16;
     if index >= 0x352 { return None; }
     let record = skip::RENDER_RECORDS + u32::from(index) * skip::RENDER_RECORD_SIZE;

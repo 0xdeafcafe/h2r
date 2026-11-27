@@ -84,6 +84,13 @@ pub(super) fn install(b: &mut Builder) {
     }).context_only();
 
     b.raw().before(&points::WORLD_GEOMETRY_BUILD, "native_world_build_entry", |c| {
+        // The transparent handler's own build (layer 15): R2's geometry arm
+        // opens on sampled frames and answers once it is proven.
+        let handler = crate::effects_shadow::geometry::build(&mut *c.ctx.runtime().memory(), c.cpu.esp);
+        if let Some(accepted) = handler {
+            c.cpu.eax = c.cpu.eax & !0xff | u32::from(accepted);
+            return c.ret(28).map(Flow::Return);
+        }
         let built = {
             let mut m = c.ctx.runtime().memory();
             let sp = c.cpu.esp;
