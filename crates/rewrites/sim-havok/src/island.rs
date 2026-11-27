@@ -272,7 +272,7 @@ pub fn solve(j: &mut Journal, a: &Args) -> Result<u32, Fallback> {
     for &(constraint, class) in &island.constraints {
         pair(j, a, base, constraint).ok_or(Fallback::Memory)?;
         cursor.before_constraint();
-        match class {}
+        class.build(j, constraint, &mut cursor).ok_or(Fallback::Memory)?;
     }
     // An island always has a constraint (`0x00316a20` calls this entry
     // only when `I+0x5c` is not zero), so with no class ported the solve
