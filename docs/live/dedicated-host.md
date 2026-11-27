@@ -25,11 +25,11 @@ Live starts it. The status line first says “Starting a dedicated host…”
 and then `Joining dedicated host (<region>)`. Your console joins
 automatically. If Live switches to a player host before the join, the
 usual matchmaking flow resumes.
-[Joining a dedicated host](live-matchmaking.md#joining-a-dedicated-host)
+[Joining a dedicated host](live-matchmaking-search.md#joining-a-dedicated-host)
 
 A peer host pays **0 ms of network RTT** to its own authority. For scale, Microsoft Research used **85 ms mean RTT** from Halo 3 console-pair probes. That sample includes candidate peers before final host selection. Saudi Arabia’s Q4 2023 fixed-line measurements to regional VALORANT servers showed **14–18 ms** by ISP, versus **76 ms** nationally to a European World of Warcraft service. These are different games, populations and routes. We have no measured h2recomp distribution or promised saving. Friends on the same LAN can already beat a regional provider. [Microsoft Research, Htrae](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/02/sigcomm09-265.pdf) · [CST, Game Mode Q4 2023, pp. 13–15](https://www.cst.gov.sa/-/media/cst-website-app/data/media/Reports/Data%20and%20Analysis/EN/Game%20Mode/Game_Mode_202304-en)
 
-At 40 ms symmetric RTT, a shot takes about 20 ms to reach the host and confirmation about another 20 ms to return, plus tick scheduling, replication and presentation. Distributed clients predict local movement and reconcile with the host. The co-op pad schedule belongs to synchronous campaign play. Its input delays do not predict distributed multiplayer hit registration. Retail weapon behaviour also varies. A client can report a projectile impact in its first tick. At 30 Hz the Battle Rifle’s 400 world units/s gives about **13.3 units** of first-tick travel. Longer shots involve projectile flight. Bungie described original Halo 2 melee as awarding the first blow observed by the host. A lower-ping remote can still win a close contest. We have no evidence of a universal hitbox rewind or a verified per-weapon validation algorithm in this recomp. [Distributed versus synchronous prediction](live-coop.md#154-prediction) · [Halo developer notes on the original BR](https://support.halowaypoint.com/hc/en-us/articles/23707515298324-Halo-The-Master-Chief-Collection-MCC-Update-February-2024) · [Bungie’s original melee account](https://halo.bungie.org/bwu/index.html?item=163)
+At 40 ms symmetric RTT, a shot takes about 20 ms to reach the host and confirmation about another 20 ms to return, plus tick scheduling, replication and presentation. Distributed clients predict local movement and reconcile with the host. The co-op pad schedule belongs to synchronous campaign play. Its input delays do not predict distributed multiplayer hit registration. Retail weapon behaviour also varies. A client can report a projectile impact in its first tick. At 30 Hz the Battle Rifle’s 400 world units/s gives about **13.3 units** of first-tick travel. Longer shots involve projectile flight. Bungie described original Halo 2 melee as awarding the first blow observed by the host. A lower-ping remote can still win a close contest. We have no evidence of a universal hitbox rewind or a verified per-weapon validation algorithm in this recomp. [Distributed versus synchronous prediction](live-coop-live.md#154-prediction) · [Halo developer notes on the original BR](https://support.halowaypoint.com/hc/en-us/articles/23707515298324-Halo-The-Master-Chief-Collection-MCC-Update-February-2024) · [Bungie’s original melee account](https://halo.bungie.org/bwu/index.html?item=163)
 
 An operator-controlled host keeps a player from choosing the authoritative clock, changing the match result on that machine or ending everyone’s game by quitting. Its telemetry can corroborate damage and kills. Input automation, information available to modified clients, packet loss and differing routes remain. A donor controls their machine and can falsify the authoritative record. Start donated servers as unranked. Central hosting also trades the former host’s immediate authority and availability of local play for dependence on capacity, routing and operator uptime. Preserve ordinary custom games and abort an interrupted ranked round without awarding a partial result. [Live trust boundary](live-security.md) · [Gameplay telemetry](live-telemetry.md)
 
@@ -162,9 +162,9 @@ Both cloud providers use the same Linux/amd64 image. It runs as a non-root
 user in a scratch rootfs with bookworm's ELF runtime libraries and CA
 certificates. The image holds public code only: the headless `h2` and its
 entrypoint. The game module compiled from the owner's disc comes with the
-private [game data bundle](#game-data-bundle) at start, so CI builds and
+private [game data bundle](dedicated-host-ops.md#game-data-bundle) at start, so CI builds and
 pushes the image on every push to master
-([Deploy from CI](live-worker.md#deploy-from-ci)).
+([Deploy from CI](live-worker-deploy.md#deploy-from-ci)).
 
 `deploy/host/build.sh --h2` builds the headless `h2` with cargo-zigbuild
 targeting `x86_64-unknown-linux-gnu.2.36`, on macOS or Linux, and stages
@@ -270,305 +270,17 @@ its configured slots and the number of regions. See the
 
 ## Light host
 
-Run `h2 serve --system-link --host-light` with the existing prebuilt image.
-Clanker Training uses the same profile, adds bot seats, and defaults to
-unpaced. An operator still uses the retail lobby to create and start a
-dedicated game. The
-machine-only lobby and remote join lifecycle above still need a game run.
-
-| Area | What the profile does and why |
-|---|---|
-| World, HUD, effects | `sim-frame` skips every steady-state world call to `0x00223240`. This drops the world, HUD, and effect draw paths reached there. It calls `0x0012b2e0` for the frame clock, advances counters at `0x00485aa0` and `0x004ba034`, and clears `0x004e6098`. Guest effect updates stay because the tick reads the counters. The software D3D shim keeps display timing and device ABI, with no GPU, display presentation, or render thread. [Skip](../../crates/rewrites/sim-bridge/src/sim_frame.rs) · [Read-back census](../runtime/sim.md#2-what-can-be-skipped-and-what-cant) |
-| UI and movies | Bink takes the existing skip return, including intro, attract and credits. The lobby and loading frames keep the guest menu path and cache housekeeping. The menu layer at `0x00147af1` dispatches virtual callbacks, so a blanket guest-side skip needs a write audit. Animation has a tick-side request at `0x001236f0` and a render-side load at `0x001237e0`. Test animation-driven hit and melee behaviour in a real match. [Movie mode](../../crates/extensions/game/src/movies_glue.rs) · [Animation dependency](../graphics/notes/pipelined-render-census.md#the-new-dependency-sites) |
-| Audio | The guest polls buffer status and position and waits for stream events. `StreamGetStatus` at `0x0037f591` has a pause bit read at `0x002ae4c4`. The same logical 256-frame grid advances cursors and delivers status, events and callbacks with no sample mixing, output queue, sink or output thread. `SetBufferData` and PCM/ADPCM stream packets validate the guest ranges without reading their sample bytes in DirectSound. Machine snapshots are unavailable with this audio profile because their audio section contains samples. [DirectSound state](../../crates/platform/dsound/src/state.rs) · [Output clock](../../crates/platform/dsound/src/output.rs) |
-| Map I/O | The world skip avoids render-initiated texture streaming in steady state. The D3D shim takes the descriptor-only texture path before reading or decoding texels, including lobby and loading frames. ISO reads and immutable DVD-directory `.map` reads can use read-only file-backed mappings. Eligible immutable ranges can also back guest pages directly. Writes to those pages are private to the match. Sim reports count mapped and copied read bytes. Keep the source files intact for the lifetime of each process. The retail copy to the writable cache, loading-screen bitmap reads, and guest sound-cache and WMA reads still run. Shared cache calls serve several resource types, and the audio shim only owns the payload after the guest submits it. [DVD reads](../../crates/runtime/vfs/src/disc.rs) · [Directory reads](../../crates/runtime/vfs/src/dir_disc.rs) · [Cache copy](../../crates/extensions/game/src/map_copy.rs) · [Codec](../../crates/platform/dsound/src/xwma.rs) |
-| Memory | The guest has 64 MiB of RAM per process. The OS can share clean native code pages when processes open the same dylib or DLL. The loader registers pointers and selectors, and dispatch tables, guest RAM, cache metadata and network state are private. Use separate `--data` directories and the same immutable image. The light profile omits kernel-call trace wrappers and frame-time history, including during a long lobby wait. [Guest RAM](../../crates/runtime/runtime/src/guest.rs) · [Module loading and boot](../../crates/apps/boot/src/lib.rs) |
-| Native simulation | Light hosts can opt into the three native animation, collision and object implementations together. Individual subsystem overrides take precedence. [Controls](../runtime/switches.md#waiting-for-a-measurement) |
-| Clock and network | The kernel sleeps when logical time leads wall time. It wakes for vblank, packet-related guest work and audio completion deadlines as needed on the way to the next 30 Hz gameplay tick. The optional pack pacer groups intermediate deadlines on a slot-specific 30 Hz grid and wakes for socket traffic. XNet performs one receive per guest poll and uses an OS wait for timed `select`. [Pacer](../../crates/runtime/kernel/src/pacer.rs) · [XNet sockets](../../crates/live/live-hle/src/network.rs) |
-| Bots and telemetry | `--host-bots` enables explicit phantom adds. The configured telemetry feature follows the regular boot and encoder path, including packed v8 where the build and ingest negotiate it. Accountless System Link can select a local capture with `H2_TELEMETRY_FILE`. [Feature registration](../../crates/apps/boot/src/registration.rs) · [Telemetry configuration](../../crates/live/live-telemetry/src/config.rs) |
-| Completed match archive | `h2 host run --archive dual\|film` or `H2_HOST_ARCHIVE`. For provisioned leases, set `LIVE_HOST_ARCHIVE` on native Live or the Worker. A pack passes the archive mode to each lease and keeps each match’s film in its own directory. The default `dual` sends live telemetry and uploads the sealed film. In `film` mode the host uploads one film at match end, and Live derives the stats and web replay from that upload. [Cutover](live-api.md#switching-a-host-to-film-ingestion) |
-
-For a quiet, low-population game, use **12 ms of game-thread CPU per tick**
-as the first sizing target (about **0.36 of one core** at 30 Hz) and
-**1 GiB RSS per process** as the provisional memory allowance. These are
-planning figures from the two-bot sim and the earlier process allowance.
-Replication, map loads and the map itself can move either number. RSS counts
-shared pages in each process. Measure the fleet’s incremental RAM separately
-before sizing by game count.
-
-Measured 2026-11-20, one waterworks 2v2 sim process (macOS `vmmap`,
-`/usr/bin/time -l`): peak RSS about **981 MiB**, of which **791 MiB** is
-the resident pages of the whole mmapped disc image (the game copies
-`shared` (183 MiB), `single_player_shared` (429 MiB) and the level map
-from `D:` at load); footprint (dirty) **143 MiB** — Malloc Large 103 MiB
-(guest RAM is 64 MiB of that), Malloc Small 35 MiB — plus shared
-`__TEXT` 414 MiB. On a container host the resident image pages are
-charged per container. Three changes cut that, all behaviour-identical:
-
-- Bulk reads through the disc mapping drop their pages again after the
-  copy out (`msync(MS_KILLPAGES)` on macOS, `madvise(MADV_DONTNEED)` +
-  `posix_fadvise(DONTNEED)` on Linux): the data lands in the title's
-  cache copy or guest RAM, so the image's pages stop accumulating.
-- The nav builder on a light host scans only the booted map at boot
-  (was: every map on the disc, reading each one's BSPs); later maps
-  build on demand as they load.
-- The descriptor-only D3D path creates no vertex or index caches (was:
-  128 + 32 MiB of LRU budget).
-
-Light hosts build interpreter analysis on demand. Slim hosts keep one lifted
-cold owner. A bot visibility grid uses its sorted cell list when a dense
-index would exceed 256 KiB. Linux glibc lease children default to two
-allocator arenas and a 128 KiB trim threshold.
-
-**Sim stores** ([Sim stores](../runtime/sim.md#61-sim-stores-the-map-without-the-map))
-take it further: with `H2_SIM_STORE` naming a directory of built
-stores, the host serves each `maps\<map>.map` from the store — only the
-bytes a recording saw the guest read — and never streams the retail
-map. Two hosts on different maps still share `shared.map`'s store pages
-and the dylib's code; two on the same map can also share guest RAM
-itself, each over a sparse copy-on-write base image
-(`state.load` with `"cow": true`). Measurement plan for the fleet:
-`wall.peak_rss_mib` and `wall.footprint_mib` in each run's report;
-`vmmap`/`smaps` for shared-versus-private per process; the reports'
-`wall.guest_written_pages` over `wall.guest_pages` for how much of the
-shared base a match keeps.
+Moved to [Dedicated host: the light host](dedicated-host-light.md#light-host).
 
 ### Server maps
 
-`h2 server-map strip ORIGINAL.map OUTPUT.map` writes a sparse copy. Use
-`h2 server-map verify ORIGINAL.map OUTPUT.map` to compare SHA-256 over
-every retained byte, including all tag headers, tag blocks, BSP metadata,
-strings, and the cache header. The verifier checks the original cache
-checksum and bounds too. Set `H2_SERVER_MAP_DIR` to the directory of
-verified copies. Name disc and official Map Pack copies by the original
-filename and packaged mod copies by the original map ID followed by
-`.map`. If a copy is missing or its header or length differs, the light
-host uses the original. Keep matched files immutable while mounted.
-
-The stripper clears known local bitmap LOD and low-detail payloads and
-classifiable PCM and Xbox ADPCM sample spans. It keeps WMA, IMA, unknown
-or externally referenced ranges, and other raw resources. Tag metadata,
-BSPs and the index stay whole, so a Firefight kit map keeps its squads,
-zones, orders, sectors and moved group table. The guest can
-read codec bytes before DirectSound sees a packet (WMA decoder
-`0x0038a0c5`–`0x0038a1cc`). Render also feeds the animation cache used
-from the tick. Keep the original cache alongside its verified override.
-The result has the same logical length, with allocated size reduced by
-the page-aligned holes. The command prints both sizes. Container savings
-depend on the captured files and on the layer format preserving holes or
-compressing zeros. Use the provisional RSS allowance above until measured.
-[Stripper](../../crates/apps/cli/src/server_map.rs) · [Mount](../../crates/runtime/vfs/src/map_override.rs)
-
 ### Measure before pruning
-
-Set `H2_HOST_AUDIT` to a report path and query `h2 agent hostaudit` before
-terminating a live host. The [sim corpus](../runtime/sim.md#host-audit-corpus)
-collects the same guest function coverage, tag reads, and subsystem CPU
-totals. Keep normal light-host traffic and fleet sizing runs unaudited.
-
-Candidate removals cover effects and lights, first-person animation and
-camera shake, sound objects, cloth and antenna updates, and HUD and menu
-state. Require a read/write trace and tick-hash parity for each switch.
-Effect dispatch at `0x0017a8a0` can apply damage or spawn objects, and
-particles share RNG and counters. Audio status, positions and completion
-events are gameplay-visible. Keep those paths and the rest of the guest
-tick until their cosmetic work can be isolated. A missing tag read or
-entry in one corpus is evidence to investigate. Map sub-tag pruning stays
-off until indirect reads and uncovered equipment are accounted for. The
-optional clang host module faults with a guest address on an uncovered
-entry. Use the full light image for live games.
 
 ### Starting one by hand
 
-`h2 live hosts start` is the admin's way to run a custom dedicated host
-outside matchmaking. It signs an `admin.write` request — with the server
-key in `--data` (the operator, the default) or an admin account's key with
-`--as GAMERTAG` — and `POST`s `/v1/admin/hosts`
-([API](live-api.md#dedicated-hosts)):
-
-```sh
-h2 live hosts start --map lockout --variant 'Slayer' --max-players 8 \
-  [--bots N] [--class small|large] [--region lhr] [--transport udp|tunnel] [--no-launch] \
-  [--live URL] [--data DIR | --as GAMERTAG]
-```
-
-Without `--no-launch` the server reserves the lease (budget,
-`LIVE_MAX_HOSTS` and cost rows all apply, exactly as for a match) and its
-configured provider starts the container; the command prints the lease
-JSON. `--bots N` (default 0, at most `--max-players` minus one, so one
-seat stays for a person) puts N Clanker names in the lease's `bots`; the
-host adds them to its lobby as phantoms ([`h2 host run`](#h2-host-run)).
-With `--no-launch` no provider is started: the server records the
-lease as `requested` and answers its host token, and the command prints
-shell lines a manual container run can `eval` — the only place the token
-is ever shown:
-
-```sh
-eval "$(h2 live hosts start --map lockout --no-launch --live http://127.0.0.1:8074)"
-```
-
-sets `H2_LEASE`, `H2_HOST_LEASE_JSON`, `H2_TOKEN` and `H2_LIVE` (the JSON
-single-quoted so `eval` cannot split on it). Export the data-bundle values
-the same way (`H2_DATA_URL`, `H2_DATA_SHA` from `h2 host bundle`), then run
-the image as [deploy/host/README.md](../../deploy/host/README.md) shows:
-
-```sh
-docker run --rm --name h2host-smoke --platform linux/amd64 \
-  -p 31000-31006:31000-31006/udp \
-  -e H2_LEASE -e H2_HOST_LEASE_JSON -e H2_LIVE -e H2_TOKEN \
-  -e H2_DATA_URL -e H2_DATA_SHA \
-  -e H2_REGION -e H2_OPT -e H2_BASE_PORT=31000 -e H2_PUBLIC_ADDR \
-  h2host:local
-```
-
-`h2 live hosts list` prints `GET /v1/admin/hosts` (running and recent
-hosts, each lease's state, end reason, boot time and cost, and the month's
-spend against the budget) with an `admin.read` token.
-`h2 live hosts stop LEASE` stops one host with reason `stopped`. Both take
-the same `--live`, `--data` and `--as` flags as `start`
-([CLI](../../crates/apps/cli/src/live_hosts.rs)).
-
-The manual container owns the same lifecycle as a launched one: it
-registers its endpoint with the token (moving the lease straight from
-`requested` to `joinable` — no provider boot event exists to wait for),
-reports playing and ended, and a lease whose container never registers
-times out on the same boot deadline as any `requested` lease. Pre-pull the
-image: the boot budget is 60 seconds from `hosts start`.
-
 ### `h2 host run`
 
-Start one host for an existing Live lease. The provider supplies the full
-`HostLease` JSON object in `H2_HOST_LEASE_JSON`, along with the lease ID,
-its bearer token and the signed URL and SHA-256 of the owner's private
-game-data bundle. Every required flag can also come from the environment.
-
-| Flag | Environment | Value |
-|---|---|---|
-| `--lease` | `H2_LEASE` | Live host lease ID |
-| `--live` | `H2_LIVE` | Live HTTPS base URL or loopback HTTP URL |
-| `--token` | `H2_TOKEN` | Lease-scoped host bearer |
-| `--data-url` | `H2_DATA_URL` | Signed bundle URL |
-| `--data-sha` | `H2_DATA_SHA` | Bundle SHA-256 |
-| `--region` | `H2_REGION` | Optional provider region label |
-| `--base-port` | `H2_BASE_PORT` | XNet base port, default 31000 |
-| `--tunnel-listen` | `H2_TUNNEL_LISTEN` | Internal tunnel listener, default `127.0.0.1:31100` |
-| `--out` | `H2_IMAGE` | Prebuilt game module directory, default the verified bundle's `image/` |
-| `--data` | `H2_DATA` | Writable game data directory, default private per-run scratch space |
-|  | `H2_AGENT` | Optional TCP endpoint for the child's agent, as `tcp://HOST:PORT` |
-
-On Unix, the supervisor checks that the JSON lease ID matches `--lease`
-or `H2_LEASE` before provisioning. It provisions the verified bundle under
-`H2_HOST_CACHE` (default `host-data` in the user cache) and starts a child
-`h2 serve --system-link --host-light`. The bundle's disc directory must
-contain `default.xbe` and the maps. The child runs the bundle's module,
-`<cache>/<sha256>/image`, unless `--out` or `H2_IMAGE` names another
-directory. Before either child starts, the supervisor checks the module's
-stamp against the XBE and this `h2`'s build settings, including
-`H2_OPT`, and stops with a named error if the bundle carries no module or
-the stamp does not match.
-[The game module](dedicated-host-build.md#the-game-module) Before it starts either child, the
-supervisor copies the bundle's `bots/` files into the child's data
-directory (`<data>/bots`), where the game loads a map's nav mesh and grid
-and the nav worker finds them current. A sim lease whose map has no nav
-mesh in the bundle fails before its child starts.
-[`install_bot_data`](../../crates/live/host-data/src/lib.rs)
-
-The child gets `H2_HOST_LOBBY=1`, its own private Unix agent socket,
-and the provider's `H2_HOST_TOKEN`, `H2_HOST_LIVE_URL` and `H2_HOST_LEASE_JSON`.
-The supervisor opens the lease's map and variant with `host.lobby.open`
-and `live: true`. Open returns the session ID acknowledged by Live. The
-supervisor registers that ID and the endpoint once `host.lobby.state` shows a lobby. It requests
-start when the lobby is ready and has at least the reserved player count,
-or one player for an open lobby. Lease roster authorisation belongs to Live.
-
-A non-sim lease with `bots` starts the child with `--host-bots`. Once the
-host is registered, the supervisor adds each leased bot through the
-child's `sim.player.add` as a brain-driven phantom named as the lease
-names it, with the host-made xuid `live_proto::bots::local_xuid(n)` for
-seat n from 1. A refused add is a named error in the host log; the other
-bots and the lobby carry on. Phantoms are not players to the supervisor:
-it counts only lobby players whose name lacks the bot mark (U+2699), so
-phantoms alone never start a match, keep a lobby from going idle, or
-appear in the reported player counts.
-[`add_phantoms`](../../crates/apps/cli/src/host_cmd/supervisor.rs)
-
-When the supervisor receives a TCP `H2_AGENT` address, the child also
-binds that address to the same agent. Both listeners share the same
-commands, state and controller claim. The child reports a bind failure
-as a startup error. Cloudflare sets `tcp://127.0.0.1:14720` for
-container-local diagnostics. A pack gives each slot its own agent port
-from 14720 and tunnel port from 31100. The Local provider drops any inherited `H2_AGENT` from Live so
-its leases use their own Unix sockets.
-
-For UDP, the child uses the default route's IPv4 or the IP from
-`H2_XNET_ADDR`, with the configured base port. Live receives that address
-unless `H2_PUBLIC_ADDR` specifies a public IPv4 or IPv4:port. Keep base
-through base+6 available and assign each concurrent host its own range.
-For tunnel leases, Live receives the WebSocket URL derived from
-`--live` at `/v1/hosts/{lease}/tunnel`, and the child listens at
-`--tunnel-listen`.
-
-The supervisor samples lobby state once a second. It reports `playing`
-on the first playing sample and reports `ended` on postgame
-(`MatchOver`), last departure (`Empty`), an unvisited lobby's timeout
-(`Idle`), or the lease's hard duration limit (`MaxDuration`). These
-ends close the lobby and return 0. A child exit before a terminal lobby
-state reports `Crashed` and returns 1. The child has up to 60 seconds
-after spawn to reach the lobby. The provider also enforces its boot
-deadline from the original lease request.
-
-The local provider sets `H2_HOST_PARENT_PIPE=1` and holds the write end of
-the supervisor's stdin pipe for the lease. When the provider exits, EOF
-requests the same shutdown as SIGTERM, so the supervisor closes the lobby
-and reaps its game child. Cloud providers leave this variable unset.
-
-Bot-only leases with a `sim-<run_id>` assignment use the existing
-unpaced simulator in a dedicated child process. The supervisor registers
-the lease and starts the child with the verified disc and the same
-checked module. The child fetches its match from `GET /v1/hosts/{lease}/sim` and uses
-the lease bearer to upload the recording and report through Live's
-private sim routes. The supervisor observes gameplay through `match.status`.
-A successful child exit reports `MatchOver` to the host API. A failed child
-exit reports `Crashed`.
-
 ### Compare against ordinary headless serve
-
-Use the image, profile and port setup from the [Mac spike](#mac-system-link-spike).
-Use the same prebuilt image and map, matching warm cache state, roster and
-telemetry configuration for both trials. Stop both processes between trials
-and start the same client again. Run the control with `start_trial control`
-and the light trial with `start_trial light --host-light`.
-
-```sh
-start_trial() {
-  label=$1
-  shift
-  H2_BOOT_REALTIME=1 H2_XNET_ADDR="${lan}:31000" H2_XNET_LOOPBACK_PEERS="${lan}:31010"     "$H2_BIN" serve "$H2_DISC" --system-link "$@" --out "$trial/host-image" --tier clang     --data "$trial/host" --no-halo1 --no-mappack --socket tcp://127.0.0.1:14720     >"$trial/$label.log" 2>&1 &
-  host_pid=$!
-}
-host_agent() { "$H2_BIN" agent --socket tcp://127.0.0.1:14720 --timeout 100 "$@"; }
-```
-
-After joining and starting the same map in each trial, collect five
-non-overlapping 30-tick windows after the first 300 ticks.
-
-```sh
-for ticks in 300 360 420 480 540; do
-  host_agent wait "{\"phase\":\"gameplay\",\"map_ticks\":$ticks}" 90000 >/dev/null &&
-    host_agent hostmetrics || break
-done | tee "$trial/$label-metrics.txt"
-```
-
-Compare `game_cpu_ms_per_tick`, `process_cpu_ms_per_tick`, `cpu_percent`
-and `rss_bytes`. The game agent reports the gameplay tick p99 over 30 seconds
-and counts intervals over 36 ms. On Linux it also reports proportional,
-private dirty and shared clean bytes. The pack reports group memory for each slot. Check `wall_ms_per_tick` against 33.3 ms. The match
-check is remote movement, hits, death and respawn, results, and a second
-round on the same host. The render consumes shared RNG at
-`0x001032a0`, so the rendered control and the light host can diverge in
-lockstep. The hash also includes guest texture and sample buffers. Compare
-repeat runs from a clean seed and use the same hash to gate each candidate
-prune. Cross-profile parity is still open. See the [sim checks](../runtime/sim.md#8-determinism).
 
 ## Lifecycle
 
@@ -612,358 +324,25 @@ process group so an operator stop reaches both the supervisor and its game.
 
 ## Game data bundle
 
-Build the bundle from your own Halo 2 disc image or an extracted DVD
-directory. Keep the archive, manifest and extracted cache private. Keep
-the bundle out of Git and container images.
-
-```sh
-h2 host bundle --disc "$H2_DISC" --out "$bundle_dir"
-```
-
-| Disc files | Why the host needs them |
-|---|---|
-| `default.xbe` | Boot reads the original executable and uses its full hash to identify the prebuilt module. |
-| `image/libh2game.so`, `image/libh2game.so.stamp` | With `--image DIR`: the Linux game module the host runs and its build stamp, compiled from the disc. The container image does not carry it. |
-| `maps/mainmenu.map` | The light host still boots the retail menu and loads the multiplayer lobby. |
-| `maps/shared.map`, `maps/single_player_shared.map` | The map loader can resolve references into these shared caches. |
-| Multiplayer `maps/*.map` | The host loads these maps for matches. The bundle selects them by their cache headers. |
-| `maps/fonts/` | The retail menu reads the font tables and packed glyphs from the DVD. |
-| `bots/<map>.<bsp>.bots`, `bots/<map>.<bsp>.vis` | Each multiplayer map's bot nav mesh and visibility grid, built from the disc. A sim child builds none, and a light host would otherwise build each map's when it is first played. |
-| `firefight/firefight-<map>/`, `firefight/kits.json` | Each multiplayer map's Firefight kit package (its `manifest.toml` and patch) and the index naming the kit version and each map's package ID. A Firefight match plays its map's kit. |
-
-The light host skips Bink movies. Campaign levels and dashboard media are
-outside the multiplayer boot path. See [boot](../../crates/apps/boot/src/lib.rs)
-and [disc fonts](../formats/fonts.md).
-
-The bot data comes from `<data>/bots`, the directory `h2 bots nav` and the
-game write. The command first builds the maps whose files are missing or
-stale there, as `h2 bots nav all` does, restoring completed builds from
-the shared nav cache. It then checks every map's files against the
-bundled map's header and refuses a map without a current mesh and grid.
-`--data DIR` names the data root (default: the one `h2 play` uses).
-`--no-bots` leaves the bot data out.
-[Bundle nav data](../../crates/live/host-data/src/bundle/nav.rs) · [Bot data files](../game/bots.md)
-
-The command builds every multiplayer map's Firefight kit from the disc
-with the builder `h2 firefight kit` uses, so the host's package ID is the
-one each player gets from their own disc
-([The kit](../game/firefight.md#the-kit)). A map the kit refuses, for
-lack of headroom or drops, is named and left without one. A kit's patch
-is bound to the disc map's hash, so a map with a kit comes from the disc
-even when `--stripped-maps` has a copy of it. `--no-firefight` leaves the
-kits out; the headless host's own build has no kit builder. When a lease
-names a Firefight match, the host places its map's package in the match's
-data root (`<data>/maps/firefight-<map>`) before the game starts. It
-refuses the lease when the bundle has no kit for the map, its kits are
-another version than the match's, or the lease's `map_id` names another
-package.
-[Bundle kits](../../crates/live/host-data/src/bundle/kits.rs) · [Placing a kit](../../crates/live/host-data/src/lib.rs)
-
-`--image DIR` adds `libh2game.so` and `libh2game.so.stamp` from `DIR`
-(`deploy/host/build.sh --module` stages them in `deploy/host/stage/image`).
-A deployed host needs it: without `--out` or `H2_IMAGE`, `h2 host run`
-refuses a bundle with no module.
-[Bundle module](../../crates/live/host-data/src/bundle/image.rs) · [The game module](dedicated-host-build.md#the-game-module)
-
-To use server copies, make them with `h2 server-map strip ORIGINAL.map
-OUTPUT.map`, keeping the original filenames, and add `--stripped-maps DIR`.
-A same-named copy must match the original map header and logical length.
-Maps without a replacement come from the disc.
-
-Pass `--sim-stores DIR` to package recorded shared resources. Each store must
-cover the corresponding cache header and match the disc at every recorded
-byte. Playable maps and the menu stay available to native readers before boot.
-Both leased child paths mount stores from the verified bundle.
-[Recording and packaging](dedicated-host-build.md#package-recorded-shared-resources)
-
-The command writes `host-data.tar.zst` and `host-data.json`. The JSON gives
-the archive's `sha256` and the list of payload paths, sizes in bytes and
-SHA-256 digests. Keep the two files together.
+Moved to [Dedicated host: data, routing, tunnel and providers](dedicated-host-ops.md#game-data-bundle).
 
 ### Upload to private R2
 
-Create an R2 bucket with public access disabled. Create an R2 API token
-with Object Read & Write permission scoped to the bucket, then configure
-your AWS CLI profile with its Access Key ID and Secret Access Key. Set
-`R2_ACCOUNT_ID`, `R2_BUCKET`, `AWS_PROFILE` and `bundle_dir` before
-running these commands with the AWS CLI and `jq`.
-[Cloudflare R2 S3 setup](https://developers.cloudflare.com/r2/get-started/s3/)
-
-```sh
-R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-H2_DATA_SHA=$(jq -er '.sha256' "$bundle_dir/host-data.json")
-R2_BUNDLE="s3://$R2_BUCKET/host-data/$H2_DATA_SHA"
-
-aws s3 cp "$bundle_dir/host-data.tar.zst" "$R2_BUNDLE/host-data.tar.zst" \
-  --endpoint-url "$R2_ENDPOINT" --region auto
-aws s3 cp "$bundle_dir/host-data.json" "$R2_BUNDLE/host-data.json" \
-  --endpoint-url "$R2_ENDPOINT" --region auto
-```
-
-Create a signed GET URL for the archive and pass it as `HostBoot.data_url`
-(`H2_DATA_URL` for a direct host launch). Pass the manifest's archive SHA-256
-as `HostBoot.data_sha256` (`H2_DATA_SHA`). Refresh the URL before starting
-hosts after it expires and keep it out of logs and shared configuration.
-[Cloudflare R2 presigned URLs](https://developers.cloudflare.com/r2/api/s3/presigned-urls/)
-
-```sh
-H2_DATA_URL=$(aws s3 presign "$R2_BUNDLE/host-data.tar.zst" \
-  --endpoint-url "$R2_ENDPOINT" --region auto --expires-in 3600)
-export H2_DATA_URL H2_DATA_SHA
-```
-
-At startup the host streams the archive to `<cache>/<sha256>.partial`,
-checks the archive digest, verifies the files during extraction and
-publishes `<cache>/<sha256>/` atomically. A complete cache entry works
-after the signed URL expires. `H2_HOST_CACHE` overrides the cache location.
-`H2_HOST_CACHE_MAX_BYTES` sets the cache budget in uncompressed bytes
-(default 8 GiB). Provisioning evicts older entries by last use and keeps
-the requested entry even if it alone exceeds the budget. When running
-different bundle hashes concurrently, size the cache to hold the live
-bundles or give each deployment its own cache.
-
 ## Routing, assignment and arbitration
 
-**Game traffic.** System Link discovers pregame hosts by UDP broadcast. Live discovers through a session ID, XNADDR/key and QoS description. Both reach the game over XNet’s UDP mapping. Keep base through base+6 reachable (game channels +0/+1/+5/+6, QoS +2). On a home router this generally requires port forwarding. The HLE provides no general NAT traversal or transport encryption. Existing public/friends listings use the observed HTTP source address. A successful XNetConnect only records an address mapping. Cloud egress and public UDP ingress can differ. Verify the advertised endpoint externally and allow an authenticated managed ingress separate from the local bind address. The existing WebSocket relay admits an open **co-op** host and one guest for messages up to 1,200 bytes. It cannot carry a retail multiplayer match today. A multiplayer fallback needs authenticated multi-peer channel mapping, datagram boundaries, expiry, limits and real route measurements. [XNet transport](live.md#client-hle-sockets-and-system-link) · [Join and address restrictions](live-custom-games.md) · [Relay](../../crates/live/live-server/src/relay.rs) · [Worker counterpart](../../crates/live/live-worker/src/relayroom.rs)
-
-**Assignment.** [Ping-aware OptiMatch](live-matchmaking.md#9-ping-aware-optimatch-assignments)
-can reserve an opted-in solo cohort for a registered dedicated endpoint.
-Each client probes a registered endpoint over UDP. For an ad hoc host,
-it measures running or configured regional UDP endpoints and can use a
-ticket-authenticated WebSocket echo on its Live origin. Cloudflare routes
-the echo through a running pack when available or answers in the regional
-pool room. Native Live answers the service echo itself.
-A registered endpoint can use its existing account. For an ad hoc host the
-matchmaker binds the lease to the assignment before the provider starts the
-child. Live attaches that assignment, including `matchmaking.host_lease`, to
-the machine's session. A roster member checks the lease and the registered
-session ID before joining.
-[QoS implementation](../../crates/live/live-hle/src/qos.rs)
-
-**Ranked admission.** A peer-hosted match uses the session host’s game
-record and its latest unused arbitration round registered before the game
-started. The existing human registration and bot roster rules apply.
-
-When the published assignment has `host_lease`, Live binds the session to
-the lease subject and checks the assignment’s members against the lease
-roster. The session has its own ID and retains the matchmaking assignment
-ID, leaving that ID available for a peer fallback. Only the lease subject
-can write the authoritative game’s frames and event batches. A client receiving `Queue::Join.frames_from_host` skips
-its own frame upload for that game.
-
-A dedicated match counts for Ranked when the lease holder signs a
-`GameEnded` with reason `finished` in the assigned ranked hopper. Every
-recorded player, including anyone who left, must have an XUID on the
-lease roster. Reserved players who never joined receive no result. A
-seat without an XUID or a player outside the reservation makes the whole
-result ineligible. The current guest-memory projection gives ordinary remote
-humans no XUID. A real game with any such seat therefore remains unranked
-until the runtime can identify that player. Gamertags and roster order
-cannot establish account identity. Live spends an eligible assignment once
-and ranks the recorded entrants. The service identity has no player slot,
-score, or standing.
-[Ranking predicates](../../crates/live/live-server/src/ranks.rs) ·
-[Arbitration](../../crates/live/live-server/src/arbitration.rs) ·
-[Identity projection](../../crates/live/live-telemetry/src/session.rs)
-
-
-
-The planned trusted source is the dedicated host. It signs telemetry
-with a service identity separate from the players. Live verifies that
-the assigned host signed the completed game and ties the record to the
-reservation and eligible joined players before it counts for Ranked.
-Preserve single-use results, reconcile disconnects against the
-reserved roster and keep the service account out of ranks and scores.
+Moved to [Dedicated host: data, routing, tunnel and providers](dedicated-host-ops.md#routing-assignment-and-arbitration).
 
 ## Host tunnel
 
-Local supervisors bind the tunnel to loopback. Cloudflare sets
-`H2_TUNNEL_LISTEN=0.0.0.0:31100` inside its private container.
-The listener starts on its first initialised XNet call and serves one
-lease. Keep this port on the private network between the game host and
-the upstream proxy. Live authenticates and admits the client first. The
-host accepts the upstream-authenticated upgrade at its original
-`/v1/hosts/{lease}/tunnel` path and logs the optional
-`x-h2-tunnel-peer` XUID.
-
-The client sends an empty binary hello with port 0 and peer 0. The host
-replies on port 0 with an assigned nonzero peer ID and the four IPv4
-octets for `10.77.0.1`. The host reserves `10.77/16` for this lease.
-The low 16 bits of a client's synthetic address hold its peer ID,
-beginning at `10.77.0.2`. A reconnect gets a fresh ID and address. All
-client frames carry peer 0. Host datagrams and bye replies carry the
-recipient's ID. The host sends a WebSocket Ping every five seconds,
-answers incoming pings, and drops connections after 15 seconds without
-a Pong. Between frames the connection workers sleep until TCP data,
-a queued datagram, or a keepalive deadline wakes them. Local QoS input
-and shutdown also wake the client worker.
-
-Datagrams go to XNet guest port `1000 + offset` with a source of the
-client's synthetic IPv4 and the host's XNet base plus that offset. The
-configured XNet IPv4 must be local to the host. The local UDP bridge
-lets ordinary socket reads and `select` wake on tunnel traffic. Sends
-to synthetic peers go back over their WebSockets. System Link broadcast
-fans out to all active tunnel peers and still goes out over native UDP.
-The tunnel answers HLE QoS queries on offset +2 using the same advertised
-data as the UDP responder.
-
-A client offers actor channel version 1 with the `x-h2-actor-channel: 1`
-upgrade header. The host acknowledges it with one version byte after the
-four IPv4 bytes in its binary hello. For a peer without the offer, the
-host sends the four-byte hello and ordinary XNet traffic. Negotiated
-peers receive actor packets as kind 3 with port 0 and the recipient's
-ID. A client requests a fresh key with kind 4, port 0, peer 0 and an
-empty payload. It sends an upstream pick with kind 5, port 0, peer 0
-and a payload of its six-byte machine id and one to sixteen message
-bytes; the host keeps the machine id of a peer's first pick for that
-peer alone, and both relays forward the frame like any other
-([Pickers](../game/rules-world-api.md#pickers)). System Link sessions use retail replication for actors.
-
-The actor sender enqueues from the simulation tick and the client
-drains its bounded queue at the tick boundary. A full send queue drops
-the packet. A full client inbox drops its oldest packet. Packet loss is
-repaired by a later key. Actor packets have a separate 1,000-byte
-rolling budget over 30 ticks that excludes the eight-byte tunnel header.
-[Actor channel](../game/ai-networking.md#how-it-works)
-
-The host allows 16 concurrent connections, including pending upgrades.
-The payload ceiling is 1,264 bytes. Each peer can send and receive up to
-240 datagrams per second, with a burst of 64 in each direction. An
-outbound queue holds 64 frames per peer. Rate limits and full queues
-drop packets. Bye or WebSocket close makes the address unreachable.
-The next receive skips pending packets from that peer and the next XNet
-address operation drops any cached mapping.
+Moved to [Dedicated host: data, routing, tunnel and providers](dedicated-host-ops.md#host-tunnel).
 
 ## Playerless lobby
 
-For the zero-local repeat of the Mac spike, start the host with
-`H2_HOST_LOBBY=1` and `serve --system-link --host-light`. Leave the real
-client on its usual System Link path. Use the host agent to open a custom
-game and read its roster even when nobody is connected.
-
-```sh
-host_agent host.lobby.open '{"map":"lockout","variant":"slayer","max_players":2,"live":false}'
-host_agent host.lobby.state '{}'
-```
-
-After a remote console joins, expect one remote player and two peers
-(count peers with `sim session`). Once `ready` is true, use
-`host_agent host.lobby.start '{}'`. Check for world mode 4 on the host and
-5 on the client. Verify movement, death and respawn from the host agent,
-then the absence of a local player in the result. Close through
-`host_agent host.lobby.close '{}'` and repeat the open and join. A second
-remote on a separate console tests independent inputs. Two split-screen
-users on one remote test the distinction between a player slot and a peer.
-
-The implementation keeps the local **peer** as host and party leader.
-It blocks local profile attachment for this dedicated run. A signed-in
-bot-style profile would be reconciled into a real session player by
-`0x63d80 → 0x65770`. Omitting that row from agent output would still
-consume a slot and could affect teams, spawns and results. No owner
-profile or player record is manufactured.
-
-Selecting Create in the System Link browser calls `0x199df9(0,0)`
-and `0x199a03(2)`. A human host's menu then opens the pregame screen.
-Each frame the menu reconciler (`0x199b08`) compares its screen with the
-network lifecycle. With zero signed-in users, the pregame branch at
-`0x19b284` requests a squad leave. A playerless host skips that UI update
-in pregame (session type 1 or 2) while it owns the active squad. Retail
-runs the update during play and postgame. Ownership checks the squad address,
-incarnation, network class and local host peer. The title screen's
-controller reset also requests a leave during boot. Its call at
-`0x1906d3` preserves the same owned squad. Explicit close uses the
-network teardown and releases ownership.
-
-The next profile-specific refusal is the controller countdown at `0x19a78e`. It reads the pressing controller's local-user index,
-which is −1 on the playerless host. The machine fallback requests stage
-2 through `0x5a220` after the remote roster, map properties, ownership
-and retail start check pass. It calls `0x5a220` as the countdown
-finisher does at `0x6e4d7`: the session in ESI, the stage in EDI, no
-stack arguments, plain `ret`. The map check is the finisher's: every
-peer's status above 2. `host.lobby.state` reports `ready` only then. Set `H2_HOST_LOBBY_MACHINE_START=0` to
-observe the original refusal with the same roster. Remote-view
-handshakes still have to finish before the match can run.
-
-| Retail boundary | What the coordinator should confirm |
-|---|---|
-| Tick `0x137fe0`, profile sign-in `0x18fb34` (callee pops 12 bytes) | Main-menu ticks service RPCs before a profile is chosen. Networking byte `[0x527330]` and lobby byte `[0x4d8ba0]` become nonzero. All four slots from `0x54e8e0` (stride `0xc70`, profile flag `0x10`, local-user index at `+4`) remain signed out through reopen and postgame. |
-| System Link Create `0x199df9(0,0)`, Live preparation `0x199e2e(1)` and Create `0x59890(2,0,0)`, custom mode `0x199a03(2)` | Creation returns success in AL. Verify that the post-create squad pointer `S = [0x527364]` identifies the same session through close. Check host state 5 (`S+0x741c`), class 1 or 2 (`+0x18`), peer count (`+0x54`), and that the machine index (`+0x72d8`) equals both host and leader (`+0x40/+0x50`). Confirm discovery and a remote join on each transport. |
-| Map setter `0x19a6f2` (ESI = map ID, stack = −1), default variant `0x19d220(out,type)`, variant setter `0x19a728(out)` | Check map (`S+0x4d0c`), distributed protocol 2 (`+0x4dac`), and the full `0x130`-byte rules at `+0x4db0`. Check the limit at variant `+0x78` and session `+0x4994`. Verify that bumping parameter revision `+0x4978` publishes the limit to the client and that retail refuses an extra join. |
-| Start check `0x19a2ce(0)`, countdown `0x19a78e` (EAX = port 0, stack = 10, 3), machine request `0x5a220` (ESI = session, EDI = 2) | Verify start state 9 with a remote player and map status 3 or 4 for every peer (`S+0x58+peer*0x10c+0x88`). Check the fallback's calling convention and the stage change at `S+0x4980` against retail's countdown finisher `0x6e410`. Exercise both flag settings and verify remote controls move a unit. |
-| Roster and phase | Verify count/mask at `S+0x1118/+0x111c`, records at `S+0x1120+slot*0x13c`, peer at `+0x0c`, and effective UTF-16 name at `+0xa8`. Cross-check lifecycle `[0x527334]` (1/2 lobby, 3 game, 4 postgame), countdown `S+0x49a8`, and game globals `[0x4e6948]` (mode `+8`, active `+0x1120`, ended `+0x1128`). Confirm world `[0x4cf77c]` reaches distributed-server mode 4 at `+8` and running state 5 at `+0x18` before gameplay is reported. |
-| Leave sessions `0x593e0()` and return to menu `0x18f1c0(0)` | The target pointer `[0x52736c]` must hold no separate active matchmaking session. Check that remote clients leave, the network squad retires, the host returns to the menu, and the specific Live listing disappears. Repeat open and join on System Link. Use a fresh lease for each Live match. Exercise close during countdown and during play. |
-
-On a leased host, `XOnlineStartup` starts machine logon before the first
-retail advertisement. The HLE checks the token against Live discovery and
-publishes as `host:<lease_id>`. Live allocates one dedicated session ID for
-the lease. Retail updates and deletion use the host bearer and event batches
-signed with the lease key. The machine has zero signed-in users and publishes
-no gamertag, friends or presence. Plain `h2 serve --system-link` still runs
-with local networking only.
-
-For a real run, compare the ID returned by `host.lobby.open` with the
-registered endpoint and the roster member's session detail. Check
-`matchmaking.host_lease` against the assigned lease, join from a second
-console, and use `host.lobby.close` to verify withdrawal of the same ID.
-Only remote players should appear in the roster.
-
-The supervisor uses the agent API for these repeatable operations. The
-guest boundaries above come from static traces. The two-console lifecycle
-and the first refusal still need a game run. [Agent methods](../runtime/agent-api.md#hostlobby)
+Moved to [Dedicated host: data, routing, tunnel and providers](dedicated-host-ops.md#playerless-lobby).
 
 ## Fly Machines provider
 
-`FlyProvider` ([fly.rs](../../crates/live/live-server/src/hosts/fly.rs)) runs
-each lease as one Fly Machine: created when matchmaking forms the lobby,
-destroyed with the match. On the native Live server, set
-`LIVE_HOST_PROVIDER=fly` to select Fly or leave it unset to use `local`.
-The native provider calls the Machines API through its reqwest adapter.
-The Worker selects Cloudflare Containers through `HostRoom`. A Worker
-deployment that selects Fly would need a platform-fetch implementation of
-`FlyHttp`.
-
-Setup, from the environment:
-
-| Variable | Meaning |
-|---|---|
-| `LIVE_FLY_TOKEN` | Fly API token, sent as the bearer on every call. Required. |
-| `LIVE_FLY_APP` | The Fly app the machines live in. Required. |
-| `LIVE_FLY_IMAGE` | The host image each machine runs (the `linux/amd64` image from `deploy/host`). Required. |
-| `LIVE_FLY_REGION` | Where a lease with no region runs. Default `iad`. |
-| `LIVE_FLY_PUBLIC_IP` | The app's dedicated IPv4 advertised to clients. Required for UDP leases. |
-| `LIVE_FLY_PORTS` | The UDP range lease windows are picked from, as `30000-44000`. Default `30000-44000`. |
-| `LIVE_FLY_API` | The API base, so a test can point the provider at a fake. Default `https://api.fly.io`. |
-
-**UDP needs the app's dedicated IPv4.** Allocate one
-(`fly ips allocate-v4`, $2/month) and the machine's host process must
-bind `fly-global-services`. The provider sets `H2_XNET_ADDR` to that
-name and the window's base port, `H2_BASE_PORT` to the base port, and
-`H2_PUBLIC_ADDR` to the app's dedicated IPv4. The supervisor resolves
-the bind name before passing a numeric address to the game.
-Each machine claims a 7-port window
-(`base..base+6`, the game's channels and QoS) as one UDP service per
-port with external matching internal, chosen deterministically from the
-lease id and aligned inside `LIVE_FLY_PORTS`, so a restarted lease comes
-back on the same ports and two concurrent leases either take disjoint
-windows or the second create is refused by Fly — an error the lifecycle
-falls back from. A Tunnel lease claims no ports: its datagrams arrive
-through the Live tunnel instead.
-
-The machine: guest `performance` 1×2048 MiB for a Small lease, 2×4096
-for Large; `auto_destroy` so a host that ends by itself (match over,
-last client gone) removes its machine; `restart: no` so a crashed host
-is not restarted — the lifecycle reads the failure and falls back. The
-machine env also carries `H2_LEASE`, `H2_HOST_LEASE_JSON`, `H2_LIVE`,
-`H2_TOKEN`, `H2_DATA_URL` and `H2_DATA_SHA`. Its metadata names
-the lease for `fly machines status`. `start` returns the machine id as
-the provider ref — the host registers itself and answers the lease when
-it is up; nothing waits. `stop` deletes the machine with force; a
-machine already gone is stopped. `alive` reads the machine state
-(booting and running are alive, destroyed or missing is not).
-
-Costs follow the [Fly row above](#where-the-game-could-run): the class's
-per-second rate while the machine exists, the dedicated IPv4, storage
-and egress.
+Moved to [Dedicated host: data, routing, tunnel and providers](dedicated-host-ops.md#fly-machines-provider).
 
 ## Order of experiments
 
@@ -1062,7 +441,7 @@ host_agent sim view at player
 
 On a disposable repeat, try the ordinary local player’s leave/sign-out action through the host agent UI after the client joins pregame. Check both session roles, peer and player counts immediately afterward. A refusal, a disbanded lobby, or migration to the client identifies a failing retail transition. If the original host survives without a player, try starting the round.
 
-**Zero-local passes** only if that experiment or the host-mode implementation in step 2 meets all of the following checks. Repeat with the service-owned lobby and identical client. Require **two peers, exactly one session player**, and a world player with a live unit and no `local_user` on the host. On the client the same named player must be local. Verify remote input, a death and respawn, round results free of a host entrant, a second successful start and the last client leaving. Add a second remote for opponent damage, scoring and team objectives. The profile-based control uses the original lobby. The dedicated repeat uses the [playerless lobby methods](#playerless-lobby) to create and start the game without a local owner. This design still awaits a two-console run. [Player reader](../../crates/extensions/agent/src/reader.rs) · [Agent API](../runtime/agent-api.md)
+**Zero-local passes** only if that experiment or the host-mode implementation in step 2 meets all of the following checks. Repeat with the service-owned lobby and identical client. Require **two peers, exactly one session player**, and a world player with a live unit and no `local_user` on the host. On the client the same named player must be local. Verify remote input, a death and respawn, round results free of a host entrant, a second successful start and the last client leaving. Add a second remote for opponent damage, scoring and team objectives. The profile-based control uses the original lobby. The dedicated repeat uses the [playerless lobby methods](dedicated-host-ops.md#playerless-lobby) to create and start the game without a local owner. This design still awaits a two-console run. [Player reader](../../crates/extensions/agent/src/reader.rs) · [Agent API](../runtime/agent-api.md)
 
 Stop the two processes from this shell when finished.
 

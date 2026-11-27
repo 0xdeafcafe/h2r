@@ -714,7 +714,7 @@ h2 lab run --host laptop --name "Join test" --dedicated --map lockout --variant 
 
 The job builds or reuses the image like any run, then starts
 `h2 serve <disc> --system-link --host-light [--host-bots]` on it with
-`H2_HOST_LOBBY=1` ([Playerless lobby](../live/dedicated-host.md#playerless-lobby))
+`H2_HOST_LOBBY=1` ([Playerless lobby](../live/dedicated-host-ops.md#playerless-lobby))
 and `H2_BOOT_REALTIME=1`. The host gets a data root of its own under
 `scratch/<id>/data`, removed when the job ends, and skips the Halo 1 and
 map pack imports. Its agent socket is the run socket at `<root>/a/<id>.sock`.

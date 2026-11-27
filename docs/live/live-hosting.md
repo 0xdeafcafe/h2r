@@ -291,7 +291,7 @@ file's path and size and the manifest: a new extraction is a new set of
 addresses. Each object carries its content type and `Cache-Control:
 public, max-age=31536000, immutable`; a file with a compressed copy is
 uploaded as that copy, its `.br` one with `Content-Encoding: br` (every glb
-and JSON file of a current extraction, [live-art.md](live-art.md#packing)),
+and JSON file of a current extraction, [live-art.md](live-art-pipeline.md#packing)),
 else its `.gz` one with `Content-Encoding: gzip`. An interrupted upload resumes
 on the next start (files already there are skipped), and a published
 extraction costs one request to recognise. Once it is all there, a request

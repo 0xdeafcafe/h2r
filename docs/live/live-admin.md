@@ -1,7 +1,7 @@
 # Live service: admins, the MOTD editor and the playlist builder
 
-Who may publish title files — the message of the day and
-`multiplayer_hopper.dat`, the playlists — and the web admin area that edits
+Who may publish title files - the message of the day and
+`multiplayer_hopper.dat`, the playlists - and the web admin area that edits
 them. Builds on [live.md](live.md), [live-api.md](live-api.md),
 [live-security.md](live-security.md) and the formats in
 [live-motd.md](live-motd.md).
@@ -15,7 +15,7 @@ key can. Admins come from two places:
   `--admin <gamertag>` (repeatable), and both it and the embedded server
   `h2 play --live-local` starts read `H2_LIVE_ADMINS`: a comma-separated list of
   gamertags, trimmed and compared case-insensitively, merged with the
-  flags. There are no built-in admin names — no gamertag is an admin unless
+  flags. There are no built-in admin names - no gamertag is an admin unless
   someone configured or granted it. An invalid gamertag in either place is
   a startup error, so a typo cannot silently widen who is an admin. The
   server logs the configured admins (gamertags only) when it starts:
@@ -50,255 +50,21 @@ tokens; everything else about the endpoints is unchanged.
 
 ## 2. The admin API
 
-The editors speak structured JSON; the server builds the binary with
-`live-proto` and publishes it as the same title file
-`h2 live motd set` / `hopper import` publish. Reads are public like every
-read; writes need a `titles.write` token (operator or admin).
+Moved to [Live admin: the admin API](live-admin-api.md#2-the-admin-api).
 
 ### `GET /v1/titles/{title}/motd`
 
-The published `message_of_the_day.dat` as its editable fields, 404 until
-one is published (the embedded server publishes a default at start, see
-below). Public on a public server: the dashboard shows the header and the
-stats site's "Did You Know?" box cycles the messages from this read.
-
-```json
-{ "header": "Halo 2 is back", "messages": ["Welcome, Spartan.", "…"] }
-```
-
 ### `PUT /v1/titles/{title}/motd`
-
-The same shape, admin-only. The server writes the same text into all nine
-language slots (as `motd set` does) and answers
-`{"published": {name, sha256, size}, "motd": …}`. Limits as the format
-requires: 1..=32 messages, at most 255 UTF-16 units each, and a built file
-of at most 32,768 bytes (`0x8000`, the MOTD channel's download buffer,
-[live-motd.md §2.2](live-motd.md); a larger file would fail the game's
-download and show nothing). The server writes the 16-byte header the game
-validates (CRC, version 1, size; `live_proto::title_file`). A refused PUT
-leaves the published file as it was. The hopper PUT is the same with
-version 4 and a 131,072-byte (`0x20000`) cap.
 
 ### When the game shows it
 
-The game fetches the MOTD from title storage once per Xbox Live sign-in
-([live-motd.md §2](live-motd.md)): sign-in arms the channel, the resource
-manager downloads `9809/message_of_the_day.dat`, validates the header and
-only then sets the flag the two screens check. Nothing re-arms the channel
-mid-session, so **a MOTD published while the game is signed in shows
-after the next sign-in** (sign out and back in, or restart the game). The
-editor says so after a publish. The Live main menu shows the header once
-per screen visit; the matchmaking screen shows a random message,
-re-picked every 15 s.
-
-Files published before the header was traced carry 16 zero bytes there,
-which the game rejects. On start, the server (`h2 live serve` and the
-embedded one) republishes such a MOTD or hopper with a real header and the
-same body (`crates/live/live-server/src/title_headers.rs`); reads through the
-admin API accept them meanwhile.
-
 ### The default MOTD and keeping what you publish
-
-`h2 play --live-local` without Postgres keeps its log in the live data directory
-(`server/log`: `events.jsonl`, `blobs/`, `checkpoints.json`;
-`crates/live/live-server/src/filestore.rs`), so accounts, friends, games and
-published title files survive a restart; the game reads the MOTD only at
-sign-in, so a publish needs to outlive the session. Only if that directory
-is held by another running server does it fall back to memory (with a
-warning).
-
-When no MOTD has ever been published, the embedded server (on Postgres or
-the file store) publishes a default one at start
-(`crates/live/live-server/src/default_motd.rs`): a short header and 21 original
-"Did you know?" lines and gameplay tips. It never replaces a published one;
-edit it like any other.
 
 ### `GET /v1/titles/{title}/hopper`
 
-The playlists as JSON — 16 hoppers, each with its records (the entries
-within the hopper, the first `record_count` of them):
-
-```json
-{ "hoppers": [ {
-    "index": 0, "type": 4, "unused": false, "status": 1, "record_count": 2,
-    "name": "", "title": "Big Team Battle",
-    "description": "Join alone or as a party…", "ranges": [1, 8, 6],
-    "dwords": [ …18 numbers… ],
-    "records": [ { "id": 1, "string": "", "flags": 1, "dwords": [1, 0],
-                   "variant": { "name": "Team Slayer", "engine": 2, "team": true },
-                   "builtin": "team_slayer" } ]
-  }, … ],
-  "variants": [ { "key": "team_slayer", "name": "Team Slayer", "engine": 2, "team": true }, … ],
-  "templates": [ { "id": 2, "type": 4, "title": "Team Slayer", "description": "…",
-                   "min_players": 6, "max_players": 8, "ranges": [2, 3, 4],
-                   "dwords": [ …18… ], "entry": { "id": 50, "variant": "team_slayer" } }, … ],
-  "maps": [ { "id": 50, "name": "Lockout" }, … ],
-  "position": 1042 }
-```
-
-- `unused`: the slot is type 0, which the game reads as no hopper. The file
-  always has 16 slots; the built-in lineup fills 11 and leaves 12..16
-  unused. Its records are empty.
-- `variants`: the built-in game variants the server can write into an
-  entry by key: the record of one of the default lineup's scripts
-  (`rules::builtin::MATCHMAKING`, built by `variants::portable::record_for`
-  in `live_proto::hopper::defaults`, never from a disc), so each is mode 2
-  and `scripted` is true. `builtin` on a record names the one its variant
-  is byte for byte, if any. A record's `variant.scripted` says whether its
-  variant runs a rules script; the builder offers scripted variants only.
-- `templates`: the default lineup's human playlists, each a kind of
-  playlist a new one is made from: its type, sizes, waits and skill table
-  (the descriptor the game's validator wants, which the JSON fields alone
-  cannot build) and a first entry that suits it. `ranges` and `dwords` are
-  that descriptor's, so a builder's copy of a new playlist is whole.
-- `maps`: the retail multiplayer maps by entry id, the map list when the
-  owner's catalog (below) is not there.
-
-For Halo 2, a server with nothing published serves the built-in lineup
-([live-matchmaking.md §6.8](live-matchmaking.md)) here and from the file
-endpoint; other titles 404 until a file is imported. What the fields are
-(the full layout is [live-matchmaking.md §6](live-matchmaking.md)):
-
-- `title` / `description`: what the playlist list shows, the English one
-  of nine per-language UTF-8 slots (`+0x0c`, 16 bytes each; `+0x9c`, 128
-  bytes each). A write puts the text in all nine. At most 15 and 127 bytes.
-- `type` 1..5: 1 free for all, 2 ranked free for all, 3 unranked teams,
-  4 ranked teams, 5 clan match. `status` 0..3 (0 lets the game check the
-  maps itself; 1 ok, 2 error, 3 none). The three `ranges` are the first
-  three type parameters (`+0x5ec`): fewest and most players for types 1
-  and 2; teams, fewest and most a team for 3..5. The descriptor's dword
-  array carries the rest (§6.2 there).
-- `record_count` is the data block's entry count (`+0x44`). The
-  descriptor's `+0x08` is the playlist's stats id, which the server keeps
-  as it is.
-- `name`: the raw ASCII field at `+0x51b`. It overlaps a 128-byte table at
-  `+0x51c` that the game validates (`0x00193560`: each byte `i..=0x7f`), so
-  it normally reads empty and must not be changed; the server writes it
-  only when it differs from what is there.
-- Per record: `id` is a **map**: a multiplayer level id from the globals
-  tag (`matg +0x178`, the lookup `0x0019c5f0`); an id that is not one
-  marks the hopper as an error. `dwords[0]` (`+0x248`) is the record's
-  **weight**: session setup (`0x00192eb0`) picks a record at random with
-  probability weight / total, clamped to 1..1000. The rest of the slot from
-  `+0x24c` is the record's **game variant**, 0x130 bytes that session setup
-  copies out whole; `variant` decodes its name, game-engine index (1 CTF,
-  2 Slayer, 3 Oddball, 4 King, 7 Juggernaut, 8 Territories, 9 Assault) and
-  team flag, read-only. `string`, `flags` and `dwords[1]` lie inside the
-  variant (`string` over its first 0x48 bytes, name and engine included;
-  `flags` is its engine flags; `dwords[1]` its join-in-progress setting);
-  the server writes `string` only when it changes, so a round trip keeps
-  the variant whole.
-
-Every byte the JSON does not name is preserved; `live_proto::hopper`
-(`Descriptor`, `Rules`, `Entry`, `VariantRecord`) reads and writes all of
-them.
-
 ### `PUT /v1/titles/{title}/hopper`
 
-Admin-only. The body lists only the hoppers that changed; within one, only
-the fields given change:
-
-```json
-{ "hoppers": [ { "index": 0, "name": "Big Team", "record_count": 3,
-    "records": [
-      { "id": 2, "string": "two first", "flags": 0, "dwords": [0, 0], "from": 1 },
-      { "id": 1, "string": "one",     "flags": 0, "dwords": [0, 0] },
-      { "id": 3, "string": "a copy",  "flags": 0, "dwords": [0, 0], "from": 1 },
-      { "id": 4, "string": "",        "flags": 1, "dwords": [1, 0], "from": 0, "from_hopper": 5 }
-    ] } ] }
-```
-
-`type` is the field's name, as the GET has it (`hopper_type` is read
-too; before this the server read only `hopper_type`, so a type edit from
-the builder was silently dropped).
-
-`records`, when present, replaces the whole list (1..100 entries;
-`record_count` must then match or be left out). Each entry keeps its
-unknown bytes — the template blobs the game fills in — from the slot named
-by `from`: the entry's position in the hopper as it stands now. Absent
-means "this position", so an edit in place needs nothing; a reorder names
-where the entry came from, a copy names its source, a removal is simply a
-shorter list. `from_hopper` makes `from` name a slot of another hopper (as
-the file stood before this patch): that is how an entry, game variant and
-all, is copied between playlists. `title` and `description` are optional
-like every other field. Nothing the builder cannot edit is ever lost, and the
-published file re-inflates to the same 0x162cc0 image with the edits
-applied. The reply is `{"published": …, "hoppers": …, "position": …}`, the
-fresh state.
-
-New playlists, removals and built-in variants:
-
-```json
-{ "hoppers": [
-    { "index": 11, "template": 2, "title": "Modtacular",
-      "records": [ { "id": 50, "string": "", "flags": 0, "dwords": [5, 0], "variant": "team_slayer" },
-                   { "id": 20, "string": "", "flags": 0, "dwords": [1, 0], "variant": "classic_ctf" } ] },
-    { "index": 10, "clear": true } ] }
-```
-
-- `template` (an id from the GET's `templates`) writes that template's
-  whole descriptor first, with the lowest playlist id (1..100) no other
-  playlist has, then the other fields on top. It is how an unused slot
-  becomes a playlist: a patch naming an unused slot without one is refused
-  ("an unused slot: create it from a template first"), and so is a new
-  playlist with no entries. On a playlist it changes its kind.
-- `clear: true` zeroes the hopper's descriptor and entries, making it an
-  unused slot; nothing else may be sent with it. Pins on that index stay
-  (they are the server's, by index) until changed.
-- A record's `variant` (a key from `variants`) builds the entry afresh: the
-  map `id`, the weight `dwords[0]`, that variant, every other byte zero, as
-  the built-in lineup writes its entries. `string`, `flags` and
-  `dwords[1]` lie inside the variant and are ignored; `from` may not be
-  given with it.
-- A playlist the game's validator took before the patch (or one made from
-  a template) must still pass it after (`check_descriptor`: type, sizes,
-  skill table, playlist id), so a raw `type` that does not fit the range
-  fields is refused with the validator's reasons.
-- Only the hoppers named are checked: unused slots elsewhere never block a
-  publish.
-- Every entry of a named playlist runs a rules script (mode 2): a hopper
-  plays scripted variants only, so an entry whose variant is mode 0 (its
-  own game type), mode 1 (Firefight) or a mode the server does not know is
-  refused by playlist, entry and variant name. The same check runs in the
-  map gate ([`blocked_pairs`] lists such an entry as blocked) and, for a
-  whole file, on `PUT /v1/titles/{title}/files/multiplayer_hopper.dat`
-  (`h2 live hopper import`): the entry checks of this list that concern
-  scripts apply, so a disc image of the game's own hoppers (every entry
-  mode 0) is not importable; the map pairs are not checked at import, as
-  a map's census may be set after the file.
-- Each entry names, by its hash prefix, one saved or built-in script (the
-  default lineup's scripts included), and the
-  playlist's kind takes that script's capabilities (the script policy,
-  [rules-engine.md, "Roles, powers and capabilities"](../game/rules-engine.md#roles-powers-and-capabilities)):
-  ranked types (2, 4 and 5) refuse every `forge.*` capability, and the
-  unranked ones keep no deny list, so they refuse none. A refusal names
-  the playlist, the entry and the capability; a prefix no script has is
-  refused too.
-
-This is `apply_patch`, `check_scripts` and `check_file` in
-`crates/live/live-server/src/admin.rs`; the Worker serves the same
-router, so both homes check the same way.
-
 ### Importing the base image
-
-```
-h2 live hopper import <path> [--title 4D530064] [--server URL] [--data DIR]
-```
-
-`path` is the owner's own `n:\multiplayer_hopper.dat` (the raw image the
-game caches) or a download envelope; the command shows the 16 playlists it
-found and publishes the file. Game data never goes in the repo — only to
-the owner's server. Until one is imported or edited, Halo 2's hopper
-endpoints serve the built-in lineup.
-
-```
-h2 live hopper defaults --out FILE [--raw] [--force]
-```
-
-writes that built-in lineup (eight playlists and three Clankermatch ones
-on retail maps, built from the format alone) as a download envelope, or
-with `--raw` as the raw image the game caches, to edit offline or import
-elsewhere.
 
 ## 3. The web admin area
 
@@ -312,19 +78,19 @@ dashboard. Each side links to the other: the dashboard's "halo admin" pod
 opens `/games/halo2/admin`, and the Halo Admin title bar's "Server admin" goes back
 to `/dash/server`. The Halo Admin sections are:
 
-- **Message of the Day** — the header and the message blocks, with a
+- **Message of the Day** - the header and the message blocks, with a
   preview in the stats site's style and the game's limits enforced in the
   form (255 UTF-16 units, 32 messages). After a publish it notes that the
   game picks the new text up at its next sign-in.
-- **Playlists** — the list shows active playlists and how many of the 16
+- **Playlists** - the list shows active playlists and how many of the 16
   slots are in use. Add a playlist from a matchmaking template, or open a
   playlist to see its kind and player counts. Its toolbar duplicates or
   removes it, or resets its title, description, rotation and any ranges
   supplied by a historical preset. **Change rules** applies a matchmaking template while keeping
   the title, description and rotation. Clanker marks belong to the original
   playlist ID and slot. A duplicate starts from a human matchmaking template.
-- **Custom content** — §7.
-- **Clanker Training** — upload a batch from the h2recomp checkout using
+- **Custom content** - §7.
+- **Clanker Training** - upload a batch from the h2recomp checkout using
   the command shown on the empty page. With runs on the server, the map,
   tuning and batch filters use values from the uploaded runs across all
   pages. Open a run for its results, speed, bot stats and live or replay
@@ -360,7 +126,7 @@ Saves are the browser's first writes: each signs a self-issued 60-second
 token (`titles.write`) with the signed-in account's key, exactly as the CLI
 signs its requests, and sends it as a bearer header.
 
-### The catalog
+### The catalogue
 
 `h2 live assets extract` (and `h2 play --live-local`, which runs it) writes
 `catalog.json` beside the art manifest, from the owner's own disc; it is
@@ -422,20 +188,20 @@ unconfirmed), and anything about a variant beyond its name and type.
 Clanmatch, Training Ground) and later ones (Team Slayer, Double Team, Team
 Snipers, Team Hardcore, Big Team Battle with the map packs, Shotty
 Snipers, the later Rumble Pit). Each is a title and description (or the
-catalog playlist whose text to use), optional range values, and its games
+catalogue playlist whose text to use), optional range values, and its games
 as descriptive references: game type, a built-in variant name to prefer,
 team or not, map display names and a weight. They are written from
 public knowledge; rotations and weights are approximate, and each preset
 says what is uncertain.
 
-A preset resolves in the browser against the catalog and the published
+A preset resolves in the browser against the catalogue and the published
 file. A map resolves by display name to its id. A game variant cannot be
 authored (its 0x130 bytes are settings the builder does not model), so
 each entry copies a whole published entry that plays the same game type
-— preferring the named variant, then the same team play — with
+- preferring the named variant, then the same team play - with
 `from`/`from_hopper` (the builder's per-entry variant list also offers
 the server's built-in variants, which a preset does not use yet). Whatever does not resolve (a map the game does not
-have, a game type no published entry plays, no catalog at all) is listed
+have, a game type no published entry plays, no catalogue at all) is listed
 as unavailable and left out; a preset with nothing resolved changes
 nothing. So a preset can set: the title and description, the range
 values it names, which maps, how often each comes up, and which existing
@@ -507,8 +273,8 @@ h2 live account export <gamertag>          # prints it (and a warning)
 ```
 
 The CLI checks with the server that the key it holds is still the
-account's current key — the same check `account import` makes in the other
-direction — and writes the browser's account entry (`{xuid, gamertag, id,
+account's current key - the same check `account import` makes in the other
+direction - and writes the browser's account entry (`{xuid, gamertag, id,
 server, server_id, kid, key, x}`, the key the base64url seed) to a 0600
 file, since it is a private key. With the web app open, go to
 the dashboard's **import account** (`/dash/server/import`, also a row of the
@@ -592,7 +358,7 @@ the account's open invites, even if it still holds a grant for future invites.
 The operator uses `h2 live invite grant <gamertag> [--open-cap N]` and
 `h2 live invite ungrant <gamertag>` with the server key in `--data`.
 Both the dashboard and CLI use the grant endpoints in
-[Server invites](live-api.md#server-invites). The server signs
+[Server invites](live-api-sessions.md#server-invites). The server signs
 `InviteGrantSet` or `InviteGrantRevoked` on the target account stream
 and records the acting admin or operator in `by`. The permission is
 replayed from the log at startup.
@@ -610,7 +376,7 @@ Account-created invites use a signed `InviteCreated` event and the same
 a non-admin account, with one slot replenished per minute. Admins have a
 separate burst of ten with the same refill rate.
 [Request tokens](live-security.md#3-request-tokens) covers authorisation
-and [Server invites](live-api.md#server-invites) describes the endpoints.
+and [Server invites](live-api-sessions.md#server-invites) describes the endpoints.
 
 The browser mock (`bun run dev`) serves the dashboard endpoints
 (`web/mock/admin.ts`). `H2_MOCK_ADMIN=1` makes accounts signed up in the
@@ -659,180 +425,14 @@ permission to revoke that invite.
 
 ## 7. Custom content: moderation
 
-Players share custom and modded maps through the server's content store
-([maps.md](../game/maps.md) §5, [live-api.md](live-api.md) "Custom maps"). Admins
-(and the operator) moderate it with tokens for `lxm` `content.moderate`:
-
-| endpoint | does |
-|---|---|
-| `GET /v1/admin/content` | `{packs, maps, blobs, reports, uploads_off, position}`: every pack (including members, state and count of pack and member reports), every package (its summary plus `state` and `reports`), every stored blob (`sha256, size, uploader, state, reports, stored_at`), the reports newest first (`target, id, by, reason, at`), and the gamertags whose uploads are off |
-| `POST /v1/admin/mod-packs/{id}/{action}` | applies one action to a pack and all of its members |
-| `POST /v1/admin/maps/{map_id}/{action}` | acts on a package |
-| `POST /v1/admin/content/{sha256}/{action}` | acts on a blob, by hash |
-| `PUT /v1/admin/uploads/{gamertag}` `{allowed}` | switches an account's uploads and publishes off or on |
-| `PUT /v1/hoppers/{hopper_id}/pins` `{map_ids}` | the custom maps a matchmaking hopper allows (empty: retail only) |
-
-The actions, and the `state` they leave:
-
-- `hide` → `hidden`: the bytes or manifest stay, but reads answer 410 Gone,
-  lists leave it out, and sessions on it are refused. `unhide` undoes it.
-- `delete` → `deleted`: a blob's file is removed (its uploader's quota is
-  freed); a package's manifest is dropped. Reads answer 410. A fresh upload
-  or publish of the same hash or `MapId` brings it back.
-- `block` → `blocked`: deleted, and refused from now on (uploads and
-  publishes answer 410). A hash can be blocked before anyone uploads it.
-  `unblock` leaves it deleted.
-
-Taking down a pack prevents downloads of its member manifests, images and
-exclusive layers. Sessions cannot advertise any of those members. A layer
-shared with a visible mod stays available to that mod. The admin can still
-inspect the pack and its reports. The public event log also omits the
-pack, member and exclusive blob streams. Unhiding the pack restores access to
-members that have no separate takedown. Unblocking leaves the pack deleted
-until its uploader republishes it.
-
-A package is refused in sessions (410) when it, or any of its layers, is
-hidden, deleted or blocked; a deleted layer alone shows up in the package's
-`missing` list. Each action is a server-signed `ContentModerated` event on
-the target's stream (`{target, id, action, by}`, `by` the admin's xuid),
-reports are `ContentReported` (`POST /v1/mod-packs/{id}/report`,
-`/v1/maps/{id}/report` or
-`/v1/content/{sha256}/report` by any account), the upload switch is
-`ContentUploadsSet` on the account's stream, and pins are `HopperPinsSet`
-on `hopper-<id>`. All of it replays from the log, so it survives restarts.
+Moved to [Live admin: moderation](live-admin-moderation.md#7-custom-content-moderation).
 
 ### Screenshot review
 
-Open **Screenshot review** at `/dash/admin` to see the held images and why
-they entered the queue. **Show image** fetches the private, normalised
-preview. **Approve** makes it public across all assigned galleries.
-**Remove** hides all copies permanently, frees its quota and attempts to
-delete the stored image. The same review page holds approved captures
-that a player reports. Existing uploader gallery images enter the queue
-on replay if their upload predates proof checks.
-
-Three distinct images flagged by the classifier or removed in review
-switch off the uploader's content uploads. Player reports without an
-admin removal do not count. Approval clears a classifier strike on that
-hash. An admin can restore uploads through the account's upload switch.
-
-The Worker and the native server share the review queue and rules.
-Native Live holds captures for review when a local classifier is absent.
-The optional local adapter sends the display WebP in an HTTP POST and
-expects a JSON response such as `{"nsfw":0.25}`, with a numeric score
-between zero and one. The operator supplies the model service on loopback.
-[Classifier setting](../runtime/switches.md#tools) · [Screenshot API](live-api.md#verified-screenshot-uploads)
-
-**Pins.** The game's hopper file has no room for a `MapId`, so pins are kept
-beside it, keyed by the `hopper_id` sessions advertise. A session with
-`hopper` or `ranked` flags may only advertise a retail map or one pinned on
-its hopper. A pin allows a custom map; it does not make a playlist play
-it (live-matchmaking.md §6.10).
-
-**The retail list.** `<data>/retail-maps.sha256` (next to the server's key)
-holds the hashes of retail maps, in `sha256sum` output form:
-
-```sh
-cd /path/to/your/disc/maps && sha256sum *.map > <data>/retail-maps.sha256
-```
-
-Blobs with a listed hash are refused, so the store never holds a retail
-map. A line that names its map (`<hex>  lockout.map`) also makes
-`MapId::retail(name, hash)` a retail id, which ranked sessions may use.
-The file is absent, so empty, by default: nothing from a disc ships with
-the server. It is read on each upload, so edits apply at once. Whatever
-the list says, a manifest with no layers (only a retail base) is never
-published: it would be the retail map itself.
-
-The Halo Admin's **Custom content** tab (`/games/halo2/admin?tab=content`, linked
-from the dashboard's "halo admin" pod) lists packs with expandable member
-maps, standalone maps and blobs. It shows their states, report counts, available
-actions, reports and upload switch; the playlist builder pins published packages per hopper.
-
 ## 8. Player reports
 
-Players report each other from the game's player-details screens
-(`XOnlineFeedbackSend`, [live-api.md](live-api.md) "Player reports"), and
-any account can report another through the API. Only admins and the
-operator read the reports: neither the reporter nor the reported player
-sees them, in the log or anywhere else. Admins review them with tokens for
-`lxm` `reports.moderate`:
-
-| endpoint | does |
-|---|---|
-| `GET /v1/admin/reports?state=open\|closed\|all` | `{items, players, position}`: the reports newest first, and a record for every reported player in them |
-| `POST /v1/admin/reports/{id}/dismiss` `{note?}` | closes a complaint: nothing to act on |
-| `POST /v1/admin/reports/{id}/note` `{note}` | closes a complaint with a note kept on the player's record |
-
-`state=open` (the default) lists complaints nobody has reviewed;
-`closed` the reviewed ones; `all` everything, the commendations
-(`good_attitude`, `good_session`) included, which are never reviewed. An
-item is `{id, target, by, kind, negative, reason?, game_id?, at, review?}`:
-`id` is the report's log position, `target` and `by` are `{xuid, gamertag}`,
-`game_id` the game the reporter was in when the game said, and `review`
-`{action, note?, by?, at}` once an admin acted (`by` absent when the operator
-did). A player's record is `{complaints, open, commendations, notes}`, over
-every report against them, with the admins' notes oldest first. A note
-needs text; either is at most 500 characters. Reviewing a commendation is
-400, a report already reviewed 409.
-
-Each report is a server-signed `PlayerReported` event and each review a
-`ReportReviewed` event, both on the reported player's `reports-<xuid>`
-stream, so the queue replays from the log. Reviewing a report bans no
-one; banning is its own action (§9), which can name the report it answers.
-
-Player reports are the service's, not the game's, so they are on the
-dashboard's server screens (§5), not the Halo Admin: **player reports** on
-the accounts screen opens `/dash/server/reports`, which shows the open
-complaints with each player's record, a note field, and Note and Dismiss;
-closed and everything list the rest. The queue is one component
-(`web/src/dash/Reports.tsx`) over `web/src/admin/reports.ts`, laid out
-plainly for now.
+Moved to [Live admin: moderation](live-admin-moderation.md#8-player-reports).
 
 ## 9. Bans
 
-An admin bans an account for a while or until lifted, often in answer to a
-report (§8), with the same `reports.moderate` tokens:
-
-| endpoint | does |
-|---|---|
-| `POST /v1/admin/bans/{xuid}` `{reason, until?, report?}` | 201 `{ok, position}`: bans the account; a newer ban replaces the one in force |
-| `POST /v1/admin/bans/{xuid}/lift` `{note?}` | lifts the ban in force; 409 when there is none |
-| `GET /v1/admin/bans?state=active\|all` | `{items, position}`: the bans in force (the default) or every ban, newest first |
-
-`reason` is what the player is told, required, at most 500 characters.
-`until` is an RFC 3339 time in the future; without it the ban lasts until
-lifted. `report` is the log position of a report against the same player.
-Admins can't be banned (403). An item is `{id, target, reason, until?,
-report?, by?, at, state, lifted?}`: `state` is `active`, `expired`,
-`lifted` or `replaced`, `by` the admin's gamertag (absent for the
-operator), and `lifted` `{note?, by?, at}`.
-
-While a ban is in force the server refuses every token the account
-presents for a write scope with `banned` (403), saying until when and why:
-signing in (`SignedIn`), the presence heartbeat, sessions, games, the co-op
-relay, reports, cloud-save writes and the rest all go through the same
-check. Reads stay open (`read`, `recovery.read`, `storage.read`,
-`log.read`), so the player can read their notice and their saves. An end
-date is checked whenever a token is used, so a ban ends by itself with
-nothing written.
-
-In the game, the Live HLE turns a `banned` answer into `0x80151200`
-(account requires management): at sign-in the game shows its account
-dialog (`0x27`, [live-boundary.md](live-boundary.md) §7), and a ban during
-a session reaches the connection task on the next heartbeat with the same
-code.
-
-Each ban is a server-signed `AccountBanned` event (`{target, reason,
-until?, report?, by?}`) and each lift an `AccountUnbanned` event
-(`{target, ban, note?, by?}`), on the account's `bans-<xuid>` stream, so
-the bans replay from the log. Admins, the operator and the banned player
-read them ([live-api.md](live-api.md) "Private events").
-
-On the dashboard, **bans** on the accounts screen opens
-`/dash/server/bans` (`web/src/dash/Bans.tsx`): the bans in force with a
-note field and Lift on each, and every ban under "every ban". Each open
-report in the queue has a Ban button that bans its player for the report,
-for a day, a week, 30 days or until lifted, with the reason; an admin
-viewing a player's dashboard screen sees their ban with Lift, or Ban. A
-banned player sees the notice on their own screen.
+Moved to [Live admin: moderation](live-admin-moderation.md#9-bans).

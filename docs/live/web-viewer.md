@@ -75,11 +75,11 @@ follow-a-player and free-fly cameras (F; WASD, Q/E down and up, drag with
 either button to look or click to lock the mouse, wheel or trackpad for
 speed, Shift to go faster, one finger to look and two to fly on a touch
 screen, or a gamepad, `viewer/flycam.ts`). A grid floor appears when the
-map has no geometry. The [map uplink](viewer-overlay.md#the-overlay)
+map has no geometry. The [map uplink](viewer-overlay-layers.md#the-overlay)
 shows geometry load progress, offers **Retry** after a failed load and
-puts level settings in the 3D view's **View** panel. [Name tags](viewer-overlay.md#name-tags)
+puts level settings in the 3D view's **View** panel. [Name tags](viewer-overlay-layers.md#name-tags)
 give priority to the followed player and reduce crowded labels to pips.
-The level [appears in a sweep](viewer-overlay.md#progressive-reveal) from
+The level [appears in a sweep](viewer-overlay-layers.md#progressive-reveal) from
 the opening focus, with a cross-fade when the browser requests reduced motion. The [opening camera](viewer-overlay.md#opening-camera)
 follows the player selected by `?player=`, the signed-in player or the
 embedding page when present, or frames the playable area. The

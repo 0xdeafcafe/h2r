@@ -159,7 +159,7 @@ the record's prefix, that `rules::verify::load` takes the IR and that
 the record uses the script index or the script's retail settings layout
 (`Header::engine`). A record with mode 2 and no script
 is refused. So a variant file plays with no server, and Live keeps game
-variants as these files ([live-api.md](../live/live-api.md#game-variants)).
+variants as these files ([live-api.md](../live/live-api-content.md#game-variants)).
 
 **To other machines: the Live session.** The wire codec drops the spare
 bytes (`0x7cc50`/`0x7d520`, **E**, game-options.md "How a variant reaches
@@ -1999,7 +1999,7 @@ Tooling:
 its pure half in `web/src/lib/rules.ts`) is where a script is written,
 checked, tested and saved on the web (Studio's Game type script window
 is the desktop editor, over the same `rules::ide` and workbench). The browser runs
-no compiler: Live's [Rules scripts](../live/live-api.md#rules-scripts)
+no compiler: Live's [Rules scripts](../live/live-api-content.md#rules-scripts)
 routes call `rules::workbench` in both homes.
 
 The **Workbench** tab is one screen. The editor is on the left with the
@@ -2007,7 +2007,7 @@ check beside it (Problems, What a map needs, Budget, Capabilities); under them t
 (generated matches and their summary) sits beside one match's results.
 Under 1100 px the parts stack in that order. The page's other tabs are **My Scripts** and **My
 Game Types**. The layout, its states and its copy are described in
-[web-app.md, "Game type scripts"](../live/web-app.md#game-type-scripts).
+[web-app.md, "Game type scripts"](../live/web-app-pages.md#game-type-scripts).
 
 - **Check.** `workbench::check` compiles, verifies and measures source:
   the IR hash, errors with line and column (0 for a verifier refusal or
@@ -2152,7 +2152,7 @@ Game Types**. The layout, its states and its copy are described in
   (`game_variants::pack_options`). **Download** asks Live's
   `POST /v1/variants/bundle` for the `.h2variant` file and works signed
   out; **Publish** posts it to the account's game variants
-  ([live-api.md](../live/live-api.md#game-variants)). The **My Game
+  ([live-api.md](../live/live-api-content.md#game-variants)). The **My Game
   Types** tab lists them beside My Scripts, and a player's page lists
   their public ones; each has a page (`statsPath("/variants/:id")`) with
   its settings, its script (opened read-only here) and the file.

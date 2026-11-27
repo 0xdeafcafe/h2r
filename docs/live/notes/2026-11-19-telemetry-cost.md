@@ -1,6 +1,6 @@
 # Telemetry cost: frame sizes and CPU per version
 
-Evidence for [Live telemetry](../live-telemetry.md#packed-frames). Nothing
+Evidence for [Live telemetry](../live-telemetry-packed.md#packed-frames). Nothing
 here states what the code does today; the design page does. Measured on the
 development Mac in a release build, the version 6 rows estimated before they
 were run; commit not recorded (moved from the design page).

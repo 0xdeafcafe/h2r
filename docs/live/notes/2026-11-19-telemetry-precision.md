@@ -1,6 +1,6 @@
 # Telemetry precision and replay measurements
 
-Evidence for [Live telemetry](../live-telemetry.md#packed-frames) and the
+Evidence for [Live telemetry](../live-telemetry-packed.md#packed-frames) and the
 [Worker](../live-worker.md). Nothing here states what the code does today;
 the design pages do.
 
@@ -10,7 +10,7 @@ The negotiated v8 stream uses about 81 bytes/player/s on the seeded
 ten-minute, 16-player match. The v7 baseline below uses about 145.
 These totals include each record's length prefix and a complete key
 every 150 samples. The comparison covers transfer size with the same
-sampling rate and field precision. [Live codec](../live-telemetry.md#version-8-live-wire) ·
+sampling rate and field precision. [Live codec](../live-telemetry-packed.md#version-8-live-wire) ·
 [Benchmark](../../../crates/live/live-proto/tests/packed_v8.rs)
 
 ## Match and measurement
@@ -27,8 +27,8 @@ starts with its own keyframe. Transfer sizes are response-body bytes.
 | Live bytes/frame | 290.23 | 271.69 | **154.93** |
 | Encode µs/frame, original run | 15.72 | 17.09 | 17.20 |
 | Encode µs/simulation tick, original run | 7.86 | 8.54 | 8.60 |
-| Encode µs/frame, mean of five paired runs | — | 28.4 | 28.2 |
-| Encode µs/simulation tick, paired mean | — | 14.2 | 14.1 |
+| Encode µs/frame, mean of five paired runs | - | 28.4 | 28.2 |
+| Encode µs/simulation tick, paired mean | - | 14.2 | 14.1 |
 | Replay JSON bytes | 68,037,538 | 88,675,937 | 90,082,165 |
 | Replay JSON gzip bytes | 11,773,243 | 13,052,003 | 13,517,251 |
 | Replay binary chunk bytes | 2,405,346 | 2,110,374 | **1,322,664** |
@@ -130,8 +130,8 @@ ten-bit representation. A future schema extension needs corresponding Rust
 and web field definitions, keyframe coverage and a versioned fixture.
 
 The wire grammar, storage routes and compatibility rules are in the
-[telemetry reference](../live-telemetry.md#packed-frames) and
-[frame chunk API](../live-api.md#frame-chunks).
+[telemetry reference](../live-telemetry-packed.md#packed-frames) and
+[frame chunk API](../live-api-events.md#frame-chunks).
 
 ## Finished replay archives
 
@@ -150,7 +150,7 @@ blob back, checks its SHA-256, verifies the decoded frames, and backs up
 original objects and signed index rows before publishing the final pointer.
 For seek playback, the index can seed each segment with the preceding
 known machine travel. The seed is index metadata and the decoded source
-frames stay exact. [Archive API](../live-api.md#finished-replay-archives)
+frames stay exact. [Archive API](../live-api-details.md#finished-replay-archives)
 
 The migration receipt reports compressed payload and immutable index-node
 bytes separately. Both count toward the archive's storage cost.
@@ -194,7 +194,7 @@ including immutable index nodes.
 The local Worker smoke exercised game close, automatic publication, R2
 reads and admin verification with a two-frame recording. Closing the game
 and observing publication took 622.7 ms. Fetching and decoding each of its
-two segments took 13.8 ms. [Worker smoke measurements](../live-worker.md#finished-replay-archive-smoke)
+two segments took 13.8 ms. [Worker smoke measurements](../live-worker-slices.md#finished-replay-archive-smoke)
 
 The following compressor comparison used identical inflated H2AR bodies from
 revision `65b71186`. Each segment was independently compressed. These are

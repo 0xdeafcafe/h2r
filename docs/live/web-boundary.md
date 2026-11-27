@@ -344,7 +344,7 @@ sample (`web/mock/admin.ts`).
   edge-served assets and cache hits are outside that count. WebSocket
   messages and co-op relay bytes are outside the request metric.
 - Event types count log records. Stored bytes describe the logical
-  event log, published map catalog and private save blobs.
+  event log, published map catalogue and private save blobs.
 - Daily usage covers up to 400 retained UTC days. The current day is
   still in progress.
 - `h2 live store copy` copies the log and blobs, which supply the derived

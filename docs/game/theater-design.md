@@ -141,7 +141,7 @@ The start state is the engine's own game options and nothing from disk.
 local games included, and `SIM_UPDATE_APPLY` applies it. It is the record
 the engine's synchronous protocol sends whole to a client, which then
 simulates from nothing else (**E**:
-[live-coop.md](../live/live-coop.md#13-the-synchronous-machinery)). Co-op
+[live-coop.md](../live/live-coop-lockstep.md#13-the-synchronous-machinery)). Co-op
 over Live runs campaign on that path (**Run**: live-coop.md, the status
 at its head). The film stores that record, as Halo 3's film does.
 

@@ -262,7 +262,7 @@ A successful sign-in with the **per-user** message warning sets `0x0050944f` in 
 | `0x003c9ae4` | XONLINE | `0x004036f7` | Inside the instruction at `0x004036f6`, which combines registers. The following real call begins at `0x004036f8` and targets D3D helper `0x00403360`. |
 | `0x003dbc19` | XNET | `0x002d5691` | Inside the instruction at `0x002d568f`, which restores the stack pointer from a frame local. No call starts at the raw site. |
 
-The other 182 supplied sites decode as direct calls to the listed targets when aligned from independently discovered containing functions. No additional false call sites were found. Existing function discovery folds a few small thunks into neighbors; public entry addresses and ABI were checked directly, rather than treating every discovered-function label as authoritative. For example, the update callback starts at `0x00236926`; a speculative containing-function seed at `0x00236925` is not its real entry.
+The other 182 supplied sites decode as direct calls to the listed targets when aligned from independently discovered containing functions. No additional false call sites were found. Existing function discovery folds a few small thunks into neighbours; public entry addresses and ABI were checked directly, rather than treating every discovered-function label as authoritative. For example, the update callback starts at `0x00236926`; a speculative containing-function seed at `0x00236925` is not its real entry.
 
 ## What this implies for the first HLE milestone
 

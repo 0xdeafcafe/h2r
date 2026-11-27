@@ -48,7 +48,7 @@ bundle fetch on a new container, the title's boot to its main menu (about
 registration ([dedicated-host.md](dedicated-host.md#where-the-game-could-run)).
 
 **What the light profile already skips** (**Code**,
-[Light host](dedicated-host.md#light-host)): every steady-state world draw
+[Light host](dedicated-host-light.md#light-host)): every steady-state world draw
 with the HUD and effect draws under it, texel reads and decodes, vertex and
 index caches, PCM mixing and output, movies, the kernel trace, and the
 disc image's resident pages after a bulk read. A gameplay frame is already
@@ -107,7 +107,7 @@ start and when their packets complete feeds back into the tick
 ([sim-budget.md](../perf/sim-budget.md#headless-guest-dependencies)), so
 the Rust body keeps admission, pitch and completion order and drops the
 work that only shapes samples. Cosmetic pruning by switch stays off for the
-reasons in [Measure before pruning](dedicated-host.md#measure-before-pruning).
+reasons in [Measure before pruning](dedicated-host-light.md#measure-before-pruning).
 
 **Tick rate.** The sim is fixed at 30 Hz and clients expect that rate, so
 there is no lower "network rate" to drop to, and there are no in-between
@@ -167,7 +167,7 @@ silicon) qualify less often. The mapping is private and preserves guest writes. 
 
 **Private stores and slim image.** The bundle accepts verified stores for
 the two shared resource maps. The menu and playable maps remain contiguous
-for native catalog and navigation readers. Both host child paths mount bundled
+for native catalogue and navigation readers. Both host child paths mount bundled
 stores. The Linux staging script accepts a matching slim coverage export.
 Qualification requires zero store misses and zero coverage fallbacks on
 the light-host corpus and the lobby sequence.
@@ -299,7 +299,7 @@ Incomplete regional coverage uses the configured default.
 The host agent exposes live per-peer RTT for the same-client comparison.
 A historical network median still needs a trusted association between
 the measured guest peer, its Live account and its network at match time.
-[Probe protocol and selection](live-matchmaking.md#ad-hoc-dedicated-hosts)
+[Probe protocol and selection](live-matchmaking-search.md#ad-hoc-dedicated-hosts)
 
 ### Caps
 
@@ -467,4 +467,4 @@ The table lists outstanding implementation work. Measurement results go in a dat
 - [sim-light.md](../perf/sim-light.md): the memory levers for sim batches, and why mapped reads and stores do not reach a sim's cache slots.
 - [sim-budget.md](../perf/sim-budget.md) and [sim-attribution.md](../perf/sim-attribution.md): where the tick goes, and the A/B method.
 - [sim-rewrite.md](../engine/sim-rewrite.md): the phases the CPU half depends on.
-- [live-matchmaking.md](live-matchmaking.md#ad-hoc-dedicated-hosts): region choice and the peer fallback.
+- [live-matchmaking.md](live-matchmaking-search.md#ad-hoc-dedicated-hosts): region choice and the peer fallback.

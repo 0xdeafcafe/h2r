@@ -35,7 +35,7 @@ exports:
 |-------|----------|------|
 | `0x003a9d74` | `0x003a87b3` | storage file download (by service id, to memory) |
 | `0x003a9d65` | `0x003a85d4` | service record query / result read |
-| `0x003a9d83` | `0x003a88c7` | sibling storage op (forwards to `0x003c70c5`, next to the readfile task builder — likely the writefile side) |
+| `0x003a9d83` | `0x003a88c7` | sibling storage op (forwards to `0x003c70c5`, next to the readfile task builder - likely the writefile side) |
 | `0x003a07a3` | `0x003b87be` | task create/attach (sub-type 2) |
 | `0x003a07ae` | `0x003b87f3` | task attach (sub-type 3) |
 | `0x003a07c4` | `0x003b65f8` | task pump/continue, budget 100 (0x64) per call |
@@ -51,8 +51,8 @@ exports:
 - `0x0006bff0` requires session handle `[0x00467214] != -1` and online-state
   helper `0x0006cd50() == 1`; calls `0x3a0671`; loops the 13-entry table at
   `0x00467178` calling `0x3a067c`; arms four async-transfer descriptors via
-  `0x00080f70` — `0x00477058`, `0x0047d8f4`, `0x00479780` (MOTD), plus
-  `0x00479750` — then calls `0x0008cc40` (starts a transfer: allocates a
+  `0x00080f70` - `0x00477058`, `0x0047d8f4`, `0x00479780` (MOTD), plus
+  `0x00479750` - then calls `0x0008cc40` (starts a transfer: allocates a
   0x14-byte record from the pool at `[0x004cf78c]+0x44`, stride
   `[+0x24]`, capacity `[+0x38]`; calls thunk `0x3a07a3(0, &rec+0x0c)` →
   stores the XONLINE task handle at rec+0x0c, sets rec `+2 = 1`, state
@@ -70,14 +70,14 @@ exports:
 - Game wrapper `0x0008eab0(handle, code_enum, arg2, arg3)`: requires
   signed-in state (`0x0006b5d0(handle)==2`), maps a small enum through the
   switch table at `0x0008eda0` (24 entries) to a packed service code
-  `(service_type << 8) | service_id` — enum 0 → `0x09c1` (type 9 =
+  `(service_type << 8) | service_id` - enum 0 → `0x09c1` (type 9 =
   title-storage, service id `0xc1`); then calls export `0x3a9d74`.
 - `0x3a87b3` (inside XONLINE): resolves the caller's logon service directory
   (per-user records at `ctx+0x13e0`, 0x48 bytes each), finds the record whose
   byte0 = service id and byte1 = 9 (storage); errors `0x80155a03` (no
   services), `0x8015000c` (wrong type), `0x80150001` (buffer smaller than the
   service record's advertised size). The record carries the **server path as
-  a wide string**, converted to ASCII (0x100-byte buffer) — i.e. the filename
+  a wide string**, converted to ASCII (0x100-byte buffer) - i.e. the filename
   on the wire comes from the service directory delivered at logon, not from
   the client binary.
 - It then builds the HTTP task via `0x003c6f4d` → `0x003c7b28`:
@@ -99,10 +99,10 @@ exports:
 - The transfer records are pumped through `0x0008cd60` → thunk `0x3a07c4`
   with a 100-unit budget; handles are closed with `0x0006b640` when done.
 - When a transfer completes, the engine (pump table `0x004d8c28`) sets bit 1
-  of the descriptor's flags word — for MOTD that is `0x00479784`
+  of the descriptor's flags word - for MOTD that is `0x00479784`
   (`0x00479780` descriptor object; `+0x08` = `0x00479788` is the state/count
   word). `0x0008ca50()` is the public gate: `count != 0 && flags & 2`.
 - Sign-out/teardown (`0x0006cbf7`) clears bit 1 on all four channel flag
-  words — the cached MOTD/hopper are invalidated and re-fetched on the next
+  words - the cached MOTD/hopper are invalidated and re-fetched on the next
   sign-in.
 

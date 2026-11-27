@@ -143,7 +143,7 @@ JWT themselves, the way AT Protocol service auth works.
   read token before expiry on both public and private homes. For co-op relay, both homes
   check the bearer token and session membership before upgrading. The
   relay rechecks membership and accepts refreshes from the same account.
-  [Relay protocol](live-api.md#co-op-relay)
+  [Relay protocol](live-api-social.md#co-op-relay)
 - **Reads are public by default**: viewing games, accounts and the event
   log needs no token, which is what the web app does. A server can switch
   that off (`--private`), and then readers need a token too.
@@ -238,7 +238,7 @@ only player XUIDs populate presence, session membership and Ranked results.
 Raw events on the `hosts` stream are visible only to admins and the
 operator. Roster members read their lease endpoint through
 `GET /v1/hosts/{lease}`.
-[Ranked admission](dedicated-host.md#routing-assignment-and-arbitration)
+[Ranked admission](dedicated-host-ops.md#routing-assignment-and-arbitration)
 
 ## 4. Base URL and discovery
 
@@ -285,7 +285,7 @@ Not built yet; the formats above are chosen so it can be.
   playlist file inflates to about 1.46 MB). Ingest messages have a 16 KiB
   cap before authentication and throughout the session on both deployments.
   Batched ingest allows at most 16 packed frame records per message.
-  A [presence heartbeat batch](live-api.md#presence-heartbeats) accepts
+  A [presence heartbeat batch](live-api-social.md#presence-heartbeats) accepts
   at most four single-use tokens, each authenticated independently.
   Writes have an in-memory budget per author and method. API GET and HEAD
   requests share a budget of 30 requests per second per client IP with a
@@ -296,10 +296,10 @@ Not built yet; the formats above are chosen so it can be.
   Requests with no trusted IP share a fallback bucket.
 - **Map outline writes** require an admin or the operator with a
   `games.write` token. That role is required for both the first outline
-  and any replacement. [Outline API](live-api.md#map-outline)
+  and any replacement. [Outline API](live-api-social.md#map-outline)
 - **Content downloads** check read authorisation and the blob's moderation
   status before streaming it from storage. The server can stream large
-  packages without buffering the full download. [Content API](live-api.md#custom-maps)
+  packages without buffering the full download. [Content API](live-api-content.md#custom-maps)
 - CORS: public reads allow any origin, so a web app served elsewhere can
   read any server; writes allow none.
 - Postgres credentials come only from the environment or the `--db` URL;

@@ -153,7 +153,7 @@ repository. It travels in the private host-data bundle as `image/`,
 listed in `host-data.json` with its size and SHA-256 like every other
 file (`crates/live/host-data/src/bundle/image.rs`). The image holds only
 public code: CI builds the Linux `h2` and pushes the image on every push
-to master ([Deploy from CI](live-worker.md#deploy-from-ci)).
+to master ([Deploy from CI](live-worker-deploy.md#deploy-from-ci)).
 
 `h2 host run` installs the verified bundle under `H2_HOST_CACHE`, then
 runs `<cache>/<bundle sha>/image` unless `--out` or `H2_IMAGE` names
@@ -190,7 +190,7 @@ h2 host bundle --disc "$H2_DISC" --image deploy/host/stage/image \
 
 Then upload `host-data.tar.zst` and `host-data.json` to the private
 bucket and point Live at the new URL and SHA-256
-([Upload to private R2](dedicated-host.md#upload-to-private-r2)). Hosts provision the new bundle under its own digest beside
+([Upload to private R2](dedicated-host-ops.md#upload-to-private-r2)). Hosts provision the new bundle under its own digest beside
 the old one; a packed host's matches already running keep theirs. A
 change that leaves the generator alone (the Worker, the web, Live, the
 supervisor) keeps the stamp, and the bundled module keeps working.
@@ -500,9 +500,9 @@ in one small, marked place (a `mod` line, a route line, a match arm).
 | 2 | `dh-provider` | astra | `live-server/src/hosts.rs`, `hosts/mod`, `hosts/local.rs`, lifecycle + reaper | `live-server/src/lib.rs`, `app.rs` (one field + alarm call) |
 | 3 | `dh-api` | sol | `live-server/src/http/hosts` routes (or `http_hosts.rs`) | `http.rs` router lines |
 | 4 | `dh-identity` | astra | `live-server/src/host_identity.rs`, ranks/arbitration host-signed checks | `ranks.rs`, `arbitration.rs`, telemetry identity |
-| 5 | `dh-cost` | glm | `live-server/src/host_costs.rs` + tests | — |
+| 5 | `dh-cost` | glm | `live-server/src/host_costs.rs` + tests | - |
 | 6 | `dh-cf` | astra | `live-worker/src/hostroom.rs`, `CloudflareProvider`, container binding, tunnel forwarding in the DO | `live-worker/src/entry.rs` routing, `wrangler.toml` |
-| 7 | `dh-fly` | glm | `live-server/src/hosts/fly.rs` | — |
+| 7 | `dh-fly` | glm | `live-server/src/hosts/fly.rs` | - |
 | 8 | `dh-matchmaker` | sol | dedicated request at cohort form, region pick from RTT, peer fallback | `live-server/src/matchmaking*.rs` |
 | 9 | `dh-tunnel-client` | astra | `live-proto/src/tunnel.rs`, client XNet transport over the tunnel | `live-hle/src/network.rs` (transport select) |
 | 10 | `dh-tunnel-host` | sol | host side of the tunnel: accept, peer ids, synthetic addresses, port fan-out | new `live-hle/src/tunnel_host.rs` |
@@ -513,7 +513,7 @@ in one small, marked place (a `mod` line, a route line, a match arm).
 | 15 | `dh-linux-emit` | astra | `emit` Linux target, ELF module loading | `runtime` loader cfg |
 | 16 | `dh-linux-runtime` | astra | Linux `cfg` for runtime, kernel, fastmem, perf: guest RAM reservation, fault handling, threads, timers | those crates' platform modules |
 | 17 | `dh-linux-headless` | sol | `host` cargo feature: cli/boot/bink/input/app gated so Linux builds without GUI | `Cargo.toml` features across those crates |
-| 18 | `dh-image` | glm | `deploy/host/`: Dockerfile, cross-build script (zig or clang + sysroot), entrypoint | — |
+| 18 | `dh-image` | glm | `deploy/host/`: Dockerfile, cross-build script (zig or clang + sysroot), entrypoint | - |
 | 19 | `dh-sim` | sol | sim batches on hosts: `h2 sim batch --provider local\|cloud` through `HostProvider`, reports into sim_runs | `sim` batch runner, `live-server/src/sim_runs.rs` |
 | 20 | `dh-web` | glm | Uplink admin **Hosts** page, game pages say "Dedicated (region)" | `web/src` route line |
 

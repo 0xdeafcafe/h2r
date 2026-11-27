@@ -77,7 +77,7 @@ The filter page is the shared settings dialog, `browser.filters`
 the doc's, each row's values a binding in
 `crates/extensions/game/src/custom_games/browser_filters.rs`. The
 browser's own text lives in its `guest` module. The Live HLE sends the choices with its custom browser
-search. The [session API](live-api.md#sessions) serves them through the
+search. The [session API](live-api-sessions.md#sessions) serves them through the
 shared router in native Live and the Cloudflare Worker.
 
 ## Join in Halo 2

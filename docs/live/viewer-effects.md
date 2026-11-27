@@ -323,7 +323,7 @@ them.
   table then links to it.
 
 **The switch.** The effects pool design adds a **Combat effects** row
-to the [View menu](viewer-overlay.md#the-overlay): `OFF`, `LOW`,
+to the [View menu](viewer-overlay-layers.md#the-overlay): `OFF`, `LOW`,
 `HIGH`. `HIGH` is the default, `LOW` under `pointer: coarse`. It is
 `?fx=` in the address and `h2.viewer.fx` in `localStorage`. It is not the
 **Show** menu's **Effects** row, which is the level's own glows and lift

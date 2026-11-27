@@ -1046,7 +1046,7 @@ runs. The in-game agent exposes the current sample during play. If the
 private upload exceeds 512 KiB, the host omits the per-tick determinism traces from the upload and records that in the notes.
 The CLI saves the full local report, including when an upload fails. Training games are private
 and excluded from public stats and ranks. The
-[Live API](../live/live-api.md#clanker-training) describes the storage limits.
+[Live API](../live/live-api-theater-stats.md#clanker-training) describes the storage limits.
 
 ### Batches on hosts
 
@@ -1068,7 +1068,7 @@ exits. Use retail map file stems such as `lockout`. The host's data bundle
 carries every multiplayer map's bot nav mesh and visibility grid, and the
 host places them in the child's data root before the run, since a sim
 never builds them.
-[Game data bundle](../live/dedicated-host.md#game-data-bundle)
+[Game data bundle](../live/dedicated-host-ops.md#game-data-bundle)
 
 `--live` defaults to `H2_LIVE_SERVER` or `http://127.0.0.1:8074`. Use a
 stored admin account for that Live server, optionally selected by
@@ -1609,7 +1609,7 @@ Stepping is the existing `session.pause` and `session.step N`.
 
 ## 10. Expected speed-up
 
-Clanker Training uses the [dedicated light profile](../live/dedicated-host.md#light-host).
+Clanker Training uses the [dedicated light profile](../live/dedicated-host-light.md#light-host).
 The default skips steady-state world draws, uses descriptor-only texture
 handles in the D3D shim, runs the audio clock without mixing, and maps the
 disc read-only. Verified server-map copies are picked up from
