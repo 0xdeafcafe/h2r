@@ -200,13 +200,24 @@ pub struct Globals {
 pub struct Plate {
     pub ops: Vec<Op>,
     pub define: [u32; 60],
+    /// The words of `define` the function writes; the others keep what the
+    /// buffer held before (the last definition built there).
+    pub written: [bool; 60],
     pub result: Option<f32>,
 }
 
 const DEFINE: u32 = 0x0048_4f68;
 
-fn word(w: &mut [u32; 60], addr: u32, v: u32) {
-    w[((addr - DEFINE) / 4) as usize] = v;
+/// The definition as it is built: its words and which of them are set.
+struct Def {
+    w: [u32; 60],
+    set: [bool; 60],
+}
+
+fn word(d: &mut Def, addr: u32, v: u32) {
+    let i = ((addr - DEFINE) / 4) as usize;
+    d.w[i] = v;
+    d.set[i] = true;
 }
 
 /// `0x0003a7cf..0x0003a984`: the first use of the device in the pass
@@ -248,7 +259,7 @@ pub fn kind3(range: &Range, colours: &Colours, skip_setup: bool, wants_result: b
     let rescaled = u32::from(range.rescaled);
     let lead = rescaled + 4;
     let tail = if range.rescaled { 4u32 } else { 24 };
-    let mut w = [0u32; 60];
+    let mut w = Def { w: [0; 60], set: [false; 60] };
     for (a, v) in [
         (0x484f94, low << 24),
         (0x484ff4, lead << 24 | 0x20_1140),
@@ -350,7 +361,7 @@ pub fn kind3(range: &Range, colours: &Colours, skip_setup: bool, wants_result: b
             result = Some(g.limit);
         }
     }
-    Plate { ops, define: w, result }
+    Plate { ops, define: w.w, written: w.set, result }
 }
 
 #[cfg(test)]
@@ -433,6 +444,9 @@ mod tests {
         // 100 * 0.5 is over the limit: it is the result, no state set.
         assert_eq!(p.result, Some(50.0));
         assert_eq!(p.ops.last(), Some(&Op::Define));
+        // 42 of the 60 words are the function's; the rest are the buffer's.
+        assert_eq!(p.written.iter().filter(|&&b| b).count(), 42);
+        assert!(!p.written[0] && p.written[((0x484f98 - DEFINE) / 4) as usize]);
         assert_eq!(p.ops[0], Op::Bind(2));
         let q = kind3(&Range { near: 0.01, ..range }, &colours, true, true, g);
         assert_eq!(q.result, Some(10.0));

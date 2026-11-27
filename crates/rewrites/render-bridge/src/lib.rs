@@ -58,6 +58,8 @@ pub mod native_transparents;
 #[cfg(feature = "native-render")]
 pub mod native_water;
 #[cfg(feature = "native-render")]
+pub mod native_weather;
+#[cfg(feature = "native-render")]
 pub mod native_world;
 #[cfg(feature = "native-render")]
 pub mod native_world_layers;

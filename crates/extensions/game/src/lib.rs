@@ -140,6 +140,8 @@ pub mod movie_display_glue;
 #[cfg(feature = "gpu")]
 pub mod native_decals_glue;
 #[cfg(feature = "gpu")]
+pub mod native_weather_glue;
+#[cfg(feature = "gpu")]
 pub mod native_decorators_glue;
 #[cfg(feature = "gpu")]
 pub mod native_sky_glue;

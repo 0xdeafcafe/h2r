@@ -71,6 +71,16 @@ pub fn depth(result: f32, near: f32, far: f32) -> (f32, f32) {
     (clamp(z, DEPTH_SCALE), clamp(w, DEPTH_SCALE))
 }
 
+/// The colours `0x00037a60` hands the state function (`[esp+2Ch]` on):
+/// the flag, each tint channel in green, then the element's own colour.
+pub fn colours(plate: &WeatherPlate) -> Colours {
+    let [r, g, b] = plate.tint;
+    Colours {
+        flag: true,
+        rgb: [[0.0, r, 0.0], [0.0, g, 0.0], [0.0, b, 0.0], plate.fill],
+    }
+}
+
 /// The submit of `plate` after a placement that returned `result`.
 pub fn quad(plate: &WeatherPlate, result: f32, near: f32, far: f32) -> Quad {
     let [left, top, right, bottom] = plate.window.map(|v| f32::from(v) - 0.5);
@@ -85,16 +95,12 @@ pub fn quad(plate: &WeatherPlate, result: f32, near: f32, far: f32) -> Quad {
         })
     };
     let at = |x: f32, y: f32, corner: usize| Vertex { position: [x, y], layers: layers(corner) };
-    let [r, g, b] = plate.tint;
     Quad {
         vertices: [at(left, top, 0), at(right, top, 1), at(left, bottom, 2), at(right, bottom, 3)],
         constants: std::array::from_fn(|i| [plate.scroll[i][0], plate.scroll[i][1], 0.0, 0.0]),
         z,
         w,
-        colours: Colours {
-            flag: true,
-            rgb: [[0.0, r, 0.0], [0.0, g, 0.0], [0.0, b, 0.0], plate.fill],
-        },
+        colours: colours(plate),
     }
 }
 
