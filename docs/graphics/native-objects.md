@@ -457,19 +457,32 @@ biped when the game queues it.
 
 `0x0003fdf0` is a cut producer (`render_bridge::cut::CUTS`, row
 `first_person`, entry `0x0003fdf0`, `ret 4`, AL = 1; the mode is in `eax`
-and the call, 0 or 1, is the stack argument). The cut is held
-(`native_first_person::HELD`): until the scene's first person equals the
-guest's, the feature installs nothing, the body runs and draws the arms and
-weapon, and the census row is `d3d`. Released, its producer is
-`feature::native_first_person` (`cut::OWN_PRODUCER`): it makes the frame
-step's writes for the row, answers the call, and draws from the scene; the
-body never runs for either argument.
+and the call, 0 or 1, is the stack argument). Its producer is
+`feature::native_first_person` (`cut::OWN_PRODUCER`), and the census row is
+`partial`: the cut is held until a frame proves the native path, then
+released for the rest of the run (`native_first_person::held`).
+
+- **Held.** The entry runs the body as a guest call of itself
+  (`held_call`), so the guest draws the arms and weapon and its layer draws
+  put their parts in the first person's view. Before the body it counts the
+  parts the guest draws (`guest_parts`: the item build's list-0 items, once
+  per layer the call draws that each holds); after it, the native path
+  plans the view's parts of the call without reserving or drawing
+  (`probe`, `Host::plan`). A call passes its `Check` when the view holds the
+  guest's count, the plan would draw all of them and drops none. A frame
+  (`Gate`: call 0, then call 1) whose two calls pass and draw at least one
+  part releases the cut.
+- **Released.** The entry makes the frame step's writes for the row,
+  answers the call and draws from the scene (`cut_call`); the body never
+  runs for either argument.
 
 - **Items.** Each call builds its items before it draws, and the answer
   builds them in Rust (`engine::render::light_gather::first_person_items`):
-  the prologue (list 0 at `0x004c1a48` saves its layers at `+0x10`, clears
-  them and starts at its count; the sorted list's mark `0x004b6284` takes
-  its count), then each record index of `0x004c8740` (`[0x0050943c]` of
+  the prologue (`prologue`: list 0 at `0x004c1a48` saves its layers at
+  `+0x10`, clears them and starts at its count; the sorted list's mark
+  `0x004b6284` takes its count), the first-person effects (below), then
+  (`records`, reading list 0 and the sorted list as the effects left them)
+  each record index of `0x004c8740` (`[0x0050943c]` of
   them) that passes the mode's filter (mode 0 all, 2 `0x10`, else `0x20`),
   part by part as `0x000449e0`, `0x00045ce0`, `0x000460d0` and
   `0x00041040` in kind 0 make it: one list-0 item per part with layers, and
@@ -479,8 +492,21 @@ body never runs for either argument.
   call draws and puts its items in the first person's view, then makes the
   epilogue (list 0's layers back, its first item 0). A record or shader the
   build does not read (a structure record, a virtual shader, a level table
-  with no levels, a record with no node matrices) is the drop `items`. The
-  first-person effects `0x00174220` the body calls first are not made.
+  with no levels, a record with no node matrices) is the drop `items`.
+- **Effects.** `0x00174220` with argument 1, which the body calls after its
+  prologue, is ported (`engine::render::light_gather::first_person_effects`):
+  it walks the particle systems (`[0x00510c74]`) in index order and selects
+  each one whose effect's owner is the current user (`[0x004b9ed8]`) with
+  the first-person camera (`0x00155760` answers 0), whose location reads
+  (`+0x30`), with no parent (`+0x4c`), in a visible cluster or with the
+  definition's bit 9. The per-view update `0x00174420` of each selected
+  system stays the guest's (its stamps and particle draws,
+  [framescene.md](framescene.md)) and is a guest call made at the stack
+  depth the guest makes it (`RESERVE`), with the selection bytes' upper
+  stack bytes as the guest pushes them. The selection is read again after
+  each update. A particle model's definition (`PRTM`, `prt3`) is the
+  guest's `0x001751d0`, called once per system. A system whose definition
+  does not read stops the walk: the drop `effects`.
 - **Source.** The first-person `View` of the frame step's scene
   (`ViewKind::FirstPerson`). Its parts, in the view's order, are the arms and
   weapon. A part is readable when its instance and rows are in the scene.
@@ -495,11 +521,15 @@ body never runs for either argument.
   `0x00040284`). `native_first_person::LATE_LAYER` is 16.
 - **No fallback.** There is no D3D draw and no mask edit. A part that does
   not draw is a named drop (`native_first_person::Dropped`): `items`,
-  `no_view`, `no_host`, `unreadable` (its instance, rows or order range are not in the
+  `effects`, `no_view`, `no_host`, `unreadable` (its instance, rows or order range are not in the
   scene), `unresident` (its model is asked for), `unsupported` (the model
   is resident, not this part or implementation) and `reservation` (the
   host's). Each is counted as `first_person_dropped_<cause>`
   (`native_first_person::drops`) and in the stage's `scene_dropped`.
+  `render.scene` reports them with `first_person_calls`,
+  `first_person_drawn`, `first_person_checked`,
+  `first_person_check_passed` and `first_person_held`
+  (`native_first_person::counters`).
 - **Host.** `native_first_person_glue` loads the models
   (`native_first_person_load`: a utility-priority worker opens the map,
   waits for requested record models, and uploads each into private GPU
@@ -520,7 +550,12 @@ body never runs for either argument.
   depth state (`aux_depth::read`) and the texture accumulation target
   (`sampled_texaccum`).
 
-Tests: `first_person_draws_after_the_world_transparents`,
+Tests: `the_plan_places_the_cut_when_on`,
+`a_frame_passes_when_both_calls_draw_every_part_the_guest_would`,
+`a_frame_with_a_dropped_or_missing_part_holds_the_cut`,
+`the_cut_is_released_by_the_first_passing_frame_and_counted`,
+`the_guests_parts_are_its_items_in_the_layers_the_call_draws`,
+`first_person_draws_after_the_world_transparents`,
 `each_call_draws_its_layers`, `an_unreadable_part_is_a_named_drop`,
 `the_first_persons_view_takes_the_render_camera_the_game_view_drew_with`
 and the cut row's (`render-bridge/tests/native_first_person.rs`);
@@ -528,7 +563,10 @@ and the cut row's (`render-bridge/tests/native_first_person.rs`);
 (`native_first_person_glue`);
 `first_person_items_match_the_lifted_original`
 (`engine/tests/light_gather_differential.rs`) runs `0x0003fdf0` lifted to
-the end of its record loop against the item build, byte for byte. The first-person
+the end of its record loop against the item build, byte for byte; the unit
+tests of `first_person_effects` drive the walk with `entry::testing::run`
+(index order, an update that retires a later system, a third-person camera,
+a particle model's guest definition). The first-person
 lights are the lights stage's ([native-lights.md](native-lights.md)).
 
 ### Shading
