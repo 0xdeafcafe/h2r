@@ -212,6 +212,7 @@ impl AgentGlue {
             probes.install(&agent, &sim);
         }
         agent::ai::install(&agent);
+        agent::pools::install(&agent);
         // net.replication: the event counter is an observer of its own, so
         // H2_FEATURES can drop it and leave the method's other readings.
         match registry.add(&agent::net::NetFeature) {

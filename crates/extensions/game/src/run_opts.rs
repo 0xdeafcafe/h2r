@@ -141,6 +141,9 @@ pub struct Host {
     /// The watermark's active-cheats line, which the debug menu glue keeps
     /// filled from `cheat.list` (docs/runtime/debug-menu.md).
     pub cheat_line: Option<Arc<std::sync::Mutex<Vec<String>>>>,
+    /// The watermark's `full` readout (`H2_WATERMARK=full`): its level
+    /// switch and the lines the game fills ([`crate::debug_readout`]).
+    pub readout: Option<crate::debug_readout::Link>,
     /// This start's game code (tier, module, background build), for
     /// `game.code` (crate::game_code).
     pub game_code: Option<Arc<crate::game_code::GameCode>>,

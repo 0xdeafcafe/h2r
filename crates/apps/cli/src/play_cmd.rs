@@ -54,7 +54,7 @@ last 5 s, in the window and once a second on stderr, and the worst frames at
 exit (docs/perf/notes/gameplay-budget.md). A two-line development-build watermark (commit,
 branch, build time, fps, frame time, draws, map, renderer) runs along the
 bottom of the picture; F3 toggles it, --no-watermark or H2_WATERMARK=0 turns
-it off. --input-timeline plays an
+it off; H2_WATERMARK=full adds the player, level, world and render picture. --input-timeline plays an
 input crate timeline (docs/input/input.md) on guest time instead of live input.
 A mappack.iso next to the disc (or another .iso there with the map pack's
 layout) is installed into --data on the way in, once: a warning never stops
@@ -390,6 +390,7 @@ fn hosted(
         theater_playback: None,
         perf_overlay: None,
         cheat_line: None,
+        readout: None,
         game_code: None,
         editor_link: None,
         debug_views: None,
@@ -867,9 +868,12 @@ pub(crate) fn run_with_theater(
     let _ = follow_status;
     let watermark = watermark_on(no_watermark, std::env::var("H2_WATERMARK").ok().as_deref());
     if watermark {
-        config.watermark = Some(play_watermark(render_thread(
-            std::env::var("H2_RENDER_THREAD").ok().as_deref(),
-        )));
+        config.watermark = Some(
+            play_watermark(render_thread(
+                std::env::var("H2_RENDER_THREAD").ok().as_deref(),
+            ))
+            .with_full(watermark_full(std::env::var("H2_WATERMARK").ok().as_deref())),
+        );
     }
     if config.banner.is_none() && building_clang.is_some() {
         config.banner = Some(tier_banner(Arc::clone(&game_code)));
@@ -894,6 +898,10 @@ pub(crate) fn run_with_theater(
     config.screenshots = Some(opts.data_root.join("screenshots"));
     let perf_overlay = config.watermark.as_ref().map(app::Watermark::switch);
     let cheat_line = config.watermark.as_ref().map(app::Watermark::cheats_handle);
+    let readout = config.watermark.as_ref().map(|w| {
+        let (full, lines) = w.readout_handles();
+        boot::debug_readout::Link { full, lines }
+    });
     let editor_link = EditorLink::default();
     config.editor_link = Some(Arc::new(EditorPlateSource(editor_link.clone())));
     if boot::forge_glue::requested().map_err(anyhow::Error::msg)? {
@@ -948,6 +956,7 @@ pub(crate) fn run_with_theater(
         host.embedded_live = live.local;
         host.perf_overlay = perf_overlay;
         host.cheat_line = cheat_line;
+        host.readout = readout;
         host.game_code = Some(game_code);
         host.editor_link = Some(editor_link);
         boot::debug_views::register(&mut host);
@@ -1147,6 +1156,12 @@ fn start_live(
 /// The watermark's rolling window when `--frame-stats` is off: short, so
 /// the numbers follow what is on screen.
 const WATERMARK_WINDOW_NS: u64 = 2_000_000_000;
+
+/// `H2_WATERMARK=full` adds the player, level, world and render-picture
+/// lines to the watermark (docs/runtime/app.md, "Watermark").
+fn watermark_full(env: Option<&str>) -> bool {
+    env.is_some_and(|v| v.trim().eq_ignore_ascii_case("full"))
+}
 
 /// The watermark is on unless `--no-watermark` or `H2_WATERMARK=0`.
 fn watermark_on(no_flag: bool, env: Option<&str>) -> bool {
@@ -1720,6 +1735,29 @@ mod tests {
         assert!(!watermark_on(false, Some("0")));
         assert!(!watermark_on(true, None));
         assert!(!watermark_on(true, Some("1")));
+    }
+
+    #[test]
+    fn only_full_adds_the_readout_to_the_watermark() {
+        assert!(!watermark_full(None));
+        assert!(!watermark_full(Some("1")));
+        assert!(watermark_full(Some("full")));
+        assert!(watermark_full(Some(" FULL ")));
+        // `full` is still on, not the off value.
+        assert!(watermark_on(false, Some("full")));
+    }
+
+    #[test]
+    fn the_full_level_puts_the_games_lines_above_the_live_numbers() {
+        let wm = play_watermark(true);
+        let (full, lines) = wm.readout_handles();
+        *lines.lock().unwrap() = vec!["pos 1.00 2.00 3.00".into()];
+        // Off, whatever the game left is not shown.
+        assert!(!wm.panels(None, "metal").live.iter().any(|l| l.starts_with("pos")));
+        full.store(true, std::sync::atomic::Ordering::Relaxed);
+        let live = wm.panels(None, "metal").live;
+        assert_eq!(live[0], "pos 1.00 2.00 3.00");
+        assert_eq!(live.last().unwrap(), "metal, render thread on");
     }
 
     #[test]

@@ -86,6 +86,7 @@ pub mod forensics;
 mod memory;
 pub mod menu;
 pub mod net;
+pub mod pools;
 mod outputs;
 pub mod probe;
 pub mod raw;

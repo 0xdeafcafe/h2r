@@ -47,6 +47,14 @@ pub const FEATURE: &str = "variant-quick";
 /// (`lobby_options`'s `PANEL_ROWS`, `rules::ir::MAX_QUICK`).
 pub const ROWS: usize = ::rules::ir::MAX_QUICK;
 
+/// The dialog's rows at most: the settings dialog's
+/// (docs/game/ui-builder-settings-dialog.md, "The settings dialog").
+pub const DIALOG_ROWS: usize = 8;
+
+/// The most values a row's picker lists: a wider range is offered as a
+/// ladder of round values ([`ladder`]).
+pub const PICKER_VALUES: usize = 12;
+
 const IDS: Family = ids::family("variant quick");
 const _: () = assert!(IDS.len as usize >= ROWS);
 
@@ -147,6 +155,60 @@ pub fn rows_with(
             Quick::Option(index) => option_row(ir, index, bits),
         })
         .collect()
+}
+
+/// The dialog's rows ([`page`]): the marks, then every option the script
+/// leaves unmarked, in declaration order, when they all fit the dialog's
+/// [`DIALOG_ROWS`]. Siege marks five of its rows and has two options more
+/// (the overtime and the rounds), so its dialog is its whole options page.
+/// A script with more unmarked options than fit keeps its marks alone
+/// (More Options has every option), and one with no marks has no rows.
+pub fn dialog_rows_with(
+    record: &GameVariant,
+    ir: &Ir,
+    offered: Option<&HashMap<u32, Vec<i32>>>,
+) -> Vec<QuickRow> {
+    let mut rows = rows_with(record, ir, offered);
+    if ir.quick.is_empty() {
+        return rows;
+    }
+    let bits = Ext::in_effect(&block_of(record)).script.options;
+    let marked = |i: u16| ir.quick.iter().any(|q| matches!(q, Quick::Option(m) if *m == i));
+    let rest: Vec<QuickRow> = (0..ir.options.len())
+        .filter_map(|i| u16::try_from(i).ok())
+        .filter(|&i| !marked(i))
+        .filter_map(|i| option_row(ir, i, bits))
+        .collect();
+    if rows.len() + rest.len() <= DIALOG_ROWS {
+        rows.extend(rest);
+    }
+    rows
+}
+
+/// The values a picker lists for a row holding `current`: all of
+/// `values` when they are at most [`PICKER_VALUES`], else a ladder of
+/// them: the first, the last, the one held and each multiple of the
+/// smallest round step that keeps the list that short (Siege's phase
+/// time, 60 to 600 seconds, is offered a minute apart). The order is
+/// `values`'s own.
+pub fn ladder(values: &[(i32, String)], current: i32) -> Vec<(i32, String)> {
+    if values.len() <= PICKER_VALUES {
+        return values.to_vec();
+    }
+    const STEPS: [i32; 12] = [2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+    let (first, last) = (values[0].0, values[values.len() - 1].0);
+    let kept = |step: i32| -> Vec<(i32, String)> {
+        values
+            .iter()
+            .filter(|(v, _)| *v == first || *v == last || *v == current || v % step == 0)
+            .cloned()
+            .collect()
+    };
+    STEPS
+        .into_iter()
+        .map(&kept)
+        .find(|k| k.len() <= PICKER_VALUES)
+        .unwrap_or_else(|| kept(i32::MAX))
 }
 
 fn setting_row(
@@ -434,5 +496,66 @@ mod tests {
         assert!(!quick_of(&record, Some(&ir), false).shown);
         let none = quick_of(&record, None, true);
         assert!(!none.shown && none.rows.is_empty() && none.script.is_none());
+    }
+
+    /// Siege's dialog is its whole options page: its five marks, then the
+    /// two options it leaves unmarked, each with its label, its value and
+    /// its description. The panel keeps the five marks. Superbounce has
+    /// more unmarked options than fit, so its dialog is its marks; a
+    /// script with no marks has no rows.
+    #[test]
+    fn the_dialog_lists_every_option_of_a_script_whose_options_fit() {
+        let ir = ::rules::compile(::rules::builtin::SIEGE).unwrap();
+        let record = variants::portable::record_for(&ir, &[]).unwrap();
+        let rows = dialog_rows_with(&record, &ir, None);
+        let names: Vec<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["respawn_time", "wave_time", "phase_time", "capture_time", "sites", "overtime_time", "round_count"]
+        );
+        assert_eq!(rows_with(&record, &ir, None).len(), 5);
+        assert_eq!(lines(&record).unwrap().len(), 5);
+        // Every option is in the dialog once, at its default.
+        for (i, o) in ir.options.iter().enumerate() {
+            let name = ir.option_name(i);
+            let row = rows.iter().find(|r| r.name == name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(row.mark, Mark::Option { index: i as u16 });
+            assert_eq!(row.value, o.default, "{name}");
+            assert!(row.help.as_deref().is_some_and(|h| !h.is_empty()), "{name}");
+            assert_eq!(row.values.len(), (o.hi - o.lo + 1) as usize, "{name}");
+        }
+        assert_eq!(rows[6].line(), "Rounds: 2");
+
+        let (ir, record) = superbounce();
+        assert!(ir.options.len() > DIALOG_ROWS);
+        assert_eq!(dialog_rows_with(&record, &ir, None), rows_with(&record, &ir, None));
+        let ir = ::rules::compile(::rules::builtin::SLAYER).unwrap();
+        let record = variants::portable::record_for(&ir, &[]).unwrap();
+        assert!(dialog_rows_with(&record, &ir, None).is_empty());
+    }
+
+    /// A short list is offered whole. A wide range is a ladder of round
+    /// values with its ends and the value held: Siege's phase time a
+    /// minute apart, its capture time five seconds apart, its respawn
+    /// wave from 3 seconds in fives.
+    #[test]
+    fn a_wide_range_is_offered_as_a_ladder() {
+        let range = |lo: i32, hi: i32| -> Vec<(i32, String)> { (lo..=hi).map(|v| (v, v.to_string())).collect() };
+        let picked = |lo, hi, current| -> Vec<i32> { ladder(&range(lo, hi), current).into_iter().map(|(v, _)| v).collect() };
+        assert_eq!(picked(1, 8, 2), (1..=8).collect::<Vec<_>>());
+        assert_eq!(picked(60, 600, 180), [60, 120, 180, 240, 300, 360, 420, 480, 540, 600]);
+        assert_eq!(picked(5, 60, 15), [5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60]);
+        assert_eq!(picked(3, 30, 10), [3, 5, 10, 15, 20, 25, 30]);
+        // A value off the ladder is kept in its place while it is held.
+        assert_eq!(picked(3, 30, 7), [3, 5, 7, 10, 15, 20, 25, 30]);
+        assert!(picked(0, 100_000, 1).len() <= PICKER_VALUES);
+        // Every option of Siege's is offered in at most a picker's rows.
+        let ir = ::rules::compile(::rules::builtin::SIEGE).unwrap();
+        let record = variants::portable::record_for(&ir, &[]).unwrap();
+        for row in dialog_rows_with(&record, &ir, None).iter().filter(|r| matches!(r.mark, Mark::Option { .. })) {
+            let offered = ladder(&row.values, row.value);
+            assert!((2..=PICKER_VALUES).contains(&offered.len()), "{}: {offered:?}", row.name);
+            assert!(offered.iter().any(|(v, _)| *v == row.value), "{}", row.name);
+        }
     }
 }
