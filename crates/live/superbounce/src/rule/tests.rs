@@ -403,3 +403,45 @@ fn launch_is_monotonic() {
         last = l;
     }
 }
+
+/// The decoded contact solver (docs/game/superbounce.md, "The launch")
+/// against the stepped game's contacts and launches
+/// (docs/game/notes/2026-11-23-why-bounces-work.md, "Tick by tick").
+#[test]
+fn pinch_matches_the_traced_impulses() {
+    let near = |a: f64, b: f64, tol: f64| assert!((a - b).abs() <= tol, "{a} vs {b}");
+    // `s007-slot`, the bounce: normals (0, 1, 0) and (0, -0.996, 0.093),
+    // 0.267 and 0.111 deep, 5.53 down with 0.51 across. The game's
+    // impulses are 24,308 and 24,273 and its launch +12.67.
+    let p = pinch(
+        [[0.0, 1.0, 0.0], [0.0, -0.996, 0.093]],
+        [-0.267, -0.111],
+        [0.0, 0.51, -5.53],
+    );
+    near(p.impulses[0], 24_300.0, 2_500.0);
+    near(p.impulses[1], 24_300.0, 2_500.0);
+    near(p.mean[2], 12.67, 0.7);
+    // The same site with no drift: two level normals, 0.233 and 0.137
+    // deep; the game's impulses are 133,128 and 132,874, and the body
+    // stops in the floor.
+    let p = pinch([[0.0, 1.0, 0.0], [0.0, -1.0, 0.0]], [-0.233, -0.137], [0.0, 0.0, -5.53]);
+    near(p.impulses[0], 133_000.0, 1_000.0);
+    near(p.impulses[1], 133_000.0, 1_000.0);
+    near(p.mean[2], -5.53, 0.1);
+}
+
+/// The launch by drift at 5.39 in, 0.06 from the edge: the game's
+/// +6.2, +9.4, +13.0 and +12.6 at drifts 0.15, 0.20, 0.30 and 0.60, the
+/// contact tick starting 0.035 of drift short and 0.139 of fall over.
+#[test]
+fn pinch_launch_follows_the_drift() {
+    for (drift, want, tol) in [(0.15, 6.2, 0.6), (0.20, 9.4, 0.9), (0.30, 13.0, 0.3), (0.60, 12.6, 0.8)] {
+        let got = pinch_at(5.39 + 0.139, drift - 0.035, 0.06).mean[2];
+        assert!((got - want).abs() <= tol, "drift {drift}: {got} vs {want}");
+    }
+    // The launch doesn't depend on how far the edge is (+12.93 to +13.01
+    // over every run that bounced at drift 0.30).
+    let near_edge = pinch_at(5.529, 0.265, 0.03).mean[2];
+    let far_edge = pinch_at(5.529, 0.265, 0.12).mean[2];
+    assert!((near_edge - far_edge).abs() < 0.05, "{near_edge} vs {far_edge}");
+}

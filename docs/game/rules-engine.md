@@ -2366,8 +2366,9 @@ physics events under them (`on touchdown`, `on launch`, `on grounded`,
 and times them, and sets traits. That makes Bounce Practice and a trick
 or parkour mode real scripts, and the superbounce mode a script's own
 choice (`requires hud.superbounce`). The detector's rule is a traced
-signature, not the launch rule (Open in superbounce.md), so it can miss
-or over-report until it is checked in play.
+signature; the launch is the island solve's
+([superbounce.md](superbounce.md#the-launch-code-trace)), whose sideways
+normal is not decoded, so it can miss or over-report until it is checked in play.
 
 **Code**, tests only. The detector is the superbounce mode's medal chain
 (`superbounce_chain`, [superbounce.md](superbounce.md#medals)): each
@@ -2666,8 +2667,9 @@ the ReachVariantTool importer follows phase 10.
 - **Spawn areas.** How `PLAYER_SPAWN_LOCATION` weighs starting locations,
   and whether answering it with a subset is enough.
 - **The bounce detector.** Its rule is a signature from traces of one
-  patch on one map; the launch rule is not decoded (superbounce.md
-  "Open").
+  patch on one map; the launch is the island solve's, and the
+  sideways normal the convex agent picks is not decoded (superbounce.md
+  "The launch").
 - **Squad entries in play.** Firefight's runs R1 to R4 (firefight.md
   "What a run settles") settle them for scripts too.
 - **Host migration.** Whether a session of ours moves hosts, and how

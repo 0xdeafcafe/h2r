@@ -26,8 +26,9 @@ established).
   velocity times one tick, every time. **Trace**
 - The bipeds' character physics has no capsule-against-world response of
   its own. The response comes from the Havok step (`0x001c3d30`). The
-  exact rule that sets the launch speed is in Havok's contact solver and
-  is not decoded. **Code** for where; **Open** for the rule.
+  launch speed is the contact solver's ([the launch](#the-launch-code-trace)):
+  eight passes of a coupled two-row solve over the two faces of the pinch.
+  **Code**, **Trace**
 - On the bounce tick the body is pinched below the floor between two
   faces looking at each other, one tilted 10.6° up; the solver's two
   opposing impulses cancel sideways and leave about 14 units/s up
@@ -110,7 +111,58 @@ the full-launch minimum (`DRIFT_FULL`), and `DROP_MIN`, `DROP_BEST` and
 `DROP_MAX` are 3.35, 3.45 and 3.60. The HUD, the bots' takeoff gate and
 the search use these same constants and the same verdict.
 `rule::launch(speed, across)` (and `Verdict::launch`) is the launch the
-bounce gives, fitted to the traces.
+bounce gives, fitted to the traces; `rule::pinch` is the decoded solver
+behind it ([the launch](#the-launch-code-trace)).
+
+## The launch (Code, Trace)
+
+The island solve (`0x0031c100`, [havok-step.md](../engine/havok-step.md#the-island-solve),
+ported in `sim-havok`) turns the two contact points of the pinch into the
+launch. Read from the image (`0x003101c0`, `0x001c2d40`, `0x0030fcb0`,
+`0x0031f620`, `0x0031c940`) and checked against the traced impulses:
+
+- **Constants.** 8 passes (info `+0x4c`); row target scale 0.6
+  (`0x0044ae8c`); velocity scale 1; recovery per metre 8 × 30 = 240
+  (`pair+0x0c`); recovery share 0.05 (`0x004155a4`), capped at one step
+  (1/30); softness 1.19e-7 (`0x0041559c`); pair coupling 0.99
+  (`W+0x178`). The biped's inverse mass is 0.008.
+- **A fresh point's target.** The add-point method (`0x00318c10`) stores
+  the stored recovery as the separation plus a velocity term, so the
+  builder's error is the velocity term less 5% of the penetration: the
+  row's target speed is `0.6 × 240 × 0.05 × |separation|` (about 7.2 per
+  unit of depth) and does not recover the whole depth.
+- **The two points are one pair.** A point flagged as paired couples with
+  the one before it into a 2×2 block `[t, m; m, t]`, `t` the inverse
+  mass plus softness, `m` the inverse mass times the normals' dot times
+  0.99. Each pass adds `K⁻¹(target − v·n)` when both parts are positive,
+  else the one row that is. A pass ends by taking the speed along each
+  normal off its target; the step's velocity is the mean of the eight
+  passes' velocities.
+- **Why the impulses are huge and equal.** Two faces that nearly oppose
+  make `K` nearly singular: `det = t²(1 − 0.99²cos²)`. With level normals
+  the impulses are 133,000 each (traced 133,128 and 132,874); with the
+  0.093 lean of `s007-slot` they are 26,100 and 26,200 (traced 24,308
+  and 24,273). The 0.99 leaves the first pass short of the push the
+  normals would cancel, and what is left over is along `z`: that is the
+  launch, 12.60 stepped against +12.67 traced.
+- **Why drift and not the edge.** Only the second normal's lean (drift
+  over fall speed) and the two depths enter, and the depths sum to a near
+  constant (radius 0.175 plus `de`, 0.199 less `de`), so the launch is
+  flat in `de` (+13.11 at 0.03 and 0.12) and rises with drift as
+  traced: +6.5, +10.1, +12.9 and +12.0 at drifts 0.15, 0.20, 0.30 and
+  0.60 (traced +6.2, +9.4, +13.0, +12.6).
+
+`rule::pinch` runs the solve; `rule::pinch_at(speed, across, de)` builds
+the pinch from a fall. Tests: `pinch_matches_the_traced_impulses`,
+`pinch_launch_follows_the_drift`.
+
+**Not decoded.** The sideways normal itself, from the convex agent's
+penetration case (`0x002eeb40`, [havok-convex.md](../engine/havok-convex.md)):
+the model takes the second normal square to the velocity. The velocity
+term of a fresh point (restitution, `0x00318e09`) is taken as zero. The
+model disagrees with the faster falls, where the two depths are not
+known: it gives +7.5 at 9 units/s and +0.1 at 13 against traced +10.68
+and +8.75, so `rule::launch` keeps the fitted push for those.
 
 ## Forced crouch (Code)
 
