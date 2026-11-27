@@ -79,7 +79,12 @@ fn reply(_: &mut Guest, c: &mut Cpu, target: u32, seed: u32) -> u32 {
             c.gpr[0] = if seed == 5 { u32::MAX } else { 0xf391_0024 };
             12
         }
-        0x21d060 => 0,
+        0x21d060 | 0x21b070 => 0,
+        // The instance lookup for a source: none found.
+        0x127d00 => {
+            c.gpr[0] = u32::MAX;
+            12
+        }
         _ => panic!("unexpected loop request call {target:#x}"),
     }
 }

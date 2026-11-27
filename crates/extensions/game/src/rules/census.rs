@@ -451,11 +451,28 @@ mod tests {
         assert_eq!(find(BlockKind::NetgameFlags, 2).label.text, "ctf_flag_spawn", "an unlabelled flag keeps its built-in label");
         assert_eq!(things.iter().filter(|t| t.class == Class::Spawn).count(), 2, "the op on a missing start is skipped");
 
-        // The shipped Zanzibar layout is all placeholders: it labels nothing
-        // on a map that lacks them, and reads as a document.
+        // The shipped Zanzibar layout is read off the map: on a map of
+        // Zanzibar's flags it numbers four of its territories as sites and
+        // labels its starts by side and phase, and it reads as a document.
+        let kinds: [u16; 72] = [0,1,1,0,0,2,2,2,3,3,4,4,4,10,10,10,10,10,10,10,10,12,12,12,12,12,12,12,12,13,14,10,10,14,14,14,14,14,14,14,13,13,13,13,13,13,13,13,13,3,3,10,16,11,11,11,11,11,11,11,11,11,11,11,11,16,16,16,16,16,16,16];
+        let teams: [u16; 72] = [0,0,1,1,8,1,0,8,1,0,8,8,8,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
+        let zan = MapRows {
+            counts: [(BlockKind::NetgameFlags, 72), (BlockKind::StartingLocations, 48)].into(),
+            flags: kinds.iter().zip(teams).map(|(&kind, team)| FlagRow { kind, team }).collect(),
+            starts: vec![0; 48],
+            ..MapRows::default()
+        };
+        let doc = layout_doc(Some("siege"), "Zanzibar", &zan.counts).unwrap();
+        assert_eq!(doc.ops.len(), 4 + 5 + 6 + 6 + 6 + 6 + 10, "every op of the layout is on an entry Zanzibar has");
+        let things = forge_doc::labelled(&zan, Some(&doc)).unwrap();
+        let sites: Vec<_> = things.iter().filter(|t| t.label.text == "siege_site").map(|t| (t.index, t.label.number)).collect();
+        assert_eq!(sites, [(13, Some(1)), (15, Some(0)), (17, Some(0)), (19, Some(1))]);
+        let starts = |text: &str, n: i32| things.iter().filter(|t| t.label.text == text && t.label.number == Some(n)).count();
+        assert_eq!([0, 1, 2].map(|n| starts("siege_attack", n)), [5, 6, 6]);
+        assert_eq!([0, 1, 2].map(|n| starts("siege_defend", n)), [6, 6, 10]);
+        // On the fake three-flag map only the ops on its two starts stay.
         let doc = layout_doc(Some("siege"), "Zanzibar", &rows.counts).unwrap();
-        assert!(doc.ops.is_empty());
-        assert_eq!(forge_doc::labelled(&rows, Some(&doc)).unwrap(), plain);
+        assert!(doc.ops.len() == 2 && forge_doc::labelled(&rows, Some(&doc)).unwrap().iter().filter(|t| t.class == Class::Spawn).count() == 2);
         assert!(layout_doc(Some("siege"), "lockout", &rows.counts).is_none());
         assert!(layout_doc(None, "zanzibar", &rows.counts).is_none());
         assert_eq!(layout_script(&siege_ir()), Some("siege"));

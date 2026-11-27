@@ -1316,7 +1316,9 @@ Options' dialog with seven choice rows, each backed by a setting
 (`firefight.waveset`: Endless first, then the lobby map's own sets, then
 the other built-ins in their order (`options::wave_menu`) — [Map-specific
 sets](#map-specific-sets)). When the lobby knows the kit's classes
-(`lobby_start::kit_classes`), a set that needs one the kit lacks shows the
+(`lobby_start::kit_classes`: a game on a kit map records the classes it read,
+`lobby_start::learn_kit_classes`, and the lobby panel looks the map up,
+`lobby_mode::panel_ids`; a map no game has played on is not known), a set that needs one the kit lacks shows the
 reason in its row (`options::wave_entry`: "the map's kit lacks marine") and
 the pick is refused; where they are not known every set is offered and the
 host refuses the match by class name, Difficulty, Starting

@@ -174,21 +174,28 @@ fn world(riders: u8, pool: usize) -> World {
     let (ship, ship_body) = make(&mut m, engine::view::objects::VEHICLE);
     ship_body.set_position(&mut m, SHIP_AT).unwrap();
     ship_body.set_up(&mut m, [0.0, 0.0, 1.0]).unwrap();
-    let mut actor_of = |m: &mut FakeGuest, squad: u32, unit: DatumHandle| {
-        let (_, actor) = fake::push(m, &actors);
+    // An actor and its unit, linked both ways as the engine's actors are, so
+    // the guest's own count of a squad's actors sees them.
+    let mut actor_of = |m: &mut FakeGuest, squad: u32, unit: DatumHandle, body: Obj| {
+        let (id, actor) = fake::push(m, &actors);
         actor.set_unit(m, Some(unit)).unwrap();
         actor.set_squad(m, squad).unwrap();
+        let raw = guest_layout::Object::at(body.addr);
+        let view = raw.as_unit();
+        view.set(m, guest_layout::Unit::ACTOR, guest_layout::Datum(id.raw())).unwrap();
+        view.set(m, guest_layout::Unit::PLAYER, guest_layout::Datum::NONE).unwrap();
+        raw.set(m, guest_layout::Object::ENTITY, u32::MAX).unwrap();
         actor
     };
     for _ in 0..riders {
         let (unit, body) = make(&mut m, engine::view::objects::BIPED);
         body.set_parent(&mut m, Some(ship)).unwrap();
-        actor_of(&mut m, u32::from(OTHER), unit);
+        actor_of(&mut m, u32::from(OTHER), unit, body);
     }
     let pool = (0..pool)
         .map(|_| {
             let (unit, body) = make(&mut m, engine::view::objects::BIPED);
-            let actor = actor_of(&mut m, u32::from(OTHER), unit);
+            let actor = actor_of(&mut m, u32::from(OTHER), unit, body);
             (actor, body, unit.raw())
         })
         .collect();

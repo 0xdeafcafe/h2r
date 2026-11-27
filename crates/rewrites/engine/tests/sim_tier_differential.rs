@@ -90,7 +90,7 @@ struct Root {
 }
 
 fn roots() -> Vec<Root> {
-    let solver = engine::sim_physics::PORTS.iter().find(|p| p.point.base == points::HAVOK_SOLVER.base).expect("solver port");
+    let solver = engine::sim_physics::PORTS.iter().chain(engine::sim_physics::ORACLES).find(|p| p.point.base == points::HAVOK_SOLVER.base).expect("solver port");
     vec![
         Root { point: &points::OBJECT_TRANSFORM_COMPOSE, fixture: compose_fixture, port: Port::Native(|c, m| native::compose(c, m)) },
         Root { point: &points::OBJECT_POSE_MATRIX, fixture: pose_fixture, port: Port::Native(|c, m| native::pose_matrix(c, m)) },

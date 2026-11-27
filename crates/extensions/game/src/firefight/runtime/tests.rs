@@ -78,10 +78,10 @@ fn guest(kit: bool, world: u32) -> (FakeGuest, u32) {
         // The kit's class record: the Elite on palette row 0.
         named(&mut m, SQUADS + 0x74, "ff_class_elite");
         m.put_u16(SQUADS + 0x74 + 0x36, 0);
-        // Endless's Marine allies: a second record on the same row, UNSC.
+        // Endless's Marine allies: a record on its own palette row, human.
         named(&mut m, SQUADS + 2 * 0x74, "ff_class_marine");
-        m.put_u16(SQUADS + 2 * 0x74 + 0x36, 0);
-        m.put_u16(SQUADS + 2 * 0x74 + 0x24, 1);
+        m.put_u16(SQUADS + 2 * 0x74 + 0x36, 1);
+        m.put_u16(SQUADS + 2 * 0x74 + 0x24, 2);
         // Its team is its faction's: Covenant, 3.
         m.put_u16(SQUADS + 0x74 + 0x24, 3);
         m.put_u16(SQUADS + 0x24, 3);
@@ -94,7 +94,7 @@ fn guest(kit: bool, world: u32) -> (FakeGuest, u32) {
         pair(&mut m, ZONES + 0x30, 1, AREAS);
         m.map(AREAS, 0x88).put_f32(AREAS + 0x24, 40.0);
         m.map(FIRING, 2 * 0x20);
-        pair(&mut m, SCNR + 0x178, 1, PALETTE);
+        pair(&mut m, SCNR + 0x178, 2, PALETTE);
         m.put_u32(PALETTE + 4, ELITE_TAG);
         pair(&mut m, SCNR + 0x240, 1, ORDERS);
         m.map(ORDERS, 0x7c);
@@ -663,7 +663,10 @@ fn the_kit_reply_reads_the_scenario() {
     assert_eq!(kit.zones.len(), 1);
     assert_eq!(kit.zones[0].point, [40.0, 0.0, 0.0]);
     assert_eq!(kit.zones[0].starts, 2);
-    assert_eq!(kit.classes, BTreeMap::from([("elite".to_string(), 0)]));
+    assert_eq!(
+        kit.classes,
+        BTreeMap::from([("elite".to_string(), 0), ("marine".to_string(), 1)])
+    );
     assert_eq!(kit.hunt_orders, [Some(0)]);
     assert!(kit.bases.is_empty(), "the fixture marks no base zone");
     let (m, _) = guest(false, 1);

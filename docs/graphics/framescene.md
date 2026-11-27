@@ -1040,11 +1040,13 @@ to the guest's draws (**Code**):
     lighting `0x00023690` under the object setup (`0x0004b5d0`). So the
     cycle reaches a layer's draws only through the object items'
     lighting, read after it; the world's items draw without one.
-  - **The plan** (`native_render::layer_pass`). Per item: the one pass
-    the item names, its `+0x14` at the shader level its `+0x15` names
-    (`frame_scene::LayerItem::pass`, `level`; the guest's list holds an
-    item per pass, and `0x00016b90` sets up that pass alone; one without
-    a vertex shader draws nothing), the
+  - **The plan** (`native_render::layer_pass`). Per item: for an
+    object's, the one pass the item names, its `+0x14` at the shader
+    level its `+0x15` names (`frame_scene::LayerItem::pass`, `level`;
+    the guest's list holds an item per pass, and `0x00016b90` sets up
+    that pass alone); for a structure item, every pass of the first
+    level, which its layer set draws for the part (`layer_pass::item_pass`).
+    A pass without a vertex shader draws nothing. Then the
     implementation (the only one, or the item's), the engine inputs
     (the view's, the lighting's from the item's owner, none for the
     structure's, and the shader's own) with the material resolved again
@@ -1210,8 +1212,14 @@ to the guest's draws (**Code**):
     `skip_holds`),
     `object_models` (the caller's models are not resident or their
     palettes changed), `viewport`, `object_w_buffer`,
-    `object_model` (the item's model is not uploaded), `object_plan`
-    (a pass does not plan; the first of each reason is logged),
+    `object_model` (the item's model is not uploaded), the plan's causes
+    `object_plan_<cause>` (`object_program_gpu::LayerPlanRefusal::name`:
+    `not_compiled`, the material's passes of the layer did not compile
+    for the model, its first compile error kept per layer and shader;
+    `no_part`, `shader`, `level`, `pass`, `pass_empty`,
+    `implementation`, `prt`, `aux_depth`, `structure_parameters`,
+    `defaults`, `ranges`, `program`, `animation`, `constants`, `state`,
+    `model`; the first of each message is logged),
     `object_texaccum` (in layer 1, or no target to bind or level to
     give), `object_aux_depth` (the device does not hold the toggle off),
     `object_fog`, `object_stencil`,

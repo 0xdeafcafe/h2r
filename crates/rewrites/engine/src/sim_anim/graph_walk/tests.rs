@@ -346,6 +346,7 @@ fn declines(c: &Case, edit: impl Fn(&mut CpuAbi, &mut Guest), why: Decline) {
 
 #[test]
 fn calls_outside_the_fast_path_decline_untouched() {
+    let _s = serial();
     let c = case(10, 6);
     let def = |i: u32, field: u32| NODE_ARRAY + 0x20 * i + field;
     // PE not yet sticky; rounding toward zero.

@@ -282,3 +282,124 @@ fn a_device_that_cannot_take_an_external_pass_refuses_a_native_draw_at_the_bound
     assert!(!device.try_native_array_draw(&mut mem, gfx::vertex::PrimitiveType::QuadList, 0, 4, &Never).unwrap());
     assert_eq!(device.last_native_refusal(), Some(d3d::NativeRefusal::Boundary));
 }
+
+/// A particle producer for [`particles`]: each draw it is offered becomes a
+/// pass standing in for it, as `game`'s particle admission does.
+#[derive(Default)]
+struct Particles(std::sync::Mutex<Vec<std::sync::Arc<d3d::ResolvedDraw>>>);
+
+struct Particle(std::sync::Arc<d3d::ResolvedDraw>);
+
+impl d3d::ExternalPass for Particle {
+    fn resolved_fallback(&self) -> Option<std::sync::Arc<d3d::ResolvedDraw>> {
+        Some(std::sync::Arc::clone(&self.0))
+    }
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites { color: true, depth_stencil: false }
+    }
+}
+
+impl d3d::DrawAdmission for Particles {
+    fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+        let draw = std::sync::Arc::new(snapshot.draw.clone());
+        self.0.lock().unwrap().push(std::sync::Arc::clone(&draw));
+        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Particles, view: 4, ranges: 1, slots: Vec::new() };
+        Some((plan, Box::new(Particle(draw))))
+    }
+}
+
+/// A device set up as the particle walk finds it: a vertex program, and
+/// one inline array register (v0, four shorts) pushed.
+fn particle_device() -> (d3d::Device<RecordingBackend>, d3d::SparseMemory) {
+    use shaders::vsh::encode::{Inst, Operand, program};
+    use shaders::vsh::{MacOp, OutReg};
+    const FUNCTION: u32 = MISC + 0x3400;
+    let mut backend = RecordingBackend::new();
+    backend.external_passes = true;
+    backend.queue_external_draws = true;
+    let (mut device, mut mem) = create(backend, UploadPolicy::Tracked);
+    set_states(&mut device, &mut mem);
+    let code = program(&[
+        Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::Pos, 0xF),
+        Inst::mac(MacOp::Mov, Some(Operand::v(3)), None, None).to_out(false, OutReg::D0, 0xF).last(),
+    ]);
+    mem.write(FUNCTION, &code).unwrap();
+    device.load_vertex_shader_program(&mut mem, FUNCTION, 0).unwrap();
+    device.set_vertex_shader(&mut mem, (MISC + 0x3a00) | 1).unwrap();
+    let dev = mem.read_u32(d3d::GuestLayout::HALO2.p_device).unwrap();
+    let mut put = mem.read_u32(dev).unwrap();
+    for word in [(1 << 18) | 0x1760, 0x0845] {
+        mem.write_u32(put, word).unwrap();
+        put += 4;
+    }
+    mem.write_u32(dev, put).unwrap();
+    (device, mem)
+}
+
+/// Particle `i`'s corners and its carried colour.
+fn particle(i: u32) -> (Vec<u8>, [Option<[f32; 4]>; 16]) {
+    let n = i as i16;
+    let data = [[n, 0, 0, 1], [n + 4, 0, 0, 1], [n + 4, 4, 0, 1], [n, 4, 0, 1]]
+        .into_iter()
+        .flatten()
+        .flat_map(i16::to_le_bytes)
+        .collect();
+    let mut carried = [None; 16];
+    carried[3] = Some([i as f32 / 8.0, 0.5, 0.25, 1.0]);
+    (data, carried)
+}
+
+/// `n` particles through `device`, `between` run before each after the
+/// first: the draws the producer was offered, what the backend queued,
+/// and the device's stats.
+fn particles(
+    runs: bool, n: u32, mut between: impl FnMut(&mut d3d::Device<RecordingBackend>, &mut d3d::SparseMemory, u32),
+) -> (Vec<d3d::ResolvedDraw>, Vec<(timeline::native::Stage, usize)>, d3d::device::Stats) {
+    let (mut device, mut mem) = particle_device();
+    device.set_inline_runs(runs);
+    let owner = Particles::default();
+    for i in 0..n {
+        if i > 0 {
+            between(&mut device, &mut mem, i);
+        }
+        let (data, carried) = particle(i);
+        assert!(device
+            .try_native_inline_draw(&mut mem, gfx::vertex::PrimitiveType::QuadList, data, &carried, &owner)
+            .unwrap(), "particle {i} was not drawn");
+    }
+    let offered = owner.0.lock().unwrap().iter().map(|d| (**d).clone()).collect();
+    (offered, device.backend.queued.clone(), device.stats())
+}
+
+/// N particles of one state make one full submit and N-1 fast ones, and
+/// the producer is offered exactly the draws, in the same order, that N
+/// full submits offer it: so the packets are the same.
+#[test]
+fn same_state_particles_resolve_once_and_offer_identical_draws() {
+    let (full, full_queued, full_stats) = particles(false, 6, |_, _, _| {});
+    let (fast, fast_queued, fast_stats) = particles(true, 6, |_, _, _| {});
+    assert_eq!((full_stats.native_inline_full, full_stats.native_inline_fast), (6, 0));
+    assert_eq!((fast_stats.native_inline_full, fast_stats.native_inline_fast), (1, 5));
+    assert_eq!(fast.len(), 6);
+    assert_eq!(fast, full);
+    assert_ne!(fast[0].streams, fast[1].streams);
+    assert_ne!(fast[0].shader.vertex_defaults, fast[1].shader.vertex_defaults);
+    assert_eq!(fast_queued, full_queued);
+    assert_eq!(fast_stats.external_passes_dropped, full_stats.external_passes_dropped);
+}
+
+/// A state change between two particles ends the run: the next particle
+/// resolves in full, and offers what a full submit would.
+#[test]
+fn a_state_change_between_particles_resolves_the_next_in_full() {
+    let blend = |d: &mut d3d::Device<RecordingBackend>, m: &mut d3d::SparseMemory, i: u32| {
+        if i == 3 {
+            d.set_render_state(m, RS_ALPHABLENDENABLE, 1).unwrap();
+        }
+    };
+    let (full, _, _) = particles(false, 5, blend);
+    let (fast, _, stats) = particles(true, 5, blend);
+    assert_eq!((stats.native_inline_full, stats.native_inline_fast), (2, 3));
+    assert_eq!(fast, full);
+    assert_ne!(fast[2].state, fast[3].state);
+}

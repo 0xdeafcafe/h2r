@@ -356,7 +356,7 @@ fn mode_blobs_round_trip_within_the_channel_limit() {
         ..teams
     };
     let bytes = teams_each.encode();
-    assert_eq!(bytes.len(), 55);
+    assert_eq!(bytes.len(), 48);
     assert!(bytes.len() <= MAX_BLOB);
     assert_eq!(Mode::decode(&bytes), Ok(teams_each));
     for stage in [Stage::Team0Won, Stage::Team1Won, Stage::Draw] {

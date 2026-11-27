@@ -38,6 +38,10 @@ const CODE: u32 = 0x0066_0000;
 const FAKE_COLLECTION_CHILD: u32 = 0x0063_7000;
 const FAKE_SHAPE_RAY: u32 = 0x0063_7010;
 const FAKE_FILTER: u32 = 0x0063_7020;
+/// The interpreter's unknown-opcode report: it calls Havok's error object
+/// and then writes address 0, so a program reaching it is one the guest
+/// asserts on.
+const OPCODE_TRAP: u32 = 0x0030_0d86;
 
 /// One query.
 #[derive(Clone, Debug)]
@@ -172,6 +176,8 @@ struct Run {
     /// Keys the guest passed to the collection.
     keys: Vec<u32>,
     enters: u32,
+    /// The guest reached [`OPCODE_TRAP`].
+    trapped: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -282,6 +288,12 @@ fn run_callbacks(
                 .finish(&*m, world);
             return out;
         }
+        if pc == OPCODE_TRAP {
+            // The open observation drops with the run, as for a guest that
+            // never returns.
+            out.trapped = true;
+            return out;
+        }
         if pc == points::COLLISION_MOPP_RAY.base {
             observation = Some(arm::begin_observed(
                 1,
@@ -339,6 +351,15 @@ fn check_case(
     let got = run(oracle, &c, &mut m, &world);
     let r = outcome(&world);
     assert_eq!(arm::open_queries(), 0, "{label}: a query stayed open");
+    if got.trapped {
+        // The walk could not run to its trap: the float environment or
+        // the root declined first.
+        assert!(
+            expected.is_err(),
+            "{label}: the guest trapped, the walk did not"
+        );
+        return None;
+    }
     assert_eq!(
         r.mismatched,
         0,

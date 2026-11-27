@@ -308,10 +308,12 @@ fn every_mode_label_fits_the_header() {
         .iter()
         .find(|b| [b.rect.top, b.rect.left, b.rect.bottom, b.rect.right] == HEADER)
         .unwrap_or_else(|| {
-            for (i, b) in lobby.panes[0].text_blocks.iter().enumerate() {
-                eprintln!("block {i}: font {} {:?}", b.font, b.rect);
-            }
-            panic!("the lobby's header block")
+            let rects: Vec<_> = lobby.panes[0]
+                .text_blocks
+                .iter()
+                .map(|b| (b.font, [b.rect.top, b.rect.left, b.rect.bottom, b.rect.right]))
+                .collect();
+            panic!("the lobby's header block {HEADER:?} is not among {rects:?}")
         });
     let room = i32::from(HEADER[3] - HEADER[1]);
     for t in Tab::ALL {

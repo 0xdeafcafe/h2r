@@ -388,8 +388,11 @@ their addresses.
   plans the item's pass only (`object_program_gpu::plan_layer_part`),
   from the model's part of the item's level: the world layers' object
   programs compile at every level the material has passes in
-  (`object_program::object_layer_levels`). A low byte other than the
-  key's part keeps the item on D3D.
+  (`object_program::object_layer_levels`). The argument's low byte is
+  the part the draw takes (`0x0004d1d8` indexes the section's parts by
+  it, `0x48` bytes each), so the scene item's key takes its part from it
+  (`scene_extract::extract`, `layer_item`), not from the record key's
+  bits 0..3.
 
 What still declines, by name: `object_fade` (the device's stipple is on:
 layers 1 and 3 outside view kinds 4 to 7), `object_stipple` (the cached fade or the
@@ -397,9 +400,8 @@ pattern is not what the epilogue leaves), `object_shader_flag` (the
 structure's parameter block's upload does not compute or the device
 and the engine do not hold it, or in layer 3 a structure lightmap
 index),
-`object_shader_flag_target` (the target copy not made yet and a pass's
-program with flag bit 20) and
-`object_argument` (another part). In layer 3's walk these
+and `object_shader_flag_target` (the target copy not made yet and a
+pass's program with flag bit 20). In layer 3's walk these
 are `walk_unsupported` (extraction) or `State` (the stipple); in the
 first person's layer 3 they are its log reasons.
 

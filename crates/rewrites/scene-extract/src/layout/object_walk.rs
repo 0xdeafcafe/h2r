@@ -94,8 +94,11 @@
 //!   pass within the layer `0x00016b90` selects (`[template+0x5c]+4`
 //!   indexed by the level, its layer's first pass plus the pass), so
 //!   each item draws one pass at one level: the scene item carries them
-//!   (`frame_scene::LayerItem::level`, `pass`). A low byte other than the
-//!   key's part refuses ([`frame_scene::LayerObjectRefusal::Argument`]).
+//!   (`frame_scene::LayerItem::level`, `pass`). In a world layer the
+//!   argument's low byte is the item's part (`0x0004d1d8` indexes the
+//!   section's parts by it), so `extract::layer_item` takes the key's
+//!   part from it; the layer-3 walk refuses a low byte other than its
+//!   key's (`walk_part_argument`).
 
 use std::collections::HashMap;
 use std::ops::Range;
@@ -446,19 +449,17 @@ fn read_part(
 ///   flagged record with a structure lightmap index refuses
 ///   ([`LayerObjectRefusal::ShaderFlag`]).
 /// - The argument's high byte reaches only the residency the stage
-///   resolve asks for; a low byte other than the key's part refuses
-///   ([`LayerObjectRefusal::Argument`]). The item's `+0x14` and `+0x15`
-///   (the pass and level its draw sets up) are the scene item's
-///   `pass` and `level`, read by `extract::layer_item`.
+///   resolve asks for. Its low byte is the part, `key`'s
+///   (`extract::layer_item` puts it there), and the item's `+0x14` and
+///   `+0x15` (the pass and level its draw sets up) are the scene item's
+///   `pass` and `level`.
 /// - Bits 9 and 6 as in layer 3 ([`record_flags`], [`visible_subparts`]).
 ///
 /// [`LayerObjectRefusal::ShaderFlag`]: frame_scene::LayerObjectRefusal::ShaderFlag
-/// [`LayerObjectRefusal::Argument`]: frame_scene::LayerObjectRefusal::Argument
 pub fn layer_part(
     mem: &dyn GuestRead, layer: u8, item: u32, record: u32, key: ItemKey,
 ) -> Result<(PartFlags, Option<Subparts>), frame_scene::LayerObjectRefusal> {
     use frame_scene::LayerObjectRefusal as R;
-    let packed = word(mem, item, 0xc).ok_or(R::Unread)?;
     let fade = (half(mem, record, RECORD_DRAW_FLAGS).ok_or(R::Unread)? as u8) != u8::MAX;
     let tag_table = word(mem, TAG_INSTANCES, 0).ok_or(R::Unread)?;
     if word(mem, tag_table, 16 * (key.shader & 0xffff)) != Some(u32::from_be_bytes(*b"shad")) {
@@ -476,9 +477,6 @@ pub fn layer_part(
         if layer == LIGHTMAP_LAYER as u8 && ((record_key >> 18) & NO_STRUCTURE_LIGHTMAP) != NO_STRUCTURE_LIGHTMAP {
             return Err(R::ShaderFlag);
         }
-    }
-    if packed as u8 != key.part {
-        return Err(R::Argument);
     }
     let flags = word(mem, record, 0).ok_or(R::Unread)?;
     let mode = word(mem, record, objects::RECORD_MODEL).ok_or(R::Unread)?;
@@ -511,8 +509,7 @@ pub fn layer_part(
         Refusal::AuxState => R::AuxState,
         Refusal::Subparts => R::Subparts,
         Refusal::ShaderFlag => R::ShaderFlag,
-        Refusal::Argument => R::Argument,
-        Refusal::Program | Refusal::Other => R::Unread,
+        Refusal::Argument | Refusal::Program | Refusal::Other => R::Unread,
     };
     let mut out = record_flags(flags, triangle_list, conditional.is_some());
     if fade {
@@ -981,12 +978,12 @@ mod tests {
         mem.w(shader + 0x14, 0);
         mem.w(target_ready, 0);
         // The argument's high byte (the projected size) changes nothing
-        // the draw sets; another part does. The pass and level the item
-        // names are the scene item's to draw, not a refusal.
+        // the draw sets. The part, pass and level the item names are the
+        // scene item's to draw, not a refusal.
         mem.w(item + 0xc, 0x80 << 24 | 1 << 8 | 2);
         assert_eq!(at(&mem, 7), Ok((PartFlags::NONE, None)));
         mem.w(item + 0xc, 1 << 8 | 3);
-        assert_eq!(at(&mem, 7), Err(R::Argument), "another part");
+        assert_eq!(at(&mem, 7), Ok((PartFlags::NONE, None)), "the key's part, which extraction takes from the low byte");
         mem.w(item + 0xc, 1 << 8 | 2);
         mem.w(item + 0x14, 1);
         assert_eq!(at(&mem, 7), Ok((PartFlags::NONE, None)), "another pass");

@@ -141,7 +141,8 @@ differential transcripts are equal. With `E` the entry `ESP` and
 
 | At | Holds |
 |---|---|
-| `S+0x10` | the shadow byte; `0x00031660` is handed its address, `0x00031170` its dword, whose upper bytes are those of `S+0xb0`, the visible list's argument pushed there (**E** `0x00031c91`) |
+| `S+0xc` | the visible list's argument, `S+0xb0` (**E** `0x00031c91`): the probe leaves `ESP` at `S+0x10`, so the push lands below it; with lights to draw, the saved `EBX` overwrites it |
+| `S+0x10` | the shadow byte; `0x00031660` is handed its address, `0x00031170` its dword, whose upper bytes are whatever the stack held |
 | `S+0x18` | the frusta count `0x000c1d90` writes (i16) |
 | `S+0x34` | the posed volume, `0x7c` bytes |
 | `S+0xb0` | the visible rows, up to 128 of `0x14` bytes |

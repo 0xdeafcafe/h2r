@@ -2485,7 +2485,7 @@ mod ground {
             })
             .collect();
         json!({
-            "format": 2,
+            "format": 3,
             "name": "Two Zones",
             "teams": 1,
             "set": {"endless": false, "scale": 0, "skulls": []},

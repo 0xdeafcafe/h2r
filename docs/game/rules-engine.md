@@ -412,9 +412,12 @@ header's), so a site gets its number and a starting location its
 layout (`gate::Sources::census` takes the script), and a Forge map the lobby
 picked replaces it, so the check and the match agree. A map with no layout
 keeps the flags' built-in labels. A label op on an entry the map lacks is
-skipped (`census::layout_doc`), which is what a placeholder index is: a
-layout names a place it has not yet read off the map (Zanzibar's file is
-all placeholders) and a census fills in the real index later. Readers that
+skipped (`census::layout_doc`), so a layout never blocks a map it does
+not fit. Zanzibar's layout names the map's own flags and starts: the
+territory flags 17 and 15 are the phase 0 sites and 19 and 13 the phase 1
+sites (the final stand is the defenders' flag stand), and the starting
+locations are numbered by phase for each side, the attackers' from the
+south stand northward and the defenders' from mid-map northward. Readers that
 need only the flags' places (`world/walls.rs` on a client, the HUD
 publisher, the Forge play forms) read `census::things`, which applies no
 layout.
@@ -2356,7 +2359,7 @@ The phased mode is the check that the API is wide enough:
 | a core carried to a goal | the objective registry as CTF and Assault | traced |
 | the map opens per phase | `set_open` on the `siege_barrier` objects, numbered by phase (a barrier is put below its place and back; `delete` and `create` are not hostable) | named; the built-in Siege |
 | spawn areas switch per phase | `spawn_areas` over labelled starting locations; `spawn_near` over a zone, which needs no labels | named; the built-in Siege (`spawn_near`) |
-| loadouts per team, chosen at spawn | `on spawn` and `set_loadout`; Halo 2 has no armor abilities, so a loadout is weapons, grenades and traits; a player picks a row of their side's table among the rows the phase's tier opens (`offer`, `choice`), row 0 until they pick | named; the built-in Siege; a pick is carried for a local player only |
+| loadouts per team, chosen at spawn | `on spawn` and `set_loadout`; Halo 2 has no armor abilities, so a loadout is weapons, grenades and traits; a player picks a row of their side's table among the rows the phase's tier opens (`offer`, `choice`), row 0 until they pick | named; the built-in Siege; the pick is the select dialog `kit.picker.game` (`content/ui/screens/kit.picker.game.yaml`), opened over the player's controller, and a player on a dedicated host's client picks through the offer cue and the tunnel's `ActorPick` frame |
 | team respawn waves | hold respawns with the lives gates, release on a timer | named; the built-in Siege |
 | two species teams | `set_body` per team at the round's start | named; the built-in Siege |
 | the objective and its state on the HUD | the Hill kit's mark, row and banner (`hud_style`, `mark`, `hud_text`) | named; the built-in Siege; the phase clock is the kit's `koth.phase` row |

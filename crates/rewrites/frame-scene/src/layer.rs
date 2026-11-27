@@ -105,11 +105,6 @@ pub enum LayerObjectRefusal {
     /// a flagged record with a structure lightmap index, which the draw
     /// does not bind for the shader.
     ShaderFlag,
-    /// The item's argument's low byte is not its key's part: the draw
-    /// would set up another part of the section than the one the scene
-    /// draws. (Its `+0x14` and `+0x15`, the pass and level, are the
-    /// item's [`LayerItem::pass`] and [`LayerItem::level`].)
-    Argument,
     /// Layer 5: the stream and constants the draw adds for an object's
     /// record whose model has a PRT block (`0x00024040`, `0x00024490`)
     /// do not read, or the draw leaves one of them as the draws before it
@@ -129,7 +124,6 @@ impl LayerObjectRefusal {
     pub fn name(self) -> &'static str {
         match self {
             LayerObjectRefusal::ShaderFlag => "object_shader_flag",
-            LayerObjectRefusal::Argument => "object_argument",
             LayerObjectRefusal::Layer5Stream => "object_layer5_stream",
             LayerObjectRefusal::Subparts => "object_subparts",
             LayerObjectRefusal::AuxState => "object_aux_state",
