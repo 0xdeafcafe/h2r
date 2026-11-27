@@ -227,7 +227,9 @@ Turf and Warlock are Multiplayer Map Pack maps, not on the retail disc:
 their scans need the map pack's `.map` files (`deltatap.map`), and no
 `deltatap.spots` exists until `h2 bots nav deltatap` runs on them.
 
-**Monster bounces.** Halopedia's "monster bounces" are a thin seam over
+#### Monster bounces
+
+Halopedia's "monster bounces" are a thin seam over
 many grid lines, or a V of converging lines. A spot whose target line
 has at least 2 other concave creases running into it, each ending on
 the line and not parallel to it (`bounce.rs`, `converging`), scores at

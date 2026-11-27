@@ -51,50 +51,52 @@ crouch spots), so a bot works round a map's sites rather than cycling
 the same few, and the claims spread the bots over it.
 
 **Which sites a route reaches.** The first time a pick looks at a site
-it pairs the site with a crouch spot (`bounce_route::pair_site`), and
-the bot keeps the pairing while the map and its spots stay the same:
-the site's approach (behind it, or its launch floor), and of the 6
-crouch spots nearest that approach within 60 units, proven first, the
-one whose start a walk reaches and from which a walk reaches the
-approach, proven first and then the shortest walk. A site with no approach (a drop with no launch floor, no
-launch) or no crouch spot a walk reaches it from is never tried (a
-primed bot needs no crouch spot). A paired site is picked when the walk
-from the bot to its crouch spot's start (primed: to its approach)
-exists; one with none is passed over for 600 ticks
-(`practice::OUT_OF_REACH_TICKS`). When the walk that fails is the one
-to the paired crouch spot's start, the crouch spot is what is out of
-reach (a floor a walk drops down from to the site but none climbs to
-from the bot): it is set aside for the same 600 ticks, its sites pair
-again without it, and the pick looks again 2 ticks later. A pick makes at
-most 4 pairings and 4 of those walks, and with more to look at picks
-again 2 ticks later. A practice try is therefore never spent finding
-out that a site is out of reach: `no_route` is a site whose route
-failed to plan from where the bot stood, which a pairing rules out but
+it pairs the site with a crouch spot (`bounce_route::pair_site`), and the
+bot keeps the pairing while the map and its spots stay the same: the site's
+approach (behind it, or its launch floor), and of the 6 crouch spots nearest
+that approach within 60 units, proven first, the one whose start a walk
+reaches and from which a walk reaches the approach, proven first and then
+the shortest walk. A site with no approach (a drop with no launch floor, no
+launch) or no crouch spot a walk reaches it from is never tried (a primed
+bot needs no crouch spot). A paired site is picked when the walk from the
+bot to its crouch spot's start (primed: to its approach) exists; one with
+none is passed over for 600 ticks (`practice::OUT_OF_REACH_TICKS`).
+
+When the walk that fails is the one to the paired crouch spot's start, the
+crouch spot is what is out of reach (a floor a walk drops down from to the
+site but none climbs to from the bot): it is set aside for the same 600
+ticks, its sites pair again without it, and the pick looks again 2 ticks
+later. A pick makes at most 4 pairings and 4 of those walks, and with more
+to look at picks again 2 ticks later. A practice try is therefore never
+spent finding out that a site is out of reach: `no_route` is a site whose
+route failed to plan from where the bot stood, which a pairing rules out but
 for a bot that moved between the pick and the plan.
 
 **Giving up what keeps failing.** A failed try counts against what it
-failed at (`Mind::practice_strike`): a walk to the crouch spot that
-failed (`no_path`, `goal_off_mesh`, `tail_stuck`, `path_lost_*`), or
-its prime, against the crouch spot; a walk to the approach that failed,
-against the site. Strikes lapse: one more than 3600 ticks (2 min,
-`practice::STRIKE_TICKS`) after the last starts the count again. A
-crouch spot with 2 (`practice::CROUCH_STRIKES`) is given up and the
-sites paired with it pair again without it; a site with 3
-(`practice::SITE_STRIKES`) is given up. Either comes back after 5400
-ticks (3 min, `practice::GIVE_UP_TICKS`). A failed prime also counts
-for every bot on the map (`practice::PRIME_FAILS`, by the crouch spot,
-lapsing the same way): the geometry that refuses one bot's crouch
-refuses them all, so a crouch spot whose primes failed twice between
-the bots is given up by each of them. A proven crouch spot
-(`superbounce::PROVEN`, or verified) is never given up. When a pick
-finds nothing while something is given up, everything given up comes
-back at once and the pick looks again: giving up never leaves a map
-with nothing to try. A landing that did not bounce counts against
-neither. A pick that finds nothing says why once a map in the log
-(`bots: bounce practice: nothing to try: ...`: the sites and crouch
-spots known, how many crouch spots are set aside as out of reach, and
-how many sites had no crouch spot to prime at, no
-approach, no walk to them, were resting, given up or too far).
+failed at (`Mind::practice_strike`): a walk to the crouch spot that failed
+(`no_path`, `goal_off_mesh`, `tail_stuck`, `path_lost_*`), or its prime,
+against the crouch spot; a walk to the approach that failed, against the
+site. Strikes lapse: one more than 3600 ticks (2 min,
+`practice::STRIKE_TICKS`) after the last starts the count again. A crouch
+spot with 2 (`practice::CROUCH_STRIKES`) is given up and the sites paired
+with it pair again without it; a site with 3 (`practice::SITE_STRIKES`) is
+given up.
+
+Either comes back after 5400 ticks (3 min, `practice::GIVE_UP_TICKS`). A
+failed prime also counts for every bot on the map (`practice::PRIME_FAILS`,
+by the crouch spot, lapsing the same way): the geometry that refuses one
+bot's crouch refuses them all, so a crouch spot whose primes failed twice
+between the bots is given up by each of them. A proven crouch spot
+(`superbounce::PROVEN`, or verified) is never given up.
+
+When a pick finds nothing while something is given up, everything given up
+comes back at once and the pick looks again: giving up never leaves a map
+with nothing to try. A landing that did not bounce counts against neither. A
+pick that finds nothing says why once a map in the log (`bots: bounce
+practice: nothing to try: ...`: the sites and crouch spots known, how many
+crouch spots are set aside as out of reach, and how many sites had no crouch
+spot to prime at, no approach, no walk to them, were resting, given up or
+too far).
 
 ### How each bot practises
 
@@ -182,20 +184,20 @@ usually picks another.
 
 ### Chains
 
-A chain is the 2nd to 6th bounce with no ground between
-([superbounce.md, "The rule"](superbounce.md#the-rule)). At the start
-of a try the bot may plan one (`bounce_route::chain`): from the site's
-launch, the sites a flight can come down on without touching the
-ground, the least steering first (the site itself among them, straight
-back down), and with its chain chance a link at a time, at most 3, one
-of the 3 easiest, another site than the one it is off 3 times in 4. The
-route goes on after the first bounce with a `chain` step for each link
-(`bounce_route::Step::Chain`, `chain_onto`): in the air off the last
-launch it steers the landing onto the link's target as a drop's air
-does, and the link is made when it is thrown up again. A link that comes
-down without launching ends the chain; the rest are passed over. The
-route's view counts the links tried and made (`chain`), and the try's
-line ends `; chain M of N`.
+A chain is the 2nd to 6th bounce with no ground between ([superbounce.md,
+"The rule"](superbounce.md#the-rule)). At the start of a try the bot may
+plan one (`bounce_route::chain`): from the site's launch, the sites a flight
+can come down on without touching the ground, the least steering first (the
+site itself among them, straight back down), and with its chain chance a
+link at a time, at most 3, one of the 3 easiest, another site than the one
+it is off 3 times in 4. The route goes on after the first bounce with a
+`chain` step for each link (`bounce_route::Step::Chain`, `chain_onto`): in
+the air off the last launch it steers the landing onto the link's target as
+a drop's air does, and the link is made when it is thrown up again.
+
+A link that comes down without launching ends the chain; the rest are passed
+over. The route's view counts the links tried and made (`chain`), and the
+try's line ends `; chain M of N`.
 
 The flight is a trait (`chain::Trajectory`). The one built in,
 `chain::Ballistic`, is conservative: the site's launch estimate
@@ -223,46 +225,46 @@ them often and a cool one now and then. No approach of its own is
 documented: a Monster site is flown as any other of its shape.
 
 **The drill.** A sim match's `[drill]` ([sim.md, "The bounce
-drill"](../runtime/sim.md#the-bounce-drill)) makes the practice try one
-site only (`bots::drill`, `Mind::set_drill`): the known site within 0.5
-of the drill's `site`. The bot walks to the drill's start (its `start`,
-else the site's approach: a drop's takeoff or launch floor) as a plain
-walk, and standing there unprimed asks the host for its word
-(`Mind::drill_wants_arm`; the brain passes its unit's datum to
-`drill::request_arm`), for 20 ticks before walking 1 unit off and back,
-since a body that sleeps has no level pair to write. Primed, it runs the
-route by the site from there (no prime: the walk to the approach, then
-the jump or the drop), tallied as a practice try, pauses 10 ticks and
-walks back to the start. The word is read between tries too
-(`Mind::wants_pair`). A route that starts primed from a word read at −3
-says so (`OrderRun::primed_read`: `primed_read`, and a practice event
-`Primed` with `read` and not `own`). The log says once a drill which
-site it found (`bots: bounce drill: site ... (a drop), aim ..., start
-..., N sites known`), after any `no known site` said while the map's
-spots were still coming in.
+drill"](../runtime/sim.md#the-bounce-drill)) makes the practice try one site
+only (`bots::drill`, `Mind::set_drill`): the known site within 0.5 of the
+drill's `site`. The bot walks to the drill's start (its `start`, else the
+site's approach: a drop's takeoff or launch floor) as a plain walk, and
+standing there unprimed asks the host for its word (`Mind::drill_wants_arm`;
+the brain passes its unit's datum to `drill::request_arm`), for 20 ticks
+before walking 1 unit off and back, since a body that sleeps has no level
+pair to write. Primed, it runs the route by the site from there (no prime:
+the walk to the approach, then the jump or the drop), tallied as a practice
+try, pauses 10 ticks and walks back to the start.
+
+The word is read between tries too (`Mind::wants_pair`). A route that starts
+primed from a word read at −3 says so (`OrderRun::primed_read`:
+`primed_read`, and a practice event `Primed` with `read` and not `own`). The
+log says once a drill which site it found (`bots: bounce drill: site ... (a
+drop), aim ..., start ..., N sites known`), after any `no known site` said
+while the map's spots were still coming in.
 
 **Training.** A sim match's `[train]` ([bounce-search.md](bounce-search.md),
 "Scheduling a batch") makes the practice fly the run's board instead
-(`Mind::set_train`, from `learn::current`; `learn::shared` keeps the
-board, built at the first pick from the known sites once the map's scan
-is in, `practice::site_in`: each site's allowed `how`s and the route's own
-knobs from `flown`, and its line of the learned file). A free bot takes
-the board's pick (`learn::Board::pick`) and flies the round's slots one
-after another, each as a drill try: the try's site is the known site
-with the search's knobs over its own, the bot walks to its approach (a
-drop's launch point), asks for the word as the drill does (the same
-`drill_wants_arm` and `drill::request_arm`), and runs the route by the
-site from there. One flight is a try: a landing that did not launch ends
-the route (`try_over`). The try is the route's first flight
-(`learn::Try::from_leap`, the miss from `Site::own_target`); a `died` is a
-scored try with a death; an end that says nothing about the knobs is
-void (`map_changed`, `practice_off`, `pair_lost`, `no_route`, a walk that
-failed, and the training's own `no_site`, `no_launch_floor`, `no_path`
-after 3 walks to the start, `not_armed` after 3 wake-ups). When the
-search has no slot left the round folds (`Board::fold`), the log says
-`bots: train: site (...) round N ...`, and the board's lines go to the
-map's learned file (`spots::store_learned`). Each try logs its line with
-`train` in place of `drill` and the knobs it flew appended (`; knobs
+(`Mind::set_train`, from `learn::current`; `learn::shared` keeps the board,
+built at the first pick from the known sites once the map's scan is in,
+`practice::site_in`: each site's allowed `how`s and the route's own knobs
+from `flown`, and its line of the learned file). A free bot takes the
+board's pick (`learn::Board::pick`) and flies the round's slots one after
+another, each as a drill try: the try's site is the known site with the
+search's knobs over its own, the bot walks to its approach (a drop's launch
+point), asks for the word as the drill does (the same `drill_wants_arm` and
+`drill::request_arm`), and runs the route by the site from there. One flight
+is a try: a landing that did not launch ends the route (`try_over`).
+
+The try is the route's first flight (`learn::Try::from_leap`, the miss from
+`Site::own_target`); a `died` is a scored try with a death; an end that says
+nothing about the knobs is void (`map_changed`, `practice_off`, `pair_lost`,
+`no_route`, a walk that failed, and the training's own `no_site`,
+`no_launch_floor`, `no_path` after 3 walks to the start, `not_armed` after 3
+wake-ups). When the search has no slot left the round folds (`Board::fold`),
+the log says `bots: train: site (...) round N ...`, and the board's lines go
+to the map's learned file (`spots::store_learned`). Each try logs its line
+with `train` in place of `drill` and the knobs it flew appended (`; knobs
 how=runoff ax=... back=...`, `practice::knobs_text`). `bots.bounce_status`
 gives the round (`practice.train`).
 

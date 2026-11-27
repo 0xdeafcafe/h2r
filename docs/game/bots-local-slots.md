@@ -178,21 +178,22 @@ same user id (`0x190186`), guests included.
 
 **Design: the bots are the human's Live guests.** When a human is on Xbox
 Live as their own account (`guest::live_host`) and no game runs, the glue
-signs each bot whose slot has a profile and is not on Live in as the
-human's guest (`guest::go_live`, every 30 frames before `SOUND_UPDATE`,
-`bot_glue::to_go_live`). It writes what `0x190074` and `0x18fee9` write:
-the `0x20` flag, the host's record with the lowest free guest number
-(`guest::free_guest_number`) at `+0x470`, its XUID at `+8` and in the
-slot's local user. It leaves out the name rebuild, so the bot stays
-"Clanker 1" (not "afr(1)"), and makes no logon: the Xbox Live service, and
-our server through the Live HLE, only ever see the human's account (the
-HLE's `XOnlineChangeLogonUsers` maps a guest to its host's account by user
-id and keeps the guest number; it makes no accounts). Offline and in
-System Link with no one on Live, nothing changes. Telemetry finds the bots
-by their controller ports (`Bots { ports }`), so a guest goes out as
-`bot: true` with no xuid, never as the human. The log says it once per
-change: `bots: Clanker 1 on port 1 is on Xbox Live as guest 1 of port 0's
-account`.
+signs each bot whose slot has a profile and is not on Live in as the human's
+guest (`guest::go_live`, every 30 frames before `SOUND_UPDATE`,
+`bot_glue::to_go_live`). It writes what `0x190074` and `0x18fee9` write: the
+`0x20` flag, the host's record with the lowest free guest number
+(`guest::free_guest_number`) at `+0x470`, its XUID at `+8` and in the slot's
+local user. It leaves out the name rebuild, so the bot stays "Clanker 1"
+(not "afr(1)"), and makes no logon: the Xbox Live service, and our server
+through the Live HLE, only ever see the human's account (the HLE's
+`XOnlineChangeLogonUsers` maps a guest to its host's account by user id and
+keeps the guest number; it makes no accounts).
+
+Offline and in System Link with no one on Live, nothing changes. Telemetry
+finds the bots by their controller ports (`Bots { ports }`), so a guest goes
+out as `bot: true` with no xuid, never as the human. The log says it once
+per change: `bots: Clanker 1 on port 1 is on Xbox Live as guest 1 of port
+0's account`.
 
 **Design (§9.5): a bot with a bot account is its own Live player.** The
 guest sign-in above is now only the fallback until the server leases the

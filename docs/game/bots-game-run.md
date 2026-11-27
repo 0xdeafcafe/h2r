@@ -524,20 +524,20 @@ fill seats bots.
 
 **The drive** (`crates/apps/cli/src/bots_drive/clankermatch.rs`): boot, sign-in
 and the Xbox Live menu as above, then row 2 (Clankermatch), A. The playlist
-list is the first settled screen after that A; its row is read off its
-list value (or counted from the DOWNs sent, when the value reads as no
-row), and A goes on the playlist's row. Then nothing is pressed: the
-search (4 to 20 s), the lobby this console hosts, the fill and the
-countdown run by themselves. A human playlist's search, no search 15 s
-after A (A again, 4 tries), no hosted lobby 90 s into the search, or a
-lobby that has not started in 180 s stops the drive, saying which. Once
-the game has played and the phase is back in the menus, it leaves: B
-(A on a dialog, and DOWN, A on the next one; A after a B that changed
-nothing, as on the carnage report) until this console hosts no session,
-then waits for the fill to end (30 s, `FILL_GONE`). A game that starts
-again first is waited out. The game runs to its own end: Rumble Slayer's
-6 minutes, Team Slayer's 8, or the score, so the timeout is 900 s
-(1200 with `--no-drive`).
+list is the first settled screen after that A; its row is read off its list
+value (or counted from the DOWNs sent, when the value reads as no row), and
+A goes on the playlist's row. Then nothing is pressed: the search (4 to 20
+s), the lobby this console hosts, the fill and the countdown run by
+themselves. A human playlist's search, no search 15 s after A (A again, 4
+tries), no hosted lobby 90 s into the search, or a lobby that has not
+started in 180 s stops the drive, saying which.
+
+Once the game has played and the phase is back in the menus, it leaves: B (A
+on a dialog, and DOWN, A on the next one; A after a B that changed nothing,
+as on the carnage report) until this console hosts no session, then waits
+for the fill to end (30 s, `FILL_GONE`). A game that starts again first is
+waited out. The game runs to its own end: Rumble Slayer's 6 minutes, Team
+Slayer's 8, or the score, so the timeout is 900 s (1200 with `--no-drive`).
 
 **The checks:**
 

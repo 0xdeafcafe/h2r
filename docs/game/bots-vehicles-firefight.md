@@ -72,14 +72,17 @@ wrong.
 **Ground-route performance.** Ground-vehicle A* accounted
 for 2,917 of 5,201 game-thread samples in a Waterworks 2v2 sim. Only a
 ground driver asks for this path. A failed plan leaves it free to choose
-again next think, including picking a new roam goal. An exhausted search
-now remembers which polygons it reached from that start. Further goals
-outside that set fail immediately. A successful search can reuse its
-corridor for the same start and goal polygons and append the current
-snapped endpoint. Each driver caches portal clearance for its loaded map,
-vehicle datum and exact hull dimensions. Steering still checks the next
-leg from the vehicle's current position. A blocked leg drops the cached
-corridor for the next plan and keeps the normal steering retry.
+again next think, including picking a new roam goal.
+
+An exhausted search now remembers which polygons it reached from that start.
+Further goals outside that set fail immediately. A successful search can
+reuse its corridor for the same start and goal polygons and append the
+current snapped endpoint.
+
+Each driver caches portal clearance for its loaded map, vehicle datum and
+exact hull dimensions. Steering still checks the next leg from the vehicle's
+current position. A blocked leg drops the cached corridor for the next plan
+and keeps the normal steering retry.
 
 **Which vehicles.** By class (`vehicle::Class::spec`).
 
@@ -96,18 +99,20 @@ The bot looks up the chosen seat's entry markers in the actual vehicle's
 render model and places them using the live node matrices. Scorpion and
 Wraith driver seats can offer two positions. It searches for a stand point
 on the floor within the tag's radius and facing limits, looks at the marker
-and holds X while in range of the seat. The stand-point offsets and the
-0.6 world-unit eye height used in this check are **[guess]**. A retry
-uses a closer point covered by the same entry data.
+and holds X while in range of the seat.
+
+The stand-point offsets and the 0.6 world-unit eye height used in this check
+are **[guess]**. A retry uses a closer point covered by the same entry data.
 
 **Go and take** (`vehicle::plan::take`, `Mind::mount_plan`). A phantom
 can choose a vehicle after 1.5 s with no enemy in view if it carries no
-objective and seeks no weapon within 20 units. A weapon farther away
-can become a vehicle errand. The phantom drives to within 3 units of it
-and finishes on foot. In an objective game it chooses a vehicle only
-when the objective point is more than 20 units away. It takes the
-nearest vehicle by distance (plus 3 per unit of height) within the
-skill's range that:
+objective and seeks no weapon within 20 units. A weapon farther away can
+become a vehicle errand. The phantom drives to within 3 units of it and
+finishes on foot.
+
+In an objective game it chooses a vehicle only when the objective point is
+more than 20 units away. It takes the nearest vehicle by distance (plus 3
+per unit of height) within the skill's range that:
 
 - is a class it drives, whole (over 0.4), upright, standing still (under
   0.5 a second);
@@ -172,13 +177,15 @@ the player looks. The driver:
   the third time within 15 s it is stuck for good.
 
 **Fly** (`vehicle::flight`). The Banshee aims and climbs toward a cruise
-height, uses hull-width collision probes and pitches into a visible
-target for a strafe run. It breaks off at close range, boosts away, and
-uses a lateral evasive roll when damaged and high enough. It requests a
-fuel rod bomb on an aligned downward run when the fighter tag has a
-secondary trigger and barrel. It descends for an objective dismount or
-a damaged vehicle. Cruise height, collision envelope, combat ranges,
-cooldowns and landing tolerances are **[guess]**.
+height, uses hull-width collision probes and pitches into a visible target
+for a strafe run. It breaks off at close range, boosts away, and uses a
+lateral evasive roll when damaged and high enough. It requests a fuel rod
+bomb on an aligned downward run when the fighter tag has a secondary trigger
+and barrel.
+
+It descends for an objective dismount or a damaged vehicle. Cruise height,
+collision envelope, combat ranges, cooldowns and landing tolerances are
+**[guess]**.
 
 The Default Xbox pad uses left trigger for boost (also recorded in
 `input::touch_layout::DRIVER`) and right trigger for primary fire.
@@ -216,16 +223,17 @@ Code: `crates/live/bots/src/firefight.rs`, tests in
 `crates/live/bots/src/firefight/tests.rs`. The mode is
 [firefight.md](firefight.md).
 
-Clankers play Firefight as players. They are always on a player team,
-never on the AI's. With one player team they fill seats on it alongside
-people; with two they fill seats on either, keeping the teams even, and
-fight the AI and the other player team. An ally squad's actors are on a
-player team (docs/game/firefight.md, "Allies"): a bot drops the actors on
-its own team, or with one player team any on a player team, from its
-perception before sight (`firefight::drop_allies`), so it never targets
-them. With two teams the other team's ally stays an enemy; and with the
-AI's team a player team nothing is dropped, since no actor can be told
-from an ally.
+Clankers play Firefight as players. They are always on a player team, never
+on the AI's. With one player team they fill seats on it alongside people;
+with two they fill seats on either, keeping the teams even, and fight the AI
+and the other player team.
+
+An ally squad's actors are on a player team (docs/game/firefight.md,
+"Allies"): a bot drops the actors on its own team, or with one player team
+any on a player team, from its perception before sight
+(`firefight::drop_allies`), so it never targets them. With two teams the
+other team's ally stays an enemy; and with the AI's team a player team
+nothing is dropped, since no actor can be told from an ally.
 
 **Seats.** While the lobby is set up for Firefight the game sets the
 player team count (`bots::firefight::set_seat_teams`, 1 or 2). A new
@@ -249,18 +257,21 @@ with `firefight::set_context(Some(Context))` and clears it with `None`:
 
 **Enemies.** Each sample, while a context is set and the bot is alive,
 `firefight::read_actors` appends the actor pool's living actors to the
-perception's others. Each is a `Seen` with id `ACTOR_ID_BASE` (`0x100`)
-plus the actor's datum index, its unit's origin (a rider's is its
-vehicle's) and its team. A unit whose body is depleted is left out.
-`firefight::normalise` then makes the game a team game; with one player
-team it puts every player on that team whatever the engine's team byte
-says; and it gives actors the AI's team, or `ACTOR_TEAM` when the AI's
-team is a player team or the bot's own. The sight filter keeps an actor
-only while it is in view (an actor has no player bit), and the mind treats
-an actor as an enemy whatever its team (`firefight::hostile`). So actors
-go through the same sight, target choice, aim and grenade path as
-players. A teammate is never a target. With two teams the other team's
-players are enemies as in any team game.
+perception's others. Each is a `Seen` with id `ACTOR_ID_BASE` (`0x100`) plus
+the actor's datum index, its unit's origin (a rider's is its vehicle's) and
+its team. A unit whose body is depleted is left out. `firefight::normalise`
+then makes the game a team game; with one player team it puts every player
+on that team whatever the engine's team byte says; and it gives actors the
+AI's team, or `ACTOR_TEAM` when the AI's team is a player team or the bot's
+own.
+
+The sight filter keeps an actor only while it is in view (an actor has no
+player bit), and the mind treats an actor as an enemy whatever its team
+(`firefight::hostile`). So actors go through the same sight, target choice,
+aim and grenade path as players.
+
+A teammate is never a target. With two teams the other team's players are
+enemies as in any team game.
 
 **Behaviour.** `firefight::State::plan` gives the goal, after an outside
 order and before the objective's:
@@ -272,14 +283,15 @@ order and before the objective's:
 | between waves, within the errand radius of home, and not at a drop zone alone | none: the bot rearms, collects grenades and roams as in any game |
 | otherwise | hold home within the name's hold radius |
 
-The errand radius is `ERRAND` (2) hold radii. A point within `DROP_NEAR`
-(8) of a drop zone outside the hold radius is the drop zone's, and the
-bot goes there only with a teammate within `COMPANY` (5). Once out of
-its free area, it walks back inside the hold radius before it is free
-again. A hold goal leashes a fight to the radius (§3.3), so the bot
-fights from home and never chases out to a drop zone. Weapons and
-ammunition outside the free area are left where they lie
-(`State::blocks`, in the weapon plan's filter).
+The errand radius is `ERRAND` (2) hold radii. A point within `DROP_NEAR` (8)
+of a drop zone outside the hold radius is the drop zone's, and the bot goes
+there only with a teammate within `COMPANY` (5). Once out of its free area,
+it walks back inside the hold radius before it is free again.
+
+A hold goal leashes a fight to the radius (§3.3), so the bot fights from
+home and never chases out to a drop zone. Weapons and ammunition outside the
+free area are left where they lie (`State::blocks`, in the weapon plan's
+filter).
 
 Two numbers come from the name (`bots::name_profile`): the hold radius
 is `HOLD_RADIUS` (8) times 0.75 to 1.25 by the name's aggression, and

@@ -614,3 +614,11 @@ See [Superbounce: ghost runs, medals and the bounce view](superbounce-ghosts-med
 ## The bounce view
 
 See [Superbounce: ghost runs, medals and the bounce view](superbounce-ghosts-medals.md#the-bounce-view).
+
+#### In the air
+
+See [superbounce-game-type](superbounce-game-type.md#in-the-air).
+
+#### Monster bounces
+
+See [superbounce-spots](superbounce-spots.md#monster-bounces).
