@@ -318,6 +318,7 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [teabag.md](game/teabag.md): teabags in every game (two crouches over a fresh body), the `Teabag` event and the Incel medal for a game without one
 - [pogo-stick.md](game/pogo-stick.md): Superbounce's Pogo Stick: a weapon of our own in three looks built from the `pogo` package (`content/pogo/`) into each multiplayer map, the secondary weapon by a script option, carried on the ground and ridden in the air with a trick for each bounce of a chain, the chase camera, `pogo.state` and `pogo.test`
 - [superbounce.md](game/superbounce.md): how a superbounce happens: a landing in a floor crease next to a seam, the Havok push, the forced-crouch and crouch-height code, per-tick traces on Ascension; the scan for spots in a map's collision (`h2 superbounce scan`); the bounce medals (design)
+- [superbounce-traces.md](game/superbounce-traces.md): superbounce: the traces behind the rules
 - [superbounce-spots.md](game/superbounce-spots.md): Where bounces and crouch spots are in the map geometry.
 - [superbounce-game-type.md](game/superbounce-game-type.md): The superbounce game type: targets and the second bounce.
 - [superbounce-guide.md](game/superbounce-guide.md): The approach guide, the HUD options, the hold-X fall assist, the flight model and what is open.
@@ -335,6 +336,7 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [hud-kit-preview-superbounce.md](game/hud-kit-preview-superbounce.md): The preview and the checks, and the superbounce HUD built on the kit.
 - [hud-kit-readout-interfaces.md](game/hud-kit-readout-interfaces.md): The superbounce readout, the scripted objective HUD, interfaces, rules, evidence and the build plan.
 - [skulls.md](game/skulls.md): campaign skulls per profile, the skulls menu, and our own skulls
+- [skulls-model.md](game/skulls-model.md): skulls: the model picture and gold and silver skulls
 - [skulls-modes.md](game/skulls-modes.md): Where each effect lives, and how skulls work in multiplayer and Firefight.
 - [skulls-ours.md](game/skulls-ours.md): The skulls we add, and what is not verified.
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants
@@ -347,18 +349,24 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [maps-saving.md](game/maps-saving.md): Saving packages from the editor, and what is not verified.
 - [test-maps.md](game/test-maps.md): test maps from recipes (spawn grid, weapon range, superbounce patch...), built from the disc and loaded through the agent API's `maps.test.*`
 - [bots.md](game/bots.md): Clanker navigation, beliefs, personality, phantom seats, appearance, player options, and Clankermatch
+- [bots-appearance.md](game/bots-appearance.md): bots: Clanker appearance and Live player options
 - [bots-perception-navigation.md](game/bots-perception-navigation.md): Perception and navigation
+- [bots-navigation.md](game/bots-navigation.md): bots perception navigation: navigation, traversal, belief and pace (3.2)
 - [bots-decision-aim.md](game/bots-decision-aim.md): Decisions, aim and emotes
+- [bots-aim.md](game/bots-aim.md): bots decision aim: aim, the aim net and the emote layer (3.4, 3.5)
 - [bots-weapons-objectives.md](game/bots-weapons-objectives.md): Weapons and objectives
 - [bots-glitches.md](game/bots-glitches.md): Glitches
 - [bots-bounce-practice.md](game/bots-bounce-practice.md): Practising and driving bounces
 - [bots-vehicles-firefight.md](game/bots-vehicles-firefight.md): Vehicles and Firefight
 - [bots-local-slots.md](game/bots-local-slots.md): Way in 1, local slots
 - [bots-phantom-peers.md](game/bots-phantom-peers.md): Way in 2, phantom peers
+- [bots-phantom-peers-pad.md](game/bots-phantom-peers-pad.md): bots phantom peers: phantom audio, the action from a pad and ping
 - [bots-phantom-runtime.md](game/bots-phantom-runtime.md): Phantom runtime and custom games
 - [bots-clankermatch.md](game/bots-clankermatch.md): Clankermatch
+- [bots-clankermatch-search.md](game/bots-clankermatch-search.md): bots clankermatch: the empty search, the lobby and the game-run checklist (8.4, 8.5)
 - [bots-server.md](game/bots-server.md): The server interface
 - [bots-stages.md](game/bots-stages.md): Stages
+- [bots-stages-late.md](game/bots-stages-late.md): bots stages: stages 6 to 9, combat decisions, weapon skill and the library surface
 - [bots-game-run.md](game/bots-game-run.md): Game runs and testing
 - [bot-training.md](game/bot-training.md): tuning the Clanker table from sim matches: what is searched, the fitness against people, throughput, the admin's Training views and promoting a table (design)
 - [bounce-search.md](game/bounce-search.md): the bots learn each superbounce spot by a per-spot knob search in headless sims (design): the knobs, the search, `<map>.learned`, `h2 sim train`
@@ -390,10 +398,14 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [forge-blockout-set.md](game/forge-blockout-set.md): The natural set, the dev textures, the monitor, interfaces, rules, slices and evidence.
 - [gametype-marker-forms.md](game/gametype-marker-forms.md): design for the markers' icons on a plate, the edit form and the play form of each kind (capture plate, plant zone, portal, boundary), box and sphere areas, and what shows in a match, slices MK10 to MK16 (design)
 - [forge-map-variants.md](game/forge-map-variants.md): design for Forge as a scenario editor: edits of the map's own placements named by identity with a print, the fields by kind, game types, the map variant file, how a lobby, a playlist entry and a game variant name one, materialising, Live, the named refusals, slices (design)
+- [forge-map-variants-games-ai.md](game/forge-map-variants-games-ai.md): forge map variants: game types and the AI ground
+- [forge-map-variants-files.md](game/forge-map-variants-files.md): forge map variants: the file, packages, picks, the lobby, materialising and Live
+- [forge-map-variants-status.md](game/forge-map-variants-status.md): forge map variants: slices, open decisions, evidence and what is not verified
 - [forge-map-variants-ui.md](game/forge-map-variants-ui.md): design for that editor's UI on the kits: Properties rows by kind from a YAML doc, the bottom-left readout, world marks, the budget, the map variant save, load and rename screens, previews, slices (design)
 - [Forge prior art](game/notes/forge-prior-art.md) records what Halo 3, Reach and Infinite Forge do, with sources.
 - [forge-firefight.md](game/forge-firefight.md): design for building a Firefight map in a Forge session and playing it: placed drops, bases and cover, the wave set in the map variant, the wave test, Map Waves in the lobby, enemy classes, slices FA1 to FA8 (the markers and the ground build are built)
 - [forge-firefight-ui.md](game/forge-firefight-ui.md): Forge and Firefight UI as Halo 2 draws it: an audit of each screen, HUD piece and overlay, the retail screen or HUD element each copies, the six-row main menu, the lobby modes, and the slices (design)
+- [forge-firefight-ui-session.md](game/forge-firefight-ui-session.md): forge firefight ui: the monitor HUD, screens, markers, AI tool and Waves screens
 - [party-lobby.md](game/party-lobby.md): the party lobby's modes (Multiplayer, Custom Games, Forge, Firefight, Co-op): the header that names the mode, the leader's GAME MODE picker on X, the Xbox Live menu's mode rows, where each mode runs, what a switch does, and its slices
 - [game-types-without-carriers.md](game/game-types-without-carriers.md): design for game types as rules scripts with no retail game type under them: what the `carrier` supplies today and what replaces each part, the `type` line (menu row, start line, what a point is), one scoring model, objectives owned by the script, retail records, an index of ours with the four retail paths answered natively and no retail engine object, Firefight and Siege maps made in Forge or Studio with AI ground built on demand, the engine reads needed and the slices
 - [rules-engine.md](game/rules-engine.md): scripted game types: a typed rules language and Forge's logic graph compiled to one verified IR, a host-only VM over named engine entries, script ports of the seven retail engines (design)
@@ -409,6 +421,7 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [rules-language-types-tooling.md](game/rules-language-types-tooling.md): Diagnostics and the editor, the workbench, the IR and the implementation plan.
 - [rules-start-gate.md](game/rules-start-gate.md): a map that breaks a script's label requirements blocks the game: the check in the lobby, on the host at game start and on Live's hopper edits (design)
 - [rules-variants.md](game/rules-variants.md): a game variant as one rules script: the `settings` block for record settings, `quick` marks for the lobby's Quick Options, `type` and `uses`, the community variants as scripts in place of the Rust table, the slices (design)
+- [rules-variants-lineup.md](game/rules-variants-lineup.md): rules variants: built-in list entries, the default Live lineup, copies, saves and files
 - [rules-world-api.md](game/rules-world-api.md): the world API for rules scripts: who runs a script in each session kind, the authenticated show channel for HUD, messages and sounds, entries for objects, drop ships, AI squads, bots, audio, HUD and physics, security and limits, per-entry costs and bench gates, splitting a script, the slices (design)
 - [rules-world-api-reference.md](game/rules-world-api-reference.md): The world API.
 - [rules-world-api-limits.md](game/rules-world-api-limits.md): Firefight and Superbounce as scripts, splitting a script, security, performance and the plan.
