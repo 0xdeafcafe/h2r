@@ -241,6 +241,19 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [maps.md](game/maps.md): map packages, patches applied at load, separate mod slots, and Live downloads
 - [test-maps.md](game/test-maps.md): test maps from recipes (spawn grid, weapon range, superbounce patch...), built from the disc and loaded through the agent API's `maps.test.*`
 - [bots.md](game/bots.md): Clanker navigation, beliefs, personality, phantom seats, appearance, player options, and Clankermatch
+- [bots-perception-navigation.md](game/bots-perception-navigation.md): Perception and navigation
+- [bots-decision-aim.md](game/bots-decision-aim.md): Decisions, aim and emotes
+- [bots-weapons-objectives.md](game/bots-weapons-objectives.md): Weapons and objectives
+- [bots-glitches.md](game/bots-glitches.md): Glitches
+- [bots-bounce-practice.md](game/bots-bounce-practice.md): Practising and driving bounces
+- [bots-vehicles-firefight.md](game/bots-vehicles-firefight.md): Vehicles and Firefight
+- [bots-local-slots.md](game/bots-local-slots.md): Way in 1, local slots
+- [bots-phantom-peers.md](game/bots-phantom-peers.md): Way in 2, phantom peers
+- [bots-phantom-runtime.md](game/bots-phantom-runtime.md): Phantom runtime and custom games
+- [bots-clankermatch.md](game/bots-clankermatch.md): Clankermatch
+- [bots-server.md](game/bots-server.md): The server interface
+- [bots-stages.md](game/bots-stages.md): Stages
+- [bots-game-run.md](game/bots-game-run.md): Game runs and testing
 - [bot-training.md](game/bot-training.md): tuning the Clanker table from sim matches: what is searched, the fitness against people, throughput, the admin's Training views and promoting a table (design)
 - [bounce-search.md](game/bounce-search.md): the bots learn each superbounce spot by a per-spot knob search in headless sims (design): the knobs, the search, `<map>.learned`, `h2 sim train`
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
