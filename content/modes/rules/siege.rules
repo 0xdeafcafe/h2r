@@ -368,7 +368,7 @@ on round_start {
     pick_row(0, "ENERGY SWORD + CARBINE")
     offer_pick(1, "DEFENDER LOADOUT")
     pick_row(1, "CARBINE + PLASMA RIFLE")
-    pick_row(1, "BRUTE PLASMA RIFLE + NEEDLER")
+    pick_row(1, "BRUTE PLASMA + NEEDLER")
     pick_row(1, "SNIPER RIFLE + MAGNUM")
     pick_row(1, "BEAM RIFLE + PLASMA PISTOL")
     pick_row(1, "ROCKETS + BATTLE RIFLE")
