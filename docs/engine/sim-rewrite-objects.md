@@ -889,7 +889,7 @@ as oracles while a test uses them).
 | 6c | Unit: rest | `c6740`, `114c60`, `c6990` (with `d0620`, `d0690`), `c6810`, `c50a0`, `111650` (unit animation state, `a0e` bytes) | 6a | captures | 456 (`111650` 210) |
 | 7a | Biped update | `dd360` and its tree (`e24f0`, `e01d0`, `dc5c0`, `df380`, `de190`, `e4050`, `e0dc0`, `e6830`, `e2d80`, …) | 6a | captures | 963 |
 | 7b | Biped post-physics | `dd990` and its tree (`dd0d0`, `dd7d0`, `e30c0`, `dd8e0`, `e4680`, …) | 7a, 4 | captures | 280 |
-| — | **Phase 3 exit check** | Ladder clean; Waterworks at least 1.2 ms/tick faster than before slice 1; co-op campaign delta recorded | 1 to 7 | | |
+| - | **Phase 3 exit check** | Ladder clean; Waterworks at least 1.2 ms/tick faster than before slice 1; co-op campaign delta recorded | 1 to 7 | | |
 | 8 | Damage | `d5de0`; `Damage` and `Kill` events; the Halo 1 health extension point kept | 1 | captures; events equal the hook-derived ones over a match | 403 |
 | 9 | Weapon | `fdfb0` (`15c6` bytes; split by state group if a lane cannot finish it) | 3 | captures | ~760 |
 | 10 | Vehicle | `efde0` and tree | 6a | captures | ~1,450 |

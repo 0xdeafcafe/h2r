@@ -29,6 +29,7 @@ use crate::forge_screens::{
 };
 
 mod area;
+mod body;
 mod net;
 mod resize;
 
@@ -167,6 +168,8 @@ pub(super) struct Editor {
     ui_up: bool,
     /// The map's palette entries the Objects palette leaves out, with why.
     refused: Vec<String>,
+    /// The map's item collections that hold a weapon (`forge_map::Opened::armed`).
+    armed: Arc<std::collections::BTreeSet<String>>,
     /// Set in a shared session (docs/game/forge-design.md, F5).
     net: Option<net::Net>,
     /// A film's edit records handed over and not yet applied, in film
@@ -213,6 +216,17 @@ pub(super) struct Editor {
     /// What the Waves page's Start from offers on this base map
     /// (`forge_screens::waves::presets`), read once as the session opens.
     wave_presets: Arc<[forge_doc::waves::Def]>,
+    /// The Forge bodies the map's kit carries (`forge::body::Kit`).
+    bodies: forge::body::Kit,
+    /// The body D-pad Up swaps into: the profile's choice ([`Editor::set_body`]).
+    body: forge_doc::bodies::Body,
+    /// Where the local player's unit is in the swap ([`body`]).
+    swap: body::Swap,
+    /// Swap into the body as soon as the player has a unit: a Forge
+    /// lobby's start, and a reload of ours from inside the body.
+    enter_at_start: bool,
+    /// The local player's handle, read each tick.
+    player: Option<u32>,
 }
 
 impl Editor {
@@ -220,8 +234,8 @@ impl Editor {
         let saved_head = opened.session.head();
         let map_name = opened.session.document().title.clone();
         let wave_presets = screens::waves::presets(&opened.session.document().base.map);
-        let mut tool = Tool::with_extents(opened.extents.into());
-        tool.monitor = crate::lobby_start::mode() == crate::lobby_start::Mode::Forge;
+        let tool = Tool::with_extents(opened.extents.into());
+        let enter_at_start = crate::lobby_start::mode() == crate::lobby_start::Mode::Forge;
         Self {
             session: Arc::new(opened.session),
             tags: opened.tags.into(),
@@ -264,6 +278,7 @@ impl Editor {
             listed: false,
             ui_up: false,
             refused: opened.refused,
+            armed: Arc::new(opened.armed),
             net: None,
             played: Vec::new(),
             now: 0,
@@ -283,7 +298,28 @@ impl Editor {
             test_answer: None,
             test_set: None,
             wave_presets,
+            bodies: opened.bodies,
+            body: forge_doc::bodies::Body::Monitor,
+            swap: body::Swap::Biped,
+            enter_at_start,
+            player: None,
         }
+    }
+
+    /// The body D-pad Up swaps into from now on: the profile's
+    /// (`forge::body::load`).
+    pub fn set_body(&mut self, body: forge_doc::bodies::Body) {
+        self.body = body;
+    }
+
+    /// The body the player flies and its unit, for `forge.status`.
+    pub fn flying(&self) -> Option<(forge_doc::bodies::Body, u32)> {
+        self.swap.flying()
+    }
+
+    /// The body picker's rows on this map (`forge::body::rows`).
+    pub fn body_rows(&self) -> Vec<forge::body::Row> {
+        forge::body::rows(&self.bodies)
     }
 
     /// The running cache's name (`forge_map::Loaded::name`).
@@ -392,8 +428,18 @@ impl Editor {
         }
         self.session = Arc::new(session);
         self.tags = opened.tags.into();
+        self.bodies = opened.bodies;
+        // The reload made a new world with no body in it: the player is
+        // back in a biped, and goes back into the body once spawned.
+        if self.tool.monitor || self.swap.flying().is_some() {
+            self.enter_at_start = true;
+        }
+        self.swap = body::Swap::Biped;
+        self.tool.monitor = false;
+        self.tool.camera = None;
         self.walls = opened.walls;
         self.refused = opened.refused;
+        self.armed = Arc::new(opened.armed);
         self.bsp = None;
         self.guard = Guard {
             scenario,
@@ -602,6 +648,9 @@ impl Editor {
             "ground":ground_api::status(&self.session, self.ground_facts()),
             "nav":nav_api::status(&self.session, self.nav_facts()),
             "parked":controls::parked().map(|unit| format!("{unit:#010x}")),
+            "body":self.swap.flying().map(|(body, unit)| json!({"kind":body.key(), "unit":format!("{unit:#010x}")})),
+            "body_choice":self.body.key(),
+            "bodies":self.body_rows().iter().map(|r| json!({"kind":r.body.key(), "name":r.label, "refused":r.refused})).collect::<Vec<_>>(),
             "pending_call":self.pending.is_some(), "pending_file":self.file_job.is_some(), "file":self.filename,
             "notice":self.notice.as_ref().map(|(text,_)|text)
         })
@@ -1135,21 +1184,32 @@ impl Editor {
             kit: self.session.has_kit(),
             team: self.session.team(id),
             spare_clips: self.spare_clips_row(id),
+            weight: self
+                .session
+                .thing(id)
+                .filter(|t| t.kind == forge::ThingKind::StartingPoint)
+                .map(|_| self.session.spawn_weight(id)),
+            place_at_start: self
+                .session
+                .thing(id)
+                .filter(|t| t.kind == forge::ThingKind::ItemSpawner)
+                .map(|_| self.session.place_at_start(id)),
         }
     }
 
     /// The spare clips row's value for `id`: an item spawner of an item
-    /// collection (`itmc`) has the row; a vehicle's or any other thing's
-    /// has none. A collection of equipment takes the row too, and the game
-    /// leaves what is not a weapon as it is (`agent::forge::spare_clips`).
-    fn spare_clips_row(&self, id: Endpoint) -> Option<Option<u8>> {
+    /// collection (`itmc`) that holds a weapon has the row, a mixed one
+    /// too; a collection of equipment, a vehicle's or any other thing's has
+    /// none (`forge_map::holds_weapon`).
+    pub(crate) fn spare_clips_row(&self, id: Endpoint) -> Option<Option<u8>> {
         let thing = self.session.thing(id)?;
-        let collection = thing.kind == forge::ThingKind::ItemSpawner
+        let armed = thing.kind == forge::ThingKind::ItemSpawner
             && thing.fields.iter().any(|(name, value)| {
                 *name == "item"
-                    && matches!(value, forge_doc::Value::Tag(Some(key)) if key.group == "itmc")
+                    && matches!(value, forge_doc::Value::Tag(Some(key))
+                        if key.group == "itmc" && self.armed.contains(&key.path))
             });
-        collection.then(|| self.session.spare_clips(id))
+        armed.then(|| self.session.spare_clips(id))
     }
 
     /// The things Save as prefab takes for `id`: its group, else the
@@ -1682,12 +1742,28 @@ impl Editor {
                 }
             }
         }
+        self.player = body::local_player(memory).map(|p| p.0);
+        self.poll_body(tick);
         if !self.busy() {
-            if self.tool.monitor && self.tool.camera.is_none() {
-                self.tool.camera = controls::eye();
-            }
             let mut input = controls::sample();
             input.dialog = self.ui_up;
+            // D-pad Up is the body swap's, not the tool's
+            // (docs/game/forge-design-slices.md, "The monitor body").
+            let swap = if input.action == Some(Action::Toggle) && !input.dialog {
+                input.action = None;
+                self.area = None;
+                true
+            } else {
+                self.enter_at_start
+                    && self.player.is_some()
+                    && matches!(self.swap, body::Swap::Biped)
+            };
+            if swap {
+                self.enter_at_start = false;
+                if let Err(why) = self.toggle_body(memory) {
+                    self.refuse(why, tick);
+                }
+            }
             self.rotating = input.rotating && !self.ui_up;
             self.take_input(tick, input, bsp);
             let walls = bsp.and_then(|i| self.walls.get(i));
@@ -1700,6 +1776,7 @@ impl Editor {
                 }
                 _ => None,
             };
+            self.fly_body();
             self.poll(tick);
         }
         self.publish(memory);
@@ -1740,6 +1817,8 @@ impl Editor {
         controls::publish(controls::State {
             active: true,
             monitor: self.tool.monitor,
+            parked: self.swap.parked(),
+            body: self.swap.flying().map(|(_, unit)| unit),
             screen: self.ui_up,
             camera: self.tool.camera,
             x_properties: self.x_properties(),
@@ -2514,6 +2593,19 @@ impl Editor {
                 let clips = i.checked_sub(1).and_then(|c| u8::try_from(c).ok());
                 return self.command(tick, Command::SetSpareClips { id, clips });
             }
+            Choice::Set(Prop::SpawnWeight, i) => {
+                let id = self.tool.aimed_thing.ok_or("Aim at a starting point.")?;
+                let weight = match i {
+                    0 => Some(forge_doc::SpawnWeight::Low),
+                    2 => Some(forge_doc::SpawnWeight::High),
+                    _ => None,
+                };
+                return self.command(tick, Command::SetSpawnWeight { id, weight });
+            }
+            Choice::Set(Prop::PlaceAtStart, i) => {
+                let id = self.tool.aimed_thing.ok_or("Aim at a spawner.")?;
+                return self.command(tick, Command::SetPlaceAtStart { id, on: i == 0 });
+            }
             Choice::Set(Prop::Role, i) => {
                 let id = self.tool.aimed_thing.ok_or("Aim at a goal.")?;
                 return self.command(
@@ -2916,6 +3008,8 @@ fn run(s: &mut Session, w: &mut ForgeWorld, tick: u32, cmd: Command) -> Result<(
         Reset { id } => s.reset(w, tick, id),
         SetTeam { id, team } => s.set_team(w, tick, id, team),
         SetSpareClips { id, clips } => s.set_spare_clips(w, tick, id, clips),
+        SetSpawnWeight { id, weight } => s.set_spawn_weight(w, tick, id, weight),
+        SetPlaceAtStart { id, on } => s.set_place_at_start(w, tick, id, on),
         Link { from, to } => s.link(w, tick, from, to).map(|_| ()),
         Unlink { link } => s.unlink(w, tick, link),
         Group { name, members } => s.group(w, tick, &name, &members, false).map(|_| ()),

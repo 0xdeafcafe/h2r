@@ -5,6 +5,9 @@
 //! Halo 2 keeps the weapon top right, the grenades top left, the shield and
 //! tracker bottom left and the game type's score plate bottom right. The
 //! Firefight block sits above the plate at the bottom right, right-justified.
+//! What it shows follows Halo 3: ODST's Firefight HUD: a lives count, the
+//! set's numeral, a circle a round and a bar a wave, lit from the left, the
+//! skulls on, and a centred line for what begins.
 //! [`layout`] is a pure function of a [`Mode`], the viewer's roster slot,
 //! the [`Scope`] and the [`Screen`]; the HUD kit's `firefight` HUD draws
 //! these elements and its checks call [`check`].
@@ -58,6 +61,21 @@ pub const BANNER: &str = "banner";
 pub const SKULL_IDS: [&str; 7] = [
     "skull_0", "skull_1", "skull_2", "skull_3", "skull_4", "skull_5", "skull_6",
 ];
+/// The set's numeral, the round pips (a set's three) and the wave pips (a
+/// round's five), left to right.
+pub const SET: &str = "set";
+pub const ROUND_IDS: [&str; 3] = ["round_0", "round_1", "round_2"];
+pub const WAVE_IDS: [&str; 5] = ["wave_0", "wave_1", "wave_2", "wave_3", "wave_4"];
+/// A pip's height, a round's width and pitch, a wave's width and pitch,
+/// and the gap between the numeral, the rounds and the waves
+/// (`font::skulls::Pip`, `content/modes/huds/firefight.hud.yaml`).
+pub const PIP_H: i16 = 10;
+pub const ROUND_PIP: (i16, i16) = (8, 9);
+pub const WAVE_PIP: (i16, i16) = (6, 7);
+pub const PIP_GAP: i16 = 6;
+/// How far above the frame's bottom the game draws its timed centred
+/// line, the banner (`hud_kit::preview::BANNER_UP`; E `0x0024d554`).
+pub const BANNER_UP: i16 = 40;
 
 /// A rectangle in viewport pixels, from its top left.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -162,7 +180,7 @@ impl Screen {
     }
 
     /// Whether the whole block is drawn: a quarter drops the score, the
-    /// meter, the skulls and the banner.
+    /// meter, the skulls and the banner, and keeps the lines and the pips.
     fn small(self) -> bool {
         self == Screen::Quarter
     }
@@ -173,8 +191,8 @@ impl Screen {
 pub fn skull_slot(i: usize, screen: Screen) -> Option<Rect> {
     let f = screen.frame();
     let (size, pitch, up) = match screen {
-        Screen::Full => (16, 18, 70),
-        Screen::Half => (14, 14, 66),
+        Screen::Full => (16, 18, 82),
+        Screen::Half => (14, 14, 80),
         Screen::Quarter => return None,
     };
     let right = f.right() - pitch * i as i16;
@@ -186,6 +204,9 @@ pub enum Kind {
     Text,
     Meter,
     Gauge,
+    /// The game's own timed centred line: the game places it, so it has a
+    /// point and no extent here.
+    Line,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -251,20 +272,32 @@ pub fn lives_text(n: u16) -> (String, Look) {
     }
 }
 
-/// The progress line's words: the bonus round's clock, or where the match
-/// is. A quarter has room for the wave alone.
-pub fn progress_text(m: &Mode, screen: Screen) -> String {
+/// The most rounds the round pips show: a set's three. A definition with
+/// more names its round on the progress line.
+pub const ROUND_PIPS: u8 = ROUND_IDS.len() as u8;
+
+/// The progress line's words, for what the pips cannot say: the bonus
+/// round's clock, or the round of a definition with more rounds than
+/// there are round pips. None otherwise.
+pub fn progress_text(m: &Mode) -> Option<String> {
     if m.bonus_left > 0 {
         let secs = u32::from(m.bonus_left).div_ceil(super::banners::TICKS_PER_SECOND.into());
-        return format!("BONUS {}:{:02}", secs / 60, secs % 60);
+        return Some(format!("BONUS {}:{:02}", secs / 60, secs % 60));
     }
-    let (round, wave) = (u16::from(m.round) + 1, u16::from(m.wave) + 1);
-    if screen.small() {
-        format!("WAVE {wave}")
-    } else if m.endless {
-        format!("SET {} ROUND {round} WAVE {wave}", u16::from(m.set) + 1)
-    } else {
-        format!("ROUND {round} OF {} WAVE {wave}", m.rounds)
+    (m.rounds > ROUND_PIPS).then(|| format!("ROUND {} OF {}", u16::from(m.round) + 1, m.rounds))
+}
+
+/// A pip `w` wide with its left edge `left` of the frame's right edge,
+/// `up` above the plate: shown, and lit for the one on and those before.
+fn pip(id: &'static str, f: Rect, left: i16, w: i16, up: i16, shown: bool, lit: bool) -> Element {
+    Element {
+        id,
+        kind: Kind::Gauge,
+        rect: Rect::new(f.right() - left, f.bottom() - PLATE_TOP - up, w, PIP_H),
+        shown,
+        text: String::new(),
+        fill: (u16::from(lit), 1),
+        look: Look::Normal,
     }
 }
 
@@ -296,12 +329,13 @@ pub fn layout(
     let own = lives_of(m, local).filter(|_| block && scope == Scope::Match && on);
     let (words, look) = lives_text(own.unwrap_or(0));
     out.push(line(LIVES, words, lives_up, f, own.is_some(), look));
+    let words = progress_text(m);
     out.push(line(
         PROGRESS,
-        progress_text(m, screen),
+        words.clone().unwrap_or_default(),
         progress_up,
         f,
-        block && on,
+        block && on && words.is_some(),
         Look::Normal,
     ));
 
@@ -343,18 +377,52 @@ pub fn layout(
         });
     }
 
-    let words = banner.unwrap_or("").to_owned();
-    let w = words.chars().count() as i16 * CHAR_W;
-    let top = if screen == Screen::Full { 60 } else { 48 };
+    // The game's timed line: centred across the frame, the game's own
+    // distance above its bottom.
     out.push(Element {
         id: BANNER,
-        kind: Kind::Text,
-        rect: Rect::new(f.x + f.w / 2 - w / 2, f.y + top, w, LINE),
+        kind: Kind::Line,
+        rect: Rect::new(f.x + f.w / 2, f.bottom() - BANNER_UP, 0, 0),
         shown: banner.is_some() && !small,
-        text: words,
+        text: banner.unwrap_or("").to_owned(),
         fill: (0, 0),
         look: Look::Normal,
     });
+
+    // The set's numeral, the rounds and the waves, between the meter and
+    // the skulls (one line lower in a quarter). A bonus round has no wave.
+    let pips = block && on;
+    let up = if small { 40 } else { 64 };
+    let waves_left = WAVE_PIP.0 + WAVE_PIP.1 * (WAVE_IDS.len() as i16 - 1);
+    let rounds_left = waves_left + PIP_GAP + ROUND_PIP.0 + ROUND_PIP.1 * (ROUND_IDS.len() as i16 - 1);
+    let numeral = (u16::from(m.set) + 1).to_string();
+    let w = numeral.chars().count() as i16 * CHAR_W;
+    out.push(Element {
+        id: SET,
+        kind: Kind::Text,
+        rect: Rect::new(
+            f.right() - rounds_left - PIP_GAP - w,
+            f.bottom() - PLATE_TOP - up - 2,
+            w,
+            LINE,
+        ),
+        shown: pips && m.endless,
+        text: numeral,
+        fill: (0, 0),
+        look: Look::Normal,
+    });
+    for (i, id) in ROUND_IDS.into_iter().enumerate() {
+        let i = i as u8;
+        let shown = pips && m.rounds <= ROUND_PIPS && i < m.rounds;
+        let left = rounds_left - ROUND_PIP.1 * i16::from(i);
+        out.push(pip(id, f, left, ROUND_PIP.0, up, shown, i <= m.round));
+    }
+    for (i, id) in WAVE_IDS.into_iter().enumerate() {
+        let i = i as u8;
+        let shown = pips && !bonus && i < m.waves;
+        let left = waves_left - WAVE_PIP.1 * i16::from(i);
+        out.push(pip(id, f, left, WAVE_PIP.0, up, shown, i <= m.wave));
+    }
     out
 }
 
@@ -397,7 +465,7 @@ pub fn check(screen: Screen, elements: &[Element]) -> Vec<String> {
 
 /// The ids, in the order [`layout`] makes them; a quarter has no skull
 /// slots.
-pub const IDS: [&str; 12] = [
+pub const IDS: [&str; 21] = [
     SCORE,
     LIVES,
     PROGRESS,
@@ -410,4 +478,13 @@ pub const IDS: [&str; 12] = [
     SKULL_IDS[5],
     SKULL_IDS[6],
     BANNER,
+    SET,
+    ROUND_IDS[0],
+    ROUND_IDS[1],
+    ROUND_IDS[2],
+    WAVE_IDS[0],
+    WAVE_IDS[1],
+    WAVE_IDS[2],
+    WAVE_IDS[3],
+    WAVE_IDS[4],
 ];

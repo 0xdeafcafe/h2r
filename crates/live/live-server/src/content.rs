@@ -151,7 +151,7 @@ impl ContentLimits {
 
 type ApiResult<T> = Result<T, ApiError>;
 
-fn gone(m: impl Into<String>) -> ApiError {
+pub(crate) fn gone(m: impl Into<String>) -> ApiError {
     ApiError::new(ErrorCode::Gone, m)
 }
 fn too_large(m: impl Into<String>) -> ApiError {
@@ -835,12 +835,35 @@ impl Live {
             .ok_or_else(|| unavailable("this server keeps no custom content (no data directory)"))
     }
 
+    /// The operator's retail list: `<data>/retail-maps.sha256` when the
+    /// data directory has one (read on each call, so an edit takes at
+    /// once), else the copy [`Live::load_retail`] read from the private
+    /// blob store (the Worker's R2), else none.
     pub fn retail(&self) -> Retail {
-        self.data_dir().map(Retail::load).unwrap_or_default()
+        if let Some(r) = self.data_dir().map(Retail::load).filter(|r| !r.hashes.is_empty()) {
+            return r;
+        }
+        self.retail_list.read().unwrap().clone().unwrap_or_default()
+    }
+
+    /// Reads the retail list from the private blob store under
+    /// [`RETAIL_FILE`] (in the data directory that is the same file; on
+    /// the Worker, the R2 object of that name). Called at start and after
+    /// the operator replaces the object. Absent: none.
+    pub async fn load_retail(&self) {
+        let Some(blobs) = self.blobs() else { return };
+        match blobs.private.get(RETAIL_FILE).await {
+            Ok(Some(bytes)) => {
+                let list = Retail::parse(&String::from_utf8_lossy(&bytes));
+                *self.retail_list.write().unwrap() = Some(list);
+            }
+            Ok(None) => *self.retail_list.write().unwrap() = None,
+            Err(e) => eprintln!("live: {RETAIL_FILE}: {e}"),
+        }
     }
 
     /// An account allowed to upload, within its rate.
-    fn uploader(&self, bearer: Option<&str>) -> ApiResult<(Author, Xuid)> {
+    pub(crate) fn uploader(&self, bearer: Option<&str>) -> ApiResult<(Author, Xuid)> {
         let author = self.authenticate(bearer, lxm::CONTENT_WRITE)?;
         let Author::Account { xuid, .. } = author else {
             return Err(forbidden("content is uploaded by an account"));
@@ -1022,7 +1045,7 @@ impl Live {
         }
     }
 
-    fn who(&self, xuid: Xuid) -> Who {
+    pub(crate) fn who(&self, xuid: Xuid) -> Who {
         Who {
             xuid,
             gamertag: self
@@ -1472,7 +1495,7 @@ impl Live {
     }
 
     /// An admin (or the operator) with a `content.moderate` token.
-    fn moderator(&self, bearer: Option<&str>) -> ApiResult<Option<Xuid>> {
+    pub(crate) fn moderator(&self, bearer: Option<&str>) -> ApiResult<Option<Xuid>> {
         let author = self.authenticate(bearer, lxm::CONTENT_MODERATE)?;
         crate::admin::require_admin(self, &author)
             .map_err(|_| forbidden("moderating content needs the operator or an admin"))?;

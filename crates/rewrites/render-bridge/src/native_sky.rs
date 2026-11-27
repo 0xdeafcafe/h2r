@@ -1,4 +1,10 @@
 //! Sky model strip admission at the indexed issue inside the sky stencil bracket.
+//!
+//! A strip the stage takes draws from the item extracted at its issue
+//! (`SkyItem`: the view's node rows, the section's decompression, the
+//! material pass). A strip it refuses keeps its guest draw and is counted
+//! `scene_kept_sky_<cause>` ([`counters`]); one it takes is
+//! `sky_plan_admitted` (docs/graphics/retire-d3d.md, "By caller").
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -7,20 +13,24 @@ pub use scene_extract::layout::sky::{Refusal, SkyItem};
 
 static OUTCOMES: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
 
-/// Counts material/geometry admission decisions. The device can still
-/// decline the external pass during attachment and resource reservation.
+/// Counts one strip's admission: `admitted`, or the cause it keeps its
+/// guest draw under. The device can still decline the external pass during
+/// attachment and resource reservation (`native_sky_*`).
 pub fn count(outcome: &'static str) {
     let mut counts = OUTCOMES.lock().unwrap_or_else(|e| e.into_inner());
     *counts.entry(outcome).or_default() += 1;
 }
 
+/// `sky_plan_admitted` and `scene_kept_sky_<cause>`.
 pub fn counters() -> Vec<(String, u64)> {
     OUTCOMES.lock().unwrap_or_else(|e| e.into_inner())
-        .iter().map(|(&outcome, &n)| {
-            let name = if outcome == "admitted" { "sky_plan_admitted".to_owned() }
-                else { format!("sky_plan_refused_{outcome}") };
-            (name, n)
-        }).collect()
+        .iter().map(|(&outcome, &n)| (counter_name(outcome), n)).collect()
+}
+
+/// The counter of `outcome`: `sky_plan_admitted`, or the kept strip's
+/// `scene_kept_sky_<cause>`.
+pub fn counter_name(outcome: &str) -> String {
+    if outcome == "admitted" { "sky_plan_admitted".to_owned() } else { format!("scene_kept_sky_{outcome}") }
 }
 
 /// The draw has to consume the entire captured strip for this model part.
@@ -70,6 +80,17 @@ mod tests {
             |_| Err("stencil")), Err("stencil"));
         assert_eq!(admit(Ok(make_item()), 1, Some(5), Some(5),
             |item| Ok(item.shader)), Ok(9));
+    }
+
+    #[test]
+    fn a_kept_strip_is_counted_scene_kept_by_its_cause() {
+        assert_eq!(counter_name("admitted"), "sky_plan_admitted");
+        assert_eq!(counter_name("cull"), "scene_kept_sky_cull");
+        let read = |name: &str| counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n);
+        let before = read("scene_kept_sky_range");
+        count("range");
+        assert_eq!(read("scene_kept_sky_range"), before + 1);
+        assert!(counters().iter().all(|(k, _)| k == "sky_plan_admitted" || k.starts_with("scene_kept_sky_")));
     }
 
     #[test]

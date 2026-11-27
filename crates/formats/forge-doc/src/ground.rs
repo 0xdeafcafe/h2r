@@ -81,6 +81,27 @@ impl GroundLabel {
         Self::Barrier,
     ];
 
+    /// The Siege layout recipe's labels, in the order Forge's Siege page
+    /// lists them (docs/game/rules-engine.md, "Siege layouts").
+    pub const SIEGE: [GroundLabel; 4] = [Self::Site, Self::Goal, Self::Line, Self::Barrier];
+
+    /// Whether the label is one of [`GroundLabel::SIEGE`].
+    pub const fn is_siege(self) -> bool {
+        matches!(self, Self::Site | Self::Goal | Self::Line | Self::Barrier)
+    }
+
+    /// The name a page of its own kind shows: the Siege page's Site, Flag
+    /// stand, Spawn line and Barrier; [`GroundLabel::title`] otherwise.
+    pub const fn short_title(self) -> &'static str {
+        match self {
+            Self::Site => "Site",
+            Self::Goal => "Flag stand",
+            Self::Line => "Spawn line",
+            Self::Barrier => "Barrier",
+            other => other.title(),
+        }
+    }
+
     /// The label's text, as a script reads it.
     pub const fn text(self) -> &'static str {
         match self {

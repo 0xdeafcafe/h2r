@@ -65,6 +65,22 @@ pub const DRIFT_MIN: f32 = 0.1;
 /// The drift across the edge (units/s) that gives a full launch: 0.15
 /// leaves +6.2, 0.20 +9.4, 0.30 +13.0.
 pub const DRIFT_FULL: f32 = 0.15;
+/// What the solver adds to the vertical speed on a full launch, by the
+/// speed the body falls in at (Trace, docs/game/notes/2026-11-23-why-bounces-work.md,
+/// "Faster falls bounce from above"): 18.5 at 5.4, 19.8 at 9, 21.9 at 13.
+/// The fall speed comes off it, so the launch is the sum less the speed.
+pub const PUSH: [(f32, f32); 3] = [(5.4, 18.5), (9.0, 19.8), (13.0, 21.9)];
+/// The share of a full launch by the drift across the edge, at 5.39 in
+/// and 0.06 from the edge (Trace): +0.07, +6.2, +9.4, +13.0 and +12.6 at
+/// 0.10, 0.15, 0.20, 0.30 and 0.60, over the full +13.0.
+pub const LEAN: [(f32, f32); 5] = [
+    (DRIFT_MIN, 0.005),
+    (0.15, 0.475),
+    (0.20, 0.72),
+    (0.30, 1.0),
+    (0.60, 0.97),
+];
+
 /// A polygon is a floor when its normal's Z is over this.
 pub const FLOOR_NZ: f32 = 0.2;
 /// The drop from the apex (units, origin to the origin standing on the
@@ -77,6 +93,45 @@ pub const DROP_MAX: f32 = 3.60;
 /// The drop with the most phases that bounce: about three in four, 2 cm
 /// from an edge.
 pub const DROP_BEST: f32 = 3.45;
+
+/// `y` at `x` along a piecewise-linear table of `(x, y)`, held at the
+/// ends.
+fn table(t: &[(f32, f32)], x: f32) -> f32 {
+    if x <= t[0].0 {
+        return t[0].1;
+    }
+    for w in t.windows(2) {
+        if x <= w[1].0 {
+            let k = (x - w[0].0) / (w[1].0 - w[0].0);
+            return w[0].1 + k * (w[1].1 - w[0].1);
+        }
+    }
+    t[t.len() - 1].1
+}
+
+/// The vertical speed (units/s) a bounce leaves a body that falls in at
+/// `speed` with `across` units/s over the edge (the launch rule, fitted
+/// to the traces; the solver itself, the step at `0x00311100`, is not
+/// decoded): the solver's push at that speed less the speed, by the share
+/// the drift leans the pinch. Under [`DRIFT_MIN`] there is no lean and no
+/// launch. Beyond the traced 5.4 to 13 the push is held at its ends.
+pub fn launch(speed: f32, across: f32) -> f32 {
+    if !(speed.is_finite() && across.is_finite()) || across < DRIFT_MIN {
+        return 0.0;
+    }
+    ((table(&PUSH, speed) - speed) * table(&LEAN, across)).max(0.0)
+}
+
+impl Verdict {
+    /// The launch a bounce verdict gives ([`launch`] at its speed and its
+    /// speed across the edge); `None` for any other outcome.
+    pub fn launch(&self) -> Option<f32> {
+        match (self.outcome, self.pierce) {
+            (Outcome::Bounce(_), Some(p)) => Some(launch(self.speed, p.across)),
+            _ => None,
+        }
+    }
+}
 
 /// Whether a drop from the apex is in the window.
 pub fn drop_in_window(drop: f32) -> bool {

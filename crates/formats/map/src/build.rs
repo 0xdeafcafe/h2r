@@ -353,7 +353,13 @@ pub struct PinnedImage {
     pub header: Vec<u8>,
     /// File bytes from `0x800` up to the index: raw data, BSP regions,
     /// low-detail bitmaps, locale text, and the old string/name tables.
+    /// Empty when the prefix stays in the source ([`Self::file_in_source`]).
     pub file: Vec<u8>,
+    /// The prefix's length when its bytes stay in the source file
+    /// ([`TagSet::from_map_streamed`]): `file` holds none of them, and
+    /// [`TagSet::build_streamed`] serves them from the source by offset;
+    /// 0 when `file` holds the prefix.
+    pub file_in_source: u64,
     /// Where the old tables were, as (file offset, byte length), in the
     /// order fixed string slots, string offsets, string blob, name blob,
     /// name offsets. A rebuilt table that fits goes back in its old place
@@ -729,9 +735,75 @@ impl TagSet {
         Ok(layout)
     }
 
-    /// Build the map in memory.
+    /// Build the map in memory. A set whose prefix stays in the source
+    /// ([`TagSet::from_map_streamed`]) is refused: build it with
+    /// [`TagSet::build_streamed`].
     pub fn build(&self) -> Result<(Vec<u8>, BuildLayout)> {
-        Builder::new(self)?.run()
+        if self.pinned.as_ref().is_some_and(|p| p.file_in_source > 0) {
+            return Err(Error::Invalid(
+                "the set's file prefix is in its source: build it streamed",
+            ));
+        }
+        let (out, mut header, mut layout) = Builder::new(self)?.run()?;
+        let mut file = out.bytes;
+        let mut checksum = XorChecksum::default();
+        checksum.update(&file[HEADER..]);
+        layout.checksum = checksum.finish();
+        put(&mut header, 0x2d0, layout.checksum);
+        file[..HEADER].copy_from_slice(&header);
+        Ok((file, layout))
+    }
+
+    /// Build the map, leaving what a streamed set keeps in its source
+    /// ([`TagSet::from_map_streamed`]) there: the output is the source's
+    /// bytes up to [`StreamedBuild::base`] with [`StreamedBuild::runs`]
+    /// written over them. `source` is the map the set was decomposed
+    /// from; it is read once, a megabyte at a time, for the checksum. A
+    /// set with its prefix in memory builds as [`TagSet::build`] does, as
+    /// one run.
+    pub fn build_streamed<R: Read + Seek>(
+        &self,
+        source: &mut R,
+    ) -> Result<(StreamedBuild, BuildLayout)> {
+        let (out, mut header, mut layout) = Builder::new(self)?.run()?;
+        let hole = out.hole as u64;
+        let base = HEADER as u64 + hole;
+        if hole > 0 && source.seek(std::io::SeekFrom::End(0))? < base {
+            return Err(Error::Invalid("the source is shorter than the set's prefix"));
+        }
+        let mut checksum = XorChecksum::default();
+        let mut chunk = vec![0u8; STREAM_CHUNK.min(hole as usize)];
+        let mut at = HEADER as u64;
+        while at < base {
+            let n = (base - at).min(STREAM_CHUNK as u64) as usize;
+            let buf = &mut chunk[..n];
+            source.seek(std::io::SeekFrom::Start(at))?;
+            source.read_exact(buf)?;
+            for (p, bytes) in &out.patches {
+                lay_patch(buf, at, *p as u64, bytes);
+            }
+            checksum.update(buf);
+            at += n as u64;
+        }
+        checksum.update(&out.bytes[HEADER..]);
+        layout.checksum = checksum.finish();
+        put(&mut header, 0x2d0, layout.checksum);
+        let mut runs = Vec::with_capacity(out.patches.len() + 2);
+        runs.push((0, header));
+        runs.extend(out.patches.into_iter().map(|(at, b)| (at as u64, b)));
+        let mut tail = out.bytes;
+        tail.drain(..HEADER);
+        if !tail.is_empty() {
+            runs.push((base, tail));
+        }
+        Ok((
+            StreamedBuild {
+                len: u64::from(layout.file_size),
+                base,
+                runs,
+            },
+            layout,
+        ))
     }
     /// Build and write the map; returns its layout.
     pub fn write_to(&self, out: &mut impl Write) -> Result<BuildLayout> {
@@ -748,6 +820,19 @@ impl TagSet {
     /// table to EOF is tables, then the index, then the metadata, and BSP
     /// regions lie before the tables.
     pub fn from_map<R: Read + Seek>(map: &mut Map<R>) -> Result<Self> {
+        Self::decompose(map, true)
+    }
+
+    /// [`TagSet::from_map`] that leaves the file prefix (raw data, BSP
+    /// regions, the old tables: everything from `0x800` to the index) in
+    /// the source: only the header, the index, the names and the metadata
+    /// are read. Build it with [`TagSet::build_streamed`] over the same
+    /// source; [`TagSet::build`] refuses it.
+    pub fn from_map_streamed<R: Read + Seek>(map: &mut Map<R>) -> Result<Self> {
+        Self::decompose(map, false)
+    }
+
+    fn decompose<R: Read + Seek>(map: &mut Map<R>, keep_prefix: bool) -> Result<Self> {
         let h = map.header().clone();
         if map.index_space().virtual_base != INDEX_VIRTUAL_BASE {
             return Err(Error::Unsupported("index not at the retail base".into()));
@@ -794,6 +879,12 @@ impl TagSet {
         let header = map.read_file_range(0, HEADER as u64)?;
         let mut file = Vec::new();
         let mut at = HEADER as u64;
+        let file_in_source = if keep_prefix {
+            0
+        } else {
+            at = prefix_end;
+            prefix_end - HEADER as u64
+        };
         while at < prefix_end {
             let n = (prefix_end - at).min(16 << 20);
             file.extend(map.read_file_range(at, n)?);
@@ -890,6 +981,7 @@ impl TagSet {
             pinned: Some(PinnedImage {
                 header,
                 file,
+                file_in_source,
                 tables,
                 index_entries_end,
                 index,
@@ -1387,7 +1479,9 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    fn run(self) -> Result<(Vec<u8>, BuildLayout)> {
+    /// Lay the file out: what follows the header, the header without its
+    /// checksum, and the layout (checksum 0). The callers checksum the body.
+    fn run(self) -> Result<(Out, Vec<u8>, BuildLayout)> {
         let set = self.set;
         let pin = set.pinned.as_ref();
         let in_bsp: std::collections::HashSet<TagId> = set
@@ -1443,9 +1537,24 @@ impl<'a> Builder<'a> {
             .ok_or(Error::Limit)?;
 
         // File prefix: header, pinned bytes, raw resources, BSP regions.
-        let mut file = vec![0u8; HEADER];
+        let mut file = Out {
+            bytes: vec![0u8; HEADER],
+            hole: 0,
+            patches: Vec::new(),
+        };
         if let Some(p) = pin {
-            file.extend_from_slice(&p.file);
+            if p.file_in_source > 0 {
+                // A builder that wrote the prefix in memory needs bytes the
+                // streamed set never read.
+                if !p.file.is_empty() {
+                    return Err(Error::Invalid(
+                        "the set's file prefix is in its source, but bytes were written to it in memory",
+                    ));
+                }
+                file.hole = usize::try_from(p.file_in_source).map_err(|_| Error::Limit)?;
+            } else {
+                file.extend_from_slice(&p.file);
+            }
         }
         let mut raw_offsets = Vec::new();
         for r in &set.raw {
@@ -1804,14 +1913,12 @@ impl<'a> Builder<'a> {
         }
         // A table that fits goes back where the pinned map had it; anything
         // else follows the prefix, sector aligned.
-        let place = |file: &mut Vec<u8>, slot: usize, bytes: &[u8]| -> Result<u32> {
+        let place = |file: &mut Out, slot: usize, bytes: &[u8]| -> Result<u32> {
             if let Some((at, len)) = pin.map(|p| p.tables[slot])
                 && bytes.len() <= len as usize
             {
-                let at = at as usize;
-                file[at..at + len as usize].fill(0);
-                file[at..at + bytes.len()].copy_from_slice(bytes);
-                return Ok(at as u32);
+                file.write_at(at as usize, len as usize, bytes);
+                return Ok(at);
             }
             let at = round_up(file.len() as u64, SECTOR) as usize;
             file.resize(at, 0);
@@ -1917,11 +2024,6 @@ impl<'a> Builder<'a> {
             &set.scenario_path,
             "scenario path must be under 256 bytes",
         )?;
-        let mut checksum = XorChecksum::default();
-        checksum.update(&file[HEADER..]);
-        let checksum = checksum.finish();
-        put(&mut header, 0x2d0, checksum);
-        file[..HEADER].copy_from_slice(&header);
 
         let tags = set
             .slots
@@ -1944,10 +2046,10 @@ impl<'a> Builder<'a> {
             raw: raw_offsets,
             bsps: bsp_layout.iter().map(|&(o, s, _)| (o, s)).collect(),
             string_count: self.strings.len() as u32,
-            checksum,
+            checksum: 0,
             index_in_metadata,
         };
-        Ok((file, layout))
+        Ok((file, header, layout))
     }
 
     fn groups(&self) -> HashMap<TagId, FourCC> {
@@ -1956,6 +2058,80 @@ impl<'a> Builder<'a> {
             .iter()
             .filter_map(|s| s.tag.as_ref().map(|t| (t.id, t.group)))
             .collect()
+    }
+}
+
+/// How much of a streamed source [`TagSet::build_streamed`] reads at once.
+const STREAM_CHUNK: usize = 1 << 20;
+
+/// A map [`TagSet::build_streamed`] built: the source's bytes up to
+/// `base`, at the same offsets, with `runs` written over them in order (a
+/// later run wins where two meet), and the runs alone from `base` to
+/// `len`. The runs are the header, the tables rewritten in their old place
+/// and everything after the prefix (raw data and BSP regions the build
+/// added, grown tables, the index, the metadata).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StreamedBuild {
+    /// The built file's length.
+    pub len: u64,
+    /// End of the source's bytes in the output: `0x800` plus the prefix
+    /// left in the source.
+    pub base: u64,
+    /// (file offset, bytes), in write order.
+    pub runs: Vec<(u64, Vec<u8>)>,
+}
+
+impl StreamedBuild {
+    /// Bytes the build holds in memory.
+    pub fn held(&self) -> u64 {
+        self.runs.iter().map(|(_, b)| b.len() as u64).sum()
+    }
+}
+
+/// Copy the part of the run at `run` inside `buf` (which holds the file
+/// from `at`) into it.
+fn lay_patch(buf: &mut [u8], at: u64, run: u64, bytes: &[u8]) {
+    let end = at + buf.len() as u64;
+    let (from, to) = (run.max(at), (run + bytes.len() as u64).min(end));
+    if from < to {
+        buf[(from - at) as usize..(to - at) as usize]
+            .copy_from_slice(&bytes[(from - run) as usize..(to - run) as usize]);
+    }
+}
+
+/// The file as the builder lays it out: `bytes` is the header and what
+/// follows it, except that a streamed set's prefix (`hole` bytes from
+/// `0x800`) stays in the source, where a write becomes a patch.
+struct Out {
+    bytes: Vec<u8>,
+    hole: usize,
+    /// (file offset, bytes) written inside the hole, in order.
+    patches: Vec<(usize, Vec<u8>)>,
+}
+
+impl Out {
+    fn len(&self) -> usize {
+        self.bytes.len() + self.hole
+    }
+    /// Grow (never into the hole) to `len` with zeros.
+    fn resize(&mut self, len: usize, value: u8) {
+        self.bytes.resize(len - self.hole, value);
+    }
+    fn extend_from_slice(&mut self, bytes: &[u8]) {
+        self.bytes.extend_from_slice(bytes);
+    }
+    /// Zero `len` bytes at `at`, then write `bytes` (no longer than `len`)
+    /// there.
+    fn write_at(&mut self, at: usize, len: usize, bytes: &[u8]) {
+        if self.hole > 0 && (HEADER..HEADER + self.hole).contains(&at) {
+            let mut run = vec![0; len];
+            run[..bytes.len()].copy_from_slice(bytes);
+            self.patches.push((at, run));
+            return;
+        }
+        let at = if at >= HEADER { at - self.hole } else { at };
+        self.bytes[at..at + len].fill(0);
+        self.bytes[at..at + bytes.len()].copy_from_slice(bytes);
     }
 }
 

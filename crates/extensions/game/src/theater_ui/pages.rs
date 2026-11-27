@@ -36,6 +36,9 @@ const TAB_PANEL: u32 = DETAIL_ROWS + DETAIL_ACTIONS as u32;
 const TAB_TEXTS: usize = 2 * Tab::ALL.len();
 const PANEL: u32 = TAB_PANEL + TAB_TEXTS as u32 + 2;
 const _: () = assert!(PANEL + crate::list_class::MAX_PANEL_TEXTS as u32 <= TEXTS.len);
+/// The first slot the library and the film page leave free: the pause
+/// menu's start no lower (`pause_screen`).
+pub(super) const SPARE: u32 = PANEL + crate::list_class::MAX_PANEL_TEXTS as u32;
 
 // The single-column skin leaves the right half for the selected film.
 const FILMS_LAYOUT: ListLayout = ListLayout {
@@ -58,8 +61,12 @@ const FILM_PICTURE: PictureSpec = PictureSpec {
     at: [12, 174],
     ..lobby::PICTURE
 };
+// The details and the empty library's help start at the map picture's
+// left edge and end at the panel's right.
+const DETAIL_LEFT: i16 = LIST_PICTURE.at[0];
+const DETAIL_RIGHT: i16 = 268;
 const LIST_STATUS: TextBlock = TextBlock {
-    rect: [-62, -20, -184, 268],
+    rect: [-62, DETAIL_LEFT, -184, DETAIL_RIGHT],
     ..lobby::BODY
 };
 const FILM_STATUS: TextBlock = TextBlock {
@@ -245,7 +252,7 @@ fn library_panel() -> Panel {
         })
         .collect();
     texts.push(panel_cell([174, 22, 152, 268], true, true));
-    texts.push(panel_cell([140, -20, 20, 268], false, true));
+    texts.push(panel_cell([140, DETAIL_LEFT, 20, DETAIL_RIGHT], false, true));
     Panel {
         art: Vec::new(),
         texts,
@@ -264,7 +271,7 @@ fn empty_help(state: &super::State) -> String {
             .as_deref()
             .filter(|_| state.tab == Tab::Clips)
     }) {
-        return text_fit::paragraph(error, 280, 5);
+        return text_fit::paragraph(error, super::selector::DETAIL_WIDTH, 5);
     }
     let message = match state.load {
         Load::Loading => return "Reading films...".into(),
@@ -294,7 +301,7 @@ fn films_model(state: &super::State, entries: &[Entry]) -> Vec<RowSpec> {
     }));
     if let Some(error) = state.library_error() {
         let mut retry = RowSpec::action("Retry library")
-            .describe(&text_fit::paragraph(error, 280, 5));
+            .describe(&text_fit::paragraph(error, super::selector::DETAIL_WIDTH, 5));
         retry.prompts = Some(library_prompts("Retry"));
         rows.push(retry);
     }
@@ -419,6 +426,7 @@ fn facts(entry: &Entry, player: Option<&str>) -> Vec<(&'static str, String)> {
         .archive_clip
         .as_ref()
         .map(|(_, title)| title.trim().to_owned())
+        .or_else(|| entry.clip.as_ref().map(|c| c.title.trim().to_owned()))
         .unwrap_or_default();
     let variant = film.variant_name().trim();
     let game = if variant.is_empty() {
@@ -653,7 +661,7 @@ pub(super) fn spec(theater: &Theater, list: bool) -> ScreenSpec {
     s
 }
 
-struct GuestTexts {
+pub(super) struct GuestTexts {
     at: AtomicU32,
     values: Mutex<Vec<Vec<u8>>>,
 }
@@ -672,7 +680,7 @@ impl GuestTexts {
     /// wrapped paragraph's `\n` would join its lines without the space the
     /// break replaced ("its\nsimulation" reads "itssimulation"); ours break
     /// with `\r\n`, as the game's own strings do.
-    fn set(&self, i: u32, value: &str) -> u32 {
+    pub(super) fn set(&self, i: u32, value: &str) -> u32 {
         let value = value.replace("\r\n", "\n").replace('\n', "\r\n");
         let value = value.as_str();
         let mut slots = self.values.lock().unwrap_or_else(|e| e.into_inner());
@@ -687,7 +695,7 @@ impl GuestTexts {
         TEXTS.id(i)
     }
 
-    fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
+    pub(super) fn write(&self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
         let base = self.at.load(Ordering::Relaxed);
         if base != 0 {
             let mut slots = self.values.lock().unwrap_or_else(|e| e.into_inner());
@@ -752,6 +760,12 @@ impl Rows for ScreenRows {
 
     fn shrink_growing_rows(&self) -> bool {
         self.list
+    }
+
+    /// The library stops at its ends: Up on Sort and Down on the last film
+    /// stay put.
+    fn wraps(&self) -> bool {
+        !self.list
     }
 
     fn texts(&self, row: i16) -> Vec<(u32, u32)> {
@@ -978,7 +992,7 @@ pub(super) fn install(registry: &mut hooks::Registry, theater: Theater) -> anyho
     for class in classes(&theater, &texts) {
         registry.add(&class).map_err(anyhow::Error::msg)?;
     }
-    Ok(())
+    super::pause_screen::install(registry, &theater, &texts)
 }
 
 pub(super) fn preview_page(theater: &Theater, list: bool) -> crate::ui_kit::page::ListPage {
@@ -1042,6 +1056,72 @@ mod tests {
             string(rows.focused_footer(Some(3)).unwrap()),
             footer_legend(&library_prompts("Details"))
         );
+    }
+
+    fn library(films: usize) -> Theater {
+        let theater = Theater::default();
+        theater.state().load = Load::Ready(
+            (0..films)
+                .map(|i| FilmMeta {
+                    id: format!("film-{i}"),
+                    map: if i % 2 == 0 { "05b_deltatowers" } else { "cyclotron" }.into(),
+                    started_ms: 1_000 + i as u64,
+                    ..FilmMeta::default()
+                })
+                .collect(),
+        );
+        theater
+    }
+
+    /// The owner's library: 23 films under Sort, Map and Game type. The
+    /// list is as tall as its layout and stops at its ends: Down from Sort
+    /// walks every row of the real list, the window following the focus,
+    /// and neither end wraps.
+    #[test]
+    fn twenty_three_films_scroll_with_the_focus_and_stop_at_the_ends() {
+        use crate::list_class::game_list::{GameList, Step};
+        let theater = library(23);
+        let rows = ScreenRows::new(theater.clone(), Arc::new(GuestTexts::default()), true);
+        assert_eq!(rows.count(), BROWSE_ROWS + 23);
+        assert!(!rows.wraps(), "the library stops at its ends");
+        assert!(ScreenRows::new(theater, Arc::default(), false).wraps());
+
+        let laid = FILMS_LAYOUT.visible as usize;
+        let mut list = GameList::ours(laid, rows.count(), FILMS_LAYOUT.extra_items() as usize, rows.wraps());
+        assert_eq!(list.items, laid, "every laid-out row has an item widget");
+        list.step(Step::Up);
+        assert_eq!(list.pressed(), Some(0), "Up on Sort stays on Sort");
+        for want in 1..rows.count() {
+            list.step(Step::Down);
+            assert_eq!(list.pressed(), Some(want));
+            assert!(list.focus < laid);
+            assert_eq!(list.first, want.saturating_sub(laid - 1), "the window follows the focus");
+        }
+        list.step(Step::Down);
+        assert_eq!(list.pressed(), Some(rows.count() - 1), "Down on the last film stays");
+        assert_eq!(list.arrows(), (true, false));
+    }
+
+    /// Sort, Map and Game type each open the picker dialog on A; Left and
+    /// Right switch the library's tab, never a filter's value.
+    #[test]
+    fn the_filters_open_pickers_and_the_arrows_change_tabs() {
+        let theater = library(23);
+        let rows = ScreenRows::new(theater.clone(), Arc::new(GuestTexts::default()), true);
+        for row in 0..BROWSE_ROWS as i16 {
+            assert!(
+                matches!(rows.press(row), Chosen::Open(crate::ui_kit::picker::NAME)),
+                "row {row}"
+            );
+        }
+        let picked = OptionRow::Map.pick(&theater, &theater.state());
+        assert_eq!(picked.values, ["All", "Ivory Tower", "Regret"]);
+        assert_eq!(rows.with_spec(|s| s.rows[BROWSE_ROWS].label.clone()), "Regret", "newest first, by its level name");
+        assert!(matches!(rows.press(BROWSE_ROWS as i16), Chosen::Push(DETAIL)));
+        let tab = theater.state().tab;
+        rows.sideways(1, true);
+        assert_ne!(theater.state().tab, tab);
+        assert_eq!(theater.state().selector.map, None, "no filter stepped");
     }
 
     #[test]

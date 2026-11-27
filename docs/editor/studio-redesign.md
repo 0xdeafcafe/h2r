@@ -30,8 +30,9 @@ before its slice starts.
 | The window: the document bar, View > Editors, a dock layout per surface, Go to anything, the game link (SH5) | built | `ui/bar.rs`, `ui/layout.rs`, `ui/palette.rs`, `app::Surface` |
 | One command layer for the window and the API | built | `App::dispatch`, `App::perform` (`app.rs`), `api/mod.rs` |
 | Document tabs: a tab per open document, each with its own undo stack; a tag's editor from its group; `shell.tabs`, `shell.open`, `shell.focus`, `shell.close` (SH1) | built | `app/shell.rs`, `ui/doc_tabs.rs`, `api/shell.rs`, `TagDoc::undo_tag` |
-| The browser's rows: the Tags root by path with variants over `TagRepo`, the Packages and Live roots, Kind, Map, search, badges, `asset.list`, `asset.thumb` (a package's PNG bitmap item), `asset.copy` (SH2) | built | `app/assets.rs`, `api/assets.rs` |
-| The browser panel: the three roots, the Kind and Map pickers, the search box, rows with badges and variant lines, open by double-click, **New from this...** (SH2, FL11) | built | `ui/browser.rs`, `Action::OpenAsset`, `Action::CreateAsset` |
+| The browser's rows: the Tags root by path with variants over `TagRepo`, the Packages and Live roots, Kind, Map, search, badges, `asset.list`, `asset.thumb` (a package's PNG bitmap item, a bitmap tag of the open map), `asset.copy`, `asset.where_used`, `asset.edits`, `asset.drop` (SH2, FL13, FL16, FL17) | built | `app/assets.rs`, `app/assets/{browse,thumbs,drop}.rs`, `api/assets.rs` |
+| The browser panel: the three roots, the Kind and Map pickers, the search box, rows with badges and variant lines, open by double-click, **New from this...**, **Open as fields**, the **Where used** and **Show edits** views, bitmap thumbnails, a dropped source file (SH2, FL11, FL13, FL15 to FL17) | built | `ui/browser.rs`, `Action::OpenAsset`, `Action::CreateAsset`, `Action::OpenFields`, `Action::WhereUsed`, `Action::ShowEdits`, `Action::DropFile` |
+| Forge map variants as documents and the Forge palette as a Browser kind (FL14) | built | `app/forge_variants.rs`, `app/assets/forge.rs`, `ui/forge_variant.rs`, `api/forge_variants.rs` ([studio-flow.md](studio-flow.md), "Forge variants and items") |
 | The kind registry: which editor and preview a tag group gets | built | `app/kinds.rs`, `tag.kinds` |
 | The field panel and its row model | built | `fields.rs`, `fields/row.rs` |
 | Pairing, the live mirror, `pair.preview`, `pair.audio` | built | `play/`, `api/preview.rs`, `api/pair.rs` |
@@ -183,11 +184,21 @@ this...** asks for the new path and writes a `like:` tag to the edit
 target via `asset.copy`. With no target, the edit-target picker opens.
 The copy opens in its package source tab.
 
-Thumbnails, **Open as fields**, **Show edits**, **Where used**, folders
-in the tree and dragging a source file onto a package are not built: the
-rows carry the data (`asset.thumb`; `used`, the keys that reference a
-tag, for **Where used**) and the menu gains the entries as their slices
-land.
+A row's right-click menu and the list itself hold the rest
+([studio-flow.md](studio-flow.md), "Links" and "Interfaces"):
+
+| Part | Does | Code |
+|---|---|---|
+| **Where used**, **Show edits** | replace the list with the asset's users, or the items that change it; **Clear** brings the list back | `app/assets/browse.rs` |
+| **Open as fields** | opens a tag's tab in the field panel in place of its group's editor | `Action::OpenFields` |
+| Thumbnails | a bitmap tag the open map holds, and a package's PNG bitmap item, draw their picture a line high; hovering shows it larger | `app/assets/thumbs.rs` |
+| A dropped file | a WAV, a PNG or a model YAML dropped on the window becomes an item of the package the Packages root shows or has selected, else of the edit target; any other file opens as a source | `app/assets/drop.rs` |
+| **Forge variants**, **Forge items** | two kinds of the Kind picker | `app/forge_variants.rs`, `app/assets/forge.rs` |
+
+Folders in the tree are not built. A thumbnail for a model, a sound's
+waveform or a screen is not built: `asset.thumb` answers `not-yet`. The
+operating system gives a drop no row to land on, so the package is the
+one the Browser shows, not the one under the pointer.
 
 A loose `.map` (a community mod) opened from **File > Open** is stored
 as an import layer (W9) and its tags join the tree under its name.
@@ -300,6 +311,10 @@ Every row above is a method. The shell's own, in
 | `asset.list {root?, package?, kind?, map?, query?, limit?}` | the browser's rows with kind, origin badge and the packages that edit them |
 | `asset.thumb {asset, out?}` | a thumbnail as a PNG path |
 | `asset.copy {asset, package?, to?}` | New from this |
+| `asset.where_used {asset}`, `asset.edits {asset}` | the Browser's link views |
+| `asset.drop {file, package?}` | a dropped source file into a package |
+| `shell.open {asset, fields: true}` | Open as fields |
+| `forge.variant.*`, `forge.items` | Forge map variants and the Forge palette |
 | `problems.list {source?}` | the Problems panel |
 | `preview.target {doc?, target?}` | the preview switch |
 | `package.*` | below, "Studio's side" |
@@ -660,12 +675,22 @@ paths in "What exists":
    reads, it takes the packages with an item whose `maps` matches the
    name or the header's class, leaves out a package whose added tags the
    map already has (a map that holds the content), and runs the rest in
-   order through `workspace::build_map`, the path `h2 package build`
-   takes, so the bytes are the same. The result is served from
-   `<data>/packages/cache/<map sha>-<key>.map` (16 hex digits of each,
-   the key `workspace::cache_key`) with a `.json` receipt holding the
-   full key and the output's hash; a second read is a cache hit, and a
-   changed map, package or builder builds anew. A map that fails to
+   order through `workspace::build_map_streamed`: the build
+   `h2 package build` takes (`workspace::build_map`), with the same
+   bytes, on the map read by offset. The map is decomposed with its file
+   prefix (raw data, BSP regions) left on the disc
+   (`map::build::TagSet::from_map_streamed`); the build holds the
+   header, index, names and metadata, and serves an overlay over the
+   map (`vfs::Rewritten::Over`), so a campaign map of any size takes its
+   packages. A package whose item writes the prefix in memory is refused
+   for that map by name. The overlay is kept in
+   `<data>/packages/cache/<map sha>-<key>.splice` (16 hex digits of
+   each, the key `workspace::cache_key`), its runs' bytes, with a
+   `.json` receipt holding the full key, the splice's hash and where
+   each run goes; a second read is a cache hit, and a changed map,
+   package or builder builds anew. Test:
+   `crates/tools/workspace/tests/streamed_rewrite.rs` (a 200 MiB map,
+   byte-equal to the buffered build, peak memory bounded). A map that fails to
    build is served unchanged and named once on stderr; a package refused
    for the map (a stale `was`, a key it lacks) is off for it with its
    reason in `packages.list`, and the cached map is keyed by what the map
@@ -683,7 +708,7 @@ paths in "What exists":
    rewrite and store level builder share the enabled package payloads.
    `packages.list` keeps the set's summary and reads map results from
    the served-map record. `vfs::RewriteBackend` keeps a 64 MiB cache for
-   idle rewritten level payloads, protecting open levels and retaining
+   idle rewritten level payloads (held bytes), protecting open levels and retaining
    the shared resource maps separately. File metadata and directory
    listings reuse the rewritten sizes after eviction.
    With the maps served from the tag store (`store-maps`), the per-map
@@ -809,13 +834,18 @@ A package is published as a mod pack is today: files into the content
 store by SHA-256, and the manifest with its lock as a document signed by
 the author's key (the `MapPublished` flow of `live_proto::maps`).
 
-- **Routes.** `GET /v1/packages` lists, `GET /v1/packages/{id}` gives
-  the signed manifest and lock, blobs come from `/v1/content/{hash}`.
-  The mod pack routes become these; a mod pack is a package whose items
-  are `map-patch`. Both homes implement them over the same store trait
-  and the parity suite runs them.
+- **Routes** ([live-api.md](../live/live-api.md), "Packages"):
+  `PUT /v1/packages` takes the signed document, `GET /v1/packages`
+  lists, `GET /v1/packages/{id}` gives the signed manifest and lock,
+  blobs come from `/v1/content/{hash}`. A mod pack is a package whose
+  items are `map-patch`; the mod pack routes go once `h2 live mods
+  import` writes packages (PK14). Both homes run the same routes, and the
+  upload check is one function (`live_proto::packages::check`) over each
+  home's store (`Holdings`); the parity suite runs them.
 - **Signing.** The server verifies the signature and every hash in the
-  lock on upload. A client verifies both again on install. Baked
+  lock on upload: each must be stored (the store keeps blobs by their
+  checked SHA-256), off the retail list and not taken down, and the lock
+  must name exactly the manifest's files. A client verifies both again on install. Baked
   packages are trusted as part of the binary. A local, unsigned package
   loads in local games only: a Live or System Link session is refused
   while the set holds one with a `sim` item, naming the package
@@ -827,14 +857,16 @@ the author's key (the `MapPublished` flow of `live_proto::maps`).
   is missing from the joiner's disc) fails the join with the reason,
   before any map load. Ranked hoppers pin the set.
 - **Credit.** `[credit]` is `live_proto::maps::Credit`. The order of
-  truth stays: an admin's correction, then the publisher's signed
-  credit, then the manifest. The publisher is shown as "uploaded by",
+  truth stays: an admin's correction (`PUT /v1/packages/{id}/credit`),
+  then the publisher's signed `credit` in the document, then the
+  manifest's. The publisher is shown as "uploaded by",
   never as the author. `docs/game/mod-credits.toml` and
   `mod-details.toml` keep their role for imported community packs.
 - **Models.** A package with a `model` or `animation` item needs the
   uploader's `model_uploads` flag
   ([forge-features.md](../game/forge-features.md), "Custom models on
-  Live").
+  Live"), set by `PUT /v1/admin/model-uploads/{gamertag}` (a
+  `ModelUploadsSet` event). A `kit` item is refused: kits are ours.
 - **In game.** The Mods screens (`mods_screen.rs`) list packages; a
   package's page lists its maps, modes and credit.
 
@@ -1234,8 +1266,8 @@ Rows are in build order.
 | PK9 (built) | **Whole maps** (`workspace::prepare`, `stage_kit::fresh::StageFresh`, `workspace::scenario_edits`, boot's `packages::prepare_maps`): `map` and `map-patch` items to map packages at prepare; the stage and the test-map recipes as packages | M | PK2 | an invented `fresh` and an invented `onto` item build; the `MapId` of a `map-patch` item equals the id of the map package the importer writes for the same patch |
 | PK10 (built: `workspace::convert`, `cli/src/package_prepare.rs`, `content/{halo1,map-pack}/`; the Map Pack's `playlist` item waits for the hopper to read fragments) | **Conversions**: `convert` items, `h2 package prepare`, stamps; `content/halo1/` and `content/map-pack/` over the existing converters | M | PK9 | with an invented converter: no disc leaves the package off with its reason; a stale stamp reruns one map; an interrupted run resumes |
 | PK12 (built) | **Kits** (built: `workspace::{kits, firefight_sets}`, `content/{core,halo1}/`, `content/modes/firefight/`; `firefight_kit::build_package` stays for `h2 firefight kit` and `host-data`'s bundle until that is moved to `ground::build`): `kit: campaign-cards`, `glyphs`; Firefight's director and wave sets as `rules` items of `modes`; `firefight_kit::build_package`'s boot and host-bundle callers go (GM1 of game-types-without-carriers builds ground on demand); boot's chain is `PackageRewrite` alone | M | PK9 | per kit, the map through the package equals the one its own caller made; `boot/src/lib.rs` builds no other rewrite |
-| PK13 | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |
-| PK14 | **Live, game and Studio**: install, the content set in a session, the join check, a session refused on `boot::packages::network_refusal`, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |
+| PK13 (built: `live_proto::packages`, `live-server/src/packages.rs`, the parity cases in `live-server/tests/support/packages.rs`; the mod pack routes stand until PK14's import writes packages) | **Live, server**: `/v1/packages`, the signed manifest and lock, the upload checks, credit, the model flag, both homes | M | PK1 | the parity suite: a bad signature, a lock hash that does not match, a retail hash and a model item without the flag are each refused; an admin's credit outranks the manifest's |
+| PK14 (started: the install's checks, `live_proto::packages::{verify_answer, verify_file}`) | **Live, game and Studio**: install, the content set in a session, the join check, a session refused on `boot::packages::network_refusal`, the Mods screens, `package.publish` and `package.install`; `h2 live mods import` writes packages | M | PK13, PK3 | on the fake server: a joiner missing one package fetches it and joins; a blocked one fails before the map load with the reason; an imported pack holds patches and credit only |
 | M1 (built) | **Model poses** (rich-editors) | M | nothing | as there |
 | AN1 (built) | **The animation editor, read**: `anim.read`, the timeline rows, scrub, loop, the key reduction | M | M1, SH1 | an invented two-bone clip lists its channels; reduce then bake is within the tolerance at every frame |
 | AN2 | **The encoder** (built): `tags::anim_write` (codecs 1 and 3) lifted from `h1-assets`, which calls it | M | nothing | `decode(encode(c))` equals `c` within quantisation on invented clips; the converter's `jmad` tests pass unchanged |

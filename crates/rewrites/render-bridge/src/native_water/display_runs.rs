@@ -2,7 +2,7 @@
 //! (`frame_scene::transparent::DisplayTransparentQueue::runs`), drawn
 //! from inside the guest's sorted dispatch (`0x0001e370`) instead of the
 //! layer-6 call's lone part (docs/graphics/native-renderer.md, "Scene
-//! lists", and docs/graphics/retire-d3d.md, "R2's first slice").
+//! list builders", and docs/graphics/retire-d3d.md, "R2's first slice").
 //!
 //! The queue is built at `TRANSPARENT_ORDER_READY` (after the sort, before
 //! the loop), which is where [`begin`] runs and draws the head run
@@ -183,7 +183,7 @@ mod tests {
     }
 
     impl Host for Recorder {
-        fn ask(&self, _: &mut dyn GuestMemory, _: &[u16]) -> Option<native_render::skip::Cleared> {
+        fn ask(&self, _: &mut dyn GuestMemory, _: &[u16], _: &mut crate::native_layers::Left) -> Option<native_render::skip::Cleared> {
             None
         }
         fn draws_display_part(&self, _: &dyn GuestMemory, part: &DisplayTransparentPart) -> bool {

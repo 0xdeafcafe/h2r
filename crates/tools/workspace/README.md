@@ -13,3 +13,11 @@ that serves each map with the set applied, cached under
 `campaign-cards` on mainmenu, `glyphs` on the font files) on the inputs the
 boot gives it, and `firefight_sets.rs` reads Firefight's wave sets, the
 `rules` items of `modes`.
+
+The tag workspace's side (docs/editor/tag-workspace.md): `edits` (edit
+files from `assets/tag-edits/` and `<data>/workspace/edits/` applied to
+loose tags), `project` (project files and the stack a build reads: edits
+over import layers over the tree) and `project_build` (a project built
+into a map package, kits as its steps). `h2 tags project` and `h2 tags
+edits` (crates/apps/h2-tools) and Studio's `project.*` and `edits.*` call
+them.

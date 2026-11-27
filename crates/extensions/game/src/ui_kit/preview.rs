@@ -111,6 +111,16 @@ impl Fonts {
         Ok(Self { table, files })
     }
 
+    /// Every font file through `patch`, kept where it gives none (a page
+    /// drawn with extra glyphs, such as `icons::Icons::font_rewrite`'s).
+    pub fn patch(&mut self, patch: impl Fn(&[u8]) -> Option<Vec<u8>>) {
+        for bytes in self.files.values_mut() {
+            if let Some(new) = patch(bytes) {
+                *bytes = new;
+            }
+        }
+    }
+
     /// The file for engine font `index`.
     pub fn file(&self, index: i16) -> Option<(&str, &[u8])> {
         let name = self.table.get(usize::try_from(index).ok()?)?;

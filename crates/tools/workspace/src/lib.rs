@@ -27,10 +27,20 @@
 //!   refused for the map is off for it whole, with its reason in
 //!   [`Report::refused`], and the rest apply
 //!   (docs/engine/asset-store.md, "Conflicts").
+//! - [`build_map_streamed`]: [`build_map_settled`] on a map read by offset
+//!   ([`base::Base`]), leaving its raw data and BSP regions in the source:
+//!   the game's rewrite of a map of any size.
 //! - [`assets`]: the asset hashes of a base level (`tags::repo::normal`),
 //!   what a mod's `was` and `replaces` name.
 //! - [`cache_key`]: the key of a build's output.
 //! - [`Layered`]: tag sources in order, first hit wins.
+//! - [`edits`]: edit files (`assets/tag-edits/`, `<data>/workspace/edits/`)
+//!   applied to loose tags, [`edits::Edited`] a tag source with them over
+//!   the layers (docs/editor/tag-workspace.md, "Edits are data").
+//! - [`project`]: project files (`art/*/project.toml`,
+//!   `<data>/workspace/projects/`) and the stack a build reads: edits over
+//!   import layers over the tree; [`project_build`] turns a project into a
+//!   map package, the kits as its steps ("Projects", "Kits are build steps").
 //! - [`check_package`], [`check_set`]: what `h2 package check` reports;
 //!   [`store_findings`]: the files of a package that are a raw resource or a
 //!   tag file of the user's own store.
@@ -55,6 +65,7 @@
 //! the rewrite), and the tests build their own.
 mod animation;
 pub mod assets;
+pub mod base;
 mod bitmap;
 mod build;
 mod builders;
@@ -62,6 +73,7 @@ mod convert;
 pub mod converted;
 pub mod delta;
 mod edit;
+pub mod edits;
 mod firefight_sets;
 mod game;
 mod ground;
@@ -76,6 +88,8 @@ mod maps;
 mod model;
 mod modes;
 mod onto;
+pub mod project;
+pub mod project_build;
 mod recipe;
 mod rewrite;
 mod sound;
@@ -87,6 +101,8 @@ mod unpin;
 mod convert_tests;
 #[cfg(test)]
 mod converted_tests;
+#[cfg(test)]
+mod edits_tests;
 #[cfg(test)]
 mod import_tests;
 #[cfg(test)]
@@ -101,6 +117,8 @@ mod level_tests;
 mod mod_tests;
 #[cfg(test)]
 mod pogo_tests;
+#[cfg(test)]
+mod project_tests;
 #[cfg(test)]
 mod recipe_tests;
 #[cfg(test)]
@@ -144,9 +162,13 @@ pub use maps::{
     write as write_map_package,
 };
 pub use onto::{
-    BuiltMap, build_map, build_map_laid_out, build_map_settled, scope_of, scope_of_bytes,
+    BuiltMap, StreamedMap, build_map, build_map_laid_out, build_map_settled, build_map_streamed,
+    scope_of, scope_of_bytes,
 };
 pub use recipe::{TestMap, records_edits, scenario_edits, test_map_package};
-pub use rewrite::{FontObserver, KitInputs, Observer, PackageRewrite, Rebuilt, Served, ServedMap, stem_of};
+pub use rewrite::{
+    FontObserver, KitInputs, Observer, PackageRewrite, Rebuilt, RebuiltOver, Served, ServedMap,
+    stem_of,
+};
 pub use tagitem::group_of_source;
 pub use unpin::MapUnpin;

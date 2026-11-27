@@ -84,11 +84,39 @@ pub struct StraightWalk {
     pub last: Option<PlaneDistances>,
 }
 
+/// One step of the guest walk, in execution order. The adapters replay
+/// these to rebuild the registers and frames `0x1de6d0` leaves behind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Step {
+    /// A node's plane test (`0x1de6f0..0x1de79d`): the node index, its
+    /// sign-extended plane index, the four values and `s0 >= 0`, `s1 >= 0`.
+    /// `next` is the child an unsplit test takes.
+    Plane {
+        node: u32,
+        plane: u32,
+        d: PlaneDistances,
+        front: [bool; 2],
+        next: u32,
+    },
+    /// The ends differ: the near child is called over `[t0, split]`.
+    Cross { split: u32, increasing: bool, near: u32 },
+    /// The near child missed and the split was not below R's fraction:
+    /// the frame returns (`0x1de895`).
+    Stop,
+    /// The walk goes on in the far child from the split (`0x1de7f7`).
+    Far { far: u32 },
+    /// The frame's leaf tail for the child word `child`, the leaf state it
+    /// sets, and whether it ran the reference matcher.
+    Leaf { child: u32, kind: u8, lookup: bool },
+}
+
 /// What the walk leaves in R and the context.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Outcome {
     pub hit: Option<Hit>,
     pub straight: Option<StraightWalk>,
+    /// Every step the guest takes, in order.
+    pub steps: Vec<Step>,
     /// Leaves appended to R's list, in order, starting at the entry
     /// `listed`; once the list holds [`LEAF_LIST`] the rest go to the
     /// overflow slot `+0x418`, the last one staying.
@@ -309,28 +337,36 @@ impl<G: GuestRead> Walk<'_, G> {
                 return Err(Bail::Float);
             }
             let (a, b) = (non_negative(s0), non_negative(s1));
+            let d = PlaneDistances { distance: dist, delta, start: s0, end: s1 };
+            let plane = n.plane_index as i16 as i32 as u32;
+            let node = child & 0x7f_ffff;
             if a == b {
                 if let Some(straight) = &mut self.out.straight {
-                    straight.last = Some(PlaneDistances { distance: dist, delta, start: s0, end: s1 });
+                    straight.last = Some(d);
                 }
                 child = Self::child(&n, a)?;
+                self.out.steps.push(Step::Plane { node, plane, d, front: [a, b], next: child });
                 continue;
             }
+            self.out.steps.push(Step::Plane { node, plane, d, front: [a, b], next: NONE });
             // Opposite signs at the ends: delta is nonzero.
             self.out.straight = None;
             let increasing = above(delta, 0);
             let split = det::x87_neg_quotient(dist, delta);
             self.out.inexact |= split.inexact;
             let near = Self::child(&n, !increasing)?;
+            self.out.steps.push(Step::Cross { split: split.value, increasing, near });
             if self.visit(near, t0, split.value, depth + 1)? {
                 return Ok(true);
             }
             // `jae`: the far side only when the split is below R's fraction.
             if !above(self.q.fraction, split.value) {
+                self.out.steps.push(Step::Stop);
                 return Ok(false);
             }
-            self.out.plane = n.plane_index as i16 as i32 as u32;
+            self.out.plane = plane;
             child = Self::child(&n, increasing)?;
+            self.out.steps.push(Step::Far { far: child });
             t0 = split.value;
         }
         self.leaf(child, t0)
@@ -368,6 +404,7 @@ impl<G: GuestRead> Walk<'_, G> {
         if lookup.is_some() {
             self.out.straight = None;
         }
+        self.out.steps.push(Step::Leaf { child, kind, lookup: lookup.is_some() });
         if let Some(lookup) = lookup.filter(|&l| l != NONE) {
             let s = self.matcher(lookup, t0, two_sided)?;
             if s != NONE {

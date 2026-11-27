@@ -186,7 +186,7 @@ fn the_methods_are_listed() {
     let t = Temp::new("list");
     let (mut app, mut api) = open(&t);
     let list = call(&mut api, &mut app, m::METHODS, json!({}));
-    for name in [m::FUNCTION_READ, m::FUNCTION_SET, m::FUNCTION_SAMPLE] {
+    for name in [m::FUNCTION_READ, m::FUNCTION_SET, m::FUNCTION_SAMPLE, m::FUNCTION_COLOURS] {
         let row = list
             .as_array()
             .unwrap()
@@ -664,4 +664,58 @@ fn every_editable_type_reads_back_what_was_written() {
         assert_eq!(bytes.len(), kind.blob_len().unwrap(), "{word}");
         assert_eq!(Function::parse(&bytes).unwrap().kind, kind);
     }
+}
+
+/// `function.colours` reads the header's colours the way the engine's
+/// colour reader does: the stops by mode, and a gradient that is
+/// `output_colour` at each input.
+#[test]
+fn colours_read_the_stops_and_the_gradient() {
+    let t = Temp::new("colours");
+    let (mut app, mut api) = open(&t);
+    // An identity blob has flags 0: mode grey, no stops.
+    let r = call(
+        &mut api,
+        &mut app,
+        m::FUNCTION_COLOURS,
+        json!({"tag": "weap", "path": "identity", "samples": 3}),
+    );
+    let f = Function::parse(&field_blob("identity")).unwrap();
+    let (mode, stops) = f.colour_stops();
+    assert_eq!(r["mode"], mode);
+    assert_eq!(r["stops"].as_array().unwrap().len(), stops.len());
+    let g = r["gradient"].as_array().unwrap();
+    assert_eq!(g.len(), 3);
+    for (row, x) in g.iter().zip([0.0f32, 0.5, 1.0]) {
+        assert_eq!(row["at"].as_f64().unwrap() as f32, x);
+        assert_eq!(
+            row["colour"],
+            format!("#{:08x}", f.output_colour(x)).as_str()
+        );
+    }
+    // The default is sixteen samples; a count out of range, and a field
+    // that is not a curve, are refused.
+    let r = call(
+        &mut api,
+        &mut app,
+        m::FUNCTION_COLOURS,
+        json!({"tag": "weap", "path": "curve"}),
+    );
+    assert_eq!(r["gradient"].as_array().unwrap().len(), 16);
+    assert_eq!(
+        code_of(api.call(
+            &mut app,
+            m::FUNCTION_COLOURS,
+            json!({"tag": "weap", "path": "curve", "samples": 1})
+        )),
+        code::INVALID_PARAMS
+    );
+    assert_eq!(
+        code_of(api.call(
+            &mut app,
+            m::FUNCTION_COLOURS,
+            json!({"tag": "weap", "path": "plain"})
+        )),
+        code::REFUSED
+    );
 }

@@ -18,6 +18,10 @@
 //! with its alpha-only clear `0x3c515` after — are never skipped: the
 //! native draws land inside their window, and the clear keeps its guest
 //! order after them.
+//!
+//! Every item the guest's layer draw still draws after the decision keeps
+//! its guest draw and is counted `scene_kept_6_<kind>_<cause>`, as the
+//! fog's are (`crate::native_fog::count_late_kept`).
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -55,7 +59,8 @@ pub const WATER_LAYER: u32 = 6;
 /// so the replacement lands inside their window and the alpha-only
 /// clear `0x3c515` keeps its guest order after it.
 pub trait Host: Send + Sync {
-    fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16]) -> Option<Cleared>;
+    /// `left` takes why the items it does not clear keep their guest draw.
+    fn ask(&self, mem: &mut dyn GuestMemory, display_clusters: &[u16], left: &mut crate::native_layers::Left) -> Option<Cleared>;
 
     /// Whether the display pass draws this part of the sorted display
     /// queue: a water part the native set holds, whose live shader is the
@@ -166,11 +171,21 @@ pub fn restore_pending(mem: &mut dyn GuestMemory) {
 /// layer draw's return address (`[esp]` at entry).
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
-    let m = crate::native_fog::Mem(mem);
-    if m.read_u32(CURRENT_LAYER) != Some(WATER_LAYER) {
+    if crate::native_fog::Mem(&mut *mem).read_u32(CURRENT_LAYER) != Some(WATER_LAYER) {
         return;
     }
     WATER_VIEWS.fetch_add(1, Ordering::Relaxed);
+    let mut left = crate::native_layers::Left::default();
+    if claim(mem, ret, &mut left) {
+        crate::native_fog::count_late_kept(&crate::native_fog::Mem(&mut *mem), WATER_LAYER, &left);
+    }
+}
+
+/// The skip of one layer-6 call. `false` when the layer draws nothing (the
+/// water gate set); else what it did not clear keeps its guest draw under
+/// the cause named in `left`.
+fn claim(mem: &mut dyn GuestMemory, ret: u32, left: &mut crate::native_layers::Left) -> bool {
+    let m = crate::native_fog::Mem(mem);
     if ret != SCENE_WATER_RETURN {
         let n = WATER_WRONG_CALLER.fetch_add(1, Ordering::Relaxed);
         if n % 1800 == 0 {
@@ -180,7 +195,8 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
                 SCENE_WATER_RETURN
             );
         }
-        return;
+        left.all(crate::native_layers::CALLER_CAUSE);
+        return true;
     }
     // The water gate (bit 4 of `0x004b9fe0`, the lifted port's
     // `0x0002c0ee`): set, the wrapper does not draw and neither does the
@@ -190,26 +206,31 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         Some(_) => {
             WATER_GATED.fetch_add(1, Ordering::Relaxed);
             crate::scene_step::late_kept(&*m.0, WATER_LAYER as u8, false);
-            return;
+            return false;
         }
-        None => return,
+        None => {
+            left.all("gate");
+            return true;
+        }
     }
     // The widened portal flood can reach water even when the retail list is empty.
     let display = crate::scene_step::late_display_visibility(&*m.0, WATER_LAYER as u8);
     let clusters = display.as_ref().map_or(&[][..], |extra| extra.whole_clusters.as_slice());
     if clusters.is_empty() && skip::has_structure_items(&m, WATER_LAYER) != Some(true) {
         crate::scene_step::late_kept(&*m.0, WATER_LAYER as u8, true);
-        return;
+        left.all("object");
+        return true;
     }
     let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
-        return;
+        left.all("host");
+        return true;
     };
-    let Some(cleared) = host.ask(&mut *m.0, clusters) else {
+    let Some(cleared) = host.ask(&mut *m.0, clusters, left) else {
         crate::scene_step::late_kept(&*m.0, WATER_LAYER as u8, true);
-        return;
+        return true;
     };
     if cleared.items.is_empty() {
-        return;
+        return true;
     }
     WATER_DRAWN.fetch_add(1, Ordering::Relaxed);
     WATER_ITEMS.fetch_add(cleared.items.len() as u64, Ordering::Relaxed);
@@ -218,8 +239,9 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         let (v, d, i, g, w) = counts();
         eprintln!("native-water: {d} of {v} layer-6 views drawn natively ({g} gated off, {w} other callers), {i} items skipped");
     }
-    let left = cleared.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
-    *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { cleared, left });
+    let kept = cleared.items.iter().map(|&item| m.read_u32(item + 0x10).unwrap_or(0)).collect();
+    *CLEARED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Pending { cleared, left: kept });
+    true
 }
 
 pub(crate) fn forget_pending() {

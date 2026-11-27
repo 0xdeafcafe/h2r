@@ -25,23 +25,29 @@ invokes the original immediately after its read.
 
 At `guest_layout::points::PLAYER_KILLED`, the killer is the player who
 receives credit. The weapon and headshot flag come from the damage report
-that depleted the victim's body. These can have different sources. For
+that depleted the victim's body. These can have different sources.
+
+For
 example, a player can earn credit for an opponent's fall after shooting
 them. The kill then carries the shooter's slot and the source `fall`,
 with no headshot flag. The observer reads the raw stack at this opaque hook
 point, preserving the hook signature recorded in player films.
+
 The same read identifies a delayed projectile after a weapon switch or a
 thrower's death, and preserves the grenade type on a self-kill. A missing
 or unrecognised source leaves the damage fields absent and preserves the kill.
-[Kill hook and damage code](live-gamestate.md#7-killdeath-and-damage-hooks)
+[Kill hook and damage code](live-gamestate-objects.md#7-killdeath-and-damage-hooks)
 
 Per-tick work follows only live player records and their current unit/vehicle
 objects. It does not scan all 2,048 objects or the one-MiB object pool. A full
 16-player selective snapshot is approximately 2–4 KiB of guest reads, including
-592 bytes of player/team stat rows. Scores are compared every tick but emitted
+592 bytes of player/team stat rows.
+
+Scores are compared every tick but emitted
 only on change and at most once per 30 ticks. Names and match options are sent
 on match/roster changes rather than in every frame. Vehicle passengers use the
 parent vehicle's world transform rather than the biped's seat-local transform.
+
 A replacement activation or a main-menu transition emits `GameEnded` with
 reason `quit` before clearing the old session; post-end kills are ignored.
 
@@ -52,362 +58,25 @@ file so runtime validation has one correction point.
 
 ## Frame species, aim, weapon and shots
 
-Each frame player carries what the web needs to draw a model
-([live-api.md](live-api.md), frames; offsets and evidence in
-[live-gamestate.md](live-gamestate.md), "Unit aim, held weapon, species and
-shots"):
+Moved to [Live telemetry: frame species, cinematics and appearance](live-telemetry-frames.md#frame-species-aim-weapon-and-shots).
 
-- `aim`: the unit's aiming vector (`+0x168`, rated likely), sent only when
-  finite and within 10% of unit length, then normalised. A bad offset sends
-  nothing.
-- `weapon`: the current weapon index (`+0x212`) picks one of the four
-  weapon datums (`+0x218`); the weapon must be a live weapon object
-  (salt-checked, type 2) whose parent is this unit. Its definition datum is
-  named by the map's tag table and sent as the file stem.
-- `species`: the unit's own definition datum (the biped's, also while in a
-  vehicle) named the same way: `masterchief` paths are `spartan`, `elite`
-  and `dervish` paths `elite`, any other biped its directory name.
-- `shots`: the weapon-fire hook counts calls by weapon datum; each tick's
-  counts go to the players holding those weapons and add up until their
-  next frame. A weapon change or death drops the pending count. Shots of a
-  tick the worker folds into another (see "Threads") are added to the one
-  it keeps. The ticks they were on go out as `fire` (see "Velocity, seat,
-  vitality and fire").
-
-Frames also carry `vehicles` and `actors` ([live-gamestate.md](live-gamestate.md),
-"AI bipeds, teams and vehicles"):
-
-- Actors: on frame ticks the object header table is read once (12 bytes a
-  slot up to the high-water mark, at most 2,048) and every biped with an
-  actor datum (`+0x12c`), no player (`+0x13c`) and no body-depleted flag
-  is read like a player's unit (position, or its vehicle's; aim; held
-  weapon). Nearest to any player first, at most 128. A fault on one biped
-  skips it; a failed scan sends no actors.
-- Bodies: the same scan keeps every biped with the body-depleted flag (the
-  game leaves a body in the world until it clears it away). A body that
-  was never a player's unit (an AI's, or one the level starts with) is
-  sent after the living actors as an actor with stance `dead` (no aim,
-  weapon or actions), nearest first, at most 32 and within the 128; it
-  keeps the id it had alive. A dead player's `pos` and `yaw` are their
-  body's while it lasts, then where they fell (the origin before this).
-- `team` is the unit's `+0x138`; in campaign it is named (likely names),
-  elsewhere sent as the number.
-- `species` is the biped tag's directory; vehicles' `kind` the `vehi`
-  stem; both `unknown` without the map's names.
-- Actors' shots: every weapon's fire-hook count since the last frame,
-  given to the actor holding that weapon at frame time.
-- Vehicles: every vehicle the scan finds (object type 1), occupied when a
-  biped's parent is it, occupied first, at most 64; a vehicle a player or
-  sent actor rides uses the transform the rider read. A vehicle whose
-  vectors are not finite and non-zero is left out. A vehicle parented to
-  another object (a turret on the scarab or a dropship) is sent with its
-  parent-relative `+0x64`. A turret (a vehicle whose parent is a vehicle:
-  the Warthog's chaingun, the Scorpion's cannon, the Wraith's mortar) also
-  sends `parent`, that vehicle's id, and every vehicle its own `aim`, the
-  unit aiming vector at `+0x168` (vehicles are units; dropped unless
-  finite and near unit length): where a turret points. A gunner's
-  `vehicle` is the turret; their position and the turret's as a rider
-  reads it are the vehicle the turret is mounted on.
-
-Version 6 adds, from the same scan ([live-gamestate.md](live-gamestate.md),
-object types 3 and 5):
-
-- Vehicles' `vel`: body `+0x88`, as units' (a ridden vehicle's is the one
-  its rider read: the vehicle's, or a gunner's mount's). Absent past
-  `MAX_FRAME_SPEED` or not finite.
-- `projectiles`: every projectile object (type 5) slower than
-  `MAX_PROJECTILE_SPEED` (100 units a second), or stuck to something:
-  grenades, rockets, plasma bolts, needles. Bullets (400 a second and
-  more) live a tick or two; the viewer draws them from the shooter's `fire`
-  and `aim`, so they are left out. Each has its datum `id`, its `proj` tag
-  stem as `kind`, `pos` and `vel` (`+0x64`, `+0x88`, what the projectile
-  update moves). A stuck one (a plasma grenade on a unit or a vehicle) has
-  a parent and a parent-relative transform, so it is sent with `parent`
-  (that object's id), its parent's position and no `vel`. At most 64; past
-  that the nearest to a player.
-- `items`: every weapon (type 2) or equipment (type 3) object with no
-  parent that no scenario placement or netgame spawn made: dropped guns, a
-  dropped flag, ball or bomb, powerups a game type creates. Placed and
-  spawned ones stay in `objects` ([Scenario objects](#scenario-objects)).
-  `kind` is the `weap` stem, or the `eqip` stem with `equipment`; `pos`,
-  `forward`, `up`. At most 128; past that the nearest to a player. They
-  are listed in object table order, so a delta matches each in place, and
-  one lying still costs nothing after its first frame. The loose test
-  reuses the placement read the scan makes anyway (parent, `+0x1a`,
-  `+0xaf`), so only loose ones cost a pose read.
-
-A carried flag, ball or bomb is its carrier's `weapon` (`flag`, `ball`,
-`assault_bomb`), so carrier and drop are both covered; the objective's
-game state (score, which team's flag) is not read yet.
-
-And, from the same scan and the units' own memory
-([live-gamestate.md](live-gamestate.md), "Unit stance, actions, damage and
-machines"):
-
-- `stance`: `dead` without a live unit, `vehicle` in one, `airborne` when
-  the biped physics mode is 2, else `crouch` when the crouch amount
-  (`+0x2c4`) is at least 0.5, else `stand`.
-- `speed`: horizontal distance between this frame's and the previous
-  frame's position over the game time between them; not sent for the first
-  frame of a unit, over gaps of more than a second, or above 100 units a
-  second (respawns, teleports).
-- `actions`, from what changed since the unit's previous frame (none for a
-  unit seen the first time): a weapon datum new to its four slots is
-  `pickup`; the held weapon becoming one it already carried is `switch`; the
-  held weapon's first magazine gaining loaded rounds while its reserve
-  drops is `reload`; fewer grenades is `grenade`, more is `pickup`; the
-  physics mode going from ground (1) to flying (2) with the velocity's z
-  above 0 is `jump`; entering the melee mode (6) is `melee`. One swing is
-  one `melee`: its damage lands a few ticks into it, so dealing melee
-  damage marks the swing only when no frame saw the entry (a hit within
-  15 ticks of a marked entry is the same swing).
-- `grenade`: the selected grenade type (`+0x23c`).
-- `hits`: a hook on the damage report function `0x000d9640` (custom ABI,
-  `EDI` = report, the victim datum on the stack; always runs the original)
-  records each report; frames send those since the last frame, newest 64.
-  The damage reporting type (the report code's low 6 bits) gives `kind` and,
-  for hand weapons, `weapon`; otherwise `weapon` is the `jpt!` tag's stem.
-  The attacker is the report's owner player (`p<index>`), else its owner
-  object. The hook is optional: without that entry frames carry no hits.
-- `bsp`: the game globals' active structure BSP (`G+0x02`).
-- `machines`: machine objects (type 7) whose world position, forward or
-  up changed by 0.001 or more since last sent. The first sample includes
-  the pose. `node` is the `mach` stem and scenario placement index, which
-  identify a placed machine in map.glb. The viewer applies the pose to
-  the whole machine, including free movers.
-- `machine_positions`: placed machines with a valid position animation
-  channel. The object body holds the scenario index at `+0x1a`, normalized
-  travel at `+0x140`, and the channel at `+0x18c` (see
-  [live-gamestate.md](live-gamestate.md#unit-stance-actions-damage-and-machines)).
-  The sender rounds travel to 0..255 and sends each index once at first
-  sight, then on changes to that byte. This works independently of the
-  object's root pose and tag name. The viewer samples the device animation
-  with those values. Earlier recordings keep their world-pose playback.
-
-For a retail-based mod, the game start reports the retail base in
-`map` and the installed package in `map_id`. Both come from the VFS
-entry named by the active cache slot (`crates/extensions/game/src/map_slots.rs`).
-A DVD override reports its own content ID even when an installed package
-shares its name. The join uses the content ID and the report can
-group with games on the same base. [Map packages](../game/maps.md#package-offers)
-
-Game starts say their `kind`: `campaign` for campaign mode, with
-`difficulty` from the active options' `+0x12a` word (0 easy to 3
-legendary; anything else leaves it out); multiplayer games are `custom`
-unless the host has called `Telemetry::set_playlist`, which makes them
-`matchmaking` with that playlist name and id. Nothing calls it yet:
-live-hle has no matchmaking (its sessions are all advertised `custom` with
-no hopper, `crates/live/live-hle/src/sessions.rs`), so the playlist source is
-the HLE's search/match state once phase 2 of
-[live-matchmaking.md](live-matchmaking.md) lands. `online` is never sent.
-
-Games also say their `skulls` (docs/game/skulls.md): ascending indices, left
-out when none are on (and by every sender before the field, which the
-server reads as none). A campaign game reads the skull array at `0x4f55dc`
-when the map activates, after our campaign start wrote the profiles'
-choice into it; a checkpoint revert continues the game and does not read it
-again. A multiplayer game cannot use the array: every reader of it tests
-for a campaign, and it still holds whatever the last campaign turned on.
-Its skulls are the set the boot applied at that game's start
-(`Telemetry::set_multiplayer_skulls`, from `boot::skulls_mp`): the host's
-choice, or on a guest the host's advertised one; only 4 (Famine) and 6
-(Blind) are ever named. Indices run to 63, so skulls of our own past the
-retail fifteen fit. The server keeps the field in `GameStarted`, returns it
-in game summaries, details and recent games, and filters by it
-(`GET /v1/games?skulls=4,6`, [live-api.md](live-api.md)).
-
-**Campaign.** The map activation `0x0018f000` also runs on every checkpoint
-revert and mission restart (`0x0018e700` re-activates with a copy of the
-active options). A re-activation of the campaign map the current game is on
-continues that game instead of ending it and starting another (which also
-spent one `POST /v1/games` per revert against the server's write rate
-limit, and a refused creation stops the sink). A different mission, a
-multiplayer map or the main menu ends it as before. The revert winds the
-engine's clock back; the game's does not: from then on every tick the game
-sends (frames, kills, scores, its end) is the engine's plus an even offset
-that puts the first one past the last tick sent. Before, the reverted run's
-ticks overlapped the first's, a replay sorted them together and the player
-flicked between the two runs.
+**Campaign.** What a campaign checkpoint does to the tick stream: [live-telemetry-frames.md](live-telemetry-frames.md#frame-species-aim-weapon-and-shots).
 
 ## Cinematics
 
-In a campaign cutscene the scripts own the world: they teleport the
-players, hide or freeze them, move AI bipeds and vehicles as puppets and
-kill whom the story needs. Before, telemetry sent all of it as play, so a
-replay or the live view showed players jumping about, frozen in place or
-gone, and a scripted death counted. Now telemetry reads, every tick, the
-byte the game itself asks whether a cinematic is playing: `[0x00510c50]+5`,
-set by HaloScript's `cinematic_start` and cleared by `cinematic_stop`
-([live-gamestate.md](live-gamestate.md), "Cinematics (cutscenes)"). It is
-in the game state, so it is right across checkpoint reverts too.
-
-While it is set:
-
-- Frames keep coming on frame ticks, on the game's clock (reverts and all,
-  as above), but each is only the tick, the BSP, a `cut` if one is due and
-  `cinematic: true`: no players, actors, vehicles, hits, machines or
-  objects. The game thread skips the world scan for them. A frame of
-  nothing costs a few bytes, and keeps the live view and recorded chunks advancing through the cutscene.
-- Kills are not sent (the kill hook reads the byte as the kill happens, and
-  the worker also drops one queued in a cutscene); hits and shots counted
-  in it are dropped, and actors' shots with them.
-- Scores and the roster are read as ever: they are the game's own record.
-- Each unit's last frame is forgotten, so the first frame after the
-  cutscene works out no speed or actions across it (a `pickup` for the
-  weapon the scripts handed over, a run at the speed of a teleport).
-  Machines are sent from their last sent state, so the doors the cutscene
-  moved are sent in that first frame.
-
-The web viewer ([live-api.md](live-api.md) frames) draws a "Cutscene" card
-over the map and the 3D view for a cinematic frame and never draws the
-entities of the frames around it into it. A replay marks each cutscene on
-the scrubber and, playing, skips from its start to the first frame after
-it; seeking into one shows the card.
-
-The packed format carries the mark as a header bit: version 6 has it on
-every frame ([Packed frames](#packed-frames)); before it, version 5 was
-written for cinematic frames alone, so a server or page from before it
-still read every other frame.
-
-Tag names are (likely) not in guest memory: nothing in the XBE refers to
-the cache header's tag-name fields, and the loader reads the tag index and
-metadata. On map activation telemetry asks boot for the active cache
-slot's file through the VFS (`map_override::active_map_source`): its host
-region, or, for a map the VFS rewrites in memory (the pogo kit, the
-screens; such a map has no contiguous host file), those bytes
-(`MapFile::memory`). When the slot cannot identify an unbound
-map, the boot locator uses the cache name. Telemetry reads the tag names
-with `crates/formats/map` and keeps only `bipd` and `weap` rows. The table is used only if the file's scenario datum equals the
-guest's (tag index header `[0x00547f00]+0x0c`), since both indexes hold the
-same salted datums. Without a match, or without a locator (tests, a raw
-XBE), `species` and `weapon` are left out.
+Moved to [Live telemetry: frame species, cinematics and appearance](live-telemetry-frames.md#cinematics).
 
 ## Velocity, seat, vitality and fire
 
-Players and actors carry the protocol's version 3 unit fields from capture
-(docs/live/replay-fidelity.md, step 4). Offsets and evidence are in
-`crates/live/live-telemetry/src/layout.rs`; all are confirmed by static reading
-of the retail XBE.
-
-- `vel`: body `+0x88`, sent as read, in world units **a second**. The
-  engine keeps the field per second, not per tick: the projectile update
-  (from `0x000f8ee2`) loads the seconds per tick (`T+0x04`), takes gravity
-  times it off the velocity's z and moves the position (`+0x64`) by the
-  velocity times it (`0x000f97df`..`0x000f9803`), and projectile creation
-  adds the tag's initial velocity (`proj +0x17c`, 400 for a bullet, world
-  units a second) straight in (`0x000f8487`). It is an object field, so
-  bipeds and vehicles hold the same unit. A rider sends the velocity of what
-  its `pos` is: the vehicle's, or the mount's for a gunner. Absent when the
-  read faults or is not finite, or faster than `MAX_FRAME_SPEED` (1000 a
-  second); a standing unit sends zeros, which cost nothing in a delta once
-  sent. A dead player sends none.
-- `seat`: unit `+0x1fc` (`i16`, -1 none), the index in the vehicle
-  definition's seats block. `unit_new` sets it to -1 (`0x000c44c1`), the
-  enter-vehicle routine (`0x000ea1f0`) indexes the seats block with it and
-  stores it (`0x000ea405`), leaving stores -1 (`0x000ea995`). Sent only
-  with `vehicle`, at most 63.
-- `body` and `shield`: `+0xec` and `+0xf0` (`f32`, 1.0 full), as
-  `object_get_health` (`0x002a1a20`) and `object_get_shield`
-  (`0x002a1a90`) read them: both 0 while the body-depleted damage flag is
-  set. Sent clamped to 0..1 and 0..4 (an overshield charges past 1).
-  Bodies (stance `dead`) carry none.
-- `fire`: each tick's fire-hook count for the held weapon also sets bit 0
-  of a 32-bit mask, after moving the mask older by the ticks since the
-  last shot (bits past 32 ticks drop off). The frame sends the mask as of
-  its tick, so bit `k` is a shot on `tick - k`, beside `shots`, the count;
-  both reset at each frame. Actors' masks are kept by weapon datum, like
-  their counts. A weapon change, death or campaign revert drops them.
-
-`actions_ago` and hits' `ago` are not filled yet.
+Moved to [Live telemetry: frame species, cinematics and appearance](live-telemetry-frames.md#velocity-seat-vitality-and-fire).
 
 ### Rate: 15 Hz, players included
 
-Frames stay on even ticks (15 Hz) for everything, players included. A
-players-only frame on odd ticks does not fit the current protocol: a
-frame's lists are complete, so an odd frame without actors, vehicles and
-machines says they are gone. The viewer would drop them for a tick, and the
-packed delta of the next even frame would carry every actor again whole
-(no previous entity to match), a keyframe's worth of bytes 15 times a
-second. Sending everything every tick doubles the world scan's game-thread
-cost (it runs on frame ticks only, `pipeline.rs`) and the bytes, while the
-server forwards at most 15 frames a second (`FRAME_INTERVAL`, 66 ms,
-`crates/live/live-server/src/games.rs`) and records the first frame of each
-wall-clock second, so the extra frames would be dropped or folded before
-anyone saw them. With `vel` and `fire` filled, the viewer can place each
-shot on its tick and interpolate between 15 Hz samples with the velocity
-(Hermite) at no extra rate.
-
-What 30 Hz players would need: a frame flag (packed version 5, JSON
-`partial: true`) meaning "these lists are unchanged since the last full
-frame", so an odd frame carries players only and the delta encoder matches
-against the last full frame's other lists; the session building one each
-odd tick (the snapshot already reads players every tick); the server's
-throttle letting players-only frames through (or the chunk recorder of
-step 5 taking every frame); and the 15-delta keyframe interval and `seq`
-counting the odd frames too. `tick_offset` staying even keeps full frames
-on even ticks either way.
-
 ### Bandwidth (estimates, until the bench runs)
-
-From the packed codes (`pack.rs`): a delta sends a changed `vel` as three
-`seg(4)` differences in 1/64 unit a second. A unit walking a curve at about
-4 units a second changes it by some 17 steps a component a frame, about
-22 bits with the field's flag (about 2.75 bytes); a still or steadily
-moving one costs nothing after the first frame. `body` and `shield` cost
-about 2 bytes a unit in a keyframe and nothing until they change; `fire`
-about half a byte on a frame its unit fired; `seat` a few bits on entering a
-vehicle.
-
-| scene (bench fixture) | before, B a frame | estimate with vel, fire, seat, vitality | per minute |
-|---|---:|---:|---:|
-| `mp16` (16 players circling) | 325 | about 375 | about 330 KiB (286 before) |
-| `mp16_1000` | 407 | about 455 | about 400 KiB (357 before) |
-| `campaign100` (all 100 actors circling) | 1330 | about 1610 | about 1.4 MiB (1.2 before) |
-
-The fixture moves every unit on a curve, so these are an upper end; in a
-real campaign most actors stand still and cost nothing extra. The bench
-fixture now sets the units' velocity in units a second (it was a per-tick
-guess) and full vitality. `cargo test --release -p live-telemetry --lib
-bench -- --ignored --nocapture` measures them; replace these estimates with
-its numbers.
 
 ## Player appearance
 
-Each player's emblem and colours are read from the signed-in profile of
-their local player slot ([live-gamestate.md](live-gamestate.md), "Local
-player slots and profile appearance"): palette indices for the four profile
-colours and the two emblem layers. Those offsets are rated likely, so the
-reader range-checks every value (colours 0..17, foreground 0..63,
-background 0..31) and omits what fails; an unvalidated offset cannot put
-garbage in events. Only the four local slots hold profile copies, so remote
-players' appearance is absent until the in-record location is validated.
-The game's rank is an Xbox Live attribute, not guest memory, and is never
-sent.
-
-Appearance rides the roster events only — never frames or scores — and is
-never re-sent unchanged:
-
-- `GameStarted` `players[i]` and `PlayerJoined` `player` gain an
-  `appearance` object, omitted when nothing is known:
-
-```json
-{ "index": 0, "name": "Sneaky Pete", "team": 1, "local": true,
-  "appearance": { "primary": 5, "secondary": 9, "tertiary": 2,
-                  "quaternary": 11, "emblem_foreground": 30,
-                  "emblem_background": 7 } }
-```
-
-- `primary`..`quaternary` are indices into the art manifest's 18-colour
-  `palette`; `emblem_foreground`/`emblem_background` index
-  `emblem/fg/<0..63>` and `emblem/bg/<0..31>`. Any field may be missing on
-  its own.
-- A mid-game appearance change to a player already in the roster cannot be
-  announced with the current event types (the server rejects a
-  `PlayerJoined` for a known player); a `PlayerUpdated`-style type would be
-  needed if that ever matters.
-
-The server's live-proto validation ignores the extra `appearance` keys
-until its `Player` type gains the field.
+Moved to [Live telemetry: frame species, cinematics and appearance](live-telemetry-frames.md#player-appearance).
 
 ## Threads
 
@@ -428,7 +97,9 @@ Ticks do not wake the worker: on the game thread a wake is a system call
 a game the worker polls the queue every 33 ms (one tick), so a tick waits
 at most that long before the worker takes it, and a batch is usually two
 ticks. After a second with no work (a menu, a paused game) it parks, and
-the next tick wakes it once. Starts, kills, ends and settings always wake
+the next tick wakes it once.
+
+Starts, kills, ends and settings always wake
 it; they are a few a minute.
 
 The worker hands each snapshot back cleared and the game thread fills it
@@ -464,7 +135,9 @@ four waiting (the worker behind, say a slow sink), a new tick is folded
 into the last queued one rather than queued. The later of the two is kept,
 except that a frame tick (even) outlasts a later other tick, so a worker
 behind still sends frames; the one kept takes the other's shots (added)
-and hits (in order, at most 256). The roster and scores of a tick that goes
+and hits (in order, at most 256).
+
+The roster and scores of a tick that goes
 are read again the next tick, so only its moment is lost.
 
 ## Failure behaviour
@@ -477,7 +150,9 @@ continues without telemetry.
 The worker's queue is bounded (256 entries). Ticks past four waiting are
 folded (see "Threads") and counted. A start, kill or end is never dropped
 to make room: if the queue is full, the observer reports an error and
-disables itself rather than blocking the guest thread. The worker finishes
+disables itself rather than blocking the guest thread.
+
+The worker finishes
 everything queued during shutdown. TCP connect, TLS/WebSocket handshake, HTTP,
 and socket operations are time-bounded, and the worker finishes its event drain
 before shutdown completes.
@@ -517,7 +192,9 @@ medal index up in the official table (`medals::official_at`), drops an
 index outside it, and queues the session's `medal`, which sends the event
 at the match clock for a player of the match. The id is the game's own
 (`double-kill`, `carjack`, `flag-save`); Live counts it per player
-([live-api.md](live-api.md#medals)). An image without the hook drops the
+([live-api.md](live-api-theater-stats.md#medals)).
+
+An image without the hook drops the
 observer with a plan note.
 
 `Superbounce` (`tick`, `player`, `chain`) and `Bounced` (`tick`, `player`)
@@ -549,13 +226,14 @@ if the signed message would exceed 16 KiB and sends `GameEnded` by itself.
 The server rejects empty event batches and messages over 16 KiB.
 
 With `ingest_frame_batch` advertised in discovery, the sink uses
-`auth_batched` and combines [packed frame records](#packed-frames) in
+`auth_batched` and combines [packed frame records](live-telemetry-packed.md#packed-frames) in
 order. It flushes after 500 ms, at 16 records or the 16 KiB message
 limit, before signed events or a JSON fallback frame, and at shutdown.
 The worker wakes for the flush deadline even when the game is idle.
+
 Older servers receive one packed record per message. Each connection
 has its own stream with a keyframe every 150 frames and deltas between.
-[Ingest wire format](live-api.md#streams-websocket)
+[Ingest wire format](live-api-social.md#streams-websocket)
 
 ### Reconnect
 
@@ -576,7 +254,7 @@ were never created.
   new API), then the socket opens and sends `auth` with a fresh token. The
   server keeps nothing per socket that a game needs: frames and batches
   carry the server's game id, and the game admits its host on any socket. A
-  new connection is a new [packed](#packed-frames) stream, so its first frame
+  new connection is a new [packed](live-telemetry-packed.md#packed-frames) stream, so its first frame
   is a keyframe, which is what the server's new decoder needs. A frame
   refused with `frame: ...` (the server lost its decoder, as after a Durable
   Object wakes from hibernation) also makes the next frame a keyframe.
@@ -636,7 +314,9 @@ Clanker bots ([bots.md](../game/bots.md) §6) are players like any other,
 keyed by their game slot (`index`): roster, scores, kills, frames and the
 final standings carry them under their own names ("Clanker 1"). Their
 roster entries add `bot: true`. On multiplayer start, the boot's bot
-locator identifies phantoms by machine id. A phantom from the active
+locator identifies phantoms by machine id.
+
+A phantom from the active
 server roster carries its rostered `xuid`, and the game carries the
 roster's `session_id`. A host-made phantom has no Live account, stats
 page, career or rank.
@@ -646,9 +326,11 @@ brain diagnostics every five wall seconds and sends one `sim_combat`
 message per bot on the authenticated ingest socket. Discovery advertises
 this optional message through `sim_combat`. Each sample carries the
 bot's decision tick, current goal, weapon and target range, last action,
-combat counters and weapon accuracy. The server keeps the latest sample
+combat counters and weapon accuracy.
+
+The server keeps the latest sample
 per player for the private run detail. Deferred runs deliver these
-figures in the final report. [Clanker Training](live-api.md#clanker-training)
+figures in the final report. [Clanker Training](live-api-theater-stats.md#clanker-training)
 
 ## Scenario objects
 
@@ -676,6 +358,7 @@ scenery. A placement record holds its position at `+0x8` and yaw, pitch,
 roll (radians) at `+0x14`; forward and up are `Rz(yaw)·Ry(-pitch)·Rx(roll)`
 applied to +x and +z, as map.glb's placements are built. A netgame
 equipment entry holds its position at `+0x40` and orientation at `+0x4c`.
+
 The scenario is `*(0x004e0350)`; the blocks are read once a game, when the
 map has loaded. A block that does not read is left empty and its objects
 are not tracked.
@@ -707,295 +390,23 @@ stream sends only the ones that changed.
 
 ## Packed frames
 
+Moved to [Live telemetry: packed frames](live-telemetry-packed.md#packed-frames).
+
 ### Version 8 live wire
-
-The game reads discovery when it opens or reconnects its ingest socket.
-It selects v8 if the server advertises `ingest_frame_versions: [8]` and
-falls back to v7 otherwise. Native and Worker servers both advertise v8.
-The viewer requests `frames=packed&frame_version=8`. Subscribers that
-omit the version keep receiving v7. Readers dispatch on each record's
-version nibble, including when a replay contains records from different
-versions. The current H2CK writer and standalone frame pages still use v7.
-[Discovery and stream API](live-api.md#streams-websocket)
-
-V8 keeps the length-prefixed container and v7 field grids. Each key
-embeds a complete v7 key including the known machine travel. Between
-keys, a forward byte-range coder writes one packet per sample, using
-causal field predictions, grouped unchanged fields and adaptive symbol
-frequencies. The key resets the field history, dictionary and symbol
-tables. A subscriber starts at a key and receives the following deltas
-in order. An existing stream has a key at least every 150 samples.
-
-The seeded 16-player match used about 81 bytes per player per second on
-v8 and about 145 on v7, including keys and record lengths.
-[Measurement workload](notes/2026-11-19-telemetry-precision.md#match-and-measurement)
-
-After the usual ULEB record length, the first byte is
-`8 | (key << 4) | (min(sid, 7) << 5)`. Slot 7 adds ULEB `sid - 7`.
-A ULEB sequence follows. A key carries one bare v7 key of stream 0,
-sequence 0. A delta carries ULEB tick increment and one terminated range
-payload. Each stream maintains independent prediction and probability
-state. A successful key supersedes earlier versions for that stream ID.
-
-Frames travel bit-packed: game to server (`/v1/ingest`, binary messages),
-server to readers (`/v1/stream?frames=packed`), recorded frames at rest
-(frame chunks, [live-api.md](live-api.md#frame-chunks); before them
-`GameFrame.data.packed`) and the replay fetch (`/v1/games/{id}/chunks`,
-and `/frames` for older games). JSON readers can request `?format=json`
-on an individual chunk or the legacy frame page. Live JSON readers use
-`/v1/stream?frames=json`. See the [precision and transfer measurements](notes/2026-11-19-telemetry-precision.md).
-`crates/live/live-proto/src/pack.rs` writes and reads it;
-`web/src/api/pack.ts` reads it; the golden vectors in
-`web/test/fixtures/pack` (written by the Rust tests from invented frames,
-read by the TypeScript tests) keep the two in step.
 
 ### Bits and numbers (v1–v7)
 
-Bits are written least significant first into bytes, first byte first.
-
-| code | bits |
-|---|---|
-| `u(n)` | `n` bits, unsigned |
-| `eg(k)` | Exp-Golomb of order `k`: for `v`, let `x = v + 2^k` have `z + k + 1` bits; `z` zeros, a one, then the low `z + k` bits of `x` (least significant first). `v` below `2^44` |
-| `seg(k)` | signed: zig-zag (`0, -1, 1, -2, ...` to `0, 1, 2, 3, ...`) then `eg(k)` |
-| `str` | literal: `eg(3)` byte length (at most 255), then each byte `u(8)`; UTF-8 |
-
-A container holds several records: each a LEB128 length then that many
-bytes. Binary socket messages and the `application/x-h2-frames` replay
-body are containers; `GameFrame.data.packed` is one record, base64url
-without padding.
-
 ### Values
-
-| value | wire | quantisation |
-|---|---|---|
-| position | three `seg(16)` | 1/1024 world unit (about 3 mm), coordinates under 10^9 |
-| position in a delta | each axis gets one nonzero bit followed by `seg(1)` for a nonzero residual against the base | same grid |
-| yaw | `u(14)` absolute | a turn in 16,384 steps, read back in (-π, π] |
-| direction (aim, forward, up) | two absolute `u(14)` components | octahedral x and y, folded at z < 0, mapped to 0..16382. The midpoint 8191 gives exact cardinal axes |
-| speed | `eg(6)` | 1/16 unit a second |
-| hit amount | `eg(6)` | 1/256 of a vitality |
-| shots | `eg(1)` | |
-| stance | `u(3)` | `stand`, `crouch`, `airborne`, `vehicle`, `dead` |
-| actions | `eg(0)` count (at most 8), then `u(3)` each | `grenade`, `melee`, `reload`, `jump`, `switch`, `pickup` |
-| grenade | `u(1)` | `frag`, `plasma` |
-| legacy device position | `u(10)` | 0..1 in 1023 steps |
-| velocity | three `seg(8)` absolute. With a base, each axis gets one nonzero bit and `seg(1)` for a nonzero difference | 1/128 unit a second |
-| fire | `eg(1)` | a tick mask, bit k a shot k ticks before the frame's tick (0 is not sent) |
-| body | `u(6)` | 0..1 in 63 steps |
-| shield | `eg(3)` | 1/32 of a shield, at most 4 |
-| seat | `eg(0)` | at most 63 |
-| ticks ago | `eg(0)` count (at most 8), then `eg(1)` each | one per action, at most 900 |
-| hit ago | `eg(1)` | at most 900 |
-| anim name | `str` | `[a-z0-9_:-]{1,64}` |
-| anim frame | `eg(4)` | 1/16 of a frame, at most 32767 |
-| string | `eg(3)`: index into the stream's string table | |
-| id | `u(2)` form: 0 datum, `u(32)` (exactly 8 lowercase hex digits in JSON); 1 player `p<n>`, `eg(2)`; 2 anything else, a string index | |
-| object kind | `u(4)` | the order of the kind table above, with `bipd` 0, `vehi` 1, `weap` 2, `eqip` 3, `scen` 4, `mach` 5, `ctrl` 6, `lifi` 7, `ssce` 8, `bloc` 9, `crea` 10, `netgame` 11 |
-| object index | `eg(6)` | at most `0x7fff` |
-
-An optional field (marked `opt` below) is a presence bit, then the value
-when present.
 
 ### A frame
 
-| field | wire |
-|---|---|
-| version | `u(4)`, 7 (6 has the same lists with the earlier quantisers and delta grammar. 5 still reads: a cinematic frame of version 4's, with the bit; 4: no projectiles, items or vehicle velocity, no prediction; 3: no anim; 2: none of version 3's fields either; 1: vehicles without parent and aim) |
-| keyframe | `u(1)` |
-| stream id | `eg(0)` |
-| sequence | `eg(8)`, one more each frame of the stream |
-| **keyframe:** game id | `str` literal |
-| tick | `eg(20)` |
-| bsp | `u(1)` present, then `eg(1)` |
-| **delta:** tick | `eg(2)`, the difference from the previous frame (never negative) |
-| bsp | `u(1)` changed; if so `u(1)` present, then `eg(1)` |
-| **both (version 3):** cut | `u(1)` present, then `eg(16)`: the engine tick a campaign revert or restart came back to; on that one frame only |
-| **both (versions 5–7):** cinematic | `u(1)`: a cinematic is playing ([Cinematics](#cinematics)); every version 6 or 7 frame has it, version 5 was written only for cinematic frames (always 1) |
-| new strings | `eg(1)` count (at most 1024), then each a `str` literal, appended to the table (a keyframe starts an empty one) |
-| players | list |
-| vehicles | list |
-| actors | list |
-| hits | always whole: `eg(2)` count, then each entity |
-| machines | list |
-| objects | list |
-| projectiles (version 6) | list |
-| items (version 6) | list |
-| machine travel (v7) | optional section, then zero padding to the byte boundary |
-
-A keyframe list starts with an `eg(2)` count followed by each entity's
-fields in schema order. A delta also starts with the count. V7 follows with
-these opcodes, shown in the order the decoder reads their bits.
-
-| bits | entity |
-|---|---|
-| `1` | Edit the previous entity at the cursor. |
-| `00` | Run of predicted or unchanged entities beginning at the cursor. `eg(2)` gives the run length minus one. |
-| `010` | New entity with all its fields. |
-| `011` | Edit a previous entity at a signed `seg(0)` displacement from the cursor. |
-
-After an edit or run the cursor moves past the last referenced entity.
-Before v7, a run starts with `0`, a new entity with `10`, and every edit
-with `11` and an explicit displacement. Each edit sends its mask and the
-values of the selected fields in schema order.
-
-Entity keys match an edit to its base even after a reorder. V7 remembers the
-previous matched edit mask in each list, initially zero. Runs and new entities
-leave that mask intact. For players and actors each five-bit group carries four
-bits of the XOR of the current and previous masks, least significant group
-first. The fifth bit requests another group. The last of five possible groups
-must end the mask. An unchanged mask costs a single zero group. The field
-orders, using the zero-based indices from the entity table, are:
-
-| list | four fields per group, first group on the left |
-|---|---|
-| player | 14,16,3,8 / 13,2,6,11 / 20,9,10,7 / 1,4,5,12 / 15,17,18,19 |
-| actor | 14,16,3,6 / 13,2,4,11 / 20,9,10,5 / 1,7,8,12 / 15,17,18,19 |
-
-For the other lists a zero bit reuses the preceding edit mask and a one bit
-starts an explicit mask, one bit per non-key field in schema order.
-
-**Version 7 prediction.** For a gap of 1–30 ticks, advance the positions of
-players, actors, vehicles and projectiles with known velocity. With velocity
-`a` in 1/128-unit/s quanta, a constant velocity gives a displacement of
-`round_half_away(a * 8 * dt / 30)` position quanta per axis.
-
-For players and datum-ID actors, two equal successive spans allow an additional
-prediction when the same numeric key occupied the previous slot both times.
-Keep that slot's actual yaw, aim and velocity from one sample earlier. Predict
-each field as twice the previous value minus the older one. Wrap yaw modulo
-16384 and clamp each oct coordinate to 0..16382. Aim and velocity each require
-two present values. When velocity can be predicted, use the mean of the last
-actual velocity and predicted velocity for displacement, or
-`round_half_away((a + b) * 4 * dt / 30)`. A keyframe clears all history.
-A gap greater than 30 ticks disables prediction for that span.
-
-Runs inherit the predicted state. Edits correct every difference from the
-quantised endpoint. A changed yaw or oct component with a base uses
-`0, seg(0)` for differences in −64..63 or `1, u(14)` for an absolute
-component. Without a base it uses `u(14)`. Yaw differences wrap at one turn.
-A matched unit's present animation phase with a present base and a span of
-1–30 ticks uses one bit after the presence bit. A one advances the base by
-16 quanta per tick. A zero precedes an absolute `eg(4)`.
-
-V7 hit positions can reuse the exact quantised position of a player in the
-same frame. When there are players, a one bit followed by a four-bit ordinal
-selects one from the current wire-order list. A zero bit precedes the three
-absolute coordinates for other hits. When the player list is empty the three
-absolute coordinates follow directly.
-
-**Versions 1–6.** Position uses 1/512 unit, velocity 1/64 unit/s, yaw 12
-bits and each oct component 12 bits (maximum 4094). All edits send an
-explicit mask. Plain position differences use three `seg(7)`, velocity
-differences three `seg(4)`, and directions and yaw carry absolute codes.
-
-**Prediction (version 6).** In a delta, the changed position of an entity
-whose previous version had a velocity (players, actors, vehicles,
-projectiles) is coded as its error from a prediction, three `seg(3)`, when
-the frame's tick difference `dt` is at most 30 and each of the previous
-velocity's components is at most 2^23 (in 1/64 unit a second); otherwise
-as the plain difference, three `seg(7)`. Both sides know which before the
-bits: it depends only on the previous entity and `dt`. The prediction, in
-integer quanta, per axis: `p + floor((4 (a + b) dt + 15) / 30)`, where `p`
-is the previous position, `a` the previous velocity and `b` the entity's
-velocity in this frame (written later in the entity, so a decoder reads the
-error first and adds the prediction once the entity is read; `a` again when
-the new one is absent or past 2^23). That is the mean velocity over `dt`
-ticks, rounded half up: exact for constant acceleration (a grenade's arc),
-and a unit walking steadily codes 0 or ±1 per axis (4 bits) where the
-plain difference of 4 units a second at 15 Hz is 10 bits, and a still axis
-4 bits where it was 8. `web/src/api/pack.ts` does the same arithmetic in
-doubles (exact: every term stays under 2^31).
-
-| list | fields (key in bold) |
-|---|---|
-| player | **index `eg(2)`**, alive `u(1)`, pos, yaw, opt vehicle id, opt species string, opt aim, opt weapon string, opt shots, opt stance, opt speed, opt actions, opt grenade; version 3 adds opt velocity, opt fire, opt body, opt shield, opt seat, opt ticks ago; version 4 opt anim name, opt anim frame (both or neither) |
-| vehicle | **id**, kind string, pos, forward, up, occupied `u(1)`, opt parent id, opt aim (version 2; version 1 ends at occupied), opt velocity (version 6) |
-| actor | **id**, species string, pos, yaw, opt aim, opt weapon string, opt shots, opt team string, opt vehicle id, opt stance, opt speed, opt actions, opt grenade; version 3 adds the same six as a player |
-| hit | opt from id, opt to id, opt weapon string, pos, opt amount, opt kind string; version 3 adds opt hit ago |
-| machine | opt node string, **id**, kind string, pos, forward, up, opt legacy device position |
-| object | **kind**, **index**, gone `u(1)`, opt pos, opt forward, opt up |
-| projectile (version 6) | **id**, kind string, pos, opt velocity, opt parent id |
-| item (version 6) | **id**, kind string, pos, forward, up, equipment `u(1)` |
-
 ### Machine travel in v7
-
-Machine travel is an optional section after the items list at the current
-bit cursor. Its first field is `eg(2)` count minus one (1–255 entries).
-Each entry is `eg(3)` placement gap, then its absolute `u(8)` position.
-Placements are strictly ascending from 0 to 32767. The gap is
-`index - previous_index - 1` with previous index initially -1.
-
-The section is absent when empty and takes at least 15 bits when present.
-A decoder uses the current record's length. With at most seven bits left,
-only zero padding is allowed. With more it reads the section, then
-requires at most seven zero padding bits. Old v7 records end with the
-same padding and still decode. The legacy 10-bit field in the
-`machines` list remains part of the body.
-
-A v7 keyframe replaces the known travel baseline. An absent section on a
-keyframe means unknown travel for all devices. Travel of zero is explicit.
-On a delta, an omitted index holds its latest value. A campaign cut
-starts a new baseline. The server carries changes from throttled frames
-and seeds the next keyframe after a reconnect and at each recorded chunk
-start, including keyframes used to seek. Playback samples adjacent
-delivered frames and holds quiet devices. It draws no telemetry during
-cinematics, though a keyframe can still carry the known baseline for
-playback afterward.
-
-An idle frame adds zero bytes. A single change at placement 0–7 uses
-15 bits, or 1–2 additional frame bytes depending on padding. The furthest
-placement in a 206-machine map takes 23 bits as a single change, or 2–3
-additional bytes. In a batch, a gap of 0–7 costs 12 bits per entry plus the
-shared count.
 
 ### Streams, keyframes and gaps
 
-An encoder starts with a keyframe and sends one again every N frames (the
-game: 150, v7 subscriber stream: 15, v8 subscriber stream: 150). It also
-sends one when the game ID changes, ticks go backwards, a checkpoint cuts
-the recording, or the string table would pass 4096 entries.
-A decoder keeps the last frame and string table per stream id; a delta
-whose sequence is not the next one it expects (a dropped frame, or joining
-mid-stream) is a gap: it drops deltas until the next keyframe. The reader
-stream sends a joining or lagging reader every frame since the last
-keyframe first, so it starts decoding at once. A frame that cannot be
-packed (non-finite numbers, unknown names, too many strings) leaves the
-encoder as it was.
-
 ### Compatibility
 
-The first four bits select the decoder. Version 7 writes all seven
-entity lists introduced through v6. A delta requires the preceding sequence
-number and a base of the same version. Live subscribers recover at a
-keyframe, and each recorded chunk begins with one. Rust and web fixtures
-cover versions 1 through 8, including old v7 records without machine travel
-and v8 keys and deltas. Recorded chunks keep their original bytes.
-An old JSON `GameFrame` and a later base64-packed one are both readable
-through the legacy frame page.
-
-Deploy the web reader first, then the server and Worker, then reinstall the
-game sender. Existing senders work with the updated readers. Clients that
-consume JSON can keep using the JSON representations.
-
 ### Finished recordings
-
-The viewer requests the archive-capable chunk index when a match ends.
-Until publication it uses the original recording. Publication switches the
-reader to independently decodable H2AR segments and keeps the current
-playhead, speed and pause state. Each segment index entry may carry a
-`machine_entry` seed with the last known device travel from its run. A cut,
-rewind or complete travel baseline starts fresh. The seed restores quiet
-doors and lifts on a seek without inserting synthetic frame rows. The
-index maps source ticks across checkpoint rewinds, so a time link can fetch its target segment directly. The viewer
-loads a neighbour near a segment edge to interpolate through it and releases
-distant segments after a seek.
-
-Local servers run the offline codec on the blocking pool. The Worker runs
-one bounded segment on its single-threaded Durable Object per alarm or admin
-step. The raw originals and their signed index remain available after
-publication and rollback. [Archive format, limits and measurements](notes/2026-11-19-telemetry-precision.md#finished-replay-archives)
-and [migration procedure](replay-migration.md).
 
 ## Telemetry cost
 
@@ -1012,7 +423,7 @@ frames are not compressed at rest.
 Unit tests use synthetic guest memory and do not execute the game. Before
 relying on live output, check in this order:
 
-1. Successful start/end and tick continuation behavior in a local Slayer game,
+1. Successful start/end and tick continuation behaviour in a local Slayer game,
    including original return values and no lost guest calls.
 2. Player name decoding, roster changes, and statborg values against the
    in-game scoreboard; verify kill attribution and score coalescing.

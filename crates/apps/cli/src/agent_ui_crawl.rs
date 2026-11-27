@@ -184,7 +184,7 @@ impl Audit {
                 self.list().and_then(|l| l.vtable) == Some(0x458b48)
                     && matches!(
                         row.text.as_deref(),
-                        Some("Custom Game Browser" | "THEATER" | "Mods")
+                        Some("Custom Game Browser" | "THEATER" | "Mod Downloader")
                     )
             }
             _ => false,

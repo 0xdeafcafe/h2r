@@ -16,6 +16,10 @@
 //!   with the category), then a second Select Map with the category's
 //!   maps. The dialog's channel replaces its active screen, so from a
 //!   map list B or Back rebuilds the categories with the opened row focused.
+//!   A map row reads its name only; the pane lists the modes it supports
+//!   under its description ([`pane_text`]), and A on a map with saved map
+//!   variants opens a third Select Map, the map itself and then its
+//!   variants ([`Mode::Variants`]).
 //! - Offline, [`page`] models the two steps as one [`StackPage`] over
 //!   [`CategoryRows`] and [`MapRows`], stepped by the table tests.
 //!
@@ -78,19 +82,15 @@ pub enum Category {
     Mods,
     /// Converted Halo 1 maps (`h2 import halo1`, `h1_<map>`).
     Halo1,
-    /// The maps that carry the Firefight kit (`Firefight – <map>`), a
-    /// Firefight lobby's only category.
-    Firefight,
 }
 
 impl Category {
     /// The categories' order on the screen.
-    pub const ALL: [Category; 5] = [
+    pub const ALL: [Category; 4] = [
         Category::Halo2,
         Category::MapPack,
         Category::Mods,
         Category::Halo1,
-        Category::Firefight,
     ];
 
     pub fn label(self) -> &'static str {
@@ -99,7 +99,6 @@ impl Category {
             Category::MapPack => "Map Pack",
             Category::Mods => "Mods",
             Category::Halo1 => "Halo: CE",
-            Category::Firefight => "Firefight",
         }
     }
 
@@ -163,15 +162,10 @@ pub struct Map {
 }
 
 impl Map {
-    /// Its category: Firefight for a kit package
-    /// ([`crate::lobby_start::is_kit_map`]), else by its path
-    /// ([`category_of`]).
+    /// Its category, by its path ([`category_of`]). A kit package
+    /// (`Firefight – <map>`) is in its path's category like any other map.
     pub fn category(&self) -> Category {
-        if crate::lobby_start::is_kit_map(self) {
-            Category::Firefight
-        } else {
-            category_of(&self.path)
-        }
+        category_of(&self.path)
     }
 
     fn slot_path(&self) -> Option<String> {
@@ -215,6 +209,8 @@ pub struct Catalogue {
     package_slots: BTreeMap<content::MapId, u32>,
     packs: Vec<InstalledPack>,
     active_pack: Option<String>,
+    /// What each map supports, for a picker's lobby ([`crate::map_modes`]).
+    modes: crate::map_modes::View,
 }
 
 impl Catalogue {
@@ -257,14 +253,12 @@ impl Catalogue {
         if mode == crate::lobby_start::Mode::Forge {
             return self.clone();
         }
-        if let Some(script) = variant.map(|v| v.ext().script)
-            && script.mode == variants::ext::Mode::Firefight
-        {
-            return Arc::new(Catalogue::new(self.all()
-                .filter(|map| crate::lobby_start::supports_wave(map, script.prefix)).cloned()));
-        }
         #[cfg(feature = "rules")]
-        if let Some(accepts) = variant.and_then(crate::rules::gate::map_filter) {
+        // Siege keeps every map: the ones without its objectives are marked.
+        if let Some(accepts) = variant
+            .filter(|v| !crate::rules::gate::is_siege_record(v))
+            .and_then(crate::rules::gate::map_filter)
+        {
             let mut view = (**self).clone();
             for (_, maps) in &mut view.groups {
                 maps.retain(|map| accepts(map.id));
@@ -279,47 +273,15 @@ impl Catalogue {
         self.clone()
     }
 
-    /// The original maps (Halo 2 category) that `has_ground` says have a
-    /// map variant with AI ground, which a Firefight lobby plays as it
-    /// plays a kit package (docs/game/forge-firefight.md, "Playing it").
-    pub(crate) fn ground_maps(&self, has_ground: impl Fn(&Map) -> bool) -> Vec<Map> {
-        let mut maps: Vec<Map> = self
-            .maps(Category::Halo2)
-            .iter()
-            .filter(|m| has_ground(m))
-            .cloned()
-            .collect();
-        maps.sort_by_key(|m| (m.name.to_lowercase(), m.id));
-        maps
+    /// The catalogue with `modes`: what a lobby's picker lists first, describes
+    /// and refuses.
+    pub(crate) fn with_modes(&self, modes: crate::map_modes::View) -> Catalogue {
+        Catalogue { modes, ..self.clone() }
     }
 
-    /// The catalogue with `maps` listed after the Firefight category's own
-    /// maps, the kit packages. The maps keep their own category in
-    /// [`Map::category`] and stay in theirs too.
-    pub(crate) fn with_firefight_maps(&self, maps: Vec<Map>) -> Catalogue {
-        let mut view = self.clone();
-        if maps.is_empty() {
-            return view;
-        }
-        match view.groups.iter_mut().find(|(c, _)| *c == Category::Firefight) {
-            Some((_, group)) => group.extend(maps),
-            None => {
-                let at = view
-                    .groups
-                    .iter()
-                    .position(|(c, _)| c.index() > Category::Firefight.index())
-                    .unwrap_or(view.groups.len());
-                view.groups.insert(at, (Category::Firefight, maps));
-            }
-        }
-        view
-    }
-
-    /// [`Self::with_firefight_maps`] over [`Self::ground_maps`]: Change Map's
-    /// Firefight list, the kit packages then the maps with ground
-    /// variants.
-    pub fn with_ground_maps(&self, has_ground: impl Fn(&Map) -> bool) -> Catalogue {
-        self.with_firefight_maps(self.ground_maps(has_ground))
+    /// What the picker knows of the maps' modes (empty outside a picker).
+    pub fn modes(&self) -> &crate::map_modes::View {
+        &self.modes
     }
 
     /// The pause dialog uses one value list. Walk the same selectable rows
@@ -543,24 +505,24 @@ impl Selection {
     /// screens and Back use this same snapshot until the next visit.
     fn begin_picker(&self, lobby: crate::lobby_start::Mode, record: Option<&variants::GameVariant>) -> OpenList {
         let mode = variant_mode(lobby, record);
-        let category = mode_category(mode);
         let base = self.catalogue();
         let mut catalogue = base.for_variant(mode, record);
-        if mode == crate::lobby_start::Mode::Firefight
-            && let Some(sources) = SOURCES.get()
-        {
+        let played = crate::map_modes::played(mode, record);
+        if let Some(sources) = SOURCES.get() {
             let wave = record
                 .map(|v| v.ext().script)
                 .filter(|s| s.mode == variants::ext::Mode::Firefight)
                 .map(|s| s.prefix);
-            let ground = base.ground_maps(|m| {
-                crate::lobby_start::supports_ground_wave(m, wave)
-                    && crate::lobby_mode::has_ground_variant(&sources.data_root, m)
-            });
-            catalogue = Arc::new(catalogue.with_firefight_maps(ground));
+            let view = crate::map_modes::in_game(&catalogue, played, wave, &sources.data_root);
+            catalogue = Arc::new(catalogue.with_modes(view));
+        } else {
+            // Nothing to analyse the maps with: the lobby's game type still
+            // says what it plays.
+            let view = crate::map_modes::View::playing(played);
+            catalogue = Arc::new(catalogue.with_modes(view));
         }
         *lock(&self.picker) = Some(catalogue);
-        OpenList { mode: category.map_or(Mode::Categories, Mode::Maps), focus: None, from_setup: category.is_some() }
+        OpenList { mode: Mode::Categories, focus: None, focus_map: None, from_setup: false }
     }
 
     fn picker_catalogue(&self) -> Arc<Catalogue> {
@@ -570,6 +532,8 @@ impl Selection {
     pub fn set(&self, mut catalogue: Catalogue, content: bool) {
         let index = lock(&self.pack_index);
         let mut current = lock(&self.catalogue);
+        #[cfg(feature = "rules")]
+        crate::rules::gate::forget_siege_maps();
         catalogue.packs = index.installed(&catalogue);
         catalogue.active_pack.clone_from(&current.active_pack);
         *current = Arc::new(catalogue);
@@ -761,6 +725,11 @@ pub enum Mode {
     Maps(Category),
     /// An installed pack's maps. Its first member represents its folder.
     Pack(u32),
+    /// The page of the map row `map` (a list id), opened from the maps of
+    /// `from`: the map itself, then each of its saved map variants
+    /// ([`crate::map_modes::View::page`]). Every row carries the map's id,
+    /// so each shows its picture; a row is told from its place in the list.
+    Variants { map: u32, from: Category },
 }
 
 /// The element ids and lock bytes a Select Map in `mode` is built from
@@ -774,22 +743,60 @@ pub fn list_for(cat: &Catalogue, mode: Mode, flags: &dyn Fn(u32) -> u8) -> Vec<(
             .filter_map(|&c| cat.category_id(c).map(|id| (id, 0)))
             .collect(),
         Mode::Maps(Category::Mods) => {
-            let mut rows: Vec<_> = cat.original_row().into_iter().map(|id| (id, 0)).collect();
-            rows.extend(cat.maps(Category::Mods).iter().filter_map(|m| {
+            let first: Vec<_> = cat.original_row().into_iter().map(|id| (id, 0)).collect();
+            let rows: Vec<_> = cat.maps(Category::Mods).iter().filter(|m| !cat.modes.hides(m.id)).filter_map(|m| {
                 match cat.packs.iter().find(|p| p.members.iter().any(|(id, _)| *id == m.id)) {
                     Some(pack) => (m.id == pack.representative()).then_some((m.id, 0)),
                     None => Some((m.id, flags(m.id))),
                 }
-            }));
-            rows
+            }).collect();
+            first.into_iter().chain(cat.modes.first_supported(rows, |r| r.0)).collect()
         }
-        Mode::Maps(c) => cat.maps(c).iter().map(|m| {
+        Mode::Maps(c) => cat.modes.first_supported(cat.maps(c).iter().filter(|m| !cat.modes.hides(m.id)).map(|m| {
             let member = c.game_order().then(|| cat.active_pack()?.slot_for(m)).flatten();
-            (member.unwrap_or(m.id), flags(m.id))
-        }).collect(),
+            (member.unwrap_or_else(|| cat.modes.row_id(m.id)), flags(m.id))
+        }).collect(), |r| r.0),
         Mode::Pack(id) => cat.pack_row(id).into_iter().flat_map(|p| p.members.iter())
             .map(|(id, _)| (*id, flags(*id))).collect(),
+        Mode::Variants { map, .. } => page_of(cat, map).iter().map(|_| (map, 0)).collect(),
     }
+}
+
+/// The page of the map row `id` ([`crate::map_modes::View::page`]): empty
+/// for a map without variants.
+pub fn page_of(cat: &Catalogue, id: u32) -> Vec<crate::map_modes::PageRow> {
+    cat.all()
+        .find(|m| cat.modes.row_id(m.id) == id)
+        .map_or_else(Vec::new, |named| cat.modes.page(id, &named.name))
+}
+
+/// Whether A on the map row `id` opens its page instead of picking it: the
+/// lobby can play on the row and the map has variants.
+pub fn opens_page(cat: &Catalogue, id: u32) -> bool {
+    cat.modes.refusal(id).is_none() && !cat.modes.variants(id).is_empty()
+}
+
+/// What the pane says under the description of the focused row (`id`, and
+/// on a map's page its place `row`): the modes it supports
+/// ([`crate::map_modes::View::pane`], [`crate::map_modes::page_pane`]).
+/// `None` for a category, a pack folder and a row with nothing to say.
+pub fn pane_text(cat: &Catalogue, mode: Mode, id: u32, row: usize) -> Option<String> {
+    match mode {
+        Mode::Categories => None,
+        Mode::Maps(Category::Mods) if cat.original_row() == Some(id) || cat.pack_row(id).is_some() => None,
+        Mode::Maps(_) | Mode::Pack(_) => cat.modes.pane(id),
+        Mode::Variants { map, .. } => {
+            let page = page_of(cat, map);
+            crate::map_modes::page_pane(page.get(row)?.support, cat.modes.played)
+        }
+    }
+}
+
+/// The name of row `row` on the page of the map row `map`, with its label
+/// slot: the map's own name first, then each variant's.
+pub fn page_label(cat: &Catalogue, map: u32, row: usize) -> Option<(u32, String)> {
+    let name = page_of(cat, map).get(row)?.name.clone();
+    Some((PAGE_LABELS + row as u32, name))
 }
 
 /// The rows of `items` (as [`list_for`] makes them) the retail dialog
@@ -870,6 +877,8 @@ struct OpenList {
     mode: Mode,
     from_setup: bool,
     focus: Option<Category>,
+    /// The map row a maps list rebuilt by Back from its page focuses.
+    focus_map: Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -887,6 +896,8 @@ pub(crate) struct Flow {
     screens: Mutex<Vec<OpenedList>>,
     /// The list handler whose rows are being drawn.
     drawing: std::sync::atomic::AtomicU32,
+    /// The place in its list of the row being drawn.
+    drawing_row: std::sync::atomic::AtomicU32,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -899,11 +910,23 @@ impl Flow {
             mode: Mode::Categories,
             from_setup: false,
             focus,
+            focus_map: None,
         });
     }
 
     fn open(&self, mode: Mode) {
-        *lock(&self.next) = Some(OpenList { mode, focus: None, from_setup: false });
+        *lock(&self.next) = Some(OpenList { mode, focus: None, focus_map: None, from_setup: false });
+    }
+
+    /// Back from the page of the map row `map`: the maps of `from` again,
+    /// on that row.
+    fn maps_on(&self, from: Category, map: u32) {
+        *lock(&self.next) = Some(OpenList {
+            mode: Mode::Maps(from),
+            focus: None,
+            focus_map: Some(map),
+            from_setup: false,
+        });
     }
 
     fn opening(&self) -> Option<OpenList> {
@@ -951,6 +974,9 @@ impl Flow {
 }
 
 const LIST_ARRAY: u32 = 0x70;
+/// An item widget's row: a handle in its list's array, -1 for none
+/// (`engine::view::ui::Item`).
+const ITEM_ROW: u32 = 0x70;
 
 /// Find the new datum by map id, since the live list can omit locked rows
 /// and the rebuilt array uses fresh handles.
@@ -991,6 +1017,8 @@ pub fn row_label(cat: &Catalogue, mode: Mode, id: u32) -> Option<(u32, String)> 
             let base = cat.maps(c).iter().find(|map| pack.slot_for(map) == Some(id))?;
             Some((slot_label()?, format!("{} ({})", base.name, pack.name)))
         }
+        // Any other map row reads its slot's own name: what it supports is
+        // in the pane ([`pane_text`]).
         _ => None,
     }
 }
@@ -1005,11 +1033,77 @@ fn utf16z(text: &str) -> Vec<u8> {
     b
 }
 
-/// Our memory: the list array, its name, then the labels.
+/// Our memory: the list array, its name, the labels, then the panes.
 const ARRAY_AT: u32 = 0;
 const NAME_AT: u32 = 0x400;
 const LABELS_AT: u32 = 0x1000;
-const REGION: u32 = 0x3000;
+/// The first label of a map's page, after the categories' and the maps'.
+const PAGE_LABELS: u32 = Category::ALL.len() as u32 + MAX_MAPS as u32;
+const PANES_AT: u32 = LABELS_AT + (PAGE_LABELS + 1 + crate::map_modes::PAGE_VARIANTS as u32) * LABEL_LEN;
+/// A pane's text: its UTF-16 units with the terminator, and its bytes with
+/// the slack [`pane_at`] places it in.
+const PANE_UNITS: usize = 384;
+const PANE_LEN: u32 = 0x100 + PANE_UNITS as u32 * 2;
+/// One pane a kind of list: a list and the one it opened are up together
+/// while one replaces the other.
+const PANES: u32 = 4;
+const REGION: u32 = PANES_AT + PANES * PANE_LEN;
+
+/// The retail Select Map's focus handler (`0x2c9b7c`, screen in ECX) asks
+/// for the language at `0x2c9be6` with the screen in EDI and the focused
+/// row's slot in EBP, then shows `slot + MP_DESC + 0x100 * language` in
+/// its description block.
+pub const PANE_LANGUAGE_RET: u32 = 0x002c_9beb;
+/// The language's cache (`0x11cae0` fills it; -1 before).
+const LANGUAGE: u32 = 0x0047_ff38;
+/// A slot has a description a language (`0x24c..0xb4c`).
+const LANGUAGES: u32 = 9;
+const SLOT_DESC: u32 = tags::ui_levels::MP_DESC as u32;
+const DESC_LEN: u32 = 0x100;
+
+fn pane_index(mode: Mode) -> u32 {
+    match mode {
+        Mode::Categories => 0,
+        Mode::Maps(_) => 1,
+        Mode::Pack(_) => 2,
+        Mode::Variants { .. } => 3,
+    }
+}
+
+/// Where the pane of `mode` is written so the retail handler reads it as
+/// a description of `slot`: in the pane's space under `region`, a whole
+/// number of descriptions past the slot's first.
+pub fn pane_at(region: u32, mode: Mode, slot: u32) -> u32 {
+    let base = region + PANES_AT + pane_index(mode) * PANE_LEN;
+    base + (slot.wrapping_add(SLOT_DESC).wrapping_sub(base) & (DESC_LEN - 1))
+}
+
+/// The language to answer so the description of `slot` is read at `at`
+/// ([`pane_at`]): the handler computes `slot + MP_DESC + (language << 8)`
+/// in 32 bits.
+pub fn pane_language(at: u32, slot: u32) -> u32 {
+    at.wrapping_sub(slot.wrapping_add(SLOT_DESC)) >> 8
+}
+
+/// The pane's text as UTF-16 with its terminator, cut to [`PANE_UNITS`].
+fn pane_bytes(text: &str) -> Vec<u8> {
+    let mut b: Vec<u8> = text
+        .encode_utf16()
+        .take(PANE_UNITS - 1)
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    b.extend([0, 0]);
+    b
+}
+
+/// The description the game holds for `slot` in `language`.
+fn slot_description(mem: &dyn GuestMemory, slot: u32, language: u32) -> String {
+    let at = slot.wrapping_add(SLOT_DESC + language * DESC_LEN);
+    let units: Vec<u16> = (0..tags::ui_levels::DESC_UNITS as u32)
+        .map_while(|i| mem.u16(at.wrapping_add(i * 2)).ok().filter(|&u| u != 0))
+        .collect();
+    String::from_utf16_lossy(&units)
+}
 
 /// The hooks (feature `map-select`).
 pub struct MapSelect {
@@ -1105,7 +1199,7 @@ impl hooks::Feature for MapSelect {
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         use engine::points::{
             GAME_TICK, LOBBY_SET_MAP, LOBBY_START_STATE, MAP_LIST_ROW_CHOSEN, MAP_LIST_ROW_TEXT, MAP_SCREEN_FREE,
-            MP_LEVEL_ARRAY, MP_LEVEL_NAME,
+            MP_LEVEL_ARRAY, MP_LEVEL_NAME, UI_LANGUAGE,
         };
         use hooks::Flow as F;
         let region = b.guest_alloc(REGION, runtime::guest::Permissions::RW)?;
@@ -1199,6 +1293,44 @@ impl hooks::Feature for MapSelect {
         .after_feature(agent::sim::calls::FEATURE)
         .after_feature(crate::skulls_custom::FEATURE);
 
+        // The lobby's game type needs a map it supports: Firefight or Siege
+        // chosen on a map without their support moves the lobby to the map
+        // last used with them, else the first the picker lists.
+        b.raw().before(&GAME_TICK, "pick a map the game type supports", move |c| {
+            let state = crate::lobby_start::state();
+            if !state.lobby {
+                return Ok(F::Continue);
+            }
+            let to = {
+                let mem = c.ctx.runtime().memory();
+                let map = mem.u32(crate::h1_options_row::LOBBY_MAP).ok();
+                let record = crate::pause_change_map::lobby_variant(&*mem);
+                drop(mem);
+                auto_pick(&state, map, record.as_ref())
+            };
+            let Some(map) = to else {
+                return Ok(F::Continue);
+            };
+            c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                Box::pin(async move {
+                    // Not while the game is starting or counting down.
+                    let started = cx
+                        .call(GuestCall::new(LOBBY_START_STATE.base).args([0]))
+                        .await?
+                        .eax;
+                    if !matches!(started, 8 | 10) {
+                        cx.call(GuestCall::new(LOBBY_SET_MAP.base).esi(map).args([u32::MAX]))
+                            .await?;
+                    }
+                    let r = cx.call(GuestCall::new(GAME_TICK.base)).await?;
+                    Ok(engine::entry::Ret::new(r.eax, 0))
+                })
+            })
+        })
+        .first()
+        .after_feature(agent::sim::calls::FEATURE)
+        .after_feature(crate::skulls_custom::FEATURE);
+
         // The list's array for a Select Map of ours.
         let (nav, sel) = (Arc::clone(&self.navigation), Arc::clone(&self.sel));
         b.raw().before(
@@ -1226,7 +1358,10 @@ impl hooks::Feature for MapSelect {
                 let catalogue = sel.picker_catalogue();
                 match write_ours(&mut *mem, &catalogue, open.mode, region) {
                     Some(at) => {
-                        let focus_id = open.focus.and_then(|folder| catalogue.category_id(folder));
+                        let focus_id = open
+                            .focus
+                            .and_then(|folder| catalogue.category_id(folder))
+                            .or(open.focus_map);
                         nav.maps.built(c.cpu.esi, open.mode, focus_id, open.from_setup);
                         drop(mem);
                         c.cpu.eax = at;
@@ -1241,8 +1376,18 @@ impl hooks::Feature for MapSelect {
         let nav = Arc::clone(&self.navigation);
         b.raw()
             .observe_before(&MAP_LIST_ROW_TEXT, "note the list drawing", move |o| {
-                nav.maps.drawing
-                    .store(o.cpu.ecx, std::sync::atomic::Ordering::SeqCst);
+                use std::sync::atomic::Ordering;
+                nav.maps.drawing.store(o.cpu.ecx, Ordering::SeqCst);
+                // The item widget's row: a handle in the list's array, its
+                // low word the row's place.
+                let guest = o.guest();
+                let row = guest
+                    .u32(o.cpu.esp + 4)
+                    .and_then(|item| guest.u32(item + ITEM_ROW))
+                    .ok()
+                    .filter(|&handle| handle != u32::MAX)
+                    .map_or(u32::MAX, |handle| handle & 0xffff);
+                nav.maps.drawing_row.store(row, Ordering::SeqCst);
             });
 
         // Category rows supply their own labels. Map rows use their slot.
@@ -1260,7 +1405,14 @@ impl hooks::Feature for MapSelect {
             let Some(id) = mem.u32(c.cpu.esp + 4).and_then(|slot| mem.u32(slot)).ok() else {
                 return Ok(F::Continue);
             };
-            let Some((n, text)) = row_label(&sel.picker_catalogue(), mode, id) else {
+            let label = match mode {
+                Mode::Variants { map, .. } => {
+                    let row = nav.maps.drawing_row.load(std::sync::atomic::Ordering::SeqCst);
+                    page_label(&sel.picker_catalogue(), map, row as usize)
+                }
+                _ => row_label(&sel.picker_catalogue(), mode, id),
+            };
+            let Some((n, text)) = label else {
                 return Ok(F::Continue);
             };
             let at = region + LABELS_AT + n * LABEL_LEN;
@@ -1284,10 +1436,11 @@ impl hooks::Feature for MapSelect {
                     return Ok(F::Continue);
                 };
                 let screen = handler.wrapping_sub(SCREEN_LIST);
-                let (id, chain, stack, ready) = {
+                let (id, place, chain, stack, ready) = {
                     let mem = c.ctx.runtime().memory();
                     let chain = mem.u32(c.cpu.esp + 4).ok();
                     let row = mem.u32(c.cpu.esp + 8).and_then(|p| mem.u32(p)).ok();
+                    let place = row.filter(|r| *r != u32::MAX).map(|r| (r & 0xffff) as usize);
                     let id = row.filter(|r| *r != u32::MAX).and_then(|r| {
                         let data = mem.u32(mem.u32(handler + 0x70).ok()? + 0x44).ok()?;
                         mem.u32(data + (r & 0xffff) * 8 + 4).ok()
@@ -1300,7 +1453,7 @@ impl hooks::Feature for MapSelect {
                             mem.u32(ch + crate::ui_watch::ACTIVE).ok() == Some(screen)
                                 && mem.u32(ch + crate::ui_watch::PENDING).ok() == Some(0)
                         });
-                    (id, chain, stack, ready)
+                    (id, place, chain, stack, ready)
                 };
                 if !ready {
                     return c.ret(8).map(F::Return);
@@ -1319,7 +1472,9 @@ impl hooks::Feature for MapSelect {
                         }
                         Some(Mode::Maps(Category::Halo2))
                     }
-                    Mode::Maps(Category::Mods) => catalogue.pack_row(id).map(|_| Mode::Pack(id)),
+                    Mode::Maps(Category::Mods) if catalogue.pack_row(id).is_some() => Some(Mode::Pack(id)),
+                    // A map with variants opens its page.
+                    Mode::Maps(from) if opens_page(&catalogue, id) => Some(Mode::Variants { map: id, from }),
                     _ => None,
                 };
                 match next {
@@ -1329,6 +1484,28 @@ impl hooks::Feature for MapSelect {
                             && let Some(pack) = catalogue.pack_row(group)
                         {
                             Arc::make_mut(&mut *lock(&sel.catalogue)).active_pack = Some(pack.key.clone());
+                        }
+                        // A lobby that plays Firefight or Siege takes no map
+                        // without it, and says why.
+                        if let Mode::Variants { map, .. } = mode {
+                            // A row of a map's page: the map itself plays
+                            // without a variant, a variant becomes the
+                            // lobby's, and the retail press sets the map.
+                            let page = page_of(&catalogue, map);
+                            let Some(row) = place.and_then(|p| page.get(p)) else {
+                                return c.ret(8).map(F::Return);
+                            };
+                            if let Some(reason) = crate::map_modes::refusal(row.support, catalogue.modes().played) {
+                                crate::lobby_tabs::notice(reason);
+                                return c.ret(8).map(F::Return);
+                            }
+                            if let Some(sources) = SOURCES.get() {
+                                let choose = crate::lobby_mode::choose_in_lobby(sources.data_root.clone(), Some(map));
+                                eprintln!("map select: {}", choose(row.file.as_deref()));
+                            }
+                        } else if let Some(reason) = catalogue.modes().refusal(id) {
+                            crate::lobby_tabs::notice(reason);
+                            return c.ret(8).map(F::Return);
                         }
                         // With Clankers on, the map's nav mesh is asked for now
                         // (docs/game/bots.md §10 stage 2).
@@ -1405,12 +1582,17 @@ impl hooks::Feature for MapSelect {
                 {
                     Ok(F::Continue)
                 }
-                (ui_back::Back::Reopen, Some(source), mode @ (Mode::Maps(_) | Mode::Pack(_))) => {
+                (
+                    ui_back::Back::Reopen,
+                    Some(source),
+                    mode @ (Mode::Maps(_) | Mode::Pack(_) | Mode::Variants { .. }),
+                ) => {
                     let nav = Arc::clone(&nav);
                     c.answer_async(move |cx| Box::pin(async move {
                         match mode {
                             Mode::Maps(category) => nav.maps.categories(Some(category)),
                             Mode::Pack(_) => nav.maps.open(Mode::Maps(Category::Mods)),
+                            Mode::Variants { map, from } => nav.maps.maps_on(from, map),
                             Mode::Categories => unreachable!(),
                         }
                         let opened = ui_back::reopen(&cx, request_at, source, CHANGE_MAP_LOADER).await;
@@ -1429,7 +1611,6 @@ impl hooks::Feature for MapSelect {
         b.raw().before(&points::SCREEN_PUSH, "restore the opened folder's focus", move |c| {
             let handler = c.cpu.edi.wrapping_add(SCREEN_LIST);
             if let Some(OpenedList {
-                mode: Mode::Categories,
                 focus_id: Some(id),
                 ..
             }) = nav.maps.list(handler)
@@ -1449,6 +1630,49 @@ impl hooks::Feature for MapSelect {
         // focus is restored here.
         .after_feature(crate::ui_back::FEATURE);
 
+        // The pane: the focused row's description, then what it supports.
+        // The retail handler shows the slot's description for the
+        // language it is told; told one that lands on our text, it shows
+        // ours ([`pane_at`], [`pane_language`]).
+        let (nav, sel) = (Arc::clone(&self.navigation), Arc::clone(&self.sel));
+        b.raw().before(&UI_LANGUAGE, "a map's pane lists what it supports", move |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            let mut mem = rt.memory();
+            if mem.u32(c.cpu.esp).ok() != Some(PANE_LANGUAGE_RET) {
+                return Ok(F::Continue);
+            }
+            let (screen, slot) = (c.cpu.edi, c.cpu.ebp);
+            let handler = screen.wrapping_add(SCREEN_LIST);
+            let Some(mode) = nav.maps.mode_of(handler) else {
+                return Ok(F::Continue);
+            };
+            let language = mem.u32(LANGUAGE).ok().filter(|&l| l < LANGUAGES);
+            let (Some(language), Ok(id)) = (language, mem.u32(slot)) else {
+                return Ok(F::Continue);
+            };
+            let place = match mode {
+                Mode::Variants { .. } => mem
+                    .u32(screen + lifecycle::SCREEN_WINDOW)
+                    .ok()
+                    .zip(mem.u32(screen + lifecycle::SCREEN_SLOT).ok())
+                    .and_then(|(window, slot)| crate::ui_watch::channel(window, slot))
+                    .and_then(|ch| lifecycle::focused_row_handle(&*mem, ch, handler))
+                    .map_or(0, |handle| (handle & 0xffff) as usize),
+                _ => 0,
+            };
+            let Some(pane) = pane_text(&sel.picker_catalogue(), mode, id, place) else {
+                return Ok(F::Continue);
+            };
+            let text = crate::map_modes::described(&slot_description(&*mem, slot, language), Some(&pane));
+            let at = pane_at(region, mode, slot);
+            if engine::memory::GuestMemory::write(&mut *mem, at, &pane_bytes(&text)).is_err() {
+                return Ok(F::Continue);
+            }
+            drop(mem);
+            c.cpu.eax = pane_language(at, slot);
+            c.ret(0).map(F::Return)
+        });
+
         let nav = Arc::clone(&self.navigation);
         b.raw().observe_before(&MAP_SCREEN_FREE, "forget the freed map list", move |o| {
             nav.maps.freed(o.cpu.ecx);
@@ -1467,6 +1691,57 @@ impl hooks::Feature for MapSelect {
         ));
         Ok(())
     }
+}
+
+/// The lobby's game type and map as the picking rule last saw them.
+static WATCHED: Mutex<Option<(crate::map_modes::Played, u32)>> = Mutex::new(None);
+
+/// The map the lobby on `map` (its list id) moves to when its game type
+/// `record` needs one the map does not support
+/// ([`crate::map_modes::pick`]): the map last used with that game type,
+/// else the first the picker lists. Decides once for each game type and
+/// map the lobby is seen on; it also notes a supported map as the one last
+/// used. `None` when nothing moves.
+pub(crate) fn auto_pick(
+    state: &crate::lobby_start::State,
+    map: Option<u32>,
+    record: Option<&variants::GameVariant>,
+) -> Option<u32> {
+    use crate::map_modes::{self, Played};
+    let played = map_modes::played(variant_mode(state.mode, record), record);
+    let key = map.map(|m| (played, m));
+    {
+        let mut seen = lock(&WATCHED);
+        if *seen == key {
+            return None;
+        }
+        *seen = key;
+    }
+    if played == Played::Other {
+        return None;
+    }
+    let cat = current()?;
+    let sources = SOURCES.get()?;
+    let wave = record
+        .map(|v| v.ext().script)
+        .filter(|s| s.mode == variants::ext::Mode::Firefight)
+        .map(|s| s.prefix);
+    let view = map_modes::in_game(&cat, played, wave, &sources.data_root);
+    if map.is_some_and(|m| view.allows(m)) {
+        map_modes::remember(played, map?);
+        return None;
+    }
+    let view_cat = cat.with_modes(view);
+    let rows: Vec<(u32, bool)> = view_cat
+        .categories()
+        .into_iter()
+        .flat_map(|c| list_for(&view_cat, Mode::Maps(c), &|_| 0))
+        .map(|(id, _)| (id, view_cat.modes().allows(id)))
+        .collect();
+    let to = map_modes::pick(&rows, map, map_modes::last(played))?;
+    eprintln!("lobby: {played:?} needs a map that supports it, moving to {to}");
+    *lock(&WATCHED) = Some((played, to));
+    Some(to)
 }
 
 /// Adds the hooks when the boot [`prepare`]d a catalogue (it always does:
@@ -1516,6 +1791,13 @@ pub fn short_name_of(id: u32) -> Option<String> {
 
 pub(super) fn opened_pack_name(id: u32) -> Option<String> {
     Some(PREPARED.get()?.catalogue().pack_row(id)?.name.clone())
+}
+
+/// The name of the map whose page ([`Mode::Variants`]) is open.
+pub(super) fn opened_map_name(id: u32) -> Option<String> {
+    let cat = PREPARED.get()?.picker_catalogue();
+    let named = cat.all().find(|m| cat.modes.row_id(m.id) == id)?;
+    Some(named.name.clone())
 }
 
 /// The category of the selected map, using the catalogue kept at boot
@@ -1756,7 +2038,6 @@ fn slug(c: Category) -> &'static str {
         Category::MapPack => "mappack",
         Category::Mods => "mods",
         Category::Halo1 => "halo1",
-        Category::Firefight => "firefight",
     }
 }
 
@@ -1767,14 +2048,6 @@ pub(crate) fn variant_mode(mode: crate::lobby_start::Mode, variant: Option<&vari
         Mode::Firefight
     } else {
         mode
-    }
-}
-
-pub fn mode_category(mode: crate::lobby_start::Mode) -> Option<Category> {
-    use crate::lobby_start::Mode as Lobby;
-    match mode {
-        Lobby::Multiplayer | Lobby::Forge => None,
-        Lobby::Firefight => Some(Category::Firefight),
     }
 }
 

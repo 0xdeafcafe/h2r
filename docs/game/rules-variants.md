@@ -181,9 +181,12 @@ quick time_limit, bounce_points, suicide_costs
 - At most five names (`ir::MAX_QUICK`). A sixth is the error
   `quick.many`: "Quick Options has five rows". An unknown name is
   `quick.unknown`, a repeated one `quick.twice`. Five is the pregame
-  panel's row count (`lobby_options::PANEL_ROWS`, **Code**), and the
-  dialog keeps the same five so the panel always summarises what the
-  dialog changes.
+  panel's row count (`lobby_options::PANEL_ROWS`, **Code**). The dialog
+  lists the marks first; when the script's unmarked options fit after
+  them in its eight rows (`variant_quick::DIALOG_ROWS`), they follow in
+  declaration order, so the dialog is the script's whole options page
+  (Siege: five marks, then Overtime and Rounds). A script with more
+  keeps its marks alone.
 - A script with no `quick` line has no Quick Options rows. Nothing is
   picked for it.
 
@@ -309,7 +312,7 @@ entries; retail uses 0 to 38 and the store 94 to 100).
 | Gun Game | `party` | none | `gun_game.rules`: a kill gives the next rung's weapon at once (`set_loadout`); players spawn unarmed (`starting_weapon = none`) and the map has no weapons |
 | Race | `party` | none | `race.rules`: the map's hills are its checkpoints, run in number order, so every map with hills races |
 | VIP | `party` | none | `vip.rules`: a VIP per team, worth `vip_points` to kill, the role passing to a teammate; the script ends the round at the score limit |
-| Siege | `siege` | none | `siege.rules`: the map's territory and CTF flags are its zones, and neither is required of the script, but the start gate refuses a map with no site and no final stand ([rules-start-gate.md](rules-start-gate.md)) — with no territory the assault goes straight at the flag stand, with no stand the sites are the whole assault, and a run the gate does not guard with neither draws the round at its start ([rules-engine.md](rules-engine.md#phases-attack-and-defend)); players spawn unarmed (`starting_weapon = none`, our added choice) and `set_loadout` arms each side; one life a round (`lives = 1`, our added choice) holds each death for its side's respawn wave |
+| Siege | `siege` | none | `siege.rules`: the map's territory and CTF flags are its zones, and neither is required of the script, but the start gate refuses a map with no site and no final stand ([rules-start-gate.md](rules-start-gate.md)) - with no territory the assault goes straight at the flag stand, with no stand the sites are the whole assault, and a run the gate does not guard with neither draws the round at its start ([rules-engine.md](rules-engine.md#phases-attack-and-defend)); players spawn unarmed (`starting_weapon = none`, our added choice) and `set_loadout` arms each side; one life a round (`lives = 1`, our added choice) holds each death for its side's respawn wave |
 
 Siege, Gun Game, Race and VIP, like Superbounce, are scripted modes after
 the settings scripts and are examples too (`builtin::examples`).
@@ -408,9 +411,12 @@ rest.
 the page `variant-quick` in place of retail's screen 222. It is the
 shared settings dialog ([ui-builder.md](ui-builder.md#the-settings-dialog))
 from `content/ui/screens/variant-quick.yaml`: Quick Options' own panel,
-the variant's name, five row slots bound `quick.0` to `quick.4`, the
+the variant's name, eight row slots bound `quick.0` to `quick.7`
+(`variant_quick::dialog_rows_with`), the
 focused row's help under the rows (an option's description; for a
-setting, what it sets: `page::help`) and the value picker on A. Its Rust
+setting, what it sets: `page::help`) and the value picker on A, which
+lists at most twelve values: a wider range is a ladder of round values
+with its ends and the value held (`variant_quick::ladder`). Its Rust
 is its bindings (`variant_quick::page`). The kit gains what the page
 needs and no other page has: a slot row (its doc text `{label}` and help
 `{help}`, bound with `Bindings::slot`) whose label, value and help come

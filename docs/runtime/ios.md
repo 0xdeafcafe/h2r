@@ -7,7 +7,7 @@ Switch: `H2_TOUCH_LOOK_ACCEL`, `H2_TOUCH_AUTO_FIRE`, `H2_ICONS`, see [switches.m
 The game runs on an iPhone or iPad as an app built from `platform/ios/`. It is
 the tvOS app's sibling ([tvos.md](tvos.md)): the same Rust runtime, game
 module build and trimmed disc, with a UIKit host for touch. It needs a real
-device (arm64, iOS 17 or later); there is no simulator build. Landscape only.
+device (arm64, iOS 17 or later); there is no simulator build. Horizontal orientation only.
 
 ## How it is put together
 
@@ -261,5 +261,5 @@ nothing is signed.
   `live/accounts.json` until the in-game account setup has a screen; with
   one, saves are synced ([live-cloud-saves.md](../live/live-cloud-saves.md)).
 - No controller speaker, no `--level`.
-- Gyro aiming's axes assume the device held in landscape like a camera;
+- Gyro aiming's axes assume the device held sideways like a camera;
   it is untested on hardware.

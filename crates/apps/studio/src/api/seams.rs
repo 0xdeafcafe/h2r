@@ -95,6 +95,8 @@ pub trait Provider {
 pub fn register(api: &mut Api) {
     // studio-tags: every field of any tag through the Tags tool's commands.
     api.register(Box::new(super::tag_fields::TagFields));
+    // Forge map variants as documents and the Forge palette.
+    api.register(Box::new(super::forge_variants::ForgeVariants));
     // Curve functions of a `view=function` field, read, edited and
     // sampled (rich editors F1).
     api.register(Box::new(super::curves::Curves));
@@ -111,6 +113,8 @@ pub fn register(api: &mut Api) {
     // ground.status and ground.build: the open map's AI ground
     // (app::ground).
     api.register(Box::new(super::ground::Ground));
+    // siege.layout: the Siege layout recipe over the open map.
+    api.register(Box::new(super::siege::Siege));
     // Playtest's static checks over the open map (app::playtest_static).
     api.register(Box::new(super::playtest::Playtest::new()));
     // The Tags tool's browsing (shared caches), resources and tag bundles.
@@ -144,6 +148,9 @@ pub fn register(api: &mut Api) {
     // The game type script editor: open, check, save and reload a .rules
     // script (app::rules_edit).
     api.register(Box::new(super::game_script::GameScript));
+    // The tag workspace's projects and edit files over the tree
+    // (workspace::project, workspace::edits).
+    api.register(Box::new(super::projects::Projects));
     // The open map's retail screen edits written as retail edit files
     // (boot::ui_kit::retail_edits).
     api.register(Box::new(super::ui_export::UiExport));

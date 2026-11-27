@@ -14,7 +14,39 @@ use content::MapId;
 use crate::{Config, Fit, KIT_VERSION, Mode};
 
 /// The built-in maps' base names, in the order the lobby prefers them.
-pub const MAPS: [&str; 2] = ["coagulation", "zanzibar"];
+/// Coagulation and Zanzibar have authored layouts; the rest are built by
+/// the kit's generator from their own flags and starts, and every one of
+/// them was built by `h2 firefight kit` on the retail disc with six or
+/// more drop zones, a path to both bases and the tag headroom to spare
+/// (docs/game/firefight.md, "Built-in kits").
+pub const MAPS: [&str; 11] = [
+    "coagulation",
+    "zanzibar",
+    "ascension",
+    "beavercreek",
+    "burial_mounds",
+    "colossus",
+    "foundation",
+    "headlong",
+    "lockout",
+    "midship",
+    "waterworks",
+];
+
+/// The retail multiplayer maps the builder refuses, each with the reason
+/// it gives. They are not built at start; `h2 firefight kit MAP` still
+/// tries one and says the same.
+pub const REFUSED: [(&str, &str); 1] = [
+    ("cyclotron", "no six drop zones: the bases' area has room for 5"),
+];
+
+/// Why the built-in set leaves `map` out, if it does.
+pub fn refusal(map: &str) -> Option<&'static str> {
+    REFUSED
+        .iter()
+        .find(|(m, _)| m.eq_ignore_ascii_case(map))
+        .map(|(_, why)| *why)
+}
 
 /// Where the disc's multiplayer maps are read from.
 pub trait DiscMaps {
@@ -87,13 +119,21 @@ fn current(t: &Target<'_>, maps_dir: &Path) -> bool {
 }
 
 /// The built-in kits' targets, from their layouts (`builtin::for_map`). A
-/// map without a layout is left out here and refused by [`ensure`].
+/// map without one is built by the generator.
 pub fn targets() -> Vec<Target<'static>> {
     MAPS.iter().filter_map(|m| target(m)).collect()
 }
 
 fn target(map: &str) -> Option<Target<'static>> {
-    let layout = super::for_map(map)?;
+    let Some(layout) = super::for_map(map) else {
+        // Generated: the kit's own spawns, drops and nav, home team red.
+        let map = MAPS.iter().copied().find(|m| *m == map)?;
+        return Some(Target {
+            map,
+            config: Config::default(),
+            layout_hash: 0,
+        });
+    };
     Some(Target {
         map: layout.map,
         config: Config {
@@ -127,13 +167,11 @@ pub fn pending_with<'a>(targets: &[Target<'a>], maps_dir: &Path) -> Vec<&'a str>
 /// order. One map's refusal does not stop the others.
 pub fn ensure(disc: &dyn DiscMaps, maps_dir: &Path) -> Vec<Report> {
     let mut reports = ensure_with(&targets(), disc, maps_dir);
-    for map in MAPS {
-        if target(map).is_none() {
-            reports.push(Report {
-                map: map.to_owned(),
-                outcome: Outcome::Refused("it has no built-in layout".to_owned()),
-            });
-        }
+    for (map, why) in REFUSED {
+        reports.push(Report {
+            map: map.to_owned(),
+            outcome: Outcome::Refused(why.to_owned()),
+        });
     }
     reports.sort_by_key(|r| MAPS.iter().position(|m| *m == r.map).unwrap_or(MAPS.len()));
     reports
@@ -141,14 +179,20 @@ pub fn ensure(disc: &dyn DiscMaps, maps_dir: &Path) -> Vec<Report> {
 
 /// [`ensure`] over `targets`, in their order.
 pub fn ensure_with(targets: &[Target<'_>], disc: &dyn DiscMaps, maps_dir: &Path) -> Vec<Report> {
+    // The campaign map the Elite's behaviour rows come from, read once and
+    // only when a kit is built.
+    let mut elite: Option<Option<Vec<u8>>> = None;
     targets
         .iter()
         .map(|t| {
             let outcome = if current(t, maps_dir) {
                 Outcome::Current
             } else {
+                let elite = elite
+                    .get_or_insert_with(|| disc.read_map(crate::ELITE_DONOR_MAP).ok())
+                    .as_deref();
                 let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    build_one(t, disc, maps_dir)
+                    build_one(t, disc, elite, maps_dir)
                 }));
                 match built {
                     Ok(Ok(built)) => built,
@@ -164,7 +208,15 @@ pub fn ensure_with(targets: &[Target<'_>], disc: &dyn DiscMaps, maps_dir: &Path)
         .collect()
 }
 
-fn build_one(t: &Target<'_>, disc: &dyn DiscMaps, maps_dir: &Path) -> Result<Outcome> {
+/// One kit, its Elite's behaviour rows from `elite`, the disc's
+/// [`crate::ELITE_DONOR_MAP`] when it has one (else the build is refused,
+/// naming the campaign Elite, unless the base carries it).
+fn build_one(
+    t: &Target<'_>,
+    disc: &dyn DiscMaps,
+    elite: Option<&[u8]>,
+    maps_dir: &Path,
+) -> Result<Outcome> {
     let base = disc.read_map(t.map)?;
     if base.is_empty() {
         bail!("the disc's {} map is empty", t.map);
@@ -177,6 +229,12 @@ fn build_one(t: &Target<'_>, disc: &dyn DiscMaps, maps_dir: &Path) -> Result<Out
         t.map,
         Mode::Kit,
         &t.config,
+        elite
+            .map(|bytes| crate::Donor {
+                name: crate::ELITE_DONOR_MAP,
+                bytes,
+            })
+            .as_ref(),
         maps_dir,
         &package_dir(t.map),
         true,

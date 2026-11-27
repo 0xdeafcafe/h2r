@@ -78,7 +78,7 @@ crouches and bodies in flight are forgotten.
   and `joined_late`, the slots of players in it who joined after its first
   kill. The stats summary counts `teabags` in the totals and
   `teabags_given` and `teabags_received` in an account's row, never a
-  bot's ([live-api.md](../live/live-api.md#stats-summary)).
+  bot's ([live-api.md](../live/live-api-theater-stats.md#stats-summary)).
 
 ### The medal
 
@@ -87,7 +87,7 @@ crouches and bodies in flight are forgotten.
 At `GameEnded` the Tracker writes a `Medal` record at the end's tick for
 each slot, in slot order, and counts it in the summary; Live counts it in
 the game's and the account's `medals`
-([live-api.md](../live/live-api.md#medals)). A player earns it once when all of these
+([live-api.md](../live/live-api-theater-stats.md#medals)). A player earns it once when all of these
 hold:
 
 1. **In from the start.** On `GameStarted`'s roster, or joined before the

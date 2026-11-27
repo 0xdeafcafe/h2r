@@ -131,6 +131,9 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
     // Each multiplayer map's disc copy, its size and whether a stripped
     // copy replaces it in the payload: the kits' bases.
     let mut kit_bases: Vec<(String, Source, u64, bool)> = Vec::new();
+    // The campaign maps, left out of the payload: a kit reads its Elite's
+    // behaviour rows from one (`firefight_kit::ELITE_DONOR_MAP`).
+    let mut campaign: Vec<(String, Source)> = Vec::new();
     for map in disc.files(&["maps"])? {
         if !map.name.to_ascii_lowercase().ends_with(".map") {
             continue;
@@ -140,6 +143,8 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
         match kind {
             CacheType::Campaign => {
                 campaign_skipped += 1;
+                let key = map.name[..map.name.len() - ".map".len()].to_ascii_lowercase();
+                campaign.push((key, map.source.clone()));
                 continue;
             }
             CacheType::Unknown(ty) => {
@@ -240,7 +245,7 @@ pub fn build(spec: &BundleSpec) -> Result<BundleOut, Error> {
             image::stage(dir, &mut payload)?;
         }
         let kits = if spec.firefight {
-            stage_kits(&kit_bases, &staging, &mut payload)?
+            stage_kits(&kit_bases, &campaign, &staging, &mut payload)?
         } else {
             KitsOut::default()
         };
@@ -304,6 +309,7 @@ struct KitsOut {
 #[cfg(feature = "firefight")]
 fn stage_kits(
     bases: &[(String, Source, u64, bool)],
+    campaign: &[(String, Source)],
     staging: &Path,
     payload: &mut Vec<Payload>,
 ) -> Result<KitsOut, Error> {
@@ -311,7 +317,11 @@ fn stage_kits(
         .iter()
         .map(|(key, source, _, _)| kits::KitMap { key: key.clone(), source: source.clone() })
         .collect();
-    let staged = kits::stage(&maps, staging, payload)?;
+    let elite = campaign
+        .iter()
+        .find(|(key, _)| key == firefight_kit::ELITE_DONOR_MAP)
+        .map(|(_, source)| source);
+    let staged = kits::stage(&maps, elite, staging, payload)?;
     let mut unstripped = 0;
     for (key, source, size, stripped) in bases {
         if !stripped || !staged.index.maps.contains_key(key) {
@@ -339,6 +349,7 @@ fn stage_kits(
 #[cfg(not(feature = "firefight"))]
 fn stage_kits(
     _: &[(String, Source, u64, bool)],
+    _: &[(String, Source)],
     _: &Path,
     _: &mut Vec<Payload>,
 ) -> Result<KitsOut, Error> {

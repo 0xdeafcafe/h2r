@@ -69,7 +69,9 @@ impl Renderer {
         area: Viewport,
     ) {
         self.timeline = None;
-        let Some(page) = &model.page else { return };
+        if model.page.is_none() && model.timeline.is_none() {
+            return;
+        }
         // A cold seek can reach the transport before the child publishes
         // a guest frame. The progress overlay can use the window itself.
         let area = if area.is_empty() {
@@ -80,15 +82,21 @@ impl Renderer {
         if area.is_empty() {
             return;
         }
-        let rect = fit(page.size.0 as f32 / page.size.1 as f32, (area.width, area.height));
-        let rect = Viewport {
-            x: area.x + rect.x,
-            y: area.y + rect.y,
-            ..rect
+        let fitted = |canvas: (u32, u32)| {
+            let rect = fit(canvas.0 as f32 / canvas.1 as f32, (area.width, area.height));
+            Viewport {
+                x: area.x + rect.x,
+                y: area.y + rect.y,
+                ..rect
+            }
         };
-        if let Some([x, y, width, height]) = page.timeline {
-            let sx = |x| (u64::from(x) * u64::from(rect.width) / u64::from(page.size.0)) as u32;
-            let sy = |y| (u64::from(y) * u64::from(rect.height) / u64::from(page.size.1)) as u32;
+        if let Some(super::Timeline { rect: [x, y, width, height], canvas }) = model.timeline
+            && canvas.0 > 0
+            && canvas.1 > 0
+        {
+            let rect = fitted(canvas);
+            let sx = |x| (u64::from(x) * u64::from(rect.width) / u64::from(canvas.0)) as u32;
+            let sy = |y| (u64::from(y) * u64::from(rect.height) / u64::from(canvas.1)) as u32;
             self.timeline = Some(Viewport {
                 x: rect.x + sx(x),
                 y: rect.y + sy(y),
@@ -96,6 +104,8 @@ impl Renderer {
                 height: sy(height),
             });
         }
+        let Some(page) = &model.page else { return };
+        let rect = fitted(page.size);
         if self.uploaded.as_ref().is_none_or(|old| !Arc::ptr_eq(old, page)) {
             self.sprite.upload(&ctx.device, &ctx.queue, page.size, &page.rgba);
             self.uploaded = Some(page.clone());

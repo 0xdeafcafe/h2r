@@ -1896,6 +1896,7 @@ mod pinned_prune_tests {
         set.pinned = Some(PinnedImage {
             header: Vec::new(),
             file: Vec::new(),
+            file_in_source: 0,
             tables: [(0, 0); 5],
             index: Vec::new(),
             index_entries_end: 0,

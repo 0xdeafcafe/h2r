@@ -1,7 +1,7 @@
 # Forge and Firefight UI: every screen and HUD piece as Halo 2 draws it
 
 Status: Partly built. Slices U1 (the main menu), U2 (the lobby modes), U3 (the monitor HUD on the HUD kit), K1 (the HUD kit's monitor mode), U4 (the Forge screens in the game and the bindings table), U5 (the Firefight HUD), K4 (the gizmo's segment in the HUD kit), U6 (the markers and the gizmo on the HUD kit) and U7 (the compositor path removed) are built, with K2 and K3, the HUD of a wave test (slice FA3 of [forge-firefight.md](forge-firefight.md)), the Waves screens (slice FA5), the Enemy types page (slice FA6) and the AI tool (slice FA7); the rest is design.
-Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_screens/waves.rs` (the Waves screens), `forge_controls/bindings.rs` (the bindings table), `lobby_mode.rs` (Game Setup's Map Variant row, the start refusal), `lobby_start.rs` (the mode), `forge_hud.rs` (the monitor HUD's feed), `firefight/{hud,options}.rs`, `map_select.rs` (the Firefight category), `forge_glue/gizmo.rs` (the gizmo's ends), `hud_kit_core::views::forge` and `content/forge/huds/forge.hud.yaml` (the monitor HUD's elements), `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` and `crates/apps/app/src/forge_overlay.rs` (the play window's keys and mouse, handed to the session). Tests: named per slice below.
+Code: `crates/extensions/game/src/forge_screens.rs` and `forge_screens/` (the Forge screens and GAME MENU rows), `forge_screens/waves.rs` (the Waves screens), `forge_controls/bindings.rs` (the bindings table), `lobby_mode.rs` (Game Setup's Map Variant row, the start refusal), `lobby_start.rs` (the mode), `forge_hud.rs` (the monitor HUD's feed), `firefight/{hud,options}.rs`, `map_select.rs` and `map_modes.rs` (the map list's mode tags), `forge_glue/gizmo.rs` (the gizmo's ends), `hud_kit_core::views::forge` and `content/forge/huds/forge.hud.yaml` (the monitor HUD's elements), `theater_ui.rs` (`menu`, the main menu's rows), `crates/apps/cli/src/play_cmd/forge.rs` and `crates/apps/app/src/forge_overlay.rs` (the play window's keys and mouse, handed to the session). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
 Forge is a lobby mode and Firefight is a game type of the party lobby
@@ -90,8 +90,10 @@ Each piece copies one retail screen or HUD element, by tag.
 | Contextual prompt | the pickup prompt line, top left | HUD kit `Prompt` |
 | Refusals and confirmations | the pickup notification list | HUD kit `Message` |
 | First-use teaching | the training box | HUD kit `Training` |
-| Budget, lives, enemies left | a grenade pill with its LCD count | HUD kit `Icon` (`Art::GrenadePill`) and `Text` (`Font::Lcd`) |
-| Budget fill | the energy sword's battery strip | HUD kit `Meter` (`Art::StripMeter`) |
+| Budget, a wave test's enemies left | a grenade pill with its LCD count | HUD kit `Icon` (`Art::GrenadePill`) and `Text` (`Font::Lcd`) |
+| Budget fill, Firefight's enemies left | the energy sword's battery strip | HUD kit `Meter` (`Art::StripMeter`) |
+| Firefight's score, lives and bonus clock | the HUD's own text lines, above the score plate | HUD kit `Text` (`Font::Hud`) |
+| Firefight's set, rounds, waves and skulls | Halo 3: ODST's Firefight HUD for what is shown (a numeral, a circle a round, a bar a wave, a picture a skull); the pictures are strokes of ours drawn as the HUD draws a letter | HUD kit `Text` and `Gauge` (`font::skulls`) |
 | Reticle | a retail weapon's reticle widget | HUD kit `Icon` (`Art::Widget`) |
 | Wave and round banner | the timed centred line of the message routine | a HUD kit channel, `Banner` (slice K2) |
 | Held object, other monitors, link ends | the game's navpoint: arrow, waypoint marker, number | HUD kit `Navpoint` |
@@ -606,10 +608,13 @@ Forge options has the Enemy types row whenever they do.
 A HUD kit `Hud` named `firefight` (`hud_kit_core::views::firefight`),
 fed by `hud::view_on` from the mode blob as it is ([firefight.md](firefight.md),
 "The HUD"; [hud-kit.md](hud-kit.md), "The Firefight HUD"): the score,
-lives and progress lines, the enemies meter, the seven skull slots and the
-banner, at the frame's bottom right above the retail score plate. The
-elements, their places and their checks are there; a banner is an event
-(a set, round, skull or wave that begins), not a stage.
+lives and progress lines, the enemies meter, the set's numeral with the
+round and wave pips, the seven skull slots, all at the frame's bottom right
+above the retail score plate, and the banner, which is the game's own timed
+centred line (the `Banner` channel, K2). What is shown follows Halo 3:
+ODST's Firefight HUD. The elements, their places and their checks are
+there; a banner is an event (a set, round, skull or wave that begins), not
+a stage.
 
 **While editing** (built, FA3). A wave test in a Forge session draws
 the Firefight HUD from the same mode blob, by what the local user is
@@ -617,7 +622,7 @@ the Firefight HUD from the same mode blob, by what the local user is
 
 | The user is | `ff.banner` | `ff.enemies`, `ff.progress`, `ff.score`, skulls | `ff.lives` | The monitor HUD |
 |---|---|---|---|---|
-| in the monitor | shown | hidden: the monitor's own pill shows the count | hidden | as it is, with `forge.enemies.*` in the grenade row's third place, after the budget and the rebuild pills |
+| in the monitor | shown | hidden, the pips too: the monitor's own pill shows the count | hidden | as it is, with `forge.enemies.*` in the grenade row's third place, after the budget and the rebuild pills |
 | in the biped | shown | shown, in their match places | hidden: a test charges no lives | not drawn |
 
 - `hud::view_on(mode, slot, scope, screen, banner)` takes the scope
@@ -645,7 +650,7 @@ their first user. The editing slices P1 to P6 are in
 
 | # | Slice | Size | Needs | Proofs |
 |---|---|---|---|---|
-| **U2** (built) | Lobby modes: `lobby_start::Mode` (picked in the party lobby's GAME MODE picker, [party-lobby.md](party-lobby.md)), Game Setup rows by mode, Map Variant picker, the Firefight map category, variant panel lines, the monitor only in Forge mode, the remote-member refusal; delete the kit lobbies | M | nothing | `Page` tables for Game Setup in each mode (`mode_lists_only_enabled_features`, `forge_mode_lists_change_map_and_forge_map`, `leaving_the_lobby_clears_the_mode`, `forge_with_a_remote_member_is_refused`, `the_monitor_needs_forge_mode`); `h2 ui preview kit.picker.map-variant`; `lobby_options` tests for the panel lines; content checks (no colon values, no repeated spaces) |
+| **U2** (built) | Lobby modes: `lobby_start::Mode` (picked in the party lobby's GAME MODE picker, [party-lobby.md](party-lobby.md)), Game Setup rows by mode, Map Variant picker, the map list's pane of supported modes, variant panel lines, the monitor only in Forge mode, the remote-member refusal; delete the kit lobbies | M | nothing | `Page` tables for Game Setup in each mode (`mode_lists_only_enabled_features`, `forge_mode_lists_change_map_and_forge_map`, `leaving_the_lobby_clears_the_mode`, `forge_with_a_remote_member_is_refused`, `the_monitor_needs_forge_mode`); `h2 ui preview kit.picker.map-variant`; `lobby_options` tests for the panel lines; content checks (no colon values, no repeated spaces) |
 | **U1** (built) | Main menu: six rows. Remove the FORGE and FIREFIGHT entries, place Theater after System Link, re-pitch if needed | S | U2, landed together | table tests `the_main_menu_has_six_rows_with_theater`, `five_rows_without_theater`, `pitch_keeps_six_rows_above_the_footer`; the `main-menu` opener's preview with six rows; the layout checks |
 | **U4** (built) | Forge screens in the game: the bindings table and Halo 3 pad gate, object menu, Properties from a table, Tools picker, Tool settings (Rotation snap), Link, questions, GAME MENU rows, Forge options, Controls; input handover | L | nothing | `h2 ui preview forge.objects`, `forge.properties`, `forge.tools`, `forge.settings`, `forge.link`, `forge.question`, `forge.options`, `forge.controls --state all --animation all`; `Page` tables carried over from `ui_kit/forge/tests.rs` plus `x_opens_objects_or_properties_by_aim`, `no_is_focused_on_every_question`, `every_action_has_one_binding`, `the_controls_page_lists_the_bindings_table`, `game_menu_adds_five_rows`; a gate table test that RB and LB rise and fall, RT held manipulates, hold Y deletes and B cancels; `list_class` runner test that a picker opens with its pick in a game; layout and content checks in every state; a disc test that each base resolves in `shared` |
 | **K1** (built) | HUD kit: monitor mode (retail widgets gated off per user but the motion tracker, grenade origins without the row) | S | the HUD kit on `master` | `hud_kit_tests`: a retail widget of a monitor user is not drawn, the motion tracker is, and another user's widgets are; `h2 hud preview forge --state all --mode all --synthetic` |
@@ -753,9 +758,6 @@ The owner's choices, which the sections above follow.
 
 ## Not verified
 
-- That the game draws its HUD for a user whose view is the monitor's
-  private world view (`spectator_view::draw_world_view`). If it does
-  not, K1 also calls the HUD draw for that view.
 - That a row added to Game Setup shows in every lobby that opens it
   (Split Screen, a hosted System Link game, an Xbox Live custom game).
 - That hiding, adding and reordering Game Setup's rows leaves each row

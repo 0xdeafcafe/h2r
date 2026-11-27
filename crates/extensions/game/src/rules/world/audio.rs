@@ -29,6 +29,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use ::rules::caps::id;
 use ::rules::ir::{Ir, Op, TagGroup};
+use ::rules::labels::ANNOUNCER;
 use ::rules::show::{self as cue, Audience, Cue, SoundCue, To};
 use ::rules::vm::{Arg, Call as VmCall};
 use agent::sim::calls::addr;
@@ -83,6 +84,10 @@ pub fn install_map(source: Option<vfs::FileSource>) {
             let m = map::Map::from_region(file, f.offset, f.len).ok()?;
             Some(sounds_of(&m))
         }
+        vfs::FileSource::Spliced(f) => {
+            let m = map::Map::from_reader(f.reader().ok()?).ok()?;
+            Some(sounds_of(&m))
+        }
     });
     set_resolver(table.map(|t| Box::new(move |path: &str| t.get(path).copied()) as Resolver));
 }
@@ -108,6 +113,18 @@ pub fn activate(vfs: &Mutex<vfs::Vfs>, loaded: Option<(String, Option<String>)>)
 /// sound and the host has no lookup of sound tags, or the loaded map holds
 /// no sound tag at a path the script names.
 pub fn refusal(ir: &Ir) -> Option<String> {
+    // An announcer line is one of ours: the clip is named, or refused by name.
+    if let Some(t) = ir.tags.iter().find(|t| {
+        t.group == TagGroup::Sound
+            && t.path.starts_with(ANNOUNCER)
+            && !is_line(&t.path)
+    }) {
+        return Some(format!(
+            "the script plays the announcer line {}, which is not one of ours \
+             (art/announcer/, docs/game/rules-world-api.md, \"Audio\")",
+            t.path
+        ));
+    }
     let plays = ir.handlers.iter().flat_map(|h| &h.code).any(|op| {
         matches!(op, Op::Call { entry, .. }
             if matches!(*entry, id::SOUND_TO | id::SOUND_TO_TEAM | id::SOUND_TO_ALL))
@@ -117,7 +134,10 @@ pub fn refusal(ir: &Ir) -> Option<String> {
     }
     let held = resolver();
     let Some(lookup) = held.as_ref() else {
-        let sound = ir.tags.iter().find(|t| t.group == TagGroup::Sound)?;
+        let sound = ir
+            .tags
+            .iter()
+            .find(|t| t.group == TagGroup::Sound && !t.path.starts_with(ANNOUNCER))?;
         return Some(format!(
             "the script plays the sound {}, and this host has not read the loaded map's sound tags \
              (docs/game/rules-world-api.md, \"Audio\")",
@@ -127,7 +147,9 @@ pub fn refusal(ir: &Ir) -> Option<String> {
     let missing = ir
         .tags
         .iter()
-        .find(|t| t.group == TagGroup::Sound && lookup(&t.path).is_none())?;
+        .find(|t| {
+            t.group == TagGroup::Sound && !t.path.starts_with(ANNOUNCER) && lookup(&t.path).is_none()
+        })?;
     Some(format!(
         "the script plays the sound {}, which the loaded map does not hold",
         missing.path
@@ -224,8 +246,29 @@ async fn start(cx: &Cx, unit: u32, sound: u32) -> anyhow::Result<()> {
 /// Plays the sound `path` to this machine's own players in `audience`, each
 /// at its living unit. A player with no living unit hears nothing.
 pub async fn play(cx: &Cx, audience: Audience, path: &str) -> anyhow::Result<()> {
+    if path.starts_with(ANNOUNCER) {
+        return say(cx.read(|m| show::local_slots(m)), audience, path);
+    }
     let units = cx.read(|m| units(m, audience));
     play_at(cx, &units, path).await
+}
+
+/// The announcer line `path` (`announcer/<clip>`): the clip joins the
+/// announcer's queue when one of this machine's own players is in
+/// `audience`, dead or alive. An unknown clip is an error naming it.
+fn say(local: impl IntoIterator<Item = u8>, audience: Audience, path: &str) -> anyhow::Result<()> {
+    let id = path.strip_prefix(ANNOUNCER).filter(|id| is_line(path) && !id.is_empty());
+    let id = id.ok_or_else(|| anyhow::anyhow!("no announcer line {path}"))?;
+    if local.into_iter().any(|s| audience & cue::player(s) != 0) {
+        crate::medal_announcer::announce_id(id);
+    }
+    Ok(())
+}
+
+/// Whether `path` (`announcer/<clip>`) names a clip of ours.
+fn is_line(path: &str) -> bool {
+    path.strip_prefix(ANNOUNCER)
+        .is_some_and(|id| crate::medal_announcer::clip_bytes(id).is_some())
 }
 
 /// Starts the sound `path` at each of `units`; the first failure is the
@@ -444,5 +487,46 @@ mod tests {
         };
         assert!(matches!(entry::poll(&mut f, &cx), Step::Done(Ok(_))));
         set_resolver(None);
+    }
+
+    /// A script plays an announcer line by `announcer/<clip>`: one of ours
+    /// needs no sound tag of the map, an unknown one is refused by name,
+    /// and the start gate's census is not asked about it.
+    #[test]
+    fn an_announcer_line_is_ours_and_an_unknown_one_is_refused_by_name() {
+        let _g = serial();
+        set_resolver(None);
+        let src = |line: &str| {
+            ::rules::compile(&format!(
+                "rules \"A\" 1\ntype slayer\nrequires audio.play\n\
+                 on kill(victim, killer) {{ sound_to_all(\"{line}\") }}\n"
+            ))
+            .unwrap()
+        };
+        assert_eq!(refusal(&src("announcer/attack")), None);
+        let why = refusal(&src("announcer/no-such-line")).unwrap();
+        assert!(why.contains("announcer/no-such-line"), "{why}");
+        let census = ::rules::labels::Census {
+            sounds: Some(Default::default()),
+            ..Default::default()
+        };
+        assert!(::rules::labels::check(&src("announcer/attack"), &census, &[0, 1]).is_empty());
+        assert!(!::rules::labels::check(&src("sound/stinger"), &census, &[0, 1]).is_empty());
+    }
+
+    /// The line joins the announcer's queue for a machine whose own player
+    /// is in the audience, and for no other; an unknown clip is an error.
+    #[test]
+    fn an_announcer_line_queues_for_the_audience_only() {
+        let _g = serial();
+        crate::medal_announcer::take_waiting();
+        let team = cue::player(0) | cue::player(2);
+        say([0u8], team, "announcer/attack").unwrap();
+        say([1u8], team, "announcer/attack").unwrap();
+        say([2u8, 3], team, "announcer/defend").unwrap();
+        assert_eq!(crate::medal_announcer::take_waiting(), ["attack", "defend"]);
+        let e = say([0u8], team, "announcer/nope").unwrap_err();
+        assert!(e.to_string().contains("announcer/nope"), "{e}");
+        assert!(crate::medal_announcer::take_waiting().is_empty());
     }
 }

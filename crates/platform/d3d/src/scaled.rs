@@ -1,5 +1,5 @@
 //! Rendering above the guest's resolution without the guest seeing it
-//! (docs/graphics/high-resolution.md, phases 1 and 2).
+//! (docs/graphics/high-resolution.md, "Exact mode: reference and view").
 //!
 //! At scales above 1, single-copy mode draws into the display backend.
 //! It also holds shared handles to guest-sized targets, so all GPU draws
@@ -605,9 +605,8 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     }
 
     pub(super) fn anamorphic_guest_frame(&self) -> bool {
-        let (w, h) = self.stats.presentation;
-        self.presentation.is_some() && self.scale == RenderScale::ONE
-            && w != 0 && h != 0 && u64::from(w) * 3 != u64::from(h) * 4
+        self.presentation.is_some()
+            && canvas_fit::anamorphic_guest_frame(self.stats.presentation, self.scale == RenderScale::ONE)
     }
 
     /// The lighting in effect.

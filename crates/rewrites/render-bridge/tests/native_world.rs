@@ -3,8 +3,8 @@
 //! synthetic guest memory (the BSP items the host draws lose layer 3's bit
 //! for the layer and get it back at the next layer draw; nothing changes
 //! without a host or in another layer; a structure item the host does not
-//! draw loses the bit too and is counted `scene_dropped_world_*`, the
-//! world drawing only from the scene), and its chain on a second executor.
+//! draw keeps its guest draw and is counted `scene_kept_3_world_<cause>`,
+//! so no wall goes undrawn), and its chain on a second executor.
 #![cfg(feature = "native-render")]
 
 use std::sync::{Arc, Mutex};
@@ -105,12 +105,12 @@ impl Host for Stub {
         self.resolved.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &frame_scene::View, stencil: &StencilPlan, claim_guest: bool) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &frame_scene::View, stencil: &StencilPlan, claim_guest: bool) -> Result<native_render::skip::Cleared, &'static str> {
         assert!(claim_guest);
         self.asked.lock().unwrap().push((bsp, view.camera, stencil.clone()));
         let mut mem = native_world::Mem(mem);
-        let (masks, cleared, _) = native_world::plan_parts(&mem, &self.parts, |_, _| true)?;
-        masks.apply(&mut mem).then_some(cleared)
+        let (masks, cleared, _) = native_world::plan_parts(&mem, &self.parts, |_, _| true).ok_or("masks")?;
+        masks.apply(&mut mem).then_some(cleared).ok_or("masks")
     }
 }
 
@@ -175,8 +175,8 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     native_world::before_layer(&mut m, 0);
     assert_eq!(
         masks(&m),
-        vec![0b0010, 0b0010, 0b1010],
-        "the drawn part's BSP item, and the part the host left as a drop; not the object"
+        vec![0b0010, 0b1010, 0b1010],
+        "the drawn part's BSP item only: the part the host left keeps its guest draw, and the object"
     );
     {
         let asked = stub.asked.lock().unwrap();
@@ -216,12 +216,12 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     native_world::restore_pending(&mut m);
     assert_eq!(masks(&m)[0], 0b0100, "not the mask the skip left: not touched");
 
-    // A part the host does not draw loses layer 3 though its shader is
+    // A part the host does not draw keeps layer 3 though its shader is
     // drawn: both BSP items carry shader 0x10, and only part 0 is native.
     let mut m = guest();
     m.set_u32(ITEMS + 0x18 + 8, 0xe000_0010).unwrap();
     native_world::before_layer(&mut m, 0);
-    assert_eq!(masks(&m), vec![0b0010, 0b0010, 0b1010]);
+    assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010]);
     native_world::restore_pending(&mut m);
     assert_eq!(masks(&m), vec![0b1010; 3]);
 
@@ -233,7 +233,7 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     m.set_u32(RENDER_RECORDS + 0x20, STENCIL_MARK).unwrap();
     m.set_u32(RENDER_RECORDS + 0x20 * 3, STENCIL_MARK).unwrap();
     native_world::before_layer(&mut m, 0);
-    assert_eq!(masks(&m), vec![0b0010, 0b0010, 0b1010], "still drawn natively");
+    assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010], "still drawn natively");
     let plan = stub.asked.lock().unwrap().last().unwrap().2.clone();
     assert_eq!((plan.off, plan.switches, plan.marked), (false, true, vec![Owner::Cluster(0)]));
     native_world::restore_pending(&mut m);
@@ -243,8 +243,8 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     native_world::before_layer(&mut m, 0);
     assert!(stub.asked.lock().unwrap().last().unwrap().2.off);
     native_world::restore_pending(&mut m);
-    // Unreadable switches (the list runs past the memory): the view is a
-    // named drop that reads nothing, the host not asked.
+    // Unreadable switches (the list runs past the memory): the view is
+    // left to the guest, nothing cleared, the host not asked.
     let asked = stub.asked.lock().unwrap().len();
     let left = native_world::stencil_views();
     let mut m = guest();
@@ -284,7 +284,7 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     assert_eq!(masks(&m), vec![0b1010; 3]);
     assert_eq!(stub.asked.lock().unwrap().len(), asked + 1);
     native_world::before_layer(&mut m, 0x0002_bd74);
-    assert_eq!(masks(&m), vec![0b0010, 0b0010, 0b1010]);
+    assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010]);
     assert_eq!(stub.asked.lock().unwrap().len(), asked + 2);
     render_bridge::scene_step::with_open(|open| {
         let (_, view) = open.expect("alternate layer 3 opened a view");
@@ -313,31 +313,30 @@ fn the_world_build_places_only_context_only_scene_hooks() {
 struct Refuser;
 
 impl Host for Refuser {
-    fn ask(&self, _: &mut dyn GuestMemory, _: u32, _: &frame_scene::View, _: &StencilPlan, _: bool) -> Option<native_render::skip::Cleared> {
-        None
+    fn ask(&self, _: &mut dyn GuestMemory, _: u32, _: &frame_scene::View, _: &StencilPlan, _: bool) -> Result<native_render::skip::Cleared, &'static str> {
+        Err("device")
     }
 }
 
-fn dropped(name: &str) -> u64 {
+fn counter(name: &str) -> u64 {
     render_bridge::native_layers::counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n)
 }
 
-/// Whatever the host refuses, no structure item of layer 3 is left for the
-/// guest to build an entry for: the bit is gone, the drop is counted, and
-/// the object (the sorted walk's) is untouched. The next layer draw sets
-/// the bits back.
+/// Whatever the host refuses, every structure item of layer 3 keeps its
+/// guest draw, counted by the host's cause; the object (the sorted walk's)
+/// is untouched and not counted. No wall goes undrawn.
 #[test]
-fn no_opaque_item_reaches_the_device() {
+fn a_refused_wall_keeps_its_guest_draw() {
     let _serial = HOST_TESTS.lock().unwrap_or_else(|e| e.into_inner());
     native_world::set_host(Arc::new(Refuser));
-    let before = dropped("scene_dropped_world_refused");
+    let before = counter("scene_kept_3_world_device");
+    let objects = counter("scene_kept_3_object_device");
     let mut m = guest();
     native_world::before_layer(&mut m, 0);
-    assert_eq!(masks(&m), vec![0b0010, 0b0010, 0b1010], "both BSP items dropped, the object left");
-    assert_eq!(dropped("scene_dropped_world_refused"), before + 2);
-    m.set_u32(CURRENT_LAYER, 5).unwrap();
-    native_world::before_layer(&mut m, 0);
-    assert_eq!(masks(&m), vec![0b1010; 3], "the bits are back for the next layer");
+    assert_eq!(masks(&m), vec![0b1010; 3], "both BSP items keep their guest draw, and the object");
+    assert_eq!(counter("scene_kept_3_world_device"), before + 2);
+    assert_eq!(counter("scene_kept_3_object_device"), objects, "layer 3's objects are the walk's");
+    native_world::restore_pending(&mut m);
 }
 
 /// Guest memory in which one range does not read, as a record past the
@@ -360,13 +359,13 @@ impl GuestMemory for Unreadable {
     }
 }
 
-/// A part whose render record does not read is dropped by name, not left to
-/// the guest.
+/// A part whose render record does not read keeps its guest draw, counted
+/// as `unreadable` under `record`.
 #[test]
-fn an_unreadable_part_is_a_named_drop() {
+fn an_unreadable_part_keeps_its_guest_draw() {
     let _serial = HOST_TESTS.lock().unwrap_or_else(|e| e.into_inner());
     native_world::set_host(Arc::new(Refuser));
-    let before = dropped("scene_dropped_world_unreadable");
+    let before = counter("scene_kept_3_unreadable_record");
     let mut inner = guest();
     // Item 1's render record is record 0x7000, and that record does not read
     // (the memory the test maps holds it, so the hole is made by hand).
@@ -374,7 +373,7 @@ fn an_unreadable_part_is_a_named_drop() {
     let record = RENDER_RECORDS + 0x20 * 0x7000;
     let mut m = Unreadable { inner, hole: record..record + 0x20 };
     native_world::before_layer(&mut m, 0);
-    assert_eq!(masks(&m.inner)[1], 0b0010, "no guest entry for it");
-    assert_eq!(dropped("scene_dropped_world_unreadable"), before + 1);
+    assert_eq!(masks(&m.inner)[1], 0b1010, "its guest entry stays");
+    assert_eq!(counter("scene_kept_3_unreadable_record"), before + 1);
     native_world::restore_pending(&mut m);
 }

@@ -270,13 +270,19 @@ fn the_page_draws_in_every_state() {
     let names: Vec<&str> = specs.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
-        ["focus-0", "focus-3", "focus-4", "three-rows", "refused"]
+        ["focus-0", "focus-3", "focus-4", "three-rows", "refused", "siege", "siege-rounds"]
     );
     for (name, s) in &specs {
-        let rows = if name == "three-rows" { 3 } else { 5 };
+        let siege = name.starts_with("siege");
+        let rows = match name.as_str() {
+            "three-rows" => 3,
+            _ if siege => 7,
+            _ => 5,
+        };
         assert_eq!(s.rows.len(), rows, "{name}");
         assert_eq!(s.title, "QUICK OPTIONS", "{name}");
-        assert_eq!(s.texts[0].text, "Superbounce", "{name}: the variant's name");
+        let variant = if siege { "Siege" } else { "Superbounce" };
+        assert_eq!(s.texts[0].text, variant, "{name}: the variant's name");
         assert!(
             s.rows
                 .iter()
@@ -326,6 +332,19 @@ fn the_page_draws_in_every_state() {
         lines("three-rows"),
         ["Respawn Time", "Starting Weapon", "Shields"]
     );
+    // Siege's page is every option of its: the marks, then the rest.
+    assert_eq!(
+        lines("siege"),
+        [
+            "Respawn Time",
+            "Respawn wave (seconds)",
+            "Phase time (seconds)",
+            "Capture time (seconds)",
+            "Sites",
+            "Overtime (seconds)",
+            "Rounds"
+        ]
+    );
     let focused = |n: &str| {
         let (_, s) = specs.iter().find(|(m, _)| m == n).unwrap();
         s.description_text().unwrap()
@@ -339,6 +358,7 @@ fn the_page_draws_in_every_state() {
         "Points for each superbounce, times its place in the chain"
     );
     assert_eq!(focused("refused"), "7 is not a value of Respawn Time");
+    assert_eq!(focused("siege-rounds"), "How many rounds; the sides swap at each");
     // A opens the picker on the row's values, the held one focused; left
     // and right step nothing.
     let page = sample_page();
@@ -387,4 +407,80 @@ fn the_hooks_are_on_the_plan() {
         text.contains("UI_UPDATE: before [variant-quick-row:"),
         "{text}"
     );
+}
+
+/// Siege's options page, row by row: every option opens a picker by A on
+/// a short list with the held value focused (a wide range a ladder), a
+/// pick writes that option's bits alone and the row shows it at once, and
+/// the two options past the marks (the overtime and the rounds) change as
+/// the marked ones do.
+#[test]
+fn sieges_page_changes_every_option_through_a_picker() {
+    let ir = Arc::new(::rules::compile(::rules::builtin::SIEGE).unwrap());
+    let record = variants::portable::record_for(&ir, &[]).unwrap();
+    let changes = Arc::new(Changes::default());
+    let d = Arc::new(Dialog::new(Arc::clone(&changes)));
+    d.open(record.clone(), Arc::clone(&ir), Some(sample_offer()));
+    let rows = d.rows();
+    assert_eq!(rows.len(), 7);
+    assert_eq!(d.name(), "Siege");
+    // Game Setup's Quick Options row opens this page for the listed Siege
+    // entry, a record on Slayer's index.
+    let listed = crate::community_variants::listed_named("Siege").unwrap();
+    assert_eq!(listed.record.game_type(), GameType::Slayer);
+    assert_eq!(
+        entry(crate::variant_quick::script_for(&listed.record).as_deref(), true),
+        Entry::Ours
+    );
+    assert!(d.fill(7).is_none(), "no eighth row");
+    for (slot, row) in rows.iter().enumerate() {
+        let filled = d.fill(slot).unwrap();
+        assert_eq!(filled.label, row.label);
+        assert!(filled.help.is_some_and(|h| !h.is_empty()), "{}", row.label);
+        let pick = d.offer(slot).unwrap_or_else(|e| panic!("{}: {e}", row.label));
+        assert!((2..=crate::variant_quick::PICKER_VALUES).contains(&pick.values.len()), "{}: {:?}", row.label, pick.values);
+        // An option's held value is always on its list; a setting's is
+        // when the editor offered it.
+        if matches!(row.mark, Mark::Option { .. }) {
+            assert_eq!(pick.values[pick.current], row.text, "{}: the held value is focused", row.label);
+        }
+    }
+    // The phase time's picker is a minute apart; the third rung is 240 s.
+    let phase = rows.iter().position(|r| r.name == "phase_time").unwrap();
+    let pick = d.offer(phase).unwrap();
+    assert_eq!(pick.values, ["60", "120", "180", "240", "300", "360", "420", "480", "540", "600"]);
+    (pick.set)(3);
+    assert_eq!(d.rows()[phase].value, 240);
+    // The rounds and the overtime, past the marks.
+    for (name, to) in [("round_count", 4), ("overtime_time", 45)] {
+        let slot = rows.iter().position(|r| r.name == name).unwrap();
+        assert!(slot >= ROWS, "{name} is past the marks");
+        let line = d.choose(slot, to);
+        assert!(line.contains("->"), "{line}");
+        assert_eq!(d.rows()[slot].value, to);
+    }
+    // Each change was handed to the setter in turn; the last record holds
+    // all three, and every other option is at its default.
+    let handed = drain(&changes, &d, 1);
+    assert_eq!(handed.len(), 3);
+    let written = GameVariant::from_bytes(&handed[2]).unwrap();
+    let bits = Ext::in_effect(written.ext_block()).script.options;
+    for (i, o) in ir.options.iter().enumerate() {
+        let name = ir.option_name(i);
+        let want = match name {
+            "phase_time" => 240,
+            "round_count" => 4,
+            "overtime_time" => 45,
+            _ => o.default,
+        };
+        assert_eq!(ir.option_value(bits, name), Some(want), "{name}");
+    }
+    // The record is still Siege's lobby record: Slayer's index, teams on.
+    assert_eq!(written.game_type(), GameType::Slayer);
+    assert!(written.team_play());
+    // A value outside an option's range is refused in the row's help.
+    let rounds = rows.iter().position(|r| r.name == "round_count").unwrap();
+    let line = d.choose(rounds, 9);
+    assert!(line.contains("not changed"), "{line}");
+    assert_eq!(d.fill(rounds).unwrap().help.unwrap(), "9 is not a value of Rounds");
 }

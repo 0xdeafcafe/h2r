@@ -26,6 +26,8 @@ pub enum MeshError {
     LoopMismatch,
     /// The two vertices are not non-adjacent corners of one face.
     NoSharedFace,
+    /// A sculpt stroke was refused: why, in a sentence.
+    Stroke(String),
     /// The input does not describe a mesh.
     BadInput(String),
     /// The operation left the mesh failing `validate`: a kernel bug. The
@@ -44,6 +46,7 @@ impl fmt::Display for MeshError {
             MeshError::NotQuadRing => write!(f, "no quad ring through the edge"),
             MeshError::LoopMismatch => write!(f, "loops cannot be bridged"),
             MeshError::NoSharedFace => write!(f, "vertices share no face to split"),
+            MeshError::Stroke(why) => write!(f, "sculpt: {why}"),
             MeshError::BadInput(what) => write!(f, "bad input: {what}"),
             MeshError::Invalid(what) => write!(f, "operation broke an invariant: {what}"),
         }

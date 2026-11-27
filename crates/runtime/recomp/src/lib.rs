@@ -822,7 +822,8 @@ mod tests {
             guest_layout::points::render_aspect::instruction_entries()
                 .chain(guest_layout::points::scene_effects::instruction_entries())
                 .chain(guest_layout::points::game_types::instruction_entries())
-                .chain(guest_layout::points::skull_gates::instruction_entries()),
+                .chain(guest_layout::points::skull_gates::instruction_entries())
+                .chain(guest_layout::points::ai_gates::instruction_entries()),
         );
         for (source, expected_hit) in [(None, false), (Some(cache.as_path()), true)] {
             let (analysis, hit) = analyze_cached(&x, source).unwrap();

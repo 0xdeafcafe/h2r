@@ -58,6 +58,7 @@ pub mod host_identity; // dh-identity
 pub mod identity;
 pub mod ingest;
 pub mod invites;
+pub mod packages;
 pub mod local_signin;
 pub mod logio;
 mod mailbox;
@@ -274,6 +275,7 @@ pub async fn serve(config: Config) -> Result<()> {
     let live = Live::start(store.clone(), identity, config.policy).await?;
     live.set_blobs(blobs.clone());
     live.set_data_dir(&config.data_dir);
+    live.load_retail().await;
     screenshot_classifier::configure_native(&live);
     let publish = match (&config.site.game_art, &blobs.public) {
         (Some(art), Some(public)) if art.share && !private => {
@@ -476,6 +478,7 @@ pub fn start_embedded_with(
         };
         let live = Live::start(store, identity, policy).await?;
         live.set_data_dir(data_dir);
+        live.load_retail().await;
         screenshot_classifier::configure_native(&live);
         if kind != "memory" {
             match title_headers::reseal_legacy(&live).await {

@@ -855,6 +855,12 @@ impl GeometrySession {
                     reason,
                 })?;
         }
+        if ops.iter().any(|op| matches!(op, MeshOp::Sculpt(_))) {
+            self.stroke_collision(t, &mesh).map_err(|reason| Error::Refused {
+                target: t.id(),
+                reason,
+            })?;
+        }
         let before = self.state.clone();
         match merge {
             Some(key) => self.undo.record_coalesced(before, key),
@@ -869,6 +875,38 @@ impl GeometrySession {
         }
         self.rev += 1;
         Ok(last)
+    }
+
+    /// A sculpted mesh through the collision compiler
+    /// (docs/editor/modeling.md, "Sculpting"). A `coll` BSP compiles as its
+    /// save compiles it (`CollSource::writes`: the limits and the tag's
+    /// materials). A structure cluster or instanced definition compiles as
+    /// its level collision would be (`from_render`, `collision_build::build`
+    /// and `verify::check`). A model section has no collision of its own.
+    /// The error is why the stroke is refused, in a sentence.
+    fn stroke_collision(&self, t: Target, mesh: &Mesh) -> Result<(), String> {
+        let opened = self.find(t).ok_or_else(|| format!("{t} is not open"))?;
+        match &opened.source {
+            Source::Coll { source, index } => source
+                .writes(*index, &coll::polygons_from_mesh(mesh))
+                .map(|_| ())
+                .map_err(|e| format!("the collision compiler refuses the stroke: {e}")),
+            Source::Structure { .. } => {
+                let export = mesh.export();
+                let polygons =
+                    from_render(&export.positions, &export.triangles, &[], &FromRender::default());
+                if polygons.is_empty() {
+                    return Err("the stroke leaves no surface for the collision compiler".into());
+                }
+                let compiled = collision_build::build(&polygons)
+                    .map_err(|e| format!("the collision compiler refuses the stroke: {e}"))?;
+                match collision_build::verify::check(&compiled.bsp, 1).first() {
+                    Some(why) => Err(format!("the stroke's collision fails the compiler's check: {why}")),
+                    None => Ok(()),
+                }
+            }
+            Source::Model { .. } => Ok(()),
+        }
     }
 
     /// End a run of merged steps.

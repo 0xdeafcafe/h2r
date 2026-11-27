@@ -1001,6 +1001,38 @@ pub(crate) fn entry_states<B: d3d::backend::Backend>(
     (ObjectLayerEntry { states: entry.states, c18 }, entry.w_buffered)
 }
 
+/// `D3DZB_USEW`: the `ZENABLE` a layer's first shader begin sets before any
+/// of the layer's items draws (`0x0001bbf0`, at `0x0001bc11`: `push 2`,
+/// `SetRenderState_ZEnable`).
+pub(crate) const LAYER_BEGIN_ZENABLE: u32 = 2;
+
+/// Whether the device's `ZENABLE` (`None`: it does not read) is another
+/// than the one the layer's draws run with ([`LAYER_BEGIN_ZENABLE`]).
+pub(crate) fn needs_layer_begin_zenable(device_zenable: Option<u32>) -> bool {
+    device_zenable != Some(LAYER_BEGIN_ZENABLE)
+}
+
+/// Gives the device, at a layer call, the depth mode the layer's draws run
+/// with: the layer's first shader begin sets `ZENABLE` to `D3DZB_USEW`
+/// through D3D, which redoes the transform fragments (`SET_CONTROL0`'s
+/// z-perspective, the viewport and the W clip). At the call the device
+/// still holds what the work before the layer left: before a view's layer
+/// 1 that is the last view's screen passes, drawn unbuffered, so every
+/// layer-1 object item read as not W-buffered (`object_w_buffer`). The
+/// guest's begin sets the same value again, so its kept draws are as
+/// before. Run before the boundary's drain, which consumes the pushed
+/// fragments. `Ok(true)` when it set the state.
+pub(crate) fn apply_layer_begin_zenable<B: d3d::backend::Backend>(
+    device: &mut d3d::Device<B>, mem: &mut dyn GuestMemory,
+) -> Result<bool, d3d::D3dError> {
+    let held = device.render_state(&crate::native_world_glue::ReadMemory(&*mem), d3d::state::slot::ZENABLE);
+    if !needs_layer_begin_zenable(held) {
+        return Ok(false);
+    }
+    device.set_render_state(&mut crate::native_lights_glue::DeviceMemory(mem), d3d::state::slot::ZENABLE, LAYER_BEGIN_ZENABLE)?;
+    Ok(true)
+}
+
 /// The device's specular bit, which a draw on the implicit final combiner
 /// takes ([`object_fog`]).
 pub(crate) fn device_specular<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> Option<u32> {
@@ -1808,6 +1840,19 @@ pub(crate) fn sampled_texaccum<B: d3d::backend::Backend>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A layer's draws run with the `ZENABLE` its first shader begin sets,
+    /// `D3DZB_USEW` (`0x0001bbf0`): the layer glue sets it at the call
+    /// over any other value or one that does not read, and leaves a
+    /// device that already holds it alone (nothing pushed).
+    #[test]
+    fn the_layer_begin_zenable_is_set_over_anything_but_usew() {
+        assert_eq!(LAYER_BEGIN_ZENABLE, 2, "D3DZB_USEW");
+        assert!(needs_layer_begin_zenable(Some(0)), "the screen passes before layer 1 draw unbuffered");
+        assert!(needs_layer_begin_zenable(Some(1)), "Z-buffered");
+        assert!(needs_layer_begin_zenable(None), "does not read");
+        assert!(!needs_layer_begin_zenable(Some(2)));
+    }
 
     /// A pass whose draws sample the texture accumulation target binds it
     /// only where the device samples render-to-texture levels in place and

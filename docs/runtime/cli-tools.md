@@ -52,10 +52,11 @@ The commands `h2-tools` runs (`tools::TOOLS`):
 | `package check\|build` | `package_cmd.rs` (over `crates/tools/workspace`; [studio-redesign.md](../editor/studio-redesign.md), "Packages") |
 | `firefight kit` | `firefight_cmd.rs` |
 | `forge build\|check` | `forge_cmd.rs` |
-| `maps`, `tags`, `tag` | `maps.rs`, `tag_repo_cmd.rs` (`tags extract\|build`) |
+| `maps`, `tags`, `tag` | `maps.rs`, `tag_repo_cmd.rs` (`tags extract\|build`), `tag_project_cmd.rs` (`tags project\|edits`) |
 | `map testbuild` | `map_testbuild.rs` |
 | `testmap` | `testmap_cmd.rs` |
 | `collision`, `superbounce scan`, `hud preview\|sheet` | `collision.rs`, `superbounce_cmd.rs`, `hud_cmd.rs` |
+| `siege layout` | `siege_cmd.rs` (docs/game/rules-engine.md, "Siege layouts") |
 | `object`, `strings`, `effect`, `lights`, `shader`, `hs` | `object.rs`, `strings.rs`, `effects.rs`, `lights.rs`, `shader.rs`, `scripts.rs` |
 | `hs lsp` | `hs_lsp.rs` (over `hs::ide`), `studio_link.rs` (the editor commands' calls to Studio) |
 | `extract-shaders` | `extract_shaders.rs` |

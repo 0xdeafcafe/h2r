@@ -5,7 +5,8 @@
 //!
 //! A and B compare the entire CPU and memory including their saved stack
 //! words. C and D compare outside the vector clobbers and dead stack slots,
-//! including the return address, EFLAGS and live x87 registers. F
+//! including the return address, EFLAGS and live x87 registers; their
+//! crossing exits compare every register and stack byte. F
 //! (`mopp_box`) compares outside `eax`, `ecx`, `edx`, the x87 condition
 //! codes and its dead stack. A decline
 //! must preserve every guest register and byte. Each case takes the adapter
@@ -19,6 +20,8 @@
 #![cfg(feature = "differential")]
 
 mod common;
+#[path = "sim_collision_differential/crossing.rs"]
+mod crossing;
 #[path = "sim_collision_differential/disc.rs"]
 mod disc;
 #[path = "sim_collision_differential/mopp_box.rs"]
@@ -488,6 +491,12 @@ fn check(
             }.unwrap();
             assert_eq!(entry.overlay, m.overlay, "{case}: parity gather wrote memory");
             assert_eq!(p.compare(reference.0.gpr[0] as u8, &reference.1).unwrap(), None, "{case} {label}");
+            let guest = lifted::cpu::from_interp(&reference.0);
+            assert_eq!(
+                p.compare_exit(&guest, &reference.1).unwrap(),
+                None,
+                "{case} {label}: crossing exit"
+            );
         }
         let mut got_cpu = ir_cpu(&nc);
         got_cpu.eip = transfer.target_pc;

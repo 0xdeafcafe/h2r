@@ -1718,9 +1718,11 @@ fn the_banner_is_drawn_centred_above_the_frames_bottom() {
 /// The Firefight HUD on the synthetic sheet (`h2 hud preview firefight
 /// --state all --mode all --synthetic`): every state and mode passes every
 /// check but the glyphs (no fonts); in a fighting state the lines, the
-/// meter and the skulls on draw at full and half size, a quarter screen
-/// draws the lives and progress lines alone, the banner draws at full and
-/// half size, and a skull off draws nothing.
+/// meter, the set's numeral, the lit pips and the skulls on draw at full
+/// and half size, a quarter screen draws the lives line and the pips
+/// alone, the banner (the game's timed line) draws at full and half size,
+/// the progress line has words only in a bonus round, and a skull off
+/// draws nothing.
 #[test]
 fn the_firefight_hud_draws_and_passes_on_the_synthetic_sheet() {
     use crate::views::firefight::{self as ff, Firefight};
@@ -1736,25 +1738,35 @@ fn the_firefight_hud_draws_and_passes_on_the_synthetic_sheet() {
     };
     for mode in [Mode::Full, Mode::Half] {
         let s = shot("fighting", mode);
-        for id in [ff::SCORE, ff::LIVES, ff::PROGRESS, ff::ENEMIES, ff::SKULLS[0], ff::SKULLS[5]] {
+        for id in [
+            ff::SCORE, ff::LIVES, ff::ENEMIES, ff::SKULLS[0], ff::SKULLS[5], ff::SET,
+            ff::ROUNDS[0], ff::WAVES[0],
+        ] {
             assert!(s.element(id).unwrap().drawn, "{mode:?} {id}");
         }
-        for id in [ff::BANNER, ff::SKULLS[1], ff::SKULLS[6]] {
+        for id in [ff::BANNER, ff::PROGRESS, ff::SKULLS[1], ff::SKULLS[6]] {
             assert!(!s.element(id).unwrap().drawn, "{mode:?} {id}");
         }
         let b = shot("wave-banner", mode);
         assert!(b.element(ff::BANNER).unwrap().drawn, "{mode:?}");
+        assert!(b.element(ff::BANNER).unwrap().channel, "{mode:?}");
+        assert!(shot("bonus", mode).element(ff::PROGRESS).unwrap().drawn, "{mode:?}");
         assert_eq!(b.element(ff::BANNER).unwrap().text.as_deref(), Some("WAVE 3"));
         // The skulls sit right to left, one slot a skull.
         let x = |id: &str| s.element(id).unwrap().rect.unwrap().x0;
         assert!(x(ff::SKULLS[5]) < x(ff::SKULLS[0]), "{mode:?}");
-        // The lines are stacked up from the corner: score, lives, progress.
+        // The block is stacked up from the corner: score, lives, the
+        // meter, the pips' row, the skulls; the row reads set, rounds,
+        // waves from the left.
         let y = |id: &str| s.element(id).unwrap().rect.unwrap().y0;
-        assert!(y(ff::PROGRESS) < y(ff::LIVES) && y(ff::LIVES) < y(ff::SCORE), "{mode:?}");
-        assert!(y(ff::ENEMIES) < y(ff::PROGRESS), "{mode:?}");
+        assert!(y(ff::ENEMIES) < y(ff::LIVES) && y(ff::LIVES) < y(ff::SCORE), "{mode:?}");
+        assert!(y(ff::WAVES[0]) < y(ff::ENEMIES), "{mode:?}");
+        assert!(y(ff::SKULLS[0]) < y(ff::WAVES[0]), "{mode:?}");
+        assert!(x(ff::SET) < x(ff::ROUNDS[0]) && x(ff::ROUNDS[0]) < x(ff::WAVES[0]), "{mode:?}");
+        assert!(x(ff::ROUNDS[0]) < x(ff::ROUNDS[1]) && x(ff::WAVES[0]) < x(ff::WAVES[1]), "{mode:?}");
     }
     let q = shot("fighting", Mode::Quarter);
-    for id in [ff::LIVES, ff::PROGRESS] {
+    for id in [ff::LIVES, ff::SET, ff::ROUNDS[0], ff::WAVES[0]] {
         assert!(q.element(id).unwrap().drawn, "{id}");
     }
     for id in [ff::SCORE, ff::ENEMIES, ff::SKULLS[0], ff::BANNER] {

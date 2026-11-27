@@ -413,3 +413,75 @@ fn a_pick_keeps_its_wave_set_and_a_game_keeps_the_pick_it_started_from() {
     begin_run();
     assert_eq!(running().unwrap().waves, None);
 }
+
+/// A package on disk as `forge_build` writes it: the manifest, the
+/// document it was built from and a stand-in for the map. Its id.
+fn write_package(dir: &Path, doc: &ForgeDoc) -> MapId {
+    use content::manifest::{FORGE_FORMAT, ForgeLayer, MANIFEST_FILE, Manifest};
+    let map = b"an invented materialised map";
+    let mut manifest = Manifest::retail("fixture", doc.base.sha256);
+    manifest.package.format = FORGE_FORMAT;
+    manifest.package.name = doc.title.clone();
+    manifest.forge.push(ForgeLayer {
+        document: doc.id().unwrap(),
+        document_file: "document.h2forge".into(),
+        file: "materialised.map".into(),
+        sha256: Sha256::of(map),
+        game: None,
+    });
+    fs::write(dir.join("materialised.map"), map).unwrap();
+    fs::write(dir.join("document.h2forge"), doc.canonical_json().unwrap()).unwrap();
+    fs::write(dir.join(MANIFEST_FILE), manifest.to_toml()).unwrap();
+    manifest.map_id()
+}
+
+/// A replica or a film has no pick: the package it loaded names the
+/// document, and the running pick is that document's, wave set and
+/// ground as the host's pick had them. A package it cannot read, or none,
+/// leaves no running pick (a refusal says why for the first).
+#[test]
+fn a_replica_runs_the_document_of_the_package_it_loaded() {
+    clear();
+    set_running(None);
+    let set = forge_doc::waves::default_set();
+    let d = doc("Basin").with_waves(Some(set.clone()));
+    let package = Dir::new();
+    let id = write_package(&package.0, &d);
+    let fake = Fake { receipts: vec![(id, package.0.clone())], ..installed() };
+    install(Box::new(fake));
+    // Nothing loaded: nothing runs.
+    set_loaded(None);
+    assert_eq!(begin_run_replica(), Ok(()));
+    assert_eq!(running(), None);
+    set_loaded(Some(id));
+    assert_eq!(begin_run_replica(), Ok(()));
+    let ran = running().expect("the package's document is the running pick");
+    assert_eq!((ran.id, ran.name.as_str(), ran.kit), (Some(id), "Basin", false));
+    assert_eq!(ran.waves, Some(set));
+    assert_eq!(ran.prep, Prep::Ready(package.0.clone()));
+    // A package whose document is gone is refused by name, and runs nothing.
+    fs::remove_file(package.0.join("document.h2forge")).unwrap();
+    assert_eq!(begin_run_replica().unwrap_err().code, "variant_unreadable");
+    assert_eq!(running(), None);
+    // A package this machine has not: nothing runs.
+    set_loaded(Some(MapId([9; 32])));
+    assert_eq!(begin_run_replica(), Ok(()));
+    assert_eq!(running(), None);
+    set_loaded(None);
+}
+
+/// `MapGate` builds a member's variant through the installed maps: the
+/// document's bytes in, the package's directory out, and a document that
+/// is not one is the build's named error.
+#[test]
+fn a_member_builds_the_document_through_the_installed_maps() {
+    let fake = installed();
+    let builds = fake.builds.clone();
+    install(Box::new(fake));
+    let d = doc("Basin");
+    let dir = build_document(d.canonical_json().unwrap().as_bytes()).unwrap();
+    assert!(dir.to_string_lossy().starts_with("maps/forge-"));
+    assert_eq!(builds.load(Ordering::SeqCst), 1);
+    assert!(build_document(b"not a document").is_err());
+    assert_eq!(builds.load(Ordering::SeqCst), 1, "an unreadable document builds nothing");
+}

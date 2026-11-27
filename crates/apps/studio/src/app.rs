@@ -59,6 +59,7 @@ pub mod textures;
 pub mod ui_screens;
 pub mod voice_batch;
 pub mod voices;
+pub mod forge_variants;
 pub mod workspace;
 pub use commands::{PlaylistEdit, Refused};
 pub use edit_target::{EditChoice, EditState, Picker};
@@ -345,8 +346,26 @@ pub enum Action {
     /// editor, or open a voice, package, or authored item in its document
     /// (`app::assets`). Tag editors use the supplied map or the open map.
     OpenAsset { asset: String, map: Option<String> },
+    /// **Open as fields**: open a tag's tab in the field panel, whatever
+    /// editor its group gets (`app::assets`). Open puts it back.
+    OpenFields { asset: String, map: Option<String> },
     /// Make and open a package item in the edit target.
     CreateAsset(assets::CreateAsset),
+    /// A file dropped on the window: a source file (a WAV, a PNG, a model
+    /// YAML) becomes an item of `package`, else of the edit target; any
+    /// other file opens as a source (`app::assets::drop`).
+    DropFile { file: PathBuf, package: Option<String> },
+    /// **Where used**: the Browser lists what uses the asset, the
+    /// `used_by` rows of the link table (`app::assets::browse`).
+    WhereUsed { asset: String },
+    /// **Show edits**: the Browser lists the package items that change
+    /// the asset (`app::assets::browse`).
+    ShowEdits { asset: String },
+    /// The Browser lists its root again, in place of a link view.
+    ClearBrowse,
+    /// A field edit, a save or a selection of the open Forge map variant
+    /// (`app::forge_variants`).
+    Forge(forge_variants::ForgeAction),
     /// Run a package document control through the package API handlers.
     PackageCommand { method: &'static str, params: serde_json::Value },
     /// **Fork for this map**: the asset's edit lines for the open map, in
@@ -525,6 +544,8 @@ impl Action {
         match self {
             Action::Quit => ToolKind::ALL.into_iter().find(|t| app.tool_dirty(*t)),
             Action::OpenSource(_) => dirty_map(),
+            // A dropped file that is no source file opens as a source.
+            Action::DropFile { file, .. } if assets::DropKind::of(file).is_none() => dirty_map(),
             // A shared cache opens in the Tags tool, beside the open map.
             Action::SelectMap(name) if tag_browse::opens_as_tags(name) => None,
             Action::SelectMap(name)
@@ -541,7 +562,7 @@ impl Action {
                 dirty_map()
             }
             Action::SelectHalo1Map(_) => dirty_map(),
-            Action::OpenAsset { asset, map: Some(name) }
+            Action::OpenAsset { asset, map: Some(name) } | Action::OpenFields { asset, map: Some(name) }
                 if !asset.starts_with("package:")
                     && (app.loaded.as_deref() != Some(name.as_str())
                         || app.opened_package.is_some()
@@ -561,7 +582,8 @@ impl Action {
             Action::HudOpenMap(_) | Action::HudOpenPackage(_) => dirty(ToolKind::Hud),
             Action::CloseDoc(Doc::Map) => dirty_map(),
             // The script's text stays in the editor when its tab closes.
-            Action::CloseDoc(Doc::Rules | Doc::Voice | Doc::SourceAsset(_)) => None,
+            // A variant with unsaved edits refuses to close (`App::close_doc`).
+            Action::CloseDoc(Doc::Rules | Doc::Voice | Doc::Forge | Doc::SourceAsset(_)) => None,
             Action::CloseDoc(doc) => doc.holder().and_then(dirty),
             _ => None,
         }
@@ -635,6 +657,14 @@ pub struct App {
     /// The package entry open in the scenario tool.
     opened_package: Option<String>,
     source_assets: Vec<Option<assets::SourceAsset>>,
+    /// The Browser's link view: Where used or Show edits
+    /// (`app::assets::browse`).
+    pub browse: assets::Browse,
+    /// The tag tabs opened as fields: each shows the field panel in
+    /// place of its group's editor (`Action::OpenFields`).
+    pub(crate) fields_only: std::collections::BTreeSet<map::TagId>,
+    /// The Forge map variant open as a document (`app::forge_variants`).
+    pub forge_variants: forge_variants::ForgeVariants,
     /// The open Map Pack, beside the Halo 2 source (its maps resolve their
     /// shared caches from that source).
     mappack: Option<MapPack>,
@@ -777,6 +807,9 @@ impl App {
             packages: Vec::new(),
             opened_package: None,
             source_assets: Vec::new(),
+            browse: assets::Browse::default(),
+            fields_only: Default::default(),
+            forge_variants: Default::default(),
             mappack: None,
             pack: Vec::new(),
             pack_notes: Vec::new(),
@@ -1224,7 +1257,13 @@ impl App {
                 None => self.undo_redo(self.tool, false),
             },
             Action::OpenAsset { asset, map } => self.open_asset(&asset, map.as_deref()),
+            Action::OpenFields { asset, map } => self.open_fields(&asset, map.as_deref()),
             Action::CreateAsset(request) => self.create_in_target(request),
+            Action::DropFile { file, package } => self.drop_file(file, package),
+            Action::WhereUsed { asset } => self.show_where_used(&asset),
+            Action::ShowEdits { asset } => self.show_edits(&asset),
+            Action::ClearBrowse => self.clear_browse(),
+            Action::Forge(action) => self.run_forge(action),
             Action::PackageCommand { method, params } => self.package_command(method, params),
             Action::ForkAsset { asset } => self.fork_asset(&asset),
             Action::RevertAsset { asset } => self.revert_asset(&asset),

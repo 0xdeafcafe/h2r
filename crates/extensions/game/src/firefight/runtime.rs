@@ -267,6 +267,31 @@ pub fn teams_refusal(teams: u8, team_play: Option<bool>) -> Option<&'static str>
 /// the game copies into the globals at activation, team play in bit 0.
 pub const OPTIONS_VARIANT_FLAGS: u32 = bots::guest::VARIANT_FLAGS;
 
+/// Whether `ai_initialize_for_new_map` takes the campaign's path on this
+/// multiplayer map (`engine::points::ai_gates`): the loaded scenario
+/// carries the Firefight kit. Retail leaves a multiplayer map's AI
+/// uninitialised, so the engine would place no actor. Every machine and a
+/// film's playback answer the same: each applies the host's placements.
+/// With Firefight off the AI is initialised and idle.
+pub fn initialises_ai(m: &dyn GuestMemory) -> bool {
+    guest::read_kit(m).ok().flatten().is_some()
+}
+
+/// The options block's variant lives setting (`options + 0x134 + 0x7c`,
+/// game globals `+0x1b8` once copied): 0 unlimited.
+pub const OPTIONS_VARIANT_LIVES: u32 =
+    crate::variant_ext::OPTIONS_VARIANT + live_proto::hopper::variant::LIVES as u32;
+
+/// The lives setting a Firefight game needs in place of `lives`: 1, so a
+/// death leaves the player with none and the engine holds the respawn
+/// until the director's `Respawn` gives one back
+/// ([`guest::engine_holds_respawns`]). Unlimited (0) would let the engine
+/// respawn every player itself, and more than 1 would give each player
+/// free lives outside the director's pool. None when it is 1 already.
+pub fn with_held_respawns(lives: i32) -> Option<i32> {
+    (lives != 1).then_some(1)
+}
+
 /// Whether a multiplayer game about to start on a map that carries the kit
 /// (`kit`) must be a team game for Game Setup's Firefight choices: two
 /// player teams with Firefight on. One team plays whatever the variant
@@ -823,7 +848,7 @@ impl Runtime {
         };
         eprintln!(
             "firefight: {}at tick {tick}: {}",
-            seq.map_or("the AI switch ".to_string(), |s| format!(
+            seq.map_or(String::new(), |s| format!(
                 "host log entry {s} "
             )),
             row.error
@@ -842,23 +867,26 @@ impl Runtime {
     }
 
     /// A game is about to start (`GAME_ACTIVATE`, before the game copies
-    /// `options`, the options block, into its globals): two Firefight
-    /// teams on a kit map turn the variant's team play on there, so the
-    /// game plays as teams and [`teams_refusal`] has nothing to refuse.
-    /// Game Setup's Firefight choices decide, as they do the match. A
-    /// film's playback, another mode, a map without the kit and one team
-    /// leave the options as they are. It also publishes the match this
-    /// game plays ([`session_firefight`], none for any other game) to the
-    /// session sink. Returns the line to log when it wrote.
-    pub fn activate(&self, m: &mut dyn GuestMemory, options: u32, film: bool) -> Option<String> {
+    /// `options`, the options block, into its globals). Firefight on a kit
+    /// map sets the variant's lives to 1, so the engine holds every
+    /// respawn and only the director's `Respawn` lets a player back
+    /// ([`with_held_respawns`]). Two Firefight teams on a kit map turn the
+    /// variant's team play on there, so the game plays as teams and
+    /// [`teams_refusal`] has nothing to refuse. Game Setup's Firefight
+    /// choices decide, as they do the match. A film's playback, another
+    /// mode, a map without the kit and Firefight off leave the options as
+    /// they are. It also publishes the match this game plays
+    /// ([`session_firefight`], none for any other game) to the session
+    /// sink. Returns the lines to log, one for each write.
+    pub fn activate(&self, m: &mut dyn GuestMemory, options: u32, film: bool) -> Vec<String> {
         if film {
-            return None;
+            return Vec::new();
         }
         // This game is built from the lobby's pick as it stands: Map Waves
         // plays that map variant's set, from here until the next game.
         crate::map_variant::begin_run();
-        if m.u32(options).ok()? != MODE_MULTIPLAYER {
-            return None;
+        if m.u32(options).ok() != Some(MODE_MULTIPLAYER) {
+            return Vec::new();
         }
         let chosen = (self.options)().and_then(|o| record_options(m, options + crate::variant_ext::OPTIONS_VARIANT, o)).ok();
         // The match resolves the Wave set value on the map it starts on:
@@ -878,17 +906,40 @@ impl Runtime {
         // Every multiplayer start: a game that is not Firefight clears the
         // last one's.
         (self.session)(chosen.as_ref().and_then(|o| session_firefight(o, kit)));
-        let chosen = chosen?;
+        let Some(chosen) = chosen else {
+            return Vec::new();
+        };
+        let mut lines = Vec::new();
+        let at = options.wrapping_add(OPTIONS_VARIANT_LIVES);
+        if kit
+            && chosen.enabled
+            && let Ok(lives) = m.i32(at)
+            && let Some(held) = with_held_respawns(lives)
+        {
+            lines.push(match m.set_i32(at, held) {
+                Ok(()) => format!(
+                    "firefight: lives: the variant's {} set to 1, so the director's lives decide every respawn",
+                    if lives == 0 { "unlimited lives".to_string() } else { format!("{lives} lives") }
+                ),
+                Err(e) => format!(
+                    "firefight: lives: the variant's lives could not be set to 1, so the engine respawns players itself: {}",
+                    fault(e)
+                ),
+            });
+        }
         let at = options.wrapping_add(OPTIONS_VARIANT_FLAGS);
-        let flags = m.u32(at).ok()?;
-        let on = with_team_play(flags, wants_team_play(&chosen, kit))?;
-        Some(match m.set_u32(at, on) {
-            Ok(()) => "firefight: two teams: Team Play is on for this game".to_string(),
-            Err(e) => format!(
-                "firefight: two teams: Team Play could not be turned on: {}",
-                fault(e)
-            ),
-        })
+        if let Ok(flags) = m.u32(at)
+            && let Some(on) = with_team_play(flags, wants_team_play(&chosen, kit))
+        {
+            lines.push(match m.set_u32(at, on) {
+                Ok(()) => "firefight: two teams: Team Play is on for this game".to_string(),
+                Err(e) => format!(
+                    "firefight: two teams: Team Play could not be turned on: {}",
+                    fault(e)
+                ),
+            });
+        }
+        lines
     }
 
     /// A game started. Returns the line to log. A wave test of the last
@@ -911,6 +962,14 @@ impl Runtime {
             return "firefight: idle: not a multiplayer game".into();
         }
         let map = map_name(&*m);
+        let role = role(&*m, film);
+        // A replica or a film has no pick of its own: Map Waves plays the
+        // set of the document its map was built from, as the host's did.
+        if role == Role::Replica
+            && let Err(refusal) = crate::map_variant::begin_run_replica()
+        {
+            self.error(None, 0, &refusal.sentence);
+        }
         let mut read = (self.options)().and_then(|o| {
             match m.u32(points::GAME_GLOBALS.base).ok().filter(|g| *g != 0) {
                 Some(g) => record_options(m, g + bots::guest::OPTIONS + crate::variant_ext::OPTIONS_VARIANT, o),
@@ -953,7 +1012,6 @@ impl Runtime {
                 return line;
             }
         };
-        let role = role(&*m, film);
         let mut skulls = BTreeSet::new();
         let started = {
             let game = GuestGame::new(m, kit.as_ref(), &[], &mut skulls, &*self.sink);
@@ -1378,6 +1436,10 @@ impl Runtime {
                 eprintln!("firefight: pod: {error}");
                 continue;
             }
+            // A refused placement counts against its wave (`Host::stopped`).
+            if let Status::Running(game) = &mut self.status {
+                game.host.refused_entry(seq, &error);
+            }
             self.error(Some(seq), tick, error);
         }
         for (seq, error) in errors {
@@ -1461,7 +1523,8 @@ impl Runtime {
         // A wave test is no match: it reports no score and no result.
         let credits = host.take_credits();
         let ended = host.take_ended();
-        let unseen = host.take_unseen_errors();
+        let mut unseen = host.take_unseen_errors();
+        unseen.extend(host.take_stop_error());
         if !host.test() {
             for credit in credits {
                 (self.reports)(Report::Score(score_report(credit)));

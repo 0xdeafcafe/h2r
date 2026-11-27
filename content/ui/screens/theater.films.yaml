@@ -30,8 +30,8 @@ widgets:
     text: "THEATER"
   description:
     component: description
-    at: [-20, -62]
-    size: [288, 122]
+    at: [22, -62]
+    size: [246, 122]
   legend:
     component: legend
     prompts: [[A, "SELECT"], [B, "BACK"], [[Left, Right], "LIBRARY"]]
@@ -73,5 +73,5 @@ widgets:
   theater.panel.7:
     component: text.label
     text: "{theater_panel_7}"
-    at: [-20, 140]
-    size: [288, 120]
+    at: [22, 140]
+    size: [246, 120]

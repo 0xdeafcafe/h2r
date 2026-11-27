@@ -187,6 +187,19 @@ impl Icons {
         }
     }
 
+    /// The keyboard set with `keys` on its caps, whatever device is in use:
+    /// for a page that reads keys of its own (the Theater's playback page,
+    /// `theater_ui::playback_icons`).
+    pub fn keyboard(keys: KeyLabels) -> Self {
+        Icons {
+            choice: IconChoice::Set(IconSet::Keyboard),
+            initial: IconSet::Keyboard,
+            active: None,
+            keys,
+            available: Arc::new(Available::all()),
+        }
+    }
+
     /// False when the retail glyphs are all that can ever show, so nothing
     /// needs installing.
     pub fn enabled(&self) -> bool {
@@ -273,12 +286,6 @@ impl FontRewrite {
 }
 
 impl vfs::Rewrite for FontRewrite {
-    fn skipped(&mut self, path: &str) {
-        self.available.keep(0);
-        crate::log::note(&format!(
-            "icons: {path} exceeds the rewrite limit; keeping original prompts"
-        ));
-    }
     fn wants(&self, path: &str) -> bool {
         let p = path.to_ascii_lowercase();
         p.starts_with("maps\\fonts\\") && !p.ends_with(".txt")
@@ -656,11 +663,5 @@ mod tests {
                 }
             }
         }
-    }
-    #[test]
-    fn an_oversized_font_disables_aliases_too() {
-        let icons = Icons::with_parts(options("playstation", false), None, None);
-        icons.font_rewrite().skipped("maps\\fonts\\large");
-        assert_eq!(icons.shown(0xe100), 0xe100);
     }
 }

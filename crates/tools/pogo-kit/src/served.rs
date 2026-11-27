@@ -6,17 +6,17 @@
 //! `workspace::PackageRewrite`); this reads what that build left. A map
 //! without all three weapons is served without the stick and is cleared.
 
-use std::io::Cursor;
+use std::io::{Read, Seek};
 
 use map::{FourCC, Map};
 
 use crate::placed::{self, Placed};
 use crate::{NEVER, Style};
 
-/// The three looks' `weap` datums in `bytes`, when the map holds all of
-/// them, with the name its header carries.
-pub fn placed_in(bytes: &[u8]) -> Option<(Placed, String)> {
-    let map = Map::from_reader(Cursor::new(bytes)).ok()?;
+/// The three looks' `weap` datums in the map `map` reads, when it holds
+/// all of them, with the name its header carries.
+pub fn placed_in(map: impl Read + Seek) -> Option<(Placed, String)> {
+    let map = Map::from_reader(map).ok()?;
     let mut weapons = [0u32; 3];
     for style in Style::ALL {
         let path = style.tag_path();
@@ -31,15 +31,15 @@ pub fn placed_in(bytes: &[u8]) -> Option<(Placed, String)> {
     Some((Placed { weapons }, map.header().name.clone()))
 }
 
-/// Records the weapons of the map `stem` as served (`bytes`), under its
+/// Records the weapons of the map `stem` as served (`map`), under its
 /// file's stem and under the name its header carries (the loadout looks the
 /// loaded map up by that; the two are the same on a retail disc), or clears
 /// them when it holds no stick.
-pub fn publish(stem: &str, bytes: &[u8]) {
+pub fn publish(stem: &str, map: impl Read + Seek) {
     if NEVER.contains(&stem.to_ascii_lowercase().as_str()) {
         return;
     }
-    match placed_in(bytes) {
+    match placed_in(map) {
         Some((p, name)) => {
             placed::set(stem, p);
             if !name.is_empty() && !name.eq_ignore_ascii_case(stem) {
@@ -50,7 +50,3 @@ pub fn publish(stem: &str, bytes: &[u8]) {
     }
 }
 
-/// A map the game asked for that the rewrite did not read (too large).
-pub fn clear(stem: &str) {
-    placed::clear(stem);
-}

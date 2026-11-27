@@ -505,7 +505,7 @@ fn each_stage_has_its_words() {
         [
             "ff.score=SCORE 3400",
             "ff.lives=LIVES 4",
-            "ff.progress=ROUND 2 OF 3 WAVE 3",
+            "ff.progress=-",
             "ff.banner=-"
         ]
     );
@@ -550,6 +550,95 @@ fn each_stage_has_its_words() {
     };
     assert_eq!(text(&bonus)[2], "ff.progress=BONUS 0:42");
     assert!((meter(&bonus).fill - 0.5).abs() < 1e-6);
+    // A definition with more rounds than round pips names its round.
+    let long = Mode {
+        round: 6,
+        rounds: 12,
+        ..sample_mode()
+    };
+    assert_eq!(text(&long)[2], "ff.progress=ROUND 7 OF 12");
+}
+
+/// The pips, as Halo 3: ODST's Firefight shows them: a circle a round and
+/// a bar a wave, lit for the one on and those done, faint for those to
+/// come; the set's numeral only where sets repeat. A bonus round has no
+/// wave, a definition over three rounds no circles, the end and the
+/// monitor none of it, and a quarter screen keeps them.
+#[test]
+fn the_pips_show_the_set_the_round_and_the_wave() {
+    let pips = |v: &Values| -> (String, String, String) {
+        let row = |ids: &[&str]| -> String {
+            ids.iter()
+                .map(|id| {
+                    let p = v.get(id).unwrap();
+                    match (p.shown, p.fill > 0.5) {
+                        (false, _) => '-',
+                        (true, true) => '#',
+                        (true, false) => '.',
+                    }
+                })
+                .collect()
+        };
+        let set = v.get(ff::SET).unwrap();
+        let numeral = if set.shown { set.text.clone() } else { "-".into() };
+        (numeral, row(&ff::ROUNDS), row(&ff::WAVES))
+    };
+    let of = |m: &Mode| pips(&view(m, 0, M));
+    let s = |a: &str, b: &str, c: &str| (a.to_owned(), b.to_owned(), c.to_owned());
+    // Round 2 of 3, wave 3 of 5, no sets.
+    assert_eq!(of(&sample_mode()), s("-", "##.", "###.."));
+    let endless = Mode {
+        set: 1,
+        endless: true,
+        round: 0,
+        wave: 4,
+        ..sample_mode()
+    };
+    assert_eq!(of(&endless), s("2", "#..", "#####"));
+    let bonus = Mode {
+        bonus_left: 900,
+        total: 1_800,
+        ..endless.clone()
+    };
+    assert_eq!(of(&bonus), s("2", "#..", "-----"));
+    let long = Mode {
+        round: 6,
+        rounds: 12,
+        ..sample_mode()
+    };
+    assert_eq!(of(&long), s("-", "---", "###.."));
+    let two = Mode {
+        rounds: 2,
+        round: 1,
+        wave: 0,
+        ..sample_mode()
+    };
+    assert_eq!(of(&two), s("-", "##-", "#...."));
+    let won = Mode {
+        stage: Stage::Won,
+        ..endless.clone()
+    };
+    assert_eq!(of(&won), s("-", "---", "-----"));
+    for screen in Screen::ALL {
+        let seen = pips(&view_on(&endless, 0, M, screen, None));
+        assert_eq!(seen, s("2", "#..", "#####"), "{screen:?}");
+        let monitor = pips(&view_on(&endless, 0, Scope::Monitor, screen, None));
+        assert_eq!(monitor, s("-", "---", "-----"), "{screen:?}");
+    }
+    // A lit pip blinks as it lights; a faint one is steady.
+    let v = view(&sample_mode(), 0, M);
+    use hud_kit_core::motion::Motion;
+    assert_eq!(v.get(ff::WAVES[2]).unwrap().motion, Motion::Arrive);
+    assert_eq!(v.get(ff::WAVES[3]).unwrap().motion, Motion::None);
+    // The row, right to left from the frame's right edge: the waves, a
+    // gap, the rounds, a gap, the numeral.
+    let l = layout::layout(&endless, 0, M, Screen::Full, None);
+    let at = |id: &str| l.iter().find(|e| e.id == id).unwrap().rect;
+    assert_eq!(at(layout::WAVE_IDS[4]), layout::Rect::new(592 - 6, 400 - 64, 6, 10));
+    assert_eq!(at(layout::WAVE_IDS[0]).x, 592 - 34);
+    assert_eq!(at(layout::ROUND_IDS[2]), layout::Rect::new(592 - 48, 400 - 64, 8, 10));
+    assert_eq!(at(layout::ROUND_IDS[0]).x, 592 - 66);
+    assert_eq!(at(layout::SET), layout::Rect::new(592 - 72 - 8, 400 - 66, 8, 14));
 }
 
 #[test]
@@ -663,12 +752,12 @@ fn the_skulls_on_ride_in_the_blob() {
         | Skull::Catch
         | Skull::Mythic
         | Skull::Angry
+        | Skull::Iron
         | Skull::LowGravity => FIREFIGHT_SKULLS.contains(&s),
-        // Iron is a bonus-round rule, not a mode-blob skull.
-        Skull::Iron => !FIREFIGHT_SKULLS.contains(&s),
     };
     assert!(FIREFIGHT_SKULLS.iter().all(|s| listed(*s)));
-    assert_eq!(SKULL_BITS.count_ones(), 9);
+    assert_eq!(SKULL_BITS.count_ones(), 10);
+    assert_eq!(ENGINE_SKULL_BITS, SKULL_BITS & !(1 << 11));
     assert_eq!(skull_mask(&[Skull::Mythic, Skull::LowGravity]), 1 << 12 | 1 << 16);
     let m = Mode {
         skulls: skull_mask(&FIREFIGHT_SKULLS),
@@ -676,7 +765,7 @@ fn the_skulls_on_ride_in_the_blob() {
     };
     assert_eq!(m.skulls, SKULL_BITS);
     assert_eq!(Mode::decode(&m.encode()), Ok(m.clone()));
-    // The slots show the six of the nine that have a slot; Iron's has no skull.
+    // The slots show the six of the ten that have a slot; Iron's has no skull.
     let slots = state_of(&layout::layout(&m, 0, M, Screen::Full, None)).skulls;
     assert_eq!(slots, [true, true, true, true, true, true, false]);
     // The director's set reaches the blob.
@@ -710,6 +799,84 @@ fn a_rounds_skull_is_a_banner_from_the_blob() {
     let events = banners::events(Some(&before), &after, 0, skull_name);
     let words: Vec<String> = events.iter().map(Banner::text).collect();
     assert_eq!(words, ["ROUND 3", "BLACK EYE ON", "WAVE 1"]);
+}
+
+/// Each Firefight event says its line: a wave starts, a wave is cleared,
+/// each skull that switches on, and all of them at once.
+#[test]
+fn each_event_says_its_announcer_line() {
+    let wave = |n| Mode { stage: Stage::Spawning, wave: n, ..sample_mode() };
+    let between = Mode { stage: Stage::Intermission, ..sample_mode() };
+    let say = |before: &Mode, after: &Mode| {
+        let events = banners::events(Some(before), after, 0, skull_name);
+        banners::lines(Some(before), after, 0, &events)
+    };
+    assert_eq!(say(&between, &wave(1)), ["new-wave"]);
+    let fighting = Mode { stage: Stage::Fighting, ..sample_mode() };
+    assert_eq!(say(&fighting, &between), ["wave-complete"]);
+    // The skull lines, one for each skull that switches on.
+    for (skull, clip) in [
+        (Skull::Assassins, "assassins-on"),
+        (Skull::Thunderstorm, "thunderstorm-on"),
+        (Skull::Famine, "famine-on"),
+        (Skull::Ghost, "ghost-on"),
+        (Skull::BlackEye, "black-eye-on"),
+        (Skull::Catch, "catch-on"),
+        (Skull::Mythic, "mythic-on"),
+        (Skull::Angry, "angry-on"),
+        (Skull::Iron, "iron-on"),
+    ] {
+        let on = Mode { skulls: skull_mask(&[skull]), ..fighting.clone() };
+        assert_eq!(say(&fighting, &on), [clip], "{skull:?}");
+    }
+    // A skull with no clip is silent; the other session skulls have one.
+    assert_eq!(banners::skull_clip("Low Gravity"), None);
+    for name in ["Envy", "Grunt Birthday Party", "IWHBYD", "Blind", "Sputnik", "Iron", "Bandana"] {
+        assert!(banners::skull_clip(name).is_some(), "{name}");
+    }
+    // Every skull on at once: one All Skulls On for the tick, not eight.
+    let all = Mode { skulls: SKULL_BITS, ..fighting.clone() };
+    assert_eq!(say(&fighting, &all), ["all-skulls-on"]);
+    // Iron is the bonus round's: the engine skulls alone are all of them.
+    let engine = Mode { skulls: ENGINE_SKULL_BITS, ..fighting.clone() };
+    assert_eq!(say(&fighting, &engine), ["all-skulls-on"]);
+    // The last skull to switch on completes the set.
+    let almost = Mode { skulls: SKULL_BITS & !skull_mask(&[Skull::Angry]), ..fighting.clone() };
+    assert_eq!(say(&almost, &all), ["all-skulls-on"]);
+    // The rest of a match: a set, a round and a bonus round end, lives are
+    // added, the last life, the skulls going off, and the game over.
+    let set_done = Mode { stage: Stage::Intermission, set: 1, round: 0, wave: 0, ..sample_mode() };
+    assert_eq!(say(&fighting, &set_done), ["set-complete"]);
+    let round_done = Mode { stage: Stage::Intermission, round: 1, wave: 0, ..sample_mode() };
+    assert_eq!(say(&fighting, &round_done), ["round-complete"]);
+    let bonus = Mode { bonus_left: 900, ..fighting.clone() };
+    assert_eq!(say(&fighting, &bonus), ["bonus-round"]);
+    let paid = Mode { lives: Lives::Shared(6), ..fighting.clone() };
+    assert_eq!(say(&bonus, &paid), ["bonus-round-complete", "lives-added"]);
+    let two = Mode { lives: Lives::Shared(2), ..fighting.clone() };
+    let one = Mode { lives: Lives::Shared(1), ..fighting.clone() };
+    assert_eq!(say(&two, &one), ["last-life"]);
+    assert_eq!(say(&one, &two), ["lives-added"]);
+    let on = Mode { skulls: skull_mask(&[Skull::Ghost, Skull::Famine]), ..fighting.clone() };
+    assert_eq!(say(&on, &fighting), ["skulls-off"]);
+    let swapped = Mode { skulls: skull_mask(&[Skull::Catch]), ..fighting.clone() };
+    assert_eq!(say(&on, &swapped), ["skulls-off", "catch-on"]);
+    let lost = Mode { stage: Stage::Lost, ..sample_mode() };
+    assert_eq!(say(&fighting, &lost), ["game-over"]);
+    // The first blob of a match says nothing: its skulls are the lobby's.
+    assert!(banners::lines(None, &on, 0, &[]).is_empty());
+    // Every clip is the announcer's own, and plays.
+    for id in [
+        "set-complete", "round-complete", "bonus-round", "bonus-round-complete",
+        "lives-added", "last-life", "game-over", "skulls-off",
+    ] {
+        assert!(crate::medal_announcer::clip_bytes(id).is_some(), "{id}");
+    }
+    // Every clip is stored as audio the announcer can play.
+    for id in ["new-wave", "wave-complete", "all-skulls-on"] {
+        let bytes = crate::medal_announcer::clip_bytes(id).unwrap();
+        assert!(crate::medal_announcer::parse_wav(bytes).is_ok(), "{id}");
+    }
 }
 
 /// The end of a won match is a banner that stays up, from the blob alone.
@@ -990,7 +1157,7 @@ fn no_element_overlaps_a_retail_rectangle() {
                 for (piece, r) in screen.retail() {
                     assert!(!e.rect.overlaps(&r), "{name} {screen:?}: {} on {piece}", e.id);
                 }
-                if e.kind == layout::Kind::Text && e.shown && e.id != layout::BANNER {
+                if e.kind == layout::Kind::Text && e.shown && e.id != layout::SET {
                     assert_eq!(e.rect.right(), f.right(), "{} is right-justified", e.id);
                     assert!(e.rect.bottom() <= f.bottom() - layout::PLATE_TOP, "{}", e.id);
                 }
@@ -1028,8 +1195,8 @@ fn a_skull_slot_never_moves() {
             }
         }
     }
-    // Full: 16 px on an 18 px pitch from the right, 70 above the plate.
-    assert_eq!(layout::skull_slot(2, Screen::Full), Some(layout::Rect::new(592 - 36 - 16, 444 - 44 - 70, 16, 16)));
+    // Full: 16 px on an 18 px pitch from the right, 82 above the plate.
+    assert_eq!(layout::skull_slot(2, Screen::Full), Some(layout::Rect::new(592 - 36 - 16, 444 - 44 - 82, 16, 16)));
     assert_eq!(layout::skull_slot(0, Screen::Quarter), None);
     // A skull on is shown in its slot, off is hidden, and switching one
     // changes nothing else.

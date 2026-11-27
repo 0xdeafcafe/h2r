@@ -25,8 +25,8 @@ static PRIVATE_VIEW: AtomicBool = AtomicBool::new(false);
 /// Whether the HUD's black overlay (`HUD_BLACK_OVERLAY`) is skipped: the
 /// view drawn is one of ours and has no player. The engine draws a view
 /// with no player (`VIEW_PLAYER` is `-1`) fully black, as it draws a
-/// local player's death or spawn fade; a private view (Forge's monitor,
-/// the agent camera, the Pogo chase camera, Theater's cameras) has none,
+/// local player's death or spawn fade; a private view (the agent camera,
+/// the Pogo chase camera, Theater's cameras) has none,
 /// and a player's own view keeps its index, so the retail fade stays.
 pub(crate) fn skips_black_overlay(m: &dyn GuestMemory) -> bool {
     PRIVATE_VIEW.load(Ordering::Relaxed) && m.u32(VIEW_PLAYER).is_ok_and(|user| user == u32::MAX)
@@ -356,8 +356,8 @@ mod tests {
     }
 
     /// One test, as the flag is process-wide: each private view kind (the
-    /// Forge monitor, the agent camera, the Pogo chase camera and
-    /// Theater's cameras all draw through `replace_world_view`) skips the
+    /// agent camera, the Pogo chase camera and Theater's cameras all draw
+    /// through `replace_world_view`) skips the
     /// overlay, a player's own view or a frame with no private view keeps
     /// it.
     #[test]
@@ -367,7 +367,7 @@ mod tests {
         PRIVATE_VIEW.store(false, Ordering::Relaxed);
         assert!(!skips_black_overlay(&guest), "no private view drawn");
         assert!(draw(&mut guest, 0x2000));
-        assert!(skips_black_overlay(&guest), "monitor, agent, Pogo, Theater");
+        assert!(skips_black_overlay(&guest), "agent, Pogo, Theater");
         guest.put_u32(VIEW_PLAYER, 0);
         assert!(!skips_black_overlay(&guest), "a dead or respawning player's fade stays");
         assert!(!skips_black_overlay(&FakeGuest::new()), "an unread player");

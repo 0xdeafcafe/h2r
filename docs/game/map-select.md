@@ -1,14 +1,23 @@
 # Multiplayer map selection
 
-Status: Built. The category dialog, the separate mod slots and the live refresh are in the code; the game checks under "Game verification" are open.
-Code: `crates/extensions/game/src/map_select.rs` (`map_select::MapSelect`, `Catalogue`, `page`). Tests: `crates/extensions/game/src/map_select.rs`.
+Status: Built. The category dialog, the separate mod slots, the live refresh, the pane's list of modes and a map's page of variants are in the code; the game checks under "Game verification" are open.
+Code: `crates/extensions/game/src/map_select.rs` (`map_select::MapSelect`, `Catalogue`, `page`), `crates/extensions/game/src/map_modes.rs` (the modes each map and map variant supports). Tests: `crates/extensions/game/src/map_select/tests.rs`, `crates/extensions/game/src/map_modes/tests.rs`.
 Switch: none.
 
 Game Setup's **Change Map** uses the game's Select Map dialog to show
 categories. Choose a category with **A**, then choose a map. **B** or
 **Back** in a map list returns to the categories with the opened category
 focused. From the categories, **B** or **Back** closes the picker.
-**A** on a map applies the selection and dismisses the picker.
+**A** on a map applies the selection and dismisses the picker; on a map
+with saved map variants it opens [the map's page](#a-map-with-variants).
+
+```text
+Select Map            Halo 2                 Lockout
+  Halo 2      (A) ->    Lockout     (A) ->     Lockout
+  Map Pack              Midship                Castle Keep
+  Mods                  Ascension              Lockout Towers
+        (B) <-                (B) <-
+```
 
 | Category | Maps | Order |
 |---|---|---|
@@ -16,7 +25,6 @@ focused. From the categories, **B** or **Back** closes the picker.
 | Map Pack | Maps installed by `h2 import-mappack` | The game's order |
 | Mods | Community packages, including mods based on disc and Map Pack maps | Name, then list ID |
 | Halo: CE | Converted Halo 1 maps | Name, then list ID |
-| Firefight | Installed kit maps | Name, then list ID |
 
 The pregame picker opens the catalogue even with a single category. A full
 Mods category can show an overflow notice even when no mod fits.
@@ -27,20 +35,103 @@ picker, since the Select Map dialog's list is only filled in the main
 menu ([settings-menu.md](settings-menu.md#game-setup-from-the-pause-menu),
 `pause_change_map`).
 
-**By lobby mode** (`map_select::mode_category`, the mode is
-`lobby_start::Mode`, [forge-firefight-ui.md](forge-firefight-ui.md#the-lobbies)):
+**By lobby mode** (the mode is `lobby_start::Mode`,
+[forge-firefight-ui.md](forge-firefight-ui.md#the-lobbies)): Multiplayer,
+Forge and Firefight lobbies, and a Custom Games lobby on a Firefight or
+Siege variant, all open the categories above. There is no Firefight
+category and no separate list of Firefight maps.
 
-| Mode | Change Map opens |
+## One list, with the modes each map supports
+
+A map row reads the map's name and nothing else. The pane lists what the
+focused map supports under its description, in the description's own
+text block and style:
+
+```text
+Lockout                  | <the map's description>
+Midship                  |
+Ascension                | Supports
+                         | Firefight
+                         | Siege on Castle Keep
+```
+
+| Pane line | When |
 |---|---|
-| Multiplayer | the categories above |
-| Forge | the same installed categories as Custom Games |
-| Firefight | the **Firefight** category: installed packages that carry the Firefight kit (`Firefight – <map>`, `lobby_start::is_kit_map`), then each original map with a saved map variant that has AI ground (`Catalogue::with_ground_maps`) |
+| `No Firefight kit or AI ground`, `No Siege sites or flag stand` | first, when the lobby plays that mode and the row does not |
+| `Supports` | the row supports a mode |
+| `Firefight`, `Siege` | the map itself plays the mode |
+| `Siege on Castle Keep` | only a variant of the map plays it |
+| `Siege on Castle Keep and 2 more` | several variants do; the first by name is named |
 
-Selecting a Firefight variant opens its compatible kit maps directly.
-B or Back returns to Game Setup. A wave set with no compatible installed
-map has an empty list. Script variants with label or tag requirements
-filter the catalogue using the map census. The remaining maps retain
-their catalogue order.
+A map that supports neither mode has no list. The text is
+`map_modes::View::pane`.
+
+The support comes from data, one function a mode
+(`crates/extensions/game/src/map_modes.rs`):
+
+| Mode | A map supports it when | A variant supports it when |
+|---|---|---|
+| Firefight | it is a kit package (`Firefight – <map>`), an installed kit package names it, or the game builds a kit for it (`lobby_start::BUILTIN_KIT_MAPS`); with a wave set made for one map, only that map (`map_modes::firefight_support`) | its document has AI ground (`forge::files::variants::Listed::ground`) and the wave set takes the map |
+| Siege | its census has a `siege_site`, a territory, a `siege_goal` or the defending team's flag stand (`rules::gate::siege_objectives`, through `rules::gate::siege_supports` over the map file) | the census of the map with the variant's edits has one (`rules::gate::siege_supports_variant`) |
+
+**A row supports the union** of what the map does and what its variants
+do (`View::support`; `View::own` is the map's alone). The filter, the
+order, the refusal and the auto-pick below all read the union.
+
+A kit package is listed under its original map, not beside it, unless no
+original map is installed. In a Firefight lobby the original map's row
+puts the package's list ID on the lobby, so the lobby's map carries the
+kit.
+
+When the lobby plays Firefight (the Firefight mode, or a Firefight
+variant) or Siege (the Siege variant), the picker lists the maps that
+play it first, each group in its category's order. The others stay
+listed by name, and their pane says what they lack. A on one is refused
+and the lobby's status line says why
+(`lobby_tabs::Reason::MapNoFirefight`, `MapNoSiege`). Siege's variant
+keeps every map in the picker; other rules scripts still hide the maps
+that lack their labels (`rules::gate::map_filter`).
+
+**Auto-pick.** When the lobby's game type becomes Firefight or Siege and
+its map does not support it, the lobby moves to the map last used with
+that game type in the session, else the first map the picker lists
+(`map_modes::pick`, the tick hook in `map_select`). A supported map is
+noted as the last used. Nothing moves once the game is starting.
+
+### A map with variants
+
+A map's saved map variants ([forge-map-variants.md](forge-map-variants.md))
+list under it. Only variants that pass the store's checks are listed
+(`lobby_mode::usable_variants`), by name, 15 at most
+(`map_modes::PAGE_VARIANTS`).
+
+| A on a map row | Result |
+|---|---|
+| The lobby's mode is not in the row's union | refused, with the reason |
+| The map has no variants | picked |
+| The map has variants | its page opens (`map_select::opens_page`, `Mode::Variants`) |
+
+| Page row | Reads | Pane | A |
+|---|---|---|---|
+| First | the map's name | what the map supports itself | plays the map with no variant (`map_variant::clear`) |
+| Each variant | the variant's name | what the variant supports | makes it the lobby's map variant (`lobby_mode::choose_in_lobby`) |
+
+Both set the lobby's map and dismiss the picker. A row that does not
+play the lobby's mode is refused with the reason. **B** or **Back**
+returns to the category's maps with the map focused. In a Siege lobby,
+Lockout with the Siege variant Castle Keep lists with the Siege maps;
+A on it opens the page, where Lockout itself is refused and Castle Keep
+is picked.
+
+Game Setup's **Map Variant...** row
+([forge-map-variants.md](forge-map-variants.md#the-lobby)) still changes
+the variant of the lobby's map without a visit to Change Map. A pack
+member and a row of the pause menu's picker pick the map directly.
+
+The picker's design is the `map.picker.slayer`, `map.picker.firefight`,
+`map.picker.siege` and `map.picker.variants` screens
+(`h2 studio ui.render`), whose rows come from `map_modes::sample` and
+`map_modes::sample_page`.
 
 ## Separate slots for mods
 
@@ -48,15 +139,15 @@ The category follows the slot's load path. The DVD's
 `D:\maps\<name>.map` has its original Halo 2 slot. Map Pack maps keep their
 imported `T:\$c\<offer>\<name>.map` slots. Each mod uses a separate content
 offer, a separate list ID, and a free multiplayer slot. A mod based on
-Lockout is listed by its own name under **Mods** while **Lockout** remains
+Lockout is listed by its own name under **Mod Downloader** while **Lockout** remains
 under **Halo 2**. The same rule applies to mods based on Map Pack maps.
 
-A fully installed Live pack appears as a folder under **Mods**. The
+A fully installed Live pack appears as a folder under **Mod Downloader**. The
 folder lists its base maps. Pick one to play that member and use the
 pack for later map choices. In **Halo 2** and **Map Pack**, a covered
 base shows its name followed by the pack name. Its row selects the
 member's exact offer. Uncovered maps
-keep their original slots. Choose **Mods** → **Use original maps**
+keep their original slots. Choose **Mod Downloader** → **Use original maps**
 to clear the pack for subsequent selections. A member can still be
 played individually when only part of its pack is installed.
 
@@ -73,7 +164,7 @@ Halo 1 maps and any other content. When the list fills, the category
 shows `Mods (N mods not shown, list full)`. Overflow packages remain
 installed and can appear when a slot becomes available.
 
-Installed mods appear in their own slots when space allows. See [generated offers](maps.md#package-offers) for slot
+Installed mods appear in their own slots when space allows. See [generated offers](maps-new-maps.md#package-offers) for slot
 allocation, IDs and load paths.
 
 ## Names, descriptions and pictures
@@ -88,7 +179,7 @@ The game applies the record to a free slot and uploads the preview to
 that slot's bitmap. Select Map, Game Setup and the lobby use the same
 slot, so all three show the chosen mod's picture. The retail slot
 retains its own name, description and bitmap. See
-[Map Pack §8.1](map-pack.md#81-where-10-reads-patchlvl) and
+[Map Pack §8.1](map-pack-playing.md#81-where-10-reads-patchlvl) and
 [map packages §4](maps.md#4-new-maps-and-the-map-pack).
 
 ## Changes during a session
@@ -130,6 +221,9 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
     The Mods list groups complete packs. When a pack is selected the
     Halo 2 and Map Pack rows resolve matching bases to member slots.
   - **pack**: the selected folder's installed member slots, ordered by base.
+  - **variants**: one element a row of the map's page, each with the
+    map's own id, so every row shows the map's picture. A row is told
+    from its place in the list, not its id.
 
   A map id no slot of the loaded list holds has no name
   (the row text below names it from its slot; the constructor only skips
@@ -139,7 +233,7 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
   the console says which rows won't show by name and why:
   `map select: Maps(MapPack): 4 of 9 rows won't show by name
   (Containment (0x514): not in the game's list, ...)`. Nothing is said
-  when every row has an unlocked slot.
+  when every row has an open slot.
 - **Row text** (`MAP_LIST_ROW_TEXT` `0x2c9ac4` notes which list is
   drawing; `MP_LEVEL_NAME` `0x2afd70` answers). The row text looks up the
   row's slot (`0x19c5f0`) and calls `0x2afd70(slot)` at `0x2c9afc` for its
@@ -147,6 +241,20 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
   name). For a list of ours, called from there, the answer is our UTF-16
   category label in category mode, the release name for a pack folder
   or the base name for a pack member. Other maps use the slot's own name.
+  On a map's page the row's place (the item widget's row handle at
+  `+0x70`, noted at `0x2c9ac4`) picks the name: the map's, then each
+  variant's (`map_select::page_label`).
+- **The pane** (`UI_LANGUAGE`, `0x11cae0`). The screen's focus handler
+  (`0x2c9b7c`, screen in ECX) finds the focused row's slot (`0x19c5f0`),
+  sets the picture, then asks for the language at `0x2c9be6` and gives
+  its description block `slot + 0x24c + 0x100 * language`. Called from
+  there (return `0x2c9beb`, the screen in EDI, the slot in EBP) for a
+  list of ours with something to say, the hook writes the slot's
+  description and the list of modes into our memory at an address a
+  whole number of descriptions past the slot's first, and answers that
+  number as the language (`map_select::pane_at`, `pane_language`). The
+  handler then shows our text. Each kind of list has its own pane, as a
+  list and the one it opened are up together during the change.
 - **A category's press** (`MAP_LIST_ROW_CHOSEN`, `0x2c9b17`, in place of
   the retail press). It finds the row's id (handler `+0x70`, element `+4`)
   and its category, then arms a maps list for it. It pushes a second
@@ -155,6 +263,12 @@ for those instances only (`map_select::MapSelect`, feature `map-select`).
   over. At push the maps screen inherits the Game Setup return before the
   window frees the folders. It records whether its opener was Game Setup
   or a folder, so another lobby mode cannot change its Back target.
+- **A map with variants** is pressed the same way: its page is a third
+  Select Map on the same window and slot. Back on it queues the
+  category's maps with the map's id as the focus.
+- **A page row's press** names the row by its place, refuses one that
+  does not play the lobby's mode, sets or clears the lobby's map variant,
+  then runs the retail press below.
 - **B or Back on a category's maps** (`SCREEN_BACK_EVENT`) queues Select
   Map in categories mode with request bit 0 set. The push hook resolves
   the opened category's representative map ID to a row handle in the
@@ -188,6 +302,11 @@ focused row, open that category, and check that the active mode is
 `folders` with the same focused row. Press B again and check that the
 picker is gone. Repeat with Back and with the lobby Back feature disabled.
 
+On a map with a saved map variant, press A and check that the active
+mode is `variants` with a `maps` parent and the map's name in `folder`.
+Press B and check `maps` with the map's row focused. Pick a variant and
+check the lobby's panel names it under the map.
+
 With an existing data directory,
 confirm retail Lockout and a Map Pack base load from their original
 categories. Pick a mod with an image and check Select Map, Game Setup
@@ -198,6 +317,13 @@ on the guest and start the match. Switch the host back to retail and
 verify the next advertisement clears the mod's content ID.
 
 Open items:
+
+- The pane and a map's page have not run in a game. To check: the
+  description block draws the list's line breaks and all of a
+  description with five lines under it; a list of several rows with one
+  map id shows every row; the item widget's row at `0x2c9ac4` is the
+  row's place; a variant picked on a map other than the lobby's is still
+  held once the retail press has set the map (`map_variant::sync`).
 
 - All nine Map Pack maps appear under **Map Pack**. The dialog has 14 row
   widgets; if a map is missing, compare the catalogue's IDs with the

@@ -218,7 +218,7 @@ impl FilmMeta {
         let n = self.monitor_looks.len();
         (n > 0).then(|| {
             format!(
-                "{n} monitor look{} drawn as marker{}",
+                "{n} monitor look{} as marker{}",
                 if n == 1 { "" } else { "s" },
                 if n == 1 { "" } else { "s" },
             )
@@ -539,6 +539,7 @@ fn downloaded_clip(
                 film: clip.film.clone(),
                 from_tick,
                 to_tick,
+                title: clip.title.clone(),
             })
         })
         .transpose()
@@ -555,11 +556,23 @@ pub trait Library: Send + Sync {
 /// playback can be exercised against independent in-memory adapters.
 pub type OpenLibrary = fn(&Path) -> Result<Box<dyn Library>, String>;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Clip {
     pub film: String,
     pub from_tick: u64,
     pub to_tick: u64,
+    /// The name the Clips tab shows, "Clip 3" for the film's third clip.
+    /// Empty for a range that was never saved from the player.
+    #[serde(default)]
+    pub title: String,
+}
+
+impl Clip {
+    /// The range and film, ignoring the name: two saves of one range are
+    /// one clip.
+    pub(super) fn same_range(&self, other: &Self) -> bool {
+        self.film == other.film && self.from_tick == other.from_tick && self.to_tick == other.to_tick
+    }
 }
 
 pub(super) fn load_clips(path: &Path) -> Result<Vec<Clip>, String> {

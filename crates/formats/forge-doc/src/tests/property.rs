@@ -1,6 +1,6 @@
 //! `EntryOp::Property` and the `team` property (slice D4). All inputs are
 //! invented.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::*;
 
@@ -466,4 +466,156 @@ fn spare_clips_are_an_item_spawners_in_range_and_the_last_op_wins() {
     ops.push(reset(6, at(ITEMS, 0)));
     assert!(spare_clips(&ops).is_empty());
     assert!(resolve(&ops, &limits().base_counts).unwrap().lowered.is_empty());
+}
+
+fn weight(id: u32, target: Endpoint, weight: Option<SpawnWeight>) -> Op {
+    Op {
+        id: OpId(id),
+        edit: Edit::Entry(EntryOp::Property {
+            target,
+            property: Property::Weight(weight),
+        }),
+    }
+}
+
+#[test]
+fn a_weight_is_a_starting_points_and_the_last_op_wins() {
+    const STARTS: BlockKind = BlockKind::StartingLocations;
+    let limits = Limits {
+        base_counts: BTreeMap::from([(ITEMS, 3), (STARTS, 2)]),
+        ..Limits::default()
+    };
+    let op = weight(1, at(STARTS, 0), Some(SpawnWeight::High));
+    assert_eq!(
+        serde_json::to_value(&op.edit).unwrap()["entry"]["property"]["property"],
+        serde_json::json!({"weight": "high"})
+    );
+    validate(&with(vec![op.clone()]), &limits).unwrap();
+    let error = validate(&with(vec![weight(1, at(ITEMS, 0), Some(SpawnWeight::Low))]), &limits)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("a weight is a starting point's"), "{error}");
+    let mut ops = vec![
+        op,
+        weight(2, at(STARTS, 1), Some(SpawnWeight::Low)),
+        weight(3, at(STARTS, 1), None),
+    ];
+    assert_eq!(
+        spawn_weights(&ops),
+        BTreeMap::from([(Endpoint::base(STARTS, 0), SpawnWeight::High)])
+    );
+    ops.push(reset(4, at(STARTS, 0)));
+    assert!(spawn_weights(&ops).is_empty());
+}
+
+fn at_start(id: u32, target: Endpoint, at_start: Option<bool>) -> Op {
+    Op {
+        id: OpId(id),
+        edit: Edit::Entry(EntryOp::Property {
+            target,
+            property: Property::PlaceAtStart(at_start),
+        }),
+    }
+}
+
+#[test]
+fn place_at_start_no_is_an_item_spawners_and_yes_is_no_property() {
+    let op = at_start(1, at(ITEMS, 2), Some(false));
+    assert_eq!(
+        serde_json::to_value(&op.edit).unwrap()["entry"]["property"]["property"],
+        serde_json::json!({"place_at_start": false})
+    );
+    validate(&with(vec![op.clone()]), &limits()).unwrap();
+    let refuse = |ops: Vec<Op>, expected: &str| {
+        let error = validate(&with(ops), &limits()).unwrap_err().to_string();
+        assert!(error.contains(expected), "{error} did not mention {expected}");
+    };
+    refuse(vec![at_start(1, at(WEAPONS, 0), Some(false))], "an item spawner's");
+    refuse(vec![at_start(1, at(ITEMS, 0), Some(true))], "the default: clear it");
+    let mut ops = vec![op, at_start(2, at(ITEMS, 0), Some(false)), at_start(3, at(ITEMS, 0), None)];
+    assert_eq!(held_at_start(&ops), BTreeSet::from([Endpoint::base(ITEMS, 2)]));
+    ops.push(reset(4, at(ITEMS, 2)));
+    assert!(held_at_start(&ops).is_empty());
+}
+
+#[test]
+fn the_forge_record_holds_each_property_at_its_built_index_and_round_trips() {
+    use crate::record::{ForgeRecord, RecordError};
+    const STARTS: BlockKind = BlockKind::StartingLocations;
+    let limits = Limits {
+        base_counts: BTreeMap::from([(ITEMS, 3), (STARTS, 2)]),
+        ..Limits::default()
+    };
+    // Item 0 is removed: the build swap-removes (`resolve`), so item 2, the
+    // last, takes its place as the built map's item 0.
+    let doc = with(vec![
+        clips(1, at(ITEMS, 2), Some(4)),
+        clips(2, at(ITEMS, 0), Some(1)),
+        at_start(3, at(ITEMS, 2), Some(false)),
+        weight(4, at(STARTS, 1), Some(SpawnWeight::Low)),
+        Op {
+            id: OpId(5),
+            edit: Edit::Entry(EntryOp::Remove { target: at(ITEMS, 0) }),
+        },
+    ]);
+    validate(&doc, &limits).unwrap();
+    let record = ForgeRecord::of(&doc, &limits.base_counts).unwrap();
+    assert_eq!(
+        record,
+        ForgeRecord {
+            spare_clips: BTreeMap::from([(0, 4)]),
+            weights: BTreeMap::from([(1, SpawnWeight::Low)]),
+            held_back: BTreeSet::from([0]),
+            bodies_refused: BTreeMap::new(),
+        }
+    );
+    // At a map's tail, before an areas record, it reads back whole.
+    let mut file = vec![9u8; 64];
+    file.extend(record.encode());
+    file.extend(game_markers::record::encode(&[]));
+    let back = ForgeRecord::read_tail(&mut std::io::Cursor::new(&file)).unwrap();
+    assert_eq!(back, Some(record.clone()));
+    assert_eq!(
+        game_markers::record::read_tail(&mut std::io::Cursor::new(&file)).unwrap(),
+        Some(Vec::new())
+    );
+    // A map with no record has none; a damaged one is refused.
+    assert_eq!(ForgeRecord::read_tail(&mut std::io::Cursor::new(vec![9u8; 64])).unwrap(), None);
+    let mut bytes = record.encode();
+    let body = bytes.len() - 8;
+    bytes[body - 5] = 11;
+    assert_eq!(ForgeRecord::decode(&bytes[..body]), Err(RecordError::Checksum));
+    assert!(ForgeRecord::default().encode().len() == 19);
+}
+
+/// The bodies a kit build left out ride the record by body and reason, and
+/// a row naming no body or no reason is refused.
+#[test]
+fn the_record_carries_the_bodies_a_kit_left_out() {
+    use crate::bodies::{Body, Refused};
+    use crate::record::{ForgeRecord, RecordError};
+    let record = ForgeRecord {
+        bodies_refused: BTreeMap::from([
+            (Body::Sentinel, Refused::CannotCopy),
+            (Body::Prophet, Refused::NoRoom),
+        ]),
+        ..ForgeRecord::default()
+    };
+    assert!(!record.is_empty());
+    let bytes = record.encode();
+    let body = bytes.len() - 8;
+    assert_eq!(ForgeRecord::decode(&bytes[..body]), Ok(record.clone()));
+    // Row 0 is the Sentinel's: field 3, index 1, value 1. A reason past the
+    // table is refused, with its checksum made good.
+    let mut bad = bytes[..body - 4].to_vec();
+    assert_eq!(&bad[7..11], &[3, 1, 0, 1]);
+    bad[10] = 9;
+    let crc = bad
+        .iter()
+        .fold(0x811c_9dc5u32, |h, &b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193));
+    bad.extend_from_slice(&crc.to_le_bytes());
+    assert_eq!(
+        ForgeRecord::decode(&bad),
+        Err(RecordError::Value { field: 3, value: 9 })
+    );
 }

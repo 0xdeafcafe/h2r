@@ -289,6 +289,8 @@ pub enum Reason {
     CoOpLiveOff,
     NoOwnWaves,
     KitBuilding,
+    MapNoFirefight,
+    MapNoSiege,
 }
 
 /// The first reason's string id.
@@ -300,7 +302,7 @@ pub const CHANGE_MODE_TEXT: &str = "\u{e102} Change Game Mode";
 
 impl Reason {
     /// Every reason, for the string table.
-    pub const ALL: [Reason; 16] = [
+    pub const ALL: [Reason; 18] = [
         Reason::MatchmakingNeedsLive,
         Reason::NoPlaylists,
         Reason::CoOpNotOnSystemLink,
@@ -317,6 +319,8 @@ impl Reason {
         Reason::CoOpLiveOff,
         Reason::NoOwnWaves,
         Reason::KitBuilding,
+        Reason::MapNoFirefight,
+        Reason::MapNoSiege,
     ];
 
     /// The status line's sentence.
@@ -338,6 +342,8 @@ impl Reason {
             Reason::CoOpLiveOff => "Co-op over Xbox Live is turned off.",
             Reason::NoOwnWaves => "This map has no waves of its own.",
             Reason::KitBuilding => "Preparing Firefight maps.",
+            Reason::MapNoFirefight => "This map has no Firefight kit and no AI ground. Pick one that supports Firefight.",
+            Reason::MapNoSiege => "This map has no Siege sites or flag stand. Pick one that supports Siege.",
         }
     }
 

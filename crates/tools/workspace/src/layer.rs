@@ -34,6 +34,11 @@ impl Layered {
         self.layers.is_empty()
     }
 
+    /// The keys layer `layer` (0 is the top) holds; none past the bottom.
+    pub fn keys_of(&self, layer: usize) -> Vec<TagKey> {
+        self.layers.get(layer).map(|l| l.keys()).unwrap_or_default()
+    }
+
     /// The layer (0 is the top) that gives `key`.
     pub fn layer_of(&self, key: &TagKey) -> Option<usize> {
         self.layers.iter().position(|l| l.keys().contains(key))

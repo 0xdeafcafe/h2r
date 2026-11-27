@@ -42,8 +42,13 @@ pub enum AreaMode {
 pub struct State {
     /// A local Forge session runs.
     pub active: bool,
-    /// The monitor is up, not the player's body.
+    /// The player flies their Forge body, not their biped.
     pub monitor: bool,
+    /// The player's own biped, kept while they fly a body: hidden and
+    /// undamageable ([`render`]'s park).
+    pub parked: Option<u32>,
+    /// The body's unit while they fly it: undamageable.
+    pub body: Option<u32>,
     /// A screen is up, ours or the game's: the game's UI has the pad.
     pub screen: bool,
     pub camera: Option<Camera>,
@@ -89,8 +94,8 @@ pub fn eye() -> Option<Camera> {
     lock().eye
 }
 
-/// Whether the local player is a monitor, for the session's monitor
-/// channel and `forge.status`.
+/// Whether the local player flies their Forge body, for the session's
+/// monitor channel and `forge.status`.
 pub fn monitor() -> bool {
     lock().state.monitor
 }

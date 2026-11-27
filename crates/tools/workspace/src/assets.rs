@@ -11,7 +11,7 @@
 //! ([`Assets::hash_of`]), are read from the map's bytes and given their
 //! forms.
 use std::collections::BTreeMap;
-use std::io::{Cursor, Read, Seek};
+use std::io::{Read, Seek};
 use std::path::Path;
 
 use content::Sha256;
@@ -20,6 +20,8 @@ use tags::repo::TagSource;
 use tags::repo::extract::{MapSource, SharedFiles};
 use tags::repo::{Error, LooseTag, TagKey, catalogue, normal};
 use tags::schema::Schema;
+
+use crate::base::{Base, BaseReader};
 
 /// The asset hashes of a base level.
 pub trait Assets {
@@ -35,7 +37,7 @@ pub trait Assets {
 /// bytes.
 pub struct OfMap<'a> {
     catalogue: Option<(catalogue::Catalogue, String)>,
-    base: &'a [u8],
+    base: Base<'a>,
     /// What was asked and answered.
     known: BTreeMap<TagKey, Sha256>,
 }
@@ -43,21 +45,21 @@ pub struct OfMap<'a> {
 impl<'a> OfMap<'a> {
     /// The assets of the store's map `map` (its stem), whose file is
     /// `base`. A catalogue that does not read is none.
-    pub fn in_store(store: &Path, map: &str, base: &'a [u8]) -> Self {
+    pub fn in_store(store: &Path, map: &str, base: impl Into<Base<'a>>) -> Self {
         let catalogue = catalogue::read(store)
             .ok()
             .flatten()
             .map(|c| (c, map.to_owned()));
-        Self::new(catalogue, base)
+        Self::new(catalogue, base.into())
     }
 
     /// The assets of the map whose bytes are `base`, with no catalogue.
     #[allow(clippy::self_named_constructors)] // `OfMap::of_map(base)` reads as the map's own assets.
-    pub fn of_map(base: &'a [u8]) -> Self {
-        Self::new(None, base)
+    pub fn of_map(base: impl Into<Base<'a>>) -> Self {
+        Self::new(None, base.into())
     }
 
-    fn new(catalogue: Option<(catalogue::Catalogue, String)>, base: &'a [u8]) -> Self {
+    fn new(catalogue: Option<(catalogue::Catalogue, String)>, base: Base<'a>) -> Self {
         Self {
             catalogue,
             base,
@@ -68,12 +70,12 @@ impl<'a> OfMap<'a> {
     /// The map's bytes as the extractor reads them, for one question.
     fn read<T>(
         &mut self,
-        ask: impl FnOnce(&mut MapSource<'_, Cursor<&'a [u8]>>) -> Result<T, String>,
+        ask: impl FnOnce(&mut MapSource<'_, BaseReader<'a>>) -> Result<T, String>,
     ) -> Result<T, String> {
         let schema = Schema::builtin();
-        let mut shared: SharedFiles<Cursor<&'a [u8]>> = SharedFiles::default();
+        let mut shared: SharedFiles<BaseReader<'a>> = SharedFiles::default();
         let map =
-            Map::from_reader(Cursor::new(self.base)).map_err(|e| format!("not a map: {e}"))?;
+            Map::from_reader(self.base.reader()).map_err(|e| format!("not a map: {e}"))?;
         let mut source = MapSource::new(schema, map, &mut shared).map_err(|e| e.to_string())?;
         ask(&mut source)
     }
@@ -151,6 +153,7 @@ pub(crate) fn lend<'r>(assets: &'r mut Option<&mut dyn Assets>) -> Option<&'r mu
 mod tests {
     use super::*;
     use crate::tests::{A, base, cc};
+    use std::io::Cursor;
 
     fn key() -> TagKey {
         TagKey::new(cc(b"jpt!"), A)

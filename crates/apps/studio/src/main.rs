@@ -777,7 +777,13 @@ impl ApplicationHandler for Runner {
                 win.studio.play.play.window_focus(&self.app, focused);
             }
             WindowEvent::CloseRequested => self.app.dispatch(Action::Quit),
-            WindowEvent::DroppedFile(path) => self.app.dispatch(Action::OpenSource(path)),
+            // A source file (a WAV, a PNG, a model YAML) goes into the
+            // package the Browser shows or has selected, else the edit
+            // target; any other file opens as a source.
+            WindowEvent::DroppedFile(path) => {
+                let package = win.studio.browser.drop_package();
+                self.app.dispatch(Action::DropFile { file: path, package });
+            }
             WindowEvent::RedrawRequested => {
                 if let Err(e) = win.redraw(&mut self.app) {
                     eprintln!("h2-editor: {e:#}");

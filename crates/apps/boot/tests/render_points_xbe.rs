@@ -33,6 +33,7 @@ fn the_native_renderers_points_are_discovered_functions() {
         &points::VIEW_PVS_REGIONS,
         &points::SCENE_OBJECT_ORDER,
         &points::VIEW_SPHERE_REGIONS,
+        &points::VIEW_PROJECTION_BUILD,
         &points::VISIBLE_LIGHT_LIST,
         &points::LIGHT_GEOMETRY_FLAGS,
         &points::LIGHT_EXTRA_CASTER,

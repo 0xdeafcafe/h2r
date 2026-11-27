@@ -2074,7 +2074,7 @@ pub fn back_surfaces(mem: &mut runtime::Guest, device: u32) {
             ((size >> 24) + 1) * 64,
         );
         let len = (pitch * h).max(w * 4).next_multiple_of(0x1000);
-        let Some(phys) = mem.find_free_physical(len, 0..0x0400_0000, 0x1_0000) else {
+        let Some(phys) = mem.find_free_physical(len, 0..runtime::guest::RAM_SIZE as u32, 0x1_0000) else {
             crate::log::note(&format!(
                 "back surface {header:#x}: no free physical memory"
             ));
@@ -2163,7 +2163,7 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
 fn subscribe_write_barrier(rt: &runtime::Runtime) -> anyhow::Result<runtime::WatchId> {
     let mut mem = rt.memory();
     let id = mem.subscribe_writes(WATCH_OWNER);
-    mem.watch_writes(id, runtime::watch::CONTIGUOUS_BASE, 0x0400_0000)?;
+    mem.watch_writes(id, runtime::watch::CONTIGUOUS_BASE, runtime::guest::RAM_SIZE as u32)?;
     Ok(id)
 }
 

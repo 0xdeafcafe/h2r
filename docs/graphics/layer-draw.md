@@ -4,6 +4,17 @@ Status: Built. The read is reference; `engine::render_loop::layer::Entries` port
 Code: `crates/rewrites/engine/src/render_loop/layer.rs`. Tests: `crates/rewrites/engine/tests/layer_differential.rs`.
 Switch: none.
 
+```mermaid
+flowchart LR
+  B["0x00044370 begin layer"] --> D["0x00044550 draw"]
+  D --> E["0x0003bc30 entry loop"]
+  E --> N["0x0003bab0 build + sort entries"]
+  E --> H["per entry: handler [rec+4]"]
+  H --> S["0x0001bbf0 shader draw begin"]
+  H --> G["0x00041040 geometry"]
+  D --> X["0x000445d0 end layer"]
+```
+
 The scene passes draw layer by layer ([e3-lighting.md](e3-lighting.md),
 "Pass taxonomy: the layers"): `0x00044370` begins a layer, `0x00044550`
 draws the current list's entries for it, `0x000445d0` ends it. This page is
@@ -63,37 +74,29 @@ For a main view with a Rust visibility gather, `native_world::layer_build`
 builds the active layer's geometry slots in source-record order. It resolves
 each BSP section or selected model section, template pass, implementation
 and vertex class. Weighted model parts select the primary or secondary node
-influence count according to part type. A cluster needs a visible region.
-A model needs a visible owner or ancestor. The structure gather supplies
-the placement records. A foreign callback can change the list and ends
-whole-list planning.
+influence count according to part type.
+
+- A cluster needs a visible region; a model needs a visible owner or ancestor.
+- The structure gather supplies the placement records.
+- A foreign callback can change the list and ends whole-list planning.
 
 `scene_extract::layer_sort::geometry` orders the full slots, including ties.
-The dispatch boundary at `0x0003bc51`, the instruction after the build call's return, compares the original result count
-and every byte, including the last rejected scratch slot when present.
+The dispatch boundary at `0x0003bc51` (the instruction after the build call's
+return) compares the original result count and every byte, including the last
+rejected scratch slot when present.
+
 For a matching list the front-end retains the Rust slots and the input
 spans it read. With the same BSP generation, view, visibility and input
-bytes it publishes the Rust slots and returns the count directly. A change
+bytes it publishes the Rust slots and returns the count directly; a change
 requires another comparison. `render.scene` reports the counts of equal,
 different and reused lists.
 
-**Waste to look at (S, from the read; not measured yet).**
+**Open: waste to look at (S, from the read; not measured).**
 
-- Every layer draw walks the whole item list again, calls every item's
-  build function again, and sorts again. A view draws about 15 layers
-  (`0x00044550` is called from 15 places in the scene passes), so the
-  same items are filtered and sorted about 15 times a view. Building each
-  item's entries once per view for all its layers (one pass, bucketed by
-  layer) and sorting once is the first batch opportunity, if the build
-  functions have no side effects that depend on the layer order (to
-  read: the build functions of the common item types).
-- The draw loop then makes one indirect call per entry and each handler
-  begins its own shader draw and submits its own geometry; the loop has
-  no notion of "same shader as the previous entry". The sort's
-  comparator (`0x0003bb80`) says what order the entries come in; if it
-  groups by shader, a Rust loop can skip repeated shader begins between
-  neighbours. `layer_build`, `shader_begin` and `geometry` in
-  `render-timing` size each part.
+| Where | What | What would settle it |
+|---|---|---|
+| Per-layer rebuild | Every layer draw walks the whole item list, calls every item's build function and sorts again. A view draws about 15 layers (`0x00044550` has 15 call sites in the scene passes), so the same items are filtered and sorted about 15 times a view. Building once per view, bucketed by layer, and sorting once is the first batch opportunity | Reading the build functions of the common item types for side effects that depend on layer order |
+| Repeated shader begins | The loop makes one indirect call per entry; each handler begins its own shader draw and submits its own geometry, with no notion of "same shader as the previous entry". If the sort comparator `0x0003bb80` groups by shader, a Rust loop can skip repeated begins between neighbours | `layer_build`, `shader_begin` and `geometry` in `render-timing` size each part |
 
 ## The port (Code, Test)
 
@@ -195,8 +198,8 @@ loops' own code.
 
 ### Hooked calls leave the direct path: what the per-draw numbers measure
 
-Per-draw `render-timing` rows once put large amounts of time into code
-that is cheap: `texture_source` showed about 22 µs per call and the
+Per-draw `render-timing` rows can put large amounts of time into code
+that is cheap: `texture_source` shows about 22 µs per call and the
 shader site `0x0001ae70` 21 ms a frame. The code does not support
 either:
 
@@ -219,15 +222,17 @@ when the runtime has resolved the target to a native handler
 hooked address resolves to the feature chain's override instead, so a
 call to it hands the transfer up to the runner and unwinds every
 generated frame above it. Each of those callers then resumes, and
-returns, through the runner. With observers after the body, the chain
-also calls the body through a shadow and a continuation. All of that
-lands in whatever stage or site is open: mostly the hooked call's
-callers, and their callers. In the deep run every one of
-`0x00016b90`'s 21 calls is hooked, so it is re-entered through the
-runner after each of them. Exactly which row picks up which re-entry
-depends on where the clock reads fall, which is why rows such as
-`0x0001ae70` can jump between runs. `texture_source` holds the re-entry
-after each `BITMAP_FRAME`.
+returns, through the runner.
+
+With observers after the body, the chain also calls the body through a
+shadow and a continuation. All of that lands in whatever stage or site is
+open: mostly the hooked call's callers, and their callers. In the deep run
+every one of `0x00016b90`'s 21 calls is hooked, so it is re-entered through
+the runner after each of them.
+
+Which row picks up which re-entry depends on where the clock reads fall,
+which is why rows such as `0x0001ae70` can jump between runs.
+`texture_source` holds the re-entry after each `BITMAP_FRAME`.
 
 So the per-draw rows rank the hooks as much as the work. The frame
 stages and the scene passes' sites are called about 100 times a frame

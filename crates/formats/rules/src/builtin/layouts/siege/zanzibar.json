@@ -9,7 +9,7 @@
   "forge_build": 1,
   "pathfind": 1
  },
- "description": "Siege on Zanzibar, labels only. Sites: the south pair (flags 17 and 15) for phase 0, the middle pair (19 and 13) for phase 1; the final stand is the defenders' flag stand. Starts are numbered by phase, the attackers from their stand northward and the defenders from the middle northward.",
+ "description": "Siege on Zanzibar, labels only. Sites: the south pair (flags 17 and 15) for phase 0, the middle pair (19 and 13) for phase 1; the final stand is blue's flag stand (flag 3, the siege_goal), the defenders' at one end of the map in both rounds. Starts are numbered by phase, the attackers from their stand northward and the defenders from the middle northward.",
  "format": 2,
  "imports": [],
  "ops": [
@@ -88,6 +88,24 @@
     }
    },
    "id": 4
+  },
+  {
+   "edit": {
+    "forge": {
+     "label": {
+      "label": {
+       "text": "siege_goal"
+      },
+      "target": {
+       "base": {
+        "block": "netgame_flags",
+        "index": 3
+       }
+      }
+     }
+    }
+   },
+   "id": 44
   },
   {
    "edit": {

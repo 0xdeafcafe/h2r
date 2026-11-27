@@ -1,8 +1,9 @@
 # Simulation rewrite, phase 2: the collision world
 
 The collision world answers A, B and F, J’s sphere pretest and
-state-exact exits in C, D, E, G and H. Other vector and spatial paths run
-their kernels alongside the lifted result. The instance and model rays
+state-exact exits in C, D, E, G and H. C and D's crossing exits answer
+after a clean shadow run ([Crossing exits](collision-queries.md#crossing-exits)).
+Other vector and spatial paths run their kernels alongside the lifted result. The instance and model rays
 feed the whole-query planner, which also supplies `collision.trace`.
 Entry I compares the general Havok ray against the guest VM and callback
 stream. Full promotion requires matching register, memory and callback
@@ -408,7 +409,7 @@ family.
 
 | # | Entry | ABI (E unless marked) | Subsumes | Guest writes the adapter must make |
 |---|---|---|---|---|
-| A | `0x0014a280` point to leaf | `node: eax, bsp: ecx, point: edx -> eax` | — | saved ESI and EDI at entry ESP−4 and ESP−8 |
+| A | `0x0014a280` point to leaf | `node: eax, bsp: ecx, point: edx -> eax` | - | saved ESI and EDI at entry ESP−4 and ESP−8 |
 | B | `0x0011bed0` location from point | `out: esi, point: edx`; reads `[0x4686c4]` (BSP index), `[0x4e033c]` (collision BSP), `[0x4e0348] + 0x30` (leaf table) | A | `out+0` leaf `u32`, `out+4` cluster `i16`, `out+6` BSP index `u16`; the no-structure and solid exits use the signed sentinel. Saved stack words are listed in the [entry contract](collision-queries.md#clobbers-and-dead-stack). |
 | C | `0x001de630` BSP vector test | `out: eax, flags: ecx, bsp: edx, limit: xmm0`, stack: breakable count `u16`, breakable mask pointer, start pointer, delta pointer; `-> al`; `ret 0x10` | `1de6d0`, `1dea00`, `1debd0`, `296520` | the result record R at `out` (below) |
 | D | `0x001de6d0` BSP vector test, context form | `ctx, node, t0, t1` on the stack; `-> al`; `ret 0x10` (P). Called directly by `0x001eff40` | its own recursion, `1dea00`, `1debd0`, `296520` | R through `ctx+0x18`; `ctx+0x1c` previous leaf, `ctx+0x20` previous kind and `ctx+0x24` last split plane |
@@ -479,7 +480,7 @@ component one `f32` add). For each terminal key, in walk order:
 1. Index the mark with the signed low 16 bits of the key. If that mark
    equals the epoch `[0x4e7c1c]`, skip. Otherwise set it. Placement lookup
    and result +0x3c use the full key. The callback also requires a live
-   code-object reference count to elide its destructor (see [entry E](collision-queries.md#entry-e--instance-trace-of-one-cluster)).
+   code-object reference count to elide its destructor (see [entry E](collision-queries.md#entry-e---instance-trace-of-one-cluster)).
 2. Filter by definition flags (`0x1689b0`), then the sphere pretest against
    the placement sphere.
 3. Transform start and delta by the placement inverse (the scale multiply is
@@ -721,7 +722,7 @@ batch once they have gathered independent inputs.
 |---|---|---|---|
 | `Bsp`, `Tree`, `Structure` | static | lazily, from guest-resident tag bytes, on first use of a pointer | map load (`CACHE_TAGS_LOAD`), structure switch (`BSP_SWITCH`) and snapshot load advance the collision epoch |
 | Gathered reference lists, breakable words, key lists | transient | per query | end of the call |
-| `Stats` | diagnostic | — | never read by a kernel |
+| `Stats` | diagnostic | - | never read by a kernel |
 
 There is no derived cache in phase 2: nothing between "static" and
 "transient". Checkpoint revert, full restore, snapshot load and tick
@@ -865,7 +866,7 @@ on the coordinator's integration pass.
 
 | # | Slice | Delivers | Share | Tests |
 |---|---|---|---:|---|
-| S0 | Contracts and core | `sim-core::det` (`checked`, `Chain`, guards), `Epoch`, lanes moved; `sim-collision` skeleton with `GuestRead`, `Bail`, `Stats`; `collision-queries.md` with the 8.1 checks for entries A to E; the differential harness helper (dead window, clobber set); `collision.stats` | — | `det` unit tests on both architectures |
+| S0 | Contracts and core | `sim-core::det` (`checked`, `Chain`, guards), `Epoch`, lanes moved; `sim-collision` skeleton with `GuestRead`, `Bail`, `Stats`; `collision-queries.md` with the 8.1 checks for entries A to E; the differential harness helper (dead window, clobber set); `collision.stats` | - | `det` unit tests on both architectures |
 | S1 | BSP decode, point, location | `bsp/decode`, `bsp/point`, `Structure::leaf_cluster`; entries A and B; per-map size report | 514 | unit, differential A and B, disc sweep points |
 | S2 | BSP segment and matcher | `bsp/segment`, `bsp/ring`; entries C and D; R pinned in `layout.rs` | 824 | unit, differential C and D with the `bsp::segment` port as third arm, disc sweep segments |
 | S3 | MOPP decode, ray walker, instance trace | `mopp/decode`, `mopp/ray`, `structure` instances, `instance`; entry E | ≥ 437 visible; most of the 1,644 family | unit, differential E, disc sweep rays and inverses |
@@ -873,7 +874,7 @@ on the coordinator's integration pass.
 | S5 | Cluster flood and object visit | `flood`, `objects`; entries G and H; `120850` and `23a160` in the kernel | 1,012 | unit, differential G and H with the two ports as third arms; native exits and lifted-return comparisons |
 | S6 | General MOPP ray | `mopp::ray` (`RayWalk` over the bytecode); entry I's parity arm, VM and callback comparison, isolated collector differential; `collision.stats` `ray` | none until I answers natively | unit, recursive transcription, differential I with invented callees, a deliberate mismatch |
 | S7 | Whole query | Rust object-reference sphere pretest; port `169510`, `1eff40` and helpers (object models through node matrices); entry J as one call; `collision.trace`; batch API with the reference-list lanes | 1,025 | unit, differential J, run parity |
-| S8 | Layout tuning | DFS re-layout with a guest-index map, two-level point treelets, only where a profile pair shows a gain | — | cold/warm and re-layout on/off give equal bits |
+| S8 | Layout tuning | DFS re-layout with a guest-index map, two-level point treelets, only where a profile pair shows a gain | - | cold/warm and re-layout on/off give equal bits |
 | S9 | Census entries | `1ddea0`, `16a8e0`, the structure child shapes `1ef950`/`1edd00` (with the Havok lane), by campaign census | 318 + campaign | as S2 |
 | S10 | Shared store | `store.rs`, mmapped per map | host RSS | stored equals lazily built, byte for byte |
 

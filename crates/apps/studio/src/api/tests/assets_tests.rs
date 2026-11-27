@@ -578,3 +578,29 @@ fn a_catalogue_that_hashed_nothing_leaves_the_rows_as_files() {
         .any(|p| p.as_str().is_some_and(|p| p.contains("assets.idx")));
     assert!(!stale, "{v}");
 }
+
+/// A bitmap tag's thumbnail is read from the open map: with none open it
+/// has no picture yet, and the refusal says where one comes from.
+#[test]
+fn a_bitmap_tags_thumbnail_needs_the_map_that_holds_it() {
+    let (t, mut app, mut api) = setup("assets-thumb-bitmap");
+    let e = api
+        .call(&mut app, m::ASSET_THUMB, json!({"asset": "tag:bitm:objects\\pixels"}))
+        .unwrap_err();
+    assert_eq!(e.code, code::NOT_YET, "{}", e.message);
+    assert!(e.message.contains("not in the open map"), "{}", e.message);
+    // The package's PNG item is the Browser's thumbnail too, read from
+    // the package's file: a PNG of invented pixels, 3 by 2.
+    std::fs::write(
+        t.path("data/packages/kit-test/art/icon.png"),
+        super::import_tests::png(3, 2),
+    )
+    .unwrap();
+    let id = crate::app::assets::AssetId::parse("item:kit-test:2").unwrap();
+    let pic = app.thumb_picture(&id).expect("the PNG decodes");
+    assert_eq!((pic.width, pic.height), (3, 2));
+    assert_eq!(pic.rgba.len(), 3 * 2 * 4);
+    // An item that is no PNG bitmap has none.
+    let other = crate::app::assets::AssetId::parse("item:kit-test:0").unwrap();
+    assert!(app.thumb_picture(&other).is_err());
+}

@@ -135,11 +135,18 @@ fn a_ship_that_is_back_takes_the_next_squad() {
         .iter()
         .filter_map(|(tick, c)| matches!(c, Command::DropSquad { .. }).then_some(*tick))
         .collect();
-    // Wave 0 at 300 (the warmup is the first wave's gap), the ship is back at
-    // 300 + 540 = 840: waves at 603 and 906 are by foot then by ship.
-    assert_eq!(by_ship.first(), Some(&300));
+    // The warmup cuts the 300-tick first gap to one second, so wave 0
+    // walks in at tick 30; wave 1 takes the ship, which is back 540 ticks
+    // later for a later wave.
+    let first_foot = run
+        .commands
+        .iter()
+        .find_map(|(tick, c)| matches!(c, Command::PlaceSquad { .. }).then_some(*tick));
+    assert_eq!(first_foot, Some(30));
+    let first = *by_ship.first().expect("a squad by ship");
+    assert!(first > 300, "{by_ship:?}");
     assert!(by_ship.len() >= 2, "{by_ship:?}");
-    assert!(by_ship.iter().all(|t| *t == 300 || *t >= 840), "{by_ship:?}");
+    assert!(by_ship.iter().all(|t| *t == first || *t >= first + 540), "{by_ship:?}");
 }
 
 /// The run of a one-squad-of-one match of `def` on `ship`.

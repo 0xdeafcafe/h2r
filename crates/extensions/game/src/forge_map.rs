@@ -145,6 +145,12 @@ pub(crate) struct Opened {
     /// Every named tag of the map by its salted datum, which
     /// [`rows::read`] resolves the loaded scenario's references through.
     pub names: BTreeMap<u32, TagKey>,
+    /// The Forge bodies the map's kit carries, by unit tag datum, and the
+    /// reasons its Forge record gives for the rest ([`kit_bodies`]).
+    pub bodies: forge::body::Kit,
+    /// The paths of the map's item collections (`itmc`) that hold a weapon:
+    /// the spawners that show Spare clips ([`armed_collections`]).
+    pub armed: std::collections::BTreeSet<String>,
 }
 
 /// Read the selected slot's logical bytes, including package layers and
@@ -279,7 +285,9 @@ fn decode(bytes: &[u8], loaded: &Loaded, base: Option<Sha256>) -> anyhow::Result
             ))
         })
         .collect();
+    let bodies = kit_bodies(&names, bytes);
     let (bounds, walls) = geometry(&mut map, &view)?;
+    let armed = armed_collections(&mut map);
     let doc = ForgeDoc {
         format: forge_doc::FORMAT,
         builder: BuilderVersions::CURRENT,
@@ -319,7 +327,78 @@ fn decode(bytes: &[u8], loaded: &Loaded, base: Option<Sha256>) -> anyhow::Result
         refused,
         walls,
         names,
+        bodies,
+        armed,
     })
+}
+
+/// The Forge bodies of a map (docs/game/forge-design-slices.md, "The
+/// monitor body"): each body whose unit tag (`forge_doc::bodies::SPECS`)
+/// is among `names`, by datum, and the reasons the map's Forge record
+/// gives for those its kit build left out. A map with no record gives no
+/// reasons: its bodies are refused as a map not built with the kit.
+pub(crate) fn kit_bodies(names: &BTreeMap<u32, TagKey>, bytes: &[u8]) -> forge::body::Kit {
+    use forge_doc::bodies::Body;
+    let carried = Body::ALL
+        .into_iter()
+        .filter_map(|body| {
+            let unit = body.spec().unit;
+            let group = String::from_utf8_lossy(&unit.group).into_owned();
+            names
+                .iter()
+                .find(|(_, key)| key.group == group && key.path.eq_ignore_ascii_case(unit.path))
+                .map(|(&datum, _)| (body, datum))
+        })
+        .collect();
+    let refused = forge_doc::record::ForgeRecord::read_tail(&mut Cursor::new(bytes))
+        .ok()
+        .flatten()
+        .map(|r| r.bodies_refused)
+        .unwrap_or_default();
+    forge::body::Kit { carried, refused }
+}
+
+/// An item collection's entries (`itmc+0x00`, a block of `0x10`-byte
+/// elements): the weight `+0x00`, the item's group `+0x04` and datum `+0x08`,
+/// the variant `+0x0c` (E: `collection_select` `0x19f1a0` steps `0x10`,
+/// reads the weight at `+0` and returns `+8`).
+const COLLECTION_ENTRIES: usize = 0x0;
+const COLLECTION_ENTRY_LEN: usize = 0x10;
+const COLLECTION_ENTRY_GROUP: usize = 0x4;
+
+/// Whether the item collection whose payload is `root` at `address` names
+/// a weapon (`weap`) among its entries. A mixed collection does.
+pub(crate) fn holds_weapon(root: &[u8], address: u32) -> anyhow::Result<bool> {
+    let view = TagView::new(root, address);
+    Ok(view
+        .block(root, COLLECTION_ENTRIES, COLLECTION_ENTRY_LEN)?
+        .iter()
+        .any(|e| {
+            e.get(COLLECTION_ENTRY_GROUP..COLLECTION_ENTRY_GROUP + 4)
+                .is_some_and(|g| FourCC::from_u32(u32::from_le_bytes(g.try_into().unwrap())) == FourCC(*b"weap"))
+        }))
+}
+
+/// The paths of the map's item collections that hold a weapon. A
+/// collection that does not read is left out, so its spawners show no Spare
+/// clips row.
+fn armed_collections<R: Read + Seek>(map: &mut Map<R>) -> std::collections::BTreeSet<String> {
+    let collections: Vec<_> = map
+        .tags()
+        .iter()
+        .filter(|t| t.group == FourCC(*b"itmc"))
+        .filter_map(|t| Some((t.id, t.name.clone()?, t.location.as_ref()?.address)))
+        .collect();
+    collections
+        .into_iter()
+        .filter(|(id, _, address)| {
+            map.read_tag_bytes(*id)
+                .ok()
+                .and_then(|root| holds_weapon(&root, *address).ok())
+                .unwrap_or(false)
+        })
+        .map(|(_, path, _)| path)
+        .collect()
 }
 
 /// The spare rows the kit's blocks have past their counts: the rows after

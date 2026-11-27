@@ -111,7 +111,7 @@ fn change_map_opens_what_game_setups_change_map_opens() {
     let cat = map_select::sample();
     assert_eq!(opening(Mode::Multiplayer, &cat), Some(Opening::Categories));
     assert_eq!(opening(Mode::Forge, &cat), opening(Mode::Multiplayer, &cat));
-    assert_eq!(opening(Mode::Firefight, &cat), None, "no kit map installed");
+    assert_eq!(opening(Mode::Firefight, &cat), Some(Opening::Categories), "one list in every mode");
     assert_eq!(
         categories(&cat),
         [Category::Halo2, Category::MapPack, Category::Mods, Category::Halo1]
@@ -122,8 +122,8 @@ fn change_map_opens_what_game_setups_change_map_opens() {
     let mut with_kit: Vec<Map> = cat.all().cloned().collect();
     with_kit.push(kit_map());
     let cat = Catalogue::new(with_kit);
-    assert_eq!(opening(Mode::Firefight, &cat), Some(Opening::Maps(Category::Firefight)));
-    assert!(categories(&cat).contains(&Category::Firefight), "installed kit maps are playable maps");
+    assert_eq!(opening(Mode::Firefight, &cat), Some(Opening::Categories), "one list in every mode");
+    assert!(categories(&cat).contains(&Category::Mods), "installed kit maps are playable maps");
 
     // One category: its maps straight away; none: no row.
     let one = Catalogue::new(cat.maps(Category::Halo2).to_vec());
@@ -287,7 +287,9 @@ fn the_built_in_list_is_read_from_the_game() {
     odd.set_name("Rockets Oddball").unwrap();
     let siege = ::rules::compile(::rules::builtin::SIEGE).unwrap();
     let script = variants::portable::record_for_named(&siege, "My Siege", &[]).unwrap();
-    assert_eq!(script.game_type(), GameType::Script);
+    // A team script's record is on Slayer's index outside a game; the
+    // list files it under its script's row all the same.
+    assert_eq!(script.game_type(), GameType::Slayer);
     g.put_u32(BUILTIN_LIST, RECORDS).put_u32(RECORDS, 3);
     for (i, v) in [&ctf, &odd, &script].into_iter().enumerate() {
         let at = RECORDS + 4 + i as u32 * BUILTIN_RECORD + BUILTIN_VARIANT;
@@ -639,9 +641,8 @@ fn a_change_rules_press_limits_the_map_rows_to_the_chosen_wave_set() {
         .chain([kit_map(), creek.clone()])));
     let mode = map_select::variant_mode(Mode::Multiplayer, chosen);
     let maps = cat.for_variant(mode, chosen);
-    assert_eq!(opening(mode, &maps), Some(Opening::Maps(Category::Firefight)));
-    assert_eq!(maps.maps(Category::Firefight), [creek]);
-    assert_eq!(maps.all().count(), 1);
+    assert_eq!(maps.all().count(), cat.all().count(), "every map stays in the list");
+    assert!(maps.all().any(|m| m.id == creek.id));
     assert_eq!(cat.for_variant(Mode::Forge, chosen).categories(), cat.categories());
 }
 

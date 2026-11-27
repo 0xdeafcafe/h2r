@@ -25,11 +25,13 @@
 // Each side's objective line, the phase clock, the capture gauge and the mark
 // over the front are the scripted objective HUD's (`hud.objective`:
 // `objective`, `countdown`, `meter`, `objective_mark`).
-// The rest of the HUD is the King of the Hill kit's: a mark over the site the attackers
-// are on (else the first still to take, then the final stand), its state
-// (open, held by a side, contested), the seconds the phase has left
-// (`koth.phase`), and a banner for a site taken, the final assault, an
-// overtime and the last 30 and 10 seconds of a phase.
+// The rest of the HUD is the Siege kit's (`content/modes/huds/siege.hud.yaml`),
+// a block above the score plate: the viewer's side and the seconds the
+// phase has left, the front's state (open, a side on it, contested), the
+// sites taken of those to take, and the round and phase; a mark over the
+// site the attackers are on (else the first still to take, then the final
+// stand); and a banner for a site taken, the final assault, an overtime
+// and the last 30 and 10 seconds of a phase.
 // A phase whose clock runs out with an attacker on its objective goes into
 // overtime: the defenders win when the attackers leave it, or when the
 // overtime runs out, whichever is first, and a capture that completes
@@ -58,7 +60,7 @@
 rules "Siege" 1
 type siege
 teams 2
-requires player.weapons, player.spawn, player.disguise, player.pick, hud.message, hud.widgets, hud.waypoints, hud.objective, objects.move, game.rounds, bots.orders
+requires audio.play, player.weapons, player.spawn, player.disguise, player.pick, hud.message, hud.widgets, hud.waypoints, hud.objective, objects.move, game.rounds, bots.orders
 about "Attackers take the map's territories, then storm the defenders' flag stand. Each phase has its own clock: run it out and the defenders win."
 quick respawn_time, wave_time, phase_time, capture_time, sites
 
@@ -105,12 +107,18 @@ option wave_time: time 3s..30s = 10s "Respawn wave" "How long a side's dead wait
 option overtime_time: time 5s..60s = 30s "Overtime" "The most a phase runs on past its clock while an attacker is on its objective"
 option round_count: int 1..8 = 2 "Rounds" "How many rounds; the sides swap at each"
 
-// The HUD (docs/game/game-types-without-carriers.md, "The display"): the
-// front's state, a banner, and a mark over the front.
-hud front_row: text at koth.hill
-hud banner_row: banner at koth.banner
-hud phase_row: text at koth.phase
-waypoint front_mark at koth.mark
+// The HUD (docs/game/rules-engine.md, "The Siege HUD"): the front's state,
+// a banner, the phase's clock, the sites taken (of those needed, the
+// style), the phase and the round (each of its total, the style), the
+// attacking side, and a mark over the front.
+hud front_row: text at siege.front
+hud banner_row: banner at siege.banner
+hud phase_row: text at siege.clock
+hud sites_row: text at siege.sites
+hud stage_row: text at siege.phase
+hud round_row: text at siege.round
+hud side_row: text at siege.side
+waypoint front_mark at siege.mark
 
 // How many starting locations a side's spawns keep near its line.
 const line = 4
@@ -228,6 +236,9 @@ fn begin(n: int) {
     clock = phase_time
     seen = -1
     overtime = false
+    // The sites taken are the phases behind; the phase on is the next.
+    hud_value(sites_row, phase)
+    hud_value(stage_row, phase + 1)
     brief()
 }
 
@@ -339,12 +350,17 @@ fn show_front() {
     }
 }
 
+// The announcer's lines (`announcer/<clip>`, art/announcer/): the game's
+// start line, Siege, is the type's own. Attack and Defend open each round
+// for their side, Final Round the last, Site Captured each site that falls,
+// Reinforcements a side's wave and Round Over each round's end.
 // The round's end: the winners score a point each and the round counts
 // for their team. The next round starts with the sides swapped; after the
 // last, the team that won the more rounds wins the game.
 fn win(side: team) {
     over = true
     clock = 0t
+    sound_to_all("announcer/round-over")
     countdown(attackers, 0t)
     countdown(defenders, 0t)
     meter(attackers, 0, 0)
@@ -374,6 +390,7 @@ fn win(side: team) {
 fn round_banner() {
     if round + 1 == round_count {
         hud_text(banner_row, "FINAL ROUND")
+        sound_to_all("announcer/final-round")
     } else if round == 0 {
         hud_text(banner_row, "ROUND 1")
     } else if round == 1 {
@@ -427,6 +444,9 @@ fn hold(p: player) {
 // The side's dead come back together.
 fn release(side: team) {
     if not over {
+        if count(players p where p.team == side and not p.alive) > 0 {
+            sound_to_team("announcer/reinforcements", side)
+        }
         for each players p where p.team == side and not p.alive { respawn(p) }
     }
 }
@@ -474,6 +494,8 @@ on round_start {
         message(attackers, "Round {n} of {total}: you attack")
         message(defenders, "Round {n} of {total}: you defend")
     }
+    sound_to_team("announcer/attack", attackers)
+    sound_to_team("announcer/defend", defenders)
     // Spartans attack, Elites defend.
     set_body(attackers, "objects/characters/masterchief/masterchief_mp")
     set_body(defenders, "objects/characters/elite/elite_mp")
@@ -499,6 +521,21 @@ on round_start {
     assault = last_stand != none
     if let g = last_stand { show_area(g, defenders) }
     if needed > 0 or assault {
+        // The HUD's counts: the sites to take, the phases (the final
+        // assault is one more), the round of the game's, and who attacks.
+        hud_style(sites_row, needed)
+        hud_show(sites_row, true)
+        if assault {
+            hud_style(stage_row, needed + 1)
+        } else {
+            hud_style(stage_row, needed)
+        }
+        hud_show(stage_row, true)
+        hud_value(round_row, round + 1)
+        hud_style(round_row, round_count)
+        hud_show(round_row, true)
+        hud_value(side_row, team_index(attackers))
+        hud_show(side_row, true)
         begin(0)
         open_map()
         if ordered {
@@ -549,6 +586,7 @@ on tick {
         // fall back.
         if let s = front {
             front = none
+            sound_to_all("announcer/site-captured")
             open_map()
             if ordered {
                 line_up()

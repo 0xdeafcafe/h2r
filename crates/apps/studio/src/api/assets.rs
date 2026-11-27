@@ -1,4 +1,5 @@
-//! `asset.*`: the browser's rows, thumbnails and Copy into a package
+//! `asset.*`: the browser's rows, its link views (Where used, Show
+//! edits), thumbnails and Copy into a package
 //! (docs/editor/studio-redesign.md, "The browser"). The rows are
 //! `app::assets`'s, the ones the browser panel reads.
 
@@ -8,6 +9,7 @@ use studio_proto::{code, method as m};
 
 use super::{P, Reply, err};
 use crate::App;
+use crate::app::{Action, Refused};
 use crate::app::assets::{self, AssetId, CreateAsset, Query, Root, ThumbRefusal};
 use crate::app::mods;
 use crate::app::package_doc::{self, Refusal};
@@ -38,9 +40,10 @@ fn list(app: &mut App, p: &P) -> Reply {
         text: p.opt_str("query")?.unwrap_or("").to_owned(),
         limit: p.opt_usize("limit")?.unwrap_or(DEFAULT_LIMIT),
     };
-    // The Voices kind lists voices, which are read from the data root.
-    if root == Root::Tags && assets::is_voices_kind(q.kind.as_deref()) {
-        return Ok(app.voice_asset_list(&q.text, q.limit));
+    // The Voices, Forge variants and Forge items kinds are read from the
+    // data root.
+    if let Some(listed) = app.kind_list(&q) {
+        return listed.map_err(|e| err(code::REFUSED, e));
     }
     let set = assets::read_set(&app.data_root());
     assets::list(&app.tags_root(), &set, &q).map_err(|e| err(code::REFUSED, e))
@@ -56,10 +59,33 @@ fn thumb(app: &mut App, p: &P) -> Reply {
             p.str("asset")?.replace([':', '\\', '/'], "_")
         )),
     };
-    assets::thumb(&set, &id, &out).map_err(|e| match e {
+    let refuse = |e: ThumbRefusal| match e {
         ThumbRefusal::NoPicture(m) => err(code::NOT_YET, m),
         ThumbRefusal::Failed(m) => err(code::FAILED, m),
-    })
+    };
+    // A tag's picture is drawn (a bitmap of the open map), and written as
+    // the PNG of the thumbnail the Browser shows.
+    if let AssetId::Tag(_) = &id {
+        let pic = app.thumb_picture(&id).map_err(refuse)?;
+        let mut bytes = Vec::new();
+        ::assets::png::write_rgba(&mut bytes, pic.width, pic.height, &pic.rgba)
+            .map_err(|e| err(code::FAILED, e.to_string()))?;
+        if let Some(dir) = out.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| err(code::FAILED, format!("{}: {e}", dir.display())))?;
+        }
+        std::fs::write(&out, &bytes)
+            .map_err(|e| err(code::FAILED, format!("{}: {e}", out.display())))?;
+        return Ok(serde_json::json!({
+            "asset": p.str("asset")?,
+            "path": out.display().to_string(),
+            "bytes": bytes.len(),
+            "width": pic.width,
+            "height": pic.height,
+            "source": app.shown_map_name(),
+        }));
+    }
+    assets::thumb(&set, &id, &out).map_err(refuse)
 }
 
 fn copy(app: &mut App, p: &P) -> Reply {
@@ -75,6 +101,59 @@ fn links(app: &mut App, p: &P) -> Reply {
     let id = asset(p)?;
     let l = app.asset_links(&id).map_err(|e| err(code::REFUSED, e))?;
     Ok(l.json(p.str("asset")?))
+}
+
+/// `asset.where_used` and `asset.edits`: the Browser's link view, set by
+/// the window's own command, so the panel shows the rows answered.
+fn browse(app: &mut App, p: &P, edits: bool) -> Reply {
+    asset(p)?;
+    let asset = p.str("asset")?.to_owned();
+    let action = if edits {
+        Action::ShowEdits { asset }
+    } else {
+        Action::WhereUsed { asset }
+    };
+    app.perform(action, false).map_err(|r| match r {
+        Refused::Failed(e) => err(code::REFUSED, e),
+        other => super::scenario::refused(other),
+    })?;
+    match &app.browse.view {
+        Some(view) => Ok(view.json()),
+        None => Err(err(code::FAILED, "the Browser took no view")),
+    }
+}
+
+/// `asset.drop`: a source file into a package, as a file dropped on the
+/// window goes into the one the Browser shows.
+fn drop_file(app: &mut App, p: &P) -> Reply {
+    let file = PathBuf::from(p.str("file")?);
+    let kind = assets::DropKind::of(&file).ok_or_else(|| {
+        err(
+            code::INVALID_PARAMS,
+            format!(
+                "{} is not a source file (a .wav, a .png or a model .yaml); source.open opens a map",
+                file.display()
+            ),
+        )
+    })?;
+    let package = package_or_target(app, p)?;
+    let action = Action::DropFile {
+        file: file.clone(),
+        package: Some(package.clone()),
+    };
+    let log = app.perform(action, false).map_err(|r| match r {
+        Refused::Failed(e) => err(code::REFUSED, e),
+        other => super::scenario::refused(other),
+    })?;
+    app.sync_tabs();
+    Ok(serde_json::json!({
+        "file": file.display().to_string(),
+        "kind": kind.id(),
+        "tag": kind.tag(&file),
+        "package": package,
+        "front": app.front_doc().map(|d| app.doc_id(d)),
+        "log": log,
+    }))
 }
 
 /// `package`, else the edit target; with neither, `NO_TARGET`.
@@ -153,6 +232,9 @@ pub fn call(app: &mut App, method: &str, p: &P) -> Reply {
         m::ASSET_THUMB => thumb(app, p),
         m::ASSET_COPY => copy(app, p),
         m::ASSET_LINKS => links(app, p),
+        m::ASSET_WHERE_USED => browse(app, p, false),
+        m::ASSET_EDITS => browse(app, p, true),
+        m::ASSET_DROP => drop_file(app, p),
         _ => Err(err(code::METHOD_NOT_FOUND, format!("no method {method}"))),
     }
 }

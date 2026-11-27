@@ -71,6 +71,8 @@ pub const TABLE: &[Switch] = &[
     // Rendering.
     sw("impl.render.native", On, "render", "2026-11-14",
         "the native renderer owns the frame (review 4.3): delete with the D3D path"),
+    sw("impl.render.native.visibility", On, "render", "2026-11-27",
+        "the guest's view projection and visibility producers replaced (retire-d3d.md R4): delete when R4's differentials hold on the gate corpus"),
     // Engine leaves (the per-function keys are `crate::leaves`').
     sw("impl.engine", Group, "engine", "2026-11-16", "goes with its last group"),
     sw("impl.engine.locale", On, "engine", "2026-11-16", EXACT),
@@ -88,6 +90,8 @@ pub const TABLE: &[Switch] = &[
         "animation sampling (sim-anim): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.anim.skeleton", On, "sim", "2026-11-23",
         "the skeleton walk of bd090 in one Rust call (docs/engine/skeleton-walk.md): deleted when phase 1b's run ladder is clean"),
+    sw("impl.sim.native.anim.manager", On, "sim", "2026-11-27",
+        "phase 1d's manager and graph entries answer from Rust (docs/engine/animation-manager.md): on after h2 sim diff parity"),
     sw("impl.sim.native.collision", Off, "sim", "2026-11-20",
         "collision queries (sim-collision): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.hs", Off, "sim", "2026-11-25",

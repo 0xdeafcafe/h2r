@@ -310,17 +310,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }))
     }
 
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan, claim_guest: bool) -> Option<native_render::skip::Cleared> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan, claim_guest: bool) -> Result<native_render::skip::Cleared, &'static str> {
         let ready = {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            Arc::clone(current_ready(&state, mem)?)
+            Arc::clone(current_ready(&state, mem).ok_or("world_pending")?)
         };
-        let mut d = self.device.lock().ok()?;
-        if !d.can_external_pass() || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()? {
-            return None;
+        let mut d = self.device.lock().map_err(|_| "device")?;
+        if !d.can_external_pass() || !matches!(d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)), Ok(true)) {
+            return Err("device");
         }
         if !crate::native_layers_glue::viewport_clip(&d, &ReadMemory(mem)) {
-            return None;
+            return Err("viewport");
         }
         // With a render thread that records scene stages, everything here
         // is extraction: the guest reads and the checks that can refuse,
@@ -338,7 +338,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             if n % 600 == 0 {
                 eprintln!("native-world: {} views left to the D3D path: not W-buffered (SET_CONTROL0 without z-perspective)", n + 1);
             }
-            return None;
+            return Err("w_buffer");
         }
         // The palettes the load expanded its palettized stage bitmaps
         // through must still be the ones bound: otherwise the D3D path
@@ -347,7 +347,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             if !PALETTE_CHANGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 eprintln!("native-world: a stage palette changed since the load expanded its bitmaps through it; the D3D path draws the world");
             }
-            return None;
+            return Err("palettes");
         }
         // The stencil the layer's draws take now, and how its items switch
         // it (`skip::stencil_plan`).
@@ -355,10 +355,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             if !STENCIL_UNREAD.swap(true, std::sync::atomic::Ordering::Relaxed) {
                 eprintln!("native-world: the device's stencil state does not read; the D3D path draws the world");
             }
-            return None;
+            return Err("stencil");
         };
-        let drained_plan = native_render::skip::stencil_plan(&render_bridge::native_world::Mem(mem), native_render::skip::LIGHTMAP_LAYER)?;
-        if &drained_plan != plan { return None; }
+        let drained_plan = native_render::skip::stencil_plan(&render_bridge::native_world::Mem(mem), native_render::skip::LIGHTMAP_LAYER)
+            .ok_or("stencil_plan")?;
+        if &drained_plan != plan { return Err("stencil_plan"); }
         let Some(stencil) = pass_stencil(&stencil, plan) else {
             let n = STENCIL_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if n % 600 == 0 {
@@ -367,36 +368,39 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                     n + 1
                 );
             }
-            return None;
+            return Err("stencil");
         };
         // The cull layer 3 starts in: what the passes that do not set
         // `CULLMODE` inherit (`native_render::look::WorldPass::inherits_cull`).
         let cull = d.cull_state(&ReadMemory(mem)).map(inherited_cull);
-        let target = d.external_ready(&ReadMemory(mem), false).ok()?;
+        let target = d.external_ready(&ReadMemory(mem), false).map_err(|_| "target")?;
         // Admit the union of both lenses. Exact readback renders the retail
         // projection, and hardware clips a submitted part outside either copy.
         let factor = d.projection_factor_for_target(target.surface_size);
-        let admission_camera = native_render::camera::display_camera(scene_view.camera, factor.min(1.));
+        let admission_camera = native_render::camera::display_camera(scene_view.camera, factor);
         let frustum = GpuWorld::draw_frustum(&admission_camera.view_projection(), true);
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let run = u64::from(d.swap_count()).wrapping_add(1);
-        let (device, color, depth) = d.external_pipeline_target(&ReadMemory(mem))?;
+        let (device, color, depth) = d.external_pipeline_target(&ReadMemory(mem)).ok_or("target")?;
         let time = native_render::layer_pass::render_time(&ReadMemory(mem));
         let accumulation = if d.samples_levels_in_place() {
             accumulation_target(&ReadMemory(mem), d.bound_target())
         } else { None };
-        let select = |parts: &[(Owner, u8)], display_only| {
+        // The parts' selection, or why it does not draw: the GPU world
+        // busy on a worker, not uploaded, a part or texaccum it cannot
+        // bind, an animation that does not read, pipelines still warming.
+        let select = |parts: &[(Owner, u8)], display_only| -> Result<Arc<WorldSelection>, &'static str> {
             let mut guard = if display_only || ready.owns_display_lightmaps() {
                 ready.gpu()
             } else {
-                ready.gpu.try_lock().ok()?
+                ready.gpu.try_lock().map_err(|_| "gpu_busy")?
             };
-            let gpu = guard.as_mut()?;
+            let gpu = guard.as_mut().ok_or("gpu_pending")?;
             configure_world(gpu, depth, cull, &stencil);
-            let mut selection = gpu.select_parts(parts, &admission_camera)?;
-            if !gpu.select_texaccum(&mut selection, accumulation) { return None; }
-            gpu.animate_selection(&mut selection, time).ok()?;
-            gpu.prewarm_world(&device, color, depth, &selection).then(|| Arc::new(selection))
+            let mut selection = gpu.select_parts(parts, &admission_camera).ok_or("selection")?;
+            if !gpu.select_texaccum(&mut selection, accumulation) { return Err("texaccum"); }
+            gpu.animate_selection(&mut selection, time).map_err(|_| "animation")?;
+            gpu.prewarm_world(&device, color, depth, &selection).then(|| Arc::new(selection)).ok_or("warming")
         };
         let world_pass = |selection, display_only| WorldPass {
             selection, display_only,
@@ -418,22 +422,23 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             // Whole sections only, and none that samples an accumulation
             // no display stage wrote (`GpuWorld::display_complete_parts`).
             let parts = ready.gpu().as_ref().map(|gpu| gpu.display_complete_parts(&parts)).unwrap_or_default();
-            if !parts.is_empty() && let Some(selection) = select(&parts, true) {
+            if !parts.is_empty() && let Ok(selection) = select(&parts, true) {
                 let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges: parts.len(), slots: accumulation_slots(&selection) };
                 let _ = d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, Box::new(world_pass(selection, true)));
             }
         }
-        if !claim_guest { return None; }
+        if !claim_guest { return Err("display_only"); }
         let (masks, cleared, selected) = {
             let bounds = ready.part_bounds.read().unwrap_or_else(|e| e.into_inner());
             render_bridge::native_world::plan_parts(
                 &render_bridge::native_world::Mem(mem), &ready.parts, |owner, part| {
                     bounds.get(&(owner, part)).is_some_and(|b| frustum.may_see(b))
                 },
-            )?
+            )
+            .ok_or("masks")?
         };
         let ranges = selected.len();
-        if ranges == 0 { return None; }
+        if ranges == 0 { return Err("part"); }
         let counted = timeline::phase::enabled().then(|| selected.iter().map(|p| p.0).collect::<Vec<_>>());
         let selection = select(&selected, false)?;
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: accumulation_slots(&selection) };
@@ -449,13 +454,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 Ok(Some(reservation)) => {
                     if !masks.apply(&mut render_bridge::native_world::Mem(mem)) {
                         timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
-                        return None;
+                        return Err("masks");
                     }
                     reservation.commit();
                     true
                 }
                 Ok(None) => false,
-                Err(_) => return None,
+                Err(_) => return Err("reservation"),
             }
         } else {
             false
@@ -466,10 +471,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 d.prepare_external_pass(&mut memory, plan, pass())
             } else {
                 d.prepare_external_bound(&mut memory, plan, pass(), Vec::new())
-            }.ok()??;
+            }.ok().flatten().ok_or("reservation")?;
             if !masks.apply(&mut render_bridge::native_world::Mem(mem)) {
                 timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
-                return None;
+                return Err("masks");
             }
             reservation.commit();
         }
@@ -477,7 +482,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             crate::native_world_layers_glue::count_frontend(crate::d3d_diag::presents() + 1, view, bsp,
                 timeline::native::WorldOpaque::Prereserved, owners);
         }
-        Some(cleared)
+        Ok(cleared)
     }
 }
 

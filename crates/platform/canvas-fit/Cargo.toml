@@ -1,0 +1,10 @@
+[package]
+name = "canvas-fit"
+description = "The one widescreen rule: the lens and the uniform fit of the guest's 640x480 canvas on a window of any shape (docs/graphics/high-resolution.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[package.metadata.h2]
+status = "in progress"
+doc = ["graphics/high-resolution.md"]

@@ -496,6 +496,7 @@ fn api_router(live: Arc<Live>, facts: crate::status::SiteFacts) -> Router {
         .merge(crate::logio::routes())
         .merge(crate::rule_scripts::routes())
         .merge(crate::game_variants::routes())
+        .merge(crate::packages::routes())
         .merge(sockets())
         .method_not_allowed_fallback(|| async {
             ApiError::new(ErrorCode::Invalid, "method not allowed here")

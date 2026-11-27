@@ -86,14 +86,13 @@ package give the same bytes on every machine, and the bytes equal
 `inject::add_pogo`'s less the version string (`pogo_tests.rs` in
 `crates/tools/workspace`).
 
-- **Cache.** `<data>/packages/cache/<map sha>-<key>.map` with a `.json`
+- **Cache.** `<data>/packages/cache/<map sha>-<key>.splice` with a `.json`
   receipt ([studio-redesign.md](../editor/studio-redesign.md), "How the
   game consumes packages"). The key covers the package's id, so a changed
   source, atlas or tag file builds anew.
 - **Refusal.** A map with no room, with no shader template the model can
-  be written on, with no weapon of the class to borrow from, or larger
-  than a rewrite reads (`vfs::MAX_REWRITE_BYTES`) is served as it is and
-  named once on stderr (`packages: <map> is served without its
+  be written on, or with no weapon of the class to borrow from is served
+  as it is and named once on stderr (`packages: <map> is served without its
   packages: <why>`). A map that already holds the stick's tags is left
   alone.
 - **Off.** The package's `features = ["pogo"]` follows the `pogo`

@@ -53,6 +53,17 @@
 //!   already made, newest first. Last it writes each teleporter channel
 //!   into the loaded scenario's netgame flag (its identifier, `+0x14`),
 //!   after checking the flag is a teleporter.
+//! - **Forge body** swaps a player's unit for a Forge body and back
+//!   (docs/game/forge-design-slices.md, "The monitor body"). Enter makes
+//!   the body's unit tag with the ownerless spawn, then gives it to the
+//!   player with `player_set_unit_index` (`0x14cad0`: stdcall `(player)`,
+//!   EBX the new unit or -1, `ret 4`; it clears the old unit's player at
+//!   `+0x13c`, sets the new one's and the player's unit at `+0x2c`, as its
+//!   callers `0x14ee70` and `0x152dad` use it), and turns it and the view
+//!   as a teleport does. The old unit is left in the world, unowned. Fly
+//!   moves the body with `object_set_position`. Leave gives the player the
+//!   kept biped again, places it at the body's position with the co-op
+//!   placement and deletes the body.
 //! - **Placement edit** is `world.placement.edit`: one transaction on a
 //!   scenario placement block (`placement::edit`). It deletes the occupants
 //!   of removed entries, renumbers the occupants of moved ones, writes the
@@ -119,6 +130,9 @@ pub mod addr {
     pub const UNIT_ADD_WEAPON: u32 = 0x000c_d0c0;
     pub const PLAYER_PLACE_NEAR: u32 = engine::points::PLAYER_PLACE_NEAR.base;
     pub const PLAYER_SET_FACING: u32 = 0x0018_74b0;
+    /// `player_set_unit_index`: stdcall `(player)`, EBX the unit (-1 for
+    /// none), `ret 4` (module doc, "Forge body").
+    pub const PLAYER_SET_UNIT: u32 = 0x0014_cad0;
     pub const OBJECT_SET_POSITION: u32 = 0x000b_75a0;
     /// Unit: desired facing, aiming and looking vectors, which the
     /// teleport writes (`0x2a01a2`, `0x2a01b8`, `0x2a01ce`).
@@ -225,9 +239,41 @@ pub enum ForgeStep {
     /// table (`forge::spare_clips`), which fills each weapon the entry
     /// makes, and the weapon it has out now.
     SpareClips { index: u32, clips: Option<u8> },
+    /// Give starting location `index` a weight, or Normal: the game's table
+    /// (`forge::spawn_weight`), which biases the spawn chooser.
+    SpawnWeight {
+        index: u32,
+        weight: Option<forge_doc::SpawnWeight>,
+    },
+    /// Hold netgame item entry `index` back at a round's start, or place
+    /// it: the game's table (`forge::place_at_start`), which the next round
+    /// reset follows.
+    PlaceAtStart { index: u32, held: bool },
     /// An edit of one of the map's own scenario entries (`forge::base`),
     /// after the other steps: checked with the batch, then done.
     Base(crate::forge::base::BaseStep),
+}
+
+/// One step of a Forge body swap ([`Call::ForgeBody`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BodyStep {
+    /// Make the unit tag `tag` at `pos` facing `forward` and make it the
+    /// player's unit. Answers `{"body", "biped"}`: the new unit and the one
+    /// it replaced, kept in the world.
+    Enter {
+        tag: u32,
+        pos: [f32; 3],
+        forward: [f32; 3],
+    },
+    /// Move the player's body `body` to `pos`, facing `forward`.
+    Fly {
+        body: u32,
+        pos: [f32; 3],
+        forward: [f32; 3],
+    },
+    /// Make `biped` the player's unit again at `body`'s position and
+    /// facing, then delete `body`. Answers `{"biped", "placed"}`.
+    Leave { body: u32, biped: u32 },
 }
 
 /// The guest address of the loaded scenario's netgame flag `flag`, checked
@@ -252,13 +298,22 @@ fn teleporter_flag(m: &dyn GuestMemory, scenario: u32, flag: u32) -> Result<u32,
 
 /// Checks that the loaded scenario has netgame item entry `index`.
 fn item_entry(m: &dyn GuestMemory, scenario: u32, index: u32) -> Result<(), String> {
-    use map::scenario_layout::{BlockKind, block};
-    let def = block(BlockKind::NetgameEquipment);
+    entry_of(m, scenario, map::scenario_layout::BlockKind::NetgameEquipment, index)
+}
+
+/// Checks that the loaded scenario's `kind` block has entry `index`.
+fn entry_of(
+    m: &dyn GuestMemory,
+    scenario: u32,
+    kind: map::scenario_layout::BlockKind,
+    index: u32,
+) -> Result<(), String> {
+    let def = map::scenario_layout::block(kind);
     let count = m
         .u32(scenario + def.offset)
         .map_err(|e| format!("guest memory at {:#x} faulted", e.addr))?;
     if index >= count {
-        return Err(format!("the scenario has no netgame item {index}"));
+        return Err(format!("the scenario has no {} {index}", def.label.to_lowercase()));
     }
     Ok(())
 }
@@ -339,6 +394,13 @@ pub enum Call {
     Forge {
         guard: crate::forge::local::Guard,
         steps: Vec<ForgeStep>,
+    },
+    /// One step of a Forge body swap for `player` (a salted handle),
+    /// rechecking the local session's admission first.
+    ForgeBody {
+        guard: crate::forge::local::Guard,
+        player: u32,
+        step: BodyStep,
     },
     /// Build game options with `steps` and queue them: a new game loads
     /// at the game's next transition.
@@ -1071,6 +1133,140 @@ async fn unwind_made(cx: &Cx, made: &[u32], deleted: &[usize]) -> Result<(), Ent
     Ok(())
 }
 
+/// Turn `unit` (its body at `body`) and, for a local player, the view to
+/// `forward`, as a teleport does.
+async fn face(cx: &Cx, scratch: u32, unit: u32, body: u32, user: i16, forward: [f32; 3]) -> Result<(), EntryError> {
+    let up = up_of(forward);
+    cx.write(|m| {
+        for o in addr::UNIT_FACINGS {
+            put_vec(m, body + o, forward)?;
+        }
+        put_vec(m, scratch + SCRATCH_FORWARD, forward)?;
+        put_vec(m, scratch + SCRATCH_UP, up)
+    })?;
+    if user >= 0 {
+        cx.call(
+            GuestCall::new(addr::PLAYER_SET_FACING)
+                .ecx(user as u32)
+                .eax(scratch + SCRATCH_FORWARD),
+        )
+        .await?;
+    }
+    cx.call(
+        GuestCall::new(addr::OBJECT_SET_POSITION)
+            .eax(0)
+            .ecx(scratch + SCRATCH_FORWARD)
+            .edx(scratch + SCRATCH_UP)
+            .args([unit, 0, 0]),
+    )
+    .await?;
+    Ok(())
+}
+
+/// A Forge body swap's step (module doc, "Forge body"). Each checks the
+/// session guard and the player's unit before its first guest call.
+async fn run_body(
+    cx: &Cx,
+    scratch: u32,
+    guard: crate::forge::local::Guard,
+    player: u32,
+    step: BodyStep,
+) -> Result<Outcome, EntryError> {
+    if !cx.read(|m| guard.allows(m)) {
+        return Ok(Err(unavailable(
+            "the local Forge session changed before the body swap",
+        )));
+    }
+    let unit = match cx.read(|m| player_unit(m, player)) {
+        Ok(Some(u)) => u,
+        Ok(None) => return Ok(Err(unavailable("the player has no unit now (between lives)"))),
+        Err(e) => return Ok(Err(unavailable(e))),
+    };
+    let (unit, body, user) = unit;
+    let finite = |v: [f32; 3]| v.iter().all(|c| c.is_finite());
+    match step {
+        BodyStep::Enter { tag, pos, forward } => {
+            if !finite(pos) || !super::edits::valid_axes(forward, up_of(forward)) {
+                return Ok(Err(super::invalid("a Forge body needs a finite place and facing")));
+            }
+            if cx.read(|m| objects::Body::at(body).parent(m))?.is_some() {
+                return Ok(Err(refused("Get out of the vehicle first.")));
+            }
+            let made = match spawn(cx, scratch, tag, pos, Some((forward, up_of(forward)))).await? {
+                Ok(made) => made,
+                Err(e) => return Ok(Err(e)),
+            };
+            cx.call(GuestCall::new(addr::PLAYER_SET_UNIT).ebx(made).args([player]))
+                .await?;
+            let Some(made_body) = cx.read(|m| body_of(m, made)) else {
+                return Ok(Err(unavailable("the Forge body was gone as soon as it was made")));
+            };
+            face(cx, scratch, made, made_body.addr, user, forward).await?;
+            Ok(Ok(json!({ "body": hex(made), "biped": hex(unit) })))
+        }
+        BodyStep::Fly {
+            body: flying,
+            pos,
+            forward,
+        } => {
+            if flying != unit {
+                return Ok(Err(refused("the player is not in that Forge body")));
+            }
+            if !finite(pos) || !super::edits::valid_axes(forward, up_of(forward)) {
+                return Ok(Err(super::invalid("a Forge body needs a finite place and facing")));
+            }
+            cx.write(|m| put_vec(m, scratch + SCRATCH_POS, pos))?;
+            cx.call(
+                GuestCall::new(addr::OBJECT_SET_POSITION)
+                    .eax(scratch + SCRATCH_POS)
+                    .ecx(0)
+                    .edx(0)
+                    .args([flying, 0, 0]),
+            )
+            .await?;
+            face(cx, scratch, flying, body, user, forward).await?;
+            Ok(Ok(json!({ "body": hex(flying) })))
+        }
+        BodyStep::Leave { body: flying, biped } => {
+            if flying != unit {
+                return Ok(Err(refused("the player is not in that Forge body")));
+            }
+            let Some(kept) = cx.read(|m| body_of(m, biped)) else {
+                return Ok(Err(unavailable("the player's own biped is gone")));
+            };
+            let at = cx.read(|m| -> Result<_, engine::MemFault> {
+                let b = objects::Body::at(body);
+                Ok((b.position(m)?, b.forward(m)?))
+            })?;
+            let (pos, forward) = at;
+            cx.call(GuestCall::new(addr::PLAYER_SET_UNIT).ebx(biped).args([player]))
+                .await?;
+            cx.write(|m| put_vec(m, scratch + SCRATCH_POS, pos))?;
+            let placed = cx
+                .call(
+                    GuestCall::new(addr::PLAYER_PLACE_NEAR)
+                        .ebx(player)
+                        .esi(scratch + SCRATCH_POS)
+                        .args([u32::MAX]),
+                )
+                .await?
+                .eax
+                & 0xff
+                != 0;
+            // Level, as a player stands: the body's heading without its pitch.
+            let level = {
+                let [x, y, _] = forward;
+                let len = (x * x + y * y).sqrt();
+                if len > 1e-4 { [x / len, y / len, 0.] } else { [1., 0., 0.] }
+            };
+            face(cx, scratch, biped, kept.addr, user, level).await?;
+            cx.call(GuestCall::new(addr::OBJECT_DELETE).args([flying]))
+                .await?;
+            Ok(Ok(json!({ "biped": hex(biped), "placed": placed })))
+        }
+    }
+}
+
 /// A local Forge edit, in the [`ForgeStep`] order. The guard and the
 /// `world.object.*` object check run before the first guest call: every
 /// live target must still resolve with its kind and salt, and every frame
@@ -1105,7 +1301,15 @@ async fn run_forge(
                 }
                 (None, None)
             }
-            ForgeStep::SpareClips { index, .. } => {
+            ForgeStep::SpawnWeight { index, .. } => {
+                if let Err(e) = cx.read(|m| {
+                    entry_of(m, guard.scenario, map::scenario_layout::BlockKind::StartingLocations, *index)
+                }) {
+                    return Ok(Err(super::invalid(e)));
+                }
+                (None, None)
+            }
+            ForgeStep::SpareClips { index, .. } | ForgeStep::PlaceAtStart { index, .. } => {
                 if let Err(e) = cx.read(|m| item_entry(m, guard.scenario, *index)) {
                     return Ok(Err(super::invalid(e)));
                 }
@@ -1212,6 +1416,12 @@ async fn run_forge(
     // clips; then the one it has out. A spawner with none keeps the reserve
     // its weapon already has.
     for step in steps {
+        if let ForgeStep::SpawnWeight { index, weight } = *step {
+            crate::forge::spawn_weight::set(index, weight);
+        }
+        if let ForgeStep::PlaceAtStart { index, held } = *step {
+            crate::forge::place_at_start::set(index, held);
+        }
         if let ForgeStep::SpareClips { index, clips } = *step {
             crate::forge::spare_clips::set(index, clips);
             if let Some(clips) = clips {
@@ -1584,6 +1794,11 @@ async fn run_call(
         }
         Call::PlacementEdit { ref plan } => placement::edit::run(cx, scratch, queue, plan).await,
         Call::Forge { guard, ref steps } => run_forge(cx, scratch, queue, guard, steps).await,
+        Call::ForgeBody {
+            guard,
+            player,
+            step,
+        } => run_body(cx, scratch, guard, player, step).await,
         Call::ReactivateStructure => reactivate_structure(cx).await,
         Call::QueueGame { ref steps } => {
             let options = scratch + SCRATCH_OPTIONS;

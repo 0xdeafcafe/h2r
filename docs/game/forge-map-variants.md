@@ -258,13 +258,13 @@ between it and a row.
 | Item spawner | item: a collection or an object tag | `item` | **E** | nothing |
 | Item spawner | respawn time; 0 is the collection's own | `respawn time` | **E** | nothing |
 | Item spawner | return time: how long an object may be away from its spot | `abandon limit` | **E** | nothing |
-| Item spawner | place at start | none: the reset `0x15ad30` spawns every matching entry at the start, whatever its mode; a countdown of 0 after `ENGINE_ROUND_RESET` would make the first spawn wait its respawn time (**E**, [2026-11-27-forge-spawner-rows.md](../engine/notes/2026-11-27-forge-spawner-rows.md)) | **E** (scenario-editor.md section 2) | left out: no document property reaches the round reset of the game that plays it |
+| Item spawner | place at start | none: the reset `0x15ad30` spawns every matching entry at the start, whatever its mode (**E**, [2026-11-27-forge-spawner-rows.md](../engine/notes/2026-11-27-forge-spawner-rows.md)) | **E** (scenario-editor.md section 2) | the property `place_at_start` ("Properties without a retail field") |
 | Item spawner | respawn trigger: what starts the countdown while the object is out | `respawn mode`: 0 the object moved from its spot or an object bit set, 1 another object bit set; the bits are not named (where each is written is in [notes/2026-11-26-forge-loose-ends.md](notes/2026-11-26-forge-loose-ends.md)) | **E** for the paths; **S** for the bits' meaning | a row in D3 once the bits are named |
 | Item spawner | game types | `game type 1` to `game type 4` (`+0x04`), read by the matcher `0x15a090` | **E** (scenario-editor.md section 2, `map::scenario_layout::game_types`) | nothing |
 | Item spawner | spare clips, team | none in the entry (**C**: the public layout has neither) | **S** | Forge properties, both built (D4, D5) |
 | Starting point | team | `team` | **V**, **C** | nothing |
 | Starting point | game types | none read; the public layout's slots after the team (**C**) are kept, not typed | **E**: no reader of the block found reads those bytes, and the spawn chooser `0x14ef00` weighs every entry (scenario-editor.md section 2); that no other code reads them is **S** | left out |
-| Starting point | weight | none in the entry (**C**); the engine's weight is its position's, with a random term, so a property is a bias added to it | **E** for the routine (notes/2026-11-26-forge-loose-ends.md) | left out: the size a Low or High bias needs is not read ([2026-11-27-forge-spawner-rows.md](../engine/notes/2026-11-27-forge-spawner-rows.md)) |
+| Starting point | weight | none in the entry (**C**); the engine's weight is its position's, with a random term, so a property is a bias added to it | **E** for the routine (notes/2026-11-26-forge-loose-ends.md) | a Forge property, built (D5) |
 | Goal | role: the netgame flag's type | `type` | **V**, **C**; the roles traced are in `forge_doc::builtin_label` | nothing |
 | Goal | team | `team` | **V**, **C** | nothing |
 | Goal | order: the hill corner or territory number | the type for a hill corner, `identifier` otherwise | **V** for the identifier; **Code** for the corner (`builtin_label`) | nothing |
@@ -281,28 +281,64 @@ each with the kinds it is on, how it reads a thing and the one
 `EntryOp::Set` it writes. The game types of an item spawner are not a
 row of that table, which is one field a row: `props::games` reads the
 four slots as a set and `Session::set_games` writes the slots that
-change in one undo step. The rows a Forge property backs are Team (D4) and Spare clips (D5). A teleporter's channel is its link's
+change in one undo step. The rows a Forge property backs are Team (D4), Spare clips, Weight and Place at start (D5). A teleporter's channel is its link's
 (the Links tool), not a row. `Session::set_field` takes a row's name
 and refuses one the thing's kind does not have.
 
 ### Properties without a retail field
 
-Spare clips, a spawner's team and a starting point's weight are in
-Halo 3's variants (**C**, forge.md 1.1) and have no field in Halo 2's
+Spare clips, place at start, a spawner's team and a starting point's
+weight are in Halo 3's variants (**C**, forge.md 1.1) and have no field in Halo 2's
 entries (**C**, **S**). They are properties of the document
 (`EntryOp::Property`), in the labels' manner: document data with no
 scenario bytes (`forge_doc::Labels`).
 
 | Property | On | Reaches the game by | State |
 |---|---|---|---|
-| `spare_clips` | item spawner of an item collection | a write to the new weapon's reserve after the spawner makes it: an observer after `NETGAME_ITEM_SPAWN` (`0x15aad0`) reads the entry's index from the popped arguments and its weapon from the spawner's state (`[GAME_ENGINE]+0x7dc`, 8 bytes an entry), and sets the first magazine's reserve (`+0x22a`) to the clips times the definition magazine's clip (`+0x0a`), capped at its `+0x0c` (**E**, [2026-11-27-forge-spawner-rows.md](../engine/notes/2026-11-27-forge-spawner-rows.md)). The clips are host state by entry (`agent::forge::spare_clips::TABLE`), set by the session's `World::spare_clips` (`ForgeStep::SpareClips`, which also fills the weapon the entry has out) and emptied at `GAME_ACTIVATE` (`game::forge_spare_clips`). Only a Forge session's game has them: a match on a built variant has no document | `Session::{spare_clips, set_spare_clips}`; the Properties row Spare clips |
+| `spare_clips` | item spawner whose collection holds a weapon | a write to the new weapon's reserve after the spawner makes it: an observer after `NETGAME_ITEM_SPAWN` (`0x15aad0`) reads the entry's index from the popped arguments and its weapon from the spawner's state (`[GAME_ENGINE]+0x7dc`, 8 bytes an entry), and sets the first magazine's reserve (`+0x22a`) to the clips times the definition magazine's clip (`+0x0a`), capped at its `+0x0c` (**E**, [2026-11-27-forge-spawner-rows.md](../engine/notes/2026-11-27-forge-spawner-rows.md)). The clips are host state by entry (`agent::forge::spare_clips::TABLE`), set by the session's `World::spare_clips` (`ForgeStep::SpareClips`, which also fills the weapon the entry has out) and emptied at `GAME_ACTIVATE` (`game::forge_spare_clips`). A match on a built variant reads them from the Forge record | `Session::{spare_clips, set_spare_clips}`; the Properties row Spare clips |
 | `team` | item spawner | nothing in a retail game type. A rules script reads it, as it reads a label ([rules-engine.md](rules-engine.md#forge-labels)) | `Session::{team, set_team}`; `forge_doc::labelled` reports it for a labelled spawner |
-| `weight` | starting point | a bias added to the weight the chooser (`PLAYER_SPAWN_LOCATION`) gives the location. The weight is the position's sum of influence spheres plus a random term (`0x23ba90`, its one caller `0x14efb1`, EAX the location, XMM0 the weight; `0x23b060`; **E**, notes/2026-11-26-forge-loose-ends.md); an after-hook on `0x23ba90` could add it. The size a bias needs is not read: the influence weights per game type and the random term's scale (**S**, [2026-11-27-forge-spawner-rows.md](../engine/notes/2026-11-27-forge-spawner-rows.md)) | not shown |
+| `weight` | starting point | a bias added to the weight the chooser (`PLAYER_SPAWN_LOCATION`) gives the location. The weight is the position's sum of influence spheres plus a random term (`0x23ba90`, its one caller `0x14efb1`, EAX the location, XMM0 the weight; `0x23b060`; **E**, notes/2026-11-26-forge-loose-ends.md); a hook after `0x23ba90` (`SPAWN_LOCATION_WEIGHT`) adds -0.5 for Low and +0.5 for High. The random term is uniform over 0 to 1 (the multiplayer globals' scale is 1.0) and an enemy's sphere weighs -0.75 to -1, so High wins a tie of influence seven times in eight and still loses to a location clear of enemies (**E**, [2026-11-27-forge-spawner-rows.md](../engine/notes/2026-11-27-forge-spawner-rows.md)). The weights are host state by location (`agent::forge::spawn_weight::TABLE`), set by `World::spawn_weight` and emptied at `GAME_ACTIVATE` (`game::forge_spawn_weight`). A match on a built variant reads them from the Forge record | `Session::{spawn_weight, set_spawn_weight}`; the Properties row Weight |
+| `place_at_start` | item spawner; `false` is No, none the retail Yes, `true` is refused (a clear) | a write after the round reset: an observer after `ENGINE_ROUND_RESET` sets the countdown (`+4`) of each held entry the reset left with no object and a countdown of 1 to 0, so the spawner arms the respawn time and the item first comes after it (**E**, [2026-11-27-forge-spawner-rows.md](../engine/notes/2026-11-27-forge-spawner-rows.md), "Place at start"). The held entries are host state (`agent::forge::place_at_start::TABLE`), set by `World::place_at_start` (`ForgeStep::PlaceAtStart`) or the Forge record and emptied at `GAME_ACTIVATE` (`game::forge_place_at_start`). In a session a change takes effect at the next round's start | `Session::{place_at_start, set_place_at_start}`; the Properties row Place at start |
 | `games` | object | the materialiser leaves the placement out of a map built for another game type ("Game types") | `Property::Games`, `forge_doc::object_games`; no session call or tool row sets it |
 
 A property that reaches the game through a hook is host state in
 `ForgeExt` and follows [forge-design.md](forge-design.md), "Who owns
 state".
+
+### The Forge record
+
+A match on a built variant has no document. The build writes what the
+hooks above need into a record at the map's tail, before the areas
+record (`forge_doc::record::ForgeRecord`, written in `forge_build::build`).
+At each `GAME_ACTIVATE`, before the call and after the three features
+empty their tables, `game::forge_record` reads the active map's record
+and fills the tables. The first round's reset runs inside
+`GAME_ACTIVATE`, so place at start holds from the first round.
+
+```text
+record  = "H2FR" version:u8 count:u16le row*count crc:u32le
+row     = field:u8 index:u16le value:u8
+trailer = length:u32le "H2FE"
+```
+
+| Field | Index | Value | Table filled |
+|---|---|---|---|
+| 0 spare clips | the item spawner's row in the built map | clips, 0 to 10 | `agent::forge::spare_clips::TABLE` |
+| 1 weight | the starting point's row | 0 Low, 1 High | `agent::forge::spawn_weight::TABLE` |
+| 2 held back | the item spawner's row | 0 | `agent::forge::place_at_start::TABLE` |
+| 3 body refused | the Forge body's code (0 Monitor, 1 Sentinel, 2 Prophet) | why the kit left it out: 0 no donor, 1 cannot copy, 2 no room | `forge_map::kit_bodies` ([forge-design-slices.md](forge-design-slices.md), "The monitor body") |
+
+`crc` is the FNV-1a of the bytes before it. Rows name entries by their
+index in the built map, which `ForgeRecord::of` resolves from the
+document (`forge_doc::resolve`); a removed entry has no row. A kit
+build writes a field 3 row for each body it left out. A build with no
+such property and no refused body writes no record.
+
+A reader walks the tail's
+records from the end (`game_markers::record::{tail_record, TAIL_ENDS}`),
+so the areas record and the Forge record are found in either order, and
+Studio strips both when it opens a map. A record that does not read is
+named and none is applied.
 
 ### Game types
 
@@ -608,8 +644,11 @@ Game Setup has **Map Variant...** under **Change Map...** in the
 CUSTOM GAMES and FORGE modes (`lobby_mode::arrange`); in FORGE it picks
 the map variant the session opens.
 
-1. **Change Map...** picks the map as today
-   ([map-select.md](map-select.md)). A new map clears the variant.
+1. **Change Map...** picks the map
+   ([map-select.md](map-select.md)). A map with saved variants opens
+   its page, the map itself and then each variant
+   ([map-select.md](map-select.md#a-map-with-variants)). A new map
+   picked without a variant clears the variant.
 2. **Map Variant...** opens a picker dialog on top of Game Setup
    (`kit.picker.map-variant`):
    **Original**, then this map's variants by name. The description
@@ -844,7 +883,7 @@ above follow.
 3. **Variant names.** Recommended: 16 characters, as the game's own
    variant names. A longer cap needs every text that shows one checked
    for fit.
-4. **Spare clips, a spawner's team and a starting point's weight.**
+4. **Spare clips, place at start, a spawner's team and a starting point's weight.**
    Halo 2's entries have no field for them. Recommended: build them as
    Forge properties, each shown only once its hook is proven (D5), and
    ship the editor without them. The other way is to leave them out of

@@ -827,15 +827,21 @@ pub fn cache_size_limit(cache_type: crate::CacheType) -> Result<u64> {
 /// ordinary metadata) an append may produce for a cache type.
 ///
 /// The loader (`0x1228f0`) takes `+0x1c` rounded up to a page from the low
-/// end of the physical arena that `0x12b400` reserves (`0x30e4000` bytes at
-/// `0x61000`), and fails only when it would cross the arena's high cursor
-/// (`0x12296c`); no constant bounds it. After load, `0x12c1e0` gives every
-/// page left between the cursors to one pool, so growth is taken from that
-/// pool. How much headroom the high side leaves at load time is not
-/// measured, so this bound is empirical: the largest total of any retail
-/// map of the same type on the owner's disc (V), which that pool is known
-/// to tolerate. See docs/formats/map-format.md, "Growing the metadata".
+/// end of the physical arena (`crate::arena`) and fails only when it would
+/// cross the arena's high cursor (`0x12296c`); no constant bounds it. After
+/// load, `0x12c1e0` gives every page left between the cursors to one pool,
+/// so growth is taken from that pool. The bound is the largest total of any
+/// retail map of the same type on the owner's disc (V), which that pool is
+/// known to tolerate on a retail arena, plus [`crate::arena::GROWTH`], the
+/// pages our runtime adds to the arena: the pool keeps at least retail's
+/// worst case. See docs/formats/map-format.md, "Growing the metadata".
 pub fn max_metadata_size(cache_type: crate::CacheType) -> Result<u32> {
+    Ok(retail_max_metadata_size(cache_type)? + crate::arena::GROWTH)
+}
+
+/// The largest `+0x1c` of any retail map of the type on the owner's disc
+/// (V): the bound on a retail arena.
+pub fn retail_max_metadata_size(cache_type: crate::CacheType) -> Result<u32> {
     Ok(match cache_type {
         crate::CacheType::Campaign => 0x00c2_4000,
         crate::CacheType::Multiplayer => 0x0062_c000,

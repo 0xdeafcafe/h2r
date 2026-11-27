@@ -20,6 +20,7 @@
 //! }
 //! ```
 
+pub mod ai_gates;
 pub mod game_types;
 pub mod render_aspect;
 pub mod scene_effects;
@@ -450,11 +451,13 @@ points! { ALL;
     /// vehicle leaves it first (action `0x1e` of `0xe68c0`). Read from the
     /// disassembly of the caller at `0x2a3ad0`, not yet confirmed by a run.
     UNIT_ENTER_VEHICLE @ 0x0011_ade0: [fn(vehicle: ebx, unit: stack 0, label: stack 1) ret 8], Optional; "docs/game/notes/2026-11-24-vehicle-actions.md";
-    /// The HS cast of an AI reference to an object list of its actors; EAX
-    /// the reference (a plain squad's index), the list datum returned in
-    /// EAX. The register convention is read from the cast table
-    /// (docs/engine/hs_vm.md) and not yet confirmed by a run.
-    OBJECT_LIST_FROM_AI @ 0x0027_2ea0: [fn(ai: eax) -> eax ret 0], Optional; "docs/engine/hs_vm.md";
+    /// The HS cast of an AI reference to an object list of its actors: the
+    /// reference (a plain squad's index) on the stack, the list datum
+    /// returned in EAX. The HS caller at `0x2a5b5b` pushes the reference
+    /// and does not pop it; the body reads it at `0x272ea4` and writes the
+    /// new list datum over that same stack slot at `0x272ebf`, so a call
+    /// that passes no stack argument loses its caller's return address.
+    OBJECT_LIST_FROM_AI @ 0x0027_2ea0: [fn(ai: stack 0) -> eax ret 4], Optional; "docs/engine/hs_vm.md";
     /// HaloScript's object awareness evaluator, index 305.
     HS_AI_SEE_OBJECT @ 0x002a_53b0: [fn(opcode: stack 0, thread: stack 1, first: stack 2) ret 12]; "docs/halo1/ai-control.md";
     /// HaloScript's two-argument `ai_place` evaluator (291): a squad and a
@@ -551,6 +554,12 @@ points! { ALL;
     /// AL 1 once the map and its first BSP are in.
     GAME_ACTIVATE @ 0x0018_f000: [fn(options: eax) -> al ret 0]; "docs/runtime/level-boot.md";
     CACHE_TAGS_LOAD @ 0x0012_28f0: [opaque], Optional; "docs/engine/engine-map.md";
+    /// Reserve the physical arena the tag cache loads into and set its
+    /// cursors (once, at startup); the `tag-arena` feature grows it.
+    PHYSICAL_ARENA_INITIALIZE @ 0x0012_b400: [opaque]; "docs/formats/map-format.md";
+    /// XAPI `XPhysicalAlloc`: MmAllocateContiguousMemoryEx over
+    /// `[address, address + size)`, or anywhere for address -1.
+    XPHYSICAL_ALLOC @ 0x002d_156a: [fn(size: stack 0, address: stack 1, alignment: stack 2, protect: stack 3) -> eax ret 16]; "docs/formats/map-format.md";
     CACHE_BSP_FIXUP @ 0x0012_2b40: [opaque], Optional; "docs/engine/engine-map.md";
     TAG_LOOKUP @ 0x0012_2c10: [opaque], Optional; "docs/engine/tag_get_checked.md";
     OBJECTS_PRE_PHYSICS @ 0x000b_6f10: [opaque], Optional; "docs/engine/engine-map.md";
@@ -771,6 +780,13 @@ points! { ALL;
     TERRITORIES_TICK @ 0x002c_0230: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
     /// Juggernaut's per-tick slot `+0x48`.
     JUGGERNAUT_TICK @ 0x0019_2530: [fn(engine: ecx) ret 0], Optional; "docs/engine/notes/2026-11-21-engine-vtables.md";
+    /// A starting location's weight for the spawn chooser: the influence
+    /// sum `0x23b060` over the context at its position, plus the random
+    /// term (the game seed's top 16 bits / 65535, times the multiplayer
+    /// globals' `+0x530` element's first float). Its one caller is
+    /// `PLAYER_SPAWN_LOCATION` (`0x14efb1`); EAX is the location
+    /// (`scnr+0x104` + `0x34` × index), ESI the seed.
+    SPAWN_LOCATION_WEIGHT @ 0x0023_ba90: [fn(location: eax, player: stack 0, flag: stack 1, context: stack 2) -> xmm0 ret 12], Optional; "docs/engine/notes/2026-11-27-forge-spawner-rows.md";
     /// The netgame item spawner: makes entry `index`'s object
     /// (`scnr+0x120`, stride `0x90`), stores its handle at the entry's
     /// state (`state + 8 * index`) and the index at the object's `+0xaf`.
@@ -1169,6 +1185,10 @@ points! { ALL;
     PORTAL_WINDOW_REGIONS @ 0x0017_30a0: [fn(lookup: stack 0, camera: stack 1, unused: stack 2, output: stack 3) ret 16]; "docs/graphics/native-visibility.md";
     /// Publish sphere-mode region records and update visited-cluster stamps.
     VIEW_SPHERE_REGIONS @ 0x0013_2d60: [fn(vis: eax) ret 0]; "docs/graphics/native-visibility.md";
+    /// Build a view's projection terms from its render camera: ECX the
+    /// camera, EDX the tangent extents or null, EAX the 0x40-byte output.
+    /// Its one caller is `0x0002fd90`.
+    VIEW_PROJECTION_BUILD @ 0x0002_fb70: [fn(camera: ecx, extents: edx, output: eax) ret 0]; "docs/graphics/native-visibility.md";
     /// Populate visibility lists from the current view's cluster references.
     SCENE_CLUSTER_GATHER @ 0x0013_2220: [fn(vis: stack 0) ret 4]; "docs/graphics/native-renderer.md";
     /// Publish clusters and their instanced geometry in visibility order.
@@ -1355,6 +1375,11 @@ points! { ALL;
     /// `slot + 0xc + 0x40 * language`). The Select Map row text calls it at
     /// `0x2c9afc`.
     MP_LEVEL_NAME @ 0x002a_fd70: [fn(slot: stack 0) -> eax ret 4]; "docs/game/map-select.md";
+    /// The current language's index (cached at `0x47ff38`). The Select Map's
+    /// focus handler (`0x2c9b7c`, its screen in EDI and the focused row's
+    /// slot in EBP) calls it at `0x2c9be6` and shows
+    /// `slot + 0x24c + 0x100 * language`, the slot's description.
+    UI_LANGUAGE @ 0x0011_cae0: [fn() -> eax ret 0]; "docs/game/map-select.md";
     /// The Select Map list's row text (list handler in ECX): the row's map
     /// id, its slot, then [`MP_LEVEL_NAME`] for the text.
     MAP_LIST_ROW_TEXT @ 0x002c_9ac4: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/map-select.md";

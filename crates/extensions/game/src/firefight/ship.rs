@@ -333,7 +333,7 @@ pub async fn place_squad_in(cx: &Cx, kit: &KitLayout, b: Boarding) -> anyhow::Re
 async fn load(cx: &Cx, ship: u32, squad: u16) -> anyhow::Result<u16> {
     let list = call(
         cx,
-        GuestCall::new(points::OBJECT_LIST_FROM_AI.base).eax(u32::from(squad)),
+        GuestCall::new(points::OBJECT_LIST_FROM_AI.base).args([u32::from(squad)]),
     )
     .await?
     .eax;

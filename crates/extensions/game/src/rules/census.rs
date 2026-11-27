@@ -463,10 +463,13 @@ mod tests {
             ..MapRows::default()
         };
         let doc = layout_doc(Some("siege"), "Zanzibar", &zan.counts).unwrap();
-        assert_eq!(doc.ops.len(), 4 + 5 + 6 + 6 + 6 + 6 + 10, "every op of the layout is on an entry Zanzibar has");
+        assert_eq!(doc.ops.len(), 4 + 1 + 5 + 6 + 6 + 6 + 6 + 10, "every op of the layout is on an entry Zanzibar has");
         let things = forge_doc::labelled(&zan, Some(&doc)).unwrap();
         let sites: Vec<_> = things.iter().filter(|t| t.label.text == "siege_site").map(|t| (t.index, t.label.number)).collect();
         assert_eq!(sites, [(13, Some(1)), (15, Some(0)), (17, Some(0)), (19, Some(1))]);
+        // The final stand is blue's flag stand, labelled so it stays put when the sides swap.
+        let goals: Vec<_> = things.iter().filter(|t| t.label.text == "siege_goal").map(|t| t.index).collect();
+        assert_eq!(goals, [3]);
         let starts = |text: &str, n: i32| things.iter().filter(|t| t.label.text == text && t.label.number == Some(n)).count();
         assert_eq!([0, 1, 2].map(|n| starts("siege_attack", n)), [5, 6, 6]);
         assert_eq!([0, 1, 2].map(|n| starts("siege_defend", n)), [6, 6, 10]);

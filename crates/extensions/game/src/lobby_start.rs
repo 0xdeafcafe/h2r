@@ -14,7 +14,8 @@
 //! category ([`forge_maps`]). Firefight needs a map that carries the kit,
 //! which `h2 firefight kit` installs as a package named `Firefight – <map>`
 //! (`firefight-kit`'s `build_package`): the catalogue lists it by that
-//! name ([`is_kit_map`]) in its Firefight category. A map the kit's probe
+//! name ([`is_kit_map`]); the map list tags its original map as supporting
+//! Firefight ([`crate::map_modes`]). A map the kit's probe
 //! recipe made is named `Firefight Probe – <map>` and is not offered.
 //!
 //! **The guest-call queue** the Forge session submits its game calls to
@@ -584,8 +585,8 @@ mod tests {
         );
         let kit: Vec<_> = kit_maps(&cat).into_iter().map(|m| m.id).collect();
         assert_eq!(kit, [12]);
-        let firefight: Vec<_> = cat.maps(Category::Firefight).iter().map(|m| m.id).collect();
-        assert_eq!(firefight, [12], "the kit maps are the Firefight category");
+        assert_eq!(cat.maps(Category::Mods).iter().map(|m| m.id).collect::<Vec<_>>(), [12, 13],
+            "a kit package is listed with the other packages");
     }
 
     #[test]
@@ -645,22 +646,6 @@ mod tests {
         );
         let picked = KitMaps::for_pick(Some(&cat), Some(10), None, true);
         assert_eq!(refusal(Mode::Firefight, Some(0), picked), None);
-    }
-
-    #[test]
-    fn change_map_lists_kit_packages_then_maps_with_ground_variants() {
-        let cat = ground_cat();
-        let view = cat.with_ground_maps(|m| m.short_name() == "beavercreek");
-        let listed: Vec<u32> = view.maps(Category::Firefight).iter().map(|m| m.id).collect();
-        assert_eq!(listed, [12, 11], "the kit package, then the base map");
-        // Nothing with ground leaves the list as it was.
-        let none = cat.with_ground_maps(|_| false);
-        assert_eq!(none, cat);
-        // With no kit package the category is made, after the others.
-        let bare = Catalogue::new([map(10, "Lockout", r"d:\maps\lockout")]);
-        let view = bare.with_ground_maps(|_| true);
-        assert_eq!(view.categories().last(), Some(&Category::Firefight));
-        assert_eq!(view.maps(Category::Halo2).len(), 1, "the original stays listed");
     }
 
     #[test]

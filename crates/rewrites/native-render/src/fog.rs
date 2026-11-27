@@ -106,7 +106,10 @@ pub fn layer_draws(mem: &dyn GuestRead) -> Option<bool> {
     Some(mem.read_u32(FOG_BYTES)? & 0x00ff_ff00 != 0)
 }
 
-/// Items left to the guest by the late-layer walk, grouped by cause.
+/// Items left to the guest by the late-layer walk, grouped by cause, and
+/// each item's list slot with its cause (`build`, `handler`, `record`,
+/// `subparts`, `object`, `material`, `order`): what its
+/// `scene_kept_<layer>_<kind>_<cause>` names.
 #[derive(Default)]
 pub struct LateRefusals {
     pub build: u64,
@@ -116,6 +119,30 @@ pub struct LateRefusals {
     pub object: u64,
     pub material: u64,
     pub order: u64,
+    pub kept: Vec<(u32, &'static str)>,
+}
+
+/// The items of the current list the guest's layer draw still draws for
+/// `layer` (6 or 16): those holding its bit
+/// ([`crate::layer_items::held_items`], objects included), less, for layer
+/// 16, a record with no entry for the layer ([`layer_implementation`]),
+/// for which the layer draws nothing. `None` when the list does not read.
+pub fn guest_items(mem: &dyn GuestRead, layer: u32) -> Option<Vec<crate::layer_items::Held>> {
+    let held = crate::layer_items::held_items(mem, layer, true)?;
+    if layer != FOG_LAYER as u32 {
+        return Some(held);
+    }
+    let Some(planar) = planar_gate(mem) else { return Some(held) };
+    let list = mem.read_u32(CURRENT_LIST)?;
+    let items = mem.read_u32(list.checked_add(0x14)?)?;
+    let entry = |slot: u32| -> Option<bool> {
+        let arg = mem.read_u32(items.checked_add(ITEM_SIZE.checked_mul(slot)?)?.checked_add(0xc)?)?;
+        let record = (arg >> 8) as u16 as i16;
+        let flags = mem.read_u32(RENDER_RECORDS + RENDER_RECORD_SIZE * u32::try_from(record).ok()?)?;
+        Some(layer_implementation(flags, planar).is_some())
+    };
+    // An item whose record does not read is kept: the guest may draw it.
+    Some(held.into_iter().filter(|h| entry(h.slot) != Some(false)).collect())
 }
 
 /// Clears the layer bit for accepted geometry. A layer-16 geometry build
@@ -155,6 +182,7 @@ pub fn clear_fog(
         }
         if mem.read_u32(item)? != GEOMETRY_BUILD {
             refused.build += 1;
+            refused.kept.push((i, "build"));
             guest_remainder = true;
             continue;
         }
@@ -162,6 +190,7 @@ pub fn clear_fog(
         let record = (arg >> 8) as u16 as i16;
         if record < 0 {
             refused.record += 1;
+            refused.kept.push((i, "record"));
             guest_remainder = true;
             continue;
         }
@@ -176,6 +205,7 @@ pub fn clear_fog(
         };
         if mem.read_u32(item + 4)? != GEOMETRY_DRAW {
             refused.handler += 1;
+            refused.kept.push((i, "handler"));
             guest_remainder = true;
             continue;
         }
@@ -183,11 +213,13 @@ pub fn clear_fog(
         // set (0x0004d14e). It still writes the current shader on entry.
         if planar.is_some() && flags & (1 << 14) != 0 {
             refused.record += 1;
+            refused.kept.push((i, "record"));
             guest_remainder = true;
             continue;
         }
         if mem.read_u32(base + 4)? != u32::MAX {
             refused.object += 1;
+            refused.kept.push((i, "object"));
             guest_remainder = true;
             continue;
         }
@@ -195,6 +227,7 @@ pub fn clear_fog(
         // ranges when the render record enables subpart selection.
         if flags & scene_extract::layout::object_walk::RECORD_SUBPARTS != 0 {
             refused.subparts += 1;
+            refused.kept.push((i, "subparts"));
             guest_remainder = true;
             continue;
         }
@@ -208,18 +241,20 @@ pub fn clear_fog(
         let fog_item = FogItem { owner, part: arg as u8, shader, implementation };
         if !native(fog_item) {
             refused.material += 1;
+            refused.kept.push((i, "material"));
             guest_remainder = true;
             continue;
         }
-        accepted.push((item, mask, fog_item));
+        accepted.push((i, item, mask, fog_item));
     }
     if guest_remainder {
         refused.order = accepted.len() as u64;
+        refused.kept.extend(accepted.iter().map(|&(i, ..)| (i, "order")));
         accepted.clear();
     }
     let mut cleared = Cleared { layer, items: Vec::with_capacity(accepted.len()) };
     let mut drawn = Vec::with_capacity(accepted.len());
-    for (item, mask, fog_item) in accepted {
+    for (_, item, mask, fog_item) in accepted {
         if mem.write_u32(item + 0x10, mask & !bit).is_none() {
             break;
         }
@@ -463,5 +498,24 @@ mod tests {
         m.w(CURRENT_LIST, 0);
         assert!(clear_fog(&mut m, 16, &|_| true).is_none());
         assert_eq!(mask(&m, 0), 1 << 16 | 1 << 3);
+    }
+
+    /// Each item the walk leaves to the guest names its slot and cause,
+    /// and the items the guest still draws skip a record with no layer-16
+    /// entry: the layer draws nothing of it.
+    #[test]
+    fn each_kept_item_names_its_slot_and_an_entryless_record_is_not_drawn() {
+        let mut m = scene();
+        m.w(RENDER_RECORDS + RENDER_RECORD_SIZE * 2, RECORD_FOG | scene_extract::layout::object_walk::RECORD_SUBPARTS);
+        let (_, _, refused) = clear_fog(&mut m, 16, &|_| true).unwrap();
+        assert_eq!(refused.kept, vec![(0, "subparts"), (2, "order")]);
+        let slots: Vec<u32> = guest_items(&m, 16).unwrap().iter().map(|h| h.slot).collect();
+        assert_eq!(slots, vec![0, 2], "the object's record has no layer-16 entry");
+        m.w(CURRENT_LAYER, 6);
+        for i in 0..3 {
+            m.w(ITEMS + ITEM_SIZE * i + 0x10, 1 << 6);
+        }
+        let slots: Vec<u32> = guest_items(&m, 6).unwrap().iter().map(|h| h.slot).collect();
+        assert_eq!(slots, vec![0, 1, 2], "layer 6 has no entry test");
     }
 }

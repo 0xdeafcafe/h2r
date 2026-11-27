@@ -219,3 +219,53 @@ fn only_a_model_section_has_levels_of_detail() {
     assert!(!s.uses_for_lower_lods(section));
     assert!(!s.can_undo());
 }
+
+/// A raise stroke over the cube's top (z = 0.5).
+fn bump() -> MeshOp {
+    MeshOp::Sculpt(mesh_edit::Stroke {
+        detail: Some(0.25),
+        ..mesh_edit::Stroke::dab(mesh_edit::Brush::Raise, [0.0, 0.0, 0.5], 0.4, 0.2)
+    })
+}
+
+#[test]
+fn a_sculpted_bsp_is_compiled_again_saved_and_reads_back() {
+    let src = map_bytes(6);
+    let mut s = session(&src);
+    let faces = s.mesh(target()).unwrap().face_count();
+    s.apply(target(), &[bump()], None).unwrap();
+    assert!(s.mesh(target()).unwrap().face_count() > faces, "the top is refined");
+    assert_eq!(s.ops(target()), &[bump()]);
+    let check = &s.check(Some(target()))[0];
+    assert_eq!((check.class, check.refused.clone()), (WriteClass::GrownBlocks, None));
+    let out = saved(&src, &s.changes().unwrap());
+    let back = Collision::read(&mut open(&out), coll()).unwrap();
+    let bsp = back.bsps().next().unwrap();
+    assert!(verify::check(bsp, back.materials.len()).is_empty());
+    // The bump's peak is solid now, and the open space above it still open.
+    let top = bsp.vertices.iter().fold(f32::MIN, |a, v| a.max(v.point[2]));
+    assert!((top - 0.7).abs() < 1e-3, "peak at {top}");
+    assert_eq!(query::locate(bsp, [0.0, 0.0, 0.6]), None, "inside the bump");
+    assert!(query::locate(bsp, [0.0, 0.0, 0.8]).is_some(), "above it");
+    // One undo step takes the whole stroke out.
+    assert!(s.undo());
+    assert!(!s.has_changes());
+    assert!(s.ops(target()).is_empty());
+    assert!(s.redo());
+    assert_eq!(s.ops(target()), &[bump()]);
+}
+
+#[test]
+fn a_stroke_the_compiler_refuses_is_refused_by_name_and_not_kept() {
+    // No collision materials: the compiled BSP's material is past the list.
+    let src = map_bytes(0);
+    let mut s = session(&src);
+    let before = s.mesh(target()).unwrap().clone();
+    let e = s.apply(target(), &[bump()], None).unwrap_err();
+    let Error::Refused { target: named, reason } = &e else { panic!("{e}") };
+    assert_eq!(named, &target().id());
+    assert!(reason.starts_with("the collision compiler refuses the stroke"), "{reason}");
+    assert_eq!(**s.mesh(target()).unwrap(), *before);
+    assert!(s.ops(target()).is_empty());
+    assert!(!s.can_undo());
+}

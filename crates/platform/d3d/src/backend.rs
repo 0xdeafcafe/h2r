@@ -335,7 +335,7 @@ pub trait ExternalPass: Send {
 
     /// The light, by handle, whose cone shadow this pass's layers read
     /// from the destination alpha, drawn by the renderer
-    /// (docs/graphics/e3-lighting.md, "Built: the shadowed cones"): the
+    /// (docs/graphics/e3-lighting-cones.md, "The shadowed cones"): the
     /// frame graph draws the cone's tile and its receivers' term just
     /// before the pass. `None` for a pass that reads no such term.
     fn cone_shadow(&self) -> Option<u32> { None }
@@ -1123,6 +1123,20 @@ impl PixelRect {
         Self { x, width: end.saturating_sub(x), ..self }
     }
 
+    /// [`PixelRect::projected_x`] on the vertical axis, for a `factor` above
+    /// 1 (the vertical lens grows by its inverse).
+    pub fn projected_y(self, viewport: (u32, u32, u32, u32), factor: f32) -> Self {
+        if factor == 1.0 || self.height == 0 { return self; }
+        let (_, top, _, height) = viewport;
+        let bottom = top.saturating_add(height);
+        let centre = f64::from(top) + f64::from(height) * 0.5;
+        let edge = |y| centre + (f64::from(y) - centre) / f64::from(factor);
+        let end = self.y.saturating_add(self.height);
+        let y = if self.y <= top { top } else { (edge(self.y).floor() as u32).clamp(top, bottom) };
+        let end = if end >= bottom { bottom } else { (edge(end).ceil() as u32).clamp(top, bottom) };
+        Self { y, height: end.saturating_sub(y), ..self }
+    }
+
     /// Whether this is the whole `w x h` target.
     pub fn is_whole(&self, w: u32, h: u32) -> bool {
         self.x == 0 && self.y == 0 && self.width == w && self.height == h
@@ -1154,22 +1168,13 @@ impl UiFit {
     /// Fit guest pixels uniformly on the output, about a pivot in guest
     /// window coordinates. Each player's viewport has its own pivot.
     pub fn about(output: (u32, u32), pivot: [f32; 2]) -> Option<Self> {
-        let (w, h) = output;
-        if w == 0 || h == 0 || u64::from(w) * 3 == u64::from(h) * 4 {
-            return None;
-        }
-        let sx = w as f32 / 640.0;
-        let sy = h as f32 / 480.0;
-        Self::from_pixel_ratio(1.0 / (sx / sy), pivot)
+        Self::from_pixel_ratio(canvas_fit::stretch_ratio(output)?.recip(), pivot)
     }
 
     /// Guest pixel width/height divided by displayed pixel width/height.
     /// For anamorphic Xbox artwork the numerator already includes its lens.
     pub fn from_pixel_ratio(ratio: f32, pivot: [f32; 2]) -> Option<Self> {
-        if !ratio.is_finite() || ratio <= 0.0 || ratio == 1.0 { return None; }
-        let x = ratio.min(1.0);
-        let y = ratio.recip().min(1.0);
-        Some(Self { transform: [x, y, pivot[0] * (1.0 - x), pivot[1] * (1.0 - y)], fit_scissor: true, screen_input: None })
+        canvas_fit::fit_about(ratio, pivot).map(Self::from_transform)
     }
 
     /// A CPU-projected sprite or query retains its player's scissor.
@@ -1363,8 +1368,11 @@ impl ResolvedDraw {
         let extra = self.extras[stage];
         let mut matrix = extra.bump_env_mat;
         if extra.samples_frame && let Some((_, factor)) = &self.retail_constants {
-            matrix[0] *= *factor;
-            matrix[2] *= *factor;
+            let (x, y) = (canvas_fit::horizontal_term(*factor), canvas_fit::vertical_term(*factor));
+            matrix[0] *= x;
+            matrix[2] *= x;
+            matrix[1] *= y;
+            matrix[3] *= y;
         }
         matrix
     }
@@ -1374,7 +1382,8 @@ impl ResolvedDraw {
         if let Some(fit) = self.ui_fit { return fit.map_rect(rect); }
         let Some((_, factor)) = &self.retail_constants else { return rect };
         let v = self.viewport;
-        rect.projected_x((v.x, v.y, v.width, v.height), *factor)
+        let view = (v.x, v.y, v.width, v.height);
+        if *factor > 1.0 { rect.projected_y(view, *factor) } else { rect.projected_x(view, *factor) }
     }
 
     /// Texture stages whose program reads the bound image.
@@ -2357,6 +2366,9 @@ pub struct RecordingBackend {
     pub external: Vec<(u32, u32)>,
     /// Per pass taken, the surfaces it samples ([`ExternalPass::sampled`]).
     pub external_sampled: Vec<Vec<Option<u32>>>,
+    /// Per pass taken, how many [`calls`](Self::calls) were recorded
+    /// before it: its place in the stream among the D3D path's work.
+    pub external_at: Vec<usize>,
     /// Whether it queues independently resolved draws
     /// ([`Backend::queue_external_draw`]) as a threaded backend does; off by
     /// default. Queued, a draw commits at once and is recorded in
@@ -2744,6 +2756,7 @@ impl Backend for RecordingBackend {
         if self.external_passes {
             self.external.push((color, depth));
             self.external_sampled.push(sampled);
+            self.external_at.push(self.calls.len());
         }
         Ok(self.external_passes)
     }

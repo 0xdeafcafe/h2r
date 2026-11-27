@@ -794,7 +794,7 @@ fn the_live_menu_puts_co_op_above_custom_games_and_mods_last() {
         assert_eq!(menu.rows(), count);
         assert_eq!(menu.count(LIST_NAME, VANILLA_ROWS), count);
         assert_eq!(menu.count(LIST_NAME, count), count, "not twice");
-        assert_eq!(menu.visible(), VISIBLE_ITEMS, "seven show; the rest scroll");
+        assert_eq!(menu.visible(), count.min(VISIBLE_ITEMS), "up to eight show; more would scroll");
         for (row, &(kind, pane)) in expected.iter().enumerate() {
             assert_eq!(menu.row_kind(row as i16), kind, "co-op {coop}, row {row}");
             assert_eq!(

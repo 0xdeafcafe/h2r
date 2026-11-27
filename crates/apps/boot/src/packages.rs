@@ -108,9 +108,8 @@ pub fn at_boot(data_root: &Path, set: BootSet, kits: KitInputs, store: Option<&P
     let rewrite = rewrite
         .with_kits(kits)
         .observing_fonts(game::superbounce_font::Capture::keep)
-        .observed(|stem, bytes| match bytes {
-            Some(bytes) => pogo_kit::served::publish(stem, bytes),
-            None => pogo_kit::served::clear(stem),
+        .observed(|stem, map| {
+            pogo_kit::served::publish(stem, std::io::BufReader::new(content::patch::Reader::new(map)))
         });
     let served = rewrite.served();
     let levels = store.map(|root| {

@@ -539,8 +539,23 @@ pub(super) fn guest(e: impl Into<EntryError>) -> anyhow::Error {
     anyhow::anyhow!("{}", e.into())
 }
 
+/// One guest call, refused before it is made when it does not fit the
+/// callee's signature in [`points`]: a callee that finds its stack
+/// argument missing reads and writes the entry's own frame, its return
+/// address first.
 pub(super) async fn call(cx: &Cx, c: GuestCall) -> anyhow::Result<Regs> {
+    check_shape(&c)?;
     cx.call(c).await.map_err(guest)
+}
+
+pub(super) fn check_shape(c: &GuestCall) -> anyhow::Result<()> {
+    let Some(point) = points::by_base(c.target) else {
+        return Ok(());
+    };
+    match c.shape_error(&point.sig) {
+        Some(why) => anyhow::bail!("the call to {} ({:#x}) is refused: {why}", point.name, c.target),
+        None => Ok(()),
+    }
 }
 
 pub(super) fn squad_index(kit: &KitLayout, slot: u8) -> anyhow::Result<u16> {

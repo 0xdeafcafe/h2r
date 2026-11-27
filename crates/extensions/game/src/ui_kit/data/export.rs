@@ -39,7 +39,7 @@ use crate::ui_kit::view::{Art, Justify, Opener};
 
 /// Texts that are a player's or a map's even where the samples show one
 /// value: `(screen, widget)`.
-pub const DYNAMIC: [(&str, &str); 9] = [
+pub const DYNAMIC: [(&str, &str); 13] = [
     ("mods.detail", "title"),
     ("mods.pack", "title"),
     ("theater.film", "title"),
@@ -48,6 +48,10 @@ pub const DYNAMIC: [(&str, &str); 9] = [
     ("kit.picker.game", "title"),
     ("kit.picker.map-variant", "title"),
     ("kit.picker.mode", "title"),
+    ("map.picker.slayer", "title"),
+    ("map.picker.firefight", "title"),
+    ("map.picker.siege", "title"),
+    ("map.picker.variants", "title"),
     // The card's profile line: the bot's, live.
     (crate::clanker_card::SCREEN, "description"),
 ];

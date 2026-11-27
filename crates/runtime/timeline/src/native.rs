@@ -552,6 +552,7 @@ const SCENE_LISTS: &[&str] = &[
     "portal_regions",
     "sphere_regions",
     "window_record",
+    "view_projection",
 ];
 const SCENE_LIST_RESULTS: [&str; 12] = [
     "native",
@@ -625,6 +626,8 @@ pub enum SceneList {
     PortalRegions,
     SphereRegions,
     WindowRecord,
+    /// One call of the view projection builder `0x0002fb70`.
+    ViewProjection,
 }
 
 #[derive(Clone, Copy)]
@@ -954,13 +957,11 @@ impl ObjectWalk {
         self.count(n);
     }
 
-    /// `n` objects the scene could not draw and nothing draws instead:
-    /// counted under this cause and as the objects stage's
-    /// `scene_dropped`. No guest draw follows.
-    pub fn dropped(self, n: usize) {
-        self.count(n);
-        Stage::Objects.count(Metric::SceneDropped, n as u64);
+    /// The cause's name: its column without `walk_` (`state`, `order`).
+    pub fn name(self) -> &'static str {
+        OBJECT_WALK_COLUMNS[self as usize].trim_start_matches("walk_")
     }
+
 }
 pub(crate) fn labels() -> &'static [String] {
     static LABELS: OnceLock<Vec<String>> = OnceLock::new();
@@ -1153,7 +1154,7 @@ mod tests {
         assert_eq!(ui, lists + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len());
         assert_eq!(
             columns[ui - 1].1,
-            "native_scene_lists_window_record_mismatch"
+            "native_scene_lists_view_projection_dropped"
         );
         for (stage, label) in [
             (SceneList::LightAdditionalCasters, "native_scene_lists_light_additional_casters_native"),

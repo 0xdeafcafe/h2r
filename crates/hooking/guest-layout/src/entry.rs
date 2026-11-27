@@ -41,6 +41,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use crate::memory::{GuestMemory, MemFault};
+use crate::points::{Loc, Sig};
 
 /// The integer registers and the XMM0 return register at entry or after a guest call.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -139,6 +140,52 @@ impl GuestCall {
     /// address.
     pub fn esp(&self, entry_esp: u32) -> u32 {
         entry_esp.wrapping_sub(self.reserve).wrapping_sub(4 * self.args.len() as u32).wrapping_sub(4)
+    }
+
+    /// Why this call does not fit the callee's signature, none when it
+    /// does (or the signature is not read). Every register argument must
+    /// be set, no other register may be, and the stack must hold at least
+    /// the signature's stack arguments (more is allowed: a caller may pass
+    /// data under them). A callee that reads or writes a stack argument
+    /// the call did not pass reaches the entry's own frame: its return
+    /// address is `[esp+4]` of a call with no stack arguments.
+    pub fn shape_error(&self, sig: &Sig) -> Option<String> {
+        let Sig::Fn { args, .. } = sig else {
+            return None;
+        };
+        let regs = [
+            ("eax", self.eax.is_some(), [Loc::Eax, Loc::Al].as_slice()),
+            ("ecx", self.ecx.is_some(), &[Loc::Ecx]),
+            ("edx", self.edx.is_some(), &[Loc::Edx]),
+            ("ebx", self.ebx.is_some(), &[Loc::Ebx]),
+            ("esi", self.esi.is_some(), &[Loc::Esi]),
+            ("edi", self.edi.is_some(), &[Loc::Edi]),
+            ("xmm0", self.xmm0.is_some(), &[Loc::Xmm0]),
+        ];
+        let mut why = Vec::new();
+        for (reg, set, locs) in regs {
+            let named = args.iter().find(|(_, l)| locs.contains(l)).map(|(n, _)| *n);
+            match (named, set) {
+                (Some(n), false) => why.push(format!("{n} belongs in {reg}, which is not set")),
+                (None, true) => why.push(format!("{reg} is set but is no argument")),
+                _ => {}
+            }
+        }
+        let stack = args
+            .iter()
+            .filter_map(|(_, l)| match l {
+                Loc::Stack(n) => Some(usize::from(*n) + 1),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        if self.args.len() < stack {
+            why.push(format!(
+                "it takes {stack} stack argument(s) and the call passes {}",
+                self.args.len()
+            ));
+        }
+        (!why.is_empty()).then(|| why.join("; "))
     }
 }
 
@@ -425,6 +472,33 @@ mod tests {
         f: impl Fn(Cx) -> Pin<Box<dyn Future<Output = EntryResult> + Send>> + Send + Sync,
     ) -> impl Fn(Cx) -> EntryFuture + Send + Sync {
         f
+    }
+
+    #[test]
+    fn a_call_with_a_stack_argument_in_a_register_is_the_wrong_shape() {
+        use crate::points;
+        // The Firefight drop ship's crash: the list cast takes the `ai` on
+        // the stack and writes its list datum over that slot, so passing the
+        // squad in EAX with no stack argument let it overwrite the entry's
+        // return address.
+        let sig = &points::OBJECT_LIST_FROM_AI.sig;
+        let bad = GuestCall::new(points::OBJECT_LIST_FROM_AI.base).eax(1);
+        let why = bad.shape_error(sig).expect("the register call is refused");
+        assert!(why.contains("eax is set but is no argument"), "{why}");
+        assert!(why.contains("1 stack argument(s) and the call passes 0"), "{why}");
+        let good = GuestCall::new(points::OBJECT_LIST_FROM_AI.base).args([1]);
+        assert_eq!(good.shape_error(sig), None);
+    }
+
+    #[test]
+    fn register_arguments_must_be_set_and_extra_stack_words_are_allowed() {
+        use crate::points;
+        let sig = &points::VEHICLE_LOAD.sig;
+        let no_edx = GuestCall::new(points::VEHICLE_LOAD.base).args([u32::MAX, 7]);
+        assert!(no_edx.shape_error(sig).unwrap().contains("vehicle belongs in edx"));
+        let more = GuestCall::new(points::VEHICLE_LOAD.base).edx(3).args([u32::MAX, 7, 0]);
+        assert_eq!(more.shape_error(sig), None);
+        assert_eq!(GuestCall::new(0x1234).eax(1).shape_error(&points::Sig::Opaque), None);
     }
 
     #[test]

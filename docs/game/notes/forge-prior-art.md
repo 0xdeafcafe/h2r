@@ -143,7 +143,7 @@ players over a network, four in split screen.
 |---|---|---|
 | Transforms | move, rotate and scale widgets with single-axis handles; Scale X, Y and Z in Object Properties (**snippet**). Typed position and rotation: **unconfirmed** | [inf-cu29], [inf-forge-hp], [inf-s4-notes] |
 | Snapping | a Movement Snap setting (0.001 is one of its values), a Rotation Snap setting, and magnets that join objects at marked points | [inf-s3-hp], [inf-forge] |
-| Axes and pivots | a prefab has a Center of Mass pivot (**snippet**). A local or world axis toggle and an editable pivot: **unconfirmed** | [inf-s5-notes] |
+| Axes and pivots | a prefab has a Centre of Mass pivot (**snippet**). A local or world axis toggle and an editable pivot: **unconfirmed** | [inf-s5-notes] |
 | Groups and prefabs | several objects become a prefab with a parent object; a prefab can hold script brains, is published on its own and browsed in the Community tab; ungrouping breaks the tie to the saved prefab; prefabs weld to vehicles | [inf-cu29], [inf-faq], [inf-fund], [inf-s5] |
 | Undo and redo | supported; in solo sessions only (**snippet**) | [inf-fund], [inf-overview] |
 | Lighting | no lightmap bake; each placed light casts static shadows, dynamic shadows or both; light probes are generated (capped at 14,000 a map; minutes on the largest maps); reflection volumes; area lights, light groups, fog per light; time of day, sun, sky and fog settings | [inf-forge-hp], [inf-forge], [inf-s5], [inf-fund] |

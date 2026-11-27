@@ -371,6 +371,7 @@ impl Live for Preview {
             film: first.id.clone(),
             from_tick: 600,
             to_tick: 1800,
+            title: "Clip 1".into(),
         });
         if name == "no-matches" {
             state.selector.map = Some("Lockout".into());

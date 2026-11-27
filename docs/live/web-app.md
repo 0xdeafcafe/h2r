@@ -9,7 +9,9 @@ It shows everyone who has signed up, who is online, the games they are
 playing as they happen (live top-down map, scoreboard, kill feed), replays of
 finished games, and the raw event log with signature checks. It is built
 against the contract in [live-api.md](live-api.md) and
-[live-security.md](live-security.md). How to run it and its scripts are in
+[live-security.md](live-security.md).
+
+How to run it and its scripts are in
 [web/README.md](../../web/README.md).
 
 Stack: TypeScript, SolidJS, @solidjs/router, Vite, plain CSS. Bun is the
@@ -64,22 +66,28 @@ waypoints, kills, scores, endings and new games.
 
 The dashboard (`/`, `/dash/:section`, `/dash/players/:tag`, `src/dash/`) is the "live" side:
 a glass orb, a wireframe tunnel and an arc of menu blades. The selected blade
-lights its connector. Recessed panels hold lists and details. Signed out the menu leads with sign
+lights its connector. Recessed panels hold lists and details.
+
+Signed out the menu leads with sign
 in, create and recover, then live now, games, players
 and settings (the ones that need an account show greyed with a hint).
 Signed in it is live now, games, friends, players,
 account (recovery code, authenticator, devices, sign out) and settings;
 profile and the server (`/dash/server`: service admin) sit under settings.
 Server admins can open **Live admin** (`/dash/admin`) from the dashboard header
-or Settings for usage, dedicated hosts, the raw event log and the style sample. On these
+or Settings for usage, dedicated hosts, the raw event log and the style sample.
+
+On these
 pages, the Back link, B, Escape and Backspace go to the previous page
 when opened from the dashboard or another admin page. Direct visits fall
 back to Settings, Server or the Live Admin hub. The **Live admin** breadcrumb opens the hub.
+
 In Usage, select a gamertag in **Top Accounts** to open its dashboard
 profile (`/dash/players/:tag`).
 Open **Games** (`/dash/games`) and select **Halo 2** to see recent games and,
 when signed in, your service record. Its link to the stats site (named by
 `STATS_NAME` in `src/brand.ts`) opens `/games/halo2`.
+
 The Halo admin area (MOTD, playlists, custom content, Clanker Training) is on the stats site
 at `/games/halo2/admin` ([docs/live/live-admin.md](live-admin.md)).
 
@@ -87,7 +95,9 @@ at `/games/halo2/admin` ([docs/live/live-admin.md](live-admin.md)).
 
 Signed-in players can open **Settings → notifications** to turn on alerts
 for games with friends or games with other players. Both start off. The
-browser stores the switches per server and account. Select **allow browser
+browser stores the switches per server and account.
+
+Select **allow browser
 notifications** on that screen to let the browser show alerts in the
 background. A visible tab shows a dashboard toast regardless of browser
 permission. Both alerts open the session detail, and clicking a browser
@@ -97,16 +107,20 @@ notification also asks the browser to focus the tab.
 stream. For those changes it reads the open sessions as the current account,
 so endpoint and visibility checks match the server's listing. A host or
 reported roster member can trigger a join alert while the game has a public
-seat and its visibility allows the reader to join. Session advertisements
+seat and its visibility allows the reader to join.
+
+Session advertisements
 supply the lobby and its seats. Presence alone can also describe a solo
 game or a game without a current advertisement. Initial and reconnect reads
-establish a silent baseline. A tab alerts once per session and shows at most
+establish a silent baseline.
+
+A tab alerts once per session and shows at most
 one alert every eight seconds. The mock streams changes to its seeded sessions
 so the settings and alerts work against the mock.
 
 Direct-message alerts need a message model with recipient-only events, stable
 message IDs and unread state. The current mailbox carries game invitations.
-See [Game-invite mailboxes](live-api.md#game-invite-mailboxes) and the
+See [Game-invite mailboxes](live-api-social.md#game-invite-mailboxes) and the
 [retail Live boundary](live-boundary.md).
 
 #### Offline delivery (not built)
@@ -116,7 +130,9 @@ display incoming alerts and open or focus the appropriate page. The
 `live-server` would add authenticated subscription registration and removal
 per account and browser, retain the endpoint and encryption keys privately,
 and check visibility and preferences when dispatching an event. Each server
-identity would have a dedicated P-256 VAPID key pair. Discovery would publish
+identity would have a dedicated P-256 VAPID key pair.
+
+Discovery would publish
 the public key, and the private key would live with the native server identity
 or in a Worker secret. An event-driven sender would deduplicate deliveries,
 retry transient failures and remove expired subscriptions. Native and
@@ -131,327 +147,66 @@ Clanker Training is available there with an admin account
 [`h2 sim --upload` recordings](../runtime/sim.md#watching-in-uplink)
 and batches. Filter by map, tuning or batch, select two matches to compare
 their summaries, or open a match for its report, bot stats and the shared
-game viewer. Running streams follow the live edge. The **Live** control
+game viewer.
+
+Running streams follow the live edge. The **Live** control
 returns to it after a seek. The training page shows the measured simulation
 speed and the same viewer switches to replay at the end.
+
 Keyboard: arrows move, Enter (or `a`) selects,
 Escape / Backspace / ArrowLeft (or `b`) goes back; the mouse works too.
 
 ### The stats site
 
-The stats site (`/games/halo2/...`, `src/stats/`; every link builds on
-`STATS_ROOT` / `statsPath()` in `src/routes.ts`, and the old `/stats/...`
-links redirect there) is the record, laid out like
-a mid-2000s game stats site: a fixed 902px column on a navy page, a header
-with the Welcome box, a black nav strip, breadcrumbs, a banner strip, then a
-290px menu column (pill menu, People Finder, reports, Recent Games) beside
-the content. The header's logo and the banner strip's mark are the
-"h2 | UPLINK" wordmark (`stats/Wordmark.tsx`, original art), so the site
-reads as `STATS_NAME` throughout. The nav's tabs start with the home,
-"h2 Uplink"; the way back to the dashboard is the small "‹ Live Dashboard"
-chip in the header's corner (`DASH_NAME`, as are the other links back to
-it), not a tab, and every page's breadcrumbs start at "Home" (`/games/halo2`).
-Pages: the home (`/games/halo2`, `stats/Home.tsx`: live now with the live games,
-players online and open games; the last 24 hours and all-time totals;
-leaderboards for today, this week, this month or all time (`?window=`):
-most kills, best K/D with 3+ games, most wins, longest killing spree,
-Legendary levels and time played; most played maps, most used weapons, an
-activity heatmap by day and hour in your time, game types and playlists,
-skull use, the window's top medals (the server's), the weapon and map of the
-week, clan standings and recent games), games (`/games/halo2/games`: the featured
-live map and the games spotlight), game details (`/games/halo2/games/:id`:
-the match hero below the breadcrumbs, the Game Viewer with the live
-tactical map or the replay, and the post game carnage report with Overview /
-Carnage / Medals / Weapons tabs), players and
-leaderboards (`/games/halo2/players`), a player's service record, game history
-with its preview pane, and career stats with Tool of Destruction, the Medal
-Chest and compare (`/games/halo2/players/:tag`, `/history`,
-`/career?compare=<tag>`), and the event log (`/games/halo2/events`).
-Campaign and multiplayer are kept apart: K/D, wins, medals, EXP,
-leaderboards and clan records count multiplayer games only, and campaign
-has its own record (`/games/halo2/players/:tag/campaign`: levels, completions,
-time played, deaths, co-op partners), its own history tab
-(`/history?tab=campaign`) and spotlight tab (`/games/halo2?games=campaign`), and
-a mission report in place of the carnage report. A game's type is shown
-as Custom Game, Matchmaking: <playlist>, Campaign, Campaign Co-op or
-Campaign Online, with the difficulty (`src/state/gametype.ts`). The mock
-starts an occasional campaign game (`mock/coop.ts`). The old
-`/games/:id`, `/players/...` and `/events` paths redirect. The shell and
-shared chrome are in `stats/Layout.tsx`, the menu-column pieces and map
-thumbnails in `stats/Side.tsx`. Below 760px the column goes full width and
-the menu column drops under the content.
+Moved to [Web app: the pages](web-app-pages.md#the-stats-site).
 
 ### Open Games
 
-The stats home's Open Games table (`/games/halo2`, `src/stats/Home.tsx`)
-shows advertised sessions with the host, map, game type and player count.
-It polls `GET /v1/sessions` every four seconds while the tab is showing
-(`src/state/sessions.ts`). **Join in Halo 2** opens the installed player.
-**Filters** opens controls for multiplayer or campaign co-op, Clankers,
-game type, named variant, map category, available public seats, campaign
-and difficulty. **Apply** sends the choices with each session list page.
-The variant field suggests names from sessions visible to the reader.
-The browser remembers applied choices locally and **Clear filters**
-restores the full list.
-
-The game's detail page and a friend's lobby presence offer the same action
-when the session admits the viewer. [Session links](live-custom-games.md#join-in-halo-2)
+Moved to [Web app: the pages](web-app-pages.md#open-games).
 
 ### Custom maps
 
-Custom maps (docs/game/maps.md §5). A session's advertisement and a game
-may carry a `map_id`, the map package played; `map` is then its base map.
-The app looks each game's `map_id` up once per page load
-(`GET /v1/maps/{id}`, `src/state/maps.ts`). Games
-are titled by the package name, else the base map's; stats and filters
-group by `map_id ?? map`, so a modded level is its own row ("<Base>
-(modded)" until its name is known). The picture is the package's image
-(`/v1/maps/{id}/image`, only when the summary has `image`), then the base
-map's art. A package that says its geometry changed gets "geometry
-changed, no 3D view" instead of the base map's 3D view. Admins pin
-packages to playlists in the playlist builder (`GET /v1/hoppers/pins`,
-`PUT /v1/hoppers/{id}/pins`) and moderate them under Admin, "Custom
-content": packages and blobs with state and report counts, hide, delete,
-block, reports, and the per-account upload switch (`src/admin/content.ts`,
-a `content.moderate` token). A signed-in player can report a package from
-its game's page. The mock (`mock/content.ts`) serves three invented
-packages (one with a picture, one with changed geometry, one blocked) and
-puts about a third of its sessions and multiplayer games on them or on an
-id it doesn't know; `H2_MOCK_CUSTOM_MAPS=0` turns that off.
+Moved to [Web app: the pages](web-app-pages.md#custom-maps).
 
 ### Mods
 
-The Mods tab (`/games/halo2/mods`, `web/src/stats/Mods.tsx`) reads the
-pack catalog from `GET /v1/mod-packs`. One row shows the release, its
-makers, uploader, version, year, online-play advisory, source, map count
-and download size when available. Expand **View maps** to reach the
-individual map pages. Newest and Most Downloaded, base map, category,
-text and uploader filters apply to whole packs. The filters stay in the
-URL, and each results page holds up to twenty packs.
-
-A pack page (`/games/halo2/mods/packs/:id`) shows its cover, credits,
-description, source and gallery. With no pack artwork it uses its members'
-screenshots. A stock map preview is labelled **Stock map picture**.
-Members keep their own URLs (`/games/halo2/mods/:id`), galleries,
-contents and layer sizes. Signed-in players can report a pack or a
-member, and can report a screenshot directly from its gallery. Its uploader
-can edit the release metadata and submit in-game screenshots using
-`h2 live mods capture`. Pending screenshots stay out of the gallery. Server
-admins open **Screenshot review** from Live Admin, show an image on demand
-and approve or remove it. Installation runs in the game. The mock serves
-invented pack metadata and member artwork.
-[Admin screenshot review](live-admin.md#screenshot-review)
+Moved to [Web app: the pages](web-app-pages.md#mods).
 
 ### Game variants
 
-A player's page lists the game variants they've published, the public
-ones, under **Game Types** (name, game type, "scripted: <script>" when
-it has one, date). Each links to its page (`statsPath("/variants/:id")`,
-`web/src/stats/Variant.tsx`): name, description, author, game type, the
-server's settings summary, the script with a link that opens it
-read-only in the workbench (`statsPath("/rules")?script=<hash>`), the
-`.h2variant` download and, for its author, Delete. The workbench's
-**Make a game variant** and **My Game Types** tab are in
-[rules-engine.md, "Workbench"](../game/rules-engine.md#workbench); the
-routes are [live-api.md, "Game variants"](live-api.md#game-variants),
-the pure half `web/src/lib/variants.ts`. The mock (`mock/variants.ts`)
-serves every route in memory and seeds two variants for Sneaky Pete.
+Moved to [Web app: the pages](web-app-pages.md#game-variants).
 
 ### Game type scripts
 
-The Game Types page (`statsPath("/rules")`, `web/src/stats/Rules.tsx`
-and `RulesTest.tsx`, the pure half `web/src/lib/rules.ts`) is the
-workbench for the rules engine's scripts; what the server does for it is
-in [rules-engine.md, "Workbench"](../game/rules-engine.md#workbench).
-The page has one row of tabs, **Workbench**, **My Scripts** and **My
-Game Types**, and no side menu. While it is shown the stats column is
-1240 px wide rather than 902 (`styles/rules.css`), and under 1100 px
-every part stacks.
-
-The Workbench tab, top to bottom:
-
-- **The bar.** Start from (a blank starter, a built-in or a saved
-  script), Save (a sign-in link when signed out), Make a game variant,
-  and the check's state: "Verifies", the script's name, its short hash
-  and "saved" when the server has it, or the number of problems. A
-  button that is off says why in its tooltip and in the line under the
-  bar ("Save and Make a game variant are off. Fix the 2 problems in the
-  script first."); the reasons are `saveBlocked`, `variantBlocked` and
-  `whyOff` in `rules.ts`.
-- **The script.** The Insert menus, the Monaco editor
-  (`stats/RulesEditor.tsx`) and its shortcut line (quick fixes,
-  rename, format, definition, references, outline). A read-only script
-  has a bar with **Use as start** above them.
-- **The check**, beside the script. **Problems** lists each error, then
-  each warning, with its place; choosing one selects it in the editor,
-  where Ctrl (Cmd)+. offers its fixes. **What a map needs** lists each
-  label the script declares: its map text, its kind in words ("a set of
-  zones, numbered") and the requirement in Forge's words, or "The script
-  declares no labels: any map will do." **Budget** has the
-  meters and each handler's worst case, and **Capabilities** the
-  lobby's words. The page checks as you type.
-- **Test.** No form: the server makes the matches up
-  (`POST /v1/rules/simulate`). One strip sets them up (`SimStrip`): the
-  players, 2 to 16, as a slider with a stepper; team play; and the seed
-  with a die that rolls a new one (`rerolled`). The page plays 25
-  matches by itself after each check and each change to the strip.
-  Under the strip is the summary (`BatchView`): who wins, as bars with
-  "9 of 25"; how the games end and how long they run; the best and
-  average top score; the costliest tick against the budget, as a meter;
-  and the warnings (`simWarnings`), script errors first, each with a
-  link to a seed that shows it. **All matches** unfolds one row a
-  match. Choosing a seed anywhere shows that match beside the summary.
-- **Edit this match**, folded at the foot of Test. Opening it puts the
-  shown match in the hand editor (`ScenarioEditor`) and uses it instead
-  of the generated ones: how long to run, the round clock, the seed and
-  team play; the seated players (slot, team by colour name, lives); the
-  **Map** (its labelled things grouped by label, each with its number,
-  team and class, **Add thing** and **Use the smallest map**; a match
-  with no map of its own says it plays on the script's smallest map and
-  offers **Make it my map**), with what the map lacks for the script's
-  labels as problems above it and **Add what the script needs**; and
-  the events in time order. "Player 0 kills Player 1, Add kill" adds a
-  kill in one click and a menu adds any other event; a new event lands
-  a second after the last and lengthens the run when it is past its
-  end. Each event is a row that reads as a sentence, a zone or object
-  picked by label and number ("capture 0"), and its time is
-  typed as `0:02.50`, as seconds (`2.5`) or as ticks (`75t`)
-  (`parseTickTime`). Every field is black on white, as the site's other
-  fields are. Folding it goes back to the generated matches.
-- **Match**, beside Test: one match in full. Its bar (`MatchBar`) names
-  the seed, steps to the match before or after it in the batch, and has
-  **Edit this match**; for an edited match it has **Back to generated
-  matches**. Under it are how the match ended (the script, the score
-  limit, the time limit), the final standings (team totals with team
-  play), and a timeline: for each moment its time, what happened
-  ("Player 0 killed Player 1", "Player 3 entered hill_corner 0"), the
-  handlers that ran and their calls, who scored and their new score,
-  and any team, lives or variable change. A long timeline shows its
-  first 150 moments and **Show all**. An event no handler answered says
-  so. An edited match whose map fails the script's labels runs nothing,
-  and the results list the map's problems. While the script has problems the last results stay, dimmed, with
-  the reason. **Copy as text** copies the trace, a line a tick.
-
-A request that fails is put in words with whose fault it is
-(`explainFailure`): the server's ("The Live server had a problem (HTTP
-503). Your script isn't the cause; try again."), the connection's, the
-account's, or the script's (the server's own message). A rate-limited
-check asks again after three seconds. A server whose rules routes
-answer 404 gets one notice, "This Live server doesn't have the script
-tools yet", with **Ask the server again**; the draft is still kept in
-the browser, the editor completes plain words, and Save, Make a game
-variant and the test are off.
-
-Signed out, everything but Save, Publish and the two list tabs works.
-`?script=<hash>` opens a saved or built-in script read-only. The mock
-(`mock/rules.ts`) answers every route from a few text checks, and makes
-its matches from seeded random kills to ten points or two minutes. It
-reads a script's `label` lines for the check's `labels` and `minimal`,
-refuses a run whose map lacks them, and offers two quick fixes (a word
-one letter off a label's name, an unused label) and a rename that
-keeps a label's map text.
+Moved to [Web app: the pages](web-app-pages.md#game-type-scripts).
 
 ### Server stats
 
-The home's windowed numbers come from the server's
-summary (`GET /v1/stats/summary?window=`, docs/live/live-api.md "Stats
-summary"), a projection the server keeps in day and hour buckets; the page
-asks again every 30 seconds (`src/state/statsSummary.ts`) and draws its
-boards, picks and heatmap with the pure helpers in `src/lib/statsHome.ts`.
-A server without it (404) gets a note, and the live parts still show. The
-mock (`mock/stats.ts`) counts its log the same way and folds in a made-up
-month of games before the simulated history so the home has weeks to show;
-`H2_MOCK_STATS_ARCHIVE=0` leaves that out. The kill feed shows a headshot
-when the killing hit reports one.
+Moved to [Web app: the pages](web-app-pages.md#server-stats).
 
 ### Derived stats
 
-Sprees, places, the weapon breakdown ("Tool of Destruction"), EXP and rank
-are computed in the browser from the games' events (`src/state/derive.ts`);
-the API does not serve them. They are marked with a `*` and a tooltip. They
-only cover games this browser has loaded, and a game's snapshot carries at
-most its recent kills, so they are estimates for long histories. Tool of
-Destruction groups scoring kills by their recorded damage source. A game
-with no source data shows a message. With partial data, the "Not recorded"
-row gives the share of kills without a source. A player's report pairs each
-weapon's "kills with" (gold bar) with "killed by" (blue bar). EXP is games
-completed plus two per win.
+Moved to [Web app: the pages](web-app-pages.md#derived-stats).
 
 ### Medals
 
-Medals are the server's, never counted in the browser
-([live-api.md](live-api.md#medals)). A game's record holds every player's
-(a bot's included) from the game reads' `medals` rows, kept by slot in
-`GameState.medals` (`src/state/reducer.ts`); a `GameMedal` streamed after
-the last read adds one, and a later read replaces the counts and adds back
-only the awards past its position. A career is the account's
-`GET /v1/accounts/{who}/medals` (`src/state/accountMedals.ts`), or the sum
-over its loaded games until that answers; with a tab, map or game-type
-filter the chest sums the matching loaded games. The home's Top Medals is
-the stats summary's `medals` for the window. Clans and the social model sum
-the server's medals for their slots.
-
-The names are the game's (`MEDALS` in `src/state/derive.ts`): Halo 2's 24
-medals in the game's order, then our modes' (the superbounce family and
-Incel). An id the site does not know shows by its id. The carnage report's
-and a player's medal chests list them only once a game or player has one,
-in rows: multi-kills, sprees, kill types, vehicle, objective, Incel, the
-bounce medals, then any others. A Halo 2 medal's picture is the server's
-game art (`medalKey`, [web-viewer.md](web-viewer.md)); our modes' are the
-pack's (`PACK_MEDALS`, `public/art/ART.md`, "Batch 07" and "Batch 08"). A
-medal with neither shows its name in a round badge (`MedalIcon`).
+Moved to [Web app: the pages](web-app-pages.md#medals).
 
 ### Sign up in the browser
 
-The dashboard's "sign up" makes a new Ed25519
-key with WebCrypto, signs the same account request `h2 live account create`
-sends (compact JWS, header `{alg: "EdDSA", kid, typ: "h2live-account"}`,
-payload the canonical JSON of `{gamertag, jwk, invite?, aud, iat}`) and
-POSTs it as `application/jose` to `/v1/accounts` (`src/state/account.ts`).
-`aud` is the server's id from its well-known document and `iat` the time in
-seconds; the server refuses a request for another server or more than five
-minutes off its clock, and so does the mock (`mock/account.ts`). The private
-key is kept as a JWK (its `d`) in this browser's IndexedDB (`h2live` /
-`accounts`), so anyone with access to the browser profile can read it; the
-UI says so. "Download for h2" saves an `accounts.json`-style file for
-`h2 live account import <file>`.
+Moved to [Web app: the pages](web-app-pages.md#sign-up-in-the-browser).
 
 ### Friends and clans
 
-Friends and clans come from the server (docs/live/live-api.md "Friends" and
-"Teams"). Halo 2's clans are built on the Xbox Live Teams API, so the
-protocol, the events and the code's types say team; everything the site
-shows says clan. The dashboard's friends and clans screens
-(`src/dash/Social.tsx`, `/dash/clans`), the stats site's clan directory and
-clan pages (`/games/halo2/clans`, `/games/halo2/clans/:id`; the old `/games/halo2/teams`
-paths redirect) and the Clans and Friends boxes on service records all
-read them and follow the stream, so they change as events arrive
-(`src/state/social.ts`). Writes are signed `h2live-event` JWS bodies sent to
-`POST /v1/events` with an `events.write` token, the same way `h2 live friend`
-and `h2 live team` send them (`src/state/sign.ts`). A clan's combined stats
-are derived from multiplayer games where two or more members played on the
-same side; its roster shows each member's role, rank and K/D.
-The mock (`mock/social.ts`) seeds three clans and some friendships. A new web
-account gets a friend request and a clan invitation a few seconds after
-signing up, and seeded players accept whatever you send them.
+Moved to [Web app: the pages](web-app-pages.md#friends-and-clans).
 
 ### Fonts
 
-All bundled fonts are under the SIL Open Font Licence, each with
-its licence file beside it: Michroma (`src/assets/fonts`, the "h2 live" name
-on the dashboard), and Orbitron and Barlow Condensed (`src/dash/fonts`, the
-dashboard's headings and its condensed labels). The stats site draws its
-wordmark as SVG (`stats/Wordmark.tsx`) and otherwise
-uses system fonts (Arial for copy and headings, Verdana for the nav strip).
+Moved to [Web app: the pages](web-app-pages.md#fonts).
 
 ### Artwork
 
-Raster artwork (banner strips, page and map textures, 24 player
-emblems, medals, rank badges) is original and lives in `public/art`,
-documented in `public/art/ART.md`; `src/lib/art.ts` maps emblems, medal ids
-and rank names to its files. Weapon silhouettes are small SVGs in
-`components/WeaponIcon.tsx`. No third-party logos or artwork are in this
-repo or in the build.
+Moved to [Web app: the pages](web-app-pages.md#artwork).
 
 ## Names, icons and link previews
 
@@ -492,7 +247,9 @@ block between `<!-- page-meta -->` and `<!-- /page-meta -->`
 (games, wins, kills, K/D from the public stats), a game's its variant, map,
 score, winner and players, a clan's its name, members and motto; other
 pages their section. Only what an anonymous reader may see is used: a
-hidden game or a private server gives the section's preview. The machine's
+hidden game or a private server gives the section's preview.
+
+The machine's
 server does it in its SPA fallback; the Worker for the paths
 `wrangler.toml` sends it first, reading `index.html` through the `ASSETS`
 binding and asking the hub (`GET /v1/page-meta?path=`) only for a page that
@@ -522,7 +279,9 @@ original art pack as a fallback.
 The embedded JSON model lets the client keep the hero markup when its own
 model matches. It replaces the markup when the game or score changes.
 The TypeScript and Rust renderers share the goldens in
-`test/fixtures/game-header.{json,html}`. Regenerate them with
+`test/fixtures/game-header.{json,html}`.
+
+Regenerate them with
 `bun test/fixtures/gen-game-header.ts`. The PNG
 pixel and palette fixtures are generated by
 `H2_UPDATE_EMBLEM_GOLDEN=1 bun test test/emblem.test.ts`.
@@ -541,12 +300,16 @@ the log position it was taken at; the stream starts after the oldest one,
 and `state/reducer.ts` is written so the overlap is harmless (a known game
 isn't restarted, kills are deduplicated by position, scores are absolute).
 If the server reports no positions, the client replays the whole log from 0
-instead. The reducer is pure (`applyEvent`, plus `apply*Snapshot`) and runs
+instead.
+
+The reducer is pure (`applyEvent`, plus `apply*Snapshot`) and runs
 inside Solid's `produce` and on plain objects in tests. On a dropped
 connection the client reconnects with exponential backoff and jitter and
 resumes after the last applied position (`from` is exclusive), so pages
 update without polling. The event reducer also flushes in hidden tabs for
-browser notifications. Games outside the snapshot (deep links, older
+browser notifications.
+
+Games outside the snapshot (deep links, older
 games on a profile) are fetched on demand.
 
 ### Frames are not reactive
@@ -559,7 +322,9 @@ yaw (short way round) between the two frames around the render tick and
 snapping on respawns. The mapping runs at the stream's measured pace
 (`streamPace`): 1 for a real-time game, and the sim's own rate (rounded to a
 half, up to 32×) for an unpaced sim streaming faster than real time, with
-the delay scaled by the same pace. All canvases share one `requestAnimationFrame` loop
+the delay scaled by the same pace.
+
+All canvases share one `requestAnimationFrame` loop
 (`map/scheduler.ts`), skip drawing when off screen, and the draw code
 (`map/render.ts`) uses the uploaded map outline when there is one, or an
 auto-fitted grid from the bounds seen so far. A map without an outline

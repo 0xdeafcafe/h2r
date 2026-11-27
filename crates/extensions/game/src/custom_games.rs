@@ -50,8 +50,9 @@
 //! `0x24c177`). So, as for the Controls list, the shared "add items" hook
 //! (`0x24bb60`) links our additional item widgets after the four. The
 //! list lays the widgets out in order (`0x24bc12`). The tag's
-//! list shows at most seven items ([`VISIBLE_ITEMS`]); a menu of more rows
-//! (eight with every row on) scrolls, with retail's own scroll arrows.
+//! list shows at most eight items ([`VISIBLE_ITEMS`]), the whole menu, so no
+//! row scrolls out of sight; a menu of more rows would scroll, with retail's
+//! own scroll arrows.
 //! [`Menu::extend_tag`] gives the added rows their panes.
 //!
 //! **Privacy.** The party privacy screen (screen `0x19`, list "squad privacy
@@ -190,7 +191,7 @@ pub const FORGE_HELP: &str = "Edit a map with your party in Forge, then play on 
 /// The Mods row's label when the mod repository has none of its own
 /// (`crate::mods_screen`), and its help when it opens the Map Pack dialog.
 pub const MODS_TEXT_ID: u32 = MODE_IDS.id(6);
-pub const MODS_TEXT: &str = "Mods";
+pub const MODS_TEXT: &str = "Mod Downloader";
 pub const MAPPACK_HELP_ID: u32 = MODE_IDS.id(7);
 pub const MAPPACK_HELP: &str = "Add the Multiplayer Map Pack's maps to your game.";
 
@@ -216,9 +217,9 @@ pub fn playlist_header<M: Gm>(m: &mut M, tag: u32, scope: crate::clankermatch::S
 pub const SCREEN_ID: i16 = 0xba;
 pub const HANDLER_VTABLE: u32 = 0x0045_8b48;
 pub const VANILLA_ITEMS: u32 = 4;
-/// The list fits seven item widgets above its hint block; more rows
-/// scroll.
-pub const VISIBLE_ITEMS: u32 = 7;
+/// The list fits eight item widgets above its hint block (the whole menu);
+/// more rows would scroll.
+pub const VISIBLE_ITEMS: u32 = 8;
 pub const MAX_EXTRA_ITEMS: u32 = VISIBLE_ITEMS - VANILLA_ITEMS;
 
 // ---- the Map Pack dialog ----
@@ -700,11 +701,11 @@ pub fn answer_error<M: Gm>(m: &mut M, entry: u32, error: u32) -> bool {
 //
 // The tag (`wgit`, docs/formats/ui.md) has four panes, one per row, each with the
 // hint texts under the list, the "Y" callout, the row's help text and
-// picture; pane 0 also holds the list (anchor, up to seven visible items,
+// picture; pane 0 also holds the list (anchor, up to eight visible items,
 // the default list skin). [`Menu::extend_tag`] adds a pane per row of ours (a
 // copy of the Custom Game pane, its picture included, with our help text),
 // puts our help on the Content Download pane the Mods row shows, and
-// ensures the list can show up to seven rows. It moves nothing: the list's
+// ensures the list can show up to eight rows. It moves nothing: the list's
 // top and the hint block stay where retail has them.
 //
 // The list lays items out from the anchor, each one item height below the
@@ -712,9 +713,9 @@ pub fn answer_error<M: Gm>(m: &mut M, entry: u32, error: u32) -> bool {
 // 43 units for the default skin. More than four rows at that pitch run into
 // the hint block, so after each layout of this list [`repitch`] moves the
 // rows up to [`pitch`] apart, inside the room the retail four rows and
-// the gap under them take. Seven items fit at 24 apart; the nine rows of
-// the whole menu would need 18 (eight, 20), under [`MIN_PITCH`], so the
-// list shows seven and scrolls.
+// the gap under them take. Eight items fit at 21 apart, the whole menu; nine
+// would need 18, under [`MIN_PITCH`], so a longer menu shows eight and
+// scrolls.
 
 const VANILLA_PANES: u32 = 4;
 /// The pane ours copies: Custom Game's, for its picture.
@@ -736,13 +737,13 @@ pub const ITEM_BOTTOM: i16 = -15;
 /// block's top (`hint_top` at -70, the list anchored at 95).
 pub const RETAIL_GAP: i16 = 21;
 /// The least gap kept under the last row.
-pub const MIN_GAP: i16 = 5;
+pub const MIN_GAP: i16 = 2;
 /// The smallest pitch allowed (the skin's text is 20 units tall).
-pub const MIN_PITCH: i16 = 22;
+pub const MIN_PITCH: i16 = 21;
 
 /// The pitch for `rows` rows inside the room the retail four take, from
 /// the first row's top to the hint block less [`MIN_GAP`]: the retail 43
-/// for four, 36 for five, 29 for six, never under [`MIN_PITCH`].
+/// for four, 37 for five, 29 for six, 24 for seven, 21 for eight, never under [`MIN_PITCH`].
 pub fn pitch(rows: u32) -> i16 {
     if rows <= VANILLA_ITEMS {
         return ITEM_HEIGHT;
@@ -1153,7 +1154,7 @@ mod tests {
             (CUSTOM_GAMES_ROW, CUSTOM_GAMES_TEXT_ID, "Custom Games"),
             (FORGE_ROW, FORGE_TEXT_ID, "Forge"),
             (BROWSER_ROW, TEXT_ID, "Custom Game Browser"),
-            (MODS_ROW, MODS_TEXT_ID, "Mods"),
+            (MODS_ROW, MODS_TEXT_ID, "Mod Downloader"),
         ] {
             assert_eq!(text_id(menu.row_kind(row), None), Some(id), "row {row}");
             let served = strings().into_iter().find(|(i, _)| *i == id).map(|(_, t)| t);
@@ -1418,7 +1419,7 @@ mod tests {
         let pane = |p: u32| BASE + p * PANE_SIZE;
         let text = |m: &Fake, p: u32, i: u32| m.u32(pane(p) + 0x20).unwrap() + i * TEXT_SIZE;
         let bitmap = |m: &Fake, p: u32, i: u32| m.u32(pane(p) + 0x28).unwrap() + i * BITMAP_SIZE;
-        // The list stays where retail anchors it; it still shows its seven.
+        // The list stays where retail anchors it; it shows its seven.
         let list = m.u32(pane(0) + 0x10).unwrap();
         assert_eq!(i16_at(&m, list + 6), 7);
         assert_eq!(i16_at(&m, list + 8), ANCHOR.0);
@@ -1494,29 +1495,29 @@ mod tests {
     }
 
     #[test]
-    fn the_live_menu_shows_seven_rows_and_scrolls_the_rest() {
+    fn the_live_menu_shows_every_row_without_scrolling() {
         for (menu, rows) in [(Menu::ALL, 8), (regular_menu(false), 7)] {
             assert_eq!(menu.count(LIST_NAME, VANILLA_ROWS), rows);
-            assert_eq!(menu.visible(), VISIBLE_ITEMS, "{rows} rows");
-            // Three item widgets of ours after the retail four: fewer than
-            // the rows, so the list scrolls.
-            assert_eq!(menu.visible() - VANILLA_ITEMS, MAX_EXTRA_ITEMS);
-            assert_eq!(menu.rows() > menu.visible(), menu.coop);
+            assert_eq!(menu.visible(), rows, "{rows} rows");
+            assert!(menu.rows() <= VISIBLE_ITEMS, "no row scrolls");
+            // Item widgets of ours after the retail four: one per extra row.
+            assert!(menu.visible() - VANILLA_ITEMS <= MAX_EXTRA_ITEMS);
 
             let mut m = Fake::default();
             let wgit = live_tag(&mut m, 4);
             assert_eq!(menu.extend_tag(&mut m, wgit, BASE), Some(true));
             let list = m.u32(BASE + 0x10).unwrap();
-            assert_eq!(i16_at(&m, list + 6), VISIBLE_ITEMS as i16);
+            assert_eq!(i16_at(&m, list + 6), rows as i16);
         }
     }
 
     #[test]
-    fn seven_rows_fit_with_the_retail_gaps_and_more_scroll() {
+    fn eight_rows_fit_with_the_retail_gaps_and_more_scroll() {
         assert_eq!(pitch(4), ITEM_HEIGHT, "retail: as it was");
-        assert_eq!(pitch(5), 36);
+        assert_eq!(pitch(5), 37);
         assert_eq!(pitch(6), 29);
         assert_eq!(pitch(7), 24);
+        assert_eq!(pitch(8), 21);
         // The retail tag: the list anchored at 95, `hint_top` at -70 (21
         // under the fourth row's bottom). Every row ends above it, the
         // first row's top where retail's is, and the text (20 units) fits
@@ -1524,8 +1525,8 @@ mod tests {
         let (anchor, hint) = (95i16, -70i16);
         assert_eq!(hint, anchor - 3 * ITEM_HEIGHT + ITEM_BOTTOM - RETAIL_GAP);
         let room = anchor + ITEM_BOTTOM - (hint + MIN_GAP);
-        assert_eq!(room, 145);
-        for rows in [5u32, 6, 7] {
+        assert_eq!(room, 148);
+        for rows in [5u32, 6, 7, 8] {
             let p = pitch(rows);
             let last_bottom = anchor - (rows as i16 - 1) * p + ITEM_BOTTOM;
             assert!(
@@ -1534,17 +1535,17 @@ mod tests {
             );
             assert!(p >= MIN_PITCH && MIN_PITCH > 20);
         }
-        // Eight or nine at once would need 20 or 18 apart, under the least
-        // pitch: they do not fit, so seven show and the rest scroll.
-        for rows in [8i16, 9] {
+        // Nine at once would need 18 apart, under the least pitch: it does
+        // not fit, so eight show and the rest scroll.
+        for rows in [9i16] {
             assert!(room / (rows - 1) < MIN_PITCH, "{rows} rows");
         }
-        // The tag: the list shows seven; its anchor and the hints stay.
+        // The tag: the list shows eight; its anchor and the hints stay.
         let mut m = Fake::default();
         let wgit = live_tag(&mut m, 4);
         assert_eq!(Menu::ALL.extend_tag(&mut m, wgit, BASE), Some(true));
         let list = m.u32(BASE + 0x10).unwrap();
-        assert_eq!(i16_at(&m, list + 6), 7, "the list shows seven");
+        assert_eq!(i16_at(&m, list + 6), 8, "the list shows eight");
         assert_eq!(i16_at(&m, list + 0xa), ANCHOR.1);
         let hint = m.u32(BASE + 0x20).unwrap();
         assert_eq!(i16_at(&m, hint + 0x1c), -60);

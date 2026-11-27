@@ -156,6 +156,17 @@ pub struct MountedVfs {
     vfs: Arc<Mutex<Vfs>>,
     rebind: Option<vfs::MapRebind>,
     active: Mutex<Option<ActiveSource>>,
+    /// The file the game loaded the running map from.
+    loaded: Mutex<Option<LoadedSlot>>,
+}
+
+/// The running map's name and the VFS path of the file its cache slot was
+/// copied from (`map_slots::active_file`): a disc map, a mod map in the
+/// data partition's content store, a Forge build, or a rewritten file.
+#[derive(Clone)]
+struct LoadedSlot {
+    name: String,
+    path: String,
 }
 
 #[derive(Clone)]
@@ -174,6 +185,7 @@ pub fn mount(vfs: Arc<Mutex<Vfs>>, rebind: Option<vfs::MapRebind>, data_root: &s
         vfs,
         rebind,
         active: Mutex::new(None),
+        loaded: Mutex::new(None),
     });
     *SOURCES.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&sources);
     sources
@@ -210,6 +222,7 @@ fn read_source(source: FileSource) -> Option<Vec<u8>> {
             Some(bytes)
         }
         FileSource::Memory(bytes) => Some(bytes.to_vec()),
+        FileSource::Spliced(file) => file.read_all().ok(),
     }
 }
 
@@ -223,6 +236,26 @@ pub(crate) fn set_active_source(name: &str, path: Option<String>, generation: Op
     });
 }
 
+/// Publishes the file the game loaded `name` from, at each game start, so
+/// every native reader opens that file rather than a path guessed from the
+/// name. `None` when the slot's source is not a map path.
+pub(crate) fn set_loaded_slot(name: &str, path: Option<String>) {
+    let Some(sources) = SOURCES.lock().unwrap_or_else(|e| e.into_inner()).upgrade() else {
+        return;
+    };
+    if path.is_none() {
+        // Named, once per map: the readers then find the map by its name.
+        static LOGGED: Mutex<String> = Mutex::new(String::new());
+        let mut last = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
+        if !last.eq_ignore_ascii_case(name) {
+            eprintln!("native map: {name}: the active slot recorded no map path; the readers guess <cdrom>\\maps\\{name}.map");
+            *last = name.to_owned();
+        }
+    }
+    *sources.loaded.lock().unwrap_or_else(|e| e.into_inner()) =
+        path.map(|path| LoadedSlot { name: name.to_owned(), path });
+}
+
 pub fn open(name: &str) -> Result<(NativeMap, ResourceFiles), Error> {
     let sources = SOURCES.lock().unwrap_or_else(|e| e.into_inner())
         .upgrade()
@@ -232,7 +265,10 @@ pub fn open(name: &str) -> Result<(NativeMap, ResourceFiles), Error> {
             .filter(|a| a.name.eq_ignore_ascii_case(name))
             .cloned()
     });
-    open_resolved(&sources.vfs, name, None, active, true)
+    // The running map is read from the file the game loaded it from.
+    let slot = sources.loaded.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        .filter(|s| s.name.eq_ignore_ascii_case(name));
+    open_resolved(&sources.vfs, name, slot.as_ref().map(|s| s.path.as_str()), active, true)
 }
 
 pub fn open_from_vfs(
@@ -269,8 +305,14 @@ fn open_resolved(
         let local = if let Some(file) = from_active_slot {
             Some(file)
         } else if let Some(path) = slot_source {
-            // An explicit replay source must match the recorded slot.
-            mounted.file_source(path)
+            // The recorded slot: the file the game (or the film) loaded.
+            // A path the VFS cannot serve is an error, not a name to guess.
+            let file = mounted.file_source(path)
+                .or_else(|| mounted.host_file(path).map(FileSource::Host));
+            if file.is_none() {
+                return Err(format!("the map's file {path} is not found").into());
+            }
+            file
         } else if let Some(path) = mounted.content_map_path(name) {
             mounted.file_source(&path)
         } else {
@@ -321,6 +363,10 @@ fn open_resolved(
         }
         FileSource::Memory(bytes) => {
             let reader: Box<dyn MapReader> = Box::new(Cursor::new(Arc::clone(bytes)));
+            Map::from_reader(served(reader, 0)?)?
+        }
+        FileSource::Spliced(file) => {
+            let reader: Box<dyn MapReader> = Box::new(BufReader::new(file.reader()?));
             Map::from_reader(served(reader, 0)?)?
         }
     };
@@ -382,6 +428,36 @@ fn register(files: &mut ResourceFiles, file: ResourceFile, source: FileSource) -
             files.set_bytes(file, bytes);
             Ok(())
         }
+        FileSource::Spliced(spliced) => {
+            files.set_source(file, Arc::new(Spliced::new(spliced)));
+            Ok(())
+        }
+    }
+}
+
+/// A spliced map's served bytes as a resource file, its base opened once.
+struct Spliced {
+    file: vfs::SplicedFile,
+    open: Mutex<Option<vfs::SplicedSource>>,
+}
+
+impl Spliced {
+    fn new(file: vfs::SplicedFile) -> Self {
+        Self { file, open: Mutex::new(None) }
+    }
+}
+
+impl assets::ResourceSource for Spliced {
+    fn len(&self) -> u64 {
+        self.file.len()
+    }
+    fn read_exact_at(&self, offset: u64, buf: &mut [u8]) -> std::io::Result<()> {
+        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        if open.is_none() {
+            *open = Some(self.file.open()?);
+        }
+        let source = open.as_mut().expect("opened above");
+        content::patch::Source::read_exact_at(source, offset, buf)
     }
 }
 
@@ -426,6 +502,40 @@ mod tests {
         old.generation = Some(generation);
         let (activated, _) = open_resolved(&vfs, "level", None, Some(old), true).unwrap();
         assert_eq!(activated.header().name, "level");
+    }
+
+    /// A mod or Forge map lives in the data partition's content store, under
+    /// a name no `<cdrom>\maps\<name>.map` guess finds. The recorded slot
+    /// path opens it; an unserved path is named in the error.
+    #[test]
+    fn a_mod_map_opens_from_the_file_its_slot_was_copied_from() {
+        let temp = Temp::new();
+        let name = "m-0123abcd-0123456789abcdef0123";
+        let store = temp.0.join("$c/00112233aabbccdd");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join(format!("{name}.map")), named_map(name)).unwrap();
+        let mut vfs = Vfs::new();
+        vfs.mount(vfs::CDROM_DEVICE, vfs::DirDiscBackend::open(&temp.0).unwrap()).unwrap();
+        let data = temp.0.join("data");
+        let tdata = data.join(format!("TDATA/{:08X}", crate::new_maps::HALO2_TITLE));
+        std::fs::create_dir_all(tdata.join("$c/00112233aabbccdd")).unwrap();
+        std::fs::copy(
+            store.join(format!("{name}.map")),
+            tdata.join(format!("$c/00112233aabbccdd/{name}.map")),
+        ).unwrap();
+        vfs.mount(vfs::DATA_DEVICE, vfs::DirDiscBackend::open(&data).unwrap()).unwrap();
+        let vfs = Mutex::new(vfs);
+        let slot = crate::map_slots::recorded_file(&format!("t:\\$c\\00112233aabbccdd\\{name}.map"))
+            .unwrap();
+        // The name alone is the guess that failed.
+        assert!(open_resolved(&vfs, name, None, None, false).is_err());
+        let (map, _) = open_resolved(&vfs, name, Some(&slot), None, false).unwrap();
+        assert_eq!(map.header().name, name);
+        let missing = slot.replace("00112233aabbccdd", "ffffffffffffffff");
+        let Err(e) = open_resolved(&vfs, name, Some(&missing), None, false) else {
+            panic!("an unserved slot path opened");
+        };
+        assert!(e.to_string().contains("ffffffffffffffff"), "{e}");
     }
 
     /// A guest file's bytes are the VFS's: a file of the disc's directory

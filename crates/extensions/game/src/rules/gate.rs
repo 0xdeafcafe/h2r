@@ -209,19 +209,79 @@ fn is_siege(prefix: [u8; 8]) -> bool {
 fn map_problems(ir: &::rules::Ir, census: &Census, teams: &[u8], siege: bool) -> Vec<String> {
     let mut problems: Vec<_> = ::rules::labels::check(ir, census, teams)
         .into_iter().map(|problem| problem.text).collect();
-    if siege {
-        let zones = |label: &str, team: Option<u8>| {
-            census.labels.get(label).is_some_and(|members| members.iter().any(|m|
-                m.class.satisfies(::rules::ir::LabelKind::Zone) && team.is_none_or(|t| m.team == Some(t))
-            ))
-        };
-        if !zones("siege_site", None) && !zones("territory", None)
-            && !zones("siege_goal", None) && !zones("ctf_flag_spawn", Some(1))
-        {
-            problems.push("Siege needs a territory, a Siege site or a defending flag stand.".into());
-        }
+    if siege && !siege_objectives(census) {
+        problems.push("Siege needs a territory, a Siege site or a defending flag stand.".into());
     }
     problems
+}
+
+/// Whether the map's census has what Siege plays: a Siege site, a
+/// territory, a Siege goal (the final stand) or the defending team's flag
+/// stand. A map with none ends Siege's first round at once
+/// (`content/modes/rules/siege.rules`, `round_start`).
+pub fn siege_objectives(census: &Census) -> bool {
+    let zones = |label: &str, team: Option<u8>| {
+        census.labels.get(label).is_some_and(|members| members.iter().any(|m|
+            m.class.satisfies(::rules::ir::LabelKind::Zone) && team.is_none_or(|t| m.team == Some(t))
+        ))
+    };
+    zones("siege_site", None) || zones("territory", None)
+        || zones("siege_goal", None) || zones("ctf_flag_spawn", Some(1))
+}
+
+static SIEGE_MAPS: Mutex<std::collections::BTreeMap<u32, bool>> = Mutex::new(std::collections::BTreeMap::new());
+/// By map, variant file and the revision its caller names (the document's
+/// id): a saved variant changes under its file name.
+static SIEGE_VARIANTS: Mutex<std::collections::BTreeMap<(u32, String, String), bool>> =
+    Mutex::new(std::collections::BTreeMap::new());
+
+/// Forgets which maps have Siege's objectives: the catalogue changed.
+pub fn forget_siege_maps() {
+    SIEGE_MAPS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    SIEGE_VARIANTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+/// Whether the map `map` with the edits of its saved variant `file` has
+/// Siege's objectives. `None` when it cannot be told.
+fn siege_census(map: u32, file: Option<&str>) -> Option<bool> {
+    let sources = SOURCES.get()?.as_ref();
+    let prefix = crate::community_variants::listed_named("Siege")?.ext().script.prefix;
+    let (ir, _) = ::rules::verify::load(&sources.blob(prefix)?).ok()?;
+    let census = sources.census(map, file, super::census::layout_script(&ir)).ok()?;
+    Some(siege_objectives(&census))
+}
+
+/// Whether the map `map` (a list id) played as its saved variant `file`
+/// has Siege's objectives ([`siege_objectives`] over the census of the map
+/// with the variant's edits). `None` when it cannot be told. The answer is
+/// kept per map, file and `revision` until [`forget_siege_maps`].
+pub fn siege_supports_variant(map: u32, file: &str, revision: &str) -> Option<bool> {
+    let key = (map, file.to_owned(), revision.to_owned());
+    if let Some(known) = SIEGE_VARIANTS.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Some(*known);
+    }
+    let has = siege_census(map, Some(file))?;
+    SIEGE_VARIANTS.lock().unwrap_or_else(|e| e.into_inner()).insert(key, has);
+    Some(has)
+}
+
+/// Whether the map `map` (a list id) has Siege's objectives
+/// ([`siege_objectives`], over the census with Siege's built-in layout).
+/// `None` when it cannot be told: Siege's script is not on this machine or
+/// the map file cannot be read. The answer is kept per map until
+/// [`forget_siege_maps`].
+pub fn siege_supports(map: u32) -> Option<bool> {
+    if let Some(known) = SIEGE_MAPS.lock().unwrap_or_else(|e| e.into_inner()).get(&map) {
+        return Some(*known);
+    }
+    let has = siege_census(map, None)?;
+    SIEGE_MAPS.lock().unwrap_or_else(|e| e.into_inner()).insert(map, has);
+    Some(has)
+}
+
+/// Whether `record` is the Siege game type.
+pub fn is_siege_record(record: &variants::GameVariant) -> bool {
+    script_of(record.ext_block(), record.game_type().engine()).is_some_and(is_siege)
 }
 
 /// Maps offered for an explicit script use the same label and team requirements

@@ -1,23 +1,32 @@
 # Animation channel manager and graph lookup
 
-Status: Six entries run as comparison arms. Run parity and cumulative timing await verification.
+Status: Six entries run as arms that answer from Rust once proven, under `impl.sim.native.anim.manager`. Cumulative timing awaits verification.
 
 The channel manager selects, advances and blends the channels on a guest
 object. Its entry points and graph helpers are registered by
 `crates/rewrites/engine/src/sim_anim/manager.rs`. Each body declares its
 entry, instruction range and return selectors. The animation switch owns
-these bodies, including graph resolution. See [switches.md](../runtime/switches.md).
+these bodies, including graph resolution. The six phase 1d entries
+also have their own switch, `impl.sim.native.anim.manager`, which
+installs them without the rest of the group. See
+[switches.md](../runtime/switches.md).
 
 ## Calls and fallback
 
-The comparison arms cover channel advance (`1c66a0`), base-pose sampling
+The arms cover channel advance (`1c66a0`), base-pose sampling
 (`1c6f60`), channel selection for sampling (`1cd590`) and the three graph
-entries below. At each entry and return selector, `manager::arm::predict`
-evaluates one segment on a CPU copy and a private store log. The bridge
-runs the generated selector once, with direct calls routed through the
-dispatcher. It compares the transfer before the callee can change the
-frame. The guest supplies the registers, RAM writes and transfer in every
-case, including a declined prediction or a mismatch.
+entries below. At each entry and return selector, `manager::arm::turn`
+picks who answers the segment. Until the entry has matched 4096 segments
+(`PROVEN_AFTER`) with no difference, and on one segment in 64
+(`AUDIT_EVERY`) after that, the guest answers: `manager::arm::predict`
+evaluates the segment on a CPU copy and a private store log, the bridge
+runs the generated selector once with direct calls routed through the
+dispatcher, and it compares the transfer before the callee can change the
+frame. Otherwise `manager::run` runs the segment and commits it, and the
+guest does not run. A declined segment goes to the guest. One difference
+returns that entry to the guest for the rest of the process. The audit
+slots restart at map load, checkpoint revert and restore. With
+`impl.sim.native.anim.manager` off, the guest answers every segment.
 
 `sim_anim::manager_channels` computes the loop-frame interval, playback
 rate class and channel mix on transient values gathered from the current
@@ -67,8 +76,8 @@ search order.
 ## Verification
 
 The read-only agent method `anim.manager` reports matched, differed,
-declined and interrupted segments per entry and retains the first
-difference. The live arm checks the transfer, CPU state (including defined
+declined, interrupted and answered segments per entry and retains the
+first difference. The live arm checks the transfer, CPU state (including defined
 flags, x87 and XMM) and final bytes at predicted physical write addresses.
 See the [agent API](../runtime/agent-api.md#anim-the-animation-graph-walk).
 

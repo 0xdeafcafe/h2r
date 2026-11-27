@@ -26,8 +26,8 @@ mod report;
 pub mod zanzibar;
 
 pub use ensure::{
-    DiscMaps, MAPS, Outcome, Report, Target, ensure, ensure_with, pending, pending_with,
-    refusal_line, targets,
+    DiscMaps, MAPS, Outcome, REFUSED, Report, Target, ensure, ensure_with, pending, pending_with,
+    refusal, refusal_line, targets,
 };
 pub use report::layout_report;
 

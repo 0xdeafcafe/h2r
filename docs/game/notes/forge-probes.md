@@ -12,7 +12,7 @@ aggregate counts, byte gaps, timings and verdicts.
 
 Use the [agent methods](../../runtime/agent-api.md#forge-probes) on the
 coordinator's own disc runs. For the two-peer experiments, use a
-[playerless System Link host](../../live/dedicated-host.md#playerless-lobby)
+[playerless System Link host](../../live/dedicated-host-ops.md#playerless-lobby)
 and a client, with separate data roots and agent endpoints. The commands
 below assume `HOST_SOCKET` and `CLIENT_SOCKET` name those endpoints.
 Set `MAP` to a multiplayer map the two peers share.
@@ -172,14 +172,14 @@ host_agent world.ai '{}'
 
 Confirm the authored spare counts and marked tails against the baseline.
 For device groups and squads, compare with the kit build's reservation
-counts. Check that each tail leaves its readers' behavior intact:
+counts. Check that each tail leaves its readers' behaviour intact:
 ordinary placement and naming, player starts, objectives and teleporter
 selection, equipment spawn and respawn, device activation, and the
 actor roster. Include a positive control with one functional entry in
 place of a spare to confirm the exercised reader can observe it.
-Record load errors, extra objects or actors, changed behavior, and
+Record load errors, extra objects or actors, changed behaviour, and
 untested readers by block. An equal aggregate census can corroborate
-the behavior checks but cannot establish inertness by itself.
+the behaviour checks but cannot establish inertness by itself.
 
 ## Probes for the loose ends (not yet run)
 

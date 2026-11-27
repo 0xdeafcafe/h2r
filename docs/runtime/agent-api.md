@@ -38,6 +38,7 @@ connection to hold `session.claim`.
 | `world.object.animate` | act | [`world.object.animate`](#worldobjectanimate) |
 | `world.placement.edit` | act | [Placement edits](#placement-edits) |
 | `world.ai` | read | [`world.ai`](#worldai) |
+| `world.pools` | read | [`world.pools`](#worldpools) |
 | `world.breakable` | read | [`world.breakable`](#worldbreakable-broken-glass) |
 | `net.replication` | read | [`net.replication`](#netreplication) |
 | `actors.net` | read | [`actors.net`](#actorsnet) |
@@ -641,7 +642,7 @@ another object answers `GONE` and never another object's data.
   `crouch_request`. It is the superbounce mode's capsule test against the
   loaded map's collision (`crates/extensions/game/src/superbounce_capsule.rs`),
   so it is there only while that mode is on and its scan is ready
-  ([superbounce.md](../game/superbounce.md#charge)).
+  ([superbounce.md](../game/superbounce-landings.md#charge)).
   Poll `object player.0` on one `h2 agent -` connection and keep one reply
   per stamped tick for a movement trace, or use [a trace](#tick-traces-and-the-flight-recorder).
 
@@ -676,6 +677,15 @@ break step reads the same state (`bots::guest::breakable`;
 ```sh
 h2 agent world.breakable '{}'
 ```
+
+## `world.pools`
+
+`h2 agent world.pools` returns `{at, actors, decals, particles}`: the live
+count in each data array's header (`crates/extensions/agent/src/pools.rs`).
+It takes no parameters and reads three headers, so it is cheap to poll. A
+pool that is not allocated, or whose header fails its signature or capacity
+check, is `null`. The watermark's `full` level reads it for its AI, decal and
+particle counts ([app.md](app.md#watermark)).
 
 ## `world.ai`
 
@@ -942,16 +952,16 @@ with `INVALID_PARAMS`) answers from the state the
 | `yaw` | the way the local player's unit aims, radians from +X toward +Y: the first-person camera's yaw |
 | `velocity` | the local player's velocity, world units a second; absent without a player |
 | `options` | the HUD's pieces this game, the Superbounce script's options as the variant set them: `targets` (`common`, `likely`, `all`) and the bools `velocity`, `alignment`, `miss_info`, `medals`, `second_bounce`, `approach_guide`, `charge_segments` ([superbounce.md](../game/superbounce.md#the-huds-options)) |
-| `targets` | the seam targets ([superbounce.md](../game/superbounce.md#targets)): `mode` (`common`, `likely` or `all`: the option's value, or the kinds the player switched to with a double tap of the flashlight), `count` (the seams `mode` shows on this map), `tag` (the tagged seam's point; absent with none) `marked` (the seams with a target navpoint, two at most: `second`'s in the flight after a bounce, none otherwise; the set's other seams are lines on the map) and `second` (absent when empty: in the flight after a bounce, the seams it can reach, the best first, each with `at`, `time`, `steer`, `reach`, `speed`, `need`, `cost` and `caught`; [superbounce.md](../game/superbounce.md#the-second-bounce)) |
-| `charge` | the charge meter: `phase` (`near`, `under`, `held`, `primed`, `lost`), `fill` (0, 1/3, 2/3, then 1 less `still_ticks` over 38 while primed, 0 while lost) and `still_ticks`; absent while hidden ([superbounce.md](../game/superbounce.md#charge)) |
+| `targets` | the seam targets ([superbounce.md](../game/superbounce.md#targets)): `mode` (`common`, `likely` or `all`: the option's value, or the kinds the player switched to with a double tap of the flashlight), `count` (the seams `mode` shows on this map), `tag` (the tagged seam's point; absent with none) `marked` (the seams with a target navpoint, two at most: `second`'s in the flight after a bounce, none otherwise; the set's other seams are lines on the map) and `second` (absent when empty: in the flight after a bounce, the seams it can reach, the best first, each with `at`, `time`, `steer`, `reach`, `speed`, `need`, `cost` and `caught`; [superbounce.md](../game/superbounce-game-type.md#the-second-bounce)) |
+| `charge` | the charge meter: `phase` (`near`, `under`, `held`, `primed`, `lost`), `fill` (0, 1/3, 2/3, then 1 less `still_ticks` over 38 while primed, 0 while lost) and `still_ticks`; absent while hidden ([superbounce.md](../game/superbounce-landings.md#charge)) |
 | `verb` | the prompt line's verb: `let_go_of_crouch` while `under`, `walk_out_to_stand` while `held`, `keep_moving` while primed and still for 19 ticks or more, `charge_again` for 150 ticks after a loss while no crouch step has begun |
-| `lost_reason` | why the charge went, while `lost` and while the verb is `charge_again`: `stood_still` (the word left −3 after 30 still ticks or more), `crouched` (a crouch while primed), `unknown` (the word left −3 for another reason); absent otherwise ([superbounce.md](../game/superbounce.md#charge)) |
+| `lost_reason` | why the charge went, while `lost` and while the verb is `charge_again`: `stood_still` (the word left −3 after 30 still ticks or more), `crouched` (a crouch while primed), `unknown` (the word left −3 for another reason); absent otherwise ([superbounce.md](../game/superbounce-landings.md#charge)) |
 | `nav_target` | the navpoint's target: `at` (the spot's stand point), `kind` (`crouch` while not primed, `strip` while primed: the chosen strip, [superbounce.md](../game/superbounce.md#floor-marks)), `distance` (world units), `fall` (a strip's drop, world units; 0 for a crouch spot) |
 | `takeoff` | while primed on the ground, where to leave from for the chosen strip, on its floor ([The takeoff](../game/superbounce.md#the-takeoff)); absent when none is found. The world's bar is drawn there |
-| `guide` | the [approach guide](../game/superbounce.md#the-approach-guide) on the seam the player is going for, absent while it is not shown: `seam` (its landing point), `call` (`off_line`, `lined_up`, `too_shallow`, `too_high`, `off_edge`, `no_drift`, `crouching`, `will_bounce`), `jump` (the player is on the ground: the landing is the jump's from the takeoff's line), `impact` (the pipper), `row` (the last free row), `ticks` to it and `speed` on it (units/s down), `caught` (within the catch), `deep` with `depth` (the margin under the depth cut; negative is too shallow) and `past` (the row's place past the edge along the drift), `across` (the speed along the drift), `chance` (the bounce's predicted [chance](../game/superbounce.md#the-chance) in a fall, 0 to 1: the call's confidence) and `chance_capped` (the seam has no measured landing and `chance` was cut to 0.6), on the ground the [jump cue](../game/superbounce.md#the-jump-cue): `jump_in` (game ticks until the box says `Jump now`, 0 on the line, while it counts), `cue` (the box's words, settled: `Climb up`, `Walk to line`, `Jump in 0.7 s`, `Jump now` or `Walk off`) and `takeoff` (the [takeoff](../game/superbounce.md#the-takeoff): `at`, the line's centre on its floor, `heading`, the way to run over it, `half`, half the band along it, `speed`, the ground speed it is for, and `walk`, the cue is not a count), and `strength` (the fade, 0 to 1). The fields from `impact` to `speed` are absent with no landing by the seam, `deep`, `depth`, `past` and `across` on a seam with no drift, `chance` on the ground, while not primed, on a seam with no drift, with no landing by the seam and in a fall slower than 5.2 units/s, `impact` to `speed` on the ground too unless the cue counts, `takeoff` and `cue` in the air, while not primed and where no takeoff is found for the seam, and `jump_in` too while the cue is not a count. The guide is absent while not primed |
+| `guide` | the [approach guide](../game/superbounce.md#the-approach-guide) on the seam the player is going for, absent while it is not shown: `seam` (its landing point), `call` (`off_line`, `lined_up`, `too_shallow`, `too_high`, `off_edge`, `no_drift`, `crouching`, `will_bounce`), `jump` (the player is on the ground: the landing is the jump's from the takeoff's line), `impact` (the pipper), `row` (the last free row), `ticks` to it and `speed` on it (units/s down), `caught` (within the catch), `deep` with `depth` (the margin under the depth cut; negative is too shallow) and `past` (the row's place past the edge along the drift), `across` (the speed along the drift), `chance` (the bounce's predicted [chance](../game/superbounce-guide.md#the-chance) in a fall, 0 to 1: the call's confidence) and `chance_capped` (the seam has no measured landing and `chance` was cut to 0.6), on the ground the [jump cue](../game/superbounce.md#the-jump-cue): `jump_in` (game ticks until the box says `Jump now`, 0 on the line, while it counts), `cue` (the box's words, settled: `Climb up`, `Walk to line`, `Jump in 0.7 s`, `Jump now` or `Walk off`) and `takeoff` (the [takeoff](../game/superbounce.md#the-takeoff): `at`, the line's centre on its floor, `heading`, the way to run over it, `half`, half the band along it, `speed`, the ground speed it is for, and `walk`, the cue is not a count), and `strength` (the fade, 0 to 1). The fields from `impact` to `speed` are absent with no landing by the seam, `deep`, `depth`, `past` and `across` on a seam with no drift, `chance` on the ground, while not primed, on a seam with no drift, with no landing by the seam and in a fall slower than 5.2 units/s, `impact` to `speed` on the ground too unless the cue counts, `takeoff` and `cue` in the air, while not primed and where no takeoff is found for the seam, and `jump_in` too while the cue is not a count. The guide is absent while not primed |
 | `landing` | while airborne and falling toward a strip, the landing the assist predicts: `at` (at the strip's floor height), `verdict` (`on_slot`, `fixable`, `miss`), `speed` (the touchdown speed, units/s), the strip's `need`, `miss` (world units outside the slot, 0 inside) and `locked` (in the slot at `need` or faster: the [lock-on](../game/superbounce.md#lock-on) is red) |
-| `last_landing` | the last touchdown within 0.5 of a strip, or primed bounce anywhere, filed when its launch window (the touchdown tick and the 3 after) closes, or a primed fall through a strip's floor, filed on the tick it crosses: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`, `through`), the touchdown's game `tick` (for `through`, the touchdown's it followed, else the crossing's) and the origin `at` on the tick before ([superbounce.md](../game/superbounce.md#landings)) |
-| `off_spot` | the local player's last 16 bounces no marked strip accounts for (none within 0.5, or outside the catch of the one there is), oldest first; absent when none: the touchdown's `tick`, the origin `at`, the `edge` of the scanned bounce spot within 0.5 (absent with none), `speed_in` and `launch` ([superbounce.md](../game/superbounce.md#landings)) |
+| `last_landing` | the last touchdown within 0.5 of a strip, or primed bounce anywhere, filed when its launch window (the touchdown tick and the 3 after) closes, or a primed fall through a strip's floor, filed on the tick it crosses: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`, `through`), the touchdown's game `tick` (for `through`, the touchdown's it followed, else the crossing's) and the origin `at` on the tick before ([superbounce.md](../game/superbounce-landings.md#landings)) |
+| `off_spot` | the local player's last 16 bounces no marked strip accounts for (none within 0.5, or outside the catch of the one there is), oldest first; absent when none: the touchdown's `tick`, the origin `at`, the `edge` of the scanned bounce spot within 0.5 (absent with none), `speed_in` and `launch` ([superbounce.md](../game/superbounce-landings.md#landings)) |
 | `standing_fits` | whether the standing capsule fits at the player's origin, as `world.object`'s `physics.standing_fits`; absent before the scan is ready |
 | `medals` | every player's medals this game, bots included ([superbounce.md](../game/superbounce.md#medals)): `players`, a row for each slot that has a chain or a medal (`player` the slot, `chain` its last chain's count, `live` whether its next bounce adds to it, `counts` each medal id's total), and `recent`, the last 8 awards, oldest first (`player`, `tick`, `chain`, `medals`: the ids, lowest first; and for a bounce `strips`, how many bounce strips were within 0.5 of its touchdown). The ids are `superbounce`, `double-bounce`, `triple-bounce`, `quad-bounce`, `chain-bounce`, `bouncetacular`, `bounced` and `monster-bounce` |
 
@@ -2184,11 +2194,13 @@ h2 agent render.parity '{"arm": true}'
   did (`position`, `forward`, `up`, `fov`, `viewport`, `near`, `far`,
   `projection`, `start cluster`, `mode`).
   The top-level `counters` include
-  the visibility differential's `scene_visibility_checked` (game views
-  whose Rust sets were made and compared), `scene_visibility_equal`,
-  `scene_visibility_differ`, `scene_visibility_clusters_differ`,
-  `scene_visibility_objects_differ`, `scene_visibility_rust_taken` (views
-  that carry the Rust sets), `scene_visibility_ns` (time in the Rust
+  the visibility differential's `scene_visibility_checked` (sampled game
+  views whose Rust sets were made and compared), `scene_visibility_equal`,
+  `scene_visibility_differ`, the shadow arms'
+  `scene_visibility_<arm>_matched`, `_differ`, `_answered`, `_guest`,
+  `_declined`, `_proven` and `_fallen` for `clusters`, `frusta` and
+  `objects` ([native-visibility.md](../graphics/native-visibility.md#the-shadow-arms)),
+  `scene_visibility_rust_taken` (views that carry the Rust sets), `scene_visibility_ns` (time in the Rust
   computation), `scene_visibility_lens_retail`, `_guest` and `_display`
   (game views by the lens their visibility used: retail, the single-copy
   camera that `VIEW_PROJECTION_TERMS` widened, or the display supplement;
@@ -2307,8 +2319,8 @@ h2 agent render.parity '{"arm": true}'
   with frame statistics and the residual census disabled. The corresponding
   `scene_submitted_sky_{reference,display}_draws` count committed sky strips.
   `sky_plan_admitted` counts strips offered to the device after extraction and
-  material checks. `sky_plan_refused_<cause>` counts failures by site, geometry,
-  material, transform, view, range, stencil or device. GPU reservation and
+  material checks. `scene_kept_sky_<cause>` counts strips left to their guest
+  draw, by cause ([native-world-walk.md](../graphics/native-world-walk.md)). GPU reservation and
   replay outcomes appear under `native_sky_*` in the frame counters.
   `post_effect_refused_<cause>` counts screen-effect preflight refusals.
   A call that needs the view but has no view strip increments `view_target`. A missing or empty
@@ -2319,7 +2331,10 @@ h2 agent render.parity '{"arm": true}'
   `layer_plan_<layer>_taken` and `layer_plan_<layer>_refused_<cause>`,
   the alternate view's as `layer_plan_alt<layer>_*`, the first person's as `layer_plan_fp<layer>_*`, object items' causes
   named `object_*` (`render_bridge::native_layers`; framescene.md,
-  slice 4); a later slice adds
+  slice 4), and the cut world layers' items left to their guest draw,
+  `scene_kept_<site><layer>_<kind>_<cause>` (site empty or `alt`, kind
+  `world`, `object` or `unreadable`; layers 1, 2, 3, 5, 6, 7, 8, 16, 17 and 20; causes in
+  [native-world-walk.md](../graphics/native-world-walk.md)); a later slice adds
   `scene_held_draws`). With the [scene sink](../graphics/framescene.md#slice-6-the-renderer-owns-game-view-frames)
   enabled, the device files
   each guest D3D op by the frame's slot (`opaque`, `after_opaque`,
@@ -3035,7 +3050,7 @@ reports `"players":[]` and `"ready":false`. Readiness needs a remote
 player, party leadership, the requested map and limit, loaded maps on every
 peer, and retail's ready-to-start result. Any connection may read state;
 mutations respect `session.claim`, and a concurrent mutation is `BUSY`.
-[Playerless lobby and the two-console check](../live/dedicated-host.md#playerless-lobby).
+[Playerless lobby and the two-console check](../live/dedicated-host-ops.md#playerless-lobby).
 
 ## `ui`: what the menus show
 
@@ -3052,7 +3067,7 @@ or the game's UI state without UI watch. All are read-only except
   Settings and Voice children report classes `video` and `voice` on
   screen 200. Press B or Back with `h2 agent press` (`input.pad`) to
   check that the previous screen returns on the same window and slot. See the
-  [pause Settings walkthrough](../game/settings-menu.md#to-check-in-game).
+  [pause Settings walkthrough](../game/settings-menu-screens.md#to-check-in-game).
   The main menu's one row of ours, Theater, follows System Link, so
   Campaign, Xbox Live, Split Screen and System Link keep their retail rows
   0 to 3 and lobby scripts press them there. `main_menu_theater` and
@@ -3090,8 +3105,8 @@ or the game's UI state without UI watch. All are read-only except
   (`history`, nearest parent first). Each screen has `id`, `instance`
   (a guest address valid for that screen's lifetime), and `parent` where
   a return is known. The map picker stages share an ID and have
-  distinct `mode` values (`folders`, `maps`, `pack`), with the open
-  category or pack named in `folder`. A lobby variant list shows Change Game Type as its parent, including that selector's Game Setup parent when present. A pack's parent is the Mods list. All stages show the active picker row in `focused_row`
+  distinct `mode` values (`folders`, `maps`, `pack`, `variants`), with the open
+  category, pack or map named in `folder`. A map's page of variants has its category's maps as its parent. A lobby variant list shows Change Game Type as its parent, including that selector's Game Setup parent when present. A pack's parent is the Mods list. All stages show the active picker row in `focused_row`
   (zero-based). Game-type and variant lists also expose their focused row.
   A custom variant list identifies its group in `variant_category` and a kit
   screen identifies its class in `class`. Both fields are null elsewhere.
@@ -3140,7 +3155,7 @@ or the game's UI state without UI watch. All are read-only except
 - **`ui.browser.filters`** (`h2 agent ui.browser.filters`, no parameters):
   reads the active Custom Game Browser preferences, even when the browser
   is closed. The result is `{"filters":{...}}` with the same field names
-  and values as the [Live session query](../live/live-api.md#browser-filters).
+  and values as the [Live session query](../live/live-api-sessions.md#browser-filters).
   Unset fields are omitted. With the default choices, it returns
   `{"filters":{}}`. After opening Game Filters with Y and choosing a row
   value with A, read this method to verify the selection.
@@ -4487,7 +4502,7 @@ or `crouch`; `kind` in the request filters), `source` (`measured` or
 end vertices to the float, a busy point's vertex twice), `stand`,
 `fall`, `launch`, `drift`, `score`, `need` and `fall` (measured
 only: 0 for a scanned spot, which the game reads as the one threshold
-every seam shares, [superbounce.md, "Speed"](../game/superbounce.md#speed);
+every seam shares, [superbounce.md, "Speed"](../game/superbounce-spots.md#speed);
 a measured spot with a recipe takeoff falls 2.43 from it), `status` (`proven` for a crouch spot at a measured priming place
 or one the map's verified file proved, `failed` for one it failed, else
 `likely`), `out` (a crouch spot's way out from `stand`, X and Y) and
@@ -5096,7 +5111,7 @@ feature is enabled.
 
 | Method and access | Parameters | Result |
 |---|---|---|
-| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Tool settings: `rotation_snap` (degrees), `movement_snap` (world units, 0 for off) and `axes` (`world` or `local`). `overlays`: each overlay (`markers`, `monitors`, `gizmo`, `nav`, `blockout`) to whether it is on. Block-out: `block_grid` (units), `dev_view`, and `resize` (`{target, def, size}` while a Resize draft is in hand, else `null`). Links fields: `tool` (`objects`, `links` or `nav`), `aimed_link` and `link_from` (`{teleporter: flag}`, `{flag: id}` for a teleporter the session added, or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `added_teleporters` (`{id, sender, channel, position}`, the teleporter flags the session added, with the channel a link gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. Palette fields: `palette` (the Objects palette's item count) and `palette_refused` (each scenario palette entry left out, as `"path: reason"`). `parked`: the hex handle of the biped the monitor parks and hides, or `null` while none is. Groups fields: `groups` (`{id, name, locked, pivot, members}`, `pivot` `centre` or `first`, `members` the things' endpoints) and `selection` (the endpoints chosen to group). Labels and prefabs: `labels` (`{thing, text, number}`, the active labels) and `prefabs` (`{name, pieces, grouped, fits, reason}`, the saved prefabs, and why one is refused on this map). Things fields: `aimed_thing` and `held_thing`, the thing's endpoint as `forge.things` gives it (an own entry's or an added one's; `aimed` and `held` are an added object's op ID only), `game` (the variant record's engine index the tool reads, or `null`) and `show` (`this_game_type` or `all_game_types`). `variant`: `{name, title, id, tier, dirty, waves}`, the session's document as a map variant saves it: `name` the file it was saved or loaded as (`null` before), `id` the play form's identity (`null`, with `id_refused`, when it does not compute), `tier` `variant` or `map`, `dirty` edits since the last save or load, and `waves` the name of the session's own wave set, or `null` when it has none and a save writes none (`forge.waves` has the rest). `ground`: `{state, building, available, loaded, markers, problems, zones?, squads?}`, the AI ground in brief (`forge.ground` has the rest): `state` is `not_built`, `current` or `stale`, `available` whether this game has a builder, `loaded` whether the last build's map is the running one, `markers` how many labels are placed and `problems` how many labels the last build could not honour. `nav`: `{state, available, generating, problems, sectors?, out_of_map?}`, the last **Generate nav** in brief (`forge.nav` has the rest). An inactive session returns `{session:"inactive", reason}` |
+| `forge.status` (read) | `{}` or omitted | The local session, role, log head, budget, monitor camera, aimed and held IDs, screen and focus, pending call or file work, and last notice. Tool settings: `rotation_snap` (degrees), `movement_snap` (world units, 0 for off) and `axes` (`world` or `local`). `overlays`: each overlay (`markers`, `monitors`, `gizmo`, `nav`, `blockout`) to whether it is on. Block-out: `block_grid` (units), `dev_view`, and `resize` (`{target, def, size}` while a Resize draft is in hand, else `null`). Links fields: `tool` (`objects`, `links` or `nav`), `aimed_link` and `link_from` (`{teleporter: flag}`, `{flag: id}` for a teleporter the session added, or `{object: id}`), `teleporters` (`{flag, sender, channel, position}` with the channel the document gives), `added_teleporters` (`{id, sender, channel, position}`, the teleporter flags the session added, with the channel a link gives), `links` (`{id, kind:"teleporter", sender, receiver, channel}` or `{id, kind:"device", machines, applies:"rebuild"}`, final indices) and `pending_rebuild`, the active device links. Palette fields: `palette` (the Objects palette's item count) and `palette_refused` (each scenario palette entry left out, as `"path: reason"`). `parked`: the hex handle of the biped kept while the player is in a Forge body, undamageable and hidden, or `null` while none is. Body fields: `body` (`{kind, unit}` while the player is in one: `kind` the body's key, `monitor`, `sentinel` or `prophet`, and `unit` its hex handle; else `null`), `body_choice` (the profile's `forge.body` key) and `bodies` (`{kind, name, refused}` for each body, `refused` the sentence that names why the kit left it out, or `null`). Groups fields: `groups` (`{id, name, locked, pivot, members}`, `pivot` `centre` or `first`, `members` the things' endpoints) and `selection` (the endpoints chosen to group). Labels and prefabs: `labels` (`{thing, text, number}`, the active labels) and `prefabs` (`{name, pieces, grouped, fits, reason}`, the saved prefabs, and why one is refused on this map). Things fields: `aimed_thing` and `held_thing`, the thing's endpoint as `forge.things` gives it (an own entry's or an added one's; `aimed` and `held` are an added object's op ID only), `game` (the variant record's engine index the tool reads, or `null`) and `show` (`this_game_type` or `all_game_types`). `variant`: `{name, title, id, tier, dirty, waves}`, the session's document as a map variant saves it: `name` the file it was saved or loaded as (`null` before), `id` the play form's identity (`null`, with `id_refused`, when it does not compute), `tier` `variant` or `map`, `dirty` edits since the last save or load, and `waves` the name of the session's own wave set, or `null` when it has none and a save writes none (`forge.waves` has the rest). `ground`: `{state, building, available, loaded, markers, problems, zones?, squads?}`, the AI ground in brief (`forge.ground` has the rest): `state` is `not_built`, `current` or `stale`, `available` whether this game has a builder, `loaded` whether the last build's map is the running one, `markers` how many labels are placed and `problems` how many labels the last build could not honour. `nav`: `{state, available, generating, problems, sectors?, out_of_map?}`, the last **Generate nav** in brief (`forge.nav` has the rest). An inactive session returns `{session:"inactive", reason}` |
 | `forge.ground` (read) | `{}` or omitted | The AI ground (docs/game/forge-map-variants.md, "AI ground"): `{state, building, available, loaded, recipe, counts, markers, problems, report}`. `state` is `not_built`, `current` or `stale`; `building` is true while a build runs (edits wait for it); `available` is whether this game has a builder; `loaded` is whether the running map was reloaded onto a build of the ground the document asks for now (false after an edit makes it stale, and while the game cannot reload the map). `recipe` is `{kit_version, home, probe, classes}` or null before the first build, with `classes` the enemy classes past the Elite as `{name, donor, sha256}`, each donor the campaign map the class is copied from (docs/game/forge-firefight.md, "Enemy classes"). `classes` (top level) is the class names the session asks for, in keep order: the recipe's, or a list `forge.ground.build {classes}` gave that the next build gives donors. `counts` maps each label (`ff_drop`, `ff_base`, `ff_cover`, `siege_site`, `siege_goal`, `siege_line`, `siege_barrier`) to how many are placed (a `siege_barrier` is a label on a placed object, not a flag, so it is counted and is not in `markers`), and `markers` lists the flags as `{id, label, number, position, facing, team}`. `problems` is each label the last build could not honour, `{label, position, reason}`. `report` is null before a build, else `{zones, squads, problems, receipt, classes, cut, costs}`, with `receipt` `{base, labels, kit_version}` as hex digests of the inputs the build covers, `classes` the classes the ground has in palette order (the Elite first), `cut` the classes cut to fit the map's tag headroom (first cut first) and `costs` each kept class past the Elite as `{name, tags, bytes}` |
 | `forge.ground.build` (act) | `{if_stale?, classes?}` or omitted | **Build AI ground**, or with `if_stale: true` **Test waves** (build only when the ground is stale or was never built). `classes` asks for those enemy classes past the Elite first (`grunt`, `jackal`, `drone`, `brute`, `hunter`, in any order; `[]` for none): a list other than the recipe's marks the ground stale, and the build takes each class's donor from this game's disc and cuts classes from the end of the list when the map is short of headroom. Answers when the build has ended with `forge.ground`'s reply plus `built`, whether it built. The build runs off the game thread over a copy of the session, and edits wait meanwhile. Refused as `forge_refused` when this game has no builder (`This game cannot build AI ground.`), in a shared session, while another edit or file job waits, with the build's own sentence when it fails (a map with no room for the ground names its cost and its biggest part; a class no donor on the disc carries, or a donor of another hash, is named), and for a class name the table lacks; a failed build changes nothing |
 | `forge.waves.test` (act) | `{stop?}` or omitted | **Test waves**, or with `stop: true` **Stop waves** ([forge-firefight.md](../game/forge-firefight.md), "Test waves"), at a local multiplayer tick; registered in `crates/extensions/agent/src/forge/test.rs`. A start whose ground the running map holds answers once the Firefight runtime has taken it, `{testing: true, set, id}` with the set's name and `Def::id` (the session's set, else Holdout's built-in set). A start whose ground is stale or not loaded builds it and answers at once with `{testing: false, building: true}`; the test starts after the reload, and `firefight.state`'s `test` says when. A stop answers `{testing: false, stopped}`, the test's squads erased. Refused as `forge_refused` with the row's sentence: while another edit or file job waits, while a test runs (`A wave test is running.`), with no test to stop (`No wave test is running.`), when this game cannot run Firefight, when the build leaves the ground unloaded, and with the runtime's refusal (a match running, a seat other than the host's, a map with no AI ground, a film's playback) |
@@ -5809,7 +5824,8 @@ small against `checked`.
 after a call. For each observed function, `matched` and `differed` count
 completed comparisons. `declined` counts segments the Rust arm could
 not predict. `interrupted` counts predictions for which the guest exited
-before a comparison boundary. The first difference for each function is
+before a comparison boundary. `answered` counts segments the Rust body
+answered without the guest under `impl.sim.native.anim.manager`. The first difference for each function is
 retained in `first`, with the starting selector (`pc`), differing field
 (`what`), and both values (`plan` and `guest`). An entry with `first` set
 to `null` has no recorded difference. Compare counts before and after
@@ -5830,21 +5846,25 @@ wire types in `crates/extensions/agent-proto/src/sim_arms.rs`.
 
 | Method | Access | Params and result |
 |---|---|---|
-| `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, in that order. |
+| `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, `sound`, in that order. |
 
 Each subsystem has `name`, `switch` (`impl.sim.native.<name>`), `on` (the
 switch in this process), `arms` and `clean`: `checked > 0 && mismatched
 == 0`, summed over the arms. Each arm has `name`, `checked`, `matched`,
 `mismatched`, `answered` (calls Rust answered in the guest's place) and
 `declined` (calls left to the guest unchecked, summed over reasons). The
-sources are `sim_physics::parity::status`, `sim_objects::functions::parity::status`,
+sources are `sim_physics::parity::status`, `sim_objects::functions::parity::status`
+(`objects.curve`), `sim_objects::functions::arm::status` (`objects.function`,
+whose `declined` adds its `dropped` audits),
 the graph walk's `arm_stats` and `stats`, `sim_anim::manager::arm::stats`,
-`sim_collision::WORLD.stats` and the shadow registry's `sim.seats` and
-`sim.effects` groups. A source without a counter reports 0 for that
+`sim_collision::WORLD.stats`, the shadow registry's `sim.seats` and
+`sim.effects` groups, and `sim_sound::voice_arm::stats` (`sound.voices`). A source without a counter reports 0 for that
 field: physics and collision have no `checked` (it is `matched` plus
-`mismatched`) and no `answered`; `anim.manager` has no `answered` and its
-`differed` is `mismatched`; shadow ports have no `answered` and their
-`skipped` is `declined`. A subsystem with its switch off reads zeros, so
+`mismatched`) and no `answered`; `anim.manager`'s `differed` is
+`mismatched`; shadow ports have no `answered` and their
+`skipped` is `declined`; `sound.voices` counts ticks for `checked`
+(sampled ticks with voices), `matched` and `mismatched`, and voices for
+`answered`. A subsystem with its switch off reads zeros, so
 `clean` is false.
 
 ```sh
@@ -5906,6 +5926,16 @@ a scenario and subtract the counters to isolate that run.
 first differing byte offset in the result record, with expected and guest values.
 `context` uses the same counters for entry D. It compares AL, R and the
 40-byte context, counting each outer walk once across its recursive calls.
+
+`vector` and `context` also carry the crossing-exit gate
+([collision-queries.md, "Crossing exits"](../engine/collision-queries.md#crossing-exits)):
+
+| Field | Meaning |
+|---|---|
+| `exits_matched` | matches that also covered every register and frame byte of a crossing exit |
+| `answered` | crossing exits answered natively once the gate opened |
+| `sampled` | crossing calls left to the guest for a comparison while answering |
+| `fell_back` | a difference was seen; the lifted body answers from then on |
 
 `instance`, `flood`, `visit` and `query` use the same comparison counters.
 An admitted native exit counts under `entries[].native`. A comparison

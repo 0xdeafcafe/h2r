@@ -6,17 +6,27 @@ Switch: [offline lighting options](../runtime/switches.md#tools) and the [lighti
 
 An opt-in mode that takes the sun out of Halo 2's baked lightmaps and
 lights it live, with shadow maps, so that the level and everything in it
-cast and receive the sun's shadow. Retail lighting stays the default. The
-baked lightmap stays the source of all indirect light: an offline tool,
-run on the owner's disc, splits each lightmap into the sun's part and the
-rest, and the renderer puts the two back together with a live shadow term.
-The rule that must hold: with the baked shadow term in place of the live
-one, the mode draws retail's image.
+cast and receive the sun's shadow. Retail lighting stays the default.
+
+```mermaid
+flowchart LR
+  R[retail lightmap page] --> T[offline split tool, owner's disc]
+  T --> I[I: indirect, baked]
+  T --> D[D: unshadowed sun]
+  C[live cascade shadow map] --> S[S: shadow term]
+  I --> L[layer 3 lightmap fetch]
+  D --> L
+  S --> L
+```
+
+The baked lightmap stays the source of all indirect light. The split
+tool divides each lightmap into the sun's part and the rest, and the
+renderer puts the two back together with a live shadow term. The rule
+that must hold: with the baked shadow term in place of the live one, the
+mode draws retail's image.
 
 This page answers whether the mode is worth building, compares the ways
-to do it, and gives the slices. It was written from the code and docs on
-master and from public sources. No leaked build or archive was opened,
-and none may be for this work.
+to do it, and gives the slices. Its sources are public ("Sources").
 
 [live-gi.md](live-gi.md) designs the mode's indirect light computed live,
 every sim tick, in place of the baked `I` of this page; that is the
@@ -38,25 +48,13 @@ where that design's checkpoint stops it or its fit refuses a level.
 
 ## Summary
 
-- **Go, staged, for the hybrid.** Keep the retail lightmap for indirect
-  light, subtract the sun's direct part offline, and add it back live
-  under a shadow map. It is the only approach that starts from retail's
-  image and changes one thing.
-- **Not now for our own bake of indirect light.** The disc lacks part of
-  what Bungie's bake was lit by, so a bake of ours is a relight, not a
-  restoration.
-- **No to runtime global illumination and to hardware ray tracing at run
-  time.** One shadow ray per pixel misses the frame budget on a base M3
-  at 4x, wgpu's ray queries on Metal are experimental, and runtime GI
-  replaces the art's ambient light with something else.
-  [live-gi.md](live-gi.md) is the design that answers this: it traces
-  nothing at run time and fits its sources to the retail lightmap.
-- **Cost of the hybrid:** about 2 to 3.5 ms of GPU time per display frame
-  on a base M3 at 2560x1920 (**Estimate**, "Approaches"). The retail
-  frame's own GPU time at that scale is not measured; slice 0 measures it.
-- **The runtime slices sit on the FrameScene renderer**
-  ([framescene.md](framescene.md)), not on the tenant path. The offline
-  split tool runs directly on the owner's map and resources.
+| Question | Answer |
+|---|---|
+| The hybrid (retail lightmap for indirect, sun subtracted offline, added back live under a shadow map) | Go, staged. It is the only approach that starts from retail's image and changes one thing |
+| A bake of our own for indirect light | Not now. The disc lacks part of what Bungie's bake was lit by, so a bake of ours is a relight |
+| Runtime global illumination, hardware ray tracing at run time | No. One shadow ray per pixel misses the frame budget on a base M3 at 4x, wgpu's ray queries on Metal are experimental, and runtime GI replaces the art's ambient light. [live-gi.md](live-gi.md) answers this: it traces nothing at run time and fits its sources to the retail lightmap |
+| Cost of the hybrid | about 2 to 3.5 ms of GPU time per display frame on a base M3 at 2560x1920 (**Estimate**, "Approaches"); the retail frame's own time at that scale is not measured, slice 0 measures it |
+| Where the runtime slices sit | on the FrameScene renderer ([framescene.md](framescene.md)), not the tenant path; the offline split tool runs directly on the owner's map and resources |
 
 ## What the disc holds
 
@@ -157,8 +155,7 @@ Notes on the estimates:
   `ExperimentalFeatures::enabled()`, which is `unsafe` (**Code**,
   `wgpu-types` `src/tokens.rs`). `gfx` asks for no experimental feature
   (`Capabilities::wanted_features`, `crates/platform/gfx/src/translate.rs`).
-- Metal support landed in wgpu 29 (**P**, wgpu PR 8071, merged February
-  2026). Third parties report open correctness bugs in it (**P\***).
+- Metal support landed in wgpu 29 (**P**, wgpu PR 8071). Third parties report open correctness bugs in it (**P\***).
 - The M3 family is the first Mac silicon with hardware ray tracing
   (**P\***, Wikipedia). Earlier chips answer the same queries in
   software, at about half the speed (**P**, nelari.us).
@@ -210,10 +207,13 @@ and evaluates each stored mip independently.
    Mesh edges lead the fill to its neighbours. CSV files preserve the run
    labels and vertex order. The report names unresolved geometry.
 
-Two sets of pages come out. The *closure* set is step 4's `I` and the
-baked direct page `B = min(retail, round(D · V))` per channel, so that `I + B` is
-the retail page to within one step of 255 and stays so under filtering,
-which is linear in each page. The *play* set is step 5's `I` and `D`.
+Two sets of pages come out:
+
+| Set | Holds | Use |
+|---|---|---|
+| Closure | step 4's `I` and the baked direct page `B = min(retail, round(D · V))` per channel | `I + B` is the retail page to within one step of 255, and stays so under filtering, which is linear in each page |
+| Play | step 5's `I` and `D` | the live mode |
+
 Each stored mip level is split on its own. A report gives, per BSP, the
 fitted `k`, the share of texels that clamped, and the edge-band share.
 
@@ -225,37 +225,46 @@ units, so no colour-space conversion enters.
 
 #### Reading the comparison
 
-`crates/apps/cli/src/lighting/solver/solve.rs` samples a 4 × 4 footprint at each
-texel against two CPU triangle BVHs. One contains clusters and instances,
-the other the scenario scenery. Each receives the same subpixel rays. The
-solver computes an independent median RGB slope from base-mip shadow-edge
-pairs for each occluder set and reports the median error in those pairs.
-The comparison pages use the scenery-inclusive fit. A missing pair
-withholds the inferred colours.
+`crates/apps/cli/src/lighting/solver/solve.rs` samples a 4 × 4 footprint
+at each texel against two CPU triangle BVHs. One contains clusters and
+instances, the other the scenario scenery. Each receives the same
+subpixel rays.
+
+The solver computes an independent median RGB slope from base-mip
+shadow-edge pairs for each occluder set and reports the median error in
+those pairs. The comparison pages use the scenery-inclusive fit. A
+missing pair withholds the inferred colours.
 
 A numeric source ID selects a sky light in the BSP's referenced skies.
-A placed sphere can also be isolated by its zero-based scenario placement
-index. Its fitted direct term includes the receiver cosine and linear
-attenuation to its authored radius. Rays end at the lamp. The split tool
-rejects dynamic-only lights, projected or custom shapes, and textured gels.
-The lamp-off image removes the fitted direct contribution. Source bounce,
-other lights and baked emission stay in the residual. Changing the lamp's
-bounce requires a separate transport solve ([live-gi.md](live-gi.md)).
+A placed sphere can also be isolated by its zero-based scenario
+placement index. Its fitted direct term includes the receiver cosine and
+linear attenuation to its authored radius, and rays end at the lamp.
+
+The split tool rejects dynamic-only lights, projected or custom shapes,
+and textured gels. The lamp-off image removes the fitted direct
+contribution. Source bounce, other lights and baked emission stay in the
+residual. Changing the lamp's bounce requires a separate transport solve
+([live-gi.md](live-gi.md)).
 
 Compare **on against retail** for new seams, ridges and missing shadow
-casters. Compare **off against on** for a plausible direct-light footprint
-and surviving independent fill. The report orders base pages by total RGB
-change and links every lower mip, traced visibility, closure pair, unshadowed
-direct and original alpha. The previews show stored RGB at the same exposure.
-Each retail/on/off display page also carries the original alpha.
-The closure error checks arithmetic. The lamp-on error, clamped share,
-unfilled edge count and the pictures judge the reconstruction.
+casters. Compare **off against on** for a plausible direct-light
+footprint and surviving independent fill.
+
+The report orders base pages by total RGB change and links every lower
+mip, traced visibility, closure pair, unshadowed direct and original
+alpha. The previews show stored RGB at the same exposure, and each
+retail/on/off display page carries the original alpha. The closure error
+checks arithmetic. The lamp-on error, clamped share, unfilled edge count
+and the pictures judge the reconstruction.
 
 The outdoor review set is Zanzibar, Coagulation and Ascension, BSP 0,
-sky light 0 on each. Each invocation writes a separate report outside Git.
+sky light 0 on each. Each invocation writes a separate report outside
+Git.
+
 An incomplete input, a fit with no visible change or closure beyond one
-step stops the gate. Otherwise the owner decides after reviewing the three
-reports. The command syntax is in [switches.md](../runtime/switches.md#tools).
+step stops the gate. Otherwise the owner decides after reviewing the
+three reports. The command syntax is in
+[switches.md](../runtime/switches.md#tools).
 
 ### One BSP with a switchable baked lamp
 
@@ -269,17 +278,22 @@ gives the bake and capture procedure.
 two complete display atlases at bake time. A successful placed-lamp split
 writes `lightmaps.json` beside the review PNGs. The installed directory
 is `<data>/relighting/` (one map, BSP and lamp per installation).
-`content::relight::Manifest` identifies the format
-`h2-display-lightmaps-v1`, internal map name, map header and structure
-checksums, BSP index and placed-lamp index. Each entry identifies a page,
-palette, mip, width and height, with SHA-256 digests of the decoded retail,
-on and off RGBA8 pixels. For group zero the two display files are
+
+| Manifest field | Holds |
+|---|---|
+| format | `h2-display-lightmaps-v1` (`content::relight::Manifest`) |
+| identity | internal map name, map header and structure checksums, BSP index, placed-lamp index |
+| per entry | page, palette, mip, width, height, SHA-256 digests of the decoded retail, on and off RGBA8 pixels |
+
+For group zero the two display files are
 `g0-pageP-palQ-mipM-{on,off}.png`, with `-rgba` before the extension
 when the corresponding retail mip has translucent pixels. The PNGs keep
 the original alpha, mip sizes and stored colour units. Names come from
-numeric keys. The report, bundle and captures contain private pixels and
-belong outside Git. A stopped split can retain a report for diagnosis
-without publishing a runtime manifest.
+numeric keys.
+
+The report, bundle and captures contain private pixels and belong
+outside Git. A stopped split can retain a report for diagnosis without
+publishing a runtime manifest.
 
 **Code.** At native BSP load, `game::relight::load` compares the
 manifest to the active map and to each resident retail page, including
@@ -288,14 +302,18 @@ digests and retail alpha. `ProgramSet::install_relight` creates material
 bindings for the reconstructed textures. The [native world
 stage](native-world.md) selects them on the display copy of the layer-3
 pass. An invalid bake or incomplete native opaque coverage leaves the
-BSP on retail and reports the reason. The guest reference retains its
+BSP on retail and reports the reason.
+
+The guest reference retains its
 original textures for readbacks. Ordinary retail launches do no bundle
 I/O. Live edits invalidate the alternative bindings.
 
 **Scope.** This swaps the sampled atlas itself. The split fits direct
 light in stored RGB units. Source bounce survives in the residual.
 Vertex lighting, self-illumination, live lights, objects and later
-material passes retain their ordinary lighting. Inspecting a bounce-only
+material passes retain their ordinary lighting.
+
+Inspecting a bounce-only
 wall and the fixture face records which parts of the lamp are still
 visible. Removing its indirect light requires an additional transport
 bake, and extinguishing its visible emission requires control of that

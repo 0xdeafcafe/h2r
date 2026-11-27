@@ -1,15 +1,43 @@
 # Docs
 
-Every doc in this folder, by area. **Start here** marks the entry point for
-each area. A page's own status line says whether it describes built code,
-partly built code or a design. Pages are written to the rules in
-[meta/docs-style.md](meta/docs-style.md).
+```mermaid
+flowchart LR
+    disc[retail disc] --> formats
+    disc --> lifter
+    lifter --> runtime
+    runtime --> graphics & audio & input
+    formats --> engine
+    engine --> game
+    game --> halo1 & live
+    editor --> formats & game
+    perf -.-> runtime
+```
 
-[ARCHITECTURE.md](ARCHITECTURE.md) is the entry point for the whole project:
-goals, targets, the pipeline and the crate table. Dated reviews of the code
-are under [Reviews](#reviews).
+| Area | Folder | Pages | Start here |
+|---|---|---|---|
+| Lifter | `lifter/` | 19 | [LIFTER.md](lifter/LIFTER.md) |
+| Runtime | `runtime/` | 32 | [BOOT.md](runtime/BOOT.md) |
+| Input | `input/` | 6 | [input.md](input/input.md) |
+| Graphics | `graphics/` | 50 | [graphics.md](graphics/graphics.md) |
+| Audio and movies | `audio/` | 6 | [audio.md](audio/audio.md) |
+| Performance | `perf/` | 19 | [README.md](perf/README.md) |
+| Formats and tags | `formats/` | 22 | [map-format.md](formats/map-format.md) |
+| Engine | `engine/` | 40 | [engine-map.md](engine/engine-map.md) |
+| Game features | `game/` | 74 | [settings-menu.md](game/settings-menu.md) |
+- [settings-menu-screens.md](game/settings-menu-screens.md): The pause menu, voice, profile and field-of-view screens, and settings as a schema.
+| Halo 1 | `halo1/` | 32 | [halo1 section](#halo-1-halo1) |
+| Xbox Live | `live/` | 70 | [live.md](live/live.md) |
+| Editor | `editor/` | 27 | [editor-guide.md](editor/editor-guide.md) |
+| Development | `dev/` | 5 | [crate-structure.md](dev/crate-structure.md) |
 
-[features.md](features.md) lists every feature beyond the retail game with its state and its page, the measured speed numbers and the roadmap.
+The whole project starts at [ARCHITECTURE.md](ARCHITECTURE.md): goals,
+targets, the pipeline and the crate table. [features.md](features.md) lists
+every feature beyond the retail game with its state and its page, the
+measured speed numbers and the roadmap. Dated reviews of the code are under
+[Reviews](#reviews).
+
+Every page below has a status line: built, partly built or a design. Pages
+follow [meta/docs-style.md](meta/docs-style.md).
 
 ## Lifter: analysis, lifting and CPU semantics (`lifter/`)
 
@@ -35,21 +63,37 @@ are under [Reviews](#reviews).
 - [cli-tools.md](runtime/cli-tools.md): `h2-tools`, the offline map, tag and script tools in a binary without the game; `h2 <tool>` runs it, `cargo h2-tools` builds only it
 - [building.md](runtime/building.md): the root `justfile`: building every target (Mac, Apple TV, iPhone, Windows, Xbox) from your disc, `just doctor`, `maps=demo|all`
 - [app.md](runtime/app.md): the host shell, `h2 play`, `h2 play --follow` and `h2 play --watch` (`crates/apps/app`): flags, pacing, frame stats, embedded hosts (tvOS, iOS)
+- [app-overlays.md](runtime/app-overlays.md): app: the `--frame-stats` overlay and the watermark
+- [app-follow.md](runtime/app-follow.md): app: `h2 play --follow` and `--watch`
 - [level-boot.md](runtime/level-boot.md): `h2 play --level` / `H2_LEVEL`: start a campaign level or a local multiplayer game directly
 - [kernel-imports.md](runtime/kernel-imports.md): work list of every kernel import Halo 2 uses, with signatures
 - [xapi.md](runtime/xapi.md): which XAPI services are replaced (`crates/platform/xapi`) and which stay generated, native saves included
+- [xapi-saves.md](runtime/xapi-saves.md): XAPI: generated and native saves, the N: volume
+- [xapi-inventory.md](runtime/xapi-inventory.md): XAPI: runtime registration and the inventory of matched and inferred entries
 - [storage.md](runtime/storage.md): the Xbox storage boundary (`crates/runtime/vfs`): volumes, FATX names, file semantics, map overrides
+- [storage-writes.md](runtime/storage-writes.md): xbox storage: write metadata and write-behind
+- [storage-nt.md](runtime/storage-nt.md): xbox storage: file objects, NT behaviour and kernel integration
 - [background-work.md](runtime/background-work.md): work nothing on the frame waits for (nav meshes, film hashes, uploads) on threads below the game's priority, and the worker cap (`crates/runtime/background`, `H2_BACKGROUND_THREADS`)
 - [agent-api.md](runtime/agent-api.md): the agent API to the running game (`h2 serve`, `h2 agent`): UI and world views, profiling by owner, snapshots, input, overrides, sim matches and tick traces
 - [debug-menu.md](runtime/debug-menu.md): our in-game debug menu: an overlay over the game image, in the 8x8 font, over the same registries as `h2 agent` (built and unit tested, not yet seen in the game)
 - [contract-thin-transfers-flat-ram.md](runtime/contract-thin-transfers-flat-ram.md): spec for the first recompiler-contract change: calls and host calls that stay off the runner, and one-instruction guest memory with a fixup table and card marking; why the opt-in flat RAM is slower; slices, gates and measurements (design only)
+- [contract-thin-transfers-flat-ram-target.md](runtime/contract-thin-transfers-flat-ram-target.md): spec section 4: the flat memory model and the thin transfers
 - [block-clock-imprecise-faults.md](runtime/block-clock-imprecise-faults.md): the fault census (`profile.faults`: which guest memory faults need a precise exit), the block clock (the default; the scheduler counts planned block costs, not accesses) and imprecise memory faults (the default)
 - [lab.md](runtime/lab.md): `h2 lab`: start levels on a second Mac over the LAN, build branches there, replay input recordings, fetch frame stats, profiles and logs
+- [lab-consent.md](runtime/lab-consent.md): the lab: player consent before a job, what happens when the player opens a game, memory limits
+- [lab-runs.md](runtime/lab-runs.md): the lab: the agent API on a run, own-data play, the dedicated System Link host, sim benchmarks, Theater runs, recordings
 - The [agent API skill](../.claude/skills/h2-agent-api/SKILL.md) and [lab skill](../.claude/skills/h2-lab/SKILL.md) guide coding agents through live checks and remote runs.
 - [checkpoints.md](runtime/checkpoints.md): the checkpoint save and revert acceptance test
 - [sim.md](runtime/sim.md): headless bot matches, tuning comparisons and uploads to Clanker Training in Uplink
+- [sim-match-setup.md](runtime/sim-match-setup.md): sim mode: the playerless host and start, the match file, rules scripts, Firefight, bot parameters
+- [sim-metrics.md](runtime/sim-metrics.md): sim mode: the tally and report, the spatial trace, sim stores, shared guest RAM
+- [sim-parallel.md](runtime/sim-parallel.md): sim mode: batches, arm swaps, Uplink watching, batches on hosts
+- [sim-bounce.md](runtime/sim-bounce.md): sim mode: bounce practice, the drill, sweeps, site training, seam drops
+- [sim-determinism.md](runtime/sim-determinism.md): sim mode: post-tick state hashes, finding the first differing state, bot navigation cost, host audit corpus
 - [bounce-search.md](runtime/bounce-search.md): the forked bounce search: superbounce trials from a saved machine, the region that bounces on each seam and the seams ranked by ease
 - [snapshots.md](runtime/snapshots.md): machine snapshots for `state.save`/`state.load`: what state lives outside guest RAM, the file format, the quiescence rule
+- [snapshots-state.md](runtime/snapshots-state.md): machine snapshots: kernel and machine state, devices, the `state.*` wiring
+- [snapshots-quiescence.md](runtime/snapshots-quiescence.md): machine snapshots: the quiescence probe
 - [cache-slots.md](runtime/cache-slots.md): the campaign cache-slot integration test
 - [tvos.md](runtime/tvos.md): building and deploying to Apple TV (`platform/tvos`, `H2_EMIT_TARGET=tvos`)
 - [windows.md](runtime/windows.md): cross-building the runtime and the game module as a Windows DLL from a Mac (`x86_64-pc-windows-msvc`)
@@ -57,6 +101,7 @@ are under [Reviews](#reviews).
 - [steamos.md](runtime/steamos.md): playing on Linux and on a Steam Machine in Developer Mode through Buck (`//platform/linux:play`, `//platform/steamos:run`), the disc from `.buckconfig.local`
 - [xbox.md](runtime/xbox.md): the UWP app for an Xbox in Dev Mode, packaged, signed and deployed from a Mac (`platform/xbox`, `H2_EMIT_TARGET=windows`)
 - [title-updates.md](runtime/title-updates.md): design for title-update XBEs (1.1 and later): what assumes the 1.0 image, the address-map plan; design only, the one built part is `h2 import-mappack` copying the Map Pack's update aside
+- [title-updates-design.md](runtime/title-updates-design.md): title updates: version detection, the per-version address map, hook translation, testing
 - [second-executor.md](runtime/second-executor.md): a second guest executor, the runtime building block the phantoms' action build runs on
 - [ios.md](runtime/ios.md): the iOS app: building, deploying and the touch controls (`platform/ios`, `input::touch`)
 - Notes: [boot-log.md](runtime/notes/boot-log.md) (the boot milestone log), [sim.md](runtime/notes/sim.md) (sim mode's speed-up estimate and per-process memory), [snapshots.md](runtime/notes/snapshots.md) (snapshot quiescence probe runs), [steamos-boot.md](runtime/notes/steamos-boot.md) (the first Steam Machine boot)
@@ -80,42 +125,86 @@ are under [Reviews](#reviews).
 ## Graphics (`graphics/`)
 
 - [graphics.md](graphics/graphics.md) (**start here**): D3D8 state and textures on wgpu (`crates/platform/gfx`): batching, merged passes, the pipeline cache
+- [graphics-textures.md](graphics/graphics-textures.md): texture decode and the Xbox D3DFORMAT to wgpu table
 - [d3d.md](graphics/d3d.md): the guest-facing Direct3D 8 replacement (`crates/platform/d3d`): entries, device model, push buffer, render targets, vblank
+- [d3d-entries.md](graphics/d3d-entries.md): the D3D functions game code calls, with address, convention and status
+- [d3d-device.md](graphics/d3d-device.md): guest structures, device fields, state ordering, draws, batching, clears, swap, gamma ramp
+- [d3d-render-targets.md](graphics/d3d-render-targets.md): render-to-texture, write-back, depth levels, the overlapping-levels GPU mirror
+- [d3d-frame-buffers.md](graphics/d3d-frame-buffers.md): textures over the frame buffers and depth buffer, the copy pool, depth aliases
+- [d3d-caches.md](graphics/d3d-caches.md): texture cache, vertex cache and the invalidation contract
+- [d3d-timing.md](graphics/d3d-timing.md): vertical blank, fences, the busy check, push-buffer callbacks
+- [d3d-nv2a.md](graphics/d3d-nv2a.md): NV2A fragments and registers, port-I/O guards, boot path and stops
+- [d3d-visibility.md](graphics/d3d-visibility.md): visibility tests and lens flares
 - [framescene.md](graphics/framescene.md): design for `FrameScene` and a native renderer that owns the frame: the snapshot type, threads, 60/120 fps from two snapshots, the order D3D is cut and deleted, slices with tests and gates
+- [framescene-slices-0-2.md](graphics/framescene-slices-0-2.md): slices 0 to 2: agent methods, crates, scene stages
+- [framescene-slice-3.md](graphics/framescene-slice-3.md): slice 3: the opaque block, objects, lights and layer items in the scene
+- [framescene-layer-plan.md](graphics/framescene-layer-plan.md): slice 4: layer plan, the stage, skip rules, outcome counters
+- [framescene-late-passes.md](graphics/framescene-late-passes.md): slice 5: fog, water and post typed
+- [framescene-owner.md](graphics/framescene-owner.md): slice 6: carried census, sink, private draw, display owner
+- [framescene-display-rate.md](graphics/framescene-display-rate.md): slices 7 to 10: the blend, the loop, fractional grids
+- [framescene-parity.md](graphics/framescene-parity.md): the parity corpus, pixel bar and hash gate
+- [framescene-measure.md](graphics/framescene-measure.md): A/B, counters, pixel and hash run commands
+- [framescene-deletion.md](graphics/framescene-deletion.md): the deletion table and risks
 - [retire-d3d.md](graphics/retire-d3d.md): design for retiring the guest D3D path: what the native stages leave on D3D by caller, the residual census (`render.residual`), what replaces each guest render subsystem, the slices and the zero-residual gate before `crates/platform/d3d` is deleted
 - [shaders.md](graphics/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/formats/shaders`)
+- [shaders-pixel.md](graphics/shaders-pixel.md): the pixel side: combiners, final combiner, texture modes, HILO, COLORSIGN
+- [shaders-fog.md](graphics/shaders-fog.md): the NV2A fog unit and how D3D state maps to it
+- [shaders-shadow-maps.md](graphics/shaders-shadow-maps.md): depth-format textures as shadow maps
+- [shaders-testing.md](graphics/shaders-testing.md): the test map, conformance coverage and sources
 - [render-thread.md](graphics/render-thread.md): the render thread (on by default, `H2_RENDER_THREAD=0` turns it off): what the guest can observe
 - [render-loop.md](graphics/render-loop.md): the view and pass loops of the retail renderer read, and the render-state list ported to Rust
 - [occlusion-culling.md](graphics/occlusion-culling.md): how a view's objects are chosen, the per-object skip point, and the game's W-buffer scale
 - [layer-draw.md](graphics/layer-draw.md): the layer draw and its entry loop, read and ported, with the `render-timing` breakdown
 - [hot-iteration.md](graphics/hot-iteration.md): live tag edits (`edit.*`) and hot WGSL overrides, parameters and toggles for the host renderer (`render.*`), without a rebuild or restart
 - [high-resolution.md](graphics/high-resolution.md): native and fixed output sizes, per-axis raster scaling, and widescreen projection
+- [high-resolution-widescreen.md](graphics/high-resolution-widescreen.md): widescreen projection, menu and HUD fit, gather lens, ocean grid
+- [high-resolution-prior-art.md](graphics/high-resolution-prior-art.md): xemu and Halo-2-HD scaling approaches
 - [native-renderer.md](graphics/native-renderer.md): the native GPU renderer (`impl.render.native`, `crates/rewrites/native-render`): the frame, the stages and how a frame is checked
+- [native-renderer-admission.md](graphics/native-renderer-admission.md): the `DrawAdmission` and external-pass contract, refusals
 - [Shader animation writes at draw time](graphics/notes/2026-11-24-shader-constant-animation.md) traces the pixel and vertex constant bindings.
 - [HUD shader selection and constant upload](graphics/notes/2026-11-24-hud-shader-setup.md) traces bitmap and glyph shader setup.
 - [Retail lens-flare draws](graphics/notes/2026-11-24-lens-flares.md) traces the visibility callback, reflections and intermediate filter targets.
 - [native-visibility.md](graphics/native-visibility.md): visibility and the main view's records in Rust (retire-d3d R4): every mode's clusters and objects, the window frusta, the light views, compared with the guest's and carried by default
 - [native-world.md](graphics/native-world.md): native renderer stage 1: the static world
+- [native-world-materials.md](graphics/native-world-materials.md): how a world material layer-3 pass is translated and refused
+- [native-world-live.md](graphics/native-world-live.md): reconstructed display lightmaps and live editor edits
+- [native-world-walk.md](graphics/native-world-walk.md): stage 1b: other world layers, the BSP scene walk, counters
 - [native-objects.md](graphics/native-objects.md): native renderer stage 2: objects and skinning
+- [native-objects-fade.md](graphics/native-objects-fade.md): the fade byte, shader flag bit 0 and structure parameters
+- [native-objects-first-person.md](graphics/native-objects-first-person.md): first-person cut, items, effects, drops, tests
+- [native-objects-programs.md](graphics/native-objects-programs.md): object shading, lighting, programs, render state, streams
 - [native-decorators.md](graphics/native-decorators.md): native decorators: the BSP's model decorators typed into the scene and drawn instanced
 - [native-transparents.md](graphics/native-transparents.md): native renderer stage 3: transparents
 - [Map-load memory](graphics/notes/2026-11-24-map-load-memory.md): menu and multiplayer load measurements
 - [Campaign frame time and retained render state](graphics/notes/2026-11-24-campaign-frame-time.md): play-run observations and source audit
 - [native-lights.md](graphics/native-lights.md): native renderer stage 4: lights and shadows
+- [native-lights-constants.md](graphics/native-lights-constants.md): the light constants and lights over the native world
 - [native-light-gather.md](graphics/native-light-gather.md): the light gather, the first-person lights, the object shadows and the light passes as Rust bodies (design, retire-d3d R3): the model, the guest state per step, the slices and their checks
+- [native-light-gather-checks.md](graphics/native-light-gather-checks.md): light gather counters, tests, live checks and refusals
 - [native-water-fog.md](graphics/native-water-fog.md): native renderer stage 4b: water, fog and camouflage
 - Retail menu widget reads cover [text](graphics/notes/2026-11-24-menu-text.md), [scroll arrows and buttons](graphics/notes/2026-11-24-menu-list-button.md) and [model selection](graphics/notes/2026-11-24-menu-model-selection.md).
 - [native-post-hud.md](graphics/native-post-hud.md): native renderer stage 5: post and HUD
+- [native-post-frame.md](graphics/native-post-frame.md): where post and the HUD sit in the frame
+- [native-post.md](graphics/native-post.md): colour pass glow, post admission, hooks, native glow
+- [native-screen-effects.md](graphics/native-screen-effects.md): scenario screen effects: evaluator, plans, convolutions
+- [native-ui-producers.md](graphics/native-ui-producers.md): UI and HUD draw primitives and the producers Rust reads
+- [native-hud-overlay.md](graphics/native-hud-overlay.md): HUD bitmaps, text, shader state and glyph pages
+- [native-menus-overlay.md](graphics/native-menus-overlay.md): menus, bitmap widgets, fade, bars, loading screen, dialog blur
 - [native-shadows.md](graphics/native-shadows.md): native shadows: caster enumeration, projection, and the interface to the light graph
 - [native-shadow-layers.md](graphics/native-shadow-layers.md): shadow layers 10, 11 and 14 drawn from the scene's gathered groups (design): the compiler from tags, the raster state, the guest targets and the object filter, the slices and their checks
 - [native-gels.md](graphics/native-gels.md): native shader gel quads through `DrawAdmission`
 - [native-particles.md](graphics/native-particles.md): native particles, contrails, beams and the other immediate effects
 - [native-decals-research.md](graphics/native-decals-research.md): native decals: the dynamic decal path read from the guest code and its draw admission
 - [e3-lighting.md](graphics/e3-lighting.md): E3 2003-style lighting on the native renderer over FrameScene (design): sun shadows from objects, the renderer's own choice of lights, shadows from every cone light, the sharp edge, the budget and the slices; retail light-path findings
-- [e3-lighting-setting.md](graphics/e3-lighting-setting.md): the Lighting row as built on the D3D path (`H2_LIGHTING`, scaled one-tap shadow maps in the view)
+- [e3-lighting-target.md](graphics/e3-lighting-target.md): the target look, its sources and evidence labels
+- [e3-lighting-sun.md](graphics/e3-lighting-sun.md): sun shadows from objects
+- [e3-lighting-lights.md](graphics/e3-lighting-lights.md): choice of lights, the flashlight, the first-person pass
+- [e3-lighting-cones.md](graphics/e3-lighting-cones.md): shadows from local lights: guest tiles and renderer cones
+- [e3-lighting-setting.md](graphics/e3-lighting-setting.md): the Lighting row on the D3D path (`H2_LIGHTING`, scaled one-tap shadow maps in the view)
 - [pstencil.md](graphics/pstencil.md): the Digsite E3 tag set's lights (study copies, never committed), corrections to earlier readings of them, and why shadows stay shadow maps rather than stencil volumes
 - [pstencil-history.md](graphics/pstencil-history.md): the history of the cut E3 2003 stencil lighting from public sources: how it worked, why it was cut, where to see it, and the look to tune against (§4)
 - Notes: [e3-lighting.md](graphics/notes/e3-lighting.md) (shadow-prototype timings, in-level Lighting runs, the budget arithmetic and the reading of Sev's shaders), [editor-guest-reads.md](graphics/notes/editor-guest-reads.md) (which of the renderer's guest reads are tag data and which are run state), [decorator-stages.md](graphics/notes/decorator-stages.md) (the lightmap page a decorator samples and what engine-driven states need), [native-ab.md](graphics/notes/native-ab.md) (the all-native A/B record behind the native renderer defaults), [not-adopted.md](graphics/notes/not-adopted.md) (removed render switches and experiments that lost), [pipeline-cache.md](graphics/notes/pipeline-cache.md) (the unbounded pipeline-cache prewarm that ran out of memory at boot), [pipelined-render.md](graphics/notes/pipelined-render.md) (pipelined rendering: census, prototype and measurements), [render-thread.md](graphics/notes/render-thread.md) (render thread measurements), [scene-pass-timing.md](graphics/notes/scene-pass-timing.md) (scene pass timing)
+- More notes: [2026-11-pstencil-research](graphics/notes/2026-11-pstencil-research.md) (pstencil research record: library, recovery, sources), [d3d-caches](graphics/notes/d3d-caches.md) (vertex cache measurements and visibility polling), [high-resolution-seams-and-text](graphics/notes/high-resolution-seams-and-text.md) (glyph filter, seam pixels and BSP crack survey), [live-gi-technique](graphics/notes/live-gi-technique.md) (live GI technique costs and ray-query reads), [merged-passes](graphics/notes/merged-passes.md) (merged-pass evidence), [native-objects-resources](graphics/notes/native-objects-resources.md) (shared program resource counts), [pipeline-compile-cost](graphics/notes/pipeline-compile-cost.md) (Metal pipeline compile cost), [pipelined-render-census](graphics/notes/pipelined-render-census.md) (pipelined rendering: census and dependency tables), [pipelined-render-prototype](graphics/notes/pipelined-render-prototype.md) (pipelined rendering: prototype, faults, measurements), [render-state-skip](graphics/notes/render-state-skip.md) (render-state skip rates), [shaders-corpus](graphics/notes/shaders-corpus.md) (retail shader corpus counts)
 - [relighting-review.md](graphics/relighting-review.md): bake one lamp on the owner’s disc and compare three captures from a pinned frame
 - [dynamic-lighting.md](graphics/dynamic-lighting.md): design (investigation) for an opt-in live sun over the baked lightmaps: what lighting data the disc holds, the approaches with costs on an M3 at 4x, the offline lightmap split, what FrameScene carries, and the slices
 - [live-gi.md](graphics/live-gi.md): design for the `dynamic` mode's indirect light computed every sim tick: the technique choice with costs on an M3 at 4x, wgpu's Metal ray queries as built, transport traced offline and relit live, the fit to the retail lightmap and the fill, objects, leaks and caches, the engine shared with E3 lighting, the slices and the go or stop checkpoint
@@ -171,6 +260,7 @@ are under [Reviews](#reviews).
 ## Engine (`engine/`)
 
 - [engine-map.md](engine/engine-map.md) (**start here**): survey of the retail engine's subsystems and where to start overriding
+- [engine-map-formats.md](engine/engine-map-formats.md): the engine map's data layouts: collision and physics models, UI tags, animation graphs, effects, objects and shaders
 - [feature-engine.md](engine/feature-engine.md): the feature engine: Rust subsystems at clean boundaries, hooks, settings; what is built and what is design
 - [guest-layout.md](engine/guest-layout.md): `crates/hooking/guest-layout`: guest structure offsets and globals, the `impl.*` switch table, hook point shapes
 - [anim-sampling.md](engine/anim-sampling.md): animation sampling in Rust (`sim-anim`) behind `impl.sim.native.anim`: the contract, the decoded clips and the disc sweep
@@ -182,6 +272,10 @@ are under [Reviews](#reviews).
 - [first-person-filters.md](engine/first-person-filters.md): the first-person seat and weapon-slot update `166d75`, including the inline axis filter `11eed0`
 - [sim-effects.md](engine/sim-effects.md): phase 6 effects, particles, contrails and decals ports behind `impl.sim.native.effects`, and their parity arm
 - [object-update.md](engine/object-update.md): the object update's contracts read from the lifted code (callouts, flag setters, register liveness) and how the phase 3 bodies behind `impl.sim.native.objects` keep them
+- [object-update-bodies-core.md](engine/object-update-bodies-core.md): the object update bodies of slices 0, 1, 3 and 4 (walks, function values, post-update shell)
+- [object-update-bodies-types.md](engine/object-update-bodies-types.md): the bodies of slices 8, 11, 5 and 6b (damage, small types, lights, unit state)
+- [object-update-bodies-units.md](engine/object-update-bodies-units.md): the bodies of the unit, weapon, vehicle and biped updates
+- [object-update-liveness.md](engine/object-update-liveness.md): register liveness over every object update entry and call site
 - [sim-review.md](engine/sim-review.md): typed simulation state and the experimental leaf compiler contract
 - [sim-tier-experiment.md](engine/sim-tier-experiment.md): the sim-tier experiment: the tick's leaves compiled under a looser contract (`emit::sim`), checked against the interpreter and timed against the hand ports
 - [sim-tier-writes.md](engine/sim-tier-writes.md): a static census of every store the game tick can make
@@ -189,12 +283,15 @@ are under [Reviews](#reviews).
 - [shadow-exec.md](engine/shadow-exec.md): shadow execution: native ports checked against the lifted original on the states the game reaches (`shadow.*`, `scripts/shadow-gate.sh`), and the shared `lifted` crate
 - [havok-runtime.md](engine/havok-runtime.md): how the retail game keeps its Havok world in guest memory: world, islands, bodies, shapes, contacts, agents
 - [collision-queries.md](engine/collision-queries.md): the native collision world behind `impl.sim.native.collision`: entries, contract and bail reasons
+- [collision-queries-entries.md](engine/collision-queries-entries.md): the per-entry contracts of the collision queries (E, F, G, H, I, J) and the sphere pretest
 - [asset-store.md](engine/asset-store.md): the asset store (slices AS1 to AS5 built, not run on the disc): every disc tag extracted once into a shared, deduplicated store; levels assembled from it as images and extents; assets by hash; mods as packages of patches and new assets; `LevelId`
+- [asset-store-packages.md](engine/asset-store-packages.md): how packages lay over the asset store, conflicts, and level identity on the network and in films
+- [asset-store-plan.md](engine/asset-store-plan.md): the asset store's risks, build slices, decisions and evidence
 - [sim-rewrite.md](engine/sim-rewrite.md): plan for rewriting the simulation as Rust subsystems (not built), with the phase specs [sim-rewrite-collision.md](engine/sim-rewrite-collision.md) (phase 2), [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) (phase 3) and [sim-rewrite-havok.md](engine/sim-rewrite-havok.md) (phase 4), whose contract page is [havok-step.md](engine/havok-step.md)
 - [sim-world.md](engine/sim-world.md): the native simulation's `World`: salted slot pools, canonical save and restore, the incremental hash and the shared RNG (`sim-world`)
 - [effects-parts.md](engine/effects-parts.md): the effect part split behind `impl.sim.effects-parts`: damage parts as sim state in the hash, decal, light and lens flare parts as events for the renderer (`sim-effects`, `sim-bridge`)
 - [sound-sim.md](engine/sound-sim.md): the native sound simulation behind `impl.sim.sound-events`: sounds as records with end ticks computed from the tag, no voice state, the host mixer fed from events (`sim-sound`, `sim-bridge`)
-- Notes: [2026-11-21-engine-vtables.md](engine/notes/2026-11-21-engine-vtables.md) (the retail game engines' vtables and the slots that make rules), [2026-11-22-script-scoring-and-roles.md](engine/notes/2026-11-22-script-scoring-and-roles.md) (the carriers' scoring sites, Juggernaut's role and Oddball's ball return, for script games), [2026-11-23-round-start-and-player-quit.md](engine/notes/2026-11-23-round-start-and-player-quit.md) (the round reset and the player-left notice that deliver `on round_start` and `on quit`), [2026-11-27-next-round.md](engine/notes/2026-11-27-next-round.md) (the round end with the game going on, behind `next_round`), [2026-11-27-forge-spawner-rows.md](engine/notes/2026-11-27-forge-spawner-rows.md) (the netgame item state behind Forge's Spare clips, and why Place at start and Weight have no row), [2026-11-27-sound-events-parity.md](engine/notes/2026-11-27-sound-events-parity.md) (the sound events switch off against on, identical over a Firefight run), [feature-engine.md](engine/notes/feature-engine.md) (feature engine and engine contracts evidence)
+- Notes: [2026-11-21-engine-vtables.md](engine/notes/2026-11-21-engine-vtables.md) (the retail game engines' vtables and the slots that make rules), [2026-11-22-script-scoring-and-roles.md](engine/notes/2026-11-22-script-scoring-and-roles.md) (the carriers' scoring sites, Juggernaut's role and Oddball's ball return, for script games), [2026-11-23-round-start-and-player-quit.md](engine/notes/2026-11-23-round-start-and-player-quit.md) (the round reset and the player-left notice that deliver `on round_start` and `on quit`), [2026-11-27-next-round.md](engine/notes/2026-11-27-next-round.md) (the round end with the game going on, behind `next_round`), [2026-11-27-forge-spawner-rows.md](engine/notes/2026-11-27-forge-spawner-rows.md) (the netgame item state and spawn weighing behind Forge's Spare clips and Weight, and what Place at start needs), [2026-11-27-sound-events-parity.md](engine/notes/2026-11-27-sound-events-parity.md) (the sound events switch off against on, identical over a Firefight run), [feature-engine.md](engine/notes/feature-engine.md) (feature engine and engine contracts evidence)
 
 ## Game features and enhancements (`game/`)
 
@@ -203,36 +300,76 @@ are under [Reviews](#reviews).
 - [teabag.md](game/teabag.md): teabags in every game (two crouches over a fresh body), the `Teabag` event and the Incel medal for a game without one
 - [pogo-stick.md](game/pogo-stick.md): Superbounce's Pogo Stick: a weapon of our own in three looks built from the `pogo` package (`content/pogo/`) into each multiplayer map, the secondary weapon by a script option, carried on the ground and ridden in the air with a trick for each bounce of a chain, the chase camera, `pogo.state` and `pogo.test`
 - [superbounce.md](game/superbounce.md): how a superbounce happens: a landing in a floor crease next to a seam, the Havok push, the forced-crouch and crouch-height code, per-tick traces on Ascension; the scan for spots in a map's collision (`h2 superbounce scan`); the bounce medals (design)
+- [superbounce-spots.md](game/superbounce-spots.md): Where bounces and crouch spots are in the map geometry.
+- [superbounce-game-type.md](game/superbounce-game-type.md): The superbounce game type: targets and the second bounce.
+- [superbounce-guide.md](game/superbounce-guide.md): The approach guide, the HUD options, the hold-X fall assist, the flight model and what is open.
+- [superbounce-landings.md](game/superbounce-landings.md): Charge, crouch spots, landings, floor marks, lock-on and how spots are verified.
+- [superbounce-ghosts-medals.md](game/superbounce-ghosts-medals.md): Ghost runs, the medals, recording and the bounce view.
 - [aim-assist.md](game/aim-assist.md): the Aim Assist setting (Auto, Default, Strong, Very Strong), the weapon and globals fields it scales at map load
 - [ui-builder.md](game/ui-builder.md): the UI builder for native screens: pages as pure state machines, one `View` drawn offline from the disc, layout checks, the fidelity loop against game captures
+- [ui-builder-dialogs.md](game/ui-builder-dialogs.md): The modal dialog, panel texts and the Dialog kind.
+- [ui-builder-settings-dialog.md](game/ui-builder-settings-dialog.md): The settings dialog, the value picker, a page header, Game Setup picture and description, Quick Options and behaviour.
+- [ui-builder-yaml-editor.md](game/ui-builder-yaml-editor.md): Screens in YAML, the design system, the layout gallery, editing in the editor and retail-screen fidelity.
 - [ui-screens.md](game/ui-screens.md): the UI kit for list screens of ours: ids, input, previews, the checklist
 - [ui-in-maps.md](game/ui-in-maps.md): our screens as generated `wgit` tags in the mainmenu and shared maps, listed in the `wgtz`, cached by disc map and docs hash
 - [hud-kit.md](game/hud-kit.md): the HUD kit (design): what Halo 2's HUD is made of (widgets, messages, training prompts, colours, fonts, anchors), HUD elements of ours drawn by the game's own HUD code, `h2 hud preview` and its checks, the superbounce HUD rebuilt on it
+- [hud-kit-how-it-works.md](game/hud-kit-how-it-works.md): The mechanism: how the kit builds and draws the HUD.
+- [hud-kit-preview-superbounce.md](game/hud-kit-preview-superbounce.md): The preview and the checks, and the superbounce HUD built on the kit.
+- [hud-kit-readout-interfaces.md](game/hud-kit-readout-interfaces.md): The superbounce readout, the scripted objective HUD, interfaces, rules, evidence and the build plan.
 - [skulls.md](game/skulls.md): campaign skulls per profile, the skulls menu, and our own skulls
+- [skulls-modes.md](game/skulls-modes.md): Where each effect lives, and how skulls work in multiplayer and Firefight.
+- [skulls-ours.md](game/skulls-ours.md): The skulls we add, and what is not verified.
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants
 - [game-options.md](game/game-options.md): game variant options retail doesn't allow (no-weapon starts, instant respawn, gravity) and names with any character (design)
+- [game-options-extension.md](game/game-options-extension.md): The option extension.
+- [game-options-names-tests.md](game/game-options-names-tests.md): Names with any character, tests and open items.
 - [maps.md](game/maps.md): map packages, patches applied at load, separate mod slots, and Live downloads
+- [maps-new-maps.md](game/maps-new-maps.md): New maps and the Map Pack.
+- [maps-sharing.md](game/maps-sharing.md): Sharing map layers through Live.
+- [maps-saving.md](game/maps-saving.md): Saving packages from the editor, and what is not verified.
 - [test-maps.md](game/test-maps.md): test maps from recipes (spawn grid, weapon range, superbounce patch...), built from the disc and loaded through the agent API's `maps.test.*`
 - [bots.md](game/bots.md): Clanker navigation, beliefs, personality, phantom seats, appearance, player options, and Clankermatch
+- [bots-perception-navigation.md](game/bots-perception-navigation.md): Perception and navigation
+- [bots-decision-aim.md](game/bots-decision-aim.md): Decisions, aim and emotes
+- [bots-weapons-objectives.md](game/bots-weapons-objectives.md): Weapons and objectives
+- [bots-glitches.md](game/bots-glitches.md): Glitches
+- [bots-bounce-practice.md](game/bots-bounce-practice.md): Practising and driving bounces
+- [bots-vehicles-firefight.md](game/bots-vehicles-firefight.md): Vehicles and Firefight
+- [bots-local-slots.md](game/bots-local-slots.md): Way in 1, local slots
+- [bots-phantom-peers.md](game/bots-phantom-peers.md): Way in 2, phantom peers
+- [bots-phantom-runtime.md](game/bots-phantom-runtime.md): Phantom runtime and custom games
+- [bots-clankermatch.md](game/bots-clankermatch.md): Clankermatch
+- [bots-server.md](game/bots-server.md): The server interface
+- [bots-stages.md](game/bots-stages.md): Stages
+- [bots-game-run.md](game/bots-game-run.md): Game runs and testing
 - [bot-training.md](game/bot-training.md): tuning the Clanker table from sim matches: what is searched, the fitness against people, throughput, the admin's Training views and promoting a table (design)
 - [bounce-search.md](game/bounce-search.md): the bots learn each superbounce spot by a per-spot knob search in headless sims (design): the knobs, the search, `<map>.learned`, `h2 sim train`
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
+- [map-pack-playing.md](game/map-pack-playing.md): How the maps play on 1.0, why the game said the content was damaged, and playing the map pack on 1.0.
 - [map-select.md](game/map-select.md): Change Map categories for Halo 2, Map Pack, Mods and Halo: CE, with separate retail and mod slots
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps with the 30 Hz tick exact (`H2_FPS`): the determinism harness and display frames between two scenes (built, not yet run in game)
 - [theater.md](game/theater.md): the in-game film library, host-film playback and seeking, with real-host verification pending
+- [theater-research.md](game/theater-research.md): How Halo 3 Theater works and whether Halo 2 fits, recording, playback, event view, risks and research points.
 - [Theater seek measurements](game/notes/theater-seek.md): cold launch, keyframe capture and tape size procedure
 - [film-format.md](game/film-format.md): the `.h2film` container a host records and Theater replays: layout, keyframes, seeking, determinism checks
+- [film-format-container.md](game/film-format-container.md): The version 3 container, keyframes, determinism, event records, size targets and live storage.
 - [forge.md](game/forge.md): what Halo 3's Forge is and what retail Halo 2 has for one to sit on: placement blocks, the netgame equipment spawner, object creation
 - [forge-design.md](game/forge-design.md): Forge documents, edit logs, local map builds and the design for in-game tools and sharing
+- [forge-design-features.md](game/forge-design-features.md): The Forge feature list, its UI, interfaces, rules and risks.
+- [forge-design-slices.md](game/forge-design-slices.md): The build slices, decisions, evidence and open items.
 - [Forge probes](game/notes/forge-probes.md) records the runtime measurement procedure and results for Forge.
 - [forge-features.md](game/forge-features.md): design for each Forge feature: monitor bodies, objects, links and triggers, emitters, barriers, nav, AI, geometry and paint, character import (not built)
 - [forge-monitor-appearance.md](game/forge-monitor-appearance.md): design for what a Forge monitor looks like: its model from the disc, colours, tint and light, the picker and preview, how a session agrees on it, and how Theater shows it (not built)
+- [forge-monitor-appearance-contract.md](game/forge-monitor-appearance-contract.md): Interfaces, rules, slices, decisions, evidence and open items.
 - [ai-networking.md](game/ai-networking.md): AI actors in network games: host actors in the distributed model, the synchronous model for campaign, what retail replicates, the actor channel, budgets, probes and slices
+- [ai-networking-budgets.md](game/ai-networking-budgets.md): Budgets, join in progress, Theater, determinism, Forge, interfaces, probes and slices.
 - [firefight.md](game/firefight.md): Firefight: waves of AI on multiplayer maps for up to 16 players, the director, the offline map kit, wave-set definitions and the design for scoring, lives, skulls and Live
 - [forge-nav.md](game/forge-nav.md): Forge's Generate nav: the bots' mesh with the placed objects merged in, its problems and their marks (partly built)
 - [forge-editing.md](game/forge-editing.md): what a Forge monitor can do, after Halo 3, Reach and Infinite: controls, tools, snapping and Coordinates, the object menu, properties by kind, groups and prefabs (partly built)
 - [gametype-markers.md](game/gametype-markers.md): the markers Forge and Studio draw for a game type's parts (spawns, flag and bomb places, hills, territories, teleporters, item spawns, volumes, script labels) from one generated set (`game_markers`), and the area of a hill or a site as a radius or a dropped path that a script's zone reads (design; the set and the area model are built)
+- [gametype-markers-drawing.md](game/gametype-markers-drawing.md): Drawing, editing, the agent API, rules, slices and evidence.
 - [forge-blockout.md](game/forge-blockout.md): design for Forge block-out (slice F8): pieces from a definition in the document (block, ramp, wedge, stairs, cylinder, arch), sizes on a power-of-two grid of units, generated `bloc`, `coll`, `phmo` and `mode` tags, the seeded natural set of rocks textured from the map's own shaders, the code-drawn dev textures with a size label on each face, Dev view, slots and slices BO1 to BO12 (design)
+- [forge-blockout-set.md](game/forge-blockout-set.md): The natural set, the dev textures, the monitor, interfaces, rules, slices and evidence.
 - [gametype-marker-forms.md](game/gametype-marker-forms.md): design for the markers' icons on a plate, the edit form and the play form of each kind (capture plate, plant zone, portal, boundary), box and sphere areas, and what shows in a match, slices MK10 to MK16 (design)
 - [forge-map-variants.md](game/forge-map-variants.md): design for Forge as a scenario editor: edits of the map's own placements named by identity with a print, the fields by kind, game types, the map variant file, how a lobby, a playlist entry and a game variant name one, materialising, Live, the named refusals, slices (design)
 - [forge-map-variants-ui.md](game/forge-map-variants-ui.md): design for that editor's UI on the kits: Properties rows by kind from a YAML doc, the bottom-left readout, world marks, the budget, the map variant save, load and rename screens, previews, slices (design)
@@ -243,12 +380,17 @@ are under [Reviews](#reviews).
 - [game-types-without-carriers.md](game/game-types-without-carriers.md): design for game types as rules scripts with no retail game type under them: what the `carrier` supplies today and what replaces each part, the `type` line (menu row, start line, what a point is), one scoring model, objectives owned by the script, retail records, an index of ours with the four retail paths answered natively and no retail engine object, Firefight and Siege maps made in Forge or Studio with AI ground built on demand, the engine reads needed and the slices
 - [rules-engine.md](game/rules-engine.md): scripted game types: a typed rules language and Forge's logic graph compiled to one verified IR, a host-only VM over named engine entries, script ports of the seven retail engines (design)
 - [rules-language-types.md](game/rules-language-types.md): the rules language with Forge labels as declared, typed names and map requirements; nullable handles with narrowing, `time`, `zone` and `weapon` types, `match`, constants; diagnostics with fixes; the IR's label table; the slices (design)
+- [rules-language-types-tooling.md](game/rules-language-types-tooling.md): Diagnostics and the editor, the workbench, the IR and the implementation plan.
 - [rules-start-gate.md](game/rules-start-gate.md): a map that breaks a script's label requirements blocks the game: the check in the lobby, on the host at game start and on Live's hopper edits (design)
 - [rules-variants.md](game/rules-variants.md): a game variant as one rules script: the `settings` block for record settings, `quick` marks for the lobby's Quick Options, `type` and `uses`, the community variants as scripts in place of the Rust table, the slices (design)
 - [rules-world-api.md](game/rules-world-api.md): the world API for rules scripts: who runs a script in each session kind, the authenticated show channel for HUD, messages and sounds, entries for objects, drop ships, AI squads, bots, audio, HUD and physics, security and limits, per-entry costs and bench gates, splitting a script, the slices (design)
+- [rules-world-api-reference.md](game/rules-world-api-reference.md): The world API.
+- [rules-world-api-limits.md](game/rules-world-api-limits.md): Firefight and Superbounce as scripts, splitting a script, security, performance and the plan.
 - [rules-world-limits.md](game/rules-world-limits.md): the world API's security, limits and performance: what an attacker controls in each direction, verifier refusals, caps on every write, the show channel's validation, the hopper gate, a property test per entry, per-entry costs and bench gates (design)
 - [rules-world-modes.md](game/rules-world-modes.md): Firefight and Superbounce as plain scripts over the world API: what each needs, what is engine code today, a sketch of each, and when the Rust oracles go (design)
 - [theater-design.md](game/theater-design.md): design for the full in-game Theater: stats is the summary and the film is the simulation; rewind and jumps from the session ring and the game start, cameras, clips, sharing through Live and the web-to-game link; slices in build order (design)
+- [theater-design-recording-playback.md](game/theater-design-recording-playback.md): How a film is recorded and played back.
+- [theater-design-interfaces.md](game/theater-design-interfaces.md): Numbers, interfaces, slices, rules, evidence and risks.
 - [input-film.md](game/input-film.md): what a film holds (seed, per-seat inputs, joins, digests), every host answer replay depends on, the Halo 3 reference, the column encoding, sizes and memory (design)
 - [Vehicle actions and Havok transforms](game/notes/2026-11-24-vehicle-actions.md) (retail traces for rules research R6 and R7)
 - Notes: [not-adopted.md](game/notes/not-adopted.md) (game designs built and removed), [2026-11-26-forge-loose-ends.md](game/notes/2026-11-26-forge-loose-ends.md) (static traces for the Forge loose ends: the arming bits, the weapon reserve, the spawn weight), [2026-11-24-game-type-engine-reads.md](game/notes/2026-11-24-game-type-engine-reads.md) (the engine reads for game types without carriers: the start line, the list's filing, the post-game, carried objectives, the four index paths, the clean-up's and protocol map's answers), [2026-11-26-firefight-class-census.md](game/notes/2026-11-26-firefight-class-census.md) (which retail maps hold each Firefight class's character, by tag name), [2026-11-23-firefight-kit-headroom.md](game/notes/2026-11-23-firefight-kit-headroom.md) (where the Firefight kit's tag memory goes on Zanzibar and the other large maps), [2026-11-22-retail-settings-dialogs.md](game/notes/2026-11-22-retail-settings-dialogs.md) (where retail's settings dialogs put the window's line and a setting's help), [high-framerate.md](game/notes/high-framerate.md) (prior art and measurements for 60 and 120 fps), [halo3-film.md](game/notes/halo3-film.md) (Halo 3's saved film layout and sizes, from public sources), [ai-networking.md](game/notes/ai-networking.md) (what retail's distributed replication carries, read from the image)
@@ -297,18 +439,33 @@ Reading and converting Halo 1 data:
 ## Xbox Live (`live/`)
 
 - [live.md](live/live.md) (**start here**): the Xbox Live replacement: overview, CLI, service and every client HLE section
+- [live-pieces.md](live/live-pieces.md): the pieces: the server, protocol and client parts and where each lives
+- [live-client-hle.md](live/live-client-hle.md): client HLE: sign-in, sockets, System Link, service logon
+- [live-client-hle-services.md](live/live-client-hle-services.md): client HLE: feedback, mute list, bans, storage, stats, messages
+- [live-client-hle-offline.md](live/live-client-hle-offline.md): client HLE: Live not set up, invitations, sessions, teams
 - [live-api.md](live/live-api.md): the service's HTTP and WebSocket contract
+- [live-api-events.md](live/live-api-events.md): events and read endpoints
+- [live-api-theater-stats.md](live/live-api-theater-stats.md): theater, stats, medals and clanker training
+- [live-api-sessions.md](live/live-api-sessions.md): sessions, invites, sign-ins and hosts
+- [live-api-social.md](live/live-api-social.md): friends, teams, moderation, saves and the co-op relay
+- [live-api-content.md](live/live-api-content.md): custom maps, rules scripts and game variants
+- [live-api-details.md](live/live-api-details.md): game art, clarifications, account details, ranks and arbitration
 - [live-security.md](live/live-security.md): identity, signing, token checks, recovery, rate limits and the federation design
 - [live-cloud-saves.md](live/live-cloud-saves.md): cloud saves: profiles, variants, campaign saves and profile settings follow the account; the merge and conflict rules
 - [live-admin.md](live/live-admin.md): who may publish title files, and the web MOTD editor and playlist builder
+- [live-admin-api.md](live/live-admin-api.md): the admin API
+- [live-admin-moderation.md](live/live-admin-moderation.md): custom content moderation, reports and bans
 - [web-boundary.md](live/web-boundary.md): what goes on the dashboard and what on the stats site, and the dashboard's dense style for admin and ops screens
 - [web-app.md](live/web-app.md): the Live web app: its pages, the mock server and its `H2_MOCK_*` knobs, derived stats, sign-up, social features, link previews and the state architecture
+- [web-app-pages.md](live/web-app-pages.md): the web app's pages, one by one
 - [web-viewer.md](live/web-viewer.md): the web app's optional game art and the game page's 2D map and 3D viewer
 - [viewer-overlay.md](live/viewer-overlay.md): the 3D view's opening camera, Halo 2-style overlay, name tags and progressive reveal (design only, not built)
+- [viewer-overlay-layers.md](live/viewer-overlay-layers.md): the overlay, name tags and progressive reveal
 - [viewer-effects.md](live/viewer-effects.md): how damage reads in the viewer, and its combat effects: shields, explosions, impacts, melee, teleporters and deaths, what each derives from and the new telemetry two need (design only, not built)
 - [Telemetry cost](live/notes/2026-11-19-telemetry-cost.md): frame sizes and CPU per version, with the benchmark commands.
 - [Replay: the original 1 Hz recording](live/notes/2026-11-18-replay-original-1hz.md): stage rates, fields and sizes of the first recording.
 - [Live Worker rehearsal](live/notes/2026-11-18-worker-rehearsal.md): the migration rehearsal on a copy of the real log.
+- [Live Worker slice measurements](live/notes/2026-11-18-worker-slice-results.md): cold start, stream, ingest, upload and relay timings under local `wrangler dev`.
 - [MOTD first reading](live/notes/2026-11-16-motd-first-reading.md): the superseded XONLINE call-chain reading, kept for its addresses.
 - [Dedicated host measurements](live/notes/host-halving.md): the evidence for halving the dedicated host.
 - [Telemetry precision and replay measurements](live/notes/2026-11-19-telemetry-precision.md) for the Live v8 stream: the workload, byte counts per player and the finished-archive limits.
@@ -316,20 +473,40 @@ Reading and converting Halo 1 data:
 - [dash-concepts.md](live/dash-concepts.md): the Live dashboard as it is now: the orb, the menu blades, the Games screen and its Halo 2 panel
 - [live-hosting.md](live/live-hosting.md): hosting a server for friends (Cloudflare Tunnel, docker compose)
 - [live-worker.md](live/live-worker.md): the Live service on Workers, Durable Objects and R2, including the game header and cutover runbook
+- [live-worker-deploy.md](live/live-worker-deploy.md): deploy, cutover runbook and rollback
+- [live-worker-slices.md](live/live-worker-slices.md): build slices and how to build and run the Worker locally
 - [dedicated-host.md](live/dedicated-host.md): native game hosting, zero-local trial, light host, cloud choices and Ranked telemetry design
+- [dedicated-host-light.md](live/dedicated-host-light.md): the light host
+- [dedicated-host-ops.md](live/dedicated-host-ops.md): game data bundle, routing, tunnel, playerless lobby and the Fly provider
 - [dedicated-host-build.md](live/dedicated-host-build.md): the shared contract of the parallel dedicated-host build: the slim host, contracts and file ownership
 - [host-halving.md](live/host-halving.md): dedicated host resource profiles, pack admission and fleet sizing, measurement gates and the proposed template start
 - [live-boundary.md](live/live-boundary.md): static inventory of the retail XOnline/XNet entry points and the sign-in sequence
 - [live-motd.md](live/live-motd.md): how retail fetches and parses `message_of_the_day.dat` and `multiplayer_hopper.dat`
 - [live-matchmaking.md](live/live-matchmaking.md): sessions, invites, arbitration, the Ranked page and ping-aware host selection in progress
+- [live-matchmaking-hoppers.md](live/live-matchmaking-hoppers.md): the hopper file, field by field
+- [live-matchmaking-search.md](live/live-matchmaking-search.md): OptiMatch search and ping-aware assignments
+- [live-matchmaking-ranks.md](live/live-matchmaking-ranks.md): ranks: what the game does and what the server does
 - [live-custom-games.md](live/live-custom-games.md): the custom games browser, filters, visibility and joining
 - [live-coop.md](live/live-coop.md): campaign co-op over Live: options, decisions, and what is built and probed (Co-op over Live built and confirmed in the game)
+- [live-coop-lockstep.md](live/live-coop-lockstep.md): the retail engine, lockstep below the game and the settings layer
+- [live-coop-crate.md](live/live-coop-crate.md): the coop crate, the probe and the retail lobby
+- [live-coop-test.md](live/live-coop-test.md): `h2 coop test`, one command on one Mac
+- [live-coop-join.md](live/live-coop-join.md): more than two players and join in progress
+- [live-coop-live.md](live/live-coop-live.md): co-op over Live, latency and prediction
 - [live-voice.md](live/live-voice.md): voice chat, voice messages and the mute list: how the title does voice, and the host design (design only, not built)
+- [live-voice-host.md](live/live-voice-host.md): voice host design
 - [live-gamestate.md](live/live-gamestate.md): retail game-state addresses and layouts for the scoreboard and map
+- [live-gamestate-objects.md](live/live-gamestate-objects.md): objects, positions, hooks and the structure map
 - [live-telemetry.md](live/live-telemetry.md): capture hooks, events, machine travel, negotiated v8 live frames and the archive handoff
+- [live-telemetry-frames.md](live/live-telemetry-frames.md): frame species, cinematics, velocity and appearance
+- [live-telemetry-packed.md](live/live-telemetry-packed.md): packed frames
 - [replay-fidelity.md](live/replay-fidelity.md): current recording and playback, the original 1 Hz measurements and the spectator track design
+- [replay-fidelity-spectator.md](live/replay-fidelity-spectator.md): the spectator track proposal
 - [replay-migration.md](live/replay-migration.md): migrate, verify and roll back finished-game archives in both homes
 - [live-art.md](live/live-art.md): map geometry and pre-drawn views extracted from the disc for the stats site
+- [live-art-viewer-packs.md](live/live-art-viewer-packs.md): the 3D viewer, map packs and mods
+- [live-art-pipeline.md](live/live-art-pipeline.md): packing, pipeline and limits
+- [live-art-models.md](live/live-art-models.md): player and weapon models
 
 ## Editor (`editor/`)
 
@@ -377,4 +554,3 @@ hold what was done about their findings.
 ## About these docs (`meta/`)
 
 - [docs-style.md](meta/docs-style.md): how docs here are written, where each kind goes, the evidence labels and the checker
-

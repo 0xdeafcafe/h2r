@@ -114,7 +114,7 @@ pub(crate) fn overlay(theater: Theater, screenshots: PathBuf, disc: Option<&Path
         theater,
         screenshots,
         input: Mutex::new(None),
-        pages: Mutex::new(Pages { disc, drawn: None }),
+        pages: Mutex::new(Pages { disc, drawn: None, keys: None }),
     });
     (shell::Overlay(controller.clone()), controller)
 }
@@ -128,31 +128,52 @@ pub(crate) struct Controller {
 
 struct Pages {
     disc: Option<preview::Disc>,
-    drawn: Option<(ScreenSpec, Arc<shell::Page>)>,
+    drawn: Option<(ScreenSpec, bool, Arc<shell::Page>)>,
+    /// The keyboard's keycaps, added to the disc's fonts the first time
+    /// the keyboard drives a film.
+    keys: Option<boot::icons::Icons>,
 }
 
 impl Pages {
-    fn render(&mut self, spec: ScreenSpec, timeline: Option<[u32; 4]>) -> Option<Arc<shell::Page>> {
+    /// `spec` drawn for the shell; with `keyboard`, its button glyphs are
+    /// the Theater's keys (`theater_ui::playback_icons`).
+    fn render(&mut self, spec: ScreenSpec, keyboard: bool) -> Option<Arc<shell::Page>> {
         if spec.name == boot::theater_ui::OVERLAY && spec.texts.is_empty() {
             self.drawn = None;
             return None;
         }
-        if let Some((old, page)) = &self.drawn && *old == spec && page.timeline == timeline {
+        if let Some((old, was, page)) = &self.drawn
+            && *old == spec
+            && *was == keyboard
+        {
             return Some(page.clone());
+        }
+        if keyboard && self.keys.is_none() {
+            let icons = boot::theater_ui::playback_icons();
+            let rewrite = icons.font_rewrite();
+            if let Some(disc) = &mut self.disc {
+                disc.fonts.patch(|bytes| rewrite.patch(bytes));
+            }
+            self.keys = Some(icons);
         }
         // Without the disc's fonts the layout source draws every word as a
         // block, so there is no page rather than a page of boxes.
         let from = preview::From::Disc(self.disc.as_ref()?);
-        let view = from.view(&spec, "playback").inspect_err(|error| {
+        let mut view = from.view(&spec, "playback").inspect_err(|error| {
             eprintln!("theater: laying out {}: {error:#}", spec.name);
         }).ok()?;
+        if let Some(icons) = self.keys.as_ref().filter(|_| keyboard) {
+            view.map_text(|text| {
+                let units: Vec<u16> = text.encode_utf16().map(|u| icons.shown(u)).collect();
+                String::from_utf16_lossy(&units)
+            });
+        }
         let canvas = preview::render_overlay(&view, from.source());
         let page = Arc::new(shell::Page {
             rgba: canvas.rgba,
             size: (canvas.width, canvas.height),
-            timeline,
         });
-        self.drawn = Some((spec, page.clone()));
+        self.drawn = Some((spec, keyboard, page.clone()));
         Some(page)
     }
 }
@@ -176,10 +197,17 @@ impl shell::Controller for Controller {
         }
         self.theater.pump();
         let playing = self.theater.playing();
-        let page = (self.theater.film_loaded() || self.theater.film_loading()).then(|| self.theater.playback_page()).flatten().and_then(|spec| {
-            self.pages.lock().unwrap_or_else(|e| e.into_inner()).render(spec, self.theater.playback_timeline())
+        // The host's page: nothing while the game draws the film's HUD and
+        // its pause menu itself (docs/game/theater.md, "Who draws what").
+        let page = (self.theater.film_loaded() || self.theater.film_loading()).then(|| self.theater.host_page()).flatten().and_then(|spec| {
+            let keyboard = self.theater.keyboard_in_use();
+            self.pages.lock().unwrap_or_else(|e| e.into_inner()).render(spec, keyboard)
         });
-        shell::View { playing, page }
+        let timeline = self.theater.playback_timeline().map(|(rect, canvas)| shell::Timeline {
+            rect,
+            canvas: canvas.or(page.as_ref().map(|p| p.size)).unwrap_or(boot::theater_ui::HUD_CANVAS),
+        });
+        shell::View { playing, page, timeline }
     }
 
     fn key(&self, key: shell::Key, down: bool, repeat: bool) -> bool {
@@ -250,6 +278,7 @@ mod tests {
         let (_, controller) = overlay(Theater::default(), PathBuf::new(), None);
         let view = controller.update();
         assert!(view.page.is_none(), "the menus are not drawn over");
+        assert!(view.timeline.is_none(), "no film, no rail to click");
         assert!(!view.playing);
     }
 
@@ -264,8 +293,8 @@ mod tests {
             right: false,
             colour: [1.0; 3],
         });
-        let mut pages = Pages { disc: None, drawn: None };
-        assert!(pages.render(spec, None).is_none());
+        let mut pages = Pages { disc: None, drawn: None, keys: None };
+        assert!(pages.render(spec, false).is_none());
     }
 
     fn local_entry(map: &str) -> film::LibraryEntry {

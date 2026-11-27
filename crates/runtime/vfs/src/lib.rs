@@ -43,7 +43,7 @@ pub use map_override::{
 };
 pub use packages::{PackageBackend, Scope as PackageScope};
 pub use reads::PathReads;
-pub use rewrite::{Chain, MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
+pub use rewrite::{Chain, Rewrite, RewriteBackend, Rewritten};
 pub use sim_store::SimStoreBackend;
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
 pub use state::{MAX_CARRIED_BYTES, SavedFile, StateError, VfsState};

@@ -1,6 +1,8 @@
 # Halo 2 retail Xbox Live API boundary
 
-Static investigation, 2026-11-15. Design: [live.md](live.md). Target: original Xbox retail `default.xbe`, XDK/XONLINES 5849. Addresses are guest virtual addresses. This report contains derived names, addresses, ABI facts and control-flow observations; no instruction-byte sequences, retail lookup tables, account data or executable extracts.
+Static investigation, 2026-11-15. Design: [live.md](live.md). Target: original Xbox retail `default.xbe`, XDK/XONLINES 5849.
+
+Addresses are guest virtual addresses. This report contains derived names, addresses, ABI facts and control-flow observations; no instruction-byte sequences, retail lookup tables, account data or executable extracts.
 
 ## Result and scope
 
@@ -11,9 +13,11 @@ Two additions make the inventory below **130 targets**:
 - `0x003ab055`, proposed `XOnlineMessageDelete`, is reached by a verified tail jump at `0x0008e93b`; the original call-only scan missed it.
 - `0x0036c47d`, confirmed `XNetGetEthernetLinkStatus`, is in `.text`, outside the two scanned library sections. Game callers are `0x0008d6b0`, `0x0008d7eb`, `0x0008d8bd`; XOnline also calls it internally at `0x003a5007`.
 
-There is another verified tail jump at `0x0008d9de` to the already-listed `XNetCleanup` entry `0x003cd67b`. Thus the expanded inventory has **185 direct calls plus two tail jumps**. Counts in the table are direct calls only; the evidence notes the tail jumps. Counts retain the original scan's source-section scope (`.text`, XPP, D3D, DSOUND, BINK). In particular, two callers of the 16-bit endian helper are in DSOUND; this is a section-based dependency inventory, not a claim that every source section contains only game code.
+There is another verified tail jump at `0x0008d9de` to the already-listed `XNetCleanup` entry `0x003cd67b`. Thus the expanded inventory has **185 direct calls plus two tail jumps**. Counts in the table are direct calls only; the evidence notes the tail jumps.
 
-**Confidence:** `confirmed` means the entry is statically identified from ABI and discriminating caller/callee behavior; `likely` means a consistent proposed name with matching ABI and contextual/public-reference support, without the same depth of independent semantic checking. There are **62 confirmed and 68 likely names** in the expanded inventory. No remaining verified target lacks a proposed name, but the likely names are not implementation-ready contracts.
+Counts retain the original scan's source-section scope (`.text`, XPP, D3D, DSOUND, BINK). In particular, two callers of the 16-bit endian helper are in DSOUND; this is a section-based dependency inventory, not a claim that every source section contains only game code.
+
+**Confidence:** `confirmed` means the entry is statically identified from ABI and discriminating caller/callee behaviour; `likely` means a consistent proposed name with matching ABI and contextual/public-reference support, without the same depth of independent semantic checking. There are **62 confirmed and 68 likely names** in the expanded inventory. No remaining verified target lacks a proposed name, but the likely names are not implementation-ready contracts.
 
 **ABI column:** `C args / stack words` distinguishes parameters from four-byte stdcall argument slots. The latter equals callee cleanup bytes divided by four, traced through the public thunk to its body. In this image a by-value `XUID` takes three words, `XNKID` two, and `ULONGLONG`/`FILETIME` two. For example, `XOnlineNotificationSetState` has five C parameters but six stack words. Every named entry's observed cleanup matches its proposed public prototype. ECX used for the library singleton is not a public argument.
 
@@ -31,7 +35,7 @@ There is another verified tail jump at `0x0008d9de` to the already-listed `XNetC
 | `0x003a0666` | XONLINE | 1 | `XOnlineChangeLogonUsersTaskGetResults` | confirmed | 2 / 2 | 0x0006c750 supplies task and four-HRESULT output; body copies per-user change results. |
 | `0x003a0671` | XONLINE | 4 | `XOnlineGetLogonUsers` | confirmed | 0 / 0 | Returns current user-array pointer; 0x0006bff0 validates per-user results. |
 | `0x003a067c` | XONLINE | 2 | `XOnlineGetServiceInfo` | confirmed | 2 / 2 | Searches requested service IDs, returns service HRESULT and optional 12-byte endpoint; 0x0006bff0 checks availability. |
-| `0x003a0687` | XONLINE | 1 | `XOnlineSaveLogonState` | likely | 1 / 1 | 0x0022387b saves session into launch data; body serializes users/services into supplied state. |
+| `0x003a0687` | XONLINE | 1 | `XOnlineSaveLogonState` | likely | 1 / 1 | 0x0022387b saves session into launch data; body serialises users/services into supplied state. |
 | `0x003a0692` | XONLINE | 1 | `XOnlineTitleUpdate` | confirmed | 1 / 1 | Update dialog callback 0x00236926 passes context 0 at 0x00236928. |
 | `0x003a069d` | XONLINE | 1 | `XOnlineOfferingIsNewContentAvailable` | likely | 3 / 3 | 0x0008d4d0 starts new-offering check with bit filter/event/task output. |
 | `0x003a06a8` | XONLINE | 1 | `XOnlineMatchSessionCreate` | confirmed | 8 / 8 | 0x0008fcc0 creates session with filled/open slots and attribute list; public signature matches eight stack words. |
@@ -63,7 +67,7 @@ There is another verified tail jump at `0x0008d9de` to the already-listed `XNetC
 | `0x003a084c` | XONLINE | 1 | `XOnlineMutelistAdd` | likely | 2 / 4 | 0x00058c10 passes controller and 12-byte XUID by value, then refreshes mute list. |
 | `0x003a086e` | XONLINE | 1 | `XOnlineMutelistRemove` | likely | 2 / 4 | 0x00058c60 mirrors Add with removal operation and refresh. |
 | `0x003a0890` | XONLINE | 1 | `XOnlineFeedbackSend` | likely | 6 / 8 | 0x0008d3d0 supplies controller, by-value XUID, feedback type (from its reason table 5, 6, 0, 1, 2, 3, 4, 12, 11, 10), a params block with a null string, event 0, task. Body 0x003b8efe sends the string as UTF-8 of at most 255 bytes; 0x003b8cbb skips repeats per controller. Decoded in live.md, "Client HLE: player feedback". |
-| `0x003a08c0` | XONLINE | 1 | `XOnlineStatWrite` | likely | 4 / 4 | 0x000923c0 sends count/stat-spec array/event/task; body serializes stat values. |
+| `0x003a08c0` | XONLINE | 1 | `XOnlineStatWrite` | likely | 4 / 4 | 0x000923c0 sends count/stat-spec array/event/task; body serialises stat values. |
 | `0x003a08cb` | XONLINE | 1 | `XOnlineStatRead` | likely | 4 / 4 | 0x00092220 requests count/stat-spec array/event/task; body builds read request. |
 | `0x003a08d6` | XONLINE | 1 | `XOnlineStatReadGetResult` | likely | 5 / 5 | 0x00092330 supplies task, count/specs and extra-buffer length/pointer. |
 | `0x003a0c39` | XONLINE | 1 | `XOnlineStartup` | confirmed | 1 / 1 | 0x0008d840 calls after XNetStartup and WSAStartup; singleton creation, one startup-params pointer. |
@@ -73,7 +77,7 @@ There is another verified tail jump at `0x0008d9de` to the already-listed `XNetC
 | `0x003a6969` | XONLINE | 1 | `XOnlinePresenceClear` | likely | 1 / 1 | 0x0008c550 clears presence task before closing it. |
 | `0x003a6f9b` | XONLINE | 1 | `XOnlinePresenceSubmit` | likely | 1 / 1 | 0x0008c410 submits previously assembled presence task. |
 | `0x003a6fa6` | XONLINE | 1 | `XOnlinePresenceGetLatest` | likely | 4 / 4 | 0x0008c470 receives group presence buffer with task/group/capacity arguments. |
-| `0x003a8316` | XONLINE | 1 | `XOnlinePresenceInit` | likely | 3 / 3 | 0x0008c320 initializes per-controller presence task with event/task output. |
+| `0x003a8316` | XONLINE | 1 | `XOnlinePresenceInit` | likely | 3 / 3 | 0x0008c320 initialises per-controller presence task with event/task output. |
 | `0x003a8321` | XONLINE | 1 | `XOnlineGameInviteSend` | likely | 8 / 9 | 0x0008f7e0 sends XUID recipient list, by-value session ID and message handle. |
 | `0x003a834e` | XONLINE | 1 | `XOnlineGameInviteAnswer` | likely | 5 / 5 | 0x0008d0b0 supplies controller, answer-info record, answer enum, event/task. |
 | `0x003a835d` | XONLINE | 1 | `XOnlineFriendsRequestEx` | likely | 5 / 7 | 0x0008f6e0 XUID branch passes message handle and by-value 12-byte recipient XUID. Implemented: the task posts a signed `FriendRequested` event on the player's account stream. |
@@ -116,7 +120,7 @@ There is another verified tail jump at `0x0008d9de` to the already-listed `XNetC
 | `0x003b0254` | XONLINE | 1 | `XOnlineQuerySearch` | likely | 10 / 10 | 0x000b37f0 supplies dataset/procedure, paging, result specs, attributes, event/task. |
 | `0x003b0263` | XONLINE | 1 | `XOnlineQuerySearchGetResults` | confirmed | 5 / 5 | 0x000b3970 reads total/returned counts and sized results; game diagnostic names this API. |
 | `0x003cd0c0` | XNET | 1 | `XNetRandom` | confirmed | 2 / 2 | 0x0007ad80 passes buffer/size; body invokes random fill and returns zero. |
-| `0x003cd0cb` | XNET | 1 | `XNetCreateKey` | confirmed | 2 / 2 | 0x0007a8a0 outputs 8-byte ID and 16-byte key; body fills both and normalizes ID flags. |
+| `0x003cd0cb` | XNET | 1 | `XNetCreateKey` | confirmed | 2 / 2 | 0x0007a8a0 outputs 8-byte ID and 16-byte key; body fills both and normalises ID flags. |
 | `0x003cd0d6` | XNET | 2 | `XNetRegisterKey` | confirmed | 2 / 2 | 0x0007a920 supplies key-ID/key pointers; body inserts key registry entry. |
 | `0x003cd0e1` | XNET | 6 | `XNetUnregisterKey` | confirmed | 1 / 1 | Paired with RegisterKey in key cleanup and shutdown; one key-ID pointer. |
 | `0x003cd0ec` | XNET | 1 | `XNetXnAddrToInAddr` | confirmed | 3 / 3 | 0x0007adf0 supplies XNADDR/key-ID and receives IN_ADDR. |
@@ -141,11 +145,11 @@ There is another verified tail jump at `0x0008d9de` to the already-listed `XNetC
 | `0x003cd32d` | XNET | 1 | `XNetInAddrToXnAddr` | confirmed | 3 / 3 | 0x0007ab60 supplies IN_ADDR and receives XNADDR plus key-ID. |
 | `0x003cd344` | XNET | 4 | `XNetUnregisterInAddr` | confirmed | 1 / 1 | Address cleanup after service/query registration; 0x000b3b10 unregisters before key removal. |
 | `0x003cd34f` | XNET | 1 | `XNetConnect` | confirmed | 1 / 1 | 0x0007acc0 starts secure-address connection for IN_ADDR. |
-| `0x003cd35a` | XNET | 1 | `XNetGetConnectStatus` | confirmed | 1 / 1 | 0x0007acf0 reads secure-address connection state; uninitialized return is LOST state 3. |
+| `0x003cd35a` | XNET | 1 | `XNetGetConnectStatus` | confirmed | 1 / 1 | 0x0007acf0 reads secure-address connection state; uninitialised return is LOST state 3. |
 | `0x003cd365` | XNET | 1 | `XNetQosServiceLookup` | confirmed | 3 / 3 | 0x0007b5e0 supplies flags/event/QoS-output; used by sign-in completion path 0x002bb04e. |
 | `0x003cd576` | XNET | 1 | `XNetStartup` | confirmed | 1 / 1 | One startup-params pointer; 0x0008d8c7 checks zero before Winsock startup. |
 | `0x003cd58d` | XNET | 1 | `WSAStartup` | confirmed | 2 / 2 | Version 0x0002 and WSADATA output at 0x0008d8db; zero required. |
-| `0x003cd67b` | XNET | 1 | `XNetCleanup` | confirmed | 0 / 0 | XNet startup rollback and shutdown; distinct from WSACleanup by initializer mode flag. Also tail-jumped from 0x0008d9de. |
+| `0x003cd67b` | XNET | 1 | `XNetCleanup` | confirmed | 0 / 0 | XNet startup rollback and shutdown; distinct from WSACleanup by initialiser mode flag. Also tail-jumped from 0x0008d9de. |
 | `0x003cd688` | XNET | 2 | `WSACleanup` | confirmed | 0 / 0 | Winsock startup rollback and shutdown; paired with WSAStartup. |
 | `0x003cd718` | XNET | 17 | `WSAGetLastError` | confirmed | 0 / 0 | Tailcalls thread-local last-error getter 0x002d1d3e; 17 socket-error call sites. |
 | `0x003cd71d` | XNET | 2 | `__WSAFDIsSet` | confirmed | 2 / 2 | 0x000b52b0 passes socket/fd_set after select; body scans count and socket entries. |
@@ -158,17 +162,17 @@ Game function names below are descriptive labels, not renamed Ghidra symbols. Th
 
 ### 1. Bring up transport when the link is active
 
-`0x0008d690` initializes transport state and calls `XNetGetEthernetLinkStatus` (`0x0036c47d`) at `0x0008d6b0`. It tests **bit 0**, then tail-enters startup `0x0008d840` only if active. The recurring update `0x0008d7e0` repeats the link test at `0x0008d7eb`: transitions up call startup; transitions down call shutdown `0x0008d970`.
+`0x0008d690` initialises transport state and calls `XNetGetEthernetLinkStatus` (`0x0036c47d`) at `0x0008d6b0`. It tests **bit 0**, then tail-enters startup `0x0008d840` only if active. The recurring update `0x0008d7e0` repeats the link test at `0x0008d7eb`: transitions up call startup; transitions down call shutdown `0x0008d970`.
 
 Startup `0x0008d840` returns immediately if already started. Otherwise its order is:
 
-1. Call link status again at `0x0008d8bd`. **This particular return value is ignored**; the preceding initialization/update checks supply the link gate.
+1. Call link status again at `0x0008d8bd`. **This particular return value is ignored**; the preceding initialisation/update checks supply the link gate.
 2. `XNetStartup` (`0x003cd576`) at `0x0008d8c7`, with a 12-byte startup-parameter structure. Any nonzero return aborts.
 3. `WSAStartup` (`0x003cd58d`) at `0x0008d8db`, requesting **0x0002 (Winsock 2.0)** and supplying WSADATA. Any nonzero return calls `XNetCleanup` and aborts.
 4. `XOnlineStartup` (`0x003a0c39`) at `0x0008d8ed`, with a pointer to a zeroed startup-parameter word. Any nonzero return calls `WSACleanup`, then `XNetCleanup`, and aborts.
-5. Mark transport started (`0x004d8b19`), initialize title-address state through `0x0007ae70` / `0x0007a9b0`, initialize the QoS record pool, and invoke registered startup callbacks.
+5. Mark transport started (`0x004d8b19`), initialise title-address state through `0x0007ae70` / `0x0007a9b0`, initialise the QoS record pool, and invoke registered startup callbacks.
 
-`0x0007a9b0` calls `XNetGetTitleXnAddr` at `0x0007aa13`. **0 means pending**, **1 means no address/uninitialized**. Other values allow it to cache XNADDR; bits `0x1c` distinguish an acquired static/DHCP/PPPoE IP. The observed XNADDR size is 36 bytes. Returning zero forever will keep acquisition pending.
+`0x0007a9b0` calls `XNetGetTitleXnAddr` at `0x0007aa13`. **0 means pending**, **1 means no address/uninitialised**. Other values allow it to cache XNADDR; bits `0x1c` distinguish an acquired static/DHCP/PPPoE IP. The observed XNADDR size is 36 bytes. Returning zero forever will keep acquisition pending.
 
 Shutdown `0x0008d970` invokes shutdown callbacks, unregisters registered keys, clears started state, then calls `XOnlineCleanup` at `0x0008d9d3`, `WSACleanup` at `0x0008d9d8`, and tail-jumps to `XNetCleanup` at `0x0008d9de`.
 
@@ -176,13 +180,13 @@ Shutdown `0x0008d970` invokes shutdown callbacks, unregisters registered keys, c
 
 The account-selection UI `0x0024af1a` calls game wrapper `0x0006c800` at `0x0024afe6`; lookup-by-name `0x0024ab0c` calls the same wrapper at `0x0024ab3c`.
 
-`0x0006c800` calls `XOnlineGetUsers` (`0x003a0636`) at `0x0006c811`, passing a user buffer and a **count output**. A negative HRESULT makes the wrapper return count zero; a nonnegative HRESULT returns the count written by the API. The count stack slot is not initialized by the wrapper. Do not interpret it as an input capacity merely because a reworked header comment describes one: the retail callee clears the count and initializes a fixed 16-user buffer.
+`0x0006c800` calls `XOnlineGetUsers` (`0x003a0636`) at `0x0006c811`, passing a user buffer and a **count output**. A negative HRESULT makes the wrapper return count zero; a nonnegative HRESULT returns the count written by the API. The count stack slot is not initialised by the wrapper. Do not interpret it as an input capacity merely because a reworked header comment describes one: the retail callee clears the count and initialises a fixed 16-user buffer.
 
 The observed `XONLINE_USER` stride is **0x70 (112) bytes**. Relevant fields are user ID at `+0`, user flags at `+8`, gamertag at `+0x0c`, and per-user HRESULT at `+0x6c`. The logon array always has four controller slots; unassigned slots are zeroed.
 
 ### 3. Create the persistent logon task
 
-Sign-in UI method `0x0024b824` calls `0x0006c8b0` at `0x0024b83f`, passing the controller and selected XONLINE_USER. The game requires both transport-initialized (`0x004d8b18`) and transport-started (`0x004d8b19`) flags.
+Sign-in UI method `0x0024b824` calls `0x0006c8b0` at `0x0024b83f`, passing the controller and selected XONLINE_USER. The game requires both transport-initialised (`0x004d8b18`) and transport-started (`0x004d8b19`) flags.
 
 When there is no existing logon task (`0x00467214 == -1`), `0x0006c8b0` builds the four-slot user array and puts the selected account in its controller slot. It creates a game task and calls:
 
@@ -192,7 +196,7 @@ at `0x0006c948`, targeting `0x003a0641`. The service list is assembled by `0x000
 
 The immediate return is tested with **HRESULT >= 0**, not against the eventual connected status. A negative result disposes the game task and resets its global index to `-1`; the sign-in method takes its failure callback. Success stores a persistent **type-0 game task**, whose `+0x0c` field contains the separate opaque SDK task handle.
 
-The actual XOnline logon body `0x003a4fd5` independently checks link bit 0 at `0x003a5007`; no cable produces `XONLINE_E_LOGON_NO_NETWORK_CONNECTION` (`0x80151000`). It also has immediate not-initialized, task-busy and out-of-memory paths. The game wrapper does not route those immediate HRESULTs individually through the later connection-result classifier.
+The actual XOnline logon body `0x003a4fd5` independently checks link bit 0 at `0x003a5007`; no cable produces `XONLINE_E_LOGON_NO_NETWORK_CONNECTION` (`0x80151000`). It also has immediate not-initialised, task-busy and out-of-memory paths. The game wrapper does not route those immediate HRESULTs individually through the later connection-result classifier.
 
 When already signed in, the alternate branch calls `XOnlineChangeLogonUsers` (`0x003a065b`) at `0x0006ca90`, with a replacement four-user array, null event and task output. User removal also uses this API at `0x0006cd05`. These are **type-1 game tasks**; they are distinct from the persistent type-0 connection task.
 
@@ -208,7 +212,7 @@ The persistent logon handle must survive connection establishment. Closing it on
 
 For ordinary asynchronous tasks, `0x0006c450` treats `XONLINETASK_S_RUNNING = 0` and `XONLINETASK_S_RUNNING_IDLE = 0x001500f2` as still active, `XONLINETASK_S_RESULTS_AVAIL = 0x001500f1` as results available, and other nonnegative results, including `XONLINETASK_S_SUCCESS = 0x001500f0`, as finished. Negative results finish with failure. The dedicated logon task has the special handling above.
 
-The change-users path `0x0006c360` branches on `XOnlineTaskContinue` directly: **0** and **0x001513f0** (`COMMIT_USER_CHANGE`) continue; **0x001513f1** (`USER_CHANGE_COMPLETE`) runs post-logon validation and finishes successfully if it passes. **0x80151300** (`CHANGE_USER_FAILED`) calls `0x0006c750`, which invokes `XOnlineChangeLogonUsersTaskGetResults` (`0x003a0666`) at `0x0006c75f` to inspect four per-user HRESULTs. It recognizes the message warning and account-management error there.
+The change-users path `0x0006c360` branches on `XOnlineTaskContinue` directly: **0** and **0x001513f0** (`COMMIT_USER_CHANGE`) continue; **0x001513f1** (`USER_CHANGE_COMPLETE`) runs post-logon validation and finishes successfully if it passes. **0x80151300** (`CHANGE_USER_FAILED`) calls `0x0006c750`, which invokes `XOnlineChangeLogonUsersTaskGetResults` (`0x003a0666`) at `0x0006c75f` to inspect four per-user HRESULTs. It recognises the message warning and account-management error there.
 
 ### 5. Check users and all requested services
 
@@ -228,7 +232,9 @@ The sign-in screen callback is `0x0024b869`, registered by `0x0024b824`. It call
 
 `0x0007b6c0` polls the returned record: its pending count at `XNQOS + 4` must reach **zero** before completion. `0x002bb0e9` reads the result, may consult `XOnlineGetNatType` through `0x0006b550`, and releases QoS through `0x0007b650` -> `XNetQosRelease`. An HLE that signs in successfully but makes QoS startup fail can repeatedly retry this step; provide a valid record that completes, not only successful logon APIs.
 
-The screen then reads `0x0006cd50` and copies `XOnlineGetLogonUsers` through `0x0006ced0`. To take success, it requires **game result 1**, selected user's **nonzero ID**, **nonempty gamertag**, and **nonnegative per-user HRESULT**. It calls success method `0x0024b971`, which updates the profile/gamertag and signed-in state. The persistent connection task is retained beyond the screen.
+The screen then reads `0x0006cd50` and copies `XOnlineGetLogonUsers` through `0x0006ced0`. To take success, it requires **game result 1**, selected user's **nonzero ID**, **nonempty gamertag**, and **nonnegative per-user HRESULT**. It calls success method `0x0024b971`, which updates the profile/gamertag and signed-in state.
+
+The persistent connection task is retained beyond the screen.
 
 ### 7. Failure routing and dashboard actions
 
@@ -250,7 +256,9 @@ The connection-result classifier at `0x0006cd50` produces the following **derive
 
 For game result 2 or 6, the handler's `keep` argument controls whether a second/cancel callback is absent or returns to the main menu. Result 9 also shares dialog `0x38`, but this connection-result classifier does not emit 9. For dialog `0x38` during an active game, the handler can substitute dialog `0xb8` and an in-game quit action; it does not always expose a dashboard action in that context.
 
-Dashboard launches are **user dialog actions**, not unconditional jumps immediately on receiving an HRESULT. Network callback `0x00236917` and online-menu callback `0x00236937` call game dashboard-launch wrapper `0x002238f4`. It constructs launch data, calls the XAPI launch entry `0x002d07f2` with a null image name at `0x0022396f`, and does not return. The derived launch reasons are **6 for network configuration** and **9 for the online menu**. Cancel/acknowledge callback `0x00236953` signs out and returns to the game's main menu. Update callback `0x00236926` has its own `XOnlineTitleUpdate` boundary call; the library's update/launch machinery contains the `xonlinedash.xbe` references.
+Dashboard launches are **user dialog actions**, not unconditional jumps immediately on receiving an HRESULT. Network callback `0x00236917` and online-menu callback `0x00236937` call game dashboard-launch wrapper `0x002238f4`. It constructs launch data, calls the XAPI launch entry `0x002d07f2` with a null image name at `0x0022396f`, and does not return. The derived launch reasons are **6 for network configuration** and **9 for the online menu**.
+
+Cancel/acknowledge callback `0x00236953` signs out and returns to the game's main menu. Update callback `0x00236926` has its own `XOnlineTitleUpdate` boundary call; the library's update/launch machinery contains the `xonlinedash.xbe` references.
 
 A successful sign-in with the **per-user** message warning sets `0x0050944f` in `0x0006bff0`; success method `0x0024b971` then shows dialog `0x28` offering the dashboard online-menu callback. Return `hr == 0` for a simple offline account without that warning.
 
@@ -262,7 +270,9 @@ A successful sign-in with the **per-user** message warning sets `0x0050944f` in 
 | `0x003c9ae4` | XONLINE | `0x004036f7` | Inside the instruction at `0x004036f6`, which combines registers. The following real call begins at `0x004036f8` and targets D3D helper `0x00403360`. |
 | `0x003dbc19` | XNET | `0x002d5691` | Inside the instruction at `0x002d568f`, which restores the stack pointer from a frame local. No call starts at the raw site. |
 
-The other 182 supplied sites decode as direct calls to the listed targets when aligned from independently discovered containing functions. No additional false call sites were found. Existing function discovery folds a few small thunks into neighbors; public entry addresses and ABI were checked directly, rather than treating every discovered-function label as authoritative. For example, the update callback starts at `0x00236926`; a speculative containing-function seed at `0x00236925` is not its real entry.
+The other 182 supplied sites decode as direct calls to the listed targets when aligned from independently discovered containing functions. No additional false call sites were found. Existing function discovery folds a few small thunks into neighbours; public entry addresses and ABI were checked directly, rather than treating every discovered-function label as authoritative.
+
+For example, the update callback starts at `0x00236926`; a speculative containing-function seed at `0x00236925` is not its real entry.
 
 ## What this implies for the first HLE milestone
 
@@ -270,20 +280,24 @@ The other 182 supplied sites decode as direct calls to the listed targets when a
 - Supply link-active state, successful XNet/Winsock/XOnline startup, a nonpending title address, one stored account, and a persistent logon task. Distinguish the **game task index**, **SDK task handle**, and **guest user-array pointer**.
 - Implement both task pumping and the **separate logon-result getter**, plus change-users results, stable logged-on-user memory and service-info queries. Use the 112-byte user layout the game observes. `XOnlineGetUsers`'s count is output-only on this path.
 - Return zero from immediate startup/logon/service-info calls and ordinary per-user success; return `0x001510f0` as the established connection result. Keep the connection task alive. General task success is `0x001500f0`, which is a different value and role.
-- Include QoS service lookup/release with eventual zero pending count. Friends/new-content/presence work begins after validation and also needs deliberate HLE behavior. The full set of downstream tasks required to keep every later screen healthy has not been dynamically exercised.
-- Preserve Winsock's `SOCKET_ERROR`/`INVALID_SOCKET` plus last-error behavior. `0x003cd718` is `WSAGetLastError`; the heavily used `0x003cd0e1` / `0x003cd147` entries are key removal / QoS listen, not send/receive.
+- Include QoS service lookup/release with eventual zero pending count. Friends/new-content/presence work begins after validation and also needs deliberate HLE behaviour. The full set of downstream tasks required to keep every later screen healthy has not been dynamically exercised.
+- Preserve Winsock's `SOCKET_ERROR`/`INVALID_SOCKET` plus last-error behaviour. `0x003cd718` is `WSAGetLastError`; the heavily used `0x003cd0e1` / `0x003cd147` entries are key removal / QoS listen, not send/receive.
 
 ## Evidence sources and limits
 
-Primary evidence is read-only decoding of `/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe`, starting from function addresses emitted by the **already-built** analyzer and checking calls, public thunks, stack cleanup and conditional branches. No build or game execution was performed. No Ghidra rename, retype, analysis or save command was issued. The resident project reported just one analyzed function, so Ghidra's read-only decompiler could not resolve the requested entries; direct decoding was used instead.
+Primary evidence is read-only decoding of `/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe`, starting from function addresses emitted by the **already-built** analyser and checking calls, public thunks, stack cleanup and conditional branches. No build or game execution was performed. No Ghidra rename, retype, analysis or save command was issued.
 
-Public references used for names and declarations, with retail behavior taking precedence over comments:
+The resident project reported just one analysed function, so Ghidra's read-only decompiler could not resolve the requested entries; direct decoding was used instead.
 
-- [RXDK public XOnline header, pinned revision](https://github.com/Team-Resurgent/RXDK-SDK/blob/1dc30011768cf75366428f23380e099afa4dce0d/include/xonline.h): API names, argument shapes, public status constants. Its rewritten explanatory comments are not treated as proof of retail behavior.
+Public references used for names and declarations, with retail behaviour taking precedence over comments:
+
+- [RXDK public XOnline header, pinned revision](https://github.com/Team-Resurgent/RXDK-SDK/blob/1dc30011768cf75366428f23380e099afa4dce0d/include/xonline.h): API names, argument shapes, public status constants. Its rewritten explanatory comments are not treated as proof of retail behaviour.
 - [RXDK public Winsock/XNet header, same revision](https://github.com/Team-Resurgent/RXDK-SDK/blob/1dc30011768cf75366428f23380e099afa4dce0d/include/winsockx.h): socket/XNet prototypes and public record definitions.
 - [Public OnlineDash symbol names](https://github.com/Cxbx-Reloaded/sym2idc/blob/master/FFFE0000_4C0590E3_Xbox%20OnlineDash.sym): older related SDK name/decoration cross-checks only; its addresses are not Halo 2 addresses.
 
-The existing XbSymbolDatabase matcher was also run read-only for leads. Its small XOnline/XNet match set agreed with the checked logon/match/startup/socket bodies; no signature data was copied. The 68 likely rows still need individual semantic confirmation before binding production implementations. Exact `htonl` versus `ntohl`, and `htons` versus `ntohs`, names cannot be distinguished from their shared operation; the combined names are intentional. This inventory does not claim to discover every possible address-taken, indirect or cross-section library entry beyond the verified direct calls, the tail-jump audit, and the additional link-status entry.
+The existing XbSymbolDatabase matcher was also run read-only for leads. Its small XOnline/XNet match set agreed with the checked logon/match/startup/socket bodies; no signature data was copied. The 68 likely rows still need individual semantic confirmation before binding production implementations.
+
+Exact `htonl` versus `ntohl`, and `htons` versus `ntohs`, names cannot be distinguished from their shared operation; the combined names are intentional. This inventory does not claim to discover every possible address-taken, indirect or cross-section library entry beyond the verified direct calls, the tail-jump audit, and the additional link-status entry.
 
 
 ## Direct-site address ledger

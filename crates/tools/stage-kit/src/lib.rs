@@ -19,6 +19,9 @@
 //! - [`kit`]: the stage's own tags added to a tag set (bitmaps, shaders,
 //!   the structure BSP and lightmap, the sky), and what they take from the
 //!   base.
+//! - [`project_kit`]: the stage as a step of a project build
+//!   (`workspace::project_build::Kit`), and the kits and fresh roots a
+//!   caller of that build passes.
 //! - [`map`](self::map): the map: the base's scenario made the stage's, a `fresh`
 //!   build over a `TagSource` (the disc map or the tag tree), the report
 //!   and the package.
@@ -35,6 +38,7 @@ pub mod layout;
 pub mod light;
 pub mod map;
 pub mod mesh;
+pub mod project_kit;
 pub mod sky;
 pub mod texture;
 

@@ -6,6 +6,8 @@ pub mod carried_slots;
 #[cfg(feature = "native-render")]
 pub mod entry_census;
 #[cfg(feature = "native-render")]
+pub mod effects_shadow;
+#[cfg(feature = "native-render")]
 pub mod native_decals;
 #[cfg(feature = "native-render")]
 pub mod native_decorators;

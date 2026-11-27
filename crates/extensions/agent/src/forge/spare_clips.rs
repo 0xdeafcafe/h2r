@@ -10,7 +10,8 @@
 //!
 //! [`TABLE`] holds the clips by entry index for the loaded map. A Forge
 //! session's [`ForgeStep::SpareClips`](crate::sim::calls::ForgeStep) sets it
-//! and fills the weapon the entry has out; the game's `forge_spare_clips`
+//! and fills the weapon the entry has out, and a built map's Forge record
+//! sets it at activation (`game::forge_record`); the game's `forge_spare_clips`
 //! feature fills each weapon the spawner makes after `NETGAME_ITEM_SPAWN`
 //! returns, and empties the table at `GAME_ACTIVATE`.
 use std::collections::BTreeMap;

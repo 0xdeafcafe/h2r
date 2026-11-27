@@ -734,6 +734,35 @@ fn every_ai_skull_gate_has_the_multiplayer_skulls_before_unless_turned_off() {
     }
 }
 
+/// With Firefight on, the AI's multiplayer gate in
+/// `ai_initialize_for_new_map` (`engine::points::ai_gates`) has the
+/// feature's one `before`, so a kit map's AI is initialised and squads can
+/// be placed; the gate's site and its target are image entries. Off, the
+/// gate is not hooked and a multiplayer map's AI stays off as in retail.
+#[test]
+fn a_firefight_map_initialises_its_ai_unless_firefight_is_off() {
+    use engine::points::ai_gates::{AI_NEW_MAP_INITIALISE, AI_NEW_MAP_MULTIPLAYER};
+    let hooked = |switches: &str| {
+        let plan = plan(&Case::full(switches)).unwrap();
+        plan.chains
+            .values()
+            .filter(|chain| std::ptr::eq(chain.point, &AI_NEW_MAP_MULTIPLAYER))
+            .flat_map(|chain| {
+                chain
+                    .hooks()
+                    .filter(|hook| hook.feature == crate::firefight::feature::FEATURE)
+                    .map(|hook| hook.kind().as_str())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(hooked(""), ["before"]);
+    assert!(hooked("-firefight").is_empty());
+    let entries: Vec<u32> = crate::image_entries().collect();
+    assert!(entries.contains(&AI_NEW_MAP_MULTIPLAYER.base));
+    assert!(entries.contains(&AI_NEW_MAP_INITIALISE));
+}
+
 /// The features `run_hosted_with_live` adds around `register_core` and
 /// `register_late`, present in the full case's plan.
 #[test]
@@ -745,6 +774,8 @@ fn the_full_case_plans_every_feature_boot_adds_outside_the_registration_function
         // `Theater::install`, before the core registrations.
         "theater-texts",
         "theater-link",
+        "theater-pause-menu",
+        "theater-pause-driver",
         // `join_link::install` with a Live HLE (in `register_core`).
         "live-join-link",
         // `AgentGlue::configure_takeover` with a window and player input.
@@ -1525,6 +1556,24 @@ fn a_default_play_fits_the_guest_camera_and_renders_on_its_own_stream() {
     assert!(hooked_at(registry_for_profile(&lockstep, profile), "VIEW_PROJECTION_TERMS").is_empty());
     assert!(!hooked_at(registry_for_profile(&lockstep, profile), "RENDER_FRAME").contains(&crate::render_rng::ID));
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The native renderer replaces the guest's view projection and its
+/// visibility producers; `impl.render.native.visibility=off` leaves them
+/// to the guest (docs/graphics/native-visibility.md).
+#[cfg(feature = "gpu")]
+#[test]
+fn the_view_projection_is_native_unless_its_switch_is_off() {
+    let profile = super::compiled_render_hooks();
+    if profile != film::RenderHooks::Gpu {
+        return;
+    }
+    let on = registry_for_profile(&Case::full(""), profile);
+    assert_eq!(hooked_at(on, "VIEW_PROJECTION_BUILD"), ["native-scene-lists"]);
+    let off = Case::full("impl.render.native.visibility=off");
+    for point in ["VIEW_PROJECTION_BUILD", "VIEW_SPHERE_REGIONS", "VIEW_PVS_REGIONS"] {
+        assert!(hooked_at(registry_for_profile(&off, profile), point).is_empty(), "{point}");
+    }
 }
 
 /// A recording and its replay register the render stream alike, so the

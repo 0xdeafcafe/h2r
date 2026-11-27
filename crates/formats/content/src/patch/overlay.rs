@@ -19,6 +19,11 @@ impl Run {
 /// Write `bytes` at `offset` into sorted, non-overlapping, non-touching
 /// `runs`; the new bytes win where they overlap.
 fn insert(runs: &mut Vec<Run>, offset: u64, bytes: &[u8]) {
+    insert_owned(runs, offset, std::borrow::Cow::Borrowed(bytes));
+}
+
+/// [`insert`], keeping `bytes` without a copy when they meet no run.
+fn insert_owned(runs: &mut Vec<Run>, offset: u64, bytes: std::borrow::Cow<'_, [u8]>) {
     if bytes.is_empty() {
         return;
     }
@@ -31,7 +36,7 @@ fn insert(runs: &mut Vec<Run>, offset: u64, bytes: &[u8]) {
             first,
             Run {
                 offset,
-                bytes: bytes.to_vec(),
+                bytes: bytes.into_owned(),
             },
         );
         return;
@@ -46,7 +51,7 @@ fn insert(runs: &mut Vec<Run>, offset: u64, bytes: &[u8]) {
         merged[at..at + r.bytes.len()].copy_from_slice(&r.bytes);
     }
     let at = (offset - start) as usize;
-    merged[at..at + bytes.len()].copy_from_slice(bytes);
+    merged[at..at + bytes.len()].copy_from_slice(&bytes);
     runs.insert(
         first,
         Run {
@@ -196,6 +201,40 @@ impl Overlay {
         self.len = self.len.max(offset + bytes.len() as u64);
     }
 
+    /// [`Overlay::write`], keeping `bytes` without a copy where they meet
+    /// no earlier run.
+    pub fn write_owned(&mut self, offset: u64, bytes: Vec<u8>) {
+        let end = offset + bytes.len() as u64;
+        insert_owned(&mut self.runs, offset, std::borrow::Cow::Owned(bytes));
+        self.len = self.len.max(end);
+    }
+
+    /// A whole new file in place of the base: none of the base shows.
+    pub fn replaced(bytes: Vec<u8>) -> Self {
+        let mut o = Self::new(0);
+        o.write_owned(0, bytes);
+        o
+    }
+
+    /// The bytes the runs hold: what the overlay keeps in memory.
+    pub fn held(&self) -> u64 {
+        self.runs.iter().map(|r| r.bytes.len() as u64).sum()
+    }
+
+    /// This overlay's output read through `next`, which was made over it,
+    /// as one overlay over this one's base.
+    pub fn then(&self, next: &Overlay) -> Overlay {
+        let mut out = self.clone();
+        // What of this output shows through `next`, then `next`'s zeros
+        // and runs.
+        out.set_len(next.base_visible.min(self.len));
+        out.set_len(next.len);
+        for r in &next.runs {
+            out.write(r.offset, &r.bytes);
+        }
+        out
+    }
+
     /// Cut or zero-extend the file to `len`.
     pub fn set_len(&mut self, len: u64) {
         truncate(&mut self.runs, len);
@@ -226,6 +265,40 @@ impl Overlay {
         base.resize(self.len as usize, 0);
         lay(&self.runs, 0, &mut base);
         base
+    }
+}
+
+/// A [`Source`] as a seekable stream, for readers that want one (a map
+/// parsed from a served file).
+pub struct Reader<S> {
+    source: S,
+    pos: u64,
+}
+impl<S: Source> Reader<S> {
+    pub fn new(source: S) -> Self {
+        Self { source, pos: 0 }
+    }
+}
+impl<S: Source> io::Read for Reader<S> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.source.size().saturating_sub(self.pos).min(buf.len() as u64) as usize;
+        if n == 0 {
+            return Ok(0);
+        }
+        let got = self.source.read_at(self.pos, &mut buf[..n])?;
+        self.pos += got as u64;
+        Ok(got)
+    }
+}
+impl<S: Source> io::Seek for Reader<S> {
+    fn seek(&mut self, to: io::SeekFrom) -> io::Result<u64> {
+        let pos = match to {
+            io::SeekFrom::Start(p) => Some(p),
+            io::SeekFrom::End(d) => self.source.size().checked_add_signed(d),
+            io::SeekFrom::Current(d) => self.pos.checked_add_signed(d),
+        };
+        self.pos = pos.ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        Ok(self.pos)
     }
 }
 
@@ -389,5 +462,60 @@ mod tests {
         p.write(MAX_LEN - 1, b"y");
         ov.apply(&p).unwrap();
         assert_eq!(ov.len(), MAX_LEN);
+    }
+
+    /// A random overlay over a base of `len` bytes: writes, a cut or a growth.
+    fn random_overlay(rng: &mut Rng, len: u64) -> Overlay {
+        let mut ov = Overlay::new(len);
+        for _ in 0..rng.below(6) {
+            let (kind, at, n) = (rng.below(4), rng.below(ov.len() + 32), rng.below(40) as usize);
+            match kind {
+                0 => ov.set_len(at + 32),
+                1 => ov.write_owned(at, rng.bytes(n)),
+                _ => ov.write(at, &rng.bytes(n)),
+            }
+        }
+        ov
+    }
+
+    #[test]
+    fn an_overlay_then_another_reads_as_one() {
+        let mut rng = Rng::new(7);
+        for _ in 0..500 {
+            let n = rng.below(200) as usize;
+            let base = rng.bytes(n);
+            let first = random_overlay(&mut rng, base.len() as u64);
+            let mid = first.materialise(base.clone());
+            let second = random_overlay(&mut rng, mid.len() as u64);
+            let want = second.materialise(mid);
+            let both = first.then(&second);
+            assert_eq!(both.materialise(base.clone()), want);
+            let mut src: &[u8] = &base;
+            let at = rng.below(want.len() as u64 + 4);
+            let n = rng.below(64) as usize;
+            let mut buf = vec![0xee; n];
+            let n = both.read_at(&mut src, at, &mut buf).unwrap();
+            let from = (at as usize).min(want.len());
+            assert_eq!(&buf[..n], &want[from..(from + buf.len()).min(want.len())]);
+        }
+        let whole = Overlay::replaced(b"new".to_vec());
+        assert_eq!((whole.len(), whole.base_visible(), whole.held()), (3, 0, 3));
+        assert_eq!(whole.materialise(vec![9; 10]), b"new");
+    }
+
+    #[test]
+    fn a_reader_streams_and_seeks_a_source() {
+        use std::io::{Read, Seek, SeekFrom};
+        let base: &[u8] = b"0123456789";
+        let mut r = Reader::new(base);
+        let mut buf = [0; 4];
+        r.seek(SeekFrom::Start(3)).unwrap();
+        r.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"3456");
+        assert_eq!(r.seek(SeekFrom::End(-2)).unwrap(), 8);
+        let mut rest = Vec::new();
+        r.read_to_end(&mut rest).unwrap();
+        assert_eq!(rest, b"89");
+        assert!(r.seek(SeekFrom::Current(-20)).is_err());
     }
 }

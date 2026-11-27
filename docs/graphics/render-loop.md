@@ -220,48 +220,17 @@ counts the skipped calls in the native world's timeline metrics
 
 ## Evidence
 
-- **The render-state list against the lifted original (Test, needs the
-  XBE).** `crates/rewrites/engine/tests/states_differential.rs`.
-  - Inputs: 1,200 seeded states (three seeds of 400). Each has a list of
-    0 to 24 entries over 64 random definitions, covering every type, both
-    sources and every state range, including states past `0xa5`. Floats
-    include NaN, infinities and halves. The x87 control word is random
-    across precision and rounding, and the shadow and dirty word are
-    random.
-  - Stubs: `SetRenderState_Simple` is a stub on both sides that updates a
-    model of the GPU, mapping push header to value, seeded from the
-    shadow. The setters and the colour function log their arguments and
-    answer from the same generator.
-  - Exact mode must give equal call logs (target, eight registers,
-    `xmm0`, stack argument), equal registers at return and all 64 MB
-    equal.
-  - Skip mode must give the same GPU model, the same registers at return,
-    and the same memory (shadow, dirty word, everything) outside the dead
-    stack below the frame. It must make the same setter and colour calls
-    in the same order with the same arguments. Its Simple calls must be
-    an ordered subsequence of the original's, and the skip count must
-    equal the number of calls left out.
+The render-state list is checked against the lifted original by `crates/rewrites/engine/tests/states_differential.rs` (Test, needs the XBE). The measured skip rates are in [notes/render-state-skip.md](notes/render-state-skip.md).
 
-  ```
-  render states: 1200 states, 10583 calls equal (exact); skip mode: 574 of 5100 Simple calls skipped, same GPU state, shadow and other calls; targets 31
-  ```
+| Part | What it covers |
+|---|---|
+| Inputs | 1,200 seeded states (three seeds of 400): lists of 0 to 24 entries over 64 random definitions, every type, both sources and every state range including states past `0xa5`; floats include NaN, infinities and halves; random x87 control word, shadow and dirty word |
+| Stubs | `SetRenderState_Simple` is a stub on both sides that updates a model of the GPU (push header to value, seeded from the shadow). The setters and the colour function log their arguments and answer from the same generator |
+| Exact mode | Equal call logs (target, eight registers, `xmm0`, stack argument), equal registers at return, all 64 MB equal |
+| Skip mode | Same GPU model, same registers at return, same memory outside the dead stack below the frame; same setter and colour calls in the same order; its Simple calls are an ordered subsequence of the original's and the skip count equals the calls left out |
+| Per-draw workload | `skipping_on_a_per_draw_workload`: 400 draws, a 12-entry list with eight Simple entries over 16 states. A state that appears twice in a list with different values is never redundant. The skip rate depends on draw order |
 
-  A synthetic per-draw workload (`skipping_on_a_per_draw_workload`) runs
-  400 draws, each applying a 12-entry list with eight Simple entries over
-  16 states and fixed parameters per shader. Within a list, a state that
-  appears twice with different values is never redundant.
-
-  ```
-  one shader: 400 draws, 3200 Simple calls in the original, 1596 skipped (49.9%)
-  four shaders, sorted: 400 draws, 3200 Simple calls in the original, 1683 skipped (52.6%)
-  four shaders, interleaved: 400 draws, 3200 Simple calls in the original, 396 skipped (12.4%)
-  ```
-
-  The skip rate depends on draw order. The game's real share is in the
-  counters' line.
-- **Not covered.** Faults inside the list (it reads and writes in a
-  different order from the original, so a bad pointer faults at a possibly
-  different address; the original would crash the game either way).
+Not covered: faults inside the list. It reads and writes in a different order from the original, so a bad pointer faults at a possibly different address (the original would crash the game either way).
 
 ## Related
 

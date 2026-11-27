@@ -31,11 +31,13 @@ mod bitmaps;
 mod blockout;
 pub(crate) mod checks;
 mod problems;
+mod projects;
 mod collision;
 mod colours;
 mod shader;
 mod curves;
 mod docs;
+mod forge_variants;
 mod game_script;
 mod geometry;
 mod hud;
@@ -48,6 +50,7 @@ mod models;
 mod nav;
 mod game;
 mod ground;
+mod siege;
 mod nav_mesh;
 mod pair;
 mod params;
@@ -229,9 +232,9 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::ASSET_THUMB,
-        "A thumbnail as a PNG path: for a package's bitmap item (item:<package>:<n>) with a PNG source. A tag's own picture (a bitmap, a model, a waveform, a screen) answers not-yet until the renderer draws it",
+        "A thumbnail as a PNG path, the picture a Browser row draws. A package's bitmap item (item:<package>:<n>) with a PNG source: the PNG as it is. A bitmap tag (tag:bitm:<path>) the open map holds: image 0 at its base level, shrunk to 64 pixels on its longer side (`width`, `height`; `source` is the map). A bitmap no open map holds and every other tag (a model, a waveform, a screen) answer not-yet",
         r#"{"asset":"string","out?":"string"}"#,
-        r#"{"asset":"string","path":"string","bytes":"integer","source":"string"}"#,
+        r#"{"asset":"string","path":"string","bytes":"integer","source":"string|null","width?":"integer","height?":"integer"}"#,
         r#"{"asset":"item:kit-test:2"}"#,
     ),
     def(
@@ -247,6 +250,27 @@ pub const METHODS: &[MethodDef] = &[
         r#"{"asset":"string (tag:<group>:<path>, package:<id>, item:<package>:<n> or voice:<id>)"}"#,
         r#"{"asset":"string","uses":"[{asset,role,via}]","used_by":"[{asset,role,via}]","editors":"[{id,label,why_not}]","problems":"[string]"}"#,
         r#"{"asset":"package:kit-test"}"#,
+    ),
+    def(
+        m::ASSET_WHERE_USED,
+        "Where used: the Browser lists what uses the asset, the `used_by` rows of asset.links, in place of its list (the window's Where used entry runs the same command), and the rows are answered. Double-click on a row, or shell.open, opens it. The view stays until the Browser's Clear or a root button",
+        r#"{"asset":"string (tag:<group>:<path>, package:<id>, item:<package>:<n> or voice:<id>)"}"#,
+        r#"{"asset":"string","view":"where_used","rows":"[{asset,role,via}]","total":"integer","problems":"[string]"}"#,
+        r#"{"asset":"tag:weap:objects\\weapons\\rifle"}"#,
+    ),
+    def(
+        m::ASSET_EDITS,
+        "Show edits: the Browser lists the package items that change the asset, in place of its list (the window's Show edits entry runs the same command). A tag: each item with a patch on it in load order (`changed_by` of asset.links), `role` edit, patch or replaces, `via` where the item reaches and its lines, an overridden line marked. A package: its edits and tag-delta items and the items that replace an asset. An item and a voice are refused",
+        r#"{"asset":"string (tag:<group>:<path> or package:<id>)"}"#,
+        r#"{"asset":"string","view":"edits","rows":"[{asset,role,via}]","total":"integer","problems":"[string]"}"#,
+        r#"{"asset":"tag:weap:objects\\weapons\\rifle"}"#,
+    ),
+    def(
+        m::ASSET_DROP,
+        "A source file into a package, as a file dropped on the window goes into the package the Browser shows: a .wav becomes a `sound` item that writes `sounds\\<name>`, a .png a `bitmap` item that writes `bitmaps\\<name>`, a model .yaml (or .yml) a `model` item that writes `models\\<name>\\model` with its sibling atlas PNG as a `data` item. `<name>` is the file's name made safe for a path; import.sound, import.bitmap and import.model take a tag of the caller's choosing and refuse the same files. A sound and a model open their source tab (`front`). The package defaults to the edit target. A file of another kind is refused: source.open opens a map",
+        r#"{"file":"string (a .wav, .png, .yaml or .yml path)","package?":"string (a local package's id)"}"#,
+        r#"{"file":"string","kind":"sound|bitmap|model","tag":"string","package":"string","front":"string|null","log":"[string]"}"#,
+        r#"{"file":"$OUT/clip.wav","package":"mine"}"#,
     ),
     def(
         m::ASSET_FORK,
@@ -460,8 +484,8 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SHELL_OPEN,
-        "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward. `asset` takes an asset id: `voice:<id>` opens the voice document (tab `voice:<id>`, on Setup while the voice has no dataset, else Lines), `tag:<group>:<path>` opens the tag as the Browser does, `item:<package>:<n>` opens a package item, and `package:<id>` opens the package document",
-        r#"{"asset?":"string (voice:<id>, tag:<group>:<path>, item:<package>:<n> or package:<id>)","tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
+        "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward. `asset` takes an asset id: `voice:<id>` opens the voice document (tab `voice:<id>`, on Setup while the voice has no dataset, else Lines), `tag:<group>:<path>` opens the tag as the Browser does, `item:<package>:<n>` opens a package item, `package:<id>` opens the package document and `forge:<map>:<file>` a Forge map variant. With `fields` a `tag:` asset opens as fields: its tab shows the field panel in place of its group's editor (`editor` field_panel and `fields` true on the tab) until it is opened without",
+        r#"{"asset?":"string (voice:<id>, tag:<group>:<path>, item:<package>:<n>, package:<id> or forge:<map>:<file>)","fields?":"boolean","tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
         r#"{"tab":"{doc,kind,title,tool,dirty,can_undo,can_redo,front,...}","front":"string|null","log":"[string]"}"#,
         r#"{"tag":"itmc:objects\\test\\kit"}"#,
     ),

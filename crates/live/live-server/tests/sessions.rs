@@ -711,6 +711,50 @@ async fn sessions_carry_the_hosts_firefight_match() {
     );
 }
 
+/// A map variant's own wave set (docs/game/forge-firefight.md, "Other
+/// machines"): a session's `firefight` whose id no built-in has, under a
+/// name no built-in has, is kept, listed, replaced by another and cleared as
+/// a built-in's is. The Worker runs the same routes
+/// (`a_session_takes_a_custom_sets_id_on_the_worker`).
+#[tokio::test]
+async fn a_session_takes_a_custom_sets_id_in_both_homes() {
+    use live_proto::session::Firefight;
+    let h = harness().await;
+    let a = h.create("Host").await;
+    let mut own = ::firefight::builtin::definitions()[1].clone();
+    own.name = "Invented Basin".into();
+    let id = own.id().unwrap().to_string();
+    assert!(
+        ::firefight::builtin::definitions().iter().all(|d| d.id().unwrap().to_string() != id),
+        "the id is no built-in's"
+    );
+    let first = Firefight { set: own.name.clone(), id, teams: own.teams, difficulty: 2, kit: 2 };
+    let mut n = new();
+    n.firefight = Some(first.clone());
+    let r = create(&h, &a, &n).await;
+    assert_eq!(r.status, StatusCode::CREATED);
+    let session = r.json()["session_id"].as_str().unwrap().to_owned();
+    let listed = h.get("/v1/sessions?hopper=7").await.json();
+    assert_eq!(
+        listed["items"][0]["advertisement"]["firefight"],
+        serde_json::to_value(&first).unwrap()
+    );
+    // Another custom set replaces it.
+    let mut other = own.clone();
+    other.name = "Another Invented".into();
+    let second = Firefight { set: other.name.clone(), id: other.id().unwrap().to_string(), ..first.clone() };
+    let up = json!({ "firefight": second });
+    assert_eq!(
+        batch(&h, &a, &session, &[body(&a, &session, session::UPDATED, up)]).await.status,
+        StatusCode::CREATED
+    );
+    let listed = h.get("/v1/sessions?hopper=7").await.json();
+    assert_eq!(
+        listed["items"][0]["advertisement"]["firefight"],
+        serde_json::to_value(&second).unwrap()
+    );
+}
+
 #[tokio::test]
 async fn browser_filters_cover_native_sessions() {
     let dir = temp_dir();

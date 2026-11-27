@@ -1,8 +1,40 @@
 # Retiring the guest D3D path
 
-Status: Design. Slice R0 (`render.residual` and the three frame counters, [agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work)) is built. Of R1, the structure's static items of layers 1, 5, 7, 8 and 20, and the objects' items of the scene's layers 1, 5, 7, 8 and 20 (layer 5's with the model's PRT stream) and the first person's layers 1, 7, 8 and 20, draw from the scene's plan by default, each item only where skipping its guest draw leaves the device's render states as drawing it would, a pass whose restore list writes back what it sets included, and each taken on its own wherever drawing it ahead of the items the guest keeps cannot change the frame (framescene.md slice 4, "The stage"). Their object items toggling the auxiliary state draw with the rows and clip the toggle sets for their view where the device holds it off, and those sampling the texture accumulation target bind its level outside layer 1; the first person's layer-3 items do both. Object items with a fade byte draw where the device's polygon stipple is off and holds what their epilogue leaves, those whose shader has flag bit 0 with the structure's parameter block upload (the bump matrices of stages 1 to 3 and `c[21..25]`) where the device and the engine already hold it and, before the frame's structure target copy, where no pass's program has flag bit 20 (whose draw would make the copy), and an item's projected size changes nothing they draw, in every layer named here and layer 3's walk ([native-objects.md](native-objects.md), "Fade, the shader flag and the item's argument"). Layer 3's object parts draw every topology and subpart choice their records make, however many subparts a part has and a strip part's chosen subparts included (framescene.md slice 3, "Bit 9"), and its decorators draw from the scene only where skipping them leaves the device's render states as drawing them would, a pass whose restore list writes back what it sets included (native-decorators.md, "The glue"). Whole groups of layers 10, 11 and 14 also draw from the scene with no geometry handler, and the object filter draws natively (native-shadow-layers.md). The rest of R1 is not built: "R1's remainder" lists what still reaches the guest's draws. Of R5, layer 2 and layer 17 draw their structure and object items from the scene's plan as layers 1, 5, 7, 8 and 20 do (layer 2 at the main, alternate and first-person calls). The sky stage draws supported strips with the view's node palette and the material inputs at issue. The parts of R5 earlier stages draw (fog, water, layers 18, 19 and 21, the flares' colour fans, the post) are in "By caller"; no other slice is built. The stages it builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
+Status: Design. R0 is built. R1, R4, R5 and the parts of earlier stages listed below are partly built; no other slice is built.
 Code: `crates/platform/d3d/src` (what is deleted), `crates/rewrites/scene-extract/src` and `crates/rewrites/native-render/src` (what replaces it), `crates/rewrites/render-bridge/src` (the frame step and the census). Tests: named per slice below.
-Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). It is removed with the crate. No slice adds a switch.
+Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). It is removed with the crate. R4's producers have `impl.render.native.visibility` (on), which only turns them off.
+
+| Slice | Built | Where it is specified |
+|---|---|---|
+| R0 | `render.residual` and the three frame counters | [agent-api.md](../runtime/agent-api.md#renderresidual-residual-d3d-work) |
+| R1, structure | static items of layers 1, 5, 7, 8 and 20 draw from the scene's plan by default | framescene.md slice 4, "The stage" |
+| R1, objects | items of the scene's layers 1, 5, 7, 8 and 20 (layer 5's with the model's PRT stream) and the first person's layers 1, 7, 8 and 20 | framescene.md slice 4, "The stage" |
+| R1, object items with auxiliary state | draw with the rows and clip the toggle sets for their view where the device holds it off; those sampling the texture accumulation target bind its level outside layer 1; the first person's layer-3 items do both | [native-objects.md](native-objects.md) |
+| R1, object items with a fade byte | draw where the device's polygon stipple is off and holds what their epilogue leaves | [native-objects.md](native-objects.md), "Fade, the shader flag and the item's argument" |
+| R1, object items whose shader has flag bit 0 | draw with the structure's parameter block upload (the bump matrices of stages 1 to 3 and `c[21..25]`) where the device and the engine already hold it, and, before the frame's structure target copy, where no pass's program has flag bit 20 (whose draw would make the copy). An item's projected size changes nothing they draw, in every layer named here and layer 3's walk | [native-objects.md](native-objects.md), "Fade, the shader flag and the item's argument" |
+| R1, layer 3 object parts | draw every topology and subpart choice their records make, however many subparts a part has and a strip part's chosen subparts included | framescene.md slice 3, "Bit 9" |
+| R1, layer 3 decorators | draw from the scene only where skipping them leaves the device's render states as drawing them would, a pass whose restore list writes back what it sets included | native-decorators.md, "The glue" |
+| R1, layers 10, 11 and 14 | whole groups draw from the scene with no geometry handler; the object filter draws natively | native-shadow-layers.md |
+| R4 | the view projection builder `0x0002fb70` at every call it accepts; the portal, window, sphere and PVS producers after their comparisons; the main view's cluster set, window frusta and object set as shadow arms (1 frame in 64 compared, answer after 16 clean samples, guest on any difference) | [native-visibility.md](native-visibility.md#the-shadow-arms) |
+| R5, layers 2 and 17 | structure and object items draw from the scene's plan as layers 1, 5, 7, 8 and 20 do (layer 2 at the main, alternate and first-person calls); both are cut world layers (`cut::LAYER_CUTS`, layer 17 in slot 12) | [native-renderer.md](native-renderer.md) |
+| R5, sky | the sky stage draws supported strips with the view's node palette, the material inputs at issue and the draw's own cull mode | [native-renderer.md](native-renderer.md) |
+| R5, earlier stages | fog, water, layers 18, 19 and 21, the flares' colour fans and the post | "By caller" |
+| R5, what is kept | every layer 2, 6, 16 and 17 item and every sky strip left to its guest draw is a `scene_kept_*` count by cause | "R5's remainder" |
+
+Each R1 item is taken only where skipping its guest draw leaves the device's render states as drawing it would (a pass whose restore list writes back what it sets included), and on its own wherever drawing it ahead of the items the guest keeps cannot change the frame. "R1's remainder" lists what still reaches the guest's draws. The stages this builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
+
+```mermaid
+flowchart LR
+  subgraph Today
+    G1[guest front-end] --> D1[d3d resolves draws]
+    D1 --> C{native stage claims?}
+    C -- yes --> N1[native renderer]
+    C -- no --> B1[D3D backend]
+  end
+  subgraph End of the plan
+    S[sim thread: frame step] --> E[scene-extract] --> F[FrameScene] --> N2[native renderer]
+  end
+```
 
 The recompiled game runs its own render front-end every frame: it makes
 D3D8 calls and writes render-state and push-buffer words, `d3d` resolves
@@ -28,44 +60,23 @@ nobody has measured. Addresses are research points. No game data.
 
 ## Inventory: what the native stages do not claim
 
-There are three kinds of D3D use, and a stage that "draws natively" today
-removes only part of the first.
+| Kind | What | Where it shows |
+|---|---|---|
+| 1. Draws | A resolved draw reaches the backend unless an admission or a native producer committed a replacement | `d3d::device::backend_draws` counts the ones that do |
+| 2. Draw setup the guest still runs for a claimed draw | The stages on the resolved-draw path replace the packet only: the guest's shader setup, state writes and stencil tail still run and go through `d3d` ([native-renderer.md](native-renderer.md), "Admission"). This is most of the front-end's CPU time | no draw count shows it |
+| 3. Everything that is not a draw | Clears, target binds, viewport and scissor fragments, visibility tests, texture and palette binds, resource reference counting and busy checks, fences, `KickOff`, the gamma ramp, vblank and `Swap` | entry counts |
 
-1. **Draws.** A resolved draw reaches the backend unless an admission or
-   a native producer committed a replacement (`d3d::device::backend_draws`
-   counts the ones that do).
-2. **Draw setup the guest still runs for a claimed draw.** The stages on
-   the resolved-draw path replace the packet only: the guest's shader
-   setup, state writes and stencil tail still run and still go through
-   `d3d` ([native-renderer.md](native-renderer.md), "Admission"). This is
-   most of the front-end's CPU time, and no draw count shows it.
-3. **Everything that is not a draw.** Clears, target binds, viewport and
-   scissor fragments, visibility tests, texture and palette binds,
-   resource reference counting and busy checks, fences, `KickOff`, the
-   gamma ramp, vblank and `Swap`.
+A stage that "draws natively" today removes only part of kind 1.
 
 ### External pass refusals
 
-A device refusal includes the producer's Rust pass type, its issue boundary,
-and the native stage for a typed plan. The first refusal for each producer,
-boundary, stage and reason is logged. Device counters retain every refusal.
-A failed reservation leaves the original guest draws available to its caller.
-A refusal from a pass with no corresponding guest draw can instead omit
-that operation.
+A device refusal includes the producer's Rust pass type, its issue boundary, and the native stage for a typed plan. The first refusal for each producer, boundary, stage and reason is logged. Device counters retain every refusal.
 
-`d3d::SceneSink` declines untyped passes and unsealed reservations inside a
-captured scene slot, except the commits of native producers it carries
-(water, flares and UI; [framescene.md](framescene.md)). The display graph needs retained inputs to record the
-operation on its own attachments. A one-shot pass carries no replay command.
-A swallowed post call whose pass records again (the glow and the screen
-effects, once their raster is frozen) commits as a carried scene stage
-(`Device::swallow_commit`, `prepare_carried_stage`, `commit_carried_stage`),
-which the sink retains as a `ReplayOp::Stage`, so it is not declined; a guest
-reference request, or a backend that cannot seal the stage, sends the call to
-`prepare_external` and the decline, and its packets replay.
-The sink names this case with the producer, so it can be distinguished from a
-binding failure or a backend recording failure. Outside captured slots these
-passes still use their normal backend path.
+A failed reservation leaves the original guest draws available to its caller. A refusal from a pass with no corresponding guest draw can instead omit that operation.
+
+`d3d::SceneSink` declines untyped passes and unsealed reservations inside a captured scene slot, except the commits of native producers it carries (water, flares and UI; [framescene.md](framescene.md)). The display graph needs retained inputs to record the operation on its own attachments. A one-shot pass carries no replay command.
+
+A swallowed post call whose pass records again (the glow and the screen effects, once their raster is frozen) commits as a carried scene stage (`Device::swallow_commit`, `prepare_carried_stage`, `commit_carried_stage`), which the sink retains as a `ReplayOp::Stage`, so it is not declined; a guest reference request, or a backend that cannot seal the stage, sends the call to `prepare_external` and the decline, and its packets replay. The sink names this case with the producer, so it can be distinguished from a binding failure or a backend recording failure. Outside captured slots these passes still use their normal backend path.
 
 ### By caller
 
@@ -79,11 +90,11 @@ these per caller with every stage on: the column "Count" says what exists.
 |---|---|---|---|---|
 | Layer draw `0x00044550`, layer 3, from `0x0002bed0` | indexed lists and strips, world and objects | world and object parts including passes with all colour writes masked and opaque One/Zero/Add blends, object templates with inherited blend and depth-write fields or instance-driven states, model decorators | parts whose material pass does not translate; objects the walk returns (`walk_unsupported`: a bit-11 part whose auxiliary state toggle does not read, a bit-6 part whose visible subparts do not read or number more than 64); decorators with an engine-driven state from a per-draw source or a lightmap stage whose globals bitmap is not uniform, whose skip would leave a render state other than the device holds (one the pass sets and its restore list does not write back, or one the restore list writes another value to: `scene_decorator_draws_state`), or whose layer-3 view's stage palettes, stencil or inherited cull do not read or hold; any view where one copy refuses. Setup (kind 2) for the resolved-draw remainder | 8.26 ms, 1,882 D3D entries a frame on the D3D path [a]; about 14 objects a frame returned [b] |
 | Layer draw, layers 1, 5, 7, 8, 20 | indexed | the structure's static items and the objects' items of layers 1, 5, 7, 8 and 20, layer 5's with the PRT stream the draw adds (the first person's 1, 7, 8 and 20) from the scene's plan (`frame-scene.layers`), under the stencil the geometry draw's prologue sets (`layer_pass::item_stencil`) | layer 5's object items whose PRT stream does not read or supplies incompatible registers or components, items whose pass leaves a render state other than the device holds (one it sets and its restore list does not write back, or one the restore list writes another value to: `layer_pass::skip_holds`), object items extraction names a cause for or whose passes do not plan, animated and per-draw items, every item after the first the plan cannot take, and every item with `frame-scene.layers=off` (kind 2 setup for all of it) | layer 1: 0.32 ms, 56 entries [a]; others under 0.3 ms |
-| Layer 2 (`0x0002c05b`; the alternate view's `0x0002bda3`; the first person's `0x00040284`) and the sky `0x0003ede0` (strip at `0x0004c976`) | indexed | layer 2's structure and object items at the main, alternate and first-person calls from the scene's plan (`frame-scene.layers`, `layer_pass::OVERLAY_LAYER`), under the device's stencil; the sky strip with per-view node rows, material bindings and the mode-2 stencil state; the remaining standard layer-2 geometry as packets | what layers 1, 5, 7, 8 and 20 refuse; other layer-2 handlers, unknown callers; unresolved sky geometry, transforms, materials or stencil state; guest sky selection and setup | 0.29 ms, 120 entries [a] |
+| Layer 2 (`0x0002c05b`; the alternate view's `0x0002bda3`; the first person's `0x00040284`) and the sky `0x0003ede0` (strip at `0x0004c976`) | indexed | layer 2's structure and object items at the main, alternate and first-person calls from the scene's plan (`frame-scene.layers`, `layer_pass::OVERLAY_LAYER`), under the device's stencil; the sky strip, culled or not, with per-view node rows, material bindings and the mode-2 stencil state; the remaining standard layer-2 geometry as packets | what layers 1, 5, 7, 8 and 20 refuse (`scene_kept_2_*`); other callers (`scene_kept_2_*_caller`); unresolved sky geometry, transforms, materials or stencil state (`scene_kept_sky_*`); guest sky selection and setup | 0.29 ms, 120 entries [a] |
 | Object shadows `0x000335e0`, `0x00032350` (both partial, as are their caster and receiver layers 10 and 11) | indexed into shadow targets, then receivers | object lists, histories and admitted mask caster bodies ([native-light-gather.md](native-light-gather.md), L7), whole groups of layers 10, 11 and 14 from the scene with no geometry handler, the filter's native quads; sorted BSP and model draws of layers 10, 11 and 14, at 1x on one backend | scaled and E3 display copies, interpolated replay, a missing freeze or resource, a pending callback, an animated gel, guest creature shadows, and the mask chain's target and device setup | 1.24 ms, 182 entries [a] |
 | Dynamic lights `0x00031c80`, per light `0x00031170` | indexed, layers 10 to 14; gel quads into target 13 | `dynamic_lights` and `light_passes` are partial. The Rust gather supplies ordered lights. Eligible diffuse and specular groups draw together over structure and models. | A refused gather runs the guest loop. Shadow and opacity targets, shader gels, incomplete groups and unavailable device copies keep their layer handlers | 1.88 ms without the per-light passes [a]; per-light time not broken out |
 | First person `0x0003fdf0(0)`, `(1)` and its lights `0x000404b0` | cut | `0x0003fdf0(0)` and `(1)`: the scene's first-person parts in slot 10, a part that does not draw a named drop ([native-objects.md](native-objects.md), "First person"); its lights' layers 12 and 13 whose groups the scene holds whole, from the scene ([native-lights.md](native-lights.md)) | the lights' list rebuilds, constants and layers 11 and 14, a group the scene does not hold whole, a light with a shader gel | 0.84 ms, 404 entries; lights 0.39 ms, 173 entries [a] |
-| Fog (layer 16), water (layer 6) | indexed, full-screen | planar fog, passes with all colour writes masked, the water edge blend including rigid placements and rasterizer bitmap stages 14 and 15, eligible indexed ranges in mixed lists, and the indexed composite in `0x0003c3c0` | mixed-list sorting and state setup, refused ranges and composite inputs, the conditional alpha clear and resource updates | under 0.3 ms [a] |
+| Fog (layer 16), water (layer 6) | indexed, full-screen | planar fog, passes with all colour writes masked, the water edge blend including rigid placements and rasterizer bitmap stages 14 and 15, eligible indexed ranges in mixed lists, and the indexed composite in `0x0003c3c0` | the whole list when one item refuses (`scene_kept_{6,16}_*_order`), objects' items, other callers, view refusals (`scene_kept_{6,16}_*`); mixed-list sorting and state setup, refused ranges and composite inputs, the conditional alpha clear and resource updates | under 0.3 ms [a] |
 | Camouflage (layers 18, 19, sorted handler `0x00041cc0`), hologram (21, `0x000423c0`) | indexed with a framebuffer snapshot | layers 18, 19 and 21's object items from the scene's plan (`frame-scene.layers`), with the shader the record names over the part's and a copy of the bound colour for the view stages ([native-water-fog.md](native-water-fog.md)) | layers 18, 19 and 21's items extraction names a cause for (the stipple fade among them), whose shader's passes do not compile or plan, and every item after the first refused; the handlers' replays of the scene's layers | not measured |
 | Sorted transparents `0x0001e370` (also `0x00040870`), layer 15 | indexed; per-handler immediate | Rust sort and native indexed draws for the standard layer-15 handler, including individual subranges and resolved object draws without a lighting owner | handler setup and restore, nonstandard emitters, ranges that fail state or attachment validation | 2.58 ms, 1,010 entries [a] |
 | Particles `0x0023ed5c`, effect quads and contrails `0x0004b252`, `0x0004b28c` | inline quads and strips | the draw packet | iteration, property evaluation, ribbon construction, the per-view update `0x00174420`; unknown builders | not broken out |
@@ -91,7 +102,7 @@ these per caller with every stage on: the column "Count" says what exists.
 | Lens flares: writer `0x00020bb0`, reader `0x00020770` | a counted draw between an inline begin and `EndVisibilityTest` | the pixel counter, on the GPU | the counted draw, the report slots, `GetVisibilityTestResult` | none |
 | Post: `0x00013870`, colour pass `0x000214f0`, screen effect `0x0002d140` | strips into side targets | glow, screen strips, blur and convolutions, as one transaction per call, including glow quads with live blend and channel masks, mixed A8/X8 framebuffer reads, and a final strip or convolution into a side target | a call with an unsupported input or a missing live target; a reference-only intermediate under scaling | 0.76 ms, 164 entries [a] |
 | `0x0002dd30`, `0x0002df00` (the flares' tests and draws) | a counted visibility fan, reflection billboards and a filtered composite | six colour fan sites ([retail trace](notes/2026-11-24-lens-flares.md)) | visibility test and feedback, guest queue and target changes, refused colour fans | committed fan ranges per copy in `render.scene` |
-| Layer 17 `0x0002c30b` (S: bloom) | indexed | its structure and object items from the scene's plan (`frame-scene.layers`) | what layers 1, 5, 7, 8 and 20 refuse | none |
+| Layer 17 `0x0002c30b` (S: bloom) | indexed | its structure and object items from the scene's plan (`frame-scene.layers`) | what layers 1, 5, 7, 8 and 20 refuse (`scene_kept_17_*`); other callers (`scene_kept_17_*_caller`) | none |
 | HUD `0x001917eb` (tail `0x0013954b`), shader quad `0x0022a664` | immediate quads through a shader | tag-shader and supported generic widget quads through the overlay, motion sensor compositing fans | the shader draw `0x0001bbf0` per quad; uncovered widget helpers (`guest_builder_draw`); the built-in diffuse shader | none: the HUD is outside the timed scene-pass sites |
 | UI `0x00147af1` (widget dispatch `0x00235445`), screen quads `0x00035b90`/`0x000363a0`/`0x00036560` | one inline quad per glyph or bitmap | supported inline bitmap and glyph quads through the overlay, model-widget material groups | layout, shaping, state and target changes; a wrap or pending fence; model-widget groups that refuse | none for the UI alone; the menu frame is 755 to 1,704 draws [c], most of them its 3D view |
 | Fade `0x00040890` | full-screen overlay | all six fade modes through the native overlay | guest state setup and draws refused by the overlay | not measured |
@@ -343,6 +354,18 @@ section 12, without either option. Results go in a new
 
 ### The frame
 
+```mermaid
+sequenceDiagram
+  participant Sim as sim thread
+  participant Ext as scene-extract
+  participant R as render thread
+  participant W as window
+  Sim->>Sim: 1. writes the tick reads
+  Sim->>Ext: 2. extraction reads guest memory
+  Ext->>R: 3. seal and publish FrameScene
+  R->>W: newest finished frame
+```
+
 `render_frame_and_present` `0x00223240` is the frame step, and it is
 replaced whole (**Design**). The replacement runs on the sim thread after
 the frame's ticks:
@@ -378,14 +401,14 @@ classified readers, 73 read run state and 30 start from it.
 
 | Subsystem | Guest code that stops running | Replacement | State today |
 |---|---|---|---|
-| Views and cameras | `0x002234e0`, `0x00223080` | `scene-extract` builds the view records from the observer cameras and writes them, since other code reads them | the main view's viewport layout, render camera, projection terms, start cluster and mode built beside the guest's and compared field by field; the visibility takes the Rust camera when equal ([native-visibility.md](native-visibility.md#the-view-records)). Cinematic and override cameras remain guest-owned. The comparison writes nothing |
+| Views and cameras | `0x002234e0`, `0x00223080` | `scene-extract` builds the view records from the observer cameras and writes them, since other code reads them | the projection builder `0x0002fb70` runs in Rust at the guest's call ([native-visibility.md](native-visibility.md#the-projection-builder)); the main view's viewport layout, render camera, projection terms, start cluster and mode built beside the guest's and compared field by field, and the visibility takes the Rust camera when equal ([native-visibility.md](native-visibility.md#the-view-records)). The render camera write, cinematic and override cameras remain guest-owned |
 | Visibility | `0x00040e90`, the portal traversal, the light frustum setup `0x000c1d90` | a Rust traversal over the BSP's clusters and portals; the Rust scene lists consume it | lists built; every game view's traversal (portal flood, sphere mode, the visible set and its run-time rows) and object set, tested against the guest's window frusta, built beside the guest's, compared as sets, and carried by the view, the default and the guest's lists the fallback a decline takes; the sphere and frustum light views compared ([native-visibility.md](native-visibility.md)); verified portal, sphere and PVS calls publish from Rust; the guest owns source-window overlap records |
 | World | the layer draws of 1, 3, 5, 7, 8, 20 over structure | `native_render::world` and `layer_pass` from tags, whole-call (framescene.md slice 4) | built for layer 3; for 1, 5, 7, 8 and 20 the structure's static items, and objects' items of 1, 5, 7, 8 and 20 |
-| Objects | `OBJECT_RENDER_SETUP` `0x00133790`, the layer-3 handlers, the first person | the Rust object setup and typed instances; a part the walk cannot read is a named drop, not a guest draw | built, with a remainder |
+| Objects | `OBJECT_RENDER_SETUP` `0x00133790`, the layer-3 handlers, the first person | the Rust object setup and typed instances; an object the walk cannot take keeps its guest handler's draw (`scene_kept_3_object_*`) | built, with a remainder |
 | Decorators | builds `0x0004de20`, draw `0x0004e260` | `native_render::decorators` ([native-decorators.md](native-decorators.md)) | built, not verified |
 | Sky, layer 2 | `0x0003ede0`, the layer-2 handlers | a sky stage from the scenario's sky and its model; layer 2 from the scene's plan | layer 2 from the plan at the main, alternate and first-person calls; per-view sky model strips with resolved materials and stencil, with packet fallback |
 | Lights and shadows | `0x00031c80`, `0x00031170`, `0x000335e0`, `0x00032350`, `0x000404b0`, gels | typed light groups and shadow layers ([native-lights.md](native-lights.md), [native-shadow-layers.md](native-shadow-layers.md)), the entries as Rust bodies ([native-light-gather.md](native-light-gather.md)); the renderer's own selection in E3 mode ([e3-lighting.md](e3-lighting.md)) | partly built |
-| Effects and particles | the producers, their property evaluation, ribbon construction, `0x00174420`, the sorted dispatch `0x0001e370` | a Rust effect pass that walks the effect and particle datums, makes the same draws from the effects seed, writes the same stamps and emits instanced quads and ribbons | packet only |
+| Effects and particles | the producers, their property evaluation, ribbon construction, `0x00174420`, the sorted dispatch `0x0001e370` | a Rust effect pass that walks the effect and particle datums, makes the same draws from the effects seed, writes the same stamps and emits instanced quads and ribbons | packet; the stamps and the dispatch's state made in Rust beside the guest and compared ("R2's shadow arm") |
 | Decals | the D3D backend draw when admission succeeds | a native quad packet from the callback's resolved array draw ([native-decals-research.md](native-decals-research.md)) | packet only. The guest walks and maintains the decal pool. |
 | Fog, water, camouflage, hologram | layers 16, 6, 18, 19, 21 | typed late passes sampling the scene's depth and colour on the GPU | fog, water, 18, 19 and 21 partly built |
 | Lens flares | `0x00020bb0`, `0x00020770`, the visibility entries | a native query pass; the flare's own fade state is advanced in Rust from its result | Native counted and colour fans, fade state guest-owned |
@@ -423,69 +446,25 @@ blend) is dropped and counted: the overlay has no guest draw behind it.
 `render.stats` reports the counts as `native_ui_overlay_*`
 ([agent-api.md](../runtime/agent-api.md#renderstats)).
 
-A `Blur` item blurs what the items before it drew, inside its clip: the
-menus' backdrop under a dialog. It carries the guest's steps by value
-(each step's spread, the tap's offset over it, and the constant of the
-combiner that blends the taps, `pick`), and the plan turns the spreads
-into offsets that are fractions of the target, so a blur looks the same
-at any scale. The plan ends the batch before a blur
-(`native_render::overlay::PlanBlur`); `OverlayGpu` ends its pass there,
-copies the target, runs each step as four bilinear taps blended in pairs
-by the guest's combiner between two scratch targets, and writes the
-result back through the texture combiner into every channel inside the
-clip. Over a target it cannot copy or sample, every blur is dropped and
-counted (`refused_blur`). In the game the blur under a dialog is drawn
-this way in place of the Kawase blur's quads
-([native-post-hud.md](native-post-hud.md#the-blur-under-a-dialog)). A `ModelView` item is a
-model widget's camera and objects with its viewport as the clip. No
-stage draws one yet: the plan drops it and counts it
-(`refused_model_view`).
+A `Blur` item blurs what the items before it drew, inside its clip: the menus' backdrop under a dialog. It carries the guest's steps by value (each step's spread, the tap's offset over it, and the constant of the combiner that blends the taps, `pick`), and the plan turns the spreads into offsets that are fractions of the target, so a blur looks the same at any scale. The plan ends the batch before a blur (`native_render::overlay::PlanBlur`); `OverlayGpu` ends its pass there, copies the target, runs each step as four bilinear taps blended in pairs by the guest's combiner between two scratch targets, and writes the result back through the texture combiner into every channel inside the clip.
 
-The HUD editor and HUD kit preview use `hud_edit::overlay::draw_list`.
-In the game, each bitmap or glyph is captured at its draw callback with
-the actual corners, inputs, bound image and evaluated shader constants.
-The guest still selects the visible widgets and places each shield
-layer and each glyph. The overlay executes supported widget combiners
-at their place in the frame.
-See [the HUD on the overlay](native-post-hud.md#the-hud-on-the-overlay).
-The renderer's glyph atlas is `native_render::overlay::GlyphPages` (one
-page per font, filled by the host from the fonts as the game serves them:
-`game::hud_overlay::fill_glyphs`, each glyph decoded once, resampled to
-the display's density ([high-resolution.md](high-resolution.md#text),
-`font::coverage::upsample`) and uploaded
-once by `ui_gpu::OverlayResidency`). A run of menu widgets is placed with
-the UI fit its draw carries (`render_bridge::ui_layout`'s rule), so its
-widgets land in the same safe area the game's own draws keep; its glyph
-pages draw near 1:1 and are sampled point-wise.
+Over a target it cannot copy or sample, every blur is dropped and counted (`refused_blur`). In the game the blur under a dialog is drawn this way in place of the Kawase blur's quads ([native-post-hud.md](native-post-hud.md#the-blur-under-a-dialog)). A `ModelView` item is a model widget's camera and objects with its viewport as the clip.
 
-The UI's producer is `scene_extract::ui::draw_list`. Its input, a
-`UiFrame`, is the guest's UI draws in call order: the fade, the solid
-rectangles of `0x00052ce7`, the loading draw's bitmaps and the screens
-of `0x00147af1`, each screen with its widgets' headers (type, depth,
-bias, rectangle, animated offset, alpha) and what each draws (a bitmap,
-a shader bitmap, text, a model view, or nothing for a container). Each
-screen's widgets are drawn in the order of the guest's comparator
-`0x002356d8` as the C runtime's `qsort` applies it (`sort_widgets`: the
-deeper first, ties within 0.001 by bias, smaller first, then by type,
-larger first; not stable), and a dialog's screen first draws its backdrop
-as a fill and a blur. Text is laid out by the caller's fonts (`UiText`),
-clipped to the widget's rectangle. A shader bitmap names its shader, so
-it is refused until tag shaders translate.
+No stage draws one yet: the plan drops it and counts it (`refused_model_view`).
 
-The game reads the guest's widgets on the sim thread at each sorted list
-(`render_bridge::native_hud::ui_overlay`), in the guest's own sorted
-order: each drawn widget is read (`scene_extract::ui::read_widget`) and
-listed, consecutive exact ones are drawn by one overlay pass placed at
-the first one's draw, their draws are skipped, and the list's skipped
-draws are checked against its claim ([native-post-hud.md](native-post-hud.md#the-menus-on-the-overlay)).
-`read_widget` reads containers, and `ui_overlay::bitmaps` a bitmap
-widget's quad. The class readers also claim supported text, lists and
-buttons. Meters, scrolling bitmaps and unsupported widget states keep
-their guest builders. Eligible screen quads from those builders reach
-the overlay at submission. Sorted-list refusals are counted by reason
-(`native_ui_overlay_menu_refused_*`). The fade, bars and loading screen
-are not read into a `UiFrame` yet; their quads are the producers of
-[native-post-hud.md](native-post-hud.md#native-ui).
+The HUD editor and HUD kit preview use `hud_edit::overlay::draw_list`. In the game, each bitmap or glyph is captured at its draw callback with the actual corners, inputs, bound image and evaluated shader constants. The guest still selects the visible widgets and places each shield layer and each glyph.
+
+The overlay executes supported widget combiners at their place in the frame. See [the HUD on the overlay](native-post-hud.md#the-hud-on-the-overlay). The renderer's glyph atlas is `native_render::overlay::GlyphPages` (one page per font, filled by the host from the fonts as the game serves them: `game::hud_overlay::fill_glyphs`, each glyph decoded once, resampled to the display's density ([high-resolution.md](high-resolution.md#text), `font::coverage::upsample`) and uploaded once by `ui_gpu::OverlayResidency`).
+
+A run of menu widgets is placed with the UI fit its draw carries (`render_bridge::ui_layout`'s rule), so its widgets land in the same safe area the game's own draws keep; its glyph pages draw near 1:1 and are sampled point-wise.
+
+The UI's producer is `scene_extract::ui::draw_list`. Its input, a `UiFrame`, is the guest's UI draws in call order: the fade, the solid rectangles of `0x00052ce7`, the loading draw's bitmaps and the screens of `0x00147af1`, each screen with its widgets' headers (type, depth, bias, rectangle, animated offset, alpha) and what each draws (a bitmap, a shader bitmap, text, a model view, or nothing for a container). Each screen's widgets are drawn in the order of the guest's comparator `0x002356d8` as the C runtime's `qsort` applies it (`sort_widgets`: the deeper first, ties within 0.001 by bias, smaller first, then by type, larger first; not stable), and a dialog's screen first draws its backdrop as a fill and a blur.
+
+Text is laid out by the caller's fonts (`UiText`), clipped to the widget's rectangle. A shader bitmap names its shader, so it is refused until tag shaders translate.
+
+The game reads the guest's widgets on the sim thread at each sorted list (`render_bridge::native_hud::ui_overlay`), in the guest's own sorted order: each drawn widget is read (`scene_extract::ui::read_widget`) and listed, consecutive exact ones are drawn by one overlay pass placed at the first one's draw, their draws are skipped, and the list's skipped draws are checked against its claim ([native-post-hud.md](native-post-hud.md#the-menus-on-the-overlay)). `read_widget` reads containers, and `ui_overlay::bitmaps` a bitmap widget's quad. The class readers also claim supported text, lists and buttons. Meters, scrolling bitmaps and unsupported widget states keep their guest builders.
+
+Eligible screen quads from those builders reach the overlay at submission. Sorted-list refusals are counted by reason (`native_ui_overlay_menu_refused_*`). The fade, bars and loading screen are not read into a `UiFrame` yet; their quads are the producers of [native-post-hud.md](native-post-hud.md#native-ui).
 
 ### What stays the same, and the proof
 
@@ -520,9 +499,9 @@ D3D entry calls.
 |---|---|---|---|---|---|
 | R0 | `render.residual`, the three counters, the baseline on the four maps | S | nothing | none; it orders the rest | the method's tests; `totals.residual` equals `draws` in the same capture |
 | R1 | The opaque block whole: layers 1, 3, 5, 7, 8, 20, objects, decorators, first person. framescene.md slices 3 and 4. Built: the per-item skips of every layer (each layer `partial`) and the layer draw's return when every item of a layer is native (`frame_step::layer`); not built: "R1's remainder" | L | R0; zero `walk_unsupported` and `layer_remainder` | 9.4 ms, 2,340 entries | 8.2's four rules; `producers` rows for these layers at zero |
-| R2 | Transparents and effects: the sorted dispatch, particles, contrails, decals, effect quads, in Rust | L | R0; the effects seed and `0x00174420` stamps reproduced | 2.6 ms, 1,010 entries | hash gate; order test; parity on explosion frames |
+| R2 | Transparents and effects: the sorted dispatch, particles, contrails, decals, effect quads, in Rust. Built: the display queue's runs ("R2's first slice"), the stamps, effects seed and dispatch state as a shadow arm ("R2's shadow arm") | L | R0; the shadow arm answering on the census corpus | 2.6 ms, 1,010 entries | hash gate; order test; parity on explosion frames |
 | R3 | Lights and shadows whole: the gather, per-light passes, object shadows, first-person lights, gels | L | R1 | 3.5 ms plus the per-light passes, 355 entries | hash gate; parity on lit interiors at 1x and 4x |
-| R4 | Visibility and view records in Rust | M | R1 | 0.9 ms, no draws | cluster and object sets equal the guest's on dumped scenes; hash gate |
+| R4 | Visibility and view records in Rust | M | R1 | 0.9 ms, no draws | cluster and object sets equal the guest's on dumped scenes (`scene_visibility_{clusters,frusta,objects}_proven` 1, `_differ` 0); hash gate |
 | R5 | The rest of a game view: sky and layer 2, fog and water remainders, layers 17, 18, 19, 21, `0x0002dd30`, `0x0002df00`, the post remainder, flares, clears and binds | M | R1; the unread callers read | 1.1 ms, 284 entries | parity per effect; `scene_readback` zero |
 | R6 | `Overlay` stage and the HUD | M | R0 | not measured | text and HUD parity at 1x exact; HUD frames on every weapon and vehicle |
 | R7 | Menus, text, loading, fade, bars, model widgets, the backdrop | L | R6 | not measured; the menu's draws less its 3D view | menu, settings, pregame lobby and loading captures; UI order test |
@@ -554,9 +533,74 @@ each entry of the loop `0x0001e370`, handler or null). Tests:
 `layer_plan_15_display_queue_{runs_planned,runs_drawn,parts_drawn,runs_refused,runs_undrawn,old_path,hook_foreign_frame}`
 (native-renderer.md).
 
-Not built: replacing the guest's loop. It needs the handlers' state and
-the effects seed and `0x00174420` stamps first, so the loop's residual
-count does not drop yet.
+The guest's loop still dispatches every entry, so the loop's residual
+count does not drop yet. What blocks replacing it is made in Rust beside
+the guest in "R2's shadow arm".
+
+### R2's shadow arm
+
+Built (**Code**): `render-bridge/src/effects_shadow.rs`. The state that
+blocks replacing `0x0001e370`, made in Rust and compared with the guest's.
+Switch `frame-scene.effects-shadow` (on).
+
+| Arm | Rust | Compared at the return with |
+|---|---|---|
+| Stamps | `effects_shadow/view_update.rs`: each outermost `0x00174420` call, its callees `0x001751d0`, `0x00137bd0`, `0x0003eb20`, `0x00165010`, `0x00181800`, `0x00249bb0` and its queue call `0x0001e4e0` | systems, particles, the two particle-model singletons, the list's end and overflow byte, the rows it queues, the seeds |
+| Dispatch | `effects_shadow/dispatch.rs`: the loop's entries in order, each handler named | the Rust sort's order (at `TRANSPARENT_ORDER_READY`); seeds, systems, particles, the list and its live rows unchanged across the loop |
+| Effects seed | no path under `0x00174420` or the named handlers loads `[0x004e7408]` (the lifted image's call graph) | both arms: the seeds do not move |
+
+What the stamps arm writes:
+
+| Field | Write |
+|---|---|
+| system `+0xd` bit 2 | set when forced (the view's cluster, or `+0xc` bit `0x400`); cleared when culled in |
+| child `+0xc` bit `0x400` | the parent's, before the child's update |
+| particle `+0x30` | the frame counter `0x004ba034`, for a particle of the other view or one the cull keeps |
+| singletons `0x00479868`, `0x00479874` `+4`, `+8` | the tag and tag data `0x00137bd0` sets before each read |
+| list row | class 3, depth, handler `0x00173c90`, payload (system, particle), position, for shader flag `0x8000` |
+
+The dispatch arm leaves the singletons out: `0x00137bd0` sets one before
+every read, so the loop's last value is never read. The handlers' other
+writes (`0x00035b00`'s `0x004670bc`, D3D state) are not compared.
+
+The gate, per frame of `0x004ba034`:
+
+| Rule | Value |
+|---|---|
+| frames compared | 1 in 64 (`SAMPLE`) |
+| answers after | 8 sampled frames in a row compared clean (`CLEAN`); a sampled frame with nothing to compare neither counts nor breaks the run |
+| stops answering | at the first difference or refusal |
+| while answering | each run of consecutive particle or decal entries (handlers `0x00173c90`; `0x00041cc0`, `0x000423c0`) goes to `RunHost::draw_display_entries` at `TRANSPARENT_DISPATCH_NEXT` after its last entry |
+
+The model refuses, by name: `fault`, `layout`, `no_definition`,
+`no_model`, `singleton_vtable`, `object_path` (a shader flag besides
+`0x8000` calls `0x00040e30`), `x87` (the distance sum at 64-bit precision
+or another rounding mode), `distance_range`, `depth`, `cycle`, `mxcsr`.
+
+`render.stats`, each `layer_plan_15_effects_shadow_<outcome>`:
+
+| Counter | Counts |
+|---|---|
+| `stamps_matched`, `stamps_mismatched_{seed,systems,particles,singletons,list,entries}`, `stamps_refused_<reason>`, `stamps_unbalanced`, `stamps_entries_queued` | outermost `0x00174420` calls on sampled frames |
+| `dispatch_matched`, `dispatch_mismatched_{order,seed,systems,particles,list,rows}`, `dispatch_refused_{plan,order,mxcsr,<reason>}`, `dispatch_unbalanced` | sorted dispatches on sampled frames |
+| `dispatch_entries_{geometry,particle,contrail,decal,null,other}` | entries of sampled dispatches, by handler |
+| `frames_sampled`, `frames_clean`, `frames_unclean`, `frames_empty`, `opened`, `fallback`, `answering_frames` | the gate |
+| `entry_runs_planned_<kind>`, `entry_runs_drawn_<kind>`, `entry_runs_entries_<kind>`, `entry_runs_refused_<kind>`, `entry_runs_no_host_<kind>`, `entry_runs_undrawn` | the runs while answering |
+
+Tests: `view_update.rs` (`a_forced_system_stamps_and_queues_each_particle`,
+`the_other_view_stamps_only_and_a_rejected_particle_is_not_stamped`,
+`children_take_the_parents_forced_bit_and_are_updated`,
+`what_the_model_cannot_make_is_a_named_refusal`,
+`the_distance_keeps_the_x87_precision_or_refuses`,
+`the_fade_and_the_frustum_follow_the_guests_compares`), `dispatch.rs`,
+`effects_shadow.rs` (the gate, a matching and a differing call and
+dispatch, the runs).
+
+Still the guest's: every handler body (the particle draw `0x00174f80` and
+its property evaluation, `0x00035b00`, the decal-list replays), the calls
+of `0x00174420` themselves, and `0x00040e30`. No `RunHost` is installed,
+so every run counts `entry_runs_no_host_<kind>`: the display copy's own
+particles and decals need a host that draws them.
 
 ### R1's remainder
 
@@ -678,6 +722,44 @@ edges (`boot`, `game`, `cli`, `h2host`, `uwp-host`, `tools/perf`),
 `impl.render.native`, and [d3d.md](d3d.md)'s device model. The entry
 inventory in d3d.md is a fact about the retail image and stays as a
 reference page.
+
+### R5's remainder
+
+What keeps a guest draw in R5's stages, by counter (**Code**; causes in
+[native-world-walk.md](native-world-walk.md), "What the scene cannot draw
+keeps its guest draw"):
+
+| Stage | Counter | Kept |
+|---|---|---|
+| Layer 2, scene and alternate view | `scene_kept_2_*`, `scene_kept_alt2_*` | what the plan refuses, as layers 1, 5, 7, 8 and 20 |
+| Layer 17 | `scene_kept_17_*` | the same, at the scene's call only |
+| Layers 2 and 17, other callers | `scene_kept_{2,17}_<kind>_caller` | every item (`native_layers::UNTAKEN_CALLER`) |
+| Fog, layer 16 | `scene_kept_16_*` | the walk's per-slot causes; one refused item keeps the list (`order`), since the guest sorts it; objects' items; other callers; view refusals. A record with no layer-16 entry draws nothing and is not counted (`fog::guest_items`) |
+| Water, layer 6 | `scene_kept_6_*` | as the fog's, plus `target_view` and `no_parts` |
+| Sky strip | `scene_kept_sky_*` | extraction, view and range refusals, then `IndexedPass::for_sky`'s |
+
+Not built:
+
+- **The sky from the scene.** The strip is still admitted at its resolved
+  draw (`native_residual_glue`), so the guest's sky selection, its node
+  palette upload and the strip's setup run. Drawing it from a
+  `FrameScene` sky item needs the material's evaluated constants in the
+  scene.
+- **Fog and water beside a kept item.** The layer draw sorts its entries
+  and the passes blend, so the native pass cannot draw ahead of one item it
+  leaves without changing the result. An object's fog item keeps the whole
+  layer 16 until objects' fog draws from the scene.
+- **Layer 2's packets.** The standard geometry the plan leaves at the main
+  and alternate calls is admitted at its resolved draw, kind 2 setup
+  included.
+
+Tests: `layer_17_and_an_untaken_callers_layer_2_count_what_they_keep`
+(`native_layers`), `what_the_guest_still_draws_is_counted_scene_kept_by_cause`
+(`tests/native_fog.rs`),
+`each_kept_item_names_its_slot_and_an_entryless_record_is_not_drawn`
+(`native_render::fog`), `a_sky_strip_keeps_its_cull_and_each_refusal_is_named`
+(`tests/world_layers_gpu.rs`), `a_kept_strip_is_counted_scene_kept_by_its_cause`
+(`native_sky`), `the_world_layers_are_cut_in_their_slots` (`tests/cut.rs`).
 
 ## Rules and limits
 
