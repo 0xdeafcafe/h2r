@@ -6,6 +6,7 @@
 pub mod body;
 mod budget;
 pub mod camera;
+pub mod ext;
 pub mod files;
 #[cfg(test)]
 mod file_tests;
@@ -203,3 +204,6 @@ mod waves_tests;
 
 #[cfg(test)]
 mod piece_tests;
+
+#[cfg(test)]
+mod ext_tests;

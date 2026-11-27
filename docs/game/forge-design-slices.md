@@ -385,6 +385,8 @@ built, its squad sink issues `actor_net::squads::SquadOp` through the
 entry Firefight uses, so a trigger can place a squad on a map that has
 the ground.
 
+Built so far: `forge::ext` (`crates/extensions/forge/src/ext.rs`) is `ForgeExt`'s canonical byte form (emitter counters, node state, barrier switches, volume occupancy and the `random` seed, each list in op-id order, refused if unsorted, trailing or over the 64 KiB cap), a volume's entered and left sets, and `Emitter::shot`, which gives an emitter's burst from the tick count alone. The graph's evaluation, the Forge step, the hash entry and the worker-count test are not built.
+
 **F10 in detail.** A `transplant` recipe copies a tag and its closure
 from a source map on the player's disc (`tags::schema::transplant`,
 `TagSet::add_tag`), names the source by hash, and is refused with its
