@@ -406,7 +406,7 @@ classified readers, 73 read run state and 30 start from it.
 | Decorators | builds `0x0004de20`, draw `0x0004e260` | `native_render::decorators` ([native-decorators.md](native-decorators.md)) | built, not verified |
 | Sky, layer 2 | `0x0003ede0`, the layer-2 handlers | a sky stage from the scenario's sky and its model; layer 2 from the scene's plan | layer 2 from the plan at the main, alternate and first-person calls; per-view sky model strips with resolved materials and stencil, with packet fallback |
 | Lights and shadows | `0x00031c80`, `0x00031170`, `0x000335e0`, `0x00032350`, `0x000404b0`, gels | typed light groups and shadow layers ([native-lights.md](native-lights.md), [native-shadow-layers.md](native-shadow-layers.md)), the entries as Rust bodies ([native-light-gather.md](native-light-gather.md)); the renderer's own selection in E3 mode ([e3-lighting.md](e3-lighting.md)) | partly built |
-| Effects and particles | the producers, their property evaluation, ribbon construction, `0x00174420`, the sorted dispatch `0x0001e370` | a Rust effect pass that walks the effect and particle datums, makes the same draws from the effects seed, writes the same stamps and emits instanced quads and ribbons | packet only |
+| Effects and particles | the producers, their property evaluation, ribbon construction, `0x00174420`, the sorted dispatch `0x0001e370` | a Rust effect pass that walks the effect and particle datums, makes the same draws from the effects seed, writes the same stamps and emits instanced quads and ribbons | packet; the stamps and the dispatch's state made in Rust beside the guest and compared ("R2's shadow arm") |
 | Decals | the D3D backend draw when admission succeeds | a native quad packet from the callback's resolved array draw ([native-decals-research.md](native-decals-research.md)) | packet only. The guest walks and maintains the decal pool. |
 | Fog, water, camouflage, hologram | layers 16, 6, 18, 19, 21 | typed late passes sampling the scene's depth and colour on the GPU | fog, water, 18, 19 and 21 partly built |
 | Lens flares | `0x00020bb0`, `0x00020770`, the visibility entries | a native query pass; the flare's own fade state is advanced in Rust from its result | Native counted and colour fans, fade state guest-owned |
@@ -497,7 +497,7 @@ D3D entry calls.
 |---|---|---|---|---|---|
 | R0 | `render.residual`, the three counters, the baseline on the four maps | S | nothing | none; it orders the rest | the method's tests; `totals.residual` equals `draws` in the same capture |
 | R1 | The opaque block whole: layers 1, 3, 5, 7, 8, 20, objects, decorators, first person. framescene.md slices 3 and 4. Built: the per-item skips of every layer (each layer `partial`); not built: "R1's remainder" | L | R0; zero `walk_unsupported` and `layer_remainder` | 9.4 ms, 2,340 entries | 8.2's four rules; `producers` rows for these layers at zero |
-| R2 | Transparents and effects: the sorted dispatch, particles, contrails, decals, effect quads, in Rust | L | R0; the effects seed and `0x00174420` stamps reproduced | 2.6 ms, 1,010 entries | hash gate; order test; parity on explosion frames |
+| R2 | Transparents and effects: the sorted dispatch, particles, contrails, decals, effect quads, in Rust. Built: the display queue's runs ("R2's first slice"), the stamps, effects seed and dispatch state as a shadow arm ("R2's shadow arm") | L | R0; the shadow arm answering on the census corpus | 2.6 ms, 1,010 entries | hash gate; order test; parity on explosion frames |
 | R3 | Lights and shadows whole: the gather, per-light passes, object shadows, first-person lights, gels | L | R1 | 3.5 ms plus the per-light passes, 355 entries | hash gate; parity on lit interiors at 1x and 4x |
 | R4 | Visibility and view records in Rust | M | R1 | 0.9 ms, no draws | cluster and object sets equal the guest's on dumped scenes; hash gate |
 | R5 | The rest of a game view: sky and layer 2, fog and water remainders, layers 17, 18, 19, 21, `0x0002dd30`, `0x0002df00`, the post remainder, flares, clears and binds | M | R1; the unread callers read | 1.1 ms, 284 entries | parity per effect; `scene_readback` zero |
@@ -531,9 +531,74 @@ each entry of the loop `0x0001e370`, handler or null). Tests:
 `layer_plan_15_display_queue_{runs_planned,runs_drawn,parts_drawn,runs_refused,runs_undrawn,old_path,hook_foreign_frame}`
 (native-renderer.md).
 
-Not built: replacing the guest's loop. It needs the handlers' state and
-the effects seed and `0x00174420` stamps first, so the loop's residual
-count does not drop yet.
+The guest's loop still dispatches every entry, so the loop's residual
+count does not drop yet. What blocks replacing it is made in Rust beside
+the guest in "R2's shadow arm".
+
+### R2's shadow arm
+
+Built (**Code**): `render-bridge/src/effects_shadow.rs`. The state that
+blocks replacing `0x0001e370`, made in Rust and compared with the guest's.
+Switch `frame-scene.effects-shadow` (on).
+
+| Arm | Rust | Compared at the return with |
+|---|---|---|
+| Stamps | `effects_shadow/view_update.rs`: each outermost `0x00174420` call, its callees `0x001751d0`, `0x00137bd0`, `0x0003eb20`, `0x00165010`, `0x00181800`, `0x00249bb0` and its queue call `0x0001e4e0` | systems, particles, the two particle-model singletons, the list's end and overflow byte, the rows it queues, the seeds |
+| Dispatch | `effects_shadow/dispatch.rs`: the loop's entries in order, each handler named | the Rust sort's order (at `TRANSPARENT_ORDER_READY`); seeds, systems, particles, the list and its live rows unchanged across the loop |
+| Effects seed | no path under `0x00174420` or the named handlers loads `[0x004e7408]` (the lifted image's call graph) | both arms: the seeds do not move |
+
+What the stamps arm writes:
+
+| Field | Write |
+|---|---|
+| system `+0xd` bit 2 | set when forced (the view's cluster, or `+0xc` bit `0x400`); cleared when culled in |
+| child `+0xc` bit `0x400` | the parent's, before the child's update |
+| particle `+0x30` | the frame counter `0x004ba034`, for a particle of the other view or one the cull keeps |
+| singletons `0x00479868`, `0x00479874` `+4`, `+8` | the tag and tag data `0x00137bd0` sets before each read |
+| list row | class 3, depth, handler `0x00173c90`, payload (system, particle), position, for shader flag `0x8000` |
+
+The dispatch arm leaves the singletons out: `0x00137bd0` sets one before
+every read, so the loop's last value is never read. The handlers' other
+writes (`0x00035b00`'s `0x004670bc`, D3D state) are not compared.
+
+The gate, per frame of `0x004ba034`:
+
+| Rule | Value |
+|---|---|
+| frames compared | 1 in 64 (`SAMPLE`) |
+| answers after | 8 sampled frames in a row compared clean (`CLEAN`); a sampled frame with nothing to compare neither counts nor breaks the run |
+| stops answering | at the first difference or refusal |
+| while answering | each run of consecutive particle or decal entries (handlers `0x00173c90`; `0x00041cc0`, `0x000423c0`) goes to `RunHost::draw_display_entries` at `TRANSPARENT_DISPATCH_NEXT` after its last entry |
+
+The model refuses, by name: `fault`, `layout`, `no_definition`,
+`no_model`, `singleton_vtable`, `object_path` (a shader flag besides
+`0x8000` calls `0x00040e30`), `x87` (the distance sum at 64-bit precision
+or another rounding mode), `distance_range`, `depth`, `cycle`, `mxcsr`.
+
+`render.stats`, each `layer_plan_15_effects_shadow_<outcome>`:
+
+| Counter | Counts |
+|---|---|
+| `stamps_matched`, `stamps_mismatched_{seed,systems,particles,singletons,list,entries}`, `stamps_refused_<reason>`, `stamps_unbalanced`, `stamps_entries_queued` | outermost `0x00174420` calls on sampled frames |
+| `dispatch_matched`, `dispatch_mismatched_{order,seed,systems,particles,list,rows}`, `dispatch_refused_{plan,order,mxcsr,<reason>}`, `dispatch_unbalanced` | sorted dispatches on sampled frames |
+| `dispatch_entries_{geometry,particle,contrail,decal,null,other}` | entries of sampled dispatches, by handler |
+| `frames_sampled`, `frames_clean`, `frames_unclean`, `frames_empty`, `opened`, `fallback`, `answering_frames` | the gate |
+| `entry_runs_planned_<kind>`, `entry_runs_drawn_<kind>`, `entry_runs_entries_<kind>`, `entry_runs_refused_<kind>`, `entry_runs_no_host_<kind>`, `entry_runs_undrawn` | the runs while answering |
+
+Tests: `view_update.rs` (`a_forced_system_stamps_and_queues_each_particle`,
+`the_other_view_stamps_only_and_a_rejected_particle_is_not_stamped`,
+`children_take_the_parents_forced_bit_and_are_updated`,
+`what_the_model_cannot_make_is_a_named_refusal`,
+`the_distance_keeps_the_x87_precision_or_refuses`,
+`the_fade_and_the_frustum_follow_the_guests_compares`), `dispatch.rs`,
+`effects_shadow.rs` (the gate, a matching and a differing call and
+dispatch, the runs).
+
+Still the guest's: every handler body (the particle draw `0x00174f80` and
+its property evaluation, `0x00035b00`, the decal-list replays), the calls
+of `0x00174420` themselves, and `0x00040e30`. No `RunHost` is installed,
+so every run counts `entry_runs_no_host_<kind>`: the display copy's own
+particles and decals need a host that draws them.
 
 ### R1's remainder
 

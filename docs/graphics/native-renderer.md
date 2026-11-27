@@ -233,9 +233,9 @@ then the only display water draw. `render.stats` counts the hook as
 draw, `hook_foreign_frame` a hook whose `esp` is not the dispatch's.
 
 The guest's own sorted loop (1,010 entries a frame on Old Mombasa) keeps
-running, because each handler's state setup, and the effects seed and
-`0x00174420` particle stamps that the effect entries write, are not
-reproduced in Rust (retire-d3d.md, R2). The water set holds layer-6 edge
+running. The stamps, the effects seed and the loop's state are made in
+Rust beside it and compared (retire-d3d.md, "R2's shadow arm"); the
+handler bodies stay the guest's. The water set holds layer-6 edge
 passes only, not the layer-15 pool programs, so a queue part is drawn with
 its edge passes at its sorted position.
 
