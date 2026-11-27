@@ -79,6 +79,9 @@ pub struct WeatherPlate {
     /// The sheet's colour: the player state's `+0xec..+0xf4` times its
     /// `+0x148 * +0x14c`, each clamped to `[0, 1]`.
     pub tint: [f32; 3],
+    /// The element's own colour (`+0x98`, `+0x9c`, `+0xa0`), each clamped to
+    /// `[0, 1]`: the plate's fourth definition colour.
+    pub fill: [f32; 3],
 }
 
 impl WeatherPlate {
@@ -154,6 +157,7 @@ pub(crate) fn summary_words(effects: &Effects, word: &mut dyn FnMut(u32)) {
         p.extent.iter().for_each(|x| word(x.to_bits()));
         p.size.iter().for_each(|x| word(x.to_bits()));
         p.tint.iter().for_each(|x| word(x.to_bits()));
+        p.fill.iter().for_each(|x| word(x.to_bits()));
     }
 }
 
@@ -201,6 +205,7 @@ mod tests {
             extent: [1.0, 2.0],
             size: [1.0; 3],
             tint: [1.0; 3],
+            fill: [0.0; 3],
         }
     }
 
