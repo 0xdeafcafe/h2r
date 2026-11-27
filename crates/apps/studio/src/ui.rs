@@ -1215,7 +1215,8 @@ impl Studio {
                     Action::SelectMap(_)
                     | Action::OpenMapPack(_)
                     | Action::SelectHalo1Map(_)
-                    | Action::OpenAsset { .. },
+                    | Action::OpenAsset { .. }
+                    | Action::OpenFields { .. },
                 ) => {
                     "opening another map"
                 }

@@ -361,9 +361,19 @@ impl App {
     }
 
     fn tag_editor(&self, id: TagId) -> Editor {
+        if self.fields_only.contains(&id) {
+            return Editor::FieldPanel;
+        }
         self.tags
             .tag(id)
             .map_or(Editor::FieldPanel, |t| kinds::kind(t.group).editor)
+    }
+
+    /// The tag's tab is open as fields ([`super::Action::OpenFields`]): the
+    /// field panel shows it, and its group's own editor (the sound editor,
+    /// the animation window, the Textures canvas) stays away.
+    pub fn as_fields(&self, id: TagId) -> bool {
+        self.fields_only.contains(&id)
     }
 
     /// A tab's id: a tool document's name (`map`, `variant`, `playlists`,
@@ -593,6 +603,10 @@ impl App {
         if self.tabs.front.is_some_and(|f| !self.tabs.has(f)) {
             self.tabs.front = self.tabs.list().last().map(|t| t.doc);
         }
+        // A tag id means another tag on another map: the mark goes with
+        // its tab.
+        let tabs = &self.tabs;
+        self.fields_only.retain(|id| tabs.has(Doc::Tag(*id)));
     }
 
     /// The tool shown changed through its old tab: bring forward the tab
@@ -715,7 +729,9 @@ impl App {
         }
         let was_front = self.tabs.front() == Some(doc);
         match doc {
-            Doc::Tag(_) => {}
+            Doc::Tag(id) => {
+                self.fields_only.remove(&id);
+            }
             Doc::SourceAsset(index) => self.source_assets[index] = None,
             Doc::Map => {
                 self.close_tool(ToolKind::Scenario);
@@ -933,6 +949,7 @@ impl App {
         }
         if let Doc::Tag(id) = doc {
             v["editor"] = json!(self.tag_editor(id).id());
+            v["fields"] = json!(self.as_fields(id));
             v["id"] = json!(format!("{:#010x}", id.0));
             v["map"] = json!(tab.map);
             if let Some(t) = self.tags.tag(id) {

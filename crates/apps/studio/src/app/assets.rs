@@ -885,6 +885,35 @@ impl App {
         self.open_tag(key, map)
     }
 
+    /// [`super::Action::OpenFields`]: the tag as [`Self::open_asset`] opens
+    /// it, with its tab marked to show the field panel in place of its
+    /// group's editor (a bitmap's tab leaves the Textures canvas, a sound's
+    /// the sound editor). The scenario is the map's own tab and is
+    /// refused: its fields are the Tags tool's.
+    pub(super) fn open_fields(&mut self, asset: &str, map: Option<&str>) {
+        let key = match AssetId::parse(asset) {
+            Ok(AssetId::Tag(key)) => key,
+            Ok(_) => return self.error(format!("{asset}: Open as fields is for a tag")),
+            Err(e) => return self.error(e),
+        };
+        if kinds::kind(key.group).editor == Editor::Scenario {
+            return self.error(format!(
+                "{asset}: the scenario is the map's own tab; its fields are in the Tags tool"
+            ));
+        }
+        let text = format!("{}:{}", fourcc_text(key.group), key.path);
+        self.open_tag(key, map);
+        self.sync_tags();
+        let Some(id) = tag_api::find_tag(&self.tags, &text) else {
+            // `open_tag` has said why the tag did not open.
+            return;
+        };
+        if self.find_doc(&self.doc_id(Doc::Tag(id))) == Some(Doc::Tag(id)) {
+            self.fields_only.insert(id);
+            self.focus_doc(Doc::Tag(id));
+        }
+    }
+
     /// The tag half of [`Self::open_asset`]: open the map that holds the
     /// tag (a Halo 1 map shows read-only, with no document), then the tag
     /// in the editor its group gets. A scenario tag is the map's own tab.
@@ -921,6 +950,8 @@ impl App {
                 if let Err(e) = self.navigate(super::NavAction::Open(vec![id])) {
                     return self.error(e);
                 }
+                // Open shows the tag in its group's editor again.
+                self.fields_only.remove(&id);
                 self.open_doc(Doc::Tag(id));
             }
             None => self.error(format!("{text} is not in the open map")),

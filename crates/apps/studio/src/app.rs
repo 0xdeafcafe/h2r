@@ -346,6 +346,9 @@ pub enum Action {
     /// editor, or open a voice, package, or authored item in its document
     /// (`app::assets`). Tag editors use the supplied map or the open map.
     OpenAsset { asset: String, map: Option<String> },
+    /// **Open as fields**: open a tag's tab in the field panel, whatever
+    /// editor its group gets (`app::assets`). Open puts it back.
+    OpenFields { asset: String, map: Option<String> },
     /// Make and open a package item in the edit target.
     CreateAsset(assets::CreateAsset),
     /// **Where used**: the Browser lists what uses the asset, the
@@ -553,7 +556,7 @@ impl Action {
                 dirty_map()
             }
             Action::SelectHalo1Map(_) => dirty_map(),
-            Action::OpenAsset { asset, map: Some(name) }
+            Action::OpenAsset { asset, map: Some(name) } | Action::OpenFields { asset, map: Some(name) }
                 if !asset.starts_with("package:")
                     && (app.loaded.as_deref() != Some(name.as_str())
                         || app.opened_package.is_some()
@@ -651,6 +654,9 @@ pub struct App {
     /// The Browser's link view: Where used or Show edits
     /// (`app::assets::browse`).
     pub browse: assets::Browse,
+    /// The tag tabs opened as fields: each shows the field panel in
+    /// place of its group's editor (`Action::OpenFields`).
+    pub(crate) fields_only: std::collections::BTreeSet<map::TagId>,
     /// The Forge map variant open as a document (`app::forge_variants`).
     pub forge_variants: forge_variants::ForgeVariants,
     /// The open Map Pack, beside the Halo 2 source (its maps resolve their
@@ -796,6 +802,7 @@ impl App {
             opened_package: None,
             source_assets: Vec::new(),
             browse: assets::Browse::default(),
+            fields_only: Default::default(),
             forge_variants: Default::default(),
             mappack: None,
             pack: Vec::new(),
@@ -1244,6 +1251,7 @@ impl App {
                 None => self.undo_redo(self.tool, false),
             },
             Action::OpenAsset { asset, map } => self.open_asset(&asset, map.as_deref()),
+            Action::OpenFields { asset, map } => self.open_fields(&asset, map.as_deref()),
             Action::CreateAsset(request) => self.create_in_target(request),
             Action::WhereUsed { asset } => self.show_where_used(&asset),
             Action::ShowEdits { asset } => self.show_edits(&asset),

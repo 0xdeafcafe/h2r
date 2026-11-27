@@ -617,6 +617,12 @@ fn row(
             if ui.menu_item(format!("{} Open", icon::FILE)) {
                 open(actions, asset, if row["new"] == true { None } else { open_map(app, row) });
             }
+            if row["new"] != true && ui.menu_item("Open as fields") {
+                actions.push(Action::OpenFields {
+                    asset: asset.to_owned(),
+                    map: open_map(app, row),
+                });
+            }
             if row["new"] != true && ui.menu_item("New from this...") {
                 st.new_from(asset);
             }

@@ -476,8 +476,8 @@ pub const METHODS: &[MethodDef] = &[
     ),
     def(
         m::SHELL_OPEN,
-        "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward. `asset` takes an asset id: `voice:<id>` opens the voice document (tab `voice:<id>`, on Setup while the voice has no dataset, else Lines), `tag:<group>:<path>` opens the tag as the Browser does, `item:<package>:<n>` opens a package item, and `package:<id>` opens the package document",
-        r#"{"asset?":"string (voice:<id>, tag:<group>:<path>, item:<package>:<n> or package:<id>)","tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
+        "Open a tag of the open map as a tab, in the editor its group gets (the scenario tag is the map's own tab), and bring it to the front. With map, that map opens first (refused over unsaved edits unless discard); a map alone brings its tab forward. `asset` takes an asset id: `voice:<id>` opens the voice document (tab `voice:<id>`, on Setup while the voice has no dataset, else Lines), `tag:<group>:<path>` opens the tag as the Browser does, `item:<package>:<n>` opens a package item, `package:<id>` opens the package document and `forge:<map>:<file>` a Forge map variant. With `fields` a `tag:` asset opens as fields: its tab shows the field panel in place of its group's editor (`editor` field_panel and `fields` true on the tab) until it is opened without",
+        r#"{"asset?":"string (voice:<id>, tag:<group>:<path>, item:<package>:<n>, package:<id> or forge:<map>:<file>)","fields?":"boolean","tag?":"string|integer (an id, group:path, path.group or a group with one tag)","map?":"string","discard?":"boolean"}"#,
         r#"{"tab":"{doc,kind,title,tool,dirty,can_undo,can_redo,front,...}","front":"string|null","log":"[string]"}"#,
         r#"{"tag":"itmc:objects\\test\\kit"}"#,
     ),
