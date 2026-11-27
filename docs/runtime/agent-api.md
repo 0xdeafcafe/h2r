@@ -5328,8 +5328,9 @@ host only: `phase` (`warmup`, `spawning`, `fighting`, `cleanup`,
 bonus round: the tick it ends at), `set` (zero-based; always 0 in a finite
 definition), `round` (of the set) and `wave` (zero-based), `reserve` (actors of the wave not yet placed),
 `teams` (the player teams, 1 or 2), `pools` and `scores` (each team's
-shared lives and points, one entry per team), `live_actors` against
-`cap`, `players`, `skulls` and `held`.
+shared lives and points, one entry per team), `live_actors` (enemies)
+and `live_allies` (the round's allied squads, which also count toward
+`cap`) against `cap`, `players`, `skulls` and `held`.
 `log` is the head (`seq`, `tick`, `hash` in hex) and `applied`, the last
 entry applied here. `errors` holds the latest 16 entries the engine
 refused, each with its `seq` (none for the AI switch), `tick` and
@@ -5378,7 +5379,8 @@ firing position count, `classes` each kit class's character palette row,
 `characters` the palette's rows, `bases` each player team's base point
 (base 0 the home base, from the `ff_base_NN` zones) and `hunt_orders`
 the scenario order for each base's hunt (`ff_hunt_00`, `ff_hunt_01`;
-`null` where the kit has none).
+`null` where the kit has none), and `hold_orders` the same for the allies'
+hold (`ff_hold_00`, `ff_hold_01`; left out when the kit has none).
 A map without the kit answers `{"kit": false, ...}` with empty lists.
 The kit's version string is not read: the game has no reader for the
 loaded map's string IDs.

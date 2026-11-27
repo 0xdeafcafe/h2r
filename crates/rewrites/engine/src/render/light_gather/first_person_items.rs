@@ -9,8 +9,9 @@
 //!    `[0x004b6284]` takes its count `[0x004b6280]`; scene list 0
 //!    (`0x004c1a48`) saves its layers at `+0x10`, clears them, and starts
 //!    its first item at its count.
-//! 2. The first-person effects `0x00174220` (argument 1), a guest call
-//!    this module does not make.
+//! 2. The first-person effects `0x00174220` (argument 1),
+//!    [`super::first_person_effects`]: they can append sorted entries, so
+//!    [`records`] reads the sorted list after them.
 //! 3. The record loop (`0x0003fe60`..`0x0003ff93`): each record index in
 //!    `0x004c8740` (`[0x0050943c]` of them) that passes the filters
 //!    ([`super::items::selected`], with the mode's filter) has its
@@ -190,20 +191,40 @@ fn sorted_class(flags: u8) -> u32 {
     }
 }
 
+/// The prologue's writes (`0x0003fdf0`..`0x0003fe3d`): the sorted list's
+/// mark takes its count, list 0 saves its layers, clears them and starts
+/// its first item at its count.
+pub fn prologue(m: &dyn GuestMemory) -> Result<Writes> {
+    let mut out = Writes::new();
+    out.word(SORTED_MARK, m.u32(SORTED_COUNT)?);
+    let list = List::read(m, 0)?;
+    out.word(SAVED_LAYERS, list.layers);
+    out.word(LIST + 8, 0);
+    out.word(LIST + 0xc, list.count as u32);
+    Ok(out)
+}
+
 /// The writes and appends of one call of `0x0003fdf0` with EAX `mode`,
-/// up to its layer draws (the prologue and the record loop; not
-/// `0x00174220`).
+/// up to its layer draws, where the first-person effects `0x00174220`
+/// change nothing: the prologue ([`prologue`]) and the record loop.
 pub fn make(m: &dyn GuestMemory, mode: u32) -> Result<Items> {
-    let mut out = Items::default();
-    let filter = filter(mode);
-    // The prologue.
-    let sorted_count = m.u32(SORTED_COUNT)?;
-    out.writes.word(SORTED_MARK, sorted_count);
+    let writes = prologue(m)?;
     let mut list = List::read(m, 0)?;
-    out.writes.word(SAVED_LAYERS, list.layers);
     list.layers = 0;
-    out.writes.word(LIST + 8, 0);
-    out.writes.word(LIST + 0xc, list.count as u32);
+    record_loop(m, mode, writes, list, m.u32(SORTED_COUNT)?)
+}
+
+/// The record loop's writes and appends (`0x0003fe48`..`0x0003ff93`),
+/// after the prologue's writes and the first-person effects
+/// (`super::first_person_effects`) are in memory: list 0 and the sorted
+/// list as they left them.
+pub fn records(m: &dyn GuestMemory, mode: u32) -> Result<Items> {
+    record_loop(m, mode, Writes::new(), List::read(m, 0)?, m.u32(SORTED_COUNT)?)
+}
+
+fn record_loop(m: &dyn GuestMemory, mode: u32, writes: Writes, mut list: List, sorted_count: u32) -> Result<Items> {
+    let mut out = Items { writes, ..Items::default() };
+    let filter = filter(mode);
     let mut sorted = sorted_count;
     let sorted_at = m.u32(SORTED_ENTRIES)?;
     let (screen, alpha) = (m.f32(SCREEN_SCALE)?, m.f32(ALPHA_SCALE)?);

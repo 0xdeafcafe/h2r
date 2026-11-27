@@ -340,22 +340,64 @@ properties `c+0x90`, `c+0x50`, the pair words and the cursor; its first
 schema is `0x00011801` followed by the row pointer, the properties, A, B
 and `0x1c`. **E**
 
+**The contact builder.** `0x0031f620`, cdecl: points (`0x20` each,
+position with the separation in `w`, normal), count, properties (`0x1c`
+each), the friction block `c+0x50`, the pair words, the cursor. The pair
+words past the two accumulators are scales: `+0x0c` the right-hand side,
+`+0x10` the recovery cap, `+0x18` the pair coupling, `+0x1c` the friction
+limit. After the header, per point in order (`0x0031f6b0`): a linear row
+(`0x30` bytes: normal with the right-hand side in `w`, A's angular part
+with the inverse effective mass in `w`, B's with the effective mass in
+`w`; each angular part rotated into the body's frame unless the
+accumulator's flag is set) and the schema `0x00030402`. When the point's
+property word `+0x18` (16 bits) is nonzero, it is coupled with the point
+before it: that schema becomes `0x00050803` followed by the off-diagonal
+term, and both rows' `w` take the 2×2 inverse. The point writes property
+`+0x14` (the recovery the next frame subtracts). **E**
+
+The friction limit is the summed impulses (`+0x00`) times the mean
+coefficient (`+0x08`) (`0x0031f9f6`). At or below zero, the tail
+`0x00320280` stores the cursor and returns. Otherwise the friction normal
+is the first point's normal, the normalised sum of the normals, or `+y`
+(limit zero), by the constants `0x0045dc78`, `0x0045dc68` and
+`0x0045dc84`. The block's axes `+0x20` and `+0x30` are re-orthogonalised
+against it (`0x0031fb50`; a short second axis replaces the first from the
+normal's components, limit zero). Two linear rows at the points' mean
+follow, with the schema `0x00051407` (output `c+0x54`, stride 8). With
+more than one point, an angular row about the normal (`0x20` bytes) turns
+it into `0x00061808`, scaled by the twist radius `+0x1c`, which is
+measured from the points while flag bit 2 is set and then cleared, unless
+it comes out below `0x004155a8`, which leaves the two-row form. **E**
+
 **Solve and export.** `0x0031c940` (parameters, accumulators, schemas,
 impulses). When it returns 1, each entity in array order gets
 `vt[+0x10]` (step, `[info+0x20]`, accumulator; `ret 0xc`), which returns
-the next accumulator. `0x0031a6a0` (type 7) writes nothing. **E**
+the next accumulator. `0x0031a6a0` (type 7) writes nothing. After the
+iterations a write-back pass walks the schemas again and, for each row,
+stores the impulse and the corrected right-hand side times `[info+0x10]`:
+the per-point forms at the header's output pointer stepping by its
+stride, the friction forms at their own pointer and stride. **E**
 
 **The port.** `sim_havok::island_solve` runs the entry on a write journal
 in stages: gather (every word read and checked before a write), the
-accumulator offsets, the pair words per constraint, each class's rows.
-Persistent words only are journalled; the buffer's contents stay in Rust.
-An island falls back to the lifted entry, counted by reason
-(`island_solve::fallbacks`), when it overflows the buffer, holds a motion
-whose two solver slots are not a covered class (type 7 only: type 6's
-export is not ported), holds a constraint whose `vt[+0x24]` is not ported
-(none is yet, so every island falls back here), finds the solver tables
-unbuilt, or reaches the schema solve, which is not modelled. The decline
-is decided before any write, so the guest runs from untouched memory.
+accumulator offsets, the accumulators laid into a Rust-owned buffer
+(`jacobian::Scratch`), the pair words and rows per constraint
+(`jacobian::contact` for the contact class), the schema decode into
+`solver::Stream` (`solver::decode`), `Stream::solve`, the write-back
+pass, the exports and the busy byte. Persistent words only are
+journalled; the buffer's contents stay in Rust. The decline is decided
+before any write, so the guest runs from untouched memory. An island
+falls back to the lifted entry, counted by reason
+(`island_solve::fallbacks`), when it overflows the buffer or its row area,
+holds a motion whose two solver slots are not a covered class (type 7
+only: type 6's export is not ported), holds a constraint whose
+`vt[+0x24]` is not ported (the six joint classes), finds the solver
+tables unbuilt, runs under an unmasked float exception or would load a
+non-finite float into the x87 unit from memory (`float`), names an
+accumulator outside the island, or is a contact retail would corrupt or
+spin on (a paired first point, two paired points in a row, a friction
+axis that stays short). `solver` counts a stream `Stream::solve`
+declines.
 
 ## Floats
 
@@ -451,13 +493,10 @@ where physics differs.
 - Which motion types, joint classes, agents and shapes a multiplayer
   match and a co-op campaign level build: `havok.bodies`, `havok.agents`
   and `havok.contacts` in a run.
-- The island solve's remaining stages: the contact builder `0x0031f620`
-  (922 instructions, mixed x87 and packed SSE, two `rsqrtss` sites and a
-  tail at `0x00320280`), the joint classes' builders, the schema solve's
-  decode into `sim_havok::solver::Stream` with its write-back pass, and
+- The island solve's remaining stages: the joint classes' builders, and
   the dynamic motions' accumulators and exports (types 2 to 5) and type
   6's export. Until they land, the island fallback counter counts every
-  constrained island.
+  island with a dynamic body or a joint.
 - That the per-island listener arrays stay empty, and that `W+0x6c` and
   `W+0x78` are not read in the step.
 - The meaning of the save and revert flag bits.

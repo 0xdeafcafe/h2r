@@ -434,3 +434,47 @@ fn actors_are_read_from_the_pool() {
     read_actors(&g, &mut none).unwrap();
     assert!(none.is_empty());
 }
+
+#[test]
+fn a_clanker_never_targets_an_ally_actor() {
+    // An ally squad's actors are on the players' engine team 0; the
+    // enemies' are on the AI's team 3.
+    let ctx = one_team();
+    let mut p = perception(
+        me_at(HOME, 0),
+        vec![
+            seen(ACTOR, 0, [5.0, 0.0, 0.0]),
+            seen(ACTOR + 1, 3, [6.0, 0.0, 0.0]),
+        ],
+        true,
+    );
+    normalise(&mut p, &ctx);
+    assert_eq!(targets(&p), vec![ACTOR + 1]);
+    assert_eq!(crate::brain::target(&p), Some(0));
+    assert_eq!(p.others.len(), 1);
+
+    // Two player teams: a bot on team 1 drops team 1's ally and still
+    // fights team 0's, which the engine makes an enemy.
+    let two = Context {
+        player_teams: vec![0, 1],
+        bases: vec![HOME, [50.0, 0.0, 0.0]],
+        lives: vec![Some(20), Some(20)],
+        ..one_team()
+    };
+    let mut p = perception(
+        me_at([50.0, 0.0, 0.0], 1),
+        vec![
+            seen(ACTOR, 1, [52.0, 0.0, 0.0]),
+            seen(ACTOR + 1, 0, [53.0, 0.0, 0.0]),
+        ],
+        true,
+    );
+    normalise(&mut p, &two);
+    assert_eq!(targets(&p), vec![ACTOR + 1]);
+
+    // The AI on a player team (a misassignment) leaves no ally to tell.
+    let bad = Context { ai_team: 0, ..one_team() };
+    let mut p = perception(me_at(HOME, 0), vec![seen(ACTOR, 0, [5.0, 0.0, 0.0])], true);
+    normalise(&mut p, &bad);
+    assert_eq!(targets(&p), vec![ACTOR]);
+}
