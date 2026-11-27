@@ -381,9 +381,14 @@ their addresses.
   detail it asks residency for, so the byte changes no state, constant or
   binding of the draw, and the native draw ignores it. `+0x15` and
   `+0x14` are the shader level and the pass within the layer that
-  `0x00016b90` selects; the native passes are the first level's from the
-  layer's first pass, so either set, or a low byte other than the key's
-  part, keeps the item on D3D.
+  `0x00016b90` selects (`[template+0x5c]+4` indexed by the level, the
+  layer's first pass there plus the pass): the guest's list holds one
+  item per pass, and each draws that pass alone. The scene item carries
+  both (`frame_scene::LayerItem::level`, `pass`), and the native draw
+  plans the item's pass only (`object_program_gpu::plan_layer_part`). The
+  object programs are compiled for the first level, so an item at
+  another level keeps its D3D draw (the plan's error names the level). A
+  low byte other than the key's part keeps the item on D3D.
 
 What still declines, by name: `object_fade` (the device's stipple is on:
 layers 1 and 3 outside view kinds 4 to 7), `object_stipple` (the cached fade or the
@@ -393,7 +398,7 @@ and the engine do not hold it, or in layer 3 a structure lightmap
 index),
 `object_shader_flag_target` (the target copy not made yet and a pass's
 program with flag bit 20) and
-`object_argument` (another pass, level or part). In layer 3's walk these
+`object_argument` (another part). In layer 3's walk these
 are `walk_unsupported` (extraction) or `State` (the stipple); in the
 first person's layer 3 they are its log reasons.
 

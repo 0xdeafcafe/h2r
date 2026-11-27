@@ -573,7 +573,7 @@ keeps a guest draw, by the counter that names it (**Code**):
 - **Layers 1, 5, 7, 8 and 20** (the scene's, the alternate view's 1 and
   5, the first person's 1, 7, 8 and 20; `layer_plan_<layer>_refused_*`,
   `_fp<layer>_*`, `_alt<layer>_*`). Structure items: the plan's causes
-  (`material`, `instance`, `no_pass`, `implementation`, `input`,
+  (`material`, `instance`, `no_pass`, `pass`, `implementation`, `input`,
   `animation`, `texture_transform`, `object_animation`, `property`,
   `wave`, `material_c18`, `time`, `per_draw`), `program`, `palettes`,
   `state`, `stencil`, `warming`, `device`, `viewport`, `unread`. Object
@@ -583,8 +583,8 @@ keeps a guest draw, by the counter that names it (**Code**):
   engine do not already hold it, since skipping the draw then leaves
   them unset, or in layer 3 a structure lightmap index the guest's draw
   leaves unbound; `object_argument`: another
-  pass, shader level or part in the item's `+0x14`, `+0x15` or its
-  argument's low byte, which the native passes are not; `object_layer5_stream`, `object_subparts`,
+  part in the item's argument's low byte than its key's (its `+0x14`
+  and `+0x15`, the pass and shader level, are the item's to draw); `object_layer5_stream`, `object_subparts`,
   `object_aux_state`, `object_unread`), then
   `object_models`, `object_w_buffer`, `object_model`, `object_plan`,
   `object_shader_flag_target` (the shader's flag bit 0 before the
