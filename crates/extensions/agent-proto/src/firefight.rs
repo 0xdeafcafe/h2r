@@ -172,6 +172,14 @@ pub enum DirectorRun {
 }
 
 /// One director command, as the host log carries it.
+/// A kind of drop ship (`firefight::ShipKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShipKind {
+    Phantom,
+    Pelican,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
@@ -190,15 +198,21 @@ pub enum Command {
         count: u16,
         zone: u8,
         weapon_tier: u8,
+        /// The kind of ship that flies it in.
+        ship: ShipKind,
     },
     /// The drop ship's hover hold.
     ShipHover {
+        ship: ShipKind,
         on: bool,
     },
     /// Everyone aboard the drop ship leaves.
-    ShipUnload,
+    ShipUnload {
+        ship: ShipKind,
+    },
     /// The drop ship flies from the zone's hover point out along its path.
     ShipLeave {
+        ship: ShipKind,
         zone: u8,
     },
     /// Two teams, after a `place_squad`: the Firefight team the squad is
@@ -369,10 +383,10 @@ mod tests {
     fn commands_take_the_host_logs_shape_and_nothing_else() {
         for value in [
             json!({"place_squad": {"slot": 0, "class": "elite", "count": 2, "zone": 1, "weapon_tier": 0}}),
-            json!({"drop_squad": {"slot": 0, "class": "elite", "count": 2, "zone": 1, "weapon_tier": 0}}),
-            json!({"ship_hover": {"on": true}}),
-            json!("ship_unload"),
-            json!({"ship_leave": {"zone": 1}}),
+            json!({"drop_squad": {"slot": 0, "class": "elite", "count": 2, "zone": 1, "weapon_tier": 0, "ship": "pelican"}}),
+            json!({"ship_hover": {"ship": "phantom", "on": true}}),
+            json!({"ship_unload": {"ship": "pelican"}}),
+            json!({"ship_leave": {"ship": "phantom", "zone": 1}}),
             json!({"target": {"slot": 0, "team": 1}}),
             json!({"ally": {"slot": 0, "team": 1}}),
             json!({"hunt": {"slot": 3}}),

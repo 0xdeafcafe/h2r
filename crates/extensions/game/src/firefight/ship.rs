@@ -22,6 +22,8 @@ use engine::entry::{Cx, GuestCall};
 use engine::view::{Datums, objects};
 use engine::{DatumHandle, GuestMemory, points};
 
+use ::firefight::ShipKind;
+
 use super::guest::{self, KitLayout, call, scenario};
 use crate::actor_net::squads::Placement;
 
@@ -52,6 +54,10 @@ pub const FLY_TICKS: u32 = 240;
 /// an engine load that seats fewer leaves the surplus on foot
 /// ([`place_squad_in`]).
 pub const SEATS: u8 = 8;
+/// The Pelican's, counted the same way: its passenger seats less none we
+/// know of (V: the tag is not read), so a short load leaves the rest on
+/// foot as for the Phantom.
+pub const PELICAN_SEATS: u8 = 6;
 
 /// A kit's ship in the world: its datum and how many seats it has.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,19 +71,30 @@ pub struct Ship {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ShipPath {
     pub run_in: [f32; 3],
-    pub hover: [f32; 3],
+    /// Each kind's hover point, the point set's `hover_<kind>` key
+    /// ([`ShipKind::index`]); none for a kind the path is not cleared for.
+    pub hovers: [Option<[f32; 3]>; ShipKind::ALL.len()],
     pub run_out: [f32; 3],
 }
 
 impl ShipPath {
-    /// The points of the flight in.
-    pub fn fly_in(&self) -> Vec<[f32; 3]> {
-        vec![self.run_in, self.hover]
+    /// The points of `kind`'s flight in, none when the path has no hover
+    /// key for it.
+    pub fn fly_in(&self, kind: ShipKind) -> Option<Vec<[f32; 3]>> {
+        Some(vec![self.run_in, self.hovers[kind.index()]?])
     }
 
-    /// The points of the flight out.
-    pub fn fly_out(&self) -> Vec<[f32; 3]> {
-        vec![self.hover, self.run_out]
+    /// The points of `kind`'s flight out.
+    pub fn fly_out(&self, kind: ShipKind) -> Option<Vec<[f32; 3]>> {
+        Some(vec![self.hovers[kind.index()]?, self.run_out])
+    }
+}
+
+/// The seats the host counts on a kind of ship.
+pub const fn seats(kind: ShipKind) -> u8 {
+    match kind {
+        ShipKind::Phantom => SEATS,
+        ShipKind::Pelican => PELICAN_SEATS,
     }
 }
 

@@ -708,7 +708,7 @@ fn with_ship(points: &[&str]) -> FakeGuest {
     m.map(NAMES, 2 * 0x24);
     named(&mut m, NAMES, "ff_crate");
     m.put_u16(NAMES + 0x20, 6).put_u16(NAMES + 0x22, 1);
-    named(&mut m, NAMES + 0x24, "ff_ship");
+    named(&mut m, NAMES + 0x24, "ff_ship_pelican");
     m.put_u16(NAMES + 0x24 + 0x20, 1).put_u16(NAMES + 0x24 + 0x22, 5);
 
     pair(&mut m, SCNR + 0x1d8, 1, SCRIPTING);
@@ -735,19 +735,19 @@ fn with_ship(points: &[&str]) -> FakeGuest {
 fn the_game_reads_the_ship_and_its_paths() {
     // The base kit carries neither.
     let kit = layout();
-    assert_eq!((kit.ship, kit.paths.clone()), (None, vec![None]));
+    assert_eq!((kit.ships, kit.paths.clone()), ([None, None], vec![None]));
 
-    let kit = read_kit(&with_ship(&["run_in", "hover", "run_out"])).unwrap().unwrap();
-    // The vehicle placement `ff_ship` names; the crate of another type is
-    // not it.
-    assert_eq!(kit.ship, Some(5));
+    let kit = read_kit(&with_ship(&["run_in", "hover_pelican", "run_out"])).unwrap().unwrap();
+    // The vehicle placement `ff_ship_pelican` names; the crate of another
+    // type is not it, and the Phantom is not parked.
+    assert_eq!(kit.ships, [None, Some(5)]);
     // One path a drop zone, by its number: `ff_path_00` is `ff_drop_00`'s;
     // `ff_path_07` has no zone.
     assert_eq!(
         kit.paths,
         [Some(ShipPath {
             run_in: [100.0, 1.0, 2.0],
-            hover: [101.0, 1.0, 2.0],
+            hovers: [None, Some([101.0, 1.0, 2.0])],
             run_out: [102.0, 1.0, 2.0],
         })]
     );
@@ -758,9 +758,9 @@ fn the_game_reads_the_ship_and_its_paths() {
     // ship.
     let kit = read_kit(&with_ship(&["run_in", "run_out", "hold"])).unwrap().unwrap();
     assert_eq!(kit.paths, [None]);
-    let mut m = with_ship(&["run_in", "hover", "run_out"]);
+    let mut m = with_ship(&["run_in", "hover_pelican", "run_out"]);
     m.put_u16(NAMES + 0x24 + 0x20, 2);
-    assert_eq!(read_kit(&m).unwrap().unwrap().ship, None);
+    assert_eq!(read_kit(&m).unwrap().unwrap().ships, [None, None]);
 }
 
 /// [`scenario`] with the pools' object names and two zone falls and a

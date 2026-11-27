@@ -31,7 +31,7 @@ struct FakeGame {
     kills: Vec<KillSeen>,
     player_kills: Vec<PlayerKill>,
     calls: Vec<Call>,
-    ship: Option<Ship>,
+    ships: [Option<Ship>; 2],
     paths: Vec<Option<ShipPath>>,
 }
 
@@ -48,7 +48,7 @@ impl FakeGame {
             kills: Vec::new(),
             player_kills: Vec::new(),
             calls: Vec::new(),
-            ship: None,
+            ships: [None, None],
             paths: Vec::new(),
         }
     }
@@ -130,8 +130,8 @@ impl Game for FakeGame {
         self.calls.push(Call::Drop(boarding));
         Ok(())
     }
-    fn ship(&self) -> Option<Ship> {
-        self.ship
+    fn ship(&self, kind: ShipKind) -> Option<Ship> {
+        self.ships[kind.index()]
     }
     fn paths(&self) -> Vec<Option<ShipPath>> {
         self.paths.clone()
@@ -1592,11 +1592,13 @@ fn an_endless_end_counts_sets_and_rounds() {
 }
 
 const SHIP: u32 = 0x8123_0004;
+const PELICAN: u32 = 0x8123_0005;
 
 /// A game whose kit has the ship, at 4 seats, and a path for its zone.
 fn ship_game() -> FakeGame {
     let mut game = FakeGame::new();
-    game.ship = Some(Ship { object: SHIP, capacity: 4 });
+    game.ships[0] = Some(Ship { object: SHIP, capacity: 4 });
+    game.ships[1] = Some(Ship { object: PELICAN, capacity: 3 });
     game.paths = vec![Some(ship_path())];
     game
 }
@@ -1604,7 +1606,7 @@ fn ship_game() -> FakeGame {
 fn ship_path() -> ShipPath {
     ShipPath {
         run_in: [-200.0, 0.0, 60.0],
-        hover: [40.0, 0.0, 6.0],
+        hovers: [Some([40.0, 0.0, 6.0]), Some([40.0, 0.0, 4.0])],
         run_out: [300.0, 0.0, 60.0],
     }
 }
@@ -1616,6 +1618,7 @@ fn drop_command(count: u16) -> Command {
         count,
         zone: 0,
         weapon_tier: 2,
+        ship: ShipKind::Phantom,
     }
 }
 
@@ -1641,7 +1644,7 @@ fn a_drop_squad_flies_the_ship_in_and_places_the_squad_into_it() {
         [
             Call::Fly(Launch {
                 ship: SHIP,
-                path: vec![ship_path().run_in, ship_path().hover],
+                path: vec![ship_path().run_in, ship_path().hovers[0].unwrap()],
                 ticks: FLY_TICKS,
             }),
             Call::Drop(Boarding {
@@ -1654,9 +1657,42 @@ fn a_drop_squad_flies_the_ship_in_and_places_the_squad_into_it() {
 }
 
 #[test]
+fn a_pelican_drop_flies_the_pelican_at_its_own_hover_height() {
+    let mut game = ship_game();
+    let mut host = start(Role::Replica, &game);
+    let Command::DropSquad { slot, class, count, zone, weapon_tier, .. } = drop_command(2) else {
+        unreachable!()
+    };
+    let command = Command::DropSquad { slot, class, count, zone, weapon_tier, ship: ShipKind::Pelican };
+    feed(&mut host, [(1, command)]);
+    assert!(host.pre_tick(1, &mut game).is_empty());
+    assert_eq!(
+        game.calls,
+        [
+            Call::Fly(Launch {
+                ship: PELICAN,
+                path: vec![ship_path().run_in, [40.0, 0.0, 4.0]],
+                ticks: FLY_TICKS,
+            }),
+            Call::Drop(Boarding { placement: placement(2), ship: PELICAN, capacity: 3 }),
+        ]
+    );
+    // A path with no Pelican hover key sends the squad on foot.
+    let mut narrow = ship_game();
+    narrow.paths = vec![Some(ShipPath { hovers: [Some([40.0, 0.0, 6.0]), None], ..ship_path() })];
+    let mut host = start(Role::Replica, &narrow);
+    let Command::DropSquad { slot, class, count, zone, weapon_tier, .. } = drop_command(2) else {
+        unreachable!()
+    };
+    feed(&mut host, [(1, Command::DropSquad { slot, class, count, zone, weapon_tier, ship: ShipKind::Pelican })]);
+    assert!(host.pre_tick(1, &mut narrow).is_empty());
+    assert_eq!(narrow.calls, [Call::Squad(SquadOp::Place(placement(2)))]);
+}
+
+#[test]
 fn a_drop_squad_without_a_ship_or_a_path_places_on_foot() {
     let mut no_ship = ship_game();
-    no_ship.ship = None;
+    no_ship.ships[0] = None;
     let mut no_path = ship_game();
     no_path.paths = vec![None];
     for mut game in [no_ship, no_path] {
@@ -1674,10 +1710,10 @@ fn the_ships_hold_unload_and_flight_out_are_the_directors_entries() {
     feed(
         &mut host,
         [
-            (1, Command::ShipHover { on: true }),
-            (2, Command::ShipUnload),
-            (3, Command::ShipLeave { zone: 0 }),
-            (4, Command::ShipHover { on: false }),
+            (1, Command::ShipHover { ship: ShipKind::Phantom, on: true }),
+            (2, Command::ShipUnload { ship: ShipKind::Phantom }),
+            (3, Command::ShipLeave { ship: ShipKind::Phantom, zone: 0 }),
+            (4, Command::ShipHover { ship: ShipKind::Phantom, on: false }),
         ],
     );
     for tick in 1..=4 {
@@ -1690,7 +1726,7 @@ fn the_ships_hold_unload_and_flight_out_are_the_directors_entries() {
             Call::Unload(SHIP),
             Call::Fly(Launch {
                 ship: SHIP,
-                path: vec![ship_path().hover, ship_path().run_out],
+                path: vec![ship_path().hovers[0].unwrap(), ship_path().run_out],
                 ticks: FLY_TICKS,
             }),
             Call::Hover(SHIP, false),
@@ -1699,7 +1735,7 @@ fn the_ships_hold_unload_and_flight_out_are_the_directors_entries() {
     // A ship that is not in the world is a refused entry, not a panic.
     let mut gone = FakeGame::new();
     let mut host = start(Role::Replica, &gone);
-    feed(&mut host, [(1, Command::ShipUnload)]);
+    feed(&mut host, [(1, Command::ShipUnload { ship: ShipKind::Phantom })]);
     let errors = host.pre_tick(1, &mut gone);
     assert_eq!(errors.len(), 1);
     assert!(errors[0].error.to_string().contains("not in the world"));
@@ -1715,9 +1751,15 @@ fn the_director_is_told_of_the_ship_and_the_zones_it_can_fly_to() {
     game.paths = vec![Some(ship_path()), None];
     let kit = game.kit().unwrap();
     let seen = observe(&kit, &BTreeMap::new(), 1, &game);
-    assert_eq!(seen.ship, ShipSeen { ready: true, paths: vec![true, false] });
+    assert_eq!(
+        seen.ship,
+        ShipSeen::phantom(true, vec![true, false]).with(ShipKind::Pelican, true, vec![true, false])
+    );
     let seen = observe(&kit, &BTreeMap::new(), 1, &FakeGame::new());
-    assert_eq!(seen.ship, ShipSeen { ready: false, paths: vec![false, false] });
+    assert_eq!(
+        seen.ship,
+        ShipSeen::phantom(false, vec![false, false]).with(ShipKind::Pelican, false, vec![false, false])
+    );
 }
 
 #[test]
