@@ -37,6 +37,9 @@ pub(super) mod vehicle;
 pub(super) mod weapon;
 /// The curve evaluator's capture arm, reached by `sim_bridge`.
 pub mod parity;
+/// The function value's shadow arm over the Rust evaluator
+/// (`sim_objects::functions::evaluator`), reached by `sim_bridge`.
+pub mod arm;
 #[cfg(test)]
 mod curve_tests;
 

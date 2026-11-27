@@ -40,18 +40,18 @@ const EVALUATE: u32 = 0x000b_a8c0;
 /// A tag function's value: `(function: eax, input, scale)`, `xmm0` out.
 const FUNCTION: u32 = 0x0013_bb90;
 /// Game time: `+4` seconds per tick (f32), `+8` the tick (i32).
-const GAME_TIME: u32 = 0x0051_0c54;
+pub(super) const GAME_TIME: u32 = 0x0051_0c54;
 /// 2^32 (f32), the unsigned fix-up `ba8c0` never takes.
 const TWO_32: u32 = 0x0045_dbb8;
 /// The handle hash's scale (f32).
-const HASH_SCALE: u32 = 0x0045_dc50;
+pub(super) const HASH_SCALE: u32 = 0x0045_dc50;
 
 /// The imm32 of `cmp edi, imm` for the built-in "one" and "zero" names.
-const NAME_ONE: u32 = 0x000b_abab;
-const NAME_ZERO: u32 = 0x000b_abb7;
+pub(super) const NAME_ONE: u32 = 0x000b_abab;
+pub(super) const NAME_ZERO: u32 = 0x000b_abb7;
 /// The imm32s of `imul eax, eax, imm` and `add eax, imm`: the handle hash.
-const HASH_MUL: u32 = 0x000b_a9e9;
-const HASH_ADD: u32 = 0x000b_a9ee;
+pub(super) const HASH_MUL: u32 = 0x000b_a9e9;
+pub(super) const HASH_ADD: u32 = 0x000b_a9ee;
 
 /// Body `+c0` and its override bit (9, as a word).
 const PHYSICS_FLAGS: u32 = 0xc0;

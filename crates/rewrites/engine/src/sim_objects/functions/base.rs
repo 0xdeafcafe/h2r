@@ -32,70 +32,70 @@ use runtime::{CpuAbi, Guest};
 
 /// The `cmp eax, imm32` immediates of the dispatch, by instruction.
 /// `bcc47`: the random name.
-const NAME_RANDOM: u32 = 0x000b_cc48;
+pub(super) const NAME_RANDOM: u32 = 0x000b_cc48;
 /// `bcc66`: the name answered by `bcad0`.
-const NAME_BCAD0: u32 = 0x000b_cc67;
+pub(super) const NAME_BCAD0: u32 = 0x000b_cc67;
 /// `bcc77`: the facing angle.
-const NAME_FACING: u32 = 0x000b_cc78;
+pub(super) const NAME_FACING: u32 = 0x000b_cc78;
 /// `bcc84`: a name answering 1.
-const NAME_ONE: u32 = 0x000b_cc85;
+pub(super) const NAME_ONE: u32 = 0x000b_cc85;
 /// `bcc8f`: a name answering 0.
-const NAME_ZERO: u32 = 0x000b_cc90;
+pub(super) const NAME_ZERO: u32 = 0x000b_cc90;
 /// `bcc9a`: body `+10a` bit 2 clear.
-const NAME_FLAG: u32 = 0x000b_cc9b;
+pub(super) const NAME_FLAG: u32 = 0x000b_cc9b;
 /// `bcd12`: the model variant fraction.
-const NAME_VARIANT: u32 = 0x000b_cd13;
+pub(super) const NAME_VARIANT: u32 = 0x000b_cd13;
 /// `bcd19`: the name answered by `bcbb0`.
-const NAME_BCBB0: u32 = 0x000b_cd1a;
+pub(super) const NAME_BCBB0: u32 = 0x000b_cd1a;
 /// `bcd20`: the name answered by `bca70`.
-const NAME_BCA70: u32 = 0x000b_cd21;
+pub(super) const NAME_BCA70: u32 = 0x000b_cd21;
 /// `bcdb2`: body `+ec`.
-const NAME_BODY_EC: u32 = 0x000b_cdb3;
+pub(super) const NAME_BODY_EC: u32 = 0x000b_cdb3;
 /// `bcdbb` (`sub eax, imm32`): a second name answering 1.
-const NAME_ONE_B: u32 = 0x000b_cdbc;
+pub(super) const NAME_ONE_B: u32 = 0x000b_cdbc;
 /// `bcdc6` (`sub eax, imm32`): the delta to the `bcb10` name; one more is
 /// the `bcb60` name.
-const DELTA_BCB10: u32 = 0x000b_cdc7;
+pub(super) const DELTA_BCB10: u32 = 0x000b_cdc7;
 /// `bcdfb`: a component name.
-const NAME_COMPONENT: u32 = 0x000b_cdfc;
+pub(super) const NAME_COMPONENT: u32 = 0x000b_cdfc;
 /// `bce06`: body `+f0`.
-const NAME_BODY_F0: u32 = 0x000b_ce07;
+pub(super) const NAME_BODY_F0: u32 = 0x000b_ce07;
 /// `bce54`: body `+f0` minus 1.
-const NAME_F0_LESS_ONE: u32 = 0x000b_ce55;
+pub(super) const NAME_F0_LESS_ONE: u32 = 0x000b_ce55;
 /// `bce65`: the name answered by `c18e0`.
-const NAME_C18E0: u32 = 0x000b_ce66;
+pub(super) const NAME_C18E0: u32 = 0x000b_ce66;
 /// `bce76`: the `1588b0` / body `+f0` test.
-const NAME_SHIELD_TEST: u32 = 0x000b_ce77;
+pub(super) const NAME_SHIELD_TEST: u32 = 0x000b_ce77;
 /// `bce7d`: a third name answering 1.
-const NAME_ONE_C: u32 = 0x000b_ce7e;
+pub(super) const NAME_ONE_C: u32 = 0x000b_ce7e;
 /// `bce84`: body `+f8`.
-const NAME_BODY_F8: u32 = 0x000b_ce85;
+pub(super) const NAME_BODY_F8: u32 = 0x000b_ce85;
 /// `bcf03`: body `+f4`.
-const NAME_BODY_F4: u32 = 0x000b_cf04;
+pub(super) const NAME_BODY_F4: u32 = 0x000b_cf04;
 /// `bcf0a`, `bcf11`: a component range `(lo, hi]`.
-const COMPONENT_LO: u32 = 0x000b_cf0b;
-const COMPONENT_HI: u32 = 0x000b_cf12;
+pub(super) const COMPONENT_LO: u32 = 0x000b_cf0b;
+pub(super) const COMPONENT_HI: u32 = 0x000b_cf12;
 /// `bcf45`: world `+78`.
-const NAME_WORLD_78: u32 = 0x000b_cf46;
+pub(super) const NAME_WORLD_78: u32 = 0x000b_cf46;
 /// `bcf50` (`sub edx, imm32`): a component name.
-const NAME_COMPONENT_B: u32 = 0x000b_cf52;
+pub(super) const NAME_COMPONENT_B: u32 = 0x000b_cf52;
 /// `bcf58` (`sub edx, imm32`): the delta to world `+70`; one more is
 /// world `+74`.
-const DELTA_WORLD_70: u32 = 0x000b_cf5a;
+pub(super) const DELTA_WORLD_70: u32 = 0x000b_cf5a;
 /// `bcf89`: world `+7c`.
-const NAME_WORLD_7C: u32 = 0x000b_cf8a;
+pub(super) const NAME_WORLD_7C: u32 = 0x000b_cf8a;
 /// `bcf90`, `bcf97`: a second component range `(lo, hi]`.
-const COMPONENT_LO_B: u32 = 0x000b_cf91;
-const COMPONENT_HI_B: u32 = 0x000b_cf98;
+pub(super) const COMPONENT_LO_B: u32 = 0x000b_cf91;
+pub(super) const COMPONENT_HI_B: u32 = 0x000b_cf98;
 /// `bce1e` (`imul ecx, ecx, imm32`) and `bce24` (`add ecx, imm32`): the
 /// random hash.
-const HASH_MUL: u32 = 0x000b_ce20;
-const HASH_ADD: u32 = 0x000b_ce26;
+pub(super) const HASH_MUL: u32 = 0x000b_ce20;
+pub(super) const HASH_ADD: u32 = 0x000b_ce26;
 
 /// The world globals pointer.
-const WORLD: u32 = 0x004d_e2f4;
+pub(super) const WORLD: u32 = 0x004d_e2f4;
 /// The game globals pointer (`+8` the mode).
-const GAME: u32 = 0x004e_6948;
+pub(super) const GAME: u32 = 0x004e_6948;
 /// The pointer whose `+1c` the facing path passes to `bff60`.
 const FACING_BASE: u32 = 0x004e_0350;
 /// The tag entries global.
@@ -106,7 +106,7 @@ const FACING_LIMIT: u32 = 0x0045_dbe8;
 const FACING_SCALE: u32 = 0x0045_e0b4;
 const FACING_OFFSET: u32 = 0x0045_dbbc;
 const TWO_32: u32 = 0x0045_dbb8;
-const RANDOM_SCALE: u32 = 0x0045_dc50;
+pub(super) const RANDOM_SCALE: u32 = 0x0045_dc50;
 
 /// The callees.
 const MARKER: u32 = 0x000b_8bd0;

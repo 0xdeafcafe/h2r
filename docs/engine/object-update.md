@@ -117,7 +117,7 @@ How the slice 1 bodies keep the contract is in "Slice 1 bodies" below.
 
 | Entry | Point | ABI | Kind |
 |---|---|---|---|
-| `bab40` | `OBJECT_FUNCTION_VALUE` | `(object: stack 0, name: stack 1, value: stack 2) -> al`; `ret 0c` | segment, then leaf |
+| `bab40` | `OBJECT_FUNCTION_VALUE` | `(object: stack 0, name: stack 1, value: stack 2) -> al`; `ret 0c` | segment; with `impl.sim.native.objects.functions`, an arm (`functions/arm.rs`) over the Rust evaluator `sim-objects/src/functions/evaluator.rs` at the entry: the answer stores the value, sets `al`, `ecx`'s top byte (the frame's result byte) and `xmm0`'s low lane where retail leaves the value there, pops the frame, flags undefined; `eax` above `al`, `edx`, the other `xmm` state and the x87 status are untouched |
 | `ba8c0` | `OBJECT_FUNCTION_EVALUATE` | `(record: eax, object: stack 0, value out: stack 1) -> al`; `ret 8`; stores the `f32` at `[stack 1]` on every path except a scripted override | segment, then leaf |
 | `108d90` | `OBJECT_FUNCTION_IMPORT` | `(object: stack 0, name: stack 1, value: ebx, active: edi) -> al`; `ret 8`. Stores 0 to `[ebx]` and `[edi]` first, then calls slot `+4c` per ancestry level as `(object, name, value, active)` until one returns non-zero. Clobbers `xmm0` | segment (indirect callout) |
 | `bcc20` | `BASE_OBJECT_IMPORT` | `(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al`; `ret 10` | segment, then leaf |

@@ -18,6 +18,7 @@ use agent_proto::sim_arms::{Arm, SimArms, Subsystem, method};
 use engine::sim_anim::graph_walk as walk;
 use engine::sim_anim::manager::arm as manager;
 use engine::sim_collision as world;
+use engine::sim_objects::functions::arm as function;
 use engine::sim_objects::functions::parity as objects;
 use engine::sim_physics::parity as physics;
 use hooks::Switches;
@@ -53,7 +54,7 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
     SimArms {
         subsystems: vec![
             subsystem(switches, "physics", physics_arms()),
-            subsystem(switches, "objects", vec![objects_wire(objects::status())]),
+            subsystem(switches, "objects", vec![objects_wire(objects::status()), function_wire(function::status())]),
             subsystem(switches, "anim", anim_wire(&walk::arm_stats(), &walk::stats(), manager::stats())),
             subsystem(switches, "collision", collision_arms(&world::stats())),
             subsystem(switches, "seats", group(sim_bridge::sim_seats::GROUP)),
@@ -105,6 +106,18 @@ fn objects_wire(s: objects::Status) -> Arm {
         mismatched: s.mismatched,
         answered: s.answered,
         declined: s.declined_float + s.declined_kind + s.declined_fault,
+    }
+}
+
+/// The function value's arm; `dropped` audits count as declined.
+fn function_wire(s: function::Status) -> Arm {
+    Arm {
+        name: "objects.function".to_owned(),
+        checked: s.checked,
+        matched: s.matched,
+        mismatched: s.mismatched,
+        answered: s.answered,
+        declined: s.declined_total() + s.dropped,
     }
 }
 
@@ -240,6 +253,15 @@ mod tests {
             declined_fault: 3,
         });
         assert_eq!((o.checked, o.answered, o.declined), (10, 7, 6));
+        let f = function_wire(function::Status {
+            checked: 8,
+            matched: 8,
+            mismatched: 0,
+            answered: 5,
+            declined: [1, 2, 3, 0, 0, 1],
+            dropped: 2,
+        });
+        assert_eq!((f.name.as_str(), f.checked, f.answered, f.declined), ("objects.function", 8, 5, 9));
         let mut graph = walk::ArmStats {
             checked: 4,
             matched: 4,
