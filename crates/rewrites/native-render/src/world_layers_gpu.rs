@@ -544,10 +544,14 @@ impl IndexedPass {
 
     /// Layer 15, one material pass of one section part. The live pass
     /// supplies its selected program, evaluated constants and stage images.
-    /// The node palette is the sky model's for the current view.
+    /// The node palette is the sky model's for the current view. With
+    /// `resident` (`SkySection::resident`: the strip's draw over the load's
+    /// geometry), the `SectionKey::Sky` entry is uploaded from the load's
+    /// snapshots, one per part for the BSP, not from the draw's streams.
     pub fn for_sky(
         draw: &ResolvedDraw, cache: Arc<Cache>, frame: u64, generation: u64,
         item: scene_extract::layout::sky::SkyItem, constants: crate::sky_material::SkyConstants,
+        resident: Option<ResolvedDraw>,
     ) -> Result<Self, &'static str> {
         // Each refusal is the strip's `scene_kept_sky_<cause>`
         // (`render_bridge::native_sky`). The cull mode is the draw's own:
@@ -582,7 +586,8 @@ impl IndexedPass {
             model: item.model, section: item.section, part: item.part,
             shader: item.shader, pass: item.pass,
         };
-        let mut candidate = Self::candidate(draw, cache, frame, None, Some(((generation, 0), key)), false)
+        let source = resident.as_ref().unwrap_or(draw);
+        let mut candidate = Self::candidate(source, cache, frame, None, Some(((generation, 0), key)), false)
             .ok_or("candidate")?;
         candidate.sky = Some(sky);
         Ok(candidate)

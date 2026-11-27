@@ -206,6 +206,14 @@ pub struct CachedIndices {
     pub rebased: std::sync::Arc<[u32]>,
 }
 
+impl CachedIndices {
+    /// An immutable derived index list with its own GPU cache identity:
+    /// `rebased` is each index minus `lo`, the largest index `hi`.
+    pub fn derived(lo: u16, hi: u16, rebased: Vec<u32>) -> Self {
+        Self { id: crate::vertex_cache::next_snapshot_id(), lo, hi, rebased: rebased.into() }
+    }
+}
+
 impl IndexData {
     /// The cache snapshot's id, if this is one.
     pub fn cache_id(&self) -> Option<u64> {

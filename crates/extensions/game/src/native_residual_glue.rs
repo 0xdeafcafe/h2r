@@ -73,14 +73,19 @@ impl d3d::DrawAdmission for ResidualDraws {
         // The pass's program and textures from the material beside the
         // strip's, until the cut binds them.
         native_sky::count_plan(issue.look.as_ref().map_or_else(|why| *why, |look| look.check(draw)));
-        // The section's geometry from the load beside the strip's, until
-        // the cut uploads it into `SectionKey::Sky`.
-        native_sky::count_geometry(issue.geometry.as_ref().map_or_else(|why| *why, |(section, part)| section.check(*part, draw)));
+        // The section's geometry from the load beside the strip's; a strip
+        // whose geometry matches draws its resident `SectionKey::Sky` entry
+        // from the load's snapshots.
+        let resident = issue.geometry.as_ref().map_err(|why| *why).and_then(|(section, part)| section.resident(*part, draw));
+        native_sky::count_geometry(resident.as_ref().map_or_else(|why| *why, |_| "matched"));
+        // The cut's arm: rows, look and geometry all the plan's.
+        native_sky::cut_outcome(call.generation, issue.rows && issue.look.as_ref().is_ok_and(|look| look.check(draw) == "matched")
+            && resident.is_ok());
         let constants = issue.constants;
         let plan = native_sky::admit(
             issue.item, call.layer.view, call.index_count, draw.indices.as_ref().map(|i| i.len()),
             // The plan's evaluated material, or the cause it has none.
-            |item| IndexedPass::for_sky(draw, self.geometry.get(), call.frame, call.generation, item, constants?),
+            |item| IndexedPass::for_sky(draw, self.geometry.get(), call.frame, call.generation, item, constants?, resident.ok()),
         );
         let (stage, pass) = match plan {
             Ok(pass) => {

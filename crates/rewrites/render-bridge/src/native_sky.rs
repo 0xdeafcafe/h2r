@@ -32,7 +32,7 @@ pub fn counters() -> Vec<(String, u64)> {
 pub fn counter_name(outcome: &str) -> String {
     if outcome == "admitted" {
         "sky_plan_admitted".to_owned()
-    } else if outcome.starts_with("rows_") || outcome.starts_with("plan_") || outcome.starts_with("geometry_") {
+    } else if outcome.starts_with("rows_") || outcome.starts_with("plan_") || outcome.starts_with("geometry_") || outcome.starts_with("cut_") {
         format!("sky_{outcome}")
     } else {
         format!("scene_kept_sky_{outcome}")
@@ -158,9 +158,46 @@ pub fn count_geometry(outcome: &'static str) {
         "unloaded" => "geometry_unloaded",
         "model" => "geometry_model",
         "extraction" => "geometry_extraction",
+        "absolute" => "geometry_absolute",
         _ => "geometry_section",
     };
     *OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).entry(name).or_default() += 1;
+}
+
+/// The cut's arm (docs/graphics/retire-d3d-r5.md, "Cutting the guest's
+/// sky setup"): the guest's sky setup may be cut for a BSP once
+/// [`CUT_TO_ANSWER`] strips in a row have had the made rows answering and
+/// the look and geometry from the load matching; one strip that does not
+/// stops it until the next BSP. Counted `sky_cut_<outcome>`: `waiting`,
+/// `ready`, `stopped`.
+pub const CUT_TO_ANSWER: u64 = 256;
+
+#[derive(Debug, Default)]
+struct CutArm {
+    generation: u64,
+    run: u64,
+    stopped: bool,
+}
+
+static CUT: Mutex<CutArm> = Mutex::new(CutArm { generation: 0, run: 0, stopped: false });
+
+/// Records one strip (`all`: rows, look and geometry all the plan's) and
+/// answers whether the cut's arm is ready for this BSP.
+pub fn cut_outcome(generation: u64, all: bool) -> bool {
+    let mut arm = CUT.lock().unwrap_or_else(|e| e.into_inner());
+    if arm.generation != generation {
+        *arm = CutArm { generation, ..CutArm::default() };
+    }
+    if !all {
+        arm.stopped = true;
+    } else if !arm.stopped {
+        arm.run += 1;
+    }
+    let ready = !arm.stopped && arm.run >= CUT_TO_ANSWER;
+    let name = if arm.stopped { "cut_stopped" } else if ready { "cut_ready" } else { "cut_waiting" };
+    drop(arm);
+    *OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).entry(name).or_default() += 1;
+    ready
 }
 
 /// The draw has to consume the entire captured strip for this model part.
@@ -220,11 +257,27 @@ mod tests {
         let before = read("scene_kept_sky_range");
         count("range");
         assert_eq!(read("scene_kept_sky_range"), before + 1);
-        assert!(counters().iter().all(|(k, _)| k == "sky_plan_admitted" || k.starts_with("scene_kept_sky_") || k.starts_with("sky_rows_") || k.starts_with("sky_plan_") || k.starts_with("sky_geometry_")));
+        assert!(counters().iter().all(|(k, _)| k == "sky_plan_admitted" || k.starts_with("scene_kept_sky_") || k.starts_with("sky_rows_") || k.starts_with("sky_plan_") || k.starts_with("sky_geometry_") || k.starts_with("sky_cut_")));
         let before = read("sky_geometry_window");
         count_geometry("window");
         assert_eq!(read("sky_geometry_window"), before + 1);
         assert_eq!(counter_name("geometry_matched"), "sky_geometry_matched");
+    }
+
+    /// The cut's arm is ready after a run of strips with everything the
+    /// plan's, stops at one that is not, and starts again at a new BSP.
+    #[test]
+    fn the_cut_arm_is_ready_after_its_run_and_stops_at_a_miss() {
+        let generation = 0xc07_0001;
+        for _ in 0..CUT_TO_ANSWER - 1 {
+            assert!(!cut_outcome(generation, true));
+        }
+        assert!(cut_outcome(generation, true));
+        assert!(cut_outcome(generation, true));
+        assert!(!cut_outcome(generation, false));
+        assert!(!cut_outcome(generation, true));
+        assert!(!cut_outcome(generation + 1, true));
+        assert_eq!(counter_name("cut_ready"), "sky_cut_ready");
     }
 
     /// The made rows answer after enough matching strips, are then sampled,

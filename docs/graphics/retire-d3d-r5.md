@@ -170,19 +170,33 @@ index run. At the strip, `SkySection::check` compares the draw's index
 list (absolute, or rebased by the part's smallest index) and each stream
 over the part's vertex window. Counted `sky_geometry_<outcome>`:
 `matched`, `indices`, `window`, `streams`, `part`, or why there is no
-section (`unloaded`, `model`, `section`, `extraction`).
+section (`unloaded`, `model`, `section`, `extraction`), and `absolute` (a
+draw that indexes the whole section, not the part's window).
+
+A strip whose geometry matches is drawn from the load's bytes
+(`SkySection::resident`): the load cuts each part's vertex window and
+rebased index list once, each a snapshot of its own
+(`CachedBytes::derived`, `CachedIndices::derived`), and
+`IndexedPass::for_sky` makes the strip's `SectionKey::Sky` entry from
+them, so the entry is uploaded once per part per BSP from the map, not
+from the guest's buffers. The draw's layout, state and constants stay the
+strip's.
+
+The cut's arm counts each strip `sky_cut_<outcome>`: `waiting`, `ready`
+(256 strips in a row with the made rows answering and the look and
+geometry matching), `stopped` (one strip that did not, until the next
+BSP).
 
 ## Not built
 
 - **Cutting the guest's sky setup.** The strip is admitted at its
   resolved draw, so the guest's sky selection, its node palette upload and
-  the strip's setup still run. The rows are made in Rust beside the
-  guest's, and the pass's program and textures from the material
-  (below), and the section's geometry read at the load and checked
-  (below). The upload into `SectionKey::Sky` is still to come: the strip
-  cache (`world_layers_gpu::ResidentSection`) is filled from a draw's own
-  streams, keyed by its snapshot, so the load's sections need a resident
-  entry made without a draw.
+  the strip's setup still run. Rows, look and geometry come from the plan
+  beside the guest's (below), and the cut's arm (`native_sky::cut_outcome`)
+  says when all three hold for a BSP. The skip itself is not built: with
+  `0x0003ede0` passed over there is no strip to admit at, so the native
+  pass needs its own issue in slot 8 with the draw state the admitted
+  strip carried.
 - **The flare passes, the post and layers 18, 19 and 21 from the scene.**
   `0x0002dd30`, `0x0002df00` and `0x00013870` still run, and their native
   passes draw into the device's live targets at the guest's calls. Cutting
@@ -214,6 +228,7 @@ Tests: `the_stage_draws_around_the_entry_the_guest_keeps`,
 `the_product_is_the_guests_composition` (`sky_rows`),
 `the_sky_look_from_the_material_is_checked_against_the_strip`,
 `the_sky_section_from_the_load_is_checked_against_the_strip` (`tests/world_layers_gpu.rs`),
+`the_cut_arm_is_ready_after_its_run_and_stops_at_a_miss` (`native_sky`),
 `the_rows_arm_answers_after_its_matches_and_stops_at_a_difference` (`native_sky`),
 `an_order_item_of_layer_2_holds_the_layer_for_its_sorted_entries`
 (`native_layers`); `a_passed_over_entry_reads_as_passed_and_keeps_its_slot_and_neighbours`,

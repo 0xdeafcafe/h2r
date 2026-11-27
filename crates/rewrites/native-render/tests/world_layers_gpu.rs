@@ -794,10 +794,10 @@ fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
         };
         let mut unmarked = draw.clone();
         unmarked.state.render.stencil.enable = false;
-        assert_eq!(IndexedPass::for_sky(&unmarked, cache.clone(), 1, 9, item.clone(), SkyConstants::default()).err(), Some("stencil"));
+        assert_eq!(IndexedPass::for_sky(&unmarked, cache.clone(), 1, 9, item.clone(), SkyConstants::default(), None).err(), Some("stencil"));
         backend.clear(color, Some(depth), Clear::all([0.0; 4])).unwrap();
         assert!(after_compile(|| {
-            let pass = IndexedPass::for_sky(&draw, cache.clone(), 1, 9, item.clone(), SkyConstants::default()).unwrap();
+            let pass = IndexedPass::for_sky(&draw, cache.clone(), 1, 9, item.clone(), SkyConstants::default(), None).unwrap();
             assert!(pass.replays_scene());
             record_pass(&mut backend, surfaces.clone(), [None; 4], timeline::native::Stage::Sky, Box::new(pass))
         }));
@@ -840,7 +840,7 @@ fn a_sky_strip_keeps_its_cull_and_each_refusal_is_named() {
         vertex: vec![Register { index: 30, value: [0.25; 4], written: 0xf, origin: Origin::Instance }],
         pixel: vec![(0, 0, 0x1122_3344)],
     };
-    let admit = |draw: &ResolvedDraw| IndexedPass::for_sky(draw, cache.clone(), 1, 9, item.clone(), material.clone()).err();
+    let admit = |draw: &ResolvedDraw| IndexedPass::for_sky(draw, cache.clone(), 1, 9, item.clone(), material.clone(), None).err();
     assert_eq!(admit(&draw), None, "an unculled strip");
     for (cull, name) in [(CullMode::Cw, "cw"), (CullMode::Ccw, "ccw")] {
         let mut culled = draw.clone();
@@ -918,10 +918,8 @@ fn the_sky_section_from_the_load_is_checked_against_the_strip() {
 
     let positions: Vec<u8> = (0..6u8 * 4).collect();
     let colours: Vec<u8> = (100..100 + 6u8 * 8).collect();
-    let section = SkySection {
-        streams: vec![(4, positions.clone()), (8, colours.clone())],
-        parts: vec![vec![0, 1, 2], vec![3, 5, 4], Vec::new()],
-    };
+    let runs = vec![vec![0, 1, 2], vec![3, 5, 4], Vec::new()];
+    let section = SkySection::new(vec![(4, positions.clone()), (8, colours.clone())], runs.clone());
     let mut draw = triangle(2.0, [0.0; 4], STENCIL_MARK_REFERENCE, false);
     draw.indices = Some(vec![0u32, 2, 1].into());
     draw.streams = vec![
@@ -943,8 +941,22 @@ fn the_sky_section_from_the_load_is_checked_against_the_strip() {
     let mut stride = draw.clone();
     stride.streams[0].stride = 12;
     assert_eq!(section.check(1, &stride), "streams");
-    let short = SkySection { streams: vec![(4, positions[..16].to_vec()), (8, colours.clone())], ..section.clone() };
+    let short = SkySection::new(vec![(4, positions[..16].to_vec()), (8, colours.clone())], runs);
     assert_eq!(short.check(1, &draw), "window");
+
+    // The resident entry's draw: the strip's, with the load's snapshots.
+    let native = section.resident(1, &draw).unwrap();
+    assert_eq!(native.vertex_count, 3);
+    assert_eq!(native.indices.as_deref(), Some(&[0u32, 2, 1][..]));
+    assert!(native.indices.as_ref().unwrap().cache_id().is_some());
+    assert_eq!(native.streams[0].data[..], positions[12..24]);
+    assert_eq!(native.streams[1].data[..], colours[24..48]);
+    assert!(native.streams.iter().all(|s| s.data.cache_id().is_some()));
+    let again = section.resident(1, &draw).unwrap();
+    assert_eq!(again.streams[0].data.cache_id(), native.streams[0].data.cache_id());
+    assert_eq!(again.indices.unwrap().cache_id(), native.indices.unwrap().cache_id());
+    assert_eq!(section.resident(1, &absolute).err(), Some("absolute"));
+    assert_eq!(section.resident(0, &draw).err(), Some("indices"));
 }
 
 /// A pool the native pass can draw: the lens (a frame sample) at stage 0,
