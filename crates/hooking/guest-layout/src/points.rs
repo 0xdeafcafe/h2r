@@ -715,12 +715,12 @@ points! { ALL;
     PARTICLE_VIEW_UPDATE @ 0x0017_4420: [opaque], Optional; "docs/graphics/native-particles.md";
     /// One particle's emission: the particle draw's per-particle callback
     /// (`ret 0x1c`), which evaluates its properties and calls the emitter.
-    PARTICLE_EVALUATE @ 0x0022_4550: [opaque], Optional; "docs/graphics/native-particles.md";
+    PARTICLE_EVALUATE @ 0x0022_4550: [fn(a0: stack 0, a1: stack 1, a2: stack 2, a3: stack 3, a4: stack 4, a5: stack 5, a6: stack 6) ret 28], Optional; "docs/graphics/native-particles.md";
     /// The particle emitter: eight words on the stack, EBX the corners.
     PARTICLE_EMIT @ 0x0023_ed30: [opaque], Optional; "docs/graphics/native-particles.md";
     /// A contrail's ribbon: the vertex builder the dynamic draw calls
     /// (`ret 0xc`), two vertices of 24 bytes a point.
-    CONTRAIL_RIBBON @ 0x0004_2cf0: [opaque], Optional; "docs/graphics/native-particles.md";
+    CONTRAIL_RIBBON @ 0x0004_2cf0: [fn(out: stack 0, bytes: stack 1, ribbon: stack 2) -> al ret 12], Optional; "docs/graphics/native-particles.md";
     CAMERA_DIRECTOR @ 0x0015_54b0: [opaque], Optional; "docs/engine/engine-map.md";
     CAMERA_OBSERVER @ 0x0016_f280: [opaque], Optional; "docs/engine/engine-map.md";
     CAMERA_FIRST_PERSON @ 0x0023_c110: [opaque], Optional; "docs/engine/engine-map.md";
