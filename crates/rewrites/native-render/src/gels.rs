@@ -230,7 +230,8 @@ mod tests {
         // f/(f-n) = 4/3; 4/3 - 0.5 * 4/3 = 2/3; times 4.
         assert!((z - 8.0 / 3.0).abs() < 1e-6);
         assert_eq!(w, 2.0);
-        assert_eq!(quad_depth(0.5, 2.0, 1.0, 1.0), (1.0, 0.5), "z clamps to the scale");
+        // near -1: 2/3 - (-1) * 2/3 = 4/3, over the scale of 1.
+        assert_eq!(quad_depth(-1.0, 2.0, 1.0, 1.0), (1.0, 0.5), "z clamps to the scale");
         assert_eq!(quad_depth(2.0, 1.0, 1.0, -1.0).1, 0.0, "w clamps to zero");
         let q = quad((64, 32), (z, w));
         assert_eq!(q.map(|(p, _)| [p[0], p[1]]), [[0.0, 0.0], [64.0, 0.0], [0.0, 32.0], [64.0, 32.0]]);
