@@ -9,10 +9,10 @@ The sources of the content stage, Studio's test map
   the cameras, and the `lights` (the day bay's sun and sky fill, the
   flat and dark levels). `stage_kit::layout` reads it and refuses
   overlaps and impossible lights.
-- `project.toml`: the tag project that builds the stage as a `fresh` map
-  over a base (`h2 tags build --project art/stage/project.toml`).
-  `content/stage/map.toml` is the same project as the baked package the
-  game builds at boot.
+
+The stage's map item is `content/stage/map.toml`: the game builds it at
+boot from the disc, and it is the tag workspace's project for the tree
+build (`h2 tags project build stage`).
 
 Only our own sources live here. The geometry is made from the YAML and
 the textures and the sky's picture are drawn in code

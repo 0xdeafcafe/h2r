@@ -11,16 +11,17 @@ use workspace::project_build::{self, Tools};
 
 const USAGE: &str = "usage:
   h2 tags project list [--json]
-      every project file: art/*/project.toml in the checkout, then
-      <data>/workspace/projects/*.toml
+      every project: each map item of the packages content/*/ in the
+      checkout, then <data>/packages/*/
   h2 tags project show PROJECT [--closure] [--json]
-      what PROJECT (a name, or a path to its .toml) resolves to: its
-      layers top first, edit files, kits, and every problem that would stop
-      its build; --closure walks a fresh project's closure for lossy tags
+      what PROJECT (a map's name, or a package directory with one map
+      item) resolves to: its layers top first (edits, authored, imports,
+      tree), edit files, kits, and every problem that would stop its build;
+      --closure walks a fresh project's closure for lossy tags
   h2 tags project build PROJECT [--out FILE.map] [--json]
-      build PROJECT from the tree, its layers, edit files and kits, and
-      write the package <data>/maps/<name>/ with receipt.json; --out also
-      writes the map alone
+      build PROJECT from the tree, its layers, edit files, kits and the
+      items it takes, and write the map package <data>/maps/<name>/ with
+      receipt.json; --out also writes the map alone
   h2 tags edits list [--json]
       every edit file: assets/tag-edits/*.yaml, then <data>/workspace/edits/
   h2 tags edits check PROJECT [--json]
@@ -147,10 +148,12 @@ fn project_list(o: &Opts) -> Result<()> {
     for p in &list {
         match (&p.name, &p.error) {
             (Some(name), _) => println!(
-                "{name}\t{:?}\t{}\t{:?}\t{}",
+                "{name}\t{:?}\t{}\t{:?}\t{} item {}\t{}",
                 p.mode.expect("a read project"),
                 p.base.as_deref().unwrap_or_default(),
                 p.origin,
+                p.package.as_deref().unwrap_or_default(),
+                p.item.unwrap_or_default(),
                 p.path
             ),
             (None, Some(e)) => println!("(unreadable)\t{}\t{e}", p.path),
@@ -167,8 +170,8 @@ fn project_show(o: &Opts) -> Result<()> {
         return print_json!(&d);
     }
     println!(
-        "{} ({:?}, base {}): {}",
-        d.project.name, d.project.mode, d.project.base, d.file
+        "{} ({:?}, base {}): package {} item {} at {}",
+        d.project.name, d.project.mode, d.project.base, d.package, d.item, d.file
     );
     for l in &d.layers {
         println!("  layer {}\t{}\t{}", l.kind, l.name, l.path);
@@ -181,6 +184,9 @@ fn project_show(o: &Opts) -> Result<()> {
     }
     if !d.edited.is_empty() {
         println!("  edits {}", d.edited.join(", "));
+    }
+    if !d.authored.is_empty() {
+        println!("  authored {}", d.authored.join(", "));
     }
     if let Some(from) = d.scenario_from {
         println!("  scenario from the {from}");
@@ -218,13 +224,14 @@ fn project_build_cmd(o: &Opts) -> Result<()> {
             "dir": wrote.dir,
             "map_id": wrote.map_id,
             "file": wrote.file,
+            "unchanged": wrote.unchanged,
             "took_ms": started.elapsed().as_millis() as u64,
             "receipt": built.receipt,
         }));
     }
     let r = &built.receipt;
     println!(
-        "{}: {} ({:?} over {}, {} bytes, tag memory {:#x} of {:#x}, {} edited tags, key {}), {:.1?}",
+        "{}: {} ({:?} over {}, {} bytes, tag memory {:#x} of {:#x}, {} edited, {} authored, {} added tags, key {}), {:.1?}",
         wrote.dir,
         wrote.map_id,
         r.mode,
@@ -233,6 +240,8 @@ fn project_build_cmd(o: &Opts) -> Result<()> {
         r.memory_size,
         r.memory_max,
         r.edited.len(),
+        r.authored.len(),
+        r.added.len(),
         &r.key[..16.min(r.key.len())],
         started.elapsed()
     );
@@ -264,7 +273,7 @@ fn edits_list(o: &Opts) -> Result<()> {
 
 fn edits_check(o: &Opts) -> Result<()> {
     let file = project::load(&o.roots, o.word(1, "a project")?)?;
-    let c = project::check_edits(&o.roots, &file.project)?;
+    let c = project::check_edits(&o.roots, &file)?;
     if o.json {
         print_json!(&c)?;
     } else {
@@ -302,7 +311,7 @@ fn edits_set(o: &Opts) -> Result<()> {
         Some(which) => {
             let file = project::load(&o.roots, which)?;
             let key = edits::parse_key(tag).map_err(anyhow::Error::msg)?;
-            Some(project::was_of(&o.roots, &file.project, &key)?)
+            Some(project::was_of(&o.roots, &file, &key)?)
         }
     };
     let w = edits::set_line(&o.roots.workspace(), name, tag, path, &value, was)

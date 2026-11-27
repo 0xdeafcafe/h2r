@@ -64,8 +64,9 @@ pub const VERSION: u32 = 2;
 /// The layout shipped with the repository.
 pub const SOURCE: &str = include_str!("../../../../art/stage/stage.yaml");
 
-/// The stage's project shipped with the repository.
-pub const PROJECT: &str = include_str!("../../../../art/stage/project.toml");
+/// The stage's `map` item shipped with the repository: its package's
+/// `map.toml`, also its tree build's project.
+pub const PROJECT: &str = include_str!("../../../../content/stage/map.toml");
 
 /// What can go wrong building the stage.
 #[derive(Debug, thiserror::Error)]

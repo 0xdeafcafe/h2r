@@ -1,79 +1,48 @@
 //! Projects over the tag tree (docs/editor/tag-workspace.md, "Projects"
 //! and "Layers").
 //!
-//! A project file names one map to build:
+//! A project is a package's `map` item: its `map.toml` ([`MapSpec`]) names
+//! the map, one file per map. The fields the tree build reads besides the
+//! map item's own:
 //!
 //! | Field | Means |
 //! |---|---|
-//! | `name` | the map and its package directory, `<data>/maps/<name>/` |
-//! | `mode` | `fresh` (closure over the layers, nothing pinned) or `onto` (the disc map with the changed tags rebuilt) |
-//! | `base` | the disc map: its variants, globals and header |
-//! | `scenario` | `fresh`: the scenario's tag path; `onto` takes the base's |
-//! | `kits` | build steps, in order ([`crate::project_build::Kit`]) |
 //! | `edits` | edit files: `assets/tag-edits/<name>.yaml` in Git, or a local file's `<name>` |
 //! | `imports` | import layers, `<data>/workspace/imports/<name>/`, top first |
-//! | `output` | `package` |
 //!
-//! Files: `art/<dir>/project.toml` in the checkout, and
-//! `<data>/workspace/projects/<name>.toml`. A name two files give is an
-//! error naming both.
+//! The packages are the checkout's `content/*/` (Git) and
+//! `<data>/packages/*/` (local, not `cache/`). A package that does not load
+//! stops every tree build, named: its items may be ones a map takes. A map
+//! name two items give is an error naming both.
 //!
-//! [`open_stack`] gives the tags a build reads: the edit files ([`Edited`])
-//! over [`Layered`] import layers over the tree, read with the base map's
-//! variants. The edit files are the project's `edits` in order, then the
-//! project's own local file `<data>/workspace/edits/<name>.yaml` when
-//! there is one (what a save writes). A tree, a base map, an import layer
-//! or an edit file that is not there is a named error.
+//! [`open_stack`] gives the tags a build reads, top first: the edit files
+//! ([`Edited`]), the authored layer (the `tag` items the map takes,
+//! [`crate::authored`]), the import layers, the tree, read with the base
+//! map's variants. The edit files are the project's `edits` in order, then
+//! its own local file `<data>/workspace/edits/<name>.yaml` when there is
+//! one (what a save writes). A tree, a base map, an import layer or an edit
+//! file that is not there is a named error.
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-use tags::repo::{TagRepo, TagSource};
+use content::package::{Kind, MANIFEST_FILE};
+use serde::Serialize;
+use tags::repo::{TagKey, TagRepo, TagSource};
 
+use crate::authored;
+use crate::build::Loaded;
 use crate::edits::{self, EditFile, Edited, Origin, Problem};
+use crate::game::{CACHE_DIR, PACKAGES_DIR};
 use crate::layer::Layered;
+use crate::maps::{MapSpec, Mode};
 
-/// Where a project in Git lives: `art/<dir>/project.toml`.
-pub const ART_DIR: &str = "art";
-pub const GIT_FILE: &str = "project.toml";
-/// Under `<data>/workspace/`: the user's projects, import layers and
-/// build caches.
-pub const PROJECTS_DIR: &str = "projects";
+/// Where the packages in Git live: `content/<dir>/package.toml`.
+pub const CONTENT_DIR: &str = "content";
+/// Under `<data>/workspace/`: the user's import layers.
 pub const IMPORTS_DIR: &str = "imports";
-pub const BUILD_DIR: &str = "build";
 
-/// How a project builds its map.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BuildMode {
-    Fresh,
-    Onto,
-}
-
-/// What a build writes.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Output {
-    /// A map package under `<data>/maps/<name>/`.
-    Package,
-}
-
-/// A project file (module docs).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Project {
-    pub name: String,
-    pub mode: BuildMode,
-    pub base: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub scenario: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub kits: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub edits: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub imports: Vec<String>,
-    pub output: Output,
-}
+/// A project: a `map` item's spec.
+pub type Project = MapSpec;
 
 /// What can stop a project.
 #[derive(Debug, thiserror::Error)]
@@ -123,79 +92,12 @@ impl EditRef {
     }
 }
 
-fn is_tag_path(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() < 256
-        && !s.contains('/')
-        && s.rsplit('\\').next().is_some_and(|n| !n.is_empty())
-}
-
-impl Project {
-    /// A project file's text, checked (module docs). `what` names the file
-    /// in errors.
-    pub fn parse(text: &str, what: &str) -> Result<Self, String> {
-        let p: Project = toml::from_str(text).map_err(|e| format!("{what}: {e}"))?;
-        p.validate().map_err(|e| format!("{what}: {e}"))?;
-        Ok(p)
-    }
-
-    pub fn validate(&self) -> Result<(), String> {
-        use content::manifest::is_map_name;
-        if !is_map_name(&self.name) || !content::store::is_dir_name(&self.name) {
-            return Err(format!("name {:?} is not a map name", self.name));
-        }
-        if !is_map_name(&self.base) {
-            return Err(format!("base {:?} is not a map name", self.base));
-        }
-        if self.name.eq_ignore_ascii_case(&self.base) {
-            return Err(format!(
-                "name {:?} is the base's: a project makes a map of its own",
-                self.name
-            ));
-        }
-        match (self.mode, &self.scenario) {
-            (BuildMode::Fresh, None) => return Err("a fresh project names its scenario".into()),
-            (BuildMode::Fresh, Some(s)) if !is_tag_path(s) => {
-                return Err(format!("scenario {s:?} is not a tag path"));
-            }
-            (BuildMode::Onto, Some(_)) => {
-                return Err("an onto project builds its base's scenario: drop `scenario`".into());
-            }
-            _ => {}
-        }
-        let mut seen = std::collections::HashSet::new();
-        for k in &self.kits {
-            if k.is_empty() || !seen.insert(("kit", k.as_str())) {
-                return Err(format!("kits: {k:?} is empty or named twice"));
-            }
-        }
-        for e in &self.edits {
-            EditRef::parse(e)?;
-            if !seen.insert(("edits", e.as_str())) {
-                return Err(format!("edits: {e:?} is named twice"));
-            }
-        }
-        for i in &self.imports {
-            if !edits::is_plain_name(i) || !seen.insert(("import", i.as_str())) {
-                return Err(format!(
-                    "imports: {i:?} is not an import layer's name, or is named twice"
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    /// The project file's text.
-    pub fn to_text(&self) -> String {
-        toml::to_string(self).unwrap_or_default()
-    }
-
-    /// `fresh`'s scenario key; `None` for `onto`.
-    pub fn scenario_key(&self) -> Option<tags::repo::TagKey> {
-        self.scenario
-            .as_ref()
-            .map(|s| tags::repo::TagKey::new(map::FourCC(*b"scnr"), s.clone()))
-    }
+/// `fresh`'s scenario key; `None` for `onto`.
+pub fn scenario_key(project: &Project) -> Option<TagKey> {
+    project
+        .scenario
+        .as_ref()
+        .map(|s| TagKey::new(map::FourCC(*b"scnr"), s.clone()))
 }
 
 /// Where a build reads and writes.
@@ -203,9 +105,9 @@ impl Project {
 pub struct Roots {
     /// The tag tree (Studio's `tags_root`, `<data>/tags/` unless set).
     pub tree: PathBuf,
-    /// The data root: `workspace/` and `maps/` are under it.
+    /// The data root: `workspace/`, `packages/` and `maps/` are under it.
     pub data: PathBuf,
-    /// The Git checkout our sources are read from (`art/`,
+    /// The Git checkout our sources are read from (`content/`,
     /// `assets/tag-edits/`); none for a player's machine.
     pub checkout: Option<PathBuf>,
 }
@@ -247,122 +149,139 @@ impl Roots {
     }
 }
 
-/// A project file found on disk.
+/// A package directory [`packages`] finds: loaded, or why not.
 #[derive(Clone, Debug)]
-pub struct ProjectFile {
-    pub project: Project,
+pub struct PackageDir {
     pub origin: Origin,
     pub path: PathBuf,
+    pub loaded: Result<Loaded, String>,
 }
 
-/// A project file as [`discover`] finds it: read, or why not.
-#[derive(Clone, Debug)]
-pub struct Found {
-    pub origin: Origin,
-    pub path: PathBuf,
-    pub project: Result<Project, String>,
-}
-
-fn read_found(origin: Origin, path: PathBuf) -> Found {
-    let project = std::fs::read_to_string(&path)
-        .map_err(|e| format!("{}: {e}", path.display()))
-        .and_then(|t| Project::parse(&t, &path.display().to_string()));
-    Found {
-        origin,
-        path,
-        project,
-    }
-}
-
-/// Every project file: `art/*/project.toml` in the checkout, then
-/// `<data>/workspace/projects/*.toml`, each sorted by path.
-pub fn discover(roots: &Roots) -> Vec<Found> {
-    let mut out = Vec::new();
-    if let Some(checkout) = &roots.checkout {
-        let mut dirs: Vec<PathBuf> = std::fs::read_dir(checkout.join(ART_DIR))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|e| e.path().join(GIT_FILE))
-            .filter(|p| p.is_file())
-            .collect();
-        dirs.sort();
-        out.extend(dirs.into_iter().map(|p| read_found(Origin::Git, p)));
-    }
-    let mut local: Vec<PathBuf> = std::fs::read_dir(roots.workspace().join(PROJECTS_DIR))
+fn package_dirs(root: &Path, skip: Option<&str>) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(root)
         .into_iter()
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.is_file() && p.extension().is_some_and(|x| x == "toml"))
+        .filter(|p| p.join(MANIFEST_FILE).is_file())
+        .filter(|p| skip.is_none_or(|s| p.file_name().and_then(|n| n.to_str()) != Some(s)))
         .collect();
-    local.sort();
-    out.extend(local.into_iter().map(|p| read_found(Origin::Local, p)));
+    dirs.sort();
+    dirs
+}
+
+fn read_package(origin: Origin, path: PathBuf) -> PackageDir {
+    let loaded = Loaded::from_dir(&path).map_err(|e| e.to_string());
+    PackageDir {
+        origin,
+        path,
+        loaded,
+    }
+}
+
+/// Every package: the checkout's `content/*/`, then `<data>/packages/*/`
+/// (not `cache/`), each sorted by path.
+pub fn packages(roots: &Roots) -> Vec<PackageDir> {
+    let mut out = Vec::new();
+    if let Some(checkout) = &roots.checkout {
+        for d in package_dirs(&checkout.join(CONTENT_DIR), None) {
+            out.push(read_package(Origin::Git, d));
+        }
+    }
+    for d in package_dirs(&roots.data.join(PACKAGES_DIR), Some(CACHE_DIR)) {
+        out.push(read_package(Origin::Local, d));
+    }
     out
 }
 
-/// The project `which` names: a path to a project file (it ends in
-/// `.toml`), or a project's name among [`discover`]'s. A name no file
-/// gives, a name two files give and a file that does not read are errors;
-/// a file that does not read and would have given the name (its
-/// directory's or its own stem) is that file's error.
-pub fn load(roots: &Roots, which: &str) -> Result<ProjectFile, ProjectError> {
-    if which.ends_with(".toml") {
-        let path = PathBuf::from(which);
-        let in_checkout = roots
-            .checkout
+/// The packages a tree build reads: every one [`packages`] finds, in its
+/// order. One that does not load is the error.
+pub fn package_set(found: &[PackageDir]) -> Result<Vec<Loaded>, ProjectError> {
+    found
+        .iter()
+        .map(|d| {
+            d.loaded.clone().map_err(|why| {
+                invalid(format!(
+                    "the package at {} does not load, and a tree build reads every package for the items a map takes: {why}",
+                    d.path.display()
+                ))
+            })
+        })
+        .collect()
+}
+
+/// A project as [`discover`] finds it: read, or why not.
+#[derive(Clone, Debug)]
+pub struct Found {
+    pub origin: Origin,
+    /// The package directory.
+    pub path: PathBuf,
+    /// The package's id and the `map` item's index; `None` when the
+    /// package does not load.
+    pub package: Option<String>,
+    pub item: Option<usize>,
+    pub project: Result<Project, String>,
+}
+
+fn map_items(d: &PackageDir) -> Vec<Found> {
+    let l = match &d.loaded {
+        Ok(l) => l,
+        Err(why) => {
+            return vec![Found {
+                origin: d.origin,
+                path: d.path.clone(),
+                package: None,
+                item: None,
+                project: Err(why.clone()),
+            }];
+        }
+    };
+    let id = l.package.manifest.package.id.clone();
+    let mut out = Vec::new();
+    for (i, item) in l.package.manifest.items.iter().enumerate() {
+        if item.kind != Kind::Map {
+            continue;
+        }
+        let project = item
+            .source
             .as_ref()
-            .is_some_and(|c| git_checkout(&path).is_some_and(|g| same_dir(&g, c)));
-        let origin = if in_checkout {
-            Origin::Git
-        } else {
-            Origin::Local
-        };
-        let f = read_found(origin, path);
-        return Ok(ProjectFile {
-            project: f.project.map_err(ProjectError::Invalid)?,
-            origin: f.origin,
-            path: f.path,
+            .ok_or_else(|| "the map item has no source".to_owned())
+            .and_then(|s| {
+                l.files
+                    .get(s)
+                    .ok_or_else(|| format!("the package has no file {s:?}"))
+                    .and_then(|b| MapSpec::parse(b).map_err(|e| format!("{s}: {e}")))
+            })
+            .map_err(|e| format!("{} item {i}: {e}", d.path.display()));
+        out.push(Found {
+            origin: d.origin,
+            path: d.path.clone(),
+            package: Some(id.clone()),
+            item: Some(i),
+            project,
         });
     }
-    let found = discover(roots);
-    let mut hits: Vec<ProjectFile> = Vec::new();
-    for f in &found {
-        match &f.project {
-            Ok(p) if p.name == which => hits.push(ProjectFile {
-                project: p.clone(),
-                origin: f.origin,
-                path: f.path.clone(),
-            }),
-            Ok(_) => {}
-            Err(why) if names(&f.path, which) => return Err(invalid(why.clone())),
-            Err(_) => {}
-        }
-    }
-    match hits.len() {
-        1 => Ok(hits.remove(0)),
-        0 => {
-            let all: Vec<String> = found
-                .iter()
-                .filter_map(|f| f.project.as_ref().ok().map(|p| p.name.clone()))
-                .collect();
-            Err(invalid(format!(
-                "no project is named {which:?} (the projects are: {})",
-                if all.is_empty() {
-                    "none".to_owned()
-                } else {
-                    all.join(", ")
-                }
-            )))
-        }
-        _ => Err(invalid(format!(
-            "two project files are named {which:?}: {}",
-            hits.iter()
-                .map(|h| h.path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(" and ")
-        ))),
-    }
+    out
+}
+
+/// Every project: each `map` item of [`packages`], and each package that
+/// does not load.
+pub fn discover(roots: &Roots) -> Vec<Found> {
+    packages(roots).iter().flat_map(map_items).collect()
+}
+
+/// A project to build: the map item and the packages around it.
+#[derive(Clone, Debug)]
+pub struct ProjectFile {
+    pub project: Project,
+    pub origin: Origin,
+    /// The package directory.
+    pub path: PathBuf,
+    /// The package's id and the `map` item's index.
+    pub package: String,
+    pub item: usize,
+    /// Every package, for the items the map takes.
+    pub packages: Vec<Loaded>,
 }
 
 fn same_dir(a: &Path, b: &Path) -> bool {
@@ -372,32 +291,142 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Whether a project file's place names `name`: `art/<name>/project.toml`
-/// or `projects/<name>.toml`.
-fn names(path: &Path, name: &str) -> bool {
-    let stem = path.file_stem().and_then(|s| s.to_str());
-    let dir = path
-        .parent()
-        .and_then(|d| d.file_name())
-        .and_then(|s| s.to_str());
-    if stem == Some("project") {
-        dir == Some(name)
+fn file_of(f: &Found, project: &Project, packages: Vec<Loaded>) -> ProjectFile {
+    ProjectFile {
+        project: project.clone(),
+        origin: f.origin,
+        path: f.path.clone(),
+        package: f.package.clone().unwrap_or_default(),
+        item: f.item.unwrap_or_default(),
+        packages,
+    }
+}
+
+/// The project `which` names: a package directory (or its
+/// `package.toml`) with one `map` item, or a map's name among
+/// [`discover`]'s. A name no item gives, a name two items give, a package
+/// with no or several map items and a package that does not load are
+/// errors; so is any package of the set that does not load
+/// ([`package_set`]).
+pub fn load(roots: &Roots, which: &str) -> Result<ProjectFile, ProjectError> {
+    let mut found = packages(roots);
+    let as_path = PathBuf::from(which);
+    let dir = if as_path.file_name().is_some_and(|n| n == MANIFEST_FILE) {
+        as_path.parent().map(Path::to_path_buf)
+    } else if as_path.join(MANIFEST_FILE).is_file() {
+        Some(as_path)
     } else {
-        stem == Some(name)
+        None
+    };
+    if let Some(dir) = dir {
+        let at = match found.iter().position(|d| same_dir(&d.path, &dir)) {
+            Some(i) => i,
+            None => {
+                let in_checkout = roots
+                    .checkout
+                    .as_ref()
+                    .is_some_and(|c| git_checkout(&dir).is_some_and(|g| same_dir(&g, c)));
+                let origin = if in_checkout {
+                    Origin::Git
+                } else {
+                    Origin::Local
+                };
+                found.push(read_package(origin, dir.clone()));
+                found.len() - 1
+            }
+        };
+        let items = map_items(&found[at]);
+        let f = match items.as_slice() {
+            [one] => one.clone(),
+            [] => {
+                return Err(invalid(format!(
+                    "the package at {} has no map item",
+                    dir.display()
+                )));
+            }
+            many => {
+                let names: Vec<String> = many
+                    .iter()
+                    .map(|f| match &f.project {
+                        Ok(p) => p.name.clone(),
+                        Err(_) => format!("item {}", f.item.unwrap_or_default()),
+                    })
+                    .collect();
+                return Err(invalid(format!(
+                    "the package at {} has {} map items ({}): name the map",
+                    dir.display(),
+                    many.len(),
+                    names.join(", ")
+                )));
+            }
+        };
+        let project = f.project.clone().map_err(invalid)?;
+        let set = package_set(&found)?;
+        return Ok(file_of(&f, &project, set));
+    }
+    let all: Vec<Found> = found.iter().flat_map(map_items).collect();
+    let hits: Vec<(&Found, &Project)> = all
+        .iter()
+        .filter_map(|f| f.project.as_ref().ok().map(|p| (f, p)))
+        .filter(|(_, p)| p.name.eq_ignore_ascii_case(which))
+        .collect();
+    match hits.as_slice() {
+        [(f, p)] => {
+            let set = package_set(&found)?;
+            Ok(file_of(f, p, set))
+        }
+        [] => {
+            if let Some(bad) = all.iter().find_map(|f| f.project.as_ref().err()) {
+                return Err(invalid(format!(
+                    "no project is named {which:?}, and a package does not read: {bad}"
+                )));
+            }
+            let names: Vec<String> = all
+                .iter()
+                .filter_map(|f| f.project.as_ref().ok().map(|p| p.name.clone()))
+                .collect();
+            Err(invalid(format!(
+                "no project is named {which:?} (the projects are: {})",
+                if names.is_empty() {
+                    "none".to_owned()
+                } else {
+                    names.join(", ")
+                }
+            )))
+        }
+        many => Err(invalid(format!(
+            "two map items are named {which:?}: {}",
+            many.iter()
+                .map(|(f, _)| format!("{} item {}", f.path.display(), f.item.unwrap_or_default()))
+                .collect::<Vec<_>>()
+                .join(" and ")
+        ))),
     }
 }
 
 /// A layer of a project's stack, top first.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct LayerInfo {
-    /// `edits`, `import` or `tree`.
+    /// `edits`, `authored`, `import` or `tree`.
     pub kind: &'static str,
+    /// The authored layer's is its fingerprint.
     pub name: String,
+    /// The authored layer's is empty when it is not kept.
     pub path: String,
 }
 
 /// The tags a build reads.
 pub type Stack = Edited<Layered>;
+
+/// A project's stack, opened.
+pub struct Opened {
+    pub stack: Stack,
+    /// Top first.
+    pub layers: Vec<LayerInfo>,
+    /// The authored layer's fingerprint and tags; `None` when the map
+    /// takes no `tag` item.
+    pub authored: Option<(String, Vec<TagKey>)>,
+}
 
 /// The project's edit files, in the order they apply (module docs).
 pub fn edit_files(roots: &Roots, project: &Project) -> Result<Vec<EditFile>, ProjectError> {
@@ -465,12 +494,18 @@ pub fn open_tree(roots: &Roots, base: &str) -> Result<TagRepo, ProjectError> {
     Ok(top)
 }
 
-/// The project's stack (module docs) and its layers, top first.
-pub fn open_stack(
-    roots: &Roots,
-    project: &Project,
-) -> Result<(Stack, Vec<LayerInfo>), ProjectError> {
-    open_tree(roots, &project.base)?;
+/// The project's stack (module docs). With `keep`, the authored layer is
+/// written to `<data>/workspace/generated/<fingerprint>/` (once) and read
+/// from there; without, it is held in memory and nothing is written.
+pub fn open_stack(roots: &Roots, file: &ProjectFile, keep: bool) -> Result<Opened, ProjectError> {
+    let project = &file.project;
+    let top = open_tree(roots, &project.base)?;
+    let candidates: Vec<TagKey> = top
+        .manifest(&project.base)?
+        .tags
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
     let files = edit_files(roots, project)?;
     let mut infos: Vec<LayerInfo> = files
         .iter()
@@ -482,6 +517,7 @@ pub fn open_stack(
         .collect();
     let mut layered = Layered::new();
     let imports = roots.workspace().join(IMPORTS_DIR);
+    let mut lower = Vec::new();
     for name in &project.imports {
         let dir = imports.join(name);
         if !dir.join("repo.txt").is_file() {
@@ -497,41 +533,94 @@ pub fn open_stack(
             repo
         };
         layered.push(Box::new(repo));
-        infos.push(LayerInfo {
+        lower.push(LayerInfo {
             kind: "import",
             name: name.clone(),
             path: dir.display().to_string(),
         });
     }
     layered.push(Box::new(TagRepo::for_map(&roots.tree, &project.base)?));
-    infos.push(LayerInfo {
+    lower.push(LayerInfo {
         kind: "tree",
         name: project.base.clone(),
         path: roots.tree.display().to_string(),
     });
+    let made = authored::make(&file.packages, &project.served(), &candidates, &mut layered)
+        .map_err(|why| invalid(format!("the authored layer of {}: {why}", project.name)))?;
+    let authored = match made {
+        None => None,
+        Some(made) => {
+            let path = if keep {
+                let (repo, dir) = authored::keep(&roots.workspace(), &made)?;
+                layered.put_top(Box::new(repo));
+                dir.display().to_string()
+            } else {
+                layered.put_top(Box::new(authored::InMemory::of(&made)));
+                String::new()
+            };
+            infos.push(LayerInfo {
+                kind: "authored",
+                name: made.fingerprint.clone(),
+                path,
+            });
+            Some((
+                made.fingerprint,
+                made.tags.into_iter().map(|t| t.key).collect(),
+            ))
+        }
+    };
+    infos.extend(lower);
     let stack = Edited::new(layered, files).map_err(ProjectError::Edits)?;
-    Ok((stack, infos))
+    Ok(Opened {
+        stack,
+        layers: infos,
+        authored,
+    })
 }
 
-/// Whether the stack holds `key` (for a fresh project's scenario).
-pub fn holds(stack: &mut Stack, key: &tags::repo::TagKey) -> Result<bool, ProjectError> {
-    Ok(stack.read(key)?.is_some())
+/// The authored layers some project's stack asks for, by fingerprint:
+/// what `workspace.prune` keeps under `<data>/workspace/generated/`. A
+/// project whose stack does not open is the error, so nothing is pruned
+/// on a guess.
+pub fn wanted_layers(roots: &Roots) -> Result<BTreeSet<String>, String> {
+    let found = packages(roots);
+    let set = package_set(&found).map_err(|e| e.to_string())?;
+    let mut out = BTreeSet::new();
+    for d in &found {
+        for f in map_items(d) {
+            let project = f.project.clone()?;
+            let has_tags = !authored::tag_items(&set, &project.served()).is_empty();
+            if !has_tags {
+                continue;
+            }
+            let file = file_of(&f, &project, set.clone());
+            let opened = open_stack(roots, &file, false)
+                .map_err(|e| format!("project {}: {e}", project.name))?;
+            if let Some((fp, _)) = opened.authored {
+                out.insert(fp);
+            }
+        }
+    }
+    Ok(out)
 }
 
-/// A project file as `project.list` gives it.
+/// A project as `project.list` gives it.
 #[derive(Clone, Debug, Serialize)]
 pub struct Listed {
     pub name: Option<String>,
+    /// The package directory.
     pub path: String,
     pub origin: Origin,
-    pub mode: Option<BuildMode>,
+    pub package: Option<String>,
+    pub item: Option<usize>,
+    pub mode: Option<Mode>,
     pub base: Option<String>,
-    /// Why the file does not read.
+    /// Why the package or its `map.toml` does not read.
     pub error: Option<String>,
 }
 
-/// Every project file ([`discover`]), each with what it names or why it
-/// does not read.
+/// Every project ([`discover`]), each with what it names or why it does
+/// not read.
 pub fn list(roots: &Roots) -> Vec<Listed> {
     discover(roots)
         .into_iter()
@@ -544,6 +633,8 @@ pub fn list(roots: &Roots) -> Vec<Listed> {
                 name,
                 path: f.path.display().to_string(),
                 origin: f.origin,
+                package: f.package,
+                item: f.item,
                 mode,
                 base,
                 error,
@@ -564,12 +655,13 @@ pub struct Checked {
     pub overrides: Vec<edits::Override>,
 }
 
-/// Apply every edit of `project` over its layers. An edit file that does
-/// not parse is listed in `problems`; a missing tree, base, layer or edit
-/// file is the error.
-pub fn check_edits(roots: &Roots, project: &Project) -> Result<Checked, ProjectError> {
-    let (mut stack, _) = match open_stack(roots, project) {
-        Ok(s) => s,
+/// Apply every edit of `file`'s project over its layers. An edit file that
+/// does not parse is listed in `problems`; a missing tree, base, layer or
+/// edit file is the error.
+pub fn check_edits(roots: &Roots, file: &ProjectFile) -> Result<Checked, ProjectError> {
+    let project = &file.project;
+    let mut stack = match open_stack(roots, file, false) {
+        Ok(o) => o.stack,
         Err(ProjectError::Edits(problems)) => {
             return Ok(Checked {
                 project: project.name.clone(),
@@ -595,14 +687,14 @@ pub fn check_edits(roots: &Roots, project: &Project) -> Result<Checked, ProjectE
 /// project's layers give it, below every edit file.
 pub fn was_of(
     roots: &Roots,
-    project: &Project,
-    tag: &tags::repo::TagKey,
+    file: &ProjectFile,
+    tag: &TagKey,
 ) -> Result<content::Sha256, ProjectError> {
-    let (mut stack, _) = open_stack(roots, project)?;
+    let mut stack = open_stack(roots, file, false)?.stack;
     let t = stack.below_mut().read(tag)?.ok_or_else(|| {
         invalid(format!(
             "no layer of project {} holds {}",
-            project.name,
+            file.project.name,
             edits::key_text(tag)
         ))
     })?;

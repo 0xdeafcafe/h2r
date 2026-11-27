@@ -5,14 +5,18 @@
 //!
 //! | Step | `fresh` | `onto` |
 //! |---|---|---|
-//! | 1 | the stack ([`open_stack`]), every edit applied once ([`Edited::check`]); a problem stops the build | the same |
-//! | 2 | when the stack holds the scenario: closure from the globals, the scenario and the [`Keep`] roots; a missing or lossy tag stops it, named; [`to_tag_set`] | the disc map reassembled from the tree, every tag pinned, the tags the layers changed rebuilt ([`onto_retail`]); a changed tag the base keeps pinned, or one the base lacks, stops it, named |
+//! | 1 | the stack ([`open_stack`], the authored layer kept), every edit applied once ([`Edited::check`]); a problem stops the build | the same |
+//! | 2 | when the stack holds the scenario: closure from the globals, the scenario, the authored tags and the [`Keep`] roots; a missing or lossy tag stops it, named; [`to_tag_set`] | the disc map reassembled from the tree, every tag pinned, the tags the layers changed rebuilt, the tags the base lacks (the changed ones and what they reach) added ([`onto_retail_adding`]); a changed tag the base keeps pinned stops it, named |
 //! | 3 | each kit, in order, on [`KitStep`]: the first may make the map when the stack has no scenario (the stage) | each kit, in order |
-//! | 4 | lay out (`TagSet::build`), unless a kit laid it out; read it back; tag memory against the bound for its type | the same |
+//! | 4 | lay out (`TagSet::build`), unless a kit laid it out | the same |
+//! | 5 | the other items the map takes (not `tag`: those are the authored layer), applied as the game applies them ([`crate::build_map`]) | the same |
+//! | 6 | read it back; tag memory against the bound for its type | the same |
 //!
-//! [`write`] puts the map in a package under `<data>/maps/<name>/`: a
-//! derived whole map for `fresh`, a patch of the disc map for `onto`, each
-//! with `receipt.json` ([`Receipt`]).
+//! A map with a `ground` file does not build from the tree: the error says
+//! so. [`write`] puts the map in the derived map package
+//! `<data>/maps/<name>/` the disc build writes too (one whole map,
+//! `built-from.toml` with the key [`TREE_KEY`], so `prepare` keeps it for
+//! a map naming edits or imports), with `receipt.json` ([`Receipt`]).
 //!
 //! A kit is a [`Kit`]: the caller passes the kits it has ([`Tools`]), so
 //! this crate needs none of them. A kit that lays out the whole map itself
@@ -20,17 +24,20 @@
 use std::collections::BTreeSet;
 use std::io::Cursor;
 
-use content::Sha256;
-use content::manifest::Layer;
+use content::package::Kind;
 use map::FourCC;
 use map::build::{TagPayload, TagSet};
 use serde::Serialize;
-use tags::repo::build::onto_retail;
+use tags::repo::build::onto_retail_adding;
 use tags::repo::{BuildOptions, LooseTag, RawRes, TagKey, TagRepo, TagSource, closure, to_tag_set};
 
+use crate::build::Target;
 use crate::edits::{Override, key_text};
+use crate::maps::{MapPackage, Mode, TREE_KEY, derived_manifest, restrict, taken_by};
+use crate::onto::scope_of_bytes;
 use crate::project::{
-    BuildMode, LayerInfo, Project, ProjectError, ProjectFile, Roots, Stack, open_stack, open_tree,
+    LayerInfo, Opened, Project, ProjectError, ProjectFile, Roots, Stack, open_stack, open_tree,
+    scenario_key,
 };
 
 const SCNR: FourCC = FourCC(*b"scnr");
@@ -141,13 +148,19 @@ pub struct KitRan {
 /// What a build did, written beside the map as `receipt.json`.
 #[derive(Clone, Debug, Serialize)]
 pub struct Receipt {
-    /// SHA-256 over the project, its edit files, its kits' fingerprints and
-    /// the base's manifest and header in the tree.
+    /// SHA-256 over the project, its edit files, the authored layer's
+    /// fingerprint, its kits' fingerprints, the packages of the other items
+    /// it takes and the base's manifest and header in the tree.
     pub key: String,
     pub project: String,
-    pub mode: BuildMode,
+    /// The package and `map` item the project is.
+    pub package: String,
+    pub item: usize,
+    pub mode: Mode,
     pub base: String,
     pub layers: Vec<LayerInfo>,
+    /// The authored layer's tags, `<group>:<path>`.
+    pub authored: Vec<String>,
     pub edit_files: Vec<String>,
     /// The tags an edit names, `<group>:<path>`.
     pub edited: Vec<String>,
@@ -157,6 +170,11 @@ pub struct Receipt {
     pub closure: usize,
     /// `onto`: the tags rebuilt from the layers.
     pub rebuilt: Vec<String>,
+    /// `onto`: the tags added, which the base lacks.
+    pub added: Vec<String>,
+    /// The packages whose other items (not `tag`) the map takes, applied
+    /// after layout.
+    pub taken: Vec<String>,
     pub file_size: u64,
     /// Tag memory used (header `+0x1c`) and the bound for the map's type.
     pub memory_size: u32,
@@ -166,9 +184,8 @@ pub struct Receipt {
 /// A built map.
 #[derive(Clone, Debug)]
 pub struct Built {
+    pub project: Project,
     pub bytes: Vec<u8>,
-    /// `onto`: the disc map it patches.
-    pub base_bytes: Option<Vec<u8>>,
     pub receipt: Receipt,
 }
 
@@ -225,24 +242,31 @@ fn globals_of(m: &tags::repo::store::Manifest) -> Result<TagKey, ProjectError> {
 }
 
 /// A fresh project's closure over the stack, when the stack holds its
-/// scenario; `None` when it does not (a kit makes it). A missing tag is an
-/// error; lossy tags are left for the caller ([`lossy`]).
+/// scenario; `None` when it does not (a kit makes it). The authored tags
+/// are roots too. A missing tag is an error; lossy tags are left for the
+/// caller ([`lossy`]).
 pub fn fresh_closure(
     roots: &Roots,
     project: &Project,
-    stack: &mut Stack,
+    opened: &mut Opened,
     keep: Keep,
 ) -> Result<Option<tags::repo::Closure>, ProjectError> {
     let top = open_tree(roots, &project.base)?;
     let m = top.manifest(&project.base)?;
-    let scenario = project
-        .scenario_key()
+    let scenario = scenario_key(project)
         .ok_or_else(|| invalid("an onto project has no closure of its own"))?;
+    let stack = &mut opened.stack;
     if stack.read(&scenario)?.is_none() {
         return Ok(None);
     }
     let globals = globals_of(&m)?;
-    let c = closure(stack, &fresh_roots(&m, &globals, &scenario, keep))?;
+    let mut from = fresh_roots(&m, &globals, &scenario, keep);
+    for k in opened.authored.iter().flat_map(|(_, keys)| keys) {
+        if !from.contains(k) {
+            from.push(k.clone());
+        }
+    }
+    let c = closure(stack, &from)?;
     if !c.missing.is_empty() {
         let items = c
             .missing
@@ -324,11 +348,15 @@ fn base_map(top: &TagRepo, base: &str) -> Result<Vec<u8>, ProjectError> {
     Ok(bytes)
 }
 
+/// Raised when the same inputs would build another map.
+pub const TREE_BUILD_VERSION: u32 = 1;
+
 /// The build key ([`Receipt::key`]).
 fn build_key(
     project: &Project,
-    stack: &Stack,
+    opened: &Opened,
     kits: &[&dyn Kit],
+    taken: &[crate::Loaded],
     manifest: &str,
     header: &[u8],
 ) -> String {
@@ -337,10 +365,15 @@ fn build_key(
         h.update(&(bytes.len() as u64).to_le_bytes());
         h.update(bytes);
     };
-    part(project.to_text().as_bytes());
-    for f in stack.files() {
+    part(&TREE_BUILD_VERSION.to_le_bytes());
+    part(toml::to_string(project).unwrap_or_default().as_bytes());
+    for f in opened.stack.files() {
         part(f.name.as_bytes());
         part(f.text.as_bytes());
+    }
+    part(opened.authored.as_ref().map_or("", |(fp, _)| fp).as_bytes());
+    for p in taken {
+        part(p.package.id.to_string().as_bytes());
     }
     for k in kits {
         part(k.name().as_bytes());
@@ -351,13 +384,59 @@ fn build_key(
     h.finish().to_string()
 }
 
+/// The tags `onto` adds: the changed ones the base lacks, and every tag
+/// they reach that the base lacks. A reached tag no layer holds is the
+/// error.
+pub(crate) fn to_add(
+    stack: &mut Stack,
+    base: &BTreeSet<TagKey>,
+    changed: &BTreeSet<TagKey>,
+) -> Result<Vec<TagKey>, ProjectError> {
+    let new: Vec<TagKey> = changed
+        .iter()
+        .filter(|k| !base.contains(*k))
+        .cloned()
+        .collect();
+    if new.is_empty() {
+        return Ok(new);
+    }
+    let c = closure(stack, &new)?;
+    let missing: Vec<String> = c
+        .missing
+        .iter()
+        .filter(|(to, _)| !base.contains(*to))
+        .map(|(to, from)| format!("{} (named by {})", key_text(to), key_text(from)))
+        .collect();
+    if !missing.is_empty() {
+        return Err(listed(
+            "tags an added tag names and no layer holds",
+            missing,
+        ));
+    }
+    Ok(c.tags
+        .into_iter()
+        .map(|t| t.key)
+        .filter(|k| !base.contains(k))
+        .collect())
+}
+
 /// Build `file`'s project (module docs).
 pub fn build(roots: &Roots, file: &ProjectFile, tools: &Tools<'_>) -> Result<Built, ProjectError> {
     roots.refuse_checkout()?;
     let project = &file.project;
+    if let Some(g) = &project.ground {
+        return Err(invalid(format!(
+            "map {} has a ground file ({g}): the AI ground is built over the disc build's map, not the tree's",
+            project.name
+        )));
+    }
     let kits = tools.kits_of(project)?;
-    let (mut stack, layers) = open_stack(roots, project)?;
-    let problems = stack.check();
+    let name = project.served();
+    let taken = restrict(&file.packages, &|i| {
+        taken_by(i, &name) && i.kind != Kind::Tag
+    });
+    let mut opened = open_stack(roots, file, true)?;
+    let problems = opened.stack.check();
     if !problems.is_empty() {
         return Err(ProjectError::Edits(problems));
     }
@@ -366,13 +445,13 @@ pub fn build(roots: &Roots, file: &ProjectFile, tools: &Tools<'_>) -> Result<Bui
     let header = top.header(&project.base)?;
     let memory_max = map::writer::max_metadata_size(m.cache_type())
         .map_err(|e| invalid(format!("the tag memory bound: {e}")))?;
-    let key = build_key(project, &stack, &kits, &m.to_text(), &header);
+    let key = build_key(project, &opened, &kits, &taken, &m.to_text(), &header);
 
     let mut closure_len = 0;
     let mut rebuilt = Vec::new();
-    let mut base_bytes = None;
+    let mut added = Vec::new();
     let set = match project.mode {
-        BuildMode::Fresh => match fresh_closure(roots, project, &mut stack, tools.keep)? {
+        Mode::Fresh => match fresh_closure(roots, project, &mut opened, tools.keep)? {
             None => None,
             Some(c) => {
                 let bad = lossy(&c.tags);
@@ -388,15 +467,15 @@ pub fn build(roots: &Roots, file: &ProjectFile, tools: &Tools<'_>) -> Result<Bui
                 };
                 let opts = BuildOptions {
                     cache_type: m.cache_type(),
-                    name: project.name.clone(),
-                    scenario: project.scenario_key().expect("a fresh project's"),
+                    name: name.clone(),
+                    scenario: scenario_key(project).expect("a fresh project's"),
                     globals: globals_of(&m)?,
                     strings: top.strings()?,
                     header_template: Some(header.clone()),
                     low_detail,
                     index_word_14: m.index_word_14,
                 };
-                let (set, report) = to_tag_set(&mut stack, &c.tags, &opts)?;
+                let (set, report) = to_tag_set(&mut opened.stack, &c.tags, &opts)?;
                 if !report.dangling.is_empty() {
                     let items = report
                         .dangling
@@ -409,21 +488,25 @@ pub fn build(roots: &Roots, file: &ProjectFile, tools: &Tools<'_>) -> Result<Bui
                 Some(set)
             }
         },
-        BuildMode::Onto => {
+        Mode::Onto => {
             let bytes = base_map(&top, &project.base)?;
             let mut tree = TagRepo::for_map(&roots.tree, &project.base)?;
-            let keys = changed(&mut stack, &mut tree)?;
-            let retail = map::Map::from_reader(Cursor::new(bytes.clone()))?;
+            let mut keys = changed(&mut opened.stack, &mut tree)?;
+            let base_keys: BTreeSet<TagKey> = m.tags.iter().map(|(k, _)| k.clone()).collect();
+            let add = to_add(&mut opened.stack, &base_keys, &keys)?;
+            keys.extend(add.iter().cloned());
+            let retail = map::Map::from_reader(Cursor::new(bytes))?;
             let mut only = Only {
-                src: &mut stack,
+                src: &mut opened.stack,
                 keys: &keys,
             };
-            let (set, report) = onto_retail(tags::schema::Schema::builtin(), retail, &mut only)?;
+            let (set, report) =
+                onto_retail_adding(tags::schema::Schema::builtin(), retail, &mut only, &add)?;
             let mut stuck = Vec::new();
-            for k in &keys {
+            for k in keys.iter().filter(|k| base_keys.contains(*k)) {
                 match set.find(k.group, &k.path).and_then(|id| set.tag(id)) {
                     None => stuck.push(format!(
-                        "{}: the base has no such tag, and an onto build adds none",
+                        "{}: the tree's manifest lists it and the map has no such tag",
                         key_text(k)
                     )),
                     Some(t) if matches!(t.payload, TagPayload::Pinned { .. }) => {
@@ -440,7 +523,7 @@ pub fn build(roots: &Roots, file: &ProjectFile, tools: &Tools<'_>) -> Result<Bui
             if !stuck.is_empty() {
                 return Err(listed("changed tags an onto build cannot rebuild", stuck));
             }
-            base_bytes = Some(bytes);
+            added = report.added.iter().map(key_text).collect();
             Some(set)
         }
     };
@@ -448,7 +531,7 @@ pub fn build(roots: &Roots, file: &ProjectFile, tools: &Tools<'_>) -> Result<Bui
     let mut step = KitStep {
         project,
         roots,
-        src: &mut stack,
+        src: &mut opened.stack,
         set,
         bytes: None,
     };
@@ -480,7 +563,7 @@ pub fn build(roots: &Roots, file: &ProjectFile, tools: &Tools<'_>) -> Result<Bui
         });
     }
     let (set, made) = (step.set.take(), step.bytes.take());
-    let bytes = match (made, set) {
+    let mut bytes = match (made, set) {
         (Some(bytes), _) => bytes,
         (None, Some(set)) => {
             set.build()
@@ -494,6 +577,14 @@ pub fn build(roots: &Roots, file: &ProjectFile, tools: &Tools<'_>) -> Result<Bui
             )));
         }
     };
+    if !taken.is_empty() {
+        let scope = scope_of_bytes(&bytes)
+            .ok_or_else(|| invalid("the built map's header does not read"))?;
+        let target = Target { name: &name, scope };
+        bytes = crate::build_map(&bytes, &taken, &target)
+            .map_err(|why| invalid(format!("the items map {name} takes: {why}")))?
+            .0;
+    }
     map::Map::from_reader(Cursor::new(bytes.as_slice()))
         .map_err(|e| invalid(format!("the built map does not read back: {e}")))?;
     let memory_size = bytes
@@ -505,25 +596,38 @@ pub fn build(roots: &Roots, file: &ProjectFile, tools: &Tools<'_>) -> Result<Bui
             "tag memory {memory_size:#x} is over the bound {memory_max:#x} for its type"
         )));
     }
+    let stack = &opened.stack;
     let receipt = Receipt {
         key,
         project: project.name.clone(),
+        package: file.package.clone(),
+        item: file.item,
         mode: project.mode,
         base: project.base.clone(),
-        layers,
+        layers: opened.layers.clone(),
+        authored: opened
+            .authored
+            .iter()
+            .flat_map(|(_, keys)| keys.iter().map(key_text))
+            .collect(),
         edit_files: stack.files().iter().map(|f| f.name.clone()).collect(),
         edited: stack.edited().iter().map(key_text).collect(),
         overrides: stack.overrides().to_vec(),
         kits: ran,
         closure: closure_len,
         rebuilt,
+        added,
+        taken: taken
+            .iter()
+            .map(|p| p.package.manifest.package.id.clone())
+            .collect(),
         file_size: bytes.len() as u64,
         memory_size,
         memory_max,
     };
     Ok(Built {
+        project: project.clone(),
         bytes,
-        base_bytes,
         receipt,
     })
 }
@@ -535,67 +639,44 @@ pub struct Wrote {
     pub dir: String,
     /// The package's `MapId`, which the game loads it by.
     pub map_id: String,
-    /// The map or patch file in it.
+    /// The map file in it.
     pub file: String,
+    /// The directory held this build already.
+    pub unchanged: bool,
 }
 
 /// The receipt file beside a built map.
 pub const RECEIPT_FILE: &str = "receipt.json";
 
 /// Write `built` as the package `<data>/maps/<name>/` (module docs),
-/// replacing an earlier build of the project.
+/// replacing an earlier build of the same `map` item. A directory another
+/// item or the user wrote is refused.
 pub fn write(roots: &Roots, built: &Built) -> Result<Wrote, ProjectError> {
     roots.refuse_checkout()?;
     let r = &built.receipt;
     let receipt = serde_json::to_vec_pretty(r).map_err(|e| invalid(format!("the receipt: {e}")))?;
-    let (manifest, file, bytes) = match r.mode {
-        BuildMode::Fresh => {
-            let file = format!("{}.map", r.project);
-            let text = format!(
-                "[package]\nformat = 1\nname = \"{name}\"\n\
-                 [base]\nmap = \"{name}\"\nderived = true\n\
-                 [[patch]]\nfile = \"{file}\"\nsha256 = \"{sha}\"\n\
-                 [list]\nbase = \"{base}\"\n",
-                name = r.project,
-                sha = Sha256::of(&built.bytes),
-                base = r.base,
-            );
-            let m = content::Manifest::from_toml(&text)
-                .map_err(|e| invalid(format!("the manifest: {e}")))?;
-            (m, file, built.bytes.clone())
-        }
-        BuildMode::Onto => {
-            let base = built
-                .base_bytes
-                .as_ref()
-                .ok_or_else(|| invalid("an onto build without its base map"))?;
-            let mut m = content::Manifest::retail(&r.base.to_ascii_lowercase(), Sha256::of(base));
-            m.package.name = r.project.clone();
-            let patch = content::patch::diff(base, &built.bytes, &format!("project {}", r.project));
-            let sha256 = Sha256::of(&patch.bytes);
-            let file = format!("project-{sha256}.{}", patch.format.extension());
-            m.patches.push(Layer {
-                file: file.clone(),
-                sha256,
-            });
-            (m, file, patch.bytes)
-        }
-    };
-    let dir = content::store::write_package(
-        &roots.maps(),
-        &r.project,
-        &manifest,
-        &[
-            (file.as_str(), bytes.as_slice()),
-            (RECEIPT_FILE, receipt.as_slice()),
+    let (manifest, file) = derived_manifest(&built.project, &built.bytes);
+    let id = manifest.map_id();
+    let m = MapPackage {
+        dir: built.project.served(),
+        package: r.package.clone(),
+        item: r.item,
+        manifest,
+        files: vec![
+            (file.clone(), built.bytes.clone()),
+            (RECEIPT_FILE.to_owned(), receipt),
         ],
-        true,
-    )
-    .map_err(|e| invalid(format!("writing the package: {e}")))?;
+        id,
+        key: TREE_KEY.to_owned(),
+    };
+    let maps = roots.maps();
+    let how = crate::maps::write(&maps, &m)
+        .map_err(|why| invalid(format!("writing the package: {why}")))?;
     Ok(Wrote {
-        dir: dir.display().to_string(),
-        map_id: manifest.map_id().to_string(),
+        dir: maps.join(&m.dir).display().to_string(),
+        map_id: id.to_string(),
         file,
+        unchanged: how == crate::maps::Wrote::Unchanged,
     })
 }
 
@@ -603,10 +684,15 @@ pub fn write(roots: &Roots, built: &Built) -> Result<Wrote, ProjectError> {
 #[derive(Clone, Debug, Serialize)]
 pub struct Described {
     pub project: Project,
+    /// The package directory, and the package and `map` item.
     pub file: String,
+    pub package: String,
+    pub item: usize,
     pub origin: crate::edits::Origin,
     /// Top first; empty when the stack does not open.
     pub layers: Vec<LayerInfo>,
+    /// The authored layer's tags, `<group>:<path>`.
+    pub authored: Vec<String>,
     pub edit_files: Vec<String>,
     pub edited: Vec<String>,
     /// Each kit the project names with its fingerprint, or why this build
@@ -655,8 +741,11 @@ pub fn describe(roots: &Roots, file: &ProjectFile, tools: &Tools<'_>, closure: b
     let mut out = Described {
         project: project.clone(),
         file: file.path.display().to_string(),
+        package: file.package.clone(),
+        item: file.item,
         origin: file.origin,
         layers: Vec::new(),
+        authored: Vec::new(),
         edit_files: Vec::new(),
         edited: Vec::new(),
         kits,
@@ -668,25 +757,36 @@ pub fn describe(roots: &Roots, file: &ProjectFile, tools: &Tools<'_>, closure: b
         out.problems.push(e.to_string());
         return out;
     }
-    let (mut stack, layers) = match open_stack(roots, project) {
-        Ok(s) => s,
+    if let Some(g) = &project.ground {
+        out.problems.push(format!(
+            "the map has a ground file ({g}), which the tree build does not build"
+        ));
+    }
+    let mut opened = match open_stack(roots, file, false) {
+        Ok(o) => o,
         Err(e) => {
             out.problems.push(e.to_string());
             return out;
         }
     };
-    out.layers = layers;
+    out.layers = opened.layers.clone();
+    out.authored = opened
+        .authored
+        .iter()
+        .flat_map(|(_, keys)| keys.iter().map(key_text))
+        .collect();
+    let stack = &mut opened.stack;
     out.edit_files = stack.files().iter().map(|f| f.name.clone()).collect();
     out.edited = stack.edited().iter().map(key_text).collect();
     out.problems
         .extend(stack.check().iter().map(ToString::to_string));
-    if project.mode == BuildMode::Fresh {
-        let scenario = project.scenario_key().expect("a fresh project's");
-        match stack.read(&scenario) {
+    if project.mode == Mode::Fresh {
+        let scenario = scenario_key(project).expect("a fresh project's");
+        match opened.stack.read(&scenario) {
             Ok(Some(_)) => {
                 out.scenario_from = Some("layers");
                 if closure {
-                    match fresh_closure(roots, project, &mut stack, tools.keep) {
+                    match fresh_closure(roots, project, &mut opened, tools.keep) {
                         Ok(Some(c)) => out.lossy = Some(lossy(&c.tags)),
                         Ok(None) => {}
                         Err(e) => out.problems.push(e.to_string()),

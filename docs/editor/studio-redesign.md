@@ -570,7 +570,8 @@ changes it. After an error the set is partly changed and is dropped.
   `PackageRewrite` serves a map a `map` item built without the items it
   took (`workspace::without_taken`), which are in its bytes already.
 - **The stage** is `content/stage/` (baked): a `map` item whose
-  `map.toml` is `art/stage/project.toml` as a package source.
+  `map.toml` is also the tag workspace's project for the tree build
+  ([tag-workspace.md](tag-workspace.md), "Projects").
   `stage_kit::fresh::StageFresh` is its `Fresh`: it reads the base and the
   shared caches through `BaseMaps` and runs `stage_kit::map::build`; its
   version is the kit's and the layout's hash.
@@ -728,7 +729,7 @@ as its unit: a project is a `map` item, a `ContentKit` is a builder, and
 | `pogo` (built, PK4) | `model`, `tag` (the weapons), `sound` (the clips `pogo_sound.rs` plays), `data` (the atlases, the pose set `pogo_pose.rs` reads) | `art/pogo/`, `PogoRewrite`; `pogo_kit::{kit, mesh, source, texture}` is the `model` builder's code and `inject::add_pogo` the test's reference |
 | `halo1` | `convert` (built, PK10: converter `halo1`, every multiplayer map in both sandboxes and the campaign), `kit: campaign-cards` (built, PK12), `screens` | `h1_import::auto_import` (gone), `CardRewrite` |
 | `map-pack` (built, PK10: the `convert` item) | `convert` (converter `map-pack`: the nine maps and the title update from the user's Map Pack disc), `playlist` | `mappack_cmd::auto_install` at boot (`h2 import-mappack` and Live's capture still call it), the Map Pack rotations in `hopper/defaults.rs` |
-| `stage` | `map` (`fresh`), `model`, `bitmap` | `art/stage/project.toml` ([content-stage.md](content-stage.md)) |
+| `stage` | `map` (`fresh`), `model`, `bitmap` | `content/stage/map.toml` ([content-stage.md](content-stage.md)) |
 | a community mod pack | `map-patch` per map, `[credit]` | a Live mod pack's member manifests ([maps.md](../game/maps.md), "The mod repository") |
 | a test map | `map` (`onto`) with `edits` | `scenario_edit::recipe` through `boot/src/test_maps_recipes.rs` ([test-maps.md](../game/test-maps.md)) |
 

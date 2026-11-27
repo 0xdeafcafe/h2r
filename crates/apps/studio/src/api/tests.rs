@@ -5853,7 +5853,7 @@ fn the_workspace_reports_the_start_page_and_extracts_an_invented_disc() {
 }
 
 /// `project.*` and `edits.*` over an invented tree (docs/editor/agent-api.md,
-/// "Projects and edit files"): a local project onto the invented map, an
+/// "Projects and edit files"): a local package's map item onto the invented map, an
 /// edit written by the API and the check that names the tag no layer holds.
 #[test]
 fn projects_and_edit_files_resolve_over_an_invented_tree() {
@@ -5875,11 +5875,17 @@ fn projects_and_edit_files_resolve_over_an_invented_tree() {
         json!({"disc": disc.display().to_string()}),
     );
     app.wait_workspace();
-    let projects = t.path("data/workspace/projects");
-    std::fs::create_dir_all(&projects).unwrap();
+    // A local package whose `map` item is the project.
+    let package = t.path("data/packages/mine");
+    std::fs::create_dir_all(&package).unwrap();
     std::fs::write(
-        projects.join("mine.toml"),
-        "name = \"mine\"\nmode = \"onto\"\nbase = \"example\"\noutput = \"package\"\n",
+        package.join("package.toml"),
+        "[package]\nformat = 1\nid = \"mine\"\nname = \"Mine\"\n[[item]]\nkind = \"map\"\nsource = \"map.toml\"\nmaps = \"all\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        package.join("map.toml"),
+        "name = \"mine\"\nmode = \"onto\"\nbase = \"example\"\n",
     )
     .unwrap();
 
@@ -5892,6 +5898,7 @@ fn projects_and_edit_files_resolve_over_an_invented_tree() {
         .unwrap_or_else(|| panic!("{listed}"));
     assert_eq!(mine["origin"], "local");
     assert_eq!(mine["mode"], "onto");
+    assert_eq!((&mine["package"], &mine["item"]), (&json!("mine"), &json!(0)));
 
     let read = call(&mut api, &mut app, m::PROJECT_READ, json!({"project": "mine"}));
     assert_eq!(read["problems"], json!([]), "{read}");

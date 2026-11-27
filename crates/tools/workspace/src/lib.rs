@@ -34,10 +34,12 @@
 //! - [`edits`]: edit files (`assets/tag-edits/`, `<data>/workspace/edits/`)
 //!   applied to loose tags, [`edits::Edited`] a tag source with them over
 //!   the layers (docs/editor/tag-workspace.md, "Edits are data").
-//! - [`project`]: project files (`art/*/project.toml`,
-//!   `<data>/workspace/projects/`) and the stack a build reads: edits over
-//!   import layers over the tree; [`project_build`] turns a project into a
-//!   map package, the kits as its steps ("Projects", "Kits are build steps").
+//! - [`project`]: projects, each a package's `map` item, and the stack a
+//!   build reads: edits over the authored layer ([`authored`], the `tag`
+//!   items the map takes, generated under `<data>/workspace/generated/`)
+//!   over import layers over the tree; [`project_build`] turns a project
+//!   into its map package, the kits as its steps ("Projects", "Kits are
+//!   build steps").
 //! - [`check_package`], [`check_set`]: what `h2 package check` reports;
 //!   [`store_findings`]: the files of a package that are a raw resource or a
 //!   tag file of the user's own store.
@@ -62,6 +64,7 @@
 //! the rewrite), and the tests build their own.
 mod animation;
 pub mod assets;
+pub mod authored;
 mod bitmap;
 mod build;
 mod builders;
@@ -152,7 +155,7 @@ pub use load::{
     lock_findings, read_lock, store_findings,
 };
 pub use maps::{
-    BUILT_FILE, BaseMaps, Failed, Fresh, FreshJob, GroundJob, Held, HeldIn, MapPackage, MapSpec,
+    BUILT_FILE, BaseMaps, TREE_KEY, Failed, Fresh, FreshJob, GroundJob, Held, HeldIn, MapPackage, MapSpec,
     MapsBuilt, Mode, NoFresh, PatchBase, Prepared, Wrote, build_maps, build_maps_held, built_names,
     held_in, prepare, restrict, without_taken,
     write as write_map_package,

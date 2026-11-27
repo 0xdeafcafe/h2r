@@ -1,5 +1,6 @@
-# The content stage as a `map` item (docs/editor/content-stage.md). The same
-# map as art/stage/project.toml, which `h2 tags build --project` builds.
+# The content stage as a `map` item (docs/editor/content-stage.md): built at
+# boot from the disc, and the tag workspace's project for the tree build
+# (h2 tags project build stage; docs/editor/tag-workspace.md, "Projects").
 mode = "fresh"
 base = "lockout"                     # the disc map: globals, variants, header template
 name = "stage"

@@ -31,17 +31,20 @@ pub struct StageFresh<'a> {
 
 /// The project a `fresh` map item stands for.
 pub fn project_of(job: &FreshJob<'_>) -> Result<Project, String> {
-    let project = Project {
-        name: job.name.to_owned(),
-        mode: "fresh".into(),
+    let spec = workspace::MapSpec {
+        mode: workspace::Mode::Fresh,
         base: job.base.to_owned(),
-        scenario: job.scenario.to_owned(),
+        name: job.name.to_owned(),
+        scenario: Some(job.scenario.to_owned()),
         kits: job.kits.to_vec(),
+        ground: None,
+        title: None,
+        author: None,
+        description: None,
         edits: Vec::new(),
-        output: "package".into(),
+        imports: Vec::new(),
     };
-    let text = toml::to_string(&project).map_err(|e| e.to_string())?;
-    Project::parse(&text).map_err(|e| e.to_string())
+    Project::from_spec(&spec).map_err(|e| e.to_string())
 }
 
 impl Fresh for StageFresh<'_> {
@@ -148,17 +151,20 @@ mod tests {
         assert!(v.ends_with(&Sha256::of(crate::SOURCE.as_bytes()).to_string()));
     }
 
-    /// `content/stage/map.toml`, the stage's package source, is the stage's
-    /// project (`art/stage/project.toml`): the same map from the same base.
+    /// The disc build's job and the shipped `map.toml` give one project:
+    /// the same map from the same base.
     #[test]
-    fn the_package_source_is_the_project() {
-        let spec = workspace::MapSpec::parse(include_bytes!("../../../../content/stage/map.toml"))
-            .unwrap();
-        let project = Project::builtin().unwrap();
-        assert_eq!(spec.mode, workspace::Mode::Fresh);
-        assert_eq!(spec.name, project.name);
-        assert_eq!(spec.base, project.base);
-        assert_eq!(spec.scenario.as_deref(), Some(project.scenario.as_str()));
-        assert_eq!(spec.kits, project.kits);
+    fn the_job_of_the_shipped_map_item_is_the_builtin_project() {
+        let spec = workspace::MapSpec::parse(crate::PROJECT.as_bytes()).unwrap();
+        let files = BTreeMap::new();
+        let job = FreshJob {
+            name: &spec.name,
+            base: &spec.base,
+            base_bytes: &[],
+            scenario: spec.scenario.as_deref().unwrap(),
+            kits: &spec.kits,
+            files: &files,
+        };
+        assert_eq!(project_of(&job).unwrap(), Project::builtin().unwrap());
     }
 }

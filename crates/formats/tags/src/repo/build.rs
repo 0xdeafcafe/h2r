@@ -421,6 +421,8 @@ pub struct OntoReport {
     pub missing: Vec<TagKey>,
     /// Of the pinned, those the source has with losses.
     pub lossy: Vec<TagKey>,
+    /// Tags the retail map lacks, added from the source ([`onto_retail_adding`]).
+    pub added: Vec<TagKey>,
     /// The tree conversion's counts.
     pub build: BuildReport,
 }
@@ -436,8 +438,22 @@ pub struct OntoReport {
 /// schema cannot rebuild.
 pub fn onto_retail<R: std::io::Read + std::io::Seek>(
     schema: &crate::schema::Schema,
+    retail: map::Map<R>,
+    src: &mut dyn TagSource,
+) -> Result<(TagSet, OntoReport)> {
+    onto_retail_adding(schema, retail, src, &[])
+}
+
+/// [`onto_retail`], and the tags `add` (keys the retail map lacks) added
+/// from `src` as new tags laid out like the replaced ones. An added tag
+/// the source lacks, holds with losses, holds as an alias or that the map
+/// already has is an error naming it. References between added and
+/// replaced tags resolve by key.
+pub fn onto_retail_adding<R: std::io::Read + std::io::Seek>(
+    schema: &crate::schema::Schema,
     mut retail: map::Map<R>,
     src: &mut dyn TagSource,
+    add: &[TagKey],
 ) -> Result<(TagSet, OntoReport)> {
     let rel = crate::schema::Relocator::new(schema, &mut retail)?;
     let movable: std::collections::HashSet<TagId> = rel
@@ -471,7 +487,7 @@ pub fn onto_retail<R: std::io::Read + std::io::Seek>(
         }
     }
     drop(own);
-    let ids: HashMap<TagKey, TagId> = tags
+    let mut ids: HashMap<TagKey, TagId> = tags
         .iter()
         .map(|t| {
             (
@@ -505,6 +521,43 @@ pub fn onto_retail<R: std::io::Read + std::io::Seek>(
                 }
             }
         }
+    }
+    let groups = src.groups();
+    for k in add {
+        if ids.contains_key(k) {
+            return Err(Error::Invalid(format!(
+                "{k} is in the map already: it is replaced, not added"
+            )));
+        }
+        let tag = src.read(k)?.ok_or_else(|| {
+            Error::Invalid(format!(
+                "{k} is to be added, and the source does not hold it"
+            ))
+        })?;
+        match tag.tree() {
+            None => {
+                return Err(Error::Invalid(format!(
+                    "{k} is an alias: an added tag has bytes of its own"
+                )));
+            }
+            Some(tr) if !tr.losses.is_empty() || tr.region == Region::Bsp => {
+                return Err(Error::Invalid(format!(
+                    "{k} is not held exactly ({}): an added tag must be",
+                    tr.losses.join("; ")
+                )));
+            }
+            Some(_) => {}
+        }
+        if !set.groups.iter().any(|g| g.class == k.group) {
+            match groups.iter().find(|g| g.class == k.group) {
+                Some(g) => set.add_group(g.class, g.parent, g.grandparent),
+                None => set.add_group(k.group, None, None),
+            }
+        }
+        let id = set.add_tag(k.group, &k.path, TagPayload::Empty)?;
+        ids.insert(k.clone(), id);
+        report.added.push(k.clone());
+        chosen.push((id, tag));
     }
     let replaced: std::collections::HashSet<TagId> = chosen.iter().map(|c| c.0).collect();
     let mut cx = Ctx {
@@ -548,5 +601,7 @@ pub fn onto_retail<R: std::io::Read + std::io::Seek>(
         report.replaced += 1;
     }
     report.pinned += chosen.len() - report.replaced;
+    // Added tags are not replacements.
+    report.replaced -= report.added.len();
     Ok((set, report))
 }

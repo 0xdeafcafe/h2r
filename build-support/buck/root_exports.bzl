@@ -26,7 +26,6 @@ def root_exports():
             "art/announcer/triple-bounce.wav",
             "art/flood-pod/flood_pod.png",
             "art/flood-pod/flood_pod.yaml",
-            "art/stage/project.toml",
             "art/stage/stage.yaml",
         ],
         visibility = ["PUBLIC"],

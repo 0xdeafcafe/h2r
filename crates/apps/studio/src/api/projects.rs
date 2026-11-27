@@ -6,10 +6,9 @@
 //! next call sees.
 //!
 //! The roots are the `tags_root` setting (the tree), the data root, and the
-//! checkout Studio was built from (`art/*/project.toml`,
-//! `assets/tag-edits/`). The kits a project can name are
+//! checkout Studio was built from (the packages `content/*/`,
+//! `assets/tag-edits/`); a project is a package's `map` item. The kits a project can name are
 //! `stage_kit::project_kit::KITS`.
-use std::path::PathBuf;
 use std::time::Instant;
 
 use serde_json::{Value, json};
@@ -28,25 +27,25 @@ pub struct Projects;
 const METHODS: &[MethodDef] = &[
     MethodDef {
         name: m::PROJECT_LIST,
-        summary: "Every project file: art/*/project.toml in the checkout, then <data>/workspace/projects/*.toml, each with its name, mode and base, or why it does not read",
+        summary: "Every project: each map item of the packages content/*/ in the checkout, then <data>/packages/*/, with its name, mode, base, package and item, or why the package or its map.toml does not read",
         params: "{}",
-        result: r#"{"projects":"[{name,path,origin,mode,base,error}]"}"#,
+        result: r#"{"projects":"[{name,path,origin,package,item,mode,base,error}]"}"#,
         example: "null",
         planned: None,
     },
     MethodDef {
         name: m::PROJECT_READ,
-        summary: "What a project (a name, or a path to its .toml) resolves to: its layers top first, its edit files and the tags they name, its kits with their fingerprints, where a fresh project's scenario comes from, and every problem that would stop its build. `closure` walks a fresh project's closure for the lossy tags that refuse it",
+        summary: "What a project (a map's name, or a package directory with one map item) resolves to: its layers top first (edits, authored, import, tree), its edit files and the tags they name, the authored tags, its kits with their fingerprints, where a fresh project's scenario comes from, and every problem that would stop its build. Nothing is written. `closure` walks a fresh project's closure for the lossy tags that refuse it",
         params: r#"{"project":"string","closure?":"boolean"}"#,
-        result: r#"{"project":"object","file":"path","origin":"git|local","layers":"[{kind,name,path}]","edit_files":"[string]","edited":"[string]","kits":"[{name,fingerprint,missing}]","scenario_from":"layers|kit|null","lossy":"[string]|null","problems":"[string]"}"#,
+        result: r#"{"project":"object","file":"path","package":"string","item":"integer","origin":"git|local","layers":"[{kind,name,path}]","authored":"[string]","edit_files":"[string]","edited":"[string]","kits":"[{name,fingerprint,missing}]","scenario_from":"layers|kit|null","lossy":"[string]|null","problems":"[string]"}"#,
         example: r#"{"project":"stage"}"#,
         planned: None,
     },
     MethodDef {
         name: m::PROJECT_BUILD,
-        summary: "Build a project from the tree, its layers, its edit files and its kits, and write the map package <data>/maps/<name>/ with receipt.json; any problem stops it with its message (an edit's file and line, a lossy or missing tag by name)",
+        summary: "Build a project from the tree, its layers (the authored layer generated under <data>/workspace/generated/), its edit files, its kits and the other items the map takes, and write its map package <data>/maps/<name>/ with receipt.json; onto adds the tags the base lacks; any problem stops it with its message (an edit's file and line, a lossy or missing tag by name)",
         params: r#"{"project":"string"}"#,
-        result: r#"{"dir":"path","map_id":"string","file":"string","took_ms":"integer","receipt":"{key,project,mode,base,layers,edit_files,edited,overrides,kits,closure,rebuilt,file_size,memory_size,memory_max}"}"#,
+        result: r#"{"dir":"path","map_id":"string","file":"string","unchanged":"boolean","took_ms":"integer","receipt":"{key,project,package,item,mode,base,layers,authored,edit_files,edited,overrides,kits,closure,rebuilt,added,taken,file_size,memory_size,memory_max}"}"#,
         example: r#"{"project":"stage"}"#,
         planned: None,
     },
@@ -83,7 +82,7 @@ impl Provider for Projects {
 
     fn call(&mut self, app: &mut App, method: &str, params: &Value) -> Option<Reply> {
         let p = P(params);
-        let roots = roots(app);
+        let roots = app.project_roots();
         Some(match method {
             m::PROJECT_LIST => Ok(json!({ "projects": project::list(&roots) })),
             m::PROJECT_READ => read(&roots, &p),
@@ -96,20 +95,6 @@ impl Provider for Projects {
             m::EDITS_SET => set(&roots, &p),
             _ => return None,
         })
-    }
-}
-
-/// The checkout Studio was built from.
-fn checkout() -> PathBuf {
-    let here = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
-    here.canonicalize().unwrap_or(here)
-}
-
-fn roots(app: &App) -> Roots {
-    Roots {
-        tree: app.tags_root(),
-        data: app.data_root(),
-        checkout: Some(checkout()),
     }
 }
 
@@ -151,6 +136,7 @@ fn build(roots: &Roots, p: &P) -> Reply {
         "dir": wrote.dir,
         "map_id": wrote.map_id,
         "file": wrote.file,
+        "unchanged": wrote.unchanged,
         "took_ms": started.elapsed().as_millis() as u64,
         "receipt": built.receipt,
     }))
@@ -158,7 +144,7 @@ fn build(roots: &Roots, p: &P) -> Reply {
 
 fn check(roots: &Roots, p: &P) -> Reply {
     let file = load(roots, p)?;
-    to_json!(&project::check_edits(roots, &file.project).map_err(failed)?)
+    to_json!(&project::check_edits(roots, &file).map_err(failed)?)
 }
 
 fn set(roots: &Roots, p: &P) -> Reply {
@@ -175,7 +161,7 @@ fn set(roots: &Roots, p: &P) -> Reply {
             let file = project::load(roots, which)
                 .map_err(|e| err(code::INVALID_PARAMS, e.to_string()))?;
             let key = edits::parse_key(tag).map_err(|e| err(code::INVALID_PARAMS, e))?;
-            Some(project::was_of(roots, &file.project, &key).map_err(failed)?)
+            Some(project::was_of(roots, &file, &key).map_err(failed)?)
         }
     };
     let wrote = edits::set_line(&roots.workspace(), name, tag, path, value, was)

@@ -1,7 +1,7 @@
 # The tag workspace: Studio as the whole tools suite
 
-Status: In progress. Built: the tag repository and its extraction versions ([tag-repo.md](../formats/tag-repo.md)); Studio's first start (W3: the start page, `workspace.*`, the game's `maps.load` rescan); edit files over the tree, the layers, projects and the build of a project into a map package, with the stage as its first kit (`project.*`, `edits.*`, `h2 tags project`, `h2 tags edits`). Not built: Studio's save writing edit lines and `doc.open {project}` (W5's journal), `project.play`, the authored layer, import layers' store (W9), the incremental cache (W6), `ContentKit` (W4). None of the built parts has run on the disc yet. "Open questions" lists what the owner still has to choose.
-Code: `crates/formats/tags/src/repo` (the tree, extraction, closure, `to_tag_set`, `onto_retail`), `crates/tools/workspace/src/{edits.rs, layer.rs, project.rs, project_build.rs}` (edit files, layers, projects, the build), `crates/tools/stage-kit/src/project_kit.rs` (the stage as a kit), `crates/apps/studio/src/api/{workspace.rs, projects.rs}` (`workspace.*`, `project.*`, `edits.*`), `crates/apps/h2-tools/src/{tag_repo_cmd.rs, tag_project_cmd.rs}` (`h2 tags`). Tests: `crates/formats/tags/src/repo/tests.rs`, `crates/tools/workspace/src/{tests.rs, edits_tests.rs, project_tests.rs}`, `crates/apps/studio/src/api/tests.rs` (`projects_and_edit_files_resolve_over_an_invented_tree`), `crates/formats/tags/tests/tag_repo.rs` (`#[ignore]`, the disc).
+Status: In progress. Built: the tag repository and its extraction versions ([tag-repo.md](../formats/tag-repo.md)); Studio's first start (W3: the start page, `workspace.*`, the game's `maps.load` rescan); edit files over the tree, the layers with the authored layer, projects (a package's `map` item) and the build of a project into its map package, `onto` adding new tags, with the stage as its first kit (`project.*`, `edits.*`, `h2 tags project`, `h2 tags edits`). Not built: Studio's save writing edit lines and `doc.open {project}` (W5's journal), `project.play`, import layers' store (W9), the incremental cache (W6), `ContentKit` (W4). None of the built parts has run on the disc yet. "Open questions" records the owner's decisions.
+Code: `crates/formats/tags/src/repo` (the tree, extraction, closure, `to_tag_set`, `onto_retail_adding`), `crates/tools/workspace/src/{edits.rs, layer.rs, authored.rs, project.rs, project_build.rs, maps.rs}` (edit files, layers, the authored layer, projects, the build, the `map` item), `crates/tools/stage-kit/src/project_kit.rs` (the stage as a kit), `crates/apps/studio/src/api/{workspace.rs, projects.rs}` (`workspace.*`, `project.*`, `edits.*`), `crates/apps/h2-tools/src/{tag_repo_cmd.rs, tag_project_cmd.rs}` (`h2 tags`). Tests: `crates/formats/tags/src/repo/tests.rs`, `crates/tools/workspace/src/{tests.rs, edits_tests.rs, project_tests.rs}`, `crates/apps/studio/src/api/tests.rs` (`projects_and_edit_files_resolve_over_an_invented_tree`), `crates/formats/tags/tests/tag_repo.rs` (`#[ignore]`, the disc).
 Switch: none.
 
 Studio is the one tool for content: it edits levels (the scenario tool),
@@ -38,11 +38,11 @@ on the map being edited. "Build slices" orders the slices of all five.
 | Tag editing | Studio's Tags and scenario tools on an open `.map`, saved as a patch package ([scenario-editor.md](scenario-editor.md)); `tag.export` and `tag.import` move `.h2tag` bundles between maps and only replace tags a map already has | built |
 | Edit files on loose tags | `workspace::edits` (`Edited`, `apply`, `set_line`), over the `edits` builder's format | built; invented tags |
 | Layers, projects, the build | `workspace::project` (`Roots`, `open_stack`, `load`), `workspace::project_build` (`Kit`, `build`, `write`) | built; invented trees, not run on the disc |
+| Our own tags as a layer | `workspace::authored` (`make`, `keep`): the `tag` items a map takes, generated under `<data>/workspace/generated/` | built; invented trees |
 
 What is missing: Studio's save writing edit lines, Studio opening a
-project instead of a map, the authored layer, import layers' store, the
-kits other than the stage as steps, and a build fast enough to run on
-every save.
+project instead of a map, import layers' store, the kits other than the
+stage as steps, and a build fast enough to run on every save.
 
 ## How it works
 
@@ -89,10 +89,11 @@ outputs add to it under `<data>/workspace/`. The builds volume has a
 quota, so the workspace accounts for itself: `workspace.status` gives
 the bytes of the tree, each layer, each project's cache and each
 output; `workspace.prune` removes raw resources no tag file or
-manifest names, generated layers no project asks for (with no project
-files, all of them; with any, none) and build caches unused for a
-week, and `cargo xtask prune` calls it. Outputs are not pruned: the
-project files name what they build. The tree
+manifest names, authored layers no project's stack asks for
+(`project::wanted_layers`; when a stack does not open, every layer is
+kept and `generated_why` says why) and build caches unused for a week,
+and `cargo xtask prune` calls it. Outputs are not pruned: the map items
+name what they build. The tree
 itself is never pruned in part: it is deleted whole and extracted
 again.
 
@@ -104,13 +105,24 @@ A build reads tags through the project's stack
 | # | Layer | Where | Type | State |
 |---|---|---|---|---|
 | 1 | Edits (below), applied to the tag the layers under them give | the project's edit files | `edits::Edited` | built |
-| 2 | Authored tags: a kit's or an importer's output from `art/` and YAML, remade when the fingerprint moves | `<data>/workspace/generated/<fingerprint>/` | | not built (question 1) |
+| 2 | Authored tags: the `tag` items (YAML) of the packages that take the map by name, made over layers 3 and 4 | `<data>/workspace/generated/<fingerprint>/`, a tag repository | `authored::keep` (`TagRepo`), `authored::InMemory` when not written | built |
 | 3 | Imported maps, in the project's `imports` order | `<data>/workspace/imports/<name>/`, a tag repository | `TagRepo` in `Layered` | read; stored by `workspace.import` (W9) |
 | 4 | The tree, with the base map's variants | `tags_root` | `TagRepo::for_map` in `Layered` | built |
 
 `Layered` gives a tag from the first layer that holds it. A missing tree,
 a tree without the base map, an import layer that is not there and an
-edit file that is not there are errors naming the path. `LevelSource` in
+edit file that is not there are errors naming the path.
+
+The authored layer is our own tags, committed as sources only and
+generated on each machine (`workspace::authored`):
+
+| Step | What |
+|---|---|
+| Sources | each `tag` item (`<path>.<group>.yaml`, the `tag` builder's `like`, `block`, `fields`, `borrow`) whose `maps` names the map |
+| Made | `tagitem::loose` over layers 3 and 4: `like` and `borrow` read them, `borrow`'s candidates are the base's tags; `replaces` is refused by name |
+| Refused | a path a lower layer holds, a path two items add, an item that does not build; each names the package and item |
+| Fingerprint | SHA-256 over `AUTHORED_VERSION` and each made tag's canonical bytes |
+| Kept | `<data>/workspace/generated/<fingerprint>/`, written once through a temporary directory, whole when `complete.txt` is there; `project.read` and `edits.check` hold it in memory and write nothing | `LevelSource` in
 `h1convert::scratch` is this with two layers; the converter moves onto
 `Layered`.
 
@@ -173,27 +185,34 @@ edits are edit lines on the `scnr`.
 
 ### Projects
 
-A project is a small file naming one map to build. In the package
-model of [studio-redesign.md](studio-redesign.md), "Packages", it is a
-`map` item of a package and its fields are these:
+A project is a package's `map` item ([studio-redesign.md](studio-redesign.md),
+"Packages"): its `map.toml` (`workspace::MapSpec`) names one map, one
+file per map. The tree build reads these fields; the game's boot builds
+the same item from the disc (`workspace::prepare`).
 
 ```toml
-# art/stage/project.toml, or <data>/workspace/projects/<name>.toml
-name = "stage"
+# content/stage/map.toml, or <data>/packages/<dir>/map.toml
 mode = "fresh"                    # or "onto"
 base = "lockout"                  # the disc map: variants, globals, header template
+name = "stage"
 scenario = 'scenarios\multi\stage\stage'   # fresh only; onto takes the base's
-kits = ["stage", "pogo"]          # Kit names, in order
+kits = ["stage"]                  # Kit names, in order; fresh only
 edits = ["assets/tag-edits/pogo-tuning.yaml", "tuning"]   # Git, then local
 imports = ["community"]           # import layers, top first
-output = "package"                # a map package under <data>/maps/
 ```
 
-`workspace::project::load` finds a project by its path or its `name`
-among `art/*/project.toml` and `<data>/workspace/projects/*.toml`; a name
-two files give, and a file at the name's place that does not read, are
-errors. Unknown fields, a fresh project with no scenario, an onto project
-with one, a name equal to the base's and an entry named twice are refused.
+| Where | Origin |
+|---|---|
+| `content/*/package.toml` in the checkout | Git |
+| `<data>/packages/*/package.toml`, not `cache/` | local |
+
+`workspace::project::load` finds a project by its map's name, or by a
+package directory with one `map` item. A name two items give, a name no
+item gives and a package that does not load are errors naming them. A
+tree build reads every package for the items the map takes, so any
+package that does not load stops it. `MapSpec` refuses unknown fields, a
+fresh map with no scenario or kits, an onto map with either, a name equal
+to the base's and an entry named twice.
 
 Two modes, because the tree cannot yet give every tag exactly:
 
@@ -201,8 +220,8 @@ Two modes, because the tree cannot yet give every tag exactly:
   every tag pinned (`TagSet::from_map`), the tags the layers changed
   are replaced, new tags are added, kits run. The level's `sbsp`,
   `ltmp` and `scnr` stay the disc's bytes unless an edit touches them.
-  This is `build::onto_retail` and what every kit does now, and it is
-  the path proven in the game.
+  This is `build::onto_retail_adding` and what every kit does now, and
+  it is the path proven in the game.
 - **`fresh`**: a map whose level is ours (the stage, a converted Halo 1
   map, later a level made in Studio). Closure from the globals and the
   scenario over the layers, `to_tag_set`, nothing pinned, as
@@ -210,26 +229,38 @@ Two modes, because the tree cannot yet give every tag exactly:
   holds a lossy tag and names it, so a retail level builds fresh only
   once its level tags extract without loss.
 
-`workspace::project_build::build(roots, project, tools) -> Built`:
+`workspace::project_build::build(roots, file, tools) -> Built`:
 
 | Step | `fresh` | `onto` |
 |---|---|---|
-| 1 | open the stack; apply every edit once; any problem stops it | the same |
-| 2 | the stack holds the scenario: closure from the globals, the scenario and the `Keep` roots; a missing tag, a lossy tag or a dangling reference stops it, named; `to_tag_set`. Else the first kit makes the map | the disc map reassembled from the tree's skeleton; `onto_retail` over only the changed tags (the edited ones, and an import layer's that differ from the tree). A changed tag the base keeps pinned, or one the base lacks, stops it, named |
+| 1 | open the stack, the authored layer kept; apply every edit once; any problem stops it | the same |
+| 2 | the stack holds the scenario: closure from the globals, the scenario, the authored tags and the `Keep` roots; a missing tag, a lossy tag or a dangling reference stops it, named; `to_tag_set`. Else the first kit makes the map | the disc map reassembled from the tree's skeleton; `onto_retail_adding` over the changed tags (the edited ones, the authored ones, an import layer's that differ from the tree). The changed tags the base lacks, and every tag they reach that it lacks, are added; one no layer holds, or a lossy one, stops it, named. A changed tag the base keeps pinned stops it, named |
 | 3 | each kit in order (`Kit::run` on `KitStep`) | the same |
-| 4 | `TagSet::build` unless a kit laid the map out; read back; tag memory against `max_metadata_size` | the same |
+| 4 | `TagSet::build` unless a kit laid the map out | the same |
+| 5 | the other items the map takes (not `tag`: those are the authored layer), applied as the game applies them (`build_map`) | the same |
+| 6 | read back; tag memory against `max_metadata_size` | the same |
 
-| Output | `fresh` | `onto` |
-|---|---|---|
-| `<data>/maps/<name>/` | a `derived` whole map | a patch against the disc map (`content::patch::diff`, as `firefight_kit::build_package`) |
-| `receipt.json` | key, layers, edit files, edited tags, overrides, kits, sizes | the same, and the tags rebuilt |
+A map item with a `ground` file does not build from the tree: the AI
+ground is built over the disc build's map, and the error says so.
+
+| Output | Both modes |
+|---|---|
+| `<data>/maps/<name>/` | the derived map package the disc build writes too: one whole map, `<name>.map` (`maps::derived_manifest`) |
+| `built-from.toml` | the package, the item and the key `tag-tree` (`maps::TREE_KEY`), written through `maps::write`: a directory another item or the user wrote is refused |
+| `receipt.json` | key, package and item, layers, authored tags, edit files, edited tags, overrides, kits, sizes; `onto`'s rebuilt and added tags; the packages whose other items it took |
+
+`prepare` keeps a tree build of a map item that names `edits` or
+`imports` (its `built-from.toml` holds `tag-tree`); without one, such an
+item is a failure naming the tree build. A map item with neither is the
+disc build's at boot, which replaces a tree build of it.
 
 The game loads the package by its id, or as a play copy of a disc level
-([editor.md](editor.md#play-and-pair)). The build key is SHA-256 over the
-project, its edit files, its kits' fingerprints and the base's manifest
-and header; W6's cache uses it. The per-map couplings (the sound gestalt,
-the low-detail ranges) are a kit's to merge. Both roots are refused
-inside a Git checkout.
+([editor.md](editor.md#play-and-pair)). The build key is SHA-256 over
+`TREE_BUILD_VERSION`, the project, its edit files, the authored layer's
+fingerprint, the packages of the other items it takes, its kits'
+fingerprints and the base's manifest and header; W6's cache uses it.
+The per-map couplings (the sound gestalt, the low-detail ranges) are a
+kit's to merge. Both roots are refused inside a Git checkout.
 
 ### Kits are build steps
 
@@ -324,9 +355,9 @@ Studio ([agent-api.md](agent-api.md)):
 | `workspace.status` | read | the tree (path, maps extracted, lossy counts), the plan's stale parts, an extraction in progress |
 | `workspace.extract` | act | `{disc?, maps?, verify?}` runs the plan; progress in `workspace.status` |
 | `workspace.import` | act | `{map \| path, name}` stores a map as an import layer (planned, W9) |
-| `project.list` | read | every project file with its name, mode and base, or why it does not read |
-| `project.read` | read | `{project, closure?}`: layers, edit files, edited tags, kits with fingerprints, where a fresh scenario comes from, the lossy tags that block `fresh` (`closure`), every problem |
-| `project.build` | act | `{project}` builds and writes; `{dir, map_id, file, took_ms, receipt}` |
+| `project.list` | read | every package's `map` item with its name, mode, base, package and item, or why it does not read |
+| `project.read` | read | `{project, closure?}`: layers, authored tags, edit files, edited tags, kits with fingerprints, where a fresh scenario comes from, the lossy tags that block `fresh` (`closure`), every problem; writes nothing |
+| `project.build` | act | `{project}` builds and writes; `{dir, map_id, file, unchanged, took_ms, receipt}` |
 | `edits.list` | read | every edit file, Git then local, with entries, tags and problems |
 | `edits.check` | read | `{project}`: every edit applied once; problems with file, line and tag; overrides |
 | `edits.set` | act | `{file, tag, path, value, project?}` writes one set line into a local file |
@@ -409,7 +440,7 @@ One lane each. A lane writes code and tests; the coordinator runs them.
 |---|---|---|---|---|
 | W1 | Extraction versions: `extract.toml`, per-group layout hashes, the plan, resumable per map, `h2 tags extract --update` | `crates/formats/tags/src/repo/{store.rs, extract.rs}`, `crates/formats/tags/src/schema` (the hash), `tag_repo_cmd.rs`, [tag-repo.md](../formats/tag-repo.md) | on invented maps: a moved layout hash re-extracts that group only; an interrupted run redoes one map; unchanged input is a no-op | the disc test extracts, then `--update` does nothing |
 | S1, S2 | The stage's geometry and its map, built `fresh` from a `TagSource` | see the stage page | | the stage loads in the game |
-| W2 | `Layered` and projects: the crate, the project file, `fresh` and `onto` builds, the package output, `h2 tags build --project` | `crates/tools/workspace/{Cargo.toml, src/lib.rs, layer.rs, project.rs, build.rs, tests.rs}`, `h1convert/src/scratch.rs` (onto `Layered`) | invented tree and layers: first hit wins; a lossy tag refuses `fresh` by name; `onto` output differs from its base only in changed tags; the stage's project builds the bytes S2 built | `h2 tags build --project art/stage/project.toml` writes the stage package |
+| W2 | `Layered` and projects: the crate, the `map` item as the project, `fresh` and `onto` builds, the package output, `h2 tags build --project` | `crates/tools/workspace/{Cargo.toml, src/lib.rs, layer.rs, project.rs, build.rs, tests.rs}`, `h1convert/src/scratch.rs` (onto `Layered`) | invented tree and layers: first hit wins; a lossy tag refuses `fresh` by name; `onto` output differs from its base only in changed tags; the stage's project builds the bytes S2 built | `h2 tags build --project content/stage/map.toml` writes the stage package |
 | W3 | Studio's first start and `workspace.*` (built): the start page, the background plan, `tags_root`, status with sizes, `workspace.prune`, the game's `maps.load` rescan | `crates/apps/studio/src/{api/workspace.rs, ui/workspace.rs, app/workspace.rs}`, `studio-proto`, `crates/extensions/game/src/test_maps.rs`, [agent-api.md](agent-api.md), [editor-guide.md](editor-guide.md) | headless: no tree shows the start page; `workspace.extract` on an invented disc; a Git checkout refused; every method's example | a fresh data root extracts from the disc in the window, with progress |
 | W4 | `ContentKit`, `KitRewrite`, the Pogo as the first kit, sources from a directory | `crates/formats/content/src/kit.rs`, `crates/tools/pogo-kit/src/{kit.rs, source.rs, rewrite.rs, inject.rs}`, `crates/apps/boot/src/lib.rs` (the chain), [pogo-stick.md](../game/pogo-stick.md) | baked and directory sources install the same tags; a map holding the kit is skipped; the rewrite's cache key is unchanged for unchanged input | the stage project with `kits = ["stage", "pogo"]` holds the Pogo |
 | S3 to S8 | The stage's flow: game methods, `stage.*`, checks | see the stage page | | `stage.run` gives a verdict on the Pogo |
@@ -454,12 +485,14 @@ A wave's slices are independent of each other.
 
 ## Open questions
 
-| # | Question | A | B | Lane's pick | Blocks |
-|---|---|---|---|---|---|
-| 1 | Our own tags in Git | sources only (YAML, art, kit code); loose tags generated locally into `generated/` | commit the generated loose tags of ours as well, for review | A: the rule that nothing of the tree is in Git stays one rule, and a review reads the YAML | the authored layer |
-| 2 | One file for a map to build | `project.toml` stays its own file beside the package `map` item's `map.toml` (`content/stage/map.toml` and `art/stage/project.toml` name the same map) | a project is the `map` item: one format, `MapSpec` gains `edits` and `imports`, `art/*/project.toml` goes | B: two files that must agree is a drift waiting to happen; built as A meanwhile | nothing built; Studio's save target in W5 |
-| 3 | What `was` hashes | the tag as the layers give it, below every edit file | the tag as the edit files before this one leave it | A (built): a hash that does not move when an earlier file changes; `from` is checked the same way | nothing |
-| 4 | New tags in an `onto` project | refused by name until `onto_retail` adds tags | `onto` adds a layer's new tags and a kit's, as every kit's rewrite does now | B, in `tags::repo::build` with W4; refused by name meanwhile | an onto project with new tags |
+All decided by the owner.
+
+| # | Question | Decided | Built as |
+|---|---|---|---|
+| 1 | Our own tags in Git | A: sources only (YAML, art, kit code); loose tags generated on each machine | the authored layer (`workspace::authored`, "Layers") |
+| 2 | One file for a map to build | B: a project is the package's `map` item, one file per map; `MapSpec` has `edits` and `imports` | `workspace::project` over packages; no `project.toml` ("Projects") |
+| 3 | What `was` hashes | A: the tag as the layers give it, below every edit file | `edits::loose_hash`; `from` is checked the same way |
+| 4 | New tags in an `onto` project | B: `onto` adds the new tags | `tags::repo::build::onto_retail_adding` ("Projects", step 2) |
 
 ## Evidence
 

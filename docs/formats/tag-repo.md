@@ -364,13 +364,15 @@ compared without its loss lines (both sides lose the same fields).
 
 **A project over the tree** (`h2 tags project build NAME`, Studio's
 `project.build`; [tag-workspace.md](../editor/tag-workspace.md),
-"Projects"): the same two builds on the project's stack, its edit files
-over its import layers over the tree:
+"Projects"; a project is a package's `map` item): the same two builds on
+the project's stack, its edit files over the authored layer (the `tag`
+items the map takes, generated under `<data>/workspace/generated/`) over
+its import layers over the tree:
 
 | Mode | Over the tree | What it needs from the tree |
 |---|---|---|
 | `fresh` | `closure` from the globals, the scenario and the kept roots, then `to_tag_set`; a lossy tag in the closure refuses it by name | the base's manifest (globals, cache type, `index_word_14`, low-detail hash), header and `strings.txt` |
-| `onto` | `onto_retail` over the changed tags only; one the base keeps pinned (BSP region, `scnr`, lossy, not movable) refuses it by name | the base's skeleton and extent table, to reassemble the disc map |
+| `onto` | `onto_retail_adding` over the changed tags only, adding those the base lacks and every tag they reach that it lacks; one the base keeps pinned (BSP region, `scnr`, lossy, not movable) refuses it by name, and so does an added tag that is lossy or an alias | the base's skeleton and extent table, to reassemble the disc map |
 
 An edit's `was` is a hash of the tag's canonical bytes
 (`tags::defs::canonical`), so a re-extraction that changes a tag
@@ -378,7 +380,7 @@ An edit's `was` is a hash of the tag's canonical bytes
 its line; one that changes only the file format or the tree's layout of
 files does not.
 
-**The stage** (`h2 tags build --project art/stage/project.toml [--disc
+**The stage** (`h2 tags build --project content/stage/map.toml [--disc
 ISO | --repo DIR] [--data DIR]`): the content stage built `fresh` over
 its base map read from the disc or from an extracted tree, and written as
 a map package (`stage_kit::map`,

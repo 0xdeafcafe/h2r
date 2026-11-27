@@ -39,25 +39,14 @@ impl Kit for StageKit {
 
     fn run(&self, step: &mut KitStep<'_>) -> Result<Installed, String> {
         let p = step.project;
-        let scenario = p
-            .scenario
-            .clone()
-            .ok_or("the stage is a fresh project's kit: name its scenario")?;
         if step.set.is_some() || step.bytes.is_some() {
             return Err(format!(
-                "the stage makes the whole map, so it is the project's only kit and no layer may hold {scenario}"
+                "the stage makes the whole map, so it is the project's only kit and no layer may hold {}",
+                p.scenario.as_deref().unwrap_or_default()
             ));
         }
-        let stage = Project {
-            name: p.name.clone(),
-            mode: "fresh".into(),
-            base: p.base.clone(),
-            scenario,
-            kits: vec!["stage".into()],
-            // The stack has applied the project's edit files already.
-            edits: Vec::new(),
-            output: "package".into(),
-        };
+        // The stack has applied the project's edit files and layers already.
+        let stage = Project::from_spec(p).map_err(|e| e.to_string())?;
         let (base, _) = Base::from_repo(&step.roots.tree, &p.base).map_err(|e| e.to_string())?;
         let built = build(&mut *step.src, &base, &stage).map_err(|e| e.to_string())?;
         let r = &built.report;

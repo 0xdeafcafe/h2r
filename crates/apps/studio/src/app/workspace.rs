@@ -686,11 +686,23 @@ impl App {
         })
     }
 
+    /// The roots the tag workspace's projects build over: the tree, the
+    /// data root and the checkout Studio was built from.
+    pub fn project_roots(&self) -> ::workspace::project::Roots {
+        let here = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        ::workspace::project::Roots {
+            tree: self.tags_root(),
+            data: self.data_root(),
+            checkout: Some(here.canonicalize().unwrap_or(here)),
+        }
+    }
+
     /// `workspace.prune` (docs/editor/tag-workspace.md, "Size and
     /// cleanup"): raw resources nothing names (no tag, manifest or extent table), generated layers no
     /// project asks for, and build caches unused for a week. The tree
     /// itself is never pruned in part. With `dry_run`, what would go.
-    /// Project outputs are the projects' (W2) and are not pruned yet.
+    /// Project outputs are the map packages under `<data>/maps/`, not
+    /// pruned here.
     pub fn workspace_prune(&mut self, dry_run: bool) -> Result<Value, String> {
         let root = self.tags_root();
         let workspace = self.data_root().join("workspace");
@@ -716,29 +728,29 @@ impl App {
                 }
             }
         }
-        // Generated layers no project asks for: with no project files,
-        // nothing asks for any of them. The layers are derived data, made
-        // again when a kit runs; which fingerprint a project asks for is
-        // the project file's (W2's projects).
-        let projects = std::fs::read_dir(workspace.join("projects"))
-            .map(|d| {
-                d.flatten().any(|e| {
-                    e.path()
-                        .extension()
-                        .is_some_and(|x| x.eq_ignore_ascii_case("toml"))
-                })
-            })
-            .unwrap_or(false);
+        // Generated layers no project asks for: each project's stack is
+        // opened without writing, and its authored layer's fingerprint is
+        // kept. When a stack does not open, every layer is kept and
+        // `generated_why` says why: nothing is removed on a guess.
+        let (wanted, generated_why) =
+            match ::workspace::project::wanted_layers(&self.project_roots()) {
+                Ok(w) => (Some(w), None),
+                Err(why) => (None, Some(why)),
+            };
         let mut generated_removed = Vec::new();
         let mut generated_kept = Vec::new();
-        for (name, size) in subdirs(&workspace.join("generated")) {
-            if projects {
+        for (name, size) in subdirs(&workspace.join(::workspace::authored::GENERATED_DIR)) {
+            if wanted.as_ref().is_none_or(|w| w.contains(&name)) {
                 generated_kept.push(name);
                 continue;
             }
             bytes += size;
             if !dry_run {
-                let _ = std::fs::remove_dir_all(workspace.join("generated").join(&name));
+                let _ = std::fs::remove_dir_all(
+                    workspace
+                        .join(::workspace::authored::GENERATED_DIR)
+                        .join(&name),
+                );
             }
             generated_removed.push(name);
         }
@@ -767,9 +779,10 @@ impl App {
             "raw": removed,
             "generated_removed": generated_removed,
             "generated_kept": generated_kept,
+            "generated_why": generated_why,
             "caches_removed": caches,
-            // Project outputs (docs/editor/tag-workspace.md) are named by
-            // the project files that build them (W2): none are pruned.
+            // Project outputs are map packages under <data>/maps/, which
+            // the map items name: none are pruned here.
             "outputs_removed": [],
             "bytes": bytes,
         }))

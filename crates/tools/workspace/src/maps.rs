@@ -38,7 +38,7 @@ use content::manifest::{Layer, ListInfo, Manifest as MapManifest, is_map_name};
 use content::package::{Item, Kind, Maps, Package};
 use content::patch::Patch;
 use content::{MapId, Sha256, store};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::build::{Failure, Loaded, Target};
 use crate::ground::GroundFile;
@@ -49,8 +49,12 @@ use crate::onto::{build_map, scope_of_bytes};
 /// what this build wrote.
 pub const BUILT_FILE: &str = "built-from.toml";
 
+/// The key a map package built from the tag tree carries in [`BUILT_FILE`]
+/// (`project_build::write`); its build key is in its `receipt.json`.
+pub const TREE_KEY: &str = "tag-tree";
+
 /// What a `map` item builds from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     /// A new map made by a builder (the stage), over the base's globals
@@ -60,8 +64,9 @@ pub enum Mode {
     Onto,
 }
 
-/// A `map` item's `map.toml`.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// A `map` item's `map.toml`: also the tag workspace's project
+/// (docs/editor/tag-workspace.md, "Projects"), one file per map.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MapSpec {
     pub mode: Mode,
@@ -86,6 +91,14 @@ pub struct MapSpec {
     pub author: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    /// Edit files the tree build applies: `assets/tag-edits/<name>.yaml`
+    /// in Git, or a local file's name ([`crate::project::EditRef`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<String>,
+    /// Import layers the tree build reads, top first:
+    /// `<data>/workspace/imports/<name>/`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub imports: Vec<String>,
 }
 
 impl MapSpec {
@@ -127,6 +140,34 @@ impl MapSpec {
                 if self.scenario.is_some() || !self.kits.is_empty() {
                     return Err("map.toml: scenario and kits are for a fresh map".into());
                 }
+            }
+        }
+        if let Some(s) = &self.scenario {
+            let ok = !s.is_empty()
+                && s.len() < 256
+                && !s.contains('/')
+                && s.rsplit('\\').next().is_some_and(|n| !n.is_empty());
+            if !ok {
+                return Err(format!("map.toml: scenario {s:?} is not a tag path"));
+            }
+        }
+        let mut seen = BTreeSet::new();
+        for k in &self.kits {
+            if k.is_empty() || !seen.insert(("kit", k.as_str())) {
+                return Err(format!("map.toml: kits: {k:?} is empty or named twice"));
+            }
+        }
+        for e in &self.edits {
+            crate::project::EditRef::parse(e).map_err(|e| format!("map.toml: {e}"))?;
+            if !seen.insert(("edits", e.as_str())) {
+                return Err(format!("map.toml: edits: {e:?} is named twice"));
+            }
+        }
+        for i in &self.imports {
+            if !crate::edits::is_plain_name(i) || !seen.insert(("import", i.as_str())) {
+                return Err(format!(
+                    "map.toml: imports: {i:?} is not an import layer's name, or is named twice"
+                ));
             }
         }
         Ok(())
@@ -366,7 +407,7 @@ pub fn built_names(packages: &[Loaded]) -> BTreeSet<String> {
 
 /// Whether `item` is one a map named `name` takes: an item that changes a
 /// map and lists `name` in its `maps`.
-fn taken_by(item: &Item, name: &str) -> bool {
+pub(crate) fn taken_by(item: &Item, name: &str) -> bool {
     !matches!(item.kind, Kind::Map | Kind::MapPatch)
         && crate::builders::changes_map(item)
         && matches!(&item.maps, Maps::Names(n) if n.iter().any(|n| n.eq_ignore_ascii_case(name)))
@@ -497,6 +538,22 @@ fn build_map_item(
     held: &HeldIn<'_>,
 ) -> Result<Outcome, String> {
     let spec = MapSpec::parse(source_of(p, item)?)?;
+    if !spec.edits.is_empty() || !spec.imports.is_empty() {
+        // The tag workspace's build of this item is the map: kept as it is.
+        let package = p.package.manifest.package.id.clone();
+        if let Some(id) = held(&spec.served(), &package, index, TREE_KEY) {
+            return Ok(Outcome::Held(Held {
+                dir: spec.served(),
+                package,
+                item: index,
+                id,
+            }));
+        }
+        return Err(format!(
+            "map {:?} names edit files or import layers, which apply to the tag tree: it builds with the tag workspace (Studio's project.build, h2 tags project build), not from the disc map",
+            spec.name
+        ));
+    }
     let ground = match &spec.ground {
         Some(file) => {
             let bytes = p
@@ -574,21 +631,7 @@ fn build_map_item(
             ground: file,
         })?;
     }
-    let mut manifest = MapManifest::retail(&name, Sha256::of(&bytes));
-    manifest.base.sha256 = None;
-    manifest.base.derived = true;
-    manifest.package.name = spec.title.clone().unwrap_or_else(|| name.clone());
-    manifest.package.author = spec.author.clone();
-    manifest.package.description = spec.description.clone();
-    let file = format!("{name}.map");
-    manifest.patches = vec![Layer {
-        file: file.clone(),
-        sha256: Sha256::of(&bytes),
-    }];
-    manifest.list = Some(ListInfo {
-        base: Some(spec.base.to_ascii_lowercase()),
-        ..ListInfo::default()
-    });
+    let (manifest, file) = derived_manifest(&spec, &bytes);
     let id = manifest.map_id();
     Ok(Outcome::Built(MapPackage {
         dir: name,
@@ -599,6 +642,29 @@ fn build_map_item(
         id,
         key,
     }))
+}
+
+/// The manifest of the derived map package a `map` item makes: one whole
+/// map, `<name>.map`, listed as its base's entry gives it. The disc build
+/// and the tree build (`project_build::write`) both write it.
+pub(crate) fn derived_manifest(spec: &MapSpec, bytes: &[u8]) -> (MapManifest, String) {
+    let name = spec.served();
+    let mut manifest = MapManifest::retail(&name, Sha256::of(bytes));
+    manifest.base.sha256 = None;
+    manifest.base.derived = true;
+    manifest.package.name = spec.title.clone().unwrap_or_else(|| name.clone());
+    manifest.package.author = spec.author.clone();
+    manifest.package.description = spec.description.clone();
+    let file = format!("{name}.map");
+    manifest.patches = vec![Layer {
+        file: file.clone(),
+        sha256: Sha256::of(bytes),
+    }];
+    manifest.list = Some(ListInfo {
+        base: Some(spec.base.to_ascii_lowercase()),
+        ..ListInfo::default()
+    });
+    (manifest, file)
 }
 
 fn build_patch_item(p: &Loaded, item: &Item) -> Result<MapPackage, String> {

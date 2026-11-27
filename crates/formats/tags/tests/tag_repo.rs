@@ -330,9 +330,71 @@ fn run(
             println!("  differs {k}: {d}");
         }
         failures += c.differ.len() + c.missing.len();
+        // A tag the disc map lacks, added onto it: a copy of one of its
+        // damage tags under a new path.
+        let r = TagRepo::for_map(&dir, stem)?;
+        let copy_of = r
+            .keys()
+            .into_iter()
+            .find(|k| k.group == map::FourCC(*b"jpt!"))
+            .ok_or("no damage tag")?;
+        let new = tags::repo::TagKey::new(copy_of.group, "invented\\added\\copy");
+        let mut src = Adding {
+            src: r,
+            copy_of,
+            new: new.clone(),
+        };
+        let (set, added) = tags::repo::build::onto_retail_adding(
+            schema,
+            open(*base, *size)?,
+            &mut src,
+            &[new.clone()],
+        )?;
+        assert_eq!(added.added, vec![new.clone()]);
+        assert!(set.find(new.group, &new.path).is_some());
+        let (bytes, _) = set.build()?;
+        Map::from_reader(std::io::Cursor::new(bytes))?;
+        println!("{stem} onto the disc map with {new} added: reads back");
     }
     assert_eq!(failures, 0);
     Ok(())
+}
+
+/// A source with one tag more: `new`, a copy of `copy_of`.
+struct Adding {
+    src: TagRepo,
+    copy_of: tags::repo::TagKey,
+    new: tags::repo::TagKey,
+}
+
+impl TagSource for Adding {
+    fn keys(&self) -> Vec<tags::repo::TagKey> {
+        let mut k = self.src.keys();
+        k.push(self.new.clone());
+        k
+    }
+
+    fn read(
+        &mut self,
+        key: &tags::repo::TagKey,
+    ) -> tags::repo::Result<Option<tags::repo::LooseTag>> {
+        if *key == self.new {
+            let mut t = self.src.read(&self.copy_of)?;
+            if let Some(t) = &mut t {
+                t.key = self.new.clone();
+            }
+            return Ok(t);
+        }
+        self.src.read(key)
+    }
+
+    fn raw(&mut self, raw: &tags::repo::RawRes) -> tags::repo::Result<Vec<u8>> {
+        self.src.raw(raw)
+    }
+
+    fn groups(&self) -> Vec<map::TagGroup> {
+        self.src.groups()
+    }
 }
 
 /// Print a BSP tag's root block (`H2_PROBE=map:offset`), for undescribed
