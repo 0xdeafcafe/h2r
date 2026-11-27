@@ -108,6 +108,7 @@ impl<B: Backend> Device<B> {
 }
 
 mod admission_scope;
+mod inline_run;
 mod projection;
 #[cfg(feature = "gpu")]
 pub use projection::widen_projection_rows;
@@ -552,6 +553,14 @@ pub struct Stats {
     /// Of those, draws a native replacement committed in their place (an
     /// admission's recording, or a post call's held originals).
     pub claimed_draws: u64,
+    /// Native inline draws (the particles) resolved in full through
+    /// the device's submit and admission
+    /// (docs/graphics/native-particles.md, "Same-state particles").
+    pub native_inline_full: u64,
+    /// Native inline draws that took the run's fast path instead: the
+    /// device state matched the run's, so only the vertices and carried
+    /// defaults were new.
+    pub native_inline_fast: u64,
     /// Draws this device handed to the backend: its share of
     /// [`backend_draws`].
     pub backend_draws: u64,
@@ -1177,6 +1186,15 @@ pub struct Device<B: Backend> {
     scoped_admission: Option<(Arc<ScopeState>, Arc<dyn crate::DrawAdmission>)>,
     /// Why the last native producer draw did not commit.
     native_refusal: Option<NativeRefusal>,
+    /// The last native inline draw's resolution, which the next one of the
+    /// same state reuses ([`inline_run`]).
+    inline_run: Option<Box<inline_run::InlineRun<B::Surface>>>,
+    /// Whether a native inline draw may open or follow a run (default on).
+    inline_runs: bool,
+    /// The submit in progress is a native inline draw that may open a run.
+    inline_capture: bool,
+    /// D3D API entries made ([`Self::live`]): part of a run's state key.
+    api_calls: AtomicU64,
     residual: Residual,
     /// Optional vertex-binding optimization at the resolved indexed draw.
     indexed_geometry: Option<IndexedGeometryHook>,
@@ -1544,6 +1562,10 @@ impl<B: Backend> Device<B> {
             opaque_targets: None,
             scoped_admission: None,
             native_refusal: None,
+            inline_run: None,
+            inline_runs: true,
+            inline_capture: false,
+            api_calls: AtomicU64::new(0),
             residual: Residual::default(),
             indexed_geometry: None,
             indexed_geometry_scope: || false,
@@ -1702,6 +1724,7 @@ impl<B: Backend> Device<B> {
     }
 
     fn live(&self, entry: &'static str) -> Result<(), D3dError> {
+        self.api_calls.fetch_add(1, AtomicOrdering::Relaxed);
         if self.created {
             Ok(())
         } else {
@@ -6172,6 +6195,10 @@ impl<B: Backend> Device<B> {
         prepared: Option<opaque_world::PacketInputs<'_>>,
     ) -> Result<(), D3dError> {
         let entry = parts.entry;
+        // Any submit ends a run of native inline draws; this one may open
+        // the next ([`inline_run`]).
+        self.inline_run = None;
+        let capture = std::mem::take(&mut self.inline_capture) && native.is_some() && prepared.is_none();
         // A guest draw (a native producer's packet is not one).
         self.stats.resolved_draws += u64::from(native.is_none());
         // Consume the candidate even when it proves empty, clipped or unresolved.
@@ -6214,6 +6241,7 @@ impl<B: Backend> Device<B> {
         self.frame_snaps.begin_draw();
         #[allow(unused_mut)]
         let mut shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
+        let raw_inputs = capture.then(|| shader.clone());
         let state = self.translate_state(&parts.words);
         let sampled = sampled_stages(&shader, &parts.words, &state);
         let mut extras = parts.words.stage_extras();
@@ -6669,6 +6697,32 @@ impl<B: Backend> Device<B> {
                     if carry {
                         self.backend.record_native_carry(color, carry_depth, textures);
                         self.backend.end_native_carry();
+                    }
+                    let plain = (0..4).all(|i| {
+                        snapshots[i].is_none() && frames[i].is_none() && aliases[i].is_none() && depth_levels[i].is_none()
+                    });
+                    if let Some(inputs) = raw_inputs
+                        && plain && !reads_frame_copy && tail.is_none() && scoped.is_none()
+                        && self.ui_fit.is_none_or(|fit| fit.applies_to_frame_sample())
+                    {
+                        self.inline_run = Some(Box::new(inline_run::InlineRun {
+                            key: None,
+                            words: Arc::clone(&draw.raw),
+                            inputs,
+                            draw: draw.clone(),
+                            color,
+                            depth,
+                            carry_depth,
+                            surfaces: binding.surfaces.clone(),
+                            request: binding.request,
+                            stage: plan.stage,
+                            view: plan.view,
+                            sampled,
+                            keys,
+                            writes_color,
+                            writes_depth,
+                            retains: retained.is_some(),
+                        }));
                     }
                     if writes_color {
                         self.color_surface_written(color);
