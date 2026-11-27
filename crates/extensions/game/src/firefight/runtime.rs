@@ -911,6 +911,14 @@ impl Runtime {
             return "firefight: idle: not a multiplayer game".into();
         }
         let map = map_name(&*m);
+        let role = role(&*m, film);
+        // A replica or a film has no pick of its own: Map Waves plays the
+        // set of the document its map was built from, as the host's did.
+        if role == Role::Replica
+            && let Err(refusal) = crate::map_variant::begin_run_replica()
+        {
+            self.error(None, 0, &refusal.sentence);
+        }
         let mut read = (self.options)().and_then(|o| {
             match m.u32(points::GAME_GLOBALS.base).ok().filter(|g| *g != 0) {
                 Some(g) => record_options(m, g + bots::guest::OPTIONS + crate::variant_ext::OPTIONS_VARIANT, o),
@@ -953,7 +961,6 @@ impl Runtime {
                 return line;
             }
         };
-        let role = role(&*m, film);
         let mut skulls = BTreeSet::new();
         let started = {
             let game = GuestGame::new(m, kit.as_ref(), &[], &mut skulls, &*self.sink);

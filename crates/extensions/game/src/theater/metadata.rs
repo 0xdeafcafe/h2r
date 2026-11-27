@@ -530,7 +530,14 @@ pub(super) fn verify_restored_map(
     expected: &MatchHeader,
     vfs: Option<&Arc<Mutex<vfs::Vfs>>>,
 ) -> Result<()> {
-    verify_map(vfs.context("film map VFS unavailable")?, &expected.map)
+    verify_map(vfs.context("film map VFS unavailable")?, &expected.map)?;
+    // The film's map is the package its header names: a Forge map's
+    // document makes the Firefight log's genesis
+    // (`crate::map_variant::begin_run_replica`).
+    crate::map_variant::set_loaded(
+        expected.map.package_id.as_deref().and_then(|id| id.parse().ok()),
+    );
+    Ok(())
 }
 
 pub(super) fn verify_start(

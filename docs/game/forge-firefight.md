@@ -1,6 +1,6 @@
 # Forge: Firefight maps
 
-Status: Design. Built under it: the ground labels and their palette page, the `ai_ground` recipe, **Build AI ground** with the reload onto the built map, the materialiser's ground build ([forge-map-variants.md](forge-map-variants.md), "AI ground"), the director, the host runtime and the Firefight HUD ([firefight.md](firefight.md)). FA2 is built: the wave set in the document and the session, the zone remap, the 12-drop cap and `forge.waves`. FA1, FA3, FA4 and FA5 are built too: the lobby takes a variant with ground, **Test waves** plays the session's set in the session, Map Waves plays its own set, and the Waves screens edit the set, with the first problem as Test waves' and a save's notice. FA6's enemy classes are built too: the classes in the recipe with their donors, the build that copies and cuts them, `forge.ground.build {classes}`, and the Enemy types page. FA7 is built: the AI tool, the DROP page and the built sectors in the overlay (`GroundReport::sectors`). FA8 below is not.
+Status: Design. Built under it: the ground labels and their palette page, the `ai_ground` recipe, **Build AI ground** with the reload onto the built map, the materialiser's ground build ([forge-map-variants.md](forge-map-variants.md), "AI ground"), the director, the host runtime and the Firefight HUD ([firefight.md](firefight.md)). FA2 is built: the wave set in the document and the session, the zone remap, the 12-drop cap and `forge.waves`. FA1, FA3, FA4 and FA5 are built too: the lobby takes a variant with ground, **Test waves** plays the session's set in the session, Map Waves plays its own set, and the Waves screens edit the set, with the first problem as Test waves' and a save's notice. FA6's enemy classes are built too: the classes in the recipe with their donors, the build that copies and cuts them, `forge.ground.build {classes}`, and the Enemy types page. FA7 is built: the AI tool, the DROP page and the built sectors in the overlay (`GroundReport::sectors`). FA8 is built: a member builds the variant and its ground through `MapGate`, both Live homes take a custom set's id, and a replica and a film make the genesis from the running document's set.
 Code: `crates/formats/forge-doc/src/ground.rs` (labels, recipe, classes), `crates/formats/forge-doc/src/waves.rs` (the wave set), `crates/extensions/forge/src/session/waves.rs` (the set in a session), `crates/extensions/agent/src/forge/waves.rs` (`forge.waves`), `crates/extensions/agent/src/forge/test.rs` (`forge.waves.test`), `crates/extensions/game/src/forge_screens/waves.rs` (the Waves screens), `crates/tools/forge-build/src/ground.rs` (the build, the class table), `crates/tools/firefight-kit/src/ground.rs` (`ground::build`, `ground::build_with`), `crates/extensions/forge/src/session/ground.rs`, `crates/apps/boot/src/ground_builder.rs` (the donors), `crates/extensions/game/src/forge_glue/ground.rs`, `crates/extensions/game/src/firefight/` (the runtime), `crates/formats/firefight` (`Def`, the director). Tests: named per slice below.
 Switch: none of its own. `forge` and `firefight`, listed in [switches.md](../runtime/switches.md).
 
@@ -32,8 +32,8 @@ What a player does, and what carries each step.
 
 FA1 alone closes the loop with the built-in wave sets: steps 1 to 3, 6
 and 7. FA2 to FA5 make the waves the author's. FA6 adds the enemy classes
-past the Elite (built). FA7 is the AI tool, and FA8 the same map with players on
-other machines.
+past the Elite (built). FA7 is the AI tool (built), and FA8 the same map with players on
+other machines (built).
 
 Forge slices F7 (volumes, the graph, emitters) and F10's monitor bodies
 are not on this path ([forge-design.md](forge-design.md), "Slices"). A
@@ -202,7 +202,20 @@ needs no change. The lobby is what stands between.
 - **Films and replicas** resolve Map Waves the same way: a film names the
   Forge document in `HEAD` and playback materialises it first
   ([forge-design.md](forge-design.md), "Films and determinism"), so the
-  replica's genesis is made from that document's set.
+  replica's genesis is made from that document's set
+  (`map_variant::begin_run_replica`, from the package the machine loaded,
+  `map_variant::set_loaded`: a member's join sets it in the boot, a film's
+  header does in `theater::metadata::verify_restored_map`; with no
+  readable package Map Waves has no set and refuses by its sentence).
+- **A member** has no pick. `live_hle::maps::MapGate` meets a session's
+  `map_id` whose manifest holds a Forge layer: it fetches the document
+  the layer names and the boot's builder (`MapGate::on_build`,
+  `map_variant::build_document`) builds it from the member's own disc,
+  AI ground included, as the host's pick was built (`Need::Build`). A
+  package that is not the id the host named is refused (`Refusal::Build`).
+  Both Live homes keep a session's `firefight` whose set name and id are
+  no built-in's, as they do a built-in's (`NewSession::firefight` is
+  validated by its shape only).
 
 ### Test waves
 
