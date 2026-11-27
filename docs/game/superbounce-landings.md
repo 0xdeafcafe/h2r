@@ -106,7 +106,7 @@ are far deeper than the one that is known to prime, the note).
 ### Crouch spots: the stricter rule
 
 The scan keeps a forced-crouch region by the rules of
-[Crouch](#crouch), then cuts the spots by these, in this order
+[Crouch](superbounce-spots.md#crouch), then cuts the spots by these, in this order
 (`crouch.rs`, `select`):
 
 1. **In play.** The stand point is no more than 1.0 below the lowest of
@@ -136,11 +136,11 @@ The scan keeps a forced-crouch region by the rules of
    −1.16), which by score alone ranks 13th of 21; Zanzibar's window sill
    (5.22, −26.285, 5.11), under broken glass (break it first; the word
    turns on the jump); and Zanzibar's walk-out place (8.07, −3.01, 4.51)
-   ([Zanzibar's window](#zanzibars-window-trace-lab-play)).
+   ([Zanzibar's window](superbounce.md#zanzibars-window-trace-lab-play)).
 5. **Stand at the way out.** `stand` is the region's exit sample nearest
    the nearest strip, not the sample nearest the centre: the word turns
    at the way out. The spot also carries `out` and `lip`
-   ([Crouch](#crouch)).
+   ([Crouch](superbounce-spots.md#crouch)).
 
 `superbounce::scan_map` and `explain_map` read the starting locations
 and the proven places from the map (`superbounce::map_context`);
@@ -191,15 +191,15 @@ and a crouch is for the ground.
 ### Landings
 
 The scanner's bounce spot carries its collision edge as the target
-([the target](#the-target-the-collision-edge)), judged with the one
-catch; its `need` is the [one threshold](#speed). How a landing is shown is in
+([the target](superbounce-spots.md#the-target-the-collision-edge)), judged with the one
+catch; its `need` is the [one threshold](superbounce-spots.md#speed). How a landing is shown is in
 [Floor marks](#floor-marks) and [Lock-on](#lock-on); this is the state
 under them.
 
 - **On course.** The state's `landing` (`superbounce_assist::predict_on`)
   is there whenever the player is airborne, rising or falling, primed or not:
   of the strips below with no floor between
-  ([the assist's rule](#hold-x-the-fall-assist)) and a point within
+  ([the assist's rule](superbounce-guide.md#hold-x-the-fall-assist)) and a point within
   3 units of the landing with the stick held as it is, the one it lands nearest the slot of,
   with its `verdict`
   (`OnSlot`, `Fixable` by the assist's reach gate, else `Miss`), `speed`
@@ -227,7 +227,7 @@ under them.
   (`sim_bench::drops::BOUNCE_VZ`): over a standing jump's launch, 3.08
   (`bots::bounce_route::JUMP_VZ`), so a hop on landing is not a bounce,
   and under every measured bounce, which launch at 4 and over
-  ([Covered seams](#covered-seams)). The HUD says it in the notification list, and
+  ([Covered seams](superbounce-spots.md#covered-seams)). The HUD says it in the notification list, and
   `superbounce.state` returns the last landing as `last_landing`: the
   outcome, the touchdown's game tick and the origin.
 - **Through the floor.** A primed fall can go through a seam's floor
@@ -242,8 +242,8 @@ under them.
   or more, or a touchdown by the strip open) and primed (the word −3 on
   the tick before or on that touchdown's tick before). The height is
   the edge's at its point nearest the origin. 0.3 is deeper than any
-  measured bounce's sink (0.07 to 0.23 under the floor, [Traces](#traces-trace)
-  and [the touchdown tick](#the-touchdown-tick-trace-stepped)), so a
+  measured bounce's sink (0.07 to 0.23 under the floor, [Traces](superbounce.md#traces-trace)
+  and [the touchdown tick](superbounce.md#the-touchdown-tick-trace-stepped)), so a
   bounce's dip is never one; the radius is the catch (0.1) and the
   capsule's radius (0.175), rounded, and the Zanzibar fall came down
   0.048 off its crease. A touchdown the fall follows was the seam hit:
@@ -268,13 +268,13 @@ under them.
 
 While primed the marker is on the **chosen strip**: the navpoint's
 (`superbounce_charge::nav_target`), the nearest strip the player's floor
-is high enough for (feet at least `fall`, the [speed model](#speed)'s
+is high enough for (feet at least `fall`, the [speed model](superbounce-spots.md#speed)'s
 2.43 drop, above `stand`, less 0.05), else the nearest strip, and while
 falling onto a strip that strip (`nav_to_landing`). The HUD's navpoint
 is over the same strip with the drop in metres
-([hud-kit.md](hud-kit.md#the-navpoint)), and the
-[fall assist](#hold-x-the-fall-assist) steers onto it. Not primed, there
-is no chosen strip. Only [marked](#the-superbounce-game-type) strips can
+([hud-kit.md](hud-kit-preview-superbounce.md#the-navpoint)), and the
+[fall assist](superbounce-guide.md#hold-x-the-fall-assist) steers onto it. Not primed, there
+is no chosen strip. Only [marked](superbounce.md#the-superbounce-game-type) strips can
 be chosen.
 
 - **Land.** The chosen strip has one ring of the capsule's radius
@@ -284,16 +284,16 @@ be chosen.
   pin stands over it with `Land, 3 m` (the drop, `fall` in whole metres;
   `Land` alone for a standing jump). From a floor too low, with a
   takeoff found, the pin and the navpoint are on the
-  [takeoff](#the-takeoff) and the strip has no label. In the air it has
+  [takeoff](superbounce-guide.md#the-takeoff) and the strip has no label. In the air it has
   no pin and no label: the [lock-on](#lock-on) is the slot's outline,
   and locked, the mark turns red with the lock.
 - **Near the eye** the ring, the line and the pin fade out: full from
   2.5 units, gone within 1.5 (`near_fade`), so a ring at the feet does
   not fill the screen.
-- **The guide's box.** While the [approach guide](#the-approach-guide)
+- **The guide's box.** While the [approach guide](superbounce-guide.md#the-approach-guide)
   is on the strip, its box is the strip's only mark: no ring, line or
   pin.
-- **The takeoff.** On the ground the [takeoff](#the-takeoff)'s bar,
+- **The takeoff.** On the ground the [takeoff](superbounce-guide.md#the-takeoff)'s bar,
   `Jump from here` or `Drop from here`.
 - **Behind geometry.** A mark the map hides from the eye (the segment
   from the eye, 0.62 over the feet, to the mark's anchor crosses a
@@ -311,7 +311,7 @@ crouch under the shard) or a turn before the jump.
 While primed, airborne and falling onto a predicted landing, the crease
 is a target (`superbounce_world::lock_box`, `brackets`), in split screen
 and with the variant's `approach_guide` option off; fullscreen with the
-option on, the [approach guide](#the-approach-guide)'s box is on the
+option on, the [approach guide](superbounce-guide.md#the-approach-guide)'s box is on the
 seam in its place (`superbounce_world::lock_shown`). The lock-on is
 four corner brackets on the floor round the point of the crease nearest the
 landing, 0.3 along it and 0.2 across when closed. They open by 1.5 per

@@ -205,7 +205,7 @@ counted, a touchdown at or over the link's `need`, and a V's arm only
 from across its bisector. No flight after a bounce has been traced, and
 whether a seam bounces a landing at a chain's speed (8 to 13 units/s
 in, against the 5.3 the measured drops come in at) is open
-([superbounce.md, "What is known about a second bounce"](superbounce.md#what-is-known-about-a-second-bounce)):
+([superbounce.md, "What is known about a second bounce"](superbounce-ghosts-medals.md#what-is-known-about-a-second-bounce)):
 `Ballistic::max_speed_in` is where a measured window goes, and until
 then a bot tries chains the game may not file.
 

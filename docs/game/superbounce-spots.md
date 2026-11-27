@@ -49,7 +49,7 @@ Polygons are bucketed on a 1-unit grid, so each test only meets its
 neighbours. Bounce spots, slots and candidates together, are ranked by
 score alone, best first (at most 4096, a bound no map reaches, so no
 cap drops a high-scoring candidate); crouch spots are kept by
-[the stricter rule](#crouch-spots-the-stricter-rule).
+[the stricter rule](superbounce-landings.md#crouch-spots-the-stricter-rule).
 
 ### Bounce
 
@@ -134,7 +134,7 @@ the scan's: `superbounce::learned::apply` moves `stand` onto it. The
 `edge` stays the collision edge: the aim says where on and beside it
 to land, the edge is what the catch is measured from. It proves
 nothing: the training writes the word, and only a primed game run
-proves a spot ([Verifying spots](#verifying-spots)). A line belongs to
+proves a spot ([Verifying spots](superbounce-landings.md#verifying-spots)). A line belongs to
 one spot: of those it is about, the one whose target line passes
 nearest its aim; a verified entry likewise proves only the spot whose
 target line passes nearest its working landing. The game applies it where
@@ -156,7 +156,7 @@ walkable floors is also a spot of its own (`Shape::Crease`, `shape`
 Nothing has measured one, so a single crease is a **candidate**
 (`Spot::candidate`): the sim's training flies it (`h2 sim train`), and
 play, the HUD and the assist leave it out until a game run or the
-training proves it ([which spots are marked](#the-superbounce-game-type)).
+training proves it ([which spots are marked](superbounce.md#the-superbounce-game-type)).
 
 - **edge**: the crease's collision edge, its two end vertices to the
   float (Zanzibar: (1.80, −26.70, 2.10) to (6.00, −26.70, 2.10)).
@@ -298,9 +298,9 @@ Zanzibar window try (4.8 cm off its crease).
 
 Where to come down on a seam is one point, the spot's `stand`, and
 everything that points at a seam reads it: the target navpoints and the
-tag ([Targets](#targets)), the mode's own navpoint, the readout's
-line-up, the [second bounce](#the-second-bounce)'s ranking and the
-[fall assist](#hold-x-the-fall-assist). The mode sets it where it
+tag ([Targets](superbounce.md#targets)), the mode's own navpoint, the readout's
+line-up, the [second bounce](superbounce-game-type.md#the-second-bounce)'s ranking and the
+[fall assist](superbounce-guide.md#hold-x-the-fall-assist). The mode sets it where it
 applies the map's files to the scan (`superbounce_mode::with_verified`),
 by the best data the seam has:
 
@@ -323,7 +323,7 @@ edge, and the point to come down on is 0.1 before it along the seam's
 `AIM_BACK`); a V's arm has its own drift, away from the side it is
 approached from, so each arm's point is on its approach side. Along a
 long strip the point slides to where the fall comes down, flown on the
-[flight model](#the-flight-model) with the stick held as it is, and
+[flight model](superbounce-guide.md#the-flight-model) with the stick held as it is, and
 keeps its place across the strip (`stand_near`).
 
 Every recorded bounce came down moving across the seam along its drift,
@@ -332,7 +332,7 @@ along the drift than 0.3, still or against it, wants a push that way
 (`superbounce_assist::wants_drift`, `DRIFT_MIN`): the readout's steer
 line says `(arrow) Drift` in place of `On seam`. It is a hint, not a
 verdict: the lock and the landing's result do not read it. The
-[approach guide](#the-approach-guide)'s arrow is lit at the full-launch
+[approach guide](superbounce-guide.md#the-approach-guide)'s arrow is lit at the full-launch
 minimum, 0.15 units/s along the drift (`rule::DRIFT_FULL`): 0.1 can
 bounce, 0.15 gives the full launch
 ([notes/2026-11-23-why-bounces-work.md](notes/2026-11-23-why-bounces-work.md)).

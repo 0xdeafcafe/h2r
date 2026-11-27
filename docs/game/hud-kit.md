@@ -362,6 +362,10 @@ Each heading below stays here so that sections cited from code and other pages r
 
 See [HUD kit: how it works](hud-kit-how-it-works.md#how-it-works).
 
+### The model (`crates/rewrites/hud-kit-core`)
+
+See [HUD kit: how it works](hud-kit-how-it-works.md#the-model-cratesrewriteshud-kit-core).
+
 ### HUDs as data
 
 See [HUD kit: how it works](hud-kit-how-it-works.md#huds-as-data).
@@ -369,6 +373,10 @@ See [HUD kit: how it works](hud-kit-how-it-works.md#huds-as-data).
 ### World marks
 
 See [HUD kit: how it works](hud-kit-how-it-works.md#world-marks).
+
+### The runtime (`crates/extensions/game/src/hud_kit.rs`)
+
+See [HUD kit: how it works](hud-kit-how-it-works.md#the-runtime-cratesextensionsgamesrchud_kitrs).
 
 ### Direction arrows
 

@@ -1299,7 +1299,7 @@ through a fresh script for the same commands.
   jumps past its byte when it is not the campaign; a hook at each of
   those thirteen jumps (`engine::points::skull_gates`) answers the gate
   "on" for the skulls the host runs, and the native active camouflage
-  asks `engine::skull_gate` ([skulls.md](skulls.md#the-campaign-gate)).
+  asks `engine::skull_gate` ([skulls.md](skulls-modes.md#the-campaign-gate)).
 
 ### Game Setup
 

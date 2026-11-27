@@ -8,7 +8,7 @@ A pipper and a box on the seam the player is going for, drawn on the
 geometry so the line-up is seen and not guessed, and before the jump a
 cue on the box that says what to do to get there. They are world marks
 of the readout HUD, built in the HUD kit
-([hud-kit.md](hud-kit.md#the-approach-guide)); the rules are
+([hud-kit.md](superbounce-guide.md#the-approach-guide)); the rules are
 `crates/extensions/game/src/superbounce_guide.rs`, pure, run by the mode
 each tick (`superbounce_guide::guide_with_phase`, into the state's
 `guide`; the state's `phase` also feeds the readout when the guide is
@@ -19,14 +19,14 @@ Where to leave from is a bar on the floor, the world's
 | Mark | Where | Says |
 |---|---|---|
 | the pipper, a small ring with a cross | where the player's path touches down, on the seam's floor | in the air, the landing itself; on the ground, only while the cue counts to a jump's line, where that jump lands |
-| the box, four corner brackets | on the seam's collision edge, at the point of it beside the landing point ([The landing point](#the-landing-point)), turned along the edge, 0.6 long and as wide as the catch (0.2): the edge runs through its middle, under the [seam line](#seam-lines) | dim while the landing is off the seam, lit when it is lined up, and in a fall the phase verdict: green `Will bounce`, or `Too shallow`, `Too high`, `Off edge`, `No drift`, `Don't crouch`; under it, before the jump, the [jump cue](#the-jump-cue) (`Climb up`, `Walk to line`, `Jump in 0.7 s`, green `Jump now`, `Walk off`) |
+| the box, four corner brackets | on the seam's collision edge, at the point of it beside the landing point ([The landing point](superbounce-spots.md#the-landing-point)), turned along the edge, 0.6 long and as wide as the catch (0.2): the edge runs through its middle, under the [seam line](superbounce.md#seam-lines) | dim while the landing is off the seam, lit when it is lined up, and in a fall the phase verdict: green `Will bounce`, or `Too shallow`, `Too high`, `Off edge`, `No drift`, `Don't crouch`; under it, before the jump, the [jump cue](#the-jump-cue) (`Climb up`, `Walk to line`, `Jump in 0.7 s`, green `Jump now`, `Walk off`) |
 | the ticks, three dashes | from the pipper toward the box | how far off the landing is: they shorten as the two close and go when the landing is caught |
 | the drift arrow | outside the box on the side the seam drifts to | the way to be moving at the landing; lit at 0.15 units/s or more that way, the full-launch minimum |
 
 **Which seam** (`superbounce_guide::target`). The seam a fall is
 predicted onto (the state's `landing`); else, while primed, the chosen
-strip (the mode's navpoint: the tag, else [the faced seam](#the-faced-seam)); else the nearest of the tagged seam and the
-target navpoints' seams within 6 units ([Targets](#targets)).
+strip (the mode's navpoint: the tag, else [the faced seam](superbounce-game-type.md#the-faced-seam)); else the nearest of the tagged seam and the
+target navpoints' seams within 6 units ([Targets](superbounce.md#targets)).
 
 **When** (`superbounce_guide::strength`). While primed, at any
 distance; not primed, never: before the charge there is nothing to land.
@@ -116,7 +116,7 @@ is full while the drop is in the 3.35 to 3.60 window and fades over the
 next unit outside it; its info row says `Drop 10.5 m  Edge 0.06 m`. **Depth**, above, remains the takeoff solver's
 heuristic and the agent API's legacy chance, not the airborne HUD call.
 
-Fullscreen, while the guide is on a seam the [lock-on](#lock-on)'s
+Fullscreen, while the guide is on a seam the [lock-on](superbounce-landings.md#lock-on)'s
 brackets are not drawn (`superbounce_world::lock_shown`): the guide's
 box is on the seam in their place, and its green says the fall will bounce. In
 split screen the lock-on's brackets are drawn.
@@ -148,7 +148,7 @@ chosen strip, and how: a jump pressed on a line, or a walk off a lip
 `superbounce_mode::takeoff_for`, into the state's `takeoff`).
 
 **The lip.** Where to look comes first from a run: the strip's kept
-ghost or verified run (`superbounce_ghost::lip`, [Ghost runs](#ghost-runs)),
+ghost or verified run (`superbounce_ghost::lip`, [Ghost runs](superbounce-ghosts-medals.md#ghost-runs)),
 the last ground frame before the flight that touched down, the way and
 speed of its first tick in the air, and whether that tick was a jump.
 Without one, or when its lip is on no floor, the map is searched
@@ -200,7 +200,7 @@ it the way to leave, and `Jump from here` or `Drop from here` on it.
 While the player's floor is too low for the strip (feet under its
 `fall` above `stand`, less 0.05) the pin and the HUD's navpoint
 (`superbounce_mode::navpoint`, the state's `navpoint`) are on the
-takeoff, and the strip has no `Land` label ([Floor marks](#floor-marks)).
+takeoff, and the strip has no `Land` label ([Floor marks](superbounce-landings.md#floor-marks)).
 
 #### The jump cue
 
@@ -291,12 +291,12 @@ unless a variant turns it off:
 
 | Option | Type, default | Off |
 |---|---|---|
-| `targets` | `common`, `likely` or `all`; `likely` | picks the [targets](#targets)' classes a game starts with (the player can switch them in the game); it has no off |
+| `targets` | `common`, `likely` or `all`; `likely` | picks the [targets](superbounce.md#targets)' classes a game starts with (the player can switch them in the game); it has no off |
 | `velocity` | bool, on | no speed row |
 | `alignment` | bool, on | no fall row: no bar, no steer line |
 | `miss_info` | bool, on | no miss row |
-| `medals` | bool, on | no medal line in the notification list and no announcer line; the chain, the score and the recorded events are unchanged ([Medals](#medals)) |
-| `second_bounce` | bool, on | no ranked seams after a bounce ([The second bounce](#the-second-bounce)): the navpoints, the last row and the fall row are as on any other fall |
+| `medals` | bool, on | no medal line in the notification list and no announcer line; the chain, the score and the recorded events are unchanged ([Medals](superbounce-ghosts-medals.md#medals)) |
+| `second_bounce` | bool, on | no ranked seams after a bounce ([The second bounce](superbounce-game-type.md#the-second-bounce)): the navpoints, the last row and the fall row are as on any other fall |
 | `approach_guide` | bool, on | no pipper, box, ticks or drift arrow, no jump cue, and no percentage on the box or the fall row ([The approach guide](#the-approach-guide)); the lock-on's brackets are drawn on a fall as in split screen |
 | `charge_segments` | bool, on | no segments round the motion tracker ([hud-kit.md](hud-kit.md), "The charge segments"); priming is the arming bar, the prompt line and the notifications |
 | `pogo` | bool, on | no Pogo Stick: the secondary weapon is the variant's own ([pogo-stick.md](pogo-stick.md)) |
@@ -361,7 +361,7 @@ is judged, and of those that pass (`choose`):
 1. the strip the read before steered onto, while it still passes, so the
    target never changes in the middle of a fall;
 2. else the strip the HUD marks, the navpoint's and the world marker's
-   ([Floor marks](#floor-marks); `set_marked`, from the mode each tick),
+   ([Floor marks](superbounce-landings.md#floor-marks); `set_marked`, from the mode each tick),
    so the pull is toward the mark the player sees;
 3. else the strip the held landing misses by least, one the fall is
    fast enough for (touchdown speed at least its `need`) before one it is
@@ -372,7 +372,7 @@ with its verdict, and the read the assist last engaged on
 ([agent-api.md](../runtime/agent-api.md#superbounce-the-superbounce-game-type)).
 
 **The steer.** The aim is the strip's
-[landing point](#the-landing-point) (`aim_at`: a measured landing as it
+[landing point](superbounce-spots.md#the-landing-point) (`aim_at`: a measured landing as it
 is, a scan's point 0.1 units back along the spot's drift). Each read
 the stick is the [flight model](#the-flight-model)'s pursuit of it
 (`superbounce_flight::pursue`): the velocity that covers the rest of the
@@ -396,8 +396,8 @@ the player's body and makes the tap's own choice on each frame
 (`choose_now`, keeping the strip the tap is steering onto), so `Hold X`
 appears on the strip the stick would be steered onto before the button
 is pressed, and turns to `Guiding` once the
-tap reports it is engaged (`assisting`; [the prompts](#the-superbounce-game-type)).
-Off, there is no choice: no prompt in the air. The [lock-on](#lock-on)
+tap reports it is engaged (`assisting`; [the prompts](superbounce.md#the-superbounce-game-type)).
+Off, there is no choice: no prompt in the air. The [lock-on](superbounce-landings.md#lock-on)
 does not depend on the assist: it closes in on the predicted landing
 either way.
 
@@ -422,8 +422,8 @@ Every landing the mode predicts is flown one game tick at a time on one
 model (`crates/extensions/game/src/superbounce_flight.rs`): the approach
 guide's [impact](#the-approach-guide) and [takeoff](#the-takeoff), the
 [fall assist](#hold-x-the-fall-assist)'s gate and stick, the
-[landing](#landings) a fall is headed for and the
-[second bounce](#the-second-bounce)'s seams. Each tick:
+[landing](superbounce-landings.md#landings) a fall is headed for and the
+[second bounce](superbounce-game-type.md#the-second-bounce)'s seams. Each tick:
 
 1. the fall speed gains 4.171 / 30 units/s (`FALL_GRAVITY`, the sim's
    fall model, `sim_bench::drops`);
@@ -465,16 +465,16 @@ lift the mode reads to a row before it reads the depth.
 
 - **The last 5 units/s.** The upward part of the two impulses on the
   touchdown tick gives 23 units/s over the body's mass; the body gains
-  17.85 ([touchdown tick](#the-touchdown-tick-trace-stepped)). What the
+  17.85 ([touchdown tick](superbounce.md#the-touchdown-tick-trace-stepped)). What the
   virtual `+0x74` before the −3 write does isn't read either.
 - **What drops the pair.** Entering a crouch and the body going to
   sleep both rebuild it at 0, which ends the effect. How long a stand it
   takes to sleep isn't measured.
 - **60 frames a second.** The player reports no bounces at 60. That isn't
   measured here. The sweep's threshold is a speed and its length one
-  tick ([the bounce rule](#the-bounce-rule-code-trace)), so a 60 Hz tick
+  tick ([the bounce rule](superbounce.md#the-bounce-rule-code-trace)), so a 60 Hz tick
   would move every window.
-- **The launch rule.** [The bounce rule](#the-bounce-rule-code-trace)
+- **The launch rule.** [The bounce rule](superbounce.md#the-bounce-rule-code-trace)
   says when the two contacts pinch. How the convex agent (`0x002eeb40`)
   picks the sideways normal, and how the solver (the step at
   `0x00311100`) turns two impulses of 24,000 to 134,000 into 18.5 to 22
@@ -483,5 +483,5 @@ lift the mode reads to a row before it reads the depth.
   lunge (body offset from the origin) bounces differently is not
   traced.
 - **Other bounce spots.** Every edge between two floor polygons bounces
-  on Ascension ([the bounce rule](#the-bounce-rule-code-trace)). Other
+  on Ascension ([the bounce rule](superbounce.md#the-bounce-rule-code-trace)). Other
   maps and other bipeds are not measured.

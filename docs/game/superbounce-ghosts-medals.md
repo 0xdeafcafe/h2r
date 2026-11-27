@@ -47,7 +47,7 @@ forced crouch keeps it), and the jump is the take-off it caused.
 files. A run that primed itself (a crouch before the touchdown) beats
 one whose word was set for it (a verifier's drop); then the shorter run
 wins; then the higher launch. A kept run also marks its spot proven in
-the verified file ([Verifying spots](#verifying-spots)), landing offset
+the verified file ([Verifying spots](superbounce-landings.md#verifying-spots)), landing offset
 and launch with it, unless the spot is proven already. A ghosts file
 that cannot be read (another version, a damaged line) is named in the
 log and is not written over.
@@ -145,16 +145,16 @@ and the site (`web/src/state/derive.ts`), in [Recording](#recording).
 The mode watches every player that has a biped, each tick: the unit, its
 position and velocity, the airborne bit and the level pair's word, the
 fields `superbounce_charge::Tick` reads for the first local player
-([the state](#the-superbounce-game-type)); `superbounce_chain::read_players`.
+([the state](superbounce.md#the-superbounce-game-type)); `superbounce_chain::read_players`.
 Sixteen pair reads a tick at most, only while the mode is on.
 
-- **A touchdown** is the one [Landings](#landings) uses
+- **A touchdown** is the one [Landings](superbounce-landings.md#landings) uses
   (`superbounce_charge::touchdown`): the tick before was airborne and
   falling at 1 unit/s or more, and this tick has stopped falling (over
   −0.5), launched, or landed. Here it counts anywhere on the map, by a
   strip or not.
 - **A bounce** is a touchdown the landing classifier files as `bounce`
-  once its launch window closes ([Landings](#landings): the best
+  once its launch window closes ([Landings](superbounce-landings.md#landings): the best
   vertical speed of the touchdown tick and the 3 after reaches 3.5
   units/s, `superbounce_charge::judge`), with the word at −3 on the
   tick before. The chain holds each touchdown that could be one
@@ -166,7 +166,7 @@ Sixteen pair reads a tick at most, only while the mode is on.
   strip names it, the nearest within 0.5
   (`superbounce_charge::landing_spot`), by `superbounce_chain::spot_id`,
   and a running rules script hears it as `on bounce`
-  ([the game type](#the-superbounce-game-type)). A bounce off every
+  ([the game type](superbounce.md#the-superbounce-game-type)). A bounce off every
   strip earns its medals and is recorded with no strip (`Award::spot`
   `None`); `on bounce` does not hear it, as it has no strip id to give,
   and `on launch` hears it with the strip `none`.
@@ -174,8 +174,8 @@ Sixteen pair reads a tick at most, only while the mode is on.
   16 units/s (`superbounce_chain::MONSTER_VZ`), the launch the landing
   classifier reads (`Pending::launch`). Every measured launch was
   under it: 7.97 to 13.22 over the six traced bounces
-  ([Traces](#traces-trace)) and 12.31 to 12.45 with the word set
-  ([the pair word](#the-pair-word-trace-lab-playback)); 16 is about a
+  ([Traces](superbounce.md#traces-trace)) and 12.31 to 12.45 with the word set
+  ([the pair word](superbounce.md#the-pair-word-trace-lab-playback)); 16 is about a
   fifth over the top of them. The number is reasoned from those, not
   measured: no Monster has been traced (**Open**). The community's
   definition (Halo Fandom wiki and Halopedia, "Super bouncing") is a
@@ -195,7 +195,7 @@ Sixteen pair reads a tick at most, only while the mode is on.
   - a tick with the airborne bit clear, from the third tick after the
     bounce's touchdown on, the tick its window closes (`CLEAR_FROM`; a
     soft landing at the top of the flight is no touchdown);
-  - a fall through a strip's floor (`through`, [Landings](#landings)),
+  - a fall through a strip's floor (`through`, [Landings](superbounce-landings.md#landings)),
     which arms a Bounced (below);
   - the player's unit changing or going (a death, a respawn, a
     vehicle), or its origin moving more than 3 units in a tick
@@ -254,7 +254,7 @@ before the unit went,
   for a bounce).
 
 The second is a fall through a strip's floor: the `through` of
-[Landings](#landings) (`superbounce_charge::through`: the origin crosses
+[Landings](superbounce-landings.md#landings) (`superbounce_charge::through`: the origin crosses
 0.3 under the edge within 0.3 of it, moving down, primed or in a live
 chain) arms a Bounced, and the unit going within 300 game ticks
 (`superbounce_chain::BOUNCED_TICKS`, 10 s) earns it, whatever the
@@ -298,7 +298,7 @@ A chain needs a bounce with no crouch between it and the last one.
 - The word is still −3 after the bounce tick (**Trace**, [the touchdown
   tick](#the-touchdown-tick-trace-stepped)).
 - The word stayed −3 through 175 ticks of walking, a run-up and a jump
-  (**Trace**, [the pair word](#the-pair-word-trace-lab-playback)), and
+  (**Trace**, [the pair word](superbounce.md#the-pair-word-trace-lab-playback)), and
   nothing in the pair pass takes −3 back; only a crouch or a sleep
   rebuilds the pair at 0 (**Code**).
 - So a player who neither crouches nor stands still is primed for the
@@ -315,7 +315,7 @@ A chain needs a bounce with no crouch between it and the last one.
 ### On the HUD
 
 One notification per award for a local player, to that player's view,
-unless the variant's `medals` [option](#the-huds-options) is off:
+unless the variant's `medals` [option](superbounce-guide.md#the-huds-options) is off:
 the line of the highest medal the award earned (`Superbounce!`, `Double
 bounce!`, `Triple bounce!`, `Quad bounce!`, `Chain bounce!`,
 `Bouncetacular!`, `Bounced!`, `Monster bounce!`) behind its medal glyph
@@ -424,7 +424,7 @@ row, as `superbounce.assist_test` holds X without a pad.
 ### Checking the medals on the lab
 
 Lab runs through the agent API at 30 frames a second, as
-[above](#checking-it-on-the-lab):
+[above](superbounce-landings.md#checking-it-on-the-lab):
 
 - **The word in flight.** The recorded bounce, then `havok.agents`
   every tick to the next touchdown: the word stays −3 and the pair is
@@ -468,7 +468,7 @@ the map-view set of 2026-11-21 (concepts 1, 3, 4 and 6).
 | Nothing | Two blips on the tracker, drawn as the game's own are, filled dots: the next spot (the navpoint's) is a dot with a ring round it, and the spot after it, the landing a next crouch spot pairs with, a smaller, fainter dot. One out of the tracker's range sits on its rim, toward the spot. No other spot is on the tracker (`tracker_blips`, `TRACKER_MARKS`). Hidden while the variant turns the tracker off. |
 | Tap the flashlight | A scan pulse. A ring leaves the player at 40 units a second and crosses the tracker; each spot in the world lights as it passes, settles and is gone 4 s after it lit. |
 | Hold the flashlight | Every spot on the level is marked in the world: a small upright ring or diamond with its distance in metres (none past 40 m), dashed and dimmer when a wall is between it and the player, a chevron over or under it for a floor above or below, and a dashed line from each crouch spot to its landing. The tracker grows to twice its size into a map: the floors from the collision within 50 m and from 2.5 units below to 1.5 above the player's feet, their outline, the spots and pairs, every proven spot out of range on its rim, turned so ahead is up. Let go and it shrinks back. |
-| Tap the flashlight twice | Each tap pulses, and the pair switches the kinds of seam the seam lines show ([Targets](#targets)). |
+| Tap the flashlight twice | Each tap pulses, and the pair switches the kinds of seam the seam lines show ([Targets](superbounce.md#targets)). |
 
 Proven spots are drawn at full strength, likely ones at half, as the
 mode's other marks. Everything is in the HUD's colour (`0x00468c84`,
