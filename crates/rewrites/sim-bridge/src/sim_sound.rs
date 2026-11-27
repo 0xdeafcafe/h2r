@@ -463,7 +463,10 @@ impl Feature for SimSoundEvents {
             // would without it, and it answers the tick last.
             .after_feature("map-select")
             .after_feature("hud-kit")
-            .after_feature("actor-net");
+            .after_feature("actor-net")
+            .after_feature("agent-calls")
+            .after_feature("host-lobby")
+            .after_feature("skulls-custom");
         Ok(())
     }
 }
