@@ -9,6 +9,7 @@ pub mod jacobian;
 pub mod layout;
 pub mod mem;
 pub mod motion;
+pub mod motion_solve;
 pub mod solver;
 pub mod structure;
 pub mod support;

@@ -34,7 +34,7 @@ use ::firefight::ShipKind;
 use super::guest::PodFall;
 use super::pods::FALL_TICKS;
 use super::ship::{Boarding, FLY_TICKS, Launch, Ship, ShipPath};
-use super::squad_pods::{Fallback, Falling, SquadPods};
+use super::squad_pods::{Fallback, Falling, Kind, SquadPods};
 use crate::actor_net::squads::{Placement, SquadEntry, SquadOp};
 
 /// Teams a game can hold.
@@ -91,6 +91,9 @@ pub struct Kit {
     /// The classes whose `auto` arrival is a pod: every one that is not
     /// Covenant.
     pub pod_classes: BTreeSet<String>,
+    /// The Flood classes among them: they fall in the Flood pods, the rest
+    /// in the insertion pods.
+    pub flood_classes: BTreeSet<String>,
 }
 
 /// One player in the match, read after the game tick.
@@ -185,6 +188,10 @@ pub trait Game: SquadEntry {
     /// it is a live vehicle in the world.
     fn squad_pods(&self) -> Vec<Option<u32>> {
         Vec::new()
+    }
+    /// How many of the last of [`Game::squad_pods`] are Flood pods.
+    fn flood_pod_count(&self) -> usize {
+        0
     }
     /// Each kit zone's fall, in kit order; none for a zone with no fall.
     fn falls(&self) -> Vec<Option<PodFall>> {
@@ -423,7 +430,10 @@ impl Host {
             unseen: BTreeMap::new(),
             placements_unseen: 0,
             unseen_errors: Vec::new(),
-            pods: SquadPods::new(game.squad_pods().len()),
+            pods: SquadPods::new(
+                game.squad_pods().len() - game.flood_pod_count(),
+                game.flood_pod_count(),
+            ),
         })
     }
 
@@ -823,6 +833,11 @@ impl Host {
                         self.pods.fell_back(Fallback::NoFall);
                         return squad(game, SquadOp::Place(placement));
                     };
+                    let kind = if self.kit.flood_classes.contains(class) {
+                        Kind::Flood
+                    } else {
+                        Kind::Human
+                    };
                     let falling = Falling {
                         slot: *slot,
                         class: class.clone(),
@@ -832,7 +847,7 @@ impl Host {
                         started: tick,
                         landed: false,
                     };
-                    return match self.pods.start(&game.squad_pods(), fall, tick, falling) {
+                    return match self.pods.start(&game.squad_pods(), kind, fall, tick, falling) {
                         Some(launch) => game.fly(launch),
                         None => squad(game, SquadOp::Place(placement)),
                     };
@@ -1182,7 +1197,8 @@ fn observe(
         kills,
         player_kills: game.player_kills(),
         pods: PodsSeen {
-            free: pods.free(&game.squad_pods()),
+            free: pods.free(&game.squad_pods(), Kind::Human),
+            free_flood: pods.free(&game.squad_pods(), Kind::Flood),
             falls: {
                 let falls = game.falls();
                 (0..kit.zones.len())
@@ -1190,6 +1206,7 @@ fn observe(
                     .collect()
             },
             classes: kit.pod_classes.clone(),
+            flood_classes: kit.flood_classes.clone(),
         },
         ship: {
             let paths = game.paths();

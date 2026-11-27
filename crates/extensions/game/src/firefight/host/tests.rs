@@ -35,6 +35,7 @@ struct FakeGame {
     ships: [Option<Ship>; 2],
     paths: Vec<Option<ShipPath>>,
     pods: Vec<Option<u32>>,
+    flood_pods: usize,
     falls: Vec<Option<PodFall>>,
 }
 
@@ -54,6 +55,7 @@ impl FakeGame {
             ships: [None, None],
             paths: Vec::new(),
             pods: Vec::new(),
+            flood_pods: 0,
             falls: Vec::new(),
         }
     }
@@ -152,6 +154,9 @@ impl Game for FakeGame {
     fn squad_pods(&self) -> Vec<Option<u32>> {
         self.pods.clone()
     }
+    fn flood_pod_count(&self) -> usize {
+        self.flood_pods
+    }
     fn falls(&self) -> Vec<Option<PodFall>> {
         self.falls.clone()
     }
@@ -170,6 +175,7 @@ fn kit() -> Kit {
         team: KIT_TEAM,
         bases: vec![[0.0, 0.0, 0.0]],
         pod_classes: BTreeSet::new(),
+        flood_classes: BTreeSet::new(),
     }
 }
 
@@ -857,7 +863,7 @@ fn observed_carries_each_players_team_and_player_kills() {
             victim: 4,
         },
     ];
-    let seen = observe(&kit(), &BTreeMap::new(), 2, &SquadPods::new(0), &game);
+    let seen = observe(&kit(), &BTreeMap::new(), 2, &SquadPods::new(0, 0), &game);
     assert_eq!(
         seen.players,
         [
@@ -912,21 +918,21 @@ fn zone_team_distance_is_from_each_teams_centre() {
         },
     ];
     let zone = kit().zones[0];
-    let seen = observe(&kit(), &BTreeMap::new(), 2, &SquadPods::new(0), &game);
+    let seen = observe(&kit(), &BTreeMap::new(), 2, &SquadPods::new(0, 0), &game);
     // All four units' centre is x 35: 5 world units from the zone at 40.
     assert_eq!(seen.zones[0].distance, 500);
     assert_eq!(seen.zones[0].team_distance, [3_000, 2_000]);
     assert_eq!(zone, [40.0, 0.0, 0.0]);
     // A team with no unit is as far as can be.
     game.players.retain(|p| p.team == 0);
-    let seen = observe(&kit(), &BTreeMap::new(), 2, &SquadPods::new(0), &game);
+    let seen = observe(&kit(), &BTreeMap::new(), 2, &SquadPods::new(0, 0), &game);
     assert_eq!(seen.zones[0].team_distance, [3_000, u32::MAX]);
     // One team: every player is team 0's.
     game.players.push(PlayerView {
         position: Some([60.0, 0.0, 0.0]),
         ..player(2, 1)
     });
-    let seen = observe(&kit(), &BTreeMap::new(), 1, &SquadPods::new(0), &game);
+    let seen = observe(&kit(), &BTreeMap::new(), 1, &SquadPods::new(0, 0), &game);
     assert_eq!(seen.zones[0].team_distance, [seen.zones[0].distance, u32::MAX]);
 }
 
@@ -1768,12 +1774,12 @@ fn the_director_is_told_of_the_ship_and_the_zones_it_can_fly_to() {
     });
     game.paths = vec![Some(ship_path()), None];
     let kit = game.kit().unwrap();
-    let seen = observe(&kit, &BTreeMap::new(), 1, &SquadPods::new(0), &game);
+    let seen = observe(&kit, &BTreeMap::new(), 1, &SquadPods::new(0, 0), &game);
     assert_eq!(
         seen.ship,
         ShipSeen::phantom(true, vec![true, false]).with(ShipKind::Pelican, true, vec![true, false])
     );
-    let seen = observe(&kit, &BTreeMap::new(), 1, &SquadPods::new(0), &FakeGame::new());
+    let seen = observe(&kit, &BTreeMap::new(), 1, &SquadPods::new(0, 0), &FakeGame::new());
     assert_eq!(
         seen.ship,
         ShipSeen::phantom(false, vec![false, false]).with(ShipKind::Pelican, false, vec![false, false])
@@ -1912,4 +1918,66 @@ fn a_wreck_is_reparked_after_its_ticks() {
         }
     }
     assert_eq!(game.calls.iter().filter(|c| **c == Call::Park(POD)).count(), 1);
+}
+
+const FLOOD: u16 = 0x22;
+const FPOD: u32 = 0x778;
+
+/// An insertion pod and a Flood pod, and a Flood class beside the Elite.
+fn two_pod_game(flood_pod: Option<u32>) -> FakeGame {
+    let mut game = pod_game();
+    game.pods = vec![Some(POD), flood_pod];
+    game.flood_pods = 1;
+    let kit = game.kit.as_mut().unwrap();
+    kit.classes.insert("flood".to_string(), FLOOD);
+    kit.pod_classes = ["flood".to_string()].into();
+    kit.flood_classes = ["flood".to_string()].into();
+    game
+}
+
+fn flood_drop(slot: u8) -> Command {
+    Command::DropSquad {
+        slot,
+        class: "flood".into(),
+        count: 2,
+        zone: 0,
+        weapon_tier: 2,
+        arrival: Arrival::Pod,
+    }
+}
+
+fn flown(game: &FakeGame) -> Vec<u32> {
+    game.calls
+        .iter()
+        .filter_map(|c| if let Call::Fly(l) = c { Some(l.ship) } else { None })
+        .collect()
+}
+
+#[test]
+fn a_flood_squad_falls_in_a_flood_pod_and_the_others_in_the_insertion_pod() {
+    let mut game = two_pod_game(Some(FPOD));
+    let mut host = start(Role::Replica, &game);
+    feed(&mut host, [(1, flood_drop(1)), (1, pod_command(0))]);
+    assert!(host.pre_tick(1, &mut game).is_empty());
+    assert_eq!(flown(&game), [FPOD, POD]);
+}
+
+#[test]
+fn a_flood_squad_never_takes_the_insertion_pod_and_goes_on_foot_without_a_flood_pod() {
+    let mut game = two_pod_game(None);
+    let mut host = start(Role::Replica, &game);
+    feed(&mut host, [(1, flood_drop(1))]);
+    assert!(host.pre_tick(1, &mut game).is_empty());
+    assert!(flown(&game).is_empty());
+    assert!(matches!(game.calls[..], [Call::Squad(SquadOp::Place(p))] if p.slot == 1));
+    assert_eq!(host.squad_pod_counts().fallbacks.get(&Fallback::NoFreePod), Some(&1));
+}
+
+#[test]
+fn the_director_sees_each_faction_pool_apart() {
+    let game = two_pod_game(Some(FPOD));
+    let host = start(Role::Host, &game);
+    let seen = observe(host.kit(), &BTreeMap::new(), 1, &SquadPods::new(1, 1), &game);
+    assert_eq!((seen.pods.free, seen.pods.free_flood), (1, 1));
+    assert!(seen.pods.flood_classes.contains("flood"));
 }

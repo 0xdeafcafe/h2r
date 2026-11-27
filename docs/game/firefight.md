@@ -1122,7 +1122,11 @@ an `impact` marker at the tip and `squad_exit_0` to `squad_exit_3` on the
 ground beside it. `h2 flood-pod kit MAP --out FILE` puts it into a disc
 multiplayer map to look at in Studio. A kit with a Flood class and a zone fall builds it in
 (`flood_pod_kit::kit::install`, in `assemble` after the classes) and parks it
-as the squad pool `ff_pod_NN`; the players' pool stays the `insertion_pod`.
+as its own pool `ff_fpod_NN`; `ff_pod_NN` (human squads) and `ff_ppod_NN`
+(players) stay the `insertion_pod`. A squad takes a free pod of its faction
+(`Kit::flood_classes`, `PodsSeen::free_flood`, the script's `pod_flood` and
+`pods_free(class)`) and falls on foot when none is free; a Flood squad never
+takes an insertion pod.
 Its tags count in the pods' bytes and `PodReport::tags`. A build that cannot
 install it is a `PodRefused` and goes without pods. The engine has not loaded
 the vehicle (**S**).

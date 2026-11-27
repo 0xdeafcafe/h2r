@@ -537,9 +537,13 @@ impl Game for GuestGame<'_> {
         self.kit.map_or_else(Vec::new, |kit| {
             kit.pods
                 .iter()
+                .chain(&kit.flood_pods)
                 .map(|&placement| super::ship::placed_ship(&*self.m, placement))
                 .collect()
         })
+    }
+    fn flood_pod_count(&self) -> usize {
+        self.kit.map_or(0, |kit| kit.flood_pods.len())
     }
     fn falls(&self) -> Vec<Option<guest::PodFall>> {
         self.kit.map_or_else(Vec::new, |kit| kit.falls.clone())
