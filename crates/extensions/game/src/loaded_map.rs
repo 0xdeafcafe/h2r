@@ -130,7 +130,10 @@ impl Feature for LoadedMap {
                 let rt = std::sync::Arc::clone(c.ctx.runtime());
                 publish_file(&*rt.memory());
                 Ok(hooks::Flow::Continue)
-            });
+            })
+            // Every reader at the start (the HUD kit, Firefight, the H1
+            // swaps) may open the map, so the path is published first.
+            .first();
         b.game()
             .on_start("publish the loaded map", |o| republish(&*o.guest()))
             .after_feature("hud");
