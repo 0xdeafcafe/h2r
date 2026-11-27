@@ -708,6 +708,8 @@ mod tests {
             m.w(at + 8, 0xe000_0010);
             m.w(at + 0xc, record << 8);
             m.w(at + 0x10, mask);
+            // The pass (low byte) and the shader level the draw sets up.
+            m.w(at + 0x14, if slot == 2 { 0x0103 } else { 0 });
         }
         let mut b = SceneBuilder::default();
         view(&mut b, &m);
@@ -729,6 +731,8 @@ mod tests {
         let items = s.items_of(&passes[0]);
         assert_eq!(items.iter().map(|i| i.slot).collect::<Vec<_>>(), [1, 2, 3]);
         assert_eq!(items[0].owner, LayerOwner::Cluster(5));
+        assert_eq!((items[0].pass, items[0].level), (0, 0));
+        assert_eq!((items[1].pass, items[1].level), (3, 1), "the item's +0x14 and +0x15");
         assert_eq!(items[0].model, u32::MAX);
         assert!(items[0].rows.is_empty() && items[0].lighting.is_none());
         assert_eq!(items[1].owner, LayerOwner::Object(InstanceKey(a)));

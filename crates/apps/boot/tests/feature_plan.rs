@@ -77,12 +77,12 @@ feature aim-assist: on
 0x001a50a0 AIM_ASSIST_PARAMS: original -> after [aim-assist:touch player's weapon cone]
 0x002b1d6e SETTINGS_ROW_TEXT: before [settings-rows:our rows' text] -> original
 0x002b1da9 SETTINGS_ROW_CHOSEN: before [settings-rows:our rows' press] -> original
-0xa0e82000 entry video-screen:loader
-0xa0e82010 entry video-screen:row text
-0xa0e82020 entry video-screen:row chosen
-0xa0e82030 entry video-screen:set up pane
-0xa0e82040 entry video-screen:loader slot
-0xa0e82050 entry video-screen:item count
+0xa0c82000 entry video-screen:loader
+0xa0c82010 entry video-screen:row text
+0xa0c82020 entry video-screen:row chosen
+0xa0c82030 entry video-screen:set up pane
+0xa0c82040 entry video-screen:loader slot
+0xa0c82050 entry video-screen:item count
 locale source ui-strings:our strings (served by engine-leaves)
 warning: LOCALE_FIND (0x001a02d0) is hot: hooking it leaves the direct-call fast path
 "

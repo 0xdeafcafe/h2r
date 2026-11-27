@@ -179,7 +179,7 @@ pub trait Host: Send + Sync {
 /// (`crate::late_sorted`; docs/graphics/retire-d3d-r5.md, "Layer 2 from
 /// the plan"): R5's blended overlay and late layers, at the scene's and
 /// the alternate view's calls.
-pub const RUN_LAYERS: [u32; 2] = [2, 17];
+pub const RUN_LAYERS: [u32; 7] = SCENE_ONLY;
 
 /// A run layer held for its sorted entries, and its caller.
 static SORTED: Mutex<Option<crate::late_sorted::Deferred>> = Mutex::new(None);

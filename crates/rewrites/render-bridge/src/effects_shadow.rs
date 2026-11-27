@@ -67,7 +67,23 @@ const VIEW_UPDATE_POP: u32 = 0x14;
 
 /// `render.stats`: `layer_plan_15_effects_shadow_<outcome>`.
 fn count(outcome: &str, n: u64) {
+    #[cfg(test)]
+    TESTED.with(|t| *t.borrow_mut().entry(outcome.to_owned()).or_default() += n);
+    #[cfg(not(test))]
     crate::native_layers::count(15, &format!("effects_shadow_{outcome}"), n);
+}
+
+// Tests run in parallel and the outcome counters are process-wide: each
+// test counts its own thread's outcomes, read back with `tested`.
+#[cfg(test)]
+thread_local! {
+    static TESTED: RefCell<std::collections::BTreeMap<String, u64>> = const { RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// This test thread's count of `outcome`.
+#[cfg(test)]
+fn tested(outcome: &str) -> u64 {
+    TESTED.with(|t| t.borrow().get(outcome).copied().unwrap_or(0))
 }
 
 /// The gate: which frame is being compared, its verdict so far, and the
@@ -702,11 +718,7 @@ mod tests {
     use engine::memory::FlatMemory;
 
     fn counter(name: &str) -> u64 {
-        let key = format!("layer_plan_15_effects_shadow_{name}");
-        crate::native_layers::counters()
-            .into_iter()
-            .find(|(k, _)| *k == key)
-            .map_or(0, |(_, v)| v)
+        super::tested(name)
     }
 
     #[test]
