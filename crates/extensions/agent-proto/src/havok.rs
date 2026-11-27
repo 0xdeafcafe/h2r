@@ -19,9 +19,9 @@ pub mod method {
     /// Overwrite one collision pair's word ([`super::PairSetParams`] →
     /// [`super::PairSet`]). Needs the claim and a session that allows host writes.
     pub const PAIR_SET: &str = "havok.pair.set";
-    /// The island solve's counters ([`super::IslandsParams`] →
-    /// [`super::Islands`]): islands answered natively and islands sent to
-    /// the lifted entry, by reason.
+    /// The island solve's and the island integrate's counters
+    /// ([`super::IslandsParams`] → [`super::Islands`]): islands answered
+    /// natively and islands sent to the guest, by reason.
     pub const ISLANDS: &str = "havok.islands";
 
     pub const ALL: &[&str] = &[BODIES, CONTACTS, AGENTS, DIGEST, PAIR_SET, ISLANDS];
@@ -225,16 +225,39 @@ pub struct Digest {
 pub struct IslandsParams {}
 
 /// `havok.islands`: the island solve's counters since the process started
-/// (docs/engine/havok-step.md, "The island solve").
+/// (docs/engine/havok-step.md, "The island solve"), and the island
+/// integrate arm's ("The island integrate").
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Islands {
-    /// Islands the native model answered.
+    /// Islands whose solve ran in Rust: at the solve's entry, or inside an
+    /// integrate the arm answered.
     pub solved: u64,
-    /// Islands sent to the lifted entry: the sum of `fallbacks`.
+    /// Islands sent to the lifted solve: the sum of `fallbacks`.
     pub declined: u64,
     /// Declines by reason, every reason listed (`memory`, `overflow`,
     /// `motion`, `constraint`, `tables`, `solver`, `float`), in that order.
     pub fallbacks: Vec<IslandFallback>,
+    pub integrate: IslandIntegrate,
+}
+
+/// The island integrate arm (`physics.island.integrate`): calls since the
+/// process started, and its take-over state since the map load.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IslandIntegrate {
+    /// Calls the Rust kernels answered.
+    pub answered: u64,
+    /// Calls the guest answered whose result equalled the prediction.
+    pub matched: u64,
+    pub mismatched: u64,
+    /// Calls the guest answered uncompared: the sum of `fallbacks`.
+    pub declined: u64,
+    /// Declines by reason, every reason listed (`memory`, `action`,
+    /// `motion`, `float`, `solve`, `monitor`, `unobserved`), in that order.
+    pub fallbacks: Vec<IslandFallback>,
+    /// Proven since the map load: the kernels answer all but one call in 64.
+    pub proven: bool,
+    /// A mismatch since the map load returned every call to the guest.
+    pub ended: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -329,9 +352,15 @@ mod tests {
             "solved": 40,
             "declined": 3,
             "fallbacks": [{"reason": "overflow", "count": 1}, {"reason": "float", "count": 2}],
+            "integrate": {
+                "answered": 900, "matched": 4100, "mismatched": 0, "declined": 2,
+                "fallbacks": [{"reason": "solve", "count": 2}],
+                "proven": true, "ended": false,
+            },
         });
         let i: Islands = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!((i.solved, i.declined, i.fallbacks.len()), (40, 3, 2));
+        assert_eq!((i.integrate.answered, i.integrate.declined, i.integrate.proven), (900, 2, true));
         assert_eq!(serde_json::to_value(&i).unwrap(), wire);
         assert!(serde_json::from_value::<IslandsParams>(json!({})).is_ok());
         assert!(serde_json::from_value::<IslandsParams>(json!({"reset": true})).is_err());

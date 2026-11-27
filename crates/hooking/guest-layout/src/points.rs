@@ -588,10 +588,11 @@ points! { ALL;
     /// The world broadphase's batch update, the sweep's virtual at slot
     /// `+0x14` of the broadphase behind `W+0xc4`.
     HAVOK_BROADPHASE_BATCH @ 0x002e_0350: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
-    /// The two shared unconstrained-motion methods, vtable slots `+0x04`
-    /// and `+0x08` of a dynamic motion.
-    HAVOK_MOTION_FORCES @ 0x0031_b060: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
-    HAVOK_MOTION_POSE @ 0x0031_b1c0: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
+    /// The two unconstrained-motion methods types 4 and 5 share: the pose,
+    /// vtable slot `+0x04` (step; `ret 4`), and the forces, slot `+0x08`
+    /// (step, gravity; `ret 8`).
+    HAVOK_MOTION_POSE @ 0x0031_b060: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
+    HAVOK_MOTION_FORCES @ 0x0031_b1c0: [opaque], Hot; "docs/engine/sim-rewrite-havok.md";
     OBJECT_SPATIAL_VISIT @ 0x000b_b050: [fn(lists: stack 0, types: stack 1, location: stack 2, center: stack 3, radius: stack 4, out: stack 5, capacity: stack 6) ret 28], Hot; "docs/perf/sim-budget.md";
     OBSERVER_RESULT @ 0x0017_1d90: [fn(observer: esi) ret 0], Hot; "docs/perf/sim-budget.md";
     OBJECT_SPATIAL_PORTAL @ 0x0014_a370: [fn(portal: eax, center: ecx, bsp: edx, radius: stack 0) -> al ret 4], Hot; "docs/perf/sim-budget.md";
