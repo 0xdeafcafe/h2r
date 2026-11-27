@@ -464,6 +464,11 @@ pub struct IndexedPass {
     pinned: Option<SurfaceTexture>,
     sorted_layer: bool,
     section: Option<((u64, u32), SectionKey)>,
+    /// A sky strip replayed with `0x0003ede0` passed over
+    /// ([`IndexedPass::sky_replay`]): no guest textures are bound, so the
+    /// stages are the resident material's, pinned when the strip was
+    /// last admitted.
+    replay: bool,
 }
 
 impl IndexedPass {
@@ -593,6 +598,34 @@ impl IndexedPass {
         Ok(candidate)
     }
 
+    /// This admitted sky strip, kept for the cut to replay
+    /// ([`Self::sky_replay`]); `None` for any other pass.
+    pub fn sky_template(&self) -> Option<SkyTemplate> {
+        self.sky.as_ref()?;
+        Some(SkyTemplate { draw: Arc::clone(&self.draw), cache: Arc::clone(&self.cache), section: self.section? })
+    }
+
+    /// The strip of `template` drawn again with `0x0003ede0` passed over
+    /// (docs/graphics/retire-d3d-r5.md, "The sky's cut"): the made rows,
+    /// the section's decompression and the evaluated material over the
+    /// strip's draw, its geometry, program, pipeline and stage views the
+    /// resident `SectionKey::Sky` entry's. The view block comes from the
+    /// device at the issue ([`SkyCut`]).
+    pub fn sky_replay(
+        template: &SkyTemplate, frame: u64, rows: Vec<frame_scene::Row>, decompression: [frame_scene::Row; 3],
+        constants: crate::sky_material::SkyConstants,
+    ) -> Result<Self, &'static str> {
+        let room = crate::program::POSITION_DECOMPRESSION - crate::program::MODEL_ROWS;
+        if rows.is_empty() || rows.len() % 3 != 0 || rows.len() > room {
+            return Err("transform");
+        }
+        let mut pass = Self::candidate(&template.draw, Arc::clone(&template.cache), frame, None, Some(template.section), false)
+            .ok_or("candidate")?;
+        pass.sky = Some(SkyRows { nodes: rows.into(), decompression, material: Arc::new(constants) });
+        pass.replay = true;
+        Ok(pass)
+    }
+
     /// Sorted slots, render records, object handles and swap counters are
     /// transient. Validate the index range once with the matching geometry.
     pub fn for_section(
@@ -633,6 +666,7 @@ impl IndexedPass {
             section,
             sorted_layer,
             pinned: texaccum.map(|t| SurfaceTexture { header: t.texture, size: t.size }),
+            replay: false,
         })
     }
 
@@ -714,6 +748,14 @@ impl IndexedPass {
             let i = windows.iter().position(|s| s.matches(draw, self.fetch))?;
             Some((key, i))
         });
+        // A replay binds the stages the strip's resident material pinned.
+        let (stages, present) = if self.replay {
+            let pinned = previous.and_then(|(key, i)| cache.sections.get(&key)?[i].material.as_ref())
+                .ok_or("replay material missing")?;
+            (pinned.groups.last().ok_or("replay textures missing")?.0.clone(), pinned.present)
+        } else {
+            (stages, present)
+        };
         let material = previous.and_then(|(key, i)| cache.sections.get(&key)?[i].material.as_ref())
             .filter(|m| m.matches(draw, present));
         let material_hit = material.is_some();
@@ -1085,6 +1127,93 @@ impl Drop for IndexedPass {
     }
 }
 
+/// An admitted sky strip as the cut replays it: its draw (over the load's
+/// geometry), the strip cache and its `SectionKey::Sky` scope and key.
+#[derive(Clone)]
+pub struct SkyTemplate {
+    draw: Arc<ResolvedDraw>,
+    cache: Arc<Cache>,
+    section: ((u64, u32), SectionKey),
+}
+
+/// The sky's strips as one external pass, issued in slot 8 with
+/// `0x0003ede0` passed over: each a [`IndexedPass::sky_replay`], in the
+/// guest's order, with the device's view block at the issue over each
+/// strip's (`view_constants`).
+pub struct SkyCut {
+    strips: Vec<IndexedPass>,
+}
+
+impl SkyCut {
+    /// `None` for no strips or one that is not a replay.
+    pub fn new(strips: Vec<IndexedPass>) -> Option<Self> {
+        (!strips.is_empty() && strips.iter().all(|s| s.replay)).then_some(Self { strips })
+    }
+
+    pub fn len(&self) -> usize {
+        self.strips.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.strips.is_empty()
+    }
+}
+
+impl ExternalPass for SkyCut {
+    fn replays_scene(&self) -> bool {
+        self.strips.iter().all(|s| s.replays_scene())
+    }
+
+    fn uses_validated_resources(&self) -> bool { true }
+
+    fn encode(&mut self, _target: ExternalTarget<'_>) {}
+
+    fn colour_only(&self) -> bool {
+        self.strips.iter().all(|s| s.colour_only())
+    }
+
+    fn writes(&self) -> ExternalWrites {
+        self.strips.iter().map(|s| s.writes()).fold(ExternalWrites::default(), |a, b| ExternalWrites {
+            color: a.color || b.color,
+            depth_stencil: a.depth_stencil || b.depth_stencil,
+        })
+    }
+
+    fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
+        for strip in &mut self.strips {
+            let mut draw = (*strip.draw).clone();
+            let mut all = *draw.shader.constants;
+            all[..d3d::VIEW_CONSTANTS].copy_from_slice(constants);
+            draw.shader.constants = Arc::new(all);
+            strip.draw = Arc::new(draw);
+        }
+    }
+
+    fn record_draws(
+        &mut self,
+        target: &ExternalAttachments,
+        request: ExternalPassRequest,
+    ) -> Option<Result<ExternalDraws, &'static str>> {
+        let mut out: Option<ExternalDraws> = None;
+        for strip in &mut self.strips {
+            let draws = match strip.record_draws(target, request)? {
+                Ok(draws) => draws,
+                Err(why) => return Some(Err(why)),
+            };
+            match &mut out {
+                None => out = Some(draws),
+                Some(all) => {
+                    all.ranges += draws.ranges;
+                    all.packets.extend(draws.packets);
+                    all.discards |= draws.discards;
+                    all.writes.extend(draws.writes);
+                }
+            }
+        }
+        out.map(Ok)
+    }
+}
+
 impl ExternalPass for IndexedPass {
     fn replays_scene(&self) -> bool {
         // A standalone range owns its entire draw. prepare() allocates its
@@ -1136,6 +1265,7 @@ impl ExternalPass for IndexedPass {
             pinned: self.pinned,
             sorted_layer: self.sorted_layer,
             section: self.section,
+            replay: self.replay,
         }))
     }
 

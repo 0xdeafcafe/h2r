@@ -1,6 +1,6 @@
 # Retiring D3D: R5, the rest of a game view
 
-Status: Partly built. Fog, water and layers 2 and 17 draw per item; the sky's constants come from the plan; cutting the guest's sky setup is the section below that says "not built".
+Status: Partly built. Fog, water and layers 2 and 17 draw per item; the sky's constants, rows, look and geometry come from the plan, and its cut passes over the guest's sky.
 Code: `crates/rewrites/render-bridge/src/late_sorted.rs` (the sorted runs), `crates/rewrites/native-render/src/sorted_entries.rs`, `crates/rewrites/native-render/src/fog.rs` (`clear_fog`, `sorted_run`), `crates/rewrites/native-render/src/layer_pass.rs` (`sorted_layer_run`), `crates/rewrites/render-bridge/src/native_layers.rs` (`RUN_LAYERS`), `crates/rewrites/native-render/src/sky_material.rs`, `crates/extensions/game/src/native_sky_glue.rs`. Tests: in those files, `crates/rewrites/render-bridge/tests/native_fog.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -187,16 +187,37 @@ The cut's arm counts each strip `sky_cut_<outcome>`: `waiting`, `ready`
 geometry matching), `stopped` (one strip that did not, until the next
 BSP).
 
+## The sky's cut
+
+Once the cut's arm is ready, `0x0003ede0` (`RENDER_SKY`, `[fn() ret 0]`)
+is passed over and the native pass draws the sky in slot 8.
+
+```mermaid
+flowchart LR
+  H[0x0003ede0 entry] -->|arm ready, not 1 in 64| C[SkyCut]
+  H -->|else| G[guest pass]
+  G -->|each admitted strip| K[kept strips]
+  K --> C
+  C -->|refused before commit| G
+  C -->|committed| R[ret 0]
+```
+
+| Step | Code | What it does |
+|---|---|---|
+| Hook | `native_world_layers` (`native_sky_cut`), `native_sky::before_sky` | at the entry, `cut_takes`: the arm ready for the BSP, and not the one pass in `CUT_SAMPLE` (64) the guest keeps |
+| Keep | `native_sky_cut_glue::record` | over a guest pass, every admitted strip's `IndexedPass::sky_template` with its section, shader, pass and decompression; the device's view block (registers 0 to 17) at the entry checked against each strip's |
+| Replay | `IndexedPass::sky_replay` | the template's draw, the rows from `sky_rows::rows_of` (no strip on the stack), the pass evaluated at the render clock; geometry, program, pipeline and stage views from the resident `SectionKey::Sky` entry |
+| Issue | `SkyCut`, `prepare_external_bound` | the strips as one pass at the boundary, the device's view block over each (`view_constants`), committed before the hook returns |
+
+A guest pass that keeps a strip on the guest leaves the kept strips empty
+until a complete one. A view block that differs stops the arm for the BSP
+(`sky_cut_view`). Counters: `sky_cut_drawn`, `sky_cut_declined_<why>`
+(`unloaded`, `strips`, `rows`, `constants`, `device`, `pass`), and the
+arm's `sky_cut_{waiting,ready,stopped}`. A passed-over sky does not reach
+the residual census's `sky` end.
+
 ## Not built
 
-- **Cutting the guest's sky setup.** The strip is admitted at its
-  resolved draw, so the guest's sky selection, its node palette upload and
-  the strip's setup still run. Rows, look and geometry come from the plan
-  beside the guest's (below), and the cut's arm (`native_sky::cut_outcome`)
-  says when all three hold for a BSP. The skip itself is not built: with
-  `0x0003ede0` passed over there is no strip to admit at, so the native
-  pass needs its own issue in slot 8 with the draw state the admitted
-  strip carried.
 - **The flare passes, the post and layers 18, 19 and 21 from the scene.**
   `0x0002dd30`, `0x0002df00` and `0x00013870` still run, and their native
   passes draw into the device's live targets at the guest's calls. Cutting
@@ -229,6 +250,7 @@ Tests: `the_stage_draws_around_the_entry_the_guest_keeps`,
 `the_sky_look_from_the_material_is_checked_against_the_strip`,
 `the_sky_section_from_the_load_is_checked_against_the_strip` (`tests/world_layers_gpu.rs`),
 `the_cut_arm_is_ready_after_its_run_and_stops_at_a_miss` (`native_sky`),
+`a_strip_holds_the_view_block_bit_for_bit` (`native_sky_cut_glue`),
 `the_rows_arm_answers_after_its_matches_and_stops_at_a_difference` (`native_sky`),
 `an_order_item_of_layer_2_holds_the_layer_for_its_sorted_entries`
 (`native_layers`); `a_passed_over_entry_reads_as_passed_and_keeps_its_slot_and_neighbours`,

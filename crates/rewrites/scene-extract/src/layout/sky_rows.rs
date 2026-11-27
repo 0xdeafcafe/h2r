@@ -129,6 +129,23 @@ pub fn native_rows(mem: &dyn GuestRead, esp: u32) -> Result<Vec<Row>, &'static s
     if stack(0) != Some(SKY_INDEXED_RETURN) || stack(0xcc) != Some(0x0003_eeb1) {
         return Err("site");
     }
+    let model = sky_model(mem)?;
+    if stack(0x28) != Some(model) {
+        return Err("sky");
+    }
+    let section = stack(0x24).ok_or("sky")?;
+    let sections = field(mem, model, MODEL_SECTIONS).ok_or("sky")?;
+    let offset = section.checked_sub(sections).filter(|o| o % SECTION_STRIDE == 0).ok_or("sky")?;
+    rows_of(mem, offset / SECTION_STRIDE)
+}
+
+/// The render model data of the view's sky (`[0x004b9eec]`, the
+/// scenario's skies block, the sky's model), as `0x0003ede0` selects it.
+fn sky_model(mem: &dyn GuestRead) -> Result<u32, &'static str> {
+    Ok(sky_and_model(mem)?.1)
+}
+
+fn sky_and_model(mem: &dyn GuestRead) -> Result<(u32, u32), &'static str> {
     let table = mem.read_u32(TAG_INSTANCES).ok_or("sky")?;
     let scenario = mem.read_u32(SCENARIO).ok_or("sky")?;
     let index = u32::from(mem.read_u32(SKY_INDEX).ok_or("sky")? as u16);
@@ -138,14 +155,20 @@ pub fn native_rows(mem: &dyn GuestRead, esp: u32) -> Result<Vec<Row>, &'static s
     let skies = field(mem, scenario, 12).ok_or("sky")?;
     let sky = tag(mem, table, field(mem, skies, index * 8 + 4).ok_or("sky")?).ok_or("sky")?;
     let model = tag(mem, table, field(mem, sky, 4).ok_or("sky")?).ok_or("sky")?;
-    if stack(0x28) != Some(model) {
+    Ok((sky, model))
+}
+
+/// The rows of section `section` of the view's sky model, made from the
+/// sky's transform with no strip on the stack: what the cut draws when
+/// `0x0003ede0` is passed over. Refusals as [`native_rows`]'s, and
+/// `sky` for a section past the model's.
+pub fn rows_of(mem: &dyn GuestRead, section: u32) -> Result<Vec<Row>, &'static str> {
+    let (sky, model) = sky_and_model(mem)?;
+    if section >= field(mem, model, MODEL_SECTIONS - 4).ok_or("sky")? {
         return Err("sky");
     }
-    let section = stack(0x24).ok_or("sky")?;
     let sections = field(mem, model, MODEL_SECTIONS).ok_or("sky")?;
-    if section.checked_sub(sections).is_none_or(|o| o % SECTION_STRIDE != 0) {
-        return Err("sky");
-    }
+    let section = sections.checked_add(section * SECTION_STRIDE).ok_or("sky")?;
     let node = field(mem, section, SECTION_NODE).ok_or("sky")? as i16;
     let Ok(node) = u32::try_from(node) else { return Err("palette") };
     let count = field(mem, model, MODE_NODE_COUNT).ok_or("node")?;
@@ -255,6 +278,7 @@ mod tests {
             (esp + 0x28, model),
             (esp + 0x24, section),
             (model + MODEL_SECTIONS, sections),
+            (model + MODEL_SECTIONS - 4, 2),
             (section + SECTION_NODE, 1),
             (model + MODE_NODE_COUNT, 2),
             (model + MODE_NODES, nodes),
@@ -281,6 +305,9 @@ mod tests {
         put(&mut mem, nodes + NODE_SIZE + NODE_INVERSE_BIND, &Matrix { position: [0.0, 0.0, -1.0], ..Matrix::IDENTITY });
         let rows = native_rows(&mem, esp).unwrap();
         assert_eq!(rows, vec![[2.0, 0.0, 0.0, 10.0], [0.0, 2.0, 0.0, 20.0], [0.0, 0.0, 2.0, 30.0]]);
+        // The cut's rows: the same section, no strip on the stack.
+        assert_eq!(rows_of(&mem, 1), Ok(rows.clone()));
+        assert_eq!(rows_of(&mem, 2), Err("sky"), "past the model's sections");
         assert_eq!(compare(&rows, &rows), "exact");
         let mut near = rows.clone();
         near[0][3] = 10.000_01;

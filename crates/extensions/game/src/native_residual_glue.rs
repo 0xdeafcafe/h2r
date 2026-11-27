@@ -11,6 +11,9 @@ pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice
         device.set_native_residual(true);
         device.add_draw_admission(std::sync::Arc::new(ResidualDraws::default()));
     }
+    if enabled {
+        crate::native_sky_cut_glue::install(device);
+    }
 }
 
 /// The refusal counted (`layer_plan_15_pool_on_d3d`) for each sorted pool
@@ -82,6 +85,7 @@ impl d3d::DrawAdmission for ResidualDraws {
         native_sky::cut_outcome(call.generation, issue.rows && issue.look.as_ref().is_ok_and(|look| look.check(draw) == "matched")
             && resident.is_ok());
         let constants = issue.constants;
+        let item = issue.item.as_ref().ok().cloned();
         let plan = native_sky::admit(
             issue.item, call.layer.view, call.index_count, draw.indices.as_ref().map(|i| i.len()),
             // The plan's evaluated material, or the cause it has none.
@@ -90,10 +94,13 @@ impl d3d::DrawAdmission for ResidualDraws {
         let (stage, pass) = match plan {
             Ok(pass) => {
                 native_sky::count("admitted");
+                // Kept for the cut to replay (`native_sky_cut_glue`).
+                crate::native_sky_cut_glue::record(call.generation, item.as_ref().map(|item| (&pass, item)), draw);
                 (timeline::native::Stage::Sky, pass)
             }
             Err(reason) => {
                 native_sky::count(reason);
+                crate::native_sky_cut_glue::record(call.generation, None, draw);
                 return None;
             }
         };
