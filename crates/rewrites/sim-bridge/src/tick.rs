@@ -26,7 +26,7 @@ pub static LEDGER: Mutex<Ledger> = Mutex::new(Ledger::new());
 
 /// A copy of the ledger now.
 pub fn ledger() -> Ledger {
-    LEDGER.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    *LEDGER.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 pub struct TickDriver;

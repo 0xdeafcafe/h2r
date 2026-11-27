@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use engine::memory::GuestMemory;
-use engine::points::{Point, Sig};
+use engine::points::{Loc, Point, Sig};
 use hooks::Builder;
 use native_render::{contrail_material, effect_material, particle_material};
 
@@ -42,14 +42,20 @@ pub const SAMPLE: u64 = 64;
 pub const CLEAN: u32 = 8;
 /// The particle setup `0x0023ea80` and the return of its call in the
 /// particle draw (`ret 0xc`, AL whether the walk runs).
-pub const PARTICLE_SETUP: Point = Point::new("PARTICLE_SETUP", 0x0023_ea80, Sig::Opaque, DOC);
+pub const PARTICLE_SETUP: Point = Point::new(
+    "PARTICLE_SETUP",
+    0x0023_ea80,
+    Sig::Fn { args: &[("a0", Loc::Stack(0)), ("a1", Loc::Stack(1)), ("a2", Loc::Stack(2))], ret: Some(Loc::Al), pop: 12 },
+    DOC,
+);
 pub const PARTICLE_SETUP_RETURN: u32 = 0x0022_441e;
 /// The polygon handler's return from its entry's setup (`call eax`).
 pub const CONTRAIL_SETUP_RETURN: u32 = 0x0003_5b23;
 
 const DOC: &str = "docs/graphics/retire-d3d-r2.md";
 pub const PARTICLE_MATERIAL: Point = Point::new("PARTICLE_MATERIAL", particle_material::DRAW, Sig::Opaque, DOC);
-pub const CONTRAIL_MATERIAL: Point = Point::new("CONTRAIL_MATERIAL", contrail_material::SETUP, Sig::Opaque, DOC);
+pub const CONTRAIL_MATERIAL: Point =
+    Point::new("CONTRAIL_MATERIAL", contrail_material::SETUP, Sig::Fn { args: &[("entry", Loc::Stack(0))], ret: None, pop: 4 }, DOC);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {

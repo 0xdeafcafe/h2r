@@ -276,10 +276,10 @@ fn compound(mem: &dyn GuestRead, model: u32, matrices: &mut Vec<[Row; 3]>) -> Re
             let m = *matrices.get(usize::from(index)).ok_or("blend")?;
             for (row, source) in sum.iter_mut().zip(&m) {
                 for (value, &x) in row.iter_mut().zip(source) {
-                    *value = x * weight + *value;
+                    *value += x * weight;
                 }
             }
-            weights = weight + weights;
+            weights += weight;
         }
         matrices.push(sum);
     }

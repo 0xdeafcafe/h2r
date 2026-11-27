@@ -822,7 +822,7 @@ mod tests {
         m.w(subparts + 8, 3 << 16 | 3);
         let spans = |m: &Mem| entry(m, ITEMS, sorted(0)).map(|(e, _)| e.subparts);
         m.w(bitmap, 0b10);
-        assert_eq!(spans(&m), Ok(Some(vec![3..6])));
+        assert_eq!(spans(&m), Ok(Some(std::iter::once(3..6).collect())));
         let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
         assert_eq!(taken(12, &e), Ok(()));
         assert_eq!(taken(13, &e), Ok(()));
@@ -832,7 +832,7 @@ mod tests {
         m.w(bitmap, 0b11);
         assert_eq!(spans(&m), Ok(None), "both visible: the whole part");
         m.w(bitmap, 0b01);
-        assert_eq!(spans(&m), Ok(Some(vec![0..3])));
+        assert_eq!(spans(&m), Ok(Some(std::iter::once(0..3).collect())));
         m.w(DATA + 0x24, 0x0068_0000);
         let slot = 0x0067_0000;
         m.w(slot, 0);
@@ -916,7 +916,7 @@ mod tests {
 
         // Only the second slice visible: its span, for layers 12 and 13.
         m.w(bitmap, 0);
-        assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap().0.subparts, Some(vec![2..6]));
+        assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap().0.subparts, Some(std::iter::once(2..6).collect()));
         m.w(bitmap, 1 << 31);
         m.w(rec, (1 << 6) | (1 << 9));
         set_half(&mut m, PARTS + 2, 0);

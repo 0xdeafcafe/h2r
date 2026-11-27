@@ -182,7 +182,7 @@ pub fn aim(mem: &dyn GuestMemory) -> Option<Option<f32>> {
     let inverse = -1.0 / view[2];
     let nx = (m(0x78)? * view[0] + m(0x98)? * view[2]) * inverse;
     let ny = 0.0 - (m(0x8c)? * view[1] + m(0x9c)? * view[2]) * inverse;
-    let inside = nx >= -1.0 && 1.0 >= nx && ny >= -1.0 && 1.0 >= ny;
+    let inside = (-1.0..=1.0).contains(&nx) && (-1.0..=1.0).contains(&ny);
     let y = (ny + 1.0) * 0.5 * (bottom - top) as f32 + top as f32;
     let _ = (left, right);
     Some(inside.then_some(y))

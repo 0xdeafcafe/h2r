@@ -41,7 +41,7 @@ const MAX_SYSTEMS: u32 = 8;
 const MAX_ELEMENTS: u32 = 64;
 
 fn clamp01(x: f32) -> f32 {
-    if x < 0.0 { 0.0 } else if x > 1.0 { 1.0 } else { x }
+    x.clamp(0.0, 1.0)
 }
 
 fn plate(mem: &dyn GuestRead, at: u32, index: u16, player: u8, window: [i16; 4]) -> Option<WeatherPlate> {

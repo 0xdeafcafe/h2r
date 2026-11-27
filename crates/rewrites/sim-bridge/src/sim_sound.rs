@@ -581,7 +581,7 @@ mod tests {
         assert_eq!(null, never);
         // The host hears starts in start order and every sound's end once.
         let log = audible.0.lock().unwrap();
-        let starts: Vec<_> = log.iter().filter_map(|e| matches!(e, SoundEvent::Started { .. }).then(|| e.id())).collect();
+        let starts: Vec<_> = log.iter().filter(|e| matches!(e, SoundEvent::Started { .. })).map(SoundEvent::id).collect();
         assert!(starts.windows(2).all(|w| w[0] < w[1]));
         let mut ends = log.iter().filter(|e| !matches!(e, SoundEvent::Started { .. })).map(SoundEvent::id).collect::<Vec<_>>();
         ends.sort();

@@ -500,7 +500,7 @@ fn read_part(
 ///
 /// [`LayerObjectRefusal::ShaderFlag`]: frame_scene::LayerObjectRefusal::ShaderFlag
 pub fn layer_part(
-    mem: &dyn GuestRead, layer: u8, item: u32, record: u32, key: ItemKey,
+    mem: &dyn GuestRead, layer: u8, _item: u32, record: u32, key: ItemKey,
 ) -> Result<(PartFlags, Option<Subparts>), frame_scene::LayerObjectRefusal> {
     use frame_scene::LayerObjectRefusal as R;
     let fade = (half(mem, record, RECORD_DRAW_FLAGS).ok_or(R::Unread)? as u8) != u8::MAX;
