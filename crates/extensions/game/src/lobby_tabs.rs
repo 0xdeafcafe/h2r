@@ -342,8 +342,8 @@ impl Reason {
             Reason::CoOpLiveOff => "Co-op over Xbox Live is turned off.",
             Reason::NoOwnWaves => "This map has no waves of its own.",
             Reason::KitBuilding => "Preparing Firefight maps.",
-            Reason::MapNoFirefight => "This map has no Firefight kit and no AI ground. Pick one tagged Firefight.",
-            Reason::MapNoSiege => "This map has no Siege sites or flag stand. Pick one tagged Siege.",
+            Reason::MapNoFirefight => "This map has no Firefight kit and no AI ground. Pick one that supports Firefight.",
+            Reason::MapNoSiege => "This map has no Siege sites or flag stand. Pick one that supports Siege.",
         }
     }
 

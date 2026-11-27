@@ -1371,6 +1371,11 @@ points! { ALL;
     /// `slot + 0xc + 0x40 * language`). The Select Map row text calls it at
     /// `0x2c9afc`.
     MP_LEVEL_NAME @ 0x002a_fd70: [fn(slot: stack 0) -> eax ret 4]; "docs/game/map-select.md";
+    /// The current language's index (cached at `0x47ff38`). The Select Map's
+    /// focus handler (`0x2c9b7c`, its screen in EDI and the focused row's
+    /// slot in EBP) calls it at `0x2c9be6` and shows
+    /// `slot + 0x24c + 0x100 * language`, the slot's description.
+    UI_LANGUAGE @ 0x0011_cae0: [fn() -> eax ret 0]; "docs/game/map-select.md";
     /// The Select Map list's row text (list handler in ECX): the row's map
     /// id, its slot, then [`MP_LEVEL_NAME`] for the text.
     MAP_LIST_ROW_TEXT @ 0x002c_9ac4: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/game/map-select.md";

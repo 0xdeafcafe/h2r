@@ -86,6 +86,7 @@ inputs = [
     "screens/map.picker.firefight.yaml",
     "screens/map.picker.siege.yaml",
     "screens/map.picker.slayer.yaml",
+    "screens/map.picker.variants.yaml",
     "screens/mods.detail.yaml",
     "screens/mods.pack.yaml",
     "screens/mods.yaml",
