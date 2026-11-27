@@ -131,6 +131,29 @@ static PROOF: Mutex<Proof> = Mutex::new(Proof {
     fields: BTreeMap::new(),
 });
 static OFFSET_BITS: AtomicU64 = AtomicU64::new(0);
+/// The slot-3 programs and the datum they were read for: read again when
+/// the rasterizer's datum changes (a new map).
+static PROGRAMS: Mutex<Option<(u32, Vec<Vec<u8>>)>> = Mutex::new(None);
+
+/// Whether `code` is one of the engine slot's programs read from the tags;
+/// `None` when they did not read.
+pub fn program_in_tags(code: &[u8]) -> Option<bool> {
+    let programs = PROGRAMS.lock().unwrap_or_else(|e| e.into_inner());
+    programs.as_ref().map(|(_, p)| native_render::decal_material::program_matches(p, code))
+}
+
+fn read_programs(mem: &dyn GuestMemory) {
+    use native_render::decal_material::{RASTERIZER, vertex_programs};
+    let word = |a: u32| mem.u32(a).ok();
+    let datum = word(RASTERIZER)
+        .and_then(|r| word(r.checked_add(0x5c)?))
+        .and_then(|t| word(t.checked_add(3 * 8 + 4)?));
+    let mut programs = PROGRAMS.lock().unwrap_or_else(|e| e.into_inner());
+    if datum.is_some() && programs.as_ref().map(|p| p.0) == datum {
+        return;
+    }
+    *programs = vertex_programs(&word, &|a, n| mem.bytes(a, n).ok());
+}
 
 /// The polygon offset constant the wrapper loaded (`[0x0045e48c]`), read at
 /// the callback's entry.
@@ -269,6 +292,7 @@ pub fn current() -> Option<(Mode, i16)> {
 }
 
 fn begin(mem: &dyn GuestMemory, list: i16) {
+    read_programs(mem);
     if let Ok(bits) = mem.u32(native_render::decal_material::OFFSET_CONSTANT_ADDRESS) {
         OFFSET_BITS.store(u64::from(bits), Ordering::Relaxed);
     }

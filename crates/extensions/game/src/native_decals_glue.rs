@@ -241,10 +241,22 @@ impl DrawAdmission for Glue {
                 render_bridge::native_decals::offset_bits(),
             );
             let d = snapshot.draw;
-            let fields = d.shader.pixel_shader.as_ref().map_or_else(
+            let mut fields = d.shader.pixel_shader.as_ref().map_or_else(
                 || vec!["combiner_missing".to_owned()],
                 |pixel| native_render::decal_material::compare(&material, pixel, &d.raw.render),
             );
+            if let VertexProcessing::Program { microcode, .. } = &d.shader.vertex {
+                let mut code = vec![0x78, 0x20];
+                code.extend_from_slice(&((microcode.len() / 4) as u16).to_le_bytes());
+                code.extend(microcode.iter().flat_map(|w| w.to_le_bytes()));
+                match render_bridge::native_decals::program_in_tags(&code) {
+                    Some(true) => {}
+                    Some(false) => fields.push("vertex_program".to_owned()),
+                    None => fields.push("vertex_program_unread".to_owned()),
+                }
+            } else {
+                fields.push("vertex_program_missing".to_owned());
+            }
             render_bridge::native_decals::proof_record(&fields);
         }
         Some((

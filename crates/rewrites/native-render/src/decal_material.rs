@@ -144,6 +144,46 @@ fn one_stage(b: &mut Block) {
     b.set(ALPHA_OUTPUT0, 0xc0);
 }
 
+/// The rasterizer data (`[0x00485a80]`), whose `+0x5c` is the table of
+/// engine vertex shaders (8-byte elements, the `vrtx` datum at `+4`).
+pub const RASTERIZER: u32 = 0x0048_5a80;
+/// The tag instance table pointer (16-byte slots: group, datum, data).
+pub const TAG_TABLE: u32 = 0x004e_3b44;
+
+/// The slot's datum and every program of its `vrtx` tag, each as the
+/// bytes the guest hands the device (`'x'`, `0x20`, the instruction
+/// count, 16-byte instructions): what `0x0001cc30(3)` selects among by
+/// the declaration's class. `None` when a table does not read or the
+/// tag is not the `vrtx` the datum names.
+pub fn vertex_programs(
+    word: &dyn Fn(u32) -> Option<u32>,
+    bytes: &dyn Fn(u32, usize) -> Option<Vec<u8>>,
+) -> Option<(u32, Vec<Vec<u8>>)> {
+    let table = word(word(RASTERIZER)?.checked_add(0x5c)?)?;
+    let datum = word(table.checked_add(VERTEX_SLOT * 8 + 4)?)?;
+    let slot = word(TAG_TABLE)?.checked_add((datum & 0xffff) * 16)?;
+    if word(slot)? != u32::from_be_bytes(*b"vrtx") || word(slot + 4)? != datum {
+        return None;
+    }
+    let tag = word(slot + 8)?;
+    let (count, block) = (word(tag + 4)?, word(tag + 8)?);
+    let mut out = Vec::new();
+    for i in 0..count.min(64) {
+        let e = block.checked_add(i * 0x1c)?;
+        let (size, ptr) = (word(e + 0xc)?, word(e + 0x10)?);
+        if size != 0 {
+            out.push(bytes(ptr, size as usize)?);
+        }
+    }
+    Some((datum, out))
+}
+
+/// Whether `code` (a draw's program with its four header bytes) is one of
+/// `programs`.
+pub fn program_matches(programs: &[Vec<u8>], code: &[u8]) -> bool {
+    programs.iter().any(|p| p == code)
+}
+
 /// Where a draw differs from the material: `combiner_w<n>` for a
 /// definition word, `render_<index>` for a render word.
 pub fn compare(m: &Material, combiner: &[u32; WORDS], render: &[u32]) -> Vec<String> {
@@ -192,6 +232,36 @@ mod tests {
         assert_eq!((c(2)[53], c(2)[46], c(2)[8]), (0x11002, 0xc00, 0xc));
         assert_eq!((c(4)[8], c(4)[53]), (0x0c1c_0000, 0x11001));
         assert_eq!((c(5)[10], c(5)[34], c(5)[35], c(5)[45], c(5)[27], c(5)[1], c(5)[0]), (0xff, 0x0804_0501, 0x182b_200b, 0xcd, 0xc0, 0x1c0d_0000, 0x3814_0000));
+    }
+
+    #[test]
+    fn the_slot_three_programs_come_from_the_vrtx_tag() {
+        use std::collections::HashMap;
+        let mut w: HashMap<u32, u32> = HashMap::new();
+        let prog = vec![0x78, 0x20, 1, 0, 9, 9, 9, 9, 8, 8, 8, 8, 7, 7, 7, 7, 6, 6, 6, 6];
+        w.insert(RASTERIZER, 0x1000);
+        w.insert(0x1000 + 0x5c, 0x2000);
+        w.insert(0x2000 + 3 * 8 + 4, 0xe300_0002);
+        w.insert(TAG_TABLE, 0x3000);
+        let slot = 0x3000 + 2 * 16;
+        w.insert(slot, u32::from_be_bytes(*b"vrtx"));
+        w.insert(slot + 4, 0xe300_0002);
+        w.insert(slot + 8, 0x4000);
+        w.insert(0x4000 + 4, 2);
+        w.insert(0x4000 + 8, 0x5000);
+        w.insert(0x5000 + 0xc, prog.len() as u32);
+        w.insert(0x5000 + 0x10, 0x6000);
+        // The second class is empty.
+        w.insert(0x5000 + 0x1c + 0xc, 0);
+        w.insert(0x5000 + 0x1c + 0x10, 0);
+        let word = |a: u32| w.get(&a).copied();
+        let bytes = |a: u32, n: usize| (a == 0x6000 && n == prog.len()).then(|| prog.clone());
+        let (datum, programs) = vertex_programs(&word, &bytes).unwrap();
+        assert_eq!((datum, programs.len()), (0xe300_0002, 1));
+        assert!(program_matches(&programs, &prog));
+        assert!(!program_matches(&programs, &prog[..8]));
+        w.insert(slot, 0);
+        assert!(vertex_programs(&|a| w.get(&a).copied(), &bytes).is_none());
     }
 
     #[test]
