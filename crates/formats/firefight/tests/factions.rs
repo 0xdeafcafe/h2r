@@ -69,6 +69,7 @@ fn ally(class: &str, count: u16) -> SquadSpec {
         drop: Drop::Edge,
         weapon_tier: 0,
         side: Side::Ally,
+        arrival: ::firefight::Arrival::Auto,
     }
 }
 

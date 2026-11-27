@@ -48,6 +48,9 @@ pub struct Shared {
     pub reentry: AtomicBool,
     /// This run plays a film: the machine replays the host's entries.
     film: bool,
+    /// The starting locations the spawn pick in progress is kept to
+    /// (`super::pods::Pick`).
+    pick: Mutex<Option<super::pods::Pick>>,
 }
 
 impl Shared {
@@ -56,7 +59,12 @@ impl Shared {
             runtime: Mutex::new(Runtime::new(sink)),
             reentry: AtomicBool::new(false),
             film,
+            pick: Mutex::new(None),
         }
+    }
+
+    pub fn pick(&self) -> MutexGuard<'_, Option<super::pods::Pick>> {
+        self.pick.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn lock(&self) -> MutexGuard<'_, Runtime> {
@@ -121,6 +129,48 @@ impl hooks::Feature for Firefight {
         use std::sync::atomic::Ordering;
         // The two points of a line-of-sight test.
         let scratch = b.guest_alloc(0x20, ::runtime::guest::Permissions::RW)?;
+        // The drop pods' spawn preference: as `PLAYER_SPAWN_LOCATION`
+        // starts, the spawning team's open starts become the pick's
+        // filter, cleared as it returns; the free-spot test answers "taken"
+        // for any other, so the chooser's own weighing picks among the
+        // open ones. With none open, or pods off, nothing is touched.
+        let pick = Arc::clone(&self.0);
+        b.raw().observe_before(
+            &engine::points::PLAYER_SPAWN_LOCATION,
+            "firefight: a spawn prefers the team's open-sky starts",
+            move |o| {
+                let found = {
+                    let mem = o.guest();
+                    let m: &dyn GuestMemory = &*mem;
+                    pick.lock().pod_pick(m, o.cpu.ecx)
+                };
+                *pick.pick() = found;
+            },
+        );
+        let pick = Arc::clone(&self.0);
+        b.raw().observe_after(
+            &engine::points::PLAYER_SPAWN_LOCATION,
+            "firefight: the spawn pick ends",
+            move |_| {
+                *pick.pick() = None;
+            },
+        );
+        let pick = Arc::clone(&self.0);
+        b.raw().before(
+            &engine::points::SPAWN_LOCATION_FREE,
+            "firefight: a start that is not open sky is taken",
+            move |c| {
+                let blocked = pick.pick().as_ref().is_some_and(|f| !f.passes(c.cpu.ecx));
+                if !blocked {
+                    return Ok(hooks::Flow::Continue);
+                }
+                c.cpu.eax &= !0xff;
+                c.ret(0).map(hooks::Flow::Return)
+            },
+        )
+        // The rules feature's spawn rules answer the same test: a rule's
+        // pick stands first, ours only where it keeps the start.
+        .after_feature("rules");
         let s = Arc::clone(&self.0);
         b.raw()
             .before(

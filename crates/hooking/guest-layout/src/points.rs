@@ -444,6 +444,12 @@ points! { ALL;
     /// accepted count occupies the low word of EAX. The stack layout and
     /// the pop are read from the call at `0x2a411c`, not yet confirmed by a run.
     VEHICLE_LOAD @ 0x0011_b0c0: [fn(vehicle: edx, mapping: stack 0, list: stack 1) -> eax ret 8], Optional; "docs/game/notes/2026-11-24-vehicle-actions.md";
+    /// `unit_enter_vehicle`'s body: the unit enters the seat of the vehicle
+    /// whose label (a string ID) matches. The vehicle is in EBX; the unit
+    /// datum and the seat label are on the stack. A unit already in another
+    /// vehicle leaves it first (action `0x1e` of `0xe68c0`). Read from the
+    /// disassembly of the caller at `0x2a3ad0`, not yet confirmed by a run.
+    UNIT_ENTER_VEHICLE @ 0x0011_ade0: [fn(vehicle: ebx, unit: stack 0, label: stack 1) ret 8], Optional; "docs/game/notes/2026-11-24-vehicle-actions.md";
     /// The HS cast of an AI reference to an object list of its actors; EAX
     /// the reference (a plain squad's index), the list datum returned in
     /// EAX. The register convention is read from the cast table

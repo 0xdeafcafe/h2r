@@ -407,6 +407,7 @@ mod tests {
                 drop: Drop::Edge,
                 weapon_tier: 0,
                 side: Side::Enemy,
+                arrival: crate::Arrival::Auto,
             }
         }
     }
