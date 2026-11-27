@@ -160,6 +160,11 @@ impl PodDrops {
         }
     }
 
+    /// Where the pods park.
+    pub fn park(&self) -> [f32; 3] {
+        self.park
+    }
+
     pub fn enabled(&self) -> bool {
         self.enabled
     }

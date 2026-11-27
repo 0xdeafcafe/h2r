@@ -83,6 +83,29 @@ pub struct State {
     /// (each also one row in `errors`).
     #[serde(default)]
     pub placements_unseen: u32,
+    /// The players' drop pods; none until a match runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pods: Option<Pods>,
+}
+
+/// The players' drop pods (docs/game/firefight.md, "Drop pods").
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pods {
+    /// Pods are on for this match: the Drop Pods setting is on and the kit
+    /// has a pod and a start under open sky.
+    pub on: bool,
+    /// Why they are not, when the kit is the reason (the row is hidden).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<String>,
+    /// Starts under open sky the kit has a fall for.
+    pub open_starts: u32,
+    /// Players dropped by pod.
+    pub pod_spawns: u32,
+    /// Players who spawned on foot, or whose drop stopped, by reason
+    /// (`no_fall`, `blocked`, `no_free_pod`, `seat_refused`, `pod_gone`,
+    /// `never_landed`, `gone`).
+    #[serde(default)]
+    pub pod_fallbacks: std::collections::BTreeMap<String, u32>,
 }
 
 /// The director's mode blob, summarised.

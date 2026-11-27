@@ -144,6 +144,13 @@ pub enum Call {
     Hover { ship: u32, on: bool },
     /// Everyone aboard the ship leaves (`VEHICLE_UNLOAD`).
     Unload { ship: u32 },
+    /// A player's drop pod: the column checked, the pod put at the top and
+    /// the unit seated (`super::pods::drop`).
+    PodDrop { object: u32, unit: u32, fall: guest::PodFall, park: [f32; 3] },
+    /// The pod's rider leaves it.
+    PodEject { unit: u32 },
+    /// The pod goes back to its parking place.
+    PodPark { object: u32, at: [f32; 3] },
 }
 
 /// What the async body before a tick does.
@@ -603,6 +610,14 @@ pub struct Match {
     /// The ships whose flight ended, for the director's `on arrive`.
     #[cfg(feature = "rules")]
     arrived: Vec<u32>,
+    /// The players' drop pods (`super::pods`).
+    pods: super::pods::PodDrops,
+    /// What the pods asked for after the last tick, made at the next
+    /// boundary.
+    pod_acts: Vec<super::pods::Act>,
+    /// The drops whose call is out, with the flight each begins on
+    /// success.
+    pod_drops: Vec<(usize, super::ship::Launch)>,
 }
 
 impl Match {
@@ -920,6 +935,7 @@ impl Runtime {
                 );
                 let context = bot_context(&host);
                 bots::firefight::set_context(context.clone());
+                let pods = super::pods::PodDrops::new(&kit, options.pods);
                 #[cfg(feature = "rules")]
                 let announce_type = role == Role::Host && director_owns_line(m);
                 self.status = Status::Running(Box::new(Match {
@@ -943,6 +959,9 @@ impl Runtime {
                     flights: Default::default(),
                     #[cfg(feature = "rules")]
                     arrived: Vec::new(),
+                    pods,
+                    pod_acts: Vec::new(),
+                    pod_drops: Vec::new(),
                 }));
                 line
             }
@@ -1033,6 +1052,7 @@ impl Runtime {
         );
         let context = bot_context(&host);
         bots::firefight::set_context(context.clone());
+        let kit_for_pods = kit.clone();
         self.errors.clear();
         hud::set_testing(true);
         self.status = Status::Running(Box::new(Match {
@@ -1056,6 +1076,10 @@ impl Runtime {
             flights: Default::default(),
             #[cfg(feature = "rules")]
             arrived: Vec::new(),
+            // A wave test drops no pods: the session respawns its players.
+            pods: super::pods::PodDrops::new(&kit_for_pods, false),
+            pod_acts: Vec::new(),
+            pod_drops: Vec::new(),
         }));
         Ok(line)
     }
@@ -1202,6 +1226,21 @@ impl Runtime {
             })
             .filter(|s| !s.from.is_empty() && !s.zones.is_empty());
         let kit = game.kit.clone();
+        // The pods' acts from the last tick, as calls under their own
+        // sequence numbers (a refusal is read by it in `finish`).
+        for act in std::mem::take(&mut game.pod_acts) {
+            use super::pods::{Act, SEQ};
+            match act {
+                Act::Drop { pod, object, unit, fall } => {
+                    let park = game.pods.park();
+                    calls.push((SEQ + pod as u32, Call::PodDrop { object, unit, fall, park }));
+                    game.pod_drops
+                        .push((pod, super::pods::PodDrops::launch(object, fall)));
+                }
+                Act::Eject { unit } => calls.push((SEQ - 1, Call::PodEject { unit })),
+                Act::Park { object, at } => calls.push((SEQ - 1, Call::PodPark { object, at })),
+            }
+        }
         // The ships in the air: the flights this tick began, then every
         // ship's place on its path as a put for the async body.
         #[cfg(feature = "rules")]
@@ -1262,8 +1301,45 @@ impl Runtime {
     /// The async body's outcome: the calls the engine refused and the sight
     /// pass, if one ran.
     pub fn finish(&mut self, tick: u32, refused: Vec<(u32, String)>, sight: Option<Vec<bool>>) {
+        let mut errors = Vec::new();
+        if let Status::Running(game) = &mut self.status {
+            let pod_drops = std::mem::take(&mut game.pod_drops);
+            for (pod, launch) in pod_drops {
+                let seq = super::pods::SEQ + pod as u32;
+                match refused.iter().find(|(s, _)| *s == seq) {
+                    None => {
+                        game.pods.dropped(pod, tick);
+                        #[cfg(feature = "rules")]
+                        if let Err(e) =
+                            game.flights.begin(launch.ship, &launch.path, tick, launch.ticks)
+                        {
+                            errors.push((None, format!("pod flight: {e}")));
+                        }
+                        #[cfg(not(feature = "rules"))]
+                        let _ = launch;
+                    }
+                    Some((_, why)) => {
+                        let reason = if why.starts_with("blocked") {
+                            super::pods::Reason::Blocked
+                        } else {
+                            super::pods::Reason::SeatRefused
+                        };
+                        game.pods.failed(pod, reason);
+                    }
+                }
+            }
+        }
         for (seq, error) in refused {
+            // A pod's refusal is counted, not an entry's error: the player
+            // stands at the spawn.
+            if (super::pods::SEQ - 1..super::pods::SEQ + 64).contains(&seq) {
+                eprintln!("firefight: pod: {error}");
+                continue;
+            }
             self.error(Some(seq), tick, error);
+        }
+        for (seq, error) in errors {
+            self.error(seq, tick, error);
         }
         if let (Some(sight), Status::Running(game)) = (sight, &mut self.status)
             && sight.len() == game.sight.len()
@@ -1303,8 +1379,36 @@ impl Runtime {
             sight,
             skulls,
             players,
+            pods,
+            pod_acts,
             ..
         } = &mut **game;
+        // The pods: the players just spawned get one, over what the guest
+        // shows now; the acts are made at the next boundary.
+        if host.role() == Role::Host && !host.test() && pods.enabled() {
+            let seen: Vec<super::pods::Seen> = read_players(&*m)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(p, unit)| super::pods::Seen {
+                    slot: p.slot,
+                    alive: p.alive,
+                    position: p.position,
+                    unit,
+                })
+                .collect();
+            let pool: Vec<super::pods::PodSeen> = kit
+                .player_pods
+                .iter()
+                .map(|&placement| {
+                    let object = super::ship::placed_ship(&*m, placement);
+                    super::pods::PodSeen {
+                        object,
+                        position: object.and_then(|o| super::ship::ship_position(&*m, o)),
+                    }
+                })
+                .collect();
+            *pod_acts = pods.step(tick, &seen, &pool);
+        }
         let result = {
             let mut g = GuestGame::new(m, Some(&*kit), sight, skulls, &*self.sink);
             g.kills = kills;
@@ -1392,6 +1496,7 @@ impl Runtime {
                 log: Some(log(&game.host)),
                 errors,
                 placements_unseen: game.host.placements_unseen(),
+                pods: Some(pods_state(game)),
             },
         }
     }
@@ -1606,6 +1711,24 @@ fn phase_name(phase: ::firefight::director::Phase) -> (&'static str, Option<u32>
     }
 }
 
+fn pods_state(game: &Match) -> wire::Pods {
+    let counts = game.pods.counts();
+    wire::Pods {
+        on: game.pods.enabled(),
+        hidden: match super::pods::row(Some(&game.kit)) {
+            super::pods::Row::Shown => None,
+            super::pods::Row::Hidden(why) => Some(why.to_owned()),
+        },
+        open_starts: game.kit.player_falls.len() as u32,
+        pod_spawns: counts.spawns,
+        pod_fallbacks: counts
+            .fallbacks
+            .iter()
+            .map(|(r, n)| (r.name().to_owned(), *n))
+            .collect(),
+    }
+}
+
 fn director(d: &::firefight::ScriptDirector, game: &Match) -> wire::Director {
     let s = d.state();
     let (phase, phase_tick) = phase_name(s.phase);
@@ -1659,6 +1782,11 @@ pub async fn make_calls(
             Call::Drop(b) => super::ship::drop_squad(cx, &work.kit, b).await.map(drop),
             Call::Hover { ship, on } => super::ship::hover(cx, ship, on).await,
             Call::Unload { ship } => super::ship::unload(cx, ship).await,
+            Call::PodDrop { object, unit, fall, park } => {
+                super::pods::drop(cx, scratch, object, unit, fall, park).await
+            }
+            Call::PodEject { unit } => super::pods::eject(cx, unit).await,
+            Call::PodPark { object, at } => super::pods::park(cx, object, at).await,
         };
         if let Err(e) = result {
             refused.push((*seq, e.to_string()));

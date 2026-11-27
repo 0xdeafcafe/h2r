@@ -360,6 +360,7 @@ fn the_choices_reach_the_definition_and_the_difficulty() {
             difficulty: Difficulty::Legendary,
             lives: Some(3),
             skulls: false,
+            pods: true,
         }
     );
     let def = o.definition().unwrap();
