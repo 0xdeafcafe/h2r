@@ -149,11 +149,54 @@ pub(crate) fn target_header(mem: &dyn GuestMemory, index: u32) -> Option<u32> {
     Some(descriptor + 0x18)
 }
 
-struct ShadowFilterPass {
-    filter: frame_scene::ShadowFilter,
-    gpu: SharedGpu,
+/// Where a filter pass's quad programs live.
+pub(crate) enum FilterDrawer {
+    /// The shadow stage's GPU.
+    Stage(SharedGpu),
+    /// One drawer per device, for an object shadow drawn from the scene
+    /// (`native_lights_glue::scene`), whose passes the scene replays.
+    Scene,
+}
+
+impl FilterDrawer {
+    fn with<R>(
+        &self,
+        device: &wgpu::Device,
+        f: impl FnOnce(&mut native_render::glow::QuadDrawer) -> R,
+    ) -> Result<R, &'static str> {
+        type Drawers = Vec<(wgpu::Device, Arc<Mutex<native_render::glow::QuadDrawer>>)>;
+        static SCENE: Mutex<Drawers> = Mutex::new(Vec::new());
+        match self {
+            Self::Stage(gpu) => {
+                let mut gpu = gpu.lock().map_err(|_| "shadow filter GPU poisoned")?;
+                Ok(f(gpu.filter()))
+            }
+            Self::Scene => {
+                let drawer = {
+                    let mut all = SCENE.lock().unwrap_or_else(|e| e.into_inner());
+                    match all.iter().find(|(d, _)| d == device) {
+                        Some((_, drawer)) => Arc::clone(drawer),
+                        None => {
+                            let drawer = Arc::new(Mutex::new(native_render::glow::QuadDrawer::new()));
+                            all.push((device.clone(), Arc::clone(&drawer)));
+                            drawer
+                        }
+                    }
+                };
+                let mut drawer = drawer.lock().map_err(|_| "shadow filter drawer poisoned")?;
+                Ok(f(&mut drawer))
+            }
+        }
+    }
+}
+
+/// An object shadow's filter quads (`0x000222a0`) between targets 10 and
+/// 11, the external plan's slots 0 and 1, or a private chain's pair.
+pub(crate) struct ShadowFilterPass {
+    pub filter: frame_scene::ShadowFilter,
+    pub drawer: FilterDrawer,
     /// A private chain's pair stands in for targets 10 and 11.
-    chain: Option<Arc<Chain>>,
+    pub chain: Option<Arc<Chain>>,
 }
 
 impl ShadowFilterPass {
@@ -165,15 +208,16 @@ impl ShadowFilterPass {
             let pair = chain
                 .pair_for(t.size)
                 .ok_or("private shadow pair missing")?;
-            let mut gpu = self.gpu.lock().map_err(|_| "shadow filter GPU poisoned")?;
-            let encoded = native_render::shadow_filter_gpu::prepare(
-                &t.device,
-                &t.queue,
-                &t.uploads,
-                gpu.filter(),
-                &self.filter,
-                pair.filter_slots(),
-            )?;
+            let encoded = self.drawer.with(&t.device, |drawer| {
+                native_render::shadow_filter_gpu::prepare(
+                    &t.device,
+                    &t.queue,
+                    &t.uploads,
+                    drawer,
+                    &self.filter,
+                    pair.filter_slots(),
+                )
+            })??;
             chain.publish(&pair);
             return Ok(encoded);
         }
@@ -186,21 +230,26 @@ impl ShadowFilterPass {
         let [Some(mask), Some(other)] = slots else {
             return Err("shadow filter target is unavailable");
         };
-        let mut gpu = self.gpu.lock().map_err(|_| "shadow filter GPU poisoned")?;
-        native_render::shadow_filter_gpu::prepare(
-            &t.device,
-            &t.queue,
-            &t.uploads,
-            gpu.filter(),
-            &self.filter,
-            [mask, other],
-        )
+        self.drawer.with(&t.device, |drawer| {
+            native_render::shadow_filter_gpu::prepare(
+                &t.device,
+                &t.queue,
+                &t.uploads,
+                drawer,
+                &self.filter,
+                [mask, other],
+            )
+        })?
     }
 }
 
 impl d3d::ExternalPass for ShadowFilterPass {
     fn colour_only(&self) -> bool {
         true
+    }
+
+    fn replays_scene(&self) -> bool {
+        matches!(self.drawer, FilterDrawer::Scene)
     }
 
     fn uses_validated_resources(&self) -> bool {
@@ -359,7 +408,11 @@ impl<B: d3d::backend::Backend + 'static> Glue<B> {
                     vertices: 4,
                     shapes: Vec::new(),
                     drop: true,
-                    pass: Box::new(ShadowFilterPass { filter, gpu, chain }),
+                    pass: Box::new(ShadowFilterPass {
+                        filter,
+                        drawer: FilterDrawer::Stage(gpu),
+                        chain,
+                    }),
                 },
             )
             .map_err(|_| "device")?
