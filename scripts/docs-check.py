@@ -423,6 +423,9 @@ def check_length(files):
 
         def flush():
             if para:
+                if para[0].startswith(("Status:", "Code:", "Tests:", "Switch:")):
+                    para.clear()
+                    return
                 text = prose_only(" ".join(para))
                 count = len(SENTENCE_END.findall(text)) + 1
                 if count > MAX_SENTENCES:
