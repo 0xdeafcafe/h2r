@@ -86,6 +86,19 @@ impl Session {
         goal: Goal,
         frame: Frame,
     ) -> Result<OpId, String> {
+        self.place_goal_with(world, tick, goal, frame, None)
+    }
+
+    /// [`Session::place_goal`] with the team and order (`identifier`) of a
+    /// goal it copies.
+    pub(super) fn place_goal_with(
+        &mut self,
+        world: &mut impl World,
+        tick: u32,
+        goal: Goal,
+        frame: Frame,
+        copy: Option<(i64, i64)>,
+    ) -> Result<OpId, String> {
         // In a kit session the flag is a spare row of the kit.
         if self.has_kit() {
             self.kit_check(BlockKind::NetgameFlags)?;
@@ -109,7 +122,7 @@ impl Session {
             // Script labels use the same carrier flag as the AI palette.
             Goal::Site => 0,
         };
-        let fields = vec![
+        let mut fields = vec![
             vector("position", frame.position)?,
             FieldWrite {
                 field: "facing".into(),
@@ -121,9 +134,15 @@ impl Session {
             },
             FieldWrite {
                 field: "team".into(),
-                value: Value::Int(8),
+                value: Value::Int(copy.map_or(8, |(team, _)| team)),
             },
         ];
+        if let Some((_, order)) = copy.filter(|(_, order)| *order != 0) {
+            fields.push(FieldWrite {
+                field: "identifier".into(),
+                value: Value::Int(order),
+            });
+        }
         let add = Edit::Placement(Placement::Add {
             block: BlockKind::NetgameFlags,
             like: None,

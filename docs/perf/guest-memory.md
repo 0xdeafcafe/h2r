@@ -98,6 +98,20 @@ lends; a runtime whose block ends before `view` refuses it. The runtime
 clears `view` before it invokes any native handler itself, so a handler
 entered through the runner always acquires.
 
+The caller's hold on the RAM gate goes with the view (`H2Direct.gate`,
+`H2_LEND_` and `H2_TAKE_BACK_` in `crates/recompiler/emit/c/h2gen.h`). The
+call counts as one trip of the hold (`h2_gate_tick`), so a waiting Rust
+guard ends it there and a hold still lasts at most `H2_GATE_TRIPS` loop
+headers and calls. The callee adopts the hold, and its way out hands back
+what it still holds (`H2_GATE_OUT_`), so neither the callee's first access
+nor the caller's first after the call is cold. A hand-up passes the hold up
+to the next direct caller, or drops it in the handler the runner invoked.
+The host-call thunk releases a hold lent to it before its Rust code runs
+(`direct_take_lent`, `crates/runtime/runtime/src/direct.rs`). At the main
+menu this removed nine cold accesses in ten
+([notes/guest-memory.md](notes/guest-memory.md), "Cold accesses at the main
+menu").
+
 The contract's rules are in `crates/recompiler/emit/RUNTIME-CONTRACT.md` section 4,
 "Direct calls".
 
@@ -171,7 +185,7 @@ D3d, Gfx and Fallback times overlap and are not summed.
 
 - `H2_FLAT_RAM` is off by default and listed in
   [switches.md](../runtime/switches.md), "Waiting for a measurement". The
-  gate-at-entry, inline dirty test, lent gate, lent count, RAM page cache and
+  gate-at-entry, inline dirty test, lent count, RAM page cache and
   per-call charge variants were removed; their results are in
   [notes/not-adopted.md](notes/not-adopted.md).
 - `H2_FASTMEM=0`, `H2_DIRECT_CALLS=0` and `H2_ACCESS_COUNT=0` build the

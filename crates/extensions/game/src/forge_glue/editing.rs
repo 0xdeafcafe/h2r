@@ -1129,6 +1129,7 @@ impl Editor {
             labellable: true,
             label: self.session.label_of(id).map(|l| (l.text, l.number)),
             savable: self.prefab_members(id).len(),
+            kit: self.session.has_kit(),
         }
     }
 
@@ -1556,9 +1557,10 @@ impl Editor {
                         // Duplicate: the copy is the log's last op, and the
                         // monitor holds it at once where the add put it.
                         if let Command::Duplicate { frame, .. } = &command {
-                            let op = self.session.last_op_id();
-                            let id = forge::Endpoint::Added(op);
-                            self.tool.take_up(&self.session, id, Some(op), *frame);
+                            if let Some(op) = self.session.last_add_id() {
+                                let id = forge::Endpoint::Added(op);
+                                self.tool.take_up(&self.session, id, Some(op), *frame);
+                            }
                         }
                         if let Command::Goal { goal, .. } = command
                             && self.tool.show == Show::ThisGameType

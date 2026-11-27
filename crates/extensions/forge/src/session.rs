@@ -216,6 +216,17 @@ impl Session {
         OpId(self.last_id)
     }
 
+    /// The ID of the newest placement add in the document: the copy a
+    /// Duplicate made, which a goal's area op follows.
+    pub fn last_add_id(&self) -> Option<OpId> {
+        self.doc
+            .ops
+            .iter()
+            .rev()
+            .find(|op| matches!(op.edit, Edit::Placement(Placement::Add { .. })))
+            .map(|op| op.id)
+    }
+
     pub fn log(&self) -> &[Entry] {
         &self.log
     }
@@ -388,8 +399,9 @@ impl Session {
     /// Properties page"): one `Placement::Add` with the source's fields —
     /// the palette tag it places, at `frame` — and the copy's op id. The
     /// fields a placement cannot carry yet (its flags and scale) wait for
-    /// their rows. A kind the session cannot add — the kit's, until slice
-    /// P2 — is refused by its sentence, and a full block by the budget's.
+    /// their rows. A kind the kit adds (a spawner, a starting point, a goal,
+    /// a teleporter) is copied in a kit session and refused by its sentence
+    /// in any other, and a full block by the budget's.
     pub fn duplicate(
         &mut self,
         world: &mut impl World,
@@ -401,6 +413,9 @@ impl Session {
         let thing = self.thing(id).ok_or(NO_THING)?;
         if thing.kind == ThingKind::Piece {
             return self.duplicate_piece(world, tick, thing.id, frame);
+        }
+        if thing.kind != ThingKind::Object && self.has_kit() {
+            return self.duplicate_kit(world, tick, &thing, frame);
         }
         if thing.kind != ThingKind::Object {
             let article = if thing.kind == ThingKind::ItemSpawner {
