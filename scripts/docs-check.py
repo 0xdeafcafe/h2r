@@ -374,7 +374,7 @@ CONTRAST = re.compile(
     re.I,
 )
 AMERICAN = re.compile(
-    r"\b(?:behavior\w*|colors?|colored|colorful|centers?|centered|analy[sz]e[sd]?|analyzing"
+    r"\b(?:behavior\w*|colors?|colored|colorful|centers?|centered|analyz(?:e|es|ed|ing)"
     r"|optimi[sz]\w*|\w+ization\w*|realiz\w*|judgment|favorites?|neighbors?|gray"
     r"|licenses? (?=to\b)|catalog(?:ed|ing)?)\b",
     re.I,
