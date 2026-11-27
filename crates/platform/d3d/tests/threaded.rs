@@ -682,3 +682,95 @@ fn queued_and_repeated_frames_keep_their_own_mark_bounds_and_view_lenses() {
         ]
     );
 }
+
+/// A native producer's pass for [`queued_particles`]: the draws it stands
+/// in for, by number, joining a run only when `joins` (as particles do).
+struct Particles {
+    draws: Vec<u32>,
+    joins: bool,
+}
+
+impl d3d::ExternalPass for Particles {
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites { color: true, depth_stencil: false }
+    }
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+    fn queued_run(&self, next: &dyn d3d::ExternalPass) -> Option<Box<dyn d3d::ExternalPass>> {
+        let next = next.as_any()?.downcast_ref::<Particles>()?;
+        (self.joins && next.joins).then(|| {
+            let draws = self.draws.iter().chain(&next.draws).copied().collect();
+            Box::new(Particles { draws, joins: true }) as Box<dyn d3d::ExternalPass>
+        })
+    }
+    fn extend_run(&mut self, next: &dyn d3d::ExternalPass) -> bool {
+        let Some(next) = next.as_any().and_then(|n| n.downcast_ref::<Particles>()) else { return false };
+        if !next.joins {
+            return false;
+        }
+        self.draws.extend(&next.draws);
+        true
+    }
+}
+
+/// `n` particle draws a native producer queues back to back on a render
+/// thread, as `Device::try_native_inline_draw` does for each: the passes
+/// the render thread was handed (`d3d::threaded::queued_runs`), the order
+/// the draws completed in, and the draws the inner backend issued.
+fn queued_particles(n: u32, joins: bool) -> ((u64, u64), Vec<u32>, Vec<d3d::ResolvedDraw>) {
+    use d3d::backend::{ExternalPassRequest, ExternalPlan, ExternalSurfaces, QueuedExternalDraw};
+    let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
+    set_states(&mut device, &mut memory);
+    let draws: Vec<_> = (0..n)
+        .map(|i| {
+            quad_vb(&mut memory, 0.0, 0.0, 4.0 + i as f32, 4.0, 0xFF00_0000 | i);
+            bind_quad(&mut device, &mut memory);
+            device.draw_vertices(&mut memory, TRIANGLESTRIP, 0, 4).unwrap();
+            std::sync::Arc::new(device.backend.draws().pop().unwrap().clone())
+        })
+        .collect();
+    let mut inner = RecordingBackend::new();
+    inner.external_passes = true;
+    let mut t = ThreadedBackend::new(inner).unwrap();
+    let colour = t.create_surface(gfx::D3DFormat::A8R8G8B8, 32, 32, false).unwrap();
+    let done = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let before = d3d::threaded::queued_runs();
+    for (i, draw) in draws.iter().enumerate() {
+        let done = std::sync::Arc::clone(&done);
+        let pass = Particles { draws: vec![i as u32], joins };
+        assert!(t.queue_external_draw(
+            QueuedExternalDraw {
+                surfaces: ExternalSurfaces { color: colour, depth: colour, sampled: vec![], slots: vec![], slot_sizes: vec![] },
+                request: ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 },
+                plan: ExternalPlan { stage: timeline::native::Stage::Particles, view: 4, ranges: 1, slots: vec![] },
+                pass: std::sync::Arc::new(std::sync::Mutex::new(Box::new(pass) as Box<dyn d3d::ExternalPass>)),
+                fallback: std::sync::Arc::clone(draw),
+                fallback_depth: None,
+                finished: Box::new(move |_| done.lock().unwrap().push(i as u32)),
+            },
+            [None; 4],
+        ));
+    }
+    t.finish().unwrap();
+    let after = d3d::threaded::queued_runs();
+    let issued = t.with_inner(|b| b.draws().into_iter().cloned().collect::<Vec<_>>()).unwrap();
+    let order = done.lock().unwrap().clone();
+    ((after.0 - before.0, after.1 - before.1), order, issued)
+}
+
+/// A batch of particles is one admission on the render thread, and draws
+/// what the particles admitted one by one draw, in the same order (here
+/// each draw's fallback: the recording backend has no GPU to record the
+/// pass on, so the run falls back as each single admission does).
+#[test]
+fn a_particle_batch_is_one_queued_admission_with_the_same_draws_in_order() {
+    let (singles, single_order, single_draws) = queued_particles(5, false);
+    let (batch, batch_order, batch_draws) = queued_particles(5, true);
+    assert_eq!(singles, (5, 5));
+    assert_eq!(batch, (1, 5));
+    assert_eq!(single_order, [0, 1, 2, 3, 4]);
+    assert_eq!(batch_order, single_order);
+    assert_eq!(batch_draws.len(), 5);
+    assert!(batch_draws.iter().zip(&single_draws).all(|(a, b)| a == b));
+}

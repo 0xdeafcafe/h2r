@@ -370,7 +370,8 @@ fn blend(c: &mut CpuAbi, m: &mut impl Memory, assist: bool) -> Unit {
             let ceiling = m.u32(ceiling)?;
             if sse::comiss(c, floor, lane0(c, reg)) & 0x41 == 0 {
                 load(c, reg, floor);
-            } else if sse::comiss(c, lane0(c, reg), ceiling) & 0x41 != 0 {
+            } else if sse::comiss(c, lane0(c, reg), ceiling) & 0x41 == 0 {
+                // `jbe` keeps the value; above the ceiling takes the ceiling.
                 load(c, reg, ceiling);
             }
         }
@@ -605,12 +606,16 @@ fn after_visibility(c: &mut CpuAbi, m: &mut impl Memory, visible: bool) -> Resul
         // dead zone.
         logic(c, u32::from(visible), 0x80);
         let active = visible || {
+            // xmm1 keeps the horizontal rate and xmm2 the squared length.
             load(c, 0, m.u32(at(c.edi, 4))?);
-            let y = sse::ss(c, Ss::Mul, 0, m.u32(at(c.edi, 4))?);
-            load(c, 0, m.u32(c.edi)?);
-            sse::ss(c, Ss::Mul, 0, m.u32(c.edi)?);
-            let square = sse::ss(c, Ss::Add, 0, y);
-            sse::comiss(c, m.u32(0x0045_dc20)?, square) & 0x41 == 0
+            load(c, 1, m.u32(c.edi)?);
+            movaps(c, 2, 0);
+            ss_reg(c, Ss::Mul, 2, 0);
+            movaps(c, 0, 1);
+            ss_reg(c, Ss::Mul, 0, 1);
+            ss_reg(c, Ss::Add, 2, 0);
+            load(c, 0, m.u32(0x0045_dc20)?);
+            sse::comiss(c, lane0(c, 0), lane0(c, 2)) & 0x41 == 0
         };
         if active {
             m.set_u8(at(c.ebp, 0x88), 1)?;
@@ -639,7 +644,8 @@ fn after_visibility(c: &mut CpuAbi, m: &mut impl Memory, visible: bool) -> Resul
     // dead-man bytes are quiet; the unit's second weapon must aim.
     let seat_weapon = u32::from(m.u16(at(c.ebp, 0x2e))?);
     alu::cmp16(c, seat_weapon, u32::from(u16::MAX));
-    if seat_weapon == u32::from(u16::MAX) {
+    if seat_weapon != u32::from(u16::MAX) {
+        // `jne 0x1866e4`: a held weapon skips the dual-wield check.
         return zoom_bits(c, m, true);
     }
     let device = m.u32(m.u32(at(sp, 0x100))?)?;
@@ -870,9 +876,10 @@ fn publish(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
                 or_bit(c, m, 0x1c, 1, true)?;
             }
         }
+        // 0x186a76: only the released path clears both latches.
+        m.set_u8(at(c.ebp, 0x8e), 0)?;
+        m.set_u8(at(c.ebp, 0x8f), 0)?;
     }
-    m.set_u8(at(c.ebp, 0x8e), 0)?;
-    m.set_u8(at(c.ebp, 0x8f), 0)?;
     // 0x186a84: the action and the input record.
     c.ecx = m.u32(at(sp, 0x104))?;
     c.eax = at(sp, 0x6c);

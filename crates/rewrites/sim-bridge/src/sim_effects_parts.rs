@@ -112,7 +112,8 @@ mod tests {
             let mut registry = Registry::new(Switches::parse(spec).unwrap());
             registry.add(&SimEffectsParts::new()).unwrap();
             let plan = registry.build(&Base).unwrap();
-            assert!(!plan.save_sections().is_empty(), "the damage chain is saved");
+            // The feature is built unless its own switch is off, then it saves its chain.
+            assert_eq!(!plan.save_sections().is_empty(), !spec.starts_with('-'), "{spec:?}");
             assert_eq!(plan.chains.contains_key(&points::EFFECT_PART_CREATE.base), on, "{spec:?}");
         }
     }

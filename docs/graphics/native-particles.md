@@ -1,7 +1,7 @@
 # Native particles and effect geometry
 
 Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. Pixel parity and timing are not verified.
-Code: `crates/rewrites/render-bridge/src/native_particles.rs`, `native_effects.rs`, `crates/extensions/game/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/rewrites/render-bridge/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`.
+Code: `crates/rewrites/render-bridge/src/native_particles.rs`, `native_effects.rs`, `crates/extensions/game/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/rewrites/render-bridge/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`, `threaded.rs` (`a_particle_batch_is_one_queued_admission_with_the_same_draws_in_order`).
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 The guest keeps all particle, beam and contrail simulation, property evaluation and geometry construction. The stage reads the completed geometry and replaces only the draw packet. Part of [native-renderer.md](native-renderer.md).
@@ -152,6 +152,30 @@ Explicit assumptions and limits:
   single-sample attachments are the handoff/backend contract here.
 - The stage replaces D3D's GPU recording and keeps guest geometry construction and resolved-draw capture. Uploads are owned per recording so cancellation stays correct. The feature's armed count is not replacement coverage; the stage counters are.
 
+
+### One admission a run
+
+Each particle the walk emits still resolves as its own device draw
+(`Device::try_native_inline_draw` through `submit_inner`), and its
+admission is still checked on its own. What the render thread is handed
+is joined at that admission: the threaded backend's queue
+(`d3d::threaded`, `QueuedRun`) takes a queued draw into the run that ends
+its pending batch when nothing was queued between them, the stage, view,
+attachments, request, fallback depth and textures are the same, and the
+passes join (`ExternalPass::queued_run` for the first two, `extend_run`
+after). A particle `Pass` joins the next one on the same renderer, guest
+targets, frame and writes; state, constants, blend and stencil stay per
+draw. The joined `Run` is a new pass, so the device's single passes, which
+a replay may carry, are not altered.
+
+The render thread prepares the run once: `Run::record_draws` gives every
+member's packet, in draw order, for the frame's open pass, so the packets
+and their order are those of the single admissions. If any copy does not
+record, the queue draws every member's fallback in order, as the single
+admissions would each have. `d3d::threaded::queued_runs` counts the runs
+handed over and the draws in them; draws minus runs is the admissions
+saved. A run ends at any other queued command, at a batch handed to the
+render thread, or at a particle that does not join.
 
 ### Colour flare fans
 
