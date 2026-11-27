@@ -20,12 +20,11 @@ fn map_category(selected: map_select::Category, packaged: bool) -> Option<MapCat
     match (selected, packaged) {
         (Category::Halo1, _) => Some(MapCategory::HaloCe),
         (Category::Mods, _) => Some(MapCategory::Mods),
-        // Firefight plays Halo 2's own maps.
-        (Category::Halo2 | Category::Firefight, false) => Some(MapCategory::Halo2),
+        (Category::Halo2, false) => Some(MapCategory::Halo2),
         (Category::MapPack, false) => Some(MapCategory::MapPack),
         // A package over a retail slot may consist of the base alone.
         // Live can classify its MapId from the manifest in its catalogue.
-        (Category::Halo2 | Category::Firefight | Category::MapPack, true) => None,
+        (Category::Halo2 | Category::MapPack, true) => None,
     }
 }
 

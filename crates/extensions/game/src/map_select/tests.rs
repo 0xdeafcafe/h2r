@@ -731,9 +731,8 @@ fn pack_picker_uses_exact_installed_slots_for_disc_and_dlc_bases() {
     assert_eq!(row_label(&cat, Mode::Maps(Category::Mods), original).unwrap().1, "Use original maps");
 }
 
-/// The kit maps are the Firefight category, which only a Firefight lobby
-/// opens; a Forge lobby opens the original maps; a Multiplayer lobby lists
-/// the categories without Firefight.
+/// There is no Firefight category: every lobby's Change Map opens the same
+/// categories, the kit packages among the packages.
 #[test]
 fn the_lobbys_mode_picks_what_change_map_opens() {
     use crate::lobby_start::Mode;
@@ -749,20 +748,17 @@ fn the_lobbys_mode_picks_what_change_map_opens() {
         1000,
         &new_map_path(0x2_0004, "lockout"),
     );
-    assert_eq!(kit.category(), Category::Firefight);
-    assert_eq!(probe.category(), Category::Mods, "the probe is not offered as Firefight");
+    assert_eq!(kit.category(), Category::Mods, "a kit package is listed with the packages");
+    assert_eq!(probe.category(), Category::Mods);
     let cat = Catalogue::new([
         map(1, "Lockout", 1, r"d:\maps\lockout"),
         kit.clone(),
         probe.clone(),
     ]);
-    assert_eq!(cat.categories(), [Category::Halo2, Category::Mods, Category::Firefight]);
-    assert_eq!(cat.maps(Category::Firefight), [kit]);
-    assert_eq!(mode_category(Mode::Multiplayer), None);
-    assert_eq!(mode_category(Mode::Forge), None);
-    assert_eq!(mode_category(Mode::Firefight), Some(Category::Firefight));
-    assert_eq!(Category::Firefight.label(), "Firefight");
-    // The Firefight label has its own string id, clear of the footers.
+    assert_eq!(cat.categories(), [Category::Halo2, Category::Mods]);
+    assert_eq!(Category::ALL.len(), 4, "there is no Firefight category");
+    let _ = Mode::Firefight;
+    // Every label has its own string id, clear of the footers.
     let ids: Vec<u32> = cat.strings().into_iter().map(|(id, _)| id).collect();
     let unique: std::collections::BTreeSet<_> = ids.iter().collect();
     assert_eq!(unique.len(), ids.len(), "every string has its own id");
@@ -779,25 +775,20 @@ fn the_picker_checks_the_selected_disc_or_package_file() {
 }
 
 #[test]
-fn changing_the_game_variant_filters_the_same_map_list_used_for_forge() {
+fn a_firefight_variant_keeps_every_map_in_the_one_list() {
     use crate::community_variants::listed_named;
     use crate::lobby_start::Mode;
-    let catalogue = Arc::new(Catalogue::new([
+    let catalogue = Catalogue::new([
         map(1, "Lockout", 1, r"d:\maps\lockout"),
         map(2, "Firefight – Lockout", 2, &new_map_path(2, "lockout")),
         map(3, "Firefight – Beaver Creek", 3, &new_map_path(3, "beavercreek")),
         map(4, "Community Midship", 4, &new_map_path(4, "midship")),
-    ]));
+    ]);
     let holdout = &listed_named("Holdout").unwrap().record;
-    let basin = &listed_named("Basin").unwrap().record;
-    let selection = Selection::new((*catalogue).clone());
-    let offered = |record| {
-        let open = selection.begin_picker(Mode::Multiplayer, Some(record));
-        assert_eq!(open.mode, super::Mode::Maps(Category::Firefight));
-        selection.picker_catalogue().all().map(|m| m.id).collect::<Vec<_>>()
-    };
-    assert_eq!(offered(holdout), [3, 2]);
-    assert_eq!(offered(basin), [3]);
-    assert_eq!(selection.begin_picker(Mode::Forge, Some(basin)).mode, super::Mode::Categories);
-    assert!(Arc::ptr_eq(&selection.picker_catalogue(), &selection.catalogue()));
+    let selection = Selection::new(catalogue);
+    let open = selection.begin_picker(Mode::Multiplayer, Some(holdout));
+    assert_eq!(open.mode, super::Mode::Categories, "the one list of categories, no Firefight list");
+    assert_eq!(selection.picker_catalogue().all().count(), 4, "unsupported maps stay visible");
+    assert_eq!(selection.picker_catalogue().modes().played, crate::map_modes::Played::Firefight);
+    assert_eq!(selection.begin_picker(Mode::Forge, Some(holdout)).mode, super::Mode::Categories);
 }

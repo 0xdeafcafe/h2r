@@ -78,19 +78,15 @@ pub enum Category {
     Mods,
     /// Converted Halo 1 maps (`h2 import halo1`, `h1_<map>`).
     Halo1,
-    /// The maps that carry the Firefight kit (`Firefight – <map>`), a
-    /// Firefight lobby's only category.
-    Firefight,
 }
 
 impl Category {
     /// The categories' order on the screen.
-    pub const ALL: [Category; 5] = [
+    pub const ALL: [Category; 4] = [
         Category::Halo2,
         Category::MapPack,
         Category::Mods,
         Category::Halo1,
-        Category::Firefight,
     ];
 
     pub fn label(self) -> &'static str {
@@ -99,7 +95,6 @@ impl Category {
             Category::MapPack => "Map Pack",
             Category::Mods => "Mods",
             Category::Halo1 => "Halo: CE",
-            Category::Firefight => "Firefight",
         }
     }
 
@@ -163,15 +158,10 @@ pub struct Map {
 }
 
 impl Map {
-    /// Its category: Firefight for a kit package
-    /// ([`crate::lobby_start::is_kit_map`]), else by its path
-    /// ([`category_of`]).
+    /// Its category, by its path ([`category_of`]). A kit package
+    /// (`Firefight – <map>`) is in its path's category like any other map.
     pub fn category(&self) -> Category {
-        if crate::lobby_start::is_kit_map(self) {
-            Category::Firefight
-        } else {
-            category_of(&self.path)
-        }
+        category_of(&self.path)
     }
 
     fn slot_path(&self) -> Option<String> {
@@ -215,6 +205,8 @@ pub struct Catalogue {
     package_slots: BTreeMap<content::MapId, u32>,
     packs: Vec<InstalledPack>,
     active_pack: Option<String>,
+    /// What each map supports, for a picker's lobby ([`crate::map_modes`]).
+    modes: crate::map_modes::View,
 }
 
 impl Catalogue {
@@ -257,14 +249,12 @@ impl Catalogue {
         if mode == crate::lobby_start::Mode::Forge {
             return self.clone();
         }
-        if let Some(script) = variant.map(|v| v.ext().script)
-            && script.mode == variants::ext::Mode::Firefight
-        {
-            return Arc::new(Catalogue::new(self.all()
-                .filter(|map| crate::lobby_start::supports_wave(map, script.prefix)).cloned()));
-        }
         #[cfg(feature = "rules")]
-        if let Some(accepts) = variant.and_then(crate::rules::gate::map_filter) {
+        // Siege keeps every map: the ones without its objectives are marked.
+        if let Some(accepts) = variant
+            .filter(|v| !crate::rules::gate::is_siege_record(v))
+            .and_then(crate::rules::gate::map_filter)
+        {
             let mut view = (**self).clone();
             for (_, maps) in &mut view.groups {
                 maps.retain(|map| accepts(map.id));
@@ -279,47 +269,15 @@ impl Catalogue {
         self.clone()
     }
 
-    /// The original maps (Halo 2 category) that `has_ground` says have a
-    /// map variant with AI ground, which a Firefight lobby plays as it
-    /// plays a kit package (docs/game/forge-firefight.md, "Playing it").
-    pub(crate) fn ground_maps(&self, has_ground: impl Fn(&Map) -> bool) -> Vec<Map> {
-        let mut maps: Vec<Map> = self
-            .maps(Category::Halo2)
-            .iter()
-            .filter(|m| has_ground(m))
-            .cloned()
-            .collect();
-        maps.sort_by_key(|m| (m.name.to_lowercase(), m.id));
-        maps
+    /// The catalogue with `modes`: what a lobby's picker lists first, tags
+    /// and refuses.
+    pub(crate) fn with_modes(&self, modes: crate::map_modes::View) -> Catalogue {
+        Catalogue { modes, ..self.clone() }
     }
 
-    /// The catalogue with `maps` listed after the Firefight category's own
-    /// maps, the kit packages. The maps keep their own category in
-    /// [`Map::category`] and stay in theirs too.
-    pub(crate) fn with_firefight_maps(&self, maps: Vec<Map>) -> Catalogue {
-        let mut view = self.clone();
-        if maps.is_empty() {
-            return view;
-        }
-        match view.groups.iter_mut().find(|(c, _)| *c == Category::Firefight) {
-            Some((_, group)) => group.extend(maps),
-            None => {
-                let at = view
-                    .groups
-                    .iter()
-                    .position(|(c, _)| c.index() > Category::Firefight.index())
-                    .unwrap_or(view.groups.len());
-                view.groups.insert(at, (Category::Firefight, maps));
-            }
-        }
-        view
-    }
-
-    /// [`Self::with_firefight_maps`] over [`Self::ground_maps`]: Change Map's
-    /// Firefight list, the kit packages then the maps with ground
-    /// variants.
-    pub fn with_ground_maps(&self, has_ground: impl Fn(&Map) -> bool) -> Catalogue {
-        self.with_firefight_maps(self.ground_maps(has_ground))
+    /// What the picker knows of the maps' modes (empty outside a picker).
+    pub fn modes(&self) -> &crate::map_modes::View {
+        &self.modes
     }
 
     /// The pause dialog uses one value list. Walk the same selectable rows
@@ -543,24 +501,19 @@ impl Selection {
     /// screens and Back use this same snapshot until the next visit.
     fn begin_picker(&self, lobby: crate::lobby_start::Mode, record: Option<&variants::GameVariant>) -> OpenList {
         let mode = variant_mode(lobby, record);
-        let category = mode_category(mode);
         let base = self.catalogue();
         let mut catalogue = base.for_variant(mode, record);
-        if mode == crate::lobby_start::Mode::Firefight
-            && let Some(sources) = SOURCES.get()
-        {
+        let played = crate::map_modes::played(mode, record);
+        if let Some(sources) = SOURCES.get() {
             let wave = record
                 .map(|v| v.ext().script)
                 .filter(|s| s.mode == variants::ext::Mode::Firefight)
                 .map(|s| s.prefix);
-            let ground = base.ground_maps(|m| {
-                crate::lobby_start::supports_ground_wave(m, wave)
-                    && crate::lobby_mode::has_ground_variant(&sources.data_root, m)
-            });
-            catalogue = Arc::new(catalogue.with_firefight_maps(ground));
+            let view = crate::map_modes::in_game(&catalogue, played, wave, &sources.data_root);
+            catalogue = Arc::new(catalogue.with_modes(view));
         }
         *lock(&self.picker) = Some(catalogue);
-        OpenList { mode: category.map_or(Mode::Categories, Mode::Maps), focus: None, from_setup: category.is_some() }
+        OpenList { mode: Mode::Categories, focus: None, from_setup: false }
     }
 
     fn picker_catalogue(&self) -> Arc<Catalogue> {
@@ -570,6 +523,8 @@ impl Selection {
     pub fn set(&self, mut catalogue: Catalogue, content: bool) {
         let index = lock(&self.pack_index);
         let mut current = lock(&self.catalogue);
+        #[cfg(feature = "rules")]
+        crate::rules::gate::forget_siege_maps();
         catalogue.packs = index.installed(&catalogue);
         catalogue.active_pack.clone_from(&current.active_pack);
         *current = Arc::new(catalogue);
@@ -774,19 +729,19 @@ pub fn list_for(cat: &Catalogue, mode: Mode, flags: &dyn Fn(u32) -> u8) -> Vec<(
             .filter_map(|&c| cat.category_id(c).map(|id| (id, 0)))
             .collect(),
         Mode::Maps(Category::Mods) => {
-            let mut rows: Vec<_> = cat.original_row().into_iter().map(|id| (id, 0)).collect();
-            rows.extend(cat.maps(Category::Mods).iter().filter_map(|m| {
+            let first: Vec<_> = cat.original_row().into_iter().map(|id| (id, 0)).collect();
+            let rows: Vec<_> = cat.maps(Category::Mods).iter().filter(|m| !cat.modes.hides(m.id)).filter_map(|m| {
                 match cat.packs.iter().find(|p| p.members.iter().any(|(id, _)| *id == m.id)) {
                     Some(pack) => (m.id == pack.representative()).then_some((m.id, 0)),
                     None => Some((m.id, flags(m.id))),
                 }
-            }));
-            rows
+            }).collect();
+            first.into_iter().chain(cat.modes.first_supported(rows, |r| r.0)).collect()
         }
-        Mode::Maps(c) => cat.maps(c).iter().map(|m| {
+        Mode::Maps(c) => cat.modes.first_supported(cat.maps(c).iter().filter(|m| !cat.modes.hides(m.id)).map(|m| {
             let member = c.game_order().then(|| cat.active_pack()?.slot_for(m)).flatten();
-            (member.unwrap_or(m.id), flags(m.id))
-        }).collect(),
+            (member.unwrap_or_else(|| cat.modes.row_id(m.id)), flags(m.id))
+        }).collect(), |r| r.0),
         Mode::Pack(id) => cat.pack_row(id).into_iter().flat_map(|p| p.members.iter())
             .map(|(id, _)| (*id, flags(*id))).collect(),
     }
@@ -974,7 +929,7 @@ pub fn row_label(cat: &Catalogue, mode: Mode, id: u32) -> Option<(u32, String)> 
         let i = cat.all().position(|map| map.id == id)?;
         Some(Category::ALL.len() as u32 + i as u32)
     };
-    match mode {
+    let own = || match mode {
         Mode::Categories => {
             let c = cat.categories().into_iter().find(|&c| cat.category_id(c) == Some(id))?;
             Some((c.index(), cat.category_label(c)))
@@ -992,7 +947,14 @@ pub fn row_label(cat: &Catalogue, mode: Mode, id: u32) -> Option<(u32, String)> 
             Some((slot_label()?, format!("{} ({})", base.name, pack.name)))
         }
         _ => None,
+    };
+    if let Some(label) = own() {
+        return Some(label);
     }
+    // A map row of a lobby's picker: its name with the modes it supports.
+    let Mode::Maps(_) = mode else { return None };
+    let named = cat.all().find(|m| cat.modes.row_id(m.id) == id)?;
+    Some((slot_label()?, cat.modes.label(id, &named.name)?))
 }
 
 fn utf16z(text: &str) -> Vec<u8> {
@@ -1199,6 +1161,44 @@ impl hooks::Feature for MapSelect {
         .after_feature(agent::sim::calls::FEATURE)
         .after_feature(crate::skulls_custom::FEATURE);
 
+        // The lobby's game type needs a map it supports: Firefight or Siege
+        // chosen on a map without their support moves the lobby to the map
+        // last used with them, else the first the picker lists.
+        b.raw().before(&GAME_TICK, "pick a map the game type supports", move |c| {
+            let state = crate::lobby_start::state();
+            if !state.lobby {
+                return Ok(F::Continue);
+            }
+            let to = {
+                let mem = c.ctx.runtime().memory();
+                let map = mem.u32(crate::h1_options_row::LOBBY_MAP).ok();
+                let record = crate::pause_change_map::lobby_variant(&*mem);
+                drop(mem);
+                auto_pick(&state, map, record.as_ref())
+            };
+            let Some(map) = to else {
+                return Ok(F::Continue);
+            };
+            c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                Box::pin(async move {
+                    // Not while the game is starting or counting down.
+                    let started = cx
+                        .call(GuestCall::new(LOBBY_START_STATE.base).args([0]))
+                        .await?
+                        .eax;
+                    if !matches!(started, 8 | 10) {
+                        cx.call(GuestCall::new(LOBBY_SET_MAP.base).esi(map).args([u32::MAX]))
+                            .await?;
+                    }
+                    let r = cx.call(GuestCall::new(GAME_TICK.base)).await?;
+                    Ok(engine::entry::Ret::new(r.eax, 0))
+                })
+            })
+        })
+        .first()
+        .after_feature(agent::sim::calls::FEATURE)
+        .after_feature(crate::skulls_custom::FEATURE);
+
         // The list's array for a Select Map of ours.
         let (nav, sel) = (Arc::clone(&self.navigation), Arc::clone(&self.sel));
         b.raw().before(
@@ -1329,6 +1329,12 @@ impl hooks::Feature for MapSelect {
                             && let Some(pack) = catalogue.pack_row(group)
                         {
                             Arc::make_mut(&mut *lock(&sel.catalogue)).active_pack = Some(pack.key.clone());
+                        }
+                        // A lobby that plays Firefight or Siege takes no map
+                        // without it, and says why.
+                        if let Some(reason) = catalogue.modes().refusal(id) {
+                            crate::lobby_tabs::notice(reason);
+                            return c.ret(8).map(F::Return);
                         }
                         // With Clankers on, the map's nav mesh is asked for now
                         // (docs/game/bots.md §10 stage 2).
@@ -1467,6 +1473,57 @@ impl hooks::Feature for MapSelect {
         ));
         Ok(())
     }
+}
+
+/// The lobby's game type and map as the picking rule last saw them.
+static WATCHED: Mutex<Option<(crate::map_modes::Played, u32)>> = Mutex::new(None);
+
+/// The map the lobby on `map` (its list id) moves to when its game type
+/// `record` needs one the map does not support
+/// ([`crate::map_modes::pick`]): the map last used with that game type,
+/// else the first the picker lists. Decides once for each game type and
+/// map the lobby is seen on; it also notes a supported map as the one last
+/// used. `None` when nothing moves.
+pub(crate) fn auto_pick(
+    state: &crate::lobby_start::State,
+    map: Option<u32>,
+    record: Option<&variants::GameVariant>,
+) -> Option<u32> {
+    use crate::map_modes::{self, Played};
+    let played = map_modes::played(variant_mode(state.mode, record), record);
+    let key = map.map(|m| (played, m));
+    {
+        let mut seen = lock(&WATCHED);
+        if *seen == key {
+            return None;
+        }
+        *seen = key;
+    }
+    if played == Played::Other {
+        return None;
+    }
+    let cat = current()?;
+    let sources = SOURCES.get()?;
+    let wave = record
+        .map(|v| v.ext().script)
+        .filter(|s| s.mode == variants::ext::Mode::Firefight)
+        .map(|s| s.prefix);
+    let view = map_modes::in_game(&cat, played, wave, &sources.data_root);
+    if map.is_some_and(|m| view.allows(m)) {
+        map_modes::remember(played, map?);
+        return None;
+    }
+    let view_cat = cat.with_modes(view);
+    let rows: Vec<(u32, bool)> = view_cat
+        .categories()
+        .into_iter()
+        .flat_map(|c| list_for(&view_cat, Mode::Maps(c), &|_| 0))
+        .map(|(id, _)| (id, view_cat.modes().allows(id)))
+        .collect();
+    let to = map_modes::pick(&rows, map, map_modes::last(played))?;
+    eprintln!("lobby: {played:?} needs a map that supports it, moving to {to}");
+    *lock(&WATCHED) = Some((played, to));
+    Some(to)
 }
 
 /// Adds the hooks when the boot [`prepare`]d a catalogue (it always does:
@@ -1756,7 +1813,6 @@ fn slug(c: Category) -> &'static str {
         Category::MapPack => "mappack",
         Category::Mods => "mods",
         Category::Halo1 => "halo1",
-        Category::Firefight => "firefight",
     }
 }
 
@@ -1767,14 +1823,6 @@ pub(crate) fn variant_mode(mode: crate::lobby_start::Mode, variant: Option<&vari
         Mode::Firefight
     } else {
         mode
-    }
-}
-
-pub fn mode_category(mode: crate::lobby_start::Mode) -> Option<Category> {
-    use crate::lobby_start::Mode as Lobby;
-    match mode {
-        Lobby::Multiplayer | Lobby::Forge => None,
-        Lobby::Firefight => Some(Category::Firefight),
     }
 }
 
