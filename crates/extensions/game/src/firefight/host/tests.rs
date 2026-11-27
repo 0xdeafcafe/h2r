@@ -1681,7 +1681,7 @@ fn a_pelican_drop_flies_the_pelican_at_its_own_hover_height() {
     let Command::DropSquad { slot, class, count, zone, weapon_tier, .. } = drop_command(2) else {
         unreachable!()
     };
-    let command = Command::DropSquad { slot, class, count, zone, weapon_tier, ship: ShipKind::Pelican };
+    let command = Command::DropSquad { slot, class, count, zone, weapon_tier, arrival: Arrival::Auto, ship: ShipKind::Pelican };
     feed(&mut host, [(1, command)]);
     assert!(host.pre_tick(1, &mut game).is_empty());
     assert_eq!(
@@ -1702,7 +1702,7 @@ fn a_pelican_drop_flies_the_pelican_at_its_own_hover_height() {
     let Command::DropSquad { slot, class, count, zone, weapon_tier, .. } = drop_command(2) else {
         unreachable!()
     };
-    feed(&mut host, [(1, Command::DropSquad { slot, class, count, zone, weapon_tier, ship: ShipKind::Pelican })]);
+    feed(&mut host, [(1, Command::DropSquad { slot, class, count, zone, weapon_tier, arrival: Arrival::Auto, ship: ShipKind::Pelican })]);
     assert!(host.pre_tick(1, &mut narrow).is_empty());
     assert_eq!(narrow.calls, [Call::Squad(SquadOp::Place(placement(2)))]);
 }
@@ -1830,6 +1830,7 @@ fn pod_command(zone: u8) -> Command {
         zone,
         weapon_tier: 2,
         arrival: Arrival::Pod,
+        ship: ShipKind::Phantom,
     }
 }
 

@@ -17,7 +17,7 @@ fn kit(pods: usize, falls: usize) -> KitLayout {
         team: 3,
         hunt_orders: Vec::new(),
         hold_orders: Vec::new(),
-        ship: None,
+        ships: [None, None],
         paths: Vec::new(),
         pods: Vec::new(),
         player_pods: (0..pods as i16).collect(),
