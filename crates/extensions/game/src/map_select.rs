@@ -1158,6 +1158,7 @@ fn write_ours(
                 "map select: Select Map lists {mode:?} ({} rows)",
                 items.len()
             );
+            eprintln!("map select: rows: {}", row_names(cat, mode, &items));
             Some(region + ARRAY_AT)
         }
         Err(e) => {
@@ -1165,6 +1166,30 @@ fn write_ours(
             None
         }
     }
+}
+
+/// The rows of a Select Map list in order, as `h2 bots test`'s driver
+/// reads them off `map select: rows: a, b, c` to count its presses: a
+/// category by its label, a map by its short name (`zanzibar`), anything
+/// else by its id.
+fn row_names(cat: &Catalogue, mode: Mode, items: &[(u32, u8)]) -> String {
+    let categories = cat.categories();
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, &(id, _))| match mode {
+            Mode::Categories => categories
+                .iter()
+                .filter(|&&c| cat.category_id(c).is_some())
+                .nth(i)
+                .map_or_else(|| format!("{id:#x}"), |c| c.label().to_owned()),
+            _ => cat
+                .all()
+                .find(|m| m.id == id)
+                .map_or_else(|| format!("{id:#x}"), Map::short_name),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Refresh in the main menu so a joining console can use its newly
@@ -1512,6 +1537,7 @@ impl hooks::Feature for MapSelect {
                         let cat = sel.picker_catalogue();
                         let map = cat.all().find(|m| m.id == id).map(Map::short_name);
                         if let Some(map) = map {
+                            eprintln!("map select: picked {map}");
                             crate::clankers::map_picked(&map);
                         }
                         Ok(F::Continue)

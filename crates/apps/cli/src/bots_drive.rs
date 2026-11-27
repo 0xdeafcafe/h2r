@@ -62,6 +62,9 @@
 //!   A on Start Game (row 0); again (UP, A) if the phase hasn't left
 //!   `menu` in [`START_MS`].
 //!
+//! With `--map`, the lobby's map is picked first, through Game Setup and
+//! Select Map ([`map`]).
+//!
 //! [`Driver::clankermatch`] takes the same way to the Live menu, then its
 //! Clankermatch row (row 2) and a clanker playlist instead
 //! ([`clankermatch`]).
@@ -179,6 +182,8 @@ enum Step {
         last_b: bool,
         dialogs: u32,
     },
+    /// The lobby's map is being picked ([`map`]) before Start Game.
+    Map(map::MapStep),
     Done,
     Stuck,
 }
@@ -270,6 +275,11 @@ pub struct Driver {
     /// Clankermatch: the Clankers driver fills a hosted clanker lobby
     /// (`clankers: clankermatch: hosting clanker playlist ...`).
     cm_hosting: bool,
+    /// `--map`: the custom game lobby's map, picked before Start Game.
+    map: Option<String>,
+    map_done: bool,
+    /// What Select Map's lines said ([`map`]).
+    seen: map::Seen,
     said: BTreeSet<String>,
     out: Vec<String>,
 }
@@ -409,6 +419,9 @@ impl Driver {
             cm_search: false,
             human_search: None,
             cm_hosting: false,
+            map: None,
+            map_done: false,
+            seen: map::Seen::default(),
             said: BTreeSet::new(),
             out: Vec::new(),
         }
@@ -499,6 +512,9 @@ impl Driver {
                     }
                 }
             }
+        }
+        if text.starts_with("map select: ") {
+            self.map_line(text);
         }
         if advertised(text) {
             self.hosting = true;
@@ -1053,7 +1069,11 @@ impl Driver {
                     }
                 }
             }
+            Step::Map(m) => self.on_map(now, m),
             Step::Lobby { since } => {
+                if self.begin_map(now) {
+                    return;
+                }
                 let all = self.in_lobby.len() >= self.phantoms;
                 let late = now.saturating_sub(since) > LOBBY_WAIT_MS;
                 if (all || late) && now.saturating_sub(since) >= SETTLE_MS {
@@ -1128,6 +1148,7 @@ impl Driver {
 }
 
 pub mod clankermatch;
+mod map;
 
 #[cfg(test)]
 mod tests;

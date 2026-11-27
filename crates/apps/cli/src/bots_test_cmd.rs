@@ -82,8 +82,8 @@ or after --timeout (360 s). The verdict lists each check, passed or
 failed, with the log lines that explain it, and names the first failure:
 signed in; Clankers on; on Xbox Live (not Split Screen or System Link);
 hosting a Live custom game (the session advertised); the Live roster; the
-Clankers phantoms seated; gameplay on a map (--map NAME: on that map; the
-map is the lobby's, this does not pick it); the phantoms joined the
+Clankers phantoms seated; gameplay on a map (--map NAME: the driver picks it in
+the lobby's Game Setup, then this checks it); the phantoms joined the
 pregame lobby; the session holding 1 + count players; the game record's bots (bot: true).
 It exits non-zero when a check failed.
 
@@ -651,7 +651,7 @@ fn test(opts: Opts) -> Result<()> {
 
     let driver = match &cm {
         Some(cm) => Driver::clankermatch(cm.row),
-        None => Driver::new(plan.phantoms()),
+        None => Driver::new(plan.phantoms()).with_map(opts.map.clone()),
     };
     let mut watch = Watch::new(TAG, &client, &agent, !opts.no_drive, driver, cm.is_some());
     let mut progress = String::new();

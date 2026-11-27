@@ -558,7 +558,7 @@ pub fn verdict(log: &str) -> Option<Verdict> {
             let other = l.first(|t| read_status(t).is_some_and(|s| s.0 == "gameplay"));
             let detail = match (&plan.map, other) {
                 (Some(want), Some((_, t))) => format!(
-                    "the game played {}, not {want} (--map checks the map; pick it in the lobby)",
+                    "the game played {}, not {want} (--map picks it in the lobby, and checks it)",
                     read_status(t).map_or("?", |s| s.2)
                 ),
                 _ => "the agent API never answered phase gameplay in a multiplayer game".into(),
