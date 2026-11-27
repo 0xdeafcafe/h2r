@@ -820,10 +820,12 @@ default, `firefight_kit::Config::dropship`):
 - **The paths.** For each drop zone `NN` with a clear column, a point set
   `ff_path_NN` in the scenario's scripting data with the points `run_in`,
   a `hover_<kind>` for each kind kept and `run_out`, in flying order. A kind's
-  hover is `ship::hover_height` (6 units for the Phantom, 4 for the Pelican)
-  over the zone's first area's mean. The path is one per zone, cleared for
-  the widest ship kept: each ray is also cast `ship::radius` (5 and 8
-  units) to each side, and the Pelican is kept only when some zone has a path
+  size is read from its own `vehi` tag (`ship::dims_in`): its reach is the
+  object's bounding radius, its hover the tallest `antigrav_height` of its lift
+  points over the zone's first area's mean, and its seats the seat block's
+  count (`ship::tag_seats` reads it again in the game). The path is one per
+  zone, cleared for the widest ship kept: each ray is also cast the kind's
+  reach to each side, and the Pelican is kept only when some zone has a path
   at its width. The
   runs are at the sky height, 10 units over the tallest collision, and
   outside the collision's horizontal bounds by at least 20. `ship::plan`
@@ -938,8 +940,7 @@ each drop zone in kit order, its `ff_path_NN` point set's `run_in`,
 `run_out` and a hover for each `hover_<kind>` key (`ship::ShipPath`), or none
 when the zone has no set or the set misses its run points or every hover. A game reports the ship as live when
 exactly one vehicle of that placement is in the world
-(`ship::placed_ship`); its seats are `ship::SEATS`, since the kit does
-not read the vehicle tag's seat blocks (`ship::seats`).
+(`ship::placed_ship`); its seats are the vehicle tag's seat count (`ship::tag_seats`).
 
 The director (`content/modes/rules/firefight.rules`) holds the ship's state
 in three globals, `ship_state` (parked, inbound, unloading, outbound),
