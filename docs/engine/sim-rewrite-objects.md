@@ -316,7 +316,7 @@ crates/rewrites/sim-objects/      no `runtime` dependency
   src/lights.rs                   c0c80, c0b00 record update
   src/pose.rs                     bd090 orchestration over sim-anim
   src/unit/, biped/, ...          one module per type tree
-  src/phase.rs                    PoseSet, BoundsSet (transient SoA)
+  src/phase.rs                    WalkSet (built); PoseSet, BoundsSet (slice 12)
 crates/rewrites/sim-state/                 read-only API (section 8)
 crates/hooking/guest-layout/src/object.rs  every offset in section 2: header and
                                   physics flag bits, body fields, ObjectDefinition
@@ -405,6 +405,12 @@ memory once per process.
 
 Built on the game thread inside one segment, read by workers, dropped or
 kept as derived state for the rest of the walk (section 7).
+
+`WalkSet` is built: one row per live object (handle, flags, type, `+c0`,
+parent, position, forward, up, animation block), gathered at each walk's
+entry by the walk arm, which counts the slot pass's predicted visits by
+type ([object-update.md](object-update.md#the-walk-arm)). `PoseSet` below
+is slice 12's:
 
 ```rust
 pub struct PoseSet {

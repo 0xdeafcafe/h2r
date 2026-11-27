@@ -414,13 +414,29 @@ as runtime before).
 
 **Objects and units update (phase 3).**
 
-- *Orchestration.* Rust runs the pre-physics `b6f10`, post-physics `b7060`
-  and final walks, `bc470` and `bc820`, with `bd090` per object, over an SoA
-  gather of the transform, parent, flags and channel state. Per-type
-  descriptor callbacks (unit `+0x40`, `c6b30`, and the others) stay guest at
-  first and are called through the async boundary
+- *Orchestration.* With `impl.sim.native.objects.walk` (off), the walk arm
+  `engine::sim_objects::walk_arm` runs the pre-physics `b6f10`,
+  post-physics `b7060` and final `b7150` walks, `bc470` and `bc820` with
+  `bd090` per object, the type dispatchers, and the biped and weapon
+  descriptor callbacks. The other types' callbacks (unit `+0x40` `c6b30`,
+  vehicles, the small types) are guest calls through the runtime
   ([feature-engine.md](feature-engine.md), "Calling code that is still
-  recompiled"). They come over type by type, biped and weapon first.
+  recompiled"); they join type by type. Each walk's entry gathers the
+  pool into an SoA working set (`sim_objects::phase::WalkSet`: handle,
+  flags, type, parent, transform, animation block) and counts its
+  predicted visits by ported type. Per segment the arm is shadow, then
+  answer:
+
+  ```
+  segment -> unproven, failed or slot % 64 == 0
+                -> Rust predicted in a Guest::trial, guest answers,
+                   compared at its transfer          (matched, mismatched)
+          -> else Rust answers, fusing only into answering bodies (answered)
+  ```
+
+  Proof is 4096 matches per entry, per map; one difference hands every
+  segment to the guest until the next map. `sim.arms` reports it as
+  `objects.walk.<entry>` ([object-update.md](object-update.md#the-walk-arm)).
 - *Also in this phase:* the object-function evaluator (`bab40`, `108d90`,
   `bcc20`) and lights (`c1400`, `c0c80`, which subsume
   `impl.sim.static-light`'s bypass); the markers `b8d30` belong to
@@ -591,7 +607,7 @@ still uses them.
 | **1c** | Unit pose and overlays (`112070` with its aim channels and aim angles), the unit aim update `c7840`, first-person pose and filters (`16760c`, `166d75` with its filter step `11eed0`), model nodes and marker transforms (`b8d30`, `1d8f00`, `1d8f50`). 3.9%. | same switch | Ladder clean. Cumulative ≥ 0.9 ms. Retires `native_unit_pose`, `native_marker_transforms`, `native_first_person_pose`, `native_first_person_filters` and `native_unit_aim`. |
 | **1d** | Animation manager and graph resolve (`1c66a0`, `1c6f60`, `1cd590`, `1daea0`, `1dd9d0`, `1ddb40`). 3.4%. | same switch | Ladder clean. Cumulative **≥ 1.2 ms**. The animation switch owns graph resolution. |
 | **2** | Collision world and queries, with the Havok ray path | `impl.sim.native.collision` | Ladder clean. ≥ 0.45 ms more. Retires `native_point_to_leaf`, `native_geometry_test`, `native_bsp_segment`, `native_collision_query`, `native_mopp_ray`, `native_spatial_visit` and `native_spatial_portal`. The subsystem owns collision dispatch and the per-function bodies serve as differential oracles. |
-| **3** | Object update walk, function evaluator, lights, per-type callbacks type by type (units, then bipeds, vehicles, weapons) | `impl.sim.native.objects` | Ladder clean. ≥ 1.5 ms more. Retires `native_object_import`, `native_object_value`, `native_base_object_import`, `native_object_pre_update`, `native_object_post_update`, `native_objects_pre_physics`, `native_objects_post_physics`, `native_object_change_colors`, `native_unit_update`, `native_light_record` and `static-light`. |
+| **3** | Object update walk, function evaluator, lights, per-type callbacks type by type (the walk arm with bipeds and weapons, then units, vehicles, the small types) | `impl.sim.native.objects`; arms `.functions` and `.walk` (off) | Ladder clean. ≥ 1.5 ms more. Retires `native_object_import`, `native_object_value`, `native_base_object_import`, `native_object_pre_update`, `native_object_post_update`, `native_objects_pre_physics`, `native_objects_post_physics`, `native_object_change_colors`, `native_unit_update`, `native_light_record` and `static-light`. |
 | **4** | Sound sim | `impl.sim.native.sound` | Opt-in native arm; the voice update is its shadow arm (`sound.voices` in `sim.arms`). Promote after the ladder matches, including voice start and completion order per tick (`sound.voices` clean with answers), and Waterworks saves ≥ 0.6 ms/tick. |
 | **5** | Havok world and glue, with the MOPP box query | `impl.sim.native.physics` | Bar E (decision 8.1). Behaviour suites pass. Cross-arch hashes identical. ≥ 1.0 ms more. Retires `native_havok_solver`, `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`. |
 | **6** | Effects, particles, decals | `impl.sim.native.effects` | Ladder clean. ≥ 0.4 ms more. **Waterworks ≤ 7.5 ms/tick** if *k* ≥ 3.3; otherwise after phase 7. |

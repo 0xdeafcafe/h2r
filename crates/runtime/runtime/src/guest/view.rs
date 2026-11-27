@@ -83,6 +83,7 @@ impl Guest {
             congruence_skipped: self.congruence_skipped,
             aliasable_ram: self.aliasable_ram,
             journal: None,
+            trial: None,
         };
         view.copy_layout_from(self);
         if self.fast_pages.is_some() {

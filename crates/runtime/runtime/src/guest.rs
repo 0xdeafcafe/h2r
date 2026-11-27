@@ -4,6 +4,8 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 mod journal;
+mod trial;
+pub use trial::TrialStores;
 mod state;
 mod view;
 mod writeback;
@@ -196,6 +198,8 @@ pub struct Guest {
     /// The undo journal of an alias executor (`guest/journal.rs`), while
     /// one is on.
     journal: Option<Box<journal::Journal>>,
+    /// A trial's saved bytes (`guest/trial.rs`), while one is on.
+    trial: Option<Box<trial::Trial>>,
 }
 
 /// Guest ABI outputs. The caller recreates zeroed allocations with
@@ -291,6 +295,7 @@ impl Guest {
             congruence_skipped: 0,
             aliasable_ram: false,
             journal: None,
+            trial: None,
         }
     }
     /// Identifies the mappings and their permissions: a new value, never
@@ -1763,6 +1768,12 @@ impl Guest {
         alignment: u32,
     ) -> Result<(), GuestFault> {
         if let Some(at) = self.fast_offset(addr, value.len(), 2, alignment) {
+            if let Some(t) = &mut self.trial {
+                // Undone when the trial ends: nothing to report.
+                t.save(at, addr, &self.ram[at..at + value.len()]);
+                self.ram[at..at + value.len()].copy_from_slice(value);
+                return Ok(());
+            }
             self.ram[at..at + value.len()].copy_from_slice(value);
             // The write barrier, as below.
             if self.watch.active() {
@@ -1787,15 +1798,24 @@ impl Guest {
             let (start, n) = (span.start, span.len());
             // An alias executor's journal keeps the bytes first.
             self.journal_save(start, n);
+            let trial = if let Some(t) = &mut self.trial {
+                t.save(start, addr.wrapping_add(offset as u32), &self.ram[span.clone()]);
+                true
+            } else {
+                false
+            };
             self.ram[span].copy_from_slice(&value[offset..offset + n]);
-            // Every RAM store passes here, so this is the whole write barrier.
-            if self.watch.active() {
+            // Every RAM store passes here, so this is the whole write
+            // barrier; a trial's stores are undone, so not reported.
+            if !trial && self.watch.active() {
                 self.watch.note(start, n);
             }
             offset += n;
             index += 1;
         }
-        if let Some(w) = &mut self.hle_writes {
+        if let Some(w) = &mut self.hle_writes
+            && self.trial.is_none()
+        {
             w.store(addr, value);
         }
         if self.journal.is_some() {

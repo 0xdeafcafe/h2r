@@ -20,6 +20,7 @@ use engine::sim_anim::manager::arm as manager;
 use engine::sim_collision as world;
 use engine::sim_objects::functions::arm as function;
 use engine::sim_objects::functions::parity as objects;
+use engine::sim_objects::walk_arm;
 use engine::sim_physics::parity as physics;
 use hooks::Switches;
 use hooks::switches::table::{self, Initial};
@@ -54,7 +55,11 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
     SimArms {
         subsystems: vec![
             subsystem(switches, "physics", physics_arms()),
-            subsystem(switches, "objects", vec![objects_wire(objects::status()), function_wire(function::status())]),
+            subsystem(switches, "objects", {
+                let mut arms = vec![objects_wire(objects::status()), function_wire(function::status())];
+                arms.extend(walk_wire(walk_arm::stats()));
+                arms
+            }),
             subsystem(switches, "anim", anim_wire(&walk::arm_stats(), &walk::stats(), manager::stats())),
             subsystem(switches, "collision", collision_arms(&world::stats())),
             subsystem(switches, "seats", group(sim_bridge::sim_seats::GROUP)),
@@ -119,6 +124,22 @@ fn function_wire(s: function::Status) -> Arm {
         answered: s.answered,
         declined: s.declined_total() + s.dropped,
     }
+}
+
+/// The walk arm, one arm per entry (`objects.walk.<entry>`); faulted,
+/// stopped and yielded guest segments count as declined.
+fn walk_wire(entries: Vec<(u32, walk_arm::Stats)>) -> Vec<Arm> {
+    entries
+        .into_iter()
+        .map(|(entry, s)| Arm {
+            name: format!("objects.walk.{entry:08x}"),
+            checked: s.matched + s.mismatched,
+            matched: s.matched,
+            mismatched: s.mismatched,
+            answered: s.answered,
+            declined: s.declined + s.interrupted,
+        })
+        .collect()
 }
 
 fn anim_wire(arm: &walk::ArmStats, body: &walk::Stats, segments: Vec<(u32, manager::Stats)>) -> Vec<Arm> {
@@ -289,6 +310,9 @@ mod tests {
         let c = collision_arms(&stats);
         assert_eq!(c.len(), 7);
         assert_eq!((c[0].checked, c[6].checked, c[6].mismatched), (2, 1, 1));
+        let w = walk_wire(vec![(0xdd360, walk_arm::Stats { matched: 6, mismatched: 1, answered: 4, declined: 2, interrupted: 3, first: None })]);
+        assert_eq!(w[0].name, "objects.walk.000dd360");
+        assert_eq!((w[0].checked, w[0].mismatched, w[0].answered, w[0].declined), (7, 1, 4, 5));
         let v = sound_wire(&voices::Stats { matched: 4, mismatched: 1, quiet: 9, declined: 2, answered: 7, ..Default::default() });
         assert_eq!((v.checked, v.mismatched, v.answered, v.declined), (5, 1, 7, 2));
     }

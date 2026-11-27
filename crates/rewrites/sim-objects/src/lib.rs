@@ -16,6 +16,7 @@ pub mod defs;
 pub mod events;
 pub mod functions;
 pub mod light;
+pub mod phase;
 pub mod unit;
 pub mod view;
 pub mod wake;

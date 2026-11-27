@@ -279,6 +279,26 @@ fn calls_between_bodies_stay_in_rust_until_a_true_callout() {
 }
 
 #[test]
+fn a_refused_admission_hands_the_transfer_to_the_runtime() {
+    let t = table();
+    let (mut cpu, mut g) = guest();
+    let mut asked = Vec::new();
+    let out = drive_admitting(&mut cpu, &mut g, &t, OUTER.base, |pc| {
+        asked.push(pc);
+        false
+    }, Body::segment)
+    .unwrap();
+    // The call to inner would fuse; refused, it leaves with the push made.
+    assert_eq!(out, TransferAbi::call(INNER.base, 0x1010));
+    assert_eq!((cpu.eax, cpu.esp), (1, STACK - 4));
+    // A true callout is never asked about.
+    assert_eq!(asked, [INNER.base]);
+    let (mut cpu, mut g) = guest();
+    let out = drive_admitting(&mut cpu, &mut g, &t, OUTER.base, |_| true, Body::segment).unwrap();
+    assert_eq!(out, TransferAbi::call(GUEST, 0x1020));
+}
+
+#[test]
 fn an_unsupported_float_environment_stops_fusion() {
     let t = table();
     for mxcsr in [0x1f80 | 0x2000, 0x1f80 | 0x8000, 0x1f80 | 0x40, 0x1f00] {

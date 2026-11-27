@@ -59,6 +59,9 @@ mod unit_rest;
 // Slice 7a: the biped update; slice 7b its post-physics update
 // (`biped::post`).
 mod biped;
+// The walk arm: the walks, `bd090`, bipeds and weapons, proved against
+// the guest before they answer.
+pub mod walk_arm;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -442,7 +445,22 @@ pub fn drive_with(
     cpu: &mut CpuAbi,
     g: &mut Guest,
     table: &Table,
+    pc: u32,
+    run_segment: impl FnMut(&Body, &mut CpuAbi, &mut Guest, u32) -> Result<TransferAbi>,
+) -> Result<TransferAbi> {
+    drive_admitting(cpu, g, table, pc, |_| true, run_segment)
+}
+
+/// As [`drive_with`], fusing a transfer the table would fuse only when
+/// `admit(target)` says so, asked last; otherwise the transfer goes to the
+/// runtime. The walk arm admits a segment whose turn is an answer
+/// ([`walk_arm::admit`]).
+pub fn drive_admitting(
+    cpu: &mut CpuAbi,
+    g: &mut Guest,
+    table: &Table,
     mut pc: u32,
+    mut admit: impl FnMut(u32) -> bool,
     mut run_segment: impl FnMut(&Body, &mut CpuAbi, &mut Guest, u32) -> Result<TransferAbi>,
 ) -> Result<TransferAbi> {
     let (first, mut fused) = (pc, 0);
@@ -455,7 +473,7 @@ pub fn drive_with(
             runtime::abi::RETURN => table.resumes(transfer.target_pc),
             _ => false,
         };
-        if !fuse || !table.supports(cpu) {
+        if !fuse || !table.supports(cpu) || !admit(transfer.target_pc) {
             return Ok(transfer);
         }
         pc = transfer.target_pc;
