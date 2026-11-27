@@ -46,7 +46,7 @@ pub(super) fn try_idle(c: &mut Call<'_>, mem: &dyn GuestMemory, stack: u32) -> O
         return None;
     }
     if !c.ctx.runtime().read_dispatch(|d| d.has_resume(ITEM_CONTINUATION)) {
-        Ui::ModelEntry.count();
+        super::kept::ui(Ui::ModelEntry);
         return None;
     }
     Ui::ModelIdle.count();
@@ -84,7 +84,7 @@ fn live(c: &Call<'_>) -> Option<Widget> {
 fn refuse(mut widget: Widget, reason: Ui) {
     widget.refused = true;
     WIDGET.set(Some(widget));
-    reason.count();
+    super::kept::ui(reason);
 }
 
 struct ModelScene {
@@ -259,7 +259,7 @@ fn plan(c: &Call<'_>, mem: &dyn GuestMemory, widget: Widget) -> Option<(u32, Vec
 fn finish(cpu: &mut CpuAbi, next_stack: u32, count: u32) -> TransferAbi {
     cpu.eax = count;
     cpu.esp = next_stack;
-    Ui::ModelNativeGroup.count();
+    super::kept::ui(Ui::ModelNativeGroup);
     ui::record(true);
     TransferAbi::resume(MODEL_GEOMETRY_RETURN)
 }

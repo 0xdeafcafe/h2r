@@ -1,6 +1,6 @@
 # Retiring the guest D3D path
 
-Status: Design. R0 is built. R1, R4, R5, R6 and the parts of earlier stages listed below are partly built; no other slice is built.
+Status: Design. R0 is built. R1, R4, R5, R6, R7 and the parts of earlier stages listed below are partly built; no other slice is built.
 Code: `crates/platform/d3d/src` (what is deleted), `crates/rewrites/scene-extract/src` and `crates/rewrites/native-render/src` (what replaces it), `crates/rewrites/render-bridge/src` (the frame step and the census). Tests: named per slice below.
 Switch: `impl.render.native` (on), removed with the crate; `impl.render.native-hud` (on), R6's, removed with the guest HUD walk; R4's producers have `impl.render.native.visibility` (on), which only turns them off. All in [switches.md](../runtime/switches.md).
 
@@ -23,6 +23,7 @@ Switch: `impl.render.native` (on), removed with the crate; `impl.render.native-h
 | R6, HUD bitmap widgets | a widget quad whose shader's Rust material is proven against the guest's draws is drawn at `0x0022a7b3` with no guest shader setup or draw | [native-hud-overlay.md](native-hud-overlay.md#the-material-in-rust) |
 | R6, the other HUD quads | the training frame, the navpoints' arrows and outlines, the waypoint markers and the indicator are captured and proven as the widgets are | [native-hud-overlay.md](native-hud-overlay.md#bitmap-widgets) |
 | R6, what is kept | every HUD item a producer offers and the overlay does not draw, and every HUD draw no producer offered, is a `scene_kept_overlay_*` count by kind and cause | "R6's remainder" |
+| R7 | the menu frame's widgets, text, fade, bars (strips included), loading screen and blur from the overlay; every menu-frame draw that does not is a `scene_kept_ui_<kind>_<cause>` count in the HUD's register | [retire-d3d-menus.md](retire-d3d-menus.md) |
 
 Each R1 item is taken only where skipping its guest draw leaves the device's render states as drawing it would (a pass whose restore list writes back what it sets included), and on its own wherever drawing it ahead of the items the guest keeps cannot change the frame. "R1's remainder" lists what still reaches the guest's draws. The stages this builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
 
@@ -507,7 +508,7 @@ D3D entry calls.
 | R4 | Visibility and view records in Rust | M | R1 | 0.9 ms, no draws | cluster and object sets equal the guest's on dumped scenes (`scene_visibility_{clusters,frusta,objects}_proven` 1, `_differ` 0); hash gate |
 | R5 | The rest of a game view: sky and layer 2, fog and water remainders, layers 17, 18, 19, 21, `0x0002dd30`, `0x0002df00`, the post remainder, flares, clears and binds | M | R1; the unread callers read | 1.1 ms, 284 entries | parity per effect; `scene_readback` zero |
 | R6 | `Overlay` stage and the HUD | M | R0 | not measured | text and HUD parity at 1x exact; HUD frames on every weapon and vehicle |
-| R7 | Menus, text, loading, fade, bars, model widgets, the backdrop | L | R6 | not measured; the menu's draws less its 3D view | menu, settings, pregame lobby and loading captures; UI order test |
+| R7 | Menus, text, loading, fade, bars, model widgets, the backdrop ([retire-d3d-menus.md](retire-d3d-menus.md)) | L | R6 | not measured; the menu's draws less its 3D view | menu, settings, pregame lobby and loading captures; `scene_kept_ui_*` at zero on them; UI order test |
 | R8 | Movies, frames outside a game view, the final display. `0x00223240` is replaced | M | R1 to R7 | the rest of `render` and all of `d3d`, `decode` | from boot to gameplay and back to the menu, `d3d_entries` grows only under `outside_render` |
 | R9 | Zero gate: the census corpus with `render.residual`; `impl.render.native=off` stops being built by default | S | R8 | none | the gate in "Rules and limits" |
 | R10 | Delete `d3d`'s draw path and the backends that replay it | M | R9, a soak the owner sets | build time and about 30,000 lines | the tree builds; the gate corpus against `d3d-reference` |

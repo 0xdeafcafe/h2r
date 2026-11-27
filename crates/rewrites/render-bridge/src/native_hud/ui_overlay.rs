@@ -410,16 +410,19 @@ pub fn at_item(frame: u32, ordinal: u32) -> Item {
     })
 }
 
-/// The items of run `run` of the claim at `frame`, to place.
+/// The items of run `run` of the claim at `frame`, to place. A run is
+/// placed once, at its first entry, so its planned items are moved out,
+/// not copied.
 pub fn run_part(frame: u32, run: usize, mem: &dyn GuestMemory) -> Option<Overlay> {
     let pending = CLAIMS.with(|c| {
-        let claims = c.borrow();
-        let claim = claims.iter().rev().find(|c| c.frame == frame)?;
-        let run = claim.runs.get(run)?;
-        Some(if claim.guest_drew {
+        let mut claims = c.borrow_mut();
+        let claim = claims.iter_mut().rev().find(|c| c.frame == frame)?;
+        let guest_drew = claim.guest_drew;
+        let run = claim.runs.get_mut(run)?;
+        Some(if guest_drew {
             Err(run.entries.clone())
         } else {
-            Ok(run.part.clone())
+            Ok(std::mem::replace(&mut run.part, Overlay::new(walk::CANVAS)))
         })
     })?;
     let ordinals = match pending {
@@ -457,6 +460,9 @@ pub fn placed(frame: u32, run: usize, placed: bool) {
             claim.guest_drew |= !placed;
             if placed {
                 claim.skipped += 1;
+            } else {
+                // Each of the run's draws is the game's.
+                super::kept::count_n(super::kept::UiKind::Widget, "pass", r.entries.len() as u64);
             }
         }
     });
@@ -508,7 +514,7 @@ pub(super) fn claim_list(mem: &dyn GuestMemory, list: &UiList, host: &dyn super:
     let custom = |widget| host.ui_custom_widget(mem, widget);
     let (claim, refused) = plan_with_text(&Ro(mem), list, fonts.as_deref().unwrap_or(&NoText), &custom);
     for (_, why) in refused {
-        why.counter().count();
+        super::kept::ui(why.counter());
     }
     claim
 }
@@ -654,6 +660,35 @@ mod tests {
         assert_eq!(claim.run_of, [Some(0), Some(0), None, Some(1), Some(1)]);
     }
 
+    /// A run's items move to its pass at its first draw: the claim keeps
+    /// no copy, and the run is still claimed.
+    #[test]
+    fn a_runs_items_move_out_of_its_claim_once() {
+        use bitmaps::tests::{VIEW, WIDGET, bitmap_widget};
+        forget();
+        let mut mem = Mem::default();
+        bitmap_widget(&mut mem);
+        let list = UiList {
+            frame: 0x8100,
+            root: WIDGET,
+            user: VIEW,
+            window: [-1.0, 1.0],
+            entries: vec![ListEntry { widget: WIDGET, depth: 0.0, bias: 0 }],
+        };
+        let (claim, _) = plan(&mem, &list);
+        let planned = claim.runs[0].part.clone();
+        open(claim);
+        assert_eq!(at_item(0x8100, 0), Item::Place(0));
+        let guest = FakeGuest::new();
+        assert_eq!(run_part(0x8100, 0, &guest), Some(planned));
+        let left = CLAIMS.with(|c| c.borrow().last().map(|c| (c.runs[0].part.items.len(), c.claimed())));
+        assert_eq!(left, Some((0, 1)), "moved, and still claimed");
+        assert_eq!(run_part(0x8100, 1, &guest), None, "no such run");
+        placed(0x8100, 0, true);
+        assert!(close(0x8100).is_empty());
+        forget();
+    }
+
     /// Each run is placed at its first draw and its entries are left out;
     /// the claim closes clean when every claimed draw was left out.
     #[test]
@@ -679,10 +714,17 @@ mod tests {
     #[test]
     fn an_unplaced_run_is_the_games_and_a_missing_draw_refuses_the_screen() {
         forget();
+        let kept = || {
+            super::super::kept::counters().into_iter()
+                .find(|(k, _)| k == "scene_kept_ui_widget_pass").map_or(0, |(_, n)| n)
+        };
+        let before = kept();
         let (claim, _) = plan(&widgets(), &list(0x8000, [0.0, 5.0, 0.0, 0.0, 0.0]));
         open(claim);
         assert_eq!(at_item(0x8000, 0), Item::Place(0));
         placed(0x8000, 0, false);
+        // Other tests count kept widgets too: at least this run's one.
+        assert!(kept() > before, "the unplaced run's one draw is kept");
         assert_eq!(at_item(0x8000, 3), Item::Place(1));
         placed(0x8000, 1, true);
         // Entry 4 is never drawn.

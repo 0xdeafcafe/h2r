@@ -2322,6 +2322,9 @@ h2 agent render.parity '{"arm": true}'
   material checks. `scene_kept_sky_<cause>` counts strips left to their guest
   draw, by cause ([native-world-walk.md](../graphics/native-world-walk.md)). GPU reservation and
   replay outcomes appear under `native_sky_*` in the frame counters.
+  `scene_kept_ui_<kind>_<cause>` counts UI draws that do not draw from the
+  scene's overlay, totals since start
+  ([retire-d3d-menus.md](../graphics/retire-d3d-menus.md#what-is-kept)).
   `post_effect_refused_<cause>` counts screen-effect preflight refusals.
   A call that needs the view but has no view strip increments `view_target`. A missing or empty
   target 1 size increments `pass_target`.

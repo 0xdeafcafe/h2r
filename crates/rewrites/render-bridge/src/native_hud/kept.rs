@@ -9,11 +9,20 @@
 //! ([`carried`]: cause `packet`). [`end`] counts an item nothing drew
 //! under its cause. A HUD draw that reaches the device with no producer
 //! before it is `untraced` ([`untraced`]).
+//!
+//! The menus' draws (slice R7, docs/graphics/retire-d3d-menus.md, "What is
+//! kept") count the same way under `scene_kept_ui_<kind>_<cause>`
+//! ([`UiKind`]): a screen draw is offered with [`begin_ui`], a menu
+//! widget, list, model, outline or blur the game keeps is counted where
+//! its producer refuses it ([`ui`], [`count`]). A UI item's guest draws
+//! are not `untraced`: that is the HUD's.
 
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
+
+use timeline::native::Ui;
 
 /// What a HUD item is, by the routine that draws it (Code, the lifted
 /// image's calls of `0x0022a664` by return address; hud-kit.md).
@@ -73,6 +82,97 @@ impl OverlayKind {
             OverlayKind::Other => "other",
             OverlayKind::Untraced => "untraced",
         }
+    }
+}
+
+/// What a kept menu-frame draw is (`scene_kept_ui_<kind>_<cause>`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum UiKind {
+    /// A drawn widget of a sorted list the overlay does not list.
+    Widget,
+    /// A whole sorted list the game draws.
+    List,
+    /// The full-screen fade (`0x00040890`).
+    Fade,
+    /// A solid rectangle of `0x00052ce7`: a menu fade, a bar, a divider.
+    Bar,
+    /// The loading screen's bitmaps and spinner (`0x000289e0`).
+    Loading,
+    /// Another widget fan or screen quad outside the HUD.
+    Quad,
+    /// A menu shader bitmap's quad (`0x002b12ae`).
+    MenuShader,
+    /// An active model widget's material group.
+    Model,
+    /// A widget outline (`0x0001ed98`).
+    Outline,
+    /// The blur under a dialog (`0x00235756`).
+    Blur,
+}
+
+impl UiKind {
+    pub const ALL: [UiKind; 10] = [
+        UiKind::Widget,
+        UiKind::List,
+        UiKind::Fade,
+        UiKind::Bar,
+        UiKind::Loading,
+        UiKind::Quad,
+        UiKind::MenuShader,
+        UiKind::Model,
+        UiKind::Outline,
+        UiKind::Blur,
+    ];
+
+    /// The kind's part of its counter's name.
+    pub fn name(self) -> &'static str {
+        match self {
+            UiKind::Widget => "widget",
+            UiKind::List => "list",
+            UiKind::Fade => "fade",
+            UiKind::Bar => "bar",
+            UiKind::Loading => "loading",
+            UiKind::Quad => "quad",
+            UiKind::MenuShader => "menu_shader",
+            UiKind::Model => "model",
+            UiKind::Outline => "outline",
+            UiKind::Blur => "blur",
+        }
+    }
+}
+
+/// A kept item's kind: the HUD's (`scene_kept_overlay_*`) or the menu
+/// frame's (`scene_kept_ui_*`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Kind {
+    Overlay(OverlayKind),
+    Ui(UiKind),
+}
+
+impl From<OverlayKind> for Kind {
+    fn from(kind: OverlayKind) -> Self {
+        Kind::Overlay(kind)
+    }
+}
+
+impl From<UiKind> for Kind {
+    fn from(kind: UiKind) -> Self {
+        Kind::Ui(kind)
+    }
+}
+
+impl Kind {
+    /// Its counter for `cause`.
+    pub fn counter(self, cause: &str) -> String {
+        match self {
+            Kind::Overlay(kind) => format!("scene_kept_overlay_{}_{cause}", kind.name()),
+            Kind::Ui(kind) => format!("scene_kept_ui_{}_{cause}", kind.name()),
+        }
+    }
+
+    /// A HUD item: its guest draw is owed to it, not `untraced`.
+    fn hud(self) -> bool {
+        matches!(self, Kind::Overlay(_))
     }
 }
 
@@ -144,7 +244,7 @@ pub fn in_hud() -> bool {
 /// The item being offered to the host, and the first cause it gave.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Pending {
-    kind: OverlayKind,
+    kind: Kind,
     cause: Option<&'static str>,
 }
 
@@ -155,7 +255,7 @@ struct Kept {
     guest_next: bool,
     /// A kept item's draws are still running ([`hold`]): all are its own.
     held: bool,
-    counts: BTreeMap<(OverlayKind, &'static str), u64>,
+    counts: BTreeMap<(Kind, &'static str), u64>,
 }
 
 static KEPT: Mutex<Kept> = Mutex::new(Kept { pending: None, guest_next: false, held: false, counts: BTreeMap::new() });
@@ -165,11 +265,24 @@ fn kept() -> std::sync::MutexGuard<'static, Kept> {
 }
 
 /// A producer offers an item of `kind` to the host.
-pub fn begin(kind: OverlayKind) {
+pub fn begin(kind: impl Into<Kind>) {
     let mut k = kept();
-    k.pending = Some(Pending { kind, cause: None });
+    k.pending = Some(Pending { kind: kind.into(), cause: None });
     k.guest_next = false;
     k.held = false;
+}
+
+/// A menu-frame screen draw of `kind` is offered to the host, unless an
+/// item is already being offered (a HUD item, or a menu shader bitmap
+/// whose quad falls back to a screen fan): whether this call began it,
+/// and so must [`end`] it.
+pub fn begin_ui(kind: UiKind) -> bool {
+    let mut k = kept();
+    if k.pending.is_some() {
+        return false;
+    }
+    k.pending = Some(Pending { kind: Kind::Ui(kind), cause: None });
+    true
 }
 
 /// The item just kept draws more than once (a screen effect's strips):
@@ -211,16 +324,78 @@ pub fn end(drawn: bool) {
     let Some(p) = k.pending.take() else { return };
     if !drawn {
         *k.counts.entry((p.kind, p.cause.unwrap_or("refused"))).or_default() += 1;
-        k.guest_next = true;
+        k.guest_next |= p.kind.hud();
     }
 }
 
 /// An item of `kind` keeps its guest draw for `cause` with no offer (its
 /// producer did not read it).
-pub fn count(kind: OverlayKind, cause: &'static str) {
+pub fn count(kind: impl Into<Kind>, cause: &'static str) {
+    count_n(kind, cause, 1);
+}
+
+/// `n` items of `kind` keep their guest draws for `cause` (a menu run's
+/// widgets whose pass was not placed).
+pub fn count_n(kind: impl Into<Kind>, cause: &'static str, n: u64) {
+    if n == 0 {
+        return;
+    }
+    let kind = kind.into();
     let mut k = kept();
-    *k.counts.entry((kind, cause)).or_default() += 1;
-    k.guest_next = true;
+    *k.counts.entry((kind, cause)).or_default() += n;
+    k.guest_next |= kind.hud();
+}
+
+/// The kept menu-frame draw a count of `counter` is, as its kind and
+/// cause, when it is one: a menu widget or list the overlay does not
+/// draw, a model widget's or outline's draw (`packet` when the native UI
+/// packet path records it), a blur the game draws. Counters of draws the
+/// overlay took, and of visits, are none.
+pub fn ui_kept(counter: Ui) -> Option<(UiKind, &'static str)> {
+    use UiKind::{Blur, List, Model, Outline, Widget};
+    Some(match counter {
+        Ui::ModelGuestBuilderDraw => (Model, "builder_draw"),
+        Ui::ModelNativeGroup => (Model, "packet"),
+        Ui::ModelEntry => (Model, "entry"),
+        Ui::ModelCamera => (Model, "camera"),
+        Ui::ModelCaller => (Model, "caller"),
+        Ui::ModelGeometry => (Model, "geometry"),
+        Ui::ModelRangeLimit => (Model, "range_limit"),
+        Ui::ModelTextureCommit => (Model, "texture_commit"),
+        Ui::ModelReservation => (Model, "reservation"),
+        Ui::OutlineNative => (Outline, "packet"),
+        Ui::OutlineEntry => (Outline, "entry"),
+        Ui::OutlineInputs => (Outline, "inputs"),
+        Ui::OutlineReservation => (Outline, "reservation"),
+        Ui::OverlayMenuRefusedFrame => (List, "frame"),
+        Ui::OverlayMenuRefusedMismatched => (List, "mismatched"),
+        Ui::OverlayMenuRefusedBitmapMeter => (Widget, "bitmap_meter"),
+        Ui::OverlayMenuRefusedBitmapScroll => (Widget, "bitmap_scroll"),
+        Ui::OverlayMenuRefusedBitmapState => (Widget, "bitmap_state"),
+        Ui::OverlayMenuRefusedText => (Widget, "text"),
+        Ui::OverlayMenuRefusedModel => (Widget, "model"),
+        Ui::OverlayMenuRefusedDraw => (Widget, "draw"),
+        Ui::OverlayMenuRefusedUnreadable => (Widget, "unreadable"),
+        Ui::OverlayMenuRefusedUnlisted => (Widget, "unlisted"),
+        Ui::OverlayModalBlurReplayed => (Blur, "replayed"),
+        Ui::OverlayModalBlurRefusedPass => (Blur, "pass"),
+        Ui::OverlayModalBlurRefusedArguments => (Blur, "arguments"),
+        Ui::OverlayModalBlurRefusedSteps => (Blur, "steps"),
+        Ui::OverlayModalBlurRefusedCombiner => (Blur, "combiner"),
+        Ui::OverlayModalBlurRefusedTargets => (Blur, "targets"),
+        // A run's pass not placed keeps each of its draws: counted per
+        // draw where the run is known (`ui_overlay::placed`).
+        _ => return None,
+    })
+}
+
+/// Counts `counter` and, when it is a kept menu-frame draw ([`ui_kept`]),
+/// its `scene_kept_ui_<kind>_<cause>`.
+pub fn ui(counter: Ui) {
+    counter.count();
+    if let Some((kind, cause)) = ui_kept(counter) {
+        count(kind, cause);
+    }
 }
 
 /// A guest draw reached the device in the HUD scope: the draw of the last
@@ -231,15 +406,16 @@ pub fn untraced(cause: &'static str) {
     if k.held || std::mem::take(&mut k.guest_next) {
         return;
     }
-    *k.counts.entry((OverlayKind::Untraced, cause)).or_default() += 1;
+    *k.counts.entry((Kind::Overlay(OverlayKind::Untraced), cause)).or_default() += 1;
 }
 
-/// `scene_kept_overlay_<kind>_<cause>` for every item kept so far.
+/// `scene_kept_overlay_<kind>_<cause>` and `scene_kept_ui_<kind>_<cause>`
+/// for every item kept so far.
 pub fn counters() -> Vec<(String, u64)> {
     kept()
         .counts
         .iter()
-        .map(|(&(kind, cause), &n)| (format!("scene_kept_overlay_{}_{cause}", kind.name()), n))
+        .map(|(&(kind, cause), &n)| (kind.counter(cause), n))
         .collect()
 }
 
@@ -298,6 +474,46 @@ mod tests {
         refuse("device");
         end(false);
         assert_eq!(counters().iter().map(|(_, n)| n).sum::<u64>(), total);
+    }
+
+    #[test]
+    fn a_menu_draw_counts_under_scene_kept_ui_and_owes_no_untraced_draw() {
+        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        release();
+        let (fade, untraced_n) = (kept_count("scene_kept_ui_fade_clip_rects"), kept_count("scene_kept_overlay_untraced_packet"));
+        assert!(begin_ui(UiKind::Fade));
+        refuse("clip_rects");
+        end(false);
+        assert_eq!(kept_count("scene_kept_ui_fade_clip_rects"), fade + 1);
+        // A guest draw after a kept HUD item is owed to it; after a menu
+        // draw it is not.
+        untraced("packet");
+        assert_eq!(kept_count("scene_kept_overlay_untraced_packet"), untraced_n + 1);
+        // An offer already open is not replaced: the menu shader's.
+        let shader = kept_count("scene_kept_ui_menu_shader_combiner");
+        begin(UiKind::MenuShader);
+        refuse("combiner");
+        assert!(!begin_ui(UiKind::Quad));
+        end(false);
+        assert_eq!(kept_count("scene_kept_ui_menu_shader_combiner"), shader + 1);
+        let pass = kept_count("scene_kept_ui_widget_pass");
+        count_n(UiKind::Widget, "pass", 3);
+        count_n(UiKind::Widget, "pass", 0);
+        assert_eq!(kept_count("scene_kept_ui_widget_pass"), pass + 3);
+        let names: std::collections::BTreeSet<_> = UiKind::ALL.iter().map(|k| k.name()).collect();
+        assert_eq!(names.len(), UiKind::ALL.len());
+    }
+
+    #[test]
+    fn a_kept_ui_counter_counts_its_draw() {
+        let _s = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(ui_kept(Ui::OverlayMenuRefusedBitmapMeter), Some((UiKind::Widget, "bitmap_meter")));
+        assert_eq!(ui_kept(Ui::OverlayMenuClaimed), None, "a claimed draw is the overlay's");
+        assert_eq!(ui_kept(Ui::OverlayMenuRefusedPass), None, "counted per draw of the run");
+        let name = "scene_kept_ui_outline_inputs";
+        let before = kept_count(name);
+        ui(Ui::OutlineInputs);
+        assert_eq!(kept_count(name), before + 1);
     }
 
     #[test]
