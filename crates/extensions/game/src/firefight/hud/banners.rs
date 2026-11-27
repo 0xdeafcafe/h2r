@@ -155,6 +155,69 @@ pub fn events(
     out
 }
 
+/// The announcer's clips for what began between `before` and `now`, as
+/// `events` (from [`events`]) for the player at roster slot `local`
+/// (docs/game/firefight.md, "The announcer"), in their order: the skulls
+/// that switched off, then each banner's line (a wave or boss wave is
+/// `new-wave`, a cleared wave `wave-complete`, and so on, [`banner_clip`]),
+/// and lives added to the player's pool. When every skull the blob carries
+/// is on, one `all-skulls-on` takes the place of the tick's skull lines. A
+/// banner or skull with no clip is silent.
+pub fn lines(before: Option<&Mode>, now: &Mode, local: u8, events: &[Banner]) -> Vec<&'static str> {
+    let Some(b) = before.filter(|b| !b.stage.over()) else {
+        return Vec::new();
+    };
+    let live = !now.stage.over();
+    let all = now.skulls & super::SKULL_BITS == super::SKULL_BITS;
+    let mut out: Vec<&'static str> = Vec::new();
+    if live && b.skulls & !now.skulls != 0 {
+        out.push("skulls-off");
+    }
+    let mut said_all = false;
+    for e in events {
+        out.extend(match e {
+            Banner::Skull(_) if all => {
+                let first = !said_all;
+                said_all = true;
+                first.then_some("all-skulls-on")
+            }
+            Banner::Skull(name) => skull_clip(name),
+            other => banner_clip(other),
+        });
+    }
+    if live
+        && let (Some(was), Some(is)) = (lives_of(b, local), lives_of(now, local))
+        && is > was
+    {
+        out.push("lives-added");
+    }
+    out
+}
+
+/// The clip of a banner's line, when it has one.
+pub fn banner_clip(banner: &Banner) -> Option<&'static str> {
+    Some(match banner {
+        Banner::Wave(_) | Banner::BossWave => "new-wave",
+        Banner::WaveClear => "wave-complete",
+        Banner::RoundComplete => "round-complete",
+        Banner::SetComplete => "set-complete",
+        Banner::BonusRound => "bonus-round",
+        Banner::BonusOver(_) => "bonus-round-complete",
+        Banner::LastLife => "last-life",
+        Banner::GameOver => "game-over",
+        _ => return None,
+    })
+}
+
+/// The clip of a skull's "<name> On" line, by the skull's menu name.
+pub fn skull_clip(name: &str) -> Option<&'static str> {
+    let want = format!("{}-on", name.to_lowercase().replace(' ', "-"));
+    crate::medal_announcer::CLIPS
+        .iter()
+        .map(|(id, _)| *id)
+        .find(|id| *id == want)
+}
+
 /// A banner on screen: how opaque it is, 0 to 255.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Shown {
