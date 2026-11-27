@@ -626,6 +626,12 @@ mod tests {
 
     #[test]
     fn switches_install_only_the_requested_body() {
+        // The default-on animation manager installs its own chains.
+        let baseline = {
+            let mut registry = Registry::new(Switches::defaults());
+            registry.add(&SimNative::for_tests()).unwrap();
+            registry.build(&Base).unwrap().chains.len()
+        };
         for enabled in std::iter::once(None).chain(ENTRIES.iter().map(Some)) {
             let mut switches = Switches::defaults();
             if let Some((_, key, _)) = enabled {
@@ -638,7 +644,7 @@ mod tests {
             let sharing: Vec<_> = enabled
                 .map(|(_, key, _)| ENTRIES.iter().filter(|e| e.1 == *key).collect())
                 .unwrap_or_default();
-            assert_eq!(plan.chains.len(), sharing.len());
+            assert_eq!(plan.chains.len(), baseline + sharing.len());
             for (point, key, _) in sharing {
                 assert_eq!(
                     plan.chains[&point.base].implement.as_ref().unwrap().label,
@@ -672,7 +678,10 @@ mod tests {
         }
         let mut incomplete = SimNative::for_tests();
         incomplete.missing_hs_entries.push(points::HS_THREAD_EXECUTE.name);
-        assert!(plan_for("impl.sim.native.hs", incomplete).chains.is_empty());
+        let plan = plan_for("impl.sim.native.hs", incomplete);
+        for point in HS_POINTS {
+            assert!(!plan.chains.contains_key(&point.base), "{}", point.name);
+        }
     }
 
     #[test]
@@ -878,7 +887,9 @@ mod tests {
         for (point, label) in COLLISION_INVALIDATE {
             let chain = &plan.chains[&point.base];
             assert!(chain.implement.is_none());
-            assert_eq!(chain.observe_before.len(), 1, "{label}");
+            // The map load is also observed by the default-on animation manager.
+            let shared = if point.base == points::CACHE_TAGS_LOAD.base { 2 } else { 1 };
+            assert_eq!(chain.observe_before.len(), shared, "{label}");
         }
         for (point, entry, _) in COLLISION_OBSERVED {
             let chain = &plan.chains[&point.base];
@@ -904,9 +915,15 @@ mod tests {
             assert_eq!(chain.observe_before.len(), 1, "{label}");
             assert!(chain.observe_before[0].optional, "{label}");
         }
+        // The default-on animation manager adds its own chains, one of
+        // which (the map load) the collision invalidation shares.
+        let mut base = Registry::new(Switches::defaults());
+        base.add(&SimNative::for_tests()).unwrap();
+        let manager_chains = base.build(&Base).unwrap().chains.len();
         assert_eq!(
             plan.chains.len(),
-            COLLISION_ENTRIES.len()
+            manager_chains - 1
+                + COLLISION_ENTRIES.len()
                 + COLLISION_INVALIDATE.len()
                 + COLLISION_PARTIAL.len()
                 + COLLISION_OBSERVED.len()
@@ -914,10 +931,14 @@ mod tests {
         );
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 
-        // Off by default.
+        // Off by default: only the animation manager's chains install.
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
-        assert!(registry.build(&Base).unwrap().chains.is_empty());
+        let plan = registry.build(&Base).unwrap();
+        assert_eq!(plan.chains.len(), manager_chains);
+        for (point, entry, _) in COLLISION_ENTRIES {
+            assert!(!plan.chains.contains_key(&point.base), "{:#x}", entry.addr());
+        }
     }
 
     #[test]
