@@ -983,6 +983,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         ok
     }
 
+    /// The scene draws every layer of the cut light frame
+    /// ([`scene`]) where its caster maps can be frozen: the single 1x
+    /// backend the shadow stage runs on. Elsewhere the guest's frame runs.
+    fn draws_scene(&self) -> bool {
+        crate::native_shadows_glue::scene_gpu().is_some()
+    }
+
     fn draw_scene(
         &self,
         mem: &mut dyn GuestMemory,
