@@ -903,71 +903,211 @@ fn every_registration_site_in_boot_is_accounted_for() {
     );
 }
 
-/// Each optional piece alone and in every combination, with the default
-/// switches and with every hook switch on: skulls and the Halo 1 options
-/// (a settings store), bots and the Clankers page (XAPI), map slots and our
-/// skulls' map reads (a VFS), telemetry, the level boot, our cheats (an
-/// agent), the lockstep harness and the co-op probe.
-///
-/// The second group (the Theater, Live, the lab takeover and the light
-/// host) is crossed with that in two ways to keep the run short: all four
-/// off or all four on over every first-group combination, then every
-/// combination of the four over a few first-group bases.
-#[test]
-fn the_plan_builds_with_every_combination_of_optional_features() {
-    let mut failures = Vec::new();
+/// The optional pieces a case can supply, as one bit each: the first nine
+/// (a settings store, XAPI, a VFS, telemetry, the level boot, an agent, the
+/// lockstep harness, the co-op probe, signed-in co-op) then the Theater,
+/// Live, the lab takeover and the light host.
+const OPTIONAL_PIECES: u32 = 13;
+
+/// How many pieces together a clash may need. Two features clash over a
+/// point, and each is made by one piece or a pair of them, so three covers
+/// a clash that needs a third piece present or absent as well.
+const CLASH_STRENGTH: u32 = 3;
+
+/// Rows of on/off for `pieces` pieces such that every choice of `strength`
+/// pieces takes each of its `2^strength` on/off values in some row (a
+/// covering array). Greedy, from the all-off row, every candidate row scored
+/// per round: `O(rows * 2^pieces * C(pieces, strength))`, deterministic.
+fn covering_rows(pieces: u32, strength: u32) -> Vec<u32> {
+    let all = 1u32 << pieces;
+    let groups: Vec<u32> = (0..all).filter(|m| m.count_ones() == strength).collect();
+    // `covered[g][v]`: group g has shown the values `v` (a subset of its mask).
+    let mut covered = vec![vec![false; all as usize]; groups.len()];
+    let mut missing = groups.len() * (1 << strength);
+    let mut rows = Vec::new();
+    let mut next = Some(0);
+    while missing > 0 {
+        let row = next.take().unwrap_or_else(|| {
+            (0..all)
+                .max_by_key(|row| {
+                    groups
+                        .iter()
+                        .enumerate()
+                        .filter(|(g, mask)| !covered[*g][(row & **mask) as usize])
+                        .count()
+                })
+                .expect("at least one candidate row")
+        });
+        for (g, mask) in groups.iter().enumerate() {
+            let seen = &mut covered[g][(row & mask) as usize];
+            if !*seen {
+                *seen = true;
+                missing -= 1;
+            }
+        }
+        rows.push(row);
+    }
+    rows
+}
+
+/// The case for a row of [`OPTIONAL_PIECES`] bits.
+fn case_for_row(switches: &str, row: u32) -> Case {
+    let on = |n: u32| row & (1 << n) != 0;
+    let first = Case {
+        settings: on(0),
+        #[cfg(feature = "gpu")]
+        drawing: true,
+        xapi: on(1),
+        vfs: on(2),
+        telemetry: on(3),
+        level: on(4),
+        agent: on(5),
+        lockstep: on(6),
+        coop_probe: on(7),
+        coop_live: on(8),
+        ..Case::none(switches)
+    };
+    with_second_group(&first, row >> 9)
+}
+
+/// The cases the sweep builds for `switches`: each covering row.
+fn sweep_cases_for(switches: &str) -> Vec<Case> {
+    covering_rows(OPTIONAL_PIECES, CLASH_STRENGTH)
+        .into_iter()
+        .map(|row| case_for_row(switches, row))
+        .collect()
+}
+
+/// The cases the sweep builds: the covering rows under each switch set.
+fn sweep_cases() -> Vec<Case> {
     let native_off = format!("{ALL_ON},{NATIVE_OFF}");
     let forge = format!("{ALL_ON},forge");
-    for switches in ["", ALL_ON, native_off.as_str()] {
-        for bits in 0u32..(1 << 9) {
-            let on = |n: u32| bits & (1 << n) != 0;
-            let first = Case {
-                switches: switches.to_owned(),
-                settings: on(0),
-                #[cfg(feature = "gpu")]
-                drawing: true,
-                xapi: on(1),
-                vfs: on(2),
-                telemetry: on(3),
-                level: on(4),
-                agent: on(5),
-                lockstep: on(6),
-                coop_probe: on(7),
-                coop_live: on(8),
-                ..Case::none(switches)
-            };
-            for second in [0u32, 0b0111] {
-                if let Err(e) = plan(&with_second_group(&first, second)) {
-                    failures.push(e);
-                }
-            }
-        }
-    }
-    // Every combination of the second group over the bases that matter:
-    // nothing else, everything a test can supply, and the probe's and
-    // lockstep's runs.
-    let bases = |switches: &str| {
-        let mut probe = Case::full(switches);
-        probe.coop_probe = true;
-        let mut lockstep = Case::full(switches);
-        lockstep.lockstep = true;
-        [Case::none(switches), Case::full(switches), probe, lockstep]
-    };
-    for switches in ["", ALL_ON, native_off.as_str(), forge.as_str()] {
-        for base in bases(switches) {
-            for second in 0u32..(1 << 4) {
-                if let Err(e) = plan(&with_second_group(&base, second)) {
-                    failures.push(e);
-                }
-            }
-        }
-    }
+    ["", ALL_ON, native_off.as_str(), forge.as_str()]
+        .into_iter()
+        .flat_map(sweep_cases_for)
+        .collect()
+}
+
+/// Builds each case's plan with `plan`; the distinct refusals.
+fn refusals(cases: &[Case], plan: impl Fn(&Case) -> Result<hooks::Plan, String>) -> Vec<String> {
+    dedup(cases.iter().filter_map(|case| plan(case).err()).collect())
+}
+
+/// Every piece alone, and every three of them together on and off, with the
+/// default switches and with every hook switch on: skulls and the Halo 1
+/// options (a settings store), bots and the Clankers page (XAPI), map slots
+/// and our skulls' map reads (a VFS), telemetry, the level boot, our cheats
+/// (an agent), the lockstep harness and the co-op probe, the Theater, Live,
+/// the lab takeover and the light host.
+///
+/// A clash comes from a feature one piece adds meeting a feature another
+/// adds, so a covering array over the pieces ([`covering_rows`]) finds what
+/// the full product of 2^13 does, in a few dozen builds instead of
+/// thousands. [`the_sweep_finds_a_clash_that_needs_two_or_three_pieces`]
+/// proves it finds one.
+#[test]
+fn the_plan_builds_with_every_combination_of_optional_features() {
+    let failures = refusals(&sweep_cases(), plan);
     assert!(
         failures.is_empty(),
-        "{} cases refused:\n{}",
+        "{} distinct refusals:\n{}",
         failures.len(),
-        dedup(failures).join("\n")
+        failures.join("\n")
     );
+}
+
+/// A feature that hooks a made-up point with a `before` and no order, or
+/// names that point's address as another name, so two of them clash.
+struct Clasher(&'static str, &'static hooks::points::Point);
+
+static CLASH_POINT: hooks::points::Point = hooks::points::Point::new(
+    "TEST_CLASH",
+    0x00ff_e000,
+    hooks::points::Sig::Fn {
+        args: &[],
+        ret: None,
+        pop: 0,
+    },
+    "docs/engine/feature-engine.md",
+);
+static CLASH_ALIAS: hooks::points::Point = hooks::points::Point::new(
+    "TEST_CLASH_ALIAS",
+    0x00ff_e000,
+    hooks::points::Sig::Opaque,
+    "docs/engine/feature-engine.md",
+);
+
+impl hooks::Feature for Clasher {
+    fn manifest(&self) -> hooks::Manifest {
+        hooks::Manifest::new(self.0, "test")
+    }
+    fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
+        b.raw()
+            .before(self.1, self.0, |_| Ok(hooks::Flow::Continue));
+        Ok(())
+    }
+}
+
+/// `case`'s plan with two [`Clasher`]s added when `when` holds of it.
+fn plan_with_clash(
+    case: &Case,
+    when: impl Fn(&Case) -> bool,
+    second: &'static hooks::points::Point,
+) -> Result<hooks::Plan, String> {
+    let mut features = registry(case);
+    if when(case) {
+        features.add(&Clasher("clash-a", &CLASH_POINT)).unwrap();
+        features.add(&Clasher("clash-b", second)).unwrap();
+    }
+    features.build(&hooks::Base).map_err(|conflicts| {
+        let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
+        format!("feature plan refused: {}", c.join("; "))
+    })
+}
+
+#[test]
+fn the_sweep_finds_a_clash_that_needs_two_or_three_pieces() {
+    let cases = sweep_cases_for(ALL_ON);
+    // Nothing injected: the sweep is clean (the test above).
+    assert!(refusals(&cases, |c| plan_with_clash(c, |_| false, &CLASH_POINT)).is_empty());
+    // Two features both hooking a point before, no order, when a VFS and the
+    // co-op probe are both present.
+    let two = refusals(&cases, |c| {
+        plan_with_clash(c, |c| c.vfs && c.coop_probe, &CLASH_POINT)
+    });
+    assert!(
+        two.iter().any(|r| r.contains(
+            "clash-a and clash-b both hook it before with no order between them"
+        )),
+        "{two:?}"
+    );
+    // Two names for one address, when telemetry, the level boot and a light
+    // host are all present (three pieces).
+    let three = refusals(&cases, |c| {
+        plan_with_clash(c, |c| c.telemetry && c.level && c.light, &CLASH_ALIAS)
+    });
+    assert!(
+        three.iter().any(|r| r.contains("is named both")),
+        "{three:?}"
+    );
+    // And when the pieces are absent together: no XAPI, no agent, no Live.
+    let absent = refusals(&cases, |c| {
+        plan_with_clash(c, |c| !c.xapi && !c.agent && !c.live && c.theater, &CLASH_POINT)
+    });
+    assert!(!absent.is_empty(), "a clash needing three absences went unseen");
+}
+
+#[test]
+fn a_covering_array_covers_every_choice_of_pieces() {
+    let rows = covering_rows(8, 3);
+    for mask in (0u32..1 << 8).filter(|m| m.count_ones() == 3) {
+        let mut seen = std::collections::BTreeSet::new();
+        for row in &rows {
+            seen.insert(row & mask);
+        }
+        assert_eq!(seen.len(), 8, "mask {mask:#b} lacks some values");
+    }
+    assert!(rows.len() < 40, "{} rows for 8 pieces", rows.len());
 }
 
 /// `case` with the second group's bits: the Theater, Live, the takeover and

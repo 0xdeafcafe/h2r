@@ -123,7 +123,10 @@ run in place through the host-call thunk, one runner step each
 `order_classes_and_after_feature_sort_the_chain`);
 `crates/apps/boot/src/registration/tests.rs`
 (`the_plan_builds_with_every_combination_of_optional_features`) builds the
-plan boot builds, so a clash fails `cargo test`;
+plan boot builds over a covering array of the optional pieces (every three of
+them on and off together), so a clash fails the test;
+`the_sweep_finds_a_clash_that_needs_two_or_three_pieces` injects the unordered and
+the two-names refusals to prove the sweep sees them;
 `the_light_host_with_the_dedicated_lobby_plans_with_no_refusal` builds the
 light host's set with the dedicated lobby (`H2_HOST_LOBBY=1`). At `GAME_TICK`
 the lobby's drive sits inside the map select's refresh
