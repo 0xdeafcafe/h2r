@@ -53,6 +53,7 @@ mod tests {
             draws: 28,
             render_passes: 11,
             submits: 2,
+            targets: 3,
         };
         assert!(e3_report(&frame).is_none());
         frame.lighting = d3d::Lighting::E3;

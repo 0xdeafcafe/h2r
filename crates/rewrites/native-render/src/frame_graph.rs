@@ -14,6 +14,7 @@ mod lighting;
 mod markers;
 mod private;
 mod sun;
+pub mod targets;
 pub use cones::ConeDraws;
 pub use lighting::{E3Report, PassWork};
 pub use sun::{RECEIVER_DEPTH_BIAS, SunSkip};
@@ -64,6 +65,9 @@ pub struct FrameReport {
     pub render_passes: u64,
     pub draws: u64,
     pub submits: u64,
+    /// The targets the frame's ops draw, read or present
+    /// ([`targets::declare`]).
+    pub targets: u32,
 }
 
 impl FrameReport {
@@ -71,6 +75,7 @@ impl FrameReport {
         id: SceneId,
         lighting: Lighting,
         e3: Option<E3Report>,
+        replay: &ReplayFrame,
         before: BatchStats,
         after: BatchStats,
     ) -> Self {
@@ -78,6 +83,7 @@ impl FrameReport {
             id,
             lighting,
             e3,
+            targets: targets::declare(replay).len() as u32,
             render_passes: after.render_passes - before.render_passes,
             draws: after.draws - before.draws,
             submits: after.submits - before.submits,
@@ -339,7 +345,7 @@ pub fn draw_private_with_observer(
         scene_hash: summary_hash(scene),
         size,
         rgba,
-        report: FrameReport::new(scene.id, lighting, e3, before, backend.batch_stats()),
+        report: FrameReport::new(scene.id, lighting, e3, replay, before, backend.batch_stats()),
     })
 }
 
@@ -364,6 +370,7 @@ pub fn draw_display(
         scene.id,
         lighting,
         e3,
+        replay,
         before,
         backend.batch_stats(),
     ))
@@ -393,7 +400,7 @@ pub fn draw_display_on(
     let e3 = record(&mut pass, scene, replay, false, lighting, observer, sun_replay, None)?;
     let outputs = pass.present_with_outputs(flags, gamma)?;
     Ok((
-        FrameReport::new(scene.id, lighting, e3, before, backend.batch_stats()),
+        FrameReport::new(scene.id, lighting, e3, replay, before, backend.batch_stats()),
         outputs,
     ))
 }
@@ -425,7 +432,7 @@ pub fn draw_scaled_display_on(
     let e3 = record(&mut pass, scene, replay, false, lighting, observer, None, None)?;
     let (after, outputs) = pass.present(replay.flags, replay.gamma.as_deref())?;
     Ok((
-        FrameReport::new(scene.id, lighting, e3, before, after),
+        FrameReport::new(scene.id, lighting, e3, replay, before, after),
         outputs,
     ))
 }
@@ -462,7 +469,7 @@ pub fn draw_display_at_rate(
         None => pass.present_with_outputs(flags, gamma)?,
     };
     Ok((
-        FrameReport::new(scene.id, lighting, e3, before, backend.batch_stats()),
+        FrameReport::new(scene.id, lighting, e3, replay, before, backend.batch_stats()),
         outputs,
     ))
 }
@@ -502,7 +509,7 @@ pub fn draw_scaled_display_at_rate(
         None => pass.present(flags, gamma)?,
     };
     Ok((
-        FrameReport::new(scene.id, lighting, e3, before, after),
+        FrameReport::new(scene.id, lighting, e3, replay, before, after),
         outputs,
     ))
 }

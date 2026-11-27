@@ -38,7 +38,7 @@ pub(super) fn draw_mixed(
         scene_hash: summary_hash(scene),
         size,
         rgba,
-        report: FrameReport::new(scene.id, lighting, e3, before, backend.batch_stats()),
+        report: FrameReport::new(scene.id, lighting, e3, replay, before, backend.batch_stats()),
     })
 }
 

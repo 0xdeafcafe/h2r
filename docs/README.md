@@ -169,6 +169,7 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [Shader animation writes at draw time](graphics/notes/2026-11-24-shader-constant-animation.md) traces the pixel and vertex constant bindings.
 - [HUD shader selection and constant upload](graphics/notes/2026-11-24-hud-shader-setup.md) traces bitmap and glyph shader setup.
 - [Retail lens-flare draws](graphics/notes/2026-11-24-lens-flares.md) traces the visibility callback, reflections and intermediate filter targets.
+- [Where the view snapshot draws](graphics/notes/2026-11-27-snapshot-slot.md) places layers 18, 19 and 21 and the colour copy `0x000352e0` in the view's order.
 - [native-visibility.md](graphics/native-visibility.md): visibility and the main view's records in Rust (retire-d3d R4): every mode's clusters and objects, the window frusta, the light views, compared with the guest's and carried by default
 - [native-world.md](graphics/native-world.md): native renderer stage 1: the static world
 - [native-world-materials.md](graphics/native-world-materials.md): how a world material layer-3 pass is translated and refused
