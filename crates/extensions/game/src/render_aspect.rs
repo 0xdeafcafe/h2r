@@ -105,6 +105,11 @@ fn retail_lens(mem: &impl GuestMemory) -> f32 {
 fn projection_factor(mem: &impl GuestMemory, output: (u32, u32)) -> f32 {
     // Below 1 the factor widens the horizontal lens; above 1 it grows the
     // vertical one (`canvas_fit::Lens::factor`).
+    // A window of the canvas's own 4:3 leaves the guest's lens as the game
+    // chose it, whatever its anamorphic term.
+    if canvas_fit::stretch_ratio(output).is_none() {
+        return 1.0;
+    }
     retail_lens(mem) * canvas_fit::Lens::for_window(output).factor()
 }
 
@@ -1186,7 +1191,7 @@ mod tests {
         let esp = 0x1000;
         let mem = FakeGuest::new();
         let gather = gather_factor(&mem);
-        for (output, y) in [((960, 1280), 0.5625f32), ((720, 1280), 0.31640625)] {
+        for (output, y) in [((960, 1280), 0.5625f32), ((720, 1280), 0.421875)] {
             let factor = projection_factor(&mem, output);
             close(factor, 1.0 / y);
             let mut camera = displayed_camera(esp);
@@ -1751,7 +1756,10 @@ mod tests {
         for (i, edge) in [0, 0, 480, 640].into_iter().enumerate() {
             mem.put_u16(0x0048_5648 + i as u32 * 2, edge);
         }
-        for size in [(5120, 2880), (3440, 1440), (1200, 1600), (640, 480)] {
+        // A portrait window grows the guest's vertical lens, so the guest
+        // draws the sprite at the window's shape already: no fit.
+        assert_eq!(projected_effect_fit(&mem, (1200, 1600), None), None);
+        for size in [(5120, 2880), (3440, 1440), (640, 480)] {
             let fit = projected_effect_fit(&mem, size, None);
             let [x, y] = physical(fit, size, [416., 176.]);
             let end = physical(fit, size, [440., 200.]);
