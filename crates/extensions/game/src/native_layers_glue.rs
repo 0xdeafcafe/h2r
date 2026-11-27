@@ -512,8 +512,8 @@ fn plan_objects<B: d3d::backend::Backend>(
         let draws = match lit.plan_layer_item(item.model, layer, scene, pass, item, &entry) {
             Ok(draws) => draws,
             Err(why) => {
-                count_refusal(&why);
-                *outcomes.entry("object_plan").or_default() += 1;
+                count_refusal(&why.to_string());
+                *outcomes.entry(why.name()).or_default() += 1;
                 continue;
             }
         };
