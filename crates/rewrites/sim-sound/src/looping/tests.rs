@@ -262,3 +262,61 @@ impl Sounds {
         self.loop_start(rng, t, &Flat(0.0), TagIndex(9), 0, SourceParams::default(), false, 0)
     }
 }
+
+#[test]
+fn a_loop_is_found_by_tag_and_owner_a_playing_one_first() {
+    let t = tags(0, 1, vec![]);
+    let mut s = Sounds::new();
+    let mut rng = Rng::new(5);
+    let a = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    assert_eq!(s.loop_find(LOOP_TAG, 7), Some(a));
+    assert_eq!(s.loop_find(LOOP_TAG, 8), None);
+    assert_eq!(s.loop_find(IN, 7), None);
+    assert!(s.loop_stop(&mut rng, &t, &Flat(0.0), a, 1, &mut NullOwners));
+    assert_eq!(s.loop_find(LOOP_TAG, 7), Some(a), "a stopped loop is still found");
+    let b = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 1).unwrap();
+    assert_eq!(s.loop_find(LOOP_TAG, 7), Some(b), "the playing one before the stopped one");
+}
+
+#[test]
+fn a_new_source_is_where_the_next_segment_plays() {
+    let t = tags(0, 1, vec![]);
+    let mut s = Sounds::new();
+    let mut rng = Rng::new(6);
+    let h = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    let mut moved = SourceParams::default();
+    moved.0[5] = 0x4120_0000;
+    assert!(s.loop_set_source(h, moved));
+    tick(&mut s, &mut rng, &t, 3);
+    let p = s.loops().get(h).unwrap().tracks[0].primary.unwrap();
+    assert_eq!(s.get(p).unwrap().source, moved);
+}
+
+#[test]
+fn a_faded_loop_plays_no_out_and_is_freed_once_empty() {
+    let t = tags(0, 1, vec![]);
+    let mut s = Sounds::new();
+    let mut rng = Rng::new(7);
+    let h = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    assert!(!s.loop_free_silent(h), "the in plays");
+    let intro = s.loops().get(h).unwrap().tracks[0].primary.unwrap();
+    assert!(s.loop_fade_out(h, 1, 3, &mut NullOwners));
+    assert!(!s.loop_fade_out(h, 1, 3, &mut NullOwners), "once");
+    assert_eq!(tags_of(&s, h), [IN], "no out");
+    assert_eq!(s.get(intro).unwrap().phase, Phase::Fading { since: 1, until: 4 });
+    for n in 1..=5 {
+        tick(&mut s, &mut rng, &t, n);
+    }
+    assert!(s.loops().get(h).is_none());
+    assert!(s.instances().is_empty());
+}
+
+#[test]
+fn a_loop_with_no_sound_is_freed_at_once() {
+    let mut t = tags(0, 1, vec![]);
+    t.loops.get_mut(&LOOP_TAG).unwrap().tracks[0].segments = [None; Segment::COUNT];
+    let mut s = Sounds::new();
+    let h = s.loop_start(&mut Rng::new(8), &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    assert!(s.loop_free_silent(h));
+    assert!(s.loops().get(h).is_none());
+}

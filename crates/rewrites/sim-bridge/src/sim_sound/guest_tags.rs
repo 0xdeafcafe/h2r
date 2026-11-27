@@ -15,16 +15,25 @@
 //! | pitch ranges | gestalt `+0x24`, 12 bytes: bounds row `+2`, first permutation `+8`, count `+0xa` |
 //! | permutations | gestalt `+0x2c`, 16 bytes: skip `+2`, length in ms `+6` (`0x218c60`) |
 //! | promotion banks | gestalt `+0x4c`, `0x1c` bytes: rows at `+4`, 16 bytes a row, its range `+0` (`0x218f10`) |
+//! | looping sound (`lsnd`) | the tag's definition: flags `+0` (bit 7 one loop a tag), tracks `+0x1c` (count, rows), details `+0x24` |
+//! | loop tracks | `0x58` bytes: flags `+4`, fade in `+0xc`, fade out `+0x10`, segment references at [`SEGMENT_REFS`] (the index at `+4`), crossfade `+0x50` (`0x21a250`) |
+//! | loop details | `0x34` bytes: the sound's index `+8`, interval `+0xc`, `+0x10`, flags `+0x18` (`0x21b6d0`) |
 
 use std::collections::BTreeMap;
 
 use engine::points;
 use engine::{GuestMemory, MemFault};
 use sim_sound::instances::{Permutation, PitchRange, Playback, Scale, SoundTag, SoundTags, TagIndex};
-use sim_sound::looping::LoopTag;
+use sim_sound::looping::{DetailTag, LoopTag, Segment, TrackTag};
 
 /// `[0x51ebd4]`: the sound gestalt.
 pub const GESTALT: u32 = 0x0051_ebd4;
+
+/// A track's segment references by [`Segment`], `0x44a188`: in, loop,
+/// out, alt trans in, alt loop, alt trans out, alt out.
+pub const SEGMENT_REFS: [u32; Segment::COUNT] = [0x14, 0x1c, 0x24, 0x40, 0x2c, 0x48, 0x34];
+const TRACK: u32 = 0x58;
+const DETAIL: u32 = 0x34;
 
 /// The rows one call reads, keyed by the gestalt's absolute indexes.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -75,6 +84,59 @@ pub fn class_flags(m: &dyn GuestMemory, def: u32) -> Result<u8, MemFault> {
     let classes = m.u32(definition(m, m.u32(block.wrapping_add(4))?)?.wrapping_add(4))?;
     let class = m.u8(def.wrapping_add(2))? as i8 as i32;
     m.u8(classes.wrapping_add((class * 0x5c) as u32).wrapping_add(0xa))
+}
+
+/// A block's rows: its count (none below 1) and its first row.
+fn block(m: &dyn GuestMemory, at: u32) -> Result<(u32, u32), MemFault> {
+    Ok(((m.u32(at)? as i32).max(0) as u32, m.u32(at.wrapping_add(4))?))
+}
+
+/// A looping sound tag's tracks and detail sounds, `None` for an index
+/// with no definition. A detail with no sound is left out: retail skips
+/// it at each step (`0x21b6dd`).
+pub fn loop_tag(m: &dyn GuestMemory, tag: TagIndex) -> Result<Option<LoopTag>, MemFault> {
+    let def = definition(m, tag.0)?;
+    if def == 0 {
+        return Ok(None);
+    }
+    let mut looping = LoopTag::default();
+    let (count, rows) = block(m, def.wrapping_add(0x1c))?;
+    for i in 0..count {
+        let t = rows.wrapping_add(TRACK * i);
+        let mut segments = [None; Segment::COUNT];
+        for (slot, &at) in segments.iter_mut().zip(SEGMENT_REFS.iter()) {
+            let index = m.u32(t.wrapping_add(at).wrapping_add(4))?;
+            *slot = (index != u32::MAX).then_some(TagIndex(index));
+        }
+        looping.tracks.push(TrackTag {
+            flags: m.u32(t.wrapping_add(4))?,
+            segments,
+            fade_in: m.f32(t.wrapping_add(0xc))?,
+            crossfade: m.f32(t.wrapping_add(0x50))?,
+            fade_out: m.f32(t.wrapping_add(0x10))?,
+        });
+    }
+    let (count, rows) = block(m, def.wrapping_add(0x24))?;
+    for i in 0..count {
+        let d = rows.wrapping_add(DETAIL * i);
+        let index = m.u32(d.wrapping_add(8))?;
+        if index == u32::MAX {
+            continue;
+        }
+        looping.details.push(DetailTag {
+            tag: TagIndex(index),
+            interval: [m.f32(d.wrapping_add(0xc))?, m.f32(d.wrapping_add(0x10))?],
+            flags: m.u8(d.wrapping_add(0x18))?,
+        });
+    }
+    Ok(Some(looping))
+}
+
+/// Tag flag bit 7 of a looping sound: one loop a tag, keyed `tag | 0x6000`
+/// for a source with a spatial type (`0x21a2bd`).
+pub fn loop_shared(m: &dyn GuestMemory, tag: TagIndex) -> Result<bool, MemFault> {
+    let def = definition(m, tag.0)?;
+    Ok(def != 0 && m.u8(def)? & 0x80 != 0)
 }
 
 impl Snapshot {
@@ -143,6 +205,27 @@ impl Snapshot {
         Ok(())
     }
 
+    /// Add the looping sound `tag` and every sound its tracks and detail
+    /// sounds name. A tag with no definition adds nothing.
+    pub fn read_loop(&mut self, m: &dyn GuestMemory, tag: TagIndex) -> Result<(), MemFault> {
+        let Some(looping) = loop_tag(m, tag)? else { return Ok(()) };
+        let sounds = looping.tracks.iter().flat_map(|t| t.segments.iter().flatten()).chain(looping.details.iter().map(|d| &d.tag));
+        for &sound in sounds {
+            if !self.sounds.contains_key(&sound) {
+                self.read_tag(m, sound, -1)?;
+            }
+        }
+        self.loops.insert(tag, looping);
+        Ok(())
+    }
+
+    /// The snapshot of one looping sound and its sounds.
+    pub fn of_loop(m: &dyn GuestMemory, tag: TagIndex) -> Result<Self, MemFault> {
+        let mut s = Self::default();
+        s.read_loop(m, tag)?;
+        Ok(s)
+    }
+
     /// The snapshot of one tag.
     pub fn of_tag(m: &dyn GuestMemory, tag: TagIndex, rule: i32) -> Result<Self, MemFault> {
         let mut s = Self::default();
@@ -209,6 +292,32 @@ mod tests {
         assert_eq!(s.scale(1), Some(&Scale { pitch: [10, 20] }));
         assert_eq!(s.promotion(0, 2), Some(1));
         assert!(t.history_off(), "class flag bit 5");
+    }
+
+    #[test]
+    fn a_looping_sound_reads_its_tracks_details_and_their_sounds() {
+        let mut g = guest();
+        let (def, tracks, details) = (ENTRIES + 0xc00, ENTRIES + 0xd00, ENTRIES + 0xe00);
+        let looping = TagIndex(0xe200_0005);
+        g.put_u32(ENTRIES + 5 * 16 + 8, def).put_u8(def, 0x80);
+        g.put_u32(def + 0x1c, 1).put_u32(def + 0x20, tracks).put_u32(def + 0x24, 2).put_u32(def + 0x28, details);
+        g.put_u32(tracks + 4, 5).put_f32(tracks + 0xc, 0.1).put_f32(tracks + 0x10, 0.3).put_f32(tracks + 0x50, 0.2);
+        for at in SEGMENT_REFS {
+            g.put_u32(tracks + at + 4, u32::MAX);
+        }
+        g.put_u32(tracks + SEGMENT_REFS[usize::from(Segment::LOOP.0)] + 4, TAG.0);
+        g.put_u32(details + 8, u32::MAX);
+        g.put_u32(details + DETAIL + 8, TAG.0).put_f32(details + DETAIL + 0xc, 1.0).put_f32(details + DETAIL + 0x10, 2.0).put_u8(details + DETAIL + 0x18, 2);
+        let s = Snapshot::of_loop(&g, looping).unwrap();
+        let l = s.looping(looping).unwrap();
+        let mut segments = [None; Segment::COUNT];
+        segments[usize::from(Segment::LOOP.0)] = Some(TAG);
+        assert_eq!(l.tracks, [TrackTag { flags: 5, segments, fade_in: 0.1, crossfade: 0.2, fade_out: 0.3 }]);
+        assert_eq!(l.details, [DetailTag { tag: TAG, interval: [1.0, 2.0], flags: 2 }], "the detail with no sound is left out");
+        assert!(s.sound(TAG).is_some(), "its sounds are read with it");
+        assert!(loop_shared(&g, looping).unwrap());
+        assert!(!loop_shared(&g, TAG).unwrap());
+        assert_eq!(Snapshot::of_loop(&g, TagIndex(0xe200_0004)).unwrap(), Snapshot::default());
     }
 
     #[test]

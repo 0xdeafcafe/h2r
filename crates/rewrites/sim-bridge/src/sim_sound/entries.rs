@@ -29,8 +29,9 @@ use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use sim_sound::chooser;
 use sim_sound::events::TableEvent;
 use sim_sound::impulse::Selection;
-use sim_sound::instances::{Handle, Levels, Rejected, Request, Rng, SoundTag, SoundTags, Sounds, TagIndex};
-use sim_sound::owners::Reason;
+use sim_sound::instances::{Handle, Levels, Rejected, Request, Rng, SoundTag, SoundTags, Sounds, SourceParams, TagIndex};
+use sim_sound::looping::{LoopError, seconds_to_ticks};
+use sim_sound::owners::{NullOwners, Reason};
 use sim_sound::schedule::duration_ticks;
 
 use super::guest_tags::{self, Snapshot};
@@ -121,7 +122,11 @@ pub enum Body {
     LoadPump,
     /// `0x127400`: the guest's camera math, which reads no pool.
     Listeners,
+    /// `0x21a250`: find or start the loop of a tag on an owner, give it the
+    /// source and the sequence, or stop it ([`LoopCall`]).
     LoopUpdate,
+    /// `0x219c30`: nothing; the owner's listener distances it caches are
+    /// read by [`GuestLevels`] at each admission.
     LoopSource,
     /// `0x219070`: [`Chooser::choose`](sim_sound::chooser::Chooser::choose) over the gestalt's rows.
     Choose,
@@ -142,7 +147,6 @@ impl Body {
                 Some("the start layer's records ([0x51ebe0]) are not in the table")
             }
             Body::Ambience => Some("the background ambience (sound globals +0x1ac) is not in the table"),
-            Body::LoopUpdate | Body::LoopSource => Some("the looping-sound entries' arguments are not read"),
             _ => None,
         }
     }
@@ -221,6 +225,8 @@ pub struct SoundLedger {
     /// Guest calls the bodies make: the original create, dispose and
     /// listener math, the start gate and rule, the pause time.
     pub entry_guest_calls: u64,
+    /// Loop starts the full loop pool refused (`sound.loops_full`).
+    pub loops_full: u64,
     /// Mouth calls made (`0x18c6a0`), one a tick per running owned sound.
     pub mouth_calls: u64,
     /// Events handed to the host by the service.
@@ -288,6 +294,7 @@ impl Table {
             ("sound.refused_entry", l.refused_entry.values().sum()),
             ("sound.entry_guest_calls", l.entry_guest_calls),
             ("sound.mouth_calls", l.mouth_calls),
+            ("sound.loops_full", l.loops_full),
             ("sound.level_faults", l.level_faults),
             ("sound.service_events", l.service_events),
             ("sound.phase_runs", l.phase_runs),
@@ -464,13 +471,20 @@ impl Table {
             return;
         };
         let mut rng = Rng::new(before);
-        // The loops' tags come with the loop entries; until then a guest
-        // table has no loop to step.
-        let empty = Snapshot::default();
+        // A guest table's tags: every live loop's tag and its sounds.
+        let mut loops = Snapshot::default();
+        if self.tags.is_none() {
+            let playing: Vec<TagIndex> = self.sounds.loops().iter().map(|(_, l)| l.tag).collect();
+            for tag in playing {
+                if loops.read_loop(mem, tag).is_err() {
+                    self.ledger.refused_unreadable += 1;
+                }
+            }
+        }
         let (fixed_tags, fixed_levels) = (self.tags.clone(), self.levels.clone());
         let tags: &dyn SoundTags = match &fixed_tags {
             Some(t) => &**t,
-            None => &empty,
+            None => &loops,
         };
         let guest_levels = GuestLevels::new(mem);
         let levels: &dyn Levels = match &fixed_levels {
@@ -557,6 +571,159 @@ impl Table {
             Err(Rejected::NoScale(_) | Rejected::NoPromotion { .. } | Rejected::Choose(_)) => {
                 self.ledger.refused_choose += 1;
                 NONE
+            }
+        }
+    }
+}
+
+/// `0x21a250`'s arguments: the tag, the owner key, the source record, the
+/// mode (0 start, 1 keep, 2 stop), the flags (bit 0 the alternate) and the
+/// stop's fade. Arguments 1 and 3 (record `+2`, the owner row's key) key
+/// retail's per-owner rows, which the table does not keep.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoopCall {
+    pub tag: TagIndex,
+    pub owner: u32,
+    pub source: SourceParams,
+    pub mode: u32,
+    pub flags: u32,
+    /// Seconds; 0 stops with the tracks' outs.
+    pub fade: f32,
+}
+
+impl LoopCall {
+    /// The call's eight stack words, the source read from its record.
+    pub fn read(m: &dyn GuestMemory, args: [u32; 8]) -> Result<Self, MemFault> {
+        let mut source = SourceParams::default();
+        if args[0] != NONE {
+            for (i, word) in source.0.iter_mut().enumerate() {
+                *word = m.u32(args[4].wrapping_add(4 * i as u32))?;
+            }
+        }
+        Ok(Self { tag: TagIndex(args[0]), owner: args[2], source, mode: args[5], flags: args[6], fade: f32::from_bits(args[7]) })
+    }
+
+    /// The source's spatial type (word 0's byte 3, low half): a shared loop
+    /// keys on its tag only with one.
+    fn spatial(&self) -> bool {
+        (self.source.0[0] >> 24) & 0xf != 0
+    }
+
+    /// Word 0 bit 1: the loop keeps the source it has.
+    fn keeps_source(&self) -> bool {
+        self.source.0[0] & 2 != 0
+    }
+}
+
+impl Table {
+    /// `0x21a250` over the table: 1 when the caller is done with the loop
+    /// (no tag, or a stop with nothing left to stop), else 0.
+    ///
+    /// | Mode | Found | Does |
+    /// |---|---|---|
+    /// | 0, 1 | no | `loop_start` on the tag with flag bit 0 as the alternate |
+    /// | 0, 1 | playing | the source (unless the source keeps its own), then `loop_set_alternate` |
+    /// | 2 | no | 1 |
+    /// | 2 | holds no sound | freed at once, 1 |
+    /// | 2 | playing | `loop_stop` with a fade of 0, else `loop_fade_out` over it |
+    /// | 2 | stopping | nothing |
+    ///
+    /// A loop of a tag with flag bit 7 and a source with a spatial type is
+    /// keyed `tag | 0x6000`, one for every owner.
+    pub fn loop_update(&mut self, m: &mut dyn GuestMemory, call: LoopCall, tick: u32) -> u32 {
+        if call.tag.0 == NONE {
+            return 1;
+        }
+        let Ok(at) = seed_at(m) else {
+            self.ledger.refused_unreadable += 1;
+            return 0;
+        };
+        let Ok(before) = m.u32(at) else {
+            self.ledger.refused_unreadable += 1;
+            return 0;
+        };
+        let snapshot = match &self.tags {
+            Some(_) => None,
+            None => match Snapshot::of_loop(&*m, call.tag) {
+                Ok(s) => Some(s),
+                Err(_) => {
+                    self.ledger.refused_unreadable += 1;
+                    return 0;
+                }
+            },
+        };
+        let shared = match guest_tags::loop_shared(&*m, call.tag) {
+            Ok(shared) => shared && call.spatial(),
+            Err(_) if self.tags.is_some() => false,
+            Err(_) => {
+                self.ledger.refused_unreadable += 1;
+                return 0;
+            }
+        };
+        let owner = if shared { call.tag.0 | 0x6000 } else { call.owner };
+        let mut rng = Rng::new(before);
+        let done = {
+            let reads: &dyn GuestMemory = &*m;
+            let (fixed_tags, fixed_levels) = (self.tags.clone(), self.levels.clone());
+            let tags: &dyn SoundTags = match (&fixed_tags, &snapshot) {
+                (Some(t), _) => &**t,
+                (None, Some(s)) => s,
+                (None, None) => unreachable!("read above"),
+            };
+            let guest_levels = GuestLevels::new(reads);
+            let levels: &dyn Levels = match &fixed_levels {
+                Some(l) => &**l,
+                None => &guest_levels,
+            };
+            let done = self.loop_call(&mut rng, tags, levels, call, owner, tick);
+            self.ledger.level_faults += guest_levels.faults.get();
+            done
+        };
+        if rng.state() != before {
+            self.ledger.draws += draws_between(before, rng.state());
+            let _ = m.set_u32(at, rng.state());
+        }
+        done
+    }
+
+    fn loop_call(&mut self, rng: &mut Rng, tags: &dyn SoundTags, levels: &dyn Levels, call: LoopCall, owner: u32, tick: u32) -> u32 {
+        let found = self.sounds.loop_find(call.tag, owner);
+        let stopping = found.and_then(|h| self.sounds.loops().get(h)).is_some_and(|l| l.stopping);
+        // Loop sounds are the table's own (`Owner::Loop`): no host is told.
+        let owners = &mut NullOwners;
+        match (call.mode, found) {
+            (2.., None) => 1,
+            (2, Some(_)) if stopping => 0,
+            (2, Some(h)) => {
+                if self.sounds.loop_free_silent(h) {
+                    return 1;
+                }
+                if call.fade == 0.0 {
+                    self.sounds.loop_stop(rng, tags, levels, h, tick, owners);
+                } else {
+                    self.sounds.loop_fade_out(h, tick, seconds_to_ticks(call.fade), owners);
+                }
+                0
+            }
+            (_, Some(h)) if !stopping => {
+                if !call.keeps_source() {
+                    self.sounds.loop_set_source(h, call.source);
+                }
+                self.sounds.loop_set_alternate(rng, tags, levels, h, call.flags & 1 != 0, tick, owners);
+                0
+            }
+            (_, _) => {
+                if levels.refused().is_some() {
+                    self.ledger.refused_no_level += 1;
+                    return 0;
+                }
+                match self.sounds.loop_start(rng, tags, levels, call.tag, owner, call.source, call.flags & 1 != 0, tick) {
+                    Ok(_) => {}
+                    Err(LoopError::UnknownTag(_)) => self.ledger.refused_unknown_tag += 1,
+                    Err(LoopError::TooManyTracks(_)) => self.ledger.refused_unreadable += 1,
+                    Err(LoopError::Full) => self.ledger.loops_full += 1,
+                }
+                0
             }
         }
     }
@@ -832,6 +999,22 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
             let tag = cx.entry().eax;
             Ok(Ret::new(cx.read(|m| promotion_bank(m, tag))?, 0))
         }
+        Body::LoopUpdate => {
+            let args = [cx.arg(0)?, cx.arg(1)?, cx.arg(2)?, cx.arg(3)?, cx.arg(4)?, cx.arg(5)?, cx.arg(6)?, cx.arg(7)?];
+            let done = cx.write(|m| {
+                let tick = tick_of(m).unwrap_or(0);
+                let mut t = lock(&table);
+                match LoopCall::read(&*m, args) {
+                    Ok(call) => t.loop_update(m, call, tick),
+                    Err(_) => {
+                        t.ledger.refused_unreadable += 1;
+                        0
+                    }
+                }
+            });
+            Ok(Ret::new(done, 32))
+        }
+        Body::LoopSource => Ok(Ret::new(0, 4)),
         Body::HistoryLast => {
             let (range, tag) = (cx.arg(0)?, cx.arg(1)?);
             Ok(Ret::new(cx.read(|m| range_word(m, range, tag))?, 8))
@@ -840,9 +1023,7 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
         | Body::StartLayerNew
         | Body::StartLayerPlay
         | Body::StartLayerRun
-        | Body::Ambience
-        | Body::LoopUpdate
-        | Body::LoopSource => unreachable!("refused above"),
+        | Body::Ambience => unreachable!("refused above"),
     }
 }
 

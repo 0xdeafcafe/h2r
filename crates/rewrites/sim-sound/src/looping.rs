@@ -316,6 +316,43 @@ impl Sounds {
         true
     }
 
+    /// The loop of `tag` on `owner` (`0x21cf80`): a playing one before a
+    /// stopped one, each the first in slot order.
+    pub fn loop_find(&self, tag: TagIndex, owner: u32) -> Option<Handle> {
+        let of = || self.loops.iter().filter(move |(_, l)| l.tag == tag && l.owner == owner);
+        of().find(|(_, l)| !l.stopping).or_else(|| of().next()).map(|(h, _)| h)
+    }
+
+    /// A loop's new source: the sounds it admits from here on play there.
+    pub fn loop_set_source(&mut self, handle: Handle, source: SourceParams) -> bool {
+        let Some(l) = self.loops.get_mut(handle) else { return false };
+        l.source = source;
+        true
+    }
+
+    /// Free a loop that holds no sound at once (`0x21b070`, for a loop
+    /// that started none). False, and nothing freed, while one plays.
+    pub fn loop_free_silent(&mut self, handle: Handle) -> bool {
+        let silent = self.loops.get(handle).is_some_and(|l| l.tracks.iter().all(|t| t.members.is_empty()));
+        silent && self.loops.free(handle).is_ok()
+    }
+
+    /// Stop a looping sound with no outs: every sound of every track fades
+    /// over `fade_ticks` (`0x21aa1f`, a stop with a fade given), and the
+    /// loop is freed once its tracks are empty.
+    pub fn loop_fade_out(&mut self, handle: Handle, tick: u32, fade_ticks: u32, owners: &mut dyn OwnerHost) -> bool {
+        let Some(l) = self.loops.get_mut(handle) else { return false };
+        if l.stopping {
+            return false;
+        }
+        l.stopping = true;
+        let members: Vec<Handle> = l.tracks.iter().flat_map(|t| t.members.iter().copied()).collect();
+        for member in members {
+            self.stop(member, tick, fade_ticks, owners);
+        }
+        true
+    }
+
     /// The loops' part of the sound phase, first in it: each loop in slot
     /// order moves each track whose segment sound's end tick has come on to
     /// its next segment (a repeating segment plays again), then plays each
