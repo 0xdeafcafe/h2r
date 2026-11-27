@@ -199,6 +199,10 @@ pub enum Refusal {
     Download(String),
     #[error("{0}")]
     Unavailable(String),
+    /// The map variant's document was fetched and this machine could not
+    /// build it.
+    #[error("building this game's map variant failed: {0}")]
+    Build(String),
 }
 
 /// What a join needs.
@@ -213,11 +217,29 @@ pub enum Need {
         answer: Box<MapAnswer>,
         bytes: u64,
     },
+    /// A Forge document to fetch and build from this machine's own disc:
+    /// no built byte travels (docs/game/forge-map-variants.md,
+    /// "Materialising for a match"). The document's AI ground, when it has
+    /// a recipe, is built with it.
+    Build(Variant),
+}
+
+/// What a join on a variant of a Forge document needs, when its package is
+/// not here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Variant {
+    /// The server's answer: the manifest names the one Forge layer.
+    pub answer: Box<MapAnswer>,
+    /// The document's hash (`ForgeLayer::document`), the blob to fetch.
+    pub document: Sha256,
 }
 
 /// Told the package directory after an install or removal.
 pub type Installed = Box<dyn Fn(&Path) + Send + Sync>;
 pub type Ready = Box<dyn Fn(MapId) -> Result<(), String> + Send + Sync>;
+/// Builds the package of a Forge document, given its bytes, from this
+/// machine's own maps; the package's directory under the maps directory.
+pub type Builder = Box<dyn Fn(&[u8]) -> Result<PathBuf, String> + Send + Sync>;
 
 /// The join-time map check and download, for one maps directory.
 pub struct MapGate {
@@ -226,6 +248,7 @@ pub struct MapGate {
     has_map_pack: bool,
     installed: Mutex<Option<Installed>>,
     ready: Mutex<Option<Ready>>,
+    builder: Mutex<Option<Builder>>,
 }
 
 impl std::fmt::Debug for MapGate {
@@ -261,7 +284,15 @@ impl MapGate {
             has_map_pack,
             installed: Mutex::new(None),
             ready: Mutex::new(None),
+            builder: Mutex::new(None),
         }
+    }
+
+    /// Build a Forge document's package on this machine. Without a
+    /// builder a join on a map variant is refused by name
+    /// ([`Refusal::Unavailable`]).
+    pub fn on_build(&self, f: Builder) {
+        *self.builder.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
     }
 
     /// Call `f` after a download or removal so the boot updates its offers.
@@ -373,6 +404,12 @@ impl MapGate {
         if let Some(dir) = self.local(&id) {
             return Ok(Need::Local(dir));
         }
+        if let [layer] = m.forge.as_slice() {
+            return Ok(Need::Build(Variant {
+                document: layer.document,
+                answer: Box::new(answer),
+            }));
+        }
         let dir = self.package_dir(&id);
         let bytes = answer
             .map
@@ -473,6 +510,7 @@ impl MapGate {
             Need::Nothing => return Ok(None),
             Need::Local(dir) => return Ok(Some(dir)),
             Need::Download { answer, bytes } => (answer, bytes),
+            Need::Build(variant) => return self.build(f, variant, map_id).map(Some),
         };
         let mut done = 0u64;
         progress(done, total);
@@ -533,6 +571,43 @@ impl MapGate {
         self.installed(&dir);
         self.count(f, map_id);
         Ok(Some(dir))
+    }
+
+    /// Fetch the document of `variant` and build its package here: the
+    /// document's own ground comes with it. The package must resolve to
+    /// the id the server named, or nothing is kept.
+    fn build(&self, f: &dyn Fetch, variant: Variant, map_id: Option<MapId>) -> Result<PathBuf, Refusal> {
+        let id = MapId::of(&variant.answer.map.manifest);
+        let guard = self.builder.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(build) = guard.as_ref() else {
+            return Err(Refusal::Unavailable(
+                "this game cannot build a map variant".into(),
+            ));
+        };
+        let document = match f
+            .get(&format!("/content/{}", variant.document), MAX_JSON)
+            .map_err(Refusal::Download)?
+        {
+            Got::Ok(bytes) => bytes,
+            Got::NotFound => {
+                return Err(Refusal::Download(format!(
+                    "the server no longer has the document {}",
+                    variant.document
+                )));
+            }
+            Got::Gone(why) => return Err(Refusal::TakenDown(why)),
+        };
+        let dir = build(&document).map_err(Refusal::Build)?;
+        drop(guard);
+        let Some(built) = self.local(&id) else {
+            return Err(Refusal::Build(format!(
+                "the package built in {} is not map {id}",
+                dir.display()
+            )));
+        };
+        self.installed(&built);
+        self.count(f, map_id);
+        Ok(built)
     }
 
     /// The blob `sha` (the package's `file`), checked against its hash.
@@ -783,6 +858,93 @@ mod tests {
         s.asked.lock().unwrap().clear();
         assert_eq!(g.check(&s, &ad("custom", Some(id))).unwrap(), Need::Local(lib.packages()[0].dir.clone()));
         assert!(!s.asked.lock().unwrap().iter().any(|p| p.starts_with("/content/")));
+        std::fs::remove_dir_all(&maps).unwrap();
+    }
+
+    /// A Forge variant's manifest: one layer naming `document`.
+    fn variant_manifest(document: Sha256, map: &[u8]) -> Manifest {
+        use content::manifest::{FORGE_FORMAT, ForgeLayer};
+        let mut m = Manifest::retail("lockout", BASE);
+        m.package.format = FORGE_FORMAT;
+        m.package.name = "Invented Basin".into();
+        m.forge = vec![ForgeLayer {
+            document,
+            document_file: "document.h2forge".into(),
+            file: "materialised.map".into(),
+            sha256: Sha256::of(map),
+            game: None,
+        }];
+        m
+    }
+
+    /// A member that has not the variant's package fetches its document
+    /// (the one with the AI ground recipe) and builds it from its own disc:
+    /// it holds the package the host's id names, and no built byte came
+    /// from the server. Refused by name without a builder, with a document
+    /// the server lacks, and when the build is another map.
+    #[test]
+    fn a_member_builds_the_ground_the_variant_names() {
+        let maps = dir("variant");
+        let document = b"{\"recipes\":[{\"name\":\"ai_ground\"}],\"invented\":true}".to_vec();
+        let map = b"MAP invented, with the ground built in";
+        let layer_hash = Sha256::of(b"canonical document without expect");
+        let m = variant_manifest(layer_hash, map);
+        let id = MapId::of(&m);
+        let mut s = Server::default();
+        let mut a = answer(&modded(b"x"), 0);
+        a.map.summary.map_id = id;
+        a.map.summary.layers.clear();
+        a.map.manifest = m.clone();
+        s.answers.insert(format!("/maps/{id}"), Got::Ok(serde_json::to_vec(&a).unwrap()));
+        s.answers.insert(format!("/content/{layer_hash}"), Got::Ok(document.clone()));
+        let ad = ad("custom", Some(id));
+        let g = gate(&maps, true);
+        // Nothing is here: the check says the document is built, nothing
+        // is fetched but the answer, and a join without a builder is refused.
+        assert!(matches!(g.check(&s, &ad).unwrap(), Need::Build(v) if v.document == layer_hash));
+        assert!(!s.asked.lock().unwrap().iter().any(|p| p.starts_with("/content/")));
+        assert_eq!(
+            g.prepare(&s, &ad).unwrap_err(),
+            Refusal::Unavailable("this game cannot build a map variant".into())
+        );
+        // The builder is handed the fetched document, and writes the package.
+        let seen: Arc<Mutex<Vec<Vec<u8>>>> = Arc::default();
+        let told: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+        let (sink, root, manifest) = (Arc::clone(&seen), maps.clone(), m.clone());
+        g.on_build(Box::new(move |bytes| {
+            sink.lock().unwrap().push(bytes.to_vec());
+            let dir = root.join("forge-built");
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            std::fs::write(dir.join("materialised.map"), map).map_err(|e| e.to_string())?;
+            std::fs::write(dir.join("document.h2forge"), bytes).map_err(|e| e.to_string())?;
+            std::fs::write(dir.join(MANIFEST_FILE), manifest.to_toml()).map_err(|e| e.to_string())?;
+            Ok(dir)
+        }));
+        let sink = Arc::clone(&told);
+        g.on_installed(Box::new(move |d| sink.lock().unwrap().push(d.to_owned())));
+        let built = g.prepare(&s, &ad).unwrap().unwrap();
+        assert_eq!(*seen.lock().unwrap(), [document.clone()], "the document the server holds");
+        assert_eq!(g.package_of(&id), Some(built.clone()));
+        assert_eq!(*told.lock().unwrap(), std::slice::from_ref(&built), "the boot is told");
+        assert_eq!(*s.counted.lock().unwrap(), [format!("/maps/{id}")]);
+        // Built now: the next join needs nothing.
+        assert_eq!(g.check(&s, &ad).unwrap(), Need::Local(built));
+        std::fs::remove_dir_all(&maps).unwrap();
+
+        // A document the server no longer has, and a build of another map.
+        let maps = dir("variant-refused");
+        let g = gate(&maps, true);
+        g.on_build(Box::new(|_| Err("the document names a tag this disc lacks".into())));
+        s.answers.remove(&format!("/content/{layer_hash}"));
+        assert!(matches!(g.prepare(&s, &ad), Err(Refusal::Download(why)) if why.contains("no longer has")));
+        s.answers.insert(format!("/content/{layer_hash}"), Got::Ok(document));
+        assert_eq!(
+            g.prepare(&s, &ad).unwrap_err(),
+            Refusal::Build("the document names a tag this disc lacks".into())
+        );
+        let root = maps.clone();
+        g.on_build(Box::new(move |_| Ok(root.join("nothing-here"))));
+        assert!(matches!(g.prepare(&s, &ad), Err(Refusal::Build(why)) if why.contains("is not map")));
         std::fs::remove_dir_all(&maps).unwrap();
     }
 
