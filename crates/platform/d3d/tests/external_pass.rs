@@ -1204,6 +1204,7 @@ fn a_sequence_committed_without_a_tail_keeps_its_order_and_the_bound_target() {
     let bound = d.bound_target();
     let mut sample = plan(1);
     sample.slots = vec![Some(d3d::ExternalSlot { header, written: false })];
+    let passes = d.stats().external_passes;
     let held = d.prepare_external_sequence(&mut m, vec![
         d3d::ExternalStep {
             targets: d3d::ExternalTargets { color: header, depth: 0, rect: (0, 0, 16, 16) },
@@ -1211,7 +1212,6 @@ fn a_sequence_committed_without_a_tail_keeps_its_order_and_the_bound_target() {
         },
         d3d::ExternalStep { targets: target, plan: sample, pass: Box::new(Receiver) },
     ]).unwrap().unwrap();
-    let passes = d.stats().external_passes;
     held.commit();
     assert_eq!(d.bound_target(), bound);
     assert_eq!(d.stats().external_passes, passes + 2);
