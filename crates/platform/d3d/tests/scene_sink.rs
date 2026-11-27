@@ -882,7 +882,8 @@ mod retained_admission {
         let draw = Arc::new(device.backend.draws().pop().unwrap().clone());
         let frames = Arc::new(Mutex::new(Vec::new()));
         let output = frames.clone();
-        let inner = RecordingBackend { queue_external_draws: true, ..RecordingBackend::new() };
+        let mut inner = RecordingBackend::new();
+        inner.queue_external_draws = true;
         let mut sink = SceneSink::new(inner, slot).with_replay(move |frame| output.lock().unwrap().push(frame));
         let fmt = D3DFormat::LinA8R8G8B8;
         let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
