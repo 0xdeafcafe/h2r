@@ -255,6 +255,7 @@ fn every_row_of_the_shipped_doc_binds() {
             label: Some(("checkpoint".into(), Some(3))),
             savable: 2,
             kit: true,
+            team: None,
         };
         let t = Thing {
             own: true,
@@ -400,6 +401,7 @@ fn the_label_rows_show_their_values_and_open_the_keyboard_or_act() {
         label: Some(("checkpoint".into(), Some(3))),
         savable: 2,
         kit: false,
+        team: None,
     };
     let rows = rows_with(&doc(), &object, 0.0, &extras);
     let by = |name: &str| rows.iter().find(|r| r.label == name).unwrap();
@@ -548,4 +550,38 @@ fn delete_is_on_every_kind_and_restore_original_only_on_a_changed_own_thing() {
         let (act, id) = restore(true, true).expect("an own changed thing has it");
         assert_eq!(act, Act::Choose(Choice::Restore(id)), "{kind:?}");
     }
+}
+
+#[test]
+fn a_spawner_has_a_team_picker_over_the_documents_property() {
+    let d = doc();
+    let spawner = thing(BlockKind::NetgameEquipment, ThingKind::ItemSpawner, &[]);
+    let team_row = |team| {
+        let extras = Extras {
+            team,
+            ..Extras::default()
+        };
+        rows_with(&d, &spawner, 0.0, &extras)
+            .into_iter()
+            .find(|r| r.label == "Team")
+            .expect("a spawner has the Team row")
+    };
+    let Act::Pick(none) = team_row(None).act else {
+        panic!("a picker")
+    };
+    assert_eq!(none.values.len(), 10);
+    assert_eq!(none.values[none.current], "None");
+    assert_eq!(none.choices[none.current], Choice::Set(Prop::SpawnerTeam, 0));
+    // Team 1 is Blue, the third value.
+    let Act::Pick(blue) = team_row(Some(1)).act else {
+        panic!("a picker")
+    };
+    assert_eq!(blue.values[blue.current], "Blue");
+    // No other kind of object has it beside the spawner's own kinds.
+    let goal = thing(BlockKind::NetgameFlags, ThingKind::Goal, &[]);
+    assert_eq!(
+        rows(&d, &goal, 0.0).iter().filter(|r| r.label == "Team").count(),
+        1,
+        "a goal keeps its field Team row only"
+    );
 }

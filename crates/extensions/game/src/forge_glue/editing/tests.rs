@@ -92,7 +92,7 @@ fn opened_with(own: Option<forge::BaseRows>) -> Opened {
         }),
         base_counts: [(item.block, 2)]
             .into_iter()
-            .chain(own.iter().map(|_| (BlockKind::StartingLocations, 1)))
+            .chain(own.iter().flat_map(|b| b.rows.iter().map(|r| (r.block, 1))))
             .collect(),
         ..Limits::default()
     };
@@ -1695,6 +1695,50 @@ fn restore_original_puts_an_own_thing_back_through_its_question() {
     assert_eq!(e.session.log().len(), 2);
     assert!(!e.session.thing(spawn).unwrap().changed);
     assert!(!labels(&e).contains(&"Restore original".to_string()));
+}
+
+/// A spawner's Team row writes the document's team property: one op, the
+/// world told nothing, and the page shows it.
+#[test]
+fn a_spawners_team_row_sets_the_property_and_tells_the_world_nothing() {
+    use forge::{BaseRow, BaseRows};
+    use forge_doc::{F32, Value};
+    let mut spawner = vec![Value::Int(0)];
+    spawner.extend([12, 12, 12, 12, 0, 30, 0].map(Value::Int));
+    spawner.extend([
+        Value::Int(0),
+        Value::Vec3([0., 6., 0.].map(|c| F32::new(c).unwrap())),
+        Value::Vec3([0.; 3].map(|c| F32::new(c).unwrap())),
+        Value::Tag(Some(TagKey {
+            group: "itmc".into(),
+            path: r"test\rifles".into(),
+        })),
+    ]);
+    let block = BlockKind::NetgameEquipment;
+    let stride = map::scenario_layout::block(block).stride as usize;
+    let row = BaseRow {
+        block,
+        index: 0,
+        raw: vec![1; stride],
+        print: forge_doc::print(block, &spawner).unwrap(),
+        fields: spawner,
+    };
+    let opened = opened_with(Some(BaseRows {
+        rows: vec![row],
+        left_out: vec![],
+    }));
+    let mut e = Editor::new(opened, Path::new("."), 1, calls::shared());
+    calls::lock(&e.calls).arm();
+    let id = Endpoint::base(block, 0);
+    e.tool.aimed_thing = Some(id);
+    e.choose(1, Choice::Set(Prop::SpawnerTeam, 3)).unwrap();
+    assert!(calls::lock(&e.calls).drain().is_empty());
+    e.poll(2);
+    assert_eq!(e.session.team(id), Some(2));
+    assert_eq!(e.session.log().len(), 1);
+    e.choose(3, Choice::Set(Prop::SpawnerTeam, 0)).unwrap();
+    e.poll(4);
+    assert_eq!(e.session.team(id), None);
 }
 
 #[test]
