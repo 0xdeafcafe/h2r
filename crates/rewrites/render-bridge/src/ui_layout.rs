@@ -9,10 +9,11 @@
 //! units: each axis of the canvas is scaled by the stretch divided into
 //! the smaller of the two stretches, about a pivot. On a 16:9 window the
 //! canvas is then drawn `min(w/640, h/480)` display pixels per guest
-//! pixel, centred — the retail 4:3 safe area. HUD corner groups place
-//! their pivot on the window's real edges instead, so the meters hug the
-//! corners of any shape of window, while centre and tracked elements keep
-//! their projected point.
+//! pixel, centred — the retail 4:3 safe area. A HUD group is held at its
+//! anchor by the one anchor rule (`canvas_fit::anchor_fit`): a corner or
+//! an edge's middle on the window's real edge, so the meters hug the
+//! corners of any shape of window, the middles on the window's middle,
+//! while tracked elements keep their projected point.
 
 /// The guest window the game draws its UI in.
 pub const CANVAS: [f32; 2] = canvas_fit::CANVAS;
@@ -23,6 +24,9 @@ pub type Fit = [f32; 4];
 
 /// The identity: the canvas drawn 1:1, its edges on the window's edges.
 pub const IDENTITY: Fit = [1.0, 1.0, 0.0, 0.0];
+
+/// Where a group is held on its view ([`canvas_fit::Anchor`]).
+pub use canvas_fit::Anchor;
 
 /// The first anchor above the HUD's four corners (the crosshair's and
 /// tracked points': they keep their projected location).
@@ -67,13 +71,9 @@ pub fn about(ratio: f32, pivot: [f32; 2]) -> Option<Fit> {
 /// One HUD group's fit on `output`, for the player's raster `view`
 /// (`x, y, width, height`, guest pixels). `anchor` names the group's
 /// corner id (0 to 3, clockwise from the top right) or, at
-/// [`ANCHOR_CENTRE`] and up, the tracked point the game gave it. Corners
-/// pivot on their own corner of the view: `pinned` on the window's edge
-/// at the group's physical scale (the Xbox widescreen layout), centred on
-/// the safe area's edge. Centre and tracked points pivot where the game
-/// projects them — in the retail lens, so their art moves with the world
-/// unless `projected_points_fitted` says the projection was already
-/// widened. `None` when the identity needs no transform.
+/// [`ANCHOR_CENTRE`] and up, the tracked point the game gave it
+/// ([`Anchor::hud`]); none is the view's centre. [`group_fit`] with the
+/// game's own anchor.
 pub fn hud_fit(
     output: (u32, u32),
     view: (u32, u32, u32, u32),
@@ -82,42 +82,36 @@ pub fn hud_fit(
     projected_points_fitted: bool,
     anchor: Option<(u32, [f32; 2])>,
 ) -> Option<Fit> {
-    let (rx, ry, rw, rh) = view;
-    let centre = [rx as f32 + rw as f32 * 0.5, ry as f32 + rh as f32 * 0.5];
-    let mut pivot = centre;
-    if let Some((id, point)) = anchor {
-        if id >= ANCHOR_CENTRE {
-            if point.iter().all(|v| v.is_finite()) {
-                pivot = point;
-            }
-        } else if pinned {
-            let right = id == 0 || id == 3;
-            let bottom = id >= 2;
-            pivot = [
-                (rx + if right { rw } else { 0 }) as f32,
-                (ry + if bottom { rh } else { 0 }) as f32,
-            ];
-        }
-    }
-    let safe = menu_fit(output, centre).unwrap_or(IDENTITY);
-    // The Xbox widescreen HUD is already laid out for anamorphic pixels:
-    // scale the artwork only by the difference between that display and
-    // ours. Its corner placement still obeys the safe area.
-    let mut fit = about(projection_factor, pivot).unwrap_or(IDENTITY);
-    if let Some((id, _)) = anchor
-        && id < ANCHOR_CENTRE
-        && !pinned
+    let anchor = anchor.map_or(Anchor::Centre, |(id, point)| Anchor::hud(id, point));
+    group_fit(output, view, pinned, projection_factor, projected_points_fitted, anchor)
+}
+
+/// The fit of a HUD group held at `anchor` of the player's raster `view`
+/// on `output`: the one anchor rule, [`canvas_fit::anchor_fit`]. A view
+/// edge lands on the window's edge when `pinned` (the Xbox widescreen
+/// layout) and on the safe area's edge otherwise, a middle on the
+/// window's middle, and the artwork is scaled by `projection_factor`
+/// about the anchor. A point pivots where the game projects it, in the
+/// retail lens, so its art moves with the world unless
+/// `projected_points_fitted` says the projection was already widened.
+/// `None` when the identity needs no transform.
+pub fn group_fit(
+    output: (u32, u32),
+    view: (u32, u32, u32, u32),
+    pinned: bool,
+    projection_factor: f32,
+    projected_points_fitted: bool,
+    anchor: Anchor,
+) -> Option<Fit> {
+    let view = [view.0 as f32, view.1 as f32, view.2 as f32, view.3 as f32];
+    let safe = stretch_ratio(output).map_or(1.0, f32::recip);
+    let mut fit = canvas_fit::anchor_fit(anchor, view, projection_factor, safe, pinned);
+    if let Anchor::Point(point) = anchor
+        && !projected_points_fitted
     {
-        let [safe_x, safe_y, _, _] = safe;
-        let edge_x = if id == 0 || id == 3 { 0.5 } else { -0.5 };
-        let edge_y = if id >= 2 { 0.5 } else { -0.5 };
-        fit[2] += edge_x * rw as f32 * (safe_x - fit[0]);
-        fit[3] += edge_y * rh as f32 * (safe_y - fit[1]);
-    }
-    if anchor.is_some_and(|(id, _)| id >= ANCHOR_CENTRE) && !projected_points_fitted {
         // The tracked point is in the retail lens. Move its centre with
-        // the world, then fit the artwork about that point.
-        fit[2] += (pivot[0] - centre[0]) * (projection_factor - 1.0);
+        // the world; the artwork is fitted about that point.
+        fit[2] += (point[0] - (view[0] + view[2] * 0.5)) * (projection_factor - 1.0);
     }
     (fit != IDENTITY).then_some(fit)
 }
@@ -165,6 +159,85 @@ mod tests {
     fn at(fit: Fit, output: (u32, u32), p: [f32; 2]) -> [f32; 2] {
         let m = map_point(fit, p);
         [m[0] * output.0 as f32 / 640.0, m[1] * output.1 as f32 / 480.0]
+    }
+
+    /// Every anchor of a HUD group at 4:3, 16:9, 21:9 and portrait 9:16,
+    /// pinned and not: 4:3 needs no transform; elsewhere the anchor's own
+    /// point lands on the window's edge (pinned), the safe area's edge
+    /// (not) or the window's middle, and the artwork is uniform.
+    #[test]
+    fn every_hud_anchor_lands_where_retail_holds_it_at_every_aspect() {
+        const VIEW: (u32, u32, u32, u32) = (0, 0, 640, 480);
+        for output in [(1440, 1080), (1920, 1080), (2520, 1080), (1080, 1920)] {
+            let (w, h) = (output.0 as f32, output.1 as f32);
+            let unit = uniform_scale(output);
+            let factor = stretch_ratio(output).map_or(1.0, f32::recip);
+            for anchor in Anchor::HELD {
+                let f = anchor.at().unwrap();
+                for pinned in [true, false] {
+                    let fit = group_fit(output, VIEW, pinned, factor, false, anchor);
+                    if output == (1440, 1080) {
+                        assert_eq!(fit, None, "{anchor:?}");
+                        continue;
+                    }
+                    let fit = fit.unwrap_or(IDENTITY);
+                    let home = [640.0 * f[0], 480.0 * f[1]];
+                    let landed = at(fit, output, home);
+                    let boxed = [(w - 640.0 * unit) / 2.0, (h - 480.0 * unit) / 2.0];
+                    for (a, size) in [(0, w), (1, h)] {
+                        let want = if f[a] == 0.5 || pinned {
+                            size * f[a]
+                        } else {
+                            boxed[a] + (size - 2.0 * boxed[a]) * f[a]
+                        };
+                        assert!(
+                            (landed[a] - want).abs() < 1e-2,
+                            "{output:?} {anchor:?} pinned {pinned} axis {a}: {} != {want}",
+                            landed[a]
+                        );
+                    }
+                    let next = at(fit, output, [home[0] + 8.0, home[1] + 8.0]);
+                    close(next[0] - landed[0], 8.0 * unit);
+                    close(next[1] - landed[1], 8.0 * unit);
+                }
+            }
+        }
+    }
+
+    /// The message group's centred lines (the timed line, the respawn
+    /// timer: centred across the frame, 40 above its bottom) are held at
+    /// the bottom's middle: on the window's centre line at 4:3, 16:9 and
+    /// 21:9, where the group's own top-left anchor draws them left of it.
+    #[test]
+    fn a_line_centred_on_the_frame_stays_on_the_windows_centre_line() {
+        const VIEW: (u32, u32, u32, u32) = (0, 0, 640, 480);
+        let line = [320.0, 444.0 - 40.0];
+        for output in [(1440, 1080), (1920, 1080), (2520, 1080)] {
+            let (w, h) = (output.0 as f32, output.1 as f32);
+            let factor = stretch_ratio(output).map_or(1.0, f32::recip);
+            let centred = group_fit(output, VIEW, true, factor, false, Anchor::Bottom)
+                .unwrap_or(IDENTITY);
+            let xy = at(centred, output, line);
+            close(xy[0], w / 2.0);
+            // As far above the window's bottom as at 4:3, in display pixels.
+            close(h - xy[1], (480.0 - line[1]) * uniform_scale(output));
+            // Text 100 guest pixels wide keeps its width at the uniform scale.
+            let right = at(centred, output, [line[0] + 50.0, line[1]]);
+            close(right[0] - xy[0], 50.0 * uniform_scale(output));
+            let corner = hud_fit(output, VIEW, true, factor, false, Some((1, [48.0, 36.0])))
+                .unwrap_or(IDENTITY);
+            let off = at(corner, output, line)[0];
+            if is_canvas_shape(output) {
+                close(off, w / 2.0);
+            } else {
+                assert!(off < w / 2.0 - 1.0, "{output:?}: {off}");
+            }
+        }
+        // A split-screen view holds the line on its own centre and bottom.
+        let half = (0, 240, 640, 240);
+        let fit = group_fit((1920, 1080), half, true, 0.75, false, Anchor::Bottom).unwrap();
+        close(at(fit, (1920, 1080), [320.0, 480.0])[0], 960.0);
+        close(at(fit, (1920, 1080), [320.0, 480.0])[1], 1080.0);
     }
 
     #[test]
