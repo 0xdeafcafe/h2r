@@ -352,6 +352,14 @@ A stage's guest entry is replaced only when all four hold:
 
 After a replacement, content the stage cannot draw is a named error: a counter (`scene_dropped_<stage>`), one log line per cause, and a row in `render.scene`. It is not sent to D3D.
 
+The world layers (`cut::LAYER_CUTS`) do not meet rule 1 yet. An item their pass cannot draw keeps its guest draw and is counted by layer, kind and cause:
+
+| Counter | Becomes a named drop when |
+|---|---|
+| `scene_kept_<site><layer>_<kind>_<cause>` | every row is zero over the census corpus |
+
+Causes: [native-world-walk.md](native-world-walk.md), "What the scene cannot draw keeps its guest draw".
+
 A replaced entry is a **cut**: `render_bridge::cut::CUTS` lists it by its `residual_census::REGISTRY` row name and entry, and its hook returns the entry's ABI result to the caller without running the guest body. No switch brings the body back; it survives only as a test oracle.
 
 - The hook first runs `frame_step::before` for the producer, which makes the 5.2 writes the body made, in `frame_step::ROWS` order (guest order: the seed, the effects word, the stamps and residency requests inside the views, then `render_views`' frame counter and one-shot byte, then the present counter). The frame owner runs the `Step::Frame` rows once per frame.
