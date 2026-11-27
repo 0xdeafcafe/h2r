@@ -1,6 +1,8 @@
-//! The named export search inside the object function evaluator.
+//! The named export search inside the object function evaluator, the
+//! curve kernel, and the evaluator over Rust-owned data.
 
 pub mod curve;
+pub mod evaluator;
 
 /// The position saved by the caller while a matching export is evaluated.
 /// Both fields belong to the guest frame and are restored independently.
