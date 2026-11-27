@@ -2,22 +2,32 @@
 //! map variant file"; docs/editor/studio-flow.md, "Forge variants and
 //! items").
 //!
-//! A map variant is a Forge document (`forge_doc::ForgeDoc`) in the store
-//! `forge::files::variants` owns: `<data>/map-variants/<map>/<file>.h2mapvariant`.
-//! Studio reads and writes it through that store and the document's own
-//! types; there is no second reader. Its asset id is `forge:<map>:<file>`.
+//! A map variant is a Forge document (`forge_doc::ForgeDoc`). It is a
+//! `map-variant` item of a package (`workspace::map_variants`; its asset id
+//! is the item's, `item:<package>:<n>`), or a file a player saved in the
+//! game, in the store `forge::files::variants` owns
+//! (`<data>/map-variants/<map>/<file>.h2mapvariant`; its asset id is
+//! `forge:<map>:<file>`). Studio reads both through that store's and the
+//! document's own types; there is no second reader.
 //!
 //! The document lists the variant's **things**: each entry a
 //! `Placement::Add` op made and each entry of the base map an entry op
 //! names, with the fields the variant writes ([`things`]). A field edit
 //! replaces the value of the write that gives the field its value
 //! ([`set_field`]), keeps the value's type and is refused when the
-//! document no longer validates. Save writes the store's file again
-//! (`variants::save` with `replace`), which is the variant's edit target:
-//! map variants are user files, not package items.
-use std::path::Path;
+//! document no longer validates.
+//!
+//! Save writes a `map-variant` item of the edit target
+//! (`App::save_forge_item`), as every document saves
+//! (docs/editor/studio-flow.md, "Shared patterns"): the item the variant
+//! was opened from when it is the target's, else a new one. Studio never
+//! writes the store's files; the game lists a package's variants with the
+//! ones saved there.
+use std::path::{Path, PathBuf};
 
-use forge::files::variants::{self as store, Source, Suggestable};
+use ::workspace::GameSet;
+use content::package::Kind as ItemKind;
+use forge::files::variants::{self as store, Source};
 use forge_doc::{
     BlockKind, Edit, Endpoint, EntryOp, F32, Forge, ForgeDoc, Limits, OpId, Placement,
     TagKey as ForgeTag, Value as FieldValue,
@@ -27,7 +37,8 @@ use tags::defs::fourcc_text;
 use tags::repo::TagKey;
 
 use super::links::{Link, role_of};
-use super::{App, Doc};
+use super::package_doc::{self, Refusal};
+use super::{Action, App, Doc};
 
 /// The Browser kind that lists the map variants.
 pub const VARIANTS_KIND: &str = "Forge variants";
@@ -446,28 +457,100 @@ pub fn places(doc: &ForgeDoc, key: &TagKey) -> usize {
         .count()
 }
 
-/// The saved variants a document can be opened from, of every map.
-pub fn saved(data: &Path) -> Result<Vec<Suggestable>, String> {
-    store::suggestable(data).map_err(|e| e.to_string())
+/// A `map-variant` item of the set, read.
+#[derive(Clone, Debug)]
+pub struct Packaged {
+    /// `item:<package>:<n>`.
+    pub asset: String,
+    pub package: String,
+    /// The source's stem.
+    pub file: String,
+    /// The source's file, for a local package.
+    pub path: Option<PathBuf>,
+    pub doc: ForgeDoc,
 }
 
-/// The variants that place `key`, as `used_by` links.
-pub fn users(data: &Path, key: &TagKey) -> Vec<Link> {
+/// The set's `map-variant` items that read, in the set's order. One that
+/// does not read is a finding of its package's check, not a row.
+pub fn packaged(set: &GameSet) -> Vec<Packaged> {
+    ::workspace::map_variants(&set.loaded())
+        .into_iter()
+        .filter_map(|v| {
+            let doc = ::workspace::read_map_variant(&v.bytes).ok()?;
+            let dir = set
+                .listed
+                .iter()
+                .find(|l| l.id == v.package)
+                .and_then(|l| l.dir.as_deref());
+            Some(Packaged {
+                asset: format!("item:{}:{}", v.package, v.item),
+                path: dir.map(|d| Path::new(d).join(&v.source)),
+                package: v.package,
+                file: v.stem,
+                doc,
+            })
+        })
+        .collect()
+}
+
+/// The set's `map-variant` items as the game's store holds them: what a
+/// game variant's suggestions are chosen from, with the saved ones
+/// (`store::suggestable_with`).
+pub fn store_packaged(set: &GameSet) -> Vec<store::Packaged> {
+    boot::packages::packaged_variants(&set.loaded())
+}
+
+/// A variant a player saved in the game or fetched from Live, of any map.
+#[derive(Clone, Debug)]
+pub struct Stored {
+    pub map: String,
+    pub file: String,
+    pub name: String,
+    pub base: forge_doc::Sha256,
+    pub id: forge_doc::Sha256,
+    /// Saved here, so it opens; a fetched one is listed only.
+    pub saved: bool,
+}
+
+/// The store's own variants, of every map: the files, without the set's.
+pub fn stored(data: &Path) -> Result<Vec<Stored>, String> {
+    Ok(store::suggestable_with(data, &[])
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|s| Stored {
+            saved: s.source == Source::Saved,
+            map: s.map,
+            file: s.file,
+            name: s.name,
+            base: s.base,
+            id: s.id,
+        })
+        .collect())
+}
+
+/// The variants that place `key`, as `used_by` links: the set's items,
+/// then the ones saved in the game.
+pub fn users(data: &Path, set: &GameSet, key: &TagKey) -> Vec<Link> {
     let mut out = Vec::new();
-    for s in saved(data).unwrap_or_default() {
-        if s.source != Source::Saved {
-            continue;
-        }
-        let Ok(doc) = store::load(data, &s.map, &s.file, Some(&s.base)) else {
-            continue;
-        };
-        let n = places(&doc, key);
+    let mut push = |asset: String, doc: &ForgeDoc| {
+        let n = places(doc, key);
         if n > 0 {
             out.push(Link {
-                asset: asset_id(&s.map, &s.file),
+                asset,
                 role: ROLE,
-                via: format!("{n} placed in {}", s.name),
+                via: format!("{n} placed in {}", doc.title),
             });
+        }
+    };
+    for p in packaged(set) {
+        push(p.asset, &p.doc);
+    }
+    for s in stored(data).unwrap_or_default() {
+        if !s.saved {
+            continue;
+        }
+        if let Ok(doc) = store::load_with(data, &s.map, &s.file, Some(&s.base), &[]) {
+            push(asset_id(&s.map, &s.file), &doc);
         }
     }
     out
@@ -494,13 +577,26 @@ pub fn uses(doc: &ForgeDoc) -> Vec<Link> {
         .collect()
 }
 
+/// Where an open variant was read from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Origin {
+    /// A file of the game's store. A save makes it an item of the edit
+    /// target; the file stays as it is.
+    Store,
+    /// A `map-variant` item: its id, and its source's file when the
+    /// package is a local one.
+    Item { id: String, path: Option<PathBuf> },
+}
+
 /// The variant open as a document.
 #[derive(Clone, Debug)]
 pub struct Open {
     pub map: String,
+    /// The store file's stem, or the item source's.
     pub file: String,
+    pub origin: Origin,
     pub doc: ForgeDoc,
-    /// The document as the store's file has it.
+    /// The document as it was read or last saved.
     saved: ForgeDoc,
     undo: Vec<ForgeDoc>,
     redo: Vec<ForgeDoc>,
@@ -510,11 +606,24 @@ pub struct Open {
 
 impl Open {
     pub fn asset(&self) -> String {
-        asset_id(&self.map, &self.file)
+        match &self.origin {
+            Origin::Store => asset_id(&self.map, &self.file),
+            Origin::Item { id, .. } => id.clone(),
+        }
     }
 
+    /// Unsaved: a field edit since the last save, or a store's variant no
+    /// package holds yet.
     pub fn dirty(&self) -> bool {
         self.doc != self.saved
+    }
+
+    /// The package the variant is an item of.
+    pub fn package(&self) -> Option<&str> {
+        match &self.origin {
+            Origin::Store => None,
+            Origin::Item { id, .. } => id.strip_prefix("item:")?.rsplit_once(':').map(|(p, _)| p),
+        }
     }
 
     pub fn can(&self) -> (bool, bool) {
@@ -523,8 +632,9 @@ impl Open {
 
     /// The document as `forge.variant.read` answers it.
     pub fn json(&self) -> Value {
-        let mut v = doc_json(&self.map, &self.file, &self.doc);
+        let mut v = doc_json(&self.asset(), &self.map, &self.file, &self.doc);
         v["dirty"] = json!(self.dirty());
+        v["package"] = json!(self.package());
         v["open"] = json!(true);
         v["selected"] = json!(self.selected);
         v
@@ -532,7 +642,7 @@ impl Open {
 }
 
 /// A variant's things as the API answers them.
-pub fn doc_json(map: &str, file: &str, doc: &ForgeDoc) -> Value {
+pub fn doc_json(asset: &str, map: &str, file: &str, doc: &ForgeDoc) -> Value {
     let rows: Vec<Value> = things(doc)
         .iter()
         .map(|t| {
@@ -553,7 +663,7 @@ pub fn doc_json(map: &str, file: &str, doc: &ForgeDoc) -> Value {
         })
         .collect();
     json!({
-        "asset": asset_id(map, file),
+        "asset": asset,
         "map": map,
         "file": file,
         "name": doc.title,
@@ -573,7 +683,7 @@ pub enum ForgeAction {
         field: String,
         value: FieldValue,
     },
-    /// Write the variant's file in the store.
+    /// Write the variant as a `map-variant` item of the edit target.
     Save,
     /// Show an entry's fields.
     Select(Option<String>),
@@ -585,42 +695,69 @@ pub struct ForgeVariants {
     pub open: Option<Open>,
 }
 
-/// A variant's id in parts.
+/// A store variant's id in parts.
 fn split(asset: &str) -> Option<(&str, &str)> {
     asset.strip_prefix("forge:")?.split_once(':')
 }
 
 impl App {
-    /// The saved variant `map`/`file` as the store reads it.
+    /// The variant `map`/`file` a player saved, as the store reads it.
     pub fn forge_variant_doc(&self, map: &str, file: &str) -> Result<ForgeDoc, String> {
         let data = self.data_root();
-        let listed = saved(&data)?;
+        let listed = stored(&data)?;
         let Some(s) = listed
             .iter()
-            .find(|s| s.map == map && s.file == file && s.source == Source::Saved)
+            .find(|s| s.map == map && s.file == file && s.saved)
         else {
             return Err(format!(
                 "no saved map variant {} (the Forge variants kind lists them; one from Live is duplicated in the game first)",
                 asset_id(map, file)
             ));
         };
-        store::load(&data, map, file, Some(&s.base)).map_err(|e| e.to_string())
+        store::load_with(&data, map, file, Some(&s.base), &[]).map_err(|e| e.to_string())
     }
 
-    /// The **Forge variants** kind's rows: every map variant the store
-    /// lists, of every map.
+    /// The **Forge variants** kind's rows: the set's `map-variant` items,
+    /// then the variants saved in the game and fetched from Live, of
+    /// every map.
     pub fn forge_variant_list(&self, text: &str, limit: usize) -> Result<Value, String> {
         let data = self.data_root();
+        let set = super::assets::read_set(&data);
         let words: Vec<String> = text.split_whitespace().map(str::to_lowercase).collect();
+        let keep = |hay: String| {
+            let hay = hay.to_lowercase();
+            words.iter().all(|w| hay.contains(w.as_str()))
+        };
         let mut rows = Vec::new();
-        for s in saved(&data)? {
-            let hay = format!("{} {} {} forge variant", s.name, s.map, s.file).to_lowercase();
-            if !words.iter().all(|w| hay.contains(w.as_str())) {
+        for p in packaged(&set) {
+            let map = &p.doc.base.map;
+            if !keep(format!("{} {map} {} {} forge variant", p.doc.title, p.file, p.package)) {
                 continue;
             }
-            let is_saved = s.source == Source::Saved;
-            let things = is_saved
-                .then(|| store::load(&data, &s.map, &s.file, Some(&s.base)).ok())
+            rows.push(json!({
+                "asset": p.asset,
+                "root": "forge",
+                "kind": VARIANTS_KIND,
+                "name": p.doc.title,
+                "map": map,
+                "file": p.file,
+                "source": "package",
+                "package": p.package,
+                "editable": true,
+                "badge": format!("variant of {map} in {}", p.package),
+                "id": p.doc.id().ok().map(|id| id.to_string()),
+                "base": p.doc.base.sha256.to_string(),
+                "things": things(&p.doc).len(),
+                "maps": [map],
+            }));
+        }
+        for s in stored(&data)? {
+            if !keep(format!("{} {} {} forge variant", s.name, s.map, s.file)) {
+                continue;
+            }
+            let things = s
+                .saved
+                .then(|| store::load_with(&data, &s.map, &s.file, Some(&s.base), &[]).ok())
                 .flatten()
                 .map(|doc| things(&doc).len());
             rows.push(json!({
@@ -630,9 +767,10 @@ impl App {
                 "name": s.name,
                 "map": s.map,
                 "file": s.file,
-                "source": if is_saved { "saved" } else { "live" },
-                "editable": is_saved,
-                "badge": format!("variant of {}", s.map),
+                "source": if s.saved { "saved" } else { "live" },
+                "package": null,
+                "editable": s.saved,
+                "badge": format!("variant of {}, saved in the game", s.map),
                 "id": s.id.to_string(),
                 "base": s.base.to_string(),
                 "things": things,
@@ -653,12 +791,17 @@ impl App {
         }))
     }
 
-    /// [`super::Action::OpenAsset`] for `forge:<map>:<file>`: the variant
-    /// as a document. The open one comes forward; another is refused while
-    /// the open one has unsaved edits.
-    pub fn open_forge_variant(&mut self, map: &str, file: &str) {
+    /// Show `doc` as the Forge variant document. The open one comes
+    /// forward; another is refused while the open one has unsaved edits.
+    fn show_forge_variant(
+        &mut self,
+        asset: &str,
+        file: &str,
+        origin: Origin,
+        doc: impl FnOnce(&Self) -> Result<ForgeDoc, String>,
+    ) {
         if let Some(open) = &self.forge_variants.open {
-            if open.map == map && open.file == file {
+            if open.asset() == asset {
                 return self.open_doc(Doc::Forge);
             }
             if open.dirty() {
@@ -668,11 +811,12 @@ impl App {
                 ));
             }
         }
-        match self.forge_variant_doc(map, file) {
+        match doc(self) {
             Ok(doc) => {
                 self.forge_variants.open = Some(Open {
-                    map: map.to_owned(),
+                    map: doc.base.map.clone(),
                     file: file.to_owned(),
+                    origin,
                     saved: doc.clone(),
                     doc,
                     undo: Vec::new(),
@@ -683,6 +827,79 @@ impl App {
             }
             Err(e) => self.error(e),
         }
+    }
+
+    /// [`super::Action::OpenAsset`] for `forge:<map>:<file>`: a variant
+    /// saved in the game, as a document.
+    pub fn open_forge_variant(&mut self, map: &str, file: &str) {
+        self.show_forge_variant(&asset_id(map, file), file, Origin::Store, |app| {
+            app.forge_variant_doc(map, file)
+        });
+    }
+
+    /// [`super::Action::OpenAsset`] for a `map-variant` item
+    /// (`app::assets::open_item`): the item's source as a document.
+    /// `path` is the source's file, for a local package.
+    pub(super) fn open_forge_item(
+        &mut self,
+        asset: &str,
+        source: &str,
+        bytes: Option<&[u8]>,
+        path: Option<PathBuf>,
+    ) {
+        let Some(stem) = ::workspace::map_variant_stem(source) else {
+            return self.error(format!("{asset}: {source} is not a <name>.h2mapvariant file"));
+        };
+        let origin = Origin::Item { id: asset.to_owned(), path };
+        self.show_forge_variant(asset, stem, origin, |_| {
+            let bytes = bytes.ok_or_else(|| format!("{asset}: {source} is not in the package"))?;
+            ::workspace::read_map_variant(bytes).map_err(|e| format!("{asset}: {e}"))
+        });
+    }
+
+    /// Write the open variant as a `map-variant` item of the package
+    /// `target`: the item it was opened from when that is `target`'s, else
+    /// a new item at `map-variants/<map>/<name>.h2mapvariant`. The
+    /// document is then that item.
+    pub(crate) fn save_forge_item(&mut self, target: &str) -> Result<PathBuf, Refusal> {
+        let data = self.data_root();
+        let open = self
+            .forge_variants
+            .open
+            .as_ref()
+            .ok_or_else(|| Refusal::Refused("no Forge variant is open".into()))?;
+        let play = forge_doc::play_form(&open.doc);
+        play.check_variant().map_err(|e| Refusal::Refused(e.to_string()))?;
+        let bytes = play.canonical_json().map_err(|e| Refusal::Refused(e.to_string()))?;
+        let origin = match &open.origin {
+            Origin::Item { path, .. } => path.clone(),
+            Origin::Store => None,
+        };
+        let suggested = format!(
+            "map-variants/{}/{}.{}",
+            open.map,
+            super::edit_target::slug_of(&open.doc.title),
+            store::VARIANT_EXT
+        );
+        let path = package_doc::put_document(
+            &data,
+            target,
+            ItemKind::MapVariant,
+            origin.as_deref(),
+            &suggested,
+            bytes.as_bytes(),
+        )?;
+        let id = super::links::item_at_path(&super::assets::read_set(&data), ItemKind::MapVariant, &path)
+            .ok_or_else(|| Refusal::Failed(format!("{} was written and is no item of {target}", path.display())))?;
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned());
+        if let Some(open) = self.forge_variants.open.as_mut() {
+            if let Some(stem) = stem {
+                open.file = stem;
+            }
+            open.origin = Origin::Item { id, path: Some(path.clone()) };
+            open.saved = open.doc.clone();
+        }
+        Ok(path)
     }
 
     /// [`super::Action::Forge`].
@@ -706,17 +923,14 @@ impl App {
                 }
             }
             ForgeAction::Save => {
-                let doc = open.doc.clone();
-                match store::save(&self.data_root(), &doc, true) {
-                    Ok(file) => {
-                        let name = doc.title.clone();
-                        if let Some(open) = self.forge_variants.open.as_mut() {
-                            open.file = file;
-                            open.saved = doc;
-                        }
-                        self.info(format!("saved the map variant {name}"));
+                let Some(target) = self.edit_target() else {
+                    return self.hold_target_save(Action::Forge(ForgeAction::Save));
+                };
+                match self.save_forge_item(&target) {
+                    Ok(path) => self.info(format!("saved {}", path.display())),
+                    Err(Refusal::Params(why) | Refusal::Refused(why) | Refusal::Failed(why)) => {
+                        self.error(why)
                     }
-                    Err(e) => self.error(e.to_string()),
                 }
             }
         }
@@ -745,6 +959,7 @@ impl App {
     /// answers for itself, edits and all.
     pub(super) fn forge_variant_uses(&self, map: &str, file: &str) -> Result<Vec<Link>, String> {
         if let Some(open) = &self.forge_variants.open
+            && open.origin == Origin::Store
             && open.map == map
             && open.file == file
         {
@@ -753,19 +968,31 @@ impl App {
         Ok(uses(&self.forge_variant_doc(map, file)?))
     }
 
-    /// The variant an asset id names, read from the open document when it
-    /// is the one, else from the store.
+    /// The variant an asset id names (`forge:<map>:<file>` or a
+    /// `map-variant` item's `item:<package>:<n>`), read from the open
+    /// document when it is the one, else from the store or the package.
     pub fn forge_variant_read(&self, asset: &str) -> Result<Value, String> {
-        let (map, file) = split(asset)
-            .ok_or_else(|| format!("{asset:?} is not a Forge variant (forge:<map>:<file>)"))?;
         if let Some(open) = &self.forge_variants.open
-            && open.map == map
-            && open.file == file
+            && open.asset() == asset
         {
             return Ok(open.json());
         }
-        let doc = self.forge_variant_doc(map, file)?;
-        let mut v = doc_json(map, file, &doc);
+        let mut v = if let Some((map, file)) = split(asset) {
+            doc_json(asset, map, file, &self.forge_variant_doc(map, file)?)
+        } else {
+            let set = super::assets::read_set(&self.data_root());
+            let p = packaged(&set)
+                .into_iter()
+                .find(|p| p.asset == asset)
+                .ok_or_else(|| {
+                    format!(
+                        "{asset:?} is not a Forge variant (forge:<map>:<file>, or a map-variant item's id; forge.variant.list lists them)"
+                    )
+                })?;
+            let mut v = doc_json(asset, &p.doc.base.map, &p.file, &p.doc);
+            v["package"] = json!(p.package);
+            v
+        };
         v["dirty"] = json!(false);
         v["open"] = json!(false);
         Ok(v)

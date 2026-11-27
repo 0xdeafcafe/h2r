@@ -36,6 +36,8 @@ hud-kit-core.workspace = true
 # The `rules` and `variant` builders compile a script; `registry` is the
 # built-in scripts of a set.
 rules.workspace = true
+# The `map-variant` builder reads a Forge document.
+forge-doc.workspace = true
 # A `variant` item makes a record of its script.
 variants = { path = "../../formats/variants" }
 # The `sound` builder's import: Xbox ADPCM encoding and resampling.

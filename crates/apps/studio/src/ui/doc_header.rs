@@ -35,7 +35,7 @@ pub(crate) fn crumbs(app: &App, id: &str) -> Option<Crumbs> {
                 .forge_variants
                 .open
                 .as_ref()
-                .filter(|open| open.map == map && open.file == file)
+                .filter(|open| open.asset() == crate::app::forge_variants::asset_id(&map, &file))
                 .map_or(file.clone(), |open| open.doc.title.clone());
             Some(Crumbs {
                 origin: map.clone(),

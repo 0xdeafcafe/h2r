@@ -9047,6 +9047,7 @@ dependencies = [
  "content",
  "firefight",
  "font",
+ "forge-doc",
  "game",
  "h1-assets",
  "hud-kit-core",

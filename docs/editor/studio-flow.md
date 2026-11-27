@@ -1,6 +1,6 @@
 # Studio's flow: one way from any asset to its editors and to what it touches
 
-Status: Partly built. Voices are documents (slices FL0 and FL5, built): the Browser's **Voices** kind and Go to anything list every character and the announcer, a voice opens as a document with a Setup and a Lines pane, and a sound's document has a Lines pane. The link table and `asset.links` (slice FL1) are built. The document header (slice FL2) is built: the trail across documents, the origin, Links and Open with, and an asset identity for scripts, variants, playlists and package HUDs. Go to anything searches the same rows the Browser lists (slice FL3): every tag of the tree, the set's packages and their items, with no map open. Package items (FL4) open the editors of what they build. The Browser lists **Game types** and **Playlists**, and scripts and variants opened from items have `item:` tab ids. One check (slice FL6) is built: the header's **Check** counts the document's findings in Problems, `check.run {asset}` and `problems.list {asset}` answer one asset's rows, the open script's diagnostics are Problems rows that open their line, and the HUD and screen editors draw their findings with Problems' line function. One undo (slice FL8) is built: every editor's Undo and Redo buttons run `Action::UndoDoc` on their document, and the mouth curve, Modeling, Textures and Animation steps are steps of their tab. One save (FL7) uses the edit target for variants, scripts, playlists, animation clips and spoken lines. One preview (slice FL9) is built: the header and Preview menu share the target switch and **In game**, which runs `pair.preview {doc?}` and brings the Game panel forward. A variant boots the own game with the open record, and a script reloads into the own game, starting it if needed. The package document (FL10) opens from the Browser or Go to anything and runs package commands. New from this (FL11) creates and opens a package source tab from the Browser or the header. The Browser also imports WAV sounds and adds YAML models with their atlases, and takes a WAV, a PNG or a model YAML dropped on the window. Its **Where used** and **Show edits** views (FL13) list the link table's rows, **Open as fields** (FL15) shows a tag in the field panel, and bitmap rows draw thumbnails (FL16). Forge map variants are documents and the Forge palette is a Browser kind (FL14). The remaining slices describe the design.
+Status: Partly built. Voices are documents (slices FL0 and FL5, built): the Browser's **Voices** kind and Go to anything list every character and the announcer, a voice opens as a document with a Setup and a Lines pane, and a sound's document has a Lines pane. The link table and `asset.links` (slice FL1) are built. The document header (slice FL2) is built: the trail across documents, the origin, Links and Open with, and an asset identity for scripts, variants, playlists and package HUDs. Go to anything searches the same rows the Browser lists (slice FL3): every tag of the tree, the set's packages and their items, with no map open. Package items (FL4) open the editors of what they build. The Browser lists **Game types** and **Playlists**, and scripts and variants opened from items have `item:` tab ids. One check (slice FL6) is built: the header's **Check** counts the document's findings in Problems, `check.run {asset}` and `problems.list {asset}` answer one asset's rows, the open script's diagnostics are Problems rows that open their line, and the HUD and screen editors draw their findings with Problems' line function. One undo (slice FL8) is built: every editor's Undo and Redo buttons run `Action::UndoDoc` on their document, and the mouth curve, Modeling, Textures and Animation steps are steps of their tab. One save (FL7) uses the edit target for variants, scripts, playlists, animation clips and spoken lines. One preview (slice FL9) is built: the header and Preview menu share the target switch and **In game**, which runs `pair.preview {doc?}` and brings the Game panel forward. A variant boots the own game with the open record, and a script reloads into the own game, starting it if needed. The package document (FL10) opens from the Browser or Go to anything and runs package commands. New from this (FL11) creates and opens a package source tab from the Browser or the header. The Browser also imports WAV sounds and adds YAML models with their atlases, and takes a WAV, a PNG or a model YAML dropped on the window. Its **Where used** and **Show edits** views (FL13) list the link table's rows, **Open as fields** (FL15) shows a tag in the field panel, and bitmap rows draw thumbnails (FL16). Forge map variants are documents and the Forge palette is a Browser kind (FL14); a variant saves as a `map-variant` item of the edit target (FL18). The remaining slices describe the design.
 Code: `crates/apps/studio/src/app/links.rs` (`links`, `role_of`), `api/assets.rs` (`links`), `app/commands.rs` (`palette`, `palette_assets`), `app/voices.rs` (`open_voice`, `voice_status`, `voice_asset_list`, `sound_new_line`, `sound_lines`), `app/voice_batch.rs` (`axis_columns`), `app/assets.rs` (`AssetId::Voice`, `AssetId::Forge`), `app/assets/{browse,forge,thumbs,drop}.rs`, `app/forge_variants.rs`, `ui/forge_variant.rs`, `ui/browser.rs`, `api/forge_variants.rs`, `ui/palette.rs`, `ui/sound.rs` (the **Lines** pane), `ui/voices.rs`, `ui/voices/{setup,lines}.rs`, `api/shell.rs` (`shell.open {asset}`), `api/ui_screens.rs` (`ui.palette`); `app/shell.rs` (`Stack`, `undo_redo_doc`, `doc_can`), `app/tag_doc.rs` (`next_step`), `app/sound_mouth.rs`, `app/textures.rs`, `app/anim/document.rs`, `ui/modeling.rs`, `ui/textures.rs`, `ui/anim/edit.rs`, `ui/inspector.rs`, `ui/scripts.rs`, `crates/tools/anim-edit/src/lib.rs` (`AnimDoc::share_steps`). Tests: `api/tests/links_tests.rs`, `app/tests.rs` (`go_to_anything_finds_every_voice_and_every_editor`, `go_to_anything_finds_a_tag_a_package_an_item_and_a_command_with_no_map_open`, `go_to_anything_opens_a_tree_tag_by_opening_its_map_first`, `a_sound_starts_one_line_row_that_targets_it`); `api/voice_clone/tests.rs` (`the_voices_kind_lists_every_character_with_its_dataset_state`, `a_voice_with_no_dataset_opens_on_setup_and_a_built_one_on_lines`, `a_line_said_from_a_sounds_pane_is_a_row_whose_target_is_that_sound`), `ui/sound.rs` (`a_voice_in_front_leaves_the_sound_editor_undrawn`), `api/tests/links_tests.rs` (`a_voice_lists_the_dialogue_sounds_its_rules_pick`); `app/shell_tests.rs` (`a_mouth_redraw_and_a_field_edit_undo_in_the_order_made`, `a_sound_and_the_map_keep_two_stacks`, `every_undo_button_runs_undo_doc`), `api/tests/bitmaps_tests.rs` (`a_bitmaps_tab_undoes_its_own_steps_and_the_map_keeps_its_own`), `api/anim/read_tests.rs` (`a_graphs_tab_undoes_its_documents_steps_in_the_order_made`), `app/script_edit_tests.rs` (`the_tools_compile_action_reports_in_the_tab_and_undoes`); `api/tests/forge_tests.rs`, `api/tests/import_tests.rs` (`a_dropped_source_file_becomes_the_item_of_its_kind`), `app/assets/thumbs.rs`, `app/assets/drop.rs`.
 Switch: none.
 
@@ -32,7 +32,7 @@ row in the Browser and a document tab.
 | a package | `package:<id>` | the package document |
 | a package item (a `.rules` script, a variant, a playlist, a screen, a HUD, a sound file, a model, an edits file) | `item:<package>:<n>` | the editor of what the item builds: the script editor, the variant's settings, the playlist table, the screen or HUD canvas, the sound editor, the model view, the tag the edits touch |
 | a voice (a character's clone, the announcer's voice) | `voice:<character>` | the voice document ("Voices and the announcer") |
-| a Forge map variant | `forge:<map>:<file>` (`AssetId::Forge`) | the Forge variant document ("Forge variants and items") |
+| a Forge map variant | the id of its `map-variant` item, `item:<package>:<n>`; `forge:<map>:<file>` (`AssetId::Forge`) for one saved in the game and in no package | the Forge variant document ("Forge variants and items") |
 | a map | its scenario tag | the map editor |
 
 A package item is the same document as the tag it builds. A `sound` item
@@ -165,7 +165,7 @@ one API method, whatever the kind.
 |---|---|---|---|
 | **Preview** | the target switch and **In game** (Cmd/Ctrl+Enter) in the header; the kind's own picture is the centre of the document | `preview.target`, `pair.preview {doc?}` for the front document (`app/preview_switch.rs`); a variant or a script previews by starting or reloading Studio's own game with it (`game.start`, `rules.reload`), and the Game panel comes forward with the result | the Preview menu as the only control; the script editor's **Reload**; choosing the variant in the game's menus |
 | **Check** | **Check** in the header, with the count of this asset's findings | `check.run` narrowed to the asset, and the kind's own check (`ui.check`, `hud.check`, `package.check`, the script's analysis); the findings go to Problems, and the editor shows Problems' rows for this asset, drawn by the same row function | the HUD's and the screens' **Checks** lists and the script editor's **Check** section as private lists |
-| **Apply** | an edit applies to the document at once. **Save** (Cmd/Ctrl+S) writes the document to the edit target ("into: pogo"), and only there | `app::edit_target`; a variant, a script and a playlist save as `variant`, `rules` and `playlist` items of the target; a voice line saves as a `sound` item | the variant and playlist editors’ file saves, the animation package picker and the voice editors’ separate save controls |
+| **Apply** | an edit applies to the document at once. **Save** (Cmd/Ctrl+S) writes the document to the edit target ("into: pogo"), and only there | `app::edit_target`; a variant, a script, a playlist and a Forge map variant save as `variant`, `rules`, `playlist` and `map-variant` items of the target; a voice line saves as a `sound` item | the variant and playlist editors’ file saves, the animation package picker and the voice editors’ separate save controls |
 | **Undo** | Cmd/Ctrl+Z, and **Undo**, **Redo** in the header, on the front document's stack (`Action::UndoDoc`, `App::doc_can`) | every editor's steps are steps of its document | the private **Undo** buttons of Modeling, Textures, Animation, the mouth curve and the script's compile |
 
 A tag's steps are kept in more than one place, and that is what one undo
@@ -232,14 +232,16 @@ Voices are assets, and making a line is part of editing a sound.
 
 ### Forge variants and items
 
-Two Browser kinds, read with `forge_doc` and the variant store
-(`forge::files::variants`; [forge-map-variants.md](../game/forge-map-variants.md)).
+Two Browser kinds, read with `forge_doc`, the set's `map-variant` items
+(`workspace::map_variants`) and the variant store
+(`forge::files::variants`; [forge-map-variants.md](../game/forge-map-variants.md),
+"A map variant in a package").
 Code: `app/forge_variants.rs`, `app/assets/forge.rs`, `ui/forge_variant.rs`,
 `api/forge_variants.rs`.
 
 | Kind | Rows | Opens as |
 |---|---|---|
-| **Forge variants** | every variant of `<data>/map-variants/<map>/`, saved and fetched from Live, with its map and how many things it holds | `Doc::Forge`: the variant's things on the left, the selected thing's fields on the right. A fetched one lists and does not open |
+| **Forge variants** | the `map-variant` items of the packages that are on, then every variant of `<data>/map-variants/<map>/`, saved in the game and fetched from Live, each with its map and how many things it holds | `Doc::Forge`: the variant's things on the left, the selected thing's fields on the right. A fetched one lists and does not open |
 | **Forge items** | every tag of the tree in a group Forge places, the tags the packages that are on add in those groups, and the kit's block-out set; the last two are marked **custom** | the tag's own editor; **Where used** lists the variants that place it |
 
 A thing is an entry the variant adds (`added:<op>`) or an entry of the
@@ -250,14 +252,24 @@ fields the variant writes for it.
 |---|---|---|
 | Edit a field | `Forge(ForgeAction::Set)`: the write that gives the field its value takes the new one, of the same type, and the document must still pass `forge_doc::validate` | `forge.variant.set` |
 | Undo, redo | `UndoDoc(Doc::Forge)`, `RedoDoc(Doc::Forge)`: one step per field edit | `doc.undo`, `doc.redo` |
-| Save | `Forge(ForgeAction::Save)`, the header's **Save** and Cmd/Ctrl+S: the variant's file in the store | `forge.variant.save` |
+| Save | `Forge(ForgeAction::Save)`, the header's **Save** and Cmd/Ctrl+S: a `map-variant` item of the edit target (`App::save_forge_item`) | `forge.variant.save {package?}` |
 
-A variant with unsaved edits does not close, and another does not open
+| Opened from | Save writes | The document is then |
+|---|---|---|
+| an item of the edit target | that item's source | the same item |
+| an item of another package | a new item of the target, `map-variants/<map>/<name>.h2mapvariant` | the new item |
+| a file saved in the game (`forge:<map>:<file>`) | a new item of the target; the file stays as it is. **Save** is offered with no edit made | the new item |
+
+With no edit target the one picker asks, and the API answers
+`NO_TARGET`. Studio writes no file under `<data>/map-variants/`: the
+game lists a package's variants with the ones saved in it. A variant is
+an item row of its package in the Packages root, under the **Forge
+variants** kind, and Go to anything finds it as it finds any item. A
+variant with unsaved edits does not close, and another does not open
 over it.
 
 Not built yet: adding or removing a thing, a field the variant does not
-already write, a variant as a package item, and variants in Go to
-anything.
+already write, and the game's saved files in Go to anything.
 
 ### The package document
 
@@ -326,7 +338,8 @@ contains the built tags.
   link view and answer its rows.
 - `forge.variant.list`, `forge.variant.read`, `forge.variant.set`,
   `forge.variant.save` and `forge.items` are the Forge kinds
-  ("Forge variants and items").
+  ("Forge variants and items"); `shell.open` and `asset.links` take a
+  `map-variant` item's id as they take any item's.
 - `shell.open {asset, fields: true}` is **Open as fields**: the tag's tab
   shows the field panel in place of its group's editor
   (`Action::OpenFields`, `App::as_fields`); a plain open brings the editor
@@ -377,10 +390,11 @@ nothing unbuilt and run together.
 | FL11 (built) | **New from this**: **New from this...** on a Browser row and in the header (the window form of `asset.copy`), **Import sound...** (`import.sound`) and **Add model...** (`import.model`), each opening the new document | M | FL10 | `ui/browser.rs`, `ui/doc_header.rs`, `app/assets.rs`, `api/import.rs` | a weapon copied from an invented one opens as a tab marked **new in** the target and holds no bytes of its source; an imported WAV opens in the sound editor |
 | FL12 (built) | **The guide by journey**: [editor-guide.md](editor-guide.md) and [editor.md](editor.md) describe the header, links and the four patterns, with the three journeys as walkthroughs | S | FL5 to FL10 | `docs/editor/editor-guide.md`, `docs/editor/editor.md`, `headless.rs` (the screenshots list) | `scripts/docs-check.py docs/editor` is clean; the screenshots regenerate from documents |
 | FL13 (built) | **Where used and Show edits**: the Browser's link views over FL1's table | S | FL1 | `app/assets/browse.rs` (new), `ui/browser.rs`, `ui/doc_header.rs`, `api/assets.rs` | on an invented map and package, `asset.where_used` on a model lists the weapon, and `asset.edits` on an edited tag lists the item and its lines; the Browser draws the same rows and **Clear** brings the list back |
-| FL14 (built) | **Forge variants and items**: the two kinds, `Doc::Forge`, field edits with undo, save to the store, the variants that place an item | M | FL13 | `app/forge_variants.rs` (new), `app/assets/forge.rs` (new), `ui/forge_variant.rs` (new), `api/forge_variants.rs` (new), `app/links.rs`, `app/shell.rs` | an invented variant lists, opens, takes a field edit that undoes, and saves a file `forge_doc` reads back with the new value; a package's added weapon and the block-out set list as custom; a placed tag's **Where used** names the variant |
+| FL14 (built) | **Forge variants and items**: the two kinds, `Doc::Forge`, field edits with undo, the variants that place an item | M | FL13 | `app/forge_variants.rs` (new), `app/assets/forge.rs` (new), `ui/forge_variant.rs` (new), `api/forge_variants.rs` (new), `app/links.rs`, `app/shell.rs` | an invented variant lists, opens, takes a field edit that undoes, and saves a file `forge_doc` reads back with the new value; a package's added weapon and the block-out set list as custom; a placed tag's **Where used** names the variant |
 | FL15 (built) | **Open as fields**: a tag's tab in the field panel | S | nothing | `app.rs` (`OpenFields`, `as_fields`), `app/assets.rs`, `ui/browser.rs`, `ui/doc_header.rs`, `api/shell.rs` | `shell.open {asset, fields: true}` on an invented sound leaves its tab on the field panel with `fields: true` in `shell.tabs`; a plain open brings the sound editor back |
 | FL16 (built) | **Thumbnails**: bitmap rows draw their picture; `asset.thumb` for a bitmap tag of the open map | S | nothing | `app/assets/thumbs.rs` (new), `ui/browser.rs`, `ui/map_list.rs`, `api/assets.rs` | `asset.thumb` on an invented map's bitmap writes a PNG 64 pixels on its longer side; a bitmap no open map holds answers `not-yet` |
 | FL17 (built) | **Drop a source file**: a WAV, a PNG or a model YAML dropped on the window becomes an item of the package the Browser shows | S | FL11 | `app/assets/drop.rs` (new), `main.rs`, `ui/browser.rs`, `api/assets.rs` | `asset.drop` on an invented WAV and PNG adds a `sound` and a `bitmap` item that check clean; a map file is `INVALID_PARAMS` |
+| FL18 (built) | **Map variants as items**: the `map-variant` item kind, its builder and check, the game's store reading the set's items, and the Forge variant document saving to the edit target | M | FL14, FL7 | `crates/formats/content/src/package/manifest.rs`, `crates/tools/workspace/src/map_variants.rs` (new), `crates/extensions/forge/src/files.rs`, `crates/apps/boot/src/packages.rs`, `app/forge_variants.rs`, `app/links.rs`, `app/assets.rs`, `api/forge_variants.rs` | an invented variant item checks clean, lists and loads through the store beside a saved one, and is not renamed or deleted; in Studio it opens from its item row, saves to the same item, and a variant saved in the game saves as a new item while its file stays |
 
 ## Rules and limits
 

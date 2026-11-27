@@ -87,6 +87,15 @@ pub fn read_set(data_root: &Path, feature_on: &dyn Fn(&str) -> bool) -> BootSet 
     }
 }
 
+/// The `map-variant` items of `loaded` as the map variant store holds
+/// them. One that does not read is left out; `h2 package check` names it.
+pub fn packaged_variants(loaded: &[workspace::Loaded]) -> Vec<forge::files::variants::Packaged> {
+    workspace::map_variants(loaded)
+        .iter()
+        .filter_map(|v| forge::files::variants::Packaged::read(&v.package, &v.stem, &v.bytes))
+        .collect()
+}
+
 /// Install the boot's package set. `kits` is what the set's `kit` items run on:
 /// the campaigns' level pictures and the button icon sets. `store` is the
 /// tag store the maps are served from (`store-maps`), if they are: the
@@ -96,6 +105,10 @@ pub fn at_boot(data_root: &Path, set: BootSet, kits: KitInputs, store: Option<&P
     // that are on: a package off takes its entries out of the game's list.
     // This is before the list is first read (`community_variants::install`).
     game::community_variants::install_registry(workspace::script_registry(&set.loaded));
+    // The set's `map-variant` items join the map variant store: the lobby,
+    // Change Map, Forge and a game variant's suggestions list and load
+    // them with the ones saved here (`forge::files::variants`).
+    forge::files::variants::install_packaged(packaged_variants(&set.loaded));
     let loaded: Arc<[workspace::Loaded]> = set.loaded.into();
     let mut rewrite = PackageRewrite::new(Arc::clone(&loaded)).strict(set.strict.clone());
     if store.is_some() {

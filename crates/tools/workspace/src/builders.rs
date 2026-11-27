@@ -31,7 +31,7 @@ pub struct Builder {
     pub check: fn(&Job<'_>) -> Result<(), Failure>,
 }
 
-static REGISTRY: [Builder; 18] = [
+static REGISTRY: [Builder; 19] = [
     Builder {
         kind: Kind::Tag,
         name: "tag",
@@ -111,6 +111,12 @@ static REGISTRY: [Builder; 18] = [
         check: crate::modes::check_playlist,
     },
     Builder {
+        kind: Kind::MapVariant,
+        name: "map-variant",
+        apply: crate::map_variants::apply,
+        check: crate::map_variants::check,
+    },
+    Builder {
         kind: Kind::Map,
         name: "map",
         apply: crate::maps::apply,
@@ -164,7 +170,8 @@ pub fn overrides_whole(kind: Kind) -> bool {
 }
 
 /// Whether `item` changes the map it is built on. A `hud` or `data` item
-/// does not, nor does a `map` or `map-patch` item (it builds a map package
+/// does not, nor does a `map-variant` item (the game builds the variant's
+/// map when a lobby picks it, [`crate::map_variants`]), nor does a `map` or `map-patch` item (it builds a map package
 /// at prepare, [`crate::maps`], and changes no other map), nor a `convert`
 /// item (its converter writes under the data root at prepare,
 /// [`crate::convert`]), nor does a `kit`
@@ -180,6 +187,7 @@ pub fn changes_map(item: &Item) -> bool {
         | Kind::Rules
         | Kind::Variant
         | Kind::Playlist
+        | Kind::MapVariant
         | Kind::Map
         | Kind::MapPatch
         | Kind::Convert

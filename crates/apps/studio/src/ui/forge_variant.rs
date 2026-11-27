@@ -70,6 +70,10 @@ pub fn window(ui: &Ui, app: &App, st: &mut ForgeVariantUi, actions: &mut Vec<Act
                 ui.same_line();
                 ui.text_disabled(format!("by {}", open.doc.author));
             }
+            ui.text_disabled(match open.package() {
+                Some(package) => format!("a map-variant item of {package}"),
+                None => "saved in the game: Save adds it to the edit target as a map-variant item".to_owned(),
+            });
             ui.text_disabled(format!(
                 "{} things{}",
                 rows.len(),

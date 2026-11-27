@@ -582,7 +582,8 @@ A map variant is a Forge document, in the form a game is played from.
   (`variant_name_taken`), unless `replace` is set; a rename or a
   duplicate never replaces. Two names that make one stem get `-2`. A
   rename or a duplicate drops `expect`, since the title is in the id.
-  `list` gives every file, the Live copies after the saved ones, each
+  `list` gives every file, the Live copies after the saved ones, then
+  the packaged ones ("A map variant in a package"), each
   with the `Problem` that bars it and its sentence; `load` refuses with
   the same one. Rename, duplicate and delete act on saved files, and on
   one that has a problem. Files are user output and stay out of Git
@@ -599,6 +600,47 @@ A map variant is a Forge document, in the form a game is played from.
   author set, tag keys, digests. A print and a `was` are digests. An
   own entry's position is never written unless the author moved it,
   and then the value is the author's.
+
+### A map variant in a package
+
+A package holds a map variant as a `map-variant` item
+([studio-redesign.md](../editor/studio-redesign.md), "Contents"). The
+source is the same file, so a variant saved in the game and a packaged
+one are one format. Code: `crates/tools/workspace/src/map_variants.rs`,
+`forge::files::variants` (`Packaged`, `install_packaged`),
+`boot::packages::at_boot`.
+
+```toml
+[[item]]
+kind = "map-variant"
+source = "map-variants/lockout/castle.h2mapvariant"
+```
+
+| Step | Where | Does |
+|---|---|---|
+| Check | `workspace::map_variants::check` (`h2 package check`) | the source's name is `<stem>.h2mapvariant`, the stem letters, digits, `_` and `-`; the bytes read as a Forge document that passes `ForgeDoc::check_variant`; the item names no `tag` |
+| Build | `workspace::map_variants::apply` | changes no map: the variant's map is built when a lobby picks it ("Materialising for a match") |
+| Boot | `boot::packages::at_boot` | gives the store the `map-variant` items of the packages that are on (`workspace::map_variants`, `variants::install_packaged`) |
+| List, load | `variants::list`, `load`, `suggestable`, `duplicate` | a packaged variant is a row of source `Package` after the saved and fetched ones, with the same checks and `Problem`s; its handle is `<package>.<stem>`, which no file stem is |
+
+A packaged variant is used wherever a saved one is, since every reader
+goes through the store: the lobby's Map Variant picker and Change Map
+(`lobby_mode::{map_variant_list, usable_variants}`), Forge's Map
+variants dialog, the pick's build (`map_variant`), the rules gate's
+census and a game variant's suggestions. `Source::loads` is true of a
+saved and a packaged variant and false of a fetched one.
+
+| Call on a packaged variant | Result |
+|---|---|
+| `load`, `duplicate` | as a saved one; the copy is a saved file |
+| `rename`, `delete` | refused, `variant_packaged`: "That map variant belongs to the package <id>. Duplicate it to change it." |
+
+`list_with`, `load_with` and `suggestable_with` take the packaged
+variants as an argument in place of the installed ones; Studio and the
+tests call them. A package that is off takes its variants out of every
+list. Studio saves a variant as an item of the edit target and never
+writes the store's files ([studio-flow.md](../editor/studio-flow.md),
+"Forge variants and items").
 
 ### How a pick names a map variant
 

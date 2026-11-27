@@ -250,7 +250,7 @@ pub const NO_GROUND: &str = "No AI ground.";
 pub const OWN_WAVES: &str = "Has its own waves.";
 
 /// The map variants of the lobby's map `map` (its list id) the picker
-/// lists, saved on this machine, by name: those that pass the store's
+/// lists, saved on this machine or in a package that is on, by name: those that pass the store's
 /// checks (`forge::files::variants::list`, against the installed map's
 /// hash) with their detail, the rest with their sentence.
 pub fn map_variant_list(data: &Path, map: Option<u32>) -> Result<Vec<VariantEntry>, String> {
@@ -262,7 +262,7 @@ pub fn map_variant_list(data: &Path, map: Option<u32>) -> Result<Vec<VariantEntr
         .map_err(|e| e.to_string())?;
     Ok(listed
         .into_iter()
-        .filter(|l| l.source == ::forge::files::variants::Source::Saved)
+        .filter(|l| l.source.loads())
         .map(|l| {
             let detail = match &l.sentence {
                 Some(_) => String::new(),
@@ -284,8 +284,8 @@ pub fn map_variant_list(data: &Path, map: Option<u32>) -> Result<Vec<VariantEntr
         .collect())
 }
 
-/// The saved map variants of the installed original map `map` that pass
-/// the store's checks: what Change Map lists under the map
+/// The saved and packaged map variants of the installed original map `map`
+/// that pass the store's checks: what Change Map lists under the map
 /// (docs/game/map-select.md, "A map with variants"). One with AI ground
 /// (`ground`) plays Firefight.
 pub fn usable_variants(
@@ -298,9 +298,7 @@ pub fn usable_variants(
         .map(|listed| {
             listed
                 .into_iter()
-                .filter(|l| {
-                    l.source == ::forge::files::variants::Source::Saved && l.problem.is_none()
-                })
+                .filter(|l| l.source.loads() && l.problem.is_none())
                 .collect()
         })
         .unwrap_or_default()
