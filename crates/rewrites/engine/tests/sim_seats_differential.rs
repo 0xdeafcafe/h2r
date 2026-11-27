@@ -192,7 +192,7 @@ fn compare(
         let ram = &native.physical_ram()[start..start + RAM];
         if mem.bytes != ram {
             let first = mem.bytes.iter().zip(ram).position(|(a, b)| a != b).unwrap();
-            panic!("{} first different byte at {first:#x}", why());
+            panic!("{} first different byte at {first:#x}: original {:#04x}, port {:#04x}", why(), mem.bytes[first], ram[first]);
         }
         if actual.kind == abi::RETURN {
             assert_eq!(actual.target_pc, EXIT);
