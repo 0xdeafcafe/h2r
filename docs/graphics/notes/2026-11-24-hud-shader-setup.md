@@ -2,7 +2,7 @@
 
 Evidence for [the native HUD overlay](../native-post-hud.md).
 
-## 2026-11-24 — from the widget to the bound combiner
+## 2026-11-24 - from the widget to the bound combiner
 
 Read at `12ae05214` with `h2 disasm` on the owner's retail executable.
 To reproduce, disassemble the following entries and follow the calls below.

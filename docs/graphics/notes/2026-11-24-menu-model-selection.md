@@ -12,7 +12,7 @@ At base `4d40837d1`, reproduce with `h2 disasm 0x002b0baa 235`,
 | `0x000bb760` | Indices 0 through 639 select words from the handle array pointed to by `0x004de2d0`. The caller discards the absent datum. |
 | `0x002b0c24` to `0x002b0c70` | Definition +0x14/+0x18 gives the separate light-name block. The light resolver walks live light data at `0x000c38e0`. The view requires at least one resolved primary object. |
 | `0x002b0c76` to `0x002b0d2b` | The draw argument supplies parent bounds. Definition +0x38 supplies the relative viewport. The draw clamps FOV at +0x34, converts it with the live multiplier and computes split-screen offsets. |
-| `0x002b0d30` to `0x002b0db6` | Definition +0x28 supplies camera center, minus the componentwise product of scale (+0x1c) and widget animation (+0x58, axes X/Z/Y). The routine normalizes its two basis vectors. |
+| `0x002b0d30` to `0x002b0db6` | Definition +0x28 supplies camera centre, minus the componentwise product of scale (+0x1c) and widget animation (+0x58, axes X/Z/Y). The routine normalises its two basis vectors. |
 | `0x002b0dd5`, `0x002b0e12`, `0x002b0e1b` | Before drawing the view the game installs the resolved object and light lists. After the view it can draw additional widget text. |
 
 The sorted-list reader accepts inactive views and empty object selections

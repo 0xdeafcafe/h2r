@@ -19,7 +19,7 @@ Those switches are gone: the default is all native, and
 
 ### Pixels
 
-Every captured frame — 1, 500 … 4500, cutscene and gameplay — is
+Every captured frame (1, 500 to 4500, cutscene and gameplay) is
 identical to D3D after round 3: the max channel difference is 6 at
 frame 500 and 0 elsewhere. Before round 3, one explosion frame (2000)
 differed by 44 px.
@@ -31,10 +31,10 @@ Presents 3000–5000, D3D against all native, same load:
 | Round | D3D fps | All-native fps |
 |---|---|---|
 | before | 35.0 | 10.7 |
-| round 1 | — | 4.75, worse than before |
+| round 1 | - | 4.75, worse than before |
 | round 2 | 23.8 | 14.4 |
 | round 3 | 25.6 | 15.4 average |
-| round 4 | — | TODO: pending measurement |
+| round 4 | - | TODO: pending measurement |
 
 Round 3's average hides two regimes: native is slower in a
 mid-gameplay stretch (12–14 fps for about 15 s) and faster at the end

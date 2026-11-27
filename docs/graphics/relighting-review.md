@@ -40,7 +40,7 @@ room lit solely by dynamic lights, or a failed fit rules the site out.
 1. Launch the GPU game with the installed data root. Both reconstructed states
    are available for private draws in this run. A dedicated agent socket
    identifies it when another game is open. Use an existing image of this
-   build with the same optimization level used to produce it. The render
+   build with the same optimisation level used to produce it. The render
    thread queues the world stage so the scene recorder can retain the draw
    and bind a different atlas during each private replay.
 
