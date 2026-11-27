@@ -214,11 +214,13 @@ device does not hold mode 1 where the item would not set it. A draw that
 samples the view or the scene copy is recorded as commands with a copy of
 the bound colour (`snapshot_gpu`), as the layer calls' are. An item whose
 `0x0003bea0` is the frame's first call (`TARGET_COPIED`) is answered only
-with nothing cached (the call's shader-cache clear then writes nothing),
-and with a structure parameter block the pass copies the bound colour into
+after the cached implementation's restore list is written
+(`restore_list`, the open shader's `0x00018900`) and the cache cleared as
+`0x00016b10` clears it (`frame_step::layer::clear_cache`), and with a
+structure parameter block the pass copies the bound colour into
 the refraction target before its first draw
-(`snapshot_gpu::Snapshots::into_target`); with a cached implementation it
-is refused `object_target`. 
+(`snapshot_gpu::Snapshots::into_target`); a restore list the device does
+not take keeps the guest's handler.
 A copy beside a draw sampling the view is
 refused `object_shader_flag_target_view`.
 
