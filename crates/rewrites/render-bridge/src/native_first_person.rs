@@ -24,6 +24,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
+use engine::render::light_gather::first_person_items;
+use scene_extract::layout::skip::{CURRENT_LAYER, CURRENT_LIST};
 use frame_scene::{FrameScene, View, ViewKind, ViewSlot};
 use runtime::guest::{Access, FaultReason};
 use runtime::GuestFault;
@@ -82,16 +84,20 @@ pub enum Dropped {
     Unsupported,
     /// The host could not reserve what the draw needs.
     Reservation,
+    /// The call's item build refused (a record or shader it does not
+    /// read): the call adds no part.
+    Items,
 }
 
 impl Dropped {
-    pub const ALL: [Dropped; 6] = [
+    pub const ALL: [Dropped; 7] = [
         Dropped::NoView,
         Dropped::NoHost,
         Dropped::Unreadable,
         Dropped::Unresident,
         Dropped::Unsupported,
         Dropped::Reservation,
+        Dropped::Items,
     ];
 
     /// The cause's name in `render.scene`.
@@ -103,6 +109,7 @@ impl Dropped {
             Dropped::Unresident => "unresident",
             Dropped::Unsupported => "unsupported",
             Dropped::Reservation => "reservation",
+            Dropped::Items => "items",
         }
     }
 
@@ -156,7 +163,7 @@ pub trait Host: Send + Sync {
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
 static CALLS: AtomicU64 = AtomicU64::new(0);
 static DRAWN: AtomicU64 = AtomicU64::new(0);
-static DROPS: [AtomicU64; 6] = [const { AtomicU64::new(0) }; 6];
+static DROPS: [AtomicU64; 7] = [const { AtomicU64::new(0) }; 7];
 
 pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
@@ -240,12 +247,49 @@ pub fn offer(
     out
 }
 
-/// Answers one call of `0x0003fdf0`: opens the first person's view, offers
-/// its parts, and counts what was drawn and what was dropped.
-pub fn answer(mem: &mut dyn GuestMemory, mode: u32) -> Outcome {
+/// The call's items into the scene, as `0x0003fdf0`'s body makes them up
+/// to its draws: the item build's writes
+/// ([`first_person_items::make`]), then each layer the call draws, with
+/// the current layer and list the guest's layer draw reads, into the
+/// first person's view, then the epilogue. `false` when the build
+/// refuses or its writes fault: the view holds no part of this call.
+pub fn build(mem: &mut dyn GuestMemory, eax: u32, call: u32) -> bool {
+    let Ok(items) = first_person_items::make(&*mem, eax) else {
+        return false;
+    };
+    if items.writes.apply(mem).is_err() {
+        return false;
+    }
+    for &(layer, gate) in first_person_items::layers(call) {
+        let gated = gate.is_none_or(|at| mem.u8(at).is_ok_and(|g| g != 0));
+        if items.layers & (1 << layer) != 0 && gated {
+            let _ = mem.set_u32(CURRENT_LAYER, u32::from(layer));
+            let _ = mem.set_u32(CURRENT_LAYER + 4, 0);
+            let _ = mem.set_u32(CURRENT_LIST, first_person_items::LIST);
+            crate::scene_step::first_person_layer(&*mem, layer);
+        } else if gate.is_none() || layer != 2 {
+            // `0x00044370` writes nothing for a layer it does not draw.
+            let _ = mem.set_u32(CURRENT_LAYER, 0);
+        }
+    }
+    first_person_items::restore(&*mem).is_ok_and(|w| w.apply(mem).is_ok())
+}
+
+/// Answers one call of `0x0003fdf0` (EAX `eax`, the stack argument
+/// `call`): builds its items into the first person's view ([`build`]),
+/// offers the view's parts, and counts what was drawn and what was
+/// dropped. The view's camera is the render camera the game view drew
+/// with: `0x0003fdf0` and its call site set none of their own.
+pub fn answer(mem: &mut dyn GuestMemory, eax: u32, call: u32) -> Outcome {
     CALLS.fetch_add(1, Ordering::Relaxed);
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let _ = crate::scene_step::open_kind(&*mem, ViewKind::FirstPerson);
+    if !build(mem, eax, call) {
+        let mut out = Outcome::default();
+        out.drop(Dropped::Items, 1);
+        count(&out);
+    }
+    let mode = call;
     let out = crate::scene_step::with_open(|open| match (host.as_deref(), open) {
         (None, Some((_, view))) => {
             let mut out = Outcome::default();
@@ -308,7 +352,7 @@ impl Feature for NativeFirstPerson {
                 // read is a drop, never a guest draw.
                 match mem.u32(c.cpu.esp.wrapping_add(4)) {
                     Ok(mode) => {
-                        answer(&mut *mem, mode);
+                        answer(&mut *mem, c.cpu.eax, mode);
                     }
                     Err(_) => count(&Outcome {
                         drawn: 0,
