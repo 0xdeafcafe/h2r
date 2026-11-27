@@ -178,6 +178,7 @@ fn a_human_squad_arrives_by_pelican() {
                     count: 1,
                     zone: 0,
                     weapon_tier: 0,
+                    arrival: Arrival::Auto,
                     ship: pelican,
                 }
             ),
