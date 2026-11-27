@@ -1758,6 +1758,10 @@ points! { ALL;
     SLOT_SIGN_OUT @ 0x0019_0d4b: [fn(slot: eax) ret 0]; "docs/game/bots.md";
     /// Allocates a one-shot sound after native playback admission.
     SOUND_IMPULSE_ALLOCATE @ 0x0012_6000: [fn(tag: stack 0, channel: stack 1, source: stack 2, rule: stack 3) -> eax ret 16]; "docs/halo1/sounds.md";
+    /// Stops the sound instance in EBX: it runs the owner's callback and starts the fade
+    /// (`+0xb0`..`+0xb8`). Called by the script stop, the retrigger of a playing line
+    /// (`0x189f1f`) and the object code. A handle that is not in the pool is ignored.
+    SOUND_STOP_INSTANCE @ 0x0012_6360: [fn(instance: ebx) ret 0]; "docs/engine/sound-sim.md";
     /// Chooses the channel for a due instance. The low word of EAX is -1 when no channel is available.
     SOUND_CHOOSE_CHANNEL @ 0x0012_8700: [fn(instance: stack 0, reason: stack 1) -> eax ret 8]; "docs/audio/dsound.md";
     /// Unbinds the channel and notifies the owner before freeing the instance.
