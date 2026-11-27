@@ -365,8 +365,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         view_target: [u32; 8],
     ) -> Result<usize, Keep> {
         let first = passes.first().ok_or(Keep::Unsupported("a scene light with no layers"))?;
-        if first.slot != render_bridge::native_lights::LIGHT_SLOT {
-            return Err(Keep::Unsupported("a first-person scene light (slot 10)"));
+        if first.slot != render_bridge::native_lights::LIGHT_SLOT
+            && first.slot != render_bridge::native_lights::FIRST_PERSON_SLOT
+        {
+            return Err(Keep::Unsupported("a scene light outside slots 4 and 10"));
         }
         let (light, gel) = scene_light(&first.light).ok_or(Keep::NoConstants)?;
         let gel = match gel {

@@ -808,6 +808,24 @@ fn open_light_passes() -> Vec<crate::native_lights::ScenePass> {
     })
 }
 
+/// The open first-person view's light layers in slot 10, owned, of the
+/// lights `handles` only: the slots the scene path took
+/// (`native_lights::draw_first_person_scene`).
+pub(crate) fn open_first_person_passes(handles: &[u32]) -> Vec<crate::native_lights::ScenePass> {
+    with_step(|step| {
+        let Some((scene, view)) = step.builder.open() else { return Vec::new() };
+        if view.key.kind != ViewKind::FirstPerson {
+            return Vec::new();
+        }
+        crate::native_lights::gather_scene_passes(scene, view)
+            .into_iter()
+            .filter(|p| {
+                p.slot == crate::native_lights::FIRST_PERSON_SLOT && handles.contains(&p.light.handle)
+            })
+            .collect()
+    })
+}
+
 /// The open game view's object shadows, owned, outside the step's lock
 /// ([`crate::native_lights::object_shadow_scene::gather`]).
 pub(crate) fn open_object_shadow_passes() -> Vec<crate::native_lights::object_shadow_scene::ObjectShadowPass> {
@@ -2026,6 +2044,10 @@ pub fn counters() -> Vec<(&'static str, u64)> {
     .chain(crate::native_decorators::counters())
     .chain(crate::native_shadows::alone_counters())
     .chain(crate::native_lights::scene_frame::counters())
+    .chain(std::iter::once((
+        "scene_first_person_cut_slots",
+        crate::native_lights::first_person_scene_slots(),
+    )))
     .chain(crate::native_shadows::filter_counters())
     .chain(crate::native_shadows::chain_counters())
     .chain(

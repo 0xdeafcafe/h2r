@@ -166,6 +166,31 @@ pub fn draw_scene(mem: &mut dyn GuestMemory, passes: &[ScenePass]) -> usize {
     drawn
 }
 
+/// First-person slots the scene path took ([`draw_first_person_scene`]).
+pub fn first_person_scene_slots() -> u64 {
+    first_person::scene_slots()
+}
+
+/// Draws the first-person lights' layers the scene path took
+/// (`first_person::run_scene`) at the loop's exit, on the target then
+/// bound. Returns the layers drawn.
+pub fn draw_first_person_scene(mem: &mut dyn GuestMemory, passes: &[ScenePass]) -> usize {
+    if passes.is_empty() || Stage::Lights.standing_down() {
+        return 0;
+    }
+    let Some(host) = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
+        return 0;
+    };
+    let Some(view_target) = host.target() else {
+        refused("first-person light view target unavailable");
+        return 0;
+    };
+    let serial = SERIAL.fetch_add(passes.len() as u64, Ordering::Relaxed);
+    let drawn = host.draw_scene(mem, SceneDraw { passes, view_target, serial });
+    SCENE_DRAWN.fetch_add(drawn as u64, Ordering::Relaxed);
+    drawn
+}
+
 /// Whether a layer draw returning to `ret` is the first-person lights'
 /// draw of `layer`.
 pub fn first_person_site(layer: u32, ret: u32) -> bool {
