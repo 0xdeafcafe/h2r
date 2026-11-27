@@ -102,6 +102,9 @@ pub mod object_streams;
 pub mod overlay;
 #[cfg(feature = "gpu")]
 pub mod particle_gpu;
+#[cfg(feature = "gpu")]
+pub mod particle_compute;
+pub mod particle_system;
 pub mod particles;
 #[cfg(feature = "gpu")]
 pub mod pass_state;

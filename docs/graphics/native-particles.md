@@ -1,10 +1,10 @@
 # Native particles and effect geometry
 
-Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. Pixel parity and timing are not verified.
-Code: `crates/rewrites/render-bridge/src/native_particles.rs`, `native_effects.rs`, `crates/extensions/game/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/rewrites/render-bridge/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`, `threaded.rs` (`a_particle_batch_is_one_queued_admission_with_the_same_draws_in_order`), `admission_scope.rs` (`same_state_particles_resolve_once_and_offer_identical_draws`).
+Status: Built. Particles, beam emissions, generated contrails, the four-vertex effect builder, volume and trail billboards, weather layers and lines, and two researched material strips are admitted through `d3d::DrawAdmission`. GPU particle systems (emission, update, compaction, draw on the GPU) are built and tested offscreen; the run host does not draw them yet. Pixel parity and timing are not verified.
+Code: `crates/rewrites/render-bridge/src/native_particles.rs`, `native_effects.rs`, `crates/extensions/game/src/native_particles_glue.rs`, `native_particles_admission.rs`, `crates/rewrites/native-render/src/particles.rs`, `particle_gpu.rs`, `particle_system.rs`, `particle_compute.rs` (`particle_common.wgsl`, `particle_compute.wgsl`, `particle_draw.wgsl`), `effect_geometry.rs`, `effect_immediate.rs`. Tests: `crates/rewrites/render-bridge/tests/native_particles.rs`, `crates/rewrites/native-render/tests/particles_gpu.rs`, `particles_compute_gpu.rs`, `crates/platform/d3d/tests/admission_scope.rs`, `external_pass.rs`, `threaded.rs` (`a_particle_batch_is_one_queued_admission_with_the_same_draws_in_order`), `admission_scope.rs` (`same_state_particles_resolve_once_and_offer_identical_draws`).
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-The guest keeps all particle, beam and contrail simulation, property evaluation and geometry construction. The stage reads the completed geometry and replaces only the draw packet. Part of [native-renderer.md](native-renderer.md).
+On the admitted path the guest keeps all particle, beam and contrail simulation, property evaluation and geometry construction; the stage reads the completed geometry and replaces only the draw packet. A GPU particle system ("GPU particle systems" below) holds its particles in GPU buffers and updates and draws them there. Part of [native-renderer.md](native-renderer.md).
 
 | Producer | Guest entry | Native admission |
 |---|---|---|
@@ -423,10 +423,70 @@ The effect leaves and query paths keep their documented admission and
 fallback boundaries. The effect quad, contrails and the guest-issued
 leaves are queued behind the render thread the same way.
 
+### GPU particle systems
+
+A system's particles live in GPU buffers for their whole life. The CPU
+stages births and records three dispatches and one draw a frame; it never
+reads a count back or writes a vertex
+(`native_render::particle_compute`, records in `particle_system`).
+
+| Buffer | Holds |
+|---|---|
+| particles, two | 128-byte `Particle`: state, then what the update evaluated for the draw. They swap each update |
+| scan, blocks | each particle's place in its block (bit 31 alive), each block's total then offset |
+| counts | `Counts`: `count`, `old`, `alive`, `spawned` |
+| indirect | the next update's dispatch (`args::UPDATE`), this scatter's (`args::SCATTER`), the draw (`args::DRAW`: 6 vertices, `count` instances) |
+| spawns, step | births and `dt`, written through the queue at `update` |
+| definition, sprites | the `Definition` uniform and its `Sprite` table |
+
+```mermaid
+flowchart LR
+  E[emit: births staged] --> U
+  U[update, indirect: age, kill, integrate, evaluate; workgroup scan] --> O
+  O[offsets, one workgroup: block offsets, births that fit, counts, indirect args] --> S
+  S[scatter, indirect: survivors in order, then births, evaluated] --> D
+  D[draw_indirect: an instance a particle, read from the buffer]
+```
+
+- **Order.** Survivors keep their order and births follow them, so blending
+  is stable from frame to frame. A system holds at most `MAX_CAPACITY`
+  (65,536) particles: the block scan is one workgroup of 256 block totals.
+  Births past the room the survivors leave are dropped.
+- **Integration.** `age += dt`; a particle with `age >= lifetime` dies.
+  Otherwise `velocity = (velocity + gravity * dt) * max(0, 1 - drag * dt)`,
+  then `position += velocity * dt`. Births are evaluated, not aged, on the
+  frame they arrive.
+- **Evaluation** is `0x00224550`'s, as `engine::particle_emission` models
+  it, with the tag function baked:
+
+| Step | GPU form |
+|---|---|
+| inputs | `Input`: life (age over lifetime), age, four random lanes fixed at birth, one, zero |
+| property (`0x00246cd0`) | two 16-sample curves (the function at range 0 and 1), lerped by the range input; `map` clamps to 0..1 and maps to `lo..hi`; modifier adds or multiplies another input |
+| colour (`0x00246d80`) | the same function's value into an 8-stop gradient |
+| alpha, colour | alpha times `tint.x`; RGB times `tint.yzw` and, with flag `0x180`, the particle's packed tint; clamped, packed RGBA (`pack4x8unorm`) |
+| rotation | property times `angle_scale`, plus `spin` with flag `0x2000` |
+| window, corners | flag `0x10000`: the definition's. Otherwise the sequence (`sequence_first`, plus the word's high half modulo `sequence_pick` with flag `0x10`), frame `t = frame property * frames` (less one with flag `0x8`), its sprite and the next, blended by `t`'s fraction unless flag `0x20`; corners from the registration point and each frame's aspect |
+| flips | flags 2 and 4 with the particle's word bits 0 and 16 |
+| size | property times `size_scale` |
+
+The draw (`ParticleDraw::draw`) is the entry a render pass calls: it binds
+the system's current buffer, the `View` uniform (clip from world, the
+billboard's right and up) and the sprite texture, and records one
+`draw_indirect` at `args::DRAW`. The vertex shader expands six corners with
+the D3D diagonal, scales by size, turns by rotation and samples both frame
+windows; `Blend::Alpha` or `Blend::Additive`, depth tested, never written.
+
+Particles are visual only. A system's state is in its own buffers; nothing
+reads or writes the sim arena or enters its hash. The CPU evaluator is a
+test (`tests/particles_compute_gpu/reference.rs`), not a runtime path.
+
 ## Rules and limits
 
 - Coverage comes from the `particles` stage counters in `H2_FRAME_STATS` (suppressed, and positive reference and display ranges in view bucket `other`). Resource and range refusals are named counters, not receipts.
 - The feature test `crates/rewrites/render-bridge/tests/native_particles.rs` requires render-safe leaf and visibility hooks and verifies that the particle update and layered handlers have no particle hooks.
+- `crates/rewrites/native-render/tests/particles_compute_gpu.rs` runs an invented system for forty frames on the GPU and on the CPU reference, more than a workgroup of particles dying across blocks, and requires the same particles in the same order within float tolerance (frame windows are skipped within 1e-3 of a frame boundary). It checks that a dead particle is compacted out, that births past the capacity drop, and that the draw's instance count is the GPU's: a stale record past it is not drawn. It skips without a GPU adapter.
+- One `GpuParticles::update` per submission: the step and births go through the queue.
 - `crates/rewrites/native-render/tests/particles_gpu.rs` draws a canonical particle and a packed ribbon strip into one submission with invented microcode and checks colour readback and refusal of a changed attachment identity. It skips without a GPU adapter. Pure tests cover dynamic register assignment, colour channel order, z/w reset, NaN and signed zero, missing memory, alias and overflow refusal, clip and depth mismatch and malformed geometry; `effect_immediate::` tests cover winding, caller allowlisting, defaults and point and odd-line refusals.
 
 ## Not verified
@@ -436,6 +496,7 @@ leaves are queued behind the render thread the same way.
 - Sorted and direct beams, a lens with changing occlusion, a light volume or trail, both material-strip callbacks, and a weather BSP in line and point modes.
 - Query results and weather and beam simulation state equal to the D3D baseline; refused point draws keep their D3D receipts.
 - Timings: warm p50 and p95 with diagnostics off.
+- GPU particle systems: building a `Definition` from a particle tag (the curves baked from the tag function) and drawing them from the run host; update and draw cost at 1k, 10k and 65k particles.
 
 ## Related
 
