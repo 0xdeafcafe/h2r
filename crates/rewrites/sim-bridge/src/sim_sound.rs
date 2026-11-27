@@ -432,7 +432,8 @@ impl Feature for SimSoundEvents {
         // `busy` set and runs the original.
         let sim = Arc::clone(&self.sim);
         let busy = Arc::new(AtomicBool::new(false));
-        b.raw().before(&points::SOUND_IMPULSE_ALLOCATE, "sound admission", move |call| {
+        b.raw()
+            .before(&points::SOUND_IMPULSE_ALLOCATE, "sound admission", move |call| {
             if busy.load(Ordering::SeqCst) {
                 return Ok(Flow::Continue);
             }
@@ -442,7 +443,9 @@ impl Feature for SimSoundEvents {
             drop(g);
             let (sim, busy) = (Arc::clone(&sim), Arc::clone(&busy));
             call.answer_async(move |cx| Box::pin(admit(cx, sim, busy, args)))
-        });
+            })
+            // After the Halo 1 promotion has rewritten the sound it admits.
+            .after_feature("h1-sound-promotion");
         // The mixer clock, the ramps and the finishes, before the tick.
         let sim = Arc::clone(&self.sim);
         b.raw()
@@ -455,7 +458,15 @@ impl Feature for SimSoundEvents {
                 let sim = Arc::clone(&sim);
                 call.answer_async(move |cx| Box::pin(deliver(cx, sim, tick, due)))
             })
-            .first();
+            .first()
+            // Innermost of the tick's first hooks: the others run as they
+            // would without it, and it answers the tick last.
+            .after_feature("map-select")
+            .after_feature("hud-kit")
+            .after_feature("actor-net")
+            .after_feature("agent-calls")
+            .after_feature("host-lobby")
+            .after_feature("skulls-custom");
         Ok(())
     }
 }

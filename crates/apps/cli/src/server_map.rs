@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(ai.squads.len(), 17);
         assert!(ai.zones.iter().any(|z| z.name == "ff_base_00"));
         let orders: Vec<_> = ai.orders.iter().map(|o| o.name.as_str()).collect();
-        assert_eq!(orders, ["ff_hunt_00", "ff_hunt_01"]);
+        assert_eq!(orders, ["ff_hunt_00", "ff_hunt_01", "ff_hold_00", "ff_hold_01"]);
         for bsp in ["court_0", "court_1"] {
             let id = server.tag(bsp).unwrap().id;
             let sectors = tags::pathfinding::PathfindingData::read(&mut server, id).unwrap();

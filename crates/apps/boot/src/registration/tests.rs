@@ -16,11 +16,12 @@ use std::sync::{Arc, Mutex};
 use super::{AgentSource, CoreInputs, LateInputs, register_core_film, register_late_for_profile};
 use crate::lockstep_glue;
 
-/// Every switch that adds hooks, on (the native renderer, the engine leaves,
+/// Every switch that adds hooks, on (the sim's sound events and effect parts,
+/// each of which hooks points other features hook, included; the native renderer, the engine leaves,
 /// Forge, the actor capture, Firefight and the creature probe are on by
 /// default; only the diagnostics and `impl.engine=on` are spelled out;
 /// `rules`, on by default too, stays named).
-pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,actor-net,firefight,rules";
+pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,actor-net,firefight,rules,impl.sim.sound-events,impl.sim.effects-parts";
 /// Added to [`ALL_ON`]: the native renderer (on by default) off.
 pub(crate) const NATIVE_OFF: &str = "impl.render.native=off";
 
