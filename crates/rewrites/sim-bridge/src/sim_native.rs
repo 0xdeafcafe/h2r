@@ -161,6 +161,8 @@ impl Feature for SimNative {
         // first (crate::sim_seats). Registers every seat with the shadow
         // whatever the switch says; installs them when it is on.
         crate::sim_seats::install(b);
+        // The aim-assist cone's kernel arm (crate::present), when on.
+        crate::present::install(b);
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to
         // invalidate them.

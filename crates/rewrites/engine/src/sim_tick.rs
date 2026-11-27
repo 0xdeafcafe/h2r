@@ -279,8 +279,75 @@ pub enum Present {
     Always,
     /// The presentation phases ([`is_presentation`]) only when a local user
     /// is mapped: with none, the guest bodies have no seat to work on and
-    /// the tick does not call them.
+    /// the tick does not call them. When they run, they draw from the
+    /// presentation stream ([`PresentSeeds`]), so the sim's draws are the
+    /// same with any number of views.
     LocalOnly,
+}
+
+/// The presentation's own copy of the two shared random seeds
+/// (`[RANDOM_SEEDS]` `+0` and `+4`, docs/engine/sim-rewrite.md, "The tick
+/// driver"). Around each presentation phase the driver puts these in the
+/// guest's seed words and the sim's back after, so first person, the HUD
+/// and the camera step this stream and never the sim's. It starts as the
+/// sim's seeds at the first presentation phase it covers, lives for the
+/// process, and is not saved: a view's draws are not sim state.
+pub struct PresentSeeds(Mutex<Option<[u32; 2]>>);
+
+impl PresentSeeds {
+    pub const fn new() -> Self {
+        PresentSeeds(Mutex::new(None))
+    }
+
+    /// The seeds the presentation draws next, `None` before its first phase.
+    pub fn get(&self) -> Option<[u32; 2]> {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Before a presentation phase: the sim's seeds out, the stream's in.
+    /// Returns the sim's, or `None` (counted) when the seed words do not read.
+    fn swap_in(&self, m: &mut dyn crate::memory::GuestMemory) -> Option<(u32, [u32; 2])> {
+        let read = |m: &dyn crate::memory::GuestMemory| -> Option<(u32, [u32; 2])> {
+            let base = m.u32(crate::points::RANDOM_SEEDS.base).ok().filter(|&b| b != 0)?;
+            Some((base, [m.u32(base).ok()?, m.u32(base.wrapping_add(4)).ok()?]))
+        };
+        let Some((base, sim)) = read(m) else {
+            UNISOLATED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return None;
+        };
+        let present = self.get().unwrap_or(sim);
+        m.set_u32(base, present[0]).ok()?;
+        m.set_u32(base.wrapping_add(4), present[1]).ok()?;
+        Some((base, sim))
+    }
+
+    /// After it: the stream's seeds kept, the sim's put back.
+    fn swap_out(&self, m: &mut dyn crate::memory::GuestMemory, (base, sim): (u32, [u32; 2])) {
+        if let (Ok(a), Ok(b)) = (m.u32(base), m.u32(base.wrapping_add(4))) {
+            *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some([a, b]);
+        }
+        let _ = m.set_u32(base, sim[0]);
+        let _ = m.set_u32(base.wrapping_add(4), sim[1]);
+    }
+}
+
+impl Default for PresentSeeds {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The driver's presentation stream.
+pub static PRESENT_SEEDS: PresentSeeds = PresentSeeds::new();
+
+/// Presentation phases that ran on the sim's seeds because the seed words
+/// did not read (no game loaded): the one way a view's draws can reach the
+/// sim stream.
+static UNISOLATED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// [`UNISOLATED`]'s count since start.
+pub fn unisolated() -> u64 {
+    UNISOLATED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Phases 26, 28 and 29: first person, HUD and the camera neighbourhood.
@@ -340,7 +407,12 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present) 
                         Form::StackRecordEcx => c.args([record]).ecx(record),
                         Form::EbxRecord => c.ebx(record),
                     };
+                    let isolate = present == Present::LocalOnly && is_presentation(i);
+                    let sim = if isolate { cx.write(|m| PRESENT_SEEDS.swap_in(m)) } else { None };
                     cx.call(c).await?;
+                    if let Some(sim) = sim {
+                        cx.write(|m| PRESENT_SEEDS.swap_out(m, sim));
+                    }
                     let now = Instant::now();
                     phase_ns[i] = ns_between(mark, now);
                     mark = now;

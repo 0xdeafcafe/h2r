@@ -14,8 +14,10 @@
 //! unit control packet, the control update (its unbound entry — the
 //! phantom seats' path — and its tail from the target update's return,
 //! with the frame the original built), the action and neutral control
-//! builders, the target comparator, the aim-assist cone, the HUD seat
-//! update and the observer resource walk. The interactive search family
+//! builders, the target comparator, the aim-assist cone's register-level
+//! oracle, the HUD seat update and the observer resource walk. The cone's
+//! kernel arm runs against the original with its real callees
+//! (`aim_assist_matches_lifted`). The interactive search family
 //! (`1a4900`, `1a5370`, `1a4c00`) is proven on the disc by the shadow's
 //! guest arm (`scripts/shadow-gate.sh`'s `sim.seats` group), which is the
 //! phase's parity stage. The observer camera's oracle is
@@ -128,6 +130,9 @@ fn segment(code: &mut lifted::Original, cpu: &mut Cpu, mem: &mut FlatMemory) -> 
 type Prepare = fn(&mut FlatMemory, &mut Cpu, u32);
 
 fn find_seat(name: &str) -> &'static Seat {
+    if name == sim_seats::PARAMS_ORACLE.name {
+        return &sim_seats::PARAMS_ORACLE;
+    }
     sim_seats::SEATS.iter().find(|s| s.name == name).expect("seat")
 }
 
@@ -590,4 +595,164 @@ fn the_covered_seats_reach_their_children() {
     assert!(tail.contains(&0x0018_61a6), "the tail never resumes at the target update");
     assert!(!matches_guest("sim.seats.hud_seat_update", 1, hud_fixture).is_empty());
     assert!(!matches_guest("sim.seats.predict_resources", 1, resources_fixture).is_empty());
+}
+
+// The aim-assist cone through its kernel arm (`engine::sim_seats::aim::arm`,
+// over `sim_objects::aim_assist`), against the lifted original with its
+// real callees: the zoom magnification `101090` and the image's `pow`
+// `372d48` on the interpreter's x87, the tracking test `1011d0` and the
+// acquisition test `101160`. No stubs: the arm's answer, applied, must
+// leave every register but the flags and every byte above the dead stack
+// as the original's return does.
+
+const AIM_UNIT: u32 = RECORDS + 0x400;
+const AIM_FIRST: u32 = RECORDS + 0x1000;
+const AIM_SECOND: u32 = RECORDS + 0x1100;
+const AIM_ENTRIES: u32 = RECORDS + 0x1800;
+const AIM_DEF_FIRST: u32 = RECORDS + 0x2000;
+const AIM_DEF_SECOND: u32 = RECORDS + 0x3000;
+const AIM_OUT: u32 = RECORDS + 0x5000;
+
+/// One weapon definition: the cone, the class, the flags, the zoom range
+/// and its triggers (state in the weapon object, kind in the definition).
+struct AimDef {
+    cone: [f32; 5],
+    class: u16,
+    flags: u32,
+    levels: i16,
+    min: f32,
+    max: f32,
+    triggers: &'static [(u8, u16)],
+}
+
+fn put_def(m: &mut FlatMemory, def: u32, object: u32, d: &AimDef) {
+    for (i, v) in d.cone.iter().enumerate() {
+        float(m, def + 0x208 + 4 * i as u32, *v);
+    }
+    m.bytes[(def + 0x294) as usize..][..2].copy_from_slice(&d.class.to_le_bytes());
+    word(m, def + 0x12c, d.flags);
+    m.bytes[(def + 0x1fe) as usize..][..2].copy_from_slice(&d.levels.to_le_bytes());
+    float(m, def + 0x200, d.min);
+    float(m, def + 0x204, d.max);
+    word(m, def + 0x2c8, d.triggers.len() as u32);
+    word(m, def + 0x2cc, def + 0x800);
+    for (i, &(state, kind)) in d.triggers.iter().enumerate() {
+        let i = i as u32;
+        m.bytes[(object + 0x20c + 12 * i) as usize] = state;
+        m.bytes[(def + 0x800 + 0x40 * i + 6) as usize..][..2].copy_from_slice(&kind.to_le_bytes());
+    }
+}
+
+/// Case `case`: the zoom level, the unit's register and what the second
+/// slot holds.
+fn aim_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
+    word(m, points::OBJECTS.base, HEADER);
+    word(m, HEADER + 0x44, DATA);
+    word(m, points::TAG_ENTRIES.base, AIM_ENTRIES);
+    word(m, DATA + 2 * 12 + 8, AIM_UNIT);
+    word(m, DATA + 6 * 12 + 8, AIM_FIRST);
+    word(m, DATA + 7 * 12 + 8, AIM_SECOND);
+    word(m, AIM_FIRST, 6);
+    word(m, AIM_SECOND, 7);
+    word(m, AIM_ENTRIES + 6 * 16 + 8, AIM_DEF_FIRST);
+    word(m, AIM_ENTRIES + 7 * 16 + 8, AIM_DEF_SECOND);
+    m.bytes[(AIM_UNIT + 0x212) as usize] = 0;
+    word(m, AIM_UNIT + 0x218, 0x8300_0006);
+    for i in 0..9 {
+        word(m, AIM_OUT + 4 * i, 0xdead_beef);
+    }
+    let scale = 1.0 + case as f32 * 0.25;
+    let cone = [0.05, 12.0, 0.09, 8.0, 0.12].map(|v: f32| v * scale);
+    let (zoom, first, second): (i32, AimDef, Option<Option<AimDef>>) = match case {
+        0 => (-1, AimDef { cone, class: 1, flags: 0, levels: 2, min: 2.0, max: 8.0, triggers: &[(0, 5)] }, None),
+        1 => (1, AimDef { cone, class: 2, flags: 0, levels: 3, min: 1.5, max: 6.0, triggers: &[(0, 1), (6, 0)] }, None),
+        2 => (
+            0,
+            AimDef { cone, class: 1, flags: 0, levels: 2, min: 2.0, max: 4.0, triggers: &[(2, 0)] },
+            Some(Some(AimDef { cone: [0.2, 5.0, 0.3, 1.0, 0.01], class: 2, flags: 0, levels: 2, min: 3.0, max: 5.0, triggers: &[] })),
+        ),
+        3 => (2, AimDef { cone, class: 1, flags: 0, levels: 3, min: 1.25, max: 3.0, triggers: &[] }, Some(None)),
+        4 => (-1, AimDef { cone, class: 1, flags: 0x20, levels: 2, min: 2.0, max: 8.0, triggers: &[] }, None),
+        5 => (0, AimDef { cone, class: 1, flags: 0, levels: 2, min: 2.0, max: 8.0, triggers: &[] }, None),
+        _ => (
+            1,
+            AimDef { cone, class: 0, flags: 0, levels: 2, min: 0.0, max: 10.0, triggers: &[(3, 0)] },
+            Some(Some(AimDef { cone: [0.01, 50.0, 0.02, 60.0, 0.5], class: 1, flags: 0, levels: 1, min: -1.0, max: 2.0, triggers: &[] })),
+        ),
+    };
+    put_def(m, AIM_DEF_FIRST, AIM_FIRST, &first);
+    match second {
+        None => m.bytes[(AIM_UNIT + 0x213) as usize] = 0xff,
+        Some(held) => {
+            m.bytes[(AIM_UNIT + 0x213) as usize] = 1;
+            match held {
+                Some(d) => {
+                    word(m, AIM_UNIT + 0x21c, 0x8400_0007);
+                    put_def(m, AIM_DEF_SECOND, AIM_SECOND, &d);
+                }
+                None => word(m, AIM_UNIT + 0x21c, u32::MAX),
+            }
+        }
+    }
+    word(m, STACK + 4, 0x5a5a_0000 | (zoom as u32 & 0xffff));
+    c.gpr[1] = if case == 5 { u32::MAX } else { 0x8200_0002 };
+    c.gpr[6] = AIM_OUT;
+}
+
+#[test]
+fn aim_assist_matches_lifted() {
+    use engine::sim_seats::aim::arm;
+    let Some((image, ram)) = image() else { return };
+    let mut code = original(image, &points::AIM_ASSIST_PARAMS);
+    for case in 0..7 {
+        for control in [0x027f_u16, 0x037f, 0x007f] {
+            let mut mem = ram.clone();
+            word(&mut mem, STACK, EXIT);
+            let mut cpu = Cpu {
+                gpr: [0x1234_5678, 0, 0x00fe_3420, 0x7b1c, STACK, 0x00aa_bbcc, 0, 0x0e37],
+                eip: points::AIM_ASSIST_PARAMS.base,
+                eflags: 0x2,
+                mxcsr: 0x1fa0,
+                ..Default::default()
+            };
+            for (i, reg) in cpu.xmm.iter_mut().enumerate() {
+                *reg = (0x1234_u128 + i as u128) << 100 | 0x4000_0000;
+            }
+            cpu.x87.control = control;
+            aim_fixture(&mut mem, &mut cpu, case);
+
+            let mut native = Guest::new();
+            native.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
+            native.write_bytes(0, &mem.bytes, 1).unwrap();
+            let mut regs = abi_cpu(&cpu);
+            let why = format!("case {case} control {control:#06x}");
+            let prediction = arm::predict(&regs, &native).unwrap_or_else(|d| panic!("{why}: declined {d:?}"));
+            let target = arm::apply(&prediction, &mut regs, &mut native).unwrap();
+            assert_eq!(target, EXIT, "{why}");
+
+            lifted::code::run_until(&mut code, &mut cpu, &mut mem, 1_000_000, |c| c.eip == EXIT)
+                .unwrap_or_else(|e| panic!("{why}: {e}"));
+            let want = abi_cpu(&cpu);
+            let gprs = |c: &runtime::CpuAbi| [c.eax, c.ecx, c.edx, c.ebx, c.esp, c.ebp, c.esi, c.edi];
+            assert_eq!(gprs(&regs), gprs(&want), "{why}: eax ecx edx ebx esp ebp esi edi");
+            assert_eq!(regs.xmm, want.xmm, "{why}: xmm");
+            assert_eq!(regs.mxcsr, want.mxcsr, "{why}: mxcsr");
+            assert_eq!(
+                (regs.x87.st, regs.x87.tag, regs.x87.status, regs.x87.control),
+                (want.x87.st, want.x87.tag, want.x87.status, want.x87.control),
+                "{why}: x87"
+            );
+            assert_eq!(prediction.differs(&want, prediction.record.map(|(out, _)| {
+                std::array::from_fn(|i| mem.read_u32(out + 4 * i as u32).unwrap())
+            })), None, "{why}");
+            // Every byte but the dead stack the original's frames used.
+            let start = native.mappings()[0].physical_start as usize;
+            let live = &native.physical_ram()[start..start + RAM];
+            let dead = (STACK - 0x1_0000) as usize..STACK as usize;
+            let first = mem.bytes.iter().zip(live).enumerate()
+                .find(|(i, (a, b))| a != b && !dead.contains(i))
+                .map(|(i, _)| i);
+            assert_eq!(first, None, "{why}: first differing byte");
+        }
+    }
 }

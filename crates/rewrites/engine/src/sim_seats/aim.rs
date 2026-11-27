@@ -8,6 +8,7 @@ use crate::sim_objects::{alu::cmp16, sse::{self, Ss}};
 use crate::sim_physics::{byte, logic, pop, push};
 use runtime::{CpuAbi, GuestFault};
 
+pub mod arm;
 mod shot;
 pub use shot::{SHOT_ENTRY, SHOT_SITES, shot};
 

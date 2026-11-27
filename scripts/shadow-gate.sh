@@ -66,7 +66,6 @@ sim_seats=(
   sim.seats.aim_target_search
   sim.seats.aim_target_compare
   sim.seats.shot_aim
-  sim.seats.aim_assist_params
   sim.seats.observer_camera
   sim.seats.predict_resources
 )
