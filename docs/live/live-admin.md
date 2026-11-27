@@ -704,7 +704,7 @@ on `hopper-<id>`. All of it replays from the log, so it survives restarts.
 ### Screenshot review
 
 Open **Screenshot review** at `/dash/admin` to see the held images and why
-they entered the queue. **Show image** fetches the private, normalized
+they entered the queue. **Show image** fetches the private, normalised
 preview. **Approve** makes it public across all assigned galleries.
 **Remove** hides all copies permanently, frees its quota and attempts to
 delete the stored image. The same review page holds approved captures

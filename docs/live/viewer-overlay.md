@@ -457,7 +457,7 @@ any branch):
 ```glsl
 vec3 revealQ = vSeeWorld / uRevealCell;
 vec3 revealW = max(fwidth(revealQ), vec3(1e-5));
-vec3 revealN = normalize(cross(dFdx(vSeeWorld), dFdy(vSeeWorld)));
+vec3 revealN = normalise(cross(dFdx(vSeeWorld), dFdy(vSeeWorld)));
 // A grid axis the surface is perpendicular to draws no lines on it.
 vec3 revealG = abs(fract(revealQ - 0.5) - 0.5) / revealW + step(0.9, abs(revealN)) * 1e3;
 float revealLine = 1.0 - clamp(min(min(revealG.x, revealG.y), revealG.z) - 0.5, 0.0, 1.0);

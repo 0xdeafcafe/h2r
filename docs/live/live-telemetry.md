@@ -176,7 +176,7 @@ machines"):
   identify a placed machine in map.glb. The viewer applies the pose to
   the whole machine, including free movers.
 - `machine_positions`: placed machines with a valid position animation
-  channel. The object body holds the scenario index at `+0x1a`, normalized
+  channel. The object body holds the scenario index at `+0x1a`, normalised
   travel at `+0x140`, and the channel at `+0x18c` (see
   [live-gamestate.md](live-gamestate.md#unit-stance-actions-damage-and-machines)).
   The sender rounds travel to 0..255 and sends each index once at first
@@ -1012,7 +1012,7 @@ frames are not compressed at rest.
 Unit tests use synthetic guest memory and do not execute the game. Before
 relying on live output, check in this order:
 
-1. Successful start/end and tick continuation behavior in a local Slayer game,
+1. Successful start/end and tick continuation behaviour in a local Slayer game,
    including original return values and no lost guest calls.
 2. Player name decoding, roster changes, and statborg values against the
    in-game scoreboard; verify kill attribution and score coalescing.

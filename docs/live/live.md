@@ -44,7 +44,7 @@ its router with a Durable Object event log and R2 blobs.
 Halo 2 statically links `XONLINES` 5849, the secure Xbox Live client. It
 lives in two code sections plus a read-only data section:
 
-| section   | VA           | size    | analyzer starts |
+| section   | VA           | size    | analyser starts |
 |-----------|--------------|--------:|----------------:|
 | `XONLINE` | `0x003a0620` | 182,708 | 913 |
 | `XNET`    | `0x003ccfe0` |  78,880 | 381 |
@@ -707,7 +707,7 @@ server logon rejects them as invalid users. Invalid identity files fail
 configuration without echoing their contents. No path means an empty account
 list; the client does not invent an account.
 
-With `server_url = None`, sign-in keeps its local-only behavior. With a URL,
+With `server_url = None`, sign-in keeps its local-only behaviour. With a URL,
 logon authenticates against that service and publishes signed presence, as
 specified in [Client HLE: service logon and title resources](#client-hle-service-logon-and-title-resources).
 
@@ -745,9 +745,9 @@ the game reads entry zero without checking the result count. QosRelease invalida
 the record; a repeated release fails. It does not measure latency or contact the
 service.
 
-The immediate follow-up tasks have these local behaviors:
+The immediate follow-up tasks have these local behaviours:
 
-| Entry | Behavior |
+| Entry | Behaviour |
 |---|---|
 | XOnlineFriendsStartup | Returns an empty task. Its first pump completes; later pumps return RUNNING_IDLE so the game's disposer can drain it. |
 | XOnlineOfferingIsNewContentAvailable | Returns a task whose result is NO_NEW_CONTENT. |
@@ -850,7 +850,7 @@ Discovery sends the title's `broadcast-search` and `broadcast-reply` messages
 through the UDP channel at guest port 1001, using INADDR_BROADCAST
 (`255.255.255.255`) for both. `0x000b2ea0` sends search message 2 about every
 1500 ms through the call at `0x000b2f29`; the reply call at `0x00094097` sends
-message 3 to the same broadcast address and port. The message serializers are registered at `0x000ac800`; their payload encoding stays in the
+message 3 to the same broadcast address and port. The message serialisers are registered at `0x000ac800`; their payload encoding stays in the
 recompiled game. `0x00093730` chooses port 1001 for transport channel 3, then
 calls sendto. Receive polling drains the same channel with recvfrom. The HLE
 does not decode or alter these title packets. It replaces XNet's secure-address
@@ -949,7 +949,7 @@ waits while the HLE tries each endpoint in order. A silent endpoint can take
 three 100 ms receive timeouts before the next endpoint is tried
 (`crates/live/live-hle/src/qos.rs`). This is a compact HLE side protocol, not an implementation
 of the encrypted Xbox QoS protocol. Non-null work events and unknown flags
-return WSAEINVAL. Service QoS keeps its sign-in behavior from above.
+return WSAEINVAL. Service QoS keeps its sign-in behaviour from above.
 
 Peer QoS allocations use a claimed 1 MiB guest arena. QosRelease returns blocks
 to a coalescing free list; cleanup releases every outstanding record. Those
@@ -1113,7 +1113,7 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
 | `0x0008e750`, manager `0x002c7410` | Message polling exposes pending game invitations. Title files use storage and never enter the player inbox. |
 
-These 2 entries still stop by API name because their backend behavior is not
+These 2 entries still stop by API name because their backend behaviour is not
 implemented. Their menu/game fallbacks are a separate follow-up slice; the
 storage entries below no longer stop. Prefixes in the table are part of each
 listed API name.
@@ -1269,7 +1269,7 @@ The capacity and returned required size count UTF-16 code units including the
 terminator, not bytes. NULL output supports a size query. Insufficient capacity
 returns `0x8007007a` and updates the required count. If the buffer can hold the
 prefix and terminator, retail writes that prefix before checking whether the
-filename fits; the HLE preserves this behavior. Other facilities return
+filename fits; the HLE preserves this behaviour. Other facilities return
 STORAGE_INVALID_FACILITY (`0x8015c009`) without changing outputs. The formatter
 does not enforce the public 256-character path limit.
 
@@ -1326,7 +1326,7 @@ monotonic sequence. Nothing is sent to the server or persisted to disk yet.
 
 StatRead (`0x003a08cb`) owns its query IDs, supports the manager's 32-spec batch
 (up to 64 specs), and completes successfully. StatReadGetResult (`0x003a08d6`)
-checks the caller-initialized specs/IDs before writing type NONE and a zero union
+checks the caller-initialised specs/IDs before writing type NONE and a zero union
 in each existing stat. Headers, IDs, padding and the unused extra buffer are
 preserved. The consumer at `0x000751a9` treats NONE as zero. Reads currently do not
 serve the local write journal as canonical leaderboard data.
@@ -1804,7 +1804,7 @@ text and voice attachments in that capture are not delivered in this slice.
 FriendsGameInvite is the older no-task API: it copies the supplied 86-byte friend
 array, queues the same writes and returns once queued. Backend failures on these
 no-task calls are visible through `Hle::server_status()`, without blocking a frame.
-Without a server URL, typed MessageSend captures retain their local behavior;
+Without a server URL, typed MessageSend captures retain their local behaviour;
 the new friend-invite actions return NO_SESSION.
 
 FriendsStartup polling and the menu's GetLatest/notification/message reads queue
@@ -1895,7 +1895,7 @@ A two-instance recipe, using an already built `h2`, is:
 
 The host/search APIs in [live-matchmaking.md](live-matchmaking.md) sections
 1.1, 1.2 and 4 use the background HTTP worker when `LiveConfig.server_url` is
-configured. Without a server they retain the local host/empty-search behavior.
+configured. Without a server they retain the local host/empty-search behaviour.
 These APIs advertise and discover lobbies. They do not implement a matchmaker,
 ranked arbitration or NAT traversal. Invitation delivery is described next.
 
@@ -1958,7 +1958,7 @@ trusted public-URL source-IP policy ([live-api.md](live-api.md#sessions)).
 
 Synthetic tests cover the nine entries and their stack cleanup, local fallback,
 typed values, dirty flags, stable IDs/keys, task lifetimes and capacity errors.
-The server tests exercise authorization, signed batches, projection/replay,
+The server tests exercise authorisation, signed batches, projection/replay,
 filters, expiry and tunnel source trust. Two synthetic guests publish/search
 through an embedded memory-backed server and read the rows and parsed values
 that the retail wrappers consume. No test runs the game.

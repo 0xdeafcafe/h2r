@@ -213,7 +213,7 @@ mode 0 → the header/first record; mode 1 → reads count + records, picks one
 at random (LCG `0x19660d`/`0x3c6ef35f`), copies ≤ 0xff wchars into the
 caller's 0x200-byte buffer.
 
-### 3.3 Failure behavior
+### 3.3 Failure behaviour
 
 - Download fails / file absent / size mismatch / inflate fails: handler
   returns 0, cache write skipped, `0x00479784` bit 1 stays clear →
@@ -312,7 +312,7 @@ dwords after it are the start-wait table; `+0x5e4` is a minimum rank; the
   variant, copied out whole with the map id for the record chosen
   (`0x00192f00`..`0x00192fd5`).
 
-### 5.3 Load paths and failure behavior
+### 5.3 Load paths and failure behaviour
 
 - `0x00194160` (descriptor callback +0x18): reset-to-defaults — allocates the
   0x162cc0 table, fills defaults (`0x001940d0`), saves via `0x00193ff0`.

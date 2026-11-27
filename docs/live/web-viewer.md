@@ -290,7 +290,7 @@ optional; a frame without them draws as before.
 Frames may carry `machines`:
 lift platforms, doors and other big scripted movers, each with the name of
 the map glb's `machines` child it is (`node`), its place and facing.
-`machine_positions` carries the normalized animation position by scenario
+`machine_positions` carries the normalised animation position by scenario
 placement index, as a byte sent on change. Live and replay state retain
 quiet devices and sample between frames at the same render tick as the
 players. The 3D view uses the map glb's device clip to pose its moving

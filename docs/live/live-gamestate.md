@@ -36,7 +36,7 @@ Recovered in `crates/hooking/guest-layout/src/datum.rs` and `docs/engine/datum_n
 | active count | `+0x3c` | `i32` | confirmed | Allocation bookkeeping |
 | element storage pointer | `+0x44` | `u32` | confirmed | All player/object access |
 | occupancy bitmap pointer | `+0x48` | `u32` | confirmed | Generic iterator |
-| total header size | `0x4c` | bytes | confirmed | Generic initializer |
+| total header size | `0x4c` | bytes | confirmed | Generic initialiser |
 
 A salted datum is `(salt << 16) | absolute_slot`; `0xffffffff` is none. For players and objects, the first `u16` of each element is its salt and zero means free. Statborg rows and BSP indices use the **absolute slot**, not the full salted datum.
 
@@ -49,7 +49,7 @@ A salted datum is `(salt << 16) | absolute_slot`; `0xffffffff` is none. For play
 | Map activation / `GameStarted` | `0x0018f000`; custom `EAX = options`; no stack args; success in `AL` | **confirmed.** Call the original and emit only when it returns `AL != 0`. It copies active options, runs new-map callbacks, selects the initial BSP, and sets the ready flag. Entry alone is too early. The successful return tail is `0x0018f086`/`0x0018f08a`. |
 | Higher-level successful start | `0x0018e8b0`; one stack arg `options` at `[esp+4]`, `ret 4`; success in `AL` | **confirmed.** Alternative wrapper around cache acquisition plus activation. Caller site `0x0018e91e` is after successful activation. Do not emit from `0x0018eaa0`: that is cache/resource acquisition only. |
 | Completed simulation tick | `0x00137fe0`; no args; void | **confirmed.** Call the original, then sample only if `T+8` changed. `0x001380f3` immediately precedes the increment; `0x001380fb` is a common tail also reached without an increment, so an exit hook must compare the counter. |
-| Game-ended latch | `0x001389c0`; no args; void | **confirmed.** Idempotently sets `G+0x1128` and initializes `G+0x112c`. Emit on return or on a `0 -> 1` transition at the completed-tick hook. Final score/winner resolution has run; quit/normal-end reason is not encoded in this function. |
+| Game-ended latch | `0x001389c0`; no args; void | **confirmed.** Idempotently sets `G+0x1128` and initialises `G+0x112c`. Emit on return or on a `0 -> 1` transition at the completed-tick hook. Final score/winner resolution has run; quit/normal-end reason is not encoded in this function. |
 | Post-game carnage report built | `0x00232d77`; no args; void; common return `0x002331a0` | **confirmed.** Optional hook for a finalized PGCR snapshot. `0x00196390` tail-jumps here from the game-end path. At entry the source stats exist but report construction is unfinished; use return or caller site `0x0015cb8d`. |
 | Winner/round resolution (optional) | `0x0015b3a0`; custom `EBX = prospective winner`; one unknown stack arg, `ret 4`; void | **confirmed ABI; limited use.** Team index in team games, player datum in FFA, `-1` for none/tie. Also handles rounds, so this is not a standalone match-ended event. Correlate it with the later end latch if winner capture is needed. |
 | Player death/kill credit | `0x0015ce70`; four stack args, `ret 0x10`; void | **confirmed.** See section 7 for arguments and score-update timing. |
@@ -58,11 +58,11 @@ A salted datum is `(salt << 16) | absolute_slot`; `0xffffffff` is none. For play
 
 ### Simulation lifecycle and tick envelope refinement
 
-The addresses in `docs/engine/engine-map.md` are real, but `0x00067e30` is initialization, not match start.
+The addresses in `docs/engine/engine-map.md` are real, but `0x00067e30` is initialisation, not match start.
 
 | Function | ABI | Role | Confidence |
 |---|---|---|---|
-| `0x00067e30` | no args; void | Simulation/network-global initialization callback | confirmed |
+| `0x00067e30` | no args; void | Simulation/network-global initialisation callback | confirmed |
 | `0x00067ee0` | no args; void | Simulation new-map callback; useful only as an additional lifecycle signal | confirmed |
 | `0x00067f60` | no args; void | Simulation disposal callback | confirmed |
 | `0x00137f70` | custom `EAX = requested tick count`, `EBX = float *remainder` (read/write); void | May execute zero, one, or multiple `0x00137fe0` ticks | confirmed |
@@ -85,7 +85,7 @@ The main game-engine update is called at `0x0013803c` (`0x0015c150`), and end/po
 | game-ended latch | `G+0x1128` | `u8` | confirmed | Set by `0x001389c0`, cleared by new-map setup |
 | end-delay countdown | `G+0x112c` | `i32` | confirmed | Initialized from tick rate by `0x001389c0` |
 | tick rate | `T+0x02` | `i16` | confirmed | Read from active options by `0x001465b0` |
-| seconds per tick | `T+0x04` | `f32` | confirmed | Recovered game-time initialization |
+| seconds per tick | `T+0x04` | `f32` | confirmed | Recovered game-time initialisation |
 | elapsed simulation ticks | `T+0x08` | `u32` | confirmed | Incremented at the end of eligible `game_tick` calls |
 | game speed | `T+0x0c` | `f32` | confirmed | Recovered game-time layout |
 | round/start tick for elapsed-match calculations | `E+0x70` | `u32` | likely | Death/round code computes `T+8 - (E+0x70)`; validate across rounds |
@@ -421,7 +421,7 @@ code cited are marked unverified.
 | netgame equipment index | `+0xaf` | `i8` | confirmed | The netgame spawner `0x0015aad0` writes the spawn's index into `scnr+0x120` here (`0x0015ac15`) after `object_new`, which sets `0xff` (`0x000b7db1`); deletion (`0x000b85c3`) calls `0x0015b220` to clear the spawn's object |
 | machine object type | header `+3` = 7 | `u8` | likely | The engine's type order (biped 0, vehicle 1, weapon 2 confirmed); the scarab of `03a`/`03b` is a `mach` tag, in `08a` a `scen` |
 | equipment and projectile object types | header `+3` = 3, 5 | `u8` | confirmed | The type table at `0x00468630` (bipd 0, vehi 1, weap 2, eqip 3, garb 4, proj 5, ...; `layout::OBJECT_TYPE_*`). Frames send projectiles (`proj`, position `+0x64`, velocity `+0x88` as the projectile update moves them, `0x000f8ee2` on) and loose weapons and equipment (no parent, `+0x1a` and `+0xaf` both -1) from the world scan (packed version 6) |
-| device position | device `+0x140` | `f32` 0..1 | confirmed | The machine network-state builder `0x000a3df0` copies it under flag `0x400`. The machine update at `0x0011546d` adds the tick's travel to it. The device code passes it to the normalized-frame setter `0x001c6620` at call site `0x00106930`. |
+| device position | device `+0x140` | `f32` 0..1 | confirmed | The machine network-state builder `0x000a3df0` copies it under flag `0x400`. The machine update at `0x0011546d` adds the tick's travel to it. The device code passes it to the normalised-frame setter `0x001c6620` at call site `0x00106930`. |
 | device power | device `+0x134` | `f32` 0..1 | confirmed | The setter's caller at `0x00106945` and `0x0010695d` uses it to blend powered and depowered rates. The viewer needs only the resulting position. |
 | device position channel | device `+0x18c` | animation channel | confirmed | `0x00108721` takes its address when starting the position action. The existing channel layout applies. Its graph datum is at `+0x18c` and its signed animation index at `+0x192`. The setter `0x001c6622` checks the index at channel `+6` for -1 and resolves the animation using the graph at channel `+0`. |
 | damage reporting type | report `+0x00` low 6 bits | enum | likely | 6-bit value; value names unverified |
@@ -478,7 +478,7 @@ or dies, and a fall still reports falling when another player earns credit.
   strikes as melee at `0x0015cecd`. It treats modifier 2 as an
   assassination for melee and as a stick for a plasma grenade at
   `0x0015d295` and `0x0015d2bf`.
-- The roadkill branch at `0x0015d2b0` recognizes a player collision or
+- The roadkill branch at `0x0015d2b0` recognises a player collision or
   modifier 3. For a generic collision Live compares the lethal report's
   owner player with the victim. World and self collisions retain the
   collision source when that modifier is absent. Environmental deaths

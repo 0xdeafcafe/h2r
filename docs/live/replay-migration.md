@@ -12,7 +12,7 @@ Run the local dry run first.
 h2 live frames migrate --dry-run --server http://127.0.0.1:8074
 ```
 
-Then measure the production store. The expected object counts and sizes for that deployment come from this command. It prints each game's decoded frame count and source, compressed segment and immutable index byte totals, followed by counts of original chunk objects, legacy frame rows, and output segments. Source bytes count the stored H2CK blobs, decoded base64 record bytes, and serialized JSON frame payloads. Backup copies and the surrounding event-log rows have additional storage overhead. Both dry runs construct and verify in memory. They write a local progress file.
+Then measure the production store. The expected object counts and sizes for that deployment come from this command. It prints each game's decoded frame count and source, compressed segment and immutable index byte totals, followed by counts of original chunk objects, legacy frame rows, and output segments. Source bytes count the stored H2CK blobs, decoded base64 record bytes, and serialised JSON frame payloads. Backup copies and the surrounding event-log rows have additional storage overhead. Both dry runs construct and verify in memory. They write a local progress file.
 
 ```sh
 h2 live frames migrate --dry-run --server https://live.forbes.red --as "${replay_admin:?set the local admin gamertag}"

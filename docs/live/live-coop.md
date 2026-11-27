@@ -72,7 +72,7 @@ mode** is the byte in game options at `+4` (`G+0x0c` in
 accepts 0 to 5, and the name table at `0x00468c64` names it: none, local,
 sync-client, sync-server, dist-client, dist-server (0 to 5). The
 **simulation world's mode** is the dword at `+8` of the simulation globals
-(pointer at `0x004CF77C`, set by the initialization callback
+(pointer at `0x004CF77C`, set by the initialisation callback
 `0x00067e30`). The new-map callback `0x00067ee0` reads the game mode and
 builds the simulation world (`0x00068c00`), which maps it through the jump
 table at `0x00068da8`: game 1, 2, 3, 4, 5 become world 1, 3, 2, 5, 4. So in

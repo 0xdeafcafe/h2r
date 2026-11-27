@@ -297,7 +297,7 @@ Not built yet; the formats above are chosen so it can be.
 - **Map outline writes** require an admin or the operator with a
   `games.write` token. That role is required for both the first outline
   and any replacement. [Outline API](live-api.md#map-outline)
-- **Content downloads** check read authorization and the blob's moderation
+- **Content downloads** check read authorisation and the blob's moderation
   status before streaming it from storage. The server can stream large
   packages without buffering the full download. [Content API](live-api.md#custom-maps)
 - CORS: public reads allow any origin, so a web app served elsewhere can

@@ -1165,7 +1165,7 @@ or delete a team they do not lead. Members can leave; the leader must delete
 the team. Names are unique ignoring case, a team reserves at most 100 active
 and recruited places, and an account may have eight teams including pending
 recruits. A deleted ID remains reserved, but its name becomes available.
-Team writes are serialized through validation and projection to enforce these
+Team writes are serialised through validation and projection to enforce these
 limits across streams.
 
 Recruit targets must be registered accounts with matching XUID/gamertag.
@@ -1327,7 +1327,7 @@ with unknown Clanker or variant metadata remains eligible for either
 value. Co-op sessions are excluded by multiplayer game type or variant
 criteria, and multiplayer sessions by campaign or difficulty criteria.
 The map filter can recover a category from package provenance or a
-recognized map name when the host omits it. The server applies the filters
+recognised map name when the host omits it. The server applies the filters
 before the page limit and retains the visibility and endpoint rules above.
 Send the same filters with each cursor.
 
@@ -1750,18 +1750,18 @@ arbitrary-file `upload` slots do not accept submissions.
 
 Live accepts PNG, JPEG and WebP with valid proof, within 5 MiB, 4096 pixels
 per side and 8 megapixels. It converts the image to opaque WebP, at most
-1280 pixels per side and 512 KiB. The normalized hash in the receipt is
+1280 pixels per side and 512 KiB. The normalised hash in the receipt is
 the ID for reports and review. The uploader's accepted receipt says
 `pending` or `approved`. The gallery uses dense indices in slot order
 followed by curated images. Reportable entries carry `reportable: true`.
 
 Live compares a 48×27 image against projected edges from an admin-supplied
 outline stored under the exact MapId. A mismatch or insufficient geometry
-requires review. The classifier scores the same normalized image that Live
+requires review. The classifier scores the same normalised image that Live
 serves. Scores above 0.20 and unavailable or invalid scores require review.
 Scores of 0.80 or higher flag the image for an upload strike.
 Private and player-hosted captures require manual approval
-even when those checks clear. The permit authorizes the capture session and
+even when those checks clear. The permit authorises the capture session and
 the digest binds the upload bytes. An uploader controls the pixels produced
 by a game running on their own device.
 
@@ -1843,7 +1843,7 @@ GET /v1/maps?sort=new&limit=20&cursor=<the previous page's next>
   (stream `mappack-<id>`, data `{id, pack?, by?}`); `null` clears it.
   Both are display data only, like the credit. `h2 live maps details
   --file docs/game/mod-details.toml` applies a file of them, and `h2 live
-  maps analyze` writes the contents reports.
+  maps analyse` writes the contents reports.
 - **Census, and the hopper gate.** A rules script declares the Forge
   labels and tags its map must hold
   ([rules-start-gate.md](../game/rules-start-gate.md)). Live holds no map
@@ -2347,7 +2347,7 @@ sessions, newest first, and at most 100 text messages ([below](#text-messages)).
 seconds. Sender names come from the account projection. Answered or
 closed/expired-session invitations disappear from this list. The projection
 rebuilds from the log on restart. As with the rest of this service, raw events
-follow the server's general public/private log policy; mailbox authorization is
+follow the server's general public/private log policy; mailbox authorisation is
 not a promise of encrypted or secret event contents.
 
 ### Text messages
@@ -2406,7 +2406,7 @@ the token's expiry closes only explicitly scoped [sim streams](#clanker-training
 Without `auth`, a public stream is anonymous and leaves those events out.
 
 Legacy subscribers request `?frames=packed` for v7. The viewer requests
-`?frames=packed&frame_version=8` and recognizes the version in each binary
+`?frames=packed&frame_version=8` and recognises the version in each binary
 record, including v7 from older servers. Both homes batch each game's
 length-prefixed records for up to 100 ms. Readers of the same version
 share its encoder and batches. Events and `caught_up` use JSON text.
