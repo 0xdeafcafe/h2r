@@ -249,6 +249,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let inputs = self.device.lock().ok().and_then(|d| {
             Some((d.backend.upload_device()?, scene_load_palettes(&d, mem)))
         });
+        crate::native_objects_glue::install_function_tables(mem);
         let relight_requested = self.relight_requested;
         let launched = background::spawn("native-world load", move || {
             if let Some((device, palettes)) = inputs
