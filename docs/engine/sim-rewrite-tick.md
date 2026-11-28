@@ -30,12 +30,13 @@ original's order:
 
 Each phase has an owner. A guest phase is a guest call (`GuestCall`, awaited,
 with the record's bytes reserved below the call's stack); a Rust phase is a
-body in the driver. Every phase is still a guest call today. The in-place
+body in the driver. The effects phase and the countdown requests are Rust;
+every other phase is a guest call, and `tick-ledger.toml` counts them. The in-place
 call that avoids the unwind per phase is a later speed-up, not a
 prerequisite.
 
 **Presentation phases.** Phases 26 (first person `0x165dc1`), 28 (HUD
-`0x1917b2`) and 29 (the camera neighbourhood `0x16f200`) are the seats'
+`0x1917b2`) and 29 (the countdown requests `0x16f200`, in Rust: `engine/src/countdown_requests.rs`) are the seats'
 views (`impl.sim.present`, on; `Present::LocalOnly`):
 
 | Local users mapped | The three phases | Their random draws |

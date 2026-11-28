@@ -378,7 +378,8 @@ pub fn unisolated() -> u64 {
     UNISOLATED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Phases 26, 28 and 29: first person, HUD and the camera neighbourhood.
+/// Phases 26, 28 and 29: first person, HUD and the countdown requests
+/// ([`crate::countdown_requests`]).
 pub fn is_presentation(phase: usize) -> bool {
     matches!(PHASES[phase].entry, 0x0016_5dc1 | 0x0019_17b2 | 0x0016_f200)
 }

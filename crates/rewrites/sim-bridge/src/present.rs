@@ -2,7 +2,7 @@
 //! driver" and "Seats and rules (phase 7)").
 //!
 //! **`impl.sim.present`** (on): the tick driver leaves out phases 26
-//! (first person), 28 (HUD) and 29 (`0x16f200`, the camera neighbourhood)
+//! (first person), 28 (HUD) and 29 (`0x16f200`, the countdown requests)
 //! on a tick where no local user is mapped: a phantom or host seat has no
 //! view. With a local user they run, and each draws from the
 //! presentation's own copy of the two shared random seeds
