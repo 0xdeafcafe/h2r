@@ -157,12 +157,20 @@ impl SlotTracker {
 
 /// A target a carried op names. `SceneColour` and `SceneDepth` are the
 /// frame's own (the surfaces the guest presents and the depth bound with
-/// them); `Aux(n)` the frame's `n`th other surface, numbered in the order
-/// first named, described by [`Carried::aux`].
+/// them); `Game`, `GameLevel` and `Slot` the game's own targets, named as
+/// their [`TargetRole`] is, each the same target in every frame; `Aux(n)`
+/// the frame's `n`th other surface, numbered in the order first named,
+/// described by [`Carried::aux`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum TargetRef {
     SceneColour,
     SceneDepth,
+    /// Entry `n` of the game's render-target table: its first surface.
+    Game(u8),
+    /// Level `level` (from 1) of entry `target`.
+    GameLevel { target: u8, level: u8 },
+    /// The target whose header the game keeps at this global.
+    Slot(u32),
     Aux(u16),
     /// No surface (a colour-only bind's depth).
     None,
@@ -180,11 +188,26 @@ pub enum TargetRole {
     DisplayDepth,
     /// Entry `n` of the game's render-target table: its first surface.
     Game(u8),
-    /// Surface `level` (1 to 3) of entry `target` (a cube map's face).
+    /// Surface `level` (1 to 3) of entry `target`: its mip level, half
+    /// the last on each side (`0x0001df20`).
     GameLevel { target: u8, level: u8 },
     /// The target whose header the game keeps at this global (the frame
     /// buffers' aliases and its own small targets, made at boot).
     Slot(u32),
+}
+
+impl TargetRole {
+    /// The frame target of a role of the game's table or slots; `None`
+    /// for the device's own buffers, which are the scene's.
+    pub const fn target(self) -> Option<TargetRef> {
+        match self {
+            TargetRole::Game(n) => Some(TargetRef::Game(n)),
+            TargetRole::GameLevel { target, level: 0 } => Some(TargetRef::Game(target)),
+            TargetRole::GameLevel { target, level } => Some(TargetRef::GameLevel { target, level }),
+            TargetRole::Slot(g) => Some(TargetRef::Slot(g)),
+            TargetRole::Display(_) | TargetRole::DisplayDepth => None,
+        }
+    }
 }
 
 /// How a carried op samples a target on the GPU, in order.
@@ -549,5 +572,15 @@ mod tests {
         c.clear();
         assert_eq!(c, Carried::default());
         assert_eq!(c.summary(), CarriedSummary::default());
+    }
+
+    #[test]
+    fn a_game_role_is_its_frame_target_and_the_devices_are_the_scenes() {
+        assert_eq!(TargetRole::Game(9).target(), Some(TargetRef::Game(9)));
+        assert_eq!(TargetRole::GameLevel { target: 0xd, level: 2 }.target(), Some(TargetRef::GameLevel { target: 0xd, level: 2 }));
+        assert_eq!(TargetRole::GameLevel { target: 0xd, level: 0 }.target(), Some(TargetRef::Game(0xd)), "level 0 is the entry");
+        assert_eq!(TargetRole::Slot(0x0050_9384).target(), Some(TargetRef::Slot(0x0050_9384)));
+        assert_eq!(TargetRole::Display(0).target(), None);
+        assert_eq!(TargetRole::DisplayDepth.target(), None);
     }
 }

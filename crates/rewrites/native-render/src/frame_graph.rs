@@ -242,7 +242,7 @@ impl<'a, 'g> Walk<'a, 'g> {
             height: from.size.1.min(to.size.1),
             depth_or_array_layers: 1,
         };
-        self.encoder.copy_texture_to_texture(from.texture.as_image_copy(), to.texture.as_image_copy(), size);
+        self.encoder.copy_texture_to_texture(from.image_copy(), to.image_copy(), size);
     }
 
     fn stage(&mut self, slot: SlotAt, stage: &mut dyn Stage, view: &dyn Fn(SlotAt, (u32, u32)) -> ViewInputs) {
