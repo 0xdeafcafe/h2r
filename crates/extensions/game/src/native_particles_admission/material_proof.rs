@@ -10,6 +10,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use engine::memory::GuestMemory;
 use native_render::effect_material::{self, Material, Resolved};
+use native_render::object_streams::StreamFormats;
 use native_render::{contrail_material, particle_material};
 use render_bridge::effect_materials::{self as proof, Kind};
 use tags::material::ShaderLibrary;
@@ -19,15 +20,23 @@ fn resolved(mem: &dyn GuestMemory, material: Material) -> Result<(Material, Reso
     Ok((material, r))
 }
 
-/// The inline array formats of the particle walk's vertices: `v0` four
-/// `S32K` shorts in an 8-byte vertex, every other register off (what the
-/// admission takes, `Refused::Geometry`); the cut setup's declaration
-/// does not run, so the supplied draw names it.
-pub(super) const PARTICLE_FORMATS: [u32; 16] = {
-    let mut f = [0x02; 16];
-    f[0] = 0x0845;
-    f
-};
+/// The vertex array formats the cut particle setup's declaration gives
+/// its draws: the stream type it declares
+/// ([`particle_material::stream_type`]) over the program's inputs, the
+/// stream format read from the table the guest reads (`0x0043f408`).
+fn particle_formats(mem: &dyn GuestMemory, inputs: &particle_material::Inputs, m: &Material) -> Result<[u32; 16], &'static str> {
+    struct Ro<'a>(&'a dyn GuestMemory);
+    impl native_render::camera::GuestRead for Ro<'_> {
+        fn read_u32(&self, address: u32) -> Option<u32> {
+            self.0.u32(address).ok()
+        }
+    }
+    let formats = StreamFormats::read(&Ro(mem)).ok_or("stream_formats_unread")?;
+    let elements = formats.elements(particle_material::stream_type(inputs)).map_err(|_| "stream_format")?;
+    let semantics =
+        effect_material::program_semantics(&|a| mem.u32(a).ok(), &|a, n| mem.bytes(a, n).ok(), m.program.0, m.program.1)?;
+    Ok(particle_material::vertex_formats(&semantics, &elements))
+}
 
 /// The material of the setup of `kind` running now as the device's
 /// supplied draw takes it, for [`Host::material_cut`]: its material,
@@ -36,11 +45,14 @@ pub(super) const PARTICLE_FORMATS: [u32; 16] = {
 ///
 /// [`Host::material_cut`]: render_bridge::native_particles::Host::material_cut
 pub(super) fn cut(mem: &dyn GuestMemory, kind: Kind) -> Result<d3d::SuppliedState, &'static str> {
+    let mut formats = None;
     let material = match kind {
         Kind::Particle => {
             let inputs = proof::particle_inputs().ok_or("no_setup")?;
             particle_material::check(&inputs).map_err(particle_material::Refused::name)?;
-            library_material(mem, &inputs)?
+            let m = library_material(mem, &inputs)?;
+            formats = Some(particle_formats(mem, &inputs, &m)?);
+            m
         }
         Kind::Contrail => {
             let inputs = proof::contrail_inputs().ok_or("no_setup")?;
@@ -52,9 +64,7 @@ pub(super) fn cut(mem: &dyn GuestMemory, kind: Kind) -> Result<d3d::SuppliedStat
     };
     let (material, resolved) = resolved(mem, material)?;
     let mut s = supplied(&material, &resolved)?;
-    if kind == Kind::Particle {
-        s.vertex_format = Some(PARTICLE_FORMATS);
-    }
+    s.vertex_format = formats;
     Ok(s)
 }
 

@@ -1543,13 +1543,4 @@ pub(super) mod tests {
         let mut short = r.clone();
         short.program.pop();
         assert_eq!(material_proof::supplied(&m, &short).err(), Some("vertex_program_size"));
-    }
-
-    /// The particle walk's vertices as the admission takes them: `v0`
-    /// four shorts in 8 bytes, nothing else.
-    #[test]
-    fn a_cut_particle_draw_names_the_walks_vertex_format() {
-        assert_eq!(material_proof::PARTICLE_FORMATS[0], 0x0845);
-        assert!(material_proof::PARTICLE_FORMATS[1..].iter().all(|&f| (f >> 4) & 0xf == 0));
-    }
-}
+    }}

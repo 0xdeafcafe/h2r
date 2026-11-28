@@ -78,6 +78,19 @@ impl Attribute {
         })
     }
 
+    /// The D3D vertex data type (`0x00035790`): the component count in
+    /// bits 4..8, the NV2A type in bits 0..4 (`0x45` four `S32K` shorts).
+    pub fn xbox_type(self) -> u32 {
+        match self {
+            Self::Float(n) => u32::from(n) * 16 + 2,
+            Self::PByte(n) => u32::from(n) * 16 + 4,
+            Self::Short(n) => u32::from(n) * 16 + 5,
+            Self::NormShort(n) => u32::from(n) * 16 + 1,
+            Self::NormPacked3 => 0x16,
+            Self::Colour => 0x40,
+        }
+    }
+
     /// Bytes per attribute (`0x00035850`).
     pub fn size(self) -> usize {
         match self {

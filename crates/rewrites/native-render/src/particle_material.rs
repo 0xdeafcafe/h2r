@@ -12,7 +12,14 @@
 //!    implementation's render and stage states, its combiner and its
 //!    bound bitmaps (`tags::material`, docs/formats/shader-instances.md);
 //! 4. program `class + 7` of implementation 0's `vrtx` (`+0x100`,
-//!    `0x0001c590` with BL 1).
+//!    `0x0001c590` with BL 1);
+//! 5. the declaration of one stream of type [`STREAM_TYPE`], or
+//!    [`STREAM_TYPE_OVERRIDE`] with both [`VERTEX_OVERRIDE`] bytes set
+//!    (`0x0001ccb0(type)`, inline at `0x0023ec7f` for the first):
+//!    `0x0001c6b0` clears the stream cache `0x0051f0f0`, stream 0's format
+//!    is the type's record in `0x0043f408`, and `0x0001c710` builds the
+//!    declaration from it and the program's inputs (`0x0001c330`,
+//!    [`vertex_formats`]).
 //!
 //! [`Inputs`] are read at the draw's entry; [`material`] (with the map's
 //! shader library) builds the [`Material`] or names the branch it does
@@ -29,9 +36,16 @@ pub const DRAW: u32 = 0x0022_43c0;
 pub const VIEW: u32 = 0x0046_87d0;
 /// `0x0001bbf0` resets the device first while this byte is set.
 pub const RESET: u32 = 0x0046_70bc;
-/// With both bytes set the setup selects engine program `0x2b` instead
-/// (`0x0001ccb0`).
+/// With both bytes set the setup declares stream type
+/// [`STREAM_TYPE_OVERRIDE`] instead of [`STREAM_TYPE`] (`0x0023ec57`).
+/// `0x00470a38` is also the emitter's gate (`crate::particles`).
 pub const VERTEX_OVERRIDE: [u32; 2] = [0x0047_0a38, 0x0047_0a39];
+/// The particle stream: position, axis, size and rotation, colour and
+/// the frame windows as floats and a `D3DCOLOR` (`0x0043f77a`).
+pub const STREAM_TYPE: u8 = 0x2a;
+/// The emitter's stream: semantic 0 as four shorts (`0x0043f78f`), the
+/// corners `0x0023ed30` pushes inline.
+pub const STREAM_TYPE_OVERRIDE: u8 = 0x2b;
 /// The program index is the system's class plus this.
 pub const PROGRAM_BASE: u32 = 7;
 /// `STIPPLEENABLE`, which the setup turns off.
@@ -95,8 +109,6 @@ pub enum Refused {
     NotShader,
     /// The device reset `0x0001bbf0` runs first ([`RESET`]).
     Reset,
-    /// The engine program `0x2b` ([`VERTEX_OVERRIDE`]).
-    VertexOverride,
     /// The shader, its template or pass does not resolve or has no
     /// such layer or pass.
     Tags,
@@ -130,7 +142,6 @@ impl Refused {
             Self::ParticleModel => "particle_model",
             Self::NotShader => "not_shader",
             Self::Reset => "reset",
-            Self::VertexOverride => "vertex_override",
             Self::Tags => "tags",
             Self::Animated => "animated",
             Self::TargetCopy => "target_copy",
@@ -146,7 +157,7 @@ impl Refused {
 }
 
 /// Whether the inputs reach `0x00016b90` as modelled: a `shad`, no
-/// reset, no override.
+/// reset.
 pub fn check(i: &Inputs) -> Result<(), Refused> {
     if PARTICLE_MODELS.contains(&i.group) {
         return Err(Refused::ParticleModel);
@@ -157,10 +168,32 @@ pub fn check(i: &Inputs) -> Result<(), Refused> {
     if i.reset {
         return Err(Refused::Reset);
     }
-    if i.vertex_override {
-        return Err(Refused::VertexOverride);
-    }
     Ok(())
+}
+
+/// The stream type the setup declares for `i`.
+pub fn stream_type(i: &Inputs) -> u8 {
+    if i.vertex_override { STREAM_TYPE_OVERRIDE } else { STREAM_TYPE }
+}
+
+/// The vertex array formats the declaration of one stream of `elements`
+/// gives a program whose register `n` reads `semantics[n]`
+/// (`0x0001c330`): each register's attribute type with the stream's
+/// vertex size as its stride, every other register off (`0x02`).
+pub fn vertex_formats(semantics: &[u16], elements: &[crate::object_streams::StreamElement]) -> [u32; 16] {
+    use crate::object_streams::{StreamElement, declaration};
+    let stride: usize = elements
+        .iter()
+        .map(|e| match *e {
+            StreamElement::Skip(n) => usize::from(n),
+            StreamElement::Attribute { format, .. } => format.size(),
+        })
+        .sum();
+    let mut formats = [0x02; 16];
+    for e in declaration(semantics, &[elements.to_vec()]) {
+        formats[usize::from(e.register)] = e.format.xbox_type() | (stride as u32) << 8;
+    }
+    formats
 }
 
 /// The combiner word a pixel constant lands in: `PSCONSTANT0_n` 10 + n,
@@ -314,15 +347,42 @@ mod tests {
     }
 
     #[test]
-    fn only_a_shad_without_reset_or_override_reaches_the_shader_setup() {
+    fn only_a_shad_without_reset_reaches_the_shader_setup() {
         let w = guest();
         let i = read(&|a| w.word(a), 0x100, 0x500).unwrap();
-        assert_eq!(check(&i), Err(Refused::VertexOverride));
-        let i = Inputs { vertex_override: false, ..i };
         assert_eq!(check(&i), Ok(()));
         assert_eq!(check(&Inputs { reset: true, ..i }), Err(Refused::Reset));
         assert_eq!(check(&Inputs { group: PARTICLE_MODELS[1], ..i }), Err(Refused::ParticleModel));
         assert_eq!(check(&Inputs { group: u32::from_be_bytes(*b"bitm"), ..i }), Err(Refused::NotShader));
+    }
+
+    /// The two records as the disc has them (`0x0043f77a`, `0x0043f78f`).
+    fn records() -> crate::object_streams::StreamFormats {
+        let mut b = vec![0u8; crate::object_streams::STREAM_FORMAT_SIZE * 0x2c];
+        let at = |t: usize| t * crate::object_streams::STREAM_FORMAT_SIZE;
+        b[at(0x2a)..at(0x2b)].copy_from_slice(&[
+            0x2a, 0, 3, 1, 2, 2, 0, 3, 3, 4, 2, 5, 1, 6, 3, 7, 3, 9, 0x11, 0xff, 0,
+        ]);
+        b[at(0x2b)..at(0x2b) + 4].copy_from_slice(&[0x2b, 0, 0x0b, 0xff]);
+        crate::object_streams::StreamFormats::from_bytes(&b)
+    }
+
+    #[test]
+    fn the_override_declares_the_emitters_short_corners_and_otherwise_the_float_stream() {
+        let w = guest();
+        let i = read(&|a| w.word(a), 0x100, 0x500).unwrap();
+        assert_eq!(stream_type(&i), STREAM_TYPE_OVERRIDE);
+        assert_eq!(stream_type(&Inputs { vertex_override: false, ..i }), STREAM_TYPE);
+        let t = records();
+        // v0 reads semantic 0: four S32K shorts in an 8-byte vertex.
+        let f = vertex_formats(&[0, 3], &t.elements(STREAM_TYPE_OVERRIDE).unwrap());
+        assert_eq!(f[0], 0x0845);
+        assert!(f[1..].iter().all(|&w| w == 0x02));
+        // The float stream is 104 bytes: v0 its float4 position, v1 its
+        // colour (semantic 9), the rest off.
+        let f = vertex_formats(&[0, 9], &t.elements(STREAM_TYPE).unwrap());
+        assert_eq!((f[0], f[1]), (104 << 8 | 0x42, 104 << 8 | 0x40));
+        assert!(f[2..].iter().all(|&w| w == 0x02));
     }
 
     #[cfg(feature = "gpu")]

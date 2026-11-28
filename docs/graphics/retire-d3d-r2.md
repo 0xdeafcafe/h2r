@@ -396,7 +396,6 @@ Refused, by name, rather than approximated:
 |---|---|---|
 | `particle_model`, `not_shader` | particle | a `PRTM`/`prt3` or other tag in the shader's place |
 | `reset` | particle | `0x0001bbf0`'s device reset (`[0x004670bc]` set) |
-| `vertex_override` | particle | `0x0001ccb0(0x2b)` (`[0x00470a38]` and `[0x00470a39]` set) |
 | `animated`, `engine_variant`, `engine_state`, `engine_texture`, `target_copy` | particle | animated parameters, a combiner variant or a state the draw's inputs choose, an engine texture or the lightmap, the frame copy |
 | `tags`, `no_vertex_shader`, `library_loading`, `library_unread` | particle | the shader does not resolve, or the map's library is not read yet |
 | `vertex_defaults`, `vertex_constant_driven`, `vertex_constant_lanes` | particle | vertex defaults, a vertex constant from the engine's inputs or a stage's size, a constant row not written whole |
@@ -433,7 +432,7 @@ The cut draw (`d3d::Device::try_native_supplied_draw`,
 | constants | the device's, the material's rows over them (`c[18 + i]` from `0x00018eab`, the matrix at `0xae`) |
 | program | the tag's, at slot 0 (`LoadVertexShader(program, 0)` at `0x0001c5c7`) |
 | textures | the material's headers (an empty stage unbinds), the device's elsewhere |
-| vertex format | particles: `v0` four `S32K` shorts in 8 bytes (`PARTICLE_FORMATS`); contrails: the device's, which the kept declaration sets |
+| vertex format | particles: the declaration of stream type `0x2a`, or `0x2b` (`v0` four `S32K` shorts in 8 bytes) with both `[0x00470a38]` and `[0x00470a39]` set, over the program's inputs (`particle_material::vertex_formats`); contrails: the device's, which the kept declaration sets |
 
 After it the device's constants, textures, combiner and inline run are as
 before, so the guest's later draws find the state they left; only the

@@ -160,6 +160,29 @@ pub fn program(
     bytes(at, size as usize).ok_or(unread)
 }
 
+/// The input semantics of program `index` of `vrtx` tag `datum`, by
+/// register, as `0x0001c330` reads them when it builds the declaration:
+/// the element's `+4` count of u16 at `+8`, register `i` reading entry
+/// `i`. The element is [`program`]'s, so its refusals are the same.
+pub fn program_semantics(
+    word: &dyn Fn(u32) -> Option<u32>,
+    bytes: &dyn Fn(u32, usize) -> Option<Vec<u8>>,
+    datum: u32,
+    index: u32,
+) -> Result<Vec<u16>, Unresolved> {
+    let unread = "vertex_program_unread";
+    program(word, bytes, datum, index)?;
+    let tag = word(word(TAG_TABLE).ok_or(unread)?.wrapping_add((datum & 0xffff) * 16 + 8)).ok_or(unread)?;
+    let e = word(tag + 8).ok_or(unread)?.wrapping_add(index * 0x1c);
+    let count = word(e + 4).ok_or(unread)?;
+    if count > 16 {
+        return Err("vertex_program_inputs");
+    }
+    let list = word(e + 8).ok_or(unread)?;
+    let b = bytes(list, 2 * count as usize).ok_or(unread)?;
+    Ok(b.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -233,5 +256,23 @@ pub(crate) mod tests {
         assert_eq!(program(&word, &bytes, u32::MAX, 0), Err("vertex_builtin"));
         assert_eq!(program(&word, &bytes, 0xe000_0002, 0), Err("vertex_not_vrtx"));
         assert_eq!(engine_vertex_shader(&word, 4), Some(0xe000_0005));
+    }
+
+    #[test]
+    fn a_programs_inputs_are_its_elements_semantic_list_by_register() {
+        let mut w = guest();
+        w.set(0x6000 + 0x1c + 4, 2);
+        w.set(0x6000 + 0x1c + 8, 0x7100);
+        let word = |a| w.word(a);
+        let bytes = |a: u32, n: usize| match a {
+            0x7000 => Some(vec![0x78; n]),
+            0x7100 => Some([3u8, 0, 0, 0].into_iter().take(n).collect()),
+            _ => None,
+        };
+        assert_eq!(program_semantics(&word, &bytes, 0xe000_0005, 1), Ok(vec![3, 0]));
+        assert_eq!(program_semantics(&word, &bytes, 0xe000_0005, 2), Err("vertex_program_index"));
+        w.set(0x6000 + 0x1c + 4, 17);
+        let word = |a| w.word(a);
+        assert_eq!(program_semantics(&word, &bytes, 0xe000_0005, 1), Err("vertex_program_inputs"));
     }
 }
