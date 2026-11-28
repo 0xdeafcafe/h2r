@@ -4,11 +4,12 @@ Typed, read-only views of the simulation for consumers that are not the simulati
 
 ## Where it sits
 
-`rewrites` domain, guest-free. Depends on `guest-layout` and `sim-objects`. Used by `agent`.
+`rewrites` domain, guest-free. Depends on `guest-layout`, `sim-objects` and `sim-players`. Used by `agent`.
 
 ## Layout
 
 - `src/lib.rs`: typed ids, kinds and the read views.
+- `src/players.rs`: players, local users, first-person state and animation channels.
 - `src/tests.rs`: tests over synthetic object pools.
 
 ## Tests

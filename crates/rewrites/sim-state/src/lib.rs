@@ -10,6 +10,11 @@
 //! not offsets.
 
 mod actors;
+mod players;
+pub use players::{
+    AnimState, Channel, FirstPersonView, PlayerId, PlayerView, PlayersMem, PlayersState, anim, first_person,
+    local_users, players,
+};
 pub use actors::{ActorControl, ActorView, visit_actors, visit_ai_units};
 
 use guest_layout::object::{NODE_MATRIX_SIZE, header};

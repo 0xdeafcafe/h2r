@@ -1,6 +1,6 @@
 //! The process's `World` (docs/engine/sim-world.md, "Store slots"): it
-//! holds the sound table's `Sounds` as its sound store and the object
-//! table as its objects store, and its save is the one snapshot section of
+//! holds the sound table's `Sounds` as its sound store, the object
+//! table as its objects store and the players state as its players store, and its save is the one snapshot section of
 //! the native sim's state. `World::save` is
 //! the format; no store saves itself elsewhere.
 
@@ -9,6 +9,7 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use sim_objects::{LightTable, ObjectTable};
+use sim_players::PlayersState;
 use sim_sound::instances::Sounds;
 use sim_world::{RestoreError, Store, World, kind};
 
@@ -143,6 +144,59 @@ impl Store for ObjectStore {
     }
 }
 
+/// The shared players state: the pool is the truth for the players array,
+/// their globals and the first-person blocks, and the world saves it in its
+/// players section.
+pub type SharedPlayers = Arc<Mutex<PlayersState>>;
+
+/// The process's players state.
+pub static PLAYERS_STATE: LazyLock<SharedPlayers> = LazyLock::new(SharedPlayers::default);
+
+pub fn lock_players(t: &Mutex<PlayersState>) -> MutexGuard<'_, PlayersState> {
+    t.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Read the guest's players array, globals and first-person block into
+/// `players` (docs/engine/sim-world.md, "The players store"). No game
+/// initialised, or the globals unreadable, leaves an empty state. An array
+/// that disagrees with itself is a bug in the writer that left it so.
+pub fn import_players(m: &(impl guest_layout::Mem + ?Sized), players: &Mutex<PlayersState>) {
+    let state = match PlayersState::import(m) {
+        Ok(Some(s)) => s,
+        Ok(None) | Err(sim_players::ImportError::Fault(_)) => PlayersState::default(),
+        Err(e) => panic!("players: the guest's players array is corrupt: {e:?}"),
+    };
+    *lock_players(players) = state;
+}
+
+/// The players state as the world's players store. A restore puts the
+/// decoded state in the shared one; the guest arena comes back with the
+/// machine snapshot it was taken with, so the two halves are one checkpoint.
+pub struct PlayersStore(pub SharedPlayers);
+
+impl Store for PlayersStore {
+    fn kind(&self) -> u16 {
+        kind::PLAYERS
+    }
+    fn version(&self) -> u16 {
+        PlayersState::VERSION
+    }
+    fn encode(&self) -> Vec<u8> {
+        lock_players(&self.0).encode()
+    }
+    fn section_hash(&self) -> u64 {
+        lock_players(&self.0).section_hash()
+    }
+    fn decode(&self, version: u16, body: &[u8]) -> Result<Box<dyn Any + Send>, RestoreError> {
+        Ok(Box::new(PlayersState::decode(version, body)?))
+    }
+    fn install(&mut self, state: Box<dyn Any + Send>) {
+        if let Ok(state) = state.downcast::<PlayersState>() {
+            *lock_players(&self.0) = *state;
+        }
+    }
+}
+
 /// A world that holds `table` as its sound store and a fresh object table.
 pub fn with_table(table: Shared) -> World {
     with_tables(table, SharedObjects::default())
@@ -150,13 +204,14 @@ pub fn with_table(table: Shared) -> World {
 
 /// A world that holds `sounds` and `objects` as its stores.
 pub fn with_tables(sounds: Shared, objects: SharedObjects) -> World {
-    with_stores(sounds, objects, SharedLights::default())
+    with_stores(sounds, objects, SharedLights::default(), SharedPlayers::default())
 }
 
-/// A world that holds `sounds`, `objects` and `lights` as its stores.
-pub fn with_stores(sounds: Shared, objects: SharedObjects, lights: SharedLights) -> World {
+/// A world that holds `sounds`, `objects`, `lights` and `players` as its stores.
+pub fn with_stores(sounds: Shared, objects: SharedObjects, lights: SharedLights, players: SharedPlayers) -> World {
     let mut w = World::new(1);
     w.attach(Box::new(LightStore(lights))).expect("a world without one takes the lights store");
+    w.attach(Box::new(PlayersStore(players))).expect("a world without one takes the players store");
     w.attach(Box::new(ObjectStore(objects))).expect("an empty world takes the objects store");
     w.attach(Box::new(SoundStore(sounds))).expect("a world without one takes the sound store");
     w.attach(Box::new(sim_world::ext::store::ExtStore)).expect("a world without one takes the extension store");
@@ -170,6 +225,7 @@ pub static WORLD: LazyLock<Mutex<World>> = LazyLock::new(|| {
         Arc::clone(&entries::SHARED),
         Arc::clone(&OBJECT_TABLE),
         Arc::clone(&LIGHT_TABLE),
+        Arc::clone(&PLAYERS_STATE),
     ))
 });
 
@@ -249,12 +305,40 @@ mod tests {
         let h = lock_lights(&a).alloc(light.clone()).unwrap();
         lock_lights(&a).alloc(light.clone()).unwrap();
         lock_lights(&a).delete(h).unwrap();
-        let saved = with_stores(sounds(), SharedObjects::default(), Arc::clone(&a)).save();
+        let saved = with_stores(sounds(), SharedObjects::default(), Arc::clone(&a), SharedPlayers::default()).save();
         let b = SharedLights::new(Mutex::new(LightTable::new(8, 0x696c)));
-        let mut world = with_stores(sounds(), SharedObjects::default(), Arc::clone(&b));
+        let mut world = with_stores(sounds(), SharedObjects::default(), Arc::clone(&b), SharedPlayers::default());
         assert_ne!(world.save(), saved);
         world.restore_into(&saved).unwrap();
         assert_eq!(lock_lights(&b).encode(), lock_lights(&a).encode());
         assert_eq!(world.save(), saved);
+    /// The players state is the world's players section: a save carries it,
+    /// a restore into another world puts it in that world's state, and the
+    /// next handle after the restore is the one the saved state would hand
+    /// out.
+    #[test]
+    fn the_world_saves_the_players_and_restores_them_into_its_state() {
+        use sim_players::{PlayerRecord, PlayersState};
+
+        let a = Arc::new(Mutex::new(PlayersState::default()));
+        let sounds = || Arc::new(Mutex::new(entries::Table::guest()));
+        let objects = || Arc::new(Mutex::new(ObjectTable::default()));
+        let (first, _) = {
+            let mut s = lock_players(&a);
+            (s.alloc(PlayerRecord::default()).unwrap(), s.alloc(PlayerRecord::default()).unwrap())
+        };
+        lock_players(&a).delete(first).unwrap();
+        lock_players(&a).first_person.bytes[4] = 9;
+        let saved = with_stores(sounds(), objects(), SharedLights::default(), Arc::clone(&a)).save();
+        let b = Arc::new(Mutex::new(PlayersState::default()));
+        let mut world = with_stores(sounds(), objects(), SharedLights::default(), Arc::clone(&b));
+        assert_ne!(world.save(), saved);
+        world.restore_into(&saved).unwrap();
+        assert_eq!(lock_players(&b).encode(), lock_players(&a).encode());
+        assert_eq!(world.save(), saved);
+        assert_eq!(
+            lock_players(&b).alloc(PlayerRecord::default()),
+            lock_players(&a).alloc(PlayerRecord::default())
+        );
     }
 }

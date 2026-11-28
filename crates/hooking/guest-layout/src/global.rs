@@ -56,6 +56,14 @@ crate::globals! { GLOBALS;
     /// Pointer to the players datum array (`0x21c`-byte
     /// [`crate::player::Player`]s).
     PLAYERS @ 0x004e_8c24; "docs/live/live-gamestate.md";
+    /// Pointer to the players' globals (`0x130` bytes, `players_initialize`
+    /// `0x0014b4b0`): `+0xc` holds four local users' player indices, `-1`
+    /// for an unmapped user.
+    PLAYER_GLOBALS @ 0x004e_8c20; "docs/engine/sim-world.md";
+    /// Pointer to the first-person state: four local users' blocks of
+    /// `0x20cc` bytes (`first_person` phase `0x00165dc1`), each holding the
+    /// user's unit at `+4` and two `0x1010`-byte weapon slots from `+0x10`.
+    FIRST_PERSON @ 0x004e_9bc8; "docs/engine/sim-world.md";
     /// Pointer to the objects datum array (`0xc`-byte
     /// [`crate::object::ObjectHeader`]s).
     OBJECTS @ 0x004e_0300; "docs/formats/objects.md";

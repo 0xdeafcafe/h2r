@@ -82,6 +82,7 @@ writes no section and a save that carries one is refused as `UnknownKind`.
 | ext | `sim_world::ext::State` (`crates/rewrites/sim-world/src/ext`) | the rules VM and Forge records, and one copy of both per checkpoint slot | `sim_world::ext::global`; the `World` holds it as `ext::store::ExtStore`, attached by `sim_bridge::world` |
 | lights | `sim_objects::LightTable` (`crates/rewrites/sim-objects/src/lights.rs`) | the lights array (`[4e030c]`, `0x110`-byte elements), each slot the element bytes | `sim_bridge::world::LIGHT_TABLE`, imported with the objects; the `World` holds it as `world::LightStore` |
 | scripts | `sim_script::ScriptTable`, holding `hs::vm::VmState` (`crates/rewrites/sim-script/src/table.rs`) | the thread pool (`0x140` slots, salts and allocation cursor kept), each thread's frames, the global cells and the host strings | `sim_script::ScriptRuntime` updates it each tick; the `World` holds it as `sim_script::ScriptStore` |
+| players | `sim_players::PlayersState` (`crates/rewrites/sim-players`) | the players array (16 slots of `0x21c` bytes), the players' globals block (`0x130` bytes), the first-person block (`0x8330` bytes) | `sim_bridge::world::PLAYERS_STATE`; the `World` holds it as `world::PlayersStore` |
 | test | `Probe` | one | the unit tests |
 
 ### The object table
@@ -109,6 +110,34 @@ pool in the table and the arena returns with its snapshot. Tests:
 `the_views_read_the_pool_as_they_read_the_arena` (`sim-objects`),
 `the_object_table_reads_as_the_arena_does` (`sim-state`),
 `the_world_saves_the_object_table_and_restores_it_into_its_table` (`sim-bridge`).
+
+### The players store
+
+`PlayersState` is retail's players array (`players_initialize` `0x0014b4b0`)
+as a `Pool<PlayerRecord>`, with two blocks the simulation owns beside it.
+A record is the datum's bytes after its salt, kept whole, so the retail
+layout (`guest_layout::player::Player`) is the state and the views read the
+offsets it names. Allocation is `datum_new` over the name seed `"pl"`
+(`0x6c70`), so handles match retail's; the save keeps free slots in place.
+
+| Block | Global | Bytes | Holds |
+|---|---|---|---|
+| players' globals | `guest_layout::global::PLAYER_GLOBALS` (`0x4e8c20`) | `0x130` | the local-user map at `+0xc`: four player indices, `-1` for an unmapped user |
+| first-person state | `guest_layout::global::FIRST_PERSON` (`0x4e9bc8`) | `0x8330` | four users' `0x20cc`-byte blocks (`first_person` phase `0x00165dc1`): the unit shown at `+4`, a key at `+8`, two `0x1010`-byte weapon slots from `+0x10` |
+
+Each block keeps the address the guest's allocator gave it, which is state.
+`PlayersState::import` reads the three arrays at the tick's entry and exit
+(`sim_bridge::tick::run`), `scatter` writes them back, and `PlayersMem` shows
+the state to the typed views as guest memory, as `PoolMem` does for objects.
+`sim-state` reads it: `players`, `local_users`, `first_person` and `anim`
+(an object's three animation channels, which live in its body in the objects
+pool, so the animation state is saved with the objects section). Tests:
+`import_reads_the_array_and_its_allocation_state`,
+`scatter_writes_the_state_back_bit_for_bit`, `allocation_follows_datum_new`,
+`players_mem_reads_as_the_arena_does` (`sim-players`),
+`the_players_list_in_slot_order_without_free_slots`,
+`anim_reads_the_manager_channels` (`sim-state`),
+`the_world_saves_the_players_and_restores_them_into_its_state` (`sim-bridge`).
 
 A subsystem whose records live here is the truth for them. Where guest code
 still reads that state, `sim-bridge` is the only place that touches guest

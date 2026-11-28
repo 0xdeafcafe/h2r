@@ -57,7 +57,7 @@ uses = ["formats", "recompiler", "runtime", "platform", "hooking"]
 crates = [
     "engine", "frame-scene", "hud-kit-core", "native-render", "render-bridge",
     "scene-extract", "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-effects", "sim-objects", "sim-sound",
-    "scene-extract", "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-effects", "sim-objects", "sim-script", "sim-sound",
+    "scene-extract", "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-effects", "sim-objects", "sim-players", "sim-script", "sim-sound",
     "sim-state",
 ]
 # Guest-free: these take typed values and may use only `formats`,
