@@ -86,8 +86,6 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim", Group, "sim", "2026-11-20", "goes with its last child"),
     sw("impl.sim.native", Group, "sim", "2026-11-20",
         "the parent of the subsystem rewrites (lane rules): each child goes when its subsystem defaults on"),
-    sw("impl.sim.native.sound", Off, "sim", "2026-11-25",
-        "phase 4 sound simulation: promote after voice, arena and timing parity"),
     sw("impl.sim.present", On, "sim", "2026-11-27",
         "ticks with no local user skip the presentation phases (sim-bridge/src/present.rs); h2 sim diff of lockout-2v2 is identical over 9000 ticks"),
     sw("impl.sim.sound-events", On, "sim", "2026-11-27",

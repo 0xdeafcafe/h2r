@@ -67,14 +67,12 @@ the graph walk's `stats`, `sim_anim::manager::arm::stats`,
 aim-assist cone's kernel arm) and `sim_seats::respawn::status`
 (`seats.respawn`), whose unported paths panic, `sim_seats::leaf::status`
 (`seats.leaf.<name>`, one arm per leaf callee, whose `declined` adds its
-unwatched audits), and `sim_sound::voice_arm::stats` (`sound.voices`). A source without a counter reports 0 for that
+unwatched audits). A source without a counter reports 0 for that
 field: physics and collision have no `checked` (it is `matched` plus
 `mismatched`) and no `answered`; `anim.manager`'s `differed` is
 `mismatched`; the `anim` arms have no `declined` (a decline panics);
 shadow ports have no `answered` and their
-`skipped` is `declined`; `sound.voices` counts ticks for `checked`
-(sampled ticks with voices), `matched` and `mismatched`, and voices for
-`answered`. `effects-parts` is the effects phase in Rust, always on
+`skipped` is `declined`. `effects-parts` is the effects phase in Rust, always on
 with no switch (its `switch` is empty): its
 `effects.damage`, `effects.object`, `effects.sound`,
 `effects.character`, `effects.coln`, `effects.decal` and `effects.light`

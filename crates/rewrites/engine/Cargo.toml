@@ -26,7 +26,6 @@ sim-collision.workspace = true
 # The object update's kernels and views behind src/sim_objects (phase 3:
 # docs/engine/sim-rewrite-objects.md).
 sim-objects.workspace = true
-sim-sound.workspace = true
 # The effects phase's walk behind src/effects_phase.rs (docs/engine/effects-parts.md).
 sim-effects.workspace = true
 # For src/runtime_glue.rs (feature `runtime-glue`): registration of the

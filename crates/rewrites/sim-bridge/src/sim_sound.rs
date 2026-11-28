@@ -1,9 +1,7 @@
 //! Install the sound pass for playback and clock-only sessions.
 //!
-//! Two arms. `impl.sim.native.sound` ([`SimSound`]) is the exact port: the
-//! guest records carry all persistent state across mixer callbacks and
-//! checkpoints. `impl.sim.sound-events` ([`SimSoundEvents`]) is the sound
-//! simulation of docs/engine/sound-sim.md: the engine's own admission makes
+//! `impl.sim.sound-events` ([`SimSoundEvents`]) is the sound simulation of
+//! docs/engine/sound-sim.md: the engine's own admission makes
 //! each instance, the sim decides when it ends, and the engine's finish
 //! runs on that tick. The host mixer is fed from the sim's events.
 
@@ -18,22 +16,26 @@ use sim_sound::events::{SoundDef, SoundEvent, SoundId, Source};
 use sim_sound::feed::{Host, NullHost};
 use sim_sound::schedule::Schedule;
 
-pub mod levels;
+pub mod ambience;
+pub mod clock;
 pub mod entries;
+pub mod gate;
 pub mod guest_tags;
+pub mod levels;
 pub mod lifecycle;
 pub mod mixer_feed;
+pub mod mouth;
 pub mod owner_host;
 pub mod owners;
+pub mod playback;
+pub mod promotion;
 pub mod request;
 pub mod scene;
-pub mod voice_arm;
+pub mod units;
 
-pub const SOUND: &str = "sim.native.sound";
 /// The sound simulation's switch (`impl.sim.sound-events`, default on; `h2 sim diff` parity in
 /// docs/engine/notes/2026-11-27-sound-events-parity.md).
 pub const EVENTS: &str = "sim.sound-events";
-const ID: &str = "impl.sim.native.sound";
 const EVENTS_ID: &str = "impl.sim.sound-events";
 
 /// What the sim reads of a sound tag when it is started without an
@@ -495,31 +497,6 @@ impl Feature for SimSoundEvents {
     }
 }
 
-pub struct SimSound;
-
-impl Feature for SimSound {
-    fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "Native sound simulation").doc("docs/engine/sim-rewrite.md")
-    }
-
-    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        if !b.switches().implementation(SOUND, false) {
-            b.snapshot(SnapshotPolicy::Stateless);
-            return Ok(());
-        }
-        crate::sim_objects::install_table(
-            b,
-            &engine::sim_sound::TABLE,
-            SOUND,
-            engine::sim_sound::generated_sites,
-        );
-        // The per-tick voice update, shadowing the guest's (voice_arm.rs).
-        b.snapshot(SnapshotPolicy::section(voice_arm::save, |bytes, _| voice_arm::load(bytes)));
-        voice_arm::install(b);
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -849,61 +826,5 @@ mod tests {
         a.step(40);
         b.step(40);
         assert_eq!(a.hash(), b.hash());
-    }
-
-    #[test]
-    fn switch_installs_each_sound_entry_and_its_callback_returns() {
-        for (spec, enabled) in [
-            ("", false),
-            ("-impl.sim.native", false),
-            ("impl.sim.native", true),
-            ("impl.sim.native,-impl.sim.native.sound", false),
-            ("-impl.sim.native,impl.sim.native.sound", true),
-        ] {
-            let mut registry = Registry::new(Switches::parse(spec).unwrap());
-            registry.add(&SimSound).unwrap();
-            let plan = registry.build(&Base).unwrap();
-            assert_eq!(!plan.save_sections().is_empty(), enabled, "the voices are saved with the switch on");
-            let table = &*engine::sim_sound::TABLE;
-            // The voice arm's points, beside the bodies.
-            let arm = [
-                &points::SOUND_IMPULSE_ALLOCATE,
-                &points::SOUND_STOP_INSTANCE,
-                &points::SOUND_FINISH_INSTANCE,
-                &points::GAME_TICK,
-                &points::SOUND_UPDATE,
-            ];
-            let bases: std::collections::BTreeSet<u32> =
-                table.bodies().iter().map(|b| b.point.base).chain(arm.iter().map(|p| p.base)).collect();
-            assert_eq!(plan.chains.len(), if enabled { bases.len() } else { 0 });
-            if enabled {
-                for body in table.bodies() {
-                    let hook = plan.chains[&body.point.base].implement.as_ref().unwrap();
-                    assert_eq!(hook.label, SOUND);
-                    assert_eq!(hook.continuation_sites(), (body.sites, engine::sim_sound::generated_sites(body.point.base)));
-                }
-                let chain = |p: &engine::points::Point| &plan.chains[&p.base];
-                let labels = |hs: &[hooks::Hook]| hs.iter().map(|h| h.label).collect::<Vec<_>>();
-                assert_eq!(labels(&chain(&points::SOUND_IMPULSE_ALLOCATE).observe_after), ["voice start"]);
-                assert_eq!(labels(&chain(&points::SOUND_STOP_INSTANCE).observe_before), ["voice stop"]);
-                assert_eq!(labels(&chain(&points::SOUND_FINISH_INSTANCE).observe_before), ["voice finish"]);
-                assert_eq!(labels(&chain(&points::GAME_TICK).observe_after), ["voice tick"]);
-                assert_eq!(labels(&chain(&points::SOUND_UPDATE).before), ["voice play-outs"]);
-            }
-        }
-    }
-
-    #[test]
-    fn callbacks_must_return_to_a_supported_float_environment() {
-        let table = &*engine::sim_sound::TABLE;
-        let mut cpu = runtime::CpuAbi::default();
-        cpu.mxcsr = 0x1f80;
-        cpu.x87.control = 0x37f;
-        cpu.x87.status = 0;
-        assert!(table.supports(&cpu));
-        for rc in [0x400, 0x800, 0xc00] {
-            cpu.x87.control = 0x37f | rc;
-            assert!(!table.supports(&cpu));
-        }
     }
 }

@@ -2047,7 +2047,6 @@ dependencies = [
  "sim-effects",
  "sim-havok",
  "sim-objects",
- "sim-sound",
  "simd",
  "tags",
  "variants",

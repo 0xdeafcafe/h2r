@@ -108,36 +108,6 @@ pub mod effects_phase;
 pub mod tick_poses;
 
 #[cfg(feature = "runtime-glue")]
-pub mod native_sound_ambience;
-#[cfg(feature = "runtime-glue")]
-pub mod native_sound_channel;
-#[cfg(feature = "runtime-glue")]
-pub mod native_sound_environment;
-#[cfg(feature = "runtime-glue")]
-pub mod native_sound_impulse;
-#[cfg(feature = "runtime-glue")]
-pub mod native_sound_listener;
-#[cfg(feature = "runtime-glue")]
-pub mod native_sound_loops;
-#[cfg(feature = "runtime-glue")]
-pub mod native_sound_mix;
-#[cfg(feature = "runtime-glue")]
-pub mod native_sound_objects;
-#[cfg(feature = "runtime-glue")]
-pub mod native_sound_scheduling;
-#[cfg(feature = "runtime-glue")]
-pub mod native_sound_segments;
-#[cfg(feature = "runtime-glue")]
-pub mod native_sound_sources;
-#[cfg(feature = "runtime-glue")]
-pub mod native_sound_spatial;
-#[cfg(feature = "runtime-glue")]
-pub mod native_sound_submix;
-#[cfg(feature = "runtime-glue")]
-pub mod native_sound_tick;
-#[cfg(feature = "runtime-glue")]
-pub mod sim_sound;
-#[cfg(feature = "runtime-glue")]
 pub mod sim_physics;
 
 // The guest boundary and the named points live in guest-layout

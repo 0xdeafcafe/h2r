@@ -233,7 +233,7 @@ fn the_hash_is_the_same_with_any_host() {
         // The unit's header names no object data, so the native mouth
         // stops at its unit test and asks the guest nothing.
         let r = run_phase(&t, g);
-        assert!(r.calls.iter().all(|c| c.target != UNIT_MOUTH && c.target != engine::sim_sound::mouth::CACHE_TOUCH));
+        assert!(r.calls.iter().all(|c| c.target != UNIT_MOUTH && c.target != crate::sim_sound::mouth::CACHE_TOUCH));
         plain.step(tick, &mut NullOwners);
     }
     // The guest host and the null one end the same sounds on the same
@@ -314,12 +314,12 @@ const GATE_CLASSES: u32 = TAGS + 0x1000;
 const GATE_STATES: u32 = TAGS + 0x1200;
 const GATE_USERS: u32 = TAGS + 0x1300;
 
-/// What `0x126c30` reads for [`TAG`] (`engine::sim_sound::gate`), and the
+/// What `0x126c30` reads for [`TAG`] (`crate::sim_sound::gate`), and the
 /// image constants it reads (test values). Open: the class plays, a chance
 /// of -1 never skips, 0 dB at the first mapped user (3), over a floor of
 /// -64. Closed: the class does not play.
 fn with_gate(g: &mut FakeGuest, open: bool) {
-    use engine::sim_sound::gate::{CLOSE, FLOOR, ONE, SEED_SCALE, SHORTEST};
+    use crate::sim_sound::gate::{CLOSE, FLOOR, ONE, SEED_SCALE, SHORTEST};
     g.put_f32(FLOOR, -64.0).put_f32(SHORTEST, 0.001).put_f32(ONE, 1.0).put_f32(CLOSE, 0.0625).put_f32(SEED_SCALE, 1.0 / 65536.0);
     g.put_u8(SOUND_DEF + 5, u8::from(open)).put_u8(SOUND_DEF + 0xa, 1);
     g.put_u32(GESTALT, GESTALT_AT).put_u32(GESTALT_AT + 4, GATE_DEFAULTS).put_u32(GESTALT_AT + 0xc, GATE_SCALES);
@@ -331,7 +331,7 @@ fn with_gate(g: &mut FakeGuest, open: bool) {
     g.put_u32(points::GLOBALS_TAG.base, GATE_GLOBALS).put_u32(GATE_GLOBALS + 0xc0, 1).put_u32(GATE_GLOBALS + 0xc4, GATE_GLOBALS + 0x40);
     g.put_u32(GATE_GLOBALS + 0x44, 5).put_u32(TAGS + 5 * 16 + 8, GATE_CLASSES).put_u32(GATE_CLASSES + 4, GATE_CLASSES + 0x100);
     g.map(GATE_CLASSES + 0x100, 0x100);
-    g.put_u32(engine::sim_sound::levels::CLASS_STATES, GATE_STATES).put_u8(GATE_STATES + 0xc, 1);
+    g.put_u32(crate::sim_sound::levels::CLASS_STATES, GATE_STATES).put_u8(GATE_STATES + 0xc, 1);
     g.put_u32(points::PLAYER_GLOBALS.base, GATE_USERS);
     for n in 0..3 {
         g.put_u32(GATE_USERS + 0xc + 4 * n, NONE);
@@ -458,7 +458,7 @@ fn a_pause_records_the_kernel_tick_count_with_no_guest_call() {
     let t = table(Arc::new(Flat(10.0)));
     let mut g = guest(0);
     let ticks = TIME + 0x3000;
-    g.put_u32(engine::sim_sound::clock::TICK_COUNT_IMPORT, ticks).put_u32(ticks, 98_765).put_u8(GLOBALS + sg::PAUSED, 1);
+    g.put_u32(crate::sim_sound::clock::TICK_COUNT_IMPORT, ticks).put_u32(ticks, 98_765).put_u8(GLOBALS + sg::PAUSED, 1);
     let r = run_body(&t, Body::Paused, g, Regs { eax: 1, ..regs() }, |c, _| panic!("no guest call: {:#x}", c.target));
     assert_eq!(r.result, Ok(Ret::new(0, 0)));
     assert_eq!(r.guest.u8(GLOBALS + sg::PAUSED), Ok(0));
@@ -568,7 +568,7 @@ fn a_stop_frees_a_loop_that_holds_no_sound_at_once() {
 
 #[test]
 fn the_ambience_blends_its_slots_toward_the_candidates_with_no_guest_call() {
-    use engine::sim_sound::ambience::{FLOOR, FRAME_TIME, FULL, PAIR_SCALE, SLOTS};
+    use crate::sim_sound::ambience::{FLOOR, FRAME_TIME, FULL, PAIR_SCALE, SLOTS};
     let t = table(Arc::new(Flat(10.0)));
     let mut g = guest(0);
     g.put_f32(FLOOR, 0.0).put_f32(PAIR_SCALE, 2.0).put_f32(FULL, 1.0).put_f32(GLOBALS + FRAME_TIME, 0.1);
@@ -588,7 +588,7 @@ const CUSTOM: u32 = (2 << 30) | 9;
 /// An effect in the map: its components (group, tag, gain, flags). Both
 /// [`TAG`]'s bank row (now a `snd!`) and [`CUSTOM`]'s row name it.
 fn with_effect(g: &mut FakeGuest, parts: &[(u32, TagIndex, f32, u32)]) {
-    g.put_u32(TAGS + 16, engine::sim_sound::playback::SOUND_GROUP);
+    g.put_u32(TAGS + 16, crate::sim_sound::playback::SOUND_GROUP);
     g.put_u32(GESTALT, GESTALT_AT).put_u32(GESTALT_AT + 0x34, BANKS);
     g.put_u32(points::SCENARIO.base, SCENARIO_AT).put_u32(SCENARIO_AT + 0x324, 3);
     g.put_u32(TAGS + 3 * 16 + 8, LIST_DEF).put_u32(LIST_DEF + 4, LIST_ROWS);

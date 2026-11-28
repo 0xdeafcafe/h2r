@@ -16,8 +16,8 @@
 use std::collections::BTreeMap;
 
 use engine::entry::{Cx, EntryError};
-use engine::sim_sound::gate::{self, Gate};
-use engine::sim_sound::{playback, promotion};
+use crate::sim_sound::gate::{self, Gate};
+use crate::sim_sound::{playback, promotion};
 use engine::{GuestMemory, MemFault};
 use sim_sound::instances::{Handle, SourceParams, TagIndex};
 use sim_sound::owners::Owner;
