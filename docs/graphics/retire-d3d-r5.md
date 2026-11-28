@@ -51,9 +51,8 @@ it off the body builds no entry, so the call returns with its items held
 A call with an item held runs the body, `layer_return_<site><layer>_guest_<cause>`;
 each item the body draws is one `scene_kept_*` count, those a stage did not
 count before the call under `unnamed` or the stage's cause. The fog and
-the water count every item they leave themselves (`native_layers::counts_own`). The residual
-census files these calls `kept` (`residual_census::KEPT_LAYERS`), the
-sorted handlers' under the site `sorted`. Tests:
+the water count every item they leave themselves (`native_layers::counts_own`). These calls are `kept`; the
+sorted handlers' are under the site `sorted`. Tests:
 `r5s_layer_draws_return_when_every_item_is_native`,
 `the_scenes_fog_and_water_return_and_their_kept_items_are_counted_once`
 (`native_layers`), `a_returned_layer_draw_leaves_the_words_the_guest_body_leaves`,
@@ -251,9 +250,7 @@ A ready arm never returns a pass to
 the guest: a cut refused before its commit draws no sky that pass,
 `scene_dropped_sky_<why>` (`unloaded`, `strips`, `rows`, `constants`,
 `device`, `pass`). Counters: `sky_cut_drawn`, the drops, and the
-arm's `sky_cut_{waiting,ready,stopped}`. A passed-over sky closes the
-residual census's `sky` producer when its entry observer opened it
-(`residual_census::passed_over`).
+arm's `sky_cut_{waiting,ready,stopped}`.
 
 ## Not built
 
@@ -289,7 +286,6 @@ Tests: `the_stage_draws_around_the_entry_the_guest_keeps`,
 `the_sky_look_from_the_material_is_checked_against_the_strip`,
 `the_sky_section_from_the_load_is_checked_against_the_strip` (`tests/world_layers_gpu.rs`),
 `the_cut_arm_is_ready_after_its_run_and_stops_at_a_miss` (`native_sky`),
-`a_passed_over_producer_closes_only_when_open` (`residual_census`),
 `a_strip_holds_the_view_block_bit_for_bit`, `a_strip_holds_the_stencil_its_place_drew_with` (`native_sky_cut_glue`),
 `the_rows_arm_answers_after_its_matches_and_stops_at_a_difference` (`native_sky`),
 `an_order_item_of_layer_2_holds_the_layer_for_its_sorted_entries`

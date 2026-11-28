@@ -8,7 +8,7 @@ What still reaches the guest's draws in [retire-d3d.md](retire-d3d.md)'s built s
 
 ## R1's remainder
 
-The opaque block's layer draws are `kept` (`residual_census::KEPT_LAYERS`):
+The opaque block's layer draws are `kept`:
 the scene's layers 1, 3, 5, 7, 8 and 20, the alternate view's 1, 3 and 5,
 the first person's 1, 3, 7, 8 and 20. `frame_step::layer` is
 `LAYER_DRAW`'s implementation (`native_layers::layer_turn`): after the
@@ -43,9 +43,7 @@ dropped. Tests: `every_item_the_guest_body_draws_is_counted_once_under_its_stage
 `the_first_persons_kept_items_count_under_its_site`,
 `a_layer_with_no_host_counts_its_items_under_host`,
 `the_opaque_blocks_layer_draws_return_or_run_the_guest_counted_by_cause`
-(`native_layers`),
-`the_opaque_blocks_layer_draws_are_kept_the_others_a_stage_draws_partial_and_the_rest_d3d`
-(`residual_census`).
+(`native_layers`).
 
 What keeps an item, by stage (**Code**):
 
@@ -189,7 +187,7 @@ live targets at the guest's calls.
 
 ## The residual callers
 
-The callers `render.residual` names with residual draws in a 16-bot game,
+The callers with residual draws in a 16-bot game,
 identified in [notes/residual-callers.md](notes/residual-callers.md)
 (numbers and reads there).
 

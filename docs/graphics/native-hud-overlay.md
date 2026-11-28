@@ -357,7 +357,7 @@ A text run's combiner (`Combiner::TextureAlpha`) samples coverage alone, so a co
 - That the 12 widget quads a frame `refused` counted in a 16-bot game were not `texture` too; `refused_<cause>` names them.
 - That the measure's callback sees the glyphs `shape` gives and no others (a space has none), and that `_ftol` at `0x00322b0c` truncates.
 - That a `TransferAbi::call` returned from a before hook enters `SCREEN_EFFECT` through its hooks, as the guest's own call does.
-- That a blip drawn by the host lands on the pixels its body's quad does (a fan of the same four vertices), and that the body's quad costs more than the host's pushed draw (`render.residual` of `0x00254490` before and after).
+- That a blip drawn by the host lands on the pixels its body's quad does (a fan of the same four vertices), and that the body's quad costs more than the host's pushed draw.
 - That retail sensor calls match (`sensor_differed` at zero), that no blip draw comes from elsewhere while the call runs, and that `0x00016a90` changes no state when `0x0013a690` is given 4 (**S**: its result is read only for an argument of 3).
 - That the navpoint, waypoint, training and indicator shaders prove: each is checked as a widget's is, and `mismatch_*` names what differs.
 - That the outline `0x0024f0fc`'s six quad calls are all the outline's (**S**).

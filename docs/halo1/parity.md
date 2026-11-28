@@ -69,7 +69,6 @@ level:
 |---|---|
 | `stem` | the store's `*.converted` marker (`halo1_campaign_<level>_<h1\|h2>` or `h1_<map>_<h1\|h2>`) |
 | `state` | `ok`; `boot` when `session.wait` for `gameplay` at `SWEEP_TICKS` map ticks (600) failed; `panic` when the serve log holds a panic or `unimplemented!` line |
-| `residual` | `render.residual` |
 | `ledger_loops` | `sim.ledger` `loops` |
 | `arms` | `sim.arms` |
 | `first_panic` | the first panic line of the serve log |

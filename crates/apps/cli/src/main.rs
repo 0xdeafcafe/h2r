@@ -28,7 +28,6 @@ mod agent_picture;
 mod agent_hot_cmd;
 mod agent_raw;
 mod agent_run;
-mod render_gate;
 mod agent_sim;
 mod sim_cmd;
 mod sim_store_cmd;
@@ -418,7 +417,6 @@ fn main() -> Result<()> {
         "theater" => theater_cmd::run(args.collect()),
         "film" => film_cmd::run(args.collect()),
                 "agent" => agent_cmd::run(args.collect()),
-        "render" => render_gate::run(args.collect()),
         #[cfg(feature = "desktop")]
         _ => desktop_command(cmd, args),
         #[cfg(not(feature = "desktop"))]

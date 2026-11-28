@@ -66,9 +66,8 @@ pub use pad::{AtTick, Now, PAD_BUTTONS, PadParams, PadStep};
 pub use render::{
     CaptureCamera, CaptureLighting, CurrentView, CurrentViewParams, CaptureReply, CaptureSource, CompareParams, CompareReply, DepthRecord,
     DisplayRateStats, DrawLayout, DrawRecord, FrameCaptureParams, FrameParams, FrameRecord, FrameReply, FrameTotals,
-    LayoutTexture, MarkerRow, MarkersParams, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats, ResidualArm,
-    ResidualCaller, ResidualParams, ResidualProducer, ResidualReply, ResidualTotals,
-    ResidualUnattributed, ResidualWindow, SceneCarried, UiStats,
+    LayoutTexture, MarkerRow, MarkersParams, OpRecord, ParityParams, ParityReply, PassRecord, RenderStats,
+    SceneCarried, UiStats,
     SceneEntries, SceneEntryRecord, SceneLateRecord, SceneOpCounts, SceneParams, ScenePostRecord,
     SceneReply, SceneCarriedCensus, SceneCensusActivation, SceneCensusCheckpoint, SceneReadUse,
     SceneSideTarget, SceneTargetUse, SceneUses, SceneViewRecord, SnapRecord, SpawnViewParams,
@@ -322,9 +321,6 @@ pub mod method {
     pub const RENDER_CAPTURE_CLIP_STATUS: &str = "render.capture_clip.status";
     /// The last sealed `FrameScene`'s counts ([`crate::SceneParams`]).
     pub const RENDER_SCENE: &str = "render.scene";
-    /// What the guest front-end still asks `d3d` to do, by caller and by
-    /// producer, over a window of presents ([`crate::ResidualParams`]).
-    pub const RENDER_RESIDUAL: &str = "render.residual";
     /// The native particle path's geometry refusals by named check, each
     /// with the first refused draw's shape (no params).
     pub const RENDER_PARTICLES_REFUSALS: &str = "render.particles.refusals";
