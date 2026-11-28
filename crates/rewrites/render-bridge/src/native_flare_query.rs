@@ -16,21 +16,18 @@
 //! hook sits there.
 //!
 //! The slots: the cut keeps the counts of the slots it ended; the bitmaps
-//! at `0x005233f0` stay the one record of which slots hold a test. Before
-//! a guest body runs, the bits of the cut's slots in the sets it may read
-//! are cleared ([`State::scrub`]), so the device is never asked for a test
-//! it did not end.
+//! at `0x005233f0` stay the one record of which slots hold a test.
+//! [`State::scrub`] clears the bits of the cut's slots in a set, so a
+//! guest body is never asked for a test it did not end.
 //!
-//! The arm: one query call in [`CHECK_EVERY`] also runs the guest walker
-//! after the cut's pass and compares the areas it stores; the reader call
-//! two frames later runs the guest reader and compares the bytes it
-//! leaves for those entries with the cut's, where both counts are back. A
-//! difference sends every later call to the guest bodies for the session,
-//! counted `scene_kept_flare_<call>_mismatch`. A call the cut does not
-//! make runs the guest body, counted `scene_kept_flare_<call>_<cause>`.
+//! The query's walker call and every reader call are the cut's: neither
+//! guest body runs for them. A call the cut cannot make writes nothing and
+//! returns, its entries keeping their areas and bytes, counted
+//! `scene_dropped_flare_<call>_<cause>`; a device read refused for a slot
+//! the guest ended is `scene_dropped_flare_read_device`.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
@@ -40,10 +37,6 @@ pub use scene_extract::flares::Quad;
 use scene_extract::flares::{self as fl, Entry, Lens, ReadConstants};
 
 pub const ID: &str = "native-flare-query";
-
-/// One query call in this many runs the guest walker too, and its reader
-/// call is compared.
-pub const CHECK_EVERY: u64 = 64;
 
 /// The walker call the cut takes: the query pass's.
 pub const QUERY_CALLBACK: u32 = 0x0002_e540;
@@ -105,20 +98,10 @@ impl SlotCount {
     }
 }
 
-/// A checked query: the entries the cut ended for `view` at `frame`, with
-/// its counts, compared at the reader call that reads `set`.
-struct Check {
-    view: u32,
-    frame: u32,
-    set: u32,
-    entries: Vec<(u32, SlotCount)>,
-}
-
-/// The cut's slots and its pending checks.
+/// The cut's slots.
 #[derive(Default)]
 pub struct State {
     slots: HashMap<u32, SlotCount>,
-    checks: Vec<Check>,
 }
 
 impl State {
@@ -147,7 +130,7 @@ impl State {
                 DeviceResult::Ready(n) => Some(n),
                 DeviceResult::Pending => None,
                 DeviceResult::Refused => {
-                    READ.keep("device");
+                    READ.dropped("device");
                     None
                 }
             },
@@ -161,20 +144,16 @@ fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> R {
     f(STATE.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_default())
 }
 
-const ALL_SETS: u8 = 0b111;
+/// Every set, for [`State::scrub`].
+pub const ALL_SETS: u8 = 0b111;
 
 /// One of the two calls, with its arm.
 pub struct Arm {
     name: &'static str,
     calls: AtomicU64,
     cut: AtomicU64,
-    checked: AtomicU64,
-    kept: Mutex<std::collections::BTreeMap<&'static str, u64>>,
     dropped: Mutex<std::collections::BTreeMap<&'static str, u64>>,
 }
-
-/// Either call's mismatch sends both to the guest.
-static FALLBACK: AtomicBool = AtomicBool::new(false);
 
 impl Arm {
     pub const fn new(name: &'static str) -> Self {
@@ -182,54 +161,21 @@ impl Arm {
             name,
             calls: AtomicU64::new(0),
             cut: AtomicU64::new(0),
-            checked: AtomicU64::new(0),
-            kept: Mutex::new(std::collections::BTreeMap::new()),
             dropped: Mutex::new(std::collections::BTreeMap::new()),
         }
     }
 
-    fn next_is_check(&self) -> bool {
-        self.calls.fetch_add(1, Ordering::Relaxed) % CHECK_EVERY == 0
-    }
-
-    pub fn keep(&self, cause: &'static str) {
-        *self.kept.lock().unwrap_or_else(|e| e.into_inner()).entry(cause).or_default() += 1;
-    }
-
-    /// A placed pass that did not count for `cause`: its entries keep
-    /// their bytes.
+    /// A call not made, or a placed pass that did not count, for `cause`:
+    /// its entries keep their areas and bytes.
     pub fn dropped(&self, cause: &'static str) {
         *self.dropped.lock().unwrap_or_else(|e| e.into_inner()).entry(cause).or_default() += 1;
-    }
-
-    /// A check's result: a difference falls back.
-    fn compared(&self, same: bool, detail: impl FnOnce() -> String) {
-        self.checked.fetch_add(1, Ordering::Relaxed);
-        if !same {
-            self.keep("mismatch");
-            if !FALLBACK.swap(true, Ordering::Relaxed) {
-                eprintln!(
-                    "native-flare-query: the {} differs from the guest body ({}); the guest bodies run from here",
-                    self.name,
-                    detail()
-                );
-            }
-        }
     }
 
     fn counters(&self) -> Vec<(String, u64)> {
         let mut out = vec![
             (format!("flare_{}_calls", self.name), self.calls.load(Ordering::Relaxed)),
             (format!("flare_{}_cut", self.name), self.cut.load(Ordering::Relaxed)),
-            (format!("flare_{}_checked", self.name), self.checked.load(Ordering::Relaxed)),
         ];
-        out.extend(
-            self.kept
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .iter()
-                .map(|(c, n)| (format!("scene_kept_flare_{}_{c}", self.name), *n)),
-        );
         out.extend(
             self.dropped
                 .lock()
@@ -247,10 +193,6 @@ pub static READ: Arm = Arm::new("read");
 /// The counters `render.scene` reports.
 pub fn counters() -> Vec<(String, u64)> {
     QUERY.counters().into_iter().chain(READ.counters()).collect()
-}
-
-pub fn fallen_back() -> bool {
-    FALLBACK.load(Ordering::Relaxed)
 }
 
 /// The guest's memory as `scene_extract` reads it.
@@ -273,7 +215,7 @@ pub struct Ended {
 
 /// What the walker would end for `view` at `frame`: every active entry of
 /// the view in the query mask whose slot is not still pending. Nothing
-/// written. `Err` names why the guest body runs instead.
+/// written. `Err` names why the call is dropped.
 pub fn plan_walk(mem: &mut dyn GuestMemory, host: &dyn Host, state: &State, view: u32, frame: u32) -> Result<Vec<Ended>, &'static str> {
     let ro = Ro(&*mem);
     let n = fl::count(&ro).ok_or("count")?;
@@ -400,16 +342,6 @@ fn original(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) ->
     Ok(runtime::TransferAbi::fault(event))
 }
 
-/// The guest body with the cut's slots in `sets` scrubbed first.
-fn guest(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32, sets: u8) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    let rt = Arc::clone(ctx.runtime());
-    {
-        let mut mem = rt.memory();
-        with_state(|s| s.scrub(&mut *mem, sets));
-    }
-    original(cpu, ctx, addr)
-}
-
 fn walk_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
     let rt = Arc::clone(ctx.runtime());
     let args: [u32; 6] = {
@@ -423,160 +355,42 @@ fn walk_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -
         return original(cpu, ctx, addr);
     }
     let arm = &QUERY;
-    let check = arm.next_is_check();
-    let Some(host) = host() else {
-        arm.keep("host");
-        return guest(cpu, ctx, addr, ALL_SETS);
-    };
-    if fallen_back() {
-        arm.keep("fallback");
-        return guest(cpu, ctx, addr, ALL_SETS);
-    }
-    let gated = {
-        let mem = rt.memory();
-        fl::walk_frame(&Ro(&*mem), view)
-    };
-    let Some(frame) = gated else {
-        // The walker's gates: it does nothing.
-        arm.cut.fetch_add(1, Ordering::Relaxed);
-        return ctx.memory().ret(cpu, 0x18);
-    };
-    let set = fl::query_set(frame);
-    let made = {
+    arm.calls.fetch_add(1, Ordering::Relaxed);
+    let made = host().ok_or("host").and_then(|host| {
         let mut mem = rt.memory();
+        // The walker's gates: it does nothing.
+        let Some(frame) = fl::walk_frame(&Ro(&*mem), view) else { return Ok(()) };
         with_state(|state| {
             let planned = plan_walk(&mut *mem, &*host, state, view, frame)?;
             let counts = place(&mut *mem, &*host, &planned)?;
-            Ok::<_, &'static str>((planned, counts))
+            commit_walk(&mut *mem, state, frame, &planned, counts)
         })
-    };
-    let (planned, counts) = match made {
-        Ok(p) => p,
-        Err(cause) => {
-            arm.keep(cause);
-            return guest(cpu, ctx, addr, 1 << set);
-        }
-    };
-    if check {
-        // The guest walker after the cut's pass, against the same depth:
-        // its areas compared now, its bytes at the read of this set.
-        let out = guest(cpu, ctx, addr, 1 << set)?;
-        let mem = rt.memory();
-        let mut differ = None;
-        for e in &planned {
-            let stored = mem.u16(fl::entry_addr(e.index) + 6).ok();
-            if stored != Some(e.area) && differ.is_none() {
-                differ = Some((e.index, e.area, stored));
-            }
-        }
-        arm.compared(differ.is_none(), || format!("entry {:?}'s area: cut, guest", differ));
-        if differ.is_none() {
-            with_state(|s| {
-                s.checks.retain(|c| c.frame.wrapping_add(6) > frame);
-                s.checks.push(Check { view, frame, set, entries: counts });
-            });
-        }
-        return Ok(out);
-    }
-    let written = {
-        let mut mem = rt.memory();
-        with_state(|state| commit_walk(&mut *mem, state, frame, &planned, counts))
-    };
-    match written {
-        Ok(()) => {
-            arm.cut.fetch_add(1, Ordering::Relaxed);
-            ctx.memory().ret(cpu, 0x18)
-        }
-        Err(cause) => {
-            arm.keep(cause);
-            guest(cpu, ctx, addr, 1 << set)
-        }
-    }
-}
-
-/// The bytes a checked read predicts for its entries: the cut's from each
-/// count that is back.
-fn predict(mem: &dyn GuestMemory, check: &Check, k: &ReadConstants) -> Vec<(u32, u8)> {
-    check
-        .entries
-        .iter()
-        .filter_map(|(i, c)| {
-            let e = Entry::read(&Ro(mem), *i)?;
-            if e.view() != check.view || !e.active() {
-                return None;
-            }
-            let samples = c.get()?;
-            let s = fl::smoothing(&Ro(mem), &e)?;
-            Some((*i, fl::read_byte(e.byte(), samples, e.area(), e.class(), s, k)))
-        })
-        .collect()
-}
-
-fn read_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    let arm = &READ;
-    let Some(host) = host() else {
-        arm.keep("host");
-        return guest(cpu, ctx, addr, ALL_SETS);
-    };
-    if fallen_back() {
-        arm.keep("fallback");
-        return guest(cpu, ctx, addr, ALL_SETS);
-    }
-    let rt = Arc::clone(ctx.runtime());
-    let gated = {
-        let mem = rt.memory();
-        fl::read_gate(&Ro(&*mem))
-    };
-    let Some((view, frame)) = gated else {
-        arm.cut.fetch_add(1, Ordering::Relaxed);
-        return ctx.memory().ret(cpu, 0);
-    };
-    let set = fl::read_set(frame);
-    let check = with_state(|s| {
-        let at = s.checks.iter().position(|c| c.view == view && c.set == set && frame > c.frame)?;
-        Some(s.checks.swap_remove(at))
     });
-    if let Some(check) = check {
-        // The guest reader on the device's counts of the checked walk;
-        // the cut's bytes from its own counts of the same quads.
-        let predicted = {
-            let mem = rt.memory();
-            ReadConstants::read(&Ro(&*mem)).map_or_else(Vec::new, |k| predict(&*mem, &check, &k))
-        };
-        let out = guest(cpu, ctx, addr, 1 << set)?;
-        let mut mem = rt.memory();
-        let mut differ = None;
-        let mut compared = 0;
-        for (i, cut) in predicted {
-            // A count the guest found pending left its byte: not compared.
-            if !matches!(host.device_result(&mut *mem, fl::slot(set, i)), DeviceResult::Ready(_)) {
-                continue;
-            }
-            compared += 1;
-            let guest = mem.u8(fl::entry_addr(i) + 3).ok();
-            if guest != Some(cut) && differ.is_none() {
-                differ = Some((i, cut, guest));
-            }
-        }
-        if compared > 0 {
-            arm.compared(differ.is_none(), || format!("entry {:?}'s byte: cut, guest", differ));
-        }
-        return Ok(out);
-    }
-    let made = {
-        let mut mem = rt.memory();
-        with_state(|state| cut_read(&mut *mem, &*host, state, view, frame))
-    };
     match made {
         Ok(()) => {
             arm.cut.fetch_add(1, Ordering::Relaxed);
-            ctx.memory().ret(cpu, 0)
         }
-        Err(cause) => {
-            arm.keep(cause);
-            guest(cpu, ctx, addr, ALL_SETS)
-        }
+        Err(cause) => arm.dropped(cause),
     }
+    ctx.memory().ret(cpu, 0x18)
+}
+
+fn read_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    let arm = &READ;
+    arm.calls.fetch_add(1, Ordering::Relaxed);
+    let rt = Arc::clone(ctx.runtime());
+    let made = host().ok_or("host").and_then(|host| {
+        let mut mem = rt.memory();
+        let Some((view, frame)) = fl::read_gate(&Ro(&*mem)) else { return Ok(()) };
+        with_state(|state| cut_read(&mut *mem, &*host, state, view, frame))
+    });
+    match made {
+        Ok(()) => {
+            arm.cut.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(cause) => arm.dropped(cause),
+    }
+    ctx.memory().ret(cpu, 0)
 }
 
 pub struct NativeFlareQuery;

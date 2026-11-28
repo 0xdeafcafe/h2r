@@ -228,21 +228,23 @@ BSP).
 ## The sky's cut
 
 Once the cut's arm is ready, `0x0003ede0` (`RENDER_SKY`, `[fn() ret 0]`)
-is passed over and the native pass draws the sky in slot 8.
+is passed over at every pass for the BSP and the native pass draws the sky
+in slot 8. The guest's pass runs only while the arm waits or after it
+stops, to record the strips the cut replays.
 
 ```mermaid
 flowchart LR
-  H[0x0003ede0 entry] -->|arm ready, not 1 in 64| C[SkyCut]
-  H -->|else| G[guest pass]
+  H[0x0003ede0 entry] -->|arm ready| C[SkyCut]
+  H -->|waiting or stopped| G[guest pass]
   G -->|each admitted strip| K[kept strips]
   K --> C
-  C -->|refused before commit| G
+  C -->|refused before commit| D[scene_dropped_sky_why, ret 0]
   C -->|committed| R[ret 0]
 ```
 
 | Step | Code | What it does |
 |---|---|---|
-| Hook | `native_world_layers` (`native_sky_cut`), `native_sky::before_sky` | at the entry, `cut_takes`: the arm ready for the BSP, and not the one pass in `CUT_SAMPLE` (64) the guest keeps |
+| Hook | `native_world_layers` (`native_sky_cut`), `native_sky::before_sky` | at the entry, `cut_takes`: the arm ready for the BSP (`SkyTurn`) |
 | Keep | `native_sky_cut_glue::record` | over a guest pass, every admitted strip's `IndexedPass::sky_template` with its section, shader, pass and decompression; the device's view block (registers 0 to 17) at the entry checked against each strip's; each strip's stencil checked against the last complete pass's strip in its place (`stencil_holds`) |
 | Replay | `IndexedPass::sky_replay` | the template's draw, the rows from `sky_rows::rows_of` (no strip on the stack), the pass evaluated at the render clock; geometry, program, pipeline and stage views from the resident `SectionKey::Sky` entry |
 | Issue | `SkyCut`, `prepare_external_bound` | the strips as one pass at the boundary, the device's view block over each (`view_constants`), committed before the hook returns |
@@ -251,8 +253,12 @@ A guest pass that keeps a strip on the guest leaves the kept strips empty
 until a complete one. A view block that differs stops the arm for the BSP
 (`sky_cut_view`), as does a strip whose stencil differs from the one its
 place drew with in the last complete pass (`sky_cut_stencil`): a replay
-draws with its template's stencil. Counters: `sky_cut_drawn`, `sky_cut_declined_<why>`
-(`unloaded`, `strips`, `rows`, `constants`, `device`, `pass`), and the
+draws with its template's stencil.
+
+A ready arm never returns a pass to
+the guest: a cut refused before its commit draws no sky that pass,
+`scene_dropped_sky_<why>` (`unloaded`, `strips`, `rows`, `constants`,
+`device`, `pass`). Counters: `sky_cut_drawn`, the drops, and the
 arm's `sky_cut_{waiting,ready,stopped}`. A passed-over sky closes the
 residual census's `sky` producer when its entry observer opened it
 (`residual_census::passed_over`).

@@ -105,6 +105,7 @@ fn program(gel: bool) -> LightProgram {
             primitive: wgpu::PrimitiveState::default(),
             alpha_test: None,
             stencil: None,
+            depth_offset: None,
         },
         inherits_cull: false,
         copies_target: false,

@@ -249,6 +249,9 @@ fn compile(
     }) {
         return Err("material writes into the shadow projection constants".into());
     }
+    // The pass's polygon offset is its fragments' (`frame_pixel` keeps it).
+    let mut pixel = t.pixel;
+    crate::pass_state::DepthOffset::apply(look.state.depth_offset, &mut pixel);
     let vs = shaders::vsh::Program::parse(microcode)
         .map_err(|e| format!("shadow vertex program: {e:?}"))?;
     let set = set_constants(&look.vertex_constants);
@@ -299,7 +302,7 @@ fn compile(
         dims: t.dims,
         signed: t.signed,
         vertex: t.vertex,
-        pixel: t.pixel,
+        pixel,
         colours: look.vector_bindings.clone(),
         state: look.state,
     })
@@ -372,6 +375,7 @@ mod tests {
                 primitive: wgpu::PrimitiveState::default(),
                 alpha_test: None,
                 stencil: None,
+                depth_offset: None,
             },
             inherits_cull: false,
             copies_target: false,
@@ -391,6 +395,16 @@ mod tests {
         assert_eq!(u.constants[48], [32.0, 33.0, 34.0, 35.0]);
         assert_eq!(u.constants[39], base.constants[39]);
         assert_eq!(u.constants[49], base.constants[49]);
+    }
+
+    #[test]
+    fn a_shadow_pass_draws_its_polygon_offset_in_its_fragments() {
+        let mut offset = look();
+        offset.state.depth_offset = Some(crate::pass_state::DepthOffset { units: 3.0, slope: 1.0 });
+        let p = compile_shadow(&offset, &program(40)).expect("caster program");
+        assert_eq!((p.pixel.depth[1], p.pixel.depth[2]), (3.0, 1.0));
+        let plain = compile_shadow(&look(), &program(40)).unwrap();
+        assert_eq!((plain.pixel.depth[1], plain.pixel.depth[2]), (0.0, 0.0));
     }
 
     #[test]

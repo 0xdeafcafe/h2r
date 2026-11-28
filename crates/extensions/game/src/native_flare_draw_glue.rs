@@ -120,7 +120,8 @@ struct Draw<B: d3d::Backend + Send + 'static> {
 impl<B: d3d::Backend + Send + 'static> Host for Draw<B> {
     fn draw(&self, mem: &mut dyn GuestMemory, draw: GlowDraw) -> bool {
         let Ok(mut device) = self.device.lock() else { return false };
-        // Without its bitmap the glow is not placed: the guest body draws it.
+        // Without its bitmap the glow is not placed: it is dropped,
+        // `scene_dropped_flare_glow_placed`.
         let Ok(bitmap) = glow_bitmap(&*mem, device.config().address_map) else { return false };
         let pass = GlowPass {
             draw,

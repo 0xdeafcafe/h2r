@@ -86,6 +86,7 @@ fn program(layer: u8) -> LightProgram {
             primitive: Default::default(),
             alpha_test: None,
             stencil: None,
+            depth_offset: None,
         },
         inherits_cull: false,
         copies_target: false,

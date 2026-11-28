@@ -14,8 +14,9 @@
 //! - **A cut pass** ([`Glue::draw`]): each kept strip replayed
 //!   (`IndexedPass::sky_replay`) with the rows made from the sky's
 //!   transform (`sky_rows::rows_of`) and its pass evaluated at the render
-//!   clock, all as one `SkyCut` reserved at the boundary and committed; any
-//!   refusal before the commit leaves the pass to the guest.
+//!   clock, all as one `SkyCut` reserved at the boundary and committed; a
+//!   refusal before the commit draws no sky that pass
+//!   (`scene_dropped_sky_<why>`), the guest's pass still passed over.
 
 use std::sync::{Arc, Mutex};
 

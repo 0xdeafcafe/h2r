@@ -13,16 +13,15 @@
 //! `implement` at the glow's entry; a call from anywhere but the late
 //! loop runs the guest body.
 //!
-//! The arm: one call in [`CHECK_EVERY`] runs the guest body instead and
-//! compares its rectangle and weight, read from the body's frame after it
-//! returns ([`guest_glow`]), with the cut's. A difference sends every
-//! later call to the guest body for the session, counted
-//! `scene_kept_flare_glow_mismatch`. A call the cut does not make runs the
-//! guest body, counted `scene_kept_flare_glow_<cause>`; a glow placed but
-//! not drawn is `scene_dropped_flare_glow_<cause>` ([`dropped`]).
+//! Every late-loop call is the cut's: the guest body never runs for it. A
+//! glow the cut cannot plan or place draws nothing and is
+//! `scene_dropped_flare_glow_<cause>` (`host`, `unread`, `table`,
+//! `placed`), as is a glow placed but not drawn ([`dropped`]). The body's
+//! frame reads ([`mark`], [`guest_glow`], [`same`]) stay as the test
+//! oracle of [`plan`].
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
@@ -32,9 +31,6 @@ use scene_extract::GuestRead;
 use scene_extract::flares::{self as fl, GlowConstants, LateGlow, Lens};
 
 pub const ID: &str = "native-flare-draw";
-
-/// One glow call in this many runs the guest body and is compared.
-pub const CHECK_EVERY: u64 = 64;
 
 /// The late loop's return from the glow (`0x0002e1c5`'s call).
 pub const LATE_RETURN: u32 = 0x0002_e1ca;
@@ -82,39 +78,15 @@ fn host() -> Option<Arc<dyn Host>> {
 pub struct Arm {
     calls: AtomicU64,
     cut: AtomicU64,
-    checked: AtomicU64,
-    kept: Mutex<BTreeMap<&'static str, u64>>,
     dropped: Mutex<BTreeMap<&'static str, u64>>,
 }
-
-static FALLBACK: AtomicBool = AtomicBool::new(false);
 
 impl Arm {
     const fn new() -> Self {
         Self {
             calls: AtomicU64::new(0),
             cut: AtomicU64::new(0),
-            checked: AtomicU64::new(0),
-            kept: Mutex::new(BTreeMap::new()),
             dropped: Mutex::new(BTreeMap::new()),
-        }
-    }
-
-    fn next_is_check(&self) -> bool {
-        self.calls.fetch_add(1, Ordering::Relaxed) % CHECK_EVERY == 0
-    }
-
-    fn keep(&self, cause: &'static str) {
-        *self.kept.lock().unwrap_or_else(|e| e.into_inner()).entry(cause).or_default() += 1;
-    }
-
-    fn compared(&self, same: bool, detail: impl FnOnce() -> String) {
-        self.checked.fetch_add(1, Ordering::Relaxed);
-        if !same {
-            self.keep("mismatch");
-            if !FALLBACK.swap(true, Ordering::Relaxed) {
-                eprintln!("native-flare-draw: the glow differs from the guest body ({}); the guest body runs from here", detail());
-            }
         }
     }
 
@@ -122,12 +94,10 @@ impl Arm {
         let mut out = vec![
             ("flare_glow_calls".to_owned(), self.calls.load(Ordering::Relaxed)),
             ("flare_glow_cut".to_owned(), self.cut.load(Ordering::Relaxed)),
-            ("flare_glow_checked".to_owned(), self.checked.load(Ordering::Relaxed)),
         ];
         let named = |map: &Mutex<BTreeMap<&'static str, u64>>, prefix: &str| -> Vec<(String, u64)> {
             map.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(c, n)| (format!("{prefix}{c}"), *n)).collect()
         };
-        out.extend(named(&self.kept, "scene_kept_flare_glow_"));
         out.extend(named(&self.dropped, "scene_dropped_flare_glow_"));
         out
     }
@@ -147,10 +117,6 @@ pub fn counters() -> Vec<(String, u64)> {
     GLOW.counters()
 }
 
-pub fn fallen_back() -> bool {
-    FALLBACK.load(Ordering::Relaxed)
-}
-
 /// The guest's memory as `scene_extract` reads it.
 struct Ro<'a>(&'a dyn GuestMemory);
 
@@ -161,7 +127,7 @@ impl GuestRead for Ro<'_> {
 }
 
 /// The glow `0x00046ea0` draws for `datum` at the position `at` points
-/// to; `None` where it draws nothing. `Err` names why the guest body runs.
+/// to; `None` where it draws nothing. `Err` names why the glow is dropped.
 pub fn plan(mem: &dyn GuestMemory, datum: u32, at: u32) -> Result<Option<GlowDraw>, &'static str> {
     let ro = Ro(mem);
     let lens = Lens::read(&ro).ok_or("unread")?;
@@ -229,61 +195,20 @@ fn glow_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -
         return original(cpu, ctx, addr);
     }
     let arm = &GLOW;
-    let check = arm.next_is_check();
-    let Some(host) = host() else {
-        arm.keep("host");
-        return original(cpu, ctx, addr);
-    };
-    if fallen_back() {
-        arm.keep("fallback");
-        return original(cpu, ctx, addr);
+    arm.calls.fetch_add(1, Ordering::Relaxed);
+    let drawn = host().ok_or("host").and_then(|host| {
+        let mut mem = rt.memory();
+        match plan(&*mem, cpu.eax, cpu.ecx)? {
+            Some(draw) if !host.draw(&mut *mem, draw) => Err("placed"),
+            _ => Ok(()),
+        }
+    });
+    match drawn {
+        Ok(()) => {
+            arm.cut.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(cause) => dropped(cause),
     }
-    let planned = {
-        let mem = rt.memory();
-        plan(&*mem, cpu.eax, cpu.ecx)
-    };
-    let planned = match planned {
-        Ok(p) => p,
-        Err(cause) => {
-            arm.keep(cause);
-            return original(cpu, ctx, addr);
-        }
-    };
-    if check {
-        // The guest body draws this call; its frame is read once it has
-        // returned.
-        let marked = {
-            let mut mem = rt.memory();
-            mark(&mut *mem, esp)
-        };
-        if let Err(cause) = marked {
-            arm.keep(cause);
-            return original(cpu, ctx, addr);
-        }
-        let out = original(cpu, ctx, addr)?;
-        let guest = {
-            let mem = rt.memory();
-            guest_glow(&*mem, esp)
-        };
-        match guest {
-            Ok(guest) => arm.compared(same(planned.as_ref(), guest), || {
-                format!("cut {:?}, guest {guest:?}", planned.map(|p| (p.glow.rect, p.glow.weight)))
-            }),
-            Err(cause) => arm.keep(cause),
-        }
-        return Ok(out);
-    }
-    if let Some(draw) = planned {
-        let placed = {
-            let mut mem = rt.memory();
-            host.draw(&mut *mem, draw)
-        };
-        if !placed {
-            arm.keep("placed");
-            return original(cpu, ctx, addr);
-        }
-    }
-    arm.cut.fetch_add(1, Ordering::Relaxed);
     ctx.memory().ret(cpu, 0)
 }
 
@@ -410,7 +335,7 @@ mod tests {
         assert_eq!(host.0.lock().unwrap().len(), 1);
     }
 
-    /// A checked call reads the body's rectangle and weight from its frame
+    /// The oracle reads the body's rectangle and weight from its frame
     /// below the entry ESP; a culled body leaves the mark.
     #[test]
     fn a_checked_glow_reads_the_bodys_frame() {

@@ -196,6 +196,7 @@ pub fn state() -> PassState {
         primitive: wgpu::PrimitiveState::default(),
         alpha_test: None,
         stencil: None,
+        depth_offset: None,
     }
 }
 

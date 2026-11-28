@@ -23,7 +23,8 @@ pub fn count(outcome: &'static str) {
     *counts.entry(outcome).or_default() += 1;
 }
 
-/// `sky_plan_admitted` and `scene_kept_sky_<cause>`.
+/// `sky_plan_admitted`, `scene_kept_sky_<cause>` and
+/// `scene_dropped_sky_<why>`.
 pub fn counters() -> Vec<(String, u64)> {
     OUTCOMES.lock().unwrap_or_else(|e| e.into_inner())
         .iter().map(|(&outcome, &n)| (counter_name(outcome), n)).collect()
@@ -34,6 +35,8 @@ pub fn counters() -> Vec<(String, u64)> {
 pub fn counter_name(outcome: &str) -> String {
     if outcome == "admitted" {
         "sky_plan_admitted".to_owned()
+    } else if let Some(why) = outcome.strip_prefix("dropped_") {
+        format!("scene_dropped_sky_{why}")
     } else if outcome.starts_with("rows_") || outcome.starts_with("plan_") || outcome.starts_with("geometry_") || outcome.starts_with("cut_") {
         format!("sky_{outcome}")
     } else {
@@ -169,27 +172,21 @@ pub fn count_geometry(outcome: &'static str) {
 }
 
 /// The cut's arm (docs/graphics/retire-d3d-r5.md, "The sky's cut"): the
-/// guest's sky pass may be passed over for a BSP once
+/// guest's sky pass is passed over for the rest of a BSP once
 /// [`CUT_TO_ANSWER`] strips in a row have had the made rows answering and
 /// the look and geometry from the load matching; one strip that does not
 /// stops it until the next BSP. Counted `sky_cut_<outcome>`: `waiting`,
 /// `ready`, `stopped`.
 pub const CUT_TO_ANSWER: u64 = 256;
 
-/// One sky pass in [`CUT_SAMPLE`] still runs the guest while the cut
-/// answers, and its strips are checked as before the cut.
-pub const CUT_SAMPLE: u64 = 64;
-
 #[derive(Debug, Default)]
 struct CutArm {
     generation: u64,
     run: u64,
     stopped: bool,
-    /// Sky passes (`0x0003ede0` calls) while ready, for the sample.
-    passes: u64,
 }
 
-static CUT: Mutex<CutArm> = Mutex::new(CutArm { generation: 0, run: 0, stopped: false, passes: 0 });
+static CUT: Mutex<CutArm> = Mutex::new(CutArm { generation: 0, run: 0, stopped: false });
 
 /// What draws the cut: the game's glue over the device and the strips the
 /// last guest pass admitted.
@@ -199,7 +196,8 @@ pub trait CutHost: Send + Sync {
     /// The guest sky pass ended.
     fn end_guest(&self);
     /// Draws the kept strips as one native pass with the guest's sky
-    /// passed over; the number drawn, or why not (the guest runs).
+    /// passed over; the number drawn, or why not (the sky is dropped this
+    /// pass, `scene_dropped_sky_<why>`).
     fn draw(&self, mem: &mut dyn GuestMemory) -> Result<usize, &'static str>;
 }
 
@@ -210,15 +208,12 @@ pub fn set_cut_host(host: Arc<dyn CutHost>) {
     *CUT_HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
 }
 
-/// Whether this sky pass is the cut's: the arm ready for `generation`
-/// and not the one pass in [`CUT_SAMPLE`] the guest keeps.
+/// Whether this sky pass is the cut's: the arm ready for `generation`.
+/// A ready arm takes every pass: the guest's `0x0003ede0` never runs
+/// again for the BSP.
 pub fn cut_takes(generation: u64) -> bool {
-    let mut arm = CUT.lock().unwrap_or_else(|e| e.into_inner());
-    if arm.generation != generation || arm.stopped || arm.run < CUT_TO_ANSWER {
-        return false;
-    }
-    arm.passes += 1;
-    arm.passes % CUT_SAMPLE != 0
+    let arm = CUT.lock().unwrap_or_else(|e| e.into_inner());
+    arm.generation == generation && !arm.stopped && arm.run >= CUT_TO_ANSWER
 }
 
 /// Stops the arm for `generation` (a check the strips do not see, such
@@ -232,27 +227,40 @@ pub fn cut_miss(generation: u64) {
     *OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).entry("cut_stopped").or_default() += 1;
 }
 
-/// At `0x0003ede0`'s entry: `true` when the cut drew the sky and the
-/// guest's pass is passed over. Counted `sky_cut_drawn`, or
-/// `sky_cut_declined_<why>` (the guest runs and is checked).
-pub fn before_sky(mem: &mut dyn GuestMemory, generation: u64) -> bool {
-    let Some(host) = CUT_HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return false };
-    let name = if cut_takes(generation) {
-        match host.draw(mem) {
-            Ok(_) => "cut_drawn",
-            Err(why) => cut_declined_name(why),
-        }
-    } else {
-        ""
+/// What `0x0003ede0`'s entry does with the guest's pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SkyTurn {
+    /// The cut drew the sky; the guest's pass is passed over.
+    Drawn,
+    /// The cut's pass was refused: the sky is not drawn this pass and the
+    /// guest's pass is passed over, counted `scene_dropped_sky_<why>`.
+    Dropped,
+    /// The arm is not ready: the guest's pass runs and its strips are
+    /// recorded for the cut (`sky_cut_waiting`, `sky_cut_stopped`).
+    Guest,
+}
+
+impl SkyTurn {
+    /// Whether the guest's pass is passed over.
+    pub fn passes_over(self) -> bool {
+        self != SkyTurn::Guest
+    }
+}
+
+/// At `0x0003ede0`'s entry. A ready arm draws the cut or drops the sky
+/// (`sky_cut_drawn`, `scene_dropped_sky_<why>`), and never runs the guest.
+pub fn before_sky(mem: &mut dyn GuestMemory, generation: u64) -> SkyTurn {
+    let Some(host) = CUT_HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return SkyTurn::Guest };
+    if !cut_takes(generation) {
+        host.begin_guest(mem);
+        return SkyTurn::Guest;
+    }
+    let (name, turn) = match host.draw(mem) {
+        Ok(_) => ("cut_drawn", SkyTurn::Drawn),
+        Err(why) => (dropped_name(why), SkyTurn::Dropped),
     };
-    if !name.is_empty() {
-        *OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).entry(name).or_default() += 1;
-    }
-    if name == "cut_drawn" {
-        return true;
-    }
-    host.begin_guest(mem);
-    false
+    *OUTCOMES.lock().unwrap_or_else(|e| e.into_inner()).entry(name).or_default() += 1;
+    turn
 }
 
 /// At `0x0003ede0`'s return, when the guest ran.
@@ -262,14 +270,16 @@ pub fn after_sky() {
     }
 }
 
-fn cut_declined_name(why: &'static str) -> &'static str {
+/// The outcome key of a refused cut pass (`counter_name` makes it
+/// `scene_dropped_sky_<why>`).
+fn dropped_name(why: &'static str) -> &'static str {
     match why {
-        "unloaded" => "cut_declined_unloaded",
-        "strips" => "cut_declined_strips",
-        "rows" => "cut_declined_rows",
-        "constants" => "cut_declined_constants",
-        "device" => "cut_declined_device",
-        _ => "cut_declined_pass",
+        "unloaded" => "dropped_unloaded",
+        "strips" => "dropped_strips",
+        "rows" => "dropped_rows",
+        "constants" => "dropped_constants",
+        "device" => "dropped_device",
+        _ => "dropped_pass",
     }
 }
 
@@ -349,7 +359,7 @@ mod tests {
         let before = read("scene_kept_sky_range");
         count("range");
         assert_eq!(read("scene_kept_sky_range"), before + 1);
-        assert!(counters().iter().all(|(k, _)| k == "sky_plan_admitted" || k.starts_with("scene_kept_sky_") || k.starts_with("sky_rows_") || k.starts_with("sky_plan_") || k.starts_with("sky_geometry_") || k.starts_with("sky_cut_")));
+        assert!(counters().iter().all(|(k, _)| k == "sky_plan_admitted" || k.starts_with("scene_kept_sky_") || k.starts_with("sky_rows_") || k.starts_with("sky_plan_") || k.starts_with("sky_geometry_") || k.starts_with("sky_cut_") || k.starts_with("scene_dropped_sky_")));
         let before = read("sky_geometry_window");
         count_geometry("window");
         assert_eq!(read("sky_geometry_window"), before + 1);
@@ -370,18 +380,19 @@ mod tests {
         assert!(!cut_outcome(generation, true));
         assert!(!cut_outcome(generation + 1, true));
         assert_eq!(counter_name("cut_ready"), "sky_cut_ready");
-        // Ready, the cut takes all but one pass in CUT_SAMPLE; a miss
-        // returns every pass to the guest.
+        // Ready, the cut takes every pass; a miss returns every pass to the
+        // guest for the BSP.
         let ready = generation + 2;
         assert!(!cut_takes(ready));
         for _ in 0..CUT_TO_ANSWER {
             cut_outcome(ready, true);
         }
-        let taken = (0..CUT_SAMPLE).filter(|_| cut_takes(ready)).count() as u64;
-        assert_eq!(taken, CUT_SAMPLE - 1);
+        assert!((0..256).all(|_| cut_takes(ready)), "no pass is the guest's once ready");
         assert!(!cut_takes(ready + 1), "another BSP's");
         cut_miss(ready);
-        assert!((0..CUT_SAMPLE).all(|_| !cut_takes(ready)));
+        assert!((0..256).all(|_| !cut_takes(ready)));
+        assert_eq!(counter_name("dropped_device"), "scene_dropped_sky_device");
+        assert!(SkyTurn::Dropped.passes_over() && SkyTurn::Drawn.passes_over() && !SkyTurn::Guest.passes_over());
     }
 
     /// The made rows answer after enough matching strips, are then sampled,
