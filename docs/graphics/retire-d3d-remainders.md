@@ -221,6 +221,30 @@ A swallowed post call whose pass records again (the glow and the screen effects,
   and the screen effects, and the scene sink (`frame-scene.sink`) counts
   ops by slot. Both exist; neither has a recorded result in `notes/`.
 
+## The named gaps
+
+A guest draw no native stage takes is drawn by nothing (**Code**,
+`d3d::gap`). The device resolves it for the state the guest reads back,
+then counts it under its caller's gap as
+`scene_dropped_residual_<gap>` in `render.scene` (and their sum
+`scene_dropped_residual`) and logs the first of each gap with its caller.
+The caller is the return address at `[esp]` of the entry being run
+(`gap::set_caller`, in the entry adapter); a draw game code wrote inline
+is filed at the entry whose drain decoded it.
+
+| Gap | Callers (return address) | What is not drawn |
+|---|---|---|
+| `emitter_refusal` | `0x0004daa0`..`0x0004dfa0` (site `0x0004dae0`) | the items each layer stage refused |
+| `decal_decorator` | `0x0004ebd0`..`0x0004ee00` | decorator types 1 and 2 |
+| `sky_strip` | `0x0004c690`..`0x0004ca00` | a sky strip the sky stage refused (its stencil) |
+| `fog_quad` | `0x00025d50`..`0x00025e50` | the planar fog's quad of modes 1, 4 and 5 |
+| `particle_model` | `0x00224fd0`..`0x00225700` | particles drawn as model parts |
+| `post_swallow` | the swallowed call's | a swallowed post call whose native pass refused |
+| `other` | any other | logged with the caller |
+
+Tests: `every_residual_caller_names_its_gap`,
+`a_dropped_draw_counts_its_gap_and_the_total` (`d3d::gap`).
+
 ## What R10 and R11 delete
 
 ### What R10 moves first

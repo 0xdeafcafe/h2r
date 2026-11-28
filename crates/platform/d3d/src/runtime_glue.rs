@@ -237,6 +237,9 @@ where
                         // `render.residual` (crate::residual): unarmed, one
                         // relaxed load; armed, the caller and the device's
                         // tallies around the drain and the entry.
+                        // The caller a draw with no native stage is
+                        // counted under (crate::gap).
+                        crate::gap::set_caller(mem.read_u32(regs.esp).unwrap_or(0));
                         let mut watch = crate::residual::armed().then(|| {
                             crate::residual::Watch::start(
                                 mem.read_u32(regs.esp).unwrap_or(0),
