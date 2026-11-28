@@ -119,8 +119,13 @@ fn bd090_and_the_type_callbacks_need_the_float_environment_at_their_entries_and_
     let ftz = CpuAbi { mxcsr: 0x9f80, ..good };
     assert!(TABLE.supports(&good) && !TABLE.supports(&ftz));
     for body in TABLE.bodies() {
+        // `bd090`, the type callbacks and the walks' SSE callouts (the
+        // spatial visit, the early-mover record, `object_new`) use float
+        // state; every other walk body is float free.
+        let sse = [&points::OBJECT_SPATIAL_VISIT, &points::OBJECT_EARLY_MOVER_RECORD, &points::CREATURE_PROBE_OBJECT_NEW];
         let free = body.point.base != points::OBJECT_NODE_MATRICES.base
-            && !TYPES.iter().any(|t| t.base == body.point.base);
+            && !TYPES.iter().any(|t| t.base == body.point.base)
+            && !sse.iter().any(|p| p.base == body.point.base);
         for &pc in std::iter::once(&body.point.base).chain(body.sites) {
             assert!(TABLE.supports_at(pc, &good), "{} at {pc:#x}", body.point.name);
             assert_eq!(TABLE.supports_at(pc, &ftz), free, "{} at {pc:#x}", body.point.name);

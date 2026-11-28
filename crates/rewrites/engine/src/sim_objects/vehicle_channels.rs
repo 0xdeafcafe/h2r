@@ -904,13 +904,12 @@ mod tests {
     fn a_changed_animation_finds_the_channels_and_each_live_one_calls_back() {
         let mut g = guest();
         let mut c = vehicle(&mut g, GRAPH);
-        // Channel C (`+40e`) none; the tail's first entry live, the others none.
+        // Channel C (`+40e`) none. The tail's records (`+288 + 194`, body
+        // `+41c`) are the three indexed lookups' stores (`+404 + 4 * 6`),
+        // so the run writes them: `0x200 + k`, each live (high word 0).
         g.set_u16(BODY + 0x40e, 0xffff).unwrap();
         let tail = BODY + 0x288;
-        g.set_u16(tail + 0x196 + 4, 0xffff).unwrap();
-        g.set_u16(tail + 0x196 + 8, 0xffff).unwrap();
         g.set_u32(tail, f(0.5)).unwrap();
-        g.set_u32(tail + 0x194, 0x77).unwrap();
         // The weights: `+35c`, and `+360` and `+364` over `+20c`.
         g.set_u32(BODY + 0x35c, f(0.25)).unwrap();
         g.set_u32(BODY + 0x360, f(3.0)).unwrap();
@@ -921,11 +920,15 @@ mod tests {
         let mut expected = vec![points::OBJECT_ROOT_VELOCITY.base, CHANNEL_INIT];
         expected.extend([CHANNEL_FIND; 6]);
         expected.extend([CHANNEL_INDEXED; 3]);
-        // A, B, D, E and F bind and call back; then the list, then the tail.
+        // A, B, D, E and F bind and call back; then the list, then the
+        // three tail entries.
         for _ in 0..5 {
             expected.extend([CHANNEL_BIND, CALLBACK]);
         }
-        expected.extend([GRAPH_NEXT, CHANNEL_BIND, CALLBACK]);
+        expected.push(GRAPH_NEXT);
+        for _ in 0..3 {
+            expected.extend([CHANNEL_BIND, CALLBACK]);
+        }
         assert_eq!(targets, expected);
         assert_eq!(g.u32(BODY + 0x400).unwrap(), ANIMATION);
         let stored: Vec<u32> = (0..9).map(|i| g.u32(BODY + 0x404 + 4 * i).unwrap()).collect();
@@ -934,7 +937,7 @@ mod tests {
         let ids: Vec<u32> = made.iter().filter(|m| m.target == CHANNEL_FIND).map(|m| m.args[0]).collect();
         assert_eq!(ids, [FIND_KIND; 6]);
         let binds: Vec<u32> = made.iter().filter(|m| m.target == CHANNEL_BIND).map(|m| m.args[0]).collect();
-        assert_eq!(binds, [0x100, 0x101, 0x103, 0x104, 0x105, 0x77]);
+        assert_eq!(binds, [0x100, 0x101, 0x103, 0x104, 0x105, 0x200, 0x201, 0x202]);
         // Every callback: `(object, graph, &record, weight, 0, 1.0, frame)`.
         let s = STACK - 0xac;
         let calls: Vec<&Made> = made.iter().filter(|m| m.target == CALLBACK).collect();
@@ -946,8 +949,8 @@ mod tests {
         let weights: Vec<u32> = calls.iter().map(|m| m.args[3]).collect();
         assert_eq!(weights[0], f(0.25));
         assert_eq!([weights[3], weights[4]], [f(1.5), f(0.5)]);
-        // The tail: 0.5 * 0.5 + 0.5.
-        assert_eq!(weights[5], f(0.75));
+        // The tail: 0.5 * 0.5 + 0.5, then 0 * 0.5 + 0.5 twice.
+        assert_eq!(&weights[5..], [f(0.75), f(0.5), f(0.5)]);
     }
 
     #[test]
