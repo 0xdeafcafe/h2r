@@ -3,7 +3,7 @@
 
 use engine::memory::GuestMemory;
 use scene_extract::GuestRead;
-use scene_extract::ui::{self, Justify, UiContent, UiWidget, Unread};
+use scene_extract::ui::{self, Justify, TextLayout, UiContent, UiWidget, Unread};
 
 use super::Gap;
 
@@ -276,6 +276,57 @@ fn offset_rect(w: &mut UiWidget) -> Result<(), Gap> {
     Ok(())
 }
 
+/// The line renderer's two indents (`0x0013f1d9`): the first row
+/// group's and the rest's, as the renderer holds them; the interface
+/// draw does not set them.
+const INDENTS: [u32; 2] = [0x004e_73fe, 0x004e_7400];
+/// The interface's tab stops (`+0x28`, eight `i16`) and their count
+/// (`+0x38`).
+const STOPS: u32 = 0x28;
+const STOP_COUNT: u32 = 0x38;
+const MAX_STOPS: i32 = 8;
+
+/// The interface draw's rectangle and advance scale (`0x0022cef5` to
+/// `0x0022d067`): the rectangle's corners projected at the widget's Z
+/// about the full canvas's centre (`0x002360c3`) and truncated to `i16`,
+/// `[top, left, bottom, right]` Y down; the scale is the projected width
+/// over the rectangle's, times the interface's `+0x20` (1, `text_style`).
+fn projected(mem: &dyn GuestRead, widget: u32, [top, left, bottom, right]: [i16; 4]) -> Result<([i16; 4], f32), Gap> {
+    use super::bitmaps::{project, truncated, Lens};
+    let lens = Lens::read(mem).ok_or(Unread::Unreadable)?;
+    let z = number(mem, widget, 0x60)?;
+    let near = project(&lens, [f32::from(left), f32::from(top), z], super::FULL_SCREEN);
+    let far = project(&lens, [f32::from(right), f32::from(bottom), z], super::FULL_SCREEN);
+    let scale = (far[0] - near[0]) / (i32::from(right) - i32::from(left)) as f32;
+    let rect = [truncated(near[1]), truncated(near[0]), truncated(far[1]), truncated(far[0])];
+    Ok((rect, scale))
+}
+
+/// A projected rectangle (Y down from the canvas's corner) as a header's
+/// (Y up about its centre), which `ui::widget_rect` turns back.
+fn rect_about_centre([top, left, bottom, right]: [i16; 4]) -> [i16; 4] {
+    let [cx, cy] = ui::CANVAS.map(|v| (v / 2) as i16);
+    [cy.wrapping_sub(top), left.wrapping_sub(cx), cy.wrapping_sub(bottom), right.wrapping_sub(cx)]
+}
+
+/// The tab stops the draw hands the line renderer (`0x0022d007`,
+/// `0x0013eb20`): a count at `+0x38` not above 0 is none; otherwise each
+/// stop is the interface's plus the projected rectangle's left, as `i16`.
+/// The interface holds eight: a larger count runs the copy past the
+/// draw's stack buffer (`text_tab_overrun`).
+fn stops(mem: &dyn GuestRead, iface: u32, left: i16) -> Result<Vec<i16>, Gap> {
+    let count = word(mem, iface, STOP_COUNT)? as i32;
+    if count <= 0 {
+        return Ok(Vec::new());
+    }
+    if count > MAX_STOPS {
+        return Err(Gap::text("text_tab_overrun"));
+    }
+    (0..count as u32)
+        .map(|i| -> Result<i16, Gap> { Ok((half(mem, iface, STOPS + i * 2)? as i16).wrapping_add(left)) })
+        .collect()
+}
+
 /// The caller checks the full-canvas viewport and, for a button, the optional bitmap.
 pub(super) fn read_widget(
     mem: &dyn GuestRead,
@@ -284,10 +335,7 @@ pub(super) fn read_widget(
     button: bool,
 ) -> Result<UiWidget, Gap> {
     let mut w = ui::read_widget_header(mem, widget, depth, UiContent::None)?;
-    if word(mem, 0x0054_d59c, 0)? >> 24 != 0
-        || word(mem, 0x0051_ec04, 0)? as u8 != 0
-        || half(mem, 0x004e_73dc, 0)? != 0
-    {
+    if word(mem, 0x0054_d59c, 0)? >> 24 != 0 || word(mem, 0x0051_ec04, 0)? as u8 != 0 {
         // The widget index display or the rectangle outlines are on.
         return Err(Gap::text("text_debug"));
     }
@@ -312,9 +360,6 @@ pub(super) fn read_widget(
     {
         return Err(Gap::text("text_style"));
     }
-    if word(mem, iface, 0x38)? != 0 {
-        return Err(Gap::text("text_tabs"));
-    }
     // The reveal cursor: shown here, its step written when the draw is
     // left out (`left_out`).
     let mut text = text;
@@ -326,16 +371,19 @@ pub(super) fn read_widget(
     if text.is_empty() {
         return Ok(w);
     }
-    let camera = number(mem, 0x0054_d5b0, 0)?;
-    let epsilon = number(mem, 0x0045_dbdc, 0)?;
-    let camera = if camera.abs() < epsilon { 1.0 } else { camera };
-    let z = camera + number(mem, widget, 0x60)?;
-    let z = if z >= 0.0 { z.max(1.0) } else { z.min(-1.0) };
-    let scale = 1.0 / ((1.0 / camera) * z);
-    if scale != 1.0 {
-        return Err(Gap::text("text_scale"));
-    }
     offset_rect(&mut w)?;
+    let [top, left, bottom, right] = w.rect;
+    if top == bottom || left == right {
+        // `0x0022cd71`: no width or no height, nothing drawn.
+        return Ok(w);
+    }
+    let (rect, scale) = projected(mem, widget, w.rect)?;
+    let layout = TextLayout {
+        scale,
+        stops: stops(mem, iface, rect[1])?,
+        indents: [half(mem, INDENTS[0], 0)? as i16, half(mem, INDENTS[1], 0)? as i16],
+    };
+    w.rect = rect_about_centre(rect);
     let justify = match word(mem, iface, 0x1c)? {
         0 => Justify::Left,
         1 => Justify::Right,
@@ -389,6 +437,7 @@ pub(super) fn read_widget(
         color,
         justify,
         shadow: flags & 4 == 0,
+        layout,
     };
     Ok(w)
 }
@@ -429,9 +478,14 @@ mod tests {
             (0x004b_62ac, 0x5000),
             (0x0045_df00, 0.5f32.to_bits()),
             (0x0051_ec04, 0),
-            (0x004e_73dc, 0),
+            (0x004e_73fc, 0),
+            (0x004e_7400, 0),
             (0x0054_d5b0, 1f32.to_bits()),
+            (0x0045_dbbc, 0.5f32.to_bits()),
+            (0x0045_dbc0, 1f32.to_bits()),
             (0x0045_dbdc, 0.001f32.to_bits()),
+            (0x0045_dbd8, 0f32.to_bits()),
+            (0x0045_dbcc, (-0.001f32).to_bits()),
             (w + 4, 6),
             (w + 0x20, 0),
             (w + 0x24, 0x0010_0010),
@@ -471,6 +525,7 @@ mod tests {
                 color: [31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0, 1.0],
                 justify: Justify::Right,
                 shadow: false,
+                layout: TextLayout::default(),
             }
         );
         m.0.insert(iface + 0x14, 0x0001_0001);
@@ -491,8 +546,31 @@ mod tests {
         let revealing = read_widget(&m, w, 2.0, false).unwrap();
         assert!(matches!(&revealing.content, UiContent::Text { text, .. } if text == &[0xdb]));
         m.0.insert(iface + 0x3c, 0xffff);
-        m.0.insert(iface + 0x38, 1);
-        assert_eq!(read_widget(&m, w, 2.0, false), Err(Gap::text("text_tabs")));
+        // Two stops, each plus the projected rectangle's left (1 + 320).
+        m.0.insert(iface + 0x38, 2);
+        m.0.insert(iface + 0x28, 0xfffe_0010);
+        m.0.insert(0x004e_73fc, 5 << 16);
+        m.0.insert(0x004e_7400, 0xfffd);
+        let tabbed = read_widget(&m, w, 2.0, false).unwrap();
+        assert!(matches!(
+            &tabbed.content,
+            UiContent::Text { layout, .. } if *layout == TextLayout { scale: 1.0, stops: vec![337, 319], indents: [5, -3] }
+        ));
+        m.0.insert(iface + 0x38, 9);
+        assert_eq!(read_widget(&m, w, 2.0, false), Err(Gap::text("text_tab_overrun")));
+        m.0.insert(iface + 0x38, -1i32 as u32);
+        assert!(matches!(read_widget(&m, w, 2.0, false).unwrap().content, UiContent::Text { layout, .. } if layout.stops.is_empty()));
+        // Behind the camera's plane by 1: half the size about the centre,
+        // the rectangle truncated and the advance scale its width's.
+        m.0.insert(iface + 0x38, 0);
+        m.0.insert(w + 0x60, 1f32.to_bits());
+        let far = read_widget(&m, w, 2.0, false).unwrap();
+        assert_eq!(far.rect, [-1, 0, 7, 8]);
+        assert!(matches!(far.content, UiContent::Text { layout, .. } if layout.scale == 0.5));
+        // No width: the draw returns before the line renderer.
+        m.0.insert(w + 0x60, 0);
+        m.0.insert(w + 0x24, 0x0000_0010);
+        assert_eq!(read_widget(&m, w, 2.0, false).unwrap().content, UiContent::None);
     }
 
     #[test]

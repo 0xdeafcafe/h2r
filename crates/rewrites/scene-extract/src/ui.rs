@@ -41,6 +41,37 @@ pub enum Justify {
     Centre,
 }
 
+/// What the line renderer `0x0013f0e0` lays a string out by besides its
+/// rectangle and justification: the advance scale (`[esp+94h]`), the tab
+/// stops (`0x004e73de`, their count at `0x004e73dc`) and the two indents
+/// (`0x004e73fe` for the first row group, `0x004e7400` for the rest).
+///
+/// Every metric is times the scale: advances, offsets, kerning, line
+/// heights and each glyph's quad, and the stops and indents too. A stop
+/// is in the canvas's pixels, not the rectangle's: column `n` of a row
+/// runs from stop `n - 1` (the rectangle's left plus the indent for
+/// column 0) to stop `n` (the rectangle's right past the last stop).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextLayout {
+    pub scale: f32,
+    pub stops: Vec<i16>,
+    pub indents: [i16; 2],
+}
+
+impl Default for TextLayout {
+    fn default() -> Self {
+        TextLayout { scale: 1.0, stops: Vec::new(), indents: [0; 2] }
+    }
+}
+
+impl TextLayout {
+    /// The layout a font that lays out only plain lines draws: scale 1,
+    /// no stops and no indents.
+    pub fn plain(&self) -> bool {
+        self.scale.to_bits() == 1f32.to_bits() && self.stops.is_empty() && self.indents == [0; 2]
+    }
+}
+
 /// A textured rectangle outside a screen (the loading draw's background,
 /// sweep and spinner) or a bitmap widget's art.
 #[derive(Clone, Debug, PartialEq)]
@@ -82,6 +113,7 @@ pub enum UiContent {
         color: [f32; 4],
         justify: Justify,
         shadow: bool,
+        layout: TextLayout,
     },
     /// A model scene (type 7): its view into the viewport its camera
     /// call names ([`UiModel`]).
@@ -238,6 +270,26 @@ pub trait UiText {
             return None;
         }
         self.shape(font, text, rect, justify)
+    }
+
+    /// As [`UiText::shape_buttons`], laid out by `layout`'s scale, tab
+    /// stops, indents and the scanner's alignment units (U+E405 to
+    /// U+E407). Fonts that lay out only plain lines give `None` for a
+    /// layout that is not [`TextLayout::plain`] or a text with a tab or
+    /// an alignment unit.
+    fn shape_layout(
+        &self,
+        font: u16,
+        text: &[u16],
+        rect: [f32; 4],
+        justify: Justify,
+        layout: &TextLayout,
+    ) -> Option<Vec<OverlayGlyph>> {
+        let laid = |u: &u16| *u == 9 || (0xe405..=0xe407).contains(u);
+        if !layout.plain() || text.iter().any(laid) {
+            return None;
+        }
+        self.shape_buttons(font, text, rect, justify)
     }
 
     /// The glyph index engine font `font` gives the character `unit`.
@@ -725,6 +777,7 @@ fn widget(overlay: &mut Overlay, text: &dyn UiText, w: &UiWidget) -> Result<Opti
             color,
             justify,
             shadow,
+            layout,
         } => {
             if string.is_empty() {
                 return Ok(None);
@@ -732,7 +785,7 @@ fn widget(overlay: &mut Overlay, text: &dyn UiText, w: &UiWidget) -> Result<Opti
             // A button glyph left by the substitution pass is a character
             // to the line scanner (`0x0013f5a0`, type 4).
             let glyphs = text
-                .shape_buttons(*font, string, rect, *justify)
+                .shape_layout(*font, string, rect, *justify, layout)
                 .ok_or_else(|| format!("font {font} does not lay out the text"))?;
             let glyphs: Vec<_> = glyphs
                 .into_iter()
@@ -743,16 +796,18 @@ fn widget(overlay: &mut Overlay, text: &dyn UiText, w: &UiWidget) -> Result<Opti
             }
             if *shadow && w.alpha * color[3] > 0.0 {
                 // The glyph callback clips a glyph first, then draws its
-                // offset shadow followed immediately by its face.
+                // shadow moved by the advance scale (`0x0001f530`)
+                // followed immediately by its face.
+                let lift = layout.scale;
                 let [x0, y0, x1, y1] = rect;
-                let shadow_clip = clip_of([x0.max(0.0) + 1.0, y0.max(0.0) + 1.0,
-                    x1.min(overlay.size[0] as f32) + 1.0, y1.min(overlay.size[1] as f32) + 1.0]);
+                let shadow_clip = clip_of([x0.max(0.0) + lift, y0.max(0.0) + lift,
+                    x1.min(overlay.size[0] as f32) + lift, y1.min(overlay.size[1] as f32) + lift]);
                 let clip = clip_of(rect);
                 let material = OverlayMaterial::text(*font);
                 let face = faded(*color, w.alpha);
                 let mut first = None;
                 for glyph in glyphs {
-                    let shifted = OverlayGlyph { rect: glyph.rect.map(|v| v + 1.0), ..glyph };
+                    let shifted = OverlayGlyph { rect: glyph.rect.map(|v| v + lift), ..glyph };
                     let item = overlay.push_text_run(material, shadow_clip,
                         [0.0, 0.0, 0.0, face[3]], &[shifted]).map_err(refused)?;
                     first.get_or_insert(item);
@@ -1089,6 +1144,7 @@ mod tests {
             justify: Justify::Left,
             color: [1.0; 4],
             shadow: true,
+            layout: TextLayout::default(),
         };
         let frame = UiFrame { draws: vec![UiDraw::Screen(UiScreen {
             backdrop: None,
@@ -1133,6 +1189,7 @@ mod tests {
             justify: Justify::Left,
             color: [1.0; 4],
             shadow: false,
+            layout: TextLayout::default(),
         };
         let frame = UiFrame { draws: vec![UiDraw::Screen(UiScreen {
             backdrop: None,
@@ -1159,6 +1216,7 @@ mod tests {
             color: [1.0, 1.0, 0.5, 1.0],
             justify: Justify::Left,
             shadow: false,
+            layout: TextLayout::default(),
         };
         title.alpha = 0.5;
         let mut panel = w(8, 0.0, 0);
@@ -1288,6 +1346,7 @@ mod tests {
             color: [1.0; 4],
             justify: Justify::Centre,
             shadow: false,
+            layout: TextLayout::default(),
         };
         let mut off = w(8, 0.1, 0);
         off.rect = [10, 400, -10, 420];

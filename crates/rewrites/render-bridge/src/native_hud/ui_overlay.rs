@@ -27,7 +27,7 @@ mod list;
 pub(super) mod model;
 mod text;
 
-pub use scene_extract::ui::{BUTTON_GLYPHS, Justify, UiText};
+pub use scene_extract::ui::{BUTTON_GLYPHS, Justify, TextLayout, UiText};
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -745,16 +745,16 @@ mod tests {
         let kept = |name: &str| {
             super::super::kept::counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n)
         };
-        let (tabs, text, view) = (
-            kept("scene_kept_ui_widget_text_tabs"),
+        let (overrun, text, view) = (
+            kept("scene_kept_ui_widget_text_tab_overrun"),
             kept("scene_kept_ui_widget_text"),
             kept("scene_kept_ui_widget_model_view"),
         );
-        MenuRefusal::from(Gap::text("text_tabs")).count();
+        MenuRefusal::from(Gap::text("text_tab_overrun")).count();
         MenuRefusal::from(Unread::Text).count();
         MenuRefusal::from(Gap::model("model_view")).count();
         MenuRefusal::from(Unread::Shader).count();
-        assert_eq!(kept("scene_kept_ui_widget_text_tabs"), tabs + 1);
+        assert_eq!(kept("scene_kept_ui_widget_text_tab_overrun"), overrun + 1);
         assert_eq!(kept("scene_kept_ui_widget_text"), text + 1);
         assert_eq!(kept("scene_kept_ui_widget_model_view"), view + 1);
         assert_eq!(kept("scene_kept_ui_widget_shader"), 0, "a shader bitmap is drawn at its quad");
