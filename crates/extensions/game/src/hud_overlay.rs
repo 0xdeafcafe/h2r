@@ -711,6 +711,19 @@ fn slot(mem: &dyn GuestMemory) -> Option<(Option<Arc<Mutex<MenuArt>>>, Arc<Mutex
     Some((slot.art.clone(), slot.assets.clone()))
 }
 
+/// The map's art once its load has run, polled for up to 20 s; `None`
+/// when it did not open.
+fn wait_for_art(mem: &dyn GuestMemory) -> Option<Arc<Mutex<MenuArt>>> {
+    let start = std::time::Instant::now();
+    while start.elapsed() < std::time::Duration::from_secs(20) {
+        if let Some((Some(art), _)) = slot(mem) {
+            return Some(art);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    None
+}
+
 /// Reads map `name` off the game thread for the menus' images.
 fn spawn_load(name: String, generation: u64) {
     let spawned = std::thread::Builder::new().name("menu overlay load".into()).spawn(move || {
@@ -1106,6 +1119,9 @@ pub fn place_menu<B: d3d::Backend + Send + 'static>(
     let Some((art, assets)) = slot(mem) else { unimplemented!("menus: pass: no overlay assets for this map") };
     let bitmaps = part.items.iter().any(|i| matches!(i.material.texture, OverlayTexture::Bitmap { .. }));
     if bitmaps {
+        // The map's art loads off the game thread; the first bitmap pass
+        // waits for it, since no guest draw stands in for it.
+        let art = art.or_else(|| wait_for_art(mem));
         let Some(art) = art else { unimplemented!("menus: pass: no map art to decode bitmaps from") };
         let mut a = art.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(why) = decode_named(&mut a, part, &mut assets.lock().unwrap_or_else(|e| e.into_inner())) {
