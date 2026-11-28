@@ -182,8 +182,8 @@ pub enum FogRefusal {
     /// Pass `pass`'s implementation does not fit ([`Refusal`]).
     Look { pass: usize, refusal: Refusal },
     /// Pass `pass`'s render states do not ([`StateRefusal`], as
-    /// `pass_state` decodes them but for its `Fog` refusal: the fog unit
-    /// is resolved per view here, [`FogWords`], not a refusal).
+    /// `pass_state` decodes them; the fog words are not the pipeline's,
+    /// and the fog unit is resolved per view here, [`FogWords`]).
     State { pass: usize, refusal: StateRefusal },
     /// Pass `pass` does not set `CULLMODE`, and some pass of the layer
     /// sets a cull other than the layer's start ([`layer_cull`]), so what
@@ -486,12 +486,12 @@ fn passes_of(
             Err(FogParity::NoFinalCombiner) => return Err(FogRefusal::NoFinalCombiner { pass: n }),
             Err(FogParity::DeviceState { stage }) => return Err(FogRefusal::DeviceState { pass: n, stage }),
         }
-        // `pass_state`'s rules but its `Fog` refusal: a fog pass may turn
-        // the fog on itself, and the fog unit is resolved per view
-        // ([`FogWords`]). The rest of the pipeline state must be the
-        // implementation's own (a pass that leaves blend or depth to the
-        // previous draw stays on the D3D path, as the transparents').
-        let mut state = state_without_fog(&states, matches!(layer.layer, 1 | 3 | 5 | 6 | 7 | 8 | 16 | 20)).map_err(|refusal| FogRefusal::State { pass: n, refusal })?;
+        // `pass_state`'s rules: a fog pass may turn the fog on itself,
+        // and the fog unit is resolved per view ([`FogWords`]). The
+        // pipeline state must be the implementation's own (a pass that
+        // leaves blend or depth to the previous draw stays on the D3D
+        // path, as the transparents').
+        let mut state = layer_pass_state(&states, matches!(layer.layer, 1 | 3 | 5 | 6 | 7 | 8 | 16 | 20)).map_err(|refusal| FogRefusal::State { pass: n, refusal })?;
         if !sets_cull(&states) {
             if !selection.layer_cull {
                 return Err(FogRefusal::InheritsCull { pass: n });
@@ -512,16 +512,11 @@ fn passes_of(
     Ok(out)
 }
 
-/// [`pass_state`] over the implementation's states without the words that
-/// set the fog (they are [`FogWords`]'s, not the pipeline's): the same
-/// decode with the `Fog` refusal not taken.
-fn state_without_fog(states: &[RenderStateValue], geometry: bool) -> Result<PassState, StateRefusal> {
-    let without: Vec<RenderStateValue> = states
-        .iter()
-        .copied()
-        .filter(|s| !FOG_WORD_SLOTS.contains(&u32::from(s.state)))
-        .collect();
-    if geometry { crate::pass_state::geometry_pass_state(&without) } else { pass_state(&without) }
+/// [`pass_state`] over the implementation's states, the geometry layers'
+/// colour-mask rule where `geometry`. The fog words decode to no pipeline
+/// state; they are [`FogWords`]'s.
+fn layer_pass_state(states: &[RenderStateValue], geometry: bool) -> Result<PassState, StateRefusal> {
+    if geometry { crate::pass_state::geometry_pass_state(states) } else { pass_state(states) }
 }
 
 /// Whether `states` set `CULLMODE` (build 5849's slots).

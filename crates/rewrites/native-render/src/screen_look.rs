@@ -413,8 +413,8 @@ pub fn template_look(
         };
     }
     let mut state = pass_state(&applied.render_states)
-        .and_then(PassState::device_stencil_only)
-        .map_err(ScreenRefusal::State)?;
+        .map_err(ScreenRefusal::State)?
+        .device_stencil_only("screen passes");
     if state.depth_write || state.depth_compare != wgpu::CompareFunction::Always {
         return Err(ScreenRefusal::Depth);
     }

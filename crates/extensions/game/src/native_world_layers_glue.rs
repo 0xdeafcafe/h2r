@@ -221,9 +221,6 @@ pub(crate) struct SkyIssue {
     pub constants: Result<native_render::sky_material::SkyConstants, &'static str>,
     /// The pass's program and textures from the material.
     pub look: Result<Arc<native_render::sky_material::SkyLook>, &'static str>,
-    /// Whether the rows made from the sky's transform answer at this strip
-    /// (`native_sky::rows_outcome`).
-    pub rows: bool,
     /// The item's section geometry from the load, and its part.
     pub geometry: Result<(Arc<native_render::sky_material::SkySection>, u32), &'static str>,
 }
@@ -231,18 +228,6 @@ pub(crate) struct SkyIssue {
 impl SkyIssue {
     fn read(guest: &runtime::Guest, mem: &Memory<'_>, esp: u32, pass: u32) -> Self {
         let item = SkyItem::read(mem, esp, pass);
-        // The rows arm: the rows made from the sky's transform beside the
-        // guest's (`native_sky::rows_outcome`). The strip draws the guest's
-        // rows until the cut draws the made ones.
-        let mut rows = false;
-        if let Ok(item) = &item {
-            let generation = render_bridge::native_map_work::bsp_generation();
-            let outcome = render_bridge::native_sky::rows_compared(generation).then(|| {
-                native_render::sky_rows::native_rows(mem, esp)
-                    .map(|rows| native_render::sky_rows::compare(&rows, &item.rows))
-            });
-            rows = render_bridge::native_sky::rows_outcome(outcome);
-        }
         let (constants, look, geometry) = match &item {
             Ok(item) => (
                 crate::native_sky_glue::evaluate(guest, item.shader, item.pass),
@@ -252,7 +237,7 @@ impl SkyIssue {
             // Not asked: the item's refusal is the strip's cause.
             Err(_) => (Err("extraction"), Err("extraction"), Err("extraction")),
         };
-        Self { item, constants, look, rows, geometry }
+        Self { item, constants, look, geometry }
     }
 }
 

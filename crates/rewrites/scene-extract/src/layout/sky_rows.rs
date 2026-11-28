@@ -286,23 +286,6 @@ fn compound(mem: &dyn GuestRead, model: u32, matrices: &mut Vec<[Row; 3]>) -> Re
     Ok(())
 }
 
-/// How the made rows compare with the guest's: `exact` bit for bit,
-/// `close` within the x87's rounding of the trigonometry (a relative
-/// `1e-5`, at least `1e-5`), or `differ`.
-pub fn compare(native: &[Row], guest: &[Row]) -> &'static str {
-    if native.len() != guest.len() {
-        return "differ";
-    }
-    let pairs = || native.iter().flatten().zip(guest.iter().flatten());
-    if pairs().all(|(a, b)| a.to_bits() == b.to_bits()) {
-        "exact"
-    } else if pairs().all(|(a, b)| (a - b).abs() <= 1e-5 * b.abs().max(1.0)) {
-        "close"
-    } else {
-        "differ"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,12 +378,6 @@ mod tests {
         // The cut's rows: the same section, no strip on the stack.
         assert_eq!(rows_of(&mem, 1), Ok(rows.clone()));
         assert_eq!(rows_of(&mem, 2), Err("sky"), "past the model's sections");
-        assert_eq!(compare(&rows, &rows), "exact");
-        let mut near = rows.clone();
-        near[0][3] = 10.000_01;
-        assert_eq!(compare(&rows, &near), "close");
-        near[0][3] = 11.0;
-        assert_eq!(compare(&rows, &near), "differ");
         mem.w(REST_COUNT, 3);
         assert_eq!(native_rows(&mem, esp), Err("rest"), "the rest pose is another model's");
         mem.w(REST_COUNT, 2);

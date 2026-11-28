@@ -1087,9 +1087,12 @@ fn post_raster(
     }
     let two_sided = draw.raw.render[TWO_SIDED_LIGHTING] != 0;
     if let Some(planned) = planned_inputs {
-        check_combiner_raster(state, two_sided, planned)?;
-        if state.fog_enable || two_sided || state.shade_mode == gfx::state::ShadeMode::Flat {
-            check_combiner_raster(state, two_sided, live_combiner_inputs(draw))?;
+        // A planned combiner's fog register is the live draw's, fed into
+        // its uniforms (`PostRaster::fog`): live fog refuses nothing.
+        let fed = |inputs: CombinerInputs| CombinerInputs { fog: false, ..inputs };
+        check_combiner_raster(state, two_sided, fed(planned))?;
+        if two_sided || state.shade_mode == gfx::state::ShadeMode::Flat {
+            check_combiner_raster(state, two_sided, fed(live_combiner_inputs(draw)))?;
         }
         if post_sampler_default_is_uncertain(draw) {
             return Err("the post draw has an invalid sampled-stage sampler state");
@@ -1139,6 +1142,7 @@ fn post_raster(
             clip.width,
             clip.height,
         ]),
+        fog: planned_inputs.map(|_| d3d::nv2a::draw_fog(draw)),
     })
 }
 

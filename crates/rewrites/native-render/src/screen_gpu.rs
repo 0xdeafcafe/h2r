@@ -682,6 +682,10 @@ pub struct PostRaster {
     pub opaque_view: [bool; 4],
     /// The effective scissor in guest target pixels.
     pub clip: Option<[u32; 4]>,
+    /// The fog register the live draw's combiners read: the fog unit's
+    /// uniform and colour (`d3d::nv2a::draw_fog`). `None` leaves the
+    /// program's (fog off).
+    pub fog: Option<([f32; 4], [f32; 4])>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -735,6 +739,10 @@ impl PostRaster {
             pixel.stipple = pattern;
             pixel.stipple_scale = PixelUniforms::stipple_grid(guest, size);
         }
+        if let Some((fog, colour)) = self.fog {
+            pixel.fog = fog;
+            pixel.fog_color = colour;
+        }
     }
 
     pub(crate) fn scissor(self, guest: (u32, u32), size: (u32, u32)) -> Result<[u32; 4], ScreenRefused> {
@@ -778,6 +786,7 @@ impl Default for PostRaster {
             w_clip: None,
             opaque_view: [false; 4],
             clip: None,
+            fog: None,
         }
     }
 }
@@ -1329,6 +1338,12 @@ mod tests {
         assert_eq!(pixel.alpha_ref[0], 37.0);
         assert_eq!(pixel.stipple, [0x42; 32]);
         assert_eq!(pixel.stipple_scale, PixelUniforms::stipple_grid((32, 19), (80, 31)));
+        assert_eq!(pixel.fog, PixelUniforms::default().fog, "no fog given: the program's");
+
+        let fog = ([0.25, -0.5, 1.0, 0.0], [0.1, 0.2, 0.3, 1.0]);
+        let mut pixel = PixelUniforms::default();
+        PostRaster { fog: Some(fog), ..raster }.pixel_uniforms(&mut pixel, (32, 19), (80, 31));
+        assert_eq!((pixel.fog, pixel.fog_color), fog, "the live draw's fog register");
     }
 
     #[test]
