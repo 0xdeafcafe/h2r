@@ -199,6 +199,12 @@ pub const SEATS: &[Seat] = &[
         run: observer,
     },
     Seat {
+        point: &points::PLAYER_PICKUP_SCAN,
+        name: "sim.seats.player_pickup_scan",
+        sites: player_objects::SITES,
+        run: player_objects::run,
+    },
+    Seat {
         point: &points::PREDICT_RESOURCES,
         name: "sim.seats.predict_resources",
         sites: resources::SITES,

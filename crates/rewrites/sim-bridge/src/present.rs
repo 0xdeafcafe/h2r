@@ -10,23 +10,22 @@
 //! hash with them, do not depend on the view count. `sim.ledger` shows
 //! the skipped phases at 0 calls and 0 ns.
 //!
-//! **The seat kernels** answer three guest functions, always, with no
-//! switch and no guest arm. A call a kernel cannot answer yet is a named,
-//! counted error (its `Decline`, logged the first time each map, counted in
-//! `sim.arms`) that the lifted body runs:
+//! **The seat kernels** answer two guest functions, always, with no
+//! switch and no guest arm. A call a kernel cannot answer is
+//! `unimplemented!("seats: <kernel>: <cause>")`, by its `Decline`; no
+//! lifted body runs in its place:
 //!
 //! | Point | Kernel | Unported paths |
 //! |---|---|---|
 //! | `AIM_ASSIST_PARAMS` `1a50a0` | `engine::sim_seats::aim::arm` over `sim_objects::aim_assist` | `float`, `triggers`, `fault` |
 //! | `PLAYER_RESPAWN_READY` `15dd40` | `engine::sim_seats::respawn` (the gate, its callees, the countdown with `a7840` and `19eb90`) | `post` (a host's event message), `announce` (a local player's HUD text and sound), `every-player`, `fault` |
-//! | `PLAYER_PICKUP_SCAN` `1508e0` | `engine::sim_seats::player_objects` (the query `bb050` through `engine::sim_collision::plan_visit_at`, the link walk, `150e30`'s early exits) | `visit`, `candidate` (a type 2 or 3 handle: the Halo 1 prompt hook observes `150e30`), `pickup`, `fault` |
 //!
-//! Their counters are `seats.aim`, `seats.respawn` and
-//! `seats.player-objects` in `sim.arms`.
+//! Their counters are `seats.aim` and `seats.respawn` in `sim.arms`. The
+//! pickup scan `1508e0` is a seat (`engine::sim_seats::player_objects`).
 
 use engine::points;
 use engine::sim_seats::aim::arm;
-use engine::sim_seats::{player_objects, respawn};
+use engine::sim_seats::respawn;
 use engine::sim_tick::Present;
 use hooks::Builder;
 use runtime::TransferAbi;
@@ -41,12 +40,11 @@ pub fn mode(switches: &hooks::Switches) -> Present {
 /// The labels the kernels install under.
 pub const AIM: &str = "sim.seats.aim";
 pub const RESPAWN: &str = "sim.seats.respawn";
-pub const PLAYER_OBJECTS: &str = "sim.seats.player-objects";
 
-/// The map-load observer that clears the three kernels' counters.
-const RESET: &str = "seats: reset the aim, respawn and pickup counters";
+/// The map-load observer that clears the two kernels' counters.
+const RESET: &str = "seats: reset the aim and respawn counters";
 
-/// The three kernels at their points, and their reset at map load.
+/// The two kernels at their points, and their reset at map load.
 /// [`crate::sim_native::SimNative`] calls it; the points are not seats, so
 /// each plan holds one implementation there, beside the `aim-assist`
 /// feature's `after` at the cone.
@@ -54,10 +52,7 @@ pub(crate) fn install(b: &mut Builder) {
     b.raw()
         .implement(&points::AIM_ASSIST_PARAMS, AIM, move |cpu, ctx, pc| {
             if pc == points::AIM_ASSIST_PARAMS.base {
-                let step = arm::enter(cpu, &mut ctx.memory());
-                if let arm::Step::Answered { target } = step {
-                    return Ok(TransferAbi::ret(target));
-                }
+                return Ok(TransferAbi::ret(arm::enter(cpu, &mut ctx.memory())));
             }
             crate::sim_objects::original(cpu, ctx, pc, false)
         })
@@ -66,22 +61,7 @@ pub(crate) fn install(b: &mut Builder) {
     b.raw()
         .implement(&points::PLAYER_RESPAWN_READY, RESPAWN, move |cpu, ctx, pc| {
             if pc == points::PLAYER_RESPAWN_READY.base {
-                let step = respawn::enter(cpu, &mut ctx.memory());
-                if let respawn::Step::Answered { target } = step {
-                    return Ok(TransferAbi::ret(target));
-                }
-            }
-            crate::sim_objects::original(cpu, ctx, pc, false)
-        })
-        .context_only()
-        .optional();
-    b.raw()
-        .implement(&points::PLAYER_PICKUP_SCAN, PLAYER_OBJECTS, move |cpu, ctx, pc| {
-            if pc == points::PLAYER_PICKUP_SCAN.base {
-                let step = player_objects::enter(cpu, &mut ctx.memory(), &engine::sim_collision::WORLD);
-                if let player_objects::Step::Answered { target } = step {
-                    return Ok(TransferAbi::ret(target));
-                }
+                return Ok(TransferAbi::ret(respawn::enter(cpu, &mut ctx.memory())));
             }
             crate::sim_objects::original(cpu, ctx, pc, false)
         })
@@ -90,7 +70,6 @@ pub(crate) fn install(b: &mut Builder) {
     b.raw().observe_before(&points::CACHE_TAGS_LOAD, RESET, |_| {
         arm::reset();
         respawn::reset();
-        player_objects::reset();
     });
 }
 
@@ -212,7 +191,6 @@ mod tests {
         for (point, label) in [
             (&points::AIM_ASSIST_PARAMS, AIM),
             (&points::PLAYER_RESPAWN_READY, RESPAWN),
-            (&points::PLAYER_PICKUP_SCAN, PLAYER_OBJECTS),
         ] {
             let implement = plan.chains[&point.base].implement.as_ref().unwrap();
             assert_eq!(implement.label, label, "{}", point.name);

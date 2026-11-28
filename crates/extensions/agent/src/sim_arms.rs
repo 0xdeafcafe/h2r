@@ -12,11 +12,9 @@
 //! * the shadow ports (`effects`) count `skipped` for `declined` and
 //!   `answered` 0;
 //! * `seats` has no switch and no guest arm: each seat body
-//!   (`sim.seats.<name>`) counts segments answered (an unported path
-//!   panics, so it has no `declined`); the `seats.aim`, `seats.respawn`
-//!   and `seats.player-objects` kernels count calls answered and their
-//!   unported paths (which the lifted body runs) as `declined`; the
-//!   `seats.leaf.*` arms also count unwatched audits as `declined`. It is
+//!   (`sim.seats.<name>`) counts segments answered, and the `seats.aim`
+//!   and `seats.respawn` kernels calls answered (an unported path
+//!   panics, so none has a `declined`); the `seats.leaf.*` arms also count unwatched audits as `declined`. It is
 //!   clean once something answered and nothing declined or mismatched;
 //! * `sound.voices` counts ticks for `checked`, `matched` and `mismatched`
 //!   and voices for `answered` (`sim_bridge::sim_sound::voice_arm::Stats`).
@@ -32,7 +30,7 @@ use engine::effect_update::arm as segment_arm;
 use engine::sim_objects::native_walk;
 use engine::sim_physics::parity as physics;
 use engine::sim_seats::aim::arm as aim;
-use engine::sim_seats::{player_objects, respawn};
+use engine::sim_seats::respawn;
 use engine::sim_seats::leaf;
 use hooks::Switches;
 use hooks::switches::table::{self, Initial};
@@ -79,7 +77,6 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
                 let mut arms = seat_wire(sim_bridge::sim_seats::stats());
                 arms.push(aim_wire(aim::status()));
                 arms.push(respawn_wire(respawn::status()));
-                arms.push(player_objects_wire(player_objects::status()));
                 arms.extend(leaf::Leaf::ALL.map(|l| leaf_wire(l, leaf::status(l))));
                 arms
             }),
@@ -198,19 +195,14 @@ fn objects_wire(s: objects::Status) -> Arm {
     }
 }
 
-/// The `seats.aim` kernel: calls answered, unported paths declined.
+/// The `seats.aim` kernel: calls answered (an unported path panics).
 fn aim_wire(s: aim::Status) -> Arm {
-    Arm { name: "seats.aim".to_owned(), answered: s.answered, declined: s.declined_total(), ..Arm::default() }
+    Arm { name: "seats.aim".to_owned(), answered: s.answered, ..Arm::default() }
 }
 
-/// The `seats.respawn` kernel: calls answered, unported paths declined.
+/// The `seats.respawn` kernel: calls answered (an unported path panics).
 fn respawn_wire(s: respawn::Status) -> Arm {
-    Arm { name: "seats.respawn".to_owned(), answered: s.answered, declined: s.declined_total(), ..Arm::default() }
-}
-
-/// The `seats.player-objects` kernel: calls answered, unported paths declined.
-fn player_objects_wire(s: player_objects::Status) -> Arm {
-    Arm { name: "seats.player-objects".to_owned(), answered: s.answered, declined: s.declined_total(), ..Arm::default() }
+    Arm { name: "seats.respawn".to_owned(), answered: s.answered, ..Arm::default() }
 }
 
 /// One seat leaf callee's arm (`seats.leaf.<name>`); audits whose
@@ -371,12 +363,11 @@ mod tests {
         }
         let seats = &r.subsystems[4];
         let n = engine::sim_seats::SEATS.len();
-        assert_eq!(seats.arms.len(), n + 3 + leaf::Leaf::ALL.len());
+        assert_eq!(seats.arms.len(), n + 2 + leaf::Leaf::ALL.len());
         assert_eq!(seats.arms[0].name, engine::sim_seats::SEATS[0].name);
         assert_eq!(seats.arms[n].name, "seats.aim");
         assert_eq!(seats.arms[n + 1].name, "seats.respawn");
-        assert_eq!(seats.arms[n + 2].name, "seats.player-objects");
-        assert_eq!(seats.arms[n + 3].name, "seats.leaf.visible");
+        assert_eq!(seats.arms[n + 2].name, "seats.leaf.visible");
         assert!(r.subsystems[5].arms.is_empty());
     }
 
