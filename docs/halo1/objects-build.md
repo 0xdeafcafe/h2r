@@ -176,10 +176,36 @@ Halo 1's names: the retail warthog's taillights scale by `jump`), export
 `a_out` to `d_out`, Halo 1's invert and always-active flags, turn-off by
 the export of the function Halo 1 names, and data an identity or linear
 function whose range is Halo 1's bounds. Each attachment then names its
-output's export. An output that doesn't convert leaves its attachments
-unscaled (1), with a note; unscaled, a rebuilt vehicle's engine would sound
-a constant hum and its lights be always on (tests:
+output's export (tests:
 `crates/tools/h1objects/tests/object_functions_disc.rs`).
+
+**Periodic functions.** Halo 1's function kinds 2 to 11 are waves:
+cosine, diagonal wave and slide, each with a variable-period form, then
+noise, jitter, wander and spark. Halo 2's periodic blob has the same
+twelve wave slots (`0x00468d48`), and a kind converts to its own slot.
+
+| Step | Halo 1 | Halo 2 (`0x000ba8c0`) |
+|---|---|---|
+| Argument | game seconds over the period | game seconds (`0x000ba9cb`), frequency `1 / period` |
+| Wave | table *k* | wave *k*, set 0, unranged (range input is 1.0) |
+| Scale by an input | times the input, then bounded | bounded, then times the import (`0x000baa27`) |
+| Bounds and result scale | clip, normalise or scale to fit | set 0's minimum and maximum, the header range |
+
+The two orders agree when the bounds start at 0 and the scaled wave
+never clips (scale to fit, or result scale at most the upper bound);
+any other scaled wave is refused by name. So are a scaled period, a
+wobble, an invert (Halo 2's time path skips it, `0x000ba95e`), a map-to
+or a threshold on a wave, and kind 1 (zero) (`functions::periodic`).
+Unit test: every kind against a Halo 1 reference over the same table
+(`halo1_periodic_functions_match_halo1_through_halo2s_evaluator`).
+
+Not verified: that Halo 1's table bytes equal Halo 2's
+(`halo1_wave_table_is_halo2s` searches Halo 1's executable for Halo 2's
+slots 1 to 11), and that Halo 1 gives a wave no per-object phase (Halo 2
+adds none, as record flag bit 3 is clear). The disc test
+`periodic_and_input_objects_convert_or_name_their_reason` converts the
+needler, the crashed lifepod, the burning flame and the monitor, and
+lists the waves they export.
 
 Weapons, equipment, grenade projectiles and bipeds name the **retail
 Halo 2 tag that plays the same role** (`convert::TEMPLATES`, first match;

@@ -338,11 +338,19 @@ A source function that lacks a supported curve or engine input stays
 unconverted, with its reason in the report. Halo 1's additive flag
 (H1 `0x8c06d..0x8c088` adds the previous output and wraps the sum by
 one) is such a case, and so is a function that turns off with one that
-did not convert (H1 `0x8c050..0x8c06b`). An attachment whose
+did not convert (H1 `0x8c050..0x8c06b`).
+
+An attachment whose
 primary or secondary scale names an output with no converted function,
 or with no function at all, fails the conversion with the attachment,
-marker and output (`functions::primary_scale`); an empty Halo 2 scale would
-run the attachment at one where Halo 1 scaled it by that output.
+marker, output and the function's reason (`functions::primary_scale`):
+an empty Halo 2 scale would run the attachment at one where Halo 1
+scales it by that output.
+
+An input with no Halo 2 import names its
+object type and Halo 1 source (`input 3 (unit source 7) has no Halo 2
+import`, `functions::input_source`). A device change colour bound to
+such an output fails the same way, with the function's reason.
 
 Halo 2 does not dispatch `pctl` attachments directly. Each emitting
 particle type becomes an attached `effe` with the source marker as its

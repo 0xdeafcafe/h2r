@@ -42,7 +42,7 @@ use crate::safe_out::OutDir;
 /// use) changes the maps they write**: every import stamped with an older
 /// version is converted again at the next `h2 play`, so `--follow` users
 /// get the new maps after the merge.
-pub const CONVERTER_VERSION: u32 = 103;
+pub const CONVERTER_VERSION: u32 = 104;
 
 /// The stamp's file, in `<data>/campaigns/halo1/`.
 pub const STAMP_FILE: &str = "import.stamp";

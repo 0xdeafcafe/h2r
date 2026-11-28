@@ -379,3 +379,117 @@ fn needler_flare_functions_convert() {
     assert!(!seen.is_empty(), "no object attaches a needle flare");
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// The retail `default.xbe` from the disc image in `$var`.
+fn xbe_bytes(var: &str, name: &str) -> Vec<u8> {
+    let mut iso = xiso::Xiso::open(BufReader::new(File::open(disc(var, name)).unwrap())).unwrap();
+    let e = iso
+        .entries()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.path.trim_start_matches(['/', '\\']).eq_ignore_ascii_case("default.xbe"))
+        .unwrap();
+    iso.read(&e).unwrap()
+}
+
+/// Halo 1's periodic waves (function kinds 2 to 11) are Halo 2's: Halo
+/// 2's wave slots 1 to 11 (`0x00468d48`, 1024 bytes each, slot 0 unused)
+/// lie in Halo 1's executable in the same order, so a converted function
+/// of kind *k* reads Halo 1's table through Halo 2's periodic wave *k*
+/// (`h1objects::functions`, `periodic`).
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn halo1_wave_table_is_halo2s() {
+    let h2 = xbe_bytes("H2_DISC", "halo2.iso");
+    let h2 = xbe::Xbe::parse(&h2).unwrap();
+    let waves = h2.bytes_at(0x0046_8d48, 12 * 1024).unwrap();
+    let h1 = xbe_bytes("H1_ISO", "halo1.iso");
+    let slots = &waves[1024..];
+    let at = h1
+        .windows(slots.len())
+        .position(|w| w == slots)
+        .unwrap_or_else(|| {
+            let found: Vec<usize> = (1..12)
+                .filter(|&k| h1.windows(1024).any(|w| w == &waves[k * 1024..(k + 1) * 1024]))
+                .collect();
+            panic!("Halo 2's waves 1 to 11 are not in Halo 1's executable in order; slots found alone: {found:?}")
+        });
+    let h1x = xbe::Xbe::parse(&h1).unwrap();
+    let va = h1x
+        .sections
+        .iter()
+        .find(|s| (s.raw_addr as usize..(s.raw_addr + s.raw_size) as usize).contains(&at))
+        .map(|s| (s.name.clone(), s.va + (at as u32 - s.raw_addr) - 1024));
+    println!("Halo 1's wave slot 0 at file offset {:#x} ({va:x?})", at - 1024);
+}
+
+/// Every function the conversion of `tree` holds whose blob is a periodic
+/// wave, as (tag, export, wave).
+fn periodic_functions(tree: &Tree) -> Vec<(String, String, u8)> {
+    use tags::effects::function::{Function, FunctionType};
+    let mut out = Vec::new();
+    for (name, t) in &tree.tags {
+        let Some(d) = Defs::builtin().group(t.group) else { continue };
+        let Ok(r) = defs::from_built(d, &t.root) else { continue };
+        for path in ["object.functions", "item.obje.functions", "unit.obje.functions", "devi.obje.functions"] {
+            let Some(Val::Block(fs)) = r.at(path) else { continue };
+            for f in fs {
+                let Some(Val::Data(data)) = f.at("default_function") else { continue };
+                let Ok(blob) = Function::parse(data) else { continue };
+                if blob.kind == FunctionType::Periodic {
+                    out.push((name.clone(), text(f, "output", &[]), blob.sub_types[0]));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The objects the import stopped on for a Halo 1 periodic function
+/// (the needler's flare, the crashed lifepod's smoke, the burning flame,
+/// the monitor's ambient sound) convert, and their conversion exports a
+/// periodic wave by name. The ones it stopped on for an input or a change
+/// colour (the energy sword, the sentinel's engine, b30's holo panel)
+/// convert, or fail naming the reason: an input by its object type and
+/// Halo 1 source, a change colour by its function's reason.
+#[test]
+#[ignore = "reads the Halo 1 disc ($H1_ISO) and the Halo 2 disc ($H2_DISC)"]
+fn periodic_and_input_objects_convert_or_name_their_reason() {
+    let (mut m, _) = h2_map("coagulation");
+    let base = Base::read(&mut m).unwrap();
+    let periodic = [
+        ("a30", "weapons\\needler\\needler"),
+        ("a30", "scenery\\vehicles\\lifepod_crashed\\lifepod_crashed"),
+        ("a10", "scenery\\emitters\\burning_flame\\burning_flame"),
+        ("c10", "characters\\monitor\\monitor"),
+    ];
+    let inputs = [
+        ("b30", "weapons\\energy sword\\energy sword"),
+        ("c10", "characters\\sentinel\\sentinel"),
+        ("b30", "levels\\b30\\devices\\interior tech objects\\holo panel\\holo panel"),
+    ];
+    for (level, name, wants_wave) in periodic
+        .iter()
+        .map(|x| (x.0, x.1, true))
+        .chain(inputs.iter().map(|x| (x.0, x.1, false)))
+    {
+        let h1 = h1_level(level);
+        let t = h1.tags().iter().find(|t| t.name == name).unwrap_or_else(|| panic!("{level}: no {name}")).clone();
+        let mut c = Converter::new(&h1, &base);
+        match c.object(&t) {
+            Ok(_) => {
+                let waves = periodic_functions(&c.tree);
+                println!("{level} {name}: converted; waves {waves:?}");
+                assert!(!wants_wave || !waves.is_empty(), "{level} {name}: no periodic function");
+            }
+            Err(e) => {
+                let e = e.to_string();
+                println!("{level} {name}: {e}");
+                assert!(!wants_wave, "{level} {name}: {e}");
+                assert!(!e.contains("is not one"), "{e}");
+                let named = e.contains(" source ") || !e.ends_with("did not convert");
+                assert!(named, "{level} {name}: the reason is not named: {e}");
+            }
+        }
+    }
+}

@@ -2402,7 +2402,15 @@ impl<'a> Converter<'a> {
         // scale-by, 0x8c1be darken-by). Halo 2 reads an unresolved name as
         // zero (0xbe9bc; 0xbab40 clears the value first), so it binds
         // `zero`, which no object exports.
-        let source_functions = h1::functions(self.h1, self.h1.tag_data(tag)?)?.len();
+        let bytes = self.h1.tag_data(tag)?;
+        let source = h1::functions(self.h1, bytes)?;
+        let source_functions = source.len();
+        // Each output's reason, for the error below.
+        let converted = crate::functions::convert(
+            &source,
+            &h1::FunctionInputs::read(bytes, dev.object.object_type),
+            &mut Vec::new(),
+        );
         for (slot, colour) in dev.object.change_colours.iter_mut().enumerate() {
             let Some(binding) = colour.function.as_mut() else { continue };
             for name in [&mut binding.darken, &mut binding.scale].into_iter().flatten() {
@@ -2419,7 +2427,10 @@ impl<'a> Converter<'a> {
                 return Err(h1convert::Error::no_rebuild(
                     &self.h1.header().name,
                     &tag.name,
-                    format!("change colour {slot}: output {name}'s function did not convert"),
+                    format!(
+                        "change colour {slot}: output {name}'s function did not convert: {}",
+                        converted.get(k).and_then(|f| f.as_ref().err()).map_or("no reason", String::as_str)
+                    ),
                 )
                 .into());
             }

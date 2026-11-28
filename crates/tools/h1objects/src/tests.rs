@@ -2230,6 +2230,161 @@ fn sentinel_shield_glow_exports_the_fourth_root_of_recent_damage() {
     assert!((function.evaluate(0.0625, 0.0) - 0.5).abs() < 0.01);
 }
 
+/// A wave slab for both sides of the periodic tests: pseudo-random bytes
+/// in every slot, the shape the engine's own tables have (this repository
+/// never holds them), so each kind reads a table of its own.
+fn wave_slab() -> tags::effects::function::Tables {
+    use tags::effects::function::{TABLE_LEN, Tables};
+    let mut x = 0x1234_5678u32;
+    let slab: Vec<u8> = (0..18 * TABLE_LEN)
+        .map(|_| {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 24) as u8
+        })
+        .collect();
+    Tables::procedural_owned().with_engine_slab(&slab).unwrap()
+}
+
+/// Halo 1's value of periodic `f` at `t` seconds with input `input`: the
+/// wave at `t / period` read from `table` (slide waves 6 and 7 wrap
+/// across the seam), times the scale and the input, then bounded.
+fn h1_periodic_value(f: &crate::h1::Function, t: f32, input: f32, table: &[u8; 1024]) -> f32 {
+    let v = t / f.period * 36.571_43;
+    let frac = v - v.floor();
+    let i = (v.floor() as i64 & 0x3ff) as usize;
+    let a = f32::from(table[i]) / 255.0;
+    let mut b = f32::from(table[(i + 1) & 0x3ff]) / 255.0;
+    let slide = matches!(f.function, 6 | 7);
+    if slide && a > 0.75 && b < 0.25 {
+        b += 1.0;
+    }
+    let mut w = (1.0 - frac) * a + b * frac;
+    if slide && w > 1.0 {
+        w -= 1.0;
+    }
+    let gain = if f.result_scale > 0.0 { f.result_scale } else { 1.0 };
+    let x = w * gain * input;
+    let [lo, hi] = f.bounds;
+    let y = match f.bounds_mode {
+        0 => x.clamp(lo, hi),
+        1 => ((x - lo) / (hi - lo)).clamp(0.0, 1.0),
+        _ => lo + (hi - lo) * x,
+    };
+    y.clamp(0.0, 1.0)
+}
+
+/// Halo 2's value of a converted function at `t` seconds with its import
+/// at `import`: `0x000ba8c0` evaluates the blob on time with range input
+/// 1, maps it onto the header's range, multiplies by the import
+/// (`0x000baa27`) and clamps.
+fn h2_periodic_value(spec: &crate::functions::FunctionSpec, t: f32, import: f32, tables: &tags::effects::function::Tables) -> f32 {
+    let f = tags::effects::function::Function::parse(&spec.data).unwrap();
+    let y = f.evaluate_with(t, 1.0, tables);
+    ((f.range[0] + (f.range[1] - f.range[0]) * y) * import).clamp(0.0, 1.0)
+}
+
+fn h1_periodic(kind: u16, scaled_by: u16, mode: u16, bounds: [f32; 2], scale: f32) -> crate::h1::Function {
+    crate::h1::Function {
+        function: kind,
+        period: 2.5,
+        result_scale: scale,
+        ..h1_function(scaled_by, mode, bounds)
+    }
+}
+
+/// Every periodic kind (2 to 11) converts to a Halo 2 periodic blob of
+/// the same wave slot whose value, through Halo 2's export evaluator, is
+/// Halo 1's over a run of times: unscaled with clip, normalise and
+/// scale-to-fit bounds and a result scale, and scaled by an input where
+/// the bounds start at 0.
+#[test]
+fn halo1_periodic_functions_match_halo1_through_halo2s_evaluator() {
+    use tags::effects::function::FunctionType;
+    let tables = wave_slab();
+    let inputs = crate::h1::FunctionInputs { unit: [1, 0, 0, 0], ..Default::default() };
+    for kind in 2..=11u16 {
+        let table = tables.wave_table(kind as u8).unwrap();
+        let cases = [
+            (h1_periodic(kind, 0, 0, [0.0, 1.0], 0.0), [1.0]),
+            (h1_periodic(kind, 0, 0, [0.2, 0.9], 0.8), [1.0]),
+            (h1_periodic(kind, 0, 1, [0.1, 0.6], 0.0), [1.0]),
+            (h1_periodic(kind, 0, 2, [0.3, 0.8], 0.5), [1.0]),
+            (h1_periodic(kind, 1, 0, [0.0, 1.0], 0.0), [0.35]),
+            (h1_periodic(kind, 1, 1, [0.0, 0.9], 0.7), [0.6]),
+            (h1_periodic(kind, 1, 2, [0.0, 0.7], 1.2), [0.8]),
+        ];
+        for (f, [input]) in cases {
+            let mut notes = Vec::new();
+            let got = crate::functions::convert(std::slice::from_ref(&f), &inputs, &mut notes);
+            let spec = got[0].as_ref().unwrap_or_else(|e| panic!("kind {kind}: {e}"));
+            assert!(notes.is_empty(), "{notes:?}");
+            let blob = tags::effects::function::Function::parse(&spec.data).unwrap();
+            assert_eq!((blob.kind, blob.sub_types, blob.is_ranged()), (FunctionType::Periodic, [kind as u8; 2], false));
+            let scaled = f.scale_function_by != 0;
+            assert_eq!(spec.import, if scaled { "driver_seat_power" } else { "one" });
+            let import = if scaled { input } else { 1.0 };
+            for step in 0..400 {
+                let t = step as f32 * 0.037;
+                let (h1, h2) = (h1_periodic_value(&f, t, input, table), h2_periodic_value(spec, t, import, &tables));
+                assert!((h1 - h2).abs() < 2e-3, "kind {kind} {f:?} at {t}: Halo 1 {h1}, Halo 2 {h2}");
+            }
+        }
+    }
+}
+
+/// What a periodic blob can't hold is refused by name, never stood in
+/// for: a scaled wave whose bounds don't start at 0 or that clips, a
+/// period scale, a wobble, an invert, a map-to; and no reason says "is
+/// not one" for a periodic kind.
+#[test]
+fn halo1_periodic_shapes_past_a_blob_are_named_refusals() {
+    let inputs = crate::h1::FunctionInputs { unit: [1, 0, 0, 0], ..Default::default() };
+    let refuse = |f: crate::h1::Function, why: &str| {
+        let got = crate::functions::convert(&[f], &inputs, &mut Vec::new());
+        let e = got[0].as_ref().unwrap_err();
+        assert!(e.contains(why) && !e.contains("is not one"), "{e}");
+    };
+    refuse(h1_periodic(9, 1, 0, [0.2, 1.0], 0.0), "0xbaa27");
+    refuse(h1_periodic(9, 1, 0, [0.0, 0.5], 0.0), "0xbaa27");
+    refuse(h1_periodic(9, 1, 1, [0.0, 0.5], 0.8), "0xbaa27");
+    refuse(crate::h1::Function { scale_period_by: 2, ..h1_periodic(3, 0, 0, [0.0, 1.0], 0.0) }, "period scaled");
+    refuse(crate::h1::Function { wobble: true, ..h1_periodic(8, 0, 0, [0.0, 1.0], 0.0) }, "wobble");
+    refuse(crate::h1::Function { flags: 1, ..h1_periodic(2, 0, 0, [0.0, 1.0], 0.0) }, "invert");
+    refuse(crate::h1::Function { map_to: 2, ..h1_periodic(2, 0, 0, [0.0, 1.0], 0.0) }, "map-to 2");
+    refuse(crate::h1::Function { period: 0.0, ..h1_periodic(2, 0, 0, [0.0, 1.0], 0.0) }, "period 0");
+    refuse(crate::h1::Function { function: 12, ..h1_function(0, 0, [0.0, 1.0]) }, "function 12");
+}
+
+/// An input with no Halo 2 import names its object type and Halo 1
+/// source; a vehicle's source comes before its unit's, an unset type's
+/// before the object's base. An output that didn't convert carries its
+/// reason to the attachment that names it.
+#[test]
+fn unconverted_inputs_name_their_type_and_source() {
+    use crate::functions::{input_source, primary_scale};
+    let inputs = crate::h1::FunctionInputs {
+        object: [0, 3, 9, 0],
+        unit: [7, 2, 0, 0],
+        vehicle: [0, 12, 0, 0],
+        weapon: [0; 4],
+        device: [0; 4],
+    };
+    assert_eq!(input_source(&inputs, 0), ("unit", 7));
+    assert_eq!(input_source(&inputs, 1), ("vehicle", 12));
+    assert_eq!(input_source(&inputs, 2), ("object", 9));
+    let fs = [h1_function(1, 0, [0.0, 1.0]), h1_function(2, 0, [0.0, 1.0]), h1_function(3, 0, [0.0, 1.0])];
+    let got = crate::functions::convert(&fs, &inputs, &mut Vec::new());
+    assert_eq!(got[0].as_ref().unwrap_err(), "input 1 (unit source 7) has no Halo 2 import");
+    assert_eq!(got[1].as_ref().unwrap().import, "jump");
+    assert_eq!(got[2].as_ref().unwrap_err(), "input 3 (object source 9) has no Halo 2 import");
+    let weapon = crate::h1::FunctionInputs { weapon: [6, 0, 0, 0], ..Default::default() };
+    let got = crate::functions::convert(&fs[..1], &weapon, &mut Vec::new());
+    assert_eq!(
+        primary_scale(1, &got).unwrap_err(),
+        "output 1's function did not convert: input 1 (weapon source 6) has no Halo 2 import"
+    );
+}
+
 fn bounded_for_test(mode: u16, bounds: [f32; 2]) -> Vec<u8> {
     let inputs = crate::h1::FunctionInputs { unit: [1, 0, 0, 0], ..Default::default() };
     let got = crate::functions::convert(&[h1_function(1, mode, bounds)], &inputs, &mut Vec::new());
