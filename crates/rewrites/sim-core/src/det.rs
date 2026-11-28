@@ -20,11 +20,15 @@
 //! When any input fails, [`Fp::exact`] is false and the caller must
 //! discard the results and let the original code run.
 mod chain;
+mod guest87;
 mod host;
 mod region;
 
 pub use chain::Chain;
-pub use region::{Checked, checked, checked_env, checked_guest_env, checked_inputs, host_fast_env};
+pub use guest87::{St, X87};
+pub use region::{
+    Checked, checked, checked_env, checked_guest, checked_guest_env, checked_inputs, host_fast_env,
+};
 
 use crate::lanes::{self, Op, Vec4};
 
