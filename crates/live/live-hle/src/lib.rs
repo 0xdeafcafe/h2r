@@ -49,6 +49,7 @@ pub use sessions::{
 };
 mod state;
 pub use state::coop_activity;
+pub mod tape;
 mod stats;
 pub use stats::{Stat, StatSpec, StatValue, StatWrite};
 mod arbitration;
@@ -259,8 +260,45 @@ pub struct Hle {
     config: LiveConfig,
     state: Mutex<state::State>,
     network: network::Network,
+    /// The session's machine tape, recording or replaying ([`tape`]).
+    tape: std::sync::OnceLock<Arc<tape::Tape>>,
 }
 impl Hle {
+    /// Record every Live entry the guest calls onto `tape`, or answer them
+    /// from it (a client film's replay, [`tape`]). Set once, before the
+    /// guest runs; a second tape is refused.
+    pub fn set_tape(&self, tape: Arc<tape::Tape>) -> Result<(), Arc<tape::Tape>> {
+        self.tape.set(tape)
+    }
+
+    pub fn tape(&self) -> Option<&Arc<tape::Tape>> {
+        self.tape.get()
+    }
+
+    /// Whose game this console is in, for its film
+    /// (docs/game/film-format.md, "The machine tape"): a client of a System Link or
+    /// Live game another console hosts, its host, or local (no session, or
+    /// co-op, whose machines each simulate every update). Never waits and
+    /// takes no guest memory.
+    pub fn film_role(&self) -> film::tape::Role {
+        use film::tape::Role;
+        if self.coop().is_some() {
+            return Role::Local;
+        }
+        let keys = self.network.registered_keys();
+        if keys.is_empty() {
+            return Role::Local;
+        }
+        if self.network.hosts_registered_key(&keys) || self.hosted_session().is_some() {
+            return Role::Host;
+        }
+        if self.archived_session() {
+            Role::LiveClient
+        } else {
+            Role::SystemLinkClient
+        }
+    }
+
     /// Fixes the version used by Live QoS admission. Boot calls this once
     /// before starting the guest, with the version of its entity definitions.
     pub fn set_replication_version(&self, version: u16) {
@@ -337,6 +375,7 @@ impl Hle {
             )),
             config,
             network: network::Network::new(network, version),
+            tape: std::sync::OnceLock::new(),
         }))
     }
     /// Reads the accounts file again (after [`account_setup::save`]), so a
@@ -1119,19 +1158,27 @@ fn stop(e: Entry, cpu: &CpuAbi, ctx: &mut ExecCtx, detail: String) -> TransferAb
         backtrace,
     }))
 }
+/// What one Live entry did, before it is handed to the guest.
+enum Performed {
+    Return(u32),
+    Stop(String),
+    Fault(GuestFault),
+}
+
+/// The most bytes one service entry may write and still be kept on a
+/// machine tape.
+const TAPE_CALL_BYTES: usize = 16 << 20;
+
 fn invoke(
     hle: &Hle,
     e: Entry,
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
 ) -> Result<TransferAbi, GuestFault> {
+    let tape = hle.tape.get().cloned();
     if e.operation == Operation::Stop {
-        return Ok(stop(
-            e,
-            cpu,
-            ctx,
-            format!("unimplemented Live API {}", e.name),
-        ));
+        // The run ends here, recorded or replayed alike.
+        return Ok(stop(e, cpu, ctx, format!("unimplemented Live API {}", e.name)));
     }
     let args = {
         let m = ctx.memory();
@@ -1145,6 +1192,142 @@ fn invoke(
             .map(|i| m.u32(cpu.esp.wrapping_add(4 + i * 4)))
             .collect::<Result<Vec<_>, _>>()?
     };
+    let Some(tape) = tape else {
+        return match perform(hle, e, &args, ctx, false).0 {
+            Performed::Return(value) => {
+                cpu.eax = value;
+                ctx.memory().ret(cpu, e.stack_words * 4)
+            }
+            Performed::Stop(why) => Ok(stop(e, cpu, ctx, why)),
+            Performed::Fault(f) => Err(f),
+        };
+    };
+    if tape.is_replay() {
+        return replay(hle, &tape, e, &args, cpu, ctx);
+    }
+    let error_before = hle.network.last_error(ctx.thread_id);
+    let (performed, captured) = perform(hle, e, &args, ctx, true);
+    let error_after = hle.network.last_error(ctx.thread_id);
+    let answer = match (&performed, captured) {
+        (Performed::Return(value), Some(captured)) => {
+            film::tape::Answer::Return(film::tape::Returned {
+                value: *value,
+                error: (error_after != error_before).then_some(error_after),
+                zeroed: captured.zeroed,
+                writes: captured.writes,
+                alloc: captured.alloc,
+            })
+        }
+        (Performed::Return(_), None) => {
+            tape.spoil(format!(
+                "{} wrote what a tape cannot hold (a mapping change, or more than {} MiB)",
+                e.name,
+                TAPE_CALL_BYTES >> 20
+            ));
+            film::tape::Answer::Stop(String::new())
+        }
+        (Performed::Stop(why), _) => film::tape::Answer::Stop(why.clone()),
+        (Performed::Fault(f), _) => film::tape::Answer::Stop(format!("guest fault in {}: {f}", e.name)),
+    };
+    tape.record(film::tape::Call {
+        entry: e.va,
+        args: args.clone(),
+        answer,
+    });
+    match performed {
+        Performed::Return(value) => {
+            cpu.eax = value;
+            ctx.memory().ret(cpu, e.stack_words * 4)
+        }
+        Performed::Stop(why) => Ok(stop(e, cpu, ctx, why)),
+        Performed::Fault(f) => Err(f),
+    }
+}
+
+/// What a call wrote, for its tape entry.
+struct Outputs {
+    zeroed: Vec<(u32, u32, u8)>,
+    writes: Vec<(u32, Vec<u8>)>,
+    alloc: Option<(u32, u32)>,
+}
+
+/// Answer a call from the tape (a client film's replay): no socket, no
+/// server, no HLE state beyond what [`network::Network::replay_mirror`]
+/// keeps. A call the tape cannot answer stops the guest with its name.
+fn replay(
+    hle: &Hle,
+    tape: &tape::Tape,
+    e: Entry,
+    args: &[u32],
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+) -> Result<TransferAbi, GuestFault> {
+    let index = tape.position();
+    let unplayable = |why: String| tape::TapeError::Unplayable {
+        index,
+        name: e.name,
+        why,
+    };
+    let call = match tape.answer(e.va, args) {
+        Ok(call) => call,
+        Err(error) => return Ok(stop(e, cpu, ctx, error.to_string())),
+    };
+    let returned = match call.answer {
+        film::tape::Answer::Stop(why) => {
+            let error = unplayable(format!("the recorded run stopped here: {why}"));
+            tape.fail(error.clone());
+            return Ok(stop(e, cpu, ctx, error.to_string()));
+        }
+        film::tape::Answer::Return(r) => r,
+    };
+    let mirrored = match e.operation {
+        Operation::Net(op) => hle.network.replay_mirror(op, args, &returned, ctx.runtime()),
+        Operation::QosRelease => {
+            hle.network.release_qos(args[0]);
+            Ok(())
+        }
+        _ => {
+            if returned.value == 0 {
+                drop(hle.network.lifecycle(e.operation));
+            }
+            Ok(())
+        }
+    };
+    let applied = mirrored.and_then(|()| {
+        let mut m = ctx.memory();
+        for &(at, len, bits) in &returned.zeroed {
+            let p = tape::permissions(bits).ok_or_else(|| format!("bad permissions {bits}"))?;
+            m.map_zeroed(at, len, p)
+                .and_then(|()| m.claim_virtual(at, len, "Live HLE").map(|_| ()))
+                .map_err(|err| format!("the recorded storage at {at:#010x}+{len:#x} does not map: {err}"))?;
+        }
+        for (at, bytes) in &returned.writes {
+            m.write_bytes(*at, bytes, 1)
+                .map_err(|f| format!("the recorded write does not land: {f}"))?;
+        }
+        Ok::<(), String>(())
+    });
+    if let Err(why) = applied {
+        let error = unplayable(why);
+        tape.fail(error.clone());
+        return Ok(stop(e, cpu, ctx, error.to_string()));
+    }
+    if let Some(error) = returned.error {
+        hle.network.set_error(ctx.thread_id, error);
+    }
+    cpu.eax = returned.value;
+    ctx.memory().ret(cpu, e.stack_words * 4)
+}
+
+/// Run one Live entry for real. With `capture`, also gather what it wrote
+/// for the machine tape: `None` when the call did what a tape cannot hold.
+fn perform(
+    hle: &Hle,
+    e: Entry,
+    args: &[u32],
+    ctx: &mut ExecCtx,
+    capture: bool,
+) -> (Performed, Option<Outputs>) {
     if let Operation::Net(op) = e.operation {
         // dh-client-join: unregistering this exact key leaves the dedicated
         // match. Unregistering the older party key can happen during its join.
@@ -1154,15 +1337,21 @@ fn invoke(
         } else {
             None
         };
-        let value = hle.network.invoke(op, &args, ctx.thread_id, ctx.runtime());
+        let (value, captured) = network::capture(capture, || {
+            hle.network.invoke(op, args, ctx.thread_id, ctx.runtime())
+        });
         if value == 0 && let Some(id) = leaving {
             let mut state = hle.lock();
             if state.end_match_join(id) {
                 hle.clear_tunnel();
             }
         }
-        cpu.eax = value;
-        return ctx.memory().ret(cpu, e.stack_words * 4);
+        let outputs = captured.map(|c| Outputs {
+            zeroed: Vec::new(),
+            writes: c.writes,
+            alloc: c.alloc,
+        });
+        return (Performed::Return(value), outputs);
     }
     if matches!(e.operation, Operation::Sessions(crate::sessions::Op::Search))
         && crate::matchmaking::config().is_some()
@@ -1170,9 +1359,15 @@ fn invoke(
     {
         eprintln!("live: matchmaking: could not start QoS responder: {e}");
     }
+    let none = || {
+        capture.then(|| Outputs {
+            zeroed: Vec::new(),
+            writes: Vec::new(),
+            alloc: None,
+        })
+    };
     if e.operation == Operation::QosRelease && hle.network.release_qos(args[0]) {
-        cpu.eax = 0;
-        return ctx.memory().ret(cpu, e.stack_words * 4);
+        return (Performed::Return(0), none());
     }
     // The accepted-invitation read stamps the record in the guest's clock;
     // the kernel's clock lock comes before guest memory, so read it first.
@@ -1194,13 +1389,19 @@ fn invoke(
     let guest_now = (e.operation == Operation::AcceptedInvite)
         .then(|| ctx.runtime().guest_time())
         .flatten();
-    let (result, cleanup) = {
+    let (result, cleanup, captured) = {
         let mut m = ctx.memory();
         let mut state = hle.state.lock().unwrap_or_else(|e| e.into_inner());
         state.set_guest_now(guest_now);
         state.set_read_keys(read_keys);
         let had_match_tunnel = state.has_match_tunnel();
-        let result = state.invoke(e.operation, &args, &mut m, hle);
+        let (result, captured) = if capture {
+            let (result, outputs) =
+                m.capture_hle_writes(TAPE_CALL_BYTES, |g| state.invoke(e.operation, args, g, hle));
+            (result, outputs)
+        } else {
+            (state.invoke(e.operation, args, &mut m, hle), None)
+        };
         if had_match_tunnel && !state.has_match_tunnel() {
             hle.clear_tunnel();
         }
@@ -1209,28 +1410,29 @@ fn invoke(
         } else {
             None
         };
-        (result, cleanup)
+        (result, cleanup, captured)
     };
     drop(cleanup); // Socket wakeups and QoS responder join run without locks.
-    let result = match result {
-        Ok(value) => {
-            cpu.eax = if e.operation == Operation::WsaCleanup && value != 0 {
-                hle.network.set_error(ctx.thread_id, value);
-                u32::MAX
-            } else {
-                value
-            };
-            return ctx.memory().ret(cpu, e.stack_words * 4);
+    let outputs = captured.map(|c| Outputs {
+        zeroed: c
+            .zeroed
+            .into_iter()
+            .map(|(at, len, p)| (at, len, tape::permission_bits(p)))
+            .collect(),
+        writes: c.writes,
+        alloc: None,
+    });
+    let performed = match result {
+        Ok(value) => Performed::Return(if e.operation == Operation::WsaCleanup && value != 0 {
+            hle.network.set_error(ctx.thread_id, value);
+            u32::MAX
+        } else {
+            value
+        }),
+        Err(state::Error::Fault(f)) => Performed::Fault(f),
+        Err(state::Error::Unverified(why)) => {
+            Performed::Stop(format!("unverified Live API {}: {why}", e.name))
         }
-        Err(error) => error,
     };
-    match result {
-        state::Error::Fault(f) => Err(f),
-        state::Error::Unverified(why) => Ok(stop(
-            e,
-            cpu,
-            ctx,
-            format!("unverified Live API {}: {why}", e.name),
-        )),
-    }
+    (performed, outputs)
 }

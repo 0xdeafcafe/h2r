@@ -72,6 +72,15 @@ const fn entry(va: u32, name: &'static str, stack_words: u32, operation: Operati
     }
 }
 
+/// The name of the Live entry at guest address `va`, for a film replay's
+/// errors; `"an unknown entry"` for any other address.
+pub fn name_at(va: u32) -> &'static str {
+    ENTRIES
+        .iter()
+        .find(|e| e.va == va)
+        .map_or("an unknown entry", |e| e.name)
+}
+
 #[rustfmt::skip]
 pub const ENTRIES: &[Entry] = &[
     entry(0x0036c47d, "XNetGetEthernetLinkStatus", 0, Operation::Link),

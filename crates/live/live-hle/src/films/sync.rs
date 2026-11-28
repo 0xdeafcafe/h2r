@@ -111,11 +111,20 @@ impl Remote for Archive {
 }
 
 /// The local player's machine tape contains private guest state. Its
-/// library entry stays local even when a previous session queued it.
+/// library entry stays local even when a previous session queued it. A
+/// client's film holds one (`film::file::FLAG_TAPE`, docs/game/film-format.md
+/// "The machine tape").
 fn machine_tape(path: &Path) -> Result<bool, String> {
     use std::io::Read;
-    let mut magic = [0; 8];
-    File::open(path).and_then(|mut f| f.read_exact(&mut magic)).map_err(|e| e.to_string())?;
+    let mut head = [0; 12];
+    let mut file = File::open(path).map_err(|e| e.to_string())?;
+    file.read_exact(&mut head[..8]).map_err(|e| e.to_string())?;
+    let magic: [u8; 8] = head[..8].try_into().unwrap();
+    if &magic == film::file::MAGIC {
+        file.read_exact(&mut head[8..]).map_err(|e| e.to_string())?;
+        let flags = u16::from_le_bytes([head[10], head[11]]);
+        return Ok(flags & film::file::FLAG_TAPE != 0);
+    }
     Ok(magic == live_proto::film::range::MAGIC || &magic[..4] == b"HEAD")
 }
 
@@ -638,6 +647,32 @@ mod tests {
             "inputs_in_film": true
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn a_client_film_with_its_machine_tape_stays_local() {
+        use film::columns::SEATS;
+        let root = std::env::temp_dir().join(live_proto::sign::random_id());
+        fs::create_dir_all(&root).unwrap();
+        let write = |name: &str, tape: bool| {
+            let path = root.join(name);
+            let mut header = recorded_header();
+            if tape {
+                header.role = film::tape::Role::SystemLinkClient;
+            }
+            let seed = film::file::Seed { header, descriptor: Default::default() };
+            let mut w = film::file::FilmWriter::new(File::create(&path).unwrap(), &seed, 30).unwrap();
+            w.push_tick(film::file::TICK_DIGEST, 1, &[None; SEATS]).unwrap();
+            if tape {
+                let pads = vec![film::tape::PadRead { handle: 4, status: 0, packet: [0; film::tape::PACKET] }];
+                w.tape(&film::tape::Tape { calls: Vec::new(), pads }).unwrap();
+            }
+            w.finish().unwrap();
+            path
+        };
+        assert_eq!(machine_tape(&write("host.h2film", false)), Ok(false));
+        assert_eq!(machine_tape(&write("client.h2film", true)), Ok(true));
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
