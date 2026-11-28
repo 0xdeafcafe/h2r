@@ -940,6 +940,10 @@ points! { ALL;
     /// Network and local delivery of a game-engine event.
     GAME_EVENT_SEND @ 0x000a_7c50: [fn(event: edx) ret 0]; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
     GAME_EVENT_SHOW @ 0x0019_eb30: [fn(event: edi) ret 0]; "docs/game/notes/2026-11-24-game-type-engine-reads.md";
+    /// A local player's announcement of an event: the row's HUD text and
+    /// the announcer sound. `GAME_EVENT_SHOW` reaches it for the event's
+    /// player.
+    GAME_EVENT_ANNOUNCE @ 0x0019_e890: [fn(player: eax, row: ecx, event: stack 0) ret 4]; "docs/engine/sim-rewrite-sketches.md";
     /// The per-tick slot `+0x48` that CTF and Assault share (vtable
     /// `0x459d18`). Their capture scoring `0x242e00` runs from the
     /// per-player slot `+0x3c` and from `0x242741`, not from here.

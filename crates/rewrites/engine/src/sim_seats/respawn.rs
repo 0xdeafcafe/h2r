@@ -25,10 +25,20 @@
 //! and, at zero, takes the staggered check. Its writes (the timer, the fade, the update
 //! word) ride in the [`Prediction`] and land in [`apply`].
 //!
+//! **The announcement.** A death event a local player is announced
+//! (`19e890` past its early exits: the HUD text and the announcer) is a
+//! guest call from the retail frame. At the entry the gate writes its
+//! frame as retail has it at `call 19eb90` (the four saved registers and
+//! the event), then calls the seat body `crate::sim_seats::announce` with
+//! the return address [`RESUME`], `15de0a`, in place of `19eb90`'s: the
+//! post, `19eb30`, `19de80` and `19df10` write nothing on the way, and
+//! `15de0a` reloads `eax`, `ecx` and `edx`. At [`RESUME`] [`resume`]
+//! runs the rest (the decrement, the fade, the entity mark, the staggered
+//! check) and returns.
+//!
 //! **What it refuses, by name.** The death event's paths that reach
 //! further guest systems: [`Decline::Post`] (a host's event message,
-//! `8b4d0`), [`Decline::Announce`] (a local player's HUD text and announcer
-//! sound in `19e890`) and [`Decline::EveryPlayer`] (an event naming no
+//! `8b4d0`) and [`Decline::EveryPlayer`] (an event naming no
 //! player, which `15dd40` never builds); and [`Decline::Fault`], a read
 //! that faults or a seconds divisor of 0. Each is
 //! `unimplemented!("seats: respawn-ready: <cause>")`; no lifted body runs
@@ -37,17 +47,23 @@
 mod countdown;
 
 pub use countdown::{
-    Mem, WRITES, Writes, announce, announce_event, announce_player, announcement, death_event,
+    Announce, Mem, WRITES, Writes, announce, announce_event, announce_player, announcement, death_event,
     entity_mark, entity_queue, event_post,
 };
 
 use crate::points;
 use crate::sim_physics::ARITH;
-use runtime::{CpuAbi, Guest};
+use runtime::{CpuAbi, Guest, TransferAbi};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The stack words `ret` pops besides the return address.
 pub const ARGS: u32 = 0;
+/// `15de0a`, after `call 19eb90`: where the gate resumes after an
+/// announcement.
+pub const RESUME: u32 = 0x0015_de0a;
+/// The gate's frame below its entry `esp` at `call 19eb90`: `sub esp, 24h`
+/// and four pushes.
+const FRAME: u32 = 0x34;
 
 /// `[game globals]`'s pointer cell.
 const GAME: u32 = 0x004e_9ae8;
@@ -69,22 +85,18 @@ pub enum Decline {
     /// The death event on a host in network state 4 or 5: `b5a70` queues
     /// its message through `8b4d0`.
     Post,
-    /// The death event's announcement for a local player: `19e890` draws
-    /// its HUD text and plays the announcer.
-    Announce,
     /// A death event naming no player: `19eb30` walks every player
     /// through `19f240`.
     EveryPlayer,
 }
 
 impl Decline {
-    pub const ALL: [Decline; 4] = [Decline::Fault, Decline::Post, Decline::Announce, Decline::EveryPlayer];
+    pub const ALL: [Decline; 3] = [Decline::Fault, Decline::Post, Decline::EveryPlayer];
 
     pub fn name(self) -> &'static str {
         match self {
             Decline::Fault => "fault",
             Decline::Post => "post",
-            Decline::Announce => "announce",
             Decline::EveryPlayer => "every-player",
         }
     }
@@ -253,7 +265,12 @@ pub fn kernel(m: &mut Mem, cpu: &CpuAbi) -> Result<Answer, Decline> {
     if timer > 0 {
         r = count_down(m, r, cpu, player)?;
     }
-    // `15de51`: the timer as the countdown left it.
+    finish(m, r, player, slot)
+}
+
+/// `15de51`: the timer as the countdown left it, then at zero the
+/// staggered check. `slot` is `ebp`, the player's slot.
+fn finish(m: &Mem, mut r: Regs, player: u32, slot: u32) -> Result<Answer, Decline> {
     let zero = m.u32(player.wrapping_add(0x164))? == 0;
     r.eax = (r.eax & !0xff) | u32::from(zero);
     if !zero {
@@ -297,7 +314,12 @@ fn count_down(m: &mut Mem, mut r: Regs, cpu: &CpuAbi, player: u32) -> Result<Reg
         r.eax = event;
         death_event(m, r, esp.wrapping_sub(4), event)?;
     }
-    // `15de0a`.
+    decrement(m, cpu.eax, player)
+}
+
+/// `15de0a..15de51`: the timer's decrement, the fade and the entity mark
+/// `a7840 (esi, 80h)`. `esi` is the slot as the gate was called with it.
+fn decrement(m: &mut Mem, esi: u32, player: u32) -> Result<Regs, Decline> {
     let left = m.u32(player.wrapping_add(0x164))?.wrapping_sub(1);
     m.set_u32(player.wrapping_add(0x164), left)?;
     let per = seconds(m)? as i32;
@@ -310,7 +332,7 @@ fn count_down(m: &mut Mem, mut r: Regs, cpu: &CpuAbi, player: u32) -> Result<Reg
     let fade = quotient.clamp(0, 0x3ff) as u32;
     m.set_u32(player.wrapping_add(0x170), fade)?;
     let regs = Regs { eax: fade, ecx: per as u32, edx: remainder as u32 };
-    entity_mark(m, regs, cpu.eax, 0x80)
+    entity_mark(m, regs, esi, 0x80)
 }
 
 /// The ticks per second, `movsx [[510c54] + 2]`.
@@ -342,6 +364,9 @@ fn stagger(m: &Mem, mut r: Regs, slot: u32) -> Result<Answer, Decline> {
 pub struct Prediction {
     pub cpu: CpuAbi,
     pub writes: Writes,
+    /// The announcement the call makes: `cpu` is then the registers at
+    /// `call 19e890` and `writes` is empty; [`apply`] writes the frame.
+    pub announce: Option<Announce>,
 }
 
 impl Prediction {
@@ -378,16 +403,86 @@ pub fn predict(cpu: &CpuAbi, g: &Guest) -> Result<Prediction, Decline> {
     out.eax = answer.regs.eax;
     out.ecx = answer.regs.ecx;
     out.edx = answer.regs.edx;
-    out.esp = cpu.esp.wrapping_add(4 + ARGS);
     out.eflags_defined &= !ARITH;
-    Ok(Prediction { cpu: out, writes: m.writes() })
+    if let Some(a) = m.announced() {
+        // The registers `15dd40` holds at `call 19eb90`, with `19e890`'s
+        // `eax`, `ecx` and its argument and return address pushed.
+        let players = g.u32(PLAYERS).map_err(|_| Decline::Fault)?;
+        let data = g.u32(players.wrapping_add(0x44)).map_err(|_| Decline::Fault)?;
+        out.eax = a.player;
+        out.ecx = a.row;
+        out.edx = cpu.edx;
+        out.ebx = 0;
+        out.esi = cpu.eax;
+        out.ebp = cpu.eax & 0xffff;
+        out.edi = (cpu.eax & 0xffff).wrapping_mul(STRIDE).wrapping_add(data);
+        out.esp = cpu.esp.wrapping_sub(FRAME + 8);
+        return Ok(Prediction { cpu: out, writes: Writes::default(), announce: Some(a) });
+    }
+    out.esp = cpu.esp.wrapping_add(4 + ARGS);
+    Ok(Prediction { cpu: out, writes: m.writes(), announce: None })
+}
+
+/// The rest of the gate from [`RESUME`], with the registers and frame
+/// `call 19eb90` left (`edi` the player, `esi` the slot as called, `ebp`
+/// its low half, `esp` the entry's less [`FRAME`]).
+pub fn predict_resume(cpu: &CpuAbi, g: &Guest) -> Result<Prediction, Decline> {
+    let mut m = Mem::new(g);
+    let r = decrement(&mut m, cpu.esi, cpu.edi)?;
+    let answer = finish(&m, r, cpu.edi, cpu.ebp)?;
+    let word = |a: u32| g.u32(a).map_err(|_| Decline::Fault);
+    let sp = cpu.esp;
+    let mut out = *cpu;
+    out.eax = answer.regs.eax;
+    out.ecx = answer.regs.ecx;
+    out.edx = answer.regs.edx;
+    out.edi = word(sp)?;
+    out.ebp = word(sp.wrapping_add(4))?;
+    out.esi = word(sp.wrapping_add(8))?;
+    out.ebx = word(sp.wrapping_add(12))?;
+    out.esp = sp.wrapping_add(FRAME + 4 + ARGS);
+    out.eflags_defined &= !ARITH;
+    Ok(Prediction { cpu: out, writes: m.writes(), announce: None })
 }
 
 /// Put `prediction` in place of the call: its writes, then its registers.
-/// Returns the return address. Every written word is written back as it
-/// is first, so a fault lands nothing.
-pub fn apply(prediction: &Prediction, cpu: &mut CpuAbi, guest: &mut Guest) -> Result<u32, runtime::GuestFault> {
-    let target = guest.u32(cpu.esp)?;
+/// Returns the transfer: the return, or the call to `19e890`. Every
+/// written word is written back as it is first, so a fault lands nothing.
+pub fn apply(prediction: &Prediction, cpu: &mut CpuAbi, guest: &mut Guest) -> Result<TransferAbi, runtime::GuestFault> {
+    if let Some(a) = &prediction.announce {
+        let entry = cpu.esp;
+        let below = |n: u32| entry.wrapping_sub(n);
+        let mut stores: Vec<(u32, u32, u8)> = vec![
+            (below(0x28), cpu.ebx, 4),
+            (below(0x2c), cpu.esi, 4),
+            (below(0x30), cpu.ebp, 4),
+            (below(0x34), cpu.edi, 4),
+        ];
+        stores.extend(a.stores());
+        stores.push((below(FRAME + 4), a.event, 4));
+        stores.push((below(FRAME + 8), RESUME, 4));
+        for &(at, _, size) in &stores {
+            if size == 2 {
+                let old = guest.u16(at)?;
+                guest.set_u16(at, old)?;
+            } else {
+                let old = guest.u32(at)?;
+                guest.set_u32(at, old)?;
+            }
+        }
+        for &(at, value, size) in &stores {
+            if size == 2 {
+                guest.set_u16(at, value as u16)?;
+            } else {
+                guest.set_u32(at, value)?;
+            }
+        }
+        let eip = cpu.eip;
+        *cpu = prediction.cpu;
+        cpu.eip = eip;
+        return Ok(TransferAbi::call(points::GAME_EVENT_ANNOUNCE.base, RESUME));
+    }
+    let target = guest.u32(prediction.cpu.esp.wrapping_sub(4 + ARGS))?;
     for (a, _) in prediction.writes.iter() {
         let old = guest.u32(a)?;
         guest.set_u32(a, old)?;
@@ -398,16 +493,23 @@ pub fn apply(prediction: &Prediction, cpu: &mut CpuAbi, guest: &mut Guest) -> Re
     let eip = cpu.eip;
     *cpu = prediction.cpu;
     cpu.eip = eip;
-    Ok(target)
+    Ok(TransferAbi::ret(target))
 }
 
-/// At the entry: the kernel answers, and the caller returns to the
-/// target. A call it cannot answer panics by its [`Decline`].
-pub fn enter(cpu: &mut CpuAbi, guest: &mut Guest) -> u32 {
+/// At the entry: the kernel answers with the return, or with the call to
+/// the announcement. A call it cannot answer panics by its [`Decline`].
+pub fn enter(cpu: &mut CpuAbi, guest: &mut Guest) -> TransferAbi {
     let prediction = predict(cpu, guest).unwrap_or_else(|why| decline(why));
-    let target = apply(&prediction, cpu, guest).unwrap_or_else(|_| decline(Decline::Fault));
+    let transfer = apply(&prediction, cpu, guest).unwrap_or_else(|_| decline(Decline::Fault));
     ANSWERED.fetch_add(1, Ordering::Relaxed);
-    target
+    transfer
+}
+
+/// At [`RESUME`], back from the announcement: the rest of the gate, and
+/// its return.
+pub fn resume(cpu: &mut CpuAbi, guest: &mut Guest) -> TransferAbi {
+    let prediction = predict_resume(cpu, guest).unwrap_or_else(|why| decline(why));
+    apply(&prediction, cpu, guest).unwrap_or_else(|_| decline(Decline::Fault))
 }
 
 /// The point the arm is installed at.

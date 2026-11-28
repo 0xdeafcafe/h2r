@@ -340,6 +340,30 @@ event (scratch, never applied), and the timer, the fade and the update word
 address is written back as it is (so a fault lands none). Registers are
 left as retail leaves them.
 
+*The announcement.* A death event that reaches `19e890` past its early
+exits (a local player's HUD text and announcer) is a call from the retail
+frame, not part of the prediction:
+
+```mermaid
+flowchart LR
+  entry[15dd40 entry] --> k[kernel] -- no announcement --> ret[apply, ret]
+  k -- Mem::announced --> frame[write the gate's frame and event] --> call[call 19e890, return 15de0a]
+  call --> seat[seat sim.seats.event_announce] --> resume[15de0a: respawn::resume] --> ret2[decrement, fade, a7840, stagger, ret]
+```
+
+The post, `19eb30`, `19de80` and `19df10` write nothing on the way, and
+`15de0a` reloads `eax`, `ecx` and `edx`, so the call goes straight to
+`19e890` with `15de0a` as its return address. The seat
+(`engine/src/sim_seats/announce.rs`) runs the body over the retail frame;
+its callees stay guest calls:
+
+| Step | Callee |
+|---|---|
+| the row's text `+0xc` and, with flag bit 0, `+0x1c` | `1a0180` (the string), `19e0f0` (formatted with the event) |
+| one line or two | `24cbee`, `24caac` |
+| the timed text `+0x14` for `[row + 0x18]` seconds | `1a0180`, `19e0f0`, `24cc73`; the tick product's `cvtsi2ss`, `mulss`, `fld` and `fistp` in Rust |
+| the announcer | `19e770 (event)` |
+
 The paths that reach further guest systems are not ported yet. Each is
 `unimplemented!("seats: respawn-ready: <decline>")`; no lifted body runs
 in its place:
@@ -347,13 +371,15 @@ in its place:
 | Decline | Where | The guest goes on to |
 |---|---|---|
 | `post` | `b5a70`, network state 4 or 5 | `8b4d0`, the event message (virtual sends, an allocator) |
-| `announce` | `19e890`, a local player | the HUD text (`1a0180`, `19e0f0`, `24caac`, `24cbee`, `24cc73`) and the announcer `19e770` |
 | `every-player` | `19eb30`, event player `-1` | the iterator `19f240`; `15dd40` never builds such an event |
 | `fault` | any read, or a seconds divisor of 0 | the whole call |
 
-`sim.arms` reports `seats.respawn`, its calls answered. `respawn_ready_and_its_callees_match_lifted` puts
-the body and each callee against the lifted functions, and checks each
-decline by the original reaching the decline's address.
+`sim.arms` reports `seats.respawn`, its calls answered.
+`respawn_ready_and_its_callees_match_lifted` puts the body and each callee
+against the lifted functions, checks each decline by the original reaching
+the decline's address, and for an announcement checks the frame at the
+call against the original's and runs `15de0a` against the lifted gate from
+the same state. The seat's own test is `sim_seats::announce`'s.
 
 *The pickup scan.* `1508e0` (`PLAYER_PICKUP_SCAN`, `ret 4`, the argument a
 player index) is called by `players_after` for each player. It is the seat

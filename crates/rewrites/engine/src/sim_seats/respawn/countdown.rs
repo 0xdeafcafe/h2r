@@ -12,12 +12,15 @@
 //!
 //! Every function returns `eax`, `ecx` and `edx` as retail leaves them; the
 //! callee-saved registers are restored by each, and each pops what its
-//! `ret` pops. The paths not ported refuse by name:
+//! `ret` pops. A local player's announcement `19e890` (past its early
+//! exits) is not answered here: [`announce`] records it in [`Mem`]
+//! ([`Announce`]), and the gate calls the seat body
+//! `crate::sim_seats::announce` from the retail frame instead. The paths
+//! not ported refuse by name:
 //!
 //! | Decline | Where | What the guest goes on to do |
 //! |---|---|---|
 //! | [`Decline::Post`] | `b5a70` with the network state 4 or 5 | `8b4d0` queues the event message (virtual sends, an allocator) |
-//! | [`Decline::Announce`] | `19e890` for a local player (`+0x28` set) | the HUD text (`1a0180`, `19e0f0`, `24caac`, ...) and the announcer sound `19e770` |
 //! | [`Decline::EveryPlayer`] | `19eb30` with the event's player `-1` | the player iterator `19f240` |
 
 use super::{Decline, Regs, GAME, MODE, PLAYERS, STRIDE, USERS};
@@ -93,17 +96,60 @@ impl Writes {
     }
 }
 
+/// The announcement `19e890` the death event reaches, with the stores the
+/// call had made by then: the gate calls it from the retail frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Announce {
+    /// `eax`: the event's player.
+    pub player: u32,
+    /// `ecx`: the announcement row.
+    pub row: u32,
+    /// `[esp + 4]`: the event, on the gate's frame.
+    pub event: u32,
+    /// The stores before the call (scratch and live), in order: the
+    /// event's words and anything the post wrote.
+    stores: [(u32, u32, u8); SLOTS],
+    len: u8,
+}
+
+impl Announce {
+    pub fn stores(&self) -> impl Iterator<Item = (u32, u32, u8)> + '_ {
+        self.stores[..usize::from(self.len)].iter().copied()
+    }
+}
+
 /// Guest memory as the call has left it so far.
 pub struct Mem<'g> {
     g: &'g Guest,
     writes: [Write; SLOTS],
     len: usize,
     live: Writes,
+    announced: std::cell::Cell<Option<Announce>>,
 }
 
 impl<'g> Mem<'g> {
     pub fn new(g: &'g Guest) -> Self {
-        Self { g, writes: [Write::default(); SLOTS], len: 0, live: Writes::default() }
+        Self {
+            g,
+            writes: [Write::default(); SLOTS],
+            len: 0,
+            live: Writes::default(),
+            announced: std::cell::Cell::new(None),
+        }
+    }
+
+    /// The announcement the call reached, if any.
+    pub fn announced(&self) -> Option<Announce> {
+        self.announced.get()
+    }
+
+    /// Record the call to `19e890`: the gate makes it.
+    fn announce(&self, player: u32, row: u32, event: u32) {
+        let mut stores = [(0, 0, 0); SLOTS];
+        for (slot, w) in stores.iter_mut().zip(&self.writes[..self.len]) {
+            *slot = (w.addr, w.value, w.size);
+        }
+        self.announced.set(Some(Announce { player, row, event, stores, len: self.len as u8 }));
     }
 
     /// The guest as it was before the call.
@@ -341,8 +387,11 @@ fn team(m: &Mem, players: u32, player: u32) -> Result<u32, Decline> {
 /// `19e890 (player: eax, row: ecx, event)`, `ret 4`: the announcement for
 /// a local player. A player with no local user (`+0x28` is `-1`) returns
 /// before anything is drawn, as does every event but type 0 kind `0x13`
-/// once `[[4e6948] + 0x1128]` is set; the rest is [`Decline::Announce`].
-pub fn announce(m: &Mem, player: u32, _row: u32, event: u32) -> Result<Regs, Decline> {
+/// once `[[4e6948] + 0x1128]` is set. The rest draws and plays: it is
+/// recorded in `m` ([`Mem::announced`]) for the gate to call, and the
+/// registers it returns are the early exit's (the gate's `15de0a` reloads
+/// all three).
+pub fn announce(m: &Mem, player: u32, row: u32, event: u32) -> Result<Regs, Decline> {
     let settings = m.u32(SETTINGS)?;
     let mut eax = (player & 0xffff).wrapping_mul(STRIDE);
     let data = m.u32(m.u32(PLAYERS)?.wrapping_add(0x44))?;
@@ -360,13 +409,11 @@ pub fn announce(m: &Mem, player: u32, _row: u32, event: u32) -> Result<Regs, Dec
     edx = m.u32(MODE)?;
     let quiet = m.u8(edx.wrapping_add(0x1128))?;
     eax = (eax & !0xff) | u32::from(quiet);
-    if quiet == 0 {
-        return Err(Decline::Announce);
-    }
-    if m.u32(event)? != 0 || m.u32(event.wrapping_add(4))? != 0x13 {
+    if quiet != 0 && (m.u32(event)? != 0 || m.u32(event.wrapping_add(4))? != 0x13) {
         return Ok(Regs { eax, ecx, edx });
     }
-    Err(Decline::Announce)
+    m.announce(player, row, event);
+    Ok(Regs { eax, ecx, edx })
 }
 
 /// `19de80 (event: eax, player: esi)`: the player's announcement row, by
