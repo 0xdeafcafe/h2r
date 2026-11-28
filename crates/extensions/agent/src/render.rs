@@ -23,8 +23,6 @@
 //! - `render.scene`: the host's [`SceneSource`] ([`set_scene_source`]).
 //! - `render.parity`: compares one presented reference frame to a private
 //!   rendering of its sealed scene, through the host's [`ParitySource`].
-//! - `render.residual`: what the guest front-end still asks `d3d` to do,
-//!   by caller and producer, over a window of presents ([`residual`]).
 //!
 //! `render.picture.*`: the presented frames, live, in a shared-memory ring
 //! or a JPEG stream ([`picture`]).
@@ -48,7 +46,6 @@ use crate::exec::{Access, Agent, DEFER_TICKS_MAX};
 pub mod clip;
 pub mod picture;
 pub mod private_graph;
-pub mod residual;
 
 /// One draw, as the backend wrapper describes it.
 #[derive(Debug, Clone, Default)]
@@ -1217,14 +1214,6 @@ pub fn add_frame_methods(agent: &Agent, capture: &'static FrameCapture, hosted: 
         };
         reply(serde_json::to_value(hosted.scene(p.dump)?))
     });
-    agent.add_method(method::RENDER_RESIDUAL, Access::Read, move |v| {
-        let p: agent_proto::ResidualParams = if v.is_null() {
-            agent_proto::ResidualParams::default()
-        } else {
-            serde_json::from_value(v).map_err(invalid)?
-        };
-        reply(serde_json::to_value(residual::answer(&p)?))
-    });
     agent.add_game_method(method::RENDER_PARITY, Access::Act, move |v, ctx| {
         let p: ParityParams = serde_json::from_value(v).map_err(invalid)?;
         if !p.arm {
@@ -1957,22 +1946,6 @@ mod frame_scene_tests {
     }
 
     #[test]
-    fn residual_refuses_bad_params_and_says_why_without_the_entry_watch() {
-        // No test here registers the function lookup: the census is not
-        // wired, so even a well-formed request is unavailable.
-        let r = Rig::new();
-        let e = r.call(method::RENDER_RESIDUAL, json!({"top": 0}), 1);
-        assert_eq!(e["error"]["code"], code::INVALID_PARAMS, "{e}");
-        let e = r.call(method::RENDER_RESIDUAL, json!({"arm": {"frames": 0}}), 2);
-        assert_eq!(e["error"]["code"], code::INVALID_PARAMS, "{e}");
-        let e = r.call(method::RENDER_RESIDUAL, json!({"frames": 600}), 3);
-        assert_eq!(e["error"]["code"], code::INVALID_PARAMS, "{e}");
-        let e = r.call(method::RENDER_RESIDUAL, json!({"arm": {"frames": 600}}), 4);
-        assert_eq!(e["error"]["code"], code::UNAVAILABLE, "{e}");
-        assert!(e["error"]["message"].as_str().unwrap().contains("entry watch"), "{e}");
-    }
-
-    #[test]
     fn a_lighting_capture_needs_a_private_renderer_even_with_a_present_writer() {
         let r = Rig::new();
         r.capture.set_writer();
@@ -2004,7 +1977,6 @@ mod frame_scene_tests {
             method::RENDER_CAPTURE,
             method::RENDER_SCENE,
             method::RENDER_PARITY,
-            method::RENDER_RESIDUAL,
         ] {
             assert!(m["result"].as_array().unwrap().contains(&json!(name)), "{name}");
         }
