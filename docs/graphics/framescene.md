@@ -456,9 +456,9 @@ The scene's target select `0x0001cd30` and clear `0x00014b60` make no guest D3D 
 | Call | Decision | Device |
 |---|---|---|
 | `0x0001cd30` | the cached pair `0x0051f3f4`/`f8` unchanged: none; same format and size: `0x003f7b30`; else `0x003f7870`; then the cache words, `al = 1` | `set_render_target_same_size`, `set_render_target` |
-| `0x00014b60` | the game's flags as D3D's (`clear_flags`); the prelude `0x00014ac0` gate set: the body | `clear` |
+| `0x00014b60` | the game's flags as D3D's (`clear_flags`); with the prelude `0x00014ac0`'s gate set, the 640 x 480 screen cleared black between two viewports first (`native_targets::prelude`) | `set_viewport`, `clear` |
 
-One call in 64 runs the body and compares `Device::bound_target` (the pair, and the viewport where the bind keeps it) with the cut's; a difference sends the session back to the body, `scene_kept_<call>_mismatch`. Tests: `a_game_view_makes_no_target_bind`, `a_check_that_differs_falls_back`, `a_call_the_cut_cannot_make_runs_the_guest_body_untouched`.
+No body runs: a call the cut cannot make panics, named `target_select: <cause>` or `scene_clear: <cause>`. Tests: `a_game_view_makes_no_target_bind`, `the_prelude_clears_the_screen_and_puts_the_viewport_back`, `a_refused_call_is_named`.
 
 ### Slice 7: frames outside a game view
 

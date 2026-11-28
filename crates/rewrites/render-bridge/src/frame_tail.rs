@@ -24,10 +24,10 @@
 //! under it do not run. The copy's success is `0x0001fd00`'s write, a
 //! pass the host did not place `0x0001fcd0`'s.
 //!
-//! A tail this does not cover runs the guest's body, counted
-//! `scene_kept_frame_tail_<cause>` ([`setup`]): `host`, `target` (the view's
-//! target is not target 0, or target 0 is not the bound one), `size`,
-//! `window`, `blend`, `unread`. Native tails count `frame_tail_native`,
+//! No guest body runs: a tail this does not cover panics, named
+//! `frame_tail: <cause>` ([`setup`]): `host`, `target` (the view's target
+//! is not target 0, or target 0 is not the bound one), `size`, `window`,
+//! `blend`, `unread`. Native tails count `frame_tail_native`,
 //! `frame_tail_copies`, `frame_tail_composites`; a pass the host did not
 //! place `frame_tail_refused_pass`, and a hold or held texture the GPU
 //! refused `frame_tail_refused_hold` ([`refused`]).
@@ -87,7 +87,7 @@ pub trait Host: Send + Sync {
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
 
-/// Installs the host (boot). Without one every tail runs the guest body.
+/// Installs the host (boot). Without one every tail panics.
 pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
 }
@@ -102,7 +102,6 @@ struct Counts {
     native: AtomicU64,
     copies: AtomicU64,
     composites: AtomicU64,
-    kept: Mutex<BTreeMap<&'static str, u64>>,
     refused: Mutex<BTreeMap<&'static str, u64>>,
 }
 
@@ -131,7 +130,6 @@ pub fn counters() -> Vec<(String, u64)> {
     let map = |m: &Mutex<BTreeMap<&'static str, u64>>, prefix: &str| -> Vec<(String, u64)> {
         m.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, n)| (format!("{prefix}{k}"), *n)).collect()
     };
-    out.extend(map(&c.kept, "scene_kept_frame_tail_"));
     out.extend(map(&c.refused, "frame_tail_refused_"));
     out
 }
@@ -158,7 +156,7 @@ pub struct Setup {
     pub blend: OverlayBlend,
 }
 
-/// The tail's target and state, or why the guest body runs. The copy
+/// The tail's target and state, or the case it does not cover. The copy
 /// reads and the composite writes the view's target `[0x004858b8]`
 /// (`0x00014bc0`): covered when that is target 0 and target 0's colour
 /// `[0x0050935c]` is the bound one (the target select's cache
@@ -366,33 +364,15 @@ fn fault(f: MemFault) -> runtime::GuestFault {
     }
 }
 
-fn original(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    if let Some(original) = ctx.runtime().resolve_original(addr) {
-        return Ok(original.invoke(cpu, ctx, addr));
-    }
-    let event = ctx.emit(runtime::Event::UnsupportedTarget { pc: cpu.eip, target: addr, kind: runtime::abi::JUMP, route: runtime::abi::ENTRY });
-    Ok(runtime::TransferAbi::fault(event))
-}
-
 /// `0x00013b90`'s entry: the setup, then `0x0001fd20` as the guest's call
 /// and [`finish`] at its return, which returns to the tail's caller with
 /// its callee-saved registers as they came in.
-fn tail_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+fn tail_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
     COUNTS.calls.fetch_add(1, Ordering::Relaxed);
-    let Some(host) = host() else {
-        bump(&COUNTS.kept, "host");
-        return original(cpu, ctx, addr);
-    };
+    let host = host().unwrap_or_else(|| crate::native_targets::unhandled("frame_tail", "host"));
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
-    let target = match setup(&*mem) {
-        Ok(s) => s,
-        Err(cause) => {
-            drop(mem);
-            bump(&COUNTS.kept, cause);
-            return original(cpu, ctx, addr);
-        }
-    };
+    let target = setup(&*mem).unwrap_or_else(|cause| crate::native_targets::unhandled("frame_tail", cause));
     COUNTS.native.fetch_add(1, Ordering::Relaxed);
     let (esp, ret) = (cpu.esp, mem.u32(cpu.esp)?);
     let saved = (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp);
@@ -540,7 +520,7 @@ mod tests {
         assert!(counters().iter().any(|(k, n)| k == "frame_tail_refused_pass" && *n >= 1));
     }
 
-    /// Each case the tail does not cover is named; the guest body runs it.
+    /// Each case the tail does not cover is named.
     #[test]
     fn uncovered_tails_are_refused_by_name() {
         let refused = |f: &dyn Fn(&mut FlatMemory)| {

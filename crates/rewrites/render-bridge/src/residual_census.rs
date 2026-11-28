@@ -216,9 +216,9 @@ pub enum Status {
     /// (`native_layers::layer_return`). Its work here is only those items'.
     /// The present is kept the same way: a published frame returns without
     /// its body, a kept one (`publish_kept_<cause>`) runs it. So are the
-    /// frame's own rows (`views`, `outside_view`, `frame_loop`): their view
-    /// setup and view end run the body only when refused
-    /// (`scene_kept_view_setup_<cause>`, `scene_kept_view_end_<cause>`).
+    /// frame's own rows (`views`, `outside_view`, `frame_loop`): their own
+    /// guest code runs, its only D3D the view setup and view end, which are
+    /// Rust with no guest body (`render_bridge::view_setup`).
     Kept,
     /// Still drawn by the guest front-end through `d3d`.
     D3d,
@@ -419,9 +419,8 @@ pub const REGISTRY: &[Row] = &[
     // `outside_render` in the frame loops outside it.
     //
     // `render_views`' begin-frame setup and its loop over the views. Its
-    // only D3D was the view setup and view end (`render_bridge::view_setup`):
-    // a setup or end the cut refuses runs the body, counted
-    // `scene_kept_view_setup_<cause>`, so its work here is only those.
+    // only D3D was the view setup and view end (`render_bridge::view_setup`),
+    // Rust with no guest body, so it has no D3D work here.
     Row {
         name: "views",
         entry: 0x0002_b5d0,
@@ -1551,7 +1550,7 @@ mod tests {
         assert!(!p.contains_key(&Producer::OutsideRender), "nothing of the loop is outside the render");
         assert_eq!(present.status(), Status::Kept);
         for name in ["views", "outside_view", "frame_loop"] {
-            assert_eq!(producer(name).status(), Status::Kept, "{name}: the view setup's refusals only");
+            assert_eq!(producer(name).status(), Status::Kept, "{name}: its own guest code, no D3D of its own");
         }
     }
 

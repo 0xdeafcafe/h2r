@@ -21,7 +21,7 @@ impl<B: d3d::Backend + Send + 'static> Targets<B> {
     fn refused(&self, what: &str, e: d3d::D3dError) -> bool {
         let mut logged = self.logged.lock().unwrap_or_else(|e| e.into_inner());
         if !std::mem::replace(&mut *logged, true) {
-            eprintln!("native-targets: the device refused {what}: {e} (the guest body runs; logged once)");
+            eprintln!("native-targets: the device refused {what}: {e} (logged once)");
         }
         false
     }
@@ -70,6 +70,13 @@ impl<B: d3d::Backend + Send + 'static> Host for Targets<B> {
         let made = device.set_render_state(&mut DeviceMemory(mem), slot, value);
         drop(device);
         made.map_or_else(|e| self.refused("a render state", e), |()| true)
+    }
+
+    fn simple_state(&self, mem: &mut dyn GuestMemory, header: u32, value: u32) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        let made = device.set_render_state_simple(&mut DeviceMemory(mem), header, value);
+        drop(device);
+        made.map_or_else(|e| self.refused("a simple render state", e), |()| true)
     }
 
     fn stored_state(&self, mem: &dyn GuestMemory, slot: u32) -> Option<u32> {

@@ -23,6 +23,7 @@ enum Op {
     Bind(Bind, u32, u32),
     Viewport([u32; 6]),
     Clear(u32, u32),
+    Simple(u32, u32),
 }
 
 #[derive(Default)]
@@ -30,7 +31,6 @@ struct Device {
     ops: Mutex<Vec<Op>>,
     constants: Mutex<BTreeMap<usize, [u32; 4]>>,
     states: Mutex<BTreeMap<u32, u32>>,
-    bound: Mutex<[u32; 8]>,
     refuse_states: bool,
 }
 
@@ -43,8 +43,6 @@ impl Device {
 impl Host for Device {
     fn bind(&self, _: &mut dyn GuestMemory, bind: Bind, colour: u32, depth: u32) -> bool {
         self.ops.lock().unwrap().push(Op::Bind(bind, colour, depth));
-        let mut b = self.bound.lock().unwrap();
-        (b[0], b[1]) = (colour, depth);
         true
     }
     fn clear(&self, _: &mut dyn GuestMemory, flags: u32, colour: u32, _z: u32, _stencil: u32) -> bool {
@@ -52,7 +50,7 @@ impl Host for Device {
         true
     }
     fn bound(&self) -> Option<[u32; 8]> {
-        Some(*self.bound.lock().unwrap())
+        None
     }
     fn render_state(&self, _: &mut dyn GuestMemory, slot: u32, value: u32) -> bool {
         if self.refuse_states {
@@ -62,8 +60,9 @@ impl Host for Device {
         self.states.lock().unwrap().insert(slot, value);
         true
     }
-    fn stored_state(&self, _: &dyn GuestMemory, slot: u32) -> Option<u32> {
-        self.states.lock().unwrap().get(&slot).copied()
+    fn simple_state(&self, _: &mut dyn GuestMemory, header: u32, value: u32) -> bool {
+        self.ops.lock().unwrap().push(Op::Simple(header, value));
+        true
     }
     fn constants(&self, mem: &mut dyn GuestMemory, register: u32, data: u32, dwords: u32) -> bool {
         let words: Vec<u32> = (0..dwords).map(|i| mem.u32(data + 4 * i).unwrap()).collect();
@@ -73,9 +72,6 @@ impl Host for Device {
         }
         self.ops.lock().unwrap().push(Op::Constants(register, words));
         true
-    }
-    fn constant(&self, r: usize) -> Option<[u32; 4]> {
-        self.constants.lock().unwrap().get(&r).copied()
     }
     fn make_space(&self, _: &mut dyn GuestMemory, minimum: u32, requested: u32) -> Option<u32> {
         self.ops.lock().unwrap().push(Op::Space(minimum, requested));
@@ -88,7 +84,6 @@ impl Host for Device {
     fn viewport(&self, mem: &mut dyn GuestMemory, at: u32) -> bool {
         let v: [u32; 6] = std::array::from_fn(|i| mem.u32(at + 4 * i as u32).unwrap());
         self.ops.lock().unwrap().push(Op::Viewport(v));
-        self.bound.lock().unwrap()[2..].copy_from_slice(&v);
         true
     }
 }
@@ -205,7 +200,7 @@ fn view_kind_two_is_the_square() {
     let t = transform(&m, VIEW).unwrap();
     assert_eq!(f32::from_bits(t[32]), 1.0);
     assert_eq!(f32::from_bits(t[35]), 1.5, "(2 + 1) / 2, no offset");
-    assert_eq!(viewport(&m, VIEW).unwrap(), [0, 0, 0x80, 0x80, 0, 1f32.to_bits()]);
+    assert_eq!(viewport(&m, VIEW, 0).unwrap(), [0, 0, 0x80, 0x80, 0, 1f32.to_bits()]);
 }
 
 /// `0x00131ed0` packs red, green and blue as bytes, each rounded to
@@ -221,31 +216,110 @@ fn the_clear_colour_packs_as_the_guest_rounds() {
     assert_eq!(pack(&m, 0x0050_0000).unwrap() >> 16, 0, "out of range: the indefinite's low byte");
 }
 
-/// A setup the plan does not cover is refused by name, before anything
-/// is written.
+/// View kind 1 draws to target `0x12`: the cache's surface on the view's
+/// depth, the select's flag 0, and no prelude.
 #[test]
-fn uncovered_setups_are_refused_by_name() {
-    let refused = |edit: &dyn Fn(&mut FlatMemory)| {
-        let mut m = mem();
-        edit(&mut m);
-        let before = m.bytes(CONTEXT, 16).unwrap();
-        let cause = plan(&m, VIEW).unwrap_err();
-        assert_eq!(m.bytes(CONTEXT, 16).unwrap(), before);
-        cause
-    };
-    assert_eq!(refused(&|m| m.set_u16(VIEW + 2, 1).unwrap()), "target");
-    assert_eq!(refused(&|m| { m.set_u8(VIEW + 7, 1).unwrap(); set_f(m, SCALE, 0.75) }), "scale");
-    assert_eq!(refused(&|m| m.set_u8(VIEW + 7, 1).unwrap()), "prelude", "a clear at scale 1 with the prelude's byte");
-    let restore = |m: &mut FlatMemory| {
-        m.set_u32(DRAW_STATE + 0x24, 0x0050_0000).unwrap();
-        m.set_u16(0x0050_0000 + 0x11c, 1 << 9).unwrap();
-    };
-    assert_eq!(refused(&restore), "restore");
-    let effect = |m: &mut FlatMemory| {
-        m.set_u8(VIEW + 0x26c, 1).unwrap();
-        m.set_u32(VIEW + 0x1b8, 3).unwrap();
-    };
-    assert_eq!(refused(&effect), "fog_effect");
+fn view_kind_one_draws_to_the_cached_target() {
+    let mut m = mem();
+    m.set_u16(VIEW + 2, 1).unwrap();
+    m.set_u8(VIEW + 7, 1).unwrap();
+    let record = TARGET_CACHE + CACHED_TARGET * TARGET_RECORD;
+    m.set_u32(record + 0x88, 1).unwrap();
+    m.set_i32(record + 0x78, 64).unwrap();
+    let dev = Device::default();
+    let s = plan_of(&m);
+    assert_eq!((s.colour, s.depth, s.flag), (record + 0x18, DEPTH, 0));
+    apply(&mut m, &dev, &s, STACK).unwrap();
+    assert_eq!(m.u32(TARGET).unwrap(), CACHED_TARGET);
+    assert_eq!(m.u8(native_targets::CACHE_FLAG).unwrap(), 0);
+    let ops = dev.ops();
+    assert_eq!(ops[3], Op::Bind(Bind::Full, record + 0x18, DEPTH));
+    assert_eq!(ops[5], Op::Clear(0xf3, 0x00ff_8000), "no prelude off target 0");
+    m.set_u8(record + 0x95, 1).unwrap();
+    assert_eq!(plan_of(&m).colour, 0, "an off record: no surface");
+}
+
+/// The viewport takes the clamped scale off the screen target, and is the
+/// 640 x 480 screen on it with the view's `+7`.
+#[test]
+fn the_viewport_scales_the_window() {
+    let mut m = mem();
+    m.set_u8(VIEW + 7, 1).unwrap();
+    set_f(&mut m, SCALE, 0.75);
+    assert_eq!(viewport(&m, VIEW, 0).unwrap(), [0, 0, 480, 360, 0, 1f32.to_bits()]);
+    set_f(&mut m, SCALE, 0.1);
+    assert_eq!(viewport(&m, VIEW, 0).unwrap()[2..4], [320, 240], "clamped at the floor");
+    m.set_u16(VIEW + 0x4a, 3).unwrap();
+    set_f(&mut m, SCALE, 0.75);
+    assert_eq!(viewport(&m, VIEW, 0).unwrap()[..3], [2, 0, 477], "truncated: 2.25, 637 * 0.75");
+    m.set_u32(SCREEN_B.0, 1).unwrap();
+    assert_eq!(screen_target(&m).unwrap(), 0x12);
+    assert_eq!(viewport(&m, VIEW, CACHED_TARGET).unwrap(), [0, 0, 640, 480, 0, 1f32.to_bits()], "the screen target");
+    m.set_u8(VIEW + 7, 0).unwrap();
+    assert_eq!(viewport(&m, VIEW, CACHED_TARGET).unwrap()[..4], [3, 0, 637, 480], "scale 1 on the screen target");
+    m.set_u32(SCREEN_A.0, 1).unwrap();
+    assert_eq!(screen_target(&m).unwrap(), 0x14);
+}
+
+/// A clear at target 0 with the view's `+7` makes the prelude first: the
+/// screen's colour cleared black between two viewports.
+#[test]
+fn a_wide_clear_makes_the_prelude() {
+    let mut m = mem();
+    m.set_u8(VIEW + 7, 1).unwrap();
+    let dev = Device::default();
+    apply(&mut m, &dev, &plan_of(&m), STACK).unwrap();
+    let ops = dev.ops();
+    let screen = [0, 0, 640, 480, 0, 1f32.to_bits()];
+    assert_eq!(ops[4..9], [Op::Viewport(screen), Op::Viewport(screen), Op::Clear(0xf0, 0), Op::Viewport([0; 6]), Op::Clear(0xf3, 0x00ff_8000)]);
+}
+
+/// The draw state's restore list, after the fill mode: a simple state
+/// through its push header, a deferred one's dirty bits, a setter.
+#[test]
+fn the_restore_list_is_made_after_the_fill_mode() {
+    let mut m = mem();
+    let (implementation, states, list) = (0x0050_0000, 0x0050_1000, 0x0050_2000);
+    m.set_u32(DRAW_STATE + 0x24, implementation).unwrap();
+    m.set_u16(implementation + 0x11c, 3 << 9 | 2).unwrap();
+    m.set_u32(DRAW_STATE + 0x20, states).unwrap();
+    m.set_u32(states + 0x14, list).unwrap();
+    let entries: [(u8, u32); 3] = [(3, 0x11), (0x60, 0x22), (0x8b, 0x33)];
+    for (i, (slot, value)) in entries.iter().enumerate() {
+        let e = list + 10 + 5 * i as u32;
+        m.set_u8(e, *slot).unwrap();
+        m.write(e + 1, &value.to_le_bytes()).unwrap();
+    }
+    m.set_u32(SIMPLE_HEADERS + 4 * 3, 0x0004_0300).unwrap();
+    m.set_u32(DEFERRED_BITS + 4 * 0x60, 0x80).unwrap();
+    m.set_u32(DEFERRED_DIRTY, 1).unwrap();
+    let s = plan_of(&m);
+    assert_eq!(
+        s.restore,
+        [
+            Restore::Simple { slot: 3, header: 0x0004_0300, value: 0x11 },
+            Restore::Deferred { slot: 0x60, bits: 0x80, value: 0x22 },
+            Restore::Setter { slot: 0x8b, value: 0x33 },
+        ]
+    );
+    let dev = Device::default();
+    apply(&mut m, &dev, &s, STACK).unwrap();
+    let ops = dev.ops();
+    assert_eq!(ops[6..9], [Op::State(SLOT_FILL_MODE, SOLID), Op::Simple(0x0004_0300, 0x11), Op::State(0x8b, 0x33)]);
+    assert_eq!((m.u32(RENDER_STATES + 4 * 3).unwrap(), m.u32(RENDER_STATES + 4 * 0x60).unwrap()), (0x11, 0x22));
+    assert_eq!(m.u32(DEFERRED_DIRTY).unwrap(), 0x81);
+    assert_eq!(m.u32(DRAW_STATE + 0x24).unwrap(), 0, "the reset after the list");
+}
+
+/// A fog effect is the caller's last call; the setup plans the rest.
+#[test]
+fn a_fog_effect_is_called_last() {
+    let mut m = mem();
+    m.set_u8(VIEW + 0x26c, 1).unwrap();
+    m.set_u32(VIEW + 0x1b8, 3).unwrap();
+    assert!(plan_of(&m).fog_effect);
+    m.set_u32(VIEW + 0x1b8, u32::MAX).unwrap();
+    assert!(!plan_of(&m).fog_effect);
 }
 
 /// With the view's fog: its block copied into the context, its constants
@@ -289,37 +363,14 @@ fn a_full_push_buffer_asks_for_room() {
     assert_eq!(dev.ops()[2], Op::PushViewport(PUSH));
 }
 
-/// A refused device call stops the cut where the body picks up.
+/// A refused device call is named.
 #[test]
-fn a_refused_call_leaves_the_rest_to_the_body() {
+fn a_refused_call_is_named() {
     let mut m = mem();
     let dev = Device { refuse_states: true, ..Default::default() };
     let plan = plan_of(&m);
     assert_eq!(apply(&mut m, &dev, &plan, STACK), Err("device"));
     assert!(dev.ops().is_empty());
-}
-
-/// A check passes on the state the cut leaves and fails on any word,
-/// constant or target that differs.
-#[test]
-fn a_check_compares_the_guest_bodys_state() {
-    let mut m = mem();
-    let dev = Device::default();
-    let s = plan_of(&m);
-    let before = dev.bound().unwrap();
-    let bind = native_targets::select(&m, s.colour, s.depth).unwrap();
-    apply(&mut m, &dev, &s, STACK).unwrap();
-    let want = expected(before, bind, &s);
-    assert_eq!(check(&m, &dev, &s, want), Ok(()));
-    dev.constants.lock().unwrap().insert(9, [0; 4]);
-    assert_eq!(check(&m, &dev, &s, want), Err("c[9]".into()));
-    let dev2 = Device::default();
-    apply(&mut m, &dev2, &s, STACK).unwrap();
-    m.set_u32(DRAW_STATE + 0x10, 1).unwrap();
-    assert!(check(&m, &dev2, &s, want).unwrap_err().starts_with("the words"));
-    let arm = Arm::new("check_setup");
-    assert!(!arm.prove(Err("c[9]".into())));
-    assert!(arm.fallen_back());
 }
 
 /// The view end clears alpha with the gate above 1 and pops the stack; the
@@ -330,15 +381,13 @@ fn the_view_end_clears_alpha_and_pops() {
     let dev = Device::default();
     m.set_i32(ALPHA_GATE, 2).unwrap();
     m.set_i32(VIEW_STACK, 2).unwrap();
-    assert_eq!(end_begin(&mut m, Some(&dev as &dyn Host)), Ok(Some(VIEW_RECORDS + VIEW_SIZE)));
+    assert_eq!(end_begin(&mut m, &dev), Ok(Some(VIEW_RECORDS + VIEW_SIZE)));
     assert_eq!(dev.ops(), [Op::Clear(0x80, 0)]);
     assert_eq!(m.i32(VIEW_STACK).unwrap(), 1);
     m.set_i32(ALPHA_GATE, 1).unwrap();
     m.set_i32(VIEW_STACK, 0).unwrap();
-    assert_eq!(end_begin(&mut m, Some(&dev as &dyn Host)), Ok(None), "the last view: nothing left to set up");
+    assert_eq!(end_begin(&mut m, &dev), Ok(None), "the last view: nothing left to set up");
     assert_eq!(dev.ops().len(), 1, "no clear at 1");
-    m.set_i32(ALPHA_GATE, 2).unwrap();
-    assert_eq!(end_begin(&mut m, None), Err("host"));
 }
 
 /// After the setup, the end copies the view's kind, fog block and camera.
