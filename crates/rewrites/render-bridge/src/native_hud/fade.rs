@@ -213,7 +213,10 @@ fn target(mem: &dyn GuestMemory) -> [u32; 2] {
 /// The hook at the fade's entry, before its scope opens: the cut's `ret`.
 pub(super) fn enter(c: &mut Call<'_>) -> TransferAbi {
     let rt = std::sync::Arc::clone(c.ctx.runtime());
-    let fade = match read(&*rt.memory()) {
+    // The memory guard is dropped before `ret` locks it again: a guard in
+    // the match scrutinee lives to the end of the match and deadlocks.
+    let read = read(&*rt.memory());
+    let fade = match read {
         // The body tests its mode and returns.
         Ok(None) => return c.ret(0).unwrap_or_else(|_| unimplemented!("fade: return")),
         Ok(Some(fade)) => fade,
