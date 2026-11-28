@@ -7,7 +7,7 @@ pub use gfx::renderer::RenderScale;
 pub use crate::lighting::shadow_scale;
 
 /// The largest whole render scale: 6x of 640x480 is 3840x2880.
-pub const MAX_SCALE: u32 = 6;
+pub use gfx::external::MAX_SCALE;
 
 /// Parses the integer scale `H2_RENDER_SCALE`. Empty is 1.
 pub fn render_scale_from(value: Option<&str>) -> Result<u32, String> {

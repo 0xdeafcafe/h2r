@@ -1,33 +1,26 @@
 //! The Forge monitors' bodies in the frame graph (docs/game/
 //! forge-monitor-appearance.md, ML4). The game publishes a [`Set`]
 //! ([`crate::bodies::publish`]); each game view of the frame gets one
-//! stage after the last op of its own slots, with the markers' place
+//! stage after its last stage, with the markers' place
 //! (after the transparents and the post passes, before the overlay). The
 //! stage skins each body's model at its pose and draws it on the scene's
 //! colour and depth with the view's view-projection, against the guest's
 //! W-buffer (`model_gpu`, the D24 rule), inside the view's viewport.
-//!
-//! A frame with no published set, no usable camera for a view, or a depth
-//! that is not a 24-bit W-buffer plans no stage and replays as before.
 
-use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use d3d::backend::{
-    ExternalAttachments, ExternalPass, ExternalPassRequest, ExternalPlan, ExternalSurfaces,
-    SceneStage,
-};
-use d3d::scene_sink::{ReplayFrame, ReplayOp};
-use frame_scene::{D24_SCALE, FrameScene, RenderCamera, TargetRef, ViewKind};
-use gfx::D3DFormat;
-use gfx::external::ExternalEncoded;
+use frame_scene::RenderCamera;
+use frame_types::{Slot, SlotAt};
+use gfx::external::{ExternalAttachments, ExternalEncoded};
 
-use super::markers::last_ops;
+use super::{Cameras, guest_rect, last_stages, nothing, texel_viewport};
 use crate::bodies::{self, BodyModel, Set};
 use crate::gpu::{DepthRule, PassViewport};
 use crate::instances::ObjectInput;
 use crate::model::NodeMatrix;
 use crate::model_gpu::GpuModels;
+use crate::program::ViewInputs;
+use crate::stage::{FrameOp, Stage, StageWork};
 
 /// One device's uploaded models, kept across frames. The published
 /// `BodyModel`s are held here as long as the device is, so a pointer match
@@ -71,88 +64,36 @@ impl Uploaded {
     }
 }
 
-/// The body stage to apply after the op at each index of `frame`, from the
-/// set the game last published. Empty when there is none.
-pub(crate) fn plan(scene: &FrameScene, frame: &ReplayFrame) -> HashMap<usize, ReplayOp> {
-    let mut after = HashMap::new();
+/// The body stage of each game view, by the index of the op it follows,
+/// from the set the game last published. Empty when there is none.
+pub(crate) fn plan(ops: &[FrameOp], cameras: &Cameras) -> Vec<(usize, SlotAt, Box<dyn Stage>)> {
     let Some(set) = bodies::published() else {
-        return after;
+        return Vec::new();
     };
-    let (Some(colour), Some(depth)) = (frame.colour, frame.depth) else {
-        return after;
-    };
-    if depth.format != D3DFormat::D24S8 as u32 && depth.format != D3DFormat::LinD24S8 as u32 {
-        return after;
+    let mut out = Vec::new();
+    for (i, view) in last_stages(ops, Slot::in_game_view) {
+        let Some(camera) = cameras.get(view) else { continue };
+        let Some(rect) = guest_rect(&camera) else { continue };
+        let stage = BodyStage { set: Arc::clone(&set), camera, rect };
+        out.push((i, SlotAt { slot: Slot::AfterPost, view }, Box::new(stage) as Box<dyn Stage>));
     }
-    for (i, view) in last_ops(frame) {
-        let Some(v) = scene
-            .views
-            .iter()
-            .find(|v| v.key.kind == ViewKind::Game && v.key.view == view)
-        else {
-            continue;
-        };
-        let camera = v.camera;
-        if !camera.is_usable() {
-            continue;
-        }
-        let [top, left, bottom, right] = camera.viewport.map(|x| u32::try_from(x).unwrap_or(0));
-        let (Some(width), Some(height)) = (
-            right.checked_sub(left).filter(|&w| w > 0),
-            bottom.checked_sub(top).filter(|&h| h > 0),
-        ) else {
-            continue;
-        };
-        let stage = BodyStage {
-            set: Arc::clone(&set),
-            camera,
-        };
-        after.insert(
-            i,
-            ReplayOp::Stage(SceneStage {
-                surfaces: ExternalSurfaces {
-                    color: TargetRef::SceneColour,
-                    depth: TargetRef::SceneDepth,
-                    sampled: vec![],
-                    slots: vec![],
-                    slot_sizes: vec![],
-                },
-                request: ExternalPassRequest {
-                    rect: (left, top, width, height),
-                    surface_size: (colour.width, colour.height),
-                    display_projection_factor: 1.0,
-                    z_scale: D24_SCALE,
-                },
-                plan: ExternalPlan {
-                    stage: timeline::native::Stage::Objects,
-                    view: u32::from(view),
-                    ranges: set.bodies.len(),
-                    slots: vec![],
-                },
-                pass: Arc::new(Mutex::new(Box::new(stage) as Box<dyn ExternalPass>)),
-            }),
-        );
-    }
-    after
+    out
 }
 
 /// One view's bodies.
 struct BodyStage {
     set: Arc<Set>,
     camera: RenderCamera,
+    rect: (u32, u32, u32, u32),
 }
 
-impl ExternalPass for BodyStage {
-    fn replays_scene(&self) -> bool {
-        true
+impl Stage for BodyStage {
+    fn name(&self) -> &'static str {
+        "bodies"
     }
 
-    fn record_encoded(
-        &mut self,
-        target: &ExternalAttachments,
-        request: ExternalPassRequest,
-    ) -> Option<Result<ExternalEncoded, &'static str>> {
-        Some(self.encode_on(target, request))
+    fn record(&mut self, t: &ExternalAttachments, _: &ViewInputs) -> StageWork {
+        StageWork::Encoded(self.encode_on(t).unwrap_or_else(|_| nothing()))
     }
 }
 
@@ -165,26 +106,9 @@ struct Placed {
 }
 
 impl BodyStage {
-    fn encode_on(
-        &self,
-        target: &ExternalAttachments,
-        request: ExternalPassRequest,
-    ) -> Result<ExternalEncoded, &'static str> {
-        let (gx, gy, gw, gh) = request.rect;
-        let (sw, sh) = request.surface_size;
-        if sw == 0 || sh == 0 {
-            return Err("body stage has an empty surface");
-        }
-        let (kx, ky) = (
-            target.size.0 as f32 / sw as f32,
-            target.size.1 as f32 / sh as f32,
-        );
-        let viewport = PassViewport {
-            x: gx as f32 * kx,
-            y: gy as f32 * ky,
-            width: gw as f32 * kx,
-            height: gh as f32 * ky,
-        };
+    fn encode_on(&self, target: &ExternalAttachments) -> Result<ExternalEncoded, &'static str> {
+        let [x, y, width, height] = texel_viewport(self.rect, target.size);
+        let viewport = PassViewport { x, y, width, height };
         let slot = uploaded_for(&target.device, &target.queue);
         let mut placed = Vec::new();
         {

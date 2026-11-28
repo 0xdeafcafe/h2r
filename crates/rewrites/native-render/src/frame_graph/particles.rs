@@ -1,34 +1,28 @@
 //! GPU particle systems in the frame graph (docs/graphics/native-particles.md,
 //! "The frame graph's particle stage"). The game publishes a [`Set`]
 //! ([`crate::particle_set::publish`]); each game view of the frame gets
-//! one stage in slot 9 ([`SLOT`], the transparents and effects), after the
-//! view's last op before the sorted transparents `0x0001e370`: the last of
-//! its carried slots up to `AfterLights`, which spans slots 5 to 9. The
+//! one stage in slot 9 (the transparents and effects), after the view's
+//! last stage before the sorted transparents `0x0001e370`: the last of its
+//! slots up to `AfterLights`, which spans slots 5 to 9. The
 //! stage mirrors each system's births (`GpuParticles::mirror`) and draws
 //! it with `ParticleDraw::w_buffered` on the scene's colour and depth,
 //! with the view's camera, inside its viewport, sampling the system's
 //! bitmap tag image.
-//!
-//! A frame with no published set, no usable camera for a view, a view
-//! with no op before its sorted transparents, or a depth that is not a
-//! 24-bit W-buffer plans no stage and replays as before.
 
-use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use d3d::backend::{
-    ExternalAttachments, ExternalPass, ExternalPassRequest, ExternalPlan, ExternalSurfaces,
-    SceneStage,
-};
-use d3d::scene_sink::{ReplayFrame, ReplayOp};
-use frame_scene::{D24_SCALE, FrameScene, RenderCamera, Slot, TargetRef, ViewKind};
-use gfx::D3DFormat;
-use gfx::external::ExternalEncoded;
+use frame_scene::RenderCamera;
+use frame_types::{Slot, SlotAt};
+use gfx::external::{ExternalAttachments, ExternalEncoded};
 use wgpu::util::DeviceExt;
 
 use crate::particle_compute::{Blend, DrawBinding, GpuParticles, ParticleCompute, ParticleDraw};
 use crate::particle_set::{self, Set, SpriteBitmap};
 use crate::particle_system::MAX_CAPACITY;
+use crate::program::ViewInputs;
+use crate::stage::{FrameOp, Stage, StageWork};
+
+use super::{Cameras, guest_rect, last_stages, nothing, texel_viewport};
 
 
 /// One device's kernels, pipelines and sprite textures, kept across
@@ -89,116 +83,34 @@ impl Held {
     }
 }
 
-/// For each guest view with game-view ops, the index of its last op
-/// before the sorted transparents (carried `Transparents`) and the view:
-/// where its particle stage goes, in slot 9.
-pub(super) fn effects_ops(frame: &ReplayFrame) -> Vec<(usize, u8)> {
-    let mut seen = HashSet::new();
-    let mut out: Vec<(usize, u8)> = frame
-        .ops
-        .iter()
-        .enumerate()
-        .rev()
-        .filter(|(_, (at, op))| {
-            matches!(at.slot, Slot::Opaque | Slot::AfterOpaque | Slot::AfterLights)
-                && !op.is_marker()
-                && seen.insert(at.view)
-        })
-        .map(|(i, (at, _))| (i, at.view))
-        .collect();
-    out.reverse();
-    out
+/// The slots before a view's sorted transparents: its particle stage
+/// follows the last stage in them.
+fn before_transparents(slot: Slot) -> bool {
+    matches!(slot, Slot::Opaque | Slot::AfterOpaque | Slot::AfterLights)
 }
 
-/// The particle stage to apply after the op at each index of `frame`,
-/// from the set the game last published. Empty when there is none.
-pub(crate) fn plan(scene: &FrameScene, frame: &ReplayFrame) -> HashMap<usize, ReplayOp> {
+/// The particle stage of each game view, by the index of the op it
+/// follows, from the set the game last published. Empty when there is none.
+pub(crate) fn plan(ops: &[FrameOp], cameras: &Cameras) -> Vec<(usize, SlotAt, Box<dyn Stage>)> {
     let Some(set) = particle_set::published() else {
-        return HashMap::new();
+        return Vec::new();
     };
-    stages(&set, scene, frame)
+    stages(&set, ops, cameras)
         .into_iter()
-        .map(|(i, placed)| (i, placed.op()))
+        .map(|(i, view, stage)| (i, SlotAt { slot: Slot::AfterLights, view }, Box::new(stage) as Box<dyn Stage>))
         .collect()
 }
 
-/// One view's stage before it is boxed: where it draws and what.
-struct Placed {
-    view: u8,
-    rect: (u32, u32, u32, u32),
-    surface: (u32, u32),
-    stage: ParticleStage,
-}
-
-impl Placed {
-    fn op(self) -> ReplayOp {
-        let (left, top, width, height) = self.rect;
-        let ranges = self.stage.set.systems.iter().filter(|s| !s.births.is_empty()).count();
-        ReplayOp::Stage(SceneStage {
-            surfaces: ExternalSurfaces {
-                color: TargetRef::SceneColour,
-                depth: TargetRef::SceneDepth,
-                sampled: vec![],
-                slots: vec![],
-                slot_sizes: vec![],
-            },
-            request: ExternalPassRequest {
-                rect: (left, top, width, height),
-                surface_size: self.surface,
-                display_projection_factor: 1.0,
-                z_scale: D24_SCALE,
-            },
-            plan: ExternalPlan {
-                stage: timeline::native::Stage::Effects,
-                view: u32::from(self.view),
-                ranges,
-                slots: vec![],
-            },
-            pass: Arc::new(Mutex::new(Box::new(self.stage) as Box<dyn ExternalPass>)),
-        })
-    }
-}
-
 /// Each view's stage for `set`, by the index of the op it follows.
-fn stages(set: &Arc<Set>, scene: &FrameScene, frame: &ReplayFrame) -> Vec<(usize, Placed)> {
-    let mut out = Vec::new();
+fn stages(set: &Arc<Set>, ops: &[FrameOp], cameras: &Cameras) -> Vec<(usize, u8, ParticleStage)> {
     if !set.draws() {
-        return out;
+        return Vec::new();
     }
-    let (Some(colour), Some(depth)) = (frame.colour, frame.depth) else {
-        return out;
-    };
-    if depth.format != D3DFormat::D24S8 as u32 && depth.format != D3DFormat::LinD24S8 as u32 {
-        return out;
-    }
-    for (i, view) in effects_ops(frame) {
-        let Some(v) = scene
-            .views
-            .iter()
-            .find(|v| v.key.kind == ViewKind::Game && v.key.view == view)
-        else {
-            continue;
-        };
-        let camera = v.camera;
-        if !camera.is_usable() {
-            continue;
-        }
-        let [top, left, bottom, right] = camera.viewport.map(|x| u32::try_from(x).unwrap_or(0));
-        let (Some(width), Some(height)) = (
-            right.checked_sub(left).filter(|&w| w > 0),
-            bottom.checked_sub(top).filter(|&h| h > 0),
-        ) else {
-            continue;
-        };
-        out.push((
-            i,
-            Placed {
-                view,
-                rect: (left, top, width, height),
-                surface: (colour.width, colour.height),
-                stage: ParticleStage { set: Arc::clone(set), camera },
-            },
-        ));
+    let mut out = Vec::new();
+    for (i, view) in last_stages(ops, before_transparents) {
+        let Some(camera) = cameras.get(view) else { continue };
+        let Some(rect) = guest_rect(&camera) else { continue };
+        out.push((i, view, ParticleStage { set: Arc::clone(set), camera, rect }));
     }
     out
 }
@@ -207,19 +119,16 @@ fn stages(set: &Arc<Set>, scene: &FrameScene, frame: &ReplayFrame) -> Vec<(usize
 struct ParticleStage {
     set: Arc<Set>,
     camera: RenderCamera,
+    rect: (u32, u32, u32, u32),
 }
 
-impl ExternalPass for ParticleStage {
-    fn replays_scene(&self) -> bool {
-        true
+impl Stage for ParticleStage {
+    fn name(&self) -> &'static str {
+        "particles"
     }
 
-    fn record_encoded(
-        &mut self,
-        target: &ExternalAttachments,
-        request: ExternalPassRequest,
-    ) -> Option<Result<ExternalEncoded, &'static str>> {
-        Some(self.encode_on(target, request))
+    fn record(&mut self, t: &ExternalAttachments, _: &ViewInputs) -> StageWork {
+        StageWork::Encoded(self.encode_on(t).unwrap_or_else(|_| nothing()))
     }
 }
 
@@ -232,21 +141,8 @@ struct Drawn {
 }
 
 impl ParticleStage {
-    fn encode_on(
-        &self,
-        target: &ExternalAttachments,
-        request: ExternalPassRequest,
-    ) -> Result<ExternalEncoded, &'static str> {
-        let (gx, gy, gw, gh) = request.rect;
-        let (sw, sh) = request.surface_size;
-        if sw == 0 || sh == 0 {
-            return Err("particle stage has an empty surface");
-        }
-        let (kx, ky) = (
-            target.size.0 as f32 / sw as f32,
-            target.size.1 as f32 / sh as f32,
-        );
-        let viewport = [gx as f32 * kx, gy as f32 * ky, gw as f32 * kx, gh as f32 * ky];
+    fn encode_on(&self, target: &ExternalAttachments) -> Result<ExternalEncoded, &'static str> {
+        let viewport = texel_viewport(self.rect, target.size);
         let device = &target.device;
         let view = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("particle view"),
@@ -326,25 +222,24 @@ impl ParticleStage {
 
 #[cfg(test)]
 mod tests {
-    use frame_scene::ViewSlot;
-    /// The slot every system draws in: 9, with the transparents and effects.
-    const SLOT: ViewSlot = ViewSlot::Transparents;
     use super::*;
     use crate::gpu::Image;
     use crate::particle_set::System;
     use crate::particle_system::Spawn;
-    use frame_scene::{AuxTarget, SceneBuilder, SceneId, SlotAt, Stamp, ViewKey};
-    use gfx::Clear;
+    use frame_scene::{SceneBuilder, SceneId, Stamp, ViewKey, ViewKind};
 
-    fn op(slot: Slot, view: u8) -> (SlotAt, ReplayOp) {
-        (
-            SlotAt { slot, view },
-            ReplayOp::Clear {
-                colour: TargetRef::SceneColour,
-                depth: TargetRef::None,
-                clear: Clear::NONE,
-            },
-        )
+    struct Named;
+    impl Stage for Named {
+        fn name(&self) -> &'static str {
+            "named"
+        }
+        fn record(&mut self, _: &ExternalAttachments, _: &ViewInputs) -> StageWork {
+            unimplemented!("test: record")
+        }
+    }
+
+    fn op(slot: Slot, view: u8) -> FrameOp {
+        FrameOp::Stage { slot: SlotAt { slot, view }, stage: Box::new(Named) }
     }
 
     fn camera() -> RenderCamera {
@@ -360,40 +255,30 @@ mod tests {
         }
     }
 
-    /// A scene of game views 0 and 1.
-    fn scene() -> FrameScene {
+    /// The cameras of game views 0 and 1.
+    fn cameras() -> Cameras {
         let mut b = SceneBuilder::default();
         b.begin(SceneId::default());
         for view in [0, 1] {
             b.open_view(ViewKey { kind: ViewKind::Game, player: view, view }, camera()).unwrap();
         }
-        (*b.seal(Stamp::default()).unwrap()).clone()
+        Cameras::of(&b.seal(Stamp::default()).unwrap(), None)
     }
 
-    /// Two views, each through its slots to the overlay, on a D24 W-buffer.
-    fn frame() -> ReplayFrame {
-        frame_on(D3DFormat::D24S8)
-    }
-
-    fn frame_on(depth: D3DFormat) -> ReplayFrame {
-        let target = |format: D3DFormat, depth| AuxTarget { width: 640, height: 480, format: format as u32, depth };
-        ReplayFrame {
-            ops: vec![
-                op(Slot::Outside, 0),
-                op(Slot::Opaque, 0),
-                op(Slot::AfterLights, 0),
-                op(Slot::Transparents, 0),
-                op(Slot::AfterPost, 0),
-                op(Slot::Opaque, 1),
-                op(Slot::AfterOpaque, 1),
-                op(Slot::AfterLights, 1),
-                op(Slot::Transparents, 1),
-                op(Slot::Overlay, 1),
-            ],
-            colour: Some(target(D3DFormat::A8R8G8B8, false)),
-            depth: Some(target(depth, true)),
-            ..Default::default()
-        }
+    /// Two views, each through its slots to the overlay.
+    fn ops() -> Vec<FrameOp> {
+        vec![
+            op(Slot::Outside, 0),
+            op(Slot::Opaque, 0),
+            op(Slot::AfterLights, 0),
+            op(Slot::Transparents, 0),
+            op(Slot::AfterPost, 0),
+            op(Slot::Opaque, 1),
+            op(Slot::AfterOpaque, 1),
+            op(Slot::AfterLights, 1),
+            op(Slot::Transparents, 1),
+            op(Slot::Overlay, 1),
+        ]
     }
 
     fn system(bitmap: &Arc<SpriteBitmap>, births: usize) -> System {
@@ -411,32 +296,27 @@ mod tests {
     }
 
     #[test]
-    fn a_published_system_draws_once_a_view_in_slot_9_with_its_sprite() {
+    fn a_published_system_draws_once_a_view_before_its_sorted_transparents() {
         let sprite = bitmap(0xe5a0_0010);
         let set = Arc::new(Set { systems: vec![system(&sprite, 3)] });
-        let (scene, frame) = (scene(), frame());
-        let placed = stages(&set, &scene, &frame);
-        let at: Vec<(usize, u8)> = placed.iter().map(|(i, p)| (*i, p.view)).collect();
-        assert_eq!(at, [(2, 0), (7, 1)], "one stage a view, after its last op before the sorted list");
-        for (i, p) in &placed {
-            let (slot, next) = (frame.ops[*i].0.slot, frame.ops[i + 1].0);
-            assert_eq!(ViewSlot::carried(slot).last(), Some(&SLOT), "the op it follows ends in slot 9");
-            assert_eq!(ViewSlot::carried(next.slot).first(), Some(&SLOT), "the next starts in slot 9");
-            assert_eq!(next.view, p.view);
-            assert_eq!(SLOT.number(), Some(9));
+        let placed = stages(&set, &ops(), &cameras());
+        let at: Vec<(usize, u8)> = placed.iter().map(|(i, v, _)| (*i, *v)).collect();
+        assert_eq!(at, [(2, 0), (7, 1)]);
+        for (_, _, p) in &placed {
             assert_eq!(p.rect, (0, 0, 640, 480));
-            let systems = &p.stage.set.systems;
-            assert_eq!(systems.len(), 1);
-            assert!(Arc::ptr_eq(&systems[0].bitmap, &sprite), "the system's own bitmap, not a bound texture");
-            assert_eq!(systems[0].bitmap.tag, 0xe5a0_0010);
+            assert!(Arc::ptr_eq(&p.set.systems[0].bitmap, &sprite), "the system's own bitmap");
         }
-        let ops: HashMap<usize, ReplayOp> = placed.into_iter().map(|(i, p)| (i, p.op())).collect();
-        for i in [2, 7] {
-            let Some(ReplayOp::Stage(stage)) = ops.get(&i) else { panic!("no stage after op {i}") };
-            assert_eq!(stage.plan.stage, timeline::native::Stage::Effects);
-            assert_eq!(stage.plan.ranges, 1);
-            assert_eq!((stage.surfaces.color, stage.surfaces.depth), (TargetRef::SceneColour, TargetRef::SceneDepth));
-        }
+    }
+
+    #[test]
+    fn no_system_no_stage() {
+        let (ops, cameras) = (ops(), cameras());
+        assert!(stages(&Arc::new(Set::default()), &ops, &cameras).is_empty(), "no system");
+        let empty = Arc::new(Set { systems: vec![system(&bitmap(1), 0)] });
+        assert!(stages(&empty, &ops, &cameras).is_empty(), "a system with no birth");
+        let set = Arc::new(Set { systems: vec![system(&bitmap(1), 1)] });
+        let menu = vec![op(Slot::Outside, 0), op(Slot::Overlay, 0)];
+        assert!(stages(&set, &menu, &cameras).is_empty(), "no game view");
     }
 
     #[test]
@@ -445,7 +325,7 @@ mod tests {
         use wgpu::{BlendFactor as F, ColorWrites as W};
         let sprite = bitmap(2);
         let systems = Blend::ALL.into_iter().map(|blend| System { blend, ..system(&sprite, 1) }).collect();
-        let placed = stages(&Arc::new(Set { systems }), &scene(), &frame());
+        let placed = stages(&Arc::new(Set { systems }), &ops(), &cameras());
         assert_eq!(placed.len(), 2);
         // (blend, SRCBLEND, DESTBLEND, COLORWRITEENABLE, program, alpha
         // test, the W-buffered entry), from each pass's implementation 0.
@@ -455,8 +335,8 @@ mod tests {
             (Blend::MultiplyAdd, F::One, F::OneMinusSrcAlpha, W::COLOR, Program::ColourAlpha, true, "fs_w_colour_alpha_tested"),
             (Blend::Glass, F::One, F::OneMinusSrcAlpha, W::ALL, Program::OwnAlpha, false, "fs_w_own_alpha"),
         ];
-        for (_, p) in &placed {
-            let blends: Vec<Blend> = p.stage.set.systems.iter().map(|s| s.blend).collect();
+        for (_, _, p) in &placed {
+            let blends: Vec<Blend> = p.set.systems.iter().map(|s| s.blend).collect();
             assert_eq!(blends, Blend::ALL, "each system keeps its blend");
         }
         for (blend, src, dst, mask, program, test, entry) in want {
@@ -468,19 +348,5 @@ mod tests {
             assert_eq!(plan.fragments[1], entry, "{blend:?}: the stage's draw is W-buffered");
             assert_eq!(plan.fragments[0], entry.replacen("fs_w", "fs", 1), "{blend:?}");
         }
-    }
-
-    #[test]
-    fn no_system_no_pass() {
-        let (scene, frame) = (scene(), frame());
-        assert!(stages(&Arc::new(Set::default()), &scene, &frame).is_empty(), "no system");
-        let empty = Arc::new(Set { systems: vec![system(&bitmap(1), 0)] });
-        assert!(stages(&empty, &scene, &frame).is_empty(), "a system with no birth");
-        let set = Arc::new(Set { systems: vec![system(&bitmap(1), 1)] });
-        assert!(stages(&set, &scene, &frame).len() == 2, "a birth: a stage a view");
-        assert!(stages(&set, &scene, &frame_on(D3DFormat::D16)).is_empty(), "not a D24 W-buffer");
-        let menu = ReplayFrame { ops: vec![op(Slot::Outside, 0), op(Slot::Overlay, 0)], ..frame };
-        assert!(stages(&set, &scene, &menu).is_empty(), "no game view");
-        assert!(effects_ops(&ReplayFrame::default()).is_empty());
     }
 }

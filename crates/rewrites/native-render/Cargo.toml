@@ -9,7 +9,7 @@ license.workspace = true
 default = ["gpu"]
 # The map loader and the wgpu pass. Without it only the pure parts
 # (world, camera, cull, skip) build: what the feature crate's hooks need.
-gpu = ["dep:mem-watch", "dep:assets", "dep:map", "dep:tags", "dep:wgpu", "dep:shaders", "dep:gfx", "dep:d3d", "dep:pollster", "dep:background", "dep:timeline"]
+gpu = ["dep:mem-watch", "dep:assets", "dep:map", "dep:tags", "dep:wgpu", "dep:shaders", "dep:gfx", "dep:pollster", "dep:background", "dep:timeline"]
 # Seeded differential tests of the object lighting and model-row ports
 # against the lifted original (tests/*_differential.rs; need the user's
 # XBE). The lifter they run is a dev-dependency.
@@ -28,7 +28,6 @@ tags = { workspace = true, optional = true }
 wgpu = { version = "30", optional = true }
 shaders = { path = "../../formats/shaders", optional = true }
 gfx = { path = "../../platform/gfx", optional = true }
-d3d = { path = "../../platform/d3d", optional = true }
 pollster = { version = "1", optional = true }
 bytemuck = { version = "1", features = ["derive"] }
 # Reads the map's font tags into text::FontFace (text.rs).

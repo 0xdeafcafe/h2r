@@ -1,105 +1,45 @@
-//! A game view rendered from the scene sealed at its present (FrameScene
-//! slice 6). The sink records guest work at its original position, including
-//! copies and reads of intermediate render targets. A slot boundary alone
-//! never ends an attachment pass: two slots can draw into the same open
-//! pass. Display and capture use the same recording path and separate
-//! attachments. Only display hands its final target to the presenter.
+//! The frame graph (docs/graphics/native-renderer.md, "How a frame
+//! flows"): walks a [`Frame`]'s ops in order on [`Targets`]. A bind sets
+//! the attachments, a clear and a copy are their own commands, and each
+//! [`Stage`] records on the bound attachments with its view's inputs. The
+//! graph adds its own stages after each game view's last op: the GPU
+//! particles ([`particles`]), the Forge monitors' bodies ([`bodies`]) and
+//! the marker skin ([`markers`]).
+//!
+//! A display frame between ticks ([`display_rate`]) is the newer frame
+//! drawn again with each view's camera blended from the frame before.
 
 pub mod display_rate;
 mod bodies;
-mod cones;
-mod inputs;
-pub use inputs::{freeze_display_inputs, freeze_scaled_inputs};
-mod lighting;
 mod markers;
 mod particles;
-mod private;
-mod sun;
-pub mod passes;
 pub mod targets;
-pub use cones::ConeDraws;
-pub use lighting::{E3Report, PassWork};
-pub use sun::{RECEIVER_DEPTH_BIAS, SunSkip};
 
-use std::ops::Range;
-use std::sync::Arc;
+use std::collections::HashMap;
 
-use d3d::gfx_backend::TileWork;
-use d3d::gfx_backend::{BatchStats, GuestDrawPass};
-use d3d::scaled::{ScaledBackend, ScaledScenePass, ScaledSurface, ScaledTexture};
-use d3d::scene_sink::{ReplayFrame, ReplayOp, Retarget, Retargeted};
-use d3d::threaded::owner::Outputs;
-use d3d::{GfxBackend, Lighting};
-use frame_scene::{FrameScene, SceneId, TargetRef, summary_hash};
+use frame_scene::{D24_SCALE, FrameScene, RenderCamera, SceneId, ViewKind, summary_hash};
+use frame_types::{Slot, SlotAt, TargetRef};
+use gfx::Clear;
+use gfx::external::{ExternalAttachments, ExternalDraws, TargetCopy};
 
-/// One run of draws and clears on the same attachments. The operations
-/// retain their original slot and view in `ReplayFrame::ops`. A return to
-/// a target after a copy starts a new row. A logical row can encode more
-/// than one hardware pass, for example for a pixel-count query.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PassRow {
-    pub colour: TargetRef,
-    pub depth: TargetRef,
-    pub ops: Range<usize>,
-}
+use crate::lighting::Lighting;
+use crate::program::ViewInputs;
+use crate::stage::{Frame, FrameOp, Stage, StageWork};
+pub use targets::{GUEST, Target, Targets};
 
-pub type ReadColour = Result<([u32; 2], Vec<u8>), String>;
-
-/// Called at the end of the row, before any later op runs. Only an
-/// observer that actually invokes the closure reads pixels back.
-pub trait PassObserver {
-    fn pass_end(
-        &mut self,
-        index: usize,
-        row: &PassRow,
-        read_colour: &mut dyn FnMut() -> ReadColour,
-    );
-}
-
-/// Submitted work for this draw of the sealed scene. A private capture
-/// returns its own report and does not publish it as a displayed frame.
+/// What a draw of a frame submitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameReport {
     pub id: SceneId,
     pub lighting: Lighting,
-    /// Present for a completed draw using the E3 mode.
-    pub e3: Option<E3Report>,
-    pub render_passes: u64,
+    /// Stages recorded, the graph's own included.
+    pub stages: u32,
     pub draws: u64,
+    pub render_passes: u64,
     pub submits: u64,
-    /// The targets the frame's ops draw, read or present
-    /// ([`targets::declare`]).
-    pub targets: u32,
-    /// The graph's passes for the frame, thirteen per game view and the
-    /// overlay's three ([`passes::plan`]).
-    pub passes: u32,
 }
 
-impl FrameReport {
-    fn new(
-        id: SceneId,
-        lighting: Lighting,
-        e3: Option<E3Report>,
-        replay: &ReplayFrame,
-        before: BatchStats,
-        after: BatchStats,
-    ) -> Self {
-        let declared = targets::declare(replay);
-        Self {
-            id,
-            lighting,
-            e3,
-            targets: declared.len() as u32,
-            passes: passes::plan(replay, &declared).len() as u32,
-            render_passes: after.render_passes - before.render_passes,
-            draws: after.draws - before.draws,
-            submits: after.submits - before.submits,
-        }
-    }
-}
-
-/// Pixels returned by the private draw. The tick and hash come from the
-/// same immutable scene whose commands produced these pixels.
+/// Pixels of a private draw, with the scene they came from.
 pub struct CapturedFrame {
     pub size: [u32; 2],
     pub rgba: Vec<u8>,
@@ -108,422 +48,394 @@ pub struct CapturedFrame {
     pub report: FrameReport,
 }
 
-/// Logical pass cuts shared by input preservation and armed observers.
-/// Recording streams ops to the encoder, whose pending list merges
-/// adjacent draws on compatible attachments.
-fn pass_rows(frame: &ReplayFrame) -> Vec<PassRow> {
-    let mut rows = Vec::new();
-    let mut current: Option<PassRow> = None;
-    let mut bound = None;
-    for (i, (_, op)) in frame.ops.iter().enumerate() {
-        // An object shadow's mark draws nothing and does not cut a row.
-        if op.is_marker() {
+/// Each game view's camera for one draw: the scene's own, or blended from
+/// the scene before for a display frame.
+pub struct Cameras {
+    views: Vec<(u8, RenderCamera)>,
+}
+
+impl Cameras {
+    /// `b`'s cameras, blended from `a` by `alpha` when given.
+    pub fn of(b: &FrameScene, from: Option<(&FrameScene, f32)>) -> Self {
+        let blended = from.map(|(a, alpha)| frame_scene::blend::blend(a, b, alpha));
+        let views = b
+            .views
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.key.kind == ViewKind::Game)
+            .map(|(i, v)| {
+                let camera = blended.as_ref().and_then(|bl| bl.cameras.get(i).copied()).unwrap_or(v.camera);
+                (v.key.view, camera)
+            })
+            .collect();
+        Self { views }
+    }
+
+    pub fn get(&self, view: u8) -> Option<RenderCamera> {
+        self.views.iter().find(|(v, _)| *v == view).map(|(_, c)| *c)
+    }
+
+    /// Every game view's camera as drawn, in the scene's order.
+    pub fn drawn(&self) -> Vec<RenderCamera> {
+        self.views.iter().map(|(_, c)| *c).collect()
+    }
+}
+
+/// A game view's viewport in the game's pixels, `(x, y, width, height)`,
+/// for a usable camera.
+pub(crate) fn guest_rect(camera: &RenderCamera) -> Option<(u32, u32, u32, u32)> {
+    if !camera.is_usable() {
+        return None;
+    }
+    let [top, left, bottom, right] = camera.viewport.map(|x| u32::try_from(x).unwrap_or(0));
+    let width = right.checked_sub(left).filter(|&w| w > 0)?;
+    let height = bottom.checked_sub(top).filter(|&h| h > 0)?;
+    Some((left, top, width, height))
+}
+
+/// `rect` in the game's pixels as a viewport on a target of `size`.
+pub(crate) fn texel_viewport(rect: (u32, u32, u32, u32), size: (u32, u32)) -> [f32; 4] {
+    let (kx, ky) = (size.0 as f32 / GUEST.0 as f32, size.1 as f32 / GUEST.1 as f32);
+    let (x, y, w, h) = rect;
+    [x as f32 * kx, y as f32 * ky, w as f32 * kx, h as f32 * ky]
+}
+
+/// For each game view with stages, the index of its last stage whose slot
+/// passes `keep`: where a graph stage of that view goes.
+pub(crate) fn last_stages(ops: &[FrameOp], keep: impl Fn(Slot) -> bool) -> Vec<(usize, u8)> {
+    let mut out: Vec<(usize, u8)> = Vec::new();
+    for (i, op) in ops.iter().enumerate() {
+        let FrameOp::Stage { slot, .. } = op else { continue };
+        if !keep(slot.slot) {
             continue;
         }
-        let attachments = match op {
-            ReplayOp::Bind { colour, depth } => {
-                bound = Some((*colour, *depth));
-                // A repeated bind at a slot transition contributes no work.
-                continue;
-            }
-            ReplayOp::Draw { .. } => bound,
-            ReplayOp::Stage(stage) => Some((stage.surfaces.color, stage.surfaces.depth)),
-            ReplayOp::Clear { colour, depth, .. } | ReplayOp::ClearRects { colour, depth, .. } => {
-                Some((*colour, *depth))
-            }
-            // Transfers, samples and queries must see all preceding work.
-            _ => None,
+        match out.iter_mut().find(|(_, v)| *v == slot.view) {
+            Some(last) => last.0 = i,
+            None => out.push((i, slot.view)),
+        }
+    }
+    out
+}
+
+/// The graph's own stages, by the index of the op they follow, in the
+/// order they draw there.
+fn graph_stages(ops: &[FrameOp], cameras: &Cameras) -> HashMap<usize, Vec<(SlotAt, Box<dyn Stage>)>> {
+    let mut after: HashMap<usize, Vec<(SlotAt, Box<dyn Stage>)>> = HashMap::new();
+    let mut add = |stages: Vec<(usize, SlotAt, Box<dyn Stage>)>| {
+        for (i, at, stage) in stages {
+            after.entry(i).or_default().push((at, stage));
+        }
+    };
+    add(particles::plan(ops, cameras));
+    add(bodies::plan(ops, cameras));
+    add(markers::plan(ops, cameras));
+    after
+}
+
+/// The work of a graph stage with nothing to draw this frame.
+pub(crate) fn nothing() -> gfx::external::ExternalEncoded {
+    gfx::external::ExternalEncoded { ranges: 0, draws: 0, passes: 0, commands: Box::new(|_| {}) }
+}
+
+/// The device and arena one draw records with.
+pub(crate) struct Gpu<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub uploads: &'a gfx::ring::UploadPool,
+}
+
+/// One draw of a frame: its encoder, upload arena and the persistent
+/// ranges written ahead of it, submitted whole or split where two stages
+/// write one range with different bytes.
+struct Walk<'a, 'g> {
+    gpu: &'a Gpu<'g>,
+    targets: &'a mut Targets,
+    lighting: Lighting,
+    encoder: wgpu::CommandEncoder,
+    arena: gfx::ring::SubmissionUploads,
+    written: HashMap<(wgpu::Buffer, u64), Vec<u8>>,
+    bound: (TargetRef, TargetRef),
+    report: FrameReport,
+}
+
+impl<'a, 'g> Walk<'a, 'g> {
+    fn new(gpu: &'a Gpu<'g>, targets: &'a mut Targets, lighting: Lighting, id: SceneId) -> Self {
+        Self {
+            gpu,
+            targets,
+            lighting,
+            encoder: gpu.device.create_command_encoder(&Default::default()),
+            arena: gpu.uploads.begin(),
+            written: HashMap::new(),
+            bound: (TargetRef::SceneColour, TargetRef::SceneDepth),
+            report: FrameReport { id, lighting, stages: 0, draws: 0, render_passes: 0, submits: 0 },
+        }
+    }
+
+    fn target(&mut self, r: TargetRef) -> Option<Target> {
+        self.targets.get(self.gpu.device, r)
+    }
+
+    fn submit(&mut self) {
+        let encoder = std::mem::replace(&mut self.encoder, self.gpu.device.create_command_encoder(&Default::default()));
+        let uploads = self.arena.upload_commands(self.gpu.queue);
+        self.gpu.queue.submit(uploads.into_iter().chain([encoder.finish()]));
+        self.arena = self.gpu.uploads.begin();
+        self.written.clear();
+        self.report.submits += 1;
+    }
+
+    fn op(&mut self, op: &mut FrameOp, view: &dyn Fn(SlotAt, (u32, u32)) -> ViewInputs) {
+        match op {
+            FrameOp::Bind { colour, depth } => self.bound = (*colour, *depth),
+            FrameOp::Clear { colour, depth, clear } => self.clear(*colour, *depth, *clear),
+            FrameOp::Copy { from, to } => self.copy(*from, *to),
+            FrameOp::Stage { slot, stage } => self.stage(*slot, &mut **stage, view),
+        }
+    }
+
+    fn clear(&mut self, colour: TargetRef, depth: TargetRef, clear: Clear) {
+        let (c, d) = (self.target(colour), self.target(depth));
+        if c.is_none() && d.is_none() {
+            return;
+        }
+        let colour_ops = wgpu::Operations {
+            load: clear.color.map_or(wgpu::LoadOp::Load, |[r, g, b, a]| {
+                wgpu::LoadOp::Clear(wgpu::Color { r: r.into(), g: g.into(), b: b.into(), a: a.into() })
+            }),
+            store: wgpu::StoreOp::Store,
         };
-        if let Some((colour, depth)) = attachments {
-            if let Some(row) = current.as_mut()
-                && (colour, depth) == (row.colour, row.depth)
-            {
-                row.ops.end = i + 1;
-                continue;
+        let depth_ops = wgpu::Operations {
+            load: clear.depth.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+            store: wgpu::StoreOp::Store,
+        };
+        let stencil_ops = wgpu::Operations {
+            load: clear.stencil.map_or(wgpu::LoadOp::Load, |s| wgpu::LoadOp::Clear(u32::from(s))),
+            store: wgpu::StoreOp::Store,
+        };
+        let _ = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("frame clear"),
+            color_attachments: &[c.as_ref().map(|c| wgpu::RenderPassColorAttachment {
+                view: &c.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: colour_ops,
+            })],
+            depth_stencil_attachment: d.as_ref().map(|d| wgpu::RenderPassDepthStencilAttachment {
+                view: &d.view,
+                depth_ops: Some(depth_ops),
+                stencil_ops: d.format.has_stencil_aspect().then_some(stencil_ops),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        self.report.render_passes += 1;
+    }
+
+    fn copy(&mut self, from: TargetRef, to: TargetRef) {
+        let (Some(from), Some(to)) = (self.target(from), self.target(to)) else {
+            return;
+        };
+        let size = wgpu::Extent3d {
+            width: from.size.0.min(to.size.0),
+            height: from.size.1.min(to.size.1),
+            depth_or_array_layers: 1,
+        };
+        self.encoder.copy_texture_to_texture(from.texture.as_image_copy(), to.texture.as_image_copy(), size);
+    }
+
+    fn stage(&mut self, slot: SlotAt, stage: &mut dyn Stage, view: &dyn Fn(SlotAt, (u32, u32)) -> ViewInputs) {
+        if stage.lighting_only().is_some_and(|m| m != self.lighting) {
+            return;
+        }
+        let (colour, depth) = self.bound;
+        let Some(c) = self.target(colour) else {
+            unimplemented!("frame graph: stage {} with no colour bound", stage.name())
+        };
+        // A colour-only bind (the overlay) gives its stages the scene's
+        // depth, which they leave unattached.
+        let depth = if depth == TargetRef::None { TargetRef::SceneDepth } else { depth };
+        let d = self.target(depth).expect("scene depth");
+        let attachments = ExternalAttachments {
+            targets: (gfx::surface::SurfaceId(0), gfx::surface::SurfaceId(1)),
+            uploads: self.arena.clone(),
+            device: self.gpu.device.clone(),
+            queue: self.gpu.queue.clone(),
+            color: c.view.clone(),
+            color_format: c.format,
+            depth: d.view.clone(),
+            depth_format: d.format,
+            size: c.size,
+            sampled: Vec::new(),
+            slots: Vec::new(),
+            stages: [None, None, None, None],
+            single_display: true,
+            lighting: self.lighting,
+            copy: TargetCopy::Display,
+        };
+        let inputs = view(slot, c.size);
+        self.report.stages += 1;
+        match stage.record(&attachments, &inputs) {
+            StageWork::Draws(draws) => self.draws(&c, &d, draws, stage.name()),
+            StageWork::Encoded(encoded) => {
+                (encoded.commands)(&mut self.encoder);
+                self.report.draws += encoded.draws as u64;
+                self.report.render_passes += encoded.passes as u64;
             }
-            if let Some(row) = current.replace(PassRow {
-                colour,
-                depth,
-                ops: i..i + 1,
-            }) {
-                rows.push(row);
-            }
-        } else if let Some(row) = current.take() {
-            rows.push(row);
         }
     }
-    rows.extend(current);
-    rows
-}
 
-trait FramePass {
-    fn apply(&mut self, op: &ReplayOp) -> Result<(), String>;
-    fn read_target(&mut self, target: TargetRef) -> ReadColour;
-    /// E3's shadow tiles, on a pass that draws them.
-    fn tile_work(&self) -> Option<TileWork> {
-        None
-    }
-}
-
-impl FramePass for GuestDrawPass<'_> {
-    fn apply(&mut self, op: &ReplayOp) -> Result<(), String> {
-        GuestDrawPass::apply(self, op)
-    }
-    fn read_target(&mut self, target: TargetRef) -> ReadColour {
-        GuestDrawPass::read_target(self, target)
-    }
-    fn tile_work(&self) -> Option<TileWork> {
-        GuestDrawPass::tile_work(self)
-    }
-}
-
-impl FramePass for ScaledScenePass<'_> {
-    fn apply(&mut self, op: &ReplayOp) -> Result<(), String> {
-        ScaledScenePass::apply(self, op)
-    }
-    fn read_target(&mut self, target: TargetRef) -> ReadColour {
-        ScaledScenePass::read_target(self, target)
-    }
-}
-
-/// E3's sun tiles for one draw of `replay` on `device`
-/// ([`sun`]): `None` in any other mode, so retail replays every op.
-fn sun_tiles(
-    device: &wgpu::Device,
-    scene: &FrameScene,
-    replay: &ReplayFrame,
-    scale: u32,
-    lighting: Lighting,
-) -> Option<sun::SunReplay> {
-    if lighting != Lighting::E3 {
-        return None;
-    }
-    let models = crate::sun_casters::models_for(scene.id.map_epoch);
-    let models = models
-        .as_deref()
-        .map(|m| m as &dyn crate::sun_casters::CasterModels);
-    let world = crate::sun_casters::world_for(scene.id.map_epoch);
-    let world = world
-        .as_deref()
-        .map(|w| w as &dyn crate::sun_casters::WorldReceivers);
-    sun::plan(device, scene, replay, scale, models, world)
-}
-
-fn record(
-    pass: &mut impl FramePass,
-    scene: &FrameScene,
-    frame: &ReplayFrame,
-    fresh_targets: bool,
-    lighting: Lighting,
-    observer: Option<&mut dyn PassObserver>,
-    sun_replay: Option<sun::SunReplay>,
-    mut retarget: Option<&mut Retarget>,
-) -> Result<Option<E3Report>, String> {
-    // The graph replays the guest's layers in both modes. Only work
-    // submitted by the E3 stages belongs to these four pass rows.
-    let mut e3 = (lighting == Lighting::E3).then(E3Report::default);
-    // The marker skin: a stage after each game view's last op, before the
-    // overlay (`markers`).
-    let marker_stages = markers::plan(scene, frame);
-    // The Forge monitors' bodies, in the markers' place and drawn first
-    // (`bodies`).
-    let body_stages = bodies::plan(scene, frame);
-    // The GPU particle systems, in slot 9 before the sorted transparents
-    // (`particles`).
-    let particle_stages = particles::plan(scene, frame);
-    let rows = observer
-        .as_ref()
-        .map(|_| pass_rows(frame))
-        .unwrap_or_default();
-    let mut rows = rows.into_iter().enumerate().peekable();
-    let mut observer = observer;
-    // Ranges of the chosen lights' stages this draw recorded (`e3.lights`).
-    let mut chosen = 0u32;
-    // The cone shadows the shadowed chosen lights read (`cones`).
-    let cone_replay = cones::plan(scene, frame, lighting);
-    let ran = (|| -> Result<(), String> {
-        for (i, (at, op)) in frame.ops.iter().enumerate() {
-            let named = |e: String| format!("view {} {} op {i}: {e}", at.view, at.slot.name());
-            // A display frame between ticks: the op on the blended camera.
-            let moved = retarget.as_deref_mut().map(|r| r.op(*at, op));
-            let op = moved.as_ref().map_or(op, Retargeted::get);
-            // A stage of one lighting mode (the renderer's chosen lights
-            // beyond the guest's) draws only in that mode.
-            let mode = stage_mode(op);
-            let other_mode = mode.is_some_and(|m| m != lighting);
-            // A shadowed chosen light whose cone is not drawn is kept.
-            let cone_kept = cone_replay.as_ref().is_some_and(|c| c.skip.contains(&i));
-            // An admitted object shadow's ops: its sun stage stands in.
-            if !other_mode && !cone_kept && !sun_replay.as_ref().is_some_and(|s| s.skip[i]) {
-                // A shadowed chosen light: its cone's term first.
-                if let Some(stage) = cone_replay.as_ref().and_then(|c| c.before.get(&i)) {
-                    pass.apply(stage).map_err(named)?;
-                }
-                pass.apply(op).map_err(named)?;
-                if let (Some(_), ReplayOp::Stage(stage)) = (mode, op) {
-                    chosen += stage.plan.ranges as u32;
-                }
-            }
-            for stage in sun_replay.as_ref().and_then(|s| s.after.get(&i)).into_iter().flatten() {
-                pass.apply(stage).map_err(named)?;
-            }
-            if let Some(stage) = particle_stages.get(&i) {
-                pass.apply(stage).map_err(named)?;
-            }
-            if let Some(stage) = body_stages.get(&i) {
-                pass.apply(stage).map_err(named)?;
-            }
-            if let Some(stage) = marker_stages.get(&i) {
-                pass.apply(stage).map_err(named)?;
-            }
-            if let Some((index, row)) = rows.next_if(|(_, row)| row.ops.end == i + 1)
-                && let Some(observer) = observer.as_deref_mut()
-            {
-                observer.pass_end(index, &row, &mut || {
-                    if fresh_targets
-                        && let Some(reason) = frame.private_read_refusal(row.ops.end, row.colour)
-                    {
-                        return Err(reason.into());
-                    }
-                    pass.read_target(row.colour)
-                });
-            }
+    fn draws(&mut self, c: &Target, d: &Target, draws: ExternalDraws, name: &str) {
+        if draws.packets.is_empty() {
+            return;
         }
-        Ok(())
-    })();
-    if let Some(s) = &sun_replay {
-        s.finish(ran.is_ok());
+        // A range already written this submission with other bytes: the
+        // work before reads the old bytes, so it goes first.
+        let clash = draws
+            .writes
+            .iter()
+            .any(|(b, o, bytes)| self.written.get(&(b.clone(), *o)).is_some_and(|held| held != bytes));
+        if clash {
+            self.submit();
+        }
+        for (buffer, offset, bytes) in draws.writes {
+            self.arena.write_front(self.gpu.device, self.gpu.queue, &buffer, offset, &bytes);
+            self.written.insert((buffer, offset), bytes);
+        }
+        let mut pass = self.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some(name),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &c.view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &d.view,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
+                stencil_ops: d.format.has_stencil_aspect().then_some(wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                }),
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        if let Err(e) = gfx::renderer::encode_in_pass(&mut pass, &draws.packets) {
+            unimplemented!("frame graph: stage {name} packets: {e}");
+        }
+        drop(pass);
+        self.report.draws += draws.packets.len() as u64;
+        self.report.render_passes += 1;
     }
-    ran?;
-    if let (Some(report), Some(tiles)) = (e3.as_mut(), pass.tile_work()) {
-        report.add_tiles(tiles);
+}
+
+/// The inputs a stage in `slot` gets on a target of `size`: its game
+/// view's camera, or none outside a game view.
+fn view_inputs(cameras: &Cameras, slot: SlotAt, size: (u32, u32)) -> ViewInputs {
+    let camera = slot.slot.in_game_view().then(|| cameras.get(slot.view)).flatten();
+    match camera {
+        Some(camera) => ViewInputs { guest_size: GUEST, ..ViewInputs::from_camera(&camera, size) },
+        None => ViewInputs {
+            constants: std::array::from_fn(|_| [0.0; 4]),
+            guest_size: GUEST,
+            size,
+            z_scale: D24_SCALE,
+            w_clip: None,
+        },
     }
-    if let (Some(report), Some(s)) = (e3.as_mut(), &sun_replay) {
-        report.add_sun(s.work());
+}
+
+/// Draws `frame` on `targets` with `cameras` and submits it.
+pub(crate) fn walk(
+    gpu: &Gpu<'_>,
+    targets: &mut Targets,
+    frame: &mut Frame,
+    cameras: &Cameras,
+    lighting: Lighting,
+) -> FrameReport {
+    if lighting == Lighting::E3 {
+        unimplemented!("frame graph: E3 sun tiles and cone shadows, which read the guest's object shadows");
     }
-    if let Some(report) = e3.as_mut() {
-        let lit = crate::light_choice::choose(scene);
-        report.add_choice(&lit);
-        report.add_cones(crate::cone_shadows::choose(scene, &lit).work);
-        report.add_chosen(chosen);
-        if let Some(c) = &cone_replay {
-            report.add_cone_draws(c.work());
+    let Frame { scene, ops, .. } = frame;
+    let mut extra = graph_stages(ops, cameras);
+    let view = |slot: SlotAt, size: (u32, u32)| view_inputs(cameras, slot, size);
+    let mut walk = Walk::new(gpu, targets, lighting, scene.id);
+    for (i, op) in ops.iter_mut().enumerate() {
+        walk.op(op, &view);
+        for (slot, mut stage) in extra.remove(&i).unwrap_or_default() {
+            walk.stage(slot, &mut *stage, &view);
         }
     }
-    Ok(e3)
+    walk.submit();
+    walk.report
 }
 
-/// The one lighting mode `op` draws in: a scene stage whose pass names
-/// one (`d3d::ExternalPass::lighting_only`). `None` for every other op.
-fn stage_mode(op: &ReplayOp) -> Option<Lighting> {
-    let ReplayOp::Stage(stage) = op else {
-        return None;
-    };
-    stage.pass.lock().ok()?.lighting_only()
+/// `f` drawn on `r`'s display targets, each view's camera blended from
+/// `from`'s scene by its fraction when given ([`Renderer::draw`]).
+pub fn draw(r: &mut crate::renderer::Renderer, f: &mut Frame, from: Option<(&FrameScene, f32)>) -> FrameReport {
+    r.draw(f, from).0
 }
 
-/// Re-render this scene to an isolated target. No present hook or
-/// display settings are touched. E3 draws the guest's shadow maps as
-/// tiles and compares their receivers with the Sharp edge
-/// (`d3d::gfx_backend::guest_draw_pass::tiles`); retail replays the
-/// guest's passes as they are.
-pub fn draw_private(
-    backend: &mut GfxBackend,
-    scene: &FrameScene,
-    replay: &ReplayFrame,
-    scale: impl Into<gfx::raster::RenderScale>,
+/// `frame` drawn privately at `scale` on targets of its own and read back.
+pub(crate) fn capture(
+    gpu: &Gpu<'_>,
+    ctx: &gfx::GfxContext,
+    frame: &mut Frame,
+    scale: crate::render_scale::RenderScale,
     lighting: Lighting,
-) -> Result<CapturedFrame, String> {
-    draw_private_with_observer(backend, scene, replay, scale, lighting, None)
-}
-
-pub fn draw_private_with_observer(
-    backend: &mut GfxBackend,
-    scene: &FrameScene,
-    replay: &ReplayFrame,
-    scale: impl Into<gfx::raster::RenderScale>,
-    lighting: Lighting,
-    observer: Option<&mut dyn PassObserver>,
-) -> Result<CapturedFrame, String> {
-    let scale = scale.into();
-    if scale != gfx::raster::RenderScale::ONE && replay.has_mixed_target_sizes() {
-        return private::draw_mixed(backend, scene, replay, scale, lighting, observer);
-    }
-    let before = backend.batch_stats();
-    let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, scale.vertical_rounded(), lighting);
-    let mut pass = GuestDrawPass::new_lit(backend, replay, scale, lighting)?;
-    let e3 = record(&mut pass, scene, replay, true, lighting, observer, sun_replay, None)?;
-    let (size, rgba) = pass.read_rgba()?;
-    Ok(CapturedFrame {
-        id: scene.id,
-        scene_hash: summary_hash(scene),
-        size,
+) -> CapturedFrame {
+    let mut targets = Targets::new(scale);
+    let cameras = Cameras::of(&frame.scene, None);
+    let report = walk(gpu, &mut targets, frame, &cameras, lighting);
+    let colour = targets.get(gpu.device, TargetRef::SceneColour).expect("scene colour");
+    let rgba = gfx::readback::read_texture(ctx, &colour.texture, wgpu::TextureAspect::All, 4, colour.size);
+    CapturedFrame {
+        size: [colour.size.0, colour.size.1],
         rgba,
-        report: FrameReport::new(scene.id, lighting, e3, replay, before, backend.batch_stats()),
-    })
+        id: frame.scene.id,
+        scene_hash: summary_hash(&frame.scene),
+        report,
+    }
 }
 
-/// Present the result of the same graph at the display scale. Logical
-/// guest ordering, including split-screen view transitions, is preserved.
-pub fn draw_display(
-    backend: &mut GfxBackend,
-    scene: &FrameScene,
-    replay: &ReplayFrame,
-    scale: u32,
-    lighting: Lighting,
-    flags: u32,
-    gamma: Option<&[u8; 768]>,
-    observer: Option<&mut dyn PassObserver>,
-) -> Result<FrameReport, String> {
-    let before = backend.batch_stats();
-    let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, scale, lighting);
-    let mut pass = GuestDrawPass::new_display_lit(backend, replay, scale, lighting)?;
-    let e3 = record(&mut pass, scene, replay, true, lighting, observer, sun_replay, None)?;
-    pass.present(flags, gamma)?;
-    Ok(FrameReport::new(
-        scene.id,
-        lighting,
-        e3,
-        replay,
-        before,
-        backend.batch_stats(),
-    ))
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// The 1x display path can use the renderer's live attachments, including
-/// their contents from the preceding frame. They belong to the caller;
-/// private draws always allocate their own. Its shadow maps keep the
-/// guest's size, so it draws no E3 tiles.
-pub fn draw_display_on(
-    backend: &mut GfxBackend,
-    scene: &FrameScene,
-    replay: &ReplayFrame,
-    lighting: Lighting,
-    flags: u32,
-    gamma: Option<&[u8; 768]>,
-    observer: Option<&mut dyn PassObserver>,
-    targets: &std::collections::HashMap<TargetRef, gfx::surface::SurfaceId>,
-) -> Result<(FrameReport, Outputs<d3d::gfx_backend::HostTexture>), String> {
-    let before = backend.batch_stats();
-    // Failure belongs to private replay. The live graph still owns its
-    // original attachments and can complete this display.
-    let _ = freeze_display_inputs(backend, replay, targets);
-    let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, 1, lighting);
-    let mut pass = GuestDrawPass::on_existing(backend, replay, targets)?;
-    pass.set_lighting(lighting);
-    let e3 = record(&mut pass, scene, replay, false, lighting, observer, sun_replay, None)?;
-    let outputs = pass.present_with_outputs(flags, gamma)?;
-    Ok((
-        FrameReport::new(scene.id, lighting, e3, replay, before, backend.batch_stats()),
-        outputs,
-    ))
-}
+    struct Named;
+    impl Stage for Named {
+        fn name(&self) -> &'static str {
+            "named"
+        }
+        fn record(&mut self, _: &ExternalAttachments, _: &ViewInputs) -> StageWork {
+            unimplemented!("test: record")
+        }
+    }
 
-/// Present on the scaled wrapper's authoritative images even when a row
-/// pairs a guest-size auxiliary colour level with the main scaled depth.
-pub fn draw_scaled_display_on(
-    backend: &mut ScaledBackend<GfxBackend, GfxBackend>,
-    scene: &FrameScene,
-    replay: &ReplayFrame,
-    observer: Option<&mut dyn PassObserver>,
-    targets: &std::collections::HashMap<
-        TargetRef,
-        ScaledSurface<gfx::surface::SurfaceId, gfx::surface::SurfaceId>,
-    >,
-) -> Result<
-    (
-        FrameReport,
-        Outputs<ScaledTexture<d3d::gfx_backend::HostTexture, d3d::gfx_backend::HostTexture>>,
-    ),
-    String,
-> {
-    let lighting = backend.lighting();
-    let before = backend.view().batch_stats();
-    let mut pass = ScaledScenePass::new(backend, replay, targets)?;
-    let _ = inputs::freeze_native_scaled_inputs(&mut pass, replay);
-    // The scaled display draws no sun tile: every object shadow keeps
-    // retail's mask there.
-    let e3 = record(&mut pass, scene, replay, false, lighting, observer, None, None)?;
-    let (after, outputs) = pass.present(replay.flags, replay.gamma.as_deref())?;
-    Ok((
-        FrameReport::new(scene.id, lighting, e3, replay, before, after),
-        outputs,
-    ))
-}
+    fn stage(slot: Slot, view: u8) -> FrameOp {
+        FrameOp::Stage { slot: SlotAt { slot, view }, stage: Box::new(Named) }
+    }
 
-/// [`draw_display_on`] for a frame owner running the display-rate loop
-/// ([`display_rate`]): this frame is drawn on the live attachments as
-/// ever (the guest's tickets and samples are its own), and the window is
-/// shown the loop's display frame for this Swap when the loop blends it.
-pub fn draw_display_at_rate(
-    backend: &mut GfxBackend,
-    display: &display_rate::Display,
-    scene: &Arc<FrameScene>,
-    replay: &Arc<ReplayFrame>,
-    lighting: Lighting,
-    observer: Option<&mut dyn PassObserver>,
-    targets: &std::collections::HashMap<TargetRef, gfx::surface::SurfaceId>,
-) -> Result<(FrameReport, Outputs<d3d::gfx_backend::HostTexture>), String> {
-    let before = backend.batch_stats();
-    // The display frame's own targets start from these inputs too.
-    let _ = freeze_display_inputs(backend, replay, targets);
-    let sun_replay = sun_tiles(&backend.ctx.device, scene, replay, 1, lighting);
-    let mut pass = GuestDrawPass::on_existing(backend, replay, targets)?;
-    pass.set_lighting(lighting);
-    let e3 = record(&mut pass, scene, replay, false, lighting, observer, sun_replay, None)?;
-    let grid = pass.grid();
-    let shown = display.at_swap(pass.backend_mut(), scene, replay, grid, lighting);
-    let (flags, gamma) = (replay.flags, replay.gamma.as_deref());
-    let outputs = match shown {
-        // The window places the marks with the cameras the display frame
-        // drew (`display_rate::marks_present`).
-        Some(shown) => d3d::present_camera::with(Some(shown.marks), || {
-            pass.present_with_outputs_showing(flags, gamma, shown.image)
-        })?,
-        None => pass.present_with_outputs(flags, gamma)?,
-    };
-    Ok((
-        FrameReport::new(scene.id, lighting, e3, replay, before, backend.batch_stats()),
-        outputs,
-    ))
-}
+    #[test]
+    fn a_views_graph_stage_follows_its_last_game_view_stage() {
+        let ops = vec![
+            stage(Slot::Outside, 0),
+            stage(Slot::Opaque, 0),
+            FrameOp::Bind { colour: TargetRef::SceneColour, depth: TargetRef::SceneDepth },
+            stage(Slot::Transparents, 0),
+            stage(Slot::Opaque, 1),
+            stage(Slot::AfterPost, 1),
+            stage(Slot::Overlay, 1),
+        ];
+        assert_eq!(last_stages(&ops, Slot::in_game_view), [(3, 0), (5, 1)]);
+        assert!(last_stages(&[], Slot::in_game_view).is_empty());
+    }
 
-/// [`draw_scaled_display_on`] for a frame owner running the display-rate
-/// loop, as [`draw_display_at_rate`]: the view draws the display frame on
-/// its own targets on its grid, whole or fractional.
-pub fn draw_scaled_display_at_rate(
-    backend: &mut ScaledBackend<GfxBackend, GfxBackend>,
-    display: &display_rate::Display,
-    scene: &Arc<FrameScene>,
-    replay: &Arc<ReplayFrame>,
-    observer: Option<&mut dyn PassObserver>,
-    targets: &std::collections::HashMap<
-        TargetRef,
-        ScaledSurface<gfx::surface::SurfaceId, gfx::surface::SurfaceId>,
-    >,
-) -> Result<
-    (
-        FrameReport,
-        Outputs<ScaledTexture<d3d::gfx_backend::HostTexture, d3d::gfx_backend::HostTexture>>,
-    ),
-    String,
-> {
-    let lighting = backend.lighting();
-    let grid = backend.resolution();
-    let before = backend.view().batch_stats();
-    let mut pass = ScaledScenePass::new(backend, replay, targets)?;
-    let _ = inputs::freeze_native_scaled_inputs(&mut pass, replay);
-    let e3 = record(&mut pass, scene, replay, false, lighting, observer, None, None)?;
-    let shown = display.at_swap(pass.view_mut(), scene, replay, grid, lighting);
-    let (flags, gamma) = (replay.flags, replay.gamma.as_deref());
-    let (after, outputs) = match shown {
-        Some(shown) => d3d::present_camera::with(Some(shown.marks), || {
-            pass.present_showing(flags, gamma, shown.image)
-        })?,
-        None => pass.present(flags, gamma)?,
-    };
-    Ok((
-        FrameReport::new(scene.id, lighting, e3, replay, before, after),
-        outputs,
-    ))
+    #[test]
+    fn a_viewport_scales_from_the_game_frame_to_the_target() {
+        assert_eq!(texel_viewport((0, 240, 640, 240), (1280, 960)), [0.0, 480.0, 1280.0, 480.0]);
+    }
 }

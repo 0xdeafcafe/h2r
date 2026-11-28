@@ -1,40 +1,9 @@
 //! The view's lighting (docs/graphics/e3-lighting-setting.md), chosen at
 //! launch by `H2_LIGHTING`; no setting holds it.
 
+pub use gfx::external::Lighting;
+
 use crate::render_scale::MAX_SCALE;
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum Lighting {
-    /// The game's own: shadow maps at the game's size, 2x2
-    /// percentage-closer filtering where the stage filters.
-    #[default]
-    Retail,
-    /// E3: shadow maps at [`shadow_scale`] times their size in the view,
-    /// compared with one tap.
-    E3,
-    /// The privately reconstructed BSP lightmap with its selected lamp on.
-    RelightOn,
-    /// The privately reconstructed BSP lightmap with its selected lamp off.
-    RelightOff,
-}
-
-impl Lighting {
-    pub fn is_relight(self) -> bool {
-        matches!(self, Self::RelightOn | Self::RelightOff)
-    }
-
-    /// The two startup-only arms that need private BSP resources.
-    pub fn relight_from_name(name: &str) -> Option<Self> {
-        let name = name.trim();
-        if name.eq_ignore_ascii_case("relight-on") {
-            Some(Self::RelightOn)
-        } else if name.eq_ignore_ascii_case("relight-off") {
-            Some(Self::RelightOff)
-        } else {
-            None
-        }
-    }
-}
 
 /// Parses the lighting selected at startup. Empty is retail.
 pub fn lighting_from(value: Option<&str>) -> Result<Lighting, String> {

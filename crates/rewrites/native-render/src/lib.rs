@@ -72,6 +72,8 @@ pub mod fog;
 pub mod fog_gpu;
 #[cfg(feature = "gpu")]
 pub mod frame_graph;
+#[cfg(feature = "gpu")]
+pub mod frame_owner;
 pub mod gels;
 #[cfg(feature = "gpu")]
 pub mod gels_gpu;
@@ -200,6 +202,8 @@ pub use scene_extract::layout::{
 
 #[cfg(feature = "gpu")]
 pub use lighting::Lighting;
+#[cfg(feature = "gpu")]
+pub use frame_owner::FrameOwner;
 #[cfg(feature = "gpu")]
 pub use renderer::Renderer;
 #[cfg(feature = "gpu")]

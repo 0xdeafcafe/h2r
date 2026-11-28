@@ -1,66 +1,58 @@
-//! Display frames between sealed scenes on the frame owner's device
-//! (docs/graphics/framescene.md, section 7 and slice 8).
+//! Display frames between sealed scenes (docs/graphics/framescene.md,
+//! section 7 and slice 8).
 //!
 //! [`Display`] holds the render thread's [`DisplayLoop`] over the last two
-//! scenes the owner drew. At an owned present the loop decides whether the
-//! window shows that scene or a blend toward it from the scene before
-//! ([`Display::at_swap`]); while nothing is queued the render thread asks
-//! it for the frames after ([`Display::idle`], through
-//! [`d3d::threaded::owner::DisplayRate`]). A display frame is the newer
-//! scene's frame drawn on its own targets with each view's camera blended
-//! (`frame_scene::blend`, moved onto the draws by
-//! `d3d::scene_sink::Retarget`) and shown as a host-only present. It
-//! never touches the guest's attachments, tickets or sampled textures.
+//! frames the owner drew. At a frame's present the loop decides whether
+//! the window shows that frame or a blend toward it from the frame before
+//! ([`Display::at_swap`]); while nothing is queued the frame owner asks it
+//! for the frames after ([`Display::idle`]). A display frame is the newer
+//! frame drawn again with each view's camera blended
+//! (`frame_scene::blend`), which the graph hands its stages.
 //!
-//! Each display frame is presented as `d3d::present_camera::Present::Synthetic`
-//! ([`marks_present`]): the window projects the world marks of the guest's
+//! Each display frame is presented as `gfx::present_camera::Present::Synthetic`
+//! ([`marks_present`]): the window projects the world marks of the game's
 //! image with the cameras the frame drew its views with
 //! (docs/game/high-framerate.md, "World marks on made frames").
 
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Instant;
 
-use d3d::gfx_backend::GuestDrawPass;
-use d3d::present_camera::{self, MarkShifts, Present};
-use d3d::scaled::ScaledBackend;
-use d3d::scaled::private_scene::MixedPrivatePass;
-use d3d::scene_sink::{ReplayFrame, Retarget, RetargetCounts};
-use d3d::threaded::owner::DisplayRate;
-use d3d::{GfxBackend, Lighting};
-use frame_scene::{Camera, FrameScene, ViewKind};
-use frame_scene::blend::{self, Plan};
+use frame_scene::Camera;
+use frame_scene::blend::Plan;
 use frame_scene::display::{AtSwap, DisplayLoop, DisplayStats, Drawn, Idle};
 use frame_scene::pace::Rate;
-use gfx::raster::RenderScale;
-use gfx::surface::SurfaceId;
+use gfx::present_camera::{self, MarkShifts, Present};
 
-use super::{record, sun_tiles};
+use crate::renderer::Renderer;
+use crate::stage::Frame;
 
-type Scaled = ScaledBackend<GfxBackend, GfxBackend>;
-
-/// What the loop keeps of a drawn scene to draw it again.
+/// What the loop keeps of a drawn frame to draw it again.
 #[derive(Clone)]
 pub struct Kept {
-    pub replay: Arc<ReplayFrame>,
-    /// The grid of the targets its display frames draw on, whole or
-    /// fractional.
-    pub scale: RenderScale,
-    /// The guest's image at its present: its world marks and their cameras
-    /// (`d3d::present_camera`).
+    pub frame: Arc<Mutex<Frame>>,
+    /// The game's image at its present: its world marks and their cameras.
     pub image: Option<Arc<present_camera::Image>>,
 }
 
-/// `render.stats`' `display_rate`: the loop's counters and what the
-/// display frames moved onto the blended cameras.
+impl Kept {
+    pub fn new(frame: Frame) -> Self {
+        let image = match &frame.present {
+            Present::Guest { image, .. } => image.clone(),
+            Present::Synthetic { source, .. } => source.clone(),
+        };
+        Self { frame: Arc::new(Mutex::new(frame)), image }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Frame> {
+        self.frame.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// `render.stats`' `display_rate`: the loop's counters and the marks the
+/// display frames moved.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct DisplayRateStats {
     pub frames: DisplayStats,
-    /// Carried draws drawn on a blended camera, over all display frames.
-    pub moved_draws: u64,
-    /// Typed stages drawn on a blended camera.
-    pub moved_stages: u64,
-    /// Typed stages in a game view drawn as their tick drew them.
-    pub held_stages: u64,
     /// Views of the marks' image on display frames whose marks were moved
     /// onto the camera the frame drew the view with.
     pub marks_moved: u64,
@@ -68,25 +60,6 @@ pub struct DisplayRateStats {
     /// image's camera: no drawn view at their viewport, or a camera that
     /// cannot be inverted.
     pub marks_held: u64,
-}
-
-/// A display frame drawn by [`draw_blend`].
-pub struct DisplayFrame {
-    /// The presented target, which the caller shows.
-    pub image: SurfaceId,
-    /// What moved onto the blended cameras.
-    pub moved: RetargetCounts,
-    /// Each game view's camera as drawn, in the scene's order (first-person
-    /// views left out: they share their game view's viewport).
-    pub cameras: Vec<Camera>,
-}
-
-/// A display frame the window is shown at a Swap in place of its scene.
-pub struct Shown {
-    pub image: SurfaceId,
-    /// The present's metadata: present the image inside
-    /// `present_camera::with(Some(marks), ..)`.
-    pub marks: Present,
 }
 
 /// The present metadata of a display frame drawn at `plan` from `a` toward
@@ -116,19 +89,9 @@ struct State {
 }
 
 impl State {
-    fn moved(&mut self, counts: RetargetCounts, marks: MarkShifts) {
-        self.stats.moved_draws += u64::from(counts.draws);
-        self.stats.moved_stages += u64::from(counts.stages);
-        self.stats.held_stages += u64::from(counts.held_stages);
+    fn moved(&mut self, marks: MarkShifts) {
         self.stats.marks_moved += u64::from(marks.moved);
         self.stats.marks_held += u64::from(marks.held);
-    }
-
-    fn failed(&mut self, error: &str) {
-        if self.frames.stats().failed == 0 {
-            eprintln!("display rate: a display frame failed ({error}); the window keeps the last one");
-        }
-        self.frames.failed();
     }
 }
 
@@ -142,8 +105,18 @@ pub fn stats() -> Option<DisplayRateStats> {
     Some(DisplayRateStats { frames: state.frames.stats(), ..state.stats })
 }
 
-/// The display-rate loop shared by an owner's presents and its render
-/// thread's idle turns.
+/// What the frame owner does on an idle turn.
+pub enum IdleTurn {
+    /// Nothing until the next frame.
+    Stop,
+    /// Ask again at this time.
+    Wait(Instant),
+    /// A display frame is drawn: present it with this metadata, then ask
+    /// again at once.
+    Drawn(Present),
+}
+
+/// The display-rate loop the frame owner drives.
 #[derive(Clone)]
 pub struct Display {
     state: Arc<Mutex<State>>,
@@ -166,172 +139,64 @@ impl Display {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// The render thread's side over a 1x display, with the owner's
-    /// lighting setting.
-    pub fn on_display(&self, lighting: Arc<dyn Fn() -> Lighting + Send + Sync>) -> Box<dyn DisplayRate<GfxBackend>> {
-        Box::new(OnDisplay { display: self.clone(), lighting })
-    }
-
-    /// The render thread's side over a scaled display: the view draws.
-    pub fn on_scaled(&self) -> Box<dyn DisplayRate<Scaled>> {
-        Box::new(OnScaled { display: self.clone() })
-    }
-
-    /// An owned present of `scene` after its frame was recorded on the
-    /// live attachments, on the render thread inside its present's
-    /// metadata (the guest's image, `present_camera::guest_image`).
-    /// Returns the display frame the window shows in its place, drawn on
-    /// `gpu`'s own targets on `scale`'s grid; `None` shows the scene itself.
-    pub fn at_swap(
-        &self,
-        gpu: &mut GfxBackend,
-        scene: &Arc<FrameScene>,
-        replay: &Arc<ReplayFrame>,
-        scale: RenderScale,
-        lighting: Lighting,
-    ) -> Option<Shown> {
+    /// A new frame at its present: draws it on `r`, or the blend toward it
+    /// the loop asks for. Returns the metadata to present it with.
+    pub fn at_swap(&self, r: &mut Renderer, frame: Kept) -> Present {
         let started = Instant::now();
         let mut state = self.lock();
-        let image = present_camera::guest_image();
-        let kept = Kept { replay: Arc::clone(replay), scale, image: image.clone() };
         let rate = (state.rate)();
-        let AtSwap::Blend { a, alpha } = state.frames.swap(Arc::clone(scene), kept, started, rate) else {
-            return None;
-        };
-        let plan = Plan::Blend(alpha);
-        match draw_blend(gpu, &a.scene, scene, replay, scale, lighting, plan) {
-            Ok(frame) => {
-                let (marks, shifts) = marks_present(a.frame.image.as_ref(), image.as_ref(), plan, &frame.cameras);
-                state.moved(frame.moved, shifts);
-                state.frames.drawn(Drawn::Swap, started.elapsed());
-                Some(Shown { image: frame.image, marks })
+        let scene = Arc::clone(&frame.lock().scene);
+        match state.frames.swap(scene, frame.clone(), started, rate) {
+            AtSwap::Newest => {
+                let mut f = frame.lock();
+                r.draw(&mut f, None);
+                f.present.clone()
             }
-            Err(e) => {
-                state.failed(&e);
-                None
+            AtSwap::Blend { a, alpha } => {
+                let (_, cameras) = r.draw(&mut frame.lock(), Some((&*a.scene, alpha)));
+                let plan = Plan::Blend(alpha);
+                let (marks, shifts) = marks_present(a.frame.image.as_ref(), frame.image.as_ref(), plan, &cameras.drawn());
+                state.moved(shifts);
+                state.frames.drawn(Drawn::Swap, started.elapsed());
+                marks
             }
         }
     }
 
-    /// The render thread has nothing queued at `now`: draws the display
-    /// frame that is due, if any, and returns when to ask again.
-    pub fn idle(&self, gpu: &mut GfxBackend, lighting: Lighting, now: Instant) -> Option<Instant> {
+    /// Nothing is queued at `now`: draws the display frame that is due on
+    /// `r`, if any.
+    pub fn idle(&self, r: &mut Renderer, now: Instant) -> IdleTurn {
         let mut state = self.lock();
         let rate = (state.rate)();
         match state.frames.idle(now, rate) {
-            Idle::Stop => None,
-            Idle::Wait(at) => Some(at),
+            Idle::Stop => IdleTurn::Stop,
+            Idle::Wait(at) => IdleTurn::Wait(at),
             Idle::Draw { a, b, plan } => {
                 let started = Instant::now();
-                let Kept { replay, scale, image } = &b.frame;
-                let shown = draw_blend(gpu, &a.scene, &b.scene, replay, *scale, lighting, plan)
-                    .and_then(|frame| {
-                        let (marks, shifts) = marks_present(a.frame.image.as_ref(), image.as_ref(), plan, &frame.cameras);
-                        present_camera::with(Some(marks), || gpu.show_between(frame.image, replay.gamma.as_deref()))?;
-                        Ok((frame.moved, shifts))
-                    });
-                match shown {
-                    Ok((moved, shifts)) => {
-                        state.moved(moved, shifts);
-                        state.frames.drawn(Drawn::Between(plan.into()), started.elapsed());
-                        // The next slot: the loop answers with its time.
-                        Some(Instant::now())
-                    }
-                    Err(e) => {
-                        state.failed(&e);
-                        None
-                    }
-                }
+                let from = match plan {
+                    Plan::Blend(alpha) => Some((&*a.scene, alpha)),
+                    Plan::Newest => None,
+                };
+                let (_, cameras) = r.draw(&mut b.frame.lock(), from);
+                let (marks, shifts) = marks_present(a.frame.image.as_ref(), b.frame.image.as_ref(), plan, &cameras.drawn());
+                state.moved(shifts);
+                state.frames.drawn(Drawn::Between(plan.into()), started.elapsed());
+                IdleTurn::Drawn(marks)
             }
         }
     }
 
-    /// A Swap went out without the graph, or the timeline changed.
+    /// The timeline changed: the next frame does not follow on from what
+    /// is on screen.
     pub fn reset(&self) {
         self.lock().frames.reset();
     }
 }
 
-struct OnDisplay {
-    display: Display,
-    lighting: Arc<dyn Fn() -> Lighting + Send + Sync>,
-}
-
-impl DisplayRate<GfxBackend> for OnDisplay {
-    fn idle(&mut self, gpu: &mut GfxBackend, now: Instant) -> Option<Instant> {
-        self.display.idle(gpu, (self.lighting)(), now)
-    }
-    fn declined(&mut self) {
-        self.display.reset();
-    }
-}
-
-struct OnScaled {
-    display: Display,
-}
-
-impl DisplayRate<Scaled> for OnScaled {
-    fn idle(&mut self, backend: &mut Scaled, now: Instant) -> Option<Instant> {
-        let lighting = backend.lighting();
-        self.display.idle(backend.view_mut(), lighting, now)
-    }
-    fn declined(&mut self) {
-        self.display.reset();
-    }
-}
-
-/// `b`'s frame drawn on `gpu`'s own targets on `scale`'s grid: with each
-/// view's camera blended from `a` for [`Plan::Blend`], as `b` itself for
-/// [`Plan::Newest`]. Above 1x, whole or fractional, a frame with
-/// fixed-size attachments beside the display grid draws them at their own
-/// size, as a private capture does (`MixedPrivatePass`), with no sun tile.
-/// E3's sun tiles follow the grid's nearest whole vertical scale.
-pub fn draw_blend(
-    gpu: &mut GfxBackend,
-    a: &FrameScene,
-    b: &FrameScene,
-    replay: &ReplayFrame,
-    scale: impl Into<RenderScale>,
-    lighting: Lighting,
-    plan: Plan,
-) -> Result<DisplayFrame, String> {
-    let scale = scale.into();
-    let blended = match plan {
-        Plan::Blend(alpha) => Some(blend::blend(a, b, alpha)),
-        Plan::Newest => None,
-    };
-    let mut retarget = blended.as_ref().map(|blended| {
-        let to = b.views.iter().map(|v| v.key).zip(blended.cameras.iter());
-        Retarget::new(b.view_cameras(), to)
-    });
-    let image = if scale != RenderScale::ONE && replay.has_mixed_target_sizes() {
-        let mut pass = MixedPrivatePass::new_lit(gpu, replay, scale, lighting)?;
-        record(&mut pass, b, replay, true, lighting, None, None, retarget.as_mut())?;
-        pass.into_image(replay.presented)?
-    } else {
-        let sun_replay = sun_tiles(&gpu.ctx.device, b, replay, scale.vertical_rounded(), lighting);
-        let mut pass = GuestDrawPass::new_lit(gpu, replay, scale, lighting)?;
-        record(&mut pass, b, replay, true, lighting, None, sun_replay, retarget.as_mut())?;
-        pass.into_image()?
-    };
-    let drawn = match &blended {
-        Some(blended) => &blended.cameras[..],
-        None => &[][..],
-    };
-    let cameras = b
-        .views
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| v.key.kind != ViewKind::FirstPerson)
-        .map(|(i, v)| drawn.get(i).copied().unwrap_or(v.camera))
-        .collect();
-    Ok(DisplayFrame { image, moved: retarget.map(|r| r.counts()).unwrap_or_default(), cameras })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use d3d::present_camera::{Image, View, ViewShift};
+    use gfx::present_camera::{Image, View, ViewShift};
 
     fn camera(yaw: f32) -> Camera {
         Camera {
@@ -394,8 +259,8 @@ mod tests {
     #[test]
     fn display_frame_marks_count_into_the_stats() {
         let display = Display::new(|| Rate::Off);
-        display.lock().moved(RetargetCounts::default(), MarkShifts { moved: 2, held: 1 });
-        display.lock().moved(RetargetCounts::default(), MarkShifts { moved: 1, held: 0 });
+        display.lock().moved(MarkShifts { moved: 2, held: 1 });
+        display.lock().moved(MarkShifts { moved: 1, held: 0 });
         let stats = display.lock().stats;
         assert_eq!((stats.marks_moved, stats.marks_held), (3, 1));
     }
