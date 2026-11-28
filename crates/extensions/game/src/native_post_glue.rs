@@ -2896,6 +2896,7 @@ mod tests {
                 depth_compare: wgpu::CompareFunction::Always,
                 primitive: wgpu::PrimitiveState::default(),
                 alpha_test: None,
+                stencil: None,
             },
         }
     }

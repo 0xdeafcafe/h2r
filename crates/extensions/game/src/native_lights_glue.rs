@@ -2617,7 +2617,7 @@ impl PreparedLight {
             && program.state.color_writes == gfx::translate::color_writes(r.color_write)
             && program.state.alpha_test == alpha
             && !r.fog_enable
-            && !r.stencil.enable
+            && program.state.stencil_matches_off_layer(&r.stencil)
             && r.fill_mode == FillMode::Solid
             && r.back_fill_mode == FillMode::Solid
             && (!r.solid_offset_enable || (r.depth_bias == 0.0 && r.depth_bias_slope_scale == 0.0))

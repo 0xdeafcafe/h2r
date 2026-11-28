@@ -498,7 +498,12 @@ pub fn sorted_pool(template: Option<&str>, material: &tags::shader::TemplatePost
 
 /// Edge-blend passes and their per-view engine texture supplies.
 pub fn water_passes(material: &tags::material::Material, rasterizer: Option<map::TagId>) -> Result<Vec<FogPass>, crate::fog_gpu::FogRefusal> {
-    supplied_layer_passes(material, WATER_LAYER, rasterizer)
+    let passes = supplied_layer_passes(material, WATER_LAYER, rasterizer)?;
+    // The water pass draws under the device's stencil only.
+    if let Some(pass) = passes.iter().position(|p| p.state.stencil.is_some()) {
+        return Err(crate::fog_gpu::FogRefusal::State { pass, refusal: crate::pass_state::StateRefusal::Stencil });
+    }
+    Ok(passes)
 }
 
 #[cfg(test)]

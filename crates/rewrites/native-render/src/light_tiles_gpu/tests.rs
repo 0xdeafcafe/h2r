@@ -104,6 +104,7 @@ fn program(gel: bool) -> LightProgram {
             depth_compare: wgpu::CompareFunction::LessEqual,
             primitive: wgpu::PrimitiveState::default(),
             alpha_test: None,
+            stencil: None,
         },
         inherits_cull: false,
         copies_target: false,

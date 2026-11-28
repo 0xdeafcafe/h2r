@@ -28,6 +28,45 @@ pub struct PassState {
     pub primitive: wgpu::PrimitiveState,
     /// Alpha test: discard unless `alpha <func> reference / 255`.
     pub alpha_test: Option<(wgpu::CompareFunction, u8)>,
+    /// The stencil the implementation sets itself, whole ([`own_stencil`]):
+    /// its pipeline and reference replace the device's at the layer call
+    /// ([`PassState::stencil_under`]). `None`: the pass draws under the
+    /// device's (`fog_gpu::layer_stencil`).
+    pub stencil: Option<gfx::state::StencilState>,
+}
+
+impl PassState {
+    /// The stencil the pass draws with where the device holds `device`:
+    /// its own when it sets one, else the device's.
+    pub fn stencil_under(&self, device: &gfx::state::StencilState) -> gfx::state::StencilState {
+        self.stencil.unwrap_or(*device)
+    }
+
+    /// Whether the pass writes depth, or the stencil it sets itself
+    /// (`fog_gpu::stencil_writes`).
+    pub fn writes_depth_stencil(&self) -> bool {
+        self.depth_write || self.stencil.is_some_and(|s| crate::fog_gpu::stencil_writes(&s))
+    }
+
+    /// Whether a live draw's stencil is the one this pass draws with where
+    /// the layer's own is off (stencil mode 0, the lights' layers): the
+    /// pass's own, or the test off.
+    pub fn stencil_matches_off_layer(&self, live: &gfx::state::StencilState) -> bool {
+        match self.stencil {
+            Some(own) if own.enable => own == *live,
+            _ => !live.enable,
+        }
+    }
+
+    /// The state for a native pass that draws only under the device's
+    /// stencil: a pass that sets its own is refused
+    /// ([`StateRefusal::Stencil`]), not drawn under the device's.
+    pub fn device_stencil_only(self) -> Result<Self, StateRefusal> {
+        match self.stencil {
+            Some(_) => Err(StateRefusal::Stencil),
+            None => Ok(self),
+        }
+    }
 }
 
 /// Why an implementation's states keep it on the D3D path.
@@ -40,10 +79,12 @@ pub enum StateRefusal {
     Invalid { state: u8, value: u32 },
     /// Fixed-function fog (the native pass has none).
     Fog,
-    /// The stencil test, set by the pass itself. The native passes draw
-    /// under the device's stencil (`fog_gpu::layer_stencil`); a pass's own
-    /// over it is not drawn. No `shad` pass on the retail maps sets one
-    /// (docs/graphics/e3-lighting.md, "Stencil: every use, named").
+    /// The stencil test, set by the pass itself, where the native pass
+    /// that would draw it takes only the device's: the screen, shadow,
+    /// decorator, water and layer 1 and 3 geometry passes. The world
+    /// layers' and the lights' passes draw their own
+    /// ([`PassState::stencil`]). No `shad` pass on the retail maps sets
+    /// one (docs/graphics/e3-lighting.md, "Stencil: every use, named").
     Stencil,
     /// A depth bias.
     DepthBias,
@@ -109,9 +150,7 @@ fn decode_states(states: &[RenderStateValue], source: StateSource) -> Result<Pas
     if rs.fog_enable && !live_object_state {
         return Err(StateRefusal::Fog);
     }
-    if rs.stencil.enable && !live_object_state {
-        return Err(StateRefusal::Stencil);
-    }
+    let stencil = if live_object_state { None } else { own_stencil(&rs, &has)? };
     if rs.solid_offset_enable && (rs.depth_bias != 0.0 || rs.depth_bias_slope_scale != 0.0) {
         return Err(StateRefusal::DepthBias);
     }
@@ -133,7 +172,43 @@ fn decode_states(states: &[RenderStateValue], source: StateSource) -> Result<Pas
             gfx::translate::Capabilities::from_features(wgpu::Features::empty()),
         ),
         alpha_test,
+        stencil,
     })
+}
+
+/// The stencil words of an implementation that sets any: `STENCILENABLE`
+/// 0 turns the test off whatever the device holds; 1 takes the test whole
+/// from the pass, so every word it reads must be set there, or the pass
+/// would inherit the previous draw's (`Unset`). A word set without
+/// `STENCILENABLE` is refused too: the device's enable decides whether it
+/// is read.
+fn own_stencil(
+    rs: &RenderState,
+    has: &dyn Fn(RenderStateType) -> bool,
+) -> Result<Option<gfx::state::StencilState>, StateRefusal> {
+    use RenderStateType as R;
+    const WORDS: [(RenderStateType, &str); 7] = [
+        (R::StencilFunc, "STENCILFUNC"),
+        (R::StencilRef, "STENCILREF"),
+        (R::StencilMask, "STENCILMASK"),
+        (R::StencilWriteMask, "STENCILWRITEMASK"),
+        (R::StencilFail, "STENCILFAIL"),
+        (R::StencilZFail, "STENCILZFAIL"),
+        (R::StencilPass, "STENCILPASS"),
+    ];
+    if !has(R::StencilEnable) {
+        return match WORDS.iter().any(|&(t, _)| has(t)) {
+            true => Err(StateRefusal::Unset("STENCILENABLE")),
+            false => Ok(None),
+        };
+    }
+    if !rs.stencil.enable {
+        return Ok(Some(gfx::state::StencilState { enable: false, ..Default::default() }));
+    }
+    if let Some(&(_, name)) = WORDS.iter().find(|&&(t, _)| !has(t)) {
+        return Err(StateRefusal::Unset(name));
+    }
+    Ok(Some(rs.stencil))
 }
 
 #[cfg(test)]
@@ -220,6 +295,53 @@ mod tests {
     }
 
     #[test]
+    fn a_pass_that_sets_its_own_stencil_draws_it_whole() {
+        use gfx::state::{StencilOp, StencilState};
+        use RenderStateType as R;
+        let base = [v(R::AlphaBlendEnable, 0), v(R::ZWriteEnable, 0)];
+        assert_eq!(pass_state(&base).unwrap().stencil, None, "no stencil word: the device's");
+        let device = StencilState { enable: true, reference: 9, ..Default::default() };
+        assert_eq!(pass_state(&base).unwrap().stencil_under(&device), device);
+
+        let mut off = base.to_vec();
+        off.push(v(R::StencilEnable, 0));
+        let off = pass_state(&off).unwrap();
+        assert_eq!(off.stencil, Some(StencilState { enable: false, ..Default::default() }));
+        assert!(!off.stencil_under(&device).enable, "the pass's 0 turns the device's test off");
+
+        let mut own = base.to_vec();
+        own.extend([
+            v(R::StencilEnable, 1),
+            v(R::StencilFunc, CompareFunc::Equal.xbox_value()),
+            v(R::StencilRef, 0x80),
+            v(R::StencilMask, 0xf0),
+            v(R::StencilWriteMask, 0),
+            v(R::StencilFail, StencilOp::Keep.xbox_value()),
+            v(R::StencilZFail, StencilOp::Keep.xbox_value()),
+            v(R::StencilPass, StencilOp::Keep.xbox_value()),
+        ]);
+        let s = pass_state(&own).unwrap();
+        let want = StencilState {
+            enable: true,
+            func: CompareFunc::Equal,
+            reference: 0x80,
+            read_mask: 0xf0,
+            write_mask: 0,
+            fail: StencilOp::Keep,
+            depth_fail: StencilOp::Keep,
+            pass: StencilOp::Keep,
+        };
+        assert_eq!(s.stencil, Some(want));
+        assert_eq!(s.stencil_under(&device), want, "the pass's own over the device's");
+        for n in 1..own.len() - base.len() {
+            let mut missing = own.clone();
+            missing.remove(base.len() + n);
+            assert!(matches!(pass_state(&missing), Err(StateRefusal::Unset(_))), "word {n} unset");
+        }
+        assert_eq!(object_program_state(&own).unwrap().stencil, None, "an object resolves it at issue");
+    }
+
+    #[test]
     fn states_left_to_the_previous_draw_or_outside_the_pass_say_why() {
         assert_eq!(pass_state(&[]), Err(StateRefusal::Unset("ALPHABLENDENABLE")));
         assert_eq!(
@@ -245,7 +367,8 @@ mod tests {
             "the depth buffer on"
         );
         assert_eq!(with(v(RenderStateType::FogEnable, 1)), Err(StateRefusal::Fog));
-        assert_eq!(with(v(RenderStateType::StencilEnable, 1)), Err(StateRefusal::Stencil));
+        assert_eq!(with(v(RenderStateType::StencilEnable, 1)), Err(StateRefusal::Unset("STENCILFUNC")));
+        assert_eq!(with(v(RenderStateType::StencilRef, 3)), Err(StateRefusal::Unset("STENCILENABLE")));
         let bad = v(RenderStateType::SrcBlend, 0x1234);
         assert_eq!(with(bad), Err(StateRefusal::Invalid { state: bad.state, value: 0x1234 }));
     }

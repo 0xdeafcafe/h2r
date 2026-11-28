@@ -85,6 +85,7 @@ fn program(layer: u8) -> LightProgram {
             depth_compare: wgpu::CompareFunction::Always,
             primitive: Default::default(),
             alpha_test: None,
+            stencil: None,
         },
         inherits_cull: false,
         copies_target: false,

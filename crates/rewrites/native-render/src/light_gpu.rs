@@ -570,7 +570,11 @@ impl LightGpu {
                     format: depth,
                     depth_write_enabled: Some(s.depth_write),
                     depth_compare: Some(s.depth_compare),
-                    stencil: wgpu::StencilState::default(),
+                    // Layers 11 to 14 draw in stencil mode 0, the test
+                    // off; a pass that sets its own draws it.
+                    stencil: s.stencil.map_or_else(wgpu::StencilState::default, |own| {
+                        crate::fog_gpu::layer_stencil(&own, depth)
+                    }),
                     bias: wgpu::DepthBiasState::default(),
                 };
                 let color_target = wgpu::ColorTargetState {
@@ -1050,7 +1054,10 @@ impl LightSet {
                         ),
                         count,
                         groups.clone(),
-                        &state,
+                        &gfx::state::RenderState {
+                            stencil: draw.program.state.stencil_under(&state.stencil),
+                            ..Default::default()
+                        },
                         target.size,
                         scissor,
                     )
@@ -1223,6 +1230,7 @@ mod tests {
                 depth_compare: wgpu::CompareFunction::Always,
                 primitive: wgpu::PrimitiveState::default(),
                 alpha_test: None,
+                stencil: None,
             },
             inherits_cull: false,
             copies_target: false,
@@ -1375,6 +1383,7 @@ mod tests {
                 depth_compare: wgpu::CompareFunction::Always,
                 primitive: wgpu::PrimitiveState::default(),
                 alpha_test: None,
+                stencil: None,
             },
             inherits_cull: false,
             copies_target: false,
@@ -1835,6 +1844,7 @@ mod tests {
                 depth_compare: wgpu::CompareFunction::Always,
                 primitive: wgpu::PrimitiveState::default(),
                 alpha_test: None,
+                stencil: None,
             },
             inherits_cull: false,
             copies_target: false,
