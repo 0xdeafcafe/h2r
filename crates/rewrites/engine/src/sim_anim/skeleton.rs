@@ -27,7 +27,7 @@ use runtime::{CpuAbi, Guest, GuestFault};
 use sim_core::det;
 use sim_core::lanes::Vec4;
 use sim_core::math::NodeMatrix;
-use std::ops::Range;
+use crate::sim_native::spans::Spans;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The pose matrix's sign mask (16 bytes).
@@ -66,7 +66,7 @@ pub enum Decline {
     Fault,
     /// The node count is below 2 or above [`MAX_NODES`].
     Count,
-    /// A range is not inside one mapping, or a written range overlaps
+    /// A range has an unreadable page, or a written range overlaps
     /// another range the walk reads or writes.
     Alias,
     /// A posed node's parent is outside the matrices.
@@ -98,21 +98,14 @@ fn read<T>(r: Result<T, GuestFault>) -> Step<T> {
     r.map_err(|_| Decline::Fault)
 }
 
-/// `len` bytes from `start`, as physical addresses: inside one mapping.
-fn physical(g: &Guest, start: u32, len: u32) -> Step<Range<u32>> {
-    let maps = g.mappings();
-    let end = maps.partition_point(|m| m.virtual_start <= start);
-    let m = maps.get(end.checked_sub(1).ok_or(Decline::Alias)?).ok_or(Decline::Alias)?;
-    let offset = start - m.virtual_start;
-    if offset.checked_add(len).is_none_or(|e| e > m.len) {
-        return Err(Decline::Alias);
-    }
-    let at = m.physical_start + offset;
-    Ok(at..at + len)
+/// `len` bytes from `start` as physical pieces, one lookup per page
+/// (`sim_native::spans`).
+fn physical(g: &Guest, start: u32, len: u32) -> Step<Spans> {
+    Spans::of(g, start, len as usize).ok_or(Decline::Alias)
 }
 
-fn overlaps(a: &Range<u32>, b: &Range<u32>) -> bool {
-    a.start < b.end && b.start < a.end
+fn overlaps(a: &Spans, b: &Spans) -> bool {
+    a.overlaps(b)
 }
 
 fn words(bytes: &[u8]) -> impl Iterator<Item = u32> + '_ {

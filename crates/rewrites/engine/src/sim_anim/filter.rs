@@ -33,6 +33,7 @@
 //! used to plan the call or its instructions.
 use crate::light_constants::X87;
 use crate::sim_native::Memory;
+use crate::sim_native::spans::Spans;
 use runtime::{CpuAbi, GuestFault};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x87::abi::{arith_op, unary_op};
@@ -107,8 +108,8 @@ pub fn enabled() -> bool {
 /// Why the kernel declined the call; the caller panics with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
-    /// A guest read faulted.
-    Fault,
+    /// A guest read faulted: `len` bytes at `addr`.
+    Fault { addr: u32, len: u32 },
     /// An instruction would deliver an unmasked SSE or x87 exception.
     Float,
     /// Stack or output storage aliases a gathered input or the body's instructions.
@@ -119,9 +120,18 @@ impl Decline {
     /// The reason as the panic names it.
     pub fn name(self) -> &'static str {
         match self {
-            Decline::Fault => "fault",
+            Decline::Fault { .. } => "fault",
             Decline::Float => "float",
             Decline::Alias => "alias",
+        }
+    }
+}
+
+impl std::fmt::Display for Decline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Decline::Fault { addr, len } => write!(f, "fault: read of {len} bytes at {addr:#010x}"),
+            other => f.write_str(other.name()),
         }
     }
 }
@@ -160,7 +170,7 @@ pub fn stats() -> Stats {
 type Step<T> = Result<T, Decline>;
 
 fn read<T>(r: Result<T, GuestFault>) -> Step<T> {
-    r.map_err(|_| Decline::Fault)
+    r.map_err(|f| Decline::Fault { addr: f.addr, len: f.len as u32 })
 }
 
 /// The machine state `11eed0` reads, gathered.
@@ -447,14 +457,15 @@ fn step_with_stores(i: &In, stores: &mut StackStores) -> Step<Out> {
 }
 
 /// A guest virtual span can share backing RAM with a different virtual
-/// address. Compare physical byte ranges, including partial-word aliases.
-fn physical(g: &impl Memory, addr: u32, size: usize) -> Step<std::ops::Range<u64>> {
-    let start = u64::from(g.physical_read(addr, size).ok_or(Decline::Fault)?);
-    Ok(start..start + size as u64)
+/// address. Compare physical byte ranges, including partial-word aliases,
+/// one lookup per page (`sim_native::spans`): the body's text crosses
+/// 0x11f000, and the loader maps each image page on its own.
+fn physical(g: &impl Memory, addr: u32, size: usize) -> Step<Spans> {
+    Spans::of(g, addr, size).ok_or(Decline::Fault { addr, len: size as u32 })
 }
 
-fn overlaps(a: &std::ops::Range<u64>, b: &std::ops::Range<u64>) -> bool {
-    a.start < b.end && b.start < a.end
+fn overlaps(a: &Spans, b: &Spans) -> bool {
+    a.overlaps(b)
 }
 
 fn fpu_in(c: &CpuAbi) -> x87::abi::X87Abi {
@@ -599,7 +610,7 @@ pub(crate) fn run_counted(
     }
     let plan = match plan(c, g, site) {
         Ok(p) => p,
-        Err(why) => unimplemented!("anim filter: {}", why.name()),
+        Err(why) => unimplemented!("anim filter: {why}"),
     };
     scatter(c, g, &plan)?;
     counts.native += 1;

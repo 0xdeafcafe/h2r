@@ -354,15 +354,35 @@ fn declines(k: &Case, edit: impl FnOnce(&mut CpuAbi, &mut Guest), why: Decline) 
     }))
     .expect_err("a decline panics");
     let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
-    assert!(message.ends_with(&format!("anim filter: {}", why.name())), "{why:?}: {message}");
+    assert!(message.ends_with(&format!("anim filter: {why}")), "{why:?}: {message}");
     assert_eq!(c, cpu);
     assert!(ram(&g) == mem, "RAM written on a decline");
 }
 
 #[test]
+fn text_across_the_loaders_page_mappings_runs() {
+    // Ascension: `anim filter: fault`. The body's text 11eed0..11f0c2
+    // crosses 0x11f000, and the loader maps each image page on its own.
+    let (mut c, mut g) = machine(&BASE);
+    let (mut c0, mut g0) = machine(&BASE);
+    g.unmap(0x11e000, 0x2000).unwrap();
+    for page in [0x11e000, 0x11f000] {
+        g.map_zeroed(page, 0x1000, Permissions::RX).unwrap();
+    }
+    assert!(Memory::physical_read(&g, FILTER, (FILTER_END - FILTER) as usize).is_none());
+    assert!(plan(&c, &g, SITE).is_ok());
+    assert!(with(true, || run(&mut c, &mut g, SITE)).unwrap());
+    assert!(with(true, || run(&mut c0, &mut g0, SITE)).unwrap());
+    assert_eq!(c, c0);
+    assert_eq!((f(&g, VEL), f(&g, POS)), (f(&g0, VEL), f(&g0, POS)));
+}
+
+#[test]
 fn unreadable_inputs_decline() {
-    declines(&BASE, |c, _| c.esi = RAM + 0x100, Decline::Fault);
-    declines(&BASE, |c, _| c.edi = RAM + 0x100, Decline::Fault);
+    let fault = Decline::Fault { addr: RAM + 0x100, len: 4 };
+    declines(&BASE, |c, _| c.esi = RAM + 0x100, fault);
+    declines(&BASE, |c, _| c.edi = RAM + 0x100, fault);
+    assert_eq!(fault.to_string(), format!("fault: read of 4 bytes at {:#010x}", RAM + 0x100));
 }
 
 #[test]
