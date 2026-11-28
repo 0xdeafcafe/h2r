@@ -1255,11 +1255,12 @@ fn the_view_projection_is_native_unless_its_switch_is_off() {
     let off = Case::full("impl.render.native.visibility=off");
     let on = registry_for_profile(&Case::full(""), profile);
     assert_eq!(hooked_at(on, "VISIBILITY_SETUP"), ["native-scene-lists"]);
-    for point in ["VIEW_PROJECTION_BUILD", "VIEW_SPHERE_REGIONS", "VIEW_PVS_REGIONS"] {
-        assert!(hooked_at(registry_for_profile(&off, profile), point).is_empty(), "{point}");
+    assert!(hooked_at(registry_for_profile(&off, profile), "VIEW_PROJECTION_BUILD").is_empty());
+    // The setup's arm still compares its samples with the switch off: at its
+    // own entry and at the entry of each producer the gather calls next.
+    for point in ["VISIBILITY_SETUP", "VIEW_SPHERE_REGIONS", "VIEW_PVS_REGIONS"] {
+        assert_eq!(hooked_at(registry_for_profile(&off, profile), point), ["native-scene-lists"], "{point}");
     }
-    // The setup's arm still compares its samples with the switch off.
-    assert_eq!(hooked_at(registry_for_profile(&off, profile), "VISIBILITY_SETUP"), ["native-scene-lists"]);
 }
 
 /// Every rendering session holds the flare state in the render's store,
