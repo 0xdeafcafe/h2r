@@ -21,6 +21,8 @@
 //!   the object, the tags and the ray, which is the simulation's
 //!   collision (`0x001697c0`);
 //! - [`answer`]: the `0x000d1e10` hook's body, for every caller;
+//! - [`record_call`]: the `0x0003ddd0` hook's body, for every caller
+//!   ([`crate::render::object_lighting::record`]);
 //! - [`Fill`]: the tick's record. The record's sample is made only in the
 //!   frame step (`0x0003dfe0`, from the object setup), so under the
 //!   render scratch store the tick's copy never has one. At the two tick
@@ -483,6 +485,37 @@ impl Site {
             Self::New => c.edi,
         }
     }
+}
+
+/// `0x0003ddd0` at its entry, for every caller: the record of the object
+/// the stack names, by [`crate::render::object_lighting::record`] under
+/// the caller's MXCSR and x87 control word. EAX takes the handle (-1 for
+/// none) and ESP is past the return address and the argument, as `ret 4`
+/// leaves them. ECX, EDX and the flags are the guest's scratch, which no
+/// caller reads after the call; EBX, ESI, EDI and EBP are unchanged, as
+/// the guest restores them. The return address comes back for the
+/// transfer.
+pub fn record_call(c: &mut CpuAbi, g: &mut dyn crate::GuestMemory) -> Result<u32, GuestFault> {
+    let fault = |f: crate::MemFault| GuestFault {
+        addr: f.addr,
+        len: f.len as usize,
+        access: if f.write { runtime::guest::Access::Write } else { runtime::guest::Access::Read },
+        reason: runtime::guest::FaultReason::Unmapped,
+    };
+    let ret = g.u32(c.esp).map_err(fault)?;
+    let object = g.u32(c.esp.wrapping_add(4)).map_err(fault)?;
+    let fpu = crate::light_constants::Fpu {
+        mxcsr: c.mxcsr,
+        x87_control: c.x87.control,
+    };
+    use crate::light_constants::Error;
+    c.eax = match crate::render::object_lighting::record(g, object, fpu) {
+        Ok(handle) => handle,
+        Err(Error::Memory(f)) => return Err(fault(f)),
+        Err(e) => unimplemented!("lightmap: record of {object:#010x}: {e:?}"),
+    };
+    c.esp = c.esp.wrapping_add(8);
+    Ok(ret)
 }
 
 /// A tick record to sample: after `0x0003ddd0` returned `handle` for the
