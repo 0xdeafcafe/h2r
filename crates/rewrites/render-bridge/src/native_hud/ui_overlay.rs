@@ -29,7 +29,6 @@ mod text;
 
 pub use scene_extract::ui::{BUTTON_GLYPHS, Justify, TextLayout, UiText};
 use std::cell::RefCell;
-use std::collections::HashSet;
 
 use engine::memory::GuestMemory;
 pub use engine::points::ui_render::{LIST_DONE, LIST_READY};
@@ -169,15 +168,15 @@ impl MenuRefusal {
         }
     }
 
-    /// Counts the refusal: its `Ui` counter and its
-    /// `scene_kept_ui_<kind>_<cause>`, a widget under its gap's name.
-    pub fn count(self) {
+    /// What the native menus cannot draw, named: no guest draw takes it.
+    pub fn panic(self) -> ! {
         match self {
-            MenuRefusal::Widget(gap) if gap.draw != Unread::Shader => {
-                self.counter().count();
-                super::kept::count(super::kept::UiKind::Widget, gap.cause);
-            }
-            _ => super::kept::ui(self.counter()),
+            MenuRefusal::Frame => unimplemented!("menus: viewport not the full screen"),
+            MenuRefusal::Mismatched => unimplemented!("menus: claim mismatched"),
+            MenuRefusal::Widget(gap) => unimplemented!("menus: {:?} {}", gap.draw, gap.cause),
+            MenuRefusal::Bitmap(why) => unimplemented!("menus: bitmap {why:?}"),
+            MenuRefusal::Unlisted => unimplemented!("menus: unlisted"),
+            MenuRefusal::Pass => unimplemented!("menus: pass"),
         }
     }
 }
@@ -233,9 +232,6 @@ pub enum Item {
 thread_local! {
     /// The game thread's open claims, innermost last.
     static CLAIMS: RefCell<Vec<Claim>> = const { RefCell::new(Vec::new()) };
-    /// Screens whose list did not match its claim: the game's until
-    /// [`forget`].
-    static REFUSED: RefCell<HashSet<u32>> = RefCell::new(HashSet::new());
 }
 
 pub(super) struct Ro<'a>(pub(super) &'a dyn GuestMemory);
@@ -460,11 +456,6 @@ pub fn open(claim: Claim) -> Vec<Claim> {
     stale
 }
 
-/// Whether screen `root`'s lists are the game's until [`forget`].
-pub fn refused(root: u32) -> bool {
-    REFUSED.with(|r| r.borrow().contains(&root))
-}
-
 /// The draw of entry `ordinal` of the list whose frame is `frame`.
 pub fn at_item(frame: u32, ordinal: u32) -> Item {
     CLAIMS.with(|c| {
@@ -559,17 +550,13 @@ pub fn placed(frame: u32, run: usize, placed: bool) {
             claim.guest_drew |= !placed;
             if placed {
                 claim.skipped += 1;
-            } else {
-                // Each of the run's draws is the game's.
-                super::kept::count_n(super::kept::UiKind::Widget, "pass", r.entries.len() as u64);
             }
         }
     });
 }
 
 /// Closes the claim at `frame` and every one opened after it: those whose
-/// skipped draws are not their claimed ones, counted, their screens
-/// refused until [`forget`].
+/// skipped draws are not their claimed ones (the caller panics on any).
 pub fn close(frame: u32) -> Vec<Claim> {
     let closed: Vec<Claim> = CLAIMS.with(|c| {
         let mut claims = c.borrow_mut();
@@ -582,39 +569,31 @@ pub fn close(frame: u32) -> Vec<Claim> {
         .into_iter()
         .filter(|c| c.skipped != c.claimed())
         .collect();
-    for claim in &mismatched {
-        Ui::OverlayMenuMismatch.count();
-        REFUSED.with(|r| r.borrow_mut().insert(claim.root));
-    }
     mismatched
 }
 
-/// Forgets the open claims and the refused screens (a snapshot load, a
-/// new map).
+/// Forgets the open claims (a snapshot load, a new map).
 pub fn forget() {
     CLAIMS.with(|c| c.borrow_mut().clear());
-    REFUSED.with(|r| r.borrow_mut().clear());
 }
 
 /// Check the screen before reading its sorted entries.
-pub(super) fn check_frame(mem: &dyn GuestMemory, root: u32) -> Result<(), MenuRefusal> {
+pub(super) fn check_frame(mem: &dyn GuestMemory) -> Result<(), MenuRefusal> {
     if screen_rect(mem) != Some(FULL_SCREEN) {
         return Err(MenuRefusal::Frame);
-    }
-    if refused(root) {
-        return Err(MenuRefusal::Mismatched);
     }
     Ok(())
 }
 
-/// Claim the list at LIST_READY. Count each drawn widget the game keeps.
+/// Claim the list at LIST_READY. A drawn widget the overlay does not
+/// draw panics, named ([`MenuRefusal::panic`]).
 pub(super) fn claim_list(mem: &dyn GuestMemory, list: &UiList, host: &dyn super::Host) -> Claim {
     let fonts = host.ui_text(mem);
     let custom = |widget| host.ui_custom_widget(mem, widget);
     let arrows = |vtable, height| host.ui_list_arrows(vtable, height);
     let (claim, refused) = plan_with_text(&Ro(mem), list, fonts.as_deref().unwrap_or(&NoText), &custom, &arrows);
-    for (_, why) in refused {
-        why.count();
+    if let Some((_, why)) = refused.into_iter().next() {
+        why.panic();
     }
     claim
 }
@@ -751,27 +730,11 @@ mod tests {
         assert!(none.runs.is_empty(), "only the text is drawn");
     }
 
-    /// A widget gap counts its own cause under `widget`; one with no
-    /// finer name counts the draw's, as the coarse counter does.
+    /// A widget gap panics under the draw and its own name.
     #[test]
-    fn a_widget_gap_is_kept_under_its_own_name() {
-        let _s = super::super::kept::tests::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        let kept = |name: &str| {
-            super::super::kept::counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n)
-        };
-        let (overrun, text, view) = (
-            kept("scene_kept_ui_widget_text_tab_overrun"),
-            kept("scene_kept_ui_widget_text"),
-            kept("scene_kept_ui_widget_model_view"),
-        );
-        MenuRefusal::from(Gap::text("text_tab_overrun")).count();
-        MenuRefusal::from(Unread::Text).count();
-        MenuRefusal::from(Gap::model("model_view")).count();
-        MenuRefusal::from(Unread::Shader).count();
-        assert_eq!(kept("scene_kept_ui_widget_text_tab_overrun"), overrun + 1);
-        assert_eq!(kept("scene_kept_ui_widget_text"), text + 1);
-        assert_eq!(kept("scene_kept_ui_widget_model_view"), view + 1);
-        assert_eq!(kept("scene_kept_ui_widget_shader"), 0, "a shader bitmap is drawn at its quad");
+    #[should_panic(expected = "menus: Text text_tab_overrun")]
+    fn a_widget_gap_panics_under_its_own_name() {
+        MenuRefusal::from(Gap::text("text_tab_overrun")).panic();
     }
 
     #[test]
@@ -831,32 +794,21 @@ mod tests {
         forget();
     }
 
-    /// A run whose pass is not placed is the game's; a claimed draw that
-    /// never comes is a mismatch, and the screen is refused until the
-    /// claims are forgotten.
+    /// A claimed draw that never comes is a mismatch, returned by `close`.
     #[test]
-    fn an_unplaced_run_is_the_games_and_a_missing_draw_refuses_the_screen() {
+    fn a_missing_draw_is_a_mismatch() {
         forget();
-        let kept = || {
-            super::super::kept::counters().into_iter()
-                .find(|(k, _)| k == "scene_kept_ui_widget_pass").map_or(0, |(_, n)| n)
-        };
-        let before = kept();
         let (claim, _) = plan(&widgets(), &list(0x8000, [0.0, 5.0, 0.0, 0.0, 0.0]));
         open(claim);
         assert_eq!(at_item(0x8000, 0), Item::Place(0));
-        placed(0x8000, 0, false);
-        // Other tests count kept widgets too: at least this run's one.
-        assert!(kept() > before, "the unplaced run's one draw is kept");
+        placed(0x8000, 0, true);
         assert_eq!(at_item(0x8000, 3), Item::Place(1));
         placed(0x8000, 1, true);
         // Entry 4 is never drawn.
         let mismatched = close(0x8000);
         assert_eq!(mismatched.len(), 1);
-        assert_eq!((mismatched[0].skipped, mismatched[0].claimed()), (1, 2));
-        assert!(refused(0x1000));
+        assert_eq!((mismatched[0].skipped, mismatched[0].claimed()), (2, 3));
         forget();
-        assert!(!refused(0x1000));
     }
 
     /// A bitmap widget lists as the quad its draw makes, in a run of its

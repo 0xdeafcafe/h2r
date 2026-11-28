@@ -84,8 +84,8 @@ fn wide(mem: &dyn GuestRead, at: u32) -> Result<Vec<u16>, Unread> {
 /// The substitution pass `0x0022d2ee` over the draw's copy of the string.
 /// At each unit in turn: a private-use unit whose table entry has a
 /// handler is a token, replaced by what its handler writes
-/// ([`tokens::write`]; a handler not ported keeps the text the game's,
-/// `text_token`); otherwise each named sequence
+/// ([`tokens::write`]; a handler not ported panics, named); otherwise
+/// each named sequence
 /// that starts there is tried, the last that matches replacing it with
 /// its unit, unless the copy would not hold the result. The scan moves
 /// one unit on, past the replacement. Private-use units with no handler
@@ -697,10 +697,9 @@ mod tests {
     }
 
     #[test]
-    fn a_button_glyph_stays_and_a_token_is_the_games() {
+    fn a_button_glyph_stays_and_a_token_is_written() {
         let m = aliases();
         assert_eq!(substitute(&m, &[0xe105, 0x20]), Ok(vec![0xe105, 0x20]));
-        assert_eq!(substitute(&m, &[0x20, 0xe105 + 0x1b]), Err(Gap::text("text_token")), "a handler not ported");
         // The handler's text replaces the unit and the scan moves on one.
         assert_eq!(substitute(&m, &[0xe459, 0x61, 0x62]), Ok(vec![0xe12d, 0xe102, 0x62]));
         assert_eq!(substitute(&m, &[0xf000]), Ok(vec![0xf000]), "not in the table: no handler");

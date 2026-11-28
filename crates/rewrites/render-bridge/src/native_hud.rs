@@ -368,23 +368,20 @@ fn menu_list(mem: &mut dyn GuestMemory, ebp: u32, edi: u32) {
     let Some(host) = host() else { return };
     match host.ui_overlay(mem) {
         Some(true) => {}
-        Some(false) => {
-            MenuRefusal::Pass.counter().count();
-            kept::count(kept::UiKind::List, "pass");
-            return;
-        }
+        Some(false) => MenuRefusal::Pass.panic(),
         None => return,
     }
-    if let Err(why) = ui_overlay::check_frame(mem, edi) {
-        kept::ui(why.counter());
-        return;
+    if let Err(why) = ui_overlay::check_frame(mem) {
+        why.panic();
     }
     let _extract = timeline::native::Timer::start(Stage::Ui, Metric::ExtractNs);
     let Some(list) = ui_overlay::at_list(&*mem, ebp, edi) else { return };
     let claim = ui_overlay::claim_list(mem, &list, host.as_ref());
     Ui::OverlayMenuClaimed.count_n(u64::from(claim.claimed()));
     // A list at this frame left open is closed (and checked) first.
-    ui_overlay::open(claim);
+    if let Some(stale) = ui_overlay::open(claim).first() {
+        unimplemented!("menus: claim at {:#x} left open, skipped {} of {} draws", stale.frame, stale.skipped, stale.claimed());
+    }
 }
 
 /// The sorted widget call (`points::ui_render::ITEM_CALL`, the argument
@@ -403,20 +400,15 @@ pub(crate) fn menu_item(c: &mut hooks::Call<'_>, mem: &mut dyn GuestMemory, stac
                 let _extract = timeline::native::Timer::start(Stage::Ui, Metric::ExtractNs);
                 ui_overlay::run_part(frame, run, mem)
             };
-            let Some(part) = part else {
-                ui_overlay::placed(frame, run, false);
-                MenuRefusal::Pass.counter().count();
-                return None;
-            };
+            let Some(part) = part else { unimplemented!("menus: run not read again after a guest draw") };
             // A run of containers has nothing to draw: it needs no pass.
             // The pass and the scene's overlay share the run's items.
             let part = Arc::new(part);
             let placed = part.is_empty() || host().is_some_and(|host| host.ui_pass(mem, &part));
-            ui_overlay::placed(frame, run, placed);
             if !placed {
-                MenuRefusal::Pass.counter().count();
-                return None;
+                MenuRefusal::Pass.panic();
             }
+            ui_overlay::placed(frame, run, placed);
             if !part.is_empty() {
                 Ui::OverlayMenuPasses.count();
                 if crate::scene_step::with_overlay(|o| o.append(&part).is_ok()) == Some(false) {
@@ -869,15 +861,16 @@ impl Feature for NativeHud {
                 return Ok(Flow::Continue);
             }
             if c.cpu.x87.control & 0x0c00 != 0 || c.cpu.mxcsr & 0x6000 != 0 {
-                kept::ui(MenuRefusal::Frame.counter());
-                return Ok(Flow::Continue);
+                unimplemented!("menus: rounding mode not to nearest");
             }
             let mut mem = rt.memory();
             menu_list(&mut *mem, c.cpu.ebp, c.cpu.edi);
             Ok(Flow::Continue)
         }).context_only().optional();
         b.raw().before(&ui_overlay::LIST_DONE, "native_ui_overlay_list_done", |c| {
-            ui_overlay::close(c.cpu.ebp);
+            if let Some(claim) = ui_overlay::close(c.cpu.ebp).first() {
+                unimplemented!("menus: claim at {:#x} skipped {} of {} draws", claim.frame, claim.skipped, claim.claimed());
+            }
             Ok(Flow::Continue)
         }).context_only().optional();
         let rust = rust_hud_on(b.switches());
