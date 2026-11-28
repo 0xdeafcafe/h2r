@@ -162,6 +162,7 @@ impl GroupRefusal {
 
 /// All the drawn groups of one site, in step order, or `None` (see
 /// [`plan_or_refusal`] for why).
+#[cfg(test)]
 pub(super) fn plan(
     mem: &dyn GuestMemory,
     site: GroupSite,

@@ -97,8 +97,8 @@ pub struct LightBinding {
 /// epilogue leaves.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize)]
 pub struct EntryState {
-    /// Record bit 11 on an object's record: the auxiliary state toggle
-    /// `0x00012d50`. The part draws with its view's
+    /// Record bit 11, an object's or the structure's: the auxiliary
+    /// state toggle `0x00012d50`. The part draws with its view's
     /// [`crate::AuxDepth`].
     pub aux_depth: bool,
     /// The record's fade byte (`+0x1a`) is below `0xff`: the polygon

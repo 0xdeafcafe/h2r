@@ -80,7 +80,7 @@ fn scene_passes(
 ) -> Result<TransferAbi, runtime::GuestFault> {
     let plan = match plan {
         Ok(plan) => plan,
-        Err(_) => super::scene_frame::refused(),
+        Err(why) => super::scene_frame::refused(why),
     };
     hooks::entry::start_render(cpu, ctx, points::RENDER_LIGHT_PASSES.base, move |cx: Cx| -> EntryFuture {
         Box::pin(async move {

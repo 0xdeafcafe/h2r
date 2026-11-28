@@ -23,7 +23,7 @@
 
 use engine::light_constants as lc;
 use engine::memory::GuestMemory;
-use engine::render::light_gather::{Writes, passes};
+use engine::render::light_gather::{Refusal, Writes, passes};
 use engine::shadow_constants as sc;
 use frame_scene::{GroupSite, PROJECTION_ROWS, SceneLight};
 use native_render::light_passes::{self, SHADOW, Steps};
@@ -37,19 +37,22 @@ use super::{Entry, SceneGroup, Source, source_constants, typed_groups};
 pub enum Dropped {
     /// The passes' arguments, the light's lists or its tags did not read.
     Unread,
-    /// The light's constants or flags did not compute.
-    Constants,
+    /// The light's constants or flags did not compute, with the port's
+    /// error where one stopped it.
+    Constants(Option<lc::Error>),
     /// The shadow projection did not compute.
-    Projection,
+    Projection(lc::Error),
     /// A layer's entries are not all of a kind the scene holds whole.
     Group(GroupRefusal),
     /// The scene's open light is not this call's (the hand-off refused).
     Light,
     /// The additional casters' pair (`0x00030ed0`) would make a suffix:
     /// a candidate's first match in the current visibility list is marked
-    /// `0x1000`, or the candidates do not read. Its record walk is not
-    /// built.
-    AdditionalCasters,
+    /// `0x1000` (`Unsupported`), or the candidates do not read (the
+    /// lookup's other refusals). The marker lookup `0x000b8d30`, the
+    /// object's records `0x00133790` and the suffix's item lists
+    /// `0x00044ac0` it would run are not built.
+    AdditionalCasters(Refusal),
     /// The host did not draw the light's groups (`Host::draw_scene_light`).
     Host,
 }
@@ -59,11 +62,11 @@ impl Dropped {
     pub fn name(self) -> &'static str {
         match self {
             Dropped::Unread => "unread",
-            Dropped::Constants => "constants",
-            Dropped::Projection => "projection",
+            Dropped::Constants(_) => "constants",
+            Dropped::Projection(_) => "projection",
             Dropped::Group(_) => "group",
             Dropped::Light => "light",
-            Dropped::AdditionalCasters => "additional_casters",
+            Dropped::AdditionalCasters(_) => "additional_casters",
             Dropped::Host => "host",
         }
     }
@@ -72,9 +75,20 @@ impl Dropped {
 /// A light the native passes cannot take: `lights: <cause>` (a group's
 /// with its refusal, `lights: group <refusal>`). Nothing falls back.
 pub fn fail(why: Dropped) -> ! {
-    match why {
-        Dropped::Group(refusal) => unimplemented!("lights: group {}", refusal.name()),
-        why => unimplemented!("lights: {}", why.name()),
+    unimplemented!("lights: {}", why.message())
+}
+
+impl Dropped {
+    /// The cause as the panic names it: its name, then what stopped it
+    /// where the port says (`constants Simd`, `group entry_state`,
+    /// `additional_casters Unsupported`).
+    pub fn message(self) -> String {
+        match self {
+            Dropped::Group(refusal) => format!("group {}", refusal.name()),
+            Dropped::Constants(Some(e)) | Dropped::Projection(e) => format!("{} {e:?}", self.name()),
+            Dropped::AdditionalCasters(r) => format!("{} {r:?}", self.name()),
+            why => why.name().to_owned(),
+        }
     }
 }
 
@@ -85,25 +99,35 @@ pub enum FrameDropped {
     /// A host is set and does not draw the scene's light layers
     /// ([`super::scene_path_ready`]).
     Host,
-    /// The frame's plan refused (`frame::plan`).
-    Plan,
-    /// A light's passes' entry plan refused (`passes::plan`).
-    Passes,
+    /// The frame's plan refused (`frame::plan`), by its refusal.
+    Plan(Refusal),
+    /// A light's passes' entry plan refused (`passes::plan`), by its
+    /// refusal.
+    Passes(Refusal),
 }
 
 impl FrameDropped {
     pub fn name(self) -> &'static str {
         match self {
             FrameDropped::Host => "host",
-            FrameDropped::Plan => "plan",
-            FrameDropped::Passes => "passes",
+            FrameDropped::Plan(_) => "plan",
+            FrameDropped::Passes(_) => "passes",
+        }
+    }
+
+    /// The cause with its refusal: `plan Residency`.
+    pub fn message(self) -> String {
+        match self {
+            FrameDropped::Plan(r) | FrameDropped::Passes(r) => format!("{} {r:?}", self.name()),
+            why => why.name().to_owned(),
         }
     }
 }
 
-/// A light frame or passes call the native code cannot plan.
+/// A light frame or passes call the native code cannot plan:
+/// `lights: frame <cause>`.
 pub fn fail_frame(why: FrameDropped) -> ! {
-    unimplemented!("lights: frame {}", why.name())
+    unimplemented!("lights: frame {}", why.message())
 }
 
 /// What one light's passes put into the scene.
@@ -138,14 +162,14 @@ pub fn entry(p: &passes::Plan) -> Entry {
 pub fn plan(mem: &dyn GuestMemory, e: &Entry) -> Result<Planned, Dropped> {
     let source = Source::observed(mem, e).ok_or(Dropped::Unread)?;
     let fpu = e.fpu();
-    let c = source_constants(mem, &source, fpu).ok_or(Dropped::Constants)?;
+    let c = source_constants(mem, &source, fpu).ok_or(Dropped::Constants(None))?;
     let inputs = source
         .inputs(mem, c.flags, c.definition_flags)
         .ok_or(Dropped::Unread)?;
     let steps = light_passes::steps(&inputs);
     let shadow = if c.flags & SHADOW != 0 {
         let g = lc::light_globals(mem, &source.call, fpu, &mut |_| None)
-            .map_err(|_| Dropped::Constants)?;
+            .map_err(|e| Dropped::Constants(Some(e)))?;
         let call = sc::Call {
             context: source.call.context,
             frame: source.call.frame,
@@ -153,7 +177,7 @@ pub fn plan(mem: &dyn GuestMemory, e: &Entry) -> Result<Planned, Dropped> {
         };
         Some(
             sc::shadow_globals_for_light(mem, &call, fpu, &g, c.flags)
-                .map_err(|_| Dropped::Projection)?,
+                .map_err(Dropped::Projection)?,
         )
     } else {
         None
@@ -236,9 +260,9 @@ fn projection_rows(block: &[u32]) -> [[u32; 4]; PROJECTION_ROWS] {
     core::array::from_fn(|row| core::array::from_fn(|col| block.get(4 * row + col).copied().unwrap_or(0)))
 }
 
-/// A passes call whose plan refused.
-pub(super) fn refused() -> ! {
-    fail_frame(FrameDropped::Passes)
+/// A passes call whose plan refused, by its refusal.
+pub(super) fn refused(why: Refusal) -> ! {
+    fail_frame(FrameDropped::Passes(why))
 }
 
 /// After the item lists of the passes entered with `p`: the light's
@@ -270,8 +294,8 @@ fn take(mem: &mut dyn GuestMemory, e: &Entry) -> Result<usize, Dropped> {
     // store puts back the cursor it saved, so the light draws its own
     // steps. A pair that would make a suffix needs the marker lookup and
     // the suffix's record walk, which are not built.
-    if planned.additional_casters && passes::additional::empty(&*mem).is_err() {
-        return Err(Dropped::AdditionalCasters);
+    if planned.additional_casters {
+        passes::additional::empty(&*mem).map_err(Dropped::AdditionalCasters)?;
     }
     let mut light = crate::scene_step::current_light().ok_or(Dropped::Light)?;
     light.candidate = Some(planned.candidate.clone());
@@ -282,4 +306,28 @@ fn take(mem: &mut dyn GuestMemory, e: &Entry) -> Result<usize, Dropped> {
     let n = planned.groups.len();
     crate::scene_step::typed_light_groups(planned.groups);
     Ok(n)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use scene_extract::light_groups::Cause;
+
+    #[test]
+    fn a_dropped_light_names_its_cause_and_what_stopped_it() {
+        assert_eq!(Dropped::Unread.message(), "unread");
+        assert_eq!(Dropped::Constants(None).message(), "constants");
+        assert_eq!(Dropped::Constants(Some(lc::Error::Simd)).message(), "constants Simd");
+        assert_eq!(Dropped::Projection(lc::Error::Data).message(), "projection Data");
+        assert_eq!(Dropped::Group(GroupRefusal::Entry(Cause::State)).message(), "group entry_state");
+        assert_eq!(Dropped::AdditionalCasters(Refusal::Unsupported).message(), "additional_casters Unsupported");
+        assert_eq!(Dropped::Host.message(), "host");
+    }
+
+    #[test]
+    fn a_refused_frame_names_its_refusal() {
+        assert_eq!(FrameDropped::Host.message(), "host");
+        assert_eq!(FrameDropped::Plan(Refusal::Residency).message(), "plan Residency");
+        assert_eq!(FrameDropped::Passes(Refusal::Layout).message(), "passes Layout");
+    }
 }

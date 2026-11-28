@@ -33,13 +33,13 @@
 //!   whole part: the entry carries the spans the emitter draws
 //!   (`LightEntry::subparts`), for every layer ([`taken`]).
 //! - What the prologue sets beyond the bindings, which the entry carries
-//!   ([`EntryState`]) for layers 10 to 14 ([`state_taken`]): an object
-//!   record's auxiliary state toggle (bit 11, while the toggle's values
-//!   read) and the fade byte (`+0x1a`).
+//!   ([`EntryState`]) for layers 10 to 14 ([`state_taken`]): a record's
+//!   auxiliary state toggle (bit 11, an object's or the structure's,
+//!   while the toggle's values read) and the fade byte (`+0x1a`).
 //! - What the handler does beyond binding the material and drawing the
 //!   part, which the scene does not carry, and so is the entry's
-//!   remainder ([`Cause`]): a structure record's toggle and a template
-//!   callback (the shader's `stem` `+0x44`, `+0x50`). The shader's `+0x16`
+//!   remainder ([`Cause`]): a template callback (the shader's `stem`
+//!   `+0x44`, `+0x50`). The shader's `+0x16`
 //!   bit 0 is entry state ([`EntryState::shader_flag`]), and a material
 //!   animation (the shader's `+0x24` block `+0x3c`) is the host's to
 //!   sample.
@@ -279,11 +279,12 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
     let model = word(mem, at(rec, 4)?)?;
     let key = word(mem, at(rec, 0xc)?)?;
     // The prologue `0x0004d640`: the fade byte's stipple pattern, and
-    // with bit 11 on an object's record the auxiliary state toggle
-    // `0x00012d50`, which the entry carries for the host to draw with
-    // (`EntryState`) while its view's toggle values read.
+    // with bit 11 the auxiliary state toggle `0x00012d50` (`0x0004d6a2`:
+    // `test ah, 8` on the record's flags, then EAX 0 and BL 1 whatever
+    // the record's model), which the entry carries for the host to draw
+    // with (`EntryState`) while its view's toggle values read.
     let aux_depth = flags & 1 << 11 != 0;
-    if aux_depth && (model == u32::MAX || crate::layout::aux_depth::read(mem).is_none()) {
+    if aux_depth && crate::layout::aux_depth::read(mem).is_none() {
         return Err(Cause::State);
     }
     let state = EntryState { aux_depth, fade: byte(mem, at(rec, 0x1a)?)? != 0xff, ..EntryState::default() };
@@ -782,9 +783,10 @@ mod tests {
         aux_view(&mut m);
         let (e, _) = entry(&m, ITEMS, sorted(2)).unwrap();
         assert_eq!(e.state, EntryState { aux_depth: true, fade: false, ..EntryState::default() });
-        // A structure record's toggle stays the guest's.
+        // A structure record's toggle is the same call: the entry carries it.
         m.w(RENDER_RECORDS + RENDER_RECORD_SIZE, 1 << 11);
-        assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap_err(), Cause::State);
+        let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
+        assert_eq!((e.model, e.state), (u32::MAX, EntryState { aux_depth: true, ..EntryState::default() }));
         m.w(RENDER_RECORDS + RENDER_RECORD_SIZE, 0);
         m.w(RENDER_RECORDS + RENDER_RECORD_SIZE + 0x18, 0x0080_0000);
         let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
@@ -926,6 +928,7 @@ mod tests {
         let rec = RENDER_RECORDS + RENDER_RECORD_SIZE;
         let cases: [(&dyn Fn(&mut Mem), Cause); 6] = [
             (&|m| m.w(ITEMS, 0x8484), Cause::Callback),
+            // The toggle's values do not read.
             (&|m| m.w(rec, 1 << 11), Cause::State),
             (&|m| set_half(m, PARTS + 8, 2), Cause::Range),
             (&|m| m.w(DATA + 0x20, 4), Cause::Range),

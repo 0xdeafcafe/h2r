@@ -16,6 +16,7 @@ use frame_scene::{FrameScene, GroupSite, LightStep, LightTarget, ShadowFilter, V
 use native_render::shadows::{CASTERS, RECEIVERS};
 use scene_extract::light_groups;
 
+use super::typed_groups::GroupRefusal;
 use super::{HOST, Ro, SceneGroup, VIEW_TARGET, typed_groups};
 use crate::native_map_work::Stage;
 
@@ -90,15 +91,46 @@ pub struct Planned {
 /// setup stored. Empty when the branch draws no layer; `None` when a
 /// group does not read. Reads only.
 pub fn groups(mem: &dyn GuestMemory) -> Option<Vec<SceneGroup>> {
-    let casters = mem.u32(CASTERS + 8).ok()?;
-    let receivers = mem.u32(RECEIVERS + 8).ok()?;
-    if casters & (1 << 10) == 0 || receivers & (1 << 11) == 0 {
-        return Some(Vec::new());
+    groups_or_refusal(mem).ok()
+}
+
+/// Why the object shadow's groups were not made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// The lists' masks, the pass flags or the definition did not read.
+    Unread,
+    /// The shadow projection block did not read.
+    Projection,
+    /// A group did not read whole.
+    Group(GroupRefusal),
+    /// The filter `0x000222a0` would draw did not compute.
+    Filter,
+}
+
+impl Refused {
+    /// The cause as the panic names it (`group entry_state`).
+    pub fn message(self) -> String {
+        match self {
+            Refused::Unread => "unread".to_owned(),
+            Refused::Projection => "projection".to_owned(),
+            Refused::Group(r) => format!("group {}", r.name()),
+            Refused::Filter => "filter".to_owned(),
+        }
     }
-    let flags = mem.u32(lp::global::PASS_FLAGS).ok()?;
-    let definition_flags = mem.u32(mem.u32(lp::global::DEFINITION).ok()?).ok()?;
-    let projection = light_groups::projection(&Ro(mem))?;
-    typed_groups::plan(
+}
+
+/// [`groups`], or why not.
+pub fn groups_or_refusal(mem: &dyn GuestMemory) -> Result<Vec<SceneGroup>, Refused> {
+    let word = |at| mem.u32(at).map_err(|_| Refused::Unread);
+    let casters = word(CASTERS + 8)?;
+    let receivers = word(RECEIVERS + 8)?;
+    if casters & (1 << 10) == 0 || receivers & (1 << 11) == 0 {
+        return Ok(Vec::new());
+    }
+    let flags = word(lp::global::PASS_FLAGS)?;
+    let definition_flags = word(word(lp::global::DEFINITION)?)?;
+    let projection = light_groups::projection(&Ro(mem)).ok_or(Refused::Projection)?;
+    typed_groups::plan_or_refusal(
         mem,
         GroupSite::ObjectShadow,
         &STEPS,
@@ -106,18 +138,19 @@ pub fn groups(mem: &dyn GuestMemory) -> Option<Vec<SceneGroup>> {
         definition_flags,
         Some(projection),
     )
+    .map_err(Refused::Group)
 }
 
 /// [`groups`], the weight the branch published and the filter
 /// `0x000222a0` would draw between its layers.
-pub fn plan(mem: &dyn GuestMemory, fpu: Fpu) -> Option<Planned> {
-    let groups = groups(mem)?;
+pub fn plan(mem: &dyn GuestMemory, fpu: Fpu) -> Result<Planned, Refused> {
+    let groups = groups_or_refusal(mem)?;
     if groups.is_empty() {
-        return Some(Planned { groups, weight: None, filter: None });
+        return Ok(Planned { groups, weight: None, filter: None });
     }
     let weight = mem.u32(light_groups::OBJECT_SHADOW_WEIGHT).ok().map(f32::from_bits);
-    let filter = Some(light_groups::shadow_filter(mem, fpu.mxcsr, fpu.x87_control)?);
-    Some(Planned { groups, weight, filter })
+    let filter = Some(light_groups::shadow_filter(mem, fpu.mxcsr, fpu.x87_control).ok_or(Refused::Filter)?);
+    Ok(Planned { groups, weight, filter })
 }
 
 static CUT: AtomicU64 = AtomicU64::new(0);
@@ -129,10 +162,11 @@ pub fn cut_count() -> u64 {
 
 /// The cut caster's item lists are made: its groups into the open object
 /// shadow. A shadow that does not plan, or that the scene refuses, panics
-/// (`lights: object_shadow plan`, `lights: object_shadow scene`).
+/// (`lights: object_shadow plan <cause>`, `lights: object_shadow scene`).
 pub fn cut(mem: &dyn GuestMemory, fpu: Fpu) {
-    let Some(p) = plan(mem, fpu) else {
-        unimplemented!("lights: object_shadow plan");
+    let p = match plan(mem, fpu) {
+        Ok(p) => p,
+        Err(why) => unimplemented!("lights: object_shadow plan {}", why.message()),
     };
     if !crate::scene_step::object_shadow_groups(p.groups, p.weight, p.filter) {
         unimplemented!("lights: object_shadow scene");
@@ -244,5 +278,21 @@ mod tests {
         let mut m = FlatMemory::new(0, 0x1000);
         assert_eq!(draw(&mut m, &passes), 1);
         assert_eq!(*host.0.lock().unwrap(), [3]);
+    }
+
+    #[test]
+    fn a_shadow_that_does_not_plan_names_why() {
+        use scene_extract::light_groups::Cause;
+        let fpu = Fpu { mxcsr: 0x1f80, x87_control: 0x027f };
+        let small = FlatMemory::new(0, 0x1000);
+        assert_eq!(plan(&small, fpu), Err(Refused::Unread), "the lists' masks do not read");
+        let mut m = FlatMemory::new(0, 0x0060_0000);
+        assert_eq!(plan(&m, fpu).unwrap().groups, Vec::new(), "no layer 10 or 11: nothing to draw");
+        m.set_u32(CASTERS + 8, 1 << 10).unwrap();
+        m.set_u32(RECEIVERS + 8, 1 << 11).unwrap();
+        m.set_u32(lp::global::DEFINITION, 0x0100_0000).unwrap();
+        assert_eq!(plan(&m, fpu), Err(Refused::Unread), "the definition does not read");
+        assert_eq!(Refused::Group(GroupRefusal::Entry(Cause::State)).message(), "group entry_state");
+        assert_eq!(Refused::Filter.message(), "filter");
     }
 }

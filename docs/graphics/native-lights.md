@@ -163,8 +163,8 @@ frame it cannot take panics (`scene_frame::fail_frame`):
 | Panic | When |
 |---|---|
 | `lights: frame host` | a host is set and does not draw the scene's light layers (`native_lights::scene_path_ready`, the host's `draws_scene`) |
-| `lights: frame plan` | the frame's plan refused (`frame::plan`) |
-| `lights: frame passes` | a light's passes' entry plan refused (`passes::plan`) |
+| `lights: frame plan <refusal>` | the frame's plan refused (`frame::plan`), by its `light_gather::Refusal` (`Memory`, `Layout`, `Unsupported`, `Residency`) |
+| `lights: frame passes <refusal>` | a light's passes' entry plan refused (`passes::plan`), by its refusal |
 
 Each light's passes (`native_lights/passes.rs`, `scene_passes`) make
 only their first step, the item lists `0x00040e90` (the item body,
@@ -191,12 +191,14 @@ The additional casters' pair (`0x00030ed0`) is decided at the item lists
 by `passes::additional::empty`. When no candidate's first match in the
 current visibility list is marked `0x1000`, the pair makes no suffix and
 draws nothing, so the light draws its own steps. A pair that would make a
-suffix needs the marker lookup and the suffix's record walk, which are
-not built: `lights: additional_casters`.
+suffix needs the marker lookup `0x000b8d30`, the object's records
+`0x00133790`, the suffix's item lists `0x00044ac0` and its shadow setup
+`0x000494b0`, which are not built: `lights: additional_casters
+Unsupported` (another refusal: the candidates did not read).
 
 | Panic | Cause |
 |---|---|
-| `lights: <cause>` | `unread`, `constants`, `projection`, `light`, `additional_casters`, `host` |
+| `lights: <cause>` | `unread`, `constants`, `projection`, `light`, `additional_casters`, `host`; `constants` and `projection` with the port's `light_constants::Error` where one stopped them, `additional_casters` with its refusal |
 | `lights: group <refusal>` | the first step that did not read whole (`typed_groups::GroupRefusal`): `layer`, `memory`, `suffix`, `mask`, `sort`, `pass`, `projection`, or `entry_<cause>` (`scene_extract::light_groups::Cause`) |
 
 Tests: `a_light_the_scene_takes_returns_after_its_lists_and_the_guest_draws_nothing`
@@ -212,7 +214,7 @@ entry carries them (`frame_scene::EntryState`, read by
 
 | State | Where | The host draws it with | Held when |
 |---|---|---|---|
-| `aux_depth` | bit 11 on an object's record: the auxiliary state toggle `0x00012d50` (the first person's arms and weapon) | the toggle's `c[0..3]` and clip range (`light_gpu::model_part`, `object_program_gpu::with_aux_depth`) | the device holds the toggle's values off (`native_objects_glue::aux_depth_at_rest`) |
+| `aux_depth` | bit 11 on a record, an object's or the structure's (`0x0004d6a2` tests the flags alone): the auxiliary state toggle `0x00012d50` (the first person's arms and weapon) | the toggle's `c[0..3]` and clip range (`light_gpu::model_part`, `object_program_gpu::with_aux_depth`) | the device holds the toggle's values off (`native_objects_glue::aux_depth_at_rest`) |
 | `fade` | the record's fade byte `+0x1a` below `0xff`: a stipple pattern | nothing: unmasked | the stipple is off and at rest (`stipple_off`, `stipple_at_rest`) |
 | `shader_flag`, `structure`, `uncopied` | the shader's flag bit 0 (`+0x16`); the active structure's parameter block (`+0x214` above 0); the frame's structure target copy not made (`0x00509430`) | nothing: the guest's prologue uploads the block (`0x0003c650`, `0x0003d000`) and a program with flag bit 20 makes the copy (`0x0003bea0`) | `structure`: the device and the engine hold every word of the upload (`native_objects_glue::structure_at_rest`). `uncopied`: no pass of the layer's draws has flag bit 20 (`LightProgram::copies_target`) |
 
@@ -222,8 +224,8 @@ entry carries them (`frame_scene::EntryState`, read by
 - Every light and shadow layer takes an entry with state
   (`light_groups::state_taken`), and the host draws it the same way in
   each (`native_lights_glue::entry_state`). On the per-handler path
-  (`dispatched_entry`) it stays `State`, as does a structure record's
-  toggle or a toggle whose values do not read.
+  (`dispatched_entry`) it stays `State`, as does a toggle whose values
+  do not read.
 - The cut asks the host once per light, and only for an entry with
   state (`Host::held_state`, `typed_groups::plan_or_refusal`). Not held:
   `lights: group entry_state`.
@@ -502,7 +504,7 @@ with no renderer its slots draw nothing.
 
 | Panic | When |
 |---|---|
-| `lights: first_person plan`, `lights: first_person records plan` | the loop's or a slot's records plan refused |
+| `lights: first_person plan <refusal>`, `lights: first_person records plan <refusal>` | the loop's or a slot's records plan refused |
 | `lights: first_person host` | a host is set and does not draw the scene's light layers |
 | `lights: first_person <cause>` | a slot the scene cannot take, by the dynamic lights' causes (`unread`, `constants`, `group <refusal>`, `light`, `host`) |
 | `lights: first_person record <refusal>` | a record the guest's per-part calls made (`Made::Guest`) |
