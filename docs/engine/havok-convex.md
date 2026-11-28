@@ -1,6 +1,6 @@
 # The Havok convex agent: separated pairs
 
-Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; the closest-feature query `0x003048a0` with its seven leaves, its triangle case `0x00303dd0`, three shape types' support virtuals and two types' vertex virtuals are ported and compared with the lifted code; so are the manifold refresh `0x00302eb0` and the triangle case's penetration call `0x0030a6b0` up to its expanding polytope; the polytope, the add-point call `0x00302c70` and the contact commit stay guest code, and no arm calls the query or the refresh yet.
+Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; the closest-feature query `0x003048a0` with its seven leaves, its triangle case `0x00303dd0`, three shape types' support virtuals and two types' vertex virtuals are ported and compared with the lifted code; so are the manifold refresh `0x00302eb0` and the triangle case's penetration call `0x0030a6b0` with its expanding polytope; the add-point call `0x00302c70` and the contact commit stay guest code, and no arm calls the query or the refresh yet.
 Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query, its leaves and the triangle case), `crates/rewrites/sim-havok/src/shape_support.rs` (the support and vertex virtuals), `crates/rewrites/sim-havok/src/manifold.rs` (the refresh), `crates/rewrites/sim-havok/src/penetration.rs` (the penetration call), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`, `gjk.rs`, `shape_support.rs`, `manifold.rs` and `penetration.rs`.
 Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
 
@@ -129,6 +129,9 @@ flowchart TD
 | any other | | out with 1 |
 
 - Out with 0 also stores B's size at `+0x08`.
+- The cache holds four 16-bit IDs before its sizes at `+0x08`, so the
+  sizes it hands over sum to four at most; a fifth ID would be read from
+  the sizes (for a capsule, an unaligned end, which declines `memory`).
 - The tolerance starts at `0x2edbe6ff` (about `1e-10`) and doubles on
   every pass (x87, stored to binary32). `FLT_EPSILON` is at `0x0041359c`.
 - Odd passes try A's support point first, even ones B's. A's direction
@@ -253,7 +256,7 @@ remembers how far the simplex has grown.
 
 | Count | Flat when | Not flat |
 |---|---|---|
-| 4 | `\|(D3 - D0) . n\|` not above `0x0045dc70` | the expanding polytope `0x00309e2e`: declined (`closest`) |
+| 4 | `\|(D3 - D0) . n\|` not above `0x0045dc70` | the expanding polytope `0x00309e2e` ("The expanding polytope" below) |
 | 3 | `\|n\|^2` is 0, `n = (D0 - D1) x (D1 - D2)` | `0x003093e0` along `n`: below `0x0045dc70` over the plane, the plane exit; else the point joins, count 4 |
 | 2 | `\|D0 - D1\|^2` not above `1e-6` | `0x00309700`: count 3 |
 | 1 | `\|D0\|^2` not above `1e-6` | `0x00309610`: count 2 |
@@ -280,15 +283,79 @@ remembers how far the simplex has grown.
 - Both exits store distance 0 and weight 0.5 and return 0.
 - The units are one Newton step on `rsqrtss`. The perpendicular's `w` is
   a frame word the guest never stores; only stack words see it.
-- Not ported: the polytope (`0x00309e2e` to `0x0030a150` and
-  `0x0030a440` to `0x0030a694`) with `0x00309a50`, `0x00309120`,
-  `0x002da730`, `0x0030abe0`, `0x0030ae70`, `0x00309270`, `0x0030aac0`,
-  `0x00309990` and the allocator's `vt[+0x14]`, and its retries, which
-  rerun the cases with a jittered translation.
+A count over four also goes to the polytope (`ja 0x00309e2e`).
+
+### The expanding polytope
+
+`Solver::polytope` runs `0x00309e2e` to `0x0030a150` and `0x0030a440`
+to `0x0030a694`. The polytope object (`0x00309a50`, at `esp+0x820`),
+its faces, vertices and free list, and the two point arrays are the
+solver's frame objects, dead at its return, so they are Rust values;
+only the support call's direction (the face's normal, at the face's own
+slot) and the stack words the guest reads back go through the journal.
+**E**
+
+```mermaid
+flowchart TD
+    T[tetrahedron on D0..D3, 0x0030ad20] --> N[nearest face 0x00309120]
+    N --> S[support along its normal 0x00309300]
+    S --> C{point below 0.001 over a face vertex? 0x002da730}
+    C -- yes --> A[answer 0x0030a440]
+    C -- no --> V[visible faces go, horizon 0x0030abe0]
+    V -- 2 --> R[retry]
+    V -- 0 --> F{room for a vertex and the faces?}
+    F -- no --> A1[answer, eax 1]
+    F -- yes --> X[new faces round the horizon 0x0030ae70]
+    X -- 0 --> N
+    X -- 2 --> R
+    R --> D{retry count}
+    D -- 1 --> K[keep one vertex, rerun the cases]
+    D -- 2 to 19 --> J[empty simplex, jittered translation, rerun the cases]
+    D -- 20 --> A2[answer, eax 2]
+```
+
+| Object | Holds |
+|---|---|
+| polytope `+0x00`, `+0x04` | the visibility margin (`1e-5` each round) and the nearest visible height (`FLT_MAX`) |
+| `+0x08` | the free list of face slots, 100 inline |
+| `+0x1b0` | the faces, 100 inline, `0x50` bytes: unit normal, distance at `+0x10`, three edges of (start vertex, next edge, twin edge, face) from `+0x14`, flag byte `+0x44` |
+| `+0x2100` | the vertices, 55 inline, `0x20` bytes: the difference, the horizon edge starting there at `+0x10` |
+| `esp+0x4a0`, `esp+0x120` | A's points and B's in B's frame, one per vertex, 55 inline |
+
+| Function | Does | Ported |
+|---|---|---|
+| `0x0030ad20` | four faces from the table at `0x00413700`; vertices 0 and 1 swap when vertex 0 is above face 3 | `Solver::tetrahedron` |
+| `0x0030a9d0` (thiscall face) | normal `(V0 - V1) x (V1 - V2)`, one Newton step on `rsqrtss`; distance `n . V0` | `Solver::face_plane` |
+| `0x00309120` (thiscall polytope) | the least distance, the first on a tie, freed faces (`FLT_MAX`) included | `Solver::nearest_face` |
+| `0x0030a770` (thiscall face; point, margin, nearest; `ret 0xc`) | height above the margin: 1, the nearest lowered to it; else 2, the margin raised to the height plus `1e-5` (x87) when that is above it; 4 when the margin is not below the nearest | `Solver::visible` |
+| `0x0030abe0`, `0x0030a880` (thiscall polytope; count, last, face, point; `ret 0x10`) | from the nearest face, each untested twin tested and a visible one recursed into; a twin not visible gives a horizon edge (counted, the last kept, stored at its start vertex); a 4 stops with 2; each visible face is freed | `Solver::expand_from`, `Solver::horizon` |
+| `0x0030ae70`, `0x0030a950`, `0x0030ac50` (thiscall polytope; count, last, point; `ret 0xc`) | the point joins as a vertex; face slots from the free list's end, then new; round the horizon from the last edge, each slot the face (edge end, edge start, new vertex) with its twins and plane; 0 when the ring closes | `Solver::add_vertex` |
+| `0x0030a810` (thiscall polytope) | every face flag and vertex horizon cleared | `Solver::clear` |
+| `0x0030aac0` (thiscall polytope; face; `ret 4`) | across the first edge whose `(e x n) . V` is below `-1e-4` when the starting face's distance is not above 0, or its `0.9` share is not above the twin's; a face walked before ends it | `Solver::walk` |
+| `0x00309270` (cdecl; seed, lo, hi, out) | `x`, `y`, `z` of `(0x3039 - s * 0x3e39b193) & 0x7fffffff` times `2^-31`, plus `lo`, times `hi - lo` (x87); `w` not written | `Solver::jitter` |
+| `0x002da730` (thiscall out; rows, v; `ret 8`) | the three rows dotted with `v`, `w` the third's | inline in `Solver::polytope` |
+
+- Converged: any of `(P - Vk) . n` below the vector at `0x00461f20`
+  (`cmpltps`, `0.001`).
+- The answer: the face's vertices to the first three differences, then
+  `0x00308260`'s weights of the vector at `0x004801e0` on them. A weight
+  below 0 walks the face, ten walks at most; the tenth face keeps the
+  ninth's differences and weights. A's and B's points of the face's
+  vertices become the simplex of three. `out` gets the normal negated,
+  the point `(w0 A0 + w1 A1) + w2 A2` and the distance negated; its
+  weight stands. eax 0, 1 (an array would fill: 55 vertices, or fewer
+  free face slots than horizon edges) or 2 (twenty retries).
+- A retry adds one to the state's `+0x4c`: the first keeps the simplex's
+  first vertex, the next eighteen empty it and add `0x00309270`'s
+  jitter (seeded by the count, `-1e-4` to `1e-4`) to the translation,
+  `w` included from the frame word the jitter leaves.
+- The arrays are inline and never grow: the guest checks the vertex and
+  face room before a round, so the allocator's `vt[+0x14]` frees never
+  run. A face array or slot list past 100 declines (`memory`).
 
 `sim_havok_differential.rs` compares the call with the lifted one, 1024
 seeds of capsules and polygons, one to four pairs, some repeated, some
-pairs apart; the polytope's seeds decline.
+pairs apart; the only decline is `monitor`.
 
 ## Support virtuals
 

@@ -99,7 +99,7 @@ pub(crate) fn shuf1(v: u128, imm: u8) -> u128 {
 }
 
 /// `movmskps`: the four sign bits.
-fn signs(v: u128) -> u32 {
+pub(crate) fn signs(v: u128) -> u32 {
     (0..4).fold(0, |m, i| m | (lane(v, i) >> 31) << i)
 }
 
@@ -1354,7 +1354,7 @@ pub mod tri_frame {
 }
 
 /// The call [`triangle_case`] makes out; [`crate::penetration::Port`]
-/// answers it in Rust up to the expanding polytope.
+/// answers it in Rust, the expanding polytope included.
 pub trait Penetration {
     /// `0x0030a6b0`, cdecl `(shape A, shape B, transform, simplex,
     /// differences, direction)`: the simplex at entry is up to four
@@ -1365,7 +1365,7 @@ pub trait Penetration {
 }
 
 /// `cmpltps`: each lane all ones where `a < b`, ordered.
-fn below(sse: &mut Sse, a: u128, b: u128) -> u128 {
+pub(crate) fn below(sse: &mut Sse, a: u128, b: u128) -> u128 {
     simd::cmpps(&mut sse.e.mxcsr, a, b, 1).unwrap_or_else(|simd::Xm| {
         sse.e.trapped = true;
         0

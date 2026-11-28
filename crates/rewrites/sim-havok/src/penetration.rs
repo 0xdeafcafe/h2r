@@ -1,6 +1,6 @@
 //! The triangle case's penetration call (docs/engine/havok-convex.md,
 //! "The penetration call"): the profiled wrapper `0x0030a6b0` and its
-//! solver `0x00309b50` up to the expanding polytope, each one guest
+//! solver `0x00309b50` with its expanding polytope, each one guest
 //! function on a [`Journal`], every float operation one guest
 //! instruction: packed and scalar SSE under the MXCSR, x87 under the
 //! control word.
@@ -9,8 +9,9 @@
 //!   frame, then the solver.
 //! - [`solve`] `0x00309b50`: the simplex grown to a tetrahedron around
 //!   the origin of `A - B`, with its exits; a tetrahedron that is not
-//!   flat goes on to the polytope, which declines
-//!   ([`Fallback::Closest`]).
+//!   flat goes on to the expanding polytope (`0x00309e2e`), whose faces,
+//!   vertices and free list are the solver's frame objects and live in
+//!   Rust here, and whose failed rounds retry the cases.
 //! - [`barycentric`] `0x00308260`: a point's weights on a triangle.
 //!
 //! The shapes' support virtuals go through [`Calls`]. [`Port`] answers
@@ -394,6 +395,21 @@ impl<C: Calls> Solver<'_, C> {
         // `push ebp; and esp,-16`, the handler frame (three pushes), ecx,
         // `_alloca(0x3004)`, three pushes.
         let l = (esp.wrapping_sub(4) & !15).wrapping_sub(0x3020);
+        // A retry reruns the cases from the jump table (`0x00309b80`);
+        // the retry count caps them at twenty.
+        loop {
+            if let Some(eax) = self.cases(j, out, l)? {
+                return Ok(eax);
+            }
+            if let Some(eax) = self.polytope(j, out, l)? {
+                return Ok(eax);
+            }
+        }
+    }
+
+    /// The jump table's cases from `0x00309b80`: `Some` an exit's eax,
+    /// `None` the expanding polytope.
+    fn cases(&mut self, j: &mut Journal, out: u32, l: u32) -> Result<Option<u32>, Fallback> {
         let (slack, tiny, zero) = (load(word(j, SLACK)?), load(word(j, TINY)?), load(word(j, ZERO)?));
         let mut edi: i32 = -1;
         let mut case = match self.count(j)? {
@@ -403,7 +419,7 @@ impl<C: Calls> Solver<'_, C> {
             3 => Case::Triangle,
             4 => Case::Tetrahedron,
             // `ja 0x00309e2e`: the polytope.
-            _ => return Err(Fallback::Closest),
+            _ => return Ok(None),
         };
         loop {
             case = match case {
@@ -418,10 +434,10 @@ impl<C: Calls> Solver<'_, C> {
                     let volume = self.sse.hsum(m);
                     if above(cmp(load(volume).abs(), slack)) {
                         // 0x00309e2e: the expanding polytope.
-                        return Err(Fallback::Closest);
+                        return Ok(None);
                     }
                     if edi >= 3 {
-                        return Ok(2);
+                        return Ok(Some(2));
                     }
                     self.dec(j)?;
                     Case::Triangle
@@ -442,12 +458,12 @@ impl<C: Calls> Solver<'_, C> {
                         let height = word(j, t.wrapping_add(triple::HEIGHT))?;
                         // `test ah,5; jnp`: below only.
                         if cmp(load(height), slack) == Cmp::Less {
-                            return self.plane(j, out, l);
+                            return self.plane(j, out, l).map(Some);
                         }
                         self.append(j, t)?;
                         Case::Tetrahedron
                     } else if edi >= 2 {
-                        return self.line(j, out);
+                        return self.line(j, out).map(Some);
                     } else {
                         self.dec(j)?;
                         Case::Segment
@@ -462,7 +478,7 @@ impl<C: Calls> Solver<'_, C> {
                         self.grow_segment(j, l.wrapping_sub(4))?;
                         Case::Triangle
                     } else if edi >= 2 {
-                        return Ok(2);
+                        return Ok(Some(2));
                     } else {
                         self.dec(j)?;
                         Case::Point
@@ -477,7 +493,7 @@ impl<C: Calls> Solver<'_, C> {
                         self.grow_point(j, l.wrapping_sub(4))?;
                         Case::Segment
                     } else if edi >= 0 {
-                        return Ok(2);
+                        return Ok(Some(2));
                     } else {
                         self.dec(j)?;
                         Case::Point0
@@ -486,13 +502,511 @@ impl<C: Calls> Solver<'_, C> {
                 // 0x00309d52.
                 Case::Point0 => {
                     if self.first(j, out, l.wrapping_sub(0xc))? {
-                        return Ok(0);
+                        return Ok(Some(0));
                     }
                     edi = 0;
                     Case::Point
                 }
             };
         }
+    }
+}
+
+/// The polytope's constants: the convergence floor of each vertex's
+/// height over the nearest face (`0.001` in every lane), the step a
+/// face's height adds to the visibility margin (`1e-5`), the jitter's
+/// integer scale (`2^-31`), the walk's edge test (`-1e-4`) and its
+/// neighbour ratio (`0.9`).
+pub const CONVERGED: u32 = 0x0046_1f20;
+pub const MARGIN_STEP: u32 = 0x0041_36f0;
+pub const JITTER_SCALE: u32 = 0x0041_36d0;
+pub const EDGE_SIDE: u32 = 0x0045_ddfc;
+pub const NEIGHBOUR: u32 = 0x0045_dc84;
+const MAX_BITS: u32 = 0x7f7f_ffff;
+/// The visibility margin each expansion starts from, `1e-5`.
+const MARGIN_BITS: u32 = 0x3727_c5ac;
+/// The jitter's range, `-1e-4` to `1e-4`, pushed as immediates.
+const JITTER_LO: u32 = 0xb8d1_b717;
+const JITTER_HI: u32 = 0x38d1_b717;
+/// The inline capacities of the polytope's arrays: faces (and the free
+/// list), vertices (and the two point arrays).
+const MAX_FACES: usize = 100;
+const MAX_VERTICES: usize = 55;
+/// The solver's frame offsets the polytope uses: the polytope object
+/// (its faces at `+0x1c0`, `0x50` bytes each), the support triple, the
+/// weights and the jitter.
+const POLYTOPE: u32 = 0x820;
+const FACES: u32 = 0x1c0;
+const FACE_BYTES: u32 = 0x50;
+const SUPPORT: u32 = 0x80;
+const WEIGHTS: u32 = 0x34;
+const JITTER: u32 = 0x40;
+
+/// `0x00413700`: the starting tetrahedron's faces, each edge as (start
+/// vertex, twin face, twin edge).
+const TETRAHEDRON: [[(usize, usize, usize); 3]; 4] = [
+    [(0, 2, 2), (2, 3, 0), (1, 1, 0)],
+    [(0, 0, 2), (1, 3, 2), (3, 2, 0)],
+    [(0, 1, 2), (3, 3, 1), (2, 0, 0)],
+    [(1, 0, 1), (2, 2, 1), (3, 1, 1)],
+];
+
+/// A face's edge: the face and the edge's index in it. Edge `k` runs
+/// from vertex `k` to vertex `k + 1` (mod 3).
+type Edge = (usize, usize);
+
+/// One `0x50`-byte face: the unit normal, the plane's distance from the
+/// origin, the edges' start vertices and twins, and the flag byte at
+/// `+0x44` (1 visible, 2 not, 3 walked, 4 inconsistent).
+#[derive(Clone, Copy, Default)]
+struct Face {
+    normal: u128,
+    distance: u32,
+    vertex: [usize; 3],
+    twin: [Edge; 3],
+    flag: u8,
+}
+
+/// A `0x20`-byte vertex: the difference `A - B`, and the horizon edge
+/// that starts at it (`+0x10`) while an expansion runs.
+#[derive(Clone, Copy)]
+struct Vertex {
+    point: u128,
+    horizon: Option<Edge>,
+}
+
+/// The polytope object the solver builds at `esp+0x820` (`0x00309a50`):
+/// the visibility margin and the nearest visible height (`+0x00`,
+/// `+0x04`), the free list of face slots (`+0x08`), the faces (`+0x1b0`)
+/// and the vertices (`+0x2100`), all on the solver's frame and dead at
+/// its return, so they live here.
+struct Polytope {
+    margin: u32,
+    nearest: u32,
+    free: Vec<usize>,
+    faces: Vec<Face>,
+    vertices: Vec<Vertex>,
+}
+
+/// The polytope's steps (`0x00309e2e` to `0x0030a150`, `0x0030a440` to
+/// `0x0030a694`, and their calls).
+impl<C: Calls> Solver<'_, C> {
+    /// `0x0030a9d0`: the face's unit normal `(V0 - V1) x (V1 - V2)` and
+    /// its distance `n . V0`.
+    fn face_plane(&mut self, p: &mut Polytope, f: usize) {
+        let [a, b, c] = p.faces[f].vertex.map(|v| p.vertices[v].point);
+        let e0 = self.sse.sub(a, b);
+        let e1 = self.sse.sub(b, c);
+        let n = cross(&mut self.sse, e0, e1);
+        let unit = self.sse.normalize(n);
+        let m = self.sse.mul(unit, a);
+        p.faces[f].distance = self.sse.hsum(m);
+        p.faces[f].normal = unit;
+    }
+
+    /// `0x00309a50` with `0x0030ad20`: the tetrahedron on the four
+    /// differences, its vertices 0 and 1 swapped when vertex 0 lies above
+    /// face 3, each face's plane.
+    fn tetrahedron(&mut self, j: &Journal, d: [u128; 4]) -> Result<Polytope, Fallback> {
+        let mut p = Polytope {
+            margin: 0,
+            nearest: 0,
+            free: Vec::new(),
+            faces: Vec::with_capacity(MAX_FACES),
+            vertices: d.iter().map(|&point| Vertex { point, horizon: None }).collect(),
+        };
+        for edges in TETRAHEDRON {
+            p.faces.push(Face {
+                vertex: edges.map(|e| e.0),
+                twin: edges.map(|e| (e.1, e.2)),
+                ..Face::default()
+            });
+        }
+        self.face_plane(&mut p, 3);
+        let gap = self.sse.sub(d[0], d[1]);
+        let m = self.sse.mul(gap, p.faces[3].normal);
+        let s = self.sse.hsum(m);
+        // `test ah,0x41; jne`: only above swaps.
+        if cmp(load(s), load(word(j, ZERO)?)) == Cmp::Greater {
+            for face in &mut p.faces {
+                for v in &mut face.vertex {
+                    *v = match *v {
+                        0 => 1,
+                        1 => 0,
+                        other => other,
+                    };
+                }
+            }
+        }
+        for f in 0..4 {
+            self.face_plane(&mut p, f);
+        }
+        Ok(p)
+    }
+
+    /// `0x00309120`: the face with the least distance, the first on a tie
+    /// (`fcomp; test ah,5; jp`: only an ordered lesser one replaces it).
+    fn nearest_face(p: &Polytope) -> usize {
+        let mut best = 0;
+        for f in 1..p.faces.len() {
+            if cmp(load(p.faces[f].distance), load(p.faces[best].distance)) == Cmp::Less {
+                best = f;
+            }
+        }
+        best
+    }
+
+    /// `0x0030a770`, thiscall on the face, `(point, margin, nearest)`:
+    /// the point's height over the face. Above the margin: 1, the nearest
+    /// lowered to it. Otherwise 2, the margin raised to the height plus
+    /// [`MARGIN_STEP`] when that is above it. Then 4 when the margin is
+    /// not below the nearest.
+    fn visible(&mut self, j: &Journal, p: &mut Polytope, f: usize, point: u128) -> Result<u8, Fallback> {
+        let v0 = p.vertices[p.faces[f].vertex[0]].point;
+        let off = self.sse.sub(point, v0);
+        let m = self.sse.mul(p.faces[f].normal, off);
+        let h = self.sse.hsum(m);
+        let r = if cmp(load(h), load(p.margin)) == Cmp::Greater {
+            // `test ah,5; jp`: only below lowers it.
+            if cmp(load(h), load(p.nearest)) == Cmp::Less {
+                p.nearest = h;
+            }
+            1
+        } else {
+            let raised = self.x.add(load(h), load(word(j, MARGIN_STEP)?));
+            if cmp(raised, load(p.margin)) == Cmp::Greater {
+                p.margin = self.x.st(raised);
+            }
+            2
+        };
+        // `test ah,1; je`: 4 unless below or unordered.
+        Ok(if matches!(cmp(load(p.margin), load(p.nearest)), Cmp::Less | Cmp::Unordered) { r } else { 4 })
+    }
+
+    /// `0x0030a880`, thiscall on the polytope, `(count, last, face,
+    /// point)`, `ret 0x10`, for a visible face: each edge's twin face not
+    /// yet tested is tested, and a visible one recursed into; a twin not
+    /// visible makes the edge's twin a horizon edge (counted, the last
+    /// kept, and stored at its start vertex). A 4, or a 2 from below,
+    /// stops the walk with 2. The face is freed (distance `FLT_MAX`, its
+    /// slot to the free list) either way.
+    fn horizon(&mut self, j: &Journal, p: &mut Polytope, f: usize, point: u128, count: &mut i32, last: &mut Option<Edge>) -> Result<u32, Fallback> {
+        let mut ebx = 0;
+        for k in 0..3 {
+            let twin = p.faces[f].twin[k];
+            let g = twin.0;
+            if p.faces[g].flag == 0 {
+                let r = self.visible(j, p, g, point)?;
+                p.faces[g].flag = r;
+                if r == 1 {
+                    ebx = self.horizon(j, p, g, point, count, last)?;
+                    if ebx == 2 {
+                        break;
+                    }
+                } else if r == 4 {
+                    ebx = 2;
+                    break;
+                }
+            }
+            if p.faces[g].flag == 2 {
+                let start = p.faces[g].vertex[twin.1];
+                p.vertices[start].horizon = Some(twin);
+                *count += 1;
+                *last = Some(twin);
+            }
+        }
+        p.faces[f].distance = MAX_BITS;
+        if p.free.len() >= MAX_FACES {
+            return Err(Fallback::Memory);
+        }
+        p.free.push(f);
+        Ok(ebx)
+    }
+
+    /// `0x0030abe0`, thiscall on the polytope, `(count, last, face,
+    /// point)`, `ret 0x10`: the margin to `1e-5`, the nearest to
+    /// `FLT_MAX`, then the nearest face's test; visible, [`Self::horizon`]
+    /// from it, else 2.
+    fn expand_from(&mut self, j: &Journal, p: &mut Polytope, f: usize, point: u128, count: &mut i32, last: &mut Option<Edge>) -> Result<u32, Fallback> {
+        (*count, *last) = (0, None);
+        (p.margin, p.nearest) = (MARGIN_BITS, MAX_BITS);
+        let r = self.visible(j, p, f, point)?;
+        p.faces[f].flag = r;
+        if r != 1 {
+            return Ok(2);
+        }
+        self.horizon(j, p, f, point, count, last)
+    }
+
+    /// `0x0030a810`: every face's flag cleared, every vertex's horizon edge.
+    fn clear(p: &mut Polytope) {
+        for face in &mut p.faces {
+            face.flag = 0;
+        }
+        for v in &mut p.vertices {
+            v.horizon = None;
+        }
+    }
+
+    /// `0x0030ae70`, thiscall on the polytope, `(count, last, point)`,
+    /// `ret 0xc`: the point joins as a vertex; `count` face slots come
+    /// from the free list's end (`0x0030a950`), then new ones; from the
+    /// last horizon edge round the horizon (each edge's end vertex names
+    /// the next), each slot becomes the face over the edge reversed and
+    /// the new vertex, its twins the edge and its neighbours in the ring,
+    /// with its plane (`0x0030ac50`). Flags and horizon edges are cleared.
+    /// 0 when the ring closes on the edge it started from, else 2.
+    fn add_vertex(&mut self, p: &mut Polytope, count: i32, last: Option<Edge>, point: u128) -> Result<u32, Fallback> {
+        let v = p.vertices.len();
+        p.vertices.push(Vertex { point, horizon: None });
+        let mut ring = Vec::new();
+        let mut left = count;
+        while left > 0 {
+            let Some(f) = p.free.pop() else { break };
+            ring.push(f);
+            left -= 1;
+        }
+        while left > 0 {
+            p.faces.push(Face::default());
+            ring.push(p.faces.len() - 1);
+            left -= 1;
+        }
+        // The slot list is a 100-entry array on 0x0030ae70's frame.
+        if ring.len() > MAX_FACES || p.faces.len() > MAX_FACES {
+            return Err(Fallback::Memory);
+        }
+        let (mut edge, mut edi) = (last, 0);
+        for i in 0..ring.len() {
+            let Some(h) = edge else {
+                edi = 2;
+                break;
+            };
+            let (f, next) = (ring[i], ring[(i + 1) % ring.len()]);
+            let (from, to) = (p.faces[h.0].vertex[h.1], p.faces[h.0].vertex[(h.1 + 1) % 3]);
+            p.faces[f].vertex = [to, from, v];
+            p.faces[h.0].twin[h.1] = (f, 0);
+            p.faces[f].twin[0] = h;
+            p.faces[next].twin[1] = (f, 2);
+            p.faces[f].twin[2] = (next, 1);
+            self.face_plane(p, f);
+            edge = p.vertices[to].horizon.take();
+        }
+        Self::clear(p);
+        Ok(if edge == last { edi } else { 2 })
+    }
+
+    /// `0x0030aac0`, thiscall on the polytope, `(face)`, `ret 4`: from the
+    /// face, across the first edge (not the one come over) whose
+    /// `(e x n) . V` is below [`EDGE_SIDE`], when the starting face's
+    /// distance is not above 0 or its [`NEIGHBOUR`] share is not above
+    /// the twin's; a face walked before ends the walk after the step.
+    fn walk(&mut self, j: &Journal, p: &mut Polytope, start: usize) -> Result<usize, Fallback> {
+        Self::clear(p);
+        let (side, zero, share) = (load(word(j, EDGE_SIDE)?), load(word(j, ZERO)?), load(word(j, NEIGHBOUR)?));
+        let (mut f, mut skip, mut stop) = (start, None, false);
+        loop {
+            if stop {
+                return Ok(f);
+            }
+            p.faces[f].flag = 3;
+            let mut moved = false;
+            for k in 0..3 {
+                if skip == Some((f, k)) {
+                    continue;
+                }
+                let v = p.vertices[p.faces[f].vertex[k]].point;
+                let w = p.vertices[p.faces[f].vertex[(k + 1) % 3]].point;
+                let e = self.sse.sub(w, v);
+                let c = cross(&mut self.sse, e, p.faces[f].normal);
+                let m = self.sse.mul(c, v);
+                let s = self.sse.hsum(m);
+                // `test ah,5; jp`: only below goes on.
+                if cmp(load(s), side) != Cmp::Less {
+                    continue;
+                }
+                let twin = p.faces[f].twin[k];
+                // `0x0030ab6a` reads the starting face's distance, not this one's.
+                let d = load(p.faces[start].distance);
+                let go = cmp(d, zero) != Cmp::Greater || cmp(self.x.mul(d, share), load(p.faces[twin.0].distance)) != Cmp::Greater;
+                if go {
+                    stop = p.faces[twin.0].flag == 3;
+                    skip = Some(twin);
+                    f = twin.0;
+                    moved = true;
+                    break;
+                }
+            }
+            if !moved {
+                return Ok(f);
+            }
+        }
+    }
+
+    /// `0x00309270`, cdecl `(seed, lo, hi, out)`: three lanes of a
+    /// linear congruential sequence (`(0x3039 - s * 0x3e39b193) &
+    /// 0x7fffffff`), each `(n 2^-31 + lo)(hi - lo)` on the x87; `w` is
+    /// not written.
+    fn jitter(&mut self, j: &mut Journal, seed: u32, out: u32) -> Result<(), Fallback> {
+        let scale = load(word(j, JITTER_SCALE)?);
+        let range = self.x.sub(load(JITTER_HI), load(JITTER_LO));
+        let mut s = seed.wrapping_mul(0x3e39_b193);
+        for lane_at in 0..3 {
+            let n = 0x3039u32.wrapping_sub(s) & 0x7fff_ffff;
+            s = n.wrapping_mul(0x3e39_b193);
+            let f = self.x.mul(F80::from_i64(i64::from(n)), scale);
+            let f = self.x.add(f, load(JITTER_LO));
+            let f = self.x.mul(f, range);
+            set(j, out.wrapping_add(4 * lane_at), self.x.st(f))?;
+        }
+        Ok(())
+    }
+
+    /// `0x00309e2e`: the expanding polytope on the four differences. Each
+    /// round takes the nearest face's support along its normal; when the
+    /// point is below [`CONVERGED`] over any of the face's vertices along
+    /// it, the face answers. Otherwise the faces the point sees go, the
+    /// horizon's new faces come, and the round repeats; a vertex or face
+    /// array that would fill answers with 1. A walk or ring that fails
+    /// retries the cases ([`Self::retry`]). `None` is a retry.
+    fn polytope(&mut self, j: &mut Journal, out: u32, l: u32) -> Result<Option<u32>, Fallback> {
+        let d = [self.difference(j, 0)?, self.difference(j, 1)?, self.difference(j, 2)?, self.difference(j, 3)?];
+        let mut p = self.tetrahedron(j, d)?;
+        let t = self.simplex(j)?;
+        let view: &Journal = j;
+        let mut a = (0..4u32).map(|i| vec(view, t.wrapping_add(16 * i))).collect::<Result<Vec<_>, _>>()?;
+        let mut b = (0..4u32).map(|i| vec(view, t.wrapping_add(simplex::LOCAL_B + 16 * i))).collect::<Result<Vec<_>, _>>()?;
+        let converged = vec(j, CONVERGED)?;
+        let triple_at = l.wrapping_add(SUPPORT);
+        loop {
+            let f = Self::nearest_face(&p);
+            // The support reads the direction from the face's own slot.
+            let face_at = l.wrapping_add(POLYTOPE + FACES).wrapping_add(FACE_BYTES * f as u32);
+            put(j, face_at, p.faces[f].normal)?;
+            self.support(j, face_at, triple_at, l.wrapping_sub(0xc))?;
+            let point = self.sse.sub(vec(j, triple_at)?, vec(j, triple_at.wrapping_add(triple::B))?);
+            // 0x002da730: `(point - Vk) . n` for the three vertices, `w` the third's.
+            let face = p.faces[f];
+            let rows = face.vertex.map(|v| self.sse.sub(point, p.vertices[v].point));
+            let column = |c: usize| {
+                let k = [lane(rows[0], c), lane(rows[1], c), lane(rows[2], c), lane(rows[2], c)];
+                k.iter().enumerate().fold(0u128, |v, (i, &w)| v | u128::from(w) << (32 * i))
+            };
+            let n = face.normal;
+            let ys = self.sse.mul(column(1), splat(lane(n, 1)));
+            let xs = self.sse.mul(column(0), splat(lane(n, 0)));
+            let zs = self.sse.mul(column(2), splat(lane(n, 2)));
+            let xy = self.sse.add(xs, ys);
+            let heights = self.sse.add(xy, zs);
+            if gjk::signs(gjk::below(&mut self.sse, heights, converged)) & 7 != 0 {
+                return self.answer(j, &mut p, &a, &b, f, out, l, 0).map(Some);
+            }
+            let (mut count, mut last) = (0, None);
+            if self.expand_from(j, &mut p, f, point, &mut count, &mut last)? != 0 {
+                match self.retry(j, l)? {
+                    Some(eax) => return self.answer(j, &mut p, &a, &b, f, out, l, eax).map(Some),
+                    None => return Ok(None),
+                }
+            }
+            // `setl`: room for a vertex, and for the new faces.
+            let room = (MAX_FACES - p.faces.len() + p.free.len()) as i32;
+            if p.vertices.len() >= MAX_VERTICES || room < count {
+                return self.answer(j, &mut p, &a, &b, f, out, l, 1).map(Some);
+            }
+            let ring = self.add_vertex(&mut p, count, last, point)?;
+            a.push(vec(j, triple_at)?);
+            b.push(vec(j, triple_at.wrapping_add(triple::LOCAL_B))?);
+            if ring != 0 {
+                match self.retry(j, l)? {
+                    Some(eax) => return self.answer(j, &mut p, &a, &b, f, out, l, eax).map(Some),
+                    None => return Ok(None),
+                }
+            }
+        }
+    }
+
+    /// `0x0030a07d`: the retry count up one. The first retry keeps one
+    /// vertex; the next eighteen empty the simplex and move the
+    /// translation by [`Self::jitter`] (seeded by the count); the
+    /// twentieth answers with 2 (`Some`).
+    fn retry(&mut self, j: &mut Journal, l: u32) -> Result<Option<u32>, Fallback> {
+        let r = word(j, self.at(state::RETRIES))?.wrapping_add(1);
+        set(j, self.at(state::RETRIES), r)?;
+        let count_at = self.simplex(j)?.wrapping_add(simplex::COUNT);
+        if r == 1 {
+            set(j, count_at, 1)?;
+            return Ok(None);
+        }
+        if r as i32 >= 0x14 {
+            return Ok(Some(2));
+        }
+        set(j, count_at, 0)?;
+        let at = l.wrapping_add(JITTER);
+        self.jitter(j, r, at)?;
+        let moved = self.sse.add(vec(j, at)?, vec(j, self.at(state::TRANSLATION))?);
+        put(j, at, moved)?;
+        put(j, self.at(state::TRANSLATION), moved)?;
+        Ok(None)
+    }
+
+    /// `0x0030a440`: the face's vertices to the first three differences
+    /// and [`barycentric`]'s weights of [`SAME`] on them; while a weight
+    /// is below 0 the face moves by [`Self::walk`], ten times at most (the
+    /// tenth face keeps the ninth's differences and weights). The face's
+    /// A and B points become the simplex of three; `out` gets the
+    /// normal negated, the point `(w0 A0 + w1 A1) + w2 A2`, the distance
+    /// negated; its weight stands. Returns `eax`.
+    #[allow(clippy::too_many_arguments)]
+    fn answer(&mut self, j: &mut Journal, p: &mut Polytope, a: &[u128], b: &[u128], start: usize, out: u32, l: u32, eax: u32) -> Result<u32, Fallback> {
+        let zero = load(word(j, ZERO)?);
+        let diffs = word(j, self.at(state::DIFFERENCES))?;
+        let weights = l.wrapping_add(WEIGHTS);
+        let mut f = start;
+        let mut walks = 0;
+        loop {
+            for k in 0..3u32 {
+                let point = p.vertices[p.faces[f].vertex[k as usize]].point;
+                put(j, diffs.wrapping_add(16 * k), point)?;
+            }
+            barycentric(j, SAME, diffs, diffs.wrapping_add(0x10), diffs.wrapping_add(0x20), weights, self.fpu)?;
+            let mut inside = true;
+            for k in 0..3 {
+                // `test ah,5; jnp`: below only.
+                if cmp(load(word(j, weights.wrapping_add(4 * k))?), zero) == Cmp::Less {
+                    inside = false;
+                    break;
+                }
+            }
+            if inside {
+                break;
+            }
+            f = self.walk(j, p, f)?;
+            walks += 1;
+            if walks >= 10 {
+                break;
+            }
+        }
+        let t = self.simplex(j)?;
+        for k in 0..3u32 {
+            let v = p.faces[f].vertex[k as usize];
+            if v >= a.len() || v >= b.len() {
+                return Err(Fallback::Memory);
+            }
+            put(j, t.wrapping_add(16 * k), a[v])?;
+            put(j, t.wrapping_add(simplex::LOCAL_B + 16 * k), b[v])?;
+        }
+        set(j, t.wrapping_add(simplex::COUNT), 3)?;
+        let w = |k: u32| word(j, weights.wrapping_add(4 * k));
+        let (w0, w1, w2) = (w(0)?, w(1)?, w(2)?);
+        let y = self.sse.mul(splat(w1), vec(j, t.wrapping_add(0x10))?);
+        let z = self.sse.mul(splat(w2), vec(j, t.wrapping_add(0x20))?);
+        let x = self.sse.mul(splat(w0), vec(j, t)?);
+        let xy = self.sse.add(x, y);
+        let point = self.sse.add(xy, z);
+        put(j, out.wrapping_add(gjk::contact_field::POINT), point)?;
+        let distance = self.x.st(load(p.faces[f].distance).neg());
+        set(j, out.wrapping_add(gjk::contact_field::DISTANCE), distance)?;
+        put(j, out, p.faces[f].normal ^ vec(j, SIGNS)?)?;
+        Ok(eax)
     }
 }
 
@@ -534,7 +1048,7 @@ fn perpendicular(x: &Fx, u: u128, w: u32) -> u128 {
 ///
 /// | Count | Flat when | Grows by |
 /// |---|---|---|
-/// | 4 | `\|volume\|` not above [`SLACK`] | (not flat: the polytope, declined) |
+/// | 4 | `\|volume\|` not above [`SLACK`] | (not flat: the expanding polytope) |
 /// | 3 | the normal's square is 0 | `0x003093e0` along the normal; below [`SLACK`] over the plane, the plane exit |
 /// | 2 | `\|D0 - D1\|^2` not above [`TINY`] | `0x00309700` |
 /// | 1 | `\|D0\|^2` not above [`TINY`] | `0x00309610` |
@@ -542,7 +1056,9 @@ fn perpendicular(x: &Fx, u: u128, w: u32) -> u128 {
 ///
 /// A flat simplex already grown past its size returns 2, but a flat
 /// triangle after a grown segment takes the line exit. The exits store
-/// `out`'s normal, point, distance and weight and return 0.
+/// `out`'s normal, point, distance and weight and return 0. The
+/// polytope answers 0, 1 when its arrays would fill, or 2 after twenty
+/// retries, with `out`'s normal, point and distance.
 pub fn solve(j: &mut Journal, s: u32, out: u32, esp: u32, fpu: Fpu, calls: &mut impl Calls) -> Result<u32, Fallback> {
     let (sse, x) = units(fpu)?;
     let mut r = Solver { s, fpu, sse, x, calls };
@@ -696,6 +1212,63 @@ mod tests {
         let mut j = Journal::new(&h);
         barycentric(&mut j, 0x100, 0x110, 0x120, 0x130, 0x200, FPU).unwrap();
         assert_eq!(weights(&j, 0x200), [0.0; 3]);
+    }
+
+    /// Shape 1 is the cube `[-1, 1]^3` (ties to `+1`), shape 2 the origin.
+    struct Cube;
+
+    impl Calls for Cube {
+        fn support(&mut self, j: &mut Journal, shape: u32, dir: u32, out: u32, _: u32) -> Result<(), Fallback> {
+            let d = vec(j, dir)?;
+            for i in 0..4 {
+                let v = if shape == 2 || i == 3 {
+                    0.0f32
+                } else if f32::from_bits(lane(d, i)) < 0.0 {
+                    -1.0
+                } else {
+                    1.0
+                };
+                set(j, out + 4 * i as u32, v.to_bits())?;
+            }
+            Ok(())
+        }
+    }
+
+    /// The origin deep inside the cube: the tetrahedron of four of its
+    /// corners grows to the cube, and the nearest face answers one unit
+    /// out along an axis.
+    #[test]
+    fn a_point_inside_a_cube_is_one_unit_deep() {
+        let mut h = heap();
+        put4(&mut h, SIGNS, [-0.0; 4]);
+        put4(&mut h, ABS, [f32::from_bits(0x7fff_ffff); 4]);
+        put4(&mut h, ONES, [1.0; 4]);
+        put4(&mut h, CONVERGED, [0.001; 4]);
+        for (at, v) in [(SLACK, 0.001f32), (TINY, 1e-6), (MARGIN_STEP, 1e-5), (EDGE_SIDE, -1e-4), (NEIGHBOUR, 0.9), (JITTER_SCALE, f32::from_bits(0x3000_0000))] {
+            h.0.insert(at, v.to_bits());
+        }
+        let (s, simplex_at, diffs, out, esp) = (0x1000, 0x2000, 0x3000, 0x4000, 0x10_0000);
+        for (i, column) in [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0; 4]].into_iter().enumerate() {
+            put4(&mut h, s + 16 * i as u32, column);
+        }
+        h.0.insert(s + state::SHAPE_A, 1);
+        h.0.insert(s + state::SHAPE_B, 2);
+        h.0.insert(s + state::SIMPLEX, simplex_at);
+        h.0.insert(s + state::DIFFERENCES, diffs);
+        for (i, corner) in [[1.0, 1.0, 1.0, 0.0], [1.0, -1.0, -1.0, 0.0], [-1.0, 1.0, -1.0, 0.0], [-1.0, -1.0, 1.0, 0.0]].into_iter().enumerate() {
+            put4(&mut h, simplex_at + 16 * i as u32, corner);
+            put4(&mut h, diffs + 16 * i as u32, corner);
+        }
+        h.0.insert(simplex_at + simplex::COUNT, 4);
+        let mut j = Journal::new(&h);
+        assert_eq!(solve(&mut j, s, out, esp, FPU, &mut Cube), Ok(0));
+        let normal: [f32; 4] = std::array::from_fn(|i| f32::from_bits(j.get(out + 4 * i as u32).unwrap()));
+        let distance = f32::from_bits(j.get(out + gjk::contact_field::DISTANCE).unwrap());
+        assert!((distance + 1.0).abs() < 1e-3, "{distance}");
+        let axis = normal[..3].iter().filter(|c| (c.abs() - 1.0).abs() < 1e-3).count();
+        let rest = normal[..3].iter().filter(|c| c.abs() < 1e-3).count();
+        assert_eq!((axis, rest), (1, 2), "{normal:?}");
+        assert_eq!(j.get(simplex_at + simplex::COUNT), Some(3));
     }
 
     #[test]

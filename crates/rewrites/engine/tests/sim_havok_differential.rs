@@ -3005,13 +3005,16 @@ fn the_query_matches_the_lifted_query() {
                 put_lanes(&mut mem, QUERY_T + 16 * i as u32, column);
             }
         }
-        // Consecutive IDs from a seeded start, A's then B's.
-        let mut pick = |ids: &[u16]| -> Vec<u16> {
-            let n = 1 + r.below(ids.len().min(3) as u32) as usize;
+        // Consecutive IDs from a seeded start, A's then B's, four at most
+        // in all: the cache holds four 16-bit IDs before its counts at
+        // `+0x08`, so a fifth would be read from the counts.
+        let mut pick = |ids: &[u16], most: usize| -> Vec<u16> {
+            let n = 1 + r.below(ids.len().min(most) as u32) as usize;
             let start = r.below(ids.len() as u32) as usize;
             (0..n).map(|k| ids[(start + k) % ids.len()]).collect()
         };
-        let (cached_a, cached_b) = (pick(&ids_a), pick(&ids_b));
+        let cached_a = pick(&ids_a, 3);
+        let cached_b = pick(&ids_b, 4 - cached_a.len());
         let mut halves = [0u16; 8];
         for (slot, id) in halves.iter_mut().zip(cached_a.iter().chain(&cached_b)) {
             *slot = *id;
@@ -3319,12 +3322,11 @@ fn the_triangle_case_matches_the_lifted_triangle_case() {
     assert!(sizes.len() >= 4, "{sizes:?}");
 }
 
-// The penetration call 0x0030a6b0 and its solver 0x00309b50
-// (sim_havok::penetration, docs/engine/havok-convex.md, "The penetration
-// call") against the lifted function, on capsules and convex polygons,
-// simplices of one to four vertex pairs, under every rounding mode. The
-// shapes' supports run through the ported virtuals; a simplex that
-// reaches the expanding polytope declines.
+// The penetration call 0x0030a6b0 and its solver 0x00309b50 with the
+// expanding polytope (sim_havok::penetration, docs/engine/havok-convex.md,
+// "The penetration call") against the lifted function, on capsules and
+// convex polygons, simplices of one to four vertex pairs, under every
+// rounding mode. The shapes' supports run through the ported virtuals.
 
 use sim_havok::penetration;
 
@@ -3343,8 +3345,7 @@ impl penetration::Calls for QueryCalls {
 /// differences `A - B` taken on the host, the output seeded: eax equals
 /// the lifted call's, ebx, ebp, esi and edi are kept, and every byte
 /// outside the stack (the simplex, the differences, the output) matches.
-/// Declines are the polytope's (`closest`) or, with the monitor stream
-/// on, `monitor`.
+/// The one decline is `monitor`, with the monitor stream on.
 #[test]
 fn the_penetration_call_matches_the_lifted_penetration_call() {
     let Some((image, base)) = ram() else { return };
@@ -3404,8 +3405,7 @@ fn the_penetration_call_matches_the_lifted_penetration_call() {
         let eax = match penetration::penetration(&mut j, args, STACK, fpu, &mut calls) {
             Ok(eax) => eax,
             Err(f) => {
-                let expected = if monitor { sim_havok::convex::Fallback::Monitor } else { sim_havok::convex::Fallback::Closest };
-                assert_eq!(f, expected, "{why}: declined");
+                assert!(monitor && f == sim_havok::convex::Fallback::Monitor, "{why}: declined {f:?}");
                 declined += 1;
                 continue;
             }
