@@ -16,10 +16,11 @@
 //! | not drawn | the first argument's byte 0 |
 //!
 //! Past them is the ocean (`0x0003c3ff..0x0003c632`), [`ocean`]'s steps:
-//! Rust makes the shader lookup, the alpha clear `0x0003c515` and the
-//! indexed quads natively and calls the body's other helpers (the grid,
-//! the gates, the copies into targets `0x16` and `0x15`, the draw state,
-//! the stage commit, the texture stamps) as guest calls, then returns as
+//! Rust makes the shader lookup, the alpha clear `0x0003c515`, the draw
+//! state but for the stream commit and the shader begin ([`ocean::state`])
+//! and the indexed quads natively, and calls the body's other helpers (the
+//! grid, the gates, the copies into targets `0x16` and `0x15`, the stream
+//! commit, the shader begin, the texture stamps) as guest calls, then returns as
 //! the body does. A step it cannot make is `unimplemented!("water ocean:
 //! <cause>")`; a gate word that does not read is `water end: unread`.
 
@@ -118,23 +119,27 @@ pub fn counters() -> Vec<(String, u64)> {
     WATER_END.counters().into_iter().chain(WATER_OCEAN.counters()).collect()
 }
 
-/// The guest stack below the call's return address the ocean uses: the
-/// clear prelude's 24-byte viewport at `esp - SCRATCH`, the helpers'
-/// frames below `esp - BODY`.
-const SCRATCH: u32 = 0x40;
+/// The guest stack below the call's return address the ocean uses: 64
+/// bytes at `esp - SCRATCH` for the words the draw state stages (the clear
+/// prelude's viewport, the constants), the helpers' frames below
+/// `esp - BODY`.
+const SCRATCH: u32 = 0x50;
 const BODY: u32 = 0x80;
 
-/// The ocean's device: the native targets' clear and the walk host's
+/// The ocean's device: the native targets' host and the walk host's
 /// water quads.
 struct Live {
+    host: Arc<dyn crate::native_targets::Host>,
     scratch: u32,
 }
 
 impl ocean::Device for Live {
-    fn clear(&mut self, mem: &mut dyn GuestMemory) -> Result<(), ocean::Cause> {
-        let host = crate::native_targets::host().ok_or("host")?;
-        crate::native_targets::cut_clear(mem, &*host, 0x10, 0x00ff_ffff, 0, 0, self.scratch)
-            .map_err(|cause| if cause == "device" { "clear" } else { cause })
+    fn host(&self) -> &dyn crate::native_targets::Host {
+        &*self.host
+    }
+
+    fn scratch(&self) -> u32 {
+        self.scratch
     }
 
     fn draw(&mut self, mem: &mut dyn GuestMemory, indices: u32, count: u32) -> Result<(), ocean::Cause> {
@@ -161,7 +166,8 @@ struct Frame {
 fn drive(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, mut ocean: ocean::Ocean, frame: Frame) -> Result<runtime::TransferAbi, runtime::GuestFault> {
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
-    let mut device = Live { scratch: frame.esp.wrapping_sub(SCRATCH) };
+    let host = crate::native_targets::host().unwrap_or_else(|| ocean_unported("host"));
+    let mut device = Live { host, scratch: frame.esp.wrapping_sub(SCRATCH) };
     let next = ocean.next(&mut *mem, &mut device, regs(cpu)).unwrap_or_else(|cause| ocean_unported(cause));
     match next {
         ocean::Next::Call(call) => {
