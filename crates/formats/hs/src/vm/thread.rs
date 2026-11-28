@@ -195,8 +195,8 @@ impl Thread {
 #[derive(Debug, Clone)]
 pub(crate) struct Pool {
     pub slots: Vec<Option<Thread>>,
-    free_scan_start: usize,
-    next_salt: u16,
+    pub(crate) free_scan_start: usize,
+    pub(crate) next_salt: u16,
 }
 pub(crate) const THREAD_CAPACITY: usize = 0x140;
 

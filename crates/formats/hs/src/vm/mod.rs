@@ -17,6 +17,7 @@ mod engine;
 mod eval;
 mod image;
 pub mod mock;
+mod state;
 mod thread;
 mod value;
 
@@ -25,6 +26,7 @@ pub use engine::{Binding, Bindings, Engine, EngineCall, EngineError, Override, S
 pub use eval::{ArgumentStep, argument_step};
 pub use image::{Native, SLEEP_UNTIL_INDEX, VmImage};
 pub use thread::{Category, DORMANT, FINISHED, Schedule, ScheduleSlot, Thread, ThreadState};
+pub use state::{StateError, VmState};
 pub use value::{Cell, HsType, StringRef, Value};
 
 use crate::{Catalog, Datum, Node, Scenario};
@@ -195,6 +197,35 @@ impl<'a> Vm<'a> {
             last_result: None,
             frame: 0,
         }
+    }
+
+    /// The state that persists between updates: threads with their frames,
+    /// the thread pool's allocation cursor and salt, global cells, the
+    /// scheduler switch and host strings. Counters, faults and the
+    /// in-update cursors are not state.
+    pub fn export_state(&self) -> VmState {
+        VmState {
+            pool: self.pool.clone(),
+            globals: self.globals.clone(),
+            enabled: self.enabled,
+            host_strings: self.host_strings.clone(),
+        }
+    }
+
+    /// Put an exported state back. The globals must be this scenario's
+    /// count; a state from another scenario is refused.
+    pub fn import_state(&mut self, state: VmState) -> Result<(), StateError> {
+        if state.globals.len() != self.globals.len() {
+            return Err(StateError::Globals { found: state.globals.len(), expected: self.globals.len() });
+        }
+        self.pool = state.pool;
+        self.globals = state.globals;
+        self.enabled = state.enabled;
+        self.host_strings = state.host_strings;
+        self.current = None;
+        self.last_result = None;
+        self.frame = 0;
+        Ok(())
     }
 
     pub fn scenario(&self) -> &Scenario {

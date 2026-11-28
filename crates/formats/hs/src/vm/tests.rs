@@ -938,3 +938,39 @@ fn stub_shapes_require_both_bodies_and_their_call_targets() {
     }
     assert_eq!(stub_shape_bytes(&good[..good.len() - 1], A), None);
 }
+
+#[test]
+fn exported_state_round_trips_and_resumes_like_the_original() {
+    let build = || {
+        let mut b = B::default();
+        let zero = b.real(0.0);
+        b.define_global("g", REAL, zero);
+        let l3 = log(&mut b, 3);
+        let n = b.short(10);
+        let s = b.call(op::SLEEP, VOID, &[n]);
+        let root = b.call(op::BEGIN, VOID, &[l3, s]);
+        b.script("loop", 0, VOID, root);
+        b.build()
+    };
+    let (scenario, c, image) = (build(), catalog(), image());
+    let mut vm = Vm::new(&scenario, &c, &image);
+    let mut run = Run::new(Policy::Neutral);
+    run.go(&mut vm, 5);
+    let bytes = vm.export_state().encode();
+    assert_eq!(VmState::decode(&bytes).unwrap().encode(), bytes);
+
+    // The original goes on; a fresh VM given the state goes on identically.
+    let mut resumed = Vm::new(&scenario, &c, &image);
+    resumed.import_state(VmState::decode(&bytes).unwrap()).unwrap();
+    let mut run2 = Run::new(Policy::Neutral);
+    run.tick(&mut vm, 5, 30);
+    run2.tick(&mut resumed, 5, 30);
+    assert_eq!(vm.export_state().encode(), resumed.export_state().encode());
+    assert_eq!(run2.logs(), run.logs().into_iter().filter(|l| l.0 >= 5).collect::<Vec<_>>());
+
+    // Damage is a typed error.
+    assert_eq!(VmState::decode(&bytes[..bytes.len() - 1]).unwrap_err(), StateError::Truncated);
+    let mut more = bytes.clone();
+    more.push(0);
+    assert_eq!(VmState::decode(&more).unwrap_err(), StateError::Trailing);
+}
