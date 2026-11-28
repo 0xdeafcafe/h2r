@@ -582,7 +582,7 @@ impl Stage for TiledRun {
                 ranges: 0,
                 draws: 0,
                 passes: 0,
-                commands: Box::new(|_| {}),
+                commands: Box::new(|_: &mut wgpu::CommandEncoder| {}),
             }),
             Err(why) => unimplemented!("lights: tiles: {why}"),
         }

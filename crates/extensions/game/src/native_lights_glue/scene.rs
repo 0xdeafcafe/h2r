@@ -176,6 +176,22 @@ impl Frozen {
     }
 }
 
+/// Target 13 as a light's gel step drew it ([`GelPass`]), recorded
+/// before the layers that sample it.
+#[derive(Clone, Default)]
+pub(super) struct GelTarget(Arc<Mutex<Option<wgpu::TextureView>>>);
+
+impl GelTarget {
+    fn put(&self, view: wgpu::TextureView) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(view);
+    }
+
+    /// The target the gel last drew into.
+    pub(super) fn get(&self) -> Option<wgpu::TextureView> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
 /// The texels of a caster map: the caster's guest `rect` (from the
 /// target's top-left) scaled from the target's guest size `surface` to
 /// its `texels`. `None` for an empty or offset rect, or one past the
@@ -416,6 +432,8 @@ impl Glue {
             .and_then(|g| g.group.pass);
         // The receivers' map, filled when the freeze records.
         let frozen = caster.map(|_| Frozen::default());
+        // Target 13, filled when the gel step records.
+        let gel_target = gel.map(|_| GelTarget::default());
         let mut steps = Vec::with_capacity(ops.len());
         let mut drawn = 0;
         for op in ops {
@@ -447,6 +465,7 @@ impl Glue {
                     Step {
                         targets: game_target(native_render::gels::TARGET),
                         stage: Box::new(GelPass {
+                            out: gel_target.clone().ok_or(Keep::Unsupported("a gel step with no gel"))?,
                             gels: Arc::clone(&ready_gels.scene_gels),
                             shader,
                             depth,
@@ -506,6 +525,7 @@ impl Glue {
                             retained: Some(retained),
                             light: prepared,
                             lighting_only: None,
+                            gel: gel_target.clone(),
                         }),
                     }
                 }
@@ -572,6 +592,8 @@ impl Glue {
 /// A scene light's shader gel drawn into target 13's level 0
 /// ([`Op::Gel`]): its layer-1 passes over the quad helper's strip.
 struct GelPass {
+    /// Where the layers after it find target 13.
+    out: GelTarget,
     gels: Arc<crate::native_gels_scene::Gels>,
     shader: u32,
     depth: (f32, f32),
@@ -605,6 +627,7 @@ impl Stage for GelPass {
             Ok(c) => c,
             Err(_) => unimplemented!("lights: the gel's passes do not prepare"),
         };
+        self.out.put(t.color.clone());
         StageWork::Encoded(gfx::external::ExternalEncoded {
             ranges: commands.ranges(),
             draws: commands.draws(),

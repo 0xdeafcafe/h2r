@@ -232,6 +232,7 @@ impl Glue {
             retained: Some(RetainedLight::of(ready, &prepared)?),
             light: prepared,
             lighting_only: Some(native_render::lighting::Lighting::E3),
+            gel: None,
         };
         push(mem, frame_types::Slot::Opaque, Box::new(pass));
         Ok(())

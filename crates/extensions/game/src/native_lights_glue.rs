@@ -2117,11 +2117,15 @@ struct RunPass {
     /// E3's chosen lights draw only in an E3 frame
     /// (`render_bridge::native_lights::chosen`).
     lighting_only: Option<native_render::lighting::Lighting>,
+    /// Target 13 as the light's gel step drew it, for a light whose
+    /// layers sample its shader gel ([`PreparedLight::binding`],
+    /// [`scene::GelTarget`]).
+    gel: Option<scene::GelTarget>,
 }
 
 impl RunPass {
     fn new(light: PreparedLight) -> Self {
-        Self { retained: None, light, lighting_only: None }
+        Self { retained: None, light, lighting_only: None, gel: None }
     }
 }
 
@@ -2203,10 +2207,14 @@ impl RunPass {
         )
         .ok_or("unsupported scissor scale")?;
         let view = ViewInputs { size: t.size, ..*request };
-        let sample: Option<&wgpu::TextureView> = match self.light.binding {
-            Some(_) => unimplemented!("lights: gel target 13's sample view"),
-            None => None,
+        // A shader gel's layers sample target 13's level 0 as the gel
+        // step left it, its coordinates in guest texels (`gel_scale`).
+        let gel = match (self.light.binding, &self.gel) {
+            (Some(_), Some(gel)) => Some(gel.get().ok_or("no gel drawn into target 13")?),
+            (Some(_), None) => unimplemented!("lights: a shader gel's layers outside its light's sequence"),
+            (None, _) => None,
         };
+        let sample = gel.as_ref();
         // A scene light's receivers sample the map its caster froze.
         let frozen = match &self.light.frozen {
             Some(frozen) => Some(frozen.get().ok_or("no caster map frozen")?),
