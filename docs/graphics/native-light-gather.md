@@ -154,7 +154,7 @@ It never writes byte 3 (**E** `0x00033558`..`0x00033562`), which the ranking rea
 | `RENDER_DYNAMIC_LIGHTS` | `0x00031c80` | `light_gather::frame::run` | the guest function, with the leaf seams of `native_scene_lists` |
 | `SCENE_ITEMS` | `0x00040e90` | `light_gather::items::run` in a light's kind, installed by `render_bridge::native_lights::items` | the guest function: the main view's kind, a refused plan |
 | `RENDER_LIGHT_PASSES` | `0x00031170` | `light_gather::passes::run` with the walk off, called by the frame body, or the guest loop offering typed passes at `LIGHT_CONSTANTS` with the walk on | the guest function |
-| `FIRST_PERSON_LIGHTS` | `0x000404b0` | the guest loop with typed admission at its final slot’s constants call, or `light_gather::first_person::run` with the walk off | the guest function |
+| `FIRST_PERSON_LIGHTS` | `0x000404b0` | `light_gather::first_person::run_scene`, each slot drawn from the scene or dropped | none: a stand-down or a refused plan returns at once, counted |
 | `FIRST_PERSON_LIGHT_RECORDS` | `0x000402b0` | `light_gather::first_person::run_records`, called by the first-person body and installed at the point | the guest function: a refused plan |
 | `OBJECT_SHADOW_LIST` | `0x000335e0` | `light_gather::object_shadows::run` | the guest function |
 | `GATHER_OBJECT_SHADOWS` | `0x00033400` | `light_gather::object_shadows::rows::run` | the guest function |
@@ -254,7 +254,7 @@ The flags are `light_passes::flags_of`, the same function `pass_flags` uses. `re
 
 `plan_records` and `run_records` are `0x000402b0`: a slot past the eighth, a count above 32, a tail past `0x8000` or over the table refuse. A record that passes the filter is `items::record_items_with` in kind 1 with the fifth argument set, or the guest's per-part calls (`0x000449e0`, `0x00045ce0`, `0x000460d0`, `0x00041040`) with the guest's registers and stack words when the port does not take it (an object's record, an override shader).
 
-`render_bridge::native_lights::first_person` installs both with `implement`, on the render thread, and runs the original when the lights stage stands down or a plan refuses. The groups of a first-person light's layers are `GroupSite::FirstPerson`.
+`render_bridge::native_lights::first_person` installs both with `implement`, on the render thread. The records run the original when the lights stage stands down or their plan refuses; the loop returns at once and is counted (native-lights.md, "First-person lights from the scene"). The groups of a first-person light's layers are `GroupSite::FirstPerson`.
 
 **Return sites.** Every call the first-person body makes names the guest's return site for its slot (`passes::named`, read through `passes::caller`), so the layer-draw hook (`first_person_site`) and the walk's layer builds see the guest's `0x00040642`, `0x000406ab`, `0x00040718` and `0x0004079c`. A call named inside another (the record replay's body inside the first-person body's call) puts the outer naming back when it returns.
 
