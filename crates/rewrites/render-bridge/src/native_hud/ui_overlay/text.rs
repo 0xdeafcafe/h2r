@@ -7,6 +7,8 @@ use scene_extract::ui::{self, Justify, TextLayout, UiContent, UiWidget, Unread};
 
 use super::Gap;
 
+mod tokens;
+
 fn word(mem: &dyn GuestRead, base: u32, off: u32) -> Result<u32, Unread> {
     base.checked_add(off)
         .and_then(|a| mem.read_u32(a))
@@ -81,8 +83,9 @@ fn wide(mem: &dyn GuestRead, at: u32) -> Result<Vec<u16>, Unread> {
 
 /// The substitution pass `0x0022d2ee` over the draw's copy of the string.
 /// At each unit in turn: a private-use unit whose table entry has a
-/// handler is a token (a name, a clock) the guest writes at the draw, so
-/// the text is the game's (`text_token`); otherwise each named sequence
+/// handler is a token, replaced by what its handler writes
+/// ([`tokens::write`]; a handler not ported keeps the text the game's,
+/// `text_token`); otherwise each named sequence
 /// that starts there is tried, the last that matches replacing it with
 /// its unit, unless the copy would not hold the result. The scan moves
 /// one unit on, past the replacement. Private-use units with no handler
@@ -98,15 +101,24 @@ fn substitute(mem: &dyn GuestRead, text: &[u16]) -> Result<Vec<u16>, Gap> {
     let mut pos = 0;
     while pos < buf.len() {
         let unit = buf[pos];
+        let mut handler = 0;
         if (0xe000..=0xf8ff).contains(&unit) {
             for i in 0..TOKEN_COUNT {
                 if word(mem, TOKENS, i * 12)? == u32::from(unit) {
-                    if word(mem, TOKENS, i * 12 + 4)? != 0 {
-                        return Err(Gap::text("text_token"));
-                    }
+                    handler = word(mem, TOKENS, i * 12 + 4)?;
                     break;
                 }
             }
+        }
+        if handler != 0 {
+            // `0x0022d43d`: the handler's text replaces the one unit, the
+            // named sequences not tried.
+            let with = tokens::write(mem, unit, handler)?;
+            if buf.len() - 1 + with.len() < COPY_UNITS {
+                drop(buf.splice(pos..pos + 1, with));
+            }
+            pos += 1;
+            continue;
         }
         let mut found: Option<(usize, u16)> = None;
         for (name, unit) in &aliases {
@@ -667,7 +679,10 @@ mod tests {
             m.0.insert(TOKENS + i * 12, 0xe105 + i);
             m.0.insert(TOKENS + i * 12 + 4, 0);
         }
-        m.0.insert(TOKENS + 0x1b * 12 + 4, 0x0022_e1ed);
+        m.0.insert(TOKENS + 0x1b * 12 + 4, 0x0022_e0df);
+        m.0.insert(TOKENS + 0x1c * 12, 0xe459);
+        m.0.insert(TOKENS + 0x1c * 12 + 4, 0x0022_e1ed);
+        m.0.insert(UI_CLOCK, 170);
         m
     }
 
@@ -685,7 +700,9 @@ mod tests {
     fn a_button_glyph_stays_and_a_token_is_the_games() {
         let m = aliases();
         assert_eq!(substitute(&m, &[0xe105, 0x20]), Ok(vec![0xe105, 0x20]));
-        assert_eq!(substitute(&m, &[0x20, 0xe105 + 0x1b]), Err(Gap::text("text_token")));
+        assert_eq!(substitute(&m, &[0x20, 0xe105 + 0x1b]), Err(Gap::text("text_token")), "a handler not ported");
+        // The handler's text replaces the unit and the scan moves on one.
+        assert_eq!(substitute(&m, &[0xe459, 0x61, 0x62]), Ok(vec![0xe12d, 0xe102, 0x62]));
         assert_eq!(substitute(&m, &[0xf000]), Ok(vec![0xf000]), "not in the table: no handler");
     }
 }
