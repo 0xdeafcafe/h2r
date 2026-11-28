@@ -233,14 +233,15 @@ pub(crate) fn bound_target() -> Option<[u32; 8]> {
     HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()?.target()
 }
 
-/// First-person slots the scene path took ([`draw_first_person_scene`]).
+/// First-person slots the scene path drew.
 pub fn first_person_scene_slots() -> u64 {
     first_person::scene_slots()
 }
 
-/// First-person slots the host did not draw ([`draw_cut_light`]).
-pub fn first_person_kept_host_slots() -> u64 {
-    first_person::kept_host_slots()
+/// First-person slots the scene path dropped, by cause
+/// (`scene_dropped_first_person_<cause>`).
+pub fn first_person_dropped() -> Vec<(&'static str, u64)> {
+    first_person::dropped()
 }
 
 /// Draws the first-person lights' layers the scene path took
@@ -576,7 +577,6 @@ pub fn new_view() {
 /// [`new_view`], which asks the host for the next view's target).
 pub fn forget_runs() {
     slot_visibility::forget();
-    passes::forget();
     first_person::forget();
     handoff::forget();
     CANDIDATE.take();
@@ -1575,10 +1575,11 @@ mod tests {
     }
 
     /// A cut light draws at its passes or not at all: a host that refuses
-    /// it, no host and no target all answer `false`, so the caller runs
-    /// the guest's passes; a light with no drawn layer needs no host.
+    /// it, no host and no target all answer `false`, so the caller drops
+    /// the light (`scene_dropped_light_host`); a light with no drawn layer
+    /// needs no host.
     #[test]
-    fn a_cut_light_the_host_refuses_is_left_to_the_guests_passes() {
+    fn a_cut_light_the_host_refuses_is_not_drawn() {
         let _host = HOST_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let pass = ScenePass {
             slot: LIGHT_SLOT,

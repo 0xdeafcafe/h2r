@@ -423,30 +423,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             let binding = entry.binding;
             uncopied |= entry.state.shader_flag && entry.state.uncopied;
             let selection = Some((binding.variant, binding.selector));
-            // An entry's state: the toggle's values it draws with, and an
-            // unmasked fade, only while the device holds what the
-            // handler's epilogue would leave.
-            let mut aux = None;
-            if !entry.state.plain() {
-                let (now, values) = *held.get_or_insert_with(|| (held_state(device, mem), held_aux(device, mem)));
-                if entry.state.fade && !now.fade {
-                    return Err(Keep::Unsupported("a faded entry, where the stipple is on or not at rest"));
-                }
-                if entry.state.structure && !now.structure {
-                    return Err(Keep::Unsupported(
-                        "a flagged entry whose structure parameter upload the device does not hold",
-                    ));
-                }
-                if entry.state.aux_depth {
-                    aux = Some(values.ok_or(Keep::Unsupported(
-                        "an entry toggling the auxiliary state, whose values the device does not hold off",
-                    ))?);
-                }
-            }
+            let aux = entry_state(device, mem, entry, &mut held)?;
             if structure_key(entry).is_some() {
-                if aux.is_some() {
-                    return Err(Keep::Unsupported("a structure entry toggling the auxiliary state"));
-                }
                 for (draw, flipped) in world.structure_entry(entry)? {
                     run.push((layer, usize::from(binding.implementation), draw, selection, flipped));
                 }
@@ -603,11 +581,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         )
         .map_err(|why| Keep::Shadow(why.name()))?;
         let mut draws: Vec<Planned> = Vec::new();
-        let mut run: Vec<(usize, WorldDraw)> = Vec::new();
+        let mut run: Vec<(usize, WorldDraw, bool)> = Vec::new();
+        let mut state_held = None;
+        // A flagged shader's entry before the frame's structure target
+        // copy, as in `gathered_draws`.
+        let mut uncopied = false;
         for e in &group.entries {
             let imp = usize::from(e.binding.implementation);
+            uncopied |= e.state.shader_flag && e.state.uncopied;
+            let aux = entry_state(d, mem, e, &mut state_held)?;
             if structure_key(e).is_some() {
-                run.extend(world.structure_entry(e)?.into_iter().map(|(d, _)| (imp, d)));
+                run.extend(world.structure_entry(e)?.into_iter().map(|(draw, flipped)| (imp, draw, flipped)));
                 continue;
             }
             if !run.is_empty() {
@@ -620,11 +604,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             let lights = model_lights.as_ref().ok_or(Keep::Unsupported(
                 "the map's model shadow parts are loading",
             ))?;
-            if layer == CASTER_LAYER {
-                draws.push(world.resolve_shadow_model(lights, e, group.rows_of(e))?);
+            let mut planned = if layer == CASTER_LAYER {
+                world.resolve_shadow_model(lights, e, group.rows_of(e))?
             } else {
-                draws.push(world.resolve_receiver_model(lights, e, group.rows_of(e), layer, gel.is_some())?);
+                world.resolve_receiver_model(lights, e, group.rows_of(e), layer, gel.is_some())?
+            };
+            for p in &mut planned {
+                if let Some(model) = &mut p.model {
+                    model.aux_depth = aux;
+                }
             }
+            draws.extend(planned);
         }
         if !run.is_empty() {
             if layer == CASTER_LAYER {
@@ -632,6 +622,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             } else {
                 draws.extend(world.resolve_receiver_parts(layer, run, gel.is_some())?);
             }
+        }
+        if uncopied && draws.iter().any(|p| p.compiled.program.copies_target) {
+            return Err(Keep::Unsupported(
+                "a flagged shader's pass with flag bit 20, before the frame's structure target copy",
+            ));
         }
         let constants = match light {
             // A scene light's gel is drawn into target 13 ahead of its
@@ -821,21 +816,32 @@ struct Held<'a> {
 }
 
 impl native_render::light_scene::Resident for Held<'_> {
+    /// The entry's part, or for visible subparts the span their native
+    /// ranges cover (a range that winds the other way draws with the front
+    /// face reversed, [`Planned::cull`]).
     fn part(&self, e: &LightEntry) -> Option<native_render::light_scene::ResidentPart> {
         if structure_key(e).is_none() {
-            let (_, ranges) = self.models?.part(e)?;
-            let [indices] = <[_; 1]>::try_from(ranges).ok()?;
+            let (_, wound) = self.models?.part_wound(e)?;
             return Some(native_render::light_scene::ResidentPart {
                 stream: LightModels::stream(e),
-                indices,
+                indices: covering(wound.into_iter().map(|(r, _)| r))?,
             });
         }
-        let [(d, false)] = <[_; 1]>::try_from(self.world.structure_entry(e).ok()?).ok()? else { return None };
+        let draws = self.world.structure_entry(e).ok()?;
+        let ranges = draws
+            .iter()
+            .map(|(d, _)| Some(d.first_index..d.first_index.checked_add(d.index_count)?))
+            .collect::<Option<Vec<_>>>()?;
         Some(native_render::light_scene::ResidentPart {
             stream: 0,
-            indices: d.first_index..d.first_index.checked_add(d.index_count)?,
+            indices: covering(ranges.into_iter())?,
         })
     }
+}
+
+/// The span `ranges` cover, or `None` for none.
+fn covering(ranges: impl Iterator<Item = Range<u32>>) -> Option<Range<u32>> {
+    ranges.reduce(|a, b| a.start.min(b.start)..a.end.max(b.end))
 }
 
 /// What the device holds for an entry's state
@@ -859,6 +865,40 @@ fn held_state<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemor
         // flag bit 20 is checked where the entry's draws resolve.
         uncopied: false,
     }
+}
+
+/// An entry's state (`frame_scene::EntryState`) as its draw takes it: the
+/// toggle's values for an object entry toggling the auxiliary state, an
+/// unmasked fade, and the structure's upload, each only while the device
+/// holds what the handler's epilogue would leave. `held` is asked once per
+/// layer. Every light and shadow layer draws through it.
+fn entry_state<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>,
+    mem: &dyn GuestMemory,
+    entry: &LightEntry,
+    held: &mut Option<(frame_scene::EntryState, Option<frame_scene::AuxDepth>)>,
+) -> Result<Option<frame_scene::AuxDepth>, Keep> {
+    if entry.state.plain() {
+        return Ok(None);
+    }
+    let (now, values) = *held.get_or_insert_with(|| (held_state(device, mem), held_aux(device, mem)));
+    if entry.state.fade && !now.fade {
+        return Err(Keep::Unsupported("a faded entry, where the stipple is on or not at rest"));
+    }
+    if entry.state.structure && !now.structure {
+        return Err(Keep::Unsupported(
+            "a flagged entry whose structure parameter upload the device does not hold",
+        ));
+    }
+    if !entry.state.aux_depth {
+        return Ok(None);
+    }
+    if structure_key(entry).is_some() {
+        return Err(Keep::Unsupported("a structure entry toggling the auxiliary state"));
+    }
+    values.map(Some).ok_or(Keep::Unsupported(
+        "an entry toggling the auxiliary state, whose values the device does not hold off",
+    ))
 }
 
 /// What the auxiliary state toggle sets for the current view, when the
@@ -1793,6 +1833,19 @@ impl Planned {
     }
 }
 
+/// `planned` over `wound`'s ranges: the forward ones, then the reversed
+/// ones as a draw of their own with the front face reversed.
+fn split_wound(wound: Vec<(Range<u32>, bool)>, planned: Planned) -> Vec<Planned> {
+    let (reversed, forward): (Vec<_>, Vec<_>) = wound.into_iter().partition(|&(_, r)| r);
+    let backward = Planned {
+        ranges: reversed.into_iter().map(|(r, _)| r).collect(),
+        flipped: true,
+        ..planned.clone()
+    };
+    let forward = Planned { ranges: forward.into_iter().map(|(r, _)| r).collect(), ..planned };
+    [forward, backward].into_iter().filter(|p| !p.ranges.is_empty()).collect()
+}
+
 /// [`Planned::material`] of a model's part.
 const MODEL_MATERIAL: u16 = u16::MAX;
 
@@ -2127,10 +2180,10 @@ impl LightsWorld {
     }
 
     /// Structure caster parts resolved with their instance inputs alone.
-    fn resolve_shadow_parts(&self, parts: Vec<(usize, WorldDraw)>) -> Result<Vec<Planned>, Keep> {
+    fn resolve_shadow_parts(&self, parts: Vec<(usize, WorldDraw, bool)>) -> Result<Vec<Planned>, Keep> {
         let mut out: Vec<Planned> = Vec::new();
         let mut pending = false;
-        for (imp, draw) in parts {
+        for (imp, draw, flipped) in parts {
             let m = draw.material;
             let end = draw
                 .first_index
@@ -2157,6 +2210,7 @@ impl LightsWorld {
             if let Some(previous) = out.last_mut()
                 && previous.placement.is_none() && placement.is_none()
                 && previous.material == m
+                && previous.flipped == flipped
                 && Arc::ptr_eq(&previous.compiled, &compiled)
             {
                 previous.ranges.push(range);
@@ -2168,7 +2222,7 @@ impl LightsWorld {
                 layer: CASTER_LAYER,
                 implementation: imp,
                 ranges: vec![range],
-                flipped: false,
+                flipped,
                 sample: None,
                 placement,
                 model: None,
@@ -2181,16 +2235,18 @@ impl LightsWorld {
         }
     }
 
-    /// A model caster part over its resident section's vertex buffer.
+    /// A model caster part over its resident section's vertex buffer: one
+    /// draw, and one more with the front face reversed for visible
+    /// subparts at an odd strip start ([`split_wound`]).
     fn resolve_shadow_model(
         &self,
         lights: &Arc<models::ModelLights>,
         entry: &LightEntry,
         rows: &[Row],
-    ) -> Result<Planned, Keep> {
-        let (section, indices) = lights
+    ) -> Result<Vec<Planned>, Keep> {
+        let (section, wound) = lights
             .models
-            .part(entry)
+            .part_wound(entry)
             .ok_or(Keep::Unsupported("scene shadow entry has no native stream"))?;
         let (shader, instance) = lights
             .instances
@@ -2218,12 +2274,12 @@ impl LightsWorld {
             ));
         }
         self.binds(&compiled.program, None, false, &lights.images)?;
-        Ok(Planned {
+        Ok(split_wound(wound, Planned {
             material: MODEL_MATERIAL,
             layer: CASTER_LAYER,
             implementation: usize::from(entry.binding.implementation),
             compiled,
-            ranges: indices,
+            ranges: Vec::new(),
             flipped: false,
             sample: None,
             placement: None,
@@ -2235,19 +2291,19 @@ impl LightsWorld {
                 rows: rows.to_vec(),
                 aux_depth: None,
             }),
-        })
+        }))
     }
 
     /// Structure receiver parts resolved with their instance inputs alone.
     fn resolve_receiver_parts(
         &self,
         layer: usize,
-        parts: Vec<(usize, WorldDraw)>,
+        parts: Vec<(usize, WorldDraw, bool)>,
         produced_gel: bool,
     ) -> Result<Vec<Planned>, Keep> {
         let mut out: Vec<Planned> = Vec::new();
         let mut pending = false;
-        for (imp, draw) in parts {
+        for (imp, draw, flipped) in parts {
             let m = draw.material;
             let end = draw
                 .first_index
@@ -2274,6 +2330,7 @@ impl LightsWorld {
             if let Some(previous) = out.last_mut()
                 && previous.placement.is_none() && placement.is_none()
                 && previous.material == m
+                && previous.flipped == flipped
                 && Arc::ptr_eq(&previous.compiled, &compiled)
             {
                 previous.ranges.push(range);
@@ -2285,7 +2342,7 @@ impl LightsWorld {
                 layer,
                 implementation: imp,
                 ranges: vec![range],
-                flipped: false,
+                flipped,
                 sample: None,
                 placement,
                 model: None,
@@ -2298,7 +2355,8 @@ impl LightsWorld {
         }
     }
 
-    /// A model receiver part over its resident section's vertex buffer.
+    /// A model receiver part over its resident section's vertex buffer,
+    /// split by winding as [`Self::resolve_shadow_model`].
     fn resolve_receiver_model(
         &self,
         lights: &Arc<models::ModelLights>,
@@ -2306,8 +2364,8 @@ impl LightsWorld {
         rows: &[Row],
         layer: usize,
         produced_gel: bool,
-    ) -> Result<Planned, Keep> {
-        let (section, indices) = lights.models.part(entry).ok_or(Keep::Unsupported(
+    ) -> Result<Vec<Planned>, Keep> {
+        let (section, wound) = lights.models.part_wound(entry).ok_or(Keep::Unsupported(
             "scene receiver entry has no native stream",
         ))?;
         let (shader, instance) = lights
@@ -2336,12 +2394,12 @@ impl LightsWorld {
             ));
         }
         self.binds(&compiled.program, None, produced_gel, &lights.images)?;
-        Ok(Planned {
+        Ok(split_wound(wound, Planned {
             material: MODEL_MATERIAL,
             layer,
             implementation: usize::from(entry.binding.implementation),
             compiled,
-            ranges: indices,
+            ranges: Vec::new(),
             flipped: false,
             sample: None,
             placement: None,
@@ -2353,7 +2411,7 @@ impl LightsWorld {
                 rows: rows.to_vec(),
                 aux_depth: None,
             }),
-        })
+        }))
     }
 
     /// Whether every texture `program` samples is loaded (its stage

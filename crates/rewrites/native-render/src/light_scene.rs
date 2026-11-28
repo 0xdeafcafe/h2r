@@ -33,7 +33,8 @@ pub type StreamId = u32;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResidentPart {
     pub stream: StreamId,
-    /// The part's indices in the stream's index buffer.
+    /// The part's indices in the stream's index buffer; for an entry with
+    /// visible subparts, the span their native ranges cover.
     pub indices: Range<u32>,
 }
 
@@ -137,19 +138,18 @@ pub fn plan_entries<'r>(
     let mut draws: Vec<Draw> = Vec::with_capacity(entries.len());
     let mut last: Option<&LightEntry> = None;
     for (n, e) in entries.iter().enumerate() {
-        // The resident part is whole; visible subparts draw through the
-        // light host's own ranges (`subpart_map`).
-        if e.subparts.is_some() {
-            return Err(Refusal::Stream);
-        }
+        // Visible subparts draw through the host's own ranges
+        // (`subpart_map`); the resident span only says they are held, so
+        // such an entry is a draw of its own.
         let part = resident.part(e).ok_or(Refusal::Stream)?;
         if matches!(e.pose, LightPose::Rows(_)) && rows(e).is_empty() {
             return Err(Refusal::Pose);
         }
         let n = n as u32;
-        let joins = last.is_some_and(|l| {
+        let joins = e.subparts.is_none() && last.is_some_and(|l| {
             let d = draws.last().expect("a draw for the last entry");
-            e.stream.topology == Topology::List
+            l.subparts.is_none()
+                && e.stream.topology == Topology::List
                 && d.topology == Topology::List
                 && d.stream == part.stream
                 && d.vertex_class == e.stream.vertex_class
@@ -558,6 +558,25 @@ mod tests {
                 .iter()
                 .all(|p| p.projection == projection && p.draws.len() == 1)
         );
+    }
+
+    #[test]
+    fn an_entry_with_visible_subparts_is_a_draw_of_its_own_in_a_shadow_layer() {
+        let whole = |slot, first| (entry(slot, LayerOwner::Cluster(2), W, first, LIST), vec![]);
+        let spans = LightEntry {
+            subparts: Some(vec![6..9]),
+            ..entry(1, LayerOwner::Cluster(2), W, 6, LIST)
+        };
+        let s = scene(&[(
+            LightGroup {
+                projection: Some([[0; 4]; PROJECTION_ROWS]),
+                ..group(10, GroupSite::Light)
+            },
+            vec![whole(0, 0), (spans, vec![]), whole(2, 12)],
+        )]);
+        let p = plan(&s, &s.groups_of(0)[0], &Held).unwrap();
+        let entries: Vec<_> = p.draws.iter().map(|d| d.entries.clone()).collect();
+        assert_eq!(entries, [0..1, 1..2, 2..3], "adjacent list ranges, none joined across the spans");
     }
 
     #[test]

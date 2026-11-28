@@ -177,8 +177,8 @@ pub(super) fn plan(
 /// or unsupported entry discards the entire collection, named by the
 /// first refusal. Only call with this invocation's item lists, including
 /// any pending shadow-target resize in `mem` (or after proving its size
-/// is unchanged). An entry with state is taken only in layers 12 and 13
-/// and only while the host holds what its handler's epilogue would leave
+/// is unchanged). An entry with state is taken in layers 10 to 14 only
+/// while the host holds what its handler's epilogue would leave
 /// ([`super::held_state`], asked once and only for such an entry).
 pub(super) fn plan_or_refusal(
     mem: &dyn GuestMemory,

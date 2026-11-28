@@ -31,15 +31,14 @@
 //!   index count and `+0x24` the pointer to their u16 stream.
 //! - A record's visible subparts (bit 6 with a mask) that are not the
 //!   whole part: the entry carries the spans the emitter draws
-//!   (`LightEntry::subparts`), for layers 12 and 13 ([`taken`]).
+//!   (`LightEntry::subparts`), for every layer ([`taken`]).
 //! - What the prologue sets beyond the bindings, which the entry carries
-//!   ([`EntryState`]) for layers 12 and 13 ([`state_taken`]): an object
+//!   ([`EntryState`]) for layers 10 to 14 ([`state_taken`]): an object
 //!   record's auxiliary state toggle (bit 11, while the toggle's values
 //!   read) and the fade byte (`+0x1a`).
 //! - What the handler does beyond binding the material and drawing the
 //!   part, which the scene does not carry, and so is the entry's
-//!   remainder ([`Cause`]): a structure record's toggle, the toggle or
-//!   the fade byte or partial subparts on a shadow layer, and a template
+//!   remainder ([`Cause`]): a structure record's toggle and a template
 //!   callback (the shader's `stem` `+0x44`, `+0x50`). The shader's `+0x16`
 //!   bit 0 is entry state ([`EntryState::shader_flag`]), and a material
 //!   animation (the shader's `+0x24` block `+0x3c`) is the host's to
@@ -112,7 +111,7 @@ pub enum Cause {
     /// does not take them ([`state_taken`]).
     State,
     /// The record's visible subparts do not read or run past its part,
-    /// or a shadow layer or the per-handler path would draw them.
+    /// or the per-handler path would draw them.
     Subparts,
     /// A template callback, or a shader whose tag or flagged inputs do not
     /// read.
@@ -391,23 +390,21 @@ fn entry_at(mem: &dyn GuestRead, item: u32, sorted: Sorted) -> R<(LightEntry, Ve
     Ok((entry, rows, data))
 }
 
-/// Whether a group of `layer` can hold an entry with `state`: only the
-/// diffuse and specular layers draw an entry's state (the auxiliary
-/// depth rows, the fade's unmasked draw, a flagged shader's prologue);
-/// the shadow layers and their casters keep such an entry's handler.
+/// Whether a group of `layer` can hold an entry with `state`: every light
+/// and shadow layer (10 to 14) draws an entry's state (the auxiliary
+/// depth rows, the fade's unmasked draw, a flagged shader's prologue)
+/// while the host holds what the handler's epilogue would leave.
 pub fn state_taken(layer: u8, state: EntryState) -> bool {
-    state.plain() || matches!(layer, 12 | 13)
+    state.plain() || matches!(layer, 10..=14)
 }
 
 /// Whether a group of `layer` can hold `entry`: its state
-/// ([`state_taken`]) and its visible subparts, which only the diffuse and
-/// specular layers draw (the shadow layers draw whole parts), or why not.
+/// ([`state_taken`]), or why not. Visible subparts are taken in every
+/// layer: the emitter draws them in the shadow layers as in diffuse and
+/// specular, and so does the host.
 pub fn taken(layer: u8, entry: &LightEntry) -> R<()> {
     if !state_taken(layer, entry.state) {
         return Err(Cause::State);
-    }
-    if entry.subparts.is_some() && !matches!(layer, 12 | 13) {
-        return Err(Cause::Subparts);
     }
     Ok(())
 }
@@ -776,7 +773,7 @@ mod tests {
     }
 
     #[test]
-    fn an_objects_toggle_and_a_fade_byte_are_the_entrys_state_and_only_diffuse_and_specular_take_it() {
+    fn an_objects_toggle_and_a_fade_byte_are_the_entrys_state_and_every_light_layer_takes_it() {
         let mut m = fixture();
         placement_and_object(&mut m);
         let toggled = RENDER_RECORDS + 3 * RENDER_RECORD_SIZE;
@@ -799,15 +796,15 @@ mod tests {
         m.w(slot + 8, 1);
         m.w(DATA + 0x24, 0x0068_0000);
         assert_eq!(dispatched_entry(&m, ITEMS, Sorted::read(&m, slot).unwrap()).unwrap_err(), Cause::State);
-        for layer in [10, 11, 14] {
-            assert!(!state_taken(layer, e.state), "layer {layer}");
-            assert!(state_taken(layer, EntryState::default()));
+        for layer in [10, 11, 14, 12, 13] {
+            assert!(state_taken(layer, e.state), "layer {layer}");
+            assert!(state_taken(layer, EntryState { aux_depth: true, fade: true, ..EntryState::default() }));
         }
-        assert!(state_taken(12, e.state) && state_taken(13, EntryState { aux_depth: true, fade: true, ..EntryState::default() }));
+        assert!(!state_taken(7, e.state), "not a light layer");
     }
 
     #[test]
-    fn visible_subparts_short_of_the_whole_part_are_the_entrys_spans_for_diffuse_and_specular() {
+    fn visible_subparts_short_of_the_whole_part_are_the_entrys_spans_in_every_layer() {
         let mut m = fixture();
         let rec = RENDER_RECORDS + RENDER_RECORD_SIZE;
         let (bitmap, subparts) = (0x0069_0000, 0x0069_1000);
@@ -824,10 +821,8 @@ mod tests {
         m.w(bitmap, 0b10);
         assert_eq!(spans(&m), Ok(Some(std::iter::once(3..6).collect())));
         let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
-        assert_eq!(taken(12, &e), Ok(()));
-        assert_eq!(taken(13, &e), Ok(()));
-        for layer in [10, 11, 14] {
-            assert_eq!(taken(layer, &e), Err(Cause::Subparts), "layer {layer} draws whole parts");
+        for layer in [10, 11, 14, 12, 13] {
+            assert_eq!(taken(layer, &e), Ok(()), "layer {layer} draws the spans");
         }
         m.w(bitmap, 0b11);
         assert_eq!(spans(&m), Ok(None), "both visible: the whole part");
@@ -914,7 +909,7 @@ mod tests {
         assert_eq!((part.stream.first_index, part.stream.index_count), (0, 6));
         assert_eq!(part.subparts, None, "the two slices join into the whole part");
 
-        // Only the second slice visible: its span, for layers 12 and 13.
+        // Only the second slice visible: its span.
         m.w(bitmap, 0);
         assert_eq!(entry(&m, ITEMS, sorted(0)).unwrap().0.subparts, Some(std::iter::once(2..6).collect()));
         m.w(bitmap, 1 << 31);
@@ -977,10 +972,9 @@ mod tests {
         m.w(BSP + 0x218, 0x0063_0000);
         let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
         assert!(e.state.structure, "a parameter block the prologue uploads");
-        for layer in [10, 11, 14] {
-            assert!(!state_taken(layer, e.state), "layer {layer} keeps a flagged shader's handler");
+        for layer in [10, 11, 14, 12, 13] {
+            assert!(state_taken(layer, e.state), "layer {layer} draws a flagged shader's entry");
         }
-        assert!(state_taken(12, e.state) && state_taken(13, e.state));
         // The per-handler path carries no state.
         let slot = 0x0067_0000;
         m.w(slot, 0);

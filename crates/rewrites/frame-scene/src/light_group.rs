@@ -146,7 +146,7 @@ pub struct LightEntry {
     /// The record's visible subparts (bit 6 with a mask): the spans of
     /// the section's source indices the emitter draws, each its own strip
     /// in strip topology (`scene_extract::layout::world_ranges::emissions`);
-    /// `None` draws the whole part. Only layers 12 and 13 take them
+    /// `None` draws the whole part. Every layer takes them
     /// (docs/graphics/native-lights.md, "Visible subparts").
     pub subparts: Option<Vec<Range<u32>>>,
 }

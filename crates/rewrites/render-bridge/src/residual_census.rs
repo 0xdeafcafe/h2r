@@ -300,14 +300,13 @@ pub const REGISTRY: &[Row] = &[
         status: Status::Partial,
         slot: "opaque",
     },
-    // The cut is held until a frame's check passes
-    // (`native_first_person::held`): until then the guest body draws the
-    // first person, after it the scene does (docs/graphics/native-objects.md,
+    // A cut from the first frame: the scene draws the first person and a
+    // part it cannot draw is a named drop (docs/graphics/native-objects.md,
     // "First person").
     Row {
         name: "first_person",
         entry: 0x0003_fdf0,
-        status: Status::Partial,
+        status: Status::Native,
         slot: "transparents",
     },
     Row {
@@ -337,13 +336,13 @@ pub const REGISTRY: &[Row] = &[
     Row {
         name: "dynamic_lights",
         entry: 0x0003_1c80,
-        status: Status::Partial,
+        status: Status::Native,
         slot: "after_opaque",
     },
     Row {
         name: "light_passes",
         entry: 0x0003_1170,
-        status: Status::Partial,
+        status: Status::Native,
         slot: "after_opaque",
     },
     // Includes sorted layer-15 pool surfaces. Layer 6 and the teardown
@@ -1645,14 +1644,13 @@ mod tests {
         for r in REGISTRY {
             assert_eq!(
                 r.status,
-                if r.name == "object_shadows" {
+                if matches!(r.name, "object_shadows" | "first_person" | "dynamic_lights" | "light_passes") {
                     Status::Native
                 } else if r.name == "present" {
                     Status::Kept
                 } else if matches!(
                     r.name,
                     "object_setup"
-                        | "first_person"
                         | "game_view"
                         | "alternate_view"
                         | "scene_passes"
@@ -1670,8 +1668,6 @@ mod tests {
                         | "fade"
                         | "loading"
                         | "decals"
-                        | "dynamic_lights"
-                        | "light_passes"
                         | "frame_tail"
                         | "movie"
                 ) {

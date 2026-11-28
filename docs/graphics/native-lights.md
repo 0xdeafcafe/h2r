@@ -1,6 +1,6 @@
 # Native renderer stage 4: lights and shadows
 
-Status: Partly built. Rust gathers visible lights and their lists. Under the cut light frame each light's groups go into the scene with no guest pass, and the host draws all five layers from them on the single 1x backend; pixel parity is not verified. The ordered light graph admits dynamic and first-person lights whose draws all fit the view's layers 12 and 13, and lights with no draws. Other lights use per-layer scene draws, gathered handlers and D3D. Live coverage, pixel parity and timing of whole passes remain unverified.
+Status: Partly built. Rust gathers visible lights and their lists, and the guest's light frame `0x00031c80` and passes `0x00031170` never run. Each light's groups go into the scene, and the host draws all five layers from them on the single 1x backend; a light it cannot take is a named, counted drop. First-person lights (`0x000404b0`) draw from the scene too, and a slot it refuses is dropped the same way. Live coverage, pixel parity and timing of whole passes remain unverified.
 Code: `crates/rewrites/engine/src/render/light_gather/typed.rs`, `crates/rewrites/render-bridge/src/native_lights/typed.rs`, `crates/rewrites/native-render/src/light_graph.rs`, `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `native_lights/scene_frame.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `native_lights_glue/models.rs`, `native_lights_glue/scene.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_gpu.rs`, `light_scene.rs`, `light_models.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/scene-extract/src/lights/gather.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Constants, implementations and the native look are in [native-lights-constants.md](native-lights-constants.md). Tests: `scene_extract::lights::gather::tests`, `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -21,7 +21,7 @@ flowchart LR
   F --> P[per light: item lists]
   P --> S[scene_frame: groups into the scene]
   S --> H[draw_cut_light: layers 10, 11, 14, 12, 13]
-  F -.refused.-> D[guest layers and D3D]
+  S -.refused.-> D[dropped, counted by cause]
 ```
 
 ## Stage 4: lights and shadows
@@ -153,25 +153,25 @@ The light frame is a cut producer (`render_bridge::cut::CUTS`, row
 
 Each light draws at its own passes, in the guest's order (`native_lights::draw_cut_light`). A light with a shader gel draws it first.
 
-When the host draws the scene's light layers
-(`render_bridge::native_lights::scene_path_ready`, the host's
-`draws_scene`), the guest's `0x00031c80` never runs. The Rust frame body
-(`native_lights/frame.rs`) still gathers every drawn light as the guest
-does: the visible list and history, the volume, frusta, visibility,
-records and part visibility.
+The guest's `0x00031c80` and `0x00031170` never run. The Rust frame body
+(`native_lights/frame.rs`) gathers every drawn light as the guest does:
+the visible list and history, the volume, frusta, visibility, records and
+part visibility. A frame it cannot take draws no light:
+
+| Frame drop (`scene_dropped_light_frame_<cause>`) | When |
+|---|---|
+| `standing_down` | the lights stage stands down on the map (`Stage::Lights`) |
+| `host` | no host draws the scene's light layers (`native_lights::scene_path_ready`, the host's `draws_scene`) |
+| `plan` | the frame's plan refused (`frame::plan`); the call is answered as the cut |
+| `passes` | a light's passes' entry plan refused (`passes::plan`); they return at once |
 
 Each light's passes (`native_lights/passes.rs`, `scene_passes`) make
 only their first step, the item lists `0x00040e90` (the item body,
 `light_gather::items`), and stop. No constants, target, stencil or
-layer draw is made, and the call returns as `ret 0x10`. A frame plan
-that refuses is answered as the cut. A light the scene cannot take keeps
-the guest's draw:
-
-| Where it refuses | What draws the light |
-|---|---|
-| the passes' entry plan | the whole original `0x00031170` |
-| `scene_frame::light`, after the item lists | the guest's remaining passes: constants, shadow setup, layers 10 to 14 (`passes::after_lists` returns `None`) |
-| the host's draw of the light (`Host::draw_scene_light` false) | the same: the guest's remaining passes, counted `scene_kept_light_host` |
+layer draw is made, and the call returns as `ret 0x10`
+(`passes::after_lists`), whether the scene took the light or not. A
+light the scene cannot take is dropped for the frame and counted by
+cause (`scene_frame::Dropped`).
 
 `native_lights::scene_frame` puts what the remaining steps would draw
 into the scene. The light and its steps come from the hand-off at the
@@ -185,21 +185,26 @@ only.
 Each drawn layer of the steps is one group of the light,
 `typed_groups::plan` over the lists the item body just made: the entries
 the guest's layer build would keep, in its sorted order. A light whose
-groups cannot all be made puts none in, and the guest's passes draw it.
-A light with the additional casters (`0x00030ed0`), whose record walk
-the cut does not make, is the guest's whole.
+groups cannot all be made puts none in and is dropped.
+
+The additional casters' pair (`0x00030ed0`) is decided at the item lists
+by `passes::additional::empty`. When no candidate's first match in the
+current visibility list is marked `0x1000`, the pair makes no suffix and
+draws nothing, so the light draws its own steps. A pair that would make a
+suffix needs the marker lookup and the suffix's record walk, which are
+not built: `scene_dropped_light_additional_casters`.
 
 | Counter (`render.scene`) | Counts |
 |---|---|
 | `scene_cut_lights`, `scene_cut_light_groups` | lights and groups the scene took |
-| `scene_kept_light_<cause>` | lights the guest draws: `unread`, `constants`, `projection`, `group`, `light`, `additional_casters`, `host` |
-| `scene_kept_light_group_<refusal>` | `group` by the first step that did not read whole (`typed_groups::GroupRefusal`): `layer`, `memory`, `suffix`, `mask`, `sort`, `pass`, `projection`, or `entry_<cause>` (`scene_extract::light_groups::Cause`) |
+| `scene_dropped_light_frame_<cause>` | frames or passes calls that drew nothing (table above) |
+| `scene_dropped_light_<cause>` | lights dropped: `unread`, `constants`, `projection`, `group`, `light`, `additional_casters`, `host` |
+| `scene_dropped_light_group_<refusal>` | `group` by the first step that did not read whole (`typed_groups::GroupRefusal`): `layer`, `memory`, `suffix`, `mask`, `sort`, `pass`, `projection`, or `entry_<cause>` (`scene_extract::light_groups::Cause`) |
 
-Tests: `a_light_the_scene_cannot_take_runs_the_guests_passes`,
-`a_kept_light_is_counted_by_cause_and_group_refusal`
+Tests: `a_light_the_scene_cannot_take_returns_after_its_lists_and_the_guest_draws_nothing`,
+`a_dropped_light_is_counted_by_cause_and_group_refusal`
 (`native_lights/passes.rs`),
-`a_cut_light_the_host_refuses_is_left_to_the_guests_passes`
-(`native_lights.rs`).
+`a_cut_light_the_host_refuses_is_not_drawn` (`native_lights.rs`).
 
 ### Entry state
 
@@ -217,22 +222,22 @@ entry carries them (`frame_scene::EntryState`, read by
 - `shader_flag` alone always holds (its residency request sets no device
   state); the rest is the R1 object items' rule
   ([native-objects-fade.md](native-objects-fade.md)).
-- Only layers 12 and 13 take an entry with state
-  (`light_groups::state_taken`). In layers 10, 11 and 14, and on the
-  per-handler path (`dispatched_entry`), it stays `State`, as does a
-  structure record's toggle or a toggle whose values do not read.
+- Every light and shadow layer takes an entry with state
+  (`light_groups::state_taken`), and the host draws it the same way in
+  each (`native_lights_glue::entry_state`). On the per-handler path
+  (`dispatched_entry`) it stays `State`, as does a structure record's
+  toggle or a toggle whose values do not read.
 - The cut asks the host once per light, and only for an entry with
   state (`Host::held_state`, `typed_groups::plan_or_refusal`). Not held:
-  `scene_kept_light_group_entry_state`, and the guest's passes draw the
-  light.
+  `scene_dropped_light_group_entry_state`, and the light is dropped.
 - The host checks again at the draw (`gathered_draws`), and a flagged
-  entry before the frame's copy keeps the light when a program of the
-  layer has flag bit 20 (`scene_kept_light_host`).
+  entry before the frame's copy drops the light when a program of the
+  layer has flag bit 20 (`scene_dropped_light_host`).
 
-Tests: `an_objects_toggle_and_a_fade_byte_are_the_entrys_state_and_only_diffuse_and_specular_take_it`
+Tests: `an_objects_toggle_and_a_fade_byte_are_the_entrys_state_and_every_light_layer_takes_it`
 (`scene_extract::light_groups`),
-`a_faded_entry_draws_in_diffuse_only_while_the_host_holds_the_stipple_at_rest`,
-`a_flagged_entry_draws_in_diffuse_and_specular_and_asks_the_host_for_the_structure_upload_only_when_it_has_one`
+`a_faded_entry_draws_only_while_the_host_holds_the_stipple_at_rest`,
+`a_flagged_entry_draws_in_every_layer_and_asks_the_host_for_the_structure_upload_only_when_it_has_one`
 (`native_lights/walk.rs`),
 `a_flagged_shader_is_entry_state_with_the_structures_block_and_the_frames_target_copy`,
 `a_part_toggling_the_auxiliary_state_draws_with_its_rows_and_clip`
@@ -258,20 +263,24 @@ triangles before each source position, so each span is one native range:
 | strip | it starts at an even position | the span's native triangles |
 | strip | it starts at an odd position: a sub-strip winds each window by its parity from its own start, so every triangle winds the other way | the same native triangles, drawn with the front face reversed |
 
-- Only layers 12 and 13 take an entry with subparts
-  (`light_groups::taken`); the per-handler path and the shadow layers
-  stay `Subparts`.
+- Every layer takes an entry with subparts (`light_groups::taken`): the
+  shadow layers draw the spans as diffuse and specular do. Only the
+  per-handler path stays `Subparts`.
 - The host draws a structure entry's spans from
   `world::light_parts::ResidentRanges::subpart_draws_wound`, an object's
   from `LightModels::part_wound`, each range with whether it winds the
   other way. Such a range is a draw of its own, its pass's cull with the
   front face reversed (`program::reversed_winding`, `Planned::cull`); a
-  pass that culls nothing is unchanged.
-- A span past the part or off a triangle has no range: the guest's
-  passes draw the light (`scene_kept_light_host`).
+  pass that culls nothing is unchanged. Layers 10, 11 and 14 split a
+  model entry's ranges the same way (`split_wound`), and a structure
+  run keeps each range's winding.
+- A span past the part or off a triangle has no range: the light is
+  dropped (`scene_dropped_light_host`).
 
-Tests: `visible_subparts_short_of_the_whole_part_are_the_entrys_spans_for_diffuse_and_specular`
+Tests: `visible_subparts_short_of_the_whole_part_are_the_entrys_spans_in_every_layer`
 (`scene_extract::light_groups`),
+`an_entry_with_visible_subparts_is_a_draw_of_its_own_in_a_shadow_layer`
+(`light_scene`),
 `a_strip_with_degenerates_maps_each_even_sub_strip_to_its_own_native_triangles`
 (`subpart_map`; its odd start is `wound`'s reversed range),
 `a_reversed_winding_flips_the_culled_face_s_front_and_leaves_an_unculled_pass`,
@@ -316,10 +325,10 @@ A scene light outside slots 4 and 10 refuses the light, and so does a
 caster region that does not start at its target's corner or runs past
 it. The host's `draws_scene` is true at any render scale and on every
 backend while the native shadows are on
-(`native_shadows_glue::enabled`); with them off the guest's light frame
-runs. The first-person lights (`0x000404b0`) replay the slots the frame
-body filled, and under the scene path draw from the scene
-("First-person lights from the scene").
+(`native_shadows_glue::enabled`); with them off the light frame
+draws no light. The first-person lights (`0x000404b0`) replay the slots
+the frame body filled and draw from the scene ("First-person lights from
+the scene").
 
 Tests: `a_shadowed_lights_layers_clear_draw_and_freeze_the_map_before_its_receivers`,
 `each_copy_freezes_the_casters_region_at_its_own_scale`,
@@ -475,55 +484,33 @@ object shadows outside a dynamic light.
 
 ### First-person lights from the scene
 
-Under the scene path (`native_lights::scene_path_ready`)
 `native_lights/first_person.rs` runs the loop as
 `engine::render::light_gather::first_person::run_scene`: each slot's
 volume and records as the guest makes them, then `scene_slot` plans the
-slot from its lists as the typed path does (`Slot::read`: the light's
-constants computed as `0x0004a1e0` would leave them, its first-person
-steps and its groups, `GroupSite::FirstPerson`) and puts the light, with
-those constants as its candidate, and its groups into the first person's
-view.
+slot from its lists (`SceneSlot::read`: the light's constants computed as
+`0x0004a1e0` would leave them, its first-person steps and its groups,
+`GroupSite::FirstPerson`). It puts the light, with those constants as its
+candidate, into the first person's view and draws it in place
+(`native_lights::draw_cut_light`) on the target bound when the loop
+began, one sequence per light as a dynamic light's, its gel first. Only
+then do its groups go in.
 
-A slot it takes makes no constants call, layer or tail; a slot it
-refuses makes the rest of its steps on the guest. A taken slot draws in
-place (`native_lights::draw_cut_light`), on the target bound when the
-loop began, one sequence per light as a dynamic light's, its gel first.
-A slot the host refuses makes the rest of its steps on the guest. The
-tail runs once at the loop's exit. `render.scene` counts the slots
-taken in `scene_first_person_cut_slots` and those the host refused in
-`scene_first_person_kept_host`.
+No slot makes the guest's constants call or layer draws. Layer 11 and 14
+items and a shader gel are the host's to draw, and the loop's tail runs
+once at its exit.
+
+| Drop (`render.scene`) | When |
+|---|---|
+| `scene_dropped_first_person_loop_standing_down` | the lights stage stands down; the loop returns at once (`ret 4`) |
+| `scene_dropped_first_person_loop_plan` | the loop's plan refused (`first_person::plan`) |
+| `scene_dropped_first_person_<cause>` | a slot not drawn, by the dynamic lights' causes (`unread`, `constants`, `group`, `light`, `host`); `host` also counts every slot while no host draws the scene's light layers |
+
+A group refusal is also counted in `scene_dropped_light_group_<refusal>`.
+`scene_first_person_cut_slots` counts the slots drawn.
 `a_cut_slots_candidate_carries_its_constants_and_its_definitions_gels`
-checks the light the scene is handed.
-
-Off the scene path:
-
-Whole-pass admission reads each slot after the loop poses its volume
-and replays its records. A slot with only supported view-target groups,
-including an empty slot with records, can issue its constants, draws
-and tail together.
-
-On the per-layer path, at a first-person light's first layer draw
-(`native_lights::first_person_layer`; the loop's light index and entry
-pointer read from its frame, `first_person_entry`), the light goes into
-the first person's view of the frame scene with its steps
-(`scene_step::first_person_light`). Its constants are the globals as the
-loop's `0x0004a1e0` call left them and the flags it set
-(`LightGlobals::stored`, `stored_light_constants`), read rather than
-computed, since the light volume is a local of the loop's frame.
-
-At each
-of its layers 12 and 13 the gathered walk's build puts the light's
-sorted entries into the scene as a group of the light, of its own site
-(`GroupSite::FirstPerson`), and when the
-scene holds the group whole the host draws it alone
-(`Glue::alone`, the same path as a dynamic light's whole group): the
-entry loop gets no entries and no handler runs. A group the scene does
-not hold whole, or the host refuses, keeps the guest's build and
-handlers, and so do layers 11 and 14 and a light with a shader gel. The
-resolved-draw path takes no first-person layer. `render.scene` counts
-the layers drawn this way in `scene_first_person_light_layers_alone`
-(included in `scene_light_layers_alone`).
+checks the light the scene is handed, and
+`a_dropped_slot_is_counted_under_the_dynamic_lights_cause_with_its_own_prefix`
+the counters.
 
 ### What a native light draws
 
@@ -574,13 +561,13 @@ The layer draw `0x00044550` of layers 10 to 14 returns without its body on the o
 
 - A whole scene group of layer 12 or 13 can skip its handlers for both structure and model entries. Individual indexed emissions keep the handler's ordering and use its resolved draw as the fallback.
 - A material with an unsupplied input or unsupported shadow map binding can decline the resident plan. The indexed path requires a supported resolved shader and state and all sampled resources on each target copy.
-- The visible-light gather, first-person record replay and ranked object-shadow list run as Rust bodies. The dynamic pass body offers the current light after its item lists are ready. A complete admission takes every supported draw and the tail together. A refusal continues at the next guest step with the same lists. The per-layer path keeps the original calls for shader setup, targets and draws. See [native-light-gather.md](native-light-gather.md).
+- The visible-light gather, first-person record replay and ranked object-shadow list run as Rust bodies. The light frame's guest leaves still run as guest calls: the re-pose markers, the visibility `0x001320f0`, the records reset `0x0002cb30`, the object records `0x00133720` and the part visibility `0x00044720`, and a volume, frusta, geometry-flag, extra-caster or record-walk leaf that refuses. None of them draws. See [native-light-gather.md](native-light-gather.md).
 - Diagnostics print as `native-lights:` on stderr: at load, each light texture with its size or why it did not load, plus resident structure parts and unread materials; at run time, each refusal reason on its first occurrence, and counts by reason every 1800 host decisions.
 
 ## Not verified
 
 - Real-map admission counts and pixel parity for mixed gathered models, placements and BSP parts whose base draw stays on D3D.
-- A first-person light's layers 12 and 13 drawn from the scene against its handlers' draws (pixel parity over the first-person weapon in a lit room), and that the view's target the dynamic lights recorded is the one the first-person layers draw on (a different one refuses, `light view target changed`).
+- A first-person light's layers drawn from the scene against the guest's (pixel parity over the first-person weapon in a lit room), and that the target bound at the loop's start is the first person's.
 - A shadowed light's layers 12 and 13 drawn natively over its D3D or shadow-stage layers 10, 11 and 14 (pixel parity on a scene with one).
 - An object entry's layers 12 and 13 drawn from the scene against its handler's draw (`render.compare` on a scene with a lit object); that the sorted entry's classification is the one the model parts are built for (`classification` from the section's `+0x14`), and that the light frame needs no per-object transform.
 - Pixel parity at equal presents, with render scale 1 and 2, with the lights stage on and off (`impl.render.native=off`). Captures from a run with zero native submissions establish no light coverage, and a scene with zero shader-gel admissions says nothing about the target-13 binding.
