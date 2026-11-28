@@ -404,8 +404,9 @@ h2 agent render.parity '{"arm": true}'
   game view), `scene_readback` and `scene_readback_<kind>` (in a game
   view, since the start). The frame step's publish adds
   `publish_native` and the kept frames by cause, `publish_kept_<slot>`,
-  `publish_kept_untracked`, `publish_kept_border`,
-  `publish_kept_display`, `publish_kept_host` and `publish_failed`
+  `publish_kept_untracked`, `publish_kept_border_<cause>`,
+  `publish_kept_display`, `publish_kept_host` and `publish_failed`, and
+  `publish_blit_native` for a published frame that drew the back buffer's blit
   ([retire-d3d-display.md](../graphics/retire-d3d-display.md#the-final-display));
   each appears once it has counted. `carried_census` keeps transient uses across
   all recorded frames. `frames` counts sink presents from one and

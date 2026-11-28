@@ -7,7 +7,7 @@
 //!
 //! | Guest | What | The publish |
 //! |---|---|---|
-//! | `0x00013d80` | with `[0x005093c8]` set, a border round the rectangle at `0x005093c0` on the back buffer | kept: `publish_kept_border` |
+//! | `0x00013d80` | with `[0x005093c8]` set, the CPU blit of an image into the rectangle at `0x005093c0` of the back buffer ([`super::blit`]) | [`Publish::blit`]: one overlay picture; not placed: kept, `publish_kept_border` |
 //! | `0x003f9df0(1, 1)`, `Swap(0)`, `0x003f9df0(1, 1)` | the back buffer scale and the swap | [`Publish::present`] with the frame step's gamma ramp |
 //! | `0x00014110..0x00014194` | `[0x00485acc]` against `[0x00467008]`, byte `[0x00485ad0]` against `[0x0046700c]`: when either differs, the TV encoder option, the flicker filter `0x003f8c70` and the latch | kept: `publish_kept_display` |
 //! | `0x00014196..0x000141ae` | the present counter `0x00485aa0`, 64-bit, +1 | `tick_writes::present_counter` |
@@ -28,8 +28,8 @@ pub const RAMP_BYTES: usize = 768;
 /// The guest words the publish reads and writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Addrs {
-    /// `0x00013d80`'s border flag.
-    pub border: u32,
+    /// `0x00013d80`'s image, rectangle and scale.
+    pub blit: super::blit::Addrs,
     /// The display's TV option (a dword) and flicker byte.
     pub display: (u32, u32),
     /// What the present last sent of them.
@@ -42,7 +42,7 @@ pub struct Addrs {
 
 impl Addrs {
     pub const HALO2: Addrs = Addrs {
-        border: 0x0050_93c8,
+        blit: super::blit::Addrs::HALO2,
         display: (0x0048_5acc, 0x0048_5ad0),
         latched: (0x0046_7008, 0x0046_700c),
         device: 0x0040_7488,
@@ -74,6 +74,13 @@ pub trait Publish: Send + Sync {
     /// Shows the frame from the scene with `gamma`, and counts its swap
     /// for the next vertical blank's record.
     fn present(&self, mem: &mut dyn GuestMemory, gamma: Option<&[u8; RAMP_BYTES]>) -> Result<(), String>;
+    /// Draws `0x00013d80`'s blit over the frame before its present (one
+    /// overlay picture, [`super::blit::overlay`]). `Err`: not placed, by
+    /// cause (`publish_kept_border_<cause>`), and the guest's present
+    /// draws it.
+    fn blit(&self, _mem: &mut dyn GuestMemory, _blit: &super::blit::Blit) -> Result<(), &'static str> {
+        Err("host")
+    }
 }
 
 static INSTALLED: Mutex<Option<Arc<dyn Publish>>> = Mutex::new(None);
@@ -93,8 +100,10 @@ pub enum Kept {
     /// A slot with a guest op, by name.
     Slot(&'static str),
     Untracked,
-    /// `0x00013d80` would draw its border.
-    Border,
+    /// `0x00013d80` would write its image and the host did not place it,
+    /// by cause: `host` (no overlay), `target` (the back buffer is not
+    /// the bound target), `pass` (the device did not take the pass).
+    Border(&'static str),
     /// The TV option or flicker byte changed.
     Display,
     /// No host registered a [`Publish`].
@@ -119,7 +128,7 @@ impl Outcome {
             Outcome::Native => "publish_native".to_owned(),
             Outcome::Kept(Kept::Slot(slot)) => format!("publish_kept_{slot}"),
             Outcome::Kept(Kept::Untracked) => "publish_kept_untracked".to_owned(),
-            Outcome::Kept(Kept::Border) => "publish_kept_border".to_owned(),
+            Outcome::Kept(Kept::Border(cause)) => format!("publish_kept_border_{cause}"),
             Outcome::Kept(Kept::Display) => "publish_kept_display".to_owned(),
             Outcome::Kept(Kept::Host) => "publish_kept_host".to_owned(),
             Outcome::Kept(Kept::Failed) => "publish_failed".to_owned(),
@@ -131,11 +140,14 @@ static COUNTS: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 static FAILED_LOGGED: AtomicBool = AtomicBool::new(false);
 
 fn count(outcome: Outcome) {
-    let name = outcome.name();
+    count_name(&outcome.name());
+}
+
+fn count_name(name: &str) {
     let mut counts = COUNTS.lock().unwrap_or_else(|e| e.into_inner());
     match counts.iter_mut().find(|(n, _)| *n == name) {
         Some((_, v)) => *v += 1,
-        None => counts.push((name, 1)),
+        None => counts.push((name.to_owned(), 1)),
     }
 }
 
@@ -175,11 +187,16 @@ fn decide(a: &Addrs, publish: Option<&dyn Publish>, g: &mut dyn GuestMemory) -> 
         Open::Carried(slot) => return Ok(Outcome::Kept(Kept::Slot(slot))),
         Open::Untracked => return Ok(Outcome::Kept(Kept::Untracked)),
     }
-    if g.u32(a.border)? != 0 {
-        return Ok(Outcome::Kept(Kept::Border));
-    }
     if g.u32(a.display.0)? != g.u32(a.latched.0)? || u32::from(g.u8(a.display.1)?) != g.u32(a.latched.1)? {
         return Ok(Outcome::Kept(Kept::Display));
+    }
+    // The blit is the last write before the swap: placed after every
+    // check that could keep the frame, so a kept frame draws it once.
+    if let Some(blit) = super::blit::read(&a.blit, g)? {
+        if let Err(cause) = publish.blit(g, &blit) {
+            return Ok(Outcome::Kept(Kept::Border(cause)));
+        }
+        count_name("publish_blit_native");
     }
     let ramp = gamma(a, g)?;
     // The counter reads before the present, so a fault leaves the frame
@@ -207,12 +224,15 @@ mod tests {
     struct Host {
         open: Open,
         fail: bool,
+        /// Whether it places a blit.
+        blits: bool,
         presents: Mutex<Vec<Option<Vec<u8>>>>,
+        placed: Mutex<Vec<super::super::blit::Blit>>,
     }
 
     impl Host {
         fn new(open: Open) -> Self {
-            Host { open, fail: false, presents: Mutex::new(Vec::new()) }
+            Host { open, fail: false, blits: false, presents: Mutex::new(Vec::new()), placed: Mutex::new(Vec::new()) }
         }
         fn presents(&self) -> Vec<Option<Vec<u8>>> {
             self.presents.lock().unwrap().clone()
@@ -230,6 +250,22 @@ mod tests {
             self.presents.lock().unwrap().push(gamma.map(|r| r.to_vec()));
             Ok(())
         }
+        fn blit(&self, _: &mut dyn GuestMemory, blit: &super::super::blit::Blit) -> Result<(), &'static str> {
+            if !self.blits {
+                return Err("pass");
+            }
+            self.placed.lock().unwrap().push(blit.clone());
+            Ok(())
+        }
+    }
+
+    const IMAGE: u32 = 0x0060_0000;
+
+    /// What `0x00013d50` leaves for a 2 x 1 image at (4, 3).
+    fn set_blit(g: &mut FakeGuest) {
+        g.map(IMAGE, 0x1000).put(IMAGE, &[1, 3]);
+        g.put_u32(A.blit.image, IMAGE).put_u32(A.blit.rect, 3 | 4 << 16).put_u32(A.blit.rect + 4, 4 | 6 << 16);
+        g.put_u32(A.blit.scale, 0x55);
     }
 
     fn ramp(n: u8) -> Vec<u8> {
@@ -287,9 +323,11 @@ mod tests {
         let mut g = guest();
         assert_eq!(present(&A, None, &mut g).unwrap(), Outcome::Kept(Kept::Host));
         let host = Host::new(Open::Scene);
-        g.put_u32(A.border, 1);
-        assert_eq!(present(&A, Some(&host), &mut g).unwrap(), Outcome::Kept(Kept::Border));
-        g.put_u32(A.border, 0).put_u8(A.display.1, 0);
+        set_blit(&mut g);
+        let outcome = present(&A, Some(&host), &mut g).unwrap();
+        assert_eq!(outcome, Outcome::Kept(Kept::Border("pass")), "a host that does not place the blit");
+        assert_eq!(outcome.name(), "publish_kept_border_pass");
+        g.put_u32(A.blit.image, 0).put_u8(A.display.1, 0);
         assert_eq!(present(&A, Some(&host), &mut g).unwrap(), Outcome::Kept(Kept::Display), "the flicker byte changed");
         g.put_u8(A.display.1, 1).put_u32(A.display.0, 8);
         assert_eq!(present(&A, Some(&host), &mut g).unwrap(), Outcome::Kept(Kept::Display), "the TV option changed");
@@ -298,6 +336,24 @@ mod tests {
         assert_eq!(present(&A, Some(&failing), &mut g).unwrap().name(), "publish_failed");
         assert!(host.presents().is_empty());
         assert_eq!(counter(&g), 41, "every kept frame leaves the counter to the guest");
+    }
+
+    #[test]
+    fn the_blit_is_drawn_from_the_scene_and_the_frame_published() {
+        let mut g = guest();
+        set_blit(&mut g);
+        let host = Host { blits: true, ..Host::new(Open::Scene) };
+        assert_eq!(present(&A, Some(&host), &mut g).unwrap(), Outcome::Native);
+        let placed = host.placed.lock().unwrap().clone();
+        assert_eq!(placed.len(), 1, "one blit, placed before the present");
+        assert_eq!((placed[0].at, placed[0].size), ([4, 3], [2, 1]));
+        assert_eq!(placed[0].bgra, [[0x55; 4], [0xff; 4]].concat());
+        assert_eq!(host.presents().len(), 1);
+        assert!(counters().iter().any(|(n, v)| n == "publish_blit_native" && *v >= 1));
+        // A frame kept for another reason leaves the blit to the guest.
+        g.put_u8(A.display.1, 0);
+        assert_eq!(present(&A, Some(&host), &mut g).unwrap(), Outcome::Kept(Kept::Display));
+        assert_eq!(host.placed.lock().unwrap().len(), 1, "a kept frame's blit is the guest's alone");
     }
 
     #[test]
