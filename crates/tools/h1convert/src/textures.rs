@@ -269,7 +269,9 @@ pub fn plan<R: Read + Seek>(
             out.notes.push(no_draw_note(name));
             continue;
         }
-        let s = shad::read_h1(h1, tag).ok_or_else(|| fail("unsupported shader definition"))?;
+        let s = shad::read_h1(h1, tag).ok_or_else(|| {
+            fail(&format!("unsupported shader definition (group {})", tag.group))
+        })?;
         if !out.library.has(s.layout) {
             return Err(fail(s.layout.stem));
         }

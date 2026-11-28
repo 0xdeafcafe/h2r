@@ -71,6 +71,64 @@ fn child2d(v: u32) -> Result<Child2d> {
     })
 }
 
+/// Most edges the Rust collision walk follows around one surface's ring.
+pub const MAX_RING: usize = 64;
+/// Deepest 3D tree (nodes on one root-to-leaf path) the Rust walk holds.
+pub const MAX_DEPTH: usize = 256;
+
+/// The longest surface ring (edges) and the deepest 3D path (nodes) of
+/// `bsp`. A ring that doesn't close counts as one past `edges.len()`; a
+/// tree that loops counts as unbounded (`usize::MAX`).
+pub fn extent(bsp: &Bsp) -> (usize, usize) {
+    let mut ring = 0;
+    for (k, s) in bsp.surfaces.iter().enumerate() {
+        let (mut e, mut n) = (s.first_edge, 0usize);
+        loop {
+            let Some(edge) = bsp.edges.get(usize::from(e)) else { break };
+            n += 1;
+            e = if usize::from(edge.right_surface) == k {
+                edge.reverse_edge
+            } else {
+                edge.forward_edge
+            };
+            if e == s.first_edge || n > bsp.edges.len() {
+                break;
+            }
+        }
+        ring = ring.max(n);
+    }
+    let mut depth = 0;
+    let mut stack = vec![(0usize, 1usize)];
+    let mut visited = 0usize;
+    while let Some((i, d)) = stack.pop() {
+        let Some(node) = bsp.nodes.get(i) else { continue };
+        visited += 1;
+        if visited > bsp.nodes.len().saturating_mul(2).max(1) + 1 {
+            return (ring, usize::MAX);
+        }
+        depth = depth.max(d);
+        for c in [node.back, node.front] {
+            if let Child::Node(k) = c {
+                stack.push((k as usize, d + 1));
+            }
+        }
+    }
+    (ring, depth)
+}
+
+/// Refuses by name a surface ring over [`MAX_RING`] edges or a tree deeper
+/// than [`MAX_DEPTH`]: the Rust walk's bounds. Nothing is split or trimmed.
+pub fn check_bounds(bsp: &Bsp) -> Result<()> {
+    let (ring, depth) = extent(bsp);
+    if ring > MAX_RING {
+        return Err(Error::CollisionBound { what: "surface ring edges", value: ring, max: MAX_RING });
+    }
+    if depth > MAX_DEPTH {
+        return Err(Error::CollisionBound { what: "tree depth", value: depth, max: MAX_DEPTH });
+    }
+    Ok(())
+}
+
 /// Converts a Halo 1 collision BSP. Fails when an index or count is past
 /// what Halo 2's packed fields hold; nothing is dropped silently.
 pub fn convert(src: &CollisionBsp) -> Result<Bsp> {
@@ -170,7 +228,7 @@ pub fn convert(src: &CollisionBsp) -> Result<Bsp> {
     ] {
         index16(what, n.saturating_sub(1) as u32)?;
     }
-    Ok(Bsp {
+    let bsp = Bsp {
         unknown_00: 0,
         nodes,
         planes: src.planes.iter().map(|&p| Plane(p)).collect(),
@@ -187,5 +245,77 @@ pub fn convert(src: &CollisionBsp) -> Result<Bsp> {
                 edge: v.first_edge,
             })
             .collect(),
-    })
+    };
+    check_bounds(&bsp)?;
+    Ok(bsp)
+}
+
+#[cfg(test)]
+mod bounds_tests {
+    use super::*;
+    use tags::collision::{Edge, Node3d, Surface};
+
+    /// One surface whose ring has `n` edges, closed.
+    fn ring(n: usize) -> Bsp {
+        let edge = |k: usize| Edge {
+            start_vertex: 0,
+            end_vertex: 0,
+            forward_edge: ((k + 1) % n) as u16,
+            reverse_edge: ((k + n - 1) % n) as u16,
+            left_surface: 0,
+            right_surface: 0xffff,
+        };
+        Bsp {
+            surfaces: vec![Surface {
+                plane: 0,
+                first_edge: 0,
+                flags: 0,
+                breakable_surface: 0xff,
+                material: 0,
+            }],
+            edges: (0..n).map(edge).collect(),
+            ..Bsp::default()
+        }
+    }
+
+    /// A chain of `n` nodes, each the front of the one before.
+    fn chain(n: usize) -> Bsp {
+        Bsp {
+            nodes: (0..n)
+                .map(|k| Node3d {
+                    plane: 0,
+                    back: Child::None,
+                    front: if k + 1 < n { Child::Node(k as u32 + 1) } else { Child::Leaf(0) },
+                })
+                .collect(),
+            ..Bsp::default()
+        }
+    }
+
+    #[test]
+    fn a_ring_of_64_edges_passes_and_65_is_named() {
+        assert_eq!(extent(&ring(64)), (64, 0));
+        check_bounds(&ring(64)).unwrap();
+        assert!(matches!(
+            check_bounds(&ring(65)),
+            Err(Error::CollisionBound { what: "surface ring edges", value: 65, max: 64 })
+        ));
+    }
+
+    #[test]
+    fn a_tree_256_deep_passes_and_257_is_named() {
+        assert_eq!(extent(&chain(256)).1, 256);
+        check_bounds(&chain(256)).unwrap();
+        assert!(matches!(
+            check_bounds(&chain(257)),
+            Err(Error::CollisionBound { what: "tree depth", value: 257, max: 256 })
+        ));
+    }
+
+    #[test]
+    fn a_looping_tree_is_refused_not_walked_forever() {
+        let mut b = chain(2);
+        b.nodes[1].front = Child::Node(0);
+        assert!(check_bounds(&b).is_err());
+    }
 }

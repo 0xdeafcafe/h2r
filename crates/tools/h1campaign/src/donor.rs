@@ -12,6 +12,7 @@
 //! | hunter | `03a_oldmombasa` |
 //! | flood combat elite, infection, carrier; monitor | `04b_floodlab` |
 //! | flood combat human | `06a_sentinelwalls` |
+//! | fuel rod gun (`flak_cannon`) | `04b_floodlab`, else `08a_deltacliffs` |
 //!
 //! Crew and Sentinel actor variants use their own rebuilt units and graphs in `crate::roster`.
 
@@ -26,7 +27,20 @@ use map::{FourCC, Map};
 use crate::{Report, Result, invalid};
 
 /// The donor maps, in the order they are searched.
-pub const MAPS: [&str; 3] = ["03a_oldmombasa", "04b_floodlab", "06a_sentinelwalls"];
+///
+/// `08a_deltacliffs` is last: it holds the fuel rod gun (`flak_cannon`,
+/// the swap for Halo 1's plasma cannon, `crate::h2assets`) with its own
+/// tree, so a level whose weapon `04b_floodlab`'s copy doesn't bring still
+/// gets a retail one. V (disc scan, 2026-11-28): `weap`, `hlmt`, `mode` and
+/// `coll` of `flak_cannon` carry data in `04a_gasgiant`, `04b_floodlab`,
+/// `05b_deltatowers`, `07a_highcharity`, `07b_forerunnership` and
+/// `08a_deltacliffs`; `03a` and `06a` have none.
+pub const MAPS: [&str; 4] = [
+    "03a_oldmombasa",
+    "04b_floodlab",
+    "06a_sentinelwalls",
+    "08a_deltacliffs",
+];
 
 /// Retail maps to copy from: (name, file bytes).
 #[derive(Debug, Default, Clone)]

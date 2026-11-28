@@ -77,7 +77,11 @@ stores every index as an `i32` with bit 31 as the flag, Halo 2 packs 3D
 children into 24 bits and the rest into `u16` with bit 15 as the flag. The
 conversion copies planes and vertices bit for bit and re-encodes every
 index, refusing any that doesn't fit (no Halo 1 multiplayer map seen comes
-close: beavercreek has 5,033 nodes and 2,476 surfaces).
+close: beavercreek has 5,033 nodes and 2,476 surfaces). It also refuses by name a surface
+ring over 64 edges or a 3D tree deeper than 256 nodes, the Rust collision walk's
+bounds (`collision::check_bounds`, `Error::CollisionBound`; scenery pieces and
+the merged level are checked too). Nothing is split or trimmed. The per-map
+maxima over the disc are not measured yet.
 
 Halo 2 keeps a structure BSP's collision at `sbsp+0x14`: one `0x40`-byte
 element, the eight blocks of an object collision BSP without its leading

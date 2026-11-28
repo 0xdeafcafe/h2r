@@ -1181,6 +1181,9 @@ pub fn merge_scenery_collision(
         }
         scenery.solid += usize::from(joined);
     }
+    // The merged level as a whole, once: each piece was checked as it joined.
+    crate::collision::check_bounds(&p.collision)
+        .map_err(|e| Error::no_rebuild(&p.h1_name, "scenery collision", e.to_string()))?;
     Ok(())
 }
 
