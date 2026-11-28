@@ -481,10 +481,10 @@ fn install_collision(b: &mut Builder) {
     }
 }
 
-/// Entry I, `0x301800`: the walk in Rust ([`engine::sim_collision::mopp_ray::CollectorCast`]),
-/// each terminal's filter, collection child and child ray a guest call
-/// made at the interpreter's own stack depth, `ret 0x14` with the
-/// caller's callee-saved registers.
+/// Entry I, `0x301800`: the walk and every terminal's callbacks in Rust
+/// ([`engine::sim_collision::mopp_ray::CollectorCast::run`]), then `ret 0x14`
+/// with the caller's callee-saved registers. It makes no guest call: a
+/// callback with no port is `unimplemented!` naming its address.
 fn mopp_ray(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAbi, GuestFault> {
     use engine::sim_collision::{WORLD, mopp_ray::CollectorCast};
     if addr != points::COLLISION_MOPP_RAY.base {
@@ -502,61 +502,20 @@ fn mopp_ray(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAb
         WORLD.record::<()>(Entry::MoppRay, &Err(Bail::Env));
         collision_unhandled(Entry::MoppRay, Bail::Env, cpu);
     }
-    let cast = CollectorCast::begin(cpu, &mut *mem, &WORLD);
+    let g: &mut Guest = &mut mem;
+    let cast = CollectorCast::begin(cpu, g, &WORLD);
     WORLD.record(Entry::MoppRay, &cast);
-    let cast = match cast {
-        Ok(cast) => Box::new(cast),
+    let mut cast = match cast {
+        Ok(cast) => cast,
         Err(why) => collision_unhandled(Entry::MoppRay, why, cpu),
     };
     let entry = *cpu;
-    mopp_ray_step(cast, entry, cpu, ctx, &mut mem)
-}
-
-/// One step of the walk: make the next callback, or return from I.
-fn mopp_ray_step(
-    mut cast: Box<engine::sim_collision::mopp_ray::CollectorCast>,
-    entry: CpuAbi,
-    cpu: &mut CpuAbi,
-    ctx: &mut ExecCtx,
-    mem: &mut Guest,
-) -> Result<TransferAbi, GuestFault> {
-    let call = match cast.next(mem, cpu) {
-        Ok(call) => call,
+    if let Err(why) = cast.run(g, cpu) {
         // The setup and earlier callbacks have written guest memory.
-        Err(why) => collision_unhandled(Entry::MoppRay, why, cpu),
-    };
-    // The walk's float flags, as the callback or the caller sees them.
-    let raised = cast.raised();
-    cpu.mxcsr = raised.mxcsr;
-    cpu.x87.status |= raised.x87;
-    let Some(call) = call else {
-        (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp, cpu.esp) = (entry.ebx, entry.esi, entry.edi, entry.ebp, entry.esp);
-        return mem.ret(cpu, 0x14);
-    };
-    // Below the interpreter frames the callback would have run under.
-    cpu.esp = entry.esp.wrapping_sub(call.reserve);
-    for &a in call.args.iter().rev() {
-        cpu.esp = cpu.esp.wrapping_sub(4);
-        mem.set_u32(cpu.esp, a)?;
+        collision_unhandled(Entry::MoppRay, why, cpu);
     }
-    for (v, reg) in [
-        (call.eax, &mut cpu.eax),
-        (call.ecx, &mut cpu.ecx),
-        (call.edx, &mut cpu.edx),
-        (call.ebx, &mut cpu.ebx),
-        (call.esi, &mut cpu.esi),
-        (call.edi, &mut cpu.edi),
-    ] {
-        if let Some(v) = v {
-            *reg = v;
-        }
-    }
-    let origin = "collision: the MOPP ray's callback";
-    ctx.call_guest_named(cpu, mem, call.target, origin, move |cpu, ctx| {
-        let rt = Arc::clone(ctx.runtime());
-        let mut mem = rt.memory();
-        mopp_ray_step(cast, entry, cpu, ctx, &mut mem)
-    })
+    (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp, cpu.esp) = (entry.ebx, entry.esi, entry.edi, entry.ebp, entry.esp);
+    g.ret(cpu, 0x14)
 }
 
 /// `plan` with only the animation group's implementations and the
@@ -579,6 +538,20 @@ pub(crate) fn only_anim(plan: &mut hooks::Plan) {
 mod tests {
     use super::*;
     use hooks::{Base, Registry, Switches};
+
+    #[test]
+    fn the_mopp_ray_installer_makes_no_guest_call() {
+        // The needles are split so this test's own text cannot match them.
+        let source = include_str!("sim_native.rs");
+        let head = concat!("fn mopp", "_ray(cpu");
+        let body = source.split(head).nth(1).expect("the installer");
+        let body = &body[..body.find("\n}\n").expect("its end")];
+        assert!(body.contains(".run(g, cpu)"), "the callbacks run in Rust");
+        for call in [concat!("call", "_guest"), concat!("Guest", "Call"), concat!("mopp_ray", "_step")] {
+            assert!(!body.contains(call), "{call}");
+            assert!(!source.contains(&format!("fn {call}")), "{call}");
+        }
+    }
 
     #[test]
     fn hand_ports_install_where_no_subsystem_body_owns_the_point() {

@@ -16,29 +16,21 @@
 use std::collections::BTreeMap;
 
 use engine::entry::{Cx, EntryError, GuestCall};
+use engine::sim_sound::{playback, promotion};
 use engine::{GuestMemory, MemFault};
 use sim_sound::instances::{Handle, SourceParams, TagIndex};
 use sim_sound::owners::Owner;
 use sim_sound::starts::{Action, Component, DialogueRow, Mode, OwnerPoll, STARTED_TABLE, SOUND_TABLE, Start, StartOf, plan};
 
-use super::{NONE, START_GATE, START_RULE, Shared, lock, object_gone, sound_on, tick_of};
+use super::{NONE, START_GATE, Shared, lock, object_gone, sound_on, tick_of};
 use crate::sim_sound::{guest_tags, request};
 
-/// `0x21dd30(edi = sound tag, custom, &effect) -> al`: the custom playback
-/// row's effect, true when it has components. It reads tag data only.
-pub const EFFECT_OF: u32 = 0x0021_dd30;
-/// `0x18d090(ecx = sound tag, edx = custom) -> eax`: the custom playback
-/// row; its byte `+8` bit 0 sets the record's source word 0 bit 8.
-pub const PLAYBACK_ROW: u32 = 0x0018_d090;
 /// A request record's bytes (`0x126000` reads to `+0x9f`).
 pub const RECORD_SIZE: u32 = 0xa0;
 /// The bodies' frame below the entry `ESP`: the record a component's
-/// admission builds, then the gate's channel, the rule's out and the
-/// effect `0x21dd30` answers.
+/// admission builds, then the gate's channel.
 pub const FRAME: u32 = RECORD_SIZE + 0x10;
 const CHANNEL_AT: u32 = 0x10;
-const RULE_AT: u32 = 0xc;
-const EFFECT_AT: u32 = 8;
 /// One effect component (group, tag, gain, flags).
 const COMPONENT: u32 = 16;
 
@@ -79,41 +71,39 @@ fn slot(cx: &Cx, at: u32) -> u32 {
     cx.entry().esp.wrapping_sub(at)
 }
 
-/// `0x21dd30` for `tag` and `custom`: the effect, when it has components.
-async fn effect_of(cx: &Cx, table: &Shared, tag: u32, custom: u32) -> Result<Option<u32>, EntryError> {
-    let out = slot(cx, EFFECT_AT);
-    let found = cx.call(GuestCall::new(EFFECT_OF).edi(tag).args([custom, out]).reserve(FRAME)).await?.eax;
-    lock(table).ledger.entry_guest_calls += 1;
-    if found & 0xff == 0 {
-        return Ok(None);
-    }
-    Ok(cx.read(|m| {
-        let effect = m.u32(out).ok()?;
-        (m.u32(effect.wrapping_add(8)).ok()? != 0).then_some(effect)
-    }))
+/// `0x21dd30` for `tag` and `custom` ([`playback::effect_of`]): the
+/// effect, when it has components. A fault reading the tag data refuses
+/// the start as unreadable.
+fn effect_of(cx: &Cx, table: &Shared, tag: u32, custom: u32) -> Option<u32> {
+    cx.read(|m| playback::effect_of(m, tag, custom)).unwrap_or_else(|_| {
+        lock(table).ledger.refused_unreadable += 1;
+        None
+    })
 }
 
-/// The gate and the rule (guest, pool-free), then the record read and
-/// admitted: the handle, or [`NONE`] when the sound is off or any step
-/// refuses.
+/// The gate (guest, pool-free) and the rule (`0x126ec0`,
+/// [`promotion::select`]), then the record read and admitted: the handle,
+/// or [`NONE`] when the sound is off or any step refuses.
 pub(super) async fn gate_and_admit(cx: &Cx, table: &Shared, record: u32, tag: u32) -> Result<u32, EntryError> {
     if !cx.read(sound_on) {
         return Ok(NONE);
     }
-    let (channel, rule) = (slot(cx, CHANNEL_AT), slot(cx, RULE_AT));
+    let channel = slot(cx, CHANNEL_AT);
     let gate = cx.call(GuestCall::new(START_GATE).eax(record).args([tag, channel, 0]).reserve(FRAME)).await?.eax;
     lock(table).ledger.entry_guest_calls += 1;
     if gate & 0xff == 0 {
         return Ok(NONE);
     }
-    let refused = cx.call(GuestCall::new(START_RULE).ecx(tag).args([rule]).reserve(FRAME)).await?.eax;
-    lock(table).ledger.entry_guest_calls += 1;
-    if refused != 0 {
-        return Ok(NONE);
-    }
     Ok(cx.write(|m| {
+        let rule = match promotion::select(m, tag) {
+            Ok(r) if r.refused => return NONE,
+            Ok(r) => r.rule,
+            Err(_) => {
+                lock(table).ledger.refused_unreadable += 1;
+                return NONE;
+            }
+        };
         let channel = m.u32(channel).unwrap_or(0);
-        let rule = m.u32(rule).unwrap_or(NONE);
         let request = request::read(&*m, [tag, channel, record, rule]);
         let tick = tick_of(m).unwrap_or(0);
         lock(table).admit(m, request, tick)
@@ -149,13 +139,14 @@ pub(super) async fn start_record(cx: &Cx, table: &Shared) -> Result<u32, EntryEr
     let flags = cx.read(|m| m.u32(record))?;
     let custom = if flags & (1 << 8) != 0 { cx.read(|m| m.u32(record.wrapping_add(0x98)))? } else { NONE };
     let mut start = None;
-    if let Some(effect) = effect_of(cx, table, tag, custom).await? {
+    if let Some(effect) = effect_of(cx, table, tag, custom) {
         start = lock(table).sounds.start_new(Start::admitting(effect));
     }
     if let Some(h) = start {
-        let row = cx.call(GuestCall::new(PLAYBACK_ROW).ecx(tag).edx(custom).reserve(FRAME)).await?.eax;
-        lock(table).ledger.entry_guest_calls += 1;
+        // `0x18d090`'s row: its byte `+8` bit 0 sets the record's byte
+        // `+0xd` bit 0, source word 0 bit 8.
         let bound = cx.write(|m| -> Result<(), MemFault> {
+            let row = playback::playback_row(&*m, tag, custom)?;
             if row != 0 && m.u8(row.wrapping_add(8))? & 1 != 0 {
                 let byte = m.u8(record.wrapping_add(0xd))?;
                 m.set_u8(record.wrapping_add(0xd), byte | 1)?;
@@ -185,7 +176,7 @@ pub(super) async fn start_record(cx: &Cx, table: &Shared) -> Result<u32, EntryEr
 pub(super) async fn tag_start(cx: &Cx, table: &Shared) -> Result<u32, EntryError> {
     let e = cx.entry();
     let (tag, scale, word) = (e.ecx, f32::from_bits(e.xmm0 as u32), cx.arg(0)? as u16);
-    let Some(effect) = effect_of(cx, table, NONE, tag).await? else {
+    let Some(effect) = effect_of(cx, table, NONE, tag) else {
         return Ok(NONE);
     };
     let Some(h) = lock(table).sounds.start_new(Start::tag(effect, scale, word)) else {

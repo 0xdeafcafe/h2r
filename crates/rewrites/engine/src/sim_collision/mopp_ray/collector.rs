@@ -1,9 +1,9 @@
 //! Entry I's collector callbacks. The walk yields a terminal at its actual
 //! interpreter depth. That depth selects the guest stack scratch passed to
-//! the filter, collection and child; all three may run arbitrary guest code.
-//! The installer makes each call [`CollectorCast::next`] returns and hands
-//! back the CPU it returned with.
-use super::{Program, Read, X87_FREE, prepare, vec4};
+//! the filter, collection and child. [`CollectorCast::next`] describes each
+//! call; [`CollectorCast::run`] answers every one in Rust
+//! ([`super::callbacks`]), by the address its vtable slot resolves to.
+use super::{Program, Read, X87_FREE, callbacks, prepare, vec4};
 use crate::sim_collision::{
     CollisionMemory,
     layout::{self, mopp_ray as l},
@@ -120,10 +120,11 @@ enum Resume {
     Ray,
 }
 
-/// Entry I in Rust. A caller drives each returned guest call exactly once
-/// and supplies the returned CPU on resumption. A decline after a callback
-/// has run cannot hand the query back to the lifted entry: the installer
-/// names it (`collision: mopp_ray: <cause>`).
+/// Entry I in Rust. [`CollectorCast::run`] makes every callback itself. A
+/// test can instead drive each call [`CollectorCast::next`] returns exactly
+/// once and supply the returned CPU on resumption. A decline after a
+/// callback has run cannot hand the query back to the lifted entry: the
+/// installer names it (`collision: mopp_ray: <cause>`).
 pub struct CollectorCast {
     vm: u32,
     entry_sp: u32,
@@ -188,6 +189,27 @@ impl CollectorCast {
         let call = self.method(g, collection, l::COLLECTION_CHILD, t)?;
         self.resume = Resume::Child(t);
         Ok(call.eax(collection).args([t.key, t.sp + 0xa0]))
+    }
+
+    /// The walk to its end, each callback run in Rust
+    /// ([`callbacks::call`]). `cpu` is the CPU at I's entry; it leaves with
+    /// the MXCSR the callbacks' SSE raised and the last callee's EAX. A
+    /// callback with no port is `unimplemented!` naming its address.
+    pub fn run(&mut self, g: &mut impl CollisionMemory, cpu: &mut CpuAbi) -> Result<(), Bail> {
+        while let Some(call) = self.next(g, cpu)? {
+            // Each callback runs under the flags the walk has raised.
+            self.raise_into(cpu);
+            cpu.eax = callbacks::call(g, cpu, &call)?;
+        }
+        self.raise_into(cpu);
+        Ok(())
+    }
+
+    /// The walk's float flags, as the callback or the caller sees them.
+    fn raise_into(&self, cpu: &mut CpuAbi) {
+        let raised = self.raised();
+        cpu.mxcsr = raised.mxcsr;
+        cpu.x87.status |= raised.x87;
     }
 
     /// The first call ignores EAX. Thereafter EAX is the register returned

@@ -104,7 +104,7 @@ and what sim mode does with it:
 
 | What the render writes that the sim reads | Census class | In sim mode |
 |---|---|---|
-| **Frame timing**: the frame wait writes the vblank count at the wait (`0x004e63a8..`), which frame timing turns into `dt` | (c), tick-visible | **Kept.** The frame wait runs on the game thread at every frame (`call_guest` to `0x0012b2e0`, the D3D layer's clocked wait), as the prototype's launch does. Without it `dt` is wrong. |
+| **Frame timing**: the frame wait writes the vblank count at the wait (`0x004e63a8..`), which frame timing turns into `dt` | (c), tick-visible | **Made in Rust.** A skipped frame makes the wait's writes and registers itself (`engine::render_loop::frame_wait`, from `sim_bridge::sim_frame`) and yields its slice to the kernel (`NtYieldExecution`) between checks, so the clocked vblank source moves the counter. Without it `dt` is wrong. |
 | **Present counter** `0x00485aa0` (64-bit), added to by `rasterizer_present`; the tick's effect code reads it | (b) | **Made in Rust**: +1 per skipped frame (`engine::render_loop::tick_writes`, the render frame step's source too), checked on rendered frames ([below](#render_every)) |
 | **Render-frame counter** `0x004ba034`, added to per `render_views`; the particle update reads it | (b), cosmetic | **Made in Rust**: +1 per skipped frame |
 | One-shot byte `0x004e6098` the render clears per view, the sim sets | (c) | **Made in Rust**: cleared per skipped frame |
@@ -190,7 +190,8 @@ What it changes (**Code**, `crates/extensions/game/src/sim_glue.rs`,
    feature implements `RENDER_FRAME` (`0x00223240`). At each entry it
    decides as the prototype does (the world path, the countdowns,
    `render_every`). Not skipping: the generated original. Skipping: the
-   frame wait on the game thread, then the tick writes from the table above,
+   frame wait in Rust on the game thread (yielding to the kernel until
+   the vblank), then the tick writes from the table above,
    then a plain `ret`. Every other feature's hooks on `RENDER_FRAME` (the
    bots' pads before it, their views back after it) run as they would
    around the original. The host's present count (`d3d_diag::presents`,

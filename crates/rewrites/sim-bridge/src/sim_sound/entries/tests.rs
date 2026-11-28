@@ -14,6 +14,14 @@ const TIME: u32 = 0x0052_0000;
 const SEEDS: u32 = 0x0052_0100;
 const GLOBALS: u32 = TIME + 0x2800;
 const RECORD: u32 = 0x0060_0000;
+/// The map's tag entries and tag data ([`guest`], [`with_effect`]).
+const TAGS: u32 = 0x0062_0000;
+const SOUND_DEF: u32 = TAGS + 0x100;
+const GESTALT_AT: u32 = TAGS + 0x200;
+const BANKS: u32 = TAGS + 0x300;
+const LIST_DEF: u32 = TAGS + 0x400;
+const LIST_ROWS: u32 = TAGS + 0x500;
+const SCENARIO_AT: u32 = TAGS + 0x800;
 const TAG: TagIndex = TagIndex(0xe100_0001);
 
 /// Levels that name their source as not ready.
@@ -52,6 +60,10 @@ fn guest(tick: u32) -> FakeGuest {
         g.put_u8(GLOBALS + o, 1);
     }
     g.put_u32(points::OBJECTS.base, TIME + 0x2000);
+    // The map's tags: tag 1 ([`TAG`]) of no group yet, its definition with
+    // bank 0 and no promotion.
+    g.map(TAGS, 0x1000).put_u32(points::TAG_ENTRIES.base, TAGS).put_u32(TAGS + 16 + 8, SOUND_DEF);
+    g.put_u8(SOUND_DEF + 0xc, 0xff).put_u8(SOUND_DEF + 0xd, 0);
     g
 }
 
@@ -175,6 +187,29 @@ fn the_sound_phase_runs_once_per_tick_number() {
 }
 
 #[test]
+fn a_units_line_end_clears_its_line_slot_with_no_guest_call() {
+    // Object 5, salt 1, a biped; its dialogue state at +0x100.
+    const UNIT: u32 = 0x0001_0005;
+    let (objects, headers, object, dialogue) = (TIME + 0x2000, TIME + 0x3000, TIME + 0x3400, TIME + 0x3800);
+    let t = table(Arc::new(Flat(10.0)));
+    let h = lock(&t).sounds.admit(&mut Rng::new(7), &tags(), Request { owner: Owner::Unit(UNIT), selection: Some((0, 0)), level: 10.0, ..Request::new(TAG) }, 0).unwrap();
+    let mut g = guest(3);
+    g.put_u32(objects + 0x38, 16).put_u32(objects + 0x24, 12).put_u32(objects + 0x44, headers);
+    g.put_u16(headers + 5 * 12, 1).put_u32(headers + 5 * 12 + 8, object);
+    g.put_u16(object + 0x33e, 0x100).put_u32(object + 0x100 + 0x38, TAG.0);
+    g.put_u32(units::DIALOGUE, dialogue).put_u8(dialogue + units::DIALOGUE_ON, 1);
+    let t2 = Arc::clone(&t);
+    let f = move |cx: Cx| -> EntryFuture {
+        let t = Arc::clone(&t2);
+        Box::pin(async move { phase(&cx, &t).await })
+    };
+    let r = entry::testing::run(&f, g, regs(), |c, _| panic!("no guest call: {:#x}", c.target));
+    assert_eq!(r.result, Ok(Ret::new(0, 0)));
+    assert!(!lock(&t).sounds.live(h), "100 ms plays out on tick 3");
+    assert_eq!(r.guest.u32(object + 0x100 + 0x38), Ok(NONE), "the unit forgot its line");
+}
+
+#[test]
 fn the_hash_is_the_same_with_any_host() {
     // Object 5 is live: index 5 of a 16-row array, salt 1.
     const UNIT: u32 = 0x0001_0005;
@@ -265,14 +300,9 @@ fn start(levels: Arc<dyn Levels + Send + Sync>, gate: u32) -> (Shared, entry::te
     record(&mut g);
     let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, move |c, m| {
         match c.target {
-            start_layer::EFFECT_OF => Regs::default(),
             START_GATE => {
                 m.set_u32(c.args[1], 3).unwrap();
                 Regs { eax: gate, ..Default::default() }
-            }
-            START_RULE => {
-                m.set_u32(c.args[0], u32::MAX).unwrap();
-                Regs::default()
             }
             other => panic!("unexpected call {other:#x}"),
         }
@@ -291,19 +321,11 @@ fn a_start_record_is_admitted_into_the_table() {
     let mut g = with_tag(guest(4));
     record(&mut g);
     let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, |c, m| match c.target {
-        // The sound's custom playback row has no effect: no start row.
-        start_layer::EFFECT_OF => {
-            assert_eq!((c.edi, c.args[0]), (Some(TAG.0), NONE));
-            Regs::default()
-        }
+        // The sound's tag is of no group: no effect, no start row.
         START_GATE => {
             assert_eq!((c.eax, c.args[0]), (Some(RECORD), TAG.0));
             m.set_u32(c.args[1], 3).unwrap();
             Regs { eax: 1, ..Default::default() }
-        }
-        START_RULE => {
-            m.set_u32(c.args[0], u32::MAX).unwrap();
-            Regs::default()
         }
         other => panic!("unexpected call {other:#x}"),
     });
@@ -314,8 +336,34 @@ fn a_start_record_is_admitted_into_the_table() {
     assert_eq!((i.tag, i.start, i.options.channel), (TAG, 4, 3));
     assert_eq!(t.ledger.draws, 2, "the gain and pitch draws");
     assert_ne!(r.guest.u32(SEEDS + 4), Ok(0x1234_5678), "the seed word moved");
-    assert_eq!(t.ledger.entry_guest_calls, 3);
+    assert_eq!(t.ledger.entry_guest_calls, 1, "the gate");
     assert!(t.sounds.starts().is_empty());
+}
+
+#[test]
+fn a_start_in_its_promotions_cooldown_is_refused_by_the_rule_in_rust() {
+    let t = table(Arc::new(Flat(10.0)));
+    let mut g = with_tag(guest(4));
+    record(&mut g);
+    // Promotion 0: one enabled rule, threshold 5, active and cooling down
+    // to clock 50; the clock is 10.
+    let (p, rules, counters) = (TAGS + 0x900, TAGS + 0xa00, TAGS + 0xb00);
+    g.put_u8(SOUND_DEF + 0xc, 0).put_u32(GESTALT, GESTALT_AT).put_u32(GESTALT_AT + 0x4c, p);
+    g.put_u32(p, 1).put_u32(p + 4, rules).put_u32(p + 8, 1).put_u32(p + 0xc, counters);
+    g.put_u32(p + 0x10, 0).put_u32(p + 0x18, 50);
+    g.put_u16(rules + 2, 1).put_u32(rules + 8, 5);
+    g.put_u32(GLOBALS + 0x84, 10);
+    let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, |c, m| match c.target {
+        START_GATE => {
+            m.set_u32(c.args[1], 3).unwrap();
+            Regs { eax: 1, ..Default::default() }
+        }
+        other => panic!("unexpected call {other:#x}"),
+    });
+    assert_eq!(r.result.unwrap().eax, NONE);
+    assert!(lock(&t).sounds.instances().is_empty());
+    assert_eq!(r.guest.u32(p + 0x14), Ok(10), "the rule kept the clock it saw");
+    assert_eq!(lock(&t).ledger.refused_unreadable, 0);
 }
 
 #[test]
@@ -329,7 +377,7 @@ fn a_start_refuses_by_name_when_its_levels_do() {
     // A closed gate admits nothing and calls no rule.
     let (t, r) = start(Arc::new(Flat(10.0)), 0);
     assert_eq!(r.result.unwrap().eax, NONE);
-    assert_eq!(r.calls.iter().map(|c| c.target).collect::<Vec<_>>(), [start_layer::EFFECT_OF, START_GATE]);
+    assert_eq!(r.calls.iter().map(|c| c.target).collect::<Vec<_>>(), [START_GATE]);
     assert!(lock(&t).sounds.instances().is_empty());
 }
 
@@ -379,6 +427,19 @@ fn the_environment_and_the_first_listener_are_the_guests_words() {
     g.put_u8(listener + sg::LISTENER_ACTIVE, 1);
     let r = run_body(&t, Body::FirstListener, g, regs(), |_, _| Regs::default());
     assert_eq!(r.result, Ok(Ret::new(listener, 0)));
+}
+
+#[test]
+fn a_pause_records_the_kernel_tick_count_with_no_guest_call() {
+    let t = table(Arc::new(Flat(10.0)));
+    let mut g = guest(0);
+    let ticks = TIME + 0x3000;
+    g.put_u32(engine::sim_sound::clock::TICK_COUNT_IMPORT, ticks).put_u32(ticks, 98_765).put_u8(GLOBALS + sg::PAUSED, 1);
+    let r = run_body(&t, Body::Paused, g, Regs { eax: 1, ..regs() }, |c, _| panic!("no guest call: {:#x}", c.target));
+    assert_eq!(r.result, Ok(Ret::new(0, 0)));
+    assert_eq!(r.guest.u8(GLOBALS + sg::PAUSED), Ok(0));
+    assert_eq!(r.guest.u32(GLOBALS + sg::PAUSE_TIME), Ok(98_765));
+    assert_eq!(r.guest.u8(GLOBALS + sg::BUSY), Ok(0));
 }
 
 #[test]
@@ -482,23 +543,34 @@ fn a_stop_frees_a_loop_that_holds_no_sound_at_once() {
 }
 
 #[test]
-fn the_ambience_runs_the_guests_blend_with_its_candidates() {
+fn the_ambience_blends_its_slots_toward_the_candidates_with_no_guest_call() {
+    use engine::sim_sound::ambience::{FLOOR, FRAME_TIME, FULL, PAIR_SCALE, SLOTS};
     let t = table(Arc::new(Flat(10.0)));
-    let mut called = Vec::new();
-    let r = run_body(&t, Body::Ambience, guest(0), Regs { eax: RECORD, ..regs() }, |call, _| {
-        called.push((call.target, call.eax));
-        Regs::default()
-    });
+    let mut g = guest(0);
+    g.put_f32(FLOOR, 0.0).put_f32(PAIR_SCALE, 2.0).put_f32(FULL, 1.0).put_f32(GLOBALS + FRAME_TIME, 0.1);
+    // Candidate 0: id 7 over 1 s; candidate 1 and both slots empty.
+    g.put_f32(RECORD, 1.0).put_u32(RECORD + 8, 7).put_u32(RECORD + 0x1c + 8, NONE);
+    g.put_u32(GLOBALS + SLOTS + 8, NONE).put_u32(GLOBALS + SLOTS + 0x1c + 8, NONE);
+    let r = run_body(&t, Body::Ambience, g, Regs { eax: RECORD, ..regs() }, |c, _| panic!("no guest call: {:#x}", c.target));
     assert_eq!(r.result, Ok(Ret::new(0, 0)));
-    assert_eq!(called, [(0x0012_6660, Some(RECORD))]);
-    assert_eq!(lock(&t).ledger.entry_guest_calls, 1);
+    assert_eq!(r.guest.u32(GLOBALS + SLOTS + 0x1c + 8), Ok(7), "the last free slot");
+    assert_eq!(r.guest.f32(GLOBALS + SLOTS + 0x1c + 4), Ok(0.1));
 }
 
 const EFFECT: u32 = RECORD + 0x800;
-const CUSTOM: u32 = 0xe400_0009;
+/// A custom playback word: row 9 of the scenario's list (kind 2).
+const CUSTOM: u32 = (2 << 30) | 9;
 
-/// An effect in the map: its components (group, tag, gain, flags).
+/// An effect in the map: its components (group, tag, gain, flags). Both
+/// [`TAG`]'s bank row (now a `snd!`) and [`CUSTOM`]'s row name it.
 fn with_effect(g: &mut FakeGuest, parts: &[(u32, TagIndex, f32, u32)]) {
+    g.put_u32(TAGS + 16, engine::sim_sound::playback::SOUND_GROUP);
+    g.put_u32(GESTALT, GESTALT_AT).put_u32(GESTALT_AT + 0x34, BANKS);
+    g.put_u32(points::SCENARIO.base, SCENARIO_AT).put_u32(SCENARIO_AT + 0x324, 3);
+    g.put_u32(TAGS + 3 * 16 + 8, LIST_DEF).put_u32(LIST_DEF + 4, LIST_ROWS);
+    for row in [BANKS, LIST_ROWS + 9 * 0x38 + 4] {
+        g.put_u32(row + 0x2c, 1).put_u32(row + 0x30, EFFECT);
+    }
     g.put_u32(EFFECT + 8, parts.len() as u32).put_u32(EFFECT + 0xc, EFFECT + 0x10);
     for (i, (group, tag, gain, flags)) in parts.iter().enumerate() {
         let c = EFFECT + 0x10 + 16 * i as u32;
@@ -506,24 +578,15 @@ fn with_effect(g: &mut FakeGuest, parts: &[(u32, TagIndex, f32, u32)]) {
     }
 }
 
-/// The start layer's guest calls: the effect found, every gate open, no
-/// rule, no custom playback row. The gates' records' flags, in order.
+/// The start layer's guest calls: every gate open. The gates' records'
+/// flags, in order.
 fn start_layer_guest(gates: &mut Vec<(u32, u32)>, open: bool) -> impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs + '_ {
     move |c, m| match c.target {
-        start_layer::EFFECT_OF => {
-            m.set_u32(c.args[1], EFFECT).unwrap();
-            Regs { eax: 1, ..Default::default() }
-        }
-        start_layer::PLAYBACK_ROW => Regs::default(),
         START_GATE => {
             let record = c.eax.unwrap();
             gates.push((m.u32(record).unwrap(), m.u32(record + 0x58).unwrap()));
             m.set_u32(c.args[1], 3).unwrap();
             Regs { eax: u32::from(open), ..Default::default() }
-        }
-        START_RULE => {
-            m.set_u32(c.args[0], u32::MAX).unwrap();
-            Regs::default()
         }
         other => panic!("unexpected call {other:#x}"),
     }
@@ -541,8 +604,6 @@ fn a_tag_start_admits_its_sound_and_starts_its_loop_on_its_own_handle() {
     let ret = r.result.unwrap();
     assert_eq!(ret.pop, 4);
     let start = Handle::from_raw(ret.eax);
-    assert_eq!(r.calls[0].edi, Some(NONE), "a tag start has no sound tag");
-    assert_eq!(r.calls[0].args[0], CUSTOM);
     // The component's record: flags 0x95 with bit 5, the start's table.
     assert_eq!(gates, [(0xb5, STARTED_TABLE)]);
     let t = lock(&t);

@@ -16,6 +16,7 @@
 //!
 //! Every address here is a research point from the read; no game data.
 
+pub mod frame_wait;
 pub mod layer;
 pub mod world_lightmap;
 pub mod world_registers;

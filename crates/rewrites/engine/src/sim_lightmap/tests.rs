@@ -167,3 +167,84 @@ fn only_the_two_tick_reads_are_filled() {
     assert_eq!(Site::of(0x0017_b61f), Some(Site::New));
     assert_eq!(Site::of(0x0004_ba21), None);
 }
+
+/// The record get's world: object `OBJECT` (index 2) with body `BODY`,
+/// and a two-record cache.
+mod record {
+    use super::*;
+    use crate::{FlatMemory, GuestMemory};
+    use crate::datum::layout;
+
+    const OBJECT: u32 = 0x0001_0002;
+    const HEADERS: u32 = 0x2000;
+    const BODY: u32 = 0x3000;
+    const ARRAY: u32 = 0x1_0000;
+    const BITMAP: u32 = 0x1_0100;
+    const DATA: u32 = 0x1_1000;
+    const STACK: u32 = 0x8_0000;
+
+    fn world() -> FlatMemory {
+        let mut m = FlatMemory::new(0, 0x60_0000);
+        m.set_u32(0x004e_0300, 0x1000).unwrap();
+        m.set_u32(0x1000 + 0x44, HEADERS).unwrap();
+        m.set_u32(HEADERS + 2 * 12 + 8, BODY).unwrap();
+        m.set_u32(BODY + 0xcc, u32::MAX).unwrap();
+        m.set_u32(RECORDS, ARRAY).unwrap();
+        m.set_u32(ARRAY + layout::MAXIMUM_COUNT, 2).unwrap();
+        m.set_u32(ARRAY + layout::ELEMENT_SIZE, 0x100).unwrap();
+        m.set_u32(ARRAY + layout::DATA, DATA).unwrap();
+        m.set_u32(ARRAY + layout::BITMAP, BITMAP).unwrap();
+        m.set_u32(STACK, 0x0017_96e2).unwrap();
+        m.set_u32(STACK + 4, OBJECT).unwrap();
+        m
+    }
+
+    fn cpu() -> CpuAbi {
+        let mut c = CpuAbi::default();
+        c.esp = STACK;
+        c.ebx = 0x11;
+        c.esi = 0x22;
+        c.edi = 0x33;
+        c.ebp = 0x44;
+        c.mxcsr = 0x1f80;
+        c.x87.control = 0x027f;
+        c
+    }
+
+    #[test]
+    fn the_objects_own_record_comes_back_as_ret_4_leaves_it() {
+        let mut m = world();
+        let handle = 0x8001_0001;
+        m.set_u32(BODY + 0xcc, handle).unwrap();
+        m.set_u32(DATA + 0x100 + 4, OBJECT).unwrap();
+        let mut c = cpu();
+        let ret = record_call(&mut c, &mut m).unwrap();
+        assert_eq!(ret, 0x0017_96e2);
+        assert_eq!(c.eax, handle);
+        assert_eq!(c.esp, STACK + 8);
+        assert_eq!((c.ebx, c.esi, c.edi, c.ebp), (0x11, 0x22, 0x33, 0x44));
+    }
+
+    #[test]
+    fn a_full_cache_with_nothing_old_enough_gives_none() {
+        let mut m = world();
+        m.set_u32(ARRAY + layout::HIGH_WATER, 2).unwrap();
+        m.set_u32(ARRAY + layout::ACTIVE_COUNT, 2).unwrap();
+        m.set_u32(BITMAP, 0b11).unwrap();
+        for i in 0..2u32 {
+            let entry = DATA + 0x100 * i;
+            m.set_u16(entry, 0x8001 + i as u16).unwrap();
+            m.set_u32(entry + 4, 0x0005_0009).unwrap();
+            m.set_u32(entry + 0xc, 100).unwrap();
+        }
+        // Frame 100: both records are 0 frames old, under the floor.
+        m.set_u32(0x004b_a034, 100).unwrap();
+        m.set_f32(0x0044_09d4, 10.0).unwrap();
+        m.set_f32(0x0045_dccc, 1000.0).unwrap();
+        let mut c = cpu();
+        record_call(&mut c, &mut m).unwrap();
+        assert_eq!(c.eax, u32::MAX);
+        assert_eq!(c.esp, STACK + 8);
+        assert_eq!(m.u32(BODY + 0xcc).unwrap(), u32::MAX);
+    }
+}

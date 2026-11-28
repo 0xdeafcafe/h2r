@@ -25,6 +25,8 @@ use std::time::Instant;
 
 use engine::entry::{Cx, EntryResult, GuestCall, Ret};
 use engine::points::{self, Point};
+use engine::sim_sound::clock::system_time;
+use engine::sim_sound::units;
 use engine::{GuestMemory, MemFault};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use sim_sound::chooser;
@@ -56,23 +58,12 @@ pub fn on(switches: &hooks::Switches) -> bool {
 const NONE: u32 = u32::MAX;
 /// `[0x4e6378]`: the channel array the create body leaves 0.
 pub const CHANNELS: u32 = 0x004e_6378;
-/// `[0x4ed28c] + 0x29`: dialogue is on (`0x18c8c0`'s gate).
-pub const DIALOGUE: u32 = 0x004e_d28c;
-pub const DIALOGUE_ON: u32 = 0x29;
-/// `0xbadc0(eax = object, 3)`: the object is a unit.
-pub const OBJECT_IS: u32 = 0x000b_adc0;
-/// `0xd0dc0(eax = unit, tag)`: the unit's line ended.
-pub const UNIT_LINE_ENDED: u32 = 0x000d_0dc0;
 /// `0x18c6a0(owner, payload, tag, range, permutation, seconds)`: the unit's
 /// mouth (`ret 0x18`). It tests the unit itself and reads no payload.
 pub const UNIT_MOUTH: u32 = 0x0018_c6a0;
 /// `0x126c30(eax = record, tag, &channel, _) -> al`: the start gate. It
 /// reads the class state and no pool (`h2 disasm 0x126c30`).
 pub const START_GATE: u32 = 0x0012_6c30;
-/// `0x126ec0(ecx = tag, &rule) -> eax`: the promotion rule, 0 to start.
-pub const START_RULE: u32 = 0x0012_6ec0;
-/// `0x3314b0`: the system time the pause records at sound globals `+0x80`.
-pub const SYSTEM_TIME: u32 = 0x0033_14b0;
 /// The stop's fade (`0x1263e5`: 300 ms at instance `+0xb4`).
 pub const STOP_FADE_MS: u32 = 300;
 /// Sound globals: sound on (`+0x78`, `+0x79`, `+0x7a`), paused (`+0x7b`),
@@ -105,9 +96,9 @@ pub enum Body {
     Service,
     /// `0x125f10`: nothing in the sim; the clip source decodes on demand.
     Prefetch,
-    /// `0x21d110`: a start row for the sound's effect, the gate and rule,
-    /// [`super::request::read`] and `admit`, then the row's `Mode::Start`
-    /// ([`start_layer::start_record`]).
+    /// `0x21d110`: a start row for the sound's effect, the gate (guest) and
+    /// the rule, [`super::request::read`] and `admit`, then the row's
+    /// `Mode::Start` ([`start_layer::start_record`]).
     StartRecord,
     /// `0x21d390`: the start rows' walk ([`start_layer::starts_update`]).
     StartsUpdate,
@@ -121,10 +112,10 @@ pub enum Body {
     Stop,
     /// `0x126400`: every sound finished with [`Reason::Cleared`].
     StopAll,
-    /// `0x126660`: the guest's blend of the two background ambience slots
-    /// (sound globals `+0x1a8`, `0x1c` bytes each) toward the candidates;
-    /// it reads no pool or channel global, and the listener math reads the
-    /// slots.
+    /// `0x126660`: the blend of the two background ambience slots (sound
+    /// globals `+0x1a8`, `0x1c` bytes each) toward the candidates
+    /// ([`engine::sim_sound::ambience::blend`]); the listener math reads
+    /// the slots.
     Ambience,
     /// `0x1272c0`: the environment words of the sound globals.
     Environment,
@@ -162,7 +153,7 @@ impl Body {
 
     /// The body calls the guest function it replaces (pool-free work).
     fn calls_original(self) -> bool {
-        matches!(self, Body::Create | Body::Drop | Body::Listeners | Body::Ambience)
+        matches!(self, Body::Create | Body::Drop | Body::Listeners)
     }
 }
 
@@ -236,7 +227,7 @@ pub struct SoundLedger {
     /// Named refusals ([`Body::refusal`]) by entry address.
     pub refused_entry: BTreeMap<u32, u64>,
     /// Guest calls the bodies make: the original create, dispose and
-    /// listener math, the start gate and rule, the pause time.
+    /// listener math, and the start gate.
     pub entry_guest_calls: u64,
     /// Loop starts the full loop pool refused (`sound.loops_full`).
     pub loops_full: u64,
@@ -324,7 +315,6 @@ impl Table {
             ("sound.rejected_full", c.rejected_full),
             ("sound.refused_no_length", c.refused_no_length),
             ("sound.draws", l.draws),
-            ("sound.owner_guest_calls", l.owner.guest_calls),
             ("sound.owner_guest_writes", l.owner.guest_writes),
             ("sound.pool_reads", l.pool_reads),
             ("sound.unported_entries", l.unported_entries),
@@ -435,18 +425,15 @@ fn permutation_at(m: &dyn GuestMemory, tag: TagIndex, selection: Selection) -> R
     Ok(m.u32(gestalt.wrapping_add(0x2c))?.wrapping_add(16u32.wrapping_mul(permutation as u32)))
 }
 
-/// Make the unit calls the step queued: a line's end through `0x18c8c0`'s
-/// gate and unit test, a mouth through `0x18c6a0`.
+/// Make the unit calls the step queued, in its order: a line's end
+/// through `0x18c8c0`'s gate and unit test ([`units::line_end`]), a mouth
+/// through `0x18c6a0`.
 async fn unit_calls(cx: &Cx, table: &Shared, calls: Vec<UnitCall>) -> Result<(), engine::entry::EntryError> {
     for call in calls {
         match call {
             UnitCall::LineEnded { object, tag } => {
-                let on = cx.read(|m| m.u32(DIALOGUE).and_then(|d| m.u8(d.wrapping_add(DIALOGUE_ON)))).unwrap_or(0) != 0;
-                if !on {
-                    continue;
-                }
-                if cx.call(GuestCall::new(OBJECT_IS).eax(object).args([3])).await?.eax != 0 {
-                    cx.call(GuestCall::new(UNIT_LINE_ENDED).eax(object).args([tag.0])).await?;
+                if cx.write(|m| units::line_end(m, object, tag.0)).is_err() {
+                    lock(table).ledger.refused_unreadable += 1;
                 }
             }
             UnitCall::Mouth { object, tag, selection, ticks } => {
@@ -486,7 +473,6 @@ fn with_units<T>(
         host.gone = gone;
         let out = f(&mut t, &mut host, tick);
         let (calls, counters) = (std::mem::take(&mut host.calls), host.counters);
-        t.ledger.owner.guest_calls += counters.guest_calls;
         t.ledger.owner.guest_writes += counters.guest_writes;
         Ok((out, calls))
     })
@@ -904,9 +890,10 @@ fn first_listener(m: &dyn GuestMemory) -> Result<u32, MemFault> {
     Ok(0)
 }
 
-/// `0x125a90`: the paused byte and, on a pause, the time it began. The
-/// channel calls are the host's and are not made.
-async fn paused(cx: &Cx, table: &Shared) -> EntryResult {
+/// `0x125a90`: the paused byte and, on a pause, the time it began
+/// (`0x3314b0`, [`system_time`]). The channel calls are the host's and are
+/// not made.
+fn paused(cx: &Cx) -> EntryResult {
     let paused = cx.entry().eax;
     let g = cx.read(|m| m.u32(points::SOUND_GLOBALS.base))?;
     let flag = u8::from(paused == 0);
@@ -918,9 +905,10 @@ async fn paused(cx: &Cx, table: &Shared) -> EntryResult {
         m.set_u8(g.wrapping_add(sg::PAUSED), flag)
     })?;
     if paused == 1 {
-        let now = cx.call(GuestCall::new(SYSTEM_TIME)).await?.eax;
-        lock(table).ledger.entry_guest_calls += 1;
-        cx.write(|m| m.set_u32(g.wrapping_add(sg::PAUSE_TIME), now))?;
+        cx.write(|m| {
+            let now = system_time(&*m)?;
+            m.set_u32(g.wrapping_add(sg::PAUSE_TIME), now)
+        })?;
     }
     cx.write(|m| m.set_u8(g.wrapping_add(sg::BUSY), 0))?;
     Ok(Ret::new(0, 0))
@@ -936,16 +924,6 @@ fn range_word(m: &dyn GuestMemory, range: u32, tag: u32) -> Result<u32, MemFault
         0xffff => NONE,
         w => u32::from(w),
     })
-}
-
-/// `0x2194a0`: tag `+0xd` is the bank, `0xff` for none.
-fn promotion_bank(m: &dyn GuestMemory, tag: u32) -> Result<u32, MemFault> {
-    let bank = m.u8(tag.wrapping_add(0xd))?;
-    if bank == 0xff {
-        return Ok(0);
-    }
-    let banks = m.u32(m.u32(GESTALT)?.wrapping_add(0x34))?;
-    Ok(banks.wrapping_add((bank as i8 as i32 * 0x34) as u32))
 }
 
 /// The entry's empty answer: its return value and argument bytes.
@@ -1003,7 +981,8 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
             Ok(Ret::new(0, 4))
         }
         Body::Ambience => {
-            original(&cx, &table, entry, &busy).await?;
+            let candidates = cx.entry().eax;
+            cx.write(|m| engine::sim_sound::ambience::blend(m, candidates))?;
             Ok(Ret::new(0, 0))
         }
         Body::Service => {
@@ -1036,12 +1015,12 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
             Ok(Ret::new(0, 0))
         }
         Body::FirstListener => Ok(Ret::new(cx.read(first_listener)?, 0)),
-        Body::Paused => paused(&cx, &table).await,
+        Body::Paused => paused(&cx),
         Body::Choose => choose(&cx, &table).await,
         Body::Pick => pick(&cx, &table).await,
         Body::PromotionBank => {
             let tag = cx.entry().eax;
-            Ok(Ret::new(cx.read(|m| promotion_bank(m, tag))?, 0))
+            Ok(Ret::new(cx.read(|m| engine::sim_sound::playback::bank_row(m, tag))?, 0))
         }
         Body::LoopUpdate => {
             let args = [cx.arg(0)?, cx.arg(1)?, cx.arg(2)?, cx.arg(3)?, cx.arg(4)?, cx.arg(5)?, cx.arg(6)?, cx.arg(7)?];
