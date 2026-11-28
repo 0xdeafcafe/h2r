@@ -41,36 +41,6 @@ pub fn on(_: &hooks::Switches) -> bool {
     true
 }
 
-/// The HUD's widget quads drawn with their material read in Rust, the
-/// guest's shader setup and draw left out once a shader is proven
-/// (docs/graphics/native-hud-overlay.md, "The material in Rust"): on
-/// with the native UI, `impl.render.native-hud=off` turns it off.
-pub const RUST_HUD: &str = "impl.render.native-hud";
-
-/// Whether the Rust HUD material ([`RUST_HUD`]) is on.
-pub fn rust_hud_on(switches: &hooks::Switches) -> bool {
-    on(switches) && switches.feature("impl.render.native-hud", true)
-}
-
-/// The HUD's bitmap, text and screen-effect widgets laid out in Rust and
-/// drawn with no guest draw once proven (docs/graphics/native-hud-overlay.md, "The walk in
-/// Rust"): on with the Rust HUD material, `impl.render.native-hud-walk=off`
-/// turns it off.
-pub const HUD_WALK: &str = "impl.render.native-hud-walk";
-
-/// Whether the Rust HUD walk ([`HUD_WALK`]) is on.
-pub fn hud_walk_on(switches: &hooks::Switches) -> bool {
-    rust_hud_on(switches) && switches.feature("impl.render.native-hud-walk", true)
-}
-
-static RUST_HUD_PLACED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Whether this run placed the Rust HUD's hooks: the host checks each
-/// captured widget quad against its Rust material only then.
-pub fn rust_hud() -> bool {
-    RUST_HUD_PLACED.load(std::sync::atomic::Ordering::Relaxed)
-}
-
 pub use points::scene_effects::HUD_QUAD_SETUP;
 
 use points::scene_effects::HUD_QUAD_READY;
@@ -869,26 +839,20 @@ impl Feature for NativeHud {
             }
             Ok(Flow::Continue)
         }).context_only().optional();
-        let rust = rust_hud_on(b.switches());
-        RUST_HUD_PLACED.store(rust, std::sync::atomic::Ordering::Relaxed);
-        if rust {
-            b.raw().before(&HUD_QUAD_SETUP, "native_hud_rust_quad", |c| {
-                let rt = Arc::clone(c.ctx.runtime());
-                if !rt.read_dispatch(|dispatch| dispatch.has_resume(HUD_QUAD_TAIL)) {
-                    return Ok(Flow::Continue);
-                }
-                let mut mem = rt.memory();
-                if !setup_quad(&mut *mem, c.cpu.ebp, c.cpu.ebx) {
-                    return Ok(Flow::Continue);
-                }
-                Ok(Flow::Return(TransferAbi::resume(HUD_QUAD_TAIL)))
-            }).context_only().optional();
-        }
-        if hud_walk_on(b.switches()) {
-            place_walk(b);
-            place_definitions(b);
-            place_sensor(b);
-        }
+        b.raw().before(&HUD_QUAD_SETUP, "native_hud_rust_quad", |c| {
+            let rt = Arc::clone(c.ctx.runtime());
+            if !rt.read_dispatch(|dispatch| dispatch.has_resume(HUD_QUAD_TAIL)) {
+                return Ok(Flow::Continue);
+            }
+            let mut mem = rt.memory();
+            if !setup_quad(&mut *mem, c.cpu.ebp, c.cpu.ebx) {
+                return Ok(Flow::Continue);
+            }
+            Ok(Flow::Return(TransferAbi::resume(HUD_QUAD_TAIL)))
+        }).context_only().optional();
+        place_walk(b);
+        place_definitions(b);
+        place_sensor(b);
         if b.switches().feature("impl.render.native-hud-blips", true) {
             place_blips(b);
         }

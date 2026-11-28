@@ -2,7 +2,7 @@
 
 Status: Design. R0 and R9 are built. R1, R4, R5, R6, R7, R8 and the parts of earlier stages listed below are partly built; R9's gate does not pass yet, and no other slice is built.
 Code: `crates/platform/d3d/src` (what is deleted), `crates/rewrites/scene-extract/src` and `crates/rewrites/native-render/src` (what replaces it), `crates/rewrites/render-bridge/src` (the frame step and the census). Tests: named per slice below.
-Switch: `impl.render.native` (on), removed with the crate; `impl.render.native-hud` and `impl.render.native-hud-walk` (on), R6's, removed with the guest HUD walk; R4's producers have `impl.render.native.visibility` (on), which only turns them off. All in [switches.md](../runtime/switches.md).
+Switch: `impl.render.native` (on), removed with the crate; R4's producers have `impl.render.native.visibility` (on), which only turns them off. All in [switches.md](../runtime/switches.md).
 
 | Slice | Built | Where it is specified |
 |---|---|---|

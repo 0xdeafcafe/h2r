@@ -19,21 +19,14 @@ fn the_native_ui_defaults_on() {
     }
 }
 
-/// The Rust HUD material is on with the native UI; its own switch turns
-/// only its setup hook off.
+/// The Rust HUD material is always placed: its setup hook and the quad
+/// hook come with the native UI.
 #[test]
-fn the_rust_hud_defaults_on_and_its_switch_only_turns_it_off() {
-    for (spec, expected) in [
-        ("", true),
-        ("impl.render.native-hud=off", false),
-        ("impl.render=off", true),
-    ] {
-        assert_eq!(native_hud::rust_hud_on(&Switches::parse(spec).unwrap()), expected, "{spec}");
+fn the_rust_hud_material_is_always_placed() {
+    let chains = plan("").chains;
+    for point in ["HUD_QUAD_SETUP", "HUD_QUAD_READY", "HUD_WALK", "HUD_DEFINITIONS", "HUD_SENSOR_DRAW"] {
+        assert!(chains.values().any(|c| c.point.name == point), "{point}");
     }
-    let placed = |spec| plan(spec).chains.values().any(|c| c.point.name == "HUD_QUAD_SETUP");
-    assert!(placed(""));
-    assert!(!placed("impl.render.native-hud=off"));
-    assert!(plan("impl.render.native-hud=off").chains.values().any(|c| c.point.name == "HUD_QUAD_READY"));
 }
 
 /// The string draw in Rust is the walk's: placed with it, off with it.
@@ -42,8 +35,6 @@ fn the_string_draw_and_the_screen_quads_are_rusts_with_the_native_hud() {
     for point in ["STRING_DRAW", "SCREEN_QUADS_BEGIN", "SCREEN_QUAD", "SCREEN_QUADS_END", "SCREEN_STATE_RESET"] {
         let placed = |spec| plan(spec).chains.values().any(|c| c.point.name == point);
         assert!(placed(""), "{point}");
-        assert!(placed("impl.render.native-hud-walk=off"), "{point}: not the walk's");
-        assert!(!placed("impl.render.native-hud=off"), "{point}");
     }
 }
 
