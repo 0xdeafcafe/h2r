@@ -52,6 +52,7 @@ A shader bitmap's draw (`0x002b11c9`) sets its combiner and constants at its qua
 Every other draw is the game's, counted by what is not read (`render.stats`, `native_ui_overlay_menu_*`), except these, which the class readers in `render_bridge::native_hud::ui_overlay` list:
 
 - Text and button labels use the live UTF-16 interface, font, justification, colour, clipping rectangle, shadow and flash. The shaper uses the game font's advances and kerning to wrap and justify each line. Each pass fills the same glyph pages as the HUD before the guest draw is skipped ([text draw and interface reads](notes/2026-11-24-menu-text.md)).
+- The substitution pass `0x0022d2ee` runs in Rust over a copy of the string (`text::substitute`): each named sequence of `0x0044a3f0` becomes its unit, the last match at a position winning, and the scan moves one unit on. A private-use unit with no handler in `0x00470204` stays and is laid out as a character (`UiText::shape_buttons`, the scanner's type 4 at `0x0013f5a0`).
 - The list emits scroll arrows using the bound first and last rows, live row occupancy and the active skin. The sorted children carry the row layout and animated highlight. A button's bitmap uses its focus state and precedes its label in the same claim ([list and button draws](notes/2026-11-24-menu-list-button.md)).
 - An idle model scene or a selection without objects or lights can produce an empty claim. At the nested camera call an active scene records its viewport, camera and ordered object handles as a `ModelView`, and its geometry still draws through the model material hooks ([model selection and camera](notes/2026-11-24-menu-model-selection.md)).
 
@@ -62,10 +63,30 @@ The remaining guest draws count by reason in `render.stats`:
 | Reason | Draw | What keeps it on the guest |
 |---|---|---|
 | `bitmap_state` | `0x002b0565`, `0x00235f31`, `0x002b07e2` | a draw the overlay does not make as the game does: the debug labels on, an image set at `+0x8c` that no loaded bitmap tag holds, an image not resident, a stage constant not white, the quads turned off, a meter's rasterizer bitmap with no second image |
-| `text` | text or button label | interface overrides, reveal updates, substitution, custom tabs or an unsupported transform |
-| `model` | model scene | active nested view, light processing or unresolved selection semantics |
-| `draw` | list, button or custom draw | unsupported class-specific lookup, placement or guest side effects |
+| `text` | text or button label | by its gap, below |
+| `model` | model scene | by its gap, below |
+| `draw` | list, button or custom draw | by its gap, below |
 | `unlisted`, `pass` | any listed class | layout or pass preparation fails, including unavailable font pages or bitmap assets |
+
+Each text, class and model refusal is a `ui_overlay::Gap`: the draw and the first check that refused it, kept as `scene_kept_ui_widget_<cause>` ([retire-d3d-menus.md](retire-d3d-menus.md#what-is-kept)):
+
+| Cause | Kept because |
+|---|---|
+| `text_viewport` | the draw's viewport is not the full canvas |
+| `text_debug`, `button_debug` | the widget index display or the rectangle outlines are on |
+| `text_interface` | the text accessor, the string slot or the buffer setter is not retail's |
+| `text_glyphs` | glyph output is off, or no glyph ring or bitmap is active |
+| `text_style` | interface flags past bit 2, or its `+0x16`, `+0x18`, `+0x20` overrides |
+| `text_tabs`, `text_reveal` | explicit tab stops (`+0x38`); the reveal cursor (`+0x3c`), which writes guest state |
+| `text_token` | a private-use unit whose handler writes text at the draw (a name, a clock) |
+| `text_scale`, `text_offset` | a projection scale not 1; an animated offset out of range |
+| `text_justify`, `text_case`, `text_colour`, `text_font` | an unknown justification; upper case of a non-ASCII unit; a channel outside 0 to 1; a font id past 16 bits |
+| `list_number`, `list_tag`, `list_globals`, `list_screen`, `list_tree`, `list_rows`, `list_pane` | the arrows' or the art's lookups: a number not finite, no tag, no interface globals, the screen not found, a parent chain or row chain that does not end, a row table the helper does not walk, a pane index below -1 |
+| `button_focus`, `button_class` | the focus accessors or the user's channel not retail's; a button draw slot not retail's |
+| `art_viewport`, `art_image`, `art_texture`, `art_scale`, `art_offset` | the art's viewport not the full canvas, image out of range or empty, image not resident, projection not finite, offset out of range |
+| `draw_class`, `draw_runtime_class`, `draw_custom` | a draw no reader knows; a vtable outside the image's UI tables; a host-drawn picture (`Host::ui_custom_widget`) |
+| `model_view` | an active model scene: the overlay pass draws no `ModelView` (`native_render::overlay`, `refused_model_view`) |
+| `model_lights`, `model_names`, `model_name`, `model_rows` | a selection with lights, more than 32 names, a name with no terminator, a scenario with more rows than an `i16` |
 
 ## Bitmap widgets
 

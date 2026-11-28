@@ -4,6 +4,8 @@ use scene_extract::{
     ui::{UiContent, Unread},
 };
 
+use super::Gap;
+
 const SCENARIO: u32 = 0x004e_0350;
 const OBJECT_HANDLES: u32 = 0x004d_e2d0;
 
@@ -19,7 +21,7 @@ fn pointer(mem: &dyn GuestRead, base: u32, offset: u32) -> Result<u32, Unread> {
 }
 
 // Widget names occupy 32 bytes; scenario names occupy the first 32 of 36.
-fn name(mem: &dyn GuestRead, base: u32, offset: u32) -> Result<Vec<u8>, Unread> {
+fn name(mem: &dyn GuestRead, base: u32, offset: u32) -> Result<Vec<u8>, Gap> {
     let p = base.checked_add(offset).ok_or(Unread::Unreadable)?;
     let mut bytes = Vec::new();
     for at in (0..32).step_by(4) {
@@ -30,7 +32,7 @@ fn name(mem: &dyn GuestRead, base: u32, offset: u32) -> Result<Vec<u8>, Unread> 
             bytes.push(byte);
         }
     }
-    Err(Unread::Model)
+    Err(Gap::model("model_name"))
 }
 
 /// The scenario objects a model widget's names select, as its draw
@@ -39,7 +41,7 @@ fn name(mem: &dyn GuestRead, base: u32, offset: u32) -> Result<Vec<u8>, Unread> 
 /// when it is not the absent datum, in name order. `Ok(None)`: the
 /// selector is inactive or the widget names no object, so no view draws.
 /// A widget with lights, or past 32 names, is not read.
-pub(in crate::native_hud) fn objects(mem: &dyn GuestRead, widget: u32) -> Result<Option<Vec<u32>>, Unread> {
+pub(in crate::native_hud) fn objects(mem: &dyn GuestRead, widget: u32) -> Result<Option<Vec<u32>>, Gap> {
     let selection =
         engine::ui_model::selection(widget, |at| mem.read_u32(at)).ok_or(Unread::Unreadable)?;
     let engine::ui_model::Selection::Names {
@@ -50,8 +52,11 @@ pub(in crate::native_hud) fn objects(mem: &dyn GuestRead, widget: u32) -> Result
     else {
         return Ok(None);
     };
-    if lights > 0 || count > 32 {
-        return Err(Unread::Model);
+    if lights > 0 {
+        return Err(Gap::model("model_lights"));
+    }
+    if count > 32 {
+        return Err(Gap::model("model_names"));
     }
     if count <= 0 {
         return Ok(None);
@@ -66,7 +71,7 @@ pub(in crate::native_hud) fn objects(mem: &dyn GuestRead, widget: u32) -> Result
         let scenario = pointer(mem, SCENARIO, 0)?;
         let rows = word(mem, scenario, 0x48)? as i32;
         if rows > i32::from(i16::MAX) {
-            return Err(Unread::Model);
+            return Err(Gap::model("model_rows"));
         }
         if rows <= 0 {
             continue;
@@ -89,12 +94,13 @@ pub(in crate::native_hud) fn objects(mem: &dyn GuestRead, widget: u32) -> Result
 }
 
 /// At the sorted list: a widget that selects no live object draws nothing
-/// ([`UiContent::None`]); one that does is the game's ([`Unread::Model`]),
-/// its view read in Rust at the item call and compared with the game's
-/// (`native_hud::model`), as no stage draws a model view yet.
-pub(super) fn read(mem: &dyn GuestRead, widget: u32) -> Result<UiContent, Unread> {
+/// ([`UiContent::None`]); one that does is the game's (`model_view`), its
+/// view read in Rust at the item call and compared with the game's
+/// (`native_hud::model`), as the overlay pass draws no model view
+/// (`native_render::overlay`, `refused_model_view`).
+pub(super) fn read(mem: &dyn GuestRead, widget: u32) -> Result<UiContent, Gap> {
     match objects(mem, widget)? {
-        Some(live) if !live.is_empty() => Err(Unread::Model),
+        Some(live) if !live.is_empty() => Err(Gap::model("model_view")),
         _ => Ok(UiContent::None),
     }
 }
@@ -131,9 +137,9 @@ mod tests {
         ]));
         assert!(matches!(read(&mem, 0x1000), Ok(UiContent::None)));
         mem.0.insert(0x6000, 42);
-        assert!(matches!(read(&mem, 0x1000), Err(Unread::Model)));
+        assert_eq!(read(&mem, 0x1000), Err(Gap::model("model_view")));
         mem.0.remove(&0x6000);
-        assert!(matches!(read(&mem, 0x1000), Err(Unread::Unreadable)));
+        assert_eq!(read(&mem, 0x1000), Err(Unread::Unreadable.into()));
     }
 
     /// Two names, the first resolving to a live object and the second to
@@ -162,7 +168,7 @@ mod tests {
         mem.0.insert(0x6000, 0xe002_0004);
         assert_eq!(objects(&mem, 0x1000), Ok(Some(vec![0xe001_0009, 0xe002_0004])), "name order, not row order");
         mem.0.insert(0x2014, 1);
-        assert_eq!(objects(&mem, 0x1000), Err(Unread::Model));
+        assert_eq!(objects(&mem, 0x1000), Err(Gap::model("model_lights")));
         mem.0.insert(0x0054_d598, 0);
         assert_eq!(objects(&mem, 0x1000), Ok(None), "an inactive selector");
     }
