@@ -21,6 +21,7 @@ pub mod functions;
 pub mod light;
 pub mod lights;
 pub mod phase;
+pub mod projectile;
 pub mod pool;
 pub mod table;
 pub mod unit;
