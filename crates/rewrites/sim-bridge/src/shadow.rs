@@ -69,7 +69,6 @@ mod tests {
         let native = crate::sim_native::ENTRIES.iter().map(|&(_, name, _)| name);
         native
             .chain(engine::sim_physics::PORTS.iter().map(|p| p.name))
-            .chain(engine::sim_seats::SEATS.iter().map(|s| s.name))
             .chain(crate::sim_objects::SHADOW_POINTS.iter().map(|p| p.name))
     }
 

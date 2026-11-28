@@ -8,10 +8,15 @@
 //! * physics and collision count `matched` and `mismatched` only, so
 //!   `checked` is their sum, and `answered` is 0;
 //! * `anim.manager` reports `differed` for `mismatched`;
-//! * the shadow ports (`seats`, `effects`) count `skipped` for `declined`
-//!   and `answered` 0; the seats' `seats.aim`, `seats.device` and
-//!   `seats.leaf.*` arms count their declines and unwatched audits for
-//!   `declined`;
+//! * the shadow ports (`effects`) count `skipped` for `declined` and
+//!   `answered` 0;
+//! * `seats` has no switch and no guest arm: each seat body
+//!   (`sim.seats.<name>`) and the `seats.aim`, `seats.respawn` and
+//!   `seats.player-objects` kernels count segments or calls answered, and
+//!   their unported paths (which the lifted body runs) as `declined`; the
+//!   `seats.device` and `seats.leaf.*` arms also count unwatched audits as
+//!   `declined`. It is clean once something answered and nothing declined
+//!   or mismatched;
 //! * `sound.voices` counts ticks for `checked`, `matched` and `mismatched`
 //!   and voices for `answered` (`sim_bridge::sim_sound::voice_arm::Stats`).
 
@@ -71,8 +76,8 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
             }),
             subsystem(switches, "anim", anim_wire(&walk::stats(), manager::stats())),
             subsystem(switches, "collision", collision_arms(&world::stats())),
-            subsystem(switches, "seats", {
-                let mut arms = group(sim_bridge::sim_seats::GROUP);
+            native("seats", {
+                let mut arms = seat_wire(sim_bridge::sim_seats::stats());
                 arms.push(aim_wire(aim::status()));
                 arms.push(device_wire(device::status()));
                 arms.push(respawn_wire(respawn::status()));
@@ -98,6 +103,30 @@ fn subsystem(switches: &Switches, name: &str, arms: Vec<Arm>) -> Subsystem {
     let default = table::get(&switch).is_some_and(|s| s.initial == Initial::On);
     let on = switches.implementation(&switch["impl.".len()..], default);
     verdict(name, switch, on, arms)
+}
+
+/// A subsystem with no switch and no guest arm: on, and clean once an
+/// arm answered with nothing declined or mismatched.
+fn native(name: &str, arms: Vec<Arm>) -> Subsystem {
+    let answered: u64 = arms.iter().map(|a| a.answered).sum();
+    let declined: u64 = arms.iter().map(|a| a.declined).sum();
+    let mismatched: u64 = arms.iter().map(|a| a.mismatched).sum();
+    Subsystem {
+        name: name.to_owned(),
+        switch: String::new(),
+        on: true,
+        clean: answered > 0 && declined == 0 && mismatched == 0,
+        arms,
+    }
+}
+
+/// The seat bodies, one arm per seat: segments answered, unported paths
+/// declined.
+fn seat_wire(stats: Vec<sim_bridge::sim_seats::Stats>) -> Vec<Arm> {
+    stats
+        .into_iter()
+        .map(|s| Arm { name: s.name.to_owned(), answered: s.answered, declined: s.declined, ..Arm::default() })
+        .collect()
 }
 
 fn verdict(name: &str, switch: String, on: bool, arms: Vec<Arm>) -> Subsystem {
@@ -183,47 +212,22 @@ fn objects_wire(s: objects::Status) -> Arm {
     }
 }
 
-/// The aim-assist cone's kernel arm (`impl.sim.aim-assist`); unwatched
-/// audits count as declined.
+/// The `seats.aim` kernel: calls answered, unported paths declined.
 fn aim_wire(s: aim::Status) -> Arm {
-    Arm {
-        name: "seats.aim".to_owned(),
-        checked: s.checked,
-        matched: s.matched,
-        mismatched: s.mismatched,
-        answered: s.answered,
-        declined: s.declined_total() + s.dropped,
-    }
+    Arm { name: "seats.aim".to_owned(), answered: s.answered, declined: s.declined_total(), ..Arm::default() }
 }
 
-/// The respawn gate's kernel arm (`impl.sim.respawn-ready`); a call the
-/// guest answers by name (`post`, `announce`, `every-player`, `fault`)
-/// counts as declined.
+/// The `seats.respawn` kernel: calls answered, unported paths declined.
 fn respawn_wire(s: respawn::Status) -> Arm {
-    Arm {
-        name: "seats.respawn".to_owned(),
-        checked: s.checked,
-        matched: s.matched,
-        mismatched: s.mismatched,
-        answered: s.answered,
-        declined: s.declined_total() + s.dropped,
-    }
+    Arm { name: "seats.respawn".to_owned(), answered: s.answered, declined: s.declined_total(), ..Arm::default() }
 }
 
-/// The pickup scan's kernel arm (`impl.sim.player-objects`); a candidate
-/// or pickup the guest answers counts as declined.
+/// The `seats.player-objects` kernel: calls answered, unported paths declined.
 fn player_objects_wire(s: player_objects::Status) -> Arm {
-    Arm {
-        name: "seats.player-objects".to_owned(),
-        checked: s.checked,
-        matched: s.matched,
-        mismatched: s.mismatched,
-        answered: s.answered,
-        declined: s.declined_total() + s.dropped,
-    }
+    Arm { name: "seats.player-objects".to_owned(), answered: s.answered, declined: s.declined_total(), ..Arm::default() }
 }
 
-/// The bound controller's device arm (under `impl.sim.native.seats`);
+/// The bound controller's device arm (under the seats);
 /// audits whose transfer never came count as declined.
 fn device_wire(s: device::Status) -> Arm {
     Arm {
@@ -372,12 +376,11 @@ mod tests {
     #[test]
     fn an_idle_process_reads_zeros_and_is_not_clean() {
         let shadow = registry();
-        shadow.register("sim.seats_a", sim_bridge::sim_seats::GROUP, "A", 0x1000, true);
         let r = read(&Switches::default(), shadow);
         let names: Vec<_> = r.subsystems.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["physics", "objects", "anim", "collision", "seats", "effects", "sound", "effects-parts"]);
         for s in &r.subsystems {
-            if ["objects", "anim", "effects", "effects-parts"].contains(&s.name.as_str()) {
+            if ["objects", "anim", "seats", "effects", "effects-parts"].contains(&s.name.as_str()) {
                 assert_eq!(s.switch, "", "{}: no switch", s.name);
                 assert!(s.on, "{}: always on", s.name);
             } else {
@@ -394,13 +397,14 @@ mod tests {
             }
         }
         let seats = &r.subsystems[4];
-        assert_eq!(seats.arms.len(), 5 + leaf::Leaf::ALL.len());
-        assert_eq!(seats.arms[0].name, "sim.seats_a");
-        assert_eq!(seats.arms[1].name, "seats.aim");
-        assert_eq!(seats.arms[2].name, "seats.device");
-        assert_eq!(seats.arms[3].name, "seats.respawn");
-        assert_eq!(seats.arms[4].name, "seats.player-objects");
-        assert_eq!(seats.arms[5].name, "seats.leaf.visible");
+        let n = engine::sim_seats::SEATS.len();
+        assert_eq!(seats.arms.len(), n + 4 + leaf::Leaf::ALL.len());
+        assert_eq!(seats.arms[0].name, engine::sim_seats::SEATS[0].name);
+        assert_eq!(seats.arms[n].name, "seats.aim");
+        assert_eq!(seats.arms[n + 1].name, "seats.device");
+        assert_eq!(seats.arms[n + 2].name, "seats.respawn");
+        assert_eq!(seats.arms[n + 3].name, "seats.player-objects");
+        assert_eq!(seats.arms[n + 4].name, "seats.leaf.visible");
         assert!(r.subsystems[5].arms.is_empty());
     }
 
@@ -501,13 +505,13 @@ mod tests {
     #[test]
     fn the_wire_shape_is_stable() {
         let v = serde_json::to_value(SimArms {
-            subsystems: vec![verdict("seats", "impl.sim.native.seats".into(), true, vec![arm("a", 2, 0)])],
+            subsystems: vec![verdict("objects", "impl.sim.native.objects".into(), true, vec![arm("a", 2, 0)])],
         })
         .unwrap();
         assert_eq!(
             v,
             serde_json::json!({"subsystems": [{
-                "name": "seats", "switch": "impl.sim.native.seats", "on": true, "clean": true,
+                "name": "objects", "switch": "impl.sim.native.objects", "on": true, "clean": true,
                 "arms": [{"name": "a", "checked": 2, "matched": 2, "mismatched": 0, "answered": 0, "declined": 0}]
             }]})
         );

@@ -1,5 +1,5 @@
 //! The player's pickup scan `1508e0` (`PLAYER_PICKUP_SCAN`, `ret 4`, the
-//! argument a player index) as a shadow arm with its callees in Rust
+//! argument a player index) with its callees in Rust
 //! (docs/engine/sim-rewrite.md, "Seats and rules (phase 7)"; the pattern of
 //! [`crate::sim_seats::respawn`]). `players_after` calls it for each player
 //! once the BSP switch volumes are done.
@@ -22,8 +22,9 @@
 //! reproduced: its caller reloads all three before using them. The
 //! callee-saved registers and `esp` are reproduced and compared.
 //!
-//! **What it refuses, by name** ([`Decline`]), each leaving the guest to
-//! answer with nothing written:
+//! **What it refuses, by name** ([`Decline`]): named, counted errors
+//! (logged the first time each map) that the lifted body still runs, with
+//! nothing written:
 //!
 //! * `visit`: the collision kernel cannot plan the query (its own `Bail`:
 //!   an x87 or SSE state it does not reproduce, an alias, a graph or list
@@ -41,18 +42,10 @@
 //!   `151ea0`, `cd7b0`, `150dd0`, `a8f10` and `15e8e0`, none ported.
 //! * `fault`: a read of the scan's inputs faulted.
 //!
-//! The arm is therefore **not** `replaces_guest`: it runs the guest body
-//! for the whole proof, for each audit and for every refusal, so it may
-//! transfer to it ([`hooks::HookRef::replaces_guest`]).
-//!
-//! **Proof, then take-over**, as the respawn arm: until [`PROVEN_AFTER`]
-//! calls have matched with no mismatch the guest answers and the
-//! prediction is compared at the return; then the kernel answers and one
-//! answerable call in [`AUDIT_EVERY`] is still compared. A mismatch hands
-//! every call back to the guest until the next map. The return compare
-//! reads back every word the prediction says the scan writes; it cannot
-//! see a write the prediction does not name (the differential test
-//! compares all of RAM).
+//! The point is therefore **not** `replaces_guest` until those are ported
+//! ([`hooks::HookRef::replaces_guest`]). Every other call the kernel
+//! answers; the differential test compares all of RAM against the lifted
+//! body.
 
 use crate::points;
 use crate::sim_collision::{CollisionWorld, plan_visit_at, visit_writes};
@@ -62,8 +55,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The stack words `ret` pops besides the return address.
 pub const ARGS: u32 = 4;
-pub const PROVEN_AFTER: u64 = 4096;
-pub const AUDIT_EVERY: u64 = 64;
 
 const PLAYERS: u32 = 0x004e_8c24;
 const OBJECTS: u32 = 0x004e_0300;
@@ -121,13 +112,11 @@ impl Decline {
 /// The arm's counters since the map loaded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Status {
-    pub checked: u64,
-    pub matched: u64,
-    pub mismatched: u64,
     pub answered: u64,
-    /// By [`Decline::ALL`] order.
+    /// Calls the kernel cannot answer yet, by [`Decline::ALL`] order:
+    /// named errors, each logged once a map, that the lifted body still
+    /// runs.
     pub declined: [u64; 4],
-    pub dropped: u64,
 }
 
 impl Status {
@@ -136,43 +125,30 @@ impl Status {
     }
 }
 
-static CHECKED: AtomicU64 = AtomicU64::new(0);
-static MATCHED: AtomicU64 = AtomicU64::new(0);
-static MISMATCHED: AtomicU64 = AtomicU64::new(0);
 static ANSWERED: AtomicU64 = AtomicU64::new(0);
-static ANSWERABLE: AtomicU64 = AtomicU64::new(0);
-static DROPPED: AtomicU64 = AtomicU64::new(0);
 static DECLINED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
 pub fn status() -> Status {
     let read = |c: &AtomicU64| c.load(Ordering::Relaxed);
-    Status {
-        checked: read(&CHECKED),
-        matched: read(&MATCHED),
-        mismatched: read(&MISMATCHED),
-        answered: read(&ANSWERED),
-        declined: std::array::from_fn(|i| read(&DECLINED[i])),
-        dropped: read(&DROPPED),
-    }
+    Status { answered: read(&ANSWERED), declined: std::array::from_fn(|i| read(&DECLINED[i])) }
 }
 
-/// Forget the map's proof and counters. Called at map load.
+/// Clear the counters. Called at map load, so each map logs its first
+/// error of each kind.
 pub fn reset() {
-    for c in [&CHECKED, &MATCHED, &MISMATCHED, &ANSWERED, &ANSWERABLE, &DROPPED] {
-        c.store(0, Ordering::Relaxed);
-    }
+    ANSWERED.store(0, Ordering::Relaxed);
     for c in &DECLINED {
         c.store(0, Ordering::Relaxed);
     }
 }
 
-/// An audit the runtime could not watch to its return.
-pub fn dropped() {
-    DROPPED.fetch_add(1, Ordering::Relaxed);
-}
-
-fn proven() -> bool {
-    MISMATCHED.load(Ordering::Relaxed) == 0 && MATCHED.load(Ordering::Relaxed) >= PROVEN_AFTER
+/// Count a call the kernel cannot answer, and say so the first time each
+/// map: it is an unported path, not a fallback.
+fn decline(why: Decline) -> Step {
+    if DECLINED[why.index()].fetch_add(1, Ordering::Relaxed) == 0 {
+        eprintln!("sim: seats player-objects: unported path `{}`; the lifted body runs it (counted in sim.arms)", why.name());
+    }
+    Step::Guest
 }
 
 fn fault<T>(r: Result<T, GuestFault>) -> Result<T, Decline> {
@@ -338,9 +314,7 @@ impl Prediction {
 pub enum Step {
     /// The kernel answered; the caller returns to `target`.
     Answered { target: u32 },
-    /// The guest answers; compare at its return ([`compare`]).
-    Audit(Prediction),
-    /// The guest answers alone: declined, counted.
+    /// An unported path: a counted, logged [`Decline`]; the lifted body runs it.
     Guest,
 }
 
@@ -367,7 +341,7 @@ pub fn apply(prediction: &Prediction, cpu: &mut CpuAbi, g: &mut Guest) -> Result
     Ok(target)
 }
 
-/// At the entry: predict the call and decide who answers.
+/// At the entry: the kernel answers, or the call is a counted [`Decline`].
 pub fn enter(cpu: &mut CpuAbi, g: &mut Guest, world: &CollisionWorld) -> Step {
     enter_with(cpu, g, world, CANDIDATES)
 }
@@ -375,47 +349,14 @@ pub fn enter(cpu: &mut CpuAbi, g: &mut Guest, world: &CollisionWorld) -> Step {
 fn enter_with(cpu: &mut CpuAbi, g: &mut Guest, world: &CollisionWorld, candidates: Candidates) -> Step {
     let prediction = match predict(cpu, g, world, candidates) {
         Ok(p) => p,
-        Err(why) => {
-            DECLINED[why.index()].fetch_add(1, Ordering::Relaxed);
-            return Step::Guest;
-        }
+        Err(why) => return decline(why),
     };
-    let slot = ANSWERABLE.fetch_add(1, Ordering::Relaxed);
-    if !proven() || slot % AUDIT_EVERY == 0 {
-        return Step::Audit(prediction);
-    }
     match apply(&prediction, cpu, g) {
         Ok(target) => {
             ANSWERED.fetch_add(1, Ordering::Relaxed);
             Step::Answered { target }
         }
-        Err(_) => {
-            DECLINED[Decline::Fault.index()].fetch_add(1, Ordering::Relaxed);
-            Step::Guest
-        }
-    }
-}
-
-/// At the guest's return: compare with the prediction. The guest's answer
-/// stands either way.
-pub fn compare(prediction: &Prediction, cpu: &CpuAbi, g: &Guest) {
-    CHECKED.fetch_add(1, Ordering::Relaxed);
-    let what = match prediction.differs(cpu) {
-        Some(register) => Some(register.to_owned()),
-        None => prediction.differs_in(g).map(|at| format!("the word at {at:#x}")),
-    };
-    match what {
-        None => {
-            MATCHED.fetch_add(1, Ordering::Relaxed);
-        }
-        Some(what) => {
-            if MISMATCHED.fetch_add(1, Ordering::Relaxed) == 0 {
-                eprintln!(
-                    "sim: seats player-objects arm: the guest's {what} differs from the prediction; \
-                     the guest answers every call until the next map"
-                );
-            }
-        }
+        Err(_) => decline(Decline::Fault),
     }
 }
 

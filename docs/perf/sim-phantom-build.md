@@ -98,7 +98,7 @@ has no finer measurement. What the code says it contains:
   in `crates/rewrites/sim-bridge/src/sim_seats.rs`). An override survives
   `prefer_generated` only where its whole chain is context-only
   (`Chain::render_thread`, marked in `hooks::install::place`). All three
-  exist only under `impl.sim.native.seats` (off). The executor installs
+  are always installed. The executor installs
   seats of its own over them ([below](#the-builder-body-in-rust)), so the
   column is what runs in the tests' builder without the body.
 
@@ -107,11 +107,11 @@ has no finer measurement. What the code says it contains:
   | `0x1a4900` target update | `sim_seats::targeting::update` | Rust | the seat alone at the point; the body reads only the CPU and the guest |
   | `0x1a5370` target search | `sim_seats::targeting::search` | Rust | the same |
   | `0x185be0` control update | `sim_seats::look::update` | lifted | the `aim-assist` feature's open and close sit at the point: per-player host state, and an `after` the fallback cannot resume |
-  | `0x1a50a0` cone | `sim_seats::aim::arm` (`impl.sim.aim-assist`, off) | lifted, with the body on too | the `aim-assist` feature's `after` at the point |
+  | `0x1a50a0` cone | `sim_seats::aim::arm` | lifted | the `aim-assist` feature's `after` at the point |
 
   The look and aim arms also move host proof counters
-  (`device::arm`, `leaf`, `aim::arm` statics), so a phantom call counts
-  towards the live arm's proof. That changes who answers, not the answer.
+  (`device::arm` and `leaf` statics, and `aim::arm`'s answered count), so a
+  phantom call counts towards the live arm's proof. That changes who answers, not the answer.
 - **Kernel faults on a mapping made this tick** (**S**, the suspect).
   `Guest::cow_refresh` replaces the view's RAM with a new
   `mach_vm_remap` each tick, and `freeze_ram` does the same for the

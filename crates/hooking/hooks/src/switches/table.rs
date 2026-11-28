@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 31;
+pub const BUDGET: usize = 26;
 
 use Initial::{Group, Off, On};
 
@@ -96,20 +96,12 @@ pub const TABLE: &[Switch] = &[
         "collision queries (sim-collision): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.hs", Off, "sim", "2026-11-25",
         "HaloScript VM: retire after the campaign parity and timing ladder"),
-    sw("impl.sim.native.seats", Off, "sim", "2026-11-25",
-        "seats and rules (sim-seats): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.sound", Off, "sim", "2026-11-25",
         "phase 4 sound simulation: promote after voice, arena and timing parity"),
     sw("impl.sim.native.physics", Off, "sim", "2026-11-25",
         "the Havok world step (sim-havok, docs/engine/sim-rewrite-havok.md): on in the lane that lands it, then deleted"),
     sw("impl.sim.present", On, "sim", "2026-11-27",
         "ticks with no local user skip the presentation phases (sim-bridge/src/present.rs); h2 sim diff of lockout-2v2 is identical over 9000 ticks"),
-    sw("impl.sim.aim-assist", Off, "sim", "2026-11-27",
-        "the aim-assist cone 1a50a0 as the sim-objects kernel's shadow arm (sim-bridge/src/present.rs): promote after h2 sim diff parity and seats.aim clean"),
-    sw("impl.sim.respawn-ready", Off, "sim", "2026-11-28",
-        "the respawn gate 15dd40 with its callees and countdown as the sim-seats kernel's shadow arm (sim-bridge/src/present.rs); a host's event post and a local player's announcement stay the guest's: promote after h2 sim diff parity and seats.respawn clean"),
-    sw("impl.sim.player-objects", Off, "sim", "2026-11-28",
-        "the pickup scan 1508e0 with its object query (bb050 through the collision kernel), link walk and 150e30's early exits as the sim-seats kernel's shadow arm (sim-bridge/src/present.rs); a type 2 or 3 handle stays the guest's: promote after h2 sim diff parity and seats.player-objects clean"),
     sw("impl.sim.sound-events", On, "sim", "2026-11-27",
         "the sound simulation (docs/engine/sound-sim.md); h2 sim diff of firefight-beavercreek is identical over 10351 ticks"),
     sw("impl.sim.sound-events.table", Off, "sim", "2026-11-27",
@@ -120,7 +112,6 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.metrics-projection", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.page-census", On, "sim", "2026-11-22",
         "the guest page census in the report (docs/perf/sim-light.md, L1): a timing arm turns it off; deleted when the page figures are measured for good"),
-    sw("impl.sim.observer-resources", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.native_simd", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.phantom-alias", On, "sim", "2026-11-22",
         "the phantoms' action build on live RAM with an undo journal (docs/perf/sim-phantom-build.md, P1): the view path stays as the check mode's reference and the flat-RAM path; the switch goes once a release has run with it on"),

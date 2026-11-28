@@ -61,7 +61,8 @@ pub async fn run(
     Ok(ret)
 }
 
-/// The Rust phase bodies: every one, the effects phase included. The
+/// The Rust phase bodies: every one (AI, the scheduler, effects, the
+/// countdown requests). The
 /// lifted form ([`sim_tick::Bodies::NONE`]) is the tests' reference only.
 pub const BODIES: sim_tick::Bodies = sim_tick::Bodies::ALL;
 
@@ -97,9 +98,10 @@ mod tests {
     use engine::sim_tick::{Owner, PHASES};
 
     #[test]
-    fn the_effects_body_always_runs() {
-        assert!(BODIES.effects);
-        assert_eq!(PHASES.iter().filter(|p| p.owner == Owner::Rust).count(), 1);
+    fn the_rust_bodies_always_run() {
+        assert!(BODIES.rust);
+        let rust: Vec<_> = PHASES.iter().filter(|p| p.owner == Owner::Rust).map(|p| p.name).collect();
+        assert_eq!(rust, ["ai", "script_scheduler", "effects", "countdown_requests"]);
     }
     use engine::memory::GuestMemory;
     use engine::testing::FakeGuest;

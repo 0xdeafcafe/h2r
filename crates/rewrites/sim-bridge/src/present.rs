@@ -2,7 +2,7 @@
 //! driver" and "Seats and rules (phase 7)").
 //!
 //! **`impl.sim.present`** (on): the tick driver leaves out phases 26
-//! (first person), 28 (HUD) and 29 (`0x16f200`, the camera neighbourhood)
+//! (first person), 28 (HUD) and 29 (`0x16f200`, the countdown requests)
 //! on a tick where no local user is mapped: a phantom or host seat has no
 //! view. With a local user they run, and each draws from the
 //! presentation's own copy of the two shared random seeds
@@ -10,35 +10,22 @@
 //! hash with them, do not depend on the view count. `sim.ledger` shows
 //! the skipped phases at 0 calls and 0 ns.
 //!
-//! **`impl.sim.aim-assist`** (off): the aim-assist cone `1a50a0` is the
-//! idiomatic kernel `sim_objects::aim_assist`, run as a shadow arm by
-//! `engine::sim_seats::aim::arm`: the guest answers and the kernel's
-//! prediction is compared at the return until 4096 calls have matched,
-//! then the kernel answers and one call in 64 is still compared; a
-//! mismatch gives every call back to the guest until the next map. Its
-//! counters are `seats.aim` in `sim.arms`.
+//! **The seat kernels** answer three guest functions, always, with no
+//! switch and no guest arm. A call a kernel cannot answer yet is a named,
+//! counted error (its `Decline`, logged the first time each map, counted in
+//! `sim.arms`) that the lifted body runs:
 //!
-//! **`impl.sim.respawn-ready`** (off): the respawn gate `15dd40`
-//! (`PLAYER_RESPAWN_READY`) with its callees and its countdown (the entity
-//! mark `a7840`, the death event `19eb90`) as the kernel
-//! `engine::sim_seats::respawn`, run as the same shadow arm; a prediction's
-//! writes land with its registers. A host's event message (`post`), a
-//! local player's announcement (`announce`) and an event naming no player
-//! (`every-player`) are declined by name to the guest, so it is not a
-//! replacement of the guest function. Its counters are `seats.respawn` in
-//! `sim.arms`.
+//! | Point | Kernel | Unported paths |
+//! |---|---|---|
+//! | `AIM_ASSIST_PARAMS` `1a50a0` | `engine::sim_seats::aim::arm` over `sim_objects::aim_assist` | `float`, `triggers`, `fault` |
+//! | `PLAYER_RESPAWN_READY` `15dd40` | `engine::sim_seats::respawn` (the gate, its callees, the countdown with `a7840` and `19eb90`) | `post` (a host's event message), `announce` (a local player's HUD text and sound), `every-player`, `fault` |
+//! | `PLAYER_PICKUP_SCAN` `1508e0` | `engine::sim_seats::player_objects` (the query `bb050` through `engine::sim_collision::plan_visit_at`, the link walk, `150e30`'s early exits) | `visit`, `candidate` (a type 2 or 3 handle: the Halo 1 prompt hook observes `150e30`), `pickup`, `fault` |
 //!
-//! **`impl.sim.player-objects`** (off): the pickup scan `1508e0`
-//! (`PLAYER_PICKUP_SCAN`) as the kernel `engine::sim_seats::player_objects`,
-//! run as the same shadow arm: the object query `bb050` (through
-//! `engine::sim_collision::plan_visit_at`), the type 7 and 11 link walk and
-//! `150e30`'s early exits. A type 2 or 3 handle in the list is declined by
-//! name (`candidate`: the Halo 1 prompt hook observes every `150e30` call),
-//! so it is not a replacement of the guest function either. Its counters are
+//! Their counters are `seats.aim`, `seats.respawn` and
 //! `seats.player-objects` in `sim.arms`.
 
 use engine::points;
-use engine::sim_seats::aim::arm::{self, Step};
+use engine::sim_seats::aim::arm;
 use engine::sim_seats::{player_objects, respawn};
 use engine::sim_tick::Present;
 use hooks::Builder;
@@ -46,146 +33,65 @@ use runtime::TransferAbi;
 
 /// The switch, without its `impl.` prefix.
 pub const PRESENT: &str = "sim.present";
-/// The aim-assist arm's switch, without its `impl.` prefix.
-pub const AIM: &str = "sim.aim-assist";
 
 pub fn mode(switches: &hooks::Switches) -> Present {
     if switches.implementation(PRESENT, true) { Present::LocalOnly } else { Present::Always }
 }
 
-/// The respawn gate arm's switch, without its `impl.` prefix.
-pub const RESPAWN: &str = "sim.respawn-ready";
+/// The labels the kernels install under.
+pub const AIM: &str = "sim.seats.aim";
+pub const RESPAWN: &str = "sim.seats.respawn";
+pub const PLAYER_OBJECTS: &str = "sim.seats.player-objects";
 
-pub fn respawn_on(switches: &hooks::Switches) -> bool {
-    switches.implementation(RESPAWN, false)
-}
+/// The map-load observer that clears the three kernels' counters.
+const RESET: &str = "seats: reset the aim, respawn and pickup counters";
 
-/// The pickup scan arm's switch, without its `impl.` prefix.
-pub const PLAYER_OBJECTS: &str = "sim.player-objects";
-
-pub fn player_objects_on(switches: &hooks::Switches) -> bool {
-    switches.implementation(PLAYER_OBJECTS, false)
-}
-
-pub fn aim_on(switches: &hooks::Switches) -> bool {
-    switches.implementation(AIM, false)
-}
-
-/// The map-load observer that clears the aim arm's proof.
-const AIM_RESET: &str = "seats: reset the aim-assist arm";
-
-/// The aim-assist arm at `AIM_ASSIST_PARAMS`, and its reset at map load.
-/// [`crate::sim_native::SimNative`] calls it; the point is the arm's
-/// alone (it is not one of the seats), so the plan holds one
-/// implementation there, beside the `aim-assist` feature's `after`.
+/// The three kernels at their points, and their reset at map load.
+/// [`crate::sim_native::SimNative`] calls it; the points are not seats, so
+/// each plan holds one implementation there, beside the `aim-assist`
+/// feature's `after` at the cone.
 pub(crate) fn install(b: &mut Builder) {
-    install_aim(b);
-    install_respawn(b);
-    install_player_objects(b);
-}
-
-/// The pickup scan's arm at `PLAYER_PICKUP_SCAN`, and its reset.
-fn install_player_objects(b: &mut Builder) {
-    if !player_objects_on(b.switches()) {
-        return;
-    }
-    let point = &points::PLAYER_PICKUP_SCAN;
     b.raw()
-        .implement(point, PLAYER_OBJECTS, move |cpu, ctx, pc| {
-            if pc == point.base {
-                let step = {
-                    let mut mem = ctx.memory();
-                    player_objects::enter(cpu, &mut mem, &engine::sim_collision::WORLD)
-                };
-                match step {
-                    player_objects::Step::Answered { target } => return Ok(TransferAbi::ret(target)),
-                    player_objects::Step::Audit(prediction) => {
-                        let watched = ctx.observe_guest_return(cpu, player_objects::ARGS, move |c, ctx| {
-                            player_objects::compare(&prediction, c, &ctx.runtime().memory())
-                        });
-                        if !watched {
-                            player_objects::dropped();
-                        }
-                    }
-                    player_objects::Step::Guest => {}
+        .implement(&points::AIM_ASSIST_PARAMS, AIM, move |cpu, ctx, pc| {
+            if pc == points::AIM_ASSIST_PARAMS.base {
+                let step = arm::enter(cpu, &mut ctx.memory());
+                if let arm::Step::Answered { target } = step {
+                    return Ok(TransferAbi::ret(target));
                 }
             }
             crate::sim_objects::original(cpu, ctx, pc, false)
         })
         .context_only()
         .optional();
-    b.raw().observe_before(&points::CACHE_TAGS_LOAD, PLAYER_OBJECTS_RESET, |_| player_objects::reset());
-}
-
-/// The map-load observer that clears the pickup scan arm's proof.
-const PLAYER_OBJECTS_RESET: &str = "seats: reset the player-objects arm";
-
-/// The respawn gate's arm at `PLAYER_RESPAWN_READY`, and its reset.
-fn install_respawn(b: &mut Builder) {
-    if !respawn_on(b.switches()) {
-        return;
-    }
-    let point = &points::PLAYER_RESPAWN_READY;
     b.raw()
-        .implement(point, RESPAWN, move |cpu, ctx, pc| {
-            if pc == point.base {
-                let step = {
-                    let mut mem = ctx.memory();
-                    respawn::enter(cpu, &mut mem)
-                };
-                match step {
-                    respawn::Step::Answered { target } => return Ok(TransferAbi::ret(target)),
-                    respawn::Step::Audit(prediction) => {
-                        let watched = ctx.observe_guest_return(cpu, respawn::ARGS, move |c, ctx| {
-                            respawn::compare(&prediction, c, &ctx.runtime().memory())
-                        });
-                        if !watched {
-                            respawn::dropped();
-                        }
-                    }
-                    respawn::Step::Guest => {}
+        .implement(&points::PLAYER_RESPAWN_READY, RESPAWN, move |cpu, ctx, pc| {
+            if pc == points::PLAYER_RESPAWN_READY.base {
+                let step = respawn::enter(cpu, &mut ctx.memory());
+                if let respawn::Step::Answered { target } = step {
+                    return Ok(TransferAbi::ret(target));
                 }
             }
             crate::sim_objects::original(cpu, ctx, pc, false)
         })
         .context_only()
         .optional();
-    b.raw().observe_before(&points::CACHE_TAGS_LOAD, RESPAWN_RESET, |_| respawn::reset());
-}
-
-/// The map-load observer that clears the respawn arm's proof.
-const RESPAWN_RESET: &str = "seats: reset the respawn-ready arm";
-
-fn install_aim(b: &mut Builder) {
-    if !aim_on(b.switches()) {
-        return;
-    }
-    let point = &points::AIM_ASSIST_PARAMS;
     b.raw()
-        .implement(point, AIM, move |cpu, ctx, pc| {
-            if pc == point.base {
-                let step = {
-                    let mut mem = ctx.memory();
-                    arm::enter(cpu, &mut mem)
-                };
-                match step {
-                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
-                    Step::Audit(prediction) => {
-                        let watched = ctx.observe_guest_return(cpu, arm::ARGS, move |c, ctx| {
-                            arm::compare(&prediction, c, &ctx.runtime().memory())
-                        });
-                        if !watched {
-                            arm::dropped();
-                        }
-                    }
-                    Step::Guest => {}
+        .implement(&points::PLAYER_PICKUP_SCAN, PLAYER_OBJECTS, move |cpu, ctx, pc| {
+            if pc == points::PLAYER_PICKUP_SCAN.base {
+                let step = player_objects::enter(cpu, &mut ctx.memory(), &engine::sim_collision::WORLD);
+                if let player_objects::Step::Answered { target } = step {
+                    return Ok(TransferAbi::ret(target));
                 }
             }
             crate::sim_objects::original(cpu, ctx, pc, false)
         })
         .context_only()
         .optional();
-    b.raw().observe_before(&points::CACHE_TAGS_LOAD, AIM_RESET, |_| arm::reset());
+    b.raw().observe_before(&points::CACHE_TAGS_LOAD, RESET, |_| {
+        arm::reset();
+        respawn::reset();
+        player_objects::reset();
+    });
 }
 
 #[cfg(test)]
@@ -297,21 +203,21 @@ mod tests {
     static SEEDS_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn the_aim_arm_owns_its_point_only_when_on() {
+    fn the_kernels_own_their_points_with_no_switch() {
         use crate::sim_native::SimNative;
         use hooks::{Base, Registry};
-        assert!(!aim_on(&Switches::defaults()));
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
-        assert!(plan.chains.get(&points::AIM_ASSIST_PARAMS.base).and_then(|c| c.implement.as_ref()).is_none());
-        // On, with the seats on too: one implementation, the arm's.
-        let on = Switches::defaults().with("impl.sim.aim-assist", true).with("impl.sim.native.seats", true);
-        let mut registry = Registry::new(on);
-        registry.add(&SimNative::for_tests()).unwrap();
-        let plan = registry.build(&Base).unwrap();
-        let implement = plan.chains[&points::AIM_ASSIST_PARAMS.base].implement.as_ref().unwrap();
-        assert_eq!(implement.label, AIM);
+        for (point, label) in [
+            (&points::AIM_ASSIST_PARAMS, AIM),
+            (&points::PLAYER_RESPAWN_READY, RESPAWN),
+            (&points::PLAYER_PICKUP_SCAN, PLAYER_OBJECTS),
+        ] {
+            let implement = plan.chains[&point.base].implement.as_ref().unwrap();
+            assert_eq!(implement.label, label, "{}", point.name);
+        }
+        assert!(plan.chains[&points::CACHE_TAGS_LOAD.base].observe_before.iter().any(|h| h.label == RESET));
     }
 
     #[test]

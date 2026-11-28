@@ -64,9 +64,7 @@ impl Feature for NativePhysics {
                     crate::shadow::run(port.name, cpu, &mut mem, pc, &mut |cpu: &mut CpuAbi, mem: &mut Guest| {
                         port.invoke(cpu, mem, pc)
                     })
-                }).resumes(port.resumes).generated_resumes(port.generated_sites).context_only()
-                    // Inside the light-host skips that share a point.
-                    .after_feature("sim-observer-resources");
+                }).resumes(port.resumes).generated_resumes(port.generated_sites).context_only();
             }
         }
         if physics_on(b.switches()) {
@@ -129,7 +127,6 @@ fn install_physics(b: &mut Builder) {
             .implement(port.point, PHYSICS, move |cpu, ctx, pc| replay(port, cpu, ctx, pc))
             .resumes(port.resumes)
             .context_only()
-            .after_feature("sim-observer-resources")
             .after_feature("sim-submix");
     }
     // The island integrate: `parity::integrate_enter` decides who answers,
@@ -161,7 +158,6 @@ fn install_physics(b: &mut Builder) {
         })
         .resumes(integrate.resumes)
         .context_only()
-        .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
     // The integrate phase and the deactivation test: their arms decide who
     // answers, as the integrate's does. Neither has a frame replay, so the
@@ -192,7 +188,6 @@ fn install_physics(b: &mut Builder) {
             original(cpu, ctx, pc, false)
         })
         .context_only()
-        .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
     // The structure polygon builder, as the phase: the guest's answer is
     // the lifted original. Ordered as the other world entries.
@@ -220,7 +215,6 @@ fn install_physics(b: &mut Builder) {
             original(cpu, ctx, pc, false)
         })
         .context_only()
-        .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
     // The convex agent's process call, as the polygon builder: the guest's
     // answer is the lifted original. Ordered as the other world entries.
@@ -248,7 +242,6 @@ fn install_physics(b: &mut Builder) {
             original(cpu, ctx, pc, false)
         })
         .context_only()
-        .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
     // The closest-feature query, as the process call.
     let query = &points::HAVOK_CLOSEST_QUERY;
@@ -275,7 +268,6 @@ fn install_physics(b: &mut Builder) {
             original(cpu, ctx, pc, false)
         })
         .context_only()
-        .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
     // The add-point call, as the process call. Cdecl: the return pops
     // nothing but its address.
@@ -303,7 +295,6 @@ fn install_physics(b: &mut Builder) {
             original(cpu, ctx, pc, false)
         })
         .context_only()
-        .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
     // The contact commit: the Rust answers it to its world listener walk,
     // which calls Halo's contact callback; the walk is called in place and
@@ -329,7 +320,6 @@ fn install_physics(b: &mut Builder) {
         })
         .resumes(&COMMIT_SITES)
         .context_only()
-        .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
     // The world listener walk: an audited commit's prediction is compared
     // at its entry.
@@ -344,7 +334,6 @@ fn install_physics(b: &mut Builder) {
             original(cpu, ctx, pc, false)
         })
         .context_only()
-        .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
     let test = &points::HAVOK_DEACTIVATION_TEST;
     b.raw()
@@ -370,7 +359,6 @@ fn install_physics(b: &mut Builder) {
             original(cpu, ctx, pc, false)
         })
         .context_only()
-        .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
     // The broadphase batch update: `parity::broadphase_enter` decides who
     // answers. Until the arm is proven since the map load, and at every

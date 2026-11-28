@@ -1,7 +1,8 @@
 //! Seats and rules, phase 7 of the simulation rewrite
 //! (docs/engine/sim-rewrite.md): the observer camera, per-seat control,
 //! look response and targeting, the HUD's per-seat update and the
-//! observer resource predictions, in Rust behind `impl.sim.native.seats`.
+//! observer resource predictions, in Rust. Always installed, with no
+//! switch (`sim_bridge::sim_seats`): a decline is a named, counted error.
 //!
 //! Each [`Seat`] is one guest function with the sites its children return
 //! to. A body runs one straight-line segment per transfer: it buffers its
@@ -21,9 +22,7 @@
 //! register-level port stays as the differential oracle
 //! [`PARAMS_ORACLE`].
 //!
-//! The bodies replace `sim.native_observer_camera` and
-//! `sim.observer-resources`; those switches are gone and the observer
-//! camera stays as the `oracle.observer_camera` test oracle
+//! The observer camera stays as the `oracle.observer_camera` test oracle
 //! (`crate::sim_physics::ORACLES`).
 
 use crate::points::{self, Point};
@@ -84,8 +83,8 @@ fn params(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Step {
 }
 
 /// The aim-assist cone's register-level port: the differential oracle of
-/// `1a50a0`. The point itself belongs to the kernel arm [`aim::arm`]
-/// (`impl.sim.aim-assist`), so it is not one of the [`SEATS`].
+/// `1a50a0`. The point itself belongs to the kernel [`aim::arm`]
+/// (`sim_bridge::present`), so it is not one of the [`SEATS`].
 pub const PARAMS_ORACLE: Seat = Seat {
     point: &points::AIM_ASSIST_PARAMS,
     name: "sim.seats.aim_assist_params",

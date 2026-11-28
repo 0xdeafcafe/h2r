@@ -67,12 +67,14 @@ const fn guest_first(entry: u32, name: &'static str) -> Phase {
 pub const PHASES: &[Phase] = &[
     guest_first(0x0014_d3a0, "players_before"),
     guest(0x0013_8db0, "unknown_138db0"),
-    guest(0x001c_83c0, "ai"),
+    // The AI update, crate::ai_update; its seven systems stay guest.
+    rust(0x001c_83c0, "ai"),
     guest(0x001f_b510, "unknown_1fb510"),
     guest(0x0020_b660, "unknown_20b660"),
     guest(0x0015_c150, "game_engine"),
     guest(0x0019_5ed0, "unknown_195ed0"),
-    guest(0x0020_9310, "script_scheduler"),
+    // The HaloScript scheduler, crate::hs_update; its threads stay guest.
+    rust(0x0020_9310, "script_scheduler"),
     guest(0x0013_8c10, "unknown_138c10"),
     guest(0x000b_6f10, "objects_before_physics"),
     guest(0x001c_3d30, "havok_step"),
@@ -94,7 +96,8 @@ pub const PHASES: &[Phase] = &[
     guest(0x0016_5dc1, "first_person"),
     guest(0x0015_3950, "unknown_153950"),
     guest(0x0019_17b2, "hud"),
-    guest(0x0016_f200, "unknown_16f200"),
+    // The countdown requests, crate::countdown_requests.
+    rust(0x0016_f200, "countdown_requests"),
 ];
 
 /// Phases the guest still runs.
@@ -277,21 +280,22 @@ pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
     run_with(cx, ledger, Present::Always, Bodies::NONE).await
 }
 
-/// Which Rust-owned phases run their Rust body. A phase whose body is off
-/// is a guest call, counted in the ledger like any guest phase.
+/// Whether the Rust-owned phases run their Rust body. A phase whose body
+/// is off is a guest call, counted in the ledger like any guest phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bodies {
-    /// The effects phase, [`crate::effects_phase`]; off only in tests, as
-    /// the lifted reference.
-    pub effects: bool,
+    /// The Rust bodies ([`crate::ai_update`], [`crate::hs_update`], [`crate::effects_phase`],
+    /// [`crate::countdown_requests`]); off only in tests, as the lifted
+    /// reference.
+    pub rust: bool,
 }
 
 impl Bodies {
-    pub const NONE: Bodies = Bodies { effects: false };
-    pub const ALL: Bodies = Bodies { effects: true };
+    pub const NONE: Bodies = Bodies { rust: false };
+    pub const ALL: Bodies = Bodies { rust: true };
 
     fn runs(self, phase: &Phase) -> bool {
-        phase.owner == Owner::Rust && phase.entry == EFFECTS && self.effects
+        phase.owner == Owner::Rust && self.rust
     }
 }
 
@@ -376,7 +380,8 @@ pub fn unisolated() -> u64 {
     UNISOLATED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Phases 26, 28 and 29: first person, HUD and the camera neighbourhood.
+/// Phases 26, 28 and 29: first person, HUD and the countdown requests
+/// ([`crate::countdown_requests`]).
 pub fn is_presentation(phase: usize) -> bool {
     matches!(PHASES[phase].entry, 0x0016_5dc1 | 0x0019_17b2 | 0x0016_f200)
 }
@@ -433,6 +438,18 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
                 || match phase.entry {
                     EFFECTS => crate::effects_phase::run(&cx, RECORD_SIZE).await?
                         == crate::effects_phase::Walked::Declined,
+                    crate::ai_update::ENTRY => {
+                        crate::ai_update::run(&cx, RECORD_SIZE).await?;
+                        false
+                    }
+                    crate::hs_update::ENTRY => {
+                        crate::hs_update::run(&cx, RECORD_SIZE).await?;
+                        false
+                    }
+                    crate::countdown_requests::ENTRY => {
+                        cx.write(|m| crate::countdown_requests::run(m))?;
+                        false
+                    }
                     _ => true,
                 };
             if guest {
@@ -503,9 +520,11 @@ mod tests {
         assert_eq!(PHASES[28].entry, 0x0016_f200);
     }
 
-    /// With the Rust bodies on, the effects phase makes no guest call of
-    /// its own: the ledger has 0 for it and 1 for every other phase, and
-    /// the walk's callees run where the phase did.
+    /// With the Rust bodies on, the AI update (disabled), the scheduler
+    /// (scripts off), the effects phase and the countdown requests make no
+    /// guest call of their own: the ledger has 0 for them
+    /// and 1 for every other phase, and the walk's callees run where the
+    /// phase did.
     #[test]
     fn effects_phase_ledger_is_zero() {
         use crate::effects_phase::tests::{STACK, answer, guest};
@@ -514,6 +533,10 @@ mod tests {
         let clock = 0x0052_0100;
         g.map(crate::points::TICK_CLOCK.base & !0xfff, 0x1000);
         g.put_u32(crate::points::TICK_CLOCK.base, clock).put_u32(clock + CLOCK_COUNTER, 5);
+        // The countdown requests' bytes, none pending; scripts off; AI
+        // disabled (its globals at a zero page).
+        g.map(crate::countdown_requests::FIRST, 2).map(crate::hs_update::ENABLED, 1);
+        g.map(crate::ai_update::GLOBALS, 4).map(AI_GLOBALS, 4).put_u32(crate::ai_update::GLOBALS, AI_GLOBALS);
         let ledger: &'static Mutex<Ledger> = Box::leak(Box::new(Mutex::new(Ledger::new())));
         let f = move |cx: Cx| -> EntryFuture { Box::pin(run_with(cx, ledger, Present::Always, Bodies::ALL)) };
         let record = STACK - RECORD_SIZE;
@@ -528,8 +551,12 @@ mod tests {
         let effects = PHASES.iter().position(|p| p.entry == EFFECTS).unwrap();
         assert_eq!(PHASES[effects].owner, Owner::Rust);
         for i in 0..PHASES.len() {
-            assert_eq!(l.calls(i), u32::from(i != effects), "{}", PHASES[i].name);
+            assert_eq!(l.calls(i), u32::from(PHASES[i].owner == Owner::Guest), "{}", PHASES[i].name);
         }
+        assert_eq!(PHASES[28].owner, Owner::Rust, "the countdown requests");
+        assert!(!targets_of(&run).contains(&crate::countdown_requests::ENTRY));
+        assert!(!targets_of(&run).contains(&crate::hs_update::ENTRY));
+        assert!(!targets_of(&run).contains(&crate::ai_update::ENTRY));
         assert_eq!(l.total_calls(), guest_phases() as u64);
         let targets: Vec<u32> = run.calls.iter().map(|c| c.target).collect();
         assert!(!targets.contains(&EFFECTS));
@@ -538,6 +565,13 @@ mod tests {
         assert_eq!(targets[at - 1], PHASES[effects - 1].entry);
         let after = targets.iter().position(|&t| t == PHASES[effects + 1].entry).unwrap();
         assert_eq!(after - at, 9, "the walk's nine callees");
+    }
+
+    /// A zero page for the AI globals in the driver tests.
+    const AI_GLOBALS: u32 = 0x0057_0000;
+
+    fn targets_of(run: &crate::entry::testing::Run) -> Vec<u32> {
+        run.calls.iter().map(|c| c.target).collect()
     }
 
     #[test]

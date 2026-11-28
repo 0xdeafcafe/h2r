@@ -14,12 +14,10 @@ mod hs_dispatch;
 mod hs_eval;
 mod hs_globals;
 pub mod hs_parity;
-mod hs_scheduler;
 mod hs_thread;
 
 const HS: &str = "sim.native.hs";
 const HS_POINTS: &[&points::Point] = &[
-    &points::SCRIPT_UPDATE,
     &points::HS_THREAD_EXECUTE,
     &points::HS_GLOBAL_READ,
     &points::HS_GLOBAL_STORED,
@@ -102,7 +100,7 @@ impl Feature for SimNative {
         for &(point, name, body) in ENTRIES {
             let owned = owns_anim(point.base)
                 || crate::sim_objects::owns(point.base)
-                || crate::sim_seats::owns(b.switches(), point.base);
+                || crate::sim_seats::owns(point.base);
             crate::shadow::register(name, crate::shadow::SIM_NATIVE, point, !owned);
             if owned {
                 continue;
@@ -122,7 +120,6 @@ impl Feature for SimNative {
         }
         if b.switches().implementation(HS, false) {
             if self.missing_hs_entries.is_empty() {
-                hs_scheduler::install(b);
                 hs_thread::install(b);
                 hs_eval::install(b);
                 hs_globals::install(b);
@@ -139,11 +136,9 @@ impl Feature for SimNative {
         crate::sim_objects::install(b);
         // Every effect port, always (crate::sim_effects).
         crate::sim_effects::install(b);
-        // Phase 7: the seats, as the shadow's guest-authoritative arm
-        // first (crate::sim_seats). Registers every seat with the shadow
-        // whatever the switch says; installs them when it is on.
+        // Phase 7: the seats (crate::sim_seats), and the aim-assist,
+        // respawn-gate and pickup-scan kernels (crate::present), always.
         crate::sim_seats::install(b);
-        // The aim-assist cone's kernel arm (crate::present), when on.
         crate::present::install(b);
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to

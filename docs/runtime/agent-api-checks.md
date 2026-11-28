@@ -75,18 +75,25 @@ whose `declined` adds its `dropped` audits), `sim_objects::native_walk::stats`
 (`objects.walk.<entry>`, one arm per walk-table body: `answered` its
 segments, `declined` its refused calls, nothing `checked`),
 the graph walk's `arm_stats` and `stats`, `sim_anim::manager::arm::stats`,
-`sim_collision::WORLD.stats`, the shadow registry's `sim.seats` and
-`sim.effects` groups, `sim_seats::aim::arm::status` (`seats.aim`, the
-aim-assist cone's kernel arm, whose `declined` adds its unwatched
-audits), `sim_seats::device::arm::status` (`seats.device`, the bound
-controller's device read, likewise), `sim_seats::leaf::status`
-(`seats.leaf.<name>`, one arm per leaf callee, likewise), and `sim_sound::voice_arm::stats` (`sound.voices`). A source without a counter reports 0 for that
+`sim_collision::WORLD.stats`, the shadow registry's `sim.effects` group,
+`sim_bridge::sim_seats::stats` (one arm per seat body, `sim.seats.<entry>`:
+`answered` its segments, `declined` its unported paths),
+`sim_seats::aim::arm::status`, `sim_seats::respawn::status` and
+`sim_seats::player_objects::status` (`seats.aim`, `seats.respawn`,
+`seats.player-objects`: `answered` and `declined` only, a decline being an
+unported path the lifted body runs), `sim_seats::device::arm::status`
+(`seats.device`, the bound
+controller's device read, whose `declined` adds its unwatched audits),
+`sim_seats::leaf::status` (`seats.leaf.<name>`, one arm per leaf callee,
+likewise), and `sim_sound::voice_arm::stats` (`sound.voices`). A source without a counter reports 0 for that
 field: physics and collision have no `checked` (it is `matched` plus
 `mismatched`) and no `answered`; `anim.manager`'s `differed` is
 `mismatched`; shadow ports have no `answered` and their
 `skipped` is `declined`; `sound.voices` counts ticks for `checked`
 (sampled ticks with voices), `matched` and `mismatched`, and voices for
-`answered`. `effects-parts` is the effects phase in Rust, always on
+`answered`. `seats` has no switch (its `switch` is empty, `on` true) and is
+`clean` once something answered with nothing declined or mismatched.
+`effects-parts` is the effects phase in Rust, always on
 with no switch (its `switch` is empty): its
 `effects.damage`, `effects.object`, `effects.sound`,
 `effects.character`, `effects.coln`, `effects.decal` and `effects.light`

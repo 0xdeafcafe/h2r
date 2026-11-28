@@ -75,7 +75,7 @@ mod tests {
                 },
                 PhaseRow {
                     entry: "0x0016f200".into(),
-                    name: "unknown_16f200".into(),
+                    name: "countdown_requests".into(),
                     owner: "rust".into(),
                     calls: 0,
                     ns: 0,

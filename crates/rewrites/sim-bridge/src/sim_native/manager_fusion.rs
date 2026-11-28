@@ -145,7 +145,7 @@ mod tests {
                 r.add(&Observe(&setup.point)).unwrap();
             }
             let mut plan = r.build(&Base).unwrap();
-            super::only_anim(&mut plan);
+            super::super::only_anim(&mut plan);
             plan.install(&rt).unwrap();
             let mut ctx = ExecCtx::new(rt.clone(), 1);
             let lookup = rt.read_dispatch(|d| d.override_handler(LOOKUP)).unwrap();

@@ -152,67 +152,24 @@ fn declines_are_counted_by_reason() {
     g.set_u32(DATA + 2 * 12 + 8, 0x0100_0000).unwrap();
     assert_eq!(enter(&mut { cpu }, &mut g), Step::Guest);
     assert_eq!(status().declined, [1, 1, 1]);
-    assert_eq!(status().checked + status().answered, 0);
+    assert_eq!(status().answered, 0);
 }
 
-/// The arm's whole life: compare, take over with audits, stop for good on
-/// a mismatch, and start over at a reset.
+/// The kernel answers every call from the first, with nothing proven
+/// first, and a reset clears the counters.
 #[test]
-fn the_arm_compares_then_takes_over_audits_and_stops_on_a_mismatch() {
+fn the_kernel_answers_from_the_first_call() {
     let _one = ARM.lock().unwrap_or_else(|e| e.into_inner());
     reset();
     let (cpu, mut g) = call();
-    while status().matched < PROVEN_AFTER {
-        let mut entering = cpu;
-        let Step::Audit(p) = enter(&mut entering, &mut g) else {
-            panic!("unproven calls are the guest's")
-        };
-        assert_eq!(entering, cpu, "an audited call leaves the registers alone");
-        let after = guest_answer(&p, &cpu, &mut g);
-        compare(&p, &after, &g);
-    }
-    assert_eq!((status().mismatched, status().answered), (0, 0));
-
-    let (mut answered, mut audited) = (0, 0);
-    for _ in 0..2 * AUDIT_EVERY {
+    for _ in 0..3 {
         g.set_u32(OUT + 0x14, 0).unwrap();
         let mut entering = cpu;
-        match enter(&mut entering, &mut g) {
-            Step::Answered { target } => {
-                answered += 1;
-                assert_eq!(target, RETURN);
-                assert_eq!(entering.esp, STACK + 8);
-                assert_eq!(
-                    g.u32(OUT + 0x14).unwrap(),
-                    0x20,
-                    "the answer writes the record"
-                );
-            }
-            Step::Audit(p) => {
-                audited += 1;
-                let after = guest_answer(&p, &cpu, &mut g);
-                compare(&p, &after, &g);
-            }
-            Step::Guest => panic!("an answerable call is never declined"),
-        }
+        assert_eq!(enter(&mut entering, &mut g), Step::Answered { target: RETURN });
+        assert_eq!(entering.esp, STACK + 8);
+        assert_eq!(g.u32(OUT + 0x14).unwrap(), 0x20, "the answer writes the record");
     }
-    assert_eq!((answered, audited), (2 * AUDIT_EVERY - 2, 2));
-
-    // A mismatch at an audit: every call is the guest's from then on.
-    let audit = (0..AUDIT_EVERY)
-        .find_map(|_| match enter(&mut { cpu }, &mut g) {
-            Step::Audit(p) => Some(p),
-            _ => None,
-        })
-        .expect("an audit within AUDIT_EVERY calls");
-    let mut after = guest_answer(&audit, &cpu, &mut g);
-    after.edx ^= 1;
-    compare(&audit, &after, &g);
-    assert_eq!(status().mismatched, 1);
-    for _ in 0..2 * AUDIT_EVERY {
-        assert!(matches!(enter(&mut { cpu }, &mut g), Step::Audit(_)));
-    }
-
+    assert_eq!(status(), Status { answered: 3, declined: [0; 3] });
     reset();
     assert_eq!(status(), Status::default());
 }

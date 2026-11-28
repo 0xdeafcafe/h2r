@@ -54,9 +54,6 @@ pub(crate) fn register_viewer_skips(
     host_light: bool,
 ) -> anyhow::Result<()> {
     if host_light {
-        features
-            .add(&sim_bridge::sim_observer::ObserverResources)
-            .map_err(anyhow::Error::msg)?;
         // The map status poll memo (docs/runtime/cache-slots.md, "The status poll").
         features
             .add(&sim_bridge::sim_status_poll::StatusPoll)

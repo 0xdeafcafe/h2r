@@ -30,7 +30,7 @@ pub const RESET: &str = "effect bodies: reset the counters";
 
 /// The bodies to install: all but the update, which the effect port owns.
 pub fn bodies() -> impl Iterator<Item = &'static Body> {
-    TABLE.bodies().iter().filter(|b| b.point.base != points::EFFECT_UPDATE.base)
+    TABLE.bodies().iter().copied().filter(|b| b.point.base != points::EFFECT_UPDATE.base)
 }
 
 pub(crate) fn install(b: &mut Builder) {

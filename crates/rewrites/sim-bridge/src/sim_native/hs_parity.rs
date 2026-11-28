@@ -48,16 +48,14 @@ impl Counter {
 }
 
 pub(super) static THREAD: Counter = Counter::new("thread");
-pub(super) static SCHEDULER: Counter = Counter::new("scheduler");
 pub(super) static EVALUATOR: Counter = Counter::new("evaluator");
 pub(super) static GLOBALS: Counter = Counter::new("globals");
 pub(super) static GLOBAL_STORE: Counter = Counter::new("global_store");
 pub(super) static DISPATCH: Counter = Counter::new("dispatch");
 
 /// Process totals. A declined call supplies no evidence of parity.
-pub fn stats() -> [(&'static str, Stats); 6] {
+pub fn stats() -> [(&'static str, Stats); 5] {
     [
-        &SCHEDULER,
         &THREAD,
         &EVALUATOR,
         &GLOBALS,

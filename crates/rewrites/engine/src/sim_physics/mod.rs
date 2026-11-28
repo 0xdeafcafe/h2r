@@ -131,8 +131,7 @@ pub const PHYSICS_PORTS: &[Port] = {
 /// are labels, not switches. The unit aim port stays in `PORTS` under its
 /// label, and the unit movement body runs the same code
 /// (`unit_aim::step`). The observer camera is a seat
-/// (`crate::sim_seats::camera`) under `impl.sim.native.seats`, which
-/// retired its switch.
+/// (`crate::sim_seats::camera`), always installed.
 pub const ORACLES: &[Port] = {
     use Controls::*;
     use points::*;

@@ -352,8 +352,9 @@ local seats drive 16% of the thread. Phantom seats may not run most of it,
 so census A's phantom arm decides whether this phase matters to hosts or
 only to players.
 
-Built behind `impl.sim.native.seats` (`crates/rewrites/engine/src/sim_seats`,
-one entry per function):
+Always installed, with no switch and no guest arm
+(`crates/rewrites/engine/src/sim_seats`, one entry per function;
+installed by `crates/rewrites/sim-bridge/src/sim_seats.rs`):
 
 | Entry | Function |
 |---|---|
@@ -366,18 +367,29 @@ one entry per function):
 | `16e5e0` | observer resource walk |
 | `1a5370`, `1a4900`, `1a4c00` | target search, follow update, shot aim: proven on the disc by the shadow arm rather than the synthetic differential |
 
-The entries install as the shadow's guest-authoritative arm: `shadow.enable`
-on, the original answers and each body is checked against it on a copy;
-checks off, the bodies answer. The switch retires `native_observer_camera`.
+A body that declines is on a path not ported yet. That is a named, counted
+error, not a fallback: `sim.seats.<entry>` in `sim.arms` counts it under
+`declined`, the first one each map is logged, and the lifted body runs that
+one segment. The seats differential tests hold each body to the lifted code.
 
-The aim-assist cone, the bound controller's device read and the eight leaf
-callees are kernels with their own arms, described in
+Three more guest functions are kernels, always installed
+(`crates/rewrites/sim-bridge/src/present.rs`), each answering every call it
+can and counting the rest by name:
+
+| Point | Kernel | Unported paths (`declined`) | `sim.arms` |
+|---|---|---|---|
+| `1a50a0` aim-assist cone | `sim_seats::aim::arm` over `sim-objects/src/aim_assist.rs` | `float`, `triggers` (over 16), `fault` | `seats.aim` |
+| `15dd40` respawn gate | `sim_seats::respawn`: `158a50`, `15db30`, `15b2f0`, the countdown with `a7840` and `19eb90` | `post` (a host's event message), `announce` (a local player's HUD text and sound), `every-player`, `fault` | `seats.respawn` |
+| `1508e0` pickup scan | `sim_seats::player_objects`: `bb050` through the collision kernel, the type 7 and 11 link walk, `150e30`'s early exits | `visit`, `candidate` (a type 2 or 3 handle: the Halo 1 prompt hook observes `150e30`), `pickup`, `fault` | `seats.player-objects` |
+
+The bound controller's device read and the eight leaf callees are kernels
+with their own arms, described in
 [sim-rewrite-sketches.md](sim-rewrite-sketches.md#seats-and-rules-phase-7-kernels).
+Those two still prove themselves against the guest after each map load
+before they answer.
 
-`observer-resources` (the trim that spares the headless host most of the
-prediction walk) stays on by default until the seats are promoted. With the
-seats on it stands down, because the seats' resource walk covers its point;
-with them off it keeps hosts fast. It goes when the seats default on.
+The seats' resource walk owns the prediction point `16e5e0`, so the light
+host's resource trim is gone with the seats' switch.
 
 **Network replication.** Stays guest. Rust subsystems feed it the same arena
 state.
@@ -401,7 +413,7 @@ still uses them.
 | **4** | Sound sim | `impl.sim.native.sound` | Opt-in native arm; the voice update is its shadow arm (`sound.voices` in `sim.arms`). Promote after the ladder matches, including voice start and completion order per tick (`sound.voices` clean with answers), and Waterworks saves ≥ 0.6 ms/tick. |
 | **5** | Havok world and glue, with the MOPP box query | `impl.sim.native.physics` | Bar E (decision 8.1). Behaviour suites pass. Cross-arch hashes identical. ≥ 1.0 ms more. Retires `native_havok_solver`, `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`. |
 | **6** | Effects, particles, decals | `impl.sim.native.effects` | Ladder clean. ≥ 0.4 ms more. **Waterworks ≤ 7.5 ms/tick** if *k* ≥ 3.3; otherwise after phase 7. |
-| **7** | Seats and rules: observer and cameras, player control, aim assist, HUD state | `impl.sim.native.seats` (built) | Ladder clean. ≥ 0.9 ms more on four local seats. Retires `native_observer_camera` (done) and, when the seats default on, `observer-resources`. Skipped for hosts if phantom seats do not run it. |
+| **7** | Seats and rules: observer and cameras, player control, aim assist, HUD state | Always on, no switch | Ladder clean with every `seats.*` arm at 0 `declined`. ≥ 0.9 ms more on four local seats. |
 | **campaign** | HaloScript VM, AI, pathfinding, in the order census B gives; may move ahead of 4 | one per subsystem | Campaign guest CPU ≤ 12 ms at the user's 4x case. |
 
 Projected Waterworks ms/tick after each phase, from the attribution's model

@@ -121,12 +121,19 @@ reached again:
 Because a continuous thread completes at its wake tick and only restarts on
 the next update, `(sleep 10)` in a continuous script repeats every 11 ticks.
 
-`hs_update` (`0x00209310`) reads `game_time + 8` once. It walks occupied
-slots in order with `data_next_index`, which re-reads the high-water mark, and
-runs every thread that is not category 4, has wake >= 0 and wake <= now. It
-stops if the scheduler is disabled, then tail-jumps to `0x001deed0`
-(`Engine::after_update`). So a thread woken by an earlier slot runs in the
-same tick, and one woken by a later slot runs on the next.
+`hs_update` (`0x00209310`) is Rust: tick phase 8 of the tick driver
+(`crates/rewrites/engine/src/hs_update.rs`). Each thread it picks runs in
+the lifted execute `0x00209850`, counted in `hs_update::Stats::executed`.
+
+| Step | What the update does |
+|---|---|
+| 1 | returns at once, with no tail call, if scripts are off (`[0x4f9388]` 0); else reads `game_time + 8` once |
+| 2 | walks occupied slots in order with `data_next_index`, which re-reads the high-water mark |
+| 3 | runs every thread that is not category 4 and has `0 <= wake <= now` |
+| 4 | stops if the scheduler is disabled, then tail-calls `0x001deed0` (`Engine::after_update`) |
+
+So a thread woken by an earlier slot runs in the same tick, and one woken by
+a later slot runs on the next.
 
 ## Evaluation
 
@@ -222,13 +229,12 @@ leaves the others running:
 ## Live comparison
 
 The HaloScript arm in `crates/rewrites/sim-bridge/src/sim_native.rs` installs
-read-only observers when the image exports the map initialiser and all six
-execution entries below. An incomplete image lists the missing entries at
+read-only observers when the image exports the map initialiser and all five
+execution entries below (the scheduler itself is Rust, above). An incomplete image lists the missing entries at
 startup. A declined comparison leaves the call out of the match count.
 
 | Counter | Guest entry | What Rust compares |
 |---|---|---|
-| `scheduler` | update `0x00209310`, execute `0x00209850` | The ordered salted thread handles through the end of one update. The scheduler captures the entry tick and reads the pool again after each dispatched thread. |
 | `thread` | execute `0x00209850` | An ordinary script starting at its root frame. A separate `Vm` runs the same scalar expression to completion or its first self-sleep, seeded with the live globals it reaches; a sleep scales its duration with the live tick rate, and the caller's x87 rounding must be nearest for the conversion's `fistp`. The observer compares the frame chain (parent, expression and cursor of each frame), the top frame, the wake state, the result bits and those globals. |
 | `evaluator` | evaluate `0x002099f0` | A literal or scenario-global atom and its cast into the destination, or the parent's destination, new frame, expression and first-entry flag for a call. |
 | `dispatch` | evaluate arguments `0x00209d50` | The signature of the builtin selected by the expression, the argument block pointer, next argument and frame cursor, and the child frame for a nested call. |
@@ -241,8 +247,7 @@ types against the cached map program before using it. Map initialisation
 discards the cache. External bindings, engine calls and the thread-facing
 builtins (`sleep` with a named script target, `sleep_forever`,
 `sleep_until`, `wake`, `begin_random`) lie outside this check. The
-scheduler and the individual VM comparisons also observe calls made by
-those scripts.
+individual VM comparisons also observe calls made by those scripts.
 
 Read [`hs.parity`](../runtime/agent-api-input.md#hsparity) before and after a
 campaign encounter. A counter needs observed matches to establish coverage.

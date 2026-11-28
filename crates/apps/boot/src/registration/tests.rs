@@ -909,12 +909,12 @@ fn light_native_subsystems_follow_the_profile_and_explicit_overrides() {
 #[test]
 fn viewer_skips_follow_the_light_profile_and_independent_switches() {
     use engine::points::PREDICT_RESOURCES;
+    // The seats' prediction walk owns the point (sim-bridge/src/sim_seats.rs):
+    // no viewer skip hooks it.
     for (light, spec, predicted) in [
         (false, "", false),
         (false, "impl.sim=on", false),
-        (true, "", true),
-        (true, "-impl.sim.observer-resources", false),
-        (true, "impl.sim.native.seats", false),
+        (true, "", false),
         (true, "-impl.sim", false),
     ] {
         let mut registry = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());

@@ -2314,3 +2314,41 @@ mod input_stage {
         assert_eq!(Refusal::LookHelper.name(), "input.look-helper");
     }
 }
+
+/// Tick phase 29 (`engine::countdown_requests`) against the lifted
+/// `0x16f200`: each request byte, set or clear, under each camera
+/// override kind, and every byte of RAM after.
+#[test]
+fn countdown_requests_match_lifted() {
+    use engine::countdown_requests::{self as requests, ENTRY, FIRST};
+    let Some((image, ram)) = image() else { return };
+    let mut code = at(image, ENTRY);
+    const CAMERA: u32 = PHASE;
+    let mut cases = 0;
+    for first in [0u8, 1, 0x80] {
+        for second in [0u8, 1] {
+            for kind in [0u32, 1, 2, 3] {
+                let why = format!("requests {first} {second}, camera kind {kind}");
+                let mut mem = ram.clone();
+                word(&mut mem, STACK, EXIT);
+                word(&mut mem, engine::view_records::CAMERA_OVERRIDE, CAMERA);
+                word(&mut mem, CAMERA + 8, kind);
+                assert!(mem.load(FIRST, &[first, second]));
+                for o in (0..0x40).step_by(4) {
+                    word(&mut mem, engine::view_records::COUNTDOWN + o, 0x5555_0000 + o);
+                }
+                let mut port = engine::FlatMemory { base: 0, bytes: mem.bytes.clone() };
+                requests::run(&mut port).unwrap_or_else(|e| panic!("{why}: {e:?}"));
+                let mut cpu = Cpu { eip: ENTRY, eflags: 0x2, mxcsr: 0x1fa0, ..Default::default() };
+                cpu.gpr[4] = STACK;
+                lifted::code::run_until(&mut code, &mut cpu, &mut mem, 10_000, |c| c.eip == EXIT)
+                    .unwrap_or_else(|e| panic!("{why}: {e}"));
+                // The saved `esi` below the return address is dead stack.
+                let dead = (STACK - 0x10) as usize..(STACK + 4) as usize;
+                assert_eq!(first_outside(&mem.bytes, &port.bytes, &dead), None, "{why}: first differing byte");
+                cases += 1;
+            }
+        }
+    }
+    assert_eq!(cases, 24);
+}
