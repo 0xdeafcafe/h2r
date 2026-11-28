@@ -206,6 +206,22 @@ pub mod layers_global {
 /// The target the layers draw into and their composite samples at stage 3.
 pub const LAYERS_TARGET: u8 = 0x13;
 
+/// What the layers' setup hands `0x000143c0` for stages 0..3
+/// (`0x000268c0`..`0x000268cf`): the fog patch's bitmap datum (`+0x18` of
+/// the `[0x004857b8]` tag's data) and each layer's image word, which the
+/// binder takes as signed.
+pub fn layers_bitmap(mem: &dyn GuestMemory) -> Result<(u32, [u16; 4]), MemFault> {
+    use layers_global as g;
+    let datum = mem.u32(global::DATUM)?;
+    let tag = mem.u32(mem.u32(g::TAG_TABLE)?.wrapping_add((datum & 0xffff) << 4).wrapping_add(8))?;
+    let bitmap = mem.u32(tag.wrapping_add(g::BITMAP_DATUM))?;
+    let mut images = [0; 4];
+    for (n, i) in images.iter_mut().enumerate() {
+        *i = mem.u16(g::LAYERS + g::LAYER_STRIDE * n as u32)?;
+    }
+    Ok((bitmap, images))
+}
+
 /// The layers' fan into target `0x13` (`0x00026880`, `0x00026ca0`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LayersFan {
@@ -318,14 +334,8 @@ pub fn layers_combiner(full: bool, colours: [u32; 4]) -> [u32; WORDS] {
 /// MXCSR and x87 control word; `mem` takes the callback's depth write.
 pub fn layers(mem: &mut dyn GuestMemory, mxcsr: u32, x87_control: u16, rect_at: u32) -> Result<LayersFan, Error> {
     use layers_global as g;
-    let datum = mem.u32(global::DATUM)?;
-    let tag = mem.u32(mem.u32(g::TAG_TABLE)?.wrapping_add((datum & 0xffff) << 4).wrapping_add(8))?;
-    let bitmap = mem.u32(tag.wrapping_add(g::BITMAP_DATUM))?;
+    let (bitmap, images) = layers_bitmap(&*mem)?;
     let layer = |n: u32| g::LAYERS + g::LAYER_STRIDE * n;
-    let mut images = [0; 4];
-    for (n, i) in images.iter_mut().enumerate() {
-        *i = mem.u16(layer(n as u32))?;
-    }
     let scale = mem.u32(composite_global::SCALE)?;
     let pack = |at: u32| -> Result<u32, Error> {
         crate::glow::pack_rgb([mem.u32(at)?, mem.u32(at + 4)?, mem.u32(at + 8)?], scale, x87_control)

@@ -3,7 +3,8 @@
 //! `engine::fog_fans`'; this draws each fan as one four-vertex strip
 //! through [`crate::glow::QuadDrawer::grid_raster`] with the guest's own
 //! combiner block, on the frame graph's surfaces for their roles (the
-//! device's slots) and the fog's bitmaps loaded at map load.
+//! device's slots) and the bitmap textures the guest binds, decoded from
+//! their headers.
 //!
 //! | Fan (setup) | Into | Stages | Raster |
 //! |---|---|---|---|
@@ -117,12 +118,9 @@ pub use gpu::{FanTarget, FogFansGpu};
 
 #[cfg(feature = "gpu")]
 mod gpu {
-    use std::collections::HashMap;
-
     use super::{Coords, FanDraw, FanRaster};
     use crate::fog_quad::{BLEND_COLOUR, blend, blend_constant};
     use crate::glow::{GridFrame, PostSurface, QuadDrawer};
-    use crate::gpu::Image;
     use crate::screen_gpu::{PostRaster, StripVertex};
 
     /// Where a fan draws, its uniforms' arena, and what each stage
@@ -136,34 +134,17 @@ mod gpu {
         pub stages: [Option<(&'a wgpu::TextureView, (u32, u32))>; 4],
     }
 
-    /// The fans' programs, pipelines, bitmaps and target-3 copy on one
-    /// device, kept across frames.
+    /// The fans' programs, pipelines and target-3 copy on one device,
+    /// kept across frames.
     #[derive(Default)]
     pub struct FogFansGpu {
         quads: QuadDrawer,
-        /// The fog's bitmaps by (datum, image), for the image set they
-        /// were uploaded from.
-        bitmaps: HashMap<(u32, u32), wgpu::TextureView>,
-        generation: u64,
         snapshot: Option<wgpu::Texture>,
     }
 
     impl FogFansGpu {
         pub fn new() -> Self {
             Self::default()
-        }
-
-        /// `image`'s texture, uploaded once per `generation` of the map's
-        /// image set.
-        pub fn bitmap(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, generation: u64, key: (u32, u32), image: &Image) -> wgpu::TextureView {
-            if generation != self.generation {
-                self.bitmaps.clear();
-                self.generation = generation;
-            }
-            self.bitmaps
-                .entry(key)
-                .or_insert_with(|| crate::gpu::texture(device, queue, image, "native fog fans bitmap"))
-                .clone()
         }
 
         /// A copy of `source`'s texture as it is now, recorded into
