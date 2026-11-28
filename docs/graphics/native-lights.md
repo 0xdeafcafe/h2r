@@ -163,8 +163,8 @@ frame it cannot take panics (`scene_frame::fail_frame`):
 | Panic | When |
 |---|---|
 | `lights: frame host` | a host is set and does not draw the scene's light layers (`native_lights::scene_path_ready`, the host's `draws_scene`) |
-| `lights: frame plan` | the frame's plan refused (`frame::plan`) |
-| `lights: frame passes` | a light's passes' entry plan refused (`passes::plan`) |
+| `lights: frame plan <refusal>` | the frame's plan refused (`frame::plan`), by its `light_gather::Refusal` (`Memory`, `Layout`, `Unsupported`, `Residency`) |
+| `lights: frame passes <refusal>` | a light's passes' entry plan refused (`passes::plan`), by its refusal |
 
 Each light's passes (`native_lights/passes.rs`, `scene_passes`) make
 only their first step, the item lists `0x00040e90` (the item body,
@@ -191,12 +191,14 @@ The additional casters' pair (`0x00030ed0`) is decided at the item lists
 by `passes::additional::empty`. When no candidate's first match in the
 current visibility list is marked `0x1000`, the pair makes no suffix and
 draws nothing, so the light draws its own steps. A pair that would make a
-suffix needs the marker lookup and the suffix's record walk, which are
-not built: `lights: additional_casters`.
+suffix needs the marker lookup `0x000b8d30`, the object's records
+`0x00133790`, the suffix's item lists `0x00044ac0` and its shadow setup
+`0x000494b0`, which are not built: `lights: additional_casters
+Unsupported` (another refusal: the candidates did not read).
 
 | Panic | Cause |
 |---|---|
-| `lights: <cause>` | `unread`, `constants`, `projection`, `light`, `additional_casters`, `host` |
+| `lights: <cause>` | `unread`, `constants`, `projection`, `light`, `additional_casters`, `host`; `constants` and `projection` with the port's `light_constants::Error` where one stopped them, `additional_casters` with its refusal |
 | `lights: group <refusal>` | the first step that did not read whole (`typed_groups::GroupRefusal`): `layer`, `memory`, `suffix`, `mask`, `sort`, `pass`, `projection`, or `entry_<cause>` (`scene_extract::light_groups::Cause`) |
 
 Tests: `a_light_the_scene_takes_returns_after_its_lists_and_the_guest_draws_nothing`
@@ -501,7 +503,7 @@ with no renderer its slots draw nothing.
 
 | Panic | When |
 |---|---|
-| `lights: first_person plan`, `lights: first_person records plan` | the loop's or a slot's records plan refused |
+| `lights: first_person plan <refusal>`, `lights: first_person records plan <refusal>` | the loop's or a slot's records plan refused |
 | `lights: first_person host` | a host is set and does not draw the scene's light layers |
 | `lights: first_person <cause>` | a slot the scene cannot take, by the dynamic lights' causes (`unread`, `constants`, `group <refusal>`, `light`, `host`) |
 | `lights: first_person record <refusal>` | a record the guest's per-part calls made (`Made::Guest`) |

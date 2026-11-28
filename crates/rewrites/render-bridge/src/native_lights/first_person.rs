@@ -69,7 +69,7 @@ pub(super) fn install(b: &mut Builder) {
                 };
                 let plan = match plan {
                     Ok(plan) => plan,
-                    Err(_) => unimplemented!("lights: first_person plan"),
+                    Err(why) => unimplemented!("lights: first_person plan {why:?}"),
                 };
                 // Each slot stops after its records, draws from its groups
                 // at once on the first person's target (bound as the loop
@@ -126,7 +126,7 @@ pub(super) fn install(b: &mut Builder) {
                 };
                 let plan = match plan {
                     Ok(plan) => plan,
-                    Err(_) => unimplemented!("lights: first_person records plan"),
+                    Err(why) => unimplemented!("lights: first_person records plan {why:?}"),
                 };
                 hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
                     Box::pin(async move {
@@ -211,8 +211,7 @@ fn scene_slot(mem: &mut dyn GuestMemory, plan: &first_person::Plan, call: &Call,
             SCENE_SLOTS.fetch_add(1, Ordering::Relaxed);
         }
         Ok(false) => {}
-        Err(Dropped::Group(refusal)) => unimplemented!("lights: first_person group {}", refusal.name()),
-        Err(why) => unimplemented!("lights: first_person {}", why.name()),
+        Err(why) => unimplemented!("lights: first_person {}", why.message()),
     }
     true
 }
@@ -256,9 +255,9 @@ struct SceneSlot {
 
 impl SceneSlot {
     fn read(mem: &dyn GuestMemory, call: &Call, fpu: Fpu) -> Result<Self, Dropped> {
-        let globals = typed::plan(mem, call, fpu, typed::Site::FirstPerson).map_err(|_| Dropped::Constants)?;
+        let globals = typed::plan(mem, call, fpu, typed::Site::FirstPerson).map_err(|e| Dropped::Constants(Some(e)))?;
         let constants = super::constants_of(mem, &globals.light, globals.flags, call.definition)
-            .ok_or(Dropped::Constants)?;
+            .ok_or(Dropped::Constants(None))?;
         let inputs = light_passes::read(&Ro(mem), globals.flags, constants.definition_flags)
             .ok_or(Dropped::Unread)?;
         let steps = light_passes::first_person_steps(&inputs);

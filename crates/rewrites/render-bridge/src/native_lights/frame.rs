@@ -49,7 +49,7 @@ pub(super) fn install(b: &mut Builder) {
                 };
                 let plan = match plan {
                     Ok(plan) => plan,
-                    Err(_) => fail_frame(FrameDropped::Plan),
+                    Err(why) => fail_frame(FrameDropped::Plan(why)),
                 };
                 hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
                     Box::pin(async move {
