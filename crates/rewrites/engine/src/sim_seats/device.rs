@@ -183,17 +183,29 @@ fn above(fp: &mut Fp, a: u32, b: u32) -> bool {
 /// The device read, or `None` when an operand left the exact range or
 /// the x87 model refused a step.
 pub fn read(d: &Device, fpu: &mut impl Fpu) -> Option<Outcome> {
-    let mut fp = Fp::new();
+    read_with(&mut Fp::new(), d, fpu)
+}
+
+/// [`read`] under the guest's `mxcsr` ([`Fp::tracked`]; it must pass
+/// [`det::guest_env`]): the outcome and the MXCSR after it, PE raised
+/// when an operation was inexact.
+pub fn read_tracked(d: &Device, mxcsr: u32, fpu: &mut impl Fpu) -> Option<(Outcome, u32)> {
+    let mut fp = Fp::tracked(mxcsr);
+    let outcome = read_with(&mut fp, d, fpu)?;
+    Some((outcome, fp.mxcsr().unwrap_or(mxcsr)))
+}
+
+fn read_with(fp: &mut Fp, d: &Device, fpu: &mut impl Fpu) -> Option<Outcome> {
     let k = d.k;
     let mut rates = [fp.mul(d.rates[0], k.scale), fp.mul(d.rates[1], k.scale)];
     let vehicle = match &d.seat {
         None => None,
-        Some(s) => Some(vehicle(&mut fp, fpu, s, k, &mut rates)?),
+        Some(s) => Some(vehicle(fp, fpu, s, k, &mut rates)?),
     };
     let path = if d.blocked {
         Path::Blocked(select(d))
     } else {
-        Path::Steer(steer(&mut fp, fpu, d)?)
+        Path::Steer(steer(fp, fpu, d)?)
     };
     fp.exact().then_some(Outcome {
         rates,

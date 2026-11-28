@@ -159,7 +159,7 @@ pub fn apply(
 /// The arm's whole answer for the call `cpu` is entering, without
 /// counting or choosing: the kernel over a copy of the call's inputs.
 pub fn predict(cpu: &CpuAbi, g: &Guest) -> Result<Prediction, Decline> {
-    if !det::fast_env(cpu.mxcsr)
+    if !det::guest_env(cpu.mxcsr)
         || !det::host_fast_env()
         || !det::x87_env(cpu.x87.control, cpu.x87.status, cpu.x87.tag, 8)
     {
@@ -187,8 +187,10 @@ pub fn predict(cpu: &CpuAbi, g: &Guest) -> Result<Prediction, Decline> {
     };
     let input = Input { one, zoom, hands };
     let mut x87 = X87(to_x87(&cpu.x87));
-    let answer = aim_assist::cone(&input, &mut |max, min, t| magnify(g, &mut x87, max, min, t));
+    let mut pow = |max, min, t| magnify(g, &mut x87, max, min, t);
+    let (answer, mxcsr) = aim_assist::cone_tracked(&input, cpu.mxcsr, &mut pow);
     let mut out = *cpu;
+    out.mxcsr = mxcsr;
     out.esp = cpu.esp.wrapping_add(4 + ARGS);
     out.eflags_defined &= !ARITH;
     let low = cpu.eax & !0xff;

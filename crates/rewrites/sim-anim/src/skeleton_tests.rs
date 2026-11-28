@@ -5,7 +5,7 @@
 //! equivalence against the register-level ports is in
 //! `engine::sim_anim::skeleton`'s tests.
 use crate::kernel::{Record, Unsupported};
-use crate::skeleton::{Constants, Walk, build_matrices, compose, pose};
+use crate::skeleton::{Constants, Walk, build_matrices, build_matrices_guest, compose, pose};
 use sim_core::det::{self, Fp};
 use sim_core::lanes::Vec4;
 use sim_core::math::{NodeMatrix, Vec3};
@@ -335,4 +335,28 @@ fn host_lanes_and_the_scalar_loop_agree() {
     let (a, b) = (run(true), run(false));
     assert!(a.0.is_ok());
     assert_eq!(a, b);
+}
+
+/// Under the live MXCSR (PE clear) the walk is the fast path's, and the
+/// MXCSR comes out with PE set; an unmasked PE refuses.
+#[test]
+fn the_guest_walk_runs_under_the_live_mxcsr() {
+    let mut rng = Rng(0x0a1d_face);
+    let k = k();
+    let locals: Vec<Record> = (0..12).map(|_| rng.record()).collect();
+    let parents: Vec<i16> = (0..12)
+        .map(|i| if i == 0 { -1 } else { (rng.next() % i as u64) as i16 })
+        .collect();
+    let start: Vec<NodeMatrix> = (0..12).map(|_| rng.matrix()).collect();
+    let mut fast = start.clone();
+    let want = build_matrices(&k, &locals, &parents, &[0], [[0; 4]; 8], &mut fast).unwrap();
+    for mxcsr in [0x1f80, 0x1fa0] {
+        let mut got = start.clone();
+        let walk = build_matrices_guest(mxcsr, &k, &locals, &parents, &[0], [[0; 4]; 8], &mut got);
+        assert_eq!(walk, Ok((want, 0x1fa0)), "{mxcsr:#x}");
+        assert_eq!(got, fast, "{mxcsr:#x}");
+    }
+    let mut got = start.clone();
+    let refused = build_matrices_guest(0x0f80, &k, &locals, &parents, &[0], [[0; 4]; 8], &mut got);
+    assert_eq!(refused, Err(Unsupported));
 }

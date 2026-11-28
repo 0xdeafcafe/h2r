@@ -35,6 +35,13 @@ pub fn fast_env(mxcsr: u32) -> bool {
     mxcsr & 0x1f80 == 0x1f80 && mxcsr & 0x6020 == 0x20
 }
 
+/// [`fast_env`] but for PE: all exceptions masked and round to nearest,
+/// with PE sticky or not. [`Fp::tracked`] runs the fast path under it and
+/// raises PE as the guest would; the live game runs at `0x1f80`.
+pub fn guest_env(mxcsr: u32) -> bool {
+    fast_env(mxcsr | 0x20)
+}
+
 /// Exact-or-decline binary32 arithmetic. See the module docs.
 ///
 /// [`Fp::guest`] runs under the guest's MXCSR instead: an operation on the
@@ -43,10 +50,16 @@ pub fn fast_env(mxcsr: u32) -> bool {
 /// SSE model, which rounds as the MXCSR says and raises its flags. Only an
 /// unmasked exception, which the guest would deliver as `#XM`, leaves
 /// [`Fp::exact`] false. [`Fp::mxcsr`] is the guest's MXCSR afterwards.
+///
+/// [`Fp::tracked`] is the fast path under the guest's MXCSR when that
+/// MXCSR passes [`guest_env`] but PE is not yet sticky: it declines as
+/// [`Fp::new`] does, and models operations only until one raises PE.
 #[derive(Clone, Copy, Debug)]
 pub struct Fp {
     ok: bool,
     guest: Option<u32>,
+    /// [`Fp::tracked`]: an operand off the fast path declines.
+    strict: bool,
 }
 
 impl Default for Fp {
@@ -57,12 +70,21 @@ impl Default for Fp {
 
 impl Fp {
     pub const fn new() -> Self {
-        Self { ok: true, guest: None }
+        Self { ok: true, guest: None, strict: false }
     }
 
     /// Arithmetic under the guest's `mxcsr`, as the instructions would run.
     pub const fn guest(mxcsr: u32) -> Self {
-        Self { ok: true, guest: Some(mxcsr) }
+        Self { ok: true, guest: Some(mxcsr), strict: false }
+    }
+
+    /// [`Fp::new`]'s fast path under the guest's `mxcsr`, which needs only
+    /// [`guest_env`]: results are the host's, an operand off the fast path
+    /// declines, and [`Fp::mxcsr`] gains the flags (PE) the operations
+    /// raise. Operations run through the SSE model until PE is sticky,
+    /// then on the host.
+    pub const fn tracked(mxcsr: u32) -> Self {
+        Self { ok: true, guest: Some(mxcsr), strict: true }
     }
 
     /// The guest's MXCSR after the operations so far, for [`Fp::guest`].
@@ -110,7 +132,8 @@ impl Fp {
     /// IE and a subnormal DE (unless DAZ), as the compare would.
     #[inline]
     pub fn check(&mut self, x: u32) {
-        let Some(m) = self.guest else {
+        let Some(m) = self.guest.filter(|_| !self.strict) else {
+            // An ordinary operand raises nothing in a compare.
             self.ok &= lanes::ordinary1(x);
             return;
         };
@@ -145,6 +168,7 @@ impl Fp {
         let fast = lanes::ordinary1(a) & lanes::ordinary1(b);
         if let Some(m) = self.guest
             && !(fast && fast_env(m))
+            && (fast || !self.strict)
         {
             let host = lanes::binary1(op, a, b);
             return self.model(m, host, |m| {
@@ -189,6 +213,7 @@ impl Fp {
         let host = (f32::from_bits(a) / f32::from_bits(b)).to_bits();
         if let Some(m) = self.guest
             && !(fast && fast_env(m))
+            && (fast || !self.strict)
         {
             return self.model(m, host, |m| simd::divss(m, u128::from(a), b).map(|r| r as u32));
         }
@@ -198,8 +223,10 @@ impl Fp {
 
     #[inline]
     fn packed(&mut self, op: Op, a: Vec4, b: Vec4) -> Vec4 {
+        let fast = lanes::scalar::ordinary(a, b);
         if let Some(m) = self.guest
-            && !(lanes::scalar::ordinary(a, b) && fast_env(m))
+            && !(fast && fast_env(m))
+            && (fast || !self.strict)
         {
             let host = lanes::scalar::binary32(op, a, b);
             let pack = |v: Vec4| v.iter().rev().fold(0u128, |bits, &x| (bits << 32) | u128::from(x));
@@ -463,6 +490,42 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn tracked_arithmetic_is_the_fast_path_and_raises_pe() {
+        let (a, b) = (1.1f32.to_bits(), 3.3f32.to_bits());
+        // The live MXCSR, PE clear: host results, PE out set.
+        let mut fp = Fp::tracked(0x1f80);
+        assert_eq!(fp.add(1.0f32.to_bits(), 2.0f32.to_bits()), 3.0f32.to_bits());
+        assert_eq!(fp.mxcsr(), Some(0x1f80), "an exact add raises nothing");
+        assert_eq!(fp.mul(a, b), (1.1f32 * 3.3).to_bits());
+        assert_eq!(fp.div(a, b), (1.1f32 / 3.3).to_bits());
+        assert_eq!(fp.mul4([a; 4], [b; 4]), [(1.1f32 * 3.3).to_bits(); 4]);
+        fp.check(a);
+        assert_eq!(fp.mxcsr(), Some(0x1fa0));
+        assert!(fp.exact());
+        // An operand off the fast path declines, as under `new`, in a
+        // scalar, a packed operation and a compare alike.
+        let runs: [fn(&mut Fp); 4] = [
+            |fp| {
+                fp.mul(1.0e-30f32.to_bits(), 1.0e-30f32.to_bits());
+            },
+            |fp| {
+                fp.add4([0; 4], [0x7f80_0000, 0, 0, 0]);
+            },
+            |fp| {
+                fp.div(1.0f32.to_bits(), 0);
+            },
+            |fp| fp.check(0x7fc0_0000),
+        ];
+        for run in runs {
+            let mut fp = Fp::tracked(0x1f80);
+            run(&mut fp);
+            assert!(!fp.exact());
+        }
+        assert!(guest_env(0x1f80) && guest_env(0x1fa0));
+        assert!(!guest_env(0x3f80) && !guest_env(0x1f00));
     }
 
     #[test]

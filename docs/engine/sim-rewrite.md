@@ -270,6 +270,13 @@ films and goldens get re-recorded per build.
   polynomials where D applies).
 - A known host float environment: round to nearest, no flush to zero. The
   pass checks it once at entry; it does not reset it per operation.
+- The guest's MXCSR is whatever the call finds; the live game runs at
+  `0x1f80`, PE clear. `det::Fp::guest` runs under any MXCSR (the host
+  result on the fast path, the `simd` crate's SSE model otherwise) and
+  refuses only an unmasked exception. `det::Fp::tracked` keeps the fast
+  path's operand range and needs only masked, round-to-nearest
+  (`det::guest_env`). Both return the flags the operations raise, PE
+  included, for the kernel to write back.
 - Reductions and accumulation run in a fixed order: object index order, never
   worker order. No `HashMap` iteration feeds results.
 - Every RNG draw (`[0x4e7408]` words) stays on the game thread, in retail

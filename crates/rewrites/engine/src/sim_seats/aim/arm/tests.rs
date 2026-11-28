@@ -138,6 +138,18 @@ fn the_unarmed_exits_leave_retails_registers() {
     );
 }
 
+/// The live MXCSR, PE clear, answers as a PE-sticky one. Every operation
+/// of the fixture is exact (magnification 1), so PE stays clear.
+#[test]
+fn the_live_mxcsr_answers_and_keeps_its_flags() {
+    let _one = ARM.lock().unwrap_or_else(|e| e.into_inner());
+    let (cpu, g) = call();
+    let sticky = predict(&cpu, &g).unwrap();
+    let live = predict(&CpuAbi { mxcsr: 0x1f80, ..cpu }, &g).unwrap();
+    assert_eq!(live.record, sticky.record);
+    assert_eq!((live.cpu.mxcsr, sticky.cpu.mxcsr), (0x1f80, 0x1fa0));
+}
+
 /// Each decline panics by name, before anything is written.
 #[test]
 fn declines_panic_by_name() {
@@ -149,8 +161,8 @@ fn declines_panic_by_name() {
         message.downcast_ref::<String>().cloned().unwrap_or_default()
     };
     let mut env = cpu;
-    env.mxcsr = 0x1f80;
-    assert!(panics(env, &mut g).ends_with("seats: aim-assist: float"));
+    env.mxcsr = 0x3f80;
+    assert!(panics(env, &mut g).ends_with("seats: aim-assist: float"), "round down");
     g.set_u32(DEF + 0x2c8, MAX_TRIGGERS as u32 + 1).unwrap();
     assert!(panics(cpu, &mut g).ends_with("seats: aim-assist: triggers"));
     g.set_u32(DEF + 0x2c8, 1).unwrap();

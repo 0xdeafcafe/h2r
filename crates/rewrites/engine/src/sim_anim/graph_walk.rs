@@ -23,21 +23,24 @@
 //! exact `sim_native` leaves, one node at a time: the oracle of the engine
 //! tests, and the third arm of the lifted differential.
 //!
+//! The kernel runs under the guest's MXCSR, whatever it holds
+//! ([`sim_anim::graph_matrices_guest`]), and the call returns the MXCSR
+//! with every flag the walk's SSE code raises.
+//!
 //! The plan declines (nothing is written; [`run`] returns the
-//! [`Decline`] and the hook panics with its name) when MXCSR is not
-//! masked, nearest and PE-sticky, when an operand is off the fast path,
-//! when the node count is above [`MAX_NODES`], when a queued link or a
-//! visited node's parent is outside the nodes, when the queue would pass
-//! 255 entries, when a range it reads or writes is not inside one mapping
-//! or a written range overlaps another range, or when a read faults.
+//! [`Decline`] and the hook panics with its name) when an operation
+//! raises an exception the MXCSR unmasks, when the node count is above
+//! [`MAX_NODES`], when a queued link or a visited node's parent is
+//! outside the nodes, when the queue would pass 255 entries, when a range
+//! it reads or writes has an unreadable page or a written range overlaps
+//! another range, or when a read faults.
 use crate::function_eval::constant::{ONE, SMALL};
 use crate::sim_anim::skeleton::SIGNS;
 use crate::sim_native::pose::{POSE_INIT_FLAGS, POSE_NORM_THRESHOLD};
 use crate::sim_native::{self, Memory};
 use crate::sim_physics::{arithmetic, pop, push};
-use ::sim_anim::{Constants, GraphNode, Record, graph_matrices};
+use ::sim_anim::{Constants, GraphNode, Record, graph_matrices_guest};
 use runtime::{CpuAbi, GuestFault, TransferAbi};
-use sim_core::det;
 use sim_core::lanes::Vec4;
 use sim_core::math::NodeMatrix;
 use crate::sim_native::spans::Spans;
@@ -82,8 +85,7 @@ pub const MAX_NODES: u32 = 1024;
 /// Why the plan declined a call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
-    /// MXCSR not masked, nearest and PE-sticky, or an operand off the
-    /// fast path.
+    /// An operation raised an SSE exception the MXCSR unmasks.
     Float = 0,
     /// A guest read faulted.
     Fault,
@@ -204,9 +206,6 @@ impl Outcome {
 /// The call's result without writing anything. `c` is the CPU at the
 /// entry (`esp` at the return address).
 pub fn plan(c: &CpuAbi, g: &impl Memory) -> Result<Outcome, Decline> {
-    if !det::fast_env(c.mxcsr) {
-        return Err(Decline::Float);
-    }
     let sp = c.esp;
     let arg = |k: u32| read(g.u32(at(sp, 4 * k)));
     let (target, graph, matrices, records, root) = (arg(0)?, arg(1)?, arg(2)?, arg(3)?, arg(4)?);
@@ -304,7 +303,8 @@ pub fn plan(c: &CpuAbi, g: &impl Memory) -> Result<Outcome, Decline> {
         signs: lanes(&read(g.u128(SIGNS))?.to_le_bytes()),
     };
     let xmm: [Vec4; 8] = std::array::from_fn(|i| lanes(&c.xmm[i]));
-    let walk = graph_matrices(&k, &locals, &nodes, &root_matrix, xmm, &mut mats).map_err(|_| {
+    let walk = graph_matrices_guest(c.mxcsr, &k, &locals, &nodes, &root_matrix, xmm, &mut mats);
+    let (walk, mxcsr) = walk.map_err(|_| {
         let bad_parent = order
             .iter()
             .any(|&v| v != 0 && !usize::try_from(nodes[v].parent).is_ok_and(|p| p < n));
@@ -364,6 +364,7 @@ pub fn plan(c: &CpuAbi, g: &impl Memory) -> Result<Outcome, Decline> {
     for (reg, v) in out.xmm.iter_mut().zip(walk.xmm) {
         *reg = unlanes(v);
     }
+    out.mxcsr = mxcsr;
     Ok(Outcome {
         entry: sp,
         matrices,

@@ -173,11 +173,39 @@ pub fn build_matrices(
     xmm: [Vec4; 8],
     out: &mut [NodeMatrix],
 ) -> Result<Walk, Unsupported> {
+    build_with(Fp::new(), k, locals, parents, keep, xmm, out).map(|(walk, _)| walk)
+}
+
+/// [`build_matrices`] under the guest's `mxcsr`, as `bd090`'s SSE code
+/// runs whatever the MXCSR holds ([`Fp::guest`]): the walk and the MXCSR
+/// after it, with every flag an operation raised. Declines on the same
+/// input faults, and on an operation whose exception the MXCSR unmasks.
+pub fn build_matrices_guest(
+    mxcsr: u32,
+    k: &Constants,
+    locals: &[Record],
+    parents: &[i16],
+    keep: &[u32],
+    xmm: [Vec4; 8],
+    out: &mut [NodeMatrix],
+) -> Result<(Walk, u32), Unsupported> {
+    let (walk, fp) = build_with(Fp::guest(mxcsr), k, locals, parents, keep, xmm, out)?;
+    Ok((walk, fp.mxcsr().unwrap_or(mxcsr)))
+}
+
+fn build_with(
+    mut fp: Fp,
+    k: &Constants,
+    locals: &[Record],
+    parents: &[i16],
+    keep: &[u32],
+    xmm: [Vec4; 8],
+    out: &mut [NodeMatrix],
+) -> Result<(Walk, Fp), Unsupported> {
     let count = out.len();
     if locals.len() < count || parents.len() < count || keep.len() * 32 < count {
         return Err(Unsupported);
     }
-    let mut fp = Fp::new();
     let mut walk = Walk { last: None, xmm };
     for i in 1..count {
         if keep[i >> 5] >> (i & 31) & 1 != 0 {
@@ -193,5 +221,5 @@ pub fn build_matrices(
         out[i] = m;
         walk = Walk { last: Some(i), xmm: regs };
     }
-    if fp.exact() { Ok(walk) } else { Err(Unsupported) }
+    if fp.exact() { Ok((walk, fp)) } else { Err(Unsupported) }
 }

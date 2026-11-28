@@ -14,17 +14,20 @@
 //! initialises, the dead stack the last node's two calls leave, the XMM
 //! registers the last composition leaves, and the loop's exit registers.
 //!
+//! The kernel runs under the guest's MXCSR, whatever it holds
+//! ([`sim_anim::build_matrices_guest`]), and the walk leaves the MXCSR
+//! with every flag the loop's SSE code raises.
+//!
 //! It declines before writing anything (the port's loop runs instead) when
-//! MXCSR is not masked, nearest and PE-sticky, when an operand is off the
-//! fast path, when the node count is outside `2..=MAX_NODES`, when a range
-//! it reads or writes is not inside one mapping or a written range
-//! overlaps a read one (physically, so aliased mappings count), when a
-//! read faults, or when a parent index is outside the matrices.
+//! an operation raises an exception the MXCSR unmasks, when the node
+//! count is outside `2..=MAX_NODES`, when a range it reads or writes has
+//! an unreadable page or a written range overlaps a read one (physically,
+//! so aliased mappings count), when a read faults, or when a parent index
+//! is outside the matrices.
 use crate::function_eval::constant::{ONE, SMALL};
 use crate::sim_native::pose::{POSE_INIT_FLAGS, POSE_NORM_THRESHOLD};
-use ::sim_anim::{Constants, Record, Walk, build_matrices};
+use ::sim_anim::{Constants, Record, Walk, build_matrices_guest};
 use runtime::{CpuAbi, Guest, GuestFault};
-use sim_core::det;
 use sim_core::lanes::Vec4;
 use sim_core::math::NodeMatrix;
 use crate::sim_native::spans::Spans;
@@ -59,8 +62,7 @@ pub const MAX_NODES: u32 = 1024;
 /// Why a walk was left to the loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
-    /// MXCSR not masked, nearest and PE-sticky, or an operand off the
-    /// fast path.
+    /// An operation raised an SSE exception the MXCSR unmasks.
     Float,
     /// A guest read faulted.
     Fault,
@@ -139,6 +141,8 @@ struct Plan {
     keep: Vec<u32>,
     out: Vec<NodeMatrix>,
     walk: Walk,
+    /// The MXCSR after the walk.
+    mxcsr: u32,
 }
 
 impl Plan {
@@ -148,9 +152,6 @@ impl Plan {
 }
 
 fn plan(c: &CpuAbi, g: &Guest) -> Step<Plan> {
-    if !det::fast_env(c.mxcsr) {
-        return Err(Decline::Float);
-    }
     let sp = c.esp;
     let slot = |off: u32| read(g.u32(sp.wrapping_add(off)));
     let (definition, orientations, matrices) =
@@ -220,9 +221,10 @@ fn plan(c: &CpuAbi, g: &Guest) -> Step<Plan> {
         signs: lanes(&read(g.u128(SIGNS))?.to_le_bytes()),
     };
     let xmm: [Vec4; 8] = std::array::from_fn(|i| lanes(&c.xmm[i]));
-    let walk = build_matrices(&k, &locals, &parents, &keep, xmm, &mut out).map_err(|_| {
+    let walk = build_matrices_guest(c.mxcsr, &k, &locals, &parents, &keep, xmm, &mut out);
+    let (walk, mxcsr) = walk.map_err(|_| {
         // The kernel declines on a parent outside the matrices or on an
-        // operand off the fast path; tell the two apart for the stats.
+        // unmasked exception; tell the two apart.
         let bad_parent = (1..n).any(|i| {
             let posed = keep[i >> 5] >> (i & 31) & 1 == 0;
             posed && !usize::try_from(parents[i]).is_ok_and(|p| p < n)
@@ -240,6 +242,7 @@ fn plan(c: &CpuAbi, g: &Guest) -> Step<Plan> {
         keep,
         out,
         walk,
+        mxcsr,
     })
 }
 
@@ -272,6 +275,7 @@ fn scatter(c: &mut CpuAbi, g: &mut Guest, p: &Plan) -> Result<(), GuestFault> {
             *reg = unlanes(v);
         }
     }
+    c.mxcsr = p.mxcsr;
     // The loop's registers at its exit: the counters one past the last
     // node, `edi` at the last node, `eax` and `ecx` reloaded.
     let n = p.count;

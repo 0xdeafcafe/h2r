@@ -144,3 +144,18 @@ fn an_operand_off_the_exact_range_is_inexact() {
     d.rates[0] = 0x7fc0_0000;
     assert_eq!(read(&d, &mut Host), None);
 }
+
+/// The live MXCSR, PE clear: the outcome is the fast path's, and the
+/// inexact rate product raises PE.
+#[test]
+fn the_live_mxcsr_reads_as_the_fast_path_and_raises_pe() {
+    let mut d = device();
+    d.rates[0] = f(1.1);
+    d.k.scale = f(0.3);
+    let fast = read(&d, &mut Host).unwrap();
+    assert_eq!(fast.rates[0], f(1.1 * 0.3));
+    assert_eq!(read_tracked(&d, 0x1f80, &mut Host), Some((fast, 0x1fa0)));
+    assert_eq!(read_tracked(&d, 0x1fa0, &mut Host), Some((fast, 0x1fa0)));
+    d.rates[0] = 0x7fc0_0000;
+    assert_eq!(read_tracked(&d, 0x1f80, &mut Host), None, "off the exact range");
+}

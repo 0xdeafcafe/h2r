@@ -112,11 +112,20 @@ before anything reads them.
 
 ## Rules and limits
 
+Both walks run under the guest's MXCSR, whatever it holds
+(`sim_anim::build_matrices_guest`, `graph_matrices_guest`, over
+`sim_core::det::Fp::guest`). An operation on the fast path (MXCSR masked,
+round-to-nearest and PE-sticky, every operand zero or of magnitude in
+`[2^-63, 2^63)`) takes the host result; any other takes the `simd`
+crate's SSE model, which rounds as the MXCSR says and raises its flags.
+The live game runs at `0x1f80`, PE clear: the first inexact operation is
+modelled and sets PE, and the rest run on the host. The walk leaves the
+MXCSR with every flag the loop's SSE code raises.
+
 The walk declines, writing nothing, and the per-node loop runs, when:
 
-- MXCSR is not masked, round-to-nearest and PE-sticky (`det::fast_env`),
-  or any operand of any operation is not zero or of magnitude in
-  `[2^-63, 2^63)` (`Float`);
+- an operation raises an exception the MXCSR unmasks, the guest's `#XM`
+  (`Float`);
 - the node count is below 2 or above 1024 (`Count`);
 - a page of a range it reads or writes is unreadable, or a written range
   overlaps another range it reads or writes, compared as physical
@@ -126,9 +135,9 @@ The walk declines, writing nothing, and the per-node loop runs, when:
   (`Parent`);
 - a read faults (`Fault`).
 
-Under those checks every operation is one correctly rounded binary32 add,
+On the fast path every operation is one correctly rounded binary32 add,
 subtract or multiply with no flag but PE, so host results equal the
-guest's on arm64 and x86-64 and MXCSR does not change. The walk reads node
+guest's on arm64 and x86-64. The walk reads node
 0's parent and the keep words even where the loop would not; both lie in
 ranges checked to be mapped. A write fault in the scatter (a read-only
 page) leaves a different partial state from the loop's.
@@ -198,8 +207,7 @@ the lifted differential.
 
 ### The graph walk declines when
 
-- MXCSR is not masked, round-to-nearest and PE-sticky, or an operand is
-  off the fast path (`float`);
+- an operation raises an exception the MXCSR unmasks (`float`);
 - a read faults (`fault`);
 - the count is above 1024 (`count`);
 - a queued link is neither `-1` nor below the count, or the queue would

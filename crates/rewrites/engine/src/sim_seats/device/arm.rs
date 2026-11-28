@@ -1,7 +1,7 @@
 //! The bound controller's device read (docs/engine/sim-rewrite.md, "Seats
 //! and rules (phase 7)"). At `185be0`'s bound branch (`0x185c6c`, a seat
 //! whose port has a controller), the seat body copies the read's inputs
-//! out of guest memory into a [`Device`], runs the kernel [`super::read`]
+//! out of guest memory into a [`Device`], runs the kernel [`super::read_tracked`]
 //! with the x87 model and the image's `pow` for the x87 pieces, and lays
 //! the outcome out as the state at the next transfer: the look curve's
 //! call (`0x185ff4`) unblocked, the visibility walk's (`0x1865bf`)
@@ -12,7 +12,7 @@
 //! `unimplemented!("seats: device read: <cause>")`: the guest's read is
 //! gone.
 
-use super::{Constants, Device, Fpu, Last, Path, Seat, read};
+use super::{Constants, Device, Fpu, Last, Path, Seat, read_tracked};
 use crate::light_constants::X87;
 use crate::memory::{GuestMemory, MemFault};
 use crate::sim_native::Memory;
@@ -231,7 +231,7 @@ fn whole(v: u32) -> [u8; 16] {
 /// frame and zeroing, `port` the controller's), without counting or
 /// choosing.
 pub fn predict(c: &CpuAbi, m: &impl Memory, sp: u32, port: u32) -> Result<Prediction, Decline> {
-    if !det::fast_env(c.mxcsr)
+    if !det::guest_env(c.mxcsr)
         || !det::host_fast_env()
         || c.x87.control & 0x3f != 0x3f
         || c.x87.status & 0x80 != 0
@@ -352,8 +352,9 @@ pub fn predict(c: &CpuAbi, m: &impl Memory, sp: u32, port: u32) -> Result<Predic
     };
 
     let mut x = load_fpu(c);
-    let outcome = read(
+    let (outcome, mxcsr) = read_tracked(
         &device,
+        c.mxcsr,
         &mut Model {
             x: &mut x,
             g: Reads(m),
@@ -375,6 +376,7 @@ pub fn predict(c: &CpuAbi, m: &impl Memory, sp: u32, port: u32) -> Result<Predic
         put(0x6c + 4 * i as i32, *w);
     }
     let mut out = *c;
+    out.mxcsr = mxcsr;
     out.xmm[0] = whole(block[15]);
     out.xmm[1] = whole(k.scale);
     out.xmm[4] = whole(k.one);
