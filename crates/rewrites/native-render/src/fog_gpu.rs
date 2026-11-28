@@ -1004,7 +1004,9 @@ impl FogSet {
                 Some(c) => Some(*c.slots.get(&(owner, part)).ok_or("a selected layer part has no cull slot")?),
                 None => None,
             };
-            // Occludable while every pass's hidden fragments draw nothing.
+            // Occludable while every pass's hidden fragments draw nothing:
+            // a pass with a polygon offset may draw in front of the depth
+            // that hides its bounds.
             let mut occludable = true;
             for ((g, state, rigid), textures) in m.passes.iter().zip(groups) {
                 // The packets set the stencil reference from the render
@@ -1024,7 +1026,7 @@ impl FogSet {
                     }
                 };
                 let key = described_pipeline(shader, color, depth, Some(state), None, stencil.clone());
-                occludable &= crate::gpu::hidden_draws_nothing(&key);
+                occludable &= state.depth_offset.is_none() && crate::gpu::hidden_draws_nothing(&key);
                 let pipeline = cache
                     .entry(pipeline.clone())
                     .or_insert_with(|| gfx::compile::Pending::ready(Some(pipeline.clone())))
