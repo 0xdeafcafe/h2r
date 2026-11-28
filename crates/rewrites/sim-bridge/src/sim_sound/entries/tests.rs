@@ -151,20 +151,21 @@ fn the_table_is_off_by_default_and_needs_the_events_switch() {
 }
 
 #[test]
-fn the_pool_global_is_zero_after_start() {
-    let t = table(Arc::new(Refusing));
-    lock(&t).sounds.admit(&mut Rng::new(1), &tags(), Request { selection: Some((0, 0)), level: 10.0, ..Request::new(TAG) }, 0).unwrap();
-    let r = run_body(&t, Body::Create, guest(0), regs(), |c, m| {
-        assert_eq!(c.target, points::SOUND_MANAGER_CREATE.base, "the guest's create runs once");
-        m.set_u32(points::SOUND_INSTANCES.base, 0x0070_0000).unwrap();
-        m.set_u32(CHANNELS, 0x0071_0000).unwrap();
-        Regs::default()
-    });
-    assert_eq!(r.result, Ok(Ret::new(0, 0)));
-    assert_eq!(r.calls.len(), 1);
-    assert_eq!(r.guest.u32(points::SOUND_INSTANCES.base), Ok(0));
-    assert_eq!(r.guest.u32(CHANNELS), Ok(0));
-    assert!(lock(&t).sounds.instances().is_empty(), "a fresh table");
+fn create_and_drop_are_the_lifecycle_and_reset_the_table() {
+    // The guest's create and dispose are not called: the bodies are
+    // `lifecycle`'s (its tests cover the globals). With the count above 1
+    // both only count, and each leaves a fresh table.
+    assert!(!Body::Create.calls_original() && !Body::Drop.calls_original());
+    for body in [Body::Create, Body::Drop] {
+        let t = table(Arc::new(Refusing));
+        lock(&t).sounds.admit(&mut Rng::new(1), &tags(), Request { selection: Some((0, 0)), level: 10.0, ..Request::new(TAG) }, 0).unwrap();
+        let mut g = guest(0);
+        g.put_u32(crate::sim_sound::lifecycle::REFCOUNT, 2);
+        let r = run_body(&t, body, g, regs(), |c, _| panic!("{body:?} called {:#x}", c.target));
+        assert_eq!(r.result, Ok(Ret::new(0, 0)));
+        assert!(r.calls.is_empty());
+        assert!(lock(&t).sounds.instances().is_empty(), "{body:?}: a fresh table");
+    }
 }
 
 #[test]
