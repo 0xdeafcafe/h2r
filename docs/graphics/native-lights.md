@@ -212,7 +212,7 @@ entry carries them (`frame_scene::EntryState`, read by
 
 | State | Where | The host draws it with | Held when |
 |---|---|---|---|
-| `aux_depth` | bit 11 on an object's record: the auxiliary state toggle `0x00012d50` (the first person's arms and weapon) | the toggle's `c[0..3]` and clip range (`light_gpu::model_part`, `object_program_gpu::with_aux_depth`) | the device holds the toggle's values off (`native_objects_glue::aux_depth_at_rest`) |
+| `aux_depth` | bit 11 on a record, an object's or the structure's (`0x0004d6a2` tests the flags alone): the auxiliary state toggle `0x00012d50` (the first person's arms and weapon) | the toggle's `c[0..3]` and clip range (`light_gpu::model_part`, `object_program_gpu::with_aux_depth`) | the device holds the toggle's values off (`native_objects_glue::aux_depth_at_rest`) |
 | `fade` | the record's fade byte `+0x1a` below `0xff`: a stipple pattern | nothing: unmasked | the stipple is off and at rest (`stipple_off`, `stipple_at_rest`) |
 | `shader_flag`, `structure`, `uncopied` | the shader's flag bit 0 (`+0x16`); the active structure's parameter block (`+0x214` above 0); the frame's structure target copy not made (`0x00509430`) | nothing: the guest's prologue uploads the block (`0x0003c650`, `0x0003d000`) and a program with flag bit 20 makes the copy (`0x0003bea0`) | `structure`: the device and the engine hold every word of the upload (`native_objects_glue::structure_at_rest`). `uncopied`: no pass of the layer's draws has flag bit 20 (`LightProgram::copies_target`) |
 
@@ -222,8 +222,8 @@ entry carries them (`frame_scene::EntryState`, read by
 - Every light and shadow layer takes an entry with state
   (`light_groups::state_taken`), and the host draws it the same way in
   each (`native_lights_glue::entry_state`). On the per-handler path
-  (`dispatched_entry`) it stays `State`, as does a structure record's
-  toggle or a toggle whose values do not read.
+  (`dispatched_entry`) it stays `State`, as does a toggle whose values
+  do not read.
 - The cut asks the host once per light, and only for an entry with
   state (`Host::held_state`, `typed_groups::plan_or_refusal`). Not held:
   `lights: group entry_state`.
