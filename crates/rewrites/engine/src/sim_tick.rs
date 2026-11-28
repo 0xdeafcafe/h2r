@@ -84,7 +84,8 @@ pub const PHASES: &[Phase] = &[
     // The effect walk, crate::effects_phase (docs/engine/effects-parts.md).
     rust(0x0017_6e40, "effects"),
     guest(0x000c_1400, "lights"),
-    guest(0x0015_ca10, "post_game"),
+    // The game engine's round countdown and end, crate::post_game.
+    rust(0x0015_ca10, "post_game"),
     guest(0x0014_d8b0, "players_after"),
     guest(0x001d_f500, "unknown_1df500"),
     guest(0x0013_8e40, "unknown_138e40"),
@@ -284,7 +285,7 @@ pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
 /// is off is a guest call, counted in the ledger like any guest phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bodies {
-    /// The Rust bodies ([`crate::ai_update`], [`crate::hs_update`], [`crate::effects_phase`],
+    /// The Rust bodies ([`crate::ai_update`], [`crate::hs_update`], [`crate::effects_phase`], [`crate::post_game`],
     /// [`crate::countdown_requests`]); off only in tests, as the lifted
     /// reference.
     pub rust: bool,
@@ -446,6 +447,10 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
                         crate::hs_update::run(&cx, RECORD_SIZE).await?;
                         false
                     }
+                    crate::post_game::ENTRY => {
+                        crate::post_game::run(&cx, RECORD_SIZE).await?;
+                        false
+                    }
                     crate::countdown_requests::ENTRY => {
                         cx.write(|m| crate::countdown_requests::run(m))?;
                         false
@@ -537,6 +542,9 @@ mod tests {
         // disabled (its globals at a zero page).
         g.map(crate::countdown_requests::FIRST, 2).map(crate::hs_update::ENABLED, 1);
         g.map(crate::ai_update::GLOBALS, 4).map(AI_GLOBALS, 4).put_u32(crate::ai_update::GLOBALS, AI_GLOBALS);
+        // No game engine: post_game's globals at a zero page, table slot 0.
+        g.map(crate::post_game::GAME, 4).map(GAME_GLOBALS, 0x1000).put_u32(crate::post_game::GAME, GAME_GLOBALS);
+        g.map(crate::post_game::ENGINES, 4);
         let ledger: &'static Mutex<Ledger> = Box::leak(Box::new(Mutex::new(Ledger::new())));
         let f = move |cx: Cx| -> EntryFuture { Box::pin(run_with(cx, ledger, Present::Always, Bodies::ALL)) };
         let record = STACK - RECORD_SIZE;
@@ -557,6 +565,7 @@ mod tests {
         assert!(!targets_of(&run).contains(&crate::countdown_requests::ENTRY));
         assert!(!targets_of(&run).contains(&crate::hs_update::ENTRY));
         assert!(!targets_of(&run).contains(&crate::ai_update::ENTRY));
+        assert!(!targets_of(&run).contains(&crate::post_game::ENTRY));
         assert_eq!(l.total_calls(), guest_phases() as u64);
         let targets: Vec<u32> = run.calls.iter().map(|c| c.target).collect();
         assert!(!targets.contains(&EFFECTS));
@@ -569,6 +578,8 @@ mod tests {
 
     /// A zero page for the AI globals in the driver tests.
     const AI_GLOBALS: u32 = 0x0057_0000;
+    /// A zero page for the game globals in the driver tests.
+    const GAME_GLOBALS: u32 = 0x0057_1000;
 
     fn targets_of(run: &crate::entry::testing::Run) -> Vec<u32> {
         run.calls.iter().map(|c| c.target).collect()

@@ -30,8 +30,20 @@ original's order:
 
 Each phase has an owner. A guest phase is a guest call (`GuestCall`, awaited,
 with the record's bytes reserved below the call's stack); a Rust phase is a
-body in the driver. The effects phase and the countdown requests are Rust;
-every other phase is a guest call, and `tick-ledger.toml` counts them. The in-place
+body in the driver. Five phases are Rust; the other 24 are guest calls,
+and `tick-ledger.toml` counts them:
+
+| Phase | Rust body | What it still calls in the guest |
+|---|---|---|
+| 3 `ai` `0x1c83c0` | `engine/src/ai_update.rs` | the six AI systems and the teardown |
+| 8 `script_scheduler` `0x209310` | `engine/src/hs_update.rs` | `HS_THREAD_EXECUTE` `0x209850` per thread, `0x1deed0` |
+| 15 `effects` `0x176e40` | `engine/src/effects_phase.rs` | the walk's nine callees |
+| 17 `post_game` `0x15ca10` | `engine/src/post_game.rs` | the round state machine `0x15c550` and eleven more |
+| 29 `countdown_requests` `0x16f200` | `engine/src/countdown_requests.rs` | nothing |
+
+`ai_update_matches_lifted`, `hs_update_matches_lifted` and
+`post_game_matches_lifted` (`engine/tests/sim_tick_differential.rs`) hold
+the bodies to the lifted functions with the guest callees stubbed. The in-place
 call that avoids the unwind per phase is a later speed-up, not a
 prerequisite.
 
