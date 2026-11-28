@@ -51,6 +51,19 @@ pub fn lock_objects(t: &Mutex<ObjectTable>) -> MutexGuard<'_, ObjectTable> {
     t.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// Read the guest's objects array into `objects` (docs/engine/sim-world.md,
+/// "Store slots"): the table the world holds is the arena's live objects.
+/// No map loaded, or the global unreadable, leaves an empty table. An array
+/// that disagrees with itself is a bug in the writer that left it so.
+pub fn import_objects(m: &(impl guest_layout::Mem + ?Sized), objects: &Mutex<ObjectTable>) {
+    let table = match ObjectTable::import(m) {
+        Ok(Some(t)) => t,
+        Ok(None) | Err(sim_objects::ImportError::Fault(_)) => ObjectTable::default(),
+        Err(e) => panic!("objects: the guest's objects array is corrupt: {e:?}"),
+    };
+    *lock_objects(objects) = table;
+}
+
 /// The object table as the world's objects store. A restore puts the
 /// decoded pool in the table; the guest arena comes back with the machine
 /// snapshot it was taken with, so the two halves are one checkpoint

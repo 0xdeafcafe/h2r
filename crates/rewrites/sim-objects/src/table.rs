@@ -20,9 +20,12 @@ use sim_world::{Fnv64, Handle, Pool, Reader, Record, RestoreError, StaleHandle, 
 /// Slots in retail's objects array; an import takes the guest array's own
 /// `maximum_count` instead.
 pub const OBJECT_CAPACITY: u32 = 2048;
-/// The array's name seed: `"ob"` of `"object"`, as `data_new` stores it
-/// (`name[0..2] | 0x8000` is the first salt).
-pub const OBJECT_NAME: u16 = 0x6f62;
+/// The array's name seed: the first two bytes of retail's `"object"`
+/// (`data_new` at `0xb67e6` is given `0x800` slots of 12 bytes and the name at
+/// `0x45322c`), read as the little-endian word `data_initialize` `0x16b6da`
+/// ORs with `0x8000` into `next_salt`: `0x626f`, so the first salt is
+/// `0xe26f`.
+pub const OBJECT_NAME: u16 = 0x626f;
 /// The section kind this table is saved under.
 pub const KIND: u16 = kind::OBJECTS;
 
