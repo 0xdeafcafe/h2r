@@ -20,6 +20,7 @@ pub mod events;
 pub mod functions;
 pub mod light;
 pub mod phase;
+pub mod pool;
 pub mod table;
 pub mod unit;
 pub mod view;

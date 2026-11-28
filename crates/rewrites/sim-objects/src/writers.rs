@@ -9,16 +9,20 @@
 //! |---|---|
 //! | `b9890` | [`detach_from_parent`] |
 //! | `bc300` | [`free_object`] |
+//! | `bc280` | [`alloc_object`] over [`crate::pool::alloc`] (`18e2b0`) |
+//! | `18e470` | [`crate::pool::compact`] |
 //!
 //! The object memory pool's header is at `[4de2ec]` ([`HEAP`]): free bytes
 //! at `+30`, the tail block at `+34` and the head block at `+38`. A block
 //! has a `0x10` byte header before its body: the size at `+0`, the
 //! previous block at `+8` and the next at `+c`.
 
-use guest_layout::{Fault, Mem, MemMut, Off};
+use guest_layout::object::ObjectHeader;
+use guest_layout::{DatumArray, Fault, Mem, MemMut, Off};
 use sim_world::Handle;
 
-use crate::table::ObjectTable;
+use crate::pool;
+use crate::table::{ObjectRecord, ObjectTable};
 
 /// The global holding the object memory pool's header address.
 pub const HEAP: u32 = 0x004d_e2ec;
@@ -131,6 +135,47 @@ pub fn free_object<M: MemMut + ?Sized>(
     }
     table.delete(me).map_err(|e| WriterError::Stale(e.0))?;
     Ok(())
+}
+
+/// `bc280 (size: stack 0)`: a datum and a zeroed body of `size` bytes from
+/// the object memory pool. The datum comes first (`datum_new`) with the
+/// size in its header; the body's block is placed by [`pool::alloc`] with
+/// the address of the datum's body pointer (`+8`) as its owner, tag 0. A
+/// full pool deletes the datum again. `None` answers `-1`, for the table
+/// full or the pool.
+pub fn alloc_object<M: MemMut + ?Sized>(
+    m: &mut M,
+    table: &mut ObjectTable,
+    size: i16,
+) -> Result<Option<Handle>, WriterError> {
+    if size < 0 {
+        unimplemented!("objects: alloc: a negative body size {size}");
+    }
+    let record = ObjectRecord { body_size: size as u16, ..ObjectRecord::default() };
+    let Some(h) = table.alloc(record) else { return Ok(None) };
+    let array = guest_layout::global::OBJECTS
+        .pointer(&*m)?
+        .unwrap_or_else(|| panic!("objects: a writer ran with no objects array"));
+    let data = DatumArray::at(array).data(&*m)?;
+    let owner = data.wrapping_add(u32::from(h.index()) * ObjectHeader::SIZE).wrapping_add(8);
+    let heap = Off::<u32>::new(0).read(&*m, HEAP)?;
+    if !pool::alloc(m, heap, owner, size as u32, 0)? {
+        table.delete(h).map_err(|e| WriterError::Stale(e.0))?;
+        return Ok(None);
+    }
+    let body_addr = Off::<u32>::new(0).read(&*m, owner)?;
+    let r = table.get_mut(h).expect("just allocated");
+    r.body_addr = body_addr;
+    r.body = vec![0; size as usize];
+    Ok(Some(h))
+}
+
+/// A whole `bc280` over the guest's arena: import, allocate, scatter.
+pub fn alloc_in_guest<M: MemMut + ?Sized>(m: &mut M, size: i16) -> Result<Option<Handle>, WriterError> {
+    let mut table = import_live(&*m)?;
+    let h = alloc_object(m, &mut table, size)?;
+    table.scatter(m)?;
+    Ok(h)
 }
 
 /// A whole `b9890` over the guest's arena: import, detach, scatter.
