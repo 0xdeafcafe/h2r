@@ -221,7 +221,6 @@ pub fn current_ready_keyed(state: &MapState, mem: &dyn GuestMemory) -> Option<(A
 pub struct Glue {
     state: State,
     switches: hooks::Switches,
-    ordered_scene_world: bool,
     relight_requested: bool,
     /// A live edit's refresh is running ([`refresh_world`]); edits wait
     /// in the queue until it ends, so they apply in order.
@@ -231,12 +230,6 @@ pub struct Glue {
 impl Host for Glue {
     fn retire_bsp(&self) {
         self.retire_stale_bsp();
-    }
-
-    /// `SetRenderState_Simple`'s push has no reader: the write is taken
-    /// as made (the caller stores the shadow itself).
-    fn try_opaque_simple(&self, _mem: &mut dyn GuestMemory, _header: u32, _value: u32) -> bool {
-        true
     }
 
     fn load_bsp(&self, mem: &dyn GuestMemory, bsp: u32) -> bool {
@@ -292,22 +285,6 @@ impl Host for Glue {
             retired.retire();
         }
         self.refresh_edits();
-    }
-
-    fn use_resolved_scene(&self, mem: &dyn GuestMemory, _bsp: u32) -> bool {
-        // The sorted draw binds guest textures. Reserve the atlas-bound
-        // world pass instead when this BSP has a complete replacement.
-        if !self.ordered_scene_world || !self.relight_requested {
-            return self.ordered_scene_world;
-        }
-        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        !current_ready(&state, mem).is_some_and(|ready| ready.owns_display_lightmaps())
-    }
-
-    fn opaque_view(
-        &self, _mem: &dyn GuestMemory, _layer: render_bridge::native_world_layers::Layer,
-    ) -> Result<Box<dyn render_bridge::native_world::OpaqueView>, &'static str> {
-        unimplemented!("world: sorted opaque part through the device")
     }
 
     fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan, claim_guest: bool) -> Result<native_render::skip::Cleared, &'static str> {
@@ -833,7 +810,6 @@ pub fn install() {
     let switches = hooks::Switches::from_env().unwrap_or_default();
     render_bridge::native_world::set_host(Arc::new(Glue {
         state: Arc::clone(&state),
-        ordered_scene_world: crate::native_world_layers_glue::owns_scene_world(&switches),
         relight_requested: native_render::lighting::lighting().is_ok_and(native_render::lighting::Lighting::is_relight),
         switches,
         refreshing: Arc::default(),

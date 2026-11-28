@@ -3,7 +3,7 @@
 Status: Built. Part of [native-world.md](native-world.md) (stage 1b).
 Code: `crates/rewrites/native-render/src/{world_layers,world_layers_gpu,world_ranges,layer_items}.rs`, `crates/rewrites/render-bridge/src/{native_layers,cut}.rs`, `crates/rewrites/scene-extract/src/layout/world_layers.rs`. Counters: `render.stats` and `render.scene` ([agent-api.md](../runtime/agent-api.md)).
 
-The world's other layers draw natively, and the guest's BSP scene walk and sorted handler run in Rust. Layers 1, 3, 5, 7, 8 and 20 and layer 2 draw from the scene's plan, and the guest builds no entry for them.
+The world's other layers draw natively, and the guest's BSP scene walk runs in Rust. Layers 1, 3, 5, 7, 8 and 20 and layer 2 draw from the scene's plan, and the guest builds no entry for them.
 
 | Layers | Slot | Producer |
 |---|---|---|
@@ -48,7 +48,6 @@ Object items plan without the world: a BSP still loading leaves only the structu
 | Not counted here | Why |
 |---|---|
 | The first person's layers, the sorted handlers' 18, 19 and 21 | they keep their own refusals (`layer_plan_*`) |
-| The resolved-scene arm (`Host::use_resolved_scene`) | it draws from inside the guest's entries, so the opaque handler hooks count their own refusals |
 
 A layer becomes scene-only, with a named drop in place of the guest draw, when its `scene_kept_*` rows are zero over the census corpus ([framescene.md](framescene.md), section 8.2).
 
@@ -56,7 +55,7 @@ A layer becomes scene-only, with a named drop in place of the guest draw, when i
 
 ## Native opaque layers
 
-The main scene draws ordinary BSP clusters and placements in sorted order in layers 1, 3, 5, 7 and 8. The default front end takes these entries at the standard geometry handler (`0x0004d0b0`). Native objects and entries left with the guest can still use the native world layers' indexed admission. Both paths preserve the original subpart ranges, topology, live colour and depth attachments and per-record stencil state.
+The main scene draws ordinary BSP clusters and placements in sorted order in layers 1, 3, 5, 7 and 8. Layer 3's are claimed before the layer draw ("Sorted handler" below). Native objects and entries left with the guest can still use the native world layers' indexed admission. Both paths preserve the original subpart ranges, topology, live colour and depth attachments and per-record stencil state.
 
 | Layer | Rule |
 |---|---|
@@ -82,44 +81,11 @@ The walk goes off with the rest of the native renderer.
 | `LAYER_ENTRIES`, after layer setup | When the world, water or fog renderer has committed its reservation and every active item has its layer bit clear, return the empty dispatch result immediately. | The GPU reservation already covers the claimed ranges. One remaining bit keeps the dispatcher. Layer setup and end still establish the shared device state. No handler, shader, stencil switch or indexed draw would run in the empty dispatcher. |
 | `RENDER_STATES` and `WORLD_PART_EMIT`, inside an opaque BSP draw | Use the render-state port through the first necessary guest call. Elide repeated simple states when the shadow matches and the push header is unique. Use the one-range emitter when visible subparts tile the part's indices. | Changed states and shared push headers still reach the device. The emitter flushes textures and emits the same indices and topology. A masked strip needs exactly one subpart. The placement constants, shader cache, lightmap binding and stencil tail still execute. |
 
-### Sorted handler and device handoff
+### Sorted handler
 
-The sorted hook matches the standard builder and draw callback, the scene layer, the handler arguments and the caller's current sort slot and counter. A native run ends at the first object, custom callback, excluded slot or refused section. Each accepted entry reads its own implementation, classification, record and visible subparts.
+Layer 3's structure items are claimed before the layer draw (`native_world::before_layer`, `Glue::ask`), so the guest's sorted handler `LIGHT_GEOMETRY_DRAW` (`0x0004d0b0`) never draws a BSP part. No Rust answers it and nothing sets D3D state for it.
 
-Triangle lists coalesce contiguous visible index ranges, and a masked strip restarts at each subpart. The native run returns with ESI on the last consumed slot, so the caller performs its normal final increment and can dispatch the next guest draw.
-
-The run's `handoff` applies material and device transitions in draw order:
-
-- The portable entry holds the outgoing shader and device cache words in a bounded writeback buffer. Native reads through any alias see the most recent write.
-- Before a real guest call, a fault or the return to the outer loop, the memory guard publishes the final dirty bytes. D3D write watches see logical writes at store time. Resource retains, releases and push callbacks still execute in device order.
-- The shader cache tracks the previous and current shader and implementation, dirty parameter banks, live texture headers and sizes, sampler stages and the full pixel-shader definition. An implementation switch consumes the outgoing restore list before publishing the new states.
-- Component writes preserve untouched vector lanes and PS fields. Frame inputs, animation and record constants are evaluated against the current view and guest floating point control words.
-- A lit placement updates both offsets in each selected lightmap stream descriptor. Its palette, shader, declaration, stream and texture changes reach the D3D device in their original order, including device references and callbacks when a resource loses its last reference.
-- A missing vertex input can suppress emission after the binder has already changed state. Stencil, fade and transient target operations bracket the actual draw.
-
-The next native or guest entry therefore starts with the outgoing device and RAM caches already installed. Applying only the last part's bindings would lose writes to earlier descriptors and intermediate resource releases.
-
-The per-range submission uses the prepared geometry and validated texture and program hints. Stale or dynamic resources still use the ordered D3D resolver. A preflight refusal keeps the original sorted handler live.
-
-A late refusal before the first range can issue the indexed draws under the state already applied. A device error after emission follows the fault path so a submitted prefix cannot be drawn twice.
-
-### Fade
-
-The fade the display draws a record with is the placement's, rescaled to the display's pixel count.
-
-| Detail setting | Fade |
-|---|---|
-| Highest display | every placement fade solid |
-| A multiplier | the placement's fade recomputed at that many output pixels per guest pixel (`world_walk::placement_display_alpha`) |
-| Retail detail | each record's byte ([occlusion-culling.md](occlusion-culling.md), "Projected size and level of detail") |
-
-Where the fade lands depends on the copies (`FadePlan`):
-
-- Single-copy rendering has the guest's draws render the display, so the fade replaces the byte the guest's `SetStipple` takes.
-- Two-copy rendering (a reference copy at guest resolution plus the display copy; always so for a network, film or lockstep run, which includes Theater's autorecord) leaves the guest the record's retail byte, so the reference copy and every guest readback stay retail. The display copy gets its pattern alone: `OpaqueDraw::display_stipple` sets `HwState::display_stipple` for that draw, and the pixel uniforms take it on a target larger than the guest's (`HwState::stipple_rows`).
-- A draw that falls back to the guest's indexed emitter takes the retail pattern on both copies.
-
-`render.scene`'s `scene_world_stipple_*` counters count the records entered with a fade and how the display resolved them. In two-copy rendering `solid` counts the display copy's solid draws.
+Each part draws with its material's resolved implementation (`tags::material::ResolvedImplementation`, `native_render::look`): the pixel-shader definition with its variant combiners and patched constants, the vertex and pixel constants, the stage textures and the sampler and render states, through the shader translator. The shader context the guest's `0x00016b90` keeps at `0x00485b48` is not read or written.
 
 ### Counters
 
@@ -134,11 +100,6 @@ The A/B method for this walk is in [notes/native-ab.md](notes/native-ab.md).
 | `native_world_state_calls_skipped` | redundant Simple state calls |
 | `native_world_opaque_prereserved_draws` | BSP parts pre-reserved |
 | `native_world_opaque_guest_indexed_draws` | ordinary world ranges that reach the indexed call after guest handler setup, including ranges later accepted by the native GPU backend |
-| `native_world_opaque_handlers_taken` | ordinary BSP geometry handlers the native path consumed (the skipped guest handler count) |
-| `native_world_opaque_handler_draws` | all ranges those handlers submitted (a masked strip can emit several) |
-| `native_world_opaque_handlers_indexed`, `native_world_opaque_handler_indexed_draws` | handlers and ranges that needed the indexed backend for emission |
-| `native_world_opaque_handlers_fallback` | whole geometry handlers left to the guest, once each |
-| `native_world_opaque_taken_sections`, `native_world_opaque_fallback_sections` | distinct clusters and placements for consumed and refused handlers; a section with mixed materials can appear in both; once per BSP, view and outcome across all sorted layers |
 | `native_world_opaque_gpu_draws` | prepared packets recorded on the required GPU copies |
 | `native_world_opaque_backend_draws` | prepared packets the ordinary backend drew after a recording refusal |
 
