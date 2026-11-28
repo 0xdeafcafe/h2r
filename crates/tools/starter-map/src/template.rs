@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use forge_shapes::{PieceDef, Shape};
 use map::scenario_layout::ITEM_GROUPS;
 use serde::{Deserialize, Serialize};
-use stage_kit::{Layout, Player};
+use content_kit::stage::{Layout, Player};
 
 use crate::coverage::Census;
 use crate::{Error, Result};
@@ -306,7 +306,7 @@ pub struct Template {
     pub name: String,
     pub title: String,
     pub description: String,
-    /// A stage layout of one bay (`stage_kit::layout`).
+    /// A stage layout of one bay (`content_kit::stage::layout`).
     pub ground: serde_yaml_ng::Value,
     pub pieces: Vec<Piece>,
     pub multiplayer: Multiplayer,
@@ -397,7 +397,7 @@ impl Template {
         Self::parse(crate::SOURCE)
     }
 
-    /// The ground as the YAML `stage_kit::Layout::parse` takes.
+    /// The ground as the YAML `content_kit::stage::Layout::parse` takes.
     pub fn ground_yaml(&self) -> Result<String> {
         serde_yaml_ng::to_string(&self.ground).map_err(|e| Error::Template(format!("ground: {e}")))
     }

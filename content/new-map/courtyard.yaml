@@ -11,7 +11,7 @@ title: Courtyard
 description: A walled courtyard of block-out pieces on a lit floor, under the sky.
 
 # The floor, its light and the sky: a stage layout of one bay
-# (stage_kit::layout, docs/editor/content-stage.md). The floor is the
+# (content_kit::stage::layout, docs/editor/content-stage.md). The floor is the
 # structure BSP: render mesh, lightmap and collision in one.
 ground:
   floor: { size: 32, label_every: 4, texels: 1024 }

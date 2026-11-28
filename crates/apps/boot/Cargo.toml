@@ -28,12 +28,10 @@ content.workspace = true
 # The controller-speaker sound index reads the player's map files (pad_speaker).
 tags.workspace = true
 hs.workspace = true
-# The pogo stick's models, added to each multiplayer map as it is served.
+# The pogo stick's models, added to each multiplayer map as it is served, and the content stage's build (packages.rs).
 content-kit = { path = "../../tools/content-kit" }
 # The game's content packages and their one rewrite (packages.rs).
 workspace = { path = "../../tools/workspace" }
-# The stage, a baked package's `fresh` map (packages::prepare_maps).
-stage-kit = { path = "../../tools/stage-kit" }
 coop = { path = "../../live/coop" }
 map.workspace = true
 # What the Halo 1 converters write and the Halo 1 hooks read (h1_*.rs);

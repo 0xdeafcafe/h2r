@@ -4,7 +4,7 @@
 
 use std::collections::BTreeSet;
 
-use blockout_kit::mesh::{self, View};
+use content_kit::blockout::mesh::{self, View};
 use dev_texture::label;
 use forge_shapes::{PieceDef, Shape};
 

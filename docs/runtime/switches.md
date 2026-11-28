@@ -345,7 +345,7 @@ Read only by ignored tests, examples and benches. Most need the disc (`H2_DISC`)
 | `H2_SCHEMA_MAPS`, `H2_SCHEMA_OUT`, `H2_SCHEMA_PROBE`, `H2_SCHEMA_WHY`, `H2_SCHEMA_ODD`, `H2_SHUFFLE_LAYOUT`, `H2_TRANSPLANT`, `H2_TRANSPLANT_FROM` | `crates/formats/tags/tests/tag_schema.rs`: maps to infer from, schema output file, root-word probe (`hlmt:0x58`), diagnostics, child layout, and the tag to transplant and its source. |
 | `H2_DEFS_GROUPS`, `H2_DEFS_MAPS`, `H2_DEFS_SKELETON`, `H2_DEFS_ANNOTATE`, `H2_DEFS_EXTRA`, `H2_DEFS_DUMP`, `H2_DEFS_DUMP_NODES` | `crates/formats/tags/tests/tag_defs.rs`: tag groups and maps to check, skeleton and annotated modes, extra definition files, and dumps. |
 | `H2_BUILD_MAPS`, `H2_GROW_TAGS`, `H2_REPO_MAPS`, `H2_REPO_DIR`, `H2_REPO_COUNT_RAW`, `H2_PROBE`, `H2_PROBE_MAP` | Tag-repository and map-build tests: maps to use, extra tags to add (default 500), where to keep the repository, sizing without writing, and BSP root probes. |
-| `H2_STAGE_BASE` | The base map of the content stage's disc test (`crates/tools/stage-kit/tests/disc.rs`; default: the project's, `lockout`). |
+| `H2_STAGE_BASE` | The base map of the content stage's disc test (`crates/tools/content-kit/tests/stage_disc.rs`; default: the project's, `lockout`). |
 | `H2_HS_MAP`, `H2_HS_TICKS` | The disc script-VM test (`crates/formats/hs/tests/vm_disc.rs`): limit the map and set ticks per phase (default 3000). |
 | `H2_SAVED_VARIANT` | A game-written saved variant payload to check (`crates/formats/variants/tests/disc.rs`). |
 | `H2_MAP`, `H2_MAPS`, `H2_BASE`, `H2_STEMS`, `H2_LEVELS` | Map stems for the Halo 1 converter and asset tests (defaults such as `lockout`, `beavercreek`, `05a_deltaapproach`). |

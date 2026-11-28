@@ -665,24 +665,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "blockout-kit"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "collision-build",
- "content-kit",
- "dev-texture",
- "forge-shapes",
- "h1-assets",
- "h1convert",
- "h1map",
- "h1objects",
- "map",
- "scenario-edit",
- "tags",
-]
-
-[[package]]
 name = "boot"
 version = "0.1.0"
 dependencies = [
@@ -745,7 +727,6 @@ dependencies = [
  "sim-bench",
  "sim-bridge",
  "snapshot",
- "stage-kit",
  "tags",
  "timeline",
  "toml",
@@ -1288,7 +1269,11 @@ name = "content-kit"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "collision-build",
  "content",
+ "dev-texture",
+ "forge-shapes",
+ "gfx",
  "h1-assets",
  "h1convert",
  "h1map",
@@ -1296,10 +1281,13 @@ dependencies = [
  "map",
  "png",
  "pogo",
+ "scenario-edit",
  "serde",
  "serde_json",
  "serde_yaml_ng",
  "tags",
+ "thiserror 2.0.21",
+ "toml",
  "vfs",
  "xiso",
 ]
@@ -2297,9 +2285,9 @@ dependencies = [
 name = "forge-build"
 version = "0.1.0"
 dependencies = [
- "blockout-kit",
  "bots",
  "content",
+ "content-kit",
  "firefight-kit",
  "forge-doc",
  "forge-shapes",
@@ -2966,6 +2954,7 @@ dependencies = [
  "anyhow",
  "cli-common",
  "content",
+ "content-kit",
  "firefight-kit",
  "forge-build",
  "forge-doc",
@@ -2980,7 +2969,6 @@ dependencies = [
  "settings",
  "sha2 0.10.9",
  "shaders",
- "stage-kit",
  "studio-proto",
  "superbounce",
  "tags",
@@ -7137,34 +7125,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
-name = "stage-kit"
-version = "0.1.0"
-dependencies = [
- "collision-build",
- "content",
- "content-kit",
- "gfx",
- "h1-assets",
- "h1convert",
- "h1map",
- "map",
- "scenario-edit",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "tags",
- "thiserror 2.0.21",
- "toml",
- "workspace",
- "xiso",
-]
-
-[[package]]
 name = "starter-map"
 version = "0.1.0"
 dependencies = [
- "blockout-kit",
  "content",
+ "content-kit",
  "forge-build",
  "forge-doc",
  "forge-shapes",
@@ -7173,7 +7138,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml_ng",
- "stage-kit",
  "tags",
  "thiserror 2.0.21",
 ]
@@ -7251,7 +7215,6 @@ dependencies = [
  "assets",
  "audio",
  "bitmap-edit",
- "blockout-kit",
  "boot",
  "bots",
  "content",
@@ -7291,7 +7254,6 @@ dependencies = [
  "sim-bench",
  "sound-clips",
  "sound-edit",
- "stage-kit",
  "starter-map",
  "studio-proto",
  "superbounce",
@@ -9064,6 +9026,7 @@ dependencies = [
  "forge-doc",
  "game",
  "h1-assets",
+ "h1convert",
  "hud-kit-core",
  "live-proto",
  "map",

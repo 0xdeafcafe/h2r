@@ -710,7 +710,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
-    //! The checks on invented layouts. The stage's layout (`stage-kit`,
+    //! The checks on invented layouts. The stage's layout (`content-kit` (its `stage` module),
     //! docs/editor/content-stage.md) joins these as
     //! `the_stage_is_ready_for_slayer` once that crate is on master: its
     //! starting locations, items and flags as [`Placed`], its mesh through

@@ -11,7 +11,7 @@ use firefight_kit::{
     KIT_VERSION, Mode, Team,
     ground::{self, BaseMarker, Labels, LineMarker, Marker, Recipe},
 };
-use stage_kit::fresh::StageFresh;
+use workspace::stage::fresh::StageFresh;
 use workspace::{Fresh, FreshJob, GroundFile, GroundJob, LabelName, Side};
 
 /// The stage as the `fresh` builder, and the Firefight kit as the ground's.

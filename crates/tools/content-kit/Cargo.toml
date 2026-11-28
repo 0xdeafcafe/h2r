@@ -1,24 +1,41 @@
 [package]
 name = "content-kit"
-description = "The content kit: one tool that builds an item's content/<item>/ (parametric YAML sources, atlases, a manifest) into tags; the Pogo Stick and the Flood pod are its items"
+description = "The content kit: one tool that builds an item's content/<item>/ (parametric YAML sources, atlases, a kit.yaml manifest) into tags; the Pogo Stick, the Flood pod, the content stage and the Forge block-out pieces are its items"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[package.metadata.h2]
+doc = ["editor/content-stage.md", "game/forge-blockout.md"]
+status = "in progress"
+
 [dependencies]
 anyhow.workspace = true
 content.workspace = true
+# The stage's collision BSP and a block-out piece's, compiled from the same
+# faces they draw, and the block-out dev tiles, font atlas and plate layout.
+collision-build = { path = "../collision-build" }
+dev-texture = { path = "../../formats/dev-texture" }
+# The block-out definitions, their shells and hulls.
+forge-shapes = { path = "../../formats/forge-shapes" }
+# The lightmap page's Xbox swizzle.
+gfx = { path = "../../platform/gfx" }
 h1-assets = { path = "../h1-assets" }
 h1convert = { path = "../h1convert" }
 h1map = { path = "../h1map" }
 h1objects = { path = "../h1objects" }
 map.workspace = true
 png.workspace = true
+# The structure BSPs' drawn parts, for the block-out palette survey.
+scenario-edit = { path = "../scenario-edit", default-features = false }
 pogo = { path = "../../formats/pogo" }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
 tags.workspace = true
+thiserror.workspace = true
+# The stage's project file and build report.
+toml.workspace = true
 vfs.workspace = true
 
 [features]

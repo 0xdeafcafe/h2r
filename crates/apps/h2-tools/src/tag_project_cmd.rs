@@ -127,8 +127,8 @@ impl Opts {
 
 fn tools() -> Tools<'static> {
     Tools {
-        kits: stage_kit::project_kit::KITS,
-        keep: stage_kit::project_kit::KEEP,
+        kits: workspace::stage::project_kit::KITS,
+        keep: workspace::stage::project_kit::KEEP,
     }
 }
 

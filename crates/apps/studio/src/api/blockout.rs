@@ -4,7 +4,7 @@
 //! with no shape), and what a definition is as text (`blockout.describe`).
 //!
 //! The geometry is the kit's own: `PieceDef::generate`, then
-//! `blockout_kit::mesh::build` in the dev view, so a render shows the
+//! `content_kit::blockout::mesh::build` in the dev view, so a render shows the
 //! faces, the cut-out plates and the glyph cells a map would carry. The
 //! viewport has no textures, so the dev raster is read here: a tile face
 //! is its family's colour, and each plate cell is drawn as the runs of
@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use blockout_kit::mesh::{self, FacePlate, Mesh, Paint, View};
+use content_kit::blockout::mesh::{self, FacePlate, Mesh, Paint, View};
 use dev_texture::label::{self, COLUMNS, ROWS};
 use dev_texture::{Family, Image, font};
 use forge_shapes::{ParsedName, PieceDef, Role, Shape, Solid};

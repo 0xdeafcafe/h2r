@@ -1,7 +1,8 @@
 # The content stage: a test map of ours that Studio drives the game on
 
-Status: In progress. Slices S1, S2, S3, S4 and S5 are built: the layout (`stage_kit::layout`), the faces that are both the render mesh and the collision (`stage_kit::mesh`), the textures (`stage_kit::texture`), the map over a base (`stage_kit::kit`, `stage_kit::map`, `h2 tags build --project`), its three lightmaps (`stage_kit::light`) and its sky (`stage_kit::sky`), the game's `render.view` (`agent_spawn_view`), and the game's `audio.meter` (`mixer_meter`). Not yet seen in a game: the sky draws on a self-illuminated shader and the lightmap's orientation and the sun's direction in the sky tag are unverified. The rest is design; "Build slices" is the order to build it in, and "Open questions" lists what the owner still has to choose.
-Code: `crates/tools/stage-kit` (the map's own tags), `art/stage/` (its sources and its project), the build in `crates/tools/workspace` (planned), `stage.*` in `crates/apps/studio/src/api/stage.rs` (planned). Tests: `crates/tools/stage-kit/src/tests.rs`, `crates/tools/stage-kit/tests/disc.rs` (`#[ignore]`), `api::tests` in Studio.
+Status: In progress. Slices S1, S2, S3, S4 and S5 are built: the layout (`content_kit::stage::layout`), the faces that are both the render mesh and the collision (`content_kit::stage::mesh`), the textures (`content_kit::stage::texture`), the map over a base (`content_kit::stage::kit`, `content_kit::stage::map`, `h2 tags build --project`), its three lightmaps (`content_kit::stage::light`) and its sky (`content_kit::stage::sky`), the game's `render.view` (`agent_spawn_view`), and the game's `audio.meter` (`mixer_meter`). Not yet seen in a game: the sky draws on a self-illuminated shader and the lightmap's orientation and the sun's direction in the sky tag are unverified. The rest is design; "Build slices" is the order to build it in, and "Open questions" lists what the owner still has to choose.
+Code: `crates/tools/content-kit/src/stage` (the map's own tags), `content/stage/` (its sources and its project), the build in `crates/tools/workspace` (planned), `stage.*` in `crates/apps/studio/src/api/stage.rs` (planned). Tests: `crates/tools/content-kit/src/stage/tests.rs`, `crates/tools/content-kit/tests/stage_disc.rs` (`#[ignore]`), `api::tests` in Studio.
+Data: `content/stage/layout.yaml` (bays, pads, lights) and `content/stage/kit.yaml` (version, biped, floor material, salt, the sky's shape and colours, the lightmap's packing, the textures' colours), read by `content_kit::stage::data` with unknown keys refused. The `Fresh` and project-`Kit` adapters are `workspace::stage`.
 Switch: none. The stage is built on first use. It is the first project of the [tag workspace](tag-workspace.md).
 
 A content lane (a weapon model, a sound, a HUD element, a screen) finishes
@@ -28,30 +29,30 @@ loaded. The stage replaces none of them ("Where it sits").
 
 ### The map
 
-`stage-kit` builds one multiplayer map from `art/stage/stage.yaml` (the
+`content-kit` (its `stage` module) builds one multiplayer map from `content/stage/layout.yaml` (the
 layout: bays, pads, references, cameras, lights) and from textures it
-draws in code (`stage_kit::texture`: the grid, its digits from a small
+draws in code (`content_kit::stage::texture`: the grid, its digits from a small
 font of our own, the sky's gradient and compass letters). No image, mesh
 or tag of the stage comes from a disc.
 
 | Part | What it is | Built by |
 |---|---|---|
-| Floor | a 64 by 64 world-unit slab per bay. A checker of 1-unit squares, a heavier line every 5, and the distance from the bay's origin painted every 5 units along both axes | `stage_kit::mesh` to `h1convert::structure::{pack, Structure::write}` for `sbsp` (`stage_kit::kit::install`); `collision_build::build` and `h1convert::convert::structure_mopp` for collision |
-| Sky | a dome of ours, 1000 units out: a horizon line, a vertical gradient, N/E/S/W letters (north is +x, the way the player spawns facing) and a sun disc where the day bay's sun is | `stage_kit::sky`: a Halo 1-form model through `h1_assets::models::mode::convert_model` (parts as strips, as a sky's are), its one material the picture on the self-illuminated stem (`h1convert::shad::ILLUM`, read from the base like the opaque stem), and a `sky ` tag whose one light is the sun. `stage_kit::kit::install` makes the scenario's skies block one element naming it; the base's skies are emptied from the scenario first |
-| Scale references | a pillar as tall as the standing player (read from the base map's biped when the stage is built, so no figure is in the repository), a 1-unit cube, a wall ruled every 0.1 unit, a doorway of the player's size | `stage_kit::mesh`, part of the `sbsp` |
+| Floor | a 64 by 64 world-unit slab per bay. A checker of 1-unit squares, a heavier line every 5, and the distance from the bay's origin painted every 5 units along both axes | `content_kit::stage::mesh` to `h1convert::structure::{pack, Structure::write}` for `sbsp` (`content_kit::stage::kit::install`); `collision_build::build` and `h1convert::convert::structure_mopp` for collision |
+| Sky | a dome of ours, 1000 units out: a horizon line, a vertical gradient, N/E/S/W letters (north is +x, the way the player spawns facing) and a sun disc where the day bay's sun is | `content_kit::stage::sky`: a Halo 1-form model through `h1_assets::models::mode::convert_model` (parts as strips, as a sky's are), its one material the picture on the self-illuminated stem (`h1convert::shad::ILLUM`, read from the base like the opaque stem), and a `sky ` tag whose one light is the sun. `content_kit::stage::kit::install` makes the scenario's skies block one element naming it; the base's skies are emptied from the scenario first |
+| Scale references | a pillar as tall as the standing player (read from the base map's biped when the stage is built, so no figure is in the repository), a 1-unit cube, a wall ruled every 0.1 unit, a doorway of the player's size | `content_kit::stage::mesh`, part of the `sbsp` |
 | Movement references | ramps at 15, 30 and 45 degrees, a stair of 0.1, 0.2 and 0.3-unit steps, a ledge at each of four heights, a 10-unit drop | the same |
-| Lighting | three bays 80 units apart, each with the same furniture: **flat** (even grey light, no direction), **day** (the sky's sun and a sky fill), **dark** (a closed room at near-black, to show self-illumination and a thing's own lights). The lightmap is computed by `stage_kit::light` from the YAML's `lights` (the sun, a sky fill, the flat and dark levels): direct light and a constant fill, no bounce. Flat and dark bays are one shared 2 by 2 cell each; day faces have cells of their own at 4 texels to the unit, shadowed by the bay's own faces, packed into the smallest power-of-two page that holds them, and written as `ltmp` by `Structure::write`. A day face's vertices are lit from the sun's direction where they look towards it | `stage_kit::light` |
-| Pads | per bay: the player's spawn at the origin facing +x, a **subject pad** 3 units ahead, and a row of eight numbered pads 2 units apart for weapons, equipment, scenery, crates and vehicles. Studio reads the subject pad (`stage_kit::subject_place`) to stand the tag being edited there ([live-editors.md](live-editors.md), "The subject") | scenario placements (`scenario_edit`'s blocks) |
+| Lighting | three bays 80 units apart, each with the same furniture: **flat** (even grey light, no direction), **day** (the sky's sun and a sky fill), **dark** (a closed room at near-black, to show self-illumination and a thing's own lights). The lightmap is computed by `content_kit::stage::light` from the YAML's `lights` (the sun, a sky fill, the flat and dark levels): direct light and a constant fill, no bounce. Flat and dark bays are one shared 2 by 2 cell each; day faces have cells of their own at 4 texels to the unit, shadowed by the bay's own faces, packed into the smallest power-of-two page that holds them, and written as `ltmp` by `Structure::write`. A day face's vertices are lit from the sun's direction where they look towards it | `content_kit::stage::light` |
+| Pads | per bay: the player's spawn at the origin facing +x, a **subject pad** 3 units ahead, and a row of eight numbered pads 2 units apart for weapons, equipment, scenery, crates and vehicles. Studio reads the subject pad (`content_kit::stage::subject_place`) to stand the tag being edited there ([live-editors.md](live-editors.md), "The subject") | scenario placements (`scenario_edit`'s blocks) |
 | Cameras | per bay, named eyes: `ground`, `front`, `side`, `orbit-0` to `orbit-7` (every 45 degrees at 2 units, 6 for a vehicle), `ruler` (side-on to the ruled wall), `third` (behind the spawn). Each is also a player starting location, so `render.spawn_view` reaches it by index | the layout, published in the build report |
 | Everything else | `matg` and what it reaches, the sound gestalt, the HUD, the player's biped and weapons, the shader templates | read from the tag tree with the base map's variants and built `fresh`, as a converted Halo 1 map takes them ([tag-workspace.md](tag-workspace.md), "Projects"; [multiplayer.md](../halo1/multiplayer.md), "fresh") |
 
-`stage-kit` is a `ContentKit`: `install` adds the stage's own tags (the
+`content-kit` (its `stage` module) is a `ContentKit`: `install` adds the stage's own tags (the
 scenario, the `sbsp` and `ltmp`, the sky, the bitmaps and shaders) to
 the set and gives the layout back. The map is the `map` item
 `content/stage/map.toml` (`mode = "fresh"`, `kits = ["stage", ...]`),
 also the tag workspace's project,
 built by `workspace::build` like any other: a pure function of the base
-map's tags, the sources, `stage_kit::VERSION` and the kits, so two
+map's tags, the sources, `content_kit::stage::VERSION` and the kits, so two
 builds make the same bytes. It writes a `derived` map package
 ([maps.md](../game/maps.md)) named `stage` under `<data>/maps/` and a
 report beside its receipt: the layout (every pad, camera and reference
@@ -61,12 +62,12 @@ Nothing it writes is in a Git checkout.
 The stage is also a package, `content/stage/`: one `map` item whose
 `map.toml` repeats the project's mode, base, name, scenario and kits (a
 test holds the two equal). The game builds it at boot, with every other
-`map` item, through `stage_kit::fresh::StageFresh`
+`map` item, through `workspace::stage::fresh::StageFresh`
 ([studio-redesign.md](studio-redesign.md), "Contents"), and leaves
 `<data>/maps/stage/` alone while the base map, the layout and
-`stage_kit::VERSION` are what built it.
+`content_kit::stage::VERSION` are what built it.
 
-Until the workspace lands, the build is `stage_kit::map::build`, for the
+Until the workspace lands, the build is `content_kit::stage::map::build`, for the
 stage kit alone (`h2 tags build --project content/stage/map.toml`, from
 the disc's base map or a tag tree). It edits the base's scenario into
 the stage's: the base's placements, netgame flags, light fixtures, decorators and
@@ -76,7 +77,7 @@ BSP naming the stage's `sbsp` and `ltmp`, and the starting locations
 replaced by each bay's spawn and then its camera eyes. The base's
 scenario, `sbsp` and `ltmp` are hidden from the closure, so the tags
 reached from `matg` and the kept groups come from the base and the stage
-adds its own. `stage_kit::map::package` writes the package and
+adds its own. `content_kit::stage::map::package` writes the package and
 `report.json`.
 
 With no tree extracted yet, the build reads the base map straight from
@@ -261,7 +262,7 @@ repository.
 
 ## Rules and limits
 
-- No disc byte reaches the repository. `art/stage/` holds our YAML; the
+- No disc byte reaches the repository. `content/stage/` holds our YAML; the
   textures are drawn in code; the project names a base map and tag paths.
   The package, reports, shots and references live under the data and
   cache roots, and outputs into a Git checkout are refused.
@@ -328,13 +329,13 @@ Pogo as a `ContentKit`, sources from a directory) is its W4.
 
 | # | Slice | Owns | Tests | Accepted when |
 |---|---|---|---|---|
-| S1 | Layout and geometry: `Layout` from YAML (bays, pads, cameras, references), the meshes, the collision polygons, the textures | `crates/tools/stage-kit/{Cargo.toml, src/lib.rs, layout.rs, mesh.rs, texture.rs, tests.rs}`, `art/stage/stage.yaml`, `art/stage/README.md` | the layout parses and refuses overlaps; every camera sees its bay's subject pad (a ray test on the mesh); the collision compiles (`collision_build::verify::check`); the grid's digits read back from the texture; the build is the same bytes twice | the tests pass; `Layout` serialises as the report's `layout` |
-| S2 | The map, flat-lit: `sbsp`, collision, MOPP, `scnr` with the placements, a constant lightmap, the base's sky, as tags added to a set; a `fresh` build over a `TagSource` (the disc map, or the tree) and the package; `h2 tags build --project` for this one project | `stage-kit/src/{map.rs, kit.rs}`, `stage-kit/tests/disc.rs`, `content/stage/map.toml`, `crates/apps/h2-tools/src/tag_repo_cmd.rs` | synthetic: the set has one BSP, the placements at the layout's points, and reads back through `map` and `scenario_edit`. Disc (`#[ignore]`): built on the user's base, the package resolves, the references resolve, tag memory is under the bound | Studio opens the package and `view.snapshot` shows the grid; the coordinator loads it in the game with `maps.load` and stands on the floor |
-| S3 | Lighting and sky: `stage_kit::light`, the three bays' lightmaps, the sky dome and its install (built) | `stage-kit/src/{light.rs, sky.rs}` | the day bay's lightmap is brighter toward the sun's side of the references and the dark bay's is under its bar; the sky model converts and the scenario names it | the three bays' `ground` shots differ as designed in the game |
+| S1 | Layout and geometry: `Layout` from YAML (bays, pads, cameras, references), the meshes, the collision polygons, the textures | `crates/tools/content-kit/src/stage/{Cargo.toml, src/lib.rs, layout.rs, mesh.rs, texture.rs, tests.rs}`, `content/stage/layout.yaml`, `content/stage/README.md` | the layout parses and refuses overlaps; every camera sees its bay's subject pad (a ray test on the mesh); the collision compiles (`collision_build::verify::check`); the grid's digits read back from the texture; the build is the same bytes twice | the tests pass; `Layout` serialises as the report's `layout` |
+| S2 | The map, flat-lit: `sbsp`, collision, MOPP, `scnr` with the placements, a constant lightmap, the base's sky, as tags added to a set; a `fresh` build over a `TagSource` (the disc map, or the tree) and the package; `h2 tags build --project` for this one project | `content-kit/src/stage/{map.rs, kit.rs}`, `stage-kit/tests/disc.rs`, `content/stage/map.toml`, `crates/apps/h2-tools/src/tag_repo_cmd.rs` | synthetic: the set has one BSP, the placements at the layout's points, and reads back through `map` and `scenario_edit`. Disc (`#[ignore]`): built on the user's base, the package resolves, the references resolve, tag memory is under the bound | Studio opens the package and `view.snapshot` shows the grid; the coordinator loads it in the game with `maps.load` and stands on the floor |
+| S3 | Lighting and sky: `content_kit::stage::light`, the three bays' lightmaps, the sky dome and its install (built) | `content-kit/src/stage/{light.rs, sky.rs}` | the day bay's lightmap is brighter toward the sun's side of the references and the dark bay's is under its bar; the sky model converts and the scenario names it | the three bays' `ground` shots differ as designed in the game |
 | S4 | `render.view` (built) | `crates/extensions/game/src/agent_spawn_view.rs`, `crates/extensions/agent-proto/src/render.rs`, [agent-api.md](../runtime/agent-api.md) | params checked; the pose reaches the private view; reset; interrupted by a map change | a capture from a given eye matches the pose |
 | S5 | `audio.meter` (built) | the host mixer's tap in `crates/extensions/game` beside `medal_announcer`, `agent-proto`, the audio page, [agent-api.md](../runtime/agent-api.md) | a synthetic sine through the tap gives its peak, RMS and loudness; `play` starts a named cue; the null sink runs with no device | the Pogo's three cues meter on a headless game |
 | S6 | `stage.status`, `stage.open`, `stage.shoot` on the own game, `maps.load`'s rescan | `crates/apps/studio/src/api/stage.rs` (planned), `studio/src/play/stage.rs`, `studio-proto`, `crates/extensions/game/src/test_maps.rs`, [agent-api.md](agent-api.md), this page | over the fake game link in `play::testing`: the calls made in order, the own game started when absent, both lightings shot, the refusals (no disc, no image, a Git checkout), every method's example; `maps.load` on an id published after start | one `stage.open` then `stage.shoot` on a headless Studio gives the PNGs of a bay in both lightings |
-| S7 | The checks, `stage.listen`, `stage.run`, `stage.golden`, the `fits` table, the `check.run` source | `studio/src/api/stage_checks.rs`, `stage-kit/src/fits.rs`, `studio/src/api/stage.rs` | each check on invented images and levels, passing and failing; `fits` on invented costs and maps; the references keyed by stage key and tier; `check.run` reports the stage skipped with no game | `stage.run` on a Pogo with a blacked atlas fails `lit` and `first-person`, and on a clip raised 12 dB fails `loud` |
+| S7 | The checks, `stage.listen`, `stage.run`, `stage.golden`, the `fits` table, the `check.run` source | `studio/src/api/stage_checks.rs`, `content-kit/src/stage/fits.rs`, `studio/src/api/stage.rs` | each check on invented images and levels, passing and failing; `fits` on invented costs and maps; the references keyed by stage key and tier; `check.run` reports the stage skipped with no game | `stage.run` on a Pogo with a blacked atlas fails `lit` and `first-person`, and on a clip raised 12 dB fails `loud` |
 | S8 | The Stage panel, the skill and the rule for lanes, the measured budgets | `studio/src/ui/stage.rs`, `.claude/skills/h2-agent-api/SKILL.md`, `AGENTS.md`, `docs/editor/notes/content-stage.md`, [editor-guide.md](editor-guide.md) | the panel's state from a canned report (a headless window test) | the budget table links to the note; a lane's report quotes a `stage.run` |
 
 S1 and S2 are in order and wait for nothing in the workspace: S2 builds

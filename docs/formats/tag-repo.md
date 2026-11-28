@@ -383,7 +383,7 @@ files does not.
 **The stage** (`h2 tags build --project content/stage/map.toml [--disc
 ISO | --repo DIR] [--data DIR]`): the content stage built `fresh` over
 its base map read from the disc or from an extracted tree, and written as
-a map package (`stage_kit::map`,
+a map package (`content_kit::stage::map`,
 [content-stage.md](../editor/content-stage.md)). Over the tree the same
 build is the stage kit of `h2 tags project build stage`.
 

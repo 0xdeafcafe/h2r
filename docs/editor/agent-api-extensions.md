@@ -517,7 +517,7 @@ sentence led by the param it is about (`shape`, `size`, `param`,
 
 - `blockout.render {name?, shape?, size?, param?, view?, pixels?, plates?,
   fit?, out?}`: the definition generated, built into the kit's render
-  mesh in the dev view (`blockout_kit::mesh::build`) and drawn offscreen
+  mesh in the dev view (`content_kit::blockout::mesh::build`) and drawn offscreen
   through the viewport's renderer to a PNG under the cache directory's
   `studio/blockout/` (never into a Git checkout: `REFUSED`). Each face is
   in its role's family colour (`dev_texture::Family`), its shell edges are

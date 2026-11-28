@@ -11,8 +11,8 @@ use map::{FourCC, Map, ResourceFile};
 use scenario_edit::recipe::{self, Anchor, Builder, Clear as Blocks, Fidelity, Place, Recipe};
 use scenario_edit::{PackageForm, Session};
 use serde::Serialize;
-use stage_kit::kit::{Facts, Keys};
-use stage_kit::map::{
+use content_kit::stage::kit::{Facts, Keys};
+use content_kit::stage::map::{
     Base, Over, Project, Report as StageReport, edit_scenario, empty_block, git_checkout,
     keys_free, lost_block,
 };
@@ -25,7 +25,7 @@ use crate::template::{Kind, Mode, Template, map_name};
 use crate::{Error, Result};
 
 /// The shared caches a base reads resources from, by file stem (as
-/// `stage_kit::fresh` reads them).
+/// `content_kit::stage::fresh` reads them).
 pub const SHARED: [(&str, ResourceFile); 3] = [
     ("mainmenu", ResourceFile::MainMenu),
     ("shared", ResourceFile::Shared),
@@ -152,7 +152,7 @@ pub fn build(
 pub fn build_key(template: &Template, req: &Request, base: &Base) -> String {
     let mut text = Vec::new();
     text.extend_from_slice(&crate::VERSION.to_le_bytes());
-    text.extend_from_slice(&stage_kit::VERSION.to_le_bytes());
+    text.extend_from_slice(&content_kit::stage::version().to_le_bytes());
     let t = serde_json::to_string(template).unwrap_or_default();
     for part in [t.as_str(), req.name.as_str(), req.kind.name(), base.map.as_str()] {
         text.extend_from_slice(&(part.len() as u64).to_le_bytes());
@@ -184,7 +184,7 @@ pub fn build_over(
     keys_free(base, &keys)?;
     let mut scnr = src
         .read(&base.scenario)
-        .map_err(stage_kit::Error::from)?
+        .map_err(content_kit::stage::Error::from)?
         .ok_or_else(|| Error::Base(format!("{}: no {}", base.map, base.scenario)))?;
     let mut cleared = Vec::new();
     if kind == Kind::Campaign {
@@ -237,7 +237,7 @@ pub fn build_over(
         kits: vec!["new-map".into()],
     };
     let key = build_key(template, req, base);
-    let floor = stage_kit::map::build_over(
+    let floor = content_kit::stage::map::build_over(
         src,
         base,
         &project,

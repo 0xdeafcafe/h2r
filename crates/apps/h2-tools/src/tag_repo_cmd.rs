@@ -559,7 +559,7 @@ const PROJECT_USAGE: &str = "usage:
       <data>/maps/<name>/ (default <data>: the user's data directory),
       with --out also as a lone map and --report the build report";
 
-/// `--project`: the content stage over its base (`stage_kit::map`).
+/// `--project`: the content stage over its base (`content_kit::stage::map`).
 fn build_project(args: &[String]) -> Result<()> {
     let mut project = None;
     let mut disc = None;
@@ -596,12 +596,12 @@ fn build_project(args: &[String]) -> Result<()> {
     }
     let text = std::fs::read_to_string(&project_path)
         .with_context(|| format!("reading {}", project_path.display()))?;
-    let project = stage_kit::map::Project::parse(&text)?;
+    let project = content_kit::stage::map::Project::parse(&text)?;
     let started = std::time::Instant::now();
     let (built, base) = match repo_dir {
         Some(dir) => {
-            let (base, mut repo) = stage_kit::map::Base::from_repo(&dir, &project.base)?;
-            (stage_kit::map::build(&mut repo, &base, &project)?, base)
+            let (base, mut repo) = content_kit::stage::map::Base::from_repo(&dir, &project.base)?;
+            (content_kit::stage::map::build(&mut repo, &base, &project)?, base)
         }
         None => {
             let disc = disc.map(Ok).unwrap_or_else(super::default_disc)?;
@@ -613,12 +613,12 @@ fn build_project(args: &[String]) -> Result<()> {
             let schema = Schema::builtin();
             let mut sh = shared(schema, &all)?;
             let mut ms = MapSource::new(schema, src.open()?, &mut sh)?;
-            let base = stage_kit::map::Base::from_map(&mut ms, &project.base)?;
-            (stage_kit::map::build(&mut ms, &base, &project)?, base)
+            let base = content_kit::stage::map::Base::from_map(&mut ms, &project.base)?;
+            (content_kit::stage::map::build(&mut ms, &base, &project)?, base)
         }
     };
     let data = data.unwrap_or_else(content::store::default_data_root);
-    let package = stage_kit::map::package(&built, &project, &base, &data)?;
+    let package = content_kit::stage::map::package(&built, &project, &base, &data)?;
     let write = |path: &Path, bytes: &[u8]| -> Result<PathBuf> {
         let name = path
             .file_name()

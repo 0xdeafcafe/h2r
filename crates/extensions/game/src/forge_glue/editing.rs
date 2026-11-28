@@ -129,7 +129,7 @@ pub(super) struct Editor {
     /// Dev view is on (`forge.blockout.dev_view`, docs/game/forge-blockout.md).
     dev_view: bool,
     /// The map's surfaces the Material picker lists after Dev, as shader
-    /// paths (`blockout_kit::palette::survey`); empty until a survey is read.
+    /// paths (`content_kit::blockout::palette::survey`); empty until a survey is read.
     surfaces: Vec<String>,
     /// Settings the player changed on a screen, for the driver to write to
     /// the profile's store ([`Editor::take_setting_writes`]).

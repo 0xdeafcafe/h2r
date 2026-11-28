@@ -9,7 +9,7 @@ Havok collides with. The design is
 ## Where it sits
 
 The `formats` domain, with no dependency on another crate of the workspace, so
-the document (`forge-doc`), the tag writer (`blockout-kit`) and Studio all use
+the document (`forge-doc`), the tag writer (`content-kit` (its `blockout` module)) and Studio all use
 it. It reads no disc and no file.
 
 ## Use

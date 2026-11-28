@@ -58,7 +58,6 @@ def root_exports():
             "art/announcer/thunderstorm-on.wav",
             "art/announcer/triple-bounce.wav",
             "art/announcer/wave-complete.wav",
-            "art/stage/stage.yaml",
         ],
         visibility = ["PUBLIC"],
     )
@@ -75,6 +74,7 @@ def root_exports():
         name = "content",
         srcs = [
             "content/README.md",
+            "content/blockout/kit.yaml",
             "content/core/huds/theater.hud.yaml",
             "content/core/kits/glyphs.kit.yaml",
             "content/core/package.toml",
@@ -165,6 +165,9 @@ def root_exports():
             "content/pogo/tags/pogo_covenant.weap.yaml",
             "content/pogo/tags/pogo_forerunner.weap.yaml",
             "content/pogo/tags/pogo_unsc.weap.yaml",
+            "content/stage/README.md",
+            "content/stage/kit.yaml",
+            "content/stage/layout.yaml",
             "content/stage/map.toml",
             "content/stage/package.toml",
             "content/superbounce/huds/pill-block.hud.yaml",
