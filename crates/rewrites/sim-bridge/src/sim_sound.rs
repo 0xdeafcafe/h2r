@@ -25,6 +25,7 @@ pub mod mixer_feed;
 pub mod owner_host;
 pub mod owners;
 pub mod request;
+pub mod scene;
 pub mod voice_arm;
 
 pub const SOUND: &str = "sim.native.sound";

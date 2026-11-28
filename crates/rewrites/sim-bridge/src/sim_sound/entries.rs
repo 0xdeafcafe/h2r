@@ -29,6 +29,7 @@ use engine::{GuestMemory, MemFault};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use sim_sound::chooser;
 use sim_sound::events::TableEvent;
+use sim_sound::feed::{NullTableHost, Scene, TableHost};
 use sim_sound::impulse::Selection;
 use sim_sound::instances::{Handle, Levels, Rejected, Request, Rng, SoundTag, SoundTags, Sounds, SourceParams, TagIndex};
 use sim_sound::looping::{LoopError, seconds_to_ticks};
@@ -259,6 +260,9 @@ pub struct Table {
     pub ledger: SoundLedger,
     outbox: Vec<TableEvent>,
     last_phase: Option<u32>,
+    /// Hears the outbox and the scene once a frame: [`NullTableHost`]
+    /// until boot gives it the mixer ([`set_host`]).
+    host: Box<dyn TableHost>,
 }
 
 pub type Shared = Arc<Mutex<Table>>;
@@ -271,13 +275,39 @@ impl Table {
     /// The map's tags and the guest levels, read from guest memory: the
     /// table boot installs.
     pub fn guest() -> Self {
-        Self { sounds: Sounds::new(), tags: None, levels: None, ledger: SoundLedger::default(), outbox: Vec::new(), last_phase: None }
+        Self {
+            sounds: Sounds::new(),
+            tags: None,
+            levels: None,
+            ledger: SoundLedger::default(),
+            outbox: Vec::new(),
+            last_phase: None,
+            host: Box::new(NullTableHost),
+        }
+    }
+
+    /// The host that hears the table: the mixer feed at boot.
+    pub fn set_host(&mut self, host: Box<dyn TableHost>) {
+        self.host = host;
     }
 
     fn reset(&mut self) {
         self.sounds = Sounds::new();
         self.outbox.clear();
         self.last_phase = None;
+        self.host.clear();
+    }
+
+    /// `0x125b40`'s body: the events since the last frame to the host in
+    /// the table's order, then the scene. Nothing here changes the table.
+    pub fn service(&mut self, tick: u32, ear: Option<sim_sound::feed::Ear>) {
+        let events = std::mem::take(&mut self.outbox);
+        self.ledger.service_events += events.len() as u64;
+        for e in &events {
+            self.host.event(e);
+        }
+        let scene = Scene { tick, ear, sources: self.sounds.sources() };
+        self.host.frame(&scene);
     }
 
     fn refuse(&mut self, addr: u32) {
@@ -321,6 +351,9 @@ impl Table {
         for (addr, n) in &l.refused_entry {
             out.insert(format!("sound.refused_entry.{addr:#x}"), *n);
         }
+        for (name, n) in self.host.counters() {
+            out.insert(name.to_owned(), n);
+        }
         out
     }
 }
@@ -330,6 +363,12 @@ pub static SHARED: LazyLock<Shared> = LazyLock::new(|| Arc::new(Mutex::new(Table
 
 pub fn lock(t: &Mutex<Table>) -> MutexGuard<'_, Table> {
     t.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Give the process's table its host: boot's mixer feed, once the audio
+/// is up.
+pub fn set_host(host: Box<dyn TableHost>) {
+    lock(&SHARED).set_host(host);
 }
 
 /// The process table's counters, for `sim.ledger`. Empty with the table
@@ -966,9 +1005,8 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
             Ok(Ret::new(0, 0))
         }
         Body::Service => {
-            let mut t = lock(&table);
-            let events = std::mem::take(&mut t.outbox);
-            t.ledger.service_events += events.len() as u64;
+            let (tick, ear) = cx.read(|m| (tick_of(m).unwrap_or(0), super::scene::ear(m).unwrap_or(None)));
+            lock(&table).service(tick, ear);
             Ok(Ret::new(0, 0))
         }
         Body::Prefetch | Body::LoadPump => Ok(Ret::new(0, 0)),

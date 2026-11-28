@@ -27,6 +27,9 @@ sim-effects.workspace = true
 x87.workspace = true
 # The host mixer the sound events feed (sim_sound/mixer_feed.rs).
 audio = { path = "../../platform/audio", default-features = false }
+# The clips the mixer feed plays, by the map's tag id (sim_sound/mixer_feed.rs).
+sound-clips = { path = "../../platform/sound-clips" }
+map.workspace = true
 
 [dev-dependencies]
 hs = { workspace = true, features = ["fixture"] }

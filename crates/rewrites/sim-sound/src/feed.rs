@@ -56,6 +56,9 @@ pub struct Scene {
 pub trait TableHost: Send {
     fn event(&mut self, event: &TableEvent);
     fn frame(&mut self, scene: &Scene);
+    /// The table was emptied with no events (a map's create or drop):
+    /// every voice goes at once.
+    fn clear(&mut self) {}
     /// The host's `feed.*` counters, by name.
     fn counters(&self) -> Vec<(&'static str, u64)> {
         Vec::new()
