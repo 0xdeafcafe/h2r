@@ -30,6 +30,8 @@ h1-runtime = { path = "../h1-runtime" }
 render-bridge = { path = "../../rewrites/render-bridge", default-features = false }
 canvas-fit = { path = "../../platform/canvas-fit" }
 sim-bridge = { path = "../../rewrites/sim-bridge" }
+# The loop pool `audio.loops` reads (audio_loops.rs).
+sim-sound.workspace = true
 film = { path = "../../live/film" }
 # Start points: the stored arena frames (theater/start_point.rs).
 zstd = "0.11"

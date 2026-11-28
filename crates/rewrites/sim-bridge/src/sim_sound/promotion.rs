@@ -34,6 +34,29 @@ fn truncate(v: f32) -> u32 {
     if v.is_nan() || !(-2_147_483_648.0..2_147_483_648.0).contains(&v) { 0x8000_0000 } else { v as i32 as u32 }
 }
 
+/// A source's promotion: the tag to start in place of `tag`, or `None` when
+/// the source's rate limit refuses the start. Halo 1's sounds carry their
+/// rules in their own tags (`docs/halo1/sounds.md`, "Impulse promotion").
+pub type SourcePromotion = fn(&mut dyn GuestMemory, u32) -> Result<Option<u32>, MemFault>;
+
+static SOURCE: std::sync::RwLock<Option<SourcePromotion>> = std::sync::RwLock::new(None);
+
+/// Install (or clear) the source promotion the start path asks.
+pub fn set_source_promotion(f: Option<SourcePromotion>) {
+    *SOURCE.write().unwrap_or_else(|e| e.into_inner()) = f;
+}
+
+/// What the start of `tag` plays after the source promotion: `Some(tag)` as
+/// it came, a promoted tag (its own rule then selects, so the rule is
+/// `-1`), or `None` for a refusal. With no promotion installed, the tag.
+pub fn promote_source(m: &mut dyn GuestMemory, tag: u32) -> Result<Option<u32>, MemFault> {
+    let f = *SOURCE.read().unwrap_or_else(|e| e.into_inner());
+    match f {
+        Some(f) => f(m, tag),
+        None => Ok(Some(tag)),
+    }
+}
+
 /// `0x126ec0(ecx = sound tag, &rule) -> eax`.
 pub fn select(m: &mut dyn GuestMemory, tag: u32) -> Result<Rule, MemFault> {
     let none = Rule { rule: NONE, refused: false };
@@ -191,5 +214,11 @@ mod tests {
         assert_eq!(truncate(-3.9), (-3i32) as u32);
         assert_eq!(truncate(f32::NAN), 0x8000_0000);
         assert_eq!(truncate(3.0e9), 0x8000_0000);
+    }
+
+    #[test]
+    fn with_no_source_promotion_the_tag_starts_as_it_came() {
+        let mut g = guest(100);
+        assert_eq!(promote_source(&mut g, TAG), Ok(Some(TAG)));
     }
 }

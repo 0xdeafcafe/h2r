@@ -6,7 +6,7 @@ use guest_layout::GuestMemory;
 use guest_layout::handle::DatumHandle;
 use guest_layout::tags::GroupTag;
 use guest_layout::view::Tags;
-use hooks::{BuildError, Builder, Feature, Flow, Manifest, points};
+use hooks::{BuildError, Builder, Feature, Manifest, points};
 use tags::sound::h1_promotion::*;
 
 const SOUND: GroupTag = GroupTag::from_chars(*b"snd!");
@@ -20,37 +20,11 @@ impl Feature for H1SoundPromotion {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         // Each rule's credit and last time are in its tag, and the clock
-        // is the mixer's: all guest memory.
+        // is the mixer's: all guest memory. The sound table's start path
+        // asks the promotion after the native admission checks
+        // (`sim_bridge::sim_sound::promotion::promote_source`).
         b.snapshot(hooks::SnapshotPolicy::Stateless);
-        b.raw()
-            .before(
-                &points::SOUND_IMPULSE_ALLOCATE,
-                "apply the source promotion rule",
-                |call| {
-                    use super::h1_particle_physics::fault;
-
-                    // The caller has passed the native sound's admission checks.
-                    let sp = call.cpu.esp;
-                    let mut m = call.ctx.memory();
-                    let original = m.u32(sp + 12)?;
-                    match choose(&mut *m, original).map_err(fault)? {
-                        Some(id) => {
-                            if id != original {
-                                m.set_u32(sp + 12, id)?;
-                                m.set_u32(sp + 16, u32::MAX)?;
-                            }
-                            Ok(Flow::Continue)
-                        }
-                        None => {
-                            let ret = m.u32(sp)?;
-                            call.cpu.eax = u32::MAX;
-                            call.cpu.esp = sp + 20;
-                            Ok(Flow::Return(runtime::TransferAbi::ret(ret)))
-                        }
-                    }
-                },
-            )
-            .context_only();
+        sim_bridge::sim_sound::promotion::set_source_promotion(Some(choose));
         Ok(())
     }
 }

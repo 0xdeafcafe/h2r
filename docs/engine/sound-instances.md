@@ -13,7 +13,7 @@ flowchart LR
     step[Sound phase: step] --> table
     step -->|ended, mouth| owners[OwnerHost]
   end
-  table -->|SoundEvent| outbox
+  table -->|TableEvent| outbox
   subgraph frame [Frame, any rate]
     outbox --> feed[MixerHost]
     scene[Scene: listeners, source positions] --> feed
@@ -267,6 +267,7 @@ The bodies are `sim_bridge::sim_sound::entries::start_layer`. Each runs in a fra
 | `0x18d090(ecx = tag, edx = custom)` | `playback::playback_row` | by `custom >> 30`: -1 or 0 the tag's bank row, 1 the globals tag's list, 2 the scenario's list (`+0x324`), 3 none |
 | `0x18d170`, `0x2194a0` | `playback::default_row`, `playback::bank_row` | a `snd!` tag's bank row (definition `+0xd`, gestalt `+0x34`, `0x34` bytes a row) |
 | `0x126ec0(ecx = tag, &rule)` | `promotion::select` | the rule over the gestalt's promotion state (`+0x4c`, `0x1c` bytes) and the sound clock (sound globals `+0x84`), and whether its cooldown refuses the start |
+| the source's promotion (Halo 1, `0x24ea0`) | `promotion::promote_source` | between the rule and the request read in `gate_and_admit`: the tag the installed `SourcePromotion` returns (rule -1 when it moved), or a refusal; `H1SoundPromotion` installs it; none for Halo 2 |
 | `0x126c30(eax = record, tag, &listener, &reason)` | `gate::start_gate` | the sound on (sound globals `+0x78` to `+0x7a`) and its class allowed (tag `+4`, `+5`, `[0x47f0e4]`); the skip draw on the game's seed word (x87, the scale row's `+0xc` to `+0x10` at source word 1 times the class default row's `+8`); `0x126bd0` (`gate::class_plays`); the listener; the level `0x1251e0` plus the distance gain in dB plus the default row's `+0x10` over the floor, or word 0 bit 8 or 11. Its refusals are `gate::Refusal` (5, 1, 4) |
 | `0x127d00(source, range, &distance)`, `0x127e20` | `gate::select_listener`, `gate::source_distance` | the nearest active listener of a positioned source (squared point or column distance, a directional source's vector length), unless `0x221da0` (`gate::obstructed`: the BSP's cluster distance `0x249d60` times distance over range reaches `0x45dd5c`) or out of range; any other source, the first mapped user at distance 0 |
 | `0x12ac20`, `0x12aff0`, `0x124fc0`, `0x125010` | `gate::distance_gain`, `gate::ramp`, `gate::distances` | the ramp from the maximum distance to the minimum, times `max / max(max, d)`; the distances from the source (word 0 bits 2, 3), the class (tag `+1` bits 2, 3) or the class default row |
@@ -361,7 +362,7 @@ Two subsystems stay guest calls: the sound cache (`0x2185d0`, `0x2186b0`), whose
 
 | Reader | Reads today | Moves to |
 |---|---|---|
-| `extensions/game/src/audio_loops.rs` (`audio.loops`) | loop array, instance, channel and stream records | `Sounds::loops()` and `instances()` for datum, segment, range and permutation; the play position from `MixerHost::voice(handle)` |
+| `extensions/game/src/audio_loops.rs` (`audio.loops`) | loop array, instance, channel and stream records | `Sounds::loops()` and `instances()` for datum, segment, range and permutation; each loop tag's tracks from the map (`Snapshot::of_loop`) label the segments |
 | `extensions/game/src/h1_conversation.rs` (`sound_live`, starts, stop) | pool row `+2`; guest calls to `0x1891d0`, `0x189fe0`, `0x126360` | `Sounds::live(handle)`; the starts keep calling game sound, which reaches the entries above |
 | `extensions/game/src/sim_glue/voices.rs` (`sound.voices` series) | pool and channel rows at six observers | deleted; the series is to be the table's events as `sound.table` (handle, tag, range, permutation, reason) |
 | Dialogue callbacks `0x18c8c0`, `0x18c910`, `0x18c6a0` | pool row for the tag | `GuestUnits` |
@@ -425,7 +426,7 @@ Space 0 sounds (word 0 bits 24 to 27), unknown spaces and world sounds with no l
 
 | Stage | State | Gate |
 |---|---|---|
-| D0 | guest pool; frame replaced by the event service; `NullHost` | none (today) |
+| D0 | guest pool; frame replaced by the event service; `NullTableHost` | none (today) |
 | D1 | `Sounds` owns every instance; entries are Rust; pool global 0 | `sound.pool_reads == 0`, `sound.unported_entries == 0`, `dsound.manager_calls == 0` over one campaign level and one match |
 | D2 | `MixerHost` at boot; the game is heard through the feed | `feed.started == sound.admitted` less `feed.culled`; `feed.clip_refused == 0` on retail maps |
 | D3 | `sim_glue/voices.rs` and both switches deleted; the sound core's DirectSound objects (mix-ins, submixes, streams) no longer registered | `dsound.manager_calls` removed with its code; `dsound.calls` names only Bink and voice |
@@ -506,7 +507,7 @@ A refusal never plays or admits something else in its place. An unknown owner re
 
 ### 5. Deletions
 
-- Files: `crates/rewrites/sim-bridge/src/sim_sound/mixer_feed.rs` (what the feed does not do yet, below); `crates/extensions/game/src/audio_loops.rs` (the play position from `MixerHost::voice`); `crates/apps/boot/src/registration.rs`; `crates/platform/dsound` (the sound core's registrations); docs: [dsound.md](../audio/dsound.md), [audio.md](../audio/audio.md), [sim-rewrite.md](sim-rewrite.md) (phase 4).
+- Files: `crates/rewrites/sim-bridge/src/sim_sound/mixer_feed.rs` (what the feed does not do yet, below); `crates/extensions/game/src/audio_loops.rs` (`Sounds::loops` rows); `crates/apps/boot/src/registration.rs`; `crates/platform/dsound` (the sound core's registrations); docs: [dsound.md](../audio/dsound.md), [audio.md](../audio/audio.md), [sim-rewrite.md](sim-rewrite.md) (phase 4).
 - The feed's open items: velocity and Doppler, obstruction and the room send (I3DL2), the propagation delay, the class ceilings and voice priority (`sim_sound::sources::VoicePriority`, `scheduling::CappedSelection`) in place of the first-come limit, a listener per split-screen user, and the detail sounds' placement.
 - Exit: D2's and D3's gates; the game is heard on the owner's machine with `dsound.manager_calls` gone and `feed.clip_refused == 0` on a retail level.
 

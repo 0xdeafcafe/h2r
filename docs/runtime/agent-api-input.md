@@ -49,18 +49,15 @@ have a configured send gain and deliver silence. Plain stereo routing has
 
 ### `audio.loops`
 
-`h2 agent audio.loops` takes no parameters. With DirectSound installed it
-reports the guest's active looping sounds and the host's playout health.
+`h2 agent audio.loops` takes no parameters. It reports the sound table's
+looping sounds (`Sounds::loops`) and the host's playout health.
 Each row in `loops` gives the salted `loop_datum`, `tag_datum`, resolved
 `tag_name` when the map names the tag, zero-based `track`, `segment`,
 `sound_instance` and `sound_datum`. `segment` is `in`, `loop`, `out`, `alt`,
 `alt_in`, `alt_transition_out`, `alt_out` or `unknown`. Overlapping instances
 of a track get separate rows. `pitch_range`, `permutation` and `chunk` come
-from the engine's source state. `play_packet` and `play_position_frames`
-give the DirectSound stream's current packet and its source-frame offset.
-They are null while no queued stream packet can be resolved. The playback
-cursor is at the mixer. The guest can select the next segment while PCM
-from its predecessor is still queued.
+from the sound's selection in the table. The table can select the next
+segment while PCM from its predecessor is still queued.
 
 `transitions` keeps the last 64 changes in starts, stops, segments and
 permutation selection, sampled after the sound frame service. A null
