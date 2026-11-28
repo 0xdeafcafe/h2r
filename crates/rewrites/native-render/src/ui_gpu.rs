@@ -564,7 +564,17 @@ pub struct OverlayGpu {
     blur_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     // The guest and display copies can alternate sizes on every dialog frame.
     blur_scratch: Vec<[wgpu::TextureView; 2]>,
+    /// The overlay's depth target ([`OverlayGpu::depth_target`]), one for
+    /// each size a copy draws at.
+    depth: Vec<wgpu::TextureView>,
 }
+
+/// The overlay's depth format: what a model view's objects test and write
+/// (docs/graphics/native-menus-overlay.md, "Model views"). D24 with
+/// stencil, as the game's own depth surface: the object programs write the
+/// W-buffer depth at D24's scale, and a marked part draws in stencil mode
+/// 2. The overlay's own items draw with no depth.
+pub const OVERLAY_DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 
 /// One step of a prepared blur: the scratch it draws into and its bound
 /// source and offset.
@@ -684,7 +694,38 @@ impl OverlayGpu {
             blur_layout,
             blur_pipelines: HashMap::new(),
             blur_scratch: Vec::new(),
+            depth: Vec::new(),
         }
+    }
+
+    /// The overlay's depth target for a colour target of `size`: made the
+    /// first time a copy of that size draws a model view, then kept. Each
+    /// model view clears it before its objects draw, so nothing in it
+    /// outlives a view. The guest's and the display's copies differ in
+    /// size, and both are kept rather than remade every frame.
+    pub fn depth_target(&mut self, device: &wgpu::Device, size: wgpu::Extent3d) -> wgpu::TextureView {
+        let size = wgpu::Extent3d { depth_or_array_layers: 1, ..size };
+        if let Some(view) = self.depth.iter().find(|v| v.texture().size() == size) {
+            return view.clone();
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("native overlay depth"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: OVERLAY_DEPTH,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        // Two copies' sizes at most: a third (a resized window) takes the
+        // oldest's place.
+        if self.depth.len() == 2 {
+            self.depth.remove(0);
+        }
+        self.depth.push(view.clone());
+        view
     }
 
     fn blur_pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
@@ -1497,6 +1538,26 @@ mod tests {
         assert_eq!((max.color.src_factor, max.color.dst_factor), (wgpu::BlendFactor::One, wgpu::BlendFactor::One));
         assert!(overlay_blend(OverlayBlend::On { source: 0x999, dest: 0x303, equation: 0x8006 }).is_err());
         assert!(overlay_blend(OverlayBlend::On { source: 0x302, dest: 0x303, equation: 1 }).is_err());
+    }
+
+    /// The depth target is the target's size in the overlay's depth
+    /// format, kept for each copy's size and remade for a new one.
+    #[test]
+    fn the_depth_target_is_kept_for_each_copys_size() {
+        let Ok(ctx) = gfx::GfxContext::headless() else {
+            return;
+        };
+        let mut gpu = OverlayGpu::new(&ctx.device, &ctx.queue);
+        let size = |width, height| wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        let guest = gpu.depth_target(&ctx.device, size(640, 480));
+        assert_eq!((guest.texture().size(), guest.texture().format()), (size(640, 480), OVERLAY_DEPTH));
+        assert!(guest.texture().usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT));
+        let display = gpu.depth_target(&ctx.device, size(1280, 960));
+        assert_eq!(display.texture().size(), size(1280, 960));
+        assert!(gpu.depth_target(&ctx.device, size(640, 480)).texture() == guest.texture(), "the guest copy's is kept");
+        assert!(gpu.depth_target(&ctx.device, size(1280, 960)).texture() == display.texture(), "and the display's");
+        gpu.depth_target(&ctx.device, size(1920, 1080));
+        assert!(gpu.depth_target(&ctx.device, size(640, 480)).texture() != guest.texture(), "a third size takes the oldest's place");
     }
 
     /// A 2 by 2 guest overlay drawn into a 4 by 4 target: a red fill over
