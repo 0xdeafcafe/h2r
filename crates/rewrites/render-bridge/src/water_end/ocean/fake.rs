@@ -17,6 +17,9 @@ pub enum Event {
     Registers { register: u32, words: Vec<u32> },
     StageState { stage: u32, state: u32, value: u32 },
     VertexProgram { function: u32, address: u32 },
+    VertexInput { handle: u32, count: u32, inputs: u32 },
+    SelectProgram { vaf: u32, address: u32 },
+    Visible,
     RenderState { slot: u32, value: u32 },
     MakeSpace,
     PushViewport { put: u32 },
@@ -77,6 +80,14 @@ impl Host for Fake {
     }
     fn vertex_program(&self, _mem: &mut dyn GuestMemory, function: u32, address: u32) -> bool {
         self.push(Event::VertexProgram { function, address });
+        true
+    }
+    fn vertex_input(&self, _mem: &mut dyn GuestMemory, handle: u32, count: u32, inputs: u32) -> bool {
+        self.push(Event::VertexInput { handle, count, inputs });
+        true
+    }
+    fn select_vertex_program(&self, _mem: &mut dyn GuestMemory, vaf: u32, address: u32) -> bool {
+        self.push(Event::SelectProgram { vaf, address });
         true
     }
     fn make_space(&self, _mem: &mut dyn GuestMemory, _minimum: u32, _requested: u32) -> Option<u32> {

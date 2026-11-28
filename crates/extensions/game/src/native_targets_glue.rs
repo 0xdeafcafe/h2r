@@ -112,6 +112,20 @@ impl<B: d3d::Backend + Send + 'static> Host for Targets<B> {
         made.map_or_else(|e| self.refused("a vertex program", e), |()| true)
     }
 
+    fn vertex_input(&self, mem: &mut dyn GuestMemory, handle: u32, count: u32, inputs: u32) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        let made = device.set_vertex_shader_input(&mut DeviceMemory(mem), handle, count, inputs);
+        drop(device);
+        made.map_or_else(|e| self.refused("the vertex inputs", e), |()| true)
+    }
+
+    fn select_vertex_program(&self, mem: &mut dyn GuestMemory, vaf: u32, address: u32) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        let made = device.select_vertex_shader_direct(&mut DeviceMemory(mem), vaf, address);
+        drop(device);
+        made.map_or_else(|e| self.refused("a vertex program select", e), |()| true)
+    }
+
     fn constant(&self, r: usize) -> Option<[u32; 4]> {
         // 192 registers (`d3d::Device::constant`'s hardware order).
         (r < 192).then(|| self.device.lock().ok().map(|d| d.constant(r).map(f32::to_bits))).flatten()

@@ -94,7 +94,8 @@ Scripted lights depend on it: the Armory's look test creates `looker_light_top_r
 |---|---|
 | `0x20bb0(view, 0x1f, 0, 0, 1, 0x2e540)` | each entry's quad (`scene_extract::flares::Lens::query`, the port of `0x2e540` and `0x48b00`), one compute pass over the bound depth (`native_render::flare_gpu`), the area at `+6` and the set's bit |
 | `0x20770` | each byte from its count two frames back (`read_byte`), `0x20e50` for an inactive entry, the view's read frame |
-| other `0x20bb0` calls (the water's class 5 query, the draw pass) | the guest's; the reader reads their slots from the device |
+| the water ocean's gate `0x3c270`: `0x209b0` and its listed `0x20bb0(view, 0x20, &entry, 1, 1, 0x3bf20)` | `register` and `walk_listed`, called by `water_end::ocean::gate` ([retire-d3d-display.md](retire-d3d-display.md#the-water-end)): its corners' rectangle in tiles, the counts summed into one slot |
+| the draw pass's `0x20bb0` | the guest's (no tests); the reader reads a slot the guest ended from the device |
 
 - The count is exact: a guest pixel of the quad passes when the quad's stored depth (its `w` held to the W clip and floored, over the full scale) is at most the depth at the pixel's centre. A quad the W clip culls counts 0.
 - The counts are the display copy's: under exact mode the display copy's recording replaces the reference copy's, unless the display is drawn through a wider lens than the quads (`native_flare_query_glue::counts_on`).

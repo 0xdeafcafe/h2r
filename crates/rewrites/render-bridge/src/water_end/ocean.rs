@@ -7,17 +7,19 @@
 //!
 //! | Step | Made |
 //! |---|---|
-//! | grid `0x0003ca90`, gates `0x0003c270` and `0x0012de70` | guest calls; a gate's AL 0 goes to the stamps |
+//! | grid `0x0003ca90` | guest call |
+//! | gate `0x0003c270`, the ocean's occlusion query | [`Device::visible`]: Rust over the native flare query's count pass ([`gate`]) |
+//! | gate `0x0012de70`, the texture block's residency | Rust ([`cache::resident`]); a closed gate goes to the stamps |
 //! | the shader `[definition + 4]` to its implementation's flags `+0x118` | Rust ([`shader`]) |
 //! | copies `0x0003bea0` (bit 20), `0x00131ed0` then `0x0003bd00` (bit 19) | guest calls; their binds land on `Game(0x16)` and `Game(0x15)` through the device's role table |
 //! | alpha clear `0x0003c515` | `native_targets::cut_clear(0x10, 0x00ffffff, 0, 0)` on the bound target |
 //! | vertex type `0x0001cbb0`, grid constants `0x000151c0`, stream `0x0001cda0` | Rust over [`Device::host`] ([`state`]) |
-//! | stream commit `0x0001c710` | guest call |
+//! | stream commit `0x0001c710` | Rust over [`Device::host`] ([`state::stream_commit`]) |
 //! | the 30 words at `0x004c1a90` zeroed, `0x0001bd50`, `0x0001cdd0` | Rust ([`state`]) |
 //! | shader begin `0x0001bbf0` | guest call |
 //! | viewport `0x00012d50`, structure constants `0x0003bf00`, the wrapper's stage commit `0x0001cf50` | Rust ([`state`]) |
 //! | quads `0x0001c8a0(8, [geometry + 0x24], [geometry + 0x20])` | [`Device::draw`]: `IndexedPass::water_quads` over the scene's `WaterComposite` |
-//! | stamps `0x0003bcb0` | a guest call per image ([`stamps`]) |
+//! | stamps `0x0003bcb0` | Rust per image ([`stamps`], [`cache::stamp`]) |
 //!
 //! What the stage cannot make is a cause, `unimplemented!("water ocean:
 //! <cause>")`: `unread`, `unwritable`, `shader_group` (a shader of group
@@ -25,12 +27,17 @@
 //! `device` (a draw-state call refused), `vertex_kind`,
 //! `position_compression`, `structure` (the upload's float model
 //! refused), `quads` (no keyed view's composite), `draw` (the native draw
-//! refused).
+//! refused), `flare_host`, `placed` (the gate's count pass not placed),
+//! `vertex_declaration`, `vertex_format` (a stream format the commit
+//! cannot build), `texture_cold` (a texture block to stream),
+//! `texture_request` (an image the texture cache must load).
 
 use engine::memory::{GuestMemory, MemFault};
 
 use crate::native_targets::Host;
 
+pub mod cache;
+pub mod gate;
 pub mod state;
 #[cfg(test)]
 mod fake;
@@ -40,14 +47,10 @@ pub type Cause = &'static str;
 
 /// The guest helpers the body calls.
 pub const GRID: u32 = 0x0003_ca90;
-pub const VISIBLE: u32 = 0x0003_c270;
-pub const TEXTURE: u32 = 0x0012_de70;
 pub const COPY_TARGET: u32 = 0x0003_bea0;
 pub const PASS_SOURCE: u32 = 0x0013_1ed0;
 pub const PASS_TARGET: u32 = 0x0003_bd00;
-pub const STREAM_COMMIT: u32 = 0x0001_c710;
 pub const SHADER_BEGIN: u32 = 0x0001_bbf0;
-pub const STAMP: u32 = 0x0003_bcb0;
 
 /// The tag table's pointer: entries of 16 bytes, the group at `+0`, the
 /// data at `+8`.
@@ -111,6 +114,9 @@ pub trait Device {
     fn scratch(&self) -> u32;
     /// The quads: `count` indices at `indices`, a quad list.
     fn draw(&mut self, mem: &mut dyn GuestMemory, indices: u32, count: u32) -> Result<(), Cause>;
+    /// The gate `0x0003c270(definition)`: whether the ocean is seen
+    /// ([`gate::visible`] over the native flare query).
+    fn visible(&mut self, mem: &mut dyn GuestMemory, definition: u32) -> Result<bool, Cause>;
 }
 
 /// The shader's words the body reads (`0x0003c439..0x0003c4d6`).
@@ -179,19 +185,10 @@ pub fn shader(mem: &dyn GuestMemory, index: u32) -> Result<Shader, Cause> {
     Ok(Shader { index, word: word(mem, p.wrapping_add(0x100))?, flags: word(mem, p.wrapping_add(0x118))?, esi, ecx, edx })
 }
 
-/// One stamp's call: the image, and the loop's registers at it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Stamp {
-    pub image: u32,
-    pub bitmap: u32,
-    pub n: u32,
-    pub block: u32,
-}
-
-/// The stamps of the shader `index` (`0x0003c5a9..0x0003c630`): each
+/// The images the shader `index` stamps (`0x0003c5a9..0x0003c630`): each
 /// image of each bitmap of its block, and the bitmap count the loop ends
 /// on (signed, the guest's `jle`).
-pub fn stamps(mem: &dyn GuestMemory, index: u32) -> Result<(Vec<Stamp>, i32), Cause> {
+pub fn stamps(mem: &dyn GuestMemory, index: u32) -> Result<(Vec<u32>, i32), Cause> {
     let block = word(mem, tag_data(mem, index)?.wrapping_add(0x24))?;
     let count = word(mem, block.wrapping_add(4))? as i32;
     let mut out = Vec::new();
@@ -206,7 +203,7 @@ pub fn stamps(mem: &dyn GuestMemory, index: u32) -> Result<(Vec<Stamp>, i32), Ca
         for n in 0..images.max(0) as u32 {
             let image = word(mem, data.wrapping_add(0x48))?.wrapping_add(n * 0x74);
             if image != 0 {
-                out.push(Stamp { image, bitmap: data, n, block });
+                out.push(image);
             }
         }
     }
@@ -216,16 +213,12 @@ pub fn stamps(mem: &dyn GuestMemory, index: u32) -> Result<(Vec<Stamp>, i32), Ca
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
     Grid,
-    Visible,
-    Texture,
-    Shader,
+    Gates,
     PassSource,
     PassTarget,
     Clear,
-    StreamCommit,
     ShaderBegin,
     Draw,
-    Stamp(usize),
 }
 
 /// One ocean's steps.
@@ -236,15 +229,13 @@ pub struct Ocean {
     regs: Regs,
     step: Step,
     shader: Option<Shader>,
-    stamps: Vec<Stamp>,
-    count: i32,
 }
 
 impl Ocean {
     /// The ocean of `definition`; `entry` the registers the body was
     /// entered with.
     pub fn new(definition: u32, clear: bool, entry: Regs) -> Self {
-        Self { definition, clear, regs: Regs { ebp: definition, ..entry }, step: Step::Grid, shader: None, stamps: Vec::new(), count: 0 }
+        Self { definition, clear, regs: Regs { ebp: definition, ..entry }, step: Step::Grid, shader: None }
     }
 
     fn call(&mut self, next: Step, target: u32, regs: Regs, args: Vec<u32>) -> Result<Next, Cause> {
@@ -258,14 +249,12 @@ impl Ocean {
     pub fn next(&mut self, mem: &mut dyn GuestMemory, device: &mut dyn Device, returned: Regs) -> Result<Next, Cause> {
         let d = self.definition;
         let r = Regs { eax: returned.eax, ecx: returned.ecx, edx: returned.edx, ..self.regs };
-        let al = returned.eax & 0xff != 0;
         match self.step {
-            Step::Grid => self.call(Step::Visible, GRID, Regs { eax: d, ..r }, Vec::new()),
-            Step::Visible => self.call(Step::Texture, VISIBLE, r, vec![d]),
-            Step::Texture if !al => self.to_stamps(mem, r),
-            Step::Texture => self.call(Step::Shader, TEXTURE, Regs { eax: 3, ecx: d.wrapping_add(TEXTURE_BLOCK), ..r }, Vec::new()),
-            Step::Shader if !al => self.to_stamps(mem, r),
-            Step::Shader => {
+            Step::Grid => self.call(Step::Gates, GRID, Regs { eax: d, ..r }, Vec::new()),
+            Step::Gates => {
+                if !device.visible(mem, d)? || !cache::resident(mem, d.wrapping_add(TEXTURE_BLOCK))? {
+                    return self.to_stamps(mem, r);
+                }
                 let index = word(mem, d.wrapping_add(SHADER))?;
                 if index == u32::MAX {
                     return self.to_stamps(mem, r);
@@ -303,15 +292,12 @@ impl Ocean {
                 state::grid_constants(mem, host)?;
                 let stream = word(mem, geometry.wrapping_add(GEOMETRY_STATE))?;
                 state::stream(mem, stream)?;
-                self.call(Step::StreamCommit, STREAM_COMMIT, Regs { esi: geometry, ..r }, vec![state::STREAMS])
-            }
-            Step::StreamCommit => {
-                let host = device.host();
+                state::stream_commit(mem, host, state::STREAMS)?;
                 mem.write(STATE_BLOCK, &[0; 4 * STATE_BLOCK_WORDS as usize]).map_err(|_| "unwritable")?;
                 state::state_block(mem, STATE_BLOCK)?;
                 state::position_decompression(mem, host, device.scratch(), 0, 0)?;
                 let edi = self.shader.map_or(0, |s| s.index);
-                self.call(Step::ShaderBegin, SHADER_BEGIN, Regs { edi, ..r }, vec![0, 3, 0, 0, 0x47c3_5000])
+                self.call(Step::ShaderBegin, SHADER_BEGIN, Regs { esi: geometry, edi, ..r }, vec![0, 3, 0, 0, 0x47c3_5000])
             }
             Step::ShaderBegin => {
                 let (host, scratch) = (device.host(), device.scratch());
@@ -326,27 +312,21 @@ impl Ocean {
                 device.draw(mem, indices, count)?;
                 self.to_stamps(mem, Regs { eax: 1, ..r })
             }
-            Step::Stamp(i) => self.stamp(i, r),
         }
     }
 
-    fn to_stamps(&mut self, mem: &dyn GuestMemory, r: Regs) -> Result<Next, Cause> {
+    /// The stamps, then the return.
+    fn to_stamps(&mut self, mem: &mut dyn GuestMemory, r: Regs) -> Result<Next, Cause> {
         let index = word(mem, self.definition.wrapping_add(SHADER))?;
         if index == u32::MAX {
             return Ok(Next::Return { eax: (index & !0xff) | 1, ecx: r.ecx });
         }
-        (self.stamps, self.count) = stamps(mem, index)?;
-        self.regs = r;
-        self.stamp(0, r)
-    }
-
-    fn stamp(&mut self, i: usize, r: Regs) -> Result<Next, Cause> {
-        let Some(&s) = self.stamps.get(i) else {
-            let ended = self.count.max(0) as u32;
-            return Ok(Next::Return { eax: (ended & !0xff) | 1, ecx: self.count as u32 });
-        };
-        let regs = Regs { eax: s.image, esi: s.bitmap, edi: s.n, ebx: s.n * 0x74, ebp: s.block, ..r };
-        self.call(Step::Stamp(i + 1), STAMP, regs, Vec::new())
+        let (images, count) = stamps(mem, index)?;
+        for image in images {
+            cache::stamp(mem, image)?;
+        }
+        let ended = count.max(0) as u32;
+        Ok(Next::Return { eax: (ended & !0xff) | 1, ecx: count as u32 })
     }
 }
 

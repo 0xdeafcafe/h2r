@@ -144,6 +144,16 @@ pub trait Host: Send + Sync {
     fn vertex_program(&self, _mem: &mut dyn GuestMemory, _function: u32, _address: u32) -> bool {
         false
     }
+    /// `D3DDevice_SetVertexShaderInput(handle, count, inputs)`
+    /// (`0x003f7440`). `false`: refused.
+    fn vertex_input(&self, _mem: &mut dyn GuestMemory, _handle: u32, _count: u32, _inputs: u32) -> bool {
+        false
+    }
+    /// `D3DDevice_SelectVertexShaderDirect(vaf, address)` (`0x003f6cf0`,
+    /// ECX the format, EAX the program's address). `false`: refused.
+    fn select_vertex_program(&self, _mem: &mut dyn GuestMemory, _vaf: u32, _address: u32) -> bool {
+        false
+    }
     /// Constant register `r` (hardware order, register + 96) as bits.
     fn constant(&self, _r: usize) -> Option<[u32; 4]> {
         None
