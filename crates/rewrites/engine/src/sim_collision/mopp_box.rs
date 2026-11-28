@@ -30,8 +30,9 @@ struct Plan {
     size: u32,
     keys_at: u32,
     corners: Corners,
-    /// A conversion rounded: the x87 status word's PE after the setup.
-    inexact: bool,
+    /// The x87 exception flags the conversions raised (PE when one
+    /// rounded), for the status word.
+    x87_flags: u16,
     keys: Vec<u32>,
 }
 
@@ -43,8 +44,8 @@ fn dead_depth(sp: u32, frames: u32) -> u32 {
 }
 
 fn plan(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Result<Plan, Bail> {
-    // One x87 register per load. The conversions set PE when inexact; the
-    // commit sets it as they would.
+    // One x87 register per load. The conversions run under the guest's
+    // control word for any operand; the commit sets the flags they raise.
     if !det::x87_env(c.x87.control, c.x87.status, c.x87.tag, 1) {
         return Err(Bail::Env);
     }
@@ -61,7 +62,7 @@ fn plan(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Res
     let min = m.vec3(aabb)?;
     let max = m.vec3(aabb.wrapping_add(l::AABB_MAX))?;
     let source = tree.source();
-    let (corners, inexact) = Corners::convert_inexact(min, max, source.origin, source.scale, c.x87.control)?;
+    let (corners, x87_flags) = Corners::convert_guest(min, max, source.origin, source.scale, c.x87.control)?;
     let data = m.u32(array.wrapping_add(l::DATA))?;
     let size = m.u32(array.wrapping_add(l::SIZE))?;
     let capacity = m.u32(array.wrapping_add(l::CAPACITY))? & l::CAPACITY_MASK;
@@ -91,7 +92,7 @@ fn plan(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Res
         size,
         keys_at,
         corners,
-        inexact,
+        x87_flags,
         keys,
     })
 }
@@ -115,9 +116,7 @@ impl Plan {
     }
 
     fn finish(&self, c: &mut CpuAbi) -> TransferAbi {
-        if self.inexact {
-            c.x87.status |= l::X87_PE;
-        }
+        c.x87.status |= self.x87_flags & 0x3f;
         // The setup's epilogue keeps the flags of the root interpreter's add to ESP.
         let aligned = self.sp.wrapping_sub(4) & !15;
         add_flags(c, aligned.wrapping_sub(l::FLAGS_ESP), l::INTERPRETER_LOCALS);

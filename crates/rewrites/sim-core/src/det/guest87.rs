@@ -126,18 +126,18 @@ impl X87 {
 
     /// `fld m32`: an SNaN is quieted with IE, a subnormal raises DE.
     pub fn load32(&self, bits: u32) -> St {
+        let (exp, mant) = ((bits >> 23) & 0xff, bits & 0x7f_ffff);
+        if exp == 0 && mant != 0 {
+            self.raise(x87::Flags::DE);
+        }
         let v = f64::from(f32::from_bits(bits));
         if v.is_finite() && self.fits(v) {
             return St(Repr::Host(v));
         }
         let mut w = F80::from_f32_bits(bits);
-        let (exp, mant) = ((bits >> 23) & 0xff, bits & 0x7f_ffff);
         if exp == 0xff && mant != 0 && mant & 0x40_0000 == 0 {
             self.raise(x87::Flags::IE);
             w.sig |= 1 << 62;
-        }
-        if exp == 0 && mant != 0 {
-            self.raise(x87::Flags::DE);
         }
         St(Repr::Wide(w))
     }

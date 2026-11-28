@@ -14,7 +14,7 @@ use super::decode::NONE;
 use super::{CORNER_LIMIT, MAX_FRAMES, Node, Tree};
 use crate::Bail;
 use ::mopp::boxvm::diagonal_plane;
-use sim_core::det::{Chain, checked};
+use sim_core::det::{Chain, checked, checked_guest};
 
 /// The full-precision corners the setup stores in the box VM: `lo` at
 /// `+0x20..+0x28`, `hi` at `+0x10..+0x18`.
@@ -72,6 +72,40 @@ impl Corners {
             Some((c, r.x87_inexact()))
         })
         .ok_or(Bail::Float)
+    }
+
+    /// [`Corners::convert`] under the guest's x87 `control` (it must pass
+    /// `sim_core::det::x87_env`) for any operand and any precision or
+    /// rounding control: the corners and the x87 exception flags (`0x3f`)
+    /// the sequence raises. A NaN or out-of-range value converts to the
+    /// indefinite `0x8000_0000` with IE, as `fistp` does. Only a host
+    /// without the checked region's controls declines ([`Bail::Env`]).
+    pub fn convert_guest(
+        min: [u32; 3],
+        max: [u32; 3],
+        origin: [u32; 3],
+        scale: u32,
+        control: u16,
+    ) -> Result<(Self, u16), Bail> {
+        // No SSE operation runs: any masked MXCSR will do.
+        checked_guest(0x1f80, control, |r| {
+            let load = |bits: u32| Chain::load(r, control, f32::from_bits(bits));
+            let full = |p: u32, a: usize| -> Option<i32> {
+                let product = (load(p)? - load(origin[a])?) * load(scale)?;
+                let stored = product.store();
+                Some(Chain::load(r, control, stored)?.integer()?.wrapping_sub(1))
+            };
+            let mut c = Corners {
+                lo: [0; 3],
+                hi: [0; 3],
+            };
+            for a in 0..3 {
+                c.lo[a] = full(min[a], a)?;
+                c.hi[a] = full(max[a], a)?;
+            }
+            Some((c, r.x87_flags()))
+        })
+        .ok_or(Bail::Env)
     }
 
     /// The query's preconditions: an ordered box inside the corner limit.
