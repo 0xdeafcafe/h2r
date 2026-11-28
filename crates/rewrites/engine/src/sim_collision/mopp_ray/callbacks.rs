@@ -125,6 +125,10 @@ fn rd_i16(g: &impl Memory, at: u32) -> Result<i32, Bail> {
     Ok(i32::from(g.u16(at).map_err(|_| Bail::Fault)? as i16))
 }
 
+fn rd3(g: &impl Memory, at: u32) -> Result<[u32; 3], Bail> {
+    Ok([rd(g, at)?, rd(g, at.wrapping_add(4))?, rd(g, at.wrapping_add(8))?])
+}
+
 fn rd_u8(g: &impl Memory, at: u32) -> Result<u8, Bail> {
     g.u8(at).map_err(|_| Bail::Fault)
 }
@@ -754,13 +758,10 @@ pub fn instance_collector(
     wr32(g, mark, epoch)?;
     let flags = rd(g, this.wrapping_add(8))?;
     let (start, delta) = (rd(g, this.wrapping_add(0x10))?, rd(g, this.wrapping_add(0x14))?);
-    let vec3 = |g: &_, at: u32| -> Result<[u32; 3], Bail> {
-        Ok([rd(g, at)?, rd(g, at.wrapping_add(4))?, rd(g, at.wrapping_add(8))?])
-    };
     let q = Query {
         cluster: 0,
-        start: vec3(&*g, start)?,
-        delta: vec3(&*g, delta)?,
+        start: rd3(&*g, start)?,
+        delta: rd3(&*g, delta)?,
         flags,
         filter: rd(g, this.wrapping_add(0x0c))?,
         limit: rd(g, result.wrapping_add(4))?,
