@@ -11,8 +11,10 @@
 //! equipment and garbage run first, the vehicle update `efde0` with its two
 //! leaves (slice 10), and the projectile update `f8de0` with its step
 //! `f8eb0`, the scenery update `10a2f0`, the device update `106790` that
-//! machines, controls and light fixtures run first and the machine update
-//! `1152e0` (slice 11). The dispatchers call them in Rust. On by default with `impl.sim.native.objects.walk`;
+//! machines, controls and light fixtures run first, the machine update
+//! `1152e0`, the crate update `11bce0` and the creature update `118700`
+//! and post-physics update `118b80` (slice 11). The dispatchers call them
+//! in Rust. On by default with `impl.sim.native.objects.walk`;
 //! `sim_bridge::sim_objects` installs [`TABLE`] when
 //! `impl.sim.native.objects` is off (on, every body is installed and these
 //! with them), or [`WITHOUT_AIM`] when the animation subsystem owns the aim
@@ -28,9 +30,9 @@
 //! inside it.
 //!
 //! **Other bodies.** Only [`POINTS`] and [`TYPES`] are in [`TABLE`]: the
-//! crate and creature updates, the machine's slot `+48` query `115a40`
-//! (no dispatcher calls it), the pose and after-root
-//! slots (`112070`, `f0f50`, `10a390`), damage, functions, the rest of the
+//! machine's slot `+48` query `115a40` (no dispatcher calls it), the pose
+//! and after-root slots (`112070`, `f0f50`, `107000`, `112dc0`,
+//! `10a390`), damage, functions, the rest of the
 //! post-update shell and lights are calls to the guest, as is every callee
 //! of a table body that has no body here. Each is made in place when the
 //! runtime can (`runtime::ExecCtx::call_inline`, from
@@ -81,9 +83,14 @@ pub const POINTS: &[&Point] = &[
 /// the `vehi` slot `+40` (`efde0`, slice 10) with its gate and contact
 /// reset, the `proj` slot `+40` (`f8de0`) with its step, the `scen` slot
 /// `+40` (`10a2f0`), the `devi` slot `+40` (`106790`, which `mach`, `ctrl`
-/// and `lifi` inherit; `ctrl` and `lifi` have no slot of their own) and
-/// the `mach` slot `+40` (`1152e0`, slice 11). Each checks the float
-/// environment at its entry and its sites.
+/// and `lifi` inherit; `ctrl` and `lifi` have no slot of their own), the
+/// `mach` slot `+40` (`1152e0`), the `bloc` slot `+40` (`11bce0`)
+/// and the `crea` slots `+40` (`118700`) and `+44` (`118b80`, slice 11).
+/// Each checks the float environment at its entry and its sites. The
+/// opt-in creature probe (`game::actor_net::creature`) skips the
+/// creature's two for a replica with a `before`; with it on they are
+/// shared points, guarded, so the dispatchers' calls go through its
+/// chain.
 pub const TYPES: &[&Point] = &[
     // The unit level: `c6b30`, its nine children and theirs, and the
     // animation state `111650` the biped tree calls.
@@ -129,7 +136,8 @@ pub const TYPES: &[&Point] = &[
     &points::WEAPON_UPDATE,
     // The item level of a weapon, equipment and garbage; the vehicle,
     // projectile and scenery levels; the device level of a device,
-    // machine, control and light fixture, and the machine level.
+    // machine, control and light fixture, and the machine level; the
+    // crate and the creature.
     &points::ITEM_UPDATE,
     &points::VEHICLE_UPDATE,
     &points::VEHICLE_UPDATE_GATE,
@@ -139,6 +147,9 @@ pub const TYPES: &[&Point] = &[
     &points::SCENERY_UPDATE,
     &points::DEVICE_UPDATE,
     &points::MACHINE_UPDATE,
+    &points::CRATE_UPDATE,
+    &points::CREATURE_UPDATE,
+    &points::CREATURE_POST_UPDATE,
 ];
 
 /// The entries whose bodies make no float instruction: every one in

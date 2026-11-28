@@ -4523,11 +4523,13 @@ fn type_post_update_dispatch_reaches_the_biped() {
 /// The unit and multiplayer types' callbacks as the walk table runs them by
 /// default (`native_walk::TYPES`): the unit level `c6b30` over the slice
 /// 6a, 6b and 6c dressings, the biped and weapon roots, the item level, the
-/// vehicle, projectile (with its step) and scenery updates, the unit
-/// leaves `cba50` and `111650`, and the dispatchers reaching the biped's
-/// two, the vehicle and every small type, with every body outside the
-/// table a callout (the crate and creature updates, the transform setters
-/// and getters). Without the aim update
+/// vehicle, projectile (with its step) and scenery updates, the device and
+/// machine updates (also over [`dress_device`]), the crate and creature
+/// updates, the unit leaves `cba50` and `111650`, and the dispatchers
+/// reaching the biped's two, the vehicle, every small type and the device
+/// family over [`dress_device`], with every body outside the
+/// table a callout (the transform setters and getters, the creature's AI
+/// calls). Without the aim update
 /// (`native_walk::WITHOUT_AIM`, the animation subsystem's hand-off) the
 /// movement's call to `c7840` is a callout. Again under flush to zero and
 /// denormals as zero, outside the float environment: every type callback
@@ -4569,6 +4571,10 @@ fn walk_table_types() {
         dressed_with_in(&points::MACHINE_UPDATE, 6, undressed, table, mxcsr);
         dressed_with_in(&points::MACHINE_UPDATE, 16, dress_device, table, mxcsr);
         dressed_with_in(&points::OBJECT_TYPE_UPDATE, 26, dress_device_family, table, mxcsr);
+        dressed_with_in(&points::CRATE_UPDATE, 6, undressed, table, mxcsr);
+        dressed_with_in(&points::CREATURE_UPDATE, 12, undressed, table, mxcsr);
+        dressed_with_in(&points::CREATURE_POST_UPDATE, 12, undressed, table, mxcsr);
+        dressed_with_in(&points::OBJECT_TYPE_POST_UPDATE, 13, undressed, table, mxcsr);
     }
 }
 

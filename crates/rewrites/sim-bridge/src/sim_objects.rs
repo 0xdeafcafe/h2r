@@ -34,13 +34,13 @@
 //! `bc820` with `bd090`, the type dispatchers, the wake leaves, and the
 //! unit (`c6b30`), biped (`dd360`, `dd990`), weapon (`fdfb0`), item
 //! (`10b4d0`), vehicle (`efde0`), projectile (`f8de0`), scenery
-//! (`10a2f0`), device (`106790`) and machine (`1152e0`) callbacks with
-//! their trees
+//! (`10a2f0`), device (`106790`), machine (`1152e0`), crate (`11bce0`)
+//! and creature (`118700`, `118b80`) callbacks with their trees
 //! (`engine::sim_objects::native_walk::TABLE`) are installed, and the Rust
 //! answers every segment. `bd090` or a type callback outside its float
 //! environment is the one refusal: the guest runs that call, counted as
-//! `float_env`. Every other body is the guest's: the other types'
-//! callbacks, damage, functions and lights. Finalize records its
+//! `float_env`. Every other body is the guest's: the pose and after-root
+//! slots, damage, functions and lights. Finalize records its
 //! `ObjectDeleted` events, so the tick's entry empties the buffer here too;
 //! the combat observers are the objects switch's. With the animation
 //! subsystem on, the aim update `c7840` is its (`native_walk::WITHOUT_AIM`),
@@ -704,6 +704,9 @@ mod tests {
             &points::SCENERY_UPDATE,
             &points::DEVICE_UPDATE,
             &points::MACHINE_UPDATE,
+            &points::CRATE_UPDATE,
+            &points::CREATURE_UPDATE,
+            &points::CREATURE_POST_UPDATE,
             &points::UNIT_CLAMP_DIRECTION,
             &points::UNIT_ANIMATION_STATE,
         ] {
@@ -717,10 +720,10 @@ mod tests {
         assert!(tick.observe_before.iter().any(|h| h.label == EVENTS_CLEAR));
         let damage = plan.chains.get(&points::DAMAGE_REPORT.base);
         assert!(damage.is_none_or(|c| !c.observe_before.iter().any(|h| h.label == "events: damage")));
-        // The other types, damage, functions and lights are the guest's.
+        // The machine's slot `+48` query, damage and functions are the
+        // guest's.
         for point in [
-            &points::CRATE_UPDATE,
-            &points::CREATURE_UPDATE,
+            &points::MACHINE_SLOT_48,
             &points::OBJECT_DAMAGE_UPDATE,
             &points::OBJECT_FUNCTION_VALUE,
             &points::FUNCTION_EVALUATE,
