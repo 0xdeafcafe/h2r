@@ -195,6 +195,59 @@ mod native {
         }
     }
 
+    /// The chain's x87 PE after the arithmetic, after `fst m32` and after
+    /// `fistp`, each sticky, against the x87 model's status word.
+    #[test]
+    fn x87_inexact_follows_the_status_word_and_not_sse() {
+        let mut seed = 11u32;
+        let mut operand = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let exponent = 125 + ((seed >> 24) % 5);
+            f32::from_bits((seed & 0x807f_ffff) | (exponent << 23))
+        };
+        let edges = [[1.0, 2.0, 0.0, 1.0, 1.0], [0.5, 0.25, 0.0, 4.0, 1.0], [1.0, 2.0, 0.0, 1.0, 3.0]];
+        for input in edges.into_iter().chain((0..512).map(|_| std::array::from_fn(|_| operand()))) {
+            for control in [0x007f, 0x027f] {
+                let [a, b, c, d, e] = input;
+                let mut state = fp::X87Abi { control, tag: 0xffff, ..Default::default() };
+                fp::ld_f32(&mut state, a.to_bits());
+                for (op, operand) in [
+                    (fp::arith_op::ADD, b),
+                    (fp::arith_op::SUB, c),
+                    (fp::arith_op::MUL, d),
+                    (fp::arith_op::DIV, e),
+                ] {
+                    fp::arith(&mut state, op, 0, fp::src_kind::F32, operand.to_bits().into());
+                }
+                let pe = |status: u16| status & 0x20 != 0;
+                let arith = pe(state.status);
+                let stored = fp::st_f32(&state, 0).1;
+                let integer = fp::st_i32(&state, 0).1;
+                let expected = (arith, arith || pe(stored.status), arith || pe(integer.status));
+                let actual = checked(|r| {
+                    let load = |x| Chain::load(r, control, x);
+                    let result = ((load(a)? + load(b)? - load(c)?) * load(d)?) / load(e)?;
+                    let after_arith = r.x87_inexact();
+                    let _ = result.store();
+                    let after_store = r.x87_inexact();
+                    // The integer store's PE taken on its own.
+                    Some((after_arith, after_store, result.integer()?, r.sse_inexact()))
+                });
+                let Some((after_arith, after_store, _, sse)) = actual else { continue };
+                assert_eq!((after_arith, after_store), (expected.0, expected.1), "control {control:#x}, {input:?}");
+                assert!(!sse, "x87 work never sets the SSE flag");
+                let integer_pe = checked(|r| {
+                    let result = ((Chain::load(r, control, a)? + Chain::load(r, control, b)? - Chain::load(r, control, c)?)
+                        * Chain::load(r, control, d)?)
+                        / Chain::load(r, control, e)?;
+                    let _ = result.integer()?;
+                    Some(r.x87_inexact())
+                });
+                assert_eq!(integer_pe, Some(expected.2), "control {control:#x}, {input:?}");
+            }
+        }
+    }
+
     #[test]
     fn square_root_rounds_at_the_x87_working_precision() {
         for control in [0x007f, 0x027f] {

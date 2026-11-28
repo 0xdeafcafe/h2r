@@ -1,20 +1,27 @@
 # Collision queries
 
-The native collision world is always installed (`sim_native::install_collision`). Point and location
-queries, MOPP boxes and J’s object-reference sphere pretest answer admitted
-calls in Rust. The vector walk, instance trace, cluster flood and object
-visit also have native exits. The vector walk's crossing exits answer every call
-from the first ([Crossing exits](#crossing-exits)). Their
-admission rules appear below.
-The Havok collector ray and the whole query keep the lifted return while
-Rust predicts the walk or result. The adapters live in
+The native collision world is always installed (`sim_native::install_collision`)
+and answers every call of entries A to J in Rust. No entry runs the lifted
+function to compare at its return. A call no kernel can answer panics with
+`collision: <entry>: <cause>` (`env` names the MXCSR and the x87 words);
+only a debugger trap runs the original.
+
+| Entry | Exits |
+|---|---|
+| C, D | straight walk and [crossing exits](#crossing-exits) replay their frame; the matcher path commits R, D's context, AL and PE |
+| E | an empty cluster replays its frame; a populated one commits the marks, the hit and AL |
+| G | the flood with no portal test replays its frame; a contested flood commits the list, the marks and both PE flags |
+| I | the walk runs in Rust; each terminal's callbacks are guest calls |
+| J | commits the result, the flags argument and the mark state |
+
+The adapters live in
 `crates/rewrites/engine/src/sim_collision`, the kernels in
 `crates/rewrites/sim-collision` and the installer in
 `crates/rewrites/sim-bridge/src/sim_native.rs`.
 [Switch table](../runtime/switches.md) · [Phase 2 design](sim-rewrite-collision.md)
 
 An answering adapter gathers the inputs and checks the writable ranges
-before committing. On a decline the lifted entry runs from the original state.
+before committing. A decline writes nothing before the panic.
 
 ## Entries
 
@@ -28,12 +35,12 @@ before committing. On a decline the lifted entry runs from the original state.
 | F | `0x300150` MOPP box query | `COLLISION_MOPP_BOX` | `ecx` box VM; stack: code, AABB, key array; `ret 0xc` | the VM's `+0`, `+0x10..+0x28`, `+0x30`; keys at `data[size..]` and `size` (below) |
 | G | `0x14a5b0` cluster flood | `COLLISION_CLUSTER_FLOOD` | stack: cluster (`i16`), centre, radius, capacity, out; `ret 0x14`; count in `ax` | the `u16` cluster list, the cluster marks |
 | H | `0xbb050` object spatial visit | `OBJECT_SPATIAL_VISIT` | stack: list bits, type mask, location, centre, radius, out, capacity; `ret 0x1c`; count in `ax` | the handle list, the epochs, active bytes and marks described below |
-| I | `0x301800` MOPP ray | `COLLISION_MOPP_RAY` | `ecx` ray VM; stack: collection, code, ray input, parent body, collector; `ret 0x14` | the guest runs the callbacks and updates the VM |
+| I | `0x301800` MOPP ray | `COLLISION_MOPP_RAY` | `ecx` ray VM; stack: collection, code, ray input, parent body, collector; `ret 0x14` | the VM; the callbacks are guest calls and write what they write |
 | J | `0x1697c0` whole query | `SIM_COLLISION_QUERY` | stack: flags, start, delta, ignore A, ignore B, result; `ret 0x18`; hit in `al` | result, flags argument, generations, active bytes and visit marks |
 
 The per-function point, sphere, BSP segment, whole query, ray, visit and
 portal ports serve as differential oracles. The subsystem owns runtime
-dispatch. The hooks that update world caches, subscriptions and parity
+dispatch. The hooks that update world caches, subscriptions and
 counters run on the owning executor.
 
 ### Entry B
@@ -159,11 +166,15 @@ The bridge first checks the MXCSR and x87 exception masks, the x87 error summary
   and H). An answer leaves the MXCSR with PE set when one was inexact,
   as retail's. FTZ and DAZ do not matter because no operand is subnormal;
   G and H also need them off (`det::checked_guest_env`).
-- For F: the x87 control word masks every exception, rounds to nearest
-  and selects single or double precision (`det::Chain`; extended bails
-  `float`), one register below the top is free, and the status word
-  already has PE. The six conversions set PE whenever one is inexact, and
-  the adapter models nothing else of the status word.
+- For F and G: the x87 control word masks every exception, rounds to
+  nearest and selects single or double precision (`det::Chain`; extended
+  bails `float`), and one (F) or two (G) registers below the top are
+  free. PE may be clear. A chain's arithmetic, `fst m32` and `fistp`
+  sample the host's inexact flag (`Checked::x87_inexact`), and the
+  commit sets the status word's PE when one rounded, as retail does. The
+  adapters model nothing else of the status word.
+- E, I and J leave both PE flags as they found them: their walks'
+  inexactness is not tracked.
 - For the C and D candidate adapters: the x87 control word masks every exception,
   rounds to nearest and does not use the reserved precision setting; the
   status word has no error summary; and at least two registers below the
@@ -259,14 +270,16 @@ through `0x16942b` into the callback that returns at `0x244c9b`.
 The audio path can forward XMM1–7 through `0x222146` and `0x221d99`.
 D's model trace can forward EDX and XMM registers through `0x1f0228`.
 A whitelist of these direct return addresses would still admit those
-paths. C and D answer an unsplit walk when the leaf transition needs no
-surface lookup. The adapter replays all registers and stack writes for
-that exit. A direct D leaf preserves the incoming XMM values. A walk that
-crosses planes without a surface lookup has a crossing exit
-([below](#crossing-exits)). The matcher paths retain the lifted return
-and compare AL and the result record, plus the outer context for D. A/B have no
-caller-liveness prerequisite. G and H likewise require exact scratch
-replay beyond the exits described above.
+paths.
+
+| Path | What the answer leaves |
+|---|---|
+| C or D unsplit walk, no surface lookup | every register and stack write replayed; a direct D leaf keeps the incoming XMM values |
+| C or D crossing planes, no surface lookup | the [crossing exit](#crossing-exits) |
+| C or D reaching the matcher | AL, R, D's context, PE and the epilogue's flags (`engine::sim_collision::commit`); ECX, EDX and XMM0–7 keep their entry values, not the matcher's scratch the callers above could forward |
+| G contested, E populated | their outputs the same way, without the scratch state |
+
+A/B have no caller-liveness prerequisite.
 
 F's direct caller `0x2df640` returns at once through `mov esp, ebp; pop
 ebp; ret 8`, which reads none of F's scratch state. It is a virtual
@@ -295,26 +308,17 @@ the instruction sequence of `0x1de630` and `0x1de6d0` and rebuilds:
 | x87 | PE on an inexact split; TOP and tags unchanged |
 | Stack | every frame's saved registers, locals, argument slots and return addresses, the wrapper's context, in guest order |
 
-The exit answers every crossing call from the first; the matcher path still
-runs lifted and is compared:
-
-```mermaid
-flowchart LR
-  call[crossing call] --> native[write the exit, answered + 1]
-  call --> lifted[matcher path, lifted] --> cmp[compare at return]
-  cmp -- clean --> count[exits_matched + 1]
-  cmp -- difference --> diff[mismatched, first_mismatch]
-```
-
-The comparison covers AL, R, D's context, all general registers and ESP,
+The exit answers every crossing call. The differential compares it with
+the lifted entry over AL, R, D's context, all general registers and ESP,
 EFLAGS on the defined bits, MXCSR, XMM0–7, the x87 control word, status
 outside C0–C3, tags and occupied registers, and the stack from 0x40 below
 the deepest frame write to the argument slots.
 
 Contents of empty x87 registers and the condition codes are not replayed,
-as for the other C and D exits. D under the wrapper (return
-`0x1de6bd`) stays lifted, so C's comparison owns it. `collision.stats`
-reports the counts under `vector` and `context`.
+as for the other C and D exits. D under the wrapper (return `0x1de6bd`)
+or its own recursion (`0x1de7dd`) takes the matcher path's commit, since
+the frame it would replay is its caller's. `collision.stats` counts the
+crossing exits under `vector.answered` and `context.answered`.
 
 ### Status-instruction census
 
@@ -357,13 +361,13 @@ through every indirect caller or exception path.
 
 ## Bails and stats
 
-A bail in A, B, E, F or the sphere pretest panics
-`collision: <entry>: <reason>` (`sim-bridge` `collision_unhandled`; an
-`env` names the MXCSR and the x87 words); no lifted body runs the call.
-Only `trap` runs the original, for the debugger. C, D, G and H run their
-lifted matcher or contested flood by design and compare at the return,
-but an `env` bail there panics too. Each bail is also the thread's last
-(`sim_collision::take_bail`), which the hook reads for the panic.
+A bail in any entry panics `collision: <entry>: <reason>` (`sim-bridge`
+`collision_unhandled`; an `env` names the MXCSR and the x87 words); no
+lifted body runs the call. Only `trap` runs the original, for the
+debugger. A bail in I after a callback has run panics the same way: the
+walk cannot be handed back to the lifted interpreter mid-query. Each
+bail is also the thread's last (`sim_collision::take_bail`), which the
+hook reads for the panic.
 
 | Reason | When |
 |---|---|
@@ -420,7 +424,11 @@ H2_XBE=/path/to/default.xbe cargo test -p engine --features differential --test 
 The G and H cases (`cluster_flood_matches_the_guest`,
 `cluster_flood_ties_match_the_guest`, `object_visit_matches_the_guest`)
 run the `sim_physics` spatial ports as a third arm, with the lifted entry
-calling the port on a copy of the guest.
+calling the port on a copy of the guest. Half the random floods and the
+single-precision tie floods enter with the x87 PE clear, and the status
+word's PE must match the guest's. `spatial::contested_spatial_calls_match_the_lifted_guest_from_pe_clear`
+runs the installed dispatch on a contested flood and a flooding visit
+from the live game's MXCSR `0x1f80` and a clear status word.
 
 The synthetic differential runs each entry against the lifted instructions
 on the IR interpreter, with a cold and a warm world and the earlier
@@ -435,20 +443,30 @@ lists and solid ends, and compares every register and stack byte.
 
 F's cases are random programs over every opcode class
 (`sim_collision::synth::random_mopp`) and `mopp::build` programs, boxes
-on frame-cell edges, and each decline path: PE clear, extended or
-directed rounding, NaN, inverted and far boxes, a full array, and a key
-area over the VM, the code or the dead stack.
+on frame-cell edges, and each decline path: extended or directed
+rounding, NaN, inverted and far boxes, a full array, and a key area over
+the VM, the code or the dead stack. Half enter with the x87 PE clear;
+`mopp_box::tests::pe_clear_is_admitted_and_set_only_by_a_rounding_conversion`
+checks that the commit sets it exactly when a conversion rounds.
 
-I's cases run the setup and the interpreter lifted, with the arm's
-observers where the installer puts them and invented callbacks answered
-by the run loop: the instanced collection method or one whose keys the
-arm cannot see, a child ray method that lowers the collector's fraction
-for some keys, and a filter that rejects some. Programs are random and
-hand-written over every opcode family, with rays on and across their
-thresholds, in single, double and extended precision. Each case must
-match or be unverified for a stated reason, and the collection must get
-the keys a native-only walk gives. A last case changes the bytecode under
-a warm world, and the arm must report the mismatch.
+I's cases (`mopp_ray::check_cast`) run the setup and the interpreter
+lifted with invented callbacks answered by the run loop: the instanced
+collection method or another, a child ray method that lowers the
+collector's fraction for some keys, and a filter that rejects some. The
+same callbacks then answer `CollectorCast`'s guest calls on a copy of
+the fixture. Every callback's target, registers, arguments and temporary
+body, the keys the collection got and every byte above the stack must
+match. Programs are random and hand-written over every opcode family,
+with rays on and across their thresholds, in single and double
+precision, and some callbacks change the VM's inputs.
+
+E's populated cases (`populated_instance_cluster_against_the_lifted_callbacks`)
+run `instance::trace` beside the lifted entry and compare AL, the
+callee-saved registers, the result, every instance mark slot, the code's
+reference count and `fs:[0]`. J's cases
+(`structure_liquid_and_reference_order_match_the_lifted_query`) run
+`query::query` and compare AL, the callee-saved registers and every byte
+the guest left outside its frames, the flags argument included.
 
 The ignored BSP sweeps compare points and segments on structure and object
 BSPs, and locations on structure BSPs. The segment sweep compares the C
@@ -479,10 +497,7 @@ cargo test --release -p engine --features differential --test it sim_collision_d
 
 ## Gaps
 
-Full authority for BSP segments that reach the matcher, populated instance clusters,
-portal tests and nonempty object visits needs the surviving volatile
-registers and frame bytes reproduced or proved dead. The general ray
-also needs callback continuation on a mid-walk decline. J needs its
-stack and alias contract closed before it can scatter the planned writes.
-Run parity, cache-cold runs, FP distributions, the bail audit, timing and
-cross-architecture comparisons are the phase exit gates.
+The matcher path, the contested flood, the populated cluster and J
+return with the callers' volatile registers at their entry values, not
+the lifted scratch some callers forward ([Call-site scan](#call-site-scan)).
+E, I and J do not track their walks' PE. A crash names either.

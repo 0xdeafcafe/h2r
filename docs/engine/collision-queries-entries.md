@@ -1,25 +1,27 @@
 # Collision queries: entry contracts
 
-Status: Built (behind the collision switch).
+Status: Built.
 Part of [collision-queries.md](collision-queries.md): the per-entry contracts for E, F, G, H, I and J and the object-reference sphere pretest.
 
 ### Entry E - instance trace of one cluster
 
-Entry E answers the signed count ≤ 0 exit in Rust. It replays the saved
-frame, scratch registers and final compare flags without reading any query
-argument. The positive path runs lifted at E. Its return comparison covers the
-hit byte, the result record and instance marks. The ABI at `0x244980` is a cluster index in `eax`, a
+Entry E answers both paths in Rust (`instance::trace`). The signed count
+≤ 0 exit replays the saved frame, scratch registers and final compare
+flags without reading any query argument. A positive count runs the
+cluster's MOPP ray and the terminals below (`instance::populated`) and
+writes the marks in visit order, the nearest hit's fields and `al`; the
+callee-saved registers, the code's reference count and `fs:[0]` keep
+their entry values. The ABI at `0x244980` is a cluster index in `eax`, a
 start pointer in `esi`, a delta pointer in `edi`, and three stack words
 at entry ESP +4, +8 and +12 (query flags, BSP filter bits, result pointer).
 `al` returns whether any terminal hit. Both exits pop the three arguments.
 The cluster record is at `[[0x4e0348] + 0xa0] + 0xb0 * cluster`. The signed
 count is at cluster +0xa8.
 
-The whole-query predictor follows the positive path through the cluster
-MOPP, live breakable words, inverse placement transform and definition
-BSP. It carries terminal marks and fraction changes across clusters in
-visit order. A populated cluster at E still has callback lifetime and
-volatile-state obligations at its own ABI.
+J's planner follows the same positive path through the cluster MOPP,
+live breakable words, inverse placement transform and definition BSP,
+and carries terminal marks and fraction changes across clusters in
+visit order.
 
 With a positive count, E uses the code object at cluster +0xac. It sets
 the ray endpoints to start and start + delta (one binary32 add per axis),
@@ -56,10 +58,10 @@ into the walk after each terminal.
 **Transient writes.** The shape constructor and destructor temporarily
 change the exception-handler link at `fs:[0]`, the stack-local child
 reference count, and the dword at code object +0x24. At `0x3009c0` a
-decrement to zero calls the guest allocator. Eliding the increment and
-decrement requires a nonzero entry count and isolation of these writes
-from result, marks, inputs and callbacks. An unsupported alias or lifetime
-must decline before any mark or result write.
+decrement to zero calls the guest allocator. The native path elides the
+increment and decrement: it needs a nonzero entry count and these words
+apart from the result, marks and inputs, and declines (`data`, `alias`)
+before any mark or result write otherwise.
 
 **Caller and frame.** A relative-call and jump scan of the executable
 sections finds one direct call, at `0x169c71` in `0x1697c0`. Its return
@@ -68,15 +70,16 @@ the first-hit exit and the continue path. It addresses its own locals
 above the consumed arguments. E preserves the callee-saved integer
 registers. The taken path can write the other integer registers, arithmetic
 flags, XMM0–7 and x87 status. Some volatile values can survive the caller's
-return. This call site alone does not establish their liveness outside J.
+return. This call site alone does not establish their liveness outside J. The
+native path leaves them at their entry values.
 
 If S is entry ESP and A is S−4 rounded down to 16 bytes, E's local base
 after saving EBX is A−0x110. On the supported callback path the first
 `0x3009e0` enters at A−0x230. Each nested ray call enters 0x1c0 bytes
 below its parent. With d active ray frames (d ≥ 1), entry C in the
 terminal callback enters at A−0x710−0x1c0·d. C's dead-window bound applies
-below that address. A successful native E therefore needs a depth bound
-for its actual traversal and an alias check spanning both walks. E's
+below that address. The native E's alias check spans that whole window
+(`0x710 + 0x1c0·MAX_FRAMES` plus C's bound) and both walks' sources. E's
 three argument words are read-only. The status-save sites are catalogued below. The precision controls reached in a running match require an entry histogram.
 
 ### Entry F - MOPP box query
@@ -151,33 +154,29 @@ guest's x87 precision (single or double; extended declines) and bails
 `float` on any operand or result off the exact path (NaN, infinity,
 subnormal, an underflowed product or quotient).
 
-I is not answered natively: the callbacks are guest code the walk would
-have to await between steps. Its parity arm (`engine::sim_collision::mopp_ray`)
-observes the query and leaves every register and byte to the guest:
+I runs in Rust (`engine::sim_collision::mopp_ray::CollectorCast`, driven
+by `sim_bridge::sim_native::mopp_ray`):
 
-1. Before I: check MXCSR, the x87 environment (three free registers) and
-   the precision, read the arguments, the code's tree, the constants, the
-   ray, the filter and the collector's fraction, and start a walk.
-2. At each interpreter entry whose `ecx` is the query's VM: the frame, pc
-   and segment must equal the walk's next call, given the VM's fraction.
-   The first also compares the complete 0x68-byte VM image, including its padding.
-3. At `0x244bb0` whose `ecx` is the query's collection, when the query has
-   no filter and that is the collection's child method: the key must equal
-   the walk's next key.
-4. After I returns: the walk must have ended too.
+1. Check MXCSR, the x87 environment (three free registers) and the
+   precision, read the arguments, the code's tree, the constants, the
+   ray and the collector's fraction, and write the 0x68-byte VM as the
+   setup does.
+2. Walk to the next terminal. Its stack address is the root
+   interpreter's (entry ESP − 4, rounded down to 16, − 0x210) less 0x1c0
+   per open interpreter level.
+3. Call the filter (input `+0x24`) when there is one, then, if its byte
+   accepts the key, the collection's child method, then the child's ray
+   method with the temporary body at terminal `+0x60`, each a guest call
+   made with ESP below that terminal's frame. Reload the VM's fraction
+   from the collector and continue the walk.
+4. When the walk ends, return with `ret 0x14` and the caller's EBX, ESI,
+   EDI, EBP.
 
-Without observed keys the arm compares calls only, until the fraction
-moves; that query counts as `fraction_moved`. Queries nest (a child shape
-can run its own ray), so the open ones form a stack per thread and each
-observation goes to the innermost. `collision.stats` reports the outcomes
-under `ray`: matched, mismatched with the first mismatch described,
-unverified by bail reason, and `fraction_moved`.
-
-The differential also drives `CollectorCast` over private guest memory.
-It calls the selected filter, looks up the child, calls the child’s ray
-method and reloads the collector fraction. A callback can mutate guest
-state. A decline after that boundary requires a continuation at the
-matching interpreter state before this candidate can answer live calls.
+A callback can change the bytecode, the VM's endpoints or the walk's
+constants; the next step then declines `data`. Queries nest (a child
+shape's ray can call I again) on the guest stack below the callback.
+A decline after a callback has run cannot be handed back to the lifted
+interpreter, and panics like any other.
 
 ### Entries G and H - cluster flood and object visit
 
@@ -235,12 +234,14 @@ portal graph once per structure and version, and reads the reference
 lists live on every call. It bounds clusters below 512 and object slots
 below 0x800, so the marks it writes cannot reach other globals.
 
-G answers when traversal needs no portal test, including a cluster with
-no portals and one whose far neighbours are all marked. H answers a
-location with cluster −1. These exits replay registers, scratch stack
-words, flags and output writes. Other admitted paths compare the lifted
-return register, list and mark tables. H also compares the generations
-and active bytes. Recursive G calls belong to their outer prediction.
+G and H answer every admitted call (`sim_collision::spatial::dispatch`).
+A flood with no portal test (a cluster with no portals, or one whose far
+neighbours are all marked) and a visit of location cluster −1 replay
+registers, scratch stack words, flags and output writes. Every other
+call writes the list, the marks, the generations and active bytes, the
+return register and both PE flags. The portal test's x87 sequences set
+the status word's PE when one rounds (`Checked::x87_inexact`), so a flood
+needs no PE on entry.
 
 ### Entry J - whole segment query
 
@@ -252,10 +253,14 @@ permutation and transforms the ray into each part’s node space. A nearer
 part supplies the material and world-space plane. J then computes the
 position and applies the requested relocation.
 
-At J’s return, the comparison checks AL, the flags argument, all 0x5c
-result bytes and the visit state. `collision.trace` runs the same planner
-read-only and returns the ordered mark lists. Trace and return comparison
-both decline on unsupported arithmetic or data. See the
+J is answered in Rust (`query::query`): it plans the whole query, then
+writes all 0x5c result bytes, the flags argument (the BSP sides and
+object bits J sets in place), and the epoch, marks and cleared active
+byte of each flood, instance trace and object visit it ran, sets AL to
+the hit and returns `ret 0x18`. None of E, G, H or the sphere pretest
+runs below it. `collision.trace` runs the same planner read-only and
+returns the ordered mark lists. Both decline on unsupported arithmetic
+or data. See the
 [query order](sim-rewrite-collision.md#54-the-collision-query-entry-j-e) and the
 [agent methods](../runtime/agent-api-checks.md#collision-the-native-collision-world).
 

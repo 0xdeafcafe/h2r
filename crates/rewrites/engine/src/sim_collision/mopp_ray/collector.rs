@@ -1,6 +1,8 @@
 //! Entry I's collector callbacks. The walk yields a terminal at its actual
 //! interpreter depth. That depth selects the guest stack scratch passed to
 //! the filter, collection and child; all three may run arbitrary guest code.
+//! The installer makes each call [`CollectorCast::next`] returns and hands
+//! back the CPU it returned with.
 use super::{Program, Read, X87_FREE, prepare, vec4};
 use crate::sim_collision::{
     CollisionMemory,
@@ -22,9 +24,7 @@ const VM_PARENT: u32 = 0x60;
 
 pub(super) struct Setup {
     vm: u32,
-    pub(super) code: u32,
-    pub(super) collection: u32,
-    pub(super) fraction: u32,
+    code: u32,
     bytes: [u8; VM_LEN],
     revision: u64,
     constants: Constants,
@@ -62,30 +62,10 @@ impl Setup {
         Ok(Self {
             vm,
             code,
-            collection,
-            fraction,
             bytes,
             revision,
             constants,
         })
-    }
-
-    pub(super) fn filter(&self) -> u32 {
-        u32::from_le_bytes(self.bytes[0x44..0x48].try_into().unwrap())
-    }
-
-    pub(super) fn first_difference(
-        &self,
-        m: &impl GuestRead,
-    ) -> Result<Option<(usize, u8, u8)>, Bail> {
-        let mut actual = [0; VM_LEN];
-        m.read(self.vm, &mut actual)?;
-        Ok(self
-            .bytes
-            .iter()
-            .zip(actual)
-            .enumerate()
-            .find_map(|(at, (&want, got))| (want != got).then_some((at, want, got))))
     }
 
     // The walk owns the bytecode, original ray, reciprocal and floating
@@ -140,11 +120,10 @@ enum Resume {
     Ray,
 }
 
-/// The native collector-path candidate. A caller drives each returned guest
-/// call exactly once and supplies the returned CPU on resumption. A decline after a
-/// callback must discard the *entire isolated trial*, including callback
-/// side effects. The differential runs this on its own copy of memory.
-/// Live I stays observed until it has a safe mid-walk continuation.
+/// Entry I in Rust. A caller drives each returned guest call exactly once
+/// and supplies the returned CPU on resumption. A decline after a callback
+/// has run cannot hand the query back to the lifted entry: the installer
+/// names it (`collision: mopp_ray: <cause>`).
 pub struct CollectorCast {
     vm: u32,
     entry_sp: u32,

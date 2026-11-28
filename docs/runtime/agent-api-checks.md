@@ -95,14 +95,15 @@ subsystem is `clean` with `checked` large enough for the scenario.
 
 ## `collision`: the native collision world
 
-The collision switch counts admitted native answers, declined queries,
-floating-point environments and comparisons with lifted returns. The
+The collision world counts native answers, declined queries and
+floating-point environments. No entry runs the lifted function, so
+nothing is compared at a return. The
 game exposes these counters at a tick boundary. See the
 [entry addresses and admission rules](../engine/collision-queries.md).
 
 | Method | Access | Params and result |
 |---|---|---|
-| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), `context` (D’s outer walk parity), `instance`, `flood`, `visit`, `query` (E, G, H and J’s return comparisons), and `ray` (I’s walk and callbacks). |
+| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` and `context` (C’s and D’s crossing exits under `answered`), and `instance`, `flood`, `visit`, `query` and `ray`, which stay zero in a running game: they hold the differential tests' comparisons. |
 | `collision.trace` | read | `{start, delta, flags}` where `start` and `delta` are three finite binary32 world coordinates and `flags` is an unsigned 32-bit whole-query mask. |
 | `collision.sources` | read | No parameters. Checks the source fingerprints of each resident native BSP and MOPP against guest RAM. |
 | `collision.sources.clear` | claim | No parameters. Returns the same check and drops all resident entries from the collision world at that tick boundary. |
@@ -157,20 +158,9 @@ first differing byte offset in the result record, with expected and guest values
 | `fell_back` | a difference was seen; the lifted body answers from then on |
 
 `instance`, `flood`, `visit` and `query` use the same comparison counters.
-An admitted native exit counts under `entries[].native`. A comparison
-counts only after the guest returns. A declined prediction is
-`unverified`. For J the comparison covers AL, flags, the result including
-padding, and the active mark tables and generations.
-
-`ray` counts the MOPP ray queries the native walk followed while the
-guest answered them: `matched` (every interpreter call, and every key
-where the instanced collection shows it, equal), `mismatched` with
-`first_mismatch` describing the first since start (the observation index
-and both sides), `unverified` by bail reason (the walk could not follow
-the query exactly, or its environment is one it does not model), and
-`fraction_moved` (no key was visible and a terminal lowered the fraction).
-Read `matched`, `mismatched` and `unverified` together to distinguish
-a covered query from one the walker could not follow.
+An admitted native answer counts under `entries[].native` and a decline
+under `entries[].bails` by reason; a decline in a running game also
+panics, naming the entry and the reason.
 
 ```sh
 h2 agent collision.stats

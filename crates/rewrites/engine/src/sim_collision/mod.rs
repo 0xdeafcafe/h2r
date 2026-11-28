@@ -1,15 +1,16 @@
 //! Guest adapters for the phase two collision world.
 //! See docs/engine/collision-queries.md for the ABI and admission rules.
 //!
-//! An authoritative path checks its inputs and writable spans before it
-//! changes guest state. C, D, G and H replay scratch registers and frame
-//! bytes on selected exits. Their broader kernels feed predictions for
-//! comparison at the lifted return. J uses the same read-only trace for
-//! its return comparison and the agent API.
+//! Every entry is answered in Rust. A path checks its inputs and writable
+//! spans before it changes guest state, and a decline names its bail for
+//! the installer's panic. C, D, E, G and H replay scratch registers and
+//! frame bytes on selected exits; their other paths commit the kernel's
+//! writes and return values. I's callbacks are guest calls between steps
+//! of its walk. J's planner also serves the agent's read-only trace.
 mod cluster;
 pub mod crossing;
 mod flood;
-pub use flood::spatial_parity;
+pub use flood::spatial;
 pub mod instance;
 pub mod layout;
 pub mod mopp_box;

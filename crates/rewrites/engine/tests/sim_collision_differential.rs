@@ -1024,12 +1024,13 @@ fn write_topology(m: &mut Ram<'_>, rng: &mut Rng, clusters: u32) -> synth::Porta
     p
 }
 
-/// Mostly the environment the flood's x87 sequences run in; now and then
-/// extended precision, or the precision flag not yet sticky.
+/// Mostly the environment the flood's x87 sequences run in, now and then
+/// extended precision. Half the calls enter with the x87 precision flag
+/// clear, as the live game does: the flood sets it as the guest would.
 fn flood_cpu(rng: &mut Rng, point: u32) -> CpuAbi {
     let mut c = entry_cpu(rng, point);
     c.x87.control = [0x027f, 0x007f, 0x027f, 0x027f, 0x037f][rng.below(5) as usize];
-    if !rng.chance(8) {
+    if rng.chance(2) {
         c.x87.status |= 0x20;
     }
     c
@@ -1238,8 +1239,10 @@ fn cluster_flood_ties_match_the_guest() {
                         m.store(OUT, &[0xcd; 16]);
                         put_vector(&mut m, CENTRE, [x, y, 0.0]);
                         let mut c = entry_cpu(&mut Rng(u64::from(n) | 1), FLOOD.point.base);
-                        (c.mxcsr, c.x87.control, c.x87.tag) = (0x1fa0, control, 0xffff);
-                        c.x87.status = 0x20;
+                        // The single-precision runs enter with both PE flags clear.
+                        let sticky = control == 0x027f;
+                        (c.mxcsr, c.x87.control, c.x87.tag) = (if sticky { 0x1fa0 } else { 0x1f80 }, control, 0xffff);
+                        c.x87.status = if sticky { 0x20 } else { 0 };
                         m.word(STACK + 4, 0);
                         m.word(STACK + 8, CENTRE);
                         m.float(STACK + 12, radius);

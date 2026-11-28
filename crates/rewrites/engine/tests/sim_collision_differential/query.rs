@@ -148,6 +148,27 @@ fn structure_liquid_and_reference_order_match_the_lifted_query() {
                         );
                     }
                 }
+                // The installed body: every byte the guest left outside
+                // its dead stack (its frames below the entry and the
+                // arguments it pops, but not the flags argument it
+                // rewrites), AL and the callee-saved registers.
+                let (mut nc, mut nm) = (cpu, m.clone());
+                let t = adapter::query::query(&mut nc, &mut nm, &world)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("flags={flags:#x}: declined {:?}", sim_collision::take_bail()));
+                let label = format!("native wall={wall} flags={flags:#x} epoch={generation:#x}");
+                assert_eq!(t.target_pc, HARNESS_EXIT, "{label}");
+                let returned = lifted::cpu::from_interp(&c);
+                assert_eq!(nc.eax & 0xff, returned.eax & 0xff, "{label}: AL");
+                assert_eq!(
+                    (nc.esp, nc.ebx, nc.ebp, nc.esi, nc.edi),
+                    (returned.esp, returned.ebx, returned.ebp, returned.esi, returned.edi),
+                    "{label}: callee-saved"
+                );
+                let dead = (STACK - 0x10000, STACK + 4 + 0x18);
+                for at in nm.touched(&guest, STACK, dead).into_iter().chain(STACK + 4..STACK + 8) {
+                    assert_eq!(nm.get(at), guest.get(at), "{label}: byte {at:#x}");
+                }
             }
         }
     });

@@ -45,6 +45,23 @@ pub use world::{
     VectorParity, take_bail,
 };
 
+/// Which of a region's float units rounded: the PE (precision) flag each
+/// sets in the guest, MXCSR bit 5 for SSE and status bit 5 for the x87.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Inexact {
+    pub sse: bool,
+    pub x87: bool,
+}
+
+impl Inexact {
+    pub fn of(r: &sim_core::det::Checked) -> Self {
+        Self {
+            sse: r.sse_inexact(),
+            x87: r.x87_inexact(),
+        }
+    }
+}
+
 /// Why a query was left to the lifted code. Nothing was written.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]

@@ -359,8 +359,8 @@ bytes and fallbacks for each map. See [collision-queries.md](collision-queries.m
 2. **Compute, then commit.** The kernel returns `Ok(result)` or `Err(Bail)`
    before any guest write. On `Bail` the adapter returns "not handled" from
    the untouched entry state and the hook panics with the bail's name
-   ([collision-queries.md](collision-queries.md), "Bails and stats"); the
-   parity arms that compare a lifted call at its return run it instead.
+   ([collision-queries.md](collision-queries.md), "Bails and stats").
+   No entry runs the lifted call as a fallback.
 3. **Checked region.** `sim_core::det::checked` clears the host's float
    status flags, runs the kernel, and bails if invalid, divide-by-zero,
    overflow or underflow was raised. With finite inputs (rule 4) that proves
@@ -517,11 +517,9 @@ impl<B: AsRef<[u8]>> RayWalk<B> {
 ```
 
 The caller handles a terminal and passes the updated fraction to the next
-call. Entry E drives it with the native instance test. Entry I runs lifted
-with a parity arm (`RayCheck`): observers at its entry, at each
-interpreter call, at the instanced collection's key method and at its
-return compare the guest with the walk and count the outcome
-(collision-queries.md, "Entry I"). Its native answer, an `async` adapter
+call. Entry E drives it with the native instance test. Entry I runs the
+walk natively and makes the filter and child-shape calls as guest calls
+that resume in Rust (`CollectorCast`, collision-queries.md, "Entry I"). Its native answer, an `async` adapter
 that awaits the guest filter and child-shape calls (feature-engine.md,
 "Calling code that is still recompiled"), follows once the arm shows no
 mismatch on a running match.
@@ -570,8 +568,8 @@ without writing a fourth lane. F starts the DFS of section 4.3 at
 `collision.stats` counts those bails for `mopp_box`; if they are above 1%
 of calls, the adapter becomes `async` and awaits `0x002d91d0` at the same
 points retail calls it. The six conversions run as `det::Chain`s in one
-checked region; the adapter needs PE already sticky in the x87 status
-word, since an inexact conversion sets it.
+checked region; the adapter sets PE in the x87 status word when a
+conversion rounds, as retail's `fistp` does, and accepts PE clear.
 
 **Cluster flood** (E, `0x0014a5b0`; P for the portal test,
 `sim_physics/spatial.rs`): write the cluster to the output while capacity
@@ -807,8 +805,7 @@ For each entry in 5.2, recorded in `docs/engine/collision-queries.md`:
    - ray walker: every opcode family by hand, misses, ends on a threshold,
      the fraction cutting a walk short, and random programs against a
      recursive transcription of the interpreter, in single and double
-     precision; the parity arm on a matching, a mismatching and an
-     unfollowable guest;
+     precision;
    - `det`: each flag forces a bail on this host; `Chain` against the `x87`
      crate for both precision modes; lanes against the scalar loop;
    - batch: `trace_batch` equals serial calls, including the mark lists;
@@ -824,9 +821,9 @@ For each entry in 5.2, recorded in `docs/engine/collision-queries.md`:
    lane settings. The existing ports run as a third arm on the entries they
    cover: `point_to_leaf`, `bsp::segment`, `collision::query`,
    `mopp_query::{box_query, ray_query}`, `geometry_test`, `spatial::portal`,
-   `visit::objects`. Entry I runs the lifted query with its parity arm and
-   invented callbacks; the arm must match or name why it cannot, and the
-   collection must get the keys the walk gives.
+   `visit::objects`. Entry I runs natively against the lifted query with
+   invented callbacks; each callback's arguments and the collection's keys
+   must match.
 3. **Disc sweep** (`-- --ignored`, owner's disc, results local). Every
    structure BSP, every `coll` BSP, every MOPP program (structure, cluster,
    `coll` slot, `phmo`):

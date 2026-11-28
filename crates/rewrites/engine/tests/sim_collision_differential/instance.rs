@@ -1,4 +1,6 @@
-//! The cluster trace's empty exit compares its entire CPU and saved stack.
+//! The cluster trace's empty exit compares its entire CPU and saved stack;
+//! a populated cluster's native answer compares AL, the callee-saved
+//! registers, the result and the mark table with the lifted entry.
 use super::*;
 use engine::sim_collision::instance;
 
@@ -223,6 +225,38 @@ fn populated_instance_cluster_against_the_lifted_callbacks() {
                     Ok(None),
                     "{case} {scale}"
                 );
+                // The installed body answers the same call in Rust: AL,
+                // the callee-saved registers, the result, every mark slot,
+                // the code's reference count and FS:[0] as the guest left them.
+                {
+                    static NATIVE: Epoch = Epoch::new();
+                    let native_world = CollisionWorld::new(&NATIVE);
+                    let (mut nc, mut nm) = (c, m.clone());
+                    let t = instance::trace(&mut nc, &mut nm, &native_world)
+                        .unwrap()
+                        .unwrap_or_else(|| panic!("{case} {scale}: declined {:?}", sim_collision::take_bail()));
+                    assert_eq!(t.target_pc, HARNESS_EXIT, "{case} {scale}");
+                    assert_eq!(
+                        (nc.eax & 0xff, nc.esp, nc.ebx, nc.ebp, nc.esi, nc.edi),
+                        (
+                            returned.eax & 0xff,
+                            returned.esp,
+                            returned.ebx,
+                            returned.ebp,
+                            returned.esi,
+                            returned.edi
+                        ),
+                        "{case} {scale}: registers"
+                    );
+                    let marks = instance::MARK_BASE - 8..instance::MARK_BASE + 4 * instance::MARK_SLOTS;
+                    for at in (RECORD..RECORD + 0x5c)
+                        .chain(marks)
+                        .chain(CODE + 0x24..CODE + 0x28)
+                        .chain(c.fs_base..c.fs_base + 4)
+                    {
+                        assert_eq!(nm.get(at), guest.get(at), "{case} {scale}: byte {at:#x}");
+                    }
+                }
                 if case == "hit" && scale == 1.0 {
                     for (label, at) in [
                         ("result+", RECORD + 0x26), // padding

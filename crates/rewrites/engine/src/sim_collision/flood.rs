@@ -4,33 +4,37 @@
 //! Both read their arguments and the live words they need, run the kernel
 //! over the structure's decoded portal graph, and only then write what the
 //! original leaves: the output array, the epochs, the active bytes and the
-//! marks. The runtime dispatch in [`spatial_parity`] replays the full
+//! marks. The runtime dispatch in [`spatial`] replays the full
 //! scratch state of the no-portal-test flood and the no-cluster visit.
-//! Other admitted calls compare the kernel's predictions with the guest.
-//! A flood requires a sticky x87 precision flag.
+//! Every other admitted call commits the kernel's plan. The x87 and SSE
+//! PE flags are set as the region's operations set them.
 use super::preflight::{CollisionMemory, Outputs};
 use super::{Read, consts, finish, layout};
 use crate::sim_native::{Memory, add_flags, logic_flags};
 use runtime::{CpuAbi, GuestFault, TransferAbi};
 use sim_collision::flood::{Flood, FloodQuery, MAX_CLUSTERS, Topology, TopologyKey};
 use sim_collision::objects::{List, Visit, VisitQuery, object_visit_inexact};
-use sim_collision::{Bail, CollisionWorld, Entry, GuestRead};
+use sim_collision::{Bail, CollisionWorld, Entry, GuestRead, Inexact};
 use sim_core::det::{self, checked_inputs};
 use std::sync::Arc;
 
-pub mod spatial_parity;
+pub mod spatial;
 
 /// The x87 state the flood's sequences reproduce: masked, nearest, single
-/// or double precision, two free registers, and PE already sticky.
+/// or double precision and two free registers. PE may be clear: the
+/// commit sets it when a sequence rounds ([`x87_after`]).
 fn x87_ready(c: &CpuAbi) -> bool {
-    det::x87_env(c.x87.control, c.x87.status, c.x87.tag, 2)
-        && c.x87.control & 0x300 != 0x300
-        && c.x87.status & 0x20 != 0
+    det::x87_env(c.x87.control, c.x87.status, c.x87.tag, 2) && c.x87.control & 0x300 != 0x300
 }
 
 /// `mxcsr` after a region whose SSE operations were `inexact`.
-fn after(mxcsr: u32, inexact: bool) -> u32 {
-    if inexact { mxcsr | 0x20 } else { mxcsr }
+fn after(mxcsr: u32, inexact: Inexact) -> u32 {
+    if inexact.sse { mxcsr | 0x20 } else { mxcsr }
+}
+
+/// The x87 status word after a region whose x87 sequences were `inexact`.
+fn x87_after(status: u16, inexact: Inexact) -> u16 {
+    if inexact.x87 { status | 0x20 } else { status }
 }
 
 fn sse_ready(c: &CpuAbi) -> Result<(), Bail> {
@@ -94,6 +98,8 @@ struct FloodPlan {
     flood: Flood,
     /// The MXCSR after the flood: PE set when an SSE operation was inexact.
     mxcsr: u32,
+    /// The x87 status after the flood: PE set when a sequence rounded.
+    x87_status: u16,
 }
 
 /// Entry G, `0x14a5b0`: stack: cluster (`i16`), centre, radius, capacity,
@@ -149,11 +155,13 @@ fn plan_flood(
         structure: t.key().structure,
         flood,
         mxcsr: after(c.mxcsr, inexact),
+        x87_status: x87_after(c.x87.status, inexact),
     })
 }
 
 fn commit_flood(c: &mut CpuAbi, g: &mut impl Memory, p: FloodPlan) -> Result<TransferAbi, GuestFault> {
     c.mxcsr = p.mxcsr;
+    c.x87.status = p.x87_status;
     let f = &p.flood;
     for (k, &cluster) in f.clusters.iter().enumerate() {
         if k < f.written {
@@ -203,6 +211,8 @@ pub struct VisitPlan {
     pub visit: Visit,
     /// The MXCSR after the visit: PE set when an SSE operation was inexact.
     pub mxcsr: u32,
+    /// The x87 status after the visit: PE set when a flood sequence rounded.
+    pub x87_status: u16,
 }
 
 /// Entry H, `0x0bb050`: stack: lists, types, location, centre, radius,
@@ -316,6 +326,7 @@ pub fn plan_visit_at(
         radius,
         visit,
         mxcsr: after(c.mxcsr, inexact),
+        x87_status: x87_after(c.x87.status, inexact),
     })
 }
 
@@ -344,6 +355,7 @@ pub fn visit_writes(p: &VisitPlan) -> Vec<(u32, u32, u8)> {
 
 fn commit_visit(c: &mut CpuAbi, g: &mut impl Memory, p: VisitPlan) -> Result<TransferAbi, GuestFault> {
     c.mxcsr = p.mxcsr;
+    c.x87.status = p.x87_status;
     let v = &p.visit;
     for (at, value, width) in visit_writes(&p) {
         if width == 1 {

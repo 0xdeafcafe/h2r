@@ -215,20 +215,18 @@ mod tests {
                 };
                 static EPOCH: Epoch = Epoch::new();
                 let world = CollisionWorld::new(&EPOCH);
-                // C only calls D here if C fell back. Even a replayable D
-                // exit must leave that lifted oracle untouched.
+                // D under C's wrapper (the lifted C's own call) skips the
+                // frame replay, which is the wrapper's, but is answered.
                 if entry == Entry::VectorContext && !alias {
                     g.set_u32(SP, super::WRAPPER_AFTER_WALK).unwrap();
-                    let before = (c, snapshot(&g));
-                    let (ret, prediction) = dispatch(&mut c, &mut g, &world).unwrap();
-                    assert!(ret.is_none() && prediction.is_some());
-                    assert_eq!(c, before.0);
-                    assert_eq!(snapshot(&g), before.1);
+                    let mut wrapped = c;
+                    let ret = dispatch(&mut wrapped, &mut g, &world).unwrap();
+                    assert_eq!(ret.unwrap().target_pc, super::WRAPPER_AFTER_WALK);
+                    assert_eq!(wrapped.esp, SP + 4 + layout::VECTOR_ARGS);
                     g.set_u32(SP, 0xabcd_ef00).unwrap();
                 }
                 let before = (c, snapshot(&g));
-                let (result, prediction) = dispatch(&mut c, &mut g, &world).unwrap();
-                assert!(prediction.is_none());
+                let result = dispatch(&mut c, &mut g, &world).unwrap();
                 if alias {
                     assert!(result.is_none(), "{entry:?} ret {ret:#x} args {args:#x}");
                     assert_eq!(c, before.0);

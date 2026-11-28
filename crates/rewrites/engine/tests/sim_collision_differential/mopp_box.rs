@@ -147,7 +147,9 @@ fn setup<'a>(image: &'a [u8], rng: &mut Rng, code: &Code, b: &Aabb) -> (CpuAbi, 
     } else {
         SUPPORTED[rng.below(2) as usize]
     };
-    if !rng.chance(16) {
+    // Half enter with PE clear, as the live game does: the setup's
+    // conversions set it as the guest's would.
+    if rng.chance(2) {
         c.x87.status |= layout::mopp_box::X87_PE;
     }
     (c, m)
@@ -227,8 +229,12 @@ fn mopp_box_edges_match_the_guest() {
                         };
                         let mut rng = Rng(u64::from(n) | 1);
                         let (mut c, mut m) = setup(image, &mut rng, &code, &b);
-                        (c.mxcsr, c.x87.control, c.x87.tag) = (0x1fa0, 0x027f, 0xffff);
-                        c.x87.status |= layout::mopp_box::X87_PE;
+                        (c.mxcsr, c.x87.control, c.x87.tag) = (0x1f80, 0x027f, 0xffff);
+                        // PE clear on odd boxes: the edge inputs are exact
+                        // and inexact by turns.
+                        if n % 2 == 0 {
+                            c.x87.status |= layout::mopp_box::X87_PE;
+                        }
                         m.word(ARRAY + layout::mopp_box::DATA, DATA);
                         m.word(ARRAY + layout::mopp_box::CAPACITY, 1024);
                         let label = format!("program {p} box {b:?}");

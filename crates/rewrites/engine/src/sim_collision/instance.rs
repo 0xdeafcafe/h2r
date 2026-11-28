@@ -1,6 +1,6 @@
 //! Instanced-geometry traces for one structure cluster (entry E).
-mod parity;
-pub use parity::ReturnPrediction;
+mod populated;
+pub use populated::{ReturnPrediction, populated};
 
 use super::{
     CollisionMemory, Outputs, Read, consts, finish, layout, layout::mopp_ray as ray_layout,
@@ -28,43 +28,82 @@ fn cluster_at(m: &impl GuestRead, structure: u32, index: u32) -> Result<u32, Bai
     Ok(base.wrapping_add(index.wrapping_mul(CLUSTER_SIZE)))
 }
 
+/// The count test's frame and inputs.
+struct Count {
+    saved_bp: u32,
+    frame: u32,
+    target: u32,
+    structure: u32,
+    cluster: u32,
+    count: u32,
+}
+
+fn count(c: &CpuAbi, g: &mut impl CollisionMemory) -> Result<Count, Bail> {
+    let saved_bp = c.esp.checked_sub(4).ok_or(Bail::Fault)?;
+    let frame = (saved_bp & !15).checked_sub(0x110).ok_or(Bail::Fault)?;
+    let output = Outputs::new(g, c.esp, c.esp - frame, [])?;
+    let m = Read(&*g, (0, 0));
+    output.separate(g, layout::ACTIVE_STRUCTURE, 4)?;
+    let structure = m.u32(layout::ACTIVE_STRUCTURE)?;
+    output.separate(g, structure.wrapping_add(CLUSTERS), 4)?;
+    let cluster = cluster_at(&m, structure, c.eax)?;
+    output.separate(g, cluster.wrapping_add(CODE_COUNT), 4)?;
+    let count = m.u32(cluster.wrapping_add(CODE_COUNT))?;
+    Ok(Count {
+        saved_bp,
+        frame,
+        target: output.target,
+        structure,
+        cluster,
+        count,
+    })
+}
+
+/// Entry E as installed: an empty cluster replays its exit
+/// ([`empty_cluster`]), a populated one is answered by [`populated`].
+pub fn trace(
+    c: &mut CpuAbi,
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+) -> Result<Option<TransferAbi>, GuestFault> {
+    match count(c, g) {
+        Ok(k) if (k.count as i32) > 0 => populated(c, g, world),
+        plan => answer_empty(c, g, world, plan),
+    }
+}
+
 /// The count test precedes all floating point work and all reads of the
 /// three arguments. Replay its complete frame and volatile registers.
-/// A populated cluster continues into the guest with its original CPU.
+/// A populated cluster returns `None` without a bail.
 pub fn empty_cluster(
     c: &mut CpuAbi,
     g: &mut impl CollisionMemory,
     world: &CollisionWorld,
 ) -> Result<Option<TransferAbi>, GuestFault> {
-    let plan = (|| -> Result<_, Bail> {
-        let saved_bp = c.esp.checked_sub(4).ok_or(Bail::Fault)?;
-        let frame = (saved_bp & !15).checked_sub(0x110).ok_or(Bail::Fault)?;
-        let output = Outputs::new(g, c.esp, c.esp - frame, [])?;
-        let m = Read(&*g, (0, 0));
-        output.separate(g, layout::ACTIVE_STRUCTURE, 4)?;
-        let structure = m.u32(layout::ACTIVE_STRUCTURE)?;
-        output.separate(g, structure.wrapping_add(CLUSTERS), 4)?;
-        let cluster = cluster_at(&m, structure, c.eax)?;
-        output.separate(g, cluster.wrapping_add(CODE_COUNT), 4)?;
-        let count = m.u32(cluster.wrapping_add(CODE_COUNT))?;
-        Ok((saved_bp, frame, output.target, structure, cluster, count))
-    })();
-    if matches!(&plan, Ok((_, _, _, _, _, count)) if (*count as i32) > 0) {
-        // A passive observer compares this call when its guest frame returns.
-        return Ok(None);
+    match count(c, g) {
+        Ok(k) if (k.count as i32) > 0 => Ok(None),
+        plan => answer_empty(c, g, world, plan),
     }
+}
+
+fn answer_empty(
+    c: &mut CpuAbi,
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    plan: Result<Count, Bail>,
+) -> Result<Option<TransferAbi>, GuestFault> {
     world.record(Entry::InstanceTrace, &plan);
-    let Ok((saved_bp, frame, target, structure, cluster, count)) = plan else {
+    let Ok(k) = plan else {
         return Ok(None);
     };
-    g.set_u32(saved_bp, c.ebp)?;
-    g.set_u32(frame, c.ebx)?;
-    g.write_bytes(frame + 0x13, &[0], 1)?;
-    c.ecx = structure;
+    g.set_u32(k.saved_bp, c.ebp)?;
+    g.set_u32(k.frame, c.ebx)?;
+    g.write_bytes(k.frame + 0x13, &[0], 1)?;
+    c.ecx = k.structure;
     c.edx &= !0xff;
-    c.eax = cluster & !0xff;
-    sub_flags(c, count, 0, 32);
-    Ok(Some(finish(c, target, 12)))
+    c.eax = k.cluster & !0xff;
+    sub_flags(c, k.count, 0, 32);
+    Ok(Some(finish(c, k.target, 12)))
 }
 
 pub const MARK_BASE: u32 = 0x004e_7c20;
