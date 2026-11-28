@@ -1,16 +1,16 @@
 # The Lighting row on the D3D path
 
-Status: Built. This page describes the scaled D3D backend. The native frame graph accepts the same setting and draws the game's retail light passes in both modes.
+Status: Built, D3D path only. This page describes the scaled D3D backend (`d3d::scaled`), which FrameScene slice R10 deletes. No setting, file key or Video row selects the lighting; `H2_LIGHTING=e3` at launch reaches this backend alone. The native frame graph draws the game's retail light passes.
 Code: `crates/platform/d3d/src/scaled.rs` (`Lighting`, `follow_lighting`, `shadow_scale`), `crates/formats/shaders/src/psh/shadow.rs` (`PixelOptions::hard_shadow`). Tests: `crates/platform/d3d/tests/render_scale.rs`, `crates/formats/shaders/tests/shadow.rs`.
 Switch: `H2_LIGHTING` (`retail`), listed in [switches.md](../runtime/switches.md).
 
-With the Video screen's Lighting row on E3, the scaled backend ([high-resolution.md](high-resolution.md)) draws the guest's own shadow maps larger and compares them with one tap, in the shown image only.
+With `H2_LIGHTING=e3`, the scaled backend ([high-resolution.md](high-resolution.md)) draws the guest's own shadow maps larger and compares them with one tap, in the shown image only.
 
 | Changes | Does not change |
 |---|---|
 | the edge of retail's own dynamic-light shadows, in the view | the lights drawn, object shadows, the lightmaps, the guest, the simulation |
 
-The design for E3 lighting as a whole, on the native renderer, is in [e3-lighting.md](e3-lighting.md). The scaled shadow maps live on the path FrameScene removes ([framescene.md](framescene.md), section 11: `scaled.rs` goes in slice 10), so no further work lands here. While the row is on E3 the native shadow stand-down applies to the scaled copies ([native-shadows.md](native-shadows.md), "Rules and limits").
+The design for E3 lighting as a whole, on the native renderer, is in [e3-lighting.md](e3-lighting.md). The scaled shadow maps live on the path FrameScene removes ([framescene.md](framescene.md), section 11: `scaled.rs` goes in slice 10), so no further work lands here. In E3 the native shadow stand-down applies to the scaled copies ([native-shadows.md](native-shadows.md), "Rules and limits").
 
 ## How it works
 
@@ -52,8 +52,8 @@ the guest's size (`tex_scale`), so a larger map needs no change there.
   compares against a golden file).
 - **At render scale 1** the view sleeps with retail lighting. With E3 it is
   awake: the frame at 1x, the shadow maps at 2x.
-- **Live**: `ScaledBackend::follow_lighting` reads the row at every present
-  and changes there, as the scale does. Copies at another factor are dropped
+- **Live**: `ScaledBackend::follow_lighting` reads its source at every present
+  and changes there, as the scale does. Nothing in the game installs a source. Copies at another factor are dropped
   at that boundary and made again at their next use (`lighting_changes_at_a_frame_boundary`).
 - **The guest sees retail**: the reference keeps every level at 1x and answers
   every read (`read_depth`, `read_surface`, counts, the judge), so game

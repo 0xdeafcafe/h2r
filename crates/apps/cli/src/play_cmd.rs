@@ -226,7 +226,7 @@ fn pad_speaker(
     // The output is opened whenever the variable allows it, so the row can
     // turn the speaker on during the run; the setting decides what reaches it.
     let config = config.filter(|c| c.enabled && audio);
-    // The mute button: `pad.mute_button` (H2_PAD_MUTE, the Voice screen's
+    // The mute button: `voice.mute_button` (H2_PAD_MUTE, the Voice screen's
     // Mute Button row). A row press reaches the HID thread at once, so the
     // thread runs while the row can still turn it on (not when
     // H2_PAD_MUTE=0 locks it off and the speaker is off).
@@ -547,7 +547,7 @@ pub(crate) fn run_with_theater(
         return crate::follow::run(args);
     }
     // The host's microphones and outputs, for the Voice screen's device
-    // rows and `--set voice.input_device=...`: listed once, before any
+    // rows and `--set voice.microphone=...`: listed once, before any
     // setting is read.
     boot::voice_settings::use_host_devices(&audio::voice::HostDevices);
     let tmp = std::env::temp_dir();

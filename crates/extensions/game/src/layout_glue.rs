@@ -2488,12 +2488,12 @@ mod tests {
         assert!(matches!(model.press(row), Chosen::Stepped(_)));
         assert!(!lightbar.get());
         assert_eq!(model.texts(row)[1].1, speaker_row::OFF_ID);
-        // The FOV and FPS rows step. The Resolution row opens a picker.
-        for r in 0..2 {
+        // The Frame Rate and Field of View rows step. The Resolution row opens a picker.
+        for r in 1..3 {
             let row = model.row(video_screen::LIST, r).unwrap();
             assert!(matches!(model.press(row), Chosen::Stepped(_)));
         }
-        let row = model.row(video_screen::LIST, 2).unwrap();
+        let row = model.row(video_screen::LIST, 0).unwrap();
         assert_eq!(model.press(row), Chosen::Open(crate::ui_kit::picker::NAME));
         (crate::ui_kit::picker::current().unwrap().set)(1);
         // A retail Controls row saves nothing new.

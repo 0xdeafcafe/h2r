@@ -3,15 +3,15 @@
 //! voice chat reads ([`VoiceHandles`]). Capture and playback are the voice
 //! chat's own; this is the settings and menu side.
 //!
-//! **Devices.** `voice.input_device` and `voice.output_device` are choices
-//! of "System default" and the host's devices, listed once at start
+//! **Devices.** `voice.microphone` and `voice.output` are choices
+//! of "System Default" and the host's devices, listed once at start
 //! ([`use_host_devices`], from an [`audio::voice::Devices`]). A device's
 //! value is [`audio::voice::key`] of its host id; the file keeps the id
-//! itself (`input_device = "coreaudio:<UID>"`), so a replug or a reboot
+//! itself (`microphone = "coreaudio:<UID>"`), so a replug or a reboot
 //! finds it again. A device saved in the file but not plugged in at start
-//! is reported once and the row shows System default; the file keeps it
+//! is reported once and the row shows System Default; the file keeps it
 //! until another device is chosen. With no host list (tests, `h2 run`)
-//! the rows offer System default only.
+//! the rows offer System Default only.
 //!
 //! **On the audio path** every read is one atomic load: muting is
 //! `VoiceHandles::mic_muted.get()`, which takes no lock.
@@ -27,8 +27,8 @@ pub const SCREEN: &str = "voice";
 /// The device rows' first choice.
 pub const DEFAULT_CHOICE: Choice = Choice {
     value: SYSTEM_DEFAULT,
-    name: "default",
-    label: "System default",
+    name: "system_default",
+    label: "System Default",
 };
 static DEFAULT_ONLY: &[Choice] = &[DEFAULT_CHOICE];
 
@@ -36,7 +36,7 @@ static DEFAULT_ONLY: &[Choice] = &[DEFAULT_CHOICE];
 /// device and volume), no second stream.
 pub const GAME_CHOICE: Choice = Choice {
     value: SYSTEM_DEFAULT,
-    name: "game",
+    name: "same_as_game",
     label: "Same as Game",
 };
 static GAME_ONLY: &[Choice] = &[GAME_CHOICE];
@@ -49,16 +49,16 @@ pub const MAX_DEVICES: usize = 12;
 pub const MAX_LABEL: usize = 24;
 
 pub static INPUT_DEVICE: Def = Def {
-    key: "voice.input_device",
+    key: "voice.microphone",
     label: "Microphone",
-    help: "The microphone voice chat captures from: System default (follows the \
+    help: "The microphone voice chat captures from: System Default (follows the \
            host's choice) or one device, kept by its host id. H2_VOICE_INPUT takes \
            an id or part of a name.",
     kind: Kind::Choice(DEFAULT_ONLY),
     default: Value::Int(SYSTEM_DEFAULT),
     env: Some("H2_VOICE_INPUT"),
     flag: None,
-    aliases: &[("system", Value::Int(SYSTEM_DEFAULT))],
+    aliases: &[("default", Value::Int(SYSTEM_DEFAULT)), ("system", Value::Int(SYSTEM_DEFAULT))],
     parse_env: Some(input_env),
     apply: Apply::Live,
     scope: Scope::Host,
@@ -70,7 +70,7 @@ pub static INPUT_DEVICE: Def = Def {
 };
 
 pub static OUTPUT_DEVICE: Def = Def {
-    key: "voice.output_device",
+    key: "voice.output",
     label: "Voice Output",
     help: "Where other players' voices play: Same as Game (mixed into the game's \
            own output) or one device, a headset, kept by its host id. H2_VOICE_OUTPUT \
@@ -79,7 +79,7 @@ pub static OUTPUT_DEVICE: Def = Def {
     default: Value::Int(SYSTEM_DEFAULT),
     env: Some("H2_VOICE_OUTPUT"),
     flag: None,
-    aliases: &[("default", Value::Int(SYSTEM_DEFAULT))],
+    aliases: &[("default", Value::Int(SYSTEM_DEFAULT)), ("game", Value::Int(SYSTEM_DEFAULT))],
     parse_env: Some(output_env),
     apply: Apply::Live,
     scope: Scope::Host,
@@ -95,26 +95,26 @@ pub const MODE_OPEN: i64 = 0;
 pub const MODE_PUSH: i64 = 1;
 
 pub static MODE: Def = Def {
-    key: "voice.mode",
-    label: "Talk",
+    key: "voice.talk_mode",
+    label: "Talk Mode",
     help: "Open Mic sends whenever you speak; Push to Talk only while the Talk \
            Button is held.",
     kind: Kind::Choice(&[
         Choice {
             value: MODE_OPEN,
-            name: "open",
+            name: "open_mic",
             label: "Open Mic",
         },
         Choice {
             value: MODE_PUSH,
-            name: "push",
+            name: "push_to_talk",
             label: "Push to Talk",
         },
     ]),
     default: Value::Int(MODE_OPEN),
     env: Some("H2_VOICE_MODE"),
     flag: None,
-    aliases: &[("ptt", Value::Int(MODE_PUSH)), ("open_mic", Value::Int(MODE_OPEN))],
+    aliases: &[("ptt", Value::Int(MODE_PUSH))],
     parse_env: None,
     apply: Apply::Live,
     scope: Scope::Host,
@@ -134,7 +134,7 @@ pub const PTT_DPAD_RIGHT: i64 = 3;
 pub const PTT_BACK: i64 = 4;
 
 pub static PTT_BUTTON: Def = Def {
-    key: "voice.push_to_talk_button",
+    key: "voice.talk_button",
     label: "Talk Button",
     help: "The pad button held to talk in Push to Talk. Back also shows the \
            multiplayer scoreboard.",
@@ -179,44 +179,6 @@ pub static PTT_BUTTON: Def = Def {
     }),
 };
 
-pub static MIC_MUTED: Def = Def {
-    key: "voice.mic_muted",
-    label: "Mute My Mic",
-    help: "Send no voice at all, whatever the Talk mode.",
-    kind: Kind::Bool,
-    default: Value::Bool(false),
-    env: Some("H2_VOICE_MIC_MUTED"),
-    flag: None,
-    aliases: &[],
-    parse_env: None,
-    apply: Apply::Live,
-    scope: Scope::Host,
-    tier: Tier::User,
-    menu: Some(Menu {
-        screen: SCREEN,
-        order: 50,
-    }),
-};
-
-pub static INCOMING_MUTED: Def = Def {
-    key: "voice.incoming_muted",
-    label: "Mute Everyone",
-    help: "Play no other player's voice.",
-    kind: Kind::Bool,
-    default: Value::Bool(false),
-    env: Some("H2_VOICE_INCOMING_MUTED"),
-    flag: None,
-    aliases: &[],
-    parse_env: None,
-    apply: Apply::Live,
-    scope: Scope::Host,
-    tier: Tier::User,
-    menu: Some(Menu {
-        screen: SCREEN,
-        order: 60,
-    }),
-};
-
 /// A volume's choices: 0% to 100% in tens. The file keeps the number.
 const VOLUMES: &[Choice] = &[
     volume(0, "0", "0%"),
@@ -237,8 +199,8 @@ const fn volume(value: i64, name: &'static str, label: &'static str) -> Choice {
 }
 
 pub static INPUT_VOLUME: Def = Def {
-    key: "voice.input_volume",
-    label: "Mic Volume",
+    key: "voice.microphone_volume",
+    label: "Microphone Volume",
     help: "How loud your voice is sent, 0 to 100 percent in tens.",
     kind: Kind::Choice(VOLUMES),
     default: Value::Int(100),
@@ -251,17 +213,55 @@ pub static INPUT_VOLUME: Def = Def {
     tier: Tier::User,
     menu: Some(Menu {
         screen: SCREEN,
-        order: 70,
+        order: 50,
     }),
 };
 
 pub static OUTPUT_VOLUME: Def = Def {
-    key: "voice.output_volume",
+    key: "voice.volume",
     label: "Voice Volume",
     help: "How loud other players' voices play, 0 to 100 percent in tens.",
     kind: Kind::Choice(VOLUMES),
     default: Value::Int(100),
     env: Some("H2_VOICE_OUTPUT_VOLUME"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: SCREEN,
+        order: 60,
+    }),
+};
+
+pub static MIC_MUTED: Def = Def {
+    key: "voice.mute_microphone",
+    label: "Mute Microphone",
+    help: "Send no voice at all, whatever the Talk Mode.",
+    kind: Kind::Bool,
+    default: Value::Bool(false),
+    env: Some("H2_VOICE_MIC_MUTED"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: SCREEN,
+        order: 70,
+    }),
+};
+
+pub static INCOMING_MUTED: Def = Def {
+    key: "voice.mute_everyone",
+    label: "Mute Everyone",
+    help: "Play no other player's voice.",
+    kind: Kind::Bool,
+    default: Value::Bool(false),
+    env: Some("H2_VOICE_INCOMING_MUTED"),
     flag: None,
     aliases: &[],
     parse_env: None,
@@ -280,10 +280,10 @@ pub static ALL: &[&Def] = &[
     &OUTPUT_DEVICE,
     &MODE,
     &PTT_BUTTON,
-    &MIC_MUTED,
-    &INCOMING_MUTED,
     &INPUT_VOLUME,
     &OUTPUT_VOLUME,
+    &MIC_MUTED,
+    &INCOMING_MUTED,
 ];
 
 /// What the voice chat reads, each with one atomic load and no lock (safe
@@ -369,7 +369,7 @@ pub fn use_host_devices(devices: &dyn Devices) -> bool {
 }
 
 /// The device `Def`s in effect: the host's once listed, else the static
-/// ones (System default only).
+/// ones (System Default only).
 pub fn device_defs() -> [&'static Def; 2] {
     match HOST.get() {
         Some(h) => [h.input_def, h.output_def],
@@ -385,7 +385,7 @@ fn leak_str(s: String) -> &'static str {
     Box::leak(s.into_boxed_str())
 }
 
-/// `base` with its own first choice (System default, Same as Game) and
+/// `base` with its own first choice (System Default, Same as Game) and
 /// `devices` as its choices (the first [`MAX_DEVICES`]; a device listed
 /// twice is offered once).
 pub fn device_def(base: &'static Def, devices: &[Device]) -> Def {
@@ -533,7 +533,7 @@ mod tests {
         assert!(!h.mic_muted.get() && !h.incoming_muted.get());
         assert_eq!((h.input_volume.get(), h.output_volume.get()), (100, 100));
         assert_eq!((h.capture_gain(), h.playback_gain()), (1.0, 1.0));
-        assert_eq!(INPUT_DEVICE.label(Value::Int(0)), "System default");
+        assert_eq!(INPUT_DEVICE.label(Value::Int(0)), "System Default");
         assert_eq!(INPUT_VOLUME.label(Value::Int(70)), "70%");
         assert_eq!(MODE.label(Value::Int(MODE_PUSH)), "Push to Talk");
     }
@@ -575,8 +575,8 @@ mod tests {
         let many: Vec<Device> = (0..20).map(|i| Device::new(format!("id{i}"), format!("Mic {i}"))).collect();
         assert_eq!(device_choices(&many).len(), MAX_DEVICES);
         // A device named like the default choice is told apart from it.
-        let odd = [Device::new("x", "System default")];
-        assert_eq!(device_choices(&odd)[0].2, "System default 2");
+        let odd = [Device::new("x", "System Default")];
+        assert_eq!(device_choices(&odd)[0].2, "System Default 2");
         assert_eq!(device_choices(&[Device::new("y", "  ")])[0].2, "Device");
     }
 
@@ -584,7 +584,7 @@ mod tests {
     fn a_host_device_is_saved_by_its_id_and_found_again_next_run() {
         let inputs = host().inputs();
         let def: &'static Def = leak(device_def(&INPUT_DEVICE, &inputs));
-        assert_eq!(def.values().len(), 5, "System default and four devices");
+        assert_eq!(def.values().len(), 5, "System Default and four devices");
         let path = tmp("save");
         let defs = [def];
         let store = Store::load(&defs, Some(&path), &|_| None, &[]).0;
@@ -598,7 +598,7 @@ mod tests {
             Some("coreaudio:Headset-in")
         );
         let t: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
-        assert_eq!(t["voice"]["input_device"].as_str(), Some("coreaudio:Headset-in"));
+        assert_eq!(t["voice"]["microphone"].as_str(), Some("coreaudio:Headset-in"));
         let (next, problems) = Store::load(&defs, Some(&path), &|_| None, &[]);
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!(next.get(def.key), Some(Value::Int(audio::voice::key("coreaudio:Headset-in"))));
@@ -607,7 +607,7 @@ mod tests {
     #[test]
     fn an_unplugged_device_is_reported_shows_the_default_and_stays_in_the_file() {
         let path = tmp("gone");
-        std::fs::write(&path, "[voice]\ninput_device = \"coreaudio:Gone\"\nmic_muted = true\n").unwrap();
+        std::fs::write(&path, "[voice]\nmicrophone = \"coreaudio:Gone\"\nmute_microphone = true\n").unwrap();
         let def: &'static Def = leak(device_def(&INPUT_DEVICE, &host().inputs()));
         let defs = [def, &MIC_MUTED];
         let (store, problems) = Store::load(&defs, Some(&path), &|_| None, &[]);
@@ -617,8 +617,8 @@ mod tests {
         // Another row's change keeps the saved device.
         store.step(MIC_MUTED.key).unwrap();
         let t: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
-        assert_eq!(t["voice"]["input_device"].as_str(), Some("coreaudio:Gone"));
-        assert_eq!(t["voice"]["mic_muted"].as_bool(), Some(false));
+        assert_eq!(t["voice"]["microphone"].as_str(), Some("coreaudio:Gone"));
+        assert_eq!(t["voice"]["mute_microphone"].as_bool(), Some(false));
     }
 
     #[test]
@@ -638,6 +638,8 @@ mod tests {
         assert_eq!(OUTPUT_DEVICE.values(), [Value::Int(SYSTEM_DEFAULT)]);
         assert_eq!(OUTPUT_DEVICE.label(Value::Int(SYSTEM_DEFAULT)), "Same as Game");
         assert_eq!(OUTPUT_DEVICE.parse("game"), Ok(Value::Int(SYSTEM_DEFAULT)));
+        assert_eq!(OUTPUT_DEVICE.parse("same_as_game"), Ok(Value::Int(SYSTEM_DEFAULT)));
+        assert_eq!(INPUT_DEVICE.parse("system_default"), Ok(Value::Int(SYSTEM_DEFAULT)));
         let out = device_def(&OUTPUT_DEVICE, &host().outputs());
         assert_eq!(out.label(Value::Int(SYSTEM_DEFAULT)), "Same as Game");
         assert_eq!(out.values().len(), 2);

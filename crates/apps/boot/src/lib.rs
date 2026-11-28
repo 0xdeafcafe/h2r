@@ -1061,17 +1061,14 @@ fn run_configured(
                 eprintln!("d3d: rendering at {width}x{height}; drawable {dw}x{dh}; single copy {single}");
                 // The Video screen's Resolution row changes the scale at the
                 // next frame boundary (docs/graphics/high-resolution.md).
-                // The Lighting row (docs/graphics/e3-lighting-setting.md)
-                // changes the view's shadows there too.
                 b.follow_resolution(move || {
                     let (width, height) = output();
                     d3d::scaled::RenderScale::for_output(width, height)
                         .expect("the resolution picker and drawable publish validated sizes")
                 });
-                if let Some(store) = &host.settings {
-                    let lighting = store.handle::<u32>(setting_defs::LIGHTING.key);
-                    b.set_lighting(setting_defs::lighting_of(lighting.get()));
-                    b.follow_lighting(move || setting_defs::lighting_of(lighting.get()));
+                // A review launch's lamp arm (docs/graphics/relighting-review.md).
+                if let Some(lighting) = d3d_glue::review_lighting() {
+                    b.set_lighting(lighting);
                 }
                 // A failed resize keeps the previous grid. The lens follows the
                 // dimensions the render thread actually accepted at present.
@@ -1087,7 +1084,7 @@ fn run_configured(
                 )?
             }
             None => d3d_glue::install_game_view(
-                &loaded.runtime, b, fps, render_thread, render_hooks, private, host.settings.as_deref(),
+                &loaded.runtime, b, fps, render_thread, render_hooks, private,
             )?,
         }),
         (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),

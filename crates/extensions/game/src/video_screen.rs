@@ -1,6 +1,6 @@
 //! Video opens from the main menu's Settings list and the pause
-//! menu's Player Settings, and Voice from the same two places. The screen uses the Controls layout for Field
-//! of View, Frame Rate, Resolution, Lighting, HUD Position and LOD Distance.
+//! menu's Player Settings, and Voice from the same two places. The screen uses the Controls layout for
+//! Resolution, Frame Rate, Field of View, HUD Position and LOD Distance.
 //! See docs/game/settings-menu.md "Video screen" for the trace.
 //!
 //! **The rows.** The Settings list (screen id 19, list handler `0x2b1cca` at
@@ -295,7 +295,7 @@ pub fn text_row<M: Gm>(m: &M, esp: u32) -> Option<i16> {
 mod tests {
     use super::*;
     use crate::layout_glue::{chosen_row, is_ours};
-    use crate::setting_defs::{ALL, FPS, LIGHTING, PAD_MUTE};
+    use crate::setting_defs::{ALL, FPS, PAD_MUTE};
     use crate::ui::{Chosen, RowKind};
     use settings::Value;
     use std::collections::BTreeMap;
@@ -375,10 +375,9 @@ mod tests {
         assert_eq!(
             kinds,
             [
-                RowKind::Setting(FOV.key),
-                RowKind::Setting(FPS.key),
                 RowKind::Setting(RESOLUTION.key),
-                RowKind::Setting(LIGHTING.key),
+                RowKind::Setting(FPS.key),
+                RowKind::Setting(FOV.key),
                 RowKind::Setting(HUD_POSITION.key),
                 RowKind::Setting(LOD_DISTANCE.key),
             ]
@@ -392,7 +391,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(no_fov.rows(LIST).len(), 5);
+        assert_eq!(no_fov.rows(LIST).len(), 4);
         assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 4);
         assert_eq!(m.count(List::Controls, 6), 12);
         // No Video screen: no Video row on Settings either, and Voice moves up.
@@ -695,16 +694,16 @@ mod tests {
     #[test]
     fn every_row_draws_its_label_and_value_as_before() {
         let m = all();
-        assert_eq!(drawn(&m, LIST, 0), s("Field of View", "70"));
-        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
         assert_eq!(
-            m.line(m.row(LIST, 2).unwrap()),
+            m.line(m.row(LIST, 0).unwrap()),
             "Resolution: Native (640x480)"
         );
-        assert_eq!(drawn(&m, LIST, 3), s("Lighting", "Retail"));
-        assert_eq!(drawn(&m, LIST, 4), s("HUD Position", "Pinned"));
-        assert_eq!(drawn(&m, LIST, 5), s("LOD Distance", "Highest"));
-        assert_eq!(drawn(&m, LIST, 6), None);
+        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
+        assert_eq!(drawn(&m, LIST, 2), s("Field of View", "70"));
+        assert_eq!(drawn(&m, LIST, 3), s("HUD Position", "Pinned"));
+        assert_eq!(drawn(&m, LIST, 4), s("LOD Distance", "Highest"));
+        assert_eq!(drawn(&m, LIST, 5), None);
+        assert!(!m.strings().iter().any(|(_, t)| t == "Lighting"), "no Lighting row");
         assert_eq!(drawn(&m, LIST, -1), None);
     }
 
@@ -734,10 +733,9 @@ mod tests {
         let fps = store.handle::<u32>(FPS.key);
         let resolution = store.handle::<settings::Resolution>(RESOLUTION.key);
         let mute = store.handle::<bool>(PAD_MUTE.key);
-        let lighting = store.handle::<u32>(LIGHTING.key);
         // What the window, the view backend and the HID thread are told.
         let told = Arc::new(std::sync::Mutex::new(Vec::new()));
-        for key in [FPS.key, RESOLUTION.key, LIGHTING.key, PAD_MUTE.key] {
+        for key in [FPS.key, RESOLUTION.key, PAD_MUTE.key] {
             let told = Arc::clone(&told);
             store.on_change(key, move |v| told.lock().unwrap().push((key, *v)));
         }
@@ -755,25 +753,25 @@ mod tests {
         press(&m, LIST, 1);
         assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
         assert_eq!(
-            press(&m, LIST, 0),
+            press(&m, LIST, 2),
             Chosen::Stepped("graphics.fov: 75".into())
         );
-        assert_eq!(drawn(&m, LIST, 0), s("Field of View", "75"));
+        assert_eq!(drawn(&m, LIST, 2), s("Field of View", "75"));
         assert_eq!(fov.get(), 75, "applies at once");
         use crate::ui_kit::picker;
-        assert_eq!(press(&m, LIST, 2), Chosen::Open(picker::NAME));
+        assert_eq!(press(&m, LIST, 0), Chosen::Open(picker::NAME));
         let pick = picker::current().unwrap();
         assert_eq!(pick.values, ["Native (640x480)", "640x480"]);
         assert_eq!(pick.current, 0);
         (pick.set)(1);
-        assert_eq!(m.line(m.row(LIST, 2).unwrap()), "Resolution: 640x480");
+        assert_eq!(m.line(m.row(LIST, 0).unwrap()), "Resolution: 640x480");
         assert_eq!(resolution.get(), settings::Resolution::Fixed(640, 480));
-        assert_eq!(press(&m, LIST, 4), Chosen::Open(picker::NAME));
+        assert_eq!(press(&m, LIST, 3), Chosen::Open(picker::NAME));
         let pick = picker::current().unwrap();
         assert_eq!(pick.values, ["Centered", "Pinned"]);
         assert_eq!(pick.current, 1);
         (pick.set)(0);
-        assert_eq!(drawn(&m, LIST, 4), s("HUD Position", "Centered"));
+        assert_eq!(drawn(&m, LIST, 3), s("HUD Position", "Centered"));
         assert_eq!(press(&m, List::Settings, 2), Chosen::Open(SCREEN));
         assert_eq!(
             drawn(&m, List::Controls, 6),
@@ -795,18 +793,8 @@ mod tests {
         press(&m, List::Controls, 10);
         assert_eq!(drawn(&m, List::Controls, 10), s("Left Trackpad", "Stick"));
         assert_eq!(
-            press(&m, LIST, 3),
-            Chosen::Stepped("graphics.lighting: e3".into())
-        );
-        assert_eq!(drawn(&m, LIST, 3), s("Lighting", "E3"));
-        assert_eq!(
-            crate::setting_defs::lighting_of(lighting.get()),
-            d3d::Lighting::E3,
-            "applies at once"
-        );
-        assert_eq!(
             press(&m, VOICE_LIST, 8),
-            Chosen::Stepped("pad.mute_button: false".into())
+            Chosen::Stepped("voice.mute_button: false".into())
         );
         assert_eq!(drawn(&m, VOICE_LIST, 8), s("Mute Button", "Off"));
         assert!(!mute.get(), "applies at once");
@@ -822,7 +810,6 @@ mod tests {
                     RESOLUTION.key,
                     settings::Resolution::Fixed(640, 480).value()
                 ),
-                (LIGHTING.key, Value::Int(1)),
                 (PAD_MUTE.key, Value::Bool(false)),
             ]
         );
@@ -835,9 +822,9 @@ mod tests {
         assert_eq!(t["graphics"]["fov"].as_integer(), Some(75));
         assert_eq!(t["graphics"]["fps"].as_integer(), Some(30));
         assert_eq!(t["graphics"]["resolution"].as_str(), Some("640x480"));
-        assert_eq!(t["graphics"]["lighting"].as_str(), Some("e3"));
+        assert!(t["graphics"].get("lighting").is_none());
         assert_eq!(t["pad_speaker"]["enabled"].as_bool(), Some(true));
-        assert_eq!(t["pad"]["mute_button"].as_bool(), Some(false));
+        assert_eq!(t["voice"]["mute_button"].as_bool(), Some(false));
         assert_eq!(t["steam_pad"]["speaker"].as_bool(), Some(false));
         assert_eq!(t["steam_pad"]["sensitivity"].as_integer(), Some(6));
         assert_eq!(t["steam_pad"]["left_pad"].as_str(), Some("stick"));
@@ -847,7 +834,6 @@ mod tests {
             Some(settings::Resolution::Fixed(640, 480).value())
         );
         assert_eq!(next.get(HUD_POSITION.key), Some(Value::Int(0)));
-        assert_eq!(next.get(LIGHTING.key), Some(Value::Int(1)));
     }
 
     #[test]
@@ -865,7 +851,7 @@ mod tests {
             Arc::new(move || *read.lock().unwrap()),
         )
         .unwrap();
-        let row = m.row(LIST, 2).unwrap();
+        let row = m.row(LIST, 0).unwrap();
         let slot = m.texts(row)[1].1;
         m.bind_resolution_slot(&[(slot, 0x8000)]);
         let studio = resolution::label(settings::Resolution::Native, studio);

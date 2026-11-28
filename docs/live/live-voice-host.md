@@ -54,7 +54,7 @@ macOS first, on cpal over CoreAudio like `crates/platform/audio/src/output.rs`. 
 `VoiceIo` (scripted frames in, recorded frames out) is what the tests use.
 Other ports implement the trait.
 
-Playback has two routes: the voice output device when `voice.output_device`
+Playback has two routes: the voice output device when `voice.output`
 names one (a headset), or mixed into the game's own output when it is "same as
 game". The second route is a host stream in DirectSound's mixer
 (`boot::voice_glue::GameMix`), so voice plays wherever the mixer's output
@@ -344,8 +344,8 @@ Who hears whom:
 - There is no account-level voice switch (section 6, decision 4); bit 16 of
   the XUID flags stays clear. A player who wants no voice uses the settings
   below, and admins have bans (live-admin.md §9).
-- `voice.incoming_muted` silences everyone locally (the headphone XMO plays
-  nothing); `voice.mic_muted` stops capture in the microphone XMO and
+- `voice.mute_everyone` silences everyone locally (the headphone XMO plays
+  nothing); `voice.mute_microphone` stops capture in the microphone XMO and
   removes the communicator (2.1), so nothing is encoded and nothing leaves
   the machine.
 

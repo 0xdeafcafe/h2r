@@ -563,7 +563,7 @@ fn restart(label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setting_defs::{ALL, FOV, FPS, HUD_POSITION, LIGHTING, LOD_DISTANCE, PAD_SPEAKER};
+    use crate::setting_defs::{ALL, FOV, FPS, HUD_POSITION, LOD_DISTANCE, PAD_SPEAKER};
     use settings::Value;
 
     fn model(store: Arc<Store>) -> Model {
@@ -602,17 +602,16 @@ mod tests {
         assert_eq!(
             keys,
             [
-                RowKind::Setting(FOV.key),
-                RowKind::Setting(FPS.key),
                 RowKind::Setting(RESOLUTION.key),
-                RowKind::Setting(LIGHTING.key),
+                RowKind::Setting(FPS.key),
+                RowKind::Setting(FOV.key),
                 RowKind::Setting(HUD_POSITION.key),
                 RowKind::Setting(LOD_DISTANCE.key),
             ]
         );
         assert_eq!(
-            m.count(List::Screen("video"), 5),
-            6,
+            m.count(List::Screen("video"), 6),
+            5,
             "ours, whatever retail says"
         );
         assert_eq!(m.count(List::Controls, 6), 8);
@@ -700,7 +699,7 @@ mod tests {
     fn a_row_reads_as_one_line() {
         let store = Arc::new(Store::defaults(ALL));
         let m = model(Arc::clone(&store));
-        let fov = m.row(List::Screen("video"), 0).unwrap();
+        let fov = m.row(List::Screen("video"), 2).unwrap();
         let value = m.texts(fov)[1].1;
         let value = &m.strings().iter().find(|(i, _)| *i == value).unwrap().1;
         assert_eq!(m.line(fov), format!("{}: {value}", FOV.label));

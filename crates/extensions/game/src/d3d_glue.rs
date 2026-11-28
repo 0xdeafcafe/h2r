@@ -148,7 +148,8 @@ impl<B: d3d::backend::Backend + Send + 'static> DeviceSnapshot for Mutex<d3d::De
 /// from a view backend at N times the guest's size (`d3d::ScaledBackend`,
 /// docs/graphics/high-resolution.md), `frame-NNNNN.png` is the view's image and
 /// exact two-copy mode also writes `frame-NNNNN-1x.png`. The run report gives the
-/// view's counts. `H2_LIGHTING=e3` gives the view E3 lighting's scaled,
+/// view's counts. `H2_LIGHTING=e3` (read by `d3d::scaled::lighting`, this
+/// capture path only) gives the view E3 lighting's scaled,
 /// one-tap shadow maps (docs/graphics/e3-lighting-setting.md), with a view at 1x
 /// too when the scale is 1. `H2_BOOT_GFX_LIGHTING_AB=1` draws a retail and
 /// an E3 view of the same run (`d3d::LightingAb`, at least 2x), compares
@@ -226,18 +227,25 @@ pub fn window_targets(
     (main, crate::run_opts::DisplayView { backend, native_target, viewer_output: None, viewer_lod: None, display_size: Arc::new(display_size) })
 }
 
+/// The private BSP review's lamp arm (docs/graphics/relighting-review.md):
+/// `H2_LIGHTING=relight-on` or `relight-off` at launch. No setting holds
+/// it and nothing changes it during a run.
+#[cfg(feature = "gpu")]
+pub fn review_lighting() -> Option<d3d::Lighting> {
+    std::env::var("H2_LIGHTING").ok().as_deref().and_then(d3d::Lighting::relight_from_name)
+}
+
 /// A locked retail target has no live raster edits. It can present directly
 /// when the run permits single-copy rendering.
 #[cfg(feature = "gpu")]
 pub fn locked_retail_target(store: Option<&settings::Store>) -> bool {
     let Some(store) = store else { return false };
-    use crate::setting_defs::{GUEST_FRAME, LIGHTING, RESOLUTION, lighting_of};
+    use crate::setting_defs::{GUEST_FRAME, RESOLUTION};
     let fixed = settings::Resolution::Fixed(GUEST_FRAME.0, GUEST_FRAME.1);
     let locked = |key| store.state(key).is_some_and(|state| state.locked);
     store.handle::<settings::Resolution>(RESOLUTION.key).get() == fixed
         && locked(RESOLUTION.key)
-        && lighting_of(store.handle::<u32>(LIGHTING.key).get()) == d3d::Lighting::Retail
-        && locked(LIGHTING.key)
+        && review_lighting().is_none()
 }
 
 #[cfg(feature = "gpu")]
@@ -258,14 +266,7 @@ pub fn single_copy(store: Option<&settings::Store>, protected: bool) -> anyhow::
         return Ok(false);
     }
     // Relit pixels must never feed guest readbacks, including in offline play.
-    let lighting = match store {
-        Some(s) => s.get(crate::setting_defs::LIGHTING.key)
-            .and_then(|v| u32::try_from(v.as_int()?).ok())
-            .map(crate::setting_defs::lighting_of)
-            .unwrap_or_default(),
-        None => d3d::scaled::lighting().map_err(anyhow::Error::msg)?,
-    };
-    if lighting.is_relight() {
+    if review_lighting().is_some() {
         return Ok(false);
     }
     let def = &crate::setting_defs::SINGLE_COPY;
@@ -589,15 +590,7 @@ pub fn install_headless_with_scenes(
                 let single = single_copy(settings, protected_readbacks)?;
                 let mut b =
                     d3d::ScaledBackend::with_resolution(reference, view, scale, single).map_err(anyhow::Error::msg)?;
-                if private.is_some() && settings.is_some() {
-                    // A serve can change its Lighting row between Swaps. Use
-                    // the same live handle as the raw 1x native owner.
-                    let wanted = current_lighting(settings, lighting);
-                    b.set_lighting(wanted());
-                    b.follow_lighting(wanted);
-                } else {
-                    b.set_lighting(lighting);
-                }
+                b.set_lighting(lighting);
                 eprintln!(
                     "d3d: rendering at {width}x{height}, {:?} lighting; single copy {single}",
                     b.lighting()
@@ -617,7 +610,7 @@ pub fn install_headless_with_scenes(
             // submission, present) on a render thread of its own
             // (docs/graphics/render-thread.md), unless H2_RENDER_THREAD=0.
             let thread = RenderThread::requested(false);
-            install_game_view(rt, backend, fps, thread, profile, private, settings)
+            install_game_view(rt, backend, fps, thread, profile, private)
         }
     }
 }
@@ -938,15 +931,6 @@ struct SceneOutput<B: d3d::Backend> {
     display_rate: Option<Box<dyn d3d::threaded::owner::DisplayRate<B>>>,
 }
 
-#[cfg(feature = "gpu")]
-fn current_lighting(
-    live: Option<&settings::Store>,
-    default: d3d::Lighting,
-) -> Box<dyn Fn() -> d3d::Lighting + Send + Sync> {
-    let row = live.map(|s| s.handle::<u32>(crate::setting_defs::LIGHTING.key));
-    Box::new(move || row.as_ref().map_or(default, |s| crate::setting_defs::lighting_of(s.get())))
-}
-
 /// A private-target worker uses a second surface store on the same GPU.
 /// Eligible displayed frames use the display's existing store on its thread.
 #[cfg(feature = "gpu")]
@@ -957,12 +941,12 @@ pub fn install_game_view(
     thread: Option<RenderThread>,
     profile: film::RenderHooks,
     private: Option<PrivateScenes>,
-    settings: Option<&settings::Store>,
 ) -> anyhow::Result<Installed> {
     let scenes = if let Some(private) = private {
         let service = private.install(&mut backend)?;
-        let lighting: Arc<dyn Fn() -> d3d::Lighting + Send + Sync> =
-            current_lighting(settings, d3d::Lighting::Retail).into();
+        // Retail, or the review launch's lamp arm: fixed for the run.
+        let wanted = review_lighting().unwrap_or_default();
+        let lighting: Arc<dyn Fn() -> d3d::Lighting + Send + Sync> = Arc::new(move || wanted);
         let display = private.display(fps);
         let owner = crate::frame_cutover::owner(service.display_device(), Arc::clone(&lighting), display.clone());
         let display_rate = display.map(|d| d.on_display(lighting));
@@ -2275,31 +2259,6 @@ mod tests {
             assert_eq!(policy(spec, gpu, true), None, "{spec}");
         }
         assert_eq!(policy("frame-scene.sink", film::RenderHooks::Slim, false), None);
-    }
-
-    #[cfg(feature = "gpu")]
-    #[test]
-    fn the_native_render_worker_sees_live_lighting_at_its_next_boundary() {
-        use crate::setting_defs::{LIGHTING, LIGHTING_E3};
-        use d3d::Lighting;
-        use std::sync::mpsc;
-
-        let (store, errors) = settings::Store::load(&[&LIGHTING], None, &|_| None, &[]);
-        assert!(errors.is_empty());
-        let wanted = current_lighting(Some(&store), Lighting::E3);
-        let (next, requested) = mpsc::channel();
-        let (report, seen) = mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            report.send(wanted()).unwrap();
-            requested.recv().unwrap();
-            report.send(wanted()).unwrap();
-        });
-        assert_eq!(seen.recv().unwrap(), Lighting::Retail);
-        store.set(LIGHTING.key, settings::Value::Int(LIGHTING_E3)).unwrap();
-        next.send(()).unwrap();
-        assert_eq!(seen.recv().unwrap(), Lighting::E3);
-        worker.join().unwrap();
-        assert_eq!(current_lighting(None, Lighting::E3)(), Lighting::E3);
     }
 
     #[cfg(feature = "gpu")]

@@ -33,7 +33,7 @@ works, and its page says which part. **Design**: written up, not built.
 | | Xbox in Developer Mode (UWP app): runs on a Series X and presents frames while the title boots; pads and levels are not verified | Partly built | [xbox](runtime/xbox.md) |
 | Graphics | Native GPU renderer, on by default: world, objects, lights, shadows, transparents, decals, particles, fog, water, post, HUD and UI. Scene lists are built in Rust, the guest's opaque handlers are skipped, geometry is cached across frames, and anything it can't take falls back to D3D (`impl.render.native=off` turns it all off) | Built | [native renderer](graphics/native-renderer.md) |
 | | Native and fixed resolutions, arbitrary display aspect, live resize and single-copy rendering in eligible sessions | Built | [high-res](graphics/high-resolution.md) |
-| | E3 2003-style lighting: the Lighting row (sharper shadow maps, D3D path) | Built | [Lighting row](graphics/e3-lighting-setting.md) |
+| | E3 2003-style lighting: sharper shadow maps on the D3D path only (`H2_LIGHTING=e3`) | Built | [D3D path](graphics/e3-lighting-setting.md) |
 | | 60 and 120 fps over the 30 Hz tick: the setting, determinism harness and the frame owner's display frames between two scenes | Partly built | [high-framerate](game/high-framerate.md) |
 | Game | Expanded settings screens: Video, Controls, FOV, voice | Built | [settings](game/settings-menu.md) |
 | | Campaign skulls per profile, a Skulls page, our own skulls | Built | [skulls](game/skulls.md) |

@@ -7,8 +7,8 @@
 //! media objects. It also opens the host devices again when the chosen
 //! microphone or output changes.
 //!
-//! **Off unless a microphone is chosen.** With `voice.input_device` at
-//! System default the mask stays 0, so the game sees no communicator, as
+//! **Off unless a microphone is chosen.** With `voice.microphone` at
+//! System Default the mask stays 0, so the game sees no communicator, as
 //! before voice. Once a microphone is chosen on the pause menu's Voice
 //! screen, every port with a player's pad gets a communicator. Bots are
 //! phantom peers with no pads, so every connected pad is a person's.
@@ -16,9 +16,9 @@
 //! **Talker.** In open-mic mode, it is the first such port. In push-to-talk
 //! mode it is the first such port whose pad holds the chosen button, as the
 //! game last read it (`Xapi::last_input_state`); nobody talks while no pad
-//! holds it. `voice.mic_muted` silences it in either mode.
+//! holds it. `voice.mute_microphone` silences it in either mode.
 //!
-//! **"Same as Game".** With `voice.output_device` at System default the
+//! **"Same as Game".** With `voice.output` at System Default the
 //! headphone mix plays in the game's own mix ([`GameMix`]: a host stream
 //! in DirectSound's mixer), so it comes out of the game's output device.
 //! A chosen output device plays it on its own stream instead.
@@ -97,7 +97,7 @@ pub fn held(
 }
 
 /// The host id of the device `key` names among a device `Def`'s choices
-/// (a choice's name is the device's id); `None` for System default or a
+/// (a choice's name is the device's id); `None` for System Default or a
 /// key not listed.
 pub fn device_id(def: &settings::Def, key: i64) -> Option<String> {
     if key == SYSTEM_DEFAULT {
