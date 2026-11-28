@@ -29,7 +29,7 @@ The 29 phases of the tick ([sim-rewrite.md](sim-rewrite.md), "The tick driver") 
 | The schedule's step | after `GAME_TICK`, an observer | no guest call |
 | Game sound `GAME_SOUND_UPDATE` (`0x18c060`), the marker start, the stop | inside the tick and the object code | not touched: they run as guest code against the engine's real instances |
 
-The sound simulation's own counter is `SoundLedger` (`sim_sound.rs`): `guest_calls` counts the guest calls the finish, ramp and update make, so it is 0 until an instance is entered. `service_runs` counts the main-loop runs, which fall with the frame rate and not the tick count, so the step that decides ends runs in the tick and the service only delivers. Test: `sound_phase_ledger_is_zero`.
+The sound simulation's own counter is `SoundLedger` (`sim_sound.rs`): `guest_calls` counts the guest calls the finish and ramp make, so it is 0 until an instance is entered; the update is the native unit mouth (`sim_bridge::unit_mouth`) and makes none. `service_runs` counts the main-loop runs, which fall with the frame rate and not the tick count, so the step that decides ends runs in the tick and the service only delivers. Test: `sound_phase_ledger_is_zero`.
 
 Refusals are counters of the same ledger, never a quiet fallback: `refused_unreadable` counts admissions whose returned handle or tick could not be read (the sound is not entered; the guest keeps it), and `refused_no_duration` counts sounds whose permutation length could not be read from the tag (entered, ending on their start tick). Both are 0 on a run that reads every tag. No new hook is added; the order of the existing ones is the hooks' list above.
 
