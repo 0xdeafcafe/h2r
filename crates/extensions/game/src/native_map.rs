@@ -85,14 +85,17 @@ impl Drop for RetireFence {
     }
 }
 
-/// Map builds share scratch allocation headroom. Wait on a loader thread
-/// for an older build to leave and for detached resources to be destroyed.
+/// Map builds take turns per lane, so each lane's scratch allocation
+/// headroom holds one build at a time. The world (BSP, screen effects) has
+/// a lane of its own: it shares no state with the object definitions,
+/// first-person models and light models, so a long object preload does not
+/// keep the level on D3D. Waits on a loader thread for an older build in
+/// the same lane to leave and for detached resources to be destroyed.
 pub(crate) fn begin_load(
     stage: timeline::setup::Stage,
     current: impl Fn() -> bool,
 ) -> Option<MutexGuard<'static, ()>> {
-    static LOADER: Mutex<()> = Mutex::new(());
-    let guard = LOADER.lock().unwrap_or_else(|e| e.into_inner());
+    let guard = lane(stage).lock().unwrap_or_else(|e| e.into_inner());
     if !current() {
         return None;
     }
@@ -100,6 +103,17 @@ pub(crate) fn begin_load(
     retire_queue().ok()?.send((stage, Box::new(RetireFence(done)))).ok()?;
     wait.recv().ok()?;
     current().then_some(guard)
+}
+
+/// The loader lane a stage's build waits in: the world's, or the models'
+/// (objects, first person, lights).
+fn lane(stage: timeline::setup::Stage) -> &'static Mutex<()> {
+    static WORLD: Mutex<()> = Mutex::new(());
+    static MODELS: Mutex<()> = Mutex::new(());
+    match stage {
+        timeline::setup::Stage::World => &WORLD,
+        _ => &MODELS,
+    }
 }
 
 type IndexedSlot = Mutex<Arc<IndexedCache>>;
@@ -501,6 +515,38 @@ mod tests {
             active: Mutex::new(None),
             loaded: Mutex::new(None),
         })
+    }
+
+    /// A world load starts while an object preload holds its lane; a
+    /// second object load still waits for the first.
+    #[test]
+    fn a_world_load_does_not_wait_behind_a_long_object_preload() {
+        use std::time::Duration;
+        use timeline::setup::Stage;
+        let (held, preloading) = mpsc::channel();
+        let (finish, finished) = mpsc::channel::<()>();
+        let preload = std::thread::spawn(move || {
+            let guard = begin_load(Stage::Objects, || true).expect("the preload is current");
+            held.send(()).unwrap();
+            let _ = finished.recv();
+            drop(guard);
+        });
+        preloading.recv().unwrap();
+        let try_load = |stage| {
+            let (send, receive) = mpsc::channel();
+            std::thread::spawn(move || {
+                let started = begin_load(stage, || true).is_some();
+                let _ = send.send(started);
+            });
+            receive
+        };
+        let world = try_load(Stage::World);
+        assert_eq!(world.recv_timeout(Duration::from_secs(10)), Ok(true), "the world waited behind the preload");
+        let objects = try_load(Stage::Objects);
+        assert!(objects.recv_timeout(Duration::from_millis(200)).is_err(), "two object builds ran at once");
+        finish.send(()).unwrap();
+        preload.join().unwrap();
+        assert_eq!(objects.recv_timeout(Duration::from_secs(10)), Ok(true));
     }
 
     #[test]

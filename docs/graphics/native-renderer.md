@@ -112,8 +112,9 @@ resources until it finishes, and a late loader can publish only to its own
 generation and mailbox.
 
 The native map loader workers serialise their bulk decode and upload work
-through `game::native_map::begin_load`, and wait for queued retirement on the
-worker thread. First-person loading opens the map for a batch of model
+through `game::native_map::begin_load`, one build at a time in each of two
+lanes (world, models; [Cache slots](../runtime/cache-slots.md)), and wait
+for queued retirement on the worker thread. First-person loading opens the map for a batch of model
 requests and releases its map readers and decoded images when the batch
 ends. Material images share their backing allocation across passes, object
 and shader readers share ordinary tag metadata within a model load, and sun
