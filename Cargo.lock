@@ -6725,6 +6725,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-players"
+version = "0.1.0"
+dependencies = [
+ "guest-layout",
+ "sim-world",
+]
+
+[[package]]
 name = "sim-script"
 version = "0.1.0"
 dependencies = [
@@ -6739,14 +6747,6 @@ dependencies = [
  "sim-world",
  "simd",
  "x87",
-]
-
-[[package]]
-name = "sim-players"
-version = "0.1.0"
-dependencies = [
- "guest-layout",
- "sim-world",
 ]
 
 [[package]]

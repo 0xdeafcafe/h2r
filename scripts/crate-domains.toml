@@ -64,7 +64,6 @@ crates = [
 # `platform` and each other (in any domain). No guest memory, no hook, no
 # lifted code. `scene-extract` is not: it is the one render crate that
 # reads guest offsets, through `engine`, to fill a FrameScene.
-guest_free = ["frame-scene", "hud-kit-core", "native-render", "sim-anim", "sim-collision", "sim-core"]
 guest_free = ["frame-scene", "hud-kit-core", "native-render", "sim-anim", "sim-collision", "sim-core", "sim-script"]
 
 [live]
