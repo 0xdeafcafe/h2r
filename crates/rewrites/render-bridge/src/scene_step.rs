@@ -56,6 +56,18 @@ impl GuestRead for Ro<'_> {
     fn read_u32(&self, addr: u32) -> Option<u32> {
         self.0.u32(addr).ok()
     }
+
+    fn with_sim_objects(&self, f: &mut dyn FnMut(&dyn guest_layout::Mem)) -> bool {
+        let table = sim_bridge::world::lock_objects(&sim_bridge::world::OBJECT_TABLE);
+        f(&sim_objects::PoolMem::new(&table));
+        true
+    }
+
+    fn with_sim_players(&self, f: &mut dyn FnMut(&dyn guest_layout::Mem)) -> bool {
+        let state = sim_bridge::world::lock_players(&sim_bridge::world::PLAYERS_STATE);
+        f(&sim_players::PlayersMem::new(&state));
+        true
+    }
 }
 
 pub type PresentPayload = Arc<dyn std::any::Any + Send + Sync>;

@@ -31,7 +31,7 @@
 
 use engine::render::light::{ARRAY_POINTER as LIGHTS, RECORD_SIZE};
 use engine::render_loop::occlusion::guest::{
-    HEADER_BODY, HEADER_SIZE, LIST_COUNT, LIST_HANDLES, OBJECTS, VIS_KIND, VIS_OBJECTS,
+    LIST_COUNT, LIST_HANDLES, VIS_KIND, VIS_OBJECTS,
 };
 
 pub use engine::render::light_gather::LIGHT_VIS;
@@ -41,7 +41,7 @@ use super::frusta::WindowFrusta;
 use super::graph::{MAX_CLUSTERS, PortalGraph};
 use super::guest::{self, ACTIVE_VIS, ViewInputs};
 use super::objects::{self, Clip, view_flags};
-use super::read::{at, ptr_at, u8_at, u16_at, u32_at};
+use super::read::{at, ptr_at, u16_at, u32_at};
 use super::sphere::{self, Rows};
 use super::{Decline, GraphCache, Parity, VisibilitySets, compare};
 use crate::GuestRead;
@@ -58,8 +58,6 @@ pub mod vis {
 /// A light record's owner attachment (`u16`, `0xffff` none) and owner.
 const RECORD_ATTACH: u32 = 0x54;
 const RECORD_OWNER: u32 = 0x4c;
-/// An object body's parent, which step 13 walks.
-const BODY_PARENT: u32 = 0x14;
 const NONE: u32 = u32::MAX;
 
 /// A light view's inputs, as `0x00132b80` left them in its struct.
@@ -141,18 +139,18 @@ fn extra_caster(mem: &dyn GuestRead, light: u32) -> Result<Option<u32>, Decline>
     if owner == NONE {
         return Ok(None);
     }
-    let headers = ptr_at(mem, field(ptr_at(mem, OBJECTS).ok_or(u)?, 0x44)?).ok_or(u)?;
-    let mut handle = owner;
-    for _ in 0..0x1_0000 {
-        let slot = field(headers, (handle & 0xffff) * HEADER_SIZE)?;
-        let body = ptr_at(mem, field(slot, HEADER_BODY)?).ok_or(u)?;
-        let parent = u32_at(mem, field(body, BODY_PARENT)?).ok_or(u)?;
-        if u8_at(mem, field(body, guest::BODY_TYPE)?).ok_or(u)? == 0 || parent == NONE {
-            return Ok(Some(handle));
+    crate::guest::with_objects(mem, |pool| {
+        let mut handle = owner;
+        for _ in 0..0x1_0000 {
+            let view = sim_state::object(pool, sim_state::ObjectId(handle)).map_err(|_| u)?.ok_or(Decline::Layout)?;
+            let parent = view.parent().map_err(|_| u)?.map_or(NONE, |p| p.0);
+            if view.body_kind().map_err(|_| u)? == 0 || parent == NONE {
+                return Ok(Some(handle));
+            }
+            handle = parent;
         }
-        handle = parent;
-    }
-    Err(Decline::Layout)
+        Err(Decline::Layout)
+    })
 }
 
 /// The light view's sets over `graph`, with the image's projection `rows`
@@ -286,6 +284,7 @@ pub fn light_arm(
 mod tests {
     use super::*;
     use crate::testing::Mem;
+    use engine::render_loop::occlusion::guest::OBJECTS;
     use crate::visibility::Mismatch;
     use crate::visibility::graph::tests::two_rooms;
     use crate::visibility::guest::{

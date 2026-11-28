@@ -11,7 +11,7 @@ doc = ["graphics/native-renderer.md", "graphics/framescene.md"]
 
 [features]
 default = ["native-render"]
-native-render = ["dep:native-render", "dep:frame-scene", "dep:scene-extract"]
+native-render = ["dep:native-render", "dep:frame-scene", "dep:scene-extract", "dep:sim-bridge"]
 
 [dependencies]
 hooks = { path = "../../hooking/hooks" }
@@ -34,6 +34,10 @@ sim-effects.workspace = true
 # The fog effect's exact SSE and x87 (src/fog_effect.rs).
 simd.workspace = true
 x87.workspace = true
+# The object and player tables scene extraction reads one way (docs/engine/engine-design.md R-12).
+sim-bridge = { path = "../sim-bridge", optional = true }
+sim-objects.workspace = true
+sim-players.workspace = true
 
 [dev-dependencies]
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }

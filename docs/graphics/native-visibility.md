@@ -204,7 +204,7 @@ A compared call is checked at `0x00172f73`, after the call's return and its `tes
 
 An armed plane diagnostic, unsupported FP state or unread input leaves the guest call in place. See `scene_extract::visibility::window_record` and `render_bridge::native_scene_lists::window`.
 
-In mode 0 an object is listed when its sphere reaches a frustum of the cluster it is referenced from (`0x00165010` over `0x00181800`): it is out when wholly past a side of the box, or when `((nz·cz + ny·cy) + nx·cx) − d > r` for a plane. NaN does not reject. `guest::frustum_inputs` reads the image's values each frame.
+The object spheres, object types and the view's player unit are read through `sim-state` views (`object`, `local_users`, `players`) over the sim's object and player tables (`GuestRead::with_sim_objects`, `with_sim_players`), one way from sim to render; only the camera kind test and the cluster reference lists are still guest words. In mode 0 an object is listed when its sphere reaches a frustum of the cluster it is referenced from (`0x00165010` over `0x00181800`): it is out when wholly past a side of the box, or when `((nz·cz + ny·cy) + nx·cx) − d > r` for a plane. NaN does not reject. `guest::frustum_inputs` reads the image's values each frame.
 
 ### The sphere mode
 
