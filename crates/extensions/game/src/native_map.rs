@@ -256,10 +256,22 @@ pub(crate) fn set_loaded_slot(name: &str, path: Option<String>) {
         path.map(|path| LoadedSlot { name: name.to_owned(), path });
 }
 
+/// The boot's mount, or why there is none: no boot has mounted one, or
+/// the boot that did has returned (its guest ended, perhaps faulted)
+/// while a loader queued behind another map build was still waiting.
+fn mounted(sources: &Weak<MountedVfs>) -> Result<Arc<MountedVfs>, Error> {
+    if let Some(sources) = sources.upgrade() {
+        return Ok(sources);
+    }
+    if Weak::ptr_eq(sources, &Weak::new()) {
+        Err("the map's VFS is not mounted".into())
+    } else {
+        Err("the game ended before the load ran; its VFS is unmounted".into())
+    }
+}
+
 pub fn open(name: &str) -> Result<(NativeMap, ResourceFiles), Error> {
-    let sources = SOURCES.lock().unwrap_or_else(|e| e.into_inner())
-        .upgrade()
-        .ok_or("the map's VFS is not mounted")?;
+    let sources = mounted(&SOURCES.lock().unwrap_or_else(|e| e.into_inner()))?;
     let active = sources.rebind.as_ref().filter(|r| r.has_ever_bound()).and_then(|_| {
         sources.active.lock().unwrap_or_else(|e| e.into_inner()).as_ref()
             .filter(|a| a.name.eq_ignore_ascii_case(name))
@@ -465,6 +477,31 @@ impl assets::ResourceSource for Spliced {
 mod tests {
     use super::*;
     use crate::map_override::tests::{Temp, named_map};
+
+    /// A loader that runs after its boot returned names the ended game,
+    /// not a VFS that was never there (a mod map's world load queued
+    /// behind its object preload outlived a guest fault).
+    #[test]
+    fn an_open_after_the_boot_returned_names_the_ended_game() {
+        let never = mounted(&Weak::new()).err().expect("no boot mounted a VFS");
+        assert_eq!(never.to_string(), "the map's VFS is not mounted");
+        let mount = mount_into(Arc::new(Mutex::new(Vfs::new())));
+        let weak = Arc::downgrade(&mount);
+        assert!(mounted(&weak).is_ok());
+        drop(mount);
+        let ended = mounted(&weak).err().expect("the boot dropped its mount");
+        assert!(ended.to_string().contains("the game ended"), "{ended}");
+    }
+
+    fn mount_into(vfs: Arc<Mutex<Vfs>>) -> Arc<MountedVfs> {
+        Arc::new(MountedVfs {
+            data_root: std::path::PathBuf::new(),
+            vfs,
+            rebind: None,
+            active: Mutex::new(None),
+            loaded: Mutex::new(None),
+        })
+    }
 
     #[test]
     fn a_displaced_indexed_cache_lives_only_as_long_as_already_admitted_draws() {

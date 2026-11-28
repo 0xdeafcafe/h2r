@@ -178,6 +178,12 @@ through it. A slot path the VFS cannot serve fails the open, naming the
 path; only a map that is not the running one (a disc map named by a
 caller) is found by `<cdrom>\maps\<name>.map` or the disc's headers.
 
+The mount lives as long as the boot (`boot::run_configured`). The map
+builds take one loader at a time (`native_map::begin_load`), so a world
+load queued behind a long object preload can run after the guest has
+ended; its open then fails with "the game ended before the load ran",
+not "the map's VFS is not mounted", which means no boot mounted one.
+
 **Reloading an editor play copy.** Queueing the same scenario can hit the
 active slot without opening the source. The copier closes the DVD source
 after publishing its header. Subsequent resource reads use the cache slot's
