@@ -255,24 +255,17 @@ pub struct Islands {
     pub commit: TakeoverArm,
 }
 
-/// A take-over arm: calls since the process started, and its take-over
-/// state since the map load.
+/// An answering arm's calls since the process started.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TakeoverArm {
     /// Calls the Rust kernels answered.
     pub answered: u64,
-    /// Calls the guest answered whose result equalled the prediction.
-    pub matched: u64,
-    pub mismatched: u64,
-    /// Calls the guest answered uncompared: the sum of `fallbacks`.
+    /// Calls the model refused, which ran the lifted entry: the sum of
+    /// `fallbacks`.
     pub declined: u64,
     /// Declines by reason, every reason of the arm's model listed in its
     /// order (docs/runtime/agent-api.md, `havok.islands`).
     pub fallbacks: Vec<IslandFallback>,
-    /// Proven since the map load: the kernels answer all but one call in 64.
-    pub proven: bool,
-    /// A mismatch since the map load returned every call to the guest.
-    pub ended: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -368,50 +361,42 @@ mod tests {
             "declined": 3,
             "fallbacks": [{"reason": "overflow", "count": 1}, {"reason": "float", "count": 2}],
             "integrate": {
-                "answered": 900, "matched": 4100, "mismatched": 0, "declined": 2,
+                "answered": 900, "declined": 2,
                 "fallbacks": [{"reason": "solve", "count": 2}],
-                "proven": true, "ended": false,
             },
             "deactivation": {
-                "answered": 0, "matched": 12, "mismatched": 0, "declined": 1,
+                "answered": 0, "declined": 1,
                 "fallbacks": [{"reason": "object", "count": 1}],
-                "proven": false, "ended": false,
             },
             "phase": {
-                "answered": 0, "matched": 3, "mismatched": 0, "declined": 5,
+                "answered": 0, "declined": 5,
                 "fallbacks": [{"reason": "listener", "count": 5}],
-                "proven": false, "ended": false,
             },
             "polygon": {
-                "answered": 70, "matched": 4096, "mismatched": 0, "declined": 1,
+                "answered": 70, "declined": 1,
                 "fallbacks": [{"reason": "ring", "count": 1}],
-                "proven": true, "ended": false,
             },
             "convex": {
-                "answered": 9, "matched": 4096, "mismatched": 0, "declined": 30,
+                "answered": 9, "declined": 30,
                 "fallbacks": [{"reason": "closest", "count": 30}],
-                "proven": true, "ended": false,
             },
             "query": {
-                "answered": 0, "matched": 30, "mismatched": 0, "declined": 2,
+                "answered": 0, "declined": 2,
                 "fallbacks": [{"reason": "shape", "count": 2}],
-                "proven": false, "ended": false,
             },
             "point": {
-                "answered": 0, "matched": 8, "mismatched": 0, "declined": 4,
+                "answered": 0, "declined": 4,
                 "fallbacks": [{"reason": "commit", "count": 4}],
-                "proven": false, "ended": false,
             },
             "commit": {
-                "answered": 3, "matched": 5, "mismatched": 0, "declined": 1,
+                "answered": 3, "declined": 1,
                 "fallbacks": [{"reason": "walk", "count": 1}],
-                "proven": false, "ended": false,
             },
         });
         let i: Islands = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!((i.solved, i.declined, i.fallbacks.len()), (40, 3, 2));
-        assert_eq!((i.integrate.answered, i.integrate.declined, i.integrate.proven), (900, 2, true));
-        assert_eq!((i.deactivation.matched, i.phase.declined, i.polygon.answered, i.convex.declined, i.query.declined, i.point.declined), (12, 5, 70, 30, 2, 4));
+        assert_eq!((i.integrate.answered, i.integrate.declined), (900, 2));
+        assert_eq!((i.deactivation.declined, i.phase.declined, i.polygon.answered, i.convex.declined, i.query.declined, i.point.declined), (1, 5, 70, 30, 2, 4));
         assert_eq!(serde_json::to_value(&i).unwrap(), wire);
         assert!(serde_json::from_value::<IslandsParams>(json!({})).is_ok());
         assert!(serde_json::from_value::<IslandsParams>(json!({"reset": true})).is_err());

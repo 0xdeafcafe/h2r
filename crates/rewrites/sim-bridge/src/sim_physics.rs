@@ -100,9 +100,6 @@ fn replay(port: &'static engine::sim_physics::Port, cpu: &mut CpuAbi, ctx: &mut 
     original(cpu, ctx, pc, resume)
 }
 
-/// The map load each arm's take-over proof restarts at.
-const MAP_LOAD: &points::Point = &points::CACHE_TAGS_LOAD;
-
 fn install_physics(b: &mut Builder) {
     use engine::sim_physics::parity::{self, Step};
     for port in engine::sim_physics::PHYSICS_PORTS {
@@ -113,10 +110,10 @@ fn install_physics(b: &mut Builder) {
             .after_feature("sim-observer-resources")
             .after_feature("sim-submix");
     }
-    // The island integrate: `parity::integrate_enter` decides who answers,
-    // as for the broadphase batch below. When the guest answers, the
-    // entry's frame replay runs it, its resume sites with it. Ordered as
-    // the other world entries.
+    // The island integrate: `parity::integrate_enter` answers every call
+    // its model takes. A declined call, counted by reason, runs the
+    // entry's frame replay with its resume sites. Ordered as the other
+    // world entries.
     let integrate = &engine::sim_physics::ISLAND_INTEGRATE;
     b.raw()
         .implement(integrate.point, PHYSICS, move |cpu, ctx, pc| {
@@ -125,17 +122,8 @@ fn install_physics(b: &mut Builder) {
                     let mut mem = ctx.memory();
                     parity::integrate_enter(cpu, &mut mem)
                 };
-                match step {
-                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
-                    Step::Audit(prediction) => {
-                        let observed = ctx.observe_guest_return(cpu, engine::sim_physics::island_integrate::ARGS, move |c, ctx| {
-                            parity::integrate_compare(&prediction, c, &ctx.runtime().memory());
-                        });
-                        if !observed {
-                            parity::integrate_uncompared();
-                        }
-                    }
-                    Step::Guest => {}
+                if let Step::Answered { target } = step {
+                    return Ok(TransferAbi::ret(target));
                 }
             }
             replay(integrate, cpu, ctx, pc)
@@ -144,11 +132,10 @@ fn install_physics(b: &mut Builder) {
         .context_only()
         .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
-    // The integrate phase and the deactivation test: their arms decide who
-    // answers, as the integrate's does. Neither has a frame replay, so the
-    // guest's answer is the lifted original, which reaches the integrate
-    // and the test through the dispatcher. Ordered as the other world
-    // entries.
+    // The integrate phase and the deactivation test answer as the
+    // integrate does. Neither has a frame replay: a declined call runs the
+    // lifted original, which reaches the integrate and the test through
+    // the dispatcher. Ordered as the other world entries.
     let phase = &points::HAVOK_INTEGRATE_PHASE;
     b.raw()
         .implement(phase, PHYSICS, move |cpu, ctx, pc| {
@@ -157,17 +144,8 @@ fn install_physics(b: &mut Builder) {
                     let mut mem = ctx.memory();
                     parity::phase_enter(cpu, &mut mem)
                 };
-                match step {
-                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
-                    Step::Audit(prediction) => {
-                        let observed = ctx.observe_guest_return(cpu, engine::sim_physics::integrate_phase::ARGS, move |c, ctx| {
-                            parity::phase_compare(&prediction, c, &ctx.runtime().memory());
-                        });
-                        if !observed {
-                            parity::phase_uncompared();
-                        }
-                    }
-                    Step::Guest => {}
+                if let Step::Answered { target } = step {
+                    return Ok(TransferAbi::ret(target));
                 }
             }
             original(cpu, ctx, pc, false)
@@ -175,7 +153,7 @@ fn install_physics(b: &mut Builder) {
         .context_only()
         .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
-    // The structure polygon builder, as the phase: the guest's answer is
+    // The structure polygon builder, as the phase: a declined call runs
     // the lifted original. Ordered as the other world entries.
     let polygon = &points::HAVOK_STRUCTURE_POLYGON;
     b.raw()
@@ -185,17 +163,8 @@ fn install_physics(b: &mut Builder) {
                     let mut mem = ctx.memory();
                     parity::polygon_enter(cpu, &mut mem)
                 };
-                match step {
-                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
-                    Step::Audit(prediction) => {
-                        let observed = ctx.observe_guest_return(cpu, engine::sim_physics::structure_polygon::ARGS, move |c, ctx| {
-                            parity::polygon_compare(&prediction, c, &ctx.runtime().memory());
-                        });
-                        if !observed {
-                            parity::polygon_uncompared();
-                        }
-                    }
-                    Step::Guest => {}
+                if let Step::Answered { target } = step {
+                    return Ok(TransferAbi::ret(target));
                 }
             }
             original(cpu, ctx, pc, false)
@@ -203,8 +172,8 @@ fn install_physics(b: &mut Builder) {
         .context_only()
         .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
-    // The convex agent's process call, as the polygon builder: the guest's
-    // answer is the lifted original. Ordered as the other world entries.
+    // The convex agent's process call, as the polygon builder: a declined
+    // call runs the lifted original. Ordered as the other world entries.
     let convex = &points::HAVOK_CONVEX_PROCESS;
     b.raw()
         .implement(convex, PHYSICS, move |cpu, ctx, pc| {
@@ -213,17 +182,8 @@ fn install_physics(b: &mut Builder) {
                     let mut mem = ctx.memory();
                     parity::convex_enter(cpu, &mut mem)
                 };
-                match step {
-                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
-                    Step::Audit(prediction) => {
-                        let observed = ctx.observe_guest_return(cpu, engine::sim_physics::convex_agent::ARGS, move |c, ctx| {
-                            parity::convex_compare(&prediction, c, &ctx.runtime().memory());
-                        });
-                        if !observed {
-                            parity::convex_uncompared();
-                        }
-                    }
-                    Step::Guest => {}
+                if let Step::Answered { target } = step {
+                    return Ok(TransferAbi::ret(target));
                 }
             }
             original(cpu, ctx, pc, false)
@@ -240,17 +200,8 @@ fn install_physics(b: &mut Builder) {
                     let mut mem = ctx.memory();
                     parity::query_enter(cpu, &mut mem)
                 };
-                match step {
-                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
-                    Step::Audit(prediction) => {
-                        let observed = ctx.observe_guest_return(cpu, engine::sim_physics::convex_query::ARGS, move |c, ctx| {
-                            parity::query_compare(&prediction, c, &ctx.runtime().memory());
-                        });
-                        if !observed {
-                            parity::query_uncompared();
-                        }
-                    }
-                    Step::Guest => {}
+                if let Step::Answered { target } = step {
+                    return Ok(TransferAbi::ret(target));
                 }
             }
             original(cpu, ctx, pc, false)
@@ -268,17 +219,8 @@ fn install_physics(b: &mut Builder) {
                     let mut mem = ctx.memory();
                     parity::point_enter(cpu, &mut mem)
                 };
-                match step {
-                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
-                    Step::Audit(prediction) => {
-                        let observed = ctx.observe_guest_return(cpu, 0, move |c, ctx| {
-                            parity::point_compare(&prediction, c, &ctx.runtime().memory());
-                        });
-                        if !observed {
-                            parity::point_uncompared();
-                        }
-                    }
-                    Step::Guest => {}
+                if let Step::Answered { target } = step {
+                    return Ok(TransferAbi::ret(target));
                 }
             }
             original(cpu, ctx, pc, false)
@@ -312,21 +254,6 @@ fn install_physics(b: &mut Builder) {
         .context_only()
         .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
-    // The world listener walk: an audited commit's prediction is compared
-    // at its entry.
-    let walk = &points::HAVOK_CONTACT_WALK;
-    b.raw()
-        .implement(walk, PHYSICS, move |cpu, ctx, pc| {
-            if pc == walk.base {
-                let mem = ctx.memory();
-                parity::commit_walk(cpu, &mem);
-                drop(mem);
-            }
-            original(cpu, ctx, pc, false)
-        })
-        .context_only()
-        .after_feature("sim-observer-resources")
-        .after_feature("sim-submix");
     let test = &points::HAVOK_DEACTIVATION_TEST;
     b.raw()
         .implement(test, PHYSICS, move |cpu, ctx, pc| {
@@ -335,17 +262,8 @@ fn install_physics(b: &mut Builder) {
                     let mut mem = ctx.memory();
                     parity::deactivation_enter(cpu, &mut mem)
                 };
-                match step {
-                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
-                    Step::Audit(prediction) => {
-                        let observed = ctx.observe_guest_return(cpu, engine::sim_physics::deactivation::ARGS, move |c, ctx| {
-                            parity::deactivation_compare(&prediction, c, &ctx.runtime().memory());
-                        });
-                        if !observed {
-                            parity::deactivation_uncompared();
-                        }
-                    }
-                    Step::Guest => {}
+                if let Step::Answered { target } = step {
+                    return Ok(TransferAbi::ret(target));
                 }
             }
             original(cpu, ctx, pc, false)
@@ -353,10 +271,8 @@ fn install_physics(b: &mut Builder) {
         .context_only()
         .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
-    // The broadphase batch update: `parity::broadphase_enter` decides who
-    // answers. Until the arm is proven since the map load, and at every
-    // audit slot after, the guest answers and the prediction is compared
-    // at its return; a proven call is answered from the prediction.
+    // The broadphase batch update: `parity::broadphase_enter` answers every
+    // call it captures; a declined call, counted, runs the lifted original.
     let batch = &points::HAVOK_BROADPHASE_BATCH;
     b.raw()
         .implement(batch, PHYSICS, move |cpu, ctx, pc| {
@@ -365,17 +281,8 @@ fn install_physics(b: &mut Builder) {
                     let mut mem = ctx.memory();
                     parity::broadphase_enter(cpu, &mut mem)
                 };
-                match step {
-                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
-                    Step::Audit(prediction) => {
-                        let observed = ctx.observe_guest_return(cpu, parity::BROADPHASE_ARGS, move |c, ctx| {
-                            parity::broadphase_compare(&prediction, c, &ctx.runtime().memory());
-                        });
-                        if !observed {
-                            parity::uncompared(&parity::BROADPHASE);
-                        }
-                    }
-                    Step::Guest => {}
+                if let Step::Answered { target } = step {
+                    return Ok(TransferAbi::ret(target));
                 }
             }
             original(cpu, ctx, pc, false)
@@ -430,9 +337,6 @@ fn install_physics(b: &mut Builder) {
             }
         })
         .optional();
-    // Every arm proves itself again at each map load, so lockstep peers
-    // and a film replay take over on the same calls.
-    b.raw().observe_before(MAP_LOAD, "physics-takeover-restart", |_| parity::map_loaded());
 }
 
 #[cfg(test)]
@@ -481,7 +385,7 @@ mod tests {
         }
         // The integrate phase and the deactivation test are implementations
         // with no resume sites.
-        for point in [&points::HAVOK_INTEGRATE_PHASE, &points::HAVOK_DEACTIVATION_TEST, &points::HAVOK_STRUCTURE_POLYGON, &points::HAVOK_CONVEX_PROCESS, &points::HAVOK_CLOSEST_QUERY, &points::HAVOK_ADD_POINT, &points::HAVOK_CONTACT_WALK] {
+        for point in [&points::HAVOK_INTEGRATE_PHASE, &points::HAVOK_DEACTIVATION_TEST, &points::HAVOK_STRUCTURE_POLYGON, &points::HAVOK_CONVEX_PROCESS, &points::HAVOK_CLOSEST_QUERY, &points::HAVOK_ADD_POINT] {
             let hook = plan.chains[&point.base].implement.as_ref().unwrap();
             assert_eq!(hook.label, PHYSICS);
             assert!(hook.continuation_sites().0.is_empty(), "{:?}", point.name);
@@ -505,13 +409,13 @@ mod tests {
             assert_eq!((chain.observe_before.len(), chain.observe_after.len()), (1, 1), "{:?}", point.name);
             assert!(chain.observe_before[0].optional && chain.observe_after[0].optional);
         }
-        // The proof restarts at the map load.
-        let chain = &plan.chains[&MAP_LOAD.base];
-        assert!(chain.implement.is_none());
-        assert_eq!(chain.observe_before.len(), 1);
+        // No arm audits the guest: the contact walk and the map load are
+        // not hooked.
+        assert!(!plan.chains.contains_key(&points::HAVOK_CONTACT_WALK.base));
+        assert!(!plan.chains.contains_key(&points::CACHE_TAGS_LOAD.base));
         assert_eq!(
             plan.chains.len(),
-            PHYSICS_PORTS.len() + 14,
+            PHYSICS_PORTS.len() + 12,
             "unexpected extra chains"
         );
     }

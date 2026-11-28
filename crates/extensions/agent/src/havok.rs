@@ -150,21 +150,12 @@ fn islands_method(v: Value) -> Result<Value, RpcError> {
     Ok(serde_json::to_value(islands).expect("islands serialise"))
 }
 
-/// One take-over arm's counts, with its model's declines by reason.
+/// One answering arm's counts, with its model's declines by reason.
 fn takeover_arm(arm: &engine::sim_physics::parity::Arm, by_reason: &[(&str, u64)]) -> TakeoverArm {
     use engine::sim_physics::parity;
-    let (_, matched, mismatched, declined) =
-        parity::status().into_iter().find(|s| s.0 == arm.name).expect("the arm is in the table");
-    let takeover = parity::takeover().into_iter().find(|t| t.name == arm.name).expect("the arm takes over");
-    TakeoverArm {
-        answered: takeover.answered,
-        matched,
-        mismatched,
-        declined,
-        fallbacks: fallbacks(by_reason),
-        proven: takeover.proven,
-        ended: takeover.ended,
-    }
+    let (.., declined) = parity::status().into_iter().find(|s| s.0 == arm.name).expect("the arm is in the table");
+    let takeover = parity::takeover().into_iter().find(|t| t.name == arm.name).expect("the arm answers");
+    TakeoverArm { answered: takeover.answered, declined, fallbacks: fallbacks(by_reason) }
 }
 
 /// Counters by reason, on the wire.
