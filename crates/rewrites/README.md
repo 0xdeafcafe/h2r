@@ -9,6 +9,7 @@ The rewrites domain holds Rust that replaces a guest subsystem: ported engine fu
 | [sim-anim](sim-anim/README.md) | Native animation sampling. |
 | [sim-collision](sim-collision/README.md) | The native collision world and its queries. |
 | [sim-objects](sim-objects/README.md) | The object update: typed pool views and object kernels. |
+| [sim-script](sim-script/README.md) | HaloScript threads on the world: the scripts section and the per-tick update. |
 | [sim-sound](sim-sound/README.md) | Sound scheduling, listener, environment and mixer parameters. |
 | [sim-world](sim-world/README.md) | The World: salted slot pools, canonical save and restore, hash and RNG. |
 | [sim-state](sim-state/README.md) | Read-only typed views of the simulation for theater, stats, Live and the agent API. |

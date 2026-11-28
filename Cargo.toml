@@ -47,6 +47,7 @@ sim-anim = { path = "crates/rewrites/sim-anim" }
 sim-collision = { path = "crates/rewrites/sim-collision" }
 sim-havok = { path = "crates/rewrites/sim-havok" }
 sim-objects = { path = "crates/rewrites/sim-objects" }
+sim-script = { path = "crates/rewrites/sim-script" }
 sim-sound = { path = "crates/rewrites/sim-sound" }
 sim-state = { path = "crates/rewrites/sim-state" }
 sim-world = { path = "crates/rewrites/sim-world" }

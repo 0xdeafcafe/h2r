@@ -81,6 +81,7 @@ writes no section and a save that carries one is refused as `UnknownKind`.
 | objects | `sim_objects::ObjectTable` (`crates/rewrites/sim-objects/src/table.rs`) | the objects array (capacity from the guest array, 2048 in retail), each slot a header and its body bytes | `sim_bridge::world::OBJECT_TABLE`; the `World` holds it as `world::ObjectStore` |
 | ext | `sim_world::ext::State` (`crates/rewrites/sim-world/src/ext`) | the rules VM and Forge records, and one copy of both per checkpoint slot | `sim_world::ext::global`; the `World` holds it as `ext::store::ExtStore`, attached by `sim_bridge::world` |
 | lights | `sim_objects::LightTable` (`crates/rewrites/sim-objects/src/lights.rs`) | the lights array (`[4e030c]`, `0x110`-byte elements), each slot the element bytes | `sim_bridge::world::LIGHT_TABLE`, imported with the objects; the `World` holds it as `world::LightStore` |
+| scripts | `sim_script::ScriptTable`, holding `hs::vm::VmState` (`crates/rewrites/sim-script/src/table.rs`) | the thread pool (`0x140` slots, salts and allocation cursor kept), each thread's frames, the global cells and the host strings | `sim_script::ScriptRuntime` updates it each tick; the `World` holds it as `sim_script::ScriptStore` |
 | test | `Probe` | one | the unit tests |
 
 ### The object table
