@@ -65,7 +65,7 @@ fn read(
     for level in manifest.levels {
         let key = LightmapKey {
             page: level.page,
-            palette: level.palette,
+            palette: Some(level.palette),
         };
         ensure!(
             levels.insert((key, level.mip), level).is_none(),
@@ -84,7 +84,7 @@ fn read(
             let record = levels
                 .remove(&(key, mip))
                 .with_context(|| format!("missing {key:?} mip {mip}"))?;
-            let stem = relight::page_stem(key.page, key.palette, mip);
+            let stem = relight::page_stem(key.page, key.palette.unwrap_or(u8::MAX), mip);
             ensure!(
                 (record.width, record.height) == (w, h),
                 "{stem}: dimensions differ"
@@ -183,7 +183,7 @@ mod tests {
             let mut levels = Vec::new();
             let mut pages = Pages::new();
             for palette in [2, 3] {
-                let key = LightmapKey { page: 4, palette };
+                let key = LightmapKey { page: 4, palette: Some(palette) };
                 let mut chain = Vec::new();
                 for (mip, width) in [(0, 2), (1, 1)] {
                     let alpha = if palette == 2 { 255 } else { 37 };
@@ -240,7 +240,7 @@ mod tests {
         for (&key, retail) in &bake.retail {
             let (a, b) = (&on[&key], &off[&key]);
             assert_eq!((a.rgba[0], b.rgba[0], retail.rgba[0]), (79, 19, 80));
-            assert_eq!(b.mips[0], [19, 21, key.palette, retail.rgba[3]]);
+            assert_eq!(b.mips[0], [19, 21, key.palette.unwrap(), retail.rgba[3]]);
             assert_eq!(&a.rgba[1..4], &retail.rgba[1..4]);
         }
     }

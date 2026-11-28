@@ -1245,7 +1245,7 @@ mod tests {
             parts: vec![PartInput { material: 0, transparent: false, triangles: vec![[0, 1, 2], [1, 3, 2]] }],
             ..Default::default()
         };
-        let key = LightmapKey { page: 0, palette: 0 };
+        let key = LightmapKey { page: 0, palette: Some(0) };
         let mut b = WorldBuilder::new();
         b.add_section(Owner::Cluster(0), &quad(20.0), &Placement::IDENTITY, Some(key));
         b.add_section(Owner::Cluster(1), &quad(20.0), &Placement::IDENTITY, Some(key));

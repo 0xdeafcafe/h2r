@@ -4249,7 +4249,7 @@ mod tests {
             parts: vec![PartInput { material: 0, transparent: false, triangles: vec![[0, 1, 2], [1, 3, 2]] }],
             ..Default::default()
         };
-        let key = LightmapKey { page: 0, palette: 0 };
+        let key = LightmapKey { page: 0, palette: Some(0) };
         let mut b = WorldBuilder::new();
         b.add_section(Owner::Cluster(0), &wall(10.0, 0.0), &Placement::IDENTITY, Some(key));
         // Behind the camera, and far to its side: both outside the lens.
@@ -4375,7 +4375,7 @@ mod tests {
             parts: vec![PartInput { material, transparent: false, triangles: vec![[0, 1, 2], [1, 3, 2]] }],
             ..Default::default()
         };
-        let key = LightmapKey { page: 0, palette: 0 };
+        let key = LightmapKey { page: 0, palette: Some(0) };
         let mut b = WorldBuilder::new();
         // The wall fills the lens; both boxes lie behind it.
         b.add_section(Owner::Cluster(0), &quad(10.0, 8.0, 0), &Placement::IDENTITY, Some(key));
