@@ -231,7 +231,8 @@ or to `unknown`, and `callers` names their functions.
 
 The frame's own
 calls have rows too: `views` (`render_views` `0x0002b5d0`),
-`outside_view` (`0x002232a0`), `frame_loop` (`0x0012b6f0`) and `present`
+`outside_view` (`0x002232a0`), `frame_loop` (`0x0012b6f0`), each `kept`
+(their only D3D is a refused view setup's, [retire-d3d-display.md](retire-d3d-display.md#the-view-setup-and-view-end)), and `present`
 (`0x00013f10`, `kept`), so the frame loops outside `0x00223240` file
 their work under a name. `outside_render` is
 every entry call made with no render frame or producer open (boot, the
