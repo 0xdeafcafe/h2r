@@ -31,6 +31,8 @@
 //!   work by slot (docs/graphics/framescene.md, slice 6);
 //! * `clip_space`: where a vertex program puts its clip position, which
 //!   the carried draws' camera classification reads;
+//! * [`gap`]: the guest draws no native stage takes, drawn by nothing
+//!   and counted by caller;
 //! * [`screen_rect`]: where a small draw's vertices land in the guest
 //!   window, for the UI fit and `render.frame_layout`.
 
@@ -42,6 +44,7 @@ pub mod descriptor;
 pub mod device;
 pub mod dirty;
 pub mod events;
+pub mod gap;
 #[cfg(feature = "gpu")]
 pub mod gfx_backend;
 pub mod glyph;

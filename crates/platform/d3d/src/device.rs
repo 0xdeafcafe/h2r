@@ -74,17 +74,6 @@ pub fn backend_draws() -> u64 {
 }
 
 impl<B: Backend> Device<B> {
-    /// A guest draw reached the backend: [`BACKEND_DRAWS`], the device's
-    /// own count, and the always-on frame counter `d3d_residual_draws`
-    /// (one relaxed load when frame stats are off; a thread-local add
-    /// when they are on).
-    #[inline]
-    fn note_backend_draw(&mut self) {
-        BACKEND_DRAWS.fetch_add(1, AtomicOrdering::Relaxed);
-        self.stats.backend_draws += 1;
-        timeline::phase::count(timeline::phase::Counter::D3dResidualDraws, 1);
-    }
-
     /// The device wrote colour surface `surface` (a draw, clear or pass):
     /// present cameras drop what they kept of it, and its frame-buffer
     /// copies are stale (its colour-write generation moves on).
@@ -3173,34 +3162,17 @@ impl<B: Backend> Device<B> {
         self.swallow_replay(s.packets)
     }
 
+    /// A refused swallow's packets: named gaps, drawn by nothing
+    /// (crate::gap). Their cached textures stay the device's.
     fn swallow_replay(&mut self, packets: Vec<SwallowPacket<B>>) -> Result<(), D3dError> {
+        let ret = crate::gap::caller();
         for p in packets {
-            let textures = std::array::from_fn(|i| {
-                p.snapshots[i]
-                    .as_ref()
-                    .or_else(|| p.keys[i].and_then(|k| p.cached.get(&k)).map(|c| &c.host))
-            });
             let entry = p.draw.entry;
-            let writes_color = p.draw.state.render.color_write.xbox_value() != 0;
-            let (outcome, spare) = self.backend.draw_owned(p.color, p.depth, p.draw, textures);
-            self.note_backend_draw();
-            self.recycle_streams(spare);
+            crate::gap::dropped_as(crate::gap::Gap::PostSwallow, entry, ret);
+            self.recycle_streams(p.draw.streams);
             self.stats.draws += 1;
             self.stats.inline_draws += u64::from(entry == "inline Begin/End");
             self.stats.swallow_draws_replayed += 1;
-            match outcome.map_err(D3dError::Backend)? {
-                DrawOutcome::Drawn => {
-                    if writes_color {
-                        self.color_surface_written(p.color);
-                    }
-                }
-                DrawOutcome::Skipped(reason) => {
-                    self.events.push(Event::DrawSkipped { entry, reason })
-                }
-                DrawOutcome::Unsupported(detail) => {
-                    return Err(D3dError::Unimplemented { entry, detail });
-                }
-            }
             for (key, texture) in p.cached {
                 self.cache.entry(key).or_insert(texture);
             }
@@ -6823,55 +6795,14 @@ impl<B: Backend> Device<B> {
             *streams = draw.streams;
             return Ok(());
         }
-        // Only adapt geometry for a submission that will use the D3D draw.
-        // A committed external replacement recycles the original streams.
-        let original = if let Some(esp) = parts.indexed_esp
-            && retained.is_none()
-            && compatible_geometry_target
-            && depth.is_some()
-            && sampled
-                .iter()
-                .zip(&textures)
-                .all(|(&read, texture)| !read || texture.is_some())
-            && let Some(hook) = &mut self.indexed_geometry
-            && let Some(geometry) = hook(mem, esp, &draw)
-        {
-            draw.layout = geometry.layout;
-            Some(std::mem::replace(&mut draw.streams, vec![geometry.stream]))
-        } else {
-            None
-        };
-        // An adapted draw (`original`) is no longer the admitted packet. The
-        // sink checks the rest once, for a retaining replay only.
-        let (outcome, spare) = match retained.filter(|_| original.is_none()) {
-            Some(admission) => self.backend.draw_admitted(color, depth, draw, textures, admission),
-            None => self.backend.draw_owned(color, depth, draw, textures),
-        };
-        self.note_backend_draw();
+        // No native stage took the draw: a named gap, drawn by nothing
+        // (crate::gap). It was resolved for the state the guest reads back.
+        let _ = (retained, compatible_geometry_target, sampled, writes_color, writes_depth, color, depth);
+        crate::gap::dropped(entry);
         if let Some(p) = prepared {
             timeline::native::world_packet(p.material, Some(fallback_reason));
         }
-        if let Some(original) = original {
-            // A threaded backend may return buffers from an earlier draw.
-            for stream in spare {
-                self.recycle_stream(stream.data);
-            }
-            *streams = original;
-        } else {
-            *streams = spare;
-        }
-        match outcome.map_err(D3dError::Backend)? {
-            DrawOutcome::Drawn => {
-                if writes_color {
-                    self.color_surface_written(color);
-                }
-                self.mark_written(writes_depth);
-            }
-            DrawOutcome::Skipped(reason) => self.events.push(Event::DrawSkipped { entry, reason }),
-            DrawOutcome::Unsupported(detail) => {
-                return Err(D3dError::Unimplemented { entry, detail });
-            }
-        }
+        *streams = draw.streams;
         Ok(())
     }
 
