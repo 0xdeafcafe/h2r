@@ -202,13 +202,10 @@ thread_local! {
     static LOOP: RefCell<Loop> = const { RefCell::new(Loop { definition: 0, shadow: false, done: Vec::new() }) };
 }
 
-/// Whose a widget's draw is: a proven widget is checked again on a walk
-/// the guest loops as a check.
-fn arm(widget: u32) -> Arm {
-    match proof(widget, Proof::arm) {
-        Arm::Own if LOOP.with(|l| l.borrow().shadow) => Arm::Shadow,
-        other => other,
-    }
+/// Whose a widget's draw is: Rust's. No guest draw runs to prove it, so
+/// there is no shadow or recheck of a widget.
+fn arm(_widget: u32) -> Arm {
+    Arm::Own
 }
 
 static COUNTS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
@@ -355,27 +352,8 @@ pub fn plan_loop() -> LoopPlan {
     if foreign {
         return refused("loop_feature");
     }
-    let definition = LOOP.with(|l| l.borrow().definition);
-    // The definitions' recheck checks every walk of it again.
-    let arm = match walk_proof(definition, Proof::arm) {
-        Arm::Own if super::definitions::rechecking() => Arm::Shadow,
-        arm => arm,
-    };
-    match arm {
-        Arm::Guest => return refused("loop_differed"),
-        Arm::Shadow => {
-            LOOP.with(|l| l.borrow_mut().shadow = true);
-            return LoopPlan::Guest;
-        }
-        Arm::Own => {}
-    }
     if shown.iter().any(|s| s.0 == Kind::Screen) {
         return refused("loop_screen");
-    }
-    // A text widget is Rust's at its draw ([`plan_text`]): only the
-    // bitmaps' proofs hold the loop.
-    if !shown.iter().all(|s| s.0 == Kind::Text || proof(s.1, |p| p.proven())) {
-        return refused("loop_unproven");
     }
     LoopPlan::Own(shown)
 }
@@ -1340,26 +1318,12 @@ mod tests {
     }
 
     #[test]
-    fn the_loop_is_rusts_once_the_selection_and_every_shown_widget_are_proven() {
+    fn the_loop_is_rusts_from_the_first_walk() {
         let (definition, widget) = (0xe300_0101, 0x0031_0000);
         let mut blocks = Blocks::default();
         blocks.bitmaps = (widget, vec![0; walk::BITMAP_SIZE]);
         let inputs = [1.0, 0.0, 0.0, 0.5];
         let shown = [Shown { kind: Kind::Bitmap, index: 0, inputs }];
-        let call = (Kind::Bitmap, widget, bits(&inputs));
-        // The guest loops while its calls are checked against Rust's.
-        for n in 0..PROOF_DRAWS {
-            walking(definition, &blocks, &shown);
-            assert_eq!(plan_loop(), LoopPlan::Guest, "walk {n}");
-            guest_call(call);
-            leave();
-        }
-        // The selection is proven, the widget is not: the guest loops.
-        walking(definition, &blocks, &shown);
-        assert_eq!(plan_loop(), LoopPlan::Guest);
-        guest_call(call);
-        leave();
-        proof(widget, |p| p.clean = PROOF_DRAWS);
         walking(definition, &blocks, &shown);
         assert_eq!(plan_loop(), LoopPlan::Own(vec![(Kind::Bitmap, widget, inputs)]));
         looped();
@@ -1367,44 +1331,17 @@ mod tests {
     }
 
     #[test]
-    fn a_walk_whose_calls_differ_keeps_the_loop_on_the_guest() {
-        let (definition, widget) = (0xe300_0102, 0x0032_0000);
-        walk_proof(definition, |p| p.clean = PROOF_DRAWS);
-        proof(widget, |p| p.clean = PROOF_DRAWS);
-        let mut blocks = Blocks::default();
-        blocks.texts = (widget, vec![0; walk::TEXT_SIZE]);
-        let shown = [Shown { kind: Kind::Text, index: 0, inputs: [1.0; 4] }];
-        walking(definition, &blocks, &shown);
-        assert!(matches!(plan_loop(), LoopPlan::Own(_)));
-        // Rust gave the loop back and the guest drew nothing.
-        gave_back();
-        leave();
-        walking(definition, &blocks, &shown);
-        assert_eq!(plan_loop(), LoopPlan::Guest);
-        leave();
-    }
-
-    #[test]
-    fn one_proven_walk_in_64_is_the_guests_with_each_widget_checked_again() {
-        let (definition, widget) = (0xe300_0103, 0x0033_0000);
-        walk_proof(definition, |p| *p = Proof { clean: PROOF_DRAWS, failed: false, seen: RECHECK - 2 });
-        proof(widget, |p| p.clean = PROOF_DRAWS);
-        let blocks = Blocks::default();
-        walking(definition, &blocks, &[]);
-        assert_eq!(plan_loop(), LoopPlan::Own(Vec::new()));
-        assert_eq!(arm(widget), Arm::Own);
-        walking(definition, &blocks, &[]);
-        assert_eq!(plan_loop(), LoopPlan::Guest);
-        assert_eq!(arm(widget), Arm::Shadow);
-        leave();
-        assert_eq!(arm(widget), Arm::Own);
+    fn a_widgets_draw_is_always_rusts() {
+        for widget in [0x0033_0000, 0x0033_0064] {
+            for _ in 0..2 * RECHECK {
+                assert_eq!(arm(widget), Arm::Own);
+            }
+        }
     }
 
     #[test]
     fn a_walk_showing_a_screen_effect_or_a_features_widget_is_the_guests_loop() {
         let (definition, widget) = (0xe300_0104, 0x0034_0000);
-        walk_proof(definition, |p| p.clean = PROOF_DRAWS);
-        proof(widget, |p| p.clean = PROOF_DRAWS);
         let mut blocks = Blocks::default();
         blocks.screens = (widget, vec![0; walk::SCREEN_SIZE]);
         walking(definition, &blocks, &[Shown { kind: Kind::Screen, index: 0, inputs: [1.0; 4] }]);

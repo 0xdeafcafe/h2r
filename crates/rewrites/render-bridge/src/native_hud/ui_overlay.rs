@@ -294,6 +294,20 @@ pub fn at_list(mem: &dyn GuestMemory, ebp: u32, edi: u32) -> Option<UiList> {
     })
 }
 
+/// A sorted list that [`at_list`] does not read: empty, it has nothing to
+/// draw; any other would be drawn by the game's own widget draws, which
+/// have no device behind them, so it panics by name.
+pub fn unlisted(mem: &dyn GuestMemory, ebp: u32) {
+    match ebp.checked_sub(COUNT_FROM_EBP).and_then(|at| mem.u32(at).ok()) {
+        Some(0) => {}
+        Some(count) => unimplemented!(
+            "menus: the list at {ebp:#x} of {count} entries does not read (at most {} are listed)",
+            walk::MAX_LISTED
+        ),
+        None => unimplemented!("menus: the list at {ebp:#x} has no readable count"),
+    }
+}
+
 /// The screen quads' viewport, when it reads.
 pub fn screen_rect(mem: &dyn GuestMemory) -> Option<[i16; 4]> {
     let word = |n: u32| mem.u16(SCREEN_RECT + 2 * n).ok().map(|w| w as i16);
@@ -659,6 +673,21 @@ mod tests {
     /// The sorted list reads as the guest left it: the count, the window,
     /// each entry's widget, depth and bias. An empty or overfull list
     /// does not.
+    #[test]
+    fn a_list_the_overlay_cannot_read_is_empty_or_named() {
+        let mut m = FakeGuest::new();
+        m.put_u32(0x8000 - COUNT_FROM_EBP, 0);
+        unlisted(&m, 0x8000);
+    }
+
+    #[test]
+    #[should_panic(expected = "does not read")]
+    fn a_list_too_long_to_list_panics_by_name() {
+        let mut m = FakeGuest::new();
+        m.put_u32(0x8000 - COUNT_FROM_EBP, walk::MAX_LISTED as u32 + 1);
+        unlisted(&m, 0x8000);
+    }
+
     #[test]
     fn the_sorted_list_reads_from_the_frame() {
         let mut mem = FakeGuest::new();

@@ -7,14 +7,12 @@
 //! words with the draw's animated constants through the HUD's function
 //! inputs (`render_bridge::native_hud::hud_inputs`) at the render clock,
 //! its blend and write state, its stages, and its corners from the quad's
-//! own vertices. While a shader is unproven the guest sets it up and the
-//! capture (`hud_overlay::draw_tag_quad`) takes the draw; [`check`] then
-//! compares the prediction with what the capture took, item field by item
-//! field. [`PROOF_DRAWS`] matching quads prove the shader; one that does not
-//! match keeps it on the guest's setup for the map. A proven shader's
-//! quads are drawn by [`draw`] at `HUD_QUAD_SETUP`, before the guest's
-//! setup, which is left out with the guest's draw; one quad in [`RECHECK`]
-//! is still set up by the guest and checked again.
+//! own vertices. Every shader's quads are drawn this way, the HUD's and
+//! the menus' (a menu shader bitmap's quad is predicted as a HUD one is),
+//! on the UI's 640 by 480 guest frame, with no guest shader setup and no
+//! proof against a guest draw. A quad that does not predict, or a pass
+//! that is not placed, panics by name ([`refuse`]). The guest's setup
+//! and draw are left out at `HUD_QUAD_SETUP`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -29,10 +27,9 @@ use render_bridge::native_hud::{HudTagQuad, HudVertices, WalkText, WalkWidget, h
 use tags::material::ShaderLibrary;
 use timeline::native::Ui;
 
-/// Matching quads that prove a shader.
-pub const PROOF_DRAWS: u32 = 8;
-/// A proven shader's quads the guest still sets up: one in this many.
-pub const RECHECK: u32 = 32;
+/// The UI's guest frame: every guest UI coordinate is 640 x 480
+/// (`render_aspect`), and its quads are clipped to the whole of it.
+const FRAME: [u32; 2] = [640, 480];
 /// The render clock `0x0001b230` divides by a property's period: a double.
 const RENDER_TIME: u32 = 0x0048_58a0;
 
@@ -60,17 +57,6 @@ pub enum Mismatch {
     State,
     Stages,
     Corners,
-}
-
-impl Mismatch {
-    fn counter(self) -> Ui {
-        match self {
-            Mismatch::Words => Ui::OverlayHudRustMismatchWords,
-            Mismatch::State => Ui::OverlayHudRustMismatchState,
-            Mismatch::Stages => Ui::OverlayHudRustMismatchStages,
-            Mismatch::Corners => Ui::OverlayHudRustMismatchCorners,
-        }
-    }
 }
 
 /// Why a quad has no prediction.
@@ -112,24 +98,11 @@ pub fn refusal_counters() -> Vec<(String, u64)> {
     counts.iter().map(|(cause, &n)| (format!("native_ui_overlay_hud_rust_refused_{cause}"), n)).collect()
 }
 
-/// One shader's proof on this map.
-#[derive(Clone, Debug, Default)]
-struct Proof {
-    matched: u32,
-    /// A captured quad did not match: the guest sets it up for the map.
-    failed: bool,
-    /// The target and clip of the quads that proved it.
-    placed: Option<([u32; 2], ClipRect)>,
-    /// Proven quads seen, for the recheck.
-    seen: u32,
-}
-
 #[derive(Default)]
 struct State {
     generation: Option<u64>,
     library: Option<ShaderLibrary>,
     shaders: HashMap<u32, Result<Arc<HudShader>, HudRefusal>>,
-    proofs: HashMap<u32, Proof>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(Mutex::default);
@@ -255,55 +228,6 @@ pub fn compare(p: &Predicted, captured: &Overlay) -> Result<(), Mismatch> {
     Ok(())
 }
 
-/// Whether a captured quad of `shader` is still worth predicting: not
-/// once a quad of it failed on this map.
-pub fn wants_check(shader: u32) -> bool {
-    state().proofs.get(&shader).is_none_or(|p| !p.failed)
-}
-
-/// A captured widget quad and its prediction: counted, and the shader's
-/// proof advanced or failed.
-pub fn check(at: &HudTagQuad, predicted: Result<Predicted, Unpredicted>, captured: &Overlay) {
-    let predicted = match predicted {
-        Ok(p) => p,
-        Err(why) => return refused(&why),
-    };
-    advance(at.shader, compare(&predicted, captured), captured);
-}
-
-/// A captured quad's answer for `shader`: its proof advanced or failed.
-fn advance(shader: u32, result: Result<(), Mismatch>, captured: &Overlay) {
-    let mut s = state();
-    let proof = s.proofs.entry(shader).or_default();
-    let proven = proof.matched >= PROOF_DRAWS;
-    match result {
-        Ok(()) if !proof.failed => {
-            Ui::OverlayHudRustMatched.count();
-            let item = &captured.items[0];
-            let placed = (captured.size, item.clip);
-            if proof.placed.is_some_and(|p| p != placed) {
-                // The quads of one shader drawn on two targets or clips
-                // (split screen): the skip does not know which.
-                proof.failed = true;
-                return;
-            }
-            proof.placed = Some(placed);
-            proof.matched += 1;
-            if proof.matched == PROOF_DRAWS {
-                Ui::OverlayHudRustProven.count();
-            }
-        }
-        Ok(()) => {}
-        Err(why) => {
-            why.counter().count();
-            if proven && !proof.failed {
-                Ui::OverlayHudRustRecheckFailed.count();
-            }
-            proof.failed = true;
-        }
-    }
-}
-
 /// The quad as one overlay item on a target of `size`, inside `clip`.
 pub fn build(p: &Predicted, at: &HudTagQuad, size: [u32; 2], clip: ClipRect) -> Option<Overlay> {
     let first = p.sampled.iter().position(|&v| v);
@@ -327,31 +251,38 @@ pub fn build(p: &Predicted, at: &HudTagQuad, size: [u32; 2], clip: ClipRect) -> 
     Some(overlay)
 }
 
-/// A proven shader's quad, before the guest's setup: whether it was drawn
-/// from the overlay (the setup and the draw are then left out). An
-/// unproven shader, the recheck's quad, a quad that does not predict or
-/// a pass that is not placed is left to the guest.
+/// A named refusal: a quad whose shader the Rust material cannot draw, or
+/// a pass that is not placed. The guest's draw has no device behind it.
+fn refuse(what: &str, why: &dyn std::fmt::Debug) -> ! {
+    unimplemented!("hud: {what}: {why:?}")
+}
+
+/// A shader quad, before the guest's setup: drawn from the overlay (the
+/// setup and the draw are then left out). The quad is the HUD's
+/// ([`HudTagQuad::widget`]) or a menu shader bitmap's.
 pub fn draw(
     mem: &mut dyn GuestMemory,
     at: &HudTagQuad,
     vertices: &HudVertices,
 ) -> bool {
-    let placed = {
-        let mut s = state();
-        let Some(proof) = s.proofs.get_mut(&at.shader) else { return false };
-        if proof.failed || proof.matched < PROOF_DRAWS {
-            return false;
+    let p = match predict(mem, at, vertices) {
+        Ok(p) => p,
+        Err(why) => {
+            refused(&why);
+            refuse(&format!("quad of shader {:#x} does not predict", at.shader), &why)
         }
-        proof.seen = proof.seen.wrapping_add(1);
-        if proof.seen % RECHECK == 0 {
-            return false;
-        }
-        proof.placed
     };
-    let Some((size, clip)) = placed else { return false };
-    let Ok(p) = predict(mem, at, vertices) else { return false };
-    let Some(overlay) = build(&p, at, size, clip) else { return false };
-    crate::hud_overlay::place_hud(mem, overlay)
+    let Some(overlay) = build(&p, at, FRAME, ClipRect::full(FRAME)) else {
+        refuse(&format!("quad of shader {:#x} does not build", at.shader), &"overlay")
+    };
+    if at.widget {
+        if !crate::hud_overlay::place_hud(mem, overlay) {
+            refuse(&format!("quad of shader {:#x} is not placed", at.shader), &"hud");
+        }
+    } else if !crate::hud_overlay::place_ui(mem, overlay) {
+        refuse(&format!("menu quad of shader {:#x} is not placed", at.shader), &"ui");
+    }
+    true
 }
 
 /// A text shader's material for a glyph draw: what [`Predicted`] holds
@@ -408,15 +339,6 @@ pub fn compare_text(m: &TextMaterial, captured: &Overlay) -> Result<(), Mismatch
     Ok(())
 }
 
-/// A captured glyph quad of text shader `shader` and its material:
-/// counted, and the shader's proof advanced or failed, as [`check`].
-pub fn check_text(shader: u32, predicted: Result<TextMaterial, Unpredicted>, captured: &Overlay) {
-    match predicted {
-        Ok(m) => advance(shader, compare_text(&m, captured), captured),
-        Err(why) => refused(&why),
-    }
-}
-
 /// A string's runs: its glyph quads in order, each run the quads next
 /// to each other in one colour (red, green, blue, alpha), placed at
 /// `origin` (the window's corner in the frame).
@@ -469,22 +391,15 @@ pub fn draw_text(
     mem: &mut dyn GuestMemory,
     text: &WalkText,
 ) -> bool {
-    let placed = {
-        let s = state();
-        let Some(proof) = s.proofs.get(&text.shader) else { return false };
-        if proof.failed || proof.matched < PROOF_DRAWS {
-            return false;
-        }
-        proof.placed
-    };
-    let Some((size, clip)) = placed else { return false };
     for &(at, word) in &text.writes {
         if mem.write(at, &word.to_le_bytes()).is_err() {
-            return false;
+            refuse("a text widget's global did not take its word", &text.shader);
         }
     }
-    let Ok(m) = predict_text(mem, text.shader) else { return false };
-    let Some(overlay) = build_text(&m, text, size, clip) else { return false };
+    let m = predict_text(mem, text.shader).unwrap_or_else(|why| refuse(&format!("text shader {:#x} does not predict", text.shader), &why));
+    let Some(overlay) = build_text(&m, text, FRAME, ClipRect::full(FRAME)) else {
+        refuse(&format!("text of shader {:#x} does not build", text.shader), &"overlay")
+    };
     let group = crate::render_aspect::hud_group_fit(text.anchor, text.point);
     let enclosing = crate::hud_overlay::ui_fit();
     if let Some(fit) = group {
@@ -494,7 +409,10 @@ pub fn draw_text(
     if group.is_some() {
         crate::hud_overlay::set_ui_fit(enclosing);
     }
-    drawn
+    if !drawn {
+        refuse(&format!("text of shader {:#x} is not placed", text.shader), &"hud");
+    }
+    true
 }
 
 /// A string of the string draw (`render_bridge::native_hud::strings`)
@@ -533,28 +451,23 @@ pub fn draw_widget(
     mem: &mut dyn GuestMemory,
     widget: &WalkWidget,
 ) -> bool {
-    let placed = {
-        let s = state();
-        let Some(proof) = s.proofs.get(&widget.shader) else { return false };
-        if proof.failed || proof.matched < PROOF_DRAWS {
-            return false;
-        }
-        proof.placed
-    };
-    let Some((size, clip)) = placed else { return false };
+    let (size, clip) = (FRAME, ClipRect::full(FRAME));
     let mut all = Overlay::new(size);
     for quad in &widget.quads {
         for &(at, word) in &quad.writes {
             if mem.write(at, &word.to_le_bytes()).is_err() {
-                return false;
+                refuse("a widget's global did not take its word", &widget.shader);
             }
         }
-        let Some(hud_input) = render_bridge::native_hud::hud_overlay::inputs(mem) else { return false };
+        let Some(hud_input) = render_bridge::native_hud::hud_overlay::inputs(mem) else {
+            refuse("a widget's shader inputs do not read", &widget.shader)
+        };
         let at = HudTagQuad { bitmap: widget.bitmap, image: quad.image, shader: widget.shader, hud_input, widget: true };
-        let Ok(p) = predict(mem, &at, &quad.vertices) else { return false };
-        let Some(one) = build(&p, &at, size, clip) else { return false };
+        let p = predict(mem, &at, &quad.vertices)
+            .unwrap_or_else(|why| refuse(&format!("widget shader {:#x} does not predict", widget.shader), &why));
+        let Some(one) = build(&p, &at, size, clip) else { refuse("a widget quad does not build", &widget.shader) };
         if all.append(&one).is_err() {
-            return false;
+            refuse("a widget's quads do not join one pass", &widget.shader);
         }
     }
     if all.is_empty() {
@@ -571,7 +484,27 @@ pub fn draw_widget(
     if group.is_some() {
         crate::hud_overlay::set_ui_fit(enclosing);
     }
-    drawn
+    if !drawn {
+        refuse("a widget's pass is not placed", &widget.shader);
+    }
+    true
+}
+
+#[cfg(test)]
+mod refusal_tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "hud: quad of shader 0xe2000009 does not predict")]
+    fn a_quad_that_does_not_predict_is_named_not_left_to_the_guest() {
+        refuse("quad of shader 0xe2000009 does not predict", &Unpredicted::Inputs);
+    }
+
+    #[test]
+    fn the_frame_is_the_guests_640_by_480_whole() {
+        assert_eq!(FRAME, [640, 480]);
+        assert_eq!(ClipRect::full(FRAME), ClipRect { x: 0, y: 0, width: 640, height: 480 });
+    }
 }
 
 #[cfg(test)]

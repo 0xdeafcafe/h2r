@@ -67,10 +67,6 @@ const EXACT: &str = "both paths are exact: make the default unconditional";
 
 pub const TABLE: &[Switch] = &[
     // Rendering.
-    sw("impl.render.native-hud", On, "render", "2026-11-27",
-        "HUD widget quads from their Rust material, no guest shader setup (docs/graphics/native-hud-overlay.md): deleted with the guest HUD walk (retire-d3d R6)"),
-    sw("impl.render.native-hud-walk", On, "render", "2026-11-27",
-        "HUD bitmap, text and screen-effect widgets laid out in Rust, no guest draw once proven (docs/graphics/native-hud-overlay.md): deleted with the guest HUD walk (retire-d3d R6)"),
     sw("impl.render.native-decal-decorators", On, "render", "2026-11-28",
         "decal decorators drawn at their sorted place, the draw 0x4ebd0 cut once a frame proves the stage (docs/graphics/retire-d3d-decal-decorators.md): deleted with the D3D path (R10)"),
     // Engine leaves (the per-function keys are `crate::leaves`').

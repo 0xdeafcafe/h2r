@@ -18,10 +18,6 @@ fn guest(what: &str) -> ! {
 }
 
 impl Host for Glue {
-    fn draw_tag_quad(&self, _: &mut dyn GuestMemory, at: &HudTagQuad, _: &HudVertices) -> bool {
-        guest(&format!("tag quad of shader {:#x}", at.shader))
-    }
-
     fn rust_hud_quad(&self, mem: &mut dyn GuestMemory, at: &HudTagQuad, vertices: &HudVertices) -> bool {
         crate::hud_native::draw(mem, at, vertices)
     }

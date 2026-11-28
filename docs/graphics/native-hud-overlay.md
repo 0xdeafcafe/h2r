@@ -1,10 +1,10 @@
 # The HUD on the overlay
 
-Status: Partly built. HUD bitmap and text widgets draw from the overlay with the shader state the guest sets; widgets the overlay cannot match stay on the guest's quads. A HUD quad whose shader's Rust material is proven against the guest's draws is drawn with no guest shader setup, and a bitmap or text widget whose Rust layout is proven the same way is drawn with no guest draw at all. A proven screen-effect widget's body is left out; its effect's draw is the post's. Once proven, Rust walks the definitions a HUD record names in the guest's order, and a string draw's site's strings are laid out and drawn by Rust as text runs. The motion sensor's place and draw calls are worked out in Rust and checked against the guest's, which still draws it. The HUD's overlay items are tagged `ViewSlot::Hud`. What the overlay keeps is counted by kind and cause. Pixel parity needs a live check.
+Status: Partly built. Every HUD and menu shader quad (a HUD widget's, a training frame's, a navpoint's, and a menu shader bitmap's) is drawn from its shader's Rust material at `HUD_QUAD_SETUP` with no guest shader setup, and a HUD bitmap or text widget's Rust layout draws with no guest draw, from its first draw: nothing waits on a guest draw to prove it, and a quad or widget Rust cannot draw panics by name (`hud: ...`). A screen-effect widget's body is left out; its effect's draw is the post's. Rust walks the definitions a HUD record names in the guest's order, and a string draw's site's strings are laid out and drawn by Rust as text runs. The motion sensor's place and draw calls are worked out in Rust and checked against the guest's. The HUD's overlay items are tagged `ViewSlot::Hud`, a menu shader bitmap's `ViewSlot::Ui`. What the overlay keeps is counted by kind and cause. Pixel parity needs a live check.
 Code: `crates/rewrites/render-bridge/src/native_hud/hud_overlay.rs`, `hud_inputs.rs`, `kept.rs`, `walk.rs`, `strings.rs`, `definitions.rs`, `sensor.rs`, `crates/rewrites/hud-kit-core/src/walk.rs`, `crates/rewrites/scene-extract/src/hud.rs`, `crates/rewrites/engine/src/hud_effects.rs`, `hud_sensor.rs`, `crates/extensions/game/src/hud_overlay.rs`, `hud_native.rs`, `crates/rewrites/native-render/src/hud_material.rs`, `ui_gpu.rs`, `overlay.rs`, `layer_pass/animation.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`, the unit tests of `hud_material.rs`, `hud_inputs.rs`, `kept.rs`, `hud_native.rs`, `hud_effects.rs`, `hud_sensor.rs`, `scene-extract`'s `hud.rs`, `native_hud/walk.rs`, `native_hud/strings.rs`, `native_hud/definitions.rs` and `native_hud/sensor.rs`, and `hud-kit-core/src/walk_tests.rs`.
-Switch: `impl.render.native` (on); `impl.render.native-hud` (on) for [the material in Rust](#the-material-in-rust); `impl.render.native-hud-walk` (on) for [the walk in Rust](#the-walk-in-rust) and [strings](#strings). All in [switches.md](../runtime/switches.md).
+Switch: `impl.render.native` (on). The material, the walk and the strings are not switchable. See [switches.md](../runtime/switches.md).
 
-The guest gates and places each HUD bitmap or text widget. The overlay captures the quad at the shader quad, with the pixel shader definition and constants the guest has bound, and draws it in place of the guest's draw. The producers and the fallback rules are in [native-ui-producers.md](native-ui-producers.md).
+The guest gates each HUD bitmap or text widget; the overlay draws its quad at the shader quad, before the guest's shader setup, in place of the guest's draw. The producers are in [native-ui-producers.md](native-ui-producers.md).
 
 ```mermaid
 flowchart LR
@@ -21,7 +21,7 @@ A bitmap enters the overlay at `0x0022a7f6`, after the shader setup and before B
 
 Capturing one quad per invocation preserves layer order, animation and the engine's choice of sprite. Each item carries the shader datum and the four `hud_input` values at `0x004e6980`.
 
-Every HUD caller of the shader quad is captured this way, and proven and drawn from its Rust material as a widget is (`native_hud::hud_overlay::tag_quad`, by the call's return, `native_hud::kept::quad_kind`):
+Every HUD caller of the shader quad is drawn from its Rust material as a widget is (`native_hud::hud_overlay::tag_quad`, by the call's return, `native_hud::kept::quad_kind`):
 
 | Kind | Draw | Quad returns (Code) |
 |---|---|---|
@@ -31,11 +31,11 @@ Every HUD caller of the shader quad is captured this way, and proven and drawn f
 | `waypoint` | the marker `0x0024ef29` (from `0x0024ecae`) | `0x0024f0bb` |
 | `indicator` | the indicator group `0x00200462` | `0x00200784` |
 
-Another caller keeps the generic fan path. The `hud_input` slot of a non-widget quad holds what `0x004e6980` holds at its draw, which is also what its shader reads.
+Another caller is the generic fan path (`Host::draw_quad`). The `hud_input` slot of a non-widget quad holds what `0x004e6980` holds at its draw, which is also what its shader reads.
 
 Each placement takes the UI fit the guest's draw carries at that point in the frame (`d3d::backend::UiFit`), set per HUD group by the anchor rule (`canvas_fit::anchor_fit`, [high-resolution.md](high-resolution.md)); a pass placed from Rust takes the device's fit at its placement (`hud_overlay::place`). No item is placed on its own.
 
-A menu shader bitmap (type 9) is drawn the same way. Its draw `0x002b11c9` copies the widget's four shader inputs (`+0x74`) through `0x001392f8` to `+0x1c0` of the UI globals `[0x00510c4c]`, then calls `0x0022a664` at `0x002b12ae` with the definition's bitmap (`+0x10`), image (`+0x0a`) and shader (`+0x18`). At the shader quad, `native_hud::hud_overlay::menu_shader_quad` reads those arguments and the UI's inputs into the item's `hud_input` slot. The quad is captured as a HUD widget's is, with its template's combiner and evaluated constants (`menu_shader_quads`, `menu_shader_fallback`).
+A menu shader bitmap (type 9) is drawn the same way. Its draw `0x002b11c9` copies the widget's four shader inputs (`+0x74`) through `0x001392f8` to `+0x1c0` of the UI globals `[0x00510c4c]`, then calls `0x0022a664` at `0x002b12ae` with the definition's bitmap (`+0x10`), image (`+0x0a`) and shader (`+0x18`). At the shader quad, `native_hud::hud_overlay::menu_shader_quad` reads those arguments and the UI's inputs into the item's `hud_input` slot. The quad is drawn at `HUD_QUAD_SETUP` as a HUD widget's is, from its shader's Rust material (`native_hud::setup_quad`, `game::hud_native::draw` with `HudTagQuad::widget` false, placed by `hud_overlay::place_ui`), so the list's shader bitmap draws no guest setup (`0x0001bbf0`). The list's entry stays the game's draw (`ui_overlay::Item::Game`) only for this widget and for entries outside the sort window, which the game culls itself (`menu_shader_quads`).
 
 ## Text widgets
 
@@ -59,17 +59,13 @@ A reserved draw keeps its resolved packet for replay if the worker cannot record
 
 ## The material in Rust
 
-A HUD bitmap widget's quad can draw with no guest shader setup: its material is read from the map, not from the device after `0x0001bbf0` has run. Each shader is proven against the guest's own draws first.
+A shader quad, the HUD's or a menu's, draws with no guest shader setup: its material is read from the map, not from the device after `0x0001bbf0` has run. No guest draw proves it first; what it cannot predict panics by name.
 
 ```mermaid
 flowchart LR
-  S[HUD_QUAD_SETUP 0x0022a7b3] -->|shader proven| R[Rust item: words, state, stages, corners]
+  S[HUD_QUAD_SETUP 0x0022a7b3] --> R[Rust item: words, state, stages, corners]
   R --> P[place_hud: overlay pass]
   P --> T[resume 0x0022a854: setup and draw left out]
-  S -->|unproven, or 1 in 32| G[guest setup 0x0001bbf0]
-  G --> C[HUD_QUAD_READY: capture]
-  C --> K[check: prediction against capture]
-  K -->|8 matches| S
 ```
 
 | Step | Symbol | What |
@@ -78,8 +74,8 @@ flowchart LR
 | Inputs | `render_bridge::native_hud::hud_inputs::function_input` | the HUD's function inputs, the callback `0x0022ace7` in Rust |
 | Constants | `HudShader::words`, `layer_pass::sample_with_inputs` | the definition's words with animated constants at the render clock `0x004858a0`; each property's `x` from its `input`, the range input `y` from `input_a` (`0x0001b230` with a provider) |
 | Prediction | `game::hud_native::predict` | the item but for its target and clip; corners from the quad's own vertices |
-| Check | `game::hud_native::check`, `compare` | at each captured widget quad: words, then blend and write state, then stages and sampler, then corners and coordinates |
-| Draw | `game::hud_native::draw`, `hud_overlay::place_hud` | a proven shader's quad as one overlay pass at the setup site, with the proof's target and clip |
+| Compare | `game::hud_native::compare` | words, then blend and write state, then stages and sampler, then corners and coordinates, for tests of a prediction against an item |
+| Draw | `game::hud_native::draw`, `hud_overlay::place_hud` | the shader's quad as one overlay pass at the setup site, on the UI's 640 by 480 frame and its whole clip (`hud_native::FRAME`) |
 
 The callback's names (string IDs) and values (Code, `h2 disasm 0x22ace7 100`):
 
@@ -95,37 +91,33 @@ The widget's bitmap is engine texture 16 (`0x00019530`'s entry `0x00019817` bind
 
 | Rule | Why |
 |---|---|
-| A shader is proven by 8 matching quads (`PROOF_DRAWS`) | a prediction is drawn only where it has been the guest's draw |
-| One mismatch keeps the shader on the guest's setup for the map | no item differs from the guest's on purpose |
-| A proven shader's quads drawn on a second target or clip fail it | the setup site does not read the viewport (split screen) |
-| One proven quad in 32 (`RECHECK`) runs the guest's setup and is checked again | a later difference is caught |
+| A quad is drawn on its first draw, with no proof against a guest draw | the guest's setup is a device draw, which is deleted |
+| A shader or quad Rust cannot draw panics by name (`hud: quad of shader ... does not predict`) | no draw falls back to the guest's setup |
 | Refused: more than one pass implementation, per-draw engine inputs, engine-driven or animated states, a stage that is not the widget's bitmap, the text stage, an instance bitmap or none, a blend the implementation does not set | each is something the guest's setup reads that the material does not |
 | A text shader's stage 0 is engine texture 15 (`hud_material::TEXT_STAGE_SOURCE`; `text_flash`, `dim_text_flash`): `StageTexture::Glyphs`. A text material takes it as the glyphs (`hud_native::predict_text`); a widget quad has no texture for it (`texture`) | the string draw's batch binds the glyph cache to stage 0 in its place and keeps the shader's combiner (`0x00035b90`, `+0x97`) |
 
 Skipping the setup leaves the shader cache at `0x00485b48` as the last guest setup left it, which is what the device holds, so the next guest setup compares against the right state.
 
-Counters (`render.stats`, `native_ui_overlay_hud_rust_*`): `drawn`, `matched`, `proven`, `mismatch_words`, `mismatch_state`, `mismatch_stages`, `mismatch_corners`, `refused`, `recheck_failed`. `render.scene` splits `refused` by cause (`refused_<cause>`: `HudRefusal::name`, or `inputs` for a quad, provider or clock that does not read; `hud_native::refusal_counters`).
+Counters (`render.stats`, `native_ui_overlay_hud_rust_*`): `drawn`, `refused`; a menu shader bitmap's quad counts in `native_ui_overlay_menu_shader_quads`. `render.scene` splits `refused` by cause (`refused_<cause>`: `HudRefusal::name`, or `inputs` for a quad, provider or clock that does not read; `hud_native::refusal_counters`).
 
 ## The walk in Rust
 
-The guest's walk of a HUD definition (`0x0013a532`) is ported to `hud_kit_core::walk`, with no guest types; `scene_extract::hud` reads what it needs. A proven bitmap widget (`0x0022aff1`) or text widget (`0x0022aa16`) is laid out and drawn by Rust and its guest draw is left out. A proven screen-effect widget (`0x0022b8e2`) is laid out by Rust and the guest runs its call of `0x0002d140` alone.
+The guest's walk of a HUD definition (`0x0013a532`) is ported to `hud_kit_core::walk`, with no guest types; `scene_extract::hud` reads what it needs. A bitmap widget (`0x0022aff1`) or text widget (`0x0022aa16`) is laid out and drawn by Rust and its guest draw is left out. A screen-effect widget (`0x0022b8e2`) is laid out by Rust and the guest runs its call of `0x0002d140` alone.
 
-A proven definition's loop is Rust's: the walk is left out and its widgets are drawn in order. Once the order of the definitions is proven too, Rust walks every definition the record names and the guest's walk of them is left out ([the definitions in Rust](#the-definitions-in-rust)).
+A definition's loop is Rust's from its first walk: the walk is left out and its widgets are drawn in order. Once the order of the definitions is proven, Rust walks every definition the record names and the guest's walk of them is left out ([the definitions in Rust](#the-definitions-in-rust)).
 
 ```mermaid
 flowchart LR
   W[HUD_WALK 0x0013a532] --> S[Rust: state words, gate, inputs = shown list]
-  S -->|loop proven, every shown widget proven| O[Rust loop: lay out, draw, next]
+  S --> O[Rust loop: lay out, draw, next]
   O --> R[return: guest walk left out]
   O -->|a widget is not Rust's| G
-  W -->|unproven, or 1 in 64| G[guest loop: gate, inputs, widget draw]
+  W -->|a feature's widget, or a screen effect| G[guest loop: gate, inputs, widget draw]
   G --> B[HUD_BITMAP_WIDGET 0x0022aff1]
   S --> B
-  B -->|proven| L[Rust layout: sprite, anchor, effects, quads, globals]
+  B --> L[Rust layout: sprite, anchor, effects, quads, globals]
   L --> H[rust_hud_widget: Rust material, one pass, the anchor's fit]
   H --> X[return: guest draw left out]
-  B -->|unproven, or 1 in 64| Q[guest draw, each quad checked at HUD_QUAD_SETUP]
-  Q -->|8 clean draws| B
 ```
 
 | Part | Guest | Rust |
@@ -150,10 +142,8 @@ flowchart LR
 | Rule | Why |
 |---|---|
 | Rust draws a bitmap widget only when `walk::shown` selected it with the inputs the guest's loop gives it (`unselected`) | the loop's gate and input hooks (the HUD kit, a converted Halo 1 HUD) stay in force |
-| A widget is proven by 8 draws (`walk::PROOF_DRAWS`) whose every quad matched Rust's at `HUD_QUAD_SETUP`: vertices, bitmap, image, shader and globals, bit for bit, and the same quad count | Rust draws only what has been the guest's draw |
-| One draw in 64 (`walk::RECHECK`) of a proven widget is the guest's and is checked again | a later difference is caught |
-| A draw that differs keeps the widget on the guest for the map (`differed`) | no widget differs from the guest's on purpose |
-| The widget's shader must be proven too ([the material in Rust](#the-material-in-rust)); its quads are one overlay pass or none (`host`) | a half-drawn widget is never shown |
+| A widget is Rust's from its first draw (`walk::arm` is always `Arm::Own`) | the guest's draw is a device draw, which is deleted |
+| The widget's shader must predict ([the material in Rust](#the-material-in-rust)); its quads are one overlay pass or none, and one that is not drawn panics by name (`hud: a widget's pass is not placed`) | a half-drawn widget is never shown |
 | The pass draws under `render_aspect::hud_group_fit` at the widget's anchor and its point, then the enclosing fit is set back | the placement rule is the guest group's (`canvas_fit`) |
 | Rust writes the globals the guest's draw would leave | the next guest quad's shader reads them |
 | Left to the guest: a widget another feature changes at its hooks (`feature`: `walk::add_foreign`), emblem types 1 and 2 (`emblem`), an anchor past the centre (`anchor`), an effect input that is not read (`effect`), an image whose texture `0x0003bcb0` would fetch (`texture`), vertices outside the capture's check (`vertices`), a failed read (`read`) | each is something the guest's draw reads or does that the layout does not |
@@ -185,10 +175,8 @@ The loop (`walk::plan_loop` at `HUD_WALK`, `native_hud::own_loop`):
 
 | Rule | Why |
 |---|---|
-| A definition's loop is proven by 8 walks whose guest widget calls were `walk::shown`'s: kind, address and inputs, bit for bit, in order (`loop_proven`) | Rust loops only where its selection has been the guest's |
-| One proven walk in 64 is the guest's; on it every proven widget is checked again too | the per-widget recheck holds without the guest's draws |
-| A walk whose calls differ keeps the loop on the guest for the map (`loop_differed`) | as a widget's draw |
-| The guest loops when a feature has a widget in the definition or a script hides HUD widgets (`loop_feature`), a screen effect is shown (`loop_screen`: its call is the guest's), or a shown widget is unproven (`loop_unproven`) | the gate and input hooks stay in force; an unproven widget needs the guest's draw to check |
+| A definition's loop is Rust's from its first walk | no guest draw is left to prove it |
+| The guest loops when a feature has a widget in the definition or a script hides HUD widgets (`loop_feature`), a screen effect is shown (`loop_screen`: its call is the guest's) | the gate and input hooks stay in force; a feature's widget and a screen effect's call are the guest's (left to a later lane) |
 | Each widget is laid out after the widgets before it are drawn and their globals written | a layout reads what the earlier draws leave |
 | A widget that is not laid out, draws nothing or the host does not take gives the loop back (`loop_gave_back`): the guest's walk runs and its draws of the widgets already drawn are left out (`walk::done`) | no widget is drawn twice or dropped |
 
