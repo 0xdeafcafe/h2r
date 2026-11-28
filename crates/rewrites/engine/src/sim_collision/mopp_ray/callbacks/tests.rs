@@ -3,6 +3,7 @@
 use super::*;
 use runtime::guest::Permissions;
 use runtime::Guest;
+use sim_core::Epoch;
 use sim_havok::structure::{POLYGON_RADIUS, POLYGON_VTABLE};
 
 const ARENA: u32 = 0x0001_0000;
@@ -24,6 +25,22 @@ const COLLECTOR: u32 = ARENA + 0x2400;
 const COLLECTOR_VT: u32 = ARENA + 0x2480;
 const RESULT: u32 = ARENA + 0x2500;
 const OUT: u32 = ARENA + 0x2600;
+const STRUCTURE: u32 = ARENA + 0x3000;
+const INSTANCES: u32 = ARENA + 0x3100;
+const DEFINITIONS: u32 = ARENA + 0x3200;
+const DEF_COLLECTION: u32 = ARENA + 0x3400;
+const TRANSFORM: u32 = ARENA + 0x4000;
+const WRAPPER: u32 = ARENA + 0x4100;
+const WRAPPER_VT: u32 = ARENA + 0x4180;
+const TRANSFORM_VT: u32 = ARENA + 0x41c0;
+/// I's entry ESP for the nesting rays; their frames go below it.
+const STACK: u32 = ARENA + 0xf000;
+
+fn world() -> &'static CollisionWorld {
+    static EPOCH: Epoch = Epoch::new();
+    static WORLD: std::sync::LazyLock<CollisionWorld> = std::sync::LazyLock::new(|| CollisionWorld::new(&EPOCH));
+    &WORLD
+}
 
 fn f(v: f32) -> u32 {
     v.to_bits()
@@ -93,7 +110,7 @@ fn the_group_filter_reads_the_rays_row_at_the_keys_info_bit() {
         g.set_u32(FILTER + 0x0c + 4 * 5, row).unwrap();
         g.set_u8(OUT, 0xaa).unwrap();
         let call = GuestCall::new(target::GROUP_FILTER).ecx(FILTER).args([OUT, INPUT, COLLECTION, 9]);
-        assert_eq!(super::call(&mut g, &mut cpu(0x027f), &call).unwrap(), OUT);
+        assert_eq!(super::call(&mut g, world(), &mut cpu(0x027f), &call).unwrap(), OUT);
         assert_eq!(g.u8(OUT).unwrap(), pass, "row {row:#x}");
     }
 }
@@ -134,11 +151,65 @@ fn a_level_surface_key_builds_its_polygon_and_a_broken_one_the_empty_shape() {
     assert_eq!(level_key(&g, 0), Err(Bail::Data));
 }
 
+/// Instance 1 of the active structure, definition 0, placed with scale
+/// one at `(0, 0, 2)`: the triangle as its definition's surface 0.
+fn instance_scene(g: &mut Guest) {
+    triangle(g, false);
+    g.set_u32(data::STRUCTURE, STRUCTURE).unwrap();
+    g.set_u32(STRUCTURE + 0x144, INSTANCES).unwrap();
+    g.set_u32(STRUCTURE + 0x13c, DEFINITIONS).unwrap();
+    let instance = INSTANCES + 0x58;
+    g.set_u32(instance, f(1.0)).unwrap();
+    for c in 0..3 {
+        g.set_u32(instance + 4 + 0x0c * c + 4 * c, f(1.0)).unwrap();
+    }
+    g.set_u32(instance + 0x30, f(2.0)).unwrap();
+    g.set_u16(instance + 0x34, 0).unwrap();
+    g.set_u32(DEFINITIONS + 0x9c, SURFACES).unwrap();
+    g.set_u32(DEFINITIONS + 0xb4, DEF_COLLECTION).unwrap();
+    g.set_u32(DEF_COLLECTION + 0x0c, BSP).unwrap();
+    g.set_u32(DEF_COLLECTION + 0x30, 0x4321).unwrap();
+}
+
 #[test]
-#[should_panic(expected = "collision: mopp_ray: level child 0x001ef950 key type 2")]
-fn an_instance_key_of_the_level_is_named() {
+fn an_instance_surface_key_builds_its_polygon_in_the_instances_space() {
+    let key = (5 << 29) | 1;
     let mut g = guest();
-    let _ = level_child(&mut g, 2 << 29, SHAPE, 0x1f80);
+    instance_scene(&mut g);
+    assert!(level_key(&g, key).unwrap());
+    assert_eq!(level_child(&mut g, key, SHAPE, 0x1f80).unwrap(), SHAPE);
+    assert_eq!(g.u32(SHAPE).unwrap(), POLYGON_VTABLE);
+    assert_eq!(g.u32(SHAPE + 0x08).unwrap(), key, "the tail is the key");
+    assert_eq!(g.u32(SHAPE + 0x1c).unwrap(), 0x4321, "the collection's owner");
+    assert_eq!(g.u32(SHAPE + 0x30).unwrap(), f(1.0), "vertex 1 x");
+    assert_eq!(g.u32(SHAPE + 0x38).unwrap(), f(2.0), "vertex 1 z, placed");
+    assert_eq!(level_child(&mut g, key, 0, 0x1f80).unwrap(), 0);
+}
+
+#[test]
+fn an_instance_key_builds_a_transform_shape_over_the_definitions_tree() {
+    let key = (2 << 29) | 1;
+    let tree = DEF_COLLECTION + data::COLLECTION_TREE;
+    let mut g = guest();
+    instance_scene(&mut g);
+    g.set_u16(tree + 6, 3).unwrap();
+    assert_eq!(level_child(&mut g, key, SHAPE, 0x1f80).unwrap(), SHAPE);
+    assert_eq!(g.u32(SHAPE).unwrap(), data::TRANSFORM_SHAPE);
+    assert_eq!(g.u16(SHAPE + 6).unwrap(), 1);
+    assert_eq!(g.u32(SHAPE + 0x0c).unwrap(), tree);
+    assert_eq!(g.u16(tree + 6).unwrap(), 3, "the reference taken and dropped");
+    let words: Vec<u32> = (0..16).map(|k| g.u32(SHAPE + 0x10 + 4 * k).unwrap()).collect();
+    let (one, two) = (f(1.0), f(2.0));
+    assert_eq!(words, [one, 0, 0, 0, 0, one, 0, 0, 0, 0, one, 0, 0, 0, two, 0], "the placement without its scale");
+}
+
+#[test]
+#[should_panic(expected = "frees shape")]
+fn an_instance_tree_freed_outside_the_tags_is_named() {
+    let mut g = guest();
+    g.map(0x0054_7000, 0x1000, 0x13_0000, Permissions::RW).unwrap();
+    instance_scene(&mut g);
+    let _ = level_child(&mut g, (2 << 29) | 1, SHAPE, 0x1f80);
 }
 
 #[test]
@@ -196,7 +267,7 @@ fn ray_scene(from: [f32; 3], to: [f32; 3]) -> Guest {
 fn cast(g: &mut Guest, control: u16) -> CpuAbi {
     let mut c = cpu(control);
     let call = GuestCall::new(target::CONVEX_RAY).ecx(SHAPE).eax(SHAPE).args([INPUT, BODY, COLLECTOR]);
-    super::call(g, &mut c, &call).unwrap();
+    super::call(g, world(), &mut c, &call).unwrap();
     c
 }
 
@@ -265,17 +336,103 @@ fn a_collector_ignores_its_objects_hits() {
 fn the_empty_shapes_ray_returns_its_shape() {
     let mut g = guest();
     let call = GuestCall::new(target::EMPTY_RAY).ecx(SHAPE).eax(SHAPE).args([INPUT, BODY, COLLECTOR]);
-    assert_eq!(super::call(&mut g, &mut cpu(0x027f), &call).unwrap(), SHAPE);
+    assert_eq!(super::call(&mut g, world(), &mut cpu(0x027f), &call).unwrap(), SHAPE);
+}
+
+/// Entry E's collector over key `0x0001_0002`: placement 0x10002 of a
+/// structure with one definition and no surfaces, which the definition
+/// filter `0x001689b0` rejects.
+fn instance_collector_scene() -> Guest {
+    let mut g = guest();
+    g.set_u32(COLLECTOR, COLLECTOR_VT).unwrap();
+    g.set_u32(COLLECTOR_VT, target::INSTANCE_COLLECTOR).unwrap();
+    g.set_u32(COLLECTOR + 4, f(0.75)).unwrap();
+    g.set_u32(COLLECTOR + 0x10, INPUT).unwrap();
+    g.set_u32(COLLECTOR + 0x14, INPUT + 0x10).unwrap();
+    g.set_u32(COLLECTOR + 0x1c, RESULT).unwrap();
+    g.set_u32(RESULT + 4, f(0.75)).unwrap();
+    g.set_u32(BODY + 4, 0x0001_0002).unwrap();
+    g.set_u32(data::INSTANCE_EPOCH, 7).unwrap();
+    g.set_u32(data::STRUCTURE, STRUCTURE).unwrap();
+    g.set_u32(STRUCTURE + 0x140, 0x0002_0000).unwrap();
+    g.set_u32(STRUCTURE + 0x144, 0x0060_0000).unwrap();
+    g.set_u32(STRUCTURE + 0x138, 1).unwrap();
+    g.set_u32(STRUCTURE + 0x13c, DEFINITIONS).unwrap();
+    g
 }
 
 #[test]
-#[should_panic(expected = "collision: mopp_ray: ray collector 0x00244c10")]
-fn the_instance_collector_is_named() {
-    let mut g = guest();
-    g.set_u32(COLLECTOR, COLLECTOR_VT).unwrap();
-    g.set_u32(COLLECTOR_VT, 0x0024_4c10).unwrap();
+fn the_instance_collector_marks_each_key_once_by_its_low_half() {
+    let mut g = instance_collector_scene();
+    // Placement 0x10002 sits at 0x600000 + 0x10002 * 0x58.
+    g.map(0x00b8_0000, 0x1000, 0x13_0000, Permissions::RW).unwrap();
+    let mark = instance::MARK_BASE + 4 * 2;
     let call = GuestCall::new(target::INSTANCE_RAY).ecx(SHAPE).args([INPUT, BODY, COLLECTOR]);
-    let _ = super::call(&mut g, &mut cpu(0x027f), &call);
+    super::call(&mut g, world(), &mut cpu(0x027f), &call).unwrap();
+    assert_eq!(g.u32(mark).unwrap(), 7, "marked before the placement test");
+    assert_eq!(g.u8(COLLECTOR + 0x18).unwrap(), 0, "rejected: no hit");
+    assert_eq!(g.u32(COLLECTOR + 4).unwrap(), f(0.75));
+    // A marked key returns before the placement: an unreadable placement
+    // block is not reached.
+    g.set_u32(STRUCTURE + 0x144, 0xdead_0000).unwrap();
+    assert_eq!(super::call(&mut g, world(), &mut cpu(0x027f), &call).unwrap(), 0x0001_0002);
+    assert_eq!(g.u32(RESULT).unwrap(), 0, "the result is untouched");
+}
+
+/// A level body over a transform shape (`TRANSFORM`, the identity moved
+/// to `(0, 0, 2)`) whose child is a wrapper over the triangle polygon.
+fn transform_scene(from: [f32; 3], to: [f32; 3]) -> Guest {
+    let mut g = ray_scene(from, to);
+    g.set_u32(TRANSFORM, TRANSFORM_VT).unwrap();
+    g.set_u32(TRANSFORM_VT + 0x24, target::TRANSFORM_RAY).unwrap();
+    g.set_u32(TRANSFORM + 0x0c, WRAPPER).unwrap();
+    for c in 0..3 {
+        g.set_u32(TRANSFORM + 0x10 + 0x10 * c + 4 * c, f(1.0)).unwrap();
+    }
+    g.set_u32(TRANSFORM + 0x48, f(2.0)).unwrap();
+    g.set_u32(WRAPPER, WRAPPER_VT).unwrap();
+    g.set_u32(WRAPPER_VT + 0x24, target::WRAPPER_RAY).unwrap();
+    g.set_u32(WRAPPER + 0x0c, SHAPE).unwrap();
+    g.set_u32(POLYGON_VTABLE + 0x20, target::POLYGON_CAST).unwrap();
+    g.set_u32(POLYGON_VTABLE + 0x24, target::CONVEX_RAY).unwrap();
+    g.set_u32(INPUT + 0x20, 0x0003_0005).unwrap();
+    g
+}
+
+fn transform_cast(g: &mut Guest) -> u32 {
+    let mut c = cpu(0x027f);
+    c.esp = STACK;
+    let call = GuestCall::new(target::TRANSFORM_RAY).ecx(TRANSFORM).eax(TRANSFORM).args([INPUT, BODY, COLLECTOR]);
+    super::call(g, world(), &mut c, &call).unwrap()
+}
+
+#[test]
+fn a_transform_shape_casts_its_child_in_local_space_through_a_wrapper() {
+    let mut g = transform_scene([0.25, 0.25, 3.0], [0.25, 0.25, 1.0]);
+    transform_cast(&mut g);
+    assert_eq!(g.u8(COLLECTOR + 0x10).unwrap(), 1, "the hit byte");
+    assert_eq!(g.u32(RESULT + 0x18).unwrap(), f(0.5));
+    let normal = [0x1c, 0x20, 0x24].map(|o| g.u32(RESULT + o).unwrap());
+    assert_eq!(normal, [0, 0, f(1.0)], "turned by the composed motion");
+    // The frame: the callee ESP is below I's, the arguments and the
+    // return; the local ray 0x90 below its aligned frame.
+    let esp = STACK - 0x10;
+    let s = ((esp - 4) & !15) - 0xac;
+    let local = (0..4).map(|k| g.u32(s + 0x1c + 4 * k).unwrap()).collect::<Vec<_>>();
+    assert_eq!(&local[..3], &[f(0.25), f(0.25), f(1.0)]);
+    assert_eq!(g.u32(s + 0x1c + 0x20).unwrap(), 0x0003_0005, "the filter info kept");
+    let body = (0..4).map(|k| g.u32(s + 0x0c + 4 * k).unwrap()).collect::<Vec<_>>();
+    assert_eq!(body, [WRAPPER, 0x55, s + 0x4c, BODY]);
+    assert_eq!(g.u32(s + 0x4c + 0x20 + 0x38).unwrap(), f(2.0), "the composed translation");
+}
+
+#[test]
+fn a_transform_shape_misses_what_its_placement_moves_away() {
+    // Through the triangle in world space, past it once moved up by two.
+    let mut g = transform_scene([0.25, 0.25, 1.0], [0.25, 0.25, -1.0]);
+    transform_cast(&mut g);
+    assert_eq!(g.u8(COLLECTOR + 0x10).unwrap(), 0);
+    assert_eq!(g.u32(RESULT + 0x18).unwrap(), f(1.0));
 }
 
 #[test]
@@ -283,5 +440,5 @@ fn the_instance_collector_is_named() {
 fn an_unknown_callback_is_named_not_run_in_the_guest() {
     let mut g = guest();
     let call = GuestCall::new(0xdead).ecx(SHAPE);
-    let _ = super::call(&mut g, &mut cpu(0x027f), &call);
+    let _ = super::call(&mut g, world(), &mut cpu(0x027f), &call);
 }

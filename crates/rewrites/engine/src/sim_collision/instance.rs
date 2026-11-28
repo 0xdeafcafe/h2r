@@ -213,8 +213,12 @@ fn four(m: &impl GuestRead, addr: u32) -> Result<[u32; 4], Bail> {
     Ok([x, y, z, m.u32(addr.wrapping_add(12))?])
 }
 
+/// `0x001691a0` (eax the key, ebx the result) for one placement: the
+/// definition filter, the sphere pretest, the inverse transform and the
+/// definition BSP's vector test at `limit`. Entry E's prediction and the
+/// collector `0x00244c10` (`mopp_ray::callbacks`) share it.
 #[allow(clippy::too_many_arguments)]
-fn placement(
+pub(crate) fn placement(
     g: &mut impl CollisionMemory,
     world: &CollisionWorld,
     q: &Query,
