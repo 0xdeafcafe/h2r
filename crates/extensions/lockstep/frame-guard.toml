@@ -1,0 +1,22 @@
+# The frame guard's allowlist (src/frame_guard.rs,
+# docs/engine/sim-render-split.md, "The proof"): the game-state arena's
+# pools a frame step may still change, by their datum array names
+# (pools::find_pools). A page whose changed bytes lie only in these pools
+# is counted as allowed; any other changed page fails the guard.
+#
+# The list only shrinks. Each entry names the slice of sim-render-split.md
+# that moves its writes off the arena, and goes in that slice's commit.
+# `allowlist_only_shrinks` fails when the list is longer than MAX_ALLOWED.
+# The guard's game-end line names the entries no frame step wrote: those
+# go too.
+#
+# The seed is the render-side arrays of gameplay::RENDER_ARRAYS that the
+# couplings table names (6: light render fields, object +0xcc's render
+# states; 7: particle view stamps). Every other pool a frame step changes
+# is a finding.
+
+[allowed]
+"lights" = "8: the light render fields onto the overlay"
+"cached object render states" = "8: the render states object +0xcc names, onto the overlay"
+"particles" = "9: particle +0x30 to a side table"
+"particle_system" = "9: system +0x0c bit 0x400 and +0x0d bit 2 to a side table"

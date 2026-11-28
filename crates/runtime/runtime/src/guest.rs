@@ -1096,6 +1096,27 @@ impl Guest {
         // Armed pages are guards in the window.
         self.refresh_window(0, 1u64 << 32);
     }
+    /// Arms the virtual pages of `[va, va + len)` for writes only, as
+    /// [`arm_all`](Self::arm_all) arms every page: the next write to each
+    /// is logged. The frame guard's arming of the game-state arena
+    /// (`lockstep::frame_guard`). Reads keep the fast path.
+    pub fn arm_writes(&mut self, va: u32, len: u32) {
+        let Some(trap) = &self.trap else {
+            return;
+        };
+        if len == 0 {
+            return;
+        }
+        let first = (va >> 12) as usize;
+        let last = (((va as u64 + len as u64 - 1) >> 12) as usize).min((1 << 20) - 1);
+        for page in first..=last {
+            trap.arm(page, false, true);
+            if let Some(pages) = &mut self.fast_pages {
+                pages[page].permissions &= !2;
+            }
+        }
+        self.refresh_window((first as u64) << 12, ((last as u64) + 1) << 12);
+    }
     /// Makes `pages` (virtual page numbers) sticky, and every other page
     /// not: armed for both kinds, every access to them is logged.
     pub fn set_sticky_pages(&mut self, pages: &[u32]) {

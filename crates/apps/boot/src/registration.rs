@@ -887,6 +887,11 @@ pub(crate) fn register_late_for_profile(
         .with_region(crate::d3d_glue::PUSH_BASE, crate::d3d_glue::PUSH_BASE + crate::d3d_glue::PUSH_LEN, "push_buffer")
         .with_region(crate::d3d_glue::SCRATCH_BASE, crate::d3d_glue::SCRATCH_BASE + 0x1000, "d3d_scratch");
     features.add(&census).map_err(|e| anyhow::anyhow!("render census: {e}"))?;
+    // The frame step leaves the game-state arena as it found it, under
+    // impl.sim.frame-guard (off; docs/engine/sim-render-split.md, "The proof").
+    features
+        .add(&lockstep::frame_guard::FrameGuard::default())
+        .map_err(|e| anyhow::anyhow!("frame guard: {e}"))?;
     #[cfg(feature = "gpu")]
     if render_hooks == film::RenderHooks::Gpu {
         use render_bridge::native_scene_lists::NativeSceneLists;
