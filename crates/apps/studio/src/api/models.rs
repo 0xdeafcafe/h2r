@@ -6,11 +6,11 @@
 //!
 //! The provider reads the map the scenario tool has open, or one of the
 //! source's maps by name; with `pogo: true`, that map with the Pogo
-//! Stick's kit added (`pogo_kit::inject::add_pogo`, which the `pogo` package's
+//! Stick's kit added (`content_kit::inject::add_pogo`, which the `pogo` package's
 //! build equals). It holds
 //! that map read-only: a fix is a `tag.set` on the map the Tags tool edits
 //! (each finding names its path), or, for the kit's own tags, a change to
-//! `crates/tools/pogo-kit`.
+//! `crates/tools/content-kit`.
 //!
 //! Renders go through the viewport's native object renderer
 //! (`scenario_edit::native_view::preview`), to a PNG under the cache
@@ -21,8 +21,8 @@ use std::sync::Arc;
 
 use agent_proto::RpcError;
 use map::{FourCC, TagId};
-use pogo_kit::Style;
-use pogo_kit::inject::Costs;
+use content_kit::Style;
+use content_kit::inject::Costs;
 use scenario_edit::MapSource as EditSource;
 use scenario_edit::geometry::Camera;
 use scenario_edit::native_view::preview::{self, Matrix, Piece};
@@ -766,7 +766,7 @@ impl Open {
 fn open_map(_app: &App, name: String, source: EditSource, auto: bool, pogo: bool) -> Result<Open, RpcError> {
     let mut source = source;
     let mut kit = None;
-    let marker = pogo_kit::inject::marker_string();
+    let marker = content_kit::inject::marker_string();
     if pogo {
         let original = source.open().map_err(failed)?;
         let has_kit = original
@@ -787,7 +787,7 @@ fn open_map(_app: &App, name: String, source: EditSource, auto: bool, pogo: bool
                 None => source.read_base().map_err(failed)?,
             };
             let stem = name.to_ascii_lowercase();
-            let added = pogo_kit::inject::add_pogo(&bytes, &stem).map_err(|e| {
+            let added = content_kit::inject::add_pogo(&bytes, &stem).map_err(|e| {
                 reason(
                     code::REFUSED,
                     "pogo_refused",

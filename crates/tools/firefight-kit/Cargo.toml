@@ -14,7 +14,7 @@ firefight = { path = "../../formats/firefight" }
 h1-assets = { path = "../h1-assets" }
 h1campaign = { path = "../h1campaign" }
 h1convert = { path = "../h1convert" }
-flood-pod-kit = { path = "../flood-pod-kit" }
+content-kit = { path = "../content-kit" }
 hs.workspace = true
 libm = "0.2"
 map.workspace = true

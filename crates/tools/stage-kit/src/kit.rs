@@ -289,9 +289,9 @@ fn fail(what: &str, e: impl std::fmt::Display) -> Error {
     Error::Build(format!("{what}: {e}"))
 }
 
-/// A picture of ours as a DXT5 `bitm` (`pogo_kit::texture::bitmap`).
+/// A picture of ours as a DXT5 `bitm` (`content_kit::texture::bitmap`).
 fn colour_bitmap(img: &Picture) -> Result<h1_assets::models::Converted> {
-    pogo_kit::texture::bitmap(&pogo_kit::texture::Rgba {
+    content_kit::texture::bitmap(&content_kit::texture::Rgba {
         width: img.width,
         height: img.height,
         pixels: img.pixels.clone(),

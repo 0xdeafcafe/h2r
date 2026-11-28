@@ -14,8 +14,8 @@ use map::build::TagSet;
 use map::writer::max_metadata_size;
 use map::{CacheType, Map};
 
-use crate::kit::{self, Facts, Tags};
-use crate::{KIT_VERSION, TAG_PATH};
+use super::kit::{self, Facts, Tags};
+use super::{KIT_VERSION, TAG_PATH};
 
 /// What the kit costs a map.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -81,7 +81,7 @@ pub fn add_flood_pod_within(original: &[u8], stem: &str, tag_memory: Option<u32>
     );
     let before = set.slots.len();
     // The map's index gains room for the tags.
-    pogo_kit::kit::make_index_room(&mut set);
+    crate::kit::make_index_room(&mut set);
     let tags = kit::install(&mut set, &facts).with_context(|| format!("{stem}: the Flood pod"))?;
     // The version travels in the map.
     set.intern(&marker_string())?;

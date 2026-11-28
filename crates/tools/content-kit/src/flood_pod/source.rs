@@ -1,65 +1,68 @@
-//! The pod's source: `art/flood-pod/flood_pod.yaml`, in the Pogo Stick's
-//! primitive YAML (`pogo_kit::source`: nodes, markers, and parts built from
-//! lathes, sweeps and boxes), and its atlas, `art/flood-pod/flood_pod.png`.
+//! The pod's source: `content/flood-pod/flood_pod.yaml`, in the Pogo Stick's
+//! primitive YAML (`crate::source`: nodes, markers, and parts built from
+//! lathes, sweeps and boxes), and its atlas, `content/flood-pod/flood_pod.png`.
 //!
 //! Every position is in model space: world units, +X forward, +Y left, +Z
-//! up, the origin the point of the tip ([`crate::RIG`]). A part's vertices
+//! up, the origin the point of the tip ([`super::RIG`]). A part's vertices
 //! move with the one node it names.
 
 use anyhow::{Context, Result, bail, ensure};
-use pogo_kit::mesh::{self, Mesh};
-pub use pogo_kit::source::Source;
-use pogo_kit::texture::{self, Rgba};
+use crate::mesh::{self, Mesh};
+pub use crate::source::Source;
+use crate::texture::{self, Rgba};
+use crate::atlas::Manifest;
+use std::sync::OnceLock;
 
-use crate::{MARKER_IMPACT, NODE_SHELL, PETALS, RIG, petal_node, squad_exit_marker};
+use super::{MARKER_IMPACT, NODE_SHELL, PETALS, RIG, petal_node, squad_exit_marker};
 
 /// The model's name and its atlas's.
 pub const NAME: &str = "flood_pod";
 
+/// The item manifest, `content/flood-pod/kit.yaml`: the atlas size, the
+/// regions a part names and the most triangles the pod has
+/// ([`crate::atlas`]).
+pub fn manifest() -> &'static Manifest {
+    static M: OnceLock<Manifest> = OnceLock::new();
+    M.get_or_init(|| {
+        Manifest::parse(include_str!("../../../../../content/flood-pod/kit.yaml"))
+            .expect("content/flood-pod/kit.yaml is a manifest")
+    })
+}
+
 /// The atlas size, pixels.
-pub const ATLAS: (u16, u16) = (512, 256);
+pub fn atlas_size() -> (u16, u16) {
+    manifest().atlas.size()
+}
 
 /// The atlas regions a part names, in pixels (x0, y0, x1, y1): the table
-/// `scripts/flood-pod-atlas.py` paints and `art/flood-pod/README.md` lists.
-pub const REGIONS: [(&str, [u16; 4]); 6] = [
-    ("flesh", [0, 0, 256, 128]),
-    ("petal", [256, 0, 512, 128]),
-    ("sac", [0, 128, 128, 256]),
-    ("bone", [128, 128, 256, 256]),
-    ("rib", [256, 128, 384, 256]),
-    ("tendril", [384, 128, 512, 256]),
-];
-
-/// Texels kept clear at a region's edge, so a filtered sample stays in it.
-pub const INSET: f32 = 2.0;
+/// `scripts/flood-pod-atlas.py` paints and `content/flood-pod/README.md`
+/// lists.
+pub fn regions() -> Vec<(&'static str, [u16; 4])> {
+    manifest().atlas.regions()
+}
 
 /// The most triangles the pod has.
-pub const MAX_TRIANGLES: usize = 2000;
+pub fn max_triangles() -> usize {
+    manifest().max_triangles.expect("the pod's manifest bounds its triangles")
+}
 
 /// How near its rig's place a node or marker is.
 const PLACE_EPSILON: f32 = 1e-3;
 
 /// A region's rectangle in texture coordinates (u0, v0, u1, v1), inset.
 pub fn region(name: &str) -> Option<[f32; 4]> {
-    let (_, [x0, y0, x1, y1]) = REGIONS.iter().find(|(n, _)| *n == name)?;
-    let (w, h) = (f32::from(ATLAS.0), f32::from(ATLAS.1));
-    Some([
-        (f32::from(*x0) + INSET) / w,
-        (f32::from(*y0) + INSET) / h,
-        (f32::from(*x1) - INSET) / w,
-        (f32::from(*y1) - INSET) / h,
-    ])
+    manifest().atlas.region(name)
 }
 
 /// The source text, as built in.
 pub fn text() -> &'static str {
-    include_str!("../../../../art/flood-pod/flood_pod.yaml")
+    include_str!("../../../../../content/flood-pod/flood_pod.yaml")
 }
 
 /// The atlas, as built in: the PNG file's bytes (a Git LFS pointer in a
-/// checkout without LFS, which `pogo_kit::texture::decode` names).
+/// checkout without LFS, which `crate::texture::decode` names).
 pub fn atlas_png() -> &'static [u8] {
-    include_bytes!("../../../../art/flood-pod/flood_pod.png")
+    include_bytes!("../../../../../content/flood-pod/flood_pod.png")
 }
 
 /// The built-in atlas's pixels.
@@ -74,7 +77,7 @@ fn near(a: [f32; 3], b: [f32; 3]) -> bool {
 /// Parses and checks a pod's source: the shell first, at the origin, then
 /// the four petals, each a child of the shell at its hinge; the impact
 /// marker and the four squad exits, on the shell at the rig's places;
-/// every part on a node the source has and in one of [`REGIONS`].
+/// every part on a node the source has and in one of [`regions`].
 pub fn parse(text: &str) -> Result<Source> {
     let s: Source = serde_yaml_ng::from_str(text).context("the pod's source")?;
     ensure!(
@@ -163,14 +166,15 @@ pub fn builtin() -> Result<Source> {
     Ok(s)
 }
 
-/// A source's triangles on the pod's atlas, within [`MAX_TRIANGLES`].
+/// A source's triangles on the pod's atlas, within [`max_triangles`].
 pub fn build(source: &Source) -> Result<Mesh> {
     let mesh = mesh::build_on(source, &region)?;
     ensure!(
-        mesh.triangles() <= MAX_TRIANGLES,
-        "{}: {} triangles; a pod has {MAX_TRIANGLES} at most",
+        mesh.triangles() <= max_triangles(),
+        "{}: {} triangles; a pod has {} at most",
         source.name,
-        mesh.triangles()
+        mesh.triangles(),
+        max_triangles()
     );
     Ok(mesh)
 }

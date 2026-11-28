@@ -8,14 +8,14 @@ use std::io::Cursor;
 
 use map::build::{Block, TagPayload, TagSet};
 use map::{CacheType, FourCC, Map, RawPointer, ResourceFile, TagId};
-use pogo_kit::fixture::fixture;
-use pogo_kit::mesh;
+use crate::fixture::fixture;
+use crate::mesh;
 use tags::model::RenderModelGeometry;
 
-use crate::inject::{self, add_flood_pod, add_flood_pod_within};
-use crate::kit::{self, GROUPS};
-use crate::source::{self, MAX_TRIANGLES, REGIONS};
-use crate::{
+use super::inject::{self, add_flood_pod, add_flood_pod_within};
+use super::kit::{self, GROUPS};
+use super::source::{self, max_triangles};
+use super::{
     KIT_VERSION, MARKER_IMPACT, NODE_SHELL, PETALS, RIG, TAG_PATH, petal_node, squad_exit_marker,
 };
 
@@ -195,7 +195,7 @@ fn the_pod_is_in_the_triangle_budget() {
     let s = source::builtin().unwrap();
     let m = source::build(&s).unwrap();
     assert!(
-        m.triangles() <= MAX_TRIANGLES,
+        m.triangles() <= max_triangles(),
         "{} triangles",
         m.triangles()
     );
@@ -204,7 +204,7 @@ fn the_pod_is_in_the_triangle_budget() {
 
     // One triangle over is refused by count.
     let mut over = s.clone();
-    while mesh::build_on(&over, &source::region).unwrap().triangles() <= MAX_TRIANGLES {
+    while mesh::build_on(&over, &source::region).unwrap().triangles() <= max_triangles() {
         over.parts.extend(s.parts.iter().cloned());
     }
     let e = format!("{:#}", source::build(&over).unwrap_err());
@@ -251,9 +251,9 @@ fn the_pod_stands_on_its_tip_and_each_petal_is_on_its_side() {
 #[test]
 fn every_region_is_drawn_and_inside_the_atlas() {
     let s = source::builtin().unwrap();
-    for (name, [x0, y0, x1, y1]) in REGIONS {
+    for (name, [x0, y0, x1, y1]) in source::regions() {
         assert!(
-            x0 < x1 && y0 < y1 && x1 <= source::ATLAS.0 && y1 <= source::ATLAS.1,
+            x0 < x1 && y0 < y1 && x1 <= source::atlas_size().0 && y1 <= source::atlas_size().1,
             "{name}"
         );
         let [u0, v0, u1, v1] = source::region(name).unwrap();
@@ -267,8 +267,9 @@ fn every_region_is_drawn_and_inside_the_atlas() {
         );
     }
     // No two regions share a texel.
-    for (i, (a, ra)) in REGIONS.iter().enumerate() {
-        for (b, rb) in &REGIONS[i + 1..] {
+    let regions = source::regions();
+    for (i, (a, ra)) in regions.iter().enumerate() {
+        for (b, rb) in &regions[i + 1..] {
             let apart = ra[2] <= rb[0] || rb[2] <= ra[0] || ra[3] <= rb[1] || rb[3] <= ra[1];
             assert!(apart, "{a} and {b} overlap");
         }
@@ -293,7 +294,7 @@ fn the_atlas_is_the_one_the_painter_paints() {
     let a = source::atlas().unwrap();
     assert_eq!(
         (a.width, a.height),
-        (u32::from(source::ATLAS.0), u32::from(source::ATLAS.1))
+        (u32::from(source::atlas_size().0), u32::from(source::atlas_size().1))
     );
     assert!(a.pixels.chunks_exact(4).all(|p| p[3] == 255), "opaque");
     assert_eq!(
@@ -303,9 +304,9 @@ fn the_atlas_is_the_one_the_painter_paints() {
         fnv64(&a.pixels)
     );
     // Every region is painted: none is one flat colour.
-    for (name, [x0, y0, x1, y1]) in REGIONS {
+    for (name, [x0, y0, x1, y1]) in source::regions() {
         let at = |x: u16, y: u16| {
-            let i = (usize::from(y) * usize::from(source::ATLAS.0) + usize::from(x)) * 4;
+            let i = (usize::from(y) * usize::from(source::atlas_size().0) + usize::from(x)) * 4;
             [a.pixels[i], a.pixels[i + 1], a.pixels[i + 2]]
         };
         let first = at(x0, y0);

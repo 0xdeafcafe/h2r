@@ -2,7 +2,7 @@
 //! DXT5 with opaque alpha, written as one image through the Halo 1 bitmap
 //! converter's tag writer (`h1_assets::bitmaps::convert::convert_with`), as
 //! the pogo stick's atlas and the stage's textures are
-//! (`pogo_kit::texture`). The chain is kept apart from the tag so a process
+//! (`content_kit::texture`). The chain is kept apart from the tag so a process
 //! encodes it once ([`crate::dev::encoded`]).
 
 use anyhow::{Result, ensure};
@@ -13,7 +13,7 @@ use h1_assets::models::Converted;
 use h1map::bitmap::{
     Bitmap, FLAG_COMPRESSED, FLAG_POWER_OF_TWO, IMAGE_LEN, Image, ImageKind, PixelFormat,
 };
-use pogo_kit::texture::{Rgba, halve, mip_count};
+use content_kit::texture::{Rgba, halve, mip_count};
 
 /// The bitmap header's usage word for an ordinary colour map.
 const USAGE_DEFAULT: u16 = 1;

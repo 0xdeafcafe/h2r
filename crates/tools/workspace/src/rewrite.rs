@@ -260,7 +260,7 @@ impl PackageRewrite {
 
     /// Call `f` with each map the rewrite is asked for, as the game is
     /// handed it (the pogo stick's weapons are read from it:
-    /// `pogo_kit::served`).
+    /// `content_kit::served`).
     pub fn observed(mut self, f: impl Fn(&str, &mut dyn Source) + Send + 'static) -> Self {
         self.observer = Some(Box::new(f));
         self

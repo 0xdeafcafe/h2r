@@ -29,7 +29,7 @@ content.workspace = true
 tags.workspace = true
 hs.workspace = true
 # The pogo stick's models, added to each multiplayer map as it is served.
-pogo-kit = { path = "../../tools/pogo-kit" }
+content-kit = { path = "../../tools/content-kit" }
 # The game's content packages and their one rewrite (packages.rs).
 workspace = { path = "../../tools/workspace" }
 # The stage, a baked package's `fresh` map (packages::prepare_maps).

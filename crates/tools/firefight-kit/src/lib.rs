@@ -733,9 +733,9 @@ fn assemble(
             let refused = |e: anyhow::Error| {
                 anyhow::Error::from(transplant::PodRefused(format!("Flood pod: {e:#}")))
             };
-            let facts = flood_pod_kit::kit::Facts::read(&mut map).map_err(refused)?;
-            let tags = flood_pod_kit::kit::install(&mut set, &facts).map_err(refused)?;
-            set.intern(&flood_pod_kit::inject::marker_string())?;
+            let facts = content_kit::flood_pod::kit::Facts::read(&mut map).map_err(refused)?;
+            let tags = content_kit::flood_pod::kit::install(&mut set, &facts).map_err(refused)?;
+            set.intern(&content_kit::flood_pod::inject::marker_string())?;
             Some(tags)
         } else {
             None

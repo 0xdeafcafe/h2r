@@ -611,7 +611,7 @@ fn setup(api: &mut Api, app: &mut App, t: &Temp, name: &str) {
         }
         // The Pogo kit's invented map with the kit in it, as court.map.
         m::MODEL_LIST | m::MODEL_READ | m::MODEL_RENDER | m::MODEL_CHECK => {
-            super::models::tests::open_court(app, &t.path("court.map"), &pogo_kit::fixture::kitted().bytes);
+            super::models::tests::open_court(app, &t.path("court.map"), &content_kit::fixture::kitted().bytes);
         }
         // The invented two-bone model and its graph, as pose.map; the
         // face preview's example poses its biped.

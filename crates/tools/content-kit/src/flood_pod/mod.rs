@@ -1,6 +1,6 @@
 //! The Flood pod's kit: the pod a Firefight Flood squad arrives in
 //! (docs/game/firefight.md, "The Flood pod"), built from a parametric
-//! source and a painted atlas under `art/flood-pod/` into the tags a map
+//! source and a painted atlas under `content/flood-pod/` into the tags a map
 //! holds it by.
 //!
 //! - [`source`]: the YAML source and the atlas, embedded, and the checks a
@@ -10,7 +10,7 @@
 //! - [`inject`]: the kit added to a multiplayer map's bytes.
 //!
 //! The primitives (lathes, sweeps, boxes), the mesher and the atlas's
-//! `bitm` writer are the Pogo Stick's (`pogo_kit::{source, mesh, texture}`).
+//! `bitm` writer are the Pogo Stick's (`crate::{source, mesh, texture}`).
 //!
 //! The pod has one rig ([`RIG`]): a `shell` node and four `petal` nodes
 //! hinged on it, which the game turns to open the pod; the model is drawn

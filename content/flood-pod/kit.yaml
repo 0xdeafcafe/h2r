@@ -1,0 +1,16 @@
+# The Flood pod's kit manifest (crates/tools/content-kit, `atlas`): its atlas,
+# the regions a part names and the most triangles the pod has. The table
+# scripts/flood-pod-atlas.py paints and README.md lists.
+item: flood_pod
+max_triangles: 2000
+atlas:
+  width: 512
+  height: 256
+  inset: 2.0
+  regions:
+    - { name: flesh, rect: [0, 0, 256, 128] }
+    - { name: petal, rect: [256, 0, 512, 128] }
+    - { name: sac, rect: [0, 128, 128, 256] }
+    - { name: bone, rect: [128, 128, 256, 256] }
+    - { name: rib, rect: [256, 128, 384, 256] }
+    - { name: tendril, rect: [384, 128, 512, 256] }

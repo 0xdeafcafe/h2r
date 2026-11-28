@@ -593,7 +593,7 @@ pub fn build(source: &Source) -> Result<Mesh> {
 }
 
 /// [`build`] on another atlas: `region` gives a region's rectangle in
-/// texture coordinates (u0, v0, u1, v1) by name (`flood-pod-kit`'s atlas).
+/// texture coordinates (u0, v0, u1, v1) by name (`flood_pod`'s atlas).
 pub fn build_on(source: &Source, region: &dyn Fn(&str) -> Option<[f32; 4]>) -> Result<Mesh> {
     let mut parts = Vec::with_capacity(source.parts.len());
     for (i, p) in source.parts.iter().enumerate() {

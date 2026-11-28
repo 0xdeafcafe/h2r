@@ -255,7 +255,7 @@ the workspace checks are in
 | `collision-build` | tools | Compiles convex polygons to a Halo 2 collision BSP (planes, 3D and 2D trees, leaves, surfaces, winged edges, vertices), opens coll BSPs as editable meshes, rebuilds their BSP physics slots, makes collision from render faces, and adds solids to a structure's level collision with its per-leaf block and MOPP (docs/editor/modeling.md) | [modeling.md](editor/modeling.md), [modeling-targets.md](editor/modeling-targets.md) | in progress |
 | `editor-core` | tools | UI-free parts of h2-editor shared by its tools: map sources, the snapshot undo stack, status messages, where game variants come from | [editor.md](editor/editor.md) | in progress |
 | `firefight-kit` | tools | Offline Firefight map kit |  |  |
-| `flood-pod-kit` | tools | The Flood pod Firefight's Flood squads arrive in, built from art/flood-pod into a map |  |  |
+| `content-kit` | tools | The Flood pod Firefight's Flood squads arrive in, built from content/flood-pod into a map |  |  |
 | `forge-build` | tools | Deterministic local Forge map materialisation over the user's Halo 2 maps |  |  |
 | `forge-nav` | tools | Generate nav for a Forge map: the bots' nav mesh over the structure BSP with the map's solid objects merged in, the teleporters linked, and its problems (docs/game/forge-design.md, F9) | [forge-nav.md](game/forge-nav.md) | in progress |
 | `geometry-edit` | tools | The Modeling tool's targets and save: structure clusters, instanced geometry definitions and render-model sections opened as mesh-edit meshes, with undo, the op log, in-place and grown writes (docs/editor/modeling.md) | [modeling.md](editor/modeling.md), [modeling-targets.md](editor/modeling-targets.md) | in progress |
@@ -269,7 +269,7 @@ the workspace checks are in
 | `hud-kit` | tools | HUD elements of ours drawn by Halo 2's own HUD: the element model, the compiler to nhdt widget records, the offline preview over the retail player HUD and its checks (docs/game/hud-kit.md) | [hud-kit.md](game/hud-kit.md) | in progress |
 | `mesh-edit` | tools | The modeling kernel of h2-editor: a radial-edge mesh in index arenas, selection, MeshOp operations as values, import and stable export (docs/editor/modeling.md) | [modeling.md](editor/modeling.md) | in progress |
 | `perf` | tools | Performance tooling: guest-aware sampling profiler, timeline capture, benchmark harness | [profiling.md](perf/profiling.md) | done |
-| `pogo-kit` | tools | The Pogo Stick's models, built from content/pogo into each multiplayer map |  |  |
+| `content-kit` | tools | The Pogo Stick's models, built from content/pogo into each multiplayer map |  |  |
 | `scenario-edit` | tools | Sapien-style scenario placement editor: typed scnr placement blocks, undoable edits written as patched .map files, a UI-free session and an offscreen wgpu viewport | [scenario-editor.md](editor/scenario-editor.md) | in progress |
 | `sound-edit` | tools | Waveform edits as a list: trim, fades, gain, normalise, silence, and a sound's permutations as files (docs/editor/studio-redesign.md, "The sound editor") | [studio-redesign.md](editor/studio-redesign.md) | in progress |
 | `stage-kit` | tools | The content stage: Studio's test map of ours, its layout, geometry, collision and textures built from art/stage (docs/editor/content-stage.md) | [content-stage.md](editor/content-stage.md) | in progress |

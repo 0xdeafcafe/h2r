@@ -26,7 +26,7 @@ h1map = { path = "../h1map" }
 h1objects = { path = "../h1objects" }
 # A mip chain boxed down and the DXT5 tag layout, as the pogo stick's atlas
 # and the stage's textures are written.
-pogo-kit = { path = "../pogo-kit" }
+content-kit = { path = "../content-kit" }
 map.workspace = true
 # The structure BSPs' drawn parts, for the palette survey.
 scenario-edit = { path = "../scenario-edit", default-features = false }

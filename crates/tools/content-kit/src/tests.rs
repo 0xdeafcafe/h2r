@@ -396,7 +396,7 @@ fn the_atlases_are_the_size_the_regions_are_laid_on() {
         let a = texture::decode(source::atlas(style)).unwrap();
         assert_eq!(
             (a.width, a.height),
-            (u32::from(source::ATLAS.0), u32::from(source::ATLAS.1)),
+            (u32::from(source::atlas_size().0), u32::from(source::atlas_size().1)),
             "{}",
             style.id()
         );
@@ -406,9 +406,9 @@ fn the_atlases_are_the_size_the_regions_are_laid_on() {
             style.id()
         );
     }
-    for (name, [x0, y0, x1, y1]) in source::REGIONS {
+    for (name, [x0, y0, x1, y1]) in source::regions() {
         assert!(
-            x0 < x1 && y0 < y1 && x1 <= source::ATLAS.0 && y1 <= source::ATLAS.1,
+            x0 < x1 && y0 < y1 && x1 <= source::atlas_size().0 && y1 <= source::atlas_size().1,
             "{name}"
         );
         let [u0, v0, u1, v1] = source::region(name).unwrap();
@@ -775,4 +775,73 @@ fn every_multiplayer_map_holds_the_class() {
             facts.class, facts.layout.stem, facts.material, facts.first_person
         );
     }
+}
+
+/// The manifests (`content/<item>/kit.yaml`) say what the tables in code
+/// said before the kits became content: the same atlas, the same regions
+/// in the same order, and a region's texture rectangle the same to the bit
+/// (the formula is the retired `source::region`'s), so the meshes' texture
+/// coordinates, and so the tags built from them, are unchanged.
+#[test]
+fn manifests_are_the_retired_tables() {
+    use crate::atlas::Manifest;
+
+    fn retired(regions: &[(&str, [u16; 4])], name: &str) -> Option<[f32; 4]> {
+        let (_, [x0, y0, x1, y1]) = regions.iter().find(|(n, _)| *n == name)?;
+        let (w, h) = (512.0_f32, 256.0_f32);
+        let inset = 2.0_f32;
+        Some([
+            (f32::from(*x0) + inset) / w,
+            (f32::from(*y0) + inset) / h,
+            (f32::from(*x1) - inset) / w,
+            (f32::from(*y1) - inset) / h,
+        ])
+    }
+
+    const POGO: [(&str, [u16; 4]); 8] = [
+        ("body", [0, 0, 256, 128]),
+        ("body_dark", [256, 0, 384, 128]),
+        ("piston", [384, 0, 512, 128]),
+        ("grip", [0, 128, 128, 192]),
+        ("peg", [0, 192, 128, 256]),
+        ("foot", [128, 128, 256, 256]),
+        ("accent", [256, 128, 384, 256]),
+        ("glow", [384, 128, 512, 256]),
+    ];
+    const FLOOD: [(&str, [u16; 4]); 6] = [
+        ("flesh", [0, 0, 256, 128]),
+        ("petal", [256, 0, 512, 128]),
+        ("sac", [0, 128, 128, 256]),
+        ("bone", [128, 128, 256, 256]),
+        ("rib", [256, 128, 384, 256]),
+        ("tendril", [384, 128, 512, 256]),
+    ];
+
+    for (manifest, table) in [
+        (source::manifest(), &POGO[..]),
+        (crate::flood_pod::source::manifest(), &FLOOD[..]),
+    ] {
+        assert_eq!(manifest.atlas.size(), (512, 256), "{}", manifest.item);
+        assert_eq!(manifest.atlas.inset.to_bits(), 2.0_f32.to_bits());
+        assert_eq!(manifest.atlas.regions(), table, "{}", manifest.item);
+        for (name, _) in table {
+            let got = manifest.atlas.region(name).unwrap();
+            let want = retired(table, name).unwrap();
+            assert_eq!(got.map(f32::to_bits), want.map(f32::to_bits), "{name}");
+        }
+        assert_eq!(manifest.atlas.region("nowhere"), None);
+    }
+    assert_eq!(source::manifest().max_triangles, None);
+    assert_eq!(crate::flood_pod::source::manifest().max_triangles, Some(2000));
+
+    // The check refuses a region off the atlas, a repeat and an overlap.
+    let bad = |regions: &str| {
+        Manifest::parse(&format!(
+            "item: x\natlas:\n  width: 8\n  height: 8\n  inset: 0.0\n  regions:\n{regions}"
+        ))
+    };
+    assert!(bad("    - { name: a, rect: [0, 0, 9, 4] }\n").is_err());
+    assert!(bad("    - { name: a, rect: [0, 0, 4, 4] }\n    - { name: a, rect: [4, 0, 8, 4] }\n").is_err());
+    assert!(bad("    - { name: a, rect: [0, 0, 4, 4] }\n    - { name: b, rect: [3, 0, 8, 4] }\n").is_err());
+    assert!(bad("    - { name: a, rect: [0, 0, 4, 4] }\n    - { name: b, rect: [4, 0, 8, 4] }\n").is_ok());
 }

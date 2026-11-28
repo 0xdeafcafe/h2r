@@ -9,37 +9,35 @@
 use anyhow::{Context, bail, ensure};
 use serde::Deserialize;
 
+use std::sync::OnceLock;
+
 use crate::Style;
+use crate::atlas::Manifest;
+
+/// The item manifest, `content/pogo/kit.yaml`: the atlas size and the
+/// regions a part names ([`crate::atlas`]).
+pub fn manifest() -> &'static Manifest {
+    static M: OnceLock<Manifest> = OnceLock::new();
+    M.get_or_init(|| {
+        Manifest::parse(include_str!("../../../../content/pogo/kit.yaml"))
+            .expect("content/pogo/kit.yaml is a manifest")
+    })
+}
 
 /// The atlas size, pixels.
-pub const ATLAS: (u16, u16) = (512, 256);
+pub fn atlas_size() -> (u16, u16) {
+    manifest().atlas.size()
+}
 
 /// The atlas regions a part names, in pixels (x0, y0, x1, y1): the table
 /// `scripts/pogo-atlas.py` paints and `content/pogo/README.md` lists.
-pub const REGIONS: [(&str, [u16; 4]); 8] = [
-    ("body", [0, 0, 256, 128]),
-    ("body_dark", [256, 0, 384, 128]),
-    ("piston", [384, 0, 512, 128]),
-    ("grip", [0, 128, 128, 192]),
-    ("peg", [0, 192, 128, 256]),
-    ("foot", [128, 128, 256, 256]),
-    ("accent", [256, 128, 384, 256]),
-    ("glow", [384, 128, 512, 256]),
-];
-
-/// Texels kept clear at a region's edge, so a filtered sample stays in it.
-pub const INSET: f32 = 2.0;
+pub fn regions() -> Vec<(&'static str, [u16; 4])> {
+    manifest().atlas.regions()
+}
 
 /// A region's rectangle in texture coordinates (u0, v0, u1, v1), inset.
 pub fn region(name: &str) -> Option<[f32; 4]> {
-    let (_, [x0, y0, x1, y1]) = REGIONS.iter().find(|(n, _)| *n == name)?;
-    let (w, h) = (f32::from(ATLAS.0), f32::from(ATLAS.1));
-    Some([
-        (f32::from(*x0) + INSET) / w,
-        (f32::from(*y0) + INSET) / h,
-        (f32::from(*x1) - INSET) / w,
-        (f32::from(*y1) - INSET) / h,
-    ])
+    manifest().atlas.region(name)
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -263,7 +261,7 @@ pub fn atlas(style: Style) -> &'static [u8] {
 
 /// Parses and checks a source: two nodes at most, the frame first and the
 /// piston its child, every part and marker on a node the source has, every
-/// region one of [`REGIONS`].
+/// region one of [`regions`].
 pub fn parse(text: &str) -> anyhow::Result<Source> {
     let s: Source = serde_yaml_ng::from_str(text).context("the model source")?;
     ensure!(

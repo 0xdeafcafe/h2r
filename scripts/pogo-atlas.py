@@ -6,8 +6,8 @@
 
 Standard library only, no input files, fixed seeds: the same bytes every
 run. Each atlas is 512x256 RGBA, opaque. The regions are the same on all
-three, in pixels (x0, y0, x1, y1), and `crates/tools/pogo-kit/src/source.rs`
-(`REGIONS`) holds the same table, which the models' parts name:
+three, in pixels (x0, y0, x1, y1), and `content/pogo/kit.yaml`
+(`regions`) holds the same table, which the models' parts name:
 
     body       0    0  256  128   the main shell, u around the shaft
     body_dark  256  0  384  128   the lower sleeve and the dark frame parts

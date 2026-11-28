@@ -17,7 +17,7 @@
 //! takes a `snd!` and its rows from another map's gestalt, is re-exported
 //! here for the import of a retail sound; the gestalt model
 //! (`h1_assets::sounds::gestalt`) stays in that crate, which this one
-//! depends on through `pogo-kit` already.
+//! depends on through `content-kit` already.
 use audio::resample::resample_sinc;
 use h1_assets::sounds::convert::{CHUNK_LEN, PermutationOut, RangeOut, snd};
 use h1_assets::sounds::gestalt::{DEFAULT_NAME, SoundGestalt, UGH};

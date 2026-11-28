@@ -895,7 +895,7 @@ pub(super) fn source_view(ui: &Ui, app: &mut App, doc: crate::app::Doc) {
     }
 }
 
-fn model_view(ui: &Ui, mesh: &pogo_kit::mesh::Mesh) {
+fn model_view(ui: &Ui, mesh: &content_kit::mesh::Mesh) {
     if mesh.triangles() == 0 {
         ui.text_disabled("This model has no triangles");
         return;

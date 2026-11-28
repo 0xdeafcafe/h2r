@@ -1,5 +1,5 @@
 //! The pogo stick's shared data: its looks, its rig and which weapon
-//! tags each served map holds. The kit (`pogo-kit`) builds the tags from
+//! tags each served map holds. The kit (`content-kit`) builds the tags from
 //! these; the game reads them to hand a player a stick and pose a rider.
 
 /// The folder every look's tags sit under.

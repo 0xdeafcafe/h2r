@@ -1,6 +1,6 @@
 [package]
-name = "pogo-kit"
-description = "The Pogo Stick's models, built from content/pogo into each multiplayer map"
+name = "content-kit"
+description = "The content kit: one tool that builds an item's content/<item>/ (parametric YAML sources, atlases, a manifest) into tags; the Pogo Stick and the Flood pod are its items"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -22,7 +22,7 @@ tags.workspace = true
 vfs.workspace = true
 
 [features]
-# The invented multiplayer map (`pogo_kit::fixture`) for other crates' tests.
+# The invented multiplayer map (`content_kit::fixture`) for other crates' tests.
 fixture = []
 
 [dev-dependencies]

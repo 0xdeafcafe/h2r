@@ -3,11 +3,11 @@
 Status: Partly built. Everything below is written and tested on synthetic
 data; none of it has run in a game, and the Elite has no pose set of its
 own.
-Code: `crates/tools/pogo-kit` (the kit and the map rewrite),
+Code: `crates/tools/content-kit` (the kit and the map rewrite),
 `crates/extensions/game/src/pogo_loadout.rs` (the secondary weapon),
 `pogo.rs` (the rider), `pogo_ride.rs`, `pogo_camera.rs`, `pogo_pose.rs`,
 `pogo_pose_glue.rs`, `pogo_sound.rs`, `pogo_agent.rs`, `pogo_mode.rs` (the
-features). Tests: `crates/tools/pogo-kit/src/tests.rs` and
+features). Tests: `crates/tools/content-kit/src/tests.rs` and
 `inject_tests.rs`, `pogo_tests.rs`, `pogo_pose_tests.rs`, and the `tests`
 module of each other file.
 Switch: the `pogo` and `pogo-view` features (on), listed in
@@ -35,13 +35,13 @@ lathes, sweeps and boxes on two nodes) and a painted 512x256 atlas
 The looks are `unsc` (a stamped olive field spring with a coil and a
 chromed piston), `covenant` (a curved shell over a plasma column) and
 `forerunner` (a six-sided alloy strut over a core of light and rings).
-All three share one rig (`pogo_kit::RIG`): the grips, the foot pegs, the
+All three share one rig (`content_kit::RIG`): the grips, the foot pegs, the
 foot and the piston's travel are in the same places, so a rider is posed
 the same on each.
 
 The package's `model` item per look and its `tag` item for the weapon build
 a look into the tags a map carries it as (`workspace::PackageRewrite`,
-below); `crates/tools/pogo-kit` holds the builder's code
+below); `crates/tools/content-kit` holds the builder's code
 (`kit::install_model`) and embeds the same sources for `inject::add_pogo`,
 which the package's build is tested against:
 
@@ -99,8 +99,8 @@ package give the same bytes on every machine, and the bytes equal
   feature: with it off the package is not in the set and no map gains a
   tag.
 - **Placed.** The `PackageRewrite` hands each map it is asked for, as the
-  game is given it, to `pogo_kit::served::publish`, which reads the three
-  `weap` datums from the map and records them in `pogo_kit::placed`,
+  game is given it, to `content_kit::served::publish`, which reads the three
+  `weap` datums from the map and records them in `content_kit::placed`,
   under the map file's stem and the name in its header. A map without all
   three (not multiplayer, refused, off) has none, and then nothing below
   happens on it.
@@ -307,12 +307,12 @@ route and the row override, are in
 - **Test.** The sounds: the `tests` module of `pogo_sound.rs` (each
   clip's peak, the level each plays at, a cue sounding once in three
   ticks, the oldest voice giving way).
-- **Test.** The kit: `pogo-kit`'s `tests.rs` (the rig's markers, the
+- **Test.** The kit: `content-kit`'s `tests.rs` (the rig's markers, the
   triangle budget, outward normals, the tags read back, the first-person
   block copied from the class's weapon and the refusal without one) and
   `inject_tests.rs` (the references resolve, the same bytes twice, the
   refusal). The package: `pogo_tests.rs` in `crates/tools/workspace`
-  (on `pogo_kit::fixture`'s map the package builds the tags and the
+  (on `content_kit::fixture`'s map the package builds the tags and the
   bytes `kit::install_all` builds; the weapon borrows the pistol's
   first-person block; the rewrite serves it, says which weapons it holds
   and leaves a map that has the stick alone; the `sound` and `model`
@@ -326,7 +326,7 @@ route and the row override, are in
   chase camera).
 - **V**, not yet run: `every_multiplayer_map_holds_the_class` (with the
   first-person graphs' idle) and
-  `every_multiplayer_map_has_the_room` in `pogo-kit` (`#[ignore]`, read
+  `every_multiplayer_map_has_the_room` in `content-kit` (`#[ignore]`, read
   `$H2_DISC`).
 
 ## Not verified

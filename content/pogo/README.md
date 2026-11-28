@@ -20,7 +20,7 @@ This folder is the `pogo` package (`package.toml`, baked into `h2` by
 `crates/apps/boot/build.rs`). Per look, a `model` item
 (`models/<look>.yaml`, with `models/<look>.png` named as a `data` item) builds
 `bitm`, `shad`, `mode` and `hlmt` (`crates/tools/workspace/src/model.rs`,
-over `crates/tools/pogo-kit`), and a `tag` item (`tags/pogo_<look>.weap.yaml`)
+over `crates/tools/content-kit`), and a `tag` item (`tags/pogo_<look>.weap.yaml`)
 builds the `weap`. `sounds/` holds the three clips the game plays
 (`sound` items) and `data/poses.yaml` the rider's pose set. A multiplayer map
 gets them when the game reads it (`workspace::PackageRewrite`). `h2 pogo models --out DIR` writes the three meshes as OBJ files to
@@ -93,3 +93,5 @@ are stored in Git LFS (`.gitattributes`).
 aliases, the mounted pose's numbers and each trick's
 (docs/game/pogo-stick.md, "The pose"). They are hand-keyed and have not
 been seen in a game; its header documents every field.
+
+`kit.yaml` is the item manifest (`crates/tools/content-kit`, `atlas`): the atlas size and the regions a part names.

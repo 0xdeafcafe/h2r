@@ -1,14 +1,14 @@
 //! The pod as tags in a map's [`TagSet`]: its atlas (`bitm`), a shader
 //! drawing it (`shad`), its render model (`mode`), a physics model
 //! (`phmo`), its model (`hlmt`) and the object (`vehi`), all named
-//! [`crate::TAG_PATH`].
+//! [`super::TAG_PATH`].
 //!
 //! Nothing here is copied from a retail tag. What a map must supply is read
 //! from it when the kit is built ([`Facts`]) and names tags the map already
 //! holds:
 //!
 //! - **The shader program.** The `shad` is written from its definition
-//!   onto a retail template the map has (`pogo_kit::kit::LAYOUTS`, the
+//!   onto a retail template the map has (`crate::kit::LAYOUTS`, the
 //!   first the map can draw), with our atlas as its base map.
 //! - **The material.** The `hlmt` and `phmo` name one of the map's global
 //!   materials: [`MATERIAL`] where the map has it.
@@ -32,12 +32,12 @@ use h1convert::shad::{self, Bound, Role};
 use h1objects::rebuild::{self, Predicted, VehicleSpec};
 use map::build::{TagPayload, TagSet};
 use map::{FourCC, Map, TagId};
-use pogo_kit::kit::Shading;
-use pogo_kit::mesh::{self, Mesh};
-use pogo_kit::texture::{self, Rgba};
+use crate::kit::Shading;
+use crate::mesh::{self, Mesh};
+use crate::texture::{self, Rgba};
 
-use crate::TAG_PATH;
-use crate::source::{self, Source};
+use super::TAG_PATH;
+use super::source::{self, Source};
 
 /// The global material the pod is made of, where the map has it; else the
 /// map's first.
@@ -232,13 +232,13 @@ pub fn install_from(
         }
     }
     ensure!(
-        (atlas.width, atlas.height) == (u32::from(source::ATLAS.0), u32::from(source::ATLAS.1)),
+        (atlas.width, atlas.height) == (u32::from(source::atlas_size().0), u32::from(source::atlas_size().1)),
         "{}: the atlas is {}x{}, want {}x{}",
         source.atlas,
         atlas.width,
         atlas.height,
-        source::ATLAS.0,
-        source::ATLAS.1
+        source::atlas_size().0,
+        source::atlas_size().1
     );
     let mesh = source::build(source)?;
     let model = model(source, &mesh)?;
@@ -252,7 +252,7 @@ pub fn install_from(
         Bound {
             id: bitmap,
             scale: [1.0, 1.0],
-            lod_offset: shad::lod_offset(source::ATLAS.0, source::ATLAS.1),
+            lod_offset: shad::lod_offset(source::atlas_size().0, source::atlas_size().1),
         },
     )]);
     let shader = shading

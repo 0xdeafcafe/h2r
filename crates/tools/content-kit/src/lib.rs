@@ -1,7 +1,15 @@
-//! The pogo stick's kit: three looks of one stick, each built from a
-//! parametric source and a painted atlas under `content/pogo/` into the tags a
-//! map needs to hold it as a weapon.
+//! The content kit: one tool that builds an item's content (`content/<item>/`:
+//! parametric YAML sources, painted atlases and a manifest) into the tags a
+//! map needs to hold it. The items are the Pogo Stick (this crate's root
+//! modules, three looks, `content/pogo/`) and the Flood pod ([`flood_pod`],
+//! `content/flood-pod/`). The data model every item shares is the manifest
+//! ([`atlas`]), the source ([`source`]), the mesher ([`mesh`]) and the atlas
+//! writer ([`texture`]); an item adds its rig and its tag layout.
 //!
+//! The Pogo Stick, three looks of one stick:
+//!
+//! - [`atlas`]: an item's manifest, `content/<item>/kit.yaml`: the atlas
+//!   size, its regions and the item's limits.
 //! - [`source`]: the YAML sources and atlases, embedded, and their parser.
 //! - [`mesh`]: a source's lathes, sweeps and boxes as triangles.
 //! - [`texture`]: an atlas as a `bitm`.
@@ -15,6 +23,8 @@
 //! Every look shares one rig ([`RIG`]): the same grips, pegs, foot and
 //! piston travel, so the code that poses a rider reads no look.
 
+pub mod atlas;
+pub mod flood_pod;
 pub mod inject;
 pub mod kit;
 pub mod mesh;
