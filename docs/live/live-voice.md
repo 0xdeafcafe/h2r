@@ -207,7 +207,7 @@ no change to game code:
 1. **A communicator on each port that has voice.** Answer XPeekDevices,
    XGetDevices and XGetDeviceChanges for the microphone and headphone types
    with a bit for every port whose player has voice, driven by host mic
-   presence and `voice.mic_muted` (see 4). Insertions and removals arrive
+   presence and `voice.mute_microphone` (see 4). Insertions and removals arrive
    through the same device-change path as gamepads, so the engine calls
    CommunicatorStatusUpdate itself.
 2. **The communicator's media objects.** The title's own XHV engine and its
@@ -225,7 +225,7 @@ no change to game code:
    HLE already forwards the flags the game sets.
 6. **Account voice permission.** Bit 16 of the XUID flags stays clear for
    every account. There is no account-level voice switch (section 6, decision
-   4); `voice.mic_muted` and `voice.incoming_muted` are the player's controls.
+   4); `voice.mute_microphone` and `voice.mute_everyone` are the player's controls.
 
 ## 3. Host design
 
@@ -252,13 +252,13 @@ from the pause menu. Its rows edit these host settings:
 
 | Setting | Read where |
 |---|---|
-| `voice.input_device` | capture open (3.2) |
-| `voice.output_device` | playback route: headset device or "same as game" |
-| `voice.mode` (open mic, or push-to-talk and its button) | microphone XMO gate, each frame (3.2) |
-| `voice.mic_muted` | microphone XMO gate, each frame; also the communicator answer (2.1) |
-| `voice.incoming_muted` | headphone XMO gate, each frame |
-| `voice.input_volume` | capture gain before the engine, each frame |
-| `voice.output_volume` | playback gain after the engine, each frame |
+| `voice.microphone` | capture open (3.2) |
+| `voice.output` | playback route: headset device or "same as game" |
+| `voice.talk_mode` (open mic, or push-to-talk and `voice.talk_button`) | microphone XMO gate, each frame (3.2) |
+| `voice.mute_microphone` | microphone XMO gate, each frame; also the communicator answer (2.1) |
+| `voice.mute_everyone` | headphone XMO gate, each frame |
+| `voice.microphone_volume` | capture gain before the engine, each frame |
+| `voice.volume` | playback gain after the engine, each frame |
 | per-player mute list, if it lands there | not used; the Live mute list (3.6) is the one list |
 
 Only one input and one output device are chosen per machine (3.2). It
@@ -276,8 +276,8 @@ Integration points:
    same `settings::Store` the pause menu writes. It never keeps its own copy.
 2. A device change (setting written) is picked up at the next 20 ms frame: the
    capture or playback stream is reopened on the audio thread.
-3. The communicator answer (2.1) reads `voice.mic_muted` and whether
-   `voice.input_device` resolves to a present device.
+3. The communicator answer (2.1) reads `voice.mute_microphone` and whether
+   `voice.microphone` resolves to a present device.
 4. If pause-settings adds a per-player mute row, it should write through to
    the Live mute list (3.6) when signed in, rather than keep its own list. I
    will raise this with that lane before either side builds it.

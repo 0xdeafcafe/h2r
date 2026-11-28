@@ -10,8 +10,8 @@ holds: a setting is one `settings::Def`, and nothing on a screen writes guest
 simulation memory except through a hook that says so (the clamp global in
 "Field of view").
 
-- **Video** on the main menu's Settings list opens the field of view,
-  frame rate, resolution, lighting, HUD position and LOD distance options.
+- **Video** on the main menu's Settings list opens the resolution,
+  frame rate, field of view, lighting, HUD position and LOD distance options.
   See "Video screen" and "Field of view". **Voice**, the next row, opens
   the voice chat options ("Voice screen").
 - The Controls screen has rows for the controller speaker, the Steam
@@ -158,6 +158,26 @@ privacy screen sets it; [live-custom-games.md](../live/live-custom-games.md)),
 ([live-coop.md](../live/live-coop.md)), and `graphics.single_copy`
 ([high-resolution.md](../graphics/high-resolution.md)).
 
+## Placement and naming
+
+Video and Voice follow one scheme (`setting_defs.rs`, `voice_settings.rs`).
+
+| What | Rule | Video | Voice |
+|---|---|---|---|
+| Screen | a setting's row is on the screen its file table belongs to | `[graphics]` | `[voice]` |
+| Row order | the device or display, then how it behaves, then levels, then On/Off rows | Resolution, Frame Rate, then the view rows | Microphone, Voice Output, Talk rows, volumes, mutes |
+| Label | Title Case, the retail screens' wording | Field of View | Talk Mode |
+| File key | the label in lower case with underscores, without the screen's name; `fov` and `fps` are the two short forms | `hud_position` | `microphone_volume` |
+| Value name | the value's label in lower case with underscores | `pinned`, `uncapped` | `open_mic`, `push_to_talk` |
+
+The only other key the file reads is the saved integer
+`graphics.render_scale` ("Video screen"). Variables keep their own names
+([switches.md](../runtime/switches.md)).
+
+Video has no widescreen, vsync or brightness row. The picture follows the
+window's shape ([high-resolution.md](../graphics/high-resolution.md#widescreen-projection)),
+Frame Rate paces the display, and brightness stays the game's own.
+
 ## Video screen
 
 The top-level Settings list reads Player Profiles, Game Variants, **Video**
@@ -165,11 +185,11 @@ and **Voice**. Selecting Video opens the display options below.
 
 | Row | Values | Saved as | Applies | Locked by |
 |---|---|---|---|---|
-| Field of View | 70 to 120 in steps of 5 | `[graphics] fov` | at once | `H2_FOV` |
-| Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | at once | `--fps`, `H2_FPS` |
 | Resolution | Native (render width x height), then fixed sizes at the viewport aspect | `[graphics] resolution` (`"native"` or `"WxH"`) | next frame | `H2_RESOLUTION`, legacy `H2_RENDER_SCALE` |
+| Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | at once | `--fps`, `H2_FPS` |
+| Field of View | 70 to 120 in steps of 5 | `[graphics] fov` | at once | `H2_FOV` |
 | Lighting | Retail, E3 (default Retail). A [BSP review launch](../graphics/relighting-review.md) displays its locked lamp state | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
-| HUD Position | Pinned (default), Centred | `[graphics] hud_position` (`"pinned"`, `"centered"`) | live | `H2_HUD_POSITION` |
+| HUD Position | Pinned (default), Centred (drawn as `Centered`) | `[graphics] hud_position` (`"pinned"`, `"centered"`) | live | `H2_HUD_POSITION` |
 | LOD Distance | Retail, 0.5x, 1x, 1.5x, 2x, 3x, 4x, Highest (default) | `[graphics] lod_distance` (number, `"retail"` or `"highest"`) | next view | `H2_LOD_DISTANCE` |
 
 A on Resolution, HUD Position or LOD Distance opens a select dialog. A confirms the

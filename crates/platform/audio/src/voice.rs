@@ -6,7 +6,7 @@
 //!
 //! A device is known by its host id (CoreAudio's device UID through cpal,
 //! which survives a reboot and a replug) and shown by its name. The
-//! `voice.input_device` and `voice.output_device` settings hold [`key`] of
+//! `voice.microphone` and `voice.output` settings hold [`key`] of
 //! the id, so the audio side reads its choice with one atomic load and
 //! finds the device again with [`find`]; 0 ([`SYSTEM_DEFAULT`]) is the
 //! host's default device.

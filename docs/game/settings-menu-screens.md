@@ -384,7 +384,7 @@ screen after each step.
    the same window and slot and the display options. Press B and check
    that the native list returns at **Video**.
 3. Select **Voice** and press A. Check for `class: "voice"` on the same
-   window and slot and **Mute Button** below **Voice Volume**. Press Back
+   window and slot and **Mute Button** below **Mute Everyone**. Press Back
    and check that the native list returns at **Voice**.
 4. Press B to return to the pause menu. In campaign, Continue resumes the
    game. In multiplayer, play continues behind the menus. Check the
@@ -405,15 +405,18 @@ Button** through `PadHid::mute_switch`.
 
 | Row | Key | Values | Locked by |
 |---|---|---|---|
-| Microphone | `voice.input_device` | System default, then the host's inputs | `H2_VOICE_INPUT` (an id, part of a name, or `default`) |
-| Voice Output | `voice.output_device` | Same as Game (mixed into the game's output), then the host's outputs | `H2_VOICE_OUTPUT` |
-| Talk | `voice.mode` | Open Mic (`open`), Push to Talk (`push`) | `H2_VOICE_MODE` |
-| Talk Button | `voice.push_to_talk_button` | D-Pad Down, D-Pad Up, D-Pad Left, D-Pad Right, Back | `H2_VOICE_PTT_BUTTON` |
-| Mute My Mic | `voice.mic_muted` | On, Off (default Off) | `H2_VOICE_MIC_MUTED` |
-| Mute Everyone | `voice.incoming_muted` | On, Off (default Off) | `H2_VOICE_INCOMING_MUTED` |
-| Mic Volume | `voice.input_volume` | 0% to 100% in tens (default 100) | `H2_VOICE_INPUT_VOLUME` |
-| Voice Volume | `voice.output_volume` | 0% to 100% in tens (default 100) | `H2_VOICE_OUTPUT_VOLUME` |
-| Mute Button | `pad.mute_button` | On, Off (default On) | `H2_PAD_MUTE` |
+| Microphone | `voice.microphone` | System Default (`system_default`), then the host's inputs | `H2_VOICE_INPUT` (an id, part of a name, or `default`) |
+| Voice Output | `voice.output` | Same as Game (`same_as_game`, mixed into the game's output), then the host's outputs | `H2_VOICE_OUTPUT` |
+| Talk Mode | `voice.talk_mode` | Open Mic (`open_mic`), Push to Talk (`push_to_talk`) | `H2_VOICE_MODE` |
+| Talk Button | `voice.talk_button` | D-Pad Down, D-Pad Up, D-Pad Left, D-Pad Right, Back | `H2_VOICE_PTT_BUTTON` |
+| Microphone Volume | `voice.microphone_volume` | 0% to 100% in tens (default 100) | `H2_VOICE_INPUT_VOLUME` |
+| Voice Volume | `voice.volume` | 0% to 100% in tens (default 100) | `H2_VOICE_OUTPUT_VOLUME` |
+| Mute Microphone | `voice.mute_microphone` | On, Off (default Off) | `H2_VOICE_MIC_MUTED` |
+| Mute Everyone | `voice.mute_everyone` | On, Off (default Off) | `H2_VOICE_INCOMING_MUTED` |
+| Mute Button | `voice.mute_button` | On, Off (default On) | `H2_PAD_MUTE` |
+
+The rows follow the order and names in
+[settings-menu.md](settings-menu.md#placement-and-naming).
 
 **Devices.** `audio::voice::Devices` lists a host's inputs and outputs
 (`audio::voice::Device`: the host id and the name); `HostDevices` is cpal's
@@ -424,7 +427,7 @@ choices of the first choice and up to twelve devices, each name cut to 24
 characters, a repeated name numbered. A device's value is
 `audio::voice::key(id)` (FNV-1a, positive, never 0), so the handle is an
 `i64`; `audio::voice::find` gives the device back, and 0 means the first
-choice. The file keeps the id (`input_device = "coreaudio:<UID>"`). A
+choice. The file keeps the id (`microphone = "coreaudio:<UID>"`). A
 device in the file but not plugged in at launch is reported once and the
 row shows the first choice; the file keeps it until another is chosen.
 The list is not followed while the game runs: a device plugged in later

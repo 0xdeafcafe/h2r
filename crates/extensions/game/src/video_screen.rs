@@ -1,6 +1,6 @@
 //! Video opens from the main menu's Settings list and the pause
-//! menu's Player Settings, and Voice from the same two places. The screen uses the Controls layout for Field
-//! of View, Frame Rate, Resolution, Lighting, HUD Position and LOD Distance.
+//! menu's Player Settings, and Voice from the same two places. The screen uses the Controls layout for
+//! Resolution, Frame Rate, Field of View, Lighting, HUD Position and LOD Distance.
 //! See docs/game/settings-menu.md "Video screen" for the trace.
 //!
 //! **The rows.** The Settings list (screen id 19, list handler `0x2b1cca` at
@@ -375,9 +375,9 @@ mod tests {
         assert_eq!(
             kinds,
             [
-                RowKind::Setting(FOV.key),
-                RowKind::Setting(FPS.key),
                 RowKind::Setting(RESOLUTION.key),
+                RowKind::Setting(FPS.key),
+                RowKind::Setting(FOV.key),
                 RowKind::Setting(LIGHTING.key),
                 RowKind::Setting(HUD_POSITION.key),
                 RowKind::Setting(LOD_DISTANCE.key),
@@ -695,12 +695,12 @@ mod tests {
     #[test]
     fn every_row_draws_its_label_and_value_as_before() {
         let m = all();
-        assert_eq!(drawn(&m, LIST, 0), s("Field of View", "70"));
-        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
         assert_eq!(
-            m.line(m.row(LIST, 2).unwrap()),
+            m.line(m.row(LIST, 0).unwrap()),
             "Resolution: Native (640x480)"
         );
+        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
+        assert_eq!(drawn(&m, LIST, 2), s("Field of View", "70"));
         assert_eq!(drawn(&m, LIST, 3), s("Lighting", "Retail"));
         assert_eq!(drawn(&m, LIST, 4), s("HUD Position", "Pinned"));
         assert_eq!(drawn(&m, LIST, 5), s("LOD Distance", "Highest"));
@@ -755,18 +755,18 @@ mod tests {
         press(&m, LIST, 1);
         assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
         assert_eq!(
-            press(&m, LIST, 0),
+            press(&m, LIST, 2),
             Chosen::Stepped("graphics.fov: 75".into())
         );
-        assert_eq!(drawn(&m, LIST, 0), s("Field of View", "75"));
+        assert_eq!(drawn(&m, LIST, 2), s("Field of View", "75"));
         assert_eq!(fov.get(), 75, "applies at once");
         use crate::ui_kit::picker;
-        assert_eq!(press(&m, LIST, 2), Chosen::Open(picker::NAME));
+        assert_eq!(press(&m, LIST, 0), Chosen::Open(picker::NAME));
         let pick = picker::current().unwrap();
         assert_eq!(pick.values, ["Native (640x480)", "640x480"]);
         assert_eq!(pick.current, 0);
         (pick.set)(1);
-        assert_eq!(m.line(m.row(LIST, 2).unwrap()), "Resolution: 640x480");
+        assert_eq!(m.line(m.row(LIST, 0).unwrap()), "Resolution: 640x480");
         assert_eq!(resolution.get(), settings::Resolution::Fixed(640, 480));
         assert_eq!(press(&m, LIST, 4), Chosen::Open(picker::NAME));
         let pick = picker::current().unwrap();
@@ -806,7 +806,7 @@ mod tests {
         );
         assert_eq!(
             press(&m, VOICE_LIST, 8),
-            Chosen::Stepped("pad.mute_button: false".into())
+            Chosen::Stepped("voice.mute_button: false".into())
         );
         assert_eq!(drawn(&m, VOICE_LIST, 8), s("Mute Button", "Off"));
         assert!(!mute.get(), "applies at once");
@@ -837,7 +837,7 @@ mod tests {
         assert_eq!(t["graphics"]["resolution"].as_str(), Some("640x480"));
         assert_eq!(t["graphics"]["lighting"].as_str(), Some("e3"));
         assert_eq!(t["pad_speaker"]["enabled"].as_bool(), Some(true));
-        assert_eq!(t["pad"]["mute_button"].as_bool(), Some(false));
+        assert_eq!(t["voice"]["mute_button"].as_bool(), Some(false));
         assert_eq!(t["steam_pad"]["speaker"].as_bool(), Some(false));
         assert_eq!(t["steam_pad"]["sensitivity"].as_integer(), Some(6));
         assert_eq!(t["steam_pad"]["left_pad"].as_str(), Some("stick"));
@@ -865,7 +865,7 @@ mod tests {
             Arc::new(move || *read.lock().unwrap()),
         )
         .unwrap();
-        let row = m.row(LIST, 2).unwrap();
+        let row = m.row(LIST, 0).unwrap();
         let slot = m.texts(row)[1].1;
         m.bind_resolution_slot(&[(slot, 0x8000)]);
         let studio = resolution::label(settings::Resolution::Native, studio);

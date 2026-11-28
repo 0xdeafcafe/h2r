@@ -30,7 +30,7 @@ pub static FOV: Def = Def {
     tier: Tier::User,
     menu: Some(Menu {
         screen: "video",
-        order: 10,
+        order: 30,
     }),
 };
 
@@ -102,7 +102,7 @@ pub static RESOLUTION: Def = Def {
     tier: Tier::User,
     menu: Some(Menu {
         screen: "video",
-        order: 30,
+        order: 10,
     }),
 };
 
@@ -182,7 +182,7 @@ pub static LOD_DISTANCE: Def = Def {
     tier: Tier::User,
     menu: Some(Menu {
         screen: "video",
-        order: 45,
+        order: 50,
     }),
 };
 
@@ -310,7 +310,7 @@ pub static PAD_LIGHTBAR: Def = Def {
 };
 
 pub static PAD_MUTE: Def = Def {
-    key: "pad.mute_button",
+    key: "voice.mute_button",
     label: "Mute Button",
     help: "A DualSense's mute button mutes the microphone and its LED shows it. \
            A change reaches the controller thread at once; off unmutes and puts the LED out.",
@@ -1019,10 +1019,10 @@ pub static ALL: &[&Def] = &[
     &crate::voice_settings::OUTPUT_DEVICE,
     &crate::voice_settings::MODE,
     &crate::voice_settings::PTT_BUTTON,
-    &crate::voice_settings::MIC_MUTED,
-    &crate::voice_settings::INCOMING_MUTED,
     &crate::voice_settings::INPUT_VOLUME,
     &crate::voice_settings::OUTPUT_VOLUME,
+    &crate::voice_settings::MIC_MUTED,
+    &crate::voice_settings::INCOMING_MUTED,
     // The Clankers page of a custom game's Game Setup (crate::clankers,
     // docs/game/bots.md section 7).
     &crate::clankers::ENABLED,

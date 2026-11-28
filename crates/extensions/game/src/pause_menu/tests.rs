@@ -185,24 +185,24 @@ fn voice_contains_mute_button_and_uses_the_live_host_settings() {
     assert_eq!(m.line(row), "Mute Button: On");
     assert_eq!(
         m.press(row),
-        Chosen::Stepped("pad.mute_button: false".into())
+        Chosen::Stepped("voice.mute_button: false".into())
     );
     assert_eq!(m.line(row), "Mute Button: Off");
     assert!(!pad_mute.get());
 
     let audio = VoiceHandles::new(m.store());
     let p = page(&m, VOICE);
-    let mut focus = Focus(4);
+    let mut focus = Focus(6);
     assert_eq!(
         p.step(&mut focus, Input::A),
-        ListEffect::Stepped("voice.mic_muted: true".into())
+        ListEffect::Stepped("voice.mute_microphone: true".into())
     );
     assert_eq!(m.store().get(MIC_MUTED.key), Some(Value::Bool(true)));
     assert_eq!(audio.capture_gain(), 0.0);
-    assert_eq!(m.line(m.row(VOICE_LIST, 4).unwrap()), "Mute My Mic: On");
+    assert_eq!(m.line(m.row(VOICE_LIST, 6).unwrap()), "Mute Microphone: On");
     assert_eq!(
-        p.step(&mut Focus(7), Input::A),
-        ListEffect::Stepped("voice.output_volume: 0".into())
+        p.step(&mut Focus(5), Input::A),
+        ListEffect::Stepped("voice.volume: 0".into())
     );
     assert_eq!(audio.output_volume.get(), 0);
 }
@@ -211,14 +211,14 @@ fn voice_contains_mute_button_and_uses_the_live_host_settings() {
 fn video_still_steps_display_settings_live() {
     let m = model();
     let p = page(&m, VIDEO);
-    let mut focus = Focus(0);
+    let mut focus = Focus(2);
     assert_eq!(
         p.step(&mut focus, Input::A),
         ListEffect::Stepped("graphics.fov: 75".into())
     );
     assert_eq!(m.store().handle::<u32>(FOV.key).get(), 75);
     assert_eq!(
-        m.line(m.row(video_screen::LIST, 0).unwrap()),
+        m.line(m.row(video_screen::LIST, 2).unwrap()),
         "Field of View: 75"
     );
 }
@@ -263,7 +263,7 @@ fn a_host_full_of_devices_fits_the_models_string_ids() {
         "the devices spill into the second family"
     );
     let mic = m.row(VOICE_LIST, 0).unwrap();
-    assert_eq!(label(&m, m.texts(mic)[1].1), "System default");
+    assert_eq!(label(&m, m.texts(mic)[1].1), "System Default");
     m.press(mic);
     assert_eq!(label(&m, m.texts(mic)[1].1), "in device number 0");
 }
