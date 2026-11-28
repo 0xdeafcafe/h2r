@@ -329,11 +329,6 @@ pub struct OverlayStats {
     /// Batches whose texture the renderer does not hold, or whose blend
     /// it cannot take (`ui_gpu`).
     pub refused_texture: u32,
-    /// Model views planned with their camera ([`OverlayPlan::model_views`])
-    /// that no stage draws yet.
-    pub refused_model_view: u32,
-    /// Model views with no camera or scissor (`crate::model_view::Refusal`).
-    pub refused_model_view_camera: u32,
     /// Movie frames whose movie the renderer holds no upload of
     /// (`ui_gpu`).
     pub refused_movie: u32,
@@ -349,8 +344,7 @@ pub struct OverlayStats {
 impl OverlayStats {
     /// Items the plan kept.
     pub fn drawn(&self) -> u32 {
-        self.items - self.refused_material - self.refused_clip - self.refused_glyph - self.refused_model_view
-            - self.refused_model_view_camera
+        self.items - self.refused_material - self.refused_clip - self.refused_glyph
     }
 }
 
@@ -418,11 +412,8 @@ impl OverlayPlan {
                 let planned = overlay.model_view_of(item).ok_or(crate::model_view::Refusal::Camera)
                     .and_then(|view| crate::model_view::plan(view, &item.clip, guest, target, before, plan.blurs.len() as u32));
                 match planned {
-                    Ok(view) => {
-                        plan.model_views.push(view);
-                        plan.stats.refused_model_view += 1;
-                    }
-                    Err(_) => plan.stats.refused_model_view_camera += 1,
+                    Ok(view) => plan.model_views.push(view),
+                    Err(why) => unimplemented!("overlay model view: {}", why.name()),
                 }
                 continue;
             }
@@ -792,20 +783,26 @@ mod tests {
         assert_eq!(p.blurs[0].scissor, Scissor { x: 0, y: 0, width: 1280, height: 960 });
         assert_eq!(p.blurs[0].offsets, vec![[0.5 / 640.0, 0.5 / 480.0], [0.625 / 640.0, 0.625 / 480.0]]);
         assert_eq!(p.blurs[0].pick, 0.25, "the combiner's constant goes with the steps");
-        assert_eq!((p.stats.blurs, p.stats.model_views, p.stats.refused_model_view), (1, 1, 1));
-        assert_eq!(p.stats.drawn(), 4);
+        assert_eq!((p.stats.blurs, p.stats.model_views), (1, 1));
+        assert_eq!(p.stats.drawn(), 5);
         assert_eq!(p.model_views.len(), 1);
         assert_eq!((p.model_views[0].before, p.model_views[0].objects.as_slice()), (2, &[7][..]), "between the batches, as the blur");
         assert_eq!(p.model_views[0].scissor, Scissor { x: 20, y: 20, width: 128, height: 96 });
         assert_eq!(p.model_views[0].camera.viewport, [10, 10, 58, 74]);
-        let mut flat = o.clone();
-        flat.model_views[0].camera.fov_y = 0.0;
-        let p = OverlayPlan::new(&flat, [1280, 960], &NoGlyphs);
-        assert_eq!((p.model_views.len(), p.stats.refused_model_view, p.stats.refused_model_view_camera), (0, 0, 1));
-        assert_eq!(p.stats.drawn(), 4);
         let mut blur_only = Overlay::new([640, 480]);
         blur_only.push_blur(all(), OverlayBlur { tap: 0.5, spreads: vec![1.0], pick: 0.0 }).unwrap();
         assert!(!OverlayPlan::new(&blur_only, [640, 480], &NoGlyphs).is_empty());
+    }
+
+    /// A view whose record would not be a camera stops the plan by name.
+    #[test]
+    #[should_panic(expected = "overlay model view: model_view_camera")]
+    fn a_model_view_with_no_camera_is_unimplemented() {
+        use frame_scene::{OverlayCamera, OverlayModelView};
+        let mut o = Overlay::new([640, 480]);
+        let camera = OverlayCamera { forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 0.0, planes: [0.0625, 200.0], ..OverlayCamera::default() };
+        o.push_model_view(ClipRect { x: 10, y: 10, width: 64, height: 48 }, OverlayModelView { camera, objects: vec![7] }).unwrap();
+        OverlayPlan::new(&o, [1280, 960], &NoGlyphs);
     }
 
     #[test]

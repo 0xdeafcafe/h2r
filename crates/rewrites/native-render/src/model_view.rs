@@ -27,8 +27,8 @@ use frame_scene::{ClipRect, OverlayModelView};
 use crate::camera::RenderCamera;
 use crate::overlay::{Scissor, scissor};
 
-/// Why a model view does not reach the object stage, counted
-/// `native_ui_overlay_refused_model_view_camera`.
+/// Why a model view cannot reach the object stage: the overlay plan stops
+/// on it by name (`unimplemented!`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// The record would not be a camera: a FOV, plane or axis that does not
