@@ -302,7 +302,7 @@ The colour pass `0x000214f0` and the screen effect `0x0002d140` are Rust bodies 
 
 | Pass | View (target 0's colour) | Roles |
 |---|---|---|
-| Glow | read and written | `Game(7)`, `Game(8)` |
+| Glow | the view's target, bound by its index (`0x00014bc0`), read and written | `Game(7)`, `Game(8)` |
 | Screen call | read; written by a pass into it | `Game(1)`, `Game(0x19)` to `Game(0x1b)` (the stand-ins) |
 
 The bodies make the guest's writes the rest of the game reads: target 1 and the stand-ins' sizes in the table and both headers (`0x0001ddd0`), the saved sizes back at the end, the template cache reset, the results and the end flag. Raster state is the plan's, not a guest draw's. A call the bodies or the passes do not cover panics, `post: <cause>`. The page: [native-post.md](native-post.md).

@@ -565,11 +565,14 @@ pub const SLOT_TARGET1: u8 = 2;
 pub const SLOT_STAND_INS: u8 = 3;
 
 /// What a post pass's slot is to the game: the view (target 0's colour,
-/// `[0x0050935c]`, a surface of the device's) or a role of Halo's target
-/// table, its surface header at `+0x18` (`render_bridge::native_targets::role`).
+/// `[0x0050935c]`, a surface of the device's), the bound colour (the
+/// target select's cache `[0x0051f3f4]`: the glow's view, which the body
+/// binds by its index first), or a role of Halo's target table, its
+/// surface header at `+0x18` (`render_bridge::native_targets::role`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PostTarget {
     View,
+    Bound,
     Role(TargetRole),
 }
 
@@ -584,6 +587,11 @@ pub fn post_slot(mem: &dyn GuestMemory, t: PostTarget, written: bool) -> Result<
             .ok()
             .filter(|&h| h != 0)
             .ok_or("the view's colour surface")?,
+        PostTarget::Bound => mem
+            .u32(render_bridge::native_targets::CACHE_COLOUR)
+            .ok()
+            .filter(|&h| h != 0)
+            .ok_or("the bound colour surface")?,
         PostTarget::Role(TargetRole::Game(n)) => {
             target_level_surface(mem, u32::from(n)).ok_or(format!("target {n:#x} is not made"))?
         }
@@ -647,9 +655,9 @@ fn screen_slots(mem: &dyn GuestMemory, call: &ScreenCall) -> Result<Vec<Option<d
         .collect()
 }
 
-/// The glow's slots: the view 0, target 7 1, target 8 2.
+/// The glow's slots: the bound colour (the view's target, which the body binds first) 0, target 7 1, target 8 2.
 pub const GLOW_TARGETS: [PostTarget; 3] =
-    [PostTarget::View, PostTarget::Role(TargetRole::Game(7)), PostTarget::Role(TargetRole::Game(8))];
+    [PostTarget::Bound, PostTarget::Role(TargetRole::Game(7)), PostTarget::Role(TargetRole::Game(8))];
 
 /// The body's target-table writes (`0x0001ddd0`) in its order, for
 /// `effect` as planned and `drawn` its passes' template gates: before a
@@ -1608,6 +1616,10 @@ mod tests {
         m.write(e + 0x95, &[1]).unwrap();
         assert!(post_slot(&m, role, false).is_err(), "a hidden size");
         assert!(post_slot(&m, PostTarget::Role(TargetRole::DisplayDepth), false).is_err());
+        // The glow's view is the bound colour, whichever target the view's is.
+        assert_eq!(GLOW_TARGETS[0], PostTarget::Bound);
+        m.set_u32(render_bridge::native_targets::CACHE_COLOUR, 0x0053_0000).unwrap();
+        assert_eq!(post_slot(&m, PostTarget::Bound, true).unwrap().header, 0x0053_0000);
         assert_eq!(GLOW_TARGETS[1], PostTarget::Role(TargetRole::Game(glow::TARGET_DOWN as u8)));
         assert_eq!(GLOW_TARGETS[2], PostTarget::Role(TargetRole::Game(glow::TARGET_OTHER as u8)));
         m.set_u32(post_feature::TARGET0_COLOUR, 0).unwrap();

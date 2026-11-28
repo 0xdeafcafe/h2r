@@ -139,25 +139,26 @@ fn stack(mem: &dyn GuestMemory, esp: u32, n: u32) -> Result<Vec<u32>, MemFault> 
     (0..n).map(|i| mem.u32(esp.wrapping_add(4 + 4 * i))).collect()
 }
 
-/// Whether the glow draws where the guest's would: the view's target is
-/// target 0, its colour is the bound one, and `0x00014bc0` at the end
-/// (Code, `0x00021a44..0x00021a6e`) binds it again, so the bind is the
-/// one the call came in with.
-pub fn glow_covered(mem: &dyn GuestMemory) -> Result<(), &'static str> {
-    let unread = |_| "unread";
-    if mem.u32(VIEW_TARGET).map_err(unread)? as u16 != 0 || mem.u32(EXIT_TARGET).map_err(unread)? != u32::MAX {
-        return Err("target");
-    }
-    if mem.u32(crate::native_targets::CACHE_COLOUR).map_err(unread)? != mem.u32(TARGET0_COLOUR).map_err(unread)? {
-        return Err("bound");
-    }
-    Ok(())
+/// `0x00014bc0`, the target select by index (AL 1, the index and 0 on
+/// the stack, the caller pops them).
+pub const BIND_TARGET: u32 = 0x0001_4bc0;
+
+/// The two binds of a colour pass that draws, by target index: the view's
+/// target `[0x004858b8]` (a word), which `0x00034a90` binds for the
+/// composite (`0x00021a1b..0x00021a3f`), and the one `0x00014bc0` binds at
+/// the end (`0x00021a44..0x00021a6e`): `[0x004858b4]` when not -1, else
+/// the view's again.
+pub fn glow_binds(mem: &dyn GuestMemory) -> Result<(u32, u32), MemFault> {
+    let view = u32::from(mem.u16(VIEW_TARGET)?);
+    let exit = mem.u32(EXIT_TARGET)?;
+    Ok((view, if exit == u32::MAX { view } else { exit }))
 }
 
-/// `0x000214f0`'s body on any guest memory, `esp` at its entry: the
-/// override record's pending reset (`0x00021533..0x0002156a`), then the
-/// glow through the host when the parameters draw. Whether it drew.
-pub fn colour_pass(mem: &mut dyn GuestMemory, esp: u32, fp: Fp) -> bool {
+/// `0x000214f0`'s body up to its glow, on any guest memory, `esp` at its
+/// entry: the override record's pending reset (`0x00021533..0x0002156a`).
+/// `Some` with the parameters when the glow draws; `None` returns at once
+/// (`0x00021a73`, no bind).
+pub fn colour_pass(mem: &mut dyn GuestMemory, esp: u32, fp: Fp) -> Option<Parameters> {
     CALLS.fetch_add(1, Ordering::Relaxed);
     let words = stack(&*mem, esp, COLOUR_ARGS).unwrap_or_else(|_| unhandled("colour pass args"));
     let args: [u32; 7] = std::array::from_fn(|i| words[i]);
@@ -167,13 +168,13 @@ pub fn colour_pass(mem: &mut dyn GuestMemory, esp: u32, fp: Fp) -> bool {
     let p = colour_pass::parameters(&*mem, args, fp.mxcsr)
         .unwrap_or_else(|e| unhandled(format!("colour pass parameters ({e:?})")));
     p.write_reset(mem).unwrap_or_else(|e| unhandled(format!("colour pass reset ({e:?})")));
-    if !p.draws {
-        return false;
-    }
-    glow_covered(&*mem).unwrap_or_else(|cause| unhandled(format!("glow {cause}")));
-    host().glow(mem, &p, fp).unwrap_or_else(|cause| unhandled(format!("glow: {cause}")));
+    p.draws.then_some(p)
+}
+
+/// The glow through the host, the view's target bound ([`glow_binds`]).
+pub fn glow(mem: &mut dyn GuestMemory, p: &Parameters, fp: Fp) {
+    host().glow(mem, p, fp).unwrap_or_else(|cause| unhandled(format!("glow: {cause}")));
     GLOWS.fetch_add(1, Ordering::Relaxed);
-    true
 }
 
 /// Where `0x0002d140` copies the call's four values (`0x0002d140..0x0002d16a`),
@@ -337,22 +338,62 @@ fn fp(cpu: &runtime::CpuAbi) -> Fp {
 /// Returns from the call at `esp` (its return address at `[esp]`) past
 /// `args` stack words.
 fn ret(cpu: &mut runtime::CpuAbi, mem: &dyn GuestMemory, esp: u32, args: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    let to = mem.u32(esp).map_err(|f| runtime::GuestFault {
-        addr: f.addr,
-        len: f.len as usize,
-        access: runtime::guest::Access::Read,
-        reason: runtime::guest::FaultReason::Unmapped,
-    })?;
+    let to = mem.u32(esp).map_err(fault)?;
     cpu.esp = esp.wrapping_add(4 + 4 * args);
     Ok(runtime::TransferAbi::ret(to))
 }
 
-fn colour_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+fn fault(f: MemFault) -> runtime::GuestFault {
+    runtime::GuestFault {
+        addr: f.addr,
+        len: f.len as usize,
+        access: if f.write { runtime::guest::Access::Write } else { runtime::guest::Access::Read },
+        reason: runtime::guest::FaultReason::Unmapped,
+    }
+}
+
+/// `0x00014bc0` of `target` as the guest's call, its two words staged
+/// below the body's `esp`, then `then`. It keeps EBX, EBP, ESI and EDI.
+fn bind_then<F>(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, esp: u32, target: u32, then: F) -> Result<runtime::TransferAbi, runtime::GuestFault>
+where
+    F: FnOnce(&mut runtime::CpuAbi, &mut runtime::ExecCtx) -> Result<runtime::TransferAbi, runtime::GuestFault> + Send + 'static,
+{
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
+    let frame = esp.wrapping_sub(0x40);
+    mem.set_u32(frame, target).map_err(fault)?;
+    mem.set_u32(frame.wrapping_add(4), 0).map_err(fault)?;
+    cpu.esp = frame;
+    cpu.eax = 1;
+    ctx.call_guest_named(cpu, &mut mem, BIND_TARGET, "render: the colour pass's bind", then)
+}
+
+/// The colour pass: its body to the glow, then, when it draws, the view's
+/// target bound, the glow on it and the end's bind ([`glow_binds`]).
+fn colour_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
     let esp = cpu.esp;
-    colour_pass(&mut *mem, esp, fp(cpu));
-    ret(cpu, &*mem, esp, COLOUR_ARGS)
+    let fp = fp(cpu);
+    let (p, binds) = {
+        let mut mem = rt.memory();
+        let Some(p) = colour_pass(&mut *mem, esp, fp) else {
+            return ret(cpu, &*mem, esp, COLOUR_ARGS);
+        };
+        (p, glow_binds(&*mem).map_err(fault)?)
+    };
+    let (view, end) = binds;
+    bind_then(cpu, ctx, esp, view, move |cpu, ctx| {
+        {
+            let rt = Arc::clone(ctx.runtime());
+            let mut mem = rt.memory();
+            glow(&mut *mem, &p, fp);
+        }
+        bind_then(cpu, ctx, esp, end, move |cpu, ctx| {
+            let rt = Arc::clone(ctx.runtime());
+            let mem = rt.memory();
+            ret(cpu, &*mem, esp, COLOUR_ARGS)
+        })
+    })
 }
 
 fn screen_call_body(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {

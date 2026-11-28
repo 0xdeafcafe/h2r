@@ -58,7 +58,7 @@ The numbers are ported: `engine::colour_pass` (the arguments and parameters), `e
 | the drawn passes | one native pass ([below](#the-native-passes)) |
 | `0x0002dae8..0x0002db5a`: 1, `0x19` and `0x1b` given their saved sizes, `0x19` again with `0x1a`'s (`0x1a` keeps the call's), `[0x004670bc]` set, `0x00016b10` on the template cache `0x00485b48`, the results `0x00485a78`/`7c` -1 | `native_post::end_writes` |
 
-The glow is covered where the guest draws it: the view's target `[0x004858b8]` is target 0, its colour `[0x0050935c]` is the bound one (`[0x0051f3f4]`), and `[0x004858b4]` is -1, so `0x00014bc0` at the end binds the target the call came in with (`glow_covered`).
+A colour pass that draws makes the guest's two binds as guest calls of `0x00014bc0` (`native_post::glow_binds`, `colour_call`): the view's target `[0x004858b8]` (a word, any target) before the glow, as `0x00034a90` binds it for the composite, and at the end `[0x004858b4]` when not -1, else the view's again (`0x00021a44..0x00021a6e`). The glow's view slot is the colour that first bind caches (`[0x0051f3f4]`).
 
 **S**: the guest's state-cache writes inside the bodies (the combiner block `0x00484f68`, the stage table `0x00404de8`, the dirty bits `0x00407490`, the bound sizes `0x00485af4`/`0x00485b04`) are left as they came in, as the device's state is, so the two agree; nothing reads them before setting them. The wide convolution's small-size flag `[0x0055e6c5]` is not written.
 
@@ -70,7 +70,7 @@ Each is one `Device::prepare_external_pass` of `Stage::Post`, committed at the c
 
 | Pass | Slots |
 |---|---|
-| Glow (`GlowPass`) | 0 the view, 1 `Game(7)`, 2 `Game(8)`, all written |
+| Glow (`GlowPass`) | 0 the bound colour (the view's target), 1 `Game(7)`, 2 `Game(8)`, all written |
 | Screen call (`ScreenPass`) | 1 the view (written when a pass draws into it), 2 `Game(1)` when a pass draws into it, 3 to 5 `Game(0x19)` to `Game(0x1b)` for each stand-in a convolution draws into or reads |
 
 The screen call's resizes are made before its slots resolve, so target 1 and the stand-ins are the graph's surfaces at the call's sizes; one target sized twice in a call is an `Err`. A pass's ranges are its strips and each convolution's quad or grid strips (`screen_ranges`); the glow's are its quads.
@@ -95,7 +95,6 @@ Every case the guest would draw and the native pass does not panics, `post: <cau
 | `host` | no host installed |
 | `colour pass args`, `screen effect args`, `screen effect values` | a stack word or the values do not read |
 | `colour pass parameters (..)`, `colour pass reset (..)` | `colour_pass::parameters` fails, or the reset does not write |
-| `glow target`, `glow bound` | the glow is not covered ([above](#the-bodies)) |
 | `glow: <cause>` | the plan (`pass_a`, `blur_combiner`, `blur`, `pass_b`, a blur that copies its result), the view's texture, a slot, the device refusing the pass |
 | `glow on the graph's targets: <refusal>` | the GPU refuses a copy (`glow::Refused`) |
 | `scope_zoom` | a HUD screen effect of a converted Halo 1 scope-zoom profile, whose profile the plan does not read |

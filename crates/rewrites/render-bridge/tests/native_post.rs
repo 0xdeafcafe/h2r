@@ -93,22 +93,18 @@ fn the_host_gets_the_calls_words() {
     native_post::set_host(stub.clone());
     let before = native_post::counts();
 
-    // The colour pass draws as its parameters say.
+    // The colour pass draws as its parameters say; the glow is the
+    // host's, on whatever target the view's is.
     for one in [0.0f32, 1.0] {
         m.set_u32(0x0045_dbc0, one.to_bits()).unwrap();
         let p = engine::colour_pass::parameters(&m, args, fp.mxcsr).unwrap();
         let asked = stub.glows.lock().unwrap().len();
-        m.set_u32(native_post::EXIT_TARGET, u32::MAX).unwrap();
-        assert_eq!(native_post::colour_pass(&mut m, ESP, fp), p.draws);
-        assert_eq!(stub.glows.lock().unwrap().len(), asked + usize::from(p.draws));
-        if p.draws {
+        let drawn = native_post::colour_pass(&mut m, ESP, fp);
+        assert_eq!(drawn.is_some(), p.draws);
+        if let Some(q) = drawn {
+            native_post::glow(&mut m, &q, fp);
+            assert_eq!(stub.glows.lock().unwrap().len(), asked + 1);
             assert_eq!(stub.glows.lock().unwrap().last().map(|(q, f)| (q.args, *f)), Some((args, fp)));
-            // Another target bound at the end: not where the guest draws.
-            m.set_u32(native_post::EXIT_TARGET, 3).unwrap();
-            let text = panic_text(|| {
-                native_post::colour_pass(&mut m, ESP, fp);
-            });
-            assert!(text.contains("post: glow target"), "{text}");
         }
     }
     let text = panic_text(|| {
@@ -144,6 +140,18 @@ fn the_host_gets_the_calls_words() {
     assert!(after.glows > before.glows);
     assert!(after.effects >= before.effects + 2);
     assert!(after.effects_ended > before.effects_ended);
+}
+
+/// The colour pass binds the view's target (a word) for its glow, and at
+/// its end the exit target when not -1, else the view's again.
+#[test]
+fn the_glow_binds_the_views_target_then_the_exit_or_view() {
+    let mut m = FlatMemory::new(0x0040_0000, 0x0021_0000);
+    m.set_u32(native_post::VIEW_TARGET, 0xabcd_0003).unwrap();
+    m.set_u32(native_post::EXIT_TARGET, u32::MAX).unwrap();
+    assert_eq!(native_post::glow_binds(&m).unwrap(), (3, 3), "the word, zero-extended");
+    m.set_u32(native_post::EXIT_TARGET, 0x18).unwrap();
+    assert_eq!(native_post::glow_binds(&m).unwrap(), (3, 0x18));
 }
 
 /// `0x0001ddd0`: the table's size and both headers' size words, zero
