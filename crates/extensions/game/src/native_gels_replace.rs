@@ -286,6 +286,7 @@ impl Replacement {
                 caps,
             ),
             alpha_test: None,
+            stencil: None,
         };
         let program = Program::compile_target(&code, &def, &options, samplers, state)?;
         let mut vertex = VertexUniforms {

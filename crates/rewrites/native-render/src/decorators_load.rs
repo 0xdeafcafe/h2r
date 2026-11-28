@@ -140,7 +140,9 @@ pub fn decorator_look(
     // sets the page to -1, `0x0004e277`): [`stage_images`].
     let mut look = look::implementation_look(p.pass, imp).map_err(|r| format!("{r:?}"))?;
     look.stage_states = applied.stage_states;
-    let state = geometry_pass_state(&applied.render_states).map_err(|r| format!("render states: {r:?}"))?;
+    let state = geometry_pass_state(&applied.render_states)
+        .and_then(PassState::device_stencil_only)
+        .map_err(|r| format!("render states: {r:?}"))?;
     let (microcode, semantics) =
         program(look.vertex_shader).ok_or("the vrtx has no classification-1 program")?;
     // A state the restore list writes back is left at the restore's
@@ -400,6 +402,7 @@ pub(crate) mod tests {
             depth_compare: wgpu::CompareFunction::Always,
             primitive: wgpu::PrimitiveState::default(),
             alpha_test: None,
+            stencil: None,
         }
     }
 

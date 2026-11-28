@@ -37,6 +37,7 @@ fn program(color: &str) -> Program {
                 caps,
             ),
             alpha_test: None,
+            stencil: None,
         },
     }
 }

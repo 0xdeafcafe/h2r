@@ -1972,6 +1972,8 @@ pub(crate) const WORLD_RIGID_PROGRAM: gfx::pipeline::ShaderId =
 
 /// The state a pipeline reports in a packet: primitive, depth
 /// and stencil, and colour target (its write mask splits merged passes).
+/// A pass that sets its own stencil ([`PassState::stencil`]) takes it in
+/// place of `stencil`, the device's at the layer.
 pub(crate) fn described_pipeline(
     shader: gfx::pipeline::ShaderId,
     color: wgpu::TextureFormat,
@@ -1981,6 +1983,10 @@ pub(crate) fn described_pipeline(
     stencil: wgpu::StencilState,
 ) -> gfx::pipeline::PipelineKey {
     let (primitive, (depth_write, depth_compare)) = pipeline_state(state, cull);
+    let stencil = match state.and_then(|s| s.stencil) {
+        Some(own) => crate::fog_gpu::layer_stencil(&own, depth),
+        None => stencil,
+    };
     let (blend, write_mask) = state.map_or((None, wgpu::ColorWrites::ALL), |s| {
         (s.blend, s.color_writes)
     });
@@ -4455,6 +4461,32 @@ mod tests {
         }
     }
 
+    /// A pass that sets its own stencil draws it, not the device's at the
+    /// layer; one that sets none takes the device's.
+    #[test]
+    fn a_pass_with_its_own_stencil_describes_it_over_the_layers() {
+        use gfx::state::{CompareFunc, StencilOp, StencilState};
+        use wgpu::TextureFormat as F;
+        let device = crate::fog_gpu::layer_stencil(
+            &StencilState { enable: true, pass: StencilOp::Replace, ..Default::default() },
+            F::Depth24PlusStencil8,
+        );
+        let own = StencilState { enable: true, func: CompareFunc::Equal, reference: 0x80, write_mask: 0, ..Default::default() };
+        let opaque = world_pass(plain_look()).state;
+        let key = |state: &PassState| {
+            described_pipeline(WORLD_CLUSTER_PROGRAM, F::Rgba8Unorm, F::Depth24PlusStencil8, Some(state), None, device.clone())
+                .depth_stencil
+                .unwrap()
+                .stencil
+        };
+        assert_eq!(key(&opaque), device);
+        let with_own = PassState { stencil: Some(own), ..opaque };
+        assert_eq!(key(&with_own), crate::fog_gpu::layer_stencil(&own, F::Depth24PlusStencil8));
+        assert_eq!(key(&with_own).front.compare, wgpu::CompareFunction::Equal);
+        let off = PassState { stencil: Some(StencilState::default()), ..opaque };
+        assert_eq!(key(&off), wgpu::StencilState::default(), "the pass's own test off");
+    }
+
     /// The game's convention: the clip position divided by w, then
     /// `c[10]` and `c[11]` to guest pixels (`ViewInputs::from_camera`);
     /// `oPos.w` keeps w for the W-buffer. `dp4 r0, v0, c[0..3];
@@ -4861,6 +4893,7 @@ mod tests {
             depth_compare: wgpu::CompareFunction::LessEqual,
             primitive: wgpu::PrimitiveState::default(),
             alpha_test: Some((wgpu::CompareFunction::Greater, 0x40)),
+            stencil: None,
         };
         WorldPass {
             look,
@@ -4891,6 +4924,7 @@ mod tests {
                 ..Default::default()
             },
             alpha_test: None,
+            stencil: None,
         };
         assert_eq!(
             reversed_winding(Some(&own), None),

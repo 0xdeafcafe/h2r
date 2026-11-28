@@ -217,7 +217,7 @@ pub fn load_with<R: std::io::Read + std::io::Seek>(
                 Ok(p) => {
                     data.words
                         .insert(m, p.first().map(|p| p.words).unwrap_or_default());
-                    data.writes_depth |= p.iter().any(|p| p.state.depth_write);
+                    data.writes_depth |= p.iter().any(|p| p.state.writes_depth_stencil());
                     data.programs.insert(m, p);
                 }
                 Err(why) => *refused.entry(why).or_default() += 1,
@@ -488,7 +488,7 @@ pub fn load_layer3<R: std::io::Read + std::io::Seek>(
         };
         match compiled {
             Ok((p, animation)) => {
-                out.data.writes_depth |= p.state.depth_write;
+                out.data.writes_depth |= p.state.writes_depth_stencil();
                 out.data.words.insert(m, p.words);
                 out.data.programs.insert(m, vec![p]);
                 if let Some(animation) = animation {

@@ -195,6 +195,7 @@ pub fn state() -> PassState {
         depth_compare: wgpu::CompareFunction::LessEqual,
         primitive: wgpu::PrimitiveState::default(),
         alpha_test: None,
+        stencil: None,
     }
 }
 

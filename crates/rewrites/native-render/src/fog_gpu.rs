@@ -584,8 +584,9 @@ pub(crate) struct LayerSlots<'a> {
 /// The stencil a world layer's native draws take: the device's at the
 /// layer call, as it is (`0x00015370`'s mode there: 0, the test off, or 1,
 /// `ALWAYS` writing reference 0 on pass, which the scene's layers 1 and 3
-/// begin in; `object_state::structure_stencil`). A pass never sets one of
-/// its own (`pass_state` refuses it), and the structure items a layer's
+/// begin in; `object_state::structure_stencil`). A pass that sets one of
+/// its own draws that instead (`PassState::stencil`,
+/// `program::described_pipeline`), and the structure items a layer's
 /// native pass takes come before any object item the guest keeps that
 /// switches it (`layer_pass::clear_layer_items`), so every one of them draws under that
 /// state. The pipelines' stencil state (the packets set its reference,
@@ -976,8 +977,6 @@ impl FogSet {
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         use gfx::{BoundGroup, RecordedDraw};
         let stencil = layer_stencil(device_stencil, depth);
-        // The packets set the stencil reference from the render state.
-        let render = gfx::state::RenderState { stencil: *device_stencil, ..Default::default() };
         let mut packets = Vec::new();
         // The materials the selection reads, and per material the
         // placements it draws.
@@ -1005,6 +1004,9 @@ impl FogSet {
             // Occludable while every pass's hidden fragments draw nothing.
             let mut occludable = true;
             for ((g, state, rigid), textures) in m.passes.iter().zip(groups) {
+                // The packets set the stencil reference from the render
+                // state: the pass's own stencil's, else the device's.
+                let render = gfx::state::RenderState { stencil: state.stencil_under(device_stencil), ..Default::default() };
                 let (shader, pipeline, uniforms, offsets) = match owner {
                     Owner::Instance(n) => {
                         let r = rigid.as_ref().ok_or("a fog placement has no rigid program")?;
@@ -1141,6 +1143,7 @@ impl FogSet {
                 }
                 pass.set_bind_group(1, textures, &[]);
                 pass.set_blend_constant(state.blend_constant);
+                pass.set_stencil_reference(u32::from(state.stencil.map_or(0, |s| s.reference)));
                 pass.draw_indexed(first_index..first_index + index_count, 0, 0..1);
             }
         }
@@ -1252,6 +1255,7 @@ pub(crate) mod tests {
             depth_compare: wgpu::CompareFunction::LessEqual,
             primitive: wgpu::PrimitiveState::default(),
             alpha_test: None,
+            stencil: None,
         }
     }
 

@@ -233,7 +233,9 @@ pub const UNLIT_BSP_IMPLEMENTATION: usize = 3;
 fn world_pass(mut look: PassLook, imp: &ResolvedImplementation, inputs: &EngineInputs) -> Result<WorldPass, Refusal> {
     let applied = apply_static(imp, inputs).map_err(Refusal::EngineStates)?;
     look.stage_states = applied.stage_states;
-    let mut state = geometry_pass_state(&applied.render_states).map_err(Refusal::State)?;
+    let mut state = geometry_pass_state(&applied.render_states)
+        .and_then(crate::pass_state::PassState::device_stencil_only)
+        .map_err(Refusal::State)?;
     if state.blend.is_some() {
         // The world issues opaque parts together. A replacement blend is
         // independent of the destination only when the operation is known.

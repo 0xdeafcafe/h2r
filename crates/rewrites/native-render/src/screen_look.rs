@@ -412,7 +412,9 @@ pub fn template_look(
             Some(TextureSource::Lightmap) => return Err(ScreenRefusal::Lightmap),
         };
     }
-    let state = pass_state(&applied.render_states).map_err(ScreenRefusal::State)?;
+    let state = pass_state(&applied.render_states)
+        .and_then(PassState::device_stencil_only)
+        .map_err(ScreenRefusal::State)?;
     if state.depth_write || state.depth_compare != wgpu::CompareFunction::Always {
         return Err(ScreenRefusal::Depth);
     }

@@ -405,11 +405,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         let samples = Arc::new(samples);
         // What the passes write: colour always (they blend over the
-        // scene), depth when any of their states writes it.
+        // scene), depth or stencil when any of their states writes it.
         let writes_depth = fog
             .programs
             .values()
-            .any(|passes| passes.iter().any(|p| p.state.depth_write));
+            .any(|passes| passes.iter().any(|p| p.state.writes_depth_stencil()));
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let plan = |ranges| d3d::ExternalPlan { stage: Stage::Fog, view, ranges, slots: Vec::new() };
         let run = u64::from(d.swap_count()).wrapping_add(1);
