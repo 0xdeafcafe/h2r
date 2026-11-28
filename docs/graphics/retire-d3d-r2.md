@@ -324,19 +324,14 @@ strip is recorded as an indexed pass (`IndexedPass`, two triangles in
 
 | Arm | |
 |---|---|
-| Rust draws | every plate draw but the sampled ones; `weather_plate_admitted` |
-| Compared | the first draw, then one in 64: the guest's draw stands and is compared field by field (`vertex<n>_r<register>`, `constant<slot>`, `combiner_w<n>`); `weather_plate_{compared,matched,mismatched}` |
-| Placement | a plate Rust's placement refuses but the guest draws is the mismatch `placement` |
-| Fallback | any mismatch: the guest's draw stands for the rest of the session; `weather_plate_fallback` is 1 |
-| Refused | the guest's draw stands, `weather_plate_refused_<reason>`: `view_unread`, `element_unread`, `globals_unread`, `geometry`, `vertex_streams`, `vertex_bytes`, `vertex_declaration`, `texture_unbound`, `texture_target`, `texture_binding`, `pass`, `second_draw`, and `unseen` (a call Rust expected to draw whose strip no admission saw) |
+| Rust draws | every plate draw; `weather_plate_admitted`. No draw is the guest's for comparison |
+| Refused | the guest's draw stands for that call, `weather_plate_refused_<reason>`: `placement` (Rust's placement refuses a plate the guest draws), `view_unread`, `element_unread`, `globals_unread`, `geometry`, `vertex_streams`, `vertex_bytes`, `vertex_declaration`, `texture_unbound`, `texture_target`, `texture_binding`, `pass`, `second_draw`, and `unseen` (a call Rust expected to draw whose strip no admission saw) |
 
 Tests: `native_weather.rs`
 (`a_plate_is_drawn_at_its_placements_depth_result`,
-`rust_draws_one_draw_in_64_is_compared_and_a_difference_falls_back_for_the_session`,
+`every_plate_is_rusts_and_a_gap_is_a_named_refusal`,
 `a_call_hands_its_plan_to_its_first_draw_only`), `native_weather_glue.rs`
-(`a_plate_strip_rust_would_draw_compares_clean`,
-`a_plate_strip_that_differs_is_named_by_field`,
-`rusts_strip_writes_its_floats_and_leaves_the_rest`,
+(`rusts_strip_writes_its_floats_and_leaves_the_rest`,
 `a_strip_without_the_plates_registers_is_refused_by_name`).
 
 Not built: nothing draws the scene's decal items, and the plates' host
