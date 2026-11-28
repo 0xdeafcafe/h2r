@@ -42,6 +42,7 @@
 pub mod colour_pass;
 pub mod contrail_ribbon;
 pub mod campaign_squad_pool;
+pub mod fog_fans;
 pub mod function_eval;
 pub mod hud_effects;
 pub mod hud_sensor;

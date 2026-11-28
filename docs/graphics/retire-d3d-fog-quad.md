@@ -96,4 +96,4 @@ not read (`other_setup` above).
 
 ## Related
 
-[retire-d3d-remainders.md](retire-d3d-remainders.md), [native-water-fog.md](native-water-fog.md) (layer 16, drawn after the quad), [native-post.md](native-post.md) (`0x00034420`).
+[retire-d3d-remainders.md](retire-d3d-remainders.md), [native-water-fog.md](native-water-fog.md) (layer 16, drawn after the quad), [native-post.md](native-post.md) (`0x00034420`), [retire-d3d-fog-fans.md](retire-d3d-fog-fans.md) (the second fog's fans).
