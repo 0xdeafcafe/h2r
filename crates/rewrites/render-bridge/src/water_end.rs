@@ -15,20 +15,19 @@
 //! | still | its first definition `[bsp + 0x218]`'s `+0x7c` equal (`ucomiss`) to `[0x0045dbd8]`, 0.0 |
 //! | not drawn | the first argument's byte 0 |
 //!
-//! Past them the guest draws the ocean (`0x0003c3ff..0x0003c632`): the
-//! grid's setup `0x0003ca90`, its visibility `0x0003c270` and texture
-//! `0x0012de70`, the shader's copies (`0x0003bea0` into target `0x16`,
-//! `0x0003bd00` into target `0x15`), the alpha clear `0x0003c515` when the
-//! second argument's byte is set, the draw state and the indexed quads
-//! `0x0001c8a0(8, [geometry + 0x24], [geometry + 0x20])`, then the
-//! texture stamps `0x0003bcb0` of the shader's bitmaps. The native
-//! renderer has no ocean stage yet, so that call is
-//! `unimplemented!("water end: ocean")`; a word that does not read is
-//! `water end: unread`.
+//! Past them is the ocean (`0x0003c3ff..0x0003c632`), [`ocean`]'s steps:
+//! Rust makes the shader lookup, the alpha clear `0x0003c515` and the
+//! indexed quads natively and calls the body's other helpers (the grid,
+//! the gates, the copies into targets `0x16` and `0x15`, the draw state,
+//! the stage commit, the texture stamps) as guest calls, then returns as
+//! the body does. A step it cannot make is `unimplemented!("water ocean:
+//! <cause>")`; a gate word that does not read is `water end: unread`.
 
 use std::sync::Arc;
 
 use engine::memory::{GuestMemory, MemFault};
+
+pub mod ocean;
 
 /// The active BSP's pointer.
 pub const BSP: u32 = 0x004e_0348;
@@ -100,35 +99,107 @@ pub fn unported(cause: &str) -> ! {
     crate::native_targets::unhandled("water end", cause)
 }
 
-/// The call's EAX and ECX, or a named panic: `ocean`, `unread`.
-pub fn water_end(mem: &dyn GuestMemory, draw: u8, clear: u8) -> (u32, u32) {
-    let call = decide(mem, draw, clear).unwrap_or_else(|_| unported("unread"));
-    match call.end {
-        End::Ocean { .. } => unported("ocean"),
-        End::NoWater | End::Still | End::NotDrawn => call.registers(),
-    }
+/// The call's gates, or a named panic: `unread`.
+pub fn water_end(mem: &dyn GuestMemory, draw: u8, clear: u8) -> Call {
+    decide(mem, draw, clear).unwrap_or_else(|_| unported("unread"))
+}
+
+/// An ocean step the native renderer cannot make: no guest body runs
+/// instead.
+pub fn ocean_unported(cause: &str) -> ! {
+    unimplemented!("water ocean: {cause}")
 }
 
 pub static WATER_END: crate::native_targets::Arm = crate::native_targets::Arm::new("water_end");
+pub static WATER_OCEAN: crate::native_targets::Arm = crate::native_targets::Arm::new("water_ocean");
 
 /// The counters `render.scene` reports.
 pub fn counters() -> Vec<(String, u64)> {
-    WATER_END.counters()
+    WATER_END.counters().into_iter().chain(WATER_OCEAN.counters()).collect()
+}
+
+/// The guest stack below the call's return address the ocean uses: the
+/// clear prelude's 24-byte viewport at `esp - SCRATCH`, the helpers'
+/// frames below `esp - BODY`.
+const SCRATCH: u32 = 0x40;
+const BODY: u32 = 0x80;
+
+/// The ocean's device: the native targets' clear and the walk host's
+/// water quads.
+struct Live {
+    scratch: u32,
+}
+
+impl ocean::Device for Live {
+    fn clear(&mut self, mem: &mut dyn GuestMemory) -> Result<(), ocean::Cause> {
+        let host = crate::native_targets::host().ok_or("host")?;
+        crate::native_targets::cut_clear(mem, &*host, 0x10, 0x00ff_ffff, 0, 0, self.scratch)
+            .map_err(|cause| if cause == "device" { "clear" } else { cause })
+    }
+
+    fn draw(&mut self, mem: &mut dyn GuestMemory, indices: u32, count: u32) -> Result<(), ocean::Cause> {
+        let geometry = crate::scene_step::water_composite(&*mem, indices, count).ok_or("quads")?;
+        crate::native_transparents::draw_water(mem, indices, count, geometry).then_some(()).ok_or("draw")
+    }
+}
+
+fn regs(cpu: &runtime::CpuAbi) -> ocean::Regs {
+    ocean::Regs { eax: cpu.eax, ecx: cpu.ecx, edx: cpu.edx, ebx: cpu.ebx, esi: cpu.esi, edi: cpu.edi, ebp: cpu.ebp }
+}
+
+/// The call's frame: ESP at entry, its return address and the caller's
+/// EBX, ESI, EDI and EBP.
+#[derive(Clone, Copy)]
+struct Frame {
+    esp: u32,
+    ret: u32,
+    saved: ocean::Regs,
+}
+
+/// One ocean step, then the next helper as a guest call whose
+/// continuation steps again, until the return.
+fn drive(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, mut ocean: ocean::Ocean, frame: Frame) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    let mut device = Live { scratch: frame.esp.wrapping_sub(SCRATCH) };
+    let next = ocean.next(&mut *mem, &mut device, regs(cpu)).unwrap_or_else(|cause| ocean_unported(cause));
+    match next {
+        ocean::Next::Call(call) => {
+            let r = call.regs;
+            (cpu.eax, cpu.ecx, cpu.edx, cpu.ebx, cpu.esi, cpu.edi, cpu.ebp) = (r.eax, r.ecx, r.edx, r.ebx, r.esi, r.edi, r.ebp);
+            cpu.esp = frame.esp.wrapping_sub(BODY);
+            for &arg in call.args.iter().rev() {
+                cpu.esp = cpu.esp.wrapping_sub(4);
+                mem.set_u32(cpu.esp, arg).unwrap_or_else(|_| ocean_unported("unwritable"));
+            }
+            ctx.call_guest_named(cpu, &mut mem, call.target, "render: the water ocean", move |cpu, ctx| drive(cpu, ctx, ocean, frame))
+        }
+        ocean::Next::Return { eax, ecx } => {
+            let s = frame.saved;
+            (cpu.eax, cpu.ecx, cpu.ebx, cpu.esi, cpu.edi, cpu.ebp) = (eax, ecx, s.ebx, s.esi, s.edi, s.ebp);
+            cpu.esp = frame.esp.wrapping_add(4 + ARG_BYTES);
+            Ok(runtime::TransferAbi::ret(frame.ret))
+        }
+    }
 }
 
 fn end_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
     WATER_END.call();
     let esp = cpu.esp;
     let rt = Arc::clone(ctx.runtime());
-    let (eax, ecx) = {
-        let mem = rt.memory();
-        let arg = |at: u32| mem.u8(esp.wrapping_add(at)).unwrap_or_else(|_| unported("unread"));
-        let (draw, clear) = (arg(ARG_DRAW), arg(ARG_CLEAR));
-        water_end(&*mem, draw, clear)
+    let mem = rt.memory();
+    let arg = |at: u32| mem.u8(esp.wrapping_add(at)).unwrap_or_else(|_| unported("unread"));
+    let (draw, clear) = (arg(ARG_DRAW), arg(ARG_CLEAR));
+    let call = water_end(&*mem, draw, clear);
+    let End::Ocean { definition, clear } = call.end else {
+        drop(mem);
+        (cpu.eax, cpu.ecx) = call.registers();
+        return ctx.memory().ret(cpu, ARG_BYTES);
     };
-    cpu.eax = eax;
-    cpu.ecx = ecx;
-    ctx.memory().ret(cpu, ARG_BYTES)
+    WATER_OCEAN.call();
+    let frame = Frame { esp, ret: mem.u32(esp).unwrap_or_else(|_| unported("unread")), saved: regs(cpu) };
+    drop(mem);
+    drive(cpu, ctx, ocean::Ocean::new(definition, clear, regs(cpu)), frame)
 }
 
 /// Places the water end's implementation (`native-water`'s feature).
@@ -170,7 +241,7 @@ mod tests {
         }
         assert_eq!(end(&mem(1, 1.0), 0, 1), End::NotDrawn);
         // The late passes' call with the water gate set.
-        assert_eq!(water_end(&mem(1, 1.0), 0, 0), (AT | 1, 1));
+        assert_eq!(water_end(&mem(1, 1.0), 0, 0).registers(), (AT | 1, 1));
     }
 
     /// A non-zero gate word, NaN included (`ucomiss` unordered), with the
@@ -190,13 +261,13 @@ mod tests {
         let mut m = mem(0, 0.0);
         m.set_u32(BSP, 0x0050_12ab).unwrap();
         m.set_u32(0x0050_12ab + WATER_COUNT, u32::MAX).unwrap();
-        assert_eq!(water_end(&m, 1, 1), (0x0050_1201, u32::MAX));
+        assert_eq!(water_end(&m, 1, 1).registers(), (0x0050_1201, u32::MAX));
     }
 
     #[test]
-    #[should_panic(expected = "water end: ocean")]
-    fn the_ocean_panics() {
-        water_end(&mem(1, 1.0), 1, 1);
+    #[should_panic(expected = "water ocean: shader_group")]
+    fn an_unported_ocean_step_is_named() {
+        ocean_unported("shader_group");
     }
 
     #[test]
