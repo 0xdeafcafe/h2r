@@ -15,7 +15,9 @@
 //! phantom seats' path — and its tail from the target update's return,
 //! with the frame the original built), the action and neutral control
 //! builders, the target comparator, the aim-assist cone's register-level
-//! oracle, the HUD seat update and the observer resource walk. The cone's
+//! oracle, the HUD seat update, the observer resource walk, and the
+//! phantom executor's action builder `186ab0` and interaction search
+//! `151110` (`sim_seats::BUILDER`, `sim_seats::INTERACTION`). The cone's
 //! kernel arm runs against the original with its real callees
 //! (`aim_assist_matches_lifted`). The interactive search family
 //! (`1a4900`, `1a5370`, `1a4c00`) is proven on the disc by the shadow's
@@ -57,6 +59,15 @@ fn cleanup(target: u32) -> u32 {
         | 0x0016_e820 | 0x0016_e950 | 0x000c_b810 => 4,
         0x0013_a720 | 0x0013_aa27 => 8,
         0x0015_0400 => 12,
+        // The action builder's and the interaction search's callees.
+        0x0012_be90 | 0x000c_fe40 | 0x000c_dff0 | 0x0015_5760 | 0x000c_85c0
+        | 0x000c_8960 | 0x0037_3b6a | 0x0014_d040 => 0,
+        0x0014_8fff => 4,
+        0x0018_7510 | 0x0015_1110 | 0x0015_1780 | 0x0015_16c0 | 0x0015_1430
+        | 0x0015_15e0 => 8,
+        0x000c_deb0 => 0x10,
+        0x0018_5be0 => 0x14,
+        0x000b_b050 => 0x1c,
         _ => panic!("unexpected callee {target:#x}"),
     }
 }
@@ -76,6 +87,18 @@ fn answer(target: u32, boundary: u32, case: u32) -> Answer {
             0x0014_ddc0 => u32::from(case % 2 == 0) * (value & 0xffff),
             // The user's player: index 2 in the fixture's players array.
             0x0014_de70 => 2,
+            // The builder's dialog and block tests: blocked one case in three.
+            0x0014_8fff => u32::from(case % 3 == 0),
+            0x0012_be90 => 0,
+            // The unit's weapon slot: none, the block's, another.
+            0x000c_fe40 => [0xffff, 1, 0, 2][case as usize % 4],
+            0x000c_dff0 => case % 2,
+            // The camera mode: zoom allowed but one case in four.
+            0x0015_5760 => u32::from(case % 4 == 3),
+            0x000c_85c0 => u32::from(case % 5 != 4),
+            0x000c_8960 => [0xffff, 1][case as usize % 2],
+            // The interaction query's count, at most the fixture's seven.
+            0x000b_b050 => [0, 1, 3, 5, 7, 2][case as usize % 6],
             _ => value,
         },
         zoom: (target == 0x0010_1090).then(|| match case {
@@ -130,8 +153,10 @@ fn segment(code: &mut lifted::Original, cpu: &mut Cpu, mem: &mut FlatMemory) -> 
 type Prepare = fn(&mut FlatMemory, &mut Cpu, u32);
 
 fn find_seat(name: &str) -> &'static Seat {
-    if name == sim_seats::PARAMS_ORACLE.name {
-        return &sim_seats::PARAMS_ORACLE;
+    for seat in [&sim_seats::PARAMS_ORACLE, &sim_seats::BUILDER, &sim_seats::INTERACTION] {
+        if name == seat.name {
+            return seat;
+        }
     }
     sim_seats::SEATS.iter().find(|s| s.name == name).expect("seat")
 }
@@ -582,6 +607,187 @@ differential!(aim_target_compare, "sim.seats.aim_target_compare", 3, compare_fix
 differential!(aim_assist_params, "sim.seats.aim_assist_params", 4, params_fixture);
 differential!(hud_seat_update, "sim.seats.hud_seat_update", 3, hud_fixture);
 differential!(predict_resources, "sim.seats.predict_resources", 3, resources_fixture);
+differential!(phantom_action_build, "sim.seats.phantom_action_build", 12, build_fixture);
+differential!(phantom_interaction_search, "sim.seats.phantom_interaction_search", 12, interaction_fixture);
+
+// The action builder `0x186ab0` and the interaction search `0x151110`
+// (docs/perf/sim-phantom-build.md, "The builder body in Rust"): a player
+// record, its control block, the unit with its weapon and grenade slots
+// and its facing, the zoom and pause globals, the frame's action as the
+// control update leaves it, and for the search the listed objects with a
+// child chain. Cases walk blocked input, a unit and none, the grenade
+// walk, the zoom and flashlight counts and the facing's `fpatan` and
+// `fmod`s.
+
+const PLAYERS_GLOBAL: u32 = 0x004e_8c24;
+const OBJECTS_GLOBAL: u32 = 0x004e_0300;
+const OBJECT_HEADER: u32 = HEADER + 0x100;
+const OBJECT_TABLE: u32 = DATA + 0x3000;
+const BUILD_PLAYER: u32 = DATA + 0x21c;
+const BUILD_UNIT: u32 = RECORDS + 0x400;
+const BUILD_CONTROLS: u32 = RECORDS + 0x3000;
+const BUILD_OUT: u32 = RECORDS + 0x5000;
+const LISTED: u32 = RECORDS + 0x6000;
+
+fn byte_at(m: &mut FlatMemory, a: u32, v: u8) {
+    m.bytes[a as usize] = v;
+}
+
+fn half_at(m: &mut FlatMemory, a: u32, v: u16) {
+    assert!(m.load(a, &v.to_le_bytes()));
+}
+
+/// Object `index` at `object`, in the fixture's object table.
+fn object(m: &mut FlatMemory, index: u32, object: u32, kind: u8) {
+    word(m, OBJECT_TABLE + index * 12 + 8, object);
+    byte_at(m, OBJECT_TABLE + index * 12 + 3, kind);
+}
+
+fn players_and_unit(m: &mut FlatMemory, case: u32) {
+    word(m, PLAYERS_GLOBAL, HEADER);
+    word(m, HEADER + 0x44, DATA);
+    word(m, OBJECTS_GLOBAL, OBJECT_HEADER);
+    word(m, OBJECT_HEADER + 0x44, OBJECT_TABLE);
+    word(m, STACK + 4, 0xe000_0001);
+    // Unit type bit 0 of `1 << kind`: the facing runs for kind 0 only.
+    object(m, 3, BUILD_UNIT, (case % 2) as u8 * 3);
+    for (i, v) in [0.6f32, -0.8, 0.25, 1.0, 2.0, 3.0].into_iter().enumerate() {
+        float(m, BUILD_UNIT + 0x168 + 4 * i as u32, v * (1.0 + case as f32 * 0.125));
+    }
+    for (i, v) in [1.0f32, 2.0, 3.0, 0.5].into_iter().enumerate() {
+        float(m, BUILD_UNIT + 0x30 + 4 * i as u32, v);
+    }
+}
+
+fn build_fixture(m: &mut FlatMemory, _: &mut Cpu, case: u32) {
+    players_and_unit(m, case);
+    let seat = case % 2;
+    word(m, BUILD_PLAYER + 0x24, 0);
+    half_at(m, BUILD_PLAYER + 0x28, seat as u16);
+    word(m, 0x004e_d284, BUILD_CONTROLS);
+    byte_at(m, BUILD_CONTROLS + 0x10, u8::from(case == 7));
+    word(m, SETTINGS, PHASE);
+    word(m, PHASE + 0xf4, RECORDS + 0x2800);
+    half_at(m, RECORDS + 0x2800 + 0x6e, 3);
+    // The control block: the unit, its weapon and grenade slots, the zoom
+    // and flashlight state.
+    let block = BUILD_CONTROLS + 0x14 + seat * 0x94;
+    word(m, block, if case % 7 == 6 { u32::MAX } else { 0x8200_0003 });
+    word(m, block + 0x28, [0x0002_0001, 0x0011_0004][case as usize % 2]);
+    byte_at(m, block + 0x2a, [0xff, 1, 0][case as usize % 3]);
+    byte_at(m, block + 0x2b, [0xff, 1][case as usize % 2]);
+    half_at(m, block + 0x2c, [0xffff, 0, 1][case as usize % 3]);
+    half_at(m, block + 0x2e, [0xffff, 2][case as usize % 2]);
+    byte_at(m, block + 0x89, (case % 3 == 1) as u8);
+    half_at(m, block + 0x8a, 7);
+    half_at(m, block + 0x8c, [0, 0x10, 0x7f][case as usize % 3]);
+    byte_at(m, block + 0x91, (case % 2) as u8);
+    byte_at(m, block + 0x92, (case % 4 == 1) as u8);
+    float(m, block + 0x18, [0.9f32, -0.2, 0.05][case as usize % 3]);
+    byte_at(m, block + 0x31, [0, 0x7f, 0xff, 5][case as usize % 4]);
+    byte_at(m, block + 0x68, (case % 5 == 3) as u8);
+    // The unit: no parent but in one case, weapon and grenade fields, the
+    // facing request bit.
+    word(m, BUILD_UNIT + 0x14, if case % 5 == 2 { 0x8200_0007 } else { u32::MAX });
+    byte_at(m, BUILD_UNIT + 0x212, [0xff, 1][case as usize % 2]);
+    byte_at(m, BUILD_UNIT + 0x213, [0xff, 0][(case / 2) as usize % 2]);
+    word(m, BUILD_UNIT + 0x214, 0x0005_0002);
+    byte_at(m, BUILD_UNIT + 0x23d, 1);
+    byte_at(m, BUILD_UNIT + 0x23e, [2, 0, 1][case as usize % 3]);
+    byte_at(m, BUILD_UNIT + 0x23f, [0, 3, 1][case as usize % 3]);
+    byte_at(m, BUILD_UNIT + 0x348, if case % 2 == 0 { 0x61 } else { 0x41 });
+    // Slowdown, pause and the film state.
+    let slow = RECORDS + 0x5a00;
+    word(m, 0x0051_0c50, if case % 3 == 1 { slow } else { 0 });
+    byte_at(m, slow + 5, (case % 2) as u8);
+    let pause = RECORDS + 0x5900;
+    word(m, 0x0051_0c54, pause);
+    byte_at(m, pause, (case % 4 == 2) as u8);
+    byte_at(m, pause + 1, 1);
+    let sim = RECORDS + 0x5800;
+    word(m, 0x004e_6948, sim);
+    byte_at(m, sim + 0xd, if case % 5 == 0 { 3 } else { 1 });
+    // The profile's flashlight bits.
+    word(m, 0x0054_e8e0, 0x10);
+    word(m, 0x0054_e9f4, if case % 3 == 2 { 0 } else { 0x08 });
+    // The arguments and the frame's action (the control update's stub
+    // writes nothing): the body's frame starts 0x64 below the entry stack.
+    float(m, STACK + 8, 1.0 / 30.0);
+    float(m, STACK + 0xc, 1.0 / 30.0);
+    word(m, STACK + 0x10, BUILD_OUT);
+    let sp = STACK - 0x64;
+    for i in 0..0x13u32 {
+        float(m, sp + 0x18 + 4 * i, (i as f32 - 6.0) * 0.125 * (1.0 + case as f32 * 0.25));
+    }
+    float(m, sp + 0x2c, [-0.5f32, 0.0, 0.75][case as usize % 3]);
+    word(m, sp + 0x30, [0, 0x40, 0x200, 0x0100_0000][case as usize % 4]);
+    byte_at(m, sp + 0x34, [0x4e, 0x00, 0x46, 0x08, 0x40, 0x0c][case as usize % 6]);
+    byte_at(m, sp + 0x39, [0x01, 0x00, 0x03][case as usize % 3]);
+}
+
+/// The listed objects: kinds by the jump table (weapon, vehicle, biped,
+/// control), one far, one whose kind is skipped, and a scenery object
+/// with two children.
+fn interaction_fixture(m: &mut FlatMemory, _: &mut Cpu, case: u32) {
+    players_and_unit(m, case);
+    word(m, BUILD_PLAYER + 0x2c, if case % 5 == 4 { u32::MAX } else { 0x8200_0003 });
+    word(m, BUILD_UNIT + 0x14, if case % 7 == 5 { 0x8200_0009 } else { u32::MAX });
+    word(m, STACK + 8, BUILD_OUT);
+    let kinds: [u8; 9] = [2, 1, 0, 8, 6, 4, 2, 7, 3];
+    let rotate = case as usize % kinds.len();
+    for i in 0..kinds.len() as u32 {
+        let index = 4 + i;
+        let at = LISTED + i * 0x100;
+        object(m, index, at, 0);
+        byte_at(m, at + 0xaa, kinds[(i as usize + rotate) % kinds.len()]);
+        // Near the unit but the seventh, far off.
+        let far = if i == 6 { 50.0 } else { 0.0 };
+        for (j, v) in [1.25f32 + far, 2.0, 3.5, 0.25].into_iter().enumerate() {
+            float(m, at + 0x30 + 4 * j as u32, v);
+        }
+        word(m, at + 0x10, u32::MAX);
+        word(m, at + 0xc, u32::MAX);
+    }
+    // The scenery object's children: 13, then 14.
+    for (index, next) in [(13u32, 0x8000_000e_u32), (14, u32::MAX)] {
+        let at = LISTED + 0x1000 + index * 0x100;
+        object(m, index, at, 0);
+        word(m, at + 0xc, next);
+        word(m, at + 0x10, u32::MAX);
+        byte_at(m, at + 0xaa, 6);
+    }
+    for i in 0..kinds.len() as u32 {
+        let at = LISTED + i * 0x100;
+        if m.bytes[(at + 0xaa) as usize] == 6 {
+            word(m, at + 0x10, 0x8000_000d);
+        }
+    }
+    // The query's list, as the stub leaves it: the frame starts 0x118
+    // below the entry stack, the list 0x14 above its saved ESI.
+    let list = STACK - 0x114 + 0x14;
+    for i in 0..0x40u32 {
+        word(m, list + 4 * i, 0x8000_0004 + i % kinds.len() as u32);
+    }
+}
+
+/// The builder reaches its interaction search and its copy-out, and the
+/// facing's two `fmod` calls; the search reaches its query and a test.
+#[test]
+fn the_phantom_body_reaches_its_children() {
+    let build = matches_guest("sim.seats.phantom_action_build", 12, build_fixture);
+    if build.is_empty() {
+        return; // no image
+    }
+    for site in [0x0018_6b1b, 0x0018_6c18, 0x0018_6f0f, 0x0018_6feb, 0x0018_7002, 0x0018_701d] {
+        assert!(build.contains(&site), "the builder never resumes at {site:#x}");
+    }
+    let search = matches_guest("sim.seats.phantom_interaction_search", 12, interaction_fixture);
+    assert!(search.contains(&0x0015_11bc), "the search never queries");
+    assert!(
+        [0x0015_1281, 0x0015_1291, 0x0015_12a1, 0x0015_12b1].iter().any(|s| search.contains(s)),
+        "the search never tests an object"
+    );
+}
 
 /// Every covered seat reaches at least one child call, so the resume
 /// machinery is exercised, the control update reaches its submitter, and

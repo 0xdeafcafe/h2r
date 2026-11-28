@@ -1,8 +1,8 @@
 # The phantoms' action build: what it costs and how it gets cheap
 
-Status: Option 1, the alias and its journal (lane P1), is built and on by default. On the laptop it is 22% faster per match than the view with identical state hashes ([notes](notes/sim-10x.md#2026-11-22-the-phantom-alias-against-the-view-on-the-laptop)); its film runs are pending. The input stage in Rust (lane P2) is built and on by default; its check-mode and differential runs are pending. Lanes P0, P3 and P4 are design.
-Code: `crates/extensions/game/src/bot_glue/retail_input.rs` (`gather`, `Builder::sample_checked`, `Builder::alias`, `Builder::view`, `Builder::rust`, `Builder::action`), `crates/rewrites/engine/src/sim_seats/input.rs`, `crates/runtime/runtime/src/executor.rs` (`SecondExecutor::alias`, `Alias`), `crates/runtime/runtime/src/guest/journal.rs`, `crates/runtime/runtime/src/guest/view.rs`. Tests: named per lane.
-Switch: `impl.sim.phantom-alias` (on; `-impl.sim.phantom-alias` builds in the view), `impl.sim.phantom-input` (on; `-impl.sim.phantom-input` runs the input stage in the guest) and `H2_PHANTOM_BUILD_CHECK=1`, all in [switches.md](../runtime/switches.md).
+Status: Option 1, the alias and its journal (lane P1), is built and on by default. On the laptop it is 22% faster per match than the view with identical state hashes ([notes](notes/sim-10x.md#2026-11-22-the-phantom-alias-against-the-view-on-the-laptop)); its film runs are pending. The input stage in Rust (lane P2) is built and on by default; its check-mode and differential runs are pending. The builder's body in Rust (lanes P3 and P4) is built and on by default; its disc differentials and check-mode runs are pending. Lane P0 is design.
+Code: `crates/extensions/game/src/bot_glue/retail_input.rs` (`gather`, `Builder::sample_checked`, `Builder::alias`, `Builder::view`, `Builder::rust`, `Builder::action`), `crates/rewrites/engine/src/sim_seats/input.rs`, `crates/rewrites/engine/src/sim_seats/builder.rs`, `crates/rewrites/engine/src/sim_seats/interaction.rs`, `crates/extensions/game/src/bot_glue/retail_input/body.rs`, `crates/runtime/runtime/src/executor.rs` (`SecondExecutor::alias`, `Alias`), `crates/runtime/runtime/src/guest/journal.rs`, `crates/runtime/runtime/src/guest/view.rs`. Tests: named per lane.
+Switch: `impl.sim.phantom-alias` (on; `-impl.sim.phantom-alias` builds in the view), `impl.sim.phantom-input` (on; `-impl.sim.phantom-input` runs the input stage in the guest), `impl.sim.phantom-body` (on; `-impl.sim.phantom-body` runs the builder in the guest) and `H2_PHANTOM_BUILD_CHECK=1`, all in [switches.md](../runtime/switches.md).
 
 Each tick a sim host turns every phantom's pad into a retail action by
 running the title's own local action builder in a private view of guest
@@ -92,20 +92,23 @@ has no finer measurement. What the code says it contains:
   non-context override, so the collision and object reads under the
   searches run as lifted code, not as the native ports.
 
-  Which seat ports the builder's executor keeps (**Code**, test
+  Which of the live game's seat ports the builder's executor keeps
+  (**Code**, test
   `a_phantom_executor_keeps_the_target_seats_and_not_the_control_update`
   in `crates/rewrites/sim-bridge/src/sim_seats.rs`). An override survives
   `prefer_generated` only where its whole chain is context-only
   (`Chain::render_thread`, marked in `hooks::install::place`). All three
-  exist only under `impl.sim.native.seats` (off), so at the default every
-  one is lifted.
+  exist only under `impl.sim.native.seats` (off). Under
+  `impl.sim.phantom-body` the executor installs seats of its own over
+  them ([below](#the-builder-body-in-rust)), so the column is what runs
+  with the body off.
 
   | Entry | Port | In the phantom executor | Why |
   |---|---|---|---|
   | `0x1a4900` target update | `sim_seats::targeting::update` | Rust | the seat alone at the point; the body reads only the CPU and the guest |
   | `0x1a5370` target search | `sim_seats::targeting::search` | Rust | the same |
   | `0x185be0` control update | `sim_seats::look::update` | lifted | the `aim-assist` feature's open and close sit at the point: per-player host state, and an `after` the fallback cannot resume |
-  | `0x1a50a0` cone | `sim_seats::aim::arm` (`impl.sim.aim-assist`, off) | lifted | the `aim-assist` feature's `after` at the point |
+  | `0x1a50a0` cone | `sim_seats::aim::arm` (`impl.sim.aim-assist`, off) | lifted, with the body on too | the `aim-assist` feature's `after` at the point |
 
   The look and aim arms also move host proof counters
   (`device::arm`, `leaf`, `aim::arm` statics), so a phantom call counts
@@ -258,6 +261,86 @@ input stage, so a mismatch counts either the path or the stage. With the
 alias off (or a flat-RAM image) the reference arm is a second view with
 the guest stage.
 
+### The builder body in Rust
+
+The sixth call, the builder `0x186ab0`, runs in Rust in the phantom
+executor under `impl.sim.phantom-body` (lanes P3 and P4). `Builder::with_body`
+puts every seat of `sim_seats::phantom_body` into the executor's own
+dispatch, at its entry and its return sites (`body::install`); the live
+game's dispatch is not touched (**Code**).
+
+| Seat | Entry | Body | Its callees |
+|---|---|---|---|
+| `sim.seats.phantom_action_build` | `0x186ab0` | `sim_seats::builder` | the control update, dialog test `0x148fff`, input block `0x12be90`, the unit's weapon and grenade queries (`0xcdeb0`, `0xcfe40`, `0xcdff0`), camera mode `0x155760`, zoom `0xc85c0` and `0xc8960`, script look `0x187510`, the interaction search, `fmod` `0x373b6a`, the action copy `0x14d040` |
+| `sim.seats.phantom_interaction_search` | `0x151110` | `sim_seats::interaction` | the spatial query `0xbb050`; the weapon, control, vehicle and biped tests `0x151780`, `0x1516c0`, `0x151430`, `0x1515e0` |
+| `sim.seats.player_control_update` | `0x185be0` | `sim_seats::look::update` | the look curve, the target update and the leaves `look` already names |
+| `sim.seats.player_look_curve` | `0x185b30` | `sim_seats::look::curve` | none |
+| `sim.seats.aim_target_update`, `_search`, `_compare` | `0x1a4900`, `0x1a5370`, `0x1a66f0` | `sim_seats::targeting` | the cone `0x1a50a0`, the stack probe `0x320560`, the candidate walk `0x1a54a0`, `qsort` `0x321460`, the line of sight `0x1a67f0` |
+
+How a build runs (`body::drive`):
+
+```mermaid
+flowchart LR
+  E[entry or site] --> S[seat segment]
+  S -- declines --> O[original from the same point]
+  S -- calls --> I{call_inline}
+  I -- returned --> E
+  I -- left --> R[runner, then the site's resume]
+  R --> E
+  S -- returns --> X[caller]
+```
+
+- **One segment, one commit.** A seat is register-level in the style of
+  `sim_seats::look`: each segment runs from the entry or a site to the
+  next call or the return, buffers its stores in a plan, and leaves every
+  register, flag, x87 and SSE state the original leaves there. A segment
+  that declines has written nothing, and the original runs from the same
+  point: its entry, or the site's generated resume.
+- **Callees in place.** A call a segment ends with is made through
+  `ExecCtx::call_inline`, and the seat carries on at the site in Rust. A
+  callee that is a seat too enters its own Rust through the entry table.
+  Where the runtime leaves a call to the runner (`Fallback`), the runner
+  makes it and enters the seat again at the site through its resume
+  registration, so the answer is the same either way. The stack probe
+  `0x320560` under the target search returns below its call slot, so it
+  is always left to the runner (**Code**: the plain-return test in
+  `try_inline`).
+- **Floats.** The facing's `fpatan`, `fsqrt` and the zoom hold's
+  `fabs`/`fcomip` run on the x87 crate from the call's x87 state, with
+  the last instruction and operand pointers retail leaves; `fmod` is the
+  guest's. The interaction search's `addss`, `subss`, `mulss` and
+  `comiss` go through `sim_objects::sse`, which follows MXCSR.
+- **Declines, by seat and point** (`body::declined`, said once each):
+
+  | When | Seat | Seen on a phantom |
+  |---|---|---|
+  | MXCSR or x87 exceptions unmasked, or a reserved precision (`sim_native::supported`) | every seat | no: the gather's float state |
+  | an x87 step the crate stops on (a transcendental under a directed rounding mode) | builder | no |
+  | the direction flag set at a `rep stos` or `rep movs` | builder | no |
+  | the grenade walk past `builder::SLOT_WALK` steps (a slot outside 0 and 1 with neither holding a grenade, where retail spins) | builder | no: units have two slots |
+  | a query count past 64, or a jump table entry the image does not have | interaction search | no |
+  | a read or write that faults, or a store log past its size | every seat | only on a broken image |
+
+- **The aim-assist feature.** Its hooks at `0x185be0` and `0x1a50a0` keep
+  per-player host state. `prefer_generated` already turns them off in the
+  executor; the body's seat at `0x185be0` replaces that chain there, and
+  `0x1a50a0` is not a phantom seat, so a phantom never runs them.
+- **Proof counters.** The control update's device and leaf arms keep
+  host statics (above), so a phantom's control updates count towards the
+  live arms' proof. Until an arm is proven its bound read declines, and
+  the guest's control update answers the phantom.
+
+The proof, in the order it is run: the disc differentials
+`phantom_action_build` and `phantom_interaction_search` in
+`crates/rewrites/engine/tests/sim_seats_differential.rs` (each segment
+against the lifted original at every call and return, every register and
+every byte of RAM; callees stubbed) and
+`the_phantom_body_reaches_its_children`; the synthetic build
+`retail_input_binds_the_requested_seat_and_keeps_its_history_private`
+with the body on (it declines and the stand-in answers); then the check
+mode over the eight Lockout seeds, whose reference arm is the guest
+builder.
+
 ### The other options
 
 | # | Option | Saving, ms a tick | Exact? | Verdict |
@@ -269,7 +352,7 @@ the guest stage.
 | 5 | A result kept across ticks | 0 | the aim search and the interaction search read moving objects every tick. Only call 2's record is constant, and option 2 takes it | no lane |
 | 6 | Seats built on several threads | wall only: no CPU saved, and a batch already fills the cores | yes (seats are independent, below) | no lane |
 | 7 | The build overlapped with the guest's tick | 0 | **no**: tick N's action is read by tick N's update straight after the gather. A build a tick late is a different match, as `H2_BOT_PIPELINE` is | no lane |
-| 8 | The builder tree in Rust over live state | all but about 0.05 | x87 and SSE floats across the whole tree, collision under it | lanes P3 and P4, on `sim_seats::look` and the [sim-rewrite](../engine/sim-rewrite.md) seats |
+| 8 | The builder tree in Rust over live state | all but about 0.05 | x87 and SSE floats across the whole tree, collision under it | lanes P3 and P4, built for the builder, the interaction search and the seats under them; their other callees stay guest calls made in place |
 | 9 | A copy-on-write view kept across ticks and patched from the live side's written pages | the faults, at the cost of a write watch on the live side and a copy of every page the tick wrote | yes | superseded by option 1, which copies only what the build wrote |
 
 **Order of the calls.** Seats are independent: each starts from the same
@@ -298,8 +381,8 @@ The lanes. Each is code only; the coordinator builds and runs.
 | **P0** split | `PhantomCosts` gains: nanoseconds in the setup writes, in each of the six calls, in `written` plus `revert`, and in the read back; the guest accesses of each call (`CallOutcome::accesses`); the pages written per seat; and the process's minor faults inside `Builder::sample` (`getrusage`). The sim report prints them under `wall` as per-tick figures | `crates/extensions/game/src/bot_glue/retail_input.rs`, `crates/live/sim-bench/src/metrics.rs`, [sim.md](../runtime/sim.md) | none | metrics unit tests on the JSON, beside `phantom_costs_are_per_tick_beside_the_brains` |
 | **P1** alias and journal (built) | `Guest` has a write journal on the fast page table's write bit; `SecondExecutor::alias(main)`, `alias_continued` and `undo`; `Builder::action` takes the alias path under the switch and the view path without it. A check mode, `H2_PHANTOM_BUILD_CHECK=1`, runs both for every seat and counts seats whose outcome, action or history bytes differ (`wall.phantom_build_mismatches`) | `crates/runtime/runtime/src/guest.rs`, `guest/journal.rs`, `guest/view.rs`, `executor.rs`, `crates/extensions/game/src/bot_glue/retail_input.rs`, `crates/live/sim-bench/src/metrics.rs`, [second-executor.md](../runtime/second-executor.md), [switches.md](../runtime/switches.md) | `impl.sim.phantom-alias` | below |
 | **P2** input stage (built) | Option 2: `bind`, `look_rates`, `read_pads`, `remap` in Rust, each falling back to its guest entry on a named refusal | `crates/rewrites/engine/src/sim_seats/input.rs`, `crates/extensions/game/src/bot_glue/retail_input.rs` | `impl.sim.phantom-input` | the disc differentials `input_stage::*` in `crates/rewrites/engine/tests/sim_seats_differential.rs` (each piece against its lifted entry to the return, every byte outside the stack); `stage_tests` in `retail_input.rs`; the image test `retail_pad_sequence_matches_local_angles_target_and_fire` on the Rust stage; the check mode over the eight Lockout seeds |
-| **P3** builder body | `0x186ab0` in Rust over `sim_seats::look` (the control update's body), the dialog test and the unit queries as Rust, the searches still guest calls | `crates/rewrites/engine/src/sim_seats/`, `retail_input.rs` | a switch of its own | as P2. The aim-assist feature opens and closes per-player host state at `0x185be0` and `0x1a50a0`: a phantom's body must not run those hooks, or must save and restore what they touch |
-| **P4** searches | the interaction search `0x151110` and the target search `0x1a5370`/`0x1a54a0` without handing calls back | as P3 | as P3 | as P2, and the shadow gate's `sim.seats` group |
+| **P3** builder body (built) | `0x186ab0` in Rust over `sim_seats::look` (the control update's body); the dialog test, the unit queries and `fmod` stay guest calls, made in place | `crates/rewrites/engine/src/sim_seats/builder.rs`, `crates/extensions/game/src/bot_glue/retail_input/body.rs` | `impl.sim.phantom-body` | the disc differential `phantom_action_build`; `the_phantom_body_reaches_its_children`; the synthetic build with the body on; the check mode over the eight Lockout seeds |
+| **P4** searches (built) | the interaction search `0x151110` in Rust, and the target update and search seats in the phantom executor, their callees made in place; the candidate walk `0x1a54a0` and the type tests stay guest calls | `crates/rewrites/engine/src/sim_seats/interaction.rs`, as P3 | as P3 | the disc differential `phantom_interaction_search`, the shadow gate's `sim.seats` group for the target seats, and the check mode |
 
 P1's proof, in the order it is run:
 

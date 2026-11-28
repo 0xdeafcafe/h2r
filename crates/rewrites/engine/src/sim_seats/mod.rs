@@ -9,9 +9,10 @@
 //! and RAM untouched for the generated original — wherever the shape is
 //! one it does not take over: a float environment it does not assume, an
 //! aliased or unmapped operand, or a path the original owns (a
-//! resource type an edited image can name). The phantom action builder
-//! therefore keeps running in the generated code, and the unbound path
-//! the phantoms take is the body's entry. The bound controller's device
+//! resource type an edited image can name). The live game's [`SEATS`]
+//! leave the action builder `186ab0` to the generated code; the phantom
+//! executor runs it in Rust ([`BUILDER`], with [`INTERACTION`] and the
+//! seats under them: [`phantom_body`]). The bound controller's device
 //! read is the kernel [`device`], run inside the control update's body
 //! through its shadow arm [`device::arm`].
 //!
@@ -29,11 +30,13 @@ use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
 pub mod aim;
+pub mod builder;
 pub mod camera;
 pub mod control;
 pub mod device;
 pub mod hud;
 pub mod input;
+pub mod interaction;
 pub mod leaf;
 pub mod look;
 pub mod player_objects;
@@ -89,6 +92,44 @@ pub const PARAMS_ORACLE: Seat = Seat {
     sites: aim::SITES,
     run: params,
 };
+
+/// The local action builder `0x186ab0`: not one of the [`SEATS`], which
+/// the live game installs, but the phantom executor's
+/// (docs/perf/sim-phantom-build.md, "The builder body in Rust").
+pub const BUILDER: Seat = Seat {
+    point: &points::PLAYER_ACTION_BUILD,
+    name: "sim.seats.phantom_action_build",
+    sites: builder::SITES,
+    run: builder::run,
+};
+
+/// The interaction search `0x151110`, under the builder.
+pub const INTERACTION: Seat = Seat {
+    point: &points::PLAYER_INTERACTION_SEARCH,
+    name: "sim.seats.phantom_interaction_search",
+    sites: interaction::SITES,
+    run: interaction::run,
+};
+
+/// The seats under the builder the phantom executor also runs in Rust:
+/// the control update over [`look`] and the target update and search
+/// under it. The aim-assist cone `0x1a50a0` is not one: its kernel arm
+/// and the `aim-assist` feature keep per-player host state.
+const UNDER_BUILDER: [u32; 5] = [
+    points::PLAYER_LOOK_CURVE.base,
+    points::PLAYER_CONTROL_UPDATE.base,
+    points::AIM_TARGET_UPDATE.base,
+    points::AIM_TARGET_SEARCH.base,
+    points::AIM_TARGET_COMPARE.base,
+];
+
+/// Every seat the phantom executor installs: the builder, the interaction
+/// search, and [`UNDER_BUILDER`]'s.
+pub fn phantom_body() -> impl Iterator<Item = &'static Seat> {
+    [&BUILDER, &INTERACTION]
+        .into_iter()
+        .chain(SEATS.iter().filter(|s| UNDER_BUILDER.contains(&s.point.base)))
+}
 
 pub const SEATS: &[Seat] = &[
     Seat {
