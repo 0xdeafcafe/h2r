@@ -94,7 +94,8 @@ pub const PHASES: &[Phase] = &[
     guest(0x0016_5dc1, "first_person"),
     guest(0x0015_3950, "unknown_153950"),
     guest(0x0019_17b2, "hud"),
-    guest(0x0016_f200, "unknown_16f200"),
+    // The countdown requests, crate::countdown_requests.
+    rust(0x0016_f200, "countdown_requests"),
 ];
 
 /// Phases the guest still runs.
@@ -277,21 +278,22 @@ pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
     run_with(cx, ledger, Present::Always, Bodies::NONE).await
 }
 
-/// Which Rust-owned phases run their Rust body. A phase whose body is off
-/// is a guest call, counted in the ledger like any guest phase.
+/// Whether the Rust-owned phases run their Rust body. A phase whose body
+/// is off is a guest call, counted in the ledger like any guest phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bodies {
-    /// The effects phase, [`crate::effects_phase`]; off only in tests, as
-    /// the lifted reference.
-    pub effects: bool,
+    /// The Rust bodies ([`crate::effects_phase`],
+    /// [`crate::countdown_requests`]); off only in tests, as the lifted
+    /// reference.
+    pub rust: bool,
 }
 
 impl Bodies {
-    pub const NONE: Bodies = Bodies { effects: false };
-    pub const ALL: Bodies = Bodies { effects: true };
+    pub const NONE: Bodies = Bodies { rust: false };
+    pub const ALL: Bodies = Bodies { rust: true };
 
     fn runs(self, phase: &Phase) -> bool {
-        phase.owner == Owner::Rust && phase.entry == EFFECTS && self.effects
+        phase.owner == Owner::Rust && self.rust
     }
 }
 
@@ -433,6 +435,10 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
                 || match phase.entry {
                     EFFECTS => crate::effects_phase::run(&cx, RECORD_SIZE).await?
                         == crate::effects_phase::Walked::Declined,
+                    crate::countdown_requests::ENTRY => {
+                        cx.write(|m| crate::countdown_requests::run(m))?;
+                        false
+                    }
                     _ => true,
                 };
             if guest {
@@ -503,9 +509,10 @@ mod tests {
         assert_eq!(PHASES[28].entry, 0x0016_f200);
     }
 
-    /// With the Rust bodies on, the effects phase makes no guest call of
-    /// its own: the ledger has 0 for it and 1 for every other phase, and
-    /// the walk's callees run where the phase did.
+    /// With the Rust bodies on, the effects phase and the countdown
+    /// requests make no guest call of their own: the ledger has 0 for them
+    /// and 1 for every other phase, and the walk's callees run where the
+    /// phase did.
     #[test]
     fn effects_phase_ledger_is_zero() {
         use crate::effects_phase::tests::{STACK, answer, guest};
@@ -514,6 +521,8 @@ mod tests {
         let clock = 0x0052_0100;
         g.map(crate::points::TICK_CLOCK.base & !0xfff, 0x1000);
         g.put_u32(crate::points::TICK_CLOCK.base, clock).put_u32(clock + CLOCK_COUNTER, 5);
+        // The countdown requests' bytes, none pending.
+        g.map(crate::countdown_requests::FIRST, 2);
         let ledger: &'static Mutex<Ledger> = Box::leak(Box::new(Mutex::new(Ledger::new())));
         let f = move |cx: Cx| -> EntryFuture { Box::pin(run_with(cx, ledger, Present::Always, Bodies::ALL)) };
         let record = STACK - RECORD_SIZE;
@@ -528,8 +537,10 @@ mod tests {
         let effects = PHASES.iter().position(|p| p.entry == EFFECTS).unwrap();
         assert_eq!(PHASES[effects].owner, Owner::Rust);
         for i in 0..PHASES.len() {
-            assert_eq!(l.calls(i), u32::from(i != effects), "{}", PHASES[i].name);
+            assert_eq!(l.calls(i), u32::from(PHASES[i].owner == Owner::Guest), "{}", PHASES[i].name);
         }
+        assert_eq!(PHASES[28].owner, Owner::Rust, "the countdown requests");
+        assert!(!targets_of(&run).contains(&crate::countdown_requests::ENTRY));
         assert_eq!(l.total_calls(), guest_phases() as u64);
         let targets: Vec<u32> = run.calls.iter().map(|c| c.target).collect();
         assert!(!targets.contains(&EFFECTS));
@@ -538,6 +549,10 @@ mod tests {
         assert_eq!(targets[at - 1], PHASES[effects - 1].entry);
         let after = targets.iter().position(|&t| t == PHASES[effects + 1].entry).unwrap();
         assert_eq!(after - at, 9, "the walk's nine callees");
+    }
+
+    fn targets_of(run: &crate::entry::testing::Run) -> Vec<u32> {
+        run.calls.iter().map(|c| c.target).collect()
     }
 
     #[test]

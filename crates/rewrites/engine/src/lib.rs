@@ -96,6 +96,7 @@ pub mod sim_objects;
 #[cfg(feature = "runtime-glue")]
 pub mod sim_seats;
 pub mod sim_tick;
+pub mod countdown_requests;
 pub mod effects_phase;
 pub mod tick_poses;
 
