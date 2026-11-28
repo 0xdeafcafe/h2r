@@ -176,7 +176,10 @@ reached from view rendering through `0x13870`): `SET_ZSTENCIL_CLEAR_VALUE`
 `NO_OPERATION` 7. On the Xbox the GPU interrupts when it reaches the
 method and D3D calls `0x24970(context)` (cdecl). The callback reads a
 render target back, so it must run after the work queued before it and
-before the work queued after it.
+before the work queued after it. The retail image never reaches the
+insert: its one caller (`0x000138a8`) passes mode 0 in BX, which takes
+`0x000245c0`'s reset branch ([sim-render-split.md](../engine/sim-render-split.md),
+coupling 5).
 
 - `Device::drain_until_callback` drains up to and including the first
   callback method and returns it as a `PushCallback` (`function`,

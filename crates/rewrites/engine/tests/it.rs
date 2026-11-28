@@ -43,6 +43,8 @@ mod point_shapes;
 mod screen_effects_differential;
 #[path = "screen_grid_differential.rs"]
 mod screen_grid_differential;
+#[path = "screen_record_differential.rs"]
+mod screen_record_differential;
 #[path = "shadow_constants.rs"]
 mod shadow_constants;
 #[path = "shadow_constants_differential.rs"]
