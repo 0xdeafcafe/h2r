@@ -209,8 +209,6 @@ const IMAGE_BYTES: u32 = 0x74;
 const IMAGE_SIZE: u32 = 0x04;
 const IMAGE_FLAGS_WORD: u32 = 0x0c;
 const LINEAR: u16 = 0x10;
-const IMAGE_TEXTURE: u32 = 0x50;
-const IMAGE_STAMP: u32 = 0x70;
 
 fn word(mem: &dyn GuestRead, addr: u32) -> Option<u32> {
     mem.read_u32(addr)
@@ -402,6 +400,23 @@ fn corners([x0, x1, y0, y1]: [f32; 4]) -> [f32; 4] {
 /// `0x00052040`'s stage 0 constant for a record with no colour: the
 /// colour `[0x00468710]` points at, alpha 1. The combiner is the
 /// texture times the vertex colour only when it is white.
+/// The tint constant `0x00012360` sets, `[r, g, b]` 0 to 1: multiplied
+/// into the quad's colour.
+pub fn default_tint(mem: &dyn GuestRead) -> Option<[f32; 3]> {
+    let colour = word(mem, at::DEFAULT_TINT)?;
+    Some([
+        float(mem, colour)?,
+        float(mem, colour.checked_add(4)?)?,
+        float(mem, colour.checked_add(8)?)?,
+    ])
+}
+
+/// `argb` as RGBA with the tint constant multiplied in.
+fn tinted(argb: u32, [r, g, b]: [f32; 3]) -> [f32; 4] {
+    let [cr, cg, cb, ca] = rgba(argb);
+    [cr * r, cg * g, cb * b, ca]
+}
+
 pub fn white_tint(mem: &dyn GuestRead) -> Option<bool> {
     let colour = word(mem, at::DEFAULT_TINT)?;
     let one = float(mem, at::ONE)?;
@@ -590,15 +605,6 @@ pub(super) fn truncated(v: f32) -> i16 {
     }
 }
 
-/// `0x00012360`: the image is resident and has a texture.
-fn resident(mem: &dyn GuestRead, image: u32) -> Result<bool, Refusal> {
-    let w32 = |a: Option<u32>| a.and_then(|a| word(mem, a)).ok_or(Refusal::Unreadable);
-    let stamp = w32(image.checked_add(IMAGE_STAMP))? as i32;
-    let after = w32(Some(at::RESIDENT_AFTER))? as i32;
-    let texture = w32(image.checked_add(IMAGE_TEXTURE))?;
-    Ok(stamp > after && texture != 0)
-}
-
 /// `0x0022ea81`: the widget's rectangle, `[x0, x1, y0, y1]` in the view's
 /// pixels: the header's moved by the animated offset, its two corners
 /// projected at the offset's Z about the view's centre.
@@ -673,10 +679,13 @@ pub fn meter(
         .checked_add(u32::from(METER_IMAGE) * IMAGE_BYTES)
         .ok_or(Unreadable)?;
     // `0x00052040`.
-    let quads_off = short(mem, at::QUADS_OFF).ok_or(Unreadable)? != 0;
-    if quads_off || !white_tint(mem).ok_or(Unreadable)? || !resident(mem, image)? {
-        return Err(State);
+    // Quads off: the guest draws none. The native overlay loads the
+    // bitmap by tag, so the guest's residency does not gate it.
+    if short(mem, at::QUADS_OFF).ok_or(Unreadable)? != 0 {
+        return Ok(header);
     }
+    let _ = image;
+    let shade = default_tint(mem).ok_or(Unreadable)?;
     header.content = UiContent::Bitmap(UiBitmap {
         texture: OverlayTexture::Bitmap {
             tag: datum,
@@ -684,7 +693,7 @@ pub fn meter(
         },
         rect,
         uv: [0.0; 4],
-        color: rgba(argb),
+        color: tinted(argb, shade),
         combiner: Combiner::Texture,
         sampler: Sampler {
             wrap: false,
@@ -747,7 +756,8 @@ pub fn read(
         let data = w32(instance)?;
         let count = w32(off(data, IMAGE_COUNT)?)? as i32;
         if count <= 0 {
-            return Err(Refusal::State);
+            // No image: the guest draws nothing.
+            return Ok(Drawn::Widget(header));
         }
         let asked = i16_at(off(widget, widget::IMAGE)?)?;
         let index = if asked >= 0 && i32::from(asked) < count {
@@ -790,18 +800,18 @@ pub fn read(
         vec![(r, coordinates(size, linear, lens.one))]
     };
     // `0x00052040` and `0x00012360`, the same for each piece.
-    if i16_at(at::QUADS_OFF)? != 0 || !white_tint(mem).ok_or(Unreadable)? {
-        return Err(Refusal::State);
+    // Quads off or an empty image: the guest draws nothing. The native
+    // overlay loads the bitmap by tag, so residency does not gate it.
+    if i16_at(at::QUADS_OFF)? != 0 || size[0] <= 0 || size[1] <= 0 {
+        return Ok(Drawn::Widget(header));
     }
-    if !resident(mem, image)? || size[0] <= 0 || size[1] <= 0 {
-        return Err(Refusal::State);
-    }
+    let shade = default_tint(mem).ok_or(Unreadable)?;
     let blend = blend(mem, mode).ok_or(Unreadable)?;
     let mut quads = pieces.into_iter().map(|(r, uv)| UiBitmap {
         texture: OverlayTexture::Bitmap { tag, image: index },
         rect: corners(r),
         uv,
-        color: rgba(argb),
+        color: tinted(argb, shade),
         combiner: Combiner::Texture,
         sampler: Sampler {
             wrap: false,
