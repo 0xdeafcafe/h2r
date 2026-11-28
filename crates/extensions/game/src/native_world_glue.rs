@@ -829,8 +829,8 @@ pub fn install() {
     crate::native_layers_glue::install(Arc::clone(&state));
     crate::native_decorators_glue::install(Arc::clone(&state));
     crate::native_sky_glue::install(Arc::clone(&state));
-    let gels = crate::native_gels_glue::install();
-    crate::native_lights_glue::install(state, gels);
+    crate::native_gels_glue::install();
+    crate::native_lights_glue::install(state);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
     crate::native_post_glue::install();
     crate::native_shadows_glue::install();
