@@ -1,18 +1,21 @@
 //! The bound controller's device read (docs/engine/sim-rewrite.md, "Seats
 //! and rules (phase 7)"). At `185be0`'s bound branch (`0x185c6c`, a seat
 //! whose port has a controller), the seat body copies the read's inputs
-//! out of guest memory into a [`Device`], runs the kernel [`super::read_tracked`]
+//! out of guest memory into a [`Device`], runs the kernel [`super::read_guest`]
 //! with the x87 model and the image's `pow` for the x87 pieces, and lays
 //! the outcome out as the state at the next transfer: the look curve's
 //! call (`0x185ff4`) unblocked, the visibility walk's (`0x1865bf`)
 //! blocked, or the walk skipped for a unit that is not a biped.
 //!
-//! Every read is the kernel's. A read it cannot take (a float environment
-//! off the pinned one, an input that faults, spans that alias) is
+//! Every read is the kernel's, under the guest's float state as it stands:
+//! the MXCSR through the SSE model ([`super::read_guest`]), the x87
+//! control word (precision, rounding, masks) through the x87 model. A read
+//! it cannot take (an unmasked exception, an input that faults, spans
+//! that alias) is
 //! `unimplemented!("seats: device read: <cause>")`: the guest's read is
 //! gone.
 
-use super::{Constants, Device, Fpu, Last, Path, Seat, read_tracked};
+use super::{Constants, Device, Fpu, Last, Path, Seat, read_guest};
 use crate::light_constants::X87;
 use crate::memory::{GuestMemory, MemFault};
 use crate::sim_native::Memory;
@@ -46,12 +49,14 @@ const CONTROL: u32 = 0x004e_d284;
 const TICKS: u32 = 0x0051_0c54;
 const OBJECT_HEADER: u32 = 0x004e_0300;
 const TAG_ENTRIES: u32 = crate::points::TAG_ENTRIES.base;
+/// The x87 status word's error summary.
+const ES: u16 = 0x80;
 
 /// Why a read is not the kernel's: each is a named panic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
-    /// MXCSR or the x87 not in the pinned state, an operand off the exact
-    /// range, or a step the x87 model refuses.
+    /// An unmasked SSE or x87 exception, a pending x87 exception, or a step
+    /// the x87 model refuses.
     Float,
     /// A read of the inputs faulted.
     Fault,
@@ -231,11 +236,9 @@ fn whole(v: u32) -> [u8; 16] {
 /// frame and zeroing, `port` the controller's), without counting or
 /// choosing.
 pub fn predict(c: &CpuAbi, m: &impl Memory, sp: u32, port: u32) -> Result<Prediction, Decline> {
-    if !det::guest_env(c.mxcsr)
-        || !det::host_fast_env()
-        || c.x87.control & 0x3f != 0x3f
-        || c.x87.status & 0x80 != 0
-    {
+    // The host's own environment backs the SSE fast path; a pending x87
+    // exception is `#MF` at the read's first waiting instruction.
+    if !det::host_fast_env() || c.x87.status & ES != 0 {
         return Err(Decline::Float);
     }
     let word = |a: u32| m.u32(a).map_err(|_| Decline::Fault);
@@ -361,6 +364,12 @@ pub fn predict(c: &CpuAbi, m: &impl Memory, sp: u32, port: u32) -> Result<Predic
         },
     )
     .ok_or(Decline::Float)?;
+    // An unmasked x87 pre-computation exception leaves only the status
+    // word changed (`x87::abi`): the guest takes `#MF` at its next waiting
+    // instruction.
+    if x.0.status & ES != 0 {
+        return Err(Decline::Float);
+    }
 
     let mut frame = before;
     let mut put = |o: i32, v: u32| frame[((o + 8) / 4) as usize] = v;

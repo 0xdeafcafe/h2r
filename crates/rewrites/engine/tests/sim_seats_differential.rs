@@ -1089,8 +1089,9 @@ fn device_start(ram: &FlatMemory, case: u32, control: u16) -> (FlatMemory, Cpu) 
         gpr: [0x1234_5678, 0x9876_5432, 0, 0x7b1c, STACK, 0x00aa_bbcc, 0x5151, 0x0e37],
         eip: points::PLAYER_CONTROL_UPDATE.base,
         eflags: 0x2,
-        // The live game's MXCSR (PE clear) on half the cases.
-        mxcsr: if case % 2 == 0 { 0x1f80 } else { 0x1fa0 },
+        // The live game's MXCSR (PE clear) on half the cases; one in four
+        // rounds down, which the read models as the guest runs it.
+        mxcsr: [0x1f80, 0x1fa0, 0x1f80, 0x3fa0][(case % 4) as usize],
         ..Default::default()
     };
     for (i, reg) in cpu.xmm.iter_mut().enumerate() {
@@ -1115,7 +1116,9 @@ fn bound_control_matches_lifted() {
     let mut code = original(image, seat.point);
     let mut reached = BTreeSet::new();
     for case in 0..DEV_CASES {
-        for control in [0x027f_u16, 0x037f, 0x007f] {
+        // The pinned word, extended and single precision, and two rounding
+        // modes off nearest: the x87 model takes each as the guest does.
+        for control in [0x027f_u16, 0x037f, 0x007f, 0x0e7f, 0x067f] {
             let (mut mem, mut cpu) = device_start(ram, case, control);
             let mut native = native_of(&mem);
             let mut regs = abi_cpu(&cpu);
