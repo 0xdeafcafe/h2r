@@ -1501,7 +1501,8 @@ impl LitObjects {
     /// the scene's parts draw theirs ([`plan_item_part`]), an animated
     /// pass sampled at `time` (the render clock). A record toggling the
     /// auxiliary state draws with `aux`, what the toggle sets for the
-    /// first person's view, and refuses without it. A record whose
+    /// first person's view, and refuses without it. A record marking the
+    /// stencil draws in mode 2 ([`marked`]). A record whose
     /// shader's prologue uploads the structure's parameter block
     /// (`frame_scene::PartFlags::STRUCTURE_PARAMETERS`) draws with
     /// `structure`, the upload, and refuses without it
@@ -1514,6 +1515,7 @@ impl LitObjects {
         let inputs = PartInputs { time, structure, ..item_inputs(frame, item, aux.is_some())? };
         let mut draw = self.plan_inputs(index, inputs, &item.key, &item.rows, entry, false)?;
         draw.aux_depth = toggled(item.flags, aux);
+        marked(item.flags, &mut draw);
         Ok(draw)
     }
 
@@ -2038,7 +2040,18 @@ pub fn plan_item_part_with<'a>(
     let inputs = item_inputs(frame, item, aux.is_some())?;
     let mut draw = plan_indexed_part(parts, part, &|i| pass_of(i).map(|p| (p, None)), inputs, key, &item.rows, entry, false)?;
     draw.aux_depth = toggled(item.flags, aux);
+    marked(item.flags, &mut draw);
     Ok(draw)
+}
+
+/// A record marking the stencil ([`PartFlags::STENCIL_MARK`]) draws in
+/// stencil mode 2, as its prologue sets it (`object_state::mark`). The
+/// caller checks what its epilogue leaves (mode 1) and leaves the mark
+/// out inside the stencil-off bracket, as layer 3's walk does.
+fn marked(flags: PartFlags, draw: &mut PlannedDraw) {
+    if flags.contains(PartFlags::STENCIL_MARK) {
+        object_state::mark(&mut draw.state);
+    }
 }
 
 /// What a draw whose record has `flags` takes of the toggle's values
@@ -2048,13 +2061,9 @@ fn toggled(flags: PartFlags, aux: Option<&AuxDepth>) -> Option<AuxDepth> {
 }
 
 /// A first-person item's inputs: its frame's, and the topology and
-/// subparts its record draws. A record marking the stencil refuses: the
-/// first-person draw keeps the device's stencil. One toggling the
-/// auxiliary state refuses unless the toggle's values are given (`aux`).
+/// subparts its record draws. One toggling the auxiliary state refuses
+/// unless the toggle's values are given (`aux`).
 fn item_inputs<'a>(frame: &'a ObjectFrame, item: &'a ItemDraw, aux: bool) -> Result<PartInputs<'a>, String> {
-    if item.flags.contains(PartFlags::STENCIL_MARK) {
-        return Err("the record marks the stencil, which the first-person draw does not".into());
-    }
     if item.flags.contains(PartFlags::AUX_DEPTH) && !aux {
         return Err("the auxiliary state toggle, whose values the first-person draw was not given".into());
     }
@@ -3640,7 +3649,8 @@ mod tests {
     }
 
     /// A first-person item draws the topology and subparts its record
-    /// picks, as a scene part does; a marked or aux-depth record refuses.
+    /// picks, as a scene part does; a marked record draws in stencil mode
+    /// 2, and an aux-depth one refuses without the toggle's values.
     #[test]
     fn a_first_person_item_draws_the_topology_and_subparts_its_record_picks() {
         let passes = [equal_pass(0)];
@@ -3658,7 +3668,9 @@ mod tests {
         let chosen = Subparts { first: 0, count: 2, visible: vec![0b10] };
         let flagged = PartFlags::STRIP | PartFlags::SUBPARTS;
         assert_eq!(plan(&item(flagged, Some(chosen))).unwrap().ranges, [15..18], "its chosen subpart");
-        assert!(plan(&item(PartFlags::STRIP | PartFlags::STENCIL_MARK, None)).unwrap_err().contains("stencil"));
+        let marked = plan(&item(PartFlags::STRIP | PartFlags::STENCIL_MARK, None)).unwrap();
+        assert_eq!((marked.ranges.clone(), marked.state.stencil), (vec![0..9], object_state::structure_stencil(object_state::STENCIL_MARK_REFERENCE)));
+        assert!(!plan(&item(PartFlags::STRIP, None)).unwrap().state.stencil.enable, "unmarked, the device's: off");
         assert!(plan(&item(PartFlags::STRIP | PartFlags::AUX_DEPTH, None)).unwrap_err().contains("auxiliary"));
         // Given the toggle's values for its view, an aux-depth record draws
         // with them; a record without bit 11 takes none.
@@ -3673,7 +3685,8 @@ mod tests {
         let d = given(&item(PartFlags::STRIP | PartFlags::AUX_DEPTH, None)).unwrap();
         assert_eq!((d.ranges.clone(), d.aux_depth), (vec![0..9], Some(aux)), "the strip, with the toggle on");
         assert_eq!(given(&item(PartFlags::STRIP, None)).unwrap().aux_depth, None);
-        assert!(given(&item(PartFlags::STRIP | PartFlags::STENCIL_MARK, None)).is_err(), "the mark still refuses");
+        let both = given(&item(PartFlags::STRIP | PartFlags::AUX_DEPTH | PartFlags::STENCIL_MARK, None)).unwrap();
+        assert_eq!((both.aux_depth, both.state.stencil.reference), (Some(aux), object_state::STENCIL_MARK_REFERENCE), "toggled and marked");
     }
 
     #[test]
@@ -4919,10 +4932,25 @@ mod tests {
         let mut unread = entry();
         unread.0.retain(|(t, _)| *t != RenderStateType::FrontFace);
         assert!(plan_part(&parts, &pass_of, &frame(), &key(4, 0, 0), &rows, &unread).unwrap_err().contains("FrontFace"));
-        // The stencil on at the layer-3 call.
+        // The stencil on at the layer-3 call: drawn under the device's
+        // state when every field reads, refused naming the one that does
+        // not.
+        use gfx::state::{CompareFunc, StencilOp};
         let mut stencil = entry();
-        stencil.0.retain(|(t, _)| *t != RenderStateType::StencilEnable);
-        stencil.0.push((RenderStateType::StencilEnable, 1));
-        assert!(plan_part(&parts, &pass_of, &frame(), &key(4, 0, 0), &rows, &stencil).unwrap_err().contains("stencil"));
+        let mode_1 = [
+            (RenderStateType::StencilEnable, 1),
+            (RenderStateType::StencilFunc, CompareFunc::Always.xbox_value()),
+            (RenderStateType::StencilMask, 0xff),
+            (RenderStateType::StencilWriteMask, 0xff),
+            (RenderStateType::StencilFail, StencilOp::Keep.xbox_value()),
+            (RenderStateType::StencilZFail, StencilOp::Keep.xbox_value()),
+            (RenderStateType::StencilPass, StencilOp::Replace.xbox_value()),
+        ];
+        stencil.0.retain(|(t, _)| !mode_1.iter().any(|(m, _)| m == t));
+        stencil.0.extend(mode_1);
+        let d = plan_part(&parts, &pass_of, &frame(), &key(4, 0, 0), &rows, &stencil).unwrap();
+        assert_eq!(d.state.stencil, object_state::structure_stencil(0));
+        stencil.0.retain(|(t, _)| *t != RenderStateType::StencilFunc);
+        assert!(plan_part(&parts, &pass_of, &frame(), &key(4, 0, 0), &rows, &stencil).unwrap_err().contains("StencilFunc"));
     }
 }

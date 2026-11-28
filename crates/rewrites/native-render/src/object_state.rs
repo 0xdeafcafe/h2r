@@ -58,8 +58,9 @@ pub const FIELDS: [R; 29] = [
 
 /// Fields every draw depends on; the rest only when one of these turns
 /// them on (alpha function and reference with the alpha test, the
-/// offsets with the solid offset), or not at all because being on
-/// refuses the draw (blend, stencil). Fog is resolved separately into the shader uniforms.
+/// offsets with the solid offset, the stencil's function, reference,
+/// masks and operations with the stencil test), or not at all because
+/// being on refuses the draw (blend). Fog is resolved separately into the shader uniforms.
 const REQUIRED: [R; 14] = [
     R::ZEnable,
     R::ZFunc,
@@ -228,8 +229,8 @@ pub fn resolve(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(
     resolve_states(own, entry, compiled, false, false)
 }
 
-/// The third-person scene path supplies fog uniforms and the packet's
-/// stencil reference. First-person callers use `resolve`.
+/// The third-person scene path supplies fog uniforms. Every caller's
+/// packets carry the stencil reference. First-person callers use `resolve`.
 pub fn resolve_scene(own: &[RenderStateValue], entry: &EntryStates, compiled: Option<(wgpu::CompareFunction, u8)>) -> Result<DrawState, String> {
     resolve_states(own, entry, compiled, true, false)
 }
@@ -306,9 +307,6 @@ fn resolve_states(
         return Err("fog is on (FOGENABLE)".into());
     }
     if rs.stencil.enable {
-        if !scene {
-            return Err("the stencil test is on (STENCILENABLE)".into());
-        }
         for field in [R::StencilFunc, R::StencilRef, R::StencilMask, R::StencilWriteMask,
             R::StencilFail, R::StencilZFail, R::StencilPass]
         {
@@ -527,7 +525,12 @@ mod tests {
             e.0.push((t, v));
             e
         };
-        assert!(resolve(&[], &with(R::StencilEnable, 1), None).unwrap_err().contains("stencil"));
+        // The stencil test draws, its fields the device's.
+        let tested = resolve(&[], &with(R::StencilEnable, 1), None).unwrap();
+        assert_eq!(tested.stencil, StencilState { enable: true, read_mask: 0, write_mask: 0, ..StencilState::default() });
+        let mut unread = with(R::StencilEnable, 1);
+        unread.0.retain(|(t, _)| *t != R::StencilFunc);
+        assert!(resolve(&[], &unread, None).unwrap_err().contains("StencilFunc"), "a field it reads that does not");
         assert!(resolve(&[], &with(R::FogEnable, 1), None).is_err());
         assert!(resolve_scene(&[], &with(R::FogEnable, 1), None).is_ok());
         assert_eq!(resolve(&[], &with(R::AlphaBlendEnable, 1), None).unwrap().blend, None);
