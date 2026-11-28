@@ -260,12 +260,24 @@ pub async fn vblank_install(cx: Cx) -> Result<Ret, EntryError> {
     Ok(Ret::new(0, 0))
 }
 
+/// The display persist (`0x0022376b`, stdcall(mode)): the loading state
+/// `0x12bf40`, `0x6cb60` unless `mode` is 4, and the retail
+/// `D3DDevice_PersistDisplay` call, which has no display to keep here.
+pub async fn display_persist(cx: Cx) -> Result<Ret, EntryError> {
+    let mode = cx.arg(0)?;
+    cx.call(GuestCall::new(0x0012_bf40)).await?;
+    if mode != 4 {
+        cx.call(GuestCall::new(0x0006_cb60)).await?;
+    }
+    Ok(Ret::new(0, 4))
+}
+
 /// The feature: both bodies in place of the retail ones.
 pub struct Display;
 
 impl Feature for Display {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "The view begin with its brightness gamma ramp, and the vblank install, without the D3D device")
+        Manifest::new(ID, "The view begin with its brightness gamma ramp, and the vblank install and the display persist, without the D3D device")
             .doc("docs/graphics/d3d-device.md")
     }
 
@@ -278,6 +290,9 @@ impl Feature for Display {
         });
         b.raw().implement_async(&points::VBLANK_INSTALL, "display vblank install", |cx| -> EntryFuture {
             Box::pin(vblank_install(cx))
+        });
+        b.raw().implement_async(&points::DISPLAY_PERSIST, "display persist", |cx| -> EntryFuture {
+            Box::pin(display_persist(cx))
         });
         Ok(())
     }
@@ -443,6 +458,18 @@ mod tests {
         assert_eq!(run.guest.u32(install_at::RING + 8).unwrap(), 0);
         assert_eq!(run.guest.u16(install_at::RING_INDEX).unwrap(), 0);
         assert_eq!(vblank_callback(), VBLANK_CALLBACK);
+    }
+
+    #[test]
+    fn the_persist_skips_one_call_for_mode_4() {
+        let f = |cx: Cx| -> EntryFuture { Box::pin(display_persist(cx)) };
+        for (mode, want) in [(4u32, vec![0x12bf40]), (1, vec![0x12bf40, 0x6cb60])] {
+            let mut g = guest();
+            g.put_u32(STACK + 4, mode);
+            let run = entry::testing::run(&f, g, Regs { esp: STACK, ..Default::default() }, |_, _| Regs::default());
+            assert_eq!(run.result, Ok(Ret::new(0, 4)));
+            assert_eq!(run.calls.iter().map(|c| c.target).collect::<Vec<_>>(), want);
+        }
     }
 
     #[test]

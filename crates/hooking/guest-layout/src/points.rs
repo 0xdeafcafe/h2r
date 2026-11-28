@@ -1156,6 +1156,11 @@ points! { ALL;
     /// frame wait's state zeroed and the vblank callback `0x0012b2a0` set.
     /// No arguments, `ret`. `render_bridge::display` implements it.
     VBLANK_INSTALL @ 0x0012_b070: [fn() ret 0]; "docs/graphics/d3d-device.md";
+    /// The display persist (from the vblank install's caller `0x12b450`):
+    /// the loading state `0x12bf40`, then `0x6cb60` unless the argument is 4,
+    /// then `D3DDevice_PersistDisplay`; `ret 4`. `render_bridge::display`
+    /// implements it without the device call.
+    DISPLAY_PERSIST @ 0x0022_376b: [fn(mode: stack 0) ret 4]; "docs/graphics/d3d-device.md";
     /// The present: the optional readback (`readback` 0 asks none), the
     /// border `0x00013d80`, the swap, the display latch and the present
     /// counter; `ret 8`. Callers: the frame step (`0x00223296`) and three

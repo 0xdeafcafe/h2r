@@ -307,18 +307,20 @@ code at `0x13d24` (in `0x13cd0`) and teardown at `0x3fc611`, release device
   resource, the callees, that only `0x3fb4d0` names `0x408644`, and that
   `+0x7A0` is only stored as 0.
 
-## Gamma ramp
+## Brightness and gamma
 
-`0x3ff5c6` loads a `D3DGAMMARAMP` (768 bytes: 256 red, 256 green, 256
-blue) into the miniport. `EAX` = the miniport (device `+0x1C28`) and
-`EDX` = the ramp. Halo calls it once, from the brightness update
-(`0x12d08`, an inlined `SetGammaRamp`). The device checks `EAX`, copies the
-ramp (`Device::gamma_ramp`).
+The brightness setting builds a 768-byte gamma ramp (256 red, 256 green, 256
+blue) in the view begin `0x12a50` (`render_bridge::display`, an `implement`
+hook; the retail code loaded it through the miniport `0x3ff5c6`). The ramp is
+`(i / 255) ^ brightness * 255` per channel; the brightness is the view's
+setting, faded toward `0x4e673c` by `0x4e6738` at 640 x 480 with one player,
+and 1 below 0.1. The ramp is kept in `frame_types::display`; the present
+applies it per channel when it copies a frame to the window
+(`gfx::display_gamma`, `FrameSink::submit_presented`). The identity ramp is
+not applied. No miniport word is read or written, and no D3D entry is
+answered for it.
 
-Each `Swap` passes the current ramp to the
-frame handoff, which applies it per RGB channel when copying the presented
-surface. The unmodified surface remains available for guest reads. The
-ignored `gamma_ramp_conventions_in_the_image` checks the convention.
-A frame the frame step publishes (`Device::publish`) passes the ramp the
-frame step read from the miniport instead
-([retire-d3d-display.md](retire-d3d-display.md#the-final-display)).
+The vblank install `0x12b070` zeroes the frame wait's words and keeps the
+callback `0x12b2a0` as `display::vblank_callback`, not at device `+0x1db8`.
+The display persist `0x22376b` runs `0x12bf40` and `0x6cb60` and skips the
+`PersistDisplay` call.
