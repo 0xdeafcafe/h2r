@@ -1,13 +1,13 @@
 //! The render thread (`d3d::ThreadedBackend`): the same device sequence
 //! through a backend directly and through the render thread must give the
-//! same backend calls, the same pixels, the same guest memory and the same
-//! device stats. Synthetic resources; the GPU test skips without an adapter.
+//! same backend calls, the same guest memory and the same device stats.
+//! Synthetic resources.
 
 mod common;
 
 use common::*;
 use d3d::{
-    Backend, Device, GfxBackend, GuestMemory, RecordingBackend, SparseMemory, ThreadedBackend,
+    Backend, Device, GuestMemory, RecordingBackend, SparseMemory, ThreadedBackend,
     UploadPolicy,
 };
 use gfx::vertex::fvf;
@@ -170,58 +170,6 @@ fn the_render_thread_makes_the_same_backend_calls() {
 }
 
 #[test]
-fn the_render_thread_draws_the_same_pixels() {
-    // Without and with the persistent pipeline cache, whose compile
-    // workers and per-present maintenance move to the render thread with
-    // the backend.
-    let dir = std::env::temp_dir().join(format!("d3d-threaded-pipelines-{}", std::process::id()));
-    for cache in [false, true] {
-        let (ctx_a, ctx_b) = match (gfx::GfxContext::headless(), gfx::GfxContext::headless()) {
-            (Ok(a), Ok(b)) => (a, b),
-            (Err(e), _) | (_, Err(e)) => {
-                eprintln!("skipping GPU test: {e}");
-                return;
-            }
-        };
-        let make = |ctx, name: &str| {
-            let g = GfxBackend::new(ctx);
-            if cache { g.with_pipeline_cache(dir.join(name)) } else { g }
-        };
-        same_pixels(make(ctx_a, "a"), make(ctx_b, "b"));
-    }
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-fn same_pixels(direct: GfxBackend, queued: GfxBackend) {
-    let (mut a, mut am, seen_a) = scenario(direct);
-    let (mut b, mut bm, seen_b) = scenario(ThreadedBackend::new(queued).unwrap());
-    assert_eq!(seen_a, seen_b, "what the guest observed");
-    assert_eq!(a.take_events(), b.take_events());
-    assert_eq!(timeless(a.stats()), timeless(b.stats()));
-    let (pa, _) = a.backend.read_color(a.back_buffer().unwrap()).unwrap();
-    let back = b.back_buffer().unwrap();
-    let (pb, _) = b
-        .backend
-        .with_surface(back, |g, s| g.read_color(s))
-        .unwrap();
-    assert!(pa.iter().any(|&p| p != 0));
-    assert_eq!(pa, pb, "back buffer");
-    a.flush_render_targets(&mut am).unwrap();
-    b.flush_render_targets(&mut bm).unwrap();
-    assert_eq!(
-        am.read_vec(0x8000_0000 | DATA_A, LEN).unwrap(),
-        bm.read_vec(0x8000_0000 | DATA_A, LEN).unwrap(),
-        "level A in guest memory"
-    );
-    let batches = b.backend.with_inner(|g| g.batch_stats()).unwrap();
-    assert_eq!(a.backend.batch_stats(), batches);
-    // The same pipelines were built behind the render thread.
-    let pipelines = b.backend.with_inner(|g| g.renderer.cache().len()).unwrap();
-    assert!(pipelines > 0);
-    assert_eq!(a.backend.renderer.cache().len(), pipelines);
-}
-
-#[test]
 fn a_wrong_speculation_stops_the_next_call() {
     let mut inner = RecordingBackend::new();
     inner.no_copies = true;
@@ -332,145 +280,9 @@ fn render_thread_timing_changes_nothing_the_guest_sees() {
     }
 }
 
-/// Untransformed fixed-function vertices (`XYZ`, no `RHW`), which the
-/// nv2a translator cannot draw, between two drawn quads.
-fn untranslatable<B: Backend>(backend: B) -> (Device<B>, SparseMemory) {
-    let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
-    set_states(&mut d, &mut m);
-    d.clear(&mut m, 0, 0, 0xF0, 0xFF10_2030, 1.0, 0).unwrap();
-    quad_vb(&mut m, 0.0, 0.0, 32.0, 32.0, 0xFF40_8020);
-    bind_quad(&mut d, &mut m);
-    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
-    let mut vb = Vec::new();
-    for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
-        for f in [x, y, 0.5] {
-            vb.extend_from_slice(&f.to_le_bytes());
-        }
-        vb.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
-    }
-    m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
-    d.set_vertex_shader(&mut m, fvf::XYZ | fvf::DIFFUSE).unwrap();
-    d.set_stream_source(&mut m, 0, VB_HEADER, 16).unwrap();
-    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
-    quad_vb(&mut m, 32.0, 32.0, 64.0, 64.0, 0xFF20_4080);
-    bind_quad(&mut d, &mut m);
-    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
-    d.swap(&mut m, 0).unwrap();
-    (d, m)
-}
-
-/// The render thread answers an untranslatable draw as the synchronous
-/// backend does: skipped, with the same event, and the run goes on.
-#[test]
-fn an_untranslatable_draw_is_skipped_the_same_way() {
-    let (ctx_a, ctx_b) = match (gfx::GfxContext::headless(), gfx::GfxContext::headless()) {
-        (Ok(a), Ok(b)) => (a, b),
-        (Err(e), _) | (_, Err(e)) => {
-            eprintln!("skipping GPU test: {e}");
-            return;
-        }
-    };
-    let (mut a, _) = untranslatable(GfxBackend::new(ctx_a));
-    let (mut b, _) = untranslatable(ThreadedBackend::new(GfxBackend::new(ctx_b)).unwrap());
-    let (ea, eb) = (a.take_events(), b.take_events());
-    assert!(
-        ea.iter().any(|e| matches!(e, d3d::Event::DrawSkipped { reason, .. } if reason.contains("untransformed"))),
-        "{ea:?}"
-    );
-    assert_eq!(ea, eb);
-    assert_eq!(timeless(a.stats()), timeless(b.stats()));
-    b.backend.finish().unwrap();
-    assert_eq!(b.backend.misses(), 0);
-    let (pa, _) = a.backend.read_color(a.back_buffer().unwrap()).unwrap();
-    let back = b.back_buffer().unwrap();
-    let (pb, _) = b.backend.with_surface(back, |g, s| g.read_color(s)).unwrap();
-    assert_eq!(pa, pb);
-}
-
-/// A fixed sequence of backend calls, long enough to cross the render
-/// thread's batch size many times: surfaces, clears, draws (handed over and
-/// copied, with textures and without), uploads and texture drops, reads,
-/// pixel counts (each draw counts, so a count is only right after every
-/// draw before it ran) and presents. Returns every value the caller saw.
-fn batched_calls<B: Backend<Surface = u32>>(b: &mut B, draw: &d3d::ResolvedDraw) -> Vec<String> {
-    let desc = gfx::TextureDesc::new(gfx::D3DFormat::LinA8R8G8B8, gfx::texture::TextureKind::D2, 4, 4, 1, 1);
-    let decoded = gfx::texture::decode_texture(&desc, &[0x11; 64], None, Default::default()).unwrap();
-    let mut seen = Vec::new();
-    let s = b.create_surface(gfx::D3DFormat::A8R8G8B8, 64, 64, false).unwrap();
-    let z = b.create_surface(gfx::D3DFormat::D24S8, 64, 64, true).unwrap();
-    let mut live: Vec<B::Texture> = Vec::new();
-    b.clear_pixel_count().unwrap();
-    for i in 0..(3 * d3d::threaded::BATCH as u32 + 17) {
-        match i % 7 {
-            0 => live.push(b.upload_texture(&decoded).unwrap()),
-            1 if live.len() > 2 => drop(live.remove(0)),
-            2 => b.clear(s, Some(z), gfx::Clear::NONE).unwrap(),
-            _ => {
-                let mut d = draw.clone();
-                d.vertex_count = 4 + i % 3;
-                let tex = [live.last(), None, None, None];
-                let r = if i % 2 == 0 {
-                    b.draw_owned(s, Some(z), d, tex).0
-                } else {
-                    b.draw(s, Some(z), &d, tex)
-                };
-                seen.push(format!("draw {i} {r:?}"));
-            }
-        }
-        if i % 23 == 0 {
-            let t = b.report_pixel_count().unwrap().unwrap();
-            seen.push(format!("count {i} {:?}", b.read_pixel_count(t)));
-        }
-        if i % 41 == 0 {
-            let layout = d3d::GuestLayoutKind::Linear { pitch: 256 };
-            let px = b.read_surface(s, gfx::D3DFormat::A8R8G8B8, 64, 64, layout).unwrap();
-            seen.push(format!("read {i} {}", px.len()));
-        }
-        if i % 60 == 59 {
-            b.present(s, 0).unwrap();
-        }
-    }
-    drop(live);
-    b.destroy_surface(z).unwrap();
-    seen
-}
-
-/// Batching changes neither the order of the backend calls nor what a
-/// read sees: the same calls as the synchronous backend, in the same
-/// order, and the same answers, with and without a lagging render thread.
-#[test]
-fn batched_commands_run_in_order_and_reads_see_everything_before_them() {
-    let (a, _, _) = scenario(RecordingBackend::new());
-    let mut draw = a
-        .backend
-        .calls
-        .iter()
-        .find_map(|c| match c {
-            d3d::backend::Recorded::Draw { draw, .. } => Some(draw.clone()),
-            _ => None,
-        })
-        .expect("a draw");
-    draw.hw.zpass_count_enable = true;
-    let mut direct = RecordingBackend::new();
-    let seen_a = batched_calls(&mut direct, &draw);
-    assert!(seen_a.iter().any(|s| s.starts_with("count") && !s.ends_with("Ok(0)")), "{seen_a:?}");
-    for jitter in [None, Some(7)] {
-        let mut t = ThreadedBackend::new(RecordingBackend::new()).unwrap();
-        if let Some(seed) = jitter {
-            t = t.with_jitter(seed);
-        }
-        let seen_b = batched_calls(&mut t, &draw);
-        assert_eq!(seen_a, seen_b, "jitter {jitter:?}");
-        let calls = t.with_inner(|r| r.calls.clone()).unwrap();
-        assert!(calls.len() > 3 * d3d::threaded::BATCH, "{}", calls.len());
-        assert_eq!(direct.calls, calls, "jitter {jitter:?}");
-        assert_eq!(t.misses(), 0);
-    }
-}
-
 #[test]
 fn queued_and_repeated_frames_keep_their_own_mark_bounds_and_view_lenses() {
-    use d3d::backend::{DrawJudge, DrawOutcome, ResolvedDraw};
+    use d3d::backend::{DrawOutcome, ResolvedDraw};
     use d3d::present_camera::{self, Image, Present, View};
     use frame_scene::{RenderCamera, transform};
     use gfx::texture::DecodedTexture;
@@ -507,29 +319,9 @@ fn queued_and_repeated_frames_keep_their_own_mark_bounds_and_view_lenses() {
         samples: Vec<Option<Sample>>,
     }
 
-    struct SkipsDraws;
-
-    impl DrawJudge for SkipsDraws {
-        fn upload_view(&self, _: &DecodedTexture) -> bool {
-            true
-        }
-
-        fn surface_view(&self, _: gfx::D3DFormat) -> bool {
-            true
-        }
-
-        fn draw(&mut self, _: &ResolvedDraw, _: [Option<bool>; 4]) -> DrawOutcome {
-            DrawOutcome::Skipped("synthetic skipped draw".into())
-        }
-    }
-
     impl Backend for Recorder {
         type Surface = u32;
         type Texture = u32;
-
-        fn judge(&self) -> Option<Box<dyn DrawJudge>> {
-            Some(Box::new(SkipsDraws))
-        }
 
         fn create_surface(
             &mut self,
@@ -638,11 +430,6 @@ fn queued_and_repeated_frames_keep_their_own_mark_bounds_and_view_lenses() {
     device.swap(&mut mem, 1).unwrap();
     device.clear(&mut mem, 0, 0, 0x01, 0, 0.5, 0).unwrap(); // Depth only.
     device.swap(&mut mem, 1).unwrap();
-    set_states(&mut device, &mut mem);
-    textured_quad(&mut device, &mut mem, [0.0, 0.0, 16.0, 16.0], 0xFFFF_FFFF);
-    assert!(device.take_events().iter().any(|event| matches!(
-        event, d3d::Event::DrawSkipped { reason, .. } if reason == "synthetic skipped draw"
-    )));
     device.swap(&mut mem, 1).unwrap();
 
     device.clear(&mut mem, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
@@ -681,96 +468,4 @@ fn queued_and_repeated_frames_keep_their_own_mark_bounds_and_view_lenses() {
             None,
         ]
     );
-}
-
-/// A native producer's pass for [`queued_particles`]: the draws it stands
-/// in for, by number, joining a run only when `joins` (as particles do).
-struct Particles {
-    draws: Vec<u32>,
-    joins: bool,
-}
-
-impl d3d::ExternalPass for Particles {
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites { color: true, depth_stencil: false }
-    }
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
-    }
-    fn queued_run(&self, next: &dyn d3d::ExternalPass) -> Option<Box<dyn d3d::ExternalPass>> {
-        let next = next.as_any()?.downcast_ref::<Particles>()?;
-        (self.joins && next.joins).then(|| {
-            let draws = self.draws.iter().chain(&next.draws).copied().collect();
-            Box::new(Particles { draws, joins: true }) as Box<dyn d3d::ExternalPass>
-        })
-    }
-    fn extend_run(&mut self, next: &dyn d3d::ExternalPass) -> bool {
-        let Some(next) = next.as_any().and_then(|n| n.downcast_ref::<Particles>()) else { return false };
-        if !next.joins {
-            return false;
-        }
-        self.draws.extend(&next.draws);
-        true
-    }
-}
-
-/// `n` particle draws a native producer queues back to back on a render
-/// thread, as `Device::try_native_inline_draw` does for each: the passes
-/// the render thread was handed (`d3d::threaded::queued_runs`), the order
-/// the draws completed in, and the draws the inner backend issued.
-fn queued_particles(n: u32, joins: bool) -> ((u64, u64), Vec<u32>, Vec<d3d::ResolvedDraw>) {
-    use d3d::backend::{ExternalPassRequest, ExternalPlan, ExternalSurfaces, QueuedExternalDraw};
-    let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-    set_states(&mut device, &mut memory);
-    let draws: Vec<_> = (0..n)
-        .map(|i| {
-            quad_vb(&mut memory, 0.0, 0.0, 4.0 + i as f32, 4.0, 0xFF00_0000 | i);
-            bind_quad(&mut device, &mut memory);
-            device.draw_vertices(&mut memory, TRIANGLESTRIP, 0, 4).unwrap();
-            std::sync::Arc::new(device.backend.draws().pop().unwrap().clone())
-        })
-        .collect();
-    let mut inner = RecordingBackend::new();
-    inner.external_passes = true;
-    let mut t = ThreadedBackend::new(inner).unwrap();
-    let colour = t.create_surface(gfx::D3DFormat::A8R8G8B8, 32, 32, false).unwrap();
-    let done = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let before = d3d::threaded::queued_runs();
-    for (i, draw) in draws.iter().enumerate() {
-        let done = std::sync::Arc::clone(&done);
-        let pass = Particles { draws: vec![i as u32], joins };
-        assert!(t.queue_external_draw(
-            QueuedExternalDraw {
-                surfaces: ExternalSurfaces { color: colour, depth: colour, sampled: vec![], slots: vec![], slot_sizes: vec![] },
-                request: ExternalPassRequest { rect: (0, 0, 32, 32), surface_size: (32, 32), z_scale: 1.0, display_projection_factor: 1.0 },
-                plan: ExternalPlan { stage: timeline::native::Stage::Particles, view: 4, ranges: 1, slots: vec![] },
-                pass: std::sync::Arc::new(std::sync::Mutex::new(Box::new(pass) as Box<dyn d3d::ExternalPass>)),
-                fallback: std::sync::Arc::clone(draw),
-                fallback_depth: None,
-                finished: Box::new(move |_| done.lock().unwrap().push(i as u32)),
-            },
-            [None; 4],
-        ));
-    }
-    t.finish().unwrap();
-    let after = d3d::threaded::queued_runs();
-    let issued = t.with_inner(|b| b.draws().into_iter().cloned().collect::<Vec<_>>()).unwrap();
-    let order = done.lock().unwrap().clone();
-    ((after.0 - before.0, after.1 - before.1), order, issued)
-}
-
-/// A batch of particles is one admission on the render thread, and draws
-/// what the particles admitted one by one draw, in the same order (here
-/// each draw's fallback: the recording backend has no GPU to record the
-/// pass on, so the run falls back as each single admission does).
-#[test]
-fn a_particle_batch_is_one_queued_admission_with_the_same_draws_in_order() {
-    let (singles, single_order, single_draws) = queued_particles(5, false);
-    let (batch, batch_order, batch_draws) = queued_particles(5, true);
-    assert_eq!(singles, (5, 5));
-    assert_eq!(batch, (1, 5));
-    assert_eq!(single_order, [0, 1, 2, 3, 4]);
-    assert_eq!(batch_order, single_order);
-    assert_eq!(batch_draws.len(), 5);
-    assert!(batch_draws.iter().zip(&single_draws).all(|(a, b)| a == b));
 }

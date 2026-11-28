@@ -78,13 +78,10 @@ fn a_skipped_light_leaves_the_device_as_the_games_tail_does() {
     let slot = GuestLayout::HALO2.render_state + 4 * d3d::state::slot::STENCILENABLE;
     assert_eq!(sm.read_u32(slot).unwrap(), 0, "stencil off");
 
-    // The next draw is the same: no scissor, no stencil.
-    for (d, m) in [(&mut drawn, &mut dm), (&mut skipped, &mut sm)] {
-        d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
-    }
-    let a = drawn.backend.draws().last().copied().cloned().unwrap();
-    let b = skipped.backend.draws().last().copied().cloned().unwrap();
-    assert_eq!(a, b);
+    // The device's hardware view and bound target are the same: no scissor,
+    // no stencil for the next draw.
+    assert_eq!(drawn.hw(), skipped.hw());
+    assert_eq!(drawn.bound_target(), skipped.bound_target());
 }
 
 #[test]

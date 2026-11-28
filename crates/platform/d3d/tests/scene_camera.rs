@@ -47,13 +47,27 @@ fn scene(views: &[(u8, Camera)]) -> Arc<FrameScene> {
     builder.seal(Stamp::default()).unwrap()
 }
 
+/// The resolved packet of one guest draw, as an admission is offered it.
 fn packet() -> ResolvedDraw {
+    struct Capture(std::sync::Mutex<Option<ResolvedDraw>>);
+    impl d3d::DrawAdmission for Capture {
+        fn admit(
+            &self,
+            snapshot: &d3d::DrawSnapshot<'_>,
+        ) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+            *self.0.lock().unwrap() = Some(snapshot.draw.clone());
+            None
+        }
+    }
+
     let (mut d, mut mem) = create(RecordingBackend::new(), UploadPolicy::Always);
     set_states(&mut d, &mut mem);
     quad_vb(&mut mem, 0.0, 0.0, 18.0, 18.0, 0xFF00_4400);
     bind_quad(&mut d, &mut mem);
+    let capture = Arc::new(Capture(std::sync::Mutex::new(None)));
+    d.add_draw_admission(capture.clone());
     d.draw_vertices(&mut mem, TRIANGLESTRIP, 0, 4).unwrap();
-    (*d.backend.draws()[0]).clone()
+    capture.0.lock().unwrap().take().expect("the draw was offered to the admission")
 }
 
 fn mapped_draw(cam: &Camera) -> ResolvedDraw {

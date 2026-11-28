@@ -1,26 +1,13 @@
-//! The scene sink (docs/graphics/framescene.md, slice 6) on the device's
-//! draw rig: it carries the device's draws in the order the backend gets
-//! them, each at the slot that was current, names the presented surface
-//! the scene's colour, and passes every draw on to the backend under it.
-//! Synthetic device over the recording backend; no GPU.
+//! The scene sink (docs/graphics/framescene.md, slice 6): the replay it
+//! keeps of the draws, copies, samples and admissions it is given, and
+//! what a replaying frame needs to be drawn privately. Packets come from
+//! the device's draw boundary ([`guest_draw`]); no GPU unless gated.
 
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::Ordering;
 
 use crate::common::*;
-use d3d::{Device, RecordingBackend, ResolvedDraw, SceneSink, SparseMemory, UploadPolicy};
-use frame_scene::{GuestOp, Slot, SlotAt, TargetRef};
-
-/// This file's slot: `u16::MAX` off, else `slot << 8 | view`.
-static AT: AtomicU16 = AtomicU16::new(u16::MAX);
-
-fn source() -> Option<SlotAt> {
-    let v = AT.load(Ordering::Relaxed);
-    (v != u16::MAX).then(|| SlotAt { slot: Slot::ALL[usize::from(v >> 8)], view: v as u8 })
-}
-
-fn at(slot: Slot, view: u8) {
-    AT.store(((slot.index() as u16) << 8) | u16::from(view), Ordering::Relaxed);
-}
+use d3d::{DrawAdmission, DrawSnapshot, Device, RecordingBackend, ResolvedDraw, SceneSink, SparseMemory, UploadPolicy};
+use frame_scene::{Slot, SlotAt, TargetRef};
 
 fn quad<B: d3d::Backend>(d: &mut Device<B>, m: &mut SparseMemory, color: u32) {
     quad_vb(m, 0.0, 0.0, 32.0, 32.0, color);
@@ -28,69 +15,35 @@ fn quad<B: d3d::Backend>(d: &mut Device<B>, m: &mut SparseMemory, color: u32) {
     d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
 }
 
-#[test]
-fn the_sink_carries_the_devices_draws_in_order_by_slot_and_the_backend_still_draws_them() {
-    let sink = SceneSink::new(RecordingBackend::new(), source).keeping_draws();
-    let (mut d, mut m) = create(sink, UploadPolicy::Always);
-    set_states(&mut d, &mut m);
-    // Frames until every buffer of the swap chain has been presented once.
-    at(Slot::Outside, 0);
-    for _ in 0..3 {
-        quad(&mut d, &mut m, 0xFF00_0000);
-        d.swap(&mut m, 0).unwrap();
-    }
-    at(Slot::Opaque, 1);
-    quad(&mut d, &mut m, 0xFFFF_0000);
-    quad(&mut d, &mut m, 0xFF00_FF00);
-    at(Slot::Transparents, 1);
-    quad(&mut d, &mut m, 0xFF00_00FF);
-    at(Slot::Overlay, 1);
-    quad(&mut d, &mut m, 0xFFFF_FFFF);
-    d.swap(&mut m, 0).unwrap();
+/// The packet the device resolves for a guest quad. A guest draw no
+/// native stage takes reaches no backend (`d3d::gap`), so the packet is
+/// taken from the draw boundary: the admission is offered the resolved
+/// draw and declines it.
+fn guest_quad(x0: f32, y0: f32, x1: f32, y1: f32, color: u32) -> ResolvedDraw {
+    use gfx::vertex::PrimitiveType;
+    use std::sync::Mutex;
 
-    let frame = d.backend.last_frame();
-    let carried: Vec<(Slot, &ResolvedDraw)> = frame
-        .ops
-        .iter()
-        .filter_map(|o| match &o.op {
-            GuestOp::Draw(Some(draw)) => Some((o.at.slot, &**draw)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(carried.iter().map(|(s, _)| *s).collect::<Vec<_>>(), [
-        Slot::Opaque,
-        Slot::Opaque,
-        Slot::Transparents,
-        Slot::Overlay
-    ]);
-    let recorded = d.backend.inner().draws();
-    assert!(recorded.len() >= carried.len());
-    let tail = &recorded[recorded.len() - carried.len()..];
-    assert!(
-        carried.iter().map(|(_, draw)| *draw).eq(tail.iter().copied()),
-        "the carried draws are the backend's, in its order"
-    );
-    assert!(frame.ops.iter().all(|o| o.at.view == 1));
-    // One bind per slot: the attachments do not change, the slot does.
-    let binds: Vec<(Slot, TargetRef)> = frame
-        .ops
-        .iter()
-        .filter_map(|o| match o.op {
-            GuestOp::Bind { colour, .. } => Some((o.at.slot, colour)),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(binds, [
-        (Slot::Opaque, TargetRef::SceneColour),
-        (Slot::Transparents, TargetRef::SceneColour),
-        (Slot::Overlay, TargetRef::SceneColour)
-    ]);
-    assert!(frame.aux.is_empty(), "nothing but the back buffer is drawn into: {:?}", frame.aux);
-    let summary = frame.summary();
-    assert_eq!(summary.slots[Slot::Opaque.index()].draws, 2);
-    assert_eq!(summary.views.len(), 1);
-    assert!(summary.side_targets.is_empty());
-    assert_eq!(summary.readback_total(), 0);
+    #[derive(Default)]
+    struct Capture(Mutex<Option<ResolvedDraw>>);
+    impl DrawAdmission for Capture {
+        fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+            *self.0.lock().unwrap() = Some(snapshot.draw.clone());
+            None
+        }
+    }
+    let mut backend = RecordingBackend::new();
+    backend.external_passes = true;
+    let (mut device, mut memory) = create(backend, UploadPolicy::Always);
+    set_states(&mut device, &mut memory);
+    quad_vb(&mut memory, x0, y0, x1, y1, color);
+    bind_quad(&mut device, &mut memory);
+    let capture = Capture::default();
+    assert!(!device.try_native_array_draw(&mut memory, PrimitiveType::TriangleStrip, 0, 4, &capture).unwrap());
+    capture.0.into_inner().unwrap().expect("the admission was offered the draw")
+}
+
+fn guest_draw(color: u32) -> ResolvedDraw {
+    guest_quad(0.0, 0.0, 32.0, 32.0, color)
 }
 
 #[test]
@@ -124,10 +77,7 @@ fn a_refilled_copy_is_a_new_sample_that_names_the_one_it_refills() {
     use std::sync::{Arc, Mutex};
 
     fn slot() -> Option<SlotAt> { Some(SlotAt { slot: Slot::Opaque, view: 0 }) }
-    let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-    set_states(&mut device, &mut memory);
-    quad(&mut device, &mut memory, 0xFF19_3264);
-    let draw = device.backend.draws().pop().unwrap().clone();
+    let draw = guest_draw(0xFF19_3264);
 
     let frames = Arc::new(Mutex::new(Vec::new()));
     let output = frames.clone();
@@ -184,10 +134,7 @@ fn replay_retains_the_sample_version_draw_bindings_and_distinct_copy_targets() {
     use std::sync::{Arc, Mutex};
 
     fn slot() -> Option<SlotAt> { Some(SlotAt { slot: Slot::Opaque, view: 0 }) }
-    let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-    set_states(&mut device, &mut memory);
-    quad(&mut device, &mut memory, 0xFF19_3264);
-    let draw = device.backend.draws().pop().unwrap().clone();
+    let draw = guest_draw(0xFF19_3264);
 
     let frames = Arc::new(Mutex::new(Vec::new()));
     let output = frames.clone();
@@ -313,10 +260,7 @@ fn the_worker_adopts_only_the_actual_immutable_draw_packet_including_unused_nan_
     use d3d::threaded::owner::{Candidate, FrameOwner, Submission, Outputs};
     use std::sync::{Arc, Mutex};
 
-    let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-    set_states(&mut device, &mut memory);
-    quad(&mut device, &mut memory, 0xFF00_8080);
-    let mut packet = device.backend.draws().pop().unwrap().clone();
+    let mut packet = guest_draw(0xFF00_8080);
     Arc::make_mut(&mut packet.shader.constants)[0][0] = f32::NAN;
     let packet = Arc::new(packet);
 
@@ -406,10 +350,7 @@ fn a_frozen_sample_needs_the_earlier_pixels_and_an_in_place_view_sees_the_later_
     use frame_scene::{AuxTarget, carried::CameraUse};
     use gfx::{Clear, D3DFormat};
 
-    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
-    set_states(&mut d, &mut m);
-    quad(&mut d, &mut m, 0xFF55_8822);
-    let mut draw = d.backend.draws().pop().unwrap().clone();
+    let mut draw = guest_draw(0xFF55_8822);
     draw.state.render.color_write = gfx::state::ColorWriteMask::ALL;
     let main = TargetRef::SceneColour;
     let side = TargetRef::Aux(0);
@@ -441,12 +382,7 @@ fn an_opaque_full_target_rhw_strip_defines_colour_only_when_it_covers_every_samp
     use frame_scene::{AuxTarget, carried::CameraUse};
     use gfx::state::{ColorWriteMask, RenderState, CullMode, DepthBufferMode, TextureOp};
 
-    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
-    set_states(&mut d, &mut m);
-    quad_vb(&mut m, -0.5, -0.5, W as f32 - 0.5, H as f32 - 0.5, 0xE05F_15F0);
-    bind_quad(&mut d, &mut m);
-    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
-    let mut draw = d.backend.draws().pop().unwrap().clone();
+    let mut draw = guest_quad(-0.5, -0.5, W as f32 - 0.5, H as f32 - 0.5, 0xE05F_15F0);
     draw.state.render = RenderState { cull_mode: CullMode::None, depth_mode: DepthBufferMode::Disabled, ..Default::default() };
     draw.state.stages[0].color_op = TextureOp::Disable;
     std::sync::Arc::make_mut(&mut draw.raw).render.fill(0);
@@ -498,10 +434,7 @@ fn inherited_in_place_bindings_name_the_live_surface_and_read_it_at_the_draw() {
     use gfx::{Clear, D3DFormat};
     use std::sync::{Arc, Mutex};
 
-    let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-    set_states(&mut device, &mut memory);
-    quad(&mut device, &mut memory, 0xff42_6503);
-    let mut draw = device.backend.draws()[0].clone();
+    let mut draw = guest_draw(0xff42_6503);
     draw.state.render.color_write = gfx::state::ColorWriteMask::ALL;
     let mut original = RecordingBackend::new();
     original.sample_surfaces = true;
@@ -563,10 +496,7 @@ fn object_shadow_marks_wrap_each_shadows_ops_and_change_nothing_else() {
         (v != u32::MAX).then_some(v)
     }
     fn never() -> Option<u32> { None }
-    let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-    set_states(&mut device, &mut memory);
-    quad(&mut device, &mut memory, 0xFF19_3264);
-    let draw = device.backend.draws().pop().unwrap().clone();
+    let draw = guest_draw(0xFF19_3264);
 
     let record = |marking: Option<ShadowSource>| -> ReplayFrame {
         let frames = Arc::new(Mutex::new(Vec::new()));
@@ -670,10 +600,7 @@ mod retained_admission {
         reference: bool,
         case: impl FnOnce(&mut RetainedAdmission<u32>, &mut ResolvedDraw, [u32; 3]),
     ) -> Outcome {
-        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-        set_states(&mut device, &mut memory);
-        quad(&mut device, &mut memory, 0xFF40_8020);
-        let draw = device.backend.draws().pop().unwrap().clone();
+        let draw = guest_draw(0xFF40_8020);
 
         let frames = Arc::new(Mutex::new(Vec::new()));
         let output = frames.clone();
@@ -836,10 +763,7 @@ mod retained_admission {
     fn native_carry(
         stage: Stage, reference: bool, packets: impl FnOnce(&mut Vec<ResolvedDraw>),
     ) -> (bool, Vec<ReplayOp>, Vec<&'static str>) {
-        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-        set_states(&mut device, &mut memory);
-        quad(&mut device, &mut memory, 0xFF40_8020);
-        let mut draws = vec![device.backend.draws().pop().unwrap().clone()];
+        let mut draws = vec![guest_draw(0xFF40_8020)];
         packets(&mut draws);
         let frames = Arc::new(Mutex::new(Vec::new()));
         let output = frames.clone();
@@ -876,10 +800,7 @@ mod retained_admission {
     /// sink answered, what its backend queued and the replay's carried
     /// stages.
     fn queued_ui_quad(carry: bool) -> (bool, Vec<(Stage, usize)>, Vec<Option<Stage>>) {
-        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-        set_states(&mut device, &mut memory);
-        quad(&mut device, &mut memory, 0xFF40_8020);
-        let draw = Arc::new(device.backend.draws().pop().unwrap().clone());
+        let draw = Arc::new(guest_draw(0xFF40_8020));
         let frames = Arc::new(Mutex::new(Vec::new()));
         let output = frames.clone();
         let mut inner = RecordingBackend::new();
@@ -927,10 +848,7 @@ mod retained_admission {
     /// and the quad goes back to a render-thread round trip.
     #[test]
     fn a_colour_only_carry_names_no_depth() {
-        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-        set_states(&mut device, &mut memory);
-        quad(&mut device, &mut memory, 0xFF40_8020);
-        let draw = Arc::new(device.backend.draws().pop().unwrap().clone());
+        let draw = Arc::new(guest_draw(0xFF40_8020));
         let mut sink = SceneSink::new(RecordingBackend::new(), slot).with_replay(|_| {});
         let fmt = D3DFormat::LinA8R8G8B8;
         let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
@@ -1134,10 +1052,7 @@ mod retained_admission {
     #[test]
     fn without_a_replay_the_hook_is_the_plain_draw() {
         fn off() -> Option<SlotAt> { None }
-        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-        set_states(&mut device, &mut memory);
-        quad(&mut device, &mut memory, 0xFF11_2233);
-        let draw = device.backend.draws().pop().unwrap().clone();
+        let draw = guest_draw(0xFF11_2233);
         let mut sink = SceneSink::new(RecordingBackend::new(), off);
         let fmt = D3DFormat::LinA8R8G8B8;
         let colour = sink.create_texture_target(fmt, 32, 32).unwrap();
@@ -1157,10 +1072,7 @@ mod retained_admission {
 
     #[test]
     fn a_default_backend_ignores_the_admission_and_draws_owned() {
-        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-        set_states(&mut device, &mut memory);
-        quad(&mut device, &mut memory, 0xFF11_2233);
-        let draw = device.backend.draws().pop().unwrap().clone();
+        let draw = guest_draw(0xFF11_2233);
         let mut backend = RecordingBackend::new();
         let fmt = D3DFormat::LinA8R8G8B8;
         let colour = backend.create_texture_target(fmt, 32, 32).unwrap();
@@ -1205,10 +1117,7 @@ mod retained_admission {
 
     #[test]
     fn a_colour_only_draw_binds_its_colour_as_depth() {
-        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-        set_states(&mut device, &mut memory);
-        quad(&mut device, &mut memory, 0xFF11_2233);
-        let draw = device.backend.draws().pop().unwrap().clone();
+        let draw = guest_draw(0xFF11_2233);
         let frames = Arc::new(Mutex::new(Vec::new()));
         let output = frames.clone();
         let mut sink = SceneSink::new(RecordingBackend::new(), slot).with_replay(move |f| output.lock().unwrap().push(f));
@@ -1240,10 +1149,7 @@ mod retained_admission {
     #[test]
     fn the_draws_own_texture_inputs_stay_with_it() {
         use gfx::texture::{TextureDesc, TextureKind, decode_texture};
-        let (mut device, mut memory) = create(RecordingBackend::new(), UploadPolicy::Always);
-        set_states(&mut device, &mut memory);
-        quad(&mut device, &mut memory, 0xFF11_2233);
-        let draw = device.backend.draws().pop().unwrap().clone();
+        let draw = guest_draw(0xFF11_2233);
         let frames = Arc::new(Mutex::new(Vec::new()));
         let output = frames.clone();
         let mut sink = SceneSink::new(RecordingBackend::new(), slot).with_replay(move |f| output.lock().unwrap().push(f));

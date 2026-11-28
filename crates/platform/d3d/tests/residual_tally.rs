@@ -4,15 +4,7 @@
 
 use crate::common::*;
 use d3d::residual::Watch;
-use d3d::{Recorded, RecordingBackend, UploadPolicy};
-
-fn drawn(d: &d3d::Device<RecordingBackend>) -> u64 {
-    d.backend
-        .calls
-        .iter()
-        .filter(|c| matches!(c, Recorded::Draw { .. }))
-        .count() as u64
-}
+use d3d::{RecordingBackend, UploadPolicy};
 
 #[test]
 fn inline_draws_are_the_drains_and_the_entrys_own_are_its_body() {
@@ -20,7 +12,7 @@ fn inline_draws_are_the_drains_and_the_entrys_own_are_its_body() {
     set_states(&mut d, &mut m);
     quad_vb(&mut m, 0.0, 0.0, 8.0, 8.0, 0xFFFF_0000);
     bind_quad(&mut d, &mut m);
-    let (drawn_before, words_before) = (drawn(&d), d.stats().push_words);
+    let words_before = d.stats().push_words;
     // Game code writes two inline quads, then calls DrawVertices: the
     // adapter drains before the entry runs.
     inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255, 0, 0, 255]);
@@ -31,26 +23,18 @@ fn inline_draws_are_the_drains_and_the_entrys_own_are_its_body() {
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     let call = w.finish(0, "D3DDevice_DrawVertices", d.residual_tally(), true);
     assert_eq!(call.ret, 0x0004_c976);
-    assert_eq!((call.inline.draws, call.inline.residual), (2, 2));
+    assert_eq!((call.inline.draws, call.inline.residual), (2, 0));
     assert_eq!(
         (call.own.draws, call.own.residual, call.own.claimed),
-        (1, 1, 0)
+        (1, 0, 0)
     );
     assert!(call.inline.push_words > 0, "{call:?}");
-    // The residual total is what the backend received, and the words are
-    // what the device decoded.
-    assert_eq!(
-        call.inline.residual + call.own.residual,
-        drawn(&d) - drawn_before
-    );
+    // The words are what the device decoded; no draw reaches the backend.
     assert_eq!(
         call.inline.push_words + call.own.push_words,
         d.stats().push_words - words_before
     );
-    assert_eq!(
-        d.stats().backend_draws,
-        d.stats().resolved_draws - d.stats().claimed_draws
-    );
+    assert_eq!(d.stats().backend_draws, 0);
 }
 
 #[test]

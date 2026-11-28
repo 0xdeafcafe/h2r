@@ -205,7 +205,7 @@ fn a_post_pass_that_cannot_record_again_replays_its_packets() {
     assert_eq!(stats.swallow_draws_replayed, 3);
     assert!(copies.is_empty(), "the sink refused it before any copy recorded");
     assert!(stages(&frame).is_empty());
-    assert_eq!(draws(&frame), 3, "the guest's packets, kept as draws");
+    assert_eq!(draws(&frame), 0, "the guest's packets are named gaps, not draws");
 }
 
 #[test]
@@ -216,8 +216,8 @@ fn a_guest_reference_request_declines_the_carry() {
     assert_eq!(stats.swallow_commits, 0);
     assert_eq!(stats.swallow_draws_replayed, 3);
     assert!(copies.is_empty());
-    assert!(stages(&frame).is_empty(), "the reference gets the guest's draws");
-    assert_eq!(draws(&frame), 3);
+    assert!(stages(&frame).is_empty(), "no carried stage for the reference");
+    assert_eq!(draws(&frame), 0, "the guest's packets are named gaps, not draws");
 }
 
 #[test]
