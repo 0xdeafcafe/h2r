@@ -3932,3 +3932,414 @@ fn add_points_the_model_does_not_cover_are_declined_and_counted() {
         assert!(g.physical_ram()[start..start + RAM] == mem.bytes[..], "{reason:?}: nothing written");
     }
 }
+
+// The contact commit `0x00318c10` (sim_havok::commit, docs/engine/havok-convex.md,
+// "The contact commit") against the lifted call, the listeners answered by
+// `LISTEN_STUB` and the removal by `REMOVE_STUB`; then its arm, at the
+// world listener walk's entry.
+
+use engine::sim_physics::contact_commit as commit_arm;
+use sim_havok::commit::{self as commit, Committed, Fallback as CommitDecline};
+
+/// A listener's `vt[+0x00]` the harness answers: `ret 4`, the listener
+/// and the event's nine words appended to `LISTEN_LOG` (a count, then ten
+/// words each). The listener's `+0x04` says what else it does: bit 0
+/// rejects the contact, bit 1 clears the word at its `+0x08` (its own
+/// entry), bit 2 stores its `+0x0c` as the property's restitution.
+const LISTEN_STUB: u32 = 0x0060_0fc0;
+const LISTEN_LOG: u32 = 0x0079_c000;
+
+const CM_MANAGER: u32 = 0x007b_0000;
+const CM_VTABLE: u32 = 0x007b_0200;
+const CM_WORLD: u32 = 0x007b_0400;
+const CM_ISLAND: u32 = 0x007b_0600;
+const CM_A: u32 = 0x007b_0800;
+const CM_B: u32 = 0x007b_0900;
+const CM_PARENT: u32 = 0x007b_0a00;
+const CM_ENTITY_A: u32 = 0x007b_1000;
+const CM_ENTITY_B: u32 = 0x007b_1100;
+const CM_MOTION_A: u32 = 0x007b_2000;
+const CM_MOTION_B: u32 = 0x007b_2100;
+const CM_INPUT: u32 = 0x007b_3000;
+const CM_CONTACT: u32 = 0x007b_3100;
+const CM_POINTS: u32 = 0x007b_4000;
+const CM_PROPERTIES: u32 = 0x007b_5000;
+const CM_IDS: u32 = 0x007b_6000;
+const CM_LISTENERS: u32 = 0x007b_7000;
+const CM_LISTENER: u32 = 0x007b_7100;
+const CM_LISTENER_VTABLE: u32 = 0x007b_7800;
+const CM_ARGS: [u32; 4] = [CM_A, CM_B, CM_INPUT, CM_CONTACT];
+/// The island vtable (`vt[+0x08]` `0x00315f60`) and a sphere motion's
+/// (`vt[+0x58]` `0x003198b0`), from the image.
+const ISLAND_VTABLE: u32 = 0x0041_4fd0;
+const SPHERE_VTABLE: u32 = 0x0041_43a8;
+
+fn commit_code(image: &Image) -> lifted::Original {
+    let mut code = image.original();
+    for f in [0x318c10, 0x31be80, 0x31be20, 0x315f60, 0x3198b0, 0x318320, 0x315d20] {
+        code.prime(f);
+    }
+    code
+}
+
+/// Run the lifted code from `cpu.eip` until it returns to `EXIT`, or until
+/// it enters `stop` from the commit's walk site; the listeners and the
+/// removal answered by their stubs.
+fn run_commit(code: &mut lifted::Original, cpu: &mut Cpu, mem: &mut FlatMemory, stop: Option<u32>) {
+    for _ in 0..2_000_000 {
+        if cpu.eip == EXIT {
+            return;
+        }
+        let sp = cpu.gpr[4];
+        if Some(cpu.eip) == stop && mem.read_u32(sp) == Some(commit::WALK_SITE) {
+            return;
+        }
+        if cpu.eip == REMOVE_STUB {
+            let n = mem.read_u32(REMOVE_LOG).unwrap();
+            word(mem, REMOVE_LOG + 4 + 8 * n, cpu.gpr[1]);
+            word(mem, REMOVE_LOG + 8 + 8 * n, mem.read_u32(sp + 4).unwrap());
+            word(mem, REMOVE_LOG, n + 1);
+            cpu.eip = mem.read_u32(sp).unwrap();
+            cpu.gpr[4] = sp + 8;
+            continue;
+        }
+        if cpu.eip == LISTEN_STUB {
+            let listener = cpu.gpr[1];
+            let event = mem.read_u32(sp + 4).unwrap();
+            listen(mem, listener, event);
+            cpu.eip = mem.read_u32(sp).unwrap();
+            cpu.gpr[4] = sp + 8;
+            continue;
+        }
+        lifted::code::step(code, cpu, mem).unwrap_or_else(|e| panic!("{e}"));
+    }
+    panic!("the lifted entry did not return");
+}
+
+/// `LISTEN_STUB` on any memory.
+fn listen_on(get: &dyn Fn(u32) -> u32, put: &mut dyn FnMut(u32, u32), listener: u32, event: u32) {
+    let n = get(LISTEN_LOG);
+    put(LISTEN_LOG + 4 + 40 * n, listener);
+    for k in 0..9 {
+        put(LISTEN_LOG + 8 + 40 * n + 4 * k, get(event + 4 * k));
+    }
+    put(LISTEN_LOG, n + 1);
+    let does = get(listener + 4);
+    if does & 1 != 0 {
+        put(event + commit::event::REJECT, 1);
+    }
+    if does & 2 != 0 {
+        put(get(listener + 8), 0);
+    }
+    if does & 4 != 0 {
+        put(get(event + commit::event::PROPERTY) + 0x0c, get(listener + 0x0c));
+    }
+}
+
+fn listen(mem: &mut FlatMemory, listener: u32, event: u32) {
+    let mut writes = Vec::new();
+    // No read follows a store to the same word.
+    listen_on(&|a: u32| mem.read_u32(a).unwrap(), &mut |a: u32, v: u32| writes.push((a, v)), listener, event);
+    for (a, v) in writes {
+        word(mem, a, v);
+    }
+}
+
+/// The stubs on the journal.
+struct StubCommit;
+
+impl commit::Calls for StubCommit {
+    fn world_add(&mut self, _: &mut Journal, _: u32, _: u32, _: u32) -> Result<(), CommitDecline> {
+        Err(CommitDecline::First)
+    }
+
+    fn reserve(&mut self, _: &mut Journal, _: u32, _: u32, _: u32, _: u32) -> Result<(), CommitDecline> {
+        Err(CommitDecline::Grow)
+    }
+
+    fn expand(&mut self, _: &mut Journal, _: u32, _: u32, _: u32) -> Result<(), CommitDecline> {
+        Err(CommitDecline::Grow)
+    }
+
+    fn listener(&mut self, j: &mut Journal, listener: u32, event: u32, _: u32) -> Result<(), CommitDecline> {
+        let mut writes = Vec::new();
+        {
+            let view = &*j;
+            listen_on(&|a: u32| view.get(a).unwrap(), &mut |a: u32, v: u32| writes.push((a, v)), listener, event);
+        }
+        for (a, v) in writes {
+            j.put(a, v).unwrap();
+        }
+        Ok(())
+    }
+
+    fn remove(&mut self, j: &mut Journal, manager: u32, id: u32, _: u32) -> Result<u32, CommitDecline> {
+        let n = j.get(REMOVE_LOG).unwrap();
+        j.put(REMOVE_LOG + 4 + 8 * n, manager).unwrap();
+        j.put(REMOVE_LOG + 8 + 8 * n, id).unwrap();
+        j.put(REMOVE_LOG, n + 1).unwrap();
+        // The stub leaves eax as the call found it: the manager's vtable.
+        Ok(j.get(manager).unwrap())
+    }
+}
+
+/// A manager whose constraint holds one to six properties and up to as
+/// many points, room in every array, two bodies (A's collidable sometimes
+/// a child), up to three world listeners and sometimes one per body;
+/// seed 15 of 16 past the property limit.
+fn commit_world(r: &mut Rng, m: &mut FlatMemory, seed: u64) {
+    word(m, CM_MANAGER, CM_VTABLE);
+    word(m, CM_VTABLE + 8, REMOVE_STUB);
+    word(m, CM_MANAGER + commit::manager::WORLD, CM_WORLD);
+    let k = CM_MANAGER + commit::manager::CONSTRAINT;
+    word(m, k + commit::constraint::ISLAND, CM_ISLAND);
+    word(m, CM_ISLAND, ISLAND_VTABLE);
+    for o in [0x08, 0x0c, 0x10, 0x18] {
+        word(m, CM_ISLAND + o, r.below(0x400));
+    }
+    word(m, k + commit::constraint::FLAGS, r.u32());
+    let n = if seed % 16 == 15 { 251 } else { 1 + r.below(6) };
+    let p = r.below(n.min(6) + 1);
+    word(m, k + commit::constraint::POINTS, CM_POINTS);
+    word(m, k + commit::constraint::POINTS + 4, p);
+    word(m, k + commit::constraint::POINTS + 8, p + 1 + r.below(3) | if r.below(2) == 0 { 0x8000_0000 } else { 0 });
+    random_bytes(r, m, CM_POINTS, 0x200);
+    word(m, k + commit::constraint::PROPERTIES, CM_PROPERTIES);
+    word(m, k + commit::constraint::PROPERTIES + 4, n);
+    word(m, k + commit::constraint::PROPERTIES + 8, n + 1 + r.below(3));
+    random_bytes(r, m, CM_PROPERTIES, 0x200);
+    // Half-words at `+0x18` that are zero in some properties.
+    for i in 0..8 {
+        if r.below(2) == 0 {
+            let at = CM_PROPERTIES + 0x1c * i + 0x18;
+            let w = m.read_u32(at).unwrap();
+            word(m, at, w & 0xffff_0000);
+        }
+    }
+    let ids = r.below(7);
+    word(m, k + commit::constraint::ID_MAP, CM_IDS);
+    word(m, k + commit::constraint::ID_MAP + 4, ids);
+    word(m, k + commit::constraint::ID_MAP + 8, ids + 1 + r.below(2));
+    for i in 0..2 {
+        let bytes: [u8; 4] = std::array::from_fn(|_| if r.below(3) == 0 { 0xff } else { r.below(8) as u8 });
+        word(m, CM_IDS + 4 * i, u32::from_le_bytes(bytes));
+    }
+    // A's collidable is a child in some seeds; the root holds the entity.
+    let (root_a, child) = if r.below(3) == 0 { (CM_PARENT, true) } else { (CM_A, false) };
+    word(m, CM_A + commit::COLLIDABLE_PARENT, if child { CM_PARENT } else { 0 });
+    word(m, CM_PARENT + commit::COLLIDABLE_PARENT, 0);
+    word(m, root_a + commit::COLLIDABLE_ENTITY, CM_ENTITY_A);
+    word(m, CM_B + commit::COLLIDABLE_PARENT, 0);
+    word(m, CM_B + commit::COLLIDABLE_ENTITY, CM_ENTITY_B);
+    for (e, motion) in [(CM_ENTITY_A, CM_MOTION_A), (CM_ENTITY_B, CM_MOTION_B)] {
+        word(m, e + commit::entity::MOTION, motion);
+        word(m, e + commit::entity::FRICTION, bits(r, 0.0, 1.0));
+        word(m, e + commit::entity::RESTITUTION, bits(r, 0.0, 1.0));
+        word(m, e + commit::entity::LISTENERS, CM_LISTENERS + 0x40);
+        word(m, e + commit::entity::LISTENERS + 4, 0);
+        word(m, motion, SPHERE_VTABLE);
+        word(m, motion + 0x2c, if r.below(4) == 0 { 0 } else { bits(r, 0.0, 2.0) });
+        for o in [0x40, 0x50, 0x70] {
+            seed_vector(r, m, motion + o);
+        }
+    }
+    word(m, CM_INPUT + commit::INPUT_RESTITUTION, bits(r, 0.0, 1.0));
+    seed_vector(r, m, CM_CONTACT);
+    word(m, CM_CONTACT + 0x0c, bits(r, -0.1, 0.1));
+    seed_vector(r, m, CM_CONTACT + 0x10);
+    // The world's listeners; a body's own in one seed of four.
+    let listeners = r.below(4);
+    word(m, CM_WORLD + commit::WORLD_LISTENERS, CM_LISTENERS);
+    word(m, CM_WORLD + commit::WORLD_LISTENERS + 4, listeners);
+    word(m, CM_LISTENER_VTABLE, LISTEN_STUB);
+    for i in 0..4 {
+        let l = CM_LISTENER + 0x10 * i;
+        word(m, CM_LISTENERS + 4 * i, if r.below(6) == 0 { 0 } else { l });
+        word(m, l, CM_LISTENER_VTABLE);
+        let does = match r.below(8) {
+            0 => 1,
+            1 => 2,
+            2 => 4,
+            _ => 0,
+        };
+        word(m, l + 4, does);
+        word(m, l + 8, CM_LISTENERS + 4 * i);
+        word(m, l + 0x0c, bits(r, 0.0, 1.0));
+    }
+    if seed % 4 == 1 {
+        let owner = if r.below(2) == 0 { CM_ENTITY_A } else { CM_ENTITY_B };
+        word(m, owner + commit::entity::LISTENERS + 4, 1);
+        word(m, CM_LISTENERS + 0x40, CM_LISTENER + 0x30);
+        word(m, CM_LISTENER + 0x38, CM_LISTENERS + 0x40);
+    }
+    word(m, LISTEN_LOG, 0);
+    word(m, REMOVE_LOG, 0);
+}
+
+fn commit_args() -> commit::Args {
+    commit::Args {
+        manager: CM_MANAGER,
+        a: CM_A,
+        b: CM_B,
+        input: CM_INPUT,
+        contact: CM_CONTACT,
+        esp: STACK,
+        eax: 0,
+        ebx: 0x1111,
+        ebp: 0x2222,
+        esi: 0x3333,
+        edi: 0x4444,
+    }
+}
+
+fn commit_cpu(fpu: Fpu) -> runtime::CpuAbi {
+    let mut cpu = runtime::CpuAbi { ecx: CM_MANAGER, ebx: 0x1111, ebp: 0x2222, esi: 0x3333, edi: 0x4444, esp: STACK, mxcsr: fpu.mxcsr, ..runtime::CpuAbi::default() };
+    cpu.x87.control = fpu.control;
+    cpu
+}
+
+fn commit_stack(m: &mut FlatMemory) {
+    for (i, v) in std::iter::once(EXIT).chain(CM_ARGS).enumerate() {
+        word(m, STACK + 4 * i as u32, v);
+    }
+}
+
+/// Seeded commits: added, rejected and refused past the property limit.
+/// eax equals the lifted call's (ecx and edx too when added), ebx, ebp,
+/// esi and edi are kept, esp is past the four arguments, and every byte
+/// outside the frame (the constraint, the island, the listener arrays,
+/// the stubs' logs) matches, under every rounding mode.
+#[test]
+fn the_contact_commit_matches_the_lifted_call() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = commit_code(image);
+    let mut exits = std::collections::BTreeMap::new();
+    for seed in 0..1024u64 {
+        let mut r = Rng(0x318c_0000 + seed);
+        let mut mem = base.clone();
+        commit_world(&mut r, &mut mem, seed);
+        commit_stack(&mut mem);
+        let fpu = test_fpu(seed);
+        let why = format!("seed {seed} {fpu:x?}");
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let done = commit::add(&mut j, &commit_args(), fpu, &mut StubCommit).unwrap_or_else(|f| panic!("{why}: declined {f:?}"));
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        let mut cpu = lifted::cpu::to_interp(&commit_cpu(fpu));
+        cpu.eip = commit::ADD;
+        run_commit(&mut code, &mut cpu, &mut mem, None);
+        let after = abi_cpu(&cpu);
+        let kind = match done {
+            Committed::Added { eax, ecx, edx } => {
+                assert_eq!((after.eax, after.ecx, after.edx), (eax, ecx, edx), "{why}: added");
+                "added"
+            }
+            Committed::Rejected { eax } => {
+                assert_eq!(after.eax, eax, "{why}: rejected");
+                "rejected"
+            }
+            Committed::Full { eax, ecx, edx } => {
+                assert_eq!((after.eax, after.ecx, after.edx), (eax, ecx, edx), "{why}: full");
+                "full"
+            }
+        };
+        assert_eq!((after.ebx, after.ebp, after.esi, after.edi, after.esp), (0x1111, 0x2222, 0x3333, 0x4444, STACK + 0x14), "{why}: kept, ret 0x10");
+        clear_frame([&mut mem, &mut expected], 4 * CM_ARGS.len() as u32);
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+        *exits.entry(kind).or_insert(0) += 1;
+    }
+    assert!(exits.len() == 3 && exits.values().all(|&n| n >= 16), "{exits:?}");
+}
+
+/// The arm end to end: its state at the world listener walk's entry
+/// matches the lifted call's there, and the lifted call carried on from
+/// an applied one (the walk, the listeners, the tail) leaves memory and
+/// the registers as the lifted call does.
+#[test]
+fn the_commit_arm_stops_at_the_walk_as_the_lifted_call() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = commit_code(image);
+    let mut answered = 0;
+    for seed in 0..512u64 {
+        if seed % 16 == 15 {
+            continue;
+        }
+        let mut r = Rng(0x318c_8000 + seed);
+        let mut mem = base.clone();
+        commit_world(&mut r, &mut mem, seed);
+        commit_stack(&mut mem);
+        let fpu = Fpu { mxcsr: 0x1f80 | ((seed % 4) as u32) << 13, control: 0x027f | (((seed / 4) % 4) as u16) << 10 };
+        let entry = commit_cpu(fpu);
+        let why = format!("seed {seed} {fpu:x?}");
+        let prediction = commit_arm::capture(&entry, &guest(&mem)).unwrap_or_else(|f| panic!("{why}: declined {f:?}"));
+        // The lifted call to its walk.
+        let mut at_walk = mem.clone();
+        let mut cpu = lifted::cpu::to_interp(&entry);
+        cpu.eip = commit::ADD;
+        run_commit(&mut code, &mut cpu, &mut at_walk, Some(commit::WORLD_WALK));
+        assert_eq!(cpu.eip, commit::WORLD_WALK, "{why}: the walk is reached");
+        assert!(prediction.matches(&abi_cpu(&cpu), &guest(&at_walk)), "{why}: the audit matches the lifted state");
+        // The lifted call whole.
+        let mut lifted_mem = mem.clone();
+        let mut whole = lifted::cpu::to_interp(&entry);
+        whole.eip = commit::ADD;
+        run_commit(&mut code, &mut whole, &mut lifted_mem, None);
+        // The applied answer, then the lifted walk and tail.
+        let mut applied = guest(&mem);
+        let mut regs = entry;
+        assert!(prediction.apply(&mut regs, &mut applied), "{why}");
+        assert_eq!(regs.esp, prediction.head.walk_esp(), "{why}");
+        let start = applied.mappings()[0].physical_start as usize;
+        let mut model = FlatMemory { bytes: applied.physical_ram()[start..start + RAM].to_vec(), ..base.clone() };
+        let mut rest = lifted::cpu::to_interp(&regs);
+        rest.eip = commit::WORLD_WALK;
+        run_commit(&mut code, &mut rest, &mut model, None);
+        let (a, b) = (abi_cpu(&whole), abi_cpu(&rest));
+        assert_eq!((a.eax, a.ebx, a.ebp, a.esi, a.edi, a.esp), (b.eax, b.ebx, b.ebp, b.esi, b.edi, b.esp), "{why}: registers");
+        clear_frame([&mut lifted_mem, &mut model], 4 * CM_ARGS.len() as u32);
+        assert_eq!(first_difference(&lifted_mem, &model), None, "{why}: first different byte");
+        answered += 1;
+    }
+    assert!(answered > 400, "{answered}");
+}
+
+/// A first point, a full point array, a motion and an island whose
+/// virtual has no port, an unmasked MXCSR, an unmapped contact and a
+/// constraint past the property limit: declined with nothing written,
+/// each reason counted.
+#[test]
+fn commits_the_arm_does_not_cover_are_declined_and_counted() {
+    let Some((_, base)) = ram() else { return };
+    let cases: [(CommitDecline, fn(&mut FlatMemory, &mut runtime::CpuAbi)); 7] = [
+        (CommitDecline::First, |m, _| word(m, CM_MANAGER + commit::manager::PROPERTIES, 0)),
+        (CommitDecline::Grow, |m, _| {
+            let p = m.read_u32(CM_MANAGER + 0x10 + commit::constraint::POINTS + 4).unwrap();
+            word(m, CM_MANAGER + 0x10 + commit::constraint::POINTS + 8, p);
+        }),
+        (CommitDecline::Motion, |m, _| word(m, CM_MOTION_B, CM_VTABLE)),
+        (CommitDecline::Island, |m, _| word(m, CM_ISLAND, CM_VTABLE)),
+        (CommitDecline::Float, |_, cpu| cpu.mxcsr = 0x1f00),
+        (CommitDecline::Memory, |m, _| word(m, STACK + 16, 0x00ff_fff0 + RAM as u32)),
+        (CommitDecline::Full, |m, _| word(m, CM_MANAGER + commit::manager::PROPERTIES, 251)),
+    ];
+    for (reason, spoil) in cases {
+        let mut r = Rng(0xc0_0000 + reason as u64);
+        let mut mem = base.clone();
+        commit_world(&mut r, &mut mem, 0);
+        commit_stack(&mut mem);
+        let mut cpu = commit_cpu(Fpu { mxcsr: 0x1f80, control: 0x027f });
+        spoil(&mut mem, &mut cpu);
+        let mut g = guest(&mem);
+        let index = CommitDecline::ALL.iter().position(|f| *f == reason).unwrap();
+        let before = commit::fallbacks()[index].1;
+        let declined = parity::status()[11].3;
+        assert_eq!(parity::commit_enter(&mut cpu, &mut g), parity::Commit::Guest, "{reason:?}");
+        assert!(commit::fallbacks()[index].1 > before, "{reason:?} counted");
+        assert!(parity::status()[11].3 > declined, "{reason:?} counted on the arm");
+        assert_eq!(cpu.esp, STACK, "{reason:?}: the frame is the guest's");
+        let start = g.mappings()[0].physical_start as usize;
+        assert!(g.physical_ram()[start..start + RAM] == mem.bytes[..], "{reason:?}: nothing written");
+    }
+}

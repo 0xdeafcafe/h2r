@@ -145,6 +145,7 @@ fn islands_method(v: Value) -> Result<Value, RpcError> {
         convex: takeover_arm(&engine::sim_physics::parity::CONVEX_AGENT, &sim_havok::convex::fallbacks()),
         query: takeover_arm(&engine::sim_physics::parity::CONVEX_QUERY, &sim_havok::closest::fallbacks()),
         point: takeover_arm(&engine::sim_physics::parity::CONTACT_POINT, &sim_havok::contact_point::fallbacks()),
+        commit: takeover_arm(&engine::sim_physics::parity::CONTACT_COMMIT, &sim_havok::commit::fallbacks()),
     };
     Ok(serde_json::to_value(islands).expect("islands serialise"))
 }

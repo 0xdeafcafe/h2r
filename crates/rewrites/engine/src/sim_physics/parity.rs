@@ -35,6 +35,13 @@
 //! (`0x302c70`, `contact_point`, `sim_havok::contact_point`), which
 //! answers a point that moves the slot it matches.
 //!
+//! The contact commit's arm (`0x318c10`, `contact_commit`,
+//! `sim_havok::commit`) answers the call up to its world listener walk
+//! (`0x318320`), whose listeners are Halo's: [`commit_enter`] leaves the
+//! call at the walk's entry for the caller to make in place, and an
+//! audited commit is compared when the guest's walk is entered from the
+//! commit ([`commit_walk`]).
+//!
 //! The two motion arms and the MOPP box arm stay compare-only. A motion
 //! prediction holds `esp`, the four callee-saved registers and the body's
 //! `0x110` bytes; what retail leaves in `eax`, `ecx`, `edx`, the XMM
@@ -42,7 +49,7 @@
 //! `eflags` is not modelled, and no differential test pins it, so an
 //! applied motion could not be shown to leave the guest's registers.
 
-use super::{broadphase, contact_point, convex_agent, convex_query, deactivation, integrate_phase, island_integrate, motion, structure_polygon};
+use super::{broadphase, contact_commit, contact_point, convex_agent, convex_query, deactivation, integrate_phase, island_integrate, motion, structure_polygon};
 use crate::sim_collision::mopp_box;
 use runtime::{CpuAbi, Guest};
 use std::cell::RefCell;
@@ -129,8 +136,9 @@ pub static STRUCTURE_POLYGON: Arm = Arm::new("physics.structure.polygon");
 pub static CONVEX_AGENT: Arm = Arm::new("physics.agent.convex");
 pub static CONVEX_QUERY: Arm = Arm::new("physics.agent.query");
 pub static CONTACT_POINT: Arm = Arm::new("physics.agent.point");
+pub static CONTACT_COMMIT: Arm = Arm::new("physics.contact.commit");
 
-static ARMS: [&Arm; 11] = [
+static ARMS: [&Arm; 12] = [
     &BROADPHASE,
     &MOTION_POSE,
     &MOTION_FORCES,
@@ -142,6 +150,7 @@ static ARMS: [&Arm; 11] = [
     &CONVEX_AGENT,
     &CONVEX_QUERY,
     &CONTACT_POINT,
+    &CONTACT_COMMIT,
 ];
 
 pub(super) fn declined(arm: &Arm) {
@@ -172,7 +181,7 @@ pub(super) fn compare(arm: &Arm, matched: bool) {
 
 /// The arms' counts since start, in table order, for tests and reports:
 /// (name, matched, mismatched, declined).
-pub fn status() -> [(&'static str, u64, u64, u64); 11] {
+pub fn status() -> [(&'static str, u64, u64, u64); 12] {
     ARMS.map(|a| {
         (
             a.name,
@@ -197,8 +206,9 @@ pub struct Takeover {
 /// The take-over state of the arms that answer calls: the broadphase
 /// batch update's, the island integrate's, the deactivation test's, the
 /// integrate phase's, the structure polygon builder's, the convex agent's,
-/// the closest-feature query's and the add-point call's.
-pub fn takeover() -> [Takeover; 8] {
+/// the closest-feature query's, the add-point call's and the contact
+/// commit's.
+pub fn takeover() -> [Takeover; 9] {
     [
         BROADPHASE.take_over(),
         ISLAND_INTEGRATE.take_over(),
@@ -208,6 +218,7 @@ pub fn takeover() -> [Takeover; 8] {
         CONVEX_AGENT.take_over(),
         CONVEX_QUERY.take_over(),
         CONTACT_POINT.take_over(),
+        CONTACT_COMMIT.take_over(),
     ]
 }
 
@@ -235,6 +246,8 @@ thread_local! {
     static POSE_OPEN: RefCell<HashMap<u32, motion::Prediction>> = RefCell::new(HashMap::new());
     static FORCES_OPEN: RefCell<HashMap<u32, motion::Prediction>> = RefCell::new(HashMap::new());
     static MOPP_OPEN: RefCell<HashMap<u32, mopp_box::Prediction>> = RefCell::new(HashMap::new());
+    /// The audited commit whose walk this thread has not entered yet.
+    static COMMIT_OPEN: RefCell<Option<contact_commit::Prediction>> = const { RefCell::new(None) };
 }
 
 /// The world broadphase batch update's arm, at its entry: capture the
@@ -487,6 +500,70 @@ pub fn point_uncompared() {
     uncompared(&CONTACT_POINT);
 }
 
+/// What [`commit_enter`] did with a contact commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Commit {
+    /// The call is at its world listener walk's entry: the stores made,
+    /// the registers set, the return to `sim_havok::commit::WALK_SITE`
+    /// pushed. The caller calls the walk and runs the guest's tail.
+    Answered,
+    /// The guest answers; its walk's entry compares ([`commit_walk`]).
+    Audit,
+    /// The guest answers alone: the call was declined, counted.
+    Guest,
+}
+
+/// A prediction left open by an earlier commit: its walk was never
+/// entered.
+fn commit_drop_open() {
+    if COMMIT_OPEN.with_borrow_mut(|open| open.take()).is_some() {
+        sim_havok::commit::count(sim_havok::commit::Fallback::Unobserved);
+        uncompared(&CONTACT_COMMIT);
+    }
+}
+
+/// The contact commit's arm, at its entry: as [`integrate_enter`], except
+/// that an answer stops at the world listener walk.
+pub fn commit_enter(cpu: &mut CpuAbi, guest: &mut Guest) -> Commit {
+    use sim_havok::commit as model;
+    commit_drop_open();
+    let prediction = match contact_commit::capture(cpu, guest) {
+        Ok(p) => p,
+        Err(f) => {
+            model::count(f);
+            declined(&CONTACT_COMMIT);
+            return Commit::Guest;
+        }
+    };
+    if !CONTACT_COMMIT.answers() {
+        COMMIT_OPEN.with_borrow_mut(|open| *open = Some(prediction));
+        return Commit::Audit;
+    }
+    if !prediction.apply(cpu, guest) {
+        model::count(model::Fallback::Memory);
+        declined(&CONTACT_COMMIT);
+        return Commit::Guest;
+    }
+    CONTACT_COMMIT.answered.fetch_add(1, Ordering::Relaxed);
+    Commit::Answered
+}
+
+/// At the world listener walk's entry (`0x318320`): when it was called
+/// from an audited commit's site with the stack the prediction holds, the
+/// prediction is compared. Any other caller leaves it open.
+pub fn commit_walk(cpu: &CpuAbi, guest: &Guest) {
+    if guest.u32(cpu.esp).ok() != Some(sim_havok::commit::WALK_SITE) {
+        return;
+    }
+    let Some(prediction) = COMMIT_OPEN.with_borrow_mut(|open| open.take()) else { return };
+    if cpu.esp != prediction.head.walk_esp() {
+        sim_havok::commit::count(sim_havok::commit::Fallback::Unobserved);
+        uncompared(&CONTACT_COMMIT);
+        return;
+    }
+    compare(&CONTACT_COMMIT, prediction.matches(cpu, guest));
+}
+
 /// The unconstrained motion's pose method (`vt[+0x08]`, `0x31b1c0`).
 pub fn motion_pose_begin(thread: u32, cpu: &CpuAbi, guest: &Guest) {
     POSE_OPEN.with_borrow_mut(|calls| {
@@ -633,7 +710,8 @@ mod tests {
                 "physics.structure.polygon",
                 "physics.agent.convex",
                 "physics.agent.query",
-                "physics.agent.point"
+                "physics.agent.point",
+                "physics.contact.commit"
             ]
         );
         assert_eq!(
@@ -646,7 +724,8 @@ mod tests {
                 "physics.structure.polygon",
                 "physics.agent.convex",
                 "physics.agent.query",
-                "physics.agent.point"
+                "physics.agent.point",
+                "physics.contact.commit"
             ]
         );
     }

@@ -1,7 +1,7 @@
 # The Havok convex agent
 
-Status: Partly built. Three take-over arms: the convex agent's process call `0x002eeb40` on separated pairs; the closest-feature query `0x003048a0` whole, its shapes' virtuals (capsule, biped wrapper, convex polygon), its triangle case `0x00303dd0` and the penetration call `0x0030a6b0` all in Rust; and the add-point call `0x00302c70` on a point that moves its slot. The manifold refresh `0x00302eb0` and the add-point call's other paths with its cut `0x00302a10` are ported and compared with the lifted code; the manager's add (`vt[+0x04]`, the contact commit) and removal stay guest code, so those paths have no arm.
-Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query, its leaves and the triangle case), `crates/rewrites/sim-havok/src/shape_support.rs` (the support and vertex virtuals), `crates/rewrites/sim-havok/src/manifold.rs` (the refresh, the add-point call and its cut), `crates/rewrites/sim-havok/src/penetration.rs` (the penetration call), `crates/rewrites/sim-havok/src/closest.rs` (the query with every call out in Rust), `crates/rewrites/sim-havok/src/contact_point.rs` (the add-point arm's model); `crates/rewrites/engine/src/sim_physics/convex_agent.rs`, `convex_query.rs` and `contact_point.rs` (the captures), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`, `physics.agent.query`, `physics.agent.point`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arms, the declines) and the unit tests in `convex.rs`, `gjk.rs`, `shape_support.rs`, `manifold.rs`, `penetration.rs`, `closest.rs` and `contact_point.rs`.
+Status: Partly built. Three take-over arms: the convex agent's process call `0x002eeb40` on separated pairs; the closest-feature query `0x003048a0` whole, its shapes' virtuals (capsule, biped wrapper, convex polygon), its triangle case `0x00303dd0` and the penetration call `0x0030a6b0` all in Rust; the add-point call `0x00302c70` on a point that moves its slot; and the contact commit `0x00318c10` (the manager's add) to its listener walk, the walk with Halo's contact callback and the tail staying lifted. The manifold refresh `0x00302eb0`, the add-point call's other paths with its cut `0x00302a10` and the whole commit are ported and compared with the lifted code; a constraint's first point (`0x0030d2b0`), array growth and the manager's removal stay guest code.
+Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query, its leaves and the triangle case), `crates/rewrites/sim-havok/src/shape_support.rs` (the support and vertex virtuals), `crates/rewrites/sim-havok/src/manifold.rs` (the refresh, the add-point call and its cut), `crates/rewrites/sim-havok/src/penetration.rs` (the penetration call), `crates/rewrites/sim-havok/src/closest.rs` (the query with every call out in Rust), `crates/rewrites/sim-havok/src/contact_point.rs` (the add-point arm's model), `crates/rewrites/sim-havok/src/commit.rs` (the contact commit); `crates/rewrites/engine/src/sim_physics/convex_agent.rs`, `convex_query.rs`, `contact_point.rs` and `contact_commit.rs` (the captures), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`, `physics.agent.query`, `physics.agent.point`, `physics.contact.commit`), `crates/rewrites/sim-bridge/src/sim_physics.rs` (the hooks). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arms, the declines) and the unit tests in `convex.rs`, `gjk.rs`, `shape_support.rs`, `manifold.rs`, `penetration.rs`, `closest.rs`, `contact_point.rs` and `commit.rs`.
 Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
 
 A convex pair's agent keeps a separating axis and a bound on the
@@ -97,8 +97,8 @@ The ported functions are compared with the lifted ones in
 `sim_havok_differential.rs`. The process call's arm declines the query
 path (`closest`); the query and the add-point call answer from their own
 arms inside the guest's process call ("The query arm", "The add-point
-arm"). A point that needs a new slot runs the manager's add and Halo's
-callback, which stay the guest's.
+arm"). A point that needs a new slot runs the add-point call lifted,
+and its manager's add answers from the commit arm ("The commit arm").
 
 ## The query
 
@@ -216,6 +216,71 @@ count left.
 seeds of zero to five slots under every rounding mode: moved, taken,
 refused (`0xffff`) and cut, the manager's add and removal answered by
 stubs that log their arguments and the contact.
+
+## The contact commit
+
+`commit::add` runs the manager's add `0x00318c10` (thiscall on the
+manager; A, B, input, contact; `ret 0x10`) on a journal. Its calls out,
+the first point's world add `0x0030d2b0`, the array growth `0x002d9160`
+and `0x002d91d0`, each listener's `vt[+0x00]` and the manager's removal
+`vt[+0x08]`, go through `commit::Calls`. **E**
+
+| Step | Does |
+|---|---|
+| frame | `push ebp`, `and esp,-16`, `sub esp,0x74`, three pushes: `F` is 16-aligned |
+| limit | more than 250 properties (`+0xa4`, signed): eax `\| 0xffff`, return |
+| bodies | each collidable's `+0x0c` to its root, the root's `+0x20` the entity |
+| first | no property yet: `0x0030d2b0` adds the constraint (`+0x10`) to the world |
+| point | `0x0031be80`: the island's `vt[+0x08]` (`0x00315f60`) gets `(0x30 n + 0xb0, 0x30, 4, 1)`, or `(0x30 n + 0xb0, 0x50, 8, 2)` with one property; flags `+0x50 \| 6`; a point appended (`+0x34`, `0x20` bytes); a property inserted at the old point count (`+0x90`, `0x1c` bytes; those past it move up, last first), `+0x00` and `+0x04` zero, half-word `+0x18` one when the one before it is zero; the ID from `0x0031be20` (the last `0xff` byte of `+0x20`, else appended) |
+| speed | each motion's `vt[+0x58]` (`0x003198b0`: `w x (p - c) + v`, the cross product stored first) at the contact; `(vB - vA) . n` by `subps`, `mulps`, `y + x`, `z + that` |
+| combine | friction `sqrt(fB fA)` and restitution `sqrt(rB rA)` on the x87 to `+0x08`, `+0x0c` |
+| copy | the contact's two vectors to the point, its `w` through an x87 load and store |
+| event | `F+0x5c`: the ID (16 bits), manager, A, B, owner, point, property, speed, reject `0` |
+| walks | the world's listeners (`+0xb4`, `0x00318320`), then each entity's with any (`+0x60`, `0x00315d20`): owner to the event, last to first, then null entries dropped |
+| reject | the event's `+0x20` is 1: the removal, eax `\| 0xffff` |
+| seed | `+0x04` `= r k v 1.3` (`k` the input's `+0x30`), `+0x14` `= that + d`, `+0x00` `= (1 / (mB + mA + ε)) (1 + r) v 0.2`; eax the property's high half and the ID |
+
+`sim_havok_differential.rs` compares it with the lifted call, 1024 seeds
+added, rejected and past the limit under every rounding mode, the
+listeners and the removal answered by stubs (a listener can reject,
+clear its own entry or change the restitution).
+
+## The commit arm
+
+`physics.contact.commit` at `0x00318c10`, the same proof, audit and
+latch as the process call, to the world listener walk only: the walk
+calls Halo's contact callback (`0x00277a00` → `0x00277b80`). The model
+is `commit::head`; its answer is every store up to the walk (the frame,
+the walk's two arguments and its return to `0x00318d9b` included) with
+eax, ecx, edx, ebx, ebp, esi, edi and esp at the walk's entry.
+
+```mermaid
+flowchart LR
+    E[0x318c10 hook] -->|answers| H[Rust head applied] --> W[call_inline 0x318320] -->|returned| T[lifted tail from 0x318d9b]
+    W -->|leave| R[runner resumes the hook at 0x318d9b]
+    E -->|audit| G[lifted call] --> C[0x318320 hook compares]
+```
+
+- The walk's own hook (`0x00318320`) compares an audited prediction when
+  it is entered from `0x00318d9b` at the predicted esp; a prediction its
+  walk never reached is counted `unobserved` at the next commit.
+- The x87 stack is empty at the walk; the x87 condition codes, the sticky
+  exception flags and the XMM registers are not modelled.
+
+| Reason | When |
+|---|---|
+| `memory` | a word is unmapped or unaligned, a store unwritable |
+| `full` | more than 250 properties |
+| `first` | the constraint's first point: the world add runs |
+| `grow` | the point, property or ID array is full |
+| `motion` | a motion's `vt[+0x58]` is not `0x003198b0` |
+| `island` | the island's `vt[+0x08]` is not `0x00315f60` |
+| `float` | an unmasked exception, an x87 stack not empty, a non-finite x87 load |
+| `unobserved` | an audited commit's walk was not compared |
+
+`sim_havok_differential.rs` checks the prediction against the lifted
+call at its walk, and the lifted walk and tail run from an applied answer
+against the lifted call whole.
 
 ## The triangle case
 
@@ -476,7 +541,7 @@ read them. Declines (`contact_point::fallbacks`, `havok.islands`'s
 | Reason | When |
 |---|---|
 | `memory` | a word is unmapped or unaligned, a store unwritable, a count past 256 |
-| `commit` | no slot matches: the manager's add runs |
+| `commit` | no slot matches: the manager's add runs (the commit arm answers it) |
 | `float` | an unmasked exception, an x87 stack not empty at the entry |
 | `unobserved` | an audited return could not be observed |
 
@@ -492,6 +557,11 @@ not decline it.
   the translation's `w`; the port reads that word from its own frame
   writes, the guest from whatever its calls left there. The penetration
   comparison did not tell the two apart; the query arm's audit would.
+- Whether any listener Halo registers writes the constraint, the
+  property or the frame before the walk returns: the commit arm's tail
+  is lifted, so the arm does not depend on it, and a Rust tail would.
+- How often a match's commits are a constraint's first point (`first`
+  on `havok.islands`'s `commit`).
 - How many query and add-point calls a match's shapes let answer:
   `shape` and `commit` on `havok.islands` give it. Other shape classes
   (spheres, boxes, triangles) have no port.
