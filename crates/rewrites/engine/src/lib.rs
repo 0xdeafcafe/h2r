@@ -98,6 +98,7 @@ pub mod sim_seats;
 pub mod sim_tick;
 pub mod countdown_requests;
 pub mod hs_update;
+pub mod ai_update;
 pub mod effects_phase;
 pub mod tick_poses;
 

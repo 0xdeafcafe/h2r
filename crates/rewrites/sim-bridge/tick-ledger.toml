@@ -6,6 +6,6 @@
 # `h2 agent call sim.ledger` shows the live counts.
 
 [guest_phases]
-menu = 26
-multiplayer = 26
-campaign = 26
+menu = 25
+multiplayer = 25
+campaign = 25

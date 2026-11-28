@@ -67,7 +67,8 @@ const fn guest_first(entry: u32, name: &'static str) -> Phase {
 pub const PHASES: &[Phase] = &[
     guest_first(0x0014_d3a0, "players_before"),
     guest(0x0013_8db0, "unknown_138db0"),
-    guest(0x001c_83c0, "ai"),
+    // The AI update, crate::ai_update; its seven systems stay guest.
+    rust(0x001c_83c0, "ai"),
     guest(0x001f_b510, "unknown_1fb510"),
     guest(0x0020_b660, "unknown_20b660"),
     guest(0x0015_c150, "game_engine"),
@@ -283,7 +284,7 @@ pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
 /// is off is a guest call, counted in the ledger like any guest phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bodies {
-    /// The Rust bodies ([`crate::hs_update`], [`crate::effects_phase`],
+    /// The Rust bodies ([`crate::ai_update`], [`crate::hs_update`], [`crate::effects_phase`],
     /// [`crate::countdown_requests`]); off only in tests, as the lifted
     /// reference.
     pub rust: bool,
@@ -437,6 +438,10 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
                 || match phase.entry {
                     EFFECTS => crate::effects_phase::run(&cx, RECORD_SIZE).await?
                         == crate::effects_phase::Walked::Declined,
+                    crate::ai_update::ENTRY => {
+                        crate::ai_update::run(&cx, RECORD_SIZE).await?;
+                        false
+                    }
                     crate::hs_update::ENTRY => {
                         crate::hs_update::run(&cx, RECORD_SIZE).await?;
                         false
@@ -515,8 +520,9 @@ mod tests {
         assert_eq!(PHASES[28].entry, 0x0016_f200);
     }
 
-    /// With the Rust bodies on, the effects phase and the countdown
-    /// requests make no guest call of their own: the ledger has 0 for them
+    /// With the Rust bodies on, the AI update (disabled), the scheduler
+    /// (scripts off), the effects phase and the countdown requests make no
+    /// guest call of their own: the ledger has 0 for them
     /// and 1 for every other phase, and the walk's callees run where the
     /// phase did.
     #[test]
@@ -527,8 +533,10 @@ mod tests {
         let clock = 0x0052_0100;
         g.map(crate::points::TICK_CLOCK.base & !0xfff, 0x1000);
         g.put_u32(crate::points::TICK_CLOCK.base, clock).put_u32(clock + CLOCK_COUNTER, 5);
-        // The countdown requests' bytes, none pending.
-        g.map(crate::countdown_requests::FIRST, 2);
+        // The countdown requests' bytes, none pending; scripts off; AI
+        // disabled (its globals at a zero page).
+        g.map(crate::countdown_requests::FIRST, 2).map(crate::hs_update::ENABLED, 1);
+        g.map(crate::ai_update::GLOBALS, 4).map(AI_GLOBALS, 4).put_u32(crate::ai_update::GLOBALS, AI_GLOBALS);
         let ledger: &'static Mutex<Ledger> = Box::leak(Box::new(Mutex::new(Ledger::new())));
         let f = move |cx: Cx| -> EntryFuture { Box::pin(run_with(cx, ledger, Present::Always, Bodies::ALL)) };
         let record = STACK - RECORD_SIZE;
@@ -547,6 +555,8 @@ mod tests {
         }
         assert_eq!(PHASES[28].owner, Owner::Rust, "the countdown requests");
         assert!(!targets_of(&run).contains(&crate::countdown_requests::ENTRY));
+        assert!(!targets_of(&run).contains(&crate::hs_update::ENTRY));
+        assert!(!targets_of(&run).contains(&crate::ai_update::ENTRY));
         assert_eq!(l.total_calls(), guest_phases() as u64);
         let targets: Vec<u32> = run.calls.iter().map(|c| c.target).collect();
         assert!(!targets.contains(&EFFECTS));
@@ -556,6 +566,9 @@ mod tests {
         let after = targets.iter().position(|&t| t == PHASES[effects + 1].entry).unwrap();
         assert_eq!(after - at, 9, "the walk's nine callees");
     }
+
+    /// A zero page for the AI globals in the driver tests.
+    const AI_GLOBALS: u32 = 0x0057_0000;
 
     fn targets_of(run: &crate::entry::testing::Run) -> Vec<u32> {
         run.calls.iter().map(|c| c.target).collect()
