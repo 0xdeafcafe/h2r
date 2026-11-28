@@ -97,11 +97,29 @@ Every case the guest would draw and the native pass does not panics, `post: <cau
 | `colour pass parameters (..)`, `colour pass reset (..)` | `colour_pass::parameters` fails, or the reset does not write |
 | `glow: <cause>` | the plan (`pass_a`, `blur_combiner`, `blur`, `pass_b`, a blur that copies its result), the view's texture, a slot, the device refusing the pass |
 | `glow on the graph's targets: <refusal>` | the GPU refuses a copy (`glow::Refused`) |
-| `scope_zoom` | a HUD screen effect of a converted Halo 1 scope-zoom profile, whose profile the plan does not read |
 | `screen effect: <cause>` | the plan, the saved sizes, `template_skipped` (a gate that does not read), a target sized twice, a missing piece (`template_pass`, `pass_target`, `view_target`, `blur`, `wide`, `stand_ins`), the view's texture, a slot, `template_restore` (a template cache with restore states, `0x00018900`, a D3D call), the device refusing the pass |
 | `screen effect <entry> on the graph's targets: <refusal>` | the GPU refuses a copy (`screen_gpu::ScreenRefused`) |
 
 While a map's screen effects load (`EffectsSlot`, on a thread of their own) a call makes its guest writes and draws nothing, counted `post_screen_effect_loading`. `render.scene` reports `post_colour_calls`, `post_colour_glows`, `post_screen_effect_calls` and `post_screen_effect_ended` (`native_post::counters`).
+
+## The Halo 1 scope
+
+A converted Halo 1 scope is an ordinary egor (copy, blur, pixel passes) whose call's values the `h1-scope-zoom` feature fills before `0x0002d140` (`h1_runtime::h1_scope_zoom`, [hud-weapons.md](../halo1/hud-weapons.md#scope-mask)):
+
+| Value | Holds |
+|---|---|
+| 0, 1 | desaturation and tint strength (scalars 41 and 42) |
+| 2 | the blur radius |
+| 3 | `tags::scope_zoom::MAGIC` |
+
+The plan takes the blur from the values, not the tag (`screen_effect::plan_with`, `scope_zoom_hud::zoom_blur`):
+
+| Radius | Blur `0x000211a0` |
+|---|---|
+| none or below | zero steps: the source returned, no draws |
+| above | the tag's steps, first scale half the radius (drawn at half resolution) |
+
+Its result feeds the next convolution's buffers, as the guest's EAX does. Tests: `scope_zoom_hud::tests`, `screen_effect::tests::a_blur_takes_its_changed_arguments`.
 
 ## The colour pass
 

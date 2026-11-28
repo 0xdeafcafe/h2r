@@ -193,10 +193,6 @@ pub fn screen_call(mem: &dyn GuestMemory, eax: u32, esp: u32) -> Result<ScreenEf
 pub fn screen_effect(mem: &mut dyn GuestMemory, eax: u32, esp: u32, fp: Fp) -> u32 {
     EFFECTS.fetch_add(1, Ordering::Relaxed);
     let call = screen_call(&*mem, eax, esp).unwrap_or_else(|_| unhandled("screen effect args"));
-    // A converted Halo 1 scope-zoom profile is no egor the plan reads.
-    if crate::scope_zoom_hud::hud_profile(&*mem, eax, esp).is_some() {
-        unhandled("scope_zoom");
-    }
     crate::scene_step::post_effect(&*mem, call.datum, call.values, call.columns, call.rows);
     let values = (0..4)
         .map(|i| mem.u32(call.values.wrapping_add(4 * i)))

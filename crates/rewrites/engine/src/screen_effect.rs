@@ -399,6 +399,25 @@ pub fn plan(
     mxcsr: u32,
     x87_control: u16,
 ) -> Result<Option<Effect>, Error> {
+    plan_with(mem, datum, values, columns, rows, corners, mxcsr, x87_control, &|_| {})
+}
+
+/// [`plan`] with each blur's arguments given to `blur_args` before the
+/// blur is planned, as a hook before `0x000211a0` called from
+/// `0x0002da9b` would change its stack words (the converted Halo 1 scope,
+/// `render_bridge::scope_zoom_hud::zoom_blur`). Its result feeds the next
+/// convolution's buffers as the guest's EAX does.
+pub fn plan_with(
+    mem: &dyn GuestMemory,
+    datum: u32,
+    values: [u32; 4],
+    columns: u32,
+    rows: u32,
+    corners: &[[u32; 4]],
+    mxcsr: u32,
+    x87_control: u16,
+    blur_args: &dyn Fn(&mut BlurArgs),
+) -> Result<Option<Effect>, Error> {
     if datum == u32::MAX {
         return Ok(None);
     }
@@ -496,7 +515,7 @@ pub fn plan(
                     let result = wide.result;
                     (Convolution::Wide { size, args, wide }, result)
                 } else {
-                    let args = BlurArgs {
+                    let mut args = BlurArgs {
                         source: target,
                         steps: mem.u32(c + 0x44)?,
                         scale: mem.u32(c + 0x48)?,
@@ -505,6 +524,7 @@ pub fn plan(
                         other,
                         last: u32::MAX,
                     };
+                    blur_args(&mut args);
                     let blur = glow::blur(mem, &args, mxcsr)?;
                     let result = blur.result;
                     (Convolution::Blur { size, args, blur }, result)
@@ -685,6 +705,33 @@ mod tests {
             }
             c => panic!("{c:?}"),
         }
+    }
+
+    #[test]
+    fn a_blur_takes_its_changed_arguments() {
+        let m = world();
+        let with = |adjust: &dyn Fn(&mut BlurArgs)| {
+            let e = plan_with(&m, DATUM, [f(1.0), 0, 0, 0], 2, 2, &corners(), 0x1f80, 0x027f, adjust).unwrap().unwrap();
+            match e.passes[0].convolutions[0].clone() {
+                Convolution::Blur { args, blur, .. } => (args, blur),
+                c => panic!("{c:?}"),
+            }
+        };
+        let (args, blur) = with(&|a| a.steps = 0);
+        assert_eq!(args.steps, 0);
+        assert!(blur.draws.is_empty(), "no steps: no draws");
+        assert_eq!(blur.result, 1, "the source unchanged");
+        let (args, blur) = with(&|a| a.scale = f(3.0));
+        assert_eq!(args.scale, f(3.0));
+        assert_eq!(blur.draws.len(), 2, "the tag's 1.5 steps");
+        assert_eq!(blur.draws[0].spread, f(3.0), "the first draw at the new scale");
+        assert_eq!(with(&|_| {}), {
+            let e = run(&m, [f(1.0), 0, 0, 0]).unwrap();
+            match e.passes[0].convolutions[0].clone() {
+                Convolution::Blur { args, blur, .. } => (args, blur),
+                c => panic!("{c:?}"),
+            }
+        }, "unchanged arguments: plan's");
     }
 
     #[test]
