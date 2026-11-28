@@ -180,17 +180,6 @@ fn video_noise_uses_the_two_retail_draws_for_each_frame() {
             seed = seed.wrapping_mul(RANDOM_A).wrapping_add(RANDOM_C);
             (seed >> 16) as f32 / 65535.
         });
-        assert_eq!(gpu::video_offset(tick), pair);
+        assert_eq!(video_offset(tick), pair);
     }
-}
-
-#[test]
-fn cinematic_shader_validates() {
-    let module = wgpu::naga::front::wgsl::parse_str(include_str!("screen.wgsl")).unwrap();
-    wgpu::naga::valid::Validator::new(
-        wgpu::naga::valid::ValidationFlags::all(),
-        wgpu::naga::valid::Capabilities::empty(),
-    )
-    .validate(&module)
-    .unwrap();
 }

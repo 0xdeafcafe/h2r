@@ -189,6 +189,8 @@ pub mod native_hud_glue;
 #[cfg(feature = "gpu")]
 pub mod modal_blur_glue;
 #[cfg(feature = "gpu")]
+pub mod native_cinematic_glue;
+#[cfg(feature = "gpu")]
 pub mod native_lights_glue;
 #[cfg(feature = "gpu")]
 pub mod native_map;

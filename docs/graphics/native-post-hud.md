@@ -81,6 +81,16 @@ The port of `0x000214f0`, the quad and the native glow: [native-post.md](native-
 
 `0x0002d140`, its function evaluator, plans, convolutions, look and GPU pass: [native-screen-effects.md](native-screen-effects.md).
 
+### The Halo 1 cinematic pass
+
+The Halo 1 campaign's screen effect (blur, light, desaturation, tint and the
+video effect) is a stage of its own, `native_render::cinematic_gpu`. It takes a
+colour target and plain parameters (`Params`, `Target`, `Video`) and names no
+device type. `h1_cinematics` reads the campaign's globals into `Params` at
+`RENDER_SCREEN_EFFECTS` and hands a `Request` to the installed drawer;
+`native_cinematic_glue` is that drawer, queuing the stage over the device with
+`Device::external_pass_now`.
+
 ## Rules and limits
 
 - Each post call commits one complete replacement or draws all its originals. A plan with an unsupported input or an unavailable live target uses D3D for that call.
