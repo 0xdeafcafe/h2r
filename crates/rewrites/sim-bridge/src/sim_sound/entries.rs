@@ -61,9 +61,6 @@ pub const CHANNELS: u32 = 0x004e_6378;
 /// `0x18c6a0(owner, payload, tag, range, permutation, seconds)`: the unit's
 /// mouth (`ret 0x18`). It tests the unit itself and reads no payload.
 pub const UNIT_MOUTH: u32 = 0x0018_c6a0;
-/// `0x126c30(eax = record, tag, &channel, _) -> al`: the start gate. It
-/// reads the class state and no pool (`h2 disasm 0x126c30`).
-pub const START_GATE: u32 = 0x0012_6c30;
 /// The stop's fade (`0x1263e5`: 300 ms at instance `+0xb4`).
 pub const STOP_FADE_MS: u32 = 300;
 /// Sound globals: sound on (`+0x78`, `+0x79`, `+0x7a`), paused (`+0x7b`),
@@ -96,9 +93,10 @@ pub enum Body {
     Service,
     /// `0x125f10`: nothing in the sim; the clip source decodes on demand.
     Prefetch,
-    /// `0x21d110`: a start row for the sound's effect, the gate (guest) and
-    /// the rule, [`super::request::read`] and `admit`, then the row's
-    /// `Mode::Start` ([`start_layer::start_record`]).
+    /// `0x21d110`: a start row for the sound's effect, the gate
+    /// ([`engine::sim_sound::gate::start_gate`]) and the rule,
+    /// [`super::request::read`] and `admit`, then the row's `Mode::Start`
+    /// ([`start_layer::start_record`]).
     StartRecord,
     /// `0x21d390`: the start rows' walk ([`start_layer::starts_update`]).
     StartsUpdate,

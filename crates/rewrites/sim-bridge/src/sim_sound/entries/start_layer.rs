@@ -15,22 +15,22 @@
 
 use std::collections::BTreeMap;
 
-use engine::entry::{Cx, EntryError, GuestCall};
+use engine::entry::{Cx, EntryError};
+use engine::sim_sound::gate::{self, Gate};
 use engine::sim_sound::{playback, promotion};
 use engine::{GuestMemory, MemFault};
 use sim_sound::instances::{Handle, SourceParams, TagIndex};
 use sim_sound::owners::Owner;
 use sim_sound::starts::{Action, Component, DialogueRow, Mode, OwnerPoll, STARTED_TABLE, SOUND_TABLE, Start, StartOf, plan};
 
-use super::{NONE, START_GATE, Shared, lock, object_gone, sound_on, tick_of};
+use super::{NONE, Shared, lock, object_gone, sound_on, tick_of};
 use crate::sim_sound::{guest_tags, request};
 
 /// A request record's bytes (`0x126000` reads to `+0x9f`).
 pub const RECORD_SIZE: u32 = 0xa0;
 /// The bodies' frame below the entry `ESP`: the record a component's
-/// admission builds, then the gate's channel.
+/// admission builds.
 pub const FRAME: u32 = RECORD_SIZE + 0x10;
-const CHANNEL_AT: u32 = 0x10;
 /// One effect component (group, tag, gain, flags).
 const COMPONENT: u32 = 16;
 
@@ -81,20 +81,24 @@ fn effect_of(cx: &Cx, table: &Shared, tag: u32, custom: u32) -> Option<u32> {
     })
 }
 
-/// The gate (guest, pool-free) and the rule (`0x126ec0`,
-/// [`promotion::select`]), then the record read and admitted: the handle,
-/// or [`NONE`] when the sound is off or any step refuses.
+/// The gate (`0x126c30`, [`gate::start_gate`]) and the rule (`0x126ec0`,
+/// [`promotion::select`]), then the record read and admitted with the
+/// gate's listener as its channel: the handle, or [`NONE`] when the sound
+/// is off or any step refuses. A fault reading the gate's or the rule's
+/// data refuses the start as unreadable.
 pub(super) async fn gate_and_admit(cx: &Cx, table: &Shared, record: u32, tag: u32) -> Result<u32, EntryError> {
     if !cx.read(sound_on) {
         return Ok(NONE);
     }
-    let channel = slot(cx, CHANNEL_AT);
-    let gate = cx.call(GuestCall::new(START_GATE).eax(record).args([tag, channel, 0]).reserve(FRAME)).await?.eax;
-    lock(table).ledger.entry_guest_calls += 1;
-    if gate & 0xff == 0 {
-        return Ok(NONE);
-    }
     Ok(cx.write(|m| {
+        let channel = match gate::start_gate(m, record, tag) {
+            Ok(Gate { refused: None, listener: Some(listener) }) => listener,
+            Ok(_) => return NONE,
+            Err(_) => {
+                lock(table).ledger.refused_unreadable += 1;
+                return NONE;
+            }
+        };
         let rule = match promotion::select(m, tag) {
             Ok(r) if r.refused => return NONE,
             Ok(r) => r.rule,
@@ -103,7 +107,6 @@ pub(super) async fn gate_and_admit(cx: &Cx, table: &Shared, record: u32, tag: u3
                 return NONE;
             }
         };
-        let channel = m.u32(channel).unwrap_or(0);
         let request = request::read(&*m, [tag, channel, record, rule]);
         let tick = tick_of(m).unwrap_or(0);
         lock(table).admit(m, request, tick)
