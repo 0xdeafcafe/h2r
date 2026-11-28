@@ -90,6 +90,23 @@ pub trait DisplayRate<B: Backend>: Send {
     fn declined(&mut self) {}
 }
 
+/// The frame graph's targets on the render thread
+/// (`native_render::frame_graph::targets::Store`; docs/graphics/
+/// retire-d3d-display.md, "The graph's targets"). Every render target and
+/// depth surface the device makes by role comes from it, so the guest's
+/// commands and the graph's replay draw on the same surface for a role,
+/// whichever per-frame [`TargetRef`] names it.
+pub trait TargetStore<B: Backend>: Send {
+    /// The role's surface: the one held while its shape holds, else a new
+    /// one (the old released).
+    fn target(&mut self, backend: &mut B, target: crate::backend::TargetDesc) -> Result<B::Surface, String>;
+    /// The device gave its handle for `role` back. The store keeps the
+    /// surface for the role's next target.
+    fn released(&mut self, backend: &mut B, role: frame_types::TargetRole, surface: B::Surface) -> Result<(), String>;
+    /// The surface of each of `frame`'s targets, by its role.
+    fn map(&self, frame: &ReplayFrame) -> Result<HashMap<TargetRef, B::Surface>, String>;
+}
+
 pub struct FrameOwner<B: Backend> {
     /// Guest Swap ordinal and the owner's generation at submission.
     pub select: Box<dyn FnMut(u64, u64) -> Option<Submission<B>> + Send>,
@@ -233,6 +250,16 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             });
         }
         self.frame_owner = Some(owner);
+        self
+    }
+
+    /// Make the game's targets through the frame graph's store
+    /// ([`TargetStore`]). Posted before any surface is made.
+    pub fn with_target_store(self, store: Box<dyn TargetStore<B>>) -> Self {
+        self.post(move |w| {
+            w.targets = Some(store);
+            Ok(())
+        });
         self
     }
 
@@ -453,9 +480,14 @@ impl<B: Backend> Worker<B> {
                 if native { MISMATCHES.fetch_add(1, Ordering::Relaxed); }
                 return None;
             };
-            let surfaces = proxies.targets.into_iter().map(|(key, id)| {
-                self.surfaces.get(&id).copied().map(|actual| (key, actual))
-            }).collect::<Option<HashMap<_, _>>>();
+            // With the graph's store the replay draws on the graph's
+            // targets, by role; the guest's commands drew on the same ones.
+            let surfaces = match &self.targets {
+                Some(store) => Some(store.map(frame).unwrap_or_else(|e| unimplemented!("graph targets: {e}"))),
+                None => proxies.targets.into_iter().map(|(key, id)| {
+                    self.surfaces.get(&id).copied().map(|actual| (key, actual))
+                }).collect::<Option<HashMap<_, _>>>(),
+            };
             match submission {
                 Submission::Native(candidate) => {
                     let Some(surfaces) = surfaces else {

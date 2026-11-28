@@ -26,6 +26,8 @@ native-render = { path = "../native-render", default-features = false, optional 
 # The frame step's scene (docs/graphics/framescene.md).
 frame-scene = { path = "../frame-scene", optional = true }
 scene-extract = { path = "../scene-extract", optional = true }
+# The targets' roles the device makes them by (docs/graphics/retire-d3d-display.md).
+frame-types = { path = "../../platform/frame-types" }
 # The sim's visual effect parts, put in each scene (docs/engine/effects-parts.md).
 sim-effects.workspace = true
 

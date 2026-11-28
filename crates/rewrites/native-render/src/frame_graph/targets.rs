@@ -2,19 +2,20 @@
 //! replay (native-only plan, `nor-8b`; docs/graphics/framescene.md,
 //! "Slice 6"). Each target the frame's ops touch is one [`Declared`]: its
 //! size, how its first use loads it, what the frame does with it and the
-//! ops and slots that do it. [`Owned`] is the graph's own set of them:
-//! one surface per declared target, allocated by the graph, kept across
-//! frames while its shape holds, as the map the replay draws on
-//! (`draw_display_on`'s `targets`; the threaded owner still makes that
-//! map from the guest's surfaces). The view setup's binds and
-//! clears (`render_bridge::view_setup`) name these targets: the scene sink
-//! files them as the [`TargetRef`]s declared here.
+//! ops and slots that do it, and its role. [`Owned`] is the graph's own
+//! set of them: one surface per [`TargetRole`], allocated by the graph,
+//! kept across frames while its shape holds. [`Store`] is it on the render
+//! thread: the device makes every render target and depth surface through
+//! it (docs/graphics/retire-d3d-display.md, "The graph's targets"), and
+//! its map is the one the replay draws on (`draw_display_on`'s `targets`).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 
+use d3d::backend::Backend;
 use d3d::scene_sink::{ReplayFrame, ReplayOp};
-use frame_scene::{Slot, TargetRef};
+use frame_scene::{Slot, TargetRef, TargetRole};
+use gfx::D3DFormat;
 
 /// How a target's first use in the frame loads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +65,9 @@ impl std::ops::BitOr for Uses {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Declared {
     pub target: TargetRef,
+    /// What it is to the game, the same in every frame
+    /// ([`ReplayFrame::roles`]); `None` for a target made with none.
+    pub role: Option<TargetRole>,
     /// Its size in guest pixels, from the frame's descriptors; `None` when
     /// the frame names none.
     pub size: Option<(u32, u32)>,
@@ -102,7 +106,7 @@ pub fn declare(frame: &ReplayFrame) -> Vec<Declared> {
             } else {
                 Load::Keep
             };
-            out.push(Declared { target, size, depth, format, load, uses, ops: i..i + 1, slots: BTreeSet::from([at.slot]) });
+            out.push(Declared { target, role: frame.role(target), size, depth, format, load, uses, ops: i..i + 1, slots: BTreeSet::from([at.slot]) });
         };
         match op {
             ReplayOp::Bind { colour, depth } => bound = Some((*colour, *depth)),
@@ -143,7 +147,7 @@ pub fn declare(frame: &ReplayFrame) -> Vec<Declared> {
                 let (size, depth, format) = describe(frame, frame.presented);
                 let load = if frame.initial.iter().any(|(t, _)| *t == frame.presented) { Load::Seeded } else { Load::Keep };
                 let end = frame.ops.len();
-                out.push(Declared { target: frame.presented, size, depth, format, load, uses: Uses::PRESENTED, ops: end..end, slots: BTreeSet::new() });
+                out.push(Declared { target: frame.presented, role: frame.role(frame.presented), size, depth, format, load, uses: Uses::PRESENTED, ops: end..end, slots: BTreeSet::new() });
             }
         }
     }
@@ -204,21 +208,30 @@ pub struct Shape {
     pub size: (u32, u32),
     pub depth: bool,
     pub format: u32,
+    /// A texture's level bound as a target: a surface the draws after it
+    /// sample in place.
+    pub texture: bool,
 }
 
 impl Shape {
     /// The shape of `d`; `None` when the frame names no size or format
     /// for it.
     pub fn of(d: &Declared) -> Option<Shape> {
-        Some(Shape { size: d.size?, depth: d.depth, format: d.format? })
+        let texture = !d.depth && matches!(d.role, Some(TargetRole::GameLevel(_)));
+        Some(Shape { size: d.size?, depth: d.depth, format: d.format?, texture })
+    }
+
+    /// The shape the device asks for.
+    pub fn of_desc(t: &d3d::TargetDesc) -> Shape {
+        Shape { size: (t.width, t.height), depth: t.depth, format: u32::from(t.format as u8), texture: t.texture }
     }
 }
 
 /// Makes and frees the graph's surfaces (the backend's).
 pub trait Allocate {
     type Surface: Copy;
-    /// A surface of `shape` for `target`; `None`: refused.
-    fn allocate(&mut self, target: TargetRef, shape: Shape) -> Option<Self::Surface>;
+    /// A surface of `shape` for `role`; `None`: refused.
+    fn allocate(&mut self, role: TargetRole, shape: Shape) -> Option<Self::Surface>;
     fn release(&mut self, surface: Self::Surface);
 }
 
@@ -227,6 +240,8 @@ pub trait Allocate {
 pub enum Refusal {
     /// The frame names no size or format for it.
     Unsized,
+    /// The device made it with no role.
+    Unroled,
     /// The allocator refused its shape.
     Allocation,
 }
@@ -235,20 +250,22 @@ impl Refusal {
     pub fn name(self) -> &'static str {
         match self {
             Refusal::Unsized => "unsized",
+            Refusal::Unroled => "unroled",
             Refusal::Allocation => "allocation",
         }
     }
 }
 
-/// The view targets the graph owns. Each declared target keeps its surface
-/// from frame to frame while its shape holds; a new shape releases the old
-/// surface and allocates another. A target a frame does not declare is
-/// kept for the next that does (a menu frame between two game frames
-/// drops nothing). A target with no surface is refused by name and
-/// counted, and the frame's map leaves it out: no other surface stands in.
+/// The game's targets the graph owns, one surface per [`TargetRole`]. A
+/// role keeps its surface from frame to frame while its shape holds,
+/// whichever per-frame [`TargetRef`] names it; a new shape replaces the
+/// surface. A role a frame does not declare is kept for the next that
+/// does (a menu frame between two game frames drops nothing). A target
+/// with no surface is refused by name and counted, and the frame's map
+/// leaves it out: no other surface stands in.
 #[derive(Debug)]
 pub struct Owned<S> {
-    held: BTreeMap<TargetRef, (Shape, S)>,
+    held: BTreeMap<TargetRole, (Shape, S)>,
     pub made: u64,
     pub kept: u64,
     pub released: u64,
@@ -261,9 +278,44 @@ impl<S> Default for Owned<S> {
     }
 }
 
+/// What [`Owned::take`] did for a role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Taken<S> {
+    /// The held surface, of the same shape.
+    Kept(S),
+    /// A new surface; `replaced` is the one of the old shape, no longer
+    /// held, for the caller to release when nothing draws on it.
+    Made { surface: S, replaced: Option<S> },
+}
+
+impl<S> Taken<S> {
+    pub fn surface(&self) -> &S {
+        match self {
+            Taken::Kept(s) | Taken::Made { surface: s, .. } => s,
+        }
+    }
+}
+
 impl<S: Copy> Owned<S> {
-    /// The surfaces for `declared`, made or kept through `alloc`, and the
-    /// targets refused. [`TargetRef::None`] is never declared.
+    /// The surface for `role` at `shape`: kept, or made through `alloc`.
+    /// `None`: the allocator refused (the old surface, if any, is still
+    /// held).
+    pub fn take<A: Allocate<Surface = S>>(&mut self, role: TargetRole, shape: Shape, alloc: &mut A) -> Option<Taken<S>> {
+        if let Some((held, surface)) = self.held.get(&role)
+            && *held == shape
+        {
+            self.kept += 1;
+            return Some(Taken::Kept(*surface));
+        }
+        let surface = alloc.allocate(role, shape)?;
+        self.made += 1;
+        let replaced = self.held.insert(role, (shape, surface)).map(|(_, old)| old);
+        Some(Taken::Made { surface, replaced })
+    }
+
+    /// The surfaces for `declared`, made or kept through `alloc` (a
+    /// replaced surface released at once), and the targets refused.
+    /// [`TargetRef::None`] is never declared.
     pub fn own<A: Allocate<Surface = S>>(
         &mut self,
         declared: &[Declared],
@@ -276,24 +328,17 @@ impl<S: Copy> Owned<S> {
                 refused.push((d.target, Refusal::Unsized));
                 continue;
             };
-            match self.held.get(&d.target) {
-                Some((held, surface)) if *held == shape => {
-                    self.kept += 1;
-                    map.insert(d.target, *surface);
-                    continue;
-                }
-                Some((_, surface)) => {
-                    alloc.release(*surface);
-                    self.released += 1;
-                    self.held.remove(&d.target);
-                }
-                None => {}
-            }
-            match alloc.allocate(d.target, shape) {
-                Some(surface) => {
-                    self.made += 1;
-                    self.held.insert(d.target, (shape, surface));
-                    map.insert(d.target, surface);
+            let Some(role) = d.role else {
+                refused.push((d.target, Refusal::Unroled));
+                continue;
+            };
+            match self.take(role, shape, alloc) {
+                Some(taken) => {
+                    if let Taken::Made { replaced: Some(old), .. } = taken {
+                        alloc.release(old);
+                        self.released += 1;
+                    }
+                    map.insert(d.target, *taken.surface());
                 }
                 None => refused.push((d.target, Refusal::Allocation)),
             }
@@ -304,9 +349,21 @@ impl<S: Copy> Owned<S> {
         (map, refused)
     }
 
-    /// The surface held for `target`.
-    pub fn surface(&self, target: TargetRef) -> Option<S> {
-        self.held.get(&target).map(|(_, s)| *s)
+    /// The surface held for `role`.
+    pub fn surface(&self, role: TargetRole) -> Option<S> {
+        self.held.get(&role).map(|(_, s)| *s)
+    }
+
+    /// The surface each of `declared` is on, by its role, held now; the
+    /// first that has none, named.
+    pub fn map(&self, declared: &[Declared]) -> Result<HashMap<TargetRef, S>, String> {
+        let mut map = HashMap::new();
+        for d in declared {
+            let role = d.role.ok_or_else(|| format!("{:?} has no role", d.target))?;
+            let surface = self.surface(role).ok_or_else(|| format!("{:?} ({role:?}) is not held", d.target))?;
+            map.insert(d.target, surface);
+        }
+        Ok(map)
     }
 
     /// Releases every surface (a device reset, the renderer's end).
@@ -327,6 +384,85 @@ impl<S: Copy> Owned<S> {
         ];
         out.extend(self.refused.iter().map(|(r, n)| (format!("graph_targets_refused_{}", r.name()), *n)));
         out
+    }
+}
+
+/// The backend's surfaces as the graph's allocator.
+struct Make<'a, B>(&'a mut B);
+
+impl<B: Backend> Allocate for Make<'_, B> {
+    type Surface = B::Surface;
+    fn allocate(&mut self, _: TargetRole, shape: Shape) -> Option<B::Surface> {
+        let format = D3DFormat::from_raw(shape.format)?;
+        let (w, h) = shape.size;
+        let made = if shape.texture { self.0.create_texture_target(format, w, h) } else { self.0.create_surface(format, w, h, shape.depth) };
+        made.ok()
+    }
+    fn release(&mut self, surface: B::Surface) {
+        // A surface is released when nothing draws on it; a refusal is
+        // the backend's and leaves nothing to do.
+        let _ = self.0.destroy_surface(surface);
+    }
+}
+
+/// The frame graph's store on the render thread
+/// (`d3d::threaded::owner::TargetStore`): every render target and depth
+/// surface the device makes is one of [`Owned`]'s, by role. The device's
+/// handles for a role come and go (`claims`, made and given back); a
+/// surface a new shape replaces while a handle to it is live is retired
+/// and freed when that handle comes back, since commands queued before
+/// the new one can still draw on it.
+pub struct Store<B: Backend> {
+    owned: Owned<B::Surface>,
+    claims: BTreeMap<TargetRole, u32>,
+    retired: Vec<B::Surface>,
+}
+
+impl<B: Backend> Default for Store<B> {
+    fn default() -> Self {
+        Self { owned: Owned::default(), claims: BTreeMap::new(), retired: Vec::new() }
+    }
+}
+
+impl<B: Backend> Store<B> {
+    /// The graph's targets: [`Owned`].
+    pub fn owned(&self) -> &Owned<B::Surface> {
+        &self.owned
+    }
+}
+
+impl<B: Backend> d3d::threaded::owner::TargetStore<B> for Store<B> {
+    fn target(&mut self, backend: &mut B, target: d3d::TargetDesc) -> Result<B::Surface, String> {
+        let role = target.role;
+        let taken = self
+            .owned
+            .take(role, Shape::of_desc(&target), &mut Make(backend))
+            .ok_or_else(|| format!("graph targets: {role:?} refused at {}x{} {:?}", target.width, target.height, target.format))?;
+        if let Taken::Made { replaced: Some(old), .. } = taken {
+            if self.claims.get(&role).copied().unwrap_or(0) == 0 {
+                Make(backend).release(old);
+                self.owned.released += 1;
+            } else {
+                self.retired.push(old);
+            }
+        }
+        *self.claims.entry(role).or_default() += 1;
+        Ok(*taken.surface())
+    }
+
+    fn released(&mut self, backend: &mut B, role: TargetRole, surface: B::Surface) -> Result<(), String> {
+        let claims = self.claims.entry(role).or_default();
+        *claims = claims.checked_sub(1).ok_or_else(|| format!("graph targets: {role:?} given back unmade"))?;
+        if let Some(i) = self.retired.iter().position(|s| *s == surface) {
+            self.retired.swap_remove(i);
+            self.owned.released += 1;
+            backend.destroy_surface(surface)?;
+        }
+        Ok(())
+    }
+
+    fn map(&self, frame: &ReplayFrame) -> Result<HashMap<TargetRef, B::Surface>, String> {
+        self.owned.map(&declare(frame))
     }
 }
 
@@ -382,13 +518,13 @@ mod tests {
     struct Pool {
         next: u32,
         live: Vec<u32>,
-        refuse: Option<TargetRef>,
+        refuse: Option<TargetRole>,
     }
 
     impl Allocate for Pool {
         type Surface = u32;
-        fn allocate(&mut self, target: TargetRef, _: Shape) -> Option<u32> {
-            if self.refuse == Some(target) {
+        fn allocate(&mut self, role: TargetRole, _: Shape) -> Option<u32> {
+            if self.refuse == Some(role) {
                 return None;
             }
             self.next += 1;
@@ -408,7 +544,8 @@ mod tests {
     fn the_graph_owns_its_targets_across_frames() {
         let colour = AuxTarget { width: 640, height: 480, depth: false, format: D3DFormat::LinA8R8G8B8 as u32 };
         let depth = AuxTarget { depth: true, format: D3DFormat::LinD24S8 as u32, ..colour };
-        let mut frame = ReplayFrame { presented: TargetRef::SceneColour, colour: Some(colour), depth: Some(depth), ..Default::default() };
+        let roles = vec![(TargetRef::SceneColour, TargetRole::Display(0)), (TargetRef::SceneDepth, TargetRole::DisplayDepth)];
+        let mut frame = ReplayFrame { presented: TargetRef::SceneColour, colour: Some(colour), depth: Some(depth), roles, ..Default::default() };
         let clear = Clear { color: Some([0.; 4]), depth: Some(1.), stencil: Some(0) };
         frame.ops = vec![(at(Slot::Opaque), ReplayOp::Clear { colour: TargetRef::SceneColour, depth: TargetRef::SceneDepth, clear })];
         let (mut owned, mut pool) = (Owned::default(), Pool::default());
@@ -425,9 +562,9 @@ mod tests {
         assert_eq!((owned.released, pool.live.len()), (1, 2), "the old colour freed");
         let menu = ReplayFrame::default();
         assert!(owned.own(&declare(&menu), &mut pool).0.is_empty());
-        assert_eq!(owned.surface(TargetRef::SceneDepth), Some(first[&TargetRef::SceneDepth]), "a frame that declares none drops none");
+        assert_eq!(owned.surface(TargetRole::DisplayDepth), Some(first[&TargetRef::SceneDepth]), "a frame that declares none drops none");
         frame.colour = None;
-        pool.refuse = Some(TargetRef::SceneDepth);
+        pool.refuse = Some(TargetRole::DisplayDepth);
         frame.depth = Some(AuxTarget { width: 320, ..depth });
         let (map, refused) = owned.own(&declare(&frame), &mut pool);
         assert_eq!(refused, [(TargetRef::SceneColour, Refusal::Unsized), (TargetRef::SceneDepth, Refusal::Allocation)]);
@@ -436,6 +573,63 @@ mod tests {
         assert_eq!((c["graph_targets_refused_unsized"], c["graph_targets_refused_allocation"]), (1, 1));
         owned.release_all(&mut pool);
         assert!(pool.live.is_empty());
+    }
+
+    /// `Aux(0)` is the freeze frame's target in one frame and the post
+    /// colour's in the next: each role keeps its own surface, whichever
+    /// number names it, and a target with no role is refused, not stood in
+    /// for.
+    #[test]
+    fn a_role_keeps_its_surface_when_its_number_moves() {
+        let side = AuxTarget { width: 320, height: 240, depth: false, format: D3DFormat::LinA8R8G8B8 as u32 };
+        let frame = |roles: [TargetRole; 2]| {
+            let mut f = ReplayFrame { aux: vec![side, side], ..Default::default() };
+            f.ops = vec![(at(Slot::AfterPost), ReplayOp::Copy { from: TargetRef::Aux(0), to: TargetRef::Aux(1) })];
+            f.roles = vec![(TargetRef::Aux(0), roles[0]), (TargetRef::Aux(1), roles[1])];
+            f
+        };
+        let (freeze, post) = (TargetRole::Game(0x12), TargetRole::Game(1));
+        let (mut owned, mut pool) = (Owned::default(), Pool::default());
+        let (a, _) = owned.own(&declare(&frame([freeze, post])), &mut pool);
+        let (b, _) = owned.own(&declare(&frame([post, freeze])), &mut pool);
+        assert_eq!(b[&TargetRef::Aux(0)], a[&TargetRef::Aux(1)], "the post colour's surface");
+        assert_eq!(b[&TargetRef::Aux(1)], a[&TargetRef::Aux(0)], "the freeze frame's surface");
+        assert_eq!((owned.made, owned.kept), (2, 2));
+        assert_eq!(owned.map(&declare(&frame([post, freeze]))).unwrap(), b);
+        let mut unnamed = frame([post, freeze]);
+        unnamed.roles.pop();
+        let (map, refused) = owned.own(&declare(&unnamed), &mut pool);
+        assert_eq!(refused, [(TargetRef::Aux(1), Refusal::Unroled)]);
+        assert!(!map.contains_key(&TargetRef::Aux(1)));
+        assert!(owned.map(&declare(&unnamed)).unwrap_err().contains("no role"));
+    }
+
+    /// The device's handles for a role through the store: the same shape
+    /// is the same surface; a new shape while the old handle is live
+    /// retires the old surface until that handle comes back, and with no
+    /// live handle frees it at once.
+    #[test]
+    fn the_store_frees_a_replaced_surface_when_its_handle_comes_back() {
+        use d3d::threaded::owner::TargetStore;
+        use d3d::{Recorded, RecordingBackend};
+        let desc = |width| d3d::TargetDesc {
+            role: TargetRole::Game(1), format: D3DFormat::LinA8R8G8B8, width, height: 240, depth: false, texture: false,
+        };
+        let destroyed = |b: &RecordingBackend| b.calls.iter().filter(|c| matches!(c, Recorded::DestroySurface { .. })).count();
+        let (mut store, mut gpu) = (Store::<RecordingBackend>::default(), RecordingBackend::new());
+        let first = store.target(&mut gpu, desc(320)).unwrap();
+        store.released(&mut gpu, TargetRole::Game(1), first).unwrap();
+        assert_eq!(store.target(&mut gpu, desc(320)).unwrap(), first, "a role's surface outlives its handle");
+        let second = store.target(&mut gpu, desc(640)).unwrap();
+        assert_ne!(second, first);
+        assert_eq!(destroyed(&gpu), 0, "the old handle is live: retired");
+        store.released(&mut gpu, TargetRole::Game(1), first).unwrap();
+        assert_eq!(destroyed(&gpu), 1, "freed when it comes back");
+        store.released(&mut gpu, TargetRole::Game(1), second).unwrap();
+        let third = store.target(&mut gpu, desc(160)).unwrap();
+        assert_eq!(destroyed(&gpu), 2, "no live handle: freed at once");
+        assert_eq!(store.owned().surface(TargetRole::Game(1)), Some(third));
+        assert!(store.released(&mut gpu, TargetRole::Game(2), third).is_err(), "a role never made");
     }
 
     /// A depth clear that leaves the stencil loads the depth; a seeded

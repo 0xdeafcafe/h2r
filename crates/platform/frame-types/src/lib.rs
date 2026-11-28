@@ -15,6 +15,6 @@ pub mod keys;
 pub use camera::{Camera, D24_SCALE, Mat4, RenderCamera, mul, transform, w_depth};
 pub use carried::{
     AuxTarget, CameraUse, Carried, CarriedOp, CarriedSummary, GuestOp, OpCounts, Readback, SideTarget, Slot, SlotAt,
-    SlotEvent, SlotTracker, TargetRef, TargetSample,
+    SlotEvent, SlotTracker, TargetRef, TargetRole, TargetSample,
 };
 pub use keys::{InstanceKey, ViewKey, ViewKind};

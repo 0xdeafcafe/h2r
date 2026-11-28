@@ -865,6 +865,15 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn destroy_surface(&mut self, surface: Self::Surface) -> Result<(), String> {
         self.inner.destroy_surface(surface)
     }
+    fn create_target(&mut self, target: d3d::TargetDesc) -> Result<Self::Surface, String> {
+        let r = self.inner.create_target(target);
+        self.line(format_args!("create_target {target:?} -> {r:?}"));
+        r
+    }
+    fn release_target(&mut self, role: frame_scene::TargetRole, surface: Self::Surface) -> Result<(), String> {
+        self.line(format_args!("release_target {role:?} {surface:?}"));
+        self.inner.release_target(role, surface)
+    }
     // Every provided method is forwarded: a default here would silently
     // replace the inner backend's (a frame-buffer snapshot would skip draws).
     fn snapshot_surface(

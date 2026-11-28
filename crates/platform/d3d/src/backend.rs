@@ -1482,6 +1482,18 @@ pub(crate) fn read_frame_probe<B: Backend + ?Sized>(
     backend.read_surface(surface, D3DFormat::LinA8R8G8B8, width, height, GuestLayoutKind::Linear { pitch })
 }
 
+/// A target the device asks for by role ([`Backend::create_target`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TargetDesc {
+    pub role: frame_types::TargetRole,
+    pub format: D3DFormat,
+    pub width: u32,
+    pub height: u32,
+    pub depth: bool,
+    /// A texture's level bound as a target (sampled in place).
+    pub texture: bool,
+}
+
 /// Host rendering for the device.
 /// `Send` (with its handles) so a device can sit behind the runtime's
 /// `Send + Sync` override handlers.
@@ -2042,6 +2054,24 @@ pub trait Backend: Send {
         height: u32,
     ) -> Result<Self::Surface, String> {
         self.create_surface(format, width, height, false)
+    }
+    /// A render target or depth surface of the game's, made by its role
+    /// (docs/graphics/retire-d3d-display.md, "The graph's targets"): the
+    /// threaded backend's worker asks the frame graph's store for it, so
+    /// one role keeps one surface across frames. `texture` is a level of a
+    /// texture bound as a target. A backend with no store makes the
+    /// surface itself, as [`create_surface`](Self::create_surface) and
+    /// [`create_texture_target`](Self::create_texture_target) do.
+    fn create_target(&mut self, target: TargetDesc) -> Result<Self::Surface, String> {
+        let TargetDesc { format, width, height, depth, texture, .. } = target;
+        if texture { self.create_texture_target(format, width, height) } else { self.create_surface(format, width, height, depth) }
+    }
+    /// Gives back a surface made by [`create_target`](Self::create_target).
+    /// The handle must not be used again; the store may keep the surface
+    /// for the role's next target of the same shape.
+    fn release_target(&mut self, role: frame_types::TargetRole, surface: Self::Surface) -> Result<(), String> {
+        let _ = role;
+        self.destroy_surface(surface)
     }
     /// Whether [`surface_texture`](Self::surface_texture) works. A device
     /// on a backend that can sample its render-to-texture surfaces keeps

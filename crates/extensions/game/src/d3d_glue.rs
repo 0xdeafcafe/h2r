@@ -1020,6 +1020,9 @@ where
             let mut display = d3d::ThreadedBackend::new(backend)?
                 .with_synchronous_presents(synchronous_presents)
                 .with_frame_owner(scenes.owner)
+                // The game's targets are the frame graph's, by role
+                // (docs/graphics/retire-d3d-display.md, "The graph's targets").
+                .with_target_store(Box::new(native_render::frame_graph::targets::Store::<B>::default()))
                 .with_present_window(window.clone());
             if let Some(rate) = scenes.display_rate {
                 display = display.with_display_rate(rate);
@@ -1282,6 +1285,12 @@ impl d3d::backend::Backend for Headless {
             !matches!(c, d3d::backend::Recorded::Surface { id, .. } if *id == surface)
         });
         Ok(())
+    }
+    fn create_target(&mut self, target: d3d::TargetDesc) -> Result<u32, String> {
+        self.0.create_target(target)
+    }
+    fn release_target(&mut self, _role: frame_scene::TargetRole, surface: u32) -> Result<(), String> {
+        self.destroy_surface(surface)
     }
     fn upload_texture(&mut self, texture: &gfx::texture::DecodedTexture) -> Result<u32, String> {
         let r = self.0.upload_texture(texture);
@@ -1762,9 +1771,14 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
     } else {
         UploadPolicy::Tracked
     };
+    // With the native renderer every render target and depth surface is
+    // made by its role (docs/graphics/retire-d3d-display.md, "The graph's
+    // targets").
+    let native = hooks::switches::native_render_on(&hooks::Switches::from_env().unwrap_or_default());
     let cfg = DeviceConfig {
         upload,
         nv2a_window: Some(NV2A_BASE),
+        roles: native.then_some(render_bridge::native_targets::role as fn(u32, u32) -> Option<frame_scene::TargetRole>),
         ..DeviceConfig::halo2(
             GuestRange {
                 addr: PUSH_BASE,
