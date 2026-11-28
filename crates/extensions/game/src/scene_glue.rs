@@ -118,7 +118,6 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
         .chain(d3d::gap::counters())
         .chain(render_bridge::native_layers::counters())
         .chain(render_bridge::native_hud::kept::counters())
-        .chain(render_bridge::native_hud::fade::counters())
         .chain(render_bridge::native_targets::counters())
         .chain(render_bridge::native_flare_query::counters())
         .chain(render_bridge::native_flare_draw::counters())

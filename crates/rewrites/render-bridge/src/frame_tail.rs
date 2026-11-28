@@ -194,7 +194,7 @@ pub fn setup(mem: &dyn GuestMemory) -> Result<Setup, &'static str> {
 
 /// Target 0's size as `0x0001dd60` gives it: the table's, or 640 by 480
 /// with no surface or a hidden size.
-fn target0_size(mem: &dyn GuestMemory) -> Result<(u32, u32), MemFault> {
+pub(crate) fn target0_size(mem: &dyn GuestMemory) -> Result<(u32, u32), MemFault> {
     if mem.u32(TARGETS + 0x88)? != 0 && mem.u8(TARGETS + 0x95)? == 0 {
         return Ok((mem.u32(TARGETS + 0x80)?, mem.u32(TARGETS + 0x84)?));
     }

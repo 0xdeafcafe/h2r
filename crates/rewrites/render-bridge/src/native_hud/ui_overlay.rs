@@ -305,10 +305,16 @@ pub fn screen_rect(mem: &dyn GuestMemory) -> Option<[i16; 4]> {
     Some([word(0)?, word(1)?, word(2)?, word(3)?])
 }
 
+/// Where a list class the host registered at run time puts its scroll
+/// arrows (`Host::ui_list_arrows`): by its vtable and its rectangle's
+/// height, the up and down arrows' offsets from the list's animated left
+/// and bottom; `None` for a class the host does not know.
+pub type ListArrows<'a> = &'a dyn Fn(u32, i32) -> Option<[[i16; 2]; 2]>;
+
 /// Read one sorted entry in the pixel order of its virtual draw.
 /// `viewport` is the list's user argument, the view a bitmap widget's draw
 /// places it in.
-fn entry_frame(mem: &dyn GuestRead, e: &ListEntry, viewport: u32) -> Result<UiFrame, MenuRefusal> {
+fn entry_frame(mem: &dyn GuestRead, e: &ListEntry, viewport: u32, arrows: ListArrows) -> Result<UiFrame, MenuRefusal> {
     use walk::draws;
     let draw = walk::widget_draw(mem, e.widget)?;
     let mut frame = UiFrame::default();
@@ -326,7 +332,7 @@ fn entry_frame(mem: &dyn GuestRead, e: &ListEntry, viewport: u32) -> Result<UiFr
             text::read_widget(mem, e.widget, e.depth, draw == draws::BUTTON)?
         }
         draws::LIST => {
-            frame.draws.extend(list::arrows(mem, e.widget, viewport)?.into_iter().map(UiDraw::Bitmap));
+            frame.draws.extend(list::arrows(mem, e.widget, viewport, arrows)?.into_iter().map(UiDraw::Bitmap));
             return Ok(frame);
         }
         draws::MODEL => walk::read_widget_header(mem, e.widget, e.depth, model::read(mem, e.widget)?)?,
@@ -356,8 +362,8 @@ fn entry_frame(mem: &dyn GuestRead, e: &ListEntry, viewport: u32) -> Result<UiFr
 }
 
 /// List the whole entry atomically, including both art and label for buttons.
-fn part(mem: &dyn GuestRead, e: &ListEntry, viewport: u32, fonts: &dyn UiText) -> Result<Overlay, MenuRefusal> {
-    let frame = entry_frame(mem, e, viewport)?;
+fn part(mem: &dyn GuestRead, e: &ListEntry, viewport: u32, fonts: &dyn UiText, arrows: ListArrows) -> Result<Overlay, MenuRefusal> {
+    let frame = entry_frame(mem, e, viewport, arrows)?;
     let mut part = Overlay::new(walk::CANVAS);
     if walk::draw_list(&frame, fonts, &mut part)
         .iter()
@@ -372,10 +378,16 @@ fn part(mem: &dyn GuestRead, e: &ListEntry, viewport: u32, fonts: &dyn UiText) -
 /// of consecutive drawn entries, and each drawn entry the game keeps, with
 /// why. An entry outside the window is not drawn and ends no run.
 pub fn plan(mem: &dyn GuestRead, list: &UiList) -> (Claim, Vec<(u32, MenuRefusal)>) {
-    plan_with_text(mem, list, &NoText, &|_| false)
+    plan_with_text(mem, list, &NoText, &|_| false, &|_, _| None)
 }
 
-fn plan_with_text(mem: &dyn GuestRead, list: &UiList, fonts: &dyn UiText, custom: &dyn Fn(u32) -> bool) -> (Claim, Vec<(u32, MenuRefusal)>) {
+fn plan_with_text(
+    mem: &dyn GuestRead,
+    list: &UiList,
+    fonts: &dyn UiText,
+    custom: &dyn Fn(u32) -> bool,
+    arrows: ListArrows,
+) -> (Claim, Vec<(u32, MenuRefusal)>) {
     let mut runs: Vec<Run> = Vec::new();
     let mut refused = Vec::new();
     let mut open = false;
@@ -388,7 +400,7 @@ fn plan_with_text(mem: &dyn GuestRead, list: &UiList, fonts: &dyn UiText, custom
             open = false;
             continue;
         }
-        let items = match part(mem, e, list.user, fonts) {
+        let items = match part(mem, e, list.user, fonts, arrows) {
             Ok(items) => items,
             Err(MenuRefusal::Widget(Gap { draw: Unread::Shader, .. })) => {
                 // A shader bitmap: the game draws it, and its quad is drawn
@@ -512,7 +524,8 @@ pub fn run_part(frame: u32, run: usize, mem: &dyn GuestMemory) -> Option<Overlay
         if host.ui_custom_widget(mem, entry.widget) {
             return None;
         }
-        let items = part(&Ro(mem), &entry, list.user, fonts.as_deref().unwrap_or(&NoText)).ok()?;
+        let arrows = |vtable, height| host.ui_list_arrows(vtable, height);
+        let items = part(&Ro(mem), &entry, list.user, fonts.as_deref().unwrap_or(&NoText), &arrows).ok()?;
         refreshed.append(&items).ok()?;
     }
     Some(refreshed)
@@ -598,7 +611,8 @@ pub(super) fn check_frame(mem: &dyn GuestMemory, root: u32) -> Result<(), MenuRe
 pub(super) fn claim_list(mem: &dyn GuestMemory, list: &UiList, host: &dyn super::Host) -> Claim {
     let fonts = host.ui_text(mem);
     let custom = |widget| host.ui_custom_widget(mem, widget);
-    let (claim, refused) = plan_with_text(&Ro(mem), list, fonts.as_deref().unwrap_or(&NoText), &custom);
+    let arrows = |vtable, height| host.ui_list_arrows(vtable, height);
+    let (claim, refused) = plan_with_text(&Ro(mem), list, fonts.as_deref().unwrap_or(&NoText), &custom, &arrows);
     for (_, why) in refused {
         why.count();
     }
@@ -764,7 +778,7 @@ mod tests {
     fn a_custom_picture_splits_the_run_even_when_its_guest_draw_has_no_pixels() {
         let mut mem = widgets();
         mem.w(0x1200, NONE_VTABLE);
-        let (claim, refused) = plan_with_text(&mem, &list(0x8000, [0.0; 5]), &NoText, &|w| w == 0x1200);
+        let (claim, refused) = plan_with_text(&mem, &list(0x8000, [0.0; 5]), &NoText, &|w| w == 0x1200, &|_, _| None);
         assert_eq!(refused, [(2, MenuRefusal::from(Gap::class("draw_custom")))]);
         assert_eq!(claim.run_of, [Some(0), Some(0), None, Some(1), Some(1)]);
     }

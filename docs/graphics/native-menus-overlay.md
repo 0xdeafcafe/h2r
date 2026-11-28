@@ -52,7 +52,15 @@ A shader bitmap's draw (`0x002b11c9`) sets its combiner and constants at its qua
 Every other draw is the game's, counted by what is not read (`render.stats`, `native_ui_overlay_menu_*`), except these, which the class readers in `render_bridge::native_hud::ui_overlay` list:
 
 - Text and button labels use the live UTF-16 interface, font, justification, colour, clipping rectangle, shadow and flash. The shaper uses the game font's advances and kerning to wrap and justify each line. Each pass fills the same glyph pages as the HUD before the guest draw is skipped ([text draw and interface reads](notes/2026-11-24-menu-text.md)).
-- The substitution pass `0x0022d2ee` runs in Rust over a copy of the string (`text::substitute`): each named sequence of `0x0044a3f0` becomes its unit, the last match at a position winning, and the scan moves one unit on. A private-use unit with no handler in `0x00470204` stays and is laid out as a character (`UiText::shape_buttons`, the scanner's type 4 at `0x0013f5a0`).
+- The substitution pass `0x0022d2ee` runs in Rust over a copy of the string (`text::substitute`): each named sequence of `0x0044a3f0` becomes its unit, the last match at a position winning, and the scan moves one unit on. A private-use unit with no handler in `0x00470204` stays and is laid out as a character (`UiText::shape_buttons`, the scanner's type 4 at `0x0013f5a0`). A unit with a handler is replaced by what the handler writes, the named sequences not tried (`0x0022d43d`, `text::tokens`):
+
+  | Body | Units | Writes |
+  |---|---|---|
+  | `0x0022dcbc` | `0xe446` to `0xe455`, `0xe45e` (the actions, dual fire) | the glyph of the button the UI user's controller layout (`0x0051ea18`, by the profile's `+0x24`) binds the action to: `0xe100` plus 0 to 13, an animated stick for 14 and 15, else `?`; `?` with no user, nothing with no layout |
+  | `0x0022df04` | `0xe456`, `0xe457` (move, look) | `0xe110` or `0xe111` by the layout's sticks (`+0x18`) |
+  | `0x0022e1ed` | `0xe459`, `0xe45a` (the animated sticks) | one of three frames by the UI clock modulo 500 |
+
+  The other 40 bodies (65 units: names, gamertags, Live, the variant, the countdowns, the clock, storage counts) keep the text the game's.
 - The line renderer `0x0013f0e0` runs in Rust (`ui::TextLayout`, `game::ui_kit::preview::text_layout::segments`, `UiText::shape_layout`):
 
   | Input | Where it comes from | What it does |
@@ -72,7 +80,7 @@ Every other draw is the game's, counted by what is not read (`render.stats`, `na
 
   A step that does not read or write counts `native_ui_overlay_menu_reveal_unwritten`.
 - Upper case (interface flag bit 1, `0x0013fae0`, `text::upper`) maps `a` to `z`, `é` to `É` and `ó` to `Ó`, and leaves every other unit.
-- The list emits scroll arrows using the bound first and last rows, live row occupancy and the active skin. The sorted children carry the row layout and animated highlight. A button's bitmap uses its focus state and precedes its label in the same claim ([list and button draws](notes/2026-11-24-menu-list-button.md)).
+- The list emits scroll arrows using the bound first and last rows, live row occupancy and the active skin. A list class registered at run time (`game::list_class`) has its arrows at the offsets its `ArrowPlace` gives for the list's height (`Host::ui_list_arrows`, `list_class::arrows_at`), as the `list-scroll-arrows` hook moves the game's quads. The sorted children carry the row layout and animated highlight. A button's bitmap uses its focus state and precedes its label in the same claim ([list and button draws](notes/2026-11-24-menu-list-button.md)).
 - An idle model scene or a selection without objects or lights can produce an empty claim. At the nested camera call an active scene records its viewport, camera and ordered object handles as a `ModelView`, and its geometry still draws through the model material hooks ([model selection and camera](notes/2026-11-24-menu-model-selection.md)).
 
 ### What stays with the guest
@@ -97,14 +105,14 @@ Each text, class and model refusal is a `ui_overlay::Gap`: the draw and the firs
 | `text_glyphs` | glyph output is off, or no glyph ring or bitmap is active |
 | `text_style` | interface flags past bit 2, or its `+0x16`, `+0x18`, `+0x20` overrides |
 | `text_tab_overrun` | a tab count past the interface's eight stops: retail copies past its stack buffer |
-| `text_token` | a private-use unit whose handler writes text at the draw (a name, a clock) |
+| `text_token` | a token whose handler is not ported: a name, a gamertag, Live, the variant, a countdown, the clock, a storage count |
 | `text_offset` | an animated offset out of range |
 | `text_justify`, `text_colour`, `text_font` | an unknown justification; a channel outside 0 to 1; a font id past 16 bits |
 | `list_number`, `list_tag`, `list_globals`, `list_screen`, `list_tree`, `list_rows`, `list_pane` | the arrows' or the art's lookups: a number not finite, no tag, no interface globals, the screen not found, a parent chain or row chain that does not end, a row table the helper does not walk, a pane index below -1 |
 | `button_focus`, `button_class` | the focus accessors or the user's channel not retail's; a button draw slot not retail's |
 | `art_viewport`, `art_image`, `art_texture`, `art_scale`, `art_offset` | the art's viewport not the full canvas, image out of range or empty, image not resident, projection not finite, offset out of range |
-| `draw_class`, `draw_runtime_class`, `draw_custom` | a draw no reader knows; a vtable outside the image's UI tables; a host-drawn picture (`Host::ui_custom_widget`) |
-| `model_view` | an active model scene: no stage draws a planned `ModelView` yet ([Model views](#model-views)) |
+| `draw_class`, `draw_runtime_class`, `draw_custom` | a draw no reader knows; a vtable outside the image's UI tables that the host does not place arrows for (`Host::ui_list_arrows`); a host-drawn picture (`Host::ui_custom_widget`) |
+| `model_view` | an active model scene: the overlay pass draws no `ModelView` (`native_render::overlay`, `refused_model_view`) |
 | `model_lights`, `model_names`, `model_name`, `model_rows` | a selection with lights, more than 32 names, a name with no terminator, a scenario with more rows than an `i16` |
 
 ## Bitmap widgets
@@ -155,7 +163,7 @@ Each of these draws is taken at its producer ([native-ui-producers.md](native-ui
 
 | Draw | Detail (Code, `h2 disasm`) |
 |---|---|
-| Fade `0x00040890` | Its mode `[0x00485870]` (0 draws nothing) picks one of six cases through the table at `0x00040dc0`. The colour at `0x00485878` and its complement, each times the fraction at `0x00485874`, are packed (`0x00131e50`). Mode 1 blends one with one minus source alpha, added. Mode 2 is one with one, reverse-subtracted. Modes 3 to 5 are one minus the destination colour with one minus the constant colour, by maximum, minimum and addition, the packed colour as `BLENDCOLOR`. Mode 6 is one with one minus the constant colour, added, the packed complement as `BLENDCOLOR`. Each case writes its combiner words into the PSDEF at `0x00484f68` before the fan at `0x00040d86`. The overlay item carries the constant (`OverlayItem::blend_constant`), which the pass sets per batch (`fade_quads`). A proven mode is made in Rust instead ([The fade in Rust](#the-fade-in-rust)) |
+| Fade `0x00040890` | Its mode `[0x00485870]` (0 draws nothing) picks one of six cases through the table at `0x00040dc0`. The colour at `0x00485878` and its complement, each times the fraction at `0x00485874`, are packed (`0x00131e50`). Mode 1 blends one with one minus source alpha, added. Mode 2 is one with one, reverse-subtracted. Modes 3 to 5 are one minus the destination colour with one minus the constant colour, by maximum, minimum and addition, the packed colour as `BLENDCOLOR`. Mode 6 is one with one minus the constant colour, added, the packed complement as `BLENDCOLOR`. Each case writes its combiner words into the PSDEF at `0x00484f68` before the fan at `0x00040d86`. The overlay item carries the constant (`OverlayItem::blend_constant`), which the pass sets per batch (`fade_quads`). The guest body never runs: Rust makes every call ([The fade in Rust](#the-fade-in-rust)) |
 | Bars `0x00052ce7`, in `0x00052040` | Menu fade rectangles, cinematic and progress bars and split-screen dividers. A record with no image writes no combiner (`0x00052857` skips to the upload), so the PSDEF at `0x00484f68` is the one the last record with an image wrote; the snapshot at the draw holds that definition, so the bar inherits it as the game's does (`bar_quads`). A fan, quad list or polygon is taken as drawn, a strip with its corners put round the quad (`hud_overlay::corner_order`, [retire-d3d-menus.md](retire-d3d-menus.md#bars)) |
 | Loading screen `0x000289e0` | Its background and sweep bitmaps at `0x0002ae60` and its spinner at `0x0002a1f4`, each with its bound bitmap (`loading_quads`) |
 
@@ -163,7 +171,7 @@ The typed `UiDraw::Fade`, `Rect` and `Bitmap` of `scene_extract::ui` are not fil
 
 ### The fade in Rust
 
-A proven fade's body does not run (`native_hud::fade`). At its entry Rust reads the mode, the fraction, the colour and the view's rectangle (`[0x00485648]`: top, left, bottom, right as `i16`), packs the colour and its complement as `0x00131e50` does (`fade::pack`: each channel times 255.0, rounded to nearest with ties to even, alpha in the top byte), writes the PSDEF words of the mode's case to `0x00484f68` (`fade::psdef`) and returns. The overlay gets one `Fill` in slot `Fade`, between the HUD's items and the UI's (`fade::plan`). Mode 0 draws nothing and returns at once.
+The fade's body never runs (`native_hud::fade`). At its entry Rust reads the mode, the fraction, the colour and the view's rectangle (`[0x00485648]`: top, left, bottom, right as `i16`), packs the colour and its complement as `0x00131e50` does (`fade::pack`: each channel times 255.0, rounded to nearest with ties to even, alpha in the top byte), writes the PSDEF words of the mode's case to `0x00484f68` (`fade::psdef`) and returns. The overlay gets one `Fill` in slot `Fade`, between the HUD's items and the UI's (`fade::plan`). Mode 0 draws nothing and returns at once.
 
 | Mode | Blend (source, dest, op) | Constant | Stage 0 inputs (alpha, colour) |
 |---|---|---|---|
@@ -176,32 +184,7 @@ A proven fade's body does not run (`native_hud::fade`). At its entry Rust reads 
 
 The cut makes no render-state, texture, program or draw call. The device and the game's state cache (`0x004b81fc`, and D3D's mirror `0x00407498`) keep their values, so they still agree. The PSDEF is game memory, and a bar with no image draws with it, so the cut writes it.
 
-A mode is cut only after a guest call of that mode has been checked and matched. After that, one call in 64 runs the body.
-
-A checked call's fan is taken on the overlay as usual (`hud_overlay::draw_screen` hands it to `fade::guest_drew`). At the body's return (`0x00040dbf`) its PSDEF words, target, clip, blend, constant, combiner and colour writes are compared with the cut's. Its corners must also cover the clip. A difference sends every later call to the body for the session.
-
-Counters in `render.scene`: `fade_{calls,cut,checked}`, and `scene_kept_fade_<cause>` for a call whose body ran (`fallback`, `mode`, `rect`, `scene`, `target`, `append`, `uncaptured` when the overlay did not take a checked fan, `mismatch`).
-
-## Model views
-
-An active model scene's `ModelView` item carries the camera its view call `0x0002c560` takes and its viewport as the clip. The overlay plan turns it into the render camera record that call fills, and keeps it between the batches in list order, as a blur (`native_render::model_view::PlanModelView`, `OverlayPlan::model_views`). The batch after it does not merge back across it.
-
-| Record field | From |
-|---|---|
-| position, forward, up | the widget's centre and axes (`scene_extract::ui::MODEL_FORWARD`, `MODEL_UP`) |
-| vertical FOV | the clamped FOV the draw passes |
-| viewport (top, left, bottom, right) | the call's left, top, right, bottom: the item's clip |
-| near, far | `0x00467014`, `0x00467018` (`engine::ui_model::VIEW_NEAR`, `VIEW_FAR`), not the game view's |
-
-`0x0002c560` copies the record whole to the render camera `0x004b9da0` and builds its projection at `0x004b9e14`. The plan does not read that projection: the lens is `RenderCamera::projection`'s from the FOV and viewport. `model_view::view_inputs` gives the objects' vertex programs the camera's view-projection rows and clip range, with `c[10]`, `c[11]` mapping clip space to the viewport rather than the canvas. The scissor is the viewport in the target's pixels.
-
-| Counter (`native_ui_overlay_*`) | Counts |
-|---|---|
-| `model_views` | `ModelView` items |
-| `refused_model_view_camera` | a view whose record is not a camera (`model_view_camera`) or whose viewport has no `i16` edges or target pixels (`model_view_clip`) |
-| `refused_model_view` | a planned view: no stage draws one yet |
-
-The widget stays the guest's (`model_view`) until the object stage draws planned views into the overlay's target. Tests: `native_render::model_view::tests::a_widgets_camera_is_the_record_the_guest_fills`, `the_scissor_is_the_records_viewport_in_the_targets_pixels`, `the_view_constants_put_the_axis_on_the_viewports_centre`, `native_render::overlay::tests::a_blur_splits_the_batches_and_carries_its_steps_as_fractions`.
+The overlay target is the scene overlay's, or target 0's size (`0x0001dd60`) when the overlay holds nothing yet. A call the cut does not make panics with its cause: `fade: mode` (past the table), `rect` (an empty or off-screen view), `no scene being built`, `target 0's size`, `PSDEF unwritable`, `append`.
 
 ## The blur under a dialog
 

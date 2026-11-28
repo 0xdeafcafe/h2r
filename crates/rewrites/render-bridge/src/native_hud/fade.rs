@@ -1,7 +1,8 @@
 //! The fade `0x00040890` made in Rust (native-only plan, `nor-10c`;
-//! docs/graphics/native-menus-overlay.md, "The fade in Rust").
+//! docs/graphics/native-menus-overlay.md, "The fade in Rust"). The guest
+//! body never runs.
 //!
-//! | Guest | Cut |
+//! | Guest | Rust |
 //! |---|---|
 //! | the body's mode test (`[0x00485870]` 0: nothing drawn) | the same test, then `ret` |
 //! | the two packed colours (`0x00131e50`), the blend and its constant, the combiner words written to the PSDEF at `0x00484f68`, the fan `0x00040d86` | [`read`], [`psdef`] written to `0x00484f68` as the body writes it, and one [`frame_scene::OverlayKind::Fill`] in slot `Fade` ([`plan`]) appended to the scene's overlay |
@@ -10,25 +11,11 @@
 //! the game's state cache (`0x004b81fc`, D3D's mirror `0x00407498`) both
 //! keep their values, so they stay in step. The PSDEF is the game's own
 //! word block, which a bar with no image draws with (`0x00052857`), so the
-//! cut writes it.
-//!
-//! The arm: a mode is cut only once a guest call of that mode has been
-//! compared and matched, and one call in [`CHECK_EVERY`] after that runs
-//! the body too. A checked call runs the guest body; its fan is taken on
-//! the overlay as before ([`guest_drew`]), and at the body's return
-//! ([`returned`]) its PSDEF words and its item are compared with the
-//! cut's. A difference sends every later call to the body for the
-//! session, counted `scene_kept_fade_mismatch`; a call the cut does not
-//! make runs the body, counted `scene_kept_fade_<cause>`.
-
-use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+//! cut writes it. A fade the cut cannot make panics, named
+//! (`fade: <cause>`).
 
 use engine::memory::GuestMemory;
-use frame_scene::{
-    ClipRect, Overlay, OverlayBlend, OverlayItem, OverlayTexture, Program, ViewSlot,
-};
+use frame_scene::{ClipRect, Overlay, OverlayBlend, OverlayItem, Program, ViewSlot};
 use hooks::Call;
 use runtime::abi::TransferAbi;
 use timeline::native::Ui;
@@ -50,8 +37,6 @@ pub const PSDEF: u32 = 0x0048_4f68;
 pub const PSDEF_WORDS: usize = 60;
 /// The highest mode the jump table `0x00040dc0` names.
 pub const MODES: u32 = 6;
-/// After a mode is proven, one call in this many runs the body too.
-pub const CHECK_EVERY: u64 = 64;
 
 /// What one fade call draws, from the words the body reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,7 +69,7 @@ pub fn pack(channels: [f32; 4], scale: f32) -> u32 {
 }
 
 /// The fade the body would draw: `None` for mode 0, which draws nothing.
-/// `Err` names why the body runs instead.
+/// `Err` names what the cut does not make.
 pub fn read(mem: &dyn GuestMemory) -> Result<Option<Fade>, &'static str> {
     let word = |a| mem.u32(a).map_err(|_| "unread");
     let mode = word(MODE)?;
@@ -210,237 +195,53 @@ pub fn plan(fade: &Fade, size: [u32; 2]) -> Result<Overlay, &'static str> {
     Ok(overlay)
 }
 
-/// Whether the guest's captured fan `guest` draws what `cut` does: the
-/// same target, clip, blend, constant, combiner and writes, no texture and
-/// no alpha test, and corners that cover the clip. The corners' colour is
-/// not compared: the combiner words, compared, read only the constant.
-pub fn compare(cut: &Overlay, guest: &Overlay) -> Result<(), String> {
-    let (Some(c), Some(g), 1) = (cut.items.first(), guest.items.first(), guest.items.len()) else {
-        return Err(format!("{} guest items", guest.items.len()));
+/// The target the cut draws over: the scene overlay's, else target 0's
+/// (`0x0001dd60`, as the frame tail reads it).
+fn target(mem: &dyn GuestMemory) -> [u32; 2] {
+    let Some(size) = crate::scene_step::with_overlay(|o| o.size) else {
+        unimplemented!("fade: no scene being built");
     };
-    let differ = |what: &str, a: &dyn std::fmt::Debug, b: &dyn std::fmt::Debug| {
-        Err(format!("{what}: cut {a:?}, guest {b:?}"))
-    };
-    if cut.size != guest.size {
-        return differ("size", &cut.size, &guest.size);
+    if size != [0, 0] {
+        return size;
     }
-    if c.clip != g.clip {
-        return differ("clip", &c.clip, &g.clip);
+    match crate::frame_tail::target0_size(mem) {
+        Ok((w, h)) if w != 0 && h != 0 => [w, h],
+        _ => unimplemented!("fade: target 0's size"),
     }
-    if c.material.blend != g.material.blend {
-        return differ("blend", &c.material.blend, &g.material.blend);
-    }
-    if c.blend_constant != g.blend_constant {
-        return differ("blend constant", &c.blend_constant, &g.blend_constant);
-    }
-    if c.shader_words != g.shader_words {
-        return differ("combiner", &c.shader_words, &g.shader_words);
-    }
-    if c.color_write != g.color_write {
-        return differ("colour write", &c.color_write, &g.color_write);
-    }
-    if g.material.texture != OverlayTexture::None || g.alpha_test.is_some() || g.alpha_kill != 0 {
-        return differ(
-            "texture or alpha test",
-            &(OverlayTexture::None, None::<()>),
-            &(g.material.texture, g.alpha_test),
-        );
-    }
-    let v = guest.vertices_of(g);
-    let lo = [0, 1].map(|k| v.iter().map(|v| v.position[k]).fold(f32::MAX, f32::min));
-    let hi = [0, 1].map(|k| v.iter().map(|v| v.position[k]).fold(f32::MIN, f32::max));
-    let k = c.clip;
-    let covers = lo[0] <= k.x as f32
-        && lo[1] <= k.y as f32
-        && hi[0] >= (k.x + k.width) as f32
-        && hi[1] >= (k.y + k.height) as f32;
-    if !covers {
-        return differ("corners", &k, &(lo, hi));
-    }
-    Ok(())
 }
 
-/// A checked call between its entry and its return.
-struct Pending {
-    fade: Fade,
-    captured: Option<Arc<Overlay>>,
-}
-
-static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
-/// Mode `m`'s guest call has been compared and matched.
-static PROVEN: [AtomicBool; MODES as usize + 1] =
-    [const { AtomicBool::new(false) }; MODES as usize + 1];
-static FALLBACK: AtomicBool = AtomicBool::new(false);
-/// The target of the last matched check: a cut's when the scene's
-/// overlay holds nothing yet.
-static TARGET: Mutex<[u32; 2]> = Mutex::new([0, 0]);
-static CALLS: AtomicU64 = AtomicU64::new(0);
-static CUT: AtomicU64 = AtomicU64::new(0);
-static CHECKED: AtomicU64 = AtomicU64::new(0);
-static KEPT: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
-
-fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-fn keep(cause: &'static str) {
-    *lock(&KEPT).entry(cause).or_default() += 1;
-}
-
-pub fn fallen_back() -> bool {
-    FALLBACK.load(Ordering::Relaxed)
-}
-
-/// The counters `render.scene` reports: `fade_{calls,cut,checked}` and
-/// `scene_kept_fade_<cause>`.
-pub fn counters() -> Vec<(String, u64)> {
-    let mut out = vec![
-        ("fade_calls".to_owned(), CALLS.load(Ordering::Relaxed)),
-        ("fade_cut".to_owned(), CUT.load(Ordering::Relaxed)),
-        ("fade_checked".to_owned(), CHECKED.load(Ordering::Relaxed)),
-    ];
-    out.extend(
-        lock(&KEPT)
-            .iter()
-            .map(|(c, n)| (format!("scene_kept_fade_{c}"), *n)),
-    );
-    out
-}
-
-/// The target a cut draws over: the scene overlay's, else the last
-/// matched check's. `None`: no scene is being built.
-fn target() -> Option<[u32; 2]> {
-    let size = crate::scene_step::with_overlay(|o| o.size)?;
-    Some(if size == [0, 0] { *lock(&TARGET) } else { size })
-}
-
-fn write_psdef(mem: &mut dyn GuestMemory, words: &[u32; PSDEF_WORDS]) -> Result<(), &'static str> {
-    for (k, w) in words.iter().enumerate() {
-        mem.set_u32(PSDEF + 4 * k as u32, *w)
-            .map_err(|_| "unwritable")?;
-    }
-    Ok(())
-}
-
-/// The hook at the fade's entry, before its scope opens: the cut's `ret`,
-/// or `None` to run the body (a checked call or one the cut refuses).
-pub(super) fn enter(c: &mut Call<'_>) -> Option<TransferAbi> {
-    let n = CALLS.fetch_add(1, Ordering::Relaxed);
-    if fallen_back() {
-        keep("fallback");
-        return None;
-    }
-    let rt = Arc::clone(c.ctx.runtime());
-    let state = read(&*rt.memory());
-    let fade = match state {
+/// The hook at the fade's entry, before its scope opens: the cut's `ret`.
+pub(super) fn enter(c: &mut Call<'_>) -> TransferAbi {
+    let rt = std::sync::Arc::clone(c.ctx.runtime());
+    let fade = match read(&*rt.memory()) {
         // The body tests its mode and returns.
-        Ok(None) => {
-            let out = c.ret(0).ok()?;
-            CUT.fetch_add(1, Ordering::Relaxed);
-            return Some(out);
-        }
+        Ok(None) => return c.ret(0).unwrap_or_else(|_| unimplemented!("fade: return")),
         Ok(Some(fade)) => fade,
-        Err(cause) => {
-            keep(cause);
-            return None;
-        }
+        Err(cause) => unimplemented!("fade: {cause}"),
     };
-    if !PROVEN[fade.mode as usize].load(Ordering::Relaxed) || n % CHECK_EVERY == 0 {
-        *lock(&PENDING) = Some(Pending {
-            fade,
-            captured: None,
-        });
-        return None;
-    }
-    let Some(size) = target() else {
-        keep("scene");
-        return None;
-    };
-    if size == [0, 0] {
-        keep("target");
-        return None;
-    }
-    let planned = match plan(&fade, size) {
-        Ok(p) => p,
-        Err(cause) => {
-            keep(cause);
-            return None;
-        }
-    };
-    let esp = c.cpu.esp;
-    let out = c.ret(0).ok()?;
-    if let Err(cause) = write_psdef(&mut *rt.memory(), &psdef(&fade)) {
-        c.cpu.esp = esp;
-        keep(cause);
-        return None;
-    }
-    // A refused append runs the body, which writes the same PSDEF.
-    if crate::scene_step::with_overlay(|o| o.append(&planned).is_ok()) != Some(true) {
-        c.cpu.esp = esp;
-        keep("append");
-        return None;
-    }
-    Ui::OverlayFadeQuads.count();
-    CUT.fetch_add(1, Ordering::Relaxed);
-    Some(out)
-}
-
-/// The overlay's capture of a checked call's fan (the game's
-/// `hud_overlay::draw_screen`).
-pub fn guest_drew(overlay: &Arc<Overlay>) {
-    if let Some(p) = lock(&PENDING).as_mut() {
-        p.captured = Some(Arc::clone(overlay));
-    }
-}
-
-/// The hook at the body's return: a checked call's PSDEF and item
-/// compared with the cut's. A fan the overlay did not take leaves the mode
-/// unproven (`scene_kept_fade_uncaptured`), not a mismatch.
-pub(super) fn returned(mem: &dyn GuestMemory) {
-    let Some(p) = lock(&PENDING).take() else {
-        return;
-    };
-    let words: Option<Vec<u32>> = (0..PSDEF_WORDS as u32)
-        .map(|k| mem.u32(PSDEF + 4 * k).ok())
-        .collect();
-    match check(&p, words.as_deref()) {
-        Ok(None) => keep("uncaptured"),
-        Ok(Some(size)) => {
-            CHECKED.fetch_add(1, Ordering::Relaxed);
-            *lock(&TARGET) = size;
-            PROVEN[p.fade.mode as usize].store(true, Ordering::Relaxed);
-        }
-        Err(detail) => {
-            CHECKED.fetch_add(1, Ordering::Relaxed);
-            keep("mismatch");
-            if !FALLBACK.swap(true, Ordering::Relaxed) {
-                eprintln!(
-                    "native-fade: mode {} differs from the guest body ({detail}); the body runs from here",
-                    p.fade.mode
-                );
+    let size = target(&*rt.memory());
+    let planned = plan(&fade, size).unwrap_or_else(|cause| unimplemented!("fade: {cause}"));
+    let out = c.ret(0).unwrap_or_else(|_| unimplemented!("fade: return"));
+    {
+        let mut mem = rt.memory();
+        for (k, w) in psdef(&fade).iter().enumerate() {
+            if mem.set_u32(PSDEF + 4 * k as u32, *w).is_err() {
+                unimplemented!("fade: PSDEF unwritable");
             }
         }
     }
-}
-
-/// A checked call's result: the matched target, `None` with no capture.
-fn check(p: &Pending, words: Option<&[u32]>) -> Result<Option<[u32; 2]>, String> {
-    let want = psdef(&p.fade);
-    if words != Some(&want[..]) {
-        return Err(format!("PSDEF: cut {want:08x?}, guest {words:08x?}"));
+    if crate::scene_step::with_overlay(|o| o.append(&planned).is_ok()) != Some(true) {
+        unimplemented!("fade: append");
     }
-    let Some(guest) = &p.captured else {
-        return Ok(None);
-    };
-    let cut = plan(&p.fade, guest.size).map_err(str::to_owned)?;
-    compare(&cut, guest).map(|()| Some(guest.size))
+    Ui::OverlayFadeQuads.count();
+    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use engine::memory::FlatMemory;
-    use frame_scene::{OverlayKind, OverlayVertex};
+    use frame_scene::OverlayKind;
 
     fn mem(mode: u32, colour: [f32; 4], fraction: f32) -> FlatMemory {
         let mut m = FlatMemory::new(0x0040_0000, 0x0030_0000);
@@ -461,13 +262,6 @@ mod tests {
         read(&mem(mode, [1.0, 0.25, 0.5, 1.0], 0.5))
             .unwrap()
             .unwrap()
-    }
-
-    /// The guest's capture of the same fan: a quad over the view.
-    fn guest(cut: &Overlay) -> Overlay {
-        let mut g = cut.clone();
-        g.items[0].kind = OverlayKind::Quad;
-        g
     }
 
     /// The cut's item follows the HUD's and comes before the UI's, in
@@ -571,63 +365,13 @@ mod tests {
     }
 
     /// Mode 0 draws nothing; a mode past the table, or an empty view, is
-    /// the body's.
+    /// not made.
     #[test]
-    fn mode_zero_draws_nothing_and_a_bad_mode_runs_the_body() {
+    fn mode_zero_draws_nothing_and_a_bad_mode_is_named() {
         assert_eq!(read(&mem(0, [1.0; 4], 1.0)), Ok(None));
         assert_eq!(read(&mem(7, [1.0; 4], 1.0)), Err("mode"));
         let mut m = mem(1, [1.0; 4], 1.0);
         m.set_u32(WINDOW + 4, 0).unwrap();
         assert_eq!(read(&m), Err("rect"));
-    }
-
-    /// The guest's fan matches when it covers the view with the same
-    /// state; a blend, a combiner word or a short corner differs.
-    #[test]
-    fn a_guest_fan_that_differs_is_a_mismatch() {
-        let f = fade(3);
-        let cut = plan(&f, [640, 480]).unwrap();
-        let mut g = guest(&cut);
-        // The guest's corners may sit past the view: they still cover it.
-        g.vertices[0] = OverlayVertex {
-            position: [-0.5, -0.5],
-            ..g.vertices[0]
-        };
-        assert_eq!(compare(&cut, &g), Ok(()));
-        let mut b = guest(&cut);
-        b.items[0].material.blend = OverlayBlend::ALPHA;
-        assert!(compare(&cut, &b).unwrap_err().starts_with("blend"));
-        let mut w = guest(&cut);
-        w.items[0].shader_words.as_mut().unwrap()[34] ^= 1;
-        assert!(compare(&cut, &w).unwrap_err().starts_with("combiner"));
-        let mut s = guest(&cut);
-        for v in &mut s.vertices {
-            v.position[0] = v.position[0].min(600.0);
-        }
-        assert!(compare(&cut, &s).unwrap_err().starts_with("corners"));
-    }
-
-    /// A checked call's guest PSDEF must be the cut's, word for word.
-    #[test]
-    fn a_checked_call_compares_the_psdef() {
-        let f = fade(5);
-        let cut = plan(&f, [640, 480]).unwrap();
-        let p = Pending {
-            fade: f,
-            captured: Some(Arc::new(guest(&cut))),
-        };
-        let mut words = psdef(&f).to_vec();
-        assert_eq!(check(&p, Some(&words[..])), Ok(Some([640, 480])));
-        words[53] = 2;
-        assert!(
-            check(&p, Some(&words[..]))
-                .unwrap_err()
-                .starts_with("PSDEF")
-        );
-        let none = Pending {
-            fade: f,
-            captured: None,
-        };
-        assert_eq!(check(&none, Some(&psdef(&f)[..])), Ok(None));
     }
 }

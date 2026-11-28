@@ -272,7 +272,13 @@ impl Reader<'_> {
     }
 }
 
-pub(super) fn arrows(mem: &dyn GuestRead, widget: u32, viewport: u32) -> Read<Vec<UiBitmap>> {
+/// The list draw's scroll arrows (`0x0024bda2`): each from the list's
+/// animated left and bottom, moved by the skin's offsets, or, for a class
+/// the host registered at run time, by the offsets `placed` gives for its
+/// vtable and height (the game's `list-scroll-arrows` hook moves the
+/// game's quads the same way). A runtime class `placed` does not know is
+/// the game's (`draw_runtime_class`).
+pub(super) fn arrows(mem: &dyn GuestRead, widget: u32, viewport: u32, placed: super::ListArrows) -> Read<Vec<UiBitmap>> {
     let r = Reader(mem);
     if r.short(widget, 0x42)? & 3 != 0 {
         return Ok(Vec::new());
@@ -299,7 +305,13 @@ pub(super) fn arrows(mem: &dyn GuestRead, widget: u32, viewport: u32) -> Read<Ve
     if visible == [false; 2] || skin_index < 0 {
         return Ok(Vec::new());
     }
-    r.retail_table(widget)?;
+    let class = match r.retail_table(widget) {
+        Ok(_) => None,
+        Err(gap) => {
+            let height = i32::from(r.short(widget, 0x24)?) - i32::from(r.short(widget, 0x20)?);
+            Some(placed(r.word(widget, 0)?, height).ok_or(gap)?)
+        }
+    };
     let globals = r.tag(r.word(r.collection()?, 4)?)?;
     if i32::from(skin_index) >= r.word(globals, 0x138)? as i32 {
         return Ok(Vec::new());
@@ -326,10 +338,11 @@ pub(super) fn arrows(mem: &dyn GuestRead, widget: u32, viewport: u32) -> Read<Ve
     for (i, show) in visible.into_iter().enumerate() {
         if show {
             let off = 12 + 4 * i as u32;
-            let anchor = [
-                f32::from(x) + f32::from(r.short(skin, off)?),
-                f32::from(y) + f32::from(r.short(skin, off + 2)?),
-            ];
+            let [dx, dy] = match class {
+                Some(offsets) => offsets[i],
+                None => [r.short(skin, off)?, r.short(skin, off + 2)?],
+            };
+            let anchor = [f32::from(x) + f32::from(dx), f32::from(y) + f32::from(dy)];
             let alpha = r.float(
                 if r.short(widget, 0x74 + 2 * i as u32)? == 0 {
                     0x0045_dbbc
@@ -484,5 +497,79 @@ mod tests {
         assert_eq!(art.color, [1.0, 1.0, 1.0, 128.0 / 255.0]);
         m.w(image + 0x70, 7);
         assert_eq!(read(&m), Err(Gap::new(Unread::Bitmap, "art_texture")));
+    }
+
+    /// A list whose class the host registered at run time: its arrows
+    /// come from the skin's images, placed by the host's offsets.
+    #[test]
+    fn a_runtime_list_class_places_its_arrows_by_the_hosts_offsets() {
+        let mut m = Mem::default();
+        let (widget, viewport, tags, base) = (0x1000, 0x8000, 0x7000, 0x5800);
+        m.w(widget, 0x0009_0000);
+        m.w(widget + 0x40, 0);
+        m.w(widget + 0x10, 0);
+        // Rows above the first and below the last: both arrows.
+        let (first, array) = (0x2000, 0x3000);
+        m.w(widget + 0x14, first);
+        m.w(widget + 0x70, array);
+        m.w(first + 0x18, 0);
+        m.w(first + 0x70, 2);
+        m.w(array + 0x38, 7);
+        m.w(array + 0x24, 8);
+        m.w(array + 0x44, 0x4000);
+        m.w(array + 0x48, 0x5000);
+        m.w(0x4000, 0x39);
+        m.w(0x4008, 0);
+        m.w(0x5000, 1 << 6);
+        // The rectangle: top -50, left 10, bottom 30.
+        m.w(widget + 0x20, 0x000a_ffce);
+        m.w(widget + 0x24, 0x003c_001e);
+        m.f(widget + 0x58, 0.0);
+        m.f(widget + 0x5c, 0.0);
+        m.f(widget + 0x60, 0.0);
+        m.w(widget + 0x74, 0);
+        // The interface's skins: tags 5 (the collection), 6 (its globals),
+        // 7 (the skin) and 3 (its bitmap).
+        m.w(0x004e_3b44, tags);
+        for (datum, data) in [(3, 0x7500), (5, 0x7100), (6, 0x7200), (7, 0x7400)] {
+            m.w(tags + datum * 16 + 8, data);
+        }
+        m.w(0x004e_0350, 0x6000);
+        m.w(0x004e_034c, 0x6100);
+        m.w(0x6010, 0);
+        m.w(0x6100 + 0x110, 1);
+        m.w(0x6100 + 0x114, 0x6200);
+        m.w(0x6200 + 0x8c, 5);
+        m.w(0x7104, 6);
+        m.w(0x7200 + 0x138, 1);
+        m.w(0x7200 + 0x13c, 0x7300);
+        m.w(0x7304, 7);
+        m.w(0x7408, 0xcafe_0003);
+        m.w(0x7500 + 0x44, 2);
+        m.w(0x7500 + 0x48, base);
+        for image in [base, base + 0x74] {
+            m.w(image + 4, 8 | 6 << 16);
+            m.w(image + 0x70, 8);
+            m.w(image + 0x50, 0x6800);
+        }
+        m.w(0x004e_6488, 7);
+        m.w(0x0048_5600, 0);
+        m.w(viewport, 0);
+        m.w(viewport + 4, 640 << 16 | 480);
+        m.f(0x0054_d5b0, 100.0);
+        m.f(0x0045_dbbc, 0.5);
+        m.f(0x0045_dbc0, 1.0);
+        m.f(0x0045_dbdc, 0.25);
+        m.f(0x0045_dbd8, 0.0);
+        m.f(0x0045_dc38, 255.0);
+        for addr in [0x0045_0718, 0x0045_06e8, 0x0045_06b8] {
+            m.w(addr, 1);
+        }
+        let placed = |vtable, height| (vtable == 0x0009_0000 && height == 80).then_some([[1, 2], [3, -4]]);
+        let art = arrows(&m, widget, viewport, &placed).unwrap();
+        // Up at the left plus 1 and the bottom plus 2; down plus 3 and
+        // less 4, about the canvas's centre with Y down.
+        assert_eq!(art.iter().map(|a| [a.rect[0], a.rect[1]]).collect::<Vec<_>>(), [[331.0, 208.0], [333.0, 214.0]]);
+        assert_eq!(arrows(&m, widget, viewport, &|_, _| None), Err(Gap::class("draw_runtime_class")));
     }
 }

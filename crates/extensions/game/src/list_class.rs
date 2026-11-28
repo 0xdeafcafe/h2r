@@ -1098,6 +1098,21 @@ impl RegisteredLayout {
 
 static LAYOUTS: Mutex<Vec<RegisteredLayout>> = Mutex::new(Vec::new());
 
+/// Where the registered list class `vtable` puts its scroll arrows for a
+/// list rectangle `height` units tall: what the `list-scroll-arrows` hook
+/// moves the game's quads by, for the native menus to place the same
+/// (`render_bridge::native_hud::Host::ui_list_arrows`). `None` for a
+/// class not registered or one that keeps the game's placement.
+pub fn arrows_at(vtable: u32, height: i32) -> Option<ScrollArrows> {
+    LAYOUTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|layout| layout.list_vtable == vtable)
+        .and_then(RegisteredLayout::arrows)
+        .map(|place| place.at(height))
+}
+
 /// The kit screen using this layout vtable, for menu inspection.
 pub fn layout_screen(vtable: u32) -> Option<&'static str> {
     LAYOUTS.lock().unwrap_or_else(|e| e.into_inner())
