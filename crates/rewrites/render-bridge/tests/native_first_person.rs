@@ -12,7 +12,7 @@ use frame_scene::{
 use hooks::plan::Base;
 use hooks::{Registry, Switches};
 use render_bridge::cut::{self, CUTS};
-use render_bridge::native_first_person::{self, Check, Dropped, Gate, Host, NativeFirstPerson, Outcome};
+use render_bridge::native_first_person::{self, Dropped, Host, NativeFirstPerson, Outcome};
 use render_bridge::native_objects::{NativeSet, SetPart};
 use render_bridge::residual_census::{self, REGISTRY, Status};
 
@@ -28,8 +28,7 @@ fn the_plan_places_the_cut_when_on() {
     let mut on = Registry::new(Switches::defaults());
     on.add(&NativeFirstPerson).unwrap();
     let plan = on.build(&Base).unwrap();
-    // Held or released, the entry is the feature's: held, it runs the body
-    // as a guest call and checks it.
+    // The entry is the feature's, and the body never runs.
     assert!(plan.text().contains("native_first_person_skip"));
     let chain = plan
         .chains
@@ -46,79 +45,15 @@ fn the_cut_row_is_in_the_table_and_the_census() {
     assert_eq!((row.entry, row.pop, row.abi_result), (0x0003_fdf0, 4, 1));
     assert!(cut::OWN_PRODUCER.contains(&"first_person"));
     let census = &REGISTRY[residual_census::row("first_person").unwrap()];
-    // Held until a frame's check passes, then cut.
-    assert_eq!((census.entry, census.status), (0x0003_fdf0, Status::Partial));
-}
-
-fn passing(guest: usize) -> Check {
-    Check { guest, view: guest, native: guest, dropped: 0 }
+    // Cut from the first frame: no held check runs the body.
+    assert_eq!((census.entry, census.status), (0x0003_fdf0, Status::Native));
 }
 
 #[test]
-fn a_frame_passes_when_both_calls_draw_every_part_the_guest_would() {
-    let mut gate = Gate::default();
-    assert!(!gate.record(0, passing(3)), "call 0 opens the frame");
-    assert!(gate.record(1, passing(1)));
-    // A frame with no part proves nothing.
-    assert!(!gate.record(0, passing(0)));
-    assert!(!gate.record(1, passing(0)));
-    // A call 1 without its call 0.
-    assert!(!gate.record(1, passing(2)));
-}
-
-#[test]
-fn a_frame_with_a_dropped_or_missing_part_holds_the_cut() {
-    let checks = [
-        Check { guest: 3, view: 3, native: 2, dropped: 1 },
-        Check { guest: 3, view: 2, native: 2, dropped: 0 },
-        Check { guest: 2, view: 3, native: 3, dropped: 0 },
-        Check { guest: 3, view: 3, native: 3, dropped: 1 },
-    ];
-    for bad in checks {
-        assert!(!bad.passed(), "{bad:?}");
-        let mut gate = Gate::default();
-        gate.record(0, bad);
-        assert!(!gate.record(1, passing(1)), "{bad:?} in call 0");
-        gate.record(0, passing(1));
-        assert!(!gate.record(1, bad), "{bad:?} in call 1");
-    }
-}
-
-#[test]
-fn the_cut_is_released_by_the_first_passing_frame_and_counted() {
-    native_first_person::hold();
-    assert!(native_first_person::held());
-    let (checked, passed) = native_first_person::checks();
-    assert!(!native_first_person::check(0, Check { guest: 2, view: 2, native: 1, dropped: 1 }));
-    assert!(!native_first_person::check(1, passing(1)));
-    assert!(native_first_person::held(), "a frame with a drop does not release it");
-    assert!(!native_first_person::check(0, passing(2)));
-    assert!(native_first_person::check(1, passing(1)));
-    assert!(!native_first_person::held());
-    let (now_checked, now_passed) = native_first_person::checks();
-    assert!(now_checked >= checked + 4 && now_passed >= passed + 3);
+fn the_counters_name_no_held_check() {
     let counters = native_first_person::counters();
-    assert!(counters.iter().any(|(k, v)| k == "first_person_held" && *v == 0));
     assert!(counters.iter().any(|(k, _)| k == "first_person_dropped_effects"));
-    native_first_person::hold();
-}
-
-#[test]
-fn the_guests_parts_are_its_items_in_the_layers_the_call_draws() {
-    use engine::render::light_gather::first_person_items::{Items, Made};
-    let mut m = FlatMemory::new(0x004b_a000, 0x100);
-    let made = |layers: u32, item: Option<u32>| Made { record: 0, part: 0, item, sorted: None, shader: 0, layers };
-    let items = Items {
-        layers: 1 << 1 | 1 << 3 | 1 << 8 | 1 << 16 | 1 << 2,
-        made: vec![made(1 << 1 | 1 << 3, Some(0)), made(1 << 16, Some(1)), made(1 << 8 | 1 << 2, Some(2)), made(1 << 1, None)],
-        ..Items::default()
-    };
-    // Layers 8 and 2 are gated off.
-    assert_eq!(native_first_person::guest_parts(&m, &items, 0), 2);
-    assert_eq!(native_first_person::guest_parts(&m, &items, 1), 1);
-    m.set_u8(0x004b_a022, 1).unwrap();
-    m.set_u8(0x004b_a023, 1).unwrap();
-    assert_eq!(native_first_person::guest_parts(&m, &items, 0), 4);
+    assert!(counters.iter().all(|(k, _)| !k.contains("held") && !k.contains("check")));
 }
 
 fn camera() -> RenderCamera {
