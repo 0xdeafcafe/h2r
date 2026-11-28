@@ -8,6 +8,10 @@ const POOL: u32 = 0x0053_0000;
 const DATA: u32 = 0x0053_1000;
 const BITMAP: u32 = 0x0053_0800;
 const TICK: i32 = 100;
+/// The object lists pool the tail call sweeps: one unreferenced list.
+const LISTS: u32 = 0x0054_0000;
+const LIST_BITS: u32 = 0x0054_0800;
+const LIST_DATA: u32 = 0x0054_1000;
 
 /// A pool of `threads`: (kind byte, wake), slot by slot; a `None` slot is
 /// free. Slot `i` has salt `0x8000 + i`.
@@ -30,7 +34,21 @@ fn guest(threads: &[Option<(u8, i32)>]) -> FakeGuest {
         }
     }
     g.put_u32(BITMAP, bits);
+    g.map(0x004f_5000, 0x1000).map(LISTS, 0x2000).put_u32(crate::hs_object_lists::LISTS, LISTS);
+    g.put_u32(LISTS + layout::ELEMENT_SIZE, 12)
+        .put_u32(LISTS + layout::HIGH_WATER, 1)
+        .put_u32(LISTS + layout::ACTIVE_COUNT, 1)
+        .put_u32(LISTS + layout::DATA, LIST_DATA)
+        .put_u32(LISTS + layout::BITMAP, LIST_BITS)
+        .put_u32(LIST_BITS, 1)
+        .put_u16(LIST_DATA, 0x9000)
+        .put_u32(LIST_DATA + 8, u32::MAX);
     g
+}
+
+/// The sweep freed the unreferenced list.
+fn swept(r: &entry::testing::Run) -> bool {
+    r.guest.u16(LIST_DATA).unwrap() == 0 && r.guest.u32(LISTS + layout::ACTIVE_COUNT).unwrap() == 0
 }
 
 fn handle(slot: u32) -> u32 {
@@ -52,7 +70,7 @@ fn calls(r: &entry::testing::Run) -> Vec<(u32, Option<u32>)> {
 }
 
 #[test]
-fn runnable_threads_run_in_slot_order_then_the_tail_call() {
+fn runnable_threads_run_in_slot_order_then_the_sweep() {
     let threads = [
         Some((0, TICK)),     // due now
         Some((EXTERNAL, 0)), // external: never run here
@@ -63,7 +81,8 @@ fn runnable_threads_run_in_slot_order_then_the_tail_call() {
     ];
     let r = run_on(guest(&threads), |_, _| Regs::default());
     assert!(r.result.is_ok());
-    assert_eq!(calls(&r), [(EXECUTE, Some(handle(0))), (EXECUTE, Some(handle(5))), (AFTER, None)]);
+    assert_eq!(calls(&r), [(EXECUTE, Some(handle(0))), (EXECUTE, Some(handle(5)))]);
+    assert!(swept(&r), "the tail call's sweep is Rust's, no guest call");
 }
 
 #[test]
@@ -72,7 +91,8 @@ fn scripts_off_make_no_call() {
     g.put_u8(ENABLED, 0);
     let r = run_on(g, |_, _| Regs::default());
     assert!(r.result.is_ok());
-    assert!(r.calls.is_empty(), "no executor and no tail call");
+    assert!(r.calls.is_empty(), "no executor");
+    assert!(!swept(&r), "and no tail call");
 }
 
 #[test]
@@ -83,7 +103,8 @@ fn a_thread_that_turns_scripts_off_ends_the_pass() {
         }
         Regs::default()
     });
-    assert_eq!(calls(&r), [(EXECUTE, Some(handle(0))), (AFTER, None)]);
+    assert_eq!(calls(&r), [(EXECUTE, Some(handle(0)))]);
+    assert!(swept(&r));
 }
 
 #[test]
@@ -95,5 +116,5 @@ fn the_pool_is_read_again_after_each_thread() {
         }
         Regs::default()
     });
-    assert_eq!(calls(&r), [(EXECUTE, Some(handle(0))), (EXECUTE, Some(handle(1))), (AFTER, None)]);
+    assert_eq!(calls(&r), [(EXECUTE, Some(handle(0))), (EXECUTE, Some(handle(1)))]);
 }

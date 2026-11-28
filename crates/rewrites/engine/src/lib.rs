@@ -68,6 +68,7 @@ pub mod shadow_arm;
 pub mod shadow_constants;
 pub mod skull_gate;
 pub mod hs_actions;
+pub mod hs_object_lists;
 pub mod hs_pool;
 pub mod hs_syntax;
 // Historical fixed-size partition fixture; the runtime reserves campaign_squad_pool.

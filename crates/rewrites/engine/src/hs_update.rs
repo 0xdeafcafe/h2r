@@ -1,8 +1,9 @@
 //! Tick phase 8, the HaloScript update `0x00209310` (`SCRIPT_UPDATE`), in
 //! Rust (docs/engine/hs_vm.md, "Threads"; docs/engine/sim-rewrite.md,
-//! "The tick driver"). The scheduler is Rust's; each thread it picks still
-//! runs in the lifted `HS_THREAD_EXECUTE` `0x209850`, one guest call per
-//! thread, counted in [`Stats::executed`].
+//! "The tick driver"). The scheduler and the tail call's object-list sweep
+//! are Rust's; each thread it picks still runs in the lifted
+//! `HS_THREAD_EXECUTE` `0x209850`, one guest call per thread, counted in
+//! [`Stats::executed`].
 //!
 //! The guest body, whole:
 //!
@@ -13,7 +14,7 @@
 //! | 3 | the first live slot from 0 (`0x16bc00` over `[0x4f9384]`), its salted handle | [`DatumArray::next_index`], [`DatumArray::handle_of`] |
 //! | 4 | a thread whose byte `+2` is not 4 (not external) and whose wake `+8` is in `0..=tick` runs: `edi` the handle, `call 0x209850` | a guest call |
 //! | 5 | the pool pointer read again, the next live slot after this one, while scripts are still on | the same reads |
-//! | 6 | `jmp 0x1deed0` (a tail call, nothing on the stack) | a guest call, [`AFTER`] |
+//! | 6 | `jmp 0x1deed0` (a tail call, nothing on the stack) | [`crate::hs_object_lists::sweep`] |
 //!
 //! The thread record is `data + index * 0x418`, as the guest addresses it,
 //! not by the pool's element size. A read that faults is the guest's own:
@@ -29,8 +30,8 @@ use std::sync::Mutex;
 pub const ENTRY: u32 = 0x0020_9310;
 /// The thread executor each runnable thread is handed to (`edi` = handle).
 pub const EXECUTE: u32 = 0x0020_9850;
-/// The update's tail call.
-pub const AFTER: u32 = 0x001d_eed0;
+/// The update's tail call, the object-list sweep ([`crate::hs_object_lists`]).
+pub const AFTER: u32 = crate::hs_object_lists::ENTRY;
 /// Scripts on.
 pub const ENABLED: u32 = 0x004f_9388;
 /// A thread record's stride in the guest's addressing.
@@ -103,7 +104,7 @@ pub async fn run(cx: &Cx, reserve: u32) -> Result<(), EntryError> {
         cx.call(GuestCall::new(EXECUTE).reserve(reserve).edi(handle)).await?;
         start = next;
     }
-    cx.call(GuestCall::new(AFTER).reserve(reserve)).await?;
+    cx.write(|m| crate::hs_object_lists::sweep(m))?;
     Ok(())
 }
 
