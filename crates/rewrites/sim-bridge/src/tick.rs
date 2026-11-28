@@ -60,6 +60,9 @@ pub async fn run(
     cx.read(|m| crate::world::import_objects(m, &crate::world::OBJECT_TABLE));
     let ret = sim_tick::run_with(cx.clone(), &LEDGER, present, bodies).await?;
     cx.read(|m| crate::world::import_objects(m, &crate::world::OBJECT_TABLE));
+    // The Havok heap as the step left it: the guest's Havok code still
+    // writes it, so the World's physics store is read in after the tick.
+    cx.read(|m| crate::world::import_heap(m, &crate::world::HAVOK_HEAP));
     engine::tick_poses::run(&cx, sim_tick::RECORD_SIZE).await?;
     crate::sim_sound::entries::phase(&cx, &sound).await?;
     Ok(ret)

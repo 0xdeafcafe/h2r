@@ -6670,6 +6670,7 @@ dependencies = [
  "sim-core",
  "sim-effects",
  "sim-ext",
+ "sim-havok",
  "sim-objects",
  "sim-sound",
  "sim-world",
@@ -6715,6 +6716,7 @@ name = "sim-havok"
 version = "0.1.0"
 dependencies = [
  "sim-core",
+ "sim-world",
  "simd",
  "x87",
 ]

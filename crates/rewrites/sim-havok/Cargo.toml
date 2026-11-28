@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 sim-core.workspace = true
+# The world's physics store format (heap.rs).
+sim-world.workspace = true
 simd.workspace = true
 x87.workspace = true
 

@@ -22,6 +22,8 @@ guest-layout = { path = "../../hooking/guest-layout" }
 lifted = { path = "../../runtime/lifted" }
 # The extension records the checkpoint hooks move (sim_ext.rs).
 sim-ext.workspace = true
+# The Havok heap the World holds as its physics store (world.rs).
+sim-havok.workspace = true
 # The object table the World holds (world.rs).
 sim-objects.workspace = true
 # The sound table and the host feed trait (sim_sound/entries.rs).
