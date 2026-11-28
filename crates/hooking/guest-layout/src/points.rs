@@ -554,6 +554,14 @@ points! { ALL;
     /// AL 1 once the map and its first BSP are in.
     GAME_ACTIVATE @ 0x0018_f000: [fn(options: eax) -> al ret 0]; "docs/runtime/level-boot.md";
     CACHE_TAGS_LOAD @ 0x0012_28f0: [opaque], Optional; "docs/engine/engine-map.md";
+    /// The first resource cache's flush: its pending completions run,
+    /// its allocator emptied, every entry deleted (`engine::native_cache_flush`).
+    CACHE_FLUSH @ 0x0012_d0a0: [fn() ret 0]; "docs/graphics/d3d-nv2a.md";
+    /// The second resource cache's flush: its allocator emptied, every
+    /// entry deleted.
+    CACHE_FLUSH_SECOND @ 0x0012_e0c0: [fn() ret 0]; "docs/graphics/d3d-nv2a.md";
+    /// The caches' unload of one owner's resources (the owner in EBX).
+    CACHE_UNLOAD_OWNER @ 0x0012_e150: [fn(owner: ebx) ret 0]; "docs/graphics/d3d-nv2a.md";
     /// Reserve the physical arena the tag cache loads into and set its
     /// cursors (once, at startup); the `tag-arena` feature grows it.
     PHYSICAL_ARENA_INITIALIZE @ 0x0012_b400: [opaque]; "docs/formats/map-format.md";

@@ -116,6 +116,8 @@ pub mod native_sound_environment;
 #[cfg(feature = "runtime-glue")]
 pub mod native_sound_impulse;
 #[cfg(feature = "runtime-glue")]
+pub mod native_cache_flush;
+#[cfg(feature = "runtime-glue")]
 pub mod native_sound_listener;
 #[cfg(feature = "runtime-glue")]
 pub mod native_sound_loops;

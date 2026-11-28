@@ -64,6 +64,16 @@ equal, a read of `[eax+0x400700]`. The sites sit in wait loops (a timer
 compare, KickOff, the reads, a call, a jump back); the values only decide
 whether the PGRAPH read happens.
 
+Three of the game sites open a resource cache's flush rather than a wait
+loop: `0x12d0cf` (`0x12d0a0`), `0x12e0d6` (`0x12e0c0`) and `0x12e15b`
+(`0x12e150`). Those functions are Rust, without the kick or the peek
+(`crates/rewrites/engine/src/native_cache_flush.rs`, installed by
+`crates/rewrites/sim-bridge/src/cache_flush.rs`). The other game sites sit
+in the cache allocator's blocking retry (`0x12d400`, and its inlined copies
+in the callers listed above): try `0x12d2f0`, pump the cache with
+`0x12c600` up to a count, then until a timeout `KickOff`, the peek and
+`SwitchToThread` (`0x2d2084`) between tries.
+
 | site | |
 |---|---|
 | game | `0x6a932`, `0x80eca`, `0x8638c`, `0x86448`, `0x8c892`, `0x12429d`, `0x12d0cf`, `0x12d4ee`, `0x12e0d6`, `0x12e15b`, `0x146f19`, `0x1561f6`, `0x18f31a`, `0x1941f2`, `0x194362`, `0x199646`, `0x1997d2` |
