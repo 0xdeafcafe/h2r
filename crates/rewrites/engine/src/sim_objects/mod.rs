@@ -21,6 +21,8 @@
 pub mod damage;
 pub mod frame;
 mod object;
+// The after-root slot `+70` callees.
+mod after_root;
 mod wake;
 mod walks;
 pub mod functions;
@@ -35,6 +37,7 @@ mod projectile;
 // Slice 11, the projectile step `f8eb0` (x87 and `xmm` lane).
 pub(crate) mod projectile_step;
 mod scenery;
+mod slot_pose;
 pub(crate) mod sse;
 // Slice 4: the post-update shell.
 mod bounds;
@@ -120,6 +123,8 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::OBJECT_TYPE_POST_UPDATE, sites: &object::POST_UPDATE_SITES, run: object::type_post_update },
     Body { point: &points::OBJECT_TYPE_POSE, sites: &object::POSE_SITES, run: object::type_pose },
     Body { point: &points::OBJECT_TYPE_AFTER_ROOT, sites: &object::AFTER_ROOT_SITES, run: object::type_after_root },
+    Body { point: &points::UNIT_AFTER_ROOT, sites: &after_root::UNIT_SITES, run: after_root::unit },
+    Body { point: &points::SCENERY_AFTER_ROOT, sites: &after_root::SCENERY_SITES, run: after_root::scenery },
     Body { point: &points::OBJECT_WAKE, sites: &[], run: wake::wake },
     Body { point: &points::OBJECT_ROOT, sites: &[], run: wake::root },
     Body { point: &points::OBJECT_WAKE_FOR_POST, sites: &[], run: wake::wake_for_post },
@@ -247,6 +252,9 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::BIPED_PHYSICS_INPUT, sites: &biped::INPUT_SITES, run: biped::physics_input },
     Body { point: &points::BIPED_LANDING_UPDATE, sites: &[], run: biped::landing_update },
     Body { point: &points::BIPED_CONTACT_UPDATE, sites: &biped::CONTACT_SITES, run: biped::contact_update },
+    // The pose slot callees: `vehi` and `devi` slot `+6c` (`slot_pose`).
+    Body { point: &points::VEHICLE_POSE, sites: &slot_pose::VEHICLE_SITES, run: slot_pose::vehicle_pose },
+    Body { point: &points::DEVICE_POSE, sites: &slot_pose::DEVICE_SITES, run: slot_pose::device_pose },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

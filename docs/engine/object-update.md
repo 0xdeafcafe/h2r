@@ -33,7 +33,7 @@ eight integer registers equal retail's.
 | 7a | the biped update `dd360` with the carrier `baf40`, timer update `e2d80`, `1469f0`, action request `e68c0`, animation kind `dd300`, landing test `e4050`, fall update `e45e0`, animation state update `e4c50`, look update `de190` | the movement and animation steps, the seat updates |
 | 7b | the biped post-physics update `dd990` with crouch step `dd7d0`, crouch height `dd8e0` and its forced test `e0dc0`, ground probe `e30c0` and its surface test `ddf60`, jump update `e4680`, physics input `dd0d0`, landing update `e4330`, contact update `e2fa0` | the AI hooks, the damage packet, the physics step |
 
-The tag-function curve evaluator `13b390` is answered by the idiomatic kernel `sim-objects/src/functions/curve.rs`. Curve kinds 9 and 10 decline to the guest, counted by reason. Counted in `engine::sim_objects::functions::parity`.
+The tag-function curve evaluator `13b390` is answered by the idiomatic kernel `sim-objects/src/functions/curve.rs`. What it does not carry (curve kinds 9 and 10, a float environment or operand off its exact path) the register-level port `engine::function_eval` answers; a fault or an exception the port does not model panics (`objects curve:`). Counted in `engine::sim_objects::functions::parity`.
 
 ## The walks in Rust
 
@@ -42,7 +42,7 @@ The walk table installs with every body (`engine::sim_objects::native_walk::TABL
 | In Rust | The guest's |
 |---|---|
 | walks (`native_walk::POINTS`): the walks `b6f10`, `b7060` and finalize `b7150`, the per-object updates `bc470` and `bc820`, the node matrices `bd090`, the four type dispatchers, the wake leaves, the early-mover wake `109580`, the eight leaves `bd090` calls (below) | damage `d5de0`, change colours `be8e0`, the rest of the post-update shell (`bc5e0`, `bdef0`, `bef30`, `be1d0`), functions, lights; finalize's `fd910`, `b83b0` and `b8460` |
-| type callbacks (`native_walk::TYPES`): the unit update `c6b30` (slot `+40` of `unit`, which bipeds and vehicles inherit) with every body of slices 6a, 6b and 6c, the aim update `c7840` among them; the biped update `dd360` (slot `+40`) and post-physics update `dd990` (slot `+44`) with every body of slices 7a and 7b; the weapon update `fdfb0` (slot `+40`, slice 9); the item level `10b4d0` (slot `+40` of `item`, run first by weapons, equipment and garbage, which have no other slot); the vehicle update `efde0` with `f1320` and `f06c0` (slice 10); the projectile update `f8de0` with its step `f8eb0`, the scenery update `10a2f0`, the device update `106790` (slot `+40` of `devi`, run first by machines, controls and light fixtures; controls and light fixtures have no other slot), the machine update `1152e0`, the crate update `11bce0` and the creature update `118700` (slot `+40`) and post-physics update `118b80` (slot `+44`) (slice 11) | the unit tree's own guest callees ([object-update-bodies-units.md](object-update-bodies-units.md)), the creature's AI calls, the machine's slot `+48` query `115a40` (no dispatcher calls it), the pose and after-root slots (`112070`, `f0f50`, `107000`, `112dc0`, `10a390`) |
+| type callbacks (`native_walk::TYPES`): the unit update `c6b30` (slot `+40` of `unit`, which bipeds and vehicles inherit) with every body of slices 6a, 6b and 6c, the aim update `c7840` among them; the biped update `dd360` (slot `+40`) and post-physics update `dd990` (slot `+44`) with every body of slices 7a and 7b; the weapon update `fdfb0` (slot `+40`, slice 9); the item level `10b4d0` (slot `+40` of `item`, run first by weapons, equipment and garbage, which have no other slot); the vehicle update `efde0` with `f1320` and `f06c0` (slice 10); the projectile update `f8de0` with its step `f8eb0`, the scenery update `10a2f0`, the device update `106790` (slot `+40` of `devi`, run first by machines, controls and light fixtures; controls and light fixtures have no other slot), the machine update `1152e0`, the crate update `11bce0` and the creature update `118700` (slot `+40`) and post-physics update `118b80` (slot `+44`) (slice 11); the vehicle and device pose slots `f0f50` and `107000` (slot `+6c`, "Slot pose callees"), the after-root slots `112dc0` (`unit`) and `10a390` (`scen`) | the unit tree's own guest callees ([object-update-bodies-units.md](object-update-bodies-units.md)), the creature's AI calls, the machine's slot `+48` query `115a40` (no dispatcher calls it), the unit pose `112070`, the pose slots' own callees `f0760` and `1c6f60` |
 
 Units, bipeds and weapons first because a multiplayer game is mostly
 them: each player is a biped (a unit) with two weapons, and the dropped
@@ -164,6 +164,8 @@ lists them.
 | `108cd0` | `OBJECT_TYPE_POST_UPDATE` | `(object: edi)`; `ret`. Slot `+44`, called `(object)`. `eax` at return is the address of the last ancestry entry, not a result | segment (indirect callout) |
 | `109050` | `OBJECT_TYPE_POSE` | `(object: ebx, stack 0, stack 1, stack 2)`; `ret 0c`. Slot `+6c`, called `(object, s0, s1, s2)` | segment (indirect callout) |
 | `1090d0` | `OBJECT_TYPE_AFTER_ROOT` | `(object: ebx, matrix: stack 0)`; `ret 4`. Slot `+70`, called `(object, matrix)` | segment (indirect callout) |
+| `112dc0` | `UNIT_AFTER_ROOT` | `(object: stack 0, matrix: stack 1)`; `ret 8`. Slot `+70` of `unit` | segment |
+| `10a390` | `SCENERY_AFTER_ROOT` | `(object: stack 0, matrix: stack 1)`; `ret 8`. Slot `+70` of `scen` | segment |
 | `b7360` | `OBJECT_WAKE` | `(object: eax)`; `ret` | leaf |
 | `baf80` | `OBJECT_ROOT` | `(object: ecx) -> eax` root ancestor (none in, none out); `ret`; clobbers `ecx`, `edx` | leaf |
 | `bba20` | `OBJECT_WAKE_FOR_POST` | `(object: eax)`; `ret` | leaf |
@@ -185,7 +187,7 @@ How the slice 1 bodies keep the contract is in "Slice 1 bodies" below.
 | `d1410` | `UNIT_IMPORT_ANIMATION` | `(unit: eax) -> xmm0`; `ret`. Calls `1c6e30` | segment |
 | `be8e0` | `OBJECT_CHANGE_COLORS` | `(object: stack 0) -> al`; `ret 4` | segment, then leaf |
 | `13bb90` | none yet | `(function: eax, stack 0, stack 1)`, input in `xmm0` (clamped), result in `xmm0`; `ret 8`. Calls the evaluator `13b390` | callout |
-| `13b390` | `FUNCTION_EVALUATE` | `(reference: edi, input: stack 0, range: stack 1) -> xmm0`; `ret 8`. The curve evaluator under every function value, light phase and screen effect ([engine-map.md](engine-map.md), `function_evaluate`) | the kernel `functions/curve.rs` answers (`xmm0`, the popped frame; `eax`, `ecx`, `edx`, `edi` untouched, flags undefined; `functions/parity.rs` counts); curve kinds 9 and 10 decline to the guest |
+| `13b390` | `FUNCTION_EVALUATE` | `(reference: edi, input: stack 0, range: stack 1) -> xmm0`; `ret 8`. The curve evaluator under every function value, light phase and screen effect ([engine-map.md](engine-map.md), `function_evaluate`) | the kernel `functions/curve.rs` answers (`xmm0`, the popped frame; `eax`, `ecx`, `edx`, `edi` untouched, flags undefined; `functions/parity.rs` counts); curve kinds 9 and 10 and off-path floats go to the register-level port `function_eval` |
 
 ### Slice 4: post-update shell
 
@@ -329,6 +331,15 @@ How the bodies keep the contract is in "Slice 7a bodies" below.
 | `e2fa0` | `BIPED_CONTACT_UPDATE` | `(object: eax, contact: ebx, stack 0 unread)`; `ret 4` | segment |
 
 How the bodies keep the contract is in "Slice 7b bodies" below.
+
+### Slot pose callees
+
+Slot `+6c`, called by the pose dispatcher `109050` as `(object, s0, s1, s2)`. Bodies in `sim_objects::slot_pose`.
+
+| Entry | Point | ABI | Kind |
+|---|---|---|---|
+| `f0f50` | `VEHICLE_POSE` | `(object, s0, s1, s2: stack)`; `ret 10`. Slot `+6c` of `vehi`: frames `{s1, s2, s0}` and calls `f0760(object, f06e0, &frame)` (`ret c`), which stays guest | segment |
+| `107000` | `DEVICE_POSE` | `(object, s0, s1, s2: stack)`; `ret 10`. Slot `+6c` of `devi`; machines, controls and light fixtures inherit it. With a model (definition `+38`), its graph (model `+4`) and an animation block (`+12a`), stores the graph's definition over `object` and calls `1c6f60(1.0, s0, s1, s2)` (`ebx` the channel, `ret 10`) for each live channel at body `+18c` and `+1ac` | segment |
 
 ### Callouts that stay guest in this phase
 

@@ -195,8 +195,7 @@ fn physics_arms() -> Vec<Arm> {
 fn objects_wire(s: objects::Status) -> Arm {
     Arm {
         name: "objects.curve".to_owned(),
-        answered: s.answered,
-        declined: s.declined_float + s.declined_kind + s.declined_fault,
+        answered: s.answered + s.ported_kind + s.ported_float,
         ..Arm::default()
     }
 }
@@ -418,8 +417,8 @@ mod tests {
 
     #[test]
     fn sources_map_onto_the_arm_fields() {
-        let o = objects_wire(objects::Status { answered: 7, declined_float: 1, declined_kind: 2, declined_fault: 3 });
-        assert_eq!((o.checked, o.answered, o.declined), (0, 7, 6));
+        let o = objects_wire(objects::Status { answered: 7, ported_kind: 2, ported_float: 1 });
+        assert_eq!((o.checked, o.answered, o.declined), (0, 10, 0));
         let f = function_wire(function::Status {
             checked: 8,
             matched: 8,

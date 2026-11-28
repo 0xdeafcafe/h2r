@@ -631,6 +631,10 @@ points! { ALL;
     OBJECT_TYPE_POSE @ 0x0010_9050: [fn(object: ebx, a: stack 0, b: stack 1, c: stack 2) ret 12], Hot; "docs/engine/object-update.md";
     /// Type after-root dispatch: slot `+70`, called with the root node matrix.
     OBJECT_TYPE_AFTER_ROOT @ 0x0010_90d0: [fn(object: ebx, matrix: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    /// Unit after-root: slot `+70` of `unit`; composes the matrix with the parent's root node matrix.
+    UNIT_AFTER_ROOT @ 0x0011_2dc0: [fn(object: stack 0, matrix: stack 1) ret 8], Hot; "docs/engine/object-update.md";
+    /// Scenery after-root: slot `+70` of `scen`; composes the matrix with the parent's root node matrix.
+    SCENERY_AFTER_ROOT @ 0x0010_a390: [fn(object: stack 0, matrix: stack 1) ret 8], Hot; "docs/engine/object-update.md";
     /// Set AWAKE on an object and its parent chain.
     OBJECT_WAKE @ 0x000b_7360: [fn(object: eax) ret 0], Hot; "docs/engine/object-update.md";
     /// The root ancestor of an object.
@@ -2139,6 +2143,8 @@ points! { ALL;
     MACHINE_UPDATE @ 0x0011_52e0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
     /// Machine slot `+48`: whether any of the machine's entries has its bit set in `bits`; 1 to `[out]` on a hit.
     MACHINE_SLOT_48 @ 0x0011_5a40: [fn(object: stack 0, bits: stack 1, out: stack 2) -> al ret 12], Hot; "docs/engine/object-update.md";
+    /// Device pose: slot `+6c` of `devi`; evaluates the channels at body `+18c` and `+1ac`.
+    DEVICE_POSE @ 0x0010_7000: [fn(object: stack 0, a: stack 1, b: stack 2, c: stack 3) ret 16], Hot; "docs/engine/object-update.md";
     /// Projectile update: slot `+40` of `proj`; calls the projectile step `0xf8eb0`.
     PROJECTILE_UPDATE @ 0x000f_8de0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
     /// Crate update: slot `+40` of `bloc`.
@@ -2200,6 +2206,8 @@ points! { ALL;
     /// Sets the first word of the vehicle update's 16 contact records
     /// (`d8` bytes each, from `buffer + bc0`) to none.
     VEHICLE_CONTACTS_RESET @ 0x000f_06c0: [fn(buffer: eax) ret 0], Hot; "docs/engine/object-update.md";
+    /// Vehicle pose: slot `+6c` of `vehi`; packs its arguments for `0xf0760`.
+    VEHICLE_POSE @ 0x000f_0f50: [fn(object: stack 0, a: stack 1, b: stack 2, c: stack 3) ret 16], Hot; "docs/engine/object-update.md";
     // Slice 6b of docs/engine/sim-rewrite-objects.md: the unit update's state
     // children (`UNIT_CONTROL_REFRESH`, `ce0c0`, is named above).
     /// Unit control: desired aim and look, timed bits, the two linked objects (`UNIT_UPDATE`'s first call).

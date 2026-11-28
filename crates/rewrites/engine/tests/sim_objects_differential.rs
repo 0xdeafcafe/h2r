@@ -256,6 +256,12 @@ fn object_on_stack(root: u32) -> bool {
         &points::WEAPON_UPDATE,
         // Slice 10.
         &points::VEHICLE_UPDATE,
+        // The pose slot callees.
+        &points::VEHICLE_POSE,
+        &points::DEVICE_POSE,
+        // The after-root slot callees.
+        &points::UNIT_AFTER_ROOT,
+        &points::SCENERY_AFTER_ROOT,
     ]
     .iter()
     .any(|p| p.base == root)
@@ -266,10 +272,16 @@ fn object_on_stack(root: u32) -> bool {
 /// the register argument of the roots that take one.
 fn entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
     word(g, STACK, EXIT);
-    word(g, STACK + 4, if object_on_stack(root) { object(case) } else { 0xdeaf_0002 });
-    // The pose dispatcher's second and third arguments; the after-root
-    // dispatcher's matrix is the first.
-    word(g, STACK + 8, PHASE + 0x100);
+    // The after-root dispatcher's matrix is its first argument, its slot
+    // callees' (`object_on_stack`) their second.
+    let first = match root {
+        r if object_on_stack(r) => object(case),
+        r if r == points::OBJECT_TYPE_AFTER_ROOT.base => AFTER_ROOT_MATRIX,
+        _ => 0xdeaf_0002,
+    };
+    word(g, STACK + 4, first);
+    // The pose dispatcher's second and third arguments.
+    word(g, STACK + 8, AFTER_ROOT_MATRIX);
     word(g, STACK + 12, case);
     let reg = match root {
         r if r == points::OBJECT_TYPE_POST_UPDATE.base => Some(7),
@@ -314,8 +326,7 @@ const SLOT_UPDATE: &[u32] = &[
     0xc6b30, 0xdd360, 0xefde0, 0x10b4d0, 0xfdfb0, 0xf8de0, 0x10a2f0, 0x106790, 0x1152e0, 0x11bce0, 0x118700,
 ];
 const SLOT_POST: &[u32] = &[0xdd990, 0x118b80];
-const SLOT_POSE: &[u32] = &[0x112070, 0xf0f50, 0x107000];
-const SLOT_AFTER_ROOT: &[u32] = &[0x112dc0, 0x10a390];
+const SLOT_POSE: &[u32] = &[0x112070];
 
 /// The stack probe `109580` makes its frame with.
 const STACK_PROBE: u32 = 0x320560;
@@ -335,9 +346,12 @@ fn cleanup(target: u32) -> u32 {
         0xc7840 => 20,
         t if SLOT_UPDATE.contains(&t) || SLOT_POST.contains(&t) => 4,
         0xb83b0 | 0xb8460 => 8,
-        t if SLOT_AFTER_ROOT.contains(&t) => 8,
         0x1d3920 => 12,
         t if SLOT_POSE.contains(&t) => 16,
+        // The vehicle pose's channel setup and the device pose's channel
+        // evaluate (`slot_pose`).
+        0xf0760 => 12,
+        0x1c6f60 => 16,
         0xbef30 => 20,
         0xbb050 => 28,
         0xbba20 | 0xa9570 | 0x1cd4e0 | 0x1ced00 | 0x108cd0 | 0xbe1d0 | 0x109660 | 0xfd910 | 0xbf380 => 0,
@@ -484,6 +498,7 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
     slice_6c_answer(cpu, g, target, n, case);
     slice_7a_answer(cpu, g, target, n, case);
     slice_7b_answer(cpu, g, &at_call, target, n, case);
+    after_root_answer(cpu, target, n, case);
     cpu.gpr[4] = sp + 4 + cleanup(target);
     cpu.eip = ret;
 }
@@ -905,6 +920,38 @@ fn type_post_update_dispatch() {
 #[test]
 fn type_pose_dispatch() {
     transcripts(&points::OBJECT_TYPE_POSE, 13);
+}
+
+/// The pose slot callees `f0f50` (`vehi`) and `107000` (`devi`), entered
+/// directly over a [`dress_pose`]d pool and through the pose dispatcher,
+/// which reaches them for vehicles, machines, controls and light fixtures.
+#[test]
+fn pose_slot_callees() {
+    dressed_with(&points::VEHICLE_POSE, 2, dress_pose);
+    dressed_with(&points::DEVICE_POSE, 8, dress_pose);
+    dressed_with(&points::OBJECT_TYPE_POSE, 13, dress_pose);
+}
+
+/// The model and animation graph the device pose reads.
+const POSE_MODEL: u32 = 0x006b_0000;
+const POSE_GRAPH: u32 = 0x006b_0100;
+
+/// [`dress`] with the device pose's path on the object a root is called
+/// on: the definition's model (`+38`, tag `40`) and the model's graph
+/// (`+4`, tag `41`), each none in one case, and the two channels at body
+/// `+18c` and `+1ac` with their handle or `+6` word none in turn. Case 0
+/// has no animation block ([`dress`]).
+fn dress_pose(g: &mut Guest, case: u32) {
+    let c = case as usize % 8;
+    word(g, TAGS + 16 * 0x40 + 8, POSE_MODEL);
+    word(g, TAGS + 16 * 0x41 + 8, POSE_GRAPH);
+    word(g, DEFINITION + 0x38, if c == 1 { u32::MAX } else { 0xe140_0040 });
+    word(g, POSE_MODEL + 4, if c == 2 { u32::MAX } else { 0xe141_0041 });
+    let body = g.u32(DATA + 12 * (object(case) & 0xffff) + 8).unwrap();
+    for (off, none, quiet) in [(0x18c, [3, 7], 4), (0x1ac, [5, 7], 6)] {
+        word(g, body + off, if none.contains(&c) { u32::MAX } else { 0xe150_0000 | off });
+        g.set_u16(body + off + 6, if c == quiet { u16::MAX } else { 1 }).unwrap();
+    }
 }
 
 #[test]
@@ -4568,6 +4615,7 @@ fn walk_table_types() {
         dressed_with_in(&points::OBJECT_TYPE_UPDATE, 11, dress_vehicle, table, mxcsr);
         dressed_with_in(&points::DEVICE_UPDATE, 6, undressed, table, mxcsr);
         dressed_with_in(&points::DEVICE_UPDATE, 16, dress_device, table, mxcsr);
+        dressed_with_in(&points::OBJECT_TYPE_POSE, 13, dress_pose, table, mxcsr);
         dressed_with_in(&points::MACHINE_UPDATE, 6, undressed, table, mxcsr);
         dressed_with_in(&points::MACHINE_UPDATE, 16, dress_device, table, mxcsr);
         dressed_with_in(&points::OBJECT_TYPE_UPDATE, 26, dress_device_family, table, mxcsr);
@@ -4580,3 +4628,49 @@ fn walk_table_types() {
 
 /// No dressing past [`dress`]: [`dressed`] as a [`dressed_with_in`] root.
 fn undressed(_: &mut Guest, _: u32) {}
+
+// The after-root slot `+70` callees `112dc0` (`unit`) and `10a390`
+// (`scen`), entered directly with the object and the matrix on the stack.
+
+/// The matrix the after-root roots compose in place (the pose
+/// dispatcher's second argument).
+const AFTER_ROOT_MATRIX: u32 = PHASE + 0x100;
+
+std::thread_local! {
+    /// Set while the after-root slot roots run: `badc0` then answers none
+    /// once in three.
+    static AFTER_ROOT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn after_root_answer(cpu: &mut Cpu, target: u32, n: usize, case: u32) {
+    if target == 0xbadc0 && AFTER_ROOT.with(std::cell::Cell::get) && (n as u32 + case) % 3 == 0 {
+        cpu.gpr[0] = 0;
+    }
+}
+
+/// The parent handle each slot callee reads (none, or a live slot), the
+/// parent's root node matrix and the matrix argument, varied by `case`.
+fn dress_after_root(g: &mut Guest, case: u32) {
+    let body = RECORDS + BODY * (object(case) & 0xffff);
+    let parent = [NONE, handle(3), handle(7), handle(1)][case as usize % 4];
+    // The unit's parent at body `+ [body+33e] + 28`; the scenery's at
+    // body `+138`.
+    g.set_u16(body + 0x33e, 0x1d0).unwrap();
+    word(g, body + 0x1f8, parent);
+    word(g, body + 0x138, parent);
+    if parent != NONE {
+        let p = RECORDS + BODY * (parent & 0xffff);
+        g.set_u16(p + 0x116, 0x1c0).unwrap();
+        matrix(g, p + 0x1c0, [1.0, 2.0, 0.5][case as usize % 3], [4.0, -1.5, 0.25 * case as f32]);
+    }
+    matrix(g, AFTER_ROOT_MATRIX, [0.75, 1.0][case as usize % 2], [-2.0, 3.0, case as f32]);
+}
+
+#[test]
+fn after_root_slots() {
+    AFTER_ROOT.with(|b| b.set(true));
+    for point in [&points::UNIT_AFTER_ROOT, &points::SCENERY_AFTER_ROOT] {
+        dressed_with(point, 8, dress_after_root);
+    }
+    AFTER_ROOT.with(|b| b.set(false));
+}
