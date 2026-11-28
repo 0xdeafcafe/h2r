@@ -80,7 +80,7 @@ An active model widget's view is read in Rust at its item call, before the guest
 | Axes | forward +Y, up +Z, as the draw builds them | `scene_extract::ui::MODEL_FORWARD`, `MODEL_UP` |
 | Item | one `ModelView` into the camera's viewport, not the widget's rectangle; a viewport past the canvas is not listed | `scene_extract::ui::UiModel` |
 
-A matching view is the one the host and the scene's overlay take. A difference sends every later view to the guest's read for the session. Every call is compared, since the guest's draw still runs whole: no stage draws a `ModelView` item yet (`native_ui_overlay_refused_model_view`), and lights are not read. Tests: `scene_extract::ui::tests::a_model_widget_is_one_model_view_item`, `native_hud::model::tests::the_rust_view_is_the_view_the_game_draws`, `a_view_that_differs_falls_back_for_the_session`, `ui_overlay::model::tests::the_names_select_their_live_handles_in_order`.
+A matching view is the one the host and the scene's overlay take. A difference sends every later view to the guest's read for the session. Every call is compared, since the guest's draw still runs whole: no stage draws a `ModelView` item yet (`native_ui_overlay_refused_model_view`, [native-menus-overlay.md](native-menus-overlay.md#model-views)), and lights are not read. Tests: `scene_extract::ui::tests::a_model_widget_is_one_model_view_item`, `native_hud::model::tests::the_rust_view_is_the_view_the_game_draws`, `a_view_that_differs_falls_back_for_the_session`, `ui_overlay::model::tests::the_names_select_their_live_handles_in_order`.
 
 ### Draw state
 
