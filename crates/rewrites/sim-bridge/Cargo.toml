@@ -27,6 +27,8 @@ sim-players.workspace = true
 sim-sound.workspace = true
 # The World that holds the sound table and is the snapshot section (world.rs).
 sim-world.workspace = true
+# The scripts store the World holds (world.rs).
+sim-script.workspace = true
 # The effect part split, damage chain and visual events (sim_effects_parts.rs).
 sim-effects.workspace = true
 # The guest's x87 state the coln and decal draws run on (sim_effects_parts.rs).

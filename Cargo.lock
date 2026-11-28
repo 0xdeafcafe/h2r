@@ -6671,6 +6671,7 @@ dependencies = [
  "sim-effects",
  "sim-objects",
  "sim-players",
+ "sim-script",
  "sim-sound",
  "sim-world",
  "simd",

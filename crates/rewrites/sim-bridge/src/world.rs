@@ -10,6 +10,7 @@ use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use sim_objects::{LightTable, ObjectTable};
 use sim_players::PlayersState;
+use sim_script::{ScriptStore, Shared as SharedScripts};
 use sim_sound::instances::Sounds;
 use sim_world::{RestoreError, Store, World, kind};
 
@@ -197,6 +198,10 @@ impl Store for PlayersStore {
     }
 }
 
+/// The process's scripts section: the script runtime reads and commits its
+/// VM state here, and the world saves it ([`ScriptStore`]).
+pub static SCRIPT_TABLE: LazyLock<SharedScripts> = LazyLock::new(SharedScripts::default);
+
 /// A world that holds `table` as its sound store and a fresh object table.
 pub fn with_table(table: Shared) -> World {
     with_tables(table, SharedObjects::default())
@@ -209,7 +214,20 @@ pub fn with_tables(sounds: Shared, objects: SharedObjects) -> World {
 
 /// A world that holds `sounds`, `objects`, `lights` and `players` as its stores.
 pub fn with_stores(sounds: Shared, objects: SharedObjects, lights: SharedLights, players: SharedPlayers) -> World {
+    with_all_stores(sounds, objects, lights, players, SharedScripts::default())
+}
+
+/// A world that holds every store: `sounds`, `objects`, `lights`,
+/// `players` and `scripts`.
+pub fn with_all_stores(
+    sounds: Shared,
+    objects: SharedObjects,
+    lights: SharedLights,
+    players: SharedPlayers,
+    scripts: SharedScripts,
+) -> World {
     let mut w = World::new(1);
+    w.attach(Box::new(ScriptStore(scripts))).expect("a world without one takes the scripts store");
     w.attach(Box::new(LightStore(lights))).expect("a world without one takes the lights store");
     w.attach(Box::new(PlayersStore(players))).expect("a world without one takes the players store");
     w.attach(Box::new(ObjectStore(objects))).expect("an empty world takes the objects store");
@@ -221,11 +239,12 @@ pub fn with_stores(sounds: Shared, objects: SharedObjects, lights: SharedLights,
 /// The process's world, over the process's tables ([`entries::SHARED`],
 /// [`OBJECT_TABLE`]).
 pub static WORLD: LazyLock<Mutex<World>> = LazyLock::new(|| {
-    Mutex::new(with_stores(
+    Mutex::new(with_all_stores(
         Arc::clone(&entries::SHARED),
         Arc::clone(&OBJECT_TABLE),
         Arc::clone(&LIGHT_TABLE),
         Arc::clone(&PLAYERS_STATE),
+        Arc::clone(&SCRIPT_TABLE),
     ))
 });
 
