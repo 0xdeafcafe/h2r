@@ -142,6 +142,7 @@ pub fn decorator_look(
     look.stage_states = applied.stage_states;
     let state = geometry_pass_state(&applied.render_states)
         .and_then(PassState::device_stencil_only)
+        .and_then(PassState::no_depth_offset)
         .map_err(|r| format!("render states: {r:?}"))?;
     let (microcode, semantics) =
         program(look.vertex_shader).ok_or("the vrtx has no classification-1 program")?;
@@ -403,6 +404,7 @@ pub(crate) mod tests {
             primitive: wgpu::PrimitiveState::default(),
             alpha_test: None,
             stencil: None,
+            depth_offset: None,
         }
     }
 

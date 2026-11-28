@@ -1281,6 +1281,7 @@ mod tests {
                 primitive: wgpu::PrimitiveState::default(),
                 alpha_test: None,
                 stencil: None,
+                depth_offset: None,
             },
         }
     }

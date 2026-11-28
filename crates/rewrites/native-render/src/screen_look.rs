@@ -414,6 +414,7 @@ pub fn template_look(
     }
     let state = pass_state(&applied.render_states)
         .and_then(PassState::device_stencil_only)
+        .and_then(PassState::no_depth_offset)
         .map_err(ScreenRefusal::State)?;
     if state.depth_write || state.depth_compare != wgpu::CompareFunction::Always {
         return Err(ScreenRefusal::Depth);

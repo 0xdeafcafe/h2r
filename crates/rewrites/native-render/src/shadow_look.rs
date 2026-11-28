@@ -123,6 +123,7 @@ pub fn receiver_look(
     let state =
         crate::pass_state::pass_state(&applied.render_states)
             .and_then(crate::pass_state::PassState::device_stencil_only)
+            .and_then(crate::pass_state::PassState::no_depth_offset)
             .map_err(LightRefusal::State)?;
     Ok(LightLook {
         layer,
@@ -372,6 +373,7 @@ mod tests {
                 primitive: wgpu::PrimitiveState::default(),
                 alpha_test: None,
                 stencil: None,
+                depth_offset: None,
             },
             inherits_cull: false,
             copies_target: false,

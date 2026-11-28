@@ -347,7 +347,9 @@ pub fn animated_light_look(
             Some(TextureSource::Lightmap) => return Err(LightRefusal::Lightmap),
         };
     }
-    let state = pass_state(&applied.render_states).map_err(LightRefusal::State)?;
+    let state = pass_state(&applied.render_states)
+        .and_then(crate::pass_state::PassState::no_depth_offset)
+        .map_err(LightRefusal::State)?;
     let look = LightLook {
         layer,
         pass: pass.pass,

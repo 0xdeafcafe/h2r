@@ -33,9 +33,46 @@ pub struct PassState {
     /// ([`PassState::stencil_under`]). `None`: the pass draws under the
     /// device's (`fog_gpu::layer_stencil`).
     pub stencil: Option<gfx::state::StencilState>,
+    /// The polygon offset the implementation sets ([`DepthOffset`]):
+    /// `None` when it sets none, or sets it to zero. A builder that draws
+    /// it adds it to the fragment's W depth ([`DepthOffset::apply`]); one
+    /// that does not refuses it ([`PassState::no_depth_offset`]).
+    pub depth_offset: Option<DepthOffset>,
+}
+
+/// A pass's polygon offset (`SOLIDOFFSETENABLE`, `POLYGONOFFSETZOFFSET`,
+/// `POLYGONOFFSETZSLOPESCALE`), in the depth buffer's units, as the NV2A
+/// adds it to the stored depth: `units` plus `slope` times the fragment's
+/// depth slope. The native programs write W depth themselves
+/// (`PixelOptions::w_buffer`), so the offset is the fragment's
+/// (`PixelUniforms::depth` y and z), not the pipeline's depth bias.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DepthOffset {
+    pub units: f32,
+    pub slope: f32,
+}
+
+impl DepthOffset {
+    /// `pixel` with this offset: the frame's depth scale is
+    /// `program::frame_pixel`'s, which keeps the offset set here.
+    pub fn apply(offset: Option<Self>, pixel: &mut shaders::psh::PixelUniforms) {
+        let o = offset.unwrap_or(DepthOffset { units: 0.0, slope: 0.0 });
+        pixel.depth[1] = o.units;
+        pixel.depth[2] = o.slope;
+    }
 }
 
 impl PassState {
+    /// The state for a native pass that does not draw a polygon offset:
+    /// a pass that sets one is refused ([`StateRefusal::DepthBias`]), not
+    /// drawn without it.
+    pub fn no_depth_offset(self) -> Result<Self, StateRefusal> {
+        match self.depth_offset {
+            Some(_) => Err(StateRefusal::DepthBias),
+            None => Ok(self),
+        }
+    }
+
     /// The stencil the pass draws with where the device holds `device`:
     /// its own when it sets one, else the device's.
     pub fn stencil_under(&self, device: &gfx::state::StencilState) -> gfx::state::StencilState {
@@ -86,7 +123,8 @@ pub enum StateRefusal {
     /// ([`PassState::stencil`]). No `shad` pass on the retail maps sets
     /// one (docs/graphics/e3-lighting.md, "Stencil: every use, named").
     Stencil,
-    /// A depth bias.
+    /// A polygon offset ([`PassState::depth_offset`]) where the native
+    /// pass that would draw it does not, or one that is not finite.
     DepthBias,
 }
 
@@ -151,7 +189,10 @@ fn decode_states(states: &[RenderStateValue], source: StateSource) -> Result<Pas
         return Err(StateRefusal::Fog);
     }
     let stencil = if live_object_state { None } else { own_stencil(&rs, &has)? };
-    if rs.solid_offset_enable && (rs.depth_bias != 0.0 || rs.depth_bias_slope_scale != 0.0) {
+    let depth_offset = depth_offset(&rs, &has)?;
+    if live_object_state && depth_offset.is_some() {
+        // An object's offset is resolved at issue (`object_state`), which
+        // draws none.
         return Err(StateRefusal::DepthBias);
     }
     let (depth_write, depth_compare) = match rs.depth_mode {
@@ -173,7 +214,38 @@ fn decode_states(states: &[RenderStateValue], source: StateSource) -> Result<Pas
         ),
         alpha_test,
         stencil,
+        depth_offset,
     })
+}
+
+/// The polygon offset of the fill mode in effect, when the implementation
+/// turns it on with a non-zero offset. Both values must then be set by the
+/// pass itself (`Unset`), or it would draw with the previous draw's.
+fn depth_offset(
+    rs: &RenderState,
+    has: &dyn Fn(RenderStateType) -> bool,
+) -> Result<Option<DepthOffset>, StateRefusal> {
+    use gfx::state::FillMode;
+    use RenderStateType as R;
+    let enabled = match rs.fill_mode {
+        FillMode::Point => rs.point_offset_enable,
+        FillMode::Wireframe => rs.wireframe_offset_enable,
+        FillMode::Solid => rs.solid_offset_enable,
+    };
+    if !enabled {
+        return Ok(None);
+    }
+    if !has(R::PolygonOffsetZOffset) {
+        return Err(StateRefusal::Unset("POLYGONOFFSETZOFFSET"));
+    }
+    if !has(R::PolygonOffsetZSlopeScale) {
+        return Err(StateRefusal::Unset("POLYGONOFFSETZSLOPESCALE"));
+    }
+    if !rs.depth_bias.is_finite() || !rs.depth_bias_slope_scale.is_finite() {
+        return Err(StateRefusal::DepthBias);
+    }
+    Ok((rs.depth_bias != 0.0 || rs.depth_bias_slope_scale != 0.0)
+        .then_some(DepthOffset { units: rs.depth_bias, slope: rs.depth_bias_slope_scale }))
 }
 
 /// The stencil words of an implementation that sets any: `STENCILENABLE`
@@ -339,6 +411,40 @@ mod tests {
             assert!(matches!(pass_state(&missing), Err(StateRefusal::Unset(_))), "word {n} unset");
         }
         assert_eq!(object_program_state(&own).unwrap().stencil, None, "an object resolves it at issue");
+    }
+
+    #[test]
+    fn a_polygon_offset_is_the_pass_state_and_set_whole() {
+        use RenderStateType as R;
+        let base = [v(R::AlphaBlendEnable, 0), v(R::ZWriteEnable, 0)];
+        let with = |extra: &[RenderStateValue]| {
+            let mut s = base.to_vec();
+            s.extend_from_slice(extra);
+            pass_state(&s)
+        };
+        let on = v(R::SolidOffsetEnable, 1);
+        let units = v(R::PolygonOffsetZOffset, (-4.0f32).to_bits());
+        let slope = v(R::PolygonOffsetZSlopeScale, 2.0f32.to_bits());
+        let s = with(&[on, units, slope]).unwrap();
+        assert_eq!(s.depth_offset, Some(DepthOffset { units: -4.0, slope: 2.0 }));
+        assert_eq!(s.no_depth_offset(), Err(StateRefusal::DepthBias), "a builder that does not draw it says so");
+        let mut pixel = shaders::psh::PixelUniforms::default();
+        DepthOffset::apply(s.depth_offset, &mut pixel);
+        assert_eq!((pixel.depth[1], pixel.depth[2]), (-4.0, 2.0));
+
+        assert_eq!(with(&[units, slope]).unwrap().depth_offset, None, "the enable off: no offset");
+        let zero = v(R::PolygonOffsetZOffset, 0);
+        let flat = v(R::PolygonOffsetZSlopeScale, 0);
+        assert_eq!(with(&[on, zero, flat]).unwrap().depth_offset, None, "a zero offset is none");
+        assert_eq!(with(&[on, slope]), Err(StateRefusal::Unset("POLYGONOFFSETZOFFSET")));
+        assert_eq!(with(&[on, units]), Err(StateRefusal::Unset("POLYGONOFFSETZSLOPESCALE")));
+        let nan = v(R::PolygonOffsetZOffset, f32::NAN.to_bits());
+        assert_eq!(with(&[on, nan, slope]), Err(StateRefusal::DepthBias));
+        assert_eq!(
+            object_program_state(&[on, units, slope]),
+            Err(StateRefusal::DepthBias),
+            "an object's offset is the live device's"
+        );
     }
 
     #[test]

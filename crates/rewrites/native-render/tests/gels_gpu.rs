@@ -38,6 +38,7 @@ fn program(color: &str) -> Program {
             ),
             alpha_test: None,
             stencil: None,
+            depth_offset: None,
         },
     }
 }

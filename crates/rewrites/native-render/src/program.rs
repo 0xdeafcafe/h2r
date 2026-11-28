@@ -1355,7 +1355,8 @@ pub(crate) fn scaled_scissor(
 /// `base` with the frame's depth and raster scales.
 pub fn frame_pixel(base: &PixelUniforms, view: &ViewInputs) -> PixelUniforms {
     PixelUniforms {
-        depth: [view.z_scale, 0.0, 0.0, 1.0],
+        // y and z: the pass's polygon offset (`pass_state::DepthOffset`).
+        depth: [view.z_scale, base.depth[1], base.depth[2], 1.0],
         depth_range: view.w_clip.map_or([0.0, view.z_scale], |(range, _)| range),
         stipple_scale: PixelUniforms::stipple_grid(view.guest_size, view.size),
         ..*base
@@ -3236,6 +3237,13 @@ mod tests {
             },
         );
         assert_eq!((p.depth[0], p.depth_range[1]), (65_535.0, 65_535.0));
+        let mut offset = PixelUniforms::default();
+        crate::pass_state::DepthOffset::apply(
+            Some(crate::pass_state::DepthOffset { units: -2.0, slope: 1.5 }),
+            &mut offset,
+        );
+        let p = frame_pixel(&offset, &ViewInputs { z_scale: 65_535.0, ..view });
+        assert_eq!(p.depth, [65_535.0, -2.0, 1.5, 1.0], "the pass's polygon offset over the frame's scale");
         // The device's clip range and clamp, as the D3D path takes them
         // (`d3d::nv2a`'s `w_clip_range`, `depth_clamp`): a cinematic's
         // range past the camera's far, clamped.
@@ -4894,6 +4902,7 @@ mod tests {
             primitive: wgpu::PrimitiveState::default(),
             alpha_test: Some((wgpu::CompareFunction::Greater, 0x40)),
             stencil: None,
+            depth_offset: None,
         };
         WorldPass {
             look,
@@ -4925,6 +4934,7 @@ mod tests {
             },
             alpha_test: None,
             stencil: None,
+            depth_offset: None,
         };
         assert_eq!(
             reversed_winding(Some(&own), None),

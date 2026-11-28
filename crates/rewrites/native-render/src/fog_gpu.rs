@@ -521,7 +521,8 @@ fn state_without_fog(states: &[RenderStateValue], geometry: bool) -> Result<Pass
         .copied()
         .filter(|s| !FOG_WORD_SLOTS.contains(&u32::from(s.state)))
         .collect();
-    if geometry { crate::pass_state::geometry_pass_state(&without) } else { pass_state(&without) }
+    let state = if geometry { crate::pass_state::geometry_pass_state(&without) } else { pass_state(&without) };
+    state.and_then(PassState::no_depth_offset)
 }
 
 /// Whether `states` set `CULLMODE` (build 5849's slots).
@@ -1256,6 +1257,7 @@ pub(crate) mod tests {
             primitive: wgpu::PrimitiveState::default(),
             alpha_test: None,
             stencil: None,
+            depth_offset: None,
         }
     }
 
