@@ -14,12 +14,10 @@ mod hs_dispatch;
 mod hs_eval;
 mod hs_globals;
 pub mod hs_parity;
-mod hs_scheduler;
 mod hs_thread;
 
 const HS: &str = "sim.native.hs";
 const HS_POINTS: &[&points::Point] = &[
-    &points::SCRIPT_UPDATE,
     &points::HS_THREAD_EXECUTE,
     &points::HS_GLOBAL_READ,
     &points::HS_GLOBAL_STORED,
@@ -132,7 +130,6 @@ impl Feature for SimNative {
         }
         if b.switches().implementation(HS, false) {
             if self.missing_hs_entries.is_empty() {
-                hs_scheduler::install(b);
                 hs_thread::install(b);
                 hs_eval::install(b);
                 hs_globals::install(b);
