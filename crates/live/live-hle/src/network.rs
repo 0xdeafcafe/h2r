@@ -73,6 +73,53 @@ impl Op {
     }
 }
 type Result<T> = std::result::Result<T, u32>;
+
+/// What one Winsock or XNet call wrote to the guest, gathered while a film
+/// records the machine tape ([`capture`], `crate::tape`). Every guest write
+/// of this module goes through [`write`] or the QoS result's, so the list
+/// is the call's whole output.
+#[derive(Default)]
+pub(crate) struct Captured {
+    pub writes: Vec<(u32, Vec<u8>)>,
+    /// The QoS result's allocation: (bytes asked, address).
+    pub alloc: Option<(u32, u32)>,
+}
+
+thread_local! {
+    static CAPTURE: std::cell::RefCell<Option<Captured>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Run `f`, gathering the guest writes it makes on this thread when `on`.
+/// Guest calls run on the one host thread that drives the guest, so a
+/// thread's capture is its call's.
+pub(crate) fn capture<T>(on: bool, f: impl FnOnce() -> T) -> (T, Option<Captured>) {
+    if !on {
+        return (f(), None);
+    }
+    let outer = CAPTURE.with(|c| c.borrow_mut().replace(Captured::default()));
+    let value = f();
+    let captured = CAPTURE.with(|c| std::mem::replace(&mut *c.borrow_mut(), outer));
+    (value, captured)
+}
+
+fn note_write(p: u32, data: &[u8]) {
+    if data.is_empty() {
+        return;
+    }
+    CAPTURE.with(|c| {
+        if let Some(c) = c.borrow_mut().as_mut() {
+            c.writes.push((p, data.to_vec()));
+        }
+    });
+}
+
+fn note_alloc(size: u32, ptr: u32) {
+    CAPTURE.with(|c| {
+        if let Some(c) = c.borrow_mut().as_mut() {
+            c.alloc = Some((size, ptr));
+        }
+    });
+}
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -104,7 +151,9 @@ fn write(rt: &Runtime, p: u32, data: &[u8]) -> Result<()> {
     if p == 0 && !data.is_empty() {
         return Err(10014);
     }
-    rt.memory().write_bytes(p, data, 1).map_err(|_| 10014)
+    rt.memory().write_bytes(p, data, 1).map_err(|_| 10014)?;
+    note_write(p, data);
+    Ok(())
 }
 fn word(rt: &Runtime, p: u32) -> Result<u32> {
     Ok(u32::from_le_bytes(read(rt, p, 4)?.try_into().unwrap()))
@@ -207,6 +256,9 @@ struct State {
     tunnel: Option<tunnel::Route>,
     errors: BTreeMap<u32, u32>,
     keys: BTreeMap<[u8; 8], [u8; 16]>,
+    /// The XNKIDs `XNetCreateKey` made on this console: a session it hosts
+    /// ([`Network::hosts_registered_key`]).
+    created: std::collections::BTreeSet<[u8; 8]>,
     peers: BTreeMap<u32, Peer>,
     /// A host's first endpoint (its XNADDR's `ina`) to the one its QoS
     /// lookup answered on instead ([`reach`]).
@@ -272,6 +324,7 @@ impl Network {
             if op == NetCleanup {
                 s.tunnel = None;
                 s.keys.clear();
+                s.created.clear();
                 s.peers.clear();
                 s.reach.clear();
                 s.traffic.clear();
@@ -352,6 +405,47 @@ impl Network {
     }
     pub fn registered_keys(&self) -> Vec<[u8; 8]> {
         lock(&self.state).keys.keys().copied().collect()
+    }
+    /// `WSAGetLastError` for `thread`.
+    pub fn last_error(&self, thread: u32) -> u32 {
+        lock(&self.state).errors.get(&thread).copied().unwrap_or(0)
+    }
+    /// Whether one of `keys` was made by `XNetCreateKey` here: this console
+    /// hosts that System Link session.
+    pub fn hosts_registered_key(&self, keys: &[[u8; 8]]) -> bool {
+        let s = lock(&self.state);
+        keys.iter().any(|k| s.created.contains(k))
+    }
+    /// A film replay serves `op` from its tape (`crate::tape`): keep the
+    /// state other Live entries read from this console's XNet as the
+    /// recorded call left it, with no socket, no host call and no network.
+    /// The session keys (`registered_keys`) and the QoS storage
+    /// (`XNetQosRelease`) are that state; every other answer is the tape's.
+    pub fn replay_mirror(
+        &self,
+        op: Op,
+        a: &[u32],
+        returned: &film::tape::Returned,
+        rt: &Runtime,
+    ) -> std::result::Result<(), String> {
+        match op {
+            Op::RegisterKey | Op::UnregisterKey if returned.value == 0 => {
+                self.register_key(op, a, rt)
+                    .map(|_| ())
+                    .map_err(|e| format!("the recorded key change does not apply here (error {e})"))
+            }
+            Op::QosLookup => {
+                let Some((size, at)) = returned.alloc else { return Ok(()) };
+                let mut m = rt.memory();
+                let got = lock(&self.state).qos.alloc(&mut m, size);
+                if got == Some(at) {
+                    Ok(())
+                } else {
+                    Err(format!("the QoS result was at {at:#010x}; the replay's storage gives {got:x?}"))
+                }
+            }
+            _ => Ok(()),
+        }
     }
     pub fn set_error(&self, thread: u32, error: u32) {
         lock(&self.state).errors.insert(thread, error);
@@ -613,6 +707,8 @@ impl Network {
                 bytes[0] &= 0x0f; // SYSTEM_LINK
                 write(rt, a[0], &bytes[..8])?;
                 write(rt, a[1], &bytes[8..])?;
+                let kid: [u8; 8] = bytes[..8].try_into().unwrap();
+                lock(&self.state).created.insert(kid);
                 Ok(0)
             }
             RegisterKey | UnregisterKey => self.register_key(op, a, rt),
@@ -1197,6 +1293,9 @@ impl Network {
         }
         m.write_bytes(ptr, &out, 1).map_err(|_| 10014u32)?;
         m.set_u32(a[11], ptr).map_err(|_| 10014u32)?;
+        note_alloc(size as u32, ptr);
+        note_write(ptr, &out);
+        note_write(a[11], &ptr.to_le_bytes());
         Ok(0)
     }
 }

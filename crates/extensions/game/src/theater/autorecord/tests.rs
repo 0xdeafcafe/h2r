@@ -675,3 +675,48 @@ fn a_game_killed_mid_play_still_has_a_front_with_its_game() {
     assert!(front.summary.duration_ticks >= 60, "the last refresh, at tick 60");
     rec.finish(true).unwrap();
 }
+
+#[test]
+fn a_client_game_leaves_a_film_with_its_machine_tape() {
+    use crate::theater::machine::{self, Machine};
+    use film::tape::Role;
+    let dir = Temp::new("client");
+    let rec = library(&dir);
+    let tape = machine::tests::sample_tape();
+    rec.attach_machine(Machine::fixed(Role::SystemLinkClient, &tape));
+    let guest = arena();
+    menus(&rec, &guest, 3);
+    // A client is sent state: its game activates and runs no update of its
+    // own, and still leaves a film.
+    rec.game_activated(&game(&block(MODE_MULTIPLAYER, 1), [1, 2]));
+    menus(&rec, &guest, 5);
+    end_game(&rec, "zanzibar", film::blam::Mode::Custom);
+    rec.finish(true).unwrap();
+    let [path] = &films(&dir.0)[..] else { panic!("one film: {:?}", rec.lock().outcome.discard) };
+    let mut reader = film::file::FilmReader::open(fs::File::open(path).unwrap()).unwrap();
+    assert!(reader.sealed);
+    assert_eq!(reader.role(), Role::SystemLinkClient);
+    assert_eq!(reader.tape().unwrap(), tape);
+    let client = machine::client_film(path).unwrap().expect("a client film");
+    assert_eq!((client.role, client.tape), (Role::SystemLinkClient, tape));
+    // Recent lists it.
+    assert_eq!(film::Library::open(&dir.0).unwrap().list().unwrap().len(), 1);
+}
+
+#[test]
+fn a_hosted_or_local_game_keeps_no_machine_tape() {
+    use crate::theater::machine::{self, Machine};
+    use film::tape::Role;
+    let dir = Temp::new("host");
+    let rec = library(&dir);
+    rec.attach_machine(Machine::fixed(Role::Host, &machine::tests::sample_tape()));
+    let guest = arena();
+    play(&rec, &guest, &block(MODE_MULTIPLAYER, 1), [1, 2], 25);
+    end_game(&rec, "zanzibar", film::blam::Mode::Custom);
+    rec.finish(true).unwrap();
+    let [path] = &films(&dir.0)[..] else { panic!("one film") };
+    let reader = film::file::FilmReader::open(fs::File::open(path).unwrap()).unwrap();
+    assert_eq!(reader.role(), Role::Host);
+    assert!(reader.tape_blocks.is_empty());
+    assert!(machine::client_film(path).unwrap().is_none(), "a host's film plays from its game start");
+}

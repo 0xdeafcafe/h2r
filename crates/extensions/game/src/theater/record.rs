@@ -175,15 +175,26 @@ impl Recording {
     /// its final header (from `header`, or the film's own) and its
     /// scoreboard, then the film file's trailer. Returns the film file's
     /// path and the final header.
+    /// Seal `files` at film tick `tick`. A client's game also takes its
+    /// machine tape (`super::machine`), and may hold no tick: what it
+    /// observed before a first tick has no tick to close, and is dropped.
     pub(super) fn seal(
         &mut self,
         mut files: GameFiles,
         header: Option<Header>,
+        tape: Option<film::tape::Tape>,
         tick: u64,
     ) -> Result<(PathBuf, Header)> {
         let sealed = (|| -> Result<Header> {
-            files.track.closing_events(std::mem::take(&mut self.frame.events))?;
-            files.track.append_to_last(self.unified.take_records(false, false)?)?;
+            let events = std::mem::take(&mut self.frame.events);
+            let records = self.unified.take_records(false, false)?;
+            if files.track.ticks() > 0 || tape.is_none() {
+                files.track.closing_events(events)?;
+                files.track.append_to_last(records)?;
+            }
+            if let Some(tape) = &tape {
+                files.film.tape(tape)?;
+            }
             self.meta.finish_map()?;
             let mut summary = self.meta.summary(tick);
             self.unified.summary_medals(&mut summary.players);

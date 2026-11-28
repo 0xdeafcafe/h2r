@@ -9,6 +9,7 @@ pub mod range;
 pub mod share;
 pub mod side;
 pub mod start;
+pub mod tape;
 use anyhow::{Context, Result, ensure};
 pub use library::{Library, LibraryEntry};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -127,6 +128,11 @@ pub struct Header {
     /// file beside it (`film::file`, `TrackReader::attach_film`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inputs_in_film: bool,
+    /// Whose game this is on the recording machine: a client film replays
+    /// as a machine from its tape ([`tape`], `film::file`). A film without
+    /// one is local.
+    #[serde(default, skip_serializing_if = "tape::Role::is_local")]
+    pub role: tape::Role,
 }
 impl Header {
     pub fn telemetry_plan(&self) -> live_proto::film::TelemetryHooks {

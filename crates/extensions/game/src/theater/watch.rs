@@ -276,6 +276,7 @@ impl Session {
                 leaving: false,
             }),
             ring: Some(super::ring::Ring::from_env()),
+            machine: None,
         };
         Ok(Planned {
             id,

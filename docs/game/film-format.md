@@ -1,7 +1,7 @@
 # Halo 2 engine films
 
-Status: Design. The film file's tick chunks, the game start block, the action and body capture at the simulation update and the stats container are built; the recorder writes a checkpoint of the film file every 150 ticks. A default recording writes one film for each game, `<id>.h2film` with `<id>.h2stats` beside it, opened at the game's activation and sealed at its end (slice 6). Extension blocks are built, with the Forge session's edits their first user; the file still carries a seed, and a `--film` or host recording is one film from boot to its first game's end ([theater-design.md](theater-design.md#slices)). It carries no call, machine keyframe, disk manifest or boot record, and the stats container carries no call tape, arena hash or mark.
-Code: `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`), `crates/live/film/src/start.rs` (`GameStart`), `crates/live/film/src/blam` (the stats container), `crates/extensions/game/src/theater/record.rs` (the recorder), `crates/extensions/game/src/theater/game_start.rs` (the capture). Tests: `crates/live/film/src/file/tests.rs`, `crates/live/film/src/start/tests.rs`, `crates/live/film/src/tests.rs`, `crates/extensions/game/src/theater/game_start/tests.rs`.
+Status: Design. The film file's tick chunks, the game start block, the action and body capture at the simulation update and the stats container are built; the recorder writes a checkpoint of the film file every 150 ticks. A default recording writes one film for each game, `<id>.h2film` with `<id>.h2stats` beside it, opened at the game's activation and sealed at its end (slice 6). Extension blocks are built, with the Forge session's edits their first user; the file still carries a seed, and a `--film` or host recording is one film from boot to its first game's end ([theater-design.md](theater-design.md#slices)). A client's film also carries its machine tape: every Live HLE call and pad read from boot ([The machine tape](#the-machine-tape)); its recording, its file blocks and the HLE's replay are built and tested, and booting a client film into Theater is not. No film carries a machine keyframe, disk manifest or boot record, and the stats container carries no call tape, arena hash or mark.
+Code: `crates/live/film/src/file.rs` (`FilmWriter`, `FilmReader`), `crates/live/film/src/start.rs` (`GameStart`), `crates/live/film/src/tape.rs` (the machine tape), `crates/live/live-hle/src/tape.rs` (its recorder and replayer), `crates/extensions/game/src/theater/machine.rs` (a client film's tape), `crates/live/film/src/blam` (the stats container), `crates/extensions/game/src/theater/record.rs` (the recorder), `crates/extensions/game/src/theater/game_start.rs` (the capture). Tests: `crates/live/film/src/file/tests.rs`, `crates/live/film/src/tape/tests.rs`, `crates/live/live-hle/tests/film_tape.rs`, `crates/live/live-hle/src/tape/tests.rs`, `crates/extensions/game/src/theater/autorecord/tests.rs`, `crates/live/film/src/start/tests.rs`, `crates/live/film/src/tests.rs`, `crates/extensions/game/src/theater/game_start/tests.rs`.
 Switch: `film-autorecord` (on), listed in [switches.md](../runtime/switches.md).
 
 An `.h2film` is a film of one game: the game options the game started
@@ -11,8 +11,13 @@ its own objects, physics and rules from the updates
 ([theater-design.md](theater-design.md)). The `.h2stats` file beside it
 is the stats stream: events, scores and poses for Live and the web
 viewer. This page is both files and the rules for recording them. The
-rule that must hold: a film holds nothing of the machine that recorded
-it, no disk file, profile, controller read, packet or memory image.
+rule that must hold: a film of a game this machine simulates holds
+nothing of the machine that recorded it, no disk file, profile,
+controller read, packet or memory image. A client of a game another
+machine hosts is sent state, not every player's updates, so its film is
+the other kind: its machine tape, the controller reads and network
+receives that made its game run as it ran ([The machine
+tape](#the-machine-tape)).
 
 ## Inspired by Halo 3 theater
 
@@ -127,15 +132,19 @@ the game.
 | --- | --- |
 | Offline, split screen, co-op over Live | The game's film, recorded on this machine. |
 | A game this machine hosts (System Link or Live) | The game's film, recorded on this machine. |
-| A System Link or Live game another player hosts | No film from this machine: a client is sent state, not updates. The host's film when the account library has it. |
-| A Live game on a dedicated host | The host's film from the account library, when signed in. |
+| A System Link or Live game another player hosts | The game's film, recorded on this machine: its machine tape, from boot to the game's end ([The machine tape](#the-machine-tape)). The host's film too, when the account library has it. |
+| A Live game on a dedicated host | The game's film, recorded on this machine as a client's. The host's film from the account library, when signed in. |
 
 Recording costs time on every tick. The update hook copies the update's
 body (`theater/actions.rs`). The observer after the tick hashes the
 gameplay state and writes the stats records, and hashes the simulation
 arena every 256 ticks (`Session::checkpoint`, `Recording::post_tick` in
-`theater/record.rs`). Nothing is recorded outside a game, and no host
-call, controller read or memory image is recorded in one. Every world
+`theater/record.rs`). Nothing of a game is recorded outside it, except
+the machine tape: a default recording keeps every Live HLE call and
+controller read from boot, in memory, for a client's game to take when it
+seals (`theater::machine`).
+
+Every world
 frame of a recording draws inside the render's private random stream
 (`render_rng.rs`), as every frame of a playback does.
 
@@ -184,6 +193,7 @@ blocks          each: u8 kind, u32 stored bytes, then one zstd frame
                    2 start point         at most one, before the first chunk
                    3 checkpoint          the open chunk, in an unsealed file
                    5 extension           one feature's input at one tick
+                   6 tape                a client's machine tape, after the last chunk
 trailer         u32 chunk count, then a u64 offset per tick chunk
 ```
 
@@ -258,6 +268,79 @@ it. A shared copy and a recovered film keep the blocks
 
 A film with a tag the build does not know is unavailable, with the
 feature named.
+
+## The machine tape
+
+A client of a System Link or Live game another console hosts is sent
+state, not every player's updates, so its game is not played again from
+the simulation's inputs. It is played again as a machine
+([theater-research.md](theater-research.md#what-the-recorder-captures-machine-level)):
+everything that reached the guest from outside its own computation is on
+the tape, keyed by call index at its HLE boundary, and the replay answers
+call *n* of the run with call *n* of the tape.
+
+| Stream | What each entry holds | Recorded by |
+|---|---|---|
+| calls | every Live HLE entry the guest made: its guest address, its stack arguments, then what it returned (`eax`), the thread's `WSAGetLastError` when the call changed it, the storage it mapped, every guest byte it wrote, and a QoS result's allocation; or the reason it stopped the guest | `live_hle::tape` at `live_hle::invoke` |
+| pads | every `XInputGetState` result: handle, status and the 22-byte packet | `xapi::tap::Recorder`, XAPI's innermost tap |
+
+The calls stream holds every receive: `recv` and `recvfrom` (payload,
+source address and its length, error), `select` (the rewritten sets),
+FIONREAD, `XNetGetConnectStatus`, `XNetQosLookup` (the XNQOS block and its
+pointer), `XNetRandom` and `XNetCreateKey`, and the Live service's
+answers. Winsock and XNet calls are gathered by `network::capture`, as
+every guest write of that module goes through `write` or the QoS result;
+the service's entries by `Guest::capture_hle_writes`. A call that does
+what a tape cannot hold (a mapping change other than the HLE's zeroed
+storage, or more than 16 MiB) ends the session's tape, and a client game
+sealed after it has no film, with the reason in `theater.status`.
+
+**On disk** a tape block (kind 6) is one zstd frame of at most 8 MiB
+inflated: `u8 version (1) | u8 stream (0 calls, 1 pads) | u64 first index
+| u32 count`, then at most 4096 entries, numbers in ULEB128
+(`film::tape`). Each stream's blocks run in order from index 0 with no
+gap. The header's flag bit 4 says the file holds a tape; the writer takes
+no tick after it.
+
+A block of another version is refused with its version named. A film
+from before tapes opens as it did, with no tape.
+
+**Whose game.** The seed's header names the film's role (`role`, left
+out for a local game), decided at the game's activation by
+`Hle::film_role`. Only a client's film takes the tape; the others play
+from their game start.
+
+| This console at the game's activation | `role` |
+|---|---|
+| no session key registered, or co-op | (local) |
+| a key it made with `XNetCreateKey`, or a Live session it advertises | `host` |
+| another console's key, in a Live session | `live-client` |
+| another console's key, otherwise | `system-link-client` |
+
+**Recording.** A default recording (`h2 play`) attaches the tape at boot,
+before the guest runs (`theater::machine::Machine::record`), unless
+lockstep owns the pad tap. The tape lives in memory, up to 512 MiB, and
+a client game's film takes all of it from boot when the game seals,
+with or without simulation updates of its own (`State::seal_game`).
+Recording changes nothing the guest sees.
+
+**Replay.** `theater::machine::replay` gives the Live HLE the film's
+calls (`Tape::replayer`) and XAPI the film's pad reads. Every Live call
+is then answered from the tape: the recorded bytes are written, the
+recorded value returned, and no socket, QoS responder or server is
+touched. The HLE keeps only the state other entries read from it: the
+session keys (`XNetRegisterKey`, `XNetUnregisterKey`), the QoS storage
+(`XNetQosLookup`, `XNetQosRelease`) and the startup counts
+(`Network::replay_mirror`). A call past the tape's end, or one whose
+entry or arguments differ from the recorded call at its index, stops the
+guest with a named error (`live_hle::tape::TapeError`), and every later
+call gives the same error; a replay never falls back to live data.
+
+**Sharing.** A client film is not shared: its tape holds this machine's
+network traffic, addresses and Live answers, so `share_copy` refuses it
+and the account library's upload leaves it local (`films::sync`).
+A recovered film (`recover`) keeps no tape, as the tape is written at the
+seal.
 
 ## Pages
 
