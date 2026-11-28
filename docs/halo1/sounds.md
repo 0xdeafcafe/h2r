@@ -107,8 +107,11 @@ Halo 2's `0x126ec0` promotion selects a range inside one sound
 (`0x218f10`). Converted H1 sounds keep the native header and gestalt with
 an appended rule containing the target datum, count, duration and two
 initially zero counter words. The boot hook uses the H2 mixer clock
-(`0x126a34`) and routes an eligible impulse at `0x126000`. Native impulse
-allocation and permutation selection then use the selected sound. A rate
+(`0x126a34`) and promotes on the sound table's start path
+(`promotion::promote_source`, after the gate and `0x126ec0`, before the
+request is read): a redirect starts the target with no rule of the first
+sound's. Native admission and permutation selection then use the selected
+sound. A rate
 limit returns the allocator's no-sound datum. The H1 mixer has no promotion
 call in its looping playback path.
 

@@ -82,7 +82,7 @@ fn effect_of(cx: &Cx, table: &Shared, tag: u32, custom: u32) -> Option<u32> {
 }
 
 /// The gate (`0x126c30`, [`gate::start_gate`]) and the rule (`0x126ec0`,
-/// [`promotion::select`]), then the record read and admitted with the
+/// [`promotion::select`]), the source's promotion ([`promotion::promote_source`]), then the record read and admitted with the
 /// gate's listener as its channel: the handle, or [`NONE`] when the sound
 /// is off or any step refuses. A fault reading the gate's or the rule's
 /// data refuses the start as unreadable.
@@ -102,6 +102,17 @@ pub(super) async fn gate_and_admit(cx: &Cx, table: &Shared, record: u32, tag: u3
         let rule = match promotion::select(m, tag) {
             Ok(r) if r.refused => return NONE,
             Ok(r) => r.rule,
+            Err(_) => {
+                lock(table).ledger.refused_unreadable += 1;
+                return NONE;
+            }
+        };
+        // The source's promotion (Halo 1, `0x24ea0`): another tag with no
+        // rule of the first's, or a refusal.
+        let (tag, rule) = match promotion::promote_source(m, tag) {
+            Ok(Some(promoted)) if promoted == tag => (tag, rule),
+            Ok(Some(promoted)) => (promoted, NONE),
+            Ok(None) => return NONE,
             Err(_) => {
                 lock(table).ledger.refused_unreadable += 1;
                 return NONE;
