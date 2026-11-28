@@ -642,7 +642,7 @@ impl Glue {
             stencil,
             copy_at,
             camera,
-            token: crate::native_world_glue::view_token(render_bridge::frame_wait::presents() + 1, view_index),
+            token: crate::native_world_glue::view_token(crate::presents::presents() + 1, view_index),
         });
         if let Some(ready) = &ready {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());

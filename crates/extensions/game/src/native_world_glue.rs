@@ -94,6 +94,9 @@ pub struct Ready {
     /// compiled layer-6 passes, their supplies and the parts the water
     /// pass draws.
     pub water: OnceLock<(Arc<crate::native_water_glue::WaterData>, StagePalettes)>,
+    /// The BSP ocean of this load (`native_ocean_glue`): what its layer-3
+    /// pass compiles from, or why it cannot.
+    pub ocean: OnceLock<Arc<Result<crate::native_ocean_glue::OceanData, String>>>,
     /// The scene's layers 1, 2, 5, 7, 8, 17 and 20 of this load
     /// (`native_layers_glue`), when `frame-scene.layers` is placed.
     pub layers: OnceLock<(Arc<crate::native_layers_glue::LayersView>, StagePalettes)>,
@@ -217,7 +220,6 @@ pub struct Glue {
 impl Host for Glue {
     fn retire_bsp(&self) {
         self.retire_stale_bsp();
-        crate::native_map::retire_indexed_caches();
     }
 
     fn try_opaque_simple(&self, _mem: &mut dyn GuestMemory, _header: u32, _value: u32) -> bool {
@@ -323,7 +325,7 @@ impl Host for Glue {
         let cull_camera = native_render::camera::display_camera(scene_view.camera, factor);
         let frustum = GpuWorld::draw_frustum(&cull_camera.view_projection(), true);
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let run = render_bridge::frame_wait::presents().wrapping_add(1);
+        let run = crate::presents::presents().wrapping_add(1);
         let (device, color, depth) = pipeline_target();
         let time = native_render::layer_pass::render_time(&ReadMemory(mem));
         let accumulation = accumulation_target(&ReadMemory(mem));
@@ -1295,7 +1297,7 @@ fn load_ready(
     }
     for group in section_parts.values_mut() { group.sort_unstable(); }
     let part_bounds = RwLock::new(world.draws.iter().map(|d| ((d.owner, d.part), d.bounds)).collect());
-    let empty_world = parts.is_empty() && opaque.is_empty();
+    let empty_world = parts.is_empty();
     let stage_bitmap = |images: &StageImages, stage: Stage| match stage {
         Stage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
         _ => None,
@@ -1342,7 +1344,7 @@ fn load_ready(
         retire: Some(retire), part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts), section_parts,
         layer3, pages: page_set,
         upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
-        fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
+        fog: OnceLock::new(), water: OnceLock::new(), ocean: OnceLock::new(), layers: OnceLock::new(),
         decorators: OnceLock::new(), sky: OnceLock::new(), lights: OnceLock::new(),
         lightmaps: lightmap_bitmap.map(|bitmap| (bitmap, lightmap_palettes.clone())),
     }))) { return Ok(()); }
@@ -1406,6 +1408,16 @@ fn load_ready(
         }
         empty
     };
+    if !key.current() { return Ok(()); }
+
+    {
+        let _scope = mem_watch::scope("native.ocean.load");
+        if let Some(ocean) = crate::native_ocean_glue::load(&mut map, &mut files, bsp_tag, &mut stage_images, &mut decoder)
+            && !send(StageReady::Ocean(Arc::new(ocean)))
+        {
+            return Ok(());
+        }
+    }
     if !key.current() { return Ok(()); }
 
     if render_bridge::native_layers::placed() {

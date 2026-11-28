@@ -13,7 +13,6 @@ use std::sync::{Arc, Mutex, MutexGuard, Weak, mpsc};
 use assets::{Region, ResourceFiles};
 use map::{Map, ResourceFile, TagId};
 use native_render::load::Error;
-use native_render::world_layers_gpu::Cache as IndexedCache;
 use vfs::{FileSource, Vfs};
 
 use crate::pad_speaker::SHARED_MAPS;
@@ -114,43 +113,6 @@ fn lane(stage: timeline::setup::Stage) -> &'static Mutex<()> {
         timeline::setup::Stage::World => &WORLD,
         _ => &MODELS,
     }
-}
-
-type IndexedSlot = Mutex<Arc<IndexedCache>>;
-static INDEXED_CACHES: Mutex<Vec<Weak<IndexedSlot>>> = Mutex::new(Vec::new());
-
-/// A draw gets the current cache at admission. A queued draw can finish
-/// with that cache after activation, without refilling the next map's cache.
-pub(crate) struct MapIndexedCache(Arc<IndexedSlot>);
-
-impl Default for MapIndexedCache {
-    fn default() -> Self {
-        let slot = Arc::new(IndexedSlot::default());
-        let mut caches = INDEXED_CACHES.lock().unwrap_or_else(|e| e.into_inner());
-        caches.retain(|cache| cache.strong_count() != 0);
-        caches.push(Arc::downgrade(&slot));
-        Self(slot)
-    }
-}
-
-impl MapIndexedCache {
-    pub(crate) fn get(&self) -> Arc<IndexedCache> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-}
-
-fn detach_indexed_cache(cache: &IndexedSlot) -> Arc<IndexedCache> {
-    std::mem::take(&mut *cache.lock().unwrap_or_else(|e| e.into_inner()))
-}
-
-pub(crate) fn retire_indexed_caches() {
-    let mut caches = INDEXED_CACHES.lock().unwrap_or_else(|e| e.into_inner());
-    caches.retain(|cache| {
-        let Some(cache) = cache.upgrade() else { return false };
-        let retired = detach_indexed_cache(&cache);
-        retire_owned(timeline::setup::Stage::World, retired);
-        true
-    });
 }
 
 /// Resolve a live datum by its map tag index when the salt differs.

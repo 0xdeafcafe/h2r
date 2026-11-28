@@ -571,12 +571,6 @@ pub struct DisplayRateStats {
     pub resets: u64,
     /// Mean cost of a display frame on the render thread, microseconds.
     pub avg_cost_us: u64,
-    /// Carried draws moved onto a blended camera.
-    pub moved_draws: u64,
-    /// Typed stages moved onto a blended camera.
-    pub moved_stages: u64,
-    /// Typed stages in a game view drawn as their tick drew them.
-    pub held_stages: u64,
     /// Views on display frames whose world marks were moved onto the
     /// camera the frame drew the view with.
     pub marks_moved: u64,

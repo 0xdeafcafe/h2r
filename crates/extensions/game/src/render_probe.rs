@@ -26,9 +26,6 @@ fn display_rate_of(s: native_render::frame_graph::display_rate::DisplayRateStats
         failed: f.failed,
         resets: f.resets,
         avg_cost_us: f.avg_cost_us,
-        moved_draws: s.moved_draws,
-        moved_stages: s.moved_stages,
-        held_stages: s.held_stages,
         marks_moved: s.marks_moved,
         marks_held: s.marks_held,
     }
@@ -143,9 +140,6 @@ mod tests {
         use native_render::frame_graph::display_rate::DisplayRateStats;
         let v = display_rate_of(DisplayRateStats {
             frames: DisplayStats { rate_hz: 120, shown_hz: 60, capped: true, swaps: 9, blended: 7, swap_blends: 3, between_newest: 2, failed: 1, resets: 4, avg_cost_us: 850 },
-            moved_draws: 40,
-            moved_stages: 5,
-            held_stages: 6,
             marks_moved: 11,
             marks_held: 2,
         });
@@ -156,7 +150,6 @@ mod tests {
         assert_eq!((&v["swaps"], &v["blended"], &v["swap_blends"]), (&json!(9), &json!(7), &json!(3)));
         assert_eq!((&v["between_newest"], &v["failed"], &v["resets"]), (&json!(2), &json!(1), &json!(4)));
         assert_eq!(v["avg_cost_us"], 850);
-        assert_eq!((&v["moved_draws"], &v["moved_stages"], &v["held_stages"]), (&json!(40), &json!(5), &json!(6)));
         assert_eq!((&v["marks_moved"], &v["marks_held"]), (&json!(11), &json!(2)));
     }
 }

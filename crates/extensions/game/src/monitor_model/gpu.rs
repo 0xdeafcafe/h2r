@@ -200,8 +200,8 @@ impl native_render::Stage for Pass {
 
     fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> native_render::StageWork {
         let renderer = Arc::clone(&self.renderer);
-        let mut r = renderer.lock().unwrap_or_else(|e| e.into_inner());
-        let r = &mut *r;
+        let mut guard = renderer.lock().unwrap_or_else(|e| e.into_inner());
+        let r = &mut *guard;
         if r.showcase.as_ref().is_none_or(|(d, _)| *d != t.device) {
             r.showcase = Some((t.device.clone(), Showcase::new(&t.device, &t.queue)));
             r.mesh = None;
@@ -228,6 +228,7 @@ impl native_render::Stage for Pass {
             glyph: false,
         };
         let (device, color, color_format) = (t.device.clone(), t.color.clone(), t.color_format);
+        drop(guard);
         crate::native_targets_glue::encoded(move |encoder| {
             let mut r = renderer.lock().unwrap_or_else(|e| e.into_inner());
             let Some((_, showcase)) = r.showcase.as_mut() else { return };

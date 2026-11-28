@@ -62,6 +62,8 @@ variants = { path = "../../formats/variants" }
 anyhow.workspace = true
 libloading = { workspace = true }
 gfx = { path = "../../platform/gfx", default-features = false }
+# The frame's view and stage types the glue hands the native renderer.
+frame-types = { path = "../../platform/frame-types" }
 png = { workspace = true }
 # The native post's A/B readback (native_post_glue).
 wgpu = { version = "30", optional = true }

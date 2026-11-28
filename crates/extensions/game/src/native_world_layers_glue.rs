@@ -98,7 +98,7 @@ pub fn install(rt: &runtime::Runtime) {
                 let mut pool = None;
                 let mut sky = None;
                 let context = (|| {
-                    let frame = render_bridge::frame_wait::presents() + 1;
+                    let frame = crate::presents::presents() + 1;
                     let current = current();
                     let guest = ctx.memory();
                     let mem = Memory(&guest);

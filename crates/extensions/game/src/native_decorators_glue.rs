@@ -598,7 +598,7 @@ impl Host for Glue {
             return None;
         }
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let token = crate::native_world_glue::view_token(render_bridge::frame_wait::presents() + 1, view);
+        let token = crate::native_world_glue::view_token(crate::presents::presents() + 1, view);
         let pass = Box::new(DecoratorPass { plan, ready: Arc::clone(&ready), draw, token });
         drop(planning);
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());

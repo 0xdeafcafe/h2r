@@ -73,8 +73,6 @@ fn counters() -> BTreeMap<String, u64> {
         .collect();
     #[cfg(feature = "gpu")]
     counts.extend(crate::native_post_glue::counters());
-    #[cfg(feature = "gpu")]
-    counts.extend(native_render::world_layers_gpu::pool_recording_counters());
     counts
 }
 

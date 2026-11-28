@@ -412,9 +412,6 @@ headless run lock it). Its fields, counted since the loop was installed:
 | `failed` | display frames that failed; the window kept the frame before |
 | `resets` | pairs dropped by a Swap without the graph |
 | `avg_cost_us` | mean render-thread cost of a display frame |
-| `moved_draws` | carried draws drawn on a blended camera |
-| `moved_stages` | typed stages drawn on a blended camera |
-| `held_stages` | typed stages in a game view drawn at their tick's camera |
 | `marks_moved` | views on display frames whose world marks were moved onto the camera the frame drew them with |
 | `marks_held` | views on display frames whose world marks kept their image's camera (no drawn view at their viewport) |
 

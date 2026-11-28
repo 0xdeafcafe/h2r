@@ -198,7 +198,7 @@ impl cut::Host for Cut {
             prepared,
             texture,
             caches: self.caches.clone(),
-            frame: render_bridge::frame_wait::presents(),
+            frame: crate::presents::presents(),
         };
         frame_builder().push(FrameOp::Stage { slot: SlotAt { slot: Slot::AfterOpaque, view: 0 }, stage: Box::new(pass) });
         Ok(())

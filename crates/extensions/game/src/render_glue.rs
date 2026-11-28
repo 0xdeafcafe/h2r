@@ -90,7 +90,6 @@ pub fn install_game(
         crate::native_particles_glue::install();
         crate::native_first_person_glue::install();
         crate::native_world_layers_glue::install(rt);
-        crate::native_lights_glue::walk::install(rt);
         crate::native_targets_glue::install();
         crate::native_flare_query_glue::install();
         crate::native_flare_draw_glue::install();

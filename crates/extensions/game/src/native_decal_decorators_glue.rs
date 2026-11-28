@@ -14,7 +14,7 @@ struct Glue;
 
 impl stage::Host for Glue {
     fn frame(&self) -> u64 {
-        render_bridge::frame_wait::presents()
+        crate::presents::presents()
     }
 
     fn begin_body(&self, _mem: &mut dyn GuestMemory, _call: &Call, _sampled: bool) {

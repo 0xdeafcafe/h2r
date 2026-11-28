@@ -195,7 +195,6 @@ pub mod native_shadow_chain;
 #[cfg(feature = "gpu")]
 pub mod native_shadows_draw;
 #[cfg(feature = "gpu")]
-pub mod native_shadows_scope;
 #[cfg(feature = "gpu")]
 pub mod native_shadows_glue;
 #[cfg(feature = "gpu")]

@@ -161,7 +161,10 @@ impl Host for Targets {
     }
 
     fn surface_size(&self, mem: &dyn GuestMemory, header: u32) -> Option<(u32, u32)> {
-        self.device.lock().ok()?.surface_size(&crate::native_world_glue::ReadMemory(mem), header)
+        // `X_D3DPixelContainer`: `Format` at +0x0c, `Size` at +0x10.
+        let format = mem.u32(header.wrapping_add(0x0c)).ok()?;
+        let size = mem.u32(header.wrapping_add(0x10)).ok()?;
+        gfx::texture::TextureDesc::from_header(format, size).ok().map(|d| (d.width, d.height))
     }
 
     fn viewport(&self, mem: &mut dyn GuestMemory, at: u32) -> bool {

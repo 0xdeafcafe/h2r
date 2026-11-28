@@ -26,7 +26,7 @@ use render_bridge::native_lights::{SceneDraw, ScenePass};
 
 use super::{
     Glue, Keep, PreparedLight, RetainedLight, ShadowMap, constants, intersect_scissor, scale_scissor,
-    scene_light, structure_key, view_constants, w_clip,
+    scene_light, structure_key,
 };
 
 /// A world-space box (`min`, `max`).
