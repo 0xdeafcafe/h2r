@@ -10,6 +10,8 @@ by `sim_bridge::tick::TickDriver` as the body of the point with
 `implement_async`. There is no switch. It does what the original does, in the
 original's order:
 
+0. the events row: `damage::tick_starts` empties the last tick's event buffer
+   (what a hook on `GAME_TICK`'s entry did);
 1. the x87 control word through the CRT (`0x003212d6`, `_controlfp` with new
    word `0x9001f` and mask `0xfffff`);
 2. the `0x4048`-byte update record on the guest stack below the entry `ESP`,
@@ -17,7 +19,7 @@ original's order:
 3. the run flag, the byte at record `+4` (`RUN_FLAG`). When it is clear the
    phases and the clock step are skipped;
 4. the 29 phases of [the sim review](../reviews/2026-11-20-sim.md) section 2.1
-   (`engine::sim_tick::PHASES`). Phase 1 (`0x0014d3a0`) takes the record as
+   (`engine::sim_tick::SYSTEMS`, one ordered table, every row named). Phase 1 (`0x0014d3a0`) takes the record as
    its one stack argument (`ret 4`) with `ECX` = record; phases 2-29 take no
    argument and see `EBX` = record (`Form`; `0x00138db0` reads it);
 5. the clock step (`0x001380b4`), inside the run branch: `[*TICK_CLOCK + 0x14]`
@@ -27,6 +29,19 @@ original's order:
    not the flag was set;
 7. the tick count at game time `+8`, which advances only if the flag is still
    set after the close.
+
+**Names.** The 14 rows that had only an address are named from the lifted
+code (`input_random` `0x138db0` steps the shared seed per action axis;
+`periodic_sound_walk` `0x20b660` runs the `snd!` group every N ticks;
+`game_over_check` `0x138e40`; `game_save_update` `0x2268e0` and
+`game_save_policy` `0x226050` (the save module); `screen_shake_players`
+`0x153950`; `net_flag_decay` `0x225730`; the rest carry the global they
+walk: `pool_walk_4f5724`, `state_4f55ec_update`, `time_clock_13c680`,
+`object_list_update`, `script_globals_step`, `input_record_apply`,
+`stats_update`). `the_rows_are_retail_order` pins the names in order.
+
+**The rate.** `TICK_RATE_HZ` is 30 and `tick_length(rate)` is the one place
+a rate becomes a step; no row holds a literal 30.
 
 Each phase has an owner. A guest phase is a guest call (`GuestCall`, awaited,
 with the record's bytes reserved below the call's stack); a Rust phase is a
@@ -62,8 +77,9 @@ starts as the sim's seeds, lives for the process and is not saved. A phase
 whose seed words do not read runs on the sim's seeds, counted by
 `sim_tick::unisolated`.
 
-The hooks on `GAME_TICK` run as before: the driver takes the original's place
-in the chain, so each `observe_before`, `before`, `after` and
+The remaining hooks on `GAME_TICK` run as before (the events row above is the
+one that moved into the table): the driver takes the original's place
+in the chain, so each `before`, `after` and
 `observe_after` hook (lockstep's hash, telemetry, the agent's queued calls,
 actor-net, cheats, skulls, co-op, firefight) fires at the same point around
 it, and a `before` that returns skips the body. `existing_tick_hooks_still_fire`
@@ -89,7 +105,7 @@ only our own simulation.
 
 **Proof.** `tests/sim_tick_differential.rs` (engine, `differential`) runs the
 lifted body on the IR interpreter: `phases_run_in_retail_order` compares its
-calls with `PHASES` (the odd entries `0x00165dc1` and `0x001917b2` are the
+calls with `SYSTEMS` (the odd entries `0x00165dc1` and `0x001917b2` are the
 targets the body reaches), and `tick_matches_lifted` compares the
 envelope's registers and stack arguments (the control word's mask included),
 the phases' `ECX`, `EBX` and stack argument, and the game-time page, which
