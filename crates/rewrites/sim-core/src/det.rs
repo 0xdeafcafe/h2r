@@ -36,9 +36,17 @@ pub fn fast_env(mxcsr: u32) -> bool {
 }
 
 /// Exact-or-decline binary32 arithmetic. See the module docs.
+///
+/// [`Fp::guest`] runs under the guest's MXCSR instead: an operation on the
+/// fast path (the MXCSR passes [`fast_env`], the operands are ordinary)
+/// takes the host result, and every other one takes the `simd` crate's
+/// SSE model, which rounds as the MXCSR says and raises its flags. Only an
+/// unmasked exception, which the guest would deliver as `#XM`, leaves
+/// [`Fp::exact`] false. [`Fp::mxcsr`] is the guest's MXCSR afterwards.
 #[derive(Clone, Copy, Debug)]
 pub struct Fp {
     ok: bool,
+    guest: Option<u32>,
 }
 
 impl Default for Fp {
@@ -49,7 +57,45 @@ impl Default for Fp {
 
 impl Fp {
     pub const fn new() -> Self {
-        Self { ok: true }
+        Self { ok: true, guest: None }
+    }
+
+    /// Arithmetic under the guest's `mxcsr`, as the instructions would run.
+    pub const fn guest(mxcsr: u32) -> Self {
+        Self { ok: true, guest: Some(mxcsr) }
+    }
+
+    /// The guest's MXCSR after the operations so far, for [`Fp::guest`].
+    pub fn mxcsr(&self) -> Option<u32> {
+        self.guest
+    }
+
+    /// Under [`Fp::guest`], raise `flags` as an instruction outside the
+    /// arithmetic would (a conversion's PE); an unmasked one refuses.
+    /// Without `guest` nothing changes.
+    pub fn raise(&mut self, flags: u32) {
+        let Some(m) = self.guest else { return };
+        let masked = (m >> simd::MASK_SHIFT) & 0x3f;
+        if flags & !masked & 0x3f != 0 {
+            self.ok = false;
+        } else {
+            self.guest = Some(m | flags);
+        }
+    }
+
+    /// One modelled instruction: its result, or a refusal on `#XM`.
+    fn model<T: Copy>(&mut self, mxcsr: u32, fallback: T, run: impl FnOnce(&mut u32) -> Result<T, simd::Xm>) -> T {
+        let mut m = mxcsr;
+        match run(&mut m) {
+            Ok(r) => {
+                self.guest = Some(m);
+                r
+            }
+            Err(simd::Xm) => {
+                self.ok = false;
+                fallback
+            }
+        }
     }
 
     /// Whether every operation so far stayed on the fast path.
@@ -59,9 +105,30 @@ impl Fp {
 
     /// Record operands that some other instruction (a compare, a
     /// conversion) consumes, under the same range rule.
+    ///
+    /// Under [`Fp::guest`] the operand is a `comiss` operand: a NaN raises
+    /// IE and a subnormal DE (unless DAZ), as the compare would.
     #[inline]
     pub fn check(&mut self, x: u32) {
-        self.ok &= lanes::ordinary1(x);
+        let Some(m) = self.guest else {
+            self.ok &= lanes::ordinary1(x);
+            return;
+        };
+        let bits = x & 0x7fff_ffff;
+        let flag = if bits > 0x7f80_0000 {
+            simd::IE
+        } else if bits != 0 && bits < 0x0080_0000 && m & 0x40 == 0 {
+            simd::DE
+        } else {
+            0
+        };
+        if flag != 0 {
+            if m & (flag << simd::MASK_SHIFT) == 0 {
+                self.ok = false;
+            } else {
+                self.guest = Some(m | flag);
+            }
+        }
     }
 
     /// Record an operand that is only compared (`comiss`, `fcom`) and
@@ -75,7 +142,22 @@ impl Fp {
 
     #[inline]
     fn scalar(&mut self, op: Op, a: u32, b: u32) -> u32 {
-        self.ok &= lanes::ordinary1(a) & lanes::ordinary1(b);
+        let fast = lanes::ordinary1(a) & lanes::ordinary1(b);
+        if let Some(m) = self.guest
+            && !(fast && fast_env(m))
+        {
+            let host = lanes::binary1(op, a, b);
+            return self.model(m, host, |m| {
+                let a = u128::from(a);
+                match op {
+                    Op::Add => simd::addss(m, a, b),
+                    Op::Sub => simd::subss(m, a, b),
+                    Op::Mul => simd::mulss(m, a, b),
+                }
+                .map(|r| r as u32)
+            });
+        }
+        self.ok &= fast;
         lanes::binary1(op, a, b)
     }
 
@@ -103,12 +185,34 @@ impl Fp {
     /// payload the host picks.
     #[inline]
     pub fn div(&mut self, a: u32, b: u32) -> u32 {
-        self.ok &= lanes::ordinary1(a) & lanes::ordinary1(b) & (b & 0x7fff_ffff != 0);
-        (f32::from_bits(a) / f32::from_bits(b)).to_bits()
+        let fast = lanes::ordinary1(a) & lanes::ordinary1(b) & (b & 0x7fff_ffff != 0);
+        let host = (f32::from_bits(a) / f32::from_bits(b)).to_bits();
+        if let Some(m) = self.guest
+            && !(fast && fast_env(m))
+        {
+            return self.model(m, host, |m| simd::divss(m, u128::from(a), b).map(|r| r as u32));
+        }
+        self.ok &= fast;
+        host
     }
 
     #[inline]
     fn packed(&mut self, op: Op, a: Vec4, b: Vec4) -> Vec4 {
+        if let Some(m) = self.guest
+            && !(lanes::scalar::ordinary(a, b) && fast_env(m))
+        {
+            let host = lanes::scalar::binary32(op, a, b);
+            let pack = |v: Vec4| v.iter().rev().fold(0u128, |bits, &x| (bits << 32) | u128::from(x));
+            let (a, b) = (pack(a), pack(b));
+            return self.model(m, host, |m| {
+                match op {
+                    Op::Add => simd::addps(m, a, b),
+                    Op::Sub => simd::subps(m, a, b),
+                    Op::Mul => simd::mulps(m, a, b),
+                }
+                .map(|r| std::array::from_fn(|i| (r >> (32 * i)) as u32))
+            });
+        }
         if lanes::enabled() {
             self.ok &= lanes::ordinary(a, b);
             lanes::binary32(op, a, b)
@@ -231,6 +335,48 @@ pub fn x87_neg_quotient(a: u32, b: u32) -> X87Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_arithmetic_runs_under_any_masked_mxcsr() {
+        let (a, b) = (1.1f32.to_bits(), 3.3f32.to_bits());
+        // PE clear: the result is the host's and PE comes out set.
+        let mut fp = Fp::guest(0x1f80);
+        assert_eq!(fp.mul(a, b), (1.1f32 * 3.3).to_bits());
+        assert_eq!(fp.mxcsr(), Some(0x1fa0));
+        let q = fp.mul4([a; 4], [b; 4]);
+        assert_eq!(q, [(1.1f32 * 3.3).to_bits(); 4]);
+        assert!(fp.exact());
+        // An exact operation leaves PE clear.
+        let mut fp = Fp::guest(0x1f80);
+        assert_eq!(fp.add(1.0f32.to_bits(), 2.0f32.to_bits()), 3.0f32.to_bits());
+        assert_eq!(fp.mxcsr(), Some(0x1f80));
+        // Operands off the fast range take the SSE model: a product that
+        // underflows raises UE and PE, and the result is the model's.
+        let tiny = 1.0e-30f32.to_bits();
+        let mut fp = Fp::guest(0x1fa0);
+        let mut m = 0x1fa0;
+        let want = simd::mulss(&mut m, u128::from(tiny), tiny).unwrap() as u32;
+        assert_eq!(fp.mul(tiny, tiny), want);
+        assert_eq!(fp.mxcsr(), Some(m));
+        assert_ne!(m & simd::UE, 0);
+        assert!(fp.exact());
+        // A comiss operand: a NaN raises IE.
+        fp.check(0x7fc0_0000);
+        assert_ne!(fp.mxcsr().unwrap() & simd::IE, 0);
+        // Round toward zero is modelled, not refused.
+        let mut fp = Fp::guest(0x7f80);
+        assert_eq!(fp.div(1.0f32.to_bits(), 3.0f32.to_bits()), 0x3eaa_aaaa);
+        assert!(fp.exact());
+        // An unmasked exception is the guest's `#XM`: refused.
+        let mut fp = Fp::guest(0x0f80);
+        fp.mul(a, b);
+        assert!(!fp.exact());
+        // Without `guest` nothing changes: off-range operands refuse.
+        let mut fp = Fp::new();
+        fp.mul(tiny, tiny);
+        assert!(!fp.exact());
+        assert_eq!(fp.mxcsr(), None);
+    }
 
     #[test]
     fn x87_environment_needs_masked_nearest_and_free_registers() {

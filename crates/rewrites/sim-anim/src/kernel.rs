@@ -72,6 +72,9 @@ pub struct Request<'a> {
     /// Per [`Which`]: the stream's codec functions, or `None` when the
     /// setup does not evaluate it.
     pub streams: [Option<Ops>; 2],
+    /// The guest's MXCSR at the first evaluator; the arithmetic runs under
+    /// it ([`Fp::guest`]) and [`Effects::mxcsr`] is the MXCSR after.
+    pub mxcsr: u32,
 }
 
 /// What the call did besides the records.
@@ -79,15 +82,53 @@ pub struct Request<'a> {
 pub struct Effects {
     /// An int16 codec ran its MMX path: x87 TOP is 0 and every tag empty.
     pub mmx: bool,
+    /// The guest's MXCSR after the call.
+    pub mxcsr: u32,
+}
+
+/// Why [`sample`] cannot reproduce a call.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The record or written buffers are shorter than the node count.
+    Records,
+    /// The setup evaluates a stream the clip does not hold.
+    NoStream(Which),
+    /// The mask has no word for a live node.
+    Mask { node: usize },
+    /// A live node reaches a codec function the kernel does not know.
+    UnknownOp { which: Which, channel: Channel },
+    /// The codec cannot read the sample: a key or value past the blob, or
+    /// (`misaligned`) a `movaps` key off 16 bytes.
+    Codec { which: Which, channel: Channel, node: usize, track: u32, misaligned: bool },
+    /// Mode 0 with a second frame reaches a live node ("Broken variants").
+    Broken { which: Which, channel: Channel, node: usize },
+    /// An operation raised an SSE exception the MXCSR leaves unmasked.
+    Unmasked,
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match *self {
+            Self::Records => write!(f, "records shorter than the node count"),
+            Self::NoStream(which) => write!(f, "no {which:?} stream"),
+            Self::Mask { node } => write!(f, "no mask word for node {node}"),
+            Self::UnknownOp { which, channel } => write!(f, "unknown {which:?} {channel:?} codec function"),
+            Self::Codec { which, channel, node, track, misaligned } => write!(
+                f,
+                "{which:?} {channel:?} node {node} track {track}: {}",
+                if misaligned { "movaps key off 16 bytes" } else { "a read past the blob" }
+            ),
+            Self::Broken { which, channel, node } => {
+                write!(f, "mode 0 with a second frame reaches {which:?} {channel:?} node {node}")
+            }
+            Self::Unmasked => write!(f, "unmasked SSE exception"),
+        }
+    }
 }
 
 /// The kernel cannot reproduce this call exactly; the guest must run it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Unsupported;
-
-fn need<T>(v: Option<T>) -> Result<T, Unsupported> {
-    v.ok_or(Unsupported)
-}
 
 /// The evaluators' quaternion blend: dot product, flip the target into the
 /// same hemisphere, lerp, renormalize with one reciprocal square root.
@@ -129,7 +170,7 @@ fn live<'s>(
     c: Channel,
     count: usize,
     mask: Option<&'s [u32]>,
-) -> impl Iterator<Item = Result<(usize, u32), Unsupported>> + 's {
+) -> impl Iterator<Item = Result<(usize, u32), Refusal>> + 's {
     s.flagged[c as usize]
         .iter()
         .take_while(move |&&(node, _)| usize::from(node) < count)
@@ -139,7 +180,7 @@ fn live<'s>(
                 None => true,
                 Some(words) => match words.get(n >> 5) {
                     Some(w) => w >> (n & 31) & 1 != 0,
-                    None => return Some(Err(Unsupported)),
+                    None => return Some(Err(Refusal::Mask { node: n })),
                 },
             };
             on.then_some(Ok((n, u32::from(track))))
@@ -156,18 +197,20 @@ struct Walk<'a, 'r> {
 }
 
 impl Walk<'_, '_> {
-    fn stream(&mut self, which: Which, ops: Ops) -> Result<(), Unsupported> {
+    fn stream(&mut self, which: Which, ops: Ops) -> Result<(), Refusal> {
         let clip = self.clip;
-        let s = need(clip.stream(which))?;
+        let s = clip.stream(which).ok_or(Refusal::NoStream(which))?;
         let req = self.req;
         let (mode, w, one, sign) = (req.mode, req.weight, req.one, req.sign);
 
         for item in live(s, Channel::Rotation, self.count, req.mask) {
             let (node, track) = item?;
-            let op = need(ops.rotation)?;
-            let mut v = need(op.sample(&mut self.cx, clip, s, track, req.frame))?;
+            let channel = Channel::Rotation;
+            let op = ops.rotation.ok_or(Refusal::UnknownOp { which, channel })?;
+            let codec = |cx: &Ctx| Refusal::Codec { which, channel, node, track, misaligned: cx.misaligned };
+            let mut v = op.sample(&mut self.cx, clip, s, track, req.frame).ok_or_else(|| codec(&self.cx))?;
             if let Some(sec) = req.secondary {
-                let q = need(op.sample(&mut self.cx, clip, s, track, sec.frame))?;
+                let q = op.sample(&mut self.cx, clip, s, track, sec.frame).ok_or_else(|| codec(&self.cx))?;
                 v = nlerp(&mut self.cx.fp, v, q, sec.blend, sign);
             }
             let fp = &mut self.cx.fp;
@@ -202,10 +245,11 @@ impl Walk<'_, '_> {
             let n = if v == Vector::Translation { 3 } else { 1 };
             for item in live(s, channel, self.count, req.mask) {
                 let (node, track) = item?;
-                let op = need(ops_of)?;
-                let mut p = need(op.sample(&mut self.cx, clip, s, v, track, req.frame))?;
+                let op = ops_of.ok_or(Refusal::UnknownOp { which, channel })?;
+                let codec = |cx: &Ctx| Refusal::Codec { which, channel, node, track, misaligned: cx.misaligned };
+                let mut p = op.sample(&mut self.cx, clip, s, v, track, req.frame).ok_or_else(|| codec(&self.cx))?;
                 if let Some(sec) = req.secondary {
-                    let q = need(op.sample(&mut self.cx, clip, s, v, track, sec.frame))?;
+                    let q = op.sample(&mut self.cx, clip, s, v, track, sec.frame).ok_or_else(|| codec(&self.cx))?;
                     let fp = &mut self.cx.fp;
                     for i in 0..n {
                         let d = fp.sub(q[i], p[i]);
@@ -256,19 +300,20 @@ pub fn sample(
     clip: &Clip,
     records: &mut [Record],
     written: &mut [u8],
-) -> Result<Effects, Unsupported> {
+) -> Result<Effects, Refusal> {
     let count = usize::try_from(req.count).unwrap_or(0);
     if records.len() < count || written.len() < count {
-        return Err(Unsupported);
+        return Err(Refusal::Records);
     }
     let mut walk = Walk {
         req,
         clip,
         cx: Ctx {
-            fp: Fp::new(),
+            fp: Fp::guest(req.mxcsr),
             mmx: false,
             data_addr: req.data_addr,
             one: req.one,
+            misaligned: false,
         },
         records,
         written,
@@ -288,14 +333,15 @@ pub fn sample(
             if ops.is_none() {
                 continue;
             }
-            let s = need(clip.stream(which))?;
-            for c in [Channel::Rotation, Channel::Translation, Channel::Scale] {
-                if live(s, c, walk.count, req.mask).next().is_some() {
-                    return Err(Unsupported);
+            let s = clip.stream(which).ok_or(Refusal::NoStream(which))?;
+            for channel in [Channel::Rotation, Channel::Translation, Channel::Scale] {
+                if let Some(item) = live(s, channel, walk.count, req.mask).next() {
+                    let (node, _) = item?;
+                    return Err(Refusal::Broken { which, channel, node });
                 }
             }
         }
-        return Ok(Effects { mmx: false });
+        return Ok(Effects { mmx: false, mxcsr: req.mxcsr });
     }
 
     for (which, ops) in streams {
@@ -304,7 +350,7 @@ pub fn sample(
         }
     }
     if !walk.cx.fp.exact() {
-        return Err(Unsupported);
+        return Err(Refusal::Unmasked);
     }
-    Ok(Effects { mmx: walk.cx.mmx })
+    Ok(Effects { mmx: walk.cx.mmx, mxcsr: walk.cx.fp.mxcsr().unwrap_or(req.mxcsr) })
 }

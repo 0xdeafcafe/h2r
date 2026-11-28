@@ -286,7 +286,7 @@ fn install_anim_points(b: &mut Builder) {
             let mut mem = ctx.memory();
             match engine::sim_anim::stream(cpu, &mut *mem, &engine::sim_anim::STORE)? {
                 Ok(transfer) => Ok(transfer),
-                Err(why) => unimplemented!("anim stream: {}", why.name()),
+                Err(why) => unimplemented!("anim stream: {why}"),
             }
         })
         .context_only();

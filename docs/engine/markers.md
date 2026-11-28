@@ -97,8 +97,11 @@ The fill declines, writing nothing, and the port panics
 `anim marker: <reason>` (no guest `1d8f50` call runs; the guest call is
 the path of the switched-off kernel), when:
 
-- MXCSR is not masked, round-to-nearest and PE-sticky (`det::fast_env`),
-  or any operand of any operation is off the fast path (`Float`);
+- an operation raises an SSE exception the guest's MXCSR leaves
+  unmasked (`Unmasked`, the guest's `#XM`). Any other MXCSR runs: the
+  kernel computes under it (`sim_core::det::Fp::guest`, the host result
+  on the fast path, the `simd` crate's SSE model otherwise, PE not yet
+  sticky included) and writes back the flags it raises;
 - a guest read faults - an unmapped instance pointer or node window
   (`Fault`; the window is read eagerly, so a read the guest would not
   make can only decline, never change a result);
