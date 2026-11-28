@@ -8,9 +8,12 @@
 //! 2. the view's 3x4 matrix at `c78..c80` (`0x003f7330`, ECX `0xae`),
 //!    rows from `[0x004687d0]` `+4/+0x10/+0x1c/+0x28`, `+8...`, `+0xc...`;
 //! 3. the shader begin `0x0001bbf0(shader; lod 0, layer, pass,
-//!    implementation 0, size 10000)`, which runs `0x00016b90`: the
+//!    implementation 0, size 10000)`, the shader a `shad`, `prt3` or
+//!    `PRTM` (`ShaderLibrary::drawn_shader`): with [`RESET`] set the
+//!    device reset first ([`RESET_STATES`]), then `0x00016b90`: the
 //!    implementation's render and stage states, its combiner and its
-//!    bound bitmaps (`tags::material`, docs/formats/shader-instances.md);
+//!    bound bitmaps, its animation sampled (`tags::material`,
+//!    docs/formats/shader-instances.md);
 //! 4. program `class + 7` of implementation 0's `vrtx` (`+0x100`,
 //!    `0x0001c590` with BL 1);
 //! 5. the declaration of one stream of type [`STREAM_TYPE`], or
@@ -34,8 +37,19 @@ use crate::effect_material::TAG_TABLE;
 pub const DRAW: u32 = 0x0022_43c0;
 /// The view whose matrix the setup writes (a pointer).
 pub const VIEW: u32 = 0x0046_87d0;
-/// `0x0001bbf0` resets the device first while this byte is set.
+/// `0x0001bbf0` resets the device first while this byte is set
+/// ([`RESET_STATES`]).
 pub const RESET: u32 = 0x0046_70bc;
+/// The render states `0x0001bbf0`'s reset sets, by guest slot, in its
+/// order: `LogicOp` 0 (`0x003f5b40`), `ZEnable` 2 (`0x003f54f0`), the
+/// depth function `LESSEQUAL` (method `0x40354`), `ZBias` 0
+/// (`0x003f59b0`), alpha test off (method `0x40300`), `SampleAlpha` 0
+/// (`0x003f5b20`), alpha reference 0 (method `0x40340`), `CullMode` and
+/// `FrontFace` `CW` (`0x003f53d0`, `0x003f5450` with `0x900`).
+pub const RESET_STATES: [(u8, u32); 9] =
+    [(150, 0), (143, 2), (57, 0x203), (149, 0), (60, 0), (158, 0), (61, 0), (147, 0x900), (146, 0x900)];
+/// The stage word the reset zeroes in each stage (`0x00404df8 + 0x80 n`).
+pub const RESET_STAGE_WORD: u8 = 10;
 /// With both bytes set the setup declares stream type
 /// [`STREAM_TYPE_OVERRIDE`] instead of [`STREAM_TYPE`] (`0x0023ec57`).
 /// `0x00470a38` is also the emitter's gate (`crate::particles`).
@@ -109,8 +123,6 @@ pub fn read(word: &dyn Fn(u32) -> Option<u32>, esp: u32, eax: u32) -> Option<Inp
 pub enum Refused {
     /// A tag that is neither a `shad` nor a particle (`prt3`, `PRTM`).
     NotShader,
-    /// The device reset `0x0001bbf0` runs first ([`RESET`]).
-    Reset,
     /// The shader, its template or pass does not resolve or has no
     /// such layer or pass.
     Tags,
@@ -145,7 +157,6 @@ impl Refused {
     pub fn name(self) -> &'static str {
         match self {
             Self::NotShader => "not_shader",
-            Self::Reset => "reset",
             Self::Tags => "tags",
             Self::Animation(cause) => cause,
             Self::TargetCopy => "target_copy",
@@ -160,14 +171,10 @@ impl Refused {
 }
 
 /// Whether the inputs reach `0x00016b90` as modelled: a `shad` or a
-/// particle tag ([`tags::material::ShaderLibrary::drawn_shader`]), no
-/// reset.
+/// particle tag ([`tags::material::ShaderLibrary::drawn_shader`]).
 pub fn check(i: &Inputs) -> Result<(), Refused> {
     if !DRAWN.contains(&i.group) {
         return Err(Refused::NotShader);
-    }
-    if i.reset {
-        return Err(Refused::Reset);
     }
     Ok(())
 }
@@ -291,15 +298,25 @@ impl Particle {
             (&sampled, frames)
         };
         let applied = crate::engine_states::apply_static(imp, &self.inputs).map_err(|_| Refused::EngineState)?;
+        // With [`RESET`] set the reset runs between the stipple and the
+        // implementation's states: its states, each stage's word 10 and
+        // the current textures zeroed (`0x0051f3d8..e4`), so
+        // `0x0001cf50` unbinds every stage the implementation leaves.
         let mut states = vec![(STIPPLE_ENABLE, 0)];
+        let mut stages: Vec<(u8, u8, u32)> = Vec::new();
+        if i.reset {
+            states.extend(RESET_STATES);
+            stages.extend((0..4).map(|n| (n, RESET_STAGE_WORD, 0)));
+        }
         states.extend(applied.render_states.iter().map(|s| (s.state, s.value)));
-        let stages = applied
-            .stage_states
-            .iter()
-            .take(4)
-            .enumerate()
-            .flat_map(|(n, s)| stage_words(s).map(|(index, value)| (n as u8, index, value)))
-            .collect();
+        stages.extend(
+            applied
+                .stage_states
+                .iter()
+                .take(4)
+                .enumerate()
+                .flat_map(|(n, s)| stage_words(s).map(|(index, value)| (n as u8, index, value))),
+        );
         let mut combiner = [0u32; WORDS];
         for (w, b) in combiner.iter_mut().zip(imp.pixel_shader.chunks_exact(4)) {
             *w = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
@@ -326,6 +343,11 @@ impl Particle {
                 Some(TextureSource::Engine(id)) => Some(engine_texture(id)?),
                 Some(TextureSource::Lightmap) => return Err(Refused::EngineTexture),
             };
+        }
+        if i.reset {
+            for t in textures.iter_mut().filter(|t| t.is_none()) {
+                *t = Some(Texture::Empty);
+            }
         }
         let vrtx = imp.vertex_shader.ok_or(Refused::NoVertexShader)?;
         let driven = imp.per_draw_inputs
@@ -448,7 +470,7 @@ mod tests {
         for group in [SHAD, PRT3, PRTM] {
             assert_eq!(check(&Inputs { group, ..i }), Ok(()));
         }
-        assert_eq!(check(&Inputs { reset: true, ..i }), Err(Refused::Reset));
+        assert_eq!(check(&Inputs { reset: true, ..i }), Ok(()));
         assert_eq!(check(&Inputs { group: u32::from_be_bytes(*b"bitm"), ..i }), Err(Refused::NotShader));
     }
 
@@ -603,6 +625,27 @@ mod tests {
             ("partly written constant", Box::new(|p| p.implementation.vertex_constants[0].written = 0x3), Err("vertex_constant_lanes")),
             ("no vertex shader", Box::new(|p| p.implementation.vertex_shader = None), Err("no_vertex_shader")),
         ];
+        // The reset: its states and stage words before the
+        // implementation's, and every stage it leaves unbound.
+        let mut p = Particle {
+            implementation: implementation(0, InputReads::default(), Vec::new()),
+            properties: Vec::new(),
+            inputs: EngineInputs::default(),
+            pass: 0,
+        };
+        p.implementation.textures[1] = stage(bitmap(0), None);
+        p.implementation.render_states = vec![tags::shader::RenderStateValue { state: 0x93, value: 0 }];
+        let reset = p.material(&Inputs { reset: true, ..i }, None).unwrap();
+        let mut states = vec![(STIPPLE_ENABLE, 0)];
+        states.extend(RESET_STATES);
+        states.push((0x93, 0));
+        assert_eq!(reset.states, states);
+        assert_eq!(reset.stages, [(0, 10, 0), (1, 10, 0), (2, 10, 0), (3, 10, 0)]);
+        let empty = Some(Texture::Empty);
+        assert_eq!(reset.textures, [empty, Some(Texture::Bitmap { bitmap: 0xe000_0010, image: 0 }), empty, empty]);
+        let kept = p.material(&i, None).unwrap();
+        assert_eq!((kept.states.len(), kept.stages.len(), kept.textures[0]), (2, 0, None));
+
         for (name, edit, expected) in rows {
             let mut p = Particle {
                 implementation: implementation(0, InputReads::default(), Vec::new()),

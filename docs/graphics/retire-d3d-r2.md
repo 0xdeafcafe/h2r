@@ -380,11 +380,11 @@ state every cut setup's draws take
 |---|---|---|
 | Setup | `0x002243c0` → `0x0023ea80` | `0x00035b00` → `0x00043720` → `0x00052d40` |
 | Inputs, read at | the draw's entry: shader, layer, pass, the system's `+4`, the view matrix `[0x004687d0]` | the setup's entry: material block `e[+0xc]` (`+0x24` type, `+0x28` flags, `+0x2a` blend mode, `+0x2e` map flags), bitmap `e[+0x18]`, image `e[+0x1c]` |
-| Port | `particle_material`: `STIPPLEENABLE` off, then implementation 0 of lod 0, layer, pass from `tags::material` (`0x00016b90`) | `contrail_material`: `0x00052d40` as data, the blend tables `0x004506b8`, `0x004506e8`, `0x00450718` copied from the image |
+| Port | `particle_material`: `STIPPLEENABLE` off, the reset's states with `[0x004670bc]` set (`RESET_STATES`), then implementation 0 of lod 0, layer, pass from `tags::material` (`0x00016b90`) for what `ShaderLibrary::drawn_shader` draws: a `shad` under its root's inputs, a `prt3`'s embedded postprocess (`+0x8c`) or a `PRTM`'s `shad` (`+0x1c`) under zero inputs; its game-time animation sampled at the render clock per setup | `contrail_material`: `0x00052d40` as data, the blend tables `0x004506b8`, `0x004506e8`, `0x00450718` copied from the image |
 | Render and stage states | the implementation's, in set order; stage states as `0x000189a0` writes them | cull, colour write, blend, alpha test, stencil, depth, z bias; stage 0's addressing and filters |
 | Combiner | the implementation's 60 words; a word its draw-time inputs drive refuses the cut (`combiner_driven`) | the 60 words built at `0x00484f68` |
-| Textures | each bound stage's bitmap image (`0x000143c0`) | stage 0's bitmap image |
-| Constants (hardware slots, register + 96) | implementation 0's `c[18 + i]` (`0x00018eab`), then `0xae..0xb0`, the view matrix | `0xae..0xb0`, the identity |
+| Textures | each bound stage's bitmap image (`0x000143c0`), an animated slot's at its frame over the slot's images (`0x0001b0a0`), the rasterizer data's bitmaps for engine textures 1, 9, 14 and 15, none for 4 and, after a reset, for every stage the implementation leaves | stage 0's bitmap image |
+| Constants (hardware slots, register + 96) | implementation 0's `c[18 + i]` (`0x00018eab`), then `0xae..0xb0`, the view matrix; its vertex defaults (`Material::defaults`, `0x00018e3b`) | `0xae..0xb0`, the identity |
 | Vertex program | program `class + 7` of implementation 0's `vrtx` | engine slot 4's program 0 |
 
 Not made, each a panic `unimplemented!("<kind>_material: <cause>")`
@@ -392,11 +392,11 @@ Not made, each a panic `unimplemented!("<kind>_material: <cause>")`
 
 | Reason | Kind | Branch |
 |---|---|---|
-| `particle_model`, `not_shader` | particle | a `PRTM`/`prt3` or other tag in the shader's place |
-| `reset` | particle | `0x0001bbf0`'s device reset (`[0x004670bc]` set) |
-| `animated`, `engine_variant`, `engine_state`, `engine_texture`, `target_copy` | particle | animated parameters, a combiner variant or a state the draw's inputs choose, an engine texture or the lightmap, the frame copy |
+| `not_shader` | particle | a tag other than a `shad`, `prt3` or `PRTM` in the shader's place |
+| `object_animation`, `animation`, `property`, `wave`, `time`, `texture_transform`, `frame_size`, `texture_frame` | particle | an animated parameter that does not sample at the render clock: an object function's input or a ranged curve (the particle provider `0x0055edd8` is not read), an animated render or stage state, a curve that does not parse, a frame that is not finite |
+| `engine_variant`, `engine_state`, `engine_texture`, `target_copy` | particle | a combiner variant or a state the draw's inputs choose, the lightmap or an engine texture that is a target or chosen at run time, the frame copy |
 | `tags`, `no_vertex_shader`, `map_name` | particle | the shader does not resolve, or the map is not named; the map's library is read at its first particle setup, and one that does not read panics |
-| `vertex_defaults`, `vertex_constant_driven`, `vertex_constant_lanes` | particle | vertex defaults, a vertex constant from the engine's inputs or a stage's size, a constant row not written whole |
+| `vertex_constant_driven`, `vertex_constant_lanes` | particle | a vertex constant from the draw's engine inputs or from an engine texture's size, a constant or default row not written whole |
 | `state_unread` | both | the state arrays were not read at the draw's setup |
 | `kind`, `blend_mode`, `view_matrix` | contrail | a block type other than 1, a blend mode past the tables, option bit 5 |
 | `texture_streaming`, `texture_unbound` | both | a bitmap image that is not resident, or a bitmap with no images |
@@ -448,8 +448,7 @@ Not made, panicking with the cause:
 | Cause | Why |
 |---|---|
 | `combiner_driven` | a combiner word the draw's inputs drive |
-| `vertex_defaults` | `SET_VERTEX_DATA4F_M` defaults (`0x00018e3b`) |
-| `vertex_constant_driven` | a vertex constant from the engine's inputs or a stage's size |
+| `vertex_constant_driven` | a vertex constant from the engine's inputs or an engine texture's size |
 | `vertex_constant_lanes` | a constant row the resolver did not write whole |
 | `vertex_program_size` | a program whose length is not its header's |
 | `program`, `render_slot`, `stage_slot`, `constant_slot`, `vertex_format`, `texture_unread`, `texture_format`, `palette` | `check_supplied`: a palettized texture would take the device's palette |
@@ -471,7 +470,8 @@ Tests: `effect_material.rs`
 `a_program_is_the_vrtx_element_at_its_index`),
 `contrail_material.rs` (`the_blend_mode_comes_from_the_images_tables_and_mode_ten_turns_blending_off`,
 `the_combiner_has_one_or_three_stages_then_the_blend_modes`),
-`particle_material.rs` (`only_a_shad_without_reset_reaches_the_shader_setup`,
+`particle_material.rs` (`a_shad_or_a_particle_without_reset_reaches_the_shader_setup`,
+`each_particle_shader_kind_makes_its_material_or_names_its_cause`,
 `the_override_declares_the_emitters_short_corners_and_otherwise_the_float_stream`),
 `effect_material.rs` (`a_programs_inputs_are_its_elements_semantic_list_by_register`).
 

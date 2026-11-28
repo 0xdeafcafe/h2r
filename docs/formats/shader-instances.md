@@ -47,9 +47,12 @@ is a block descriptor it is preserved but never dereferenced.
 
 ### The draw path
 
-`0x0001bbf0` begins a shader draw: it checks that the tag is a `shad`
-(`0x0001bcc9`), copies four root fields into engine inputs, then calls
-`0x00016b90(state 0x485b48, shad, lod, layer, pass, implementation, size)`.
+`0x0001bbf0` begins a shader draw: for a `shad` (`0x0001bcc9`) it copies
+four root fields into engine inputs, for any other tag it zeroes them, then
+calls `0x00016b90(state 0x485b48, shad, lod, layer, pass, implementation, size)`.
+A particle draw passes a `prt3`, whose compiled postprocess is its own
+`+0x8c` block, or a `PRTM`, whose `shad` is at `+0x1c`
+(`tags::material::ShaderLibrary::drawn_shader`).
 That function walks the compiled postprocess records:
 
 ```text
