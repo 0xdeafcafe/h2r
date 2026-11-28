@@ -284,6 +284,83 @@ pub fn compare_constants(
     out
 }
 
+/// A tag's data: `[[TAG_TABLE] + 16 * index + 8]`.
+fn tag_data(word: &dyn Fn(u32) -> Option<u32>, datum: u32) -> Option<u32> {
+    word(word(TAG_TABLE)?.checked_add((datum & 0xffff) * 16 + 8)?)
+}
+
+/// The image `0x00137550` gives for image `index` of `bitmap`: 0 for a
+/// tag that is not there or an index outside the tag's images.
+fn image_at(word: &dyn Fn(u32) -> Option<u32>, bitmap: u32, index: i32) -> Option<u32> {
+    let tag = tag_data(word, bitmap)?;
+    let index = index as i16;
+    if tag == 0 || index < 0 {
+        return Some(0);
+    }
+    if i32::from(index) >= word(tag.checked_add(0x44)?)? as i32 {
+        return Some(0);
+    }
+    Some(word(tag.checked_add(0x48)?)?.wrapping_add(index as u32 * 0x74))
+}
+
+/// The texture header the decal callback `0x00044040` binds at stage 0
+/// for a record (`0x0004409c` to `0x000440ef`): the bitmap datum at
+/// `+0x8c` of the record's decal tag (`+0x2c`); the image `selector`
+/// (`+0x29`) modulo the bitmap's image count, where that image is 2D
+/// (`0x000144f0`, its `+0xa`); else image 1 of the rasterizer's default
+/// bitmap (`[[RASTERIZER] + 0x64]`); its header (`+0x50`) only while
+/// resident (`0x00012310`).
+///
+/// `Err` names what the guest body would do that this does not:
+/// `texture_streaming` (the loader runs), `texture_unbound` (nothing is
+/// bound, the stage keeps the last texture), `texture_image` (an image
+/// the guest reads at address 0), `texture_unread`.
+pub fn decal_texture(word: &dyn Fn(u32) -> Option<u32>, decal: u32, selector: i8) -> Result<u32, &'static str> {
+    const UNREAD: &str = "texture_unread";
+    const BITMAP: u32 = 0x6c + 0x20;
+    let tag = tag_data(word, decal).ok_or(UNREAD)?;
+    let bitmap = word(tag.wrapping_add(BITMAP)).ok_or(UNREAD)?;
+    let mut image = 0;
+    if bitmap != u32::MAX {
+        let images = word(tag_data(word, bitmap).ok_or(UNREAD)?.wrapping_add(0x44)).ok_or(UNREAD)? as i32;
+        if images > 0 {
+            // `idiv`: the remainder takes the selector's sign, as `%` does.
+            let at = image_at(word, bitmap, i32::from(selector) % images).ok_or(UNREAD)?;
+            if at == 0 {
+                return Err("texture_image");
+            }
+            // The image's kind, the word at `+0xa`: 0 is 2D.
+            if word(at.wrapping_add(8)).ok_or(UNREAD)? >> 16 == 0 {
+                image = at;
+            }
+        }
+    }
+    if image == 0 {
+        let default = word(word(RASTERIZER).ok_or(UNREAD)?.wrapping_add(0x64)).ok_or(UNREAD)?;
+        if default == u32::MAX {
+            return Err("texture_unbound");
+        }
+        image = image_at(word, default, 1).ok_or(UNREAD)?;
+        if image == 0 {
+            return Err("texture_unbound");
+        }
+    }
+    let stamp = word(image.wrapping_add(0x70)).ok_or(UNREAD)? as i32;
+    let header = word(image.wrapping_add(0x50)).ok_or(UNREAD)?;
+    if stamp <= word(crate::effect_material::RESIDENT_STAMP).ok_or(UNREAD)? as i32 || header == 0 {
+        return Err("texture_streaming");
+    }
+    Ok(header)
+}
+
+/// The vertex default `v10` the callback sets from a record's tint
+/// (`+0x24`, a `D3DCOLOR`): `D3DDevice_SetVertexData4ub(10, r, g, b, a)`
+/// at `0x00044132`, each byte over 255 as the device takes it.
+pub fn tint(colour: u32) -> [f32; 4] {
+    let [b, g, r, a] = colour.to_le_bytes();
+    [r, g, b, a].map(|v| f32::from(v) / 255.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,5 +463,62 @@ mod tests {
             compare_constants(&r, Some(0), None, at, &c),
             ["constant_relative", "constant_view_unread", "constant_c9_ungiven"]
         );
+    }
+
+    /// Tags for the decal texture tests: decal tag 1 names bitmap 2 (three
+    /// images, image 1 a cube map), the rasterizer's default is bitmap 3
+    /// (two images). Every image is resident.
+    fn texture_tags() -> std::collections::HashMap<u32, u32> {
+        let mut w = std::collections::HashMap::new();
+        w.insert(TAG_TABLE, 0x3000);
+        w.insert(RASTERIZER, 0x1000);
+        w.insert(0x1000 + 0x64, 0xe300_0003);
+        w.insert(crate::effect_material::RESIDENT_STAMP, 10);
+        for (index, data) in [(1, 0x4000), (2, 0x5000), (3, 0x6000)] {
+            w.insert(0x3000 + 16 * index + 8, data);
+        }
+        w.insert(0x4000 + 0x8c, 0xe300_0002);
+        for (tag, images, at) in [(0x5000, 3, 0x7000), (0x6000, 2, 0x8000)] {
+            w.insert(tag + 0x44, images);
+            w.insert(tag + 0x48, at);
+            for i in 0..images {
+                let image = at + 0x74 * i;
+                w.insert(image + 8, 0);
+                w.insert(image + 0x50, 0xa000 + image);
+                w.insert(image + 0x70, 11);
+            }
+        }
+        // Image 1 of bitmap 2 is a cube map.
+        w.insert(0x7000 + 0x74 + 8, 1 << 16);
+        w
+    }
+
+    #[test]
+    fn a_decal_binds_its_image_modulo_the_count_else_the_default_image_1() {
+        let mut w = texture_tags();
+        let header = |w: &std::collections::HashMap<u32, u32>, selector: i8| {
+            decal_texture(&|a| w.get(&a).copied(), 0xe300_0001, selector)
+        };
+        assert_eq!(header(&w, 0), Ok(0xa000 + 0x7000));
+        assert_eq!(header(&w, 5), Ok(0xa000 + 0x7000 + 2 * 0x74));
+        // Image 1 is not 2D: the default bitmap's image 1.
+        assert_eq!(header(&w, 4), Ok(0xa000 + 0x8000 + 0x74));
+        // A negative selector leaves a negative remainder: the guest reads
+        // the kind of image address 0.
+        assert_eq!(header(&w, -2), Err("texture_image"));
+        // A decal without a bitmap binds the default's image 1.
+        w.insert(0x4000 + 0x8c, u32::MAX);
+        assert_eq!(header(&w, 0), Ok(0xa000 + 0x8000 + 0x74));
+        // Not resident: the loader would run.
+        w.insert(0x8000 + 0x74 + 0x70, 10);
+        assert_eq!(header(&w, 0), Err("texture_streaming"));
+        // No default bitmap: nothing is bound.
+        w.insert(0x1000 + 0x64, u32::MAX);
+        assert_eq!(header(&w, 0), Err("texture_unbound"));
+    }
+
+    #[test]
+    fn the_tint_is_set_as_red_green_blue_alpha_over_255() {
+        assert_eq!(tint(0x80ff_0033), [1.0, 0.0, 51.0 / 255.0, 128.0 / 255.0]);
     }
 }

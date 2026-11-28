@@ -1,10 +1,21 @@
 //! Dynamic decal admission at the actual resolved `D3DDevice_DrawVertices`
-//! packet. The guest callback still runs, so texture setup, duplicate markers
-//! and state tails are unchanged. A replacement is returned only after the
+//! packet, and the callback's cut (docs/graphics/retire-d3d-decals.md).
+//!
+//! Where the guest callback runs, its texture setup, duplicate markers and
+//! state tails are unchanged. A replacement is returned only after the
 //! complete draw resolves; the handoff records it transactionally on both
-//! target copies before suppressing D3D.
+//! target copies before suppressing D3D. The first draw admitted in a mode
+//! of a view (`0x0002c370`'s call) is that mode's [`Template`].
+//!
+//! Where the callback is cut ([`render_bridge::native_decals::cut`]), each
+//! record is drawn from the template with its own vertices, tint (`v10`)
+//! and stage-0 texture, the texture decoded from guest memory
+//! ([`decode_bitmap`]): the device still holds the last texture the guest
+//! bound. Every later draw a guest body makes in that mode is compared with
+//! the template and the walk (the arm).
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 use d3d::backend::{
@@ -12,13 +23,17 @@ use d3d::backend::{
 };
 use d3d::shader::VertexProcessing;
 use gfx::vertex::{PrimitiveType, StreamLayout, VertexDataType, VertexRegister};
+use engine::memory::GuestMemory;
 use native_render::decal::{Mode, VERTEX_SIZE, Vertex, decode_packed};
+use render_bridge::native_decals::cut::{self, Expected, Record};
 use native_render::decal_gpu::{
     ClipRect, DecalCache, DecalClip, DecalGpu, DecalTarget, PacketTarget, Prepared, ReferenceCopy,
     ShaderSnapshot, StageExtras,
 };
 use shaders::vsh::VertexUniforms;
 use timeline::native::Stage;
+
+use crate::native_lights_glue::DeviceMemory;
 
 const STIPPLE_ENABLE: usize = 83;
 const TWO_SIDED_LIGHTING: usize = 141;
@@ -32,15 +47,286 @@ struct Glue {
     caches: Caches,
 }
 
-/// Register on the guest's ordered draw, which also owns its fallback.
+/// The first draw admitted in a mode of a view: the state, program,
+/// constants and clips every record of that mode draws with.
+struct Template {
+    /// The `0x0002c370` call it was admitted in ([`cut::mode_call`]).
+    call: u64,
+    /// The draw as [`prepare`] made it, for the arm's comparison.
+    raw: Prepared,
+    /// The draw as admitted (with the Rust material once proven): what a
+    /// cut record draws, with its own vertices, tint and texture.
+    drawn: Prepared,
+    writes_depth: bool,
+}
+
+static TEMPLATE: Mutex<Option<Arc<Template>>> = Mutex::new(None);
+
+fn template() -> Option<Arc<Template>> {
+    TEMPLATE.lock().unwrap_or_else(|e| e.into_inner()).clone().filter(|t| t.call == cut::mode_call())
+}
+
+/// Register on the guest's ordered draw, which also owns its fallback,
+/// and, unless `native-decals.cut=off`, draw the cut callback's records.
 pub fn install<B: d3d::backend::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
 ) {
-    if !hooks::Switches::from_env().is_ok_and(|s| render_bridge::native_decals::on(&s)) {
+    let Ok(switches) = hooks::Switches::from_env() else { return };
+    if !render_bridge::native_decals::on(&switches) {
         return;
     }
+    let glue = Glue::default();
+    if render_bridge::native_decals::cut_on(&switches) {
+        cut::set_host(Arc::new(Cut { device: Arc::clone(device), caches: glue.caches.clone() }));
+    }
     let Ok(mut d) = device.lock() else { return };
-    d.add_draw_admission(Arc::new(Glue::default()));
+    d.add_draw_admission(Arc::new(glue));
+}
+
+/// A stage-0 texture decoded from guest memory as the D3D path decodes it,
+/// every mip level of face 0, RGBA8.
+pub struct DecalBitmap {
+    key: u64,
+    /// `(width, height, texels)` per level, level 0 first.
+    levels: Vec<(u32, u32, Vec<u8>)>,
+    /// A linear texture is fetched in texels ([`ShaderSnapshot::tex_scale`]).
+    tex_scale: Option<[f32; 4]>,
+}
+
+/// Decoded bitmaps by key; cleared when it grows past [`BITMAP_LIMIT`].
+static BITMAPS: Mutex<Option<HashMap<u64, Arc<DecalBitmap>>>> = Mutex::new(None);
+const BITMAP_LIMIT: usize = 256;
+
+/// The texture header's levels (`header` as `0x00012310` returns it):
+/// its words `+0` (a texture resource), `+4` (data), `+0xc` (format) and
+/// `+0x10` (size). Decoded once per map load and header words.
+pub fn decode_bitmap(mem: &dyn GuestMemory, header: u32, map: d3d::AddressMap) -> Result<Arc<DecalBitmap>, &'static str> {
+    let w = |o: u32| mem.u32(header.wrapping_add(o)).map_err(|_| "texture_unread");
+    let (common, data, format, size) = (w(0)?, w(4)?, w(0xc)?, w(0x10)?);
+    if (common >> 16) & 7 != 4 {
+        return Err("texture_resource");
+    }
+    let mut h = std::hash::DefaultHasher::new();
+    (render_bridge::native_map_work::generation(), header, [data, format, size]).hash(&mut h);
+    let key = h.finish();
+    let mut cached = BITMAPS.lock().unwrap_or_else(|e| e.into_inner());
+    let cache = cached.get_or_insert_with(HashMap::new);
+    if let Some(b) = cache.get(&key) {
+        return Ok(Arc::clone(b));
+    }
+    let desc = gfx::TextureDesc::from_header(format, size).map_err(|_| "texture_format")?;
+    if desc.kind != gfx::texture::TextureKind::D2 || desc.format.is_depth() {
+        return Err("texture_kind");
+    }
+    let total = desc.total_size().map_err(|_| "texture_format")?;
+    if total > 1 << 24 {
+        return Err("texture_size");
+    }
+    let bytes = mem.bytes(map.to_virtual(data), total).map_err(|_| "texture_unread")?;
+    let options = gfx::DecodeOptions { bc_supported: false, signed: [false; 4] };
+    let decoded = gfx::decode_texture(&desc, &bytes, None, options).map_err(|_| "texture_decode")?;
+    let swap = match decoded.host {
+        gfx::HostFormat::Rgba8Unorm => false,
+        gfx::HostFormat::Bgra8Unorm => true,
+        _ => return Err("texture_host_format"),
+    };
+    let mut levels: Vec<(u32, u32, Vec<u8>)> = Vec::new();
+    for l in decoded.levels.iter().filter(|l| l.face == 0) {
+        // Each level halves the last, as the texture's mip chain is made;
+        // the chain stops at the first that does not.
+        let n = levels.len() as u32;
+        let (w0, h0) = levels.first().map_or((l.width, l.height), |f| (f.0, f.1));
+        let want = ((w0 >> n).max(1), (h0 >> n).max(1));
+        if l.level != n || (l.width, l.height) != want || l.width == 0 || l.height == 0
+            || l.data.len() != 4 * l.width as usize * l.height as usize
+        {
+            break;
+        }
+        let mut rgba = l.data.clone();
+        if swap {
+            rgba.chunks_exact_mut(4).for_each(|p| p.swap(0, 2));
+        }
+        levels.push((l.width, l.height, rgba));
+    }
+    if levels.is_empty() {
+        return Err("texture_decode");
+    }
+    let tex_scale = (desc.format.layout() == gfx::format::Layout::Linear && desc.width != 0 && desc.height != 0)
+        .then_some([1.0 / desc.width as f32, 1.0 / desc.height as f32, 1.0, 1.0]);
+    let b = Arc::new(DecalBitmap { key, levels, tex_scale });
+    if cache.len() >= BITMAP_LIMIT {
+        cache.clear();
+    }
+    cache.insert(key, Arc::clone(&b));
+    Ok(b)
+}
+
+/// The GPU copies of decoded bitmaps, by device and key; cleared when it
+/// grows past [`BITMAP_LIMIT`].
+type Views = HashMap<(wgpu::Device, u64), wgpu::TextureView>;
+static VIEWS: Mutex<Option<Views>> = Mutex::new(None);
+
+fn texture_view(device: &wgpu::Device, queue: &wgpu::Queue, b: &DecalBitmap) -> wgpu::TextureView {
+    let mut views = VIEWS.lock().unwrap_or_else(|e| e.into_inner());
+    let views = views.get_or_insert_with(HashMap::new);
+    if let Some(v) = views.get(&(device.clone(), b.key)) {
+        return v.clone();
+    }
+    let (w, h, _) = b.levels[0];
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("native decal bitmap"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: b.levels.len() as u32,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    for (level, (lw, lh, texels)) in b.levels.iter().enumerate() {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { mip_level: level as u32, ..texture.as_image_copy() },
+            texels,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * lw), rows_per_image: Some(*lh) },
+            wgpu::Extent3d { width: *lw, height: *lh, depth_or_array_layers: 1 },
+        );
+    }
+    let view = texture.create_view(&Default::default());
+    if views.len() >= BITMAP_LIMIT {
+        views.clear();
+    }
+    views.insert((device.clone(), b.key), view.clone());
+    view
+}
+
+/// Draws a cut callback's records from the mode's template.
+struct Cut<B: d3d::backend::Backend + Send + 'static> {
+    device: d3d::abi::SharedDevice<B>,
+    caches: Caches,
+}
+
+impl<B: d3d::backend::Backend + Send + 'static> cut::Host for Cut<B> {
+    fn draw(&self, mem: &mut dyn GuestMemory, r: &Record) -> Result<(), &'static str> {
+        if r.count == 0 {
+            // `D3DDevice_DrawVertices` with no vertices draws nothing.
+            return Ok(());
+        }
+        let header = r.texture?;
+        let bytes = r.bytes.as_deref().ok_or("vertices_unread")?;
+        if bytes.len() != r.count as usize * VERTEX_SIZE {
+            return Err("vertices_unread");
+        }
+        let template = template().ok_or("template")?;
+        let mut device = self.device.lock().map_err(|_| "device")?;
+        let texture = decode_bitmap(&*mem, header, device.config().address_map)?;
+        let mut prepared = template.drawn.clone();
+        prepared.vertices = vertices_of(bytes);
+        prepared.shader.vertex.defaults[10] = cut::tint(r.tint);
+        prepared.shader.tex_scale = texture.tex_scale;
+        let pass = DecalPass {
+            prepared,
+            fallback: None,
+            writes_depth: template.writes_depth,
+            texture: Some(texture),
+            run: Some(template.call),
+            clip: None,
+            gpu: None,
+            caches: self.caches.clone(),
+            frame: crate::d3d_diag::presents(),
+        };
+        let plan = ExternalPlan { stage: Stage::Decals, view: 0, ranges: 1, slots: Vec::new() };
+        match device.prepare_external_pass(&mut DeviceMemory(mem), plan, Box::new(pass)) {
+            Ok(Some(reservation)) => {
+                reservation.commit();
+                Ok(())
+            }
+            Ok(None) => Err("reservation"),
+            Err(_) => Err("device"),
+        }
+    }
+}
+
+/// What the arm reads of a guest body's resolved decal draw.
+struct Drawn<'a> {
+    vertex_count: u32,
+    /// The texture header bound at stage 0.
+    texture: Option<u32>,
+    /// The vertex default `v10`.
+    tint: [f32; 4],
+    /// The one stream's bytes.
+    vertices: Option<&'a [u8]>,
+}
+
+impl<'a> Drawn<'a> {
+    fn of(d: &'a d3d::ResolvedDraw) -> Self {
+        Self {
+            vertex_count: d.vertex_count,
+            texture: d.texture_info[0].map(|i| i.header),
+            tint: d.shader.vertex_defaults[10],
+            vertices: d.streams.first().map(|s| &s.data[..]),
+        }
+    }
+}
+
+/// The arm's check of a guest body's draw against the walk: the vertex
+/// count, the texture it binds, the tint and the vertices.
+fn check_walk(expected: &Expected, d: &Drawn<'_>) -> Vec<String> {
+    let r = match expected {
+        Expected::Unmodelled => return Vec::new(),
+        Expected::Missing => return vec!["unexpected".to_owned()],
+        Expected::Next(r) => r,
+    };
+    let texture = match r.texture {
+        Ok(header) => d.texture == Some(header),
+        Err(_) => true,
+    };
+    let vertices = match (&r.bytes, d.vertices) {
+        (None, _) => true,
+        (Some(b), Some(v)) => b[..] == *v,
+        (Some(_), None) => false,
+    };
+    [
+        (d.vertex_count == r.count, "count"),
+        (texture, "texture"),
+        (d.tint.map(f32::to_bits) == cut::tint(r.tint).map(f32::to_bits), "tint"),
+        (vertices, "vertices"),
+    ]
+    .into_iter()
+    .filter(|(same, _)| !same)
+    .map(|(_, f)| f.to_owned())
+    .collect()
+}
+
+/// The arm's check of a draw against its mode's template: everything a
+/// cut record takes from the template.
+fn check_template(t: &Prepared, p: &Prepared) -> Vec<String> {
+    let (a, b) = (&t.shader, &p.shader);
+    let mut vertex = b.vertex.clone();
+    vertex.defaults[10] = a.vertex.defaults[10];
+    let reference = match (&t.reference, &p.reference) {
+        (None, None) => true,
+        (Some(x), Some(y)) => *x.constants == *y.constants && x.clips == y.clips,
+        _ => false,
+    };
+    [
+        (a.render == b.render, "render"),
+        (a.stages == b.stages, "stages"),
+        (a.extras == b.extras, "extras"),
+        (a.combiner == b.combiner, "combiner"),
+        (a.microcode == b.microcode, "program"),
+        (a.provided_inputs == b.provided_inputs, "inputs"),
+        (a.two_sided_lighting == b.two_sided_lighting, "two_sided"),
+        (a.stipple == b.stipple, "stipple"),
+        (vertex == a.vertex, "vertex"),
+        (a.w_buffered == b.w_buffered, "w_buffer"),
+        (a.integer_depth == b.integer_depth, "depth_format"),
+        (t.clips == p.clips, "clips"),
+        (reference, "reference"),
+    ]
+    .into_iter()
+    .filter(|(same, _)| !same)
+    .map(|(_, f)| f.to_owned())
+    .collect()
 }
 
 fn clip(r: d3d::PixelRect) -> ClipRect {
@@ -82,8 +368,13 @@ fn decal_vertices(
     if stream.data.len() != vertex_count as usize * VERTEX_SIZE {
         return Err("vertex bytes");
     }
-    Ok(stream
-        .data
+    Ok(vertices_of(&stream.data))
+}
+
+/// Halo 2's decal vertices from their bytes: float3 position, then the
+/// `NORMPACKED3` word ([`decode_packed`]).
+fn vertices_of(bytes: &[u8]) -> Vec<Vertex> {
+    bytes
         .as_chunks::<VERTEX_SIZE>()
         .0
         .iter()
@@ -95,7 +386,7 @@ fn decal_vertices(
             ],
             diffuse: decode_packed(v[12..16].try_into().expect("packed")),
         })
-        .collect())
+        .collect()
 }
 
 /// Filled quads use the live polygon mask. A pushed NV2A control word
@@ -268,9 +559,16 @@ impl DrawAdmission for Glue {
             return None;
         }
         render_bridge::native_decals::note_examined();
+        // The arm: this draw against the cut's walk and its mode's template.
+        let expected = cut::take_expected();
+        let modelled = expected != Expected::Unmodelled;
+        let mut fields = check_walk(&expected, &Drawn::of(snapshot.draw));
         let mut prepared = match prepare(mode, snapshot) {
             Ok(p) => p,
             Err(why @ ("vertex declaration" | "vertex streams")) => {
+                if modelled {
+                    cut::mismatch(&fields);
+                }
                 let d = snapshot.draw;
                 let strides: Vec<_> = d.streams.iter().map(|s| s.stride).collect();
                 render_bridge::native_decals::note_admission_refusal(format!(
@@ -279,10 +577,23 @@ impl DrawAdmission for Glue {
                 return None;
             }
             Err(why) => {
+                if modelled {
+                    cut::mismatch(&fields);
+                }
                 render_bridge::native_decals::note_admission_refusal(why);
                 return None;
             }
         };
+        let call = cut::mode_call();
+        let held = template();
+        if modelled {
+            if let Some(t) = &held {
+                fields.extend(check_template(&t.raw, &prepared));
+            }
+            cut::mismatch(&fields);
+        }
+        // The mode's first admitted draw is its template.
+        let raw = held.is_none().then(|| prepared.clone());
         render_bridge::native_decals::note_candidate();
         // Once the material is proven the draw is built from it, and one
         // draw in 64 is the guest's own, compared with the Rust one.
@@ -331,6 +642,11 @@ impl DrawAdmission for Glue {
                 return None;
             }
         }
+        let writes_depth = snapshot.draw.writes_depth_stencil();
+        if let Some(raw) = raw {
+            *TEMPLATE.lock().unwrap_or_else(|e| e.into_inner()) =
+                Some(Arc::new(Template { call, raw, drawn: prepared.clone(), writes_depth }));
+        }
         Some((
             ExternalPlan {
                 stage: Stage::Decals,
@@ -340,7 +656,10 @@ impl DrawAdmission for Glue {
             },
             Box::new(DecalPass {
                 prepared,
-                draw: Arc::new(snapshot.draw.clone()),
+                fallback: Some(Arc::new(snapshot.draw.clone())),
+                writes_depth,
+                texture: None,
+                run: None,
                 clip: None,
                 gpu: None,
                 caches: self.caches.clone(),
@@ -352,7 +671,16 @@ impl DrawAdmission for Glue {
 
 struct DecalPass {
     prepared: Prepared,
-    draw: Arc<d3d::ResolvedDraw>,
+    /// The guest's resolved draw, which D3D draws when a copy refuses;
+    /// `None` for a cut record, which has no guest draw.
+    fallback: Option<Arc<d3d::ResolvedDraw>>,
+    writes_depth: bool,
+    /// A cut record's own stage-0 texture: the device still holds the last
+    /// one the guest bound.
+    texture: Option<Arc<DecalBitmap>>,
+    /// A cut record's `0x0002c370` call: its passes sample no guest
+    /// texture, so a run of them pins its attachments once.
+    run: Option<u64>,
     clip: Option<d3d::DepthClip>,
     gpu: Option<DecalGpu>,
     caches: Caches,
@@ -366,7 +694,7 @@ impl DecalPass {
         if self.gpu.is_none() {
             self.gpu = Some(DecalGpu::new(t.device, &self.prepared)?);
         }
-        if self.gpu.as_ref().is_some_and(|g| g.sampled()) && t.stages[0].is_none() {
+        if self.gpu.as_ref().is_some_and(|g| g.sampled()) && t.stages[0].is_none() && self.texture.is_none() {
             return Err("texture view");
         }
         Ok(())
@@ -375,13 +703,17 @@ impl DecalPass {
 
 impl d3d::ExternalPass for DecalPass {
     fn resolved_fallback(&self) -> Option<Arc<d3d::ResolvedDraw>> {
-        Some(Arc::clone(&self.draw))
+        self.fallback.clone()
+    }
+
+    fn batch_key(&self) -> Option<u64> {
+        self.run
     }
 
     fn writes(&self) -> ExternalWrites {
         ExternalWrites {
             color: true,
-            depth_stencil: self.draw.writes_depth_stencil(),
+            depth_stencil: self.writes_depth,
         }
     }
 
@@ -414,8 +746,9 @@ impl d3d::ExternalPass for DecalPass {
             clamp: clip.clamp,
             w_buffered: clip.w_buffered,
         };
+        let own = self.texture.as_ref().map(|b| texture_view(&t.device, &t.queue, b));
         // A decal sampling the target it draws into cannot share its pass.
-        let stage0 = t.stages[0].as_ref();
+        let stage0 = own.as_ref().or(t.stages[0].as_ref());
         if stage0.is_some_and(|v| [t.color.texture(), t.depth.texture()].contains(&v.texture())) {
             return refuse("texture is the target");
         }
@@ -457,6 +790,11 @@ impl d3d::ExternalPass for DecalPass {
             clamp: clip.clamp,
             w_buffered: clip.w_buffered,
         };
+        let own = self.texture.as_ref().map(|b| texture_view(t.device, t.queue, b));
+        let mut stages: [Option<&wgpu::TextureView>; 4] = t.stages;
+        if let Some(view) = &own {
+            stages[0] = Some(view);
+        }
         let mut target = DecalTarget {
             device: t.device,
             queue: t.queue,
@@ -469,7 +807,7 @@ impl d3d::ExternalPass for DecalPass {
             z_scale: t.z_scale,
             guest_size: t.guest_size,
             size: t.size,
-            stages: t.stages,
+            stages,
             copy: t.copy,
         };
         usize::from(
@@ -478,6 +816,78 @@ impl d3d::ExternalPass for DecalPass {
                 .expect("prepared above")
                 .encode(&mut target, clip),
         )
+    }
+}
+
+#[cfg(test)]
+mod arm_tests {
+    use super::*;
+
+    fn prepared() -> Prepared {
+        Prepared {
+            mode: Mode::Alpha0,
+            vertices: Vec::new(),
+            shader: ShaderSnapshot {
+                render: gfx::state::RenderState::default(),
+                stages: std::array::from_fn(|n| gfx::state::TextureStageState::default_for_stage(n as u32)),
+                extras: [StageExtras::default(); 4],
+                combiner: shaders::psh::PixelShaderDef::default(),
+                microcode: vec![0x78, 0x20, 0, 0],
+                provided_inputs: 0b11,
+                two_sided_lighting: false,
+                stipple: None,
+                vertex: VertexUniforms::default(),
+                w_buffered: true,
+                integer_depth: false,
+                tex_scale: None,
+            },
+            clips: vec![ClipRect { x: 0, y: 0, width: 640, height: 480 }],
+            reference: None,
+        }
+    }
+
+    fn record(bytes: &[u8]) -> Record {
+        Record {
+            at: 0x1000,
+            owner: 0x1000,
+            marker: 0,
+            decal: 0xe600_0001,
+            image: 0,
+            tint: 0x80ff_0033,
+            start: 0,
+            count: 4,
+            texture: Ok(0xa000),
+            bytes: Some(Arc::from(bytes)),
+        }
+    }
+
+    #[test]
+    fn a_draw_matching_the_walk_and_template_is_clean() {
+        let bytes = [7u8; 64];
+        let drawn = Drawn { vertex_count: 4, texture: Some(0xa000), tint: cut::tint(0x80ff_0033), vertices: Some(&bytes) };
+        assert!(check_walk(&Expected::Next(record(&bytes)), &drawn).is_empty());
+        // An unmodelled walk checks nothing.
+        assert!(check_walk(&Expected::Unmodelled, &Drawn { vertex_count: 0, ..drawn }).is_empty());
+        // Another record of the mode differs from the template only in
+        // its tint.
+        let template = prepared();
+        let mut other = prepared();
+        other.shader.vertex.defaults[10] = [1.0; 4];
+        assert!(check_template(&template, &other).is_empty());
+    }
+
+    #[test]
+    fn a_draw_that_differs_from_the_walk_or_template_is_named_by_field() {
+        let bytes = [7u8; 64];
+        let drawn = Drawn { vertex_count: 8, texture: Some(0xb000), tint: [0.0; 4], vertices: Some(&bytes[..32]) };
+        assert_eq!(check_walk(&Expected::Next(record(&bytes)), &drawn), ["count", "texture", "tint", "vertices"]);
+        assert_eq!(check_walk(&Expected::Missing, &drawn), ["unexpected"]);
+        let template = prepared();
+        let mut other = prepared();
+        other.shader.stages[0] = gfx::state::TextureStageState::default_for_stage(1);
+        other.shader.vertex.constants[4] = [2.0; 4];
+        other.clips.clear();
+        assert_eq!(check_template(&template, &other), ["stages", "vertex", "clips"]);
     }
 }
 
