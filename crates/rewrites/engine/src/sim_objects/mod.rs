@@ -1,10 +1,7 @@
 //! The guest side of the object update, phase 3 of the simulation rewrite
 //! (design: docs/engine/sim-rewrite-objects.md section 5; contracts:
-//! docs/engine/object-update.md). Every body runs under
-//! `impl.sim.native.objects` (default off); the walks, the per-object
-//! updates and the multiplayer types' callbacks ([`native_walk::TABLE`])
-//! also run alone, always.
-//! `sim_bridge::sim_objects` installs both.
+//! docs/engine/object-update.md). Every body runs, always:
+//! `sim_bridge::sim_objects` installs [`BODIES`] with no switch.
 //!
 //! A ported function is a [`Body`]: retail-site arms over the retail stack
 //! frame. At every guest call it makes, `esp`, the frame slots it reads
@@ -401,9 +398,10 @@ impl Table {
 /// The float environment every body assumes: MXCSR rounds to nearest,
 /// masks every exception, and neither flushes to zero nor treats
 /// denormals as zero; the x87 masks every exception, has no pending
-/// error and does not use the reserved precision. When it does not hold, the original runs: the installer checks
-/// it before the first body, [`drive`] before fusing into the next, except
-/// for a [`Table::float_free`] body.
+/// error and does not use the reserved precision. When it does not hold,
+/// the object installer counts the call (`native_walk::Refusal`) and the
+/// Rust still runs it; [`drive`] does not fuse into the next body, except
+/// a [`Table::float_free`] one, so that call is counted at its own hook.
 pub fn supported(cpu: &CpuAbi) -> bool {
     crate::sim_native::supported(cpu) && cpu.mxcsr & MXCSR_MODES == 0
 }

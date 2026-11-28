@@ -1,6 +1,6 @@
 //! Object function value and import ports. Never installed: the bodies in
-//! `crate::sim_objects::functions` own these entries under
-//! `impl.sim.native.objects`; these stay as test oracles
+//! `crate::sim_objects::functions` own these entries; these stay as test
+//! oracles
 //! (`tests/sim_native_differential.rs`).
 use super::*;
 use crate::function_eval::constant::ONE;

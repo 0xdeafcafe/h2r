@@ -700,9 +700,9 @@ fn compare(
         if at != port.point.base {
             seen.insert(at);
         }
-        assert_ne!(actual.route,abi::RESUME,"{} case {case} escaped to generated code",port.switch);
+        assert_ne!(actual.route,abi::RESUME,"{} case {case} escaped to generated code",port.name);
         let expected = segment(code, inline, &mut cpu, &mut mem);
-        let why = || format!("{} case {case} boundary {n} from {at:#x}", port.switch);
+        let why = || format!("{} case {case} boundary {n} from {at:#x}", port.name);
         assert_eq!(actual, expected, "{}", why());
         regs.eip = actual.target_pc;
         assert_eq!(regs, abi_cpu(&cpu), "{}", why());

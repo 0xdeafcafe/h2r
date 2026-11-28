@@ -875,29 +875,17 @@ fn light_native_subsystems_follow_the_profile_and_explicit_overrides() {
         &COLLISION_LOCATION,
         &OBJECT_FUNCTION_VALUE,
     ];
+    // Animation and the object update always install; collision follows
+    // the light profile.
     for (light, spec, expected) in [
-        (true, "", [false; 3]),
-        (false, "host-light-native", [false; 3]),
+        (true, "", [true, false, true]),
+        (false, "host-light-native", [true, false, true]),
         (true, "host-light-native", [true; 3]),
-        (
-            true,
-            "-host-light-native,impl.sim.native.anim",
-            [true, false, false],
-        ),
-        (
-            true,
-            "host-light-native,-impl.sim.native.collision",
-            [true, false, true],
-        ),
-        (true, "host-light-native,-impl.sim.native", [false; 3]),
-        (
-            true,
-            "host-light-native,-impl.sim,impl.sim.native.objects",
-            [false, false, true],
-        ),
+        (true, "-host-light-native,impl.sim.native.collision", [true; 3]),
+        (true, "host-light-native,-impl.sim.native.collision", [true, false, true]),
+        (true, "host-light-native,-impl.sim.native", [true, false, true]),
     ] {
         let switches = super::profile_switches(hooks::Switches::parse(spec).unwrap(), light);
-        assert!(!switches.implementation("sim.native_unit_pose", false));
         let mut registry = hooks::Registry::new(switches);
         registry
             .add(&sim_bridge::sim_native::SimNative::new(&runtime))

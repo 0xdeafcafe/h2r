@@ -13,30 +13,25 @@
 //! `f8eb0`, the scenery update `10a2f0`, the device update `106790` that
 //! machines, controls and light fixtures run first, the machine update
 //! `1152e0`, the crate update `11bce0` and the creature update `118700`
-//! and post-physics update `118b80` (slice 11). The dispatchers call them
-//! in Rust, with no switch: `sim_bridge::sim_objects` installs [`TABLE`] when
-//! `impl.sim.native.objects` is off (on, every body is installed and these
-//! with them), or [`WITHOUT_AIM`] when the animation subsystem owns the aim
-//! update `c7840`.
+//! and post-physics update `118b80` (slice 11). [`TABLE`] names that
+//! set, the walk table the engine's differential tests drive;
+//! `sim_bridge::sim_objects` installs every body in [`BODIES`] (the
+//! pose and after-root dispatchers, damage, functions, the post-update
+//! shell and lights with these), and [`WITHOUT_AIM`]'s hand-off applies
+//! there too: the animation subsystem owns the aim update `c7840`.
 //!
-//! The Rust body answers every segment; nothing is compared. A body the
-//! Rust cannot take for one call is a [`Refusal`]: the guest runs that
-//! call (one object's `bd090`, one unit's `c6b30`, one weapon's `fdfb0`)
-//! and the caller's Rust frame resumes at its site. The walks, the
-//! updates, the dispatchers and the wake leaves read and write no float
-//! state ([`FLOAT_FREE`]), so they run whatever the float environment and
-//! never refuse; `bd090` and the type callbacks ([`TYPES`]) run only
-//! inside it.
+//! The Rust body answers every segment; nothing is compared. A body
+//! entered outside the float environment its arithmetic assumes is
+//! counted as a [`Refusal`] and still answered. The walks, the updates,
+//! the dispatchers and the wake leaves read and write no float state
+//! ([`FLOAT_FREE`]), so they are never counted; `bd090` and the type
+//! callbacks ([`TYPES`]) are.
 //!
-//! **Other bodies.** Only [`POINTS`] and [`TYPES`] are in [`TABLE`]: the
-//! machine's slot `+48` query `115a40` (no dispatcher calls it), the pose
-//! and after-root slots (`112070`, `f0f50`, `107000`, `112dc0`,
-//! `10a390`), damage, functions, the rest of the
-//! post-update shell and lights are calls to the guest, as is every callee
-//! of a table body that has no body here. Each is made in place when the
-//! runtime can (`runtime::ExecCtx::call_inline`, from
-//! `sim_bridge::sim_objects`), else through the runner, counted either way
-//! ([`callout`]).
+//! Every callee of a body that has no body of its own is a call to the
+//! guest, made in place when the runtime can
+//! (`runtime::ExecCtx::call_inline`, from `sim_bridge::sim_objects`),
+//! else through the runner, counted either way ([`callout`]). The
+//! counters ([`stats`]) cover every body in `super::TABLE`.
 
 use super::{BODIES, Body, Table};
 use crate::points::{self, Point};
@@ -197,8 +192,8 @@ pub static TABLE: LazyLock<Table> = LazyLock::new(|| {
         .float_free(FLOAT_FREE)
 });
 
-/// [`TABLE`] without the aim update `c7840`: with `impl.sim.native.anim`
-/// on, the animation subsystem implements that point, so the movement
+/// [`TABLE`] without the aim update `c7840`: the animation subsystem
+/// implements that point, so the movement
 /// `c60c0` calls it as a callout and its hook answers
 /// (`sim_bridge::sim_objects`, as for the full table). The counters stay
 /// [`TABLE`]'s.
@@ -208,10 +203,11 @@ pub static WITHOUT_AIM: LazyLock<Table> = LazyLock::new(|| {
         .float_free(FLOAT_FREE)
 });
 
-/// Why the guest runs one call of a body in [`TABLE`].
+/// A named error a body's call is counted under. The Rust still answers
+/// the call; no refusal hands it to the guest.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Refusal {
-    /// `bd090` or a type callback entered or resumed outside the float
+    /// A body that uses float state entered or resumed outside the float
     /// environment its arithmetic assumes ([`super::supported`]).
     FloatEnv,
 }
@@ -233,7 +229,8 @@ pub struct Stats {
     pub entry: u32,
     /// Segments the Rust body ran (entry or site to the next transfer).
     pub segments: u64,
-    /// Calls or resumes the guest ran, by [`Refusal::ALL`] position.
+    /// Calls or resumes counted under a named error, by
+    /// [`Refusal::ALL`] position; the Rust answered them.
     pub refused: [u64; Refusal::ALL.len()],
     /// True callouts from the body that the runtime made in place and that
     /// came back to their site in Rust (`runtime::ExecCtx::call_inline`).
@@ -250,7 +247,7 @@ struct Counters {
 }
 
 static COUNTERS: LazyLock<Counters> = LazyLock::new(|| {
-    let n = TABLE.bodies().len();
+    let n = super::TABLE.bodies().len();
     Counters {
         segments: (0..n).map(|_| AtomicU64::new(0)).collect(),
         refused: (0..n).map(|_| std::array::from_fn(|_| AtomicU64::new(0))).collect(),
@@ -259,19 +256,19 @@ static COUNTERS: LazyLock<Counters> = LazyLock::new(|| {
     }
 });
 
-/// One segment of a body in [`TABLE`], counted: the runner
-/// [`super::drive_with`] takes.
+/// One segment of a body, counted: the runner [`super::drive_with`]
+/// takes.
 pub fn segment(body: &Body, cpu: &mut CpuAbi, g: &mut Guest, pc: u32) -> super::Result<TransferAbi> {
     let transfer = body.segment(cpu, g, pc)?;
-    if let Some(i) = TABLE.index(pc) {
+    if let Some(i) = super::TABLE.index(pc) {
         COUNTERS.segments[i].fetch_add(1, Ordering::Relaxed);
     }
     Ok(transfer)
 }
 
-/// The guest runs the call or resume at `pc` because of `why`.
+/// The call or resume at `pc` is counted under `why`.
 pub fn refused(pc: u32, why: Refusal) {
-    if let Some(i) = TABLE.index(pc) {
+    if let Some(i) = super::TABLE.index(pc) {
         let at = Refusal::ALL.iter().position(|&r| r == why).expect("listed");
         COUNTERS.refused[i][at].fetch_add(1, Ordering::Relaxed);
     }
@@ -280,7 +277,7 @@ pub fn refused(pc: u32, why: Refusal) {
 /// One true callout of the body that resumes at `site`: made in place and
 /// back in Rust (`None`), or left to the runner for `why`.
 pub fn callout(site: u32, left: Option<Fallback>) {
-    if let Some(i) = TABLE.index(site) {
+    if let Some(i) = super::TABLE.index(site) {
         match left {
             None => COUNTERS.inline[i].fetch_add(1, Ordering::Relaxed),
             Some(why) => COUNTERS.left[i][why.index()].fetch_add(1, Ordering::Relaxed),
@@ -288,9 +285,9 @@ pub fn callout(site: u32, left: Option<Fallback>) {
     }
 }
 
-/// Every body's counters, in [`TABLE`] order.
+/// Every body's counters, in `super::TABLE` order.
 pub fn stats() -> Vec<Stats> {
-    TABLE
+    super::TABLE
         .bodies()
         .iter()
         .enumerate()

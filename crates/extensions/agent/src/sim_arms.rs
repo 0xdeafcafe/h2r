@@ -69,7 +69,7 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
                 arms.extend(walk_wire(native_walk::stats()));
                 arms
             }),
-            subsystem(switches, "anim", anim_wire(&walk::arm_stats(), &walk::stats(), manager::stats())),
+            subsystem(switches, "anim", anim_wire(&walk::stats(), manager::stats())),
             subsystem(switches, "collision", collision_arms(&world::stats())),
             subsystem(switches, "seats", {
                 let mut arms = group(sim_bridge::sim_seats::GROUP);
@@ -177,11 +177,9 @@ fn physics_arms() -> Vec<Arm> {
 fn objects_wire(s: objects::Status) -> Arm {
     Arm {
         name: "objects.curve".to_owned(),
-        checked: s.checked,
-        matched: s.matched,
-        mismatched: s.mismatched,
         answered: s.answered,
         declined: s.declined_float + s.declined_kind + s.declined_fault,
+        ..Arm::default()
     }
 }
 
@@ -295,14 +293,13 @@ fn segment_wire(prefix: &str, entries: Vec<(u32, segment_arm::Stats)>) -> Vec<Ar
         .collect()
 }
 
-fn anim_wire(arm: &walk::ArmStats, body: &walk::Stats, segments: Vec<(u32, manager::Stats)>) -> Vec<Arm> {
+/// The graph walk compares nothing: its body answers or declines by reason.
+fn anim_wire(body: &walk::Stats, segments: Vec<(u32, manager::Stats)>) -> Vec<Arm> {
     let mut arms = vec![Arm {
         name: "anim.graph_walk".to_owned(),
-        checked: arm.checked,
-        matched: arm.matched,
-        mismatched: arm.mismatched,
         answered: body.native,
-        declined: arm.declined.iter().sum(),
+        declined: body.declined.iter().sum(),
+        ..Arm::default()
     }];
     arms.extend(segments.into_iter().map(|(addr, s)| Arm {
         name: format!("anim.manager.{addr:08x}"),
@@ -427,16 +424,8 @@ mod tests {
 
     #[test]
     fn sources_map_onto_the_arm_fields() {
-        let o = objects_wire(objects::Status {
-            checked: 10,
-            matched: 9,
-            mismatched: 1,
-            answered: 7,
-            declined_float: 1,
-            declined_kind: 2,
-            declined_fault: 3,
-        });
-        assert_eq!((o.checked, o.answered, o.declined), (10, 7, 6));
+        let o = objects_wire(objects::Status { answered: 7, declined_float: 1, declined_kind: 2, declined_fault: 3 });
+        assert_eq!((o.checked, o.answered, o.declined), (0, 7, 6));
         let f = function_wire(function::Status {
             checked: 8,
             matched: 8,
@@ -446,16 +435,11 @@ mod tests {
             dropped: 2,
         });
         assert_eq!((f.name.as_str(), f.checked, f.answered, f.declined), ("objects.function", 8, 5, 9));
-        let mut graph = walk::ArmStats {
-            checked: 4,
-            matched: 4,
-            ..Default::default()
-        };
-        graph.declined[0] = 2;
-        let body = walk::Stats {
+        let mut body = walk::Stats {
             native: 3,
             ..Default::default()
         };
+        body.declined[0] = 2;
         let seg = manager::Stats {
             matched: 5,
             differed: 1,
@@ -463,8 +447,8 @@ mod tests {
             answered: 9,
             ..Default::default()
         };
-        let arms = anim_wire(&graph, &body, vec![(0x10100, seg)]);
-        assert_eq!((arms[0].checked, arms[0].answered, arms[0].declined), (4, 3, 2));
+        let arms = anim_wire(&body, vec![(0x10100, seg)]);
+        assert_eq!((arms[0].checked, arms[0].answered, arms[0].declined), (0, 3, 2));
         assert_eq!(arms[1].name, "anim.manager.00010100");
         assert_eq!((arms[1].checked, arms[1].mismatched, arms[1].declined, arms[1].answered), (6, 1, 2, 9));
         let mut stats = world::Stats::default();

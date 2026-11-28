@@ -223,7 +223,7 @@ def code_names():
         git_lines("grep", "-ohE", r"impl\.[a-z0-9_-]+(\.[a-z0-9_-]+)*", "--", "crates")
     )
     # Registered as `.implementation("sim.arena-hash", ..)`: the `impl.` is implied.
-    # Ports name theirs as a plain string (`port(.., "sim.native_pose_matrix", ..)`).
+    # Some switches are named as a plain string (`"sim.native_simd"`).
     for quoted in git_lines(
         "grep", "-ohE", r'"(sim|audio|render|net|input)\.[a-z0-9_.-]+"', "--", "crates"
     ):

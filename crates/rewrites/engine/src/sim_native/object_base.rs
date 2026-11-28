@@ -1,8 +1,8 @@
 //! Base object function imports. StringIDs, the PRNG parameters and the
 //! normalized random scale belong to the loaded image. The constants here
 //! identify operand locations, so the public source carries no retail IDs.
-//! Never installed: `crate::sim_objects::functions::base` owns the entry
-//! under `impl.sim.native.objects`; this stays a test oracle.
+//! Never installed: `crate::sim_objects::functions::base` owns the entry;
+//! this stays a test oracle.
 use super::*;
 use crate::{
     function_eval::constant::ONE,

@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 40;
+pub const BUDGET: usize = 31;
 
 use Initial::{Group, Off, On};
 
@@ -62,8 +62,6 @@ const fn sw(
     }
 }
 
-const SIM_PORT: &str =
-    "hand port superseded by its subsystem's rewrite (docs/engine/sim-rewrite.md): delete with it";
 const DIAGNOSTIC: &str = "a diagnostic: becomes an agent API toggle, then goes";
 const EXACT: &str = "both paths are exact: make the default unconditional";
 
@@ -94,14 +92,10 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim", Group, "sim", "2026-11-20", "goes with its last child"),
     sw("impl.sim.native", Group, "sim", "2026-11-20",
         "the parent of the subsystem rewrites (lane rules): each child goes when its subsystem defaults on"),
-    sw("impl.sim.native.anim", Off, "sim", "2026-11-20",
-        "animation sampling (sim-anim): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.collision", Off, "sim", "2026-11-20",
         "collision queries (sim-collision): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.hs", Off, "sim", "2026-11-25",
         "HaloScript VM: retire after the campaign parity and timing ladder"),
-    sw("impl.sim.native.objects", Off, "sim", "2026-11-20",
-        "the object update (sim-objects): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.seats", Off, "sim", "2026-11-25",
         "seats and rules (sim-seats): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.sound", Off, "sim", "2026-11-25",
@@ -130,14 +124,6 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.native_simd", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.phantom-alias", On, "sim", "2026-11-22",
         "the phantoms' action build on live RAM with an undo journal (docs/perf/sim-phantom-build.md, P1): the view path stays as the check mode's reference and the flat-RAM path; the switch goes once a release has run with it on"),
-    // Simulation: hand ports (`sim_bridge::sim_native`).
-    sw("impl.sim.native_transform_compose", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_pose_matrix", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_unit_pose", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_marker_transforms", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_unit_aim", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_first_person_pose", Off, "sim", "2026-11-20", SIM_PORT),
-    sw("impl.sim.native_first_person_filters", Off, "sim", "2026-11-20", SIM_PORT),
 ];
 
 /// The row named `name`.

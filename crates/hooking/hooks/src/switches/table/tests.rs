@@ -199,7 +199,7 @@ fn every_switch_the_code_reads_is_listed_with_its_default() {
     }
     assert!(problems.is_empty(), "\n{}", problems.join("\n"));
     // The scan sees the reads it should.
-    for name in ["impl.render.native", "impl.sim.native_simd", "impl.sim.native_transform_compose"] {
+    for name in ["impl.render.native", "impl.sim.native_simd"] {
         assert!(reads.iter().any(|r| r.name == name), "the scan missed {name}");
     }
 }

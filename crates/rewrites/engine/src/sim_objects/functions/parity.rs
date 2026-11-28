@@ -1,25 +1,11 @@
-//! The object function evaluator's capture arm and its take-over
-//! (docs/engine/sim-rewrite.md, phase 3; the pattern of phase 5's
-//! `sim_physics::parity`): at every call of the tag-function curve
-//! evaluator `13b390` — the curve every object function value, light and
-//! screen effect flows through — the idiomatic kernel
-//! `sim_objects::functions::curve` predicts the result from the guest
-//! state. While the arm is unproven the guest answers (or the slice 3
-//! bodies, which reach it as a callout), and the prediction is compared
-//! with what the answer left in `xmm0`. Mismatches are counted and the
-//! first is named on stderr; [`status`] carries the counters for tests
-//! and reports. A declined call (float environment, curve kinds 9 and 10,
-//! an unreadable operand) is the guest's alone and counted by reason,
-//! never silent.
-//!
-//! **Take-over.** After [`PROVEN_AFTER`] matched calls with no mismatch
-//! ever seen, [`enter`] answers the call itself: `xmm0` and the return
-//! from the kernel's prediction, counted in `answered`. Every
-//! [`AUDIT_EVERY`]th answerable call after that still goes to the guest
-//! and is compared, so a later mismatch stops the take-over for good (a
-//! mismatch is never undone; the guest answers everything from then on).
-//! The counters are process-wide and the audit slot is chosen by the
-//! count of answerable calls, so the choice depends on no thread.
+//! The tag-function curve evaluator `13b390` in Rust (docs/engine/sim-rewrite.md,
+//! phase 3): at every call, the curve every object function value, light
+//! and screen effect flows through, the idiomatic kernel
+//! `sim_objects::functions::curve` answers from the guest state, counted
+//! in `answered`. Nothing is compared. A call the kernel cannot take
+//! (the float environment or an operand off its exact path, curve kinds 9
+//! and 10, an unreadable operand) is the guest's, counted by reason
+//! ([`Status`]); those are the only guest calls left at this point.
 //!
 //! What an answered call leaves: `xmm0`'s low lane, `esp` and the return,
 //! and the arithmetic flags undefined. `eax`, `ecx`, `edx` and `edi` keep
@@ -42,21 +28,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 /// address.
 pub const ARGS: u32 = 8;
 
-/// Matched calls, with no mismatch, before the arm answers calls itself.
-pub const PROVEN_AFTER: u64 = 4096;
-
-/// After that, one answerable call in this many still goes to the guest
-/// and is compared.
-pub const AUDIT_EVERY: u64 = 64;
-
-/// The arm's counters since start.
+/// The evaluator's counters since the map loaded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Status {
-    /// Calls the guest answered and the arm compared at the return.
-    pub checked: u64,
-    pub matched: u64,
-    pub mismatched: u64,
-    /// Calls the kernel answered in the guest's place.
+    /// Calls the kernel answered.
     pub answered: u64,
     /// Calls left to the guest, by reason: the float environment or an
     /// operand off the kernel's exact path; curve kinds 9 and 10; a guest
@@ -66,11 +41,7 @@ pub struct Status {
     pub declined_fault: u64,
 }
 
-static CHECKED: AtomicU64 = AtomicU64::new(0);
-static MATCHED: AtomicU64 = AtomicU64::new(0);
-static MISMATCHED: AtomicU64 = AtomicU64::new(0);
 static ANSWERED: AtomicU64 = AtomicU64::new(0);
-static ANSWERABLE: AtomicU64 = AtomicU64::new(0);
 static DECLINED_FLOAT: AtomicU64 = AtomicU64::new(0);
 static DECLINED_KIND: AtomicU64 = AtomicU64::new(0);
 static DECLINED_FAULT: AtomicU64 = AtomicU64::new(0);
@@ -79,9 +50,6 @@ static DECLINED_FAULT: AtomicU64 = AtomicU64::new(0);
 pub fn status() -> Status {
     let read = |c: &AtomicU64| c.load(Ordering::Relaxed);
     Status {
-        checked: read(&CHECKED),
-        matched: read(&MATCHED),
-        mismatched: read(&MISMATCHED),
         answered: read(&ANSWERED),
         declined_float: read(&DECLINED_FLOAT),
         declined_kind: read(&DECLINED_KIND),
@@ -89,10 +57,10 @@ pub fn status() -> Status {
     }
 }
 
-/// The kernel's prediction of one call: the result bits and the `esp` its
+/// The kernel's answer to one call: the result bits and the `esp` its
 /// return leaves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Prediction {
+struct Prediction {
     bits: u32,
     end_sp: u32,
 }
@@ -103,16 +71,13 @@ pub enum Step {
     /// The kernel answered: `cpu` holds the result and the popped frame;
     /// the caller returns to `target`.
     Answered { target: u32 },
-    /// The guest answers; compare its result with the prediction at the
-    /// return ([`compare`]).
-    Audit(Prediction),
-    /// The guest answers alone: the call was declined, counted.
+    /// The kernel cannot take the call: the guest answers, counted by
+    /// reason.
     Guest,
 }
 
-/// At the entry, before anything runs: run the kernel and decide who
-/// answers. Whether the arm has earned the take-over is read from the
-/// counters.
+/// At the entry, before anything runs: the kernel answers the call, or
+/// counts why it cannot.
 pub fn enter(cpu: &mut CpuAbi, guest: &Guest) -> Step {
     let prediction = match capture(cpu, guest) {
         Ok(p) => p,
@@ -121,10 +86,6 @@ pub fn enter(cpu: &mut CpuAbi, guest: &Guest) -> Step {
             return Step::Guest;
         }
     };
-    let slot = ANSWERABLE.fetch_add(1, Ordering::Relaxed);
-    if !proven() || slot % AUDIT_EVERY == 0 {
-        return Step::Audit(prediction);
-    }
     let Ok(target) = guest.u32(cpu.esp) else {
         count_decline(Miss::Fault);
         return Step::Guest;
@@ -136,48 +97,10 @@ pub fn enter(cpu: &mut CpuAbi, guest: &Guest) -> Step {
     Step::Answered { target }
 }
 
-/// Forget everything the arm has seen: the counters, the mismatch and
-/// the audit slot. Called at map load, so a proof earned on one map is
-/// earned again on the next (the curves and the image constants are the
-/// map's), and an arm a mismatch stopped starts over compare-only.
+/// Zero the counters (at map load: the curves are the map's).
 pub fn reset() {
-    for counter in [
-        &CHECKED,
-        &MATCHED,
-        &MISMATCHED,
-        &ANSWERED,
-        &ANSWERABLE,
-        &DECLINED_FLOAT,
-        &DECLINED_KIND,
-        &DECLINED_FAULT,
-    ] {
+    for counter in [&ANSWERED, &DECLINED_FLOAT, &DECLINED_KIND, &DECLINED_FAULT] {
         counter.store(0, Ordering::Relaxed);
-    }
-}
-
-/// Whether the arm has matched enough calls with no mismatch.
-fn proven() -> bool {
-    MISMATCHED.load(Ordering::Relaxed) == 0 && MATCHED.load(Ordering::Relaxed) >= PROVEN_AFTER
-}
-
-/// At the return, after the guest ran: compare its result with the
-/// prediction. The guest's answer stands either way.
-pub fn compare(prediction: Prediction, cpu: &CpuAbi) {
-    CHECKED.fetch_add(1, Ordering::Relaxed);
-    let got = lo(cpu, 0);
-    let Prediction { bits: want, end_sp } = prediction;
-    if got == want && cpu.esp == end_sp {
-        MATCHED.fetch_add(1, Ordering::Relaxed);
-        return;
-    }
-    let seen = MISMATCHED.fetch_add(1, Ordering::Relaxed);
-    if seen == 0 {
-        eprintln!(
-            "sim: objects function-curve arm: the guest's result differs from the prediction \
-             (xmm0 {got:#010x}, want {want:#010x}; esp {:#010x}, want {end_sp:#010x}); \
-             the guest answers every call from here",
-            cpu.esp
-        );
     }
 }
 
@@ -281,64 +204,25 @@ mod tests {
         (cpu, g)
     }
 
-    /// The guest's answer to `cpu`'s call: `bits` in `xmm0`, the frame
-    /// popped.
-    fn guest_answer(cpu: &CpuAbi, bits: u32) -> CpuAbi {
-        let mut answer = *cpu;
-        answer.esp += 4 + ARGS;
-        answer.xmm[0] = u128::from(bits).to_le_bytes();
-        answer
-    }
-
     const WANT: u32 = 0x3e80_0000; // 0.25, the identity curve at 0.25
 
-    /// The arm's whole life, in one test: the counters are process-wide,
-    /// and the take-over is a function of them.
     #[test]
-    fn the_arm_compares_then_takes_over_audits_and_stops_on_a_mismatch() {
+    fn the_kernel_answers_every_call_it_can_and_counts_the_rest() {
         let _one = ARM.lock().unwrap_or_else(|e| e.into_inner());
         reset();
         let (cpu, g) = call(0x1fa0, 0x027f);
-        let start = status();
-        assert_eq!(start.answered, 0);
-
-        // Unproven: the guest answers, and every call is compared.
-        let mut compared = 0;
-        while status().matched < PROVEN_AFTER {
+        for n in 1..=3 {
             let mut entering = cpu;
-            let Step::Audit(p) = enter(&mut entering, &g) else { panic!("unproven calls are the guest's") };
-            assert_eq!((entering.esp, entering.xmm[0]), (cpu.esp, cpu.xmm[0]), "an audited call leaves the registers alone");
-            compare(p, &guest_answer(&cpu, WANT));
-            compared += 1;
+            let Step::Answered { target } = enter(&mut entering, &g) else { panic!("an answerable call") };
+            assert_eq!(target, 0, "the return word on the synthetic stack");
+            assert_eq!(entering.esp, cpu.esp + 4 + ARGS);
+            assert_eq!(lo(&entering, 0), WANT);
+            assert_eq!(entering.eflags_defined & ARITH, 0);
+            assert_eq!(status().answered, n);
         }
-        assert!(compared > 0);
-        assert_eq!((status().mismatched, status().answered), (0, 0));
 
-        // Proven: the kernel answers all but every AUDIT_EVERY'th call,
-        // which is compared like before.
-        let (mut answered, mut audited) = (0, 0);
-        for _ in 0..2 * AUDIT_EVERY {
-            let mut entering = cpu;
-            match enter(&mut entering, &g) {
-                Step::Answered { target } => {
-                    answered += 1;
-                    assert_eq!(target, 0, "the return word on the synthetic stack");
-                    assert_eq!(entering.esp, cpu.esp + 4 + ARGS);
-                    assert_eq!(lo(&entering, 0), WANT);
-                    assert_eq!(entering.eflags_defined & ARITH, 0);
-                }
-                Step::Audit(p) => {
-                    audited += 1;
-                    compare(p, &guest_answer(&cpu, WANT));
-                }
-                Step::Guest => panic!("an answerable call is never declined"),
-            }
-        }
-        assert_eq!((answered, audited), (2 * AUDIT_EVERY - 2, 2));
-        assert_eq!(status().answered - start.answered, answered);
-
-        // A declined environment, kind and operand are the guest's, and
-        // do not count as answerable.
+        // A declined environment, kind and operand are the guest's,
+        // counted by reason.
         let before = status();
         let (mut env, g2) = call(0x1f80, 0x027f);
         assert_eq!(enter(&mut env, &g2), Step::Guest);
@@ -355,63 +239,7 @@ mod tests {
         );
         assert_eq!(after.answered, before.answered);
 
-        // A mismatch at an audited call ends the take-over for good.
-        let mut audit = None;
-        for _ in 0..AUDIT_EVERY {
-            let mut entering = cpu;
-            if let Step::Audit(p) = enter(&mut entering, &g) {
-                audit = Some(p);
-                break;
-            }
-        }
-        compare(audit.expect("an audit within AUDIT_EVERY calls"), &guest_answer(&cpu, 0x3f40_0000));
-        assert_eq!(status().mismatched, 1);
-        let answered = status().answered;
-        for _ in 0..2 * AUDIT_EVERY {
-            let mut entering = cpu;
-            assert!(matches!(enter(&mut entering, &g), Step::Audit(_)));
-        }
-        assert_eq!(status().answered, answered);
-    }
-
-    /// A map load puts a proven arm, and one a mismatch stopped, back to
-    /// compare-only.
-    #[test]
-    fn a_reset_puts_a_proven_arm_back_to_comparing() {
-        let _one = ARM.lock().unwrap_or_else(|e| e.into_inner());
-        let (cpu, g) = call(0x1fa0, 0x027f);
-        let prove = || {
-            while status().matched < PROVEN_AFTER {
-                let mut entering = cpu;
-                let Step::Audit(p) = enter(&mut entering, &g) else { panic!("unproven calls are the guest's") };
-                compare(p, &guest_answer(&cpu, WANT));
-            }
-        };
-        reset();
-        prove();
-        let mut entering = cpu;
-        let mut took_over = false;
-        for _ in 0..AUDIT_EVERY {
-            took_over |= matches!(enter(&mut entering, &g), Step::Answered { .. });
-        }
-        assert!(took_over, "a proven arm answers");
-
         reset();
         assert_eq!(status(), Status::default());
-        for _ in 0..2 * AUDIT_EVERY {
-            let mut entering = cpu;
-            assert!(matches!(enter(&mut entering, &g), Step::Audit(_)), "after a reset every call is compared");
-        }
-
-        // The proof is earned again, and a mismatch is forgotten too.
-        reset();
-        let mut entering = cpu;
-        let Step::Audit(p) = enter(&mut entering, &g) else { panic!("unproven") };
-        compare(p, &guest_answer(&cpu, 0x3f40_0000));
-        assert_eq!(status().mismatched, 1);
-        reset();
-        prove();
-        let answered = (0..AUDIT_EVERY).filter(|_| matches!(enter(&mut { cpu }, &g), Step::Answered { .. })).count();
-        assert!(answered > 0);
     }
 }

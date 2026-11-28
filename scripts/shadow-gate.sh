@@ -9,7 +9,7 @@
 #
 #   MAP     a multiplayer map (default lockout)
 #   TICKS   game ticks of gameplay to check (default 900: 30 s)
-#   PORTS   port switch names (sim.native_unit_pose), groups (sim.native,
+#   PORTS   port names (sim.port.unit_pose), groups (sim.native,
 #           sim.physics, sim.native.objects, sim.seats), object point names,
 #           or all (the default standalone port set)
 #
@@ -17,7 +17,8 @@
 #   H2            the h2 binary (default h2; reinstall it from this tree)
 #   H2_DISC       the disc image (default disc/halo2.iso in the checkout)
 #   H2_OPT        as for the build: the image must already be built
-#   H2_FEATURES   kept; the ports' impl. switches are added to it
+#   H2_FEATURES   kept; the seats' impl. switch is added to it when a seat
+#                 is named (every other port is always installed)
 #   SHADOW_EVERY  check one call in this many (default 1)
 #   SHADOW_OUT    where the match, log, report and verdict go
 #                 (default a new directory under $TMPDIR)
@@ -40,17 +41,15 @@ disc="${H2_DISC:-$root/disc/halo2.iso}"
 # Every port by group. `feature`'s shadow tests check that each registered
 # port is listed here, one per line.
 sim_native=(
-  sim.native_transform_compose
-  sim.native_pose_matrix
-  sim.native_rotation_codec
-  sim.native_unit_pose
-  sim.native_animation_stream
-  sim.native_marker_transforms
+  sim.port.transform_compose
+  sim.port.pose_matrix
+  sim.port.unit_pose
+  sim.port.marker_transforms
 )
 sim_physics=(
-  sim.native_unit_aim
-  sim.native_first_person_pose
-  sim.native_first_person_filters
+  sim.port.unit_aim
+  sim.port.first_person_pose
+  sim.port.first_person_filters
 )
 # Phase 7's seats share one switch; with their checks on they run as the
 # guest-authoritative arm (docs/engine/shadow-exec.md), so the match
@@ -103,18 +102,12 @@ features="${H2_FEATURES:-}"
 json_ports=""
 seats_flagged=0
 for p in "${ports[@]}"; do
-  if [[ " ${sim_objects[*]} " == *" $p "* ]]; then
-    if [[ ",$features," != *",impl.sim.native.objects,"* ]]; then
-      features="${features:+$features,}impl.sim.native.objects"
-    fi
-  elif [[ $p == sim.seats.* ]]; then
+  if [[ $p == sim.seats.* ]]; then
     # Every seat sits behind the one phase switch; name it once.
     if (( seats_flagged == 0 )); then
       features="${features:+$features,}impl.sim.native.seats"
       seats_flagged=1
     fi
-  else
-    features="${features:+$features,}impl.$p"
   fi
   json_ports="${json_ports:+$json_ports,}\"$p\""
 done
