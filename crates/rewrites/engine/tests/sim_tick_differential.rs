@@ -17,6 +17,9 @@
 //! loaded that the driver does not). Both runs seed the tick clock, and the
 //! page compare covers its writes.
 //!
+//! `ai_update_matches_lifted`, `hs_update_matches_lifted`: the Rust phase
+//! bodies against their lifted functions, the unported callees stubbed.
+//!
 //! Needs the user's XBE (`lifted::image`); skipped without it.
 #![cfg(feature = "differential")]
 
@@ -246,4 +249,183 @@ fn tick_matches_lifted() {
     let page = TIME & !0xfff;
     let ours_page = guest.bytes(page, 0x1000).unwrap();
     assert_eq!(ours_page, lifted_mem.bytes[page as usize..page as usize + 0x1000]);
+}
+
+// The Rust phase bodies against their lifted functions
+// (`engine::ai_update`, `engine::hs_update`): the lifted body runs on the
+// interpreter with its unported callees (`stubs`) answered by a stub that
+// writes nothing and every other callee lifted, and the Rust body runs on a
+// guest holding the same RAM with the same stubs. The stubbed calls (target
+// and `edi`) and every byte of RAM but the dead stack must agree.
+
+/// One stubbed call: the target and `edi`.
+type Stubbed = (u32, u32);
+
+/// The lifted function at `entry`, run to its return on `mem`: its calls
+/// into `stubs`. A tail jump into a stub counts as its call.
+fn lifted_phase(entry: u32, stubs: &[u32], mem: &mut FlatMemory) -> Vec<Stubbed> {
+    let image = lifted::image::Image::get().expect("image");
+    let mut code = image.original();
+    code.prime(entry);
+    assert!(mem.load(STACK, &EXIT.to_le_bytes()));
+    let mut cpu = Cpu { gpr: [0, 0, 0, 0, STACK, 0, 0, 0], eip: entry, eflags: 0x2, mxcsr: 0x1fa0, ..Default::default() };
+    let mut seen = Vec::new();
+    for _ in 0..2_000_000 {
+        if stubs.contains(&cpu.eip) {
+            // A tail jump: the return address is the caller's.
+            seen.push((cpu.eip, cpu.gpr[7]));
+            let sp = cpu.gpr[4];
+            cpu.eip = mem.read_u32(sp).unwrap();
+            cpu.gpr[4] = sp + 4;
+        }
+        if cpu.eip == EXIT {
+            return seen;
+        }
+        match lifted::code::step(&mut code, &mut cpu, mem).unwrap_or_else(|e| panic!("{e}")) {
+            Flow::Call { target, .. } if stubs.contains(&target) => {
+                seen.push((target, cpu.gpr[7]));
+                let sp = cpu.gpr[4];
+                cpu.eip = mem.read_u32(sp).unwrap();
+                cpu.gpr[4] = sp + 4;
+                cpu.gpr[0] = 0;
+            }
+            Flow::Return { target } if target == EXIT => return seen,
+            _ => {}
+        }
+    }
+    panic!("{entry:#x} did not return");
+}
+
+/// The Rust body `f` on a guest holding `mem`: its guest calls, and the
+/// guest after.
+fn rust_phase(
+    f: fn(entry::Cx) -> EntryFuture,
+    mem: &FlatMemory,
+) -> (Vec<Stubbed>, FakeGuest) {
+    let mut g = FakeGuest::new();
+    g.put(0, &mem.bytes);
+    let run = entry::testing::run(&f, g, Regs { esp: STACK, ..Default::default() }, |_, _| Regs::default());
+    assert_eq!(run.result, Ok(entry::Ret::new(0, 0)));
+    let calls = run.calls.iter().map(|c| (c.target, c.edi.unwrap_or(0))).collect();
+    (calls, run.guest)
+}
+
+/// Every byte of `lifted` and `ours` outside the stack page under `STACK`.
+fn same_ram(lifted: &FlatMemory, ours: &FakeGuest, why: &str) {
+    let mut got = vec![0u8; lifted.bytes.len()];
+    ours.read(0, &mut got).unwrap();
+    let dead = (STACK as usize - 0x1000)..(STACK as usize + 4);
+    let first = lifted.bytes.iter().zip(&got).enumerate().find(|(i, (a, b))| a != b && !dead.contains(i));
+    assert_eq!(first.map(|(i, _)| format!("{i:#x}")), None, "{why}: first differing byte");
+}
+
+fn image_ram() -> Option<FlatMemory> {
+    let image = lifted::image::Image::get()?;
+    let mut mem = image.ram.clone();
+    mem.bytes.truncate(RAM);
+    Some(mem)
+}
+
+fn put(mem: &mut FlatMemory, at: u32, bytes: &[u8]) {
+    assert!(mem.load(at, bytes), "{at:#x}");
+}
+
+#[test]
+fn ai_update_matches_lifted() {
+    use engine::ai_update::{self, ENGINE, GLOBALS, SYSTEMS, TEARDOWN};
+    let Some(ram) = image_ram() else { return };
+    const G: u32 = 0x0060_0000;
+    const MODE: u32 = 0x0060_1000;
+    let stubs: Vec<u32> = SYSTEMS.iter().copied().chain([TEARDOWN]).collect();
+    let f: fn(entry::Cx) -> EntryFuture = |cx| {
+        Box::pin(async move {
+            ai_update::run(&cx, 0x40).await?;
+            Ok(entry::Ret::new(0, 0))
+        })
+    };
+    let mut cases = 0;
+    for on in [0u8, 1] {
+        for enabled in [0u8, 1] {
+            for ran in [0u8, 1] {
+                for mode in [1u8, 4] {
+                    for countdown in [0i16, 1, 30, -2] {
+                        let why = format!("on {on} enabled {enabled} ran {ran} mode {mode} countdown {countdown}");
+                        let mut mem = ram.clone();
+                        put(&mut mem, GLOBALS, &G.to_le_bytes());
+                        put(&mut mem, ENGINE, &MODE.to_le_bytes());
+                        put(&mut mem, MODE + 0xc, &[mode]);
+                        put(&mut mem, G, &[on, enabled, ran]);
+                        put(&mut mem, G + 0x22, &countdown.to_le_bytes());
+                        let (ours, guest) = rust_phase(f, &mem);
+                        let lifted = lifted_phase(ai_update::ENTRY, &stubs, &mut mem);
+                        let targets = |v: &[Stubbed]| v.iter().map(|c| c.0).collect::<Vec<_>>();
+                        assert_eq!(targets(&ours), targets(&lifted), "{why}");
+                        same_ram(&mem, &guest, &why);
+                        cases += 1;
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 64);
+}
+
+#[test]
+fn hs_update_matches_lifted() {
+    use engine::hs_update::{self, AFTER, ENABLED, EXECUTE};
+    let Some(ram) = image_ram() else { return };
+    const POOL: u32 = 0x0060_0000;
+    const BITMAP: u32 = 0x0060_0800;
+    const DATA: u32 = 0x0060_1000;
+    const THREAD: u32 = 0x418;
+    let f: fn(entry::Cx) -> EntryFuture = |cx| {
+        Box::pin(async move {
+            hs_update::run(&cx, 0x40).await?;
+            Ok(entry::Ret::new(0, 0))
+        })
+    };
+    let mut seed = 0x1234_5678u32;
+    let mut next = move || {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        seed
+    };
+    let mut ran = 0;
+    for case in 0..200 {
+        let mut mem = ram.clone();
+        let enabled = u8::from(case % 10 != 0);
+        let slots = 1 + next() % 12;
+        put(&mut mem, ENABLED, &[enabled]);
+        put(&mut mem, points::GAME_TIME.base, &TIME.to_le_bytes());
+        put(&mut mem, TIME + 8, &50i32.to_le_bytes());
+        put(&mut mem, engine::hs_pool::THREADS, &POOL.to_le_bytes());
+        put(&mut mem, POOL + 0x20, &32u32.to_le_bytes());
+        put(&mut mem, POOL + 0x24, &THREAD.to_le_bytes());
+        put(&mut mem, POOL + 0x38, &slots.to_le_bytes());
+        put(&mut mem, POOL + 0x44, &DATA.to_le_bytes());
+        put(&mut mem, POOL + 0x48, &BITMAP.to_le_bytes());
+        let mut bits = 0u32;
+        for i in 0..slots {
+            let r = next();
+            if r % 5 == 0 {
+                continue;
+            }
+            bits |= 1 << i;
+            let at = DATA + THREAD * i;
+            let kind = [0u8, 1, 2, 4][(r >> 3) as usize % 4];
+            let wake = [0i32, 50, 51, -1, 10][(r >> 6) as usize % 5];
+            put(&mut mem, at, &(0x8000 + i as u16).to_le_bytes());
+            put(&mut mem, at + 2, &[kind]);
+            put(&mut mem, at + 8, &wake.to_le_bytes());
+        }
+        put(&mut mem, BITMAP, &bits.to_le_bytes());
+        let why = format!("case {case}: {slots} slots, bits {bits:#x}, enabled {enabled}");
+        let (ours, guest) = rust_phase(f, &mem);
+        let lifted = lifted_phase(hs_update::ENTRY, &[EXECUTE, AFTER], &mut mem);
+        assert_eq!(ours, lifted, "{why}: the executor's threads (edi) and the tail call");
+        same_ram(&mem, &guest, &why);
+        ran += ours.iter().filter(|c| c.0 == EXECUTE).count();
+    }
+    assert!(ran > 100, "the cases ran threads: {ran}");
 }
