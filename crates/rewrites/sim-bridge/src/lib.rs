@@ -13,6 +13,7 @@ pub mod sim_sound;
 pub mod sim_ext;
 pub mod sim_physics;
 pub mod sim_seats;
+pub mod cache_flush;
 pub mod sim_lightmap;
 pub mod sim_status_poll;
 pub mod present;

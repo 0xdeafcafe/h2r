@@ -109,6 +109,9 @@ impl Feature for SimNative {
         // Phase 7: the seats (crate::sim_seats), and the aim-assist,
         // respawn-gate and pickup-scan kernels (crate::present), always.
         crate::sim_seats::install(b);
+        // The resource caches' flushes, with no push-buffer kick
+        // (crate::cache_flush), always.
+        crate::cache_flush::install(b);
         crate::present::install(b);
         // The clip store and the collision world are derived from guest
         // memory and hold no state of their own; a load only has to

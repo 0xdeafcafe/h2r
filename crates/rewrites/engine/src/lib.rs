@@ -108,6 +108,8 @@ pub mod effects_phase;
 pub mod tick_poses;
 
 #[cfg(feature = "runtime-glue")]
+pub mod native_cache_flush;
+#[cfg(feature = "runtime-glue")]
 pub mod sim_physics;
 
 // The guest boundary and the named points live in guest-layout
