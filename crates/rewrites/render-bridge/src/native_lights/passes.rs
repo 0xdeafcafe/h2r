@@ -1,144 +1,83 @@
-//! One dynamic light at `0x00031170`. With the walk on, the entry runs the
-//! lifted original whole. When a renderer can take typed passes (L8) it
-//! first keeps its plan; the body's own call to the constants
-//! (`points::LIGHT_CONSTANTS`, return word `site::CONSTANTS`, after the
-//! item lists and the shadow byte) then offers the complete passes. A
-//! commit resumes the guest at `site::VIEW_TARGET`, whose epilogue restores
-//! the saved registers and returns; a refusal runs the constants and the
-//! rest of the body untouched. With the walk off (opted out, or render
-//! timing) L5 runs the body in Rust, its guest calls naming their
-//! original return sites through `passes::caller`. Refusal at the entry
-//! itself runs the entire original function.
+//! One dynamic light at `0x00031170` (docs/graphics/native-lights.md, "The
+//! light frame under the cut"). Its only caller is the cut light frame's
+//! Rust body ([`super::frame`]), and the guest's body never runs: the
+//! passes make their item lists, put the light and its groups into the
+//! scene ([`super::scene_frame`]) and return (`ret 0x10`). A light the
+//! scene cannot take is dropped for the frame and counted by cause.
 
-use std::cell::Cell;
 use std::sync::Arc;
 
-use engine::light_constants::Fpu;
-use engine::memory::GuestMemory;
-use engine::points;
 use engine::entry::Ret;
+use engine::light_constants::Fpu;
+use engine::points;
 use engine::render::light_gather::{Refusal, passes};
 use hooks::{Builder, Call, Cx, EntryFuture, Flow};
 use runtime::TransferAbi;
 use timeline::native::{SceneList, SceneListResult};
 
 use super::frame::{original, refused};
-use crate::native_map_work::{Stage, bsp_generation};
+use super::scene_frame::{FrameDropped, drop_frame};
+use crate::native_map_work::Stage;
 
-/// The entry plan of the invocation running the whole guest body, the
-/// return address it was called with, and the map generation it began
-/// in (a load or a restored snapshot moves it on).
-struct Pending {
-    plan: passes::Plan,
-    ret: u32,
-    generation: u64,
-}
-
-thread_local! {
-    /// Set only by the entry that runs the guest body, cleared by every
-    /// entry and taken by the first constants call that follows. The
-    /// thread that runs the guest owns it; another thread never sees it.
-    static PENDING: Cell<Option<Pending>> = const { Cell::new(None) };
-}
-
-pub(super) fn forget() {
-    PENDING.take();
-}
-
-fn guest_pass(why: Refusal) {
-    refused(SceneList::TypedLightPasses, why);
-    refused(SceneList::LightPasses, why);
-}
+/// The passes' `ret 0x10`.
+const POP: u16 = 0x10;
 
 pub(super) fn install(b: &mut Builder) {
-    let walk = super::walk::on(b.switches());
     b.raw()
         .implement(
             &points::RENDER_LIGHT_PASSES,
             "native_lights_passes",
             move |cpu, ctx, addr| {
-                // Any earlier invocation has passed its constants call.
-                forget();
-                if addr != points::RENDER_LIGHT_PASSES.base || Stage::Lights.standing_down() {
+                if addr != points::RENDER_LIGHT_PASSES.base {
                     return original(cpu, ctx, addr);
                 }
-                let typed_fpu =
-                    super::typed::fpu_ready(cpu.x87.tag, cpu.x87.status, cpu.x87.control);
+                if Stage::Lights.standing_down() {
+                    drop_frame(FrameDropped::StandingDown);
+                    return ret(cpu, ctx);
+                }
                 let fpu = Fpu {
                     mxcsr: cpu.mxcsr,
                     x87_control: cpu.x87.control,
                 };
-                let (plan, ret) = {
+                let plan = {
                     let runtime = Arc::clone(ctx.runtime());
                     let mem = runtime.memory();
-                    (
-                        passes::plan(&*mem, cpu.esp, cpu.eax, cpu.ecx, fpu),
-                        GuestMemory::u32(&*mem, cpu.esp),
-                    )
+                    passes::plan(&*mem, cpu.esp, cpu.eax, cpu.ecx, fpu)
                 };
-                // Under the cut the passes stop after the item lists:
-                // the scene takes the light's layers, and nothing draws.
-                // A light the scene cannot take is the guest's to draw.
-                if super::scene_path_ready() {
-                    return scene_passes(cpu, ctx, addr, plan);
-                }
-                let plan = match plan {
-                    Ok(plan) => plan,
-                    Err(why) => {
-                        if walk {
-                            guest_pass(why);
-                        } else {
-                            refused(SceneList::LightPasses, why);
-                        }
-                        return original(cpu, ctx, addr);
-                    }
-                };
-                if walk {
-                    match ret {
-                        Ok(ret) if typed_fpu && super::typed::host_ready() => {
-                            PENDING.set(Some(Pending {
-                                plan,
-                                ret,
-                                generation: bsp_generation(),
-                            }));
-                        }
-                        Ok(_) => guest_pass(Refusal::Unsupported),
-                        Err(_) => guest_pass(Refusal::Memory),
-                    }
-                    return original(cpu, ctx, addr);
-                }
-                hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
-                    Box::pin(async move {
-                        let (ret, _) = passes::run_with(&cx, plan, |_, _| {
-                            refused(SceneList::TypedLightPasses, Refusal::Unsupported);
-                            Ok(None)
-                        })
-                        .await?;
-                        SceneList::LightPasses.count(SceneListResult::Native);
-                        Ok::<_, engine::entry::EntryError>(ret)
-                    })
-                })
+                scene_passes(cpu, ctx, plan)
             },
         )
         .context_only();
     b.raw()
         .before(
             &points::LIGHT_CONSTANTS,
-            "native_lights_typed_passes",
-            |c| Ok(at_constants(c).map_or(Flow::Continue, Flow::Return)),
+            "native_lights_constants_observer",
+            |c| {
+                at_constants(c);
+                Ok(Flow::Continue)
+            },
         )
         .context_only();
 }
 
+/// Returns from the passes as `0x00031170` does, with nothing made.
+fn ret(
+    cpu: &mut runtime::CpuAbi,
+    ctx: &mut runtime::ExecCtx,
+) -> Result<TransferAbi, runtime::GuestFault> {
+    let mut guest = ctx.memory();
+    cpu.eax = 0;
+    guest.ret(cpu, u32::from(POP))
+}
+
 /// The passes of a light of the cut frame ([`super::scene_frame`]): the
 /// item lists, then the light's groups into the scene, and the return
-/// (`ret 0x10`). A light the scene cannot take keeps the guest's draw:
-/// a refused plan runs the whole original, and a light whose groups do
-/// not make runs the passes on past the item lists ([`after_lists`]).
+/// (`ret 0x10`). A refused plan returns at once; a light whose groups do
+/// not make, or that the host does not draw, returns after its item lists
+/// ([`after_lists`]). Both are counted, and neither draws.
 fn scene_passes(
     cpu: &mut runtime::CpuAbi,
     ctx: &mut runtime::ExecCtx,
-    addr: u32,
     plan: Result<passes::Plan, Refusal>,
 ) -> Result<TransferAbi, runtime::GuestFault> {
     let plan = match plan {
@@ -146,24 +85,13 @@ fn scene_passes(
         Err(why) => {
             refused(SceneList::LightPasses, why);
             super::scene_frame::refused();
-            // The guest draws this light: the held run draws first.
-            {
-                let runtime = Arc::clone(ctx.runtime());
-                let mut mem = runtime.memory();
-                super::flush_light_run(&mut *mem);
-            }
-            return original(cpu, ctx, addr);
+            return ret(cpu, ctx);
         }
     };
     hooks::entry::start_render(cpu, ctx, points::RENDER_LIGHT_PASSES.base, move |cx: Cx| -> EntryFuture {
         Box::pin(async move {
             let (ret, _) = passes::run_with(&cx, plan, |mem, p| {
-                let taken = super::scene_frame::light(mem, p);
-                if taken.is_err() {
-                    // The guest's remaining passes draw this light.
-                    super::flush_light_run(mem);
-                }
-                Ok(after_lists(taken))
+                Ok(Some(after_lists(super::scene_frame::light(mem, p))))
             })
             .await?;
             SceneList::LightPasses.count(SceneListResult::Native);
@@ -172,88 +100,36 @@ fn scene_passes(
     })
 }
 
-/// What the cut passes do once the item lists are made, given what the
-/// scene took: a light in the scene returns (`ret 0x10`, nothing drawn);
-/// one it kept (`None`) runs the guest's remaining passes, which draw it.
+/// What the cut passes do once the item lists are made: return
+/// (`ret 0x10`) with nothing drawn by the guest, whether the scene took the
+/// light or dropped it ([`super::scene_frame::light`] counts a drop).
 pub(super) fn after_lists(
-    taken: Result<usize, super::scene_frame::Kept>,
-) -> Option<(Ret, passes::LightPasses)> {
-    taken
-        .ok()
-        .map(|_| (Ret::new(0, 0x10), passes::LightPasses::default()))
+    _taken: Result<usize, super::scene_frame::Dropped>,
+) -> (Ret, passes::LightPasses) {
+    (Ret::new(0, POP), passes::LightPasses::default())
 }
 
-/// The constants' entry. Acts only on the whole guest body's own call
-/// from the kept invocation; `None` leaves every register and word as the
-/// guest left them, and the constants run.
-fn at_constants(c: &mut Call<'_>) -> Option<TransferAbi> {
+/// The constants' entry, called by the first-person lights
+/// (`0x0004057e`): the hand-off and the slot visibility observe the call.
+/// Every register and word stays as the guest left them.
+fn at_constants(c: &mut Call<'_>) {
     let rt = Arc::clone(c.ctx.runtime());
-    let call = {
-        let mem = rt.memory();
-        if !Stage::Lights.standing_down()
-            && passes::caller(&*mem, c.cpu.esp) == Some(passes::site::CONSTANTS)
-        {
-            if let Some((entry, serial)) = super::handoff::at_constants(c.cpu.esp) {
-                super::observe(&*mem, entry, serial);
-            }
-            super::slot_visibility::collect(&*mem, c.cpu.edx);
-        }
-        passes::ConstantsCall::read(&*mem, c.cpu.esp).ok()??
-    };
-    let pending = PENDING.take()?;
-    let p = &pending.plan;
-    if pending.generation != bsp_generation() || Stage::Lights.standing_down() {
-        guest_pass(Refusal::Unsupported);
-        return None;
-    }
-    let regs = [c.cpu.eax, c.cpu.ecx, c.cpu.edx];
-    let same_call = {
-        let mem = rt.memory();
-        call.matches(&*mem, p, regs).unwrap_or(false)
-            && GuestMemory::u32(&*mem, p.entry_esp).ok() == Some(pending.ret)
-    };
-    // The bounds port runs under the entry's float modes, which the
-    // constants would also see, with an empty x87 stack.
-    let cpu = &*c.cpu;
-    if !same_call
-        || (cpu.mxcsr ^ p.fpu.mxcsr) & !0x3f != 0
-        || cpu.x87.control != p.fpu.x87_control
-        || !super::typed::fpu_ready(cpu.x87.tag, cpu.x87.status, cpu.x87.control)
+    let mem = rt.memory();
+    if !Stage::Lights.standing_down()
+        && passes::caller(&*mem, c.cpu.esp) == Some(passes::site::CONSTANTS)
     {
-        guest_pass(Refusal::Layout);
-        return None;
-    }
-    if !rt.read_dispatch(|dispatch| dispatch.has_resume(passes::site::VIEW_TARGET)) {
-        guest_pass(Refusal::Unsupported);
-        return None;
-    }
-    let issued = {
-        let mut mem = rt.memory();
-        super::typed::dynamic(&mut *mem, p)
-    };
-    let eax = match issued {
-        Ok(eax) => eax,
-        Err(why) => {
-            guest_pass(why);
-            return None;
+        if let Some((entry, serial)) = super::handoff::at_constants(c.cpu.esp) {
+            super::observe(&*mem, entry, serial);
         }
-    };
-    SceneList::TypedLightPasses.count(SceneListResult::Native);
-    SceneList::LightPasses.count(SceneListResult::Native);
-    // As the tail leaves them at the view target's return site: EAX what
-    // the target call left, EBX zero (`0x000314d4`), whose low byte and
-    // word the epilogue stores into the pass flags.
-    c.cpu.eax = eax;
-    c.cpu.ebx = 0;
-    c.cpu.esp = call.view_target_esp();
-    Some(TransferAbi::resume(passes::site::VIEW_TARGET))
+        super::slot_visibility::collect(&*mem, c.cpu.edx);
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::after_lists;
+    use super::{POP, after_lists};
     use crate::native_lights::GroupRefusal;
-    use crate::native_lights::scene_frame::{self, GROUP_NAMES, Kept, keep_light};
+    use crate::native_lights::scene_frame::{self, Dropped, FrameDropped, GROUP_NAMES, drop_frame, drop_light};
     use scene_extract::light_groups::Cause;
 
     fn counter(name: &str) -> u64 {
@@ -261,37 +137,41 @@ mod tests {
     }
 
     /// A light the scene takes returns after its item lists, drawing
-    /// nothing; a light it keeps runs the guest's remaining passes. The
-    /// flashlight whose sorted entries include one the scene cannot hold
-    /// is drawn by the guest, not dropped.
+    /// nothing; so does one it drops: the guest's remaining passes never
+    /// run.
     #[test]
-    fn a_light_the_scene_cannot_take_runs_the_guests_passes() {
-        assert!(after_lists(Ok(3)).is_some(), "in the scene: return");
-        assert!(after_lists(Ok(0)).is_some(), "no drawn layer: return");
-        for kept in [
-            Kept::Unread,
-            Kept::Constants,
-            Kept::Projection,
-            Kept::Group(GroupRefusal::Entry(Cause::Material)),
-            Kept::Light,
-            Kept::AdditionalCasters,
-            Kept::Host,
+    fn a_light_the_scene_cannot_take_returns_after_its_lists_and_the_guest_draws_nothing() {
+        assert_eq!(after_lists(Ok(3)).0.pop, POP, "in the scene: return");
+        assert_eq!(after_lists(Ok(0)).0.pop, POP, "no drawn layer: return");
+        for dropped in [
+            Dropped::Unread,
+            Dropped::Constants,
+            Dropped::Projection,
+            Dropped::Group(GroupRefusal::Entry(Cause::Material)),
+            Dropped::Light,
+            Dropped::AdditionalCasters,
+            Dropped::Host,
         ] {
-            assert!(after_lists(Err(kept)).is_none(), "{kept:?}: the guest's passes go on");
+            assert_eq!(after_lists(Err(dropped)).0.pop, POP, "{dropped:?}: return");
         }
     }
 
-    /// Each kept light is counted by cause, a group's also by its
-    /// refusal; no row says dropped.
+    /// Each dropped light is counted by cause, a group's also by its
+    /// refusal, and a whole frame by its own cause; no row says kept.
     #[test]
-    fn a_kept_light_is_counted_by_cause_and_group_refusal() {
-        let (group, state) = (counter("scene_kept_light_group"), counter("scene_kept_light_group_entry_state"));
-        keep_light(Kept::Group(GroupRefusal::Entry(Cause::State)));
-        assert!(counter("scene_kept_light_group") > group);
-        assert!(counter("scene_kept_light_group_entry_state") > state);
-        assert!(scene_frame::counters().iter().all(|(k, _)| !k.contains("dropped")));
+    fn a_dropped_light_is_counted_by_cause_and_group_refusal() {
+        let (group, state) = (counter("scene_dropped_light_group"), counter("scene_dropped_light_group_entry_state"));
+        drop_light(Dropped::Group(GroupRefusal::Entry(Cause::State)));
+        assert!(counter("scene_dropped_light_group") > group);
+        assert!(counter("scene_dropped_light_group_entry_state") > state);
+        for why in [FrameDropped::StandingDown, FrameDropped::Host, FrameDropped::Plan, FrameDropped::Passes] {
+            let before = counter(why.name());
+            drop_frame(why);
+            assert!(counter(why.name()) > before, "{why:?}");
+        }
+        assert!(scene_frame::counters().iter().all(|(k, _)| !k.contains("kept")));
         for (name, refusal) in GROUP_NAMES.iter().zip(GroupRefusal::NAMES) {
-            assert_eq!(*name, format!("scene_kept_light_group_{refusal}"));
+            assert_eq!(*name, format!("scene_dropped_light_group_{refusal}"));
         }
     }
 }

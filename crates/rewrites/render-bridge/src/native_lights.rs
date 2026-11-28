@@ -576,7 +576,6 @@ pub fn new_view() {
 /// [`new_view`], which asks the host for the next view's target).
 pub fn forget_runs() {
     slot_visibility::forget();
-    passes::forget();
     first_person::forget();
     handoff::forget();
     CANDIDATE.take();

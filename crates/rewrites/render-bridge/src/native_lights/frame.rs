@@ -1,7 +1,8 @@
 //! The light frame body at `RENDER_DYNAMIC_LIGHTS` (`0x00031c80`;
 //! docs/graphics/native-light-gather.md, slice L2): the plan reads and
-//! refuses before any write, and a refused plan runs the guest function
-//! whole. The body's guest calls go through their own hook chains, so
+//! refuses before any write. The guest function never runs: a refused
+//! plan, a stage standing down or no host for the scene's light layers is
+//! answered as the cut and counted (`scene_dropped_light_frame_<cause>`). The body's guest calls go through their own hook chains, so
 //! the scene-list seams of the geometry flags and the extra caster
 //! count their own fallbacks when a step goes to the guest.
 
@@ -13,6 +14,7 @@ use hooks::{Builder, Cx, EntryFuture};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 use timeline::native::{SceneList, SceneListResult};
 
+use super::scene_frame::{FrameDropped, drop_frame};
 use crate::native_map_work::Stage;
 
 /// Places the body. One `implement` at the point; the observers before
@@ -24,16 +26,23 @@ pub(super) fn install(b: &mut Builder) {
             &points::RENDER_DYNAMIC_LIGHTS,
             "native_lights_frame",
             |cpu, ctx, addr| {
-                if addr != points::RENDER_DYNAMIC_LIGHTS.base || Stage::Lights.standing_down() {
+                if addr != points::RENDER_DYNAMIC_LIGHTS.base {
                     return original(cpu, ctx, addr);
                 }
-                // Under the cut the body still gathers, and each light's
-                // passes put the light and its groups into the scene
-                // ([`super::scene_frame`]); a refused plan is answered as
-                // the cut, never by the guest's body.
-                let cut = super::scene_path_ready()
-                    .then(|| crate::cut::cut("dynamic_lights"))
-                    .flatten();
+                // The frame is a cut: the guest's body never runs. A frame
+                // the scene cannot take draws no light and is counted.
+                let cut = crate::cut::cut("dynamic_lights").expect("dynamic_lights is a cut");
+                let dropped = if Stage::Lights.standing_down() {
+                    Some(FrameDropped::StandingDown)
+                } else if !super::scene_path_ready() {
+                    Some(FrameDropped::Host)
+                } else {
+                    None
+                };
+                if let Some(why) = dropped {
+                    drop_frame(why);
+                    return crate::cut::answer(cut, cpu, ctx);
+                }
                 let fpu = Fpu {
                     mxcsr: cpu.mxcsr,
                     x87_control: cpu.x87.control,
@@ -47,10 +56,8 @@ pub(super) fn install(b: &mut Builder) {
                     Ok(plan) => plan,
                     Err(why) => {
                         refused(SceneList::LightFrame, why);
-                        if let Some(cut) = cut {
-                            return crate::cut::answer(cut, cpu, ctx);
-                        }
-                        return original(cpu, ctx, addr);
+                        drop_frame(FrameDropped::Plan);
+                        return crate::cut::answer(cut, cpu, ctx);
                     }
                 };
                 hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
