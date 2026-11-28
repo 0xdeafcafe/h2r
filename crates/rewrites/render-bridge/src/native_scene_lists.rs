@@ -318,29 +318,23 @@ fn stack(m: &dyn GuestMemory, cpu: &CpuAbi, offset: u32) -> Result<u32> {
 
 /// The shadow arm of a portal producer (walk, merge, window record). Until
 /// [`Audit::PROOF`] guest calls in a row match the Rust result, every call
-/// runs the guest and is compared. From then Rust answers every call but
-/// one in [`Audit::CHECK_EVERY`], which runs the guest and is compared. A
-/// difference sends every later call to the guest for the session. A new
-/// BSP needs a new proof (`rescope`), and never lifts a fallback.
+/// runs the guest and is compared. From then Rust answers every call for
+/// the BSP. A difference while proving sends every later call to the
+/// guest for the session. A new BSP needs a new proof (`rescope`), and
+/// never lifts a fallback.
 #[derive(Debug, Default)]
 struct Audit {
     clean: u32,
-    calls: u64,
     fallen: bool,
 }
 
 impl Audit {
     const PROOF: u32 = 16;
-    const CHECK_EVERY: u64 = 64;
 
     /// Whether Rust answers this call. `false`: the guest runs, and its
     /// result is compared unless the arm has fallen back.
     fn answers(&mut self) -> bool {
-        if self.fallen || self.clean < Self::PROOF {
-            return false;
-        }
-        self.calls += 1;
-        self.calls % Self::CHECK_EVERY != 0
+        !self.fallen && self.clean >= Self::PROOF
     }
 
     /// Whether a guest call is still worth comparing.
@@ -361,7 +355,6 @@ impl Audit {
 
     fn rescope(&mut self) {
         self.clean = 0;
-        self.calls = 0;
     }
 
     #[cfg(test)]
@@ -664,14 +657,13 @@ mod tests {
     }
 
     #[test]
-    fn a_portal_arm_answers_after_its_proof_samples_one_call_in_64_and_falls_back_on_a_difference() {
+    fn a_portal_arm_answers_every_call_after_its_proof_and_falls_back_on_a_difference() {
         let mut arm = Audit::default();
         for _ in 0..Audit::PROOF {
             assert!(!arm.answers());
             assert!(!arm.compared(true));
         }
-        let answered = (0..Audit::CHECK_EVERY).filter(|_| arm.answers()).count();
-        assert_eq!(answered as u64, Audit::CHECK_EVERY - 1);
+        assert!((0..256).all(|_| arm.answers()), "no call is sampled once proven");
         // A new BSP asks for a new proof.
         arm.rescope();
         assert!(!arm.answers());
@@ -687,7 +679,7 @@ mod tests {
             arm.compared(true);
         }
         arm.rescope();
-        assert!((0..2 * Audit::CHECK_EVERY).all(|_| !arm.answers()));
+        assert!((0..256).all(|_| !arm.answers()));
     }
 
     #[test]

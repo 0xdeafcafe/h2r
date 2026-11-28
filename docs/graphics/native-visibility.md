@@ -167,7 +167,7 @@ Each counter family counts comparisons, differences or mismatches, native calls 
 | Arm state | A call | Counted |
 |---|---|---|
 | unproven | the guest runs; its result is compared with Rust's | `fallback`, then `compared` |
-| proven (16 clean comparisons in a row) | Rust answers, but one call in 64 runs the guest and is compared | `native`; the sample as above |
+| proven (16 clean comparisons in a row) | Rust answers every call for the BSP; the guest does not run | `native` |
 | fallen back (a difference) | the guest runs, uncompared, for the session | `fallback`; the difference once as `mismatch`, and one log line |
 
 A new BSP generation asks for a new proof and never lifts a fallback. A refusal (`memory`, `layout`, `unsupported`) runs the guest that call, uncompared. The arm proves the producer, not one input, so a moving camera or a door keeps the Rust answer.

@@ -464,9 +464,8 @@ mod tests {
             state.pending = Some(attempt());
             assert_eq!(state.finish(&m, &cpu, 5, 3).unwrap(), Some(true));
         }
-        // Proven: the walk answers whatever its frustum, but for the sample.
-        let answered = (0..Audit::CHECK_EVERY).filter(|_| state.audit.answers()).count();
-        assert_eq!(answered as u64, Audit::CHECK_EVERY - 1);
+        // Proven: the walk answers every call, whatever its frustum.
+        assert!((0..256).all(|_| state.audit.answers()));
         m.set_u16(S.chains + CHAIN_LINKS + 4, 1).unwrap();
         state.pending = Some(attempt());
         assert_eq!(state.finish(&m, &cpu, 5, 3).unwrap(), Some(false));
