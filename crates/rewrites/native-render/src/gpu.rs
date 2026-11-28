@@ -290,9 +290,25 @@ pub struct WorldSelection {
     /// The selected animated materials' constants at this frame's clock
     /// ([`GpuWorld::animate_selection`]).
     pub(crate) constants: HashMap<u16, crate::fog_gpu::LayerConstants>,
+    /// The placements the structure draws faded this frame (retail's LOD
+    /// display fade), each with the table pattern its fade selects, and
+    /// the table's rows ([`GpuWorld::set_fades`]). Empty draws every
+    /// placement solid.
+    fades: HashMap<u32, u8>,
+    stipple: Option<Box<[[u32; 32]; crate::program::STIPPLE_LEVELS]>>,
 }
 
 impl WorldSelection {
+    /// The pattern placement `instance` draws with, when it is faded.
+    pub(crate) fn fade_level(&self, instance: u32) -> Option<u8> {
+        self.fades.get(&instance).copied()
+    }
+
+    /// The stipple table's rows, when any placement is faded.
+    pub(crate) fn stipple_table(&self) -> Option<&[[u32; 32]; crate::program::STIPPLE_LEVELS]> {
+        self.stipple.as_deref()
+    }
+
     fn push(&mut self, slot: usize, draw: &WorldDraw) {
         let batch = draw.batch as usize;
         if let Some((last, _, end)) = self.spans.last_mut() && *last == batch && *end == slot {
@@ -1536,6 +1552,34 @@ impl GpuWorld {
         Some(selection)
     }
 
+    /// Fades the selection's placements: `fades` maps a placement to the
+    /// pattern of the engine's stipple table its fade selects
+    /// (`engine::render_loop::opaque_material::stipple_table`), `table` the
+    /// table's 17 patterns of 32 rows. A placement with no rigid program is
+    /// not in the selection to fade; one the selection does not hold is
+    /// ignored. A placement left out draws solid, as before.
+    pub fn set_fades(
+        &self, selection: &mut WorldSelection, fades: &HashMap<u32, u8>,
+        table: &[[u32; 32]; crate::program::STIPPLE_LEVELS],
+    ) {
+        selection.fades.clear();
+        for usage in selection.materials.values_mut() {
+            usage.stippled = false;
+        }
+        for &(material, instance) in &selection.vertices {
+            let Some(&level) = instance.and_then(|n| fades.get(&n)) else { continue };
+            assert!(
+                usize::from(level) < crate::program::STIPPLE_LEVELS,
+                "native world: stipple pattern {level} is past the table"
+            );
+            selection.fades.insert(instance.expect("matched above"), level);
+            if let Some(usage) = selection.materials.get_mut(&material) {
+                usage.stippled = true;
+            }
+        }
+        selection.stipple = (!selection.fades.is_empty()).then(|| Box::new(*table));
+    }
+
     /// The display-only parts this world can draw whole: every part of an
     /// owner (a cluster or a placement) must be loaded and read no texture
     /// accumulation target, or none of its parts is kept. A display-only
@@ -1888,7 +1932,7 @@ impl GpuWorld {
         let mut late = Vec::new();
         let mut start = vec![0u32; if culled.is_some() { world.draws.len() } else { 0 }];
         let mut ranges = 0;
-        let mut bound: Option<((u16, wgpu::BindGroup, Option<u32>, u32), Bound)> = None;
+        let mut bound: Option<((u16, wgpu::BindGroup, Option<u32>, u32, Option<u8>), Bound)> = None;
         let mut live_groups = HashMap::new();
         let mut pending: Option<std::ops::Range<u32>> = None;
         // `range`: indices, or with `culled` the slots of a run.
@@ -1944,7 +1988,9 @@ impl GpuWorld {
                     Owner::Cluster(_) => None,
                     Owner::Instance(n) => Some(n),
                 };
-                let binding = (batch.material, textures.clone(), instance, reference);
+                // A faded placement draws with its program's stipple variant.
+                let level = instance.and_then(|n| selection.fade_level(n));
+                let binding = (batch.material, textures.clone(), instance, reference, level);
                 if bound.as_ref().is_none_or(|(at, _)| *at != binding) {
                     if let (Some(range), Some((_, b))) = (pending.take(), &bound) {
                         emit(&mut packets, &mut late, b, range);
@@ -1955,11 +2001,18 @@ impl GpuWorld {
                                 .ok_or("world program unbound")?;
                             (pipeline, uniforms, Vec::new())
                         }
-                        Some(n) => {
-                            let (pipeline, slots, offset) = p.rigid(batch.material, n, color_format, depth_format, &stencil.state)
-                                .ok_or("world rigid program unbound")?;
-                            (pipeline, slots, vec![offset])
-                        }
+                        Some(n) => match level {
+                            None => {
+                                let (pipeline, slots, offset) = p.rigid(batch.material, n, color_format, depth_format, &stencil.state)
+                                    .ok_or("world rigid program unbound")?;
+                                (pipeline, slots, vec![offset])
+                            }
+                            Some(level) => {
+                                let (pipeline, slots, offsets) = p.rigid_stipple(batch.material, n, level, color_format, depth_format, &stencil.state)
+                                    .ok_or("world rigid stipple program unbound")?;
+                                (pipeline, slots, offsets.to_vec())
+                            }
+                        },
                     };
                     let key = p.described(batch.material, instance.is_some(), color_format, depth_format, &stencil.state)
                         .ok_or("world program unbound")?;
@@ -2329,8 +2382,8 @@ mod tests {
             selection.push(slot, draw);
         }
         assert_eq!(selection.spans, [(4, 7, 9), (1, 2, 3), (4, 8, 9), (4, 8, 9)]);
-        assert_eq!(selection.materials[&2], MaterialUse { cluster: true, rigid: true });
-        assert_eq!(selection.materials[&9], MaterialUse { cluster: false, rigid: true });
+        assert_eq!(selection.materials[&2], MaterialUse { cluster: true, rigid: true, stippled: false });
+        assert_eq!(selection.materials[&9], MaterialUse { cluster: false, rigid: true, stippled: false });
         assert_eq!(selection.vertices, [(2, None), (2, Some(5)), (9, Some(5))].into());
     }
 

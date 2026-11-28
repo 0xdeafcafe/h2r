@@ -890,7 +890,9 @@ pub(crate) fn register_late_for_profile(
         // The static world on the native GPU renderer
         // (on by default; docs/graphics/native-renderer.md). Its layer-draw observer
         // runs after render-timing's. The world reads its map and resources
-        // through the VFS (native_map).
+        // through the VFS (native_map). Its placements fade by the display's
+        // LOD Distance word.
+        render_bridge::native_world::set_lod_scale(view_scale);
         features
             .add(&render_bridge::native_world::NativeWorld)
             .map_err(|e| anyhow::anyhow!("native world: {e}"))?;

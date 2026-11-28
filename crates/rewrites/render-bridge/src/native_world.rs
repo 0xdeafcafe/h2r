@@ -100,7 +100,76 @@ pub trait Host: Send + Sync {
     /// Returns the guest parts it draws, or why it draws none: the
     /// structure items then keep their guest draw, counted
     /// `scene_kept_3_world_<cause>` ([`crate::native_layers::count_kept`]).
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &View, stencil: &StencilPlan, claim_guest: bool) -> Result<Cleared, &'static str>;
+    ///
+    /// `fades` is each faded placement's pattern of the engine's stipple
+    /// table ([`placement_fades`]): the placements it names draw stippled.
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &View, stencil: &StencilPlan, fades: &PlacementFades, claim_guest: bool) -> Result<Cleared, &'static str>;
+}
+
+/// Where the engine keeps the stipple patterns the fade byte selects:
+/// [`STIPPLE_LEVELS`] of 32 rows (`0x80` bytes each).
+pub const STIPPLE_TABLE: u32 = 0x0048_7288;
+pub const STIPPLE_LEVELS: usize = 17;
+/// The guest's x87 control word and SSE control word while it renders
+/// (the fade byte's arithmetic rounds under them).
+const GUEST_FCW: u16 = 0x027f;
+const GUEST_MXCSR: u32 = 0x1f80;
+
+/// The placements layer 3 draws faded: retail's LOD-distance display fade.
+/// A placement the guest's walk fades (its render record's fade byte,
+/// `+0x1a`, is not `0xff`) draws with a stipple pattern of the engine's
+/// table; the display's LOD Distance setting rescales the byte first
+/// (`engine::render_loop::world_walk::placement_display_alpha`), and
+/// Highest draws every placement solid.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlacementFades {
+    /// Placement index to the table pattern (`0..`[`STIPPLE_LEVELS`]).
+    pub levels: HashMap<u32, u8>,
+    /// The table's patterns, read when any placement is faded.
+    pub table: Option<Box<[[u32; 32]; STIPPLE_LEVELS]>>,
+}
+
+/// The display's LOD Distance word's scale, for [`placement_fades`].
+static LOD_SCALE: Mutex<Option<crate::native_scene_lists::ViewLodScale>> = Mutex::new(None);
+
+/// Hands the world the render context's LOD scale (the `lod-distance`
+/// feature's), or none: every fade then draws as the record carries it.
+pub fn set_lod_scale(scale: Option<crate::native_scene_lists::ViewLodScale>) {
+    *LOD_SCALE.lock().unwrap_or_else(|e| e.into_inner()) = scale;
+}
+
+/// The fades of `records` (layer 3's placements, [`skip::placement_records`])
+/// under display detail `lod`. `None` when the pattern arithmetic or the
+/// table does not read.
+pub fn placement_fades(
+    m: &dyn GuestMemory, records: &[skip::PlacementRecord], lod: crate::native_scene_lists::LodDetail,
+) -> Option<PlacementFades> {
+    use crate::native_scene_lists::LodDetail;
+    use engine::render_loop::{opaque_material::stipple_table, world_walk::placement_display_alpha};
+    let mut levels = HashMap::new();
+    for r in records.iter().filter(|r| r.fade != 0xff) {
+        let byte = match lod {
+            LodDetail::Highest => 0xff,
+            LodDetail::Scaled(factor) if factor != 1.0 && r.at != 0 => {
+                // A placement that does not read keeps the record's own byte.
+                placement_display_alpha(m, r.at, factor, GUEST_FCW).unwrap_or(r.fade)
+            }
+            _ => r.fade,
+        };
+        if let Some(at) = stipple_table(m, byte, GUEST_FCW, GUEST_MXCSR).ok()? {
+            levels.insert(r.placement, ((at - STIPPLE_TABLE) / 0x80) as u8);
+        }
+    }
+    let table = if levels.is_empty() {
+        None
+    } else {
+        let mut table = Box::new([[0u32; 32]; STIPPLE_LEVELS]);
+        for (n, row) in table.iter_mut().flatten().enumerate() {
+            *row = m.u32(STIPPLE_TABLE + 4 * n as u32).ok()?;
+        }
+        Some(table)
+    };
+    Some(PlacementFades { levels, table })
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -245,7 +314,15 @@ fn claim_layer(mem: &mut dyn GuestMemory, ret: u32) -> Option<crate::native_laye
         left.all("stencil_plan");
         return claim_guest.then_some(left);
     };
-    match host.ask(m.0, bsp, &view, &stencil, claim_guest) {
+    let lod = (*LOD_SCALE.lock().unwrap_or_else(|e| e.into_inner()))
+        .map_or(crate::native_scene_lists::LodDetail::Retail, |scale| scale.display(&*m.0));
+    let fades = skip::placement_records(&m, LIGHTMAP_LAYER)
+        .and_then(|records| placement_fades(&*m.0, &records, lod));
+    let Some(fades) = fades else {
+        left.all("fade");
+        return claim_guest.then_some(left);
+    };
+    match host.ask(m.0, bsp, &view, &stencil, &fades, claim_guest) {
         Ok(c) => {
             DRAWN.fetch_add(1, Ordering::Relaxed);
             ITEMS.fetch_add(c.items.len() as u64, Ordering::Relaxed);

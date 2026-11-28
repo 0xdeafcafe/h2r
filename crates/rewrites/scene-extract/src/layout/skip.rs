@@ -175,6 +175,59 @@ pub fn structure_part(mem: &dyn GuestRead, item: u32) -> Option<(Owner, u8)> {
     Some((owner, arg as u8))
 }
 
+/// A placement the current list draws in `layer`, with the render record
+/// that draws it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlacementRecord {
+    /// The placement's index in the BSP's instanced geometry.
+    pub placement: u32,
+    /// The record's address ([`RENDER_RECORDS`] plus its index times
+    /// [`RENDER_RECORD_SIZE`]).
+    pub record: u32,
+    /// The record's fade byte (`+0x1a`): `0xff` draws solid, any other the
+    /// pattern the guest's `SetStipple` takes for it.
+    pub fade: u8,
+    /// The placement's own record in the BSP (`+0x1c`), which the fade
+    /// window reads; `0` when the record holds none.
+    pub at: u32,
+}
+
+/// The placements `layer`'s current list draws, one per placement in the
+/// order the list first names it, with their records' fade bytes. Every
+/// item of a placement shares its record. `None` when the layer is not
+/// current or the list does not read.
+pub fn placement_records(mem: &dyn GuestRead, layer: u32) -> Option<Vec<PlacementRecord>> {
+    if layer >= 32 || mem.read_u32(CURRENT_LAYER)? != layer {
+        return None;
+    }
+    let list = mem.read_u32(CURRENT_LIST)?;
+    if list == 0 {
+        return Some(Vec::new());
+    }
+    let count = mem.read_u32(list + 4)?;
+    let first = mem.read_u32(list + 0xc)?;
+    let items = mem.read_u32(list + 0x14)?;
+    let mut out: Vec<PlacementRecord> = Vec::new();
+    for i in first..count.min(first.saturating_add(MAX_ITEMS)) {
+        let item = items + ITEM_SIZE * i;
+        if mem.read_u32(item + 0x10)? & (1 << layer) == 0 || !is_structure_item(mem, item)? {
+            continue;
+        }
+        let Some((Owner::Instance(placement), _)) = structure_part(mem, item) else { continue };
+        if out.iter().any(|p| p.placement == placement) {
+            continue;
+        }
+        let record = RENDER_RECORDS + RENDER_RECORD_SIZE * ((mem.read_u32(item + 0xc)? >> 8) as u16 as i16 as u32);
+        out.push(PlacementRecord {
+            placement,
+            record,
+            fade: (mem.read_u32(record + 0x18)? >> 16) as u8,
+            at: mem.read_u32(record + 0x1c)?,
+        });
+    }
+    Some(out)
+}
+
 /// Clears `layer`'s bit on every BSP item of the current list whose part
 /// (owner and part index, [`structure_part`]) and shader (the item's
 /// `+8`) `native` accepts, when the current layer is `layer`: the items of
@@ -525,6 +578,39 @@ mod tests {
         assert_eq!(structure_part(&m, ITEMS + ITEM_SIZE * 2), Some((Owner::Instance(140), 0)));
         m.w(ITEMS + 0xc, 0x00ff_ff04);
         assert_eq!(structure_part(&m, ITEMS), None, "record -1");
+    }
+
+    #[test]
+    fn a_placement_names_its_records_fade_once_for_all_its_items() {
+        // Record 7: placement 140, fade byte 0x88 (+0x1a), its placement
+        // record at +0x1c; two items of it, and a cluster item that names
+        // no placement.
+        let mut m = scene();
+        m.w(RENDER_RECORDS + 0x20 * 7, 1 << 12);
+        m.w(RENDER_RECORDS + 0x20 * 7 + 0xc, 140 << 18);
+        m.w(RENDER_RECORDS + 0x20 * 7 + 0x18, 0x0088_0000);
+        m.w(RENDER_RECORDS + 0x20 * 7 + 0x1c, 0x1234_0000);
+        m.w(RENDER_RECORDS + 0x20 * 2, 0);
+        m.w(RENDER_RECORDS + 0x20 * 2 + 0xc, 0x7ff << 18 | 37 << 9);
+        m.w(ITEMS + 0xc, 2 << 8);
+        let second = ITEMS + ITEM_SIZE * 2;
+        m.w(second + 0xc, 7 << 8);
+        m.w(second + 0x10, 0b1000);
+        let third = ITEMS + ITEM_SIZE * 3;
+        m.w(third, GEOMETRY_BUILD);
+        m.w(third + 0xc, 7 << 8 | 1);
+        m.w(third + 0x10, 0b1000);
+        let got = placement_records(&m, LIGHTMAP_LAYER).unwrap();
+        assert_eq!(got, vec![PlacementRecord {
+            placement: 140,
+            record: RENDER_RECORDS + 0x20 * 7,
+            fade: 0x88,
+            at: 0x1234_0000,
+        }]);
+        // A solid placement reads 0xff; another layer reads nothing.
+        m.w(RENDER_RECORDS + 0x20 * 7 + 0x18, 0x00ff_0000);
+        assert_eq!(placement_records(&m, LIGHTMAP_LAYER).unwrap()[0].fade, 0xff);
+        assert_eq!(placement_records(&m, 1), None);
     }
 
     #[test]

@@ -91,7 +91,7 @@ struct Stub {
 }
 
 impl Host for Stub {
-    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &frame_scene::View, stencil: &StencilPlan, claim_guest: bool) -> Result<native_render::skip::Cleared, &'static str> {
+    fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &frame_scene::View, stencil: &StencilPlan, _: &native_world::PlacementFades, claim_guest: bool) -> Result<native_render::skip::Cleared, &'static str> {
         assert!(claim_guest);
         self.asked.lock().unwrap().push((bsp, view.camera, stencil.clone()));
         let mut mem = native_world::Mem(mem);
@@ -281,7 +281,7 @@ fn the_world_build_places_only_context_only_scene_hooks() {
 struct Refuser;
 
 impl Host for Refuser {
-    fn ask(&self, _: &mut dyn GuestMemory, _: u32, _: &frame_scene::View, _: &StencilPlan, _: bool) -> Result<native_render::skip::Cleared, &'static str> {
+    fn ask(&self, _: &mut dyn GuestMemory, _: u32, _: &frame_scene::View, _: &StencilPlan, _: &native_world::PlacementFades, _: bool) -> Result<native_render::skip::Cleared, &'static str> {
         Err("device")
     }
 }
@@ -344,4 +344,31 @@ fn an_unreadable_part_keeps_its_guest_draw() {
     assert_eq!(masks(&m.inner)[1], 0b1010, "its guest entry stays");
     assert_eq!(counter("scene_kept_3_unreadable_record"), before + 1);
     native_world::restore_pending(&mut m);
+}
+
+/// A placement the guest fades draws with its fade byte's pattern of the
+/// engine's table; a solid one (`0xff`) and a Highest display draw none;
+/// the table is read only when something is faded.
+#[test]
+fn placements_fade_by_the_records_byte() {
+    use native_render::skip::PlacementRecord;
+    use render_bridge::native_scene_lists::LodDetail;
+    const FADE_SCALE: u32 = 0x0045_dbb4;
+    const TABLE_SCALE: u32 = 0x0044_541c;
+    let mut m = FlatMemory::new(0x0040_0000, 0x0021_0000);
+    // byte / 255 times 16 selects the pattern: 0x80 is level 8.
+    m.set_u32(FADE_SCALE, (1.0f32 / 255.0).to_bits()).unwrap();
+    m.set_u32(TABLE_SCALE, 16.0f32.to_bits()).unwrap();
+    for n in 0..17 * 32 {
+        m.set_u32(native_world::STIPPLE_TABLE + 4 * n, n).unwrap();
+    }
+    let record = |placement, fade| PlacementRecord { placement, record: 0, fade, at: 0 };
+    let records = [record(4, 0x80), record(9, 0xff)];
+    let fades = native_world::placement_fades(&m, &records, LodDetail::Retail).unwrap();
+    assert_eq!(fades.levels, [(4, 8)].into(), "the solid placement is not faded");
+    assert_eq!(fades.table.as_ref().unwrap()[8][0], 8 * 32, "the table's rows are the guest's");
+    let highest = native_world::placement_fades(&m, &records, LodDetail::Highest).unwrap();
+    assert!(highest.levels.is_empty() && highest.table.is_none(), "Highest draws every fade solid");
+    let none = native_world::placement_fades(&m, &[record(9, 0xff)], LodDetail::Retail).unwrap();
+    assert_eq!(none, native_world::PlacementFades::default());
 }
