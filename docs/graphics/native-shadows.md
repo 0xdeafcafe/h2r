@@ -81,7 +81,9 @@ Eligibility and projection have separate tests:
   `0x000320b0` checks the resulting transformed bounds.
 
 **Direction and strength.** `0x0003dc90` selects the default lighting
-sample at the default record's +0x1c for body +7 bit 0. Otherwise it follows an attachment to its root and returns render-cache entry +0x54 when the entry is valid (byte +3 set). The mask branch requires a sample.
+sample at the default record's +0x1c for body +7 bit 0. Otherwise it takes the object's lighting record, making one when the object has none (`0x0003ddd0`), and returns record +0x54 once the record is lit (byte +3 set). The mask branch requires a sample.
+
+A new record is unlit, so the caster draws no shadow for it until the object setup samples it. The caster makes this lookup in Rust (`engine::render::object_lighting`, `crates/rewrites/engine/src/render/object_lighting.rs`).
 
 Its +0x0c vector becomes the projection's **forward**, along the cast shadow: `0x00032493` copies it, `0x000324b1` normalises it, and `0x00032905` passes that frame to the shadow setup. The receiver's hardware `c[41].xyz` is the opposite, toward the light (`0x00048f85`, `engine::shadow_constants`).
 

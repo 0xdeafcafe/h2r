@@ -3,7 +3,7 @@
 //! kinds of render-only bytes into the game-state arena: the
 //! render-state cache at `[0x00509434]` (the object setup's lighting
 //! records, `0x0003ddd0` and its native port
-//! `native_scene_lists/setup/lighting.rs`), each object's handle into it
+//! `engine::render::object_lighting`), each object's handle into it
 //! at body `+0xcc`, and the light records' render fields (the re-pose's
 //! `+0x84..+0x9c` and `+0xac..+0xc4`, and `+0xf8..+0x110`, which
 //! `0x000c12d0` and `0x00031660` write).

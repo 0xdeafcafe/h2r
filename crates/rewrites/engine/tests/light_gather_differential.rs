@@ -3550,7 +3550,6 @@ const SHADOW_CASTER_STUBS: Stubs = &[
     (0x0003_d7c0, &[6, 7], 0, 0),    // chain visibility, also writes through EDI
     (0x0003_2ac0, &[3, 6, 7], 0, 0), // switch from mask to creature
     (0x0003_2ce0, &[0, 3, 6, 7], 1, 4), // draw creature, EAX object
-    (0x0003_dc90, &[], 1, 4),         // lighting sample
     (0x0003_1f50, &[], 5, 20),        // extents
     (0x0003_0bf0, &[0], 0, 0),        // vector to normalize
     (0x000c_1930, &[0, 2], 0, 0),     // volume
@@ -3578,6 +3577,53 @@ const SHADOW_CASTER_STUBS: Stubs = &[
 
 const SHADOW_LIGHTING: u32 = 0x0349_0000;
 const SHADOW_AXES: u32 = 0x034a_0000;
+/// The object lighting cache's datum array (bitmap at +0x100) and its
+/// four 0x100-byte records.
+const LIGHTING_RECORDS: u32 = 0x034b_0000;
+const LIGHTING_DATA: u32 = 0x034c_0000;
+
+/// An empty lighting cache, and a root that takes its lighting from it
+/// (body +7 bit 0 clear). The caster's lookup `0x0003dc90` runs unstubbed
+/// on both sides: the original's against the port's
+/// (`engine::render::object_lighting`).
+fn lighting_cache(m: &mut FlatMemory) {
+    put(m, 0x0050_9434, LIGHTING_RECORDS);
+    for (at, v) in [(0x20, 4), (0x24, 0x100), (0x34, 0), (0x38, 0), (0x3c, 0), (0x44, LIGHTING_DATA)] {
+        put(m, LIGHTING_RECORDS + at, v);
+    }
+    put(m, LIGHTING_RECORDS + 0x48, LIGHTING_RECORDS + 0x100);
+    put16(m, LIGHTING_RECORDS + 0x40, 0x8000);
+    put(m, LIGHTING_RECORDS + 0x100, 0);
+    put8(m, body(0) + 7, 0);
+}
+
+/// A root with no record: the lookup makes one (default light, three
+/// permutation bytes, two change colours) and it is not lit yet.
+fn new_lighting_record(m: &mut FlatMemory, r: &mut Rng) {
+    lighting_cache(m);
+    put(m, body(0) + 0xcc, NONE);
+    put16(m, body(0) + 0x118, 30);
+    put16(m, body(0) + 0x11a, 0x1c0);
+    put16(m, body(0) + 0x124, 48);
+    put16(m, body(0) + 0x126, 0x180);
+    for i in 0..12 {
+        putf(m, body(0) + 0x180 + 4 * i, r.float(0.0, 1.0));
+    }
+}
+
+/// A root whose own record (record 2) is lit: the lookup gives its +0x54.
+fn lit_lighting_record(m: &mut FlatMemory, r: &mut Rng) {
+    lighting_cache(m);
+    let record = LIGHTING_DATA + 0x200;
+    put(m, body(0) + 0xcc, 0x8000_0002);
+    put(m, record + 4, object_datum(0));
+    put8(m, record + 3, 1);
+    let sample = record + 0x54;
+    putf(m, sample + 0x1c, r.float(0.9, 1.5));
+    for i in 0..3 {
+        putf(m, sample + 0xc + i * 4, r.float(-1.0, 1.0));
+    }
+}
 
 fn shadow_caster_world(w: &mut World, r: &mut Rng, esp: u32, case: u32) {
     let m = &mut w.mem;
@@ -3635,6 +3681,7 @@ enum MaskCase {
     AtThreshold,
     AboveThreshold,
     OutsideBounds,
+    LitRecord,
     EnterCreature,
     DeclineCreature,
     ContinueCreature,
@@ -3650,8 +3697,8 @@ fn object_shadow_caster_matches_the_lifted_original() {
                 NoClusters, NoCasters, NoReceivers, DeclineLayer, BothLayers,
                 FilterClearsReceiver, StencilSkipsDraw, Ineligible, AttachedDuringEligibility,
                 DisabledDuringEligibility, Hidden, NoSample, ZeroStrength, BelowThreshold,
-                AtThreshold, AboveThreshold, OutsideBounds, EnterCreature, DeclineCreature,
-                ContinueCreature, InactiveCreature,
+                AtThreshold, AboveThreshold, OutsideBounds, LitRecord, EnterCreature,
+                DeclineCreature, ContinueCreature, InactiveCreature,
             ] {
                 let mut r = Rng(seed ^ ((case as u64) << 32) ^ 0x2350);
                 let mut w = World::new(image, &mut r, 4);
@@ -3667,6 +3714,23 @@ fn object_shadow_caster_matches_the_lifted_original() {
                 let threshold_case = matches!(case, BelowThreshold | AtThreshold | AboveThreshold);
                 if threshold_case {
                     putf(&mut w.mem, esp + 8, 1.0);
+                }
+                // The default lighting's strength, or the cache's records.
+                let strength = SHADOW_LIGHTING + 0x1c + 0x1c;
+                match case {
+                    NoSample => new_lighting_record(&mut w.mem, &mut r),
+                    LitRecord => lit_lighting_record(&mut w.mem, &mut r),
+                    ZeroStrength => putf(&mut w.mem, strength, 0.0),
+                    BelowThreshold | AtThreshold | AboveThreshold => {
+                        let threshold = word(&w.mem, 0x0045_df88);
+                        let at = match case {
+                            BelowThreshold => threshold - 1,
+                            AboveThreshold => threshold + 1,
+                            _ => threshold,
+                        };
+                        put(&mut w.mem, strength, at);
+                    }
+                    _ => {}
                 }
                 let label = format!("shadow mask seed {seed} case {case:?}");
                 let plan = object_shadows::caster::plan(&Ram(w.mem.clone()), esp, FPU)
@@ -3703,20 +3767,6 @@ fn object_shadow_caster_matches_the_lifted_original() {
                                 assert_eq!(&m.bytes[mode..mode + 2], &[0, active]);
                                 // The low byte of the final answer is reloaded after the draw.
                                 put8(m, esp - 0xb50 + 0x13, 0x91);
-                            }
-                            0x0003_dc90 => {
-                                eax = if case == NoSample { 0 } else { SHADOW_LIGHTING + 0x1c };
-                                if case == ZeroStrength {
-                                    putf(m, eax + 0x1c, 0.0);
-                                } else if threshold_case {
-                                    let threshold = word(m, 0x0045_df88);
-                                    let strength = match case {
-                                        BelowThreshold => threshold - 1,
-                                        AboveThreshold => threshold + 1,
-                                        _ => threshold,
-                                    };
-                                    put(m, eax + 0x1c, strength);
-                                }
                             }
                             0x0003_1f50 => {
                                 putf(m, c.args[3], r.float(1.0, 4.0));
@@ -3771,8 +3821,9 @@ fn object_shadow_caster_matches_the_lifted_original() {
                 // when it changes a gate that was satisfied during preflight.
                 let stopped_at = match case {
                     Ineligible | AttachedDuringEligibility | DisabledDuringEligibility => Some(SHADOW_ELIGIBLE),
-                    Hidden => Some(0x0003_d7c0),
-                    NoSample | ZeroStrength | BelowThreshold | AtThreshold => Some(0x0003_dc90),
+                    // The lighting lookup is not a stub: these end after
+                    // the visibility call.
+                    Hidden | NoSample | ZeroStrength | BelowThreshold | AtThreshold => Some(0x0003_d7c0),
                     OutsideBounds => Some(0x0003_20b0),
                     _ => None,
                 };
@@ -3784,7 +3835,7 @@ fn object_shadow_caster_matches_the_lifted_original() {
                 assert_eq!(visits(passes::call::ITEMS), usize::from(case != NoClusters), "{label}");
                 let draws = match case {
                     DeclineLayer | FilterClearsReceiver | StencilSkipsDraw => 1,
-                    BothLayers | AboveThreshold => 2,
+                    BothLayers | AboveThreshold | LitRecord => 2,
                     _ => 0,
                 };
                 assert_eq!(visits(0x0002_22a0), usize::from(draws != 0), "{label}");
@@ -3801,7 +3852,7 @@ fn object_shadow_caster_matches_the_lifted_original() {
 /// including the entry's scratch frame. These inputs need no retail image.
 #[test]
 fn object_shadow_caster_refuses_before_writing() {
-    use gather::Refusal::{Residency, Unsupported};
+    use gather::Refusal::Unsupported;
     let image = FlatMemory::new(0, RAM);
     for seed in seeds() {
         let mut r = Rng(seed);
@@ -3809,15 +3860,16 @@ fn object_shadow_caster_refuses_before_writing() {
         let esp = cpu(&mut r).gpr[4];
         shadow_caster_world(&mut w, &mut r, esp, 0);
         assert!(object_shadows::caster::plan(&Ram(w.mem.clone()), esp, FPU).is_ok());
+        // A root with no lighting record is planned: the body makes it.
+        let mut m = w.mem.clone();
+        put8(&mut m, body(0) + 7, 0);
+        put(&mut m, body(0) + 0xcc, NONE);
+        assert!(object_shadows::caster::plan(&Ram(m), esp, FPU).is_ok(), "seed {seed}, missing record");
         type Edit = fn(&mut FlatMemory, &mut Fpu);
         let cases: &[(&str, gather::Refusal, Edit)] = &[
             ("disabled", Unsupported, |m, _| put8(m, SHADOWS_ON, 0)),
             ("attached", Unsupported, |m, _| put(m, body(0) + 0x14, object_datum(1))),
             ("creature", Unsupported, |m, _| put8(m, body(0) + 0xaa, 12)),
-            ("missing cache entry", Residency, |m, _| {
-                put8(m, body(0) + 7, 0);
-                put(m, body(0) + 0xcc, NONE);
-            }),
             ("x87 precision", Unsupported, |_, fpu| fpu.x87_control = 0x037f),
             ("SSE rounding", Unsupported, |_, fpu| fpu.mxcsr |= 1 << 13),
         ];

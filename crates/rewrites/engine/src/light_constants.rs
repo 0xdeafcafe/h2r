@@ -374,6 +374,17 @@ impl X87 {
     pub(crate) fn fld(&mut self, bits: u32) -> Result<(), Error> {
         Self::ok(x87::abi::ld_f32(&mut self.0, bits))
     }
+    /// `fld qword`.
+    pub(crate) fn fld_m64(&mut self, bits: u64) -> Result<(), Error> {
+        Self::ok(x87::abi::ld_f64(&mut self.0, bits))
+    }
+    /// `fistp dword`, rounded by the control word.
+    pub(crate) fn fistp_m32(&mut self) -> Result<i32, Error> {
+        let (code, store) = x87::abi::st_i32(&self.0, 0);
+        Self::ok(code)?;
+        x87::abi::store_commit(&mut self.0, store.status, true);
+        Ok(store.value)
+    }
     pub(crate) fn arith_m(&mut self, op: u32, bits: u32) -> Result<(), Error> {
         Self::ok(x87::abi::arith(
             &mut self.0,
