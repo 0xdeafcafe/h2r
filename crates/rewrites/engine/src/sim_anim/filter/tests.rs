@@ -363,12 +363,14 @@ fn declines(k: &Case, edit: impl FnOnce(&mut CpuAbi, &mut Guest), why: Decline) 
 fn text_across_the_loaders_page_mappings_runs() {
     // Ascension: `anim filter: fault`. The body's text 11eed0..11f0c2
     // crosses 0x11f000, and the loader maps each image page on its own.
+    // `map_zeroed` would put the second page back beside the first in
+    // their host page, so it gets fresh zeroed storage above the RAM.
     let (mut c, mut g) = machine(&BASE);
     let (mut c0, mut g0) = machine(&BASE);
+    let base = g.mappings()[0].physical_start;
     g.unmap(0x11e000, 0x2000).unwrap();
-    for page in [0x11e000, 0x11f000] {
-        g.map_zeroed(page, 0x1000, Permissions::RX).unwrap();
-    }
+    g.map(0x11e000, 0x1000, base + 0x11e000, Permissions::RX).unwrap();
+    g.map(0x11f000, 0x1000, base + RAM + 0x1000, Permissions::RX).unwrap();
     assert!(Memory::physical_read(&g, FILTER, (FILTER_END - FILTER) as usize).is_none());
     assert!(plan(&c, &g, SITE).is_ok());
     assert!(with(true, || run(&mut c, &mut g, SITE)).unwrap());
