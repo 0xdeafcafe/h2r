@@ -20,8 +20,6 @@ engine = { path = "../engine", features = ["runtime-glue"] }
 guest-layout = { path = "../../hooking/guest-layout" }
 # Shadow checks of the sim ports against the lifted original (shadow.rs).
 lifted = { path = "../../runtime/lifted" }
-# The extension records the checkpoint hooks move (sim_ext.rs).
-sim-ext.workspace = true
 # The object table the World holds (world.rs).
 sim-objects.workspace = true
 # The sound table and the host feed trait (sim_sound/entries.rs).

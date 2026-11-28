@@ -332,3 +332,50 @@ fn damaged_section_bytes_change_nothing() {
     assert!(target.load_section(&slot).is_err());
     assert_eq!(target, before);
 }
+
+mod world_section {
+    use crate::ext::checkpoint::global;
+    use crate::ext::store::ExtStore;
+    use crate::ext::{RULES, FORGE};
+    use crate::{World, kind};
+
+    /// The extension state is a world section: a save carries the live
+    /// records and the slot copies, a restore brings them back, a refused
+    /// restore changes nothing, and the sim hash moves with a record.
+    /// One test, because the state is the process's.
+    #[test]
+    fn the_world_saves_hashes_and_restores_the_extension_records() {
+        *global() = super::State::new();
+        let mut w = World::new(1);
+        w.attach(Box::new(ExtStore)).unwrap();
+        assert_eq!(w.store(kind::EXT).unwrap().encode(), Vec::<u8>::new());
+        let empty = w.sim_hash();
+
+        {
+            let mut g = global();
+            g.ext.set(&RULES, vec![1, 2, 3]).unwrap();
+            g.checkpoint_saved(0).unwrap();
+            g.ext.set(&FORGE, vec![7]).unwrap();
+        }
+        assert_ne!(w.sim_hash(), empty);
+        let saved = w.save();
+        let at_save = w.sim_hash();
+
+        *global() = super::State::new();
+        assert_eq!(w.sim_hash(), empty);
+        w.restore_into(&saved).unwrap();
+        assert_eq!(w.sim_hash(), at_save);
+        assert_eq!(w.save(), saved);
+        assert_eq!(global().ext.get(&FORGE), Some(&[7][..]));
+        global().checkpoint_reverted(0).unwrap();
+        assert_eq!(global().ext.get(&FORGE), None);
+        assert_eq!(global().ext.get(&RULES), Some(&[1, 2, 3][..]));
+
+        // A section the registered kinds refuse is not decoded.
+        use crate::Store;
+        assert!(ExtStore.decode(1, b"\x01junk").is_err());
+        assert!(ExtStore.decode(2, &[]).is_err());
+
+        *global() = super::State::new();
+    }
+}

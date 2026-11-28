@@ -78,7 +78,7 @@ modes 3 and 5 in [live-coop.md](../live/live-coop.md)):
 A `Replica` is not a second authority. In a synchronous session every
 machine simulates everything, so a call only the host made would split
 the arenas. Each machine's VM reads the same arena, holds the same
-`RULES` record (`sim_ext::RULES`, in the sim hash) and makes the same
+`RULES` record (`sim_world::ext::RULES`, in the sim hash) and makes the same
 calls, and the lockstep hash (`lockstep::hash_sim`) is the check, as it
 is for the rest of the simulation. A late joiner gets the record with
 the snapshot and `Vm::resume` continues from it. A `Replica` needs the

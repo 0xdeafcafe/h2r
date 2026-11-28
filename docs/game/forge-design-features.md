@@ -173,7 +173,7 @@ Forge shares and does not add to.
 | Tag headroom is small on multiplayer maps | monitor bodies and AI may not fit; one map has none | F3 measures it; the cut order; a body recipe names its cost up front; the AI ground takes the kit's fit steps and cuts classes from the end ([firefight.md](firefight.md), "The kit") |
 | Host-made objects may not replicate, by group | more of F15 falls to Forge's mirrors | F3 measures; synchronous is built first and needs none of it |
 | The synchronous protocol may not hold a multiplayer map | F5 cannot ship; F15 moves ahead of it. Firefight maps are not held up: their actors are host actors in the distributed model | F3, before F5 is built |
-| `SimExt` has no user | no emitters, triggers or logic | the blob is built and tested on synthetic memory (`crates/rewrites/sim-ext`; sim-rewrite.md, "The `SimExt` blob"); F7 gives `FORGE` its first record and proves it on a running game |
+| `SimExt` has no user | no emitters, triggers or logic | the blob is built and tested on synthetic memory (`crates/rewrites/sim-world/src/ext`; sim-rewrite.md, "The `SimExt` blob"); F7 gives `FORGE` its first record and proves it on a running game |
 | The modeling crates are design | geometry and paint cannot start | block-out needs only `collision-build`; the rest follows modeling's own slices |
 | A crate with a fixed body may not stop a player | block-out pieces are walked through, as scenery is | BO4's first game run places one block; a piece becomes a machine if it fails ([forge-blockout.md](forge-blockout.md), "Not verified") |
 | A game that loads a map with added tags is unproven on retail bases | every recipe | map-builder.md, "Not verified"; F10's first run is one transplanted scenery tag |

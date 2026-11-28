@@ -5,7 +5,7 @@
 //! The record is plain bytes (`encode`, `decode`) in one canonical form: every list
 //! is sorted by op id with no repeats, so two machines that reach one state write
 //! one byte string, and the sim hash folds the same digest. [`VERSION`] and
-//! [`MAX_BYTES`] equal `sim_ext::FORGE`'s version and cap.
+//! [`MAX_BYTES`] equal `sim_world::ext::FORGE`'s version and cap.
 //!
 //! An emitter's shots come from the tick count alone ([`Emitter::shot`]); the record
 //! only counts what fired, so a machine that joins late and a machine that never
@@ -13,9 +13,9 @@
 
 use std::collections::BTreeMap;
 
-/// The record's layout version, `sim_ext::FORGE`'s.
+/// The record's layout version, `sim_world::ext::FORGE`'s.
 pub const VERSION: u16 = 1;
-/// The record's cap in bytes, `sim_ext::FORGE`'s.
+/// The record's cap in bytes, `sim_world::ext::FORGE`'s.
 pub const MAX_BYTES: usize = 64 * 1024;
 /// An object count in one volume's occupancy.
 pub const MAX_OCCUPANTS: usize = 256;

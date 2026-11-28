@@ -221,7 +221,6 @@ the workspace checks are in
 | `sim-collision` | rewrites | The native collision world: BSPs decoded once, queries as single Rust calls (docs/engine/sim-rewrite-collision.md) | [sim-rewrite-collision.md](engine/sim-rewrite-collision.md) |  |
 | `sim-core` | rewrites | Shared math, exact SSE-order lanes and float rules for the native simulation subsystems |  |  |
 | `sim-effects` | rewrites | The effects phase of the native simulation: the effect walk, the damage, object and sound part arms and the renderer's part events | [effects-parts.md](engine/effects-parts.md), [sim-rewrite.md](engine/sim-rewrite.md) | in progress |
-| `sim-ext` | rewrites | SimExt: the versioned side arena of extension records saved with checkpoints, snapshots and film keyframes and folded into the sim hash (docs/engine/sim-rewrite.md section 2) | [sim-rewrite.md](engine/sim-rewrite.md) | in progress |
 | `sim-havok` | rewrites | Ordered Havok simulation kernels over transient, Rust-owned data |  |  |
 | `sim-objects` | rewrites | The object update in Rust: typed views over the object pool, the definition table and the object kernels (docs/engine/sim-rewrite-objects.md) | [sim-rewrite-objects.md](engine/sim-rewrite-objects.md) |  |
 | `sim-sound` | rewrites | Sound source, scheduling and environment kernels for the native simulation | [sim-rewrite.md](engine/sim-rewrite.md), [sound-instances.md](engine/sound-instances.md), [dsound.md](audio/dsound.md) | in progress |
