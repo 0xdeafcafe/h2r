@@ -5,7 +5,7 @@
 //! must agree, and so must what each leaves in the game-time record.
 //!
 //! `phases_run_in_retail_order`: the lifted body's calls, less the four
-//! envelope calls, are `PHASES` in order. That covers the odd phase
+//! envelope calls, are `SYSTEMS` in order. That covers the odd phase
 //! addresses (`0x165dc1`, `0x1917b2`): the transcript names the target the
 //! body really reaches.
 //! `tick_matches_lifted`: the envelope's calls (the control word, the
@@ -26,7 +26,7 @@
 
 use guest_layout::entry::{self, Regs};
 use guest_layout::memory::GuestMemory;
-use engine::sim_tick::{self, PHASES};
+use engine::sim_tick::{self, SYSTEMS};
 use guest_layout::testing::FakeGuest;
 use guest_layout::entry::EntryFuture;
 use guest_layout::points;
@@ -73,7 +73,7 @@ fn is_envelope(target: u32) -> bool {
 /// The callee's stack cleanup: the record's `before` and phase 1 are
 /// `ret 4`.
 fn cleanup(target: u32) -> u32 {
-    u32::from(target == sim_tick::RECORD_BEFORE || target == PHASES[0].entry) * 4
+    u32::from(target == sim_tick::RECORD_BEFORE || target == SYSTEMS[0].entry) * 4
 }
 
 /// The clock's inputs: the tick length at `TIME + 4`, the clock's time and
@@ -190,7 +190,7 @@ fn driver_calls() -> (Vec<Seen>, u32, FakeGuest) {
 fn phases_run_in_retail_order() {
     let Some((lifted, _, _)) = lifted_calls() else { return };
     let phases: Vec<u32> = lifted.iter().map(|c| c.target).filter(|&t| !is_envelope(t)).collect();
-    let want: Vec<u32> = PHASES.iter().map(|p| p.entry).collect();
+    let want: Vec<u32> = SYSTEMS.iter().map(|p| p.entry).collect();
     assert_eq!(phases, want, "the lifted body's phase calls (both runs set the record's run flag at the before step)");
     let envelope: Vec<u32> = lifted.iter().map(|c| c.target).filter(|&t| is_envelope(t)).collect();
     assert_eq!(
@@ -232,7 +232,7 @@ fn tick_matches_lifted() {
         v.iter()
             .filter(|c| !is_envelope(c.target))
             .map(|c| {
-                if c.target == PHASES[0].entry {
+                if c.target == SYSTEMS[0].entry {
                     (c.target, c.args[0], c.ecx.unwrap_or(0), 0)
                 } else {
                     (c.target, 0, 0, c.ebx.unwrap_or(0))

@@ -36,7 +36,7 @@ pub enum Form {
 
 /// One phase of the tick.
 #[derive(Clone, Copy, Debug)]
-pub struct Phase {
+pub struct System {
     /// The guest function (a phase's guest entry is kept after a Rust body
     /// takes it over: it names the phase and is what the differential test
     /// compares against).
@@ -46,16 +46,16 @@ pub struct Phase {
     pub form: Form,
 }
 
-const fn guest(entry: u32, name: &'static str) -> Phase {
-    Phase { entry, name, owner: Owner::Guest, form: Form::EbxRecord }
+const fn guest(entry: u32, name: &'static str) -> System {
+    System { entry, name, owner: Owner::Guest, form: Form::EbxRecord }
 }
 
-const fn rust(entry: u32, name: &'static str) -> Phase {
-    Phase { entry, name, owner: Owner::Rust, form: Form::EbxRecord }
+const fn rust(entry: u32, name: &'static str) -> System {
+    System { entry, name, owner: Owner::Rust, form: Form::EbxRecord }
 }
 
-const fn guest_first(entry: u32, name: &'static str) -> Phase {
-    Phase { entry, name, owner: Owner::Guest, form: Form::StackRecordEcx }
+const fn guest_first(entry: u32, name: &'static str) -> System {
+    System { entry, name, owner: Owner::Guest, form: Form::StackRecordEcx }
 }
 
 /// The 29 phases in the order `game_tick` calls them
@@ -64,49 +64,62 @@ const fn guest_first(entry: u32, name: &'static str) -> Phase {
 /// see `EBX` = record ([`Form`]). Phases 26 (`0x165dc1`) and 28
 /// (`0x1917b2`) are odd addresses; the differential test checks the whole
 /// table against the lifted body.
-pub const PHASES: &[Phase] = &[
+pub const SYSTEMS: &[System] = &[
     guest_first(0x0014_d3a0, "players_before"),
-    guest(0x0013_8db0, "unknown_138db0"),
+    guest(0x0013_8db0, "input_random"),
     // The AI update, crate::ai_update; its seven systems stay guest.
     rust(0x001c_83c0, "ai"),
-    guest(0x001f_b510, "unknown_1fb510"),
-    guest(0x0020_b660, "unknown_20b660"),
+    guest(0x001f_b510, "pool_walk_4f5724"),
+    guest(0x0020_b660, "periodic_sound_walk"),
     guest(0x0015_c150, "game_engine"),
-    guest(0x0019_5ed0, "unknown_195ed0"),
+    guest(0x0019_5ed0, "stats_update"),
     // The HaloScript scheduler, crate::hs_update; its threads stay guest.
     rust(0x0020_9310, "script_scheduler"),
-    guest(0x0013_8c10, "unknown_138c10"),
+    guest(0x0013_8c10, "input_record_apply"),
     guest(0x000b_6f10, "objects_before_physics"),
     guest(0x001c_3d30, "havok_step"),
     guest(0x000b_7060, "objects_after_physics"),
     guest(0x000b_7150, "objects_final"),
-    guest(0x0022_68e0, "unknown_2268e0"),
+    guest(0x0022_68e0, "game_save_update"),
     // The effect walk, crate::effects_phase (docs/engine/effects-parts.md).
     rust(0x0017_6e40, "effects"),
     guest(0x000c_1400, "lights"),
     // The game engine's round countdown and end, crate::post_game.
     rust(0x0015_ca10, "post_game"),
     guest(0x0014_d8b0, "players_after"),
-    guest(0x001d_f500, "unknown_1df500"),
-    guest(0x0013_8e40, "unknown_138e40"),
-    guest(0x0013_8eb0, "unknown_138eb0"),
-    guest(0x0022_6050, "unknown_226050"),
-    guest(0x0013_c680, "unknown_13c680"),
-    guest(0x0012_3430, "unknown_123430"),
-    guest(0x0022_5730, "unknown_225730"),
+    guest(0x001d_f500, "state_4f55ec_update"),
+    guest(0x0013_8e40, "game_over_check"),
+    guest(0x0013_8eb0, "script_globals_step"),
+    guest(0x0022_6050, "game_save_policy"),
+    guest(0x0013_c680, "time_clock_13c680"),
+    guest(0x0012_3430, "object_list_update"),
+    guest(0x0022_5730, "net_flag_decay"),
     guest(0x0016_5dc1, "first_person"),
-    guest(0x0015_3950, "unknown_153950"),
+    guest(0x0015_3950, "screen_shake_players"),
     guest(0x0019_17b2, "hud"),
     // The countdown requests, crate::countdown_requests.
     rust(0x0016_f200, "countdown_requests"),
 ];
 
+/// The tick rate, in ticks per second. The rate is a parameter of the
+/// driver's clock, not a literal in a system: [`tick_length`] is the one
+/// place it becomes a step in seconds. 30 for now (the owner's call), and
+/// the game-time record's length field (`TIME_LENGTH`) is where retail
+/// keeps the same number.
+pub const TICK_RATE_HZ: u32 = 30;
+
+/// One tick's length in seconds at `rate_hz`, as the f32 the game-time
+/// record holds.
+pub fn tick_length(rate_hz: u32) -> f32 {
+    1.0 / rate_hz as f32
+}
+
 /// Phases the guest still runs.
 pub const fn guest_phases() -> usize {
     let mut n = 0;
     let mut i = 0;
-    while i < PHASES.len() {
-        if matches!(PHASES[i].owner, Owner::Guest) {
+    while i < SYSTEMS.len() {
+        if matches!(SYSTEMS[i].owner, Owner::Guest) {
             n += 1;
         }
         i += 1;
@@ -131,11 +144,11 @@ pub const fn guest_phases() -> usize {
 /// stalled thread lengthens it, so read it over a window of play.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ledger {
-    calls: [u32; PHASES.len()],
+    calls: [u32; SYSTEMS.len()],
     ticks: u64,
     tick: u32,
-    phase_ns: [u64; PHASES.len()],
-    phase_last_ns: [u64; PHASES.len()],
+    phase_ns: [u64; SYSTEMS.len()],
+    phase_last_ns: [u64; SYSTEMS.len()],
     tick_ns: u64,
     tick_last_ns: u64,
     loop_ns: u64,
@@ -153,11 +166,11 @@ impl Default for Ledger {
 impl Ledger {
     pub const fn new() -> Self {
         Ledger {
-            calls: [0; PHASES.len()],
+            calls: [0; SYSTEMS.len()],
             ticks: 0,
             tick: 0,
-            phase_ns: [0; PHASES.len()],
-            phase_last_ns: [0; PHASES.len()],
+            phase_ns: [0; SYSTEMS.len()],
+            phase_last_ns: [0; SYSTEMS.len()],
             tick_ns: 0,
             tick_last_ns: 0,
             loop_ns: 0,
@@ -166,7 +179,7 @@ impl Ledger {
             last_entry: None,
         }
     }
-    /// A guest call to phase `phase` (an index into [`PHASES`]).
+    /// A guest call to phase `phase` (an index into [`SYSTEMS`]).
     pub fn record(&mut self, phase: usize) {
         self.calls[phase] = self.calls[phase].saturating_add(1);
     }
@@ -184,7 +197,7 @@ impl Ledger {
     /// when the record's run flag was clear at the close). `phase_ns` is
     /// each phase's time this tick (0 for a phase not run) and `tick_ns`
     /// the tick's, entry to exit.
-    pub fn finish_tick(&mut self, tick: u32, phase_ns: &[u64; PHASES.len()], tick_ns: u64) {
+    pub fn finish_tick(&mut self, tick: u32, phase_ns: &[u64; SYSTEMS.len()], tick_ns: u64) {
         self.ticks += 1;
         self.tick = tick;
         self.phase_last_ns = *phase_ns;
@@ -295,7 +308,7 @@ impl Bodies {
     pub const NONE: Bodies = Bodies { rust: false };
     pub const ALL: Bodies = Bodies { rust: true };
 
-    fn runs(self, phase: &Phase) -> bool {
+    fn runs(self, phase: &System) -> bool {
         phase.owner == Owner::Rust && self.rust
     }
 }
@@ -384,7 +397,7 @@ pub fn unisolated() -> u64 {
 /// Phases 26, 28 and 29: first person, HUD and the countdown requests
 /// ([`crate::countdown_requests`]).
 pub fn is_presentation(phase: usize) -> bool {
-    matches!(PHASES[phase].entry, 0x0016_5dc1 | 0x0019_17b2 | 0x0016_f200)
+    matches!(SYSTEMS[phase].entry, 0x0016_5dc1 | 0x0019_17b2 | 0x0016_f200)
 }
 
 /// The players' globals pointer; `+0xc` holds four local users' player
@@ -413,6 +426,8 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
     // Counts made until the tick returns are tick-time (render_census).
     let _scope = crate::render_census::TickScope::enter();
     ledger.lock().unwrap_or_else(|e| e.into_inner()).begin_tick(entered);
+    // The tick's first row: the last tick's events go (`events_clear`).
+    crate::sim_objects::damage::tick_starts();
     let record = cx.entry().esp.wrapping_sub(RECORD_SIZE);
     let call = |target: u32| GuestCall::new(target).reserve(RECORD_SIZE);
     cx.call(call(CONTROL_WORD_FN).args([CONTROL_WORD_NEW, CONTROL_WORD_MASK])).await?;
@@ -420,7 +435,7 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
     cx.call(call(RECORD_BEFORE).args([record])).await?;
     let flag_at = record.wrapping_add(RUN_FLAG);
     let runs = cx.read(|m| m.u8(flag_at))? != 0;
-    let mut phase_ns = [0u64; PHASES.len()];
+    let mut phase_ns = [0u64; SYSTEMS.len()];
     if runs {
         // Each phase's time runs from the previous clock read to the one
         // after its call.
@@ -429,7 +444,7 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
             Present::Always => LOCAL_USER_COUNT,
             Present::LocalOnly => cx.read(|m| local_users(m)),
         };
-        for (i, phase) in PHASES.iter().enumerate() {
+        for (i, phase) in SYSTEMS.iter().enumerate() {
             if views == 0 && is_presentation(i) {
                 continue;
             }
@@ -516,13 +531,62 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
 mod tests {
     use super::*;
 
+    /// The row order is retail's (docs/reviews/2026-11-20-sim.md, section
+    /// 2.1): the names, in order, are pinned.
+    #[test]
+    fn the_rows_are_retail_order() {
+        let names: Vec<&str> = SYSTEMS.iter().map(|p| p.name).collect();
+        assert_eq!(
+            names,
+            [
+                "players_before",
+                "input_random",
+                "ai",
+                "pool_walk_4f5724",
+                "periodic_sound_walk",
+                "game_engine",
+                "stats_update",
+                "script_scheduler",
+                "input_record_apply",
+                "objects_before_physics",
+                "havok_step",
+                "objects_after_physics",
+                "objects_final",
+                "game_save_update",
+                "effects",
+                "lights",
+                "post_game",
+                "players_after",
+                "state_4f55ec_update",
+                "game_over_check",
+                "script_globals_step",
+                "game_save_policy",
+                "time_clock_13c680",
+                "object_list_update",
+                "net_flag_decay",
+                "first_person",
+                "screen_shake_players",
+                "hud",
+                "countdown_requests",
+            ]
+        );
+        assert!(SYSTEMS.iter().all(|p| !p.name.starts_with("unknown_")));
+    }
+
+    #[test]
+    fn the_tick_rate_is_a_parameter() {
+        assert_eq!(TICK_RATE_HZ, 30);
+        assert_eq!(tick_length(TICK_RATE_HZ), 1.0 / 30.0);
+        assert_eq!(tick_length(60), 1.0 / 60.0);
+    }
+
     #[test]
     fn there_are_29_phases_each_entry_once() {
-        assert_eq!(PHASES.len(), 29);
+        assert_eq!(SYSTEMS.len(), 29);
         let mut seen = std::collections::BTreeSet::new();
-        assert!(PHASES.iter().all(|p| seen.insert(p.entry)));
-        assert_eq!(PHASES[0].entry, 0x0014_d3a0);
-        assert_eq!(PHASES[28].entry, 0x0016_f200);
+        assert!(SYSTEMS.iter().all(|p| seen.insert(p.entry)));
+        assert_eq!(SYSTEMS[0].entry, 0x0014_d3a0);
+        assert_eq!(SYSTEMS[28].entry, 0x0016_f200);
     }
 
     /// With the Rust bodies on, the AI update (disabled), the scheduler
@@ -556,12 +620,12 @@ mod tests {
         });
         assert_eq!(run.result, Ok(Ret::new(0, 0)));
         let l = ledger.lock().unwrap();
-        let effects = PHASES.iter().position(|p| p.entry == EFFECTS).unwrap();
-        assert_eq!(PHASES[effects].owner, Owner::Rust);
-        for i in 0..PHASES.len() {
-            assert_eq!(l.calls(i), u32::from(PHASES[i].owner == Owner::Guest), "{}", PHASES[i].name);
+        let effects = SYSTEMS.iter().position(|p| p.entry == EFFECTS).unwrap();
+        assert_eq!(SYSTEMS[effects].owner, Owner::Rust);
+        for i in 0..SYSTEMS.len() {
+            assert_eq!(l.calls(i), u32::from(SYSTEMS[i].owner == Owner::Guest), "{}", SYSTEMS[i].name);
         }
-        assert_eq!(PHASES[28].owner, Owner::Rust, "the countdown requests");
+        assert_eq!(SYSTEMS[28].owner, Owner::Rust, "the countdown requests");
         assert!(!targets_of(&run).contains(&crate::countdown_requests::ENTRY));
         assert!(!targets_of(&run).contains(&crate::hs_update::ENTRY));
         assert!(!targets_of(&run).contains(&crate::ai_update::ENTRY));
@@ -571,8 +635,8 @@ mod tests {
         assert!(!targets.contains(&EFFECTS));
         // The walk runs between the phases either side of it.
         let at = targets.iter().position(|&t| t == sim_effects::walk::ALIVE).unwrap();
-        assert_eq!(targets[at - 1], PHASES[effects - 1].entry);
-        let after = targets.iter().position(|&t| t == PHASES[effects + 1].entry).unwrap();
+        assert_eq!(targets[at - 1], SYSTEMS[effects - 1].entry);
+        let after = targets.iter().position(|&t| t == SYSTEMS[effects + 1].entry).unwrap();
         assert_eq!(after - at, 9, "the walk's nine callees");
     }
 
@@ -590,23 +654,23 @@ mod tests {
         let mut l = Ledger::new();
         l.record(3);
         l.record(3);
-        l.finish_tick(9, &[0; PHASES.len()], 0);
+        l.finish_tick(9, &[0; SYSTEMS.len()], 0);
         assert_eq!((l.calls(3), l.calls(4), l.ticks(), l.tick(), l.total_calls()), (2, 0, 1, 9, 2));
     }
 
     #[test]
     fn the_ledger_totals_phase_time_and_keeps_the_last_tick() {
         let mut l = Ledger::new();
-        let mut a = [0u64; PHASES.len()];
+        let mut a = [0u64; SYSTEMS.len()];
         a[2] = 30;
         a[5] = 20;
-        let mut b = [0u64; PHASES.len()];
+        let mut b = [0u64; SYSTEMS.len()];
         b[2] = 10;
         l.finish_tick(1, &a, 60);
         l.finish_tick(2, &b, 15);
         assert_eq!((l.phase_ns(2), l.phase_ns(5), l.phase_last_ns(2), l.phase_last_ns(5)), (40, 20, 10, 0));
         assert_eq!((l.tick_ns(), l.tick_last_ns()), (75, 15));
-        let sum: u64 = (0..PHASES.len()).map(|i| l.phase_ns(i)).sum();
+        let sum: u64 = (0..SYSTEMS.len()).map(|i| l.phase_ns(i)).sum();
         assert!(sum <= l.tick_ns());
     }
 

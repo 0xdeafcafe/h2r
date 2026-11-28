@@ -258,7 +258,6 @@ fn drive(
 
 /// The event observers. They write only the game thread's event buffer.
 fn install_events(b: &mut Builder) {
-    b.raw().observe_before(&points::GAME_TICK, EVENTS_CLEAR, |_| damage::tick_starts());
     b.raw()
         .observe_before(&points::DAMAGE_REPORT, "events: damage", |o| {
             if let (Some(report), Some(victim)) = (o.arg_u32("report"), o.arg_u32("victim")) {
@@ -270,9 +269,6 @@ fn install_events(b: &mut Builder) {
         damage::player_killed(&o.guest(), o.cpu.esp);
     });
 }
-
-/// The tick-entry observer that empties the event buffer.
-const EVENTS_CLEAR: &str = "events: tick";
 
 /// Install `table`'s bodies under `label`, each call admitted only inside
 /// the table's float environment (else the original runs), for a table
@@ -484,7 +480,6 @@ mod tests {
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
         for (point, label) in [
-            (&points::GAME_TICK, "events: tick"),
             (&points::DAMAGE_REPORT, "events: damage"),
             (&points::PLAYER_KILLED, "events: kill"),
         ] {
@@ -568,10 +563,10 @@ mod tests {
             let implement = plan.chains[&point.base].implement.as_ref().unwrap();
             assert_eq!(implement.label, OBJECTS, "{}", point.name);
         }
-        // Finalize's deletion events and the combat events are emptied at
-        // the tick's entry.
-        let tick = &plan.chains[&points::GAME_TICK.base];
-        assert!(tick.observe_before.iter().any(|h| h.label == EVENTS_CLEAR));
+        // Finalize's deletion events and the combat events are emptied by
+        // the tick driver's first row, not by a hook: nothing observes
+        // `GAME_TICK` here.
+        assert!(plan.chains.get(&points::GAME_TICK.base).is_none_or(|c| c.observe_before.is_empty()));
     }
 
     /// Outside the float environment, the root leaf `baf80` (float-free)

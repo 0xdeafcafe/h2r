@@ -99,12 +99,12 @@ impl Feature for TickDriver {
 mod tests {
     use super::*;
     use guest_layout::entry::{self, Regs};
-    use engine::sim_tick::{Owner, PHASES};
+    use engine::sim_tick::{Owner, SYSTEMS};
 
     #[test]
     fn the_rust_bodies_always_run() {
         assert!(BODIES.rust);
-        let rust: Vec<_> = PHASES.iter().filter(|p| p.owner == Owner::Rust).map(|p| p.name).collect();
+        let rust: Vec<_> = SYSTEMS.iter().filter(|p| p.owner == Owner::Rust).map(|p| p.name).collect();
         assert_eq!(rust, ["ai", "script_scheduler", "effects", "post_game", "countdown_requests"]);
     }
     use guest_layout::memory::GuestMemory;
@@ -153,19 +153,19 @@ mod tests {
         assert_eq!(run.result, Ok(hooks::Ret::new(0, 0)));
         let targets: Vec<u32> = run.calls.iter().map(|c| c.target).collect();
         let mut want = vec![sim_tick::CONTROL_WORD_FN, sim_tick::RECORD_BUILD, sim_tick::RECORD_BEFORE];
-        want.extend(PHASES.iter().map(|p| p.entry));
+        want.extend(SYSTEMS.iter().map(|p| p.entry));
         want.push(sim_tick::RECORD_AFTER);
         assert_eq!(targets, want);
         // `sim_tick::run` is the lifted form: every phase a guest call.
         let l = ledger.lock().unwrap();
-        for (i, p) in PHASES.iter().enumerate() {
+        for (i, p) in SYSTEMS.iter().enumerate() {
             assert_eq!(l.calls(i), 1, "{}", p.name);
         }
         assert_eq!((l.ticks(), l.tick()), (1, 6));
         // The phases' times are spans inside the tick: they sum to at most
         // the tick's, in the total and in the last tick.
-        let sum: u64 = (0..PHASES.len()).map(|i| l.phase_ns(i)).sum();
-        let last: u64 = (0..PHASES.len()).map(|i| l.phase_last_ns(i)).sum();
+        let sum: u64 = (0..SYSTEMS.len()).map(|i| l.phase_ns(i)).sum();
+        let last: u64 = (0..SYSTEMS.len()).map(|i| l.phase_last_ns(i)).sum();
         assert!(sum <= l.tick_ns() && last <= l.tick_last_ns(), "{sum} {last} {}", l.tick_ns());
         assert_eq!((sum, l.tick_ns()), (last, l.tick_last_ns()), "one tick: total is last");
         assert_eq!(l.loops(), 0, "one entry has no span yet");
@@ -177,7 +177,7 @@ mod tests {
         // The control word's mask is retail's.
         assert_eq!(run.calls[0].args, [sim_tick::CONTROL_WORD_NEW, 0x000f_ffff]);
         // Phase 1 takes the record on the stack and in ECX; the rest EBX.
-        let phases = &run.calls[3..3 + PHASES.len()];
+        let phases = &run.calls[3..3 + SYSTEMS.len()];
         assert_eq!((phases[0].args.clone(), phases[0].ecx, phases[0].ebx), (vec![RECORD], Some(RECORD), None));
         for c in &phases[1..] {
             assert_eq!((c.args.len(), c.ecx, c.ebx), (0, None, Some(RECORD)), "{:#x}", c.target);
@@ -212,7 +212,7 @@ mod tests {
     #[test]
     fn a_close_that_clears_the_flag_holds_the_tick() {
         let (run, _) = tick_with(5, 1, 0);
-        assert_eq!(run.calls.len(), 4 + PHASES.len());
+        assert_eq!(run.calls.len(), 4 + SYSTEMS.len());
         assert_eq!(run.guest.u32(TIME + 8), Ok(5));
         assert_eq!(run.guest.u32(CLOCK + 0x14), Ok(4));
     }

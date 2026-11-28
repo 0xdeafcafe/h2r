@@ -1972,7 +1972,7 @@ fn tick_counts(l: &engine::sim_tick::Ledger) -> BTreeMap<String, f64> {
         return out;
     }
     let per = |ns: u64| round(ns as f64 / l.ticks() as f64);
-    for i in 0..engine::sim_tick::PHASES.len() {
+    for i in 0..engine::sim_tick::SYSTEMS.len() {
         out.insert(format!("sim_tick_phase_{}_ns", i + 1), per(l.phase_ns(i)));
     }
     out.insert("sim_tick_ns".to_owned(), per(l.tick_ns()));
@@ -2138,13 +2138,13 @@ mod tests;
 #[cfg(test)]
 mod tick_count_tests {
     use super::tick_counts;
-    use engine::sim_tick::{Ledger, PHASES};
+    use engine::sim_tick::{Ledger, SYSTEMS};
 
     #[test]
     fn counters_carry_the_ticks_phase_means() {
         assert!(tick_counts(&Ledger::new()).is_empty());
         let mut l = Ledger::new();
-        let mut ns = [0u64; PHASES.len()];
+        let mut ns = [0u64; SYSTEMS.len()];
         ns[0] = 3_000;
         l.finish_tick(1, &ns, 5_000);
         l.finish_tick(2, &ns, 5_000);

@@ -79,7 +79,7 @@ pub(crate) fn install(b: &mut Builder) {
 mod tests {
     use super::*;
     use guest_layout::entry::{self, Regs};
-    use engine::sim_tick::{self, PHASES};
+    use engine::sim_tick::{self, SYSTEMS};
     use guest_layout::testing::FakeGuest;
     use hooks::Switches;
     use std::sync::Mutex;
@@ -107,7 +107,7 @@ mod tests {
             Regs::default()
         };
         let r = entry::testing::run(&f, g, Regs { esp: STACK, ..Default::default() }, callee);
-        r.calls.iter().map(|c| c.target).filter(|t| PHASES.iter().any(|p| p.entry == *t)).collect()
+        r.calls.iter().map(|c| c.target).filter(|t| SYSTEMS.iter().any(|p| p.entry == *t)).collect()
     }
 
     #[test]
@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn phantom_seat_runs_no_camera() {
         let calls = run(Present::LocalOnly, &[]);
-        assert_eq!(calls.len(), PHASES.len() - 3);
+        assert_eq!(calls.len(), SYSTEMS.len() - 3);
         for e in [0x0016_5dc1, 0x0019_17b2, 0x0016_f200] {
             assert!(!calls.contains(&e), "{e:#x}");
         }
@@ -147,7 +147,7 @@ mod tests {
             if c.target == sim_tick::RECORD_BEFORE || c.target == sim_tick::RECORD_AFTER {
                 m.set_u8(STACK - sim_tick::RECORD_SIZE + sim_tick::RUN_FLAG, 1).unwrap();
             }
-            if let Some(i) = PHASES.iter().position(|p| p.entry == c.target) {
+            if let Some(i) = SYSTEMS.iter().position(|p| p.entry == c.target) {
                 for at in [SEEDS, SEEDS + 4] {
                     let seed = m.u32(at).unwrap().wrapping_mul(0x0019_660d).wrapping_add(0x3c6e_f35f);
                     m.set_u32(at, seed).unwrap();
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn a_local_seat_and_the_off_switch_keep_every_phase() {
-        assert_eq!(run(Present::LocalOnly, &[2]).len(), PHASES.len());
-        assert_eq!(run(Present::Always, &[]).len(), PHASES.len());
+        assert_eq!(run(Present::LocalOnly, &[2]).len(), SYSTEMS.len());
+        assert_eq!(run(Present::Always, &[]).len(), SYSTEMS.len());
     }
 }
