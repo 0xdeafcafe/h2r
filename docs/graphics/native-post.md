@@ -58,7 +58,7 @@ The numbers are ported: `engine::colour_pass` (the arguments and parameters), `e
 | the drawn passes | one native pass ([below](#the-native-passes)) |
 | `0x0002dae8..0x0002db5a`: 1, `0x19` and `0x1b` given their saved sizes, `0x19` again with `0x1a`'s (`0x1a` keeps the call's), `[0x004670bc]` set, `0x00016b10` on the template cache `0x00485b48`, the results `0x00485a78`/`7c` -1 | `native_post::end_writes` |
 
-A colour pass that draws makes the guest's two binds as guest calls of `0x00014bc0` (`native_post::glow_binds`, `colour_call`): the view's target `[0x004858b8]` (a word, any target) before the glow, as `0x00034a90` binds it for the composite, and at the end `[0x004858b4]` when not -1, else the view's again (`0x00021a44..0x00021a6e`). The glow's view slot is the colour that first bind caches (`[0x0051f3f4]`).
+A colour pass that draws makes the guest's two binds of `0x00014bc0` in Rust (`native_post::glow_binds`, `colour_call`, `render_bridge::target_bind::bind`; a bind it cannot make panics, `post: bind: <cause>`): the view's target `[0x004858b8]` (a word, any target) before the glow, as `0x00034a90` binds it for the composite, and at the end `[0x004858b4]` when not -1, else the view's again (`0x00021a44..0x00021a6e`). The glow's view slot is the colour that first bind caches (`[0x0051f3f4]`).
 
 **S**: the guest's state-cache writes inside the bodies (the combiner block `0x00484f68`, the stage table `0x00404de8`, the dirty bits `0x00407490`, the bound sizes `0x00485af4`/`0x00485b04`) are left as they came in, as the device's state is, so the two agree; nothing reads them before setting them. The wide convolution's small-size flag `[0x0055e6c5]` is not written.
 

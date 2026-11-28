@@ -285,7 +285,9 @@ The game binds every target through its select `0x00014bc0(index)` (Code; the ca
 | `0x21` to `0x26` | `[0x00509390]` to `[0x005093a4]`, depth `[0x005093a8]`; no code names them as written | `Slot(..)` |
 | 2, `0xe`, `0x17`, `0x18`, `0x1c`, `0x1e` to `0x20` | none | |
 
-The depth is `[0x00509364]` (`DisplayDepth`) for indices 0, 1, 3, 5 to 8, `0xf` and `0x12`, else none.
+The depth is `[0x00509364]` (`DisplayDepth`) for indices 0, 1, 3, 5 to 8, `0xf` and `0x12`, entry 9's surface for 9 (whose data and size words index 9 copies into `0x00484f50` first), else none; AL 0 drops it. The viewport follows the bind: 128 square for context kind 2, the context's window (`view_setup::viewport`) for 0, 1, 2, `0x12` and the screen target, else the colour's whole level-0 surface (`GetDesc`, `0x003fd9c0`).
+
+`render_bridge::target_bind` is this select in Rust (`bind`: `surfaces`, `native_targets::cut_select`, `viewport`, `Host::viewport`). An index the tables send nowhere is `index`; a viewport with no colour to size it by is `colour`. Tests: `each_index_binds_its_tables_surfaces`, `index_9_points_the_static_surface_at_target_9`, `the_viewport_is_the_window_for_the_view_and_the_surface_for_others`, `a_swizzled_surface_is_sized_by_its_format`.
 
 ```mermaid
 flowchart LR
