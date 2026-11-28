@@ -6669,7 +6669,6 @@ dependencies = [
  "runtime",
  "sim-core",
  "sim-effects",
- "sim-ext",
  "sim-havok",
  "sim-objects",
  "sim-players",
