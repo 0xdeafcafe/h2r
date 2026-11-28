@@ -4,7 +4,6 @@
 //! walk keeps the game's order, state setup and layout callbacks.
 
 mod backdrop;
-pub mod blips;
 pub mod definitions;
 pub mod fade;
 pub mod hud_inputs;
@@ -28,6 +27,8 @@ use scene_extract::hud::walk::Kind;
 use timeline::native::{Metric, Stage, Ui};
 
 use hooks::{BuildError, Builder, Feature, Flow, Manifest};
+
+use crate::native_post;
 
 pub const ID: &str = "native-hud";
 
@@ -194,10 +195,10 @@ pub trait Host: Send + Sync {
         false
     }
 
-    /// A motion sensor blip's quad ([`blips`]) under the state the device
-    /// holds, as the push buffer's Begin, vertices and End the body would
-    /// write: true when drawn, so the body is left out.
-    fn sensor_blip(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
+    /// The motion sensor's call of `HUD_SENSOR_DRAW` worked out in Rust
+    /// ([`sensor`]): true when the host drew its target, blips and
+    /// composite, so the guest's draw is left out.
+    fn motion_sensor(&self, _mem: &mut dyn GuestMemory, _draw: &sensor::Draw) -> bool {
         false
     }
 
@@ -460,10 +461,18 @@ fn place_screen_quads(b: &mut Builder) {
 /// out and drawn in the guest's order, after the widgets before it.
 /// False when a widget is not Rust's to draw: the guest loops, and its
 /// draws of the widgets already drawn are left out ([`walk::done`]).
-fn own_loop(mem: &mut dyn GuestMemory, fp: walk::Fp, player: u32, record: u32, shown: &[(Kind, u32, [f32; 4])]) -> bool {
+fn own_loop(mem: &mut dyn GuestMemory, fp: walk::Fp, stack: u32, player: u32, record: u32, shown: &[(Kind, u32, [f32; 4])]) -> bool {
     for &(kind, widget, inputs) in shown {
         let drawn = match kind {
-            Kind::Screen => false,
+            Kind::Screen => match walk::own_screen(&*mem, player, widget, &inputs) {
+                Some(Some(draw)) => {
+                    screen_call(mem, fp, stack, &draw);
+                    true
+                }
+                // Its mode has no effect: the guest's widget calls nothing.
+                Some(None) => true,
+                None => false,
+            },
             Kind::Bitmap => match walk::own_bitmap(&*mem, fp, player, record, widget, &inputs) {
                 Some((laid, last)) => own_widget(mem, &laid, &last),
                 None => false,
@@ -486,16 +495,28 @@ fn own_loop(mem: &mut dyn GuestMemory, fp: walk::Fp, player: u32, record: u32, s
     true
 }
 
+/// A screen-effect widget's call, made as the guest's body makes it:
+/// the globals, then `0x0002d140`'s body ([`native_post::screen_effect`])
+/// on a frame under `stack`, the stack pointer of the hook the walk runs
+/// in (free stack below it). Returns the call's result (EAX).
+fn screen_call(mem: &mut dyn GuestMemory, fp: walk::Fp, stack: u32, draw: &walk::ScreenDraw) -> u32 {
+    let top = stack.wrapping_sub(0x100);
+    let Some(esp) = walk::call_frame(mem, top, draw) else {
+        unimplemented!("hud: a screen effect's frame at {top:#x} does not write")
+    };
+    native_post::screen_effect(mem, draw.effect, esp, native_post::Fp { mxcsr: fp.mxcsr, x87_control: fp.control })
+}
+
 /// The definitions' walks in Rust ([`definitions`]), at `HUD_DEFINITIONS`:
 /// each definition the record names, in the guest's order, by Rust's own
 /// loop. `Ok` when every one was Rust's; otherwise `Err` with the step the
 /// guest resumes at, its walk handed over.
-fn own_definitions(mem: &mut dyn GuestMemory, fp: walk::Fp, user: u32, record: u32, walks: &[hud::walk::DefinitionWalk]) -> Result<(), usize> {
+fn own_definitions(mem: &mut dyn GuestMemory, fp: walk::Fp, stack: u32, user: u32, record: u32, walks: &[hud::walk::DefinitionWalk]) -> Result<(), usize> {
     for w in walks {
         walk::enter(&*mem, w.datum, user, record, w.slot);
         let owned = match walk::plan_loop() {
             walk::LoopPlan::Guest => false,
-            walk::LoopPlan::Own(shown) => own_loop(mem, fp, user, record, &shown),
+            walk::LoopPlan::Own(shown) => own_loop(mem, fp, stack, user, record, &shown),
         };
         if !owned {
             definitions::hand_off(w.datum, w.slot);
@@ -553,7 +574,7 @@ fn place_definitions(b: &mut Builder) {
                 definitions::leave();
                 return Ok(Flow::Continue);
             }
-            own_definitions(&mut *mem, fp, user, record, &walks)
+            own_definitions(&mut *mem, fp, c.cpu.esp, user, record, &walks)
         };
         let step = match step {
             Ok(()) => {
@@ -582,92 +603,27 @@ fn place_definitions(b: &mut Builder) {
     }).optional();
 }
 
-/// The motion sensor's check ([`sensor`]): Rust's point and draws at the
-/// HUD render's call of `HUD_SENSOR_DRAW`, the guest's blip draws and
-/// composite as they come, the verdict at the return. Observers only: the
-/// guest draws the sensor, and the Halo 1 HUD's hook on the call stays
-/// free to skip it.
+/// The motion sensor ([`sensor`]): the call of `HUD_SENSOR_DRAW` is
+/// Rust's, with its point and the draws it asks for worked out from the
+/// guest's memory and handed to the host. The guest's body, its blip draws
+/// and its composite never run. The Halo 1 HUD's hook on the call hides
+/// the sensor first.
 fn place_sensor(b: &mut Builder) {
-    b.raw().observe_before(&points::HUD_SENSOR_DRAW, "native_hud_sensor_enter", |o| {
-        let mem = o.guest();
-        if mem.u32(o.cpu.esp).ok() != Some(sensor::DRAW_RETURN) {
-            return;
-        }
-        let (user, mxcsr, control) = (o.cpu.ecx, o.cpu.mxcsr, o.cpu.x87.control);
-        let at = o.cpu.eax;
-        let point = (|| Some([mem.u16(at).ok()? as i16, mem.u16(at.checked_add(2)?).ok()? as i16]))();
-        let expected = engine::hud_sensor::point(&*mem, mxcsr)
-            .and_then(|p| Ok((p, engine::hud_sensor::draw(&*mem, mxcsr, control, user, p)?)))
-            .ok();
-        sensor::enter(user, point, expected);
-    }).optional();
-    b.raw().observe_after(&points::HUD_SENSOR_DRAW, "native_hud_sensor_leave", |_| sensor::leave()).optional();
-    b.raw().observe_before(&points::HUD_SENSOR_BLIP, "native_hud_sensor_blip", |o| {
-        if !sensor::checking() {
-            return;
-        }
-        let mem = o.guest();
-        let esp = o.cpu.esp;
-        let arg = |n: u32| mem.u32(esp.wrapping_add(4 + 4 * n)).ok();
-        if mem.u32(esp).ok() != Some(sensor::BLIP_RETURN) {
-            return;
-        }
-        let blip = (|| {
-            let at = arg(0)?;
-            Some(engine::hud_sensor::Blip {
-                position: [mem.u32(at).ok()?, mem.u32(at.wrapping_add(4)).ok()?],
-                shade: arg(1)?,
-                size: arg(2)?,
-                colour: arg(3)?,
-                pulse: arg(4)? as u8 != 0,
-            })
-        })();
-        match blip {
-            Some(b) => sensor::blip(b),
-            None => sensor::unread(),
-        }
-    }).optional();
-    b.raw().observe_before(&points::HUD_SENSOR_COMPOSITE, "native_hud_sensor_composite", |o| {
-        if !sensor::checking() {
-            return;
-        }
-        let mem = o.guest();
-        let esp = o.cpu.esp;
-        if mem.u32(esp).ok() != Some(sensor::COMPOSITE_RETURN) {
-            return;
-        }
-        let read = || {
-            let at = mem.u32(esp.wrapping_add(4)).ok()?;
-            Some(([mem.u32(at).ok()?, mem.u32(at.wrapping_add(4)).ok()?], mem.u32(esp.wrapping_add(8)).ok()?))
-        };
-        match read() {
-            Some((centre, value)) => sensor::composite(centre, value),
-            None => sensor::unread(),
-        }
-    }).optional();
-}
-
-/// The blips' cut ([`blips`]): a blip whose setup would change nothing
-/// is the host's quad and returns without its body. The sensor's check
-/// observes the blip before this runs.
-fn place_blips(b: &mut Builder) {
-    b.raw().observe_before(&points::HUD_SENSOR_DRAW, "native_hud_blips_enter", |_| blips::edge()).optional();
-    b.raw().observe_after(&points::HUD_SENSOR_DRAW, "native_hud_blips_leave", |_| blips::edge()).optional();
-    b.raw().before(&points::HUD_SENSOR_BLIP, "native_hud_blips", |c| {
+    b.raw().before(&points::HUD_SENSOR_DRAW, "native_hud_sensor", |c| {
         let rt = Arc::clone(c.ctx.runtime());
         let mut mem = rt.memory();
-        let host = host();
-        let turn = blips::turn(&mut *mem, c.cpu.esp, c.cpu.mxcsr, |m, v| {
-            host.as_ref().is_some_and(|h| h.sensor_blip(m, v))
-        });
-        match turn {
-            blips::Turn::Guest => Ok(Flow::Continue),
-            blips::Turn::Return { mxcsr } => {
-                c.cpu.mxcsr = mxcsr;
-                Ok(Flow::Return(mem.ret(c.cpu, 20)?))
+        let scratch = c.cpu.esp.wrapping_sub(sensor::SCRATCH);
+        match sensor::plan(&mut *mem, scratch, c.cpu.mxcsr, c.cpu.x87.control, c.cpu.ecx, c.cpu.eax) {
+            Ok(None) => {}
+            Ok(Some(draw)) => {
+                if !host().is_some_and(|host| host.motion_sensor(&mut *mem, &draw)) {
+                    unimplemented!("hud: the motion sensor's draw has no host");
+                }
             }
+            Err(why) => unimplemented!("hud: the motion sensor does not work out ({why})"),
         }
-    }).context_only().optional();
+        c.ret(0).map(Flow::Return)
+    }).after_feature("h1-hud-text").context_only().optional();
 }
 
 /// The walk's hooks ([`walk`]): Rust's selection and, once proven, its
@@ -692,7 +648,7 @@ fn place_walk(b: &mut Builder) {
             let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
             match walk::plan_loop() {
                 walk::LoopPlan::Guest => false,
-                walk::LoopPlan::Own(shown) => own_loop(&mut *mem, fp, player, record, &shown),
+                walk::LoopPlan::Own(shown) => own_loop(&mut *mem, fp, c.cpu.esp, player, record, &shown),
             }
         };
         if !owned {
@@ -711,26 +667,22 @@ fn place_walk(b: &mut Builder) {
         let (Some(player), Some(inputs)) = (argument(&*mem, c.cpu.esp, 0), argument(&*mem, c.cpu.esp, 1)) else {
             return Ok(Flow::Continue);
         };
-        walk::called(&*mem, Kind::Screen, c.cpu.eax, inputs);
-        let walk::ScreenPlan::Own(draw) = walk::plan_screen(&*mem, player, c.cpu.eax, inputs) else {
+        let widget = c.cpu.eax;
+        walk::called(&*mem, Kind::Screen, widget, inputs);
+        // Drawn already by Rust's loop before it gave the walk back.
+        if walk::done(Kind::Screen, widget) {
+            return c.ret(8).map(Flow::Return);
+        }
+        let Some(plan) = walk::plan_screen(&*mem, player, widget, inputs) else {
             return Ok(Flow::Continue);
         };
-        // The body is left out: the guest runs the call alone, on the
-        // frame the body would have built, and returns through its tail.
-        let saved = walk::Saved { ebp: c.cpu.ebp, ebx: c.cpu.ebx, edi: c.cpu.edi, esi: c.cpu.esi };
-        let Some((esp, ebp)) = walk::call_frame(&mut *mem, c.cpu.esp, saved, &draw) else {
-            return Ok(Flow::Continue);
-        };
-        c.cpu.esp = esp;
-        c.cpu.ebp = ebp;
-        c.cpu.eax = draw.effect;
-        c.cpu.eip = points::SCREEN_EFFECT.base;
-        Ok(Flow::Return(TransferAbi::call(points::SCREEN_EFFECT.base, walk::SCREEN_CALL_RETURN)))
+        // The body is left out: its call is made here, in its place.
+        if let Some(draw) = plan {
+            let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
+            c.cpu.eax = screen_call(&mut *mem, fp, c.cpu.esp, &draw);
+        }
+        c.ret(8).map(Flow::Return)
     }).context_only().optional();
-    b.raw().after(&points::HUD_SCREEN_WIDGET, "native_hud_walk_screen_done", |_| {
-        walk::finish_screen();
-        Ok(())
-    }).optional();
     b.raw().before(&points::HUD_TEXT_WIDGET, "native_hud_walk_text", |c| {
         let rt = Arc::clone(c.ctx.runtime());
         let owned = {
@@ -853,9 +805,6 @@ impl Feature for NativeHud {
         place_walk(b);
         place_definitions(b);
         place_sensor(b);
-        if b.switches().feature("impl.render.native-hud-blips", true) {
-            place_blips(b);
-        }
         b.raw().before(&HUD_QUAD_READY, "native_hud_walk_quad", |c| {
             let rt = Arc::clone(c.ctx.runtime());
             if !rt.read_dispatch(|dispatch| dispatch.has_resume(HUD_QUAD_TAIL)) {

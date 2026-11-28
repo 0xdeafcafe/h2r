@@ -58,8 +58,8 @@ impl Host for Glue {
         guest("backdrop composite")
     }
 
-    fn sensor_blip(&self, _: &mut dyn GuestMemory, _: &HudVertices) -> bool {
-        guest("motion sensor blip")
+    fn motion_sensor(&self, _: &mut dyn GuestMemory, _: &render_bridge::native_hud::sensor::Draw) -> bool {
+        unimplemented!("hud: the motion sensor's offscreen target (0x00254200), blips (0x00254490) and composite fans (0x002548f0) have no overlay item")
     }
 
     fn inline_ui_quad(&self, _: &mut dyn GuestMemory, primitive: u32, _: Vec<u8>) -> bool {

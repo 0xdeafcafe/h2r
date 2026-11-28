@@ -26,7 +26,7 @@
 
 use crate::function_eval::{self, fld_m64};
 use crate::light_constants::{Error, Sse, X87};
-use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::memory::GuestMemory;
 
 use x87::abi::arith_op;
 
@@ -252,28 +252,9 @@ pub const TAG_INSTANCES: u32 = 0x004e_3b44;
 pub const CACHE_STAMP: u32 = 0x004e_6488;
 /// The byte that lets a blip draw (`0x00254560`).
 pub const BLIPS_DRAW: u32 = 0x0051_ec9a;
-/// The four stages' textures to bind (`0x0001cf50` binds those that are
-/// not the bound ones at `TEXTURES_BOUND`).
-pub const TEXTURES: u32 = 0x0051_f3d8;
-pub const TEXTURES_BOUND: u32 = 0x0051_f3c8;
-/// The blip's vertex program record (`0x0001c710`'s argument) and its
-/// three dirty bytes and its count.
-pub const BLIP_PROGRAM: u32 = 0x0051_f0f0;
-const PROGRAM_DIRTY: [u32; 3] = [0x20c, 0x2d4, 0x88];
-const PROGRAM_COUNT: u32 = 0x2d0;
-/// The bound bitmap's width and height the body writes (`i16`, widened).
-pub const BITMAP_WIDTH: u32 = 0x0048_5af4;
-pub const BITMAP_HEIGHT: u32 = 0x0048_5b04;
-/// The cull mode and the z bias the body writes before it sets them to 0.
-pub const CULL_MODE: u32 = 0x004b_8448;
-pub const Z_BIAS: u32 = 0x004b_8450;
 /// The half size factor (`0x0025457c`) and the blip's depth (`0x002546fe`).
 const HALF: u32 = 0x0045_dc0c;
 const DEPTH: u32 = 0x0045_dd40;
-
-/// The push words one blip takes: Begin, the colour, four vertices of a
-/// texture coordinate and a position, End.
-pub const BLIP_PUSH_BYTES: u32 = (2 + 5 + 4 * (2 + 5) + 2) * 4;
 
 /// One blip draw `0x00254490` as its body makes it, from its arguments
 /// (Code, `h2 disasm 0x00254490 200`).
@@ -385,43 +366,6 @@ pub fn blip_draw(mem: &dyn GuestMemory, esp: u32, mxcsr: u32) -> Result<BlipDraw
         ],
         mxcsr: sse.mxcsr,
     })
-}
-
-/// What leaving out the state setup of a blip `draw` would leave
-/// different from running it, `None` when nothing: a stage texture
-/// `0x0001cf50` would bind (`"texture"`), or the blip's vertex program
-/// marked dirty, which `0x0001c710` would select again (`"shader"`). The
-/// cull mode and z bias it sets to 0 and its deferred state commit are
-/// left as the blip before it in the same sensor call left them.
-pub fn blip_state(mem: &dyn GuestMemory, draw: &BlipDraw) -> Result<Option<&'static str>, BlipRefusal> {
-    let read = |at: u32| mem.u32(at).map_err(|_| BlipRefusal::Unread);
-    for stage in 0..4 {
-        let want = if stage == 0 { draw.texture } else { read(TEXTURES + 4 * stage)? };
-        if want != read(TEXTURES_BOUND + 4 * stage)? {
-            return Ok(Some("texture"));
-        }
-    }
-    for dirty in PROGRAM_DIRTY {
-        if mem.u8(BLIP_PROGRAM + dirty).map_err(|_| BlipRefusal::Unread)? != 0 {
-            return Ok(Some("shader"));
-        }
-    }
-    if read(CULL_MODE)? != 0 || read(Z_BIAS)? != 0 {
-        return Ok(Some("state"));
-    }
-    Ok(None)
-}
-
-/// The writes the body makes to guest memory beyond the device when its
-/// state setup changes nothing ([`blip_state`] gave `None`): the bitmap's
-/// texture and size, the program record's count, the cull mode and z bias.
-pub fn blip_writes(mem: &mut dyn GuestMemory, draw: &BlipDraw) -> Result<(), MemFault> {
-    mem.set_u32(TEXTURES, draw.texture)?;
-    mem.set_i32(BITMAP_WIDTH, draw.width)?;
-    mem.set_i32(BITMAP_HEIGHT, draw.height)?;
-    mem.set_u32(BLIP_PROGRAM + PROGRAM_COUNT, 0)?;
-    mem.set_u32(CULL_MODE, 0)?;
-    mem.set_u32(Z_BIAS, 0)
 }
 
 #[cfg(test)]
@@ -589,8 +533,6 @@ mod tests {
         m.put_u32(ESP + 16, 0x0077_0000).put_u32(ESP + 20, u32::from(pulse) | 0xab00);
         m.put_f32(0x0076_0000, 10.0).put_f32(0x0076_0004, 20.0);
         m.put_f32(0x0077_0000, 0.5).put_f32(0x0077_0004, 0.25).put_f32(0x0077_0008, 1.0);
-        m.put_u32(TEXTURES, 0x7100).put_u32(TEXTURES_BOUND, 0x7100);
-        m.put_u32(CULL_MODE, 0).put_u32(Z_BIAS, 0).put_u32(BITMAP_WIDTH, 0).put_u32(BITMAP_HEIGHT, 0);
         m
     }
 
@@ -607,7 +549,6 @@ mod tests {
         assert_eq!(d.vertices[1], [colour, (1, [1.0, 0.0, 0.0, 1.0]), (0, [12.0, 22.0, z, z])]);
         assert_eq!(d.vertices[2], [colour, (1, [1.0, 1.0, 0.0, 1.0]), (0, [12.0, 18.0, z, z])]);
         assert_eq!(d.vertices[3], [colour, (1, [0.0, 1.0, 0.0, 1.0]), (0, [8.0, 18.0, z, z])]);
-        assert_eq!(blip_state(&m, &d), Ok(None));
     }
 
     #[test]
@@ -615,8 +556,6 @@ mod tests {
         let mut m = blip_image(true);
         let d = blip_draw(&m, ESP, MXCSR).unwrap();
         assert_eq!((d.texture, d.width, d.height), (0x7200, 32, -2));
-        // Stage 0 holds the first bitmap's texture: the setup would bind.
-        assert_eq!(blip_state(&m, &d), Ok(Some("texture")));
         m.put_u8(BLIPS_DRAW, 0);
         assert!(!blip_draw(&m, ESP, MXCSR).unwrap().draws);
     }
@@ -633,33 +572,5 @@ mod tests {
         let mut m = blip_image(false);
         m.put_u32(0x0073_0110, 0);
         assert_eq!(blip_draw(&m, ESP, MXCSR), Err(BlipRefusal::Bitmap));
-    }
-
-    #[test]
-    fn a_dirty_program_another_stage_or_a_set_cull_mode_needs_the_setup() {
-        let m = blip_image(false);
-        let d = blip_draw(&m, ESP, MXCSR).unwrap();
-        for dirty in PROGRAM_DIRTY {
-            let mut m = blip_image(false);
-            m.put_u8(BLIP_PROGRAM + dirty, 1);
-            assert_eq!(blip_state(&m, &d), Ok(Some("shader")), "{dirty:#x}");
-        }
-        let mut m = blip_image(false);
-        m.put_u32(TEXTURES + 8, 0x9000);
-        assert_eq!(blip_state(&m, &d), Ok(Some("texture")));
-        let mut m = blip_image(false);
-        m.put_u32(CULL_MODE, 0x405);
-        assert_eq!(blip_state(&m, &d), Ok(Some("state")));
-    }
-
-    #[test]
-    fn a_left_out_setup_writes_what_the_body_writes() {
-        let mut m = blip_image(true);
-        m.put_u32(BLIP_PROGRAM + PROGRAM_COUNT, 3);
-        let d = blip_draw(&m, ESP, MXCSR).unwrap();
-        blip_writes(&mut m, &d).unwrap();
-        assert_eq!(m.u32(TEXTURES).unwrap(), 0x7200);
-        assert_eq!((m.i32(BITMAP_WIDTH).unwrap(), m.i32(BITMAP_HEIGHT).unwrap()), (32, -2));
-        assert_eq!(m.u32(BLIP_PROGRAM + PROGRAM_COUNT).unwrap(), 0);
     }
 }

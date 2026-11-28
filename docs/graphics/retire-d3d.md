@@ -27,8 +27,7 @@ Switch: `impl.render.native` (on), removed with the crate; R4's producers have `
 | R5, the layer draws' return | layers 2, 17, 18, 19 and 21 at the sites R5 takes, and the scene's water 6 and fog 16, return without the guest body when no item holds the bit; fog with its gate off returns with its items held (`kept` in the census) | [retire-d3d-r5.md](retire-d3d-r5.md) |
 | R5, what is kept | every layer 2, 6, 16, 17, 18, 19 and 21 item, sky strip, post call and flare fan left to its guest draw is a `scene_kept_*` count by cause | [retire-d3d-r5.md](retire-d3d-r5.md) |
 | R6, HUD bitmap widgets | a widget quad whose shader's Rust material is proven against the guest's draws is drawn at `0x0022a7b3` with no guest shader setup or draw | [native-hud-overlay.md](native-hud-overlay.md#the-material-in-rust) |
-| R6, the walk | the walk's selection, inputs and bitmap, text and screen-effect widget layout in Rust; a bitmap or text widget proven against the guest's quads is drawn with no guest draw, and a proven screen-effect widget's body is left out | [native-hud-overlay.md](native-hud-overlay.md#the-walk-in-rust) |
-| R6, the sensor's blips | a blip draw `0x00254490` after the first of its sensor call returns without its body when its setup would change nothing on the device: the host draws its quad from Rust's model of the body; a blip the body draws counts `scene_kept_overlay_sensor_blip_<cause>` | [native-hud-overlay.md](native-hud-overlay.md#the-blips) |
+| R6, the walk | the walk's selection, inputs and bitmap, text and screen-effect widget layout in Rust; a bitmap or text widget proven against the guest's quads is drawn with no guest draw, and a screen-effect widget's call is made in Rust, its body left out | [native-hud-overlay.md](native-hud-overlay.md#the-walk-in-rust) |
 | R6, the other HUD quads | the training frame, the navpoints' arrows and outlines, the waypoint markers and the indicator are captured and proven as the widgets are | [native-hud-overlay.md](native-hud-overlay.md#bitmap-widgets) |
 | R6, what is kept | every HUD item a producer offers and the overlay does not draw, and every HUD draw no producer offered, is a `scene_kept_overlay_*` count by kind and cause | "R6's remainder" |
 | R7 | the menu frame's widgets, text, fade, bars (strips included), loading screen and blur from the overlay; every menu-frame draw that does not is a `scene_kept_ui_<kind>_<cause>` count in the HUD's register | [retire-d3d-menus.md](retire-d3d-menus.md) |
@@ -345,7 +344,6 @@ map as `overlay_<kind>_<cause>`.
 | `widget`, `crosshair` | bitmap widget quads (`0x0022aff1`, `0x0022bbca`); `crosshair` while the widget's anchor id is 4, the centre |
 | `text` | HUD glyph quads at the screen quad `0x000363c4` |
 | `motion_sensor` | the wash, tint and composite fans of `0x002548f0` in the HUD |
-| `sensor_blip` | a blip's quad `0x00254490` the body draws: `first` (the call's first blip), `bitmap`, `unread`, `texture`, `shader`, `state` ([the blips](native-hud-overlay.md#the-blips)); one the host draws is `packet` |
 | `navpoint`, `waypoint` | the arrow `0x0024e9c7` and outline `0x0024f0fc`; the marker `0x0024ef29` |
 | `training`, `indicator` | the training frame `0x001e9140`; the indicator group `0x00200462` |
 | `screen_effect` | a screen-effect widget's call of `0x0002d140` (`0x0022bbc0`) |

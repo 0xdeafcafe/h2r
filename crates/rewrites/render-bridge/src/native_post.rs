@@ -406,8 +406,6 @@ fn screen_call_body(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
     let esp = cpu.esp;
-    // A shadowed HUD widget's call is checked against Rust's.
-    crate::native_hud::walk::observe_screen(&*mem, cpu.eax, esp);
     cpu.eax = screen_effect(&mut *mem, cpu.eax, esp, fp(cpu));
     ret(cpu, &*mem, esp, SCREEN_ARGS)
 }

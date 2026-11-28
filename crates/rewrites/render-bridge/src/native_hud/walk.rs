@@ -12,15 +12,12 @@
 //! colour, checked against the guest's glyph quads at the screen quad.
 //!
 //! A screen-effect widget's call of `0x0002d140` (its effect, its bitmap
-//! and its grid) is worked out at `HUD_SCREEN_WIDGET` and checked against
-//! the guest's call; a proven widget's body is left out and the guest
-//! runs the call alone, on a frame Rust fills ([`call_frame`]).
+//! and its grid) is worked out in Rust ([`own_screen`]) and made by
+//! `native_post::screen_effect` in the loop's order, with the globals the
+//! widget writes ([`screen_globals`]); the guest's widget body never runs.
 //!
-//! The loop itself is Rust's once the guest's widget calls matched
-//! Rust's selection on [`PROOF_DRAWS`] walks of the definition and every
-//! widget it shows is proven ([`plan_loop`]): the widgets are laid out
-//! and drawn in the guest's order and the guest's walk is left out. One
-//! walk in [`RECHECK`] is the guest's, with every widget checked again.
+//! The loop itself is Rust's ([`plan_loop`]): the widgets are laid out
+//! and drawn in the guest's order and the guest's walk is left out.
 //!
 //! A text widget laid out in Rust is Rust's at its draw ([`plan_text`]):
 //! the host draws its glyph quads and the guest's string draw never runs.
@@ -152,8 +149,6 @@ struct State {
     /// The order of the definitions' walks (`super::definitions`), by
     /// the local user.
     definitions: HashMap<u32, Proof>,
-    /// The motion sensor's draw calls (`super::sensor`), by the local user.
-    sensors: HashMap<u32, Proof>,
 }
 
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(Mutex::default);
@@ -179,12 +174,6 @@ fn walk_proof<T>(definition: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
 /// walk's for the map.
 pub(super) fn definitions_proof<T>(user: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
     state(|s| f(s.definitions.entry(user).or_default()))
-}
-
-/// The proof of local user `user`'s motion sensor draws, kept with the
-/// walk's for the map.
-pub(super) fn sensor_proof<T>(user: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
-    state(|s| f(s.sensors.entry(user).or_default()))
 }
 
 /// The loop's side of the walk the guest is in.
@@ -273,17 +262,6 @@ struct Active {
     /// not Rust's to check.
     foreign: bool,
     expect: Option<Expect>,
-    screen: Option<ExpectScreen>,
-}
-
-/// A shadowed screen-effect widget: the call Rust worked out, and the
-/// guest's calls against it.
-#[derive(Clone, Debug, PartialEq)]
-struct ExpectScreen {
-    widget: u32,
-    draw: ScreenDraw,
-    calls: u32,
-    matched: bool,
 }
 
 thread_local! {
@@ -318,7 +296,7 @@ pub fn enter(mem: &dyn GuestMemory, definition: u32, player: u32, record: u32, s
             };
             (0..block.len() / kind.size()).any(|i| foreign(mem, blocks.address(kind, i)))
         });
-        Some(Active { blocks, shown, calls: Vec::new(), foreign: any_foreign, expect: None, screen: None })
+        Some(Active { blocks, shown, calls: Vec::new(), foreign: any_foreign, expect: None })
     };
     let active = read();
     if active.is_none() {
@@ -339,9 +317,7 @@ pub enum LoopPlan {
 }
 
 /// `HUD_WALK`'s entry, after [`enter`]: whose the loop is. Rust's when
-/// the definition's selection is proven, no feature changes a widget of
-/// it, no screen effect is shown (its call is the guest's) and every
-/// widget shown is proven.
+/// no feature changes a widget of the definition.
 pub fn plan_loop() -> LoopPlan {
     let refused = |why: &'static str| {
         count(why);
@@ -351,9 +327,6 @@ pub fn plan_loop() -> LoopPlan {
     let Some((foreign, shown)) = ACTIVE.with(|a| a.borrow().as_ref().map(read)) else { return LoopPlan::Guest };
     if foreign {
         return refused("loop_feature");
-    }
-    if shown.iter().any(|s| s.0 == Kind::Screen) {
-        return refused("loop_screen");
     }
     LoopPlan::Own(shown)
 }
@@ -769,159 +742,78 @@ fn lay_out_screen(mem: &dyn GuestMemory, player: u32, widget: u32, inputs: &[f32
     walk::screen_widget(&w, inputs, &screen, aim, bitmap.as_ref().map(|b| b as &dyn walk::Bitmap), user_state).map_err(Refusal::cause)
 }
 
-/// What the screen-effect widget's entry does.
-#[derive(Clone, Debug, PartialEq)]
-pub enum ScreenPlan {
-    /// The guest runs the widget.
-    Guest,
-    /// The guest runs this call alone ([`call_frame`]).
-    Own(ScreenDraw),
+/// A screen-effect widget of a loop Rust runs: its call worked out.
+/// `Some(None)`: its mode has no effect, and nothing is called. `None`:
+/// not Rust's to call (counted), and the loop goes back to the guest.
+pub fn own_screen(mem: &dyn GuestMemory, player: u32, widget: u32, inputs: &[f32; 4]) -> Option<Option<ScreenDraw>> {
+    match lay_out_screen(mem, player, widget, inputs) {
+        Ok(draw) => Some(draw),
+        Err(why) => {
+            count("screen_refused");
+            count(why);
+            None
+        }
+    }
 }
 
-/// `HUD_SCREEN_WIDGET`'s entry: whose the widget's layout is, as [`plan`]
-/// for a bitmap widget.
-pub fn plan_screen(mem: &dyn GuestMemory, player: u32, widget: u32, inputs: u32) -> ScreenPlan {
+/// `HUD_SCREEN_WIDGET`'s entry from the guest's walk (the loop gave
+/// back): the widget's call when it is selected with the inputs the guest
+/// gives and no feature changes it. `None`: the guest's body runs, and its
+/// call of `0x0002d140` is the post's all the same.
+pub fn plan_screen(mem: &dyn GuestMemory, player: u32, widget: u32, inputs: u32) -> Option<Option<ScreenDraw>> {
     let refused = |why: &'static str| {
         count(why);
-        ScreenPlan::Guest
+        None
     };
     let Some(given) = four(mem, inputs) else { return refused("screen_read") };
     match selected(Kind::Screen, widget, &given) {
-        None => return ScreenPlan::Guest,
+        None => return None,
         Some(false) => return refused("screen_unselected"),
         Some(true) => {}
     }
     if foreign(mem, widget) {
         return refused("screen_feature");
     }
-    let draw = match lay_out_screen(mem, player, widget, &given) {
-        Ok(Some(draw)) => draw,
-        Ok(None) => return refused("screen_empty"),
-        Err(why) => {
-            count("screen_refused");
-            return refused(why);
-        }
-    };
-    match arm(widget) {
-        Arm::Guest => refused("screen_differed"),
-        Arm::Shadow => {
-            let e = ExpectScreen { widget, draw, calls: 0, matched: true };
-            ACTIVE.with(|a| {
-                if let Some(a) = a.borrow_mut().as_mut() {
-                    a.screen = Some(e);
-                }
-            });
-            ScreenPlan::Guest
-        }
-        Arm::Own => ScreenPlan::Own(draw),
-    }
+    own_screen(mem, player, widget, &given)
 }
 
-/// The screen-effect widget's call returns here (`0x0022bbbb`'s).
-pub const SCREEN_CALL_RETURN: u32 = 0x0022_bbc0;
-/// The widget's frame under its entry stack pointer `E` (`0x0022b8e2`:
-/// `push ebp; lea ebp, [esp - 0x70]; sub esp, 0xa4; push ebx; push edi`,
-/// then `push esi`): the grid at `ebp - 0x34`.
-const SCREEN_GRID: u32 = 0xa8;
-const SCREEN_SAVED: [u32; 3] = [0xac, 0xb0, 0xb4];
-const SCREEN_CALL_STACK: u32 = 0xc8;
+/// Bytes [`call_frame`] writes from its top.
+pub const SCREEN_FRAME: u32 = 0xd0;
+
+/// The call's grid is 3 by 3 (`0x0022bbb2`, `0x0022bbb5`).
+pub const SCREEN_GRID: [u32; 2] = [3, 3];
 
 /// The globals the widget writes before its call (`0x0022bb20`,
 /// `0x0022bb9f`, `0x0022bba4`).
-fn screen_globals(draw: &ScreenDraw) -> Vec<(u32, u32)> {
+pub fn screen_globals(draw: &ScreenDraw) -> Vec<(u32, u32)> {
     let mut writes = vec![(walk::global::BITMAP, draw.bitmap), (walk::global::IMAGE, draw.image as u32)];
     writes.extend(draw.values.iter().enumerate().map(|(i, v)| (walk::global::INPUTS + 4 * i as u32, v.to_bits())));
     writes
 }
 
-/// Whether the call of `0x0002d140` at `esp` with `eax` is `draw`'s:
-/// the effect, the four values, a 3 by 3 grid of the same corners, and
-/// the globals written.
-fn screen_matches(mem: &dyn GuestMemory, eax: u32, esp: u32, draw: &ScreenDraw) -> bool {
-    let read = || {
-        let word = |n: u32| mem.u32(esp.checked_add(4 + 4 * n)?).ok();
-        let (values, corners) = (word(0)?, word(3)?);
-        if eax != draw.effect || [word(1)?, word(2)?] != [3, 3] {
-            return Some(false);
-        }
-        for (i, v) in draw.values.iter().enumerate() {
-            if mem.u32(values.checked_add(4 * i as u32)?).ok()? != v.to_bits() {
-                return Some(false);
-            }
-        }
-        for (i, v) in draw.grid.iter().flatten().enumerate() {
-            if mem.u32(corners.checked_add(4 * i as u32)?).ok()? != v.to_bits() {
-                return Some(false);
-            }
-        }
-        Some(globals_hold(mem, &screen_globals(draw)))
-    };
-    read().unwrap_or(false)
-}
-
-/// The guest's call of `0x0002d140` (`eax`, `esp` at its entry), in a
-/// shadowed screen-effect widget: checked against the call Rust worked out.
-pub fn observe_screen(mem: &dyn GuestMemory, eax: u32, esp: u32) {
-    ACTIVE.with(|a| {
-        let mut a = a.borrow_mut();
-        let Some(e) = a.as_mut().and_then(|a| a.screen.as_mut()) else { return };
-        if mem.u32(esp).ok() != Some(SCREEN_CALL_RETURN) {
-            return;
-        }
-        e.matched &= screen_matches(mem, eax, esp, &e.draw);
-        e.calls += 1;
-    });
-}
-
-/// `HUD_SCREEN_WIDGET`'s return: a shadowed widget's answer.
-pub fn finish_screen() {
-    let Some(e) = ACTIVE.with(|a| a.borrow_mut().as_mut().and_then(|a| a.screen.take())) else { return };
-    let matched = e.matched && e.calls == 1;
-    count(if matched { "screen_shadow_matched" } else { "screen_shadow_differed" });
-    if proof(e.widget, |p| p.checked(matched)) {
-        count("screen_proven");
-    }
-}
-
-/// The registers the widget's body saves.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Saved {
-    pub ebp: u32,
-    pub ebx: u32,
-    pub edi: u32,
-    pub esi: u32,
-}
-
-/// A proven screen-effect widget's frame, as its body leaves it at the
-/// call of `0x0002d140`, written under the widget's entry stack pointer
-/// `esp`: the saved registers, the grid, the globals, the call's four
-/// words and its return (`SCREEN_CALL_RETURN`, whose code restores the
-/// registers and returns from the widget). The stack and frame pointers
-/// to enter `0x0002d140` with; EAX is `draw.effect`.
-pub fn call_frame(mem: &mut dyn GuestMemory, esp: u32, saved: Saved, draw: &ScreenDraw) -> Option<(u32, u32)> {
+/// A screen-effect call's frame, written at `top` (free stack): the four
+/// values, the grid and the call's words (return, values, 3, 3, grid; the
+/// return word unused), then the globals ([`screen_globals`]). `top` is
+/// the stack pointer to call `native_post::screen_effect` with. `None`:
+/// guest memory refused.
+pub fn call_frame(mem: &mut dyn GuestMemory, top: u32, draw: &ScreenDraw) -> Option<u32> {
+    let values = top.checked_add(0x20)?;
+    let grid = top.checked_add(0x40)?;
     let mut put = |at: u32, word: u32| mem.write(at, &word.to_le_bytes()).ok();
-    let inputs = esp.checked_add(8)?;
-    let under = |n: u32| esp.checked_sub(n);
-    put(under(4)?, saved.ebp)?;
-    for (at, word) in SCREEN_SAVED.into_iter().zip([saved.ebx, saved.edi, saved.esi]) {
-        put(under(at)?, word)?;
+    for (i, v) in draw.values.iter().enumerate() {
+        put(values + 4 * i as u32, v.to_bits())?;
     }
-    let grid = under(SCREEN_GRID)?;
     for (i, v) in draw.grid.iter().flatten().enumerate() {
         put(grid + 4 * i as u32, v.to_bits())?;
     }
     for (at, word) in screen_globals(draw) {
         put(at, word)?;
     }
-    let top = under(SCREEN_CALL_STACK)?;
-    // The values are the widget's own inputs argument (`[ebp + 0x7c]`).
-    let values = mem.u32(inputs).ok()?;
-    let mut put = |at: u32, word: u32| mem.write(at, &word.to_le_bytes()).ok();
-    for (i, word) in [SCREEN_CALL_RETURN, values, 3, 3, grid].into_iter().enumerate() {
+    for (i, word) in [0, values, SCREEN_GRID[0], SCREEN_GRID[1], grid].into_iter().enumerate() {
         put(top + 4 * i as u32, word)?;
     }
     count("screen_called");
-    Some((top, under(0x74)?))
+    Some(top)
 }
 
 /// Rust drew the text widget (`drawn`), or the host did not take it.
@@ -1007,7 +899,7 @@ mod tests {
 
     fn shadow(e: Expect) {
         let blocks = Blocks::default();
-        ACTIVE.with(|a| *a.borrow_mut() = Some(Active { blocks, shown: Vec::new(), calls: Vec::new(), foreign: false, expect: Some(e), screen: None }));
+        ACTIVE.with(|a| *a.borrow_mut() = Some(Active { blocks, shown: Vec::new(), calls: Vec::new(), foreign: false, expect: Some(e) }));
     }
 
     fn answer(m: &FakeGuest) -> Expect {
@@ -1091,7 +983,7 @@ mod tests {
         let mut blocks = Blocks::default();
         blocks.bitmaps = (0x3000, vec![0; 2 * walk::BITMAP_SIZE]);
         let shown = vec![Shown { kind: Kind::Bitmap, index: 1, inputs: [1.0, 0.0, 0.0, 0.5] }];
-        let active = Active { blocks, shown, calls: Vec::new(), foreign: false, expect: None, screen: None };
+        let active = Active { blocks, shown, calls: Vec::new(), foreign: false, expect: None };
         assert_eq!(expected_calls(&active), vec![(Kind::Bitmap, 0x3000 + walk::BITMAP_SIZE as u32, bits(&[1.0, 0.0, 0.0, 0.5]))]);
     }
 
@@ -1105,7 +997,7 @@ mod tests {
         blocks.bitmaps = (0x3000, vec![0; walk::BITMAP_SIZE]);
         // Selected with other inputs than the guest gives.
         let shown = vec![Shown { kind: Kind::Bitmap, index: 0, inputs: [0.5; 4] }];
-        ACTIVE.with(|a| *a.borrow_mut() = Some(Active { blocks, shown, calls: Vec::new(), foreign: false, expect: None, screen: None }));
+        ACTIVE.with(|a| *a.borrow_mut() = Some(Active { blocks, shown, calls: Vec::new(), foreign: false, expect: None }));
         let fp = Fp { mxcsr: 0x1f80, control: 0x027f };
         assert_eq!(plan(&m, fp, 0, 0x6000, 0x3000, 0x7000), Plan::Guest);
         assert!(ACTIVE.with(|a| a.borrow().as_ref().unwrap().expect.is_none()));
@@ -1221,7 +1113,7 @@ mod tests {
         let mut blocks = Blocks::default();
         blocks.texts = (TEXT, vec![0; walk::TEXT_SIZE]);
         let shown = vec![Shown { kind: Kind::Text, index: 0, inputs: [1.0; 4] }];
-        let active = || Active { blocks: blocks.clone(), shown: shown.clone(), calls: Vec::new(), foreign: false, expect: None, screen: None };
+        let active = || Active { blocks: blocks.clone(), shown: shown.clone(), calls: Vec::new(), foreign: false, expect: None };
         ACTIVE.with(|a| *a.borrow_mut() = Some(active()));
         assert_eq!(plan_text(&m, FP, None, RECORD, TEXT, 0x7800), TextPlan::Guest);
         // Selected, with fonts: Rust's, with no proof.
@@ -1242,72 +1134,44 @@ mod tests {
     }
 
     #[test]
-    fn a_proven_screen_widgets_frame_is_the_call_the_guests_body_makes() {
+    fn a_screen_widgets_frame_is_the_call_the_guests_body_makes() {
         let mut m = FakeGuest::new();
-        let e = 0x000d_0000;
-        m.put(e - 0x100, &[0u8; 0x110]);
-        m.put_u32(walk::global::BITMAP, 0).put_u32(walk::global::INPUTS + 12, 0);
-        // The widget's arguments: the player, then its inputs.
-        m.put_u32(e, 0x0013_a5f0).put_u32(e + 4, 0).put_u32(e + 8, 0x7800);
+        let top = 0x000d_0000;
+        m.put(top, &[0u8; 0x100]);
         let draw = screen_draw();
+        assert_eq!(call_frame(&mut m, top, &draw), Some(top));
+        // The call's words as the body pushes them: values, 3, 3, the grid.
+        let (values, grid) = (m.u32(top + 4).unwrap(), m.u32(top + 16).unwrap());
+        assert_eq!([m.u32(top + 8).unwrap(), m.u32(top + 12).unwrap()], [3, 3]);
         for (i, v) in draw.values.iter().enumerate() {
-            m.put_f32(0x7800 + 4 * i as u32, *v);
+            assert_eq!(m.u32(values + 4 * i as u32).unwrap(), v.to_bits());
         }
-        let saved = Saved { ebp: 0x000d_0040, ebx: 11, edi: 22, esi: 33 };
-        let (esp, ebp) = call_frame(&mut m, e, saved, &draw).unwrap();
-        assert_eq!((esp, ebp), (e - 0xc8, e - 0x74));
-        // The call as the guest's body pushes it, returning into its tail.
-        assert_eq!(m.u32(esp).unwrap(), SCREEN_CALL_RETURN);
-        assert_eq!([m.u32(esp + 4).unwrap(), m.u32(esp + 8).unwrap(), m.u32(esp + 12).unwrap()], [0x7800, 3, 3]);
-        assert_eq!(m.u32(esp + 16).unwrap(), ebp - 0x34);
-        assert!(screen_matches(&m, draw.effect, esp, &draw));
-        // The tail pops ESI, EDI and EBX above the call's words, then
-        // `add ebp, 0x70; leave` finds the caller's EBP.
-        assert_eq!([m.u32(esp + 0x14).unwrap(), m.u32(esp + 0x18).unwrap(), m.u32(esp + 0x1c).unwrap()], [33, 22, 11]);
-        assert_eq!(m.u32(ebp + 0x70).unwrap(), 0x000d_0040);
+        for (i, v) in draw.grid.iter().flatten().enumerate() {
+            assert_eq!(m.u32(grid + 4 * i as u32).unwrap(), v.to_bits(), "grid word {i}");
+        }
+        // The globals the body writes before its call.
+        assert_eq!(m.u32(walk::global::BITMAP).unwrap(), draw.bitmap);
         assert_eq!(m.u32(walk::global::IMAGE).unwrap(), 2);
+        for (i, v) in draw.values.iter().enumerate() {
+            assert_eq!(m.u32(walk::global::INPUTS + 4 * i as u32).unwrap(), v.to_bits());
+        }
+        // The values, the grid and the words do not overlap.
+        assert!(values >= top + 0x14 && grid >= values + 0x10 && grid + 4 * 36 <= top + SCREEN_FRAME);
     }
 
     #[test]
-    fn a_guest_call_with_another_effect_corner_or_bitmap_differs() {
-        let draw = screen_draw();
-        for change in 0..4 {
-            let mut m = FakeGuest::new();
-            let e = 0x000d_0000;
-            m.put(e - 0x100, &[0u8; 0x110]);
-        m.put_u32(walk::global::BITMAP, 0).put_u32(walk::global::INPUTS + 12, 0);
-            m.put_u32(e + 8, 0x7800);
-            for (i, v) in draw.values.iter().enumerate() {
-                m.put_f32(0x7800 + 4 * i as u32, *v);
-            }
-            let (esp, ebp) = call_frame(&mut m, e, Saved { ebp: 0, ebx: 0, edi: 0, esi: 0 }, &draw).unwrap();
-            let mut eax = draw.effect;
-            match change {
-                0 => eax = 0xe300_0005,
-                1 => {
-                    m.put_f32(ebp - 0x34 + 16, 101.0);
-                }
-                2 => {
-                    m.put_u32(walk::global::BITMAP, 0xe100_0002);
-                }
-                _ => {
-                    m.put_u32(esp + 8, 4);
-                }
-            }
-            ACTIVE.with(|a| {
-                let e = ExpectScreen { widget: 0x5200, draw: draw.clone(), calls: 0, matched: true };
-                *a.borrow_mut() = Some(Active { blocks: Blocks::default(), shown: Vec::new(), calls: Vec::new(), foreign: false, expect: None, screen: Some(e) });
-            });
-            observe_screen(&m, eax, esp);
-            let e = ACTIVE.with(|a| a.borrow().as_ref().and_then(|a| a.screen.clone())).unwrap();
-            assert!(e.calls == 1 && !e.matched, "change {change}");
-            ACTIVE.with(|a| *a.borrow_mut() = None);
-        }
+    fn a_screen_widgets_globals_are_the_bitmap_the_image_and_the_four_inputs() {
+        let globals = screen_globals(&screen_draw());
+        assert_eq!(globals.len(), 6);
+        assert_eq!(globals[0], (walk::global::BITMAP, 0xe100_0001));
+        assert_eq!(globals[1], (walk::global::IMAGE, 2));
+        assert_eq!(globals[3], (walk::global::INPUTS + 8, 0.0f32.to_bits()));
+        assert_eq!(globals[2], (walk::global::INPUTS + 4, 0.5f32.to_bits()));
     }
 
     /// A walk of `definition` showing `shown`, as [`enter`] leaves it.
     fn walking(definition: u32, blocks: &Blocks, shown: &[Shown]) {
-        let active = Active { blocks: blocks.clone(), shown: shown.to_vec(), calls: Vec::new(), foreign: false, expect: None, screen: None };
+        let active = Active { blocks: blocks.clone(), shown: shown.to_vec(), calls: Vec::new(), foreign: false, expect: None };
         ACTIVE.with(|a| *a.borrow_mut() = Some(active));
         LOOP.with(|l| *l.borrow_mut() = Loop { definition, ..Loop::default() });
     }
@@ -1340,12 +1204,12 @@ mod tests {
     }
 
     #[test]
-    fn a_walk_showing_a_screen_effect_or_a_features_widget_is_the_guests_loop() {
+    fn a_walk_showing_a_screen_effect_is_rusts_and_a_features_widget_is_the_guests_loop() {
         let (definition, widget) = (0xe300_0104, 0x0034_0000);
         let mut blocks = Blocks::default();
         blocks.screens = (widget, vec![0; walk::SCREEN_SIZE]);
         walking(definition, &blocks, &[Shown { kind: Kind::Screen, index: 0, inputs: [1.0; 4] }]);
-        assert_eq!(plan_loop(), LoopPlan::Guest);
+        assert_eq!(plan_loop(), LoopPlan::Own(vec![(Kind::Screen, widget, [1.0; 4])]));
         // With nothing shown the loop is Rust's, unless a feature has a widget in the definition.
         walking(definition, &blocks, &[]);
         assert_eq!(plan_loop(), LoopPlan::Own(Vec::new()));

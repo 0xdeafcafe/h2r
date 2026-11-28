@@ -1,6 +1,6 @@
 # The HUD on the overlay
 
-Status: Partly built. Every HUD and menu shader quad (a HUD widget's, a training frame's, a navpoint's, and a menu shader bitmap's) is drawn from its shader's Rust material at `HUD_QUAD_SETUP` with no guest shader setup, and a HUD bitmap or text widget's Rust layout draws with no guest draw, from its first draw: nothing waits on a guest draw to prove it, and a quad or widget Rust cannot draw panics by name (`hud: ...`). A screen-effect widget's body is left out; its effect's draw is the post's. Rust walks the definitions a HUD record names in the guest's order, and a string draw's site's strings are laid out and drawn by Rust as text runs. The motion sensor's place and draw calls are worked out in Rust and checked against the guest's. The HUD's overlay items are tagged `ViewSlot::Hud`, a menu shader bitmap's `ViewSlot::Ui`. What the overlay keeps is counted by kind and cause. Pixel parity needs a live check.
+Status: Partly built. Every HUD and menu shader quad (a HUD widget's, a training frame's, a navpoint's, and a menu shader bitmap's) is drawn from its shader's Rust material at `HUD_QUAD_SETUP` with no guest shader setup, and a HUD bitmap or text widget's Rust layout draws with no guest draw, from its first draw: nothing waits on a guest draw to prove it, and a quad or widget Rust cannot draw panics by name (`hud: ...`). A screen-effect widget's body is left out; its effect's draw is the post's. Rust walks the definitions a HUD record names in the guest's order, and a string draw's site's strings are laid out and drawn by Rust as text runs. The motion sensor's place and draw calls are worked out in Rust, and its call is Rust's: the host draws them, and the guest's body never runs (the host's target and composite are not built, and the call panics by name). The HUD's overlay items are tagged `ViewSlot::Hud`, a menu shader bitmap's `ViewSlot::Ui`. What the overlay keeps is counted by kind and cause. Pixel parity needs a live check.
 Code: `crates/rewrites/render-bridge/src/native_hud/hud_overlay.rs`, `hud_inputs.rs`, `kept.rs`, `walk.rs`, `strings.rs`, `definitions.rs`, `sensor.rs`, `crates/rewrites/hud-kit-core/src/walk.rs`, `crates/rewrites/scene-extract/src/hud.rs`, `crates/rewrites/engine/src/hud_effects.rs`, `hud_sensor.rs`, `crates/extensions/game/src/hud_overlay.rs`, `hud_native.rs`, `crates/rewrites/native-render/src/hud_material.rs`, `ui_gpu.rs`, `overlay.rs`, `layer_pass/animation.rs`. Tests: `crates/rewrites/render-bridge/tests/native_hud.rs`, the unit tests of `hud_material.rs`, `hud_inputs.rs`, `kept.rs`, `hud_native.rs`, `hud_effects.rs`, `hud_sensor.rs`, `scene-extract`'s `hud.rs`, `native_hud/walk.rs`, `native_hud/strings.rs`, `native_hud/definitions.rs` and `native_hud/sensor.rs`, and `hud-kit-core/src/walk_tests.rs`.
 Switch: `impl.render.native` (on). The material, the walk and the strings are not switchable. See [switches.md](../runtime/switches.md).
 
@@ -131,7 +131,7 @@ flowchart LR
 | Effects | `0x0022bcaf` | `engine::hud_effects::apply`, on the SSE and x87 models |
 | Bitmap widget | `0x0022aff1`: mirrors, the meter, list and colour types, its globals at `0x004e6978`..`0x004e69b0` | `walk::bitmap_widget` |
 | Quad vertices | `0x0022a664` to its setup | `walk::vertices` |
-| Screen-effect widget | `0x0022b8e2` to its call of `0x0002d140` | `walk::screen_widget`; `native_hud::walk::call_frame` writes the body's frame and the call |
+| Screen-effect widget | `0x0022b8e2` to its call of `0x0002d140` | `walk::screen_widget`; `native_hud::walk::call_frame` writes the call's frame, and `native_post::screen_effect` makes the call |
 | Text place | `0x0022aa16` to its string | `walk::text_widget` |
 | String | `0x0022a871`: the table's string; the named input through `_ftol` as `%d`, `0%d`, `00%d`; or the name of the record's player (`+0x228` while `+0x224` is set, through `0x0016bae0`), else nothing | `hud_overlay::localized`, `walk::number_text`, `hud::player_name` |
 | Measure | `0x0013e9c0` in 0, 0, 1000, 1000; its callback `0x0013e8e0` | `UiText::shape`, `walk::text_bounds` |
@@ -153,7 +153,7 @@ Text and screen-effect widgets take the bitmap widget's rules, with these differ
 | Widget | Checked | Drawn |
 |---|---|---|
 | Text | nothing: a widget laid out and selected is Rust's at its draw (`walk::plan_text`), and an unproven text widget does not hold the loop. The guest's draw would run the string draw, which is Rust's ([strings](#strings)) | `Host::rust_hud_text`: runs over the host's glyph pages (`OverlayTexture::Glyphs`) by the shader's words, the quad's colour as diffuse (`hud_native::build_text`, `hud_overlay::place_text`). The shader is proven on the guest's glyph captures (`hud_native::check_text`: words, state, stages) |
-| Screen effect | the guest's one call at `SCREEN_EFFECT`: effect, values, 3 by 3, the grid and the globals | `call_frame`: the saved registers, grid, globals and the call's words on the guest's stack, then `0x0002d140` entered with the return `0x0022bbc0`, whose code leaves the widget. The post draws the effect ([native-post-hud.md](native-post-hud.md)) |
+| Screen effect | nothing: a widget laid out and selected is Rust's, in the loop's order | `native_hud::screen_call`: the globals the body writes (`walk::screen_globals`), the values, the 3 by 3 grid and the call's words on free stack below the hook's (`walk::call_frame`), then `native_post::screen_effect` with no guest call. The post draws the effect ([native-post-hud.md](native-post-hud.md)) |
 
 Text left to the guest: a name that is not read (`name`), a number whose input is not read or is past an `i32` (`number`), a string with a character a handler that is not read replaces (`string`: a session's or variant's name, a clock), one the fonts do not shape (`shape`: `menu_text::shape`'s characters and the button glyphs), a font byte past 1 (`font`), a colour outside 0..1 (`colour`), no host fonts (`text_fonts`). The font renderer's own state (`0x004e73a0`..) is not written by a Rust-drawn string (**S**: every string draw sets it first).
 
@@ -176,13 +176,14 @@ The loop (`walk::plan_loop` at `HUD_WALK`, `native_hud::own_loop`):
 | Rule | Why |
 |---|---|
 | A definition's loop is Rust's from its first walk | no guest draw is left to prove it |
-| The guest loops when a feature has a widget in the definition or a script hides HUD widgets (`loop_feature`), a screen effect is shown (`loop_screen`: its call is the guest's) | the gate and input hooks stay in force; a feature's widget and a screen effect's call are the guest's (left to a later lane) |
+| The guest loops when a feature has a widget in the definition or a script hides HUD widgets (`loop_feature`) | the gate and input hooks stay in force; a feature's widget is the guest's (left to a later lane) |
+| A screen effect is a widget of the loop: its call is made in the loop's order, and a mode with no effect calls nothing | the guest's widget does the same |
 | Each widget is laid out after the widgets before it are drawn and their globals written | a layout reads what the earlier draws leave |
 | A widget that is not laid out, draws nothing or the host does not take gives the loop back (`loop_gave_back`): the guest's walk runs and its draws of the widgets already drawn are left out (`walk::done`) | no widget is drawn twice or dropped |
 
-Hooks (`native_hud::place_walk`, feature `native-hud`, all optional): `HUD_WALK`, `HUD_SCREEN_WIDGET` and `HUD_BITMAP_WIDGET`, each before and after, and `HUD_TEXT_WIDGET` before. No other feature hooks these points, so they need no order. The quad check runs inside `native_hud_rust_quad` at `HUD_QUAD_SETUP` and the call check inside `native_post_screen_effect` at `SCREEN_EFFECT`, each before the draw is offered.
+Hooks (`native_hud::place_walk`, feature `native-hud`, all optional): `HUD_WALK`, `HUD_SCREEN_WIDGET` and `HUD_BITMAP_WIDGET`, each before and after, and `HUD_TEXT_WIDGET` before. No other feature hooks these points, so they need no order. The quad check runs inside `native_hud_rust_quad` at `HUD_QUAD_SETUP`. A screen-effect widget the guest's walk reaches after the loop gave back (`HUD_SCREEN_WIDGET`) is called the same way in place of its body, unless Rust's loop already drew it.
 
-Counters (`render.scene`, `native_ui_overlay_hud_walk_*`): `loop_owned` and the loop's above; `drawn`, `proven`, `shadow_matched`, `shadow_differed`, each refusal above; the same with `screen_` before them, and each text refusal with `text_` (`screen_called` for `drawn`; `text_refused` and `screen_refused` beside a layout refusal's cause); and `selection_matched`, `selection_differed`, `selection_foreign` (the guest's widget calls of one walk against `walk::shown`; `foreign` when the definition has another feature's widget).
+Counters (`render.scene`, `native_ui_overlay_hud_walk_*`): `loop_owned` and the loop's above; `drawn`, `proven`, `shadow_matched`, `shadow_differed`, each refusal above; each screen refusal with `screen_` before it (`screen_called` for a call made; `screen_refused` beside a layout refusal's cause), and each text refusal with `text_` (`text_refused` beside a layout refusal's cause); and `selection_matched`, `selection_differed`, `selection_foreign` (the guest's widget calls of one walk against `walk::shown`; `foreign` when the definition has another feature's widget).
 
 ### The definitions in Rust
 
@@ -214,62 +215,40 @@ Hooks (`native_hud::place_definitions`, with `place_walk`): `HUD_DEFINITIONS` be
 
 ### The motion sensor in Rust
 
-After the definitions the HUD render calls `0x001a2823` (`points::HUD_SENSOR_DRAW`, EAX its point, ECX the user) when `0x0015fef0` allows it and the record's word at `+0x3c` is -1 (`0x001395fa`..`0x00139685`). `engine::hud_sensor` gives the call's point and every draw it asks for; `native_hud::sensor` checks them against the guest's (Code, `h2 disasm 0x0013954b 120`, `h2 disasm 0x001a2823 100`, `h2 disasm 0x001a2197 40`).
+After the definitions the HUD render calls `0x001a2823` (`points::HUD_SENSOR_DRAW`, EAX its point, ECX the user) when `0x0015fef0` allows it and the record's word at `+0x3c` is -1 (`0x001395fa`..`0x00139685`). The call is Rust's: `native_hud::sensor::plan` works out the draws it asks for from `engine::hud_sensor` and hands them to the host (`Host::motion_sensor`); the guest's body, its blip draws `0x00254490` and its composite `0x002548f0` never run (Code, `h2 disasm 0x0013954b 120`, `h2 disasm 0x001a2823 100`, `h2 disasm 0x001a2197 40`).
 
 ```mermaid
 flowchart LR
   R[HUD render: anchor 2 + centre table - window corner] --> D[HUD_SENSOR_DRAW 0x001a2823]
   D -->|camera mode 2 or 3| N[nothing]
-  D --> T[0x00254200: the sensor's target]
-  T --> B[10 frames of the ring: each blip through 0x001a2197 to HUD_SENSOR_BLIP 0x00254490]
-  B --> C[HUD_SENSOR_COMPOSITE 0x002548f0: wash, tint, composite fans]
+  D --> P[sensor::plan]
+  P --> B[10 frames of the ring: each blip as its draw 0x00254490's quad]
+  P --> C[composite: centre and value]
+  B --> H[Host::motion_sensor]
+  C --> H
 ```
 
 | Part | Guest | Rust |
 |---|---|---|
 | Screen mode | `0x0013a690(4)`: 0 with the window 640 by 480 or more, 2 with both less, else 1 | `hud_sensor::screen_mode` |
-| Point | `0x00139614`: the safe rectangle's left and bottom (anchor 2), plus the mode's entry of the centre table `0x0047ff40`, less the window's corner, each truncated to `i16` | `hud_sensor::point` |
+| Point | `0x00139614`: the safe rectangle's left and bottom (anchor 2), plus the mode's entry of the centre table `0x0047ff40`, less the window's corner, each truncated to `i16` | the call's EAX, two `i16` (`hud_sensor::point` gives the render's) |
 | Camera mode | `0x00155760`: the user's camera update function (`0x004e8c44 + 0x140 * user`, `+0xc`); first person with no blend 0, following 1, dead or flying with `[0x0051ec10]` 2, else 3. 2 and 3 draw nothing | `hud_sensor::camera_mode` |
-| Centre | the point plus the window's corner, as floats | `Sensor::centre` |
+| Centre | the point plus the window's corner, as floats | `Draw::centre` |
 | Ring | `[0x0051e994] + 0x2f0 * user`: ten frames of `0x44` bytes, sixteen 4-byte blips (x, y, type, size index) and the count at `+0x40`; step `i` reads frame `([[0x0051e994] + 0xbc0] + i) % 10` | `hud_sensor::draw` |
 | Step values | `a = (10 - i) * 0.1`; shade `a * a`; swell `pow(1 - a, 3.5) * 7 + 1` on the x87 | the SSE and x87 models, `function_eval::pow` |
-| Blip | type 0 is none; size `base * swell + [0x0047ff9c + 4 * index]`, `base` 1 or, for type 6, `(sin(ticks * seconds a tick * pi) + 1) / 30 + 1`; colour `0x00445320 + 12 * type` | `Blip` |
-| Composite | the centre and `[0x0051e98c]` | `Sensor::value` |
+| Blip | type 0 is none; size `base * swell + [0x0047ff9c + 4 * index]`, `base` 1 or, for type 6, `(sin(ticks * seconds a tick * pi) + 1) / 30 + 1`; colour `0x00445320 + 12 * type` | `hud_sensor::Blip` |
+| Blip quad | the draw `0x00254490` takes the HUD interface's bitmap (`[[0x004e034c] + 0x114]` when `+0x110` is set: the first bitmap of the tags at `+0x64` and `+0x6c`, the second for a pulsing blip, resident when its `+0x70` is past `[0x004e6488]`) and pushes one quad: colour (register 5) the blip's colour times its shade, alpha `[0x0045dbc0]`; corners at the position plus and minus half the size (`[0x0045dc0c]`), y up first; coordinates 0 and 1 (register 1); depth `[0x0045dd40]`; SSE in the body's order | `hud_sensor::blip_draw` over a call frame `sensor::plan` writes on free stack below the hook's: one `BlipDraw` for each blip |
+| Composite | the centre and `[0x0051e98c]` | `Draw::centre`, `Draw::value` |
 
 | Rule | Why |
 |---|---|
-| A call from the HUD render (return `0x0013968a`) is checked: the point at its entry, each blip draw from `0x001a2197` (return `0x001a2219`) and the composite (return `0x001a2960`), bit for bit, in order, at the return | Rust's list is the guest's only where it has been checked |
-| 8 matching calls in a row prove it (`sensor_proven`), kept per local user for the map; every call is still checked, as the guest draws the sensor | the list a Rust draw starts from is proven first |
-| A call that differs leaves the sensor unchecked for the map (`sensor_guest` after) | as a widget's draw |
-| A call with no guest draw where Rust expects one is no verdict (`sensor_unseen`): the Halo 1 HUD's hook skips hidden sensors at the same entry | another feature's skip is not a difference |
-| What Rust or a guest draw does not read is not checked (`sensor_read`) | |
+| The call is Rust's wherever it comes from; the Halo 1 HUD's hook (`h1-hud-text`) sits outside it and hides the sensor first | a hidden sensor draws nothing |
+| What does not read, or a blip whose bitmap is not resident (its body asks the texture cache), panics by name (`hud: the motion sensor does not work out (...)`) | no guest draw is left to fall back to |
+| Each blip's SSE runs under the MXCSR the one before it leaves | the body's operations are the guest's, in order |
 
-Hooks (`native_hud::place_sensor`, with `place_walk`): observers before `HUD_SENSOR_DRAW`, `HUD_SENSOR_BLIP` and `HUD_SENSOR_COMPOSITE`, and after `HUD_SENSOR_DRAW`. Being observers they need no order with `h1_hud_text`'s hook on `HUD_SENSOR_DRAW`. Counters as the walk's (`native_ui_overlay_hud_walk_sensor_*`): `matched`, `proven`, `differed` with the part (`differed_point`, `differed_drawn`, `differed_blips`, `differed_composite`), `guest`, `unseen`, `read`.
+Hook (`native_hud::place_sensor`): `HUD_SENSOR_DRAW` before, optional, sitting inside `h1-hud-text`'s hook. Tests: `native_hud::sensor`'s (the call frame, reads, causes) and `hud_sensor`'s `a_blips_quad_*`, `a_pulsing_blip_*` and `a_bitmap_the_cache_must_load_is_refused`.
 
-The fans the composite draws are the host's ([What is kept](#what-is-kept)), and so are the blip quads after the first of a call ([The blips](#the-blips)). The sensor's target (`0x00254200`: target `0x1d` cleared, its blend states) and each call's first blip are the guest's.
-
-### The blips
-
-A blip draw `0x00254490` binds its bitmap's texture to stage 0 (`0x0001cf50`, which binds only the stages whose texture is not the bound one), selects the blip's vertex program `0x0051f0f0` when its record is dirty (`0x0001c710`), sets the cull mode and z bias to 0, commits the deferred state and pushes one quad into the sensor's target. Between two blip calls of one `0x001a2823` the guest makes no D3D call (its loop and `0x001a2197` are arithmetic), so a blip's setup after the first changes the device only through the texture and the program record. `native_hud::blips` reads both, and where neither would change, the host draws the quad and the call returns without its body (Code, `h2 disasm 0x00254490 200`).
-
-| Part | Guest | Rust |
-|---|---|---|
-| Bitmaps | the HUD interface `[[0x004e034c] + 0x114]` (when `+0x110` is set), the first bitmap of the tags at `+0x64` and `+0x6c`; the second for a pulsing blip | `hud_sensor::blip_draw` |
-| Residency | `0x00012360`, `0x00012310`: a bitmap whose `+0x70` is past `[0x004e6488]` gives its texture `+0x50` with no call | the same test; any other bitmap keeps the body (`bitmap`) |
-| Writes | `[0x0051f3d8]` the texture, `[0x00485af4]` and `[0x00485b04]` the bitmap's `+4` and `+6`, the record's count `+0x2d0`, `[0x004b8448]` and `[0x004b8450]` | `hud_sensor::blip_writes` |
-| Quad | colour (register 5) the blip's colour times its shade, alpha `[0x0045dbc0]`; corners at the position plus and minus half the size (`[0x0045dc0c]`), y up first; coordinates 0 and 1 (register 1); depth `[0x0045dd40]`; SSE in the body's order | `BlipDraw::vertices`, drawn as a fan through the device's pushed draw (`Host::sensor_blip`) |
-
-| Rule | Why |
-|---|---|
-| The first blip of each call runs its body (`first`) | it follows the sensor's target setup |
-| A blip whose texture would bind (`texture`), whose program record is dirty (`shader`) or whose cull mode or z bias global is set (`state`) runs its body | its setup would change the device |
-| A blip the body would draw nothing for (`[0x0051ec9a]` clear) runs it, counted nowhere | the body stops before its state |
-| A blip Rust does not read (`bitmap`, `unread`), or one from a caller other than `0x001a2197`, runs its body and makes the next one first | the body may stop before its state |
-| A blip the host refuses runs its body under the host's cause | as a fan's |
-
-Counters: `scene_kept_overlay_sensor_blip_<cause>`, `native_ui_overlay_hud_walk_sensor_blip_returned`. Switch: `impl.render.native-hud-blips=off` keeps every blip on its body. Tests: `hud_sensor`'s `a_blips_quad_*`, `a_pulsing_blip_*`, `a_bitmap_the_cache_must_load_is_refused`, `a_dirty_program_*`, `a_left_out_setup_*`; `native_hud::blips`'s tests.
-
-Not built: the sensor drawn from Rust's list (its target, the blips and the fans as overlay items in slot `Hud`); the rest of the HUD render `0x0013954b` (the record's fill `0x0013992a`, then `0x0015ea50`, `0x00200462` and `0x001e6fe0` after the sensor: the messages and training); and the screen effect's draw from the scene. It is the post's transaction over the guest's execution of `0x0002d140`.
+Not built: the sensor drawn from Rust's list. The host's `motion_sensor` panics by name: the sensor's target (`0x00254200`: target `0x1d` cleared, its blend states), the blips drawn into it as fans, and the composite `0x002548f0` (wash, tint, composite fans over the bitmaps at `+0x3c` and `+0x44`) have no overlay item yet. The rest of the HUD render `0x0013954b` (the record's fill `0x0013992a`, then `0x0015ea50`, `0x00200462` and `0x001e6fe0` after the sensor: the messages and training) and the screen effect's draw from the scene are as before; the effect is the post's transaction over `0x0002d140`.
 
 ## Strings
 
@@ -345,9 +324,7 @@ A text run's combiner (`Combiner::TextureAlpha`) samples coverage alone, so a co
 - That the plain-text batch's combiner is the glyph's texture times the vertex colour: a run samples the pages' coverage alone (a private-use glyph, the only coloured ones, is the guest's).
 - That the 12 widget quads a frame `refused` counted in a 16-bot game were not `texture` too; `refused_<cause>` names them.
 - That the measure's callback sees the glyphs `shape` gives and no others (a space has none), and that `_ftol` at `0x00322b0c` truncates.
-- That a `TransferAbi::call` returned from a before hook enters `SCREEN_EFFECT` through its hooks, as the guest's own call does.
-- That a blip drawn by the host lands on the pixels its body's quad does (a fan of the same four vertices), and that the body's quad costs more than the host's pushed draw.
-- That retail sensor calls match (`sensor_differed` at zero), that no blip draw comes from elsewhere while the call runs, and that `0x00016a90` changes no state when `0x0013a690` is given 4 (**S**: its result is read only for an argument of 3).
+- That `0x00016a90` changes no state when `0x0013a690` is given 4 (**S**: its result is read only for an argument of 3).
 - That the navpoint, waypoint, training and indicator shaders prove: each is checked as a widget's is, and `mismatch_*` names what differs.
 - That the outline `0x0024f0fc`'s six quad calls are all the outline's (**S**).
 - HUD pixel parity on the lab. From the same saved camera and tick, capture `render.frame` with `impl.render.native` off and on. Compare empty, partial and full ammo and shield meters, a flashing ammo count and a two-colour waypoint emblem, including a split-screen view and a scaled display copy. Compare RGBA in each widget rectangle and check `render.stats` for bitmap and text reservations, display recordings and zero fallback or failed recordings for the exercised widgets.
