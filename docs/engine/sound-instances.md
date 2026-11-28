@@ -13,7 +13,7 @@ flowchart LR
     step[Sound phase: step] --> table
     step -->|ended, mouth| owners[OwnerHost]
   end
-  table -->|SoundEvent| outbox
+  table -->|TableEvent| outbox
   subgraph frame [Frame, any rate]
     outbox --> feed[MixerHost]
     scene[Scene: listeners, source positions] --> feed
@@ -426,7 +426,7 @@ Space 0 sounds (word 0 bits 24 to 27), unknown spaces and world sounds with no l
 
 | Stage | State | Gate |
 |---|---|---|
-| D0 | guest pool; frame replaced by the event service; `NullHost` | none (today) |
+| D0 | guest pool; frame replaced by the event service; `NullTableHost` | none (today) |
 | D1 | `Sounds` owns every instance; entries are Rust; pool global 0 | `sound.pool_reads == 0`, `sound.unported_entries == 0`, `dsound.manager_calls == 0` over one campaign level and one match |
 | D2 | `MixerHost` at boot; the game is heard through the feed | `feed.started == sound.admitted` less `feed.culled`; `feed.clip_refused == 0` on retail maps |
 | D3 | `sim_glue/voices.rs` and both switches deleted; the sound core's DirectSound objects (mix-ins, submixes, streams) no longer registered | `dsound.manager_calls` removed with its code; `dsound.calls` names only Bink and voice |
