@@ -1,17 +1,21 @@
 //! The walks in Rust (docs/engine/object-update.md, "The walks in Rust"):
-//! pre-physics `b6f10`, post-physics `b7060`, the per-object updates
-//! `bc470` and `bc820` with the node matrices `bd090`, the four type
-//! dispatchers, the wake leaves, the early-mover wake `109580`, the leaves
-//! `bd090` calls (`b8bd0`, `bf5a0`, `bfc90`, `bff10`, `bfe80`, `bfed0`,
-//! `bfe20`, `b6780`), and the type callbacks of the objects a multiplayer
-//! game has most of: the unit update `c6b30` with its tree (slices 6a, 6b
-//! and 6c), the biped update `dd360` and post-physics update `dd990` with
-//! the ported part of their trees (slices 7a and 7b), and the weapon
-//! update `fdfb0` (slice 9). The dispatchers call them in Rust. On by
-//! default with `impl.sim.native.objects.walk`; `sim_bridge::sim_objects`
-//! installs [`TABLE`] when `impl.sim.native.objects` is off (on, every
-//! body is installed and these with them), or [`WITHOUT_AIM`] when the
-//! animation subsystem owns the aim update `c7840`.
+//! pre-physics `b6f10`, post-physics `b7060` and finalize `b7150`, the
+//! per-object updates `bc470` and `bc820` with the node matrices `bd090`,
+//! the four type dispatchers, the wake leaves, the early-mover wake
+//! `109580`, the leaves `bd090` calls (`b8bd0`, `bf5a0`, `bfc90`, `bff10`,
+//! `bfe80`, `bfed0`, `bfe20`, `b6780`), and the type callbacks of the
+//! objects a multiplayer game has: the unit update `c6b30` with its tree
+//! (slices 6a, 6b and 6c), the biped update `dd360` and post-physics update
+//! `dd990` with the ported part of their trees (slices 7a and 7b), the
+//! weapon update `fdfb0` (slice 9), the item level `10b4d0` that weapons,
+//! equipment and garbage run first, the vehicle update `efde0` with its two
+//! leaves (slice 10), and the projectile update `f8de0` with its step
+//! `f8eb0` and the scenery update `10a2f0` (slice 11). The dispatchers call
+//! them in Rust. On by default with `impl.sim.native.objects.walk`;
+//! `sim_bridge::sim_objects` installs [`TABLE`] when
+//! `impl.sim.native.objects` is off (on, every body is installed and these
+//! with them), or [`WITHOUT_AIM`] when the animation subsystem owns the aim
+//! update `c7840`.
 //!
 //! The Rust body answers every segment; nothing is compared. A body the
 //! Rust cannot take for one call is a [`Refusal`]: the guest runs that
@@ -22,14 +26,14 @@
 //! never refuse; `bd090` and the type callbacks ([`TYPES`]) run only
 //! inside it.
 //!
-//! **Other types.** Only [`POINTS`] and [`TYPES`] are in [`TABLE`]: the
-//! item level of a weapon (`10b4d0`), the other types' callbacks (the
-//! vehicle update `efde0` too), damage, functions, the rest of the
-//! post-update shell, lights and finalize `b7150` are calls to the guest,
-//! as are the unit tree's own guest callees. Each is made in place when
-//! the runtime can (`runtime::ExecCtx::call_inline`, from
-//! `sim_bridge::sim_objects`), else through the runner, counted either
-//! way ([`callout`]).
+//! **Other bodies.** Only [`POINTS`] and [`TYPES`] are in [`TABLE`]: the
+//! device, machine, crate and creature updates, the pose and after-root
+//! slots (`112070`, `f0f50`, `10a390`), damage, functions, the rest of the
+//! post-update shell and lights are calls to the guest, as is every callee
+//! of a table body that has no body here. Each is made in place when the
+//! runtime can (`runtime::ExecCtx::call_inline`, from
+//! `sim_bridge::sim_objects`), else through the runner, counted either way
+//! ([`callout`]).
 
 use super::{BODIES, Body, Table};
 use crate::points::{self, Point};
@@ -37,12 +41,13 @@ use runtime::{CpuAbi, Fallback, Guest, TransferAbi};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// The walk bodies: the two walks, the per-object updates, `bd090`, the
+/// The walk bodies: the three walks, the per-object updates, `bd090`, the
 /// type dispatchers, the wake leaves, the early-mover wake and the leaves
 /// `bd090` calls (`getters`). [`TABLE`] holds these and [`TYPES`].
 pub const POINTS: &[&Point] = &[
     &points::OBJECTS_PRE_PHYSICS,
     &points::OBJECTS_POST_PHYSICS,
+    &points::OBJECTS_FINALIZE,
     &points::OBJECT_PRE_UPDATE,
     &points::OBJECT_POST_UPDATE,
     &points::OBJECT_NODE_MATRICES,
@@ -68,9 +73,13 @@ pub const POINTS: &[&Point] = &[
 /// The type callbacks in [`TABLE`]: the `unit` descriptor's slot `+40`
 /// (`c6b30`, slices 6a, 6b and 6c, which bipeds and vehicles inherit), the
 /// `bipd` descriptor's slots `+40` (`dd360`, slice 7a) and `+44` (`dd990`,
-/// slice 7b), each with every body its tree fuses, and the `weap` slot
-/// `+40` (`fdfb0`, slice 9). Each checks the float environment at its
-/// entry and its sites.
+/// slice 7b) with every body their trees fuse, the `weap` slot `+40`
+/// (`fdfb0`, slice 9), the `item` slot `+40` (`10b4d0`, which `weap`,
+/// `eqip` and `garb` inherit; `eqip` and `garb` have no slot of their own),
+/// the `vehi` slot `+40` (`efde0`, slice 10) with its gate and contact
+/// reset, and the `proj` slot `+40` (`f8de0`) with its step and the `scen`
+/// slot `+40` (`10a2f0`, slice 11). Each checks the float environment at
+/// its entry and its sites.
 pub const TYPES: &[&Point] = &[
     // The unit level: `c6b30`, its nine children and theirs, and the
     // animation state `111650` the biped tree calls.
@@ -114,6 +123,15 @@ pub const TYPES: &[&Point] = &[
     &points::BIPED_LANDING_UPDATE,
     &points::BIPED_CONTACT_UPDATE,
     &points::WEAPON_UPDATE,
+    // The item level of a weapon, equipment and garbage; the vehicle,
+    // projectile and scenery levels.
+    &points::ITEM_UPDATE,
+    &points::VEHICLE_UPDATE,
+    &points::VEHICLE_UPDATE_GATE,
+    &points::VEHICLE_CONTACTS_RESET,
+    &points::PROJECTILE_UPDATE,
+    &points::PROJECTILE_STEP,
+    &points::SCENERY_UPDATE,
 ];
 
 /// The entries whose bodies make no float instruction: every one in
@@ -121,6 +139,7 @@ pub const TYPES: &[&Point] = &[
 pub const FLOAT_FREE: &[u32] = &[
     points::OBJECTS_PRE_PHYSICS.base,
     points::OBJECTS_POST_PHYSICS.base,
+    points::OBJECTS_FINALIZE.base,
     points::OBJECT_PRE_UPDATE.base,
     points::OBJECT_POST_UPDATE.base,
     points::OBJECT_TYPE_UPDATE.base,
@@ -143,11 +162,12 @@ pub const FLOAT_FREE: &[u32] = &[
 ];
 
 /// The entries whose hooks never transfer to their own guest body: the
-/// two walks and the per-object updates (`HookRef::replaces_guest`). Each
-/// has resume sites, so `hooks::Plan::replaced` keeps its body lifted.
+/// three walks and the per-object updates (`HookRef::replaces_guest`).
+/// Each has resume sites, so `hooks::Plan::replaced` keeps its body lifted.
 pub const REPLACES_GUEST: &[u32] = &[
     points::OBJECTS_PRE_PHYSICS.base,
     points::OBJECTS_POST_PHYSICS.base,
+    points::OBJECTS_FINALIZE.base,
     points::OBJECT_PRE_UPDATE.base,
     points::OBJECT_POST_UPDATE.base,
 ];

@@ -2,9 +2,9 @@
 //! (design: docs/engine/sim-rewrite-objects.md section 5; contracts:
 //! docs/engine/object-update.md). Every body runs under
 //! `impl.sim.native.objects` (default off); the walks, the per-object
-//! updates and the unit, biped and weapon callbacks ([`native_walk::TABLE`])
-//! also run alone, on by default (`impl.sim.native.objects.walk`). `sim_bridge::sim_objects` installs
-//! both.
+//! updates and the multiplayer types' callbacks ([`native_walk::TABLE`])
+//! also run alone, on by default (`impl.sim.native.objects.walk`).
+//! `sim_bridge::sim_objects` installs both.
 //!
 //! A ported function is a [`Body`]: retail-site arms over the retail stack
 //! frame. At every guest call it makes, `esp`, the frame slots it reads
@@ -62,8 +62,8 @@ mod unit_rest;
 // Slice 7a: the biped update; slice 7b its post-physics update
 // (`biped::post`).
 mod biped;
-// The walks, the per-object updates and the unit, biped and weapon
-// callbacks in Rust, on by default (`impl.sim.native.objects.walk`).
+// The walks, the per-object updates and the multiplayer types' callbacks
+// in Rust, on by default (`impl.sim.native.objects.walk`).
 pub mod native_walk;
 
 use crate::points::{self, Point};

@@ -103,7 +103,7 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.native.objects", Off, "sim", "2026-11-20",
         "the object update (sim-objects): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.objects.walk", On, "sim", "2026-11-27",
-        "the walks b6f10 and b7060 and the per-object updates in Rust (docs/engine/object-update.md): off runs the guest walks, the A arm of h2 sim diff; deleted with impl.sim.native.objects"),
+        "the walks b6f10, b7060 and b7150, the per-object updates and the multiplayer type callbacks in Rust (docs/engine/object-update.md): off runs the guest walks, the A arm of h2 sim diff; deleted with impl.sim.native.objects"),
     sw("impl.sim.native.seats", Off, "sim", "2026-11-25",
         "seats and rules (sim-seats): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.sound", Off, "sim", "2026-11-25",

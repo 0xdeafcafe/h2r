@@ -930,13 +930,15 @@ fn early_mover_wake() {
 }
 
 /// The walks in Rust as installed by default (`native_walk::TABLE`): the
-/// walks, the per-object updates, `bd090` with the leaves it calls
-/// (`walk_table_getters` runs them over the dressed pool) and the unit,
-/// biped and weapon callbacks fused, every other type callback a callout.
-/// Again under flush to zero and denormals as zero, outside the float
-/// environment: every walk body but `bd090` still runs, and `bd090` and
-/// the type callbacks are the lifted original's (the `float_env` refusal),
-/// resumed from at the caller's site.
+/// three walks, the per-object updates, `bd090` with the leaves it calls
+/// (`walk_table_getters` runs them over the dressed pool) and the unit and
+/// multiplayer types' callbacks (`walk_table_types`) fused, every other
+/// type callback a callout. Finalize over 24 cases, as `objects_finalize`,
+/// with its deletion events counted. Again under flush to zero and
+/// denormals as zero, outside the float environment: every walk body but
+/// `bd090` still runs, and `bd090` and the type callbacks are the lifted
+/// original's (the `float_env` refusal), resumed from at the caller's
+/// site.
 #[test]
 fn walk_table_roots() {
     let table: &Table = &engine::sim_objects::native_walk::TABLE;
@@ -951,6 +953,9 @@ fn walk_table_roots() {
         for mxcsr in [None, Some(outside)] {
             transcripts_in(point, 6, table, mxcsr);
         }
+    }
+    for mxcsr in [None, Some(outside)] {
+        transcripts_in(&points::OBJECTS_FINALIZE, 24, table, mxcsr);
     }
 }
 
@@ -3704,8 +3709,8 @@ fn unit_rest_transcripts(point: &points::Point, cases: u32) {
     unit_rest_transcripts_in(point, cases, &sim_objects::TABLE, None);
 }
 
-/// [`unit_rest_transcripts`] over `table`, every run starting with
-/// `mxcsr` when given.
+/// [`unit_rest_transcripts`] over `table`, every run starting with `mxcsr`
+/// when given.
 fn unit_rest_transcripts_in(point: &points::Point, cases: u32, table: &Table, mxcsr: Option<u32>) {
     let Some((image, ram)) = image() else { return };
     let mut code = image.original();
@@ -4462,13 +4467,14 @@ fn type_post_update_dispatch_reaches_the_biped() {
     BIPED_POST.with(|b| b.set(false));
 }
 
-/// The unit, biped and weapon callbacks as the walk table runs them by
-/// default (`native_walk::TYPES`): each root, and the dispatchers reaching
-/// a biped's three (the unit level `c6b30`, then `dd360`; `dd990`) and a
-/// vehicle's unit level, with every body outside the table a callout (the
-/// item level `10b4d0`, the vehicle update `efde0`). The unit level runs
-/// over the slice 6a, 6b and 6c dressings, and the unit leaves the biped
-/// tree calls (`cba50`, `111650`) as roots. Without the aim update
+/// The unit and multiplayer types' callbacks as the walk table runs them by
+/// default (`native_walk::TYPES`): the unit level `c6b30` over the slice
+/// 6a, 6b and 6c dressings, the biped and weapon roots, the item level, the
+/// vehicle, projectile (with its step) and scenery updates, the unit
+/// leaves `cba50` and `111650`, and the dispatchers reaching the biped's
+/// two, the vehicle and every small type, with every body outside the
+/// table a callout (the device, machine, crate and creature updates, the
+/// transform setters and getters). Without the aim update
 /// (`native_walk::WITHOUT_AIM`, the animation subsystem's hand-off) the
 /// movement's call to `c7840` is a callout. Again under flush to zero and
 /// denormals as zero, outside the float environment: every type callback
@@ -4488,7 +4494,6 @@ fn walk_table_types() {
         unit_state_transcripts_in(&points::UNIT_UPDATE, 8, without_aim, mxcsr);
         unit_rest_transcripts_in(&points::UNIT_UPDATE, 16, table, mxcsr);
         unit_rest_transcripts_in(&points::UNIT_ANIMATION_STATE, 16, table, mxcsr);
-        dressed_with_in(&points::OBJECT_TYPE_UPDATE, 11, dress_vehicle, table, mxcsr);
         dressed_with_in(&points::WEAPON_UPDATE, 16, dress_weapon, table, mxcsr);
         biped_transcripts_in(&points::BIPED_UPDATE, 24, table, mxcsr);
         biped_post_transcripts_in(&points::BIPED_POST_UPDATE, 42, table, mxcsr);
@@ -4498,5 +4503,16 @@ fn walk_table_types() {
         BIPED_POST.with(|b| b.set(true));
         dressed_with_in(&points::OBJECT_TYPE_POST_UPDATE, 12, dress_biped_both, table, mxcsr);
         BIPED_POST.with(|b| b.set(false));
+        dressed_with_in(&points::ITEM_UPDATE, 6, undressed, table, mxcsr);
+        dressed_with_in(&points::SCENERY_UPDATE, 6, undressed, table, mxcsr);
+        dressed_with_in(&points::PROJECTILE_UPDATE, 6, undressed, table, mxcsr);
+        dressed_with_in(&points::PROJECTILE_UPDATE, 12, dress_step, table, mxcsr);
+        dressed_with_in(&points::PROJECTILE_STEP, 12, dress_step, table, mxcsr);
+        dressed_with_in(&points::OBJECT_TYPE_UPDATE, 13, undressed, table, mxcsr);
+        dressed_with_in(&points::VEHICLE_UPDATE, 11, dress_vehicle, table, mxcsr);
+        dressed_with_in(&points::OBJECT_TYPE_UPDATE, 11, dress_vehicle, table, mxcsr);
     }
 }
+
+/// No dressing past [`dress`]: [`dressed`] as a [`dressed_with_in`] root.
+fn undressed(_: &mut Guest, _: u32) {}

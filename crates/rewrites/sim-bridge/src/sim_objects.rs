@@ -30,17 +30,20 @@
 //! then, and on one call in 64 after.
 //!
 //! With [`OBJECTS`] off and [`WALK`] on (the default), only the walks
-//! `b6f10` and `b7060`, the per-object updates `bc470` and `bc820` with
-//! `bd090`, the type dispatchers, the wake leaves, and the unit (`c6b30`),
-//! biped (`dd360`, `dd990`) and weapon (`fdfb0`) callbacks with their
-//! trees (`engine::sim_objects::native_walk::TABLE`) are installed, and
-//! the Rust answers every segment. `bd090` or a type callback outside its
-//! float environment is the one refusal: the guest runs that call, counted
-//! as `float_env`. Every other body is the guest's: the other types'
-//! callbacks (the item level and the vehicle update too), damage,
-//! functions, lights and finalize. With the animation subsystem on, the
-//! aim update `c7840` is its (`native_walk::WITHOUT_AIM`), as in
-//! `table`.
+//! `b6f10`, `b7060` and `b7150`, the per-object updates `bc470` and
+//! `bc820` with `bd090`, the type dispatchers, the wake leaves, and the
+//! unit (`c6b30`), biped (`dd360`, `dd990`), weapon (`fdfb0`), item
+//! (`10b4d0`), vehicle (`efde0`), projectile (`f8de0`) and scenery
+//! (`10a2f0`) callbacks with their trees
+//! (`engine::sim_objects::native_walk::TABLE`) are installed, and the Rust
+//! answers every segment. `bd090` or a type callback outside its float
+//! environment is the one refusal: the guest runs that call, counted as
+//! `float_env`. Every other body is the guest's: the other types'
+//! callbacks, damage, functions and lights. Finalize records its
+//! `ObjectDeleted` events, so the tick's entry empties the buffer here too;
+//! the combat observers are the objects switch's. With the animation
+//! subsystem on, the aim update `c7840` is its (`native_walk::WITHOUT_AIM`),
+//! as in `table`.
 //!
 //! [`crate::sim_native::SimNative`] calls [`install`]: the bodies hold no
 //! state, so the feature's snapshot policy does not change. The arms'
@@ -161,7 +164,10 @@ const FUNCTION_ARM_RESET: &str = "objects: reset the function arm";
 /// call, counted, and the guest runs it; the caller's Rust frame resumes
 /// at its site. The walks and the per-object updates never refuse, so
 /// their hooks are marked [`hooks::HookRef::replaces_guest`] (`native_walk::REPLACES_GUEST`).
+/// Finalize's body appends the tick's `ObjectDeleted` events, so the
+/// buffer is emptied at the tick's entry ([`install_events_clear`]).
 fn install_walk(b: &mut Builder) {
+    install_events_clear(b);
     let table = walk_table(b.switches());
     for &body in table.bodies() {
         let point = body.point;
@@ -323,7 +329,7 @@ fn drive(
 
 /// The event observers. They write only the game thread's event buffer.
 fn install_events(b: &mut Builder) {
-    b.raw().observe_before(&points::GAME_TICK, "events: tick", |_| damage::tick_starts());
+    install_events_clear(b);
     b.raw()
         .observe_before(&points::DAMAGE_REPORT, "events: damage", |o| {
             if let (Some(report), Some(victim)) = (o.arg_u32("report"), o.arg_u32("victim")) {
@@ -334,6 +340,29 @@ fn install_events(b: &mut Builder) {
     b.raw().observe_before(&points::PLAYER_KILLED, "events: kill", |o| {
         damage::player_killed(&o.guest(), o.cpu.esp);
     });
+}
+
+/// The tick's event buffer is emptied at `GAME_TICK`'s entry, so at tick
+/// end it holds that tick's events.
+fn install_events_clear(b: &mut Builder) {
+    b.raw().observe_before(&points::GAME_TICK, EVENTS_CLEAR, |_| damage::tick_starts());
+}
+
+/// The observer [`install_events_clear`] adds.
+const EVENTS_CLEAR: &str = "events: tick";
+
+/// The chains [`install_walk`] adds to a plan: one per walk body and the
+/// event clear at `GAME_TICK`.
+#[cfg(test)]
+pub(crate) fn walk_chains() -> usize {
+    native_walk::TABLE.bodies().len() + 1
+}
+
+/// [`walk_chains`] with the animation subsystem on: its table lacks the
+/// aim update `c7840`.
+#[cfg(test)]
+pub(crate) fn walk_chains_without_aim() -> usize {
+    native_walk::WITHOUT_AIM.bodies().len() + 1
 }
 
 pub(crate) fn install_table(
@@ -659,18 +688,36 @@ mod tests {
             );
             assert!(owns(&Switches::defaults(), body.point.base));
         }
-        // The units', bipeds' and weapons' callbacks are the walk table's.
-        for point in [&points::UNIT_UPDATE, &points::BIPED_UPDATE, &points::BIPED_POST_UPDATE, &points::WEAPON_UPDATE] {
+        // Finalize never refuses; the multiplayer types' callbacks are the
+        // walk table's and refuse outside their float environment.
+        let finalize = plan.chains[&points::OBJECTS_FINALIZE.base].implement.as_ref().unwrap();
+        assert!(finalize.label == WALK_LABEL && finalize.replaces_guest());
+        for point in [
+            &points::UNIT_UPDATE,
+            &points::BIPED_UPDATE,
+            &points::BIPED_POST_UPDATE,
+            &points::WEAPON_UPDATE,
+            &points::ITEM_UPDATE,
+            &points::VEHICLE_UPDATE,
+            &points::PROJECTILE_UPDATE,
+            &points::SCENERY_UPDATE,
+            &points::UNIT_CLAMP_DIRECTION,
+            &points::UNIT_ANIMATION_STATE,
+        ] {
             let implement = plan.chains[&point.base].implement.as_ref().unwrap();
             assert_eq!(implement.label, WALK_LABEL, "{}", point.name);
             assert!(!implement.replaces_guest(), "{} refuses outside its float environment", point.name);
         }
-        // The other types (the item level of a weapon, the vehicle
-        // update), damage, functions, lights and finalize are the guest's.
+        // Finalize's deletion events are emptied at the tick's entry; the
+        // combat observers are the objects switch's.
+        let tick = &plan.chains[&points::GAME_TICK.base];
+        assert!(tick.observe_before.iter().any(|h| h.label == EVENTS_CLEAR));
+        let damage = plan.chains.get(&points::DAMAGE_REPORT.base);
+        assert!(damage.is_none_or(|c| !c.observe_before.iter().any(|h| h.label == "events: damage")));
+        // The other types, damage, functions and lights are the guest's.
         for point in [
-            &points::OBJECTS_FINALIZE,
-            &points::ITEM_UPDATE,
-            &points::VEHICLE_UPDATE,
+            &points::DEVICE_UPDATE,
+            &points::MACHINE_UPDATE,
             &points::OBJECT_DAMAGE_UPDATE,
             &points::OBJECT_FUNCTION_VALUE,
             &points::FUNCTION_EVALUATE,

@@ -710,8 +710,8 @@ mod tests {
         assert_eq!(walk.implement.as_ref().unwrap().label, ANIM);
         assert_eq!((walk.before.len(), walk.after.len()), (0, 0));
         // The walk table is on by default, without the aim update the
-        // subsystem owns.
-        let walk = engine::sim_objects::native_walk::WITHOUT_AIM.bodies().len();
+        // subsystem owns, with its event clear.
+        let walk = crate::sim_objects::walk_chains_without_aim();
         assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len() + walk);
         let aim = plan.chains[&points::UNIT_AIM_UPDATE.base].implement.as_ref().unwrap();
         assert_eq!(aim.label, ANIM);
@@ -732,8 +732,8 @@ mod tests {
         assert_eq!(pose.label, ANIM);
         assert_eq!(pose.continuation_sites().0, sim::unit::SITES);
         // The walk table is on by default, without the aim update the
-        // subsystem owns.
-        let walk = engine::sim_objects::native_walk::WITHOUT_AIM.bodies().len();
+        // subsystem owns, with its event clear.
+        let walk = crate::sim_objects::walk_chains_without_aim();
         assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len() + walk);
         let aim = plan.chains[&points::UNIT_AIM_UPDATE.base].implement.as_ref().unwrap();
         assert_eq!(aim.label, ANIM);
