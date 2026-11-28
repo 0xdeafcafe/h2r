@@ -33,10 +33,11 @@ impl d3d::ExternalPass for FogQuadPass {
         self.test = Some(DepthTest { w_buffered: true, range: clip.range, clamp: clip.clamp });
     }
 
-    // Its numbers are the call's and its depth test is frozen when issued,
-    // so a scene replay can record it again on its attachments.
+    // Its numbers are the call's and its depth test is frozen at the bind
+    // (after the device asks this), so a scene replay can record it again
+    // on its attachments.
     fn replays_scene(&self) -> bool {
-        self.test.is_some()
+        true
     }
 
     /// Drawn on every copy (the reference and the display).
@@ -92,7 +93,7 @@ impl d3d::ExternalPass for FogOtherPass {
     }
 
     fn replays_scene(&self) -> bool {
-        self.test.is_some()
+        true
     }
 
     fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
