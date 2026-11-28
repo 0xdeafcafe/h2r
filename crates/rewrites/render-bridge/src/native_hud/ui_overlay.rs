@@ -85,8 +85,9 @@ pub enum MenuRefusal {
     Frame,
     /// The screen's list did not match its claim earlier on the map.
     Mismatched,
-    /// The widget's draw is not read yet.
-    Widget(Unread),
+    /// The widget's draw is not read yet: the draw and the first check
+    /// that refused it.
+    Widget(Gap),
     /// A bitmap widget's draw the overlay does not make.
     Bitmap(bitmaps::Refusal),
     /// The overlay refused the widget's items.
@@ -97,7 +98,55 @@ pub enum MenuRefusal {
 
 impl From<Unread> for MenuRefusal {
     fn from(why: Unread) -> Self {
+        MenuRefusal::Widget(why.into())
+    }
+}
+
+impl From<Gap> for MenuRefusal {
+    fn from(why: Gap) -> Self {
         MenuRefusal::Widget(why)
+    }
+}
+
+/// A drawn widget the overlay does not read, named: the draw it is
+/// (`draw`, its `Ui` counter) and the first check on its path that
+/// refused it (`cause`, its `scene_kept_ui_widget_<cause>`). A gap with
+/// no finer name has the draw's own (`text`, `draw`, `model`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Gap {
+    pub draw: Unread,
+    pub cause: &'static str,
+}
+
+impl Gap {
+    pub const fn new(draw: Unread, cause: &'static str) -> Self {
+        Gap { draw, cause }
+    }
+
+    pub const fn text(cause: &'static str) -> Self {
+        Gap::new(Unread::Text, cause)
+    }
+
+    pub const fn class(cause: &'static str) -> Self {
+        Gap::new(Unread::Draw, cause)
+    }
+
+    pub const fn model(cause: &'static str) -> Self {
+        Gap::new(Unread::Model, cause)
+    }
+}
+
+impl From<Unread> for Gap {
+    fn from(draw: Unread) -> Self {
+        let cause = match draw {
+            Unread::Bitmap => "bitmap_state",
+            Unread::Shader => "shader",
+            Unread::Text => "text",
+            Unread::Model => "model",
+            Unread::Draw => "draw",
+            Unread::Unreadable => "unreadable",
+        };
+        Gap { draw, cause }
     }
 }
 
@@ -107,16 +156,28 @@ impl MenuRefusal {
             MenuRefusal::Frame => Ui::OverlayMenuRefusedFrame,
             MenuRefusal::Mismatched => Ui::OverlayMenuRefusedMismatched,
             // Read by `bitmaps`: never a reason of its own.
-            MenuRefusal::Widget(Unread::Bitmap) => Ui::OverlayMenuRefusedBitmapState,
+            MenuRefusal::Widget(Gap { draw: Unread::Bitmap, .. }) => Ui::OverlayMenuRefusedBitmapState,
             MenuRefusal::Bitmap(why) => why.counter(),
             // Drawn at its quad (`plan`): never a reason of its own.
-            MenuRefusal::Widget(Unread::Shader) => Ui::OverlayMenuShaderFallback,
-            MenuRefusal::Widget(Unread::Text) => Ui::OverlayMenuRefusedText,
-            MenuRefusal::Widget(Unread::Model) => Ui::OverlayMenuRefusedModel,
-            MenuRefusal::Widget(Unread::Draw) => Ui::OverlayMenuRefusedDraw,
-            MenuRefusal::Widget(Unread::Unreadable) => Ui::OverlayMenuRefusedUnreadable,
+            MenuRefusal::Widget(Gap { draw: Unread::Shader, .. }) => Ui::OverlayMenuShaderFallback,
+            MenuRefusal::Widget(Gap { draw: Unread::Text, .. }) => Ui::OverlayMenuRefusedText,
+            MenuRefusal::Widget(Gap { draw: Unread::Model, .. }) => Ui::OverlayMenuRefusedModel,
+            MenuRefusal::Widget(Gap { draw: Unread::Draw, .. }) => Ui::OverlayMenuRefusedDraw,
+            MenuRefusal::Widget(Gap { draw: Unread::Unreadable, .. }) => Ui::OverlayMenuRefusedUnreadable,
             MenuRefusal::Unlisted => Ui::OverlayMenuRefusedUnlisted,
             MenuRefusal::Pass => Ui::OverlayMenuRefusedPass,
+        }
+    }
+
+    /// Counts the refusal: its `Ui` counter and its
+    /// `scene_kept_ui_<kind>_<cause>`, a widget under its gap's name.
+    pub fn count(self) {
+        match self {
+            MenuRefusal::Widget(gap) if gap.draw != Unread::Shader => {
+                self.counter().count();
+                super::kept::count(super::kept::UiKind::Widget, gap.cause);
+            }
+            _ => super::kept::ui(self.counter()),
         }
     }
 }
@@ -257,7 +318,7 @@ fn entry_frame(mem: &dyn GuestRead, e: &ListEntry, viewport: u32) -> Result<UiFr
             if viewport == 0 || mem.read_u32(viewport) != Some(0)
                 || viewport.checked_add(4).and_then(|p| mem.read_u32(p))
                     != Some((walk::CANVAS[0] << 16) | walk::CANVAS[1]) {
-                return Err(Unread::Text.into());
+                return Err(Gap::text("text_viewport").into());
             }
             if draw == draws::BUTTON {
                 frame.draws.extend(list::button_art(mem, e.widget, viewport)?.map(UiDraw::Bitmap));
@@ -281,7 +342,10 @@ fn entry_frame(mem: &dyn GuestRead, e: &ListEntry, viewport: u32) -> Result<UiFr
                     }
                 }
             }
-            Err(why) => return Err(MenuRefusal::Widget(why)),
+            // A class whose draw the overlay does not know: a runtime
+            // class or a retail draw not read yet.
+            Err(Unread::Draw) => return Err(Gap::class("draw_class").into()),
+            Err(why) => return Err(why.into()),
         },
     };
     frame.draws.push(UiDraw::Screen(UiScreen {
@@ -320,13 +384,13 @@ fn plan_with_text(mem: &dyn GuestRead, list: &UiList, fonts: &dyn UiText, custom
             continue;
         }
         if custom(e.widget) {
-            refused.push((i as u32, MenuRefusal::Widget(Unread::Draw)));
+            refused.push((i as u32, Gap::class("draw_custom").into()));
             open = false;
             continue;
         }
         let items = match part(mem, e, list.user, fonts) {
             Ok(items) => items,
-            Err(MenuRefusal::Widget(Unread::Shader)) => {
+            Err(MenuRefusal::Widget(Gap { draw: Unread::Shader, .. })) => {
                 // A shader bitmap: the game draws it, and its quad is drawn
                 // from the overlay at the shader quad (`super::hud_overlay::
                 // menu_shader_quad`). It ends the run, so order holds.
@@ -521,7 +585,7 @@ pub(super) fn claim_list(mem: &dyn GuestMemory, list: &UiList, host: &dyn super:
     let custom = |widget| host.ui_custom_widget(mem, widget);
     let (claim, refused) = plan_with_text(&Ro(mem), list, fonts.as_deref().unwrap_or(&NoText), &custom);
     for (_, why) in refused {
-        super::kept::ui(why.counter());
+        why.count();
     }
     claim
 }
@@ -645,7 +709,7 @@ mod tests {
         let mem = widgets();
         // Entry 1 is past the far depth; entry 2 is text.
         let (claim, refused) = plan(&mem, &list(0x8000, [0.0, 5.0, 0.0, 0.0, 0.0]));
-        assert_eq!(refused, [(2, MenuRefusal::Widget(Unread::Text))]);
+        assert_eq!(refused, [(2, Gap::text("text_viewport").into())]);
         let runs: Vec<_> = claim.runs.iter().map(|r| r.entries.clone()).collect();
         assert_eq!(runs, [vec![0], vec![3, 4]]);
         assert_eq!(claim.run_of, [Some(0), None, None, Some(1), Some(1)]);
@@ -663,7 +727,7 @@ mod tests {
         let mut mem = widgets();
         mem.w(0x1200, NONE_VTABLE);
         let (claim, refused) = plan_with_text(&mem, &list(0x8000, [0.0; 5]), &NoText, &|w| w == 0x1200);
-        assert_eq!(refused, [(2, MenuRefusal::Widget(Unread::Draw))]);
+        assert_eq!(refused, [(2, Gap::class("draw_custom").into())]);
         assert_eq!(claim.run_of, [Some(0), Some(0), None, Some(1), Some(1)]);
     }
 

@@ -552,6 +552,8 @@ pub enum Unread {
     /// hud_overlay::menu_shader_quad`).
     Shader,
     /// A text widget: the string, its font and the interface's colour.
+    /// Its reader names the check that refused it
+    /// (`render_bridge::native_hud::ui_overlay::Gap`).
     Text,
     /// A model scene whose view the caller does not read: lights, more
     /// than 32 names, or no stage to draw the view.
@@ -727,8 +729,10 @@ fn widget(overlay: &mut Overlay, text: &dyn UiText, w: &UiWidget) -> Result<Opti
             if string.is_empty() {
                 return Ok(None);
             }
+            // A button glyph left by the substitution pass is a character
+            // to the line scanner (`0x0013f5a0`, type 4).
             let glyphs = text
-                .shape(*font, string, rect, *justify)
+                .shape_buttons(*font, string, rect, *justify)
                 .ok_or_else(|| format!("font {font} does not lay out the text"))?;
             let glyphs: Vec<_> = glyphs
                 .into_iter()
@@ -1103,6 +1107,43 @@ mod tests {
             assert_eq!(pair[0].color, [0.0, 0.0, 0.0, 1.0]);
             assert_eq!(pair[1].color, [1.0; 4]);
         }
+    }
+
+    /// Cells that lay a button glyph out as any other unit.
+    struct Buttons;
+
+    impl UiText for Buttons {
+        fn shape(&self, font: u16, text: &[u16], rect: [f32; 4], j: Justify) -> Option<Vec<OverlayGlyph>> {
+            Cells.shape(font, text, rect, j)
+        }
+
+        fn shape_buttons(&self, font: u16, text: &[u16], rect: [f32; 4], j: Justify) -> Option<Vec<OverlayGlyph>> {
+            self.shape(font, text, rect, j)
+        }
+    }
+
+    /// A label holding a button glyph lists when its fonts lay buttons
+    /// out, and is refused, with a note, when they do not.
+    #[test]
+    fn a_labels_button_glyph_is_a_character_to_fonts_that_lay_buttons_out() {
+        let mut label = w(6, 0.0, 0);
+        label.content = UiContent::Text {
+            font: 1,
+            text: vec![0x41, *BUTTON_GLYPHS.start()],
+            justify: Justify::Left,
+            color: [1.0; 4],
+            shadow: false,
+        };
+        let frame = UiFrame { draws: vec![UiDraw::Screen(UiScreen {
+            backdrop: None,
+            widgets: vec![label],
+        })] };
+        let mut o = Overlay::default();
+        assert!(draw_list(&frame, &Buttons, &mut o).iter().all(|l| l.note.is_none()));
+        let glyphs = o.glyphs_of(&o.items[0]);
+        assert_eq!(glyphs[1].index, u32::from(*BUTTON_GLYPHS.start()));
+        let mut o = Overlay::default();
+        assert!(draw_list(&frame, &Cells, &mut o).iter().any(|l| l.note.is_some()));
     }
 
     /// The UI order test (retire-d3d.md, R7's proof) on a synthetic
