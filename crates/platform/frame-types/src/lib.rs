@@ -1,7 +1,7 @@
 //! The frame types the guest's Direct3D device and `FrameScene` share
 //! (docs/graphics/framescene.md): the carried part of a frame by slot
-//! ([`carried`]), the render camera ([`camera`]) and the view and object
-//! keys ([`keys`]).
+//! ([`carried`]), the render camera ([`camera`]), the view and object
+//! keys ([`keys`]) and the display's gamma ramp ([`display`]).
 //!
 //! `d3d` records the carried part and classifies its draws against the
 //! scene's cameras; `frame_scene` holds them in the sealed scene and
@@ -10,6 +10,7 @@
 
 pub mod camera;
 pub mod carried;
+pub mod display;
 pub mod keys;
 
 pub use camera::{Camera, D24_SCALE, Mat4, RenderCamera, mul, transform, w_depth};

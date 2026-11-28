@@ -854,6 +854,11 @@ pub(crate) fn register_late_for_profile(
     features
         .add(&render_bridge::render_timing::RenderTiming::new())
         .map_err(|e| anyhow::anyhow!("render timing: {e}"))?;
+    // The view begin (brightness gamma ramp) and the vblank install, in Rust
+    // (docs/graphics/d3d-device.md, "Brightness and gamma"). Every run.
+    features
+        .add(&render_bridge::display::Display)
+        .map_err(|e| anyhow::anyhow!("display: {e}"))?;
     // The frame step leaves the game-state arena as it found it, under
     // impl.sim.frame-guard (off; docs/engine/sim-render-split.md, "The proof").
     features

@@ -1160,6 +1160,21 @@ points! { ALL;
     /// frame step and the map load's two frame loops (`0x00163a1a`,
     /// `0x00163acd`).
     RENDER_OUTSIDE_VIEW @ 0x0022_32a0: [fn() ret 0]; "docs/graphics/retire-d3d-display.md";
+    /// The view begin (`render_views` `0x0002b5d0` and the outside-view
+    /// frames `0x0002c8a0`, `0x0002ca00`): copies the 0x18-byte record at EAX
+    /// to `0x00485898`, sets the clip range, steps the lightmap cycle and the
+    /// resource upkeep, and loads the brightness gamma ramp. `ret`.
+    /// `render_bridge::display` implements it.
+    RENDER_VIEW_BEGIN @ 0x0001_2a50: [fn(record: eax) ret 0]; "docs/graphics/d3d-device.md";
+    /// The vblank install (from `game_main` through `0x0012b690`): the
+    /// frame wait's state zeroed and the vblank callback `0x0012b2a0` set.
+    /// No arguments, `ret`. `render_bridge::display` implements it.
+    VBLANK_INSTALL @ 0x0012_b070: [fn() ret 0]; "docs/graphics/d3d-device.md";
+    /// The display persist (from the vblank install's caller `0x12b450`):
+    /// the loading state `0x12bf40`, then `0x6cb60` unless the argument is 4,
+    /// then `D3DDevice_PersistDisplay`; `ret 4`. `render_bridge::display`
+    /// implements it without the device call.
+    DISPLAY_PERSIST @ 0x0022_376b: [fn(mode: stack 0) ret 4]; "docs/graphics/d3d-device.md";
     /// The present: the optional readback (`readback` 0 asks none), the
     /// border `0x00013d80`, the swap, the display latch and the present
     /// counter; `ret 8`. Callers: the frame step (`0x00223296`) and three

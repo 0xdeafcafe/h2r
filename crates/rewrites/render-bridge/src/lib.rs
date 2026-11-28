@@ -92,6 +92,7 @@ pub mod native_world_layers;
 pub mod open_shader;
 pub mod cut;
 pub mod frame_step;
+pub mod display;
 pub mod frame_wait;
 pub mod device_state;
 pub mod guest_entries;

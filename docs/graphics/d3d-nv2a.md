@@ -199,7 +199,7 @@ The boot ([BOOT.md](../runtime/BOOT.md)) runs past all of these to the menu and 
 | Inline arrays (`0x4b220`'s draw through BeginPush and SetStateVB, both native) | drain; see below |
 | Same-size targets (`0x3f7b30`) | implemented; tests for it, the commit's kept bits and the internal references are in `tests/round6.rs` |
 | Resource destruction (`0x3fb520`) | the device does its part and the original runs after the entry ([d3d-device.md](d3d-device.md), [Resource destruction](d3d-device.md#resource-destruction)) |
-| Gamma ramp (`0x3ff5c6`, from the brightness update at `0x12d08`) | implemented ([d3d-device.md](d3d-device.md), [Gamma ramp](d3d-device.md#gamma-ramp)) |
+| Gamma ramp (`0x3ff5c6`, from the brightness update at `0x12d08`) | replaced in Rust ([d3d-device.md](d3d-device.md), [Brightness and gamma](d3d-device.md#brightness-and-gamma)) |
 
 **Inline arrays.** `INLINE_ARRAY` (`0x1818`) words between `BEGIN_END` words collect in the immediate-mode state (`ImmediateDraw::inline`, at most `pushbuf::MAX_INLINE_WORDS` per primitive, never mixed with vertex-data writes), and the `End` draws them against the pushed state. Counted in `Stats::inline_array_draws`.
 

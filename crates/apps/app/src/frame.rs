@@ -333,11 +333,14 @@ impl FrameSink {
     }
 
     /// Publishes a frame the frame owner presented ([`gfx::Presenter::sink`]):
-    /// opaque, with this sink's frame marks, counted as a made frame.
+    /// opaque, with this sink's frame marks and the display's gamma ramp,
+    /// counted as a made frame.
     /// Errors are printed (first ten) and the frame is skipped.
     pub fn submit_presented(&mut self, view: &wgpu::TextureView, size: (u32, u32)) {
         let marks = self.mark_source.as_mut().map_or(FrameMarks::Raw, |source| source());
-        match self.submit_encoded(size, true, view, None, [0., 0., 1., 1.], marks, |_| Ok(())) {
+        // The brightness setting's ramp (the game's view begin builds it).
+        let gamma = gfx::display_gamma();
+        match self.submit_encoded(size, true, view, gamma.as_ref(), [0., 0., 1., 1.], marks, |_| Ok(())) {
             Ok(_) => {
                 self.shared.made.fetch_add(1, Ordering::Relaxed);
             }
