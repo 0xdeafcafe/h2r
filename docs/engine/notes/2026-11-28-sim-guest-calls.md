@@ -32,7 +32,7 @@ which.
 | `eng/sim_tick.rs:417` | `1df500`, `138e40`, `138eb0`, `226050`, `13c680`, `123430`, `225730`, `153950` | phases 19 to 25, 27 | lifted |
 | `eng/sim_tick.rs:417` | `165dc1`, `1917b2` | phases 26 and 28, first person and HUD (presentation) | lifted; the first-person pose and filters are Rust ports |
 | `eng/ai_update.rs:111` | `1c81c0`, `201c80`, `268510`, `1e2f50`, `20fb30`, `293830` | the six AI systems | lifted ([AI function list](2026-11-28-ai-function-list.md)) |
-| `eng/post_game.rs:165` | `15c550` | the round-state step: returns unless `G+0xc04` differs from the state `G+0x6c` | lifted |
+| `eng/post_game.rs:165` | `15c550` | the round-state step: returns unless `G+0xc04` differs from the state `G+0x6c` | **ported**: `engine::round_state::run`; a change still calls the leaves below |
 | `eng/hs_update.rs:106` | `1deed0` | the object-list sweep: frees unreferenced lists and their node chains | **ported**: `engine::hs_object_lists::sweep` |
 | `eng/hs_update.rs:103` | `209850` | `HS_THREAD_EXECUTE`, once per runnable script thread | lifted (the Rust VM in `crates/formats/hs` is differential-only) |
 | `eng/tick_poses.rs:130` | `bd090` | `OBJECT_NODE_MATRICES`, once per object still dirty at the tick's end | Rust (`sim_objects::pose::node_matrices`) |
@@ -50,6 +50,7 @@ which.
 | `eng/post_game.rs:165` | `15dd10` | the end's finish | lifted |
 | `eng/post_game.rs:165` | `19eb90` | `GAME_EVENT_POST`, the `0x22`-byte end event | Rust (`sim_seats::event`) |
 | `eng/post_game.rs:165` | `162030`, `15c6f0`, `196430`, `196390` | the post-game screen's flags and its quiet and loud steps | lifted |
+| `eng/round_state.rs` | `a7810`, `162030`, `157ae0`, `19f240`, `b58c0`, the engine vtable `+0x90` | a round state change: the round's end, the screen flag, the round reset, the player iterator, the object flags, the engine's state virtual | lifted |
 
 ## Other lanes and not the sim
 
@@ -73,7 +74,7 @@ owner's design, not this table's.
 
 | Target | Size | Notes |
 |---|---|---|
-| `15c550` | `0x15c550..0x15c6ec`, three state arms | a frame `iterator` at `esp+0xc` for `19f240`, the engine vtable `+0x90`, `a7810`, `162030`, `157ae0`, `b58c0` |
+| `19f240` | the player iterator, `0x19f240..` | the players pool walk with the `+2 & 2` filter; `sim_seats::event` calls it too |
 | `682e0`, `683a0`, `684e0` | the record build calls `69260`, the input and network gather | theater and co-op hook `683a0`; one port with them |
 | `3212d6` | the CRT | the lifted CPU's x87 state; no `Cx` access to it |
 | the lifted phases | whole subsystems | each needs its own map, as the AI and players notes give |

@@ -60,6 +60,7 @@ pub mod planar_fog;
 pub mod render;
 pub mod render_census;
 pub mod render_loop;
+pub mod round_state;
 pub mod scene_list_math;
 pub mod screen_effect;
 pub mod screen_effects;
