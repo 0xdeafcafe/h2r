@@ -544,6 +544,7 @@ impl Table {
             None => &guest_levels,
         };
         if levels.refused().is_none() {
+            self.sounds.free_unrefreshed_loops();
             self.sounds.step_loops(&mut rng, tags, levels, tick);
         }
         self.ledger.level_faults += guest_levels.faults.get();
@@ -758,6 +759,7 @@ impl Table {
                 0
             }
             (_, Some(h)) if !stopping => {
+                self.sounds.loop_touch(h, call.flags & 2 != 0);
                 if !call.keeps_source() {
                     self.sounds.loop_set_source(h, call.source);
                 }
@@ -770,7 +772,7 @@ impl Table {
                     return 0;
                 }
                 match self.sounds.loop_start(rng, tags, levels, call.tag, owner, call.source, call.flags & 1 != 0, tick) {
-                    Ok(_) => {}
+                    Ok(h) => self.sounds.loop_touch(h, call.flags & 2 != 0),
                     Err(LoopError::UnknownTag(_)) => self.ledger.refused_unknown_tag += 1,
                     Err(LoopError::TooManyTracks(_)) => self.ledger.refused_unreadable += 1,
                     Err(LoopError::Full) => self.ledger.loops_full += 1,

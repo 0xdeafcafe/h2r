@@ -382,3 +382,40 @@ fn a_track_sound_plays_at_its_loops_source_as_the_owner_moves_it() {
     let intro = s.loops().get(h).unwrap().tracks[0].primary.unwrap();
     assert_eq!(s.sources(), [(intro, moved), (shot, SourceParams::default())]);
 }
+
+#[test]
+fn a_loop_its_owner_left_is_freed_and_its_sounds_play_out() {
+    let t = tags(0, 1, vec![]);
+    let mut s = Sounds::new();
+    let mut rng = Rng::new(1);
+    let h = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    let intro = s.loops().get(h).unwrap().tracks[0].primary.unwrap();
+    // Started this tick: reached.
+    assert!(s.free_unrefreshed_loops().is_empty());
+    tick(&mut s, &mut rng, &t, 1);
+    s.loop_touch(h, false);
+    assert!(s.free_unrefreshed_loops().is_empty(), "reached again");
+    // The next tick nothing reaches it: freed, and the in plays to its end.
+    assert_eq!(s.free_unrefreshed_loops(), [h]);
+    assert!(s.loops().get(h).is_none());
+    assert!(s.live(intro));
+    let events = tick(&mut s, &mut rng, &t, 3);
+    assert_eq!(order(&events), [("end", intro)], "no next segment");
+    assert!(s.instances().is_empty());
+}
+
+#[test]
+fn a_kept_loop_lives_while_a_sound_of_it_plays() {
+    let t = tags(0, 1, vec![]);
+    let mut s = Sounds::new();
+    let mut rng = Rng::new(1);
+    let h = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    s.loop_touch(h, true);
+    assert!(s.free_unrefreshed_loops().is_empty());
+    assert!(s.free_unrefreshed_loops().is_empty(), "flag bit 1 and the in plays");
+    assert!(s.loops().get(h).is_some());
+    // A stopping loop is left to its outs and its own free.
+    assert!(s.loop_stop(&mut rng, &t, &Flat(0.0), h, 1, &mut NullOwners));
+    s.loops.get_mut(h).unwrap().keep = false;
+    assert!(s.free_unrefreshed_loops().is_empty());
+}

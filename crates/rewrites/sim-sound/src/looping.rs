@@ -132,6 +132,13 @@ pub struct Looping {
     pub alternate: bool,
     /// Stopped: the tracks play their outs and fade, then the loop is freed.
     pub stopping: bool,
+    /// Its owner reached it this tick (`0x21a250` stamps `+0x53` with the
+    /// sound globals' frame byte `+0x7f`). One its owner left is freed by
+    /// [`Sounds::free_unrefreshed_loops`].
+    pub touched: bool,
+    /// `+0x50` bit 1, the last call's flag bit 1: a loop its owner left
+    /// lives on while a sound of it plays.
+    pub keep: bool,
     pub tracks: Vec<Track>,
     /// `+0x58`: per detail sound, the mixer clock (ms) it next plays after.
     pub details: Vec<i32>,
@@ -210,6 +217,8 @@ impl Sounds {
             source,
             alternate,
             stopping: false,
+            touched: true,
+            keep: false,
             tracks: vec![Track::default(); def.tracks.len()],
             details: vec![0; def.details.len()],
         };
@@ -321,6 +330,35 @@ impl Sounds {
     pub fn loop_find(&self, tag: TagIndex, owner: u32) -> Option<Handle> {
         let of = || self.loops.iter().filter(move |(_, l)| l.tag == tag && l.owner == owner);
         of().find(|(_, l)| !l.stopping).or_else(|| of().next()).map(|(h, _)| h)
+    }
+
+    /// Its owner reached the loop this tick (`0x21a250`'s stamp, `0x21a521`),
+    /// with the call's flag bit 1 (`0x21abb0`).
+    pub fn loop_touch(&mut self, handle: Handle, keep: bool) {
+        if let Some(l) = self.loops.get_mut(handle) {
+            l.touched = true;
+            l.keep = keep;
+        }
+    }
+
+    /// `0x21b0e0`'s first test, in slot order, before the loops step: a
+    /// playing loop its owner did not reach since the last call is freed
+    /// (`0x21b070`), unless it keeps (flag bit 1) and a sound of it plays.
+    /// Its sounds play out on their own end ticks; it starts no more. Then
+    /// every loop waits for its owner again. Freed loops' handles return.
+    pub fn free_unrefreshed_loops(&mut self) -> Vec<Handle> {
+        let mut freed = Vec::new();
+        for handle in self.loops.handles() {
+            let Some(l) = self.loops.get_mut(handle) else { continue };
+            let sounding = l.tracks.iter().any(|t| !t.members.is_empty());
+            if !l.stopping && !l.touched && !(l.keep && sounding) {
+                let _ = self.loops.free(handle);
+                freed.push(handle);
+                continue;
+            }
+            l.touched = false;
+        }
+        freed
     }
 
     /// A loop's new source: the sounds it admits from here on play there.
@@ -485,7 +523,7 @@ impl Record for Looping {
         for word in self.source.0 {
             w.u32(word);
         }
-        w.u8(u8::from(self.alternate) | (u8::from(self.stopping) << 1));
+        w.u8(u8::from(self.alternate) | (u8::from(self.stopping) << 1) | (u8::from(self.touched) << 2) | (u8::from(self.keep) << 3));
         w.u8(self.tracks.len() as u8);
         for t in &self.tracks {
             w.u8(t.current.0);
@@ -511,7 +549,7 @@ impl Record for Looping {
             *word = r.u32()?;
         }
         let flags = r.u8()?;
-        if flags & !3 != 0 {
+        if flags & !0xf != 0 {
             return Err(bad("loop flags"));
         }
         let count = usize::from(r.u8()?);
@@ -529,7 +567,17 @@ impl Record for Looping {
         }
         let n = r.u16()?;
         let details = (0..n).map(|_| r.u32().map(|v| v as i32)).collect::<Result<_, _>>()?;
-        Ok(Self { tag, owner, source, alternate: flags & 1 != 0, stopping: flags & 2 != 0, tracks, details })
+        Ok(Self {
+            tag,
+            owner,
+            source,
+            alternate: flags & 1 != 0,
+            stopping: flags & 2 != 0,
+            touched: flags & 4 != 0,
+            keep: flags & 8 != 0,
+            tracks,
+            details,
+        })
     }
 }
 
