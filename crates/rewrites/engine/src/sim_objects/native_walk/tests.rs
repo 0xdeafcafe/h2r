@@ -17,29 +17,39 @@ fn of(entry: u32) -> Stats {
 }
 
 #[test]
-fn the_table_holds_the_walks_bd090_and_the_biped_and_weapon_callbacks_and_nothing_else() {
+fn the_table_holds_the_walks_bd090_and_the_multiplayer_type_callbacks_and_nothing_else() {
     assert_eq!(TABLE.bodies().len(), POINTS.len() + TYPES.len());
     for point in POINTS.iter().chain(TYPES) {
         assert!(TABLE.owns(point.base), "{}", point.name);
     }
     assert!(POINTS.iter().all(|p| !TYPES.iter().any(|t| t.base == p.base)), "listed once");
-    for point in [&points::BIPED_UPDATE, &points::BIPED_POST_UPDATE, &points::WEAPON_UPDATE] {
-        assert!(TYPES.iter().any(|t| t.base == point.base), "{}", point.name);
-    }
-    // Every body the biped and weapon trees fuse in the full table, but
-    // the unit leaves, is in this one: a call between two of them stays
-    // Rust.
-    for other in [
-        &points::OBJECTS_FINALIZE,
-        &points::UNIT_UPDATE,
-        &points::UNIT_CLAMP_DIRECTION,
-        &points::UNIT_ANIMATION_STATE,
+    assert!(POINTS.iter().any(|p| p.base == points::OBJECTS_FINALIZE.base));
+    for point in [
+        &points::BIPED_UPDATE,
+        &points::BIPED_POST_UPDATE,
+        &points::WEAPON_UPDATE,
         &points::ITEM_UPDATE,
         &points::VEHICLE_UPDATE,
+        &points::PROJECTILE_UPDATE,
+        &points::SCENERY_UPDATE,
+        &points::UNIT_CLAMP_DIRECTION,
+        &points::UNIT_ANIMATION_STATE,
+    ] {
+        assert!(TYPES.iter().any(|t| t.base == point.base), "{}", point.name);
+    }
+    // Every body the type trees fuse in the full table, but the unit
+    // level, is in this one: a call between two of them stays Rust.
+    for other in [
+        &points::UNIT_UPDATE,
+        &points::DEVICE_UPDATE,
+        &points::MACHINE_UPDATE,
+        &points::CRATE_UPDATE,
+        &points::CREATURE_UPDATE,
         &points::OBJECT_DAMAGE_UPDATE,
         &points::OBJECT_FUNCTION_VALUE,
         &points::OBJECT_CHANGE_COLORS,
         &points::OBJECT_BOUNDS,
+        &points::OBJECT_ROOT_VELOCITY,
         &points::LIGHTS_UPDATE,
     ] {
         assert!(!TABLE.owns(other.base), "{} is the guest's", other.name);

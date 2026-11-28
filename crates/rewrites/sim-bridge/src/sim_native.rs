@@ -709,8 +709,8 @@ mod tests {
         let walk = &plan.chains[&points::ANIM_GRAPH_MATRICES.base];
         assert_eq!(walk.implement.as_ref().unwrap().label, ANIM);
         assert_eq!((walk.before.len(), walk.after.len()), (0, 0));
-        // The walk table is on by default.
-        let walk = engine::sim_objects::native_walk::TABLE.bodies().len();
+        // The walk table is on by default, with its event clear.
+        let walk = crate::sim_objects::walk_chains();
         assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len() + walk);
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 
@@ -728,8 +728,8 @@ mod tests {
         let pose = plan.chains[&points::SIM_UNIT_POSE.base].implement.as_ref().unwrap();
         assert_eq!(pose.label, ANIM);
         assert_eq!(pose.continuation_sites().0, sim::unit::SITES);
-        // The walk table is on by default.
-        let walk = engine::sim_objects::native_walk::TABLE.bodies().len();
+        // The walk table is on by default, with its event clear.
+        let walk = crate::sim_objects::walk_chains();
         assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len() + walk);
 
         // The retired per-function switches are gone from the table.
