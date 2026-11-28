@@ -4,7 +4,7 @@ Performance tooling: a guest-aware sampling profiler, timeline capture and the b
 
 ## Where it sits
 
-`tools` domain. Depends on `runtime`, `kernel`, `d3d`, `gfx`, `timeline`, `emit`, `lift` and `ir`. Used by `game`, `boot` and `cli`.
+`tools` domain. Depends on `runtime`, `kernel`, `gfx`, `timeline`, `emit`, `lift` and `ir`. Used by `game`, `boot` and `cli`.
 
 ## Layout
 
@@ -12,7 +12,7 @@ Performance tooling: a guest-aware sampling profiler, timeline capture and the b
 - `src/symbolize.rs`: generated code back to guest functions.
 - `src/remote.rs`: profiles from a device that cannot symbolise them.
 - `src/bench.rs`, `src/budget.rs`: benchmarks and budgets.
-- `src/hotloop.rs`, `src/pushbuf.rs`: synthetic guest loops and a synthetic push-buffer frame; no retail bytes.
+- `src/hotloop.rs`: synthetic guest loops; no retail bytes.
 - `src/cli.rs`: `h2 profile` and `h2 bench`.
 
 ## Tests

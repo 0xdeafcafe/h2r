@@ -175,8 +175,7 @@ pub enum ReservationCause {
     Consumed,
     /// The device could not bind the pass's targets or pipeline.
     Unbound,
-    /// A per-range draw (`d3d::NativeRefusal`): the device is not at a
-    /// producer boundary.
+    /// A per-range draw not at a producer boundary.
     Boundary,
     /// The index range's geometry did not resolve.
     Geometry,

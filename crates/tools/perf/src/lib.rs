@@ -11,7 +11,7 @@
 //! - [`remote`]: profiles from a device that can't symbolise them (the
 //!   Xbox app): a module-relative dump there, resolved on the Mac against
 //!   the deployed binaries.
-//! - [`bench`]: repeatable scenarios ([`hotloop`], [`pushbuf`], [`boot`]),
+//! - [`bench`]: repeatable scenarios ([`hotloop`], [`boot`]),
 //!   results as JSON, and a regression comparison.
 //! - [`budget`]: a timeline trace split into per-frame self time per
 //!   span, with logical time and scheduler counts (`h2 profile budget`).
@@ -23,7 +23,6 @@ pub mod budget;
 pub mod cli;
 pub mod hotloop;
 pub mod profile;
-pub mod pushbuf;
 pub mod remote;
 pub mod sample;
 pub mod symbolize;
@@ -36,7 +35,6 @@ pub fn scenarios(disc: Option<std::path::PathBuf>) -> Vec<Box<dyn bench::Scenari
     for h in hotloop::HotLoop::all() {
         v.push(Box::new(h));
     }
-    v.push(Box::new(pushbuf::PushbufFrame::default()));
     v.push(Box::new(boot::MenuHold::new(disc)));
     v
 }

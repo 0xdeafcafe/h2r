@@ -204,7 +204,7 @@ pub static INPUT: Gauge = Gauge::new();
 pub enum Role {
     /// The guest's runner thread (generated code, kernel, HLE, d3d).
     Game = 0,
-    /// The d3d render thread (`d3d::ThreadedBackend`).
+    /// The render thread (`native_render::FrameOwner`).
     Render = 1,
     /// The shell's UI thread (window events, compositor, present).
     Ui = 2,

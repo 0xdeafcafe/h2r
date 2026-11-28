@@ -10,7 +10,6 @@ mem-watch.workspace = true
 timeline = { path = "../../runtime/timeline" }
 runtime.workspace = true
 kernel = { path = "../../runtime/kernel" }
-d3d = { path = "../../platform/d3d" }
 gfx = { path = "../../platform/gfx" }
 emit.workspace = true
 lift.workspace = true

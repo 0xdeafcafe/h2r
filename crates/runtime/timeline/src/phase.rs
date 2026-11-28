@@ -182,11 +182,9 @@ pub enum Counter {
     MapSlotVfsWaitNs,
     /// Foreground time checking the mounted sources of inactive map slots.
     MapSlotCheckNs,
-    /// Guest calls of D3D entry points that ran (`d3d::runtime_glue`), on
-    /// any thread. Always on (docs/graphics/retire-d3d.md, slice R0).
+    /// Guest calls of D3D entry points that ran, on any thread.
     D3dEntries,
-    /// Guest draws `d3d` handed to its backend: what no native replacement
-    /// claimed (`d3d::device::backend_draws`'s growth). Always on.
+    /// Guest draws no native replacement claimed. Nothing counts it now.
     D3dResidualDraws,
     /// Push-buffer words `d3d` decoded, counted once per drain. Always on.
     D3dPushWords,
@@ -195,8 +193,8 @@ pub enum Counter {
     NativeInlineFull,
     /// Native inline draws that took a same-state run's fast path.
     NativeInlineFast,
-    /// Queued native admissions the render thread prepared
-    /// (`d3d::threaded::queued_runs`), and the draws in them.
+    /// Queued native admissions the render thread prepared, and the draws
+    /// in them. Nothing counts them now.
     QueuedRuns,
     QueuedRunDraws,
 }
