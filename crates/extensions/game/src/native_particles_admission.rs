@@ -17,7 +17,7 @@ use native_render::effect_geometry::{self, DynamicCall};
 use native_render::effect_immediate::{self, Site};
 use native_render::flares;
 use native_render::particle_gpu::*;
-use native_render::particles::{self, Declaration, DrawIdentity, Vertex};
+use native_render::particles::{self, DrawIdentity, Vertex};
 
 use crate::native_lights_glue::DeviceMemory;
 use timeline::native::{Metric, Stage};
@@ -74,7 +74,7 @@ fn producer_label(producer: Producer) -> &'static str {
 /// Every `Refused::Geometry` reason with the counter name it logs under:
 /// `Particle/Geometry/primitive`. A reason not listed counts as `Geometry`
 /// (the test below keeps the list whole).
-const GEOMETRY_REASONS: [(&str, &str); 22] = [
+const GEOMETRY_REASONS: [(&str, &str); 20] = [
     ("indexed", "Geometry/indexed"),
     ("pretransformed", "Geometry/pretransformed"),
     ("layouts", "Geometry/layouts"),
@@ -87,8 +87,6 @@ const GEOMETRY_REASONS: [(&str, &str); 22] = [
     ("data_len", "Geometry/data_len"),
     ("data_type", "Geometry/data_type"),
     ("inputs", "Geometry/inputs"),
-    ("corner_vertices", "Geometry/corner_vertices"),
-    ("corner_compare", "Geometry/corner_compare"),
     ("corner_differs", "Geometry/corner_differs"),
     ("unpublished", "Geometry/unpublished"),
     ("data_differs", "Geometry/data_differs"),
@@ -468,10 +466,7 @@ fn geometry(
             if draw.shader.provided_inputs != 1 {
                 return Err(Refused::Geometry("inputs"));
             }
-            let expected = call
-                .emission
-                .vertices(Declaration::CornerShort4, draw.shader.vertex_defaults)
-                .map_err(|_| Refused::Geometry("corner_vertices"))?;
+            let expected = call.emission.vertices(draw.shader.vertex_defaults);
             let actual: [Vertex; 4] = std::array::from_fn(|corner| {
                 let mut registers = draw.shader.vertex_defaults;
                 registers[0] = std::array::from_fn(|i| {
@@ -480,10 +475,7 @@ fn geometry(
                 });
                 Vertex { registers }
             });
-            if particles::differing_registers(&expected, &actual)
-                .map_err(|_| Refused::Geometry("corner_compare"))?
-                != 0
-            {
+            if particles::differing_registers(&expected, &actual) != 0 {
                 return Err(Refused::Geometry("corner_differs"));
             }
             Ok((expected.to_vec(), None, Cow::Borrowed(&particles::QUAD_INDICES)))

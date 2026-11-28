@@ -104,9 +104,14 @@ impl GuestRead for Read<'_> {
 fn emit(mem: &mut dyn GuestMemory, esp: u32, ebx: u32) -> bool {
     CALLS.fetch_add(1, Ordering::Relaxed);
     Stage::Particles.count(Metric::WalkExamined, 1);
-    let Ok(emission) = particles::read_emission(&Read(mem), esp, ebx) else {
-        Stage::Particles.count(Metric::WalkRefusedInputs, 1);
-        return false;
+    let emission = match particles::read_emission(&Read(mem), esp, ebx) {
+        Ok(Some(emission)) => emission,
+        // The gate off: the guest's emitter draws nothing either.
+        Ok(None) => return false,
+        Err(_) => {
+            Stage::Particles.count(Metric::WalkRefusedInputs, 1);
+            return false;
+        }
     };
     let Ok(return_address) = mem.u32(esp) else {
         return false;
@@ -136,9 +141,7 @@ fn refused_name(r: particles::Refused) -> &'static str {
         particles::Refused::AddressOverflow => "address",
         particles::Refused::Disabled => "disabled",
         particles::Refused::AttributeRegister => "register",
-        particles::Refused::Declaration => "declaration",
         particles::Refused::Geometry => "geometry",
-        particles::Refused::Identity => "identity",
     }
 }
 
@@ -150,8 +153,8 @@ fn refused_name(r: particles::Refused) -> &'static str {
 pub(crate) fn draw_emission(mem: &mut dyn GuestMemory, esp: u32, ebx: u32) -> Result<bool, &'static str> {
     CALLS.fetch_add(1, Ordering::Relaxed);
     let emission = match particles::read_emission(&Read(mem), esp, ebx) {
-        Ok(e) => e,
-        Err(particles::Refused::Disabled) => return Ok(false),
+        Ok(Some(e)) => e,
+        Ok(None) => return Ok(false),
         Err(r) => return Err(refused_name(r)),
     };
     let return_address = mem.u32(esp).map_err(|_| "unreadable")?;

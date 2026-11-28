@@ -703,7 +703,7 @@ params; any field is refused with `invalid params`.
   stride), `attributes` (not exactly one for a particle),
   `attribute_slot` (offset or register), `primitive`, `vertex_count`,
   `data_len`, `data_type`, `inputs` (the shader's provided registers),
-  `corner_vertices`, `corner_compare`, `corner_differs` (the stream
+  `corner_differs` (the stream
   differs from the published corner values), `unpublished`,
   `data_differs` (a dynamic call's bytes), `indices`, and the ribbon
   bytes' `raw_bytes`, `raw_attributes` and `raw_vertex_count`.
