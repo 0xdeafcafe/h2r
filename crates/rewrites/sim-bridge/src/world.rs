@@ -8,7 +8,7 @@ use std::any::Any;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
-use sim_objects::{LightTable, ObjectTable};
+use sim_objects::{EffectTable, LightTable, ObjectTable};
 use sim_sound::instances::Sounds;
 use sim_world::{RestoreError, Store, World, kind};
 
@@ -63,6 +63,7 @@ pub fn import_objects(m: &(impl guest_layout::Mem + ?Sized), objects: &Mutex<Obj
     };
     *lock_objects(objects) = table;
     import_lights(m, &LIGHT_TABLE);
+    import_effects(m, &EFFECT_TABLE);
 }
 
 /// The shared light table: the pool is the truth for the lights array, and
@@ -114,6 +115,54 @@ impl Store for LightStore {
     }
 }
 
+/// The shared effect table: the pool is the truth for the effects array
+/// (`[4ea93c]`), and the world saves it in its effects section.
+pub type SharedEffects = Arc<Mutex<EffectTable>>;
+
+/// The process's effect table.
+pub static EFFECT_TABLE: LazyLock<SharedEffects> = LazyLock::new(SharedEffects::default);
+
+pub fn lock_effects(t: &Mutex<EffectTable>) -> MutexGuard<'_, EffectTable> {
+    t.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Read the guest's effects array into `effects`, as [`import_lights`]
+/// does for the lights: no map loaded leaves an empty table.
+pub fn import_effects(m: &(impl guest_layout::Mem + ?Sized), effects: &Mutex<EffectTable>) {
+    let table = match EffectTable::import(m) {
+        Ok(Some(t)) => t,
+        Ok(None) | Err(sim_objects::ImportError::Fault(_)) => EffectTable::default(),
+        Err(e) => panic!("effects: the guest's effects array is corrupt: {e:?}"),
+    };
+    *lock_effects(effects) = table;
+}
+
+/// The effect table as the world's effects store, like [`LightStore`].
+pub struct EffectStore(pub SharedEffects);
+
+impl Store for EffectStore {
+    fn kind(&self) -> u16 {
+        kind::EFFECTS
+    }
+    fn version(&self) -> u16 {
+        EffectTable::VERSION
+    }
+    fn encode(&self) -> Vec<u8> {
+        lock_effects(&self.0).encode()
+    }
+    fn section_hash(&self) -> u64 {
+        lock_effects(&self.0).section_hash()
+    }
+    fn decode(&self, version: u16, body: &[u8]) -> Result<Box<dyn Any + Send>, RestoreError> {
+        Ok(Box::new(lock_effects(&self.0).decode(version, body)?))
+    }
+    fn install(&mut self, state: Box<dyn Any + Send>) {
+        if let Ok(table) = state.downcast::<EffectTable>() {
+            *lock_effects(&self.0) = *table;
+        }
+    }
+}
+
 /// The object table as the world's objects store. A restore puts the
 /// decoded pool in the table; the guest arena comes back with the machine
 /// snapshot it was taken with, so the two halves are one checkpoint
@@ -155,7 +204,13 @@ pub fn with_tables(sounds: Shared, objects: SharedObjects) -> World {
 
 /// A world that holds `sounds`, `objects` and `lights` as its stores.
 pub fn with_stores(sounds: Shared, objects: SharedObjects, lights: SharedLights) -> World {
+    with_all(sounds, objects, lights, SharedEffects::default())
+}
+
+/// A world that holds `sounds`, `objects`, `lights` and `effects`.
+pub fn with_all(sounds: Shared, objects: SharedObjects, lights: SharedLights, effects: SharedEffects) -> World {
     let mut w = World::new(1);
+    w.attach(Box::new(EffectStore(effects))).expect("a world without one takes the effects store");
     w.attach(Box::new(LightStore(lights))).expect("a world without one takes the lights store");
     w.attach(Box::new(ObjectStore(objects))).expect("an empty world takes the objects store");
     w.attach(Box::new(SoundStore(sounds))).expect("a world without one takes the sound store");
@@ -166,10 +221,11 @@ pub fn with_stores(sounds: Shared, objects: SharedObjects, lights: SharedLights)
 /// The process's world, over the process's tables ([`entries::SHARED`],
 /// [`OBJECT_TABLE`]).
 pub static WORLD: LazyLock<Mutex<World>> = LazyLock::new(|| {
-    Mutex::new(with_stores(
+    Mutex::new(with_all(
         Arc::clone(&entries::SHARED),
         Arc::clone(&OBJECT_TABLE),
         Arc::clone(&LIGHT_TABLE),
+        Arc::clone(&EFFECT_TABLE),
     ))
 });
 
