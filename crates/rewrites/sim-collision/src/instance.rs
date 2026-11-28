@@ -2,7 +2,7 @@
 //! structure instance. Keep the accumulation order of the three guest
 //! routines: inverse (141590), local ray (1691a0), world plane (168b40).
 use crate::{Bail, GuestRead};
-use sim_core::det::{self, Fp};
+use sim_core::det::Fp;
 use std::cmp::Ordering;
 
 type V = [u32; 3];
@@ -45,17 +45,22 @@ impl PlacementMatrix {
         fp.exact().then_some(inverted).ok_or(Bail::Float)
     }
 
+    /// [`PlacementMatrix::inverse`] in the caller's `fp`.
+    pub fn inverse_with(&self, fp: &mut Fp, one: u32) -> Self {
+        self.invert(one, fp)
+    }
+
     fn invert(&self, one: u32, fp: &mut Fp) -> Self {
-        fp.check(self.scale);
-        fp.check(one);
-        if det::compare(self.scale, 0) == Ordering::Equal {
+        // 141590: `ucomiss scale, 0; lahf; test ah, 44h; jnp`, so only an
+        // ordered equal takes either branch; a NaN scale divides.
+        if fp.ucomiss(self.scale, 0) == Some(Ordering::Equal) {
             return Self {
                 scale: 0,
                 basis: [[0; 3]; 3],
                 translation: [0; 3],
             };
         }
-        let unit = det::compare(self.scale, one) == Ordering::Equal;
+        let unit = fp.ucomiss(self.scale, one) == Some(Ordering::Equal);
         let scale = if unit { one } else { fp.div(one, self.scale) };
         let t = self.translation.map(|v| {
             let neg = fp.sub(0, v);
@@ -97,7 +102,7 @@ impl PlacementMatrix {
     pub fn local_ray_with(&self, fp: &mut Fp, one: u32, start: V, delta: V) -> (V, V) {
         let inv = self.invert(one, fp);
         let mut transform = |mut v: V, point: bool| {
-            if det::compare(inv.scale, one) != Ordering::Equal {
+            if fp.ucomiss(inv.scale, one) != Some(Ordering::Equal) {
                 v = v.map(|x| fp.mul(inv.scale, x));
             }
             let mut v = inv.rotate(v, &mut *fp);
@@ -171,6 +176,23 @@ mod tests {
             PlacementMatrix::from_words(source).inverse(ONE),
             Err(Bail::Float)
         ));
+    }
+
+    #[test]
+    fn a_guest_nan_scale_divides_as_141590_does() {
+        // `ucomiss` is unordered, so neither the zero nor the unit branch
+        // is taken; the quiet NaN raises nothing and the scale is 1 / NaN.
+        let mut source = [0; 13];
+        source[0] = f32::NAN.to_bits();
+        let mut fp = Fp::guest(0x1f80);
+        let inv = PlacementMatrix::from_words(source).inverse_with(&mut fp, ONE);
+        assert!(f32::from_bits(inv.scale).is_nan());
+        assert_eq!(fp.mxcsr(), Some(0x1f80));
+        // A signalling NaN raises IE in the `ucomiss`.
+        source[0] = 0x7fa0_0000;
+        let mut fp = Fp::guest(0x1f80);
+        PlacementMatrix::from_words(source).inverse_with(&mut fp, ONE);
+        assert_ne!(fp.mxcsr().unwrap() & 1, 0);
     }
 
     #[test]

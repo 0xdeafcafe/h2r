@@ -99,6 +99,8 @@ pub fn query(
         return Err(f);
     }
     cpu.eax = (cpu.eax & !0xff) | u32::from(r.plan.record.word(0) != 0);
+    cpu.mxcsr = r.plan.mxcsr;
+    cpu.x87.status |= r.plan.x87 & 0x3f;
     Ok(Some(super::super::finish(cpu, r.target, 0x18)))
 }
 

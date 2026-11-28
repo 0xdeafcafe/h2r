@@ -7,7 +7,7 @@ mod transform;
 use crate::{Bail, GuestRead, Hit, Outcome, sphere::Sphere};
 pub use parts::PartRay;
 use parts::{Model, PartHit};
-use sim_core::det::{self, Fp};
+use sim_core::det::Fp;
 use std::cmp::Ordering;
 
 const OBJECT_TABLE: u32 = 0x004e_0300;
@@ -92,6 +92,7 @@ fn model(g: &impl GuestRead, body: u32) -> Result<Option<Model>, Bail> {
 }
 
 fn accepts(
+    fp: &mut Fp,
     g: &impl GuestRead,
     q: &ObjectQuery,
     id: u32,
@@ -123,11 +124,11 @@ fn accepts(
         center: g.vec3(body.wrapping_add(0x40))?,
         radius: g.u32(body.wrapping_add(0x4c))?,
     };
-    let offset = sphere.offset(q.start)?;
-    Ok(offset.contains_start() || offset.sweep(q.delta)?.hit())
+    let offset = sphere.offset_with(fp, q.start)?;
+    Ok(offset.contains_start() || offset.sweep_with(fp, q.delta)?.hit())
 }
 
-fn result(g: &impl GuestRead, object: u32, hlmt: u32, part: PartHit) -> Result<ObjectHit, Bail> {
+fn result(fp: &mut Fp, g: &impl GuestRead, object: u32, hlmt: u32, part: PartHit) -> Result<ObjectHit, Bail> {
     let materials = g.u32(hlmt.wrapping_add(0x5c))?;
     let index = part.hit.material as i16 as u32;
     let material = g.u16(
@@ -137,10 +138,14 @@ fn result(g: &impl GuestRead, object: u32, hlmt: u32, part: PartHit) -> Result<O
     )?;
     let p = part.hit.plane_addr;
     let [x, y, z] = g.vec3(p)?;
-    let plane = part.matrix.plane(
+    let plane = part.matrix.plane_with(
+        fp,
         [x, y, z, g.u32(p.wrapping_add(12))?],
         part.hit.plane & 0x8000 != 0,
-    )?;
+    );
+    if !fp.exact() {
+        return Err(Bail::Float);
+    }
     Ok(ObjectHit {
         object,
         key: part.key,
@@ -155,6 +160,18 @@ fn result(g: &impl GuestRead, object: u32, hlmt: u32, part: PartHit) -> Result<O
 /// continuation stack carries the caller's pretest mode across children.
 /// Bound malformed cyclic lists before returning anything to the caller.
 pub fn trace_objects<G: GuestRead>(
+    g: &mut G,
+    q: &ObjectQuery,
+    visit: impl FnMut(&mut G, PartRay) -> Result<Outcome, Bail>,
+) -> Result<Option<ObjectHit>, Bail> {
+    trace_objects_with(&mut Fp::new(), g, q, visit)
+}
+
+/// [`trace_objects`] in the caller's `fp`: under [`Fp::guest`] every
+/// operand runs as the guest's SSE instructions do and `fp` gathers the
+/// flags they raise. The part walks' own flags are the caller's.
+pub fn trace_objects_with<G: GuestRead>(
+    fp: &mut Fp,
     g: &mut G,
     q: &ObjectQuery,
     mut visit: impl FnMut(&mut G, PartRay) -> Result<Outcome, Bail>,
@@ -180,19 +197,18 @@ pub fn trace_objects<G: GuestRead>(
             return Err(Bail::Data);
         }
         let (header, body) = object(g, current)?;
-        if pretested || accepts(g, q, current, header, body)? {
+        if pretested || accepts(fp, g, q, current, header, body)? {
             if let Some(m) = model(g, body)?
-                && let Some(part) = m.ray(g, q.start, q.delta, q.bsp_flags, &mut visit)?
+                && let Some(part) = m.ray(fp, g, q.start, q.delta, q.bsp_flags, &mut visit)?
             {
-                let mut fp = Fp::new();
-                fp.check(fraction);
-                fp.check(part.hit.fraction);
+                // Ordered: a NaN fraction never takes the part.
+                let closer = fp.comiss(fraction, part.hit.fraction) == Some(Ordering::Greater);
                 if !fp.exact() {
                     return Err(Bail::Float);
                 }
-                if det::compare(fraction, part.hit.fraction) == Ordering::Greater {
+                if closer {
                     fraction = part.hit.fraction;
-                    best = Some(result(g, current, m.hlmt, part)?);
+                    best = Some(result(fp, g, current, m.hlmt, part)?);
                     if q.flags & (1 << 28) != 0 {
                         break;
                     }

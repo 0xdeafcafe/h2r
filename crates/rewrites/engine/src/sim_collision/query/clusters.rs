@@ -5,7 +5,7 @@ use super::super::instance;
 use super::*;
 use sim_collision::{
     Fault,
-    model::{ObjectQuery, trace_objects},
+    model::{ObjectQuery, trace_objects_with},
     objects::layout as reference,
     sphere::Sphere,
 };
@@ -27,9 +27,11 @@ pub(super) struct Marks {
 }
 
 impl Marks {
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn walk(
         &mut self,
         cpu: &CpuAbi,
+        env: &mut Env,
         g: &mut impl CollisionMemory,
         world: &CollisionWorld,
         structure: u32,
@@ -61,7 +63,7 @@ impl Marks {
                 continue;
             }
             self.clusters.push(cluster);
-            if ray.flags & 2 != 0 && liquid(&m, structure, cluster, ray, record)? {
+            if ray.flags & 2 != 0 && liquid(env, &m, structure, cluster, ray, record)? {
                 *hit_bsp = None;
                 if ray.flags & FIRST_HIT != 0 {
                     break;
@@ -77,6 +79,7 @@ impl Marks {
                     limit: record.word(4),
                 };
                 let e = instance::predict_with_marks(cpu, g, world, q, epoch, &self.instances)?;
+                env.absorb(e.mxcsr, e.x87);
                 for (addr, _) in e.marks {
                     self.instances
                         .push(addr.checked_sub(INSTANCE_MARKS).ok_or(Bail::Data)? / 4);
@@ -91,6 +94,7 @@ impl Marks {
             }
             if let Some(generation) = self.object_epoch {
                 self.objects(
+                    env,
                     g,
                     world,
                     cluster,
@@ -108,8 +112,10 @@ impl Marks {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn objects(
         &mut self,
+        env: &mut Env,
         g: &mut impl CollisionMemory,
         world: &CollisionWorld,
         cluster: u32,
@@ -158,8 +164,8 @@ impl Marks {
                 center: m.vec3(bounds.wrapping_add(4))?,
                 radius: m.u32(bounds.wrapping_add(16))?,
             };
-            let offset = sphere.offset(ray.start)?;
-            if !offset.contains_start() && !offset.sweep(ray.delta)?.hit() {
+            let offset = sphere.offset_with(&mut env.fp, ray.start)?;
+            if !offset.contains_start() && !offset.sweep_with(&mut env.fp, ray.delta)?.hit() {
                 continue;
             }
             if ray.ignore.contains(&object) {
@@ -175,10 +181,18 @@ impl Marks {
                 ignore: ray.ignore,
                 fraction: record.word(4),
             };
-            let hit = trace_objects(&mut ModelMemory(g), &q, |m, part| {
+            // The parts' walks raise into `walks`; `env.fp` is the trace's.
+            let (mxcsr, control) = (env.mxcsr(), env.x87.control());
+            let walks = std::cell::Cell::new((0u32, 0u16));
+            let hit = trace_objects_with(&mut env.fp, &mut ModelMemory(g), &q, |m, part| {
                 let b = bsp(m.0, world, part.bsp)?;
-                b.vector_test(m, &part.query, 0, 0, part.t1)
+                let out = b.vector_test_under(mxcsr, control, m, &part.query, 0, 0, part.t1)?;
+                let (s, x) = walks.get();
+                walks.set((s | out.mxcsr.unwrap_or(mxcsr), x | out.x87_flags));
+                Ok(out)
             })?;
+            let (s, x) = walks.get();
+            env.absorb(s, x);
             if let Some(hit) = hit {
                 hit.write_result(|offset, bytes| {
                     record.store(offset, bytes);
@@ -260,7 +274,10 @@ pub(super) fn dot(fp: &mut Fp, n: [u32; 3], v: [u32; 3]) -> u32 {
     fp.add(zy, x)
 }
 
+/// The liquid boundary test in J (`0x169ad1`): SSE for the distances and
+/// the time, x87 for the speed (`fabs`, `fcomip`).
 fn liquid(
+    env: &mut Env,
     g: &impl GuestRead,
     structure: u32,
     cluster: u32,
@@ -280,44 +297,40 @@ fn liquid(
     }
     let plane = plane_at(g, at.wrapping_add(4))?;
     let n = [plane[0], plane[1], plane[2]];
-    let mut fp = Fp::new();
-    let s = dot(&mut fp, n, ray.start);
+    let fp = &mut env.fp;
+    let s = dot(fp, n, ray.start);
     let s = fp.sub(s, plane[3]);
-    let v = dot(&mut fp, n, ray.delta);
-    fp.check(s);
-    fp.check(v);
-    if !fp.exact() {
-        return Err(Bail::Float);
-    }
-    if det::compare(s, 0).is_gt() == det::compare(v, 0).is_gt() {
+    let v = dot(fp, n, ray.delta);
+    // `comiss x, 0; jbe` for each: a NaN is not above zero.
+    let above = |fp: &mut Fp, x| fp.comiss(x, 0) == Some(Ordering::Greater);
+    if above(fp, s) == above(fp, v) {
         return Ok(false);
     }
-    let speed = v & 0x7fff_ffff;
-    if !det::compare(speed, s & 0x7fff_ffff).is_gt() {
+    // `fld v; fabs; fstp m32` then `fld s; fabs; fld m32; fcomip; jbe`.
+    let x = &env.x87;
+    let speed = x.store32(x.abs(x.load32(v)));
+    let gap = x.abs(x.load32(s));
+    if x.compare(x.load32(speed), gap, false) != Some(Ordering::Greater) {
         return Ok(false);
     }
+    let fp = &mut env.fp;
     let min = g.u32(BOUNDARY_MIN_SPEED)?;
-    fp.check(min);
-    if !fp.exact() {
-        return Err(Bail::Float);
-    }
-    if det::compare(speed, min).is_lt() {
+    // `comiss speed, min; jb`: below or unordered rejects.
+    if !matches!(fp.comiss(speed, min), Some(Ordering::Greater | Ordering::Equal)) {
         return Ok(false);
     }
     let t = fp.div(s, v);
     let t = fp.sub(0, t);
-    fp.check(t);
-    fp.check(record.word(4));
-    if !fp.exact() {
-        return Err(Bail::Float);
-    }
-    if !det::compare(t, record.word(4)).is_lt() {
+    // `comiss fraction, t; jbe`: only an ordered earlier time hits.
+    if fp.comiss(record.word(4), t) != Some(Ordering::Greater) {
         return Ok(false);
     }
+    let flip = fp.comiss(0, s) == Some(Ordering::Greater);
+    env.exact()?;
     record.put(0, 2);
     record.put(4, t);
     record.store(0x24, &material.to_le_bytes());
-    record.put_plane(plane, det::compare(s, 0).is_lt())?;
+    record.put_plane(env, plane, flip)?;
     record.put(0x38, i);
     record.put(0x3c, NONE);
     record.put(0x40, NONE);
