@@ -32,15 +32,17 @@ pub fn encoded(commands: impl Fn(&mut wgpu::CommandEncoder) + Send + 'static) ->
 
 /// The frame target behind guest surface `header`: 0 is none; a header
 /// with no game role (`native_targets::role`) is the device's own back
-/// buffer (`colour`) or depth. A game role has no frame target yet.
+/// buffer (`colour`) or depth; a game role is its own target
+/// (`TargetRole::target`), which the frame graph makes at the guest's
+/// size for it (`native_render::frame_graph::targets::GAME`).
 pub fn target_ref(mem: &dyn GuestMemory, header: u32, colour: bool) -> TargetRef {
     if header == 0 {
         return TargetRef::None;
     }
-    match native_targets::role(header, &|a| mem.u32(a).ok()) {
+    match native_targets::role(header, &|a| mem.u32(a).ok()).and_then(|r| r.target()) {
+        Some(target) => target,
         None if colour => TargetRef::SceneColour,
         None => TargetRef::SceneDepth,
-        Some(role) => unimplemented!("targets: frame target for {role:?}"),
     }
 }
 

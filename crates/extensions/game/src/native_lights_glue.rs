@@ -710,10 +710,22 @@ fn push(mem: &dyn GuestMemory, slot: frame_types::Slot, stage: Box<dyn Stage>) {
     frame_builder().push(FrameOp::Stage { slot: frame_types::SlotAt { slot, view: view as u8 }, stage });
 }
 
-/// The frame's colour and depth targets for entry `n` of the game's
-/// render-target table.
+/// The frame's colour and depth targets the target select `0x00014bc0`
+/// binds for index `n` (`render_bridge::target_bind::surfaces`): the
+/// table entry's colour with the device's depth (1, 5 to 8, `0xf`,
+/// `0x12`) or none (`0xa` to `0xd`, `0x13` to `0x16`, `0x19` to `0x1b`);
+/// index 9 the static surface over entry 9's memory with entry 9 as the
+/// depth (the shadow map). An index the lights bind no table entry
+/// through panics by name.
 fn game_target(n: u32) -> (frame_types::TargetRef, frame_types::TargetRef) {
-    unimplemented!("lights: TargetRef for game target {n}")
+    use frame_types::TargetRef;
+    let game = TargetRef::Game(n as u8);
+    match n {
+        1 | 5..=8 | 0xf | 0x12 => (game, TargetRef::SceneDepth),
+        9 => (TargetRef::Slot(render_bridge::target_bind::STATIC), game),
+        0xa..=0xd | 0x13..=0x16 | 0x19..=0x1b => (game, TargetRef::None),
+        _ => unimplemented!("lights: target select index {n}, which binds no table entry"),
+    }
 }
 
 /// A structure entry's key in [`ClusterParts`]; `None` for an object's.
@@ -2278,6 +2290,26 @@ impl RunPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shadow_gel_and_mask_targets_bind_as_the_select_does() {
+        use frame_types::TargetRef;
+        use native_render::frame_graph::targets;
+        assert_eq!(render_bridge::target_bind::STATIC, targets::STATIC_SLOT);
+        assert_eq!(game_target(9), (TargetRef::Slot(targets::STATIC_SLOT), TargetRef::Game(9)), "the shadow map's depth is entry 9");
+        assert_eq!(game_target(10), (TargetRef::Game(10), TargetRef::None));
+        assert_eq!(game_target(native_render::gels::TARGET), (TargetRef::Game(13), TargetRef::None));
+        assert_eq!(game_target(1), (TargetRef::Game(1), TargetRef::SceneDepth));
+        let (colour, depth) = game_target(9);
+        assert_eq!(targets::guest_target(depth).unwrap().format.native(), wgpu::TextureFormat::Depth32FloatStencil8);
+        assert_eq!(targets::guest_target(colour).unwrap().size, targets::guest_target(depth).unwrap().size);
+    }
+
+    #[test]
+    #[should_panic(expected = "target select index 4, which binds no table entry")]
+    fn an_index_with_no_entry_is_named() {
+        game_target(4);
+    }
 
     #[test]
     fn a_layer_drawn_alone_is_cut_to_the_views_rect_alone() {

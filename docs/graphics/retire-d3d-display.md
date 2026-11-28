@@ -255,14 +255,14 @@ Tests: `the_gates_end_with_no_work`, `a_drawn_definition_is_the_ocean`, `the_ret
 
 ## The graph's targets
 
-Every render target and depth surface the device makes is the frame graph's, keyed by what it is to the game, not by the guest header or the frame's `TargetRef`. A `TargetRef::Aux(n)` is numbered by first use in its frame, so `Aux(0)` is the freeze frame's target in one frame and the post colour's in the next; a `TargetRole` is the same in every frame.
+Every render target the game binds is the frame graph's, keyed by what it is to the game, not by the guest header. A `TargetRole` is the same in every frame, and its frame target (`TargetRole::target`: `TargetRef::Game`, `GameLevel`, `Slot`) is too; the device's own buffers are the scene's (`SceneColour`, `SceneDepth`).
 
 | Role | What | Made at |
 |---|---|---|
 | `Display(n)` | swap-chain buffer `n` (the back buffers, then the display surface) | `Direct3D_CreateDevice` |
 | `DisplayDepth` | the device's depth buffer | `Direct3D_CreateDevice` |
 | `Game(n)` | entry `n` of Halo's target table `0x004b4b58` (stride `0x98`): its first surface header `+0x18` (`0x0001dcf0`) | the first bind of the header |
-| `GameLevel { target, level }` | surface `level` (1 to 3) of entry `target`, `+0x18 + 0x18 * level` (`0x0001dd20`: target `0xd`'s cube faces) | the first bind of the header |
+| `GameLevel { target, level }` | surface `level` (1 to 3) of entry `target`, `+0x18 + 0x18 * level` (`0x0001dd20`): its mip level, half the last on each side (target `0xd`'s) | the first bind of the header |
 | `Slot(global)` | the target whose header the game keeps at `global` (`native_targets::TARGET_SLOTS`, below) | the first bind of the header |
 
 The game binds every target through its select `0x00014bc0(index)` (Code; the case bytes at `0x00014f30`, the jumps at `0x00014ed0`); the other `SetRenderTarget` callers are the XDK's own, on the device's buffers. By index:
@@ -284,28 +284,44 @@ The depth is `[0x00509364]` (`DisplayDepth`) for indices 0, 1, 3, 5 to 8, `0xf` 
 
 ```mermaid
 flowchart LR
-  G[guest bind or clear, header] --> D[d3d::Device::surface_for]
-  D -->|DeviceConfig::roles| R[native_targets::role]
-  R --> T[Backend::create_target role]
-  T --> S[SceneSink: the frame's roles]
-  S --> W[ThreadedBackend worker]
-  W --> ST[frame_graph::targets::Store]
-  ST --> O[targets::Owned, one surface per role]
-  O -->|TargetStore::map at the present| P[the replay's targets]
+  G[guest bind or clear, header] --> R[native_targets::role]
+  R -->|TargetRole::target| F[TargetRef: Game, GameLevel, Slot]
+  R -->|no role| S[SceneColour, SceneDepth]
+  F --> T[frame_graph::targets::Targets::get]
+  S --> T
+  T --> O[one texture per entry or slot, at the render scale]
 ```
 
-- **The role table.** `render_bridge::native_targets::role(header, word)` names the table's surfaces (`TARGET_COUNT` entries, `TARGET_LEVELS` surfaces each) by address, and a header one of the select's globals holds (`word` reads it) as that global's `Slot`. Boot's glue sets it as `d3d::DeviceConfig::roles` with the native renderer on. The device asks it in `surface_for` and `rtt_surface`, and makes the surface with `Backend::create_target`; a header it does not name panics, `d3d targets: <header> (texture <parent>) has no role`. One role has one live device surface: a second panics, `d3d targets: two live surfaces for <role>`. A rewritten header gives its old surface back (`Backend::release_target`) before the new one is made.
-- **The frame's roles.** The scene sink keeps each surface's role and the recorder files them per frame, `ReplayFrame::roles` (`ReplayFrame::role`), after the present's renaming. `targets::declare` puts each target's role in its `Declared`.
-- **The store.** `ThreadedBackend::with_target_store` installs `frame_graph::targets::Store` (a `d3d::threaded::owner::TargetStore`) on the render thread, so the worker's `create_target` and `release_target` go to it. `targets::Owned` holds one surface per role across frames and devices: the same shape keeps its surface, a new shape makes another. The device's handles for a role come and go; a surface a new shape replaces while a handle to it is live is retired and freed when that handle comes back, since commands queued before the new one can still draw on it. A role's surface outlives its handle, so a device made again after a teardown gets the same surfaces.
-- **The replay.** At the present the worker takes the graph's map, `TargetStore::map`: each declared target's surface by its role. The guest's commands drew on the same surfaces, so a frame's carried work and its replay share them. A declared target with no role, or a role the store does not hold, panics, `graph targets: <cause>`.
+- **The role table.** `render_bridge::native_targets::role(header, word)` names the table's surfaces (`TARGET_COUNT` entries, `TARGET_LEVELS` surfaces each) by address, and a header one of the select's globals holds (`word` reads it) as that global's `Slot`. `game::native_targets_glue::target_ref` turns a bound header into its frame target: no role is the scene's colour or depth, a role its `TargetRole::target`. The lights bind by select index (`native_lights_glue::game_target`, the select's colour and depth for the index).
+- **The targets.** `native_render::frame_graph::targets::Targets` makes each game target at its first use, one texture per table entry (all its levels) and per slot, at the guest's size times the render scale (`RenderScale::size`); a new scale makes them again. `GameLevel` is a view of the entry's mip. Colour is `Rgba8Unorm`; entry 9 (the shadow map) is `Depth32FloatStencil8`, since the light freeze reads its depth as float bits. An entry the game never makes, a level past its count, a slot other than the static surface, or an `Aux` panics by name, `targets: <cause>`.
+
+The game's table, as `0x0001d770` makes it at boot (through `0x0001db10` on the heap and `0x0001df20` in entry 1's or entry 9's memory) and `0x0001dc40` makes `0x12` when a screen effect first wants it. The format byte is `0x0001d6f0`'s: linear and depth pick it. Size is the guest's; the frame graph's is that times the render scale.
+
+| Entry | Size | Guest format | Levels | Memory | Use |
+|---|---|---|---|---|---|
+| 1 | 640 x 480 | `LIN_A8R8G8B8` (`0x12`) | 1 | heap | texture accumulation (engine texture 3) |
+| 5, 6 | 320 x 240 | `LIN_A8R8G8B8` | 1 | entry 1, `+0`, `+0x4b000` | |
+| 7, 8 | 160 x 120 | `LIN_A8R8G8B8` | 1 | entry 9, `+0`, `+0x16800` | |
+| 9 | 512 x 512 | `LIN_D24S8` (`0x2e`) | 1 | heap | shadow map depth |
+| `0xa` to `0xc` | 128 x 128 | `LIN_A8R8G8B8` | 1 | entry 9, `+0`, `+0x10000`, `+0x20000` | `0xa`: the shadow colour mask |
+| `0xd` | 256 x 256 | `A8R8G8B8` (`0x06`, swizzled) | 3 | entry 9, `+0` | the gel |
+| `0xf` | 64 x 64 | `LIN_A8R8G8B8` | 1 | heap | |
+| `0x12` | 640 x 480 | `LIN_A8R8G8B8` | 1 | heap, on demand | view kind 1's target |
+| `0x13` | 320 x 240 | `LIN_A8R8G8B8` | 1 | entry 9, `+0x2d000` | |
+| `0x15`, `0x16` | 512 x 256 | `A8R8G8B8` | 1 | entry 9, `+0`, `+0x80000` | ocean reflection, refraction |
+| `0x17` | 320 x 240 | `LIN_A8R8G8B8` | 1 | entry 1, `+0` | |
+| `0x19` to `0x1b` | 320 x 240 | `LIN_A8R8G8B8` | 1 | entry 9, `+0`, `+0x4b000`, `+0x96000` | screen effect stand-ins |
+| 0, 2 to 4, `0xe`, `0x10`, `0x11`, `0x14`, `0x18`, `0x1c` up | none: no code makes them | | | | |
+| slot `0x00509384` | entry 9's size | `LIN_A8R8G8B8` | 1 | entry 9 | index 9's colour |
+
+On the Xbox the entries share memory as the table shows; each frame target is its own texture.
+
 - **The post and the screen effects.** The colour pass `0x000214f0` and the screen effects `0x0002d140` are still guest work. Their binds, clears and external slots (target 1, the stand-ins `0x19` to `0x1b`, the bound colour) reach the device through `surface_for`, so each is drawn on its role's graph surface. The water end's ocean clears the bound target's alpha with `native_targets::cut_clear`, copies the bound colour into `Game(0x16)` and draws its pass natively ("The water end").
 
 - **The water.** The water teardown `0x0003c3c0` with its alpha clear `0x0003c515` is still guest work. Its binds and clears reach the device through `surface_for`, so each is drawn on its role's graph surface.
 - **The post.** The colour pass and the screen effects name their slots by role ([below](#the-post-and-the-screen-effects)).
 
-`Owned` counts `graph_targets_made`, `_kept`, `_released` and `graph_targets_refused_<cause>` (`unsized`, `unroled`, `allocation`) for a frame it owns directly (`Owned::own`). Without a role table (the `d3d` crate's own tests) the device makes each target as any surface, and without a store the worker makes them on its backend.
-
-Tests: `a_game_target_is_named_by_its_table_entry_or_its_global` (`native_targets.rs`), `each_frame_names_its_targets_roles` (`d3d/src/scene_sink/replay.rs`), `a_role_keeps_its_surface_when_its_number_moves`, `the_store_frees_a_replaced_surface_when_its_handle_comes_back` and `the_graph_owns_its_targets_across_frames` (`frame_graph/targets.rs`).
+Tests: `a_game_target_is_named_by_its_table_entry_or_its_global` (`native_targets.rs`), `a_game_role_is_its_frame_target_and_the_devices_are_the_scenes` (`carried.rs`), `the_table_is_what_the_boot_makes`, `a_ref_names_its_entry_level_or_slot`, `game_targets_take_the_scale` and the named panics (`frame_graph/targets.rs`), `the_shadow_gel_and_mask_targets_bind_as_the_select_does` (`native_lights_glue.rs`).
 
 ## The post and the screen effects
 
