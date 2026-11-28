@@ -93,7 +93,11 @@ fn a_desktop_player_registers_only_the_films_render_groups() {
                 plan.chains
                     .values()
                     .flat_map(|c| c.hooks())
-                    .all(|h| { h.feature != "render-loop" && !h.feature.starts_with("native-") })
+                    .all(|h| {
+                        // The native simulation is on in every profile.
+                        h.feature != "render-loop"
+                            && (!h.feature.starts_with("native-") || h.feature.starts_with("native-simulation"))
+                    })
             );
         }
     }

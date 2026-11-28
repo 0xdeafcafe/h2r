@@ -767,10 +767,13 @@ mod tests {
         for (point, label) in COLLISION_INVALIDATE {
             let chain = &plan.chains[&point.base];
             assert!(chain.implement.is_none());
-            // The map load is also observed by the animation invalidation
-            // and the object arms' resets.
-            let shared = if point.base == points::CACHE_TAGS_LOAD.base { 4 } else { 1 };
-            assert_eq!(chain.observe_before.len(), shared, "{label}");
+            // The map load is also observed by every arm's reset: the
+            // collision invalidation is one of them.
+            if point.base == points::CACHE_TAGS_LOAD.base {
+                assert!(chain.observe_before.iter().any(|h| h.label == label), "{label}");
+            } else {
+                assert_eq!(chain.observe_before.len(), 1, "{label}");
+            }
         }
         for (point, entry, _) in COLLISION_OBSERVED {
             let chain = &plan.chains[&point.base];

@@ -331,5 +331,8 @@ fn clear_takes_every_voice_at_once() {
     h.event(&on_track(started(handle(2), (0, 1), 0), None));
     h.frame(&scene(0));
     h.clear();
-    assert_eq!((h.held(), lock(&mixer).buffer_count(), lock(&mixer).stream_count()), (0, 0, 0));
+    // One guard at a time: two in a statement would deadlock on the mutex.
+    let buffers = lock(&mixer).buffer_count();
+    let streams = lock(&mixer).stream_count();
+    assert_eq!((h.held(), buffers, streams), (0, 0, 0));
 }

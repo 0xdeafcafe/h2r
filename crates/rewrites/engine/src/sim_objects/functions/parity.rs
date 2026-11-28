@@ -17,7 +17,6 @@
 //! docs/engine/object-update.md), `ebx`, `ebp` and `esi` are retail's, and
 //! the x87 stack is as it was (retail leaves it empty).
 
-use super::lo;
 use crate::function_eval::constant::{
     BYTE, ONE, SHAPE_BIAS, SHAPE_SCALE, SHAPES, WAVE_SCALE, WAVES, WRAP_HIGH, WRAP_LOW,
 };
@@ -124,6 +123,7 @@ fn port(cpu: &mut CpuAbi, guest: &Guest, input: u32, range: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::lo;
     use super::*;
     use runtime::guest::Permissions;
     use std::sync::Mutex;

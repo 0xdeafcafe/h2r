@@ -155,7 +155,14 @@ fn the_cut_table_names_every_registry_producer() {
     for (i, c) in CUTS.iter().enumerate() {
         assert!(CUTS[..i].iter().all(|o| o.name != c.name), "{} twice", c.name);
     }
-    for row in REGISTRY.iter().filter(|r| r.status == Status::Native) {
+    // Native rows with no entry of their own: the guest body is called
+    // only from a cut producer, `dynamic_lights` (`render_light_passes`,
+    // once per frame, docs/graphics/native-lights.md), so it never runs.
+    const INSIDE_A_CUT: &[&str] = &["light_passes"];
+    for row in REGISTRY
+        .iter()
+        .filter(|r| r.status == Status::Native && !INSIDE_A_CUT.contains(&r.name))
+    {
         assert!(
             CUTS.iter().any(|c| c.name == row.name),
             "{} is native in the census and not cut",
