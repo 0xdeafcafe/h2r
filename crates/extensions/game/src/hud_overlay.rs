@@ -1015,6 +1015,12 @@ fn read_fonts() -> Fonts {
     Fonts::served(&table, files)
 }
 
+/// An overlay pass as a typed UI scene stage on the bound targets, which a
+/// replaying sink keeps where it refuses an untyped immediate pass.
+fn ui_plan() -> d3d::ExternalPlan {
+    d3d::ExternalPlan { stage: timeline::native::Stage::Ui, view: 0, ranges: 1, slots: Vec::new() }
+}
+
 /// Places a pass drawing `overlay` from `assets` at this point in the
 /// frame: whether the device took it.
 pub fn place<B: d3d::Backend + Send + 'static>(
@@ -1029,7 +1035,7 @@ pub fn place<B: d3d::Backend + Send + 'static>(
         let fit = d.ui_fit().map(|f| f.transform);
         let pass = OverlayPass { overlay, assets: Some(assets), movie: None, fit, tail: false };
         matches!(
-            d.external_pass_now(&mut crate::native_lights_glue::DeviceMemory(mem), Box::new(pass)),
+            d.external_stage_now(&mut crate::native_lights_glue::DeviceMemory(mem), None, ui_plan(), Box::new(pass)),
             Ok(true)
         )
     })
@@ -1048,7 +1054,7 @@ pub fn place_movie<B: d3d::Backend + Send + 'static>(
         let fit = d.ui_fit().map(|f| f.transform);
         let pass = OverlayPass { overlay: Arc::new(overlay), assets: None, movie: Some(movie), fit, tail: false };
         matches!(
-            d.external_pass_now(&mut crate::native_lights_glue::DeviceMemory(mem), Box::new(pass)),
+            d.external_stage_now(&mut crate::native_lights_glue::DeviceMemory(mem), None, ui_plan(), Box::new(pass)),
             Ok(true)
         )
     })
@@ -1082,7 +1088,7 @@ pub fn place_blit<B: d3d::Backend + Send + 'static>(
         return Err("target");
     }
     let pass = OverlayPass { overlay, assets: None, movie: Some(picture), fit: None, tail: false };
-    match d.external_pass_now(&mut crate::native_lights_glue::DeviceMemory(mem), Box::new(pass)) {
+    match d.external_stage_now(&mut crate::native_lights_glue::DeviceMemory(mem), None, ui_plan(), Box::new(pass)) {
         Ok(true) => Ok(()),
         _ => Err("pass"),
     }
@@ -1100,7 +1106,7 @@ pub fn place_tail<B: d3d::Backend + Send + 'static>(
     device.lock().ok().is_some_and(|mut d| {
         let pass = OverlayPass { overlay: Arc::new(overlay), assets: None, movie: None, fit: None, tail: true };
         matches!(
-            d.external_pass_now(&mut crate::native_lights_glue::DeviceMemory(mem), Box::new(pass)),
+            d.external_stage_now(&mut crate::native_lights_glue::DeviceMemory(mem), None, ui_plan(), Box::new(pass)),
             Ok(true)
         )
     })
