@@ -35,6 +35,8 @@ use super::MAX_FRAMES;
 use crate::Bail;
 use ::mopp::boxvm::diagonal_plane;
 use ::mopp::code::terminal_key;
+use sim_core::det::{Fp, X87};
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt;
 
@@ -48,11 +50,14 @@ pub enum Precision {
     Single,
     /// `PC = 10`: 53 bits, rounded to binary32 where the original stores.
     Double,
+    /// `PC = 11`: 64 bits, on the `x87` crate's model.
+    Extended,
 }
 
 impl Precision {
-    /// The precision of a masked, round-to-nearest control word. Extended
-    /// precision and every other control is [`Bail::Env`].
+    /// The precision of a masked, round-to-nearest control word. Every
+    /// other control (another rounding, an unmasked exception, the
+    /// reserved precision) is [`Bail::Env`].
     pub fn from_control(control: u16) -> Result<Self, Bail> {
         if control & 0x0c3f != 0x003f {
             return Err(Bail::Env);
@@ -60,7 +65,17 @@ impl Precision {
         match (control >> 8) & 3 {
             0 => Ok(Precision::Single),
             2 => Ok(Precision::Double),
+            3 => Ok(Precision::Extended),
             _ => Err(Bail::Env),
+        }
+    }
+
+    /// The masked, round-to-nearest control word of this precision.
+    pub fn control(self) -> u16 {
+        match self {
+            Precision::Single => 0x007f,
+            Precision::Double => 0x027f,
+            Precision::Extended => 0x037f,
         }
     }
 }
@@ -90,6 +105,8 @@ pub struct Ray {
     pub from: Vec4,
     pub to: Vec4,
     pub precision: Precision,
+    /// The guest's MXCSR at the call, under which the packed work runs.
+    pub mxcsr: u32,
     pub constants: Constants,
 }
 
@@ -158,6 +175,9 @@ pub struct Root {
     pub inverse_scale: u32,
     pub frame: Frame,
     pub segment: Segment,
+    /// The flags the setup's arithmetic raised; the walk continues from
+    /// them.
+    pub raised: Raised,
 }
 
 /// One step of the walk the caller sees.
@@ -194,162 +214,95 @@ impl fmt::Display for Event {
     }
 }
 
-/// An x87 stack value. In single precision it is always a binary32 value.
-#[derive(Clone, Copy, Debug)]
-struct St(f64);
+/// An x87 stack value.
+type St = sim_core::det::St;
 
-#[derive(Clone, Copy)]
-enum Arith {
-    Add,
-    Sub,
-    Mul,
-    Div,
+/// The flags a walk raised: the guest's MXCSR after its SSE operations
+/// and the x87 exception flags (`0x3f`) of its x87 sequences, PE included.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Raised {
+    pub mxcsr: u32,
+    pub x87: u16,
 }
 
-/// A binary32 operand the fast path takes: zero or normal.
-fn input32(bits: u32) -> bool {
-    let m = bits & 0x7fff_ffff;
-    m == 0 || (0x0080_0000..0x7f80_0000).contains(&m)
+/// The interpreter's floats under the guest's x87 control word and MXCSR,
+/// for any operand: the x87 sequences on [`sim_core::det::X87`], the
+/// packed SSE work on [`Fp::guest`].
+#[derive(Clone, Debug)]
+struct Fpu {
+    x87: X87,
+    sse: Cell<Fp>,
 }
-
-/// A binary32 result: an exact zero, or normal and clear of the
-/// normal/subnormal boundary (tininess is detected before or after
-/// rounding, depending on the hardware).
-fn result32(bits: u32) -> bool {
-    let m = bits & 0x7fff_ffff;
-    m == 0 || (0x0080_0001..0x7f80_0000).contains(&m)
-}
-
-fn result64(bits: u64) -> bool {
-    let m = bits & 0x7fff_ffff_ffff_ffff;
-    m == 0 || (0x0010_0000_0000_0001..0x7ff0_0000_0000_0000).contains(&m)
-}
-
-/// A zero from a product or quotient of nonzero values underflowed.
-fn underflowed(kind: Arith, a: f64, b: f64, r: f64) -> bool {
-    r == 0.0
-        && match kind {
-            Arith::Mul => a != 0.0 && b != 0.0,
-            Arith::Div => a != 0.0,
-            Arith::Add | Arith::Sub => false,
-        }
-}
-
-/// The x87 sequences, at the guest's precision.
-#[derive(Clone, Copy, Debug)]
-struct Fpu(Precision);
 
 impl Fpu {
+    fn new(precision: Precision, raised: Raised) -> Self {
+        Self {
+            x87: X87::with_flags(precision.control(), raised.x87),
+            sse: Cell::new(Fp::guest(raised.mxcsr)),
+        }
+    }
+
+    fn raised(&self) -> Raised {
+        Raised {
+            mxcsr: self.sse.get().mxcsr().unwrap_or_default(),
+            x87: self.x87.flags(),
+        }
+    }
+
     /// `fld m32`.
-    fn load(self, bits: u32) -> Result<St, Bail> {
-        if !input32(bits) {
-            return Err(Bail::Float);
-        }
-        Ok(St(f64::from(f32::from_bits(bits))))
+    fn load(&self, bits: u32) -> Result<St, Bail> {
+        Ok(self.x87.load32(bits))
     }
 
-    /// `fild m32` of an operand below `2^24`: exact in both precisions.
-    fn int(self, v: u32) -> St {
-        debug_assert!(v < 1 << 24);
-        St(f64::from(v))
+    /// `fild m32` of an operand below `2^24`.
+    fn int(&self, v: u32) -> St {
+        self.x87.int(i64::from(v))
     }
 
-    fn op(self, kind: Arith, a: St, b: St) -> Result<St, Bail> {
-        if matches!(kind, Arith::Div) && b.0 == 0.0 {
-            return Err(Bail::Float);
-        }
-        let r = match self.0 {
-            Precision::Single => {
-                let (x, y) = (a.0 as f32, b.0 as f32);
-                let r = match kind {
-                    Arith::Add => x + y,
-                    Arith::Sub => x - y,
-                    Arith::Mul => x * y,
-                    Arith::Div => x / y,
-                };
-                if !result32(r.to_bits()) {
-                    return Err(Bail::Float);
-                }
-                f64::from(r)
-            }
-            Precision::Double => {
-                let (x, y) = (a.0, b.0);
-                let r = match kind {
-                    Arith::Add => x + y,
-                    Arith::Sub => x - y,
-                    Arith::Mul => x * y,
-                    Arith::Div => x / y,
-                };
-                if !result64(r.to_bits()) {
-                    return Err(Bail::Float);
-                }
-                r
-            }
-        };
-        if underflowed(kind, a.0, b.0, r) {
-            return Err(Bail::Float);
-        }
-        Ok(St(r))
+    fn add(&self, a: St, b: St) -> Result<St, Bail> {
+        Ok(self.x87.add(a, b))
     }
-
-    fn add(self, a: St, b: St) -> Result<St, Bail> {
-        self.op(Arith::Add, a, b)
+    fn sub(&self, a: St, b: St) -> Result<St, Bail> {
+        Ok(self.x87.sub(a, b))
     }
-    fn sub(self, a: St, b: St) -> Result<St, Bail> {
-        self.op(Arith::Sub, a, b)
+    fn mul(&self, a: St, b: St) -> Result<St, Bail> {
+        Ok(self.x87.mul(a, b))
     }
-    fn mul(self, a: St, b: St) -> Result<St, Bail> {
-        self.op(Arith::Mul, a, b)
-    }
-    fn div(self, a: St, b: St) -> Result<St, Bail> {
-        self.op(Arith::Div, a, b)
+    fn div(&self, a: St, b: St) -> Result<St, Bail> {
+        Ok(self.x87.div(a, b))
     }
 
     /// `fst(p) m32`.
-    fn store(self, a: St) -> Result<u32, Bail> {
-        let r = a.0 as f32;
-        if !result32(r.to_bits()) || (r == 0.0 && a.0 != 0.0) {
-            return Err(Bail::Float);
-        }
-        Ok(r.to_bits())
+    fn store(&self, a: St) -> Result<u32, Bail> {
+        Ok(self.x87.store32(a))
     }
-}
 
-/// `fcom`/`fcomp`: the values are never NaN here.
-fn cmp(a: St, b: St) -> Ordering {
-    a.0.partial_cmp(&b.0).unwrap_or(Ordering::Equal)
-}
-
-/// One packed SSE operation, lane by lane, rounded once per lane.
-fn packed(kind: Arith, a: Vec4, b: Vec4) -> Result<Vec4, Bail> {
-    let mut out = [0; 4];
-    for ((o, &a), &b) in out.iter_mut().zip(&a).zip(&b) {
-        if !input32(a) || !input32(b) {
-            return Err(Bail::Float);
-        }
-        let (x, y) = (f32::from_bits(a), f32::from_bits(b));
-        let r = match kind {
-            Arith::Add => x + y,
-            Arith::Sub => x - y,
-            Arith::Mul => x * y,
-            Arith::Div => unreachable!("no packed division"),
-        };
-        if !result32(r.to_bits()) || underflowed(kind, f64::from(x), f64::from(y), f64::from(r)) {
-            return Err(Bail::Float);
-        }
-        *o = r.to_bits();
+    /// `fcomp; fnstsw ax; test ah, 5` (or `41h`): every branch the
+    /// interpreter takes on it tests for an ordered less or greater, so an
+    /// unordered compare (`None`) takes neither.
+    fn cmp(&self, a: St, b: St) -> Option<Ordering> {
+        self.x87.compare(a, b, false)
     }
-    Ok(out)
-}
 
-fn add4(a: Vec4, b: Vec4) -> Result<Vec4, Bail> {
-    packed(Arith::Add, a, b)
-}
-fn sub4(a: Vec4, b: Vec4) -> Result<Vec4, Bail> {
-    packed(Arith::Sub, a, b)
-}
-fn mul4(a: Vec4, b: Vec4) -> Result<Vec4, Bail> {
-    packed(Arith::Mul, a, b)
+    /// One packed SSE operation, lane by lane, rounded once per lane. Only
+    /// an unmasked exception refuses, which the entry's environment check
+    /// rules out.
+    fn packed(&self, op: impl FnOnce(&mut Fp) -> Vec4) -> Result<Vec4, Bail> {
+        let mut fp = self.sse.get();
+        let r = op(&mut fp);
+        self.sse.set(fp);
+        if fp.exact() { Ok(r) } else { Err(Bail::Env) }
+    }
+
+    fn add4(&self, a: Vec4, b: Vec4) -> Result<Vec4, Bail> {
+        self.packed(|fp| fp.add4(a, b))
+    }
+    fn sub4(&self, a: Vec4, b: Vec4) -> Result<Vec4, Bail> {
+        self.packed(|fp| fp.sub4(a, b))
+    }
+    fn mul4(&self, a: Vec4, b: Vec4) -> Result<Vec4, Bail> {
+        self.packed(|fp| fp.mul4(a, b))
+    }
 }
 
 fn splat(x: u32) -> Vec4 {
@@ -369,12 +322,18 @@ impl Ray {
     /// scale `scale * root_scale` stored, and both ends as
     /// `(p - origin) * frame_scale`, packed.
     pub fn root(&self) -> Result<Root, Bail> {
-        let fpu = Fpu(self.precision);
+        let fpu = Fpu::new(
+            self.precision,
+            Raised {
+                mxcsr: self.mxcsr,
+                x87: 0,
+            },
+        );
         let scale = fpu.load(self.origin[3])?;
         let inverse_scale = fpu.store(fpu.div(fpu.load(self.constants.one)?, scale)?)?;
         let s = fpu.store(fpu.mul(scale, fpu.load(self.constants.root_scale)?)?)?;
-        let start = mul4(splat(s), sub4(self.from, self.origin)?)?;
-        let end = mul4(splat(s), sub4(self.to, self.origin)?)?;
+        let start = fpu.mul4(splat(s), fpu.sub4(self.from, self.origin)?)?;
+        let end = fpu.mul4(splat(s), fpu.sub4(self.to, self.origin)?)?;
         Ok(Root {
             inverse_scale,
             frame: Frame {
@@ -385,21 +344,22 @@ impl Ray {
                 property: 0,
             },
             segment: Segment { start, end },
+            raised: fpu.raised(),
         })
     }
 
     /// `(1 - w) * a + w * b`, packed, as every clip writes it.
-    fn blend(&self, w: u32, a: Vec4, b: Vec4) -> Result<Vec4, Bail> {
+    fn blend(&self, fpu: &Fpu, w: u32, a: Vec4, b: Vec4) -> Result<Vec4, Bail> {
         let w = splat(w);
-        add4(mul4(sub4(self.constants.unit, w)?, a)?, mul4(w, b)?)
+        fpu.add4(fpu.mul4(fpu.sub4(self.constants.unit, w)?, a)?, fpu.mul4(w, b)?)
     }
 
     /// The end a return site recomputes once the fraction drops below one:
     /// `(((1 - f) * from + f * to) - origin) * frame_scale - frame_offset`.
-    fn end_at(&self, fraction: u32, frame: &Frame) -> Result<Vec4, Bail> {
-        let world = self.blend(fraction, self.from, self.to)?;
-        let local = mul4(splat(frame.scale), sub4(world, self.origin)?)?;
-        sub4(local, frame.offset)
+    fn end_at(&self, fpu: &Fpu, fraction: u32, frame: &Frame) -> Result<Vec4, Bail> {
+        let world = self.blend(fpu, fraction, self.from, self.to)?;
+        let local = fpu.mul4(splat(frame.scale), fpu.sub4(world, self.origin)?)?;
+        fpu.sub4(local, frame.offset)
     }
 }
 
@@ -438,7 +398,7 @@ struct Level {
 }
 
 /// The query state every level shares.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct Ctx {
     ray: Ray,
     fpu: Fpu,
@@ -462,7 +422,7 @@ impl<B: AsRef<[u8]>> RayWalk<B> {
             code,
             ctx: Ctx {
                 ray,
-                fpu: Fpu(ray.precision),
+                fpu: Fpu::new(ray.precision, root.raised),
                 inverse_scale: root.inverse_scale,
                 fraction: ray.constants.one,
             },
@@ -507,6 +467,25 @@ impl<B: AsRef<[u8]>> RayWalk<B> {
         }
     }
 
+    /// The flags the setup and the walk so far raised, for the entry to
+    /// leave in MXCSR and the x87 status word.
+    pub fn raised(&self) -> Raised {
+        self.ctx.fpu.raised()
+    }
+
+    /// Continue from the guest's state after a callback: its `mxcsr` and
+    /// x87 status word, plus the flags the walk has raised.
+    pub fn absorb(&mut self, mxcsr: u32, x87_status: u16) {
+        let raised = self.ctx.fpu.raised();
+        self.ctx.fpu = Fpu::new(
+            self.ctx.ray.precision,
+            Raised {
+                mxcsr: mxcsr | (raised.mxcsr & 0x3f),
+                x87: (x87_status & 0x3f) | raised.x87,
+            },
+        );
+    }
+
     /// Nested calls active now, the root included.
     pub fn depth(&self) -> usize {
         self.levels.len()
@@ -516,7 +495,7 @@ impl<B: AsRef<[u8]>> RayWalk<B> {
 /// The return site of a two-sided split (`0x00300e9d`, `0x00300ff2`).
 /// `false` when the frame returns there.
 fn resume_after_child(ctx: &Ctx, level: &mut Level, resume: Resume) -> Result<bool, Bail> {
-    let fpu = ctx.fpu;
+    let fpu = &ctx.fpu;
     let (Resume::High {
         start,
         end,
@@ -533,19 +512,19 @@ fn resume_after_child(ctx: &Ctx, level: &mut Level, resume: Resume) -> Result<bo
     }) = resume;
     let zero = fpu.load(ctx.ray.constants.zero)?;
     let (s, e) = (fpu.load(start)?, fpu.load(end)?);
-    if cmp(fpu.mul(e, s)?, zero) == Ordering::Less {
+    if fpu.cmp(fpu.mul(e, s)?, zero) == Some(Ordering::Less) {
         let w = fpu.store(fpu.div(s, fpu.sub(s, e)?)?)?;
         let seg = level.segment;
-        level.segment.start = ctx.ray.blend(w, seg.start, seg.end)?;
+        level.segment.start = ctx.ray.blend(fpu, w, seg.start, seg.end)?;
     }
-    if cmp(fpu.load(ctx.fraction)?, fpu.load(ctx.ray.constants.one)?) == Ordering::Less {
-        level.segment.end = ctx.ray.end_at(ctx.fraction, &level.frame)?;
+    if fpu.cmp(fpu.load(ctx.fraction)?, fpu.load(ctx.ray.constants.one)?) == Some(Ordering::Less) {
+        level.segment.end = ctx.ray.end_at(fpu, ctx.fraction, &level.frame)?;
         if let Some(a) = axis {
             let end = fpu.load(level.segment.end[a])?;
             let t = fpu.load(threshold)?;
             let short = match resume {
-                Resume::High { .. } => cmp(end, t) == Ordering::Less,
-                Resume::Low { .. } => cmp(end, t) == Ordering::Greater,
+                Resume::High { .. } => fpu.cmp(end, t) == Some(Ordering::Less),
+                Resume::Low { .. } => fpu.cmp(end, t) == Some(Ordering::Greater),
             };
             if short {
                 return Ok(false);
@@ -567,7 +546,7 @@ fn be(code: &[u8], pc: usize, at: usize, n: usize) -> Result<u32, Bail> {
 /// The projection of one end on a diagonal plane, in the original's
 /// operand order (`0x00300a1e..0x00300c77`): the first axis loaded, then
 /// each `fadd`/`fsub` in turn.
-fn project(fpu: Fpu, op: u8, p: Vec4) -> Result<St, Bail> {
+fn project(fpu: &Fpu, op: u8, p: Vec4) -> Result<St, Bail> {
     let (first, rest): (usize, &[(bool, usize)]) = match op {
         0x13 => (2, &[(true, 1)]),
         0x14 => (1, &[(false, 2)]),
@@ -603,7 +582,7 @@ struct Split {
 /// Run one opcode of the top level. `Some` when the walk has something to
 /// report: a nested call (pushed) or a terminal (popped).
 fn step(code: &[u8], ctx: &Ctx, levels: &mut Vec<Level>) -> Result<Option<Event>, Bail> {
-    let fpu = ctx.fpu;
+    let fpu = &ctx.fpu;
     let top = levels.len() - 1;
     let level = &mut levels[top];
     let pc = level.pc;
@@ -711,7 +690,7 @@ fn step(code: &[u8], ctx: &Ctx, levels: &mut Vec<Level>) -> Result<Option<Event>
 /// Rescale `01..04` (`0x003012da`): both ends lose the operand bytes and
 /// gain `2^k`, and the level takes a new frame with the offsets added and
 /// scaled the same way, `k` more bits and the frame scale times `2^k`.
-fn rescale(fpu: Fpu, level: &mut Level, k: u32, b: [u32; 3]) -> Result<(), Bail> {
+fn rescale(fpu: &Fpu, level: &mut Level, k: u32, b: [u32; 3]) -> Result<(), Bail> {
     let bytes = [
         small(b[0].into()),
         small(b[1].into()),
@@ -720,13 +699,13 @@ fn rescale(fpu: Fpu, level: &mut Level, k: u32, b: [u32; 3]) -> Result<(), Bail>
     ];
     let m = splat(small(1 << k));
     let seg = &mut level.segment;
-    seg.start = sub4(seg.start, bytes)?;
-    seg.end = sub4(seg.end, bytes)?;
-    seg.start = mul4(m, seg.start)?;
-    seg.end = mul4(m, seg.end)?;
+    seg.start = fpu.sub4(seg.start, bytes)?;
+    seg.end = fpu.sub4(seg.end, bytes)?;
+    seg.start = fpu.mul4(m, seg.start)?;
+    seg.end = fpu.mul4(m, seg.end)?;
     let f = level.frame;
     level.frame = Frame {
-        offset: mul4(m, add4(f.offset, bytes)?)?,
+        offset: fpu.mul4(m, fpu.add4(f.offset, bytes)?)?,
         bits: f.bits.wrapping_add(k),
         scale: fpu.store(fpu.mul(fpu.int(1 << k), fpu.load(f.scale)?)?)?,
         key: f.key,
@@ -738,7 +717,7 @@ fn rescale(fpu: Fpu, level: &mut Level, k: u32, b: [u32; 3]) -> Result<(), Bail>
 /// The split tests from `0x00300d50`. Takes one side by moving the level's
 /// pc; for both sides returns the child the original calls first.
 fn two_sided(ctx: &Ctx, level: &mut Level, s: &Split, op: u8) -> Result<Option<Level>, Bail> {
-    let fpu = ctx.fpu;
+    let fpu = &ctx.fpu;
     let seg = level.segment;
     // The start's projection stays on the x87 stack; the end's is stored.
     let (start, end) = match s.axis {
@@ -749,11 +728,11 @@ fn two_sided(ctx: &Ctx, level: &mut Level, s: &Split, op: u8) -> Result<Option<L
         ),
     };
     let (low, high) = (fpu.load(s.low)?, fpu.load(s.high)?);
-    if cmp(end, high) == Ordering::Less && cmp(start, high) == Ordering::Less {
+    if fpu.cmp(end, high) == Some(Ordering::Less) && fpu.cmp(start, high) == Some(Ordering::Less) {
         level.pc = s.first;
         return Ok(None);
     }
-    if cmp(start, low) == Ordering::Greater && cmp(end, low) == Ordering::Greater {
+    if fpu.cmp(start, low) == Some(Ordering::Greater) && fpu.cmp(end, low) == Some(Ordering::Greater) {
         level.pc = s.second;
         return Ok(None);
     }
@@ -762,7 +741,7 @@ fn two_sided(ctx: &Ctx, level: &mut Level, s: &Split, op: u8) -> Result<Option<L
     let end_low = fpu.store(fpu.sub(end, low)?)?;
     let end_high = fpu.store(fpu.sub(end, high)?)?;
     let zero = fpu.load(ctx.ray.constants.zero)?;
-    let rising = cmp(fpu.load(start_low)?, fpu.load(end_low)?) == Ordering::Less;
+    let rising = fpu.cmp(fpu.load(start_low)?, fpu.load(end_low)?) == Some(Ordering::Less);
     // The first child gets a copy with its end clipped at the threshold
     // on the far side of it.
     let (near_start, near_end) = if rising {
@@ -772,9 +751,9 @@ fn two_sided(ctx: &Ctx, level: &mut Level, s: &Split, op: u8) -> Result<Option<L
     };
     let mut copy = seg;
     let (ns, ne) = (fpu.load(near_start)?, fpu.load(near_end)?);
-    if cmp(fpu.mul(ne, ns)?, zero) == Ordering::Less {
+    if fpu.cmp(fpu.mul(ne, ns)?, zero) == Some(Ordering::Less) {
         let w = fpu.store(fpu.div(ns, fpu.sub(ns, ne)?)?)?;
-        copy.end = ctx.ray.blend(w, seg.start, seg.end)?;
+        copy.end = ctx.ray.blend(fpu, w, seg.start, seg.end)?;
     }
     let (resume, first) = if rising {
         (
@@ -812,7 +791,7 @@ fn two_sided(ctx: &Ctx, level: &mut Level, s: &Split, op: u8) -> Result<Option<L
 /// outside `[lo, hi]` on the axis, else clip whichever ends lie outside.
 /// `false` when the frame returns.
 fn bound(code: &[u8], ctx: &Ctx, level: &mut Level, op: u8) -> Result<bool, Bail> {
-    let fpu = ctx.fpu;
+    let fpu = &ctx.fpu;
     let pc = level.pc;
     let (a, lo, hi, len) = if op <= 0x28 {
         let a = usize::from(op - 0x26);
@@ -833,13 +812,13 @@ fn bound(code: &[u8], ctx: &Ctx, level: &mut Level, op: u8) -> Result<bool, Bail
     };
     let seg = level.segment;
     let (s, e) = (fpu.load(seg.start[a])?, fpu.load(seg.end[a])?);
-    let reverse = if cmp(s, e) == Ordering::Less {
-        if cmp(e, lo) == Ordering::Less || cmp(s, hi) == Ordering::Greater {
+    let reverse = if fpu.cmp(s, e) == Some(Ordering::Less) {
+        if fpu.cmp(e, lo) == Some(Ordering::Less) || fpu.cmp(s, hi) == Some(Ordering::Greater) {
             return Ok(false);
         }
         false
     } else {
-        if cmp(s, lo) == Ordering::Less || cmp(e, hi) == Ordering::Greater {
+        if fpu.cmp(s, lo) == Some(Ordering::Less) || fpu.cmp(e, hi) == Some(Ordering::Greater) {
             return Ok(false);
         }
         true
@@ -850,9 +829,9 @@ fn bound(code: &[u8], ctx: &Ctx, level: &mut Level, op: u8) -> Result<bool, Bail
     for (t, far) in [(hi, true), (lo, false)] {
         let d0 = fpu.load(fpu.store(fpu.sub(s, t)?)?)?;
         let d1 = fpu.sub(e, t)?;
-        if cmp(fpu.mul(d0, d1)?, zero) == Ordering::Less {
+        if fpu.cmp(fpu.mul(d0, d1)?, zero) == Some(Ordering::Less) {
             let w = fpu.store(fpu.div(d0, fpu.sub(d0, d1)?)?)?;
-            let v = ctx.ray.blend(w, seg.start, seg.end)?;
+            let v = ctx.ray.blend(fpu, w, seg.start, seg.end)?;
             // The high clip moves the end of a rising segment, the low
             // clip its start; a falling segment the other way round.
             if far != reverse {

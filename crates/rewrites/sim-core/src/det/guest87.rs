@@ -56,7 +56,7 @@ enum Op {
 
 /// The x87 under one control word, gathering the exception flags its
 /// operations raise.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct X87 {
     control: u16,
     flags: Cell<u16>,
@@ -73,6 +73,15 @@ impl X87 {
         Self {
             control,
             flags: Cell::new(0),
+        }
+    }
+
+    /// [`X87::new`], continuing from the exception `flags` earlier
+    /// sequences raised.
+    pub fn with_flags(control: u16, flags: u16) -> Self {
+        Self {
+            control,
+            flags: Cell::new(flags & 0x3f),
         }
     }
 

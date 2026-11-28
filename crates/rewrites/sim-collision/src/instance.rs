@@ -88,12 +88,19 @@ impl PlacementMatrix {
 
     pub fn local_ray(&self, one: u32, start: V, delta: V) -> Result<(V, V), Bail> {
         let mut fp = Fp::new();
-        let inv = self.invert(one, &mut fp);
+        let ray = self.local_ray_with(&mut fp, one, start, delta);
+        if fp.exact() { Ok(ray) } else { Err(Bail::Float) }
+    }
+
+    /// [`PlacementMatrix::local_ray`] in the caller's `fp` ([`Fp::guest`]
+    /// runs any operand and gathers the guest's flags).
+    pub fn local_ray_with(&self, fp: &mut Fp, one: u32, start: V, delta: V) -> (V, V) {
+        let inv = self.invert(one, fp);
         let mut transform = |mut v: V, point: bool| {
             if det::compare(inv.scale, one) != Ordering::Equal {
                 v = v.map(|x| fp.mul(inv.scale, x));
             }
-            let mut v = inv.rotate(v, &mut fp);
+            let mut v = inv.rotate(v, &mut *fp);
             if point {
                 for (x, t) in v.iter_mut().zip(inv.translation) {
                     *x = fp.add(*x, t);
@@ -101,17 +108,18 @@ impl PlacementMatrix {
             }
             v
         };
-        let ray = (transform(start, true), transform(delta, false));
-        if fp.exact() {
-            Ok(ray)
-        } else {
-            Err(Bail::Float)
-        }
+        (transform(start, true), transform(delta, false))
     }
 
     pub fn plane(&self, p: [u32; 4], flipped: bool) -> Result<[u32; 4], Bail> {
         let mut fp = Fp::new();
-        let [x, y, z] = self.rotate([p[0], p[1], p[2]], &mut fp);
+        let out = self.plane_with(&mut fp, p, flipped);
+        if fp.exact() { Ok(out) } else { Err(Bail::Float) }
+    }
+
+    /// [`PlacementMatrix::plane`] in the caller's `fp`.
+    pub fn plane_with(&self, fp: &mut Fp, p: [u32; 4], flipped: bool) -> [u32; 4] {
+        let [x, y, z] = self.rotate([p[0], p[1], p[2]], fp);
         let tz = fp.mul(self.translation[2], z);
         let scaled = fp.mul(p[3], self.scale);
         let mut d = fp.add(tz, scaled);
@@ -123,11 +131,7 @@ impl PlacementMatrix {
         if flipped {
             out = out.map(|n| fp.sub(0, n));
         }
-        if fp.exact() {
-            Ok(out)
-        } else {
-            Err(Bail::Float)
-        }
+        out
     }
 }
 

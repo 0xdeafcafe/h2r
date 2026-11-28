@@ -525,6 +525,10 @@ fn mopp_ray_step(
         // The setup and earlier callbacks have written guest memory.
         Err(why) => collision_unhandled(Entry::MoppRay, why, cpu),
     };
+    // The walk's float flags, as the callback or the caller sees them.
+    let raised = cast.raised();
+    cpu.mxcsr = raised.mxcsr;
+    cpu.x87.status |= raised.x87;
     let Some(call) = call else {
         (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp, cpu.esp) = (entry.ebx, entry.esi, entry.edi, entry.ebp, entry.esp);
         return mem.ret(cpu, 0x14);
