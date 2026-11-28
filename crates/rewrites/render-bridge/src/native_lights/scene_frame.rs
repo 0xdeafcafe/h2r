@@ -62,7 +62,7 @@ pub enum Dropped {
 impl Dropped {
     pub const COUNT: usize = 7;
 
-    fn index(self) -> usize {
+    pub(super) fn index(self) -> usize {
         match self {
             Dropped::Unread => 0,
             Dropped::Constants => 1,
@@ -163,6 +163,12 @@ static GROUPS: AtomicU64 = AtomicU64::new(0);
 /// Counts a light dropped under `why`.
 pub fn drop_light(why: Dropped) {
     DROPPED[why.index()].fetch_add(1, Ordering::Relaxed);
+    drop_group(why);
+}
+
+/// A dropped light's or first-person slot's group refusal, counted in
+/// `scene_dropped_light_group_<refusal>`.
+pub(super) fn drop_group(why: Dropped) {
     if let Dropped::Group(refusal) = why
         && let Some(n) = GroupRefusal::NAMES.iter().position(|&n| n == refusal.name())
     {

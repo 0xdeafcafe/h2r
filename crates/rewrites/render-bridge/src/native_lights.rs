@@ -233,14 +233,15 @@ pub(crate) fn bound_target() -> Option<[u32; 8]> {
     HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()?.target()
 }
 
-/// First-person slots the scene path took ([`draw_first_person_scene`]).
+/// First-person slots the scene path drew.
 pub fn first_person_scene_slots() -> u64 {
     first_person::scene_slots()
 }
 
-/// First-person slots the host did not draw ([`draw_cut_light`]).
-pub fn first_person_kept_host_slots() -> u64 {
-    first_person::kept_host_slots()
+/// First-person slots the scene path dropped, by cause
+/// (`scene_dropped_first_person_<cause>`).
+pub fn first_person_dropped() -> Vec<(&'static str, u64)> {
+    first_person::dropped()
 }
 
 /// Draws the first-person lights' layers the scene path took
