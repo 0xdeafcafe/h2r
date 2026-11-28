@@ -589,6 +589,11 @@ points! { ALL;
     /// The convex agents' closest-feature query (docs/engine/havok-convex.md).
     /// The convex agents' add-point call, cdecl (docs/engine/havok-convex.md).
     HAVOK_ADD_POINT @ 0x0030_2c70: [fn(a: stack 0, b: stack 1, input: stack 2, point: stack 3, manager: stack 4, slots: stack 5, count: stack 6) -> eax ret 0], Hot; "docs/engine/havok-convex.md";
+    /// The contact manager's add (vtable `0x00415074` slot 1), which the
+    /// add-point call makes for a new slot (docs/engine/havok-convex.md).
+    HAVOK_CONTACT_COMMIT @ 0x0031_8c10: [fn(manager: ecx, a: stack 0, b: stack 1, input: stack 2, contact: stack 3) -> eax ret 16], Hot; "docs/engine/havok-convex.md";
+    /// The world's contact listener walk, cdecl (docs/engine/havok-convex.md).
+    HAVOK_CONTACT_WALK @ 0x0031_8320: [fn(world: stack 0, event: stack 1) ret 0], Hot; "docs/engine/havok-convex.md";
     HAVOK_CLOSEST_QUERY @ 0x0030_48a0: [fn(state: ecx, a: stack 0, b: stack 1, transform: stack 2, cache: stack 3, out: stack 4) -> eax ret 20], Hot; "docs/engine/havok-convex.md";
     HAVOK_DEACTIVATION_TEST @ 0x0031_6b30: [fn(island: ecx, out: stack 0, step: stack 1) -> eax ret 8], Hot; "docs/engine/havok-integrate.md";
     /// The island solve, cdecl (docs/engine/havok-step.md, "The island solve").

@@ -2,7 +2,11 @@
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use engine::points;
 use engine::sim_physics::PORTS;
-use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
+use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, Inline, TransferAbi};
+
+/// The contact commit's one resume: the return from its world listener
+/// walk.
+static COMMIT_SITES: [u32; 1] = [engine::sim_physics::contact_commit::WALK_SITE];
 
 pub struct NativePhysics;
 
@@ -293,6 +297,47 @@ fn install_physics(b: &mut Builder) {
         .context_only()
         .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
+    // The contact commit: the Rust answers it to its world listener walk,
+    // which calls Halo's contact callback; the walk is called in place and
+    // the lifted tail runs from its site.
+    let commit = &points::HAVOK_CONTACT_COMMIT;
+    b.raw()
+        .implement(commit, PHYSICS, move |cpu, ctx, pc| {
+            use engine::sim_physics::contact_commit::{WALK_SITE, WORLD_WALK};
+            if pc != commit.base {
+                return original(cpu, ctx, pc, pc == WALK_SITE);
+            }
+            let step = {
+                let mut mem = ctx.memory();
+                parity::commit_enter(cpu, &mut mem)
+            };
+            if step != parity::Commit::Answered {
+                return original(cpu, ctx, pc, false);
+            }
+            match ctx.call_inline(cpu, WORLD_WALK, WALK_SITE) {
+                Inline::Returned => original(cpu, ctx, WALK_SITE, true),
+                Inline::Leave { transfer, .. } => Ok(transfer),
+            }
+        })
+        .resumes(&COMMIT_SITES)
+        .context_only()
+        .after_feature("sim-observer-resources")
+        .after_feature("sim-submix");
+    // The world listener walk: an audited commit's prediction is compared
+    // at its entry.
+    let walk = &points::HAVOK_CONTACT_WALK;
+    b.raw()
+        .implement(walk, PHYSICS, move |cpu, ctx, pc| {
+            if pc == walk.base {
+                let mem = ctx.memory();
+                parity::commit_walk(cpu, &mem);
+                drop(mem);
+            }
+            original(cpu, ctx, pc, false)
+        })
+        .context_only()
+        .after_feature("sim-observer-resources")
+        .after_feature("sim-submix");
     let test = &points::HAVOK_DEACTIVATION_TEST;
     b.raw()
         .implement(test, PHYSICS, move |cpu, ctx, pc| {
@@ -449,11 +494,15 @@ mod tests {
         }
         // The integrate phase and the deactivation test are implementations
         // with no resume sites.
-        for point in [&points::HAVOK_INTEGRATE_PHASE, &points::HAVOK_DEACTIVATION_TEST, &points::HAVOK_STRUCTURE_POLYGON, &points::HAVOK_CONVEX_PROCESS, &points::HAVOK_CLOSEST_QUERY, &points::HAVOK_ADD_POINT] {
+        for point in [&points::HAVOK_INTEGRATE_PHASE, &points::HAVOK_DEACTIVATION_TEST, &points::HAVOK_STRUCTURE_POLYGON, &points::HAVOK_CONVEX_PROCESS, &points::HAVOK_CLOSEST_QUERY, &points::HAVOK_ADD_POINT, &points::HAVOK_CONTACT_WALK] {
             let hook = plan.chains[&point.base].implement.as_ref().unwrap();
             assert_eq!(hook.label, PHYSICS);
             assert!(hook.continuation_sites().0.is_empty(), "{:?}", point.name);
         }
+        // The contact commit resumes at its walk's return only.
+        let hook = plan.chains[&points::HAVOK_CONTACT_COMMIT.base].implement.as_ref().unwrap();
+        assert_eq!(hook.label, PHYSICS);
+        assert_eq!(hook.continuation_sites().0, &COMMIT_SITES[..]);
         // The broadphase batch is one implementation; both motion methods
         // and the MOPP box query keep their observer pairs.
         let chain = &plan.chains[&points::HAVOK_BROADPHASE_BATCH.base];

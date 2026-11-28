@@ -251,6 +251,8 @@ pub struct Islands {
     pub query: TakeoverArm,
     /// The add-point call arm (`physics.agent.point`).
     pub point: TakeoverArm,
+    /// The contact commit arm (`physics.contact.commit`).
+    pub commit: TakeoverArm,
 }
 
 /// A take-over arm: calls since the process started, and its take-over

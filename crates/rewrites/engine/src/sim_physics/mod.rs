@@ -10,6 +10,7 @@ mod answer;
 mod colors;
 mod havok;
 mod island_solve;
+pub mod contact_commit;
 pub mod contact_point;
 pub mod convex_agent;
 pub mod convex_query;

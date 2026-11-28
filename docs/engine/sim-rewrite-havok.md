@@ -17,8 +17,9 @@ structure polygon builder's take-over (slice 4,
 [havok-structure.md](havok-structure.md)); slice 5's take-overs
 ([havok-convex.md](havok-convex.md)): the convex agent's separated
 pairs, the closest-feature query whole (its shapes' virtuals, triangle
-case `303dd0` and penetration call `30a6b0` in Rust) and the add-point
-call on a point that moves its slot;
+case `303dd0` and penetration call `30a6b0` in Rust), the add-point
+call on a point that moves its slot, and the contact commit `318c10`
+to its listener walk (Halo's callback and the tail stay lifted);
 the island
 solve entry `31c100` (slice 2). The per-function `native_havok_solver`,
 `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`
@@ -27,10 +28,10 @@ beyond the differential tests (disc sweep, run parity, the behaviour
 suites) and the timing gate are open: the collide phase `30fcb0`, the
 integrate phase's declined paths (pending work, listeners, splits, island
 deactivation), the manifold refresh `302eb0` (ported and compared, no
-arm), a new contact point (the add-point call and its cut `302a10` are
-ported and compared; the manager's add, the contact commit `318c10` with
-Halo's callback, is not) and the other agent/narrowphase leaves still
-run lifted, and
+arm), the add-point call's new slot and its cut `302a10` (ported and
+compared, no arm: they call the commit, whose listeners are Halo's), a
+constraint's first point (`30d2b0`) and the other agent/narrowphase
+leaves still run lifted, and
 slice 3's runs, lanes and worker solves are not built (each island reads
 the solver buffer bytes the island before it left, so a run's islands
 are not independent without a read check).
@@ -519,11 +520,11 @@ with no guest call between them (A3) skip validation.
     shape object the guest would have built on its stack is scratch (A1);
     slice 4's step 0 proves nothing keeps a pointer to it.
   - Any other vtable: the pair runs the lifted `vt[+0x10]`, awaited.
-- **Contact commit** (`contact.rs`): `Add` runs the manager's add-point
-  (`0x00318c10`): friction and restitution combine, the impulse seed, the
-  id map, the property insert, the first-point constraint add
-  (`0x0030d2b0`, `0x00316cf0`), then Halo's contact callback
-  (`0x00277b80`), awaited. `Remove` likewise. Serial, pair order, child
+- **Contact commit** (`commit.rs`): the manager's add (`0x00318c10`):
+  the first-point constraint add (`0x0030d2b0`, `0x00316cf0`), the point,
+  the property insert and the ID map, friction and restitution, then the
+  listener walks with Halo's contact callback (`0x00277b80`) awaited,
+  then the impulse seed. `Remove` likewise. Serial, pair order, child
   order (F4, F7, F8).
 - **Parallel form.** For `Jobs > 1`: speculate every pair of the island
   on workers, then validate and commit in pair order on the game thread.
@@ -813,6 +814,7 @@ since start and whether the arm is proven or ended since the map load.
 | `physics.agent.convex` | `2eeb40`, `ret 0x10` | take-over |
 | `physics.agent.query` | `3048a0`, `ret 0x14` | take-over |
 | `physics.agent.point` | `302c70`, `ret` | take-over |
+| `physics.contact.commit` | `318c10` to `318320`, `ret 0x10` | take-over to the walk |
 
 - **Take-over.** The broadphase arm is one `implement` at `2e0350`.
   `broadphase::capture` predicts the whole `CpuAbi` but `eip` and every
@@ -870,6 +872,14 @@ since start and whether the arm is proven or ended since the map load.
   matches: the slot's words with eax the slot, ecx and edx the point's
   distance and weight; declines `memory`, `commit` (the manager adds the
   contact), `float`, `unobserved` (`havok.islands`'s `point`).
+- **Contact commit.** The same proof, audit and latch at `318c10`, up to
+  the world listener walk `318320`, whose listeners include Halo's
+  contact callback. An answer leaves the call at the walk's entry and
+  the hook calls the walk in place (`ExecCtx::call_inline`); the lifted
+  tail runs from its site `318d9b`. An audit compares at the guest's own
+  walk entry from that site. Declines `memory`, `full`, `first`, `grow`,
+  `motion`, `island`, `float`, `unobserved` (`havok.islands`'s `commit`;
+  [havok-convex.md](havok-convex.md#the-commit-arm)).
 - **Declines.** A capture that refuses the state (float environment,
   array capacity, an unknown node), an apply that refuses its spans (an
   access trap, a read-only page, a span across mappings, two spans on the
