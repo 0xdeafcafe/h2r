@@ -150,6 +150,7 @@ pub(super) fn object_pose(
             for &section in sections.iter().filter(|&&index| index != u8::MAX) {
                 let index = u32::from(section);
                 if m.u32(at(hlmt, 0xc4 + (index / 32) * 4)?)? & (1 << (index % 32)) != 0 {
+                    engine::render_census::setup_pose_refusal();
                     return Err(Refusal::Palette);
                 }
             }

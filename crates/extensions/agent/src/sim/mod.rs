@@ -20,6 +20,8 @@
 //!   ([`events`]).
 //! - `sim.ledger`: the guest phases of the game tick the Rust driver still
 //!   calls ([`ledger`]); no guest reads.
+//! - `sim.render_writes`: the render-writes census ([`render_writes`]); no
+//!   guest reads.
 //! - `player.mark` / `player.recall`: a player's position and facing saved
 //!   under a slot, and put back through `sim.state.set`'s teleport.
 //!
@@ -43,6 +45,7 @@ pub mod objects;
 pub mod pause;
 pub mod recording;
 pub mod quit;
+pub mod render_writes;
 pub mod shot;
 pub mod state;
 pub mod window;
@@ -236,6 +239,7 @@ pub fn install(agent: &Agent, bots: Box<dyn Bots>, probe: Option<SessionProbe>) 
     add(method::PLAYER_MARK, Access::Act, Sim::player_mark);
     add(method::PLAYER_RECALL, Access::Act, Sim::player_recall);
     ledger::install(agent);
+    render_writes::install(agent);
     pause::install(agent, agent_proto::host_pause::hub());
     quit::install(agent, agent_proto::host_quit::hub());
     shot::install(agent, agent_proto::host_shot::hub());

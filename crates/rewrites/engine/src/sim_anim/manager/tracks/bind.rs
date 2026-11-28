@@ -14,6 +14,7 @@ pub(super) fn remap(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> Transfer {
                 logic(c, c.eax, 1 << 31);
                 if c.eax != 0 {
                     c.edx = u32::from(g.u8(at(c.edi, 0x6c))? >> 1) & 1;
+                    crate::render_census::selector_call(c.edx != 0);
                     logic(c, c.edx, 1 << 31);
                     push(c, g, c.edx)?;
                     push(c, g, c.ecx)?;

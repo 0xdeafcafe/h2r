@@ -55,6 +55,7 @@ pub mod particle_emission;
 pub mod particle_walk;
 pub mod planar_fog;
 pub mod render;
+pub mod render_census;
 pub mod render_loop;
 pub mod scene_list_math;
 pub mod screen_effect;

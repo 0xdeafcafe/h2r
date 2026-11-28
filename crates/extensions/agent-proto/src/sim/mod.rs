@@ -30,6 +30,7 @@ pub mod hashes;
 pub mod ledger;
 pub mod menu;
 pub mod objects;
+pub mod render_writes;
 
 /// Method names. They are host methods: `session.methods` lists them where
 /// the game registered them (`agent::sim::install`).
@@ -75,6 +76,9 @@ pub mod method {
     /// The guest phases the Rust tick driver still calls
     /// ([`super::ledger`]).
     pub const LEDGER: &str = "sim.ledger";
+    /// The render-writes census ([`super::render_writes`],
+    /// docs/engine/sim-render-split.md).
+    pub const RENDER_WRITES: &str = "sim.render_writes";
     /// Save a player's position and facing under a slot
     /// ([`super::MarkParams`], [`super::Mark`]).
     pub const PLAYER_MARK: &str = "player.mark";
@@ -122,6 +126,7 @@ pub mod method {
         OBJECTS,
         EVENTS,
         LEDGER,
+        RENDER_WRITES,
         PLAYER_MARK,
         PLAYER_RECALL,
         OBJECT_SET,

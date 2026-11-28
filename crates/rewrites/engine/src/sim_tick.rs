@@ -403,6 +403,8 @@ pub fn local_users(m: &dyn crate::memory::GuestMemory) -> u32 {
 /// [`run`] with a presentation mode and the Rust phase bodies on.
 pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, bodies: Bodies) -> EntryResult {
     let entered = Instant::now();
+    // Counts made until the tick returns are tick-time (render_census).
+    let _scope = crate::render_census::TickScope::enter();
     ledger.lock().unwrap_or_else(|e| e.into_inner()).begin_tick(entered);
     let record = cx.entry().esp.wrapping_sub(RECORD_SIZE);
     let call = |target: u32| GuestCall::new(target).reserve(RECORD_SIZE);
@@ -478,6 +480,10 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
         m.set_u32(at, next)?;
         Ok::<_, crate::memory::MemFault>(next)
     })?;
+    // The census: bodies still carrying the dirty-pose bit as the tick ends.
+    if let Some(scan) = cx.read(|m| crate::render_census::scan_poses(m)) {
+        crate::render_census::record_scan(scan);
+    }
     let tick_ns = ns_between(entered, Instant::now());
     ledger.lock().unwrap_or_else(|e| e.into_inner()).finish_tick(tick, &phase_ns, tick_ns);
     Ok(Ret::new(0, 0))

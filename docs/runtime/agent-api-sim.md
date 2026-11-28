@@ -311,6 +311,7 @@ boundary while the game ticks. The wire types are `agent_proto::sim`.
 | `sim.objects` | read | `{kinds?, max?}`: every live object in slot order through the simulation's typed views, `{objects, truncated}` |
 | `sim.events` | read | `{kinds?}`: the last tick's simulation events in order (`deleted`, `damage`, `kill`, `actor_killed`), `{events}` |
 | `sim.ledger` | read | `{}`: the guest phases of the game tick the Rust driver still calls, `{tick, ticks, phases: [{entry, name, owner, calls, ns, last_ns}], guest_total, tick_ns, tick_last_ns, loop_ns, loop_last_ns, loops, sound}`, with nanoseconds per phase (total and last tick) and for the whole loop; answered on the connection's thread |
+| `sim.render_writes` | read | `{}`: the render-writes census ([sim-render-split.md](../engine/sim-render-split.md), slice 0), process counters since the game started, `{selector_in_tick, selector_in_frame, gameplay_draws_in_frame, setup_pose_refusals, ticks_scanned, live_objects, bit30_objects, pending_objects, pending_max, pending_sum, guarded_pages_dirtied}`. "In frame" is outside the tick driver. `pending_*` count object bodies with flag bit 30 set and bit 29 clear at tick end (last scan, largest, sum over scans); `guarded_pages_dirtied` is 0 until the frame guard exists. Diff two answers for a span; answered on the connection's thread |
 
 **Brains.** For a brain-driven simulated player, `sim.player.add`,
 `sim.player.list` and the `sim` root of `sim.view` include `brain` when
