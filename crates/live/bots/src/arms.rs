@@ -1137,9 +1137,41 @@ pub(crate) fn ground_into(
     m: &dyn GuestMemory,
     near: Option<crate::brain::Vec3>,
     out: &mut Ground,
+    vehicle_headers: Option<&mut Vec<crate::vehicle::read::VehicleHeader>>,
+) -> R<()> {
+    scan_into(
+        m,
+        near.map_or(Senses::Blind, Senses::Near),
+        out,
+        vehicle_headers,
+    )
+}
+
+/// Which live grenades a scan keeps.
+#[derive(Clone, Copy)]
+enum Senses {
+    Blind,
+    /// Those within [`crate::incoming::DANGER`] of this point.
+    Near(crate::brain::Vec3),
+    /// Every one, for a [`SharedGround`] to filter per bot.
+    All,
+}
+
+/// A live grenade at `position` is within [`crate::incoming::DANGER`] of `at`.
+fn in_danger(position: crate::brain::Vec3, at: crate::brain::Vec3) -> bool {
+    let distance = (position[0] - at[0])
+        .hypot(position[1] - at[1])
+        .hypot(position[2] - at[2]);
+    distance < crate::incoming::DANGER
+}
+
+fn scan_into(
+    m: &dyn GuestMemory,
+    senses: Senses,
+    out: &mut Ground,
     mut vehicle_headers: Option<&mut Vec<crate::vehicle::read::VehicleHeader>>,
 ) -> R<()> {
-    use crate::incoming::{DANGER, Grenade, PROJECTILE, grenade_defs};
+    use crate::incoming::{Grenade, PROJECTILE, grenade_defs};
 
     out.held_power.clear();
     out.weapons.clear();
@@ -1151,7 +1183,11 @@ pub(crate) fn ground_into(
     };
     out.supplies.get_or_insert_with(Vec::new).clear();
     let grenade_equipment = crate::incoming::equipment_defs(m);
-    let senses = near.and_then(|at| grenade_defs(m).map(|defs| (at, defs)));
+    let senses = match senses {
+        Senses::Blind => None,
+        Senses::Near(at) => grenade_defs(m).map(|defs| (Some(at), defs)),
+        Senses::All => grenade_defs(m).map(|defs| (None, defs)),
+    };
     for record in array.live_iter(m, OBJECT_LIMIT)? {
         let (h, header) = record?;
         let site = match header.kind(m)? {
@@ -1169,16 +1205,12 @@ pub(crate) fn ground_into(
                     if let Ok(Some(def)) = body.definition(m)
                         && defs.contains(&Some(def))
                         && let Ok(position) = body.position(m)
+                        && at.is_none_or(|at| in_danger(position, at))
                     {
-                        let distance = (position[0] - at[0])
-                            .hypot(position[1] - at[1])
-                            .hypot(position[2] - at[2]);
-                        if distance < DANGER {
-                            out.grenades.push(Grenade {
-                                id: h.raw(),
-                                at: position,
-                            });
-                        }
+                        out.grenades.push(Grenade {
+                            id: h.raw(),
+                            at: position,
+                        });
                     }
                 }
                 continue;
@@ -1236,6 +1268,124 @@ pub(crate) fn ground_into(
         }
     }
     Ok(())
+}
+
+/// One object-table scan shared by every bot sampled for one game tick.
+///
+/// What a scan finds (pickups, supplies, held power, loose and live
+/// grenades, vehicles) is the same for every bot but for the live
+/// grenades' distance, so a sampler that runs several bots against one
+/// guest state opens a scope ([`share_ground`]) and the table is walked
+/// once, not once per bot. The bots of a tick see the memory of its first
+/// sample, as a batched sample does (`think::Mode::Batched`).
+#[derive(Default)]
+pub(crate) struct SharedGround {
+    key: Option<u64>,
+    scan: Option<Scan>,
+    /// Table walks made, for tests.
+    scans: u32,
+}
+
+struct Scan {
+    result: R<()>,
+    ground: Ground,
+    vehicles: Vec<crate::vehicle::read::VehicleHeader>,
+}
+
+impl SharedGround {
+    #[cfg(test)]
+    pub(crate) fn scans(&self) -> u32 {
+        self.scans
+    }
+}
+
+thread_local! {
+    static SHARED: std::cell::RefCell<Option<SharedGround>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f` with `store` as this thread's shared scan. A store keyed
+/// otherwise is emptied first; an open scope already on the thread is
+/// kept (the outer sampler's store holds the scan).
+pub(crate) fn share_ground<T>(store: &mut SharedGround, key: u64, f: impl FnOnce() -> T) -> T {
+    if SHARED.with_borrow(Option::is_some) {
+        return f();
+    }
+    if store.key != Some(key) {
+        store.key = Some(key);
+        store.scan = None;
+    }
+    struct Restore<'a>(&'a mut SharedGround);
+    impl Drop for Restore<'_> {
+        fn drop(&mut self) {
+            if let Some(s) = SHARED.take() {
+                *self.0 = s;
+            }
+        }
+    }
+    SHARED.set(Some(std::mem::take(store)));
+    let _restore = Restore(store);
+    f()
+}
+
+/// [`ground_into`] through the thread's shared scan when a scope is open
+/// ([`share_ground`]): the table is walked at the first bot's call and
+/// copied out for the others, live grenades filtered by each one's `near`.
+pub(crate) fn ground_for(
+    m: &dyn GuestMemory,
+    near: Option<crate::brain::Vec3>,
+    out: &mut Ground,
+    vehicle_headers: Option<&mut Vec<crate::vehicle::read::VehicleHeader>>,
+) -> R<()> {
+    if !SHARED.with_borrow(Option::is_some) {
+        return ground_into(m, near, out, vehicle_headers);
+    }
+    SHARED.with_borrow_mut(|shared| {
+        let shared = shared.as_mut().expect("the scope checked above");
+        if shared.scan.is_none() {
+            shared.scans += 1;
+            let mut ground = Ground {
+                loose_grenades: Vec::new(),
+                held_power: Vec::new(),
+                weapons: Vec::new(),
+                supplies: Some(Vec::new()),
+                grenades: Vec::new(),
+            };
+            let mut vehicles = Vec::new();
+            let result = scan_into(m, Senses::All, &mut ground, Some(&mut vehicles));
+            shared.scan = Some(Scan {
+                result,
+                ground,
+                vehicles,
+            });
+        }
+        let scan = shared.scan.as_ref().expect("scanned above");
+        // A fault leaves what the walk found before it, as ground_into does.
+        if let Some(headers) = vehicle_headers {
+            headers.extend_from_slice(&scan.vehicles);
+        }
+        scan.result.clone()?;
+        let g = &scan.ground;
+        out.loose_grenades.clear();
+        out.loose_grenades.extend_from_slice(&g.loose_grenades);
+        out.held_power.clear();
+        out.held_power.extend_from_slice(&g.held_power);
+        out.weapons.clear();
+        out.weapons.extend_from_slice(&g.weapons);
+        match (&g.supplies, &mut out.supplies) {
+            (None, s) => *s = None,
+            (Some(from), Some(to)) => {
+                to.clear();
+                to.extend_from_slice(from);
+            }
+            (Some(from), s @ None) => *s = Some(from.clone()),
+        }
+        out.grenades.clear();
+        if let Some(at) = near {
+            out.grenades
+                .extend(g.grenades.iter().filter(|n| in_danger(n.at, at)).copied());
+        }
+        Ok(())
+    })
 }
 
 #[cfg(test)]

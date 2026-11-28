@@ -519,7 +519,7 @@ pub(crate) fn perception_with(
             supplies: out.observations.supplies.take(),
             grenades: std::mem::take(grenades),
         };
-        let scanned = crate::arms::ground_into(m, near, &mut ground, vehicle_headers).is_ok();
+        let scanned = crate::arms::ground_for(m, near, &mut ground, vehicle_headers).is_ok();
         out.observations.ground_grenades = ground.loose_grenades;
         out.pickups = ground.weapons;
         out.observations.held_power = ground.held_power;

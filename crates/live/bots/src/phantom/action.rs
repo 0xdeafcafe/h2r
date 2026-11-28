@@ -390,11 +390,18 @@ impl Phantoms {
             } else {
                 // Keep observing and planning while the pad is gated
                 // (docs/game/bots.md §5.4).
-                let report = if mode.batched() {
-                    books.batch_pad(m, session, tick, slot, i)?
-                } else {
-                    books.list[i].serial_pad(m, tick)
-                };
+                // Every phantom sampled at this tick reads one object scan.
+                let mut ground = std::mem::take(&mut books.ground);
+                let key = u64::from(session) << 32 | u64::from(tick);
+                let report = crate::arms::share_ground(&mut ground, key, || {
+                    if mode.batched() {
+                        books.batch_pad(m, session, tick, slot, i)
+                    } else {
+                        Ok(books.list[i].serial_pad(m, tick))
+                    }
+                });
+                books.ground = ground;
+                let report = report?;
                 let p = &mut books.list[i];
                 p.shot_range = report.shot_range;
                 p.uplink.think_ticks = report.think_ticks;

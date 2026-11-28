@@ -499,6 +499,19 @@ impl Thinker {
         seats: &[Seat<'_>],
     ) -> Vec<Report> {
         let _timer = GameThreadTimer::start();
+        // The seats read one object scan between them (`arms::share_ground`).
+        let mut ground = crate::arms::SharedGround::default();
+        crate::arms::share_ground(&mut ground, u64::from(tick), || {
+            self.sample_seats(tick, guest, seats)
+        })
+    }
+
+    fn sample_seats(
+        &mut self,
+        tick: u32,
+        guest: &dyn GuestMemory,
+        seats: &[Seat<'_>],
+    ) -> Vec<Report> {
         match self.mode {
             Mode::Serial => {
                 self.settle();

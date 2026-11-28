@@ -687,6 +687,100 @@ fn pickups_are_the_weapons_nobody_holds() {
     assert!(!flag.useful());
 }
 
+fn empty_ground() -> Ground {
+    Ground {
+        loose_grenades: Vec::new(),
+        held_power: Vec::new(),
+        weapons: Vec::new(),
+        supplies: Some(Vec::new()),
+        grenades: Vec::new(),
+    }
+}
+
+#[test]
+fn bots_sampled_in_one_scope_walk_the_object_table_once() {
+    let w = world();
+    let mut alone = empty_ground();
+    ground_into(&w.g, Some([0.0; 3]), &mut alone, None).unwrap();
+    let mut store = SharedGround::default();
+    let shared: Vec<Ground> = share_ground(&mut store, 7, || {
+        (0..16)
+            .map(|bot| {
+                let mut out = empty_ground();
+                ground_for(&w.g, Some([bot as f32, 0.0, 0.0]), &mut out, None).unwrap();
+                out
+            })
+            .collect()
+    });
+    assert_eq!(store.scans(), 1, "one walk for sixteen bots");
+    for out in &shared {
+        assert_eq!(out.weapons, alone.weapons);
+        assert_eq!(out.held_power, alone.held_power);
+        assert_eq!(out.supplies, alone.supplies);
+        assert_eq!(out.loose_grenades, alone.loose_grenades);
+    }
+    // The same key reuses the scan; a new tick walks again.
+    share_ground(&mut store, 7, || {
+        ground_for(&w.g, None, &mut empty_ground(), None)
+    })
+    .unwrap();
+    assert_eq!(store.scans(), 1);
+    share_ground(&mut store, 8, || {
+        ground_for(&w.g, None, &mut empty_ground(), None)
+    })
+    .unwrap();
+    assert_eq!(store.scans(), 2);
+    // Outside a scope nothing is kept: each call walks for itself.
+    let mut out = empty_ground();
+    ground_for(&w.g, None, &mut out, None).unwrap();
+    assert_eq!(out.weapons, alone.weapons);
+    assert_eq!(store.scans(), 2);
+}
+
+#[test]
+fn a_shared_scan_keeps_each_bots_own_live_grenades() {
+    let at = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [10.0, 0.0, 0.0]];
+    let grenades = [
+        crate::incoming::Grenade {
+            id: 1,
+            at: [0.5, 0.0, 0.0],
+        },
+        crate::incoming::Grenade {
+            id: 2,
+            at: [9.0, 0.0, 0.0],
+        },
+    ];
+    // In range of the first two bots, the second grenade of the third.
+    let mut store = SharedGround {
+        key: Some(3),
+        scan: Some(Scan {
+            result: Ok(()),
+            ground: Ground {
+                grenades: grenades.to_vec(),
+                ..empty_ground()
+            },
+            vehicles: Vec::new(),
+        }),
+        scans: 0,
+    };
+    let ids: Vec<Vec<u32>> = share_ground(&mut store, 3, || {
+        at.iter()
+            .map(|&near| {
+                let mut out = empty_ground();
+                ground_for(&FakeGuest::new(), Some(near), &mut out, None).unwrap();
+                out.grenades.iter().map(|g| g.id).collect()
+            })
+            .chain(std::iter::once({
+                let mut out = empty_ground();
+                ground_for(&FakeGuest::new(), None, &mut out, None).unwrap();
+                out.grenades.iter().map(|g| g.id).collect()
+            }))
+            .collect()
+    });
+    assert_eq!(ids, [vec![1], vec![1], vec![2], vec![]]);
+    assert_eq!(store.scans(), 0, "the kept scan answered");
+}
+
 #[test]
 fn a_stale_definition_reads_as_no_gun() {
     let mut w = world();
