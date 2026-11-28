@@ -406,12 +406,13 @@ is the mirror's own: `GpuParticles::mirror`, then one
 | view | the draw's view constants (`c[0]`, `c[1]`, `c[3]` and the pixel fix-up `c[10]`, `c[11]`, widened for the display copy) over the whole target; the billboard axes are the x and y rows less their part along the view |
 | depth | the W-buffer: `c[3]`'s W held to the draw's W clip (clamped or culled as `D3DRS_DEPTHCLIPCONTROL` says), floored, over the target's Z scale; tested less-equal, never written |
 | sprite | the stage 0 texture the cut material binds; a linear sampler |
+| stencil | the supplied draw's, test, write and reference (`fog_gpu::layer_stencil`; off on a depth with no stencil aspect); a batch that writes it says so in its writes |
 
 | Outcome | Counter |
 |---|---|
 | batch drawn | `layer_plan_15_effects_shadow_answer_mirrored` (particles) |
 | not taken: direct draw | `scene_kept_15_particle_mirror_<cause>`: `no_host`, `orientation` (`0x0023ea80`'s class, definition `+4`, not 0), `tint_scale` (flag `0x180` with `BYTE * TINT` not 1/255), `unreadable`, or the host's: `uncut` (no cut setup), `tag_unread`, `bitmap_unread`, `bitmap_sequences`, `bitmap_sprites`, or the `particle_definition::Refused` name |
-| batch refused: no guest draw is left | `layer_plan_15_effects_shadow_mirror_dropped_<cause>`; the gate stops answering. `unfinished`: a batch no draw's return took. The host's: `uncut`, `capacity`, `no_colour`, `no_depth`, `clip_rects`, `z_buffered`, the state `ParticleDraw` does not draw (`depth_off`, `depth_write`, `depth_func`, `color_write`, `alpha_test`, `stencil`, `opaque`, `blend`: other than alpha or additive), or the supplied draw's (`boundary`, `admission`, ...) |
+| batch refused: no guest draw is left | `layer_plan_15_effects_shadow_mirror_dropped_<cause>`; the gate stops answering. `unfinished`: a batch no draw's return took. The host's: `uncut`, `capacity`, `no_colour`, `no_depth`, `clip_rects`, `z_buffered`, the state `ParticleDraw` does not draw (`depth_off`, `depth_write`, `depth_func`, `color_write`, `alpha_test`, `opaque`, `blend`: other than alpha or additive), or the supplied draw's (`boundary`, `admission`, ...) |
 | refused while recording | `native-particles` refusals, `Mirror/<cause>` (`texture`, `view_size`, `z_scale`, `view_rows`, `capacity`, `sprites`, `viewport`): the batch does not draw |
 
 A batch's system is made for each recording (its births go through the

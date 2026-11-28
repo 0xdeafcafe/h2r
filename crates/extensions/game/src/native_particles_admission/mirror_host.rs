@@ -165,7 +165,7 @@ pub(super) fn accepted(
 /// The blend of the cut setup's `render` state as `ParticleDraw` has it,
 /// or why it is not one `ParticleDraw` draws: its depth is tested
 /// less-equal and never written, it writes every channel, and it has no
-/// alpha or stencil test.
+/// alpha test. Its stencil is drawn as it is ([`MirrorPass::stencil`]).
 pub(super) fn state(render: &RenderState) -> Result<Blend, &'static str> {
     if render.depth_mode == DepthBufferMode::Disabled {
         return Err("depth_off");
@@ -182,9 +182,6 @@ pub(super) fn state(render: &RenderState) -> Result<Blend, &'static str> {
     }
     if render.alpha_test_enable {
         return Err("alpha_test");
-    }
-    if render.stencil.enable {
-        return Err("stencil");
     }
     let colour = gfx::translate::blend_state(render).ok_or("opaque")?.color;
     let additive = wgpu::BlendComponent {
@@ -255,7 +252,7 @@ struct Gpu {
     device: wgpu::Device,
     compute: ParticleCompute,
     sampler: wgpu::Sampler,
-    draws: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Blend), ParticleDraw>,
+    draws: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Blend, wgpu::StencilState), ParticleDraw>,
 }
 
 type GpuSlot = Arc<Mutex<Option<Gpu>>>;
@@ -284,6 +281,10 @@ struct MirrorPass {
     built: Arc<Built>,
     spawns: Vec<Spawn>,
     blend: Blend,
+    /// The supplied draw's stencil, test and write, as the guest's draw
+    /// would take it (`fog_gpu::layer_stencil`; off without a stencil
+    /// aspect).
+    stencil: gfx::state::StencilState,
     clamp: bool,
     gpu: GpuSlot,
 }
@@ -309,10 +310,11 @@ impl MirrorPass {
             contents: view.as_bytes(),
             usage: wgpu::BufferUsages::UNIFORM,
         });
+        let stencil = native_render::fog_gpu::layer_stencil(&self.stencil, t.depth_format);
         let draw = gpu
             .draws
-            .entry((t.color_format, t.depth_format, self.blend))
-            .or_insert_with(|| ParticleDraw::w_buffered(t.device, t.color_format, t.depth_format, self.blend));
+            .entry((t.color_format, t.depth_format, self.blend, stencil.clone()))
+            .or_insert_with(|| ParticleDraw::w_buffered_stencil(t.device, t.color_format, t.depth_format, self.blend, stencil));
         let binding = draw.bind(t.device, &system, &buffer, texture, &gpu.sampler);
         let (w, h) = t.size;
         let [vx, vy, vw, vh] = t.viewport;
@@ -346,6 +348,7 @@ impl MirrorPass {
         });
         pass.set_viewport(0.0, 0.0, w as f32, h as f32, 0.0, 1.0);
         pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
+        pass.set_stencil_reference(u32::from(self.stencil.reference));
         draw.draw(&mut pass, &system, &binding);
         Ok(())
     }
@@ -353,7 +356,7 @@ impl MirrorPass {
 
 impl ExternalPass for MirrorPass {
     fn writes(&self) -> ExternalWrites {
-        ExternalWrites { color: true, depth_stencil: false }
+        ExternalWrites { color: true, depth_stencil: native_render::fog_gpu::stencil_writes(&self.stencil) }
     }
 
     fn prepare_copy(&mut self, t: &ExternalTarget<'_>) -> Result<(), &'static str> {
@@ -404,6 +407,7 @@ struct Admit {
 impl DrawAdmission for Admit {
     fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
         let (definition, built, spawns) = self.pass.lock().unwrap_or_else(|e| e.into_inner()).take()?;
+        let stencil = snapshot.draw.state.render.stencil;
         let blend = match admits(snapshot) {
             Ok(b) => b,
             Err(why) => {
@@ -417,6 +421,7 @@ impl DrawAdmission for Admit {
             built,
             spawns,
             blend,
+            stencil,
             clamp: d3d::hw::draw_clamps_depth(snapshot.draw),
             gpu: Arc::clone(&self.gpu),
         };
@@ -587,6 +592,17 @@ mod tests {
         ] {
             assert_eq!(state(&s), Err(cause));
         }
+        // A stencil test is drawn, not refused.
+        let marked = gfx::state::StencilState {
+            enable: true,
+            func: CompareFunc::Equal,
+            reference: 0xff,
+            ..Default::default()
+        };
+        assert_eq!(state(&RenderState { stencil: marked, ..r }), Ok(Blend::Alpha));
+        let pipeline = native_render::fog_gpu::layer_stencil(&marked, wgpu::TextureFormat::Depth24PlusStencil8);
+        assert_eq!(pipeline.front.compare, wgpu::CompareFunction::Equal);
+        assert!(!native_render::fog_gpu::stencil_writes(&marked), "a test that keeps the buffer writes nothing");
     }
 
     #[test]

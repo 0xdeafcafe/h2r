@@ -371,7 +371,7 @@ pub struct DrawBinding {
 impl ParticleDraw {
     /// `depth`: the pass's depth format, tested (less-equal), never written.
     pub fn new(device: &wgpu::Device, color: wgpu::TextureFormat, depth: Option<wgpu::TextureFormat>, blend: Blend) -> Self {
-        Self::with_fragment(device, color, depth, blend, false)
+        Self::with_fragment(device, color, depth, blend, false, wgpu::StencilState::default())
     }
 
     /// The draw into a guest W-buffer of `depth`'s format: the depth each
@@ -380,7 +380,19 @@ impl ParticleDraw {
     /// not the clip's z (docs/graphics/retire-d3d-r2.md, "R2's particle
     /// mirror").
     pub fn w_buffered(device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, blend: Blend) -> Self {
-        Self::with_fragment(device, color, Some(depth), blend, true)
+        Self::with_fragment(device, color, Some(depth), blend, true, wgpu::StencilState::default())
+    }
+
+    /// [`ParticleDraw::w_buffered`] under `stencil`, the guest draw's
+    /// (`fog_gpu::layer_stencil`); the pass sets its reference.
+    pub fn w_buffered_stencil(
+        device: &wgpu::Device,
+        color: wgpu::TextureFormat,
+        depth: wgpu::TextureFormat,
+        blend: Blend,
+        stencil: wgpu::StencilState,
+    ) -> Self {
+        Self::with_fragment(device, color, Some(depth), blend, true, stencil)
     }
 
     fn with_fragment(
@@ -389,6 +401,7 @@ impl ParticleDraw {
         depth: Option<wgpu::TextureFormat>,
         blend: Blend,
         w_buffered: bool,
+        stencil: wgpu::StencilState,
     ) -> Self {
         let module = module(device, "particle draw", include_str!("particle_draw.wgsl"));
         let plan = blend.plan();
@@ -407,7 +420,7 @@ impl ParticleDraw {
                 format,
                 depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                stencil: Default::default(),
+                stencil: stencil.clone(),
                 bias: Default::default(),
             }),
             multisample: wgpu::MultisampleState::default(),
