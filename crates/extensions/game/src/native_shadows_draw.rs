@@ -118,6 +118,11 @@ pub struct Freeze {
 }
 
 impl d3d::ExternalPass for Freeze {
+    // Reads back what it draws: a kept scene cannot record it again.
+    fn replays_scene(&self) -> bool {
+        false
+    }
+
     fn colour_only(&self) -> bool {
         self.kind == MapKind::ColourMask
     }

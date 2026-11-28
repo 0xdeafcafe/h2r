@@ -829,6 +829,11 @@ struct CompareRun {
 }
 
 impl d3d::ExternalPass for CompareRun {
+    // Reads back what it draws: a kept scene cannot record it again.
+    fn replays_scene(&self) -> bool {
+        false
+    }
+
     fn uses_validated_resources(&self) -> bool {
         true
     }
@@ -886,6 +891,11 @@ struct ScratchCopy {
 }
 
 impl d3d::ExternalPass for ScratchCopy {
+    // Reads back what it draws: a kept scene cannot record it again.
+    fn replays_scene(&self) -> bool {
+        false
+    }
+
     fn uses_validated_resources(&self) -> bool {
         true
     }
@@ -947,6 +957,11 @@ struct Snapshot {
 }
 
 impl d3d::ExternalPass for Snapshot {
+    // Reads back what it draws: a kept scene cannot record it again.
+    fn replays_scene(&self) -> bool {
+        false
+    }
+
     fn uses_validated_resources(&self) -> bool {
         true
     }

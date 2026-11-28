@@ -48,6 +48,11 @@ struct FlareQueryPass {
 }
 
 impl d3d::ExternalPass for FlareQueryPass {
+    // Reads back what it draws: a kept scene cannot record it again.
+    fn replays_scene(&self) -> bool {
+        false
+    }
+
     fn writes(&self) -> d3d::ExternalWrites {
         d3d::ExternalWrites { color: false, depth_stencil: false }
     }

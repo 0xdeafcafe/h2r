@@ -302,7 +302,9 @@ pub trait ExternalPass: Send {
     /// material inputs must stay valid for the lifetime of the pass. It
     /// must produce packets or encoded commands using only the attachments
     /// and uploads supplied to that recording, with no guest feedback.
-    fn replays_scene(&self) -> bool { false }
+    /// Native passes are built from immutable data, so this is the default;
+    /// a pass that reads back (a query, a snapshot) says no.
+    fn replays_scene(&self) -> bool { true }
 
     /// This pass for the draws it stands in for, then `next`'s: a kept
     /// scene joins adjacent draws of one state into a single pass
