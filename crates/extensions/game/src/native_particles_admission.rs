@@ -164,10 +164,8 @@ impl native_render::camera::GuestRead for Read<'_> {
 }
 impl<B: d3d::backend::Backend + 'static> ImmediateAdmission<B> {
     /// A draw under a cut setup, from the material held at the cut
-    /// (docs/graphics/retire-d3d-r2.md, "The cut"). Its guest setup did
-    /// not run, so the guest must not draw it: a draw the device refuses
-    /// is dropped, counted `<kind>_material_dropped_<cause>`, and the gate
-    /// closes so the next setup runs the guest's. Always `true`.
+    /// (docs/graphics/retire-d3d-r2.md, "The cut"). A draw the device
+    /// cannot make panics with its cause. Always `true`.
     #[allow(clippy::too_many_arguments)]
     fn supplied_draw(
         &self, mem: &mut dyn GuestMemory, kind: Kind, primitive: PrimitiveType, data: Vec<u8>,
@@ -180,7 +178,7 @@ impl<B: d3d::backend::Backend + 'static> ImmediateAdmission<B> {
             Err(_) => Err("device_lock"),
         };
         if let Err(cause) = outcome {
-            render_bridge::effect_materials::dropped(kind, cause);
+            unimplemented!("{kind:?} material: the supplied draw: {cause}");
         }
         true
     }
@@ -208,16 +206,11 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
             source: Source::Particle(call.clone()),
             id: self.admission.serial.fetch_add(1, Ordering::Relaxed),
         };
-        if let Some(supplied) = material_proof::held(Kind::Particle) {
-            let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles };
-            return self.supplied_draw(mem, Kind::Particle, PrimitiveType::QuadList, data, &carried, &supplied, &candidate);
-        }
+        let Some(supplied) = material_proof::held(Kind::Particle) else {
+            unimplemented!("particle_material: an emission before any particle setup");
+        };
         let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles };
-        self.device.lock().is_ok_and(|mut device| {
-            device.try_native_inline_draw(
-                &mut DeviceMemory(mem), PrimitiveType::QuadList, data, &carried, &candidate,
-            ).ok() == Some(true)
-        })
+        self.supplied_draw(mem, Kind::Particle, PrimitiveType::QuadList, data, &carried, &supplied, &candidate)
     }
 
     fn try_dynamic(&self, mem: &mut dyn GuestMemory, esp: u32, data: Option<u32>) -> bool {
@@ -244,7 +237,10 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
         };
         *bytes = Some(generated.as_slice().into());
         let held = match call.kind {
-            effect_geometry::Kind::Contrail => material_proof::held(Kind::Contrail),
+            effect_geometry::Kind::Contrail => Some(
+                material_proof::held(Kind::Contrail)
+                    .unwrap_or_else(|| unimplemented!("contrail_material: a contrail draw before any contrail setup")),
+            ),
             effect_geometry::Kind::EffectQuad => None,
         };
         if call.kind == effect_geometry::Kind::Contrail {

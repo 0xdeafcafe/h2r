@@ -1,9 +1,8 @@
 //! The Rust particle and contrail materials a cut setup's draws take
 //! (docs/graphics/retire-d3d-r2.md, "R2's materials"): made from the
 //! setup's inputs (`render_bridge::effect_materials`) and the tags, as the
-//! device's supplied draw state. No draw is compared with the guest's. The
-//! particle material needs the map's shader library, read off the game
-//! thread once a map.
+//! device's supplied draw state. The particle material needs the map's
+//! shader library, read once a map.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -40,8 +39,7 @@ fn particle_formats(mem: &dyn GuestMemory, inputs: &particle_material::Inputs, m
 
 /// The material of the setup of `kind` running now as the device's
 /// supplied draw takes it, for [`Host::material_cut`]: its material,
-/// textures and program made, or the refusal named, which keeps the
-/// guest's setup.
+/// textures and program made, or the cause it cannot be (which panics).
 ///
 /// [`Host::material_cut`]: render_bridge::native_particles::Host::material_cut
 pub(super) fn cut(mem: &dyn GuestMemory, kind: Kind) -> Result<d3d::SuppliedState, &'static str> {
@@ -68,8 +66,8 @@ pub(super) fn cut(mem: &dyn GuestMemory, kind: Kind) -> Result<d3d::SuppliedStat
     Ok(s)
 }
 
-/// `m` and its textures and program as a supplied draw's state. Refused:
-/// a combiner word the draw drives (`combiner_driven`), which the
+/// `m` and its textures and program as a supplied draw's state. Not
+/// made: a combiner word the draw drives (`combiner_driven`), which the
 /// material does not hold, and a program whose length is not its
 /// header's (`vertex_program_size`).
 pub(super) fn supplied(m: &Material, r: &Resolved) -> Result<d3d::SuppliedState, &'static str> {
@@ -100,12 +98,9 @@ pub(super) fn hold(kind: Kind, s: d3d::SuppliedState) {
     HELD.lock().unwrap_or_else(|e| e.into_inner())[kind as usize] = Some(Arc::new(s));
 }
 
-/// The state a draw of `kind` draws from: `None` unless its setup was
-/// cut ([`proof::under_cut`]) with a material held.
+/// The state a draw of `kind` draws from: the material its setup's cut
+/// held, `None` before the first setup of `kind`.
 pub(super) fn held(kind: Kind) -> Option<Arc<d3d::SuppliedState>> {
-    if !proof::under_cut(kind) {
-        return None;
-    }
     HELD.lock().unwrap_or_else(|e| e.into_inner())[kind as usize].clone()
 }
 
@@ -114,8 +109,6 @@ pub(super) fn held(kind: Kind) -> Option<Arc<d3d::SuppliedState>> {
 struct Library {
     generation: Option<u64>,
     library: Option<Arc<Mutex<ShaderLibrary>>>,
-    failed: bool,
-    loading: bool,
     /// By (shader, layer, pass): the material with no matrix and class 0.
     materials: HashMap<(u32, u32, u32), Result<Material, particle_material::Refused>>,
 }
@@ -123,23 +116,28 @@ struct Library {
 static LIBRARY: LazyLock<Mutex<Library>> = LazyLock::new(Mutex::default);
 
 /// The particle material for `inputs`, its view matrix and program index
-/// the draw's own.
+/// the draw's own. The map's shader library is read at the map's first
+/// particle setup, on the game thread: the setup waits for it.
 fn library_material(mem: &dyn GuestMemory, inputs: &particle_material::Inputs) -> Result<Material, &'static str> {
     let generation = render_bridge::native_map_work::generation();
     let mut s = LIBRARY.lock().unwrap_or_else(|e| e.into_inner());
     if s.generation != Some(generation) {
         *s = Library { generation: Some(generation), ..Library::default() };
     }
-    if s.failed {
-        return Err("library_unread");
-    }
-    let Some(library) = s.library.clone() else {
-        if !s.loading {
-            let name = crate::health::loaded_map_name(mem).ok().filter(|n| !n.is_empty()).ok_or("library_loading")?;
-            s.loading = true;
-            load(name, generation);
+    let library = match s.library.clone() {
+        Some(library) => library,
+        None => {
+            let name = crate::health::loaded_map_name(mem).ok().filter(|n| !n.is_empty()).ok_or("map_name")?;
+            let read = crate::native_map::open(&name)
+                .map_err(|e| e.to_string())
+                .and_then(|(mut map, _)| ShaderLibrary::read(&mut map).map_err(|e| e.to_string()));
+            let library = match read {
+                Ok(library) => Arc::new(Mutex::new(library)),
+                Err(e) => unimplemented!("particle_material: {name}: the shader library did not read ({e})"),
+            };
+            s.library = Some(Arc::clone(&library));
+            library
         }
-        return Err("library_loading");
     };
     let key = (inputs.shader, inputs.layer, inputs.pass);
     let base = s.materials.entry(key).or_insert_with(|| {
@@ -153,28 +151,4 @@ fn library_material(mem: &dyn GuestMemory, inputs: &particle_material::Inputs) -
     m.constants.extend(inputs.matrix.iter().enumerate().map(|(n, row)| (effect_material::MATRIX_SLOT + n, *row)));
     m.program.1 = u32::from(inputs.class) + particle_material::PROGRAM_BASE;
     Ok(m)
-}
-
-/// Reads map `name`'s shader library off the game thread.
-fn load(name: String, generation: u64) {
-    let spawned = std::thread::Builder::new().name("particle material library".into()).spawn(move || {
-        let read = crate::native_map::open(&name)
-            .map_err(|e| e.to_string())
-            .and_then(|(mut map, _)| ShaderLibrary::read(&mut map).map_err(|e| e.to_string()));
-        let mut s = LIBRARY.lock().unwrap_or_else(|e| e.into_inner());
-        if s.generation != Some(generation) {
-            return;
-        }
-        s.loading = false;
-        match read {
-            Ok(library) => s.library = Some(Arc::new(Mutex::new(library))),
-            Err(e) => {
-                eprintln!("particle material: {name}: the shader library did not read ({e})");
-                s.failed = true;
-            }
-        }
-    });
-    if spawned.is_err() {
-        LIBRARY.lock().unwrap_or_else(|e| e.into_inner()).failed = true;
-    }
 }

@@ -387,17 +387,15 @@ state every cut setup's draws take
 | Constants (hardware slots, register + 96) | implementation 0's `c[18 + i]` (`0x00018eab`), then `0xae..0xb0`, the view matrix | `0xae..0xb0`, the identity |
 | Vertex program | program `class + 7` of implementation 0's `vrtx` | engine slot 4's program 0 |
 
-`render.scene` carries `<kind>_material_{cut,refused_<cause>,dropped_<cause>}`
-for `particle` and `contrail` (`render-bridge/src/effect_materials.rs`).
-
-Refused, by name, rather than approximated:
+Not made, each a panic `unimplemented!("<kind>_material: <cause>")`
+(`render-bridge/src/effect_materials.rs`), never the guest's setup:
 
 | Reason | Kind | Branch |
 |---|---|---|
 | `particle_model`, `not_shader` | particle | a `PRTM`/`prt3` or other tag in the shader's place |
 | `reset` | particle | `0x0001bbf0`'s device reset (`[0x004670bc]` set) |
 | `animated`, `engine_variant`, `engine_state`, `engine_texture`, `target_copy` | particle | animated parameters, a combiner variant or a state the draw's inputs choose, an engine texture or the lightmap, the frame copy |
-| `tags`, `no_vertex_shader`, `library_loading`, `library_unread` | particle | the shader does not resolve, or the map's library is not read yet |
+| `tags`, `no_vertex_shader`, `map_name` | particle | the shader does not resolve, or the map is not named; the map's library is read at its first particle setup, and one that does not read panics |
 | `vertex_defaults`, `vertex_constant_driven`, `vertex_constant_lanes` | particle | vertex defaults, a vertex constant from the engine's inputs or a stage's size, a constant row not written whole |
 | `state_unread` | both | the state arrays were not read at the draw's setup |
 | `kind`, `blend_mode`, `view_matrix` | contrail | a block type other than 1, a blend mode past the tables, option bit 5 |
@@ -411,15 +409,14 @@ from the device.
 
 ### The cut
 
-Built (**Code**): `render-bridge/src/effect_materials.rs`. A gate per kind:
-
-| | |
-|---|---|
-| Cut | at every setup's call (`0x0023ea80` returning to `0x0022441e`, `0x00043720` returning to `0x00035b23`) the host (`Host::material_cut`) holds the material as a supplied state and the setup does not run: `0x0023ea80` returns AL 1 (`ret 0xc`), `0x00043720` returns (`ret 4`); `<kind>_material_cut` |
-| Kept | the host's refusal runs the guest's setup for that call: `scene_kept_15_<kind>_material_<cause>`, `<kind>_material_refused_<cause>` |
-| Dropped | a cut setup's draw the device refuses: its setup did not run, so the guest does not draw it either; `<kind>_material_dropped_<cause>` |
-
-No setup is the guest's for comparison.
+Built (**Code**): `render-bridge/src/effect_materials.rs`. At every
+setup's call (`0x0023ea80` returning to `0x0022441e`, `0x00043720`
+returning to `0x00035b23`) the host (`Host::material_cut`) holds the
+material as a supplied state and the setup does not run: `0x0023ea80`
+returns AL 1 (`ret 0xc`), `0x00043720` returns (`ret 4`). These panic
+with their cause: a call from another caller, a material the host cannot
+make, a draw the device refuses, an emission or contrail draw before its
+kind's first setup. The guest's setup never runs.
 
 The cut draw (`d3d::Device::try_native_supplied_draw`,
 `d3d/src/device/supplied.rs`):
@@ -437,8 +434,7 @@ The cut draw (`d3d::Device::try_native_supplied_draw`,
 After it the device's constants, textures, combiner and inline run are as
 before, so the guest's later draws find the state they left; only the
 carried attributes stay, as the guest's emitter writes them too. The
-host asks `Device::check_supplied` before it cuts: what it names keeps
-the guest's setup.
+host asks `Device::check_supplied` before it cuts: what it names panics.
 
 Kept on every call, by name:
 
@@ -447,7 +443,7 @@ Kept on every call, by name:
 | `0x0002c3b0`, `0x0001bd50` | they write no device state, but later draws read their writes: `0x0001bd50`'s environment cache `[0x00485a58]` and dirty words, and `0x00016b90`'s engine inputs from `0x0055edd8` |
 | `0x00035b00`'s own setup (`0x00016b10`, the declaration from entry `+0x10`, `0x0001c6b0`, `0x0001c710`, `0x0001cf50`) | the declaration is not in the material |
 
-Refused, keeping the guest's setup (`scene_kept_15_<kind>_material_<cause>`):
+Not made, panicking with the cause:
 
 | Cause | Why |
 |---|---|
@@ -458,15 +454,10 @@ Refused, keeping the guest's setup (`scene_kept_15_<kind>_material_<cause>`):
 | `vertex_program_size` | a program whose length is not its header's |
 | `program`, `render_slot`, `stage_slot`, `constant_slot`, `vertex_format`, `texture_unread`, `texture_format`, `palette` | `check_supplied`: a palettized texture would take the device's palette |
 
-The material's own refusals reach the same counter
-(`scene_kept_15_particle_material_tags`, `..._library_loading`, ...).
 R2's answer (`effects_shadow/answer.rs`) reaches the cut draw through
 `native_particles::draw_emission` and the host's `try_emit`.
 
-Tests: `effect_materials.rs` (`every_setup_the_host_makes_is_cut`,
-`a_refused_material_keeps_the_guest_setup_by_name`,
-`a_cut_draw_the_device_refuses_is_dropped_by_name`),
-`d3d/tests/admission_scope.rs`
+Tests: `d3d/tests/admission_scope.rs`
 (`a_cut_draw_uses_the_supplied_state_not_the_previous_draws`,
 `the_device_state_after_a_cut_draw_is_the_guests`,
 `a_cut_draw_without_a_program_is_refused_by_name`),
@@ -480,7 +471,9 @@ Tests: `effect_material.rs`
 `a_program_is_the_vrtx_element_at_its_index`),
 `contrail_material.rs` (`the_blend_mode_comes_from_the_images_tables_and_mode_ten_turns_blending_off`,
 `the_combiner_has_one_or_three_stages_then_the_blend_modes`),
-`particle_material.rs` (`only_a_shad_without_reset_or_override_reaches_the_shader_setup`).
+`particle_material.rs` (`only_a_shad_without_reset_reaches_the_shader_setup`,
+`the_override_declares_the_emitters_short_corners_and_otherwise_the_float_stream`),
+`effect_material.rs` (`a_programs_inputs_are_its_elements_semantic_list_by_register`).
 
 ## Related
 

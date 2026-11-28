@@ -2286,7 +2286,6 @@ pub fn counters() -> Vec<(&'static str, u64)> {
     .chain(native_render::decal_scene::counters())
     .chain(crate::native_decals::cut::rows())
     .chain(crate::native_decal_decorators::rows())
-    .chain(crate::effect_materials::rows())
     .chain(native_render::weather_scene::counters())
     .chain(crate::native_weather::rows())
     .chain(crate::native_shadows::alone_counters())
