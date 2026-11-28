@@ -565,7 +565,13 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn ui_pass(&self, mem: &mut dyn GuestMemory, part: &Arc<frame_scene::Overlay>) -> bool {
-        self.permits_draw() && crate::hud_overlay::place_menu(&self.device, mem, part)
+        if !self.permits_draw() {
+            unimplemented!("menus: pass outside its UI scope");
+        }
+        if !crate::hud_overlay::place_menu(&self.device, mem, part) {
+            unimplemented!("menus: pass: the device did not take it");
+        }
+        true
     }
 
     fn modal_blur(&self, mem: &mut dyn GuestMemory, call: &render_bridge::native_hud::modal_blur::ModalBlur) -> bool {
