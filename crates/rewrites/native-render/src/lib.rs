@@ -168,8 +168,6 @@ pub mod transparent;
 #[cfg(feature = "gpu")]
 pub mod transparent_sort;
 #[cfg(feature = "gpu")]
-pub mod transparent_material;
-#[cfg(feature = "gpu")]
 pub mod transparent_streams;
 #[cfg(feature = "gpu")]
 pub mod ui_gpu;

@@ -478,7 +478,7 @@ Tests: `effect_materials.rs` (`every_setup_the_host_makes_is_cut`,
 
 Tests: `effect_material.rs`
 (`a_resident_image_binds_its_texture_and_others_fall_back_as_the_binder_does`,
-`a_draw_that_differs_is_named_by_field_and_a_state_set_twice_by_its_last_value`),
+`a_program_is_the_vrtx_element_at_its_index`),
 `contrail_material.rs` (`the_blend_mode_comes_from_the_images_tables_and_mode_ten_turns_blending_off`,
 `the_combiner_has_one_or_three_stages_then_the_blend_modes`),
 `particle_material.rs` (`only_a_shad_without_reset_or_override_reaches_the_shader_setup`).

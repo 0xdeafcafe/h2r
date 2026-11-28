@@ -1153,8 +1153,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
 /// BSP cluster entry of the sorted transparents drawn from the world's
 /// layer-15 set, as a run of one item (like [`Glue::commit_run`]'s), in
 /// place of the guest's handler `0x00041020`. The set's passes were
-/// compiled at the load from the same tags the arm proved against the
-/// device (`native_render::transparent_material`).
+/// compiled at the load from the same tags.
 struct TransparentAnswer<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     state: State,
