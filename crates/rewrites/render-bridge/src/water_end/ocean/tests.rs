@@ -80,11 +80,12 @@ fn mem(flags: u32) -> FlatMemory {
 struct Recorder {
     host: Fake,
     refuse_draw: bool,
+    mxcsr: u32,
 }
 
 impl Recorder {
     fn new() -> Self {
-        Self { host: Fake::default(), refuse_draw: false }
+        Self { host: Fake::default(), refuse_draw: false, mxcsr: 0x1f80 }
     }
 }
 
@@ -102,6 +103,9 @@ impl Device for Recorder {
         self.host.push(Event::Draw { indices, count });
         Ok(())
     }
+    fn fp(&mut self) -> (&mut u32, u16) {
+        (&mut self.mxcsr, 0x027f)
+    }
 }
 
 /// An event's kind, for the order.
@@ -115,8 +119,11 @@ fn kind(e: &Event) -> String {
 /// Steps the ocean to its return, each helper leaving AL from `al` (by
 /// target, 1 otherwise). The calls and the return.
 fn run(m: &mut FlatMemory, clear: bool, al: &dyn Fn(u32) -> u32) -> (Vec<Call>, Vec<Event>, Next) {
+    run_with(m, clear, al, Recorder::new())
+}
+
+fn run_with(m: &mut FlatMemory, clear: bool, al: &dyn Fn(u32) -> u32, mut device: Recorder) -> (Vec<Call>, Vec<Event>, Next) {
     let mut ocean = Ocean::new(DEF, clear, Regs { ebx: 0xb, esi: 0x5, edi: 0xd, ..Regs::default() });
-    let mut device = Recorder::new();
     let mut calls = Vec::new();
     let mut returned = Regs::default();
     loop {
@@ -143,7 +150,7 @@ fn the_ocean_makes_the_bodys_steps_in_order() {
     order.dedup();
     let g = |t: u32| format!("guest {t:#x}");
     let want: Vec<String> = [
-        g(GRID), g(VISIBLE), g(TEXTURE), g(COPY_TARGET), g(PASS_SOURCE), g(PASS_TARGET), "Clear".into(),
+        g(VISIBLE), g(TEXTURE), g(COPY_TARGET), g(PASS_SOURCE), g(PASS_TARGET), "Clear".into(),
         "VertexProgram".into(), "Constants".into(), g(STREAM_COMMIT), "Constants".into(), g(SHADER_BEGIN),
         "PushViewport".into(), "StageState".into(), "Registers".into(), "RenderState".into(), "Registers".into(),
         "Texture".into(), "Draw".into(), g(STAMP),
@@ -155,7 +162,8 @@ fn the_ocean_makes_the_bodys_steps_in_order() {
     assert!(events.contains(&Event::Draw { indices: INDICES, count: 8 }));
     assert_eq!(events.iter().filter(|e| matches!(e, Event::StageState { .. })).count(), 12);
     let by = |t: u32| calls.iter().find(|c| c.target == t).unwrap();
-    assert_eq!(by(GRID).regs.eax, DEF);
+    // The grid of a zero angle leaves EAX the definition.
+    assert_eq!(by(VISIBLE).regs.eax, DEF);
     assert_eq!(by(VISIBLE).args, vec![DEF]);
     assert_eq!((by(TEXTURE).regs.eax, by(TEXTURE).regs.ecx), (3, DEF + TEXTURE_BLOCK));
     assert_eq!(by(PASS_SOURCE).args, vec![DEF + PASS_BLOCK]);
@@ -179,6 +187,52 @@ fn the_ocean_makes_the_bodys_steps_in_order() {
     assert_eq!(end, Next::Return { eax: 1, ecx: 1 });
 }
 
+/// A definition with an angle: a camera 3 above a 640x480 raster (its
+/// top 7) and a grid of angle 1.
+fn grid_mem(raster: [u16; 4]) -> FlatMemory {
+    let mut m = mem(0);
+    for (at, v) in [
+        (ocean_grid::constant::ONE, 1.0f32),
+        (ocean_grid::constant::CAP, 0.78),
+        (ocean_grid::constant::MARGIN, 1.13),
+        (ocean_grid::FOV, 1.2),
+        (ocean_grid::CAMERA + 8, 3.0),
+        (DEF + ocean_grid::ANGLE, 1.0),
+        (DEF + ocean_grid::WIDTH, 1.0),
+    ] {
+        m.set_f32(at, v).unwrap();
+    }
+    for (o, v) in raster.iter().enumerate() {
+        m.set_u16(ocean_grid::RASTER + 2 * o as u32, *v).unwrap();
+    }
+    m
+}
+
+/// The grid is built in Rust before the gates: the camera's basis and the
+/// model rows the draw uploads, and the registers the guest's setup
+/// leaves (ECX 0, EDX the raster's top).
+#[test]
+fn the_grid_is_built_before_the_gates() {
+    let mut m = grid_mem([7, 0, 487, 640]);
+    let (calls, events, _) = run(&mut m, false, &|_| 1);
+    assert_eq!(events[0], Event::Guest(VISIBLE));
+    let r = calls[0].regs;
+    assert_eq!((calls[0].target, r.eax, r.ecx, r.edx, r.ebp), (VISIBLE, 0, 0, 7, DEF));
+    assert_eq!(m.f32(ocean_grid::MATRIX).unwrap(), 3.0);
+    // Forward along y and up along z: left along -x, the sideways span.
+    let side = m.f32(ocean_grid::ROWS + 4).unwrap();
+    assert!(side < -3.0 && side.is_finite(), "{side}");
+}
+
+/// An unmasked exception in the grid is a named gap.
+#[test]
+#[should_panic(expected = "water ocean grid: simd")]
+fn an_unmasked_grid_exception_is_unimplemented() {
+    // A zero raster: 0 / 0, with the invalid operation unmasked.
+    let mut m = grid_mem([0; 4]);
+    run_with(&mut m, false, &|_| 1, Recorder { mxcsr: 0x1f80 & !0x80, ..Recorder::new() });
+}
+
 /// The implementation's bits pick the copies; no clear byte, no clear.
 #[test]
 fn the_shader_flags_pick_the_copies() {
@@ -187,7 +241,7 @@ fn the_shader_flags_pick_the_copies() {
         events.into_iter().take_while(|e| !matches!(e, Event::VertexProgram { .. })).collect::<Vec<_>>()
     };
     use Event::*;
-    let gates = [Guest(GRID), Guest(VISIBLE), Guest(TEXTURE)];
+    let gates = [Guest(VISIBLE), Guest(TEXTURE)];
     assert_eq!(head(0, false), gates);
     assert_eq!(head(1 << COPY_BIT, false), [&gates[..], &[Guest(COPY_TARGET)]].concat());
     assert_eq!(
@@ -210,7 +264,7 @@ fn a_closed_gate_goes_to_the_stamps() {
     let mut m = mem(0);
     m.set_u32(DEF + SHADER, u32::MAX).unwrap();
     let (_, events, end) = run(&mut m, true, &|_| 1);
-    assert_eq!(events, vec![Guest(GRID), Guest(VISIBLE), Guest(TEXTURE)]);
+    assert_eq!(events, vec![Guest(VISIBLE), Guest(TEXTURE)]);
     assert!(matches!(end, Next::Return { eax: 0xffff_ff01, .. }));
 }
 

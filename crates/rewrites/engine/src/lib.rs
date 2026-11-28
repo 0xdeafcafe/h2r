@@ -52,6 +52,7 @@ pub mod light_constants;
 pub mod light_passes;
 pub mod map_status;
 pub mod objectives;
+pub mod ocean_grid;
 pub mod particle_emission;
 pub mod particle_seen;
 pub mod particle_walk;
