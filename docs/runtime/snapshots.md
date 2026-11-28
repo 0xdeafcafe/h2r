@@ -235,7 +235,7 @@ module doc already separates what the guest owns from what the device owns.
 | Frame-buffer ring order and flags | `swap: Swap` | Save | By each buffer's `Data`; the buffers themselves are Check. |
 | Destroys the guest has yet to run | `pending_destroys`, `torn_down` | Save | |
 | Frame and depth surface pixels | backend surfaces | Rebuild | Not saved: a load keeps the loading device's pixels, so the first frame's history (Halo samples last frame's buffers by parity) is the loading run's. Draw streams do not depend on it. |
-| Surfaces of guest surface headers that are not texture levels | `other_surfaces` | Rebuild | Made again blank on next use. Pixels lost. |
+| Surfaces of guest surface headers that are not texture levels | `other_surfaces` | Rebuild | Made again on next use. Without the frame graph's store blank, pixels lost; with it the role's surface comes back as the loading run left it ([retire-d3d-display.md](../graphics/retire-d3d-display.md#the-graphs-targets)). |
 | Texture, vertex and index caches, memos, depth copies and aliases | `cache`, `vertex_cache`, `index_cache`, `translated`, `draw_*`, `microcode_*`, `depth_*` | Rebuild | Keyed by guest address; `Device::drop_host_caches`. |
 | Render-to-texture targets, alias mirror | `rtt`, `mirror`, `raster.rs` | Rebuild | The save writes dirty levels and the mirror back to guest RAM first; a load drops them. |
 | Write tracker | `tracker` | Keep | Every copy held over it is dropped with the caches. |

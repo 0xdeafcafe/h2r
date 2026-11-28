@@ -1,7 +1,7 @@
 # Retiring D3D: movies, frames outside a game view and the display (R8)
 
-Status: Partly built. The frame step, the movie's picture, the publish (in the frame step and the three frame loops outside it), the frame tail, the frame's finish and the view setup and view end are native, and the frame wait calls no D3D entry; a frame tail or view setup it does not cover and a frame with a carried slot keep the guest's D3D calls, each under a named `render.residual` row.
-Code: `crates/rewrites/render-bridge/src/render_frame.rs` (the frame step), `native_targets.rs` (the finish), `render_frame/publish.rs`, `d3d::Device::publish` and `game::d3d_glue::SinkDrain` (the publish), `crates/platform/bink-hle/src/display.rs` and `crates/rewrites/render-bridge/src/native_movie.rs` (the movie), `crates/extensions/game/src/movie_display_glue.rs` and `hud_overlay::place_movie` (the glue), `render_frame::loop_present` (the frame loops' present), `frame_tail.rs` with `hud_overlay::place_tail` and `frame_scene::OverlayKind::Hold` (the frame tail), `view_setup.rs` and `native-render/src/frame_graph/targets.rs` (the view setup and view end, the graph's targets), `residual_census::REGISTRY` (the rows). Tests: in each, `the_frame_finish_makes_no_d3d_entry` (`native_targets.rs`), `a_frame_with_a_screen_effect_makes_no_d3d_entry` and `uncovered_tails_are_refused_by_name` (`frame_tail.rs`), `the_view_setup_makes_no_d3d_entry`, `uncovered_setups_are_refused_by_name` and `a_check_compares_the_guest_bodys_state` (`view_setup/tests.rs`), `the_graph_owns_its_targets_across_frames` (`frame_graph/targets.rs`), `a_held_texture_survives_into_the_next_frame` (`native-render/src/ui_gpu.rs`), `the_frame_wait_is_outside_the_render` and `the_frames_own_calls_are_named_rows_inside_and_outside_the_frame_step` (`residual_census.rs`), `a_loop_frame_from_the_scene_is_published_with_no_d3d_entry` (`render_frame.rs`), `a_native_display_takes_the_picture_and_leaves_the_guest_texture_alone` (`crates/platform/bink-hle/tests/synthetic.rs`) and `a_published_frame_presents_with_the_frame_steps_ramp_and_the_next_vblank_reports_its_swap` (`crates/platform/d3d/tests/round7.rs`).
+Status: Partly built. The frame step, the movie's picture, the publish (in the frame step and the three frame loops outside it), the frame tail, the frame's finish and the view setup and view end are native, the frame wait calls no D3D entry, and every render target and depth surface is the frame graph's, by role; a frame tail or view setup it does not cover and a frame with a carried slot keep the guest's D3D calls, each under a named `render.residual` row.
+Code: `crates/rewrites/render-bridge/src/render_frame.rs` (the frame step), `native_targets.rs` (the finish), `render_frame/publish.rs`, `d3d::Device::publish` and `game::d3d_glue::SinkDrain` (the publish), `crates/platform/bink-hle/src/display.rs` and `crates/rewrites/render-bridge/src/native_movie.rs` (the movie), `crates/extensions/game/src/movie_display_glue.rs` and `hud_overlay::place_movie` (the glue), `render_frame::loop_present` (the frame loops' present), `frame_tail.rs` with `hud_overlay::place_tail` and `frame_scene::OverlayKind::Hold` (the frame tail), `view_setup.rs` (the view setup and view end), `native-render/src/frame_graph/targets.rs`, `native_targets::role`, `d3d::Device::make_target` and `d3d::threaded::owner::TargetStore` (the graph's targets), `residual_census::REGISTRY` (the rows). Tests: in each, `the_frame_finish_makes_no_d3d_entry` (`native_targets.rs`), `a_frame_with_a_screen_effect_makes_no_d3d_entry` and `uncovered_tails_are_refused_by_name` (`frame_tail.rs`), `the_view_setup_makes_no_d3d_entry`, `uncovered_setups_are_refused_by_name` and `a_check_compares_the_guest_bodys_state` (`view_setup/tests.rs`), `the_graph_owns_its_targets_across_frames` (`frame_graph/targets.rs`), `a_held_texture_survives_into_the_next_frame` (`native-render/src/ui_gpu.rs`), `the_frame_wait_is_outside_the_render` and `the_frames_own_calls_are_named_rows_inside_and_outside_the_frame_step` (`residual_census.rs`), `a_loop_frame_from_the_scene_is_published_with_no_d3d_entry` (`render_frame.rs`), `a_native_display_takes_the_picture_and_leaves_the_guest_texture_alone` (`crates/platform/bink-hle/tests/synthetic.rs`) and `a_published_frame_presents_with_the_frame_steps_ramp_and_the_next_vblank_reports_its_swap` (`crates/platform/d3d/tests/round7.rs`).
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). Off, the frame is the guest's and the movie fills and draws the guest's texture.
 
 Slice R8 of [retire-d3d.md](retire-d3d.md). `render_frame_and_present` `0x00223240` is Rust: the frame step calls each part of the guest's frame in its order, so each part goes native in place. The exit: from boot to gameplay and back to the menu, `render.residual`'s `d3d_entries` grow only under `outside_render`. R7 owns the menus, R6 the HUD; R8 takes the frame itself, the movie, and what neither draws.
@@ -91,7 +91,7 @@ The view end (**Code** `0x00013c20..0x00013cc6`): with `[0x004ba04c]` above 1, `
 
 No guest body of the setup or the end runs. A case the cut cannot make panics, named `view_setup: <cause>` or `view_end: <cause>`: `host` (none installed), `device` (a refused call), `unread`, `unwritable`. `render.scene` counts `view_setup_calls` and `view_end_calls`.
 
-The bind and the clear land on the frame graph's targets: the scene sink files them as the `TargetRef`s `frame_graph::targets::declare` names, and `targets::Owned` is the graph's own set of them, one surface per declared target across frames (the same shape keeps its surface, a new one frees it and makes another), counted `graph_targets_made`, `_kept`, `_released` and `graph_targets_refused_<cause>` (`unsized`, `allocation`). A refused target has no surface: nothing stands in. The replay still takes its map from the threaded owner (`d3d::threaded::owner`), not from `Owned`.
+The bind and the clear land on the frame graph's targets ([below](#the-graphs-targets)).
 
 **S**: that the FPU's precision makes the product of two floats exact in `0x00131ed0`'s `fistp` (it is in 53 or 64 bits); that nothing reads the guest stack below the call that the cut stages its arguments in.
 
@@ -223,12 +223,45 @@ No guest body of the tail runs. A tail it does not cover panics, named `frame_ta
 
 No guest body of the finish runs. A finish the cut cannot make panics, named `frame_finish: <cause>`: `host`, `device` (a refused set), `release` (the last reference), `unread`, `unwritable`. `render.scene` counts `frame_finish_calls`.
 
+## The graph's targets
+
+Every render target and depth surface the device makes is the frame graph's, keyed by what it is to the game, not by the guest header or the frame's `TargetRef`. A `TargetRef::Aux(n)` is numbered by first use in its frame, so `Aux(0)` is the freeze frame's target in one frame and the post colour's in the next; a `TargetRole` is the same in every frame.
+
+| Role | What | Made at |
+|---|---|---|
+| `Display(n)` | swap-chain buffer `n` (the back buffers, then the display surface) | `Direct3D_CreateDevice` |
+| `DisplayDepth` | the device's depth buffer | `Direct3D_CreateDevice` |
+| `Game(n)` | entry `n` of Halo's target table `0x004b4b58` (stride `0x98`): its surface header `+0x18` | the first bind of the header |
+| `GameLevel(n)` | a level of entry `n`'s texture (`+4`) bound as a target | the first bind of the level |
+
+```mermaid
+flowchart LR
+  G[guest bind or clear, header] --> D[d3d::Device::surface_for]
+  D -->|DeviceConfig::roles| R[native_targets::role]
+  R --> T[Backend::create_target role]
+  T --> S[SceneSink: the frame's roles]
+  S --> W[ThreadedBackend worker]
+  W --> ST[frame_graph::targets::Store]
+  ST --> O[targets::Owned, one surface per role]
+  O -->|TargetStore::map at the present| P[the replay's targets]
+```
+
+- **The role table.** `render_bridge::native_targets::role(header, parent)` names the table's entries (`TARGET_COUNT` of them, **S**: that there are no more). Boot's glue sets it as `d3d::DeviceConfig::roles` with the native renderer on. The device asks it in `surface_for` and `rtt_surface`, and makes the surface with `Backend::create_target`; a header it does not name panics, `d3d targets: <header> (texture <parent>) has no role`. One role has one live device surface: a second panics, `d3d targets: two live surfaces for <role>`. A rewritten header gives its old surface back (`Backend::release_target`) before the new one is made.
+- **The frame's roles.** The scene sink keeps each surface's role and the recorder files them per frame, `ReplayFrame::roles` (`ReplayFrame::role`), after the present's renaming. `targets::declare` puts each target's role in its `Declared`.
+- **The store.** `ThreadedBackend::with_target_store` installs `frame_graph::targets::Store` (a `d3d::threaded::owner::TargetStore`) on the render thread, so the worker's `create_target` and `release_target` go to it. `targets::Owned` holds one surface per role across frames and devices: the same shape keeps its surface, a new shape makes another. The device's handles for a role come and go; a surface a new shape replaces while a handle to it is live is retired and freed when that handle comes back, since commands queued before the new one can still draw on it. A role's surface outlives its handle, so a device made again after a teardown gets the same surfaces.
+- **The replay.** At the present the worker takes the graph's map, `TargetStore::map`: each declared target's surface by its role. The guest's commands drew on the same surfaces, so a frame's carried work and its replay share them. A declared target with no role, or a role the store does not hold, panics, `graph targets: <cause>`.
+- **The post, the screen effects and the water.** The colour pass `0x000214f0`, the screen effects `0x0002d140` and the water teardown `0x0003c3c0` with its alpha clear `0x0003c515` are still guest work. Their binds, clears and external slots (target 1, the stand-ins `0x19` to `0x1b`, the bound colour) reach the device through `surface_for`, so each is drawn on its role's graph surface.
+
+`Owned` counts `graph_targets_made`, `_kept`, `_released` and `graph_targets_refused_<cause>` (`unsized`, `unroled`, `allocation`) for a frame it owns directly (`Owned::own`). Without a role table (the `d3d` crate's own tests) the device makes each target as any surface, and without a store the worker makes them on its backend.
+
+Tests: `a_game_target_is_named_by_its_table_entry` (`native_targets.rs`), `each_frame_names_its_targets_roles` (`d3d/src/scene_sink/replay.rs`), `a_role_keeps_its_surface_when_its_number_moves`, `the_store_frees_a_replaced_surface_when_its_handle_comes_back` and `the_graph_owns_its_targets_across_frames` (`frame_graph/targets.rs`).
+
 ## Not verified
 
 - A movie on screen with the native display: its placement against the guest's draw at 1x and at render scale.
 - That `d3d_entries` grow only under `outside_render` from boot to gameplay and back (the R8 exit); it needs R1 to R7.
 - The view setup in a game: its frames on screen against the guest's, a view of kind 1 and a scaled view among them.
-- `targets::Owned` drawing a frame: the replay takes the map from the threaded owner, not from the graph.
+- The graph's targets in a game: which headers panic `d3d targets: <header> has no role`, and whether two levels of one entry's texture are ever bound at once.
 - The frame tail in a game: a screen effect's freeze frame on screen against the guest's, at 1x and at render scale, and `frame_tail_native` against `frame_tail_calls`; a tail with a view of kind 1 panics (`target`).
 - A frame loop's published frame on screen, and its `loop_published` against `loop_presents` over a map load.
 - The frame's finish in a game: whether a `release` panics.
