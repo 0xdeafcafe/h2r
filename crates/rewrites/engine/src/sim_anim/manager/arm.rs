@@ -92,7 +92,7 @@ pub struct Prediction {
 
 fn plan(body: &'static Body, cpu: &CpuAbi, ram: &mut Guest, pc: u32) -> Option<Prediction> {
     let mut log = Log::new();
-    let mut bus = Bus::for_segment(ram, &mut log, cpu, pc, body.entry..body.end, body.sites)?;
+    let mut bus = Bus::for_segment(ram, &mut log, cpu, pc, body.entry..body.end, body.sites).ok()?;
     let mut cpu = *cpu;
     let transfer = evaluate(body, &mut cpu, &mut bus, pc).ok()?;
     // Both generated tiers spill the outgoing target to EIP at this

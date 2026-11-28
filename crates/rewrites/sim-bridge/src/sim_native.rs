@@ -262,10 +262,16 @@ fn install_anim_bodies(b: &mut Builder, exports: &[AnimBody]) {
 /// A segment body declined at `pc`: no guest runs it.
 /// `plan::segment` declines before it plans when the float environment is
 /// not the ports', and otherwise on a fault inside the plan; either way it
-/// leaves `cpu` as it was.
+/// leaves `cpu` as it was. The panic names the access the plan refused
+/// (`sim::take_decline`).
 fn segment_declined(name: &str, cpu: &CpuAbi, pc: u32) -> ! {
-    let why = if sim::supported(cpu) { "fault" } else { "float" };
-    unimplemented!("anim {name}: {why} at {pc:#x}")
+    if !sim::supported(cpu) {
+        unimplemented!("anim {name}: float at {pc:#x}")
+    }
+    match sim::take_decline() {
+        Some((at, why)) if at == pc => unimplemented!("anim {name}: fault at {pc:#x}: {why}"),
+        _ => unimplemented!("anim {name}: fault at {pc:#x}: no decline recorded"),
+    }
 }
 
 /// The stream, marker and graph walk points of the animation group.
@@ -698,6 +704,29 @@ mod tests {
                 assert_eq!(message, want, "{pc:#x}");
                 assert_eq!(at, cpu, "{pc:#x}");
             }
+        }
+    }
+
+    #[test]
+    fn a_declined_segment_names_why_in_its_panic() {
+        let (plan, mut ctx) = anim_with_originals();
+        for entry in [0x1c6f60, 0x1ccda0] {
+            let body = ANIM_BODIES.iter().find(|b| b.point.base == entry).unwrap();
+            let hook = plan.chains[&entry].implement.as_ref().unwrap();
+            let hooks::Run::Implement(run) = &hook.run else { unreachable!() };
+            // The ports' float environment: the plan refuses on the test
+            // guest's access trap, and the panic says so.
+            let mut cpu = CpuAbi::default();
+            let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = run(&mut cpu, &mut ctx, entry);
+            }))
+            .expect_err("a declined segment panics");
+            let message = err.downcast_ref::<String>().map(String::as_str).unwrap_or_default();
+            let want = format!(
+                "not implemented: anim {}: fault at {entry:#x}: an access trap is installed",
+                body.point.name
+            );
+            assert_eq!(message, want);
         }
     }
 

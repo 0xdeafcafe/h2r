@@ -46,12 +46,19 @@ before the caller reads it again.
 
 The bridge installs a body only when the image exports its entry and all
 return selectors. A declined first segment panics
-(`anim <entry>: <float|fault> at <pc>`). If a child declines after its
-caller commits, the bridge hands the pending transfer and the caller's
-committed frame back to the dispatcher, whose hook for the child then
-panics the same way.
+(`anim <entry>: float at <pc>`, or `anim <entry>: fault at <pc>: <why>`
+with the access the plan refused, from `sim_native::take_decline`). If a
+child declines after its caller commits, the bridge hands the pending
+transfer and the caller's committed frame back to the dispatcher, whose
+hook for the child then panics the same way.
 `sim_native::plan` indexes long store logs by physical address so reads
 through guest aliases see pending channel copies.
+
+The XBE loader maps each image page as its own mapping
+(`runtime::loader::load_xbe_with`), so a body's text, or a load or store,
+can cross from one mapping into the next. The plan takes the text page
+by page into at most six physical spans, and splits such a load or store
+at the page boundary. A plan with an access trap installed declines.
 
 ## Graph lookup
 
