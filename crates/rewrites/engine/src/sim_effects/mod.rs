@@ -1,14 +1,12 @@
 //! Effects, particles, contrails and decals: phase 6 of the simulation
 //! rewrite (docs/engine/sim-rewrite.md, "Effects (phase 6)"; contracts in
-//! docs/engine/sim-effects.md). Everything here runs under
-//! `impl.sim.native.effects` (default off), installed by
+//! docs/engine/sim-effects.md). Every port is installed, always, by
 //! `sim_bridge::sim_effects`.
 //!
 //! A [`Port`] is a retail function or a stretch of one: an entry and the
 //! return addresses of the guest calls it makes. At each, [`Port::run`]
-//! works from the registers and the retail stack frame alone, so a call a
-//! port declines (or a checkpoint restore between two segments) is
-//! finished by the original from the same state. The effect clock, the
+//! works from the registers and the retail stack frame alone, so a
+//! checkpoint restore between two segments resumes from the same state. The effect clock, the
 //! particle step, the contrail clock and the decal clock are plain Rust
 //! values gathered from the datums for one step and written back before
 //! the next guest call; no handle, pointer or time survives a callout.
@@ -39,7 +37,8 @@ pub struct Port {
     pub sites: &'static [u32],
     /// Whether the call at `pc` (the entry or a site) is inside what the
     /// port reproduces exactly: float environment, bounded loops, no
-    /// armed memory trap. False sends the call to the original.
+    /// armed memory trap. False is counted by the installer; the port
+    /// still runs.
     pub supported: fn(&CpuAbi, &Guest, u32) -> bool,
     /// Run from `pc` to the next transfer.
     pub run: fn(&mut CpuAbi, &mut Guest, u32) -> Result<TransferAbi>,

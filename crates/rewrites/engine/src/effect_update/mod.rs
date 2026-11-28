@@ -1,8 +1,8 @@
 //! The effects phase's per-effect callees as Rust bodies
 //! (docs/engine/effects-parts.md, "The per-effect bodies"). The effect
 //! walk of `0x176e40` (`crate::effects_phase`) calls four functions for
-//! each live effect; each is a [`Body`] here, run through the segment arm
-//! ([`arm`]) that proves it against the guest before it answers:
+//! each live effect; each is a [`Body`] here, and the Rust answers every
+//! segment ([`arm`] counts them):
 //!
 //! | Entry | Body | What it does |
 //! |---|---|---|

@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 41;
+pub const BUDGET: usize = 40;
 
 use Initial::{Group, Off, On};
 
@@ -108,8 +108,6 @@ pub const TABLE: &[Switch] = &[
         "phase 4 sound simulation: promote after voice, arena and timing parity"),
     sw("impl.sim.native.physics", Off, "sim", "2026-11-25",
         "the Havok world step (sim-havok, docs/engine/sim-rewrite-havok.md): on in the lane that lands it, then deleted"),
-    sw("impl.sim.native.effects", Off, "sim", "2026-11-25",
-        "effects, particles, contrails and decals (engine::sim_effects): on in the lane that lands it, then deleted"),
     sw("impl.sim.present", On, "sim", "2026-11-27",
         "ticks with no local user skip the presentation phases (sim-bridge/src/present.rs); h2 sim diff of lockout-2v2 is identical over 9000 ticks"),
     sw("impl.sim.aim-assist", Off, "sim", "2026-11-27",

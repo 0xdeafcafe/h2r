@@ -80,16 +80,21 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
                 arms.extend(leaf::Leaf::ALL.map(|l| leaf_wire(l, leaf::status(l))));
                 arms
             }),
-            subsystem(switches, "effects", group(engine::sim_effects::GROUP)),
+            subsystem(switches, "effects", with_outside(group(engine::sim_effects::GROUP), &sim_bridge::sim_effects::outside())),
             subsystem(switches, "sound", vec![sound_wire(&voices::stats())]),
             effects_parts(sim_bridge::sim_effects_parts::status(), engine::effect_update::arm::stats()),
         ],
     }
 }
 
-/// `impl.sim.native.<name>` with its verdict over `arms`.
+/// `impl.sim.native.<name>` with its verdict over `arms`. A subsystem
+/// whose switch is gone (anim, objects, effects) is always on, with
+/// `switch` empty.
 fn subsystem(switches: &Switches, name: &str, arms: Vec<Arm>) -> Subsystem {
     let switch = format!("impl.sim.native.{name}");
+    if table::get(&switch).is_none() {
+        return verdict(name, String::new(), true, arms);
+    }
     let default = table::get(&switch).is_some_and(|s| s.initial == Initial::On);
     let on = switches.implementation(&switch["impl.".len()..], default);
     verdict(name, switch, on, arms)
@@ -142,6 +147,17 @@ fn effects_parts(
     ];
     arms.extend(segment_wire("effects.body", bodies));
     verdict("effects-parts", String::new(), true, arms)
+}
+
+/// The effect ports' calls run outside their `supported` check, added to
+/// each port's `declined` (`sim_bridge::sim_effects::outside`).
+fn with_outside(mut arms: Vec<Arm>, outside: &[(&str, u64)]) -> Vec<Arm> {
+    for arm in &mut arms {
+        if let Some((_, n)) = outside.iter().find(|(name, _)| *name == arm.name) {
+            arm.declined += n;
+        }
+    }
+    arms
 }
 
 fn physics_arms() -> Vec<Arm> {
@@ -271,11 +287,10 @@ fn segment_wire(prefix: &str, entries: Vec<(u32, segment_arm::Stats)>) -> Vec<Ar
         .into_iter()
         .map(|(entry, s)| Arm {
             name: format!("{prefix}.{entry:08x}"),
-            checked: s.matched + s.mismatched,
-            matched: s.matched,
-            mismatched: s.mismatched,
             answered: s.answered,
-            declined: s.declined + s.interrupted,
+            // Answered all the same; the float environment is the error.
+            declined: s.float_env,
+            ..Arm::default()
         })
         .collect()
 }
@@ -364,10 +379,11 @@ mod tests {
         let r = read(&Switches::default(), shadow);
         let names: Vec<_> = r.subsystems.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["physics", "objects", "anim", "collision", "seats", "effects", "sound", "effects-parts"]);
-        assert_eq!(r.subsystems[7].switch, "", "no switch");
-        assert!(r.subsystems[7].on, "always on");
         for s in &r.subsystems {
-            if s.name != "effects-parts" {
+            if ["objects", "anim", "effects", "effects-parts"].contains(&s.name.as_str()) {
+                assert_eq!(s.switch, "", "{}: no switch", s.name);
+                assert!(s.on, "{}: always on", s.name);
+            } else {
                 assert_eq!(s.switch, format!("impl.sim.native.{}", s.name));
             }
             assert!(!s.clean, "{}", s.name);
@@ -396,7 +412,7 @@ mod tests {
         let s = Switches::parse("impl.sim.native.physics=on").unwrap();
         let r = read(&s, registry());
         assert!(r.subsystems[0].on);
-        assert!(!r.subsystems[1].on);
+        assert!(!r.subsystems[3].on, "collision");
     }
 
     #[test]
@@ -471,7 +487,7 @@ mod tests {
                     ..EffectArms::default()
                 },
             ),
-            vec![(0x1792b0, segment_arm::Stats { matched: 3, answered: 2, interrupted: 1, ..segment_arm::Stats::default() })],
+            vec![(0x1794e0, segment_arm::Stats { answered: 2, float_env: 1 })],
         );
         let names: Vec<&str> = e.arms.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(
@@ -485,14 +501,14 @@ mod tests {
                 "effects.decal",
                 "effects.light",
                 "effects.parts",
-                "effects.body.001792b0"
+                "effects.body.001794e0"
             ]
         );
         assert_eq!(e.arms[5].answered, 5);
         assert_eq!((e.arms[0].checked, e.arms[0].answered, e.arms[0].declined), (6, 3, 2));
         assert_eq!((e.arms[1].checked, e.arms[1].answered, e.arms[1].declined), (4, 9, 1));
         assert_eq!((e.arms[7].answered, e.arms[7].declined), (4, 3));
-        assert_eq!((e.arms[8].checked, e.arms[8].answered, e.arms[8].declined), (3, 2, 1));
+        assert_eq!((e.arms[8].checked, e.arms[8].answered, e.arms[8].declined), (0, 2, 1));
         assert!(!e.clean);
         let v = sound_wire(&voices::Stats { matched: 4, mismatched: 1, quiet: 9, declined: 2, answered: 7, ..Default::default() });
         assert_eq!((v.checked, v.mismatched, v.answered, v.declined), (5, 1, 7, 2));
