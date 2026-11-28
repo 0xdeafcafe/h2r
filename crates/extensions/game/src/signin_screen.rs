@@ -1076,7 +1076,7 @@ pub fn install(
         .map_err(|e| anyhow::anyhow!("signin strings: {e}"))?;
     match registry.add(&class(Arc::clone(&rows), TEXT_BLOCK)) {
         Ok(true) => {}
-        Ok(false) => eprintln!("signin prompt: features.{FEATURE} is off"),
+        Ok(false) => crate::say_once(format!("signin prompt: features.{FEATURE} is off")),
         Err(e) => eprintln!("signin prompt: {e}"),
     }
     let window = window(std::env::var("H2_SIGNIN_DIALOG").ok().as_deref());
@@ -1088,7 +1088,7 @@ pub fn install(
 fn wrap_continue(rt: &Runtime, rows: Arc<SigninRows>, window: u32) -> anyhow::Result<bool> {
     let hle = Arc::clone(&rows.hle);
     let Some(inner) = rt.edit_dispatch(|d| d.override_handler(TASK_CONTINUE)) else {
-        eprintln!("signin prompt: no Live entry at {TASK_CONTINUE:#x}; not wrapped");
+        crate::say_once(format!("signin prompt: no Live entry at {TASK_CONTINUE:#x}; not wrapped"));
         return Ok(false);
     };
     rt.edit_dispatch(|d| {

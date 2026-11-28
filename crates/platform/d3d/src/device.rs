@@ -6464,7 +6464,7 @@ impl<B: Backend> Device<B> {
                     && !screen_pass),
             glyph_cache,
         };
-        let (mut draw, snapshots) = if self
+        let (draw, snapshots) = if self
             .swallowing
             .as_ref()
             .is_some_and(|s| s.plan.call.is_some())

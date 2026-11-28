@@ -63,7 +63,7 @@ fn ret(
     cpu: &mut runtime::CpuAbi,
     ctx: &mut runtime::ExecCtx,
 ) -> Result<TransferAbi, runtime::GuestFault> {
-    let mut guest = ctx.memory();
+    let guest = ctx.memory();
     cpu.eax = 0;
     guest.ret(cpu, u32::from(POP))
 }

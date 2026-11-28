@@ -146,7 +146,7 @@ fn empty_loop(
     cpu: &mut runtime::CpuAbi,
     ctx: &mut runtime::ExecCtx,
 ) -> Result<TransferAbi, runtime::GuestFault> {
-    let mut guest = ctx.memory();
+    let guest = ctx.memory();
     cpu.eax = (cpu.eax & !0xff) | 1;
     guest.ret(cpu, 4)
 }

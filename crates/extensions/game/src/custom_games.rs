@@ -987,7 +987,7 @@ pub fn install_privacy(
         squad_visibility(g).map(crate::live_glue::visibility)
     })));
     let Some(o) = rt.resolve_original(PRIVACY_CHOSEN) else {
-        eprintln!("custom games: no generated entry at {PRIVACY_CHOSEN:#x}; privacy not followed");
+        crate::say_once(format!("custom games: no generated entry at {PRIVACY_CHOSEN:#x}; privacy not followed"));
         return Ok(());
     };
     let o = Arc::new(o);

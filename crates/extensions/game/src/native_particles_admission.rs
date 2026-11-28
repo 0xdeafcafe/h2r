@@ -680,7 +680,7 @@ impl<'a> CopyView<'a> {
             copy: t.copy,
         }
     }
-    fn of_attachments(t: &'a ExternalAttachments, request: &d3d::ExternalPassRequest) -> Self {
+    fn of_attachments(t: &'a ExternalAttachments, _request: &d3d::ExternalPassRequest) -> Self {
         Self {
             device: &t.device,
             size: t.size,

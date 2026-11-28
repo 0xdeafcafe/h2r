@@ -500,7 +500,7 @@ fn open_dialog(
 fn original(rt: &runtime::Runtime, addr: u32) -> Option<Arc<OriginalHandler>> {
     let o = rt.resolve_original(addr);
     if o.is_none() {
-        eprintln!("layouts: no generated entry at {addr:#x}; hook skipped");
+        crate::say_once(format!("layouts: no generated entry at {addr:#x}; hook skipped"));
     }
     o.map(Arc::new)
 }

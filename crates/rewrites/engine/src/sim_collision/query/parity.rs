@@ -150,7 +150,7 @@ struct Slot<'a>(&'a AtomicUsize);
 impl<'a> Slot<'a> {
     fn reserve(count: &'a AtomicUsize) -> Option<Self> {
         count
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
                 (live < 32).then_some(live + 1)
             })
             .ok()

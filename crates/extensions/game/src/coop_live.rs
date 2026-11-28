@@ -1870,23 +1870,27 @@ pub fn install(
     if std::env::var_os("H2_NO_COOP_ROW").is_some() {
         return Ok(false);
     }
-    let levels = match disc_levels(disc) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("coop-live: cannot read the disc's campaign levels: {e:#}");
-            Vec::new()
+    // The early plan builds have no disc path yet; read once it is known.
+    let known = !disc.as_os_str().is_empty();
+    let levels = if !known {
+        Vec::new()
+    } else {
+        match disc_levels(disc) {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("coop-live: cannot read the disc's campaign levels: {e:#}");
+                Vec::new()
+            }
         }
     };
     let named = levels.iter().filter(|l| l.name.is_some()).count();
-    eprintln!(
-        "coop-live: {} campaign levels ({named} named){}",
-        levels.len(),
-        if arm.is_some() {
-            ""
-        } else {
-            "; the co-op hooks are off"
-        }
-    );
+    if known {
+        eprintln!(
+            "coop-live: {} campaign levels ({named} named){}",
+            levels.len(),
+            if arm.is_some() { "" } else { "; the co-op hooks are off" }
+        );
+    }
     let skulls: HostSkulls = Box::new(move |profiles| {
         let Some(store) = &store else {
             return Vec::new();

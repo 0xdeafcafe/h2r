@@ -11,6 +11,17 @@ pub use live_telemetry as telemetry;
 pub use live_hle::{HostPublisher, LiveConfig};
 pub use run_opts::{BetweenSlices, Host, RunOpts, RunReport, VfsReady};
 
+/// Prints `line` to stderr the first time this process says it. Install
+/// notes repeat on every feature-plan build; this keeps them to one line.
+pub fn say_once(line: String) {
+    static SAID: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+        std::sync::Mutex::new(None);
+    let mut said = SAID.lock().unwrap_or_else(|e| e.into_inner());
+    if said.get_or_insert_with(Default::default).insert(line.clone()) {
+        eprintln!("{line}");
+    }
+}
+
 pub mod account_screen;
 pub mod actor_net;
 pub mod agent_frames;

@@ -325,7 +325,7 @@ struct ConnectionSlot(Arc<AtomicUsize>);
 impl ConnectionSlot {
     fn take(connections: &Arc<AtomicUsize>) -> Result<Self> {
         connections
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 (n < MAX_CONNECTIONS).then_some(n + 1)
             })
             .ok()

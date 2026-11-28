@@ -86,7 +86,7 @@ pub fn install(registry: &mut hooks::Registry, boot: Boot) -> anyhow::Result<boo
     );
     let shared = Arc::new(Mutex::new(opened));
     if STORE.set(Arc::clone(&shared)).is_err() {
-        eprintln!("game variants: a store was already open; this one is not used");
+        crate::say_once("game variants: a store was already open; this one is not used".into());
     }
     if let Some(h) = &boot.live {
         let _ = LIVE.set(Arc::clone(h));
