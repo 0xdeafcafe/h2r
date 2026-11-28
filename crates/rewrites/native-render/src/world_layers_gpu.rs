@@ -572,13 +572,9 @@ impl IndexedPass {
         // packet's reference come from the resolved state, so a strip
         // drawn with the scene's mark (mode 2, `0x0002c0bc`) writes it and
         // a strip whose state leaves the test off writes none, as on D3D.
-        // Only a stencil the target cannot hold is refused.
-        if draw.state.render.stencil.enable
-            && !draw.target.depth_format.and_then(gfx::format::depth_format_to_wgpu)
-                .is_some_and(|format| format.has_stencil_aspect())
-        {
-            return Err("stencil_target");
-        }
+        // A target with no stencil (no depth, or a `D16` one) draws with
+        // the test off, as the D3D path's pipeline takes it
+        // (`gfx::translate::depth_stencil_state`).
         if !matches!(&draw.shader.vertex, d3d::shader::VertexProcessing::Program { .. }) {
             return Err("program");
         }
@@ -705,12 +701,9 @@ impl IndexedPass {
         }
         let scale = d3d::scaled::RenderScale::between(guest_size, target.size).ok_or("zero raster extent")?;
         if (width, height) != (draw.target.width, draw.target.height)
-            || depth.is_some_and(|format| {
-                target.size != (target.depth.texture().width(), target.depth.texture().height())
-                    || (draw.state.render.stencil.enable && !format.has_stencil_aspect())
-            })
+            || depth.is_some_and(|_| target.size != (target.depth.texture().width(), target.depth.texture().height()))
         {
-            return Err("incompatible target or stencil");
+            return Err("incompatible target");
         }
         let caps = Capabilities::from_features(target.device.features());
         let mut active = self.cache.device.lock().map_err(|_| "device cache poisoned")?;

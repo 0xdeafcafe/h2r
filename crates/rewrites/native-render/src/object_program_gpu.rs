@@ -1752,7 +1752,7 @@ impl LitObjects {
                     shader: OBJECT_PROGRAM,
                     vertex_buffers,
                     primitive: draw.state.primitive,
-                    depth_stencil: Some(draw_depth_stencil(&draw.state, depth)?),
+                    depth_stencil: Some(draw_depth_stencil(&draw.state, depth)),
                     color_target: wgpu::ColorTargetState {
                         format: color, blend: draw.state.blend, write_mask: draw.state.color_writes,
                     },
@@ -1982,24 +1982,17 @@ pub fn with_aux_depth(vertex: &mut VertexUniforms, pixel: &mut PixelUniforms, au
 }
 
 /// The depth and stencil a lit part's pipeline draws with on a
-/// `depth_format` attachment; `None` when it tests the stencil and the
-/// attachment has none.
-fn draw_depth_stencil(state: &DrawState, depth_format: wgpu::TextureFormat) -> Option<wgpu::DepthStencilState> {
-    if state.stencil.enable && !depth_format.has_stencil_aspect() {
-        return None;
-    }
-    let stencil = gfx::translate::depth_stencil_state(
-        &gfx::state::RenderState { stencil: state.stencil, ..Default::default() },
-        Some(depth_format),
-        wgpu::PrimitiveTopology::TriangleList,
-    )?.stencil;
-    Some(wgpu::DepthStencilState {
+/// `depth_format` attachment: the draw's stencil
+/// (`fog_gpu::layer_stencil`, off on a depth with no stencil aspect, as on
+/// D3D).
+fn draw_depth_stencil(state: &DrawState, depth_format: wgpu::TextureFormat) -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
         format: depth_format,
         depth_write_enabled: Some(state.depth_write),
         depth_compare: Some(state.depth_compare),
-        stencil,
+        stencil: crate::fog_gpu::layer_stencil(&state.stencil, depth_format),
         bias: wgpu::DepthBiasState::default(),
-    })
+    }
 }
 
 /// [`LitObjects::plan`] over a model's `parts` and its programs' passes

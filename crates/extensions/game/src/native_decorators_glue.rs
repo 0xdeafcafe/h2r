@@ -33,8 +33,8 @@
 //!   commit, as the fog's.
 //! - **The pass** (`DecoratorPass`): the device's view constants and W
 //!   clip at the issue and the pass's pipeline for each copy's formats
-//!   under the view's stencil and cull (none when the stencil tests on a
-//!   depth with no stencil aspect).
+//!   under the view's stencil and cull (the test off on a depth with no
+//!   stencil aspect, as on D3D).
 //!   An unfinished pipeline keeps the slots on D3D. `decorators_gpu::bind`
 //!   and `encode` record after all copies pass.
 

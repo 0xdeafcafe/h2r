@@ -897,18 +897,19 @@ fn a_sky_strip_keeps_its_cull_and_each_refusal_is_named() {
         culled.state.render.cull_mode = cull;
         assert_eq!(admit(&culled), None, "{name}: the pipeline takes the draw's cull");
     }
-    // The stencil is the draw's own: off, or another test, is drawn; a
-    // stencil the target cannot hold is refused.
+    // The stencil is the draw's own: off, or another test, is drawn; on a
+    // target with no stencil it draws with the test off, as on D3D.
     let unmarked = { let mut d = draw.clone(); d.state.render.stencil.enable = false; d };
     assert_eq!(admit(&unmarked), None, "a strip with the stencil off");
     let mut tested = draw.clone();
     tested.state.render.stencil.func = CompareFunc::Equal;
     tested.state.render.stencil.pass = StencilOp::Keep;
     assert_eq!(admit(&tested), None, "a strip that tests the stencil");
+    let unheld = { let mut d = draw.clone(); d.target.depth_format = None; d };
+    assert_eq!(admit(&unheld), None, "a mark on a target with no stencil");
     let mut cases: Vec<(&str, ResolvedDraw)> = Vec::new();
     cases.push(("topology", { let mut d = draw.clone(); d.primitive = PrimitiveType::TriangleList; d }));
     cases.push(("index_range", { let mut d = draw.clone(); d.indices = Some(vec![0, 1, 3].into()); d }));
-    cases.push(("stencil_target", { let mut d = draw.clone(); d.target.depth_format = None; d }));
     cases.push(("program", { let mut d = draw.clone(); d.shader.vertex = VertexProcessing::FixedFunction { fvf: 0x002 }; d }));
     cases.push(("transform", {
         let mut d = draw.clone();
