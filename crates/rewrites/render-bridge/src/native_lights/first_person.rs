@@ -6,10 +6,9 @@
 //! and records as the guest makes them, then [`scene_slot`] draws the slot
 //! from its groups on the first person's target and puts it into the
 //! scene. The guest's constants call and layer draws never run. A slot
-//! the scene cannot take, and every slot while no host draws the scene's
-//! light layers, is dropped for the frame and counted by cause
-//! (`scene_dropped_first_person_<cause>`). A plan that refuses runs the
-//! guest function whole.
+//! the scene cannot take panics by cause (`lights: first_person <cause>`),
+//! as does a refused plan; with no renderer (no host) the slots draw
+//! nothing.
 //!
 //! At the entry E3's chosen first-person lights that have no slot are
 //! queued over the first-person parts (`chosen::first_person::at_pass`).
@@ -29,7 +28,7 @@ use native_render::light_passes::{self, Steps};
 use runtime::TransferAbi;
 use timeline::native::{SceneList, SceneListResult};
 
-use super::frame::{original, refused};
+use super::frame::original;
 use super::scene_frame::Dropped;
 use super::{Ro, SceneGroup};
 use crate::native_map_work::Stage;
@@ -49,7 +48,7 @@ pub(super) fn install(b: &mut Builder) {
                     return original(cpu, ctx, addr);
                 }
                 if Stage::Lights.standing_down() {
-                    return drop_loop(cpu, ctx, LoopDropped::StandingDown);
+                    return empty_loop(cpu, ctx);
                 }
                 {
                     // E3's chosen first-person lights that have no slot
@@ -70,16 +69,17 @@ pub(super) fn install(b: &mut Builder) {
                 };
                 let plan = match plan {
                     Ok(plan) => plan,
-                    Err(why) => {
-                        refused(SceneList::FirstPersonLights, why);
-                        return drop_loop(cpu, ctx, LoopDropped::Plan);
-                    }
+                    Err(_) => unimplemented!("lights: first_person plan"),
                 };
                 // Each slot stops after its records, draws from its groups
                 // at once on the first person's target (bound as the loop
-                // begins) and goes into the scene. With no host drawing the
-                // scene's light layers every slot is dropped.
-                let ready = super::scene_path_ready();
+                // begins) and goes into the scene. With no renderer the
+                // slots draw nothing; a host that does not draw the
+                // scene's light layers is unimplemented.
+                let host = super::has_host();
+                if host && !super::scene_path_ready() {
+                    unimplemented!("lights: first_person host");
+                }
                 let target = super::bound_target();
                 hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
                     Box::pin(async move {
@@ -87,12 +87,11 @@ pub(super) fn install(b: &mut Builder) {
                             &cx,
                             plan,
                             &mut |m, p, call| {
-                                if ready {
+                                if host {
                                     scene_slot(m, p, call, target)
                                 } else {
                                     super::finish_candidate();
                                     super::FIRST_PERSON.set(None);
-                                    drop_slot(Dropped::Host);
                                     true
                                 }
                             },
@@ -127,10 +126,7 @@ pub(super) fn install(b: &mut Builder) {
                 };
                 let plan = match plan {
                     Ok(plan) => plan,
-                    Err(why) => {
-                        refused(SceneList::FirstPersonRecords, why);
-                        return original(cpu, ctx, addr);
-                    }
+                    Err(_) => unimplemented!("lights: first_person records plan"),
                 };
                 hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
                     Box::pin(async move {
@@ -144,30 +140,12 @@ pub(super) fn install(b: &mut Builder) {
         .context_only();
 }
 
-/// Why the whole loop drew nothing. The guest body never runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LoopDropped {
-    /// The lights stage stands down on this map.
-    StandingDown,
-    /// The loop's plan refused (`first_person::plan`).
-    Plan,
-}
-
-const LOOP_DROPPED_NAMES: [&str; 2] = [
-    "scene_dropped_first_person_loop_standing_down",
-    "scene_dropped_first_person_loop_plan",
-];
-
-static LOOP_DROPPED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
-
-/// Counts the dropped loop and returns from `0x000404b0` as its empty
-/// loop's exit does (`ret 4`, AL 1), the body not run.
-fn drop_loop(
+/// Returns from `0x000404b0` as its empty loop's exit does (`ret 4`,
+/// AL 1), the body not run: the map has nothing native for the lights.
+fn empty_loop(
     cpu: &mut runtime::CpuAbi,
     ctx: &mut runtime::ExecCtx,
-    why: LoopDropped,
 ) -> Result<TransferAbi, runtime::GuestFault> {
-    LOOP_DROPPED[why as usize].fetch_add(1, Ordering::Relaxed);
     let mut guest = ctx.memory();
     cpu.eax = (cpu.eax & !0xff) | 1;
     guest.ret(cpu, 4)
@@ -179,40 +157,6 @@ static SCENE_SLOTS: AtomicU64 = AtomicU64::new(0);
 /// `scene_first_person_cut_slots`).
 pub fn scene_slots() -> u64 {
     SCENE_SLOTS.load(Ordering::Relaxed)
-}
-
-static DROPPED: [AtomicU64; Dropped::COUNT] = [const { AtomicU64::new(0) }; Dropped::COUNT];
-
-/// `scene_dropped_first_person_<cause>`, in [`Dropped::NAMES`]' order.
-const DROPPED_NAMES: [&str; Dropped::COUNT] = [
-    "scene_dropped_first_person_unread",
-    "scene_dropped_first_person_constants",
-    "scene_dropped_first_person_projection",
-    "scene_dropped_first_person_group",
-    "scene_dropped_first_person_light",
-    "scene_dropped_first_person_additional_casters",
-    "scene_dropped_first_person_host",
-];
-
-/// Counts a first-person slot the scene path did not draw; a group
-/// refusal is also counted by its step (`scene_dropped_light_group_*`).
-fn drop_slot(why: Dropped) {
-    DROPPED[why.index()].fetch_add(1, Ordering::Relaxed);
-    super::scene_frame::drop_group(why);
-}
-
-/// `render.scene`'s columns for the first-person slots the scene path
-/// dropped, by cause.
-pub fn dropped() -> Vec<(&'static str, u64)> {
-    DROPPED_NAMES
-        .into_iter()
-        .zip(DROPPED.iter().map(|c| c.load(Ordering::Relaxed)))
-        .chain(
-            LOOP_DROPPED_NAMES
-                .into_iter()
-                .zip(LOOP_DROPPED.iter().map(|c| c.load(Ordering::Relaxed))),
-        )
-        .collect()
 }
 
 /// The scene's candidate for a first-person slot's light: its record,
@@ -258,7 +202,7 @@ pub(super) fn candidate(
 /// constants) into the first person's view, its layers drawn now on
 /// `target` ([`super::draw_cut_light`]) and only then its groups put in.
 /// Always true: the guest's steps never run. A slot the scene cannot take
-/// is not drawn this frame and is counted by cause ([`drop_slot`]).
+/// panics by cause (`lights: first_person <cause>`).
 fn scene_slot(mem: &mut dyn GuestMemory, plan: &first_person::Plan, call: &Call, target: Option<[u32; 8]>) -> bool {
     super::finish_candidate();
     super::FIRST_PERSON.set(None);
@@ -267,7 +211,8 @@ fn scene_slot(mem: &mut dyn GuestMemory, plan: &first_person::Plan, call: &Call,
             SCENE_SLOTS.fetch_add(1, Ordering::Relaxed);
         }
         Ok(false) => {}
-        Err(why) => drop_slot(why),
+        Err(Dropped::Group(refusal)) => unimplemented!("lights: first_person group {}", refusal.name()),
+        Err(why) => unimplemented!("lights: first_person {}", why.name()),
     }
     true
 }
@@ -337,14 +282,13 @@ impl SceneSlot {
     }
 }
 
-/// One count per record that passed the filter: native for a record
-/// appended in Rust, the fallback and its reason for one the guest's
-/// per-part calls made.
+/// One count per record appended in Rust; a record the guest's per-part
+/// calls would make is unimplemented.
 fn count(records: &SlotRecords) {
     for &(_, made) in &records.made {
         match made {
             Made::Rust => SceneList::FirstPersonRecords.count(SceneListResult::Native),
-            Made::Guest(why) => refused(SceneList::FirstPersonRecords, why),
+            Made::Guest(why) => unimplemented!("lights: first_person record {why:?}"),
         }
     }
 }
@@ -353,22 +297,6 @@ fn count(records: &SlotRecords) {
 mod tests {
     use super::*;
     use engine::FlatMemory;
-
-    #[test]
-    fn a_dropped_slot_is_counted_under_the_dynamic_lights_cause_with_its_own_prefix() {
-        for (fp, light) in DROPPED_NAMES.iter().zip(Dropped::NAMES) {
-            assert_eq!(
-                fp.strip_prefix("scene_dropped_first_person_"),
-                light.strip_prefix("scene_dropped_light_"),
-            );
-        }
-        let before = dropped();
-        drop_slot(Dropped::Host);
-        let after = dropped();
-        let at = |rows: &[(&str, u64)]| rows.iter().find(|r| r.0 == "scene_dropped_first_person_host").unwrap().1;
-        assert!(at(&after) > at(&before));
-        assert!(after.iter().any(|r| r.0 == "scene_dropped_first_person_loop_plan"));
-    }
 
     #[test]
     fn a_cut_slots_candidate_carries_its_constants_and_its_definitions_gels() {

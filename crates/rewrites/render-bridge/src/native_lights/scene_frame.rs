@@ -18,12 +18,8 @@
 //! A light it takes draws at once, at its passes, from its groups
 //! ([`super::draw_cut_light`]); only then do the groups go into the
 //! scene. A light this cannot make whole, or the host does not draw,
-//! dropped for the frame: its passes return after the item lists, and it
-//! is counted by cause (`scene_dropped_light_<cause>` in `render.scene`; a
-//! group's refusal also `scene_dropped_light_group_<refusal>`). The guest's
-//! remaining passes never run.
-
-use std::sync::atomic::{AtomicU64, Ordering};
+//! panics by cause (`lights: <cause>`, [`fail`]). The guest's remaining
+//! passes never run.
 
 use engine::light_constants as lc;
 use engine::memory::GuestMemory;
@@ -36,8 +32,7 @@ use super::typed::Mirror;
 use super::typed_groups::GroupRefusal;
 use super::{Entry, SceneGroup, Source, source_constants, typed_groups};
 
-/// Why a light's passes put nothing into the scene. The light is not drawn
-/// this frame and is counted by cause; the guest's passes never run.
+/// Why a light's passes cannot put it into the scene ([`fail`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dropped {
     /// The passes' arguments, the light's lists or its tags did not read.
@@ -60,66 +55,35 @@ pub enum Dropped {
 }
 
 impl Dropped {
-    pub const COUNT: usize = 7;
-
-    pub(super) fn index(self) -> usize {
-        match self {
-            Dropped::Unread => 0,
-            Dropped::Constants => 1,
-            Dropped::Projection => 2,
-            Dropped::Group(_) => 3,
-            Dropped::Light => 4,
-            Dropped::AdditionalCasters => 5,
-            Dropped::Host => 6,
-        }
-    }
-
-    pub const NAMES: [&'static str; Dropped::COUNT] = [
-        "scene_dropped_light_unread",
-        "scene_dropped_light_constants",
-        "scene_dropped_light_projection",
-        "scene_dropped_light_group",
-        "scene_dropped_light_light",
-        "scene_dropped_light_additional_casters",
-        "scene_dropped_light_host",
-    ];
-
+    /// The cause's name in the panic ([`fail`]).
     pub fn name(self) -> &'static str {
-        Self::NAMES[self.index()]
+        match self {
+            Dropped::Unread => "unread",
+            Dropped::Constants => "constants",
+            Dropped::Projection => "projection",
+            Dropped::Group(_) => "group",
+            Dropped::Light => "light",
+            Dropped::AdditionalCasters => "additional_casters",
+            Dropped::Host => "host",
+        }
     }
 }
 
-static DROPPED: [AtomicU64; Dropped::COUNT] = [const { AtomicU64::new(0) }; Dropped::COUNT];
-/// `scene_dropped_light_group_<refusal>`, in [`GroupRefusal::NAMES`]' order.
-pub const GROUP_NAMES: [&str; GroupRefusal::NAMES.len()] = [
-    "scene_dropped_light_group_layer",
-    "scene_dropped_light_group_memory",
-    "scene_dropped_light_group_suffix",
-    "scene_dropped_light_group_mask",
-    "scene_dropped_light_group_sort",
-    "scene_dropped_light_group_pass",
-    "scene_dropped_light_group_projection",
-    "scene_dropped_light_group_entry_memory",
-    "scene_dropped_light_group_entry_callback",
-    "scene_dropped_light_group_entry_owner",
-    "scene_dropped_light_group_entry_section",
-    "scene_dropped_light_group_entry_range",
-    "scene_dropped_light_group_entry_state",
-    "scene_dropped_light_group_entry_subparts",
-    "scene_dropped_light_group_entry_material",
-    "scene_dropped_light_group_entry_pose",
-];
+/// A light the native passes cannot take: `lights: <cause>` (a group's
+/// with its refusal, `lights: group <refusal>`). Nothing falls back.
+pub fn fail(why: Dropped) -> ! {
+    match why {
+        Dropped::Group(refusal) => unimplemented!("lights: group {}", refusal.name()),
+        why => unimplemented!("lights: {}", why.name()),
+    }
+}
 
-static DROPPED_GROUP: [AtomicU64; GroupRefusal::NAMES.len()] =
-    [const { AtomicU64::new(0) }; GroupRefusal::NAMES.len()];
-/// Why a whole light frame (`0x00031c80`) or a light's passes drew
-/// nothing, before any light of it reached [`plan`]. The guest's body never
-/// runs for any of them.
+/// Why a whole light frame (`0x00031c80`) or a light's passes cannot be
+/// planned: `lights: frame <cause>`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FrameDropped {
-    /// The lights stage stands down on this map (`Stage::Lights`).
-    StandingDown,
-    /// No host draws the scene's light layers ([`super::scene_path_ready`]).
+    /// A host is set and does not draw the scene's light layers
+    /// ([`super::scene_path_ready`]).
     Host,
     /// The frame's plan refused (`frame::plan`).
     Plan,
@@ -128,70 +92,18 @@ pub enum FrameDropped {
 }
 
 impl FrameDropped {
-    pub const NAMES: [&'static str; 4] = [
-        "scene_dropped_light_frame_standing_down",
-        "scene_dropped_light_frame_host",
-        "scene_dropped_light_frame_plan",
-        "scene_dropped_light_frame_passes",
-    ];
-
-    fn index(self) -> usize {
+    pub fn name(self) -> &'static str {
         match self {
-            FrameDropped::StandingDown => 0,
-            FrameDropped::Host => 1,
-            FrameDropped::Plan => 2,
-            FrameDropped::Passes => 3,
+            FrameDropped::Host => "host",
+            FrameDropped::Plan => "plan",
+            FrameDropped::Passes => "passes",
         }
     }
-
-    pub fn name(self) -> &'static str {
-        Self::NAMES[self.index()]
-    }
 }
 
-static FRAME_DROPPED: [AtomicU64; FrameDropped::NAMES.len()] =
-    [const { AtomicU64::new(0) }; FrameDropped::NAMES.len()];
-
-/// Counts a light frame or passes call dropped under `why`.
-pub fn drop_frame(why: FrameDropped) {
-    FRAME_DROPPED[why.index()].fetch_add(1, Ordering::Relaxed);
-}
-
-static LIGHTS: AtomicU64 = AtomicU64::new(0);
-static GROUPS: AtomicU64 = AtomicU64::new(0);
-
-/// Counts a light dropped under `why`.
-pub fn drop_light(why: Dropped) {
-    DROPPED[why.index()].fetch_add(1, Ordering::Relaxed);
-    drop_group(why);
-}
-
-/// A dropped light's or first-person slot's group refusal, counted in
-/// `scene_dropped_light_group_<refusal>`.
-pub(super) fn drop_group(why: Dropped) {
-    if let Dropped::Group(refusal) = why
-        && let Some(n) = GroupRefusal::NAMES.iter().position(|&n| n == refusal.name())
-    {
-        DROPPED_GROUP[n].fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-/// `render.scene`'s columns for the cut light frame: lights and groups
-/// the scene took, and lights dropped by cause.
-pub fn counters() -> Vec<(&'static str, u64)> {
-    [
-        ("scene_cut_lights", LIGHTS.load(Ordering::Relaxed)),
-        ("scene_cut_light_groups", GROUPS.load(Ordering::Relaxed)),
-    ]
-    .into_iter()
-    .chain(Dropped::NAMES.into_iter().zip(DROPPED.iter().map(|c| c.load(Ordering::Relaxed))))
-    .chain(GROUP_NAMES.into_iter().zip(DROPPED_GROUP.iter().map(|c| c.load(Ordering::Relaxed))))
-    .chain(
-        FrameDropped::NAMES
-            .into_iter()
-            .zip(FRAME_DROPPED.iter().map(|c| c.load(Ordering::Relaxed))),
-    )
-    .collect()
+/// A light frame or passes call the native code cannot plan.
+pub fn fail_frame(why: FrameDropped) -> ! {
+    unimplemented!("lights: frame {}", why.name())
 }
 
 /// What one light's passes put into the scene.
@@ -324,17 +236,15 @@ fn projection_rows(block: &[u32]) -> [[u32; 4]; PROJECTION_ROWS] {
     core::array::from_fn(|row| core::array::from_fn(|col| block.get(4 * row + col).copied().unwrap_or(0)))
 }
 
-/// A passes call whose plan refused: the light is dropped.
-pub(super) fn refused() {
-    drop_frame(FrameDropped::Passes);
-    drop_light(Dropped::Unread);
+/// A passes call whose plan refused.
+pub(super) fn refused() -> ! {
+    fail_frame(FrameDropped::Passes)
 }
 
 /// After the item lists of the passes entered with `p`: the light's
 /// groups into the scene, behind the light the hand-off opened. Returns
-/// the groups put in, or why the light is dropped (counted by
-/// [`drop_light`]).
-pub(super) fn light(mem: &mut dyn GuestMemory, p: &passes::Plan) -> Result<usize, Dropped> {
+/// the groups put in; a light it cannot take panics by cause ([`fail`]).
+pub(super) fn light(mem: &mut dyn GuestMemory, p: &passes::Plan) -> usize {
     let e = entry(p);
     // A light whose lists the guest made was left for the constants call,
     // which does not run here.
@@ -344,11 +254,7 @@ pub(super) fn light(mem: &mut dyn GuestMemory, p: &passes::Plan) -> Result<usize
     // The scene draws the light or nothing does: no layer of this light is
     // a candidate of the resolved-draw path.
     super::CANDIDATE.take();
-    let taken = take(mem, &e);
-    if let Err(why) = taken {
-        drop_light(why);
-    }
-    taken
+    take(mem, &e).unwrap_or_else(|why| fail(why))
 }
 
 /// The light drawn and its groups into the scene, or why not. Nothing is
@@ -375,7 +281,5 @@ fn take(mem: &mut dyn GuestMemory, e: &Entry) -> Result<usize, Dropped> {
     }
     let n = planned.groups.len();
     crate::scene_step::typed_light_groups(planned.groups);
-    LIGHTS.fetch_add(1, Ordering::Relaxed);
-    GROUPS.fetch_add(n as u64, Ordering::Relaxed);
     Ok(n)
 }

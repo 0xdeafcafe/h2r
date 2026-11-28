@@ -15,8 +15,7 @@ use hooks::{Builder, Call, Cx, EntryFuture, Flow};
 use runtime::TransferAbi;
 use timeline::native::{SceneList, SceneListResult};
 
-use super::frame::{original, refused};
-use super::scene_frame::{FrameDropped, drop_frame};
+use super::frame::original;
 use crate::native_map_work::Stage;
 
 /// The passes' `ret 0x10`.
@@ -32,7 +31,6 @@ pub(super) fn install(b: &mut Builder) {
                     return original(cpu, ctx, addr);
                 }
                 if Stage::Lights.standing_down() {
-                    drop_frame(FrameDropped::StandingDown);
                     return ret(cpu, ctx);
                 }
                 let fpu = Fpu {
@@ -82,11 +80,7 @@ fn scene_passes(
 ) -> Result<TransferAbi, runtime::GuestFault> {
     let plan = match plan {
         Ok(plan) => plan,
-        Err(why) => {
-            refused(SceneList::LightPasses, why);
-            super::scene_frame::refused();
-            return ret(cpu, ctx);
-        }
+        Err(_) => super::scene_frame::refused(),
     };
     hooks::entry::start_render(cpu, ctx, points::RENDER_LIGHT_PASSES.base, move |cx: Cx| -> EntryFuture {
         Box::pin(async move {
@@ -101,11 +95,9 @@ fn scene_passes(
 }
 
 /// What the cut passes do once the item lists are made: return
-/// (`ret 0x10`) with nothing drawn by the guest, whether the scene took the
-/// light or dropped it ([`super::scene_frame::light`] counts a drop).
-pub(super) fn after_lists(
-    _taken: Result<usize, super::scene_frame::Dropped>,
-) -> (Ret, passes::LightPasses) {
+/// (`ret 0x10`) with nothing drawn by the guest; the scene took the light
+/// ([`super::scene_frame::light`] panics on one it cannot take).
+pub(super) fn after_lists(_groups: usize) -> (Ret, passes::LightPasses) {
     (Ret::new(0, POP), passes::LightPasses::default())
 }
 
@@ -128,50 +120,12 @@ fn at_constants(c: &mut Call<'_>) {
 #[cfg(test)]
 mod tests {
     use super::{POP, after_lists};
-    use crate::native_lights::GroupRefusal;
-    use crate::native_lights::scene_frame::{self, Dropped, FrameDropped, GROUP_NAMES, drop_frame, drop_light};
-    use scene_extract::light_groups::Cause;
-
-    fn counter(name: &str) -> u64 {
-        scene_frame::counters().into_iter().find(|(k, _)| *k == name).map_or(0, |(_, v)| v)
-    }
 
     /// A light the scene takes returns after its item lists, drawing
-    /// nothing; so does one it drops: the guest's remaining passes never
-    /// run.
+    /// nothing: the guest's remaining passes never run.
     #[test]
-    fn a_light_the_scene_cannot_take_returns_after_its_lists_and_the_guest_draws_nothing() {
-        assert_eq!(after_lists(Ok(3)).0.pop, POP, "in the scene: return");
-        assert_eq!(after_lists(Ok(0)).0.pop, POP, "no drawn layer: return");
-        for dropped in [
-            Dropped::Unread,
-            Dropped::Constants,
-            Dropped::Projection,
-            Dropped::Group(GroupRefusal::Entry(Cause::Material)),
-            Dropped::Light,
-            Dropped::AdditionalCasters,
-            Dropped::Host,
-        ] {
-            assert_eq!(after_lists(Err(dropped)).0.pop, POP, "{dropped:?}: return");
-        }
-    }
-
-    /// Each dropped light is counted by cause, a group's also by its
-    /// refusal, and a whole frame by its own cause; no row says kept.
-    #[test]
-    fn a_dropped_light_is_counted_by_cause_and_group_refusal() {
-        let (group, state) = (counter("scene_dropped_light_group"), counter("scene_dropped_light_group_entry_state"));
-        drop_light(Dropped::Group(GroupRefusal::Entry(Cause::State)));
-        assert!(counter("scene_dropped_light_group") > group);
-        assert!(counter("scene_dropped_light_group_entry_state") > state);
-        for why in [FrameDropped::StandingDown, FrameDropped::Host, FrameDropped::Plan, FrameDropped::Passes] {
-            let before = counter(why.name());
-            drop_frame(why);
-            assert!(counter(why.name()) > before, "{why:?}");
-        }
-        assert!(scene_frame::counters().iter().all(|(k, _)| !k.contains("kept")));
-        for (name, refusal) in GROUP_NAMES.iter().zip(GroupRefusal::NAMES) {
-            assert_eq!(*name, format!("scene_dropped_light_group_{refusal}"));
-        }
+    fn a_light_the_scene_takes_returns_after_its_lists_and_the_guest_draws_nothing() {
+        assert_eq!(after_lists(3).0.pop, POP, "in the scene: return");
+        assert_eq!(after_lists(0).0.pop, POP, "no drawn layer: return");
     }
 }
