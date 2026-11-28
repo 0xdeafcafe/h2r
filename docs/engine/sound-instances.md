@@ -241,7 +241,7 @@ A sound tag's custom playback row (gestalt `+0x34`, `0x34` bytes, found by `0x18
 | Stop | `start_stop_begin` (stopping, released), `Mode::Stop`, `start_stop_end` (done) | `0x21d360` |
 | Its sound ends | `start_sound_ended(code)`: `0xA` nothing; else `cut` unless 2 (played out), then the stop | `0x21da90`; `0x21db30` passes 1 and gives the sound back its own table |
 
-The bodies are `sim_bridge::sim_sound::entries::start_layer`. Each runs in a frame `0xB0` bytes below its entry `ESP`: the request record a component's admission builds and the gate's channel. The tag reads are `engine::sim_sound::playback` and the rule is `engine::sim_sound::promotion`:
+The bodies are `sim_bridge::sim_sound::entries::start_layer`. Each runs in a frame `0xB0` bytes below its entry `ESP`, which holds the request record a component's admission builds. The tag reads are `engine::sim_sound::playback`, the gate is `engine::sim_sound::gate` and the rule is `engine::sim_sound::promotion`:
 
 | Function | Port | Answers |
 |---|---|---|
@@ -249,7 +249,9 @@ The bodies are `sim_bridge::sim_sound::entries::start_layer`. Each runs in a fra
 | `0x18d090(ecx = tag, edx = custom)` | `playback::playback_row` | by `custom >> 30`: -1 or 0 the tag's bank row, 1 the globals tag's list, 2 the scenario's list (`+0x324`), 3 none |
 | `0x18d170`, `0x2194a0` | `playback::default_row`, `playback::bank_row` | a `snd!` tag's bank row (definition `+0xd`, gestalt `+0x34`, `0x34` bytes a row) |
 | `0x126ec0(ecx = tag, &rule)` | `promotion::select` | the rule over the gestalt's promotion state (`+0x4c`, `0x1c` bytes) and the sound clock (sound globals `+0x84`), and whether its cooldown refuses the start |
-| `0x126c30(eax = record, tag, &channel, _)` | none: a guest call | the start gate |
+| `0x126c30(eax = record, tag, &listener, &reason)` | `gate::start_gate` | the sound on (sound globals `+0x78` to `+0x7a`) and its class allowed (tag `+4`, `+5`, `[0x47f0e4]`); the skip draw on the game's seed word (x87, the scale row's `+0xc` to `+0x10` at source word 1 times the class default row's `+8`); `0x126bd0` (`gate::class_plays`); the listener; the level `0x1251e0` plus the distance gain in dB plus the default row's `+0x10` over the floor, or word 0 bit 8 or 11. Its refusals are `gate::Refusal` (5, 1, 4) |
+| `0x127d00(source, range, &distance)`, `0x127e20` | `gate::select_listener`, `gate::source_distance` | the nearest active listener of a positioned source (squared point or column distance, a directional source's vector length), unless `0x221da0` (`gate::obstructed`: the BSP's cluster distance `0x249d60` times distance over range reaches `0x45dd5c`) or out of range; any other source, the first mapped user at distance 0 |
+| `0x12ac20`, `0x12aff0`, `0x124fc0`, `0x125010` | `gate::distance_gain`, `gate::ramp`, `gate::distances` | the ramp from the maximum distance to the minimum, times `max / max(max, d)`; the distances from the source (word 0 bits 2, 3), the class (tag `+1` bits 2, 3) or the class default row |
 
 | Entry | Body |
 |---|---|
@@ -288,7 +290,7 @@ The guest keeps calling sound code until its callers are Rust. Each entry below 
 | `0x1253d0`, `0x125600` | `0x12000`, `0x12080` | the guest's create (globals, loops, start layer: pool-free), then the pool and channel globals (`[0x4e637c]`, `[0x4e6378]`) 0 and a fresh `Sounds`; the drop empties the table, then runs the guest's dispose |
 | `0x125b40` `SOUND_UPDATE` | main loop `0x12b450` | frame service: the outbox to the host, no sim work |
 | `0x125f10` | `0x18a40e`, `0x2a9d9b` | the cache request: nothing in the sim, the clip source decodes on demand |
-| `0x21d110` | `0x18a10c` | a start row for the sound's effect, the gate `0x126c30` (guest, pool-free) and the rule `0x126ec0` (Rust), then `request::read` and `admit` on the game's seed word, then the row's start ([The start layer](#the-start-layer)) |
+| `0x21d110` | `0x18a10c` | a start row for the sound's effect, the gate `0x126c30` and the rule `0x126ec0` (both Rust), then `request::read` and `admit` on the game's seed word, then the row's start ([The start layer](#the-start-layer)) |
 | `0x21d390`, `0x21d630`, `0x21d2c0`, `0x21d360` | `0x18c125`, `0x225da6`, `0x225ea5`, `0x225e42` | the start layer over its rows (`entries::start_layer`): the walk, a run in a mode, a tag start, a stop |
 | `0x126360` `SOUND_STOP_INSTANCE` | `0x166992`, `0x189ee0`, `0x18a380`, `0x22beb5` | `stopping`, then `Fading` over 300 ms (`0x1263e5`) |
 | `0x126400` | `0x159e20` | every instance finished with `Cleared` (reason `0xA`, `0x12646b`) |
@@ -415,7 +417,7 @@ One ledger, `sim_sound::entries::SoundLedger` beside `Sounds::counters`, read by
 | `sound.refused_no_length` | a permutation with no length in the tag | 0 |
 | `sound.refused_unknown_tag`, `sound.refused_no_level`, `sound.refused_unreadable`, `sound.refused_choose` | a start whose tag is not in `SoundTags`, whose levels source names itself in `Levels::refused` (`0x1251e0` until the guest port), whose record faulted, or that the chooser could not choose for | 0 once the map's tags and levels are wired |
 | `sound.refused_entry`, `sound.refused_entry.<address>` | calls to a body that refuses by name | 0 |
-| `sound.entry_guest_calls` | the guest calls the bodies make: the create, dispose and listener originals and the start gate | falls as bodies move to Rust |
+| `sound.entry_guest_calls` | the guest calls the bodies make: the create, dispose and listener originals | falls as bodies move to Rust |
 | `sound.mouth_calls`, `sound.level_faults` | mouths made; levels a guest read fault left at the floor | `level_faults` 0 |
 | `sound.loops_full` | loop starts the full loop pool (128) refused | 0 |
 | `sound.service_events`, `sound.phase_runs`, `sound.phase_ns` | events handed to the host, sound phase runs and their time | `phase_runs` one a tick |
