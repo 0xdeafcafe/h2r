@@ -564,7 +564,17 @@ pub struct OverlayGpu {
     blur_pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     // The guest and display copies can alternate sizes on every dialog frame.
     blur_scratch: Vec<[wgpu::TextureView; 2]>,
+    /// The overlay's depth target ([`OverlayGpu::depth_target`]), one for
+    /// each size a copy draws at.
+    depth: Vec<wgpu::TextureView>,
 }
+
+/// The overlay's depth format: what a model view's objects test and write
+/// (docs/graphics/native-menus-overlay.md, "Model views"). D24 with
+/// stencil, as the game's own depth surface: the object programs write the
+/// W-buffer depth at D24's scale, and a marked part draws in stencil mode
+/// 2. The overlay's own items draw with no depth.
+pub const OVERLAY_DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 
 /// One step of a prepared blur: the scratch it draws into and its bound
 /// source and offset.
@@ -580,6 +590,70 @@ struct PreparedBlur {
     steps: Vec<BlurStep>,
     result: wgpu::BindGroup,
     scissor: crate::overlay::Scissor,
+}
+
+/// The object stage of a planned model view
+/// (docs/graphics/native-menus-overlay.md, "Model views"): the packets
+/// that draw `view`'s objects with `inputs`, its view constants
+/// ([`crate::model_view::view_inputs`]: its camera, and `c[10]`, `c[11]`
+/// over its viewport), on a `color` target of `size` texels with the
+/// overlay's depth ([`OVERLAY_DEPTH`]). The overlay scissors each packet
+/// to the view. An error names why the view's objects do not draw, and
+/// the overlay stops on it (`unimplemented!`): no other path draws them.
+pub trait ModelViewObjects {
+    fn draws(
+        &mut self,
+        view: &crate::model_view::PlanModelView,
+        inputs: &crate::program::ViewInputs,
+        color: wgpu::TextureFormat,
+        size: (u32, u32),
+    ) -> Result<Vec<RecordedDraw>, &'static str>;
+}
+
+/// No object stage: a pass whose plan holds no model view (the HUD, the
+/// blur). A view in its plan stops it by name.
+pub struct NoObjects;
+
+impl ModelViewObjects for NoObjects {
+    fn draws(
+        &mut self,
+        _view: &crate::model_view::PlanModelView,
+        _inputs: &crate::program::ViewInputs,
+        _color: wgpu::TextureFormat,
+        _size: (u32, u32),
+    ) -> Result<Vec<RecordedDraw>, &'static str> {
+        Err("no object stage")
+    }
+}
+
+/// A model view as recorded: after the batches and blurs before it, one
+/// pass over the target and the overlay's depth (cleared), its objects'
+/// packets in order.
+struct PreparedView {
+    before: usize,
+    blurs: usize,
+    packets: Vec<RecordedDraw>,
+}
+
+/// The packets `objects` makes for `view` on a `format` target of `size`,
+/// each scissored to the view: refused when the stage refuses or a packet
+/// would not record in the overlay's pass (a pipeline that did not build,
+/// a draw counting its samples).
+fn model_view_packets(
+    objects: &mut dyn ModelViewObjects,
+    view: &crate::model_view::PlanModelView,
+    target: [u32; 2],
+    format: wgpu::TextureFormat,
+) -> Result<Vec<RecordedDraw>, &'static str> {
+    let inputs = crate::model_view::view_inputs(&view.camera, view.guest, target);
+    let size = (target[0], target[1]);
+    let packets = objects.draws(view, &inputs, format, size)?;
+    if packets.iter().any(|p| p.counts_samples() || !p.pipeline_valid()) {
+        return Err("a model view's draw needs a pass of its own");
+    }
+    let s = view.scissor;
+    let scissor = gfx::ScissorRect { x: s.x, y: s.y, width: s.width, height: s.height };
+    Ok(packets.into_iter().map(|p| p.with_scissor(scissor, size)).collect())
 }
 
 impl OverlayGpu {
@@ -684,7 +758,38 @@ impl OverlayGpu {
             blur_layout,
             blur_pipelines: HashMap::new(),
             blur_scratch: Vec::new(),
+            depth: Vec::new(),
         }
+    }
+
+    /// The overlay's depth target for a colour target of `size`: made the
+    /// first time a copy of that size draws a model view, then kept. Each
+    /// model view clears it before its objects draw, so nothing in it
+    /// outlives a view. The guest's and the display's copies differ in
+    /// size, and both are kept rather than remade every frame.
+    pub fn depth_target(&mut self, device: &wgpu::Device, size: wgpu::Extent3d) -> wgpu::TextureView {
+        let size = wgpu::Extent3d { depth_or_array_layers: 1, ..size };
+        if let Some(view) = self.depth.iter().find(|v| v.texture().size() == size) {
+            return view.clone();
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("native overlay depth"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: OVERLAY_DEPTH,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        // Two copies' sizes at most: a third (a resized window) takes the
+        // oldest's place.
+        if self.depth.len() == 2 {
+            self.depth.remove(0);
+        }
+        self.depth.push(view.clone());
+        view
     }
 
     fn blur_pipeline(&mut self, device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
@@ -960,6 +1065,9 @@ impl OverlayGpu {
             return Err("overlay hold needs its own copy");
         }
         let mut stats = plan.stats;
+        if !plan.model_views.is_empty() {
+            unimplemented!("overlay packets: a model view needs the overlay's depth pass");
+        }
         let draws = self.batch_draws(device, format, plan, textures, &mut stats);
         if draws.is_empty() {
             return Ok((Vec::new(), stats));
@@ -1012,6 +1120,22 @@ impl OverlayGpu {
         plan: &crate::overlay::OverlayPlan,
         textures: &dyn OverlayTextures,
     ) -> Result<(ExternalEncoded, crate::overlay::OverlayStats), &'static str> {
+        self.prepare_with_objects(device, target, plan, textures, &mut NoObjects)
+    }
+
+    /// [`Self::prepare`] with `objects`, the stage that draws the plan's
+    /// model views' objects ([`ModelViewObjects`]): each view one pass of
+    /// its own over the target and the overlay's depth target
+    /// ([`Self::depth_target`]), cleared to the far plane, in its place
+    /// among the batches, holds and blurs.
+    pub fn prepare_with_objects(
+        &mut self,
+        device: &wgpu::Device,
+        target: &wgpu::TextureView,
+        plan: &crate::overlay::OverlayPlan,
+        textures: &dyn OverlayTextures,
+        objects: &mut dyn ModelViewObjects,
+    ) -> Result<(ExternalEncoded, crate::overlay::OverlayStats), &'static str> {
         let size = target.texture().size();
         if [size.width, size.height] != plan.target {
             return Err("overlay target size changed");
@@ -1032,6 +1156,18 @@ impl OverlayGpu {
                 None => stats.refused_hold += 1,
             }
         }
+        let mut model_views = Vec::with_capacity(plan.model_views.len());
+        for view in &plan.model_views {
+            match model_view_packets(objects, view, plan.target, format) {
+                Ok(packets) => model_views.push(PreparedView {
+                    before: view.before as usize,
+                    blurs: view.blurs as usize,
+                    packets,
+                }),
+                Err(why) => unimplemented!("overlay model view: {why}"),
+            }
+        }
+        let depth = (!model_views.is_empty()).then(|| self.depth_target(device, size));
         let blurs = if plan.blurs.is_empty() {
             None
         } else {
@@ -1041,7 +1177,7 @@ impl OverlayGpu {
             }
             prepared
         };
-        if draws.is_empty() && blurs.is_none() && holds.is_empty() {
+        if draws.is_empty() && blurs.is_none() && holds.is_empty() && model_views.is_empty() {
             return Ok((
                 ExternalEncoded { ranges: 0, draws: 0, passes: 0, commands: Box::new(|_| {}) },
                 stats,
@@ -1095,8 +1231,8 @@ impl OverlayGpu {
         let target = target.clone();
         let (width, height) = (size.width as f32, size.height as f32);
         let steps: usize = blurs.iter().map(|b| b.steps.len()).sum();
-        let count = draws.len() + steps + blurs.len();
-        let passes = 1 + holds.len() + blurs.iter().map(|b| b.steps.len() + 2).sum::<usize>();
+        let count = draws.len() + steps + blurs.len() + model_views.iter().map(|v| v.packets.len()).sum::<usize>();
+        let passes = 1 + holds.len() + blurs.iter().map(|b| b.steps.len() + 2).sum::<usize>() + 2 * model_views.len();
         Ok((
             ExternalEncoded {
                 ranges: plan.batches.len(),
@@ -1135,7 +1271,7 @@ impl OverlayGpu {
                         }
                     };
                     // A hold copies what the batches before it drew; at a
-                    // blur's point it runs first.
+                    // blur's or a model view's point it runs first.
                     let mut held = holds.iter().peekable();
                     let hold = |encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
                         encoder.copy_texture_to_texture(
@@ -1144,11 +1280,48 @@ impl OverlayGpu {
                             target.texture().size(),
                         );
                     };
-                    for blur in &blurs {
+                    // A model view's objects: a pass of their own over the
+                    // target and the depth, cleared, which the overlay's
+                    // own items never test.
+                    let view_pass = |encoder: &mut wgpu::CommandEncoder, view: &PreparedView| {
+                        let Some(depth) = depth.as_ref() else { return };
+                        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("native overlay model view"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: &target,
+                                depth_slice: None,
+                                resolve_target: None,
+                                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                            })],
+                            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                                view: depth,
+                                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                                stencil_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0), store: wgpu::StoreOp::Discard }),
+                            }),
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        pass.set_viewport(0.0, 0.0, width, height, 0.0, 1.0);
+                        // Checked when the packets were made: every
+                        // pipeline built, none counted.
+                        let _ = gfx::renderer::encode_in_pass(&mut pass, &view.packets);
+                    };
+                    let mut model = model_views.iter().peekable();
+                    for (index, blur) in blurs.iter().enumerate() {
                         let (Some(views), Some((copy, step))) = (scratch.as_ref(), write_back.as_ref())
                         else {
                             break;
                         };
+                        // The views before this blur in the list.
+                        while let Some(view) = model.next_if(|v| v.blurs <= index) {
+                            while let Some((before, h)) = held.next_if(|(before, _)| *before <= view.before) {
+                                segment(encoder, *before, &mut next);
+                                hold(encoder, h);
+                            }
+                            segment(encoder, view.before, &mut next);
+                            view_pass(encoder, view);
+                        }
                         while let Some((before, view)) = held.next_if(|(before, _)| *before <= blur.before) {
                             segment(encoder, *before, &mut next);
                             hold(encoder, view);
@@ -1174,6 +1347,14 @@ impl OverlayGpu {
                         let c = blur.scissor;
                         pass.set_scissor_rect(c.x, c.y, c.width, c.height);
                         pass.draw_indexed(whole.clone(), 0, 0..1);
+                    }
+                    for view in model {
+                        while let Some((before, h)) = held.next_if(|(before, _)| *before <= view.before) {
+                            segment(encoder, *before, &mut next);
+                            hold(encoder, h);
+                        }
+                        segment(encoder, view.before, &mut next);
+                        view_pass(encoder, view);
                     }
                     for (before, view) in held {
                         segment(encoder, *before, &mut next);
@@ -1444,8 +1625,6 @@ pub fn count_overlay(stats: &crate::overlay::OverlayStats) {
         (Ui::OverlayRefusedTexture, stats.refused_texture),
         (Ui::OverlayBlurs, stats.blurs),
         (Ui::OverlayModelViews, stats.model_views),
-        (Ui::OverlayRefusedModelView, stats.refused_model_view),
-        (Ui::OverlayRefusedModelViewCamera, stats.refused_model_view_camera),
         (Ui::OverlayRefusedBlur, stats.refused_blur),
         (Ui::OverlayMovieFrames, stats.movie_frames),
         (Ui::OverlayRefusedMovie, stats.refused_movie),
@@ -1497,6 +1676,119 @@ mod tests {
         assert_eq!((max.color.src_factor, max.color.dst_factor), (wgpu::BlendFactor::One, wgpu::BlendFactor::One));
         assert!(overlay_blend(OverlayBlend::On { source: 0x999, dest: 0x303, equation: 0x8006 }).is_err());
         assert!(overlay_blend(OverlayBlend::On { source: 0x302, dest: 0x303, equation: 1 }).is_err());
+    }
+
+    /// The depth target is the target's size in the overlay's depth
+    /// format, kept for each copy's size and remade for a new one.
+    #[test]
+    fn the_depth_target_is_kept_for_each_copys_size() {
+        let Ok(ctx) = gfx::GfxContext::headless() else {
+            return;
+        };
+        let mut gpu = OverlayGpu::new(&ctx.device, &ctx.queue);
+        let size = |width, height| wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+        let guest = gpu.depth_target(&ctx.device, size(640, 480));
+        assert_eq!((guest.texture().size(), guest.texture().format()), (size(640, 480), OVERLAY_DEPTH));
+        assert!(guest.texture().usage().contains(wgpu::TextureUsages::RENDER_ATTACHMENT));
+        let display = gpu.depth_target(&ctx.device, size(1280, 960));
+        assert_eq!(display.texture().size(), size(1280, 960));
+        assert!(gpu.depth_target(&ctx.device, size(640, 480)).texture() == guest.texture(), "the guest copy's is kept");
+        assert!(gpu.depth_target(&ctx.device, size(1280, 960)).texture() == display.texture(), "and the display's");
+        gpu.depth_target(&ctx.device, size(1920, 1080));
+        assert!(gpu.depth_target(&ctx.device, size(640, 480)).texture() != guest.texture(), "a third size takes the oldest's place");
+    }
+
+    /// A list with one model view between two fills: the view and its
+    /// constants as the overlay's stage hands them to the objects, its
+    /// pass over the depth between the fills' passes.
+    fn model_view_list() -> frame_scene::Overlay {
+        use frame_scene::{ClipRect, Overlay, OverlayBlend, OverlayCamera, OverlayModelView};
+        let mut overlay = Overlay::new([640, 480]);
+        overlay.push_fill(ClipRect::full([640, 480]), [0.0, 0.0, 640.0, 480.0], [1.0, 0.0, 0.0, 1.0], OverlayBlend::Off).unwrap();
+        let camera = OverlayCamera {
+            position: [0.0, 1.0, 2.0],
+            forward: [0.0, 1.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            fov_y: 0.75,
+            planes: [0.0625, 200.0],
+            projection: None,
+        };
+        let view = OverlayModelView { camera, objects: vec![42, 17] };
+        overlay.push_model_view(ClipRect { x: 310, y: 228, width: 20, height: 24 }, view).unwrap();
+        overlay.push_fill(ClipRect::full([640, 480]), [0.0, 0.0, 8.0, 8.0], [0.0, 1.0, 0.0, 1.0], OverlayBlend::Off).unwrap();
+        overlay
+    }
+
+    #[test]
+    fn a_model_view_hands_its_objects_its_view_and_draws_over_the_depth() {
+        let Ok(ctx) = gfx::GfxContext::headless() else {
+            return;
+        };
+        #[derive(Default)]
+        struct Seen(Vec<(Vec<u32>, crate::overlay::Scissor, crate::program::ViewInputs, wgpu::TextureFormat, (u32, u32))>);
+        impl ModelViewObjects for Seen {
+            fn draws(
+                &mut self,
+                view: &crate::model_view::PlanModelView,
+                inputs: &crate::program::ViewInputs,
+                color: wgpu::TextureFormat,
+                size: (u32, u32),
+            ) -> Result<Vec<RecordedDraw>, &'static str> {
+                self.0.push((view.objects.clone(), view.scissor, *inputs, color, size));
+                Ok(Vec::new())
+            }
+        }
+        let target = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test overlay"),
+            size: wgpu::Extent3d { width: 1280, height: 960, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let plan = crate::overlay::OverlayPlan::new(&model_view_list(), [1280, 960], &crate::overlay::NoGlyphs);
+        assert_eq!((plan.batches.len(), plan.model_views.len()), (2, 1));
+        let mut gpu = OverlayGpu::new(&ctx.device, &ctx.queue);
+        let mut seen = Seen::default();
+        let (encoded, _) = gpu.prepare_with_objects(&ctx.device, &view, &plan, &NoTextures, &mut seen).unwrap();
+        let [(objects, scissor, inputs, color, size)] = seen.0.as_slice() else { panic!("one view: {}", seen.0.len()) };
+        assert_eq!(objects, &[42, 17]);
+        assert_eq!(*scissor, crate::overlay::Scissor { x: 620, y: 456, width: 40, height: 48 });
+        let planned = &plan.model_views[0];
+        assert_eq!(*inputs, crate::model_view::view_inputs(&planned.camera, [640, 480], [1280, 960]), "the view's own constants");
+        assert_eq!((*color, *size), (wgpu::TextureFormat::Rgba8Unorm, (1280, 960)));
+        assert_eq!(encoded.passes, 3, "the overlay's pass, the view's, and the overlay's after it");
+        let scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut encoder = ctx.device.create_command_encoder(&Default::default());
+        (encoded.commands)(&mut encoder);
+        ctx.queue.submit([encoder.finish()]);
+        assert!(pollster::block_on(scope.pop()).is_none(), "the view's pass over the depth target records");
+        let depth = gpu.depth_target(&ctx.device, target.size());
+        assert_eq!(depth.texture().format(), OVERLAY_DEPTH);
+    }
+
+    #[test]
+    #[should_panic(expected = "overlay model view: no object stage")]
+    fn a_model_view_with_no_object_stage_is_unimplemented() {
+        let Ok(ctx) = gfx::GfxContext::headless() else {
+            panic!("overlay model view: no object stage (no GPU here)");
+        };
+        let target = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test overlay"),
+            size: wgpu::Extent3d { width: 640, height: 480, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let plan = crate::overlay::OverlayPlan::new(&model_view_list(), [640, 480], &crate::overlay::NoGlyphs);
+        let mut gpu = OverlayGpu::new(&ctx.device, &ctx.queue);
+        let _ = gpu.prepare(&ctx.device, &target.create_view(&Default::default()), &plan, &NoTextures);
     }
 
     /// A 2 by 2 guest overlay drawn into a 4 by 4 target: a red fill over
