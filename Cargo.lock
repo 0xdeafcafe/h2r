@@ -6670,6 +6670,7 @@ dependencies = [
  "sim-core",
  "sim-effects",
  "sim-objects",
+ "sim-script",
  "sim-sound",
  "sim-world",
  "simd",
