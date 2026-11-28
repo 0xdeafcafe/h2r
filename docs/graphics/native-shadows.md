@@ -123,7 +123,7 @@ Layers 10, 11 and 14 take the same entries as diffuse and specular:
 |---|---|
 | visible subparts | the spans' native ranges, a draw of its own (`light_scene::plan_entries`); a range at an odd strip start with the front face reversed (`split_wound`, `Planned::cull`) |
 | state (`frame_scene::EntryState`) | `native_lights_glue::entry_state`: the toggle's rows on a model entry, an unmasked fade and the structure's upload while the device holds them, else the light is dropped (`scene_dropped_light_host`) |
-| a nonzero LOD or pass selector | not drawn: the light is dropped (`scene_dropped_light_host`) |
+| a LOD and pass selector | the material's pass at that level and selector (`shadow_look::shadow_look`, `receiver_look`), keyed by it in the resolver (`materials::Variant::selection`); a level or pass the material lacks is a named refusal (`LightRefusal::NoLayer`, `NoPass`) |
 
 ## Interfaces
 

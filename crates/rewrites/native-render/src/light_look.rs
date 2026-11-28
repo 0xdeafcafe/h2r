@@ -635,7 +635,7 @@ pub fn light_vertex(base: &VertexUniforms, frame: &[u32; FRAME_DWORDS]) -> Verte
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use tags::material::{
         Origin, ResolvedImplementation, ResolvedLayer, ResolvedPass, StageTexture,
@@ -651,7 +651,7 @@ mod tests {
 
     /// 03a's `lightaccum_frustum_no_specular_gel_tex` shape: base, the
     /// normalization cube, bump, gel; additive, no depth write.
-    fn implementation(index: usize, stage_3: TextureSource) -> ResolvedImplementation {
+    pub(crate) fn implementation(index: usize, stage_3: TextureSource) -> ResolvedImplementation {
         use gfx::state::{BlendFactor, RenderStateType as R};
         use tags::shader::RenderStateValue;
         let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
@@ -726,7 +726,7 @@ mod tests {
         }
     }
 
-    fn material(layer: usize, imps: Vec<ResolvedImplementation>) -> Material {
+    pub(crate) fn material(layer: usize, imps: Vec<ResolvedImplementation>) -> Material {
         Material {
             shader: TagId(0xe000_0100),
             template: TagId(0xe000_0101),
