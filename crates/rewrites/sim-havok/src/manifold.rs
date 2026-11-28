@@ -739,7 +739,7 @@ mod tests {
         // 0.25 (2, 0, 0) + 0.75 (0, 1, 0), the distance in `w`, then +y.
         let (args, contact) = m.added[0];
         assert_eq!(args[..3], [A, B, INPUT]);
-        assert_eq!(contact, [f(0.5), f(0.75), 0, f(0.3), 0, f(1.0), 0, 0]);
+        assert_eq!(contact, [f(0.5), f(0.75), 0, f(0.3), 0, f(1.0), 0, f(0.3)]);
         let w = j.finish();
         assert_eq!(w[&COUNT], 2);
         assert_eq!(w[&(SLOTS + slot::BYTES + slot::ID)], 0x3f00_0009);

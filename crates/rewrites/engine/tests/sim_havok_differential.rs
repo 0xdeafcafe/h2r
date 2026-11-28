@@ -3627,7 +3627,7 @@ fn query_cpu(fpu: Fpu) -> runtime::CpuAbi {
 fn the_query_arm_answers_as_the_lifted_query() {
     let Some((image, base)) = ram() else { return };
     let mut code = query_code_all(image);
-    let (mut answers, mut armed, mut memory) = (std::collections::BTreeMap::new(), 0, 0);
+    let (mut answers, mut armed, mut memory, mut float) = (std::collections::BTreeMap::new(), 0, 0, 0);
     for seed in 0..1024u64 {
         let mut r = Rng(0x3048_a000 + seed);
         let mut mem = base.clone();
@@ -3639,8 +3639,12 @@ fn the_query_arm_answers_as_the_lifted_query() {
             Ok(p) => p,
             // An array past the port's bounds, or a float a leaf refuses:
             // rare. A shape or monitor decline is a wiring fault.
-            Err(QueryDecline::Memory | QueryDecline::Float) => {
+            Err(QueryDecline::Memory) => {
                 memory += 1;
+                continue;
+            }
+            Err(QueryDecline::Float) => {
+                float += 1;
                 continue;
             }
             Err(f) => panic!("{why}: declined {f:?}"),
@@ -3662,7 +3666,9 @@ fn the_query_arm_answers_as_the_lifted_query() {
         armed += u32::from(seed % 4 == 1);
         *answers.entry(prediction.query.eax).or_insert(0) += 1;
     }
-    assert!(answers.len() >= 2 && armed > 128 && memory < 64, "{answers:?}, {armed} with the stall byte clear, {memory} declined");
+    // `test_fpu` gives three seeds in four a control word or MXCSR the port
+    // refuses by name (`float`); the game runs the default one.
+    assert!(answers.len() >= 2 && armed > 32 && memory < 64 && float <= 800, "{answers:?}, {armed} with the stall byte clear, {memory} memory and {float} float declined");
 }
 
 /// An unported shape virtual, an unmasked MXCSR, the monitor stream and

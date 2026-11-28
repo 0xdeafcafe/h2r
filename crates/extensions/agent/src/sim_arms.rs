@@ -383,11 +383,13 @@ mod tests {
             }
         }
         let seats = &r.subsystems[4];
-        assert_eq!(seats.arms.len(), 4 + leaf::Leaf::ALL.len());
+        assert_eq!(seats.arms.len(), 5 + leaf::Leaf::ALL.len());
         assert_eq!(seats.arms[0].name, "sim.seats_a");
         assert_eq!(seats.arms[1].name, "seats.aim");
         assert_eq!(seats.arms[2].name, "seats.device");
-        assert_eq!(seats.arms[3].name, "seats.leaf.visible");
+        assert_eq!(seats.arms[3].name, "seats.respawn");
+        assert_eq!(seats.arms[4].name, "seats.player-objects");
+        assert_eq!(seats.arms[5].name, "seats.leaf.visible");
         assert!(r.subsystems[5].arms.is_empty());
     }
 

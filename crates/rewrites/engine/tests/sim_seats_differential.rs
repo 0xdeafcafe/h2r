@@ -1625,10 +1625,15 @@ fn respawn_ready_and_its_callees_match_lifted() {
                 let start = native.mappings()[0].physical_start as usize;
                 let live = &native.physical_ram()[start..start + RAM];
                 let dead = (STACK - 0x1_0000) as usize..STACK as usize;
-                let first = mem.bytes.iter().zip(live).enumerate()
-                    .find(|(i, (a, b))| a != b && !dead.contains(i))
-                    .map(|(i, _)| i);
-                assert_eq!(first, None, "{why}: first differing byte");
+                // Slice compares first (memcmp); the byte walk only names
+                // the first difference once one is known to exist.
+                let same = mem.bytes[..dead.start] == live[..dead.start] && mem.bytes[dead.end..] == live[dead.end..];
+                if !same {
+                    let first = mem.bytes.iter().zip(live).enumerate()
+                        .find(|(i, (a, b))| a != b && !dead.contains(i))
+                        .map(|(i, _)| i);
+                    assert_eq!(first, None, "{why}: first differing byte");
+                }
             }
         }
     }
