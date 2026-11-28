@@ -96,7 +96,8 @@ pub enum Body {
     Service,
     /// `0x125f10`: nothing in the sim; the clip source decodes on demand.
     Prefetch,
-    /// `0x21d110`: a start row for the sound's effect, the gate and rule,
+    /// `0x21d110`: a start row for the sound's effect, the gate (guest) and
+    /// the rule,
     /// [`super::request::read`] and `admit`, then the row's `Mode::Start`
     /// ([`start_layer::start_record`]).
     StartRecord,
@@ -227,7 +228,7 @@ pub struct SoundLedger {
     /// Named refusals ([`Body::refusal`]) by entry address.
     pub refused_entry: BTreeMap<u32, u64>,
     /// Guest calls the bodies make: the original create, dispose and
-    /// listener math, the start gate and rule, the pause time.
+    /// listener math, and the start gate.
     pub entry_guest_calls: u64,
     /// Loop starts the full loop pool refused (`sound.loops_full`).
     pub loops_full: u64,
