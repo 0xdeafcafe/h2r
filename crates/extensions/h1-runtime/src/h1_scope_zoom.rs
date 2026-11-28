@@ -1,5 +1,7 @@
 //! Supply the converted Halo 1 HUD screen effect with inputs from the active
-//! view. The guest still draws the framebuffer copy, blur and pixel passes.
+//! view (docs/halo1/hud.md). The native post draws its copy, blur and pixel
+//! passes, the blur at the radius these values carry
+//! (`render_bridge::scope_zoom_hud::zoom_blur`).
 
 use engine::handle::DatumHandle;
 use engine::memory::GuestMemory;
@@ -8,11 +10,10 @@ use runtime::guest::Permissions;
 use tags::scope_zoom::MAGIC;
 
 // The profile reads native_post shares (src/scope_zoom_hud.rs there).
-use render_bridge::scope_zoom_hud::{hud_profile, profile, tag_def};
+use render_bridge::scope_zoom_hud::{CONVOLUTION_RETURN, blur_words, hud_profile, profile, tag_def};
 
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy, points};
 
-const CONVOLUTION_RETURN: u32 = 0x0002_da9b;
 // 0x0002d140 copies all four caller values here. 0x000338bf/0x000338c8
 // supply the first two to the shader as scalar inputs 41 and 42.
 const SCREEN_VALUES: u32 = 0x004c_19b0;
@@ -206,18 +207,17 @@ fn prepare_hud(
     mem.set_u32(esp + 4, scratch).ok()
 }
 
+/// The guest blur's arms of [`blur_words`], for a `d3d-reference` build
+/// whose `0x0002d140` is the guest's.
 fn prepare_blur(mem: &mut dyn GuestMemory, esp: u32) -> Option<()> {
-    if mem.u32(esp).ok()? != CONVOLUTION_RETURN || mem.u32(SCREEN_VALUES + 12).ok()? != MAGIC {
+    if mem.u32(esp).ok()? != CONVOLUTION_RETURN {
         return None;
     }
-    let radius = mem.f32(SCREEN_VALUES + 8).ok()?;
-    if radius <= 0.0 {
-        // Halo 2 returns the unchanged source when there are zero steps.
-        mem.set_u32(esp + 4, 0).ok()
-    } else {
-        // The convolution draws at half resolution.
-        mem.set_u32(esp + 8, (radius * 0.5).to_bits()).ok()
-    }
+    let values: [u32; 4] = std::array::from_fn(|i| mem.u32(SCREEN_VALUES + 4 * i as u32).unwrap_or(0));
+    let (steps, scale) = (mem.u32(esp + 4).ok()?, mem.u32(esp + 8).ok()?);
+    let (new_steps, new_scale) = blur_words(values, steps, scale)?;
+    mem.set_u32(esp + 4, new_steps).ok()?;
+    mem.set_u32(esp + 8, new_scale).ok()
 }
 
 #[cfg(test)]

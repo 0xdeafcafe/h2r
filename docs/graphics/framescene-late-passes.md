@@ -63,7 +63,6 @@ The glow (`GlowPass`) and each screen call (`ScreenPass`, both `game::native_pos
 - The replacement of layers 16 and 6 and of `render_screen_effects` (8.2: their census over the corpus, the table of writes, the differentials).
 - The post stage drawing from `PostParams` on the render thread, in place of the Rust bodies' passes at the call.
 - The deletion of the three stages' glue.
-- A converted Halo 1 scope-zoom profile's screen effect (it panics, `post: scope_zoom`).
 
 ## Tests and gate
 

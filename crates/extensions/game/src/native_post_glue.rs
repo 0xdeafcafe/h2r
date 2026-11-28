@@ -31,6 +31,7 @@ use native_render::screen_gpu::{
 };
 use native_render::screen_look::{CombinerInputs, ScreenStage};
 use render_bridge::native_post::{self as post_feature, Fp, Host, ScreenEffect};
+use render_bridge::scope_zoom_hud;
 
 use crate::native_lights_glue::DeviceMemory;
 use crate::native_map;
@@ -442,7 +443,9 @@ pub fn missing(
 pub use native_render::post::MAX_CORNERS;
 
 /// The plan of the call `c` and its values: its values and corners read,
-/// then `engine::screen_effect::plan`.
+/// then `engine::screen_effect::plan_with`, a converted Halo 1 scope's
+/// blur taking the radius its values carry
+/// (`render_bridge::scope_zoom_hud::zoom_blur`).
 pub fn plan_effect(
     mem: &dyn GuestMemory,
     c: ScreenEffect,
@@ -451,7 +454,7 @@ pub fn plan_effect(
     let (values, corners) = native_render::post::screen_inputs(
         &Ro(mem), c.values, c.corners, c.columns, c.rows,
     )?;
-    let effect = screen_effect::plan(
+    let effect = screen_effect::plan_with(
         mem,
         c.datum,
         values,
@@ -460,6 +463,7 @@ pub fn plan_effect(
         &corners,
         fp.mxcsr,
         fp.x87_control,
+        &|args| scope_zoom_hud::zoom_blur(values, args),
     )
     .map_err(err("plan"))?;
     Ok(effect.map(|e| (e, values)))

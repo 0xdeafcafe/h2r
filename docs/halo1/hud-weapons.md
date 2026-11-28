@@ -258,7 +258,9 @@ converted draw uses those initial values for the valid channels.
 
 The `h1-scope-zoom` feature reads the profile only on converted HUD
 effect draws (`0x0022bbbb`). It supplies the current view's blur radius
-and the two colour strengths. The local flashlight button toggles
+and the two colour strengths as the call's values; the native post
+plans the blur from that radius
+([native-post.md](../graphics/native-post.md#the-halo-1-scope)). The local flashlight button toggles
 night vision on supported scopes. The unit-light update at
 `0x000c50a0` advances its fade with simulation time, using Halo 1's
 rise and fall rates (`0x00045c6c`, `0x00045cae`). State follows the
