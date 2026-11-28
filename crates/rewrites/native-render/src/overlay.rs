@@ -8,7 +8,9 @@
 //! batch; nothing is reordered, so blended items keep the guest's order.
 //! A blur ends the batch before it: it reads what was drawn. A movie
 //! frame draws as a quad over its movie's upload
-//! (`frame_scene::OverlayTexture::Movie`). A model view is refused until
+//! (`frame_scene::OverlayTexture::Movie`). A hold ends the batch before
+//! it too: it copies what was drawn into its held texture
+//! ([`PlanHold`]). A model view is refused until
 //! a stage draws a model widget's view.
 //! An item the renderer cannot draw is dropped and counted by its reason
 //! ([`OverlayStats`]): the overlay has no guest draw to fall back to.
@@ -29,6 +31,18 @@ pub struct PlanBlur {
     pub offsets: Vec<[f32; 2]>,
     /// The steps' combiner constant (`frame_scene::OverlayBlur::pick`).
     pub pick: f32,
+}
+
+/// A hold between batches: the target as the batches before it left it,
+/// copied whole into the renderer's held texture `hold`
+/// (`frame_scene::OverlayKind::Hold`). A hold and a blur at the same
+/// point run the hold first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlanHold {
+    /// The batches drawn before it (an index into
+    /// [`OverlayPlan::batches`]).
+    pub before: u32,
+    pub hold: u32,
 }
 
 /// The six corners a quad draws as two triangles, as indices into its four
@@ -319,6 +333,11 @@ pub struct OverlayStats {
     /// Movie frames whose movie the renderer holds no upload of
     /// (`ui_gpu`).
     pub refused_movie: u32,
+    /// Holds: copies of the target into a held texture.
+    pub holds: u32,
+    /// Holds over a target the GPU cannot copy, or with no held texture
+    /// of the target's size and format (`ui_gpu`).
+    pub refused_hold: u32,
     /// Blurs over a target the GPU cannot copy or sample (`ui_gpu`).
     pub refused_blur: u32,
 }
@@ -340,6 +359,8 @@ pub struct OverlayPlan {
     pub batches: Vec<OverlayBatch>,
     /// In list order; each between the batches its `before` names.
     pub blurs: Vec<PlanBlur>,
+    /// In list order, as the blurs.
+    pub holds: Vec<PlanHold>,
     pub stats: OverlayStats,
 }
 
@@ -383,9 +404,17 @@ impl OverlayPlan {
         plan.stats.blurs = counts.blurs;
         plan.stats.model_views = counts.model_views;
         plan.stats.movie_frames = counts.movie_frames;
+        plan.stats.holds = counts.holds;
         for item in &overlay.items {
             if item.kind == OverlayKind::ModelView {
                 plan.stats.refused_model_view += 1;
+                continue;
+            }
+            if item.kind == OverlayKind::Hold {
+                match overlay.hold_of(item) {
+                    Some(hold) => plan.holds.push(PlanHold { before: plan.batches.len() as u32, hold }),
+                    None => plan.stats.refused_hold += 1,
+                }
                 continue;
             }
             if matches!(item.material.program, Program::Shader { .. })
@@ -426,7 +455,7 @@ impl OverlayPlan {
                     }));
                     plan.indices.extend(QUAD_INDICES.map(|i| base + i));
                 }
-                OverlayKind::Blur | OverlayKind::ModelView => unreachable!("planned above"),
+                OverlayKind::Blur | OverlayKind::ModelView | OverlayKind::Hold => unreachable!("planned above"),
                 OverlayKind::TextRun => {
                     let font = match item.material.texture {
                         frame_scene::OverlayTexture::Glyphs { font } => font,
@@ -460,7 +489,8 @@ impl OverlayPlan {
                 }
             }
             let count = plan.indices.len() as u32 - start;
-            let after_blur = plan.blurs.last().is_some_and(|b| b.before as usize == plan.batches.len());
+            let after_blur = plan.blurs.last().is_some_and(|b| b.before as usize == plan.batches.len())
+                || plan.holds.last().is_some_and(|h| h.before as usize == plan.batches.len());
             let magnified = target[0] > guest[0] || target[1] > guest[1];
             let glyph_cache = if magnified { item.glyph_cache & 15 } else { 0 };
             let joins = !after_blur && plan.batches.last().is_some_and(|b| {
@@ -495,7 +525,7 @@ impl OverlayPlan {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.batches.is_empty() && self.blurs.is_empty()
+        self.batches.is_empty() && self.blurs.is_empty() && self.holds.is_empty()
     }
 }
 
@@ -749,6 +779,21 @@ mod tests {
         let mut blur_only = Overlay::new([640, 480]);
         blur_only.push_blur(all(), OverlayBlur { tap: 0.5, spreads: vec![1.0], pick: 0.0 }).unwrap();
         assert!(!OverlayPlan::new(&blur_only, [640, 480], &NoGlyphs).is_empty());
+    }
+
+    #[test]
+    fn a_hold_splits_the_batches_where_it_stands() {
+        let mut o = Overlay::new([640, 480]);
+        o.push_quad(sprite(1), all(), quad(0.0)).unwrap();
+        o.push_hold(4).unwrap();
+        o.push_quad(sprite(1), all(), quad(8.0)).unwrap();
+        let p = OverlayPlan::new(&o, [1280, 960], &NoGlyphs);
+        assert_eq!(p.batches.len(), 2, "the quad after the hold is not merged back");
+        assert_eq!(p.holds, [PlanHold { before: 1, hold: 4 }]);
+        assert_eq!((p.stats.holds, p.stats.refused_hold, p.stats.drawn()), (1, 0, 3));
+        let mut hold_only = Overlay::new([640, 480]);
+        hold_only.push_hold(4).unwrap();
+        assert!(!OverlayPlan::new(&hold_only, [640, 480], &NoGlyphs).is_empty());
     }
 
     #[test]

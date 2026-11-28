@@ -54,6 +54,8 @@ pub mod native_post;
 #[cfg(feature = "native-render")]
 pub mod native_scene_lists;
 #[cfg(feature = "native-render")]
+pub mod frame_tail;
+#[cfg(feature = "native-render")]
 pub mod native_targets;
 #[cfg(feature = "native-render")]
 pub mod native_shadows;

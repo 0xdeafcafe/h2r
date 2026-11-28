@@ -4,7 +4,8 @@
 //! [`OverlayKind::TextRun`], a [`OverlayKind::Fill`], a
 //! [`OverlayKind::MovieFrame`] (a movie's current frame), a
 //! [`OverlayKind::Blur`] of what is under it or a
-//! [`OverlayKind::ModelView`] (a menu's model widget), with a material key
+//! [`OverlayKind::ModelView`] (a menu's model widget) or a
+//! [`OverlayKind::Hold`] (what is under it kept for later frames), with a material key
 //! and a clip rectangle; `native_render::ui_gpu` draws the list in its
 //! order. Each item names its overlay slot ([`OverlayItem::slot`]): `Ui`
 //! unless its producer tags its part ([`Overlay::set_slot`]), as the
@@ -110,6 +111,9 @@ pub enum OverlayTexture {
     /// Movie `movie`'s current frame, as the host uploads it (a
     /// [`OverlayKind::MovieFrame`]'s texture).
     Movie { movie: u32 },
+    /// The pixels an [`OverlayKind::Hold`] of `hold` last kept, at the
+    /// size of the target the item draws into.
+    Held { hold: u32 },
 }
 
 /// How the texture is sampled.
@@ -203,6 +207,11 @@ pub enum OverlayKind {
     /// four corners like a quad: the renderer takes the frame's texels
     /// from the movie's upload.
     MovieFrame,
+    /// The target's pixels drawn so far, kept whole in the renderer's
+    /// texture `hold` (the item's `detail`) until the next hold of it,
+    /// across frames: what [`OverlayTexture::Held`] samples. No corners;
+    /// draws nothing itself.
+    Hold,
 }
 
 /// Which movie a [`OverlayKind::MovieFrame`] item shows, and which frame.
@@ -291,8 +300,9 @@ pub struct OverlayItem {
     pub shader_stages: [Option<OverlayTexture>; 4],
     /// Each corner's four normalized texture coordinates after the vertex program.
     pub stage_uv: Option<Box<[[[f32; 2]; 4]; 4]>>,
-    /// A blur's index in [`Overlay::blurs`] or a model view's in
-    /// [`Overlay::model_views`]; `None` for the other kinds.
+    /// A blur's index in [`Overlay::blurs`], a model view's in
+    /// [`Overlay::model_views`], a movie frame's in [`Overlay::movies`], a
+    /// hold's texture id; `None` for the other kinds.
     pub detail: Option<u32>,
     /// The overlay slot the item draws in: [`ViewSlot::Hud`],
     /// [`ViewSlot::Fade`] or [`ViewSlot::Ui`] (the default).
@@ -347,6 +357,7 @@ pub struct OverlayCounts {
     pub blurs: u32,
     pub model_views: u32,
     pub movie_frames: u32,
+    pub holds: u32,
     /// Items whose material is a tag shader.
     pub shader_materials: u32,
 }
@@ -584,6 +595,18 @@ impl Overlay {
         Ok(n)
     }
 
+    /// The target drawn so far kept in the renderer's texture `hold`, for
+    /// later items and frames to sample ([`OverlayTexture::Held`]).
+    pub fn push_hold(&mut self, hold: u32) -> Result<u32, OverlayError> {
+        let clip = self.clip(ClipRect::full(self.size))?;
+        Ok(self.push_detail(OverlayKind::Hold, clip, hold))
+    }
+
+    /// The texture a hold item keeps the target in.
+    pub fn hold_of(&self, item: &OverlayItem) -> Option<u32> {
+        (item.kind == OverlayKind::Hold).then_some(item.detail).flatten()
+    }
+
     /// The movie a movie frame item shows.
     pub fn movie_of(&self, item: &OverlayItem) -> Option<&OverlayMovie> {
         (item.kind == OverlayKind::MovieFrame).then(|| self.movies.get(item.detail? as usize)).flatten()
@@ -640,6 +663,8 @@ impl Overlay {
                 d + match item.kind {
                     OverlayKind::Blur => b,
                     OverlayKind::MovieFrame => w,
+                    // A hold names its texture, not an entry.
+                    OverlayKind::Hold => 0,
                     _ => m,
                 }
             }),
@@ -658,6 +683,7 @@ impl Overlay {
                 OverlayKind::Blur => c.blurs += 1,
                 OverlayKind::ModelView => c.model_views += 1,
                 OverlayKind::MovieFrame => c.movie_frames += 1,
+                OverlayKind::Hold => c.holds += 1,
             }
             c.glyphs += item.glyphs.len() as u32;
             if matches!(item.material.program, Program::Shader { .. }) {
@@ -697,6 +723,7 @@ impl Overlay {
                     corners == 0 && glyphs > 0 && matches!(item.material.texture, OverlayTexture::Glyphs { .. })
                 }
                 OverlayKind::Blur | OverlayKind::ModelView => corners == 0 && glyphs == 0,
+                OverlayKind::Hold => corners == 0 && glyphs == 0 && item.detail.is_some(),
             };
             if !fits {
                 return Err(format!("overlay item {n} is a {:?} with {corners} corners and {glyphs} glyphs", item.kind));
@@ -708,6 +735,7 @@ impl Overlay {
                 _ => None,
             };
             match (next, item.detail) {
+                (None, Some(_)) if item.kind == OverlayKind::Hold => {}
                 (None, None) => {}
                 (Some(next), Some(d)) if d == *next => *next += 1,
                 (_, detail) => {
@@ -762,6 +790,10 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
             OverlayTexture::Movie { movie } => {
                 word(4);
                 word(movie);
+            }
+            OverlayTexture::Held { hold } => {
+                word(5);
+                word(hold);
             }
         }
     }
@@ -829,6 +861,9 @@ pub(crate) fn summary_words(overlay: &Overlay, word: &mut dyn FnMut(u32)) {
         if let Some(m) = overlay.movie_of(item) {
             word(m.movie);
             word(m.frame);
+        }
+        if let Some(hold) = overlay.hold_of(item) {
+            word(hold);
         }
         if let Some(b) = overlay.blur_of(item) {
             floats(&mut *word, &[b.tap]);
@@ -1126,6 +1161,27 @@ mod tests {
         a.append(&o).unwrap();
         assert_eq!(a.movie_of(&a.items[1]), Some(&OverlayMovie { movie: 9, frame: 4 }));
         assert_eq!(a.check(), Ok(()));
+    }
+
+    #[test]
+    fn a_hold_keeps_its_texture_id_through_a_join() {
+        let all = ClipRect::full([640, 480]);
+        let mut o = Overlay::new([640, 480]);
+        o.push_hold(7).unwrap();
+        let mut held = sprite();
+        held.texture = OverlayTexture::Held { hold: 7 };
+        o.push_quad(held, all, quad(0.0, 0.0)).unwrap();
+        assert_eq!((o.items[0].kind, o.items[0].clip), (OverlayKind::Hold, all));
+        assert_eq!(o.hold_of(&o.items[0]), Some(7));
+        assert_eq!(o.hold_of(&o.items[1]), None);
+        assert_eq!(o.counts().holds, 1);
+        assert_eq!(o.check(), Ok(()));
+        let mut a = Overlay::new([640, 480]);
+        a.push_blur(all, OverlayBlur { tap: 1.0, spreads: vec![1.0], pick: 0.0 }).unwrap();
+        a.append(&o).unwrap();
+        assert_eq!(a.hold_of(&a.items[1]), Some(7), "not moved by the blur before it");
+        assert_eq!(a.check(), Ok(()));
+        assert_eq!(Overlay::default().push_hold(7), Err(OverlayError::NoTarget));
     }
 
     #[test]

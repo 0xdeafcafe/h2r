@@ -1,7 +1,8 @@
 //! The host of `render_bridge::native_targets`: the scene's target select
 //! and clear and the frame's finish made on the shared device without
 //! their guest D3D entries (docs/graphics/framescene.md, "Slice 6";
-//! docs/graphics/retire-d3d-display.md, "The frame step").
+//! docs/graphics/retire-d3d-display.md, "The frame step"), and the frame
+//! tail's overlay placed on it ("The frame tail").
 
 use std::sync::{Arc, Mutex};
 
@@ -64,9 +65,21 @@ impl<B: d3d::Backend + Send + 'static> Host for Targets<B> {
     }
 }
 
+/// The frame tail's overlay, placed through the overlay's pass.
+struct Tail<B: d3d::Backend + Send + 'static> {
+    device: d3d::abi::SharedDevice<B>,
+}
+
+impl<B: d3d::Backend + Send + 'static> render_bridge::frame_tail::Host for Tail<B> {
+    fn place(&self, mem: &mut dyn GuestMemory, overlay: frame_scene::Overlay) -> bool {
+        crate::hud_overlay::place_tail(&self.device, mem, overlay)
+    }
+}
+
 pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
     if !hooks::Switches::from_env().is_ok_and(|s| native_targets::on(&s)) {
         return;
     }
     native_targets::set_host(Arc::new(Targets { device: Arc::clone(device), logged: Mutex::new(false) }));
+    render_bridge::frame_tail::set_host(Arc::new(Tail { device: Arc::clone(device) }));
 }

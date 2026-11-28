@@ -12,6 +12,7 @@
 //! |---|---|---|
 //! | `0x0001cd30(esi colour, eax depth, [esp+4] flag)`, `ret 4`, `al = 1` | the cached pair `0x0051f3f4`/`0x0051f3f8` unchanged: nothing; a colour of the cached one's format and size (`+0`, `+0xc`, `+0x10`): the same-size bind `0x003f7b30`; else `0x003f7870` | [`Host::bind`] |
 //! | `0x00014b60(eax flags, colour, z, stencil byte)`, `ret 0xc`, `eax = 0` | the game's flags as D3D clear flags ([`clear_flags`]); none: nothing | [`Host::clear`] |
+//! | `0x00013b90()`, `ret`: the frame tail | [`crate::frame_tail`]: the freeze frame's copy and composite as overlay items | `frame_tail::Host::place` |
 //! | `0x00013cd0()`, `ret`, `eax = 0`: the frame's finish | the four stage slots cleared and committed against their cache, the index buffer's device reference dropped, the pixel shader none ([`cut_finish`]) | [`Host::texture`], [`Host::pixel_shader`] |
 //!
 //! The arm: one call in [`CHECK_EVERY`] of each runs the guest body and
@@ -202,7 +203,8 @@ pub static FRAME_FINISH: Arm = Arm::new("frame_finish");
 
 /// The counters `render.scene` reports.
 pub fn counters() -> Vec<(String, u64)> {
-    TARGET_SELECT.counters().into_iter().chain(SCENE_CLEAR.counters()).chain(FRAME_FINISH.counters()).collect()
+    TARGET_SELECT.counters().into_iter().chain(SCENE_CLEAR.counters()).chain(FRAME_FINISH.counters())
+        .chain(crate::frame_tail::counters()).collect()
 }
 
 /// The words of the bound target a check compares for `bind`: the pair,
@@ -440,6 +442,9 @@ impl Feature for NativeTargets {
         b.raw().implement(&engine::points::SCENE_TARGET_SELECT, "native_targets_select", select_call).context_only();
         b.raw().implement(&engine::points::SCENE_CLEAR, "native_targets_clear", clear_call).context_only();
         b.raw().implement(&engine::points::RENDER_FRAME_FINISH, "native_targets_finish", finish_call).context_only();
+        // The frame tail before it (docs/graphics/retire-d3d-display.md,
+        // "The frame tail").
+        crate::frame_tail::place(b);
         Ok(())
     }
 }

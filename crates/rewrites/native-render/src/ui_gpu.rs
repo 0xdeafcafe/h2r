@@ -386,6 +386,69 @@ pub trait OverlayTextures {
     fn sampler(&self, _texture: frame_scene::OverlayTexture) -> Option<&wgpu::Sampler> {
         None
     }
+
+    /// Hold `hold`'s texture for a target of `size` and `format`
+    /// ([`OverlayResidency::hold`]); `None` when there is none.
+    fn held(&self, _hold: u32, _size: wgpu::Extent3d, _format: wgpu::TextureFormat) -> Option<&wgpu::TextureView> {
+        None
+    }
+}
+
+/// `inner` with the held textures of one target's size resolved:
+/// `frame_scene::OverlayTexture::Held` names a hold, not a size.
+struct Holding<'a> {
+    inner: &'a dyn OverlayTextures,
+    held: HashMap<u32, wgpu::TextureView>,
+}
+
+impl<'a> Holding<'a> {
+    /// Every hold `plan` writes or samples, for a `size` and `format`
+    /// target.
+    fn new(
+        inner: &'a dyn OverlayTextures,
+        plan: &crate::overlay::OverlayPlan,
+        size: wgpu::Extent3d,
+        format: wgpu::TextureFormat,
+    ) -> Holding<'a> {
+        let sampled = plan.batches.iter().flat_map(|b| {
+            std::iter::once(b.material.texture).chain(b.shader_stages.iter().flatten().copied())
+        });
+        let ids = plan.holds.iter().map(|h| h.hold).chain(sampled.filter_map(|t| match t {
+            frame_scene::OverlayTexture::Held { hold } => Some(hold),
+            _ => None,
+        }));
+        let mut held = HashMap::new();
+        for id in ids {
+            if let Some(view) = inner.held(id, size, format) {
+                held.insert(id, view.clone());
+            }
+        }
+        Holding { inner, held }
+    }
+}
+
+impl OverlayTextures for Holding<'_> {
+    fn view(&self, texture: frame_scene::OverlayTexture) -> Option<&wgpu::TextureView> {
+        match texture {
+            frame_scene::OverlayTexture::Held { hold } => self.held.get(&hold),
+            _ => self.inner.view(texture),
+        }
+    }
+
+    fn stage(&self, stage: usize, texture: frame_scene::OverlayTexture) -> Option<&wgpu::TextureView> {
+        match texture {
+            frame_scene::OverlayTexture::Held { hold } => self.held.get(&hold),
+            _ => self.inner.stage(stage, texture),
+        }
+    }
+
+    fn stage_sampler(&self, stage: usize, texture: frame_scene::OverlayTexture) -> Option<&wgpu::Sampler> {
+        self.inner.stage_sampler(stage, texture)
+    }
+
+    fn sampler(&self, texture: frame_scene::OverlayTexture) -> Option<&wgpu::Sampler> {
+        self.inner.sampler(texture)
+    }
 }
 
 /// No textures: only flat items draw.
@@ -893,6 +956,9 @@ impl OverlayGpu {
         if !plan.blurs.is_empty() {
             return Err("overlay blur needs its own passes");
         }
+        if !plan.holds.is_empty() {
+            return Err("overlay hold needs its own copy");
+        }
         let mut stats = plan.stats;
         let draws = self.batch_draws(device, format, plan, textures, &mut stats);
         if draws.is_empty() {
@@ -952,7 +1018,20 @@ impl OverlayGpu {
         }
         let format = target.texture().format();
         let mut stats = plan.stats;
-        let draws = self.batch_draws(device, format, plan, textures, &mut stats);
+        let textures = Holding::new(textures, plan, size, format);
+        let draws = self.batch_draws(device, format, plan, &textures, &mut stats);
+        // A hold copies the whole target into its texture of the target's
+        // size and format; a target that cannot be copied from, or no
+        // such texture, refuses it.
+        let copyable = target.texture().usage().contains(wgpu::TextureUsages::COPY_SRC)
+            && target.texture().sample_count() == 1;
+        let mut holds = Vec::with_capacity(plan.holds.len());
+        for hold in &plan.holds {
+            match textures.held.get(&hold.hold).filter(|_| copyable) {
+                Some(view) => holds.push((hold.before as usize, view.clone())),
+                None => stats.refused_hold += 1,
+            }
+        }
         let blurs = if plan.blurs.is_empty() {
             None
         } else {
@@ -962,7 +1041,7 @@ impl OverlayGpu {
             }
             prepared
         };
-        if draws.is_empty() && blurs.is_none() {
+        if draws.is_empty() && blurs.is_none() && holds.is_empty() {
             return Ok((
                 ExternalEncoded { ranges: 0, draws: 0, passes: 0, commands: Box::new(|_| {}) },
                 stats,
@@ -1017,7 +1096,7 @@ impl OverlayGpu {
         let (width, height) = (size.width as f32, size.height as f32);
         let steps: usize = blurs.iter().map(|b| b.steps.len()).sum();
         let count = draws.len() + steps + blurs.len();
-        let passes = 1 + blurs.iter().map(|b| b.steps.len() + 2).sum::<usize>();
+        let passes = 1 + holds.len() + blurs.iter().map(|b| b.steps.len() + 2).sum::<usize>();
         Ok((
             ExternalEncoded {
                 ranges: plan.batches.len(),
@@ -1055,11 +1134,25 @@ impl OverlayGpu {
                             *next += 1;
                         }
                     };
+                    // A hold copies what the batches before it drew; at a
+                    // blur's point it runs first.
+                    let mut held = holds.iter().peekable();
+                    let hold = |encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView| {
+                        encoder.copy_texture_to_texture(
+                            target.texture().as_image_copy(),
+                            view.texture().as_image_copy(),
+                            target.texture().size(),
+                        );
+                    };
                     for blur in &blurs {
                         let (Some(views), Some((copy, step))) = (scratch.as_ref(), write_back.as_ref())
                         else {
                             break;
                         };
+                        while let Some((before, view)) = held.next_if(|(before, _)| *before <= blur.before) {
+                            segment(encoder, *before, &mut next);
+                            hold(encoder, view);
+                        }
                         segment(encoder, blur.before, &mut next);
                         encoder.copy_texture_to_texture(
                             target.texture().as_image_copy(),
@@ -1081,6 +1174,10 @@ impl OverlayGpu {
                         let c = blur.scissor;
                         pass.set_scissor_rect(c.x, c.y, c.width, c.height);
                         pass.draw_indexed(whole.clone(), 0, 0..1);
+                    }
+                    for (before, view) in held {
+                        segment(encoder, *before, &mut next);
+                        hold(encoder, view);
                     }
                     segment(encoder, usize::MAX, &mut next);
                 }),
@@ -1106,7 +1203,15 @@ pub struct OverlayResidency {
     /// Each movie's frame: the frame it holds, its texture and view. Not
     /// a map's: another generation keeps them.
     movies: HashMap<u32, (u32, wgpu::Texture, wgpu::TextureView)>,
+    /// Each hold's kept target, by hold and the target's size and format
+    /// (a target's reference and display copies are two), oldest first.
+    /// Not a map's either.
+    holds: Vec<(u32, wgpu::Extent3d, wgpu::TextureFormat, wgpu::TextureView)>,
 }
+
+/// Held textures kept at once: one hold at two copies' sizes, and room
+/// for a size change.
+const HOLDS: usize = 4;
 
 fn overlay_texture(device: &wgpu::Device, label: &str, width: u32, height: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
@@ -1271,10 +1376,50 @@ impl OverlayResidency {
     }
 }
 
+impl OverlayResidency {
+    /// Makes sure hold `hold` has a texture for a target of `size` and
+    /// `format` to copy into, made the first time (the copy fills it);
+    /// what it holds stays across frames until the next hold of it. The
+    /// oldest is dropped past [`HOLDS`]. False when the size is empty or
+    /// past the device's largest texture.
+    pub fn hold(&mut self, device: &wgpu::Device, hold: u32, size: wgpu::Extent3d, format: wgpu::TextureFormat) -> bool {
+        let largest = device.limits().max_texture_dimension_2d;
+        if size.width == 0 || size.height == 0 || size.width > largest || size.height > largest {
+            return false;
+        }
+        let size = wgpu::Extent3d { depth_or_array_layers: 1, ..size };
+        if self.holds.iter().any(|(h, s, f, _)| (*h, *s, *f) == (hold, size, format)) {
+            return true;
+        }
+        if self.holds.len() == HOLDS {
+            self.holds.remove(0);
+        }
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("native overlay hold"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        self.holds.push((hold, size, format, texture.create_view(&Default::default())));
+        true
+    }
+}
+
 impl OverlayTextures for OverlayResidency {
+    fn held(&self, hold: u32, size: wgpu::Extent3d, format: wgpu::TextureFormat) -> Option<&wgpu::TextureView> {
+        let size = wgpu::Extent3d { depth_or_array_layers: 1, ..size };
+        self.holds.iter().find(|(h, s, f, _)| (*h, *s, *f) == (hold, size, format)).map(|(_, _, _, view)| view)
+    }
+
     fn view(&self, texture: frame_scene::OverlayTexture) -> Option<&wgpu::TextureView> {
         match texture {
             frame_scene::OverlayTexture::None | frame_scene::OverlayTexture::Bound { .. } => None,
+            // A held texture is a target size's ([`OverlayTextures::held`]).
+            frame_scene::OverlayTexture::Held { .. } => None,
             frame_scene::OverlayTexture::Bitmap { tag, image } => self.images.get(&(tag, image)),
             frame_scene::OverlayTexture::Glyphs { font } => self.glyphs.get(&font).map(|(_, _, view)| view),
             frame_scene::OverlayTexture::Movie { movie } => self.movies.get(&movie).map(|(_, _, view)| view),
@@ -1595,6 +1740,72 @@ mod tests {
         let short = MovieImage { bgra: vec![0; 4].into(), ..frame(3, [0; 4], [0; 4]) };
         assert!(!residency.sync_movie(&ctx.device, &ctx.queue, &short));
         assert!(residency.view(OverlayTexture::Movie { movie: 5 }).is_none());
+    }
+
+    /// A hold keeps the target as the batches before it drew it, and a
+    /// later frame with no hold still samples it (the frame tail's
+    /// freeze frame, docs/graphics/retire-d3d-display.md, "The frame
+    /// tail"). Frame 1: red, hold, green, then the held texture over the
+    /// right half; frame 2: blue, then the held texture over the whole.
+    #[test]
+    fn a_held_texture_survives_into_the_next_frame() {
+        use frame_scene::{ClipRect, Combiner, Overlay, OverlayBlend, OverlayMaterial, OverlayTexture, OverlayVertex, Program, Sampler};
+        use crate::overlay::{NoGlyphs, OverlayPlan};
+
+        let Ok(ctx) = gfx::GfxContext::headless() else {
+            return;
+        };
+        let size = wgpu::Extent3d { width: 2, height: 2, depth_or_array_layers: 1 };
+        let target = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test overlay hold"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&Default::default());
+        let all = ClipRect::full([2, 2]);
+        let held = OverlayMaterial {
+            program: Program::Fixed(Combiner::Texture),
+            texture: OverlayTexture::Held { hold: 1 },
+            sampler: Sampler { wrap: false, point: true },
+            blend: OverlayBlend::Off,
+        };
+        let corner = |x: f32, y: f32| OverlayVertex { position: [x, y], uv: [x / 2.0, y / 2.0], color: [1.0; 4] };
+        let rect = |x0: f32, x1: f32| [corner(x0, 0.0), corner(x1, 0.0), corner(x1, 2.0), corner(x0, 2.0)];
+        let mut first = Overlay::new([2, 2]);
+        first.push_fill(all, [0.0, 0.0, 2.0, 2.0], [1.0, 0.0, 0.0, 1.0], OverlayBlend::Off).unwrap();
+        first.push_hold(1).unwrap();
+        first.push_fill(all, [0.0, 0.0, 2.0, 2.0], [0.0, 1.0, 0.0, 1.0], OverlayBlend::Off).unwrap();
+        first.push_quad(held, all, rect(1.0, 2.0)).unwrap();
+        let mut second = Overlay::new([2, 2]);
+        second.push_fill(all, [0.0, 0.0, 2.0, 2.0], [0.0, 0.0, 1.0, 1.0], OverlayBlend::Off).unwrap();
+        second.push_quad(held, all, rect(0.0, 2.0)).unwrap();
+        let mut gpu = OverlayGpu::new(&ctx.device, &ctx.queue);
+        let mut residency = OverlayResidency::default();
+        let draw = |gpu: &mut OverlayGpu, residency: &OverlayResidency, overlay: &Overlay| {
+            let plan = OverlayPlan::new(overlay, [2, 2], &NoGlyphs);
+            let (encoded, stats) = gpu.prepare(&ctx.device, &view, &plan, residency).unwrap();
+            let mut encoder = ctx.device.create_command_encoder(&Default::default());
+            (encoded.commands)(&mut encoder);
+            ctx.queue.submit([encoder.finish()]);
+            let pixels = gfx::readback::read_texture(&ctx, &target, wgpu::TextureAspect::All, 4, (2, 2));
+            (stats, [[pixels[0], pixels[1], pixels[2]], [pixels[4], pixels[5], pixels[6]]])
+        };
+        // No texture for the hold: refused, and its quad with it.
+        let (stats, _) = draw(&mut gpu, &residency, &first);
+        assert_eq!((stats.holds, stats.refused_hold, stats.refused_texture), (1, 1, 1));
+        assert!(residency.hold(&ctx.device, 1, size, wgpu::TextureFormat::Rgba8Unorm));
+        assert!(residency.held(1, size, wgpu::TextureFormat::Bgra8Unorm).is_none(), "another format holds apart");
+        let (stats, row) = draw(&mut gpu, &residency, &first);
+        assert_eq!((stats.refused_hold, stats.refused_texture), (0, 0));
+        assert_eq!(row, [[0, 255, 0], [255, 0, 0]], "green, then the red the hold kept");
+        let (stats, row) = draw(&mut gpu, &residency, &second);
+        assert_eq!((stats.holds, stats.refused_texture), (0, 0));
+        assert_eq!(row, [[255, 0, 0], [255, 0, 0]], "the next frame samples what the hold kept");
     }
 
     /// A 4 by 4 overlay: white on the left half, black on the right, a
