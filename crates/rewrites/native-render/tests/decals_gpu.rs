@@ -1,6 +1,6 @@
 //! Synthetic only. The coordinator runs this; no retail assets or game.
 #![cfg(feature = "gpu")]
-use d3d::TargetCopy;
+use gfx::external::TargetCopy;
 use gfx::state::{ColorWriteMask, DepthBufferMode, FrontFace, RenderState, TextureStageState};
 use native_render::decal::{Mode, Vertex};
 use native_render::decal_gpu::{

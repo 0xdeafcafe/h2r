@@ -7,7 +7,7 @@ use shaders::vsh::encode::{Inst, Operand as O};
 use shaders::{psh, vsh};
 
 const SIZE: u32 = 64;
-fn program(instructions: &[Inst]) -> d3d::shader::Microcode {
+fn program(instructions: &[Inst]) -> gfx::guest_program::Microcode {
     let encoded = vsh::encode::program(instructions);
     let words: Vec<_> = encoded[4..]
         .as_chunks::<4>()
