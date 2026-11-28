@@ -1,8 +1,10 @@
 //! The guest side of the object update, phase 3 of the simulation rewrite
 //! (design: docs/engine/sim-rewrite-objects.md section 5; contracts:
-//! docs/engine/object-update.md). Everything here runs under
-//! `impl.sim.native.objects` (default off), installed by
-//! `sim_bridge::sim_objects`.
+//! docs/engine/object-update.md). Every body runs under
+//! `impl.sim.native.objects` (default off); the walks and the per-object
+//! updates ([`native_walk::TABLE`]) also run alone, on by default
+//! (`impl.sim.native.objects.walk`). `sim_bridge::sim_objects` installs
+//! both.
 //!
 //! A ported function is a [`Body`]: retail-site arms over the retail stack
 //! frame. At every guest call it makes, `esp`, the frame slots it reads
@@ -59,9 +61,9 @@ mod unit_rest;
 // Slice 7a: the biped update; slice 7b its post-physics update
 // (`biped::post`).
 mod biped;
-// The walk arm: the walks, `bd090`, bipeds and weapons, proved against
-// the guest before they answer.
-pub mod walk_arm;
+// The walks and the per-object updates in Rust, on by default
+// (`impl.sim.native.objects.walk`).
+pub mod native_walk;
 
 use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -264,6 +266,9 @@ pub struct Table {
     index: Vec<(u32, Role, u16)>,
     /// Per body: calls into it go through the runtime ([`Table::guard`]).
     guarded: Vec<AtomicBool>,
+    /// Per body: its segments read and write no float state
+    /// ([`Table::float_free`]).
+    no_float: Vec<bool>,
     nearest_x87: bool,
 }
 
@@ -281,7 +286,20 @@ impl Table {
             return Err(TableError::Duplicate(w[0].0));
         }
         let guarded = bodies.iter().map(|_| AtomicBool::new(false)).collect();
-        Ok(Table { bodies, index, guarded, nearest_x87: false })
+        let no_float = vec![false; bodies.len()];
+        Ok(Table { bodies, index, guarded, no_float, nearest_x87: false })
+    }
+
+    /// The bodies starting at `entries` read and write no MXCSR, x87 or
+    /// XMM state, so they run whatever the float environment
+    /// ([`Table::supports_at`]). An entry with no body here is ignored.
+    pub fn float_free(mut self, entries: &[u32]) -> Self {
+        for &entry in entries {
+            if let Some((Role::Entry, body)) = self.find(entry) {
+                self.no_float[usize::from(body)] = true;
+            }
+        }
+        self
     }
 
     /// The x87 gain and filter curves require round-to-nearest at every entry,
@@ -293,6 +311,19 @@ impl Table {
 
     pub fn supports(&self, cpu: &CpuAbi) -> bool {
         supported(cpu) && (!self.nearest_x87 || cpu.x87.control & 0xc00 == 0)
+    }
+
+    /// Whether the body that `pc` enters or resumes may run on `cpu`: a
+    /// [`Table::float_free`] body always may, any other when
+    /// [`Table::supports`] holds.
+    pub fn supports_at(&self, pc: u32, cpu: &CpuAbi) -> bool {
+        matches!(self.find(pc), Some((_, body)) if self.no_float[usize::from(body)]) || self.supports(cpu)
+    }
+
+    /// The position in [`Table::bodies`] of the body `pc` enters or
+    /// resumes.
+    pub fn index(&self, pc: u32) -> Option<usize> {
+        self.find(pc).map(|(_, body)| usize::from(body))
     }
 
     pub fn bodies(&self) -> &[&'static Body] {
@@ -358,7 +389,8 @@ impl Table {
 /// masks every exception, and neither flushes to zero nor treats
 /// denormals as zero; the x87 masks every exception, has no pending
 /// error and does not use the reserved precision. When it does not hold, the original runs: the installer checks
-/// it before the first body, [`drive`] before fusing into the next.
+/// it before the first body, [`drive`] before fusing into the next, except
+/// for a [`Table::float_free`] body.
 pub fn supported(cpu: &CpuAbi) -> bool {
     crate::sim_native::supported(cpu) && cpu.mxcsr & MXCSR_MODES == 0
 }
@@ -453,8 +485,8 @@ pub fn drive_with(
 
 /// As [`drive_with`], fusing a transfer the table would fuse only when
 /// `admit(target)` says so, asked last; otherwise the transfer goes to the
-/// runtime. The walk arm admits a segment whose turn is an answer
-/// ([`walk_arm::admit`]).
+/// runtime. The per-effect bodies' arm admits a segment whose turn is an
+/// answer (`crate::effect_update::arm::admit`).
 pub fn drive_admitting(
     cpu: &mut CpuAbi,
     g: &mut Guest,
@@ -473,7 +505,7 @@ pub fn drive_admitting(
             runtime::abi::RETURN => table.resumes(transfer.target_pc),
             _ => false,
         };
-        if !fuse || !table.supports(cpu) || !admit(transfer.target_pc) {
+        if !fuse || !table.supports_at(transfer.target_pc, cpu) || !admit(transfer.target_pc) {
             return Ok(transfer);
         }
         pc = transfer.target_pc;

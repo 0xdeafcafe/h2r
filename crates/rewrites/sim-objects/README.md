@@ -10,7 +10,7 @@ The object update in Rust: typed views over the object pool, the definition tabl
 
 - `src/view/`, `src/view.rs`: typed views over the object pool.
 - `src/defs.rs`: the definition table.
-- `src/phase.rs`: the walks' working set (`WalkSet`), gathered at a walk's entry.
+- `src/phase.rs`: the walks' working set (`WalkSet`), one row per live object, gathered on demand; no walk gathers it yet.
 - `src/synth.rs`: synthetic object pools and definitions (`synth`).
 
 ## Features

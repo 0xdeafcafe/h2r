@@ -263,8 +263,8 @@ thread the live state for a moment, with no alias:
 - **Rust only:** generated code's inline stores bypass `Guest`, so it
   must not run inside a trial.
 
-The object walk arm predicts each segment this way
-([object-update.md](../engine/object-update.md#the-walk-arm)).
+The per-effect bodies' arm predicts each segment this way
+([effects-parts.md](../engine/effects-parts.md)).
 
 ## 4. Tests and measurements
 

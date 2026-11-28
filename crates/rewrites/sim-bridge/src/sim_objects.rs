@@ -1,6 +1,8 @@
 //! `impl.sim.native.objects`: the object update, phase 3 of the simulation
 //! rewrite (docs/engine/object-update.md; design
-//! docs/engine/sim-rewrite-objects.md). Default off.
+//! docs/engine/sim-rewrite-objects.md). Default off. With it off, the
+//! walks and the per-object updates still run in Rust
+//! (`impl.sim.native.objects.walk`, on; [`install_walk`]).
 //!
 //! Every body in `engine::sim_objects::BODIES` gets its entry and its
 //! return sites. At either, with the float environment the bodies assume,
@@ -27,21 +29,22 @@
 //! driver runs, the evaluator answers once proven and is compared until
 //! then, and on one call in 64 after.
 //!
-//! With `impl.sim.native.objects.walk` ([`WALK`]) the walks, `bd090` and
-//! the biped and weapon trees (`engine::sim_objects::walk_arm::TABLE`)
-//! are installed through the walk arm instead: each segment's turn says
-//! whether the Rust body answers or the guest does, with the Rust segment
-//! predicted and compared ([`walk_segment`]). Every other body is left
-//! out, so the other types' callbacks, damage, functions and lights are
-//! the guest's; the function value's arm still runs at `bab40` when
-//! [`FUNCTIONS`] is set.
+//! With [`OBJECTS`] off and [`WALK`] on (the default), only the walks
+//! `b6f10` and `b7060`, the per-object updates `bc470` and `bc820` with
+//! `bd090`, the type dispatchers and the wake leaves
+//! (`engine::sim_objects::native_walk::TABLE`) are installed, and the Rust
+//! answers every segment. `bd090` outside its float environment is the one
+//! refusal: the guest runs that call, counted as `float_env`. Every other
+//! body is the guest's: the types' callbacks, damage, functions, lights
+//! and finalize.
 //!
 //! [`crate::sim_native::SimNative`] calls [`install`]: the bodies hold no
 //! state, so the feature's snapshot policy does not change. The arms'
 //! Rust-owned data and proofs are the map's, rebuilt after a map load.
 use hooks::Builder;
 use engine::points;
-use engine::sim_objects::{self as objects, Table, damage, walk_arm};
+use engine::sim_objects::native_walk::{self, Refusal};
+use engine::sim_objects::{self as objects, Table, damage};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 
 /// The switch, without its `impl.` prefix, and the label of the bodies'
@@ -62,35 +65,25 @@ pub fn functions_on(switches: &hooks::Switches) -> bool {
     on(switches) && switches.feature(FUNCTIONS, false)
 }
 
-/// The walk arm, looked up exactly: on only when set, and only under
-/// [`OBJECTS`]. Off by default until the parity ladder passes
-/// (docs/engine/object-update.md, "The walk arm").
+/// The walks in Rust (docs/engine/object-update.md, "The walks in
+/// Rust"): on by default; it follows `impl.sim.native.objects` and
+/// `impl.sim.native` when either is set, so `-impl.sim.native` runs the
+/// guest's walks.
 pub const WALK: &str = "impl.sim.native.objects.walk";
 
+/// The label of the walk table's implementations.
+pub const WALK_LABEL: &str = "sim.native.objects.walk";
+
+/// Whether the walk table is installed on its own: [`WALK`] on and
+/// [`OBJECTS`] off (on, every body is installed, these among them).
 pub fn walk_on(switches: &hooks::Switches) -> bool {
-    on(switches) && switches.feature(WALK, false)
+    !on(switches) && switches.implementation("sim.native.objects.walk", true)
 }
 
-/// Whether the per-function port at `addr` stands down: the switch is on
-/// and a body owns the point.
+/// Whether the per-function port at `addr` stands down: a body installed
+/// by either switch owns the point.
 pub fn owns(switches: &hooks::Switches, addr: u32) -> bool {
-    owns_in(on(switches), authoritative(switches), addr) || (walk_on(switches) && walk_arm::TABLE.owns(addr))
-}
-
-/// The bodies installed to answer unconditionally: every body, or, with
-/// the walk arm, only the function value's when its arm is set.
-fn authoritative(switches: &hooks::Switches) -> &'static Table {
-    static VALUE: std::sync::LazyLock<Table> = std::sync::LazyLock::new(|| {
-        Table::new(objects::BODIES.iter().filter(|b| b.point.base == points::OBJECT_FUNCTION_VALUE.base))
-            .expect("BODIES is consistent")
-    });
-    static NONE: std::sync::LazyLock<Table> =
-        std::sync::LazyLock::new(|| Table::new(std::iter::empty()).expect("an empty table"));
-    match (walk_on(switches), functions_on(switches)) {
-        (false, _) => table(switches),
-        (true, true) => &VALUE,
-        (true, false) => &NONE,
-    }
+    owns_in(on(switches), table(switches), addr) || (walk_on(switches) && native_walk::TABLE.owns(addr))
 }
 
 fn owns_in(on: bool, table: &Table, addr: u32) -> bool {
@@ -122,16 +115,16 @@ pub(crate) const SHADOW_POINTS: &[&points::Point] = &[
 
 pub(crate) fn install(b: &mut Builder) {
     let installed = on(b.switches());
-    let bodies = authoritative(b.switches());
+    let bodies = table(b.switches());
     for point in SHADOW_POINTS {
         crate::shadow::register(point.name, OBJECTS, point, installed && bodies.owns(point.base));
+    }
+    if walk_on(b.switches()) {
+        install_walk(b);
     }
     if installed {
         let arm = functions_on(b.switches());
         install_table_with(b, bodies, OBJECTS, |_| &[], arm);
-        if walk_on(b.switches()) {
-            install_walk_arm(b);
-        }
         install_events(b);
         install_curve_arm(b);
         // The arm's proof is the map's: a new map earns it again.
@@ -151,77 +144,41 @@ pub(crate) fn install(b: &mut Builder) {
 const CURVE_ARM_RESET: &str = "objects: reset the curve arm";
 /// The map-load observer that clears the function arm and its data.
 const FUNCTION_ARM_RESET: &str = "objects: reset the function arm";
-/// The map-load observer that clears the walk arm's proof and fallback.
-const WALK_ARM_RESET: &str = "objects: reset the walk arm";
-/// The revert and restore observers that start its audit slots over.
-const WALK_ARM_NEW_RUN: [(&points::Point, &str); 2] = [
-    (&points::GAME_STATE_REVERT, "objects: walk arm slots at a revert"),
-    (&points::GAME_STATE_RESTORE, "objects: walk arm slots at a restore"),
-];
-
-/// The walk arm's bodies (`walk_arm::TABLE`), each entry and site
-/// through [`walk_segment`].
-fn install_walk_arm(b: &mut Builder) {
-    let table: &'static Table = &walk_arm::TABLE;
+/// The walk table's bodies (`native_walk::TABLE`), each entry and site
+/// answered by the Rust: [`objects::drive_with`] fuses every transfer
+/// between them and counts each segment. A body outside the float
+/// environment it needs (only `bd090`) is refused for that call, counted,
+/// and the guest runs it; the caller's Rust frame resumes at its site. The
+/// walks and the per-object updates never refuse, so their hooks are
+/// marked [`hooks::HookRef::replaces_guest`] (`native_walk::REPLACES_GUEST`).
+fn install_walk(b: &mut Builder) {
+    let table: &'static Table = &native_walk::TABLE;
     for &body in table.bodies() {
         let point = body.point;
-        b.raw()
-            .implement(point, OBJECTS, move |cpu, ctx, pc| {
-                let site = pc != point.base && body.sites.contains(&pc);
-                if pc == point.base || site {
-                    return walk_segment(cpu, ctx, pc, site);
-                }
-                original(cpu, ctx, pc, site)
-            })
+        let hook = b
+            .raw()
+            .implement(point, WALK_LABEL, move |cpu, ctx, pc| walk_segment(cpu, ctx, pc, body.sites))
             .resumes(body.sites)
             .context_only()
             .when_shared(move |entry| {
                 table.guard(entry);
             });
-    }
-    // The proof is the map's; reverts and restores replay the slots.
-    // Observers reset process counters only, so they sit last.
-    b.raw()
-        .observe_before(&points::CACHE_TAGS_LOAD, WALK_ARM_RESET, |_| walk_arm::reset())
-        .last();
-    for (point, label) in WALK_ARM_NEW_RUN {
-        b.raw().observe_before(point, label, |_| walk_arm::new_run()).last();
+        if native_walk::REPLACES_GUEST.contains(&point.base) {
+            hook.replaces_guest();
+        }
     }
 }
 
-/// One segment of a walk-arm body at `pc`: the Rust body answers on its
-/// turn, fusing into each next body whose turn is an answer too;
-/// otherwise the guest answers and the Rust segment, predicted on the
-/// state it started from, is compared at the guest's transfer. An
-/// unsupported float environment is the guest's, counted as declined.
-fn walk_segment(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32, site: bool) -> Result<TransferAbi, GuestFault> {
-    use walk_arm::Turn;
-    let table: &'static Table = &walk_arm::TABLE;
-    if let Some(walk) = walk_arm::walk_at(pc) {
-        walk_arm::walk_entered(&ctx.memory(), walk);
-    }
-    if !table.supports(cpu) {
-        walk_arm::declined(pc);
-        return original(cpu, ctx, pc, site);
-    }
-    if walk_arm::turn(pc) == Some(Turn::Answer) {
+/// One entry or site of a walk-table body at `pc`: the Rust runs it and
+/// every body it reaches; a refused one is the guest's.
+fn walk_segment(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32, sites: &[u32]) -> Result<TransferAbi, GuestFault> {
+    let table: &'static Table = &native_walk::TABLE;
+    if table.supports_at(pc, cpu) {
         let mut mem = ctx.memory();
-        return objects::drive_admitting(cpu, &mut mem, table, pc, walk_arm::admit, walk_arm::answer_segment);
+        return objects::drive_with(cpu, &mut mem, table, pc, native_walk::segment);
     }
-    let prediction = {
-        let mut mem = ctx.memory();
-        walk_arm::predict(cpu, &mut mem, pc)
-    };
-    // A direct-call image can run a callee inside the caller's handler:
-    // stop the original at its next transfer, as the prediction stops.
-    let guest = ctx.with_routed_calls(|ctx| original(cpu, ctx, pc, site));
-    if let Some(prediction) = prediction {
-        match &guest {
-            Ok(transfer) => prediction.compare(cpu, &ctx.memory(), *transfer),
-            Err(_) => prediction.guest_error(),
-        }
-    }
-    guest
+    native_walk::refused(pc, Refusal::FloatEnv);
+    original(cpu, ctx, pc, sites.contains(&pc))
 }
 
 /// The tag-function curve evaluator `13b390` (`FUNCTION_EVALUATE`): the
@@ -455,10 +412,11 @@ mod tests {
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
         // The default-on animation manager arms install their own entries;
-        // none of them is an object body.
+        // none of them is an object body. Only the walk table's are.
         for body in objects::BODIES {
-            let chain = plan.chains.get(&body.point.base);
-            assert!(chain.is_none_or(|c| c.implement.is_none()), "off: {}", body.point.name);
+            let implement = plan.chains.get(&body.point.base).and_then(|c| c.implement.as_ref());
+            let walk = native_walk::TABLE.owns(body.point.base);
+            assert_eq!(implement.map(|i| i.label), walk.then_some(WALK_LABEL), "off: {}", body.point.name);
         }
         // The manager keeps the "sim-native" section; it holds no bytes.
         assert!(plan.save_sections().iter().all(|(_, bytes)| bytes.is_empty()));
@@ -501,10 +459,13 @@ mod tests {
         assert!(!owns_in(true, t, points::OBJECTS_POST_PHYSICS.base));
         // A site is not an entry: the port there is not displaced by it.
         assert!(!owns_in(true, t, PRE_SITES[0]));
-        // The slice 1 bodies own the walks while the switch is on.
+        // The slice 1 bodies own the walks while the switch is on, and the
+        // walk table owns them by default.
         let on = Switches::defaults().with(&format!("impl.{OBJECTS}"), true);
         assert!(owns(&on, points::OBJECTS_PRE_PHYSICS.base));
-        assert!(!owns(&Switches::defaults(), points::OBJECTS_PRE_PHYSICS.base));
+        assert!(owns(&Switches::defaults(), points::OBJECTS_PRE_PHYSICS.base));
+        assert!(!owns(&Switches::defaults(), points::UNIT_UPDATE.base));
+        assert!(!owns(&Switches::defaults().with("impl.sim.native", false), points::OBJECTS_PRE_PHYSICS.base));
     }
 
     #[test]
@@ -595,124 +556,102 @@ mod tests {
     }
 
     #[test]
-    fn the_walk_arm_is_off_unless_set_and_installs_only_its_bodies() {
+    fn the_walk_table_is_on_by_default_and_gives_way_to_the_objects_switch() {
         let objects_on = || Switches::defaults().with(&format!("impl.{OBJECTS}"), true);
-        assert!(!walk_on(&objects_on()), "the objects switch alone leaves it off");
-        assert!(!walk_on(&Switches::defaults().with(WALK, true)), "it needs the objects switch");
-        let walk = objects_on().with(WALK, true);
-        assert!(walk_on(&walk));
-        let mut registry = Registry::new(walk.clone());
+        assert!(walk_on(&Switches::defaults()));
+        assert!(!walk_on(&objects_on()), "the objects switch installs every body instead");
+        for off in [WALK, "impl.sim.native.objects", "impl.sim.native", "impl.sim"] {
+            assert!(!walk_on(&Switches::defaults().with(off, false)), "-{off}");
+        }
+        let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
-        for body in walk_arm::TABLE.bodies() {
+        for body in native_walk::TABLE.bodies() {
             let implement = plan.chains[&body.point.base].implement.as_ref().unwrap();
-            assert_eq!(implement.label, OBJECTS, "{}", body.point.name);
+            assert_eq!(implement.label, WALK_LABEL, "{}", body.point.name);
             assert_eq!(implement.continuation_sites().0, body.sites);
-            assert!(owns(&walk, body.point.base));
+            assert_eq!(
+                implement.replaces_guest(),
+                native_walk::REPLACES_GUEST.contains(&body.point.base),
+                "{}",
+                body.point.name
+            );
+            assert!(owns(&Switches::defaults(), body.point.base));
         }
-        // The other types, damage, functions and lights are the guest's.
-        for point in [&points::UNIT_UPDATE, &points::VEHICLE_UPDATE, &points::OBJECT_DAMAGE_UPDATE, &points::OBJECT_FUNCTION_VALUE] {
-            let chain = plan.chains.get(&point.base);
-            let implement = chain.and_then(|c| c.implement.as_ref());
-            assert!(implement.is_none_or(|i| i.label != OBJECTS), "{}", point.name);
-            assert!(!owns(&walk, point.base), "{}", point.name);
+        // The other types, damage, functions, lights and finalize are the
+        // guest's.
+        for point in [
+            &points::OBJECTS_FINALIZE,
+            &points::BIPED_UPDATE,
+            &points::UNIT_UPDATE,
+            &points::VEHICLE_UPDATE,
+            &points::OBJECT_DAMAGE_UPDATE,
+            &points::OBJECT_FUNCTION_VALUE,
+            &points::FUNCTION_EVALUATE,
+        ] {
+            let implement = plan.chains.get(&point.base).and_then(|c| c.implement.as_ref());
+            assert!(implement.is_none(), "{}", point.name);
+            assert!(!owns(&Switches::defaults(), point.base), "{}", point.name);
         }
-        let load = &plan.chains[&points::CACHE_TAGS_LOAD.base];
-        assert!(load.observe_before.iter().any(|h| h.label == WALK_ARM_RESET));
-        for (point, label) in WALK_ARM_NEW_RUN {
-            assert!(plan.chains[&point.base].observe_before.iter().any(|h| h.label == label), "{label}");
-        }
+        // No state.
         assert!(plan.save_sections().iter().all(|(_, bytes)| bytes.is_empty()));
-        // With the function arm set too, `bab40` is its own.
-        let mut registry = Registry::new(walk.with(FUNCTIONS, true));
-        registry.add(&SimNative::for_tests()).unwrap();
-        let plan = registry.build(&Base).unwrap();
-        assert!(plan.chains[&points::OBJECT_FUNCTION_VALUE.base].implement.is_some());
-        // Off: no walk arm observers.
+        // Every walk entry has resume sites, so the lift keeps its body.
+        let entries: std::collections::BTreeSet<u32> = native_walk::TABLE.bodies().iter().map(|b| b.point.base).collect();
+        assert!(plan.replaced(&entries).is_empty());
+        // With the objects switch on, every body is the objects switch's.
         let mut registry = Registry::new(objects_on());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
-        let load = &plan.chains[&points::CACHE_TAGS_LOAD.base];
-        assert!(!load.observe_before.iter().any(|h| h.label == WALK_ARM_RESET));
+        for body in native_walk::TABLE.bodies() {
+            let implement = plan.chains[&body.point.base].implement.as_ref().unwrap();
+            assert_eq!(implement.label, OBJECTS, "{}", body.point.name);
+        }
     }
 
-    /// The carrier `baf40` through the walk arm, with a generated original
-    /// that leaves what retail leaves: compared until proven, then the
-    /// body answers with every 64th segment the guest's; a difference
-    /// hands it back.
+    /// Outside the float environment, the root leaf `baf80` (float-free)
+    /// is still the Rust's and counted, and `bd090` is refused to the
+    /// guest, counted as `float_env`.
     #[test]
-    fn the_walk_arm_compares_until_proven_then_answers_and_a_difference_hands_back() {
+    fn a_walk_body_answers_outside_the_float_environment_and_bd090_is_refused() {
         use runtime::guest::Permissions;
         use runtime::{Dispatch, Runtime};
-        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-        const POOL: u32 = 0x0050_0000;
-        const HEADERS: u32 = 0x0050_1000;
-        const BODY: u32 = 0x0051_0000;
+        use std::sync::atomic::{AtomicU64, Ordering};
         const STACK: u32 = 0x0057_0800;
         const CALLER: u32 = 0x0001_2345;
         static GUEST: AtomicU64 = AtomicU64::new(0);
-        static WRONG: AtomicBool = AtomicBool::new(false);
-        let carrier = points::OBJECT_CARRIER.base;
+        let pose = points::OBJECT_NODE_MATRICES.base;
+        let root = points::OBJECT_ROOT.base;
         let mut d = Dispatch::default();
-        d.register_generated_rust(carrier, move |cpu, ctx, pc| {
-            assert_eq!(pc, carrier);
+        d.register_generated_rust(pose, move |cpu, ctx, pc| {
+            assert_eq!(pc, pose);
             GUEST.fetch_add(1, Ordering::Relaxed);
-            let mut m = ctx.memory();
-            // push esi; ...; pop esi; ret
-            m.set_u32(cpu.esp - 4, cpu.esi)?;
-            cpu.ecx = BODY;
-            cpu.edx = u32::from(WRONG.load(Ordering::Relaxed));
-            // No caller reads the flags of its last `test`.
-            cpu.eflags_defined = 0;
-            cpu.eip = CALLER;
-            cpu.esp += 4;
-            Ok(TransferAbi::ret(CALLER))
+            ctx.memory().ret(cpu, 4)
         })
         .unwrap();
+        d.register_generated_rust(root, |_, _, _| panic!("the root leaf never refuses")).unwrap();
         let mut g = Guest::new();
-        g.map_zeroed(0x004e_0000, 0x000a_0000, Permissions::RW).unwrap();
-        g.set_u32(points::OBJECTS.base, POOL).unwrap();
-        g.set_u32(POOL + 0x44, HEADERS).unwrap();
-        g.set_u32(HEADERS + 8, BODY).unwrap();
+        g.map_zeroed(0x0057_0000, 0x1000, Permissions::RW).unwrap();
         g.set_u32(STACK, CALLER).unwrap();
         let mut ctx = ExecCtx::new(Runtime::new(g, d), 1);
-        walk_arm::reset();
-        let counts = || walk_arm::stats().into_iter().find(|(e, _)| *e == carrier).map(|(_, s)| s).unwrap_or_default();
-        let mut step = || {
-            let mut cpu = CpuAbi { esp: STACK, eax: 1 << 16, esi: 0x5151_5151, ..Default::default() };
-            let t = walk_segment(&mut cpu, &mut ctx, carrier, false).unwrap();
-            assert_eq!(t, TransferAbi::ret(CALLER));
-            assert_eq!((cpu.esp, cpu.ecx, cpu.esi), (STACK + 4, BODY, 0x5151_5151));
-            assert_eq!(ctx.memory().u32(STACK - 4).unwrap(), 0x5151_5151);
+        let count = |entry: u32| native_walk::stats().into_iter().find(|s| s.entry == entry).unwrap();
+        // Flush to zero.
+        let ftz = || {
+            let mut cpu = CpuAbi { esp: STACK, ecx: u32::MAX, mxcsr: 0x9f80, ..Default::default() };
+            cpu.x87.control = 0x027f;
+            cpu
         };
-        while counts().matched < walk_arm::PROVEN_AFTER {
-            step();
-        }
-        assert_eq!(counts().answered, 0);
-        let guest = GUEST.load(Ordering::Relaxed);
-        let n = walk_arm::AUDIT_EVERY * 4;
-        for _ in 0..n {
-            step();
-        }
-        let after = counts();
-        assert_eq!(GUEST.load(Ordering::Relaxed) - guest, 4);
-        assert_eq!((after.answered, after.mismatched), (n - 4, 0));
-        // A guest that differs at an audit: every later segment is its.
-        WRONG.store(true, Ordering::Relaxed);
-        while counts().mismatched == 0 {
-            let mut cpu = CpuAbi { esp: STACK, eax: 1 << 16, esi: 0x5151_5151, ..Default::default() };
-            walk_segment(&mut cpu, &mut ctx, carrier, false).unwrap();
-        }
-        assert!(walk_arm::failed());
-        assert_eq!(counts().first.unwrap().what, "edx");
-        let guest = GUEST.load(Ordering::Relaxed);
-        for _ in 0..8 {
-            let mut cpu = CpuAbi { esp: STACK, eax: 1 << 16, esi: 0x5151_5151, ..Default::default() };
-            walk_segment(&mut cpu, &mut ctx, carrier, false).unwrap();
-        }
-        assert_eq!(GUEST.load(Ordering::Relaxed) - guest, 8);
-        WRONG.store(false, Ordering::Relaxed);
-        walk_arm::reset();
+        let before = (count(root), count(pose), GUEST.load(Ordering::Relaxed));
+        let mut cpu = ftz();
+        let t = walk_segment(&mut cpu, &mut ctx, root, &[]).unwrap();
+        assert_eq!(t, TransferAbi::ret(CALLER));
+        assert_eq!((cpu.eax, cpu.esp), (u32::MAX, STACK + 4));
+        assert_eq!(count(root).segments, before.0.segments + 1);
+        let mut cpu = ftz();
+        walk_segment(&mut cpu, &mut ctx, pose, &[]).unwrap();
+        assert_eq!(GUEST.load(Ordering::Relaxed), before.2 + 1);
+        let after = count(pose);
+        assert_eq!(after.refused[0], before.1.refused[0] + 1);
+        assert_eq!(after.segments, before.1.segments);
     }
 
     static DAMAGE_BODIES: [Body; 2] = [

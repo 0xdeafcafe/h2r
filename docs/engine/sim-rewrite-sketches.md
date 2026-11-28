@@ -73,29 +73,18 @@ What each phase of [sim-rewrite.md](sim-rewrite.md) takes over: its data, its en
 
 **Objects and units update (phase 3).**
 
-- *Orchestration.* With `impl.sim.native.objects.walk` (off), the walk arm
-  `engine::sim_objects::walk_arm` runs the pre-physics `b6f10`,
-  post-physics `b7060` and final `b7150` walks, `bc470` and `bc820` with
-  `bd090` per object, the type dispatchers, and the biped and weapon
-  descriptor callbacks. The other types' callbacks (unit `+0x40` `c6b30`,
-  vehicles, the small types) are guest calls through the runtime
+- *Orchestration.* With `impl.sim.native.objects.walk` (on), the walk
+  table `engine::sim_objects::native_walk` runs the pre-physics `b6f10`
+  and post-physics `b7060` walks, `bc470` and `bc820` with `bd090` per
+  object, the type dispatchers and the wake leaves, and answers every
+  segment; nothing is compared. Finalize `b7150` and every type's
+  callbacks (unit `+0x40` `c6b30`, bipeds, weapons, vehicles, the small
+  types) are guest calls through the runtime
   ([feature-engine.md](feature-engine.md), "Calling code that is still
-  recompiled"); they join type by type. Each walk's entry gathers the
-  pool into an SoA working set (`sim_objects::phase::WalkSet`: handle,
-  flags, type, parent, transform, animation block) and counts its
-  predicted visits by ported type. Per segment the arm is shadow, then
-  answer:
-
-  ```
-  segment -> unproven, failed or slot % 64 == 0
-                -> Rust predicted in a Guest::trial, guest answers,
-                   compared at its transfer          (matched, mismatched)
-          -> else Rust answers, fusing only into answering bodies (answered)
-  ```
-
-  Proof is 4096 matches per entry, per map; one difference hands every
-  segment to the guest until the next map. `sim.arms` reports it as
-  `objects.walk.<entry>` ([object-update.md](object-update.md#the-walk-arm)).
+  recompiled"); they join type by type. The one refusal is `bd090`
+  outside its float environment (`float_env`): the guest runs that call.
+  `sim.arms` reports `objects.walk.<entry>`
+  ([object-update.md](object-update.md#the-walks-in-rust)).
 - *Also in this phase:* the object-function evaluator (`bab40`, `108d90`,
   `bcc20`) and lights (`c1400`, `c0c80`, which subsume
   `impl.sim.static-light`'s bypass); the markers `b8d30` belong to

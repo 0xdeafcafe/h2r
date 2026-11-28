@@ -407,10 +407,10 @@ Built on the game thread inside one segment, read by workers, dropped or
 kept as derived state for the rest of the walk (section 7).
 
 `WalkSet` is built: one row per live object (handle, flags, type, `+c0`,
-parent, position, forward, up, animation block), gathered at each walk's
-entry by the walk arm, which counts the slot pass's predicted visits by
-type ([object-update.md](object-update.md#the-walk-arm)). `PoseSet` below
-is slice 12's:
+parent, position, forward, up, animation block), with the slot pass's
+visits by type. No walk gathers it yet; the walks run as retail-frame
+bodies ([object-update.md](object-update.md#the-walks-in-rust)). `PoseSet`
+below is slice 12's:
 
 ```rust
 pub struct PoseSet {

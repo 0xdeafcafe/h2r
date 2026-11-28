@@ -71,9 +71,9 @@ switch in this process), `arms` and `clean`: `checked > 0 && mismatched
 `declined` (calls left to the guest unchecked, summed over reasons). The
 sources are `sim_physics::parity::status`, `sim_objects::functions::parity::status`
 (`objects.curve`), `sim_objects::functions::arm::status` (`objects.function`,
-whose `declined` adds its `dropped` audits), `sim_objects::walk_arm::stats`
-(`objects.walk.<entry>`, one arm per walk-arm entry, whose `declined` adds
-its interrupted guest segments),
+whose `declined` adds its `dropped` audits), `sim_objects::native_walk::stats`
+(`objects.walk.<entry>`, one arm per walk-table body: `answered` its
+segments, `declined` its refused calls, nothing `checked`),
 the graph walk's `arm_stats` and `stats`, `sim_anim::manager::arm::stats`,
 `sim_collision::WORLD.stats`, the shadow registry's `sim.seats` and
 `sim.effects` groups, `sim_seats::aim::arm::status` (`seats.aim`, the
@@ -93,7 +93,8 @@ field: physics and collision have no `checked` (it is `matched` plus
 arms are `sim_effects_parts::status`'s part arms, and `effects.parts` counts
 the parts returned from Rust as `answered` and the parts the guest's arm
 ran unchecked as `declined`, then `effects.body.<entry>`, one arm per
-per-effect body (`effect_update::arm::stats`, counted as the walk arm's)
+per-effect body (`effect_update::arm::stats`, whose `declined` adds its
+interrupted guest segments)
 ([effects-parts.md](../engine/effects-parts.md)). A subsystem with its
 switch off reads zeros, so `clean` is false.
 

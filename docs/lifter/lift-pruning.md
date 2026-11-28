@@ -63,6 +63,7 @@ refusing and comparing arms. Marked so far:
 | Point | Feature | Why it qualifies |
 |---|---|---|
 | `CONTROLS_ROW_TEXT` (`0x2c8548`) | `controls-text` (`crates/extensions/game/src/controls_text.rs`) | the port reads the body's immediates and jump table as data and calls only `ITEM_TEXT` and `TEXT_SET` (declared with `calls_guest`); no arm runs the body |
+| `OBJECTS_PRE_PHYSICS`, `OBJECTS_POST_PHYSICS`, `OBJECT_PRE_UPDATE`, `OBJECT_POST_UPDATE` (`0xb6f10`, `0xb7060`, `0xbc470`, `0xbc820`) | `sim-native`, the walk table (`crates/rewrites/sim-bridge/src/sim_objects.rs`, `install_walk`) | float-free bodies with no refusal ([object-update.md](../engine/object-update.md#the-walks-in-rust)); each resumes at its sites, so the plan keeps it lifted |
  A feature that refuses to build
 (`BuildError`) contributes nothing, so its entries stay lifted.
 

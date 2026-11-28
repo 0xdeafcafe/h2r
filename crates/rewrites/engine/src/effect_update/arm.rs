@@ -1,6 +1,5 @@
 //! The per-effect bodies' arm (docs/engine/effects-parts.md, "The
-//! per-effect bodies"): the walk arm's rule (`crate::sim_objects::walk_arm`)
-//! over [`super::TABLE`].
+//! per-effect bodies"): a segment arm over [`super::TABLE`].
 //!
 //! Each segment (a body's entry or site to its next transfer) gets a
 //! [`turn`]. Until the segment's entry has matched [`PROVEN_AFTER`]
@@ -19,7 +18,39 @@ use runtime::{CpuAbi, Guest, TransferAbi, abi};
 use std::collections::BTreeMap;
 use std::sync::{LazyLock, Mutex};
 
-pub use crate::sim_objects::walk_arm::{Mismatch, Stats, Turn};
+/// The first difference an entry saw.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Mismatch {
+    /// The entry or site the segment began at.
+    pub pc: u32,
+    pub what: String,
+    pub rust: String,
+    pub guest: String,
+}
+
+/// One entry's counters since the map loaded.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct Stats {
+    pub matched: u64,
+    pub mismatched: u64,
+    /// Segments the Rust body answered.
+    pub answered: u64,
+    /// Segments left to the guest unpredicted: the float environment, or
+    /// the Rust segment faulted.
+    pub declined: u64,
+    /// The guest faulted, stopped or yielded before its transfer.
+    pub interrupted: u64,
+    pub first: Option<Mismatch>,
+}
+
+/// Who answers a segment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Turn {
+    /// The Rust body runs and commits.
+    Answer,
+    /// The guest runs; the Rust segment is predicted and compared.
+    Compare,
+}
 
 /// Matched segments of an entry, with no difference anywhere, before its
 /// body answers.

@@ -324,6 +324,9 @@ const STACK_PROBE: u32 = 0x320560;
 fn cleanup(target: u32) -> u32 {
     match target {
         0xbc470 | 0xbc820 | 0x109580 | 0x108c60 | 0xbe8e0 | 0xbc5e0 | 0xbd090 | 0xbdef0 => 4,
+        // The damage update, a callout of the pre-update under the walk
+        // table alone.
+        0xd5de0 => 4,
         t if SLOT_UPDATE.contains(&t) || SLOT_POST.contains(&t) => 4,
         0xb83b0 | 0xb8460 => 8,
         t if SLOT_AFTER_ROOT.contains(&t) => 8,
@@ -663,7 +666,7 @@ impl Harness<'_> {
             let pc = cpu.eip;
             rec.resumes.push(pc);
             let on = rust(k);
-            let t = if on && self.table.at(pc).is_some() && sim_objects::supported(&from_interp(&cpu)) {
+            let t = if on && self.table.at(pc).is_some() && self.table.supports_at(pc, &from_interp(&cpu)) {
                 let mut regs = from_interp(&cpu);
                 let t = sim_objects::drive(&mut regs, &mut g, self.table, pc)
                     .unwrap_or_else(|f| panic!("root {:#x} case {}: body fault {f:?}", self.root, self.case));
@@ -799,8 +802,13 @@ fn check(name: &str, reference: &Record, other: &Record) {
 
 /// Every run of `root` over `cases` pools agrees with the lifted one.
 fn transcripts(point: &points::Point, cases: u32) {
+    transcripts_in(point, cases, &sim_objects::TABLE, None);
+}
+
+/// [`transcripts`] with `table`'s bodies fused and every other callee a
+/// callout, every run starting with `mxcsr` when given.
+fn transcripts_in(point: &points::Point, cases: u32, table: &Table, mxcsr: Option<u32>) {
     let Some((image, ram)) = image() else { return };
-    let table: &Table = &*sim_objects::TABLE;
     let mut code = image.original();
     code.prime(point.base);
     for body in table.bodies() {
@@ -811,7 +819,13 @@ fn transcripts(point: &points::Point, cases: u32) {
     let mut h = Harness { code: &mut code, table, root: point.base, case: 0 };
     for case in 0..cases {
         h.case = case;
-        let fresh = || start(ram, point.base, case);
+        let fresh = || {
+            let (mut cpu, g) = start(ram, point.base, case);
+            if let Some(mxcsr) = mxcsr {
+                cpu.mxcsr = mxcsr;
+            }
+            (cpu, g)
+        };
         let (cpu, g) = fresh();
         let reference = h.run(cpu, g, &|_| false);
         if point.base == points::OBJECT_FUNCTION_VALUE.base && case == function_cases() {
@@ -907,6 +921,29 @@ fn wake_leaves() {
 #[test]
 fn early_mover_wake() {
     transcripts(&points::OBJECT_EARLY_MOVER_WAKE, 6);
+}
+
+/// The walks in Rust as installed by default (`native_walk::TABLE`): the
+/// walks, the per-object updates and `bd090` fused, every type callback a
+/// callout. Again under flush to zero and denormals as zero, outside the
+/// float environment: every body but `bd090` still runs, and `bd090` is
+/// the lifted original's (the `float_env` refusal), resumed from at the
+/// post-update's site.
+#[test]
+fn walk_table_roots() {
+    let table: &Table = &engine::sim_objects::native_walk::TABLE;
+    let outside = 0x1f80 | 0x8040;
+    assert!(!sim_objects::supported(&runtime::CpuAbi { mxcsr: outside, ..Default::default() }));
+    for point in [
+        &points::OBJECTS_PRE_PHYSICS,
+        &points::OBJECTS_POST_PHYSICS,
+        &points::OBJECT_PRE_UPDATE,
+        &points::OBJECT_POST_UPDATE,
+    ] {
+        for mxcsr in [None, Some(outside)] {
+            transcripts_in(point, 6, table, mxcsr);
+        }
+    }
 }
 
 #[test]

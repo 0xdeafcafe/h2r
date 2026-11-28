@@ -22,7 +22,8 @@ use engine::sim_anim::manager::arm as manager;
 use engine::sim_collision as world;
 use engine::sim_objects::functions::arm as function;
 use engine::sim_objects::functions::parity as objects;
-use engine::sim_objects::walk_arm;
+use engine::effect_update::arm as segment_arm;
+use engine::sim_objects::native_walk;
 use engine::sim_physics::parity as physics;
 use engine::sim_seats::aim::arm as aim;
 use engine::sim_seats::device::arm as device;
@@ -64,7 +65,7 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
             subsystem(switches, "physics", physics_arms()),
             subsystem(switches, "objects", {
                 let mut arms = vec![objects_wire(objects::status()), function_wire(function::status())];
-                arms.extend(walk_wire(walk_arm::stats()));
+                arms.extend(walk_wire(native_walk::stats()));
                 arms
             }),
             subsystem(switches, "anim", anim_wire(&walk::arm_stats(), &walk::stats(), manager::stats())),
@@ -112,7 +113,7 @@ fn verdict(name: &str, switch: String, on: bool, arms: Vec<Arm>) -> Subsystem {
 fn effects_parts(
     switches: &Switches,
     (parts, arms): (EffectParts, EffectArms),
-    bodies: Vec<(u32, walk_arm::Stats)>,
+    bodies: Vec<(u32, segment_arm::Stats)>,
 ) -> Subsystem {
     let on = sim_bridge::sim_effects_parts::on(switches);
     let wire = |name: &str, a: EffectArm| Arm {
@@ -218,14 +219,26 @@ fn function_wire(s: function::Status) -> Arm {
     }
 }
 
-/// The walk arm, one arm per entry (`objects.walk.<entry>`); faulted,
-/// stopped and yielded guest segments count as declined.
-fn walk_wire(entries: Vec<(u32, walk_arm::Stats)>) -> Vec<Arm> {
-    segment_wire("objects.walk", entries)
+/// The walks in Rust, one arm per body (`objects.walk.<entry>`): its
+/// segments answered, and its refused calls (every reason) declined.
+/// Nothing is compared.
+fn walk_wire(bodies: Vec<native_walk::Stats>) -> Vec<Arm> {
+    bodies
+        .into_iter()
+        .map(|s| Arm {
+            name: format!("objects.walk.{:08x}", s.entry),
+            checked: 0,
+            matched: 0,
+            mismatched: 0,
+            answered: s.segments,
+            declined: s.refused.iter().sum(),
+        })
+        .collect()
 }
 
-/// A segment arm's entries as `<prefix>.<entry>`, the walk arm's way.
-fn segment_wire(prefix: &str, entries: Vec<(u32, walk_arm::Stats)>) -> Vec<Arm> {
+/// A segment arm's entries as `<prefix>.<entry>`; faulted, stopped and
+/// yielded guest segments count as declined.
+fn segment_wire(prefix: &str, entries: Vec<(u32, segment_arm::Stats)>) -> Vec<Arm> {
     entries
         .into_iter()
         .map(|(entry, s)| Arm {
@@ -414,9 +427,9 @@ mod tests {
         let c = collision_arms(&stats);
         assert_eq!(c.len(), 7);
         assert_eq!((c[0].checked, c[6].checked, c[6].mismatched), (2, 1, 1));
-        let w = walk_wire(vec![(0xdd360, walk_arm::Stats { matched: 6, mismatched: 1, answered: 4, declined: 2, interrupted: 3, first: None })]);
-        assert_eq!(w[0].name, "objects.walk.000dd360");
-        assert_eq!((w[0].checked, w[0].mismatched, w[0].answered, w[0].declined), (7, 1, 4, 5));
+        let w = walk_wire(vec![native_walk::Stats { entry: 0xbd090, segments: 4, refused: [2] }]);
+        assert_eq!(w[0].name, "objects.walk.000bd090");
+        assert_eq!((w[0].checked, w[0].mismatched, w[0].answered, w[0].declined), (0, 0, 4, 2));
         let e = effects_parts(
             &Switches::default(),
             (
@@ -429,7 +442,7 @@ mod tests {
                     ..EffectArms::default()
                 },
             ),
-            vec![(0x1792b0, walk_arm::Stats { matched: 3, answered: 2, interrupted: 1, ..walk_arm::Stats::default() })],
+            vec![(0x1792b0, segment_arm::Stats { matched: 3, answered: 2, interrupted: 1, ..segment_arm::Stats::default() })],
         );
         let names: Vec<&str> = e.arms.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(

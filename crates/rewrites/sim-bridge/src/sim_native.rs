@@ -229,8 +229,9 @@ fn manager_arms(exports: &[AnimBody]) -> Vec<AnimBody> {
 
 /// `impl.sim.native.anim.skeleton`: the skeleton walk of `bd090` as one
 /// Rust call, phase 1b (docs/engine/skeleton-walk.md). On by default. It
-/// runs wherever `bd090` runs natively: the `impl.sim.native.objects` body
-/// or the `impl.sim.native_pose_matrix` port. Unset, it follows
+/// runs wherever `bd090` runs natively: the walk table's body
+/// (`impl.sim.native.objects.walk`), the `impl.sim.native.objects` body or
+/// the `impl.sim.native_pose_matrix` port. Unset, it follows
 /// `impl.sim.native.anim`, so `-impl.sim.native.anim` and
 /// `-impl.sim.native` turn it off too.
 fn skeleton_on(switches: &hooks::Switches) -> bool {
@@ -708,7 +709,9 @@ mod tests {
         let walk = &plan.chains[&points::ANIM_GRAPH_MATRICES.base];
         assert_eq!(walk.implement.as_ref().unwrap().label, ANIM);
         assert_eq!((walk.before.len(), walk.after.len()), (0, 0));
-        assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len());
+        // The walk table is on by default.
+        let walk = engine::sim_objects::native_walk::TABLE.bodies().len();
+        assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len() + walk);
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 
         // The subsystem owns both shared points when their individual
@@ -725,7 +728,9 @@ mod tests {
         let pose = plan.chains[&points::SIM_UNIT_POSE.base].implement.as_ref().unwrap();
         assert_eq!(pose.label, ANIM);
         assert_eq!(pose.continuation_sites().0, sim::unit::SITES);
-        assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len());
+        // The walk table is on by default.
+        let walk = engine::sim_objects::native_walk::TABLE.bodies().len();
+        assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len() + walk);
 
         // The retired per-function switches are gone from the table.
         for key in ["sim.native_rotation_codec", "sim.native_animation_stream", "sim.native_graph_resolve"] {

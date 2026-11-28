@@ -32,8 +32,9 @@ the same, so the guest cannot tell which ran.
 ## How it works
 
 `bd090` runs natively as the register-level port
-`engine::sim_physics::node_matrices` (under `impl.sim.native_pose_matrix`,
-or as the `impl.sim.native.objects` body `sim_objects::pose`). At the
+`engine::sim_physics::node_matrices` (as the body `sim_objects::pose`
+in the walk table, on by default, or under `impl.sim.native.objects`; or
+under `impl.sim.native_pose_matrix`). At the
 loop's entry (`bd50c`, node count above 1, `esi` 1) it calls
 `engine::sim_anim::skeleton::run`, and runs its own per-node loop `nodes`
 only when that returns `false`.
@@ -275,8 +276,8 @@ that is not mapped declines a call the guest would complete.
 ## Not verified
 
 - Run parity: the sim-budget A/B with `-impl.sim.native.anim.skeleton`
-  against on, with `impl.sim.native.objects` (or
-  `impl.sim.native_pose_matrix`) on, identical `state_hashes_v1` and an
+  against on, at the defaults (the walk table runs `bd090`), identical
+  `state_hashes_v1` and an
   empty `h2 sim diff`; the cross-architecture arm.
 - The decline rate on real skeletons (`stats()`), and the time saved per
   tick on Waterworks.

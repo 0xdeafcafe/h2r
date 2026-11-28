@@ -242,6 +242,8 @@ mod tests {
         for (point, _) in ANIM_INVALIDATE {
             assert!(plan.chains.contains_key(&point.base));
         }
-        assert_eq!(plan.chains.len(), arm::ENTRIES.len() + ANIM_INVALIDATE.len());
+        // The walk table is on by default.
+        let walk = engine::sim_objects::native_walk::TABLE.bodies().len();
+        assert_eq!(plan.chains.len(), arm::ENTRIES.len() + ANIM_INVALIDATE.len() + walk);
     }
 }
