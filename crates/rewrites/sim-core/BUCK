@@ -42,6 +42,7 @@ workspace_library(
     version = "0.1.0",
     deps = [
         "//crates/recompiler/simd:simd",
+        "//crates/recompiler/x87:x87",
     ],
 )
 

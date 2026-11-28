@@ -282,7 +282,6 @@ def root_exports():
             "docs/formats/haloscript.md",
             "docs/game/mod-credits.toml",
             "docs/game/mod-details.toml",
-            "docs/graphics/d3d.md",
             "docs/input/input-default.toml",
             "docs/input/input-menu-example.toml",
             "docs/live/live-boundary.md",
