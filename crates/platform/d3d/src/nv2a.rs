@@ -1790,6 +1790,16 @@ pub fn d3d_fog(
     D3dFog { gen_mode, fog }
 }
 
+/// The fog register a draw's combiners read: the fog unit's uniform
+/// ([`d3d_fog`]) and `FOGCOLOR` (`psh::argb`), from the draw's own render
+/// state, as its D3D draw takes them. A native pass that draws in its
+/// place writes these into its pixel uniforms (`fog`, `fog_color`).
+pub fn draw_fog(draw: &ResolvedDraw) -> ([f32; 4], [f32; 4]) {
+    static TABLE: std::sync::LazyLock<RenderStateTable> =
+        std::sync::LazyLock::new(RenderStateTable::default);
+    (fog_uniform(&TABLE, draw), argb(draw.state.render.fog_color))
+}
+
 /// The fog uniform (`psh::fog`): the fog unit as D3D programs it for the
 /// draw's render state ([`d3d_fog`]).
 fn fog_uniform(table: &RenderStateTable, draw: &ResolvedDraw) -> [f32; 4] {

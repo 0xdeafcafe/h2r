@@ -437,6 +437,11 @@ mod tests {
         let display = NativeDrawProgram::resolve_ui(&draw, present, caps, FetchMode::Cpu, 2u32).unwrap();
         assert_eq!(reference.pixel.alpha_ref[0], 91.0);
         assert_eq!(reference.pixel.fog_color, [0.0, 0.0, 1.0, 1.0]);
+        assert_eq!(
+            crate::nv2a::draw_fog(&draw),
+            (reference.pixel.fog, reference.pixel.fog_color),
+            "a native pass in the draw's place reads the fog register its D3D draw does"
+        );
         assert_eq!(reference.pixel.stipple, [0xa5a5a5a5; 32]);
         let guest = (draw.target.width, draw.target.height);
         assert_eq!(reference.pixel.stipple_scale, PixelUniforms::stipple_grid(guest, guest));
