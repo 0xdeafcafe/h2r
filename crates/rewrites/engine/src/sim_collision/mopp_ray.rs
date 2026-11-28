@@ -4,9 +4,10 @@
 //! The setup and the float interpreter `0x003009e0` are the kernel walk
 //! (`sim_collision::mopp::ray`). Each terminal's callbacks (the optional
 //! filter, the collection's child method and the child shape's ray
-//! method) are guest calls the installer makes between steps of the walk
-//! (`sim_bridge::sim_native`), at the stack depth the interpreter would
-//! have called them from.
+//! method) run in Rust between steps of the walk ([`callbacks`]), chosen
+//! by the address the vtable slot resolves to. A target with no port is
+//! `unimplemented!("collision: mopp_ray: ...")`; none runs in the guest.
+pub mod callbacks;
 mod collector;
 pub use collector::CollectorCast;
 use collector::Setup;
