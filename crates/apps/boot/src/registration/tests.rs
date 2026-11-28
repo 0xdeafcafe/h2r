@@ -506,7 +506,7 @@ fn the_full_case_plans_every_feature_boot_adds_outside_the_registration_function
 fn the_light_host_with_the_dedicated_lobby_plans_with_no_refusal() {
     let mut failures = Vec::new();
     let native_off = format!("{ALL_ON},{NATIVE_OFF}");
-    for switches in ["", ALL_ON, native_off.as_str(), "host-light-native"] {
+    for switches in ["", ALL_ON, native_off.as_str()] {
         for bits in 0u32..(1 << 4) {
             let mut case = Case::full(switches);
             case.light = true;
@@ -871,7 +871,7 @@ fn the_lobby_copy_boost_is_on_for_light_hosts_unless_switched_off() {
 }
 
 #[test]
-fn light_native_subsystems_follow_the_profile_and_explicit_overrides() {
+fn native_subsystems_install_on_every_profile() {
     use engine::points::{COLLISION_LOCATION, OBJECT_FUNCTION_VALUE, SIM_ANIMATION_STREAM};
     let runtime = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());
     let points = [
@@ -879,17 +879,10 @@ fn light_native_subsystems_follow_the_profile_and_explicit_overrides() {
         &COLLISION_LOCATION,
         &OBJECT_FUNCTION_VALUE,
     ];
-    // Animation and the object update always install; collision follows
-    // the light profile.
-    for (light, spec, expected) in [
-        (true, "", [true, false, true]),
-        (false, "host-light-native", [true, false, true]),
-        (true, "host-light-native", [true; 3]),
-        (true, "-host-light-native,impl.sim.native.collision", [true; 3]),
-        (true, "host-light-native,-impl.sim.native.collision", [true, false, true]),
-        (true, "host-light-native,-impl.sim.native", [true, false, true]),
-    ] {
-        let switches = super::profile_switches(hooks::Switches::parse(spec).unwrap(), light);
+    // Animation, collision and the object update always run in Rust: no
+    // profile or switch removes them.
+    for light in [false, true] {
+        let switches = super::profile_switches(hooks::Switches::parse("").unwrap(), light);
         let mut registry = hooks::Registry::new(switches);
         registry
             .add(&sim_bridge::sim_native::SimNative::new(&runtime))
@@ -900,8 +893,8 @@ fn light_native_subsystems_follow_the_profile_and_explicit_overrides() {
                 .chains
                 .get(&p.base)
                 .is_some_and(|c| c.implement.is_some())),
-            expected,
-            "{light} {spec}"
+            [true; 3],
+            "{light}"
         );
     }
 }

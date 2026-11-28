@@ -1,8 +1,8 @@
 # The Havok convex agent
 
-Status: Partly built. Three take-over arms: the convex agent's process call `0x002eeb40` on separated pairs; the closest-feature query `0x003048a0` whole, its shapes' virtuals (capsule, biped wrapper, convex polygon), its triangle case `0x00303dd0` and the penetration call `0x0030a6b0` all in Rust; the add-point call `0x00302c70` on a point that moves its slot; and the contact commit `0x00318c10` (the manager's add) to its listener walk, the walk with Halo's contact callback and the tail staying lifted. The manifold refresh `0x00302eb0`, the add-point call's other paths with its cut `0x00302a10` and the whole commit are ported and compared with the lifted code; a constraint's first point (`0x0030d2b0`), array growth and the manager's removal stay guest code.
+Status: Partly built. Three answering arms: the convex agent's process call `0x002eeb40` on separated pairs; the closest-feature query `0x003048a0` whole, its shapes' virtuals (capsule, biped wrapper, convex polygon), its triangle case `0x00303dd0` and the penetration call `0x0030a6b0` all in Rust; the add-point call `0x00302c70` on a point that moves its slot; and the contact commit `0x00318c10` (the manager's add) to its listener walk, the walk with Halo's contact callback and the tail staying lifted. The manifold refresh `0x00302eb0`, the add-point call's other paths with its cut `0x00302a10` and the whole commit are ported and compared with the lifted code; a constraint's first point (`0x0030d2b0`), array growth and the manager's removal stay guest code.
 Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query, its leaves and the triangle case), `crates/rewrites/sim-havok/src/shape_support.rs` (the support and vertex virtuals), `crates/rewrites/sim-havok/src/manifold.rs` (the refresh, the add-point call and its cut), `crates/rewrites/sim-havok/src/penetration.rs` (the penetration call), `crates/rewrites/sim-havok/src/closest.rs` (the query with every call out in Rust), `crates/rewrites/sim-havok/src/contact_point.rs` (the add-point arm's model), `crates/rewrites/sim-havok/src/commit.rs` (the contact commit); `crates/rewrites/engine/src/sim_physics/convex_agent.rs`, `convex_query.rs`, `contact_point.rs` and `contact_commit.rs` (the captures), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`, `physics.agent.query`, `physics.agent.point`, `physics.contact.commit`), `crates/rewrites/sim-bridge/src/sim_physics.rs` (the hooks). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arms, the declines) and the unit tests in `convex.rs`, `gjk.rs`, `shape_support.rs`, `manifold.rs`, `penetration.rs`, `closest.rs`, `contact_point.rs` and `commit.rs`.
-Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
+Always installed: the physics entries have no switch.
 
 A convex pair's agent keeps a separating axis and a bound on the
 distance along it ([havok-runtime.md](havok-runtime.md), "Convex child
@@ -58,7 +58,7 @@ flowchart TD
 
 **The port.** `sim_havok::convex::process` on a journal, the engine's
 `sim_physics/convex_agent.rs` capture, and `parity`'s
-`physics.agent.convex` arm answering once proven (sim-rewrite-havok.md
+`physics.agent.convex` arm answering every call it captures from the first (sim-rewrite-havok.md
 §9.5). The answer is the bound's store with eax the point-count address,
 ecx the monitor head, edx the manager word, ebx, ebp, esi and edi, and
 esp past the four arguments. The x87 condition codes, the sticky
@@ -72,7 +72,7 @@ counted by reason (`convex::fallbacks`, `havok.islands`'s `convex`):
 | `points` | the pair is apart but its manifold holds points |
 | `float` | an unmasked exception, an x87 stack not empty, a non-finite x87 load or projection |
 | `monitor` | the monitor stream is on |
-| `unobserved` | an audited return could not be observed |
+| `unobserved` | kept on the wire; no call is audited, so it reads 0 |
 
 ## The query path
 
@@ -247,8 +247,7 @@ clear its own entry or change the restitution).
 
 ## The commit arm
 
-`physics.contact.commit` at `0x00318c10`, the same proof, audit and
-latch as the process call, to the world listener walk only: the walk
+`physics.contact.commit` at `0x00318c10`, answering from the first call as the process call does, to the world listener walk only: the walk
 calls Halo's contact callback (`0x00277a00` → `0x00277b80`). The model
 is `commit::head`; its answer is every store up to the walk (the frame,
 the walk's two arguments and its return to `0x00318d9b` included) with
@@ -258,12 +257,9 @@ eax, ecx, edx, ebx, ebp, esi, edi and esp at the walk's entry.
 flowchart LR
     E[0x318c10 hook] -->|answers| H[Rust head applied] --> W[call_inline 0x318320] -->|returned| T[lifted tail from 0x318d9b]
     W -->|leave| R[runner resumes the hook at 0x318d9b]
-    E -->|audit| G[lifted call] --> C[0x318320 hook compares]
+    E -->|declined| G[lifted call]
 ```
 
-- The walk's own hook (`0x00318320`) compares an audited prediction when
-  it is entered from `0x00318d9b` at the predicted esp; a prediction its
-  walk never reached is counted `unobserved` at the next commit.
 - The x87 stack is empty at the walk; the x87 condition codes, the sticky
   exception flags and the XMM registers are not modelled.
 
@@ -276,7 +272,7 @@ flowchart LR
 | `motion` | a motion's `vt[+0x58]` is not `0x003198b0` |
 | `island` | the island's `vt[+0x08]` is not `0x00315f60` |
 | `float` | an unmasked exception, an x87 stack not empty, a non-finite x87 load |
-| `unobserved` | an audited commit's walk was not compared |
+| `unobserved` | kept on the wire; no call is audited, so it reads 0 |
 
 `sim_havok_differential.rs` checks the prediction against the lifted
 call at its walk, and the lifted walk and tail run from an applied answer
@@ -493,8 +489,7 @@ query arm calls them all.
 ## The query arm
 
 `physics.agent.query` at `0x003048a0` (thiscall on the state; shape A,
-shape B, transform, cache, out; `ret 0x14`), the same proof, audit and
-latch as the process call (sim-rewrite-havok.md §9.5). Six call sites
+shape B, transform, cache, out; `ret 0x14`), answering from the first call as the process call does (sim-rewrite-havok.md §9.5). Six call sites
 reach it, `0x002ee47a` to `0x002ef02a`. `closest::query` runs
 `gjk::query` with every call out in Rust (`closest::Ported`):
 
@@ -521,7 +516,7 @@ reach it, `0x002ee47a` to `0x002ef02a`. `closest::query` runs
 | `shape` | a shape's `vt[+0x30]` or `vt[+0x34]` has no port |
 | `float` | an unmasked exception, an x87 stack not empty at the entry |
 | `monitor` | the monitor stream is on |
-| `unobserved` | an audited return could not be observed |
+| `unobserved` | kept on the wire; no call is audited, so it reads 0 |
 
 `sim_havok_differential.rs` runs the arm against the lifted query with
 every callee lifted, 1024 seeds of capsules, polygons and biped wrappers
@@ -529,8 +524,7 @@ over every pair, the stall byte clear in one of four.
 
 ## The add-point arm
 
-`physics.agent.point` at `0x00302c70` (cdecl, seven arguments), the same
-proof, audit and latch. `contact_point::answer` runs
+`physics.agent.point` at `0x00302c70` (cdecl, seven arguments), answering from the first call. `contact_point::answer` runs
 `manifold::add_point` and answers only a point that moves its slot,
 which calls nothing out; eax the slot, ecx and edx the distance and
 weight words, ebx, ebp, esi, edi, and esp past the return. The two
@@ -543,7 +537,7 @@ read them. Declines (`contact_point::fallbacks`, `havok.islands`'s
 | `memory` | a word is unmapped or unaligned, a store unwritable, a count past 256 |
 | `commit` | no slot matches: the manager's add runs (the commit arm answers it) |
 | `float` | an unmasked exception, an x87 stack not empty at the entry |
-| `unobserved` | an audited return could not be observed |
+| `unobserved` | kept on the wire; no call is audited, so it reads 0 |
 
 The add-point call writes no monitor entry, so the monitor stream does
 not decline it.
@@ -556,7 +550,7 @@ not decline it.
 - The penetration call's retries add a frame word the jitter leaves to
   the translation's `w`; the port reads that word from its own frame
   writes, the guest from whatever its calls left there. The penetration
-  comparison did not tell the two apart; the query arm's audit would.
+  comparison did not tell the two apart; a comparison of the query arm would.
 - Whether any listener Halo registers writes the constraint, the
   property or the frame before the walk returns: the commit arm's tail
   is lifted, so the arm does not depend on it, and a Rust tail would.

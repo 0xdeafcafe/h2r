@@ -1,8 +1,8 @@
 # The Havok structure polygon: the level's child shapes
 
-Status: Partly built. The polygon builder `0x001edd00`, which every child-shape getter of the structure's containers calls, runs as a take-over arm; the per-structure polygon cache (`StructureGeo`) and the MOPP through phase 2's decode wait for the narrowphase slices that read them.
+Status: Partly built. The polygon builder `0x001edd00`, which every child-shape getter of the structure's containers calls, runs as a answering arm; the per-structure polygon cache (`StructureGeo`) and the MOPP through phase 2's decode wait for the narrowphase slices that read them.
 Code: `crates/rewrites/sim-havok/src/structure.rs` (`build`), `crates/rewrites/engine/src/sim_physics/structure_polygon.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.structure.polygon`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded surfaces, the arm, the declines, the disc sweep) and the unit tests in `structure.rs`.
-Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
+Always installed: the physics entries have no switch.
 
 A level's collision is a MOPP tree whose keys of type 1 name collision
 BSP surfaces. A pair's child agent asks the container for the key's
@@ -73,7 +73,7 @@ flowchart LR
 **The port.** `sim_havok::structure::build` on a journal, the engine's
 `sim_physics/structure_polygon.rs` capture with eax and ecx the shape,
 edx the tail, ebx, ebp, esi and edi, and `parity`'s
-`physics.structure.polygon` arm answering once proven (sim-rewrite-havok.md
+`physics.structure.polygon` arm answering every call from the first (sim-rewrite-havok.md
 §9.5). Declines, counted by reason (`structure::fallbacks`,
 `havok.islands`'s `polygon`):
 
@@ -82,7 +82,7 @@ edx the tail, ebx, ebp, esi and edi, and `parity`'s
 | `memory` | a word is unmapped, a half-word straddles a word, a store unaligned or unwritable, or two stores share physical bytes |
 | `ring` | more than 256 vertices, or a ring that does not close |
 | `float` | a transform under an MXCSR that does not mask every exception |
-| `unobserved` | an audited return could not be observed |
+| `unobserved` | kept on the wire; no call is audited, so it reads 0 |
 
 The disc sweep `every_disc_surface_polygon_matches_the_lifted_builder`
 (`#[ignore]`, `H2_DISC` and `H2_XBE`) builds every surface of every

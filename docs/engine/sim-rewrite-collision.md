@@ -126,7 +126,7 @@ crates/rewrites/engine/src/sim_collision/
   mopp_box.rs               entry F
   commit.rs                 ordered scatter helpers, mark replay
 crates/rewrites/engine/tests/sim_collision_differential.rs
-crates/rewrites/sim-bridge/src/sim_native.rs   installs under impl.sim.native.collision
+crates/rewrites/sim-bridge/src/sim_native.rs   always installs (`install_collision`)
 docs/engine/collision-queries.md   contract page written in S0
 ```
 
@@ -834,8 +834,8 @@ For each entry in 5.2, recorded in `docs/engine/collision-queries.md`:
      sampling), 400 rays per cluster program against the lifted
      `0x301800`;
    - every instance's inverse transform against the lifted `0x141590`.
-4. **Run parity.** The sim-budget A/B with `-impl.sim.native.collision`
-   against on: Lockout local, Waterworks local, Waterworks mixed, seed 7,
+4. **Run parity.** The sim-budget A/B of the native world against the
+   lifted build: Lockout local, Waterworks local, Waterworks mixed, seed 7,
    1,800 ticks, `impl.sim.arena-hash` on. Every `state_hashes_v1` row and
    arena block equal; `h2 sim diff` prints nothing. One headless campaign
    level through the agent API with arena hashes.
@@ -860,8 +860,7 @@ also how a behaviour suite checks a level's collision without a weapon.
 ## 9. Slices
 
 Each is one lane. "Share" is the with-services samples of the functions the
-slice stops running (section 2). A slice lands default-off under
-`impl.sim.native.collision` with ladder steps 1 to 3 clean; steps 4 to 7 run
+slice stops running (section 2). A slice lands with ladder steps 1 to 3 clean; steps 4 to 7 run
 on the coordinator's integration pass.
 
 | # | Slice | Delivers | Share | Tests |
@@ -884,7 +883,7 @@ kernel. A single collision switch selects these entries. The point,
 sphere, BSP segment, whole query, general ray, visit and portal
 register ports remain available to the differential harness.
 The separate integer MOPP interpreter belongs to the Havok world step:
-`impl.sim.native.physics` compares its box query with the guest as a
+The Havok world step compares its box query with the guest as a
 capture arm, and no per-function `native_mopp_box` switch remains.
 
 Lane ownership: new `crates/rewrites/sim-collision`, `crates/rewrites/engine/src/sim_collision`,

@@ -124,7 +124,7 @@ Methods ([agent-api.md](../runtime/agent-api-checks.md#shadow-checks)):
 `shadow.enable`, `shadow.disable`, `shadow.status`.
 
 ```sh
-H2_FEATURES=impl.sim.native_unit_pose,impl.sim.native.physics h2 serve ...
+H2_FEATURES=impl.sim.native_unit_pose h2 serve ...
 h2 agent shadow.enable '{"ports":["sim.native_unit_pose","sim.physics"],"every":4}'
 h2 agent shadow.status
 ```

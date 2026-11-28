@@ -55,8 +55,6 @@ pub struct TraceResult {
 /// `collision.stats`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Stats {
-    /// The switch the entries are installed under.
-    pub switch: String,
     /// One per monitored entry in contract order.
     pub entries: Vec<EntryStats>,
     /// Decode attempts since start and the number that failed.
@@ -112,15 +110,9 @@ pub struct VectorParity {
     /// crossing exit.
     #[serde(default)]
     pub exits_matched: u64,
-    /// C and D: crossing exits answered natively after a clean run.
+    /// C and D: crossing exits answered natively.
     #[serde(default)]
     pub answered: u64,
-    /// C and D: calls left to the guest for a shadow sample while answering.
-    #[serde(default)]
-    pub sampled: u64,
-    /// C and D: a difference was seen, so the lifted body answers.
-    #[serde(default)]
-    pub fell_back: bool,
 }
 
 /// Queries of the general MOPP ray (entry I) the native walk was compared

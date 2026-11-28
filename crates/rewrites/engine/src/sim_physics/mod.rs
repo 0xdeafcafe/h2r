@@ -91,17 +91,16 @@ pub const PORTS: &[Port] = {
     ]
 };
 
-/// The island integrate's frame replay: the guest's answer whenever the
-/// integrate arm (`parity::integrate_enter`) does not answer the call
-/// itself. Installed by the arm's implementation, not with
+/// The island integrate's frame replay: runs a call the integrate arm
+/// (`parity::integrate_enter`) declines. Installed by the arm's implementation, not with
 /// [`PHYSICS_PORTS`], because both share the entry.
 pub const ISLAND_INTEGRATE: Port =
     port(&points::HAVOK_ISLAND_INTEGRATE, "sim.native.physics", Controls::World, world::INTEGRATE_SITES, world::integrate_island);
 
-/// The Havok world entries under `impl.sim.native.physics` phase 5
+/// The Havok world entries of phase 5, always installed
 /// (docs/engine/sim-rewrite-havok.md §7.8): the step wrapper and the
 /// island collide, which replay the retail frame, and the leaves below.
-/// The world phases between them stay guest code and drive these entries
+/// The world phases between them are lifted code and drive these entries
 /// through the dispatcher. The island integrate is [`ISLAND_INTEGRATE`].
 pub const PHYSICS_PORTS: &[Port] = {
     use points::*;
@@ -136,7 +135,7 @@ pub const ORACLES: &[Port] = {
     use Controls::*;
     use points::*;
     &[
-        // The Havok per-function ports retired by `impl.sim.native.physics`
+        // The Havok per-function ports retired by the physics subsystem
         // (sim-rewrite-havok.md, slice 8): their bodies are the differential
         // oracles for the phase 5 kernels (sim_havok::solver, support, weld).
         Port {

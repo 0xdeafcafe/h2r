@@ -68,14 +68,14 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
     };
     SimArms {
         subsystems: vec![
-            subsystem(switches, "physics", physics_arms()),
+            checked_native("physics", physics_arms()),
             subsystem(switches, "objects", {
                 let mut arms = vec![objects_wire(objects::status()), function_wire(function::status())];
                 arms.extend(walk_wire(native_walk::stats()));
                 arms
             }),
             subsystem(switches, "anim", anim_wire(&walk::stats(), manager::stats())),
-            subsystem(switches, "collision", collision_arms(&world::stats())),
+            checked_native("collision", collision_arms(&world::stats())),
             native("seats", {
                 let mut arms = seat_wire(sim_bridge::sim_seats::stats());
                 arms.push(aim_wire(aim::status()));
@@ -127,6 +127,12 @@ fn seat_wire(stats: Vec<sim_bridge::sim_seats::Stats>) -> Vec<Arm> {
         .into_iter()
         .map(|s| Arm { name: s.name.to_owned(), answered: s.answered, declined: s.declined, ..Arm::default() })
         .collect()
+}
+
+/// A subsystem with no switch whose arms check (physics, collision): on,
+/// and clean once an arm checked with nothing mismatched.
+fn checked_native(name: &str, arms: Vec<Arm>) -> Subsystem {
+    verdict(name, String::new(), true, arms)
 }
 
 fn verdict(name: &str, switch: String, on: bool, arms: Vec<Arm>) -> Subsystem {
@@ -380,7 +386,7 @@ mod tests {
         let names: Vec<_> = r.subsystems.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["physics", "objects", "anim", "collision", "seats", "effects", "sound", "effects-parts"]);
         for s in &r.subsystems {
-            if ["objects", "anim", "seats", "effects", "effects-parts"].contains(&s.name.as_str()) {
+            if s.name != "sound" {
                 assert_eq!(s.switch, "", "{}: no switch", s.name);
                 assert!(s.on, "{}: always on", s.name);
             } else {
@@ -410,10 +416,11 @@ mod tests {
 
     #[test]
     fn the_switch_reads_from_the_features() {
-        let s = Switches::parse("impl.sim.native.physics=on").unwrap();
+        let s = Switches::parse("impl.sim.native.sound=on").unwrap();
         let r = read(&s, registry());
-        assert!(r.subsystems[0].on);
-        assert!(!r.subsystems[3].on, "collision");
+        assert!(r.subsystems[0].on, "physics");
+        assert!(r.subsystems[3].on, "collision");
+        assert!(r.subsystems[6].on, "sound");
     }
 
     #[test]

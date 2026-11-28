@@ -64,7 +64,7 @@ wire types in `crates/extensions/agent-proto/src/sim_arms.rs`.
 |---|---|---|
 | `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, `sound`, `effects-parts`, in that order. |
 
-Each subsystem has `name`, `switch` (`impl.sim.native.<name>`), `on` (the
+Each subsystem has `name`, `switch` (`impl.sim.native.<name>`, empty for the always-on subsystems), `on` (the
 switch in this process), `arms` and `clean`: `checked > 0 && mismatched
 == 0`, summed over the arms. Each arm has `name`, `checked`, `matched`,
 `mismatched`, `answered` (calls Rust answered in the guest's place) and
@@ -86,15 +86,16 @@ unported path the lifted body runs), `sim_seats::device::arm::status`
 controller's device read, whose `declined` adds its unwatched audits),
 `sim_seats::leaf::status` (`seats.leaf.<name>`, one arm per leaf callee,
 likewise), and `sim_sound::voice_arm::stats` (`sound.voices`). A source without a counter reports 0 for that
-field: physics and collision have no `checked` (it is `matched` plus
-`mismatched`) and no `answered`; `anim.manager`'s `differed` is
+field: physics has no `checked` (it is `matched` plus
+`mismatched`); `anim.manager`'s `differed` is
 `mismatched`; shadow ports have no `answered` and their
 `skipped` is `declined`; `sound.voices` counts ticks for `checked`
 (sampled ticks with voices), `matched` and `mismatched`, and voices for
 `answered`. `seats` has no switch (its `switch` is empty, `on` true) and is
 `clean` once something answered with nothing declined or mismatched.
-`effects-parts` is the effects phase in Rust, always on
-with no switch (its `switch` is empty): its
+`physics`, `collision` and `effects-parts` always run in Rust with no
+switch (their `switch` is empty and `on` is true). `effects-parts` is the
+effects phase in Rust: its
 `effects.damage`, `effects.object`, `effects.sound`,
 `effects.character`, `effects.coln`, `effects.decal` and `effects.light`
 arms are `sim_effects_parts::status`'s part arms, and `effects.parts` counts
@@ -102,8 +103,8 @@ the parts returned from Rust as `answered` and the parts the guest's arm
 ran unchecked as `declined`, then `effects.body.<entry>`, one arm per
 per-effect body (`effect_update::arm::stats`, whose `declined` adds its
 interrupted guest segments)
-([effects-parts.md](../engine/effects-parts.md)). A subsystem with its
-switch off reads zeros, so `clean` is false.
+([effects-parts.md](../engine/effects-parts.md)). A subsystem with a switch that is
+off reads zeros, so `clean` is false.
 
 ```sh
 h2 agent sim.arms
@@ -114,14 +115,14 @@ subsystem is `clean` with `checked` large enough for the scenario.
 
 ## `collision`: the native collision world
 
-The collision switch counts admitted native answers, declined queries,
+The collision world counts admitted native answers, declined queries,
 floating-point environments and comparisons with lifted returns. The
 game exposes these counters at a tick boundary. See the
 [entry addresses and admission rules](../engine/collision-queries.md).
 
 | Method | Access | Params and result |
 |---|---|---|
-| `collision.stats` | read | No parameters. Returns `switch`, `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), `context` (D’s outer walk parity), `instance`, `flood`, `visit`, `query` (E, G, H and J’s return comparisons), and `ray` (I’s walk and callbacks). |
+| `collision.stats` | read | No parameters. Returns `entries`, `decodes`, `decode_failures`, `flushes`, `bsps`, `mopps`, `bytes`, `array_bytes`, `budget_bytes`, `ring_fallbacks`, `cluster_budget_reads`, `precision` (aggregate single, reserved, double and extended x87 calls at C and D), `vector` (C’s result parity), `context` (D’s outer walk parity), `instance`, `flood`, `visit`, `query` (E, G, H and J’s return comparisons), and `ray` (I’s walk and callbacks). |
 | `collision.trace` | read | `{start, delta, flags}` where `start` and `delta` are three finite binary32 world coordinates and `flags` is an unsigned 32-bit whole-query mask. |
 | `collision.sources` | read | No parameters. Checks the source fingerprints of each resident native BSP and MOPP against guest RAM. |
 | `collision.sources.clear` | claim | No parameters. Returns the same check and drops all resident entries from the collision world at that tick boundary. |
@@ -165,15 +166,13 @@ first differing byte offset in the result record, with expected and guest values
 `context` uses the same counters for entry D. It compares AL, R and the
 40-byte context, counting each outer walk once across its recursive calls.
 
-`vector` and `context` also carry the crossing-exit gate
+`vector` and `context` also carry the crossing exits
 ([collision-queries.md, "Crossing exits"](../engine/collision-queries.md#crossing-exits)):
 
 | Field | Meaning |
 |---|---|
 | `exits_matched` | matches that also covered every register and frame byte of a crossing exit |
-| `answered` | crossing exits answered natively once the gate opened |
-| `sampled` | crossing calls left to the guest for a comparison while answering |
-| `fell_back` | a difference was seen; the lifted body answers from then on |
+| `answered` | crossing exits answered natively, every one from the first call |
 
 `instance`, `flood`, `visit` and `query` use the same comparison counters.
 An admitted native exit counts under `entries[].native`. A comparison
@@ -217,7 +216,7 @@ The next queries repopulate the world from current guest sources. The
 read-only form leaves the warm world's entries in place.
 
 Start each arm from the same match state and input with
-`impl.sim.native.collision` and `impl.sim.arena-hash` enabled.
+`impl.sim.arena-hash` enabled.
 Use one claimed connection per arm. This example captures 1,800 cold ticks.
 Replace `collision.sources.clear` with `collision.sources` for the warm
 run and save its JSON lines separately.

@@ -283,9 +283,10 @@ create an object for each index in `create`.
 
 ### Collision
 
-The lifted game reads collision in place by default
-(`impl.sim.native.collision` is off, `crates/hooking/hooks/src/switches/table.rs`),
-so live collision is a pointer swap in guest memory, staged off the tick
+The game reads collision from guest memory in place; the native
+collision world, always installed, checks each resident BSP and MOPP
+against its guest source by fingerprint (`collision.sources`,
+[agent-api-checks.md](../runtime/agent-api-checks.md)). Live collision is a pointer swap in guest memory, staged off the tick
 and committed on it.
 
 1. **Stage.** The editor compiles with `collision-build`

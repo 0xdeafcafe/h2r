@@ -1,8 +1,7 @@
 //! `collision.stats` (docs/runtime/agent-api.md, "collision"): the native
 //! collision world's call, bail, decode and float-environment counters.
 //! A game method, answered at a tick boundary. The counters are process
-//! globals, so the answer needs no guest memory; with
-//! `impl.sim.native.collision` off they stay zero.
+//! globals, so the answer needs no guest memory.
 
 use crate::{Access, Agent};
 use agent_proto::collision::{EntryStats, Precision, RayParity, Stats, method};
@@ -23,14 +22,11 @@ fn parity(stats: &world::VectorParity) -> agent_proto::collision::VectorParity {
         first_mismatch: stats.first_mismatch.clone(),
         exits_matched: stats.exits_matched,
         answered: stats.answered,
-        sampled: stats.sampled,
-        fell_back: stats.fell_back,
     }
 }
 
 fn wire(s: &world::Stats) -> Stats {
     Stats {
-        switch: "impl.sim.native.collision".into(),
         entries: Entry::ALL
             .iter()
             .map(|&e| {
@@ -196,6 +192,5 @@ mod tests {
         a.between_slices(&mut NoGuest, 0);
         let line = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         assert!(line.contains("\"vector_context\""), "{line}");
-        assert!(line.contains("impl.sim.native.collision"), "{line}");
     }
 }

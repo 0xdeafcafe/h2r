@@ -5,16 +5,16 @@ Status: phase 5 landing, 2026-11-25. Built, with unit tests only: the
 pool, structure polygons, the accumulators) at
 `crates/rewrites/sim-havok`; the engine adapters - the oracle ports'
 fast paths (`sim_physics/support.rs`, `weld.rs`), the world entries and
-capture arms under `impl.sim.native.physics`
+capture arms, always installed
 (`crates/rewrites/engine/src/sim_physics/{world,broadphase,motion,parity}.rs`),
 installed by `sim-bridge/src/sim_physics.rs`; the heap digest
 (`live-telemetry`'s `havok_agents::digest`, `havok.digest`, the sim
 report's `havok.world` component); the shadow's `compare_only` arm for
 guest-authoritative candidates; the broadphase batch update's, the
 island integrate's, the deactivation test's and the integrate phase's
-take-overs (§9.5, [havok-integrate.md](havok-integrate.md)); the
-structure polygon builder's take-over (slice 4,
-[havok-structure.md](havok-structure.md)); slice 5's take-overs
+answering arms (§9.5, [havok-integrate.md](havok-integrate.md)); the
+structure polygon builder's answering arm (slice 4,
+[havok-structure.md](havok-structure.md)); slice 5's answering arms
 ([havok-convex.md](havok-convex.md)): the convex agent's separated
 pairs, the closest-feature query whole (its shapes' virtuals, triangle
 case `303dd0` and penetration call `30a6b0` in Rust), the add-point
@@ -78,7 +78,7 @@ Evidence labels: **Code** (read from the disassembly at the address given),
   recompiled code and its dispatch, from static decode of the structure
   geometry, and from running *independent* units side by side. No float
   expression is reordered, refactored or fused.
-- **One switch**, `impl.sim.native.physics`, already named by the plan.
+- **No switch.** The world step and its arms always install.
   No per-slice switches and no environment variables. Fallback to the
   lifted code is by *data* (an island or pair the port does not cover runs
   the lifted entry), not by a switch.
@@ -379,7 +379,7 @@ crates/rewrites/engine/src/sim_physics/   the adapters and the oracle ports
   alloc.rs                      the four memory-system entries
   broadphase.rs                 the batch update's capture arm
   motion.rs                     the two motion methods' capture arms
-  parity.rs                     the arms' counters and the broadphase take-over gate
+  parity.rs                     the arms' counters and the broadphase answering arm
   (planned)                     boundary.rs, callbacks.rs, spec.rs
 crates/rewrites/engine/tests/sim_havok_differential.rs (planned)
 docs/engine/havok-step.md       the contract page (engine README format)
@@ -775,8 +775,8 @@ allocation order is covered.
   registers and RAM, kept in the user's data directory; the differential
   test runs from each. Captures for: a superbounce landing, a grenade
   bounce, a vehicle at speed, a ragdoll, a pile of crates.
-- **Run parity.** The sim-budget A/B, `-impl.sim.native.physics` against
-  on: Lockout local, Waterworks local, Waterworks mixed, seed 7, 1,800
+- **Run parity.** The sim-budget A/B, the native world against the lifted
+  build: Lockout local, Waterworks local, Waterworks mixed, seed 7, 1,800
   ticks, arena hashes on. Every `state_hashes_v1` row, every arena block
   and the `havok` component must match; `h2 sim diff` prints nothing. Then
   a co-op campaign level headless (decision 8.3), and the Halo 1 behaviour
@@ -792,41 +792,37 @@ allocation order is covered.
 - **Timing.** Three unprofiled medians per arm, and one profiled pair to
   confirm the family's samples dropped.
 
-### 9.5 Capture arms and the take-over
+### 9.5 Capture arms and the answering arms
 
 The kernels the world step absorbs run as capture arms in
 `crates/rewrites/engine/src/sim_physics/parity.rs`, installed by
 `crates/rewrites/sim-bridge/src/sim_physics.rs`. `parity::status()`
-gives each arm's matched, mismatched and declined calls since start;
-`parity::takeover()` gives, for the arms that answer, the calls answered
-since start and whether the arm is proven or ended since the map load.
+gives the compare-only arms' matched, mismatched and declined calls since
+start; `parity::takeover()` gives, for the arms that answer, the calls
+answered and declined since start.
 
 | Arm | Entry | Mode |
 |---|---|---|
-| `physics.broadphase` | `2e0350`, `ret 0x14` | take-over |
+| `physics.broadphase` | `2e0350`, `ret 0x14` | answers |
 | `physics.motion.pose` | `31b060`, `ret 4` | compare-only |
 | `physics.motion.forces` | `31b1c0`, `ret 8` | compare-only |
 | `physics.mopp.box` | `300150` | compare-only |
-| `physics.island.integrate` | `316a20`, `ret 4` | take-over |
-| `physics.island.deactivation` | `316b30`, `ret 8` | take-over |
-| `physics.integrate` | `30fef0`, `ret 4` | take-over |
-| `physics.structure.polygon` | `1edd00`, `ret 0x14` | take-over |
-| `physics.agent.convex` | `2eeb40`, `ret 0x10` | take-over |
-| `physics.agent.query` | `3048a0`, `ret 0x14` | take-over |
-| `physics.agent.point` | `302c70`, `ret` | take-over |
-| `physics.contact.commit` | `318c10` to `318320`, `ret 0x10` | take-over to the walk |
+| `physics.island.integrate` | `316a20`, `ret 4` | answers |
+| `physics.island.deactivation` | `316b30`, `ret 8` | answers |
+| `physics.integrate` | `30fef0`, `ret 4` | answers |
+| `physics.structure.polygon` | `1edd00`, `ret 0x14` | answers |
+| `physics.agent.convex` | `2eeb40`, `ret 0x10` | answers |
+| `physics.agent.query` | `3048a0`, `ret 0x14` | answers |
+| `physics.agent.point` | `302c70`, `ret` | answers |
+| `physics.contact.commit` | `318c10` to `318320`, `ret 0x10` | answers to the walk |
 
-- **Take-over.** The broadphase arm is one `implement` at `2e0350`.
+- **Broadphase.** The broadphase arm is one `implement` at `2e0350`.
   `broadphase::capture` predicts the whole `CpuAbi` but `eip` and every
-  byte span the call writes. Until `PROVEN_AFTER` (4096) calls have
-  matched since the map load with no mismatch, the guest answers and the
-  prediction is compared at its return (`ExecCtx::observe_guest_return`).
-  After that, `Prediction::apply` writes the spans and the registers and
-  the call returns to its caller; every `AUDIT_EVERY`th (64th) answerable
-  call still goes to the guest and is compared. A mismatch ends the
-  take-over until the next map load. The pattern is the object function
-  curve arm's (`sim_objects::functions::parity`).
-- **Island integrate.** The same proof, audit and latch at `316a20`.
+  byte span the call writes. From the first call, `Prediction::apply`
+  writes the spans and the registers and the call returns to its caller.
+  A call the capture refuses runs the lifted entry and is counted by
+  reason. No call is compared with the guest.
+- **Island integrate.** The same at `316a20`.
   `island_integrate::capture` runs the whole entry in Rust on a journal:
   the island solve with the nine arguments the entry pushes, or, with no
   constraint, each entity's forces and pose virtuals last to first
@@ -835,13 +831,12 @@ since start and whether the arm is proven or ended since the map load.
   the arithmetic flags are dead in the one caller (`0x0030fef0`, read at
   `0x0031000b..0x0031000f`). The XMM registers, the x87 condition codes
   and the sticky exception flags are left as they were, as the island
-  solve's entry leaves them. When the guest
-  answers, the entry's frame replay (`sim_physics::ISLAND_INTEGRATE`)
+  solve's entry leaves them. When the entry
+  declines, the entry's frame replay (`sim_physics::ISLAND_INTEGRATE`)
   runs it, and the solve inside is the island solve's own entry. Its
   declines are counted by reason as well (`memory`, `action`, `motion`,
   `float`, `solve`, `monitor`, `unobserved`; `havok.islands`).
-- **Deactivation test and integrate phase.** The same proof, audit and
-  latch at `316b30` and `30fef0`, each one `implement` whose guest answer
+- **Deactivation test and integrate phase.** The same at `316b30` and `30fef0`, each one `implement` whose guest answer
   is the lifted original ([havok-integrate.md](havok-integrate.md)). The
   test's prediction is its journal (the timers, the counter, the
   deactivators' references, the out byte) with eax, ebx, ebp, esi, edi
@@ -849,7 +844,7 @@ since start and whether the arm is proven or ended since the map load.
   journal, in the phase's order, with eax and ecx the monitor words, edx
   `0xffffffff`, ebx, ebp, esi, edi and esp. Their declines are counted by
   reason (`havok.islands`'s `deactivation` and `phase`). The phase
-  composes the other two models, so a proven phase answers the whole
+  composes the other two models, so an answered phase answers the whole
   island loop in one call.
 - **Structure polygon.** The same at `1edd00`, the builder every
   child-shape getter of the structure's containers calls
@@ -872,39 +867,34 @@ since start and whether the arm is proven or ended since the map load.
   matches: the slot's words with eax the slot, ecx and edx the point's
   distance and weight; declines `memory`, `commit` (the manager adds the
   contact), `float`, `unobserved` (`havok.islands`'s `point`).
-- **Contact commit.** The same proof, audit and latch at `318c10`, up to
+- **Contact commit.** The same at `318c10`, up to
   the world listener walk `318320`, whose listeners include Halo's
   contact callback. An answer leaves the call at the walk's entry and
   the hook calls the walk in place (`ExecCtx::call_inline`); the lifted
-  tail runs from its site `318d9b`. An audit compares at the guest's own
-  walk entry from that site. Declines `memory`, `full`, `first`, `grow`,
+  tail runs from its site `318d9b`. Declines `memory`, `full`, `first`, `grow`,
   `motion`, `island`, `float`, `unobserved` (`havok.islands`'s `commit`;
   [havok-convex.md](havok-convex.md#the-commit-arm)).
 - **Declines.** A capture that refuses the state (float environment,
-  array capacity, an unknown node), an apply that refuses its spans (an
+  array capacity, an unknown node) and an apply that refuses its spans (an
   access trap, a read-only page, a span across mappings, two spans on the
-  same physical bytes) and a return the dispatcher cannot observe leave
-  the call to the guest and count as `declined`. A declined call takes no
-  audit slot.
-- **Map load.** An observer at `CACHE_TAGS_LOAD` (`parity::map_loaded`)
-  restarts every arm's proof: the matched count, the audit slot and the
-  mismatch latch. Two lockstep peers and a film replay of a match then
-  answer and audit the same calls whatever their processes ran before.
-  The `status` totals are not reset.
+  same physical bytes) run the lifted entry and count as `declined`, by
+  reason. The guest still answers those calls.
+- **Compare-only arms.** The motion pose and forces and the MOPP box arms
+  compare their prediction with the guest's return and never answer.
 - **Motion stays compare-only.** A motion prediction holds `esp`, `ebx`,
   `ebp`, `esi`, `edi` and the body's `0x110` bytes. What retail leaves in
   `eax`, `ecx`, `edx`, the XMM registers, the x87 stack, status and tag
   words, the MXCSR flags and `eflags` is not modelled, and no
   differential test pins it, so an applied motion could not be shown to
   leave the guest's registers.
-- **Live check.** `impl.sim.native.physics` on against off on Lockout,
-  1,800 ticks: `havok.digest` equal at every tick, `physics.broadphase`,
+- **Live check.** On Lockout, 1,800 ticks, the native world against the
+  lifted build: `havok.digest` equal at every tick, `physics.broadphase`,
   `physics.island.integrate`, `physics.island.deactivation` and
-  `physics.integrate` answered above zero and mismatched zero
-  (`havok.islands` gives the last three's counts and declines). A take-over drops no
+  `physics.integrate` answered above zero
+  (`havok.islands` gives the last three's counts and declines). An answer drops no
   write only if its spans or words cover every byte retail writes outside
-  the stack below `esp`; the comparison
-  checks those, and this run checks the rest.
+  the stack below `esp`; the digest
+  check covers the rest.
 
 ## 10. Threads
 

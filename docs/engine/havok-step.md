@@ -1,8 +1,8 @@
 # The Havok step: entries, writes and classes
 
-Status: Partly built. The digest, its agent method and its sim-report component are built, and so are the four allocator entries (slice 1), the island solve (slice 2) and slice 3's take-over arms for the island integrate, the deactivation test and the integrate phase (below, "The island solve"; [havok-integrate.md](havok-integrate.md)). The step's other entries are contracts only, ported by the slices of [sim-rewrite-havok.md](sim-rewrite-havok.md) §11.
+Status: Partly built. The digest, its agent method and its sim-report component are built, and so are the four allocator entries (slice 1), the island solve (slice 2) and slice 3's answering arms for the island integrate, the deactivation test and the integrate phase (below, "The island solve"; [havok-integrate.md](havok-integrate.md)). The step's other entries are contracts only, ported by the slices of [sim-rewrite-havok.md](sim-rewrite-havok.md) §11.
 Code: `crates/rewrites/sim-havok/src/mem.rs` and `crates/rewrites/engine/src/sim_physics/alloc.rs` (the allocator), `crates/rewrites/sim-havok/src/island_solve.rs` and `crates/rewrites/engine/src/sim_physics/island_solve.rs` (the island solve), `crates/rewrites/sim-havok/src/motion_solve.rs` (`forces`, `pose`, shared with the island integrate), `crates/rewrites/engine/tests/sim_havok_differential.rs` (their differential tests), `crates/live/live-telemetry/src/havok_agents/digest.rs` (`read`), `crates/extensions/agent/src/havok.rs` (`havok.digest`), `crates/extensions/agent-proto/src/havok.rs` (`Digest`, `DigestParams`), `crates/extensions/game/src/sim_glue.rs` (the `havok.world` component). Tests: the unit tests of those three files.
-Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
+Always installed: the physics entries have no switch.
 
 This is the contract page for the world step `0x311100` and everything
 under it. It records each planned entry's callers, what the step writes
@@ -299,8 +299,7 @@ Not covered, so the guest runs: the overflow object, a class free over
 two above, an unaligned or unmapped word. ecx, edx and the arithmetic
 flags are scratch and left undefined; the callee-saved registers and
 `eax` (allocations) are as retail. Halo calls these too (74 sites above),
-so the entries are installed for every caller, under
-`impl.sim.native.physics`.
+so the entries are installed for every caller.
 
 ## The island solve
 

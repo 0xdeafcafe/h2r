@@ -29,9 +29,7 @@ use crate::{
     skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_back, ui_watch, variant_ext, variant_page, variant_weapons, xapi_glue,
 };
 
-/// The collision queries, on by default on a light host (animation and the
-/// object update always run in Rust). Resolve the default through the
-/// ordinary implementation hierarchy so a group or leaf override wins.
+/// The light host's switch defaults.
 pub(crate) fn profile_switches(mut switches: hooks::Switches, light: bool) -> hooks::Switches {
     if light {
         // The lobby's background map copy, several steps a frame
@@ -39,11 +37,6 @@ pub(crate) fn profile_switches(mut switches: hooks::Switches, light: bool) -> ho
         // `-map-copy.lobby` is its A/B arm.
         let lobby = switches.feature(map_copy::LOBBY, true);
         switches = switches.with(map_copy::LOBBY, lobby);
-    }
-    if light && switches.feature("host-light-native", false) {
-        let subsystem = sim_bridge::sim_native::COLLISION;
-        let enabled = switches.implementation(subsystem, true);
-        switches = switches.with(&format!("impl.{subsystem}"), enabled);
     }
     switches
 }

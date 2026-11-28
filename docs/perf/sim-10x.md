@@ -112,8 +112,8 @@ speed as off ([notes](notes/sim-10x.md)). The code says why (**Code**).
   access ([anim-sampling.md](../engine/anim-sampling.md)). It replaces
   `2798a0` and below: 3.5% of the Waterworks thread, less the first-person
   share a phantom roster does not have. About 0.19 ms on Lockout all-in.
-- **Collision takes two leaves.** `impl.sim.native.collision` installs
-  point-to-leaf and location only; the vector and instance traces run the
+- **Collision takes two leaves.** The always-installed collision world answers
+  point-to-leaf and location; the vector and instance traces run the
   original while their float environments are observed
   (`crates/rewrites/sim-bridge/src/sim_native.rs`, `COLLISION_OBSERVED`).
 
@@ -158,8 +158,8 @@ Notes on rows the ask names:
   square roots).
 - **Light profile.** `h2 sim run` already runs the light profile
   ([sim.md §10](../runtime/sim.md#10-expected-speed-up)):
-  the packet clock and the world-frame skip are on. The one profile switch a sim leaves
-  off is `host-light-native` (levers 4, 13 and 15). The tick pacer, mapped
+  the packet clock and the world-frame skip are on. Levers 4, 13 and 15
+  (animation, collision, objects) always run in Rust. The tick pacer, mapped
   reads and sim stores do not change unpaced ms/tick.
 - **Output-only work.** A sim has no viewer and no listener. Under the
   product contract a switch may drop work whose only consumer is a screen

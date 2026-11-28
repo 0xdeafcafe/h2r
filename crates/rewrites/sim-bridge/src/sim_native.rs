@@ -93,7 +93,6 @@ impl Feature for SimNative {
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         sim::set_simd(simd_on(b.switches()));
-        let collision = collision_on(b.switches());
         // The hand ports at points no subsystem body owns: the transform
         // composition, the root transform and the pose matrix, reached
         // from guest callers outside the object bodies.
@@ -130,9 +129,9 @@ impl Feature for SimNative {
             }
         }
         install_anim(b, &self.exported_anim);
-        if collision {
-            install_collision(b);
-        }
+        // The native collision world answers every collision query; there
+        // is no switch and no guest arm (docs/engine/collision-queries.md).
+        install_collision(b);
         crate::sim_objects::install(b);
         // Every effect port, always (crate::sim_effects).
         crate::sim_effects::install(b);
@@ -145,9 +144,7 @@ impl Feature for SimNative {
         // invalidate them.
         b.snapshot(SnapshotPolicy::section(Vec::new, move |_, _| {
             engine::sim_anim::invalidate();
-            if collision {
-                engine::sim_collision::invalidate();
-            }
+            engine::sim_collision::invalidate();
             Ok(())
         }));
         Ok(())
@@ -356,13 +353,19 @@ fn observe_anim_invalidate(b: &mut Builder) {
     }
 }
 
-/// Phase two collision queries and their return comparisons.
-/// See docs/engine/collision-queries.md for the admission rules.
+/// The collision queries' hook label. The native collision world is the
+/// only path, with no switch (docs/engine/collision-queries.md).
 pub const COLLISION: &str = "sim.native.collision";
 
-fn collision_on(switches: &hooks::Switches) -> bool {
-    switches.implementation(COLLISION, false)
-}
+/// The chains [`install_collision`] adds to a plan that already holds the
+/// animation invalidation: the map load observer is shared with it.
+#[cfg(test)]
+pub(crate) const COLLISION_CHAINS: usize = COLLISION_ENTRIES.len()
+    + COLLISION_INVALIDATE.len()
+    - 1
+    + COLLISION_PARTIAL.len()
+    + COLLISION_OBSERVED.len()
+    + RAY_PARITY.len();
 
 type CollisionBody = fn(
     &mut CpuAbi,
@@ -811,8 +814,7 @@ mod tests {
 
     #[test]
     fn collision_takes_its_entries_and_invalidates_on_reload() {
-        let key = format!("impl.{COLLISION}");
-        let mut registry = Registry::new(Switches::defaults().with(&key, true));
+        let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
         for (point, entry, _) in COLLISION_ENTRIES {
@@ -853,36 +855,21 @@ mod tests {
             assert_eq!(chain.observe_before.len(), 1, "{label}");
             assert!(chain.observe_before[0].optional, "{label}");
         }
-        // The always-on subsystems add their own chains, one of which
-        // (the map load) the collision invalidation shares.
-        let mut base = Registry::new(Switches::defaults());
-        base.add(&SimNative::for_tests()).unwrap();
-        let manager_chains = base.build(&Base).unwrap().chains.len();
-        assert_eq!(
-            plan.chains.len(),
-            manager_chains - 1
-                + COLLISION_ENTRIES.len()
-                + COLLISION_INVALIDATE.len()
-                + COLLISION_PARTIAL.len()
-                + COLLISION_OBSERVED.len()
-                + RAY_PARITY.len()
-        );
-        assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
-
-        // Off by default: only the always-on subsystems' chains install.
-        let mut registry = Registry::new(Switches::defaults());
+        // No switch turns the collision world off: `-impl.sim.native`
+        // leaves every entry in place.
+        let mut registry = Registry::new(Switches::parse("-impl.sim.native").unwrap());
         registry.add(&SimNative::for_tests()).unwrap();
-        let plan = registry.build(&Base).unwrap();
-        assert_eq!(plan.chains.len(), manager_chains);
+        let off = registry.build(&Base).unwrap();
         for (point, entry, _) in COLLISION_ENTRIES {
-            assert!(!plan.chains.contains_key(&point.base), "{:#x}", entry.addr());
+            assert!(off.chains[&point.base].implement.is_some(), "{:#x}", entry.addr());
         }
+        assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
+        assert!(hooks::Switches::parse(&format!("impl.{COLLISION}")).is_err(), "the switch is deleted");
     }
 
     #[test]
     fn collision_entries_count_the_environment_before_declining() {
-        let switches = Switches::defaults().with(&format!("impl.{COLLISION}"), true);
-        let mut registry = Registry::new(switches);
+        let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
         let rt = runtime::Runtime::new(Guest::new(), runtime::Dispatch::default());
@@ -934,8 +921,7 @@ mod tests {
 
     #[test]
     fn collision_leaves_memory_traps_to_the_lifted_instructions() {
-        let switches = Switches::defaults().with(&format!("impl.{COLLISION}"), true);
-        let mut registry = Registry::new(switches);
+        let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
         let mut guest = Guest::new();
