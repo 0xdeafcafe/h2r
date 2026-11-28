@@ -95,7 +95,7 @@ struct Draw<B: d3d::Backend + Send + 'static> {
 
 impl<B: d3d::Backend + Send + 'static> Host for Draw<B> {
     fn fan(&self, mem: &mut dyn GuestMemory, fan: &Fan) -> Result<(), &'static str> {
-        let Ok(mut device) = self.device.lock() else { return Err("placed") };
+        let Ok(mut device) = self.device.lock() else { return Err("placed_lock") };
         let address_map = device.config().address_map;
         // Slot 0 the fan's target, written; each other surface once, read.
         let mut slots = vec![Some(d3d::ExternalSlot { header: fan.dest, written: true })];
@@ -127,12 +127,24 @@ impl<B: d3d::Backend + Send + 'static> Host for Draw<B> {
         }
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Fog, view: 0, ranges: 1, slots };
         let pass = FanPass { fan: fan.clone(), stages };
-        match device.prepare_external_pass(&mut DeviceMemory(mem), plan, Box::new(pass)) {
-            Ok(Some(reservation)) => {
-                reservation.commit();
+        // The fan's setup selects its own target (`0x00014bc0`) and is cut,
+        // so the pass names the fan's target, not the one bound: drained
+        // here, committed with nothing rebound.
+        match device.begin_external_boundary(&mut DeviceMemory(mem)) {
+            Ok(true) => {}
+            Ok(false) => return Err("placed_callback"),
+            Err(_) => return Err("placed_device"),
+        }
+        let (w, h) = device.surface_size(&DeviceMemory(mem), fan.dest).ok_or("placed_header")?;
+        let targets = d3d::ExternalTargets { color: fan.dest, depth: 0, rect: (0, 0, w, h) };
+        let step = d3d::ExternalStep { targets, plan, pass: Box::new(pass) };
+        match device.prepare_external_sequence(&mut DeviceMemory(mem), vec![step]) {
+            Ok(Some(prepared)) => {
+                prepared.commit();
                 Ok(())
             }
-            _ => Err("placed"),
+            Ok(None) => Err("placed_refused"),
+            Err(_) => Err("placed_device"),
         }
     }
 }

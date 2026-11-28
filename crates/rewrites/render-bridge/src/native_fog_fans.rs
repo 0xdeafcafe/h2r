@@ -20,7 +20,7 @@
 //! `0x00016b10` and rectangle. The setups' bodies never run.
 //!
 //! What the cut cannot draw is `unimplemented!("fog fans: <cause>")`: no
-//! host (`host`), a pass the device does not place (`placed`), the
+//! host (`host`), a pass the device does not place (`placed_<why>`), the
 //! host's (a texture it cannot decode, a stage or copy it cannot make), a
 //! bitmap that binds nothing (`texture_unbound`), a view
 //! target other than 0 (`composite into target <n>`), a weather plate
