@@ -9,10 +9,13 @@
 //!    Menus, loading screens and Bink run the original, so loading drives
 //!    the caches as always. A world frame runs the original too on every
 //!    `render_every`th one (0: never).
-//! 2. Otherwise **skip**: run the frame wait `0x0012b2e0` here (frame timing
-//!    turns the vblanks it counts into the tick's `dt`), then the frame's
-//!    tick writes ([`after_wait`]: `engine::render_loop::tick_writes`, the
-//!    one source the render frame step uses too), and return to the game.
+//! 2. Otherwise **skip**: the frame wait `0x0012b2e0` in Rust
+//!    (`engine::render_loop::frame_wait`; frame timing turns the vblanks it
+//!    counts into the tick's `dt`), yielding the slice to the kernel
+//!    (`NtYieldExecution`) until the clocked vblank source reaches the
+//!    target, then the frame's tick writes ([`after_wait`]:
+//!    `engine::render_loop::tick_writes`, the one source the render frame
+//!    step uses too), and return to the game.
 //! 3. **Check**: a world frame the original renders is checked after it
 //!    returns: the guest's three words against the Rust prediction. A
 //!    difference is counted by word and falls back for the session: every
@@ -27,6 +30,7 @@ use std::sync::{Arc, Mutex};
 
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
+use engine::render_loop::frame_wait::{self, Watch};
 use engine::render_loop::tick_writes::{self, Word, Words};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
@@ -38,8 +42,9 @@ pub const ID: &str = "sim-frame";
 /// game, anything for a synthetic test.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Addrs {
-    /// The engine frame wait, run on the game thread at a skipped frame.
-    pub frame_wait: u32,
+    /// The engine frame wait's globals, made in Rust at a skipped frame
+    /// (`engine::render_loop::frame_wait`).
+    pub wait: frame_wait::Addrs,
     /// `[engine_globals]`, `+0x1120` (byte) and `+2` (word): the world-path
     /// test at the top of `0x00223240`.
     pub engine_globals: u32,
@@ -54,7 +59,7 @@ pub struct Addrs {
 
 impl Addrs {
     pub const HALO2: Addrs = Addrs {
-        frame_wait: 0x0012_b2e0,
+        wait: frame_wait::Addrs::HALO2,
         engine_globals: 0x004e_6948,
         ui_state: (0x004c_f770, 0x004c_f772, 0x004c_f77c),
         cache_countdowns: (0x004e_6470, 0x004e_64a0),
@@ -365,29 +370,63 @@ fn frame(
         return Ok(original.invoke(cpu, ctx, addr));
     }
     let saved = *cpu;
+    let ret_pc = {
+        let mut mem = rt.memory();
+        frame_wait::enter(&me.addrs.wait, &mut *mem).map_err(fault)?;
+        mem.u32(cpu.esp)?
+    };
+    wait(me.clone(), Watch::default(), saved, ret_pc, cpu, ctx)
+}
+
+/// `NtYieldExecution`: the kernel service a waiting frame gives its slice
+/// up through, so other threads run or the clock moves to the next
+/// vblank's deadline.
+const NT_YIELD_EXECUTION: u32 = 238;
+
+/// The wait's globals faulted: the guest's own access would have.
+fn fault(e: MemFault) -> GuestFault {
+    GuestFault {
+        addr: e.addr,
+        len: e.len as usize,
+        access: if e.write { runtime::guest::Access::Write } else { runtime::guest::Access::Read },
+        reason: runtime::guest::FaultReason::Unmapped,
+    }
+}
+
+/// One check of the skipped frame's wait: over, the exit's writes, the
+/// tick writes and the return; else a yield and the next check. A wait no
+/// vblank will end stops by name.
+fn wait(
+    me: SimFrame,
+    mut watch: Watch,
+    saved: CpuAbi,
+    ret_pc: u32,
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+) -> Result<TransferAbi, GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    // No memory lock is held here: the kernel's clock takes the kernel lock.
+    let now = rt.guest_time();
     let mut mem = rt.memory();
-    let ret_pc = mem.u32(cpu.esp)?;
-    let me2 = me.clone();
-    ctx.call_guest_named(
-        cpu,
-        &mut mem,
-        me.addrs.frame_wait,
-        "sim: frame wait in place of the render",
-        move |cpu, ctx| {
-            let eax = cpu.eax;
-            *cpu = saved;
-            cpu.eax = eax;
-            {
-                let rt = Arc::clone(ctx.runtime());
-                let mut g = rt.memory();
-                me2.skipped(&mut *g);
-            }
-            // `render_frame_and_present` takes no arguments: pop the
-            // return address only.
-            cpu.esp = saved.esp.wrapping_add(4);
-            Ok(TransferAbi::ret(ret_pc))
-        },
-    )
+    let a = me.addrs.wait;
+    if let Some(exit) = frame_wait::exit(&a, &mut *mem).map_err(fault)? {
+        *cpu = saved;
+        cpu.eax = exit.eax;
+        me.skipped(&mut *mem);
+        // `render_frame_and_present` takes no arguments: pop the return
+        // address only.
+        cpu.esp = saved.esp.wrapping_add(4);
+        return Ok(TransferAbi::ret(ret_pc));
+    }
+    let (counter, target) = frame_wait::read(&a, &*mem).map_err(fault)?;
+    if let Err(why) = watch.step(counter, target, now) {
+        panic!("sim frame: frame wait: {why}");
+    }
+    *cpu = saved;
+    let token = runtime::kernel::function_token(NT_YIELD_EXECUTION);
+    ctx.call_guest_named(cpu, &mut mem, token, "sim: the frame wait's yield", move |cpu, ctx| {
+        wait(me, watch, saved, ret_pc, cpu, ctx)
+    })
 }
 
 #[cfg(test)]
@@ -396,7 +435,14 @@ mod tests {
     use engine::testing::FakeGuest;
 
     const A: Addrs = Addrs {
-        frame_wait: 0x1000,
+        wait: frame_wait::Addrs {
+            counter: 0x2040,
+            target: 0x2048,
+            entry_count: 0x2050,
+            exit_count: 0x2058,
+            frame_gate: 0x2060,
+            late_flag: 0x2064,
+        },
         engine_globals: 0x2000,
         ui_state: (0x2010, 0x2011, 0x2014),
         cache_countdowns: (0x2020, 0x2024),
