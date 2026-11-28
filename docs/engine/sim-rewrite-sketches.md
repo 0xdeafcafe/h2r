@@ -332,21 +332,47 @@ themselves aside) call further guest code and stay guest calls.
 the answer) is called by `players_before` for each candidate. Unlike the
 leaves it has its own shadow arm at its entry
 (`engine/src/sim_seats/respawn.rs`, `impl.sim.respawn-ready`, off), with
-three of its callees in Rust: `158a50` (takes part: flags `+2`, `+0xc0`,
-unit slot `+0x2c`, then `15db30`, out of lives: the lives setting
+its callees in Rust: `158a50` (takes part: flags `+2`, `+0xc0`, unit slot
+`+0x2c`, then `15db30`, out of lives: the lives setting
 `[[4e6948] + 0x1b8]`, no unit, `+0x1ac` zero) and `15b2f0` (a local user
 mapped, `[game + 0x6c] == 1`, and a client or `[game + 0xc04] == 1`). The
-body then answers no on a negative timer `+0x164`, and on a zero timer the
+body answers no on a negative timer `+0x164`, and on a zero timer takes the
 staggered check (ticks since `[game + 0x70]` over 3, their remainder by 32
-against the slot's). The arm is proven and audited as the aim arm is, and
-leaves `eax`, `ecx`, `edx` and `esp` as retail does; no memory is written.
+against the slot's).
 
-A timer above zero is declined by name (`countdown`) and the guest runs:
-that path decrements the timer, writes `+0x170`, calls `a7840` (a tail call
-into the network entity queue `b58c0`) and, at one, two and three seconds,
-`19eb90` (`a7c50` posts through `b5a70`; `19eb30` walks every player through
-`19de80`, `19df10` and the announcement formatter `19e890`). Those trees
-are not ported, so the arm does not replace the guest function. The other
-decline is `fault`. `sim.arms` reports `seats.respawn`;
-`respawn_ready_and_its_callees_match_lifted` puts each callee and the body
-against the lifted functions.
+A timer above zero is the countdown (`respawn/countdown.rs`):
+
+| Step | Function | What it does |
+|---|---|---|
+| 1 | `15dd40` | on the ticks at 3, 2 and 1 seconds (`(i16)[[510c54] + 2]` ticks each) the event kind `0x14`, on the last tick `0x15`: the death event built on the dead stack |
+| 2 | `19eb90` | nothing on a client (mode 4); else `a7c50` and `19eb30` |
+| 3 | `a7c50` -> `b5a70` | mode 5 only; returns unless the network state `[[4cf77c] + 8]` is 4 or 5 |
+| 4 | `19eb30` -> `19de80` | the event's player, by its subjects in order (player `+0xc`, `+0x14`, team `+0x10`, `+0x18`, anyone) |
+| 5 | `19df10` | the first matching row of the event type's block in the globals tag (`[[4e034c] + 0x16c]`, two jump tables) |
+| 6 | `19e890` | returns for a player with no local user (`+0x28` is `-1`), and once `[[4e6948] + 0x1128]` is set for all but type 0 kind `0x13` |
+| 7 | `15de0a` | timer minus 1, the fade `+0x170` (seconds left, held to `0..=0x3ff`) |
+| 8 | `a7840` -> `b58c0` | the player's entity `[game + 0x2c + 4 * slot]`: in network state 4, when its row is replicated, `0x80` ORed into its update word |
+| 9 | `15de51` | a timer now at zero takes the staggered check |
+
+The kernel reads through `Mem`, which holds the call's own writes: the
+event (scratch, never applied), and the timer, the fade and the update word
+(live). The live words ride in the prediction, land in `apply` after each
+address is written back as it is (so a fault lands none), and an audit
+compares them after the guest's return. Registers are left as retail
+leaves them.
+
+The paths that reach further guest systems are declined by name and the
+guest runs the call:
+
+| Decline | Where | The guest goes on to |
+|---|---|---|
+| `post` | `b5a70`, network state 4 or 5 | `8b4d0`, the event message (virtual sends, an allocator) |
+| `announce` | `19e890`, a local player | the HUD text (`1a0180`, `19e0f0`, `24caac`, `24cbee`, `24cc73`) and the announcer `19e770` |
+| `every-player` | `19eb30`, event player `-1` | the iterator `19f240`; `15dd40` never builds such an event |
+| `fault` | any read, or a seconds divisor of 0 | the whole call |
+
+So the arm does not replace the guest function (`replaces_guest`): on a
+networked host and for a local player the event ticks stay guest. `sim.arms`
+reports `seats.respawn`. `respawn_ready_and_its_callees_match_lifted` puts
+the body and each callee against the lifted functions, and checks each
+decline by the original reaching the decline's address.

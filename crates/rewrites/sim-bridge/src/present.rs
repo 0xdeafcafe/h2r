@@ -19,10 +19,12 @@
 //! counters are `seats.aim` in `sim.arms`.
 //!
 //! **`impl.sim.respawn-ready`** (off): the respawn gate `15dd40`
-//! (`PLAYER_RESPAWN_READY`) and its callees `158a50`, `15db30` and `15b2f0`
-//! as the kernel `engine::sim_seats::respawn`, run as the same shadow arm.
-//! A respawn timer above zero is declined by name (`countdown`): the
-//! entity mark `a7840` and the death event `19eb90` are guest. It is not a
+//! (`PLAYER_RESPAWN_READY`) with its callees and its countdown (the entity
+//! mark `a7840`, the death event `19eb90`) as the kernel
+//! `engine::sim_seats::respawn`, run as the same shadow arm; a prediction's
+//! writes land with its registers. A host's event message (`post`), a
+//! local player's announcement (`announce`) and an event naming no player
+//! (`every-player`) are declined by name to the guest, so it is not a
 //! replacement of the guest function. Its counters are `seats.respawn` in
 //! `sim.arms`.
 
@@ -75,14 +77,14 @@ fn install_respawn(b: &mut Builder) {
         .implement(point, RESPAWN, move |cpu, ctx, pc| {
             if pc == point.base {
                 let step = {
-                    let mem = ctx.memory();
-                    respawn::enter(cpu, &mem)
+                    let mut mem = ctx.memory();
+                    respawn::enter(cpu, &mut mem)
                 };
                 match step {
                     respawn::Step::Answered { target } => return Ok(TransferAbi::ret(target)),
                     respawn::Step::Audit(prediction) => {
-                        let watched = ctx.observe_guest_return(cpu, respawn::ARGS, move |c, _| {
-                            respawn::compare(&prediction, c)
+                        let watched = ctx.observe_guest_return(cpu, respawn::ARGS, move |c, ctx| {
+                            respawn::compare(&prediction, c, &ctx.runtime().memory())
                         });
                         if !watched {
                             respawn::dropped();

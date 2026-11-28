@@ -183,8 +183,9 @@ fn aim_wire(s: aim::Status) -> Arm {
     }
 }
 
-/// The respawn gate's kernel arm (`impl.sim.respawn-ready`); a countdown
-/// the guest answers counts as declined.
+/// The respawn gate's kernel arm (`impl.sim.respawn-ready`); a call the
+/// guest answers by name (`post`, `announce`, `every-player`, `fault`)
+/// counts as declined.
 fn respawn_wire(s: respawn::Status) -> Arm {
     Arm {
         name: "seats.respawn".to_owned(),

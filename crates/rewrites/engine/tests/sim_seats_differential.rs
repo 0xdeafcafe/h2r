@@ -1245,14 +1245,20 @@ fn init_packet_declines_an_overlap() {
     }
 }
 
-// The respawn gate `15dd40` and its callees `15db30`, `158a50` and `15b2f0`
-// through their kernel (`engine::sim_seats::respawn`), each against the
-// lifted original with its real callees (no stubs). The world is drawn
-// from a seeded xorshift so every branch of the four bodies is taken: the
-// local-user cell empty, a player's flags, its `+0xc0` and unit slot, the
-// lives setting and lives, the user count, the machine mode, the timer
-// (below zero, zero, and above, which the kernel declines by name), and
-// the staggered check's tick delta against the slot.
+// The respawn gate `15dd40` and its callees `15db30`, `158a50` and `15b2f0`,
+// and the countdown's `a7840`, `b58c0`, `a7c50`, `19eb90`, `19eb30`,
+// `19de80`, `19df10` and `19e890`, through their kernel
+// (`engine::sim_seats::respawn`), each against the lifted original with its
+// real callees (no stubs). The world is drawn from a seeded xorshift so
+// every branch of the bodies is taken: the local-user cell empty, a
+// player's flags, its `+0xc0` and unit slot, the lives setting and lives,
+// the user count, the machine mode, the timer (below zero, zero, the
+// second ticks and the ticks between) and the ticks per second, the
+// staggered check's tick delta against the slot, the player's entity and
+// the network state and replication bit, the announcement rows and the
+// event's subjects, a player's local user and the quiet flag. A decline
+// must be one the original reaches: its stop address is where the guest
+// goes on alone.
 
 const RS_GAME: u32 = RECORDS + 0x100;
 const RS_HEADER: u32 = RECORDS + 0x400;
@@ -1265,6 +1271,27 @@ const RS_PLAYERS_CELL: u32 = 0x004e_8c24;
 const RS_MODE_CELL: u32 = 0x004e_6948;
 const RS_TICKS_CELL: u32 = 0x0051_0c54;
 const RS_STRIDE: u32 = 0x21c;
+const RS_SETTINGS: u32 = RECORDS + 0x6000;
+const RS_TAGS: u32 = RECORDS + 0x6400;
+const RS_DEF: u32 = RECORDS + 0x6800;
+const RS_ANN: u32 = RECORDS + 0x6c00;
+const RS_EVENT: u32 = RECORDS + 0x7000;
+const RS_NET: u32 = RECORDS + 0x8000;
+const RS_NETDATA: u32 = RECORDS + 0x1_0000;
+const RS_NETFLAGS: u32 = RECORDS + 0x2_0000;
+const RS_ROWS: u32 = RECORDS + 0x2_4000;
+const RS_TAGS_CELL: u32 = 0x004e_3b44;
+const RS_NET_CELL: u32 = 0x004c_f77c;
+/// The players' entity indices the world hands out (low ten bits 7, 0x3ff
+/// and 5).
+const RS_ENTITIES: [u32; 3] = [0x1_0007, 0x3ff, 5];
+/// `19df10`'s announcement block offsets.
+const RS_BLOCKS: [u32; 9] = [0x98, 0xa0, 0xa8, 0xb0, 0xb8, 0xc8, 0xd8, 0xe0, 0xe8];
+/// Where the original goes on alone after each named decline.
+const RS_ANNOUNCE_AT: u32 = 0x0019_e90d;
+const RS_POST_AT: u32 = 0x0008_b4d0;
+const RS_EVERY_AT: u32 = 0x0019_f240;
+const RS_STOPS: [u32; 3] = [RS_ANNOUNCE_AT, RS_POST_AT, RS_EVERY_AT];
 
 struct Xorshift(u32);
 
@@ -1303,12 +1330,65 @@ fn respawn_world(m: &mut FlatMemory, r: &mut Xorshift) -> (u32, [u32; 8]) {
         m.bytes[(p + 0xc0) as usize] = r.pick(&[0xff, 1, 1]);
         word(m, p + 0x2c, r.pick(&[u32::MAX, u32::MAX, 0x1234]));
         m.bytes[(p + 0x1ac) as usize..][..2].copy_from_slice(&r.pick(&[0u16, 0, 2]).to_le_bytes());
-        word(m, p + 0x164, r.pick(&[0u32, 0, 0, 0xffff_fff0, 7]));
+        word(m, p + 0x164, r.pick(&[0u32, 0, 0, 0xffff_fff0, 7, 1, 2, 3, 30, 60, 90, 31]));
+        m.bytes[(p + 0x28) as usize..][..2].copy_from_slice(&r.pick(&[0xffffu16, 0xffff, 0]).to_le_bytes());
     }
     let delta = r.pick(&[-4i32, 0, 3, 4, 5, 32 + (slot & 0x1f) as i32, 37, 64 + (slot & 0x1f) as i32]);
     word(m, RS_TICKS + 8, (1000 + delta) as u32);
+    m.bytes[(RS_TICKS + 2) as usize..][..2].copy_from_slice(&r.pick(&[30u16, 30, 1, 2, 3]).to_le_bytes());
+    // The entity mark: each slot's entity, the network state, the
+    // replication bits and the queued words.
+    for s in [0u32, 3, 5, 15, 33] {
+        word(m, RS_GAME + 0x2c + 4 * s, r.pick(&[u32::MAX, RS_ENTITIES[0], RS_ENTITIES[1], RS_ENTITIES[2]]));
+    }
+    word(m, RS_NET_CELL, RS_NET);
+    word(m, RS_NET + 8, r.pick(&[0, 3, 4, 4, 5]));
+    word(m, RS_NET + 4, RS_NETDATA);
+    word(m, RS_NETDATA + 0x20a4, RS_NETFLAGS);
+    for e in RS_ENTITIES {
+        let e = e & 0x3ff;
+        m.bytes[(RS_NETFLAGS + e * 8 + 0x44) as usize] = r.pick(&[4, 0, 0xff]);
+        word(m, RS_NETDATA + 0x2098 + e * 32 + 0x20, r.next());
+    }
+    // The announcements: the globals tag, its blocks, three rows.
+    m.bytes[(RS_MODE + 0x1128) as usize] = r.pick(&[0, 1, 1]);
+    word(m, SETTINGS, RS_SETTINGS);
+    word(m, RS_SETTINGS + 0x16c, r.pick(&[3, 0x2_0003]));
+    word(m, RS_TAGS_CELL, RS_TAGS);
+    word(m, RS_TAGS + 3 * 16 + 8, RS_DEF);
+    word(m, RS_DEF + 0xc, RS_ANN);
+    for off in RS_BLOCKS {
+        word(m, RS_ANN + off, r.pick(&[0, 1, 3, 3, u32::MAX]));
+        word(m, RS_ANN + off + 4, RS_ROWS);
+    }
+    for i in 0..3 {
+        let row = RS_ROWS + i * 0xa8;
+        rs_half(m, row + 4, r.pick(&[0x14, 0x15, 0x13, 0x14]));
+        rs_half(m, row + 6, r.pick(&[0, 1, 2, 3, 4, 0, 4]));
+        rs_half(m, row + 0x10, r.pick(&[0, 1, 2, 3, 4, 5]));
+        rs_half(m, row + 0x12, r.pick(&[0, 1, 2, 3, 4, 5]));
+    }
+    // An event for the callees on their own.
+    let words = [
+        r.pick(&[0, 0, 1, 2, 6, 10]),
+        r.pick(&[0x14, 0x15, 0x13]),
+        r.pick(&[slot, slot, u32::MAX]),
+        r.pick(&[slot, u32::MAX, 7]),
+        r.pick(&[u32::MAX, 1, 0]),
+        r.pick(&[slot, u32::MAX]),
+        r.pick(&[u32::MAX, 1]),
+        0,
+        r.next(),
+    ];
+    for (i, v) in words.into_iter().enumerate() {
+        word(m, RS_EVENT + 4 * i as u32, v);
+    }
     let regs = [r.next(), r.next(), r.next(), 0, STACK, r.next(), r.next(), r.next()];
     (slot, regs)
+}
+
+fn rs_half(m: &mut FlatMemory, a: u32, v: u16) {
+    assert!(m.load(a, &v.to_le_bytes()));
 }
 
 fn respawn_guest(mem: &FlatMemory) -> Guest {
@@ -1325,6 +1405,71 @@ fn at(image: &lifted::image::Image, addr: u32) -> lifted::Original {
     code
 }
 
+/// One lifted call from `entry` with `args` above its return address, run
+/// to its return or to one of [`RS_STOPS`].
+fn rs_call(code: &mut lifted::Original, entry: u32, gpr: [u32; 8], args: &[u32], mem: &mut FlatMemory) -> Cpu {
+    for (i, a) in args.iter().enumerate() {
+        word(mem, STACK + 4 + 4 * i as u32, *a);
+    }
+    let mut cpu = Cpu { gpr, eip: entry, eflags: 0x2, mxcsr: 0x1fa0, ..Default::default() };
+    cpu.gpr[4] = STACK;
+    lifted::code::run_until(code, &mut cpu, mem, 1_000_000, |c| c.eip == EXIT || RS_STOPS.contains(&c.eip))
+        .unwrap_or_else(|e| panic!("{e}"));
+    cpu
+}
+
+fn rs_stop(d: engine::sim_seats::respawn::Decline) -> u32 {
+    use engine::sim_seats::respawn::Decline;
+    match d {
+        Decline::Announce => RS_ANNOUNCE_AT,
+        Decline::Post => RS_POST_AT,
+        Decline::EveryPlayer => RS_EVERY_AT,
+        Decline::Fault => panic!("a fault in the respawn world"),
+    }
+}
+
+/// One countdown callee's port against the lifted original from the same
+/// registers, stack arguments and memory: `eax`, `ecx`, `edx` as the port
+/// says, the rest as they came, the arguments popped, the port's writes and
+/// nothing else above the dead stack; or, for a decline, the original
+/// reaching the decline's stop. Returns the outcome's name.
+fn rs_check(
+    why: &str,
+    code: &mut lifted::Original,
+    entry: u32,
+    gpr: [u32; 8],
+    args: &[u32],
+    mem: &FlatMemory,
+    got: Result<(engine::sim_seats::respawn::Regs, engine::sim_seats::respawn::Writes), engine::sim_seats::respawn::Decline>,
+) -> &'static str {
+    let mut want_mem = mem.clone();
+    let cpu = rs_call(code, entry, gpr, args, &mut want_mem);
+    let (r, writes) = match got {
+        Err(d) => {
+            assert_eq!(cpu.eip, rs_stop(d), "{why}: declined {d:?}; the original went elsewhere");
+            return d.name();
+        }
+        Ok(got) => got,
+    };
+    assert_eq!(cpu.eip, EXIT, "{why}: the port answered; the original stopped at {:#x}", cpu.eip);
+    let mut expect = gpr;
+    expect[0] = r.eax;
+    expect[1] = r.ecx;
+    expect[2] = r.edx;
+    expect[4] = STACK + 4 + 4 * args.len() as u32;
+    assert_eq!(cpu.gpr, expect, "{why}: eax ecx edx ebx esp ebp esi edi");
+    let mut port = mem.clone();
+    for (a, v) in writes.iter() {
+        word(&mut port, a, v);
+    }
+    let dead = (STACK - 0x1_0000) as usize..(STACK + 0x40) as usize;
+    let first = want_mem.bytes.iter().zip(&port.bytes).enumerate()
+        .find(|(i, (a, b))| a != b && !dead.contains(i))
+        .map(|(i, _)| i);
+    assert_eq!(first, None, "{why}: first differing byte");
+    if writes.is_empty() { "answered" } else { "wrote" }
+}
+
 #[test]
 fn respawn_ready_and_its_callees_match_lifted() {
     use engine::sim_seats::respawn::{self, Decline, Regs};
@@ -1333,9 +1478,19 @@ fn respawn_ready_and_its_callees_match_lifted() {
     let mut part = at(image, 0x0015_8a50);
     let mut lives = at(image, 0x0015_db30);
     let mut user = at(image, 0x0015_b2f0);
+    let mut queue = at(image, 0x000b_58c0);
+    let mut mark = at(image, 0x000a_7840);
+    let mut post = at(image, 0x000a_7c50);
+    let mut find = at(image, 0x0019_df10);
+    let mut announce = at(image, 0x0019_e890);
+    let mut subjects = at(image, 0x0019_de80);
+    let mut walk = at(image, 0x0019_eb30);
+    let mut death = at(image, 0x0019_eb90);
     let mut rng = Xorshift(0x9e37_79b9);
     let (mut answered, mut countdown) = (0, 0);
     let (mut yes, mut no) = (0, 0);
+    let mut outcomes = std::collections::BTreeMap::<String, u32>::new();
+    let mut tally = |what: &str, outcome: &str| *outcomes.entry(format!("{what} {outcome}")).or_default() += 1;
     for case in 0..6000 {
         let mut mem = ram.clone();
         word(&mut mem, STACK, EXIT);
@@ -1374,29 +1529,99 @@ fn respawn_ready_and_its_callees_match_lifted() {
         assert_eq!((a.regs.eax, a.regs.ecx, a.regs.edx), (want.gpr[0], want.gpr[1], want.gpr[2]), "{why}: 15b2f0");
         assert_eq!(a.ready, want.gpr[0] & 0xff != 0, "{why}: 15b2f0 al");
 
+        // The countdown's callees on their own.
+        let regs3 = Regs { eax: regs[0], ecx: regs[1], edx: regs[2] };
+        let (any, other) = (rng.next(), rng.next());
+        let entity = rng.pick(&[RS_ENTITIES[0], RS_ENTITIES[1], RS_ENTITIES[2], any]);
+        let flags = rng.pick(&[0x80, other]);
+        let mut m = respawn::Mem::new(&g);
+        let got = respawn::entity_queue(&mut m, regs3, entity, flags);
+        let o = rs_check(&format!("{why}: b58c0"), &mut queue, 0x000b_58c0, regs, &[entity, flags], &mem, got.map(|r| (r, m.writes())));
+        tally("b58c0", o);
+
+        let mut m = respawn::Mem::new(&g);
+        let got = respawn::entity_mark(&mut m, regs3, slot, 0x80);
+        let o = rs_check(&format!("{why}: a7840"), &mut mark, 0x000a_7840, regs, &[slot, 0x80], &mem, got.map(|r| (r, m.writes())));
+        tally("a7840", o);
+
+        let mut gpr = regs;
+        gpr[2] = RS_EVENT;
+        let m = respawn::Mem::new(&g);
+        let got = respawn::event_post(&m, Regs { edx: RS_EVENT, ..regs3 }, STACK);
+        let o = rs_check(&format!("{why}: a7c50"), &mut post, 0x000a_7c50, gpr, &[], &mem, got.map(|r| (r, m.writes())));
+        tally("a7c50", o);
+
+        let kind = rng.pick(&[0u32, 1, 2, 3, 4]);
+        let mut gpr = regs;
+        gpr[0] = slot;
+        gpr[7] = RS_EVENT;
+        let m = respawn::Mem::new(&g);
+        let got = respawn::announcement(&m, slot, RS_EVENT, kind);
+        let found = got.map(|r| r.eax != 0).unwrap_or(false);
+        let o = rs_check(&format!("{why}: 19df10 kind {kind}"), &mut find, 0x0019_df10, gpr, &[kind], &mem, got.map(|r| (r, m.writes())));
+        tally("19df10", if found { "found" } else { o });
+
+        let row = rng.pick(&[RS_ROWS, RS_ROWS + 0xa8]);
+        let mut gpr = regs;
+        gpr[0] = slot;
+        gpr[1] = row;
+        let m = respawn::Mem::new(&g);
+        let got = respawn::announce(&m, slot, row, RS_EVENT);
+        let o = rs_check(&format!("{why}: 19e890"), &mut announce, 0x0019_e890, gpr, &[RS_EVENT], &mem, got.map(|r| (r, m.writes())));
+        tally("19e890", o);
+
+        let mut gpr = regs;
+        gpr[0] = RS_EVENT;
+        gpr[6] = slot;
+        let m = respawn::Mem::new(&g);
+        let got = respawn::announce_player(&m, RS_EVENT, slot);
+        let o = rs_check(&format!("{why}: 19de80"), &mut subjects, 0x0019_de80, gpr, &[], &mem, got.map(|r| (r, m.writes())));
+        tally("19de80", o);
+
+        let mut gpr = regs;
+        gpr[7] = RS_EVENT;
+        let m = respawn::Mem::new(&g);
+        let got = respawn::announce_event(&m, RS_EVENT);
+        let o = rs_check(&format!("{why}: 19eb30"), &mut walk, 0x0019_eb30, gpr, &[], &mem, got.map(|r| (r, m.writes())));
+        tally("19eb30", o);
+
+        let mut gpr = regs;
+        gpr[0] = RS_EVENT;
+        let m = respawn::Mem::new(&g);
+        let got = respawn::death_event(&m, Regs { eax: RS_EVENT, ..regs3 }, STACK, RS_EVENT);
+        let o = rs_check(&format!("{why}: 19eb90"), &mut death, 0x0019_eb90, gpr, &[], &mem, got.map(|r| (r, m.writes())));
+        tally("19eb90", o);
+
         // 15dd40 (eax: the player), the whole body, through the arm's
         // prediction and its apply.
         let mut gpr = regs;
-        gpr[0] = (regs[0] & 0xffff_0000) | slot;
-        gpr[0] = (gpr[0] & 0xffff_0000) | (slot & 0xffff);
+        gpr[0] = (regs[0] & 0xffff_0000) | (slot & 0xffff);
         let mut cpu_regs = abi_cpu(&Cpu { gpr, eip: points::PLAYER_RESPAWN_READY.base, eflags: 0x2, mxcsr: 0x1fa0, ..Default::default() });
+        let timer = mem.read_u32(RS_DATA + (slot & 0xffff) * RS_STRIDE + 0x164).unwrap_or(0) as i32;
         match respawn::predict(&cpu_regs, &g) {
-            Err(Decline::Countdown) => {
-                countdown += 1;
-                continue;
+            Err(Decline::Fault) => panic!("{why}: declined fault"),
+            Err(d) => {
+                let want = rs_call(&mut gate, points::PLAYER_RESPAWN_READY.base, gpr, &[], &mut mem.clone());
+                assert_eq!(want.eip, rs_stop(d), "{why}: 15dd40 declined {d:?}; the original went elsewhere");
+                tally("15dd40", d.name());
             }
-            Err(d) => panic!("{why}: declined {d:?}"),
             Ok(prediction) => {
                 answered += 1;
                 let mut native = respawn_guest(&mem);
-                let target = respawn::apply(&prediction, &mut cpu_regs, &native).unwrap();
+                let target = respawn::apply(&prediction, &mut cpu_regs, &mut native).unwrap();
                 assert_eq!(target, EXIT, "{why}");
-                let want = run(&mut gate, points::PLAYER_RESPAWN_READY.base, gpr, &mut mem);
+                let want = rs_call(&mut gate, points::PLAYER_RESPAWN_READY.base, gpr, &[], &mut mem);
+                assert_eq!(want.eip, EXIT, "{why}: 15dd40 answered; the original stopped at {:#x}", want.eip);
                 let want = abi_cpu(&want);
                 assert_eq!(gprs(&cpu_regs), gprs(&want), "{why}: 15dd40 eax ecx edx ebx esp ebp esi edi");
                 assert_eq!(prediction.differs(&want), None, "{why}");
                 if want.eax & 0xff == 0 { no += 1 } else { yes += 1 }
-                // No memory is written: every byte above the dead stack.
+                if timer > 0 && !prediction.writes.is_empty() {
+                    countdown += 1;
+                    tally("15dd40", "countdown");
+                }
+                // Every byte above the dead stack: the countdown's writes
+                // landed by `apply`, nothing else.
                 let start = native.mappings()[0].physical_start as usize;
                 let live = &native.physical_ram()[start..start + RAM];
                 let dead = (STACK - 0x1_0000) as usize..STACK as usize;
@@ -1404,10 +1629,19 @@ fn respawn_ready_and_its_callees_match_lifted() {
                     .find(|(i, (a, b))| a != b && !dead.contains(i))
                     .map(|(i, _)| i);
                 assert_eq!(first, None, "{why}: first differing byte");
-                let _ = &mut native;
             }
         }
     }
-    assert!(answered > 500 && countdown > 10, "answered {answered}, countdown {countdown}");
+    drop(tally);
+    let n = |k: &str| outcomes.get(k).copied().unwrap_or(0);
+    assert!(answered > 500 && countdown > 30, "answered {answered}, countdown {countdown}");
+    for k in [
+        "b58c0 wrote", "b58c0 answered", "a7840 wrote", "a7840 answered", "a7c50 post", "a7c50 answered",
+        "19df10 found", "19df10 answered", "19e890 announce", "19e890 answered", "19de80 answered",
+        "19de80 announce", "19eb30 every-player", "19eb30 answered", "19eb90 answered", "19eb90 post",
+    ] {
+        assert!(n(k) > 5, "{k}: {}; outcomes {outcomes:?}", n(k));
+    }
+    assert!(n("15dd40 announce") + n("15dd40 post") > 0, "outcomes {outcomes:?}");
     assert!(yes > 5 && no > 50, "yes {yes}, no {no}");
 }

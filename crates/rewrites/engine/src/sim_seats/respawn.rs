@@ -16,21 +16,36 @@
 //! `eax` (and `ecx`, `edx` as the guest leaves them), `esp` and the popped
 //! return.
 //!
-//! **What it refuses, by name.** A timer above zero ([`Decline::Countdown`])
-//! is the countdown: the body decrements the timer, writes the fade at
-//! `+0x170` and calls `a7840` (the entity dirty mark, a tail call into the
-//! network entity queue `b58c0`) and, on the ticks at one, two and three
-//! seconds, the death event `19eb90` (`a7c50` posts through `b5a70`;
-//! `19eb30` walks every player through `19de80`, `19df10` and the
-//! announcement formatter `19e890`, which formats text). Those trees are
-//! not ported, so this arm is **not** `replaces_guest`: the guest answers
-//! every call it declines, and a read that faults ([`Decline::Fault`]).
+//! **The countdown.** A timer above zero runs the countdown in Rust
+//! (`respawn/countdown.rs`): on the ticks at three, two and one seconds
+//! and at the last tick it builds the death event on its stack and calls
+//! `19eb90`, then decrements the timer, writes the fade `+0x170` (the
+//! seconds left, held to `0..=0x3ff`), calls the entity mark `a7840` (its
+//! tail call `b58c0` ORs `0x80` into the entity's network update word)
+//! and, at zero, takes the staggered check. Its writes (the timer, the fade, the update
+//! word) ride in the [`Prediction`] and land in [`apply`]; an audit
+//! compares them after the guest's return.
+//!
+//! **What it refuses, by name.** The death event's paths that reach
+//! further guest systems: [`Decline::Post`] (a host's event message,
+//! `8b4d0`), [`Decline::Announce`] (a local player's HUD text and announcer
+//! sound in `19e890`) and [`Decline::EveryPlayer`] (an event naming no
+//! player, which `15dd40` never builds); and [`Decline::Fault`], a read
+//! that faults or a seconds divisor of 0. So the arm is **not**
+//! `replaces_guest`: the guest answers every call it declines.
 //!
 //! **Proof, then take-over**, as the aim arm: until [`PROVEN_AFTER`] calls
 //! have matched with no mismatch the guest answers and the prediction is
 //! compared at the return; then the kernel answers and one answerable call
 //! in [`AUDIT_EVERY`] is still compared. A mismatch hands every call back
 //! to the guest until the next map.
+
+mod countdown;
+
+pub use countdown::{
+    Mem, WRITES, Writes, announce, announce_event, announce_player, announcement, death_event,
+    entity_mark, entity_queue, event_post,
+};
 
 use crate::points;
 use crate::sim_physics::ARITH;
@@ -56,20 +71,29 @@ const STRIDE: u32 = 0x21c;
 /// Why a call was left to the guest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
-    /// A read of the call's inputs faulted.
+    /// A read of the call's inputs faulted, or the seconds divisor
+    /// `(i16)[[510c54] + 2]` is 0.
     Fault,
-    /// The respawn timer is above zero: the countdown's event and entity
-    /// calls are the guest's.
-    Countdown,
+    /// The death event on a host in network state 4 or 5: `b5a70` queues
+    /// its message through `8b4d0`.
+    Post,
+    /// The death event's announcement for a local player: `19e890` draws
+    /// its HUD text and plays the announcer.
+    Announce,
+    /// A death event naming no player: `19eb30` walks every player
+    /// through `19f240`.
+    EveryPlayer,
 }
 
 impl Decline {
-    pub const ALL: [Decline; 2] = [Decline::Fault, Decline::Countdown];
+    pub const ALL: [Decline; 4] = [Decline::Fault, Decline::Post, Decline::Announce, Decline::EveryPlayer];
 
     pub fn name(self) -> &'static str {
         match self {
             Decline::Fault => "fault",
-            Decline::Countdown => "countdown",
+            Decline::Post => "post",
+            Decline::Announce => "announce",
+            Decline::EveryPlayer => "every-player",
         }
     }
 
@@ -86,7 +110,7 @@ pub struct Status {
     pub mismatched: u64,
     pub answered: u64,
     /// By [`Decline::ALL`] order.
-    pub declined: [u64; 2],
+    pub declined: [u64; 4],
     pub dropped: u64,
 }
 
@@ -102,7 +126,7 @@ static MISMATCHED: AtomicU64 = AtomicU64::new(0);
 static ANSWERED: AtomicU64 = AtomicU64::new(0);
 static ANSWERABLE: AtomicU64 = AtomicU64::new(0);
 static DROPPED: AtomicU64 = AtomicU64::new(0);
-static DECLINED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+static DECLINED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
 pub fn status() -> Status {
     let read = |c: &AtomicU64| c.load(Ordering::Relaxed);
@@ -242,11 +266,13 @@ pub fn user_ready(g: &Guest, eax: u32) -> Result<Answer, Decline> {
     Ok(Answer { ready, regs: r })
 }
 
-/// The whole call from the registers at its entry (`eax` the slot).
-pub fn kernel(g: &Guest, cpu: &CpuAbi) -> Result<Answer, Decline> {
+/// The whole call from the registers at its entry (`eax` the slot), with
+/// the words it writes left in `m`.
+pub fn kernel(m: &mut Mem, cpu: &CpuAbi) -> Result<Answer, Decline> {
+    let g = m.guest();
     let word = |a: u32| g.u32(a).map_err(|_| Decline::Fault);
     let game = word(GAME)?;
-    let mut edx = word(game.wrapping_add(0xc14))?;
+    let edx = word(game.wrapping_add(0xc14))?;
     let user = word(edx.wrapping_mul(4).wrapping_add(USERS))?;
     if user == 0 {
         // `mov al, 1` and out through the shortest exit.
@@ -269,33 +295,99 @@ pub fn kernel(g: &Guest, cpu: &CpuAbi) -> Result<Answer, Decline> {
     }
     let mut r = ready.regs;
     let timer = word(player.wrapping_add(0x164))? as i32;
-    if timer > 0 {
-        return Err(Decline::Countdown);
-    }
     r.eax = timer as u32;
-    r.eax = (r.eax & !0xff) | u32::from(timer == 0);
-    if timer != 0 {
+    if timer > 0 {
+        r = count_down(m, r, cpu, player)?;
+    }
+    // `15de51`: the timer as the countdown left it.
+    let zero = m.u32(player.wrapping_add(0x164))? == 0;
+    r.eax = (r.eax & !0xff) | u32::from(zero);
+    if !zero {
         return Ok(Answer { ready: false, regs: r });
     }
-    let ticks = word(TICKS)?;
-    r.ecx = word(ticks.wrapping_add(8))?;
-    edx = word(GAME)?;
-    r.edx = edx;
-    r.ecx = r.ecx.wrapping_sub(word(edx.wrapping_add(0x70))?);
-    let delta = r.ecx as i32;
-    if delta <= 3 {
+    stagger(m, r, slot)
+}
+
+/// `15ddaa..15de51`: the death event on the second ticks, the timer's
+/// decrement, the fade and the entity mark. `r.eax` is the timer.
+fn count_down(m: &mut Mem, mut r: Regs, cpu: &CpuAbi, player: u32) -> Result<Regs, Decline> {
+    let timer = r.eax;
+    r.ecx = seconds(m)?;
+    r.edx = r.ecx.wrapping_mul(3);
+    let kind = if timer == r.edx {
+        Some(0x14)
+    } else {
+        r.edx = r.ecx.wrapping_mul(2);
+        if timer == r.edx || timer == r.ecx {
+            Some(0x14)
+        } else if timer == 1 {
+            Some(0x15)
+        } else {
+            None
+        }
+    };
+    if let Some(kind) = kind {
+        // The frame below the four pushes: `esp` is `entry - 0x34`, the
+        // event is at `[esp + 0x10]`.
+        let esp = cpu.esp.wrapping_sub(0x34);
+        let event = esp.wrapping_add(0x10);
+        m.scratch_u32(esp.wrapping_add(0x14), kind)?;
+        m.scratch_u16(esp.wrapping_add(0x30), 0xffff)?;
+        for off in [0x28, 0x24, 0x20] {
+            m.scratch_u32(esp.wrapping_add(off), u32::MAX)?;
+        }
+        m.scratch_u32(esp.wrapping_add(0x18), cpu.eax)?;
+        m.scratch_u32(esp.wrapping_add(0x1c), cpu.eax)?;
+        m.scratch_u32(esp.wrapping_add(0x2c), 0)?;
+        m.scratch_u32(event, 0)?;
+        r.eax = event;
+        death_event(m, r, esp.wrapping_sub(4), event)?;
+    }
+    // `15de0a`.
+    let left = m.u32(player.wrapping_add(0x164))?.wrapping_sub(1);
+    m.set_u32(player.wrapping_add(0x164), left)?;
+    let per = seconds(m)? as i32;
+    let left = left as i32;
+    let (quotient, remainder) = match (left.checked_div(per), left.checked_rem(per)) {
+        (Some(q), Some(rem)) => (q, rem),
+        _ => return Err(Decline::Fault),
+    };
+    m.set_u32(player.wrapping_add(0x170), quotient as u32)?;
+    let fade = quotient.clamp(0, 0x3ff) as u32;
+    m.set_u32(player.wrapping_add(0x170), fade)?;
+    let regs = Regs { eax: fade, ecx: per as u32, edx: remainder as u32 };
+    entity_mark(m, regs, cpu.eax, 0x80)
+}
+
+/// The ticks per second, `movsx [[510c54] + 2]`.
+fn seconds(m: &Mem) -> Result<u32, Decline> {
+    Ok(m.u16(m.u32(TICKS)?.wrapping_add(2))? as i16 as i32 as u32)
+}
+
+/// `15de5e`: a timer at zero waits for the slot's turn once more than
+/// three ticks have passed since `[game + 0x70]`. `al` is 1 coming in.
+fn stagger(m: &Mem, mut r: Regs, slot: u32) -> Result<Answer, Decline> {
+    let ticks = m.u32(TICKS)?;
+    r.ecx = m.u32(ticks.wrapping_add(8))?;
+    r.edx = m.u32(GAME)?;
+    r.ecx = r.ecx.wrapping_sub(m.u32(r.edx.wrapping_add(0x70))?);
+    if r.ecx as i32 <= 3 {
         return Ok(Answer { ready: true, regs: r });
     }
     r.ecx &= 0x1f;
     let ready = r.ecx == slot & 0x1f;
-    r.eax = u32::from(ready);
+    if !ready {
+        r.eax &= !0xff;
+    }
     Ok(Answer { ready, regs: r })
 }
 
-/// One call's prediction: the CPU as the return leaves it.
+/// One call's prediction: the CPU as the return leaves it, and the words
+/// the call writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Prediction {
     pub cpu: CpuAbi,
+    pub writes: Writes,
 }
 
 impl Prediction {
@@ -316,6 +408,12 @@ impl Prediction {
         .find(|(_, a, b)| a != b)
         .map(|(name, ..)| *name)
     }
+
+    /// Whether a word the prediction writes holds something else in
+    /// `guest` after the guest's return.
+    pub fn memory_differs(&self, guest: &Guest) -> bool {
+        self.writes.iter().any(|(a, v)| guest.u32(a).ok() != Some(v))
+    }
 }
 
 /// What [`enter`] did with a call.
@@ -331,19 +429,29 @@ pub enum Step {
 
 /// The kernel's prediction for the call `cpu` is entering.
 pub fn predict(cpu: &CpuAbi, g: &Guest) -> Result<Prediction, Decline> {
-    let answer = kernel(g, cpu)?;
+    let mut m = Mem::new(g);
+    let answer = kernel(&mut m, cpu)?;
     let mut out = *cpu;
     out.eax = answer.regs.eax;
     out.ecx = answer.regs.ecx;
     out.edx = answer.regs.edx;
     out.esp = cpu.esp.wrapping_add(4 + ARGS);
     out.eflags_defined &= !ARITH;
-    Ok(Prediction { cpu: out })
+    Ok(Prediction { cpu: out, writes: m.writes() })
 }
 
-/// Put `prediction` in place of the call; returns the return address.
-pub fn apply(prediction: &Prediction, cpu: &mut CpuAbi, guest: &Guest) -> Result<u32, runtime::GuestFault> {
+/// Put `prediction` in place of the call: its writes, then its registers.
+/// Returns the return address. Every written word is written back as it
+/// is first, so a fault lands nothing.
+pub fn apply(prediction: &Prediction, cpu: &mut CpuAbi, guest: &mut Guest) -> Result<u32, runtime::GuestFault> {
     let target = guest.u32(cpu.esp)?;
+    for (a, _) in prediction.writes.iter() {
+        let old = guest.u32(a)?;
+        guest.set_u32(a, old)?;
+    }
+    for (a, v) in prediction.writes.iter() {
+        guest.set_u32(a, v)?;
+    }
     let eip = cpu.eip;
     *cpu = prediction.cpu;
     cpu.eip = eip;
@@ -351,7 +459,7 @@ pub fn apply(prediction: &Prediction, cpu: &mut CpuAbi, guest: &Guest) -> Result
 }
 
 /// At the entry: predict the call and decide who answers.
-pub fn enter(cpu: &mut CpuAbi, guest: &Guest) -> Step {
+pub fn enter(cpu: &mut CpuAbi, guest: &mut Guest) -> Step {
     let prediction = match predict(cpu, guest) {
         Ok(p) => p,
         Err(why) => {
@@ -375,11 +483,12 @@ pub fn enter(cpu: &mut CpuAbi, guest: &Guest) -> Step {
     }
 }
 
-/// At the guest's return: compare with the prediction. The guest's answer
-/// stands either way.
-pub fn compare(prediction: &Prediction, cpu: &CpuAbi) {
+/// At the guest's return: compare with the prediction, the registers and
+/// the written words in `guest`. The guest's answer stands either way.
+pub fn compare(prediction: &Prediction, cpu: &CpuAbi, guest: &Guest) {
     CHECKED.fetch_add(1, Ordering::Relaxed);
-    match prediction.differs(cpu) {
+    let what = prediction.differs(cpu).or_else(|| prediction.memory_differs(guest).then_some("memory"));
+    match what {
         None => {
             MATCHED.fetch_add(1, Ordering::Relaxed);
         }
