@@ -10,8 +10,9 @@
 //! frame draws as a quad over its movie's upload
 //! (`frame_scene::OverlayTexture::Movie`). A hold ends the batch before
 //! it too: it copies what was drawn into its held texture
-//! ([`PlanHold`]). A model view is refused until
-//! a stage draws a model widget's view.
+//! ([`PlanHold`]). A model view is planned for the object stage with its
+//! camera and scissor (`crate::model_view::PlanModelView`), in list order
+//! as the blurs; until that stage draws one, each is counted refused.
 //! An item the renderer cannot draw is dropped and counted by its reason
 //! ([`OverlayStats`]): the overlay has no guest draw to fall back to.
 
@@ -328,8 +329,11 @@ pub struct OverlayStats {
     /// Batches whose texture the renderer does not hold, or whose blend
     /// it cannot take (`ui_gpu`).
     pub refused_texture: u32,
-    /// Model views: no stage draws a model widget's view yet.
+    /// Model views planned with their camera ([`OverlayPlan::model_views`])
+    /// that no stage draws yet.
     pub refused_model_view: u32,
+    /// Model views with no camera or scissor (`crate::model_view::Refusal`).
+    pub refused_model_view_camera: u32,
     /// Movie frames whose movie the renderer holds no upload of
     /// (`ui_gpu`).
     pub refused_movie: u32,
@@ -346,6 +350,7 @@ impl OverlayStats {
     /// Items the plan kept.
     pub fn drawn(&self) -> u32 {
         self.items - self.refused_material - self.refused_clip - self.refused_glyph - self.refused_model_view
+            - self.refused_model_view_camera
     }
 }
 
@@ -361,6 +366,8 @@ pub struct OverlayPlan {
     pub blurs: Vec<PlanBlur>,
     /// In list order, as the blurs.
     pub holds: Vec<PlanHold>,
+    /// In list order, as the blurs.
+    pub model_views: Vec<crate::model_view::PlanModelView>,
     pub stats: OverlayStats,
 }
 
@@ -407,7 +414,16 @@ impl OverlayPlan {
         plan.stats.holds = counts.holds;
         for item in &overlay.items {
             if item.kind == OverlayKind::ModelView {
-                plan.stats.refused_model_view += 1;
+                let before = plan.batches.len() as u32;
+                let planned = overlay.model_view_of(item).ok_or(crate::model_view::Refusal::Camera)
+                    .and_then(|view| crate::model_view::plan(view, &item.clip, guest, target, before));
+                match planned {
+                    Ok(view) => {
+                        plan.model_views.push(view);
+                        plan.stats.refused_model_view += 1;
+                    }
+                    Err(_) => plan.stats.refused_model_view_camera += 1,
+                }
                 continue;
             }
             if item.kind == OverlayKind::Hold {
@@ -490,7 +506,8 @@ impl OverlayPlan {
             }
             let count = plan.indices.len() as u32 - start;
             let after_blur = plan.blurs.last().is_some_and(|b| b.before as usize == plan.batches.len())
-                || plan.holds.last().is_some_and(|h| h.before as usize == plan.batches.len());
+                || plan.holds.last().is_some_and(|h| h.before as usize == plan.batches.len())
+                || plan.model_views.last().is_some_and(|m| m.before as usize == plan.batches.len());
             let magnified = target[0] > guest[0] || target[1] > guest[1];
             let glyph_cache = if magnified { item.glyph_cache & 15 } else { 0 };
             let joins = !after_blur && plan.batches.last().is_some_and(|b| {
@@ -763,18 +780,28 @@ mod tests {
         o.push_quad(sprite(1), all(), quad(0.0)).unwrap();
         o.push_blur(all(), OverlayBlur { tap: 0.5, spreads: vec![1.0, 1.25], pick: 0.25 }).unwrap();
         o.push_quad(sprite(1), all(), quad(8.0)).unwrap();
-        let view = OverlayModelView { camera: OverlayCamera::default(), objects: vec![7] };
+        let camera = OverlayCamera { forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 1.0, planes: [0.0625, 200.0], ..OverlayCamera::default() };
+        let view = OverlayModelView { camera, objects: vec![7] };
         o.push_model_view(ClipRect { x: 10, y: 10, width: 64, height: 48 }, view).unwrap();
         o.push_quad(sprite(1), all(), quad(16.0)).unwrap();
         let p = OverlayPlan::new(&o, [1280, 960], &NoGlyphs);
-        assert_eq!(p.batches.len(), 2, "the quad after the blur is not merged back; the model view does not split");
-        assert_eq!((p.batches[0].items, p.batches[1].items), (1, 2));
+        assert_eq!(p.batches.len(), 3, "the quads after the blur and the model view are not merged back");
+        assert_eq!((p.batches[0].items, p.batches[1].items, p.batches[2].items), (1, 1, 1));
         assert_eq!(p.blurs.len(), 1);
         assert_eq!(p.blurs[0].before, 1);
         assert_eq!(p.blurs[0].scissor, Scissor { x: 0, y: 0, width: 1280, height: 960 });
         assert_eq!(p.blurs[0].offsets, vec![[0.5 / 640.0, 0.5 / 480.0], [0.625 / 640.0, 0.625 / 480.0]]);
         assert_eq!(p.blurs[0].pick, 0.25, "the combiner's constant goes with the steps");
         assert_eq!((p.stats.blurs, p.stats.model_views, p.stats.refused_model_view), (1, 1, 1));
+        assert_eq!(p.stats.drawn(), 4);
+        assert_eq!(p.model_views.len(), 1);
+        assert_eq!((p.model_views[0].before, p.model_views[0].objects.as_slice()), (2, &[7][..]), "between the batches, as the blur");
+        assert_eq!(p.model_views[0].scissor, Scissor { x: 20, y: 20, width: 128, height: 96 });
+        assert_eq!(p.model_views[0].camera.viewport, [10, 10, 58, 74]);
+        let mut flat = o.clone();
+        flat.model_views[0].camera.fov_y = 0.0;
+        let p = OverlayPlan::new(&flat, [1280, 960], &NoGlyphs);
+        assert_eq!((p.model_views.len(), p.stats.refused_model_view, p.stats.refused_model_view_camera), (0, 0, 1));
         assert_eq!(p.stats.drawn(), 4);
         let mut blur_only = Overlay::new([640, 480]);
         blur_only.push_blur(all(), OverlayBlur { tap: 0.5, spreads: vec![1.0], pick: 0.0 }).unwrap();

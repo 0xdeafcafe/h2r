@@ -1445,6 +1445,7 @@ pub fn count_overlay(stats: &crate::overlay::OverlayStats) {
         (Ui::OverlayBlurs, stats.blurs),
         (Ui::OverlayModelViews, stats.model_views),
         (Ui::OverlayRefusedModelView, stats.refused_model_view),
+        (Ui::OverlayRefusedModelViewCamera, stats.refused_model_view_camera),
         (Ui::OverlayRefusedBlur, stats.refused_blur),
         (Ui::OverlayMovieFrames, stats.movie_frames),
         (Ui::OverlayRefusedMovie, stats.refused_movie),
