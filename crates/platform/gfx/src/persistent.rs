@@ -1,7 +1,7 @@
 //! GPU vertex buffers that outlive a submission.
 //!
 //! A vertex stream a caller marks with an id ([`Draw::stream_ids`]) holds
-//! bytes that never change under that id (the d3d device's vertex cache
+//! bytes that never change under that id (the guest device's vertex cache
 //! hands out a new id whenever it re-reads a range). The first draw of an
 //! id writes its host buffer (raw, realigned or converted, as the stream's
 //! [`StreamPlan`] says) into a region of its own; later draws of the same
@@ -30,7 +30,7 @@
 //! own are held up to half the budget (an eviction frees a quarter at
 //! once); slabs that come back empty past [`SPARE_SLABS`] are dropped.
 //!
-//! Staged writes ([`PersistentVertices::set_staged`], what `d3d`'s backend
+//! Staged writes ([`PersistentVertices::set_staged`], what the renderer
 //! uses): instead of a `queue.write_buffer` per new region (a staging
 //! buffer wgpu makes and frees, about 20 us each), the bytes go into an
 //! upload ring that is written once per flush, and a buffer-to-buffer copy

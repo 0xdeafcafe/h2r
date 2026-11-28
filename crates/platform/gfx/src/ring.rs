@@ -513,7 +513,7 @@ impl SubmissionUploads {
     /// Copy `bytes` into a persistent buffer ahead of every command of the
     /// submission whose [`upload_commands`](Self::upload_commands) take it.
     /// The caller keeps one content per range for that submission
-    /// (`d3d::GfxBackend` decides at commit, in submission order).
+    /// (the renderer decides at commit, in submission order).
     pub fn write_front(&self, device: &wgpu::Device, queue: &wgpu::Queue, dst: &wgpu::Buffer, offset: u64, bytes: &[u8]) {
         if bytes.is_empty() { return; }
         crate::churn::upload_bytes(bytes.len());

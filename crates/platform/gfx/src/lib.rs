@@ -43,6 +43,10 @@ pub mod external;
 pub mod raster;
 pub mod format;
 #[cfg(feature = "gpu")]
+pub mod host_texture;
+pub mod guest_program;
+pub mod guest_projection;
+#[cfg(feature = "gpu")]
 pub mod guest_words;
 #[cfg(feature = "gpu")]
 pub mod occlusion;
@@ -50,6 +54,9 @@ pub mod occlusion;
 pub mod persistent;
 #[cfg(feature = "gpu")]
 pub mod pipeline;
+#[cfg(feature = "gpu")]
+pub mod pipeline_store;
+pub mod present_camera;
 #[cfg(feature = "gpu")]
 pub mod presenter;
 #[cfg(feature = "gpu")]

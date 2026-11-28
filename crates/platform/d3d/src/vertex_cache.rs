@@ -24,19 +24,9 @@
 //! back already scanned and rebased onto its vertex window.
 
 use rustc_hash::FxHashMap as HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::backend::{CachedBytes, CachedIndices};
+use gfx::external::{CachedBytes, CachedIndices, next_snapshot_id};
 use crate::dirty::WriteTracker;
-
-/// Snapshot ids, unique in the process: a backend may outlive a cache
-/// ([`crate::Device::set_vertex_cache`] makes new ones) and keeps host
-/// copies by id, so an id must never name two snapshots.
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
-pub(crate) fn next_snapshot_id() -> u64 {
-    NEXT_ID.fetch_add(1, Ordering::Relaxed)
-}
 
 /// What a [`RangeCache`] keeps per range.
 pub trait Snapshot: Clone {

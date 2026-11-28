@@ -21,11 +21,20 @@ hashbrown = { version = "0.17", default-features = false, features = ["default-h
 serde = { version = "1", features = ["derive"] }
 pollster = { version = "1", optional = true }
 smallvec = "1"
+# The one widescreen rule (UiFit; docs/graphics/high-resolution.md).
+canvas-fit = { path = "../canvas-fit" }
+# Pixel combiner definitions and fog parameters (guest_program).
+shaders = { path = "../../formats/shaders" }
+# The one cache directory the pipeline store lives in (pipeline_store).
+host-dirs.workspace = true
+# The render camera `present_camera` carries.
+frame-types = { path = "../frame-types" }
 thiserror.workspace = true
 # Pipeline-creation spans (docs/perf/profiling.md); no dependencies of its own.
 timeline = { path = "../../runtime/timeline", optional = true }
 
 [dev-dependencies]
+serde_json.workspace = true
 winit = "0.30"
 anyhow.workspace = true
 

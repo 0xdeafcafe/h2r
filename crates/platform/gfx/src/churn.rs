@@ -10,7 +10,7 @@ use std::cell::Cell;
 /// What was allocated on this thread so far.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Churn {
-    /// GPU buffers created by `gfx` (and the d3d backend's counted paths):
+    /// GPU buffers created by `gfx`:
     /// rings, persistent vertex and index buffers, staging chunks, count
     /// and read-back buffers.
     pub buffers_created: u64,
