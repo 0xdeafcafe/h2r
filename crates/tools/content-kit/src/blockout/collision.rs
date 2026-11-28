@@ -17,7 +17,6 @@ use forge_shapes::Solid;
 use map::build::Block;
 use tags::collision::{BSP_BLOCKS_SIZE, BSP_SIZE, BSP_STRIDES, Bsp, COLL_ROOT_SIZE};
 
-use crate::blockout::{crate::blockout::data::data().node.as_str(), crate::blockout::data::data().region.as_str()};
 
 
 /// The shell's faces as collision polygons, in shell order, all material 0.

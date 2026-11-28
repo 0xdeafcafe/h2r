@@ -44,7 +44,7 @@ pub fn project_of(job: &FreshJob<'_>) -> Result<Project, String> {
         edits: Vec::new(),
         imports: Vec::new(),
     };
-    Project::from_spec(&spec).map_err(|e| e.to_string())
+    super::project_of_spec(&spec).map_err(|e| e.to_string())
 }
 
 impl Fresh for StageFresh<'_> {
@@ -165,6 +165,6 @@ mod tests {
             kits: &spec.kits,
             files: &files,
         };
-        assert_eq!(project_of(&job).unwrap(), Project::builtin().unwrap());
+        assert_eq!(project_of(&job).unwrap(), crate::stage::builtin_project().unwrap());
     }
 }

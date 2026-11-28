@@ -43,6 +43,7 @@ vfs.workspace = true
 fixture = []
 
 [dev-dependencies]
+workspace = { path = "../workspace" }
 xiso.workspace = true
 
 [lints]

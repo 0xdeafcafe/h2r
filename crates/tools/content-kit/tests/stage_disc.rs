@@ -11,7 +11,7 @@ use std::fs::File;
 use std::io::BufReader;
 
 use map::{Map, ResourceFile};
-use content_kit::stage::map::{Base, Project, build, package};
+use content_kit::stage::map::{Base, build, package};
 use tags::repo::{MapSource, SharedFiles, TagKey, TagSource};
 use tags::schema::Schema;
 
@@ -64,7 +64,7 @@ fn shared(schema: &Schema, maps: &[(String, u64, u64)]) -> Res<SharedFiles<BufRe
 #[test]
 #[ignore = "needs the owner's disc"]
 fn the_stage_builds_on_the_disc() -> Res<()> {
-    let mut project = Project::builtin()?;
+    let mut project = workspace::stage::builtin_project()?;
     if let Ok(b) = std::env::var("H2_STAGE_BASE") {
         project.base = b;
     }

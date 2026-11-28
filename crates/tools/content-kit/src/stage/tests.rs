@@ -446,30 +446,14 @@ mod base {
 }
 
 fn project() -> crate::stage::map::Project {
-    crate::stage::map::Project::builtin().expect("the shipped project parses")
-}
-
-#[test]
-fn the_project_parses_and_refuses_what_it_cannot_build() {
-    let p = project();
-    assert_eq!((p.name.as_str(), p.mode.as_str()), ("stage", "fresh"));
-    assert_eq!(p.kits, ["stage"]);
-    for (from, to) in [
-        ("mode = \"fresh\"", "mode = \"onto\""),
-        ("kits = [\"stage\"]", "kits = [\"stage\", \"pogo\"]"),
-        (
-            "kits = [\"stage\"]",
-            "kits = [\"stage\"]\nedits = [\"x\", \"x\"]",
-        ),
-        ("name = \"stage\"", "name = \"a stage\""),
-    ] {
-        let text = crate::stage::PROJECT.replace(from, to);
-        assert_ne!(text, crate::stage::PROJECT, "{from}");
-        assert!(
-            matches!(crate::stage::map::Project::parse(&text), Err(Error::Project(_))),
-            "{to}"
-        );
-    }
+    crate::stage::map::Project::from_spec(&crate::stage::map::Spec {
+        fresh: true,
+        base: "lockout".into(),
+        name: "stage".into(),
+        scenario: Some(r"scenarios\multi\stage\stage".into()),
+        kits: vec!["stage".into()],
+    })
+    .expect("the shipped project")
 }
 
 #[test]

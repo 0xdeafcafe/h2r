@@ -74,6 +74,7 @@ def root_exports():
         name = "content",
         srcs = [
             "content/README.md",
+            "content/blockout/README.md",
             "content/blockout/kit.yaml",
             "content/core/huds/theater.hud.yaml",
             "content/core/kits/glyphs.kit.yaml",

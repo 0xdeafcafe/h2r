@@ -596,7 +596,7 @@ fn build_project(args: &[String]) -> Result<()> {
     }
     let text = std::fs::read_to_string(&project_path)
         .with_context(|| format!("reading {}", project_path.display()))?;
-    let project = content_kit::stage::map::Project::parse(&text)?;
+    let project = workspace::stage::project(&text)?;
     let started = std::time::Instant::now();
     let (built, base) = match repo_dir {
         Some(dir) => {

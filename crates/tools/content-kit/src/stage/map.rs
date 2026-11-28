@@ -121,17 +121,21 @@ fn plain_name(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
-impl Project {
-    /// A `map.toml`'s text, as [`Project::from_spec`] takes it.
-    pub fn parse(text: &str) -> Result<Project> {
-        let spec = workspace::MapSpec::parse(text.as_bytes()).map_err(Error::Project)?;
-        Self::from_spec(&spec)
-    }
+/// The fields of a `map.toml` ([`workspace::MapSpec`], parsed by
+/// `workspace::stage::project`) that the stage build checks.
+pub struct Spec {
+    pub fresh: bool,
+    pub base: String,
+    pub name: String,
+    pub scenario: Option<String>,
+    pub kits: Vec<String>,
+}
 
+impl Project {
     /// The map item this build can make: the stage kit alone, `fresh`.
     /// Anything else is an error naming it. Its edit files and import
     /// layers are the tree build's stack, not this build's.
-    pub fn from_spec(spec: &workspace::MapSpec) -> Result<Project> {
+    pub fn from_spec(spec: &Spec) -> Result<Project> {
         if !plain_name(&spec.name) {
             return Err(Error::Project(format!(
                 "name {:?}: letters, digits, '_' and '-', at most 31",
@@ -144,7 +148,7 @@ impl Project {
                 spec.base
             )));
         }
-        if spec.mode != workspace::Mode::Fresh {
+        if !spec.fresh {
             return Err(Error::Project(
                 "mode \"onto\": the stage builds \"fresh\"".into(),
             ));
@@ -174,10 +178,6 @@ impl Project {
         })
     }
 
-    /// The project shipped with the repository ([`crate::stage::PROJECT`]).
-    pub fn builtin() -> Result<Project> {
-        Self::parse(crate::stage::PROJECT)
-    }
 }
 
 // The base.

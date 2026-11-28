@@ -46,7 +46,7 @@ impl Kit for StageKit {
             ));
         }
         // The stack has applied the project's edit files and layers already.
-        let stage = Project::from_spec(p).map_err(|e| e.to_string())?;
+        let stage = super::project_of_spec(p).map_err(|e| e.to_string())?;
         let (base, _) = Base::from_repo(&step.roots.tree, &p.base).map_err(|e| e.to_string())?;
         let built = build(&mut *step.src, &base, &stage).map_err(|e| e.to_string())?;
         let r = &built.report;
