@@ -9,9 +9,11 @@
 //!
 //! The pass's own state setup (the target, the render states, the vertex
 //! program) stays the guest's: only its walker call is cut, so the count
-//! reads the depth the guest bound. Other walker calls (the water's query,
-//! class 5; the draw pass) run the guest body, and the reader reads their
-//! slots from the device ([`Host::device_result`]). Both hooks are
+//! reads the depth the guest bound. The water ocean's gate makes its own
+//! registration and listed walker call in Rust ([`register`],
+//! [`walk_listed`], from `water_end::ocean::gate`). The draw pass's walker
+//! call runs the guest body, and the reader reads a slot the guest ended
+//! from the device ([`Host::device_result`]). Both hooks are
 //! `implement`s at their entries, placed after `native-targets`; no other
 //! hook sits there.
 //!
@@ -86,6 +88,9 @@ pub enum SlotCount {
     Ready(u32),
     /// Quad `k` of a count pass.
     Counted(Arc<dyn Counts>, usize),
+    /// The sum of quads `range` of a count pass (one test drawn as
+    /// several quads).
+    Summed(Arc<dyn Counts>, std::ops::Range<usize>),
 }
 
 impl SlotCount {
@@ -94,6 +99,7 @@ impl SlotCount {
         match self {
             Self::Ready(n) => Some(*n),
             Self::Counted(c, k) => c.read().and_then(|v| v.get(*k).copied()),
+            Self::Summed(c, r) => c.read().and_then(|v| v.get(r.clone()).map(|s| s.iter().fold(0u32, |a, &n| a.saturating_add(n)))),
         }
     }
 }
@@ -278,6 +284,168 @@ pub fn commit_walk(mem: &mut dyn GuestMemory, state: &mut State, frame: u32, pla
     Ok(())
 }
 
+/// What `0x000209b0` matches an entry's head against (its key, EAX): the
+/// low bit, the view, the class, the owner and the top six bits.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Key {
+    pub bit: bool,
+    pub view: u32,
+    pub class: u32,
+    pub owner: u32,
+    pub tail: u32,
+}
+
+impl Key {
+    fn matches(&self, head: u32) -> bool {
+        head & 1 == u32::from(self.bit)
+            && (head >> 1) & 3 == self.view
+            && (head >> 3) & 7 == self.class
+            && (head >> 6) & 0xfff == self.owner
+            && (head >> 18) & 0x3f == self.tail
+    }
+
+    /// The head `0x00020a82..0x00020ad7` builds over `head`.
+    fn head(&self, head: u32) -> u32 {
+        let put = |h: u32, v: u32, mask: u32| ((v ^ h) & mask) ^ h;
+        let h = put(head, u32::from(self.bit), 1);
+        let h = put(h, self.view << 1, 6);
+        let h = put(h, self.class << 3, 0x38);
+        let h = put(h, self.owner << 6, 0x3_ffc0);
+        put(h, self.tail << 18, 0xfc_0000)
+    }
+}
+
+/// The gates `0x000209b0` returns -1 behind: the array off, no current
+/// view, `[0x00485607]` set, `[0x004850c8]` not 0.
+pub const REGISTER_BYTE: u32 = 0x0048_5607;
+pub const REGISTER_WORD: u32 = 0x0048_50c8;
+
+/// `0x000209b0(eax key, payload, size)`: the in-use entry whose head
+/// matches `key`, else the first free entry (freed by `0x00020e50`, its
+/// head built, the count raised past it); an entry not active this frame
+/// takes the payload's size (`+4` bits 2..6) and the payload at `+8`, and
+/// becomes in use and active. `None` where the guest returns -1.
+pub fn register(mem: &mut dyn GuestMemory, state: &mut State, key: Key, payload: &[u8]) -> Result<Option<u32>, &'static str> {
+    let r = |mem: &dyn GuestMemory, at: u32| mem.u32(at).map_err(|_| "unread");
+    let byte = |mem: &dyn GuestMemory, at: u32| mem.u8(at).map_err(|_| "unread");
+    if byte(&*mem, fl::ON)? == 0
+        || r(&*mem, fl::CURRENT_VIEW)? == u32::MAX
+        || byte(&*mem, REGISTER_BYTE)? != 0
+        || r(&*mem, REGISTER_WORD)? != 0
+    {
+        return Ok(None);
+    }
+    let n = r(&*mem, fl::COUNT)? as i32;
+    let mut found = None;
+    for i in 0..n.max(0) as u32 {
+        let at = fl::entry_addr(i);
+        if r(&*mem, at + 4)? & 1 != 0 && key.matches(r(&*mem, at)?) {
+            found = Some(i);
+            break;
+        }
+    }
+    let index = match found {
+        Some(i) => i,
+        None => {
+            // The free scan runs to the end of the array, not the count.
+            let Some(i) = (0..(fl::COUNT - fl::ENTRIES) / fl::ENTRY_SIZE)
+                .map(|i| r(&*mem, fl::entry_addr(i) + 4).map(|f| (i, f)))
+                .find(|v| v.as_ref().map_or(true, |&(_, f)| f & 1 == 0))
+                .transpose()?
+                .map(|(i, _)| i)
+            else {
+                return Ok(None);
+            };
+            free(mem, state, i)?;
+            let at = fl::entry_addr(i);
+            let head = key.head(r(&*mem, at)?);
+            mem.set_u32(at, head).map_err(|_| "unwritable")?;
+            if (i + 1) as i32 > r(&*mem, fl::COUNT)? as i32 {
+                mem.set_u32(fl::COUNT, i + 1).map_err(|_| "unwritable")?;
+            }
+            i
+        }
+    };
+    let at = fl::entry_addr(index);
+    let flags = r(&*mem, at + 4)?;
+    if flags & 2 == 0 {
+        let size = payload.len() as u32;
+        let flags = ((((size * 4) ^ flags) & 0x7c) ^ flags) | 3;
+        mem.set_u32(at + 4, flags).map_err(|_| "unwritable")?;
+        mem.write(at + 8, payload).map_err(|_| "unwritable")?;
+    }
+    Ok(Some(index))
+}
+
+/// A listed entry's test, made by its caller: quads whose counts sum, or
+/// a count known with no pass.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Test {
+    Quads(Vec<Quad>),
+    Known(u32),
+}
+
+/// One entry of a listed walker call: its test and the area the walker
+/// stores at `+6`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Listed {
+    pub index: u32,
+    pub test: Test,
+    pub area: u16,
+}
+
+/// A listed walker call `0x00020bb0(view, mask, list, n, 1, callback)`
+/// whose callback's tests are `listed`: each active entry of the view in
+/// `mask` whose slot is not still pending is tested (one count pass for
+/// every quad), its area stored and its bit set, its count the cut's
+/// slot. Nothing when the walker's gates hold.
+pub fn walk_listed(mem: &mut dyn GuestMemory, host: &dyn Host, state: &mut State, view: u32, mask: u32, listed: &[Listed]) -> Result<(), &'static str> {
+    let Some(frame) = fl::walk_frame(&Ro(&*mem), view) else { return Ok(()) };
+    let set = fl::query_set(frame);
+    let mut planned = Vec::new();
+    for l in listed {
+        let e = Entry::read(&Ro(&*mem), l.index).ok_or("unread")?;
+        if !e.active() || e.view() != view || mask & (1 << e.class()) == 0 {
+            continue;
+        }
+        let (word, bit) = fl::ended_bit(set, l.index);
+        let ended = mem.u32(word).map_err(|_| "unread")? & bit != 0;
+        if ended && state.count(mem, host, fl::slot(set, l.index)).is_none() {
+            continue;
+        }
+        planned.push(l);
+    }
+    let quads: Vec<Quad> = planned.iter().flat_map(|l| match &l.test {
+        Test::Quads(q) => q.clone(),
+        Test::Known(_) => Vec::new(),
+    }).collect();
+    let counts = if quads.is_empty() { None } else { Some(host.query(mem, quads).ok_or("placed")?) };
+    let mut k = 0;
+    for l in planned {
+        let c = match (&l.test, &counts) {
+            (Test::Quads(q), Some(c)) if !q.is_empty() => {
+                k += q.len();
+                SlotCount::Summed(Arc::clone(c), k - q.len()..k)
+            }
+            (Test::Known(n), _) => SlotCount::Ready(*n),
+            _ => SlotCount::Ready(0),
+        };
+        mem.set_u16(fl::entry_addr(l.index) + 6, l.area).map_err(|_| "unwritable")?;
+        let (word, bit) = fl::ended_bit(set, l.index);
+        let v = mem.u32(word).map_err(|_| "unread")?;
+        mem.set_u32(word, v | bit).map_err(|_| "unwritable")?;
+        state.slots.insert(fl::slot(set, l.index), c);
+    }
+    Ok(())
+}
+
+/// The installed host and the cut's slots, for a caller outside the two
+/// hooks (the water ocean's gate). `None` without a host.
+pub fn with_host<R>(f: impl FnOnce(&dyn Host, &mut State) -> R) -> Option<R> {
+    let host = host()?;
+    Some(with_state(|state| f(&*host, state)))
+}
+
 /// `0x00020e50(eax index)`: the entry's bits cleared in all three sets,
 /// the entry zeroed, its flags `0xff80`.
 pub fn free(mem: &mut dyn GuestMemory, state: &mut State, index: u32) -> Result<(), &'static str> {
@@ -350,8 +518,8 @@ fn walk_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -
     };
     let [view, mask, list, _count, query, callback] = args;
     if callback != QUERY_CALLBACK || query & 0xff != 1 || list != 0 || mask != QUERY_MASK {
-        // The water's query (its class 5 entry, listed) and the draw pass
-        // (no tests): neither polls a slot of the query's classes.
+        // The draw pass (no tests): it polls no slot of the query's
+        // classes. The water's query is the ocean gate's, in Rust.
         return original(cpu, ctx, addr);
     }
     let arm = &QUERY;
@@ -580,6 +748,58 @@ mod tests {
         state.scrub(&mut m, ALL_SETS);
         assert_eq!(m.u32(word).unwrap() & bit, 0);
         assert!(state.slots.is_empty());
+    }
+
+    /// `0x000209b0` finds an in-use entry by its key; a new key takes the
+    /// first free entry past it, raises the count and carries its payload.
+    #[test]
+    fn register_finds_the_key_or_takes_a_free_entry() {
+        let mut state = State::default();
+        let mut m = mem(10);
+        // Entry 1 (the water's, class 5 view 0) is in use and active.
+        m.set_u32(fl::entry_addr(1) + 4, 3).unwrap();
+        let water = Key { view: 0, class: 5, ..Key::default() };
+        assert_eq!(register(&mut m, &mut state, water, &7u32.to_le_bytes()), Ok(Some(1)));
+        assert_eq!(m.u32(fl::entry_addr(1) + 8).unwrap(), u32::MAX, "an active entry keeps its payload");
+        let new = Key { view: 1, class: 5, ..Key::default() };
+        assert_eq!(register(&mut m, &mut state, new, &0x1234u32.to_le_bytes()), Ok(Some(0)), "entry 0 is not in use");
+        let e = fl::entry_addr(0);
+        assert_eq!(m.u32(e).unwrap(), 1 << 1 | 5 << 3);
+        assert_eq!(m.u32(e + 4).unwrap(), 0xff80 | 4 * 4 | 3);
+        assert_eq!(m.u32(e + 8).unwrap(), 0x1234);
+        assert_eq!(m.u32(fl::COUNT).unwrap(), 2);
+        m.set_u8(REGISTER_BYTE, 1).unwrap();
+        assert_eq!(register(&mut m, &mut state, new, &[]), Ok(None), "a gate returns -1");
+    }
+
+    /// A listed entry's quads are counted in one pass and summed into its
+    /// slot; a known count needs no pass; the reader takes either.
+    #[test]
+    fn a_listed_test_sums_its_quads() {
+        let gpu = Gpu::default();
+        let mut state = State::default();
+        let mut m = mem(10);
+        let q = |x0: i32| Quad { x0, y0: 0, x1: x0 + 4, y1: 4, z: 0.0, w: 0.0, area: 16 };
+        let listed = [Listed { index: 1, test: Test::Quads(vec![q(0), q(4)]), area: 0xffff }];
+        walk_listed(&mut m, &gpu, &mut state, 0, 0x20, &listed).unwrap();
+        assert_eq!(gpu.passes.lock().unwrap()[0].0.len(), 2);
+        let (word, bit) = fl::ended_bit(fl::query_set(10), 1);
+        assert_ne!(m.u32(word).unwrap() & bit, 0);
+        assert_eq!(m.u16(fl::entry_addr(1) + 6).unwrap(), 0xffff);
+        gpu.land(0x4000);
+        assert_eq!(state.slots[&fl::slot(fl::query_set(10), 1)].get(), Some(0x8000));
+        // Two frames later the reader carries it: half of 0xffff seen.
+        m.set_u32(fl::FRAME, 12).unwrap();
+        cut_read(&mut m, &gpu, &mut state, 0, 12).unwrap();
+        assert_eq!(m.u8(fl::entry_addr(1) + 3).unwrap(), 127);
+        // A class outside the mask is left; a known count needs no pass.
+        let mut m = mem(10);
+        walk_listed(&mut m, &gpu, &mut state, 0, 0x1f, &listed).unwrap();
+        assert_eq!(m.u32(word).unwrap() & bit, 0);
+        let known = [Listed { index: 1, test: Test::Known(0xffff), area: 0xffff }];
+        walk_listed(&mut m, &gpu, &mut state, 0, 0x20, &known).unwrap();
+        assert_eq!(gpu.passes.lock().unwrap().len(), 1);
+        assert_eq!(state.slots[&fl::slot(fl::query_set(10), 1)].get(), Some(0xffff));
     }
 
     /// An inactive entry of the view is freed as `0x00020e50` frees it.

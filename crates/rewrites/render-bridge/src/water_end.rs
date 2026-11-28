@@ -16,14 +16,16 @@
 //! | not drawn | the first argument's byte 0 |
 //!
 //! Past them is the ocean (`0x0003c3ff..0x0003c632`), [`ocean`]'s steps:
-//! Rust makes the shader lookup, the alpha clear `0x0003c515`, the draw
-//! state but for the stream commit and the shader begin ([`ocean::state`])
-//! and the indexed quads natively, and calls the body's other helpers (the
-//! grid, the gates, the stream commit, the shader begin, the texture
-//! stamps) as guest calls, then returns as the body does. The copy
-//! `0x0003bea0` into target `0x16` is Rust; the sky pass into target
-//! `0x15` is not made. A step it cannot make is `unimplemented!("water
-//! ocean: <cause>")`, or `water ocean copy: <cause>` for the copies; a gate word that does not read is `water end: unread`.
+//! Rust makes the grid (`engine::ocean_grid`), the gates (the occlusion
+//! query over the native flare query's count pass, [`ocean::gate`]; the
+//! texture block's residency, [`ocean::cache`]), the shader lookup, the
+//! copy `0x0003bea0` into target `0x16`, the alpha clear `0x0003c515`, the
+//! draw state and stream commit ([`ocean::state`]), the indexed quads
+//! natively and the texture stamps, and calls the shader begin as a guest
+//! call, then returns as the body does. The sky pass into target `0x15`
+//! is not made. A step it cannot make is `unimplemented!("water ocean:
+//! <cause>")`, or `water ocean copy: <cause>` for the copies; a gate word
+//! that does not read is `water end: unread`.
 
 use std::sync::Arc;
 
@@ -151,6 +153,10 @@ impl ocean::Device for Live {
     fn draw(&mut self, mem: &mut dyn GuestMemory, indices: u32, count: u32) -> Result<(), ocean::Cause> {
         let geometry = crate::scene_step::water_composite(&*mem, indices, count).ok_or("quads")?;
         crate::native_transparents::draw_water(mem, indices, count, geometry).then_some(()).ok_or("draw")
+    }
+
+    fn visible(&mut self, mem: &mut dyn GuestMemory, definition: u32) -> Result<bool, ocean::Cause> {
+        crate::native_flare_query::with_host(|host, state| ocean::gate::visible(mem, host, state, definition)).unwrap_or(Err("flare_host"))
     }
 
     fn fp(&mut self) -> (&mut u32, u16) {

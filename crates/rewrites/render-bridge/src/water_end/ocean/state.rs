@@ -293,5 +293,132 @@ pub fn commit_stages(mem: &mut dyn GuestMemory, host: &dyn Host) -> Result<(), C
     Ok(())
 }
 
+/// D3D's static vertex shader object: `0x0001c710` copies the format to
+/// its `+0x14` and sets it as the input's handle (`| 1`).
+pub const STATIC_SHADER: u32 = 0x0040_8518;
+/// The record's words `0x0001c330` and `0x0001c710` read: the slot, its
+/// vertex type (`slot * 16 + 4`, kind `+ 8`), the program's address and
+/// dirty byte, the pending and last formats, the format, its dirty byte,
+/// the inputs, their count and their dirty byte.
+pub const RECORD_SLOT: u32 = 0x80;
+pub const RECORD_PROGRAM: u32 = 0x84;
+pub const RECORD_PROGRAM_DIRTY: u32 = 0x88;
+pub const RECORD_FORMATS: u32 = 0x8c;
+pub const RECORD_LAST_FORMATS: u32 = 0xcc;
+pub const RECORD_VAF: u32 = 0x10c;
+pub const RECORD_VAF_DIRTY: u32 = 0x20c;
+pub const RECORD_INPUTS: u32 = 0x210;
+pub const RECORD_COUNT: u32 = 0x2d0;
+pub const RECORD_INPUTS_DIRTY: u32 = 0x2d4;
+/// The built-in vertex type's registers by semantic (`0x0001c3c1`).
+pub const BUILTIN_REGISTERS: [(usize, i32); 3] = [(0, 0), (3, 3), (14, 9)];
+/// Semantics `0x0001c330`'s register table holds (`0x15` words).
+pub const SEMANTICS: usize = 0x15;
+
+/// `0x0001c330(record, vaf)`: the attribute format at `vaf` (sixteen
+/// registers of 16 bytes, each type `D3DVSDT_NONE` 2 first) from the
+/// record's pending formats, each register's stream, offset and type, by
+/// the semantics of the record's vertex type; each format taken moves to
+/// the last formats and clears the format's dirty byte. With no streams
+/// all sixteen pending formats are read.
+pub fn declaration(mem: &mut dyn GuestMemory, record: u32, vaf: u32) -> Result<(), Cause> {
+    let mut out = [0u8; 0x100];
+    for r in out.chunks_exact_mut(16) {
+        r[8] = 2;
+    }
+    let mut registers = [-1i32; SEMANTICS];
+    let slot = word(mem, record + RECORD_SLOT)?;
+    let at = record.wrapping_add(slot.wrapping_mul(16));
+    let tag = word(mem, at.wrapping_add(4))?;
+    if tag == u32::MAX {
+        for (s, r) in BUILTIN_REGISTERS {
+            registers[s] = r;
+        }
+    } else {
+        let kinds = word(mem, tag_data(mem, tag)?.wrapping_add(8))?;
+        let kind = kinds.wrapping_add(word(mem, at.wrapping_add(8))?.wrapping_mul(0x1c));
+        let (count, list) = (word(mem, kind.wrapping_add(4))?, word(mem, kind.wrapping_add(8))?);
+        for i in 0..count {
+            let s = usize::from(mem.u16(list.wrapping_add(2 * i)).map_err(|_| "unread")?);
+            *registers.get_mut(s).ok_or("vertex_declaration")? = i as i32;
+        }
+    }
+    let n = word(mem, record + RECORD_COUNT)? as i32;
+    let streams = if n == 0 { 16 } else { n.max(0) as u32 };
+    for stream in 0..streams {
+        let pending = record + RECORD_FORMATS + 4 * stream;
+        let format = word(mem, pending)?;
+        if format == 0 {
+            continue;
+        }
+        let mut offset = 0u32;
+        for k in 0..10 {
+            let semantic = byte(mem, format.wrapping_add(1 + 2 * k))? as i8;
+            let code = byte(mem, format.wrapping_add(2 + 2 * k))? as i8;
+            if semantic >= 0 {
+                let attribute = native_render::object_streams::Attribute::from_code(code as u8).ok_or("vertex_format")?;
+                let register = *registers.get(semantic as usize).ok_or("vertex_declaration")?;
+                if register >= 0 {
+                    let r = out.get_mut(16 * register as usize..16 * register as usize + 16).ok_or("vertex_declaration")?;
+                    r[0..4].copy_from_slice(&stream.to_le_bytes());
+                    r[4..8].copy_from_slice(&offset.to_le_bytes());
+                    r[8..12].copy_from_slice(&attribute.xbox_type().to_le_bytes());
+                    r[12] = 0;
+                    r[13] = 0;
+                }
+                // `movzx`: the size's low byte.
+                offset = offset.wrapping_add(u32::from(attribute.size() as u8));
+            } else if semantic == -2 {
+                offset = offset.wrapping_add(i32::from(code) as u32);
+            } else {
+                break;
+            }
+        }
+        set(mem, pending + 0x40, format)?;
+        set(mem, pending, 0)?;
+        set_byte(mem, record + RECORD_VAF_DIRTY, 0)?;
+    }
+    mem.write(vaf, &out).map_err(|_| "unwritable")
+}
+
+/// `0x0001c710(record)`: the stream commit. A dirty format is rebuilt
+/// ([`declaration`]); a format or inputs still dirty set the inputs
+/// (`SetVertexShaderInput`, the static shader with the format copied in,
+/// or none without streams); a dirty program or format selects the
+/// program at the record's address with the format
+/// (`SelectVertexShaderDirect`). The count is cleared, and the format's
+/// dirty byte when either was set.
+pub fn stream_commit(mem: &mut dyn GuestMemory, host: &dyn Host, record: u32) -> Result<(), Cause> {
+    let vaf = record + RECORD_VAF;
+    let mut made_any = false;
+    if byte(mem, record + RECORD_VAF_DIRTY)? != 0 {
+        declaration(mem, record, vaf)?;
+    }
+    if byte(mem, record + RECORD_VAF_DIRTY)? != 0 || byte(mem, record + RECORD_INPUTS_DIRTY)? != 0 {
+        let n = word(mem, record + RECORD_COUNT)?;
+        if n as i32 > 0 {
+            let mut format = [0u8; 0x100];
+            mem.read(vaf, &mut format).map_err(|_| "unread")?;
+            mem.write(STATIC_SHADER + 0x14, &format).map_err(|_| "unwritable")?;
+            made(host.vertex_input(mem, STATIC_SHADER | 1, n, record + RECORD_INPUTS))?;
+        } else {
+            made(host.vertex_input(mem, 0, n, 0))?;
+        }
+        set_byte(mem, record + RECORD_INPUTS_DIRTY, 0)?;
+        made_any = true;
+    }
+    if byte(mem, record + RECORD_PROGRAM_DIRTY)? != 0 || byte(mem, record + RECORD_VAF_DIRTY)? != 0 {
+        let address = word(mem, record + RECORD_PROGRAM)?;
+        made(host.select_vertex_program(mem, vaf, address))?;
+        set_byte(mem, record + RECORD_PROGRAM_DIRTY, 0)?;
+        made_any = true;
+    }
+    set(mem, record + RECORD_COUNT, 0)?;
+    if made_any {
+        set_byte(mem, record + RECORD_VAF_DIRTY, 0)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

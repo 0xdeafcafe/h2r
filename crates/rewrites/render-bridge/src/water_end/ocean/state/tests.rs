@@ -231,3 +231,99 @@ fn the_structure_upload_is_made_in_the_guests_order() {
     let scratch: Vec<u32> = (0..13).map(|i| m.u32(structure_upload::SCRATCH + 4 * i).unwrap()).collect();
     assert_eq!(scratch, u.scratch);
 }
+
+const RECORD: u32 = 0x0050_d000;
+const FORMAT: u32 = 0x0050_e000;
+
+/// A record whose slot 0 is the built-in vertex type, one stream pending
+/// `FORMAT`: semantic 0 as three floats, a skip of 4, semantic 3 as a
+/// colour, semantic 5 (no register) as two shorts, then the end.
+fn record(m: &mut FlatMemory) {
+    m.set_u32(RECORD + 4, u32::MAX).unwrap();
+    m.set_u32(RECORD + RECORD_FORMATS, FORMAT).unwrap();
+    m.set_u32(RECORD + RECORD_COUNT, 1).unwrap();
+    m.set_u32(RECORD + RECORD_PROGRAM, 0x31).unwrap();
+    m.write(FORMAT, &[0, 0, 2, 0xfe, 4, 3, 17, 5, 9, 14, 3, 0xff, 0]).unwrap();
+    m.write(RECORD + RECORD_VAF_DIRTY, &[1]).unwrap();
+}
+
+/// The format is built by the vertex type's registers in stream order,
+/// the pending format moved to the last. Rebuilding it alone makes no
+/// call (`0x0001c330` clears its dirty byte); dirty inputs are set
+/// through the static shader with the format copied in, then a dirty
+/// program selected.
+#[test]
+fn the_stream_commit_builds_the_format_then_sets_the_inputs_and_program() {
+    let mut m = mem();
+    record(&mut m);
+    let host = Fake::default();
+    stream_commit(&mut m, &host, RECORD).unwrap();
+    assert!(host.take().is_empty());
+    let vaf = RECORD + RECORD_VAF;
+    let reg = |m: &FlatMemory, r: u32| [0, 4, 8].map(|o| m.u32(vaf + 16 * r + o).unwrap());
+    // Semantic 0 to register 0 (float3, 0x32); 3 to 3 at 16 (colour,
+    // 0x40); 5 (no register) skips two shorts; 14 to 9 at 24 (float4,
+    // 0x42).
+    assert_eq!(reg(&m, 0), [0, 0, 0x32]);
+    assert_eq!(reg(&m, 3), [0, 16, 0x40]);
+    assert_eq!(reg(&m, 9), [0, 24, 0x42]);
+    assert_eq!(reg(&m, 1), [0, 0, 2], "an unused register is D3DVSDT_NONE");
+    assert_eq!(m.u32(RECORD + RECORD_LAST_FORMATS).unwrap(), FORMAT);
+    assert_eq!(m.u32(RECORD + RECORD_FORMATS).unwrap(), 0);
+    assert_eq!(m.u32(RECORD + RECORD_COUNT).unwrap(), 0);
+    m.set_u32(RECORD + RECORD_COUNT, 1).unwrap();
+    m.write(RECORD + RECORD_INPUTS_DIRTY, &[1]).unwrap();
+    m.write(RECORD + RECORD_PROGRAM_DIRTY, &[1]).unwrap();
+    stream_commit(&mut m, &host, RECORD).unwrap();
+    assert_eq!(host.take(), vec![
+        Event::VertexInput { handle: STATIC_SHADER | 1, count: 1, inputs: RECORD + RECORD_INPUTS },
+        Event::SelectProgram { vaf, address: 0x31 },
+    ]);
+    assert_eq!(m.u32(STATIC_SHADER + 0x14 + 16 * 3 + 4).unwrap(), 16);
+    assert_eq!(m.u32(RECORD + RECORD_COUNT).unwrap(), 0);
+    assert_eq!((m.u8(RECORD + RECORD_INPUTS_DIRTY).unwrap(), m.u8(RECORD + RECORD_PROGRAM_DIRTY).unwrap()), (0, 0));
+    // Nothing dirty: no calls, the count still cleared.
+    m.set_u32(RECORD + RECORD_COUNT, 1).unwrap();
+    stream_commit(&mut m, &host, RECORD).unwrap();
+    assert!(host.take().is_empty());
+    assert_eq!(m.u32(RECORD + RECORD_COUNT).unwrap(), 0);
+}
+
+/// Inputs dirty with no streams set none; a dirty program alone selects.
+#[test]
+fn the_stream_commit_without_streams_sets_no_inputs() {
+    let mut m = mem();
+    m.write(RECORD + RECORD_INPUTS_DIRTY, &[1]).unwrap();
+    m.write(RECORD + RECORD_PROGRAM_DIRTY, &[1]).unwrap();
+    let host = Fake::default();
+    stream_commit(&mut m, &host, RECORD).unwrap();
+    assert_eq!(host.take(), vec![
+        Event::VertexInput { handle: 0, count: 0, inputs: 0 },
+        Event::SelectProgram { vaf: RECORD + RECORD_VAF, address: 0 },
+    ]);
+    assert_eq!((m.u8(RECORD + RECORD_INPUTS_DIRTY).unwrap(), m.u8(RECORD + RECORD_PROGRAM_DIRTY).unwrap()), (0, 0));
+}
+
+/// A tag's vertex type maps its kind's semantics in list order; a
+/// semantic past the table is named.
+#[test]
+fn a_tags_vertex_type_maps_its_semantics() {
+    let mut m = mem();
+    record(&mut m);
+    let (data, kinds, list) = (0x0050_f000, 0x0050_f100, 0x0050_f200);
+    tag(&mut m, 6, data);
+    m.set_u32(RECORD + 4, 6).unwrap();
+    m.set_u32(RECORD + 8, 1).unwrap();
+    m.set_u32(data + 8, kinds).unwrap();
+    m.set_u32(kinds + 0x1c + 4, 2).unwrap();
+    m.set_u32(kinds + 0x1c + 8, list).unwrap();
+    // Semantic 3 to register 0, semantic 0 to register 1.
+    m.set_u32(list, 3).unwrap();
+    declaration(&mut m, RECORD, RECORD + RECORD_VAF).unwrap();
+    let vaf = RECORD + RECORD_VAF;
+    assert_eq!((m.u32(vaf + 4).unwrap(), m.u32(vaf + 8).unwrap()), (16, 0x40));
+    assert_eq!((m.u32(vaf + 16 + 4).unwrap(), m.u32(vaf + 16 + 8).unwrap()), (0, 0x32));
+    m.set_u32(RECORD + RECORD_FORMATS, FORMAT).unwrap();
+    m.set_u32(list, 21).unwrap();
+    assert_eq!(declaration(&mut m, RECORD, RECORD + RECORD_VAF), Err("vertex_declaration"));
+}
