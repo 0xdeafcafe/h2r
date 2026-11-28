@@ -23,6 +23,7 @@ pub mod native_first_person;
 pub mod native_fog;
 #[cfg(feature = "native-render")]
 pub mod native_fog_fans;
+#[cfg(feature = "native-render")]
 pub mod native_fog_quad;
 #[cfg(feature = "native-render")]
 pub mod native_gels;

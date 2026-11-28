@@ -1213,6 +1213,7 @@ fn run_configured(
             // The sound table's sounds play through this mixer
             // (game/src/sound_feed.rs, docs/engine/sound-instances.md,
             // "Mixer feed").
+            #[cfg(feature = "gpu")]
             if sim_bridge::sim_sound::entries::on(features.switches()) {
                 game::sound_feed::connect(Arc::clone(&mixer), audio.wma.as_ref().map(|w| w.tables()));
             }

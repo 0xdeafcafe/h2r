@@ -44,8 +44,10 @@ workspace_library(
     version = "0.1.0",
     deps = [
         "//crates/formats/hs:hs",
+        "//crates/formats/map:map",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/audio:audio",
+        "//crates/platform/sound-clips:sound-clips",
         "//crates/recompiler/x87:x87",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/sim-effects:sim-effects",
@@ -68,8 +70,10 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/hs:hs",
+        "//crates/formats/map:map",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/audio:audio",
+        "//crates/platform/sound-clips:sound-clips",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/x87:x87",
         "//crates/rewrites/engine:engine",

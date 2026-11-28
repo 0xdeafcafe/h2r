@@ -83,8 +83,7 @@ pub fn extent(bsp: &Bsp) -> (usize, usize) {
     let mut ring = 0;
     for (k, s) in bsp.surfaces.iter().enumerate() {
         let (mut e, mut n) = (s.first_edge, 0usize);
-        loop {
-            let Some(edge) = bsp.edges.get(usize::from(e)) else { break };
+        while let Some(edge) = bsp.edges.get(usize::from(e)) {
             n += 1;
             e = if usize::from(edge.right_surface) == k {
                 edge.reverse_edge
