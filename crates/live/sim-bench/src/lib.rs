@@ -6,13 +6,15 @@
 //! plan and report ([`train`]), the seam drops ([`drops`]) and the forked
 //! bounce search ([`bounces`]; docs/runtime/bounce-search.md), a
 //! Firefight match's table, seat rule and report section ([`firefight`]),
-//! and the spatial trace of a `detail = "spatial"` match ([`spatial`]).
+//! the spatial trace of a `detail = "spatial"` match ([`spatial`]), and
+//! the render-blind gate's comparison ([`blind`]).
 //!
 //! Nothing here touches the game: the boot glue (`boot::sim_glue`) reads
 //! the game and feeds this crate plain values, and `h2 sim` (the CLI) runs
 //! the processes. So all of it is tested without a run.
 
 pub mod batch;
+pub mod blind;
 pub mod bounce;
 pub mod bounces;
 pub mod clock;

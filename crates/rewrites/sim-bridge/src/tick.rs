@@ -10,6 +10,12 @@
 //! same point around the body. A `before` that returns skips the body as it
 //! skipped the original.
 //!
+//! Particles age as if seen (`engine::particle_seen`,
+//! docs/engine/sim-render-split.md, "6. Render scratch and stamps"): at
+//! each particle location's per-frame move the driver's observer sets the
+//! stamp the move reads, so no system moves by what a view drew. It is on
+//! wherever the tick is, rendered or not.
+//!
 //! [`LEDGER`] counts and times each guest phase the body calls. `sim.ledger` reads it
 //! and `tick-ledger.toml` is its ratchet.
 
@@ -30,6 +36,9 @@ pub fn ledger() -> Ledger {
 }
 
 pub struct TickDriver;
+
+/// The label of the particle locations' as-seen observer.
+pub const AS_SEEN: &str = "particles age as if seen";
 
 /// The tick: the 29 phases, then the node matrices of every object left
 /// with a dirty pose ([`engine::tick_poses`], docs/engine/sim-render-split.md,
@@ -73,6 +82,12 @@ impl Feature for TickDriver {
         b.raw().implement_async(&points::GAME_TICK, "tick driver", move |cx| -> EntryFuture {
             Box::pin(run(cx, present, bodies, sound.clone()))
         });
+        b.raw()
+            .observe_before(&points::PARTICLE_LOCATION_MOVE, AS_SEEN, |o| {
+                let location = o.cpu.ebx;
+                let _ = engine::particle_seen::as_seen(&mut *o.guest(), location);
+            })
+            .optional();
         Ok(())
     }
 }
@@ -303,6 +318,17 @@ mod tests {
                 sim_tick::guest_phases()
             );
         }
+    }
+
+    #[test]
+    fn every_particle_location_moves_as_if_seen() {
+        let mut r = hooks::Registry::new(hooks::Switches::parse("").unwrap());
+        r.add(&TickDriver).unwrap();
+        let text = r.build(&hooks::Base).unwrap().text();
+        assert!(
+            text.contains(&format!("0x00248750 PARTICLE_LOCATION_MOVE: observe_before [sim-tick:{AS_SEEN}]")),
+            "{text}"
+        );
     }
 
     /// Every hook kind on `GAME_TICK` stays in its place around the driver:

@@ -3,7 +3,8 @@
 //! Research points: `0x0023ed30` emits one quad after the caller evaluated
 //! the properties; `0x0023ecd0` selects its attribute registers. The helper
 //! writes two vectors, size/rotation, colour, quad and two UV windows, then
-//! one inline quad. `0x00174420` remains guest-owned, including its writes.
+//! one inline quad. `0x00174420` is not this module's (render-bridge's effects
+//! shadow makes it and keeps its stamps out of the arena).
 //! No particle datum is read or changed here. See native-particles.md.
 
 use crate::camera::GuestRead;

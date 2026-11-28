@@ -1110,6 +1110,10 @@ fn run_configured(
     if opts.d3d && !host_light {
         render_rng::install(&mut features)?;
         render_scratch::install(&mut features)?;
+        // The flare state is the render's: the simulation's bytes are
+        // put back after every frame (docs/engine/sim-render-split.md,
+        // "4. The flare visibility byte").
+        flare_store::install(&mut features)?;
     }
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.

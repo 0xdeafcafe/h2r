@@ -6,8 +6,8 @@
 //! `effect_geometry` instance streams without reading the guest.
 //!
 //! The list holds what the draws produce. The effects random word and the
-//! `0x00174420` visibility and location stamps are not here: the guest
-//! keeps making them (framescene.md, 5.2).
+//! `0x00174420` visibility and location stamps are not here: the effects
+//! shadow keeps them render-private (framescene.md, 5.2).
 
 use serde::Serialize;
 

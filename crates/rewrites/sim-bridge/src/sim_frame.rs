@@ -125,7 +125,7 @@ pub fn after_wait(a: &Addrs, g: &mut dyn GuestMemory) -> Result<(), MemFault> {
 }
 
 /// Whether the caches are idle after a frame, so it presented.
-fn idle_after(a: &Addrs, g: &dyn GuestMemory) -> bool {
+pub fn idle_after(a: &Addrs, g: &dyn GuestMemory) -> bool {
     let (c0, c1) = a.cache_countdowns;
     matches!((g.i32(c0), g.i32(c1)), (Ok(x), Ok(y)) if x <= 0 && y <= 0)
 }

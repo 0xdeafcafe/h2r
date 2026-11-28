@@ -112,7 +112,7 @@ and what sim mode does with it:
 | Object `+0xcc` render-state handle, light render fields, the render-state cache | (a), false sharing; the tick's effect update calls `0x0003ddd0` too | Nothing to do: a frame writes the render's own copy and puts the tick's bytes back (`game::render_scratch`, [sim-render-split.md](../engine/sim-render-split.md), "6. Render scratch and stamps") |
 | Object node matrices: the setup's pose request evaluates a dirty pose (`0x000bd7b2`); marker lookup reads the matrices | (c) | **Made in the tick**: the tick builds every dirty pose at its end (`engine::tick_poses`), so a skipped and a rendered run hold the same matrices ([sim-render-split.md](../engine/sim-render-split.md), "2. Node matrices") |
 | Texture, geometry and animation caches, and the async I/O pool behind them | (c), structural | **The open risk.** The render drives texture and geometry streaming, which the sim does not use (collision is in the tags). The animation cache is used by both: the tick *requests* (`0x001236f0`), the render *gets* and loads (`0x001237e0`). Whether a sim that never gets still has every animation resident is **Run**. The fallback is `render_every` (below). |
-| Particle systems (`0x00174420` updates them while drawing) | (c), cosmetic | Particles do not feed gameplay. They age only through the sim's own updates. |
+| Particle systems (`0x00174420` updates them while drawing) | (c), cosmetic | Particles do not feed gameplay. They age only through the sim's own updates: the view stamps stay in a render-private table and the location move reads every location as seen ([sim-render-split.md](../engine/sim-render-split.md#6-render-scratch-and-stamps)). |
 | **The shared random seed** `[0x004e7408]+0`: the render steps it (object code `0x001032a0` that the render reaches) | (c) | **Changes the random stream.** A sim run is reproducible against another sim run, never against a rendered run: the render's draws are no longer in the sequence. See [Determinism](#8-determinism). |
 | Game-time bracket (`0x00146de0` on entry to `render_views`, `0x00146b80` on exit) | (d), not identified | **Not verified**: the one census item that could be real sim state. A tick-hash comparison between a skipped and a rendered run answers it ([Not verified](#not-verified)). |
 
@@ -350,6 +350,8 @@ Each new sim report records `state_hashes_v1` in guest tick order. Detail: [Sim 
 ### Finding the first differing state
 
 `h2 sim diff <a.json> <b.json>` says which state differs first, not only that a digest does. Detail: [Sim mode: state hashes and bot navigation cost](sim-determinism.md).
+
+`h2 sim blind [--ticks N] [--no-arena] <arm=file>...` holds every arm's hash series (a report, or a `sim.hashes` reply) against the first and names the first differing tick and arm: the comparison of the render-blind gate ([sim-render-split.md](../engine/sim-render-split.md), "Running the gate").
 
 #### Bot thinking across cores
 

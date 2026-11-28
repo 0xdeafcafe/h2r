@@ -97,6 +97,8 @@ Scripted lights depend on it: the Armory's look test creates `looker_light_top_r
 | other `0x20bb0` calls (the water's class 5 query, the draw pass) | the guest's; the reader reads their slots from the device |
 
 - The count is exact: a guest pixel of the quad passes when the quad's stored depth (its `w` held to the W clip and floored, over the full scale) is at most the depth at the pixel's centre. A quad the W clip culls counts 0.
+- The counts are the display copy's: under exact mode the display copy's recording replaces the reference copy's, unless the display is drawn through a wider lens than the quads (`native_flare_query_glue::counts_on`).
+- Between frames the flare state is in the render-private store and the region holds the simulation's bytes ([sim-render-split.md](../engine/sim-render-split.md), "4. The flare visibility byte").
 - The bitmaps at `0x5233f0` stay the one record of which slots hold a test. Before a guest body runs, the bits of Rust's slots are cleared, so the device is never asked for a test it did not end.
 - The arm: one query call in 64 also runs the guest walker after the Rust pass and compares the areas; the reader call that reads that set runs the guest reader and compares the bytes where both counts are back. A difference sends both calls to the guest for the session.
 - Counters in `render.scene`: `flare_{query,read}_{calls,cut,checked}`, `scene_kept_flare_{query,read}_<cause>` (a call the guest body ran) and `scene_dropped_flare_query_<cause>` (a placed pass that did not count; its bytes keep their values).

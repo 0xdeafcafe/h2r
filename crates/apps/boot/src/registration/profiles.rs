@@ -321,6 +321,7 @@ pub(crate) fn registry_with_film(
     if !case.light {
         crate::render_rng::install(&mut features).unwrap();
         crate::render_scratch::install(&mut features).unwrap();
+        crate::flare_store::install(&mut features).unwrap();
     }
     let lockstep = lockstep_glue::Config {
         trace: case

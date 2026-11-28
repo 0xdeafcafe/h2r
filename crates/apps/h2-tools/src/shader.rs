@@ -197,11 +197,32 @@ fn print_one(map_name: &str, tag: &str, disc: Option<PathBuf>) -> Result<()> {
                 }
                 for a in &i.animated {
                     println!(
-                        "        animated {:?} target {} ({} property refs)",
+                        "        animated {:?} target {} ({} property refs) binding {:02x?} pixel {:?}",
                         a.kind,
                         a.binding.target,
-                        a.properties.len()
+                        a.properties.len(),
+                        [a.binding.target, a.binding.b1, a.binding.b2],
+                        a.pixel_register
                     );
+                    for r in &a.properties {
+                        let Some(p) = usize::try_from(r.property).ok().and_then(|n| pp.properties.get(n)) else {
+                            println!("          component {} property {} (missing)", r.component, r.property);
+                            continue;
+                        };
+                        let f = tags::effects::function::Function::parse(&p.function);
+                        println!(
+                            "          component {} property {}: input {} a {} period {} function {}",
+                            r.component,
+                            r.property,
+                            p.input,
+                            p.input_a,
+                            f32::from_bits(p.input_b),
+                            match f {
+                                Ok(f) => format!("{:?} sub {:?} range {:?} flags {:#x} words {:02x?} payload {:02x?}", f.kind, f.sub_types, f.range, f.flags, f.unknown_0c, f.payload),
+                                Err(e) => format!("unparsed ({e})"),
+                            }
+                        );
+                    }
                 }
                 for e in &i.engine_render_states {
                     println!("        engine render state binding {:02x?}", e.bytes);
