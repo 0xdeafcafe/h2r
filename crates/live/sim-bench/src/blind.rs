@@ -89,7 +89,9 @@ pub fn compare(arms: &[Arm], needs: Needs) -> Verdict {
     if rest.is_empty() {
         return Verdict::Incomplete("one arm: nothing to compare it with".into());
     }
-    let by_tick = |a: &Arm| -> BTreeMap<u32, &TickHash> { a.rows.iter().map(|r| (r.tick, r)).collect() };
+    fn by_tick(a: &Arm) -> BTreeMap<u32, &TickHash> {
+        a.rows.iter().map(|r| (r.tick, r)).collect()
+    }
     let base = by_tick(reference);
     for arm in arms {
         let have = by_tick(arm);
