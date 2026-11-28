@@ -132,7 +132,6 @@ impl History {
 struct Monitor {
     history: Arc<Mutex<History>>,
     mixer: Arc<Mutex<audio::Mixer>>,
-    hle: Arc<dsound::Hle>,
     output: OutputHealthProbe,
 }
 
@@ -148,20 +147,6 @@ impl Monitor {
             .stream_health()
     }
 
-    fn add_playheads(&self, tracks: &mut [Track]) {
-        if tracks.iter().all(|track| track.ds_stream.is_none()) {
-            return;
-        }
-        let sound = self.hle.direct_sound();
-        for track in tracks {
-            if let Some((packet, position)) =
-                track.ds_stream.and_then(|ptr| sound.stream_playhead(ptr))
-            {
-                track.play_packet = Some(packet);
-                track.play_position_frames = Some(position);
-            }
-        }
-    }
 }
 
 impl hooks::Feature for Monitor {
@@ -182,7 +167,7 @@ impl hooks::Feature for Monitor {
                 &guest_layout::points::SOUND_UPDATE,
                 "looping-sound transitions",
                 move |o| {
-                    let (map, tick, mut tracks, menu) = {
+                    let (map, tick, tracks, menu) = {
                         let g = o.guest();
                         (
                             crate::telemetry::loaded_map_name(&g)
@@ -193,9 +178,6 @@ impl hooks::Feature for Monitor {
                             MenuMusic::read(&*g).ok().flatten(),
                         )
                     };
-                    if let Ok(tracks) = &mut tracks {
-                        monitor.add_playheads(tracks);
-                    }
                     let at = SoundStamp {
                         tick,
                         present: crate::presents::presents(),
@@ -205,7 +187,7 @@ impl hooks::Feature for Monitor {
                     let stream = monitor.read_stream();
                     let mut history = monitor.history();
                     history.observe_stream(stream, at.elapsed_us);
-                    history.observe(map, at, tracks.ok(), menu);
+                    history.observe(map, at, Some(tracks), menu);
                 },
             )
             .last();
@@ -222,22 +204,18 @@ pub fn install(
     let monitor = Monitor {
         history: Arc::default(),
         mixer: audio.mixer(),
-        hle: Arc::clone(&audio.hle),
         output: audio.output.health_probe(),
     };
     let records_transitions = registry.add(&monitor)?;
     let wma = audio.wma.clone();
     agent.add_game_method(method::AUDIO_LOOPS, Access::Read, move |params, ctx| {
         validate_params(&params)?;
-        let mut tracks = Err("guest memory unavailable".to_owned());
+        let mut tracks = Vec::new();
         let mut menu = None;
         ctx.reader.with_guest(&mut |g| {
-            tracks = audio_loops::read(g)
-                .map_err(|e| format!("looping sounds: guest memory at {:#x} faulted", e.addr));
+            tracks = audio_loops::read(g);
             menu = MenuMusic::read(g).ok().flatten();
         });
-        let mut tracks = tracks.map_err(|message| RpcError::new(code::UNAVAILABLE, message))?;
-        monitor.add_playheads(&mut tracks);
         let output = monitor.output.read();
         let stream = monitor.read_stream();
         let (changes, menu_changes, last_stream_starve_us) = {
@@ -339,9 +317,6 @@ mod tests {
             pitch_range: Some(0),
             permutation: Some(0),
             chunk: Some(0),
-            ds_stream: Some(5),
-            play_packet: Some(20),
-            play_position_frames: Some(200),
         };
         let stamp = |present| SoundStamp {
             present,
@@ -350,8 +325,7 @@ mod tests {
             elapsed_us: present * 1_000_000 / 60,
         };
         history.observe(None, stamp(2298), Some(vec![track.clone()]), None);
-        track.play_packet = Some(21);
-        track.play_position_frames = Some(1);
+        track.chunk = Some(1);
         history.observe(None, stamp(2299), Some(vec![track.clone()]), None);
         assert_eq!(history.transitions.len(), 1, "only the initial start");
 
@@ -364,7 +338,7 @@ mod tests {
         assert_eq!(transition.at.tick, Some(1150));
         let from = transition.from.as_ref().unwrap();
         assert_eq!(from.segment, Segment::In);
-        assert_eq!(from.play_packet, Some(21));
+        assert_eq!(from.chunk, Some(1));
         assert_eq!(transition.to.as_ref(), Some(&track));
     }
 

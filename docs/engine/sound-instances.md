@@ -361,7 +361,7 @@ Two subsystems stay guest calls: the sound cache (`0x2185d0`, `0x2186b0`), whose
 
 | Reader | Reads today | Moves to |
 |---|---|---|
-| `extensions/game/src/audio_loops.rs` (`audio.loops`) | loop array, instance, channel and stream records | `Sounds::loops()` and `instances()` for datum, segment, range and permutation; the play position from `MixerHost::voice(handle)` |
+| `extensions/game/src/audio_loops.rs` (`audio.loops`) | loop array, instance, channel and stream records | `Sounds::loops()` and `instances()` for datum, segment, range and permutation; each loop tag's tracks from the map (`Snapshot::of_loop`) label the segments |
 | `extensions/game/src/h1_conversation.rs` (`sound_live`, starts, stop) | pool row `+2`; guest calls to `0x1891d0`, `0x189fe0`, `0x126360` | `Sounds::live(handle)`; the starts keep calling game sound, which reaches the entries above |
 | `extensions/game/src/sim_glue/voices.rs` (`sound.voices` series) | pool and channel rows at six observers | deleted; the series is to be the table's events as `sound.table` (handle, tag, range, permutation, reason) |
 | Dialogue callbacks `0x18c8c0`, `0x18c910`, `0x18c6a0` | pool row for the tag | `GuestUnits` |
@@ -506,7 +506,7 @@ A refusal never plays or admits something else in its place. An unknown owner re
 
 ### 5. Deletions
 
-- Files: `crates/rewrites/sim-bridge/src/sim_sound/mixer_feed.rs` (what the feed does not do yet, below); `crates/extensions/game/src/audio_loops.rs` (the play position from `MixerHost::voice`); `crates/apps/boot/src/registration.rs`; `crates/platform/dsound` (the sound core's registrations); docs: [dsound.md](../audio/dsound.md), [audio.md](../audio/audio.md), [sim-rewrite.md](sim-rewrite.md) (phase 4).
+- Files: `crates/rewrites/sim-bridge/src/sim_sound/mixer_feed.rs` (what the feed does not do yet, below); `crates/extensions/game/src/audio_loops.rs` (`Sounds::loops` rows); `crates/apps/boot/src/registration.rs`; `crates/platform/dsound` (the sound core's registrations); docs: [dsound.md](../audio/dsound.md), [audio.md](../audio/audio.md), [sim-rewrite.md](sim-rewrite.md) (phase 4).
 - The feed's open items: velocity and Doppler, obstruction and the room send (I3DL2), the propagation delay, the class ceilings and voice priority (`sim_sound::sources::VoicePriority`, `scheduling::CappedSelection`) in place of the first-come limit, a listener per split-screen user, and the detail sounds' placement.
 - Exit: D2's and D3's gates; the game is heard on the owner's machine with `dsound.manager_calls` gone and `feed.clip_refused == 0` on a retail level.
 

@@ -2550,6 +2550,7 @@ dependencies = [
  "sim-bench",
  "sim-bridge",
  "sim-ext",
+ "sim-sound",
  "sim-state",
  "snapshot",
  "sound-clips",
