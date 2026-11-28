@@ -10,6 +10,10 @@
 //! | `0x0022e1ed` | `0xe459`, `0xe45a` (`animating_left_thumbstick`, `_right_`) | one of the stick's three frames by the UI clock |
 //! | `0x0022d82c` | `0xe415`, `0xe40d` (`build_number`, `vehicle_set`) | nothing |
 //! | `0x0022d503` | `0xe40a` (`variant`) | the session's game variant's name (`+4`), else the default variant's (`0x0054e4a0`) |
+//! | `0x0022d456` | `0xe409` (`gametype`) | the variant's game type name from the UI tag's second `unic` (`+0x14c`), else the static buffer `0x0055c6e4` |
+//! | `0x0022d62b`, `0x0022d655`, `0x0022d67c` | `0xe40b` (`motion_sensor_enabled`), `0xe40c` (`teams_enabled`), `0xe40e` (`weapon_set`) | a string of the UI tag's `unic` (`+0x11c`), by the variant's flags |
+//! | `0x0022d6ee` | `0xe429` to `0xe42c` (`player_gamertag`) | the player's gamertag (`0x0054e8e0`, `0xc70` each) |
+//! | `0x0022da65` | `0xe42d` to `0xe430` (`hud_scoreboard`) | a string of the HUD's score record |
 //! | `0x0022d7a1` | `0xe45c` (`new-content`) | the new-content glyph `0xe007` while `[0x0051055d]` is set |
 //! | `0x0022d99e` | `0xe420` (`live_ui_driver_gamertag`) | the Live driver's gamertag at `0x0054e438` |
 //! | `0x0022d9e0` | `0xe422` (`hud_quantity`) | the HUD's quantity (`[[0x00510c4c] + 0x1b0]`) |
@@ -17,6 +21,20 @@
 //! | `0x0022e148`, `0x0022e179`, `0x0022e196`, `0x0022e1b3`, `0x0022e1d0` | `hour_12`, `hour_24`, `minute`, `day`, `month`, `year` | the clock's field (`0x0054e7ce`..) |
 //!
 //! Any other body panics, named by its token (`ui text: token <name>`).
+//! Not ported, each reading a subsystem with no native model: `mapname`
+//! (`0x0022d5a7`, the session's map), `hopper_name` and
+//! `hopper_description` (`0x0022d52e`, `0x0022d566`), `countdown`
+//! (`0x0022d730`), `matchmaking_countdown` (`0x0022d775`),
+//! `map_load_percent` (`0x0022d7ce`), `name_of_last_person_to_delay_countdown`
+//! (`0x0022d80b`), `leader` (`0x0022d82f`), `network_quality`
+//! (`0x0022d85f`), `active_multiplayer_protocol` (`0x0022d93b`),
+//! `live_ui_driver_clan_name` (`0x0022d9b4`), `ge_round_time_left`
+//! (`0x0022da75`), `target_player_gamertag` (`0x0022daa5`),
+//! `game_player_count` (`0x0022dad1`), the coop names (`0x0022db96`,
+//! `0x0022dbe0`, `0x0022dc2a`), `storage_blocks` (`0x0022dc68`), the target
+//! player's clan and title (`0x0022dfa9`, `0x0022e001`, `0x0022e06c`),
+//! `live_ui_driver_clan_level` (`0x0022e0df`), and `player_profile_name`
+//! (`0x0022d68f`).
 
 use scene_extract::GuestRead;
 use scene_extract::ui::Unread;
@@ -75,6 +93,32 @@ const MONTH: u32 = 0x0054_e7d0;
 const DAY: u32 = 0x0054_e7d4;
 const HOUR: u32 = 0x0054_e7d6;
 const MINUTE: u32 = 0x0054_e7d8;
+/// The session's game variant flags (`+0x48`): bit 0 teams, bit 1 the
+/// motion sensor.
+const VARIANT_FLAGS: u32 = 0x48;
+/// The variant's game type (`+0x44`).
+const VARIANT_TYPE: u32 = 0x44;
+/// `0x0022d6ee`: the players' records (`0xc70` bytes from `0x0054e8e0`),
+/// the gamertag at `+0x470 + 0xc`.
+const GAMER_PLAYERS: u32 = 0x0054_e8e0 + 0x470 + 0xc;
+const GAMER_STRIDE: u32 = 0xc70;
+/// The scoreboard strings of the HUD state's `+0x1bc` record (`0x0013934d`).
+const HUD_SCORES: u32 = 0x1bc;
+/// The static buffer the game type lookup writes (`0x0055c6e4`), read
+/// back whether or not the lookup wrote it.
+const GAMETYPE_BUFFER: u32 = 0x0055_c6e4;
+/// The tag instance table, the globals tag (`0x004e034c`) and its owner
+/// of the screens (`0x004e0350`), the language (`0x0047ff38`).
+const TAGS: u32 = 0x004e_3b44;
+const GLOBALS: u32 = 0x004e_034c;
+const SCREENS: u32 = 0x004e_0350;
+const LANGUAGE: u32 = 0x0047_ff38;
+/// A locale record in the globals: `+0x188`, `0x1c` bytes per language;
+/// its index `+0`, blob `+4`, count `+8`, loaded byte `+0x18`.
+const LOCALES: u32 = 0x188;
+const LOCALE_BYTES: u32 = 0x1c;
+/// What a string the table lacks reads as (`0x0043e5e1`).
+const EMPTY_STRING: u32 = 0x0043_e5e1;
 /// A handler writes at most this many units (`0x0008cc20`).
 const MAX_UNITS: usize = 0xff;
 
@@ -91,12 +135,29 @@ pub(super) fn write(mem: &dyn GuestRead, unit: u16, handler: u32) -> Result<Vec<
         0x0022_e1ed => Ok(vec![animated(word(mem, UI_CLOCK, 0)?, unit)]),
         0x0022_d82c => Ok(Vec::new()),
         0x0022_d503 => {
-            let variant = match session(mem)? {
-                Some(session) if (3..=8).contains(&word(mem, session, SESSION_MODE)?) => session.wrapping_add(SESSION_VARIANT),
-                _ => DEFAULT_VARIANT,
-            };
+            let variant = session_variant(mem)?.unwrap_or(DEFAULT_VARIANT);
             Ok(wide(mem, variant.wrapping_add(VARIANT_NAME))?)
         }
+        0x0022_d456 => gametype(mem),
+        0x0022_d62b => {
+            let on = session_variant(mem)?.map(|v| word(mem, v, VARIANT_FLAGS)).transpose()?.is_some_and(|f| f >> 1 & 1 != 0);
+            Ok(ui_string(mem, if on { 0x0200_0181 } else { 0x0300_0182 })?)
+        }
+        0x0022_d655 => {
+            let on = session_variant(mem)?.map(|v| word(mem, v, VARIANT_FLAGS)).transpose()?.is_some_and(|f| f & 1 != 0);
+            Ok(ui_string(mem, if on { 0x0700_0183 } else { 0x0800_0184 })?)
+        }
+        0x0022_d67c => Ok(ui_string(mem, 0x0600_00b8)?),
+        0x0022_d6ee => {
+            let player = match unit {
+                0xe429 => 0,
+                0xe42a => 1,
+                0xe42b => 2,
+                _ => 3,
+            };
+            Ok(narrow(mem, GAMER_PLAYERS.wrapping_add(player * GAMER_STRIDE))?)
+        }
+        0x0022_da65 => scoreboard(mem, unit),
         0x0022_d7a1 => Ok(if byte(mem, NEW_CONTENT)? != 0 { vec![0xe007] } else { Vec::new() }),
         0x0022_d99e => Ok(narrow(mem, LIVE_DRIVER_GAMERTAG)?),
         0x0022_d9e0 => Ok(decimal(word(mem, word(mem, HUD_STATE, 0)?, HUD_QUANTITY)? as i32)),
@@ -196,6 +257,161 @@ fn session(mem: &dyn GuestRead) -> Result<Option<u32>, Unread> {
     };
     let session = word(mem, at, 0)?;
     Ok((word(mem, session, SESSION_MODE)? != 0).then_some(session))
+}
+
+/// A tag's data by its datum (`[0x004e3b44] + (datum & 0xffff) * 0x10 + 8`);
+/// 0 for no datum.
+fn tag_data(mem: &dyn GuestRead, datum: u32) -> Result<u32, Unread> {
+    if datum == u32::MAX {
+        return Ok(0);
+    }
+    word(mem, word(mem, TAGS, 0)?, (datum & 0xffff) * 0x10 + 8)
+}
+
+/// `0x001482e8` and `0x00148350`: the globals' UI tag for the screens'
+/// mode (`+0x8c`, `+0x94`, `+0x84`), then the tag its datum at `+4` names;
+/// 0 when any is absent.
+fn ui_globals(mem: &dyn GuestRead) -> Result<u32, Unread> {
+    let (screens, globals) = (word(mem, SCREENS, 0)?, word(mem, GLOBALS, 0)?);
+    if screens == 0 || globals == 0 || word(mem, globals, 0x110)? == 0 {
+        return Ok(0);
+    }
+    let block = word(mem, globals, 0x114)?;
+    if block == 0 {
+        return Ok(0);
+    }
+    let field = match half(mem, screens, 0x10)? as i16 {
+        0 => 0x8c,
+        1 => 0x94,
+        2 => 0x84,
+        _ => return Ok(0),
+    };
+    let tag = tag_data(mem, word(mem, block, field)?)?;
+    if tag == 0 {
+        return Ok(0);
+    }
+    tag_data(mem, word(mem, tag, 4)?)
+}
+
+/// `0x001a0180` with `0x001a0350`: the string `id` of the `unic` `datum`
+/// in the chosen language, as UTF-16 up to `0xff` units. `None` when the
+/// lookup writes nothing (no datum, the language's table not loaded).
+fn locale_string(mem: &dyn GuestRead, datum: u32, id: u32) -> Result<Option<Vec<u16>>, Unread> {
+    if datum == u32::MAX {
+        return Ok(None);
+    }
+    let language = word(mem, LANGUAGE, 0)?;
+    if language == u32::MAX {
+        // The guest picks one here (`0x0011ca80`).
+        return Err(Unread::Unreadable);
+    }
+    let data = tag_data(mem, datum)?;
+    let start = i32::from(half(mem, data, 0x10u32.wrapping_add(language.wrapping_mul(4)))? as i16);
+    let count = i32::from(half(mem, data, 0x12u32.wrapping_add(language.wrapping_mul(4)))? as i16);
+    let table = word(mem, GLOBALS, 0)?.wrapping_add(LOCALES).wrapping_add(language.wrapping_mul(LOCALE_BYTES));
+    if byte(mem, table.wrapping_add(0x18))? == 0 {
+        return Ok(None);
+    }
+    let (index, blob, total) = (word(mem, table, 0)?, word(mem, table, 4)?, word(mem, table, 8)? as i32);
+    let mut at = EMPTY_STRING;
+    let mut i = start;
+    let end = start.wrapping_add(count);
+    while i < end {
+        if i >= 0 && i <= total.wrapping_sub(1) {
+            let entry = index.wrapping_add((i as u32).wrapping_mul(8));
+            if word(mem, entry, 0)? == id {
+                at = blob.wrapping_add(word(mem, entry, 4)?);
+                break;
+            }
+        }
+        i += 1;
+    }
+    let mut bytes = Vec::new();
+    for n in 0..0x400u32 {
+        match byte(mem, at.wrapping_add(n))? {
+            0 => break,
+            b => bytes.push(b),
+        }
+    }
+    let mut units: Vec<u16> = String::from_utf8_lossy(&bytes).encode_utf16().collect();
+    units.truncate(MAX_UNITS);
+    Ok(Some(units))
+}
+
+/// `0x0023620d`: the string `id` of the UI tag's `unic` (`+0x11c`); empty
+/// for no tag or no string.
+fn ui_string(mem: &dyn GuestRead, id: u32) -> Result<Vec<u16>, Unread> {
+    if id == u32::MAX {
+        return Ok(Vec::new());
+    }
+    let ui = ui_globals(mem)?;
+    if ui == 0 {
+        return Ok(Vec::new());
+    }
+    let datum = word(mem, ui, 0x11c)?;
+    Ok(locale_string(mem, datum, id)?.unwrap_or_default())
+}
+
+/// `0x000649c0`: the session variant the UI reads: the session's at
+/// `+0x4db0` in a game (mode 3 to 8), else none.
+fn session_variant(mem: &dyn GuestRead) -> Result<Option<u32>, Unread> {
+    Ok(match session(mem)? {
+        Some(session) if (3..=8).contains(&word(mem, session, SESSION_MODE)?) => Some(session.wrapping_add(SESSION_VARIANT)),
+        _ => None,
+    })
+}
+
+/// `0x0022d456`: the name of the variant's game type from the UI tag's
+/// second `unic` (`+0x14c`); the static buffer `0x0055c6e4` as it stands
+/// when no string is looked up (no UI tag, a type with no name).
+fn gametype(mem: &dyn GuestRead) -> Result<Vec<u16>, Gap> {
+    let stale = || -> Result<Vec<u16>, Unread> {
+        let mut out = Vec::new();
+        for i in 0..MAX_UNITS as u32 {
+            match half(mem, GAMETYPE_BUFFER, 2 * i)? {
+                0 => break,
+                u => out.push(u),
+            }
+        }
+        Ok(out)
+    };
+    let ui = ui_globals(mem)?;
+    if ui == 0 {
+        return Ok(stale()?);
+    }
+    let variant = session_variant(mem)?.unwrap_or(DEFAULT_VARIANT);
+    let id = match word(mem, variant, VARIANT_TYPE)? {
+        0 => 0x0800_010b,
+        1 => 0x1000_010d,
+        2 => 0x0600_010f,
+        3 => 0x0700_0110,
+        4 => 0x1000_0111,
+        7 => 0x0a00_0113,
+        8 => 0x0b00_0115,
+        9 => 0x0700_010e,
+        _ => return Ok(stale()?),
+    };
+    match locale_string(mem, word(mem, ui, 0x14c)?, id)? {
+        Some(text) => Ok(text),
+        None => Ok(stale()?),
+    }
+}
+
+/// `0x0022da65` (`0x0013934d`): the HUD scoreboard's string for the
+/// unit, a wide string in the record at `[HUD + 0x1bc]`; nothing with
+/// no record.
+fn scoreboard(mem: &dyn GuestRead, unit: u16) -> Result<Vec<u16>, Gap> {
+    let record = word(mem, word(mem, HUD_STATE, 0)?, HUD_SCORES)?;
+    if record == 0 {
+        return Ok(Vec::new());
+    }
+    let at = match unit {
+        0xe42d => 0x1bc,
+        0xe42e => 0x208,
+        0xe42f => 0x134,
+        _ => 0x176,
+    };
+    Ok(wide(mem, record.wrapping_add(at))?)
 }
 
 /// `0x0022da0d`: `??`, then the betraying player's name when its datum
@@ -459,5 +675,128 @@ mod tests {
         m.0.insert(LIVE_DRIVER_GAMERTAG, u32::from_le_bytes([b'A', 0xe9, b'z', 0]));
         assert_eq!(write(&m, 0xe420, 0x0022_d99e), Ok(vec![0x41, 0x25a1, 0x7a]));
         assert_eq!(write(&m, 0xe415, 0x0022_d82c), Ok(Vec::new()));
+    }
+
+    fn put_bytes(m: &mut Mem, at: u32, bytes: &[u8]) {
+        for (i, chunk) in bytes.chunks(4).enumerate() {
+            let mut w = [0u8; 4];
+            w[..chunk.len()].copy_from_slice(chunk);
+            m.0.insert(at + 4 * i as u32, u32::from_le_bytes(w));
+        }
+    }
+
+    /// A UI tag whose two `unic`s hold one table of strings (`ids`, each
+    /// the string after it in `texts`), language 0, loaded.
+    fn locale(ids: &[u32], texts: &[&str]) -> Mem {
+        let mut m = Mem(BTreeMap::new());
+        let (globals, block, tags) = (0x1_0000, 0x1_1000, 0x2_0000);
+        m.0.insert(SCREENS, 0x5000);
+        m.0.insert(0x5000 + 0x10, 0);
+        m.0.insert(GLOBALS, globals);
+        m.0.insert(globals + 0x110, 1);
+        m.0.insert(globals + 0x114, block);
+        m.0.insert(block + 0x8c, 2);
+        m.0.insert(TAGS, tags);
+        m.0.insert(tags + 2 * 0x10 + 8, 0x2_1000);
+        m.0.insert(0x2_1000 + 4, 3);
+        m.0.insert(tags + 3 * 0x10 + 8, 0x2_2000);
+        m.0.insert(0x2_2000 + 0x11c, 4);
+        m.0.insert(0x2_2000 + 0x14c, 5);
+        m.0.insert(tags + 4 * 0x10 + 8, 0x2_3000);
+        m.0.insert(tags + 5 * 0x10 + 8, 0x2_4000);
+        for unic in [0x2_3000, 0x2_4000] {
+            m.0.insert(unic + 0x10, ids.len() as u32 * 0x1_0000);
+        }
+        m.0.insert(LANGUAGE, 0);
+        let table = globals + LOCALES;
+        m.0.insert(table, 0x3_0000);
+        m.0.insert(table + 4, 0x3_1000);
+        m.0.insert(table + 8, ids.len() as u32);
+        m.0.insert(table + 0x18, 1);
+        let mut at = 0;
+        for (i, (id, text)) in ids.iter().zip(texts).enumerate() {
+            m.0.insert(0x3_0000 + 8 * i as u32, *id);
+            m.0.insert(0x3_0000 + 8 * i as u32 + 4, at);
+            let mut bytes = text.as_bytes().to_vec();
+            bytes.push(0);
+            put_bytes(&mut m, 0x3_1000 + at, &bytes);
+            at += (bytes.len() as u32).next_multiple_of(4);
+        }
+        m
+    }
+
+    fn in_game(m: &mut Mem, flags: u32) {
+        m.0.insert(SESSION_ON & !3, 1);
+        m.0.insert(SESSION_STATE, 8);
+        m.0.insert(SESSIONS[1], 0x4_0000);
+        m.0.insert(0x4_0000 + SESSION_MODE, 4);
+        m.0.insert(0x4_0000 + SESSION_VARIANT + VARIANT_FLAGS, flags);
+    }
+
+    #[test]
+    fn the_variant_option_tokens_look_up_their_string_by_the_flags() {
+        let mut m = locale(&[0x0200_0181, 0x0300_0182, 0x0700_0183, 0x0800_0184, 0x0600_00b8], &["Sensor on", "Sensor off", "Teams", "Free for all", "Rockets"]);
+        m.0.insert(SESSION_ON & !3, 0);
+        assert_eq!(write(&m, 0xe40b, 0x0022_d62b), Ok(text("Sensor off")), "no game: no variant");
+        assert_eq!(write(&m, 0xe40c, 0x0022_d655), Ok(text("Free for all")));
+        in_game(&mut m, 2);
+        assert_eq!(write(&m, 0xe40b, 0x0022_d62b), Ok(text("Sensor on")));
+        assert_eq!(write(&m, 0xe40c, 0x0022_d655), Ok(text("Free for all")));
+        in_game(&mut m, 1);
+        assert_eq!(write(&m, 0xe40b, 0x0022_d62b), Ok(text("Sensor off")));
+        assert_eq!(write(&m, 0xe40c, 0x0022_d655), Ok(text("Teams")));
+        assert_eq!(write(&m, 0xe40e, 0x0022_d67c), Ok(text("Rockets")));
+        m.0.insert(LOCALES + 0x1_0000 + 0x18, 0);
+        assert_eq!(write(&m, 0xe40e, 0x0022_d67c), Ok(Vec::new()), "table not loaded");
+    }
+
+    #[test]
+    fn a_string_the_table_lacks_is_the_empty_one_and_no_tag_writes_nothing() {
+        let mut m = locale(&[0x0600_00b8], &["Rockets"]);
+        m.0.insert(EMPTY_STRING & !3, 0);
+        assert_eq!(write(&m, 0xe40b, 0x0022_d62b), Ok(Vec::new()));
+        m.0.insert(SCREENS, 0);
+        assert_eq!(write(&m, 0xe40e, 0x0022_d67c), Ok(Vec::new()));
+    }
+
+    #[test]
+    fn the_game_type_names_its_type_else_the_static_buffer() {
+        let mut m = locale(&[0x0700_0110], &["Oddball"]);
+        m.0.insert(SESSION_ON & !3, 0);
+        m.0.insert(DEFAULT_VARIANT + VARIANT_TYPE, 3);
+        put_bytes(&mut m, GAMETYPE_BUFFER, &[b'o', 0, b'l', 0, 0, 0, 0, 0]);
+        assert_eq!(write(&m, 0xe409, 0x0022_d456), Ok(text("Oddball")));
+        m.0.insert(DEFAULT_VARIANT + VARIANT_TYPE, 5);
+        assert_eq!(write(&m, 0xe409, 0x0022_d456), Ok(text("ol")), "type 5 has no name");
+        m.0.insert(DEFAULT_VARIANT + VARIANT_TYPE, 12);
+        assert_eq!(write(&m, 0xe409, 0x0022_d456), Ok(text("ol")));
+        m.0.insert(DEFAULT_VARIANT + VARIANT_TYPE, 3);
+        m.0.insert(SCREENS, 0);
+        assert_eq!(write(&m, 0xe409, 0x0022_d456), Ok(text("ol")), "no UI tag");
+    }
+
+    #[test]
+    fn a_gamertag_token_reads_its_players_record_as_narrow_text() {
+        let mut m = Mem(BTreeMap::new());
+        put_bytes(&mut m, GAMER_PLAYERS, b"One\0");
+        put_bytes(&mut m, GAMER_PLAYERS + 3 * GAMER_STRIDE, b"Four\0");
+        assert_eq!(write(&m, 0xe429, 0x0022_d6ee), Ok(text("One")));
+        assert_eq!(write(&m, 0xe42c, 0x0022_d6ee), Ok(text("Four")));
+    }
+
+    #[test]
+    fn the_scoreboard_tokens_read_the_records_strings() {
+        let mut m = Mem(BTreeMap::new());
+        m.0.insert(HUD_STATE, 0x2000);
+        m.0.insert(0x2000 + HUD_SCORES, 0);
+        assert_eq!(write(&m, 0xe42d, 0x0022_da65), Ok(Vec::new()));
+        m.0.insert(0x2000 + HUD_SCORES, 0x3000);
+        for (unit, at) in [(0xe42d, 0x1bc), (0xe42e, 0x208), (0xe42f, 0x134), (0xe430, 0x176)] {
+            for (i, u) in format!("s{unit:x}").encode_utf16().enumerate() {
+                let a = 0x3000 + at + 2 * i as u32;
+                *m.0.entry(a & !3).or_insert(0) |= u32::from(u) << ((a & 2) * 8);
+            }
+            assert_eq!(write(&m, unit, 0x0022_da65), Ok(text(&format!("s{unit:x}"))));
+        }
     }
 }
