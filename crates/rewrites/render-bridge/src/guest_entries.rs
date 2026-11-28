@@ -1,18 +1,33 @@
-//! The guest's Direct3D entries with no device behind them.
+//! The guest's Direct3D entries with no device behind them
+//! (docs/graphics/d3d-entries.md).
 //!
 //! Every entry the retail D3D library exposes to game code (88 of them) is
-//! overridden. These answer at once with no device state, since
-//! resource caches reach them outside the frame: `Direct3D_CreateDevice`,
-//! `D3DResource_AddRef` and `Release`, `D3DResource_IsBusy`,
-//! `D3D_BlockOnResource`, the fences (`D3D_SetFence`,
-//! `D3D_BlockOnTime`), and the boot display's `D3DDevice_Swap` and device
-//! teardown. Every other one panics with its name and caller:
-//! the frame step draws through the native renderer, so a guest call that
-//! still reaches D3D is a gap to replace, found from the crash.
+//! overridden, and [`answer`] says how each one answers:
+//!
+//! - **Resources and fences**, reached outside the frame by the resource
+//!   caches: `Direct3D_CreateDevice`, `D3DResource_AddRef` and `Release`,
+//!   `D3DResource_IsBusy`, `D3D_BlockOnResource`, `D3D_SetFence`,
+//!   `D3D_BlockOnTime`.
+//! - **State setters**: the `SetRenderState_*` and `SetTextureState_*`
+//!   entries store their value in the guest's own state arrays, which game
+//!   code reads back, and push nothing ([`crate::device_state`]).
+//! - **The frame's end**: `D3DDevice_Swap` is the frame step's seal
+//!   ([`crate::frame_wait::swapped`]); `CDevice_KickOff` has no push buffer
+//!   to hand over; the device teardown has nothing to free (this
+//!   `CreateDevice` allocates nothing, and `SetTexture`/`SetPalette` never
+//!   bind); `PersistDisplay` has no display to keep.
+//! - **Gaps**: every other entry panics with its name and caller. They
+//!   draw, or write the push buffer, or build GPU state a draw reads; their
+//!   callers' draws belong to native stages, so a call that still reaches
+//!   one is a gap to replace, found from the crash
+//!   (docs/graphics/notes/2026-11-28-d3d-live-callers.md lists the callers
+//!   still reachable).
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use runtime::{CpuAbi, Dispatch, ExecCtx, GuestFault, TransferAbi};
+
+use crate::device_state;
 
 /// The guest's own device object (`D3D__Device`), whose address the game
 /// keeps at [`P_DEVICE`].
@@ -115,9 +130,6 @@ pub const ENTRIES: &[(u32, &str, &str)] = &[
 /// The last fence [`set_fence`] handed out.
 static FENCE: AtomicU32 = AtomicU32::new(0);
 
-/// Swaps the guest made through [`ENTRIES`]' `D3DDevice_Swap`.
-static SWAPS: AtomicU32 = AtomicU32::new(0);
-
 /// What an entry does: answer with `eax` and pop `cleanup` bytes, or panic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Answer {
@@ -126,11 +138,17 @@ enum Answer {
     Release,
     Return { eax: Option<u32>, cleanup: u32 },
     SetFence,
+    /// A state setter's store ([`device_state::set`]).
+    State(device_state::Setter),
+    /// `D3DDevice_Swap` (EAX = flags; returns EAX = the swap count; `ret`).
     Swap,
     Gap,
 }
 
 fn answer(addr: u32) -> Answer {
+    if let Some(s) = device_state::setter(addr) {
+        return Answer::State(s);
+    }
     match addr {
         0x003f_5240 => Answer::CreateDevice,
         0x003f_b600 => Answer::AddRef,
@@ -142,14 +160,15 @@ fn answer(addr: u32) -> Answer {
         0x003f_a680 => Answer::SetFence,
         // D3D_BlockOnTime: every fence has passed.
         0x003f_a970 => Answer::Return { eax: None, cleanup: 8 },
-        // D3DDevice_Swap: only boot_display_once (0x00012420, before the
-        // main loop) still calls it; the frame's present is the scene's
-        // seal (render_frame::publish). Nothing is shown, so the swap
-        // counts and returns.
         0x003f_9d00 => Answer::Swap,
-        // The device teardown boot_display_once ends with: the device is
-        // the guest's own object and holds nothing.
+        // CDevice_KickOff: no push buffer to hand over; EDX untouched.
+        0x003f_ac30 => Answer::Return { eax: None, cleanup: 0 },
+        // The device teardown (from `boot_display_once` 0x12420 and the
+        // shutdown 0x141c0): nothing bound, nothing allocated. The caller
+        // zeroes the device object itself.
         0x003f_c530 => Answer::Return { eax: None, cleanup: 0 },
+        // D3DDevice_PersistDisplay: S_OK, no display surface to keep.
+        0x003f_8ad0 => Answer::Return { eax: Some(0), cleanup: 0 },
         _ => Answer::Gap,
     }
 }
@@ -193,7 +212,11 @@ fn call(
         }
         Answer::Return { eax, cleanup } => (eax, cleanup),
         Answer::SetFence => (Some(FENCE.fetch_add(1, Ordering::Relaxed).wrapping_add(1)), 4),
-        Answer::Swap => (Some(SWAPS.fetch_add(1, Ordering::Relaxed).wrapping_add(1)), 0),
+        Answer::State(s) => (None, device_state::set(s, cpu, &mut mem)?),
+        Answer::Swap => {
+            crate::frame_wait::swapped();
+            (Some(crate::frame_wait::swaps()), 0)
+        }
         Answer::Gap => {
             let caller = mem.u32(cpu.esp).unwrap_or(0);
             unimplemented!("d3d entry {name} ({addr:#x}, {convention}): caller {caller:#x}");
@@ -217,13 +240,68 @@ mod tests {
         assert_eq!(addrs.len(), 88);
     }
 
+    fn named(name: &str) -> Answer {
+        let e = ENTRIES.iter().find(|e| e.1 == name).unwrap_or_else(|| panic!("{name}"));
+        answer(e.0)
+    }
+
     #[test]
-    fn only_the_benign_entries_answer() {
-        let answering: Vec<&str> = ENTRIES
+    fn every_setter_is_a_listed_entry() {
+        for &(addr, _) in device_state::RENDER_STATE_SETTERS {
+            assert!(ENTRIES.iter().any(|e| e.0 == addr), "{addr:#x}");
+        }
+    }
+
+    #[test]
+    fn each_kind_answers_its_entries() {
+        let count = |f: fn(&Answer) -> bool| ENTRIES.iter().filter(|e| f(&answer(e.0))).count();
+        // Every SetRenderState_* and SetTextureState_* entry stores.
+        let setters = ENTRIES
             .iter()
-            .filter(|e| answer(e.0) != Answer::Gap)
-            .map(|e| e.1)
-            .collect();
-        assert_eq!(answering.len(), 7, "{answering:?}");
+            .filter(|e| e.1.starts_with("D3DDevice_SetRenderState_") || e.1.starts_with("D3DDevice_SetTextureState_"))
+            .count();
+        assert_eq!(setters, 35);
+        assert_eq!(count(|a| matches!(a, Answer::State(_))), setters);
+        assert_eq!(named("D3DDevice_SetRenderState_ZBias"), Answer::State(device_state::Setter::ZBias));
+        assert_eq!(named("D3DDevice_SetRenderState_Simple"), Answer::State(device_state::Setter::Simple));
+        assert_eq!(named("D3DDevice_Swap"), Answer::Swap);
+        assert_eq!(named("CDevice_KickOff"), Answer::Return { eax: None, cleanup: 0 });
+        assert_eq!(named("D3DDevice_PersistDisplay"), Answer::Return { eax: Some(0), cleanup: 0 });
+        assert_eq!(named("D3D device teardown (0x3fc530)"), Answer::Return { eax: None, cleanup: 0 });
+    }
+
+    #[test]
+    fn the_rest_are_named_gaps() {
+        let gaps: Vec<&str> = ENTRIES.iter().filter(|e| answer(e.0) == Answer::Gap).map(|e| e.1).collect();
+        assert_eq!(gaps.len(), 88 - 7 - 35 - 4, "{gaps:?}");
+        for name in [
+            "D3D_MakeRequestedSpace",
+            "D3DDevice_Begin",
+            "D3DDevice_End",
+            "D3DDevice_Clear",
+            "D3DDevice_SetTexture",
+            "D3DDevice_SetPixelShader",
+            "D3DDevice_DrawIndexedVertices",
+        ] {
+            assert!(gaps.contains(&name), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_setter_returns_past_its_argument() {
+        use runtime::guest::Permissions;
+        let mut mem = runtime::Guest::new();
+        mem.map_zeroed(0x0040_4000, 0x5000, Permissions::RW).unwrap();
+        mem.map_zeroed(0x0001_0000, 0x1000, Permissions::RW).unwrap();
+        let esp = 0x0001_0800;
+        mem.set_u32(esp, 0x0001_2438).unwrap();
+        mem.set_u32(esp + 4, 2).unwrap();
+        let mut cpu = CpuAbi { esp, eax: 0x55, ..CpuAbi::default() };
+        let Answer::State(s) = named("D3DDevice_SetRenderState_StencilEnable") else { panic!() };
+        let cleanup = device_state::set(s, &cpu, &mut mem).unwrap();
+        mem.ret(&mut cpu, cleanup).unwrap();
+        assert_eq!(cpu.esp, esp + 8);
+        assert_eq!(cpu.eax, 0x55);
+        assert_eq!(mem.u32(device_state::render_state(144)).unwrap(), 2);
     }
 }
