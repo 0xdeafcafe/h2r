@@ -36,7 +36,7 @@ and `tick-ledger.toml` counts them:
 | Phase | Rust body | What it still calls in the guest |
 |---|---|---|
 | 3 `ai` `0x1c83c0` | `engine/src/ai_update.rs` | the six AI systems and the teardown |
-| 8 `script_scheduler` `0x209310` | `engine/src/hs_update.rs` | `HS_THREAD_EXECUTE` `0x209850` per thread, `0x1deed0` |
+| 8 `script_scheduler` `0x209310` | `engine/src/hs_update.rs` | `HS_THREAD_EXECUTE` `0x209850` per thread; its tail call, the object-list sweep `0x1deed0`, is `engine/src/hs_object_lists.rs` |
 | 15 `effects` `0x176e40` | `engine/src/effects_phase.rs` | the walk's nine callees |
 | 17 `post_game` `0x15ca10` | `engine/src/post_game.rs` | the round state machine `0x15c550` and eleven more |
 | 29 `countdown_requests` `0x16f200` | `engine/src/countdown_requests.rs` | nothing |
