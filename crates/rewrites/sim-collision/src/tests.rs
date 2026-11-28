@@ -767,6 +767,45 @@ fn steps_follow_the_guest_frames_in_order() {
     assert_eq!(out.steps[3], Step::Stop);
 }
 
+/// Under the guest's state the walks run operands the fast path declines:
+/// a plane component far below its range and a NaN coordinate.
+#[test]
+fn the_walks_run_operands_off_the_fast_path_under_the_guest_state() {
+    use sim_core::det::Fp;
+    let img = image(&wall(0));
+    let bsp = decode(&img);
+    // `x = 0` with a y component of 1e-30: on `y = 0` each product by it is
+    // zero, so every outcome is the plain wall's.
+    let mut b = wall(0);
+    b.planes[0] = [1.0, 1.0e-30, 0.0, 0.0];
+    let tiny_img = image(&b);
+    let tiny = decode(&tiny_img);
+    let p = bits([-0.5, 0.0, 0.0]);
+    assert!(matches!(tiny.point_result(0, p), Err(Bail::Float)), "the fast path declines");
+    let mut fp = Fp::guest(0x1f80);
+    assert_eq!(tiny.point_result_with(&mut fp, 0, p).unwrap(), bsp.point_result(0, p).unwrap());
+    assert_eq!(fp.mxcsr(), Some(0x1f80));
+
+    let q = query([-1.0, 0.0, 0.0], [3.0, 0.0, 0.0], 1);
+    assert!(matches!(run(&tiny_img, &tiny, &q), Err(Bail::Float)), "the fast path declines");
+    let t1 = 1.0f32.to_bits();
+    let want = bsp.vector_test_under(0x1f80, 0x027f, &img, &q, 0, 0, t1).unwrap();
+    let got = tiny.vector_test_under(0x1f80, 0x027f, &tiny_img, &q, 0, 0, t1).unwrap();
+    assert!(want.hit.is_some());
+    assert_eq!(got.hit, want.hit);
+    assert_eq!(got.steps, want.steps);
+    assert_eq!(got.mxcsr, want.mxcsr);
+    assert_eq!(got.x87_flags, want.x87_flags);
+
+    // A NaN coordinate: the distance is unordered, `comiss dist, 0; jb`
+    // is taken (the back child, leaf 0) and the compare raises IE.
+    let mut fp = Fp::guest(0x1f80);
+    let got = bsp.point_result_with(&mut fp, 0, bits([f32::NAN, 0.0, 0.0])).unwrap();
+    assert_eq!(got.leaf, 0);
+    assert_ne!(fp.mxcsr().unwrap() & 0x01, 0);
+    assert!(fp.exact());
+}
+
 /// Under the live MXCSR (PE clear) the point walk is the fast path's and
 /// gathers PE: an exact walk leaves it clear, an inexact one sets it.
 #[test]
@@ -801,7 +840,7 @@ fn the_segment_walk_runs_under_the_guest_mxcsr() {
     let bsp = decode(&img);
     let q = query([-1.0, 0.0, 0.0], [3.0, 0.0, 0.0], 1);
     let fast = run(&img, &bsp, &q).unwrap();
-    let live = bsp.vector_test_under(0x1f80, &img, &q, 0, 0, 1.0f32.to_bits()).unwrap();
+    let live = bsp.vector_test_under(0x1f80, 0x027f, &img, &q, 0, 0, 1.0f32.to_bits()).unwrap();
     assert_eq!(live.hit, fast.hit);
     assert_eq!(live.steps, fast.steps);
     let m = live.mxcsr.expect("the guest's MXCSR");

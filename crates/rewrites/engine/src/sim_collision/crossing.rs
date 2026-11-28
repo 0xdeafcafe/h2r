@@ -263,9 +263,7 @@ impl Exit {
             return None;
         }
         let mut cpu = machine.c;
-        if o.inexact {
-            cpu.x87.status |= 0x20;
-        }
+        cpu.x87.status |= o.x87_flags & 0x3f;
         cpu.mxcsr |= o.mxcsr.unwrap_or(0) & 0x3f;
         add_flags(&mut cpu, sp.wrapping_sub(outer), outer);
         let _ = finish(&mut cpu, plan.target, layout::VECTOR_ARGS);

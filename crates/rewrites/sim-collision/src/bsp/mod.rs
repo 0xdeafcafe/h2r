@@ -20,7 +20,8 @@
 //! retail reads.
 use crate::Bail;
 use crate::mem::GuestRead;
-use sim_core::lanes::ordinary1;
+use sim_core::det::Fp;
+use sim_core::lanes::compared1;
 use std::cmp::Ordering;
 use std::sync::RwLock;
 
@@ -221,11 +222,15 @@ fn abs(x: u32) -> f32 {
 
 /// The matcher's dominant axis (`0x1dea57`..`0x1deab8`): z unless
 /// `|nz| < |ny|` or `|nz| < |nx|`, else y when `|ny| >= |nx|`, else x.
+///
+/// The row is decided once per BSP, so its compares (`fld`, `fcomip`,
+/// `comiss`) must raise no flag: zero, normal and infinite components
+/// raise none. A NaN or subnormal one would, so its row is `BAD`.
 fn dominant_axis(n: &[u32; 4]) -> u8 {
-    if !(ordinary1(n[0]) && ordinary1(n[1]) && ordinary1(n[2])) {
+    if !(compared1(n[0]) && compared1(n[1]) && compared1(n[2])) {
         return BAD;
     }
-    // Ordinary values are never NaN, so `>=` is the guest's "not below".
+    // Compared values are never NaN, so `>=` is the guest's "not below".
     let (x, y, z) = (abs(n[0]), abs(n[1]), abs(n[2]));
     if z >= y && z >= x {
         2
@@ -470,7 +475,7 @@ impl Bsp {
             })
             .collect();
 
-        let zero_ok = ordinary1(consts.zero);
+        let zero_ok = compared1(consts.zero);
         let refs = raw[block::REFS]
             .as_chunks::<4>()
             .0
@@ -708,14 +713,15 @@ fn read_ring(
     Err(Bail::Data)
 }
 
-/// `comiss a, 0` then `jb` not taken: `a >= 0`, ordered.
+/// `comiss a, 0` then `jb` not taken: `a >= 0`, ordered. A NaN sets CF,
+/// so `jb` is taken. `fp` gains the compare's flags.
 #[inline]
-pub(crate) fn non_negative(a: u32) -> bool {
-    sim_core::det::compare(a, 0) != Ordering::Less
+pub(crate) fn non_negative(fp: &mut Fp, a: u32) -> bool {
+    matches!(fp.comiss(a, 0), Some(Ordering::Greater | Ordering::Equal))
 }
 
-/// `comiss a, b` then `ja`: `a > b`, ordered.
+/// `comiss a, b` then `ja` (or `jbe` not taken): `a > b`, ordered.
 #[inline]
-pub(crate) fn above(a: u32, b: u32) -> bool {
-    sim_core::det::compare(a, b) == Ordering::Greater
+pub(crate) fn above(fp: &mut Fp, a: u32, b: u32) -> bool {
+    fp.comiss(a, b) == Some(Ordering::Greater)
 }

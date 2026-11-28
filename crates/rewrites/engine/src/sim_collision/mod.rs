@@ -136,28 +136,25 @@ fn plan_vector(
     let (start_at, delta_at) = (m.u32(sp.wrapping_add(12))?, m.u32(sp.wrapping_add(16))?);
     let (start, delta) = (m.vec3(start_at)?, m.vec3(delta_at)?);
     let one = m.u32(layout::ONE)?;
-    // The limit is only compared; the walk computes with `min(limit, 1)`.
-    let mut fp = Fp::new();
-    fp.check_compared(limit);
-    fp.check(one);
-    if !fp.exact() {
-        return Err(Bail::Float);
-    }
-    // `0 > limit` clamps both to zero; otherwise the walk runs to
-    // `min(limit, 1)` with R's fraction at the limit.
-    let negative = det::compare(0, limit) == Ordering::Greater;
+    // `comiss 0, limit; ja` clamps both to zero; otherwise
+    // `comiss limit, 1; ja` runs the walk to `min(limit, 1)` with R's
+    // fraction at the limit. An unordered limit passes through both. The
+    // compares raise their flags under the guest's MXCSR, which the walk
+    // continues from.
+    let mut fp = Fp::guest(c.mxcsr);
+    let negative = fp.comiss(0, limit) == Some(Ordering::Greater);
     let fraction = if negative { 0 } else { limit };
     let t1 = if negative {
         0
-    } else if det::compare(limit, one) == Ordering::Greater {
+    } else if fp.comiss(limit, one) == Some(Ordering::Greater) {
         one
     } else {
         limit
     };
-    fp.check(t1);
     if !fp.exact() {
         return Err(Bail::Float);
     }
+    let mxcsr = fp.mxcsr().unwrap_or(c.mxcsr);
     let bsp = world.bsp(&m, bsp_addr, || consts(&m))?;
     let outputs = Outputs::new(
         g,
@@ -184,7 +181,7 @@ fn plan_vector(
         prev_kind: 0,
         plane: NONE,
     };
-    let outcome = bsp.vector_test_under(c.mxcsr, &m, &q, 0, 0, t1)?;
+    let outcome = bsp.vector_test_under(mxcsr, c.x87.control, &m, &q, 0, 0, t1)?;
     for &at in &outcome.mask_reads {
         outputs.separate(g, at, 4)?;
     }
@@ -250,7 +247,7 @@ fn plan_context(
         prev_kind: b[ctx::PREV_KIND as usize],
         plane: w(ctx::PLANE),
     };
-    let outcome = bsp.vector_test_under(c.mxcsr, &m, &q, node, t0, t1)?;
+    let outcome = bsp.vector_test_under(c.mxcsr, c.x87.control, &m, &q, node, t0, t1)?;
     for &at in &outcome.mask_reads {
         outputs.separate(g, at, 4)?;
     }
@@ -276,9 +273,7 @@ fn commit(c: &mut CpuAbi, g: &mut impl Memory, plan: Plan) -> Result<TransferAbi
     if let Some(context) = plan.context {
         o.write_context(|offset, bytes| g.write_bytes(context.wrapping_add(offset), bytes, 1))?;
     }
-    if o.inexact {
-        c.x87.status |= 0x20;
-    }
+    c.x87.status |= o.x87_flags & 0x3f;
     c.mxcsr |= o.mxcsr.unwrap_or(0) & 0x3f;
     c.eax = (c.eax & !0xff) | u32::from(o.hit.is_some());
     // The last flag producer on every return is the epilogue's add to ESP.

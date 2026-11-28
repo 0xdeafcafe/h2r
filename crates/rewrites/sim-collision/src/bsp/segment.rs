@@ -10,6 +10,7 @@
 use super::{BAD_CHILD, BAD_PLANE, Bsp, LEAF, MAX_DEPTH, NONE, Node, above, non_negative};
 use crate::Bail;
 use crate::mem::GuestRead;
+use std::cmp::Ordering;
 use sim_core::det::{self, Fp};
 
 /// Leaf states: an empty leaf, a leaf with flag bit 0 (it reaches a
@@ -128,6 +129,9 @@ pub struct Outcome {
     /// Some split's x87 quotient was inexact: the guest set PE in the x87
     /// status word.
     pub inexact: bool,
+    /// [`Bsp::vector_test_under`]: the x87 exception flags (`0x3f`) the
+    /// splits raise, PE included.
+    pub x87_flags: u16,
     /// Guest addresses of the breakable words the walk read.
     pub mask_reads: Vec<u32>,
     /// [`Bsp::vector_test_under`]: the guest's MXCSR after the walk's SSE
@@ -240,6 +244,9 @@ struct Walk<'a, G> {
     q: &'a Segment,
     g: &'a G,
     fp: Fp,
+    /// [`Bsp::vector_test_under`]: the guest's x87 control word, under
+    /// which each split's `fdiv` runs.
+    x87_control: Option<u16>,
     // A tree reaches each internal node at most once, including tail descents.
     nodes_left: usize,
     out: Outcome,
@@ -257,29 +264,35 @@ impl Bsp {
         t0: u32,
         t1: u32,
     ) -> Result<Outcome, Bail> {
-        self.walk_with(Fp::new(), g, q, node, t0, t1)
+        self.walk_with(Fp::new(), None, g, q, node, t0, t1)
     }
 
-    /// [`Bsp::vector_test`] under the guest's `mxcsr` ([`Fp::tracked`]; it
-    /// must pass `sim_core::det::guest_env`): [`Outcome::mxcsr`] holds the
-    /// MXCSR the guest's walk leaves.
+    /// [`Bsp::vector_test`] under the guest's `mxcsr` and x87 `control`
+    /// ([`Fp::guest`]; the MXCSR must pass `sim_core::det::guest_env` and
+    /// the control word `sim_core::det::x87_env`): any operand runs as the
+    /// guest's instructions would, [`Outcome::mxcsr`] holds the MXCSR the
+    /// walk leaves and [`Outcome::x87_flags`] what the splits raise.
+    #[allow(clippy::too_many_arguments)]
     pub fn vector_test_under(
         &self,
         mxcsr: u32,
+        control: u16,
         g: &impl GuestRead,
         q: &Segment,
         node: u32,
         t0: u32,
         t1: u32,
     ) -> Result<Outcome, Bail> {
-        let mut out = self.walk_with(Fp::tracked(mxcsr), g, q, node, t0, t1)?;
+        let mut out = self.walk_with(Fp::guest(mxcsr), Some(control), g, q, node, t0, t1)?;
         out.mxcsr.get_or_insert(mxcsr);
         Ok(out)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn walk_with(
         &self,
         fp: Fp,
+        x87_control: Option<u16>,
         g: &impl GuestRead,
         q: &Segment,
         node: u32,
@@ -294,6 +307,7 @@ impl Bsp {
             q,
             g,
             fp,
+            x87_control,
             nodes_left: self.nodes.len(),
             out: Outcome {
                 straight: Some(StraightWalk::default()),
@@ -304,7 +318,10 @@ impl Bsp {
             },
         };
         // R's fraction is only compared with splits: J passes `FLT_MAX`.
-        w.fp.check_compared(q.fraction);
+        // Under the guest's state each compare records its own flags.
+        if x87_control.is_none() {
+            w.fp.check_compared(q.fraction);
+        }
         w.visit(node, t0, t1, 0)?;
         if !w.fp.exact() {
             return Err(Bail::Float);
@@ -369,7 +386,7 @@ impl<G: GuestRead> Walk<'_, G> {
             if !fp.exact() {
                 return Err(Bail::Float);
             }
-            let (a, b) = (non_negative(s0), non_negative(s1));
+            let (a, b) = (non_negative(fp, s0), non_negative(fp, s1));
             let d = PlaneDistances { distance: dist, delta, start: s0, end: s1 };
             let plane = n.plane_index as i16 as i32 as u32;
             let node = child & 0x7f_ffff;
@@ -384,16 +401,28 @@ impl<G: GuestRead> Walk<'_, G> {
             self.out.steps.push(Step::Plane { node, plane, d, front: [a, b], next: NONE });
             // Opposite signs at the ends: delta is nonzero.
             self.out.straight = None;
-            let increasing = above(delta, 0);
-            let split = det::x87_neg_quotient(dist, delta);
-            self.out.inexact |= split.inexact;
+            // `jbe` not taken: `delta > 0`, ordered.
+            let increasing = above(&mut self.fp, delta, 0);
+            let split = match self.x87_control {
+                Some(control) => det::x87_neg_quotient_under(control, dist, delta),
+                None => {
+                    // The fast path checked dist and delta; delta is
+                    // nonzero when the ends' signs differ.
+                    let q = det::x87_neg_quotient(dist, delta);
+                    det::X87Guest { value: q.value, flags: if q.inexact { 0x20 } else { 0 } }
+                }
+            };
+            self.out.inexact |= split.flags & 0x20 != 0;
+            self.out.x87_flags |= split.flags;
             let near = Self::child(&n, !increasing)?;
             self.out.steps.push(Step::Cross { split: split.value, increasing, near });
             if self.visit(near, t0, split.value, depth + 1)? {
                 return Ok(true);
             }
-            // `jae`: the far side only when the split is below R's fraction.
-            if !above(self.q.fraction, split.value) {
+            // `comiss split, fraction; jae`: stop unless the split is below
+            // R's fraction or unordered with it.
+            let split_order = self.fp.comiss(split.value, self.q.fraction);
+            if matches!(split_order, Some(Ordering::Greater | Ordering::Equal)) {
                 self.out.steps.push(Step::Stop);
                 return Ok(false);
             }
@@ -527,7 +556,7 @@ impl<G: GuestRead> Walk<'_, G> {
             if !fp.exact() {
                 return Err(Bail::Float);
             }
-            x = n.child[usize::from(non_negative(value))] as i16;
+            x = n.child[usize::from(non_negative(fp, value))] as i16;
         }
         Ok(if x == -1 { NONE } else { (x & 0x7fff) as u32 })
     }

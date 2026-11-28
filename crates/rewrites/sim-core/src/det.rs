@@ -163,6 +163,22 @@ impl Fp {
         self.ok &= lanes::compared1(x);
     }
 
+    /// `comiss a, b`: the order, `None` when unordered (ZF, PF and CF
+    /// all set, so `jb` and `jbe` are taken and `ja` and `jae` are not).
+    /// Under [`Fp::guest`] both operands raise what the compare raises
+    /// ([`Fp::check`]); otherwise they must pass [`Fp::check_compared`].
+    #[inline]
+    pub fn comiss(&mut self, a: u32, b: u32) -> Option<std::cmp::Ordering> {
+        if self.guest.is_some() && !self.strict {
+            self.check(a);
+            self.check(b);
+        } else {
+            self.check_compared(a);
+            self.check_compared(b);
+        }
+        comiss(a, b)
+    }
+
     #[inline]
     fn scalar(&mut self, op: Op, a: u32, b: u32) -> u32 {
         let fast = lanes::ordinary1(a) & lanes::ordinary1(b);
@@ -300,6 +316,13 @@ pub fn truncates(x: u32) -> bool {
     lanes::ordinary1(x) && x & 0x7fff_ffff < 0x4f00_0000
 }
 
+/// `comiss a, b` on any operands: `None` when unordered. Raises nothing;
+/// [`Fp::comiss`] records the flags.
+#[inline]
+pub fn comiss(a: u32, b: u32) -> Option<std::cmp::Ordering> {
+    f32::from_bits(a).partial_cmp(&f32::from_bits(b))
+}
+
 /// `comiss a, b` for ordinary operands: `Some(Ordering)` (never unordered
 /// in the fast path). Signed zeros compare equal.
 #[inline]
@@ -357,6 +380,44 @@ pub fn x87_neg_quotient(a: u32, b: u32) -> X87Store {
         value: (-q).to_bits(),
         inexact: f64::from(q) * f64::from(y) != f64::from(x),
     }
+}
+
+/// [`x87_neg_quotient`] under the guest's x87 `control` for any operands:
+/// the stored bits and the exception flags (`0x3f` of the status word) the
+/// sequence raises. Operands on the fast path take the host division;
+/// the rest run on the `x87` crate's model, which rounds as `control`
+/// says. `control` must pass [`x87_env`], so every exception is masked.
+pub fn x87_neg_quotient_under(control: u16, a: u32, b: u32) -> X87Guest {
+    if lanes::ordinary1(a) && lanes::ordinary1(b) && b & 0x7fff_ffff != 0 {
+        let q = x87_neg_quotient(a, b);
+        return X87Guest {
+            value: q.value,
+            flags: if q.inexact { 0x20 } else { 0 },
+        };
+    }
+    use x87::abi as fp;
+    let mut s = fp::X87Abi {
+        control,
+        tag: 0xffff,
+        ..Default::default()
+    };
+    fp::ld_f32(&mut s, a);
+    fp::arith(&mut s, fp::arith_op::DIV, 0, fp::src_kind::F32, u64::from(b));
+    fp::unary(&mut s, fp::unary_op::CHS);
+    let (_, store) = fp::st_f32(&s, 0);
+    fp::store_commit(&mut s, store.status, true);
+    X87Guest {
+        value: store.value,
+        flags: s.status & 0x3f,
+    }
+}
+
+/// What [`x87_neg_quotient_under`] stores and raises.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct X87Guest {
+    pub value: u32,
+    /// IE, DE, ZE, OE, UE and PE as the status word gains them.
+    pub flags: u16,
 }
 
 #[cfg(test)]
@@ -443,6 +504,58 @@ mod tests {
             value: store.value,
             inexact: s.status & fp::H2_FP_PE != 0,
         }
+    }
+
+    #[test]
+    fn guest_quotient_models_operands_off_the_fast_path() {
+        let tiny = 1.0e-30f32.to_bits();
+        let sub = 0x0000_0001;
+        let cases = [
+            (1.0f32.to_bits(), 3.0f32.to_bits()),
+            (tiny, 3.0f32.to_bits()),
+            (1.0f32.to_bits(), tiny),
+            (sub, 1.0f32.to_bits()),
+            (1.0f32.to_bits(), 0),
+            (0, 0),
+            (0x7fc0_0000, 1.0f32.to_bits()),
+            (0x7f80_0000, 2.0f32.to_bits()),
+        ];
+        for (a, b) in cases {
+            for control in [0x007f, 0x027f, 0x037f] {
+                use x87::abi as fp;
+                let mut s = fp::X87Abi {
+                    control,
+                    tag: 0xffff,
+                    ..Default::default()
+                };
+                fp::ld_f32(&mut s, a);
+                fp::arith(&mut s, fp::arith_op::DIV, 0, fp::src_kind::F32, u64::from(b));
+                fp::unary(&mut s, fp::unary_op::CHS);
+                let (_, store) = fp::st_f32(&s, 0);
+                fp::store_commit(&mut s, store.status, true);
+                let got = x87_neg_quotient_under(control, a, b);
+                assert_eq!(got.value, store.value, "{a:#x} / {b:#x} control {control:#x}");
+                assert_eq!(got.flags, s.status & 0x3f, "{a:#x} / {b:#x} control {control:#x}");
+            }
+        }
+        // A subnormal dividend raises DE; a zero divisor ZE.
+        assert_ne!(x87_neg_quotient_under(0x027f, sub, 1.0f32.to_bits()).flags & 0x02, 0);
+        assert_ne!(x87_neg_quotient_under(0x027f, 1.0f32.to_bits(), 0).flags & 0x04, 0);
+    }
+
+    #[test]
+    fn guest_comiss_orders_nan_as_unordered_and_raises_ie() {
+        let mut fp = Fp::guest(0x1f80);
+        assert_eq!(fp.comiss(0x7fc0_0000, 0), None);
+        assert_ne!(fp.mxcsr().unwrap() & simd::IE, 0);
+        assert!(fp.exact());
+        let mut fp = Fp::guest(0x1f80);
+        assert_eq!(fp.comiss(1, 0), Some(std::cmp::Ordering::Greater));
+        assert_ne!(fp.mxcsr().unwrap() & simd::DE, 0);
+        // Off guest the same operands decline.
+        let mut fp = Fp::new();
+        assert_eq!(fp.comiss(0x7fc0_0000, 0), None);
+        assert!(!fp.exact());
     }
 
     #[test]
