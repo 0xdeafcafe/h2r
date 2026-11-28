@@ -221,7 +221,9 @@ fn damage_parts_match_lifted() {
         assert_eq!(esp, STACK - 0x11c, "case {case}: the arm's depth");
         let got = &mem.bytes[at as usize..at as usize + damage::SIZE];
         let want = damage::record(&inputs);
-        assert_eq!(damage::first_difference(&want, got.try_into().unwrap()), None, "case {case}");
+        let got: &[u8; damage::SIZE] = got.try_into().unwrap();
+        let first = want.iter().zip(got).position(|(w, g)| w != g);
+        assert_eq!(first, None, "case {case}: the record's first differing byte");
         assert_eq!(read32(&mem, esp + 8), damage::NO_OBJECT, "case {case}");
     }
 }

@@ -757,6 +757,7 @@ fn an_export_maps_its_input_through_its_function() {
             export(
                 ram, RECORDS, 0, flags, 40, E1, gate, threshold, scale, identity,
             );
+            lib.definitions.clear();
             lib.value(&*ram, ENV, OBJECT, E1)
         };
     // Plain: the input, active above 0.
@@ -783,6 +784,7 @@ fn an_export_maps_its_input_through_its_function() {
     // An output range past 1 clamps at the end.
     let wide = blob(&mut ram, 1, 0, 0, [0, 0], [0.0, 8.0], &[]);
     export(&mut ram, RECORDS, 0, 0, 40, E1, 0, 0.0, 0, wide);
+    lib.definitions.clear();
     assert_eq!(value(&mut lib, &ram, OBJECT, E1), Ok(found(1.0, 1)));
 }
 
@@ -801,10 +803,12 @@ fn a_periodic_export_runs_on_game_time_with_an_optional_per_object_offset() {
     };
     // Input: the "one" import (1.0, active), which the curve scales.
     export(&mut ram, RECORDS, 0, 0, 10, E1, 0, 0.0, 0, wave);
+    lib.definitions.clear();
     let plain = want(&mut ram, t);
     assert_eq!(value(&mut lib, &ram, OBJECT, E1), Ok(plain));
     // Bit 3 adds the handle's hash: single precision rounds each step,
     export(&mut ram, RECORDS, 0, 8, 10, E1, 0, 0.0, 0, wave);
+    lib.definitions.clear();
     let single = Env {
         x87_control: 0x007f,
         ..ENV
@@ -827,6 +831,7 @@ fn a_periodic_export_runs_on_game_time_with_an_optional_per_object_offset() {
     assert_eq!(lib.value(&ram, unready, OBJECT, E1), Err(Decline::Float));
     // Without bit 3 the x87 is not used.
     export(&mut ram, RECORDS, 0, 0, 10, E1, 0, 0.0, 0, wave);
+    lib.definitions.clear();
     assert_eq!(lib.value(&ram, extended, OBJECT, E1), Ok(plain));
 }
 
@@ -885,6 +890,7 @@ fn an_override_a_loop_and_an_unpinned_environment_decline() {
     export(&mut ram, RECORDS, 0, 0, 40, E1, 0, 0.0, E1, identity);
     assert_eq!(value(&mut lib, &ram, OBJECT, E1), Err(Decline::Depth));
     export(&mut ram, RECORDS, 0, 0, 40, E1, 0, 0.0, 0, identity);
+    lib.definitions.clear();
     assert_eq!(value(&mut lib, &ram, OBJECT, E1), Ok(found(0.25, 1)));
     for (mxcsr, control) in [(0x1f80u32, 0x027fu16), (0x1fa0, 0x0e7f), (0x3fa0, 0x027f)] {
         let env = Env {
@@ -908,6 +914,7 @@ fn an_override_a_loop_and_an_unpinned_environment_decline() {
     ram.setf(BODY + 0xec, 0.25);
     let nine = blob(&mut ram, 1, 9, 0, [0, 0], [0.0, 1.0], &[]);
     export(&mut ram, RECORDS, 0, 0, 40, E1, 0, 0.0, 0, nine);
+    lib.definitions.clear();
     assert_eq!(value(&mut lib, &ram, OBJECT, E1), Err(Decline::Curve));
 }
 

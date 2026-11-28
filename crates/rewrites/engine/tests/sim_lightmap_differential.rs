@@ -768,7 +768,8 @@ impl Lifted<'_> {
                     return Ok(c.gpr[0]);
                 }
                 RESIDENT => {
-                    al(&mut c, case.sections.contains_key(&c.gpr[1]));
+                    let resident = case.sections.contains_key(&c.gpr[1]);
+                    al(&mut c, resident);
                     ret(&mut c, &*mem, 0);
                 }
                 TEXTURE => {

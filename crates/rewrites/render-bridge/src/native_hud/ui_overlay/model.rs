@@ -203,7 +203,8 @@ mod tests {
         mem.0.insert(0x0054_d598, 0);
         assert!(matches!(read(&mem, 0x1000, PARENT), Ok(UiContent::None)), "an inactive selector");
         mem.0.insert(0x0054_d598, 4);
-        mem.0.remove(&0x6000);
+        // The handle of the row the name selects (row 1), no longer readable.
+        mem.0.remove(&0x6004);
         assert_eq!(read(&mem, 0x1000, PARENT), Err(Unread::Unreadable.into()));
     }
 
