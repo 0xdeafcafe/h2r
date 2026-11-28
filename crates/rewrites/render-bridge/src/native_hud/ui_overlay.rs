@@ -384,7 +384,7 @@ fn plan_with_text(mem: &dyn GuestRead, list: &UiList, fonts: &dyn UiText, custom
             continue;
         }
         if custom(e.widget) {
-            refused.push((i as u32, Gap::class("draw_custom").into()));
+            refused.push((i as u32, MenuRefusal::from(Gap::class("draw_custom"))));
             open = false;
             continue;
         }
@@ -709,7 +709,7 @@ mod tests {
         let mem = widgets();
         // Entry 1 is past the far depth; entry 2 is text.
         let (claim, refused) = plan(&mem, &list(0x8000, [0.0, 5.0, 0.0, 0.0, 0.0]));
-        assert_eq!(refused, [(2, Gap::text("text_viewport").into())]);
+        assert_eq!(refused, [(2, MenuRefusal::from(Gap::text("text_viewport")))]);
         let runs: Vec<_> = claim.runs.iter().map(|r| r.entries.clone()).collect();
         assert_eq!(runs, [vec![0], vec![3, 4]]);
         assert_eq!(claim.run_of, [Some(0), None, None, Some(1), Some(1)]);
@@ -750,7 +750,7 @@ mod tests {
         let mut mem = widgets();
         mem.w(0x1200, NONE_VTABLE);
         let (claim, refused) = plan_with_text(&mem, &list(0x8000, [0.0; 5]), &NoText, &|w| w == 0x1200);
-        assert_eq!(refused, [(2, Gap::class("draw_custom").into())]);
+        assert_eq!(refused, [(2, MenuRefusal::from(Gap::class("draw_custom")))]);
         assert_eq!(claim.run_of, [Some(0), Some(0), None, Some(1), Some(1)]);
     }
 

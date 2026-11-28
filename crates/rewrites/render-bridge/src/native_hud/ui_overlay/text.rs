@@ -118,7 +118,7 @@ fn substitute(mem: &dyn GuestRead, text: &[u16]) -> Result<Vec<u16>, Gap> {
             // replaces with nothing.
             let with: &[u16] = if unit == 0 { &[] } else { std::slice::from_ref(&unit) };
             if buf.len() - matched + with.len() < COPY_UNITS {
-                buf.splice(pos..pos + matched, with.iter().copied());
+                drop(buf.splice(pos..pos + matched, with.iter().copied()));
             }
         }
         pos += 1;
