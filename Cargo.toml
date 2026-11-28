@@ -50,7 +50,6 @@ sim-objects = { path = "crates/rewrites/sim-objects" }
 sim-sound = { path = "crates/rewrites/sim-sound" }
 sim-state = { path = "crates/rewrites/sim-state" }
 sim-world = { path = "crates/rewrites/sim-world" }
-sim-ext = { path = "crates/rewrites/sim-ext" }
 x87 = { path = "crates/recompiler/x87" }
 kernel = { path = "crates/runtime/kernel" }
 voice = { path = "crates/platform/voice" }

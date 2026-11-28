@@ -1422,7 +1422,7 @@ fn tick_phases(
         end.tick_ns().saturating_sub(start.tick_ns()),
         end.loop_ns().saturating_sub(start.loop_ns()),
         end.loops().saturating_sub(start.loops()),
-        engine::sim_tick::PHASES
+        engine::sim_tick::SYSTEMS
             .iter()
             .enumerate()
             .map(|(i, p)| (p.name.to_owned(), end.phase_ns(i).saturating_sub(start.phase_ns(i)))),

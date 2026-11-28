@@ -355,7 +355,7 @@ drops the script, its calls and its record ("this machine is not the
 game engine's authority"). A film's playback is not told apart: it runs
 the script where the replayed engine answers true.
 
-**State.** The `RULES` record (`sim_ext::RULES`) holds
+**State.** The `RULES` record (`sim_world::ext::RULES`) holds
 `RulesExt::encode`, set at the start, written after every run that
 changed it and removed after `GAME_END` and at the next start
 ([sim-rewrite.md](../engine/sim-rewrite.md#2-who-owns-state)), so

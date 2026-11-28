@@ -20,6 +20,7 @@ pub mod events;
 pub mod functions;
 pub mod light;
 pub mod phase;
+pub mod pool;
 pub mod table;
 pub mod unit;
 pub mod view;
@@ -34,5 +35,5 @@ pub mod synth;
 
 pub use defs::{Def, DefTable};
 pub use events::{Damage, Kill, SimEvent};
-pub use table::{ObjectRecord, ObjectTable, PoolMem};
+pub use table::{ImportError, ObjectRecord, ObjectTable, PoolMem};
 pub use view::{ObjRef, Objects};

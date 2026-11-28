@@ -185,7 +185,7 @@ pub fn fold_ext(arena: u64, ext: Option<u64>) -> u64 {
 /// The hash of `region`, or `None` while it is not there to read (before
 /// the guest has set the pointer, or with the range not mapped). Reads
 /// guest memory from Rust: uncharged, and it writes nothing. The process's
-/// `SimExt` records are folded in ([`fold_ext`], `sim_ext::digest`), so
+/// `SimExt` records are folded in ([`fold_ext`], `sim_world::ext::digest`), so
 /// extension state that differs between two runs makes their hashes
 /// differ.
 pub fn hash_sim(guest: &Guest, region: SimRegion) -> Option<u64> {
@@ -204,7 +204,7 @@ pub fn hash_sim_buffered(guest: &Guest, region: SimRegion, bytes: &mut Vec<u8>) 
     }
     bytes.resize(len as usize, 0);
     guest.read_bytes(base, bytes, 1).ok()?;
-    Some(hash_arena(bytes, sim_ext::digest()))
+    Some(hash_arena(bytes, sim_world::ext::digest()))
 }
 
 /// The hash of an arena's bytes with the extension records' digest folded
@@ -244,7 +244,7 @@ pub fn hash_sim_blocks(
     );
     Some((
         base,
-        fold_ext(hash_bytes(u64::from(len), bytes), sim_ext::digest()),
+        fold_ext(hash_bytes(u64::from(len), bytes), sim_world::ext::digest()),
     ))
 }
 
@@ -280,7 +280,7 @@ pub fn hash_gameplay_blocks(
     if block != usize::MAX {
         blocks.extend(bytes.chunks(block).map(|c| hash_bytes(c.len() as u64, c)));
     }
-    Some((base, hash_arena(bytes, sim_ext::digest())))
+    Some((base, hash_arena(bytes, sim_world::ext::digest())))
 }
 
 /// What a record marks.
@@ -850,7 +850,7 @@ mod tests {
         g.read_bytes(0x11000, &mut bytes, 1).unwrap();
         assert_eq!(
             hash_sim(&g, fixed),
-            Some(hash_arena(&bytes, sim_ext::digest()))
+            Some(hash_arena(&bytes, sim_world::ext::digest()))
         );
         assert_ne!(hash_arena(&bytes, None), hash_arena(&bytes, Some(1)));
     }
@@ -889,16 +889,16 @@ mod tests {
         };
         let arena = hash_sim(&g, fixed).unwrap();
         assert_eq!(fold_ext(arena, None), arena, "no records: the arena hash");
-        assert_eq!(fold_ext(arena, sim_ext::SimExt::new().digest()), arena);
+        assert_eq!(fold_ext(arena, sim_world::ext::SimExt::new().digest()), arena);
 
-        let mut ext = sim_ext::SimExt::new();
-        ext.set(&sim_ext::RULES, vec![1]).unwrap();
+        let mut ext = sim_world::ext::SimExt::new();
+        ext.set(&sim_world::ext::RULES, vec![1]).unwrap();
         let one = fold_ext(arena, ext.digest());
         assert_ne!(one, arena);
-        ext.set(&sim_ext::RULES, vec![2]).unwrap();
+        ext.set(&sim_world::ext::RULES, vec![2]).unwrap();
         let two = fold_ext(arena, ext.digest());
         assert_ne!(two, one, "a changed record changes the hash");
-        ext.set(&sim_ext::RULES, vec![1]).unwrap();
+        ext.set(&sim_world::ext::RULES, vec![1]).unwrap();
         assert_eq!(fold_ext(arena, ext.digest()), one);
     }
 

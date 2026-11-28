@@ -683,6 +683,10 @@ points! { ALL;
     OBJECT_DETACH @ 0x000b_9890: [fn(object: eax) -> eax ret 0], Hot; "docs/engine/object-update.md";
     /// Free an object's body from the object memory pool and delete its datum.
     OBJECT_BODY_FREE @ 0x000b_c300: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    /// Allocate an object's datum and its zeroed body from the object memory pool; the handle, or none when either is full.
+    OBJECT_BODY_ALLOC @ 0x000b_c280: [fn(size: stack 0) -> eax ret 4], Hot; "docs/engine/object-update.md";
+    /// Compact the object memory pool: slide each block down in address order, rewriting each owner's body pointer.
+    OBJECT_POOL_COMPACT @ 0x0018_e470: [fn(pool: edi) ret 0], Hot; "docs/engine/object-update.md";
     /// The weapons' deferred fire: each weapon with body `+16c` bit 0 through `fd980`.
     WEAPONS_DEFERRED_FIRE @ 0x000f_d910: [fn() ret 0], Hot; "docs/engine/object-update.md";
     /// Object memory collection, finalize's tail.

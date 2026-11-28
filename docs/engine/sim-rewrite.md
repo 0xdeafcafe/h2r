@@ -149,13 +149,13 @@ every 30 ticks), telemetry, and the agent API.
 
 #### The `SimExt` blob
 
-Partly built, tested on synthetic memory only; no feature stores a record
-yet. Code: `crates/rewrites/sim-ext` (the container and its byte form),
+Code: `crates/rewrites/sim-world/src/ext` (the container and its byte
+form; `store.rs` is the world's `kind::EXT` section),
 `crates/rewrites/sim-bridge/src/sim_ext.rs` (the hooks, feature `sim-ext`,
 registered in every run by `crates/apps/boot/src/registration.rs`),
 `lockstep::fold_ext` (the hash).
 
-- **Records.** A feature registers a `sim_ext::Kind` (name, layout
+- **Records.** A feature registers a `sim_world::ext::Kind` (name, layout
   version, cap) and stores its record as bytes it encodes itself.
   `RULES` (`RulesExt`, 64 KiB) and `FORGE` (`ForgeExt`, 64 KiB) are
   registered from the start. `RULES` holds `rules::RulesExt::encode`,
@@ -164,7 +164,7 @@ registered in every run by `crates/apps/boot/src/registration.rs`),
   `FORGE` is opaque until its owner lands. The container is at most
   256 KiB.
 - **Bytes.** No records is zero bytes. Otherwise `"SEXT"`, the format
-  (`sim_ext::FORMAT`, 1), the record count, the records in name order
+  (`sim_world::ext::FORMAT`, 1), the record count, the records in name order
   (name, version, length, bytes) and a CRC-32 of all of it. The form is
   canonical: a restore refuses another format, an unregistered kind, a
   record of another version, a record over its cap, a bad CRC and any
@@ -180,10 +180,12 @@ registered in every run by `crates/apps/boot/src/registration.rs`),
   were any. A full restore at `0x124380` reads a save
   file that has no records beside it, so the observer after it clears
   them, with a line when there were any.
-- **Snapshots and films.** The feature's snapshot section holds the live
-  records and both slot copies, and is empty when all three are. Film
-  keyframes are machine snapshots ([film-format.md](../game/film-format.md)),
-  so they carry the same section.
+- **Snapshots and films.** `sim_world::ext::store::ExtStore` is the
+  world's `kind::EXT` store: its section holds the live records and both
+  slot copies, and is empty when all three are. `World::save`,
+  `World::restore_into` and `World::sim_hash` cover it. Film keyframes are
+  machine snapshots ([film-format.md](../game/film-format.md)), so they
+  carry the same section.
 - **The hash.** `lockstep::hash_sim`, `hash_sim_buffered` and
   `hash_sim_blocks` fold the records' FNV-1a digest into the arena hash
   when there is a record, and return the arena hash unchanged when there
@@ -192,7 +194,7 @@ registered in every run by `crates/apps/boot/src/registration.rs`),
   difference in extension state alone shows in the whole hash.
 - **Not covered.** A full restore from a save file loses the records
   (campaign save-and-quit). The blob is one per process
-  (`sim_ext::global`), and nothing clears it between matches; each owner
+  (`sim_world::ext::global`), and nothing clears it between matches; each owner
   sets or removes its record when its game starts.
 
 Why this holds up:

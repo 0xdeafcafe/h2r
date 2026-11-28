@@ -1180,13 +1180,8 @@ pub(crate) mod tests {
 
     pub(crate) fn player_viewport(split: bool) -> [f32; 4] {
         // A guest boundary at 10 / 19 of the screen falls between physical texels.
-        let request = gfx::external::ExternalPassRequest {
-            rect: if split { (10, 0, 9, 19) } else { (0, 0, 19, 19) },
-            surface_size: (19, 19),
-            display_projection_factor: 0.75,
-            z_scale: 1.0,
-        };
-        gfx::external::external_viewport(&request, (SIZE, SIZE))
+        let rect = if split { (10, 0, 9, 19) } else { (0, 0, 19, 19) };
+        gfx::external::external_viewport(rect, (19, 19), (SIZE, SIZE))
     }
 
     pub(crate) fn assert_split_images(images: &[(Vec<u8>, Vec<u8>)]) {

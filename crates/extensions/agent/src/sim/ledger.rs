@@ -6,7 +6,7 @@
 use agent_proto::sim::ledger::{LedgerReply, PhaseRow};
 use agent_proto::sim::method;
 use agent_proto::{RpcError, code};
-use engine::sim_tick::{self, Ledger, Owner, PHASES};
+use engine::sim_tick::{self, Ledger, Owner, SYSTEMS};
 
 use crate::{Access, Agent};
 
@@ -15,7 +15,7 @@ pub fn reply(ledger: &Ledger, sound: std::collections::BTreeMap<String, u64>) ->
     LedgerReply {
         tick: ledger.tick(),
         ticks: ledger.ticks(),
-        phases: PHASES
+        phases: SYSTEMS
             .iter()
             .enumerate()
             .map(|(i, p)| PhaseRow {
