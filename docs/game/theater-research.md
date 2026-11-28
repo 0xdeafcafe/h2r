@@ -164,11 +164,11 @@ anything.
 
 | source | boundary | today |
 |---|---|---|
-| pad reads | `XInputGetState` result and status (22-byte `XINPUT_STATE`) | `xapi::tap::Recorder` |
+| pad reads | `XInputGetState` result and status (22-byte `XINPUT_STATE`) | `xapi::tap::Recorder`; a client's film takes them ([film-format.md](film-format.md#the-machine-tape)) |
 | device arrival, capabilities | `XGetDeviceChanges`, capabilities | not tapped (the harness replays with the same kind of pad); a film should record them |
-| network receives | `recv`/`recvfrom` results (payload, source address, error), `select` and FIONREAD results, `XNetGetConnectStatus`, QoS results | not tapped; live.md "Client HLE" lists the entries |
-| host randomness | `XNetRandom`, `XNetCreateKey` (host OS randomness, live.md) | not tapped |
-| Live HLE answers | logon, presence, title storage (MOTD and playlists), stats | not tapped; record their results by call index like a receive |
+| network receives | `recv`/`recvfrom` results (payload, source address, error), `select` and FIONREAD results, `XNetGetConnectStatus`, QoS results | `live_hle::tape`, every Live HLE call by index; a client's film takes them ([film-format.md](film-format.md#the-machine-tape)) |
+| host randomness | `XNetRandom`, `XNetCreateKey` (host OS randomness, live.md) | `live_hle::tape`, as calls |
+| Live HLE answers | logon, presence, title storage (MOTD and playlists), stats | `live_hle::tape`, as calls, with every guest byte each wrote |
 | time | NT epoch (`Config::epoch_100ns`) | configurable; record it |
 | start state | profile, settings and save files on U: and E: that the game reads; N: cache contents | record a manifest with hashes, and embed the small user files (they're the user's own data) |
 | build | image stamp (generated code, override set, passes), disc identity (title ID, XBE hash) | stamp exists for frame comparisons (BOOT.md); reuse it |

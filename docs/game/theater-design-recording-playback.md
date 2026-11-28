@@ -313,16 +313,22 @@ answer or host call order, so a build that changes those plays it.
 | Campaign, a new mission | this machine | options | checkpoints and reverts are replayed |
 | Campaign, resumed from a saved checkpoint | this machine | options and a start point | |
 | Co-op over Live (synchronous) | every machine: each applies every update | options; a start point for a player who joined in progress | each machine's film is the same simulation |
-| System link or Live game hosted by a player | the host's machine | options | a client's machine records no film |
+| System link or Live game hosted by a player | every machine: the host from the simulation, each client its own machine | the host: options; a client: boot | a client's film is its machine tape ([film-format.md](film-format.md#the-machine-tape)) |
 | Live game on a dedicated host | the host | options | the host uploads it; every participant's library lists it |
 | Firefight, Forge, scripted game types | whichever machine simulates | options, with the script or map variant by value | Forge edits are extension records |
 
-A client of a distributed game watches the host's film, fetched from its
-account library after the game ("Account film library"), with its own
-seat selected. It shows the authoritative game, not what the client's
-machine predicted. The host can also forward the film to its clients as
-it is made ([input-film.md](input-film.md#the-action-side-stream)), which
-gives a client the film without Live.
+Every machine records its own game. A client of a distributed game is
+sent state, not every player's updates, so its film is not played from
+the simulation's inputs: it is the client's machine tape, every network
+receive and Live answer the guest got and every controller read, from
+boot to the game's end ([film-format.md](film-format.md#the-machine-tape)).
+Its replay boots the same build and answers each of those from the tape,
+with no socket and no server, so the client's game runs again as it ran,
+its prediction and lag included; a read the tape lacks is a named error.
+
+The host's film, from the account library or forwarded as it is made
+([input-film.md](input-film.md#the-action-side-stream)), shows the
+authoritative game beside it.
 
 ### Sharing through Live
 

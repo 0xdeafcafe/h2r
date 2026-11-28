@@ -8,6 +8,7 @@ mod capture;
 mod film_play;
 pub mod extension;
 mod game_start;
+pub mod machine;
 mod media;
 pub use capture::{ClipCapture, ClipSink, ClipSpan, Picture};
 pub use media::Media;
@@ -212,6 +213,9 @@ struct State {
     /// The session ring of the film being played ([`ring`]); `None` while
     /// recording and in a verification.
     ring: Option<ring::Ring>,
+    /// The machine's outside inputs since boot, for a client's film
+    /// ([`machine`]); `None` when the session keeps no machine tape.
+    machine: Option<machine::Machine>,
 }
 
 /// A default recording's account of itself: the films it sealed, the last
@@ -296,6 +300,16 @@ impl Drop for Seal {
 impl Session {
     fn lock(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Keep this recording's machine tape: a client's game seals with it
+    /// ([`machine`], docs/game/film-format.md "The machine tape"). Boot
+    /// attaches it before the guest runs, so the tape starts at boot.
+    pub fn attach_machine(&self, machine: machine::Machine) {
+        let mut s = self.lock();
+        if matches!(s.mode, Mode::Record(_)) {
+            s.machine = Some(machine);
+        }
     }
     pub fn open(
         record: Option<PathBuf>,
@@ -395,6 +409,7 @@ impl Session {
                 features: switches.with(admission, true).spec(),
                 player_features: player_features && !host_recording,
                 inputs_in_film: true,
+                role: film::tape::Role::Local,
                 transfers_per_slice: opts.transfers_per_slice,
                 meta: FilmMeta {
                     id: live_proto::sign::random_id(),
@@ -505,6 +520,7 @@ impl Session {
                 outcome: Outcome::default(),
                 watch: None,
                 ring: None,
+                machine: None,
             }),
             upload: Mutex::default(),
             watch: watch::Hub::new(own),
@@ -904,7 +920,7 @@ impl Session {
         };
         let upload = rec.upload.take();
         let files = rec.game.take().context("film already closed")?;
-        let path = match rec.seal(files, Some(header), tick) {
+        let path = match rec.seal(files, Some(header), None, tick) {
             Ok((path, header)) => {
                 s.header = header;
                 path
@@ -950,6 +966,27 @@ impl Session {
         Ok(())
     }
 }
+/// Seal a client's game with its machine tape, and say where it went.
+fn keep(
+    rec: &mut Recording,
+    outcome: &mut Outcome,
+    files: record::GameFiles,
+    tape: Option<film::tape::Tape>,
+    ticks: u64,
+) {
+    let role = files.header.role;
+    match rec.seal(files, None, tape, ticks) {
+        Ok((path, _)) => {
+            eprintln!("theater: this {} game's film is {}", role.label(), path.display());
+            outcome.films.push(path);
+        }
+        Err(error) => {
+            eprintln!("theater: could not keep this game's film: {error:#}");
+            outcome.discard = Some(format!("could not keep this game's film: {error:#}"));
+        }
+    }
+}
+
 impl State {
     fn fail(&mut self, why: String) {
         self.fail_at(self.tick, why)
@@ -958,22 +995,40 @@ impl State {
     /// Seal the film of the game a default recording just played, at the
     /// tick it reached, and make ready for the next game, whose film opens
     /// at its activation (docs/game/film-format.md, "Recording every
-    /// game"). A game that never completed its first update (one gone
-    /// before it, or a guest stopped inside it) has no film: its files are
-    /// deleted. A film that cannot be sealed is logged and kept as the
+    /// game"). A client's game keeps its film with the machine tape, with
+    /// or without updates of its own ([`machine`]). Any other game that
+    /// never completed its first update (one gone before it, or a guest
+    /// stopped inside it) has no film: its files are deleted. A film that cannot be sealed is logged and kept as the
     /// last discard reason.
     fn seal_game(&mut self) {
         let tick = self.tick;
+        // A client's game is its machine: its film takes the tape from boot,
+        // with or without simulation updates of its own.
+        let client = self.mode_game_role().is_client();
+        let tape = match (&self.machine, client) {
+            (Some(machine), true) => match machine.tape() {
+                Ok(tape) => Some(tape),
+                Err(why) => {
+                    self.outcome.discard = Some(format!("this client game has no film: {why}"));
+                    None
+                }
+            },
+            _ => None,
+        };
         let Mode::Record(rec) = &mut self.mode else { return };
         rec.match_over = false;
         if let Some(files) = rec.game.take() {
             match files.base {
+                Some(base) if tape.is_some() => {
+                    keep(rec, &mut self.outcome, files, tape, tick.saturating_sub(base))
+                }
+                None if tape.is_some() => keep(rec, &mut self.outcome, files, tape, 0),
                 // Base is set as the first update enters; its film tick is
                 // pushed as it ends. The track learns the film's version
                 // from that tick, so a seal before it has nothing to keep.
                 _ if files.track.ticks() == 0 => files.discard(),
                 None => files.discard(),
-                Some(base) => match rec.seal(files, None, tick.saturating_sub(base)) {
+                Some(base) => match rec.seal(files, None, None, tick.saturating_sub(base)) {
                     Ok((path, _)) => {
                         eprintln!("theater: this game's film is {}", path.display());
                         self.outcome.films.push(path);
@@ -988,6 +1043,15 @@ impl State {
         }
         let Mode::Record(rec) = &mut self.mode else { return };
         rec.next_game();
+    }
+
+    /// The role of the game in play's film (`film::Header::role`), local
+    /// when no game is in play.
+    fn mode_game_role(&self) -> film::tape::Role {
+        match &self.mode {
+            Mode::Record(rec) => rec.game.as_ref().map_or(Default::default(), |g| g.header.role),
+            _ => Default::default(),
+        }
     }
 
     /// A new game activated in a default recording: the game before it
@@ -1008,11 +1072,13 @@ impl State {
         if let Err(error) = autorecord::prune(&dir, autorecord::KEEP, now) {
             eprintln!("theater: could not make room in the film library: {error:#}");
         }
-        match record::GameFiles::create(
-            autorecord::destination(&dir, now),
-            autorecord::game_header(&header),
-            None,
-        ) {
+        let mut header = autorecord::game_header(&header);
+        // Whose game it is, as the machine sees it at the game's activation.
+        if let Some(machine) = &self.machine {
+            header.role = machine.role();
+        }
+        let Mode::Record(rec) = &mut self.mode else { return };
+        match record::GameFiles::create(autorecord::destination(&dir, now), header, None) {
             Ok(files) => rec.game = Some(files),
             Err(error) => {
                 eprintln!("theater: this game has no film: {error:#}");

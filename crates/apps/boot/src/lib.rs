@@ -1310,6 +1310,21 @@ fn run_configured(
     let debug_capture_unavailable = Some("this host has no GPU renderer");
     #[cfg(feature = "gpu")]
     let world_line_capture_requested = world_line_present.is_some();
+    // A default recording keeps the machine's outside inputs from boot,
+    // so a client's game leaves a film (theater::machine,
+    // docs/game/film-format.md "The machine tape"). Its pad recorder is
+    // XAPI's innermost tap, under the assist's and the agent's; lockstep
+    // owns the pad tap when it is on.
+    if !replaying
+        && !lockstep_on
+        && let (Some(session), Some(hle), Some(x)) = (film.as_ref(), _live.as_ref(), xa.as_ref())
+        && session.player_features()
+    {
+        match theater::machine::Machine::record(hle, &**x) {
+            Ok(machine) => session.attach_machine(machine),
+            Err(e) => eprintln!("theater: a client's game leaves no film this session: {e:#}"),
+        }
+    }
     // The lockstep harness, the agent, our cheats, the render features and
     // the probes (registration.rs, the rest of the plan's features).
     let late = registration::register_late_for_profile(
