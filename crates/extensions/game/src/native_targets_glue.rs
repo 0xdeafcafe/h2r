@@ -145,6 +145,10 @@ impl<B: d3d::Backend + Send + 'static> Host for Targets<B> {
         made.map_err(|e| self.refused("the viewport push", e)).ok()
     }
 
+    fn surface_size(&self, mem: &dyn GuestMemory, header: u32) -> Option<(u32, u32)> {
+        self.device.lock().ok()?.surface_size(&crate::native_world_glue::ReadMemory(mem), header)
+    }
+
     fn viewport(&self, mem: &mut dyn GuestMemory, at: u32) -> bool {
         let Ok(mut device) = self.device.lock() else { return false };
         let made = device.set_viewport(&mut DeviceMemory(mem), at);

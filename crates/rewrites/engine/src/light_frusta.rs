@@ -253,31 +253,43 @@ fn extend_rect(rect: &mut [u32; 4], points: &[[f32; 2]]) {
 
 /// `0x00141590`: the inverse of the basis at `+0x38`, written at `+0x04`.
 fn inverse(f: &mut Rec, c: &Consts) {
-    let s = f.f(0x38);
-    if s == 0.0 {
-        f.0[0x04..0x38].fill(0);
-        return;
+    let basis: [u32; 13] = std::array::from_fn(|i| f.bits(0x38 + 4 * i));
+    for (i, w) in inverse_words(&basis, c.one).into_iter().enumerate() {
+        f.set_bits(0x04 + 4 * i, w);
     }
-    let t = f.v3(0x60);
-    let mut tp = [0.0 - t[0], 0.0 - t[1], 0.0 - t[2]];
-    if s == c.one {
-        f.set(0x04, c.one);
+}
+
+/// `0x00141590(ecx = basis, eax = out)`, bit for bit: the inverse of a
+/// 13-word basis (scale, three axes, the point), `one` the guest's 1.0.
+/// A zero scale gives all zeros; a scale of one is kept, any other its
+/// reciprocal, which scales the point. The axes are transposed and the
+/// point is taken through them in the guest's order.
+pub fn inverse_words(basis: &[u32; 13], one: f32) -> [u32; 13] {
+    let f = |i: usize| f32::from_bits(basis[i]);
+    let s = f(0);
+    let mut out = [0u32; 13];
+    if s == 0.0 {
+        return out;
+    }
+    let mut tp = [0.0 - f(10), 0.0 - f(11), 0.0 - f(12)];
+    if s == one {
+        out[0] = one.to_bits();
     } else {
-        let k = c.one / s;
+        let k = one / s;
         tp = [k * tp[0], k * tp[1], k * tp[2]];
-        f.set(0x04, k);
+        out[0] = k.to_bits();
     }
     // The axes transposed: rows of x, y and z components.
-    for (row, at) in [0x08usize, 0x14, 0x20].into_iter().enumerate() {
-        for (axis, from) in [0x3cusize, 0x48, 0x54].into_iter().enumerate() {
-            let w = f.bits(from + 4 * row);
-            f.set_bits(at + 4 * axis, w);
+    for row in 0..3 {
+        for axis in 0..3 {
+            out[1 + 3 * row + axis] = basis[1 + 3 * axis + row];
         }
     }
-    for (k, from) in [0x3cusize, 0x48, 0x54].into_iter().enumerate() {
-        let a = f.v3(from);
-        f.set(0x2c + 4 * k, (a[2] * tp[2] + a[0] * tp[0]) + a[1] * tp[1]);
+    for k in 0..3 {
+        let a = [f(1 + 3 * k), f(2 + 3 * k), f(3 + 3 * k)];
+        out[10 + k] = ((a[2] * tp[2] + a[0] * tp[0]) + a[1] * tp[1]).to_bits();
     }
+    out
 }
 
 /// `0x00163db0` into the record at `+0x90`, from the rectangle `rect`
