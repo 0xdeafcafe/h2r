@@ -53,7 +53,7 @@ The load is pinned until the masks and the commands commit, and only then does `
 
 ## The post passes, replayed
 
-The glow (`GlowPass`) and each screen call (`ScreenPass`, both `game::native_post_glue`) are native passes of `Stage::Post` (`Device::prepare_external_pass`), committed at the call ([native-post.md](native-post.md#the-native-passes)). Both record again on any copy's attachments (`replays_scene`), so the display copy replays them on its own attachments.
+The glow (`GlowPass`) and each screen call (`ScreenPass`, both `game::native_post_glue`) are native passes of `Stage::Post`, reserved as a typed scene stage (`Device::reserve_scene_stage`, which a replaying sink keeps; a plain reservation is refused for post) and committed at the call ([native-post.md](native-post.md#the-native-passes)). Both record again on any copy's attachments (`replays_scene`), so the display copy replays them on its own attachments.
 
 - No guest draw is resolved: the raster is the plan's.
 - The glow takes its down-sample's entry from the view's slot, copied with alpha one where the guest reads it as `X8` (`OpaqueEntry`), as the device's framebuffer snapshot does.
