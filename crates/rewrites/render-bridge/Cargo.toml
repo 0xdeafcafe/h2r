@@ -31,6 +31,8 @@ sim-effects.workspace = true
 
 [dev-dependencies]
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
+# The off arm's tests read `impl.render.native=off` (docs/graphics/retire-d3d.md, R9).
+hooks = { path = "../../hooking/hooks", features = ["d3d-reference"] }
 
 [lints]
 workspace = true

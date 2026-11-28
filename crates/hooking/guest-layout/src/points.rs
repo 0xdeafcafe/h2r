@@ -1082,6 +1082,20 @@ points! { ALL;
     /// `ret` (its tail jump to `D3DDevice_SetPixelShader`).
     /// `render_bridge::native_targets` implements it.
     RENDER_FRAME_FINISH @ 0x0001_3cd0: [fn() ret 0]; "docs/graphics/retire-d3d-display.md";
+    /// The frame outside a game view: the menus, the loading screen and
+    /// the movie, through `0x0002c8a0`. No arguments, `ret`. Called by the
+    /// frame step and the map load's two frame loops (`0x00163a1a`,
+    /// `0x00163acd`).
+    RENDER_OUTSIDE_VIEW @ 0x0022_32a0: [fn() ret 0]; "docs/graphics/retire-d3d-display.md";
+    /// The present: the optional readback (`readback` 0 asks none), the
+    /// border `0x00013d80`, the swap, the display latch and the present
+    /// counter; `ret 8`. Callers: the frame step (`0x00223296`) and three
+    /// frame loops outside it (`0x0012b784`, `0x00163a28`, `0x00163adb`).
+    RENDER_PRESENT @ 0x0001_3f10: [fn(readback: stack 0, flags: stack 1) ret 8]; "docs/graphics/retire-d3d-display.md";
+    /// A frame loop outside `0x00223240`: one view through `0x0002ca00`
+    /// with the callback `0x002233a0`, the frame wait and the present.
+    /// One stack argument, `ret 4`.
+    RENDER_FRAME_LOOP @ 0x0012_b6f0: [opaque]; "docs/graphics/retire-d3d-display.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
     /// Water compositing after the scene's layer 6.

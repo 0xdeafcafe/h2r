@@ -120,10 +120,15 @@ test-maps = ["game/test-maps", "dep:scenario-edit", "dep:firefight-kit", "dep:fo
 # The rules host runtime (docs/game/rules-engine.md); on at run time
 # unless H2_FEATURES=-rules.
 rules = ["game/rules"]
+# The D3D draw path as the reference arm: `impl.render.native=off` is read
+# (docs/graphics/retire-d3d.md, R9). Not in a default build.
+d3d-reference = ["hooks/d3d-reference"]
 
 [dev-dependencies]
 # The fixture generated module, for hooks run through the real Runner.
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
+# The off arm's tests read `impl.render.native=off` (docs/graphics/retire-d3d.md, R9).
+hooks = { path = "../../hooking/hooks", default-features = false, features = ["d3d-reference"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
