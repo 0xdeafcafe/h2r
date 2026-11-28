@@ -216,6 +216,7 @@ pub fn material(i: &Inputs, vertex_shader: u32) -> Result<Material, Refused> {
         combiner_driven: 0,
         textures: [Some(Texture::Bitmap { bitmap: i.bitmap, image: i32::from(i.image) }), None, None, None],
         constants: identity.iter().enumerate().map(|(n, row)| (MATRIX_SLOT + n, *row)).collect(),
+        defaults: Vec::new(),
         program: (vertex_shader, 0),
     })
 }

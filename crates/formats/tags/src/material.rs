@@ -343,6 +343,21 @@ pub struct PassSelection {
     pub implementation: usize,
 }
 
+/// The shader a shader begin draws for a tag (`0x0001bbf0`): a `shad`'s
+/// own postprocess (`+0x20`) under its root's inputs
+/// ([`EngineInputs::for_shader`]); a model particle's (`PRTM`) `shad`
+/// (`+0x1c`) under zero inputs; a particle's (`prt3`) embedded
+/// postprocess (`+0x8c`, its template the element's `+0`) under zero
+/// inputs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawnShader {
+    /// The tag whose postprocess is drawn: the `shad`, or the `prt3`.
+    pub shader: TagId,
+    pub template: TagId,
+    pub postprocess: ShaderPostprocess,
+    pub inputs: EngineInputs,
+}
+
 /// A selected tag binding and its position within the layer.
 pub struct SelectedImplementation {
     /// Ordered fixed render-state setters when resolving over live state.
@@ -635,12 +650,53 @@ impl ShaderLibrary {
     /// evaluator before the static result can be published.
     pub fn selected_implementation(
         &mut self, shader_id: TagId, selection: PassSelection, inputs: Option<&EngineInputs>,
-        mut state: Option<&mut ParameterState>,
+        state: Option<&mut ParameterState>,
     ) -> Result<SelectedImplementation> {
         let shader = self.shader(shader_id)?;
-        let sp = shader.compiled()?;
+        let defaults = EngineInputs::for_shader(&shader);
+        let inputs = inputs.unwrap_or(&defaults);
+        self.select(shader.template.id, shader.compiled()?, selection, inputs, state)
+    }
+
+    /// What the shader begin draws for the tag `id`: a `shad`, or the
+    /// particle tags a particle draw passes in its place
+    /// ([`DrawnShader`]).
+    pub fn drawn_shader(&self, id: TagId) -> Result<DrawnShader> {
+        match self.group_of(id) {
+            Some(SHAD) => {
+                let shader = self.shader(id)?;
+                let inputs = EngineInputs::for_shader(&shader);
+                let postprocess = shader.compiled()?.clone();
+                Ok(DrawnShader { shader: id, template: shader.template.id, postprocess, inputs })
+            }
+            Some(PRTM) => {
+                let root = self.meta.bytes(self.address(id, PRTM)?, PRTM_ROOT)?;
+                let shad = TagId(u32_at(root, PRTM_SHADER + 4));
+                let shader = self.shader(shad)?;
+                let postprocess = shader.compiled()?.clone();
+                Ok(DrawnShader { shader: shad, template: shader.template.id, postprocess, inputs: EngineInputs::default() })
+            }
+            Some(PRT3) => {
+                let postprocess = ShaderPostprocess::decode_particle(&self.meta, self.address(id, PRT3)?)?;
+                Ok(DrawnShader { shader: id, template: postprocess.template, postprocess, inputs: EngineInputs::default() })
+            }
+            Some(_) => Err(Error::Invalid("tag is not a shader or a particle")),
+            None => Err(Error::Invalid("tag reference does not resolve")),
+        }
+    }
+
+    /// [`Self::selected_implementation`] for a [`DrawnShader`], under its
+    /// own inputs.
+    pub fn selected_drawn(&mut self, drawn: &DrawnShader, selection: PassSelection) -> Result<SelectedImplementation> {
+        self.select(drawn.template, &drawn.postprocess, selection, &drawn.inputs, None)
+    }
+
+    fn select(
+        &mut self, template: TagId, sp: &ShaderPostprocess, selection: PassSelection, inputs: &EngineInputs,
+        mut state: Option<&mut ParameterState>,
+    ) -> Result<SelectedImplementation> {
         sp.validate()?;
-        let tp = self.template(shader.template.id)?.compiled()?;
+        let tp = self.template(template)?.compiled()?;
         tp.validate()?;
         let lod = tp.lods.get(selection.lod).ok_or(Error::Invalid("missing selected LOD"))?;
         if selection.layer >= usize::from(lod.layers.count) { return Err(Error::Invalid("missing selected layer")); }
@@ -653,17 +709,12 @@ impl ShaderLibrary {
         }
         let ib = tp.implementations[usize::from(pass.implementations.start) + k];
         self.pass(pass.pass.id)?.compiled()?.validate()?;
-        let tp = self.templates[&shader.template.id].compiled()?;
+        let tp = self.templates[&template].compiled()?;
         let spas = self.passes[&pass.pass.id].compiled()?;
         if usize::from(pass.implementations.count) != spas.implementations.len() {
             return Err(Error::Invalid("template binding rows do not match the pass's implementations"));
         }
         let anim = sp.animation_leaf(selection.lod, selection.layer, selection.pass, k).copied();
-        let defaults;
-        let inputs = match inputs {
-            Some(inputs) => inputs,
-            None => { defaults = EngineInputs::for_shader(&shader); &defaults }
-        };
         let implementation = self.resolve(tp, sp, spas, &spas.implementations[k], k, ib, anim, inputs,
             &mut Work(MAX_MATERIAL_WORK), state.as_deref_mut())?;
         let render_writes = state.map(|s| s.fixed.switch(pass.pass.id, &implementation)).unwrap_or_default();

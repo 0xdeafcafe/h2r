@@ -10,9 +10,17 @@ use std::sync::{Arc, LazyLock, Mutex};
 use engine::memory::GuestMemory;
 use native_render::effect_material::{self, Material, Resolved};
 use native_render::object_streams::StreamFormats;
+use native_render::particle_material::Particle;
 use native_render::{contrail_material, particle_material};
 use render_bridge::effect_materials::{self as proof, Kind};
 use tags::material::ShaderLibrary;
+
+struct Ro<'a>(&'a dyn GuestMemory);
+impl native_render::camera::GuestRead for Ro<'_> {
+    fn read_u32(&self, address: u32) -> Option<u32> {
+        self.0.u32(address).ok()
+    }
+}
 
 fn resolved(mem: &dyn GuestMemory, material: Material) -> Result<(Material, Resolved), &'static str> {
     let r = effect_material::resolve(&material, &|a| mem.u32(a).ok(), &|a, n| mem.bytes(a, n).ok())?;
@@ -24,12 +32,6 @@ fn resolved(mem: &dyn GuestMemory, material: Material) -> Result<(Material, Reso
 /// ([`particle_material::stream_type`]) over the program's inputs, the
 /// stream format read from the table the guest reads (`0x0043f408`).
 fn particle_formats(mem: &dyn GuestMemory, inputs: &particle_material::Inputs, m: &Material) -> Result<[u32; 16], &'static str> {
-    struct Ro<'a>(&'a dyn GuestMemory);
-    impl native_render::camera::GuestRead for Ro<'_> {
-        fn read_u32(&self, address: u32) -> Option<u32> {
-            self.0.u32(address).ok()
-        }
-    }
     let formats = StreamFormats::read(&Ro(mem)).ok_or("stream_formats_unread")?;
     let elements = formats.elements(particle_material::stream_type(inputs)).map_err(|_| "stream_format")?;
     let semantics =
@@ -103,20 +105,22 @@ pub(super) fn held(kind: Kind) -> Option<Arc<Held>> {
     HELD.lock().unwrap_or_else(|e| e.into_inner())[kind as usize].clone()
 }
 
-/// The map's shader library and the particle materials made from it.
+/// The map's shader library and the particle shaders resolved from it.
 #[derive(Default)]
 struct Library {
     generation: Option<u64>,
     library: Option<Arc<Mutex<ShaderLibrary>>>,
-    /// By (shader, layer, pass): the material with no matrix and class 0.
-    materials: HashMap<(u32, u32, u32), Result<Material, particle_material::Refused>>,
+    /// By (shader, layer, pass).
+    particles: HashMap<(u32, u32, u32), Result<Arc<Particle>, particle_material::Refused>>,
 }
 
 static LIBRARY: LazyLock<Mutex<Library>> = LazyLock::new(Mutex::default);
 
-/// The particle material for `inputs`, its view matrix and program index
-/// the draw's own. The map's shader library is read at the map's first
-/// particle setup, on the game thread: the setup waits for it.
+/// The particle material for `inputs`: the shader resolved once per
+/// (shader, layer, pass) ([`particle_material::resolve`]), the draw's
+/// view matrix, program index and animation at the render clock its own
+/// ([`Particle::material`]). The map's shader library is read at the
+/// map's first particle setup, on the game thread: the setup waits for it.
 fn library_material(mem: &dyn GuestMemory, inputs: &particle_material::Inputs) -> Result<Material, &'static str> {
     let generation = render_bridge::native_map_work::generation();
     let mut s = LIBRARY.lock().unwrap_or_else(|e| e.into_inner());
@@ -139,15 +143,16 @@ fn library_material(mem: &dyn GuestMemory, inputs: &particle_material::Inputs) -
         }
     };
     let key = (inputs.shader, inputs.layer, inputs.pass);
-    let base = s.materials.entry(key).or_insert_with(|| {
-        let mut lib = library.lock().unwrap_or_else(|e| e.into_inner());
-        let base = particle_material::Inputs { matrix: [[0.0; 4]; 3], class: 0, ..*inputs };
-        particle_material::material(&mut lib, &base)
-    });
-    let mut m = base.clone().map_err(particle_material::Refused::name)?;
-    let matrix = effect_material::MATRIX_SLOT..effect_material::MATRIX_SLOT + 3;
-    m.constants.retain(|(slot, _)| !matrix.contains(slot));
-    m.constants.extend(inputs.matrix.iter().enumerate().map(|(n, row)| (effect_material::MATRIX_SLOT + n, *row)));
-    m.program.1 = u32::from(inputs.class) + particle_material::PROGRAM_BASE;
-    Ok(m)
+    let particle = s
+        .particles
+        .entry(key)
+        .or_insert_with(|| {
+            let mut lib = library.lock().unwrap_or_else(|e| e.into_inner());
+            particle_material::resolve(&mut lib, inputs).map(Arc::new)
+        })
+        .clone()
+        .map_err(particle_material::Refused::name)?;
+    drop(s);
+    let time = native_render::layer_pass::render_time(&Ro(mem));
+    particle.material(inputs, time).map_err(particle_material::Refused::name)
 }

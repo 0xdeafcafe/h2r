@@ -1299,3 +1299,47 @@ fn engine_texture_26_of_minus_one_takes_the_rasterizer_shaders_parameter() {
     f.arena.b[at..at + 2].copy_from_slice(&(-1i16).to_le_bytes());
     assert_eq!(stage1(&f).source, TextureSource::Engine(PROPERTY_BITMAP_TEXTURE));
 }
+
+#[test]
+fn particles_draw_their_embedded_postprocess_and_model_particles_their_shad_under_zero_inputs() {
+    const PRT3_ID: TagId = TagId(0xe005_0006);
+    const PRTM_ID: TagId = TagId(0xe006_0007);
+    let mut f = fixture();
+    // prt3 +0x8c points at the shad's own postprocess element; PRTM +0x18
+    // references the shad.
+    let shad_root = (f.tags[0].2 - BASE) as usize;
+    let sp_at = u32_in(&f.arena.b, shad_root + 0x24);
+    let mut prt3 = vec![0u8; PRT3_ROOT];
+    blk(&mut prt3, PRT3_POSTPROCESS_BLOCK, 1, sp_at);
+    let prt3_at = f.arena.put(&prt3);
+    let mut prtm = vec![0u8; PRTM_ROOT];
+    w32(&mut prtm, PRTM_SHADER, u32::from_be_bytes(*b"shad"));
+    w32(&mut prtm, PRTM_SHADER + 4, SHAD_ID.0);
+    let prtm_at = f.arena.put(&prtm);
+    let mut empty = vec![0u8; PRT3_ROOT];
+    blk(&mut empty, PRT3_POSTPROCESS_BLOCK, 0, 0);
+    let empty_at = f.arena.put(&empty);
+    f.tags.extend([(PRT3_ID, PRT3, prt3_at), (PRTM_ID, PRTM, prtm_at), (TagId(0xe007_0008), PRT3, empty_at)]);
+    let mut lib = library(&f);
+    let selection = PassSelection { lod: 0, layer: 2, pass: 0, implementation: 0 };
+
+    let shad = lib.drawn_shader(SHAD_ID).unwrap();
+    assert_eq!((shad.shader, shad.template), (SHAD_ID, STEM_ID));
+    assert_eq!(shad.inputs, EngineInputs::for_shader(&lib.shader(SHAD_ID).unwrap()));
+    let own = lib.selected_implementation(SHAD_ID, selection, None, None).unwrap().implementation;
+    assert_eq!(lib.selected_drawn(&shad, selection).unwrap().implementation, own);
+
+    let zero = lib.selected_implementation(SHAD_ID, selection, Some(&EngineInputs::default()), None).unwrap().implementation;
+    assert_ne!(zero, own, "the shad's scalar 21 reaches the final combiner");
+    for id in [PRT3_ID, PRTM_ID] {
+        let drawn = lib.drawn_shader(id).unwrap();
+        assert_eq!(drawn.template, STEM_ID);
+        assert_eq!(drawn.inputs, EngineInputs::default());
+        assert_eq!(lib.selected_drawn(&drawn, selection).unwrap().implementation, zero);
+    }
+    assert_eq!(lib.drawn_shader(PRT3_ID).unwrap().shader, PRT3_ID);
+    assert_eq!(lib.drawn_shader(PRTM_ID).unwrap().shader, SHAD_ID);
+    assert!(lib.drawn_shader(TagId(0xe007_0008)).is_err(), "a prt3 without its postprocess");
+    assert!(lib.drawn_shader(BITM_ID).is_err());
+    assert!(lib.drawn_shader(TagId(0xe0ff_00ff)).is_err());
+}
