@@ -36,11 +36,12 @@ pub const LAYER_BUILD_RETURN: u32 = 0x0003_bc4f;
 /// `LAYER_BUILD_RETURN`, which writes only flags).
 pub const LAYER_BUILT: Point = Point::new("LAYER_BUILT", 0x0003_bc51, Sig::Site, RENDERER);
 
-/// The entry loop's step after an entry (`0x0003bc90`): the return of the
-/// entry's handler call, and where an entry the loop passes over joins it.
-/// ESI is still the entry just dispatched; the counter and ESI advance
-/// next (docs/graphics/layer-draw.md).
-pub const LAYER_ENTRY_DONE: Point = Point::new("LAYER_ENTRY_DONE", 0x0003_bc90, Sig::Site, RENDERER);
+/// The entry loop's step after an entry (`0x0003bc94`, the `add esi, 18h`):
+/// the instruction after the handler call's return `0x0003bc90` (a call's
+/// continuation, where no hook runs) and its counter load, reached by every
+/// entry, the passed-over ones included. ESI is still the entry just
+/// dispatched; EAX holds the loop's counter (docs/graphics/layer-draw.md).
+pub const LAYER_ENTRY_DONE: Point = Point::new("LAYER_ENTRY_DONE", 0x0003_bc94, Sig::Site, RENDERER);
 
 /// End of one complete BSP material walk, before the record cursor advances.
 pub const WORLD_SECTION_END: Point = Point::new("WORLD_SECTION_END", 0x0004_4c6c, Sig::Site, RENDERER);
