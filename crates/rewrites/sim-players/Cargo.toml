@@ -1,0 +1,17 @@
+[package]
+name = "sim-players"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "The players pool, the players' globals and the first-person state of the native simulation, held by the World (docs/engine/sim-world.md)"
+
+[package.metadata.h2]
+status = "in progress"
+doc = ["engine/sim-world.md", "live/live-gamestate.md"]
+
+[dependencies]
+guest-layout = { path = "../../hooking/guest-layout" }
+sim-world.workspace = true
+
+[lints]
+workspace = true

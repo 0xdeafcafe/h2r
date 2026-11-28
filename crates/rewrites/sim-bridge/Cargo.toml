@@ -24,6 +24,7 @@ lifted = { path = "../../runtime/lifted" }
 sim-ext.workspace = true
 # The object table the World holds (world.rs).
 sim-objects.workspace = true
+sim-players.workspace = true
 # The sound table and the host feed trait (sim_sound/entries.rs).
 sim-sound.workspace = true
 # The World that holds the sound table and is the snapshot section (world.rs).
