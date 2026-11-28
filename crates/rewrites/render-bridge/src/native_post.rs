@@ -265,9 +265,10 @@ pub const RESULTS: [u32; 2] = [0x0048_5a78, 0x0048_5a7c];
 /// from [`save_sizes`]: target 1, `0x19` and `0x1b` given their saved
 /// sizes back, `0x19` written a second time with `0x1a`'s (the
 /// original's order; `0x1a` keeps what the call set), `[0x004670bc]`
-/// set, `0x00016b10` on the template cache, the results -1. `Err` names
-/// what it cannot make: a cache with restore states to apply
-/// (`0x00018900`, a D3D call) is `template_restore`.
+/// set, `0x00016b10` on the template cache (its restore list written,
+/// [`restore_list`], then the cache cleared), the results -1. `Err` names
+/// what it cannot make: a restore entry through a state setter
+/// (`0x004038d8`, `template_restore`).
 pub fn end_writes(mem: &mut dyn GuestMemory, saved: &[(u32, u32); 4]) -> Result<(), String> {
     let fault = |e: MemFault| format!("end writes ({e:?})");
     for (t, (w, h)) in [(1, saved[0]), (0x19, saved[1]), (0x19, saved[2]), (0x1b, saved[3])] {
@@ -275,9 +276,7 @@ pub fn end_writes(mem: &mut dyn GuestMemory, saved: &[(u32, u32); 4]) -> Result<
     }
     mem.write(END_FLAG, &[1]).map_err(fault)?;
     let c = TEMPLATE_CACHE;
-    if mem.u32(c + 0x24).map_err(fault)? != 0 {
-        return Err("template_restore".into());
-    }
+    restore_list(mem)?;
     let one = mem.u32(TEMPLATE_ONE).map_err(fault)?;
     for off in (0xc..=0x24).step_by(4) {
         mem.set_u32(c + off, 0).map_err(fault)?;
@@ -290,6 +289,36 @@ pub fn end_writes(mem: &mut dyn GuestMemory, saved: &[(u32, u32); 4]) -> Result<
     }
     for r in RESULTS {
         mem.set_u32(r, u32::MAX).map_err(fault)?;
+    }
+    Ok(())
+}
+
+/// `0x00016b10`'s call of `0x00018900` on the cache's open shader
+/// (`open_shader::read`): a simple state and a deferred one are written
+/// into the state shadow (a deferred one into the dirty word too), as the
+/// layer draw's restore does; there is no device state behind them. A
+/// cache with no implementation writes nothing. An entry through a state
+/// setter is `template_restore`, and nothing is written for the list.
+pub fn restore_list(mem: &mut dyn GuestMemory) -> Result<(), String> {
+    use crate::open_shader::{Write, read};
+    use engine::render_loop::states::{DIRTY, SHADOW};
+    let fault = |e: MemFault| format!("template restore ({e:?})");
+    let Some(open) = read(&*mem).map_err(fault)? else {
+        return Ok(());
+    };
+    if open.writes.iter().any(|w| matches!(w, Write::Setter { .. })) {
+        return Err("template_restore".into());
+    }
+    for w in open.writes {
+        match w {
+            Write::Simple { state, value, .. } => mem.set_u32(SHADOW + 4 * u32::from(state), value).map_err(fault)?,
+            Write::Deferred { state, mask, value } => {
+                let dirty = mem.u32(DIRTY).map_err(fault)?;
+                mem.set_u32(DIRTY, dirty | mask).map_err(fault)?;
+                mem.set_u32(SHADOW + 4 * u32::from(state), value).map_err(fault)?;
+            }
+            Write::Setter { .. } => unreachable!("checked above"),
+        }
     }
     Ok(())
 }

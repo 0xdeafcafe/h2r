@@ -5,7 +5,8 @@
 //!
 //! | Guest | Port | Does |
 //! |---|---|---|
-//! | `0x0003dc90` | [`sample`] | the default lighting, or the object's record's lighting `+0x54` once it is lit |
+//! | `0x0003dc90` | [`sample`] | the default lighting, or the object's record's lighting `+0x54` once it is lit; a child takes its root's |
+//! | `0x000baf80` | [`root`] | the root of an object's parent chain |
 //! | `0x0003ddd0` | [`record`] | the object's record: its own, a new one, or the oldest one taken over |
 //! | `0x0003dd10` | [`colours`] | the record's change colours `+0xa8..+0xb8` |
 //! | `0x0002c3b0` | `default_light` | a new record's light at `+0x44` |
@@ -77,8 +78,8 @@ pub fn sample(m: &mut dyn GuestMemory, object: u32, fpu: Fpu) -> Result<Sample, 
     }
     if m.u32(b.wrapping_add(0x14))? != NONE {
         // 0x0003dcc8: a child asks for its parent's (0x000baf80) and
-        // goes round again. Its callers take roots only.
-        unimplemented!("residency: lighting sample of a child object {object:#010x}");
+        // goes round again.
+        return sample(m, root(m, object)?, fpu);
     }
     let handle = record(m, object, fpu)?;
     if handle == NONE {
@@ -92,6 +93,21 @@ pub fn sample(m: &mut dyn GuestMemory, object: u32, fpu: Fpu) -> Result<Sample, 
         0
     };
     Ok(Sample { eax, edx: data })
+}
+
+/// `0x000baf80`: the root of `object`'s parent chain (body `+0x14`, -1 for
+/// none). A chain longer than the object array is a cycle the guest would
+/// loop on forever.
+pub fn root(m: &dyn GuestMemory, object: u32) -> Result<u32, Error> {
+    let mut current = object;
+    for _ in 0..=0xffff {
+        let parent = m.u32(body(m, current)?.wrapping_add(0x14))?;
+        if parent == NONE {
+            return Ok(current);
+        }
+        current = parent;
+    }
+    unimplemented!("residency: lighting parent chain of {object:#010x} loops")
 }
 
 /// `0x0003ddd0`: the object's record handle, or `NONE` when the array is

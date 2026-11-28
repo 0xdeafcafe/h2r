@@ -197,8 +197,69 @@ fn the_end_writes_the_saved_sizes_back_in_the_originals_order() {
     assert_eq!((m.u32(c).unwrap(), m.u32(c + 0x40).unwrap()), (u32::MAX, u32::MAX));
     assert_eq!(m.u32(c + 0x1330).unwrap(), 0x3f80_0000);
     assert_eq!(native_post::RESULTS.map(|r| m.u32(r).unwrap()), [u32::MAX; 2]);
-    m.set_u32(c + 0x24, 0x0050_0000).unwrap();
-    assert_eq!(native_post::end_writes(&mut m, &saved), Err("template_restore".into()), "restores are D3D calls");
+}
+
+const DESCRIPTOR: u32 = 0x0045_1000;
+const TABLE: u32 = 0x0045_2000;
+const IMPLEMENTATION: u32 = 0x0045_3000;
+
+/// A template cache holding an open shader whose restore list is the
+/// table's entries `0..entries.len()`: `(state, value)` each.
+fn open_template(entries: &[(u8, u32)]) -> FlatMemory {
+    use engine::render_loop::states::{DIRTY, HEADERS, MASKS};
+    use render_bridge::open_shader as os;
+    let mut m = FlatMemory::new(0x0040_0000, 0x0020_0000);
+    let c = native_post::TEMPLATE_CACHE;
+    m.set_u32(c + 0x24, IMPLEMENTATION).unwrap();
+    m.set_u32(c + os::SETUP_DESCRIPTOR, DESCRIPTOR).unwrap();
+    m.set_u32(DESCRIPTOR + os::DESCRIPTOR_STATES, TABLE).unwrap();
+    m.set_u16(IMPLEMENTATION + os::IMPLEMENTATION_RESTORE, (entries.len() as u16) << 9).unwrap();
+    for (n, (state, value)) in entries.iter().enumerate() {
+        m.set_u8(TABLE + os::ENTRY * n as u32, *state).unwrap();
+        m.set_u32(TABLE + os::ENTRY * n as u32 + 1, *value).unwrap();
+    }
+    m.set_u32(HEADERS + 4 * 0x10, 0x0004_0300).unwrap();
+    m.set_u32(MASKS + 4 * 0x60, 0x20).unwrap();
+    m.set_u32(DIRTY, 0x101).unwrap();
+    m.set_u32(0x0045_dbd4, 0x3f80_0000).unwrap();
+    m
+}
+
+/// `0x00016b10` writes the open shader's restore states into the state
+/// shadow (a deferred one into the dirty word too) before it clears the
+/// cache.
+#[test]
+fn the_end_restores_the_template_caches_states_then_clears_it() {
+    use engine::render_loop::states::{DIRTY, SHADOW};
+    let mut m = open_template(&[(0x10, 1), (0x60, 7), (0x10, 5)]);
+    native_post::end_writes(&mut m, &[(0, 0); 4]).unwrap();
+    assert_eq!(m.u32(SHADOW + 4 * 0x10).unwrap(), 5, "the later write of a state wins");
+    assert_eq!(m.u32(SHADOW + 4 * 0x60).unwrap(), 7);
+    assert_eq!(m.u32(DIRTY).unwrap(), 0x121, "the deferred state's mask");
+    let c = native_post::TEMPLATE_CACHE;
+    assert_eq!(m.u32(c + 0x24).unwrap(), 0, "the cache is cleared after the restore");
+    assert_eq!(m.u32(c).unwrap(), u32::MAX);
+}
+
+/// A cache with no open shader restores nothing.
+#[test]
+fn a_template_cache_with_no_open_shader_restores_nothing() {
+    use engine::render_loop::states::{DIRTY, SHADOW};
+    let mut m = open_template(&[(0x10, 1)]);
+    m.set_u32(native_post::TEMPLATE_CACHE + 0x24, 0).unwrap();
+    native_post::end_writes(&mut m, &[(0, 0); 4]).unwrap();
+    assert_eq!(m.u32(SHADOW + 4 * 0x10).unwrap(), 0);
+    assert_eq!(m.u32(DIRTY).unwrap(), 0x101);
+}
+
+/// A restore entry through a state setter (`0x88` and up) is not made:
+/// `template_restore`, with no entry of the list written.
+#[test]
+fn a_restore_entry_through_a_state_setter_is_named() {
+    use engine::render_loop::states::SHADOW;
+    let mut m = open_template(&[(0x10, 1), (0x8f, 3)]);
+    assert_eq!(native_post::end_writes(&mut m, &[(0, 0); 4]), Err("template_restore".into()));
+    assert_eq!(m.u32(SHADOW + 4 * 0x10).unwrap(), 0, "the list is taken whole or not at all");
 }
 
 /// `0x00014f60`'s texture for a target: the two buffer cases by the frame

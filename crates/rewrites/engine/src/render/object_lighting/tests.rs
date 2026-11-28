@@ -233,10 +233,50 @@ fn unforced_colours_follow_the_definitions_bit_and_the_bodys_count() {
     assert_eq!(m.u32(entry + 0xa8).unwrap(), 0x0040_00fe);
 }
 
+const CHILD: u32 = 0x0001_0001;
+const GRANDCHILD: u32 = 0x0001_0003;
+
+/// `child` an object (index = its low word) whose body is at `body` and
+/// whose parent is `parent`.
+fn attach(m: &mut FlatMemory, child: u32, body: u32, parent: u32) {
+    m.set_u32(HEADERS + (child & 0xffff) * 12 + 8, body).unwrap();
+    m.set_u32(body + 0x14, parent).unwrap();
+}
+
 #[test]
-#[should_panic(expected = "residency: lighting sample of a child object")]
-fn a_child_objects_sample_is_a_named_gap() {
+fn a_child_takes_its_roots_lighting() {
     let mut m = world();
-    m.set_u32(BODY + 0x14, 0x0001_0001).unwrap();
-    let _ = sample(&mut m, OBJECT, FPU);
+    attach(&mut m, CHILD, 0x4000, OBJECT);
+    attach(&mut m, GRANDCHILD, 0x5000, CHILD);
+    record(&mut m, OBJECT, FPU).unwrap();
+    m.set_u8(DATA + 3, 1).unwrap();
+    let root_sample = sample(&mut m, OBJECT, FPU).unwrap();
+    assert_eq!(root_sample, Sample { eax: DATA + 0x54, edx: DATA });
+    assert_eq!(root(&m, GRANDCHILD), Ok(OBJECT));
+    for child in [CHILD, GRANDCHILD] {
+        assert_eq!(sample(&mut m, child, FPU), Ok(root_sample));
+    }
+    assert_eq!(m.u32(ARRAY + layout::ACTIVE_COUNT).unwrap(), 1, "a child makes no record of its own");
+}
+
+#[test]
+fn a_child_of_a_default_lit_root_takes_the_default_lighting() {
+    let mut m = world();
+    m.set_u8(BODY + 7, 1).unwrap();
+    attach(&mut m, CHILD, 0x4000, OBJECT);
+    assert_eq!(sample(&mut m, CHILD, FPU), Ok(Sample { eax: 0x30000 + 0x1c, edx: HEADERS | 1 }));
+}
+
+#[test]
+fn a_root_is_its_own_root() {
+    let m = world();
+    assert_eq!(root(&m, OBJECT), Ok(OBJECT));
+}
+
+#[test]
+#[should_panic(expected = "residency: lighting parent chain")]
+fn a_parent_chain_that_loops_is_a_named_gap() {
+    let mut m = world();
+    m.set_u32(BODY + 0x14, OBJECT).unwrap();
+    let _ = root(&m, OBJECT);
 }

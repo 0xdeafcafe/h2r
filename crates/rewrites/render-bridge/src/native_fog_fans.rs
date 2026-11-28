@@ -25,7 +25,7 @@
 //! bitmap that binds nothing (`texture_unbound`), a texture the cache
 //! would read from disc (`texture_request: <cause>`, [`crate::texture_cache`]), a view
 //! target other than 0 (`composite into target <n>`), a target the guest
-//! has not made (`target 3 unmade`, `target <n> unmade`), a weather plate
+//! has not made (no fan until it does, [`Made::Unmade`]), a weather plate
 //! call other than the composite's (`weather plate <cause>`: its kind,
 //! flags or result), a fan not finite
 //! (`fan_unfinite`), an operand the SSE or x87 model refuses (`simd`,
@@ -119,28 +119,30 @@ pub fn before_fans(mem: &dyn GuestMemory, mxcsr: u32, ecx: u32, edx: u32) {
 /// surface.
 pub const TARGET3: u32 = crate::native_targets::TARGET_SLOTS[0];
 
-/// Target 3's surface header ([`TARGET3`]); `target 3 unmade` while the
-/// global is 0.
-fn target3(mem: &dyn GuestMemory) -> u32 {
+/// Target 3's surface header ([`TARGET3`]); `None` while the global is 0:
+/// the guest has not made the target (the menu has none before a fog
+/// frame), so the frame draws no fan until it does ([`Made::Unmade`]).
+fn target3(mem: &dyn GuestMemory) -> Option<u32> {
     match mem.u32(TARGET3) {
-        Ok(0) => unported("target 3 unmade"),
-        Ok(h) => h,
+        Ok(0) => None,
+        Ok(h) => Some(h),
         Err(_) => unported("unread"),
     }
 }
 
 /// Table target `n`'s first surface header, role `Game(n)`, as
 /// `0x0001dcf0` returns it: live (`+0x88` set, the hiding byte `+0x95`
-/// clear, a level at `+0x78`), else `target <n> unmade`.
-fn game(mem: &dyn GuestMemory, n: u8) -> u32 {
+/// clear, a level at `+0x78`), else `None`: the target is unmade and the
+/// frame draws no fan ([`Made::Unmade`]).
+fn game(mem: &dyn GuestMemory, n: u8) -> Option<u32> {
     use crate::native_targets::{TARGET_STRIDE, TARGETS};
     let entry = TARGETS + TARGET_STRIDE * u32::from(n);
     let live = (|| Ok::<_, engine::MemFault>(mem.u32(entry + 0x88)? != 0 && mem.u8(entry + 0x95)? == 0 && (mem.u32(entry + 0x78)? as i32) > 0))()
         .unwrap_or_else(|_| unported("unread"));
     if !live {
-        unported(&format!("target {n:#x} unmade"));
+        return None;
     }
-    crate::native_targets::surface(TargetRole::Game(n)).unwrap_or_else(|| unported("target"))
+    Some(crate::native_targets::surface(TargetRole::Game(n)).unwrap_or_else(|| unported("target")))
 }
 
 /// The surface header of the view's target `n`: target 0's colour is the
@@ -169,6 +171,10 @@ pub enum Made {
     /// The cache returned no header for a stage: the writes are made and
     /// nothing is drawn that frame.
     NoTexture,
+    /// A target the fan reads or draws into is not made yet: the writes
+    /// are made and nothing is drawn that frame; the fan draws once the
+    /// guest has made the target.
+    Unmade,
 }
 
 /// The header `0x000143c0` binds for `bitmap`'s `image`: the resident one
@@ -235,7 +241,8 @@ pub fn fan(mem: &mut dyn GuestMemory, setup: Setup, rect_at: u32, mxcsr: u32, x8
             if ff::composite_writes(mem).is_err() {
                 unported("depth_write");
             }
-            Fan { draw, dest: view_surface(&*mem, c.target), sources: [Some(Source::Surface(target3(&*mem))), None, None, None] }
+            let Some(t3) = target3(&*mem) else { return Made::Unmade };
+            Fan { draw, dest: view_surface(&*mem, c.target), sources: [Some(Source::Surface(t3)), None, None, None] }
         }
         Setup::Layers => {
             // `0x000268cf`, per stage, before any write.
@@ -252,7 +259,8 @@ pub fn fan(mem: &mut dyn GuestMemory, setup: Setup, rect_at: u32, mxcsr: u32, x8
             let draw = FanDraw::from_fan(l.combiner, floats(l.positions), l.coordinates.map(floats), [stage; 4], FanRaster::Opaque)
                 .unwrap_or_else(|r| refused(r));
             let sources = headers.map(|h| Some(Source::Texture(h)));
-            Fan { draw, dest: game(&*mem, ff::LAYERS_TARGET), sources }
+            let Some(dest) = game(&*mem, ff::LAYERS_TARGET) else { return Made::Unmade };
+            Fan { draw, dest, sources }
         }
         Setup::LayersComposite => {
             if ff::weather_plate(&*mem).unwrap_or_else(|_| unported("unread")) {
@@ -261,7 +269,7 @@ pub fn fan(mem: &mut dyn GuestMemory, setup: Setup, rect_at: u32, mxcsr: u32, x8
                     unported(&format!("weather plate {why}"));
                 }
                 if let Some(plate) = ff::weather_plate_placement(mem, mxcsr, x87_control, &args).unwrap_or_else(|e| unported(cause(e))) {
-                    return Made::Draw(plate_fan(mem, plate, rect_at, mxcsr));
+                    return plate_fan(mem, plate, rect_at, mxcsr).map_or(Made::Unmade, Made::Draw);
                 }
             }
             // Stage 2 before any write (a false plate writes nothing).
@@ -278,16 +286,12 @@ pub fn fan(mem: &mut dyn GuestMemory, setup: Setup, rect_at: u32, mxcsr: u32, x8
             let raster = if c.blue_only() { FanRaster::BlueOnly } else { FanRaster::Constant };
             let draw = FanDraw::from_fan(c.combiner, floats(c.positions), c.coordinates.map(floats), [PIXELS, None, unit, PIXELS], raster)
                 .unwrap_or_else(|r| refused(r));
+            let (Some(t3), Some(layers)) = (target3(&*mem), game(&*mem, ff::LAYERS_TARGET)) else { return Made::Unmade };
             let dest = match c.dest {
                 LayersDest::View(n) => view_surface(&*mem, n),
-                LayersDest::Target3 => target3(&*mem),
+                LayersDest::Target3 => t3,
             };
-            let sources = [
-                Some(Source::Surface(target3(&*mem))),
-                None,
-                Some(Source::Texture(header)),
-                Some(Source::Surface(game(&*mem, ff::LAYERS_TARGET))),
-            ];
+            let sources = [Some(Source::Surface(t3)), None, Some(Source::Texture(header)), Some(Source::Surface(layers))];
             Fan { draw, dest, sources }
         }
     })
@@ -297,17 +301,18 @@ pub fn fan(mem: &mut dyn GuestMemory, setup: Setup, rect_at: u32, mxcsr: u32, x8
 /// the plate's block and destination, target 3 at stage 0 (clamp, point)
 /// and target `0x13` at stage 1 (`0x00026efd`: clamp, linear), both in
 /// their pixels.
-fn plate_fan(mem: &mut dyn GuestMemory, plate: ff::WeatherPlate, rect_at: u32, mxcsr: u32) -> Fan {
+fn plate_fan(mem: &mut dyn GuestMemory, plate: ff::WeatherPlate, rect_at: u32, mxcsr: u32) -> Option<Fan> {
     let c = ff::plate_fan(mem, mxcsr, rect_at, plate).unwrap_or_else(|e| unported(cause(e)));
     let raster = if c.blue_only() { FanRaster::BlueOnly } else { FanRaster::Constant };
     let draw = FanDraw::from_fan(c.combiner, floats(c.positions), c.coordinates.map(floats), [PIXELS, PIXELS, None, None], raster)
         .unwrap_or_else(|r| refused(r));
+    let (t3, layers) = (target3(&*mem)?, game(&*mem, ff::LAYERS_TARGET)?);
     let dest = match c.dest {
         LayersDest::View(n) => view_surface(&*mem, n),
-        LayersDest::Target3 => target3(&*mem),
+        LayersDest::Target3 => t3,
     };
-    let sources = [Some(Source::Surface(target3(&*mem))), Some(Source::Surface(game(&*mem, ff::LAYERS_TARGET))), None, None];
-    Fan { draw, dest, sources }
+    let sources = [Some(Source::Surface(t3)), Some(Source::Surface(layers)), None, None];
+    Some(Fan { draw, dest, sources })
 }
 
 /// The setup `setup`'s call at `esp` under the call's MXCSR and x87
@@ -319,7 +324,7 @@ pub fn turn(mem: &mut dyn GuestMemory, setup: Setup, esp: u32, mxcsr: u32, x87_c
     };
     let fan = match fan(mem, setup, rect_at, mxcsr, x87_control) {
         Made::Draw(fan) => fan,
-        Made::NoTexture => return Turn::Return,
+        Made::NoTexture | Made::Unmade => return Turn::Return,
     };
     let host = host.unwrap_or_else(|| unported("host"));
     if let Err(why) = host.fan(mem, &fan) {
@@ -541,21 +546,46 @@ mod tests {
         assert_eq!(fan.draw.combiner[54], 0x8421);
     }
 
-    #[test]
-    #[should_panic(expected = "fog fans: target 0x13 unmade")]
-    fn an_unmade_table_target_is_named() {
-        let mut m = setup_mem(Setup::Layers);
-        let entry = crate::native_targets::TARGETS + crate::native_targets::TARGET_STRIDE * 0x13;
-        m.set_u8(entry + 0x95, 1).unwrap();
-        drawn(Setup::Layers, &mut m);
+    /// A setup whose target the guest has not made returns with its writes
+    /// made and draws no fan.
+    fn skipped(setup: Setup, m: &mut FlatMemory) {
+        let host = Drawn::default();
+        assert_eq!(turn(m, setup, ESP, MXCSR, CONTROL, Some(&host)), Turn::Return);
+        assert!(host.0.lock().unwrap().is_empty(), "no fan before the target is made");
     }
 
     #[test]
-    #[should_panic(expected = "fog fans: target 3 unmade")]
-    fn an_unmade_target_3_is_named() {
+    fn an_unmade_table_target_skips_the_layers_with_their_writes_made() {
+        let mut m = setup_mem(Setup::Layers);
+        let entry = crate::native_targets::TARGETS + crate::native_targets::TARGET_STRIDE * 0x13;
+        m.set_u8(entry + 0x95, 1).unwrap();
+        skipped(Setup::Layers, &mut m);
+        let mut live = setup_mem(Setup::Layers);
+        drawn(Setup::Layers, &mut live);
+        assert_eq!(m.u32(cg::DEPTH).unwrap(), live.u32(cg::DEPTH).unwrap(), "the setup's writes are the same");
+    }
+
+    #[test]
+    fn an_unmade_target_3_skips_the_composite_with_its_writes_made() {
         let mut m = setup_mem(Setup::Composite);
         m.set_u32(TARGET3, 0).unwrap();
-        drawn(Setup::Composite, &mut m);
+        skipped(Setup::Composite, &mut m);
+        assert_eq!(m.u32(cg::DEPTH).unwrap(), 1024.0f32.to_bits());
+    }
+
+    #[test]
+    fn an_unmade_target_3_skips_the_layers_composite() {
+        let mut m = setup_mem(Setup::LayersComposite);
+        m.set_u32(TARGET3, 0).unwrap();
+        skipped(Setup::LayersComposite, &mut m);
+    }
+
+    #[test]
+    fn an_unmade_layers_target_skips_the_layers_composite() {
+        let mut m = setup_mem(Setup::LayersComposite);
+        let entry = crate::native_targets::TARGETS + crate::native_targets::TARGET_STRIDE * 0x13;
+        m.set_u32(entry + 0x88, 0).unwrap();
+        skipped(Setup::LayersComposite, &mut m);
     }
 
     #[test]

@@ -56,7 +56,7 @@ The numbers are ported: `engine::colour_pass` (the arguments and parameters), `e
 | `0x0002d26e..0x0002d344`: targets 1, `0x19`, `0x1a`, `0x1b`'s sizes saved (0 without a surface or with a hidden size) | `native_post::save_sizes` |
 | `0x0002d49f`, before each pass's template gate: target 1 at the pass's size; `0x0002da3e`, `0x0002da47`, past a drawn pass's gate: each drawn convolution's two stand-ins at its size (`0x0001ddd0`: the table's `+0x80`, `+0x84` and both headers' size words `+0x14`, `+0x28`, zero unless `+0x94`) | `resizes`, `native_post::resize` |
 | the drawn passes | one native pass ([below](#the-native-passes)) |
-| `0x0002dae8..0x0002db5a`: 1, `0x19` and `0x1b` given their saved sizes, `0x19` again with `0x1a`'s (`0x1a` keeps the call's), `[0x004670bc]` set, `0x00016b10` on the template cache `0x00485b48`, the results `0x00485a78`/`7c` -1 | `native_post::end_writes` |
+| `0x0002dae8..0x0002db5a`: 1, `0x19` and `0x1b` given their saved sizes, `0x19` again with `0x1a`'s (`0x1a` keeps the call's), `[0x004670bc]` set, `0x00016b10` on the template cache `0x00485b48` (its restore list written into the state shadow, then cleared), the results `0x00485a78`/`7c` -1 | `native_post::end_writes` |
 
 A colour pass that draws makes the guest's two binds of `0x00014bc0` in Rust (`native_post::glow_binds`, `colour_call`, `render_bridge::target_bind::bind`; a bind it cannot make panics, `post: bind: <cause>`): the view's target `[0x004858b8]` (a word, any target) before the glow, as `0x00034a90` binds it for the composite, and at the end `[0x004858b4]` when not -1, else the view's again (`0x00021a44..0x00021a6e`). The glow's view slot is the colour that first bind caches (`[0x0051f3f4]`).
 
@@ -97,7 +97,7 @@ Every case the guest would draw and the native pass does not panics, `post: <cau
 | `colour pass parameters (..)`, `colour pass reset (..)` | `colour_pass::parameters` fails, or the reset does not write |
 | `glow: <cause>` | the plan (`pass_a`, `blur_combiner`, `blur`, `pass_b`, a blur that copies its result), the view's texture, a slot, the device refusing the pass |
 | `glow on the graph's targets: <refusal>` | the GPU refuses a copy (`glow::Refused`) |
-| `screen effect: <cause>` | the plan, the saved sizes, `template_skipped` (a gate that does not read), a target sized twice, a missing piece (`template_pass`, `pass_target`, `view_target`, `blur`, `wide`, `stand_ins`), the view's texture, a slot, `template_restore` (a template cache with restore states, `0x00018900`, a D3D call), the device refusing the pass |
+| `screen effect: <cause>` | the plan, the saved sizes, `template_skipped` (a gate that does not read), a target sized twice, a missing piece (`template_pass`, `pass_target`, `view_target`, `blur`, `wide`, `stand_ins`), the view's texture, a slot, `template_restore` (a template cache restore entry through a state setter, `0x004038d8`), the device refusing the pass |
 | `screen effect <entry> on the graph's targets: <refusal>` | the GPU refuses a copy (`screen_gpu::ScreenRefused`) |
 
 While a map's screen effects load (`EffectsSlot`, on a thread of their own) a call makes its guest writes and draws nothing, counted `post_screen_effect_loading`. `render.scene` reports `post_colour_calls`, `post_colour_glows`, `post_screen_effect_calls` and `post_screen_effect_ended` (`native_post::counters`).
