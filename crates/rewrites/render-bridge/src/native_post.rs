@@ -361,8 +361,8 @@ where
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
     let frame = esp.wrapping_sub(0x40);
-    mem.set_u32(frame, target).map_err(fault)?;
-    mem.set_u32(frame.wrapping_add(4), 0).map_err(fault)?;
+    mem.set_u32(frame, target)?;
+    mem.set_u32(frame.wrapping_add(4), 0)?;
     cpu.esp = frame;
     cpu.eax = 1;
     ctx.call_guest_named(cpu, &mut mem, BIND_TARGET, "render: the colour pass's bind", then)
