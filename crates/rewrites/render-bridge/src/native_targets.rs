@@ -160,6 +160,17 @@ pub trait Host: Send + Sync {
     fn viewport(&self, _mem: &mut dyn GuestMemory, _viewport: u32) -> bool {
         false
     }
+    /// The bound colour copied into the colour of game target `target`
+    /// (`Game(target)`, the guest's `0x000352e0(target, 1)`), ordered with
+    /// the draws that follow it. `false`: refused.
+    fn copy_view(&self, _mem: &mut dyn GuestMemory, _target: u32) -> bool {
+        false
+    }
+    /// The open shader's restore list as `0x00018900` writes it
+    /// ([`crate::open_shader`]). `false`: a state the device does not take.
+    fn restore(&self, _mem: &mut dyn GuestMemory, _writes: &[crate::open_shader::Write]) -> bool {
+        false
+    }
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
