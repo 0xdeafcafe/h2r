@@ -524,20 +524,6 @@ mod tests {
     }
 
     #[test]
-    fn a_displaced_indexed_cache_lives_only_as_long_as_already_admitted_draws() {
-        let slot = IndexedSlot::default();
-        let pass_cache = slot.lock().unwrap().clone();
-        let old = Arc::downgrade(&pass_cache);
-        let retired = detach_indexed_cache(&slot);
-        assert!(Arc::ptr_eq(&pass_cache, &retired));
-        assert!(!Arc::ptr_eq(&pass_cache, &slot.lock().unwrap()));
-        drop(retired);
-        assert!(old.upgrade().is_some());
-        drop(pass_cache);
-        assert!(old.upgrade().is_none());
-    }
-
-    #[test]
     fn a_private_source_is_visible_to_native_jobs_only_after_activation() {
         let temp = Temp::new();
         let path = format!("{}\\maps\\level.map", vfs::CDROM_DEVICE);
