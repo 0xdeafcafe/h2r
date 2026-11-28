@@ -208,13 +208,15 @@ impl water_end::OceanHost for Glue {
         }
         let program = self.program(&ready, data, &*mem, draw.stream.kind)?;
         let grid = self.grid(&program, &*mem, &draw.stream, &quads.quads)?;
-        // The reflection and refraction targets (0x15, 0x16) and the
-        // palettes the stages read come from the frame's targets.
+        // The reflection and refraction targets (0x15, 0x16) come from the
+        // frame's targets.
         if !program.sampled().is_empty() {
             unimplemented!("ocean: render targets sampled from the frame's targets");
         }
-        if data.palettes.iter().any(Option::is_some) {
-            unimplemented!("ocean: stage palettes from the device");
+        // The palettes the load expanded its stages through must still be
+        // the ones bound (`native_targets_glue::stage_palette`).
+        if !crate::native_world_glue::palettes_hold(&data.palettes, &|n| crate::native_world_glue::stage_palette(&*mem, n)) {
+            return Err("palette");
         }
         let pass = OceanPass {
             data: Arc::clone(&ready),

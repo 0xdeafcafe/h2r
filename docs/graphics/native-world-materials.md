@@ -63,7 +63,7 @@ The main menu's dynamic detail shader, for example, declares five input register
 
 `tex_bump`'s bump stage (stage 2) is `P8Bump`, and `P8` is palettised too. The tag has no palette, and `assets` decodes both as their index in every channel. The D3D path samples them through the device palette bound at their stage, so the native pass expands them through the same one.
 
-The load takes the palettes bound at stages 0..3 when it starts (`Device::stage_palette`, read-only). It refuses a palettised bitmap at stage 3 or at a stage with no full 256-entry palette.
+The load takes the palettes bound at stages 0..3 when it starts, as the game records them (`native_targets_glue::stage_palette`): a stage whose cache word at `0x484DC0` names one of the `[0x5093AC]` headers at `0x484DD0` (12 bytes each) holds that palette, any other the default `[0x484DBC]`. The entries are the header's `Data` in contiguous memory, 256 >> the size code in `Common`'s top two bits. It refuses a palettised bitmap at stage 3 or at a stage with no full 256-entry palette.
 
 One decoder serves every pass loaded with the world (`native_render::stage_images::StageDecoder`: layer 3 and the transparents' layer-15 passes, which share its images; the objects can take it too).
 

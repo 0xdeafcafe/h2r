@@ -437,7 +437,7 @@ impl Glue {
         };
         // The world's sets draw with the palettes the load expanded
         // through.
-        if !taken.is_empty() && !world.is_some_and(|(_, palettes)| palettes_hold(palettes, &crate::native_world_glue::stage_palette)) {
+        if !taken.is_empty() && !world.is_some_and(|(_, palettes)| palettes_hold(palettes, &|s| crate::native_world_glue::stage_palette(&*mem, s))) {
             *outcomes.entry("palettes").or_default() += taken.len() as u64;
             taken.drain().for_each(|(slot, _)| left.item(slot, "palettes"));
         }
@@ -1094,7 +1094,7 @@ impl render_bridge::effects_shadow::geometry::AnswerHost for TransparentAnswer {
         let (stencil, fog) = {
             let read = ReadMemory(mem);
             let device_stencil = crate::native_objects_glue::device_state::stencil().ok_or("stencil")?;
-            if !palettes_hold(palettes, &crate::native_world_glue::stage_palette) {
+            if !palettes_hold(palettes, &|s| crate::native_world_glue::stage_palette(&*mem, s)) {
                 return Err("palettes");
             }
             // Skipping the handler must leave the device as its draws would:

@@ -585,7 +585,7 @@ impl Host for Glue {
         }
         let inherits_cull = plan.batches.iter().any(|b| matches!(looks.look(&b.material), Some(Ok(l)) if l.inherits_cull));
         let read = ReadMemory(mem);
-        let draw = layer_draw(inherits_cull);
+        let draw = layer_draw(&*mem, inherits_cull)?;
 
         // The skip over a preview: nothing touches the guest until the
         // reservation has recorded on every copy.
@@ -618,9 +618,15 @@ impl Host for Glue {
 }
 
 /// The stencil and cull the placements draw under at the layer-3 call
-/// (`0x0004e260` sets neither); the cull only when a pass inherits it.
-fn layer_draw(_inherits_cull: bool) -> DrawKey {
-    unimplemented!("decorators: layer-3 stencil and cull from the device")
+/// (`0x0004e260` sets neither), from the guest's render-state shadow
+/// (`native_targets_glue::stencil_state`, `cull_state`); the cull only
+/// when a pass inherits it. `None` when the stencil does not read.
+fn layer_draw(mem: &dyn GuestMemory, inherits_cull: bool) -> Option<DrawKey> {
+    let stencil = crate::native_targets_glue::stencil_state(mem)?;
+    let cull = inherits_cull
+        .then(|| crate::native_targets_glue::cull_state(mem).map(crate::native_world_glue::inherited_cull))
+        .flatten();
+    Some(DrawKey { stencil, cull })
 }
 
 /// The display's projection factor, the lens the GPU culls by.

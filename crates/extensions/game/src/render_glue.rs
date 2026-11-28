@@ -185,11 +185,20 @@ pub fn ui_state() -> UiState {
 
 #[cfg(feature = "gpu")]
 impl crate::render_aspect::UiLayoutSink for UiLayout {
+    /// The display widens the retail lens by `factor`; the camera keeps
+    /// the retail one.
     fn set_projection_factor(&self, factor: f32) {
-        UI.lock().unwrap_or_else(|e| e.into_inner()).projection_factor = factor;
+        if factor.is_finite() && factor > 0.0 {
+            *UI.lock().unwrap_or_else(|e| e.into_inner()) = UiState { projection_factor: factor, camera_projection_factor: 1.0 };
+        }
     }
+    /// The camera already projects through `factor`'s lens: nothing is
+    /// widened after it, and only screen-space offsets stored outside the
+    /// projection take `factor`.
     fn set_camera_projection_factor(&self, factor: f32) {
-        UI.lock().unwrap_or_else(|e| e.into_inner()).camera_projection_factor = factor;
+        if factor.is_finite() && factor > 0.0 {
+            *UI.lock().unwrap_or_else(|e| e.into_inner()) = UiState { projection_factor: 1.0, camera_projection_factor: factor };
+        }
     }
     fn set_fit(&self, _: &mut runtime::Guest, fit: Option<gfx::external::UiFit>) {
         crate::hud_overlay::set_ui_fit(fit);

@@ -566,7 +566,7 @@ impl Glue {
         }
         let (models, generation) = self.load(mem).ok_or(ObjectWalk::Model)?;
         self.refresh_edits(mem, &models, generation);
-        if !model_palettes_hold(&models) {
+        if !model_palettes_hold(&*mem, &models) {
             return Err(ObjectWalk::Inputs);
         }
         // The view needs a render camera that reads, as the layer's draws
@@ -1031,8 +1031,8 @@ fn count_refusal(why: &str) {
 
 static PALETTE_CHANGED: AtomicBool = AtomicBool::new(false);
 
-fn model_palettes_hold(models: &Models) -> bool {
-    let hold = palettes_hold(&models.palettes, &stage_palette);
+fn model_palettes_hold(mem: &dyn GuestMemory, models: &Models) -> bool {
+    let hold = palettes_hold(&models.palettes, &|s| stage_palette(mem, s));
     if !hold && !PALETTE_CHANGED.swap(true, Ordering::Relaxed) {
         eprintln!("native-objects: the stage palette changed since a base map was expanded");
     }
@@ -1102,7 +1102,7 @@ fn layer_source_models(mem: &dyn GuestMemory) -> Option<Arc<Models>> {
         let s = state.as_ref().filter(|s| s.generation == generation && s.name == name)?;
         s.resident(timeline::frames())?
     };
-    if !model_palettes_hold(&models) {
+    if !model_palettes_hold(mem, &models) {
         return None;
     }
     Some(models)

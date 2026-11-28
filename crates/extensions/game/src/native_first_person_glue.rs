@@ -140,7 +140,7 @@ impl Host for Glue {
         let cold = !current(&self.state.lock().unwrap_or_else(|e| e.into_inner()));
         if cold {
             let _dispatch = timeline::setup::dispatch();
-            let (palettes, formats) = (stage_palettes(), StreamFormats::read(&Ro(mem)));
+            let (palettes, formats) = (stage_palettes(&*mem), StreamFormats::read(&Ro(mem)));
             let mut generation = self.generation.lock().unwrap_or_else(|e| e.into_inner());
             *generation += 1;
             let next = *generation;
@@ -197,7 +197,7 @@ impl Host for Glue {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         if used.iter().any(Option::is_some) {
-            let now = stage_palettes();
+            let now = stage_palettes(&*mem);
             if !palettes_hold(&used, &|stage| now[stage].clone()) {
                 return None;
             }
@@ -505,7 +505,7 @@ pub(crate) fn layer_models(mem: &dyn GuestMemory) -> Option<Arc<dyn crate::nativ
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     if used.iter().any(Option::is_some) {
-        let now = stage_palettes();
+        let now = stage_palettes(mem);
         if !palettes_hold(&used, &|stage| now[stage].clone()) {
             return None;
         }

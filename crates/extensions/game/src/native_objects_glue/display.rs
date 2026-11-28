@@ -9,7 +9,7 @@ impl Glue {
         let visibility = view.display_visibility.as_ref()?;
         let handles = &visibility.objects;
         let (models, _) = self.load(mem)?;
-        if !model_palettes_hold(&models) {
+        if !super::model_palettes_hold(&*mem, &models) {
             return None;
         }
         let entry = LayerEntry::read();

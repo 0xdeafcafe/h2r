@@ -129,7 +129,7 @@ The admission's frustum test kept the selected-parts pass equal to the D3D path 
 | Keying | The world is keyed and loaded by the game's active BSP index (game globals `+2`, `i16`; `native_world_glue::active_bsp_index`), which must load at that address. A level's BSPs share one address across views. A placement's placed copy is unscaled, as the game draws it (`load`). |
 | Packed vectors | The lighting vector (`v5`) and frame vectors (`v2..v4`) are `NORMPACKED3` words in the stream format table (`0x0043f408`, type `0x30`). A world vertex carries them as words (`WorldVertex::packed`) and the material programs decode them as the D3D path does (`program::INPUTS`, `WORLD_FETCH`), so a world program's module equals the D3D path's for the same draw, text for text (`a_world_program_s_module_is_the_d3d_path_s`). The CPU midpoint decode (`load::program_lighting_vector`) is not used for lighting. |
 | Block-compressed stages | Stage bitmaps keep their BC blocks (`assets::decode_image_blocks`, `Image::with_blocks`) and upload where the device takes BC, on the D3D path's rule (no signed channel: `bias_signed` drops them). The CPU DXT decode truncates interpolated colours and would be one level darker. `program::describe_image` prints a stage's native upload (format, size, levels, a hash of level 0) beside the D3D texture. |
-| Inherited cull | A pass that does not set `CULLMODE` takes the device's `CULLMODE` and `FRONTFACE` at the layer-3 call (`look::WorldPass::inherits_cull`, `Device::cull_state`, read from the guest's render-state array as the stencil is; `program::InheritedCull`). Clusters and placements both take it. |
+| Inherited cull | A pass that does not set `CULLMODE` takes the device's `CULLMODE` and `FRONTFACE` at the layer-3 call (`look::WorldPass::inherits_cull`, `native_targets_glue::cull_state`, read from the guest's render-state shadow at `0x00407498` as the stencil is; `program::InheritedCull`). Clusters and placements both take it. |
 | Unmatched pixel fields | `explicit_final` (only when both final-combiner input words are zero, which a world pass's are not), an all-ones `stipple`, `fog_color` and `bump_mat`/`bump_lum` (read only by a fog-reading combiner and the bump-environment modes, which `world_parity` refuses) are not matched. |
 
 ### Skip only the replaced work (Code)
@@ -171,7 +171,7 @@ The feature reads how layer 3's items switch the stencil before asking the host 
 
 | Case | The native pass draws with |
 |---|---|
-| No item switches | the stencil the device holds when asked (`Device::stencil_state`, translated as the D3D path's pipeline translates it, `gpu::PassStencil`) |
+| No item switches | the stencil the guest's render-state shadow holds when asked (`native_targets_glue::stencil_state`, translated as a draw's pipeline translates it, `gpu::PassStencil`) |
 | Some item switches, layer not in mode 1 | nothing: the D3D path draws the view (counted in the log). An item leaves mode 1, so the layer must start in mode 1 (`PassStencil::is_structure_mode`) for the items left to D3D to draw as they would. |
 | Some item switches, a flag set | every part with the stencil off (mode 0) |
 | Some item switches, no flag | a marked section's parts with reference `0xff` (mode 2, its own run in the batch, `PassStencil::reference_of`), the rest with mode 1 |

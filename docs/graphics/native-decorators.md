@@ -151,7 +151,7 @@ The state rule (`Host::holds`, `decorators_load::skip_holds`) exists because of 
 
 A material is therefore kept only when the restore list, every state of the pass's list the restore list does not write back (at the value the draw sets, `DecoratorLook::leaves`) and `TwoSidedLighting` off already hold at the call. The world layers' items follow the same rule (`layer_pass::skip_holds`).
 
-The host reserves one external pass as the fog's does. The device must be W-buffered, the stage palettes the load expanded palettized stage bitmaps through must still be bound (`palettes_hold`), the device's stencil must read, and so must its cull when a planned pass leaves the cull to the device. The draw `0x0004e260` sets neither, so the pipelines draw under the stencil and cull the device holds at the layer-3 call (`decorators_gpu::DrawKey`; the stencil through `fog_gpu::layer_stencil`, its reference set on the pass).
+The host reserves one external pass as the fog's does. The device must be W-buffered, the stage palettes the load expanded palettized stage bitmaps through must still be bound (`palettes_hold`), the stencil in the guest's render-state shadow must read, and so must its cull when a planned pass inherits the cull. The draw `0x0004e260` sets neither, so the pipelines draw under the stencil and cull the render-state shadow holds at the layer-3 call (`decorators_gpu::DrawKey`, `native_targets_glue::stencil_state` and `cull_state`; the stencil through `fog_gpu::layer_stencil`, its reference set on the pass).
 
 A pass that sets its own stencil draws it, with its own reference per batch (`Bound::stencil_reference`). A pass's polygon offset is drawn in its fragments' W depth (`pass_state::DepthOffset`).
 
