@@ -34,6 +34,11 @@ fn the_table_holds_the_walks_bd090_and_the_multiplayer_type_callbacks_and_nothin
         &points::VEHICLE_UPDATE,
         &points::PROJECTILE_UPDATE,
         &points::SCENERY_UPDATE,
+        &points::DEVICE_UPDATE,
+        &points::MACHINE_UPDATE,
+        &points::CRATE_UPDATE,
+        &points::CREATURE_UPDATE,
+        &points::CREATURE_POST_UPDATE,
     ] {
         assert!(TYPES.iter().any(|t| t.base == point.base), "{}", point.name);
     }
@@ -62,10 +67,7 @@ fn the_table_holds_the_walks_bd090_and_the_multiplayer_type_callbacks_and_nothin
     }
     // The bodies of the other types and the shell stay the guest's.
     for other in [
-        &points::DEVICE_UPDATE,
-        &points::MACHINE_UPDATE,
-        &points::CRATE_UPDATE,
-        &points::CREATURE_UPDATE,
+        &points::MACHINE_SLOT_48,
         &points::OBJECT_DAMAGE_UPDATE,
         &points::OBJECT_FUNCTION_VALUE,
         &points::UNIT_FUNCTION_IMPORT,
