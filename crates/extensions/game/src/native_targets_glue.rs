@@ -1,7 +1,8 @@
 //! The host of `render_bridge::native_targets`: the scene's target select
 //! and clear and the frame's finish made on the shared device without
 //! their guest D3D entries (docs/graphics/framescene.md, "Slice 6";
-//! docs/graphics/retire-d3d-display.md, "The frame step"), and the frame
+//! docs/graphics/retire-d3d-display.md, "The frame step"), the view setup's
+//! and view end's device calls ("The view setup and view end"), and the frame
 //! tail's overlay placed on it ("The frame tail").
 
 use std::sync::{Arc, Mutex};
@@ -62,6 +63,51 @@ impl<B: d3d::Backend + Send + 'static> Host for Targets<B> {
         let made = device.set_pixel_shader(&mut DeviceMemory(mem), handle);
         drop(device);
         made.map_or_else(|e| self.refused("a pixel shader", e), |()| true)
+    }
+
+    fn render_state(&self, mem: &mut dyn GuestMemory, slot: u32, value: u32) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        let made = device.set_render_state(&mut DeviceMemory(mem), slot, value);
+        drop(device);
+        made.map_or_else(|e| self.refused("a render state", e), |()| true)
+    }
+
+    fn stored_state(&self, mem: &dyn GuestMemory, slot: u32) -> Option<u32> {
+        let read = crate::native_world_glue::ReadMemory(mem);
+        self.device.lock().ok()?.render_state(&read, slot)
+    }
+
+    fn constants(&self, mem: &mut dyn GuestMemory, register: u32, data: u32, dwords: u32) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        let made = device.set_vertex_shader_constant_dwords(&mut DeviceMemory(mem), register, data, dwords);
+        drop(device);
+        made.map_or_else(|e| self.refused("the constants", e), |()| true)
+    }
+
+    fn constant(&self, r: usize) -> Option<[u32; 4]> {
+        // 192 registers (`d3d::Device::constant`'s hardware order).
+        (r < 192).then(|| self.device.lock().ok().map(|d| d.constant(r).map(f32::to_bits))).flatten()
+    }
+
+    fn make_space(&self, mem: &mut dyn GuestMemory, minimum: u32, requested: u32) -> Option<u32> {
+        let Ok(mut device) = self.device.lock() else { return None };
+        let made = device.make_requested_space(&mut DeviceMemory(mem), minimum, requested);
+        drop(device);
+        made.map_err(|e| self.refused("room in the push buffer", e)).ok()
+    }
+
+    fn push_viewport(&self, mem: &mut dyn GuestMemory, put: u32, at: u32) -> Option<u32> {
+        let Ok(mut device) = self.device.lock() else { return None };
+        let made = device.push_viewport(&mut DeviceMemory(mem), put, at);
+        drop(device);
+        made.map_err(|e| self.refused("the viewport push", e)).ok()
+    }
+
+    fn viewport(&self, mem: &mut dyn GuestMemory, at: u32) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        let made = device.set_viewport(&mut DeviceMemory(mem), at);
+        drop(device);
+        made.map_or_else(|e| self.refused("a viewport", e), |()| true)
     }
 }
 

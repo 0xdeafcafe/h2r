@@ -1,7 +1,7 @@
 # Retiring D3D: movies, frames outside a game view and the display (R8)
 
-Status: Partly built. The frame step, the movie's picture, the publish (in the frame step and the three frame loops outside it), the frame tail and the frame's finish are native, and the frame wait calls no D3D entry; a frame tail it does not cover, the frames outside a game view's own setup and a frame with a carried slot keep the guest's D3D calls, each under a named `render.residual` row.
-Code: `crates/rewrites/render-bridge/src/render_frame.rs` (the frame step), `native_targets.rs` (the finish), `render_frame/publish.rs`, `d3d::Device::publish` and `game::d3d_glue::SinkDrain` (the publish), `crates/platform/bink-hle/src/display.rs` and `crates/rewrites/render-bridge/src/native_movie.rs` (the movie), `crates/extensions/game/src/movie_display_glue.rs` and `hud_overlay::place_movie` (the glue), `render_frame::loop_present` (the frame loops' present), `frame_tail.rs` with `hud_overlay::place_tail` and `frame_scene::OverlayKind::Hold` (the frame tail), `residual_census::REGISTRY` (the rows). Tests: in each, `the_frame_finish_makes_no_d3d_entry` (`native_targets.rs`), `a_frame_with_a_screen_effect_makes_no_d3d_entry` and `uncovered_tails_are_refused_by_name` (`frame_tail.rs`), `a_held_texture_survives_into_the_next_frame` (`native-render/src/ui_gpu.rs`), `the_frame_wait_is_outside_the_render` and `the_frames_own_calls_are_named_rows_inside_and_outside_the_frame_step` (`residual_census.rs`), `a_loop_frame_from_the_scene_is_published_with_no_d3d_entry` (`render_frame.rs`), `a_native_display_takes_the_picture_and_leaves_the_guest_texture_alone` (`crates/platform/bink-hle/tests/synthetic.rs`) and `a_published_frame_presents_with_the_frame_steps_ramp_and_the_next_vblank_reports_its_swap` (`crates/platform/d3d/tests/round7.rs`).
+Status: Partly built. The frame step, the movie's picture, the publish (in the frame step and the three frame loops outside it), the frame tail, the frame's finish and the view setup and view end are native, and the frame wait calls no D3D entry; a frame tail or view setup it does not cover and a frame with a carried slot keep the guest's D3D calls, each under a named `render.residual` row.
+Code: `crates/rewrites/render-bridge/src/render_frame.rs` (the frame step), `native_targets.rs` (the finish), `render_frame/publish.rs`, `d3d::Device::publish` and `game::d3d_glue::SinkDrain` (the publish), `crates/platform/bink-hle/src/display.rs` and `crates/rewrites/render-bridge/src/native_movie.rs` (the movie), `crates/extensions/game/src/movie_display_glue.rs` and `hud_overlay::place_movie` (the glue), `render_frame::loop_present` (the frame loops' present), `frame_tail.rs` with `hud_overlay::place_tail` and `frame_scene::OverlayKind::Hold` (the frame tail), `view_setup.rs` and `native-render/src/frame_graph/targets.rs` (the view setup and view end, the graph's targets), `residual_census::REGISTRY` (the rows). Tests: in each, `the_frame_finish_makes_no_d3d_entry` (`native_targets.rs`), `a_frame_with_a_screen_effect_makes_no_d3d_entry` and `uncovered_tails_are_refused_by_name` (`frame_tail.rs`), `the_view_setup_makes_no_d3d_entry`, `uncovered_setups_are_refused_by_name` and `a_check_compares_the_guest_bodys_state` (`view_setup/tests.rs`), `the_graph_owns_its_targets_across_frames` (`frame_graph/targets.rs`), `a_held_texture_survives_into_the_next_frame` (`native-render/src/ui_gpu.rs`), `the_frame_wait_is_outside_the_render` and `the_frames_own_calls_are_named_rows_inside_and_outside_the_frame_step` (`residual_census.rs`), `a_loop_frame_from_the_scene_is_published_with_no_d3d_entry` (`render_frame.rs`), `a_native_display_takes_the_picture_and_leaves_the_guest_texture_alone` (`crates/platform/bink-hle/tests/synthetic.rs`) and `a_published_frame_presents_with_the_frame_steps_ramp_and_the_next_vblank_reports_its_swap` (`crates/platform/d3d/tests/round7.rs`).
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). Off, the frame is the guest's and the movie fills and draws the guest's texture.
 
 Slice R8 of [retire-d3d.md](retire-d3d.md). `render_frame_and_present` `0x00223240` is Rust: the frame step calls each part of the guest's frame in its order, so each part goes native in place. The exit: from boot to gameplay and back to the menu, `render.residual`'s `d3d_entries` grow only under `outside_render`. R7 owns the menus, R6 the HUD; R8 takes the frame itself, the movie, and what neither draws.
@@ -66,23 +66,36 @@ A draw that is not placed shows nothing, since no guest texture is behind it. Ea
 
 ## Frames outside a game view
 
-`0x002232a0` draws what is not a game view: the menus, the loading screen and the movie. The tick `0x00156040` has two callers, `0x0002bc31` and `0x0002c99d` (**Code**; **S**: which views they sit in). Its draws are the overlay producers' ([native-post-hud.md](native-post-hud.md#the-fade-the-bars-and-the-loading-screen), [native-menus-overlay.md](native-menus-overlay.md)) and the movie's. Its own setup (the target, the clear, the viewport, through `0x0002c8a0`) is the guest's, through `d3d`.
+`0x002232a0` draws what is not a game view: the menus, the loading screen and the movie. The tick `0x00156040` has two callers, `0x0002bc31` and `0x0002c99d` (**Code**; **S**: which views they sit in). Its draws are the overlay producers' ([native-post-hud.md](native-post-hud.md#the-fade-the-bars-and-the-loading-screen), [native-menus-overlay.md](native-menus-overlay.md)) and the movie's. Its own setup (the target, the clear, the viewport, through `0x0002c8a0`) is the view setup's ([below](#the-view-setup-and-view-end)).
 
-The `views`, `outside_view` and `frame_loop` rows reach D3D only through two shared calls, so cutting those two cuts all three (**Code**):
+The `views`, `outside_view` and `frame_loop` rows reach D3D only through two shared calls, the view setup `0x000132d0(view)` (`ret 4`; callers `0x0002c990` in `0x0002c8a0`, `0x0002cafd` in `0x0002ca00`, `0x00013c60` in the view end, and `0x0002bc1b`, `0x0002c755`, `0x0002c863` in the game views) and the view end `0x00013c20()` (`ret`; the tail of each caller above: `0x0002bc36`, `0x0002bcb8`, `0x0002c76e`, `0x0002c889`, `0x0002c9e4`, `0x0002cb0f`). Both are Rust ([below](#the-view-setup-and-view-end)), so the three rows are `kept`: their work is only what a refused setup's body does.
 
-| Call | Callers | What it does | D3D entries |
-|---|---|---|---|
-| `0x000132d0(view)`, `ret 4`: the view setup | `0x0002c990` (`0x0002c8a0`), `0x0002cafd` (`0x0002ca00`), `0x00013c60` (the view end), and `0x0002bc1b`, `0x0002c755`, `0x0002c863` in the game views | copies the view's `0x298` bytes to the render context `0x00485600`; `[0x004858b8]` = `0x12` for view kind `+2` = 1, else 0 | none |
-| | | `0x00015370` (BX the kind, a seven-way switch): case 0 `[0x004b843c]` = 0 | `SetRenderState_StencilEnable(0)` (the other six cases not read) |
-| | | `[0x005093b4]` = `0x901`, `[0x005093b8]` = `0x900`; `0x00012fa0` (ECX `+0x18`, EAX `+0x8c`, byte `+7`, word `+2`) | `0x00012d50`, `SetVertexShaderConstantNotInlineFast` |
-| | | with `+8` set: the target switch `0x00014bc0(1, [0x004858b8], 0)` and the clear `0x00014b60` (colour flags 1, or `0x61` with `0x00131ed0(0x0048560c)` when `[0x004670cd]` is 0; Z 1.0); else the switch alone | the native select and clear, then `0x003fdb20`, `SetViewport` |
-| | | five words pushed straight into the push buffer: method `0x1af0`, count 4, `0`, `[0x0045dbbc]`, `[0x0045dbc0]`, `[0x0045e3b0]` | the raw push (`MakeRequestedSpace` when full) |
-| | | `[0x004b8428]` = `0x1b02` | `SetRenderState_FillMode(0x1b02)` |
-| | | `0x00016b10` (ESI `0x00485b48`): its record reset, `0x00018900` when `+0x24` is set | `0x00018900`'s (not read) |
-| | | with `+0x26c` set: `0x48` words from `+0x14c` to `0x0048574c`, then `0x00025a10` | `SetRenderState_FogColor`, `SetVertexShaderConstantNotInlineFast`, `0x00027aa0`'s |
-| `0x00013c20()`, `ret`: the view end | the tail of each caller above (`0x0002bc36`, `0x0002bcb8`, `0x0002c76e`, `0x0002c889`, `0x0002c9e4`, `0x0002cb0f`) | with `[0x004ba04c]` above 1, `D3DDevice_Clear(0, 0, 0x80, 0, 1.0, 0)` (alpha only); pops the view stack `[0x0046701c]` and, a view left, runs `0x000132d0` for it, then its camera (`0x0002f970`, `0x0002fd90`) | `Clear`, and the setup's |
+## The view setup and view end
 
-Neither is cut: each is a guest body today, and the rows stay `d3d` until both are.
+`render_bridge::view_setup` implements both (`points::RENDER_VIEW_SETUP`, `RENDER_VIEW_END`), placed by `native_targets` with its host. The setup is planned from guest memory with nothing written (`plan`), then made (`apply`): the game-side words, then the device's calls in the body's order through `native_targets::Host`, staged in the guest stack below the call as the body's frame would hold them (**Code** `0x000132d0..0x0001344d`):
+
+| Guest | What it does | The cut |
+|---|---|---|
+| `rep movsd` | the view's `0x298` bytes to the render context `0x00485600`; `[0x004858b8]` = `0x12` for view kind `+2` = 1, else 0 | the same writes; kind 1 refused (`target`) |
+| `0x00015370` (BX 0, its case 0 only) | `[0x004b843c]` = 0, `SetRenderState_StencilEnable(0)`, word `[0x00467010]` = 0 | the writes, `Host::render_state(144, 0)` |
+| | `[0x005093b4]` = `0x901`, `[0x005093b8]` = `0x900` | the same writes |
+| `0x00012fa0` (ECX `+0x18`, EAX `+0x8c`, byte `+7`, word `+2`), `ret 8` | `0x00012d50` with BL 0: the device's clip range `+0x1c10` = `[0x0045dbc0] * [0x00485adc]`, `+0x1c14` = `[0x00485ae0]`, `+0x1c18` bit 1, the viewport push `0x003f6190`, the view-projection rows; then 48 words to `c[-96]` (`SetVertexShaderConstantNotInlineFast`), shadowed at `0x00407738` unless `[0x00404fe8]` bit 4 | `view_setup::transform` (the rows as `aux_depth::rows` orders them, the view's words from `+0xc4` and `+0x18`, the window's mapping); the clip words, `Host::push_viewport`, `Host::constants(0, 48)` |
+| `0x00014bc0(1, [0x004858b8], 0)` | target 0: `0x0001cd30` with `[0x0050935c]`, `[0x00509364]`, flag 1; the viewport: 128 square for view kind 2, else the window `0x00485648` times the scale | `native_targets::cut_select`; `Host::viewport` with the window; a scale other than 1.0 refused (`scale`) |
+| `0x00014b60`, with `+8` set | flags 1, or `0x61` with the colour `0x00131ed0(0x0048560c)` when `[0x004670cd]` is 0; Z 1.0 | `native_targets::cut_clear`; a clear whose prelude would run refused (`prelude`) |
+| the raw push | method `0x1af0`, four words: 0, `[0x0045dbbc]`, `[0x0045dbc0]`, `[0x0045e3b0]` (`MakeRequestedSpace` at the limit) | the same words at put, `Host::make_space` at the limit |
+| `[0x004b8428]` = `0x1b02` | `SetRenderState_FillMode(0x1b02)` | the write, `Host::render_state(139, 0x1b02)` |
+| `[0x004670bc]` = 1, `0x00016b10` (ESI `0x00485b48`) | the draw state's reset; `0x00018900` when `+0x24` is set | the same writes; a restore list that is not empty refused (`restore`) |
+| with `+0x26c` set | `0x48` words from `+0x14c` to `0x0048574c`; `0x00025a10`: 24 words to `c[-84]` (shadowed at `0x004077f8`), the fog colour `0x00131ed0(+0x168)` to `[0x004b8424]` and `SetRenderState_FogColor`, then `0x00027aa0` | `view_setup::fog`; `Host::constants(12, 24)`, `Host::render_state(138, colour)`; `0x00027aa0` runs only with `+0x1b8` not 0 or -1, refused (`fog_effect`) |
+
+The view end (**Code** `0x00013c20..0x00013cc6`): with `[0x004ba04c]` above 1, `D3DDevice_Clear(0, 0, 0x80, 0, 1.0, 0)` through `Host::clear`; the view stack `[0x0046701c]` popped; a view left (`0x004850d0 + 0x298 * n`), the guest call of the setup above for it, its kind to `[0x004b9ed4]`, its `+0x14c` to `0x004b9ef0` and `+0x18` to the camera `0x004b9da0`, and the guest calls of its camera `0x0002f970` and `0x0002fd90`, which call no D3D entry. It returns with EBX, ESI, EDI and EBP as they came in.
+
+One setup in 64 runs the guest body and compares what it left with the plan (`view_setup::check`): every planned word, the clip words, `c[0..12]` and the fog's `c[12..18]`, render states 144, 139 and 138, and the bound target (the pair, the viewport's origin and depth range exactly; its width and height at most the plan's, since the device clips the far edges to the target). A difference sends every later setup to the guest body. The raw and viewport pushes are not compared.
+
+A setup it does not cover runs the guest body, counted `scene_kept_view_setup_<cause>` in `render.scene`: `host`, `target`, `scale`, `prelude`, `restore`, `fog_effect`, `unread`, `unwritable`, `device` (a refused call: the body sets the same state again), `mismatch`, `fallback`. `view_setup_calls`, `view_setup_cut` and `view_setup_checked` count the rest; the end counts `view_end_calls`, `view_end_cut` and `scene_kept_view_end_<cause>` (`host`, `device`, `unread`, `unwritable`).
+
+The bind and the clear land on the frame graph's targets: the scene sink files them as the `TargetRef`s `frame_graph::targets::declare` names, and `targets::Owned` is the graph's own set of them, one surface per declared target across frames (the same shape keeps its surface, a new one frees it and makes another), counted `graph_targets_made`, `_kept`, `_released` and `graph_targets_refused_<cause>` (`unsized`, `allocation`). A refused target has no surface: nothing stands in. The replay still takes its map from the threaded owner (`d3d::threaded::owner`), not from `Owned`.
+
+**S**: that the FPU's precision makes the product of two floats exact in `0x00131ed0`'s `fistp` (it is in 53 or 64 bits); that nothing reads the guest stack below the call that the cut stages its arguments in.
 
 Three frame loops run outside `0x00223240` (**Code**):
 
@@ -98,9 +111,9 @@ Each present asks the publish as the frame step's does (`render_frame::loop_pres
 
 | Row | Entry | Status | What it still holds |
 |---|---|---|---|
-| `views` | `render_views` `0x0002b5d0` | `d3d` | the begin-frame setup around the views |
-| `outside_view` | `0x002232a0` | `d3d` | the setup above |
-| `frame_loop` | `0x0012b6f0` | `d3d` | its view `0x0002ca00`'s setup |
+| `views` | `render_views` `0x0002b5d0` | `kept` | a refused view setup's or view end's body |
+| `outside_view` | `0x002232a0` | `kept` | the same, for `0x0002c8a0`'s view |
+| `frame_loop` | `0x0012b6f0` | `kept` | the same, for its view `0x0002ca00` |
 | `present` | `0x00013f10` | `kept` | a kept frame's `Swap` |
 
 ## The final display
@@ -215,7 +228,9 @@ Each step is a no-op once made, so a cut stopped part way runs the guest body, w
 ## Not verified
 
 - A movie on screen with the native display: its placement against the guest's draw at 1x and at render scale.
-- That `d3d_entries` grow only under `outside_render` from boot to gameplay and back (the R8 exit); it needs R1 to R7 and the frames outside a game view's own setup.
+- That `d3d_entries` grow only under `outside_render` from boot to gameplay and back (the R8 exit); it needs R1 to R7.
+- The view setup in a game: `view_setup_cut` against `view_setup_calls`, which causes are kept and how often, and that no check differs.
+- `targets::Owned` drawing a frame: the replay takes the map from the threaded owner, not from the graph.
 - The frame tail in a game: a screen effect's freeze frame on screen against the guest's, at 1x and at render scale, and `frame_tail_native` against `frame_tail_calls`.
 - A frame loop's published frame on screen, and its `loop_published` against `loop_presents` over a map load.
 - The frame's finish in a game: `frame_finish_cut` against `frame_finish_calls`, and that a `release` is rare.

@@ -13,6 +13,7 @@
 //! | `0x0001cd30(esi colour, eax depth, [esp+4] flag)`, `ret 4`, `al = 1` | the cached pair `0x0051f3f4`/`0x0051f3f8` unchanged: nothing; a colour of the cached one's format and size (`+0`, `+0xc`, `+0x10`): the same-size bind `0x003f7b30`; else `0x003f7870` | [`Host::bind`] |
 //! | `0x00014b60(eax flags, colour, z, stencil byte)`, `ret 0xc`, `eax = 0` | the game's flags as D3D clear flags ([`clear_flags`]); none: nothing | [`Host::clear`] |
 //! | `0x00013b90()`, `ret`: the frame tail | [`crate::frame_tail`]: the freeze frame's copy and composite as overlay items | `frame_tail::Host::place` |
+//! | `0x000132d0(view)`, `ret 4`, and `0x00013c20()`, `ret`: the view setup and view end | [`crate::view_setup`]: the context, the transform, the target, the clear, the fog | this host's other calls |
 //! | `0x00013cd0()`, `ret`, `eax = 0`: the frame's finish | the four stage slots cleared and committed against their cache, the index buffer's device reference dropped, the pixel shader none ([`cut_finish`]) | [`Host::texture`], [`Host::pixel_shader`] |
 //!
 //! The arm: one call in [`CHECK_EVERY`] of each runs the guest body and
@@ -121,6 +122,35 @@ pub trait Host: Send + Sync {
     fn pixel_shader(&self, _mem: &mut dyn GuestMemory, _handle: u32) -> bool {
         false
     }
+    /// A `SetRenderState_*` setter for guest slot `slot`. `false`: refused.
+    fn render_state(&self, _mem: &mut dyn GuestMemory, _slot: u32, _value: u32) -> bool {
+        false
+    }
+    /// What guest render-state slot `slot` holds (`d3d::Device::render_state`).
+    fn stored_state(&self, _mem: &dyn GuestMemory, _slot: u32) -> Option<u32> {
+        None
+    }
+    /// `D3DDevice_SetVertexShaderConstantNotInlineFast(register + 96, data,
+    /// dwords)`. `false`: refused.
+    fn constants(&self, _mem: &mut dyn GuestMemory, _register: u32, _data: u32, _dwords: u32) -> bool {
+        false
+    }
+    /// Constant register `r` (hardware order, register + 96) as bits.
+    fn constant(&self, _r: usize) -> Option<[u32; 4]> {
+        None
+    }
+    /// `D3D_MakeRequestedSpace(minimum, requested)`: the new put.
+    fn make_space(&self, _mem: &mut dyn GuestMemory, _minimum: u32, _requested: u32) -> Option<u32> {
+        None
+    }
+    /// The viewport push fragment `0x003f6190` at `put`: the new put.
+    fn push_viewport(&self, _mem: &mut dyn GuestMemory, _put: u32, _device: u32) -> Option<u32> {
+        None
+    }
+    /// `D3DDevice_SetViewport(viewport)`. `false`: refused.
+    fn viewport(&self, _mem: &mut dyn GuestMemory, _viewport: u32) -> bool {
+        false
+    }
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -130,7 +160,7 @@ pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
 }
 
-fn host() -> Option<Arc<dyn Host>> {
+pub(crate) fn host() -> Option<Arc<dyn Host>> {
     HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
@@ -184,7 +214,28 @@ impl Arm {
         same
     }
 
-    fn counters(&self) -> Vec<(String, u64)> {
+    /// A call counted without a check (a call with no arm).
+    pub(crate) fn call(&self) {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A call the cut made.
+    pub(crate) fn made(&self) {
+        self.cut.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A check's outcome: `Err` names what differed, and falls back.
+    pub(crate) fn prove(&self, outcome: Result<(), String>) -> bool {
+        self.checked.fetch_add(1, Ordering::Relaxed);
+        let Err(what) = outcome else { return true };
+        self.keep("mismatch");
+        if !self.fallback.swap(true, Ordering::Relaxed) {
+            eprintln!("native-targets: {} differs from the guest body ({what}); the guest body runs from here", self.name);
+        }
+        false
+    }
+
+    pub(crate) fn counters(&self) -> Vec<(String, u64)> {
         let mut out = vec![
             (format!("{}_calls", self.name), self.calls.load(Ordering::Relaxed)),
             (format!("{}_cut", self.name), self.cut.load(Ordering::Relaxed)),
@@ -204,7 +255,7 @@ pub static FRAME_FINISH: Arm = Arm::new("frame_finish");
 /// The counters `render.scene` reports.
 pub fn counters() -> Vec<(String, u64)> {
     TARGET_SELECT.counters().into_iter().chain(SCENE_CLEAR.counters()).chain(FRAME_FINISH.counters())
-        .chain(crate::frame_tail::counters()).collect()
+        .chain(crate::frame_tail::counters()).chain(crate::view_setup::counters()).collect()
 }
 
 /// The words of the bound target a check compares for `bind`: the pair,
@@ -445,6 +496,9 @@ impl Feature for NativeTargets {
         // The frame tail before it (docs/graphics/retire-d3d-display.md,
         // "The frame tail").
         crate::frame_tail::place(b);
+        // The view setup and view end every frame producer reaches D3D
+        // through ("Frames outside a game view").
+        crate::view_setup::place(b);
         Ok(())
     }
 }
