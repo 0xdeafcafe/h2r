@@ -3043,7 +3043,15 @@ fn first_person_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
                 |k, callout, m| fp_effect(case_seed, k, callout, m, draws_at),
             );
             let mut a = w.mem;
-            let (calls, eax, after) = original_stubbed(
+            // The original's depth range (the device's put and `+0x1c10`,
+            // `0x003faae0`, `0x003f6190`) only fed D3D; the port makes
+            // none of it. Its calls leave the put as it is and keep the
+            // later callees' places; its words are put back.
+            let put_at = FP_DEVICE as usize..FP_DEVICE as usize + 8;
+            let range_at = (FP_DEVICE + 0x1c10) as usize..(FP_DEVICE + 0x1c1c) as usize;
+            let (put_words, range_words) = (a.bytes[put_at.clone()].to_vec(), a.bytes[range_at.clone()].to_vec());
+            let mut pushes = 0;
+            let (raw, eax, after) = original_stubbed(
                 &mut lifted,
                 &mut a,
                 &mut c,
@@ -3051,10 +3059,34 @@ fn first_person_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
                 esp,
                 FP_STUBS,
                 true,
-                |k, callout, m| fp_effect(case_seed, k, callout, m, draws_at),
+                |k, callout, m| {
+                    if matches!(callout.target, first_person::call::PUSH_SPACE | first_person::call::PUSH_STATE) {
+                        pushes += 1;
+                        return (callout.regs[0], 0);
+                    }
+                    fp_effect(case_seed, k - pushes, callout, m, draws_at)
+                },
             )
             .unwrap_or_else(|e| panic!("{label}: {e}"));
             assert_eq!(after, esp + 8, "{label}: ESP after the original");
+            a.bytes[put_at].copy_from_slice(&put_words);
+            a.bytes[range_at].copy_from_slice(&range_words);
+            let pushed = raw.iter().any(|c| c.target == first_person::call::PUSH_SPACE);
+            let port_esi = |site: u32| port_calls.iter().find(|c| c.site == site).map(|c| c.regs[2]);
+            let calls: Vec<Callout> = raw
+                .into_iter()
+                .filter(|c| !matches!(c.target, first_person::call::PUSH_SPACE | first_person::call::PUSH_STATE))
+                .map(|mut c| {
+                    if c.site == first_person::site::VIEW_TARGET {
+                        // The original's EAX is AL 1 over the put the push
+                        // left, its ESI the device; the port's, 1 and the
+                        // light's record.
+                        c.regs[0] &= 0xff;
+                        c.regs[2] = port_esi(c.site).unwrap_or(c.regs[2]);
+                    }
+                    c
+                })
+                .collect();
             assert_transcripts(&label, &calls, &port_calls);
             assert_eq!(
                 result.map(|ret| (ret.eax, ret.pop)),
@@ -3079,7 +3111,7 @@ fn first_person_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
                     }
                 }
             }
-            if calls.iter().any(|c| c.target == first_person::call::PUSH_SPACE) {
+            if pushed {
                 tally.add("push space");
             }
         }

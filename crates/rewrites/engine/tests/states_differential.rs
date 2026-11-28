@@ -11,13 +11,17 @@
 //! - `Mode::Exact` is Port grade: equal call logs (target, every register,
 //!   `xmm0`, stack arguments), registers at return, and all 64 MB.
 //! - `Mode::SkipRedundant` may make fewer Simple calls. What must be equal
-//!   is the effect: the GPU register model, D3D's shadow, dirty mask,
-//!   `0x004076b8` and the device's `+0x790`, every non-Simple call (the
+//!   is the effect: the GPU register model, D3D's shadow, dirty mask
+//!   and `0x004076b8`, every non-Simple call (the
 //!   setters and colours, with all their registers and arguments), the
 //!   registers at return, and all memory outside the dead stack. Every
 //!   Simple call it makes is one the original makes, in the same order, and
 //!   every one it skips would have written the value the register already
 //!   held.
+//!
+//! The original's copy of state `0x88` to the device's `+0x790` only fed
+//! D3D; the port makes none, so the device word is put back on the
+//! original's side before memory is compared.
 //!
 //! The control word varies (rounding and precision control), and the
 //! parameters include NaN, infinities, ties and out-of-range values, for
@@ -446,7 +450,10 @@ fn render_states_match_the_lifted_original() {
             let (mut a, regs, fcw) = state(&image, seed, case);
             let mut b = a.clone();
             let mut c = a.clone();
+            let device_word = (DEV + 0x790) as usize..(DEV + 0x794) as usize;
+            let seeded = a.bytes[device_word.clone()].to_vec();
             let (ra, sa) = lifted.run(seed, &mut a, regs, fcw).unwrap();
+            a.bytes[device_word].copy_from_slice(&seeded);
             let (rb, sb, _) = port(seed, &mut b, regs, fcw, Mode::Exact).unwrap();
             let ctx = format!("seed {seed} case {case} fcw {fcw:#x}");
             for (i, (x, y)) in sa.log.iter().zip(&sb.log).enumerate() {

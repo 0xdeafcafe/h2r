@@ -23,8 +23,6 @@ pub enum Event {
     SelectProgram { vaf: u32, address: u32 },
     Visible,
     RenderState { slot: u32, value: u32 },
-    MakeSpace,
-    PushViewport { put: u32 },
     Draw(Box<super::Draw>),
     CopyView { target: u32 },
     Restore { writes: usize },
@@ -52,9 +50,6 @@ pub fn read(mem: &dyn GuestMemory, at: u32, n: u32) -> Vec<u32> {
 
 /// The size every surface has.
 pub const SURFACE: (u32, u32) = (512, 256);
-
-/// The put [`Fake::push_viewport`] advances by.
-pub const PUSH: u32 = 0x28;
 
 impl Host for Fake {
     fn bind(&self, _mem: &mut dyn GuestMemory, _bind: Bind, colour: u32, depth: u32) -> bool {
@@ -106,14 +101,6 @@ impl Host for Fake {
     fn select_vertex_program(&self, _mem: &mut dyn GuestMemory, vaf: u32, address: u32) -> bool {
         self.push(Event::SelectProgram { vaf, address });
         true
-    }
-    fn make_space(&self, _mem: &mut dyn GuestMemory, _minimum: u32, _requested: u32) -> Option<u32> {
-        self.push(Event::MakeSpace);
-        Some(0)
-    }
-    fn push_viewport(&self, _mem: &mut dyn GuestMemory, put: u32, _device: u32) -> Option<u32> {
-        self.push(Event::PushViewport { put });
-        Some(put + PUSH)
     }
     fn copy_view(&self, _mem: &mut dyn GuestMemory, target: u32) -> bool {
         self.push(Event::CopyView { target });

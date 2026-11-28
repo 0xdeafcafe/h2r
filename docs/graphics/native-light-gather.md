@@ -126,7 +126,7 @@ Any other record that passes the filters gives each visible part to `0x00041040`
 3. sets the constants with shadow 0 and weight one (`0x0004a1e0`, EDX the light datum; the weight and the scale are the image's pushed words at `0x00040566` and `0x0004056d`);
 4. sets the flags: bit 0 for a kind-0 volume, bit 1 for a colour B component above zero (`comiss`, `ja`: a NaN is not), bits 2 to 5 clear, and the passes byte `[0x004ba018]`;
 5. draws layers 11, 14, 12 and, with bits 0 and 1, 13 on list 1, each only when the list's mask has its bit; no layer 10 and no additional casters. Layer 11 is reached whatever the flags;
-6. runs the passes' tail, with the depth range inline: the device's range words and dirty bit, `0x003faae0` when its push buffer is full, and `0x003f6190` (**E** `0x000407bd`..`0x0004080f`).
+6. runs the passes' tail, with the depth range inline: the device's range words and dirty bit, `0x003faae0` when its push buffer is full, and `0x003f6190` (**E** `0x000407bd`..`0x0004080f`). The port leaves the depth range out: it only fed D3D, and no device exists. The view's target gets AL 1.
 
 The first-person visibility comparison rebuilds the replay slots from the dynamic passes' source records and compares each slot at this loop's entry. See [native-visibility.md](native-visibility.md#first-person-lights).
 
@@ -250,7 +250,7 @@ The flags are `light_passes::flags_of`, the same function `pass_flags` uses. `re
 - the record replay `0x000402b0` as a guest call, and the constants as a guest call;
 - the flags inline;
 - the layer blocks as the passes body makes them (each a guest call of the target, clip, blend, stencil, draw and end, so `Glue::alone` draws a whole group of layer 12 or 13 as before);
-- the tail with the depth range inline.
+- the tail without the depth range.
 
 `plan_records` and `run_records` are `0x000402b0`: a slot past the eighth, a count above 32, a tail past `0x8000` or over the table refuse. A record that passes the filter is `items::record_items_with` in kind 1 with the fifth argument set, or the guest's per-part calls (`0x000449e0`, `0x00045ce0`, `0x000460d0`, `0x00041040`) with the guest's registers and stack words when the port does not take it (an object's record, an override shader).
 

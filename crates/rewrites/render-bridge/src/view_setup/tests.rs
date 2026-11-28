@@ -7,8 +7,6 @@ use super::*;
 use crate::native_targets::Bind;
 
 const VIEW: u32 = 0x0057_0000;
-const DEVICE_AT: u32 = 0x0058_0000;
-const PUSH: u32 = 0x0059_0000;
 const STACK: u32 = 0x005f_0000;
 const COLOUR: u32 = 0x005a_0000;
 const DEPTH: u32 = 0x005a_1000;
@@ -17,8 +15,6 @@ const DEPTH: u32 = 0x005a_1000;
 #[derive(Clone, Debug, PartialEq)]
 enum Op {
     State(u32, u32),
-    PushViewport(u32),
-    Space(u32, u32),
     Constants(u32, Vec<u32>),
     Bind(Bind, u32, u32),
     Viewport([u32; 6]),
@@ -73,14 +69,6 @@ impl Host for Device {
         self.ops.lock().unwrap().push(Op::Constants(register, words));
         true
     }
-    fn make_space(&self, _: &mut dyn GuestMemory, minimum: u32, requested: u32) -> Option<u32> {
-        self.ops.lock().unwrap().push(Op::Space(minimum, requested));
-        Some(PUSH)
-    }
-    fn push_viewport(&self, _: &mut dyn GuestMemory, put: u32, _device: u32) -> Option<u32> {
-        self.ops.lock().unwrap().push(Op::PushViewport(put));
-        Some(put + 13 * 4)
-    }
     fn viewport(&self, mem: &mut dyn GuestMemory, at: u32) -> bool {
         let v: [u32; 6] = std::array::from_fn(|i| mem.u32(at + 4 * i as u32).unwrap());
         self.ops.lock().unwrap().push(Op::Viewport(v));
@@ -100,17 +88,12 @@ fn mem() -> FlatMemory {
     for (at, v) in [(ONE, 1.0), (HALF, 0.5), (MINUS_HALF, -0.5), (SCALE, 1.0), (SCALE_MIN, 0.5), (Z_OFFSET, 0.25)] {
         set_f(&mut m, at, v);
     }
-    for (at, v) in [(KIND2_EXTENT, 2.0), (ROW_SCALE, 1.0), (TRANSFORM_27, 3.0), (TRANSFORM_31, 4.0), (PUSH_W, 5.0)] {
+    for (at, v) in [(KIND2_EXTENT, 2.0), (ROW_SCALE, 1.0), (TRANSFORM_27, 3.0), (TRANSFORM_31, 4.0)] {
         set_f(&mut m, at, v);
     }
-    for (at, v) in [(CLIP_NEAR, 0.0625), (CLIP_FAR, 1024.0), (COLOUR_SCALE, 255.0), (RESET_SCALAR, 7.0), (FOG_FLOOR, 0.001)] {
+    for (at, v) in [(COLOUR_SCALE, 255.0), (RESET_SCALAR, 7.0), (FOG_FLOOR, 0.001)] {
         set_f(&mut m, at, v);
     }
-    m.set_u32(DEVICE, DEVICE_AT).unwrap();
-    m.set_u32(DEVICE_AT, PUSH + 0x100).unwrap();
-    m.set_u32(DEVICE_AT + 4, PUSH + 0x8000).unwrap();
-    m.set_u32(DEVICE_AT + DEVICE_CLIP + 8, 1).unwrap();
-    m.set_u32(PUSH_THRESHOLD, 0x400).unwrap();
     m.set_u32(VIEW_COLOUR, COLOUR).unwrap();
     m.set_u32(VIEW_DEPTH, DEPTH).unwrap();
     // The view: kind 0, a clear, the window, the matrices, the clear colour.
@@ -138,7 +121,7 @@ fn plan_of(m: &FlatMemory) -> Setup {
 
 /// The setup's device calls in the body's order, through the host, and its
 /// game-side words: the context, the target, the stencil and the draw
-/// state's mirrors, the transform's shadow and the raw push. No guest D3D
+/// state's mirrors and the transform's shadow. No guest D3D
 /// entry is made.
 #[test]
 fn the_view_setup_makes_no_d3d_entry() {
@@ -148,24 +131,17 @@ fn the_view_setup_makes_no_d3d_entry() {
     apply(&mut m, &dev, &s, STACK).unwrap();
     let ops = dev.ops();
     assert_eq!(ops[0], Op::State(SLOT_STENCIL_ENABLE, 0), "the stencil off first");
-    assert_eq!(ops[1], Op::PushViewport(PUSH + 0x100), "the clip range pushed at put");
-    assert!(matches!(&ops[2], Op::Constants(0, w) if w.len() == 48), "the transform at c[-96]");
-    assert_eq!(ops[3], Op::Bind(Bind::Full, COLOUR, DEPTH), "target 0's pair");
-    assert_eq!(ops[4], Op::Viewport([0, 0, 640, 480, 0, 1f32.to_bits()]));
-    assert_eq!(ops[5], Op::Clear(0xf0 | 3, 0x00ff_8000), "colour, depth and stencil in the view's colour");
-    assert_eq!(ops[6], Op::State(SLOT_FILL_MODE, SOLID));
-    assert_eq!(ops.len(), 7, "no fog");
+    assert!(matches!(&ops[1], Op::Constants(0, w) if w.len() == 48), "the transform at c[-96]");
+    assert_eq!(ops[2], Op::Bind(Bind::Full, COLOUR, DEPTH), "target 0's pair");
+    assert_eq!(ops[3], Op::Viewport([0, 0, 640, 480, 0, 1f32.to_bits()]));
+    assert_eq!(ops[4], Op::Clear(0xf0 | 3, 0x00ff_8000), "colour, depth and stencil in the view's colour");
+    assert_eq!(ops[5], Op::State(SLOT_FILL_MODE, SOLID));
+    assert_eq!(ops.len(), 6, "no fog");
     assert_eq!(m.bytes(CONTEXT, VIEW_SIZE as usize).unwrap(), m.bytes(VIEW, VIEW_SIZE as usize).unwrap());
     assert_eq!((m.u32(TARGET).unwrap(), m.u32(FILL_MODE).unwrap(), m.u8(DRAW_BEGIN).unwrap()), (0, SOLID, 1));
     assert_eq!(m.u32(TRANSFORM_SHADOW + 4 * 31).unwrap(), 4f32.to_bits(), "the shadow holds the transform");
     assert_eq!(m.u32(DRAW_STATE + 0x1330).unwrap(), 7f32.to_bits());
     assert_eq!(m.u32(DRAW_STATE + 0x40).unwrap(), u32::MAX);
-    let put = PUSH + 0x100 + 13 * 4;
-    assert_eq!(m.u32(put).unwrap(), 0x0010_1af0, "the raw push after the viewport's");
-    assert_eq!(m.u32(put + 16).unwrap(), 5f32.to_bits());
-    assert_eq!(m.u32(DEVICE_AT).unwrap(), put + 0x14);
-    assert_eq!(m.u32(DEVICE_AT + DEVICE_CLIP).unwrap(), 0.0625f32.to_bits());
-    assert_eq!(m.u32(DEVICE_AT + DEVICE_CLIP + 8).unwrap(), 3, "the game owns the clip range");
     assert_eq!(m.u32(native_targets::CACHE_COLOUR).unwrap(), COLOUR, "the select's cache");
 }
 
@@ -233,8 +209,8 @@ fn view_kind_one_draws_to_the_cached_target() {
     assert_eq!(m.u32(TARGET).unwrap(), CACHED_TARGET);
     assert_eq!(m.u8(native_targets::CACHE_FLAG).unwrap(), 0);
     let ops = dev.ops();
-    assert_eq!(ops[3], Op::Bind(Bind::Full, record + 0x18, DEPTH));
-    assert_eq!(ops[5], Op::Clear(0xf3, 0x00ff_8000), "no prelude off target 0");
+    assert_eq!(ops[2], Op::Bind(Bind::Full, record + 0x18, DEPTH));
+    assert_eq!(ops[4], Op::Clear(0xf3, 0x00ff_8000), "no prelude off target 0");
     m.set_u8(record + 0x95, 1).unwrap();
     assert_eq!(plan_of(&m).colour, 0, "an off record: no surface");
 }
@@ -272,7 +248,7 @@ fn a_wide_clear_makes_the_prelude() {
     apply(&mut m, &dev, &plan, STACK).unwrap();
     let ops = dev.ops();
     let screen = [0, 0, 640, 480, 0, 1f32.to_bits()];
-    assert_eq!(ops[4..9], [Op::Viewport(screen), Op::Viewport(screen), Op::Clear(0xf0, 0), Op::Viewport([0; 6]), Op::Clear(0xf3, 0x00ff_8000)]);
+    assert_eq!(ops[3..8], [Op::Viewport(screen), Op::Viewport(screen), Op::Clear(0xf0, 0), Op::Viewport([0; 6]), Op::Clear(0xf3, 0x00ff_8000)]);
 }
 
 /// The draw state's restore list, after the fill mode: a simple state
@@ -306,7 +282,7 @@ fn the_restore_list_is_made_after_the_fill_mode() {
     let dev = Device::default();
     apply(&mut m, &dev, &s, STACK).unwrap();
     let ops = dev.ops();
-    assert_eq!(ops[6..9], [Op::State(SLOT_FILL_MODE, SOLID), Op::Simple(0x0004_0300, 0x11), Op::State(0x8b, 0x33)]);
+    assert_eq!(ops[5..8], [Op::State(SLOT_FILL_MODE, SOLID), Op::Simple(0x0004_0300, 0x11), Op::State(0x8b, 0x33)]);
     assert_eq!((m.u32(RENDER_STATES + 4 * 3).unwrap(), m.u32(RENDER_STATES + 4 * 0x60).unwrap()), (0x11, 0x22));
     assert_eq!(m.u32(DEFERRED_DIRTY).unwrap(), 0x81);
     assert_eq!(m.u32(DRAW_STATE + 0x24).unwrap(), 0, "the reset after the list");
@@ -345,23 +321,11 @@ fn a_fogged_view_sets_its_fog_after_the_fill_mode() {
     assert_eq!(fog.colour, 0x00ff_0000);
     apply(&mut m, &dev, &s, STACK).unwrap();
     let ops = dev.ops();
-    assert_eq!(ops[6], Op::State(SLOT_FILL_MODE, SOLID));
-    assert!(matches!(&ops[7], Op::Constants(0xc, w) if w.len() == 0x18));
-    assert_eq!(ops[8], Op::State(SLOT_FOG_COLOUR, 0x00ff_0000));
+    assert_eq!(ops[5], Op::State(SLOT_FILL_MODE, SOLID));
+    assert!(matches!(&ops[6], Op::Constants(0xc, w) if w.len() == 0x18));
+    assert_eq!(ops[7], Op::State(SLOT_FOG_COLOUR, 0x00ff_0000));
     assert_eq!(m.u32(FOG_COLOUR).unwrap(), 0x00ff_0000);
     assert_eq!(m.u32(FOG_SHADOW).unwrap(), fog.block[0]);
-}
-
-/// A full push buffer asks for room as the body's inline writers do.
-#[test]
-fn a_full_push_buffer_asks_for_room() {
-    let mut m = mem();
-    m.set_u32(DEVICE_AT, PUSH + 0x8000).unwrap();
-    let dev = Device::default();
-    let plan = plan_of(&m);
-    apply(&mut m, &dev, &plan, STACK).unwrap();
-    assert_eq!(dev.ops()[1], Op::Space(0x200, 0x400));
-    assert_eq!(dev.ops()[2], Op::PushViewport(PUSH));
 }
 
 /// A refused device call is named.
