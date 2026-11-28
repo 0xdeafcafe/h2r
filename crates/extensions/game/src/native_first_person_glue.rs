@@ -226,7 +226,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
             let clip = device.depth_clip(&read, native_render::camera::D24_SCALE);
             let stencil_off = mem.u32(native_render::skip::STENCIL_OFF_FLAGS).ok().map(|flags| flags & 0x00ff_ff00 != 0);
-            let stencil_mode_1 = crate::native_objects_glue::in_stencil_mode_1(&device, mem);
+            let stencil_mode_1 = crate::native_objects_glue::in_stencil_mode_1_with(mem, device.stencil_state(&read));
             let mut states = EntryStates::read(|state| {
                 table
                     .canonical_to_guest(state.index())

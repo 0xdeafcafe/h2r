@@ -1241,7 +1241,7 @@ pub(crate) fn device_stipple_after<B: d3d::backend::Backend>(
     }
 }
 
-/// [`in_stencil_mode_1`] with the device's stencil `stencil` (a run's, as
+/// Whether the scene is in stencil mode 1 with the device's stencil `stencil` (a run's, as
 /// the restore leaves it: [`stencil_with`]).
 pub(crate) fn in_stencil_mode_1_with(mem: &dyn GuestMemory, stencil: Option<gfx::state::StencilState>) -> bool {
     mem.u16(SCENE_STENCIL_MODE) == Ok(1) && stencil == Some(scene_stencil())
