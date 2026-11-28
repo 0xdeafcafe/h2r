@@ -100,12 +100,13 @@ pub fn register_image_entries() {
 
 /// The list [`register_image_entries`] registers, in order.
 pub fn image_entries() -> impl Iterator<Item = u32> {
-    use engine::points::{ai_gates, game_types, render_aspect, scene_effects, skull_gates};
+    use engine::points::{ai_gates, cache_wait, game_types, render_aspect, scene_effects, skull_gates};
     render_aspect::instruction_entries()
         .chain(scene_effects::instruction_entries())
         .chain(game_types::instruction_entries())
         .chain(skull_gates::instruction_entries())
         .chain(ai_gates::instruction_entries())
+        .chain(cache_wait::instruction_entries())
 }
 
 /// Map the image, attach the kernel, register the generated module and run

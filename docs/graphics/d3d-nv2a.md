@@ -72,7 +72,13 @@ loop: `0x12d0cf` (`0x12d0a0`), `0x12e0d6` (`0x12e0c0`) and `0x12e15b`
 in the cache allocator's blocking retry (`0x12d400`, and its inlined copies
 in the callers listed above): try `0x12d2f0`, pump the cache with
 `0x12c600` up to a count, then until a timeout `KickOff`, the peek and
-`SwitchToThread` (`0x2d2084`) between tries.
+`SwitchToThread` (`0x2d2084`) between tries. Nine of those waits (`0x12d4e3`,
+`0x6a927`, `0x80ebf`, `0x124292`, `0x19963b`, `0x1997c7`, `0x86381`,
+`0x8643d`, `0x1561eb`) are `before` hooks that yield the thread and resume
+at the `jmp` after the yield's call, so the kick and the peek never run
+(`crates/hooking/guest-layout/src/points/cache_wait.rs`, installed by
+`crates/rewrites/sim-bridge/src/cache_flush.rs`); the retries, the pump and
+the timeout stay retail's.
 
 | site | |
 |---|---|

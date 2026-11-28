@@ -21,6 +21,7 @@
 //! ```
 
 pub mod ai_gates;
+pub mod cache_wait;
 pub mod game_types;
 pub mod render_aspect;
 pub mod scene_effects;

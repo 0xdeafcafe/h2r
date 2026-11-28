@@ -5,10 +5,14 @@
 //! original's by construction (a site the body does not own).
 
 use engine::native_cache_flush::TABLE;
-use hooks::Builder;
+use engine::points::cache_wait::WAITS;
+use hooks::{Builder, Flow};
+use runtime::TransferAbi;
 
 /// The label the bodies install under.
 pub const LABEL: &str = "cache flush";
+/// The label the allocations' wait installs under.
+pub const WAIT_LABEL: &str = "cache wait";
 
 pub(crate) fn install(b: &mut Builder) {
     for &body in TABLE.bodies() {
@@ -23,6 +27,16 @@ pub(crate) fn install(b: &mut Builder) {
                 body.segment(cpu, &mut mem, pc)
             })
             .resumes(body.sites)
+            .context_only();
+    }
+    // The blocking allocations' wait: the GPU kick and the fence peek are
+    // gone; the yield stays (`engine::points::cache_wait`).
+    for wait in &WAITS {
+        b.raw()
+            .before(&wait.site, WAIT_LABEL, move |_| {
+                std::thread::yield_now();
+                Ok(Flow::Return(TransferAbi::resume(wait.resume)))
+            })
             .context_only();
     }
 }
