@@ -379,11 +379,12 @@ const COLLISION_ENTRIES: [(&points::Point, Entry, CollisionBody); 5] = [
 
 // Each body answers exact exits, then compares admitted lifted calls at their
 // real returns. A return continuation in guest RAM could alias query inputs.
-const COLLISION_PARTIAL: [(&points::Point, Entry); 4] = [
+// The spatial visit `bb050` is a body of `sim_objects` (the walks'
+// callouts), so it has no hook here.
+const COLLISION_PARTIAL: [(&points::Point, Entry); 3] = [
     (&points::COLLISION_VECTOR_TEST, Entry::VectorTest),
     (&points::COLLISION_BSP_SEGMENT, Entry::VectorContext),
     (&points::COLLISION_CLUSTER_FLOOD, Entry::ClusterFlood),
-    (&points::OBJECT_SPATIAL_VISIT, Entry::ObjectVisit),
 ];
 
 const COLLISION_OBSERVED: [(&points::Point, Entry, &str); 2] = [

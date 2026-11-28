@@ -5,9 +5,9 @@
 //! run `sim_objects::wake` to the end and return with the registers and
 //! flags retail returns with, leaving the stack below `esp` as retail
 //! leaves it (the pushes and return addresses of the leaves and their
-//! calls to each other). `109580` calls the stack probe `320560` and
-//! the spatial visit `bb050`, which stay guest until phase 2's visit is
-//! callable from Rust, so it is a segment body.
+//! calls to each other). `109580` calls the stack probe `320560`, a
+//! guest call, and the spatial visit `bb050` (a body, `callouts`), so it
+//! is a segment body.
 
 use super::{Cx, Next, Result, unowned};
 use crate::points;

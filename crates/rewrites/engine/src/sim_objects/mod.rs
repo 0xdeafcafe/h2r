@@ -24,6 +24,12 @@ mod object;
 // The after-root slot `+70` callees.
 mod after_root;
 mod wake;
+// The walks' callouts: the delete, the tree passes, the collector, the
+// deferred fire, the replicated transform, the type new dispatch, the
+// spatial visit, the early-mover record and object_new.
+mod callouts;
+mod mover_record;
+mod object_new;
 mod walks;
 pub mod functions;
 // Slice 11: the small type updates.
@@ -131,6 +137,17 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::OBJECT_WAKE_FOR_POST, sites: &[], run: wake::wake_for_post },
     Body { point: &points::OBJECT_WAKE_CHILDREN, sites: &[], run: wake::wake_children },
     Body { point: &points::OBJECT_EARLY_MOVER_WAKE, sites: &wake::EARLY_MOVER_SITES, run: wake::early_mover_wake },
+    // The walks' callouts (docs/engine/object-update.md, "Walk callouts").
+    Body { point: &points::OBJECT_REPLICATED_TRANSFORM, sites: &callouts::REPLICATED_SITES, run: callouts::replicated_transform },
+    Body { point: &points::OBJECT_TYPE_NEW, sites: &callouts::TYPE_NEW_SITES, run: callouts::type_new },
+    Body { point: &points::WEAPONS_DEFERRED_FIRE, sites: &callouts::DEFERRED_FIRE_SITES, run: callouts::deferred_fire },
+    Body { point: &points::OBJECT_DELETE, sites: &callouts::DELETE_SITES, run: callouts::delete },
+    Body { point: &points::OBJECT_DELETE_TREE, sites: &callouts::DELETE_TREE_SITES, run: callouts::delete_tree },
+    Body { point: &points::OBJECT_FREE_TREE, sites: &callouts::FREE_TREE_SITES, run: callouts::free_tree },
+    Body { point: &points::OBJECTS_COLLECT, sites: &callouts::COLLECT_SITES, run: callouts::collect },
+    Body { point: &points::OBJECT_SPATIAL_VISIT, sites: &callouts::VISIT_SITES, run: callouts::spatial_visit },
+    Body { point: &points::OBJECT_EARLY_MOVER_RECORD, sites: &mover_record::RECORD_SITES, run: mover_record::record },
+    Body { point: &points::CREATURE_PROBE_OBJECT_NEW, sites: &object_new::NEW_SITES, run: object_new::object_new },
     // The leaves `bd090` calls: the node matrix address, the animation and
     // attachment tests and the node-mask operations (`getters`).
     Body { point: &points::OBJECT_NODE_MATRIX, sites: &[], run: getters::node_matrix },

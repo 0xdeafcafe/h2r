@@ -4,7 +4,7 @@ use super::spatial::{fp_error, scalar};
 use super::*;
 use crate::{datum::layout, light_constants::Sse};
 
-pub(super) const SITES: [u32; 3] = [0xbb0e9, 0xbb17e, 0xbb2c4];
+pub(crate) const SITES: [u32; 3] = [0xbb0e9, 0xbb17e, 0xbb2c4];
 const FRAME: u32 = 0x420;
 const ARG: u32 = FRAME + 20;
 const QUERY_ACTIVE: u32 = 0x004d_e2f8;
@@ -109,7 +109,7 @@ fn candidates(c: &mut CpuAbi, g: &mut Guest, first: bool) -> Result<bool> {
     Ok(false)
 }
 
-pub(super) fn objects(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Result<TransferAbi> {
+pub(crate) fn objects(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Result<TransferAbi> {
     if pc == points::OBJECT_SPATIAL_VISIT.base {
         c.esp = c.esp.wrapping_sub(FRAME);
         c.eax = g.u32(c.esp.wrapping_add(FRAME + 8))?;

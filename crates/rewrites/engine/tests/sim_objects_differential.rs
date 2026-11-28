@@ -264,6 +264,10 @@ fn object_on_stack(root: u32) -> bool {
         // The after-root slot callees.
         &points::UNIT_AFTER_ROOT,
         &points::SCENERY_AFTER_ROOT,
+        // The walks' callouts.
+        &points::OBJECT_DELETE,
+        &points::OBJECT_DELETE_TREE,
+        &points::OBJECT_FREE_TREE,
     ]
     .iter()
     .any(|p| p.base == root)
@@ -290,6 +294,15 @@ fn entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
         r if r == points::OBJECT_TYPE_POSE.base || r == points::OBJECT_TYPE_AFTER_ROOT.base => Some(3),
         r if r == points::OBJECT_WAKE.base || r == points::OBJECT_WAKE_FOR_POST.base => Some(0),
         r if r == points::OBJECT_ROOT.base => Some(1),
+        // The walks' callouts: the type new dispatch's object in `ebx`,
+        // the replicated transform's and the early-mover record's in
+        // `eax` (the record's list index in `ecx`).
+        r if r == points::OBJECT_TYPE_NEW.base => Some(3),
+        r if r == points::OBJECT_REPLICATED_TRANSFORM.base => Some(0),
+        r if r == points::OBJECT_EARLY_MOVER_RECORD.base => {
+            cpu.gpr[1] = case % 3;
+            Some(0)
+        }
         _ => None,
     };
     if let Some(reg) = reg {
@@ -393,6 +406,8 @@ fn cleanup(target: u32) -> u32 {
         t if let Some(&(_, pop)) = SLICE_6C_CALLEES.iter().find(|c| c.0 == t) => pop,
         t if let Some(&(_, pop)) = SLICE_7A_CALLEES.iter().find(|c| c.0 == t) => pop,
         t if let Some(&(_, pop)) = SLICE_7B_CALLEES.iter().find(|c| c.0 == t) => pop,
+        t if let Some(&(_, pop)) = CALLOUT_CALLEES.iter().find(|c| c.0 == t) => pop,
+        t if TYPE_NEW_SLOTS.contains(&t) => 12,
         _ => panic!("no stub for callee {target:#x}: add its cleanup"),
     }
 }
@@ -401,6 +416,9 @@ fn cleanup(target: u32) -> u32 {
 /// deletion, deferred weapon fire and the early-mover record.
 fn mutates(target: u32) -> bool {
     matches!(target, 0xbc470 | 0xbc820 | 0x109580 | 0xb83b0 | 0xdbfb0 | 0xd6800 | 0xfd910 | 0x109660)
+        // The callees of the walks' callouts that change the live set:
+        // the deferred fire, the datum free, the record's body transform.
+        || matches!(target, 0xfd980 | 0xbc300 | 0x1d08e0)
         || SLOT_UPDATE.contains(&target)
         || SLOT_POST.contains(&target)
 }
@@ -448,6 +466,7 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
         cpu.eip = ret;
         return;
     }
+    callout_writes(g, sp, target, n, case);
     let seed = target.wrapping_mul(0x9127).rotate_left(n as u32 % 32) ^ case;
     cpu.gpr[0] = match target {
         // Per-object updates answer in `al`.
@@ -474,6 +493,7 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
         // two entries in three.
         0x1c6470 => (n as u32 + case) % 2,
         0x1dceb0 => u32::from((n as u32 + case) % 3 != 0),
+        t if let Some(v) = callout_answer(g, t, n, case) => v,
         _ => 0x006e_1000 | (seed & 0xff),
     };
     cpu.gpr[1] = seed.rotate_left(9);
@@ -876,8 +896,9 @@ fn transcripts_in(point: &points::Point, cases: u32, table: &Table, mxcsr: Optio
         check(&format!("{} case {case} fused", point.name), &reference, &fused);
         if point.base == points::OBJECTS_FINALIZE.base && table.owns(point.base) {
             // One `ObjectDeleted` per object finalize deletes, recorded by
-            // the body before `b83b0`.
-            let deletes = reference.callouts.iter().filter(|c| c.target == 0xb83b0).count();
+            // the body before `b83b0`: the `b9ce0` calls of the shallowest
+            // `b8540`, not those of the children `b83b0` deletes.
+            let deletes = top_level_deletes(&reference);
             let events = ::sim_objects::events::with(|e| e.len());
             assert_eq!(events, deletes, "{} case {case}: deletion events", point.name);
         }
@@ -4760,4 +4781,369 @@ fn after_root_slots() {
     for point in [&points::UNIT_AFTER_ROOT, &points::SCENERY_AFTER_ROOT] {
         dressed_with(point, 8, dress_after_root);
     }
+}
+
+// The walks' callouts (docs/engine/object-update.md, "Walk callouts"):
+// the replicated transform `a9570`, the type new dispatch `108a90`, the
+// deferred fire `fd910`, the delete `b8540`, the tree passes `b83b0` and
+// `b8460`, the collector `bf380`, the spatial visit `bb050`, the
+// early-mover record `109660` and `object_new` `b7b40`. Each is a root
+// over the dressed pool; the walks reach them through the table.
+
+/// Every guest function the walks' callouts call that no earlier table
+/// names, with the bytes its `ret` pops.
+const CALLOUT_CALLEES: &[(u32, u32)] = &[
+    // `a9570`.
+    (0xa9640, 0),
+    (0xa9820, 4),
+    (0xa9a70, 0),
+    (0xa9b40, 4),
+    (0xa99f0, 4),
+    // `fd910`.
+    (0xbaeb0, 4),
+    (0xfd980, 4),
+    // `b8540`.
+    (0xb9ce0, 0),
+    (0xb9d20, 0),
+    (0xb8b70, 0),
+    (0x10a250, 4),
+    (0xbf090, 0),
+    (0x15b220, 4),
+    (0x109400, 4),
+    (0xbb950, 8),
+    (0xa7a60, 0),
+    (0x10ace0, 0),
+    // `b83b0`: the eight delete callbacks at `468664`, the network
+    // detaches.
+    (0xbb880, 4),
+    (0xc1670, 4),
+    (0x1c9f30, 4),
+    (0x152cf0, 4),
+    (0x16651c, 4),
+    (0x15e7a0, 4),
+    (0x2095e0, 4),
+    (0x17b3c0, 4),
+    (0xcc590, 0),
+    (0xb9a90, 0),
+    // `b8460`.
+    (0xb9890, 0),
+    (0xb7300, 0),
+    (0xb87b0, 4),
+    (0xd4a60, 0),
+    (0xbee60, 0),
+    (0x146bf0, 0),
+    (0x1c37f0, 0),
+    (0x278f00, 0),
+    (0x108bf0, 0),
+    (0xbc300, 4),
+    // `bf380`: its pass test and the passes of the table at `440578`.
+    (0xbf1c0, 0),
+    (0xbf360, 24),
+    (0xbf240, 12),
+    (0xbf2c0, 24),
+    (0x1c8560, 24),
+    (0x1c8700, 12),
+    (0x1c88c0, 24),
+    // `bb050`: the cluster flood and the two list heads.
+    (0x14a5b0, 20),
+    (0xb8940, 8),
+    (0xb8a10, 8),
+    // `109660` (`142a60` runs inline, `30bf0` is slice 4's).
+    (0x1d08e0, 0),
+    (0x141590, 0),
+    // `b7b40`.
+    (0xbf9a0, 8),
+    (0x1cb0d0, 4),
+    (0xbc380, 12),
+    (0x1c3930, 0),
+    (0xbf510, 4),
+    (0xb8820, 0),
+    (0xbc280, 4),
+    (0x1cafc0, 0),
+    (0x108a40, 0),
+    (0x1caed0, 0),
+    (0x1cb0a0, 0),
+    (0xba540, 0),
+    (0xba590, 8),
+    (0xbe240, 12),
+    (0xba3d0, 0),
+    (0xbd020, 4),
+    (0xb8600, 8),
+    (0xb8890, 4),
+    (0xbe690, 0),
+    (0x108b80, 0),
+    (0x176780, 16),
+    (0x2e1e0, 0),
+    (0x109390, 0),
+];
+
+/// The synthetic types' slot `+2c` the type new dispatch calls
+/// ([`dress_type_new`]), `(object, a, b)`, `ret 0c`.
+const TYPE_NEW_SLOTS: [u32; 3] = [0x006d_1000, 0x006d_2000, 0x006d_3000];
+
+/// What the walks' callouts' stubs write: the replicated transform's
+/// record (its bits from `a9820`, its first word from `a99f0`).
+fn callout_writes(g: &mut Guest, sp: u32, target: u32, n: usize, case: u32) {
+    match target {
+        0xa9820 => {
+            let record = g.u32(sp + 4).unwrap();
+            word(g, record, (n as u32 + case) % 4);
+        }
+        0xa99f0 => {
+            let record = g.u32(sp + 4).unwrap();
+            word(g, record, case % 2);
+        }
+        _ => {}
+    }
+}
+
+/// The answers of the walks' callouts' stubs: the iterator's bodies and
+/// its end, empty list heads, a flood count, `object_new`'s allocation (a
+/// live handle or none) and its yes-or-no answers in `al`.
+fn callout_answer(g: &Guest, target: u32, n: usize, case: u32) -> Option<u32> {
+    let turn = n as u32 + case;
+    Some(match target {
+        0xbaeb0 => if turn % 4 >= 2 { 0 } else { g.u32(DATA + 12 * (2 + turn % 3) + 8).unwrap() },
+        0xb8940 | 0xb8a10 => u32::MAX,
+        0x14a5b0 => turn % 3,
+        0xbc280 => if turn % 3 == 0 { u32::MAX } else { handle(3) },
+        0xb9ce0 | 0xbf1c0 => turn % 2,
+        0xbc380 | 0x1c3930 | 0xbf510 | 0x1cb0d0 | 0xbf9a0 | 0xb8820 => u32::from(turn % 4 != 0),
+        t if TYPE_NEW_SLOTS.contains(&t) => u32::from(turn % 3 != 0),
+        _ => return None,
+    })
+}
+
+/// The objects finalize deletes: its `b83b0` callouts, or with `b83b0` a
+/// body the `b9ce0` calls of the shallowest `b8540` (the children
+/// `b83b0` deletes call it deeper).
+fn top_level_deletes(r: &Record) -> usize {
+    let direct = r.callouts.iter().filter(|c| c.target == 0xb83b0).count();
+    if direct > 0 {
+        return direct;
+    }
+    let sps: Vec<u32> = r.callouts.iter().filter(|c| c.target == 0xb9ce0).map(|c| c.gpr[4]).collect();
+    let top = sps.iter().copied().max();
+    sps.iter().filter(|&&sp| Some(sp) == top).count()
+}
+
+/// The synthetic descriptor every type uses under [`dress_type_new`], and
+/// its ancestors.
+const TYPE_DESCRIPTOR: u32 = 0x006c_0000;
+const DESCRIPTOR_TABLE: u32 = 0x0046_8630;
+
+/// The body of the object a root is called on.
+fn root_body(g: &Guest, case: u32) -> u32 {
+    g.u32(DATA + 12 * (object(case) & 0xffff) + 8).unwrap()
+}
+
+/// `a9570`: pending (`+d8` bit 0) in most cases, attached in some.
+fn dress_replicated(g: &mut Guest, case: u32) {
+    let body = root_body(g, case);
+    byte(g, body + 0xd8, [1, 1, 0, 1][case as usize % 4]);
+    word(g, body + 0x14, if case % 3 == 0 { handle(1) } else { u32::MAX });
+}
+
+/// `108a90`: every type's descriptor is [`TYPE_DESCRIPTOR`], with none to
+/// three ancestors whose slot `+2c` is set (one of them empty in some
+/// cases).
+fn dress_type_new(g: &mut Guest, case: u32) {
+    for t in 0..16 {
+        word(g, DESCRIPTOR_TABLE + 4 * t, TYPE_DESCRIPTOR);
+    }
+    let count = case % 4;
+    for i in 0..4u32 {
+        let ancestor = TYPE_DESCRIPTOR + 0x100 * (i + 1);
+        word(g, TYPE_DESCRIPTOR + 0x84 + 4 * i, if i < count { ancestor } else { 0 });
+        let slot = if (i + case) % 5 == 4 { 0 } else { TYPE_NEW_SLOTS[i as usize % 3] };
+        word(g, ancestor + 0x2c, slot);
+    }
+}
+
+/// `fd910`: the iterator's bodies with a deferred shot (`+16c` bit 0) in
+/// turn.
+fn dress_deferred(g: &mut Guest, case: u32) {
+    for slot in 2..5 {
+        let body = g.u32(DATA + 12 * slot + 8).unwrap();
+        byte(g, body + 0x16c, u8::from((slot + case) % 2 == 0));
+    }
+}
+
+/// `b8540`: the body's `+af` none or a value.
+fn dress_delete(g: &mut Guest, case: u32) {
+    let body = root_body(g, case);
+    byte(g, body + 0xaf, if case % 2 == 0 { 0xff } else { 3 });
+}
+
+/// `b83b0` and `b8460`: `top` by turns, the children of slot 2 (cases 3
+/// and up) with an owner (`+d4`) in some, the body's `+c0` bit 6 and
+/// `+4` bit 8 in turn.
+fn dress_tree(g: &mut Guest, case: u32) {
+    word(g, STACK + 8, case % 2);
+    for slot in [6, 7] {
+        let body = RECORDS + BODY * slot;
+        word(g, body + 0xd4, if (slot + case) % 3 == 0 { handle(1) } else { u32::MAX });
+        word(g, body + 0x10, u32::MAX);
+    }
+    let body = root_body(g, case);
+    byte(g, body + 0xc0, if case % 4 >= 2 { 0x40 } else { 0 });
+    word(g, body + 4, if case % 3 == 1 { 1 << 8 } else { 0 });
+}
+
+/// The heap state `bf380` reads at `[4de2ec]`.
+const COLLECT_HEAP: u32 = 0x006c_1000;
+
+/// `bf380`: a collection asked (`+1`, full or not at `+2`) or not, the
+/// heap's free space and the object count either side of their limits,
+/// and the count at `+4` either side of `32`.
+fn dress_collect(g: &mut Guest, case: u32) {
+    let c = case as usize;
+    byte(g, PHASE + 1, [1, 1, 0, 0, 0, 0, 0, 0][c % 8]);
+    byte(g, PHASE + 2, [0, 1, 0, 0, 0, 0, 0, 0][c % 8]);
+    g.set_u16(PHASE + 4, [0, 0, 0x40, 0x10, 0x40, 0x40, 0x32, 0x31][c % 8]).unwrap();
+    word(g, 0x004d_e2ec, COLLECT_HEAP);
+    word(g, COLLECT_HEAP + 0x38, if c % 2 == 0 { 0 } else { COLLECT_HEAP + 0x100 });
+    word(g, COLLECT_HEAP + 0x100, 0x4000);
+    word(g, COLLECT_HEAP + 0x28, 0x1000);
+    word(g, COLLECT_HEAP + 0x2c, [0, 0, 0x20000, 0x20000, 0x8000, 0x20000, 0x20000, 0x20000][c % 8]);
+    word(g, HEADER + 0x3c, [0, 0, 0x10, 0x10, 0x10, 0x7a0, 0x10, 0x10][c % 8]);
+}
+
+/// The spatial visit's location, centre and result buffer.
+const VISIT_LOCATION: u32 = 0x006c_2000;
+const VISIT_OUT: u32 = 0x006c_2100;
+
+/// `bb050`: the seven arguments, the location's cluster none in some
+/// cases, the radius either side of the flood threshold, no type filter
+/// in one.
+fn dress_visit(g: &mut Guest, case: u32) {
+    let c = case as usize;
+    let args = [
+        [3, 1, 0x3f, 2, 0, 3][c % 6],
+        if c % 3 == 0 { 0 } else { 0x89c },
+        VISIT_LOCATION,
+        VISIT_LOCATION + 0x10,
+        [0.5f32, 4.0, 0.0, 12.0, 1.0, 2.0][c % 6].to_bits(),
+        VISIT_OUT,
+        16,
+    ];
+    for (i, a) in args.into_iter().enumerate() {
+        word(g, STACK + 4 + 4 * i as u32, a);
+    }
+    g.set_u16(VISIT_LOCATION + 4, if c % 4 == 1 { u16::MAX } else { c as u16 }).unwrap();
+    for i in 0..3u32 {
+        f32w(g, VISIT_LOCATION + 0x10 + 4 * i, [1.0f32, -2.0, 0.5][i as usize] * case as f32);
+    }
+}
+
+/// The early-mover record's physics model, shapes and rigid bodies.
+const RECORD_MODEL: u32 = 0x006c_3000;
+const RECORD_SHAPES: u32 = 0x006c_3100;
+const RECORD_SHAPE_LIST: u32 = 0x006c_3200;
+const RECORD_RIGID: u32 = 0x006c_4000;
+const RECORD_STATE: u32 = 0x006c_5000;
+
+/// `109660`: the definition's physics model (`+38`, none in one case) and
+/// its shape definition (`+24`), the component (odd cases, [`dress`]) with
+/// two rigid bodies whose shapes have the flag `+18` bit 4 in turn, the
+/// rigid body's state or the zero vector, and the record's `+e4` and
+/// `+e5` in every combination.
+fn dress_mover_record(g: &mut Guest, case: u32) {
+    let c = case as usize;
+    word(g, DEFINITION + 0x38, if c == 7 { u32::MAX } else { 0xe140_0040 });
+    word(g, TAGS + 16 * 0x40 + 8, RECORD_MODEL);
+    word(g, RECORD_MODEL + 0x24, if c == 5 { u32::MAX } else { 0xe142_0042 });
+    word(g, TAGS + 16 * 0x42 + 8, RECORD_SHAPES);
+    word(g, RECORD_SHAPES + 0x3c, RECORD_SHAPE_LIST);
+    for k in 0..4u32 {
+        byte(g, RECORD_SHAPE_LIST + 0x90 * k + 0x18, if (k + case) % 3 == 0 { 0x10 } else { 0 });
+    }
+    let component = COMPONENTS + 0x100 + 0xa0 * (case & 0xffff);
+    byte(g, component + 0x18, [0, 1, 0xff, 1][c % 4]);
+    word(g, component + 0x70, RECORD_RIGID);
+    word(g, component + 0x74, 2);
+    for r in 0..2u32 {
+        let rigid = RECORD_RIGID + 0x60 * r;
+        word(g, rigid + 0x48, RECORD_SHAPE_LIST + 0x800 + 8 * r);
+        word(g, rigid + 0x4c, 2);
+        word(g, rigid + 0x40, RECORD_STATE + 0x100 * r);
+        byte(g, RECORD_STATE + 0x100 * r + 0x40, u8::from((r + case) % 3 == 0));
+        word(g, RECORD_STATE + 0x100 * r + 0x3c, RECORD_STATE + 0x80);
+        for k in 0..2u32 {
+            byte(g, RECORD_SHAPE_LIST + 0x800 + 8 * r + k, (r + k) as u8);
+        }
+    }
+    for i in 0..12u32 {
+        f32w(g, RECORD_STATE + 0x80 + 0x40 + 4 * i, 0.25 * (i + case) as f32 - 1.0);
+    }
+    let record = LIST + 0xe8 * (case % 3);
+    byte(g, record + 0xe4, u8::from(c % 2 == 1));
+    byte(g, record + 0xe5, u8::from(c % 4 >= 2));
+}
+
+/// `object_new`'s placement.
+const PLACEMENT: u32 = 0x006c_6000;
+
+/// `b7b40`: [`dress_type_new`]'s descriptors, a placement whose
+/// definition tag is none in case 0 and otherwise the dressed definition
+/// with a type by case, its flags at `+18` by case.
+fn dress_object_new(g: &mut Guest, case: u32) {
+    dress_type_new(g, case);
+    word(g, STACK + 4, PLACEMENT);
+    word(g, PLACEMENT, if case == 0 { u32::MAX } else { 0xe000_0000 });
+    g.set_u16(DEFINITION, [0, 2, 1, 6, 3, 9, 0, 4][case as usize % 8]).unwrap();
+    word(g, PLACEMENT + 0x18, case & 0x3f);
+    for i in 0..3u32 {
+        f32w(g, PLACEMENT + 0x1c + 4 * i, [1.0f32, 2.0, -0.5][i as usize] * case as f32);
+    }
+}
+
+#[test]
+fn replicated_transform() {
+    dressed_with(&points::OBJECT_REPLICATED_TRANSFORM, 8, dress_replicated);
+}
+
+#[test]
+fn type_new_dispatch() {
+    dressed_with(&points::OBJECT_TYPE_NEW, 8, dress_type_new);
+}
+
+#[test]
+fn deferred_fire() {
+    dressed_with(&points::WEAPONS_DEFERRED_FIRE, 6, dress_deferred);
+}
+
+#[test]
+fn object_delete() {
+    dressed_with(&points::OBJECT_DELETE, 6, dress_delete);
+}
+
+#[test]
+fn delete_tree() {
+    dressed_with(&points::OBJECT_DELETE_TREE, 8, dress_tree);
+}
+
+#[test]
+fn free_tree() {
+    dressed_with(&points::OBJECT_FREE_TREE, 8, dress_tree);
+}
+
+#[test]
+fn objects_collect() {
+    dressed_with(&points::OBJECTS_COLLECT, 8, dress_collect);
+}
+
+#[test]
+fn spatial_visit() {
+    dressed_with(&points::OBJECT_SPATIAL_VISIT, 6, dress_visit);
+}
+
+#[test]
+fn early_mover_record() {
+    dressed_with(&points::OBJECT_EARLY_MOVER_RECORD, 8, dress_mover_record);
+}
+
+#[test]
+fn object_new() {
+    dressed_with(&points::CREATURE_PROBE_OBJECT_NEW, 8, dress_object_new);
 }

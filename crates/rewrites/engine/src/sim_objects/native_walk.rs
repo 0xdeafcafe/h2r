@@ -4,7 +4,12 @@
 //! the four type dispatchers, the wake leaves, the early-mover wake
 //! `109580`, the leaves `bd090` calls (`b8bd0`, `bf5a0`, `bfc90`, `bff10`,
 //! `bfe80`, `bfed0`, `bfe20`, `b6780`), the typed object lookup `badc0`
-//! the type trees call, and the type callbacks of the
+//! the type trees call, the walks' callouts (the delete
+//! `b8540` and its tree passes `b83b0` and `b8460`, the collector
+//! `bf380`, the deferred fire `fd910`, the replicated transform `a9570`,
+//! the type new dispatch `108a90`, the spatial visit `bb050`, the
+//! early-mover record `109660` and `object_new` `b7b40`), and the type
+//! callbacks of the
 //! objects a multiplayer game has: the unit update `c6b30` with its tree
 //! (slices 6a, 6b and 6c), the biped update `dd360` and post-physics update
 //! `dd990` with the ported part of their trees (slices 7a and 7b), the
@@ -41,9 +46,9 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The walk bodies: the three walks, the per-object updates, `bd090`, the
-/// type dispatchers, the wake leaves, the early-mover wake and the leaves
-/// `bd090` calls and the typed object lookup `badc0` (`getters`).
-/// [`TABLE`] holds these and [`TYPES`].
+/// type dispatchers, the wake leaves, the early-mover wake, the leaves
+/// `bd090` calls and the typed object lookup `badc0` (`getters`), and the walks' callouts (`callouts`,
+/// `mover_record`, `object_new`). [`TABLE`] holds these and [`TYPES`].
 pub const POINTS: &[&Point] = &[
     &points::OBJECTS_PRE_PHYSICS,
     &points::OBJECTS_POST_PHYSICS,
@@ -69,6 +74,17 @@ pub const POINTS: &[&Point] = &[
     &points::NODE_MASK_SET,
     &points::ANIMATION_VALID,
     &points::OBJECT_GET_TYPED,
+    // The walks' callouts.
+    &points::OBJECT_REPLICATED_TRANSFORM,
+    &points::OBJECT_TYPE_NEW,
+    &points::WEAPONS_DEFERRED_FIRE,
+    &points::OBJECT_DELETE,
+    &points::OBJECT_DELETE_TREE,
+    &points::OBJECT_FREE_TREE,
+    &points::OBJECTS_COLLECT,
+    &points::OBJECT_SPATIAL_VISIT,
+    &points::OBJECT_EARLY_MOVER_RECORD,
+    &points::CREATURE_PROBE_OBJECT_NEW,
 ];
 
 /// The type callbacks in [`TABLE`]: the `unit` descriptor's slot `+40`
@@ -159,7 +175,8 @@ pub const TYPES: &[&Point] = &[
 ];
 
 /// The entries whose bodies make no float instruction: every one in
-/// [`POINTS`] but `bd090`.
+/// [`POINTS`] but `bd090`, the spatial visit `bb050` (SSE), the
+/// early-mover record `109660` (SSE) and `object_new` `b7b40`.
 pub const FLOAT_FREE: &[u32] = &[
     points::OBJECTS_PRE_PHYSICS.base,
     points::OBJECTS_POST_PHYSICS.base,
@@ -184,6 +201,13 @@ pub const FLOAT_FREE: &[u32] = &[
     points::NODE_MASK_SET.base,
     points::ANIMATION_VALID.base,
     points::OBJECT_GET_TYPED.base,
+    points::OBJECT_TYPE_NEW.base,
+    points::WEAPONS_DEFERRED_FIRE.base,
+    points::OBJECT_DELETE.base,
+    points::OBJECT_DELETE_TREE.base,
+    points::OBJECT_FREE_TREE.base,
+    points::OBJECTS_COLLECT.base,
+    points::OBJECT_REPLICATED_TRANSFORM.base,
 ];
 
 /// The entries whose hooks never transfer to their own guest body: the
