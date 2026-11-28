@@ -16,6 +16,7 @@ copy recorded.
 | `Device::prepare_external_pass(mem, plan, pass)` | a hook outside draw submission, after draining the preceding guest commands | `Option<Reservation>`; `commit()` or drop to cancel |
 | `Device::prepare_external_bound_at(mem, plan, pass, slots, rect)` | a held packet at a drained boundary | as above |
 | `Device::reserve_scene_stage` | the render thread takes the stage (`Device::queues_scene_stages`) | queued, no round trip |
+| `Device::external_stage_now(mem, targets, plan, pass)` | a pass placed at a guest call boundary as a typed scene stage, on named targets or (`None`) the bound ones, nothing rebound: a replaying scene sink keeps it (`ReplayOp::Stage`) where it refuses an untyped `external_pass_now` (the fog fans, the fog quad) | `Result<bool, D3dError>`: queued or run |
 | `Device::try_native_*_draw` | a native producer that commits at the queue | the guest skips its own emission |
 
 ```mermaid

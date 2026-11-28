@@ -177,6 +177,38 @@ fn replay_filters_one_shot_stages() {
 
 
 #[test]
+fn a_replaying_sink_keeps_an_immediate_stage_it_refuses_untyped() {
+    use d3d::scene_sink::{ReplayOp, SceneSink};
+    use frame_scene::{Slot, SlotAt};
+
+    struct Retained;
+
+    impl ExternalPass for Retained {
+        fn replays_scene(&self) -> bool { true }
+    }
+
+    let captured = Arc::new(Mutex::new(None));
+    let out = Arc::clone(&captured);
+    let worker = ThreadedBackend::new(recorder()).unwrap();
+    let sink = SceneSink::new(worker, || Some(SlotAt { slot: Slot::Opaque, view: 0 }))
+        .with_replay(move |frame| *out.lock().unwrap() = Some(frame));
+    let (mut d, mut m) = create(sink, UploadPolicy::Always);
+    set_states(&mut d, &mut m);
+    quad(&mut d, &mut m, 0xff00_ff00);
+    assert!(!d.external_pass_now(&mut m, Box::new(Retained)).unwrap(), "the recorder cannot retain an untyped pass");
+    assert!(d.external_stage_now(&mut m, None, plan(Stage::Fog, 1), Box::new(Retained)).unwrap());
+    assert_eq!(d.stats().external_passes, 1);
+    d.swap(&mut m, 0).unwrap();
+    let guard = captured.lock().unwrap();
+    let frame = guard.as_ref().expect("the sink captured the swap");
+    let stages: Vec<_> = frame.ops.iter().filter_map(|(_, op)| match op {
+        ReplayOp::Stage(stage) => Some(stage.plan.stage),
+        _ => None,
+    }).collect();
+    assert_eq!(stages, [Stage::Fog], "the immediate pass is kept typed");
+}
+
+#[test]
 fn scene_asset_upload_runs_once_on_the_display_worker_without_a_frame_or_attachments() {
     use d3d::Backend;
 
