@@ -3,7 +3,7 @@
 //! predicted record, including all untouched fields, when the guest returns.
 //! Compare-only: the prediction does not hold the scratch registers retail
 //! leaves, so it is never applied in the guest's place (`parity`).
-use crate::sim_native::SegmentMemory;
+use crate::sim_native::spans::Spans;
 use runtime::{CpuAbi, Guest, guest::Access};
 use sim_core::det;
 use sim_havok::motion::{self, ForceInput, PoseConstants, PoseInput, Vector};
@@ -50,14 +50,16 @@ impl Prediction {
     }
 }
 
-fn disjoint(a: (u32, usize), b: (u32, usize)) -> bool {
-    u64::from(a.0) + a.1 as u64 <= u64::from(b.0) || u64::from(b.0) + b.1 as u64 <= u64::from(a.0)
+/// No physical byte in common. Each range is looked up page by page
+/// (`sim_native::spans`): a body or frame can cross page mappings.
+fn disjoint(a: &Spans, b: &Spans) -> bool {
+    !a.overlaps(b)
 }
 
 struct Gather<'a> {
     guest: &'a Guest,
-    body: (u32, usize),
-    stack_frame: (u32, usize),
+    body: Spans,
+    stack_frame: Spans,
 }
 
 impl<'a> Gather<'a> {
@@ -67,19 +69,13 @@ impl<'a> Gather<'a> {
         {
             return None;
         }
-        let body = (
-            guest.checked_offset(cpu.ecx, BODY_LEN, Access::Read, 16)?,
-            BODY_LEN,
-        );
+        let body = Spans::checked(guest, cpu.ecx, BODY_LEN, Access::Read, 16)?;
         // Includes every nested helper's aligned locals as well as the return and arguments.
         let stack_start = cpu.esp.checked_sub(0x100)?;
         let end_sp = cpu.esp.checked_add(4 + arg_bytes)?;
         let stack_len = (end_sp - stack_start) as usize;
-        let stack_frame = (
-            guest.checked_offset(stack_start, stack_len, Access::Read, 1)?,
-            stack_len,
-        );
-        if !disjoint(body, stack_frame) {
+        let stack_frame = Spans::checked(guest, stack_start, stack_len, Access::Read, 1)?;
+        if !disjoint(&body, &stack_frame) {
             return None;
         }
         Some((
@@ -98,14 +94,10 @@ impl<'a> Gather<'a> {
     }
 
     fn words<const N: usize>(&self, at: u32, alignment: u32) -> Option<[u32; N]> {
-        let span = (
-            self.guest
-                .checked_offset(at, 4 * N, Access::Read, alignment)?,
-            4 * N,
-        );
+        let span = Spans::checked(self.guest, at, 4 * N, Access::Read, alignment)?;
         // An argument can point into the caller's stack above the frame.
         // Reads aliased with stores or with the reserved local frame decline.
-        if !disjoint(self.body, span) || !disjoint(self.stack_frame, span) {
+        if !disjoint(&self.body, &span) || !disjoint(&self.stack_frame, &span) {
             return None;
         }
         let mut words = [0; N];

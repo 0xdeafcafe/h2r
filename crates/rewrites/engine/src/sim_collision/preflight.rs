@@ -4,7 +4,7 @@ use super::layout;
 use crate::sim_native::Memory;
 use runtime::{
     Guest,
-    guest::{Access, Permissions},
+    guest::Access,
 };
 use sim_collision::{
     Bail, Bsp, TopologyKey,
@@ -107,15 +107,10 @@ impl CollisionMemory for Guest {
     }
 
     fn physical_range(&self, addr: u32, len: u32) -> Option<u32> {
-        let maps = self.mappings();
-        let i = maps
-            .partition_point(|m| m.virtual_start <= addr)
-            .checked_sub(1)?;
-        let m = &maps[i];
-        let offset = addr - m.virtual_start;
-        // A span crossing a mapping boundary is left to the original.
-        (m.permissions.bits() & Permissions::READ.bits() != 0 && offset.checked_add(len)? <= m.len)
-            .then(|| m.physical_start + offset)
+        // Readable, and physically contiguous across any page mappings it
+        // crosses (the loader and the kernel map page by page).
+        self.check(addr, len.max(1) as usize, Access::Read, 1).ok()?;
+        crate::sim_native::plan::contiguous(self, addr, len as usize)
     }
 
     fn writable(&self, addr: u32, len: u32) -> bool {
@@ -193,6 +188,7 @@ mod tests {
     use super::*;
     use crate::sim_collision::{point_to_leaf, vector_context, vector_test};
     use runtime::CpuAbi;
+    use runtime::guest::Permissions;
     use sim_collision::{
         Bail, CollisionWorld, Entry,
         synth::{Builder, SOLID},

@@ -55,9 +55,10 @@ fn disjoint(m: &impl Memory, a: (u32, usize), b: (u32, usize)) -> Result<()> {
         access: Access::Read,
         reason: FaultReason::InvalidBuffer,
     };
-    let x = u64::from(m.physical_read(a.0, a.1).ok_or_else(fault)?);
-    let y = u64::from(m.physical_read(b.0, b.1).ok_or_else(fault)?);
-    if x < y + b.1 as u64 && y < x + a.1 as u64 {
+    // One lookup per page: either range can cross page mappings.
+    let x = crate::sim_native::spans::Spans::of(m, a.0, a.1).ok_or_else(fault)?;
+    let y = crate::sim_native::spans::Spans::of(m, b.0, b.1).ok_or_else(fault)?;
+    if x.overlaps(&y) {
         Err(fault())
     } else {
         Ok(())

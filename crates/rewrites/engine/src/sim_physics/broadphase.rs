@@ -4,7 +4,7 @@
 //! Each batch owns its endpoint/node arrays. Only array growth, which calls
 //! the guest allocator, requires dropping the prediction.
 
-use crate::sim_native::SegmentMemory;
+use crate::sim_native::spans::Spans;
 use runtime::{CpuAbi, Guest, guest::Access};
 use sim_havok::broadphase::{Crossing, Endpoint, Node, Sweep};
 use std::collections::BTreeMap;
@@ -156,16 +156,16 @@ impl Prediction {
     /// Answer the call in the guest's place: every predicted span written,
     /// every register the prediction holds (the whole `CpuAbi` but `eip`,
     /// which the dispatcher owns). Refused, with nothing written, when a
-    /// span is not plain writable RAM inside one mapping (an access trap,
-    /// a read-only page, a span across mappings) or when two spans share
+    /// span is not plain writable RAM (an access trap, a read-only page;
+    /// pages are looked up one by one) or when two spans share
     /// physical bytes, whose final value would then depend on the write
     /// order the prediction does not model.
     pub fn apply(&self, cpu: &mut CpuAbi, g: &mut Guest) -> bool {
-        let mut physical = Vec::with_capacity(self.spans.len());
+        let mut physical: Vec<Spans> = Vec::with_capacity(self.spans.len());
         for (at, bytes) in &self.spans {
-            let Some(start) = g.checked_offset(*at, bytes.len(), Access::Write, 1) else { return false };
-            let range = u64::from(start)..u64::from(start) + bytes.len() as u64;
-            if physical.iter().any(|r: &std::ops::Range<u64>| r.start < range.end && range.start < r.end) {
+            // One lookup per page: a span can cross page mappings.
+            let Some(range) = Spans::checked(&*g, *at, bytes.len(), Access::Write, 1) else { return false };
+            if physical.iter().any(|r| r.overlaps(&range)) {
                 return false;
             }
             physical.push(range);

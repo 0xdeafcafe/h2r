@@ -876,8 +876,8 @@ answered and declined since start.
   [havok-convex.md](havok-convex.md#the-commit-arm)).
 - **Declines.** A capture that refuses the state (float environment,
   array capacity, an unknown node) and an apply that refuses its spans (an
-  access trap, a read-only page, a span across mappings, two spans on the
-  same physical bytes) run the lifted entry and count as `declined`, by
+  access trap, a read-only page, two spans on the same physical bytes;
+  spans are checked page by page, `sim_native::spans`) run the lifted entry and count as `declined`, by
   reason. The guest still answers those calls.
 - **Compare-only arms.** The motion pose and forces and the MOPP box arms
   compare their prediction with the guest's return and never answer.

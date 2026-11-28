@@ -58,7 +58,13 @@ The XBE loader maps each image page as its own mapping
 (`runtime::loader::load_xbe_with`), so a body's text, or a load or store,
 can cross from one mapping into the next. The plan takes the text page
 by page into at most six physical spans, and splits such a load or store
-at the page boundary. A plan with an access trap installed declines.
+at the page boundary. The kernel maps committed virtual memory page by
+page as well.
+
+Every native kernel that compares or indexes physical
+ranges takes them through `sim_native::spans::Spans` (one lookup per
+page) or `sim_native::plan::contiguous` (adjacent mappings whose storage
+runs on). A plan with an access trap installed declines.
 
 ## Graph lookup
 

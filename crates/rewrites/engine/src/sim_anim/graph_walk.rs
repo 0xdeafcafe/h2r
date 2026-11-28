@@ -40,7 +40,7 @@ use runtime::{CpuAbi, GuestFault, TransferAbi};
 use sim_core::det;
 use sim_core::lanes::Vec4;
 use sim_core::math::NodeMatrix;
-use std::ops::Range;
+use crate::sim_native::spans::Spans;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The walk's entry.
@@ -92,7 +92,7 @@ pub enum Decline {
     /// A queued link is outside the nodes, or the queue would pass 255
     /// entries.
     Queue,
-    /// A range is not inside one mapping, or a written range overlaps
+    /// A range has an unreadable page, or a written range overlaps
     /// another range the call reads or writes.
     Alias,
     /// A visited node's parent is outside the nodes.
@@ -126,14 +126,14 @@ fn below(sp: u32, off: u32) -> u32 {
     sp.wrapping_sub(off)
 }
 
-/// `len` bytes from `start` as a physical range: inside one mapping.
-fn span(g: &impl Memory, start: u32, len: u32) -> Planned<Range<u64>> {
-    let p = g.physical_read(start, len as usize).ok_or(Decline::Alias)?;
-    Ok(u64::from(p)..u64::from(p) + u64::from(len))
+/// `len` bytes from `start` as physical pieces, one lookup per page
+/// (`sim_native::spans`).
+fn span(g: &impl Memory, start: u32, len: u32) -> Planned<Spans> {
+    Spans::of(g, start, len as usize).ok_or(Decline::Alias)
 }
 
-fn overlaps(a: &Range<u64>, b: &Range<u64>) -> bool {
-    a.start < b.end && b.start < a.end
+fn overlaps(a: &Spans, b: &Spans) -> bool {
+    a.overlaps(b)
 }
 
 fn lanes(x: &[u8; 16]) -> Vec4 {

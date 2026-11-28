@@ -32,16 +32,40 @@ impl SegmentMemory for Guest {
             return Some(physical);
         }
         self.check(addr, len, access, alignment).ok()?;
-        let maps = self.mappings();
-        let i = maps
-            .partition_point(|m| m.virtual_start <= addr)
-            .checked_sub(1)?;
-        let mapping = &maps[i];
-        let offset = addr - mapping.virtual_start;
-        // Leave accesses straddling virtual mappings to the lifted instruction.
-        (u64::from(offset) + len as u64 <= u64::from(mapping.len))
-            .then(|| mapping.physical_start + offset)
+        contiguous(self, addr, len)
     }
+}
+
+/// The physical start of `[addr, addr + len)` when its bytes run on in
+/// physical RAM: one mapping, or virtually adjacent mappings whose physical
+/// pages follow each other (the loader and the kernel map page by page,
+/// usually onto consecutive storage). Permissions are not checked here.
+/// Scattered pages are `None`; [`super::spans::Spans`] takes them a page
+/// at a time.
+pub(crate) fn contiguous(g: &Guest, addr: u32, len: usize) -> Option<u32> {
+    let maps = g.mappings();
+    let mut i = maps.partition_point(|m| m.virtual_start <= addr).checked_sub(1)?;
+    let first = &maps[i];
+    let offset = addr - first.virtual_start;
+    let start = first.physical_start.checked_add(offset)?;
+    let end = u64::from(addr) + len as u64;
+    let (mut virt_end, mut phys_end) = (
+        u64::from(first.virtual_start) + u64::from(first.len),
+        u64::from(first.physical_start) + u64::from(first.len),
+    );
+    if u64::from(addr) >= virt_end {
+        return None;
+    }
+    while virt_end < end {
+        i += 1;
+        let m = maps.get(i)?;
+        if u64::from(m.virtual_start) != virt_end || u64::from(m.physical_start) != phys_end {
+            return None;
+        }
+        virt_end += u64::from(m.len);
+        phys_end += u64::from(m.len);
+    }
+    Some(start)
 }
 
 const PAGE: u32 = 0x1000;
@@ -601,6 +625,25 @@ mod tests {
         assert_eq!(unit::run(&mut cpu, &mut ram, 0x1127f5).unwrap(), None);
         assert_eq!(cpu, before);
         assert_eq!(ram.u32(sp + 0x20).unwrap(), 0);
+    }
+
+    #[test]
+    fn page_mappings_on_consecutive_storage_read_as_one_range() {
+        let mut g = Guest::new();
+        // The loader's layout on consecutive storage, then a page whose
+        // storage does not follow.
+        g.map(0x40000, PAGE, 0x10000, Permissions::RX).unwrap();
+        g.map(0x41000, PAGE, 0x11000, Permissions::RX).unwrap();
+        g.map(0x42000, PAGE, 0x20000, Permissions::RX).unwrap();
+        assert_eq!(g.checked_offset(0x40ff0, 0x20, Access::Read, 1), Some(0x10ff0));
+        assert_eq!(contiguous(&g, 0x40000, 0x2000), Some(0x10000));
+        assert_eq!(g.checked_offset(0x41ff0, 0x20, Access::Read, 1), None, "storage jumps");
+        assert_eq!(g.checked_offset(0x40ff0, 0x20, Access::Write, 1), None, "read-only");
+        assert_eq!(contiguous(&g, 0x42ff0, 0x20), None, "0x43000 is unmapped");
+        // Text across those two pages plans as one span.
+        let mut log = Log::<8>::new();
+        let plan = Plan::new(&mut g, &mut log, 0x40f00, 0x41100).unwrap();
+        assert_eq!(&plan.text.at[..usize::from(plan.text.n)], &[(0x10f00, 0x11100)]);
     }
 
     /// The XBE loader's layout: one mapping per page. Each page here has

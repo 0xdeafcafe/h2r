@@ -208,16 +208,12 @@ fn call_arg(c: &mut CpuAbi, g: &mut impl crate::sim_native::Memory, arg: u32, ta
 }
 
 // A mapping can be an alias of another range of guest virtual addresses.
-// A bulk copy or a deferred store needs disjoint *physical* spans. Fall
-// back to ordered accesses for ranges that cross a mapping boundary.
+// A bulk copy or a deferred store needs disjoint *physical* spans. A range
+// across page mappings qualifies when its physical pages run on
+// (`sim_native::plan::contiguous`); others take ordered accesses.
 pub(crate) fn physical_span(g: &Guest, addr: u32, len: u32) -> Option<std::ops::Range<u32>> {
-    let maps = g.mappings();
-    let end = maps.partition_point(|m| m.virtual_start <= addr);
-    let mapping = maps.get(end.checked_sub(1)?)?;
-    let offset = addr - mapping.virtual_start;
-    if offset.checked_add(len)? > mapping.len { return None; }
-    let start = mapping.physical_start + offset;
-    Some(start..start+len)
+    let start = crate::sim_native::plan::contiguous(g, addr, len as usize)?;
+    Some(start..start.checked_add(len)?)
 }
 
 fn overlap(a: &std::ops::Range<u32>, b: &std::ops::Range<u32>) -> bool {

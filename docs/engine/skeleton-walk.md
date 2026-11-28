@@ -118,9 +118,10 @@ The walk declines, writing nothing, and the per-node loop runs, when:
   or any operand of any operation is not zero or of magnitude in
   `[2^-63, 2^63)` (`Float`);
 - the node count is below 2 or above 1024 (`Count`);
-- a range it reads or writes is not inside one mapping, or a written range
+- a page of a range it reads or writes is unreadable, or a written range
   overlaps another range it reads or writes, compared as physical
-  addresses so aliased mappings count (`Alias`);
+  addresses page by page (`sim_native::spans`) so aliased mappings and
+  ranges across the loader's page mappings count (`Alias`);
 - a posed node's parent index is negative or not below the count
   (`Parent`);
 - a read faults (`Fault`).
@@ -203,9 +204,9 @@ the lifted differential.
 - the count is above 1024 (`count`);
 - a queued link is neither `-1` nor below the count, or the queue would
   pass 255 entries (`queue`);
-- a range it reads or writes is not inside one mapping, or a written
-  range (the matrices, the frame, the cutoff) overlaps another range
-  (`alias`);
+- a page of a range it reads or writes is unreadable, or a written
+  range (the matrices, the frame, the cutoff) overlaps another range,
+  page by page (`sim_native::spans`) (`alias`);
 - a visited node other than 0 names a parent outside the nodes
   (`parent`).
 
