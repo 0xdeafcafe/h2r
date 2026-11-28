@@ -103,11 +103,18 @@ pub(crate) fn with_art_map<T>(mem: &dyn GuestMemory, f: impl FnOnce(&mut NativeM
 /// point in the frame with the map's assets, its images decoded first:
 /// whether it was placed. While the map loads, or when an image does
 /// not decode, nothing is placed.
-pub(crate) fn place_hud(
-    mem: &mut dyn GuestMemory,
-    mut part: Overlay,
-) -> bool {
-    part.set_slot(ViewSlot::Hud);
+pub(crate) fn place_hud(mem: &mut dyn GuestMemory, part: Overlay) -> bool {
+    place_slotted(mem, part, ViewSlot::Hud)
+}
+
+/// [`place_hud`] for a menu's quad (a shader bitmap widget's), tagged
+/// [`ViewSlot::Ui`].
+pub(crate) fn place_ui(mem: &mut dyn GuestMemory, part: Overlay) -> bool {
+    place_slotted(mem, part, ViewSlot::Ui)
+}
+
+fn place_slotted(mem: &mut dyn GuestMemory, mut part: Overlay, view: ViewSlot) -> bool {
+    part.set_slot(view);
     let Some((Some(art), assets)) = slot(mem) else { return false };
     {
         let mut a = art.lock().unwrap_or_else(|e| e.into_inner());

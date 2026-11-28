@@ -126,31 +126,10 @@ fn walk_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
         ui::record(false);
         return false;
     };
-    if let Some(at) = hud_overlay::tag_quad(mem, frame) {
-        if let Some(kind) = kind {
-            kept::begin(kind);
-        }
-        if host.draw_tag_quad(mem, &at, &vertices) {
-            timeline::native::Ui::OverlayHudTagQuads.count();
-            kept::end(true);
-            ui::record(true);
-            return true;
-        }
-        timeline::native::Ui::OverlayHudTagFallback.count();
-    } else if let Some(at) = hud_overlay::menu_shader_quad(mem, frame) {
-        // A menu shader bitmap: the game's draw at the sorted list
-        // (`ui_overlay::plan`), its quad from the overlay here. Kept, it
-        // counts under the capture's cause (`scene_kept_ui_menu_shader_*`).
-        let offered = kind.is_none() && kept::begin_ui(kept::UiKind::MenuShader);
-        if host.draw_tag_quad(mem, &at, &vertices) {
-            timeline::native::Ui::OverlayMenuShaderQuads.count();
-            if offered {
-                kept::end(true);
-            }
-            ui::record(true);
-            return true;
-        }
-        timeline::native::Ui::OverlayMenuShaderFallback.count();
+    // A HUD widget's or a menu shader bitmap's quad is drawn at
+    // `HUD_QUAD_SETUP` ([`setup_quad`]) and never reaches here.
+    if hud_overlay::tag_quad(mem, frame).is_some() || hud_overlay::menu_shader_quad(mem, frame).is_some() {
+        unimplemented!("hud: a shader quad ({:#x}) reached the draw past its setup", frame);
     }
     // The screen capture's cause is the one that counts.
     if let Some(kind) = kind {
@@ -167,11 +146,20 @@ fn walk_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
 fn setup_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
     // A shadowed widget's quad is checked against Rust's layout first.
     walk::observe(mem, frame);
-    let Some(at) = hud_overlay::tag_quad(mem, frame) else { return false };
-    let Some(vertices) = vertices(mem, frame, colour) else { return false };
+    // A menu shader bitmap's quad (type 9) is predicted as a HUD one is.
+    let Some(at) = hud_overlay::tag_quad(mem, frame).or_else(|| hud_overlay::menu_shader_quad(mem, frame)) else {
+        return false;
+    };
+    let Some(vertices) = vertices(mem, frame, colour) else {
+        unimplemented!("hud: a shader quad's vertices do not read (shader {:#x})", at.shader);
+    };
     let drawn = host().is_some_and(|host| host.rust_hud_quad(mem, &at, &vertices));
     if drawn {
-        Ui::OverlayHudRustDrawn.count();
+        if at.widget {
+            Ui::OverlayHudRustDrawn.count();
+        } else {
+            Ui::OverlayMenuShaderQuads.count();
+        }
         Stage::Ui.count(Metric::BuildsSkipped, 1);
         ui::record(true);
     }
@@ -180,14 +168,10 @@ fn setup_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
 
 /// What the screen draws become: boot's glue over the GPU and the device.
 pub trait Host: Send + Sync {
-    fn draw_tag_quad(&self, _mem: &mut dyn GuestMemory, _at: &HudTagQuad, _vertices: &HudVertices) -> bool {
-        false
-    }
-
     /// A HUD widget's quad before its shader setup ([`HUD_QUAD_SETUP`]):
     /// true when the host drew it from its shader's Rust material, so the
-    /// setup and the draw are left out. A shader not yet proven against
-    /// the guest's own setup is not drawn here.
+    /// setup and the draw are left out. Every shader's quad is drawn here
+    /// (a menu shader bitmap's too); what cannot be drawn panics by name.
     fn rust_hud_quad(&self, _mem: &mut dyn GuestMemory, _at: &HudTagQuad, _vertices: &HudVertices) -> bool {
         false
     }
@@ -358,7 +342,7 @@ fn menu_list(mem: &mut dyn GuestMemory, ebp: u32, edi: u32) {
         why.panic();
     }
     let _extract = timeline::native::Timer::start(Stage::Ui, Metric::ExtractNs);
-    let Some(list) = ui_overlay::at_list(&*mem, ebp, edi) else { return };
+    let Some(list) = ui_overlay::at_list(&*mem, ebp, edi) else { return ui_overlay::unlisted(&*mem, ebp) };
     let claim = ui_overlay::claim_list(mem, &list, host.as_ref());
     Ui::OverlayMenuClaimed.count_n(u64::from(claim.claimed()));
     // A list at this frame left open is closed (and checked) first.
