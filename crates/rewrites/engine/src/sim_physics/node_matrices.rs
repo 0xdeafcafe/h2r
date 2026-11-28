@@ -8,7 +8,7 @@
 //! same pushes, frame and return address the guest call would write, so
 //! the skeleton walk makes no guest calls at all. Every other callee stays
 //! a guest call that resumes here at its return site. The walk itself goes
-//! to `crate::sim_anim::skeleton` (phase 1b, `impl.sim.native.anim.skeleton`)
+//! to `crate::sim_anim::skeleton` (phase 1b)
 //! first; [`nodes`] runs it when that declines.
 use super::*;
 use crate::sim_native;
@@ -592,8 +592,9 @@ pub(crate) fn update(c: &mut CpuAbi, g: &mut Guest, mut pc: u32) -> Result<Trans
                         0xbd5f5
                     } else {
                         // Phase 1b: the whole walk in one Rust call,
-                        // or this loop when it declines or is off.
-                        if !crate::sim_anim::skeleton::run(c, g)? {
+                        // or this loop when it declines (a counted
+                        // `skeleton::Decline`).
+                        if !crate::sim_anim::skeleton::walk(c, g)? {
                             nodes(c, g)?;
                         }
                         return leave(c, g);

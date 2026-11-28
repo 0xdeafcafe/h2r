@@ -1,8 +1,8 @@
-//! `impl.sim.effects-parts` (on by default): the effects phase of the tick
-//! in Rust (docs/engine/effects-parts.md).
+//! The effects phase of the tick in Rust, always, with no switch
+//! (docs/engine/effects-parts.md).
 //!
 //! Two pieces. The effect walk of `0x176e40` is the tick driver's Rust body
-//! for the phase ([`crate::tick::bodies`], `engine::effects_phase`). This
+//! for the phase ([`crate::tick::BODIES`], `engine::effects_phase`). This
 //! module is the other: an implementation of the part switch
 //! `EFFECT_PART_CREATE` (`0x17a8a0`) that decodes each part and hands it to
 //! [`sim_effects::dispatch::Parts`]:
@@ -59,14 +59,8 @@ use sim_effects::damage::{self, Record};
 use sim_effects::dispatch::{Action, Arms, Inputs, Parts, Stats};
 use sim_effects::{character, coln, decal, light, object, random, sound, Part, PartClass};
 
-/// The switch, without its `impl.` prefix. On by default; off, the guest
-/// runs the effects phase and every part.
-pub const PARTS: &str = "sim.effects-parts";
-const ID: &str = "impl.sim.effects-parts";
-
-pub fn on(switches: &hooks::Switches) -> bool {
-    switches.implementation(PARTS, true)
-}
+/// The feature's id.
+const ID: &str = "sim-effects-parts";
 
 /// The switch's argument bytes (`ret 0x14`).
 const POP: u32 = 0x14;
@@ -884,15 +878,13 @@ impl Feature for SimEffectsParts {
     fn manifest(&self) -> Manifest {
         Manifest::new(ID, "The effects phase in Rust: the effect walk and an arm for each part class")
             .doc("docs/engine/effects-parts.md")
+            .always_on()
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         // The arms' proofs and the scene queue are the process's, not the
         // game's: both answers leave the same guest state.
         b.snapshot(SnapshotPolicy::Stateless);
-        if !on(b.switches()) {
-            return Ok(());
-        }
         b.raw().implement(&points::EFFECT_PART_CREATE, "effect part arm", enter).context_only();
         // The effect walk's four callees, through their own arm.
         crate::effect_update::install(b);
@@ -957,12 +949,12 @@ mod tests {
     use hooks::{Base, Registry, Switches};
 
     #[test]
-    fn the_switch_is_on_by_default_and_installs_the_arm() {
-        for (spec, on) in [("", true), ("impl.sim.effects-parts", true), ("-impl.sim.effects-parts", false)] {
-            let mut registry = Registry::new(Switches::parse(spec).unwrap());
+    fn the_feature_installs_the_arm() {
+        {
+            let mut registry = Registry::new(Switches::defaults());
             registry.add(&SimEffectsParts).unwrap();
             let plan = registry.build(&Base).unwrap();
-            assert_eq!(plan.chains.contains_key(&points::EFFECT_PART_CREATE.base), on, "{spec:?}");
+            assert!(plan.chains.contains_key(&points::EFFECT_PART_CREATE.base));
             for p in [
                 &points::DAMAGE_AREA_APPLY,
                 &points::EFFECT_PART_PLACE,
@@ -973,7 +965,7 @@ mod tests {
                 &points::DECAL_CREATE,
                 &points::LIGHT_CREATE,
             ] {
-                assert_eq!(plan.chains.contains_key(&p.base), on, "{spec:?} {}", p.name);
+                assert!(plan.chains.contains_key(&p.base), "{}", p.name);
             }
         }
     }

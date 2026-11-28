@@ -859,10 +859,8 @@ pub(crate) fn register_late_for_profile(
     }
     // The effects phase in Rust (docs/engine/effects-parts.md): the part arm
     // here, the effect walk in the tick driver below.
-    if sim_bridge::sim_effects_parts::on(features.switches()) {
-        features.add(&sim_bridge::sim_effects_parts::SimEffectsParts)
-            .map_err(|e| anyhow::anyhow!("effect parts: {e}"))?;
-    }
+    features.add(&sim_bridge::sim_effects_parts::SimEffectsParts)
+        .map_err(|e| anyhow::anyhow!("effect parts: {e}"))?;
     // The tick itself, from Rust; every hook on GAME_TICK stays around it.
     features
         .add(&sim_bridge::tick::TickDriver)

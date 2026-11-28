@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 47;
+pub const BUDGET: usize = 41;
 
 use Initial::{Group, Off, On};
 
@@ -96,18 +96,12 @@ pub const TABLE: &[Switch] = &[
         "the parent of the subsystem rewrites (lane rules): each child goes when its subsystem defaults on"),
     sw("impl.sim.native.anim", Off, "sim", "2026-11-20",
         "animation sampling (sim-anim): on in the lane that lands it, then deleted"),
-    sw("impl.sim.native.anim.skeleton", On, "sim", "2026-11-23",
-        "the skeleton walk of bd090 in one Rust call (docs/engine/skeleton-walk.md): deleted when phase 1b's run ladder is clean"),
-    sw("impl.sim.native.anim.manager", On, "sim", "2026-11-27",
-        "phase 1d's manager and graph entries answer from Rust (docs/engine/animation-manager.md): on after h2 sim diff parity"),
     sw("impl.sim.native.collision", Off, "sim", "2026-11-20",
         "collision queries (sim-collision): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.hs", Off, "sim", "2026-11-25",
         "HaloScript VM: retire after the campaign parity and timing ladder"),
     sw("impl.sim.native.objects", Off, "sim", "2026-11-20",
         "the object update (sim-objects): on in the lane that lands it, then deleted"),
-    sw("impl.sim.native.objects.walk", On, "sim", "2026-11-27",
-        "the walks b6f10, b7060 and b7150, the per-object updates and the multiplayer type callbacks in Rust (docs/engine/object-update.md): off runs the guest walks, the A arm of h2 sim diff; deleted with impl.sim.native.objects"),
     sw("impl.sim.native.seats", Off, "sim", "2026-11-25",
         "seats and rules (sim-seats): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.sound", Off, "sim", "2026-11-25",
@@ -128,8 +122,6 @@ pub const TABLE: &[Switch] = &[
         "the sound simulation (docs/engine/sound-sim.md); h2 sim diff of firefight-beavercreek is identical over 10351 ticks"),
     sw("impl.sim.sound-events.table", Off, "sim", "2026-11-27",
         "the sound table's entry bodies and tick phase (docs/engine/sound-instances.md): on after h2 sim diff parity with sound.table in the series"),
-    sw("impl.sim.effects-parts", On, "sim", "2026-11-27",
-        "the effects phase in Rust (docs/engine/effects-parts.md): the effect walk, the damage part arm, visual parts as scene events; off runs the guest phase, the A arm of h2 sim diff"),
     sw("impl.sim.arena-hash", Off, "sim", "2026-11-20", DIAGNOSTIC),
     sw("impl.sim.frame-guard", Off, "sim", "2026-11-28",
         "the frame guard (lockstep::frame_guard, docs/engine/sim-render-split.md): a test mode; goes when the render-blind gate (slice 10) holds the rule in h2 sim and the ladder"),
@@ -140,10 +132,6 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.native_simd", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.phantom-alias", On, "sim", "2026-11-22",
         "the phantoms' action build on live RAM with an undo journal (docs/perf/sim-phantom-build.md, P1): the view path stays as the check mode's reference and the flat-RAM path; the switch goes once a release has run with it on"),
-    sw("impl.sim.phantom-input", On, "sim", "2026-11-28",
-        "the phantoms' input stage in Rust (engine::sim_seats::input): off runs the lifted stage; the switch goes once a release has run with it on"),
-    sw("impl.sim.phantom-body", On, "sim", "2026-11-28",
-        "the phantoms' action builder 0x186ab0, its interaction search and the seats under them in Rust, callees made in place (docs/perf/sim-phantom-build.md, P3 and P4): off runs the guest builder, the check mode's reference; the switch goes once a release has run with it on"),
     // Simulation: hand ports (`sim_bridge::sim_native`).
     sw("impl.sim.native_transform_compose", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_pose_matrix", Off, "sim", "2026-11-20", SIM_PORT),

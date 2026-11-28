@@ -10,12 +10,14 @@
 //! seats whose outcome, action or history differ.
 //!
 //! The input stage (the bind, the look rates, the pad read and the remap)
-//! runs in Rust (`engine::sim_seats::input`) under `impl.sim.phantom-input`
-//! ([`stage_for`]); a piece that refuses runs its guest entry instead.
+//! always runs in Rust (`engine::sim_seats::input`); a piece that refuses
+//! is counted by name and runs its guest entry instead.
 //!
 //! The builder `0x186ab0` itself, the interaction search under it and the
-//! seats under those run in Rust under `impl.sim.phantom-body`
-//! ([`body_for`], [`body`]); a segment that declines runs the original.
+//! seats under those always run in Rust ([`body`]); a segment that declines
+//! is counted and runs the original from there. [`Stage::Guest`] and a
+//! builder without the body are the tests' and the check mode's lifted
+//! reference only.
 use anyhow::Result;
 use bots::phantom::{SeatInput, session::at::ACTION_SIZE};
 use engine::sim_seats::input::{self as seat_input, Refusal};
@@ -150,21 +152,6 @@ pub(super) enum Stage {
     Guest,
 }
 
-/// The stage `impl.sim.phantom-input` picks: Rust unless it is off.
-pub(super) fn stage_for(switches: &hooks::Switches) -> Stage {
-    if switches.implementation("sim.phantom-input", true) {
-        Stage::Rust
-    } else {
-        Stage::Guest
-    }
-}
-
-/// Whether `impl.sim.phantom-body` runs the builder's body in Rust: on
-/// unless it is off.
-pub(super) fn body_for(switches: &hooks::Switches) -> bool {
-    switches.implementation("sim.phantom-body", true)
-}
-
 /// Input-stage pieces that refused and ran their guest entry.
 static REFUSED: AtomicU64 = AtomicU64::new(0);
 
@@ -254,9 +241,24 @@ pub(super) struct Builder {
     other: Option<Box<Builder>>,
 }
 
-/// Only the live animation cache may submit or wait for a resource read.
-/// Retry the pad against fresh RAM once after a synchronous cache fill.
+/// The seat's action, built with the input stage and the builder body in
+/// Rust ([`gather_with`]).
 pub(super) async fn gather(
+    input: &Mutex<Option<Builder>>,
+    main: &Runtime,
+    workspace: u32,
+    path: Path,
+    cpu: CpuAbi,
+    seat: SeatInput,
+    cx: &engine::entry::Cx,
+) -> Option<[u8; ACTION_SIZE]> {
+    gather_with(input, main, workspace, path, Stage::Rust, true, cpu, seat, cx).await
+}
+
+/// [`gather`] with the stage and body named: the tests build on the lifted
+/// stage as their reference. Only the live animation cache may submit or wait for a resource read.
+/// Retry the pad against fresh RAM once after a synchronous cache fill.
+pub(super) async fn gather_with(
     input: &Mutex<Option<Builder>>,
     main: &Runtime,
     workspace: u32,
@@ -1394,21 +1396,5 @@ mod stage_tests {
             assert_eq!(m.read::<0x48>(RAW).unwrap(), before, "{path:?}: live raw input kept");
             assert_eq!(m.u32(CONTROLS + 0x14).unwrap(), 0, "{path:?}: live control kept");
         }
-    }
-
-    #[test]
-    fn the_switch_runs_the_stage_in_rust_by_default() {
-        let parse = |spec: &str| stage_for(&hooks::Switches::parse(spec).unwrap());
-        assert_eq!(parse(""), Stage::Rust);
-        assert_eq!(parse("-impl.sim.phantom-input"), Stage::Guest);
-        assert_eq!(parse("-impl.sim"), Stage::Guest, "through its parent");
-    }
-
-    #[test]
-    fn the_switch_runs_the_body_in_rust_by_default() {
-        let parse = |spec: &str| body_for(&hooks::Switches::parse(spec).unwrap());
-        assert!(parse(""));
-        assert!(!parse("-impl.sim.phantom-body"));
-        assert!(!parse("-impl.sim"), "through its parent");
     }
 }

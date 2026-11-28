@@ -1,6 +1,7 @@
-//! A phase 1d segment: the Rust body answers on its turn (`answer`, the
-//! `impl.sim.native.anim.manager` switch); otherwise the original handler
-//! answers and its outgoing frame is compared with the prediction.
+//! A phase 1d segment: the Rust body answers on its turn; otherwise (before
+//! the entry is proven, on an audit slot, or on a counted decline) the
+//! original handler answers and its outgoing frame is compared with the
+//! prediction.
 use engine::sim_anim::manager::{self, arm};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
@@ -9,9 +10,8 @@ pub(super) fn run(
     ctx: &mut ExecCtx,
     pc: u32,
     resume: bool,
-    answer: bool,
 ) -> Result<TransferAbi, GuestFault> {
-    if answer && arm::turn(pc) == Some(arm::Turn::Answer) {
+    if arm::turn(pc) == Some(arm::Turn::Answer) {
         // A declined segment leaves the frame intact; the guest takes it
         // below and the prediction declines again, counted.
         if let Some(transfer) = manager::run(cpu, &mut ctx.memory(), pc)? {
@@ -85,9 +85,11 @@ mod tests {
         g.set_u32(DATA + 0x230, DATA + 0x300).unwrap();
         g.set_u32(DATA + 4, 0x0001ffff).unwrap();
         let rt = Runtime::new(g, d);
-        let mut registry = Registry::new(Switches::defaults().with("impl.sim.native.anim", true).with("impl.sim.native.objects.walk", false));
+        let mut registry = Registry::new(Switches::defaults().with("impl.sim.native.anim", true));
         registry.add(&SimNative::new(&rt)).unwrap();
-        registry.build(&Base).unwrap().install(&rt).unwrap();
+        let mut plan = registry.build(&Base).unwrap();
+        crate::sim_objects::without_walk(&mut plan);
+        plan.install(&rt).unwrap();
         let handler = |pc| rt.read_dispatch(|d| d.override_handler(pc)).unwrap();
         let mut ctx = ExecCtx::new(rt.clone(), 1);
         let mut cpu = CpuAbi {
@@ -155,7 +157,7 @@ mod tests {
         };
         let before = matched();
         assert_eq!(
-            run(&mut cpu, &mut ctx, RETURN_FROM_PRELOAD, true, false).unwrap(),
+            run(&mut cpu, &mut ctx, RETURN_FROM_PRELOAD, true).unwrap(),
             TransferAbi::ret(RETURN_FROM_GRAPH)
         );
         assert_eq!((cpu.eax, cpu.esi, cpu.ebx, cpu.esp), (7, 3, 5, SP + 16));
@@ -209,7 +211,7 @@ mod tests {
         };
         let mut step = || {
             let mut cpu = entry;
-            let t = run(&mut cpu, &mut ctx, AFTER_CALLBACK, true, true).unwrap();
+            let t = run(&mut cpu, &mut ctx, AFTER_CALLBACK, true).unwrap();
             assert_eq!(t, TransferAbi::call(RESOURCE, RETURN_TO));
             assert_eq!((cpu.esp, cpu.ecx, cpu.esi), (SP - 8, 0x35, 0x123456));
             assert_eq!(ctx.memory().u32(SP - 8).unwrap(), RETURN_TO);
@@ -230,9 +232,8 @@ mod tests {
     }
 
     #[test]
-    fn the_manager_switch_alone_installs_the_phase_1d_entries() {
-        let switches = Switches::defaults().with("impl.sim.native.anim.manager", true);
-        let mut registry = Registry::new(switches);
+    fn the_defaults_install_the_phase_1d_entries() {
+        let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
         for entry in arm::ENTRIES {

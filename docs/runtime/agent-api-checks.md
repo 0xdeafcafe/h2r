@@ -41,7 +41,7 @@ after a call. For each observed function, `matched` and `differed` count
 completed comparisons. `declined` counts segments the Rust arm could
 not predict. `interrupted` counts predictions for which the guest exited
 before a comparison boundary. `answered` counts segments the Rust body
-answered without the guest under `impl.sim.native.anim.manager`. The first difference for each function is
+answered without the guest. The first difference for each function is
 retained in `first`, with the starting selector (`pc`), differing field
 (`what`), and both values (`plan` and `guest`). An entry with `first` set
 to `null` has no recorded difference. Compare counts before and after
@@ -86,8 +86,8 @@ field: physics and collision have no `checked` (it is `matched` plus
 `mismatched`; shadow ports have no `answered` and their
 `skipped` is `declined`; `sound.voices` counts ticks for `checked`
 (sampled ticks with voices), `matched` and `mismatched`, and voices for
-`answered`. `effects-parts` is the effects phase in Rust, under
-`impl.sim.effects-parts` rather than an `impl.sim.native.*` switch: its
+`answered`. `effects-parts` is the effects phase in Rust, always on
+with no switch (its `switch` is empty): its
 `effects.damage`, `effects.object`, `effects.sound`,
 `effects.character`, `effects.coln`, `effects.decal` and `effects.light`
 arms are `sim_effects_parts::status`'s part arms, and `effects.parts` counts

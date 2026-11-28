@@ -1,6 +1,6 @@
 //! The action builder's body in Rust, in the phantom executor only
-//! (`impl.sim.phantom-body`, docs/perf/sim-phantom-build.md, "The builder
-//! body in Rust").
+//! (docs/perf/sim-phantom-build.md, "The builder body in Rust"), always
+//! on.
 //!
 //! Every seat of `engine::sim_seats::phantom_body` goes into the
 //! executor's dispatch at its entry and its return sites. A seat runs a

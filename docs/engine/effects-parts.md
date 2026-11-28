@@ -2,7 +2,7 @@
 
 Status: Partly built. The walk, its four per-effect callees, an arm for every part class the switch handles (damage, object, sound, character, `coln`, decal, light), the returned arms and the scene events are written; nothing draws the scene events yet.
 Code: `crates/rewrites/sim-effects` (pure), `crates/rewrites/engine/src/effects_phase.rs` (the walk over the guest), `crates/rewrites/engine/src/effect_update` (the per-effect bodies and their arm), `crates/rewrites/sim-bridge/src/sim_effects_parts.rs` (the part switch), `crates/rewrites/sim-bridge/src/effect_update.rs` (the bodies' hooks). Tests: `effects_phase_ledger_is_zero` (`engine::sim_tick`), `visual_events_leave_hash_unchanged` and `object_and_sound_parts_answer_after_their_own_proof` (`sim_effects::dispatch`), `the_object_answer_calls_the_leaves_in_retails_order`, `the_sound_answer_makes_retails_call`, `the_character_answer_pushes_as_retail`, `the_decal_answer_draws_between_the_leaves` and `the_light_answer_makes_retails_call` (`sim_bridge::sim_effects_parts`), `the_other_arms_answer_after_their_own_proof` (`sim_effects::dispatch`), `a_draw_is_retails_lcg_and_scale` (`sim_effects::random`), `damage_parts_match_lifted` (`crates/rewrites/engine/tests/sim_effects_differential.rs`), the per-effect bodies' tests (`engine::effect_update::tests`), `the_switch_installs_every_body_with_its_sites_and_the_resets` and `the_native_effects_port_keeps_the_update` (`sim_bridge::effect_update`).
-Switch: `impl.sim.effects-parts` (on), listed in [switches.md](../runtime/switches.md). Off, the guest runs the phase and every part: the A arm of `h2 sim diff`.
+Switch: none. The effects phase always runs in Rust (`SimEffectsParts` is always on, `sim_bridge::tick::BODIES`); a part an arm declines is a named, counted refusal that runs the guest's arm for that part. The differential tests call the lifted phase directly as the reference.
 
 The tick driver runs the effects phase (phase 15, `0x176e40`) as a Rust body, so `sim.ledger` counts no guest call for it and `tick-ledger.toml` allows 28 guest phases. Every part stays exact: each class's arm is compared with the guest until proven, and the draws keep their order. Visual parts become events in Rust for the renderer's scene, outside the arena. No RNG draw changes place.
 
@@ -119,7 +119,7 @@ One difference hands all four back to the guest until the next map; a revert or 
 
 ## Not verified
 
-- Whole-run parity: `h2 sim run docs/runtime/sim-examples/lockout-2v2.toml` with `H2_FEATURES=-impl.sim.effects-parts` and without, then `h2 sim diff` of the two reports.
+- Whole-run parity: `h2 sim diff` of `docs/runtime/sim-examples/lockout-2v2.toml` against the lifted build.
 - That each arm reaches 4096 matched parts on a real match, and its timing; likewise each per-effect body's 4096 matched segments (`sim.arms` `effects.body.*`).
 - The object, sound, character, decal and light answers run against the lifted leaves: the bridge tests drive them on a fake guest only. The `coln` answer's x87 state against the lifted `0x259d0`'s.
 

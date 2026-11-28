@@ -239,15 +239,3 @@ fn walks_outside_the_fast_path_decline_untouched() {
     // Records past the end of RAM.
     declines(&c, |_, g| g.set_u32(STACK + ORIENTATIONS_SLOT, RAM - 0x20).unwrap(), Decline::Alias);
 }
-
-#[test]
-fn the_switch_turns_the_walk_off() {
-    let c = case(6, 6);
-    let (mut cpu, mut g) = machine(&c);
-    set_enabled(false);
-    let off = run(&mut cpu, &mut g).unwrap();
-    set_enabled(true);
-    assert!(!off);
-    let (before, _) = machine(&c);
-    assert_eq!(cpu, before);
-}

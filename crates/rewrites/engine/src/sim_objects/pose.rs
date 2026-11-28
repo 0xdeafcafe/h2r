@@ -13,7 +13,7 @@
 //! skeleton. The root transform `bdc40` and the root's pose and
 //! composition run inline through `sim_native`'s exact bodies. The
 //! skeleton walk is phase 1b's: `sim_anim::build_matrices` through
-//! `crate::sim_anim::skeleton` (`impl.sim.native.anim.skeleton`), with the
+//! `crate::sim_anim::skeleton`, with the
 //! port's per-node loop as its fallback (docs/engine/skeleton-walk.md).
 //!
 //! The port makes its transfers through the runtime's stack helpers
