@@ -134,8 +134,9 @@ impl<B: d3d::Backend + Send + 'static> Host for Draw<B> {
     }
 
     fn draw_other(&self, mem: &mut dyn GuestMemory, draw: &FogOtherDraw) -> bool {
-        let header = (!draw.plate)
-            .then(|| native_render::fog_quad::ramp_texture(&|a| mem.u32(a).ok()).unwrap_or_else(|why| native_fog_quad::unported(why)));
+        // The bridge resolves stage 2's header (`FogOtherDraw::ramp`), asking
+        // the guest's texture cache when it streams; 0 for the plate.
+        let header = (draw.ramp != 0).then_some(draw.ramp);
         let Ok(mut device) = self.device.lock() else { return false };
         let ramp = header.map(|h| decode_bitmap(&*mem, h, device.config().address_map).unwrap_or_else(|why| native_fog_quad::unported(why)));
         let pass = FogOtherPass { draw: draw.clone(), ramp, test: None };
