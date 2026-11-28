@@ -243,7 +243,6 @@ mod tests {
     #[test]
     fn every_frame_is_the_answers_and_an_unread_frame_is_kept_by_name() {
         let mut m = answering_world();
-        np::set_host(Arc::new(Takes(Mutex::default(), true)));
         for frame in [64, 65, 128] {
             m.set_u32(view_update::FRAME, frame).unwrap();
             assert!(ours(&m, "particle"), "frame {frame}");
