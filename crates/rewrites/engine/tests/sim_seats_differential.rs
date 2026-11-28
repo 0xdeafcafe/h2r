@@ -45,6 +45,16 @@ const SETTINGS: u32 = 0x004e_034c;
 const CONTROL_TABLE: u32 = 0x004e_d284;
 const HUD_SEATS: u32 = 0x0051_0c4c;
 
+/// The first byte where `a` and `b` differ outside `dead`: slice compares
+/// (memcmp) first, the byte walk only once a difference is known.
+fn first_outside(a: &[u8], b: &[u8], dead: &std::ops::Range<usize>) -> Option<usize> {
+    let (lo, hi) = (dead.start.min(a.len()), dead.end.min(a.len()));
+    if a[..lo] == b[..lo] && a[hi..] == b[hi..] {
+        return None;
+    }
+    a.iter().zip(b).enumerate().find(|(i, (x, y))| x != y && !dead.contains(i)).map(|(i, _)| i)
+}
+
 /// Every callee the covered seats reach, with the stack the real one
 /// leaves: the return's cleanup, or a fastcall's nothing.
 fn cleanup(target: u32) -> u32 {
@@ -749,9 +759,7 @@ fn aim_assist_matches_lifted() {
             let start = native.mappings()[0].physical_start as usize;
             let live = &native.physical_ram()[start..start + RAM];
             let dead = (STACK - 0x1_0000) as usize..STACK as usize;
-            let first = mem.bytes.iter().zip(live).enumerate()
-                .find(|(i, (a, b))| a != b && !dead.contains(i))
-                .map(|(i, _)| i);
+            let first = first_outside(&mem.bytes, &live, &dead);
             assert_eq!(first, None, "{why}: first differing byte");
         }
     }
@@ -1463,9 +1471,7 @@ fn rs_check(
         word(&mut port, a, v);
     }
     let dead = (STACK - 0x1_0000) as usize..(STACK + 0x40) as usize;
-    let first = want_mem.bytes.iter().zip(&port.bytes).enumerate()
-        .find(|(i, (a, b))| a != b && !dead.contains(i))
-        .map(|(i, _)| i);
+    let first = first_outside(&want_mem.bytes, &port.bytes, &dead);
     assert_eq!(first, None, "{why}: first differing byte");
     if writes.is_empty() { "answered" } else { "wrote" }
 }
@@ -1629,9 +1635,7 @@ fn respawn_ready_and_its_callees_match_lifted() {
                 // the first difference once one is known to exist.
                 let same = mem.bytes[..dead.start] == live[..dead.start] && mem.bytes[dead.end..] == live[dead.end..];
                 if !same {
-                    let first = mem.bytes.iter().zip(live).enumerate()
-                        .find(|(i, (a, b))| a != b && !dead.contains(i))
-                        .map(|(i, _)| i);
+                    let first = first_outside(&mem.bytes, &live, &dead);
                     assert_eq!(first, None, "{why}: first differing byte");
                 }
             }
@@ -1819,9 +1823,7 @@ fn player_objects_match_lifted() {
             let base = native.mappings()[0].physical_start as usize;
             let live = &native.physical_ram()[base..base + RAM];
             let dead = (STACK - 0x1_0000) as usize..STACK as usize;
-            let first = mem.bytes.iter().zip(live).enumerate()
-                .find(|(i, (a, b))| a != b && !dead.contains(i))
-                .map(|(i, _)| i);
+            let first = first_outside(&mem.bytes, &live, &dead);
             assert_eq!(first, None, "{why}: first differing byte");
         }
 
@@ -1846,9 +1848,7 @@ fn player_objects_match_lifted() {
             let base = guest.mappings()[0].physical_start as usize;
             let live = &guest.physical_ram()[base..base + RAM];
             let dead = (STACK - 0x1_0000) as usize..STACK as usize;
-            let first = probe.bytes.iter().zip(live).enumerate()
-                .find(|(i, (a, b))| a != b && !dead.contains(i))
-                .map(|(i, _)| i);
+            let first = first_outside(&probe.bytes, &live, &dead);
             assert_eq!(first, None, "{why}: 150e30 wrote a byte");
         } else {
             passes += 1;
