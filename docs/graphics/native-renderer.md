@@ -487,8 +487,8 @@ composites it. The bridge scopes each helper by its caller and drains pending
 draws at entry and return. Its four-vertex pushed fans use the native
 screen-space pass with the resolved shader, textures, viewport and target.
 
-Refused draws use the original packet. State setup, optional surface
-readback and `Swap` run on the guest path.
+Refused draws, the tail's setup and a kept frame's `Swap` use the guest path;
+the finish `0x00013cd0` is Rust ([retire-d3d-display.md](retire-d3d-display.md#the-frames-finish)).
 
 The five base target sites are `0x0002bde2`, `0x0002be83`, `0x0002bf0e`,
 `0x0002bf7f` and `0x0002bfe3`. The direct clear is `0x0002be01`; the clear

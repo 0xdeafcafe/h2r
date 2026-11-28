@@ -14,7 +14,8 @@
 //!    0: a loading frame does not present.
 //!
 //! [`next`] is that order as data; [`RenderFrame`] runs it, each step a
-//! guest call. Nothing here draws: the steps' own replacements (the views'
+//! guest call. The frame wait is outside the render for `render.residual`
+//! ([`crate::residual_census::frame_wait`]). Nothing here draws: the steps' own replacements (the views'
 //! stages, the overlay's producers, the movie's display) are where the
 //! frame goes native. At the present, [`publish`] shows a frame whose
 //! every slot drew from the scene in place of the guest's present, and
@@ -215,6 +216,9 @@ fn fault(f: MemFault) -> GuestFault {
 fn run(me: &RenderFrame, frame: Frame, step: Step, cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
+    if matches!(step, Step::Waited { .. }) {
+        crate::residual_census::frame_wait(&mut *mem, false);
+    }
     let outcome = match step {
         Step::Waited { present: true } => {
             let host = me.publish.clone().or_else(publish::installed);
@@ -245,6 +249,9 @@ fn run(me: &RenderFrame, frame: Frame, step: Step, cpu: &mut CpuAbi, ctx: &mut E
                 Called::FrameWait if present == Some(false) => me.stats.loading.fetch_add(1, Ordering::Relaxed),
                 _ => 0,
             };
+            if kind == Called::FrameWait {
+                crate::residual_census::frame_wait(&mut *mem, true);
+            }
             // Each call starts from the frame's own stack, its arguments
             // pushed right to left as the guest pushes them.
             cpu.esp = frame.esp;

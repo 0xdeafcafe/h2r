@@ -18,7 +18,9 @@
 //!   words were written. Work goes to the innermost open producer only, so
 //!   the producer rows sum to `totals`. Inside a render frame with no
 //!   producer open it is `unknown`; outside every render frame it is
-//!   `outside_render`. `unknown` is never folded into a neighbour.
+//!   `outside_render`, and so is the frame step's frame wait
+//!   ([`frame_wait`]): it calls no D3D entry, and what runs while it yields
+//!   is other threads' work. `unknown` is never folded into a neighbour.
 //!
 //! Without the option there are no producers: `unattributed` holds the
 //! inline draws, which no caller row owns.
@@ -621,6 +623,8 @@ pub struct Census {
     timing: bool,
     stack: Vec<Open>,
     frame_depth: u32,
+    /// Inside the frame step's frame wait ([`Census::wait`]).
+    waiting: bool,
     game_view_seen: bool,
     /// When the innermost producer became innermost (timing only).
     since: Option<Instant>,
@@ -669,7 +673,7 @@ impl Census {
     pub fn current(&self) -> Producer {
         match self.stack.last() {
             Some(o) => o.producer,
-            None if self.frame_depth > 0 => Producer::Unknown,
+            None if self.frame_depth > 0 && !self.waiting => Producer::Unknown,
             None => Producer::OutsideRender,
         }
     }
@@ -831,9 +835,19 @@ impl Census {
         self.frame_depth += 1;
     }
 
+    /// The frame step's frame wait begins (`on`) or returns. While it
+    /// runs, work with no producer open is `outside_render`: the wait
+    /// calls no D3D entry, and the threads that run while it yields are
+    /// not the render.
+    pub fn wait(&mut self, on: bool) {
+        self.charge_time();
+        self.waiting = on;
+    }
+
     /// A render frame ends. Producers still open inside it never ended.
     pub fn frame_end(&mut self) {
         self.charge_time();
+        self.waiting = false;
         self.frame_depth = self.frame_depth.saturating_sub(1);
         if self.frame_depth == 0 && !self.stack.is_empty() {
             self.unbalanced += self.stack.len() as u64;
@@ -846,6 +860,7 @@ impl Census {
         self.unbalanced += self.stack.len() as u64;
         self.stack.clear();
         self.frame_depth = 0;
+        self.waiting = false;
         self.since = None;
     }
 
@@ -932,6 +947,17 @@ pub fn request(frames: Option<u32>) -> (State, Option<Report>) {
 /// A snapshot load (the frame step's `forget`).
 pub fn forget() {
     with(Census::forget);
+}
+
+/// The frame step calls its frame wait `0x0012b2e0` (`on`) or the wait
+/// returned (docs/graphics/retire-d3d-display.md, "The frame step"). What
+/// game code wrote before it is drained to the producer that wrote it.
+pub fn frame_wait(mem: &mut dyn GuestMemory, on: bool) {
+    #[cfg(feature = "native-render")]
+    boundary(mem);
+    #[cfg(not(feature = "native-render"))]
+    let _ = mem;
+    with(|c| c.wait(on));
 }
 
 /// The device drained at a boundary, when a window is armed or open.
@@ -1388,6 +1414,28 @@ mod tests {
         assert_eq!(p[&Producer::Unknown].work.draws, 1);
         assert_eq!(Producer::Unknown.status(), Status::Unknown);
         assert_eq!(r.unattributed, (1, 1));
+    }
+
+    /// The frame wait calls no D3D entry; a resource call another thread
+    /// makes while it yields is not the frame's, so a frame drawn natively
+    /// adds nothing outside `outside_render` across its wait.
+    #[test]
+    fn the_frame_wait_is_outside_the_render() {
+        let mut c = open(true, 1);
+        c.frame_begin();
+        c.wait(true);
+        c.call(&entry("D3DResource_IsBusy", 0x0012_c9a0, Tally::default()), None);
+        c.call(&entry("D3D_BlockOnResource", 0x0012_c9c0, Tally::default()), None);
+        c.wait(false);
+        c.call(&entry(DRAW, 0x0002_9b40, tally(1, 0, 1, 4)), None);
+        c.wait(true);
+        c.frame_end();
+        c.call(&entry("D3DResource_AddRef", 0x0012_0000, Tally::default()), None);
+        let r = close(c, 8);
+        let p = r.producers.as_ref().unwrap();
+        assert_eq!(p[&Producer::OutsideRender].work.entries, 4, "the wait's two, AddRef after the frame and the Swap");
+        assert_eq!(p[&Producer::OutsideRender].work.locks, 2);
+        assert_eq!(p[&Producer::Unknown].work.entries, 1, "the draw after the wait is the frame's");
     }
 
     #[test]

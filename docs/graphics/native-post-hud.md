@@ -87,7 +87,7 @@ The port of `0x000214f0`, the quad and the native glow: [native-post.md](native-
 - Under render scaling, a replacement that uses a reference-only intermediate together with a live display target falls back.
 - Screen-effect residency follows the loaded effect set, including its feedback copies and convolution programs. The screen and glow drawers cap the raster variants they retain per program. The UI draw cache follows the active device and caps its shader and pipeline variants.
 - `0x0002df00` and `0x0002dd30` separate flare colour from visibility. The native flare stage records eligible colour and counted visibility fans. The tests' counts are answered through `GetVisibilityTestResult` from the backend's counter ([d3d.md](d3d.md), "Visibility tests"), and an owned frame's graph replays the counted draws and installs its counts under the guest's tickets ([framescene.md](framescene.md), slice 6).
-- Layer 17's items are drawn as the other scene layers' are; the clear before them is the guest's. The frame tail draws supported copy and composite fans through the native screen-space pass. State commit (`0x00013cd0`) and present (`0x00013f10`) use D3D.
+- Layer 17's items are drawn as the other scene layers' are; the clear before them is the guest's. The frame tail draws supported copy and composite fans through the native screen-space pass. The frame's finish (`0x00013cd0`) is made on the device ([retire-d3d-display.md](retire-d3d-display.md#the-frames-finish)); a kept frame's present (`0x00013f10`) uses D3D.
 
 ## Not verified
 

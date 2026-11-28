@@ -1056,6 +1056,12 @@ points! { ALL;
     RENDER_ALTERNATE_VIEW @ 0x0002_c790: [opaque]; "docs/graphics/render-loop.md";
     /// End-of-frame rendering after the view loop, before the final blit.
     RENDER_FRAME_TAIL @ 0x0001_3b90: [opaque]; "docs/graphics/native-renderer.md";
+    /// The frame's finish after the tail (`render_views` `0x0002b6f7`, the
+    /// alternate frames `0x0002c9e9`, `0x0002cb14`): the four texture
+    /// stages, the index buffer and the pixel shader reset. No arguments,
+    /// `ret` (its tail jump to `D3DDevice_SetPixelShader`).
+    /// `render_bridge::native_targets` implements it.
+    RENDER_FRAME_FINISH @ 0x0001_3cd0: [fn() ret 0]; "docs/graphics/retire-d3d-display.md";
     /// `render_scene_passes`: the scene pass sequence of one view.
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/graphics/e3-lighting.md";
     /// Water compositing after the scene's layer 6.

@@ -42,8 +42,8 @@ Text is one batch per string with a quad per glyph, each a separate D3D draw; a 
 | Call | What it does |
 |---|---|
 | `0x00013b90` | calls `0x0001fd20`, then, when `0x0001dc40` and `0x0001de20` say so, copies the view's target `[0x004858b8]` through `0x000351a0`, then `0x0001fd00`, `0x0001fcd0` and `0x00022070` |
-| `0x00013cd0` (`ret 4`) | commits the state (`0x0001cf50`), writes push words itself (`[0x00407488]`) and calls the D3D entry at `0x003fb520` |
-| `0x00013f10` (`ret 8`) | locks a surface for the optional readback (`0x003fdb20`, `0x003fad50`, `0x003fdbc0`; bitmaps `0x001358c0`, `0x00135a30`), calls `0x00013d80` and swaps at `0x000140fc` (`0x003f9d00`, between two `0x003f9df0`) |
+| `0x00013cd0` (`ret`) | clears the four stage requests and commits them (`0x0001cf50`, `D3DDevice_SetTexture`), drops the device's index buffer (`D3D_DestroyResource` `0x003fb520` at its last reference) and tail-jumps to `D3DDevice_SetPixelShader(0)`; Rust with the native targets ([retire-d3d-display.md](retire-d3d-display.md#the-frames-finish)) |
+| `0x00013f10` (`ret 8`) | locks a surface for the optional readback (no caller asks one) (`0x003fdb20`, `0x003fad50`, `0x003fdbc0`; bitmaps `0x001358c0`, `0x00135a30`), calls `0x00013d80` and swaps at `0x000140fc` (`0x003f9d00`, between two `0x003f9df0`) |
 
 ## Native UI
 

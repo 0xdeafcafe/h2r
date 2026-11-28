@@ -12,6 +12,7 @@
 //! |---|---|---|
 //! | `0x0001cd30(esi colour, eax depth, [esp+4] flag)`, `ret 4`, `al = 1` | the cached pair `0x0051f3f4`/`0x0051f3f8` unchanged: nothing; a colour of the cached one's format and size (`+0`, `+0xc`, `+0x10`): the same-size bind `0x003f7b30`; else `0x003f7870` | [`Host::bind`] |
 //! | `0x00014b60(eax flags, colour, z, stencil byte)`, `ret 0xc`, `eax = 0` | the game's flags as D3D clear flags ([`clear_flags`]); none: nothing | [`Host::clear`] |
+//! | `0x00013cd0()`, `ret`, `eax = 0`: the frame's finish | the four stage slots cleared and committed against their cache, the index buffer's device reference dropped, the pixel shader none ([`cut_finish`]) | [`Host::texture`], [`Host::pixel_shader`] |
 //!
 //! The arm: one call in [`CHECK_EVERY`] of each runs the guest body and
 //! compares the device's bound target after it with the cut's
@@ -22,6 +23,11 @@
 //! `scene_kept_<call>_mismatch`. A call the cut does not make (no host, a
 //! clear whose prelude `0x00014ac0` would run, a refused device call) runs
 //! the guest body, counted `scene_kept_<call>_<cause>`.
+//!
+//! The finish has no arm: it is the body's own writes and calls in its
+//! order, and a cut stopped part way leaves a prefix of them, which the
+//! guest body then repeats to the same end (each of its steps is a no-op
+//! once made).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -44,6 +50,24 @@ pub const CACHE_FLAG: u32 = 0x0051_f3fc;
 /// and `[0x004858b8]` is zero.
 pub const CLEAR_PRELUDE_ON: u32 = 0x0048_5607;
 pub const CLEAR_PRELUDE_TARGET: u32 = 0x0048_58b8;
+
+/// The finish's globals (Code, `0x00013cd0..0x00013d43`): the engine's
+/// four requested textures, the four it last committed (`0x0001cf50`
+/// sets a stage whose two differ), the word it sets to -1, the word it
+/// clears, and the device pointer.
+pub const STAGE_REQUESTED: u32 = 0x0051_f3d8;
+pub const STAGE_COMMITTED: u32 = 0x0051_f3c8;
+pub const FINISH_UNSET: u32 = 0x0046_7004;
+pub const FINISH_CLEARED: u32 = 0x0040_8338;
+pub const DEVICE: u32 = 0x0040_7488;
+/// The device's index buffer and base vertex (`d3d::layout::field`'s
+/// `BASE_VERTEX`).
+pub const DEVICE_INDICES: u32 = 0x7a0;
+pub const DEVICE_BASE_VERTEX: u32 = 0x1c;
+/// A resource's device references: `+0x80000` each, live while any bit
+/// of [`LIVE_REFS`] is set.
+pub const DEVICE_REF: u32 = 0x0008_0000;
+pub const LIVE_REFS: u32 = 0x0078_ffff;
 
 /// Which bind the target select makes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,6 +112,14 @@ pub trait Host: Send + Sync {
     fn clear(&self, mem: &mut dyn GuestMemory, flags: u32, colour: u32, z: u32, stencil: u32) -> bool;
     /// The device's bound target (`d3d::Device::bound_target`).
     fn bound(&self) -> Option<[u32; 8]>;
+    /// `D3DDevice_SetTexture(stage, texture)`. `false`: refused.
+    fn texture(&self, _mem: &mut dyn GuestMemory, _stage: u32, _texture: u32) -> bool {
+        false
+    }
+    /// `D3DDevice_SetPixelShader(handle)`. `false`: refused.
+    fn pixel_shader(&self, _mem: &mut dyn GuestMemory, _handle: u32) -> bool {
+        false
+    }
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -166,10 +198,11 @@ impl Arm {
 
 pub static TARGET_SELECT: Arm = Arm::new("target_select");
 pub static SCENE_CLEAR: Arm = Arm::new("scene_clear");
+pub static FRAME_FINISH: Arm = Arm::new("frame_finish");
 
 /// The counters `render.scene` reports.
 pub fn counters() -> Vec<(String, u64)> {
-    TARGET_SELECT.counters().into_iter().chain(SCENE_CLEAR.counters()).collect()
+    TARGET_SELECT.counters().into_iter().chain(SCENE_CLEAR.counters()).chain(FRAME_FINISH.counters()).collect()
 }
 
 /// The words of the bound target a check compares for `bind`: the pair,
@@ -223,6 +256,74 @@ pub fn cut_clear(mem: &mut dyn GuestMemory, host: &dyn Host, flags: u32, colour:
         return Err("device");
     }
     Ok(())
+}
+
+/// The finish's cut (`0x00013cd0`, Code): the stage requests cleared and
+/// `[0x00467004]` set to -1; each stage whose committed texture is not
+/// null set to null through `host` and its cache cleared (`0x0001cf50`);
+/// `[0x00408338]` cleared; the device's index buffer, when it has one,
+/// loses its device reference and the device's index buffer and base
+/// vertex are cleared; the pixel shader none through `host`. `Err` names
+/// why the guest body runs from where the cut stopped: `release` when
+/// the reference is the index buffer's last, whose destroy
+/// (`D3D_DestroyResource` `0x003fb520`) the body makes.
+pub fn cut_finish(mem: &mut dyn GuestMemory, host: &dyn Host) -> Result<(), &'static str> {
+    let unwritable = |_| "unwritable";
+    for stage in 0..4 {
+        mem.set_u32(STAGE_REQUESTED + 4 * stage, 0).map_err(unwritable)?;
+    }
+    mem.set_u32(FINISH_UNSET, u32::MAX).map_err(unwritable)?;
+    for stage in 0..4 {
+        let at = STAGE_COMMITTED + 4 * stage;
+        if mem.u32(at).map_err(|_| "unread")? == 0 {
+            continue;
+        }
+        if !host.texture(mem, stage, 0) {
+            return Err("device");
+        }
+        mem.set_u32(at, 0).map_err(unwritable)?;
+    }
+    let device = mem.u32(DEVICE).map_err(|_| "unread")?;
+    let indices = mem.u32(device.wrapping_add(DEVICE_INDICES)).map_err(|_| "unread")?;
+    mem.set_u32(FINISH_CLEARED, 0).map_err(unwritable)?;
+    if indices != 0 {
+        let refs = mem.u32(indices).map_err(|_| "unread")?.wrapping_sub(DEVICE_REF);
+        if refs & LIVE_REFS == 0 {
+            return Err("release");
+        }
+        mem.set_u32(indices, refs).map_err(unwritable)?;
+    }
+    mem.set_u32(device.wrapping_add(DEVICE_INDICES), 0).map_err(unwritable)?;
+    mem.set_u32(device.wrapping_add(DEVICE_BASE_VERTEX), 0).map_err(unwritable)?;
+    if !host.pixel_shader(mem, 0) {
+        return Err("device");
+    }
+    Ok(())
+}
+
+fn finish_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    let arm = &FRAME_FINISH;
+    arm.calls.fetch_add(1, Ordering::Relaxed);
+    let Some(host) = host() else {
+        arm.keep("host");
+        return original(cpu, ctx, addr);
+    };
+    let rt = Arc::clone(ctx.runtime());
+    let made = {
+        let mut mem = rt.memory();
+        cut_finish(&mut *mem, &*host)
+    };
+    match made {
+        Ok(()) => {
+            arm.cut.fetch_add(1, Ordering::Relaxed);
+            cpu.eax = 0;
+            ctx.memory().ret(cpu, 0)
+        }
+        Err(cause) => {
+            arm.keep(cause);
+            original(cpu, ctx, addr)
+        }
+    }
 }
 
 /// Whether the native targets are placed: with the native renderer on,
@@ -326,7 +427,7 @@ pub struct NativeTargets;
 
 impl Feature for NativeTargets {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "The scene's target select and clear answered without their guest bodies").doc("docs/graphics/framescene.md")
+        Manifest::new(ID, "The scene's target select and clear and the frame's finish answered without their guest bodies").doc("docs/graphics/framescene.md")
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
@@ -338,6 +439,7 @@ impl Feature for NativeTargets {
         }
         b.raw().implement(&engine::points::SCENE_TARGET_SELECT, "native_targets_select", select_call).context_only();
         b.raw().implement(&engine::points::SCENE_CLEAR, "native_targets_clear", clear_call).context_only();
+        b.raw().implement(&engine::points::RENDER_FRAME_FINISH, "native_targets_finish", finish_call).context_only();
         Ok(())
     }
 }
@@ -351,6 +453,8 @@ mod tests {
     struct Device {
         binds: Mutex<Vec<(Bind, u32, u32)>>,
         clears: Mutex<Vec<[u32; 5]>>,
+        textures: Mutex<Vec<(u32, u32)>>,
+        shaders: Mutex<Vec<u32>>,
         refuse: AtomicBool,
     }
 
@@ -368,6 +472,17 @@ mod tests {
         }
         fn bound(&self) -> Option<[u32; 8]> {
             None
+        }
+        fn texture(&self, _: &mut dyn GuestMemory, stage: u32, texture: u32) -> bool {
+            if self.refuse.load(Ordering::Relaxed) {
+                return false;
+            }
+            self.textures.lock().unwrap().push((stage, texture));
+            true
+        }
+        fn pixel_shader(&self, _: &mut dyn GuestMemory, handle: u32) -> bool {
+            self.shaders.lock().unwrap().push(handle);
+            true
         }
     }
 
@@ -448,5 +563,65 @@ mod tests {
         assert!(arm.fallen_back());
         let c: std::collections::BTreeMap<_, _> = arm.counters().into_iter().collect();
         assert_eq!((c["check_checked"], c["scene_kept_check_mismatch"]), (2, 1));
+    }
+
+    const DEVICE_AT: u32 = 0x0050_0000;
+    const INDICES: u32 = 0x0060_0100;
+
+    /// The finish's globals with stages 0 and 2 committed and an index
+    /// buffer holding `refs`.
+    fn finish_mem(refs: u32) -> FlatMemory {
+        let mut m = FlatMemory::new(0x0040_0000, 0x0030_0000);
+        m.set_u32(DEVICE, DEVICE_AT).unwrap();
+        for (stage, t) in [(0, A), (1, 0), (2, B), (3, 0)] {
+            m.set_u32(STAGE_REQUESTED + 4 * stage, t).unwrap();
+            m.set_u32(STAGE_COMMITTED + 4 * stage, t).unwrap();
+        }
+        m.set_u32(FINISH_CLEARED, 7).unwrap();
+        m.set_u32(DEVICE_AT + DEVICE_INDICES, INDICES).unwrap();
+        m.set_u32(DEVICE_AT + DEVICE_BASE_VERTEX, 12).unwrap();
+        m.set_u32(INDICES, refs).unwrap();
+        m
+    }
+
+    /// The frame's finish makes its texture and pixel-shader resets on the
+    /// device through the host, with the body's own writes, and no guest
+    /// D3D entry: only the stages the engine had committed are set.
+    #[test]
+    fn the_frame_finish_makes_no_d3d_entry() {
+        let dev = Device::default();
+        let mut m = finish_mem(2 * DEVICE_REF | 1);
+        assert_eq!(cut_finish(&mut m, &dev), Ok(()));
+        assert_eq!(*dev.textures.lock().unwrap(), [(0, 0), (2, 0)], "the committed stages, in order");
+        assert_eq!(*dev.shaders.lock().unwrap(), [0], "the pixel shader none");
+        for stage in 0..4 {
+            assert_eq!(m.u32(STAGE_REQUESTED + 4 * stage).unwrap(), 0);
+            assert_eq!(m.u32(STAGE_COMMITTED + 4 * stage).unwrap(), 0);
+        }
+        assert_eq!(m.u32(FINISH_UNSET).unwrap(), u32::MAX);
+        assert_eq!(m.u32(FINISH_CLEARED).unwrap(), 0);
+        assert_eq!(m.u32(INDICES).unwrap(), DEVICE_REF | 1, "one device reference dropped");
+        assert_eq!((m.u32(DEVICE_AT + DEVICE_INDICES).unwrap(), m.u32(DEVICE_AT + DEVICE_BASE_VERTEX).unwrap()), (0, 0));
+        assert_eq!(cut_finish(&mut m, &dev), Ok(()), "a second finish");
+        assert_eq!(dev.textures.lock().unwrap().len(), 2, "nothing committed is left to set");
+        assert_eq!(m.u32(INDICES).unwrap(), DEVICE_REF | 1, "no index buffer to release");
+    }
+
+    /// The index buffer's last reference is the body's to drop (its
+    /// destroy); a refused stage stops the cut where the body picks up.
+    #[test]
+    fn a_finish_the_cut_cannot_make_leaves_a_prefix_of_the_body() {
+        let dev = Device::default();
+        let mut m = finish_mem(DEVICE_REF);
+        assert_eq!(cut_finish(&mut m, &dev), Err("release"));
+        assert_eq!(m.u32(INDICES).unwrap(), DEVICE_REF, "the reference left for the body");
+        assert_eq!(m.u32(DEVICE_AT + DEVICE_INDICES).unwrap(), INDICES);
+        assert!(dev.shaders.lock().unwrap().is_empty());
+        let dev = Device::default();
+        dev.refuse.store(true, Ordering::Relaxed);
+        let mut m = finish_mem(2 * DEVICE_REF);
+        assert_eq!(cut_finish(&mut m, &dev), Err("device"));
+        assert_eq!(m.u32(STAGE_COMMITTED).unwrap(), A, "the stage's cache kept for the body's commit");
+        assert_eq!(m.u32(FINISH_CLEARED).unwrap(), 7);
     }
 }

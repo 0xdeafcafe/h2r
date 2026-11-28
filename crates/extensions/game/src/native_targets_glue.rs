@@ -1,6 +1,7 @@
 //! The host of `render_bridge::native_targets`: the scene's target select
-//! and clear made on the shared device without their guest D3D entries
-//! (docs/graphics/framescene.md, "Slice 6").
+//! and clear and the frame's finish made on the shared device without
+//! their guest D3D entries (docs/graphics/framescene.md, "Slice 6";
+//! docs/graphics/retire-d3d-display.md, "The frame step").
 
 use std::sync::{Arc, Mutex};
 
@@ -46,6 +47,20 @@ impl<B: d3d::Backend + Send + 'static> Host for Targets<B> {
 
     fn bound(&self) -> Option<[u32; 8]> {
         self.device.lock().ok().map(|d| d.bound_target())
+    }
+
+    fn texture(&self, mem: &mut dyn GuestMemory, stage: u32, texture: u32) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        let made = device.set_texture(&mut DeviceMemory(mem), stage, texture);
+        drop(device);
+        made.map_or_else(|e| self.refused("a texture", e), |()| true)
+    }
+
+    fn pixel_shader(&self, mem: &mut dyn GuestMemory, handle: u32) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        let made = device.set_pixel_shader(&mut DeviceMemory(mem), handle);
+        drop(device);
+        made.map_or_else(|e| self.refused("a pixel shader", e), |()| true)
     }
 }
 
