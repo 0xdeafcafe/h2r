@@ -7,6 +7,7 @@ use std::sync::LazyLock;
 
 pub mod clock;
 pub mod levels;
+pub mod units;
 
 pub static TABLE: LazyLock<Table> = LazyLock::new(|| {
     let groups = [

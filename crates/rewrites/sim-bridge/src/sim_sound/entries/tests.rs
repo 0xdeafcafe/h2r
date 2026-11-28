@@ -175,6 +175,29 @@ fn the_sound_phase_runs_once_per_tick_number() {
 }
 
 #[test]
+fn a_units_line_end_clears_its_line_slot_with_no_guest_call() {
+    // Object 5, salt 1, a biped; its dialogue state at +0x100.
+    const UNIT: u32 = 0x0001_0005;
+    let (objects, headers, object, dialogue) = (TIME + 0x2000, TIME + 0x3000, TIME + 0x3400, TIME + 0x3800);
+    let t = table(Arc::new(Flat(10.0)));
+    let h = lock(&t).sounds.admit(&mut Rng::new(7), &tags(), Request { owner: Owner::Unit(UNIT), selection: Some((0, 0)), level: 10.0, ..Request::new(TAG) }, 0).unwrap();
+    let mut g = guest(3);
+    g.put_u32(objects + 0x38, 16).put_u32(objects + 0x24, 12).put_u32(objects + 0x44, headers);
+    g.put_u16(headers + 5 * 12, 1).put_u32(headers + 5 * 12 + 8, object);
+    g.put_u16(object + 0x33e, 0x100).put_u32(object + 0x100 + 0x38, TAG.0);
+    g.put_u32(units::DIALOGUE, dialogue).put_u8(dialogue + units::DIALOGUE_ON, 1);
+    let t2 = Arc::clone(&t);
+    let f = move |cx: Cx| -> EntryFuture {
+        let t = Arc::clone(&t2);
+        Box::pin(async move { phase(&cx, &t).await })
+    };
+    let r = entry::testing::run(&f, g, regs(), |c, _| panic!("no guest call: {:#x}", c.target));
+    assert_eq!(r.result, Ok(Ret::new(0, 0)));
+    assert!(!lock(&t).sounds.live(h), "100 ms plays out on tick 3");
+    assert_eq!(r.guest.u32(object + 0x100 + 0x38), Ok(NONE), "the unit forgot its line");
+}
+
+#[test]
 fn the_hash_is_the_same_with_any_host() {
     // Object 5 is live: index 5 of a 16-row array, salt 1.
     const UNIT: u32 = 0x0001_0005;

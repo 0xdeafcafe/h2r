@@ -2,11 +2,11 @@
 //! live in guest memory (docs/engine/sound-instances.md, "Owners").
 //!
 //! `Sounds::step` calls the host synchronously; a unit's dialogue end
-//! (`0xd0dc0`) and its mouth (`0x18c9b0`) are guest calls, which the
-//! phase makes after the step from [`GuestUnits::calls`], in the order the
-//! table asked for them. The script line table's clear is a guest write,
-//! made at once. Both are counted. They become plain Rust calls when the
-//! object store lands, with no change to `Sounds`.
+//! (`0x18c8c0`, ported as `engine::sim_sound::units::line_end`) and its
+//! mouth (`0x18c6a0`, a guest call) run after the step from
+//! [`GuestUnits::calls`], in the order the table asked for them. The script
+//! line table's clear is a guest write, made at once and counted. They
+//! move to the object store when it lands, with no change to `Sounds`.
 
 use std::collections::BTreeSet;
 
@@ -22,19 +22,18 @@ pub const LINES_OFFSET: u32 = 0x128;
 pub const LINE_SLOTS: u32 = 16;
 const NONE: u32 = u32::MAX;
 
-/// A guest call the phase makes after the step.
+/// A unit call the phase makes after the step.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum UnitCall {
-    /// `0xd0dc0`: the unit's line `tag` ended.
+    /// `0x18c8c0`: the unit's line `tag` ended.
     LineEnded { object: u32, tag: TagIndex },
-    /// `0x18c9b0`: the unit's mouth for `tag`'s permutation, `ticks` in.
+    /// `0x18c6a0`: the unit's mouth for `tag`'s permutation, `ticks` in.
     Mouth { object: u32, tag: TagIndex, selection: Selection, ticks: u32 },
 }
 
-/// `sound.owner_guest_calls`, `sound.owner_guest_writes`.
+/// `sound.owner_guest_writes`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct OwnerCounters {
-    pub guest_calls: u64,
     pub guest_writes: u64,
 }
 
@@ -56,11 +55,6 @@ impl<'a> GuestUnits<'a> {
         self.m
     }
 
-    fn call(&mut self, call: UnitCall) {
-        self.counters.guest_calls += 1;
-        self.calls.push(call);
-    }
-
     /// Clear the script line slot that holds `handle`.
     fn clear_line(&mut self, handle: Handle) {
         let Ok(base) = self.m.u32(LINES) else { return };
@@ -80,13 +74,13 @@ impl OwnerHost for GuestUnits<'_> {
 
     fn mouth(&mut self, owner: &Owner, tag: TagIndex, selection: Selection, ticks: u32) {
         if let Some(object) = owner.unit() {
-            self.call(UnitCall::Mouth { object, tag, selection, ticks });
+            self.calls.push(UnitCall::Mouth { object, tag, selection, ticks });
         }
     }
 
     fn ended(&mut self, _: &Sounds, owner: &Owner, handle: Handle, tag: TagIndex, _: Reason) {
         if let Some(object) = owner.unit() {
-            self.call(UnitCall::LineEnded { object, tag });
+            self.calls.push(UnitCall::LineEnded { object, tag });
         }
         if matches!(owner, Owner::ScriptLine(_)) {
             self.clear_line(handle);
@@ -139,7 +133,7 @@ mod tests {
         let ended: Vec<_> = host.calls.iter().filter(|c| matches!(c, UnitCall::LineEnded { .. })).collect();
         assert_eq!(ended, [&UnitCall::LineEnded { object: 0x55, tag: TAG }]);
         assert_eq!(host.calls[0], UnitCall::Mouth { object: 0x55, tag: TAG, selection: Selection { range: 0, permutation: 0, chunk: 0 }, ticks: 1 });
-        assert_eq!(host.counters, OwnerCounters { guest_calls: 2, guest_writes: 0 });
+        assert_eq!(host.counters, OwnerCounters { guest_writes: 0 });
     }
 
     #[test]

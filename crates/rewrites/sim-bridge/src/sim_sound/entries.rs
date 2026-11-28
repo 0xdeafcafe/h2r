@@ -26,6 +26,7 @@ use std::time::Instant;
 use engine::entry::{Cx, EntryResult, GuestCall, Ret};
 use engine::points::{self, Point};
 use engine::sim_sound::clock::system_time;
+use engine::sim_sound::units;
 use engine::{GuestMemory, MemFault};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use sim_sound::chooser;
@@ -57,13 +58,6 @@ pub fn on(switches: &hooks::Switches) -> bool {
 const NONE: u32 = u32::MAX;
 /// `[0x4e6378]`: the channel array the create body leaves 0.
 pub const CHANNELS: u32 = 0x004e_6378;
-/// `[0x4ed28c] + 0x29`: dialogue is on (`0x18c8c0`'s gate).
-pub const DIALOGUE: u32 = 0x004e_d28c;
-pub const DIALOGUE_ON: u32 = 0x29;
-/// `0xbadc0(eax = object, 3)`: the object is a unit.
-pub const OBJECT_IS: u32 = 0x000b_adc0;
-/// `0xd0dc0(eax = unit, tag)`: the unit's line ended.
-pub const UNIT_LINE_ENDED: u32 = 0x000d_0dc0;
 /// `0x18c6a0(owner, payload, tag, range, permutation, seconds)`: the unit's
 /// mouth (`ret 0x18`). It tests the unit itself and reads no payload.
 pub const UNIT_MOUTH: u32 = 0x0018_c6a0;
@@ -323,7 +317,6 @@ impl Table {
             ("sound.rejected_full", c.rejected_full),
             ("sound.refused_no_length", c.refused_no_length),
             ("sound.draws", l.draws),
-            ("sound.owner_guest_calls", l.owner.guest_calls),
             ("sound.owner_guest_writes", l.owner.guest_writes),
             ("sound.pool_reads", l.pool_reads),
             ("sound.unported_entries", l.unported_entries),
@@ -434,18 +427,15 @@ fn permutation_at(m: &dyn GuestMemory, tag: TagIndex, selection: Selection) -> R
     Ok(m.u32(gestalt.wrapping_add(0x2c))?.wrapping_add(16u32.wrapping_mul(permutation as u32)))
 }
 
-/// Make the unit calls the step queued: a line's end through `0x18c8c0`'s
-/// gate and unit test, a mouth through `0x18c6a0`.
+/// Make the unit calls the step queued, in its order: a line's end
+/// through `0x18c8c0`'s gate and unit test ([`units::line_end`]), a mouth
+/// through `0x18c6a0`.
 async fn unit_calls(cx: &Cx, table: &Shared, calls: Vec<UnitCall>) -> Result<(), engine::entry::EntryError> {
     for call in calls {
         match call {
             UnitCall::LineEnded { object, tag } => {
-                let on = cx.read(|m| m.u32(DIALOGUE).and_then(|d| m.u8(d.wrapping_add(DIALOGUE_ON)))).unwrap_or(0) != 0;
-                if !on {
-                    continue;
-                }
-                if cx.call(GuestCall::new(OBJECT_IS).eax(object).args([3])).await?.eax != 0 {
-                    cx.call(GuestCall::new(UNIT_LINE_ENDED).eax(object).args([tag.0])).await?;
+                if cx.write(|m| units::line_end(m, object, tag.0)).is_err() {
+                    lock(table).ledger.refused_unreadable += 1;
                 }
             }
             UnitCall::Mouth { object, tag, selection, ticks } => {
@@ -485,7 +475,6 @@ fn with_units<T>(
         host.gone = gone;
         let out = f(&mut t, &mut host, tick);
         let (calls, counters) = (std::mem::take(&mut host.calls), host.counters);
-        t.ledger.owner.guest_calls += counters.guest_calls;
         t.ledger.owner.guest_writes += counters.guest_writes;
         Ok((out, calls))
     })
