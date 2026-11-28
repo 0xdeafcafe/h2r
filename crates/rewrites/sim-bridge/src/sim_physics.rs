@@ -13,7 +13,8 @@ pub struct NativePhysics;
 /// and the kernels they absorb run as capture arms
 /// (`engine::sim_physics::parity`): the broadphase batch update and the
 /// island integrate, the integrate phase, the deactivation test, the
-/// structure polygon builder and the convex agent's process call answer
+/// structure polygon builder, the convex agent's process call, the
+/// closest-feature query and the add-point call answer
 /// calls themselves once proven, with one call in `AUDIT_EVERY` still
 /// compared with the guest (the integrate's guest answer is its frame
 /// replay); the two unconstrained-motion methods and
@@ -237,6 +238,61 @@ fn install_physics(b: &mut Builder) {
         .context_only()
         .after_feature("sim-observer-resources")
         .after_feature("sim-submix");
+    // The closest-feature query, as the process call.
+    let query = &points::HAVOK_CLOSEST_QUERY;
+    b.raw()
+        .implement(query, PHYSICS, move |cpu, ctx, pc| {
+            if pc == query.base {
+                let step = {
+                    let mut mem = ctx.memory();
+                    parity::query_enter(cpu, &mut mem)
+                };
+                match step {
+                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
+                    Step::Audit(prediction) => {
+                        let observed = ctx.observe_guest_return(cpu, engine::sim_physics::convex_query::ARGS, move |c, ctx| {
+                            parity::query_compare(&prediction, c, &ctx.runtime().memory());
+                        });
+                        if !observed {
+                            parity::query_uncompared();
+                        }
+                    }
+                    Step::Guest => {}
+                }
+            }
+            original(cpu, ctx, pc, false)
+        })
+        .context_only()
+        .after_feature("sim-observer-resources")
+        .after_feature("sim-submix");
+    // The add-point call, as the process call. Cdecl: the return pops
+    // nothing but its address.
+    let add = &points::HAVOK_ADD_POINT;
+    b.raw()
+        .implement(add, PHYSICS, move |cpu, ctx, pc| {
+            if pc == add.base {
+                let step = {
+                    let mut mem = ctx.memory();
+                    parity::point_enter(cpu, &mut mem)
+                };
+                match step {
+                    Step::Answered { target } => return Ok(TransferAbi::ret(target)),
+                    Step::Audit(prediction) => {
+                        let observed = ctx.observe_guest_return(cpu, 0, move |c, ctx| {
+                            parity::point_compare(&prediction, c, &ctx.runtime().memory());
+                        });
+                        if !observed {
+                            parity::point_uncompared();
+                        }
+                    }
+                    Step::Guest => {}
+                }
+            }
+            original(cpu, ctx, pc, false)
+        })
+        .context_only()
+        .after_feature("sim-observer-resources")
+        .after_feature("sim-submix");
     let test = &points::HAVOK_DEACTIVATION_TEST;
     b.raw()
         .implement(test, PHYSICS, move |cpu, ctx, pc| {
@@ -393,7 +449,7 @@ mod tests {
         }
         // The integrate phase and the deactivation test are implementations
         // with no resume sites.
-        for point in [&points::HAVOK_INTEGRATE_PHASE, &points::HAVOK_DEACTIVATION_TEST, &points::HAVOK_STRUCTURE_POLYGON, &points::HAVOK_CONVEX_PROCESS] {
+        for point in [&points::HAVOK_INTEGRATE_PHASE, &points::HAVOK_DEACTIVATION_TEST, &points::HAVOK_STRUCTURE_POLYGON, &points::HAVOK_CONVEX_PROCESS, &points::HAVOK_CLOSEST_QUERY, &points::HAVOK_ADD_POINT] {
             let hook = plan.chains[&point.base].implement.as_ref().unwrap();
             assert_eq!(hook.label, PHYSICS);
             assert!(hook.continuation_sites().0.is_empty(), "{:?}", point.name);
@@ -419,7 +475,7 @@ mod tests {
         assert_eq!(chain.observe_before.len(), 1);
         assert_eq!(
             plan.chains.len(),
-            PHYSICS_PORTS.len() + 10,
+            PHYSICS_PORTS.len() + 12,
             "unexpected extra chains"
         );
     }

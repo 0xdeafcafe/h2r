@@ -586,6 +586,10 @@ points! { ALL;
     /// `0x00412c48` and the biped wrapper's agent call
     /// (docs/engine/havok-convex.md).
     HAVOK_CONVEX_PROCESS @ 0x002e_eb40: [fn(agent: ecx, a: stack 0, b: stack 1, input: stack 2, output: stack 3) ret 16], Hot; "docs/engine/havok-convex.md";
+    /// The convex agents' closest-feature query (docs/engine/havok-convex.md).
+    /// The convex agents' add-point call, cdecl (docs/engine/havok-convex.md).
+    HAVOK_ADD_POINT @ 0x0030_2c70: [fn(a: stack 0, b: stack 1, input: stack 2, point: stack 3, manager: stack 4, slots: stack 5, count: stack 6) -> eax ret 0], Hot; "docs/engine/havok-convex.md";
+    HAVOK_CLOSEST_QUERY @ 0x0030_48a0: [fn(state: ecx, a: stack 0, b: stack 1, transform: stack 2, cache: stack 3, out: stack 4) -> eax ret 20], Hot; "docs/engine/havok-convex.md";
     HAVOK_DEACTIVATION_TEST @ 0x0031_6b30: [fn(island: ecx, out: stack 0, step: stack 1) -> eax ret 8], Hot; "docs/engine/havok-integrate.md";
     /// The island solve, cdecl (docs/engine/havok-step.md, "The island solve").
     HAVOK_ISLAND_SOLVE @ 0x0031_c100: [fn(step: stack 0, info: stack 1, pairs: stack 2, gravity: stack 3, island: stack 4, entities: stack 5, entity_count: stack 6, constraints: stack 7, constraint_count: stack 8) -> eax ret 0], Hot; "docs/engine/havok-step.md";

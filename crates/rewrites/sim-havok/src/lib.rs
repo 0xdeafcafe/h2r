@@ -3,6 +3,8 @@
 
 pub mod array;
 pub mod broadphase;
+pub mod closest;
+pub mod contact_point;
 pub mod convex;
 pub mod deactivation;
 pub mod fp;

@@ -14,8 +14,11 @@ guest-authoritative candidates; the broadphase batch update's, the
 island integrate's, the deactivation test's and the integrate phase's
 take-overs (§9.5, [havok-integrate.md](havok-integrate.md)); the
 structure polygon builder's take-over (slice 4,
-[havok-structure.md](havok-structure.md)); the convex agent's
-separated-pair take-over (slice 5, [havok-convex.md](havok-convex.md));
+[havok-structure.md](havok-structure.md)); slice 5's take-overs
+([havok-convex.md](havok-convex.md)): the convex agent's separated
+pairs, the closest-feature query whole (its shapes' virtuals, triangle
+case `303dd0` and penetration call `30a6b0` in Rust) and the add-point
+call on a point that moves its slot;
 the island
 solve entry `31c100` (slice 2). The per-function `native_havok_solver`,
 `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`
@@ -23,10 +26,11 @@ switches are retired; their bodies are differential oracles. The ladder
 beyond the differential tests (disc sweep, run parity, the behaviour
 suites) and the timing gate are open: the collide phase `30fcb0`, the
 integrate phase's declined paths (pending work, listeners, splits, island
-deactivation), the convex agent's closest-feature query (ported with
-its triangle case `303dd0` and compared, no arm; the penetration call
-`30a6b0` ported with its expanding polytope), manifold and contact commit and the other
-agent/narrowphase leaves still run lifted, and
+deactivation), the manifold refresh `302eb0` (ported and compared, no
+arm), a new contact point (the add-point call and its cut `302a10` are
+ported and compared; the manager's add, the contact commit `318c10` with
+Halo's callback, is not) and the other agent/narrowphase leaves still
+run lifted, and
 slice 3's runs, lanes and worker solves are not built (each island reads
 the solver buffer bytes the island before it left, so a run's islands
 are not independent without a read check).
@@ -807,6 +811,8 @@ since start and whether the arm is proven or ended since the map load.
 | `physics.integrate` | `30fef0`, `ret 4` | take-over |
 | `physics.structure.polygon` | `1edd00`, `ret 0x14` | take-over |
 | `physics.agent.convex` | `2eeb40`, `ret 0x10` | take-over |
+| `physics.agent.query` | `3048a0`, `ret 0x14` | take-over |
+| `physics.agent.point` | `302c70`, `ret` | take-over |
 
 - **Take-over.** The broadphase arm is one `implement` at `2e0350`.
   `broadphase::capture` predicts the whole `CpuAbi` but `eip` and every
@@ -855,6 +861,15 @@ since start and whether the arm is proven or ended since the map load.
   monitor head, edx the manager word, ebx, ebp, esi, edi and esp;
   declines `memory`, `closest` (the query path), `points`, `float`,
   `monitor`, `unobserved` (`havok.islands`'s `convex`).
+- **Closest-feature query.** The same at `3048a0`, inside the guest's
+  process call: the whole query with the shapes' virtuals, the triangle
+  case and its penetration call in Rust; every store above esp with eax,
+  ecx and edx the query's; declines `memory`, `shape` (a virtual with no
+  port), `float`, `monitor`, `unobserved` (`havok.islands`'s `query`).
+- **Add-point.** The same at `302c70`, a point that moves the slot it
+  matches: the slot's words with eax the slot, ecx and edx the point's
+  distance and weight; declines `memory`, `commit` (the manager adds the
+  contact), `float`, `unobserved` (`havok.islands`'s `point`).
 - **Declines.** A capture that refuses the state (float environment,
   array capacity, an unknown node), an apply that refuses its spans (an
   access trap, a read-only page, a span across mappings, two spans on the

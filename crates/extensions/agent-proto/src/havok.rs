@@ -247,6 +247,10 @@ pub struct Islands {
     pub polygon: TakeoverArm,
     /// The convex agent's process call arm (`physics.agent.convex`).
     pub convex: TakeoverArm,
+    /// The closest-feature query arm (`physics.agent.query`).
+    pub query: TakeoverArm,
+    /// The add-point call arm (`physics.agent.point`).
+    pub point: TakeoverArm,
 }
 
 /// A take-over arm: calls since the process started, and its take-over
@@ -386,11 +390,21 @@ mod tests {
                 "fallbacks": [{"reason": "closest", "count": 30}],
                 "proven": true, "ended": false,
             },
+            "query": {
+                "answered": 0, "matched": 30, "mismatched": 0, "declined": 2,
+                "fallbacks": [{"reason": "shape", "count": 2}],
+                "proven": false, "ended": false,
+            },
+            "point": {
+                "answered": 0, "matched": 8, "mismatched": 0, "declined": 4,
+                "fallbacks": [{"reason": "commit", "count": 4}],
+                "proven": false, "ended": false,
+            },
         });
         let i: Islands = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!((i.solved, i.declined, i.fallbacks.len()), (40, 3, 2));
         assert_eq!((i.integrate.answered, i.integrate.declined, i.integrate.proven), (900, 2, true));
-        assert_eq!((i.deactivation.matched, i.phase.declined, i.polygon.answered, i.convex.declined), (12, 5, 70, 30));
+        assert_eq!((i.deactivation.matched, i.phase.declined, i.polygon.answered, i.convex.declined, i.query.declined, i.point.declined), (12, 5, 70, 30, 2, 4));
         assert_eq!(serde_json::to_value(&i).unwrap(), wire);
         assert!(serde_json::from_value::<IslandsParams>(json!({})).is_ok());
         assert!(serde_json::from_value::<IslandsParams>(json!({"reset": true})).is_err());

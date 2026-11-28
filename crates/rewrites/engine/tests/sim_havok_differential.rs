@@ -36,6 +36,13 @@ const BUILD_STUB: u32 = 0x0060_0f00;
 /// and the ID appended to `REMOVE_LOG` (a count, then pairs).
 const REMOVE_STUB: u32 = 0x0060_0f40;
 const REMOVE_LOG: u32 = 0x0078_f000;
+/// A contact manager's add the harness answers: `ret 0x10`, eax the word
+/// at `ADD_NEXT` (then raised by one), the manager, the four arguments
+/// and the contact's eight words appended to `ADD_LOG` (a count, then
+/// thirteen words each).
+const ADD_STUB: u32 = 0x0060_0f80;
+const ADD_LOG: u32 = 0x0079_0000;
+const ADD_NEXT: u32 = 0x0079_8000;
 const BUFFER_OBJECT: u32 = 0x0060_0000;
 const BUFFER: u32 = 0x0062_0000;
 const BUFFER_BYTES: u32 = 0x8000;
@@ -102,6 +109,23 @@ fn run(code: &mut lifted::Original, cpu: &mut Cpu, mem: &mut FlatMemory) {
             word(mem, REMOVE_LOG, n + 1);
             cpu.eip = mem.read_u32(sp).unwrap();
             cpu.gpr[4] = sp + 8;
+            continue;
+        }
+        if cpu.eip == ADD_STUB {
+            let sp = cpu.gpr[4];
+            let n = mem.read_u32(ADD_LOG).unwrap();
+            let args: [u32; 4] = std::array::from_fn(|i| mem.read_u32(sp + 4 + 4 * i as u32).unwrap());
+            let contact: [u32; 8] = std::array::from_fn(|i| mem.read_u32(args[3] + 4 * i as u32).unwrap());
+            let at = ADD_LOG + 4 + 52 * n;
+            for (k, v) in std::iter::once(cpu.gpr[1]).chain(args).chain(contact).enumerate() {
+                word(mem, at + 4 * k as u32, v);
+            }
+            word(mem, ADD_LOG, n + 1);
+            let id = mem.read_u32(ADD_NEXT).unwrap();
+            word(mem, ADD_NEXT, id.wrapping_add(1));
+            cpu.gpr[0] = id;
+            cpu.eip = mem.read_u32(sp).unwrap();
+            cpu.gpr[4] = sp + 20;
             continue;
         }
         lifted::code::step(code, cpu, mem).unwrap_or_else(|e| panic!("{e}"));
@@ -3425,4 +3449,480 @@ fn the_penetration_call_matches_the_lifted_penetration_call() {
     }
     let answered: u32 = answers.values().sum();
     assert!(answered >= 64 && answers.len() >= 2, "{answers:?}, {declined} declined");
+}
+
+// The biped wrapper's `vt[+0x34]` and the closest-feature query arm
+// (sim_havok::closest, engine::sim_physics::convex_query,
+// docs/engine/havok-convex.md, "The query arm"): the query with every
+// call out in Rust against the lifted query with every call out lifted.
+
+use engine::sim_physics::convex_query as query_arm;
+use sim_havok::closest::{self as closest, Fallback as QueryDecline};
+
+/// Havok's biped wrapper vtable (type `0x17`).
+const BIPED_VTABLE: u32 = 0x0041_22f0;
+/// A vtable whose `vt[+0x30]` and `vt[+0x34]` have no port.
+const UNPORTED_VTABLE: u32 = 0x0077_6000;
+
+/// A biped wrapper around a capsule at `wrapper + 0x80`, its IDs the
+/// capsule's.
+fn seed_biped(r: &mut Rng, m: &mut FlatMemory, at: u32, seed: u64) -> Vec<u16> {
+    let child = at + 0x80;
+    seed_capsule(r, m, child, seed);
+    word(m, at, BIPED_VTABLE);
+    word(m, at + shape::biped_field::CHILD, child);
+    let offset = seed_vector(r, m, at + shape::biped_field::OFFSET);
+    if seed % 16 == 5 {
+        put_lanes(m, at + shape::biped_field::OFFSET, [0.0, 0.0, 0.0, offset[3]]);
+    }
+    vec![0, 0x10]
+}
+
+/// The wrapper's vertices: the child's by the cached IDs, moved by the
+/// offset with each `w` through the x87. eax, ecx and edx are not read by
+/// the query and not compared; ebx, ebp, esi, edi, esp past `ret 0xc`,
+/// the MXCSR, the x87 registers, status and tags and every byte outside
+/// the frame match the lifted function.
+#[test]
+fn the_biped_vertices_match_the_lifted_vertices() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = support_code(image);
+    for f in [shape::BIPED_VERTICES, shape::CAPSULE_VERTICES] {
+        code.prime(f);
+    }
+    let mut counts = std::collections::BTreeMap::new();
+    for seed in 0..1024u64 {
+        let mut r = Rng(0x2dbd_b000 + seed);
+        let mut mem = base.clone();
+        seed_biped(&mut r, &mut mem, SHAPE, seed / 8);
+        let count = match seed % 8 {
+            0 => 0,
+            1 => u32::MAX,
+            _ => 1 + r.below(2),
+        };
+        let ids = [r.below(2) * 0x10, r.below(2) * 0x10];
+        word(&mut mem, SHAPE_DIR, ids[0] | ids[1] << 16);
+        for i in 0..2 {
+            seed_vector(&mut r, &mut mem, SHAPE_OUT + 16 * i);
+        }
+        if seed % 16 == 3 {
+            // A signalling NaN in end A's `w` comes back quiet.
+            word(&mut mem, SHAPE + 0x80 + 0x1c, 0x7f80_0001);
+        }
+        let x87 = support_x87(&mut r, seed);
+        let fpu = test_fpu(seed);
+        let why = format!("biped vertices seed {seed} ({count})");
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let (mut mxcsr, mut x) = (fpu.mxcsr, x87);
+        shape::biped_vertices(&mut j, SHAPE, SHAPE_DIR, count, SHAPE_OUT, STACK, &mut mxcsr, &mut x, |j, child, _, _, _| {
+            shape::capsule_vertices(j, child, SHAPE_DIR, count, SHAPE_OUT)
+        })
+        .unwrap_or_else(|f| panic!("{why}: declined {f:?}"));
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        for (i, v) in [EXIT, SHAPE_DIR, count, SHAPE_OUT].into_iter().enumerate() {
+            word(&mut mem, STACK + 4 * i as u32, v);
+        }
+        let mut cpu = Cpu { gpr: [0, SHAPE, SUPPORT_EDX, 0x1111, STACK, 0x2222, 0x3333, 0x4444], eip: shape::BIPED_VERTICES, ..Cpu::default() };
+        cpu.mxcsr = fpu.mxcsr;
+        cpu.x87 = ir::interp::X87 {
+            st: x87.st,
+            control: x87.control,
+            status: x87.status,
+            tag: x87.tag,
+            opcode: x87.opcode,
+            instruction_pointer: x87.instruction_pointer,
+            data_pointer: x87.data_pointer,
+            instruction_selector: x87.instruction_selector,
+            data_selector: x87.data_selector,
+        };
+        run(&mut code, &mut cpu, &mut mem);
+        let after = abi_cpu(&cpu);
+        assert_eq!((after.ebx, after.ebp, after.esi, after.edi, after.esp), (0x1111, 0x2222, 0x3333, 0x4444, STACK + 16), "{why}: kept, ret 0xc");
+        assert_eq!(after.mxcsr, mxcsr, "{why}: mxcsr");
+        assert_eq!((after.x87.st, after.x87.status, after.x87.tag), (x.st, x.status, x.tag), "{why}: x87");
+        clear_frame([&mut mem, &mut expected], 12);
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+        *counts.entry(count.min(3)).or_insert(0) += 1;
+    }
+    assert!(counts.len() >= 3, "{counts:?}");
+}
+
+/// A capsule, a convex polygon or a biped wrapper around a capsule.
+fn seed_arm_shape(r: &mut Rng, m: &mut FlatMemory, at: u32, kind: u64, seed: u64) -> Vec<u16> {
+    match kind % 3 {
+        0 => seed_query_shape(r, m, at, false),
+        1 => seed_query_shape(r, m, at, true),
+        _ => seed_biped(r, m, at, seed),
+    }
+}
+
+const QUERY_ARGS: [u32; 5] = [QUERY_A, QUERY_B, QUERY_T, QUERY_CACHE, QUERY_OUT];
+
+/// A seeded query as the query test lays it out, over every pair of
+/// shape kinds, the stall byte clear in one seed of four so stalls reach
+/// the triangle case and its penetration call; the stack holds the
+/// return and the five arguments.
+fn query_world(r: &mut Rng, mem: &mut FlatMemory, seed: u64) {
+    let ids_a = seed_arm_shape(r, mem, QUERY_A, seed, seed);
+    let ids_b = seed_arm_shape(r, mem, QUERY_B, seed / 3, seed);
+    for i in 0..4 {
+        seed_vector(r, mem, QUERY_T + 16 * i);
+    }
+    if seed % 4 == 3 {
+        for (i, column) in [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]].into_iter().enumerate() {
+            put_lanes(mem, QUERY_T + 16 * i as u32, column);
+        }
+    }
+    let mut pick = |ids: &[u16], most: usize| -> Vec<u16> {
+        let n = 1 + r.below(ids.len().min(most) as u32) as usize;
+        let start = r.below(ids.len() as u32) as usize;
+        (0..n).map(|k| ids[(start + k) % ids.len()]).collect()
+    };
+    let cached_a = pick(&ids_a, 3);
+    let cached_b = pick(&ids_b, 4 - cached_a.len());
+    let mut halves = [0u16; 8];
+    for (slot, id) in halves.iter_mut().zip(cached_a.iter().chain(&cached_b)) {
+        *slot = *id;
+    }
+    for i in 0..4 {
+        word(mem, QUERY_CACHE + 4 * i as u32, u32::from(halves[2 * i]) | u32::from(halves[2 * i + 1]) << 16);
+    }
+    let (max_a, max_b) = (2 + r.below(3), 2 + r.below(3));
+    word(mem, QUERY_CACHE + 8, cached_a.len() as u32 | (cached_b.len() as u32) << 8 | max_a << 16 | max_b << 24);
+    for off in [gjk::state::NORMAL, gjk::state::SIDES] {
+        seed_vector(r, mem, GJK_STATE + off);
+    }
+    word(mem, GJK_STATE + gjk::state::LAST_B, 1 + r.below(3));
+    word(mem, GJK_STATE + gjk::state::SETTLE, if seed % 4 == 1 { 0 } else { 1 + r.below(255) });
+    word(mem, MONITOR_HEAD, 0);
+    word(mem, MONITOR_END, 0);
+    for (i, v) in std::iter::once(EXIT).chain(QUERY_ARGS).enumerate() {
+        word(mem, STACK + 4 * i as u32, v);
+    }
+}
+
+fn query_code_all(image: &Image) -> lifted::Original {
+    let mut code = query_code(image);
+    for f in [TRIANGLE_CASE, PENETRATION, 0x309b50, shape::BIPED_SUPPORT, shape::BIPED_VERTICES] {
+        code.prime(f);
+    }
+    code
+}
+
+fn query_cpu(fpu: Fpu) -> runtime::CpuAbi {
+    let mut cpu = runtime::CpuAbi { ecx: GJK_STATE, ebx: 0x1111, ebp: 0x2222, esi: 0x3333, edi: 0x4444, esp: STACK, mxcsr: fpu.mxcsr, ..runtime::CpuAbi::default() };
+    cpu.x87.control = fpu.control;
+    cpu
+}
+
+/// The arm end to end on capsules, polygons and biped wrappers: an
+/// audited query's prediction matches the lifted answer (eax, ecx, edx,
+/// the kept registers, esp past `ret 0x14`, every predicted word), and an
+/// applied one leaves every byte outside the dead stack as the lifted
+/// query does, the triangle case and the penetration call included.
+#[test]
+fn the_query_arm_answers_as_the_lifted_query() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = query_code_all(image);
+    let (mut answers, mut armed, mut memory) = (std::collections::BTreeMap::new(), 0, 0);
+    for seed in 0..1024u64 {
+        let mut r = Rng(0x3048_a000 + seed);
+        let mut mem = base.clone();
+        query_world(&mut r, &mut mem, seed);
+        let fpu = test_fpu(seed);
+        let why = format!("seed {seed} {fpu:x?}");
+        let cpu = query_cpu(fpu);
+        let prediction = match query_arm::capture(&cpu, &guest(&mem)) {
+            Ok(p) => p,
+            // An array past the port's bounds, or a float a leaf refuses:
+            // rare. A shape or monitor decline is a wiring fault.
+            Err(QueryDecline::Memory | QueryDecline::Float) => {
+                memory += 1;
+                continue;
+            }
+            Err(f) => panic!("{why}: declined {f:?}"),
+        };
+        let mut lifted = mem.clone();
+        let after = run_this(&mut code, &mut lifted, 0x3048a0, GJK_STATE, &QUERY_ARGS, fpu);
+        assert_eq!((after.eax, after.ecx, after.edx), (prediction.query.eax, prediction.query.ecx, prediction.query.edx), "{why}: eax, ecx, edx");
+        assert!(prediction.matches(&after, &guest(&lifted)), "{why}: the audit matches the lifted answer");
+        let mut applied = guest(&mem);
+        let mut regs = cpu;
+        assert!(prediction.apply(&mut regs, &mut applied), "{why}");
+        assert_eq!((regs.ebx, regs.ebp, regs.esi, regs.edi, regs.esp), (0x1111, 0x2222, 0x3333, 0x4444, STACK + 0x18), "{why}: kept, ret 0x14");
+        let start = applied.mappings()[0].physical_start as usize;
+        let mut model = FlatMemory { bytes: applied.physical_ram()[start..start + RAM].to_vec(), ..base.clone() };
+        for m in [&mut lifted, &mut model] {
+            m.bytes[(STACK - query_arm::DEAD_STACK) as usize..(STACK + 4 + query_arm::ARGS) as usize].fill(0);
+        }
+        assert_eq!(first_difference(&lifted, &model), None, "{why}: first different byte");
+        armed += u32::from(seed % 4 == 1);
+        *answers.entry(prediction.query.eax).or_insert(0) += 1;
+    }
+    assert!(answers.len() >= 2 && armed > 128 && memory < 64, "{answers:?}, {armed} with the stall byte clear, {memory} declined");
+}
+
+/// An unported shape virtual, an unmasked MXCSR, the monitor stream and
+/// an unmapped cache: declined with nothing written, each reason counted.
+#[test]
+fn queries_the_model_does_not_cover_are_declined_and_counted() {
+    let Some((_, base)) = ram() else { return };
+    let cases: [(QueryDecline, fn(&mut FlatMemory, &mut runtime::CpuAbi)); 4] = [
+        (QueryDecline::Shape, |m, _| {
+            word(m, UNPORTED_VTABLE + closest::SUPPORT, 0x0012_3450);
+            word(m, UNPORTED_VTABLE + closest::VERTICES, 0x0012_3460);
+            word(m, QUERY_A, UNPORTED_VTABLE);
+        }),
+        (QueryDecline::Float, |_, cpu| cpu.mxcsr = 0x1f00),
+        (QueryDecline::Monitor, |m, _| word(m, MONITOR_END, 0x0060_0900)),
+        (QueryDecline::Memory, |m, _| word(m, STACK + 16, 0x00ff_fff0 + RAM as u32)),
+    ];
+    for (reason, spoil) in cases {
+        let mut r = Rng(0xdec6_0000 + reason as u64);
+        let mut mem = base.clone();
+        query_world(&mut r, &mut mem, 0);
+        let mut cpu = query_cpu(Fpu { mxcsr: 0x1f80, control: 0x027f });
+        spoil(&mut mem, &mut cpu);
+        let mut g = guest(&mem);
+        let index = QueryDecline::ALL.iter().position(|f| *f == reason).unwrap();
+        let before = closest::fallbacks()[index].1;
+        let declined = parity::status()[9].3;
+        assert!(matches!(parity::query_enter(&mut cpu, &mut g), Step::Guest), "{reason:?}");
+        assert!(closest::fallbacks()[index].1 > before, "{reason:?} counted");
+        assert!(parity::status()[9].3 > declined, "{reason:?} counted on the arm");
+        assert_eq!(cpu.esp, STACK, "{reason:?}: the frame is the guest's");
+        let start = g.mappings()[0].physical_start as usize;
+        assert!(g.physical_ram()[start..start + RAM] == mem.bytes[..], "{reason:?}: nothing written");
+    }
+}
+
+// The add-point call `0x00302c70` with its cut `0x00302a10`
+// (sim_havok::manifold::add_point, docs/engine/havok-convex.md, "The
+// add-point call") against the lifted functions, the manager's add and
+// removal answered by `ADD_STUB` and `REMOVE_STUB`; then its arm.
+
+use engine::sim_physics::contact_point as point_arm;
+use sim_havok::contact_point::{self as contact_point, Fallback as PointDecline};
+use sim_havok::manifold::{Added, PointArgs, PointCalls};
+
+const PT_A: u32 = 0x007a_0000;
+const PT_B: u32 = 0x007a_0100;
+const PT_MOTION_A: u32 = 0x007a_1000;
+const PT_MOTION_B: u32 = 0x007a_1100;
+const PT_INPUT: u32 = 0x007a_2000;
+const PT_TOLERANCES: u32 = 0x007a_2100;
+const PT_POINT: u32 = 0x007a_3000;
+const PT_SLOTS: u32 = 0x007a_4000;
+const PT_COUNT: u32 = 0x007a_4200;
+const PT_MANAGER: u32 = 0x007a_5000;
+const PT_VTABLE: u32 = 0x007a_5100;
+const PT_ARGS: [u32; 7] = [PT_A, PT_B, PT_INPUT, PT_POINT, PT_MANAGER, PT_SLOTS, PT_COUNT];
+
+fn point_code(image: &Image) -> lifted::Original {
+    let mut code = image.original();
+    for f in [0x302c70, 0x302a10, 0x2da610] {
+        code.prime(f);
+    }
+    code
+}
+
+/// The stubs' logs on the journal, word for word as the harness writes them.
+struct StubManager;
+
+impl PointCalls for StubManager {
+    fn add(&mut self, j: &mut Journal, manager: u32, args: [u32; 4], _: u32) -> Result<u32, sim_havok::convex::Fallback> {
+        let n = j.get(ADD_LOG).unwrap();
+        let contact: [u32; 8] = std::array::from_fn(|i| j.get(args[3] + 4 * i as u32).unwrap());
+        let at = ADD_LOG + 4 + 52 * n;
+        for (k, v) in std::iter::once(manager).chain(args).chain(contact).enumerate() {
+            j.put(at + 4 * k as u32, v).unwrap();
+        }
+        j.put(ADD_LOG, n + 1).unwrap();
+        let id = j.get(ADD_NEXT).unwrap();
+        j.put(ADD_NEXT, id.wrapping_add(1)).unwrap();
+        Ok(id)
+    }
+
+    fn remove(&mut self, j: &mut Journal, manager: u32, id: u32, esp: u32) -> Result<(), sim_havok::convex::Fallback> {
+        manifold::Calls::remove(&mut ManifoldCalls, j, manager, id, esp)
+    }
+}
+
+/// A pair of seeded motions, zero to five slots of `count`, a new point
+/// that lies near one slot in most seeds (its normal near the slot's in
+/// most of those), and the manager's stubs; the stack holds the return
+/// and the seven arguments.
+fn point_world(r: &mut Rng, m: &mut FlatMemory, seed: u64) {
+    word(m, PT_A + manifold::COLLIDABLE_MOTION, PT_MOTION_A);
+    word(m, PT_B + manifold::COLLIDABLE_MOTION, PT_MOTION_B);
+    for i in 0..4 {
+        seed_vector(r, m, PT_MOTION_A + manifold::MOTION_TRANSFORM + 16 * i);
+        seed_vector(r, m, PT_MOTION_B + manifold::MOTION_TRANSFORM + 16 * i);
+    }
+    word(m, PT_INPUT + manifold::INPUT_TOLERANCES, PT_TOLERANCES);
+    word(m, PT_TOLERANCES + manifold::TOLERANCE_MATCH, bits(r, 0.0, 0.5));
+    let count = match seed % 8 {
+        6 => 4,
+        7 => 5,
+        _ => r.below(5),
+    };
+    word(m, PT_COUNT, count);
+    for i in 0..6 {
+        let s = PT_SLOTS + manifold::slot::BYTES * i;
+        seed_vector(r, m, s);
+        seed_vector(r, m, s + manifold::slot::POINT_B);
+        let id = if seed % 16 == 13 && i == 0 { 0x7f80_0001 } else { 0x3f00_0000 | r.below(0x100) };
+        word(m, s + manifold::slot::ID, id);
+        seed_vector(r, m, s + manifold::slot::NORMAL);
+    }
+    let near = r.below(count.max(1));
+    let jitter = if r.below(4) == 0 { 2.0 } else { 0.05 };
+    let at = PT_SLOTS + manifold::slot::BYTES * near;
+    let lanes = |m: &FlatMemory, a: u32| -> [f32; 4] { std::array::from_fn(|k| f32::from_bits(m.read_u32(a + 4 * k as u32).unwrap())) };
+    let slot_a = lanes(m, at);
+    put_lanes(m, PT_POINT + manifold::point::WORLD_A, slot_a.map(|x| x + float(r, -jitter, jitter)));
+    let slot_n = lanes(m, at + manifold::slot::NORMAL);
+    let tilt = if r.below(3) == 0 { 0.5 } else { 0.02 };
+    put_lanes(m, PT_POINT + manifold::point::NORMAL, slot_n.map(|x| x + float(r, -tilt, tilt)));
+    seed_vector(r, m, PT_POINT + manifold::point::LOCAL_B);
+    word(m, PT_POINT + manifold::point::DISTANCE, bits(r, -0.5, 0.5));
+    word(m, PT_POINT + manifold::point::WEIGHT, bits(r, 0.0, 1.0));
+    word(m, PT_MANAGER, PT_VTABLE);
+    word(m, PT_VTABLE + 4, ADD_STUB);
+    word(m, PT_VTABLE + 8, REMOVE_STUB);
+    word(m, ADD_LOG, 0);
+    word(m, REMOVE_LOG, 0);
+    word(m, ADD_NEXT, if seed % 16 == 9 { 0xffff } else { 0x5a5a_0000 | r.below(0x8000) });
+    for (i, v) in std::iter::once(EXIT).chain(PT_ARGS).enumerate() {
+        word(m, STACK + 4 * i as u32, v);
+    }
+}
+
+fn point_args() -> PointArgs {
+    PointArgs { a: PT_A, b: PT_B, input: PT_INPUT, point: PT_POINT, manager: PT_MANAGER, slots: PT_SLOTS, count: PT_COUNT, esp: STACK }
+}
+
+/// Seeded new points against zero to five slots: moved, taken, refused
+/// and cut back to four. eax equals the lifted call's (ecx and edx too
+/// where no call out came last), ebx, ebp, esi and edi are kept, and
+/// every byte outside the frame (the slots, the count, the stubs' logs)
+/// matches, under every rounding mode.
+#[test]
+fn the_add_point_call_matches_the_lifted_call() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = point_code(image);
+    let mut exits = std::collections::BTreeMap::new();
+    for seed in 0..1024u64 {
+        let mut r = Rng(0x302c_0000 + seed);
+        let mut mem = base.clone();
+        point_world(&mut r, &mut mem, seed);
+        let fpu = test_fpu(seed);
+        let why = format!("seed {seed} {fpu:x?}");
+        let before = mem.clone();
+        let view = Flat(&before);
+        let mut j = Journal::new(&view);
+        let added = manifold::add_point(&mut j, &point_args(), fpu, &mut StubManager).unwrap_or_else(|f| panic!("{why}: declined {f:?}"));
+        let mut expected = before.clone();
+        apply(&mut expected, j);
+        let after = run_this(&mut code, &mut mem, 0x302c70, 0, &PT_ARGS, fpu);
+        let kind = match added {
+            Added::Moved { slot, ecx, edx } => {
+                assert_eq!((after.eax, after.ecx, after.edx), (slot, ecx, edx), "{why}: moved");
+                "moved"
+            }
+            Added::Refused { eax } => {
+                assert_eq!(after.eax, eax, "{why}: refused");
+                "refused"
+            }
+            Added::Taken { count, id } => {
+                assert_eq!((after.eax, after.ecx, after.edx), (count, count, id), "{why}: taken");
+                "taken"
+            }
+            Added::Cut { count } => {
+                assert_eq!(after.eax, count, "{why}: cut");
+                "cut"
+            }
+        };
+        assert_eq!((after.ebx, after.ebp, after.esi, after.edi, after.esp), (0x1111, 0x2222, 0x3333, 0x4444, STACK + 4), "{why}: kept, ret");
+        clear_frame([&mut mem, &mut expected], 4 * PT_ARGS.len() as u32);
+        assert_eq!(first_difference(&mem, &expected), None, "{why}: first different byte");
+        *exits.entry(kind).or_insert(0) += 1;
+    }
+    assert!(exits.len() == 4 && exits.values().all(|&n| n >= 16), "{exits:?}");
+}
+
+fn point_cpu(fpu: Fpu) -> runtime::CpuAbi {
+    let mut cpu = runtime::CpuAbi { ebx: 0x1111, ebp: 0x2222, esi: 0x3333, edi: 0x4444, esp: STACK, mxcsr: fpu.mxcsr, ..runtime::CpuAbi::default() };
+    cpu.x87.control = fpu.control;
+    cpu
+}
+
+/// The arm end to end: a moved point's prediction matches the lifted
+/// answer and an applied one leaves memory as it does; a point the
+/// manager must add declines (`commit`).
+#[test]
+fn the_add_point_arm_answers_as_the_lifted_call() {
+    let Some((image, base)) = ram() else { return };
+    let mut code = point_code(image);
+    let (mut moved, mut committed) = (0, 0);
+    for seed in 0..256u64 {
+        let mut r = Rng(0x302c_8000 + seed);
+        let mut mem = base.clone();
+        point_world(&mut r, &mut mem, seed);
+        let fpu = Fpu { mxcsr: 0x1f80 | ((seed % 4) as u32) << 13, control: 0x027f };
+        let cpu = point_cpu(fpu);
+        let prediction = match point_arm::capture(&cpu, &guest(&mem)) {
+            Ok(p) => p,
+            Err(PointDecline::Commit) => {
+                committed += 1;
+                continue;
+            }
+            Err(f) => panic!("seed {seed}: declined {f:?}"),
+        };
+        let mut lifted = mem.clone();
+        let after = run_this(&mut code, &mut lifted, 0x302c70, 0, &PT_ARGS, fpu);
+        assert!(prediction.matches(&after, &guest(&lifted)), "seed {seed}: the audit matches the lifted answer");
+        let mut applied = guest(&mem);
+        let mut regs = cpu;
+        assert!(prediction.apply(&mut regs, &mut applied), "seed {seed}");
+        assert_eq!((regs.eax, regs.esp), (prediction.moved.slot, STACK + 4), "seed {seed}");
+        let start = applied.mappings()[0].physical_start as usize;
+        let mut model = FlatMemory { bytes: applied.physical_ram()[start..start + RAM].to_vec(), ..base.clone() };
+        clear_frame([&mut lifted, &mut model], 4 * PT_ARGS.len() as u32);
+        assert_eq!(first_difference(&lifted, &model), None, "seed {seed}: first different byte");
+        moved += 1;
+    }
+    assert!(moved > 32 && committed > 32, "{moved} moved, {committed} committed");
+}
+
+/// A point no slot matches, an unmasked MXCSR and an unmapped count:
+/// declined with nothing written, each reason counted.
+#[test]
+fn add_points_the_model_does_not_cover_are_declined_and_counted() {
+    let Some((_, base)) = ram() else { return };
+    let cases: [(PointDecline, fn(&mut FlatMemory, &mut runtime::CpuAbi)); 3] = [
+        (PointDecline::Commit, |m, _| word(m, PT_TOLERANCES + manifold::TOLERANCE_MATCH, 0)),
+        (PointDecline::Float, |_, cpu| cpu.mxcsr = 0x1f00),
+        (PointDecline::Memory, |m, _| word(m, STACK + 28, 0x00ff_fff0 + RAM as u32)),
+    ];
+    for (reason, spoil) in cases {
+        let mut r = Rng(0xdec7_0000 + reason as u64);
+        let mut mem = base.clone();
+        point_world(&mut r, &mut mem, 0);
+        let mut cpu = point_cpu(Fpu { mxcsr: 0x1f80, control: 0x027f });
+        spoil(&mut mem, &mut cpu);
+        let mut g = guest(&mem);
+        let index = PointDecline::ALL.iter().position(|f| *f == reason).unwrap();
+        let before = contact_point::fallbacks()[index].1;
+        let declined = parity::status()[10].3;
+        assert!(matches!(parity::point_enter(&mut cpu, &mut g), Step::Guest), "{reason:?}");
+        assert!(contact_point::fallbacks()[index].1 > before, "{reason:?} counted");
+        assert!(parity::status()[10].3 > declined, "{reason:?} counted on the arm");
+        assert_eq!(cpu.esp, STACK, "{reason:?}: the frame is the guest's");
+        let start = g.mappings()[0].physical_start as usize;
+        assert!(g.physical_ram()[start..start + RAM] == mem.bytes[..], "{reason:?}: nothing written");
+    }
 }

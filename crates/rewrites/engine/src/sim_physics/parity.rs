@@ -28,7 +28,12 @@
 //! `sim_havok::integrate_phase`), and so do the structure polygon
 //! builder's (`0x1edd00`, `structure_polygon`, `sim_havok::structure`) and
 //! the convex agent's process call's (`0x2eeb40`, `convex_agent`,
-//! `sim_havok::convex`), which answers the separated-pair path.
+//! `sim_havok::convex`), which answers the separated-pair path, and the
+//! closest-feature query's (`0x3048a0`, `convex_query`,
+//! `sim_havok::closest`), which answers the whole query, the triangle case
+//! and its penetration call included, and the add-point call's
+//! (`0x302c70`, `contact_point`, `sim_havok::contact_point`), which
+//! answers a point that moves the slot it matches.
 //!
 //! The two motion arms and the MOPP box arm stay compare-only. A motion
 //! prediction holds `esp`, the four callee-saved registers and the body's
@@ -37,7 +42,7 @@
 //! `eflags` is not modelled, and no differential test pins it, so an
 //! applied motion could not be shown to leave the guest's registers.
 
-use super::{broadphase, convex_agent, deactivation, integrate_phase, island_integrate, motion, structure_polygon};
+use super::{broadphase, contact_point, convex_agent, convex_query, deactivation, integrate_phase, island_integrate, motion, structure_polygon};
 use crate::sim_collision::mopp_box;
 use runtime::{CpuAbi, Guest};
 use std::cell::RefCell;
@@ -122,8 +127,10 @@ pub static DEACTIVATION: Arm = Arm::new("physics.island.deactivation");
 pub static INTEGRATE_PHASE: Arm = Arm::new("physics.integrate");
 pub static STRUCTURE_POLYGON: Arm = Arm::new("physics.structure.polygon");
 pub static CONVEX_AGENT: Arm = Arm::new("physics.agent.convex");
+pub static CONVEX_QUERY: Arm = Arm::new("physics.agent.query");
+pub static CONTACT_POINT: Arm = Arm::new("physics.agent.point");
 
-static ARMS: [&Arm; 9] = [
+static ARMS: [&Arm; 11] = [
     &BROADPHASE,
     &MOTION_POSE,
     &MOTION_FORCES,
@@ -133,6 +140,8 @@ static ARMS: [&Arm; 9] = [
     &INTEGRATE_PHASE,
     &STRUCTURE_POLYGON,
     &CONVEX_AGENT,
+    &CONVEX_QUERY,
+    &CONTACT_POINT,
 ];
 
 pub(super) fn declined(arm: &Arm) {
@@ -163,7 +172,7 @@ pub(super) fn compare(arm: &Arm, matched: bool) {
 
 /// The arms' counts since start, in table order, for tests and reports:
 /// (name, matched, mismatched, declined).
-pub fn status() -> [(&'static str, u64, u64, u64); 9] {
+pub fn status() -> [(&'static str, u64, u64, u64); 11] {
     ARMS.map(|a| {
         (
             a.name,
@@ -187,9 +196,9 @@ pub struct Takeover {
 
 /// The take-over state of the arms that answer calls: the broadphase
 /// batch update's, the island integrate's, the deactivation test's, the
-/// integrate phase's, the structure polygon builder's and the convex
-/// agent's.
-pub fn takeover() -> [Takeover; 6] {
+/// integrate phase's, the structure polygon builder's, the convex agent's,
+/// the closest-feature query's and the add-point call's.
+pub fn takeover() -> [Takeover; 8] {
     [
         BROADPHASE.take_over(),
         ISLAND_INTEGRATE.take_over(),
@@ -197,6 +206,8 @@ pub fn takeover() -> [Takeover; 6] {
         INTEGRATE_PHASE.take_over(),
         STRUCTURE_POLYGON.take_over(),
         CONVEX_AGENT.take_over(),
+        CONVEX_QUERY.take_over(),
+        CONTACT_POINT.take_over(),
     ]
 }
 
@@ -418,6 +429,64 @@ pub fn convex_uncompared() {
     uncompared(&CONVEX_AGENT);
 }
 
+/// The closest-feature query's arm, at its entry: as [`integrate_enter`].
+pub fn query_enter(cpu: &mut CpuAbi, guest: &mut Guest) -> Step<convex_query::Prediction> {
+    use sim_havok::closest as model;
+    enter(
+        &CONVEX_QUERY,
+        cpu,
+        guest,
+        |cpu, guest| convex_query::capture(cpu, guest).map_err(model::count).ok(),
+        |p, cpu, guest| {
+            let applied = p.apply(cpu, guest);
+            if !applied {
+                model::count(model::Fallback::Memory);
+            }
+            applied
+        },
+    )
+}
+
+/// At the guest's return from an audited query.
+pub fn query_compare(prediction: &convex_query::Prediction, cpu: &CpuAbi, guest: &Guest) {
+    compare(&CONVEX_QUERY, prediction.matches(cpu, guest));
+}
+
+/// An audited query whose return could not be observed.
+pub fn query_uncompared() {
+    sim_havok::closest::count(sim_havok::closest::Fallback::Unobserved);
+    uncompared(&CONVEX_QUERY);
+}
+
+/// The add-point call's arm, at its entry: as [`integrate_enter`].
+pub fn point_enter(cpu: &mut CpuAbi, guest: &mut Guest) -> Step<contact_point::Prediction> {
+    use sim_havok::contact_point as model;
+    enter(
+        &CONTACT_POINT,
+        cpu,
+        guest,
+        |cpu, guest| contact_point::capture(cpu, guest).map_err(model::count).ok(),
+        |p, cpu, guest| {
+            let applied = p.apply(cpu, guest);
+            if !applied {
+                model::count(model::Fallback::Memory);
+            }
+            applied
+        },
+    )
+}
+
+/// At the guest's return from an audited add-point call.
+pub fn point_compare(prediction: &contact_point::Prediction, cpu: &CpuAbi, guest: &Guest) {
+    compare(&CONTACT_POINT, prediction.matches(cpu, guest));
+}
+
+/// An audited add-point call whose return could not be observed.
+pub fn point_uncompared() {
+    sim_havok::contact_point::count(sim_havok::contact_point::Fallback::Unobserved);
+    uncompared(&CONTACT_POINT);
+}
+
 /// The unconstrained motion's pose method (`vt[+0x08]`, `0x31b1c0`).
 pub fn motion_pose_begin(thread: u32, cpu: &CpuAbi, guest: &Guest) {
     POSE_OPEN.with_borrow_mut(|calls| {
@@ -562,7 +631,9 @@ mod tests {
                 "physics.island.deactivation",
                 "physics.integrate",
                 "physics.structure.polygon",
-                "physics.agent.convex"
+                "physics.agent.convex",
+                "physics.agent.query",
+                "physics.agent.point"
             ]
         );
         assert_eq!(
@@ -573,7 +644,9 @@ mod tests {
                 "physics.island.deactivation",
                 "physics.integrate",
                 "physics.structure.polygon",
-                "physics.agent.convex"
+                "physics.agent.convex",
+                "physics.agent.query",
+                "physics.agent.point"
             ]
         );
     }

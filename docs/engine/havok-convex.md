@@ -1,16 +1,15 @@
-# The Havok convex agent: separated pairs
+# The Havok convex agent
 
-Status: Partly built. The separated-pair path of the convex agent's process call `0x002eeb40` runs as a take-over arm; the closest-feature query `0x003048a0` with its seven leaves, its triangle case `0x00303dd0`, three shape types' support virtuals and two types' vertex virtuals are ported and compared with the lifted code; so are the manifold refresh `0x00302eb0` and the triangle case's penetration call `0x0030a6b0` with its expanding polytope; the add-point call `0x00302c70` and the contact commit stay guest code, and no arm calls the query or the refresh yet.
-Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query, its leaves and the triangle case), `crates/rewrites/sim-havok/src/shape_support.rs` (the support and vertex virtuals), `crates/rewrites/sim-havok/src/manifold.rs` (the refresh), `crates/rewrites/sim-havok/src/penetration.rs` (the penetration call), `crates/rewrites/engine/src/sim_physics/convex_agent.rs` (the capture), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arm, the declines) and the unit tests in `convex.rs`, `gjk.rs`, `shape_support.rs`, `manifold.rs` and `penetration.rs`.
+Status: Partly built. Three take-over arms: the convex agent's process call `0x002eeb40` on separated pairs; the closest-feature query `0x003048a0` whole, its shapes' virtuals (capsule, biped wrapper, convex polygon), its triangle case `0x00303dd0` and the penetration call `0x0030a6b0` all in Rust; and the add-point call `0x00302c70` on a point that moves its slot. The manifold refresh `0x00302eb0` and the add-point call's other paths with its cut `0x00302a10` are ported and compared with the lifted code; the manager's add (`vt[+0x04]`, the contact commit) and removal stay guest code, so those paths have no arm.
+Code: `crates/rewrites/sim-havok/src/convex.rs` (`process`), `crates/rewrites/sim-havok/src/gjk.rs` (the query, its leaves and the triangle case), `crates/rewrites/sim-havok/src/shape_support.rs` (the support and vertex virtuals), `crates/rewrites/sim-havok/src/manifold.rs` (the refresh, the add-point call and its cut), `crates/rewrites/sim-havok/src/penetration.rs` (the penetration call), `crates/rewrites/sim-havok/src/closest.rs` (the query with every call out in Rust), `crates/rewrites/sim-havok/src/contact_point.rs` (the add-point arm's model); `crates/rewrites/engine/src/sim_physics/convex_agent.rs`, `convex_query.rs` and `contact_point.rs` (the captures), `crates/rewrites/engine/src/sim_physics/parity.rs` (`physics.agent.convex`, `physics.agent.query`, `physics.agent.point`). Tests: `crates/rewrites/engine/tests/sim_havok_differential.rs` (seeded pairs, the arms, the declines) and the unit tests in `convex.rs`, `gjk.rs`, `shape_support.rs`, `manifold.rs`, `penetration.rs`, `closest.rs` and `contact_point.rs`.
 Switch: `impl.sim.native.physics`, listed in [switches.md](../runtime/switches.md).
 
 A convex pair's agent keeps a separating axis and a bound on the
 distance along it ([havok-runtime.md](havok-runtime.md), "Convex child
 state"). While the bound stays positive after both bodies' motion is
 projected onto the axis, the pair is still apart and the call does no
-query. Slice 5 of [sim-rewrite-havok.md](sim-rewrite-havok.md) starts
-with that path, bit-exact; the query and the contact work behind it are
-the rest of the slice.
+query. Slice 5 of [sim-rewrite-havok.md](sim-rewrite-havok.md) ports
+that path, the query and the contact work behind it, bit-exact.
 
 Evidence: read with `h2 disasm` (**E**), **S** supposed.
 
@@ -91,14 +90,15 @@ frame and runs the closest-feature query. **E**
 | `0x00308590` (cdecl; p1, d1, p2, d2, out) | the closest points of two segments, x87 solve, flags for each clamp | `gjk::segments` |
 | `0x003032c0` (thiscall state; cache, separation, out; `ret 0xc`; the cache is not read) | the contact: the negated direction, the distance, and A's support point (A's simplex one vertex, weight 1.0), B's moved back by the distance (B's one vertex, 0.0) or the state's midpoint `+0x130` (0.5) | `gjk::contact` |
 | `0x002da6e0` (thiscall out; transform, vector; `ret 8`) | the separating direction back into the world | `gjk::rotate` |
-| `0x00302c70` (cdecl; A, B, input, contact, manager, slots, count) | add a point: a slot within the match radius takes it in place, else a new slot and an ID from the manager's `vt[+0x04]` (then Halo's contact callback); past four slots `0x00302a10` cuts back to four | no |
+| `0x00302c70` (cdecl; A, B, input, contact, manager, slots, count) | add a point: a slot within the match radius takes it in place, else a new slot and an ID from the manager's `vt[+0x04]` (then Halo's contact callback); past four slots `0x00302a10` cuts back to four ("The add-point call" below) | `manifold::add_point`, `manifold::cut` |
 | `0x00302eb0` (cdecl; A, B, input, floor, slots, count, collector, manager) | refresh: each point kept as a contact in the collector's array or dropped through the manager's `vt[+0x08]` ("The manifold" below) | `manifold::refresh` |
 
 The ported functions are compared with the lifted ones in
-`sim_havok_differential.rs`. The arm still declines the query path
-(`closest`): it answers only when the query, every shape class's support
-virtuals and the manifold calls it makes are in Rust, and a call that
-adds or removes a point runs Halo's callback, which stays the guest's.
+`sim_havok_differential.rs`. The process call's arm declines the query
+path (`closest`); the query and the add-point call answer from their own
+arms inside the guest's process call ("The query arm", "The add-point
+arm"). A point that needs a new slot runs the manager's add and Halo's
+callback, which stay the guest's.
 
 ## The query
 
@@ -181,6 +181,41 @@ through the caller's `manifold::Calls`. **E**
   seeds of zero to four points, the removals answered by a stub. The
   seeds leave the array room; the lifted reserve calls the system
   allocator.
+
+## The add-point call
+
+`manifold::add_point` runs `0x00302c70` on a journal. Its calls out, the
+manager's add (`vt[+0x04]`, thiscall `(A, B, input, contact)`, `ret 0x10`)
+and removal (`vt[+0x08]`), go through the caller's
+`manifold::PointCalls`. **E**
+
+| Step | Does |
+|---|---|
+| radius | the tolerances' `+0x04` squared on the x87 and kept on the stack, unrounded |
+| match | each slot: `\|slot A - point A\|^2` (stored to binary32) below the best so far, and `\|slot n - point n\|^2` below `0.01` (`0x0045e02c`); both strict and ordered, a NaN never matches; the best becomes that slot's distance |
+| moved | the last match takes the point's A, B and normal, the distance at `+0x2c`, the weight at `+0x0c`; its ID word `+0x1c` goes through an x87 load and store (an SNaN comes back quiet); eax the slot, ecx and edx the distance and weight words |
+| new slot | the slot past the count, or a frame slot with four or more, takes the same words; both points placed by `0x002da610` (`(c0 x + c1 y) + (c2 z + t)`), `w A + (1 - w) B` with the distance in `w` and the normal go to the manager's add |
+| ID | `0xffff` returns the add's eax, the slot written, the count not; else the ID with `0x3f000000` to `+0x1c` and the count up one (eax and ecx the count, edx the ID word) |
+| cut | past four, `0x00302a10` with the four slots and the new one; the count is its eax |
+
+The cut (`0x00302a10`, cdecl `(slots, A, B, manager)`, five slot
+pointers) marks four, each search strictly above a best starting at
+`0.0` (`test ah, 0x41`) over the unmarked slots:
+
+1. the farthest from slot 0, skipping the slot it holds as best (slot 0 to begin with);
+2. the farthest from the first;
+3. the widest `\|(s2 - s) x (s1 - s2)\|^2`, starting from the second;
+4. the farthest from the third.
+
+A search that finds nothing above `0.0` marks its start again, so fewer
+than four can be marked. Each unmarked slot, first to last, goes to the
+removal and the last pointer's three vectors take its place; eax is the
+count left.
+
+`sim_havok_differential.rs` compares the call with the lifted one, 1024
+seeds of zero to five slots under every rounding mode: moved, taken,
+refused (`0xffff`) and cut, the manager's add and removal answered by
+stubs that log their arguments and the contact.
 
 ## The triangle case
 
@@ -375,7 +410,7 @@ count, out; `ret 0xc`), a vertex per 16-bit ID. **E**
 | Type | `vt[+0x34]` | Does | Ported |
 |---|---|---|---|
 | 7, capsule | `0x002dddb0` | the end at `+0x10 + id`, `w` the ID with `0x3f000000` | `shape_support::capsule_vertices` |
-| `0x17`, biped wrapper | `0x002dbdb0` | the child's, then the offset added to each (`w` through the x87) | no |
+| `0x17`, biped wrapper | `0x002dbdb0` | the child's, whatever the count; then for each of `count` vertices (none when `count - 1` is below zero) the offset added, all four lanes, `w` through the x87 as the child left it | `shape_support::biped_vertices` |
 | `0x18`, convex polygon | `0x001ee3d0` | vertex `id` whole, last ID first | `shape_support::polygon_vertices` |
 
 - The biped wrapper takes its child as a callback; the port answers for
@@ -385,16 +420,81 @@ count, out; `ret 0xc`), a vertex per 16-bit ID. **E**
   so the status word, the tags and the popped registers match. A
   polygon count over 256 declines.
 
-The support virtuals are compared with the lifted functions in
-`sim_havok_differential.rs`, 1024 seeds each; the vertex virtuals run
-inside the query's comparison, 1024 seeds of capsules and polygons, where
-a stall that reaches the triangle case declines. No arm calls them yet.
+The support virtuals and the biped wrapper's `vt[+0x34]` are compared
+with the lifted functions in `sim_havok_differential.rs`, 1024 seeds
+each; the vertex virtuals also run inside the query's comparisons. The
+query arm calls them all.
+
+## The query arm
+
+`physics.agent.query` at `0x003048a0` (thiscall on the state; shape A,
+shape B, transform, cache, out; `ret 0x14`), the same proof, audit and
+latch as the process call (sim-rewrite-havok.md §9.5). Six call sites
+reach it, `0x002ee47a` to `0x002ef02a`. `closest::query` runs
+`gjk::query` with every call out in Rust (`closest::Ported`):
+
+| Call | Answered by |
+|---|---|
+| a shape's `vt[+0x30]`, `vt[+0x34]` | the port of the function its vtable holds, picked by address: capsule, biped wrapper (its child the same way, four deep at most), convex polygon |
+| the triangle case `0x00303dd0` | `gjk::triangle_case` |
+| its penetration call `0x0030a6b0` | `penetration::Port`, the support virtuals as above |
+
+- Each support or vertex virtual runs on a fresh x87 state under the
+  entry's control word and the entry's MXCSR: the query reads no
+  register, flag or x87 state a call leaves.
+- The answer: every store above the entry's esp, with eax, ecx and edx
+  the query's, ebx, ebp, esi, edi, and esp past the five arguments. The
+  frames below esp (`0x10000` bytes: the solver's `_alloca` alone takes
+  `0x3004`) are left out. The x87 condition codes, the sticky exception
+  flags and the XMM registers are not modelled.
+- Declines, counted by reason (`closest::fallbacks`, `havok.islands`'s
+  `query`):
+
+| Reason | When |
+|---|---|
+| `memory` | a word is unmapped or unaligned, a store unwritable, an array past the port's bounds (256 simplex vertices, the polytope's 100 face slots) |
+| `shape` | a shape's `vt[+0x30]` or `vt[+0x34]` has no port |
+| `float` | an unmasked exception, an x87 stack not empty at the entry |
+| `monitor` | the monitor stream is on |
+| `unobserved` | an audited return could not be observed |
+
+`sim_havok_differential.rs` runs the arm against the lifted query with
+every callee lifted, 1024 seeds of capsules, polygons and biped wrappers
+over every pair, the stall byte clear in one of four.
+
+## The add-point arm
+
+`physics.agent.point` at `0x00302c70` (cdecl, seven arguments), the same
+proof, audit and latch. `contact_point::answer` runs
+`manifold::add_point` and answers only a point that moves its slot,
+which calls nothing out; eax the slot, ecx and edx the distance and
+weight words, ebx, ebp, esi, edi, and esp past the return. The two
+callers (`0x002eede4`, `0x002fa965`) write eax, ecx and edx before they
+read them. Declines (`contact_point::fallbacks`, `havok.islands`'s
+`point`):
+
+| Reason | When |
+|---|---|
+| `memory` | a word is unmapped or unaligned, a store unwritable, a count past 256 |
+| `commit` | no slot matches: the manager's add runs |
+| `float` | an unmasked exception, an x87 stack not empty at the entry |
+| `unobserved` | an audited return could not be observed |
+
+The add-point call writes no monitor entry, so the monitor stream does
+not decline it.
 
 ## Not verified
 
 - How many of a match's convex calls take the separated path; `closest`
   and `answered` on `havok.islands` give it.
 - What the motion's two positions and allowance are (**S**).
+- The penetration call's retries add a frame word the jitter leaves to
+  the translation's `w`; the port reads that word from its own frame
+  writes, the guest from whatever its calls left there. The penetration
+  comparison did not tell the two apart; the query arm's audit would.
+- How many query and add-point calls a match's shapes let answer:
+  `shape` and `commit` on `havok.islands` give it. Other shape classes
+  (spheres, boxes, triangles) have no port.
 
 ## Related
 

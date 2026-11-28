@@ -12,10 +12,10 @@
 //! - [`polygon`] `0x001ee350`, type `0x18`: the vertex with the largest
 //!   dot product.
 //!
-//! And two shapes' `vt[+0x34]`, which seed the query's simplex from the
+//! And three shapes' `vt[+0x34]`, which seed the query's simplex from the
 //! cached vertex IDs (thiscall `(ids, count, out)`, `ret 0xc`):
-//! [`capsule_vertices`] `0x002dddb0` and [`polygon_vertices`]
-//! `0x001ee3d0`.
+//! [`capsule_vertices`] `0x002dddb0`, [`polygon_vertices`] `0x001ee3d0`
+//! and [`biped_vertices`] `0x002dbdb0`.
 //!
 //! On a [`Fallback`] the journal is discarded and the MXCSR and the x87
 //! state are left as they came.
@@ -32,6 +32,7 @@ pub const BIPED_SUPPORT: u32 = 0x002d_bd40;
 pub const POLYGON_SUPPORT: u32 = 0x001e_e350;
 pub const CAPSULE_VERTICES: u32 = 0x002d_ddb0;
 pub const POLYGON_VERTICES: u32 = 0x001e_e3d0;
+pub const BIPED_VERTICES: u32 = 0x002d_bdb0;
 /// The `0.0` the x87 compares the dot product with, and `-FLT_MAX`, the
 /// polygon's starting best.
 pub const ZERO: u32 = 0x0045_dbd8;
@@ -270,6 +271,55 @@ pub fn polygon_vertices(j: &mut Journal, this: u32, ids_at: u32, count: u32, out
     Ok(())
 }
 
+/// Type `0x17`'s `vt[+0x34]`, `0x002dbdb0`: the child at `+0x30` fills
+/// `out` through its own `vt[+0x34]` (`child`: the journal, the child,
+/// its entry esp, the MXCSR and the x87 state), whatever the count; then each of the `count` vertices
+/// (none when `count - 1` is below zero) has the offset at `+0x10` added,
+/// all four lanes, with its `w` loaded on the x87 before the add and
+/// stored back after it (`fld`, `fstp`: an SNaN comes back quiet).
+///
+/// `esp` is the entry stack pointer (at the return address). The query
+/// reads no register it leaves.
+#[allow(clippy::too_many_arguments)]
+pub fn biped_vertices(
+    j: &mut Journal,
+    this: u32,
+    ids_at: u32,
+    count: u32,
+    out: u32,
+    esp: u32,
+    mxcsr: &mut u32,
+    x: &mut X87Abi,
+    child: impl FnOnce(&mut Journal, u32, u32, &mut u32, &mut X87Abi) -> Result<(), Fallback>,
+) -> Result<(), Fallback> {
+    masked(x)?;
+    sse(*mxcsr)?;
+    let (mut m, mut fx) = (*mxcsr, *x);
+    let n = ids(count)?;
+    let frame = esp.wrapping_sub(4) & !15;
+    let shape = word(j, this.wrapping_add(biped_field::CHILD))?;
+    // ecx, ebx, esi, edi saved, then out, count, ids and the return address.
+    child(j, shape, frame.wrapping_sub(32), &mut m, &mut fx)?;
+    masked(&fx)?;
+    let mut sse = sse(m)?;
+    for i in 0..n {
+        let slot = out.wrapping_add(16 * i);
+        let w = word(j, slot.wrapping_add(0xc))?;
+        ok(abi::ld_f32(&mut fx, w))?;
+        let v = vec(j, slot)?;
+        let offset = vec(j, this.wrapping_add(biped_field::OFFSET))?;
+        let moved = sse.add(v, offset);
+        put(j, slot, moved)?;
+        let (r, stored) = abi::st_f32(&fx, 0);
+        ok(r)?;
+        j.put(slot.wrapping_add(0xc), stored.value).ok_or(Fallback::Memory)?;
+        abi::store_commit(&mut fx, stored.status, true);
+    }
+    let m = done(&sse)?;
+    (*mxcsr, *x) = (m, fx);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,6 +440,37 @@ mod tests {
         polygon_vertices(&mut j, SHAPE, DIR, 2, OUT).unwrap();
         assert_eq!(get4(&j, OUT + 0x10), get4(&j, v + 0x20));
         assert_eq!(polygon_vertices(&mut Journal::new(&h), SHAPE, DIR, 1, OUT + 8), Err(Fallback::Memory));
+    }
+
+    #[test]
+    fn a_bipeds_cached_vertices_are_its_childs_moved_by_the_offset() {
+        let mut h = heap();
+        put4(&mut h, SHAPE + biped_field::OFFSET, [0.0, 0.0, 0.5, 2.0]);
+        h.0.insert(SHAPE + biped_field::CHILD, CHILD);
+        let snan = 0x7f80_0001;
+        for count in [0u32, 2] {
+            let (mut m, mut x) = (MXCSR, fpu());
+            let mut j = Journal::new(&h);
+            biped_vertices(&mut j, SHAPE, DIR, count, OUT, 0x7f00_0000, &mut m, &mut x, |j, shape, esp, _, _| {
+                assert_eq!((shape, esp), (CHILD, 0x7eff_fff0 - 32));
+                for i in 0..2 {
+                    put_vector(j, OUT + 16 * i, u128::from(snan) << 96 | u128::from(1.0f32.to_bits())).unwrap();
+                }
+                Ok(())
+            })
+            .unwrap();
+            for i in 0..2 {
+                let got = get4(&j, OUT + 16 * i);
+                let moved = i < count;
+                assert_eq!(got[2], if moved { 0.5f32.to_bits() } else { 0 }, "{count} {i}");
+                assert_eq!(got[3], if moved { snan | 0x0040_0000 } else { snan }, "{count} {i}: w through the x87");
+            }
+            assert_eq!(x.tag, 0xffff, "each load is stored and popped");
+        }
+        let mut x = fpu();
+        let calls = |_: &mut Journal, _, _, _: &mut u32, _: &mut X87Abi| Ok(());
+        let mut m = MXCSR;
+        assert_eq!(biped_vertices(&mut Journal::new(&h), SHAPE, DIR, 1, OUT + 8, 0x7f00_0000, &mut m, &mut x, calls), Err(Fallback::Memory));
     }
 
     #[test]
