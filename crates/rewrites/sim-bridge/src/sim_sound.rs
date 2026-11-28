@@ -11,6 +11,7 @@ pub mod entries;
 pub mod gate;
 pub mod guest_tags;
 pub mod levels;
+pub mod listeners;
 pub mod lifecycle;
 pub mod mixer_feed;
 pub mod mouth;

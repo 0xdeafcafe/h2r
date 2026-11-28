@@ -318,7 +318,7 @@ The guest keeps calling sound code until its callers are Rust. Each entry below 
 | `0x125360` | `0x18c57a` | the first mapped user's listener, or 0, ported |
 | `0x125a90` | `0x232087` | the paused byte (`+0x7b`) and the pause time (`+0x80`, `0x3314b0`'s `[[0x411690]]`, `KeTickCount`: `sim_bridge::sim_sound::clock::system_time`); the channel calls are the host's |
 | `0x125d60` | loaders | nothing: the host mixes on its own thread |
-| `0x127400` `SOUND_LISTENERS_UPDATE` | `0x125c1e`, `0x18c07f` | the guest's camera math, which reads no pool or channel global; the `Scene` reads its listeners in slice 5 |
+| `0x127400` `SOUND_LISTENERS_UPDATE` | `0x125c1e`, `0x18c07f` | the listener update, ported (`sim_bridge::sim_sound::listeners::update`): each user's listener row from its camera, or from the camera turned toward the unit's attachment (`0x11d6a0`, `0x11d950`, `0x11d610` in Rust); `0xcaf60` (the attachment), `0xba1d0` (the ear), `0x11bed0` (the BSP leaf), `0x11d000` (a perpendicular axis) and, with the stack argument set, `0x220790` (the environment record) stay guest calls; the `Scene` reads its listeners in slice 5 |
 | `0x21a250`, `0x219c30` | object sound update `0x18a7b0` | `0x21a250`: `Table::loop_update`, below; `0x219c30`: nothing, the owner's per-listener distances it caches are read by `GuestLevels` at each admission |
 | `0x219070`, `0x219110`, `0x219430`, `0x2194a0` | `0x236299`, `0x20b140`, `0x20afb0` to `0x20b660`, `0x18d090` | `Chooser::choose` and `chooser::pick` over the gestalt's range and permutation rows; `0x219430` the range row's word `+6` when the tag's class sets flag bit 5, else -1 (tag data: the scripts index a bit array with it); `0x2194a0` the promotion bank row |
 
