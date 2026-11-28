@@ -38,6 +38,15 @@ fn the_rust_hud_defaults_on_and_its_switch_only_turns_it_off() {
     assert!(plan("impl.render.native-hud=off").chains.values().any(|c| c.point.name == "HUD_QUAD_READY"));
 }
 
+/// The string draw in Rust is the walk's: placed with it, off with it.
+#[test]
+fn the_string_draw_is_placed_with_the_hud_walk() {
+    let placed = |spec| plan(spec).chains.values().any(|c| c.point.name == "STRING_DRAW");
+    assert!(placed(""));
+    assert!(!placed("impl.render.native-hud-walk=off"));
+    assert!(!placed("impl.render.native-hud=off"));
+}
+
 #[test]
 fn the_ui_hooks_can_run_on_the_render_thread() {
     let plan = plan("");

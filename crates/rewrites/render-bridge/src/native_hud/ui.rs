@@ -207,6 +207,8 @@ fn screen_quad(c: &mut Call<'_>) -> Option<TransferAbi> {
     let corners = mem.u32(stack.checked_add(4)?).ok()?;
     // A shadowed text widget's glyph is checked against Rust's layout.
     super::walk::observe_glyph(&*mem, corners);
+    // So is a shadowed string's (`super::strings`).
+    super::strings::observe_glyph(&*mem, corners);
     // A screen quad in the HUD is a glyph of one of its strings.
     let hud = super::kept::in_hud();
     let Some(vertices) = screen_vertices(&*mem, corners) else {

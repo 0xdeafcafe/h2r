@@ -766,16 +766,17 @@ pub(crate) fn place_hud<B: d3d::Backend + Send + 'static>(
     place(device, mem, Arc::new(part), assets)
 }
 
-/// Places `part` (a HUD string's runs over the glyph pages), tagged
-/// [`ViewSlot::Hud`], at this
-/// point in the frame, every glyph of it in the pages first: whether it
-/// was placed. A glyph the fonts do not give places nothing.
+/// Places `part` (a string's runs over the glyph pages), tagged `slot`
+/// (the HUD's or the UI's), at this point in the frame, every glyph of
+/// it in the pages first: whether it was placed. A glyph the fonts do
+/// not give places nothing.
 pub(crate) fn place_text<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
     mem: &mut dyn GuestMemory,
     mut part: Overlay,
+    slot: ViewSlot,
 ) -> bool {
-    part.set_slot(ViewSlot::Hud);
+    part.set_slot(slot);
     let Some((_, assets)) = slot(mem) else { return false };
     let Some(fonts) = fonts() else { return false };
     {

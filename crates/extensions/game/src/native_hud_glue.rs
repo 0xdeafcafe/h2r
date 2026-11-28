@@ -416,6 +416,10 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         self.permits_draw() && crate::hud_native::draw_text(&self.device, mem, text)
     }
 
+    fn rust_string(&self, mem: &mut dyn GuestMemory, run: &render_bridge::native_hud::strings::StringRun) -> bool {
+        self.permits_draw() && crate::hud_native::draw_string(&self.device, mem, run)
+    }
+
     fn draw_quad(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
         let source = SCOPES.with(|s| s.borrow().screen_source(self.admission.owner));
         self.offer(source.unwrap_or(ScreenDraw::Widget), || {

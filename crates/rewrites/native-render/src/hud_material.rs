@@ -11,8 +11,8 @@
 //! and stage states, and its combiner words with each draw's animated
 //! constants ([`HudShader::words`]). A shader whose setup reads anything
 //! else (an engine input per draw, a texture the engine supplies other
-//! than the widget's bitmap, an animated state) is refused by name and
-//! stays on the guest's setup.
+//! than the widget's bitmap or the text stage, an animated state) is
+//! refused by name and stays on the guest's setup.
 
 use frame_scene::{OverlayBlend, OverlayTexture, Sampler};
 use gfx::state::{RenderState, RenderStateType, TextureAddress, TextureFilter};
@@ -27,6 +27,14 @@ use crate::layer_pass::{LayerRefusal, ObjectInputs, sample_with_inputs};
 /// (`[0x004e6978]` datum, `[0x004e697c]` image; jump-table entry 15,
 /// `0x00019817`), which the quad sets before the shader begins.
 pub const WIDGET_BITMAP_SOURCE: u8 = 16;
+
+/// The engine texture a HUD text shader's stage 0 names (`text_flash`,
+/// `dim_text_flash`: `h2 shader <map> 'ui\hud\shaders\text_flash'`).
+/// `0x00019530` binds `[[0x00485a80] + 0x14]` for it (entry 14,
+/// `0x000197fb`); the string draw's batch then binds the glyph cache to
+/// stage 0 in its place (`0x00035b90`) and keeps the shader's combiner
+/// (`+0x97`), so the stage samples the glyphs.
+pub const TEXT_STAGE_SOURCE: u8 = 15;
 
 /// Why a HUD shader stays on the guest's setup.
 #[derive(Clone, Debug, PartialEq)]
@@ -105,13 +113,16 @@ pub enum StageTexture {
     Widget,
     /// An instance bitmap.
     Bitmap { tag: u32, image: u16 },
+    /// The text stage (engine source [`TEXT_STAGE_SOURCE`]): the glyphs
+    /// of the string drawn. No widget quad samples it.
+    Glyphs,
 }
 
 impl StageTexture {
     /// The overlay texture this stage binds for a quad of `bitmap`'s `image`.
     pub fn overlay(self, bitmap: u32, image: u16) -> Option<OverlayTexture> {
         match self {
-            StageTexture::None => None,
+            StageTexture::None | StageTexture::Glyphs => None,
             StageTexture::Widget => Some(OverlayTexture::Bitmap { tag: bitmap, image }),
             StageTexture::Bitmap { tag, image } => Some(OverlayTexture::Bitmap { tag, image }),
         }
@@ -154,6 +165,7 @@ impl HudShader {
             stages[n] = match texture.map(|t| t.source) {
                 None | Some(TextureSource::None) => StageTexture::None,
                 Some(TextureSource::Engine(WIDGET_BITMAP_SOURCE)) => StageTexture::Widget,
+                Some(TextureSource::Engine(TEXT_STAGE_SOURCE)) => StageTexture::Glyphs,
                 Some(TextureSource::Bitmap { bitmap, image, .. }) => StageTexture::Bitmap {
                     tag: bitmap.0,
                     image: u16::try_from(image).map_err(|_| HudRefusal::Texture { stage: n })?,
@@ -355,6 +367,25 @@ mod tests {
         assert_eq!(
             HudShader::from_implementation(TagId(7), imp, Vec::new()).unwrap_err(),
             HudRefusal::AnimatedState(AnimationKind::RenderState)
+        );
+    }
+
+    /// A text shader's stage 0 is the engine's text stage, which the
+    /// string draw binds the glyphs to: the shader resolves, and a widget
+    /// quad, which has no glyphs, has no texture for it.
+    #[test]
+    fn a_text_shaders_stage_is_the_glyphs_and_no_widget_quads() {
+        let mut imp = widget();
+        imp.textures[0] = Some(TagStage { source: TextureSource::Engine(TEXT_STAGE_SOURCE), size: None, stage_size: None });
+        let hud = HudShader::from_implementation(TagId(7), imp, Vec::new()).unwrap();
+        assert_eq!(hud.stages[0], StageTexture::Glyphs);
+        assert_eq!(hud.stages[0].overlay(0x40, 3), None);
+        let mut imp = widget();
+        imp.textures[0] = Some(TagStage { source: TextureSource::Engine(14), size: None, stage_size: None });
+        assert_eq!(
+            HudShader::from_implementation(TagId(7), imp, Vec::new()).unwrap_err(),
+            HudRefusal::Texture { stage: 0 },
+            "another engine texture"
         );
     }
 

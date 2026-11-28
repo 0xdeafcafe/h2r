@@ -123,6 +123,8 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
         .chain(render_bridge::native_flare_draw::counters())
         .chain(render_bridge::native_transparents::sort::counters())
         .chain(render_bridge::native_hud::walk::counters())
+        .chain(render_bridge::native_hud::strings::counters())
+        .chain(crate::hud_native::refusal_counters())
         .chain(render_bridge::native_sky::counters())
         .chain(render_bridge::native_first_person::counters())
         .chain(render_bridge::native_world::stipple_counters().map(|(k, v)| (k.to_owned(), v)))
