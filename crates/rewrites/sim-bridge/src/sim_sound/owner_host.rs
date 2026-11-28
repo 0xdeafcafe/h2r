@@ -3,7 +3,7 @@
 //!
 //! `Sounds::step` calls the host synchronously; a unit's dialogue end
 //! (`0x18c8c0`, ported as `engine::sim_sound::units::line_end`) and its
-//! mouth (`0x18c6a0`, a guest call) run after the step from
+//! mouth (`0x18c6a0`, ported as `crate::unit_mouth`) run after the step from
 //! [`GuestUnits::calls`], in the order the table asked for them. The script
 //! line table's clear is a guest write, made at once and counted. They
 //! move to the object store when it lands, with no change to `Sounds`.

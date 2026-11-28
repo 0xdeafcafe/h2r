@@ -230,13 +230,10 @@ fn the_hash_is_the_same_with_any_host() {
         // The tag's first range is 0, its permutation row at PERMS.
         g.put_u32(points::TAG_ENTRIES.base, TIME + 0x3800).put_u32(TIME + 0x3800 + 16 + 8, TIME + 0x3900);
         g.put_u32(GESTALT, TIME + 0x3a00).put_u32(TIME + 0x3a00 + 0x24, TIME + 0x3b00).put_u32(TIME + 0x3a00 + 0x2c, PERMS);
+        // The unit's header names no object data, so the native mouth
+        // stops at its unit test and asks the guest nothing.
         let r = run_phase(&t, g);
-        let mouths: Vec<_> = r.calls.iter().filter(|c| c.target == UNIT_MOUTH).map(|c| c.args.clone()).collect();
-        if tick < 3 {
-            assert_eq!(mouths, [vec![UNIT, 0, TAG.0, 0, PERMS, super::super::owners::seconds(tick).to_bits()]]);
-        } else {
-            assert!(mouths.is_empty());
-        }
+        assert!(r.calls.iter().all(|c| c.target != UNIT_MOUTH && c.target != engine::sim_sound::mouth::CACHE_TOUCH));
         plain.step(tick, &mut NullOwners);
     }
     // The guest host and the null one end the same sounds on the same

@@ -59,8 +59,9 @@ const NONE: u32 = u32::MAX;
 /// `[0x4e6378]`: the channel array the create body leaves 0.
 pub const CHANNELS: u32 = 0x004e_6378;
 /// `0x18c6a0(owner, payload, tag, range, permutation, seconds)`: the unit's
-/// mouth (`ret 0x18`). It tests the unit itself and reads no payload.
-pub const UNIT_MOUTH: u32 = 0x0018_c6a0;
+/// mouth, ported in [`crate::unit_mouth`]. It tests the unit itself and
+/// reads no payload.
+pub const UNIT_MOUTH: u32 = engine::sim_sound::mouth::UNIT_MOUTH;
 /// The stop's fade (`0x1263e5`: 300 ms at instance `+0xb4`).
 pub const STOP_FADE_MS: u32 = 300;
 /// Sound globals: sound on (`+0x78`, `+0x79`, `+0x7a`), paused (`+0x7b`),
@@ -425,7 +426,7 @@ fn permutation_at(m: &dyn GuestMemory, tag: TagIndex, selection: Selection) -> R
 
 /// Make the unit calls the step queued, in its order: a line's end
 /// through `0x18c8c0`'s gate and unit test ([`units::line_end`]), a mouth
-/// through `0x18c6a0`.
+/// through `0x18c6a0` ([`crate::unit_mouth`]).
 async fn unit_calls(cx: &Cx, table: &Shared, calls: Vec<UnitCall>) -> Result<(), engine::entry::EntryError> {
     for call in calls {
         match call {
@@ -441,7 +442,7 @@ async fn unit_calls(cx: &Cx, table: &Shared, calls: Vec<UnitCall>) -> Result<(),
                 };
                 let seconds = super::owners::seconds(ticks).to_bits();
                 let range = i32::from(selection.range) as u32;
-                cx.call(GuestCall::new(UNIT_MOUTH).args([object, 0, tag.0, range, permutation, seconds])).await?;
+                crate::unit_mouth::run(cx, [object, 0, tag.0, range, permutation, seconds]).await?;
                 lock(table).ledger.mouth_calls += 1;
             }
         }

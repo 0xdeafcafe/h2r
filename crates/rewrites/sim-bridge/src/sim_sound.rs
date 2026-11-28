@@ -376,7 +376,8 @@ pub async fn deliver(cx: Cx, sim: Arc<Mutex<SoundSim>>, tick: u32, due: Due) -> 
 
 /// The main loop's update: the events to the host, then the owners'
 /// lip-sync updates the mixer's loop makes (`0x129593`), one for each
-/// running sound whose owner has one, with the seconds since its start.
+/// running sound whose owner has one, with the seconds since its start
+/// ([`crate::unit_mouth`]).
 pub async fn service(cx: Cx, sim: Arc<Mutex<SoundSim>>) -> EntryResult {
     let running = {
         let mut s = lock(&sim);
@@ -390,9 +391,8 @@ pub async fn service(cx: Cx, sim: Arc<Mutex<SoundSim>>) -> EntryResult {
             .filter_map(|(_, l)| owners::update_call(m, l.instance, owners::seconds(tick.saturating_sub(l.start))))
             .collect()
     });
-    lock(&sim).ledger_mut().guest_calls += calls.len() as u64;
-    for (function, args) in calls {
-        cx.call(GuestCall::new(function).args(args)).await?;
+    for (_, args) in calls {
+        crate::unit_mouth::run(&cx, args).await?;
     }
     Ok(Ret::new(0, 0))
 }
@@ -823,13 +823,18 @@ mod tests {
         lock(&sim).start_instance(SoundDef { tag: 1, duration_ms: Some(60_000), looping: false }, Source(1), 10, fixture::HANDLE);
         let s = Arc::clone(&sim);
         let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(service(cx, Arc::clone(&s))) };
-        let r = entry::testing::run(&f, world(), Regs { esp: 0x0030_0000, ..Default::default() }, |_, _| Regs::default());
-        assert_eq!(r.result, Ok(Ret::new(0, 0)));
         // Tick 40, started on 10: one second.
-        let want = vec![(owners::UPDATE_LIP_SYNC, None, vec![0xaaaa_0001, fixture::REC + 0x5c, fixture::TAG, 1, fixture::PERMS + 7 * 16, 1.0f32.to_bits()])];
-        assert_eq!(calls_of(&r), want);
+        let want = [0xaaaa_0001, fixture::REC + 0x5c, fixture::TAG, 1, fixture::PERMS + 7 * 16, 1.0f32.to_bits()];
+        assert_eq!(owners::update_call(&world(), fixture::HANDLE, 1.0), Some((owners::UPDATE_LIP_SYNC, want)));
+        // The owner is not a live object (an empty object array), so the
+        // native mouth stops at its unit test.
+        let mut g = world();
+        g.put_u32(points::OBJECTS.base, 0x0031_0000).put_u32(0x0031_0000 + 0x38, 0);
+        let r = entry::testing::run(&f, g, Regs { esp: 0x0030_0000, ..Default::default() }, |c, _| panic!("no guest call: {:#x}", c.target));
+        assert_eq!(r.result, Ok(Ret::new(0, 0)));
+        assert_eq!(calls_of(&r), vec![]);
         let s = lock(&sim);
-        assert_eq!((s.ledger().service_runs, s.ledger().guest_calls), (1, 1));
+        assert_eq!((s.ledger().service_runs, s.ledger().guest_calls), (1, 0));
     }
 
     #[test]

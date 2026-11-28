@@ -177,7 +177,7 @@ Retail keeps a pointer to a table of functions per instance. The table is a clos
 
 Order is retail's: `ended` runs with the instance still in the pool (it gets `&Sounds`), and the slot is freed after (`0x127390`). The host is called for `Unit` and `ScriptLine` owners only, a `Start`'s `own` included (`Owner::host`); `None`, `Loop`, `Started` and the start part of `Start` are the table's own. `Reason` is an enum of the engine's reasons: `PlayedOut` (2), `OwnerGone` (3), `Faded` (4), `Superseded` (0xF) and the start failures.
 
-`sim_bridge::sim_sound::owner_host::GuestUnits` implements `OwnerHost` while unit and script state live in guest memory. A line's end runs in Rust over guest memory (`engine::sim_sound::units::line_end`); a mouth is a guest call (`0x18c6a0`), counted as `sound.mouth_calls`; the line-table clear is a counted guest write ([Counters](#counters)). They move to the object store when it lands, with no change to `Sounds`.
+`sim_bridge::sim_sound::owner_host::GuestUnits` implements `OwnerHost` while unit and script state live in guest memory. A line's end runs in Rust over guest memory (`engine::sim_sound::units::line_end`); so does a mouth (`0x18c6a0`, `sim_bridge::unit_mouth`, counted as `sound.mouth_calls`; [The unit mouth](#the-unit-mouth)); the line-table clear is a counted guest write ([Counters](#counters)). They move to the object store when it lands, with no change to `Sounds`.
 
 ## The sound phase
 
@@ -187,7 +187,25 @@ The tick driver runs a 30th phase, `sound`, owned by Rust, after the 29 (`sim_br
 2. `Sounds::step`, each instance in slot order (the walk `0x128020`): a fade whose ramp is done (`owners::ramp_done`) ends with `Faded`; else an owner `alive` calls gone ends with `OwnerGone`; else an `end` that has come ends with `PlayedOut`.
 3. `mouth` for each running owned instance, with the ticks since its start.
 4. Events to the outbox (`events::TableEvent`): starts and stops in call order, then ends in slot order.
-5. The unit calls `GuestUnits` queued, in the step's order. A line's end is `0x18c8c0` past its pool read, in Rust (`units::line_end`): dialogue on (`[0x4ed28c] + 0x29`), `0xbadc0` with mask 3 says unit (`units::object_of_types`), then `0xd0dc0` clears the unit's line slot if it still holds the tag (`units::unit_line_ended`). A mouth is `0x18c6a0(object, 0, tag, range, permutation row, seconds)`: the update tests the unit itself and does not read its payload argument (`h2 disasm 0x18c6a0`).
+5. The unit calls `GuestUnits` queued, in the step's order. A line's end is `0x18c8c0` past its pool read, in Rust (`units::line_end`): dialogue on (`[0x4ed28c] + 0x29`), `0xbadc0` with mask 3 says unit (`units::object_of_types`), then `0xd0dc0` clears the unit's line slot if it still holds the tag (`units::unit_line_ended`). A mouth is `0x18c6a0(object, 0, tag, range, permutation row, seconds)`: the update tests the unit itself and does not read its payload argument (`h2 disasm 0x18c6a0`). The service's lip-sync updates (`0x129593`) take the same path.
+
+### The unit mouth
+
+`engine::sim_sound::mouth` ports the update over guest memory; the facial sequence is `engine::sim_anim::facial`. `mouth::gate` runs to the extra-info resource's residency, `mouth::finish` the rest. The resource cache's touch (`0x12de70`, flags 2) is Rust where it needs no I/O (`mouth::residency`); a request to submit (`0x12e3a0`), a priority to raise, a blocking wait or a load to relocate is `Residency::Guest`, and `sim_bridge::unit_mouth` calls the guest's `0x12de70` for the answer.
+
+| Step | Address | Rust |
+|---|---|---|
+| unit, permutation index in its range | `0x18c6a0` | `mouth::gate` |
+| lip sync: `snd!` `+1` bit 1 clear, the class's `+8` bit 1 (`0x221810`), an extra info | `0x18c720` | `mouth::gate`, `mouth::sound_class` |
+| residency of the element's `+8` resource | `0x12de70` | `mouth::residency` |
+| seconds × 30, `fistp` to the tick | `0x18c7a9` | `mouth::finish` |
+| the tick's byte / 255, the tick clamped to the curve | `0x218e50` | `mouth::aperture` |
+| aperture `+0x208` steps at most 0.3 toward it | `0x18c9b0` | `mouth::step_aperture` |
+| a descriptor with a facial sequence: the unit's entry | `0x18ca20`, `0x10e480` | `mouth::facial_sequence`, `facial::unit_sequence` |
+| custom state `0x0e0000c2` holds tracks 0x12..0x14 | `0x11b930` | `facial::custom_state` |
+| tracks sampled (smoothstep between keys), blended with last tick's by the unit's weight (tag `+0x1e4`, else 0.95), the 12 strongest kept as bytes | `0x10de40` | `facial::blend` |
+
+A facial sequence of more than 24 tracks reads the blend's frame past its previous-value array; it stays `unimplemented!`.
 
 The frame service does no sim work. It hands the outbox and a read-only `Scene` to the host.
 
