@@ -1,7 +1,7 @@
 # Sim and render split
 
-Status: Design. The render random stream, the gather-lens exit and the frame guard (slice 1) are built; every other row is a slice below.
-Code: `crates/extensions/game/src/render_rng.rs` (the private stream), `crates/extensions/lockstep/src/frame_guard.rs` and `frame-guard.toml` (the frame guard and its allowlist), `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs` (`outside_gather_lens`, the object setup seam), `crates/platform/d3d/src/scaled.rs` (`ScaledBackend`, the reference copy), `crates/extensions/game/src/d3d_glue.rs` (`protected_readbacks`, `single_copy`). Tests: `crates/platform/d3d/tests/render_scale.rs`, the unit tests in `frame_guard.rs`.
+Status: Design. The render random stream, the gather-lens exit the frame guard (slice 1) and the tick-end node matrices (slice 4) are built; every other row is a slice below.
+Code: `crates/extensions/game/src/render_rng.rs` (the private stream), `crates/extensions/lockstep/src/frame_guard.rs` and `frame-guard.toml` (the frame guard and its allowlist), `crates/rewrites/engine/src/tick_poses.rs` (the tick-end node matrices), `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs` (`outside_gather_lens`, the object setup seam), `crates/platform/d3d/src/scaled.rs` (`ScaledBackend`, the reference copy), `crates/extensions/game/src/d3d_glue.rs` (`protected_readbacks`, `single_copy`). Tests: `crates/platform/d3d/tests/render_scale.rs`, the unit tests in `frame_guard.rs`.
 Switch: `impl.sim.frame-guard` (off, **Code**) and `film.verify` (off, Design, added to [switches.md](../runtime/switches.md) by slice 12).
 
 ```mermaid
@@ -35,7 +35,7 @@ Sources: [high-resolution.md](../graphics/high-resolution.md), "Determinism"; [s
 | # | Coupling | Guest site | Reaches the sim through | Owner at the end |
 |---|---|---|---|---|
 | 1 | Animation variant pick | object setup `0x00133790` -> pose request `0x000bd610` -> animate `0x000bdb60` -> overlays `0x000bd970` -> channel select `0x001cb410` (flags `0x7f`) -> selector `0x001dd630` | a stack channel, so only the seed draw at `0x001dd6e1` (gameplay bit set) and the pose it feeds | couplings 2 and 3 ([1](#1-animation-variant-picks)) |
-| 2 | Node matrices | `0x000bd610`: the section test at `0x000bd750`, the evaluation at `0x000bd7b2` | shared node matrices, body flag bit 30 cleared; marker lookup reads them | the tick ([2](#2-node-matrices)) |
+| 2 | Node matrices | `0x000bd610`: the section test at `0x000bd750`, the evaluation at `0x000bd7b2` | shared node matrices, body flag bit 30 cleared; marker lookup reads them | built: `tick_poses.rs` ([2](#2-node-matrices)) |
 | 3 | Shared random seed | object code `0x001032a0` reached from the render; `[0x004e7408]` | the tick's next random numbers | built: `render_rng.rs` ([3](#3-the-random-stream)) |
 | 4 | Flare visibility byte | writer `0x00020bb0`, reader `0x00020770` (its count read at `0x000207b0`'s call `0x00020840`) | a GPU sample count smoothed into byte 3 of each entry of the array at `0x0051f40c`. No tick code reads the byte; `object_new` reads the entries' heads to free an owner's flares | the renderer ([4](#4-the-flare-visibility-byte)) |
 | 5 | Push-buffer callback texels | insert `0x0002460e` in `0x000245c0`, callback `0x00024970`, texels through `0x003fdbc0` and `0x00024a70` | a luminance histogram at `0x0051ecf0` and six floats in the record `[0x00485890]`. Only `render_screen_effects` reads them: no tick reader | the renderer ([5](#5-the-push-buffer-callback)) |
@@ -65,9 +65,9 @@ Frame timing (`0x0012b2e0`, the vblank count) is the logical clock, not the rend
 |---|---|
 | Guest | At `0x000bd750` the selected section bytes index the pose-section bitset at the model definition's `+0xc4`. On a hit, with body flag bit 30 set and bit 29 clear, `0x000bd7b2` evaluates the pose into the object's shared node matrices and clears bit 30 (**E**; **Code**: `native_scene_lists/setup/palette.rs::object_pose`, `object_lod.rs`). The tick's own build is `0x000bd090`, which also clears bit 30 ([sim-rewrite-objects.md](sim-rewrite-objects.md)). |
 | Why it couples | Marker lookup (`sim_native/marker.rs`) reads those matrices. A listed object has fresh ones and an unlisted one stale ones, so a marker position depends on the camera. A headless host never evaluates them at all. |
-| Move | The same tick phase builds the matrices of every object left with bit 30 set and bit 29 clear, through `sim_objects/pose.rs` (the `0x000bd090` port), in object index order, and clears the bit. The frame step reads matrices and never writes them. A display-only pose (interpolation, a display LOD) stays on the private overlay of `native_scene_lists/setup.rs`. |
+| Move | `engine::tick_poses` runs after the record's close in the tick driver (`sim-bridge/src/tick.rs`, before the sound phase). It builds the matrices of every object left with bit 30 set and bit 29 clear by calling `0x000bd090` (`sim_objects/pose.rs` when the native walk holds it), in object index order with an object's pending parents (body `+0x14`) first, so bit 30 is clear on every object when the frame step runs (**Code**). The frame step reads matrices and never writes them. A display-only pose (interpolation, a display LOD) stays on the private overlay of `native_scene_lists/setup.rs`. |
 | Cost | Bounded by the census: objects carrying bit 30 at tick end, per map. Hosts pay it too, and get the markers a rendered client has. |
-| Proof | Unit: `outside_gather_lens`'s fixture, reversed: an unlisted object's matrices equal a listed one's after the tick. Differential: `sim_objects_differential.rs` covers `0x000bd090`. Run: zero `0x000bd7b2` evaluations from the setup in `sim.render_writes`; `Refusal::Palette` for a dirty pose counts zero. |
+| Proof | Unit (**Test**): `after_the_tick_end_build_the_setup_reads_every_pose_and_writes_none` (the gather-lens fixture reversed, `native_scene_lists/setup.rs`), `every_pending_object_is_built_at_tick_end_whatever_the_view_listed` (`tick_poses/tests.rs`), `the_tick_ends_with_the_dirty_poses_built` (`sim-bridge/src/tick.rs`). Differential: `sim_objects_differential.rs` covers `0x000bd090`. Run: zero `0x000bd7b2` evaluations from the setup in `sim.render_writes`; `Refusal::Palette` for a dirty pose counts zero; `tick_poses::stats().left_dirty` is zero. |
 
 After this slice the gather-lens exit (`outside_gather_lens`) is a cost saving only. A game of several machines can then take the window's frustum, which is open slice 2 of [high-resolution.md](../graphics/high-resolution.md).
 
@@ -177,6 +177,7 @@ Slices 0 to 2 run together. 4 follows 0; 6 and 7 follow 2; 5, 8 and 9 follow 1.
 ## Not verified
 
 - Who sets body flag bit 30, and how many objects carry it at tick end.
+- That `0x000bd090` gives the matrices `0x000bd7b2` gave for the same object, machines included: the post update (`0x000bc820`) skips `0x000bd090` for type 7, and the tick-end build does not.
 - How a pending variant is marked in a channel, and whether an eager pick alters a channel the tick would have replaced before playing it.
 - That no tick code reached through an indirect call reads the flare state, the histogram or the callback's record: the static census follows direct calls and tail transfers only. The run-time census answers it.
 - Which store sets the callback record pointer `[0x00485890]`, and whether the record lies inside the hashed region.
