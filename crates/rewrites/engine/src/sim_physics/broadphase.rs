@@ -141,6 +141,8 @@ pub struct Prediction {
 }
 
 impl Prediction {
+    /// The differential tests' check: the guest's answer equals this one.
+    #[cfg(test)]
     pub fn matches(&self,cpu:&CpuAbi,g:&Guest) -> bool {
         let mut expected = self.cpu;
         expected.eip = cpu.eip; // The hook dispatcher owns the return PC.
