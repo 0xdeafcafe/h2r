@@ -2926,6 +2926,78 @@ impl<B: Backend> Device<B> {
         Ok(self.issue_external_pass(mem, pass, "immediate pass"))
     }
 
+    /// [`Self::external_pass_now`] as a typed scene stage of `plan`: on
+    /// `targets`, or the bound colour, depth and viewport when `None`
+    /// (read after the drain). The stage is queued for the render thread,
+    /// or run, in order after the drained draws, and nothing is rebound. A
+    /// sink that keeps a scene replay retains the stage
+    /// ([`crate::scene_sink::ReplayOp::Stage`]) where it refuses an untyped
+    /// pass. A backend that runs no scene stages takes a pass on the bound
+    /// targets untyped, and refuses one on named targets.
+    pub fn external_stage_now(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        targets: Option<ExternalTargets>,
+        plan: crate::ExternalPlan,
+        mut pass: Box<dyn crate::backend::ExternalPass>,
+    ) -> Result<bool, D3dError> {
+        self.live("external stage")?;
+        if let Some(cb) = self.drain_until_callback(mem)? {
+            self.undelivered = Some(cb);
+            return Ok(false);
+        }
+        self.swallow_external_boundary()?;
+        let queued = self.queues_scene_stages(plan.stage);
+        if !queued && !self.backend.runs_scene_stages() {
+            if targets.is_none() {
+                return Ok(self.issue_external_pass(mem, pass, "immediate pass"));
+            }
+            let origin = ExternalOrigin::new(&*pass, "immediate stage", Some(plan.stage));
+            self.refuse_external(origin, ExternalRefusal::Unsupported, None);
+            return Ok(false);
+        }
+        let origin = ExternalOrigin::new(&*pass, "immediate stage", Some(plan.stage));
+        if !self.backend.accepts_scene_pass(&*pass) {
+            self.refuse_external(origin, ExternalRefusal::Backend, Some("the backend does not keep this pass"));
+            return Ok(false);
+        }
+        let targets = targets.unwrap_or_else(|| self.external_targets());
+        let binding = match self.bind_external_at(mem, targets, &plan, &mut *pass, None) {
+            Ok(binding) => binding,
+            Err(why) => {
+                self.refuse_external(origin, why, None);
+                return Ok(false);
+            }
+        };
+        for &(_, surface) in &binding.colors {
+            self.materialize_display_copy(surface)?;
+        }
+        let stage = crate::SceneStage {
+            surfaces: binding.surfaces,
+            request: binding.request,
+            plan,
+            pass: Arc::new(std::sync::Mutex::new(pass)),
+        };
+        let taken = if queued {
+            self.backend.queue_scene_stage(stage)
+        } else {
+            self.backend.run_scene_stage(stage).map_err(D3dError::Backend)?
+        };
+        if !taken {
+            self.refuse_external(origin, ExternalRefusal::Backend, None);
+            return Ok(false);
+        }
+        for (header, surface) in binding.colors {
+            self.color_surface_written(surface);
+            self.mark_color_written(header);
+        }
+        if binding.depth_write {
+            self.mark_depth_written();
+        }
+        self.stats.external_passes += 1;
+        Ok(true)
+    }
+
     /// Drains earlier work and arms one guest post call. Only draws
     /// issued inside that call can satisfy its plan. Its return, a
     /// mismatch, or a conflicting operation ends the transaction.

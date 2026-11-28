@@ -41,6 +41,10 @@ impl d3d::ExternalPass for FanPass {
         true
     }
 
+    fn writes(&self) -> d3d::ExternalWrites {
+        d3d::ExternalWrites { color: true, depth_stencil: false }
+    }
+
     // Its numbers are the call's and its images loaded, so a scene replay
     // can record it again on its slots.
     fn replays_scene(&self) -> bool {
@@ -128,22 +132,13 @@ impl<B: d3d::Backend + Send + 'static> Host for Draw<B> {
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Fog, view: 0, ranges: 1, slots };
         let pass = FanPass { fan: fan.clone(), stages };
         // The fan's setup selects its own target (`0x00014bc0`) and is cut,
-        // so the pass names the fan's target, not the one bound: drained
-        // here, committed with nothing rebound.
-        match device.begin_external_boundary(&mut DeviceMemory(mem)) {
-            Ok(true) => {}
-            Ok(false) => return Err("placed_callback"),
-            Err(_) => return Err("placed_device"),
-        }
+        // so the pass names the fan's target, not the one bound: a fog
+        // scene stage placed after the drained draws, nothing rebound.
         let (w, h) = device.surface_size(&DeviceMemory(mem), fan.dest).ok_or("placed_header")?;
         let targets = d3d::ExternalTargets { color: fan.dest, depth: 0, rect: (0, 0, w, h) };
-        let step = d3d::ExternalStep { targets, plan, pass: Box::new(pass) };
-        match device.prepare_external_sequence(&mut DeviceMemory(mem), vec![step]) {
-            Ok(Some(prepared)) => {
-                prepared.commit();
-                Ok(())
-            }
-            Ok(None) => Err("placed_refused"),
+        match device.external_stage_now(&mut DeviceMemory(mem), Some(targets), plan, Box::new(pass)) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("placed_refused"),
             Err(_) => Err("placed_device"),
         }
     }

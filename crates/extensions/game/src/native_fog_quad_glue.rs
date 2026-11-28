@@ -130,7 +130,7 @@ impl<B: d3d::Backend + Send + 'static> Host for Draw<B> {
     fn draw(&self, mem: &mut dyn GuestMemory, draw: &FogQuadDraw) -> bool {
         let Ok(mut device) = self.device.lock() else { return false };
         let pass = FogQuadPass { draw: draw.clone(), test: None };
-        matches!(device.external_pass_now(&mut DeviceMemory(mem), Box::new(pass)), Ok(true))
+        matches!(device.external_stage_now(&mut DeviceMemory(mem), None, plan(), Box::new(pass)), Ok(true))
     }
 
     fn draw_other(&self, mem: &mut dyn GuestMemory, draw: &FogOtherDraw) -> bool {
@@ -140,8 +140,15 @@ impl<B: d3d::Backend + Send + 'static> Host for Draw<B> {
         let Ok(mut device) = self.device.lock() else { return false };
         let ramp = header.map(|h| decode_bitmap(&*mem, h, device.config().address_map).unwrap_or_else(|why| native_fog_quad::unported(why)));
         let pass = FogOtherPass { draw: draw.clone(), ramp, test: None };
-        matches!(device.external_pass_now(&mut DeviceMemory(mem), Box::new(pass)), Ok(true))
+        matches!(device.external_stage_now(&mut DeviceMemory(mem), None, plan(), Box::new(pass)), Ok(true))
     }
+}
+
+/// Either pass as a fog scene stage over the bound targets
+/// (`d3d::Device::external_stage_now`): a replaying scene sink keeps it
+/// typed and records it again, where it refuses an untyped pass.
+fn plan() -> d3d::ExternalPlan {
+    d3d::ExternalPlan { stage: timeline::native::Stage::Fog, view: 0, ranges: 1, slots: Vec::new() }
 }
 
 pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
