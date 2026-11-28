@@ -292,9 +292,9 @@ live fields name none.
 Once the material is proven (`material_proven()`), an admitted decal draw
 takes its combiner from the mode's Rust material and its position matrix
 rows from the open view (`apply_rust` in `native_decals_glue.rs`); one draw
-in 64 stays the guest's own and is the comparison. The callback `0x00044040`
-is not cut: the host draws the guest's quads from its resolved draws, not
-from the scene's items.
+in 64 stays the guest's own and is the comparison. A call of `0x00044040` is
+cut where its records draw from the mode's template, not the scene's items
+([retire-d3d-decals.md](retire-d3d-decals.md)).
 
 The weather plates' host (**Code**): `render-bridge/src/native_weather.rs`
 observes each call of the plate draw `0x00037a60` (element at `[esp+4]`)

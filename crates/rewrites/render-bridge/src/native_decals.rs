@@ -14,7 +14,7 @@ use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use engine::datum::{DatumArray, SIGNATURE, layout};
@@ -24,6 +24,8 @@ use native_render::decal::Mode;
 
 use hooks::{BuildError, Builder, Feature, Manifest};
 use timeline::native::{Metric, Stage};
+
+pub mod cut;
 
 pub const ID: &str = "native-decals";
 
@@ -330,6 +332,26 @@ fn end() {
     CURRENT.with(|c| c.set(None));
 }
 
+/// Whether the callback's cut is placed ([`cut`]): with the stage, unless
+/// `native-decals.cut=off`.
+pub fn cut_on(switches: &hooks::Switches) -> bool {
+    on(switches) && switches.feature(cut::SWITCH, true)
+}
+
+/// The original body at `addr`.
+fn original(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    if let Some(original) = ctx.runtime().resolve_original(addr) {
+        return Ok(original.invoke(cpu, ctx, addr));
+    }
+    let event = ctx.emit(runtime::Event::UnsupportedTarget {
+        pc: cpu.eip,
+        target: addr,
+        kind: runtime::abi::JUMP,
+        route: runtime::abi::ENTRY,
+    });
+    Ok(runtime::TransferAbi::fault(event))
+}
+
 pub struct NativeDecals;
 
 impl Feature for NativeDecals {
@@ -352,8 +374,34 @@ impl Feature for NativeDecals {
             })
             .context_only();
         b.raw()
-            .observe_before(&points::scene_effects::DECAL_RENDER_END, "native_decals_end", |_| end())
+            .observe_before(&points::scene_effects::DECAL_RENDER_END, "native_decals_end", |_| {
+                cut::end_call();
+                end();
+            })
             .context_only();
+        if cut_on(b.switches()) {
+            // One template per mode of a view (`0x0002c370`): the state
+            // its callbacks draw with.
+            b.raw()
+                .observe_before(&points::RENDER_DECAL_MODE, "native_decals_mode", |_| cut::next_mode_call())
+                .context_only();
+            // The callback returns without its body when every record it
+            // would draw is drawn natively ([`cut::turn`]).
+            b.raw()
+                .implement(&points::DECAL_RENDER, "native_decals_cut", |cpu, ctx, addr| {
+                    if addr == points::DECAL_RENDER.base {
+                        let rt = Arc::clone(ctx.runtime());
+                        let mut g = rt.memory();
+                        let list = g.u32(cpu.esp.wrapping_add(4)).unwrap_or(u32::MAX);
+                        if cut::turn(&mut *g, list) == cut::Turn::Return {
+                            end();
+                            return g.ret(cpu, 8);
+                        }
+                    }
+                    original(cpu, ctx, addr)
+                })
+                .context_only();
+        }
         // The weather plates' host draws in the same pass (slot 9).
         crate::native_weather::build(b);
         b.snapshot(hooks::SnapshotPolicy::Stateless);

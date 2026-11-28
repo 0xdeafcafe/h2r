@@ -211,13 +211,15 @@ flowchart LR
 | Step | Code | What it does |
 |---|---|---|
 | Hook | `native_world_layers` (`native_sky_cut`), `native_sky::before_sky` | at the entry, `cut_takes`: the arm ready for the BSP, and not the one pass in `CUT_SAMPLE` (64) the guest keeps |
-| Keep | `native_sky_cut_glue::record` | over a guest pass, every admitted strip's `IndexedPass::sky_template` with its section, shader, pass and decompression; the device's view block (registers 0 to 17) at the entry checked against each strip's |
+| Keep | `native_sky_cut_glue::record` | over a guest pass, every admitted strip's `IndexedPass::sky_template` with its section, shader, pass and decompression; the device's view block (registers 0 to 17) at the entry checked against each strip's; each strip's stencil checked against the last complete pass's strip in its place (`stencil_holds`) |
 | Replay | `IndexedPass::sky_replay` | the template's draw, the rows from `sky_rows::rows_of` (no strip on the stack), the pass evaluated at the render clock; geometry, program, pipeline and stage views from the resident `SectionKey::Sky` entry |
 | Issue | `SkyCut`, `prepare_external_bound` | the strips as one pass at the boundary, the device's view block over each (`view_constants`), committed before the hook returns |
 
 A guest pass that keeps a strip on the guest leaves the kept strips empty
 until a complete one. A view block that differs stops the arm for the BSP
-(`sky_cut_view`). Counters: `sky_cut_drawn`, `sky_cut_declined_<why>`
+(`sky_cut_view`), as does a strip whose stencil differs from the one its
+place drew with in the last complete pass (`sky_cut_stencil`): a replay
+draws with its template's stencil. Counters: `sky_cut_drawn`, `sky_cut_declined_<why>`
 (`unloaded`, `strips`, `rows`, `constants`, `device`, `pass`), and the
 arm's `sky_cut_{waiting,ready,stopped}`. A passed-over sky closes the
 residual census's `sky` producer when its entry observer opened it
@@ -258,7 +260,7 @@ Tests: `the_stage_draws_around_the_entry_the_guest_keeps`,
 `the_sky_section_from_the_load_is_checked_against_the_strip` (`tests/world_layers_gpu.rs`),
 `the_cut_arm_is_ready_after_its_run_and_stops_at_a_miss` (`native_sky`),
 `a_passed_over_producer_closes_only_when_open` (`residual_census`),
-`a_strip_holds_the_view_block_bit_for_bit` (`native_sky_cut_glue`),
+`a_strip_holds_the_view_block_bit_for_bit`, `a_strip_holds_the_stencil_its_place_drew_with` (`native_sky_cut_glue`),
 `the_rows_arm_answers_after_its_matches_and_stops_at_a_difference` (`native_sky`),
 `an_order_item_of_layer_2_holds_the_layer_for_its_sorted_entries`
 (`native_layers`); `a_passed_over_entry_reads_as_passed_and_keeps_its_slot_and_neighbours`,

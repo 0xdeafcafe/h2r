@@ -180,6 +180,20 @@ reference page.
 
 What keeps a guest draw in R5's stages, and how fog and water draw per item in the guest's order: [retire-d3d-r5.md](retire-d3d-r5.md).
 
+## The residual callers
+
+The callers `render.residual` names with residual draws in a 16-bot game,
+identified in [notes/residual-callers.md](notes/residual-callers.md)
+(numbers and reads there).
+
+| Caller | What it is | What claims it, or what claiming it needs |
+|---|---|---|
+| `0x4dad0` (site `0x4dae0`) | the emitter `0x0004daa0`'s whole-part indexed draw, shared by every layer's geometry handler and the sorted layer-15 handler | nothing of its own: its draws are each stage's refusals. A census with `frame-scene.census` files them by layer draw (`producers`), and `render.scene`'s `scene_kept_*` names their causes |
+| `0x4ebd0` | decorator types 1 and 2 (decals) in the transparent layers | a decal-decorator stage: the placement's vertex range from the BSP decorator block, its shader's transparent pass, `c[53]` and `ZBias` 1, drawn at the call in sorted order, then the call returned (`ret 0x1c`). Not built |
+| `0x4c690` | the sky model renderer's strips | the sky stage and its cut ([retire-d3d-r5.md](retire-d3d-r5.md), "The sky's cut"). A strip draws with its own stencil state; only a stencil the target cannot hold is refused |
+| `0x25d50` | the planar fog's screen quad (`0x00034420` with `0x00026520` or `0x00025e50`) | a Rust fog quad: the state `0x00026520` sets, its combiner, the corners `0x00026710` makes, then the call returned. Not built |
+| `0x00224fd0` (site `0x225475`) | **S**: particles drawn as model parts, a callback of `0x00175610` | a particle-model stage. Not built |
+
 ## External pass refusals
 
 A device refusal includes the producer's Rust pass type, its issue boundary, and the native stage for a typed plan. The first refusal for each producer, boundary, stage and reason is logged. Device counters retain every refusal.

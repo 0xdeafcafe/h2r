@@ -4,11 +4,12 @@ Status: Built. All seven decal modes are admitted through `d3d::DrawAdmission`; 
 Code: `crates/rewrites/render-bridge/src/native_decals.rs`, `crates/extensions/game/src/native_decals_glue.rs`, `crates/rewrites/native-render/src/decal.rs`, `decal_gpu.rs`. Tests: `crates/rewrites/render-bridge/tests/native_defaults.rs` (switch), `crates/rewrites/native-render/tests/decals_gpu.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-The guest keeps the decal array, the per-record texture binds, the duplicate markers and the wrapper's state. The stage replaces only the resolved `D3DDevice_DrawVertices` packet of each record. Addresses and offsets below are research points from the guest code (**Code**, `h2 disasm`), not game data. Part of [native-renderer.md](native-renderer.md).
+The guest keeps the decal array and the wrapper's state. Where the guest callback runs, it keeps the per-record texture binds and duplicate markers and the stage replaces only the resolved `D3DDevice_DrawVertices` packet of each record; where the callback is cut, Rust walks it, writes its markers and draws each record from its mode's template ([retire-d3d-decals.md](retire-d3d-decals.md)). Addresses and offsets below are research points from the guest code (**Code**, `h2 disasm`), not game data. Part of [native-renderer.md](native-renderer.md).
 
 | Piece | Owner |
 |---|---|
-| decal array, texture binds, duplicate markers, wrapper state, final solid-offset reset | guest |
+| decal array, wrapper state, final solid-offset reset | guest |
+| texture binds, duplicate markers | guest where the callback runs; Rust where it is cut (`native_decals::cut`) |
 | the resolved draw packet of each record | native stage, through `d3d::DrawAdmission`; D3D when any copy refuses |
 | modes 0 to 6 | one admission each; depth, bias and blend per [Effective render state](#effective-render-state) |
 

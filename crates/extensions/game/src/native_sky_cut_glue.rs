@@ -7,7 +7,10 @@
 //!   registers 0 to 17) is checked against the device's at
 //!   `0x0003ede0`'s entry. A strip kept on the guest, or a view block that
 //!   differs, leaves the pass incomplete; a differing view also stops the
-//!   cut's arm (`sky_cut_view`). A complete pass replaces the kept strips.
+//!   cut's arm (`sky_cut_view`), as does a strip whose stencil is not the
+//!   one the last pass's strip in its place drew with (`sky_cut_stencil`:
+//!   a replay draws with its template's). A complete pass replaces the
+//!   kept strips.
 //! - **A cut pass** ([`Glue::draw`]): each kept strip replayed
 //!   (`IndexedPass::sky_replay`) with the rows made from the sky's
 //!   transform (`sky_rows::rows_of`) and its pass evaluated at the render
@@ -61,6 +64,7 @@ pub(crate) fn record(
     generation: u64, admitted: Option<(&IndexedPass, &render_bridge::native_sky::SkyItem)>, draw: &d3d::ResolvedDraw,
 ) {
     let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    let kept = &mut *kept;
     let Some(recording) = kept.recording.as_mut() else { return };
     if recording.generation != generation {
         recording.complete = false;
@@ -75,15 +79,39 @@ pub(crate) fn record(
         return;
     }
     match admitted.and_then(|(pass, item)| Some((pass.sky_template()?, item))) {
-        Some((template, item)) => recording.strips.push(Strip {
-            template,
-            section: item.section,
-            shader: item.shader,
-            pass: item.pass,
-            decompression: item.decompression,
-        }),
+        Some((template, item)) => {
+            // A replay draws with the stencil its template drew with: a
+            // strip whose stencil differs from the last pass's strip in
+            // its place stops the arm for the BSP (`sky_cut_stencil`).
+            let previous = (kept.generation == generation)
+                .then(|| kept.strips.get(recording.strips.len()))
+                .flatten()
+                .map(|p| p.template.stencil());
+            if !stencil_holds(previous, template.stencil()) {
+                if recording.complete {
+                    render_bridge::native_sky::count("cut_stencil");
+                    render_bridge::native_sky::cut_miss(generation);
+                }
+                recording.complete = false;
+                return;
+            }
+            recording.strips.push(Strip {
+                template,
+                section: item.section,
+                shader: item.shader,
+                pass: item.pass,
+                decompression: item.decompression,
+            });
+        }
         None => recording.complete = false,
     }
+}
+
+/// Whether a strip's stencil `now` holds the one the last complete pass's
+/// strip in its place drew with (`previous`; `None` for a strip with no
+/// such place): test, ops, masks and reference alike.
+fn stencil_holds(previous: Option<&gfx::state::StencilState>, now: &gfx::state::StencilState) -> bool {
+    previous.is_none_or(|p| p == now)
 }
 
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
@@ -171,5 +199,19 @@ mod tests {
         constants[0][0] = -0.0;
         assert!(!same_view(&constants, &view), "bit for bit: -0 is not 0");
         assert!(!same_view(&constants[..4], &view));
+    }
+
+    /// A strip with no place in the last pass holds; one in a place holds
+    /// only the stencil drawn there, its reference included.
+    #[test]
+    fn a_strip_holds_the_stencil_its_place_drew_with() {
+        let mark = native_render::object_state::structure_stencil(native_render::object_state::STENCIL_MARK_REFERENCE);
+        let off = gfx::state::StencilState { enable: false, ..mark };
+        assert!(stencil_holds(None, &off));
+        assert!(stencil_holds(Some(&mark), &mark));
+        assert!(stencil_holds(Some(&off), &off));
+        assert!(!stencil_holds(Some(&mark), &off));
+        let other = gfx::state::StencilState { reference: mark.reference.wrapping_add(1), ..mark };
+        assert!(!stencil_holds(Some(&mark), &other));
     }
 }
