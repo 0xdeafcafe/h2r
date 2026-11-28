@@ -48,8 +48,10 @@ pub struct Fade {
     /// Alpha as the colour's, each colour channel one minus its own,
     /// times the fraction, packed (`0x0004094c`).
     pub complement: u32,
-    /// The view, guest pixels.
-    pub rect: ClipRect,
+    /// The view, guest pixels: left, top, right, bottom. The body's fan
+    /// is the view's 16-bit width and height; one empty or off the target
+    /// covers no pixel ([`plan`]).
+    pub rect: [i32; 4],
 }
 
 /// `0x00131e50`: each channel times `scale` on the x87 (exact in `f64`),
@@ -76,6 +78,8 @@ pub fn read(mem: &dyn GuestMemory) -> Result<Option<Fade>, &'static str> {
     if mode == 0 {
         return Ok(None);
     }
+    // The body jumps through `0x00040dc0` by mode less one with no bound
+    // check: past mode 6 it lands in the padding after the table.
     if mode > MODES {
         return Err("mode");
     }
@@ -92,21 +96,14 @@ pub fn read(mem: &dyn GuestMemory) -> Result<Option<Fade>, &'static str> {
     let half = |k: u32| word(WINDOW + 4 * (k / 2)).map(|w| (w >> (16 * (k % 2))) as u16 as i16);
     let [top, left, bottom, right] = [half(0)?, half(1)?, half(2)?, half(3)?];
     // The body's own 16-bit differences (`0x00040d65`, `0x00040d73`).
-    let width = right.wrapping_sub(left);
-    let height = bottom.wrapping_sub(top);
-    if width <= 0 || height <= 0 || left < 0 || top < 0 {
-        return Err("rect");
-    }
+    let width = i32::from(right.wrapping_sub(left));
+    let height = i32::from(bottom.wrapping_sub(top));
+    let [left, top] = [i32::from(left), i32::from(top)];
     Ok(Some(Fade {
         mode,
         colour: pack(lit, scale),
         complement: pack(complement, scale),
-        rect: ClipRect {
-            x: left as u32,
-            y: top as u32,
-            width: width as u32,
-            height: height as u32,
-        },
+        rect: [left, top, left + width, top + height],
     }))
 }
 
@@ -158,19 +155,30 @@ pub fn psdef(fade: &Fade) -> [u32; PSDEF_WORDS] {
     w
 }
 
+/// The view's pixels on a target `size`: the view clipped to it, `None`
+/// when no pixel is left (an empty or flipped view, or one off the
+/// target).
+fn covered(rect: [i32; 4], size: [u32; 2]) -> Option<ClipRect> {
+    let clamp = |v: i32, max: u32| v.clamp(0, max.min(i32::MAX as u32) as i32) as u32;
+    let [x0, y0] = [clamp(rect[0], size[0]), clamp(rect[1], size[1])];
+    let [x1, y1] = [clamp(rect[2], size[0]), clamp(rect[3], size[1])];
+    (x1 > x0 && y1 > y0).then_some(ClipRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 })
+}
+
 /// The fade as one overlay item over a target `size`: a `Fill` of the
 /// view in slot `Fade`, drawn by the PSDEF's combiner with the case's
 /// blend and constant, colour channels written, alpha not (`0x00040971`).
+/// A view that covers no pixel of the target draws no item.
 pub fn plan(fade: &Fade, size: [u32; 2]) -> Result<Overlay, &'static str> {
     let ((source, dest, equation), constant) = blend(fade.mode);
-    let r = fade.rect;
+    let mut overlay = Overlay::new(size);
+    let Some(r) = covered(fade.rect, size) else { return Ok(overlay) };
     let rect = [
         r.x as f32,
         r.y as f32,
         (r.x + r.width) as f32,
         (r.y + r.height) as f32,
     ];
-    let mut overlay = Overlay::new(size);
     overlay
         .push_fill(
             r,
@@ -232,6 +240,11 @@ pub(super) fn enter(c: &mut Call<'_>) -> TransferAbi {
                 unimplemented!("fade: PSDEF unwritable");
             }
         }
+    }
+    // The PSDEF is the body's whatever its view covers; an empty view
+    // draws nothing.
+    if planned.is_empty() {
+        return out;
     }
     if crate::scene_step::with_overlay(|o| o.append(&planned).is_ok()) != Some(true) {
         unimplemented!("fade: append");
@@ -367,14 +380,31 @@ mod tests {
         }
     }
 
-    /// Mode 0 draws nothing; a mode past the table, or an empty view, is
-    /// not made.
+    /// Mode 0 draws nothing; a mode past the table is not made.
     #[test]
     fn mode_zero_draws_nothing_and_a_bad_mode_is_named() {
         assert_eq!(read(&mem(0, [1.0; 4], 1.0)), Ok(None));
         assert_eq!(read(&mem(7, [1.0; 4], 1.0)), Err("mode"));
+    }
+
+    /// An empty view draws no item; one past the target's edge is
+    /// clipped to it; an inset one covers only itself.
+    #[test]
+    fn the_view_is_clipped_to_the_target() {
+        let size = [640, 480];
         let mut m = mem(1, [1.0; 4], 1.0);
         m.set_u32(WINDOW + 4, 0).unwrap();
-        assert_eq!(read(&m), Err("rect"));
+        let empty = read(&m).unwrap().unwrap();
+        assert!(plan(&empty, size).unwrap().is_empty());
+        // top -20, left -10, bottom 500, right 700.
+        m.set_u32(WINDOW, (-20i16 as u16 as u32) | (-10i16 as u16 as u32) << 16).unwrap();
+        m.set_u32(WINDOW + 4, 500 | 700 << 16).unwrap();
+        let wide = plan(&read(&m).unwrap().unwrap(), size).unwrap();
+        assert_eq!(wide.items[0].clip, ClipRect::full(size));
+        // The letterbox's band: top 60, bottom 420.
+        m.set_u32(WINDOW, 60).unwrap();
+        m.set_u32(WINDOW + 4, 420 | 640 << 16).unwrap();
+        let band = plan(&read(&m).unwrap().unwrap(), size).unwrap();
+        assert_eq!(band.items[0].clip, ClipRect { x: 0, y: 60, width: 640, height: 360 });
     }
 }
