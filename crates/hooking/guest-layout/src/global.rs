@@ -59,6 +59,9 @@ crate::globals! { GLOBALS;
     /// Pointer to the objects datum array (`0xc`-byte
     /// [`crate::object::ObjectHeader`]s).
     OBJECTS @ 0x004e_0300; "docs/formats/objects.md";
+    /// Pointer to the lights datum array (`0x110`-byte elements, the salt
+    /// first: docs/engine/object-update.md, "Slice 5 bodies").
+    LIGHTS @ 0x004e_030c; "docs/engine/object-update.md";
     /// Pointer to the loaded scenario tag (`scnr`): player starting
     /// locations at `+0x100` (count) and `+0x104`, `0x34` each.
     SCENARIO @ 0x004e_0350; "docs/editor/scenario-editor.md";

@@ -32,6 +32,8 @@ pub mod kind {
     pub const EFFECTS: u16 = 7;
     pub const AI: u16 = 8;
     pub const SCRIPTS: u16 = 9;
+    /// The lights datum array (`sim_objects::lights::LightTable`).
+    pub const LIGHTS: u16 = 10;
     /// The test store; the one store wave 1 fills.
     pub const PROBE: u16 = 0x100;
 }

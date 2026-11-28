@@ -8,7 +8,7 @@ use std::any::Any;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
-use sim_objects::ObjectTable;
+use sim_objects::{LightTable, ObjectTable};
 use sim_sound::instances::Sounds;
 use sim_world::{RestoreError, Store, World, kind};
 
@@ -62,6 +62,56 @@ pub fn import_objects(m: &(impl guest_layout::Mem + ?Sized), objects: &Mutex<Obj
         Err(e) => panic!("objects: the guest's objects array is corrupt: {e:?}"),
     };
     *lock_objects(objects) = table;
+    import_lights(m, &LIGHT_TABLE);
+}
+
+/// The shared light table: the pool is the truth for the lights array, and
+/// the world saves it in its lights section.
+pub type SharedLights = Arc<Mutex<LightTable>>;
+
+/// The process's light table.
+pub static LIGHT_TABLE: LazyLock<SharedLights> = LazyLock::new(SharedLights::default);
+
+pub fn lock_lights(t: &Mutex<LightTable>) -> MutexGuard<'_, LightTable> {
+    t.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Read the guest's lights array into `lights`, as [`import_objects`] does
+/// for the objects: no map loaded leaves an empty table.
+pub fn import_lights(m: &(impl guest_layout::Mem + ?Sized), lights: &Mutex<LightTable>) {
+    let table = match LightTable::import(m) {
+        Ok(Some(t)) => t,
+        Ok(None) | Err(sim_objects::ImportError::Fault(_)) => LightTable::default(),
+        Err(e) => panic!("lights: the guest's lights array is corrupt: {e:?}"),
+    };
+    *lock_lights(lights) = table;
+}
+
+/// The light table as the world's lights store; a restore puts the decoded
+/// pool in the table, like [`ObjectStore`].
+pub struct LightStore(pub SharedLights);
+
+impl Store for LightStore {
+    fn kind(&self) -> u16 {
+        kind::LIGHTS
+    }
+    fn version(&self) -> u16 {
+        LightTable::VERSION
+    }
+    fn encode(&self) -> Vec<u8> {
+        lock_lights(&self.0).encode()
+    }
+    fn section_hash(&self) -> u64 {
+        lock_lights(&self.0).section_hash()
+    }
+    fn decode(&self, version: u16, body: &[u8]) -> Result<Box<dyn Any + Send>, RestoreError> {
+        Ok(Box::new(lock_lights(&self.0).decode(version, body)?))
+    }
+    fn install(&mut self, state: Box<dyn Any + Send>) {
+        if let Ok(table) = state.downcast::<LightTable>() {
+            *lock_lights(&self.0) = *table;
+        }
+    }
 }
 
 /// The object table as the world's objects store. A restore puts the
@@ -100,7 +150,13 @@ pub fn with_table(table: Shared) -> World {
 
 /// A world that holds `sounds` and `objects` as its stores.
 pub fn with_tables(sounds: Shared, objects: SharedObjects) -> World {
+    with_stores(sounds, objects, SharedLights::default())
+}
+
+/// A world that holds `sounds`, `objects` and `lights` as its stores.
+pub fn with_stores(sounds: Shared, objects: SharedObjects, lights: SharedLights) -> World {
     let mut w = World::new(1);
+    w.attach(Box::new(LightStore(lights))).expect("a world without one takes the lights store");
     w.attach(Box::new(ObjectStore(objects))).expect("an empty world takes the objects store");
     w.attach(Box::new(SoundStore(sounds))).expect("a world without one takes the sound store");
     w
@@ -109,7 +165,11 @@ pub fn with_tables(sounds: Shared, objects: SharedObjects) -> World {
 /// The process's world, over the process's tables ([`entries::SHARED`],
 /// [`OBJECT_TABLE`]).
 pub static WORLD: LazyLock<Mutex<World>> = LazyLock::new(|| {
-    Mutex::new(with_tables(Arc::clone(&entries::SHARED), Arc::clone(&OBJECT_TABLE)))
+    Mutex::new(with_stores(
+        Arc::clone(&entries::SHARED),
+        Arc::clone(&OBJECT_TABLE),
+        Arc::clone(&LIGHT_TABLE),
+    ))
 });
 
 pub fn lock(w: &Mutex<World>) -> MutexGuard<'_, World> {
@@ -176,5 +236,24 @@ mod tests {
         assert_eq!(lock_objects(&b).encode(), lock_objects(&a).encode());
         assert_eq!(world.save(), saved);
         assert_eq!(lock_objects(&b).alloc(rec(0x300)), lock_objects(&a).alloc(rec(0x300)));
+    }
+
+    /// The light pool is the world's lights section, like the objects.
+    #[test]
+    fn the_world_saves_the_light_table_and_restores_it_into_its_table() {
+        let sounds = || Arc::new(Mutex::new(entries::Table::guest()));
+        let a = SharedLights::new(Mutex::new(LightTable::new(8, 0x696c)));
+        let mut light = sim_objects::LightRecord::default();
+        light.set_flags(2);
+        let h = lock_lights(&a).alloc(light.clone()).unwrap();
+        lock_lights(&a).alloc(light.clone()).unwrap();
+        lock_lights(&a).delete(h).unwrap();
+        let saved = with_stores(sounds(), SharedObjects::default(), Arc::clone(&a)).save();
+        let b = SharedLights::new(Mutex::new(LightTable::new(8, 0x696c)));
+        let mut world = with_stores(sounds(), SharedObjects::default(), Arc::clone(&b));
+        assert_ne!(world.save(), saved);
+        world.restore_into(&saved).unwrap();
+        assert_eq!(lock_lights(&b).encode(), lock_lights(&a).encode());
+        assert_eq!(world.save(), saved);
     }
 }
