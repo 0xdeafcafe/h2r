@@ -194,7 +194,7 @@ pub static FRAME_FINISH: Arm = Arm::new("frame_finish");
 /// The counters `render.scene` reports.
 pub fn counters() -> Vec<(String, u64)> {
     TARGET_SELECT.counters().into_iter().chain(SCENE_CLEAR.counters()).chain(FRAME_FINISH.counters())
-        .chain(crate::frame_tail::counters()).chain(crate::view_setup::counters()).collect()
+        .chain(crate::frame_tail::counters()).chain(crate::view_setup::counters()).chain(crate::water_end::counters()).collect()
 }
 
 /// Halo's render-target table (`0x004b4b58`, stride `0x98`): entry `n`'s

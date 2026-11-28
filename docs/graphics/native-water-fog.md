@@ -192,29 +192,22 @@ A pool that writes depth needs the write proven against the world's depth first.
 
 #### The water edge blend, drawn natively (layer 6)
 
-The skip, the scene and the reservation are the fog's: one context-only observer before the layer draw, ordered after the world's and the fog's. It runs for layer 6 when the caller is the late passes' call (`[esp] == 0x0002c120`), gated by the water branch's own gate (bit 4 of `0x004b9fe0` clear). The reservation drains the setup wrapper's pushes before the native draw. The teardown `0x0003c3c0` keeps its conditional alpha clear at `0x0003c515` and its state commit.
+The skip, the scene and the reservation are the fog's: one context-only observer before the layer draw, ordered after the world's and the fog's. It runs for layer 6 when the caller is the late passes' call (`[esp] == 0x0002c120`), gated by the water branch's own gate (bit 4 of `0x004b9fe0` clear). The reservation drains the setup wrapper's pushes before the native draw.
 
 ```mermaid
 sequenceDiagram
   participant W as water setup wrapper
-  participant H as indexed helper (0x0001c8a9)
   participant N as native water stage
-  participant T as teardown 0x0003c3c0
+  participant T as water end 0x0003c3c0 (Rust)
   W->>N: layer 6 observer reserves the pass
-  W->>H: state commit returns (0x0001c8a5)
-  H->>N: offer the composite's quad list
-  N-->>H: committed: AL = 1, pop three arguments, return
-  H->>T: teardown clears alpha
-  Note over H,N: refusal takes the original indexed call
+  N->>T: layer 6 drawn
+  T-->>T: gates: return, no work
+  Note over T: an ocean to draw panics, water end: ocean
 ```
 
-At `0x0001c8a9`, one instruction past the state commit's return `0x0001c8a5` (no hook runs at a call's continuation), the indexed helper offers the composite's quad list to the water stage. The keyed view owns the quad corners, and the stage verifies them against the current vertex window before expanding them into triangles.
+The water end after it is Rust (`render_bridge::water_end`, [retire-d3d-display.md](retire-d3d-display.md#the-water-end)). Its gates return with no work; the ocean, with its alpha clear `0x0003c515` and its indexed quads, has no native stage and panics, `water end: ocean`. The quads' native draw (`frame_scene::late::WaterComposite`, `scene_step::water_composite`, `world_layers_gpu::IndexedPass::water_quads`) is the piece that stage draws them with.
 
-When the native draw commits, the hook performs the helper's tail itself (`mov al, 1; ret 0xc` past its indexed call): AL set, the return address and the three arguments popped, a return to the helper's caller (`scene_extract::late::WATER_COMPOSITE_RETURN`, a call continuation). No resume point inside the helper is needed. Refusals take the original indexed call.
-
-Under a retaining scene sink the committed composite is carried as the replay's admitted draw (`Backend::begin_native_carry`; see [framescene.md](framescene.md)). Without that the sink refuses the reservation and the guest draws the water.
-
-**Layer-6 counters.** `scene_water_views`, `scene_water_drawn`, `scene_water_parts` and `native_water_walk_*` count only layer 6 and its composite, which Old Mombasa and Zanzibar use. They stay zero on Delta Towers, which has no layer-6 edge materials. Its `tower_pool` surfaces are drawn by the sorted pool pass (above), counted under `layer_plan_15_pool_*`. Its bay's open water is the BSP water definition's ocean grid (`water_ocean`), which the teardown draws on the D3D path. That grid is attached to the camera; its width in a wide window is in [high-resolution.md](high-resolution.md#widescreen-projection).
+**Layer-6 counters.** `scene_water_views`, `scene_water_drawn`, `scene_water_parts` and `native_water_walk_*` count only layer 6 and its composite, which Old Mombasa and Zanzibar use. They stay zero on Delta Towers, which has no layer-6 edge materials. Its `tower_pool` surfaces are drawn by the sorted pool pass (above), counted under `layer_plan_15_pool_*`. Its bay's open water is the BSP water definition's ocean grid (`water_ocean`), which the water end draws; with the native renderer it panics, `water end: ocean`. That grid is attached to the camera; its width in a wide window is in [high-resolution.md](high-resolution.md#widescreen-projection).
 
 **Parts.** Layer 6 draws the kind-4 transparent parts of clusters and placements. A placement uses its own model rows at the rigid program's dynamic uniform offset. Each pass must compile the rigid classification and the part must supply every vertex input it reads. Missing rows, streams or rigid programs leave the placement on the guest path. The look is the material's own layer-6 pass (`fog_gpu::supplied_layer_passes`), accepted by the fog layer's rule: the states the implementation sets itself, a final combiner of its own, no device-state texture modes.
 

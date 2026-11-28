@@ -25,20 +25,6 @@ pub fn scene_layer_call(layer: u32, ret: u32) -> bool {
     matches!((layer, ret), (16, SCENE_FOG_RETURN) | (6, SCENE_WATER_RETURN))
 }
 
-/// The indexed helper returns to the water composite after its call at
-/// 0x0003c598. Its arguments are topology, index address and index count.
-pub const WATER_COMPOSITE_RETURN: u32 = 0x0003_c59d;
-
-pub fn water_quad_range(mem: &dyn GuestRead, esp: u32) -> Option<(u32, u32)> {
-    let slot = |offset| mem.read_u32(esp.checked_add(offset)?);
-    if slot(0)? != WATER_COMPOSITE_RETURN || slot(4)? != 8 {
-        return None;
-    }
-    let indices = slot(8)?;
-    let count = slot(12)?;
-    (indices != 0 && count >= 4 && count.is_multiple_of(4)).then_some((indices, count))
-}
-
 /// Copy the 16-bit index list as quads. Bound extraction to the device's
 /// vertex limit before allocating, and reject address wrap.
 pub fn water_composite(mem: &dyn GuestRead, indices: u32, count: u32) -> Option<frame_scene::late::WaterComposite> {
@@ -127,22 +113,6 @@ mod tests {
             assert!(scene_layer_call(layer, ret));
             assert!(!scene_layer_call(layer, ret + 1));
             assert!(!scene_layer_call(other, ret));
-        }
-    }
-
-    #[test]
-    fn water_composite_reads_only_complete_quads_at_its_own_call() {
-        let mut mem = Mem::default();
-        let esp = 0x5010;
-        for (offset, value) in [(0, WATER_COMPOSITE_RETURN), (4, 8), (8, 0x8342), (12, 12)] {
-            mem.w(esp + offset, value);
-        }
-        assert_eq!(water_quad_range(&mem, esp), Some((0x8342, 12)));
-        for (offset, invalid) in [(0, 0x1000), (4, 6), (8, 0), (12, 7)] {
-            let old = mem.read_u32(esp + offset).unwrap();
-            mem.w(esp + offset, invalid);
-            assert_eq!(water_quad_range(&mem, esp), None);
-            mem.w(esp + offset, old);
         }
     }
 

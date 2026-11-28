@@ -46,7 +46,6 @@ fn the_scene_and_its_cleanup_share_the_render_thread() {
     let text = plan.text();
     for (point, label) in [
         ("TRANSPARENT_GEOMETRY", "native_transparents_entry"),
-        ("WATER_INDEX_READY", "native_water_composite"),
         ("SUBPART_STRIP_DRAW", "native_late_subpart_draw"),
         ("SUBPART_LIST_DRAW", "native_late_subpart_draw"),
         ("SUBPART_LIST_LAST", "native_late_subpart_draw"),

@@ -73,20 +73,6 @@ pub const SCENE_TRANSPARENTS_END: Point = Point::new("SCENE_TRANSPARENTS_END", 0
 /// both paths fall to.
 pub const TRANSPARENT_DISPATCH_NEXT: Point = Point::new("TRANSPARENT_DISPATCH_NEXT", 0x0001_e3f9, Sig::Site, RENDERER);
 
-/// The shared indexed wrapper, just after its state commit. The water
-/// composite is identified by the wrapper's own return address.
-/// The commit (`call 0x0001cf50` at 0x0001c8a0) returns to 0x0001c8a5,
-/// where a return resumes the wrapper's generated code and no hook runs;
-/// the site is the next instruction. 0x0001c8a5 (`mov eax, [esp+8]`)
-/// writes only EAX and falls through, so `[esp]` is still the wrapper's
-/// return address and its three arguments are at `esp+4..+0xc`.
-pub const WATER_INDEX_READY: Point = Point::new("WATER_INDEX_READY", 0x0001_c8a9, Sig::Site, RENDERER);
-/// The wrapper's tail, past its `DrawIndexedVertices` call at 0x0001c8b4, is
-/// `mov al, 1; ret 0xc` (0x0001c8b9). A native draw returns from the
-/// wrapper at the site itself, popping this many argument bytes after the
-/// return address, so the tail needs no entry or resume of its own.
-pub const WATER_INDEX_ARG_BYTES: u32 = 0xc;
-
 pub const HUD_QUAD_READY: Point = Point::new("HUD_QUAD_READY", 0x0022_a7f6, Sig::Site, RENDERER);
 /// In the shader quad `0x0022a664`, the call to `0x0001be50` that starts
 /// the widget's state setup (`0x0001bd50` twice, the shader begin
@@ -206,7 +192,6 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         GEOMETRY_RANGE_READY.base,
         SCENE_TRANSPARENTS_END.base,
         TRANSPARENT_DISPATCH_NEXT.base,
-        WATER_INDEX_READY.base,
         PORTAL_WINDOW_CALL.base,
         PORTAL_WINDOW_RESUME,
         PORTAL_WINDOW_READY.base,
@@ -270,16 +255,11 @@ mod tests {
         }
         assert!(seen.contains(&super::EFFECT_QUAD_READY.base));
         assert!(seen.contains(&super::DECAL_RENDER_END.base));
-        // The water wrapper's tail is not an entry: a native draw returns
-        // from the wrapper at the site.
-        assert!(seen.contains(&super::WATER_INDEX_READY.base));
-        assert!(!seen.contains(&0x0001_c8b9));
         // The sorted loop's join is the instruction after the handler's
         // return, never the return itself.
         assert!(seen.contains(&super::TRANSPARENT_DISPATCH_NEXT.base));
         assert_eq!(super::TRANSPARENT_DISPATCH_NEXT.base, 0x0001_e3f9);
         assert!(!seen.contains(&0x0001_e3f3));
-        assert_eq!(super::WATER_INDEX_ARG_BYTES, 0xc);
         // Every leaf's two sites are entries.
         for leaf in super::EFFECT_LEAVES {
             assert!(seen.contains(&leaf.begin.base), "{leaf:?}");
