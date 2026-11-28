@@ -525,6 +525,7 @@ mod tests {
             rebind: None,
             active: Mutex::new(None),
             loaded: Mutex::new(None),
+            running: Mutex::new(None),
         })
     }
 

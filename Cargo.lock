@@ -2584,6 +2584,7 @@ dependencies = [
  "sim-ext",
  "sim-state",
  "snapshot",
+ "sound-clips",
  "superbounce",
  "tags",
  "timeline",
@@ -2592,6 +2593,7 @@ dependencies = [
  "vfs",
  "voice",
  "wgpu",
+ "wma",
  "xapi",
  "xbe",
  "xiso",
@@ -6715,10 +6717,12 @@ dependencies = [
  "hs",
  "ir",
  "lifted",
+ "map",
  "runtime",
  "sim-effects",
  "sim-ext",
  "sim-sound",
+ "sound-clips",
  "x87",
 ]
 

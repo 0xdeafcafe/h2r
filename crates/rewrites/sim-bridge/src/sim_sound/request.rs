@@ -52,6 +52,7 @@ pub fn read(m: &dyn GuestMemory, args: [u32; 4]) -> Result<Request, RequestError
         source,
         owner,
         track: None,
+        follows: None,
         gain_base: if has(7) { Some(f32::from_bits(u32_at(record.wrapping_add(0x94))?)) } else { None },
         selection: if has(10) {
             Some((u16_at(record.wrapping_add(0x9c))?, u16_at(record.wrapping_add(0x9e))?))
