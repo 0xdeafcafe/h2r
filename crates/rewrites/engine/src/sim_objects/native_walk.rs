@@ -147,6 +147,9 @@ pub const TYPES: &[&Point] = &[
     &points::CREATURE_POST_UPDATE,
     &points::VEHICLE_POSE,
     &points::DEVICE_POSE,
+    // The after-root slot `+70` of `unit` and `scen`.
+    &points::UNIT_AFTER_ROOT,
+    &points::SCENERY_AFTER_ROOT,
 ];
 
 /// The entries whose bodies make no float instruction: every one in
