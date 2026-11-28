@@ -68,6 +68,8 @@ pub mod view_setup;
 #[cfg(feature = "native-render")]
 pub mod target_bind;
 #[cfg(feature = "native-render")]
+pub mod texture_cache;
+#[cfg(feature = "native-render")]
 pub mod native_shadows;
 #[cfg(feature = "native-render")]
 pub mod native_sky;

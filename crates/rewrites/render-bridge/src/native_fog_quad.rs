@@ -25,7 +25,9 @@
 //! host, a pass the device does not place (`placed`, `other_placed`), a
 //! fan that is not one quad (`fan_shape`, `fan_unfinite`), an operand the
 //! SSE or x87 model refuses (`simd`, `x87`), an unreadable input
-//! (`unread`), and a quad placed but not recorded ([`unported`]).
+//! (`unread`), a ramp the texture cache would read from disc
+//! (`texture_request: <cause>`, [`crate::texture_cache`]), and a quad
+//! placed but not recorded ([`unported`]).
 
 use std::sync::{Arc, Mutex};
 
@@ -75,16 +77,7 @@ pub enum Turn {
     /// The quad is placed (or there is none to draw) and the gate's write
     /// is made: return AL 0.
     Return,
-    /// The other setup's ramp image is not resident: ask the guest's
-    /// texture cache `0x00012310` for it (eax the image, xmm2 the LOD 0),
-    /// as `0x000143c0` does, then [`turn_other_with`] its header.
-    Stream(u32),
 }
-
-/// The texture cache's get of an image's header (`eax` the image, `xmm2`
-/// the LOD), which `0x000143c0` calls: the header when resident, else what
-/// the cache has after asking for the load (`0x0012ccf0`, `0x0012ce00`).
-pub const RAMP_RESOURCE: u32 = 0x0001_2310;
 
 /// Whether the setup whose stack is at `esp` is the fan's of `0x00025d50`
 /// with its corners: the fan's frame above it holds the return to
@@ -132,16 +125,11 @@ pub fn turn(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: u16, h
 }
 
 /// The other setup's call at `esp` (`0x00025e50`, view modes 1, 4 and 5),
-/// as [`turn`] is the planar quad's.
+/// as [`turn`] is the planar quad's. A ramp not resident is the texture
+/// cache's `0x00012310` (LOD 0) in Rust (`crate::texture_cache::header`);
+/// a header of 0 binds no ramp, so the strip is not drawn that frame; the
+/// depth word is written and the setup returns as when it draws.
 pub fn turn_other(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: u16, host: Option<&dyn Host>) -> Turn {
-    turn_other_with(mem, esp, mxcsr, x87_control, host, None)
-}
-
-/// [`turn_other`] with stage 2's ramp header given (`Some`: what the
-/// guest's `0x00012310` returned for a ramp not resident). A header of 0
-/// binds no ramp, so the strip is not drawn that frame; the depth word is
-/// written and the setup returns as when it draws.
-pub fn turn_other_with(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: u16, host: Option<&dyn Host>, ramp: Option<u32>) -> Turn {
     let Some(rect_at) = quad_call(&*mem, esp) else {
         return Turn::Guest;
     };
@@ -156,16 +144,16 @@ pub fn turn_other_with(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_cont
     let draw = FogOtherDraw::from_fan(quad.combiner, positions, coordinates, quad.depth_test)
         .map(|d| FogOtherDraw { plate, ..d })
         .unwrap_or_else(|shape| unported(shape.cause()));
-    // Stage 2 (`0x00025f45`): the plate samples stage 0 alone. Nothing is
-    // written before this, so a stream turn runs the cut again after.
+    // Stage 2 (`0x00025f45`): the plate samples stage 0 alone.
     let ramp = if plate {
         0
-    } else if let Some(header) = ramp {
-        header
     } else {
-        match native_render::fog_quad::ramp_texture(&|a| mem.u32(a).ok()).unwrap_or_else(|why| unported(why)) {
+        let ramp = native_render::fog_quad::ramp_texture(&|a| mem.u32(a).ok()).unwrap_or_else(|why| unported(why));
+        match ramp {
             native_render::fog_quad::Ramp::Header(header) => header,
-            native_render::fog_quad::Ramp::Streaming { image } => return Turn::Stream(image),
+            native_render::fog_quad::Ramp::Streaming { image } => {
+                crate::texture_cache::header(mem, image, 0.0).unwrap_or_else(|why| unported(why))
+            }
         }
     };
     if (plate || ramp != 0) && !host.draw_other(mem, &FogOtherDraw { ramp, ..draw }) {
@@ -217,34 +205,7 @@ fn cut(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32, base: u
             cpu.eax &= !0xff;
             rt.memory().ret(cpu, 4)
         }
-        Turn::Stream(image) => stream(cpu, ctx, image),
     }
-}
-
-/// Asks the guest's texture cache for the other setup's ramp `image`, as
-/// `0x000143c0` does, then finishes the cut with the header it returns.
-fn stream(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, image: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    let rt = Arc::clone(ctx.runtime());
-    let (esp, mxcsr, control) = (cpu.esp, cpu.mxcsr, cpu.x87.control);
-    cpu.eax = image;
-    cpu.xmm[2] = [0; 16];
-    let mut mem = rt.memory();
-    ctx.call_guest_named(cpu, &mut mem, RAMP_RESOURCE, "native_fog_quad_ramp", move |cpu, ctx| {
-        if cpu.esp != esp {
-            unported("ramp_stack");
-        }
-        let header = cpu.eax;
-        let rt = Arc::clone(ctx.runtime());
-        let turn = {
-            let mut mem = rt.memory();
-            turn_other_with(&mut *mem, esp, mxcsr, control, host().as_deref(), Some(header))
-        };
-        if turn != Turn::Return {
-            unported("ramp_stream");
-        }
-        cpu.eax &= !0xff;
-        rt.memory().ret(cpu, 4)
-    })
 }
 
 pub struct NativeFogQuad;
@@ -423,27 +384,65 @@ mod tests {
         assert!(changed.iter().all(|&a| (global::DEPTH..global::DEPTH + 4).contains(&a)));
     }
 
-    #[test]
-    fn a_streaming_ramp_asks_the_cache_and_draws_what_it_returns() {
+    /// [`other_mem`] with its ramp streamed (`+0x0f` bit 1) at the cache's
+    /// stamp with no header, its level 0 in cache entry 0, loaded or not.
+    fn streaming_mem(loaded: bool) -> FlatMemory {
+        use crate::texture_cache as tc;
         let mut m = other_mem();
-        // A streamed image (`+0x0f` bit 1) past its stamp.
-        m.set_u32(native_render::effect_material::RESIDENT_STAMP, 5).unwrap();
-        m.set_u32(RAMP_IMAGE + 0xc, 0x0200_0000).unwrap();
+        for (a, v) in [
+            (native_render::effect_material::RESIDENT_STAMP, 5),
+            (RAMP_IMAGE + 0x50, 0),
+            (RAMP_IMAGE + 0xc, 0x0200_0000),
+            (RAMP_IMAGE + 0x58, 1.0f32.to_bits()),
+            (RAMP_IMAGE + 0x1c, 0),
+            (RAMP_IMAGE + 0x34, 0x100),
+            (RAMP_IMAGE + 0x28, 0),
+            (RAMP_IMAGE + 0x20, u32::MAX),
+            (RAMP_IMAGE + 0x24, u32::MAX),
+            (RAMP_IMAGE + 0x2c, u32::MAX),
+            (RAMP_IMAGE + 0x30, u32::MAX),
+            (tc::TEXTURES, 0x0051_6000),
+            (0x0051_6044, TEXTURE_ENTRIES),
+            (tc::TEXTURE_RESOURCES, 0x0051_7000),
+            (0x0051_7064, 0x0051_7100),
+            (0x0051_7144, 0x0051_7200),
+        ] {
+            m.set_u32(a, v).unwrap();
+        }
+        m.set_u8(TEXTURE_ENTRIES + 3, u8::from(loaded)).unwrap();
+        m
+    }
+
+    const TEXTURE_ENTRIES: u32 = 0x0051_6100;
+
+    #[test]
+    fn a_streaming_ramp_takes_the_texture_caches_header() {
+        let mut m = streaming_mem(true);
         let host = Draws::default();
-        let before = m.bytes(0x0040_0000, 0x0012_0000).unwrap();
-        assert_eq!(turn_other(&mut m, ESP, MXCSR, CONTROL, Some(&host)), Turn::Stream(RAMP_IMAGE));
-        // Nothing is written or drawn before the cache is asked.
-        assert_eq!(m.bytes(0x0040_0000, 0x0012_0000).unwrap(), before);
-        assert!(host.2.lock().unwrap().is_empty());
-        // The cache's header is drawn.
-        assert_eq!(turn_other_with(&mut m, ESP, MXCSR, CONTROL, Some(&host), Some(0x0051_5000)), Turn::Return);
-        assert_eq!(host.2.lock().unwrap()[0].ramp, 0x0051_5000);
-        // None yet: no strip this frame, the depth word still written.
-        let host = Draws::default();
+        assert_eq!(turn_other(&mut m, ESP, MXCSR, CONTROL, Some(&host)), Turn::Return);
+        assert_eq!(host.2.lock().unwrap()[0].ramp, TEXTURE_ENTRIES + 0x14);
+        // The cache holds its level 0 as `0x0012ccf0` does.
+        assert_eq!(m.u32(RAMP_IMAGE + 0x50).unwrap(), TEXTURE_ENTRIES + 0x14);
+    }
+
+    #[test]
+    fn a_ramp_default_of_0_draws_no_strip_and_writes_the_depth() {
+        let mut m = streaming_mem(false);
+        // Pinned under I/O load: the 2D default `[0x00485ae4]`, here 0.
+        m.set_u32(crate::texture_cache::PIN_COUNT, 2).unwrap();
+        m.set_u32(crate::texture_cache::IO_LOAD, 0x1a).unwrap();
         m.set_u32(global::DEPTH, 0).unwrap();
-        assert_eq!(turn_other_with(&mut m, ESP, MXCSR, CONTROL, Some(&host), Some(0)), Turn::Return);
+        let host = Draws::default();
+        assert_eq!(turn_other(&mut m, ESP, MXCSR, CONTROL, Some(&host)), Turn::Return);
         assert!(host.2.lock().unwrap().is_empty());
         assert_eq!(m.u32(global::DEPTH).unwrap(), 1024.0f32.to_bits());
+    }
+
+    #[test]
+    #[should_panic(expected = "fog quad: texture_request: 0x0012ca6f")]
+    fn a_ramp_read_to_wait_for_panics_with_its_cause() {
+        let mut m = streaming_mem(false);
+        turn_other(&mut m, ESP, MXCSR, CONTROL, Some(&Draws::default()));
     }
 
     #[test]
