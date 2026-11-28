@@ -1858,3 +1858,253 @@ fn player_objects_match_lifted() {
     assert!(observed_ok > 20 && candidates > 20, "observed {observed_ok}, candidates {candidates}, visit {visit}");
     assert!(exits > 200 && passes > 100 && pickups > 5, "150e30 exits {exits}, passes {passes}; pickups {pickups}");
 }
+
+// The phantom build's input stage (`sim_seats::input`,
+// docs/perf/sim-phantom-build.md): each piece against its lifted entry
+// run to the return, from the same RAM and float environment. The pad
+// read's `XInputGetState` is answered as the phantom executor answers it:
+// the case's report, and success. Every byte of RAM outside the stack
+// must agree, or the piece must refuse.
+mod input_stage {
+    use super::*;
+    use engine::sim_seats::input::{self, REPORT, Refusal};
+
+    const XINPUT_GET_STATE: u32 = 0x0040_9b6c;
+    const CONTROLS: u32 = RECORDS;
+    const OBJECT_TABLE: u32 = DATA;
+    const OBJECT: u32 = RECORDS + 0x1000;
+
+    /// The original from `entry` with `gpr` and `args`, to its return.
+    fn original(mem: &mut FlatMemory, entry: u32, cpu: &mut Cpu, args: &[u32], report: &[u8; REPORT]) {
+        let (image, _) = image().unwrap();
+        let mut code = at(image, entry);
+        word(mem, STACK, EXIT);
+        for (i, a) in args.iter().enumerate() {
+            word(mem, STACK + 4 + 4 * i as u32, *a);
+        }
+        cpu.gpr[4] = STACK;
+        cpu.eip = entry;
+        loop {
+            lifted::code::run_until(&mut code, cpu, mem, 1_000_000, |c| c.eip == EXIT || c.eip == XINPUT_GET_STATE)
+                .unwrap_or_else(|e| panic!("{entry:#x}: {e}"));
+            if cpu.eip == EXIT {
+                return;
+            }
+            let sp = cpu.gpr[4];
+            let out = mem.read_u32(sp + 8).unwrap();
+            assert!(mem.load(out, report));
+            cpu.gpr[0] = 0;
+            cpu.eip = mem.read_u32(sp).unwrap();
+            cpu.gpr[4] = sp + 12;
+        }
+    }
+
+    /// The first byte outside the stack where the two differ.
+    fn first_difference(mem: &FlatMemory, guest: &Guest) -> Option<usize> {
+        let base = guest.mappings()[0].physical_start as usize;
+        let live = &guest.physical_ram()[base..base + RAM];
+        let stack = (STACK - 0x1_0000) as usize..(STACK + 0x40) as usize;
+        mem.bytes.iter().zip(live).enumerate()
+            .find(|(i, (a, b))| a != b && !stack.contains(i))
+            .map(|(i, _)| i)
+    }
+
+    /// Runs `piece` on a copy of `mem` and the original on `mem`: they
+    /// agree, or the piece refused and wrote nothing. Returns the refusal.
+    fn agree(
+        mem: &mut FlatMemory,
+        mut cpu: Cpu,
+        entry: u32,
+        args: &[u32],
+        report: &[u8; REPORT],
+        why: &str,
+        piece: impl FnOnce(&mut Guest, &runtime::CpuAbi) -> Result<(), Refusal>,
+    ) -> Option<Refusal> {
+        let mut guest = respawn_guest(mem);
+        let before = mem.clone();
+        let regs = abi_cpu(&cpu);
+        let outcome = piece(&mut guest, &regs);
+        if let Err(refusal) = outcome {
+            assert_eq!(first_difference(&before, &guest), None, "{why}: {refusal:?} wrote");
+            return Some(refusal);
+        }
+        original(mem, entry, &mut cpu, args, report);
+        if let Some(at) = first_difference(mem, &guest) {
+            let live = guest.physical_ram()[guest.mappings()[0].physical_start as usize + at];
+            panic!("{why}: first different byte at {at:#x}: original {:#04x}, Rust {live:#04x}", mem.bytes[at]);
+        }
+        None
+    }
+
+    fn report(rng: &mut Xorshift) -> [u8; REPORT] {
+        let mut r = [0u8; REPORT];
+        for b in &mut r {
+            *b = rng.next() as u8;
+        }
+        // Thumbs at the dead zone's edges, the limits, an axis and noise.
+        for j in 0..4 {
+            let noise = rng.next() as i16;
+            let v = rng.pick(&[0, 9000, 9001, -9000, -9001, i16::MAX, i16::MIN, 20_000, -20_000, noise]);
+            r[0xe + 2 * j..0x10 + 2 * j].copy_from_slice(&v.to_le_bytes());
+        }
+        r
+    }
+
+    fn scribble(mem: &mut FlatMemory, rng: &mut Xorshift, at: u32, len: u32) {
+        let bytes: Vec<u8> = (0..len).map(|_| rng.next() as u8).collect();
+        assert!(mem.load(at, &bytes));
+    }
+
+    fn start(case: u32) -> Cpu {
+        let mut cpu = Cpu { eflags: 0x2, ..Default::default() };
+        cpu.x87.control = [0x007f, 0x027f, 0x037f][case as usize % 3];
+        cpu
+    }
+
+    #[test]
+    fn the_pad_read_matches_lifted() {
+        let Some((_, ram)) = image() else { return };
+        let mut rng = Xorshift(0x1240_c001);
+        for case in 0..400 {
+            let mut mem = ram.clone();
+            for port in 0..4 {
+                word(&mut mem, input::HANDLES + 4 * port, if rng.next() % 3 == 0 { 0 } else { 1 + port });
+            }
+            scribble(&mut mem, &mut rng, input::RAW, input::RAW_SIZE * 4);
+            let noise = rng.next();
+            let elapsed = rng.pick(&[33, 34, 0, 0xffff, 0x8000_0000, noise]);
+            let pad = report(&mut rng);
+            let why = format!("124c00 case {case}");
+            let refused = agree(&mut mem, start(case), input::READ_PADS, &[elapsed], &pad, &why, |g, _| {
+                input::read_pads(g, elapsed, &pad)
+            });
+            assert_eq!(refused, None, "{why}");
+        }
+    }
+
+    #[test]
+    fn the_look_rates_match_lifted() {
+        let Some((_, ram)) = image() else { return };
+        let mut rng = Xorshift(0x190c_34aa);
+        for case in 0..200 {
+            let mut mem = ram.clone();
+            let user = case % 4;
+            let profile = input::PROFILES + user * input::PROFILE_STRIDE;
+            scribble(&mut mem, &mut rng, profile, 7);
+            // Each layout and look mode, and the sensitivity's ends.
+            assert!(mem.load(profile + 4, &[(case % 5) as u8, (case % 6) as u8, rng.pick(&[0, 1, 5, 10, 11, 0xff])]));
+            let mut cpu = start(case);
+            cpu.gpr[0] = user;
+            let why = format!("190c34 case {case}");
+            let refused = agree(&mut mem, cpu, input::LOOK_RATES, &[], &[0; REPORT], &why, |g, _| input::look_rates(g, user));
+            assert_eq!(refused, None, "{why}");
+        }
+    }
+
+    #[test]
+    fn the_remap_matches_lifted() {
+        let Some((_, ram)) = image() else { return };
+        let mut rng = Xorshift(0x217c_4000);
+        let mut modes = [0u32; 5];
+        for case in 0..600 {
+            let mut mem = ram.clone();
+            for port in 0..4 {
+                word(&mut mem, input::HANDLES + 4 * port, if port > 0 && rng.next() % 2 == 0 { 0 } else { 1 });
+                let raw = input::RAW + input::RAW_SIZE * port;
+                scribble(&mut mem, &mut rng, raw, input::RAW_SIZE);
+                let pad = report(&mut rng);
+                assert!(mem.load(raw + 0x40, &pad[0xe..REPORT]));
+                let rates = input::RATES + input::RATES_SIZE * port;
+                scribble(&mut mem, &mut rng, rates, input::RATES_SIZE);
+                let slots: Vec<u8> = (0..16).map(|_| (rng.next() % 16) as u8).collect();
+                assert!(mem.load(rates + 8, &slots));
+                let mode = rng.pick(&[0u16, 1, 2, 3, 2, 3, 7]);
+                modes[usize::from(mode).min(4)] += 1;
+                let invert = (rng.next() % 2) as u8;
+                assert!(mem.load(rates + 0x18, &[mode as u8, (mode >> 8) as u8, invert, invert & (rng.next() % 2) as u8]));
+                scribble(&mut mem, &mut rng, input::LAYOUT + input::LAYOUT_SIZE * port, input::LAYOUT_SIZE);
+            }
+            scribble(&mut mem, &mut rng, input::LATCH, 4);
+            assert!(mem.load(input::REPLAY_SELECT, &[0]));
+            let why = format!("217c40 case {case}");
+            let refused = agree(&mut mem, start(case), input::REMAP, &[], &[0; REPORT], &why, |g, c| input::remap(g, c));
+            assert_eq!(refused, None, "{why}");
+        }
+        assert!(modes.iter().all(|&n| n > 50), "modes {modes:?}");
+    }
+
+    #[test]
+    fn the_bind_matches_lifted() {
+        let Some((_, ram)) = image() else { return };
+        let mut rng = Xorshift(0x1872_d0d0);
+        let (mut kept, mut bound) = (0, 0);
+        for case in 0..300 {
+            let mut mem = ram.clone();
+            let user = case % 4;
+            let unit = match case % 5 {
+                0 => u32::MAX,
+                _ => (rng.next() & 0xffff_0000) | (case % 7),
+            };
+            word(&mut mem, 0x004e_d284, CONTROLS);
+            scribble(&mut mem, &mut rng, CONTROLS, 0x14 + 4 * input::CONTROL_SIZE);
+            assert!(mem.load(CONTROLS, &[(case % 3 != 0) as u8]));
+            let block = CONTROLS + 0x14 + user * input::CONTROL_SIZE;
+            if case % 2 == 0 {
+                word(&mut mem, block, unit);
+            }
+            word(&mut mem, HEADER + 0x44, OBJECT_TABLE);
+            word(&mut mem, 0x004e_0300, HEADER);
+            word(&mut mem, OBJECT_TABLE + (unit & 0xffff) * 12 + 8, OBJECT);
+            scribble(&mut mem, &mut rng, OBJECT + 0x200, 0x48);
+            // A unit forward vector, an axis, or none at all.
+            let yaw = (rng.next() % 6283) as f32 / 1000.0 - 3.14;
+            let pitch = (rng.next() % 3000) as f32 / 1000.0 - 1.5;
+            let forward = match case % 7 {
+                0 => [0.0, 0.0, 0.0],
+                1 => [0.0, -1.0, 0.0],
+                _ => [yaw.cos() * pitch.cos(), yaw.sin() * pitch.cos(), pitch.sin()],
+            };
+            for (i, v) in forward.iter().enumerate() {
+                float(&mut mem, OBJECT + 0x150 + 4 * i as u32, *v);
+            }
+            let held = mem.read_u32(CONTROLS).unwrap() & 0xff != 0 && mem.read_u32(block).unwrap() == unit;
+            if held { kept += 1 } else { bound += 1 }
+            let mut cpu = start(case);
+            (cpu.gpr[0], cpu.gpr[1]) = (user, unit);
+            let why = format!("1872d0 case {case}");
+            let refused = agree(&mut mem, cpu, input::BIND, &[], &[0; REPORT], &why, |g, c| input::bind(g, c, user, unit));
+            assert_eq!(refused, None, "{why}");
+        }
+        assert!(kept > 50 && bound > 100, "kept {kept}, bound {bound}");
+    }
+
+    /// The refusals the stage names leave RAM alone; the caller then runs
+    /// the guest entry.
+    #[test]
+    fn the_stage_refuses_by_name() {
+        let Some((_, ram)) = image() else { return };
+        let mut mem = ram.clone();
+        word(&mut mem, input::HANDLES, 1);
+        let rates = input::RATES;
+        assert!(mem.load(rates + 8, &[0, 4, 2, 3, 1, 5, 6, 7, 0xc, 0xd, 0xe, 0xf, 0xa, 0xb, 0, 1]));
+        let mut cpu = start(2);
+        let remap = |mem: &mut FlatMemory, cpu: Cpu| {
+            agree(mem, cpu, input::REMAP, &[], &[0; REPORT], "refusal", |g, c| input::remap(g, c))
+        };
+        cpu.mxcsr = 0x1f80 | 1 << 13;
+        assert_eq!(remap(&mut mem.clone(), cpu), Some(Refusal::Mxcsr));
+        cpu = start(2);
+        cpu.x87.control = 0x0b7f; // round up: the x87 crate's transcendentals stop.
+        assert_eq!(remap(&mut mem.clone(), cpu), Some(Refusal::X87));
+        let mut helper = mem.clone();
+        assert!(helper.load(rates + 0x1a, &[0, 1]));
+        assert_eq!(remap(&mut helper, start(2)), Some(Refusal::LookHelper));
+        let mut replay = mem.clone();
+        assert!(replay.load(input::REPLAY_SELECT, &[1]));
+        assert_eq!(remap(&mut replay, start(2)), Some(Refusal::ReplayRecord));
+        let mut slot = mem.clone();
+        assert!(slot.load(rates + 8, &[16]));
+        assert_eq!(remap(&mut slot, start(2)), Some(Refusal::Slot));
+        assert_eq!(Refusal::LookHelper.name(), "input.look-helper");
+    }
+}

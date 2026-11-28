@@ -33,6 +33,7 @@ pub mod camera;
 pub mod control;
 pub mod device;
 pub mod hud;
+pub mod input;
 pub mod leaf;
 pub mod look;
 pub mod player_objects;

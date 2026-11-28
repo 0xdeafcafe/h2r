@@ -94,8 +94,10 @@ impl hooks::Feature for Bots {
         let phantoms = self.phantoms.clone();
         let workspace = b.guest_alloc(retail_input::WORK_BYTES, runtime::guest::Permissions::RW)?;
         let input = Arc::new(std::sync::Mutex::new(None));
-        // impl.sim.phantom-alias (docs/perf/sim-phantom-build.md).
+        // impl.sim.phantom-alias and impl.sim.phantom-input
+        // (docs/perf/sim-phantom-build.md).
         let path = retail_input::path_for(b.switches());
+        let stage = retail_input::stage_for(b.switches());
         b.raw().before(
             &points::SIMULATION_SLOT_ACTION,
             "phantoms: sample the pad for this simulation tick",
@@ -117,6 +119,7 @@ impl hooks::Feature for Bots {
                                     &rt,
                                     workspace,
                                     path,
+                                    stage,
                                     cpu,
                                     sample,
                                     &cx,

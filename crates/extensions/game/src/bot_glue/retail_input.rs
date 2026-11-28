@@ -8,8 +8,13 @@
 //! image, it runs in a copy-on-write snapshot taken at the tick's first
 //! seat. `H2_PHANTOM_BUILD_CHECK=1` runs both for every seat and counts the
 //! seats whose outcome, action or history differ.
+//!
+//! The input stage (the bind, the look rates, the pad read and the remap)
+//! runs in Rust (`engine::sim_seats::input`) under `impl.sim.phantom-input`
+//! ([`stage_for`]); a piece that refuses runs its guest entry instead.
 use anyhow::Result;
 use bots::phantom::{SeatInput, session::at::ACTION_SIZE};
+use engine::sim_seats::input::{self as seat_input, Refusal};
 use runtime::{
     CopyKind, CpuAbi, Guest, Runtime,
     executor::{Alias, ExecutorError, SecondExecutor},
@@ -129,6 +134,29 @@ pub(super) fn path_for(switches: &hooks::Switches) -> Path {
     }
 }
 
+/// Who runs the input stage: the four entries `0x1872d0`, `0x190c34`,
+/// `0x124c00` and `0x217c40`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Stage {
+    /// `engine::sim_seats::input`, each piece falling back to its guest
+    /// entry when it refuses.
+    Rust,
+    /// The guest entries.
+    Guest,
+}
+
+/// The stage `impl.sim.phantom-input` picks: Rust unless it is off.
+pub(super) fn stage_for(switches: &hooks::Switches) -> Stage {
+    if switches.implementation("sim.phantom-input", true) {
+        Stage::Rust
+    } else {
+        Stage::Guest
+    }
+}
+
+/// Input-stage pieces that refused and ran their guest entry.
+static REFUSED: AtomicU64 = AtomicU64::new(0);
+
 /// `H2_PHANTOM_BUILD_CHECK=1`: build every seat on both paths and compare.
 fn check_mode() -> bool {
     std::env::var("H2_PHANTOM_BUILD_CHECK").is_ok_and(|v| v == "1")
@@ -203,10 +231,13 @@ pub(super) struct Builder {
     reported: BTreeSet<BuildFailure>,
     cold: animation::ColdRead,
     path: Path,
+    stage: Stage,
+    /// Input-stage refusals already said.
+    refused: BTreeSet<Refusal>,
     /// Alias path: the stack window of the tick's first gather.
     stack: Vec<(u32, Box<[u8; STACK_PAGE as usize]>)>,
-    /// Check mode: the same seats built on the other path, with their own
-    /// executor and history.
+    /// Check mode: the same seats built on the other path with the guest
+    /// input stage, with their own executor and history.
     other: Option<Box<Builder>>,
 }
 
@@ -217,13 +248,14 @@ pub(super) async fn gather(
     main: &Runtime,
     workspace: u32,
     path: Path,
+    stage: Stage,
     cpu: CpuAbi,
     seat: SeatInput,
     cx: &engine::entry::Cx,
 ) -> Option<[u8; ACTION_SIZE]> {
     let attempt = |refresh| {
         let mut guard = input.lock().unwrap_or_else(|e| e.into_inner());
-        let builder = guard.get_or_insert_with(|| Builder::new(main, workspace, path));
+        let builder = guard.get_or_insert_with(|| Builder::new(main, workspace, path, stage));
         if refresh {
             builder.restart();
         }
@@ -267,8 +299,9 @@ fn report_cold(input: &Mutex<Option<Builder>>, read: AnimationRead, seat: SeatIn
 impl Builder {
     /// A builder on `path`, or on the view where the alias cannot run (a
     /// flat-RAM image, said once). In check mode it carries a second
-    /// builder on the other path.
-    fn new(main: &Runtime, workspace: u32, path: Path) -> Self {
+    /// builder on the other path with the guest input stage: the
+    /// reference arm.
+    fn new(main: &Runtime, workspace: u32, path: Path, stage: Stage) -> Self {
         let usable = |path| {
             if path == Path::Alias && main.flat_ram() {
                 static SAID: std::sync::Once = std::sync::Once::new();
@@ -283,20 +316,20 @@ impl Builder {
             }
         };
         let path = usable(path);
-        let mut builder = Self::on(main, workspace, path);
+        let mut builder = Self::on(main, workspace, path, stage);
         if check_mode() {
             let other = usable(match path {
                 Path::Alias => Path::View,
                 Path::View => Path::Alias,
             });
-            if other != path {
-                builder.other = Some(Box::new(Self::on(main, workspace, other)));
+            if other != path || stage != Stage::Guest {
+                builder.other = Some(Box::new(Self::on(main, workspace, other, Stage::Guest)));
             }
         }
         builder
     }
 
-    fn on(main: &Runtime, workspace: u32, path: Path) -> Self {
+    fn on(main: &Runtime, workspace: u32, path: Path, stage: Stage) -> Self {
         let exec = SecondExecutor::new(main, |_, _| false);
         exec.runtime().edit_dispatch(|d| {
             d.prefer_generated();
@@ -331,6 +364,8 @@ impl Builder {
             reported: BTreeSet::new(),
             cold,
             path,
+            stage,
+            refused: BTreeSet::new(),
             stack: Vec::new(),
             other: None,
         }
@@ -371,9 +406,11 @@ impl Builder {
             let n = MISMATCHES.fetch_add(1, Ordering::Relaxed) + 1;
             if n <= 8 {
                 eprintln!(
-                    "phantoms: the {:?} and {:?} builds differ for player {} at tick {} (mismatch {n})",
+                    "phantoms: the {:?} ({:?} input) and {:?} ({:?} input) builds differ for player {} at tick {} (mismatch {n})",
                     self.path,
+                    self.stage,
                     other.path,
+                    other.stage,
                     seat.player.index(),
                     seat.tick
                 );
@@ -465,6 +502,40 @@ impl Builder {
         Ok(alias)
     }
 
+    /// One input-stage piece in Rust, on the registers its guest call
+    /// would start with, timed in that call's slot of the split. False
+    /// when the stage is the guest's or the piece refused (each refusal
+    /// said once): the caller then makes the guest call, from the RAM the
+    /// refusal left untouched.
+    fn rust(
+        &mut self,
+        entry: u32,
+        regs: &CpuAbi,
+        piece: impl FnOnce(&mut Guest, &CpuAbi) -> Result<(), Refusal>,
+    ) -> bool {
+        if self.stage != Stage::Rust {
+            return false;
+        }
+        let role = match entry {
+            seat_input::BIND => 0,
+            seat_input::LOOK_RATES => 1,
+            seat_input::READ_PADS => 3,
+            _ => 4,
+        };
+        let started = Instant::now();
+        let outcome = piece(&mut self.exec.runtime().memory(), regs);
+        add(&CALL_NS[role], elapsed_ns(started));
+        let Err(refusal) = outcome else { return true };
+        add(&REFUSED, 1);
+        if self.refused.insert(refusal) {
+            eprintln!(
+                "phantoms: the input stage refused {} at {entry:#x}; that piece runs the guest entry",
+                refusal.name()
+            );
+        }
+        false
+    }
+
     fn action(&mut self, main: &Runtime, cpu: CpuAbi, s: SeatInput) -> Result<[u8; ACTION_SIZE]> {
         let idx = s.player.index();
         if s.reset {
@@ -554,8 +625,16 @@ impl Builder {
             add(&CALL_ACCESSES[role], outcome?.accesses);
             Ok(regs.eax)
         };
-        call(&mut self.exec, 0, 0x1872d0, 0, s.unit.raw(), &[])?; // bind/reset control if unit changed
-        call(&mut self.exec, 1, 0x190c34, 0, 0, &[])?; // profile -> look rates and Default layout
+        let regs = |eax, ecx| CpuAbi { esp: stack, eax, ecx, ..cpu };
+        let unit = s.unit.raw();
+        // Bind or reset control if the unit changed.
+        if !self.rust(seat_input::BIND, &regs(0, unit), |m, c| seat_input::bind(m, c, 0, unit)) {
+            call(&mut self.exec, 0, seat_input::BIND, 0, unit, &[])?;
+        }
+        // Profile to look rates over the Default layout.
+        if !self.rust(seat_input::LOOK_RATES, &regs(0, 0), |m, _| seat_input::look_rates(m, 0)) {
+            call(&mut self.exec, 1, seat_input::LOOK_RATES, 0, 0, &[])?;
+        }
         let director = call(
             &mut self.exec,
             2,
@@ -575,8 +654,17 @@ impl Builder {
         // Exactly the reader's milliseconds, including the fractional tick over time.
         let ms = |t: u64| (t as f64 * f64::from(s.dt) * 1000.).round() as u64;
         let elapsed = ms(u64::from(s.tick) + 1).saturating_sub(ms(u64::from(s.tick))) as u32;
-        call(&mut self.exec, 3, 0x124c00, 0, 0, &[elapsed])?;
-        call(&mut self.exec, 4, 0x217c40, 0, 0, &[])?;
+        // The pad as the executor's XInputGetState answers it.
+        let read = |m: &mut Guest, _: &CpuAbi| -> Result<(), Refusal> {
+            let report = <Guest as engine::sim_native::Memory>::load::<{ seat_input::REPORT }>(m, work)?;
+            seat_input::read_pads(m, elapsed, &report)
+        };
+        if !self.rust(seat_input::READ_PADS, &regs(0, 0), read) {
+            call(&mut self.exec, 3, seat_input::READ_PADS, 0, 0, &[elapsed])?;
+        }
+        if !self.rust(seat_input::REMAP, &regs(0, 0), |m, c| seat_input::remap(m, c)) {
+            call(&mut self.exec, 4, seat_input::REMAP, 0, 0, &[])?;
+        }
         let out = work + 0x40;
         call(
             &mut self.exec,
@@ -647,7 +735,7 @@ mod tests {
         })
         .unwrap();
         let main = Runtime::new(g, d);
-        let mut builder = Builder::new(&main, WORK, path);
+        let mut builder = Builder::new(&main, WORK, path, Stage::Guest);
         let cpu = CpuAbi {
             esp: WORK + 0xfff0,
             ..Default::default()
@@ -699,12 +787,16 @@ mod tests {
     // retail code itself comes from the coordinator's compiled game image.
     #[test]
     fn retail_input_binds_the_requested_seat_and_keeps_its_history_private() {
+        // The Rust input stage refuses here (the fixture maps none of the
+        // image's constants), so every piece runs its stand-in.
         for path in [Path::Alias, Path::View] {
-            binds_the_requested_seat_on(path);
+            for stage in [Stage::Guest, Stage::Rust] {
+                binds_the_requested_seat_on(path, stage);
+            }
         }
     }
 
-    fn binds_the_requested_seat_on(path: Path) {
+    fn binds_the_requested_seat_on(path: Path, stage: Stage) {
         const USERS: u32 = 0x550000;
         const CONTROLS: u32 = USERS + 0x100;
         const PLAYER: u32 = USERS + 0x400;
@@ -782,7 +874,7 @@ mod tests {
             .unwrap();
         }
         let main = Runtime::new(g, d);
-        let mut builder = Builder::new(&main, WORK, path);
+        let mut builder = Builder::new(&main, WORK, path, stage);
         for (tick, reset, count) in [(1, true, 1), (2, false, 2), (9, true, 1)] {
             let seat = SeatInput {
                 player,
@@ -819,6 +911,8 @@ mod tests {
                 .unwrap(),
             u32::MAX
         );
+        let refused = (stage == Stage::Rust).then_some(Refusal::Memory);
+        assert_eq!(builder.refused.first().copied(), refused, "{path:?}, {stage:?}");
     }
 }
 
@@ -903,7 +997,7 @@ mod path_tests {
     fn later_seats_of_a_tick_see_the_first_gathers_world_on_both_paths() {
         for path in [Path::Alias, Path::View] {
             let main = runtime();
-            let mut builder = Builder::new(&main, WORK, path);
+            let mut builder = Builder::new(&main, WORK, path, Stage::Guest);
             let first = builder.action(&main, cpu(), seat(21, 1)).unwrap();
             assert_eq!(reported(first), (0, 0x1111), "{path:?}");
             // Between the gathers the live game's own calls run below the
@@ -937,7 +1031,7 @@ mod path_tests {
         // The default builds on live RAM and never snapshots; off, it does.
         for (spec, snapshots) in [("", false), ("-impl.sim.phantom-alias", true)] {
             let main = runtime();
-            let mut builder = Builder::new(&main, WORK, parse(spec));
+            let mut builder = Builder::new(&main, WORK, parse(spec), Stage::Guest);
             assert_eq!(builder.path, parse(spec));
             builder.action(&main, cpu(), seat(21, 1)).unwrap();
             assert_eq!(builder.exec.base().is_some(), snapshots, "{spec:?}");
@@ -950,8 +1044,8 @@ mod path_tests {
     #[test]
     fn check_mode_builds_both_paths_and_they_agree() {
         let main = runtime();
-        let mut builder = Builder::new(&main, WORK, Path::Alias);
-        builder.other = Some(Box::new(Builder::on(&main, WORK, Path::View)));
+        let mut builder = Builder::new(&main, WORK, Path::Alias, Stage::Guest);
+        builder.other = Some(Box::new(Builder::on(&main, WORK, Path::View, Stage::Guest)));
         let checked = CHECKED.load(Ordering::Relaxed);
         let mismatches = MISMATCHES.load(Ordering::Relaxed);
         for (index, tick) in [(21, 1), (22, 1), (21, 2), (22, 2)] {
@@ -991,8 +1085,13 @@ fn retail_pad_sequence_matches_local_angles_target_and_fire() -> Result<()> {
     let main = &loaded.runtime;
     // SAFETY: H2_RETAIL_MODULE is the coordinator's generated module for this XBE.
     let _module = unsafe { crate::load_module(&module, main, &xbe)? };
-    // Both paths, each from the checkpoint as saved.
-    for path in [Path::Alias, Path::View] {
+    // Both paths, and the alias with each input stage, each from the
+    // checkpoint as saved.
+    for (path, stage) in [
+        (Path::Alias, Stage::Rust),
+        (Path::Alias, Stage::Guest),
+        (Path::View, Stage::Guest),
+    ] {
         snapshot::guest::load_guest(&saved, &mut main.memory(), None)?;
         const WORK: u32 = 0xa3fe0000;
         let (player, player_addr, unit) = {
@@ -1056,7 +1155,7 @@ fn retail_pad_sequence_matches_local_angles_target_and_fire() -> Result<()> {
             m.set_u32(users + 12, u32::MAX)?;
             m.set_u32(users + 0x1c, u32::MAX)?;
         }
-        let mut remote = Builder::new(main, WORK, path);
+        let mut remote = Builder::new(main, WORK, path, stage);
         let dt = 1.0f32 / 30.0;
         let mut acquired = false;
         let mut fired = false;
@@ -1107,7 +1206,7 @@ fn retail_pad_sequence_matches_local_angles_target_and_fire() -> Result<()> {
                     reset: tick == 0,
                 },
             )?;
-            assert_eq!(action, expected, "{path:?}: retail action at sample {tick}");
+            assert_eq!(action, expected, "{path:?}, {stage:?} input: retail action at sample {tick}");
             let word = |off: usize| u32::from_le_bytes(action[off..off + 4].try_into().unwrap());
             acquired |= word(0x34) != u32::MAX
                 && word(0x3c) != u32::MAX
@@ -1122,4 +1221,143 @@ fn retail_pad_sequence_matches_local_angles_target_and_fire() -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The Rust input stage inside a build: the guest entries are not called,
+/// the builder reads what the stage wrote, and live RAM is untouched.
+#[cfg(test)]
+mod stage_tests {
+    use super::*;
+    use engine::DatumHandle;
+    use runtime::{Dispatch, guest::Permissions};
+
+    const USERS: u32 = 0x550000;
+    const CONTROLS: u32 = USERS + 0x100;
+    const PLAYER: u32 = USERS + 0x400;
+    const HEADER: u32 = USERS + 0x800;
+    const TABLE: u32 = USERS + 0x900;
+    const OBJECT: u32 = USERS + 0xa00;
+    const WORK: u32 = 0x560000;
+
+    /// The image's constants the stage reads (their retail values), the
+    /// tables the setup writes, and one unit facing +y.
+    fn guest() -> Guest {
+        let mut g = Guest::new();
+        g.map_zeroed(0x120000, 0x100000, Permissions::RX).unwrap();
+        g.map_zeroed(0x430000, 0x140000, Permissions::RW).unwrap();
+        g.write(0x440c38, [0u8, 1, 2, 3, 4, 5, 6, 7]).unwrap();
+        g.write(0x440c40, [1u8, 2, 4, 8, 0x10, 0x20, 0x40, 0x80]).unwrap();
+        for i in 0..10u32 {
+            g.set_u32(0x444bdc + 4 * i, (40. + 10. * i as f32).to_bits()).unwrap();
+            g.set_u32(0x444c04 + 4 * i, (80. + 20. * i as f32).to_bits()).unwrap();
+        }
+        let pi = std::f32::consts::PI;
+        for (at, v) in [
+            (0x43ba70, 1. / 32767.),
+            (0x43f17c, 2. * pi),
+            (0x44a038, 120.),
+            (0x44a03c, 60.),
+            (0x45dbb4, 1. / 255.),
+            (0x45dbc0, 1.),
+            (0x45dbcc, -1.),
+            (0x45e010, 0.174_532_92),
+            (0x45e014, 1.637_022_3),
+            (0x45e018, 3. * pi / 4.),
+            (0x45e01c, pi / 4.),
+            (0x45e020, 0.610_865_2),
+            (0x45e050, -1.492_256_5),
+            (0x45e054, 1.492_256_5),
+            (0x4570a0, pi / 4.),
+            (0x4570a4, 3. * pi / 4.),
+            (0x4570a8, -pi / 4.),
+            (0x4570ac, -3. * pi / 4.),
+        ] {
+            g.set_u32(at, f32::to_bits(v)).unwrap();
+        }
+        g.set_u32(0x4e8c20, USERS).unwrap();
+        g.set_u32(0x4ed284, CONTROLS).unwrap();
+        g.set_u8(CONTROLS, 1).unwrap();
+        g.set_u32(0x4e0300, HEADER).unwrap();
+        g.set_u32(HEADER + 0x44, TABLE).unwrap();
+        g.set_u32(TABLE + 50 * 12 + 8, OBJECT).unwrap();
+        g.set_u32(OBJECT + 0x154, 1f32.to_bits()).unwrap();
+        g
+    }
+
+    #[test]
+    fn the_rust_stage_runs_no_input_entry_and_leaves_live_ram() {
+        let player = DatumHandle::new(21, 5);
+        let unit = DatumHandle::new(9, 50);
+        for path in [Path::Alias, Path::View] {
+            let mut d = Dispatch::default();
+            for address in [0x1872d0, 0x190c34, 0x124c00, 0x217c40] {
+                d.register_generated_rust(address, move |_, _, _| {
+                    panic!("{path:?}: the guest entry {address:#x} ran")
+                })
+                .unwrap();
+            }
+            d.register_generated_rust(0x1557c0, |cpu, ctx, _| ctx.memory().ret(cpu, 0))
+                .unwrap();
+            // The builder reports the abstract input, the look rates' mode
+            // word and the bound control block's unit and yaw.
+            d.register_generated_rust(0x186ab0, |cpu, ctx, _| {
+                let mut m = ctx.memory();
+                let out = m.u32(cpu.esp + 16)?;
+                let mut action = [0; ACTION_SIZE];
+                action[..0x50].copy_from_slice(&m.read::<0x50>(0x51ea88)?);
+                action[0x50..0x54].copy_from_slice(&m.read::<4>(CONTROLS + 0x14)?);
+                action[0x54..0x58].copy_from_slice(&m.read::<4>(CONTROLS + 0x24)?);
+                action[0x58] = m.u8(0x51ea18 + 0x18)?;
+                m.write(out, action)?;
+                m.ret(cpu, 0)
+            })
+            .unwrap();
+            let main = Runtime::new(guest(), d);
+            let before = main.memory().read::<0x48>(RAW).unwrap();
+            let mut builder = Builder::new(&main, WORK, path, Stage::Rust);
+            let cpu = CpuAbi {
+                esp: WORK + 0xfff0,
+                ..Default::default()
+            };
+            let mut pad = input::State::default();
+            pad.gamepad.thumb_ly = i16::MAX;
+            pad.gamepad.analog[0] = 255;
+            let mut actions = Vec::new();
+            for tick in 1..=2 {
+                let seat = SeatInput {
+                    player,
+                    player_addr: PLAYER,
+                    unit,
+                    tick,
+                    dt: 1. / 30.,
+                    pad,
+                    reset: tick == 1,
+                };
+                actions.push(builder.action(&main, cpu, seat).unwrap());
+            }
+            assert!(builder.refused.is_empty(), "{path:?}: {:?}", builder.refused);
+            let word = |a: &[u8; ACTION_SIZE], at: usize| u32::from_le_bytes(a[at..at + 4].try_into().unwrap());
+            let [first, second] = [actions[0], actions[1]];
+            // Bound on the first build, facing +y: a yaw of pi/2.
+            assert_eq!(word(&first, 0x50), unit.raw(), "{path:?}");
+            assert_eq!(f32::from_bits(word(&first, 0x54)), std::f32::consts::FRAC_PI_2);
+            // Full up on the left stick is +1 on 0x38; the right stick is centred.
+            assert_eq!(f32::from_bits(word(&second, 0x38)), 1., "{path:?}");
+            assert_eq!(word(&second, 0x3c), 0f32.to_bits());
+            assert_eq!(first[0x58], 0, "the Default layout's mode");
+            // The analog button is held from the second read: one down tick.
+            assert_eq!((first[0], second[0]), (0, 1), "{path:?}");
+            let m = main.memory();
+            assert_eq!(m.read::<0x48>(RAW).unwrap(), before, "{path:?}: live raw input kept");
+            assert_eq!(m.u32(CONTROLS + 0x14).unwrap(), 0, "{path:?}: live control kept");
+        }
+    }
+
+    #[test]
+    fn the_switch_runs_the_stage_in_rust_by_default() {
+        let parse = |spec: &str| stage_for(&hooks::Switches::parse(spec).unwrap());
+        assert_eq!(parse(""), Stage::Rust);
+        assert_eq!(parse("-impl.sim.phantom-input"), Stage::Guest);
+        assert_eq!(parse("-impl.sim"), Stage::Guest, "through its parent");
+    }
 }
