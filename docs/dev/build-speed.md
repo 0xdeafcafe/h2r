@@ -25,6 +25,10 @@ further down.
   whole.
 - Many checkouts are built one after another into one target directory.
 
+## Playing a fix quickly
+
+`cargo run --profile play -p cli -- play <iso>` builds an optimised `h2` that is incremental and split into 256 codegen units (`[profile.play]` in `Cargo.toml`). A one-line change in a large crate such as `game` recompiles only the units it touches. Frame-time numbers still come from release builds on the lab.
+
 ## What the target directory shows
 
 Read from a 70 GB shared target directory on 2026-11-20 (52 GB in

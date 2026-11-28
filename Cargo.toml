@@ -109,6 +109,15 @@ field_reassign_with_default = "allow"
 # each codegen unit's object file and in a dSYM per test executable, about
 # 12 GB per target directory. A panic still names its file and line; a
 # backtrace names functions, not lines (docs/dev/build-speed.md).
+# `cargo run --profile play -p cli -- play ...`: optimised like release, but
+# incremental and in many codegen units, so a one-line fix in a big crate
+# (game) rebuilds in seconds, not minutes. Perf numbers still come from
+# release builds on the lab (docs/dev/build-speed.md).
+[profile.play]
+inherits = "release"
+incremental = true
+codegen-units = 256
+
 [profile.dev]
 debug = false
 
