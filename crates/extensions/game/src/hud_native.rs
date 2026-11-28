@@ -510,15 +510,17 @@ pub fn build_string(run: &StringRun, size: [u32; 2], clip: ClipRect) -> Option<O
     Some(overlay)
 }
 
-/// A proven string laid out in Rust: its runs placed as one pass over the
-/// host's glyph pages ([`build_string`]), on the bound target inside its
-/// clip area. Neither has a source without the device yet.
+/// A string laid out in Rust: its runs placed as one pass over the
+/// host's glyph pages ([`build_string`]) on the UI's guest frame (every
+/// guest UI coordinate is 640 x 480, `render_aspect`), clipped to the
+/// whole frame; the run's origin places split-screen windows.
 pub fn draw_string(
     mem: &mut dyn GuestMemory,
     run: &StringRun,
 ) -> bool {
-    let _ = (mem, run, build_string);
-    unimplemented!("hud: the string's bound target extent and clip area from the device")
+    const FRAME: [u32; 2] = [640, 480];
+    let Some(overlay) = build_string(run, FRAME, ClipRect::full(FRAME)) else { return false };
+    crate::hud_overlay::place_text(mem, overlay, frame_scene::ViewSlot::Hud)
 }
 
 /// A bitmap widget laid out in Rust (`render_bridge::native_hud::walk`),

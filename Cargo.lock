@@ -2166,6 +2166,7 @@ dependencies = [
  "anyhow",
  "bots",
  "content",
+ "content-kit",
  "firefight",
  "h1-assets",
  "h1campaign",
