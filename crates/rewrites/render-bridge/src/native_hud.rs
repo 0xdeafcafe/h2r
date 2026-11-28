@@ -311,6 +311,14 @@ pub trait Host: Send + Sync {
         false
     }
 
+    /// Where a list class the host registered at run time (its `vtable`)
+    /// puts its scroll arrows for a list `height` units tall
+    /// ([`ui_overlay::ListArrows`]). `None`: the host does not know the
+    /// class, and its list is the game's (`draw_runtime_class`).
+    fn ui_list_arrows(&self, _vtable: u32, _height: i32) -> Option<[[i16; 2]; 2]> {
+        None
+    }
+
     /// The loaded map's menu font layout and shared overlay glyph pages.
     fn ui_text(&self, _mem: &dyn GuestMemory) -> Option<Box<dyn ui_overlay::UiText>> {
         None

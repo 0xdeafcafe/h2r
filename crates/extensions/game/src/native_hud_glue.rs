@@ -598,6 +598,10 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
             .is_some_and(|block| crate::skulls_model::noted(widget, block).is_some())
     }
 
+    fn ui_list_arrows(&self, vtable: u32, height: i32) -> Option<[[i16; 2]; 2]> {
+        crate::list_class::arrows_at(vtable, height).map(|a| [a.up, a.down])
+    }
+
     fn ui_pass(&self, mem: &mut dyn GuestMemory, part: &Arc<frame_scene::Overlay>) -> bool {
         self.permits_draw() && crate::hud_overlay::place_menu(&self.device, mem, part)
     }
