@@ -113,6 +113,18 @@ impl<'r> Chain<'r> {
     }
 }
 
+impl Chain<'_> {
+    /// `fabs`.
+    pub fn abs(self) -> Self {
+        let value = match self.value {
+            Value::Single(value) => Value::Single(value.abs()),
+            Value::Double(value) => Value::Double(value.abs()),
+            Value::Guest(value) => Value::Guest(self.x87().abs(value)),
+        };
+        Self { value, ..self }
+    }
+}
+
 impl Neg for Chain<'_> {
     type Output = Self;
     fn neg(self) -> Self {

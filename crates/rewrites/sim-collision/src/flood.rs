@@ -13,10 +13,11 @@
 //! The arithmetic keeps the retail operation order. The plane distance and
 //! the cross-section radius are x87 sequences ([`Chain`], in the guest's
 //! precision control); the sphere and polygon tests are SSE scalar
-//! operations ([`Checked`]). Anything off the checked fast path declines
-//! the whole query.
-use crate::{Bail, GuestRead, Inexact, store::Column};
-use sim_core::det::{Chain, Checked, checked_inputs};
+//! operations ([`Checked`]). Under the guest's state
+//! ([`Topology::cluster_flood_guest`]) every operand runs as the guest's
+//! instructions do; [`Topology::cluster_flood`] keeps the checked path.
+use crate::{Bail, GuestRead, Raised, store::Column};
+use sim_core::det::{Chain, Checked};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
@@ -90,6 +91,10 @@ pub struct Projection {
     /// The vertex count as the polygon test reads it (the low half of the
     /// count word, signed). Zero or negative: the test passes.
     pub sides: i16,
+    /// The MXCSR and x87 flags the axis pick and the sign test raise (a
+    /// NaN or subnormal component), which every test that reaches the
+    /// projection raises again.
+    pub pick_flags: (u32, u16),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -176,6 +181,42 @@ pub fn dominant_axis(normal: [u32; 3]) -> usize {
         1
     } else {
         0
+    }
+}
+
+/// The projection's axis and sign, as `0x00120850` and the portal test's
+/// `comiss normal[axis], 0; jbe` decide them for any normal.
+struct Pick {
+    axis: usize,
+    positive: bool,
+    flags: (u32, u16),
+}
+
+/// `0x00120850` for any normal: `fld; fabs; fstp m32` per component (a
+/// subnormal raises DE, an SNaN IE and is quieted), then `fcomip` of
+/// `|z|` with `|y|` and `comiss |z|, |x|` (each `jb`: unordered is below)
+/// choose z, and `comiss |y|, |x|` y over x. Then the sign test. The flags
+/// do not depend on the precision or rounding control: every step is exact.
+fn pick(normal: [u32; 3]) -> Pick {
+    use sim_core::det::{Fp, X87};
+    let x = X87::new(0x027f);
+    let mut fp = Fp::guest(0x1f80);
+    let abs: [u32; 3] = std::array::from_fn(|i| x.store32(x.abs(x.load32(normal[i]))));
+    let [ax, ay, az] = abs;
+    let at_least = |o: Option<Ordering>| matches!(o, Some(Ordering::Greater | Ordering::Equal));
+    let z_over_y = at_least(x.compare(x.load32(az), x.load32(ay), false));
+    let axis = if z_over_y && at_least(fp.comiss(az, ax)) {
+        2
+    } else if at_least(fp.comiss(ay, ax)) {
+        1
+    } else {
+        0
+    };
+    let positive = fp.comiss(normal[axis], 0) == Some(Ordering::Greater);
+    Pick {
+        axis,
+        positive,
+        flags: (fp.mxcsr().unwrap_or_default() & 0x3f, x.flags()),
     }
 }
 
@@ -318,13 +359,11 @@ impl PortalBuilder {
         use layout::*;
         let normal = r.bytes(planes.normal.wrapping_add(plane_offset), 12)?;
         let normal: [u32; 3] = std::array::from_fn(|k| word(&normal, 4 * k));
-        // The axis pick and the sign test load and compare the normal: a
-        // subnormal component would raise the denormal flag.
-        if !checked_inputs(&normal) {
-            return Err(Bail::Float);
-        }
-        let axis = dominant_axis(normal);
-        let positive = f32::from_bits(normal[axis]) > 0.0;
+        let Pick {
+            axis,
+            positive,
+            flags: pick_flags,
+        } = pick(normal);
         let row = planes.projection[2 * axis + usize::from(positive)];
         let axes = [row[0], row[1]];
         if axes.iter().any(|&a| !(0..3).contains(&a)) {
@@ -355,6 +394,7 @@ impl PortalBuilder {
             axes,
             ring: start..self.ring.len() as u32,
             sides,
+            pick_flags,
         })
     }
 
@@ -526,7 +566,6 @@ impl Topology {
     /// `0x0014a370`: whether the sphere reaches through the portal.
     fn portal_test(&self, r: &Checked, q: &FloodQuery, t: &Test) -> Result<bool, Bail> {
         let ld = |x: u32| Chain::load(r, q.control, f32::from_bits(x)).ok_or(Bail::Float);
-        let order = |o: Option<Ordering>| o.ok_or(Bail::Float);
         let [nx, ny, nz, d] = t.plane;
         let [cx, cy, cz] = q.centre;
         // ((ny*cy + nz*cz) + cx*nx) - d on the x87, stored once for the
@@ -535,9 +574,9 @@ impl Topology {
         let dist = dist - ld(d)?;
         let stored = dist.store();
         let radius = ld(q.radius)?;
-        if order(radius.compare(dist))? != Ordering::Greater
-            || order(radius.compare(-dist))? != Ordering::Greater
-        {
+        // `fabs; fld radius; fcomip; jbe`: on unless the radius is above
+        // the distance, ordered.
+        if radius.compare(dist.abs()) != Some(Ordering::Greater) {
             return Ok(false);
         }
         // Bounding sphere, SSE: ((dz*dz + dx*dx) + dy*dy) < (r_p + r)^2.
@@ -551,11 +590,13 @@ impl Topology {
         let xx = r.mul(dx, dx);
         let yy = r.mul(dy, dy);
         let apart = r.add(r.add(zz, xx), yy);
-        if r.mul(reach, reach) <= apart {
+        // `comiss reach², apart; jbe`.
+        if r.comiss(r.mul(reach, reach), apart, false) != Some(Ordering::Greater) {
             return Ok(false);
         }
         // The centre dropped onto the plane along the projection normal.
         let t = t.projection.as_ref().map_err(|w| *w)?;
+        r.raise(t.pick_flags.0, t.pick_flags.1);
         let back = r.sub(0.0, stored);
         let point: [f32; 3] =
             std::array::from_fn(|k| r.add(r.mul(f(t.normal[k]), back), f(q.centre[k])));
@@ -582,11 +623,16 @@ impl Topology {
             let ex = r.sub(uj, ui);
             let ey = r.sub(vj, vi);
             let length = r.add(r.mul(ex, ex), r.mul(ey, ey));
-            if length == 0.0 {
+            // `ucomiss length, 0; lahf; test ah, 44h; jnp`: skip only an
+            // ordered zero.
+            if r.comiss(length, 0.0, true) == Some(Ordering::Equal) {
                 continue;
             }
             let cross = r.sub(r.mul(x0, ey), r.mul(y0, ex));
-            if cross > 0.0 && r.mul(cross, cross) > r.mul(length, rr) {
+            // `comiss cross, 0; jbe`, then `comiss cross², length·r²; ja`.
+            if r.comiss(cross, 0.0, false) == Some(Ordering::Greater)
+                && r.comiss(r.mul(cross, cross), r.mul(length, rr), false) == Some(Ordering::Greater)
+            {
                 return false;
             }
         }
@@ -595,19 +641,21 @@ impl Topology {
 
     /// Entry G on its own: one checked region around the flood.
     pub fn cluster_flood(&self, g: &impl GuestRead, q: &FloodQuery) -> Result<Flood, Bail> {
-        self.cluster_flood_inexact(g, q).map(|(flood, _)| flood)
+        sim_core::det::checked(|r| Some(self.flood(g, r, q))).unwrap_or(Err(Bail::Float))
     }
 
-    /// [`Topology::cluster_flood`], and which of its SSE and x87
-    /// operations were inexact: the PE flags the guest sets in MXCSR and
-    /// in the x87 status word.
-    pub fn cluster_flood_inexact(
+    /// [`Topology::cluster_flood`] under the guest's `mxcsr` and
+    /// [`FloodQuery::control`] for any operand, and the flags it raised.
+    /// Only an unmasked exception or a host without the region's controls
+    /// declines ([`Bail::Env`]).
+    pub fn cluster_flood_guest(
         &self,
         g: &impl GuestRead,
         q: &FloodQuery,
-    ) -> Result<(Flood, Inexact), Bail> {
-        sim_core::det::checked(|r| Some(self.flood(g, r, q).map(|f| (f, Inexact::of(r)))))
-            .unwrap_or(Err(Bail::Float))
+        mxcsr: u32,
+    ) -> Result<(Flood, Raised), Bail> {
+        sim_core::det::checked_guest(mxcsr, q.control, |r| Some(self.flood(g, r, q).map(|f| (f, Raised::of(r)))))
+            .unwrap_or(Err(Bail::Env))
     }
 }
 

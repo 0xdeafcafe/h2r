@@ -217,13 +217,7 @@ impl fmt::Display for Event {
 /// An x87 stack value.
 type St = sim_core::det::St;
 
-/// The flags a walk raised: the guest's MXCSR after its SSE operations
-/// and the x87 exception flags (`0x3f`) of its x87 sequences, PE included.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Raised {
-    pub mxcsr: u32,
-    pub x87: u16,
-}
+pub use crate::Raised;
 
 /// The interpreter's floats under the guest's x87 control word and MXCSR,
 /// for any operand: the x87 sequences on [`sim_core::det::X87`], the

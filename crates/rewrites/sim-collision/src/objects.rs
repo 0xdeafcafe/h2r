@@ -9,7 +9,8 @@
 //! epochs, marks and handles in the order the guest would store them.
 use crate::flood::{Flood, FloodQuery, MAX_CLUSTERS, Topology};
 use crate::{Bail, GuestRead};
-use sim_core::det::{Checked, checked, checked_inputs};
+use sim_core::det::{Checked, checked, checked_guest};
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -200,7 +201,10 @@ impl<G: GuestRead> State<'_, G> {
                     }
                 }
             }
-            let packed = if count == 4 { packet::overlaps(self.q, k, &batch) } else { None };
+            // The packed test raises nothing it does not prove, so under
+            // the guest's state it runs only once PE is sticky.
+            let pe = self.r.mxcsr().is_none_or(|m| m & 0x20 != 0);
+            let packed = if count == 4 && pe { packet::overlaps(self.q, k, &batch) } else { None };
             for (i, item) in batch[..count].iter().enumerate() {
                 let hit = match packed {
                     Some(bits) => bits[i],
@@ -242,7 +246,8 @@ impl<G: GuestRead> State<'_, G> {
             r.add(r.add(zz, xx), yy)
         };
         let rr = r.mul(reach, reach);
-        Ok(rr >= apart)
+        // `comiss rr, apart; jb`: unordered is not an overlap.
+        Ok(matches!(r.comiss(rr, apart, false), Some(Ordering::Greater | Ordering::Equal)))
     }
 }
 
@@ -252,18 +257,20 @@ pub fn object_visit(
     q: &VisitQuery,
     topology: impl FnOnce() -> Result<Arc<Topology>, Bail>,
 ) -> Result<Visit, Bail> {
-    object_visit_inexact(g, q, topology).map(|(v, _)| v)
+    checked(|r| Some(visit(g, r, q, topology))).unwrap_or(Err(Bail::Float))
 }
 
-/// [`object_visit`], and which of its SSE and x87 operations were
-/// inexact: the PE flags the guest sets in MXCSR and the x87 status word.
-pub fn object_visit_inexact(
+/// [`object_visit`] under the guest's `mxcsr` and [`VisitQuery::control`]
+/// for any operand, and the flags it raised. Only an unmasked exception or
+/// a host without the region's controls declines ([`Bail::Env`]).
+pub fn object_visit_guest(
     g: &impl GuestRead,
     q: &VisitQuery,
+    mxcsr: u32,
     topology: impl FnOnce() -> Result<Arc<Topology>, Bail>,
-) -> Result<(Visit, crate::Inexact), Bail> {
-    checked(|r| Some(visit(g, r, q, topology).map(|v| (v, crate::Inexact::of(r)))))
-        .unwrap_or(Err(Bail::Float))
+) -> Result<(Visit, crate::Raised), Bail> {
+    checked_guest(mxcsr, q.control, |r| Some(visit(g, r, q, topology).map(|v| (v, crate::Raised::of(r)))))
+        .unwrap_or(Err(Bail::Env))
 }
 
 fn visit(
@@ -286,10 +293,9 @@ fn visit(
     let clusters: Vec<u16> = if q.cluster == u16::MAX {
         Vec::new()
     } else {
-        if !checked_inputs(&[q.radius, q.zero]) {
-            return Err(Bail::Float);
-        }
-        if f32::from_bits(q.radius) > f32::from_bits(q.zero) {
+        // `comiss radius, zero; jbe`: a flood only for an ordered greater.
+        let (radius, zero) = (f32::from_bits(q.radius), f32::from_bits(q.zero));
+        if r.comiss(radius, zero, false) == Some(Ordering::Greater) {
             if !q.x87 {
                 return Err(Bail::Env);
             }

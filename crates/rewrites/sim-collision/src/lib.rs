@@ -45,19 +45,20 @@ pub use world::{
     VectorParity, take_bail,
 };
 
-/// Which of a region's float units rounded: the PE (precision) flag each
-/// sets in the guest, MXCSR bit 5 for SSE and status bit 5 for the x87.
+/// The float flags a kernel raised: the guest's MXCSR after its SSE
+/// operations (outside a guest region only PE, bit 5) and the x87
+/// exception flags (`0x3f` of the status word) of its x87 sequences.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Inexact {
-    pub sse: bool,
-    pub x87: bool,
+pub struct Raised {
+    pub mxcsr: u32,
+    pub x87: u16,
 }
 
-impl Inexact {
+impl Raised {
     pub fn of(r: &sim_core::det::Checked) -> Self {
         Self {
-            sse: r.sse_inexact(),
-            x87: r.x87_inexact(),
+            mxcsr: r.mxcsr().unwrap_or(if r.sse_inexact() { 0x20 } else { 0 }),
+            x87: r.x87_flags(),
         }
     }
 }

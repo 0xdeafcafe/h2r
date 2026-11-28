@@ -94,6 +94,12 @@ impl X87 {
         self.flags.get()
     }
 
+    /// Raise exception `flags` (`0x3f`) as an instruction outside this
+    /// model would.
+    pub fn raise_bits(&self, flags: u16) {
+        self.flags.set(self.flags.get() | (flags & 0x3f));
+    }
+
     fn raise(&self, f: x87::Flags) {
         self.flags.set(self.flags.get() | (f.0 & 0x3f));
     }

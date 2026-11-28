@@ -94,6 +94,16 @@ impl Checked {
             | if self.x87_inexact.get() { 0x20 } else { 0 }
     }
 
+    /// [`checked_guest`]: raise `sse` in the guest's MXCSR and `x87` in the
+    /// x87 flags, as instructions the kernel decided ahead of the region
+    /// (a decode) would have. Outside guest mode nothing changes.
+    pub fn raise(&self, sse: u32, x87: u16) {
+        if let Some(g) = &self.guest {
+            g.mxcsr.set(g.mxcsr.get() | (sse & 0x3f));
+            g.x87.raise_bits(x87);
+        }
+    }
+
     /// [`checked_guest`]: the region's x87.
     pub(super) fn x87(&self) -> Option<&super::X87> {
         self.guest.as_ref().map(|g| &g.x87)
