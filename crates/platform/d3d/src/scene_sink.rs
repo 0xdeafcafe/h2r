@@ -46,7 +46,7 @@ use replay::{Origin, Recorder};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use frame_types::{AuxTarget, Carried, CarriedSummary, GuestOp, Readback, Slot, SlotAt, TargetRef, TargetSample};
+use frame_types::{AuxTarget, Carried, CarriedSummary, GuestOp, Readback, Slot, SlotAt, TargetRef, TargetRole, TargetSample};
 use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
@@ -219,6 +219,8 @@ pub struct SceneSink<B: Backend> {
     scene_depth: Option<B::Surface>,
     /// Every live surface, as made.
     surfaces: Vec<(B::Surface, AuxTarget)>,
+    /// The roles of the surfaces the device made by role ([`Backend::create_target`]).
+    roles: Vec<(B::Surface, TargetRole)>,
     /// This frame's side targets, by number.
     aux: Vec<B::Surface>,
 }
@@ -247,6 +249,7 @@ impl<B: Backend> SceneSink<B> {
             scene_colour: Vec::new(),
             scene_depth: None,
             surfaces: Vec::new(),
+            roles: Vec::new(),
             aux: Vec::new(),
         }
     }
@@ -319,7 +322,7 @@ impl<B: Backend> SceneSink<B> {
     /// the final surface. The census' swap-chain alias heuristic is only
     /// for describing counts; a copy swap still has two distinct targets.
     fn replay_target(&mut self, surface: B::Surface) -> TargetRef {
-        self.replay.as_mut().expect("recording replay").target(surface, &self.surfaces)
+        self.replay.as_mut().expect("recording replay").target(surface, &self.surfaces, &self.roles)
     }
 
     fn replay_attachments(&mut self, colour: B::Surface, depth: Option<B::Surface>) -> (TargetRef, TargetRef) {
@@ -523,7 +526,17 @@ impl<B: Backend> SceneSink<B> {
     fn made(&mut self, surface: B::Surface, target: AuxTarget) {
         if let Some(replay) = &mut self.replay { replay.destroy(surface); }
         self.surfaces.retain(|(s, _)| *s != surface);
+        self.roles.retain(|(s, _)| *s != surface);
         self.surfaces.push((surface, target));
+    }
+
+    fn forget(&mut self, surface: B::Surface) {
+        self.surfaces.retain(|(s, _)| *s != surface);
+        self.roles.retain(|(s, _)| *s != surface);
+        self.scene_colour.retain(|s| *s != surface);
+        if self.scene_depth == Some(surface) {
+            self.scene_depth = None;
+        }
     }
 
     fn target(&mut self, surface: B::Surface) -> TargetRef {
@@ -607,7 +620,7 @@ impl<B: Backend> SceneSink<B> {
                     if let Some(Origin::Sample { frozen, .. }) = &texture.origin
                         && let Some(binding) = frozen.get_or_init(|| self.inner.retain_scene_sample(&texture.inner))
                     {
-                        let target = replay.target(surface, &self.surfaces);
+                        let target = replay.target(surface, &self.surfaces, &self.roles);
                         return Some(ReplayTexture::Live { target, binding: binding.clone() });
                     }
                     #[cfg(not(feature = "gpu"))]
@@ -658,7 +671,7 @@ impl<B: Backend> SceneSink<B> {
                 && self.surfaces.iter().any(|(s, desc)| *s == surface && !desc.depth))
                 .then(|| replay.view_identity(surface));
             if let Some(at) = at {
-                let of = replay.target(surface, &self.surfaces);
+                let of = replay.target(surface, &self.surfaces, &self.roles);
                 replay.sample(at, of, how, view, into)
             } else {
                 Origin::sample(replay.seq, None, &how, view)
@@ -757,12 +770,22 @@ impl<B: Backend> Backend for SceneSink<B> {
         if let Some(replay) = &mut self.replay {
             replay.destroy(surface);
         }
-        self.surfaces.retain(|(s, _)| *s != surface);
-        self.scene_colour.retain(|s| *s != surface);
-        if self.scene_depth == Some(surface) {
-            self.scene_depth = None;
-        }
+        self.forget(surface);
         self.inner.destroy_surface(surface)
+    }
+    fn create_target(&mut self, target: crate::backend::TargetDesc) -> Result<Self::Surface, String> {
+        let s = self.inner.create_target(target)?;
+        let crate::backend::TargetDesc { role, format, width, height, depth, .. } = target;
+        self.made(s, AuxTarget { width, height, format: u32::from(format as u8), depth });
+        self.roles.push((s, role));
+        Ok(s)
+    }
+    fn release_target(&mut self, role: TargetRole, surface: Self::Surface) -> Result<(), String> {
+        if let Some(replay) = &mut self.replay {
+            replay.destroy(surface);
+        }
+        self.forget(surface);
+        self.inner.release_target(role, surface)
     }
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String> {
         if self.replay.is_some() {

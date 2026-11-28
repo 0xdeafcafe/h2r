@@ -77,7 +77,7 @@ pub mod vertex_cache;
 pub use backend::{
     DrawAdmission, DrawSnapshot, ExternalPlan, ExternalRecording, ExternalSlot, ExternalSurfaces, ExternalWrites, SharedReplacement, TargetCopy,
     Backend, ChannelMask, DepthClip, DrawOutcome, ExternalPass, ExternalPassRequest, VIEW_CONSTANTS, external_viewport, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
-    RectClear, ResolvedDraw, SceneStage, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
+    RectClear, ResolvedDraw, SceneStage, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, TargetDesc, Viewport,
 };
 pub use device::{
     Device, DeviceConfig, DrawScope, ExternalRefusal, NativeRefusal, GuestRange, PreparedExternal, SceneReservation, SuppliedState,

@@ -88,6 +88,61 @@ impl<B: Backend> Device<B> {
         self.frame_snaps.forget(surface);
     }
 
+    /// The role of the target at `header` (`parent` its texture for a
+    /// level, else 0); `None` without a role table. A header the table
+    /// does not name is a gap.
+    fn role_of(&self, header: u32, parent: u32) -> Option<frame_types::TargetRole> {
+        let table = self.cfg.roles?;
+        Some(table(header, parent).unwrap_or_else(|| {
+            unimplemented!("d3d targets: {header:#010x} (texture {parent:#010x}) has no role")
+        }))
+    }
+
+    /// A render target or depth surface: by `role` through
+    /// [`Backend::create_target`] (the frame graph's store, on the render
+    /// thread), else made as any surface. One role has one live surface.
+    fn make_target(
+        &mut self,
+        role: Option<frame_types::TargetRole>,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        depth: bool,
+        texture: bool,
+    ) -> Result<B::Surface, D3dError> {
+        let Some(role) = role else {
+            return if texture {
+                self.backend.create_texture_target(format, width, height)
+            } else {
+                self.backend.create_surface(format, width, height, depth)
+            }
+            .map_err(D3dError::Backend);
+        };
+        if self.target_roles.iter().any(|(_, r)| *r == role) {
+            unimplemented!("d3d targets: two live surfaces for {role:?}");
+        }
+        let s = self
+            .backend
+            .create_target(crate::backend::TargetDesc { role, format, width, height, depth, texture })
+            .map_err(D3dError::Backend)?;
+        self.target_roles.push((s, role));
+        Ok(s)
+    }
+
+    /// Gives `surface` back: to its role's store when made by role, else
+    /// destroyed.
+    fn drop_surface(&mut self, surface: B::Surface) -> Result<(), D3dError> {
+        self.forget_surface(surface);
+        match self.target_roles.iter().position(|(s, _)| *s == surface) {
+            Some(i) => {
+                let (_, role) = self.target_roles.swap_remove(i);
+                self.backend.release_target(role, surface)
+            }
+            None => self.backend.destroy_surface(surface),
+        }
+        .map_err(D3dError::Backend)
+    }
+
     /// Frame-buffer copy textures the device holds: its pool of copies,
     /// refilled by later draws and kept across presents (at most
     /// [`FRAME_COPY_TEXTURES`]; `frame_snaps.rs`).
@@ -225,6 +280,13 @@ pub struct DeviceConfig {
     /// [`crate::runtime_glue::map_device_memory`] to map. `None` leaves
     /// `+0x934` alone (zero), so those reads fault.
     pub nv2a_window: Option<u32>,
+    /// The game's role for the render target or depth surface at a
+    /// header (`header`, its texture `parent` for a level, else 0)
+    /// (docs/graphics/retire-d3d-display.md, "The graph's targets"). Set,
+    /// every target is made by role ([`Backend::create_target`]) and a
+    /// header with no role panics by name; `None` (the crate's own tests)
+    /// makes each as any surface.
+    pub roles: Option<fn(u32, u32) -> Option<frame_types::TargetRole>>,
 }
 
 impl DeviceConfig {
@@ -238,6 +300,7 @@ impl DeviceConfig {
             scratch,
             upload: UploadPolicy::Tracked,
             nv2a_window: None,
+            roles: None,
         }
     }
 }
@@ -1092,6 +1155,8 @@ pub struct Device<B: Backend> {
     frame_headers: Vec<u32>,
     depth_header: u32,
     other_surfaces: HashMap<u32, ([u32; 3], B::Surface)>,
+    /// The surfaces made by role ([`Self::make_target`]).
+    target_roles: Vec<(B::Surface, frame_types::TargetRole)>,
     render_target: u32,
     depth_stencil: u32,
     textures: [u32; 4],
@@ -1497,6 +1562,7 @@ impl<B: Backend> Device<B> {
             frame_headers: Vec::new(),
             depth_header: 0,
             other_surfaces: HashMap::default(),
+            target_roles: Vec::new(),
             render_target: 0,
             depth_stencil: 0,
             textures: [0; 4],
@@ -1902,18 +1968,16 @@ impl<B: Backend> Device<B> {
         })?;
         let host_fmt = linear_twin(fmt);
         let count = p.back_buffer_count.max(1);
+        // With a role table each buffer is the graph's: back buffer `i` is
+        // `Display(i)`, the display surface the one after them.
+        let roled = self.cfg.roles.is_some();
+        let display = |i: u32| roled.then_some(frame_types::TargetRole::Display(i as u8));
         let mut back = Vec::new();
-        for _ in 0..count {
-            back.push(
-                self.backend
-                    .create_surface(host_fmt, p.width, p.height, false)
-                    .map_err(D3dError::Backend)?,
-            );
+        for i in 0..count {
+            back.push(self.make_target(display(i), host_fmt, p.width, p.height, false, false)?);
         }
-        let front = self
-            .backend
-            .create_surface(host_fmt, p.width, p.height, false)
-            .map_err(D3dError::Backend)?;
+        let role = display(count);
+        let front = self.make_target(role, host_fmt, p.width, p.height, false, false)?;
         // `0x3fc9a2..0x3fc9c0`: multisampling or D3DSWAPEFFECT_COPY makes a
         // copy-swap device; anything else flips.
         let copy_swap = p.multisample_type & 0x3000 != 0 || p.swap_effect == 3;
@@ -1952,11 +2016,8 @@ impl<B: Backend> Device<B> {
                     )
                 })?;
             let dlin = linear_twin(dfmt);
-            self.depth = Some(
-                self.backend
-                    .create_surface(dlin, p.width, p.height, true)
-                    .map_err(D3dError::Backend)?,
-            );
+            let role = self.cfg.roles.map(|_| frame_types::TargetRole::DisplayDepth);
+            self.depth = Some(self.make_target(role, dlin, p.width, p.height, true, false)?);
             self.depth_header = at(scratch, SurfaceHeader::SIZE as u64)?;
         }
         Ok(())
@@ -2004,8 +2065,7 @@ impl<B: Backend> Device<B> {
         surfaces.extend(self.depth.take());
         surfaces.extend(self.other_surfaces.drain().map(|(_, (_, s))| s));
         for s in surfaces {
-            self.forget_surface(s);
-            self.backend.destroy_surface(s).map_err(D3dError::Backend)?;
+            self.drop_surface(s)?;
         }
         self.created = false;
         self.params = None;
@@ -4408,10 +4468,7 @@ impl<B: Backend> Device<B> {
         self.mirror_stale.remove(&header);
         if let Some(t) = self.rtt.remove(&header) {
             self.rtt_epoch += 1;
-            self.forget_surface(t.surface);
-            self.backend
-                .destroy_surface(t.surface)
-                .map_err(D3dError::Backend)?;
+            self.drop_surface(t.surface)?;
         }
         for h in self
             .rtt
@@ -4427,14 +4484,10 @@ impl<B: Backend> Device<B> {
             self.rtt_epoch += 1;
             self.mirror_stale.remove(&h);
             self.depth_level_tex.remove(&h);
-            self.forget_surface(t.surface);
-            self.backend
-                .destroy_surface(t.surface)
-                .map_err(D3dError::Backend)?;
+            self.drop_surface(t.surface)?;
         }
         if let Some((_, s)) = self.other_surfaces.remove(&header) {
-            self.forget_surface(s);
-            self.backend.destroy_surface(s).map_err(D3dError::Backend)?;
+            self.drop_surface(s)?;
         }
         if self.depth_color.is_some_and(|c| c.header == header) {
             self.depth_color = None;
@@ -5106,16 +5159,14 @@ impl<B: Backend> Device<B> {
         }
         let desc = crate::texdesc::from_header(h.pixels.format, h.pixels.size)
             .map_err(|e| D3dError::unimplemented(entry, format!("surface header: {e}")))?;
-        let s = self
-            .backend
-            .create_surface(desc.format, desc.width, desc.height, depth)
-            .map_err(D3dError::Backend)?;
-        if let Some((_, old)) = self.other_surfaces.insert(header, (id, s)) {
-            self.forget_surface(old);
-            self.backend
-                .destroy_surface(old)
-                .map_err(D3dError::Backend)?;
+        // The header was rewritten: its old surface goes back first, so
+        // the role has one live surface.
+        if let Some((_, old)) = self.other_surfaces.remove(&header) {
+            self.drop_surface(old)?;
         }
+        let role = self.role_of(header, 0);
+        let s = self.make_target(role, desc.format, desc.width, desc.height, depth, false)?;
+        self.other_surfaces.insert(header, (id, s));
         self.note_depth_color(header, &h, &desc, depth);
         Ok(s)
     }

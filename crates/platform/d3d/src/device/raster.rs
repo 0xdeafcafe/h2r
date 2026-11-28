@@ -835,19 +835,10 @@ impl<B: Backend> Device<B> {
             self.rtt_synced.remove(&header);
             self.rtt_stores.remove(&header);
             self.depth_level_tex.remove(&header);
-            self.forget_surface(old.surface);
-            self.backend
-                .destroy_surface(old.surface)
-                .map_err(D3dError::Backend)?;
+            self.drop_surface(old.surface)?;
         }
-        let surface = if depth {
-            self.backend
-                .create_surface(desc.format, desc.width, desc.height, true)
-        } else {
-            self.backend
-                .create_texture_target(desc.format, desc.width, desc.height)
-        }
-        .map_err(D3dError::Backend)?;
+        let role = self.role_of(header, h.parent);
+        let surface = self.make_target(role, desc.format, desc.width, desc.height, depth, !depth)?;
         let target = RttTarget {
             surface,
             parent: h.parent,
@@ -1540,10 +1531,7 @@ impl<B: Backend> Device<B> {
         self.depth_level_tex.clear();
         self.rtt_epoch += 1;
         for (_, t) in self.rtt.drain().collect::<Vec<_>>() {
-            self.forget_surface(t.surface);
-            self.backend
-                .destroy_surface(t.surface)
-                .map_err(D3dError::Backend)?;
+            self.drop_surface(t.surface)?;
         }
         Ok(())
     }

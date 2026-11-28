@@ -708,6 +708,8 @@ impl<B: Backend> Device<B> {
             swap,
             // Pixels on the host only: made again blank on use.
             other_surfaces: _,
+            // Each made by role with its surface; given back with it.
+            target_roles: _,
             render_target,
             depth_stencil,
             textures,
@@ -1091,8 +1093,7 @@ impl<B: Backend> Device<B> {
         let mut surfaces: Vec<B::Surface> = self.rtt.drain().map(|(_, t)| t.surface).collect();
         surfaces.extend(self.other_surfaces.drain().map(|(_, (_, s))| s));
         for s in surfaces {
-            self.forget_surface(s);
-            self.backend.destroy_surface(s).map_err(D3dError::Backend)?;
+            self.drop_surface(s)?;
         }
         self.depth_generation += 1;
         self.depth_copy = None;

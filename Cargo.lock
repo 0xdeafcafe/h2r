@@ -5856,6 +5856,7 @@ dependencies = [
  "canvas-fit",
  "engine",
  "frame-scene",
+ "frame-types",
  "hooks",
  "native-render",
  "runtime",

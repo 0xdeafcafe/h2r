@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use frame_types::{AuxTarget, SlotAt, TargetRef};
+use frame_types::{AuxTarget, SlotAt, TargetRef, TargetRole};
 use frame_types::carried::CameraUse;
 use gfx::texture::{DecodeOptions, DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
@@ -230,7 +230,19 @@ pub struct ReplayFrame {
     pub colour: Option<AuxTarget>,
     pub depth: Option<AuxTarget>,
     pub presented: TargetRef,
+    /// Each target's role, which the frame graph owns its surface by
+    /// (`native_render::frame_graph::targets`). A target the device made
+    /// with no role (a device without a role table) has none.
+    pub roles: Vec<(TargetRef, TargetRole)>,
     pub refusals: Vec<&'static str>,
+}
+
+impl ReplayFrame {
+    /// The role of `target`; `None` for [`TargetRef::None`] and a target
+    /// made without one.
+    pub fn role(&self, target: TargetRef) -> Option<TargetRole> {
+        self.roles.iter().find(|(t, _)| *t == target).map(|(_, r)| *r)
+    }
 }
 
 impl Default for ReplayFrame {
@@ -250,6 +262,7 @@ impl Default for ReplayFrame {
             colour: None,
             depth: None,
             presented: TargetRef::None,
+            roles: Vec::new(),
             refusals: Vec::new(),
         }
     }
@@ -308,6 +321,8 @@ pub(super) struct Recorder<S> {
     // Physical handles can be destroyed and recycled before present. Ops
     // retain the number of the resource, independently of its live handle.
     live: Vec<(S, u16)>,
+    /// The roles of this frame's physical ids, as `live` numbers them.
+    roles: Vec<(u16, TargetRole)>,
     // Allocation identities only for surfaces with an in-place view. Guest
     // texture handles may outlive the surface handle or cross many presents.
     views: Vec<(S, Arc<()>)>,
@@ -327,6 +342,7 @@ impl<S: Copy + Eq> Recorder<S> {
         Self {
             frame: ReplayFrame::default(),
             live: Vec::new(),
+            roles: Vec::new(),
             views: Vec::new(),
             seeds: Vec::new(),
             bound: None,
@@ -352,7 +368,7 @@ impl<S: Copy + Eq> Recorder<S> {
         self.frame.ops.push((at, op));
     }
 
-    pub fn target(&mut self, surface: S, surfaces: &[(S, AuxTarget)]) -> TargetRef {
+    pub fn target(&mut self, surface: S, surfaces: &[(S, AuxTarget)], roles: &[(S, TargetRole)]) -> TargetRef {
         if let Some((_, id)) = self.live.iter().find(|(s, _)| *s == surface) {
             return TargetRef::Aux(*id);
         }
@@ -369,6 +385,9 @@ impl<S: Copy + Eq> Recorder<S> {
         }
         self.frame.aux.push(*desc);
         self.live.push((surface, id));
+        if let Some((_, role)) = roles.iter().find(|(s, _)| *s == surface) {
+            self.roles.push((id, *role));
+        }
         TargetRef::Aux(id)
     }
 
@@ -460,6 +479,7 @@ impl<S: Copy + Eq> Recorder<S> {
         }
         let map = |r| match r { TargetRef::Aux(i) => names[usize::from(i)], other => other };
         frame.presented = map(present);
+        frame.roles = self.roles.drain(..).map(|(id, role)| (map(TargetRef::Aux(id)), role)).collect();
         for (target, _) in &mut frame.initial {
             *target = map(*target);
         }
@@ -520,5 +540,54 @@ mod allocation_tests {
         assert_eq!(recorder.view_surface(&second), Some(3));
         recorder.forget_view_identities();
         assert_eq!(recorder.view_surface(&second), None);
+    }
+}
+
+#[cfg(test)]
+mod role_tests {
+    use std::sync::{Arc, Mutex};
+
+    use frame_types::{Slot, SlotAt, TargetRef, TargetRole};
+    use gfx::{Clear, D3DFormat};
+
+    use crate::backend::TargetDesc;
+    use crate::{Backend, RecordingBackend, SceneSink};
+
+    /// A target's number is its first use in the frame, so the freeze
+    /// frame's target is `Aux(0)` in one frame and the post colour's in
+    /// the next; each frame says which role each number is.
+    #[test]
+    fn each_frame_names_its_targets_roles() {
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let output = Arc::clone(&frames);
+        let mut sink = SceneSink::new(RecordingBackend::new(), || Some(SlotAt { slot: Slot::AfterPost, view: 0 }))
+            .with_replay(move |f| output.lock().unwrap().push(f));
+        let desc = |role| TargetDesc { role, format: D3DFormat::LinA8R8G8B8, width: 4, height: 4, depth: false, texture: false };
+        let (freeze, post) = (TargetRole::Game(0x12), TargetRole::Game(1));
+        let main = sink.create_target(desc(TargetRole::Display(0))).unwrap();
+        let freeze_s = sink.create_target(desc(freeze)).unwrap();
+        let post_s = sink.create_target(desc(post)).unwrap();
+        sink.clear(freeze_s, None, Clear::all([0.; 4])).unwrap();
+        sink.copy_surface(post_s, main).unwrap();
+        sink.present(main, 0).unwrap();
+        sink.clear(post_s, None, Clear::all([0.; 4])).unwrap();
+        sink.copy_surface(freeze_s, main).unwrap();
+        sink.present(main, 0).unwrap();
+        let taken = std::mem::take(&mut *frames.lock().unwrap());
+        let [first, second] = &taken[..] else { panic!("two frames") };
+        for f in [first, second] {
+            assert_eq!(f.presented, TargetRef::SceneColour);
+            assert_eq!(f.role(TargetRef::SceneColour), Some(TargetRole::Display(0)));
+            assert_eq!(f.role(TargetRef::None), None);
+        }
+        assert_eq!((first.role(TargetRef::Aux(0)), first.role(TargetRef::Aux(1))), (Some(freeze), Some(post)));
+        assert_eq!((second.role(TargetRef::Aux(0)), second.role(TargetRef::Aux(1))), (Some(post), Some(freeze)));
+        sink.release_target(post, post_s).unwrap();
+        let plain = sink.create_surface(D3DFormat::LinA8R8G8B8, 4, 4, false).unwrap();
+        sink.clear(plain, None, Clear::all([0.; 4])).unwrap();
+        sink.present(main, 0).unwrap();
+        let third = frames.lock().unwrap().pop().unwrap();
+        assert_eq!(third.role(TargetRef::Aux(0)), None, "a surface made with no role has none");
+        assert_eq!(third.role(TargetRef::SceneColour), Some(TargetRole::Display(0)));
     }
 }

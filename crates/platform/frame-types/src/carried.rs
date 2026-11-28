@@ -168,6 +168,22 @@ pub enum TargetRef {
     None,
 }
 
+/// What a target is to the game, the same from frame to frame. A
+/// [`TargetRef::Aux`] is numbered per frame by first use, so one number
+/// names another target in the next frame; a role does not. The frame
+/// graph owns one surface per role (`native_render::frame_graph::targets`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum TargetRole {
+    /// Swap-chain buffer `n` (0 the back buffer).
+    Display(u8),
+    /// The device's own depth buffer.
+    DisplayDepth,
+    /// Entry `n` of the game's render-target table: its surface.
+    Game(u8),
+    /// A level of entry `n`'s texture bound as a target.
+    GameLevel(u8),
+}
+
 /// How a carried op samples a target on the GPU, in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TargetSample {

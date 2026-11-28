@@ -349,6 +349,9 @@ pub struct Worker<B: Backend> {
     /// Display frames between owned presents
     /// ([`ThreadedBackend::with_display_rate`]).
     display_rate: Option<Box<dyn owner::DisplayRate<B>>>,
+    /// The frame graph's targets ([`ThreadedBackend::with_target_store`]):
+    /// the game's render targets and depth surfaces, by role.
+    targets: Option<Box<dyn owner::TargetStore<B>>>,
 }
 
 #[derive(Default)]
@@ -801,6 +804,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     spent_constants: Vec::new(),
                     spent_boxes: Vec::new(),
                     display_rate: None,
+                    targets: None,
                 };
                 // When the display-rate loop wants its next frame
                 // (`owner::DisplayRate`: display frames between owned
@@ -1242,6 +1246,36 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             Ok(())
         });
         Ok(id)
+    }
+
+    fn create_target(&mut self, target: crate::backend::TargetDesc) -> Result<u32, String> {
+        self.check()?;
+        let id = self.new_surface();
+        self.surface_formats.insert(id, (target.format, target.depth));
+        self.post_create(move |w| {
+            let s = match &mut w.targets {
+                Some(store) => store.target(&mut w.inner, target)?,
+                None => w.inner.create_target(target)?,
+            };
+            w.surfaces.insert(id, s);
+            Ok(())
+        });
+        Ok(id)
+    }
+
+    fn release_target(&mut self, role: frame_types::TargetRole, surface: u32) -> Result<(), String> {
+        self.check()?;
+        self.surface_formats.remove(&surface);
+        self.post(move |w| {
+            let s = w.surface(surface)?;
+            w.surfaces.remove(&surface);
+            w.live_sources.retain(|_, source| *source != surface);
+            match &mut w.targets {
+                Some(store) => store.released(&mut w.inner, role, s),
+                None => w.inner.release_target(role, s),
+            }
+        });
+        Ok(())
     }
 
     fn destroy_surface(&mut self, surface: u32) -> Result<(), String> {
