@@ -21,7 +21,7 @@ The frame step types each placement's draw into the scene with the registers the
 | Decorator type (class `+4`) | Build | Draw | Typed here |
 |---|---|---|---|
 | 0, models | `0x0004de20` | `0x0004e260` | yes |
-| 1 and 2, decals | `0x0004dfa0` | `0x0004ebd0` | no, items in the transparent layers |
+| 1 and 2, decals | `0x0004dfa0` | `0x0004ebd0` | no, items in the transparent layers, drawn at the call ([retire-d3d-decal-decorators.md](retire-d3d-decal-decorators.md)) |
 | 3 to 5, quads | `0x0004e0d0` | `0x0004ede0` or `0x0004efa0` | no, items in the transparent layers |
 
 ## How it works

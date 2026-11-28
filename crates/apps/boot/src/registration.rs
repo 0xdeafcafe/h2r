@@ -991,6 +991,11 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_decals::NativeDecals)
             .map_err(|e| anyhow::anyhow!("native decals: {e}"))?;
+        // Decal decorators at their sorted place, their draw cut once a
+        // frame proves the stage (docs/graphics/retire-d3d-decal-decorators.md).
+        features
+            .add(&render_bridge::native_decal_decorators::NativeDecalDecorators)
+            .map_err(|e| anyhow::anyhow!("native decal decorators: {e}"))?;
         features
             .add(&render_bridge::native_particles::NativeParticles)
             .map_err(|e| anyhow::anyhow!("native particles: {e}"))?;

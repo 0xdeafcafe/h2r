@@ -1151,6 +1151,11 @@ points! { ALL;
     /// after `0x00043a40` selects the mode and its state. Stack `(list, unused)`,
     /// `ret 8`; the only native decal replacement point.
     DECAL_RENDER @ 0x0004_4040: [fn(list: stack 0, unused: stack 1) ret 8]; "docs/graphics/native-decals-research.md";
+    /// The draw of decal decorators (types 1 and 2): one layer-15 pass of
+    /// one placement, called by the sorted walk `0x00040f60` after the
+    /// build `0x0004dfa0`. Stack `(shader, 0, 0, layer, pass, argument,
+    /// entry)`, `ret 0x1c`; the native stage's cut point.
+    DECAL_DECORATOR_DRAW @ 0x0004_ebd0: [fn(shader: stack 0, zero: stack 1, zero2: stack 2, layer: stack 3, pass: stack 4, argument: stack 5, entry: stack 6) ret 28]; "docs/graphics/retire-d3d-decal-decorators.md";
     /// `render_decal_mode` (`0x0002c370`): one mode of the dynamic decals,
     /// EAX the mode 0 to 6: the mode's state (`0x00043a40`), then
     /// `DECAL_RENDER` per entry of `[0x00547f94]`. `render_scene_passes`

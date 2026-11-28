@@ -66,6 +66,12 @@ fn stages() -> Vec<Stage> {
             feature: &render_bridge::native_decals::NativeDecals,
         },
         Stage {
+            name: "decal decorators",
+            on: render_bridge::native_decal_decorators::on,
+            label: "native_decal_decorators",
+            feature: &render_bridge::native_decal_decorators::NativeDecalDecorators,
+        },
+        Stage {
             name: "particles",
             on: render_bridge::native_particles::on,
             label: "native_particles_walk_emit",
