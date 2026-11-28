@@ -18,6 +18,7 @@ mod regions;
 mod sphere_regions;
 mod transparents;
 pub(crate) mod view_records;
+pub(crate) mod visibility_setup;
 mod window;
 pub(crate) use transparents::{bsp as transparent_bsp, display_sort_key, order as transparent_order};
 
@@ -172,6 +173,7 @@ impl Feature for ScaledSceneLists {
             return Ok(());
         }
         view_records::install(b, visibility);
+        visibility_setup::install(b, visibility);
         engine::light_frusta::arm::set_on(visibility);
         if visibility {
             portal_walk::install(b);

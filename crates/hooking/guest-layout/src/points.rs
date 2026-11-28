@@ -1322,6 +1322,14 @@ points! { ALL;
     PORTAL_WINDOW_REGIONS @ 0x0017_30a0: [fn(lookup: stack 0, camera: stack 1, unused: stack 2, output: stack 3) ret 16]; "docs/graphics/native-visibility.md";
     /// Publish sphere-mode region records and update visited-cluster stamps.
     VIEW_SPHERE_REGIONS @ 0x0013_2d60: [fn(vis: eax) ret 0]; "docs/graphics/native-visibility.md";
+    /// The gather's setup: the view's fields of the visibility struct,
+    /// its frusta, start cluster and mode. Its one caller is the gather
+    /// `0x001320f0` (`0x00132129`).
+    VISIBILITY_SETUP @ 0x0013_2b80: [fn(flags: ecx, count: ebx, vis: stack 0, kind: stack 1, frusta: stack 2, start: stack 3, source: stack 4, centre: stack 5, radius: stack 6, clip: stack 7, clip_offset: stack 8) -> eax ret 36]; "docs/graphics/native-visibility.md";
+    /// The frusta mode's producer: per frustum the walk, the merge and the
+    /// region writer, then the ordinal sort. Called by the gather at
+    /// `0x0013216c`.
+    VIEW_FRUSTA_REGIONS @ 0x0017_3130: [fn(count: stack 0, view: stack 1, start: stack 2, output: stack 3) ret 16]; "docs/graphics/native-visibility.md";
     /// Build a view's projection terms from its render camera: ECX the
     /// camera, EDX the tangent extents or null, EAX the 0x40-byte output.
     /// Its one caller is `0x0002fd90`.

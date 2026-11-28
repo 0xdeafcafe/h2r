@@ -319,7 +319,12 @@ impl ByteArm {
     /// each differing field, and keep the first difference (`at` names the
     /// call). Returns the differing fields.
     pub fn compare(&mut self, proposal: &Proposal, m: &dyn GuestMemory, on: bool, at: impl FnOnce() -> String) -> Vec<&'static str> {
-        let differing = proposal.differing(m);
+        self.record(proposal.differing(m), on, at)
+    }
+
+    /// A compared call whose differing fields the caller found (a
+    /// proposal's bytes and any register the function returns).
+    pub fn record(&mut self, differing: Vec<&'static str>, on: bool, at: impl FnOnce() -> String) -> Vec<&'static str> {
         self.shadow.compared(differing.is_empty(), on);
         for &name in &differing {
             *self.differ.entry(name).or_default() += 1;

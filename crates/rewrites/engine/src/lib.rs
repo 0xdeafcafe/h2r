@@ -75,6 +75,7 @@ pub mod ui_backdrop;
 pub mod view_projection;
 pub mod light_frusta;
 pub mod view_records;
+pub mod visibility_setup;
 pub mod ui_model;
 pub mod ui_sprite;
 
