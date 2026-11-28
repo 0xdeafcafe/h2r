@@ -1,6 +1,4 @@
-//! `native-decals`: scope dynamic decal callbacks for the ordered
-//! `d3d::DrawAdmission` in boot. On with the native renderer
-//! (`impl.render.native`).
+//! `native-decals`: scope dynamic decal callbacks for the decals stage.
 //!
 //! The callback at `0x00044040` binds textures, marks duplicates and issues
 //! one array draw per visible record. That call resolves once for ordered

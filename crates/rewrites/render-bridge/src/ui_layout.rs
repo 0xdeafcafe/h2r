@@ -125,7 +125,7 @@ pub fn map_point(fit: Fit, p: [f32; 2]) -> [f32; 2] {
 /// mapped and rounded: the clip a fitted draw keeps its scissor in. An edge
 /// on the canvas boundary (0 or the 640x480 far side) of a shrunk axis stays
 /// on the display boundary, so a clip that is the whole canvas spans the
-/// whole display (the same rule as `d3d::backend::UiFit::map_rect`).
+/// whole display (the same rule as `gfx::external::UiFit::map_rect`).
 pub fn map_rect(fit: Fit, r: (u32, u32, u32, u32)) -> (u32, u32, u32, u32) {
     let axis = |a: usize, start: u32, len: u32| {
         let size = CANVAS[a] as u32;
