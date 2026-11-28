@@ -11,7 +11,7 @@ only a debugger trap runs the original.
 | C, D | straight walk and [crossing exits](#crossing-exits) replay their frame; the matcher path commits R, D's context, AL and PE |
 | E | an empty cluster replays its frame; a populated one commits the marks, the hit and AL |
 | G | the flood with no portal test replays its frame; a contested flood commits the list, the marks and both PE flags |
-| I | the walk runs in Rust; each terminal's callbacks are guest calls |
+| I | the walk and each terminal's callbacks run in Rust; a callback with no port panics by address |
 | J | commits the result, the flags argument and the mark state |
 
 The adapters live in
@@ -35,7 +35,7 @@ before committing. A decline writes nothing before the panic.
 | F | `0x300150` MOPP box query | `COLLISION_MOPP_BOX` | `ecx` box VM; stack: code, AABB, key array; `ret 0xc` | the VM's `+0`, `+0x10..+0x28`, `+0x30`; keys at `data[size..]` and `size` (below) |
 | G | `0x14a5b0` cluster flood | `COLLISION_CLUSTER_FLOOD` | stack: cluster (`i16`), centre, radius, capacity, out; `ret 0x14`; count in `ax` | the `u16` cluster list, the cluster marks |
 | H | `0xbb050` object spatial visit | `OBJECT_SPATIAL_VISIT` | stack: list bits, type mask, location, centre, radius, out, capacity; `ret 0x1c`; count in `ax` | the handle list, the epochs, active bytes and marks described below |
-| I | `0x301800` MOPP ray | `COLLISION_MOPP_RAY` | `ecx` ray VM; stack: collection, code, ray input, parent body, collector; `ret 0x14` | the VM; the callbacks are guest calls and write what they write |
+| I | `0x301800` MOPP ray | `COLLISION_MOPP_RAY` | `ecx` ray VM; stack: collection, code, ray input, parent body, collector; `ret 0x14` | the VM; what the ported callbacks write (the child shape, the collector's hit) |
 | J | `0x1697c0` whole query | `SIM_COLLISION_QUERY` | stack: flags, start, delta, ignore A, ignore B, result; `ret 0x18`; hit in `al` | result, flags argument, generations, active bytes and visit marks |
 
 The per-function point, sphere, BSP segment, whole query, ray, visit and
@@ -453,8 +453,9 @@ I's cases (`mopp_ray::check_cast`) run the setup and the interpreter
 lifted with invented callbacks answered by the run loop: the instanced
 collection method or another, a child ray method that lowers the
 collector's fraction for some keys, and a filter that rejects some. The
-same callbacks then answer `CollectorCast`'s guest calls on a copy of
-the fixture. Every callback's target, registers, arguments and temporary
+same callbacks then answer the calls `CollectorCast::next` describes on
+a copy of the fixture; the ported callbacks have unit tests of their own
+(`mopp_ray::callbacks::tests`). Every callback's target, registers, arguments and temporary
 body, the keys the collection got and every byte above the stack must
 match. Programs are random and hand-written over every opcode family,
 with rays on and across their thresholds, in single and double

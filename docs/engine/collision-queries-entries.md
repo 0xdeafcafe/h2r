@@ -164,13 +164,44 @@ by `sim_bridge::sim_native::mopp_ray`):
 2. Walk to the next terminal. Its stack address is the root
    interpreter's (entry ESP − 4, rounded down to 16, − 0x210) less 0x1c0
    per open interpreter level.
-3. Call the filter (input `+0x24`) when there is one, then, if its byte
-   accepts the key, the collection's child method, then the child's ray
-   method with the temporary body at terminal `+0x60`, each a guest call
-   made with ESP below that terminal's frame. Reload the VM's fraction
-   from the collector and continue the walk.
+3. Run the filter (input `+0x24`) when there is one, then, if its byte
+   accepts the key, the collection's child method into the buffer at
+   terminal `+0xa0`, then the child's ray method with the temporary body
+   at terminal `+0x60`. Each runs in Rust
+   (`engine::sim_collision::mopp_ray::callbacks`), chosen by the address
+   its vtable slot holds (table below). Reload the VM's fraction from the
+   collector and continue the walk.
 4. When the walk ends, return with `ret 0x14` and the caller's EBX, ESI,
    EDI, EBP.
+
+No callback runs in the guest. A slot that resolves anywhere else is
+`unimplemented!("collision: mopp_ray: <slot> <address>")`. The targets
+(**E**, `h2 disasm` and the XBE's vtables):
+
+| Slot | Address | Object | Port |
+|---|---|---|---|
+| filter `vt[0]` | `0x2df8f0` | the group filter's ray interface (filter `+0x10`, vtables `0x41258c`, `0x4555d8`) | bit `info & 31` of row `[ray input +0x20] & 31` at `+0x0c`; the info is the collection's `vt[+0x38]`, `0x11ca70`, always 0 |
+| collection `vt[+0x34]` | `0x1ef950` | the level (`0x4560f8`, tree `0x456160`) | key filter `0x1ef3e0` (types 1 to 5); a rejected key gets the empty shape `0x456134`; type 1 the surface polygon (`0x1edd00`, flag 1, owner -1, tail the key) |
+| | `0x1ee4d0` | an object BSP (`0x456194`, tree `0x455f58`) | the surface polygon, owner `+0x30` |
+| | `0x244bb0` | instanced geometry (`0x459e0c`, entry E's tree) | the shape `0x459de4` naming `+0x0c` and the key |
+| child `vt[+0x24]` | `0x2df110` | the polygon `0x4560b8` | `vt[+0x20]` `0x1edf50` casts at the collector's fraction; a hit's normal is turned by `[body+8] + 0x20` |
+| | `0x2dae30` | the empty shape | returns |
+| | `0x244be0` | an instance key's shape | a hit at fraction one to the collector |
+| collector `vt[0]` | `0x1829b0` | Halo's phantom ray collector (`0x453b88`, from `0x182800`) | keeps a facing hit below one and its result's fraction, not on the ignored object |
+
+The polygon cast `0x1edf50` takes the plane from the first three
+vertices, `(v1 - v0) x (v2 - v0)`, normalised unless its x87 length is
+below `[0x45dbdc]`; a ray parallel to it has fraction 0. The fraction must
+be below the hit's and in `[0, 1]`, and the hit point, projected by the
+normal's major axis and sign (`0x440b94`), inside the ring (`0x23a220`,
+no edge with the point on its right). Its projected ring sits 0x40 below
+its entry ESP, so a ring past eight vertices declines (`data`).
+
+Not ported, each named when reached: the level's key types 2 (an
+instance's transform shape, whose ray `0x2deb20` nests I again through the
+welding wrapper `0x2fc0a0`), 5 (`0x1ee500`) and the rest (`0x1ef070`);
+entry E's instance collector `0x244c10`, reached when E's native trace
+declines; any other convex cast or collector.
 
 A callback can change the bytecode, the VM's endpoints or the walk's
 constants; the next step then declines `data`. Queries nest (a child

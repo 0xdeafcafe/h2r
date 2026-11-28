@@ -5,9 +5,9 @@ state-exact exits in C, D, E, G and H. C and D's crossing exits answer
 after a clean shadow run ([Crossing exits](collision-queries.md#crossing-exits)).
 Other vector and spatial paths run their kernels alongside the lifted result. The instance and model rays
 feed the whole-query planner, which also supplies `collision.trace`.
-Entry I compares the general Havok ray against the guest VM and callback
-stream. Full promotion requires matching register, memory and callback
-effects on the verification ladder. [Entry contracts](collision-queries.md) ·
+Entry I runs the general Havok ray and its callbacks in Rust, with no
+guest call ([collision-queries-entries.md](collision-queries-entries.md),
+"Entry I"). [Entry contracts](collision-queries.md) ·
 [Umbrella plan](sim-rewrite.md)
 
 Sources: the Waterworks profile in [sim-budget.md](../perf/sim-budget.md)
@@ -83,8 +83,8 @@ Two facts from the stacks shape the order of work:
 - `3009e0` is reached two ways. 437 samples have `244980` on the stack (the
   per-cluster instanced-geometry trace under `1697c0`). `2df720` appears in
   723, so at least 286 come from Havok's own ray casts through the same
-  shape method. The first path closes completely in Rust. The second calls
-  guest shape code at every terminal.
+  shape method. Both close in Rust: entry I runs each terminal's shape
+  callbacks natively.
 - `1de630` has two large callers: `1697c0` (265 samples) and the sound
   listener path `221e30` (254). `14a280` is called mostly through `11bed0`
   (277 of 463). Taking over the small entries first pays for sound, camera
@@ -518,11 +518,9 @@ impl<B: AsRef<[u8]>> RayWalk<B> {
 
 The caller handles a terminal and passes the updated fraction to the next
 call. Entry E drives it with the native instance test. Entry I runs the
-walk natively and makes the filter and child-shape calls as guest calls
-that resume in Rust (`CollectorCast`, collision-queries.md, "Entry I"). Its native answer, an `async` adapter
-that awaits the guest filter and child-shape calls (feature-engine.md,
-"Calling code that is still recompiled"), follows once the arm shows no
-mismatch on a running match.
+walk and the filter, child and child-ray callbacks in Rust
+(`CollectorCast::run`, `mopp_ray::callbacks`; collision-queries-entries.md,
+"Entry I"), dispatched on the address each vtable slot holds.
 
 **Ray VM at entry I** (E, `0x002df74d`, `0x00301800`). The tree shape's
 slot `+0x24` (`0x002df720`) constructs a VM on its stack and passes the
@@ -937,7 +935,7 @@ theater or film.
    target ≥ 0.8 ms/tick removed.
 3. Ten entries have native query kernels (`14a280`, `11bed0`, `1de630`, `1de6d0`,
    `244980`, `300150`, `14a5b0`, `bb050`, `301800`, `1697c0`), each as one
-   Rust call with no guest calls except the general MOPP ray.
+   Rust call with no guest calls.
 4. Kernels compute first and commit after; anything inexact returns `Bail`
    and the lifted body runs, so exactness never depends on a hard case.
 5. Exactness comes from retail operation order, a host float-flag checked
