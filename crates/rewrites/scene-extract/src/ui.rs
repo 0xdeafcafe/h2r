@@ -743,6 +743,11 @@ fn refused(e: OverlayError) -> String {
     format!("the overlay refused it: {e:?}")
 }
 
+/// `b` as one quad of `overlay`, at its own rectangle.
+pub fn push_bitmap(overlay: &mut Overlay, b: &UiBitmap) -> Result<u32, OverlayError> {
+    bitmap(overlay, b, b.rect, 1.0)
+}
+
 fn bitmap(
     overlay: &mut Overlay,
     b: &UiBitmap,

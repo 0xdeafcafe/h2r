@@ -59,12 +59,13 @@ At the sorted virtual draw call `0x00235445`, the hook reads the ordinal, list r
 | Menu fade rectangles, cinematic bars and split-screen dividers | The completed quad copy at the `0x0004b252` uploader with return address `0x00052ce7`. The callback, mode, topology and copy length must agree | The copy callback and inline packet publication. The common uploader's caller runs its original state tail |
 | Loading spinners and background/sweep bitmaps | The spinner's two sets of completed UVs at `0x0002a1f4`. The bitmap at `0x0002ae60` supplies its two rectangles and UV divisors and Rust evaluates the multiplications with the live MXCSR | The immediate-mode submission of each fan. The loading animation, clears, target binds and presentation remain in guest order |
 | Motion sensor wash, tint, and composite | The wash uses the live tint and sample spread at `0x00254b95`. The tint at `0x00254e28` reads the loaded executable's immediate operands. The composite at `0x00255083` reads the selected centre and half extent | Each fan's geometry builder through End. Material and target changes keep their original order |
-| Debug/widget outlines | Five signed-short points and the converted colour at `0x0001ed98`, with the caller and the open line-strip Begin verified | The packed colour and vertex loop. The guest End closes the empty stream and restores line state |
+| Debug/widget outlines | `0x00235d69` is implemented in Rust (`native_hud::screen_draw`): the four corners projected about the view's centre (`0x002360c3`), the colour packed as `0x00131e50` packs it, five points | The whole function: begin `0x0001eb00`, the vertex loop `0x0001ed70`, state commit `0x0001ee60` and End. The strip is four one-pixel fills in the overlay |
+| Rectangle fill | `0x0013c050` is implemented in Rust (`native_hud::screen_draw`): the dim under a dialog (`0x00147cdb`) and the meters' rectangle, one quad of the rasterizer bitmap's second image | The whole function and its `0x00052040` draw |
 | Host-drawn widgets | At the sorted call, the host is asked whether it draws the validated widget itself (`native_hud::Host::replace_widget`). The Skulls page's model picture is the one such widget: the noted picture widget, its block and its alpha at `+0x64` ([skulls.md](../game/skulls.md#the-model-picture)) | The entire virtual draw, resuming at `0x00235448`. The host's pass is queued at that point in the walk (`Device::external_pass_now`) |
 
 Model widgets are the overlay's ([native-menus-overlay.md](native-menus-overlay.md#model-views)): the game's draw of one never runs, and one the sorted list does not take stops by name. At its item call the view is read (`ui_overlay::model::view`) and handed to the host (`Host::model_view`).
 
-The menu backdrop reserves each fan independently, and the outline keeps the guest's rectangle transformation and state setup.
+The menu backdrop reserves each fan independently.
 
 Uncovered HUD and widget helpers still build their draw packets. The scoped recorder can consume these packets with the resolved D3D draw available as ordered fallback. The host debug menu is drawn by the host over the presented frame ([debug-menu.md](../runtime/debug-menu.md)).
 
@@ -78,7 +79,7 @@ Uncovered HUD and widget helpers still build their draw packets. The scoped reco
 | `builds_skipped`, `walk_suppressed` | early geometry submissions skipped |
 | `fallback_*` | geometry, order, target, state, shader, texture, upload and reservation reasons; a preparation refusal may accompany a failed early reservation |
 | `guest_builder_draw` | draws that still arrive as guest packets |
-| `backdrop_fallback_*`, `outline_fallback_*` | a missing entry, incompatible inputs and failed reservations |
+| `backdrop_fallback_*` | a missing entry, incompatible inputs and failed reservations |
 | `scene_kept_overlay_<kind>_<cause>` (`render.scene`) | HUD items the overlay leaves to the guest's draw or packet, by kind and cause ([retire-d3d.md](retire-d3d.md#r6s-remainder)) |
 | `scene_kept_ui_<kind>_<cause>` (`render.scene`) | menu-frame draws the overlay leaves to the guest's draw or packet, by kind and cause ([retire-d3d-menus.md](retire-d3d-menus.md#what-is-kept)) |
 | `native_ui_overlay_*` | the typed overlay stage, which draws from the scene and not from these producers ([retire-d3d.md](retire-d3d.md#what-replaces-each-subsystem)); `render.stats` reports them |

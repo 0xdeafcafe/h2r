@@ -229,24 +229,11 @@ Stages 3 to 5 do the same for `t2` and `t3`; stages 6 and 7 and the final combin
 
 ### How the overlay takes it
 
-`render_bridge::native_hud::modal_blur` observes the blur's entry when its return is `0x00235794`, reads the ten words and computes the draws and the combiner as the guest will (`read`). The overlay's `Blur` item carries the steps' spreads, the tap and the combiner's constant over 255 (`OverlayBlur::pick`, 0 for the plain form).
+`render_bridge::native_hud::modal_blur` implements `0x00235756` (`points::UI_MODAL_BLUR`): the guest's wrapper and the Kawase blur `0x000211a0` under it (its combiner `0x00020f30`, the block `0x0001ccf0`, the quad draws `0x00034a90` and `0x00034420`, the copy `0x000351a0`) never run. `wrapper` takes the fraction from XMM0, multiplies it by `[0x0045de14]` and builds the ten words the wrapper pushes (scale and growth 1.0, dest 1, other -1, last 0, combine 1, 0, the strength `[0x0045dc20]`, `y` 0.0), then computes the draws and the combiner as the guest would. The overlay's `Blur` item carries the steps' spreads, the tap and the combiner's constant over 255 (`OverlayBlur::pick`, 0 for the plain form).
 
-The host arms the device (`Host::modal_blur`, `game::modal_blur_glue`). The game's code runs whole, so its target binds, texture stage writes, combiner block and dirty bits are its own. The device holds back its quads, the copy's included (`Device::swallow`: slot 0 the target bound at the call, the UI's, slot 1 target 1).
+The host places the pass (`Host::modal_blur`, `game::modal_blur_glue`): slot 0 is the target bound at the call, the UI's, slot 1 target 1. `OverlayGpu` draws the blur into target 0: the copy, the steps in scratch targets, the result written back into every channel. The item joins `FrameScene::overlay`. The renderer reuses the scratch pair for each of the two most recent target sizes and formats.
 
-At the wrapper's return (`Host::finish_modal_blur`) the quads are checked: unblended, every channel written, each sampling the target the plan names, whole, with targets 0 and 1 the same size. The overlay's blur is then drawn into target 0 by `OverlayGpu` in their place: the copy, the steps in scratch targets, the result written back into every channel.
-
-The renderer reuses the scratch pair for each of the two most recent target sizes and formats, so the guest and display copies can alternate each frame. The item joins `FrameScene::overlay`. A quad off the plan, a check that fails or a pass that does not record gives the game's quads back in order (`overlay_modal_blur_replayed`).
-
-### Counters
-
-`render.stats` counts the blurs drawn (`overlay_modal_blurs`), those given back, those the host did not arm (`overlay_modal_blur_refused_pass`: the UI scope's order did not hold) and those not read, by reason:
-
-| Counter | Reason |
-|---|---|
-| `overlay_modal_blur_refused_arguments` | a word not the one the wrapper pushes |
-| `overlay_modal_blur_refused_steps` | past `engine::glow::MAX_BLUR_STEPS` |
-| `overlay_modal_blur_refused_combiner` | the `y` form or another stage count |
-| `overlay_modal_blur_refused_targets` | a draw outside targets 0 and 1 |
+A call the plan cannot take stops by name (`dialog blur: <reason>`): a word not the one the wrapper pushes (`Arguments`), steps past `engine::glow::MAX_BLUR_STEPS` (`Steps`), the `y` form or another stage count (`Combiner`), a draw outside targets 0 and 1 (`Targets`), or a pass the device does not take.
 
 ## Related
 

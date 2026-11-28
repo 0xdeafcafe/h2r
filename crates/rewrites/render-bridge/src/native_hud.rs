@@ -11,7 +11,7 @@ pub mod hud_inputs;
 pub mod hud_overlay;
 pub mod kept;
 pub mod modal_blur;
-mod outline;
+mod screen_draw;
 pub mod sensor;
 pub mod strings;
 mod ui;
@@ -32,7 +32,6 @@ use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 pub const ID: &str = "native-hud";
 
 pub use hud_overlay::HudTagQuad;
-pub use outline::{PUSH_BYTES as OUTLINE_PUSH_BYTES, Vertices as OutlineVertices};
 pub use ui::UiScope;
 pub use ui_overlay::MenuRefusal;
 pub use walk::{WalkQuad, WalkText, WalkWidget};
@@ -261,10 +260,6 @@ pub trait Host: Send + Sync {
         _mem: &mut dyn GuestMemory,
         _vertices: &engine::ui_backdrop::Fan<2>,
     ) -> bool {
-        false
-    }
-
-    fn outline(&self, _mem: &mut dyn GuestMemory, _vertices: &OutlineVertices) -> bool {
         false
     }
 
