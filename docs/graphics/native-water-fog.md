@@ -205,7 +205,7 @@ sequenceDiagram
   Note over T: an ocean to draw: its steps (water_end::ocean)
 ```
 
-The water end after it is Rust (`render_bridge::water_end`, [retire-d3d-display.md](retire-d3d-display.md#the-water-end)). Its gates return with no work; the ocean is `water_end::ocean`: its alpha clear `0x0003c515` through `native_targets::cut_clear` and its indexed quads drawn natively (`frame_scene::late::WaterComposite`, `scene_step::water_composite`, `world_layers_gpu::IndexedPass::water_quads`), its gates, stream commit and texture stamps Rust, its grid, copies and shader begin guest calls. A step it cannot make panics, `water ocean: <cause>`.
+The water end after it is Rust (`render_bridge::water_end`, [retire-d3d-display.md](retire-d3d-display.md#the-water-end)). Its gates return with no work; the ocean is `water_end::ocean`: its alpha clear `0x0003c515` through `native_targets::cut_clear` and its indexed quads drawn natively (`frame_scene::late::WaterComposite`, `scene_step::water_composite`, `world_layers_gpu::IndexedPass::water_quads`), its grid, gates, first copy, stream commit and texture stamps Rust, its shader begin a guest call, its sky pass into target `0x15` not made. A step it cannot make panics, `water ocean: <cause>`.
 
 **Layer-6 counters.** `scene_water_views`, `scene_water_drawn`, `scene_water_parts` and `native_water_walk_*` count only layer 6 and its composite, which Old Mombasa and Zanzibar use. They stay zero on Delta Towers, which has no layer-6 edge materials. Its `tower_pool` surfaces are drawn by the sorted pool pass (above), counted under `layer_plan_15_pool_*`. Its bay's open water is the BSP water definition's ocean grid (`water_ocean`), which the water end's ocean draws (`water_end::ocean`). That grid is attached to the camera; its width in a wide window is in [high-resolution.md](high-resolution.md#widescreen-projection).
 
@@ -258,7 +258,6 @@ Every layer goes through the layer begin `0x00044370`, the layer draw `0x0004455
 
 - The meaning of the render record's `+0` bits 7 and 8 and of `[0x004ba004]` (only their use in layer 16's build is read), the fog implementations 0 and 1 (views with a fog byte set stay on D3D), and that no draw between a layer's setup and the native passes changes the cull (read from the layer draw's order, not a captured trace).
 - Pixel parity of fog and the water edge blend against D3D, including the alpha channel the teardown clears.
-- The full effects of the setup `0x00025e50` that `0x00025d50` submits in view modes 1, 4 and 5 (`0x00026520`, modes 2 and 3, is read in [retire-d3d-fog-quad.md](retire-d3d-fog-quad.md)).
 - Pixel parity of layers 18, 19 and 21 against D3D (19 drawn into render target 3). The view copy is made once before the layer, so a later item reads the target as it was before the earlier items drew, where the D3D path samples the target it draws into. That the camouflage and hologram shaders' engine inputs are ones the object path supplies (their refusals are logged at load).
 - What `0x00015680` sets from the layer descriptor's `+0x18` (read from the device at the call, not from the descriptor).
 

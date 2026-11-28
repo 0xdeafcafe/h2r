@@ -16,15 +16,16 @@
 //! | not drawn | the first argument's byte 0 |
 //!
 //! Past them is the ocean (`0x0003c3ff..0x0003c632`), [`ocean`]'s steps:
-//! Rust makes the gates (the occlusion query over the native flare
-//! query's count pass, [`ocean::gate`]; the texture block's residency,
-//! [`ocean::cache`]), the shader lookup, the alpha clear `0x0003c515`, the
-//! draw state and stream commit but for the shader begin
-//! ([`ocean::state`]), the indexed quads natively and the texture stamps,
-//! and calls the body's other helpers (the grid, the copies into targets
-//! `0x16` and `0x15`, the shader begin) as guest calls, then returns as
-//! the body does. A step it cannot make is `unimplemented!("water ocean:
-//! <cause>")`; a gate word that does not read is `water end: unread`.
+//! Rust makes the grid (`engine::ocean_grid`), the gates (the occlusion
+//! query over the native flare query's count pass, [`ocean::gate`]; the
+//! texture block's residency, [`ocean::cache`]), the shader lookup, the
+//! copy `0x0003bea0` into target `0x16`, the alpha clear `0x0003c515`, the
+//! draw state and stream commit ([`ocean::state`]), the indexed quads
+//! natively and the texture stamps, and calls the shader begin as a guest
+//! call, then returns as the body does. The sky pass into target `0x15`
+//! is not made. A step it cannot make is `unimplemented!("water ocean:
+//! <cause>")`, or `water ocean copy: <cause>` for the copies; a gate word
+//! that does not read is `water end: unread`.
 
 use std::sync::Arc;
 
@@ -110,7 +111,10 @@ pub fn water_end(mem: &dyn GuestMemory, draw: u8, clear: u8) -> Call {
 /// An ocean step the native renderer cannot make: no guest body runs
 /// instead.
 pub fn ocean_unported(cause: &str) -> ! {
-    unimplemented!("water ocean: {cause}")
+    match cause.strip_prefix("copy_") {
+        Some(copy) => unimplemented!("water ocean copy: {copy}"),
+        None => unimplemented!("water ocean: {cause}"),
+    }
 }
 
 pub static WATER_END: crate::native_targets::Arm = crate::native_targets::Arm::new("water_end");
@@ -133,6 +137,8 @@ const BODY: u32 = 0x80;
 struct Live {
     host: Arc<dyn crate::native_targets::Host>,
     scratch: u32,
+    mxcsr: u32,
+    x87_control: u16,
 }
 
 impl ocean::Device for Live {
@@ -151,6 +157,10 @@ impl ocean::Device for Live {
 
     fn visible(&mut self, mem: &mut dyn GuestMemory, definition: u32) -> Result<bool, ocean::Cause> {
         crate::native_flare_query::with_host(|host, state| ocean::gate::visible(mem, host, state, definition)).unwrap_or(Err("flare_host"))
+    }
+
+    fn fp(&mut self) -> (&mut u32, u16) {
+        (&mut self.mxcsr, self.x87_control)
     }
 }
 
@@ -173,8 +183,9 @@ fn drive(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, mut ocean: ocean
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
     let host = crate::native_targets::host().unwrap_or_else(|| ocean_unported("host"));
-    let mut device = Live { host, scratch: frame.esp.wrapping_sub(SCRATCH) };
+    let mut device = Live { host, scratch: frame.esp.wrapping_sub(SCRATCH), mxcsr: cpu.mxcsr, x87_control: cpu.x87.control };
     let next = ocean.next(&mut *mem, &mut device, regs(cpu)).unwrap_or_else(|cause| ocean_unported(cause));
+    cpu.mxcsr = device.mxcsr;
     match next {
         ocean::Next::Call(call) => {
             let r = call.regs;
@@ -280,6 +291,12 @@ mod tests {
     #[should_panic(expected = "water ocean: shader_group")]
     fn an_unported_ocean_step_is_named() {
         ocean_unported("shader_group");
+    }
+
+    #[test]
+    #[should_panic(expected = "water ocean copy: pass")]
+    fn an_unported_copy_is_named() {
+        ocean_unported("copy_pass");
     }
 
     #[test]

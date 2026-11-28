@@ -205,7 +205,7 @@ identified in [notes/residual-callers.md](notes/residual-callers.md)
 | `0x4ebd0` | decorator types 1 and 2 (decals) in the transparent layers | the decal-decorator stage: each body's `DrawVertices` drawn natively at the call, in sorted order; once a frame proves it, a call the last body's template stands for returns (`ret 0x1c`) and draws the template with its own vertices; the rest count `scene_kept_decal_decorator_<cause>` ([retire-d3d-decal-decorators.md](retire-d3d-decal-decorators.md)) |
 | `0x4c690` | the sky model renderer's strips | the sky stage and its cut ([retire-d3d-r5.md](retire-d3d-r5.md), "The sky's cut"). A strip draws with its own stencil state, the test off on a target with no stencil |
 | `0x25dc0` | the second fog's screen fans (`0x00034420` with `0x00026880`, `0x00026e50` or `0x000276d0`) | `unimplemented!("fog fans: <cause>")` when one would draw ([retire-d3d-fog-fans.md](retire-d3d-fog-fans.md)) |
-| `0x25d50` | the planar fog's screen quad (`0x00034420` with `0x00026520` or `0x00025e50`) | modes 2 and 3: the quad drawn natively and the setup returned with no fan ([retire-d3d-fog-quad.md](retire-d3d-fog-quad.md)); modes 1, 4 and 5 (`0x00025e50`, not read) are `unimplemented!("fog quad: other_setup")` |
+| `0x25d50` | the planar fog's screen quad (`0x00034420` with `0x00026520` or `0x00025e50`) | every mode: the quad drawn natively and the setup returned with no fan ([retire-d3d-fog-quad.md](retire-d3d-fog-quad.md)); the other setup's weather plate (`0x0003a5c0`, kind 1) is ported and its block drawn natively when it returns true |
 | `0x00224fd0` (site `0x225475`) | **S**: particles drawn as model parts, a callback of `0x00175610` | a particle-model stage. Not built |
 
 ## External pass refusals

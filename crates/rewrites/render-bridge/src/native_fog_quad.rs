@@ -12,20 +12,27 @@
 //! state the setup leaves, as that path leaves none. The setup's body
 //! never runs: a density not above 0 makes the gate's write in Rust too.
 //!
-//! What the cut cannot draw is `unimplemented!("fog quad: <cause>")`: no
-//! host, a pass the device does not place (`placed`), a fan that is not
-//! one quad (`fan_shape`, `fan_unfinite`), an operand the SSE or x87
-//! model refuses (`simd`, `x87`), an unreadable input (`unread`), a quad
-//! placed but not recorded ([`unported`]), and the fan of the setup
-//! `0x00025e50` (modes 1, 4 and 5, `other_setup`), which has no native
-//! stage.
+//! The setup of view modes 1, 4 and 5, `0x00025e50`, is cut the same way
+//! at its own entry ([`turn_other`]): its texture-shader fog
+//! (`engine::planar_fog::other`) drawn by [`Host::draw_other`]
+//! (`native_render::fog_quad::FogOtherDraw`), the depth word written, AL
+//! 0, so its fan draws nothing. With `[0x0048578c]` 0 it asks the weather
+//! plate `0x0003a5c0` first (`engine::fog_fans::weather_plate_placement`,
+//! kind 1); when that returns true the strip draws the plate's block
+//! (`FogOtherDraw::plate`) and the depth word is the plate's.
+//!
+//! What the cuts cannot draw is `unimplemented!("fog quad: <cause>")`: no
+//! host, a pass the device does not place (`placed`, `other_placed`), a
+//! fan that is not one quad (`fan_shape`, `fan_unfinite`), an operand the
+//! SSE or x87 model refuses (`simd`, `x87`), an unreadable input
+//! (`unread`), and a quad placed but not recorded ([`unported`]).
 
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
-use engine::planar_fog::{self as pf, FogQuad, Setup};
+use engine::planar_fog::{self as pf, FogQuad};
 use hooks::{BuildError, Builder, Feature, Manifest};
-pub use native_render::fog_quad::FogQuadDraw;
+pub use native_render::fog_quad::{FogOtherDraw, FogQuadDraw};
 
 pub const ID: &str = "native-fog-quad";
 
@@ -34,6 +41,8 @@ pub trait Host: Send + Sync {
     /// Places `draw` at this point in the frame. `false`: not placed,
     /// nothing recorded.
     fn draw(&self, mem: &mut dyn GuestMemory, draw: &FogQuadDraw) -> bool;
+    /// Places the other setup's `draw` likewise.
+    fn draw_other(&self, mem: &mut dyn GuestMemory, draw: &FogOtherDraw) -> bool;
 }
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
@@ -113,13 +122,36 @@ pub fn turn(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: u16, h
     Turn::Return
 }
 
-/// `0x00025d50`'s entry: the setup `0x00025e50` of modes 1, 4 and 5 has
-/// no native stage.
+/// The other setup's call at `esp` (`0x00025e50`, view modes 1, 4 and 5),
+/// as [`turn`] is the planar quad's.
+pub fn turn_other(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: u16, host: Option<&dyn Host>) -> Turn {
+    let Some(rect_at) = quad_call(&*mem, esp) else {
+        return Turn::Guest;
+    };
+    // The plate writes its own depth word when it returns true.
+    let (quad, plate) = match pf::other(mem, mxcsr, x87_control, rect_at).unwrap_or_else(|e| unported(cause(e))) {
+        pf::Other::Plate(q) => (q, true),
+        pf::Other::Quad(q) => (q, false),
+    };
+    let host = host.unwrap_or_else(|| unported("host"));
+    let positions = quad.positions.map(|p| p.map(f32::from_bits));
+    let coordinates = quad.coordinates.map(|v| v.map(|c| c.map(f32::from_bits)));
+    let draw = FogOtherDraw::from_fan(quad.combiner, positions, coordinates, quad.depth_test)
+        .map(|d| FogOtherDraw { plate, ..d })
+        .unwrap_or_else(|shape| unported(shape.cause()));
+    if !host.draw_other(mem, &draw) {
+        unported("other_placed");
+    }
+    if !plate && pf::gate_writes(mem).is_err() {
+        unported("depth_write");
+    }
+    Turn::Return
+}
+
+/// `0x00025d50`'s entry: its branch must read.
 pub fn before_fog(mem: &dyn GuestMemory) {
-    match pf::setup(mem) {
-        Ok(Setup::Other) => unimplemented!("fog quad: other_setup (0x00025e50, view modes 1, 4, 5)"),
-        Ok(_) => {}
-        Err(_) => unimplemented!("fog quad: unread_setup"),
+    if pf::setup(mem).is_err() {
+        unimplemented!("fog quad: unread_setup");
     }
 }
 
@@ -131,8 +163,18 @@ fn original(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) ->
     Ok(runtime::TransferAbi::fault(event))
 }
 
+type TurnFn = fn(&mut dyn GuestMemory, u32, u32, u16, Option<&dyn Host>) -> Turn;
+
 fn setup_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    if addr != engine::points::PLANAR_FOG_SETUP.base {
+    cut(cpu, ctx, addr, engine::points::PLANAR_FOG_SETUP.base, turn)
+}
+
+fn other_setup_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    cut(cpu, ctx, addr, engine::points::PLANAR_FOG_OTHER_SETUP.base, turn_other)
+}
+
+fn cut(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32, base: u32, turn: TurnFn) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    if addr != base {
         return original(cpu, ctx, addr);
     }
     let rt = Arc::clone(ctx.runtime());
@@ -166,6 +208,7 @@ impl Feature for NativeFogQuad {
             .observe_before(&engine::points::PLANAR_FOG, "native_fog_quad_branch", |o| before_fog(&*o.guest()))
             .context_only();
         b.raw().implement(&engine::points::PLANAR_FOG_SETUP, "native_fog_quad", setup_call).context_only();
+        b.raw().implement(&engine::points::PLANAR_FOG_OTHER_SETUP, "native_fog_quad_other", other_setup_call).context_only();
         Ok(())
     }
 }
@@ -204,11 +247,15 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct Draws(Mutex<Vec<FogQuadDraw>>, bool);
+    struct Draws(Mutex<Vec<FogQuadDraw>>, bool, Mutex<Vec<FogOtherDraw>>);
 
     impl Host for Draws {
         fn draw(&self, _: &mut dyn GuestMemory, draw: &FogQuadDraw) -> bool {
             self.0.lock().unwrap().push(draw.clone());
+            !self.1
+        }
+        fn draw_other(&self, _: &mut dyn GuestMemory, draw: &FogOtherDraw) -> bool {
+            self.2.lock().unwrap().push(draw.clone());
             !self.1
         }
     }
@@ -264,7 +311,7 @@ mod tests {
     #[should_panic(expected = "fog quad: placed")]
     fn a_pass_the_device_does_not_place_panics() {
         let mut m = mem();
-        let refusing = Draws(Mutex::new(Vec::new()), true);
+        let refusing = Draws(Mutex::new(Vec::new()), true, Mutex::new(Vec::new()));
         turn(&mut m, ESP, MXCSR, CONTROL, Some(&refusing));
     }
 
@@ -275,18 +322,72 @@ mod tests {
         turn(&mut m, ESP, MXCSR, CONTROL, None);
     }
 
-    #[test]
-    #[should_panic(expected = "fog quad: other_setup")]
-    fn the_other_setup_panics() {
+    /// The other setup's call, its plate word set.
+    fn other_mem() -> FlatMemory {
         let mut m = mem();
-        m.set_u32(global::MODE, 4).unwrap();
-        before_fog(&m);
+        m.set_f32(engine::planar_fog::other::PLATE, 0.5).unwrap();
+        m.set_f32(engine::planar_fog::other::TINY, 0.0001).unwrap();
+        m
     }
 
     #[test]
-    fn modes_2_and_3_pass_the_branch() {
+    fn the_other_setup_is_cut_and_draws_its_strip() {
+        let mut m = other_mem();
+        let host = Draws::default();
+        let before = m.bytes(0x0040_0000, 0x0012_0000).unwrap();
+        assert_eq!(turn_other(&mut m, ESP, MXCSR, CONTROL, Some(&host)), Turn::Return);
+        let after = m.bytes(0x0040_0000, 0x0012_0000).unwrap();
+        let drawn = host.2.lock().unwrap().clone();
+        assert_eq!(drawn.len(), 1);
+        assert!(drawn[0].depth_test);
+        assert_eq!(drawn[0].strip[3].0, [640.0, 480.0]);
+        assert_eq!(drawn[0].combiner[54], 0x2621);
+        let changed: Vec<u32> = (0..before.len()).filter(|&i| before[i] != after[i]).map(|i| 0x0040_0000 + i as u32).collect();
+        assert!(changed.iter().all(|&a| (global::DEPTH..global::DEPTH + 4).contains(&a)));
+    }
+
+    #[test]
+    fn the_other_setups_plate_draws_its_block_at_its_depth() {
+        use engine::fog_fans::plate_global as p;
+        use engine::planar_fog::other as o;
+        let mut m = other_mem();
+        for (a, v) in [
+            (o::PLATE, 0.0),
+            (o::NEAR_START, 0.25),
+            (o::NEAR_END, 0.75),
+            (o::DEPTH_SCALE, 1.0),
+            (p::CAP_KIND1, 128.0),
+            (p::RESCALE, 256.0),
+            (p::FIXED, 65536.0),
+            (p::UNFIXED, 1.0 / 65536.0),
+            (p::HALF, 0.5),
+            (p::LIMIT, 0.1),
+            (p::KIND1_DIV, 2.0),
+        ] {
+            m.set_f32(a, v).unwrap();
+        }
+        let host = Draws::default();
+        assert_eq!(turn_other(&mut m, ESP, MXCSR, CONTROL, Some(&host)), Turn::Return);
+        let drawn = host.2.lock().unwrap().clone();
+        assert_eq!(drawn.len(), 1);
+        assert!(drawn[0].plate && drawn[0].depth_test);
+        assert_eq!(drawn[0].combiner[54], 1);
+        // The plate's depth word, not the gate's clip far.
+        assert_eq!(m.u32(global::DEPTH).unwrap(), 0.25f32.to_bits());
+    }
+
+    #[test]
+    #[should_panic(expected = "fog quad: other_placed")]
+    fn an_other_pass_the_device_does_not_place_panics() {
+        let mut m = other_mem();
+        let refusing = Draws(Mutex::new(Vec::new()), true, Mutex::new(Vec::new()));
+        turn_other(&mut m, ESP, MXCSR, CONTROL, Some(&refusing));
+    }
+
+    #[test]
+    fn every_mode_passes_the_branch() {
         let mut m = mem();
-        for mode in [0, 2, 3] {
+        for mode in [0, 1, 2, 3, 4, 5] {
             m.set_u32(global::MODE, mode).unwrap();
             before_fog(&m);
         }

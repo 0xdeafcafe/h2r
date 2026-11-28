@@ -183,10 +183,14 @@ unwritten and writes only the record fields the guest writes.
 
 `engine::sim_anim::stream` reads everything first, then writes:
 
-1. MXCSR must be masked, round-to-nearest and PE-sticky
-   (`sim_core::det::fast_env`), and every float the call consumes must be
-   zero or of magnitude in `[2^-63, 2^63)`; then host binary32 results are
-   the guest's bits and MXCSR cannot change.
+1. The call runs under the guest's MXCSR (`sim_core::det::Fp::guest`):
+   an operation whose MXCSR passes `sim_core::det::fast_env` and whose
+   operands are zero or of magnitude in `[2^-63, 2^63)` takes the host
+   binary32 result, which is the guest's and changes no flag; every other
+   one (PE not yet sticky, a subnormal, a directed rounding) takes the
+   `simd` crate's SSE model, which rounds and raises flags as the
+   instruction would. A `cvttss2si` of a fraction raises PE. The body
+   writes the MXCSR back.
 2. Setup as above.
 3. The clip: `ClipStore` keyed by the sizes address, checked against the
    16 sizes bytes and the view's node count, built from the blob the
@@ -201,15 +205,17 @@ unwritten and writes only the record fields the guest writes.
 4. `sim_anim::sample` into a copy of the records, no guest access.
 5. Write back the touched fields; MMX effects on x87; `ret 0x28`.
 
-It declines, writing nothing, on: the float
-environment or an off-range operand; a guest read fault; no frames or a
+It declines, writing nothing, on: an SSE exception the MXCSR leaves
+unmasked (the guest's `#XM`); a guest read fault; no frames or a
 frame `cvttss2si` cannot take; a remap (kinds 1 and 2); mode 0 with
 direct-test entries (mode 4); a shape without a layout (negative sizes,
 over 16 MiB); records misaligned or overlapping the inputs, stack or
 scratch; an element node count above the view's; anything the kernel
-declines (unknown codec function, a key past the blob, the broken
-variants, a misaligned `movaps` key). `stream` returns the `Decline`
-and the hook panics with `anim stream: <reason>`; no guest runs the
+declines (`sim_anim::Refusal`: an unknown codec function, a key or value
+past the blob, a misaligned `movaps` key, the broken variants, each with
+its stream, channel, node and track). `stream` returns the `Decline` and
+the hook panics with `anim stream: <reason>`, the kernel's refusal
+spelled out; no guest runs the
 call. `engine::sim_anim::stats()` counts native and inactive calls.
 
 ## Deviations

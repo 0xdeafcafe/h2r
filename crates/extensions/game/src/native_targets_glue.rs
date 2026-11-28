@@ -151,6 +151,83 @@ impl<B: d3d::Backend + Send + 'static> Host for Targets<B> {
         drop(device);
         made.map_or_else(|e| self.refused("a viewport", e), |()| true)
     }
+
+    fn copy_view(&self, mem: &mut dyn GuestMemory, target: u32) -> bool {
+        let Some(header) = crate::native_shadows_glue::target_header(&*mem, target) else { return false };
+        let Ok(mut device) = self.device.lock() else { return false };
+        if !device.can_external_pass() {
+            return false;
+        }
+        let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
+        let plan = d3d::ExternalPlan {
+            stage: timeline::native::Stage::Water,
+            view,
+            ranges: 1,
+            slots: vec![Some(d3d::ExternalSlot { header, written: true })],
+        };
+        match device.prepare_external_pass(&mut DeviceMemory(mem), plan, Box::new(ViewCopy)) {
+            Ok(Some(reservation)) => {
+                reservation.commit();
+                true
+            }
+            Ok(None) => false,
+            Err(e) => self.refused("a view copy", e),
+        }
+    }
+
+    fn restore(&self, mem: &mut dyn GuestMemory, writes: &[render_bridge::open_shader::Write]) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        crate::native_layers_glue::restore_list(&mut device, mem, writes).is_ok()
+    }
+}
+
+/// The bound colour copied into the target of the plan's one slot, in
+/// order with the draws after it (`snapshot_gpu::Snapshots::into_target`):
+/// `0x0003bea0`'s copy of the water end's ocean
+/// (`render_bridge::water_end::ocean`, docs/graphics/retire-d3d-display.md,
+/// "The water end").
+struct ViewCopy;
+
+impl ViewCopy {
+    fn snapshot(
+        color: &wgpu::TextureView, slot: Option<&d3d::backend::ExternalColor>,
+    ) -> Result<native_render::snapshot_gpu::ViewSnapshot, &'static str> {
+        let slot = slot.ok_or("the refraction target unavailable")?;
+        if !color.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
+            return Err("the bound colour cannot be sampled for a snapshot");
+        }
+        Ok(native_render::snapshot_gpu::Snapshots::default().into_target(color, &slot.attachment, slot.format))
+    }
+}
+
+impl d3d::ExternalPass for ViewCopy {
+    fn diagnostic_name(&self) -> &'static str {
+        "water ocean view copy"
+    }
+
+    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
+        match Self::snapshot(t.color, t.slots.first().and_then(Option::as_ref)) {
+            Ok(copy) => {
+                copy.record(t.device, t.encoder);
+                1
+            }
+            Err(_) => 0,
+        }
+    }
+
+    fn record_encoded(
+        &mut self, t: &d3d::backend::ExternalAttachments, _request: d3d::ExternalPassRequest,
+    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+        Some(Self::snapshot(&t.color, t.slots.first().and_then(Option::as_ref)).map(|copy| {
+            let device = t.device.clone();
+            d3d::backend::ExternalEncoded {
+                ranges: 1,
+                draws: 1,
+                passes: 1,
+                commands: Box::new(move |encoder: &mut wgpu::CommandEncoder| copy.record(&device, encoder)),
+            }
+        }))
+    }
 }
 
 /// The frame tail's overlay, placed through the overlay's pass.

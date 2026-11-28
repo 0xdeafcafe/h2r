@@ -7,11 +7,12 @@
 //!
 //! | Step | Made |
 //! |---|---|
-//! | grid `0x0003ca90` | guest call |
+//! | grid `0x0003ca90` | Rust ([`engine::ocean_grid`]), its aspect widened to [`grid_lens`] |
 //! | gate `0x0003c270`, the ocean's occlusion query | [`Device::visible`]: Rust over the native flare query's count pass ([`gate`]) |
 //! | gate `0x0012de70`, the texture block's residency | Rust ([`cache::resident`]); a closed gate goes to the stamps |
 //! | the shader `[definition + 4]` to its implementation's flags `+0x118` | Rust ([`shader`]) |
-//! | copies `0x0003bea0` (bit 20), `0x00131ed0` then `0x0003bd00` (bit 19) | guest calls; their binds land on `Game(0x16)` and `Game(0x15)` through the device's role table |
+//! | copy `0x0003bea0` (bit 20) | Rust ([`first_copy`]): the frame's first call restores the open shader, copies the bound colour into `Game(0x16)` through [`Host::copy_view`](crate::native_targets::Host::copy_view) and sets the frame's flags |
+//! | pass `0x00131ed0`, `0x0003bd00` (bit 19) | not made: the sky drawn into `Game(0x15)`, `copy_pass` |
 //! | alpha clear `0x0003c515` | `native_targets::cut_clear(0x10, 0x00ffffff, 0, 0)` on the bound target |
 //! | vertex type `0x0001cbb0`, grid constants `0x000151c0`, stream `0x0001cda0` | Rust over [`Device::host`] ([`state`]) |
 //! | stream commit `0x0001c710` | Rust over [`Device::host`] ([`state::stream_commit`]) |
@@ -22,7 +23,9 @@
 //! | stamps `0x0003bcb0` | Rust per image ([`stamps`], [`cache::stamp`]) |
 //!
 //! What the stage cannot make is a cause, `unimplemented!("water ocean:
-//! <cause>")`: `unread`, `unwritable`, `shader_group` (a shader of group
+//! <cause>")`, or for the copies `unimplemented!("water ocean copy:
+//! <cause>")` (`copy_cache`, `copy_restore`, `copy_target`, `copy_pass`):
+//! `unread`, `unwritable`, `shader_group` (a shader of group
 //! `MTRP` or `3trp`, whose template is a virtual call), `host`, `clear`,
 //! `device` (a draw-state call refused), `vertex_kind`,
 //! `position_compression`, `structure` (the upload's float model
@@ -30,10 +33,18 @@
 //! refused), `flare_host`, `placed` (the gate's count pass not placed),
 //! `vertex_declaration`, `vertex_format` (a stream format the commit
 //! cannot build), `texture_cold` (a texture block to stream),
-//! `texture_request` (an image the texture cache must load).
+//! `texture_request` (an image the texture cache must load). The grid's
+//! are `unimplemented!("water ocean grid: <cause>")`: `unread`,
+//! `unwritable`, `simd` (an unmasked SSE exception), `x87` (an unmasked
+//! x87 exception or an operation the model stops on).
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use engine::light_constants::Error as FloatError;
 use engine::memory::{GuestMemory, MemFault};
+use engine::ocean_grid;
 
+use super::{BSP, WATER_COUNT};
 use crate::native_targets::Host;
 
 pub mod cache;
@@ -46,10 +57,6 @@ mod fake;
 pub type Cause = &'static str;
 
 /// The guest helpers the body calls.
-pub const GRID: u32 = 0x0003_ca90;
-pub const COPY_TARGET: u32 = 0x0003_bea0;
-pub const PASS_SOURCE: u32 = 0x0013_1ed0;
-pub const PASS_TARGET: u32 = 0x0003_bd00;
 pub const SHADER_BEGIN: u32 = 0x0001_bbf0;
 
 /// The tag table's pointer: entries of 16 bytes, the group at `+0`, the
@@ -63,8 +70,6 @@ pub const GROUP_3TRP: u32 = 0x7072_7433;
 pub const SHADER: u32 = 4;
 pub const GEOMETRY: u32 = 0xc;
 pub const TEXTURE_BLOCK: u32 = 0x10;
-pub const PASS_BLOCK: u32 = 0x58;
-pub const PASS_WORD: u32 = 0x84;
 /// The geometry's words: the state word, the quads' index count and list.
 pub const GEOMETRY_STATE: u32 = 0x3c;
 pub const QUAD_COUNT: u32 = 0x20;
@@ -72,6 +77,10 @@ pub const QUAD_INDICES: u32 = 0x24;
 /// The block `0x0001bd50` reads, zeroed first (30 words).
 pub const STATE_BLOCK: u32 = 0x004c_1a90;
 pub const STATE_BLOCK_WORDS: u32 = 0x1e;
+/// The frame's structure target copy flag (`0x0003bea0` sets it; the frame
+/// step clears it) and the game target the copy is made into.
+pub const TARGET_COPIED: u32 = 0x0050_9430;
+pub const COPY_INTO: u32 = 0x16;
 /// The implementation flags' copy bits.
 pub const COPY_BIT: u32 = 20;
 pub const PASS_BIT: u32 = 19;
@@ -117,6 +126,43 @@ pub trait Device {
     /// The gate `0x0003c270(definition)`: whether the ocean is seen
     /// ([`gate::visible`] over the native flare query).
     fn visible(&mut self, mem: &mut dyn GuestMemory, definition: u32) -> Result<bool, Cause>;
+    /// The caller's MXCSR, which the grid's sticky flags land in, and its
+    /// x87 control word.
+    fn fp(&mut self) -> (&mut u32, u16);
+    /// The displayed lens's factor the grid's aspect widens by.
+    fn lens(&self) -> f32 {
+        grid_lens()
+    }
+}
+
+/// The displayed lens's factor, as f32 bits: 1 (the retail grid) until
+/// render-aspect sets its view lens.
+static GRID_LENS: AtomicU32 = AtomicU32::new(0x3f80_0000);
+
+/// Sets the factor the grid's aspect widens by
+/// ([`ocean_grid::widen_aspect`]): render-aspect's view lens, the
+/// fitted guest camera's or the device's per-draw lens.
+pub fn set_grid_lens(factor: f32) {
+    GRID_LENS.store(factor.to_bits(), Ordering::Relaxed);
+}
+
+pub fn grid_lens() -> f32 {
+    f32::from_bits(GRID_LENS.load(Ordering::Relaxed))
+}
+
+/// The grid's cause.
+fn grid_cause(e: FloatError) -> Cause {
+    match e {
+        FloatError::Memory(MemFault { write: true, .. }) => "unwritable",
+        FloatError::Memory(_) => "unread",
+        FloatError::Simd => "simd",
+        FloatError::X87(_) => "x87",
+        _ => "other",
+    }
+}
+
+fn grid_unported(cause: Cause) -> ! {
+    unimplemented!("water ocean grid: {cause}")
 }
 
 /// The shader's words the body reads (`0x0003c439..0x0003c4d6`).
@@ -160,6 +206,34 @@ fn word(mem: &dyn GuestMemory, at: u32) -> Result<u32, Cause> {
 fn tag_data(mem: &dyn GuestMemory, index: u32) -> Result<u32, Cause> {
     let table = word(mem, TAGS)?;
     word(mem, table.wrapping_add((index & 0xffff) << 4).wrapping_add(8))
+}
+
+/// `0x0003bea0` (Code, `0x0003bea0..0x0003beff`): the frame's first call
+/// (the flag [`TARGET_COPIED`] clear) writes the cache's restore list and
+/// clears the cache (`0x00016b10`, `frame_step::layer::clear_cache`), with
+/// water in the BSP copies the bound colour into `Game(`[`COPY_INTO`]`)`
+/// (`0x000352e0(0x16, 1)`, then the view's target bound again), sets the
+/// flag and the draw byte and clears the cache again. Later calls return
+/// at once. `copy_cache`, `copy_restore` and `copy_target` are the refusals.
+fn first_copy(mem: &mut dyn GuestMemory, device: &dyn Device) -> Result<(), Cause> {
+    if mem.u8(TARGET_COPIED).map_err(unread)? != 0 {
+        return Ok(());
+    }
+    let host = device.host();
+    let open = crate::open_shader::read(&*mem).map_err(|_| "copy_cache")?;
+    if let Some(open) = &open {
+        if !host.restore(mem, &open.writes) {
+            return Err("copy_restore");
+        }
+    }
+    let bsp = word(mem, BSP)?;
+    if word(mem, bsp.wrapping_add(WATER_COUNT))? as i32 > 0 && !host.copy_view(mem, COPY_INTO) {
+        return Err("copy_target");
+    }
+    let unwritable = |_: MemFault| "unwritable";
+    mem.set_u8(TARGET_COPIED, 1).map_err(unwritable)?;
+    mem.set_u8(engine::render_loop::layer::DRAW_FLAG, 1).map_err(unwritable)?;
+    crate::frame_step::layer::clear_cache(mem).map_err(unwritable)
 }
 
 /// The lookup from the shader `index` to its implementation's flags
@@ -214,8 +288,6 @@ pub fn stamps(mem: &dyn GuestMemory, index: u32) -> Result<(Vec<u32>, i32), Caus
 enum Step {
     Grid,
     Gates,
-    PassSource,
-    PassTarget,
     Clear,
     ShaderBegin,
     Draw,
@@ -250,7 +322,22 @@ impl Ocean {
         let d = self.definition;
         let r = Regs { eax: returned.eax, ecx: returned.ecx, edx: returned.edx, ..self.regs };
         match self.step {
-            Step::Grid => self.call(Step::Gates, GRID, Regs { eax: d, ..r }, Vec::new()),
+            Step::Grid => {
+                let (mxcsr, control) = device.fp();
+                let mut mx = *mxcsr;
+                let grid = ocean_grid::grid(mem, d, &mut mx, control, device.lens());
+                *device.fp().0 = mx;
+                let r = match grid.unwrap_or_else(|e| grid_unported(grid_cause(e))) {
+                    ocean_grid::Grid::Skipped => Regs { eax: d, ..r },
+                    ocean_grid::Grid::Built { eax, edx, widened } => {
+                        crate::scene_step::count_ocean_grid(widened);
+                        Regs { eax, ecx: 0, edx, ..r }
+                    }
+                };
+                self.regs = r;
+                self.step = Step::Gates;
+                self.next(mem, device, r)
+            }
             Step::Gates => {
                 if !device.visible(mem, d)? || !cache::resident(mem, d.wrapping_add(TEXTURE_BLOCK))? {
                     return self.to_stamps(mem, r);
@@ -262,23 +349,16 @@ impl Ocean {
                 let s = shader(mem, index)?;
                 self.shader = Some(s);
                 let r = Regs { eax: s.flags >> COPY_BIT, ecx: s.ecx, edx: s.edx, ebx: s.ebx(), esi: s.esi, edi: s.word, ..r };
+                // The pass into target 0x15 draws the sky; the copy goes first.
                 if s.copies() {
-                    return self.call(Step::PassSource, COPY_TARGET, r, Vec::new());
+                    first_copy(mem, device)?;
+                }
+                if s.passes() {
+                    return Err("copy_pass");
                 }
                 self.regs = r;
-                self.step = Step::PassSource;
-                self.next(mem, device, r)
-            }
-            Step::PassSource if self.shader.is_some_and(|s| s.passes()) => {
-                self.call(Step::PassTarget, PASS_SOURCE, Regs { eax: d.wrapping_add(PASS_BLOCK), ..r }, vec![d.wrapping_add(PASS_BLOCK)])
-            }
-            Step::PassSource => {
                 self.step = Step::Clear;
                 self.next(mem, device, r)
-            }
-            Step::PassTarget => {
-                let pass = word(mem, d.wrapping_add(PASS_WORD))?;
-                self.call(Step::Clear, PASS_TARGET, Regs { ecx: pass, ..r }, vec![pass, returned.eax])
             }
             Step::Clear => {
                 let (host, scratch) = (device.host(), device.scratch());

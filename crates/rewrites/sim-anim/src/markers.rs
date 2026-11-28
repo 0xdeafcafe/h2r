@@ -171,7 +171,33 @@ pub fn model_markers(
     matrices: &[NodeMatrix],
     mirror: bool,
 ) -> Result<Vec<Marker>, Unsupported> {
-    let mut fp = Fp::new();
+    markers_with(Fp::new(), k, instances, sel, matrices, mirror).map(|(out, _)| out)
+}
+
+/// [`model_markers`] under the guest's `mxcsr`, as `b8d30`'s SSE code runs
+/// whatever the MXCSR holds ([`Fp::guest`]): the records and the MXCSR
+/// afterwards. Declines only on an unmasked exception or a selection's
+/// node outside `matrices`.
+pub fn model_markers_guest(
+    mxcsr: u32,
+    k: &Constants,
+    instances: &[u8],
+    sel: &[Selection],
+    matrices: &[NodeMatrix],
+    mirror: bool,
+) -> Result<(Vec<Marker>, u32), Unsupported> {
+    markers_with(Fp::guest(mxcsr), k, instances, sel, matrices, mirror)
+        .map(|(out, m)| (out, m.unwrap_or(mxcsr)))
+}
+
+fn markers_with(
+    mut fp: Fp,
+    k: &Constants,
+    instances: &[u8],
+    sel: &[Selection],
+    matrices: &[NodeMatrix],
+    mirror: bool,
+) -> Result<(Vec<Marker>, Option<u32>), Unsupported> {
     let mut out = Vec::with_capacity(sel.len());
     for s in sel {
         let instance = &instances[s.at..s.at + INSTANCE_BYTES];
@@ -202,7 +228,7 @@ pub fn model_markers(
         });
     }
     if fp.exact() {
-        Ok(out)
+        Ok((out, fp.mxcsr()))
     } else {
         Err(Unsupported)
     }

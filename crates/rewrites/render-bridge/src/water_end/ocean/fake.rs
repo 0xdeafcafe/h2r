@@ -24,11 +24,15 @@ pub enum Event {
     MakeSpace,
     PushViewport { put: u32 },
     Draw { indices: u32, count: u32 },
+    CopyView { target: u32 },
+    Restore { writes: usize },
 }
 
 #[derive(Default)]
 pub struct Fake {
     pub events: Mutex<Vec<Event>>,
+    /// The copy into a target is refused.
+    pub refuse_copy: std::sync::atomic::AtomicBool,
 }
 
 impl Fake {
@@ -97,5 +101,13 @@ impl Host for Fake {
     fn push_viewport(&self, _mem: &mut dyn GuestMemory, put: u32, _device: u32) -> Option<u32> {
         self.push(Event::PushViewport { put });
         Some(put + PUSH)
+    }
+    fn copy_view(&self, _mem: &mut dyn GuestMemory, target: u32) -> bool {
+        self.push(Event::CopyView { target });
+        !self.refuse_copy.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn restore(&self, _mem: &mut dyn GuestMemory, writes: &[crate::open_shader::Write]) -> bool {
+        self.push(Event::Restore { writes: writes.len() });
+        true
     }
 }

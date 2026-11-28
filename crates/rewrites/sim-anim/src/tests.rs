@@ -1,7 +1,7 @@
 //! Synthetic clips only: every blob here is built by the test.
-use crate::clip::{Clip, Shape, Sizes, Which};
+use crate::clip::{Channel, Clip, Shape, Sizes, Which};
 use crate::codec::{Ctx, Frame, RotOp, VecOp, Vector, normalize4};
-use crate::kernel::{self, Mode, Ops, Record, Request, Secondary, Unsupported, sample};
+use crate::kernel::{self, Mode, Ops, Record, Refusal, Request, Secondary, sample};
 use crate::store::ClipStore;
 use sim_core::Epoch;
 use sim_core::det::{self, Fp};
@@ -90,6 +90,7 @@ fn request<'a>(mode: Mode, streams: [Option<Ops>; 2]) -> Request<'a> {
         sign: SIGN,
         data_addr: 0x1000_0000,
         streams,
+        mxcsr: 0x1fa0,
     }
 }
 
@@ -105,6 +106,7 @@ fn ctx() -> Ctx {
         mmx: false,
         data_addr: 0x1000_0000,
         one: ONE,
+        misaligned: false,
     }
 }
 
@@ -438,7 +440,8 @@ fn broken_replace_with_second_frame_declines_when_it_reaches_a_node() {
     });
     let mut recs = vec![[0; 8]; 12];
     let mut written = vec![0u8; 12];
-    assert_eq!(sample(&req, &c, &mut recs, &mut written), Err(Unsupported));
+    let broken = Refusal::Broken { which: Which::Animated, channel: Channel::Rotation, node: 1 };
+    assert_eq!(sample(&req, &c, &mut recs, &mut written), Err(broken));
     req.count = 1;
     assert_eq!(
         sample(&req, &c, &mut recs, &mut written).map(|e| e.mmx),
@@ -448,20 +451,23 @@ fn broken_replace_with_second_frame_declines_when_it_reaches_a_node() {
 }
 
 #[test]
-fn off_path_operands_and_unknown_codecs_decline() {
+fn off_path_operands_run_under_the_mxcsr_and_unknown_codecs_decline() {
     let c = twelve();
     let mut req = request(Mode::Add, [None, Some(RAW)]);
     req.count = 12;
     let mut recs = vec![[0, 0, 0, ONE, 0, 0, 0, 1]; 12];
     let mut written = vec![0u8; 12];
-    assert_eq!(
-        sample(&req, &c, &mut recs, &mut written),
-        Err(Unsupported),
-        "denormal scale"
-    );
+    // A denormal scale takes the SSE model: `mulss` raises DE.
+    let effects = sample(&req, &c, &mut recs, &mut written).unwrap();
+    assert_ne!(effects.mxcsr & simd::DE, 0, "denormal scale");
+    // Denormal unmasked: that `mulss` is the guest's `#XM`.
+    req.mxcsr = 0x1ea0;
+    let mut recs = vec![[0, 0, 0, ONE, 0, 0, 0, 1]; 12];
+    assert_eq!(sample(&req, &c, &mut recs, &mut written), Err(Refusal::Unmasked));
     let mut req = request(Mode::Replace, [None, Some(Ops { scale: None, ..RAW })]);
     req.count = 12;
-    assert_eq!(sample(&req, &c, &mut recs, &mut written), Err(Unsupported));
+    let unknown = Refusal::UnknownOp { which: Which::Animated, channel: Channel::Scale };
+    assert_eq!(sample(&req, &c, &mut recs, &mut written), Err(unknown));
     req.count = 11;
     assert!(
         sample(&req, &c, &mut recs, &mut written).is_ok(),
@@ -469,7 +475,7 @@ fn off_path_operands_and_unknown_codecs_decline() {
     );
     let short = [0u32; 0];
     req.mask = Some(&short);
-    assert_eq!(sample(&req, &c, &mut recs, &mut written), Err(Unsupported));
+    assert!(matches!(sample(&req, &c, &mut recs, &mut written), Err(Refusal::Mask { .. })));
 }
 
 #[test]

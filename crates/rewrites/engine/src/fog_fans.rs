@@ -3,7 +3,7 @@
 //! function of guest memory and its two flag bytes.
 //!
 //! (Code, `h2 disasm 0x25dc0 40`, `0x26880 240`, `0x26e50 410`,
-//! `0x276d0 160`, `0x34420 215`.)
+//! `0x276d0 160`, `0x34420 215`, `0x3a5c0 1200`.)
 //!
 //! `0x00025dc0(cl, dl)` draws only when the fog's tag datum
 //! `[0x004857b8]` is neither -1 nor 0 and `[0x004857d8]` is above
@@ -12,7 +12,7 @@
 //!
 //! | Flags | Fans (setup, attribute callback) |
 //! |---|---|
-//! | `cl` set | [`Fans::Layers`]: `0x00026880`, `0x00026ca0`, into target `0x13` ([`layers`]); then `0x00026e50`, `0x00027520` ([`layers_composite`]) |
+//! | `cl` set | [`Fans::Layers`]: `0x00026880`, `0x00026ca0`, into target `0x13` ([`layers`]); then `0x00026e50`, `0x00027520` (the branch byte clear, the weather plate [`weather_plate_placement`] and [`plate_fan`] when it returns true; else [`layers_composite`]) |
 //! | `cl` clear, `dl` set | [`Fans::Composite`]: `0x000276d0`, `0x00027960`, target 3 into the view's ([`composite`]) |
 //! | neither | none |
 //!
@@ -30,7 +30,7 @@
 //! callback gives attribute 0 the rectangle's lerp at the depth word
 //! (`0x000350e0`) and attribute 1 the lerp itself, z 0, w 1.
 
-use crate::light_constants::{Error, Sse};
+use crate::light_constants::{Error, Sse, X87};
 use crate::memory::{GuestMemory, MemFault};
 use crate::screen_grid;
 
@@ -360,9 +360,513 @@ pub fn layers(mem: &mut dyn GuestMemory, mxcsr: u32, x87_control: u16, rect_at: 
 }
 
 /// Whether the layers' composite takes the weather plate's placement
-/// `0x0003a5c0` first (the branch byte clear), which has no native stage.
+/// `0x0003a5c0` first (the branch byte clear): [`weather_plate_placement`].
 pub fn weather_plate(mem: &dyn GuestMemory) -> Result<bool, MemFault> {
     Ok(mem.u8(layers_global::BRANCH)? == 0)
+}
+
+/// The weather plate's placement `0x0003a5c0` (`stdcall`, nine arguments,
+/// `ret 24h`), the path the layers' composite reaches.
+pub const WEATHER_PLATE: u32 = 0x0003_a5c0;
+
+/// `0x0003a5c0`'s image constants and globals.
+pub mod plate_global {
+    /// Kind 1's cap (the jump table at `0x0003b88c`, case `0x0003a62d`).
+    pub const CAP_KIND1: u32 = 0x0045_dc90;
+    /// Kind 1's divisors by the slope's power of two `n`
+    /// (`0x0003b0a1`..`0x0003b0db`): the first for `n` above 0 and `n`
+    /// 5, the second for `n` above 5.
+    pub const KIND1_DIV: u32 = 0x0045_dc0c;
+    pub const KIND1_DIV_HIGH: u32 = 0x0045_dc10;
+    /// The other planar fog setup's block (`0x00025e84`), read at
+    /// `+0x1c`..`+0x28` and `+0x5c`..`+0x68` by kind 1.
+    pub const PLANAR_BLOCK: u32 = 0x0048_574c;
+    /// 1.0.
+    pub const ONE: u32 = 0x0045_dbc0;
+    /// The scale the depths are divided by and the result multiplied by
+    /// (the layers' [`super::layers_global::DOT_X`] word).
+    pub const SCALE: u32 = 0x0048_565c;
+    /// Kind 2's cap on `1 / (far - near)` (the jump table at `0x0003b88c`).
+    pub const CAP: u32 = 0x0045_dd60;
+    /// The rescale (256) and its inverse.
+    pub const RESCALE: u32 = 0x0045_dd5c;
+    pub const UNRESCALE: u32 = 0x0045_dfa0;
+    /// The fixed point's scale (65536) and its inverse.
+    pub const FIXED: u32 = 0x0045_dcb0;
+    pub const UNFIXED: u32 = 0x0045_dcac;
+    /// 0.5.
+    pub const HALF: u32 = 0x0045_dbbc;
+    /// The least depth the result takes.
+    pub const LIMIT: u32 = 0x0048_5658;
+}
+
+/// The plate's block: for kind 2 the one the layers' composite builds on
+/// its stack (`0x00026e73`..`0x00026eec`): the fog's density and amount,
+/// its colour, and at `+0x14` whether `dl` is clear (the fan goes into
+/// target 3). For kind 1 the planar fog's at [`plate_global::PLANAR_BLOCK`]:
+/// density `+0x68`, amount `+0x28`, colour `+0x5c`, `first` `+0x1c`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlateBlock {
+    pub density: u32,
+    pub amount: u32,
+    pub colour: [u32; 3],
+    /// Kind 1's three `f32`s times the amount; 0 for kind 2.
+    pub first: [u32; 3],
+    pub target3: bool,
+}
+
+/// `0x0003a5c0`'s arguments: the block, the near and far depths, the
+/// kind (the switch at `0x0003b88c`), the four flag arguments 4..7 and
+/// where the result depth is written.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlateArgs {
+    pub block: PlateBlock,
+    pub near: u32,
+    pub far: u32,
+    pub kind: u32,
+    pub flags: [u32; 4],
+    pub result: u32,
+}
+
+impl PlateArgs {
+    /// The layers' composite's call (`0x00026e89`..`0x00026ef0`): kind 2,
+    /// flags 0, 0, 1, 0, the result into the depth word.
+    pub fn fog(mem: &dyn GuestMemory) -> Result<Self, MemFault> {
+        let lane = |i: u32| mem.u32(composite_global::COLOUR + 4 * i);
+        let block = PlateBlock {
+            density: mem.u32(layers_global::DENSITY)?,
+            amount: mem.u32(global::AMOUNT)?,
+            colour: [lane(0)?, lane(1)?, lane(2)?],
+            first: [0; 3],
+            target3: mem.u8(global::FLAG_DL)? == 0,
+        };
+        Ok(Self {
+            block,
+            near: mem.u32(layers_global::SPAN_NEAR)?,
+            far: mem.u32(layers_global::SPAN_FAR)?,
+            kind: 2,
+            flags: [0, 0, 1, 0],
+            result: composite_global::DEPTH,
+        })
+    }
+
+    /// The other planar fog setup's call (`0x00025e68`..`0x00025e89`),
+    /// with [`crate::planar_fog::other::PLATE`] 0: kind 1, flags 0, the
+    /// planar block, the first plane's range, the result into the depth
+    /// word.
+    pub fn planar(mem: &dyn GuestMemory) -> Result<Self, MemFault> {
+        use crate::planar_fog::other as o;
+        let at = |o: u32| mem.u32(plate_global::PLANAR_BLOCK + o);
+        let block = PlateBlock {
+            density: at(0x68)?,
+            amount: at(0x28)?,
+            colour: [at(0x5c)?, at(0x60)?, at(0x64)?],
+            first: [at(0x1c)?, at(0x20)?, at(0x24)?],
+            target3: false,
+        };
+        Ok(Self {
+            block,
+            near: mem.u32(o::NEAR_START)?,
+            far: mem.u32(o::NEAR_END)?,
+            kind: 1,
+            flags: [0; 4],
+            result: crate::planar_fog::global::DEPTH,
+        })
+    }
+
+    /// Why these arguments are not a path ported, `None` for the
+    /// composite's (kind 2, flags 0, 0, 1, 0) and the planar fog's (kind
+    /// 1, flags 0). Kinds 0 and 3, the other flags (argument 7 set skips
+    /// the device setup, `0x0003a7c9`) and no result are other callers'.
+    pub fn unported(&self) -> Option<String> {
+        if self.kind != 1 && self.kind != 2 {
+            return Some(format!("kind {}", self.kind));
+        }
+        let flags = if self.kind == 2 { [0, 0, 1, 0] } else { [0; 4] };
+        if self.flags != flags {
+            return Some(format!("flags {:?}", self.flags));
+        }
+        if self.result == 0 {
+            return Some("no result".into());
+        }
+        None
+    }
+}
+
+/// What `0x0003a5c0` leaves when it returns true: where the fan draws
+/// (the view's target, or target 3 when kind 2's byte is set), the
+/// 60-word block it builds at `0x00484f68`, the depth it wrote, and
+/// whether that depth was held to the limit, which turns the depth test
+/// off (`0x0003b864`, state `0x8f` 0).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WeatherPlate {
+    pub dest: LayersDest,
+    pub combiner: [u32; WORDS],
+    pub depth: u32,
+    pub z_off: bool,
+}
+
+/// `fld dword a; fmul dword b` (or `a` alone), `fstp qword`, `floor`
+/// (`0x00321099`), `_ftol2` (`0x00322b0c`). The floor of a finite double
+/// is exact; its NaN and infinity path (`0x00324995`) is not modelled.
+fn floor_int(x87_control: u16, a: u32, b: Option<u32>) -> Result<i32, Error> {
+    let mut x = X87::new(x87_control);
+    x.fld(a)?;
+    if let Some(b) = b {
+        x.fmul_m(b)?;
+    }
+    let (code, store) = x87::abi::st_f64(&x.0, 0);
+    X87::ok(code)?;
+    let d = f64::from_bits(store.value);
+    if !d.is_finite() {
+        return Err(Error::X87(x87::abi::status::UNMODELLED));
+    }
+    let mut y = X87::new(x87_control);
+    X87::ok(x87::abi::ld_f64(&mut y.0, d.floor().to_bits()))?;
+    let (code, store) = x87::abi::st_i32_trunc(&y.0, 0);
+    X87::ok(code)?;
+    Ok(store.value)
+}
+
+/// `0x0002b480` then `_ftol2`, held to a byte (`0x0003b435`..`0x0003b46b`).
+fn floor_byte(x87_control: u16, v: u32) -> Result<u32, Error> {
+    Ok(floor_int(x87_control, v, None)?.clamp(0, 0xff) as u32)
+}
+
+/// `0x00131fc0`: `v` times 255 (`fistp`, the control word's rounding) in
+/// the top byte.
+fn alpha_byte(v: u32, scale: u32, x87_control: u16) -> Result<u32, Error> {
+    let mut x = X87::new(x87_control);
+    x.fld(v)?;
+    x.fld(scale)?;
+    x.arith_reg(x87::abi::arith_op::MUL, 1, 0, true)?;
+    Ok((x.fistp_m32()? as u32) << 24)
+}
+
+/// `fld dword v; fmul dword k; fidiv dword d; fstp dword`.
+fn scaled_over(x87_control: u16, v: u32, k: u32, d: i32) -> Result<u32, Error> {
+    let mut x = X87::new(x87_control);
+    x.fld(v)?;
+    x.fmul_m(k)?;
+    X87::ok(x87::abi::arith(&mut x.0, x87::abi::arith_op::DIV, 0, x87::abi::src_kind::I32, d as u32 as u64))?;
+    x.fstp_m32()
+}
+
+/// `0x0003a5c0` for `args` (the composite's: [`PlateArgs::unported`] is
+/// `None`) under the call's MXCSR and x87 control word. `None` is its
+/// false (`0x0003b880`), which writes nothing; true writes the result
+/// depth through `args.result`.
+///
+/// The placement (`0x0003a5c0`..`0x0003a7c2`): `near` and `far` over the
+/// scale, both times 256 when `far` so is not above 1, each floored to
+/// sixteen-bit fractions. False when `far` is not above `near`; when
+/// `1 / (far - near)` is above the cap, false if rescaled, else (argument
+/// 6) the cap is the slope; false when `near` is below 0. Then the device
+/// setup (`0x0003a7cf`..`0x0003a984`: the view's target, target 3 at
+/// stage 0, clamp and point, blend and alpha test off, states `0x39`,
+/// `0x52`, vertex slot `0xc`, program `0x0051f0f0`), the block from the
+/// fixed-point near end, the slope's power of two (`0x0003aad4`) and kind
+/// 2's words (`0x0003b29f`..`0x0003b545`: blend as the composite, or into
+/// target 3 blue alone), and the result: the scale times `near` (over 256
+/// when rescaled), at least the limit (`0x0003b821`..`0x0003b871`).
+pub fn weather_plate_placement(mem: &mut dyn GuestMemory, mxcsr: u32, x87_control: u16, args: &PlateArgs) -> Result<Option<WeatherPlate>, Error> {
+    use plate_global as g;
+    let mut sse = Sse { mxcsr };
+    let one = mem.u32(g::ONE)?;
+    let scale = mem.u32(g::SCALE)?;
+    let cap = mem.u32(g::CAP)?;
+    let rescale = mem.u32(g::RESCALE)?;
+    let (fixed, unfixed) = (mem.u32(g::FIXED)?, mem.u32(g::UNFIXED)?);
+    let inv = sse.div(one, scale)?;
+    let mut near = sse.mul(inv, args.near)?;
+    let mut far = sse.mul(inv, args.far)?;
+    let big = sse.mul(far, rescale)?;
+    // The kind's switch (0x0003a618): kind 1 `al` 0 and `bl` 1, its own
+    // cap; kind 2 `al` 1, so a small range is rescaled, and `bl` 0.
+    let (rescales, bl, cap) = match args.kind {
+        1 => (false, true, mem.u32(g::CAP_KIND1)?),
+        _ => (true, false, cap),
+    };
+    let small = !sse.below(one, big)?;
+    let rescaled = rescales && small;
+    if rescaled {
+        near = sse.mul(near, rescale)?;
+        far = big;
+    }
+    let near_i = floor_int(x87_control, near, Some(fixed))?;
+    let far_i = floor_int(x87_control, far, Some(fixed))?;
+    let near = sse.int(near_i)?;
+    let near = sse.mul(near, unfixed)?;
+    let far = sse.int(far_i)?;
+    let far = sse.mul(far, unfixed)?;
+    if !sse.above(far, near)? {
+        return Ok(None);
+    }
+    let span = sse.sub(far, near)?;
+    let mut slope = sse.div(one, span)?;
+    if sse.above(slope, cap)? {
+        // `0x0003a709`: `1 / cap`, read again from the slot after.
+        sse.div(one, cap)?;
+        slope = cap;
+        if rescaled {
+            return Ok(None);
+        }
+        // Arguments 4 and 5 are 0 on both calls; argument 6 keeps the
+        // near end, else false (0x0003a71c..0x0003a761).
+        if args.flags[2] == 0 {
+            return Ok(None);
+        }
+    }
+    // A negative near end: with `bl` (kind 1) the start is `-slope * near`
+    // in [0, 1] and the near end 0 (0x0003a779..0x0003a7bc); without it
+    // (kind 2, argument 5 0) false.
+    let mut start = 0;
+    let mut near = near;
+    if sse.above(0, near)? {
+        if !bl {
+            return Ok(None);
+        }
+        let p = sse.mul(slope, near)?;
+        start = clamp01(sse.sub(0, p)?);
+        near = 0;
+    }
+    let target = mem.u16(composite_global::VIEW_TARGET)? as i16;
+
+    // 0x0003a989: the fixed-point near end in bytes.
+    let v = floor_int(x87_control, near, Some(fixed))?;
+    let (mut low, mut high) = ((v & 0xff) as u32, v >> 8);
+    if high > 0xff {
+        (low, high) = (0xff, 0xff);
+    }
+    let lead = u32::from(rescaled) + 4;
+    let tail: u32 = if rescaled { 4 } else { 0x18 };
+    let mut n = 0u32;
+    if sse.above(slope, one)? {
+        loop {
+            n += 1;
+            if n > 31 {
+                return Err(Error::Unbounded);
+            }
+            let p = sse.int(1 << n)?;
+            if !sse.above(slope, p)? {
+                break;
+            }
+        }
+    }
+    let byte_scale = mem.u32(composite_global::SCALE)?;
+    let hi = floor_byte(x87_control, scaled_over(x87_control, slope, rescale, 1 << n)?)?;
+    let half = {
+        let mut x = X87::new(x87_control);
+        x.fld(slope)?;
+        x.fmul_m(mem.u32(g::HALF)?)?;
+        x.fstp_m32()?
+    };
+    let lo = floor_byte(x87_control, half)?;
+    // 0x0003a9f3: the block cleared, then the words both kinds take.
+    let mut w = [0u32; WORDS];
+    for (i, x) in [
+        (11, low << 24),
+        (35, lead << 24 | 0x20_1140),
+        (1, lead << 24 | 0x20_9140),
+        (53, 0x1_1108),
+        (10, 0xff_0000),
+        (18, 0xff00),
+        (34, 0x0801_0802),
+        (45, 0x3045),
+        (46, 0xc00),
+        (27, 0xc00),
+        (12, (high as u32) << 24),
+        (36, 0x2020),
+        (47, 0x4d00),
+        (2, tail << 24 | 0x20_1140),
+        (28, 0xd00),
+        (13, 0x0100_0000),
+        (37, 0xcc20_2d20),
+        (48, 0xc00),
+        (3, 0xdd20_2df1),
+        (29, 0xd00),
+        (54, 1), // texture modes: stage 0 2D
+    ] {
+        w[i] = x;
+    }
+    let dest = if args.kind == 1 {
+        kind1_words(&mut w, &*mem, &mut sse, x87_control, &args.block, [slope, start], n, byte_scale, hi << 24 | lo)?;
+        LayersDest::View(target)
+    } else {
+        kind2_words(&mut w, x87_control, args, rescaled, n, byte_scale, hi << 24 | lo, target)?
+    };
+    let mut depth = sse.mul(scale, near)?;
+    if rescaled {
+        depth = sse.mul(depth, mem.u32(g::UNRESCALE)?)?;
+    }
+    let limit = mem.u32(g::LIMIT)?;
+    let z_off = !sse.below(limit, depth)?;
+    if z_off {
+        depth = limit;
+    }
+    mem.set_u32(args.result, depth)?;
+    Ok(Some(WeatherPlate { dest, combiner: w, depth, z_off }))
+}
+
+/// Kind 2's words (0x0003b29f..0x0003b545) and where its fan draws.
+#[allow(clippy::too_many_arguments)]
+fn kind2_words(
+    w: &mut [u32; WORDS],
+    x87_control: u16,
+    args: &PlateArgs,
+    rescaled: bool,
+    n: u32,
+    byte_scale: u32,
+    slope_bytes: u32,
+    target: i16,
+) -> Result<LayersDest, Error> {
+    let density = alpha_byte(args.block.density, byte_scale, x87_control)?;
+    let amount = alpha_byte(args.block.amount, byte_scale, x87_control)?;
+    let level = |over: u32, under: u32| -> u32 {
+        let x = if n > over { 0x20 } else if n <= under { 0 } else { 0x10 };
+        x << 12 | 0xd00
+    };
+    for (i, x) in [
+        // Kind 2 (0x0003b331..0x0003b4f2).
+        (54, 0x21), // texture modes: stages 0 and 1 2D
+        (14, if rescaled { 0x7f00_00ff } else { 0 }),
+        (38, (if n > 3 { 0x20 } else { 0 }) | 0x1d20_1d00),
+        (49, level(2, 1)),
+        (4, 0x1801_1120),
+        (30, 0xc00),
+        (15, density),
+        (23, amount),
+        (39, 0x3911_1912),
+        (50, 0xd00),
+        (5, (if n > 6 { 0x20 } else { 0 }) | 0x0d20_0d00),
+        (31, level(5, 4)),
+        (24, slope_bytes),
+        (6, 0x1d12_0c02),
+        (7, 0x1d0d_0d20),
+        (33, 0x4d00),
+        (32, (if n > 0 { 0x10 } else { 0 }) << 12 | 0xd00),
+    ] {
+        w[i] = x;
+    }
+    Ok(if args.block.target3 {
+        // 0x0003b506: target 3, blue alone, blend off; no final constant.
+        w[8] = 0x1d;
+        w[9] = 0;
+        LayersDest::Target3
+    } else {
+        w[43] = crate::glow::pack_rgb(args.block.colour, byte_scale, x87_control)?;
+        w[8] = 0x1d01_0000;
+        w[9] = 0x1d00;
+        LayersDest::View(target)
+    })
+}
+
+/// Kind 1's words (`0x0003ae64`..`0x0003b291`): the planar block's
+/// amount and its `first` lanes times it, and its density and colour,
+/// each in [0, 1]; the start over the slope's scale as an alpha byte; the
+/// final constant the density and colour. Its states are the planar fog
+/// quad's (`crate::planar_fog::STATES`: blend, W-buffered less or equal,
+/// no depth write) and its texture modes the common stage 0 alone.
+#[allow(clippy::too_many_arguments)]
+fn kind1_words(
+    w: &mut [u32; WORDS],
+    mem: &dyn GuestMemory,
+    sse: &mut Sse,
+    x87_control: u16,
+    block: &PlateBlock,
+    [slope, start]: [u32; 2],
+    n: u32,
+    byte_scale: u32,
+    slope_bytes: u32,
+) -> Result<(), Error> {
+    use plate_global as g;
+    let pack = |v: [u32; 4]| crate::colour_pass::pack_colour(v, byte_scale, x87_control);
+    let amount = clamp01(block.amount);
+    let mut lit = [amount, 0, 0, 0];
+    for (l, &f) in lit[1..].iter_mut().zip(&block.first) {
+        *l = clamp01(sse.mul(f, block.amount)?);
+    }
+    let fog = [clamp01(block.density), clamp01(block.colour[0]), clamp01(block.colour[1]), clamp01(block.colour[2])];
+    // 0x0003b0a1..0x0003b11b: ((1 / a) / b) / (slope / 2^n) * start.
+    let one = mem.u32(g::ONE)?;
+    let div = mem.u32(g::KIND1_DIV)?;
+    let a = if n > 5 { mem.u32(g::KIND1_DIV_HIGH)? } else if n > 4 { div } else { one };
+    let b = if n > 0 { div } else { one };
+    let mut t = sse.div(one, a)?;
+    t = sse.div(t, b)?;
+    let power = sse.int(1 << n)?;
+    let scaled = sse.div(slope, power)?;
+    t = sse.div(t, scaled)?;
+    t = sse.mul(t, start)?;
+    let fog_word = pack(fog)?;
+    let level = |over: u32, under: u32| -> u32 {
+        let x = if n > over { 0x20 } else if n <= under { 0 } else { 0x10 };
+        x << 12 | 0xd00
+    };
+    for (i, x) in [
+        (0, 0x0820_0000),
+        (26, 0x40),
+        (4, (if n > 3 { 0x20 } else { 0 }) | 0x1d20_1d00),
+        (30, level(2, 1)),
+        (23, alpha_byte(clamp01(t), byte_scale, x87_control)?),
+        (5, 0x1d20_1220),
+        (31, level(5, 4)),
+        (16, pack(lit)?),
+        (24, slope_bytes),
+        (40, 0x0134_1134),
+        (51, 0x45),
+        (6, 0x1d12_0c02),
+        (32, (if n > 0 { 0x10 } else { 0 }) << 12 | 0xd00),
+        (17, fog_word),
+        (7, 0x1114_1d05),
+        (33, 0xc00),
+        (8, 0x0114_000f),
+        (9, 0x1d04_1c00),
+        (43, fog_word),
+    ] {
+        w[i] = x;
+    }
+    Ok(())
+}
+
+/// The layers' composite's corners (`0x00027520`) at the callback's
+/// depth: attribute 1 the rectangle's lerp, 2 the dot vector with the
+/// branch byte set and else the lerp times the target scale (the jump
+/// table at `0x000276b0`, `0x000275bd`), 3 the dot vector, 4 the scaled
+/// lerp. `mem` takes the callback's depth write.
+fn layers_corners(mem: &mut dyn GuestMemory, sse: &mut Sse, rect_at: u32) -> Result<([[u32; 4]; 4], [[[u32; 4]; 4]; 4]), Error> {
+    use layers_global as g;
+    let depth = callback_depth(mem)?;
+    let branch = mem.u8(g::BRANCH)? != 0;
+    let rect = read_rect(&*mem, rect_at)?;
+    let one = mem.u32(screen_grid::constant::ONE)?;
+    let span = sse.sub(mem.u32(g::SPAN_FAR)?, mem.u32(g::SPAN_NEAR)?)?;
+    let floor = mem.u32(g::SPAN_MIN)?;
+    let span = if sse.above(floor, span)? { floor } else { span };
+    let inv = sse.div(one, span)?;
+    let x = sse.mul(mem.u32(g::DOT_X)?, inv)?;
+    let z = sse.mul(mem.u32(g::SPAN_NEAR)?, inv)?;
+    let z = sse.sub(0, z)?;
+    let dot = [x, 0, z, 0];
+    let k = mem.u32(g::TARGET_SCALE)?;
+    let (mut positions, mut coordinates) = ([[0; 4]; 4], [[[0; 4]; 4]; 4]);
+    for (n, c) in CORNER_UV.into_iter().enumerate() {
+        let uv = corner(one, c);
+        positions[n] = screen_grid::position(&*mem, sse, &rect, uv, depth)?;
+        let [x, y] = lerp(sse, &rect, uv)?;
+        let scaled = [sse.mul(x, k)?, sse.mul(y, k)?, 0, one];
+        coordinates[n] = [[x, y, 0, one], if branch { dot } else { scaled }, dot, scaled];
+    }
+    Ok((positions, coordinates))
+}
+
+/// The layers' composite's fan when the weather plate returned true
+/// (`0x00026efd`..`0x00026f7e`): the plate's block and destination,
+/// target 3 at stage 0 and target `0x13` at stage 1, at the plate's depth.
+pub fn plate_fan(mem: &mut dyn GuestMemory, mxcsr: u32, rect_at: u32, plate: WeatherPlate) -> Result<LayersComposite, Error> {
+    let mut sse = Sse { mxcsr };
+    let (positions, coordinates) = layers_corners(mem, &mut sse, rect_at)?;
+    Ok(LayersComposite { dest: plate.dest, combiner: plate.combiner, positions, coordinates })
 }
 
 /// `[0, 1]` as `0x00027209`..`0x0002737b` clamp: below 0 to 0, above 1
@@ -434,28 +938,8 @@ pub fn layers_composite(mem: &mut dyn GuestMemory, mxcsr: u32, x87_control: u16,
         crate::glow::pack_rgb([lane(0)?, lane(1)?, lane(2)?], scale, x87_control)?
     };
     let combiner = layers_composite_combiner(v, colour, scale, x87_control, target3)?;
-    let depth = mem.u32(composite_global::DEPTH)?;
-    let rect = read_rect(&*mem, rect_at)?;
-    let one = mem.u32(screen_grid::constant::ONE)?;
     let mut sse = Sse { mxcsr };
-    // Attributes 2 and 3: the same dot vector at every corner.
-    let span = sse.sub(mem.u32(g::SPAN_FAR)?, mem.u32(g::SPAN_NEAR)?)?;
-    let floor = mem.u32(g::SPAN_MIN)?;
-    let span = if sse.above(floor, span)? { floor } else { span };
-    let inv = sse.div(one, span)?;
-    let x = sse.mul(mem.u32(g::DOT_X)?, inv)?;
-    let z = sse.mul(mem.u32(g::SPAN_NEAR)?, inv)?;
-    let z = sse.sub(0, z)?;
-    let dot = [x, 0, z, 0];
-    let k = mem.u32(g::TARGET_SCALE)?;
-    let (mut positions, mut coordinates) = ([[0; 4]; 4], [[[0; 4]; 4]; 4]);
-    for (n, c) in CORNER_UV.into_iter().enumerate() {
-        let uv = corner(one, c);
-        positions[n] = screen_grid::position(&*mem, &mut sse, &rect, uv, depth)?;
-        let [x, y] = lerp(&mut sse, &rect, uv)?;
-        let scaled = [sse.mul(x, k)?, sse.mul(y, k)?, 0, one];
-        coordinates[n] = [[x, y, 0, one], dot, dot, scaled];
-    }
+    let (positions, coordinates) = layers_corners(mem, &mut sse, rect_at)?;
     Ok(LayersComposite { dest, combiner, positions, coordinates })
 }
 
@@ -646,6 +1130,7 @@ mod tests {
         f(&mut m, g::TARGET_SCALE, 0.5);
         f(&mut m, g::DENSITY, 1.0);
         m.set_u8(global::FLAG_DL, 1).unwrap();
+        m.set_u8(g::BRANCH, 1).unwrap();
         m.set_u16(composite_global::VIEW_TARGET, 0).unwrap();
         let c = layers_composite(&mut m, MXCSR, 0x027f, rect).unwrap();
         assert_eq!(c.dest, LayersDest::View(0));
@@ -668,6 +1153,141 @@ mod tests {
         assert_eq!((t3.combiner[8], t3.combiner[9], t3.combiner[43]), (0xc, 0, 0));
         assert!(!weather_plate(&{ let mut w = mem(); w.set_u8(g::BRANCH, 1).unwrap(); w }).unwrap());
         assert!(weather_plate(&mem()).unwrap());
+    }
+
+    /// The plate's constants over [`layers_mem`], the scale `scale`, the
+    /// fog's density 1, amount 0.5, colour (1, 0.5, 0.25) into the view.
+    fn plate_mem(scale: f32, near: f32, far: f32) -> (FlatMemory, u32) {
+        use plate_global as p;
+        let (mut m, rect) = layers_mem();
+        let f = |m: &mut FlatMemory, a: u32, v: f32| m.set_f32(a, v).unwrap();
+        for (a, v) in [
+            (p::ONE, 1.0),
+            (p::SCALE, scale),
+            (p::CAP, 128.0),
+            (p::RESCALE, 256.0),
+            (p::UNRESCALE, 1.0 / 256.0),
+            (p::FIXED, 65536.0),
+            (p::UNFIXED, 1.0 / 65536.0),
+            (p::HALF, 0.5),
+            (p::LIMIT, 10.0),
+            (layers_global::SPAN_NEAR, near),
+            (layers_global::SPAN_FAR, far),
+            (layers_global::SPAN_MIN, 1.0),
+            (layers_global::DENSITY, 1.0),
+            (layers_global::TARGET_SCALE, 0.5),
+        ] {
+            f(&mut m, a, v);
+        }
+        m.set_u8(global::FLAG_DL, 1).unwrap();
+        m.set_f32(composite_global::DEPTH, 0.0).unwrap();
+        (m, rect)
+    }
+
+    fn place(m: &mut FlatMemory) -> Option<WeatherPlate> {
+        let args = PlateArgs::fog(&*m).unwrap();
+        assert_eq!(args.unported(), None);
+        weather_plate_placement(m, MXCSR, 0x027f, &args).unwrap()
+    }
+
+    #[test]
+    fn the_composites_plate_call_is_kind_2_and_other_arguments_are_named() {
+        let (m, _) = plate_mem(1024.0, 24.0, 1048.0);
+        let a = PlateArgs::fog(&m).unwrap();
+        assert_eq!((a.kind, a.flags, a.result), (2, [0, 0, 1, 0], composite_global::DEPTH));
+        assert_eq!((a.near, a.far), (24.0f32.to_bits(), 1048.0f32.to_bits()));
+        assert_eq!(a.block, PlateBlock { density: 1.0f32.to_bits(), amount: 0.5f32.to_bits(), colour: [1.0f32.to_bits(), 0.5f32.to_bits(), 0.25f32.to_bits()], first: [0; 3], target3: false });
+        assert_eq!(PlateArgs { kind: 3, ..a }.unported().as_deref(), Some("kind 3"));
+        assert_eq!(PlateArgs { flags: [0, 0, 1, 1], ..a }.unported().as_deref(), Some("flags [0, 0, 1, 1]"));
+        assert_eq!(PlateArgs { result: 0, ..a }.unported().as_deref(), Some("no result"));
+        // The planar fog's call: kind 1, flags 0, its block and range.
+        let p = PlateArgs::planar(&m).unwrap();
+        assert_eq!((p.kind, p.flags, p.result, p.unported()), (1, [0; 4], crate::planar_fog::global::DEPTH, None));
+        assert_eq!(PlateArgs { flags: [0, 0, 1, 0], ..p }.unported().as_deref(), Some("flags [0, 0, 1, 0]"));
+    }
+
+    #[test]
+    fn a_wide_plate_is_placed_into_the_view_with_its_block_and_depth() {
+        // 24 and 1048 over 1024: 0.0234375 and 1.0234375, slope 1, n 0.
+        let (mut m, _) = plate_mem(1024.0, 24.0, 1048.0);
+        let p = place(&mut m).unwrap();
+        assert_eq!(p.dest, LayersDest::View(0));
+        let w = p.combiner;
+        // The near end 1536 / 65536: low 0, high 6.
+        assert_eq!((w[11], w[12]), (0, 0x0600_0000));
+        assert_eq!((w[35], w[1], w[2]), (0x0420_1140, 0x0420_9140, 0x1820_1140));
+        assert_eq!((w[53], w[54], w[14]), (0x1_1108, 0x21, 0));
+        assert_eq!((w[38], w[5], w[49], w[31], w[32]), (0x1d20_1d00, 0x0d20_0d00, 0xd00, 0xd00, 0xd00));
+        // 1 * 256 held to 255; 0.5 floored to 0.
+        assert_eq!(w[24], 0xff00_0000);
+        // Density 1 and amount 0.5 (127.5 to even: 128) in the top byte.
+        assert_eq!((w[15], w[23]), (0xff00_0000, 0x8000_0000));
+        assert_eq!((w[43], w[8], w[9]), (0x00ff_8040, 0x1d01_0000, 0x1d00));
+        // 1024 * 0.0234375 = 24, over the limit of 10.
+        assert_eq!(p.depth, 24.0f32.to_bits());
+        assert_eq!(m.u32(composite_global::DEPTH).unwrap(), p.depth);
+    }
+
+    #[test]
+    fn a_narrow_plate_takes_the_cap_and_its_power_of_two() {
+        // 10 and 10.001: slope 65536 / 65 over the cap, so 128 and n 7.
+        let (mut m, _) = plate_mem(1.0, 10.0, 10.001);
+        m.set_u8(global::FLAG_DL, 0).unwrap();
+        let p = place(&mut m).unwrap();
+        let w = p.combiner;
+        // The near end 655360: high above 255, both bytes 255.
+        assert_eq!((w[11], w[12]), (0xff00_0000, 0xff00_0000));
+        assert_eq!((w[38], w[5], w[49], w[31], w[32]), (0x1d20_1d20, 0x0d20_0d20, 0x20d00, 0x20d00, 0x10d00));
+        // 128 * 256 / 128 held to 255; 128 * 0.5 = 64.
+        assert_eq!(w[24], 0xff00_0040);
+        // Into target 3: no final constant.
+        assert_eq!(p.dest, LayersDest::Target3);
+        assert_eq!((w[43], w[8], w[9]), (0, 0x1d, 0));
+        assert_eq!(p.depth, 10.0f32.to_bits());
+    }
+
+    #[test]
+    fn a_small_range_is_rescaled_by_256() {
+        // 0.001 and 0.003: far * 256 is not above 1.
+        let (mut m, _) = plate_mem(1.0, 0.001, 0.003);
+        let p = place(&mut m).unwrap();
+        let w = p.combiner;
+        assert_eq!(w[14], 0x7f00_00ff);
+        assert_eq!((w[35], w[2]), (0x0520_1140, 0x0420_1140));
+        // The slope 65536 / 33554 is under 2: n 1.
+        assert_eq!((w[49], w[32]), (0xd00, 0x10d00));
+        // The result is the near end over 256, held to the limit.
+        assert_eq!(p.depth, 10.0f32.to_bits());
+        m.set_f32(plate_global::LIMIT, 0.0).unwrap();
+        let p = place(&mut m).unwrap();
+        assert_eq!(f32::from_bits(p.depth), 16777.0 / 65536.0 / 256.0);
+    }
+
+    #[test]
+    fn an_empty_negative_or_narrow_rescaled_plate_is_refused_and_writes_nothing() {
+        for (near, far) in [(5.0f32, 5.0f32), (6.0, 5.0), (-2.0, 5.0), (0.001, 0.0010001)] {
+            let (mut m, _) = plate_mem(1.0, near, far);
+            assert_eq!(place(&mut m), None, "{near} {far}");
+            assert_eq!(m.u32(composite_global::DEPTH).unwrap(), 0, "{near} {far}");
+        }
+    }
+
+    #[test]
+    fn the_plates_fan_samples_the_scaled_lerp_for_stage_1() {
+        let (mut m, rect) = plate_mem(1024.0, 24.0, 1048.0);
+        let p = place(&mut m).unwrap();
+        let c = plate_fan(&mut m, MXCSR, rect, p.clone()).unwrap();
+        assert_eq!((c.dest, c.combiner), (p.dest, p.combiner));
+        let f = |v: [u32; 4]| v.map(f32::from_bits);
+        assert_eq!(f(c.coordinates[2][0]), [640.0, 480.0, 0.0, 1.0]);
+        // The branch byte clear: attribute 2 is attribute 4.
+        assert_eq!(f(c.coordinates[2][1]), [320.0, 240.0, 0.0, 1.0]);
+        assert_eq!(c.coordinates[2][1], c.coordinates[2][3]);
+        assert_ne!(c.coordinates[2][2], c.coordinates[2][1]);
+        // At the plate's depth (24), not the clip far.
+        let mut s = Sse { mxcsr: MXCSR };
+        let at = screen_grid::position(&m, &mut s, &read_rect(&m, rect).unwrap(), [0, 0], 24.0f32.to_bits()).unwrap();
+        assert_eq!(c.positions[0], at);
     }
 
     #[test]

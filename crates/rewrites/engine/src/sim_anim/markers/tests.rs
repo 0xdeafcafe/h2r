@@ -279,6 +279,30 @@ fn the_port_fills_the_markers_through_the_kernel() {
 }
 
 #[test]
+fn a_fresh_mxcsr_fills_the_same_markers_and_sets_precision() {
+    // 03a_oldmombasa: `anim marker: float`. Retail's SSE runs whatever the
+    // MXCSR holds; here PE is not yet sticky, as after the guest's own
+    // `ldmxcsr`. The records are the sticky run's and PE comes out set.
+    let _guard = SWITCH.lock().unwrap();
+    set_enabled(true);
+    let w = populated(1);
+    let expected = reference(&w);
+    assert!(!expected.is_empty());
+    let (mut cpu, mut g) = machine(&w);
+    cpu.mxcsr = 0x1f80;
+    let transfer = crate::sim_native::marker::transforms(&mut cpu, &mut g).unwrap();
+    set_enabled(false);
+    assert_eq!(transfer, TransferAbi::resume(AFTER_MARKERS));
+    assert_eq!(cpu.mxcsr, 0x1fa0);
+    for (n, m) in expected.iter().enumerate() {
+        let at = OUT + ::sim_anim::markers::MARKER_BYTES as u32 * n as u32;
+        let mut bytes = [0u8; ::sim_anim::markers::MARKER_BYTES];
+        g.read_bytes(at, &mut bytes, 1).unwrap();
+        assert_eq!(bytes.as_slice(), m.to_bytes().as_slice(), "marker {n}");
+    }
+}
+
+#[test]
 fn a_mirrored_object_negates_the_world_left_column() {
     let mut w = populated(2);
     w.mirror = true;
@@ -331,14 +355,15 @@ const MODEL_MARKERS: u32 = 0x001d_8f50;
 #[test]
 fn calls_off_the_fast_path_decline_untouched() {
     let w = populated(6);
-    // PE not yet sticky.
+    // PE not yet sticky with precision unmasked: the first inexact
+    // operation would raise `#XM`.
     declines(
         &World {
             seed: 6,
             ..w.clone()
         },
-        |c, _| c.mxcsr = 0x1f80,
-        Decline::Float,
+        |c, _| c.mxcsr = 0x0f80,
+        Decline::Unmasked,
     );
     // More groups than the scan bound, and none matches.
     let mut wide = populated(7);
