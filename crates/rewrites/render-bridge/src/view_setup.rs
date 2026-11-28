@@ -179,8 +179,6 @@ pub struct Setup {
     pub view: u32,
     /// The game-side words, in the body's order.
     pub writes: Vec<Write>,
-    /// The device's clip range and its flags (`+0x1c10..+0x1c18`).
-    pub clip: [u32; 3],
     /// `c[-96..-84]`: the view-projection rows and the view's constants.
     pub transform: [u32; 48],
     pub colour: u32,
@@ -191,9 +189,6 @@ pub struct Setup {
     pub viewport: [u32; 6],
     /// The clear's game flags and colour.
     pub clear: Option<(u32, u32)>,
-    /// The raw push: method `0x1af0`, four words (0, `[0x0045dbbc]`,
-    /// `[0x0045dbc0]`, `[0x0045e3b0]`).
-    pub push: [u32; 5],
     /// The draw state's restore list, in its order.
     pub restore: Vec<Restore>,
     pub fog: Option<Fog>,
@@ -469,9 +464,6 @@ pub fn plan(mem: &dyn GuestMemory, view: u32) -> Result<Setup, Cause> {
     for (a, v) in SETUP_WORDS {
         put(&mut writes, a, &v.to_le_bytes());
     }
-    let device = word(mem, DEVICE)?;
-    let near = float(mem, ONE)? * float(mem, CLIP_NEAR)?;
-    let clip = [near.to_bits(), word(mem, CLIP_FAR)?, word(mem, device.wrapping_add(DEVICE_CLIP + 8))? | 2];
     let transform = transform(mem, view)?;
     let shadow = byte(mem, CONSTANT_FLAGS)? & 0x10 == 0;
     if shadow {
@@ -486,7 +478,6 @@ pub fn plan(mem: &dyn GuestMemory, view: u32) -> Result<Setup, Cause> {
     } else {
         None
     };
-    let push = [0x0010_1af0, 0, word(mem, HALF)?, word(mem, ONE)?, word(mem, PUSH_W)?];
     put(&mut writes, FILL_MODE, &SOLID.to_le_bytes());
     put(&mut writes, DRAW_BEGIN, &[1]);
     let restore = draw_state(mem, &mut writes)?;
@@ -502,7 +493,7 @@ pub fn plan(mem: &dyn GuestMemory, view: u32) -> Result<Setup, Cause> {
     } else {
         (None, false)
     };
-    Ok(Setup { view, writes, clip, transform, colour, depth, flag, viewport, clear, push, restore, fog, fog_effect })
+    Ok(Setup { view, writes, transform, colour, depth, flag, viewport, clear, restore, fog, fog_effect })
 }
 
 fn stage(mem: &mut dyn GuestMemory, at: u32, words: &[u32]) -> Result<(), Cause> {
@@ -531,11 +522,6 @@ pub fn apply(mem: &mut dyn GuestMemory, host: &dyn Host, s: &Setup, scratch: u32
     }
     let refused = |made: bool| if made { Ok(()) } else { Err("device") };
     refused(host.render_state(mem, SLOT_STENCIL_ENABLE, 0))?;
-    let device = word(mem, DEVICE)?;
-    stage(mem, device.wrapping_add(DEVICE_CLIP), &s.clip)?;
-    let put = reserve(mem, host, device)?;
-    let put = host.push_viewport(mem, put, device).ok_or("device")?;
-    mem.set_u32(device, put).map_err(unwritable)?;
     stage(mem, scratch, &s.transform)?;
     refused(host.constants(mem, 0, scratch, 48))?;
     native_targets::cut_select(mem, host, s.colour, s.depth, s.flag)?;
@@ -544,9 +530,6 @@ pub fn apply(mem: &mut dyn GuestMemory, host: &dyn Host, s: &Setup, scratch: u32
     if let Some((flags, colour)) = s.clear {
         native_targets::cut_clear(mem, host, flags, colour, 1f32.to_bits(), 0, scratch)?;
     }
-    let put = reserve(mem, host, device)?;
-    stage(mem, put, &s.push)?;
-    mem.set_u32(device, put.wrapping_add(0x14)).map_err(unwritable)?;
     refused(host.render_state(mem, SLOT_FILL_MODE, SOLID))?;
     for r in &s.restore {
         restore(mem, host, *r)?;
