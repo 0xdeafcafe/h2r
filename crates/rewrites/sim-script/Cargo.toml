@@ -1,0 +1,23 @@
+[package]
+name = "sim-script"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "HaloScript threads and natives on the world's pools: the hs VM's state held as the world's scripts section, a runtime that updates it, and Rust bodies for engine builtins"
+
+[package.metadata.h2]
+status = "in progress"
+doc = ["engine/hs_vm.md", "engine/sim-world.md", "engine/sim-rewrite.md"]
+
+[dependencies]
+# The VM, its engine trait and its state codec.
+hs.workspace = true
+# The store trait, section kinds and restore errors the scripts section uses.
+sim-world.workspace = true
+
+[dev-dependencies]
+# Invented script tables and executable (no game data).
+hs = { workspace = true, features = ["fixture"] }
+
+[lints]
+workspace = true

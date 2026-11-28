@@ -6729,6 +6729,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-script"
+version = "0.1.0"
+dependencies = [
+ "hs",
+ "sim-world",
+]
+
+[[package]]
 name = "sim-sound"
 version = "0.1.0"
 dependencies = [
