@@ -499,6 +499,8 @@ fn put_fx_state(w: &mut Writer, f: &FxState) {
         shelf_z,
         room_z,
         phase_off,
+        // Not saved: a restored voice starts a new epoch.
+        epoch: _,
     } = f;
     w.u64(*clock).u64(*env_start);
     put_f64(w, *doppler);

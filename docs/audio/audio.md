@@ -18,6 +18,7 @@ write on a Rust struct, and a software mixer renders the result.
 | `dsound` | `SoundBuffer` (Lock/Unlock, Play/Stop, loop region, position), `Stream` (packets), `MixIn` (an FX-send bus), `Listener`/`Source3d`/`Spatial`. |
 | `route` | Xbox mix bins folded to stereo (`dest`, `channel_of`); the table is below. |
 | `mixer` | `Mixer::render(&mut [f32])`: stereo f32 at the host rate. No device knowledge. |
+| `mixer::synth`, `mix_thread` | A render in two halves: `Mixer::prepare_job` (voice state) and `Synth::mix` (samples), and the thread that runs the second; see "Mixing off the game thread". |
 | `meter` | Peak, RMS and BS.1770-4 loudness of PCM; see "Metering the mixer". |
 | `hrtf` | Binaural filtering for positioned mix-ins (on by default). |
 | `sink` | Device-independent output plumbing: lock-free SPSC `ring`, `AudioSink` trait, headless `NullSink`, `Pump`. |
@@ -29,6 +30,31 @@ write on a Rust struct, and a software mixer renders the result.
 synthesised ADPCM clip. Port to tvOS or another host by disabling `device`
 and calling `Mixer::render` from the platform callback (cpal also supports
 iOS/tvOS CoreAudio, untested here).
+
+## Mixing off the game thread
+
+`Mixer::render_split` splits where a voice's frames have been read from its
+buffer:
+
+| half | does | owner |
+|---|---|---|
+| `Mixer::prepare_job(frames, side)` | advances every cursor, status, loop, packet queue, stream-health counter and the clock; reads each playing voice's frames at unity gain; returns a `MixJob` (frames plus the routing inputs by value) | the thread that makes the guest's DirectSound calls |
+| `Synth::mix(job, out, side)` | voice effects and filters, pan, 3D, mix bins, mix-in buses, HRTF, reverb, the side mix | any one thread, jobs in prepare order |
+
+Everything the guest reads (`GetCurrentPosition`, `GetStatus`, packet
+completions, `Play`/`Stop` effects) is set by the first half, so a read after
+a write sees it without waiting for a mix. `Synth` holds the state only the
+second half touches: per-voice filter memory, per-mix-in HRTF history and the
+reverb tail. A voice restart (`FxState::reset`) bumps an epoch the job
+carries, which clears that voice's memory in the `Synth`. Prepare then mix
+gives the same samples as `render_split` (`deferred_mix_equals_the_inline_render`).
+A mixer with bin taps does not defer (`Mixer::can_defer`).
+
+`mix_thread::MixThread` runs a `Synth` on a worker: `submit(Work)` queues a
+block, a bounded FIFO (64 blocks) makes the producer wait rather than drop,
+and `flush` waits for everything submitted. Blocks are delivered in submission
+order. [dsound.md](dsound.md#mixing-off-the-game-thread) wires it to the
+logical output.
 
 ## Host output (what `boot` calls)
 

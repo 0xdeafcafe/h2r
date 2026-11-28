@@ -2661,6 +2661,40 @@ impl DirectSound {
         self.service_all(h).map(|_| ())
     }
 
+    /// The state half of [`render_leased`](Self::render_leased) for `frames`
+    /// frames (`audio::Mixer::prepare_job`): voices, cursors and the clock
+    /// move on exactly as a render moves them and completions are collected,
+    /// but the samples are left to the returned job, for an `audio::Synth` to
+    /// mix on another thread. `side` says a side output will be mixed.
+    /// `None`, with nothing changed, when this mixer cannot defer (clock-only,
+    /// or bins tapped): render it with `render_leased_split`.
+    #[cfg(feature = "playback")]
+    pub fn render_leased_job(
+        &mut self,
+        h: &mut dyn Host,
+        frames: usize,
+        side: bool,
+        lease: &Lease,
+    ) -> Result<Option<audio::MixJob>, Stop> {
+        if !self.holds(lease) {
+            return Err(Stop::Consumer(self.conflict(lease.who)));
+        }
+        if self.clock_only() {
+            return Ok(None);
+        }
+        let shared = Arc::clone(&self.mixer);
+        let mut mixer = shared.lock().unwrap_or_else(|e| e.into_inner());
+        if !mixer.can_defer() {
+            return Ok(None);
+        }
+        let playing = self.playing_for_trace(&mixer);
+        let job = mixer.prepare_job(frames, side);
+        self.trace_render(&mixer, playing, frames as u64);
+        drop(mixer);
+        self.service_all(h)?;
+        Ok(Some(job))
+    }
+
     /// Makes every `DirectSoundDoWork` advance the clock by `frames` output
     /// frames (for example `rate / 60` for a game that calls it once per
     /// frame). `None`, the default, leaves the mixer to its sink. Claims the

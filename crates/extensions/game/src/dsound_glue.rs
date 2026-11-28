@@ -367,7 +367,7 @@ fn install_parts(
     };
     #[cfg(not(feature = "local-io"))]
     let pacing = dsound::Pacing::Completions { origin };
-    let output = hle
+    let mut output = hle
         .spawn_output(
             Arc::clone(rt),
             move || BoxedSink(open.expect("playback opens a sink")()),
@@ -379,6 +379,12 @@ fn install_parts(
             },
         )
         .map_err(|e| anyhow::anyhow!("dsound output: {e:?}"))?;
+    // The sample half of each render runs on its own thread; `advance_to`
+    // keeps the state half, so the guest sees what it always saw.
+    // `H2_MIX_THREAD=0` mixes inline (docs/runtime/switches.md).
+    if std::env::var_os("H2_MIX_THREAD").is_none_or(|v| v != "0") {
+        output.enable_mix_thread();
+    }
     // Stream callbacks at DPC level, on the output's grid: the completion
     // DPC's deadlines also stop the idle advance at every quantum, so a
     // callback runs within two quanta of its packet (docs/audio/dsound.md, "The

@@ -585,6 +585,31 @@ Never combine a render pump with a device, the output thread or the app's
 discard renderer. `frames_rendered()` counts what the shim's manual,
 `DoWork` and pump paths rendered (not the output thread: see its stats).
 
+### Mixing off the game thread
+
+With logical pacing, `Output::enable_mix_thread()` (on in `h2 play`;
+`H2_MIX_THREAD=0` turns it off) splits each quantum of `advance_to` in two
+([audio.md](audio.md#mixing-off-the-game-thread)):
+
+- On the caller's thread, under the same guest memory, `DirectSound` and gate
+  locks as before: `DirectSound::render_leased_job` runs the state half
+  (`Mixer::prepare_job`) and then completes packets (`service_all`). Cursors,
+  statuses, completed sizes and events are final when `advance_to` returns,
+  exactly as with an inline render, so a position or status read after
+  `advance_to`, or after any override call, never waits on a mix.
+- On the `audio-mix` thread: the sample half, then the tap, the side queue and
+  the playout queue, in quantum order. The thread takes none of the locks the
+  game takes.
+
+A quantum that cannot defer (bins tapped, `Mixer::can_defer`) is mixed on the
+caller's thread and queued as PCM behind the jobs before it.
+
+The FIFO holds 64 quanta; a caller that outruns the thread waits for room.
+`Output::flush_mix` waits for the queue to empty, and dropping the `Output`
+mixes what is queued. Filter and reverb memory is not in a snapshot, as it
+never reached the guest. `StreamHealth::unrouted_frames` counts on the
+`Synth` (`MixThread::unrouted_frames`).
+
 ### Playout: the jitter buffer (logical pacing)
 
 `Pacing::Logical { playout: Some(Playout) }` is what `h2 play` uses

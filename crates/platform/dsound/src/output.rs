@@ -39,7 +39,11 @@
 use crate::register::{Hle, StopRecord};
 use crate::state::{Consumer, Lease, Stop};
 #[cfg(feature = "playback")]
-use audio::{resample::LinearResampler, sink::Pump as RingPump};
+use audio::{
+    mix_thread::{self, MixThread, Work},
+    resample::LinearResampler,
+    sink::Pump as RingPump,
+};
 use audio::sink::{AudioSink, SinkStats};
 use runtime::Runtime;
 use std::collections::VecDeque;
@@ -393,7 +397,11 @@ pub struct Output {
     lease: Lease,
     grid: Option<Mutex<Grid>>,
     #[cfg(feature = "playback")]
-    tap: Option<Mutex<SampleTap>>,
+    tap: Arc<Mutex<Option<SampleTap>>>,
+    /// The thread that mixes what [`advance_to`](Output::advance_to) prepares
+    /// ([`Output::enable_mix_thread`]).
+    #[cfg(feature = "playback")]
+    mix: Option<MixThread>,
     clock_only: bool,
 }
 
@@ -402,7 +410,53 @@ impl Output {
     /// Clock-only output has no PCM. The tap must not reenter DirectSound.
     #[cfg(feature = "playback")]
     pub fn tap_samples(&mut self, tap: impl FnMut(&[f32]) + Send + 'static) {
-        self.tap = Some(Mutex::new(Box::new(tap)));
+        *self.tap.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(tap));
+    }
+
+    /// Runs the sample half of every logical render (effects, routing, HRTF,
+    /// reverb) on a thread of its own: [`advance_to`](Self::advance_to) then
+    /// does only the state half (cursors, status, packet completions) and
+    /// queues the rest, so the guest sees exactly what it saw before and the
+    /// samples are the same, a little later. The tap and the playout queue
+    /// are fed from that thread, in order. A no-op with device or
+    /// clock-only pacing, or when already on; call it before the first
+    /// `advance_to`.
+    #[cfg(feature = "playback")]
+    pub fn enable_mix_thread(&mut self) {
+        let Some(grid) = &self.grid else {
+            return;
+        };
+        if self.clock_only || self.mix.is_some() {
+            return;
+        }
+        let max = grid.lock().unwrap_or_else(|e| e.into_inner()).max_queued;
+        let shared = Arc::clone(&self.shared);
+        let tap = Arc::clone(&self.tap);
+        self.mix = Some(MixThread::spawn(
+            mix_thread::DEPTH,
+            Box::new(move |block, side| {
+                if let Some(tap) = tap.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                    tap(block);
+                }
+                if let Some(side) = side {
+                    shared.push_side(side, max);
+                }
+                let over = push_queue(&shared.queue, block, max);
+                shared.note_dropped(over);
+            }),
+        ));
+    }
+
+    #[cfg(not(feature = "playback"))]
+    pub fn enable_mix_thread(&mut self) {}
+
+    /// Waits until every block [`advance_to`](Self::advance_to) has queued
+    /// for the mix thread is mixed and in the playout queue.
+    pub fn flush_mix(&self) {
+        #[cfg(feature = "playback")]
+        if let Some(mix) = &self.mix {
+            mix.flush();
+        }
     }
 
     pub fn health_probe(&self) -> OutputHealthProbe {
@@ -489,6 +543,39 @@ impl Output {
                 break;
             }
             #[cfg(feature = "playback")]
+            if let (Some(mix), Some((block, side))) = (&self.mix, &mut samples) {
+                let side_live = self.shared.side_live.load(Ordering::Acquire);
+                let job = self.hle.render_leased_job(
+                    &self.runtime,
+                    QUANTUM as usize,
+                    side_live,
+                    &self.lease,
+                )?;
+                let work = match job {
+                    Some(job) => Work::Job(Box::new(job)),
+                    None => {
+                        // Cannot defer (bins are tapped): mixed here, queued
+                        // behind the jobs before it.
+                        self.hle.render_leased(
+                            &self.runtime,
+                            block,
+                            side_live.then_some(&mut side[..]),
+                            &self.lease,
+                        )?;
+                        Work::Pcm {
+                            main: block.to_vec(),
+                            side: side_live.then(|| side.to_vec()),
+                        }
+                    }
+                };
+                drop(gate);
+                mix.submit(work);
+                g.done += QUANTUM;
+                rendered += QUANTUM;
+                self.shared.rendered.fetch_add(QUANTUM, Ordering::AcqRel);
+                continue;
+            }
+            #[cfg(feature = "playback")]
             if let Some((block, side)) = &mut samples {
                 let side_live = self.shared.side_live.load(Ordering::Acquire);
                 self.hle.render_leased(
@@ -498,8 +585,8 @@ impl Output {
                     &self.lease,
                 )?;
                 drop(gate);
-                if let Some(tap) = &self.tap {
-                    tap.lock().unwrap_or_else(|e| e.into_inner())(block);
+                if let Some(tap) = self.tap.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+                    tap(block);
                 }
                 if side_live {
                     self.shared.push_side(side, g.max_queued);
@@ -609,6 +696,8 @@ impl Drop for Output {
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
+        #[cfg(feature = "playback")]
+        drop(self.mix.take());
         self.hle.direct_sound().release_lease(&self.lease);
     }
 }
@@ -748,7 +837,9 @@ impl Hle {
             lease,
             grid,
             #[cfg(feature = "playback")]
-            tap: None,
+            tap: Arc::new(Mutex::new(None)),
+            #[cfg(feature = "playback")]
+            mix: None,
             clock_only,
         })
     }

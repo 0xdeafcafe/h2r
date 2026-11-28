@@ -351,11 +351,26 @@ impl Hle {
         })
     }
 
-    fn host_call(
+    /// [`DirectSound::render_leased_job`] from the host: the state half of a
+    /// render, with completions published as for [`Hle::render_leased`].
+    #[cfg(feature = "playback")]
+    pub(crate) fn render_leased_job(
         &self,
         runtime: &Runtime,
-        f: impl FnOnce(&mut DirectSound, &mut Bridge<'_>) -> Result<(), Stop>,
-    ) -> Result<(), Stop> {
+        frames: usize,
+        side: bool,
+        lease: &Lease,
+    ) -> Result<Option<audio::MixJob>, Stop> {
+        self.host_call(runtime, |ds, bridge| {
+            ds.render_leased_job(bridge, frames, side, lease)
+        })
+    }
+
+    fn host_call<T>(
+        &self,
+        runtime: &Runtime,
+        f: impl FnOnce(&mut DirectSound, &mut Bridge<'_>) -> Result<T, Stop>,
+    ) -> Result<T, Stop> {
         let (result, finished) = {
             let mut guard = runtime.memory();
             let mut ds = lock(&self.ds);

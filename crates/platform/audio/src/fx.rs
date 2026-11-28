@@ -617,6 +617,9 @@ pub struct FxState {
     /// frames, bounded by [`MAX_PHASE_OFFSET`], instead of changing the
     /// consumption rate (see `pitch_mult`).
     pub(crate) phase_off: f64,
+    /// Counts [`FxState::reset`]s. A mixer that keeps the filter memory on
+    /// another thread ([`crate::mixer::Synth`]) clears it when this changes.
+    pub(crate) epoch: u32,
 }
 
 /// Bound on the read-position offset pitch modulation may build up on a
@@ -635,6 +638,7 @@ impl Default for FxState {
             shelf_z: [0.0; 2],
             room_z: [0.0; 2],
             phase_off: 0.0,
+            epoch: 0,
         }
     }
 }
@@ -643,8 +647,10 @@ impl FxState {
     /// The voice starts over: clock, envelope and filter memory.
     pub fn reset(&mut self) {
         let doppler = self.doppler;
+        let epoch = self.epoch.wrapping_add(1);
         *self = Self::default();
         self.doppler = doppler;
+        self.epoch = epoch;
     }
 
     /// `SetEG` while running restarts the envelope from now.

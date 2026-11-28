@@ -29,6 +29,9 @@ use crate::hrtf::Hrtf;
 use crate::reverb::{I3dl2Listener, Reverb};
 use crate::route::{self, Dest};
 
+mod synth;
+pub use synth::{MixJob, Synth};
+
 /// Identifies a mix-in inside a [`Mixer`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct MixInId(pub(crate) u32);

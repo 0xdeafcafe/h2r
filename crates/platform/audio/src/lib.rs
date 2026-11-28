@@ -26,6 +26,7 @@ pub mod format;
 pub mod fx;
 mod hrtf;
 pub mod meter;
+pub mod mix_thread;
 pub mod mixer;
 pub mod resample;
 pub mod reverb;
@@ -39,7 +40,7 @@ pub mod output;
 
 pub use dsound::{BufferId, MixIn, SoundBuffer, Stream, StreamId, VoiceOutput};
 pub use format::{Codec, WaveFormat};
-pub use mixer::{MixInId, Mixer, StreamHealth};
+pub use mixer::{MixInId, MixJob, Mixer, StreamHealth, Synth};
 pub use reverb::{I3dl2Listener, Reverb};
 pub use sink::{AudioSink, NullSink, Pump, SinkStats};
 
