@@ -118,7 +118,16 @@ The store's fields, by `render_scratch::fields`:
 | Light render fields | the lights array at `[0x004e030c]`, `0x110`-byte records | `+0x84` and `+0xac` (the re-pose, 0x18 bytes each), `+0xf8..+0x110` |
 | Object render-state handle | body `+0xcc` of each live object (`[0x004e0300]`, below the high water) | 4 bytes |
 
-A field whose tick bytes differ from the ones the last frame put back was written by the tick since, and the frame starts it from the tick's bytes: a datum reused, a map loaded and a revert drop the render's copy of what they changed. A game's end drops every copy. The tick does write the cache: the effect update calls `0x0003ddd0` (`engine::effect_update::alive`, step 5) and reads the record's lighting into the effect's `+0x104` and `+0x108`. With the store it reads the tick's own record, which the render's lighting refresh no longer reaches (**S**: how far those two words reach the drawn effect).
+A field whose tick bytes differ from the ones the last frame put back was written by the tick since, and the frame starts it from the tick's bytes: a datum reused, a map loaded and a revert drop the render's copy of what they changed. A game's end drops every copy. The tick does write the cache: the effect update calls `0x0003ddd0` (`engine::effect_update::alive`, step 5) and reads the record's lighting into the effect's `+0x104` and `+0x108`. With the store it reads the tick's own record, which no lighting sample reaches.
+
+The tick's read, `alive.rs` at `0x001796e2`: when the record's byte `+2` is set it copies the record's `+0x2c` (the sample's scalar, [native-shadows.md](../graphics/native-shadows.md), "Direction and strength") to the effect's `+0x104` and `+0x28` to `+0x108`. Making those two words in the tick is blocked:
+
+| Blocker | What answers it |
+|---|---|
+| The sample producer is guest code no one has read: the default path sets the scalar to one (`0x000d4682`), the tuned path evaluates a tag function of a weighted colour at the object (`0x000d3e46`, `0x000d3e92`). Who sets byte `+2`, and from which lights and which BSP lighting, is not known (**S**) | a static read of the producer from `0x0003ddd0`'s callers to `0x000d3e46`; its inputs decide whether it is sim state (tags, the lights array, the object) or render state |
+| The readers of effect `+0x104` and `+0x108` are not named (**S**). If only the render reads them, the render can take them from its own record at draw time and the tick's copy goes | the reader census (slice 2's tool) over the effect array |
+
+Until one lands, an effect owned by an object keeps the `+0x104` and `+0x108` it had before its first sampled record: the tint is stale, the simulation is not.
 
 **S**: which other render fields lie inside `SimRegion::HALO2`. The frame guard's first run lists them.
 
@@ -221,6 +230,7 @@ Slices 0 to 2 run together. 4 follows 0; 6 and 7 follow 2; 5, 8 and 9 follow 1.
 - Which render-written fields lie inside the hashed region: the frame guard has not run on a game, so its first findings, and whether the seed's pools are written in a frame step, are open.
 - That the light render fields are the three spans `render_scratch::LIGHT_FIELDS` names, and that no frame writes a light byte outside them.
 - That the object `+0xcc` the tick sees, now never a render's handle, leaves the hash series of a recorded film unchanged; golden films may need re-recording.
+- Who reads effect `+0x104` and `+0x108`, and whether the stale tint after slice 8 shows in a drawn effect.
 - Frames outside `0x00223240` (the loops at `0x0012b6f0` and the map load's): they draw without the store.
 - Arena writes made through another alias of a page: the watch sees them, the trap does not, so their writer reads `unseen`.
 - That no render reader besides `0x00174420` reads a particle's `+0x30` (the census found only the location move); a sampled or refused frame still writes and restores the stamps, so the frame guard sees those pages dirty.
