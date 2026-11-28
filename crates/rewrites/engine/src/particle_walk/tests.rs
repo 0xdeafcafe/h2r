@@ -1,6 +1,6 @@
 use super::*;
 use crate::function_eval::constant::{BYTE, ZERO};
-use crate::memory::FlatMemory;
+use guest_layout::memory::FlatMemory;
 use crate::particle_emission::constant;
 
 const CW: u16 = 0x027f;

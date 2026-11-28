@@ -43,8 +43,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use native_render::camera::{GuestRead, GuestWrite};
 use native_render::fog::{self, FOG_LAYER};
 use native_render::skip::{self, Cleared};

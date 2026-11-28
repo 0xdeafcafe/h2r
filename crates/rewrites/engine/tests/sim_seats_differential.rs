@@ -28,7 +28,7 @@
 //! Needs the user's XBE (`lifted::image`); skipped without it.
 #![cfg(feature = "differential")]
 
-use engine::points;
+use guest_layout::points;
 use engine::sim_seats::{self, Seat};
 use ir::interp::{Cpu, FlatMemory, Flow};
 use lifted::Code;
@@ -2298,7 +2298,7 @@ fn countdown_requests_match_lifted() {
                 for o in (0..0x40).step_by(4) {
                     word(&mut mem, engine::view_records::COUNTDOWN + o, 0x5555_0000 + o);
                 }
-                let mut port = engine::FlatMemory { base: 0, bytes: mem.bytes.clone() };
+                let mut port = guest_layout::FlatMemory { base: 0, bytes: mem.bytes.clone() };
                 requests::run(&mut port).unwrap_or_else(|e| panic!("{why}: {e:?}"));
                 let mut cpu = Cpu { eip: ENTRY, eflags: 0x2, mxcsr: 0x1fa0, ..Default::default() };
                 cpu.gpr[4] = STACK;

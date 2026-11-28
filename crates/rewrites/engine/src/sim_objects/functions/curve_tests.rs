@@ -7,7 +7,7 @@
 
 use crate::function_eval::{self, constant};
 use crate::light_constants::Sse;
-use crate::memory::{FlatMemory, GuestMemory};
+use guest_layout::memory::{FlatMemory, GuestMemory};
 use sim_objects::functions::curve::{self, Answer, Decline, Image};
 
 const REFERENCE: u32 = 0x0048_7ff0;

@@ -27,7 +27,7 @@
 //! `declaration`, ...).
 
 use engine::contrail_ribbon as cr;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::particle_emission as pe;
 
 use super::{count, mirror, sse_supported, stamps, view_update, with_gate};
@@ -168,7 +168,7 @@ mod tests {
     use super::*;
     use crate::native_particles::{self as np, Call, Host, Producer};
     use super::super::fixtures::{ESP, world};
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     fn counter(name: &str) -> u64 {
         crate::native_layers::counters()

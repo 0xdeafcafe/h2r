@@ -17,7 +17,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use agent_proto::{RpcError, code, method};
-use engine::{GuestMemory, points};
+use guest_layout::{GuestMemory, points};
 use hooks::{Builder, Feature, Flow, Manifest, Registry};
 use prediction::{Aim, Prediction};
 use serde::{Deserialize, Serialize};

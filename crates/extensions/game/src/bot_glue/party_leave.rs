@@ -5,10 +5,7 @@ use bots::{
     lobby,
     phantom::{Phantoms, session},
 };
-use engine::{
-    memory::GuestMemory,
-    points::{self, party_leave as at},
-};
+use guest_layout::{memory::GuestMemory, points::{self, party_leave as at}};
 use hooks::{Builder, Flow};
 
 fn squad(m: &dyn GuestMemory) -> Option<u32> {

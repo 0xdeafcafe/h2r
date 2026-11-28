@@ -1,9 +1,9 @@
 //! The cheats over a fake game: one local player on a biped (the same
 //! shape as `skulls_custom`'s tests), game time, and the globals.
 
-use engine::datum::layout as dl;
-use engine::testing::FakeGuest;
-use engine::view::objects;
+use guest_layout::datum::layout as dl;
+use guest_layout::testing::FakeGuest;
+use guest_layout::view::objects;
 
 use super::*;
 use crate::skulls_custom::{BODY_PARENT, UNIT_WEAPONS};
@@ -38,16 +38,16 @@ fn game() -> FakeGuest {
     ] {
         g.map(a, 0x1000);
     }
-    g.put_u32(engine::points::PLAYERS.base, PLAYERS_H)
-        .put_u32(engine::points::OBJECTS.base, OBJECTS_H)
+    g.put_u32(guest_layout::points::PLAYERS.base, PLAYERS_H)
+        .put_u32(guest_layout::points::OBJECTS.base, OBJECTS_H)
         .put_u32(GAME_GLOBALS, GLOBALS)
         .put_u32(GLOBALS + GLOBALS_MODE, 1)
         .put_u16(GLOBALS + GLOBALS_TICK_RATE, 30)
-        .put_u32(engine::points::GAME_TIME.base, TIME)
+        .put_u32(guest_layout::points::GAME_TIME.base, TIME)
         .put_u16(TIME + TIME_RATE, 30)
         .put_f32(TIME + TIME_TICK_SECONDS, 1.0 / 30.0)
         .put_f32(TIME + TIME_SPEED, 1.0)
-        .put_u32(engine::points::SIM_GLOBALS.base, SIM)
+        .put_u32(guest_layout::points::SIM_GLOBALS.base, SIM)
         .put_u32(SIM + 8, 1)
         .put_u32(HUD_GLOBALS, HUD)
         .put_u8(HUD + HUD_SHOWN, 1);
@@ -237,7 +237,7 @@ fn co_op_and_lockstep_refuse_and_switch_them_off() {
     assert_eq!(sim_mode(&g), Some(1));
     g.put_u32(SIM + 8, 3);
     assert_eq!(sim_mode(&g), Some(3));
-    g.put_u32(engine::points::SIM_GLOBALS.base, 0);
+    g.put_u32(guest_layout::points::SIM_GLOBALS.base, 0);
     assert_eq!(sim_mode(&g), None);
     // cheat.set refuses; cheat.list says why.
     let mut c = Cheats::default();
@@ -406,7 +406,7 @@ const AI: u32 = 0x0069_0000;
 fn with_ai() -> FakeGuest {
     let mut g = game();
     g.map(0x004f_0000, 0x1_0000).map(AI, 0x1000);
-    g.put_u32(engine::points::AI_GLOBALS.base, AI)
+    g.put_u32(guest_layout::points::AI_GLOBALS.base, AI)
         .put_u8(AI + AI_ON, 1)
         .put_u8(AI + 1, 1);
     g
@@ -451,12 +451,12 @@ fn ai_off_holds_the_on_byte_and_gives_back_the_games_value() {
 fn ai_off_waits_for_the_globals_and_a_co_op_session_refuses_it() {
     // No AI globals yet (a map loading): nothing written, nothing held.
     let mut g = with_ai();
-    g.put_u32(engine::points::AI_GLOBALS.base, 0);
+    g.put_u32(guest_layout::points::AI_GLOBALS.base, 0);
     let mut c = Cheats::default();
     set(&mut c, "ai_off", json!(true));
     c.tick(&mut g, &OK).unwrap();
     assert_eq!(g.u8(AI + AI_ON).unwrap(), 1);
-    g.put_u32(engine::points::AI_GLOBALS.base, AI);
+    g.put_u32(guest_layout::points::AI_GLOBALS.base, AI);
     c.tick(&mut g, &OK).unwrap();
     assert_eq!(g.u8(AI + AI_ON).unwrap(), 0);
     // It changes the simulation: a co-op session switches it off, undone.

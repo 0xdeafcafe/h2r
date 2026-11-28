@@ -32,9 +32,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 
 use super::{FIRST_EXTRA, LEASH, NONE, Player, layout::*, players, script_players, world_position};
 

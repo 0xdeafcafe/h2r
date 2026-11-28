@@ -7,7 +7,7 @@ mod wire;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use engine::{DatumHandle, GuestMemory, MemFault, points, view::objects};
+use guest_layout::{DatumHandle, GuestMemory, MemFault, points, view::objects};
 use guest_layout::ObjectType;
 use hooks::{BuildError, Builder, Flow, GuestCall, Manifest};
 use runtime::guest::{Access, FaultReason, GuestFault, Permissions};

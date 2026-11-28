@@ -41,9 +41,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
@@ -189,8 +189,8 @@ pub fn slayer_loader(settings: bool, pick: bool) -> u32 {
 
 // ---- guest memory ----
 
-fn rows(m: &dyn GuestMemory, list: u32) -> Result<engine::datum::DatumArray, MemFault> {
-    Ok(engine::datum::DatumArray::at(
+fn rows(m: &dyn GuestMemory, list: u32) -> Result<guest_layout::datum::DatumArray, MemFault> {
+    Ok(guest_layout::datum::DatumArray::at(
         m.u32(list.wrapping_add(LIST_ROWS))?,
     ))
 }
@@ -306,7 +306,7 @@ pub fn drop_create_new(m: &mut dyn GuestMemory, handler: u32) -> Result<bool, Me
         return Ok(false);
     }
     let array = rows(m, handler)?;
-    let hw = array.header_field(m, engine::datum::layout::HIGH_WATER)?;
+    let hw = array.header_field(m, guest_layout::datum::layout::HIGH_WATER)?;
     for i in 0..hw.max(0) {
         let Some(elem) = array.get_absolute(m, i)? else {
             continue;
@@ -472,7 +472,7 @@ fn focus_empty_list(m: &mut dyn GuestMemory, screen: u32) -> Result<(), MemFault
     };
     if m.u32(ch + ACTIVE)? == screen && m.u32(ch + PENDING)? == 0 && m.u32(ch + 0x34)? == 0 {
         let array = rows(m, screen + SCREEN_LIST)?;
-        if array.addr != 0 && array.header_field(m, engine::datum::layout::ACTIVE_COUNT)? == 0 {
+        if array.addr != 0 && array.header_field(m, guest_layout::datum::layout::ACTIVE_COUNT)? == 0 {
             m.set_u32(ch + 0x34, screen)?;
         }
     }

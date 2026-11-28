@@ -4,10 +4,7 @@ use std::collections::BTreeMap;
 
 use agent_proto::RpcError;
 use agent_proto::forge::{BlockCapacity, ObjectPool};
-use engine::{
-    GuestMemory,
-    datum::{DatumArray, layout},
-};
+use guest_layout::{GuestMemory, datum::{DatumArray, layout}};
 use guest_layout::global;
 
 use super::{fault, scenario, unavailable};

@@ -7,7 +7,7 @@
 //! (`SOUND_IMPULSE_ALLOCATE`, `0x126000`) does, with its random draws and
 //! its rejections, and the sim reads the instance it returned.
 
-use engine::{GuestMemory, points};
+use guest_layout::{GuestMemory, points};
 
 pub const NONE: u32 = u32::MAX;
 /// Table `+8`: the lip-sync update the mixer's loop calls (`0x129593`).
@@ -189,7 +189,7 @@ pub fn seconds(ticks: u32) -> f32 {
 #[cfg(test)]
 pub(crate) mod fixture {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     pub(crate) use super::FLOOR;
 
     pub const POOL: u32 = 0x0060_0000;

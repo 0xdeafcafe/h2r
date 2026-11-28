@@ -35,7 +35,7 @@ pub(super) fn source_damage(
     report: u32,
 ) -> Result<Option<(u32, u16)>, MemFault> {
     let damage = DatumHandle(m.u32(report + 8)?);
-    let Some(tag) = engine::view::Tags.entry(m, damage)? else {
+    let Some(tag) = guest_layout::view::Tags.entry(m, damage)? else {
         return Ok(None);
     };
     if tag.group(m)? != DAMAGE_EFFECT {
@@ -207,9 +207,9 @@ pub(super) fn install(b: &mut Builder, reactions: Queue) {
 
 #[cfg(test)]
 mod tests {
-    use engine::datum::layout;
-    use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, index_layout};
-    use engine::testing::FakeGuest;
+    use guest_layout::datum::layout;
+    use guest_layout::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, index_layout};
+    use guest_layout::testing::FakeGuest;
 
     use super::*;
 

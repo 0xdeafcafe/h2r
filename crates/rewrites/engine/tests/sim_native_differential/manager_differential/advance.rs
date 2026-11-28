@@ -109,7 +109,7 @@ pub(super) fn cases(h: &mut Harness<'_>) {
                 c.ebx = MANAGER;
                 c.esi = OUT;
                 c.eax = if seed == 6 { 1 } else { u32::MAX };
-                word(m, engine::points::OBJECTS.base, DATA + 0x4000);
+                word(m, guest_layout::points::OBJECTS.base, DATA + 0x4000);
                 word(m, DATA + 0x4044, DATA + 0x5000);
                 word(m, DATA + 0x5014, DATA + 0x6000);
                 m.bytes[(DATA + 0x60b3) as usize] = 1;

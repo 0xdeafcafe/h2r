@@ -1,7 +1,7 @@
 use super::*;
-use engine::datum::layout as dl;
-use engine::points;
-use engine::testing::FakeGuest;
+use guest_layout::datum::layout as dl;
+use guest_layout::points;
+use guest_layout::testing::FakeGuest;
 
 #[test]
 fn shots_are_heard_at_the_holders_world_position() {

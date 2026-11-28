@@ -1,8 +1,8 @@
 use super::*;
-use engine::datum::SIGNATURE;
-use engine::entry::{self, EntryFuture, Regs};
+use guest_layout::datum::SIGNATURE;
+use guest_layout::entry::{self, EntryFuture, Regs};
 use crate::sim_sound::clock::TICK_COUNT_IMPORT;
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 
 const HEAP: u32 = 0x0080_0000;
 const TICKS: u32 = 0x0041_2000;

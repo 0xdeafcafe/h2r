@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use engine::map_status::{Answer, Cache, Lookup};
-use engine::points;
+use guest_layout::points;
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use runtime::CpuAbi;
 

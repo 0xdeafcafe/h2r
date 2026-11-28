@@ -15,7 +15,7 @@
 //! table follows the Forge session, which a snapshot does not rewind
 //! either, so the feature is stateless to snapshots.
 use agent::forge::spare_clips;
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 
 /// The feature's id (`features.forge-spare-clips`).
 pub const FEATURE: &str = "forge-spare-clips";
@@ -58,7 +58,7 @@ impl hooks::Feature for SpareClips {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn the_hook_reads_the_popped_arguments_and_skips_an_entry_with_none() {

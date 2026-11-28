@@ -7,7 +7,7 @@ use ::actor_net::{
     Actor, ActorChange, ActorSet, Budget, BudgetError, Control, DIGEST_PERIOD_TICKS, Packet,
     Record, SetError,
 };
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use sim_state::ActorView;
 
 use super::dialogue::Line;

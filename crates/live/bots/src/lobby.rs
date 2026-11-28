@@ -25,7 +25,7 @@
 //!   against `+0x50`), "Waiting for ... to start the game".
 //! - 9: ready.
 //!
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 use crate::guest::R;
 

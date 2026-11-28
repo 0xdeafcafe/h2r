@@ -1,8 +1,9 @@
 //! Run an invented scenario on the Rust VM and through the owner's lifted
 //! map initializer and scheduler. The test supplies the same clock and AI
 //! query value to both engines. All guest evaluators and their callees run.
-use engine::datum::{DatumArray, layout};
-use engine::{GuestMemory, hs_pool, hs_syntax, points};
+use guest_layout::datum::{DatumArray, layout};
+use guest_layout::{GuestMemory, points};
+use engine::{hs_pool, hs_syntax};
 use hs::Catalog;
 use hs::fixture::Tables;
 use hs::vm::mock::{Policy, RecordingEngine};
@@ -98,7 +99,7 @@ struct Oracle {
 
 impl Oracle {
     fn new(image: &Image, tables: &Tables) -> Self {
-        let mut arena = engine::FlatMemory::new(ARENA, 0x20000);
+        let mut arena = guest_layout::FlatMemory::new(ARENA, 0x20000);
         arena.write(ARENA, b"hs fixture\0").unwrap();
         let external = hs_pool::EXTERNALS as i32;
         for (addr, count, width) in [

@@ -21,7 +21,7 @@ use std::net::SocketAddrV4;
 use std::sync::{Arc, Mutex};
 
 use agent_proto::sim::SessionKind;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use forge::net::Seat;
 
 use super::net::{self, CoopLane};
@@ -514,8 +514,8 @@ mod tests {
     use super::*;
     use crate::forge_glue::net::{self as glue, Change, Offer};
     use forge::look::session::CanDraw;
-    use engine::points;
-    use engine::testing::FakeGuest;
+    use guest_layout::points;
+    use guest_layout::testing::FakeGuest;
     use forge::net::{Node, Role};
     use forge::{PaletteItem, Session, World};
     use forge_doc::{BuilderVersions, ForgeDoc, Limits, MapRef, Sha256, WorldBounds};

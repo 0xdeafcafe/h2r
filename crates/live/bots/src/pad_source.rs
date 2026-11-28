@@ -7,7 +7,7 @@
 //! send its pad as the peer's action, as a remote console's controller
 //! would. Controller ports belong to people.
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use input::host::HostPadState;
 
 /// What a source sees each frame.

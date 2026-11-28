@@ -15,8 +15,8 @@
 
 use std::sync::Mutex;
 
-use engine::memory::GuestMemory;
-use engine::points::{Loc, Point, Sig};
+use guest_layout::memory::GuestMemory;
+use guest_layout::points::{Loc, Point, Sig};
 use hooks::Builder;
 use native_render::{contrail_material, particle_material};
 

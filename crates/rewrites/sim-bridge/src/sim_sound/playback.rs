@@ -18,8 +18,8 @@
 //!
 //! A list's row is its definition's `+4` plus `0x38 * (custom & 0x3fffffff) + 4`.
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::{GLOBALS_TAG, SCENARIO, TAG_ENTRIES};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{GLOBALS_TAG, SCENARIO, TAG_ENTRIES};
 
 const NONE: u32 = u32::MAX;
 /// `[0x51ebd4]`: the sound gestalt.
@@ -126,7 +126,7 @@ pub fn effect_of(m: &dyn GuestMemory, tag: u32, custom: u32) -> Result<Option<u3
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const ENTRIES: u32 = 0x0060_0000;
     const DEF: u32 = 0x0060_1000;

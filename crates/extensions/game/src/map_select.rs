@@ -36,8 +36,8 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::{GuestMemory, points};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::{GuestMemory, points};
 
 use crate::list_class::{ListClass, Rows};
 use crate::ui::Chosen;
@@ -836,12 +836,12 @@ const CAPACITY: i32 = 64;
 /// Writes a data array at `at` (named by the string at `name`) holding
 /// `items`, as `0x19c7e0` fills the retail one.
 pub fn write_list(
-    m: &mut dyn engine::memory::GuestMemory,
+    m: &mut dyn guest_layout::memory::GuestMemory,
     at: u32,
     name: u32,
     items: &[(u32, u8)],
-) -> Result<(), engine::memory::MemFault> {
-    let a = engine::datum::DatumArray::at(at);
+) -> Result<(), guest_layout::memory::MemFault> {
+    let a = guest_layout::datum::DatumArray::at(at);
     a.initialize_contiguous(m, name, CAPACITY, ELEMENT, 0, 0)?;
     a.make_valid(m)?;
     a.delete_all(m)?;
@@ -855,10 +855,10 @@ pub fn write_list(
 }
 
 /// The retail array's lock byte by map id.
-pub fn read_flags(m: &dyn engine::memory::GuestMemory, array: u32) -> Vec<(u32, u8)> {
-    let a = engine::datum::DatumArray::at(array);
+pub fn read_flags(m: &dyn guest_layout::memory::GuestMemory, array: u32) -> Vec<(u32, u8)> {
+    let a = guest_layout::datum::DatumArray::at(array);
     let mut out = Vec::new();
-    let Ok(hw) = a.header_field(m, engine::datum::layout::HIGH_WATER) else {
+    let Ok(hw) = a.header_field(m, guest_layout::datum::layout::HIGH_WATER) else {
         return out;
     };
     for i in 0..hw.clamp(0, 256) {
@@ -975,14 +975,14 @@ impl Flow {
 
 const LIST_ARRAY: u32 = 0x70;
 /// An item widget's row: a handle in its list's array, -1 for none
-/// (`engine::view::ui::Item`).
+/// (`guest_layout::view::ui::Item`).
 const ITEM_ROW: u32 = 0x70;
 
 /// Find the new datum by map id, since the live list can omit locked rows
 /// and the rebuilt array uses fresh handles.
 fn focus_handle(mem: &dyn GuestMemory, array: u32, id: u32) -> Option<u32> {
-    let array = engine::datum::DatumArray::at(array);
-    let count = array.header_field(mem, engine::datum::layout::HIGH_WATER).ok()?;
+    let array = guest_layout::datum::DatumArray::at(array);
+    let count = array.header_field(mem, guest_layout::datum::layout::HIGH_WATER).ok()?;
     (0..count.clamp(0, MAX_MAPS as i32)).find_map(|row| {
         let element = array.get_absolute(mem, row).ok()??;
         if mem.u32(element + 4).ok()? != id {
@@ -1122,7 +1122,7 @@ pub struct Slots {
 /// Writes the array a Select Map in `mode` lists into our memory at
 /// `region`; its address, `None` when it could not be written.
 fn write_ours(
-    mem: &mut dyn engine::memory::GuestMemory,
+    mem: &mut dyn guest_layout::memory::GuestMemory,
     cat: &Catalogue,
     mode: Mode,
     region: u32,
@@ -1150,7 +1150,7 @@ fn write_ours(
         );
     }
     let written =
-        engine::memory::GuestMemory::write(&mut *mem, region + NAME_AT, b"map select list\0")
+        guest_layout::memory::GuestMemory::write(&mut *mem, region + NAME_AT, b"map select list\0")
             .and_then(|()| write_list(&mut *mem, region + ARRAY_AT, region + NAME_AT, &items));
     match written {
         Ok(()) => {
@@ -1222,7 +1222,7 @@ impl hooks::Feature for MapSelect {
             .doc("docs/game/map-select.md")
     }
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
-        use engine::points::{
+        use guest_layout::points::{
             GAME_TICK, LOBBY_SET_MAP, LOBBY_START_STATE, MAP_LIST_ROW_CHOSEN, MAP_LIST_ROW_TEXT, MAP_SCREEN_FREE,
             MP_LEVEL_ARRAY, MP_LEVEL_NAME, UI_LANGUAGE,
         };
@@ -1257,12 +1257,12 @@ impl hooks::Feature for MapSelect {
                     return Ok(F::Continue);
                 }
                 let (sel, slots) = (Arc::clone(&sel), Arc::clone(&slots));
-                c.answer_async(move |cx| -> engine::entry::EntryFuture {
+                c.answer_async(move |cx| -> guest_layout::entry::EntryFuture {
                     Box::pin(async move {
                         refresh_slots(&cx, &sel).await?;
                         slots.passing.store(true, Ordering::SeqCst);
                         let r = cx.call(GuestCall::new(GAME_TICK.base)).await?;
-                        Ok(engine::entry::Ret::new(r.eax, 0))
+                        Ok(guest_layout::entry::Ret::new(r.eax, 0))
                     })
                 })
             })
@@ -1295,7 +1295,7 @@ impl hooks::Feature for MapSelect {
             let Some(map) = landing else {
                 return Ok(F::Continue);
             };
-            c.answer_async(move |cx| -> engine::entry::EntryFuture {
+            c.answer_async(move |cx| -> guest_layout::entry::EntryFuture {
                 Box::pin(async move {
                     // Not while the game is starting or counting down.
                     let state = cx
@@ -1308,7 +1308,7 @@ impl hooks::Feature for MapSelect {
                         eprintln!("lobby: landed on the Firefight kit map {map}");
                     }
                     let r = cx.call(GuestCall::new(GAME_TICK.base)).await?;
-                    Ok(engine::entry::Ret::new(r.eax, 0))
+                    Ok(guest_layout::entry::Ret::new(r.eax, 0))
                 })
             })
         })
@@ -1336,7 +1336,7 @@ impl hooks::Feature for MapSelect {
             let Some(map) = to else {
                 return Ok(F::Continue);
             };
-            c.answer_async(move |cx| -> engine::entry::EntryFuture {
+            c.answer_async(move |cx| -> guest_layout::entry::EntryFuture {
                 Box::pin(async move {
                     // Not while the game is starting or counting down.
                     let started = cx
@@ -1348,7 +1348,7 @@ impl hooks::Feature for MapSelect {
                             .await?;
                     }
                     let r = cx.call(GuestCall::new(GAME_TICK.base)).await?;
-                    Ok(engine::entry::Ret::new(r.eax, 0))
+                    Ok(guest_layout::entry::Ret::new(r.eax, 0))
                 })
             })
         })
@@ -1441,7 +1441,7 @@ impl hooks::Feature for MapSelect {
                 return Ok(F::Continue);
             };
             let at = region + LABELS_AT + n * LABEL_LEN;
-            if engine::memory::GuestMemory::write(&mut *mem, at, &utf16z(&text)).is_err() {
+            if guest_layout::memory::GuestMemory::write(&mut *mem, at, &utf16z(&text)).is_err() {
                 return Ok(F::Continue);
             }
             drop(mem);
@@ -1691,7 +1691,7 @@ impl hooks::Feature for MapSelect {
             };
             let text = crate::map_modes::described(&slot_description(&*mem, slot, language), Some(&pane));
             let at = pane_at(region, mode, slot);
-            if engine::memory::GuestMemory::write(&mut *mem, at, &pane_bytes(&text)).is_err() {
+            if guest_layout::memory::GuestMemory::write(&mut *mem, at, &pane_bytes(&text)).is_err() {
                 return Ok(F::Continue);
             }
             drop(mem);

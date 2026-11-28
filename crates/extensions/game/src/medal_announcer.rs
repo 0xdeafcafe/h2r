@@ -22,8 +22,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::{self, announcer_queue};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{self, announcer_queue};
 use hud_kit_core::views::superbounce::{MEDALS, Medal};
 
 /// The feature's id.

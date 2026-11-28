@@ -9,7 +9,7 @@
 
 pub use lifted::shadow::{Enabled, Error, Mismatch, Port, PortFn, SHADOW, Shadow, Status};
 
-use engine::points;
+use guest_layout::points;
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
 /// The group of [`crate::sim_native`]'s entries.

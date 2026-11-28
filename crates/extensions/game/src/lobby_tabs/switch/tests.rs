@@ -1,8 +1,8 @@
 use super::*;
 use crate::map_select::Map;
-use engine::entry::{EntryFuture, Regs, Ret, testing};
-use engine::memory::GuestMemory;
-use engine::testing::FakeGuest;
+use guest_layout::entry::{EntryFuture, Regs, Ret, testing};
+use guest_layout::memory::GuestMemory;
+use guest_layout::testing::FakeGuest;
 
 fn map(id: u32, name: &str, path: &str) -> Map {
     Map {

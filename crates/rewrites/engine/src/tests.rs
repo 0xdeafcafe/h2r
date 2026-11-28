@@ -1,12 +1,12 @@
 //! Behaviour tests over synthetic guest memory. No game data: every
 //! structure is built here from the recovered layouts.
 
-use crate::abi::{self, Regs};
-use crate::datum::{DataIterator, DatumArray, SALT_WRAP, allocation_size, flags, layout};
-use crate::handle::DatumHandle;
-use crate::locale::{EMPTY_STRING, LocaleTable, StringId, layout as loc};
-use crate::memory::{FlatMemory, GuestMemory, MemFault};
-use crate::tags::{
+use guest_layout::abi::{self, Regs};
+use guest_layout::datum::{DataIterator, DatumArray, SALT_WRAP, allocation_size, flags, layout};
+use guest_layout::handle::DatumHandle;
+use guest_layout::locale::{EMPTY_STRING, LocaleTable, StringId, layout as loc};
+use guest_layout::memory::{FlatMemory, GuestMemory, MemFault};
+use guest_layout::tags::{
     GroupTag, TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, tag_get_checked, tag_group_find,
 };
 
@@ -804,7 +804,7 @@ fn tag_entry_at_address_zero_is_rejected() {
 /// lands on groups[-1], compares low, and halving -1 stays -1.
 #[test]
 fn negative_group_count_bsearch_does_not_terminate() {
-    use crate::tags::{Bounded, tag_group_find_bounded};
+    use guest_layout::tags::{Bounded, tag_group_find_bounded};
     let mut m = tag_index(0x004e_0000);
     m.set_i32(INDEX + 4, -1).unwrap();
     m.set_u32(GROUPS - 12, 2).unwrap();

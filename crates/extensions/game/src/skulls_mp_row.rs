@@ -24,7 +24,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use engine::entry::{EntryFuture, GuestCall, Ret};
+use guest_layout::entry::{EntryFuture, GuestCall, Ret};
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
@@ -165,7 +165,7 @@ fn row_chosen(c: &mut Call, screen: &SkullsScreen, request_at: u32) -> Result<Fl
         let mem = c.ctx.runtime().memory();
         let player = skulls_menu::player_index(&*mem, c.cpu.esp);
         // The list handler is at screen + 0x614 (the constructor's ESI).
-        let at = c.cpu.ecx.wrapping_sub(engine::view::ui::LIST);
+        let at = c.cpu.ecx.wrapping_sub(guest_layout::view::ui::LIST);
         let stack = mem
             .u32(at + SCREEN_WINDOW)
             .ok()
@@ -218,7 +218,7 @@ impl hooks::Feature for VariantRow {
             .doc("docs/game/skulls.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        use engine::points::{VARIANT_OPTIONS_ROW_CHOSEN, VARIANT_OPTIONS_ROW_TEXT};
+        use guest_layout::points::{VARIANT_OPTIONS_ROW_CHOSEN, VARIANT_OPTIONS_ROW_TEXT};
         // The request a press hands the loader (it is read during the call
         // only, as retail's are on the caller's stack).
         let request_at = b.guest_alloc(0x1000, Permissions::RW)?;

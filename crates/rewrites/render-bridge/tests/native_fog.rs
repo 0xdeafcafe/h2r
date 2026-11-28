@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use engine::memory::{FlatMemory, GuestMemory};
+use guest_layout::memory::{FlatMemory, GuestMemory};
 use render_bridge::native_fog::{self, Host, NativeFog};
 use render_bridge::native_layers::Left;
 use hooks::plan::Base;

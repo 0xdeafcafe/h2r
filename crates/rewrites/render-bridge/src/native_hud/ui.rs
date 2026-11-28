@@ -2,8 +2,8 @@
 //! the guest at the original instruction.
 use std::sync::Arc;
 
-use engine::memory::GuestMemory;
-use engine::points::{Point, UI_RENDER_LAYERS, ui_render::*};
+use guest_layout::memory::GuestMemory;
+use guest_layout::points::{Point, UI_RENDER_LAYERS, ui_render::*};
 use runtime::abi::TransferAbi;
 use timeline::native::{Metric, Stage, Ui};
 
@@ -330,7 +330,7 @@ pub(super) fn place(b: &mut Builder<'_>) {
     b.raw().before(&LOADING_BITMAP_READY, "native_ui_loading_bitmap", |c| {
         Ok(loading_fan(c, false).map_or(Flow::Continue, Flow::Return))
     }).context_only().optional();
-    use engine::points::render_aspect::{ANCHOR, GROUPS};
+    use guest_layout::points::render_aspect::{ANCHOR, GROUPS};
     b.raw().before(&ANCHOR, "native_hud_bitmap_anchor", |c| {
         // A bitmap widget's anchor id (EAX): the centre's is the reticle
         // (`kept::quad_kind`).
@@ -353,7 +353,7 @@ pub(super) fn place(b: &mut Builder<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn only_the_frame_tail_caller_owns_each_shared_helper() {

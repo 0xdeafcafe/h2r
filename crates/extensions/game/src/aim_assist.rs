@@ -51,11 +51,11 @@ pub mod player;
 pub const FEATURE: &str = "aim-assist";
 
 /// The tag-entry table pointer (16-byte entries: group, datum, address, size).
-pub const TAG_ENTRIES: u32 = engine::tags::TAG_ENTRIES_GLOBAL;
+pub const TAG_ENTRIES: u32 = guest_layout::tags::TAG_ENTRIES_GLOBAL;
 /// The tag-index header pointer; its `+0x18` is the tag slot count.
-pub const TAG_INDEX: u32 = engine::tags::TAG_INDEX_GLOBAL;
-const TAG_COUNT: u32 = engine::tags::index_layout::TAG_COUNT;
-const ENTRY_STRIDE: u32 = engine::tags::entry_layout::STRIDE;
+pub const TAG_INDEX: u32 = guest_layout::tags::TAG_INDEX_GLOBAL;
+const TAG_COUNT: u32 = guest_layout::tags::index_layout::TAG_COUNT;
+const ENTRY_STRIDE: u32 = guest_layout::tags::entry_layout::STRIDE;
 
 /// The weapon group as the entry table stores it.
 pub const WEAP: u32 = u32::from_be_bytes(*b"weap");

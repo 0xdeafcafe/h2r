@@ -26,7 +26,7 @@ pub use gpu::register;
 mod gpu {
     use super::*;
     use crate::world_lines::{ImageMarks, WorldLine, WorldLineSource};
-    use engine::GuestMemory;
+    use guest_layout::GuestMemory;
     use views::{DebugBsp, DebugHitboxes, DebugImage};
 
     /// Called by the window host before boot installs the shared scene observer.

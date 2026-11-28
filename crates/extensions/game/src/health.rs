@@ -32,9 +32,9 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::view::objects;
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::view::objects;
 
 /// The feature's id (`features.h1-health`).
 pub const FEATURE: &str = "h1-health";

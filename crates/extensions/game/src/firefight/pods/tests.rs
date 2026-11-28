@@ -180,8 +180,8 @@ fn the_row_is_hidden_without_open_starts() {
 
 /// An invented unit, graph and tag table for the seat test: the graph has
 /// the modes `labels`.
-fn seat_guest(labels: &[u32], any_seat: u8) -> (engine::testing::FakeGuest, u32) {
-    let mut g = engine::testing::FakeGuest::new();
+fn seat_guest(labels: &[u32], any_seat: u8) -> (guest_layout::testing::FakeGuest, u32) {
+    let mut g = guest_layout::testing::FakeGuest::new();
     let (unit, state_offset, graph_tag, modes, table) = (0x10_0000, 0x300u16, 0x20_0000, 0x21_0000, 0x30_0000);
     g.put_u8(unit + ANY_SEAT, any_seat)
         .put_u16(unit + ANIMATION_STATE, state_offset)

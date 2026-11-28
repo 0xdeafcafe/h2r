@@ -2,7 +2,7 @@
 //! runs in `tests/sim_effects_differential.rs`.
 use super::*;
 use crate::function_eval::constant::ONE;
-use crate::points;
+use guest_layout::points;
 use runtime::guest::Permissions;
 
 const STACK: u32 = 0x007f_0000;

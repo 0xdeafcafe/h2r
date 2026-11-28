@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::light_frusta::{self as lf, Call, guest as g};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};
 

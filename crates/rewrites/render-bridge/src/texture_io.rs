@@ -22,7 +22,7 @@
 //! walks them by seek distance (`0x001a1720`), which orders reads and
 //! changes no result.
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// Why the pool cannot go on.
 pub type Cause = &'static str;
@@ -280,7 +280,7 @@ pub(crate) fn init(m: &mut dyn GuestMemory) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const FLAG: u32 = 0x0053_0003;
     const DEST_AT: u32 = 0x0054_0000;

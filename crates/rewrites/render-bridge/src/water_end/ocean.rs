@@ -40,7 +40,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use engine::light_constants::Error as FloatError;
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::ocean_grid;
 
 use super::{BSP, WATER_COUNT};

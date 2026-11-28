@@ -32,8 +32,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::entry::{EntryFuture, GuestCall, Ret};
-use engine::memory::GuestMemory;
+use guest_layout::entry::{EntryFuture, GuestCall, Ret};
+use guest_layout::memory::GuestMemory;
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
@@ -1833,7 +1833,7 @@ impl hooks::Feature for SetupRow {
         .doc("docs/game/bots.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        use engine::points::{
+        use guest_layout::points::{
             SQUAD_SETTINGS_LIST_CTOR as CTOR, SQUAD_SETTINGS_ROW_CHOSEN, SQUAD_SETTINGS_ROW_TEXT,
         };
         let request_at = b.guest_alloc(0x1000, Permissions::RW)?;
@@ -1910,7 +1910,7 @@ pub fn install(
     crate::game_setup_help::register(
         ROW_ACTION,
         crate::game_setup_help::image::ROSTER,
-        Arc::new(move |m: &mut dyn engine::memory::GuestMemory| {
+        Arc::new(move |m: &mut dyn guest_layout::memory::GuestMemory| {
             let id = help.row_help_id()?;
             help.write_texts(m).ok()?;
             Some(id)

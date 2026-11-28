@@ -47,7 +47,7 @@ pub use guest::{LIGHT_VIS, MAIN_VIS};
 pub use history::{History, HistoryRow};
 pub use visible::VisibleLight;
 
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// Why a leaf did not answer. The caller leaves the step to its guest
 /// function.

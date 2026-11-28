@@ -4,7 +4,7 @@
 //! them with the lifted original.
 
 use super::*;
-use crate::points;
+use guest_layout::points;
 use crate::sim_objects::{TABLE, drive};
 use runtime::TransferAbi;
 use runtime::guest::Permissions;

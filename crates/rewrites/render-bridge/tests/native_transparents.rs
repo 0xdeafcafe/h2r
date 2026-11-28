@@ -2,7 +2,7 @@
 //! when another handler runs without calling the geometry observer.
 #![cfg(feature = "native-render")]
 
-use engine::{memory::{FlatMemory, GuestMemory}, points};
+use guest_layout::{memory::{FlatMemory, GuestMemory}, points};
 use render_bridge::native_transparents::{self, NativeTransparents, Scope};
 use render_bridge::native_world::ACTIVE_BSP;
 use hooks::plan::Base;

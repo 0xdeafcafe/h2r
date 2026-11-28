@@ -171,7 +171,7 @@ fn focus_wakes_the_window_and_obeys_agent_control() {
 }
 
 struct Game {
-    guest: engine::testing::FakeGuest,
+    guest: guest_layout::testing::FakeGuest,
     status: GameStatus,
     reads: usize,
 }
@@ -185,7 +185,7 @@ impl Reader for Game {
         Ok(Vec::new())
     }
 
-    fn with_guest(&mut self, f: &mut dyn FnMut(&mut dyn engine::GuestMemory)) -> bool {
+    fn with_guest(&mut self, f: &mut dyn FnMut(&mut dyn guest_layout::GuestMemory)) -> bool {
         self.reads += 1;
         f(&mut self.guest);
         true
@@ -220,7 +220,7 @@ impl SceneRig {
             rx,
             now,
             game: Game {
-                guest: engine::testing::FakeGuest::new(),
+                guest: guest_layout::testing::FakeGuest::new(),
                 status: GameStatus::default(),
                 reads: 0,
             },
@@ -291,14 +291,14 @@ fn marks_hold_a_box_in_its_frame_and_expire_on_the_wall_clock() {
 }
 
 fn mark_object(
-    guest: &mut engine::testing::FakeGuest,
+    guest: &mut guest_layout::testing::FakeGuest,
 ) -> (guest_layout::DatumHandle, u32, guest_layout::Object) {
-    use engine::view::{fake, objects};
+    use guest_layout::view::{fake, objects};
     use guest_layout::{Datum, Object};
 
     const ARRAY: u32 = 0x8000;
     const BODY: u32 = 0x9000;
-    guest.put_u32(engine::points::OBJECTS.base, ARRAY);
+    guest.put_u32(guest_layout::points::OBJECTS.base, ARRAY);
     let table = fake::datums::<objects::Header>(guest, ARRAY, 4);
     let (handle, header) = fake::push(guest, &table);
     header.set_body(guest, BODY).unwrap();
@@ -392,7 +392,7 @@ fn an_older_render_with_no_shapes_waits_for_the_next_image() {
     });
     assert_eq!(rig.call(method::MARKS, params.clone())["result"]["held"], 1);
 
-    let older = engine::testing::FakeGuest::new();
+    let older = guest_layout::testing::FakeGuest::new();
     let empty = rig.link.capture_marks(&older, || rig.now()).unwrap();
     assert!(empty.shapes.is_empty());
     assert!(rig.link.frame_mark_deadline(&empty, || rig.now()).is_none());
@@ -506,11 +506,11 @@ fn object_entries_are_refused_without_the_tick_observer() {
 #[test]
 fn mark_capture_does_no_guest_reads_without_a_mark_set() {
     struct Unreadable;
-    impl engine::GuestMemory for Unreadable {
-        fn read(&self, _: u32, _: &mut [u8]) -> Result<(), engine::MemFault> {
+    impl guest_layout::GuestMemory for Unreadable {
+        fn read(&self, _: u32, _: &mut [u8]) -> Result<(), guest_layout::MemFault> {
             panic!("the idle path must not read the guest");
         }
-        fn write(&mut self, _: u32, _: &[u8]) -> Result<(), engine::MemFault> {
+        fn write(&mut self, _: u32, _: &[u8]) -> Result<(), guest_layout::MemFault> {
             panic!("mark capture is read-only");
         }
     }
@@ -553,7 +553,7 @@ fn mark_refusals_name_the_displayed_frame_source() {
 #[test]
 fn an_identical_renewal_waits_for_its_own_frame() {
     let mut rig = SceneRig::new(true);
-    let guest = engine::testing::FakeGuest::new();
+    let guest = guest_layout::testing::FakeGuest::new();
     rig.call(method::MARKS, point_set());
     let first = rig.link.capture_marks(&guest, || rig.now()).unwrap();
     rig.link.set_drawn_mark_generation(first.generation());

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use agent_proto::firefight::{CommandParams, CommandReply, Kit, State, method};
 use agent_proto::{RpcError, code};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use serde_json::Value;
 
 use crate::{Access, Agent};

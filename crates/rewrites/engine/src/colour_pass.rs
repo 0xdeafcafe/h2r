@@ -26,7 +26,7 @@
 //! checks all three against the lifted original.
 
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// Guest globals the pass reads.
 pub mod global {

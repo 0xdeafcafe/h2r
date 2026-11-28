@@ -8,7 +8,7 @@
 //! stamps, residency) is a no-op until that slice fills it; the row and its
 //! place in the order exist now so the slice only adds the body.
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The guest words the frame step writes: the frame's tick writes, one
 /// source for this frame step and the headless one (`sim_frame`).
@@ -166,7 +166,7 @@ pub fn before(mem: &mut dyn GuestMemory, name: &str) -> Result<(), MemFault> {
 /// `0x00018900`, a D3D write, so the guest body runs ([`Keep::OpenShader`]).
 pub mod layer {
     use super::Step;
-    use engine::memory::{GuestMemory, MemFault};
+    use guest_layout::memory::{GuestMemory, MemFault};
 
     /// The layers whose draw can return: the opaque block's.
     pub const LAYERS: [u32; 6] = [1, 3, 5, 7, 8, 20];

@@ -87,7 +87,7 @@
 use super::frame::{set_slot, slot};
 use super::functions::{OBJECTS, Ss, TAGS, call, imm, lo, load, ret, ss};
 use super::{Cx, Next, Result, unowned};
-use crate::points;
+use guest_layout::points;
 use crate::sim_physics::{byte, pop, push};
 use runtime::{CpuAbi, Guest};
 

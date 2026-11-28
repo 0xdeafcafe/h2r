@@ -20,7 +20,7 @@ mod events;
 mod particle_birth;
 mod particles;
 
-use crate::points::Point;
+use guest_layout::points::Point;
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
 type Result<T> = std::result::Result<T, GuestFault>;

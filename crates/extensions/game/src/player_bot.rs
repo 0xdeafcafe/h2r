@@ -28,8 +28,8 @@ use agent_proto::player_bot::{self as wire, BotParams, BotStatus};
 use agent_proto::{RpcError, code};
 use bots::mind::Skill;
 use bots::pad_source::{Frame, PadSource};
-use engine::memory::GuestMemory;
-use engine::view::players;
+use guest_layout::memory::GuestMemory;
+use guest_layout::view::players;
 use input::gamepad::Gamepad;
 use serde_json::Value;
 
@@ -143,7 +143,7 @@ pub fn view(m: &dyn GuestMemory) -> Result<Option<View>, String> {
     let Some(tick) = bots::guest::game_tick(m) else {
         return Ok(None);
     };
-    let read = || -> Result<Option<([u8; 6], String, usize)>, engine::memory::MemFault> {
+    let read = || -> Result<Option<([u8; 6], String, usize)>, guest_layout::memory::MemFault> {
         let Some(array) = players::array(m)? else {
             return Ok(None);
         };

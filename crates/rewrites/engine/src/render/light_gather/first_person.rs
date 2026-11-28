@@ -60,10 +60,10 @@ use super::guest::{LIGHTS, NONE, TAGS};
 use super::items::{self, LIST, LISTS, Made};
 use super::passes::{self, Layer};
 use super::{Refusal, Result, visible, volume};
-use crate::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
 use crate::light_constants::{Call, Fpu};
 use crate::light_passes::{flag, global as lp};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The frame below the entry `ESP`: `0x88` bytes of locals and four
 /// saved registers. The calls are made below it.
@@ -83,7 +83,7 @@ pub mod slot {
 
 /// The guest functions the body calls.
 pub mod call {
-    use crate::points;
+    use guest_layout::points;
     pub use crate::render::light_gather::passes::call::{
         CLIP_MODE, CONSTANTS, LAYER_DRAW, LAYER_END, RECEIVER_BLEND, SCISSORS, STENCIL,
         STENCIL_ENABLE, TARGET,
@@ -1057,7 +1057,7 @@ mod tests {
 
     #[test]
     fn the_recorded_lights_are_the_tables_slots_up_to_its_count() {
-        let mut m = crate::memory::FlatMemory::new(FIRST_PERSON_TABLE, 0x0005_0000);
+        let mut m = guest_layout::memory::FlatMemory::new(FIRST_PERSON_TABLE, 0x0005_0000);
         for s in 0..SLOTS as u32 {
             m.set_u32(slot_base(s) + SLOT_LIGHT, 0x00a0_0000 | s)
                 .unwrap();

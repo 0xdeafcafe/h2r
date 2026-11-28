@@ -61,7 +61,7 @@
 
 use super::sse::{self, Ss::{Add, Div, Mul, Sub}};
 use super::{Cx, Next, Result, alu, unowned};
-use crate::points;
+use guest_layout::points;
 use crate::sim_physics::{ARITH, arithmetic, byte, logic, pop, push, status};
 use runtime::{CpuAbi, Guest};
 use x87::abi::{self as fp, arith_op, src_kind};

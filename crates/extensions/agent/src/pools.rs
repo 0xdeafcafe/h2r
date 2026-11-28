@@ -3,7 +3,7 @@
 //! their data arrays. Cheap enough to poll every present, which the
 //! watermark's `full` level does.
 
-use engine::{GuestMemory, datum::{SIGNATURE, layout}};
+use guest_layout::{GuestMemory, datum::{SIGNATURE, layout}};
 use serde_json::{Value, json};
 
 use crate::{Access, Agent};
@@ -47,7 +47,7 @@ pub fn install(agent: &Agent) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     fn array(m: &mut FakeGuest, global: u32, header: u32, live: u32, capacity: u32) {
         m.put_u32(global, header)

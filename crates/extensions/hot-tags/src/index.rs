@@ -59,10 +59,10 @@ fn fault(what: &str, e: runtime::GuestFault) -> String {
 /// The index, or why there is none (no map loaded yet).
 pub fn index(g: &Guest) -> Result<TagIndex, String> {
     let header = g
-        .u32(engine::points::TAG_INDEX.base)
+        .u32(guest_layout::points::TAG_INDEX.base)
         .map_err(|e| fault("tag index pointer", e))?;
     let entries = g
-        .u32(engine::points::TAG_ENTRIES.base)
+        .u32(guest_layout::points::TAG_ENTRIES.base)
         .map_err(|e| fault("tag entry pointer", e))?;
     if header == 0 || entries == 0 {
         return Err("no tag index: no map is loaded".into());

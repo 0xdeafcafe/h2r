@@ -106,7 +106,7 @@ pub fn can_draw() -> forge::look::session::CanDraw {
 /// (docs/game/forge-monitor-appearance.md, "Theater"): the seats' looks and
 /// poses drawn by the code the live session uses, from this machine's
 /// catalogue. Empty outside a film that recorded monitors.
-pub fn playback_bodies(m: &dyn engine::GuestMemory) -> Vec<forge::look::body::Draw> {
+pub fn playback_bodies(m: &dyn guest_layout::GuestMemory) -> Vec<forge::look::body::Draw> {
     if !crate::theater::forge_film::active() {
         return Vec::new();
     }
@@ -127,7 +127,7 @@ pub fn playback_bodies(m: &dyn engine::GuestMemory) -> Vec<forge::look::body::Dr
 /// of the profile on local slot 0, as this machine's catalogue can draw
 /// it. `None` leaves the page as retail draws it.
 pub fn appearance_body(
-    m: &dyn engine::GuestMemory,
+    m: &dyn guest_layout::GuestMemory,
     widget: &forge::look::appearance::Widget,
     seconds: f32,
 ) -> Option<forge::look::body::Draw> {
@@ -149,7 +149,7 @@ pub fn appearance_body(
 /// forge-monitor-appearance.md, ML5), in the palette colours the loaded
 /// map holds: what the frame step's scene adds to each game view after
 /// the game's candidates (`render_bridge::scene_step::set_host_lights`).
-pub fn monitor_lights(m: &dyn engine::GuestMemory) -> Vec<frame_scene::Light> {
+pub fn monitor_lights(m: &dyn guest_layout::GuestMemory) -> Vec<frame_scene::Light> {
     let mut bodies = monitor_bodies();
     bodies.extend(playback_bodies(m));
     // The same per-view call hands the frame graph the bodies themselves
@@ -210,7 +210,7 @@ pub fn host_lights(
         .collect()
 }
 
-fn admitted(m: &dyn engine::GuestMemory, generation: u64) -> bool {
+fn admitted(m: &dyn guest_layout::GuestMemory, generation: u64) -> bool {
     GENERATION.load(Ordering::Acquire) == generation && forge_map::admitted_session(m)
 }
 
@@ -306,7 +306,7 @@ impl Driver {
         &mut self,
         mut opened: Opened,
         loaded: &Loaded,
-        m: &dyn engine::GuestMemory,
+        m: &dyn guest_layout::GuestMemory,
         tick: u32,
         why: Option<String>,
     ) -> Editor {
@@ -340,7 +340,7 @@ impl Driver {
 
     /// Ask a reload of ours how it stands. A refused one leaves the editor
     /// on the map it has, saying why.
-    fn poll_reload(&mut self, m: &dyn engine::GuestMemory) {
+    fn poll_reload(&mut self, m: &dyn guest_layout::GuestMemory) {
         let Some(carry) = &mut self.carry else { return };
         if let reload::Step::Refused(why) = carry.poll() {
             // A carried editor's map went away for another reason: it ends.
@@ -355,7 +355,7 @@ impl Driver {
         }
     }
 
-    fn tick(&mut self, m: &dyn engine::GuestMemory) {
+    fn tick(&mut self, m: &dyn guest_layout::GuestMemory) {
         // The co-op link offers its lanes before anything else, so a
         // session that opens this tick finds them.
         self.link.tick(m);
@@ -522,7 +522,7 @@ impl Driver {
 }
 
 /// The game's tick now, if it is ticking.
-fn tick_of(m: &dyn engine::GuestMemory) -> Option<u32> {
+fn tick_of(m: &dyn guest_layout::GuestMemory) -> Option<u32> {
     GameTime::current(m).ok().flatten().and_then(|t| t.tick(m).ok())
 }
 
@@ -535,7 +535,7 @@ fn reopen(
     mut carry: reload::Carry,
     opened: Opened,
     loaded: &Loaded,
-    m: &dyn engine::GuestMemory,
+    m: &dyn guest_layout::GuestMemory,
     tick: u32,
 ) -> Result<Editor, (String, Opened)> {
     let Some(editor) = carry.editor.take() else {
@@ -593,7 +593,7 @@ impl Feature for Hooks {
         let driver = self.0.clone();
         b.game().on_end("release the Forge monitor", move |o| {
             let guest = o.guest();
-            let m: &dyn engine::GuestMemory = &*guest;
+            let m: &dyn guest_layout::GuestMemory = &*guest;
             if GameGlobals::current(m)
                 .ok()
                 .flatten()
@@ -625,7 +625,7 @@ impl Feature for Hooks {
 /// forge-monitor-appearance.md, ML7): the local seat's look, what this
 /// machine can draw as its hello says, the host model list's catalogue
 /// and the palette's RGB.
-fn monitor_start(m: &dyn engine::GuestMemory, looks: &Looks) -> editing::MonitorStart {
+fn monitor_start(m: &dyn guest_layout::GuestMemory, looks: &Looks) -> editing::MonitorStart {
     let colour = crate::pad_lightbar::seat_colour(m, 0).unwrap_or(0);
     let resolved = looks
         .session()
@@ -654,7 +654,7 @@ fn monitor_start(m: &dyn engine::GuestMemory, looks: &Looks) -> editing::Monitor
 /// The profile of local slot 0 and its colour: whose monitor look this is.
 /// Without a signed-in profile it is the default profile
 /// ([`crate::skulls::DEFAULT_PROFILE`]) and palette colour 0.
-fn who_of(m: Option<&dyn engine::GuestMemory>) -> Who {
+fn who_of(m: Option<&dyn guest_layout::GuestMemory>) -> Who {
     match m {
         Some(m) => Who {
             profile: crate::skulls::profile_or_default(&crate::layout_glue::ReadGm(m), 0),
@@ -759,7 +759,7 @@ impl agent::forge::test::WavesTest for Backend {
 }
 
 impl LocalApi for Backend {
-    fn who(&self, m: Option<&dyn engine::GuestMemory>) -> Who {
+    fn who(&self, m: Option<&dyn guest_layout::GuestMemory>) -> Who {
         who_of(m)
     }
 
@@ -849,7 +849,7 @@ impl LocalApi for Backend {
         }
     }
 
-    fn input(&self, m: &dyn engine::GuestMemory, input: forge::tool::Input) -> Result<(), String> {
+    fn input(&self, m: &dyn guest_layout::GuestMemory, input: forge::tool::Input) -> Result<(), String> {
         let driver = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if driver.editor.is_none()
             || !driver

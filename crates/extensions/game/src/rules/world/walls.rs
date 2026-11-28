@@ -11,7 +11,7 @@
 
 use crate::forge_glue::markers_world::Wall;
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 
 use super::zones::{Shape, Zones};
 use crate::rules::census::{self, Table};

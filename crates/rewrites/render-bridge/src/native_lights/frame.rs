@@ -5,7 +5,7 @@
 //! or a host that does not draw the scene panics (`lights: frame <cause>`).
 
 use engine::light_constants::Fpu;
-use engine::points;
+use guest_layout::points;
 use engine::render::light_gather::Refusal;
 use engine::render::light_gather::frame::{self, By, Gathered, LightFrame};
 use hooks::{Builder, Cx, EntryFuture};
@@ -63,7 +63,7 @@ pub(super) fn install(b: &mut Builder) {
                         // frame returns.
                         cx.write(|m| super::flush_light_run(m));
                         count(&light_frame);
-                        Ok::<_, engine::entry::EntryError>(ret)
+                        Ok::<_, guest_layout::entry::EntryError>(ret)
                     })
                 })
             },

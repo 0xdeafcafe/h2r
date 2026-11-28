@@ -2,10 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use engine::{
-    entry::{Cx, EntryError, GuestCall},
-    memory::{GuestMemory, MemFault},
-};
+use guest_layout::{entry::{Cx, EntryError, GuestCall}, memory::{GuestMemory, MemFault}};
 use hs::h1_ai_slots::{MAX_PLATOON_TEXT, PlatoonRule, PlatoonTrigger, decode_words};
 
 use super::{NONE, actors, speech, squad_control, state, uncover};

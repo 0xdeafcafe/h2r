@@ -27,7 +27,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use hud_kit_core::views::superbounce::{MEDALS, Medal};
 use superbounce::{Spot, Vec3};
 
@@ -761,7 +761,7 @@ pub fn medals_by_id() -> Vec<(&'static str, Medal)> {
 /// [`Medals::step`]: position, velocity, airborne, crouching and the level pair's
 /// word (one pair read each, sixteen at most).
 pub fn read_players(m: &dyn GuestMemory) -> Vec<Seen> {
-    use engine::view::{objects, players};
+    use guest_layout::view::{objects, players};
     use live_telemetry::layout::{
         BIPED_FLAGS, BODY_DEPLETED, BODY_VELOCITY, UNIT_FLAG_CROUCH, UNIT_FLAGS,
     };

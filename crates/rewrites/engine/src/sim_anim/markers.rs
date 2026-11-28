@@ -24,7 +24,7 @@
 //! the kernel gathers, when a read faults, or when the output overlaps a
 //! range it reads.
 use crate::function_eval::constant::{ONE, SMALL};
-use crate::points::TAG_ENTRIES;
+use guest_layout::points::TAG_ENTRIES;
 use crate::sim_native::Memory;
 use ::sim_anim::markers::{self, Constants, Marker};
 use runtime::{CpuAbi, GuestFault, TransferAbi};

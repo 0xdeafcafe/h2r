@@ -15,10 +15,10 @@
 
 use std::collections::BTreeMap;
 
-use engine::entry::{Cx, EntryError};
+use guest_layout::entry::{Cx, EntryError};
 use crate::sim_sound::gate::{self, Gate};
 use crate::sim_sound::{playback, promotion};
-use engine::{GuestMemory, MemFault};
+use guest_layout::{GuestMemory, MemFault};
 use sim_sound::instances::{Handle, SourceParams, TagIndex};
 use sim_sound::owners::Owner;
 use sim_sound::starts::{Action, Component, DialogueRow, Mode, OwnerPoll, STARTED_TABLE, SOUND_TABLE, Start, StartOf, plan};

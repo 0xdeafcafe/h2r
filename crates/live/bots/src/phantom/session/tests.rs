@@ -1,7 +1,7 @@
 use super::*;
-use engine::datum::layout as dl;
-use engine::handle::DatumHandle;
-use engine::testing::FakeGuest;
+use guest_layout::datum::layout as dl;
+use guest_layout::handle::DatumHandle;
+use guest_layout::testing::FakeGuest;
 use input::host::HostPadState;
 
 const S: u32 = 0x0070_0000;

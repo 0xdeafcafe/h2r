@@ -13,7 +13,7 @@
 
 use engine::light_constants as lc;
 use engine::light_passes as lp;
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use frame_scene::{LightVolume, SceneLight};
 
 use super::{LightConstants, Stage, VIEW_TARGET, constants_of};
@@ -258,7 +258,7 @@ pub fn unread() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use frame_scene::Light;
 
     fn fpu() -> lc::Fpu {

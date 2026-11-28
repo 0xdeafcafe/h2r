@@ -3,7 +3,7 @@
 //! rounding; the second passes through x87 extended precision.
 
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 const DRAW_DISTANCE_SCALE: u32 = 0x0046_70e4;
 const BYTE_SCALE: u32 = 0x0045_dc10;
@@ -184,7 +184,7 @@ pub fn faded_rows(m: &dyn GuestMemory, byte: u8, rest: &[u32; 32], mxcsr: u32) -
 #[cfg(test)]
 mod stipple_tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn record_fade_and_tail_use_their_own_threshold_and_rounding() {

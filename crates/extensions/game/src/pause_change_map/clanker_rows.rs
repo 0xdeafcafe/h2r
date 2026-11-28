@@ -88,7 +88,7 @@ impl Rows for ClankerRows {
         };
         picker::offer_list(pick(d, &self.0)).map_or(Chosen::Nothing, Chosen::Open)
     }
-    fn write_texts(&self, m: &mut dyn engine::memory::GuestMemory) -> Result<(), engine::memory::MemFault> {
+    fn write_texts(&self, m: &mut dyn guest_layout::memory::GuestMemory) -> Result<(), guest_layout::memory::MemFault> {
         TEXTS.write(m)
     }
     fn describe(&self, count: usize) -> Option<String> {

@@ -5,7 +5,7 @@
 
 use super::guest::{LIGHT_VIS, List, NONE, TAGS, at, lights, ptr, tag};
 use super::{Refusal, Result, Writes};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 const ONE: u32 = 0x0045_dbc0;
 

@@ -19,11 +19,11 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use engine::function_eval::constant::BYTE;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::particle_emission as pe;
 use engine::particle_emission::constant::TINT;
 use engine::particle_walk::{self as pw, Call};
-use engine::points::{Loc, Point, Sig};
+use guest_layout::points::{Loc, Point, Sig};
 use hooks::{Builder, Flow};
 use native_render::particle_mirror as nm;
 
@@ -175,7 +175,7 @@ pub fn known_refusal(m: &dyn GuestMemory, draw: u32) -> Option<&'static str> {
 }
 
 /// The block's bytes, in runs.
-fn write(mem: &mut dyn GuestMemory, writes: &BTreeMap<u32, u8>) -> Result<(), engine::memory::MemFault> {
+fn write(mem: &mut dyn GuestMemory, writes: &BTreeMap<u32, u8>) -> Result<(), guest_layout::memory::MemFault> {
     let mut run: Option<(u32, Vec<u8>)> = None;
     for (&at, &byte) in writes {
         match &mut run {
@@ -230,7 +230,7 @@ pub(crate) fn build(b: &mut Builder) {
 mod tests {
     use super::*;
     use engine::function_eval::constant::ONE;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use std::sync::Mutex;
 
     const ESP: u32 = 0x0050_0000;

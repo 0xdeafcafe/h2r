@@ -29,7 +29,7 @@
 //! buffer with what the builder reads after writing it.
 
 use self::guest::*;
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// The image's words the builder reads.
 pub mod guest {
@@ -74,8 +74,8 @@ pub enum Refusal {
     Unsupported,
 }
 
-impl From<crate::memory::MemFault> for Refusal {
-    fn from(_: crate::memory::MemFault) -> Self {
+impl From<guest_layout::memory::MemFault> for Refusal {
+    fn from(_: guest_layout::memory::MemFault) -> Self {
         Self::Memory
     }
 }
@@ -261,7 +261,7 @@ pub fn build(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const CAMERA: u32 = 0x0010_0000;
     const EXTENTS: u32 = 0x0010_1000;

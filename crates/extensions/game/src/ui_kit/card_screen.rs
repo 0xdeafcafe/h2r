@@ -20,8 +20,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::entry::GuestCall;
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::entry::GuestCall;
+use guest_layout::memory::{GuestMemory, MemFault};
 
 use crate::list_class::{
     self, Action, ListClass, LiveText, OnFree, Panel, PanelText, PictureSpec, Rows, TextBlock,
@@ -340,7 +340,7 @@ pub fn class(screen: &Arc<KitScreen>) -> ListClass {
         let held = (me.source.held)().min(me.count().saturating_sub(1));
         me.focused(held);
         Box::pin(async move {
-            let list = at.wrapping_add(engine::view::ui::LIST);
+            let list = at.wrapping_add(guest_layout::view::ui::LIST);
             cx.call(
                 GuestCall::new(list_class::LIST_SET_ROW)
                     .eax(list)

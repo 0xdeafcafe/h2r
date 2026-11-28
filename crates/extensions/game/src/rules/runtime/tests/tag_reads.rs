@@ -4,7 +4,7 @@
 //! swapped-in script is held to the same check.
 
 use ::rules::ty::fixed;
-use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, index_layout};
+use guest_layout::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, index_layout};
 use map::FourCC;
 
 use super::*;

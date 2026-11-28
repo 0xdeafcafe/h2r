@@ -14,7 +14,7 @@
 //! cut writes it. A fade the cut cannot make panics, named
 //! (`fade: <cause>`).
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_scene::{ClipRect, Overlay, OverlayBlend, OverlayItem, Program, ViewSlot};
 use hooks::Call;
 use runtime::abi::TransferAbi;
@@ -256,7 +256,7 @@ pub(super) fn enter(c: &mut Call<'_>) -> TransferAbi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use frame_scene::OverlayKind;
 
     fn mem(mode: u32, colour: [f32; 4], fraction: f32) -> FlatMemory {

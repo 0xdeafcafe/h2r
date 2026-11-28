@@ -3,7 +3,7 @@
 use super::*;
 use ::sim_anim::manager_channels::WrappedInterval;
 use crate::function_eval::constant::{ONE, SMALL};
-use crate::points::TAG_ENTRIES;
+use guest_layout::points::TAG_ENTRIES;
 use crate::sim_native::sub_flags;
 use crate::sim_physics::{ARITH, arithmetic, byte, logic};
 

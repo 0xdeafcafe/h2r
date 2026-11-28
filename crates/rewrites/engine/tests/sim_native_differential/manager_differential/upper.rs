@@ -29,7 +29,7 @@ fn channel_fixture(pc: u32, seed: u32, c: &mut CpuAbi, m: &mut FlatMemory) {
     if seed == 3 {
         c.eflags |= 0x400;
     }
-    word(m, engine::points::TAG_ENTRIES.base, TABLE);
+    word(m, guest_layout::points::TAG_ENTRIES.base, TABLE);
     word(m, TABLE + 16 + 8, GRAPH);
     word(m, TABLE + 32 + 8, GRAPH + 0x100);
     word(m, 0x4687a4, OUTPUT + 128);

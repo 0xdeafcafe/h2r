@@ -14,6 +14,7 @@ hooks = { path = "../../hooking/hooks" }
 runtime.workspace = true
 tags.workspace = true
 engine = { path = "../../rewrites/engine", features = ["runtime-glue"] }
+guest-layout = { path = "../../hooking/guest-layout" }
 # The scope-zoom profile reads the native screen effect shares
 # (render_bridge::scope_zoom_hud).
 render-bridge = { path = "../../rewrites/render-bridge", default-features = false }

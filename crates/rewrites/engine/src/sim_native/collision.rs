@@ -249,7 +249,7 @@ fn structure_segment(c: &mut CpuAbi, g: &mut impl Memory) -> Result {
     c.ecx = at(c.esp, 12);
     push(c, g, c.ecx)?;
     const AFTER_BSP: u32 = 0x001d_e6bd;
-    call(c, g, crate::points::COLLISION_BSP_SEGMENT.base, AFTER_BSP)
+    call(c, g, guest_layout::points::COLLISION_BSP_SEGMENT.base, AFTER_BSP)
 }
 
 /// Finish a world-only miss when both the outer query and its BSP walk

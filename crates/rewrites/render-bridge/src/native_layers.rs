@@ -52,8 +52,8 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 use frame_scene::{FrameScene, SceneBuilder, SceneId, Stamp, ViewKey, ViewKind};
 use native_render::camera::{GuestRead, GuestWrite};
 use native_render::skip::{self, Cleared};
@@ -955,9 +955,9 @@ mod tests {
     /// render record and whether the record is an object's. Record
     /// `0x7000` is past the memory: it does not read. The render camera
     /// reads as no camera.
-    fn list(layer: u32, items: &[(u32, bool)]) -> engine::memory::FlatMemory {
+    fn list(layer: u32, items: &[(u32, bool)]) -> guest_layout::memory::FlatMemory {
         use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, GEOMETRY_BUILD, RENDER_RECORDS};
-        let mut m = engine::memory::FlatMemory::new(0x0040_0000, 0x0010_0000);
+        let mut m = guest_layout::memory::FlatMemory::new(0x0040_0000, 0x0010_0000);
         m.set_u32(CURRENT_LAYER, layer).unwrap();
         m.set_u32(CURRENT_LIST, LIST).unwrap();
         m.set_u32(LIST + 4, items.len() as u32).unwrap();
@@ -974,7 +974,7 @@ mod tests {
         m
     }
 
-    fn mask(m: &engine::memory::FlatMemory, slot: u32) -> u32 {
+    fn mask(m: &guest_layout::memory::FlatMemory, slot: u32) -> u32 {
         m.u32(LIST_ITEMS + 0x18 * slot + 0x10).unwrap()
     }
 
@@ -1138,7 +1138,7 @@ mod tests {
     #[test]
     fn the_light_passes_layer_draws_return_or_run_the_guest_counted_by_site_and_cause() {
         use crate::frame_step::layer as fl;
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let get = |k: &str| counters().into_iter().find(|(n, _)| n == k).map_or(0, |(_, v)| v);
         let mut mem = FlatMemory::new(0x0045_0000, 0x7_0000);
         let (list, items) = (0x004a_0000, 0x004a_0100);
@@ -1188,7 +1188,7 @@ mod tests {
     fn an_open_shader_with_every_item_native_is_restored_and_returns() {
         use crate::frame_step::layer as fl;
         use crate::open_shader::IMPLEMENTATION_RESTORE;
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let get = |k: &str| counters().into_iter().find(|(n, _)| n == k).map_or(0, |(_, v)| v);
         let mut mem = FlatMemory::new(0x0040_0000, 0x10_0000);
         let (list, items, implementation) = (0x004a_0000, 0x004a_0100, 0x004a_1000);
@@ -1225,7 +1225,7 @@ mod tests {
     #[test]
     fn the_opaque_blocks_layer_draws_return_or_run_the_guest_counted_by_cause() {
         use crate::frame_step::layer as fl;
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let get = |k: &str| counters().into_iter().find(|(n, _)| n == k).map_or(0, |(_, v)| v);
         let mut mem = FlatMemory::new(0x0045_0000, 0x7_0000);
         let (list, items) = (0x004a_0000, 0x004a_0100);
@@ -1278,7 +1278,7 @@ mod tests {
     #[test]
     fn r5s_layer_draws_return_when_every_item_is_native() {
         use crate::frame_step::layer as fl;
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let get = |k: &str| counters().into_iter().find(|(n, _)| n == k).map_or(0, |(_, v)| v);
         let mut mem = FlatMemory::new(0x0045_0000, 0x7_0000);
         let (list, items) = (0x004a_0000, 0x004a_0100);
@@ -1321,7 +1321,7 @@ mod tests {
     #[test]
     fn the_scenes_fog_and_water_return_and_their_kept_items_are_counted_once() {
         use crate::frame_step::layer as fl;
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         use scene_extract::late::{SCENE_FOG_RETURN, SCENE_WATER_RETURN};
         let get = |k: &str| counters().into_iter().find(|(n, _)| n == k).map_or(0, |(_, v)| v);
         let mut mem = FlatMemory::new(0x0045_0000, 0x7_0000);
@@ -1424,7 +1424,7 @@ mod tests {
     #[test]
     fn a_cleared_bit_goes_back_only_on_the_same_item() {
         let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         const BASE: u32 = 0x0060_0000;
         let mut mem = FlatMemory::new(BASE, 0x100);
         let (a, b) = (BASE, BASE + 0x18);

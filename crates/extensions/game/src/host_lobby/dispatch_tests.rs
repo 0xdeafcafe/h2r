@@ -177,7 +177,7 @@ fn host_tick_and_agent_guest_calls_can_share_a_feature_plan() {
 
 #[test]
 fn menu_state_is_read_at_a_slice_even_before_the_first_game_tick() {
-    struct Reader(engine::testing::FakeGuest);
+    struct Reader(guest_layout::testing::FakeGuest);
     impl agent::Reader for Reader {
         fn status(&mut self) -> agent::GameStatus {
             agent::GameStatus::default()
@@ -187,7 +187,7 @@ fn menu_state_is_read_at_a_slice_even_before_the_first_game_tick() {
             Ok(Vec::new())
         }
 
-        fn with_guest(&mut self, visit: &mut dyn FnMut(&mut dyn engine::GuestMemory)) -> bool {
+        fn with_guest(&mut self, visit: &mut dyn FnMut(&mut dyn guest_layout::GuestMemory)) -> bool {
             visit(&mut self.0);
             true
         }
@@ -203,7 +203,7 @@ fn menu_state_is_read_at_a_slice_even_before_the_first_game_tick() {
         false,
     );
     client.send(&agent, 1, method::HOST_LOBBY_STATE, json!({}));
-    let mut menu = engine::testing::FakeGuest::new();
+    let mut menu = guest_layout::testing::FakeGuest::new();
     let game = 0x8200_0000;
     menu.put_u32(points::GAME_GLOBALS.base, game)
         .put_u8(game + 0x1120, 1)

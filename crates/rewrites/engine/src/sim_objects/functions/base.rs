@@ -26,7 +26,7 @@ use super::{
     above, byte, call, cvtsi2ss, fp_error, fpu, fpu_done, imm, load, lo, movaps, pop, push, ret,
     slot, ss, ucomiss_lahf_jp, unowned, zero, Ss, ONE,
 };
-use crate::points;
+use guest_layout::points;
 use crate::sim_objects::{Cx, Next, Result};
 use runtime::{CpuAbi, Guest};
 

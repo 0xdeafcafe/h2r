@@ -6,7 +6,7 @@
 use super::{array, cache, ISLAND_PAIRS, MAX_PAIRS};
 use crate::havok::{bad, span};
 use crate::layout as l;
-use engine::{GuestMemory, MemFault};
+use guest_layout::{GuestMemory, MemFault};
 
 // Pool constructor 0x22c3e0, usage 0x22cb90, pressure and overflow 0x146fd0.
 const POOL: u32 = 0x0047_9898;

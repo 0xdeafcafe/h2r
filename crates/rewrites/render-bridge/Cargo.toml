@@ -20,6 +20,7 @@ canvas-fit = { path = "../../platform/canvas-fit" }
 runtime.workspace = true
 tags.workspace = true
 engine = { path = "../engine", features = ["runtime-glue"] }
+guest-layout = { path = "../../hooking/guest-layout" }
 timeline = { path = "../../runtime/timeline" }
 # The world skip and camera read (pure: no GPU, no map reader).
 native-render = { path = "../native-render", default-features = false, optional = true }

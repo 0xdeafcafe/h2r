@@ -2,7 +2,8 @@
 use std::sync::{Arc, Mutex};
 
 use agent_proto::theater::{self as api, CameraMode};
-use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE};
+use guest_layout::{GuestMemory, points};
+use engine::render_loop::views::VIEW_STRIDE;
 use hooks::{Builder, Flow};
 
 use super::{Mode, Presentation, Session, forge_film, rig::ReplayCamera};

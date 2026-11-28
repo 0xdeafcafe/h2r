@@ -48,7 +48,7 @@ pub fn take() -> Vec<Snapshot> {
 /// The scores the game holds now, read through the same guest reads a
 /// script's `player_score` and team score make.
 #[cfg(feature = "rules")]
-pub fn read(m: &dyn engine::GuestMemory, tick: u32) -> Snapshot {
+pub fn read(m: &dyn guest_layout::GuestMemory, tick: u32) -> Snapshot {
     use crate::rules::guest;
     let players = crate::firefight::runtime::read_players(m).unwrap_or_default();
     let mut rows: Vec<(u8, u8, i32)> = players

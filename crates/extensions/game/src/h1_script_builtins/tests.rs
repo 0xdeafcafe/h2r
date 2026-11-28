@@ -1,8 +1,5 @@
 use super::*;
-use engine::{
-    entry::{EntryFuture, Regs, testing},
-    testing::FakeGuest,
-};
+use guest_layout::{entry::{EntryFuture, Regs, testing}, testing::FakeGuest};
 
 const STACK: u32 = 0x0001_0000;
 const CLOCK: u32 = 0x0002_0000;

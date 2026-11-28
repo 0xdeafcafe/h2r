@@ -45,7 +45,7 @@ use live_hle::HostVariantExt;
 use live_proto::session::VariantExt;
 use variants::ext::{self, Ext};
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 use crate::coop_probe::{self, Session};
 use crate::layout_glue::Gm;
@@ -537,7 +537,7 @@ pub const PLAYER_SPEED: u32 = 0x19c;
 /// Multiplies every live player's movement multiplier by `f`; how many it
 /// changed. A value that isn't finite is left alone.
 pub fn scale_player_speeds(m: &mut dyn GuestMemory, f: f32) -> Result<usize, MemFault> {
-    let Some(array) = engine::view::players::array(m)? else {
+    let Some(array) = guest_layout::view::players::array(m)? else {
         return Ok(0);
     };
     let at: Vec<u32> = array.live(m, 16)?.into_iter().map(|(_, p)| p.addr).collect();
@@ -868,7 +868,7 @@ mod tests {
             None
         );
 
-        let mut g = engine::testing::FakeGuest::new();
+        let mut g = guest_layout::testing::FakeGuest::new();
         const REC: u32 = 0x0070_0000;
         g.map(REC, 0x1000);
         g.put_f32(REC + DAMAGE_AMOUNT, 10.0);
@@ -885,7 +885,7 @@ mod tests {
 
     #[test]
     fn movement_speed_scales_the_players_multipliers_and_back() {
-        use engine::datum::layout as dl;
+        use guest_layout::datum::layout as dl;
         const H: u32 = 0x0060_0000;
         const D: u32 = 0x0060_1000;
         let mut e = Ext::default();
@@ -897,9 +897,9 @@ mod tests {
         assert_eq!(decide(e, Some((&guest, 2)), true).speed(), Some(1.5));
         assert_eq!(decide(e, Some((&guest, 2)), false).speed(), None);
 
-        let mut g = engine::testing::FakeGuest::new();
+        let mut g = guest_layout::testing::FakeGuest::new();
         g.map(H, 0x1000).map(D, 0x1000);
-        g.put_u32(engine::points::PLAYERS.base, H)
+        g.put_u32(guest_layout::points::PLAYERS.base, H)
             .put_u32(H + dl::ELEMENT_SIZE, 0x21c)
             .put_u32(H + dl::HIGH_WATER, 3)
             .put_u32(H + dl::DATA, D);
@@ -1006,7 +1006,7 @@ mod tests {
     #[test]
     fn a_guest_with_its_hosts_block_applies_it_in_game() {
         use coop_probe::layout as l;
-        use engine::points::{NETWORK_READY, SQUAD_SESSION};
+        use guest_layout::points::{NETWORK_READY, SQUAD_SESSION};
         const S: u32 = 0x9000_0000;
         let mut f = game(crate::skulls_mp::MODE_MULTIPLAYER, &half());
         f.wr(S, &vec![0; 0x7420]);
@@ -1094,7 +1094,7 @@ mod tests {
         assert_eq!(in_game(&f), Decision::Retail, "a retail record");
         // A System Link host and a Live host, read from the session.
         use coop_probe::layout as l;
-        use engine::points::{NETWORK_READY, SQUAD_SESSION};
+        use guest_layout::points::{NETWORK_READY, SQUAD_SESSION};
         const S: u32 = 0x9000_0000;
         for (class, applied) in [(SYSTEM_LINK, false), (2, true)] {
             let mut f = game(crate::skulls_mp::MODE_MULTIPLAYER, &half());

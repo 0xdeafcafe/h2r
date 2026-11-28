@@ -6,8 +6,8 @@ use crate::spectator_view::horizontal_fov;
 use crate::native_map::{self, NativeMap};
 use crate::native_world_glue::{self as world_glue, Raw, ReadMemory};
 use crate::telemetry::layout;
-use engine::view::{Tags, objects, players};
-use engine::{DatumHandle, GuestMemory};
+use guest_layout::view::{Tags, objects, players};
+use guest_layout::{DatumHandle, GuestMemory};
 use gfx::presenter::OffscreenTarget;
 use native_render::camera::RenderCamera;
 use native_render::gpu::{DepthRule, GpuWorld, Image, PassViewport};
@@ -259,7 +259,7 @@ impl Frame {
             address,
             index,
             source: crate::map_slots::active_file(g),
-            checksum: guest_layout::game::cache_checksum(g as &dyn engine::GuestMemory).unwrap_or_default(),
+            checksum: guest_layout::game::cache_checksum(g as &dyn guest_layout::GuestMemory).unwrap_or_default(),
         };
         // While every player is respawning, continue rendering a detached
         // camera in the last map it actually saw. Never open a menu BSP for it.

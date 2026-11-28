@@ -32,7 +32,7 @@
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_scene::LatePart;
 use native_render::camera::GuestRead;
 use native_render::skip::{CURRENT_LAYER, CURRENT_LIST};
@@ -244,7 +244,7 @@ pub fn after_entry(slot: &Mutex<Option<Deferred>>, mem: &mut dyn GuestMemory, es
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use native_render::skip::{GEOMETRY_BUILD, GEOMETRY_DRAW, ITEM_SIZE, RENDER_RECORD_SIZE, RENDER_RECORDS};
     use native_render::world::Owner;
 

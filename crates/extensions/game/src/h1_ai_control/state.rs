@@ -1,6 +1,6 @@
 //! Access to converted control state saved by the retail HaloScript VM.
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 const GLOBALS: u32 = 0x004f_9380;
 const GLOBAL_DATA: u32 = 0x44;
@@ -44,7 +44,7 @@ pub(super) fn registry(
         return Ok(None);
     };
     let pool = m.u32(GLOBALS)?;
-    if pool == 0 || end > m.u32(pool + engine::datum::layout::MAXIMUM_COUNT)?.saturating_sub(VALUE_START) {
+    if pool == 0 || end > m.u32(pool + guest_layout::datum::layout::MAXIMUM_COUNT)?.saturating_sub(VALUE_START) {
         return Ok(None);
     }
     let scenario = m.u32(super::points::SCENARIO.base)?;

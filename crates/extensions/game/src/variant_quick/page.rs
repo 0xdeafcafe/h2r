@@ -50,8 +50,8 @@ use std::sync::{Arc, LazyLock, Mutex};
 
 use ::rules::ir::Ir;
 use agent_proto::{RpcError, code};
-use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
-use engine::memory::GuestMemory;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
+use guest_layout::memory::GuestMemory;
 use hooks::{BuildError, Builder, Flow, Manifest, SnapshotPolicy, points};
 use runtime::guest::Permissions;
 use variants::ext::Ext;

@@ -37,8 +37,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::entry::{Cx, EntryError, GuestCall};
-use engine::memory::MemFault;
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::memory::MemFault;
 use hooks::{BuildError, Builder, Manifest};
 use live_hle::Hle;
 use live_hle::signin::{Phase, Prompt};
@@ -427,7 +427,7 @@ impl SigninRows {
     }
 
     /// The keyboard's text once it closed, to the HLE.
-    fn poll_keyboard(&self, m: &dyn engine::memory::GuestMemory) -> Result<(), MemFault> {
+    fn poll_keyboard(&self, m: &dyn guest_layout::memory::GuestMemory) -> Result<(), MemFault> {
         let Some(buffer) = self.keyboard_buffer() else {
             return Ok(());
         };
@@ -502,7 +502,7 @@ impl Rows for SigninRows {
         }
         live
     }
-    fn write_texts(&self, m: &mut dyn engine::memory::GuestMemory) -> Result<(), MemFault> {
+    fn write_texts(&self, m: &mut dyn guest_layout::memory::GuestMemory) -> Result<(), MemFault> {
         self.poll_keyboard(m)
     }
 }
@@ -1147,7 +1147,7 @@ fn open_after(
         cpu.esp -= 8;
         m.set_u32(cpu.esp, mask)?;
         m.set_u32(cpu.esp + 4, loader)?;
-        engine::points::OPEN_SCREEN.base
+        guest_layout::points::OPEN_SCREEN.base
     } else {
         cpu.esp -= REQUEST_SIZE + 4;
         let at = cpu.esp + 4;

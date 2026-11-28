@@ -2,7 +2,7 @@ use std::sync::mpsc::{Receiver, Sender, channel, sync_channel};
 use std::time::Duration;
 
 use agent::{Agent, ConnId, GameStatus, Reader};
-use engine::{GuestMemory, testing::FakeGuest};
+use guest_layout::{GuestMemory, testing::FakeGuest};
 use forge::look::{Refusal, monitors::Who};
 use forge_doc::{Edit, EntryOp};
 use game_markers::{Area, AreaError, Shape};

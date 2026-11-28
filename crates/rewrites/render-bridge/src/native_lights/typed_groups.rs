@@ -3,7 +3,7 @@
 //! slot's RECORDS, or the mask caster's ITEMS. The additional caster's
 //! receiver interval exists only after its own record walk.
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::shadow_constants::global::{TARGET_STRIDE, TARGETS};
 use frame_scene::{EntryState, GroupSite, LightGroup, LightStep, LightTarget, PROJECTION_ROWS, ShadowPass};
 use native_render::shadows;

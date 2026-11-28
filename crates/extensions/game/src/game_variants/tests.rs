@@ -377,12 +377,12 @@ fn the_merged_block_holds_retail_community_and_store_entries() {
     let mut template = GameVariant::stock(GameType::Slayer).unwrap();
     template.set_name(&display).unwrap();
     template.set(SettingId(2), 10).unwrap();
-    let mut mem = engine::memory::FlatMemory::new(0, variants::record::RECORD_SIZE);
-    engine::GuestMemory::write(&mut mem, 0, template.bytes()).unwrap();
+    let mut mem = guest_layout::memory::FlatMemory::new(0, variants::record::RECORD_SIZE);
+    guest_layout::GuestMemory::write(&mut mem, 0, template.bytes()).unwrap();
     assert!(inject::restore_listed(&mut mem, 0).unwrap());
     assert!(!inject::restore_listed(&mut mem, 0).unwrap());
     let mut restored = template.to_bytes();
-    engine::GuestMemory::read(&mem, 0, &mut restored).unwrap();
+    guest_layout::GuestMemory::read(&mem, 0, &mut restored).unwrap();
     assert!(restored[variants::record::TYPE_AREA].iter().all(|&b| b == 0));
     let restored = GameVariant::from_bytes(&restored).unwrap();
     assert_eq!(restored.game_type(), GameType::Script);

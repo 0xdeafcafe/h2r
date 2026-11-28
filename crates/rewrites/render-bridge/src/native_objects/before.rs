@@ -38,7 +38,7 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_scene::ViewKind;
 use native_render::camera::GuestRead;
 use native_render::object_walk::{self, Entry};
@@ -428,7 +428,7 @@ mod tests {
     /// the next layer draw sets it back only on an item that still holds it.
     #[test]
     fn a_runs_cleared_bits_go_back_at_the_next_layer_draw() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let mut m = FlatMemory::new(0x0060_0000, 0x100);
         let (a, b) = (0x0060_0000, 0x0060_0018);
         m.set_u32(a + 0x10, 1 << 3 | 1 << 5).unwrap();
@@ -494,7 +494,7 @@ mod tests {
         let entries = vec![Entry::Excluded, Entry::Object { handle: 1, part: Some(part()) }];
         let predicted = vec![field("ZEnable", Some(2)), field("CullMode", Some(0x900))];
         let host = Fields { fields: vec![field("ZEnable", Some(2)), field("CullMode", Some(0x901))], drawn: Mutex::new(Vec::new()) };
-        let mem = engine::memory::FlatMemory::new(0x0060_0000, 0x100);
+        let mem = guest_layout::memory::FlatMemory::new(0x0060_0000, 0x100);
         let pend = |e: &[Entry]| PENDING.with(|p| *p.borrow_mut() = Some((Built { entries: e.to_vec(), items: vec![0; e.len()] }, predicted.clone())));
         let names = ["layer_plan_3_objects_before_mismatched_CullMode", "layer_plan_3_objects_before_mismatched_entries", "layer_plan_3_objects_before_state_not_first"];
         let before: Vec<u64> = names.iter().map(|n| counter(n)).collect();
@@ -515,7 +515,7 @@ mod tests {
     /// as `order`.
     #[test]
     fn the_leading_runs_draw_before_the_call_and_the_rest_keep_their_order() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let base = 0x0060_0000;
         let mut m = FlatMemory::new(base, 0x100);
         let items: Vec<u32> = (0..4).map(|i| base + 0x18 * i).collect();
@@ -544,7 +544,7 @@ mod tests {
     /// from a list with no item holding bit 3.
     #[test]
     fn the_rust_list_refuses_another_build() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let (list, items) = (0x0060_0000, 0x0060_0100);
         let mut m = FlatMemory::new(list, 0x200);
         m.set_u32(list + 4, 1).unwrap();

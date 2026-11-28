@@ -1,6 +1,6 @@
 //! Reads the final widget inputs and image at the shader quad before Begin.
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use scene_extract::hud;
 
 /// Material inputs at the completed shader quad, after the guest has selected
@@ -189,7 +189,7 @@ const MAX_UNITS: usize = 0xff;
 /// the string draw's changes are not read ([`substituted`]). A string
 /// the tables lack is the empty one, as in the game.
 pub fn localized(mem: &dyn GuestMemory, key: u32) -> Option<String> {
-    use engine::locale::{LocaleTable, StringId};
+    use guest_layout::locale::{LocaleTable, StringId};
 
     if key == 0 {
         return None;
@@ -284,7 +284,7 @@ fn substituted(mem: &dyn GuestMemory, mut units: Vec<u16>) -> Option<Vec<u16>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn shield_layer_reads_its_image_and_evaluated_inputs() {
@@ -343,7 +343,7 @@ mod tests {
             m.put_u32(index + 8 * n as u32, id).put_u32(index + 8 * n as u32 + 4, offset);
         }
         m.put(blob, b"zero\0").put(blob + 8, b"Ammo\0").put(blob + 16, "Zur\u{fc}ck\0".as_bytes());
-        m.put_u8(engine::locale::EMPTY_STRING, 0);
+        m.put_u8(guest_layout::locale::EMPTY_STRING, 0);
         // A replacement table of "[x]" to '#', then "[x" to '<' and "x]" to '>'.
         m.put(0x7000, &[b'[', 0, b'x', 0, b']', 0, 0, 0]).put(0x7010, &[b'[', 0, b'x', 0, 0, 0]).put(0x7020, &[b'x', 0, b']', 0, 0, 0]);
         for entry in 0..REPLACEMENT_COUNT {

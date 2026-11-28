@@ -4,7 +4,7 @@
 //! all memory. Skipped without the image (docs/engine/shadow-exec.md).
 #![cfg(feature = "differential")]
 
-use engine::points;
+use guest_layout::points;
 use engine::sim_effects::{Port, ports};
 use ir::interp::{Cpu, FlatMemory, Flow};
 use lifted::Code;

@@ -3,7 +3,7 @@
 //! `0x000c19f0` and `0x000c1a80`). The light pass builds the same scratch
 //! record on its stack for the lights the guest draws.
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::render::light::LightRecord;
 use engine::render::light_gather;
 use frame_scene::LightVolume;

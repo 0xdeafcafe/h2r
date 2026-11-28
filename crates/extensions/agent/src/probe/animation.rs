@@ -1,8 +1,10 @@
 //! Use the same lookup and inheritance resolution as the animation manager.
 use crate::sim::calls::Outcome;
 use agent_proto::{RpcError, code};
-use engine::{
-    DatumHandle, GuestMemory, MemFault,
+use guest_layout::{
+    DatumHandle,
+    GuestMemory,
+    MemFault,
     entry::{Cx, EntryError, GuestCall},
     view::{Tags, objects},
 };
@@ -25,7 +27,7 @@ fn graph(m: &dyn GuestMemory, unit: u32) -> Result<Option<(u32, u32)>, MemFault>
     let root = Tags.get(
         m,
         DatumHandle(graph),
-        engine::tags::GroupTag::from_chars(*b"jmad"),
+        guest_layout::tags::GroupTag::from_chars(*b"jmad"),
     )?;
     Ok(root.map(|r| (graph, r)))
 }
@@ -120,7 +122,7 @@ pub(crate) fn start(
         .get(
             m,
             DatumHandle(graph),
-            engine::tags::GroupTag::from_chars(*b"jmad"),
+            guest_layout::tags::GroupTag::from_chars(*b"jmad"),
         )
         .map_err(fault)?
         .ok_or_else(|| unavailable(format!("the object's graph {graph:08x} is not loaded")))?;
@@ -156,8 +158,8 @@ pub(crate) fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::tags::{GroupTag, TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL};
-    use engine::testing::FakeGuest;
+    use guest_layout::tags::{GroupTag, TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL};
+    use guest_layout::testing::FakeGuest;
 
     const BODY: u32 = 0x8020_0000;
 

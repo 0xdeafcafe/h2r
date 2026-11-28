@@ -35,7 +35,7 @@ use super::start_point::StartPoint;
 use super::start_point_state::{self as arena, ExtRecords, Global};
 use super::{SeekProgress, Session, State, forge_film};
 use agent_proto::theater as api;
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use std::time::Instant;
 
 /// Film ticks between entries.

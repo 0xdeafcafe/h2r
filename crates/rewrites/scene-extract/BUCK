@@ -39,6 +39,7 @@ workspace_library(
     tree = ":lib-tree",
     version = "0.1.0",
     deps = [
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/hud-kit-core:hud-kit-core",
@@ -57,6 +58,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/hud-kit-core:hud-kit-core",

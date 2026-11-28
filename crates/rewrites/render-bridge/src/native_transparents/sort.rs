@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_scene::ViewSlot;
 
 /// One call of each pass in this many runs the guest sort and is compared.
@@ -266,7 +266,7 @@ pub fn counters() -> Vec<(String, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     fn count(sort: &Sort, name: &str) -> u64 {
         sort.counters()

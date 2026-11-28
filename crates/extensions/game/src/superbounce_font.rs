@@ -22,7 +22,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use gfx::world_lines::{GlyphPixels, LabelFace, LabelFont};
 
 /// Where the font table is.

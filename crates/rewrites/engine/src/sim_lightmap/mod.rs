@@ -61,8 +61,8 @@ pub const RECORD: u32 = 0x0003_ddd0;
 /// The active structure and lightmap (docs/formats/structure-bsp.md).
 const ACTIVE_BSP: u32 = 0x004e_0348;
 const ACTIVE_LIGHTMAP: u32 = 0x004e_0344;
-const TAG_INDEX: u32 = crate::tags::TAG_INDEX_GLOBAL;
-const TAG_ENTRIES: u32 = crate::tags::TAG_ENTRIES_GLOBAL;
+const TAG_INDEX: u32 = guest_layout::tags::TAG_INDEX_GLOBAL;
+const TAG_ENTRIES: u32 = guest_layout::tags::TAG_ENTRIES_GLOBAL;
 /// The render-state cache, `0x100`-byte records.
 const RECORDS: u32 = 0x0050_9434;
 
@@ -499,8 +499,8 @@ impl Site {
 /// caller reads after the call; EBX, ESI, EDI and EBP are unchanged, as
 /// the guest restores them. The return address comes back for the
 /// transfer.
-pub fn record_call(c: &mut CpuAbi, g: &mut dyn crate::GuestMemory) -> Result<u32, GuestFault> {
-    let fault = |f: crate::MemFault| GuestFault {
+pub fn record_call(c: &mut CpuAbi, g: &mut dyn guest_layout::GuestMemory) -> Result<u32, GuestFault> {
+    let fault = |f: guest_layout::MemFault| GuestFault {
         addr: f.addr,
         len: f.len as usize,
         access: if f.write { runtime::guest::Access::Write } else { runtime::guest::Access::Read },

@@ -52,7 +52,7 @@ use crate::function_eval::{
     constant::{ONE, SMALL, ZERO},
 };
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use crate::particle_emission::Overlay;
 
 use x87::abi::{arith_op, unary_op};

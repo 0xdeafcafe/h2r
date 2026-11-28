@@ -14,10 +14,10 @@ use crate::{
     think::{self, Report, lock_source},
     tuning::PhantomLatency,
 };
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::view::{objects, players};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::view::{objects, players};
 use input::host::HostPadState;
 
 /// Buffered controller reports on the remote action path. Build the guest
@@ -369,7 +369,7 @@ impl Phantoms {
                 books.list[i].invalidate_input();
                 state = books.list[i].buttons;
             }
-            let time = m.u32(engine::points::GAME_TIME.base)?;
+            let time = m.u32(guest_layout::points::GAME_TIME.base)?;
             let dt = m.f32(time + 4)?;
             let rate = m.u16(time + guest::GAME_TIME_RATE)?;
             let player_addr = seat.player_addr;
@@ -724,7 +724,7 @@ mod tests {
         };
         let w = fixture::world(7);
         let mut thinker = Thinker::on_radio(mode, w.board);
-        let g = engine::testing::FakeGuest::new();
+        let g = guest_layout::testing::FakeGuest::new();
         let mut uplinks: Vec<Uplink> = (0..fixture::BOTS)
             .map(|i| Uplink::new(100 + u64::from(i)))
             .collect();

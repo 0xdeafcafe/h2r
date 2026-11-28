@@ -39,7 +39,7 @@
 //! stack as it found it).
 
 use super::{Regs, Step};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 pub const RENDER_STATES: u32 = 0x0001_a170;
 /// `D3DDevice_SetRenderState_Simple`: ECX header, EDX value.

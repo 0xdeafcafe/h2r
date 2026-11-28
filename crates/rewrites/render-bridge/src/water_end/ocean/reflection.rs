@@ -23,7 +23,7 @@
 //! (the view's target is not 0 or `0x12`), `cache` and `restore` (the
 //! draw state's reset).
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 use super::{Cause, Device};
 use crate::native_targets::{self, Host};

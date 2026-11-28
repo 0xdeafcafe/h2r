@@ -11,9 +11,9 @@
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::view::{objects, players};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::view::{objects, players};
 
 use crate::brain::Vec3;
 
@@ -157,7 +157,7 @@ pub fn kill_from_guest(
 /// A multiplayer game whose variant is a team game.
 fn team_game(m: &dyn GuestMemory) -> Result<bool, MemFault> {
     use crate::guest::{MODE_MULTIPLAYER, OPTIONS, VARIANT_FLAGS};
-    let globals = m.u32(engine::points::GAME_GLOBALS.base)?;
+    let globals = m.u32(guest_layout::points::GAME_GLOBALS.base)?;
     Ok(globals != 0
         && m.u32(globals + OPTIONS)? == MODE_MULTIPLAYER
         && m.u32(globals + OPTIONS + VARIANT_FLAGS)? & 1 != 0)

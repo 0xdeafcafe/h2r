@@ -7,9 +7,9 @@
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::view::{objects, players};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::view::{objects, players};
 
 use crate::brain::Vec3;
 

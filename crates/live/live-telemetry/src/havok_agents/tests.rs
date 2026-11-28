@@ -1,5 +1,5 @@
-use engine::testing::FakeGuest;
-use engine::view::fake;
+use guest_layout::testing::FakeGuest;
+use guest_layout::view::fake;
 
 use super::*;
 

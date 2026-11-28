@@ -3,7 +3,7 @@
 //! destinations, dirty masks and partial registers survive material changes.
 
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 const SCALAR: u32 = 0x5c;
 const VECTOR: u32 = 0x108;
@@ -474,7 +474,7 @@ pub fn pixel(m:&mut dyn GuestMemory, cache:u32,range:u32,fcw:u16,mxcsr:u32) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     #[test]
     fn pixel_register_writes_select_fragments_and_accumulate_dirty_bits() {
         let c = 0x1000;

@@ -24,12 +24,12 @@
 //! Needs the user's XBE (`lifted::image`); skipped without it.
 #![cfg(feature = "differential")]
 
-use engine::entry::{self, Regs};
-use engine::memory::GuestMemory;
+use guest_layout::entry::{self, Regs};
+use guest_layout::memory::GuestMemory;
 use engine::sim_tick::{self, PHASES};
-use engine::testing::FakeGuest;
-use engine::entry::EntryFuture;
-use engine::points;
+use guest_layout::testing::FakeGuest;
+use guest_layout::entry::EntryFuture;
+use guest_layout::points;
 use ir::interp::{Cpu, FlatMemory, Flow};
 use lifted::Code;
 use std::sync::Mutex;

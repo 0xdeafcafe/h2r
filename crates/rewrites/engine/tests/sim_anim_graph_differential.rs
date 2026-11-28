@@ -12,7 +12,7 @@
 //! guest's result changed, must be named by `compare`.
 #![cfg(feature = "differential")]
 
-use engine::points;
+use guest_layout::points;
 use engine::sim_anim::graph_walk as walk;
 use ir::interp::{Cpu, FlatMemory};
 use lifted::Code;

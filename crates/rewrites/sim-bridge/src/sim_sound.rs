@@ -9,8 +9,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use engine::entry::{Cx, EntryResult, GuestCall, Ret};
-use engine::{GuestMemory, MemFault, points};
+use guest_layout::entry::{Cx, EntryResult, GuestCall, Ret};
+use guest_layout::{GuestMemory, MemFault, points};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use sim_sound::events::{SoundDef, SoundEvent, SoundId, Source};
 use sim_sound::feed::{Host, NullHost};
@@ -626,9 +626,9 @@ mod tests {
             registry.add(&SimSoundEvents::headless()).unwrap();
             let plan = registry.build(&Base).unwrap();
             assert_eq!(!plan.save_sections().is_empty(), on, "the schedule is saved with the switch on");
-            let chain = |p: &engine::points::Point| plan.chains.get(&p.base);
+            let chain = |p: &guest_layout::points::Point| plan.chains.get(&p.base);
             assert_eq!(chain(&points::SOUND_UPDATE).is_some_and(|c| c.implement.is_some()), on);
-            let labels = |p: &engine::points::Point| {
+            let labels = |p: &guest_layout::points::Point| {
                 chain(p).map(|c| c.before.iter().map(|h| h.label).collect::<Vec<_>>()).unwrap_or_default()
             };
             assert_eq!(labels(&points::SOUND_IMPULSE_ALLOCATE), if on { vec!["sound admission"] } else { vec![] });
@@ -708,20 +708,20 @@ mod tests {
     }
 
     /// The fixture's guest with the clock and the tick the sim reads.
-    fn world() -> engine::testing::FakeGuest {
+    fn world() -> guest_layout::testing::FakeGuest {
         let mut g = fixture::guest();
         g.put_u32(points::GAME_TIME.base, fixture::TIME).put_u32(fixture::TIME + 8, 40);
         g.put_u32(owners::MIXER, fixture::MIXER_AT);
         g
     }
 
-    fn calls_of(r: &engine::entry::testing::Run) -> Vec<(u32, Option<u32>, Vec<u32>)> {
+    fn calls_of(r: &guest_layout::entry::testing::Run) -> Vec<(u32, Option<u32>, Vec<u32>)> {
         r.calls.iter().map(|c| (c.target, c.eax, c.args.clone())).collect()
     }
 
     #[test]
     fn the_admission_is_the_engines_and_its_instance_is_entered() {
-        use engine::entry::{self, Regs};
+        use guest_layout::entry::{self, Regs};
         for (returned, entered) in [(fixture::HANDLE, true), (u32::MAX, false)] {
             let sim = Arc::new(Mutex::new(SoundSim::new(Arc::new(NoDurations), Box::new(NullHost))));
             let busy = Arc::new(AtomicBool::new(false));
@@ -748,7 +748,7 @@ mod tests {
 
     #[test]
     fn a_tick_start_sets_the_clock_polls_ramps_and_finishes_then_runs_the_tick() {
-        use engine::entry::{self, Regs};
+        use guest_layout::entry::{self, Regs};
         let mut g = world();
         // The instance is ramping and its ramp has reached the floor.
         g.put_u8(fixture::REC + 4, 1 << 7).put_u32(fixture::REC + 0xb4, 400).put_u32(fixture::REC + 0xb8, 100);
@@ -781,7 +781,7 @@ mod tests {
 
     #[test]
     fn an_instance_the_guest_freed_is_not_finished_twice() {
-        use engine::entry::{self, Regs};
+        use guest_layout::entry::{self, Regs};
         let mut g = world();
         g.put_u16(fixture::REC, 0);
         let sim = Arc::new(Mutex::new(SoundSim::new(Arc::new(NoDurations), Box::new(NullHost))));
@@ -795,7 +795,7 @@ mod tests {
 
     #[test]
     fn the_service_makes_the_owners_update_with_the_seconds_since_the_start() {
-        use engine::entry::{self, Regs};
+        use guest_layout::entry::{self, Regs};
         let sim = Arc::new(Mutex::new(SoundSim::new(Arc::new(NoDurations), Box::new(NullHost))));
         lock(&sim).start_instance(SoundDef { tag: 1, duration_ms: Some(60_000), looping: false }, Source(1), 10, fixture::HANDLE);
         let s = Arc::clone(&sim);

@@ -6,7 +6,7 @@ use agent_proto::debug::{
     RANGE, TRACE_TICKS, View, ViewParams, ViewState, ViewsParams, ViewsResult, method,
 };
 use agent_proto::{RpcError, code};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use guest_layout::game::{GameGlobals, GameTime, PlayerGlobals, cache_checksum};
 use guest_layout::sound::SoundListener;
 use std::collections::HashMap;
@@ -222,15 +222,15 @@ fn seat_positions(guest: &dyn GuestMemory) -> Vec<Point> {
         .and_then(|p| p.local_players(guest).ok());
     let Some(seats) = seats else { return vec![] };
     let sound = guest
-        .u32(engine::points::SOUND_GLOBALS.base)
+        .u32(guest_layout::points::SOUND_GLOBALS.base)
         .ok()
         .filter(|&p| p != 0);
-    let players = engine::view::players::array(guest).ok().flatten();
+    let players = guest_layout::view::players::array(guest).ok().flatten();
     seats
         .into_iter()
         .enumerate()
         .filter_map(|(i, datum)| {
-            let id = engine::DatumHandle::from_raw(datum.raw())?;
+            let id = guest_layout::DatumHandle::from_raw(datum.raw())?;
             let listener = || {
                 let listener = SoundListener::for_user(sound?, i)?;
                 if listener.active(guest).ok()? == 0 {

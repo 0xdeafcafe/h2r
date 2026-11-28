@@ -6,7 +6,7 @@
 
 use super::guest::{LIGHT_VIS, List, NONE, Row, at, objects, ptr};
 use super::{Refusal, Result, Writes};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// `0x00031c20`: AL the shadow byte, ECX the owner, stack 0 the
 /// visibility struct (only the light's own is taken).

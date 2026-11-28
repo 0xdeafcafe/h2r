@@ -1,7 +1,7 @@
 //! Speech routes for rebuilt Halo 1 units. H2 0x114ec0 caches the chosen
 //! dialogue datum in the per-unit block located by the word at +0x342.
 
-use engine::view::Tags;
+use guest_layout::view::Tags;
 use map::{H1_DIALOGUE_SLOT, H1_NATIVE_DIALOGUE_SLOT, H1_VOICE_VARIANT};
 
 use super::{cast, leaders::guest_fault, voices, *};
@@ -221,9 +221,9 @@ pub(super) fn rebind(m: &mut dyn GuestMemory, unit: u32, voice: i16) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use engine::datum::layout;
-    use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, index_layout};
-    use engine::testing::FakeGuest;
+    use guest_layout::datum::layout;
+    use guest_layout::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, index_layout};
+    use guest_layout::testing::FakeGuest;
 
     use super::*;
 

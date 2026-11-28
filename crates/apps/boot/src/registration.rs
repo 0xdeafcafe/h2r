@@ -337,7 +337,7 @@ pub(crate) fn register_core_film(
         game_setup_help::register(
             h1_options_row::OPTIONS_ACTION,
             game_setup_help::image::QUICK_OPTIONS,
-            Arc::new(move |m: &mut dyn engine::memory::GuestMemory| {
+            Arc::new(move |m: &mut dyn guest_layout::memory::GuestMemory| {
                 use crate::list_class::Rows;
                 let id = page.row_help_id()?;
                 page.write_texts(m).ok()?;

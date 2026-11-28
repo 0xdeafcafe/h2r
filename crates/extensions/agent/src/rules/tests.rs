@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use agent_proto::rules::{Budget, Refusal, Reloaded, State};
 use agent_proto::{Object, code};
-use engine::GuestMemory;
-use engine::testing::FakeGuest;
+use guest_layout::GuestMemory;
+use guest_layout::testing::FakeGuest;
 use serde_json::{Value, json};
 
 use super::*;

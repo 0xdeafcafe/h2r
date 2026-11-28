@@ -17,11 +17,7 @@
 
 use std::collections::BTreeMap;
 
-use engine::{
-    DatumHandle,
-    memory::{GuestMemory, MemFault},
-    view::{Record, objects},
-};
+use guest_layout::{DatumHandle, memory::{GuestMemory, MemFault}, view::{Record, objects}};
 use hooks::{Builder, Flow, points};
 
 use super::{
@@ -95,7 +91,7 @@ pub(super) fn collect(
 /// silent end of the enum, and only a shot that carries a report can
 /// force a combat level.
 fn audible_barrel(m: &dyn GuestMemory, definition: Option<DatumHandle>, barrel: u32) -> R<bool> {
-    use engine::tags::{GroupTag, tag_get_checked};
+    use guest_layout::tags::{GroupTag, tag_get_checked};
 
     let Some(definition) = definition else {
         return Ok(true);
@@ -218,9 +214,9 @@ pub(super) fn register(b: &mut Builder<'_>) {
 mod tests {
     use super::*;
     use engine::campaign_squad_pool;
-    use engine::datum::layout;
-    use engine::tags;
-    use engine::testing::FakeGuest;
+    use guest_layout::datum::layout;
+    use guest_layout::tags;
+    use guest_layout::testing::FakeGuest;
     use hooks::points;
 
     fn shot_guest() -> (FakeGuest, u32) {

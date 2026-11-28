@@ -28,10 +28,10 @@
 
 use std::sync::Arc;
 
-use engine::GuestMemory;
-use engine::MemFault;
-use engine::points;
-use engine::points::game_types::{SPAWN_TYPE_MASK, SPAWN_TYPE_MASK_SLAYER};
+use guest_layout::GuestMemory;
+use guest_layout::MemFault;
+use guest_layout::points;
+use guest_layout::points::game_types::{SPAWN_TYPE_MASK, SPAWN_TYPE_MASK_SLAYER};
 use runtime::TransferAbi;
 
 /// Slots in every engine vtable.
@@ -206,7 +206,7 @@ pub fn register(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const OBJECT: u32 = 0x2000_0000;
 

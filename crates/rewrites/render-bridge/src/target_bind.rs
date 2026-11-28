@@ -17,7 +17,7 @@
 //! the tables send nowhere), `colour` (no colour surface to size the
 //! viewport by), `unread`, `unwritable`, `device`.
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 use crate::native_targets::{self, Host};
 use crate::view_setup;
@@ -156,7 +156,7 @@ pub fn bind(mem: &mut dyn GuestMemory, host: &dyn Host, index: i32, lvl: i32, ke
 mod tests {
     use std::sync::Mutex;
 
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     use super::*;
     use crate::native_targets::Bind;

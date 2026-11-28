@@ -1,5 +1,5 @@
 use super::*;
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 use guest_layout::game::GameOptions;
 use map::build::{Block, BspField, FixupKind, TagPayload, TagSet};
 

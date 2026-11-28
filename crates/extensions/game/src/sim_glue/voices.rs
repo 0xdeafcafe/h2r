@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
-use engine::datum::DatumArray;
-use engine::sound::{SoundChannel, SoundInstance};
-use engine::{DatumHandle, GuestMemory, MemFault, points};
+use guest_layout::datum::DatumArray;
+use guest_layout::sound::{SoundChannel, SoundInstance};
+use guest_layout::{DatumHandle, GuestMemory, MemFault, points};
 
 /// The salt distinguishes different lifetimes in the same pool slot. Tag
 /// and permutation distinguish instances which submit identical PCM.

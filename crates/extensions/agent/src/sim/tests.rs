@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use agent_proto::sim::{REFUSED, SessionKind, SessionView, method};
 use agent_proto::{Kind, Object, code};
-use engine::GuestMemory;
-use engine::testing::FakeGuest;
-use engine::view::fake;
-use engine::view::objects::{Body, Header};
-use engine::view::players::Player;
+use guest_layout::GuestMemory;
+use guest_layout::testing::FakeGuest;
+use guest_layout::view::fake;
+use guest_layout::view::objects::{Body, Header};
+use guest_layout::view::players::Player;
 use live_telemetry::layout as l;
 use serde_json::{Value, json};
 
@@ -57,8 +57,8 @@ fn game() -> Game {
     g.put_u32(SIM_GLOBALS.base, 0x8120_0000);
     g.put_u32(SQUAD_SESSION.base, 0x8130_0000);
     for (global, hdr) in [
-        (engine::points::PLAYERS.base, PLAYERS_HDR),
-        (engine::points::OBJECTS.base, OBJECTS_HDR),
+        (guest_layout::points::PLAYERS.base, PLAYERS_HDR),
+        (guest_layout::points::OBJECTS.base, OBJECTS_HDR),
     ] {
         g.map(global, 4);
         g.put_u32(global, hdr);
@@ -194,7 +194,7 @@ fn a_host_write_lands_where_the_readers_read() {
     assert_eq!(p0["grenades"], json!({"frag": 4, "plasma": 0}));
     assert_eq!(p0["ammo"], json!({"loaded": 12, "reserve": 48}));
     // The player record's team, as world.query reads it.
-    let pl = engine::view::players::array(&game.g)
+    let pl = guest_layout::view::players::array(&game.g)
         .unwrap()
         .unwrap()
         .get_absolute(&game.g, 0)
@@ -208,7 +208,7 @@ fn a_host_write_lands_where_the_readers_read() {
 #[test]
 fn the_view_reports_each_players_lives() {
     let (h, mut game) = (Harness::new(), game());
-    let players = engine::view::players::array(&game.g).unwrap().unwrap();
+    let players = guest_layout::view::players::array(&game.g).unwrap().unwrap();
     for (i, lives) in [(0, 2u16), (1, 0xffff)] {
         let p = players.get_absolute(&game.g, i).unwrap().unwrap();
         game.g.put_u16(p.addr + super::state::PLAYER_LIVES, lives);
@@ -231,8 +231,8 @@ fn the_view_reports_each_players_score() {
     let (h, mut game) = (Harness::new(), game());
     let v = h.ok(&mut game, method::VIEW, json!({"roots": ["player"]}));
     assert!(v["player"]["0"]["score"].is_null(), "no game engine: {v}");
-    game.g.map(engine::points::GAME_ENGINE.base, 4);
-    game.g.put_u32(engine::points::GAME_ENGINE.base, ENGINE);
+    game.g.map(guest_layout::points::GAME_ENGINE.base, 4);
+    game.g.put_u32(guest_layout::points::GAME_ENGINE.base, ENGINE);
     game.g.map(ENGINE, 0x1000);
     let row = |i: u32| ENGINE + super::state::STAT_ROWS + super::state::STAT_ROW_SIZE * i;
     game.g.put_u16(row(0), 150).put_u16(row(1), (-5i16) as u16);
@@ -240,7 +240,7 @@ fn the_view_reports_each_players_score() {
     assert_eq!(v["player"]["0"]["score"], 150);
     assert_eq!(v["player"]["1"]["score"], -5);
     // An engine pointer of zero (the menu) is no game engine.
-    game.g.put_u32(engine::points::GAME_ENGINE.base, 0);
+    game.g.put_u32(guest_layout::points::GAME_ENGINE.base, 0);
     let v = h.ok(&mut game, method::VIEW, json!({"roots": ["player"]}));
     assert!(v["player"]["0"]["score"].is_null(), "{v}");
 }
@@ -328,7 +328,7 @@ fn bad_values_and_missing_units_write_nothing() {
         json!({"player": "player.1", "team": 0, "health": 0.5}),
     );
     assert_eq!(e["code"], code::GONE);
-    let pl = engine::view::players::array(&game.g)
+    let pl = guest_layout::view::players::array(&game.g)
         .unwrap()
         .unwrap()
         .get_absolute(&game.g, 1)
@@ -850,7 +850,7 @@ fn give_makes_a_weapon_by_name_and_fills_its_magazine() {
     );
     // The game makes it: the new weapon is the one the unit now holds.
     let weapon = game.g.u32(UNIT_BODY + l::UNIT_WEAPONS).unwrap();
-    let unit_h = engine::view::players::array(&game.g)
+    let unit_h = guest_layout::view::players::array(&game.g)
         .unwrap()
         .unwrap()
         .get_absolute(&game.g, 0)
@@ -1053,7 +1053,7 @@ fn live_capture_matches_sim_objects_at_the_same_boundary() {
 
     let (h, mut game) = (Harness::new(), game());
     let g = &mut game.g;
-    let objects = engine::view::objects::array(g).unwrap().unwrap();
+    let objects = guest_layout::view::objects::array(g).unwrap().unwrap();
     let unit_id = objects.array.handle_of(g, 0).unwrap().unwrap();
     let unit_header = objects.get(g, unit_id).unwrap().unwrap();
     ObjectHeader::at(unit_header.addr)
@@ -1073,7 +1073,7 @@ fn live_capture_matches_sim_objects_at_the_same_boundary() {
     let gun = Layout::at(WEAPON_BODY);
     gun.set(g, Layout::PARENT, Datum(unit_id.raw())).unwrap();
     gun.set(g, Layout::PLACEMENT_INDEX, -1).unwrap();
-    let players = engine::view::players::array(g).unwrap().unwrap();
+    let players = guest_layout::view::players::array(g).unwrap().unwrap();
     let player = players.get_absolute(g, 0).unwrap().unwrap();
     let mut name = [0; guest_layout::player::NAME_UNITS];
     for (dst, unit) in name.iter_mut().zip("Nyx ∆".encode_utf16()) {
@@ -1206,9 +1206,9 @@ fn edit_requests() -> [(&'static str, Value); 4] {
 fn drive_edit_tick(
     g: &mut Game,
     q: &super::calls::Shared,
-    callee: impl FnMut(&engine::entry::GuestCall, &mut dyn GuestMemory) -> engine::entry::Regs,
-) -> Vec<engine::entry::GuestCall> {
-    use engine::entry::{Cx, EntryFn, EntryFuture, Regs, Ret};
+    callee: impl FnMut(&guest_layout::entry::GuestCall, &mut dyn GuestMemory) -> guest_layout::entry::Regs,
+) -> Vec<guest_layout::entry::GuestCall> {
+    use guest_layout::entry::{Cx, EntryFn, EntryFuture, Regs, Ret};
     use std::sync::atomic::AtomicBool;
 
     const SCRATCH: u32 = 0x8130_0000;
@@ -1225,11 +1225,11 @@ fn drive_edit_tick(
             Arc::new(AtomicBool::new(false)),
         ))
     });
-    let r = engine::entry::testing::run(&*f, std::mem::take(&mut g.g), Regs::default(), callee);
+    let r = guest_layout::entry::testing::run(&*f, std::mem::take(&mut g.g), Regs::default(), callee);
     assert_eq!(r.result, Ok(Ret::new(0, 0)));
     assert_eq!(
         r.calls.last().unwrap().target,
-        engine::points::GAME_TICK.base
+        guest_layout::points::GAME_TICK.base
     );
     g.g = r.guest;
     r.calls
@@ -1338,7 +1338,7 @@ fn object_edits_check_the_callers_epoch_again_before_the_engine_call() {
         params["epoch"] = json!(epoch);
         h.deferred(&mut g, name, params.clone());
         h.agent.live_cut();
-        let calls = drive_edit_tick(&mut g, &q, |_, _| engine::entry::Regs::default());
+        let calls = drive_edit_tick(&mut g, &q, |_, _| guest_layout::entry::Regs::default());
         assert_eq!(calls.len(), 1, "{name} must only reenter the tick");
         h.agent.on_tick(&mut g);
         let reply = h.reply();
@@ -1374,7 +1374,7 @@ fn confirmed_edits_recheck_the_salt_at_execution() {
         assert!(e["message"].as_str().unwrap().contains("peer count"));
     }
     assert!(!super::calls::lock(&q).has_pending());
-    let pool = engine::view::objects::array(&g.g).unwrap().unwrap();
+    let pool = guest_layout::view::objects::array(&g.g).unwrap().unwrap();
     let slot = pool.get_absolute(&g.g, 1).unwrap().unwrap();
     let salt = slot.salt(&g.g).unwrap();
     let id = format!("weapon.{salt:04x}0001");
@@ -1386,7 +1386,7 @@ fn confirmed_edits_recheck_the_salt_at_execution() {
         method::OBJECT_SET,
         json!({"id":id,"pos":[5,4,3],"confirm_peers":3,"epoch":epoch}),
     );
-    let calls = drive_edit_tick(&mut g, &q, |_, _| engine::entry::Regs::default());
+    let calls = drive_edit_tick(&mut g, &q, |_, _| guest_layout::entry::Regs::default());
     assert_eq!(calls[0].target, super::calls::addr::OBJECT_SET_POSITION);
     h.agent.on_tick(&mut g);
     let reply = h.reply();
@@ -1398,7 +1398,7 @@ fn confirmed_edits_recheck_the_salt_at_execution() {
     h.deferred(&mut g, method::OBJECT_DELETE, json!({"id":id,"confirm_peers":3}));
     // Reuse the weapon slot after accepting the request and before the hook.
     slot.set_salt(&mut g.g, salt.wrapping_add(1)).unwrap();
-    let calls = drive_edit_tick(&mut g, &q, |_, _| engine::entry::Regs::default());
+    let calls = drive_edit_tick(&mut g, &q, |_, _| guest_layout::entry::Regs::default());
     assert_eq!(calls.len(), 1, "only the game tick");
     h.agent.on_tick(&mut g);
     assert_eq!(h.reply()["error"]["code"], code::GONE);
@@ -1460,7 +1460,7 @@ fn reload_queues_the_active_options() {
     }
 
     let base = 0x8140_0000;
-    g.g.put_u32(engine::points::GAME_GLOBALS.base, base);
+    g.g.put_u32(guest_layout::points::GAME_GLOBALS.base, base);
     g.g.map(base, GameGlobals::SIZE);
     let e = h.err(&mut g, method::MAP_RELOAD, json!({}));
     assert_eq!(e["code"], REFUSED);
@@ -1478,16 +1478,16 @@ fn reload_queues_the_active_options() {
         assert!(!super::calls::lock(&q).has_pending());
         h.deferred(&mut g, method::MAP_RELOAD, json!({}));
         let calls = drive_edit_tick(&mut g, &q, |call, m| {
-            if call.target == engine::points::OPTIONS_QUEUE.base {
+            if call.target == guest_layout::points::OPTIONS_QUEUE.base {
                 assert!(call.args.is_empty());
                 assert_eq!(m.bytes(call.eax.unwrap(), options.len()).unwrap(), options);
                 m.write(super::calls::PENDING_OPTIONS, &options).unwrap();
                 m.write(super::calls::OPTIONS_PENDING, &[1]).unwrap();
             }
-            engine::entry::Regs::default()
+            guest_layout::entry::Regs::default()
         });
         assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].target, engine::points::OPTIONS_QUEUE.base);
+        assert_eq!(calls[0].target, guest_layout::points::OPTIONS_QUEUE.base);
         h.agent.on_tick(&mut g);
         let reply = h.reply();
         let result: agent_proto::sim::MapReloadResult =
@@ -1506,7 +1506,7 @@ fn reload_fixture() -> (Game, u32, std::path::PathBuf) {
     let mut g = game();
     let base = 0x8140_0000;
     let options = base + OPTIONS;
-    g.g.put_u32(engine::points::GAME_GLOBALS.base, base);
+    g.g.put_u32(guest_layout::points::GAME_GLOBALS.base, base);
     g.g.map(base, GameGlobals::SIZE);
     g.g.put_u8(base + GameGlobals::MAP_ACTIVE.offset, 1);
     g.g.put_u8(super::calls::OPTIONS_PENDING, 0);
@@ -1552,7 +1552,7 @@ fn file_reload_binds_between_options_queue_and_the_tick() {
     let second = h.err(&mut g, method::MAP_RELOAD, json!({}));
     assert_eq!(second["code"], REFUSED);
     let calls = drive_edit_tick(&mut g, &q, |c, m| {
-        if c.target == engine::points::OPTIONS_QUEUE.base {
+        if c.target == guest_layout::points::OPTIONS_QUEUE.base {
             let size = super::calls::OPTIONS_SIZE as usize;
             assert_eq!(
                 m.bytes(c.eax.unwrap(), size).unwrap(),
@@ -1565,7 +1565,7 @@ fn file_reload_binds_between_options_queue_and_the_tick() {
         } else {
             events.lock().unwrap().push("tick");
         }
-        engine::entry::Regs::default()
+        guest_layout::entry::Regs::default()
     });
     assert_eq!(calls.len(), 2);
     assert_eq!(
@@ -1580,7 +1580,7 @@ fn file_reload_binds_between_options_queue_and_the_tick() {
     assert_eq!(result["checksum"], 0x1234);
     // The real main loop has not consumed the first request yet.
     h.deferred(&mut g, method::MAP_RELOAD, json!({}));
-    let calls = drive_edit_tick(&mut g, &q, |_, _| engine::entry::Regs::default());
+    let calls = drive_edit_tick(&mut g, &q, |_, _| guest_layout::entry::Regs::default());
     assert_eq!(calls.len(), 1, "only the tick");
     h.agent.on_tick(&mut g);
     assert_eq!(h.reply()["error"]["code"], REFUSED);
@@ -1624,7 +1624,7 @@ fn changed_options_or_failed_reservation_refuse_before_the_guest_queue() {
     h.deferred(&mut g, method::MAP_RELOAD, json!({ "file": file }));
     h.agent.on_tick(&mut g);
     g.g.put(options + 0x1c, b"other scenario\0");
-    let calls = drive_edit_tick(&mut g, &q, |_, _| engine::entry::Regs::default());
+    let calls = drive_edit_tick(&mut g, &q, |_, _| guest_layout::entry::Regs::default());
     assert_eq!(calls.len(), 1, "only the tick");
     h.agent.on_tick(&mut g);
     let error = &h.reply()["error"];
@@ -1636,9 +1636,9 @@ fn changed_options_or_failed_reservation_refuse_before_the_guest_queue() {
     h.deferred(&mut g, method::MAP_RELOAD, json!({ "file": file }));
     h.agent.on_tick(&mut g);
     let calls = drive_edit_tick(&mut g, &q, |call, m| {
-        assert_eq!(call.target, engine::points::GAME_TICK.base);
+        assert_eq!(call.target, guest_layout::points::GAME_TICK.base);
         assert_eq!(m.u8(super::calls::OPTIONS_PENDING).unwrap(), 0);
-        engine::entry::Regs::default()
+        guest_layout::entry::Regs::default()
     });
     assert_eq!(calls.len(), 1);
     h.agent.on_tick(&mut g);
@@ -1664,8 +1664,8 @@ fn file_preparation_waits_off_the_tick_and_rechecks_the_session() {
     send.send(Ok(super::PreparedMapReload::new(31, || panic!("a client reserved the source")))).unwrap();
     h.agent.on_tick(&mut g);
     let calls = drive_edit_tick(&mut g, &q, |call, _| {
-        assert_eq!(call.target, engine::points::GAME_TICK.base);
-        engine::entry::Regs::default()
+        assert_eq!(call.target, guest_layout::points::GAME_TICK.base);
+        guest_layout::entry::Regs::default()
     });
     assert_eq!(calls.len(), 1);
     h.agent.on_tick(&mut g);
@@ -1706,7 +1706,7 @@ fn playback_without_guest_calls_does_not_advertise_reload() {
 
 #[test]
 fn timed_out_edits_make_no_guest_calls_when_the_hook_resumes() {
-    use engine::entry::{Cx, EntryFuture, Regs, Step, poll};
+    use guest_layout::entry::{Cx, EntryFuture, Regs, Step, poll};
     use std::sync::atomic::AtomicBool;
 
     let (h, q) = with_calls();
@@ -1736,8 +1736,8 @@ fn timed_out_edits_make_no_guest_calls_when_the_hook_resumes() {
     let Step::Call(call) = poll(&mut resumed, &cx) else {
         panic!("expected the game tick")
     };
-    assert_eq!(call.target, engine::points::GAME_TICK.base);
-    engine::entry::resume(&cx, Regs::default());
+    assert_eq!(call.target, guest_layout::points::GAME_TICK.base);
+    guest_layout::entry::resume(&cx, Regs::default());
     assert!(matches!(poll(&mut resumed, &cx), Step::Done(Ok(_))));
 }
 
@@ -2015,7 +2015,7 @@ fn audio_play_queues_the_sound_start_at_the_players_unit_and_refuses_what_is_no_
         method::AUDIO_PLAY,
         json!({"sound": "sound\\pogo\\spring"}),
     );
-    let unit_h = engine::view::players::array(&game.g)
+    let unit_h = guest_layout::view::players::array(&game.g)
         .unwrap()
         .unwrap()
         .get_absolute(&game.g, 0)
@@ -2104,7 +2104,7 @@ fn recording_play_finds_the_recording_by_name_and_queues_the_players_call() {
         method::RECORDING_PLAY,
         json!({"recording": "LEAVE", "mode": "hover"}),
     );
-    let unit_h = engine::view::players::array(&game.g)
+    let unit_h = guest_layout::view::players::array(&game.g)
         .unwrap()
         .unwrap()
         .get_absolute(&game.g, 0)

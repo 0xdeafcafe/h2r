@@ -39,8 +39,8 @@ pub mod view_update;
 use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use hooks::{Builder, Flow};
 
 /// The argument bytes `0x00224550` pops (`ret 0x1c`).
@@ -426,7 +426,7 @@ mod tests {
     use super::view_update::tests::{PART_DATA, ROWS, SYS_DATA, particle, system, world};
     use super::view_update::{LIST_END, LIST_ENTRIES, LIST_STRIDE, PARTICLE, SYSTEM};
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     fn counter(name: &str) -> u64 {
         super::tested(name)

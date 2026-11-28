@@ -31,7 +31,7 @@
 //! against the original, lifted and run on the IR interpreter.
 
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// The image's constants the setup reads.
 pub mod constant {

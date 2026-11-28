@@ -18,8 +18,8 @@
 
 use std::sync::{Mutex, MutexGuard};
 
-use engine::GuestMemory;
-use engine::handle::DatumHandle;
+use guest_layout::GuestMemory;
+use guest_layout::handle::DatumHandle;
 use hud_kit_core::views::superbounce::Medal;
 use pogo::Style;
 use pogo::placed::Placed;
@@ -140,7 +140,7 @@ fn read(m: &dyn GuestMemory, placed: Option<&Placed>, seen: &Seen) -> Read {
     let held = (|| {
         let t = seen.tick.as_ref()?;
         let placed = placed?;
-        let (_, body) = engine::view::objects::get(m, DatumHandle(t.unit)).ok()??;
+        let (_, body) = guest_layout::view::objects::get(m, DatumHandle(t.unit)).ok()??;
         let style = crate::pogo_loadout::held_style(m, body.addr, placed)?;
         let weapon = guest_layout::Unit::at(body.addr).held_weapon(m).ok()??;
         Some(Held {

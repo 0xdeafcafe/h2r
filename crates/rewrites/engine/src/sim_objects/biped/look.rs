@@ -2,8 +2,8 @@
 
 use super::{NONE, and32, arithmetic, at, below_or_equal, call, flags8, pop, push, set_slot, slot, store_ss, sx16};
 use super::{Cx, Next, Result, unowned};
-use crate::datum::layout::DATA;
-use crate::points;
+use guest_layout::datum::layout::DATA;
+use guest_layout::points;
 use crate::sim_objects::alu;
 use crate::sim_objects::sse::{self, Ss};
 use crate::sim_physics::byte;

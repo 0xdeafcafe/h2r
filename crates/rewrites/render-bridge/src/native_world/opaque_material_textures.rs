@@ -3,11 +3,11 @@
 //! stage changes the desired resource. The emitter compares those headers
 //! with the currently bound ones and issues the effective D3D texture binds.
 
-use engine::entry::{Cx, EntryError, GuestCall};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::render_loop::{opaque_material::bitmap_frame, opaque_texture, world_lightmap, world_walk};
 use engine::screen_grid::constant::{BOUND_HEIGHT, BOUND_WIDTH};
-use engine::tags::TAG_ENTRIES_GLOBAL;
+use guest_layout::tags::TAG_ENTRIES_GLOBAL;
 use engine::screen_effect::{TARGET_OVERRIDE, TARGET_STRIDE, TARGETS};
 use native_render::object_nodes::TEXACCUM_HEADER;
 #[cfg(test)]
@@ -447,8 +447,8 @@ pub(super) async fn resolve(cx: &Cx, fcw: u16, mxcsr: u32) -> Applied {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::entry::{EntryFuture, Regs, Ret, testing::run};
-    use engine::testing::FakeGuest;
+    use guest_layout::entry::{EntryFuture, Regs, Ret, testing::run};
+    use guest_layout::testing::FakeGuest;
 
     const RANGE: u32 = 0x1000;
     const PASS: u32 = 0x1020;

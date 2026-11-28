@@ -12,7 +12,7 @@ use super::{
     above, byte, fp_error, fpu, fpu_done, imm, lo, load, movaps, pop, push, ret, slot, unowned,
     zero, OBJECTS, ONE, TAGS,
 };
-use crate::datum::layout;
+use guest_layout::datum::layout;
 use crate::sim_objects::{Cx, Next, Result};
 use runtime::{CpuAbi, Guest};
 

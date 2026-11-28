@@ -5,8 +5,8 @@
 //! `0x16b6b0`, which takes the scenario's count as the capacity and sets or
 //! clears one bitmap bit per slot. A converted scenario with more slots than
 //! the retail bitmap covers gets a larger bitmap here first.
-use crate::datum::{self, flags, layout};
-use crate::{GuestMemory, MemFault, points};
+use guest_layout::datum::{self, flags, layout};
+use guest_layout::{GuestMemory, MemFault, points};
 
 /// Holds the syntax array header.
 pub const NODES: u32 = 0x004f_9394;
@@ -73,8 +73,8 @@ pub fn prepare(m: &mut dyn GuestMemory, extended: u32) -> Result<(), MemFault> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::datum::DatumArray;
-    use crate::memory::FlatMemory;
+    use guest_layout::datum::DatumArray;
+    use guest_layout::memory::FlatMemory;
 
     const HEADER: u32 = 0x500000;
     const EXTENDED: u32 = 0x520000;

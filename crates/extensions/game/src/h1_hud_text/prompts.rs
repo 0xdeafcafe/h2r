@@ -2,13 +2,13 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::handle::DatumHandle;
+use guest_layout::handle::DatumHandle;
 use engine::hs_actions;
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::{
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{
     HUD_INTERACTION_VISIBLE, PLAYER_PICKUP_CANDIDATE, PLAYER_PICKUP_SCAN, PLAYER_PRESS_INTERACT,
 };
-use engine::tags::{entry_layout, tag_entry_checked};
+use guest_layout::tags::{entry_layout, tag_entry_checked};
 use hooks::{Builder, Flow, GuestCall, Ret};
 use h1_contract::hud::{
     EXIT_VEHICLE, MARKER, MARKER_AT, PROMPT_SUBJECT_SIZE, PROMPT_SUBJECTS, SWAP_POWERUP,
@@ -366,9 +366,9 @@ pub(super) fn register(b: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
-    use engine::points::SCENARIO;
-    use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, index_layout};
+    use guest_layout::memory::FlatMemory;
+    use guest_layout::points::SCENARIO;
+    use guest_layout::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, index_layout};
     use h1_contract::hud::{GROUP, SCENARIO_HMT, SHARED_MESSAGES, SIZE};
 
     const TAG: u32 = 0x0045_1000;

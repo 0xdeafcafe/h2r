@@ -47,7 +47,7 @@ const TICKS: u32 = 0x0051_0c54;
 const RANK_SCALE: u32 = 0x0045_df20;
 const USERS: u32 = 0x004e_8c20;
 const CONTROL: u32 = 0x004e_d284;
-const TAG_ENTRIES: u32 = crate::points::TAG_ENTRIES.base;
+const TAG_ENTRIES: u32 = guest_layout::points::TAG_ENTRIES.base;
 /// `100880`'s index is `movsx cx`: a count past this would wrap it.
 const MAGAZINES_MAX: i32 = 0x7fff;
 /// `c6ef0` reads its three directions through this pointer.

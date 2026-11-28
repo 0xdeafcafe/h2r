@@ -2,7 +2,7 @@
 //! existence checks and deletion path. The probe supplies the shape,
 //! payload, placement and position callbacks those routines dispatch to.
 
-use engine::{GuestMemory, MemFault, points, view::objects};
+use guest_layout::{GuestMemory, MemFault, points, view::objects};
 use guest_layout::tags::{GroupTag, entry_layout, index_layout};
 use hooks::{BuildError, Builder, Cx, EntryFuture, GuestCall, Ret};
 

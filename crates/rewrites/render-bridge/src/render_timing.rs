@@ -52,7 +52,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use engine::points::{self, Point, Sig};
+use guest_layout::points::{self, Point, Sig};
 use timeline::phase::{self, Phase};
 
 use hooks::{BuildError, Builder, Feature, Manifest};

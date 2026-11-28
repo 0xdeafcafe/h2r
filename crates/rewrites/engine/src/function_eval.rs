@@ -33,7 +33,7 @@
 //! `engine/tests/screen_effects_differential.rs`.
 
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 use x87::abi::{arith_op, src_kind, unary_op};
 
@@ -840,7 +840,7 @@ pub(crate) fn put_constants(m: &mut dyn GuestMemory) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const DATA: u32 = 0x0048_8000;
     const REF: u32 = 0x0048_7ff0;

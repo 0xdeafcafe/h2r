@@ -29,7 +29,7 @@
 
 use std::sync::{Arc, RwLock};
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 pub mod ocean;
 
@@ -210,13 +210,13 @@ fn end_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -
 
 /// Places the water end's implementation (`native-water`'s feature).
 pub fn place(b: &mut hooks::Builder<'_>) {
-    b.raw().implement(&engine::points::WATER_TEARDOWN, "native_water_end", end_call).context_only();
+    b.raw().implement(&guest_layout::points::WATER_TEARDOWN, "native_water_end", end_call).context_only();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const AT: u32 = 0x0050_0000;
     const DEFINITIONS: u32 = 0x0051_0000;

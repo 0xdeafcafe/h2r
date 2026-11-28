@@ -510,11 +510,11 @@ pub fn publish_play(entries: Vec<Entry>) {
 /// record the map carries) and its flags' places. A scenario that is not
 /// loaded yet leaves them to the next frame. True when it read them.
 #[cfg(feature = "rules")]
-pub fn refresh_play(m: &dyn engine::GuestMemory) -> bool {
+pub fn refresh_play(m: &dyn guest_layout::GuestMemory) -> bool {
     if !PLAY_STALE.load(Ordering::Acquire) {
         return false;
     }
-    if m.u32(engine::points::SCENARIO.base).unwrap_or(0) == 0 {
+    if m.u32(guest_layout::points::SCENARIO.base).unwrap_or(0) == 0 {
         return false;
     }
     let Ok(things) = crate::rules::census::things(m) else {
@@ -933,7 +933,7 @@ pub use gpu::{batch, register};
 
 #[cfg(feature = "gpu")]
 mod gpu {
-    use engine::GuestMemory;
+    use guest_layout::GuestMemory;
 
     use super::*;
     use crate::world_lines::{ImageMarks, LineStyle, WorldLine, WorldLineSource};

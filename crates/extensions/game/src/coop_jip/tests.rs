@@ -1,8 +1,8 @@
 use super::*;
-use engine::entry::Regs;
-use engine::entry::testing::run;
-use engine::memory::GuestMemory;
-use engine::testing::FakeGuest;
+use guest_layout::entry::Regs;
+use guest_layout::entry::testing::run;
+use guest_layout::memory::GuestMemory;
+use guest_layout::testing::FakeGuest;
 
 const SESSION: u32 = 0x0010_0000;
 const REQUEST: u32 = 0x0020_0000;
@@ -82,7 +82,7 @@ fn only_the_host_of_a_running_co_op_campaign_reads_as_the_lobby() {
 
 /// Runs the lifted check on a session in state `real`; the stand-in for
 /// retail's check records the state it saw and answers `code`.
-fn check(real: u32, code: u32) -> (engine::entry::testing::Run, u32) {
+fn check(real: u32, code: u32) -> (guest_layout::entry::testing::Run, u32) {
     let mut g = FakeGuest::new();
     g.put_u32(SESSION + layout::STATE, real);
     let seen = Arc::new(Mutex::new(0));

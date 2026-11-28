@@ -1,5 +1,5 @@
 use super::*;
-use engine::memory::FlatMemory;
+use guest_layout::memory::FlatMemory;
 
 const CACHE: u32 = 0x0050_0000;
 const POOL: u32 = 0x0050_0100;

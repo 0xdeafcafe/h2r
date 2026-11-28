@@ -18,7 +18,7 @@
 
 use crate::function_eval::{self, constant::ONE};
 use crate::light_constants::X87;
-use crate::points;
+use guest_layout::points;
 use crate::sim_physics::ARITH;
 use runtime::{CpuAbi, Guest};
 use sim_core::det;

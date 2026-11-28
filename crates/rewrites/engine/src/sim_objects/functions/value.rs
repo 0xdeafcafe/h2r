@@ -27,8 +27,8 @@ use super::{
     pop, push, ret, slot, ss, test8, unowned, zero, NONE, OBJECTS, ONE, ONE_BITS, TAGS, TYPES,
     ZERO,
 };
-use crate::datum::layout;
-use crate::points;
+use guest_layout::datum::layout;
+use guest_layout::points;
 use crate::sim_objects::{Cx, Next, Result};
 use runtime::{CpuAbi, Guest};
 use ::sim_objects::functions::{ExportCursor, ExportStop};

@@ -1,6 +1,6 @@
 //! The transient values have already disappeared by the next agent tick.
 use super::*;
-use engine::points;
+use guest_layout::points;
 use ::hooks::{BuildError, Builder, Feature, Manifest, Obs, SnapshotPolicy};
 use std::collections::BTreeMap;
 
@@ -300,7 +300,7 @@ mod tests {
     }
     #[test]
     fn structure_collision_does_not_read_object_fields() {
-        let mut m = engine::testing::FakeGuest::new();
+        let mut m = guest_layout::testing::FakeGuest::new();
         m.map(0x1000, 0x26);
         m.put_u32(0x1000, 1).put_u16(0x1024, 7);
         let v = collision(&m, 0x1000, 88).unwrap();

@@ -1,9 +1,9 @@
 use super::{cast::*, *};
-use engine::datum::layout;
-use engine::entry::EntryFuture;
-use engine::entry::Regs;
-use engine::entry::testing::{Run, run};
-use engine::testing::FakeGuest;
+use guest_layout::datum::layout;
+use guest_layout::entry::EntryFuture;
+use guest_layout::entry::Regs;
+use guest_layout::entry::testing::{Run, run};
+use guest_layout::testing::FakeGuest;
 
 const SCENARIO: u32 = 0x1000;
 const DEFINITIONS: u32 = 0x2000;

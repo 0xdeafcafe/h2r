@@ -22,9 +22,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
-use engine::view::objects;
-use engine::{DatumHandle, points};
+use guest_layout::memory::GuestMemory;
+use guest_layout::view::objects;
+use guest_layout::{DatumHandle, points};
 use frame_scene::NodeMatrix;
 use hooks::Flow;
 use pogo::RIG;
@@ -255,8 +255,8 @@ pub fn install_hooks(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
 
 #[cfg(test)]
 mod tests {
-    use engine::testing::FakeGuest;
-    use engine::view::fake;
+    use guest_layout::testing::FakeGuest;
+    use guest_layout::view::fake;
     use guest_layout::{Object, ObjectHeader};
 
     use super::*;

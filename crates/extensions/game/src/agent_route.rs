@@ -11,7 +11,7 @@ use agent::{Access, RoutePad, RoutePorts};
 use agent_proto::route::{Leg, LegStatus, PortParams, RouteParams, State, Status};
 use agent_proto::{Boundary, PORTS, Phase, RpcError, code, method};
 use bots::cache::{self, MapData, Stamp};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use input::host::ConvertConfig;
 use serde_json::Value;
 

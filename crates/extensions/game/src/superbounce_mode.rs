@@ -49,7 +49,7 @@ use std::io::{Read, Seek};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use superbounce::{Kind, Spot, Vec3};
 
 use crate::superbounce_capsule::Room;
@@ -1115,7 +1115,7 @@ fn read_live(m: &dyn GuestMemory) -> Live {
         )
         .is_ok_and(|flags| flags & crate::superbounce_view::CONTROL_FLASHLIGHT != 0);
     // Bit 0 of the biped flags, as `world.object` reads `physics.airborne`.
-    let airborne = u.kind == engine::view::objects::BIPED
+    let airborne = u.kind == guest_layout::view::objects::BIPED
         && m.u16(u.body.wrapping_add(BIPED_FLAGS))
             .is_ok_and(|flags| flags & 1 != 0);
     Live {

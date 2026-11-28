@@ -18,7 +18,7 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use engine::{GuestMemory, points};
+use guest_layout::{GuestMemory, points};
 use hooks::{Builder, Feature, Flow, Manifest};
 
 pub const ID: &str = "render-rng";
@@ -160,7 +160,7 @@ pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const SEED: u32 = 0x0060_0000;
 

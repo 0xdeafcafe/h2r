@@ -1,6 +1,6 @@
 use super::*;
-use engine::datum::layout as dl;
-use engine::testing::FakeGuest;
+use guest_layout::datum::layout as dl;
+use guest_layout::testing::FakeGuest;
 use settings::Def;
 
 fn store() -> Store {
@@ -398,8 +398,8 @@ fn game() -> FakeGuest {
     for a in [PLAYERS_H, OBJECTS_H, PLAYER_DATA, OBJECT_DATA, BODY] {
         g.map(a, 0x1000);
     }
-    g.put_u32(engine::points::PLAYERS.base, PLAYERS_H)
-        .put_u32(engine::points::OBJECTS.base, OBJECTS_H);
+    g.put_u32(guest_layout::points::PLAYERS.base, PLAYERS_H)
+        .put_u32(guest_layout::points::OBJECTS.base, OBJECTS_H);
     for (h, size, data) in [
         (PLAYERS_H, 0x21c, PLAYER_DATA),
         (OBJECTS_H, 0xc, OBJECT_DATA),
@@ -448,7 +448,7 @@ fn the_local_players_units_are_found() {
     g.put_u16(PLAYER_DATA + 0x28, 0xffff);
     assert!(local_units(&g).unwrap().is_empty());
     // No players array yet (the menus): none, no fault.
-    g.put_u32(engine::points::PLAYERS.base, 0);
+    g.put_u32(guest_layout::points::PLAYERS.base, 0);
     assert!(local_units(&g).unwrap().is_empty());
 }
 
@@ -576,7 +576,7 @@ fn a_variants_unlimited_grenades_reach_every_players_unit() {
     assert_eq!(variant_grenades(&mut g).unwrap(), 0);
     assert_eq!(g.u8(BODY + UNIT_GRENADES).unwrap(), 7, "more is kept");
     // No players array (the menus): nothing, no fault.
-    g.put_u32(engine::points::PLAYERS.base, 0);
+    g.put_u32(guest_layout::points::PLAYERS.base, 0);
     assert_eq!(variant_grenades(&mut g).unwrap(), 0);
 }
 

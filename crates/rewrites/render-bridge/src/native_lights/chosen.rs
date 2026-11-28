@@ -114,7 +114,7 @@ pub fn beyond_guest(lights: &[SceneLight], cap: usize, slots: usize) -> (Vec<Cho
 /// Draws `lights` (from [`beyond_guest`]) for the view whose light pass is
 /// over and counts the outcome. Returns the lights the host drew.
 pub fn draw(
-    mem: &mut dyn engine::memory::GuestMemory,
+    mem: &mut dyn guest_layout::memory::GuestMemory,
     lights: &[ChosenLight],
     unread: usize,
 ) -> usize {

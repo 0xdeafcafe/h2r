@@ -3,15 +3,15 @@
 //! the host runtime applies at a tick boundary.
 //!
 //! Reads and writes take guest memory directly. An entry that calls the
-//! engine is an `async` body over a [`Cx`] (`engine::entry`): it runs inside
+//! engine is an `async` body over a [`Cx`] (`guest_layout::entry`): it runs inside
 //! a guest entry at the tick boundary, which makes each guest call. Every
 //! call goes to the engine's own routine, named in `points.rs`; nothing
 //! here writes an actor record.
 
 use ::firefight::Faction;
 use ::firefight::director::SQUAD_SLOTS;
-use engine::entry::{Cx, EntryError, GuestCall, Regs};
-use engine::{GuestMemory, MemFault, points};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Regs};
+use guest_layout::{GuestMemory, MemFault, points};
 
 use super::host::{AiGlobals, Kit};
 use ::firefight::ShipKind;
@@ -329,7 +329,7 @@ pub fn character_ready(m: &dyn GuestMemory, row: u16) -> anyhow::Result<()> {
 /// whose definition is at [`FAKE_CHARACTERS`] `+ 0x100 * i`, has no
 /// parent and has one row of each of [`UNCHECKED_ROWS`].
 #[cfg(test)]
-pub(super) fn fake_characters(m: &mut engine::testing::FakeGuest, palette: u32, rows: u32) {
+pub(super) fn fake_characters(m: &mut guest_layout::testing::FakeGuest, palette: u32, rows: u32) {
     m.put_u32(guest_layout::global::TAG_ENTRIES.base, FAKE_TAGS);
     for i in 0..rows {
         let definition = FAKE_CHARACTERS + 0x100 * i;

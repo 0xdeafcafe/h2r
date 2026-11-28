@@ -31,7 +31,7 @@
 //! against the lifted original.
 
 use crate::light_constants::{Error, Fpu, LightGlobals, Sse, X87};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// `0x00048ee0`: ECX the projection volume, EBX the light's frame block
 /// (`record + 0x84`), stack the `ligh` definition; `ret 4` (through

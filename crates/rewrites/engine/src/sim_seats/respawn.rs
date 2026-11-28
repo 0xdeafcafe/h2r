@@ -52,7 +52,7 @@ pub use countdown::{
     entity_mark, entity_queue, event_post,
 };
 
-use crate::points;
+use guest_layout::points;
 use crate::sim_physics::ARITH;
 use runtime::guest::{Access, FaultReason};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
@@ -511,6 +511,6 @@ pub fn resume(cpu: &mut CpuAbi, guest: &mut Guest) -> Result<TransferAbi, GuestF
 }
 
 /// The point the arm is installed at.
-pub fn point() -> &'static crate::points::Point {
+pub fn point() -> &'static guest_layout::points::Point {
     &points::PLAYER_RESPAWN_READY
 }

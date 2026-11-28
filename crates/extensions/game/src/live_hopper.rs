@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use engine::points::HOPPER_BLOCK_READ;
+use guest_layout::points::HOPPER_BLOCK_READ;
 use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 use live_proto::hopper::{BLOCK, is_base_map, retain_block_maps};
 

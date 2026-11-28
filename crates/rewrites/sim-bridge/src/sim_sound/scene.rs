@@ -3,8 +3,8 @@
 //! Where each sound plays comes from the table
 //! ([`sim_sound::instances::Sounds::sources`]), not guest memory.
 
-use engine::points;
-use engine::{GuestMemory, MemFault};
+use guest_layout::points;
+use guest_layout::{GuestMemory, MemFault};
 use sim_sound::feed::Ear;
 
 /// Sound globals `+0x88`: a user's listener, `0x48` bytes each.
@@ -46,7 +46,7 @@ pub fn ear(m: &dyn GuestMemory) -> Result<Option<Ear>, MemFault> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn the_scene_hears_through_the_first_active_listener() {

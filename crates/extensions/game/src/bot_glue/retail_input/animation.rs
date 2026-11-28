@@ -1,6 +1,6 @@
 //! Animation cache misses in the private action builder. Only a read of an
 //! existing live graph can be repeated on the scheduled game thread.
-use engine::{
+use guest_layout::{
     DatumHandle,
     entry::GuestCall,
     memory::GuestMemory,
@@ -105,11 +105,7 @@ mod tests {
     use super::*;
     use crate::bot_glue::retail_input::{ACTION_SIZE, Path, Stage, gather_with};
     use bots::phantom::SeatInput;
-    use engine::{
-        entry::{self, Regs, Ret},
-        tags,
-        testing::FakeGuest,
-    };
+    use guest_layout::{entry::{self, Regs, Ret}, tags, testing::FakeGuest};
     use runtime::{CpuAbi, Dispatch, guest::Permissions};
 
     const GRAPH: u32 = 0x552000;

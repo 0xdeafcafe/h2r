@@ -1,4 +1,4 @@
-//! Seeded differential test: every adapter in `engine::abi::OVERRIDES`
+//! Seeded differential test: every adapter in `guest_layout::abi::OVERRIDES`
 //! against the original x86, lifted by `crates/recompiler/lift` and run on the IR
 //! interpreter (`ir::interp`), from identical 64 MB guest states.
 //!
@@ -33,10 +33,10 @@
 //! **Views.** For the lookups a view answers (`datum_try_and_get`,
 //! `datum_get_absolute`, `tag_get_checked`), the view is asked the same
 //! question on the memory the original ran on and must give its answer
-//! (`engine::view`), so the views are checked against real layouts.
+//! (`guest_layout::view`), so the views are checked against real layouts.
 //!
 //! **The game's path.** Every call is also made the way the game makes it
-//! with `impl.engine` on: through `engine::runtime_glue::invoke` (the body
+//! with `impl.engine` on: through `guest_layout::runtime_glue::invoke` (the body
 //! the `engine-leaves` feature installs) on a `runtime::Guest` holding the
 //! same 64 MB. That side must agree with the direct adapter exactly: same
 //! outcome, every register, every byte, and the same fault address and
@@ -46,8 +46,8 @@
 
 use std::collections::BTreeMap;
 
-use engine::abi::{self, Output, Reg, Regs};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::abi::{self, Output, Reg, Regs};
+use guest_layout::memory::{GuestMemory, MemFault};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, Exit, FlatMemory};
 
@@ -165,12 +165,12 @@ struct Tally {
     disagreed: u64,
     /// Calls whose game path (runtime `invoke`) disagreed with the adapter.
     game_disagreed: u64,
-    /// Calls also answered by a view (`engine::view`), and disagreements.
+    /// Calls also answered by a view (`guest_layout::view`), and disagreements.
     views: u64,
     view_disagreed: u64,
 }
 
-engine::record! {
+guest_layout::record! {
     /// Any element: the views' lookups use the array's own element size.
     struct Element: 0x4 {}
 }
@@ -224,19 +224,19 @@ impl Harness<'_> {
     /// just answered, from the memory it ran on: `None` when the function
     /// has no view, `Some(None)` when they agree, `Some(Some(why))` when not.
     fn view_check(&mut self, name: &str, r: &Regs, theirs: &Outcome) -> Option<Option<String>> {
-        use engine::view::{Datums, Tags};
+        use guest_layout::view::{Datums, Tags};
         let m = Eng(&mut self.a);
         let ours = match name {
             "datum_try_and_get" => Datums::<Element>::at(r.esi)
-                .get(&m, engine::DatumHandle(r.eax))
+                .get(&m, guest_layout::DatumHandle(r.eax))
                 .map(|e| e.map(|e| e.addr)),
             "datum_get_absolute" => Datums::<Element>::at(r.esi)
                 .get_absolute(&m, r.edx as i32)
                 .map(|e| e.map(|e| e.addr)),
             "tag_get_checked" => Tags.get(
                 &m,
-                engine::DatumHandle(r.ecx),
-                engine::tags::GroupTag(r.ebx),
+                guest_layout::DatumHandle(r.ecx),
+                guest_layout::tags::GroupTag(r.ebx),
             ),
             _ => return None,
         };
@@ -307,7 +307,7 @@ impl Harness<'_> {
                 edi: r.edi,
                 ..Default::default()
             };
-            match engine::runtime_glue::invoke(o, &mut cpu, &mut self.c) {
+            match guest_layout::runtime_glue::invoke(o, &mut cpu, &mut self.c) {
                 Ok(t) if t == runtime::TransferAbi::ret(HARNESS_EXIT) => Outcome::Returned(Regs {
                     eax: cpu.eax,
                     ecx: cpu.ecx,
@@ -1176,7 +1176,7 @@ fn overrides_agree_with_the_lifted_original() {
     let lifter = lift::Lifter::new(&analysis, &x).unwrap();
     let image = lift::harness::load_image(&x).unwrap();
     assert_eq!(
-        image.bytes[engine::locale::EMPTY_STRING as usize],
+        image.bytes[guest_layout::locale::EMPTY_STRING as usize],
         0,
         "EMPTY_STRING is a NUL byte"
     );

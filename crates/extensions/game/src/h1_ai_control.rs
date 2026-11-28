@@ -2,9 +2,9 @@
 //! The scripts still run on the retail Halo 2 interpreter. See
 //! docs/halo1/ai-control.md for the builtin and guest ABI evidence.
 
-use engine::DatumHandle;
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::DatumHandle;
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
 use hooks::{BuildError, Builder, Flow, Manifest, points};
 use hs::h1_ai_slots::{self, Operation};
 
@@ -188,7 +188,7 @@ pub fn dialogue_awareness(
     actor: u32,
     rate: u32,
 ) -> Result<u16, MemFault> {
-    match actors::by_handle(m, engine::DatumHandle(actor))? {
+    match actors::by_handle(m, guest_layout::DatumHandle(actor))? {
         Some(actor) => Ok(contact::focused(m, actor, rate)?.level),
         None => Ok(0),
     }
@@ -244,7 +244,7 @@ fn call_operation(call: &mut hooks::Call<'_>, opcode: u16) -> Option<Operation> 
 }
 
 pub fn call_head(call: &mut hooks::Call<'_>, opcode: u16) -> Option<u32> {
-    use engine::{DatumHandle, datum::DatumArray};
+    use guest_layout::{DatumHandle, datum::DatumArray};
 
     let thread = call.arg_u32("thread")?;
     let mem = call.ctx.runtime().memory();
@@ -446,8 +446,8 @@ async fn dispatch(cx: Cx, op: Operation) -> Result<Ret, EntryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::entry::{EntryFuture, Regs, testing};
-    use engine::testing::FakeGuest;
+    use guest_layout::entry::{EntryFuture, Regs, testing};
+    use guest_layout::testing::FakeGuest;
 
     const STACK: u32 = 0x0030_0000;
     const DESCRIPTOR: u32 = 0x0031_0000;
@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn free_uses_the_native_squad_unlink_for_each_selected_actor() {
-        use engine::datum::layout;
+        use guest_layout::datum::layout;
 
         const ARRAY: u32 = 0x0083_0000;
         const ROWS: u32 = 0x0084_0000;

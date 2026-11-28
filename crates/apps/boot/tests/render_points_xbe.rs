@@ -8,7 +8,7 @@
 //!
 //! `H2_XBE=/path/default.xbe cargo test -p boot --test render_points_xbe -- --ignored`
 
-use engine::points;
+use guest_layout::points;
 
 #[test]
 #[ignore = "needs the retail default.xbe in $H2_XBE"]

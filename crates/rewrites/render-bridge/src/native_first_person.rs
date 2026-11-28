@@ -23,8 +23,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
-use engine::entry::{Cx, EntryError, EntryFuture, EntryResult, Ret};
+use guest_layout::memory::GuestMemory;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, EntryResult, Ret};
 use engine::render::light_gather::{first_person_effects, first_person_items};
 use scene_extract::layout::skip::{CURRENT_LAYER, CURRENT_LIST};
 use frame_scene::{FrameScene, View, ViewKind, ViewSlot};

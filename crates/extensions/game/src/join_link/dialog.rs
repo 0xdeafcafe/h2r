@@ -1,7 +1,7 @@
 //! A large kit dialog, available both in the shell and over a running map.
 use std::sync::{Arc, Mutex};
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 use crate::list_class::{ListClass, Panel, PanelText, Rows, TextBlock};
 use crate::ui::{Chosen, LABEL_SLOT};

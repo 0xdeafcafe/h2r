@@ -75,8 +75,8 @@ fn level(pathfinding: u32) -> Guest {
     g.map_zeroed(0x0040_0000, 0x0020_0000, Permissions::RW).unwrap();
     g.map_zeroed(META, 0x0001_0000, Permissions::RW).unwrap();
     g.map_zeroed(QUERY, 0x3000, Permissions::RW).unwrap();
-    g.set_u32(engine::points::TAG_INDEX.base, HEADER).unwrap();
-    g.set_u32(engine::points::TAG_ENTRIES.base, ENTRIES).unwrap();
+    g.set_u32(guest_layout::points::TAG_INDEX.base, HEADER).unwrap();
+    g.set_u32(guest_layout::points::TAG_ENTRIES.base, ENTRIES).unwrap();
     g.set_u32(HEADER + hot_tags::index::HEADER_SCENARIO, SCNR).unwrap();
     g.set_u32(HEADER + hot_tags::index::HEADER_COUNT, 2).unwrap();
     entry(&mut g, 0, b"scnr", SCNR, META, 0x100);

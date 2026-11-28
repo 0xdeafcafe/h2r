@@ -1,11 +1,11 @@
 use std::sync::Mutex;
 
 use ::actor_net::{ActorChange, Control, Record};
-use engine::entry::testing::{Run, run};
-use engine::entry::{Regs, Ret};
-use engine::testing::FakeGuest;
-use engine::view::{Datums, fake, objects};
-use engine::{GuestMemory, tags};
+use guest_layout::entry::testing::{Run, run};
+use guest_layout::entry::{Regs, Ret};
+use guest_layout::testing::FakeGuest;
+use guest_layout::view::{Datums, fake, objects};
+use guest_layout::{GuestMemory, tags};
 
 use super::*;
 
@@ -116,7 +116,7 @@ fn packet(tick: u32, records: Vec<Record>) -> Packet {
 fn tick(client: Client, guest: FakeGuest, local_tick: u32) -> (Client, Run) {
     let state = Arc::new(Mutex::new(Some(client)));
     let moved = Arc::clone(&state);
-    let entry = move |cx: Cx| -> engine::entry::EntryFuture {
+    let entry = move |cx: Cx| -> guest_layout::entry::EntryFuture {
         let mut client = moved.lock().unwrap().take().unwrap();
         let moved = Arc::clone(&moved);
         Box::pin(async move {

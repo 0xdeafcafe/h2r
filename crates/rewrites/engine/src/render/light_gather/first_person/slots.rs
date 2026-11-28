@@ -1,7 +1,7 @@
 //! The ordered table consumed by the first-person light loop. Rebuild it
 //! from the dynamic passes while each light's source records still exist.
 use super::{SLOT_COUNT, SLOT_LIGHT, SLOT_RECORDS, SLOTS, slot_base};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use crate::render::light_gather::{Refusal, Result, frame::FIRST_PERSON_COUNT, items};
 
 type Record = [u8; items::RECORD as usize];
@@ -90,7 +90,7 @@ impl Slots {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn a_full_slot_ignores_later_records_and_a_missing_record_differs() {

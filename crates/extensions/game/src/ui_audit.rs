@@ -3,8 +3,8 @@
 use std::collections::HashSet;
 
 use agent_proto::{RpcError, code, method};
-use engine::datum::{DatumArray, layout};
-use engine::{DatumHandle, GuestMemory, points};
+use guest_layout::datum::{DatumArray, layout};
+use guest_layout::{DatumHandle, GuestMemory, points};
 use serde_json::{Value, json};
 
 use crate::{list_class, ui_kit::dialog_tag, ui_watch};
@@ -861,7 +861,7 @@ pub(crate) fn install(agent: &agent::Agent) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const SCREEN: u32 = 0x1000;
     const LIST_AT: u32 = 0x2000;

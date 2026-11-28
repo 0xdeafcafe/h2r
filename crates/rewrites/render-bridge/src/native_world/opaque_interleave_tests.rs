@@ -3,10 +3,10 @@
 //! They write different lanes of the constant and leave a second stage alone.
 
 use super::{OpaqueDraw, OpaqueSubmitError, opaque_handler, opaque_material};
-use engine::entry::{self, Cx, EntryFuture, GuestCall, Regs, Ret};
-use engine::memory::GuestMemory;
+use guest_layout::entry::{self, Cx, EntryFuture, GuestCall, Regs, Ret};
+use guest_layout::memory::GuestMemory;
 use engine::render_loop::states;
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 use native_render::skip::RENDER_RECORDS;
 use native_render::world::Owner;
 use native_render::world_ranges::SortedPart;
@@ -63,7 +63,7 @@ fn scene() -> FakeGuest {
     let mut m = FakeGuest::new();
     m.map(BASE, SIZE);
     for (at, value) in [
-        (engine::tags::TAG_ENTRIES_GLOBAL, TABLE),
+        (guest_layout::tags::TAG_ENTRIES_GLOBAL, TABLE),
         (TABLE + 16, u32::from_be_bytes(*b"shad")), (TABLE + 24, SHADER),
         (TABLE + 40, TEMPLATE_TAG), (TABLE + 56, PASS_TAG),
         (SHADER + 4, u32::MAX), (SHADER + 0x24, INSTANCE),

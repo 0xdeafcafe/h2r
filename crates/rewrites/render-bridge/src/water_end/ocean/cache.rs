@@ -17,7 +17,7 @@
 //! native draw takes its bitmaps from the map at the load, not from these
 //! caches.
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 use super::Cause;
 

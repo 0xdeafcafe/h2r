@@ -2,9 +2,9 @@
 //! palettes come from the loaded map, as they do for the player models
 //! and scoreboard. See docs/audio/playstation-audio.md.
 
-use engine::tags::GroupTag;
-use engine::view::{Tags, players};
-use engine::{DatumHandle, GuestMemory, points};
+use guest_layout::tags::GroupTag;
+use guest_layout::view::{Tags, players};
+use guest_layout::{DatumHandle, GuestMemory, points};
 use live_telemetry::layout;
 
 const PORTS: usize = layout::PLAYER_SLOT_COUNT as usize;
@@ -173,9 +173,9 @@ pub fn colours(m: &dyn GuestMemory) -> [Option<[u8; 3]>; PORTS] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::datum::layout as datum;
-    use engine::tags::{entry_layout, index_layout};
-    use engine::testing::FakeGuest;
+    use guest_layout::datum::layout as datum;
+    use guest_layout::tags::{entry_layout, index_layout};
+    use guest_layout::testing::FakeGuest;
 
     const GAME: u32 = 0x10000;
     const OPTIONS: u32 = GAME + layout::OPTIONS;

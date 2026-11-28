@@ -17,7 +17,7 @@
 //! wait gives its slice up between checks so the kernel's clocked vblank
 //! source moves the counter, and [`Watch`] names a wait that never ends.
 
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The globals the wait reads and writes (all 64-bit but the two flags).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,7 +154,7 @@ impl Watch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const A: Addrs = Addrs {
         counter: 0x1000,

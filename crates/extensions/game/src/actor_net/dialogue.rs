@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use ::actor_net::wire::MAX_RECORDS;
-use engine::{GuestMemory, points};
+use guest_layout::{GuestMemory, points};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Line {
@@ -120,7 +120,7 @@ pub(super) fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn a_line_is_queued_once() {

@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use super::world_walk::LIGHTMAP;
 
 /// Last page read by the material's lightmap texture binding.
@@ -146,7 +146,7 @@ impl Bindings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn disjoint_descriptors_and_both_palette_shortcuts_survive_the_run() {

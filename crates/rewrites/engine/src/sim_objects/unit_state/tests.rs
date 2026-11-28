@@ -3,7 +3,7 @@
 //! image constants they read are planted with test values); no game data.
 
 use super::*;
-use crate::points;
+use guest_layout::points;
 use crate::sim_objects::{TABLE, drive, frame};
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, Guest, TransferAbi};

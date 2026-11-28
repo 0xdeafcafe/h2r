@@ -1,9 +1,6 @@
 //! Order speech uses the same event system as native AI vocalizations.
 
-use engine::{
-    entry::{Cx, EntryError, GuestCall},
-    memory::MemFault,
-};
+use guest_layout::{entry::{Cx, EntryError, GuestCall}, memory::MemFault};
 
 use super::{NONE, actors};
 

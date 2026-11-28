@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_scene::{ClipRect, Overlay, OverlayKind, OverlayTexture, ViewSlot};
 use frame_types::Slot as FrameSlot;
 use gfx::external::{ExternalAttachments, UiFit};

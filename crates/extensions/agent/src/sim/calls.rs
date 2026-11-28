@@ -97,10 +97,10 @@ use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 
 use super::edits::{PreparedMapReload, ReservedMapReload, active_options, refused, replay_options};
 use agent_proto::{ObjectId, RpcError, code};
-use engine::GuestMemory;
-use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
-use engine::handle::DatumHandle;
-use engine::view::{objects, players};
+use guest_layout::GuestMemory;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
+use guest_layout::handle::DatumHandle;
+use guest_layout::view::{objects, players};
 use serde_json::{Value, json};
 
 /// The addresses, with the evidence in the module doc.
@@ -117,7 +117,7 @@ pub mod addr {
     pub const OBJECT_NEW: u32 = 0x000b_7b40;
     /// `sound_start_at_marker`: EAX the marker, ESI the object, one stack
     /// argument pointing to (permutation hint, sound, scale, flags).
-    pub const SOUND_START_AT_MARKER: u32 = engine::points::SOUND_START_AT_MARKER.base;
+    pub const SOUND_START_AT_MARKER: u32 = guest_layout::points::SOUND_START_AT_MARKER.base;
     /// The head marker's name id.
     pub const HEAD_MARKER: u32 = 0x0400_0095;
     /// The recording player: EAX the unit, CX the recording's index in
@@ -128,7 +128,7 @@ pub mod addr {
     pub const RECORDING_PLAYER: u32 = 0x001f_b360;
     pub const OBJECT_DELETE: u32 = 0x000b_8540;
     pub const UNIT_ADD_WEAPON: u32 = 0x000c_d0c0;
-    pub const PLAYER_PLACE_NEAR: u32 = engine::points::PLAYER_PLACE_NEAR.base;
+    pub const PLAYER_PLACE_NEAR: u32 = guest_layout::points::PLAYER_PLACE_NEAR.base;
     pub const PLAYER_SET_FACING: u32 = 0x0018_74b0;
     /// `player_set_unit_index`: stdcall `(player)`, EBX the unit (-1 for
     /// none), `ret 4` (module doc, "Forge body").
@@ -282,7 +282,7 @@ pub enum BodyStep {
 fn teleporter_flag(m: &dyn GuestMemory, scenario: u32, flag: u32) -> Result<u32, String> {
     use map::scenario_layout::{BlockKind, block};
     let def = block(BlockKind::NetgameFlags);
-    let fault = |e: engine::MemFault| format!("guest memory at {:#x} faulted", e.addr);
+    let fault = |e: guest_layout::MemFault| format!("guest memory at {:#x} faulted", e.addr);
     let count = m.u32(scenario + def.offset).map_err(fault)?;
     let first = m.u32(scenario + def.offset + 4).map_err(fault)?;
     if flag >= count {
@@ -612,7 +612,7 @@ pub fn lock(q: &Shared) -> MutexGuard<'_, Queue> {
 }
 
 /// The cache name and game mode of the timeline which owns a preview.
-pub(crate) fn preview_scenario(m: &dyn engine::GuestMemory) -> Option<(String, u32)> {
+pub(crate) fn preview_scenario(m: &dyn guest_layout::GuestMemory) -> Option<(String, u32)> {
     let mut name = [0u8; 32];
     m.read(guest_layout::global::CACHE_MAP_NAME.base, &mut name).ok()?;
     let len = name.iter().position(|&b| b == 0).unwrap_or(name.len());
@@ -707,7 +707,7 @@ impl Queue {
         check: Option<EditCheck>,
     ) -> Result<PendingCall, String> {
         let queues_game = matches!(&call, Call::QueueGame { steps } if steps.iter().any(|step| {
-            matches!(step, GameStep::Call { target, .. } if *target == engine::points::OPTIONS_QUEUE.base)
+            matches!(step, GameStep::Call { target, .. } if *target == guest_layout::points::OPTIONS_QUEUE.base)
         }));
         let ticket = self.admit(queue, queues_game, check)?;
         self.pending.push((ticket.ticket, call));
@@ -890,7 +890,7 @@ pub fn up_of(f: [f32; 3]) -> [f32; 3] {
     u.map(|v| v / len)
 }
 
-fn put_vec(m: &mut dyn GuestMemory, at: u32, v: [f32; 3]) -> Result<(), engine::MemFault> {
+fn put_vec(m: &mut dyn GuestMemory, at: u32, v: [f32; 3]) -> Result<(), guest_layout::MemFault> {
     for (i, c) in v.iter().enumerate() {
         m.set_f32(at + 4 * i as u32, *c)?;
     }
@@ -899,7 +899,7 @@ fn put_vec(m: &mut dyn GuestMemory, at: u32, v: [f32; 3]) -> Result<(), engine::
 
 /// A player's unit handle, its body and its local user, read now.
 fn player_unit(m: &dyn GuestMemory, player: u32) -> Result<Option<(u32, u32, i16)>, String> {
-    let fault = |e: engine::MemFault| format!("guest memory at {:#x} faulted", e.addr);
+    let fault = |e: guest_layout::MemFault| format!("guest memory at {:#x} faulted", e.addr);
     let Some(array) = players::array(m).map_err(fault)? else {
         return Err("no players array (no game loaded)".into());
     };
@@ -950,7 +950,7 @@ async fn prepare_spawn(
             put_vec(m, scratch + addr::PLACEMENT_FORWARD, forward)?;
             put_vec(m, scratch + addr::PLACEMENT_UP, up)?;
         }
-        Ok::<_, engine::MemFault>(())
+        Ok::<_, guest_layout::MemFault>(())
     })?;
     Ok(())
 }
@@ -999,7 +999,7 @@ async fn object_set(
     };
     let turning = forward.is_some() || up.is_some();
     if turning {
-        let axes = cx.read(|m| -> Result<_, engine::MemFault> {
+        let axes = cx.read(|m| -> Result<_, guest_layout::MemFault> {
             Ok((
                 match forward {
                     Some(f) => f,
@@ -1059,9 +1059,9 @@ async fn object_delete(cx: &Cx, queue: &Shared, id: ObjectId) -> Result<Outcome,
 /// and active, then the deactivate and activate pair, then the active
 /// index read back.
 async fn reactivate_structure(cx: &Cx) -> Result<Outcome, EntryError> {
-    let state = cx.read(|m| -> Result<(i16, i16), engine::MemFault> {
+    let state = cx.read(|m| -> Result<(i16, i16), guest_layout::MemFault> {
         let loaded = m.u16(addr::LOADED_STRUCTURE_BSP)? as i16;
-        let globals = m.u32(engine::points::GAME_GLOBALS.base)?;
+        let globals = m.u32(guest_layout::points::GAME_GLOBALS.base)?;
         let active = m.u16(globals.wrapping_add(addr::GAME_GLOBALS_ACTIVE_BSP))? as i16;
         Ok((loaded, active))
     });
@@ -1079,12 +1079,12 @@ async fn reactivate_structure(cx: &Cx) -> Result<Outcome, EntryError> {
             "no structure BSP is loaded and active (loaded {loaded}, active {active})"
         ))));
     }
-    cx.call(GuestCall::new(engine::points::STRUCTURE_BSP_DEACTIVATE.base))
+    cx.call(GuestCall::new(guest_layout::points::STRUCTURE_BSP_DEACTIVATE.base))
         .await?;
-    cx.call(GuestCall::new(engine::points::STRUCTURE_BSP_ACTIVATE.base))
+    cx.call(GuestCall::new(guest_layout::points::STRUCTURE_BSP_ACTIVATE.base))
         .await?;
-    let after = cx.read(|m| -> Result<i16, engine::MemFault> {
-        let globals = m.u32(engine::points::GAME_GLOBALS.base)?;
+    let after = cx.read(|m| -> Result<i16, guest_layout::MemFault> {
+        let globals = m.u32(guest_layout::points::GAME_GLOBALS.base)?;
         Ok(m.u16(globals.wrapping_add(addr::GAME_GLOBALS_ACTIVE_BSP))? as i16)
     });
     match after {
@@ -1234,7 +1234,7 @@ async fn run_body(
             let Some(kept) = cx.read(|m| body_of(m, biped)) else {
                 return Ok(Err(unavailable("the player's own biped is gone")));
             };
-            let at = cx.read(|m| -> Result<_, engine::MemFault> {
+            let at = cx.read(|m| -> Result<_, guest_layout::MemFault> {
                 let b = objects::Body::at(body);
                 Ok((b.position(m)?, b.forward(m)?))
             })?;
@@ -1425,7 +1425,7 @@ async fn run_forge(
         if let ForgeStep::SpareClips { index, clips } = *step {
             crate::forge::spare_clips::set(index, clips);
             if let Some(clips) = clips {
-                cx.write(|m| -> Result<(), engine::MemFault> {
+                cx.write(|m| -> Result<(), guest_layout::MemFault> {
                     if let Some(state) = crate::forge::spare_clips::state(m)? {
                         crate::forge::spare_clips::fill(m, state, index, clips)?;
                     }
@@ -1550,7 +1550,7 @@ async fn run_call(
             let at = cx.read(|m| body_of(m, made).and_then(|b| b.position(m).ok()));
             // The barrel calls this immediately after spawning. The projectile
             // definition selects whether it needs a same-tick ballistic step.
-            cx.call(GuestCall::new(engine::points::BARREL_PROJECTILE.base).ecx(made))
+            cx.call(GuestCall::new(guest_layout::points::BARREL_PROJECTILE.base).ecx(made))
                 .await?;
             Ok(Ok(json!({ "object": hex(made), "pos": at })))
         }
@@ -1829,7 +1829,7 @@ async fn run_call(
                         if let Some(a) = esi {
                             c = c.esi(a.resolve(options));
                         }
-                        if *target == engine::points::OPTIONS_QUEUE.base
+                        if *target == guest_layout::points::OPTIONS_QUEUE.base
                             && let Some(ticket) = ticket
                             && let Err(why) = reserve_reload(queue, ticket, options)
                         {
@@ -1991,7 +1991,7 @@ async fn run_batch(
                 if active_options(m)? != reload.options {
                     return Err(refused("the active game options changed before reload"));
                 }
-                let fault = |e: engine::MemFault| {
+                let fault = |e: guest_layout::MemFault| {
                     refused(format!("cannot read the pending game transition at {:#x}", e.addr))
                 };
                 if m.u8(OPTIONS_PENDING).map_err(fault)? != 0 {
@@ -2032,7 +2032,7 @@ async fn run_batch(
     }
     reentry.store(true, Ordering::SeqCst);
     let _reentry = TickReentry(reentry);
-    cx.call(GuestCall::new(engine::points::GAME_TICK.base)).await?;
+    cx.call(GuestCall::new(guest_layout::points::GAME_TICK.base)).await?;
     Ok(Ret::new(0, 0))
 }
 
@@ -2044,7 +2044,7 @@ enum PendingOptions {
 }
 
 fn pending_options(m: &dyn GuestMemory, options: u32) -> Result<PendingOptions, String> {
-    let fault = |e: engine::MemFault| format!("cannot read queued options at {:#x}", e.addr);
+    let fault = |e: guest_layout::MemFault| format!("cannot read queued options at {:#x}", e.addr);
     if m.u8(OPTIONS_PENDING).map_err(fault)? == 0 {
         return Ok(PendingOptions::Empty);
     }
@@ -2121,7 +2121,7 @@ const TAG_TABLE: u32 = 0x004e_3b44;
 /// `[[data + 4] + 0x1c]`. A campaign map's tags don't hold what a
 /// multiplayer map's do, so `game.load` from a campaign would fault.
 pub(crate) fn variant_name_lookup_faults(m: &dyn GuestMemory) -> bool {
-    let chain = || -> Result<bool, engine::MemFault> {
+    let chain = || -> Result<bool, guest_layout::MemFault> {
         let matg = m.u32(GLOBALS_TAG)?;
         if matg == 0 {
             return Ok(false);

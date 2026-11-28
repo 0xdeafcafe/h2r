@@ -8,8 +8,8 @@
 //! | dialogue on | `[0x4ed28c] + 0x29` |
 //! | the unit's line | object `+0x33e`: the offset of its dialogue state; `+0x38` past it, the line's tag |
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::OBJECTS;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::OBJECTS;
 
 const NONE: u32 = u32::MAX;
 /// `[0x4ed28c] + 0x29`: dialogue is on (`0x18c8c0`'s gate).
@@ -73,7 +73,7 @@ pub fn line_end(m: &mut dyn GuestMemory, object: u32, tag: u32) -> Result<bool, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const ARRAY: u32 = 0x0060_0000;
     const HEADERS: u32 = 0x0060_1000;

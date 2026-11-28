@@ -1,6 +1,6 @@
 use super::*;
-use engine::datum::layout as dl;
-use engine::testing::FakeGuest;
+use guest_layout::datum::layout as dl;
+use guest_layout::testing::FakeGuest;
 
 /// The model is process-wide; tests that set it take this.
 static MODEL: Mutex<()> = Mutex::new(());
@@ -91,8 +91,8 @@ fn put_game(
     put16: &mut dyn FnMut(u32, u16),
     put8: &mut dyn FnMut(u32, u8),
 ) {
-    put32(engine::points::PLAYERS.base, PLAYERS_H);
-    put32(engine::points::OBJECTS.base, OBJECTS_H);
+    put32(guest_layout::points::PLAYERS.base, PLAYERS_H);
+    put32(guest_layout::points::OBJECTS.base, OBJECTS_H);
     for (h, size, data, n) in [
         (PLAYERS_H, 0x21c, PLAYER_DATA, 1),
         (OBJECTS_H, 0xc, OBJECT_DATA, 3),
@@ -386,7 +386,7 @@ fn halo1_maps_pick_halo1s_model_by_name_and_sandbox() {
 
 #[test]
 fn a_draw_can_borrow_the_name_even_at_the_end_of_a_mapping() {
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     let mut mem = FlatMemory::new(CACHE_MAP_NAME, 4);
     mem.write(CACHE_MAP_NAME, b"abc\0").unwrap();
     let mut field = [0; 32];

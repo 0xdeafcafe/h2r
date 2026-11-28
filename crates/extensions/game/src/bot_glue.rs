@@ -23,7 +23,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::points;
+use guest_layout::points;
 use hooks::{BuildError, Builder, Flow, Manifest};
 
 pub const ID: &str = "bots";

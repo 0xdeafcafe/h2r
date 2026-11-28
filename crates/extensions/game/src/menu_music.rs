@@ -1,11 +1,11 @@
 //! Retail menu music and attract timer state for `audio.loops`.
 
-use engine::points::{
+use guest_layout::points::{
     GLOBALS_TAG, SCENARIO, UI_ATTRACT_RESET, UI_ATTRACT_TIMEOUT, UI_CLOCK, UI_LAST_INPUT,
     UI_MUSIC_GATE, UI_MUSIC_STATE,
 };
-use engine::tags::{self, GroupTag, entry_layout};
-use engine::{DatumHandle, GuestMemory, MemFault};
+use guest_layout::tags::{self, GroupTag, entry_layout};
+use guest_layout::{DatumHandle, GuestMemory, MemFault};
 use serde::Serialize;
 
 const WIGL_ATTRACT_MUSIC_LEAD: u32 = 0x1c0;
@@ -101,9 +101,9 @@ fn tag_address(m: &dyn GuestMemory, raw: u32, group: [u8; 4]) -> Result<Option<u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::points::{TAG_ENTRIES, TAG_INDEX};
-    use engine::tags::index_layout;
-    use engine::testing::FakeGuest;
+    use guest_layout::points::{TAG_ENTRIES, TAG_INDEX};
+    use guest_layout::tags::index_layout;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn menu_timer_distinguishes_music_stop_from_movie_start_at_present_2300() {

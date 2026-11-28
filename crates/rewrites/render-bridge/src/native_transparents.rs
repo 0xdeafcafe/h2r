@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::{memory::GuestMemory, points};
+use guest_layout::{memory::GuestMemory, points};
 use native_render::camera::GuestRead;
 use native_render::transparent::{self, Entry};
 
@@ -548,7 +548,7 @@ impl Feature for NativeTransparents {
 #[cfg(test)]
 mod walk_tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use native_render::skip::CURRENT_LIST;
 
     #[test]

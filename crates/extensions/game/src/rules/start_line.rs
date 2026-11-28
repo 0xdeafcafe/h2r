@@ -3,15 +3,15 @@
 //! See docs/game/notes/2026-11-24-game-type-engine-reads.md, "The start line".
 
 use ::rules::types::{StartLine, Type};
-use engine::entry::{Cx, GuestCall};
-use engine::{GuestMemory, points};
+use guest_layout::entry::{Cx, GuestCall};
+use guest_layout::{GuestMemory, points};
 use std::sync::Arc;
 
 /// The broadcast waits until every seated player's machine is in the game,
 /// the condition of the retail per-player start slot. Players that have
 /// left the round no longer hold the line.
 pub fn players_ready(m: &dyn GuestMemory) -> bool {
-    let Ok(Some(players)) = engine::view::players::array(m) else {
+    let Ok(Some(players)) = guest_layout::view::players::array(m) else {
         return false;
     };
     let Ok(listed) = players.live_iter(m, 16) else {
@@ -45,7 +45,7 @@ pub async fn post(cx: &Cx, tick: u32, ty: Type) -> anyhow::Result<()> {
                 .checked_sub(SIZE)
                 .ok_or_else(|| anyhow::anyhow!("no stack space for the game event"))?;
             cx.write(|m| m.write(event, &[0; SIZE as usize]))
-                .map_err(|e| anyhow::anyhow!("{}", engine::entry::EntryError::from(e)))?;
+                .map_err(|e| anyhow::anyhow!("{}", guest_layout::entry::EntryError::from(e)))?;
             cx.call(
                 GuestCall::new(points::GAME_EVENT_NEW.base)
                     .eax(event)

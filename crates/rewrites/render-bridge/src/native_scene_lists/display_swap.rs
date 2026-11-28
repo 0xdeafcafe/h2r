@@ -293,7 +293,7 @@ fn part_element(m: &dyn GuestMemory, section: u32, region: usize) -> Result<u16>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const ITEM_LIST: u32 = 0x10000;
     const ITEMS: u32 = 0x100a0;

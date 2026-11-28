@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use agent::Access;
 use agent_proto::{RpcError, code, method};
-use engine::{GuestMemory, points};
+use guest_layout::{GuestMemory, points};
 use serde_json::{Value, json};
 
 use crate::layout_glue::ReadGm;
@@ -226,7 +226,7 @@ mod tests {
     use crate::list_class::WIDGET_PARENT;
     const FOCUSED: u32 = 0x34;
     const PLAYER_MASK: u32 = 8;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const SCREEN: u32 = 0x10000;
     const ITEM: u32 = 0x11000;

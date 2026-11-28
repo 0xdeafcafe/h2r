@@ -66,7 +66,7 @@ fn the_ui_hooks_can_run_on_the_render_thread() {
 
 #[test]
 fn ui_shares_the_loading_and_effect_points_with_other_features() {
-    use engine::points::ui_render::LOADING_DRAW;
+    use guest_layout::points::ui_render::LOADING_DRAW;
     use render_bridge::native_particles::{DYNAMIC_QUAD_READY, NativeParticles};
     use render_bridge::render_timing::RenderTiming;
 

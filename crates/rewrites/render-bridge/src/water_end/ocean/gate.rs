@@ -17,7 +17,7 @@
 //! the eye or the near plane leaves the rectangle unbounded: the test is
 //! the whole area, seen.
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use scene_extract::GuestRead;
 use scene_extract::flares::{self as fl, Lens};
 

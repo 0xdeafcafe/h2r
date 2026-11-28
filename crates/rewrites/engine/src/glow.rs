@@ -25,7 +25,7 @@
 
 use crate::colour_pass::Parameters;
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// The combiner block.
 pub const PSDEF: u32 = 0x0048_4f68;
@@ -459,7 +459,7 @@ pub fn wide(mem: &dyn GuestMemory, a: &WideArgs, mxcsr: u32) -> Result<Wide, Err
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     /// The two constants the blur reads (1.0, and a spread term of 2.0
     /// chosen here), on otherwise empty memory.

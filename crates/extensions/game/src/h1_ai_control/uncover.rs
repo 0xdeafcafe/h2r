@@ -1,7 +1,7 @@
 //! Halo 2's native uncover behavior is used for Halo 1 playfights and
 //! the one-shot maneuver override.
 
-use engine::{
+use guest_layout::{
     DatumHandle,
     entry::{Cx, EntryError, GuestCall},
     memory::{GuestMemory, MemFault},
@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn playfight_exception_keeps_the_salted_target_and_command_checks() {
-        use engine::{datum::layout, testing::FakeGuest};
+        use guest_layout::{datum::layout, testing::FakeGuest};
 
         const SCENARIO: u32 = 0x0080_0000;
         const DEFINITIONS: u32 = 0x0081_0000;

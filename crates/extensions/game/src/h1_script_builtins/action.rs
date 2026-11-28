@@ -1,9 +1,7 @@
 //! Feed the mapped action/reload button to Halo 2's script action test.
 
-use engine::{
-    hs_actions::{ACTION, CAPTURE, LATCHED, PLAYER_CONTROL, UNTIL_RELEASE},
-    points,
-};
+use guest_layout::points;
+use engine::hs_actions::{ACTION, CAPTURE, LATCHED, PLAYER_CONTROL, UNTIL_RELEASE};
 use hooks::{Builder, Flow};
 use runtime::{Guest, GuestFault};
 

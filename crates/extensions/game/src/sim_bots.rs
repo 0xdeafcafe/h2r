@@ -184,7 +184,7 @@ pub(crate) fn stats(
 /// body (`live_telemetry::havok_agents`), which a forced crouch leaves at
 /// -3 (docs/game/superbounce.md, "The pair word"). `None` when the unit
 /// has no single such pair.
-pub(crate) fn read_pair_word(m: &dyn engine::GuestMemory, unit: u32) -> Option<u32> {
+pub(crate) fn read_pair_word(m: &dyn guest_layout::GuestMemory, unit: u32) -> Option<u32> {
     live_telemetry::havok_agents::fixed_pair_word(m, unit).ok().flatten()
 }
 
@@ -458,7 +458,7 @@ impl Bots for SimBots {
             .map(brain_view)
     }
 
-    fn clankers(&self, guest: Option<&dyn engine::GuestMemory>) -> Vec<ClankerView> {
+    fn clankers(&self, guest: Option<&dyn guest_layout::GuestMemory>) -> Vec<ClankerView> {
         bots::phantom::list()
             .into_iter()
             .filter_map(|bot| {
@@ -641,7 +641,7 @@ mod tests {
     fn a_script_supplies_its_pad_to_the_phantom() {
         use pad_source::PadSource as _;
 
-        let guest = engine::testing::FakeGuest::new();
+        let guest = guest_layout::testing::FakeGuest::new();
         let remote = Remote::new();
         let pad = Gamepad {
             buttons: input::gamepad::Buttons::START,

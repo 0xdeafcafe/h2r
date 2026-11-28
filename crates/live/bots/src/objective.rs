@@ -20,9 +20,9 @@
 //! - King of the Hill's globals `[0x51ecc8]`: `+0x1a0` the hill in play,
 //!   whose corners are the netgame flags of type `11 +` it (`0x2bdc70`).
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
-use engine::view::objects;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
+use guest_layout::view::objects;
 
 use crate::brain::{Me, Seen, Vec3};
 

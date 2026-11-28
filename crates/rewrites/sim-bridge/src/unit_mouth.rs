@@ -3,7 +3,7 @@
 //! resource cache's touch (`0x12de70`) made by the guest when its answer
 //! needs I/O (docs/engine/sound-instances.md, "Owners").
 
-use engine::entry::{Cx, EntryError, GuestCall};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
 use crate::sim_sound::mouth::{self, CACHE_TOUCH, Call, TOUCH_FLAGS};
 
 /// `0x18c6a0(args)`: the unit's mouth for one tick of its line.

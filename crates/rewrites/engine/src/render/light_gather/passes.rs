@@ -40,17 +40,17 @@ use std::cell::Cell;
 
 use super::guest::TAGS;
 use super::{Result, visible};
-use crate::entry::{Cx, EntryError, GuestCall, Regs, Ret};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Regs, Ret};
 use crate::light_constants::Fpu;
 use crate::light_passes::{self as lp, FlagInputs, flag};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The saved registers below the entry `ESP`.
 pub const FRAME: u32 = 0x10;
 
 /// The guest functions the body calls.
 pub mod call {
-    use crate::points;
+    use guest_layout::points;
     pub const ITEMS: u32 = points::SCENE_ITEMS.base;
     /// The light's constants: EAX the frame block, ECX the context, EDX
     /// the light datum; stack (definition, the image's word, shadow,
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn the_bodys_own_constants_call_names_its_invocation() {
-        use crate::testing::FakeGuest;
+        use guest_layout::testing::FakeGuest;
         let entry_esp = 0x0002_0000;
         let plan = Plan {
             entry_esp,

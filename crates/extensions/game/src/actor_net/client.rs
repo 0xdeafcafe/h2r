@@ -8,8 +8,8 @@ use std::sync::{
 };
 
 use ::actor_net::{Actor, ActorChange, Check, Control, Packet, Record, Replica, SetError, Verdict};
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::{DatumHandle, points};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::{DatumHandle, points};
 use hooks::{Builder, Flow};
 
 mod guest;

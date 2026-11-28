@@ -5,7 +5,7 @@ use crate::host_lobby::{PlayerlessLobby, SimOpen, SimStart, SquadId};
 use crate::layout_glue::{Gm, ReadGm};
 use crate::{coop_probe, level_boot};
 use anyhow::{Result, bail};
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
 use hooks::{Flow, points};
 use std::net::{Ipv4Addr, SocketAddrV4, UdpSocket};
 use sim_bench::metrics::SetupStage;

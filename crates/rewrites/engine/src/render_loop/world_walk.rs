@@ -12,8 +12,8 @@
 //! records follow the main view's.
 
 use crate::light_constants::constant::{HALF, ONE, QUARTER, TWO};
-use crate::memory::GuestMemory;
-use crate::points::PIXEL_SCALE;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points::PIXEL_SCALE;
 use crate::render::light_gather::LIGHT_VIS;
 use crate::render_loop::occlusion::guest::{MAIN_VIS, VIS_KIND};
 use x87::{F80, Mode};
@@ -354,7 +354,7 @@ fn fill(
                 && fog != u32::MAX
                 && m.f32(VIEW_FOG_AMOUNT).ok()? == m.f32(ZERO_FLOAT).ok()?
             {
-                let tags = ptr(m, crate::tags::TAG_ENTRIES_GLOBAL)?;
+                let tags = ptr(m, guest_layout::tags::TAG_ENTRIES_GLOBAL)?;
                 let tag = ptr(m, tags.checked_add((fog & 0xffff) * 16 + 8)?)?;
                 if m.u8(tag).ok()? & 2 == 0 {
                     bits |= 1 << 8;
@@ -511,7 +511,7 @@ fn walk_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const BSP: u32 = 0x510000;
     const SECTIONS: u32 = BSP + 0x800;
@@ -606,7 +606,7 @@ mod tests {
         let mut m = fixture(Walk::Clusters);
         m.set_u32(SCENE_MODE, 3).unwrap();
         m.set_u32(VIEW_FOG_TAG, 1).unwrap();
-        m.set_u32(crate::tags::TAG_ENTRIES_GLOBAL, BSP + 0x3000)
+        m.set_u32(guest_layout::tags::TAG_ENTRIES_GLOBAL, BSP + 0x3000)
             .unwrap();
         m.set_u32(BSP + 0x3018, BSP + 0x3100).unwrap();
         assert_eq!(

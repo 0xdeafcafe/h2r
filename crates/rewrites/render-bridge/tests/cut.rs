@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use engine::memory::{FlatMemory, GuestMemory};
+use guest_layout::memory::{FlatMemory, GuestMemory};
 use hooks::{Registry, Remap, Switches, from_fn};
 use render_bridge::cut::{self, CUTS, Cut, Refused};
 use render_bridge::frame_step::{self, Addrs, Owner, ROWS, Step};
@@ -194,7 +194,7 @@ fn the_cut_table_names_every_registry_producer() {
 #[test]
 #[cfg(feature = "native-render")]
 fn object_setup_makes_the_guests_residency_requests() {
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use render_bridge::native_scene_lists::{ResidencyRequest, residency_request};
     const CACHE: u32 = 0x004e_649c;
     const REQUESTS: u32 = 0x004e_648c;

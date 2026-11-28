@@ -1,6 +1,6 @@
 //! Directional overlay, blend weights and the final pair of animation layers.
 use super::*;
-use crate::points::OBJECTS;
+use guest_layout::points::OBJECTS;
 
 const ACTIVE_WEIGHT: u32 = 0x0044_54e4;
 const INACTIVE_WEIGHT: u32 = 0x0045_dcd0;

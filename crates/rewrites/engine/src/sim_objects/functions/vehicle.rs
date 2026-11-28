@@ -23,7 +23,7 @@ use super::{
     Ss, above, byte, call, comiss, fp_error, fpu, fpu_done, imm, lo, load, movaps, pop, push,
     ret, slot, ss, unowned, zero, OBJECTS, ONE, TAGS,
 };
-use crate::datum::layout;
+use guest_layout::datum::layout;
 use crate::light_constants::{Error, X87};
 use crate::sim_objects::{Cx, Next, Result};
 use runtime::{CpuAbi, Guest};

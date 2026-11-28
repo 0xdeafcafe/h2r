@@ -3,7 +3,7 @@
 //! channel at frame + 0x48. Its result is consumed at its return site.
 
 use super::*;
-use crate::points::{OBJECTS, TAG_ENTRIES};
+use guest_layout::points::{OBJECTS, TAG_ENTRIES};
 
 const EVALUATE: u32 = 0x1c6f60;
 const SELECT: u32 = 0x1c6470;

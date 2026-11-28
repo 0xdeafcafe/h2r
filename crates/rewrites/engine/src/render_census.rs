@@ -12,8 +12,8 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 
-use crate::memory::GuestMemory;
-use crate::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 
 static IN_TICK: AtomicBool = AtomicBool::new(false);
 
@@ -158,7 +158,7 @@ pub fn record_scan(scan: PoseScan) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const HEADER: u32 = 0x1000;
     const DATA: u32 = 0x2000;

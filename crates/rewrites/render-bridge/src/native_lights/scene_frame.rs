@@ -22,7 +22,7 @@
 //! passes never run.
 
 use engine::light_constants as lc;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::render::light_gather::{Refusal, Writes, passes};
 use engine::shadow_constants as sc;
 use frame_scene::{GroupSite, PROJECTION_ROWS, SceneLight};

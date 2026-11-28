@@ -191,7 +191,7 @@ pub(super) fn install(b: &mut Builder, on: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn the_frame_at_the_call_is_the_guests() {

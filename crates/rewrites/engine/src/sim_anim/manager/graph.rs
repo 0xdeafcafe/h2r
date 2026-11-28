@@ -1,7 +1,7 @@
 //! Graph elements, resource preloads, sampling views and named graph blocks.
 use super::*;
 use ::sim_anim::graph_resolve::{CLIP_BYTES, Preload};
-use crate::points::TAG_ENTRIES;
+use guest_layout::points::TAG_ENTRIES;
 use crate::sim_native::{graph::ENABLED, sub_flags};
 use crate::sim_physics::{arithmetic, byte, logic};
 

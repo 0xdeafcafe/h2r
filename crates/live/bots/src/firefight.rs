@@ -17,8 +17,8 @@
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, RwLock};
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::view::{Datums, objects};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::view::{Datums, objects};
 use guest_layout::actor::Actor;
 use guest_layout::global::ACTORS;
 

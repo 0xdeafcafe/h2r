@@ -31,7 +31,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::planar_fog::{self as pf, FogQuad};
 use hooks::{BuildError, Builder, Feature, Manifest};
 pub use native_render::fog_quad::{FogOtherDraw, FogQuadDraw};
@@ -183,11 +183,11 @@ fn original(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) ->
 type TurnFn = fn(&mut dyn GuestMemory, u32, u32, u16, Option<&dyn Host>) -> Turn;
 
 fn setup_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    cut(cpu, ctx, addr, engine::points::PLANAR_FOG_SETUP.base, turn)
+    cut(cpu, ctx, addr, guest_layout::points::PLANAR_FOG_SETUP.base, turn)
 }
 
 fn other_setup_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    cut(cpu, ctx, addr, engine::points::PLANAR_FOG_OTHER_SETUP.base, turn_other)
+    cut(cpu, ctx, addr, guest_layout::points::PLANAR_FOG_OTHER_SETUP.base, turn_other)
 }
 
 fn cut(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32, base: u32, turn: TurnFn) -> Result<runtime::TransferAbi, runtime::GuestFault> {
@@ -222,10 +222,10 @@ impl Feature for NativeFogQuad {
             return Ok(());
         }
         b.raw()
-            .observe_before(&engine::points::PLANAR_FOG, "native_fog_quad_branch", |o| before_fog(&*o.guest()))
+            .observe_before(&guest_layout::points::PLANAR_FOG, "native_fog_quad_branch", |o| before_fog(&*o.guest()))
             .context_only();
-        b.raw().implement(&engine::points::PLANAR_FOG_SETUP, "native_fog_quad", setup_call).context_only();
-        b.raw().implement(&engine::points::PLANAR_FOG_OTHER_SETUP, "native_fog_quad_other", other_setup_call).context_only();
+        b.raw().implement(&guest_layout::points::PLANAR_FOG_SETUP, "native_fog_quad", setup_call).context_only();
+        b.raw().implement(&guest_layout::points::PLANAR_FOG_OTHER_SETUP, "native_fog_quad_other", other_setup_call).context_only();
         Ok(())
     }
 }
@@ -233,7 +233,7 @@ impl Feature for NativeFogQuad {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use engine::planar_fog::global;
 
     const ESP: u32 = 0x0050_0000;

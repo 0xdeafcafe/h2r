@@ -18,7 +18,7 @@
 //!   process has.
 
 use crate::pools::{HEAD, find_pools};
-use engine::datum::layout;
+use guest_layout::datum::layout;
 
 /// The pools (data arrays, by their header names) the simulation does not
 /// read. A pool runs from its header to the next, so the array's elements
@@ -241,7 +241,7 @@ mod tests {
             let at = 0x20 + i * 0x200;
             block[at..at + name.len()].copy_from_slice(name.as_bytes());
             block[at + SIG_AT..at + SIG_AT + 4]
-                .copy_from_slice(&engine::datum::SIGNATURE.to_le_bytes());
+                .copy_from_slice(&guest_layout::datum::SIGNATURE.to_le_bytes());
             block[at + SALT_AT..at + SALT_AT + 2].copy_from_slice(&salts[i].to_le_bytes());
             block[at + 0x4c..at + 0x14c].fill(fill + i as u8);
         }
@@ -303,7 +303,7 @@ mod tests {
         for (at, name) in [(0x20usize, "noncollideable object cluster r"), (0x8200, "flocks")] {
             block[at..at + name.len()].copy_from_slice(name.as_bytes());
             block[at + SIG_AT..at + SIG_AT + 4]
-                .copy_from_slice(&engine::datum::SIGNATURE.to_le_bytes());
+                .copy_from_slice(&guest_layout::datum::SIGNATURE.to_le_bytes());
         }
         let mut stale = block.clone();
         stale[0x20 + 0x7ed4..0x20 + 0x7ee0].fill(0x77);

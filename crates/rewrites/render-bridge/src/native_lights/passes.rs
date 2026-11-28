@@ -7,9 +7,9 @@
 
 use std::sync::Arc;
 
-use engine::entry::Ret;
+use guest_layout::entry::Ret;
 use engine::light_constants::Fpu;
-use engine::points;
+use guest_layout::points;
 use engine::render::light_gather::{Refusal, passes};
 use hooks::{Builder, Call, Cx, EntryFuture, Flow};
 use runtime::TransferAbi;
@@ -89,7 +89,7 @@ fn scene_passes(
             })
             .await?;
             SceneList::LightPasses.count(SceneListResult::Native);
-            Ok::<_, engine::entry::EntryError>(ret)
+            Ok::<_, guest_layout::entry::EntryError>(ret)
         })
     })
 }

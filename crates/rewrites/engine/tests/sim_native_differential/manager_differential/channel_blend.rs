@@ -9,7 +9,7 @@ const EVENTS: u32 = DATA + 0x5000;
 const OUTPUT: u32 = DATA + 0x6000;
 
 fn machine(m: &mut FlatMemory, seed: u32) {
-    word(m, engine::points::TAG_ENTRIES.base, TABLE);
+    word(m, guest_layout::points::TAG_ENTRIES.base, TABLE);
     word(m, TABLE + 3 * 16 + 8, GRAPH);
     for off in [0, 0x20, 0x40] {
         word(m, MANAGER + off, 0x8000_0003);

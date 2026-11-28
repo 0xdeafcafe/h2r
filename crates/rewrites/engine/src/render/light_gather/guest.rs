@@ -4,10 +4,10 @@
 //! [`Refusal::Layout`].
 
 use super::{Refusal, Result, Writes};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 pub(super) const NONE: u32 = u32::MAX;
-pub(super) const TAGS: u32 = crate::tags::TAG_ENTRIES_GLOBAL;
+pub(super) const TAGS: u32 = guest_layout::tags::TAG_ENTRIES_GLOBAL;
 pub(super) const OBJECTS: u32 = crate::render_loop::occlusion::guest::OBJECTS;
 pub(super) const LIGHTS: u32 = crate::render::light::ARRAY_POINTER;
 pub(super) const LIGHT_BYTES: u32 = crate::render::light::RECORD_SIZE as u32;

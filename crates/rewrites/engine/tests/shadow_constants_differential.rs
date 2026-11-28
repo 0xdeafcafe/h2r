@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::light_constants::Fpu;
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::shadow_constants::{
     self as sc, BIND_TEXTURES, CONSTANTS_DWORDS, CONSTANTS_REGISTER, Call, SET_CONSTANTS,
     SET_CONSTANTS_CLEANUP, SHADOW_SETUP, global,

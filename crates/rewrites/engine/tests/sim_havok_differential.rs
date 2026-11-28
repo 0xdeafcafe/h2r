@@ -14,7 +14,7 @@
 //! image the tests return.
 #![cfg(feature = "differential")]
 
-use engine::points;
+use guest_layout::points;
 use engine::sim_physics::{PHYSICS_PORTS, Port, supported};
 use ir::interp::{Cpu, FlatMemory};
 use lifted::Code;

@@ -16,10 +16,10 @@
 //! A new record is unlit (`+3` 0) until the object setup samples it
 //! (`0x0003dfe0`), so its first [`sample`] gives 0.
 
-use crate::datum::DatumArray;
-use crate::handle::DatumHandle;
+use guest_layout::datum::DatumArray;
+use guest_layout::handle::DatumHandle;
 use crate::light_constants::{Error, Fpu, Sse, X87};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// The record array's header pointer.
 pub const CACHE: u32 = 0x0050_9434;

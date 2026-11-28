@@ -34,9 +34,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bots::lobby;
-use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use serde_json::{Value, json};
 use settings::Store;
 

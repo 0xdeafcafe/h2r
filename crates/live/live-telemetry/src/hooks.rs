@@ -6,7 +6,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::points;
+use guest_layout::points;
 #[cfg(test)]
 use runtime::Runtime;
 

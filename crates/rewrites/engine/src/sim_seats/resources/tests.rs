@@ -4,7 +4,7 @@
 //! and a count too long to trust declines with the list untouched. The
 //! lifted `16e5e0` is the oracle in `sim_seats_differential::predict_resources`.
 use super::*;
-use crate::tags::{TAG_ENTRIES_GLOBAL, entry_layout};
+use guest_layout::tags::{TAG_ENTRIES_GLOBAL, entry_layout};
 use runtime::Guest;
 use runtime::abi;
 use runtime::guest::Permissions;

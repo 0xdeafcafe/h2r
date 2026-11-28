@@ -1,6 +1,6 @@
 use super::*;
-use crate::entry::{self, EntryFuture, Regs, Ret};
-use crate::testing::FakeGuest;
+use guest_layout::entry::{self, EntryFuture, Regs, Ret};
+use guest_layout::testing::FakeGuest;
 
 const STACK: u32 = 0x0030_0000;
 const G: u32 = 0x0060_0000;

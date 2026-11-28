@@ -17,7 +17,7 @@
 
 use super::{Constants, Device, Fpu, Last, Path, Seat, read_guest};
 use crate::light_constants::X87;
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use crate::sim_native::Memory;
 use crate::sim_physics::{
     logic,
@@ -48,7 +48,7 @@ const INPUTS: u32 = 0x004e_61dc;
 const CONTROL: u32 = 0x004e_d284;
 const TICKS: u32 = 0x0051_0c54;
 const OBJECT_HEADER: u32 = 0x004e_0300;
-const TAG_ENTRIES: u32 = crate::points::TAG_ENTRIES.base;
+const TAG_ENTRIES: u32 = guest_layout::points::TAG_ENTRIES.base;
 /// The x87 status word's error summary.
 const ES: u16 = 0x80;
 

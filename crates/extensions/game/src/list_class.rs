@@ -44,11 +44,11 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::DatumHandle;
-use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::{self, CONTROLS_LIST_VTABLE, CONTROLS_SCREEN_VTABLE};
-use engine::view::ui::{self, Item, Screen, list_slot, screen_slot};
+use guest_layout::DatumHandle;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{self, CONTROLS_LIST_VTABLE, CONTROLS_SCREEN_VTABLE};
+use guest_layout::view::ui::{self, Item, Screen, list_slot, screen_slot};
 use runtime::guest::Permissions;
 
 use crate::ui::{Chosen, List, Model};
@@ -516,7 +516,7 @@ pub fn picture_block(
     .map_err(fault)?;
     let word = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
     let image = i16::from_le_bytes([b[BITMAP_IMAGE], b[BITMAP_IMAGE + 1]]);
-    if word(BITMAP_GROUP) != engine::tags::GroupTag::from_chars(*b"bitm").0
+    if word(BITMAP_GROUP) != guest_layout::tags::GroupTag::from_chars(*b"bitm").0
         || word(BITMAP_HANDLE) == u32::MAX
         || image != spec.image
     {
@@ -1939,7 +1939,7 @@ pub fn adopt(
 /// Append rows to the reserved array without invalidating the focused handle.
 fn grow_rows(m: &mut dyn GuestMemory, screen: Screen, count: usize) -> Result<(), MemFault> {
     let rows = screen.list().row_array(m)?.array;
-    let active = rows.header_field(m, engine::datum::layout::ACTIVE_COUNT)?;
+    let active = rows.header_field(m, guest_layout::datum::layout::ACTIVE_COUNT)?;
     for _ in active.max(0) as usize..count {
         if rows.new_datum(m)?.is_none() {
             break;
@@ -3226,9 +3226,9 @@ mod tests {
         assert!(building_reason(6).is_some());
     }
     use crate::video_screen::{self, Switches};
-    use engine::entry::{GuestCall as Gc, Regs, testing};
-    use engine::testing::FakeGuest;
-    use engine::view::fake;
+    use guest_layout::entry::{GuestCall as Gc, Regs, testing};
+    use guest_layout::testing::FakeGuest;
+    use guest_layout::view::fake;
     use settings::Store;
 
     const SCREEN: u32 = 0x0010_0000;
@@ -5035,7 +5035,7 @@ mod tests {
             .put_u16(b + 0xa, 3)
             .put_u16(b + 0xc, 44)
             .put_u16(b + 0xe, 124)
-            .put_u32(b + 0x18, engine::tags::GroupTag::from_chars(*b"bitm").0)
+            .put_u32(b + 0x18, guest_layout::tags::GroupTag::from_chars(*b"bitm").0)
             .put_u32(b + 0x1c, 0xe588_0368)
             .put_u16(b + 0x20, 2);
         g

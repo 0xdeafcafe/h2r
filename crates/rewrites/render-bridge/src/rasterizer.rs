@@ -37,8 +37,8 @@
 //!
 //! A case the bodies do not cover panics, named `rasterizer: <cause>`.
 
-use engine::entry::{Cx, EntryError, EntryFuture, EntryResult, GuestCall, Regs, Ret};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::entry::{Cx, EntryError, EntryFuture, EntryResult, GuestCall, Regs, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
 use hooks::points::{self, Point};
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use runtime::guest::Permissions;

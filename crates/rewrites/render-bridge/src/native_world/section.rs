@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use native_render::skip;
 use frame_scene::Owner;
 use crate::native_scene_lists::transparent_bsp::{Bounds, SectionQueue, PLANE_HASH, PLANE_EQUAL};
@@ -50,7 +50,7 @@ pub fn display_late_shader(m: &dyn GuestMemory, cluster: u16, part: u8, layer: u
     let material = m.u32(bsp.checked_add(0xa8)?).ok()?.checked_add(index*32)?;
     if !material_visible(m, material, 0x7ff)? { return None; }
     let shader = m.u32(material.checked_add(12)?).ok()?;
-    let plan = LodPlan::read(m, m.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?, shader)?;
+    let plan = LodPlan::read(m, m.u32(guest_layout::tags::TAG_ENTRIES_GLOBAL).ok()?, shader)?;
     let &[(mask, _)] = plan.levels.as_slice() else { return None; };
     (mask & 1u32.checked_shl(u32::from(layer))? != 0
         && !(mask & 0x8080 != 0 && mask & 0xa == 0 && mask & (1 << 21) != 0)).then_some(shader as u16)
@@ -81,7 +81,7 @@ pub fn display_cluster_complete(m: &dyn GuestMemory, cluster: u16) -> Option<boo
     if parts > 256 { return None; }
     let first = m.u32(geometry.checked_add(4)?).ok()?;
     let materials = m.u32(bsp.checked_add(0xa4)?).ok()?;
-    let table = m.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?;
+    let table = m.u32(guest_layout::tags::TAG_ENTRIES_GLOBAL).ok()?;
     for part in 0..parts {
         let p = first.checked_add(part*PART_SIZE as u32)?;
         if matches!(m.u16(p).ok()?, 0 | 5) || m.u16(p.checked_add(12)?).ok()? == 0 { continue; }
@@ -177,7 +177,7 @@ struct Materials {
 impl Materials {
     fn lod(&mut self, m: &dyn GuestMemory, shader: u32, pixels: f32, watch: &mut Sources)
         -> Option<((u8, u32, u32), bool)> {
-        let table = m.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?;
+        let table = m.u32(guest_layout::tags::TAG_ENTRIES_GLOBAL).ok()?;
         let key = (table, shader);
         let hit = self.shaders.get(&key).is_some_and(|p| {
             watch.clean(p.checked) || p.current(m, &mut self.scratch)
@@ -345,7 +345,7 @@ pub(crate) fn display_cluster_transparents(m: &dyn GuestMemory, id: u16, cw: u16
     let mat_count = m.u32(bsp.checked_add(0xa4)?).ok()?;
     let mat_base = m.u32(bsp.checked_add(0xa8)?).ok()?;
     let planes = m.u32(PART_PLANES).ok()?;
-    let table = m.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?;
+    let table = m.u32(guest_layout::tags::TAG_ENTRIES_GLOBAL).ok()?;
     let pixels = engine::render_loop::world_walk::cluster_pixel_size(m, section, cw)?;
     let scale = m.f32(SCREEN_SCALE).ok()?;
     let alpha = m.f32(ALPHA_SCALE).ok()?;
@@ -523,7 +523,7 @@ fn append_cached(m: &mut dyn GuestMemory, sp: u32, index: u32, cache: &mut Secti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const SP: u32 = 0x520000;
     const BSP: u32 = SP+0x1000;
@@ -543,7 +543,7 @@ mod tests {
             (super::super::ACTIVE_BSP, BSP), (BSP+0xa4, 2), (BSP+0xa8, MAT),
             (MAT+12, 1), (MAT+32+12, 1), (SCENE_LIST, 8), (SCENE_LIST+20, ITEMS),
             (PART_PLANES, BSP+0xb00), (BSP+0xb2c, PLANE_HASH), (BSP+0xb30, PLANE_EQUAL),
-            (engine::tags::TAG_ENTRIES_GLOBAL, TABLE), (TABLE+16, u32::from_be_bytes(*b"shad")),
+            (guest_layout::tags::TAG_ENTRIES_GLOBAL, TABLE), (TABLE+16, u32::from_be_bytes(*b"shad")),
             (TABLE+24, HEADER+0x100), (HEADER+0x124, HEADER+0x180), (HEADER+0x180, 2),
             (TABLE+40, HEADER+0x200), (HEADER+0x25c, HEADER), (HEADER, 1),
             (HEADER+4, HEADER+0x40), (HEADER+0x42, (1<<3)|(1<<16)),
@@ -729,7 +729,7 @@ mod tests {
             let row = ROWS+(i+1)*0x70;
             assert_eq!(m.u32(row), Ok(1));
             assert_eq!(m.f32(row+4), Ok(depth));
-            assert_eq!(m.u32(row+0x20), Ok(engine::points::TRANSPARENT_GEOMETRY.base));
+            assert_eq!(m.u32(row+0x20), Ok(guest_layout::points::TRANSPARENT_GEOMETRY.base));
             assert_eq!(m.u32(row+0x24), Ok(1));
             assert_eq!(m.u32(row+0x28), Ok((17<<24) | i));
         }

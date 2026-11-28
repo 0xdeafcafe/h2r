@@ -24,7 +24,7 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 use emit::sim::{self, Closure};
-use engine::points::{self, Point};
+use guest_layout::points::{self, Point};
 use engine::sim_native as native;
 use ir::interp::{self, Cpu, FlatMemory};
 use runtime::guest::{Access, FaultReason, Permissions};

@@ -1,7 +1,7 @@
 use super::*;
-use engine::datum::layout as dl;
-use engine::points;
-use engine::testing::FakeGuest;
+use guest_layout::datum::layout as dl;
+use guest_layout::points;
+use guest_layout::testing::FakeGuest;
 
 const PLAYERS_HEADER: u32 = 0x0061_0000;
 const PLAYERS_DATA: u32 = 0x0061_1000;

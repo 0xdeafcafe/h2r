@@ -1,7 +1,8 @@
 //! The three backdrop draws share the guest's material and target setup.
 use std::sync::Arc;
 
-use engine::{memory::GuestMemory, points::ui_render::*, ui_backdrop};
+use guest_layout::{memory::GuestMemory, points::ui_render::*};
+use engine::ui_backdrop;
 use runtime::abi::TransferAbi;
 use timeline::native::{Metric, Stage, Ui};
 
@@ -133,7 +134,7 @@ pub(super) fn place(b: &mut Builder<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn api_fans_require_the_guest_begin_argument() {

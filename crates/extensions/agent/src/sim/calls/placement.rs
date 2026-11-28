@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use agent_proto::sim::REFUSED;
 use agent_proto::{Kind, ObjectId, RpcError, code};
-use engine::GuestMemory;
-use engine::handle::DatumHandle;
-use engine::view::{Tags, objects};
+use guest_layout::GuestMemory;
+use guest_layout::handle::DatumHandle;
+use guest_layout::view::{Tags, objects};
 use guest_layout::{Object, ObjectHeader, ObjectType};
 use live_telemetry::layout;
 
@@ -19,7 +19,7 @@ pub(super) mod edit;
 /// `world.object.respawn {definition}`.
 pub(super) mod definition;
 
-fn fault(e: engine::MemFault) -> RpcError {
+fn fault(e: guest_layout::MemFault) -> RpcError {
     RpcError::new(
         code::UNAVAILABLE,
         format!("guest memory fault at {:#x}", e.addr),
@@ -266,7 +266,7 @@ pub(super) fn read(
         }
     };
 
-    let scnr = m.u32(engine::points::SCENARIO.base).map_err(fault)?;
+    let scnr = m.u32(guest_layout::points::SCENARIO.base).map_err(fault)?;
     let desc = tags::object::OBJECT_TYPES[ty as usize];
     let (placements, palette, stride) = desc
         .placement

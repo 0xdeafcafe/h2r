@@ -19,7 +19,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_scene::{ClipRect, Overlay, OverlayGlyph, OverlayMaterial, OverlayTexture, OverlayVertex, Program, Sampler};
 use map::TagId;
 use native_render::hud_material::{HudRefusal, HudShader, HudState, StageTexture};

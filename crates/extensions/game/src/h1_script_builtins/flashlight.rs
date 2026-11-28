@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use engine::{
+use guest_layout::{
     datum::DatumArray,
     handle::DatumHandle,
     memory::{GuestMemory, MemFault},
@@ -151,7 +151,7 @@ pub(super) fn install(b: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{datum::layout, testing::FakeGuest, view::objects::Header};
+    use guest_layout::{datum::layout, testing::FakeGuest, view::objects::Header};
 
     #[test]
     fn killed_units_fade_and_dropped_weapons_stop_using_the_former_holders_light() {

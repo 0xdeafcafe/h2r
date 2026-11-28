@@ -3,7 +3,8 @@
 //! render records in this view, including vertices rejected by the guest
 //! shader-classification check. A different callback owns its whole list.
 
-use engine::{light_passes as lp, memory::GuestMemory, tags::TAG_ENTRIES_GLOBAL};
+use guest_layout::{memory::GuestMemory, tags::TAG_ENTRIES_GLOBAL};
+use engine::light_passes as lp;
 use native_render::{light_passes, shadows, skip};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -462,7 +463,7 @@ impl Built {
     }
 }
 
-use engine::points;
+use guest_layout::points;
 use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 use std::cell::{Cell, RefCell};
 use std::sync::Arc;
@@ -815,7 +816,7 @@ impl Feature for NativeLightWalk {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::FlatMemory;
+    use guest_layout::FlatMemory;
 
     const ITEMS: u32 = 0x8000;
     const BUFFER: u32 = 0x18000;

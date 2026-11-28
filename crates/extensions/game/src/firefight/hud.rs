@@ -39,7 +39,7 @@ use std::sync::{Arc, Mutex};
 
 use ::firefight::director::Phase;
 use ::firefight::{MAX_TEAMS, Outcome, ScriptDirector, Skull};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use hud_kit_core::views::firefight::{self as kit, Firefight, LivesLook};
 
 pub use hud_kit_core::model::{Style, Value, Values};
@@ -774,12 +774,12 @@ pub fn skull_name(index: u8) -> Option<&'static str> {
 /// The roster slot of each local user's player the game lists, by local
 /// user (0 to 3).
 pub fn local_slots(m: &dyn GuestMemory) -> Result<[Option<u8>; USERS], MemFault> {
-    use engine::view::players;
+    use guest_layout::view::players;
     let mut out = [None; USERS];
     let Some(array) = players::array(m)? else {
         return Ok(out);
     };
-    if m.u32(array.array.addr.wrapping_add(engine::datum::layout::DATA))? == 0 {
+    if m.u32(array.array.addr.wrapping_add(guest_layout::datum::layout::DATA))? == 0 {
         return Ok(out);
     }
     for (handle, p) in array.live(m, 16)? {

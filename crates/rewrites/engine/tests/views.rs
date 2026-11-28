@@ -2,13 +2,13 @@
 //! functions, so the records sit where the game's arrays put them; the tag
 //! index is built from its documented layout. Synthetic values only.
 
-use engine::DatumHandle;
-use engine::datum::layout;
-use engine::memory::GuestMemory;
-use engine::points;
-use engine::tags::{GroupTag, entry_layout, group_layout, index_layout};
-use engine::testing::FakeGuest;
-use engine::view::{Tags, fake, objects, players};
+use guest_layout::DatumHandle;
+use guest_layout::datum::layout;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
+use guest_layout::tags::{GroupTag, entry_layout, group_layout, index_layout};
+use guest_layout::testing::FakeGuest;
+use guest_layout::view::{Tags, fake, objects, players};
 
 const PLAYERS_HEADER: u32 = 0x0010_0000;
 const OBJECTS_HEADER: u32 = 0x0020_0000;
@@ -164,7 +164,7 @@ fn tags_resolve_by_handle_and_group() {
 
 #[test]
 fn a_controls_shaped_screen_reaches_its_list_items_press_record_and_slots() {
-    use engine::view::ui::{self, ListHandler, PressRecord, Screen};
+    use guest_layout::view::ui::{self, ListHandler, PressRecord, Screen};
     const SCREEN: u32 = 0x0060_0000;
     const VTABLE: u32 = 0x0061_0000;
     let mut g = FakeGuest::new();

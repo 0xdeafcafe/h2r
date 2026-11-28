@@ -1,6 +1,6 @@
 use super::*;
-use engine::entry::{EntryFuture, Regs, testing};
-use engine::testing::FakeGuest;
+use guest_layout::entry::{EntryFuture, Regs, testing};
+use guest_layout::testing::FakeGuest;
 
 #[test]
 fn unsupported_and_offline_runs_add_no_join_hooks_or_dialog_allocations() {

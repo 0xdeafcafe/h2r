@@ -1,8 +1,8 @@
 //! Scene front-end hooks. Every operation is synchronous against the active
 //! render memory so a render-thread fallback can resume at the next guest call.
 
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use engine::render::light_gather::{LIGHT_VIS, object_shadows::caster, passes};
 use engine::render_loop::world_walk::{self, Walk};
 use native_render::skip;
@@ -243,7 +243,7 @@ fn all_masked(m: &dyn GuestMemory, list: u32, layer: u32) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     #[test]
     fn shadow_record_walks_require_the_caster_and_the_correct_visibility() {
         let sp = 0x1000;

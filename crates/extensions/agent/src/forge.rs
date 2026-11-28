@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use agent_proto::forge::{CapacityReply, ProbeParams, ProbeReply, TagArena, method};
 use agent_proto::sim::{OBJECT_GROUPS, SpawnParams, hashes::HashesParams};
 use agent_proto::{Boundary, RpcError, code};
-use engine::{GuestMemory, MemFault};
+use guest_layout::{GuestMemory, MemFault};
 use guest_layout::{game::GameGlobals, global};
 
 use crate::sim::{SimHandle, hashes::HashLog};
@@ -233,7 +233,7 @@ fn read_kit(m: &mut dyn GuestMemory) -> Result<ProbeReply, RpcError> {
 
 /// Choose the first valid loaded tag in index order when the caller only names a group.
 fn first_tag(m: &dyn GuestMemory, group: &str) -> Result<String, RpcError> {
-    use engine::tags::{entry_layout as entry, index_layout as index};
+    use guest_layout::tags::{entry_layout as entry, index_layout as index};
     let wanted = u32::from_be_bytes(group.as_bytes().try_into().expect("validated object group"));
     let header = global::TAG_INDEX
         .pointer(m)

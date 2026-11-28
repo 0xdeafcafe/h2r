@@ -47,9 +47,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use hooks::Flow;
 use runtime::guest::Permissions;
 
@@ -385,7 +385,7 @@ async fn place_near(
     anchor: u32,
     scratch: u32,
 ) -> Result<bool, EntryError> {
-    cx.write(|m| -> Result<(), engine::memory::MemFault> {
+    cx.write(|m| -> Result<(), guest_layout::memory::MemFault> {
         for (i, v) in at.iter().enumerate() {
             m.set_f32(scratch + 4 * i as u32, *v)?;
         }
@@ -461,7 +461,7 @@ pub async fn spawn(
         s.moved_start.take()
     };
     if let Some((at, pos)) = moved {
-        cx.write(|m| -> Result<(), engine::memory::MemFault> {
+        cx.write(|m| -> Result<(), guest_layout::memory::MemFault> {
             for (i, v) in pos.iter().enumerate() {
                 m.set_f32(at + 4 * i as u32, *v)?;
             }
@@ -477,7 +477,7 @@ pub async fn spawn(
     Ok(Ret::new(eax, 4))
 }
 
-fn set_pos(m: &mut dyn GuestMemory, at: u32, p: [f32; 3]) -> Result<(), engine::memory::MemFault> {
+fn set_pos(m: &mut dyn GuestMemory, at: u32, p: [f32; 3]) -> Result<(), guest_layout::memory::MemFault> {
     for (i, v) in p.iter().enumerate() {
         m.set_f32(at + 4 * i as u32, *v)?;
     }
@@ -576,7 +576,7 @@ pub async fn pick(
     }
     // Every starting location tried goes back but the one spawned on.
     let tried: Vec<u16> = (0..starts.at.len().min(2) as u16).collect();
-    cx.write(|m| -> Result<(), engine::memory::MemFault> {
+    cx.write(|m| -> Result<(), guest_layout::memory::MemFault> {
         for &s in &tried {
             if found.is_none_or(|c| c.start != s) {
                 set_pos(m, entry(s), starts.at[usize::from(s)])?;

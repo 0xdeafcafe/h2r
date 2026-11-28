@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use gfx::external::{PixelRect, UiFit};
-use engine::{GuestMemory, points};
+use guest_layout::{GuestMemory, points};
 use hooks::{Builder, Feature, Flow, Manifest};
 use points::render_aspect::{
     ANCHOR, ANCHOR_READY, DOC, FLARE_COMPOSITE_DONE, FLARE_COMPOSITE_LOOP, FLARE_QUERY,
@@ -1040,7 +1040,7 @@ impl Feature for RenderAspect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const FULL: PixelRect = PixelRect {
         x: 0,

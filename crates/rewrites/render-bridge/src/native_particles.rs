@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use hooks::{BuildError, Builder, Feature, Flow, Manifest};
-use engine::memory::GuestMemory;
-use engine::points::{Point, Sig};
+use guest_layout::memory::GuestMemory;
+use guest_layout::points::{Point, Sig};
 use timeline::native::{Metric, Stage};
 use native_render::camera::GuestRead;
 use native_render::effect_geometry::{self, DynamicCall};
@@ -20,7 +20,7 @@ pub const ID: &str = "native-particles";
 /// Refusal lines printed per kind before they go quiet.
 pub(crate) const LOG_LIMIT: u64 = 8;
 
-pub use engine::points::scene_effects::{
+pub use guest_layout::points::scene_effects::{
     EFFECT_END as DYNAMIC_END, EFFECT_PUBLISH as DYNAMIC_PUBLISH, EFFECT_QUAD_READY as DYNAMIC_QUAD_READY,
     PARTICLE_EMIT_READY as EMIT_READY, PARTICLE_END as EMIT_END, PARTICLE_PUBLISH as EMIT_PUBLISH,
 };
@@ -189,7 +189,7 @@ pub fn on_dynamic(mem: &mut dyn GuestMemory, esp: u32, stride: u32) {
             return;
         }
     };
-    if call.return_address == engine::points::ui_render::RECT_SUBMIT_RETURN {
+    if call.return_address == guest_layout::points::ui_render::RECT_SUBMIT_RETURN {
         return;
     }
     DYNAMIC_CALLS.fetch_add(1, Ordering::Relaxed);

@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use content::campaign_list::{Built, BuiltLevel};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 
 use super::{CampaignProgress, State};
 use crate::skulls::{LOCAL_PLAYERS, SLOT_SIGNED_IN, SLOT_STRIDE, SLOTS};
@@ -205,7 +205,7 @@ mod tests {
     use super::*;
     use crate::campaigns::{Progress, Selection};
     use content::campaign_list::{self as cl, CampaignManifest, HALO1};
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use std::io::Write;
 
     #[test]

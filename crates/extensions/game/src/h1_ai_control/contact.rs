@@ -1,11 +1,7 @@
 //! Halo 1's focused-prop awareness and combat levels, evaluated from native
 //! perception records before Halo 2 classifies the actor's best interest.
 
-use engine::{
-    DatumHandle,
-    memory::{GuestMemory, MemFault},
-    view::objects,
-};
+use guest_layout::{DatumHandle, memory::{GuestMemory, MemFault}, view::objects};
 
 use super::{NONE, actors, preference, state};
 
@@ -201,7 +197,7 @@ pub(super) fn focused(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn switches_use_the_focused_props_combat_level() {

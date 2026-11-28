@@ -26,8 +26,8 @@
 
 use super::{Cx, Next, Result, unowned};
 use crate::light_constants::X87;
-use crate::memory::GuestMemory;
-use crate::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use crate::sim_physics::{ARITH, byte, logic, pop, push, status};
 use ::sim_objects::events::{self, SimEvent};
 use guest_layout::Datum;

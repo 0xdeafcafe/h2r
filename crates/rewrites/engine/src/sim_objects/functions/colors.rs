@@ -18,9 +18,9 @@
 //! object.
 
 use super::{byte, call, fp_error, load, pop, push, ret, unowned, ONE};
-use crate::datum::layout;
+use guest_layout::datum::layout;
 use crate::light_constants::Sse;
-use crate::points;
+use guest_layout::points;
 use crate::sim_objects::{Cx, Next, Result};
 use runtime::{CpuAbi, Guest};
 

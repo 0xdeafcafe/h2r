@@ -3,7 +3,7 @@
 
 use agent_proto::{RpcError, code};
 use bots::{lobby, phantom};
-use engine::{GuestMemory, view::players};
+use guest_layout::{GuestMemory, view::players};
 use serde_json::{Value, json};
 
 use phantom::session::{self, at::*};
@@ -175,7 +175,7 @@ pub(crate) fn match_peer_rtts(m: &dyn GuestMemory) -> Result<Value, RpcError> {
 
 fn scoreboard_bars(m: &dyn GuestMemory, stats: u32) -> Option<u8> {
     // `0x160837` passes this player's 16-byte stats record in EBX.
-    let globals = m.u32(engine::points::GAME_ENGINE.base).ok()?;
+    let globals = m.u32(guest_layout::points::GAME_ENGINE.base).ok()?;
     if globals == 0 {
         return None;
     }
@@ -209,7 +209,7 @@ impl hooks::Feature for ConnectionBars {
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         b.raw()
             .after(
-                &engine::points::SCOREBOARD_CONNECTION_BARS,
+                &guest_layout::points::SCOREBOARD_CONNECTION_BARS,
                 "fill the visible badge from the player's peer",
                 |c| {
                     if c.cpu.eax & 0xff != 0 {
@@ -233,7 +233,7 @@ impl hooks::Feature for ConnectionBars {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn rtt_bars_follow_retail_latency_boundaries() {
@@ -248,7 +248,7 @@ mod tests {
 
     #[test]
     fn scoreboard_looks_up_the_peer_by_the_player_datums_machine() {
-        use engine::datum::layout as datum;
+        use guest_layout::datum::layout as datum;
 
         const ENGINE: u32 = 0x0060_0000;
         const HEADER: u32 = 0x0061_0000;
@@ -258,8 +258,8 @@ mod tests {
         const STRIDE: u32 = 0x21c;
         let machine = phantom::machine_id(phantom::PhantomHandle(3));
         let mut m = FakeGuest::new();
-        m.put_u32(engine::points::GAME_ENGINE.base, ENGINE)
-            .put_u32(engine::points::PLAYERS.base, HEADER)
+        m.put_u32(guest_layout::points::GAME_ENGINE.base, ENGINE)
+            .put_u32(guest_layout::points::PLAYERS.base, HEADER)
             .put_u32(HEADER + datum::DATA, DATA)
             .put_u32(HEADER + datum::HIGH_WATER, 6)
             .put_u32(HEADER + datum::ELEMENT_SIZE, STRIDE)

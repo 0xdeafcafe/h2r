@@ -17,7 +17,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 
 /// A world position.
 pub type Vec3 = [f32; 3];
@@ -279,9 +279,9 @@ pub fn record(to: &dyn Recorder, guest: &runtime::Guest, teabags: &[Teabag]) {
 
 /// A unit read by its datum: origin, alive and the crouch request.
 pub fn read_unit(m: &dyn GuestMemory, unit: u32) -> Option<UnitRead> {
-    use engine::view::objects;
+    use guest_layout::view::objects;
     use live_telemetry::layout::{BODY_DEPLETED, UNIT_FLAG_CROUCH, UNIT_FLAGS};
-    let handle = engine::handle::DatumHandle::from_raw(unit)?;
+    let handle = guest_layout::handle::DatumHandle::from_raw(unit)?;
     let (kind, body) = objects::get(m, handle).ok()??;
     let position = body.position(m).ok()?;
     if !position.iter().all(|v| v.is_finite()) {
@@ -301,7 +301,7 @@ pub fn read_unit(m: &dyn GuestMemory, unit: u32) -> Option<UnitRead> {
 
 /// Every listed player's slot and unit, for [`Watch::step`].
 pub fn read_players(m: &dyn GuestMemory) -> Vec<Seen> {
-    use engine::view::players;
+    use guest_layout::view::players;
     let Ok(Some(array)) = players::array(m) else {
         return Vec::new();
     };

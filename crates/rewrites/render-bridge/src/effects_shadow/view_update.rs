@@ -34,7 +34,7 @@
 
 use std::collections::BTreeMap;
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 use super::overlay::Overlay;
 
@@ -678,7 +678,7 @@ impl Model<'_> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     pub const SYS_ARRAY: u32 = 0x0060_0000;
     pub const SYS_DATA: u32 = 0x0060_1000;

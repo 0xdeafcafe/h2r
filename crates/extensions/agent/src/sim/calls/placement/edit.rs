@@ -43,8 +43,8 @@ use agent_proto::sim::{
     PlacementCreated, PlacementEditParams, Placement, Was,
 };
 use agent_proto::{Kind, ObjectId, RpcError, code};
-use engine::GuestMemory;
-use engine::entry::{Cx, EntryError, GuestCall};
+use guest_layout::GuestMemory;
+use guest_layout::entry::{Cx, EntryError, GuestCall};
 use guest_layout::ObjectType;
 use map::scenario_layout::{self as layout, BlockKind};
 use serde_json::{Value, json};
@@ -387,7 +387,7 @@ fn survey(
     plan: &Plan,
     queue: &Shared,
 ) -> Result<Survey, RpcError> {
-    let scenario = m.u32(engine::points::SCENARIO.base).map_err(fault)?;
+    let scenario = m.u32(guest_layout::points::SCENARIO.base).map_err(fault)?;
     if scenario == 0 {
         return Err(refused("no loaded scenario"));
     }
@@ -448,7 +448,7 @@ fn survey(
     // The tag an arena extent is booked to: the loaded scenario's datum.
     let scenario_tag = match grow {
         Some(_) => m
-            .u32(engine::points::TAG_INDEX.base)
+            .u32(guest_layout::points::TAG_INDEX.base)
             .and_then(|index| m.u32(index.wrapping_add(hot_tags::index::HEADER_SCENARIO)))
             .map_err(fault)?,
         None => 0,
@@ -670,7 +670,7 @@ async fn apply(
     // repoints and the count.
     let stride = spec.stride;
     let base = grown.map_or(survey.base, |e| e.at);
-    cx.write(|m| -> Result<(), engine::MemFault> {
+    cx.write(|m| -> Result<(), guest_layout::MemFault> {
         if let Some(extent) = grown {
             let mut block = if survey.capacity == 0 {
                 Vec::new()

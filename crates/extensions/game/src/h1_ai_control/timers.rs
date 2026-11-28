@@ -3,12 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use engine::{
-    DatumHandle,
-    entry::Cx,
-    memory::{GuestMemory, MemFault},
-    view::objects,
-};
+use guest_layout::{DatumHandle, entry::Cx, memory::{GuestMemory, MemFault}, view::objects};
 use hs::h1_ai_slots::timers::{
     self, BLOCKS, HEADER, REVEAL_PLAYERS, SQUADS, TIME_UNITS_PER_SECOND, UPDATE_TIME,
 };
@@ -284,7 +279,7 @@ pub(super) fn tick(cx: &Cx, base: u32) -> R<Vec<u32>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use hooks::points;
 
     #[test]
@@ -333,8 +328,8 @@ mod tests {
         let mut guest = FakeGuest::new();
         guest
             .put_u32(GLOBALS, ARRAY)
-            .put_u32(ARRAY + engine::datum::layout::MAXIMUM_COUNT, 0x1000)
-            .put_u32(ARRAY + engine::datum::layout::DATA, VALUES)
+            .put_u32(ARRAY + guest_layout::datum::layout::MAXIMUM_COUNT, 0x1000)
+            .put_u32(ARRAY + guest_layout::datum::layout::DATA, VALUES)
             .put_u32(SCENARIO + 0x1c0, (words.len() + 1) as u32)
             .put_u32(SCENARIO + 0x1c4, DECLARATIONS)
             .put(
@@ -354,9 +349,9 @@ mod tests {
         );
         guest
             .put_u32(actors::ACTORS, ACTORS)
-            .put_u32(ACTORS + engine::datum::layout::ELEMENT_SIZE, 0x100)
-            .put_u32(ACTORS + engine::datum::layout::HIGH_WATER, 1)
-            .put_u32(ACTORS + engine::datum::layout::DATA, ACTOR_ROWS)
+            .put_u32(ACTORS + guest_layout::datum::layout::ELEMENT_SIZE, 0x100)
+            .put_u32(ACTORS + guest_layout::datum::layout::HIGH_WATER, 1)
+            .put_u32(ACTORS + guest_layout::datum::layout::DATA, ACTOR_ROWS)
             .put_u16(ACTOR_ROWS, 0x8123)
             .put_u32(ACTOR_ROWS + 0x18, NONE)
             .put_u32(ACTOR_ROWS + 0x30, 0)

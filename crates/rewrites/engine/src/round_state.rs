@@ -23,8 +23,8 @@
 //! `ebx` and `esi` pushed below; the player iterator is the locals. A read
 //! that faults is the guest's own: the lifted body faults on the same read.
 
-use crate::entry::{Cx, EntryError, GuestCall};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The function's guest entry.
 pub const ENTRY: u32 = 0x0015_c550;

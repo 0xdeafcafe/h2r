@@ -325,7 +325,7 @@ mod tests {
 
     #[test]
     fn the_guest_merge_proves_the_arm_and_a_different_window_falls_it_back() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         const POOL: u32 = 0x2000;
         let mut m = FlatMemory::new(0x1000, 0x2000);
         let windows = vec![window([0., 1., 0., 1.], 1.)];

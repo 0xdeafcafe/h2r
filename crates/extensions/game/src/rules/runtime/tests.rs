@@ -5,11 +5,11 @@
 use std::sync::{Arc, Mutex};
 
 use ::rules::vm::{Arg, Call as VmCall};
-use engine::entry::{Cx, EntryFuture, GuestCall, Regs, Ret, testing};
-use engine::points;
-use engine::testing::FakeGuest;
-use engine::view::fake;
-use engine::view::players::Player;
+use guest_layout::entry::{Cx, EntryFuture, GuestCall, Regs, Ret, testing};
+use guest_layout::points;
+use guest_layout::testing::FakeGuest;
+use guest_layout::view::fake;
+use guest_layout::view::players::Player;
 use variants::ext::{LEN, Script};
 
 use super::publish::walls_due;
@@ -1177,7 +1177,7 @@ mod round_start_and_quit {
     /// Takes player `slot` off the roster as the engine does before its
     /// player-left notice (player `+2` bit 1).
     fn leave(m: &mut FakeGuest, slot: u8) {
-        let players = engine::view::players::array(&*m).unwrap().unwrap();
+        let players = guest_layout::view::players::array(&*m).unwrap().unwrap();
         let p = players.get_absolute(&*m, i32::from(slot)).unwrap().unwrap();
         p.set_flags(m, 2).unwrap();
     }

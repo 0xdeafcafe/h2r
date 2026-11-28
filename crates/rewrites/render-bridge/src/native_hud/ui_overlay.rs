@@ -30,8 +30,8 @@ mod text;
 pub use scene_extract::ui::{BUTTON_GLYPHS, Justify, TextLayout, UiText};
 use std::cell::RefCell;
 
-use engine::memory::GuestMemory;
-pub use engine::points::ui_render::{LIST_DONE, LIST_READY};
+use guest_layout::memory::GuestMemory;
+pub use guest_layout::points::ui_render::{LIST_DONE, LIST_READY};
 use frame_scene::Overlay;
 use scene_extract::GuestRead;
 use scene_extract::ui::{self as walk, NoText, UiDraw, UiFrame, UiScreen, Unread};
@@ -612,7 +612,7 @@ pub(super) fn claim_list(mem: &dyn GuestMemory, list: &UiList, host: &dyn super:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use scene_extract::testing::Mem;
     use scene_extract::ui::draws;
 

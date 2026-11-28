@@ -5,7 +5,7 @@
 //! it this path, is held equal to the lifted guest by
 //! `tests/marker_differential.rs`.
 use super::*;
-use crate::points::{OBJECTS, TAG_ENTRIES};
+use guest_layout::points::{OBJECTS, TAG_ENTRIES};
 use runtime::Guest;
 use runtime::guest::Permissions;
 use std::sync::Mutex;

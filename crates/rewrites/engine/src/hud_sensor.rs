@@ -26,7 +26,7 @@
 
 use crate::function_eval::{self, fld_m64};
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 use x87::abi::arith_op;
 
@@ -427,7 +427,7 @@ pub fn blip_writes(mem: &mut dyn GuestMemory, draw: &BlipDraw) -> Result<(), Mem
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const MXCSR: u32 = 0x1f80;
     const CONTROL: u16 = 0x027f;

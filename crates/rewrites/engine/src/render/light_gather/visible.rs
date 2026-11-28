@@ -8,7 +8,7 @@ use super::guest::{NONE, Pool, Sphere, TAGS, at, lights, objects, ptr, tag};
 use super::history::{self, History};
 use super::{Refusal, Result, Writes};
 use crate::light_constants::Fpu;
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// One row's bytes.
 pub const VISIBLE_BYTES: usize = 0x14;
@@ -27,7 +27,7 @@ const PLAYER_IDENTITIES: u32 = 0x004e_8c20;
 const ACTIVE_SCENARIO: u32 = 0x004e_0350;
 /// The view's depth plane (`0x00031a1a`..`0x00031a50`).
 pub const PROJECTION_DEPTH: [u32; 4] = [0x004b_9e20, 0x004b_9e2c, 0x004b_9e38, 0x004b_9e44];
-pub use crate::points::PIXEL_SCALE;
+pub use guest_layout::points::PIXEL_SCALE;
 pub const MIN_DEPTH: u32 = 0x0045_dc68;
 pub const SIZE_FACTOR: u32 = 0x0045_dc0c;
 const EPSILON: u32 = 0x0045_dbdc;

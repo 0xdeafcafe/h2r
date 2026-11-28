@@ -2,11 +2,11 @@
 //! cache request or return. A request can change the list, so its header,
 //! index and accumulated success are recovered from the guest frame.
 
-use crate::points;
+use guest_layout::points;
 use crate::sim_native::{Memory, Result as TransferResult, plan};
 use crate::sim_objects::alu::cmp16;
 use crate::sim_physics::{arithmetic, byte, logic, pop, push};
-use crate::tags::{TAG_ENTRIES_GLOBAL, entry_layout};
+use guest_layout::tags::{TAG_ENTRIES_GLOBAL, entry_layout};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
 const ENTRY: u32 = points::PREDICT_RESOURCES.base;

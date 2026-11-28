@@ -1,6 +1,6 @@
 //! Scenario scripts and globals at the interpreter's current tick boundary.
 use agent_proto::{RpcError, code};
-use engine::{GuestMemory, MemFault, datum::{DatumArray, layout}, points};
+use guest_layout::{GuestMemory, MemFault, datum::{DatumArray, layout}, points};
 use serde_json::{Value, json};
 
 use crate::{Access, Agent};
@@ -117,7 +117,7 @@ fn globals(m: &dyn GuestMemory) -> Result<Value, RpcError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn player_actions_distinguish_a_press_from_a_script_claim() {

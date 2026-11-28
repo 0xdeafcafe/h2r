@@ -85,9 +85,9 @@ pub fn perf_env_note(
 }
 
 /// Register the retail image's hooked interior sites (the render sites, the
-/// script index's, `engine::points::game_types`, the AI skulls'
-/// campaign gates, `engine::points::skull_gates`, and the AI's multiplayer
-/// gate, `engine::points::ai_gates`) with the image
+/// script index's, `guest_layout::points::game_types`, the AI skulls'
+/// campaign gates, `guest_layout::points::skull_gates`, and the AI's multiplayer
+/// gate, `guest_layout::points::ai_gates`) with the image
 /// builder (`recomp::register_retail_entries`), so discovery makes them
 /// instruction entries in both tiers. Every binary that builds, stamps,
 /// loads or analyses the image calls it first (`h2`'s `main`, the Apple
@@ -100,7 +100,7 @@ pub fn register_image_entries() {
 
 /// The list [`register_image_entries`] registers, in order.
 pub fn image_entries() -> impl Iterator<Item = u32> {
-    use engine::points::{ai_gates, cache_wait, game_types, render_aspect, scene_effects, skull_gates};
+    use guest_layout::points::{ai_gates, cache_wait, game_types, render_aspect, scene_effects, skull_gates};
     render_aspect::instruction_entries()
         .chain(scene_effects::instruction_entries())
         .chain(game_types::instruction_entries())

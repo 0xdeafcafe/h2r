@@ -1,6 +1,6 @@
 //! Whether the retail multiplayer round takes input, from the game engine.
 //! The opening fade is [`super::match_opening_fading`]'s.
-use engine::{memory::GuestMemory, points};
+use guest_layout::{memory::GuestMemory, points};
 
 use super::R;
 
@@ -29,7 +29,7 @@ pub(crate) fn playing(m: &dyn GuestMemory) -> R<bool> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     /// A round that is playing, on a host with no local view.
     pub(crate) fn live_round(m: &mut FakeGuest, engine: u32, locals: u32) {

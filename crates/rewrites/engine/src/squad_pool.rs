@@ -1,8 +1,8 @@
 //! The two contiguous campaign AI datum arrays allocated by 0x200930.
 //! They occupy one fixed-size region of game state. Move their boundary
 //! before 0x200b30 seeds either array for the new scenario.
-use crate::datum::{self, DatumArray, flags, layout};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::datum::{self, DatumArray, flags, layout};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 const SQUADS: u32 = 0x51e9d8;
 const GROUPS: u32 = 0x51e9dc;
@@ -38,7 +38,7 @@ fn invalid(addr: u32) -> MemFault {
 /// Called before the original initializer. Preserve the guest allocator
 /// and restore the standard capacities when loading a smaller scenario.
 pub fn prepare(m: &mut dyn GuestMemory) -> Result<(), MemFault> {
-    let scenario = m.u32(crate::points::SCENARIO.base)?;
+    let scenario = m.u32(guest_layout::points::SCENARIO.base)?;
     let needed = partition(
         m.u32(scenario + 0x160)? as usize,
         m.u32(scenario + 0x158)? as usize,
@@ -90,14 +90,14 @@ pub fn prepare(m: &mut dyn GuestMemory) -> Result<(), MemFault> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn repartition_and_restore_preserve_neighboring_game_state() {
         let mut m = FlatMemory::new(0x450000, 0x100000);
         let (s, sc) = (0x480000, 0x460000);
         let g = s + bytes(RETAIL.0, SQUAD) as u32;
-        m.set_u32(crate::points::SCENARIO.base, sc).unwrap();
+        m.set_u32(guest_layout::points::SCENARIO.base, sc).unwrap();
         m.set_u32(SQUADS, s).unwrap();
         m.set_u32(GROUPS, g).unwrap();
         for (at, n, stride, name) in [(s, 335, SQUAD, 0x4561f0), (g, 100, GROUP, 0x4561e4)] {

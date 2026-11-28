@@ -4,7 +4,7 @@
 //! The guest reads the kernel's `KeTickCount` through its import slot; the
 //! kernel keeps that word current in guest memory, so the read is the call.
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// `0x411690`: the import slot holding `KeTickCount`'s address.
 pub const TICK_COUNT_IMPORT: u32 = 0x0041_1690;
@@ -17,7 +17,7 @@ pub fn system_time(m: &dyn GuestMemory) -> Result<u32, MemFault> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn the_system_time_is_the_word_the_import_slot_names() {

@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use engine::objectives::check_span;
-use engine::{GuestMemory, MemFault, points};
+use guest_layout::{GuestMemory, MemFault, points};
 use map::scenario_layout::{self, BlockDef, BlockKind};
 use sim_bench::spatial::{Ground, Item, Mesh, Place, Pose, Start, V3, Weapon};
 
@@ -152,7 +152,7 @@ pub fn places(m: &dyn GuestMemory) -> Result<(Vec<Start>, Vec<Item>), MemFault> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use sim_bench::spatial::{Event, Header, NoGround, Recorder};
 
     const SCENARIO: u32 = 0x10_0000;

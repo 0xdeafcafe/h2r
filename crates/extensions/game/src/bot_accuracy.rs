@@ -120,7 +120,7 @@ pub(crate) fn reset() {
 pub(crate) fn install(b: &mut hooks::Builder, phantoms: Phantoms) {
     b.game().on_start("start phantom shot counts", |_| reset());
     b.raw().observe_before(
-        &engine::points::WEAPON_STAT_BUCKET,
+        &guest_layout::points::WEAPON_STAT_BUCKET,
         "credit phantom shots by weapon and range",
         move |o| {
             let player = (o.cpu.ebp & 0xffff) as usize;

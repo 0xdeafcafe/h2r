@@ -20,10 +20,10 @@
 //! not by the pool's element size. A read that faults is the guest's own:
 //! the lifted body faults on the same read.
 
-use crate::datum::{DatumArray, layout};
-use crate::entry::{Cx, EntryError, GuestCall};
+use guest_layout::datum::{DatumArray, layout};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
 use crate::hs_pool::THREADS;
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use std::sync::Mutex;
 
 /// The phase's guest entry.
@@ -97,7 +97,7 @@ pub async fn run(cx: &Cx, reserve: u32) -> Result<(), EntryError> {
         return Ok(());
     }
     count(|s| s.passes += 1);
-    let tick = cx.read(|m| -> Result<i32, MemFault> { m.i32(m.u32(crate::points::GAME_TIME.base)?.wrapping_add(8)) })?;
+    let tick = cx.read(|m| -> Result<i32, MemFault> { m.i32(m.u32(guest_layout::points::GAME_TIME.base)?.wrapping_add(8)) })?;
     let mut start = 0;
     while let Some((handle, next)) = cx.read(|m| next_runnable(m, tick, start))? {
         count(|s| s.executed += 1);

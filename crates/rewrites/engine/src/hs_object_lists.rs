@@ -17,9 +17,9 @@
 //! A read that faults is the guest's own: the lifted body faults on the
 //! same read.
 
-use crate::datum::DatumArray;
-use crate::handle::DatumHandle;
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::datum::DatumArray;
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The sweep's guest entry.
 pub const ENTRY: u32 = 0x001d_eed0;
@@ -59,7 +59,7 @@ pub fn sweep(m: &mut dyn GuestMemory) -> Result<u32, MemFault> {
     while let Some(index) = at {
         let Some(handle) = lists.handle_of(m, index)? else { break };
         let slot = handle.raw() & 0xffff;
-        let data = m.u32(lists.addr.wrapping_add(crate::datum::layout::DATA))?;
+        let data = m.u32(lists.addr.wrapping_add(guest_layout::datum::layout::DATA))?;
         let list = data.wrapping_add(slot.wrapping_mul(LIST));
         if m.u16(list.wrapping_add(REFERENCES))? == 0 {
             let first = m.u32(list.wrapping_add(NEXT))?;
@@ -76,8 +76,8 @@ pub fn sweep(m: &mut dyn GuestMemory) -> Result<u32, MemFault> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::datum::layout;
-    use crate::testing::FakeGuest;
+    use guest_layout::datum::layout;
+    use guest_layout::testing::FakeGuest;
 
     const L: u32 = 0x0060_0000;
     const L_BITS: u32 = 0x0060_0800;

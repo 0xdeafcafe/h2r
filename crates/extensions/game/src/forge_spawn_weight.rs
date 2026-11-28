@@ -18,7 +18,7 @@
 use std::sync::Mutex;
 
 use agent::forge::spawn_weight;
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 
 /// The feature's id (`features.forge-spawn-weight`).
 pub const FEATURE: &str = "forge-spawn-weight";
@@ -77,7 +77,7 @@ impl hooks::Feature for SpawnWeight {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use forge_doc::SpawnWeight::High;
     use map::scenario_layout::{BlockKind, block};
 
@@ -87,7 +87,7 @@ mod tests {
         const STARTS: u32 = 0x0071_0000;
         let def = block(BlockKind::StartingLocations);
         let mut g = FakeGuest::new();
-        g.put_u32(engine::points::SCENARIO.base, SCNR)
+        g.put_u32(guest_layout::points::SCENARIO.base, SCNR)
             .map(SCNR + def.offset, 8)
             .put_u32(SCNR + def.offset, 2)
             .put_u32(SCNR + def.offset + 4, STARTS);

@@ -2,7 +2,7 @@
 //! Live QoS use the same game description. Direct, invited and queued requests
 //! converge on the host's session validator (docs/game/notes/creature-entity.md).
 
-use engine::{GuestMemory, MemFault, points};
+use guest_layout::{GuestMemory, MemFault, points};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use live_proto::replication;
 use runtime::{
@@ -205,7 +205,7 @@ impl Feature for ReplicationAdmission {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use live_proto::replication::{CREATURE_FULL, CREATURE_PROBE, STOCK};
 
     const DESCRIPTION: u32 = 0x1000;

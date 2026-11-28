@@ -250,7 +250,7 @@ pub(super) async fn gather(
     path: Path,
     cpu: CpuAbi,
     seat: SeatInput,
-    cx: &engine::entry::Cx,
+    cx: &guest_layout::entry::Cx,
 ) -> Option<[u8; ACTION_SIZE]> {
     gather_with(input, main, workspace, path, Stage::Rust, true, cpu, seat, cx).await
 }
@@ -267,7 +267,7 @@ pub(super) async fn gather_with(
     body: bool,
     cpu: CpuAbi,
     seat: SeatInput,
-    cx: &engine::entry::Cx,
+    cx: &guest_layout::entry::Cx,
 ) -> Option<[u8; ACTION_SIZE]> {
     let attempt = |refresh| {
         let mut guard = input.lock().unwrap_or_else(|e| e.into_inner());
@@ -731,7 +731,7 @@ impl Builder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::DatumHandle;
+    use guest_layout::DatumHandle;
     use runtime::{Dispatch, Guest, guest::Permissions};
 
     #[test]
@@ -965,7 +965,7 @@ mod tests {
 #[cfg(test)]
 mod path_tests {
     use super::*;
-    use engine::DatumHandle;
+    use guest_layout::DatumHandle;
     use runtime::{Dispatch, guest::Permissions};
     use std::sync::Arc;
 
@@ -1111,7 +1111,7 @@ mod path_tests {
 #[test]
 #[ignore = "requires a built retail module and a local multiplayer checkpoint with an opponent under the reticle"]
 fn retail_pad_sequence_matches_local_angles_target_and_fire() -> Result<()> {
-    use engine::DatumHandle;
+    use guest_layout::DatumHandle;
     use runtime::guest::Permissions;
     use std::path::PathBuf;
 
@@ -1273,7 +1273,7 @@ fn retail_pad_sequence_matches_local_angles_target_and_fire() -> Result<()> {
 #[cfg(test)]
 mod stage_tests {
     use super::*;
-    use engine::DatumHandle;
+    use guest_layout::DatumHandle;
     use runtime::{Dispatch, guest::Permissions};
 
     const USERS: u32 = 0x550000;

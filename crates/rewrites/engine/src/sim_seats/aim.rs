@@ -2,7 +2,7 @@
 //! for the same cone. Zoom and weapon disposition are guest calls, so each
 //! calculation reads the weapon and output again after those calls return.
 use crate::function_eval::constant::ONE;
-use crate::points;
+use guest_layout::points;
 use crate::sim_native::{Memory, Result, sub_flags};
 use crate::sim_objects::{alu::cmp16, sse::{self, Ss}};
 use crate::sim_physics::{byte, logic, pop, push};

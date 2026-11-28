@@ -2,8 +2,8 @@
 //! of a render view and the render call's argument naming that copy.
 use std::f32::consts::{FRAC_PI_2, TAU};
 
-use engine::view::{Record, objects, players};
-use engine::{DatumHandle, GuestMemory, points};
+use guest_layout::view::{Record, objects, players};
+use guest_layout::{DatumHandle, GuestMemory, points};
 use live_telemetry::layout;
 
 use super::prediction::Aim;

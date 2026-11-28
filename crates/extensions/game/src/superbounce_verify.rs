@@ -35,7 +35,7 @@ use agent_proto::superbounce::{
     VerifyTrial,
 };
 use agent_proto::{RpcError, code};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use serde_json::Value;
 
 use plan::{Plan, Trial, TrialKind};

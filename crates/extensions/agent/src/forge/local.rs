@@ -10,7 +10,7 @@ use agent_proto::forge::{
     WavesParams, method, refusal,
 };
 use agent_proto::{Boundary, Kind, ObjectId, RpcError, code};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use forge_doc::{Entry, ForgeDoc, Op, Sha256, TagKey};
 use map::scenario_layout as layout;
 use serde::Deserialize;

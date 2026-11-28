@@ -4,8 +4,8 @@
 //! Juggernaut, the engine also maintains its announcement and team mask.
 use std::sync::Arc;
 
-use engine::entry::{Cx, EntryError, GuestCall};
-use engine::{GuestMemory, MemFault, points};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::{GuestMemory, MemFault, points};
 
 use super::feature::Shared;
 use super::runtime::Runtime;

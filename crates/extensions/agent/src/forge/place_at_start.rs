@@ -17,7 +17,7 @@
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 
-use engine::{GuestMemory, MemFault};
+use guest_layout::{GuestMemory, MemFault};
 
 use super::spare_clips::STATE_STRIDE;
 
@@ -74,7 +74,7 @@ pub fn hold(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn a_held_entry_left_to_spawn_has_its_countdown_zeroed_and_no_other() {

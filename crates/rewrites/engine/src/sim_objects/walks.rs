@@ -11,8 +11,8 @@
 //! slot. Callbacks can add, delete and relink objects during any pass.
 
 use super::{Cx, Next, Result, unowned};
-use crate::datum::layout;
-use crate::points;
+use guest_layout::datum::layout;
+use guest_layout::points;
 use crate::sim_physics::{arithmetic, byte, logic, pop, push};
 use guest_layout::object::header;
 use runtime::{CpuAbi, Guest};

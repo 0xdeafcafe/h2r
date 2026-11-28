@@ -15,7 +15,7 @@ struct Close {
 impl Agent {
     /// Boot installs this on an external Live service. It reads the
     /// active game session's network class at the same boundary as capture.
-    pub fn set_live_session_probe(&self, probe: fn(&dyn engine::GuestMemory) -> bool) {
+    pub fn set_live_session_probe(&self, probe: fn(&dyn guest_layout::GuestMemory) -> bool) {
         self.lock().live_session = Some(probe);
     }
 

@@ -2,8 +2,8 @@ use agent_proto::route::Sample;
 use bots::autonav::{self, MAP_HEADER_LEN};
 use bots::cache::Stamp;
 use bots::guest::{self, BODY_DEPLETED};
-use engine::GuestMemory;
-use engine::view::{objects, players};
+use guest_layout::GuestMemory;
+use guest_layout::view::{objects, players};
 
 use crate::telemetry::layout;
 

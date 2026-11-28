@@ -1,5 +1,5 @@
 use super::*;
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 
 fn globals(m: &mut FakeGuest) -> u32 {
     let (sc, defs, pool, data, clock) = (0x10000, 0x20000, 0x30000, 0x40000, 0x50000);

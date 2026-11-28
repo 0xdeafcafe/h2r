@@ -5,8 +5,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use engine::entry::{EntryFuture, Ret, testing};
-use engine::testing::FakeGuest;
+use guest_layout::entry::{EntryFuture, Ret, testing};
+use guest_layout::testing::FakeGuest;
 
 const GLOBALS: u32 = 0x4000;
 const SCNR: u32 = 0x1_0000;

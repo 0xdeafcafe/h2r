@@ -2,10 +2,10 @@
 //! promotion rules select a range within one definition (0x126ec0,
 //! 0x218f10). H1 selects a different sound or rejects the request.
 
-use engine::GuestMemory;
-use engine::handle::DatumHandle;
-use engine::tags::GroupTag;
-use engine::view::Tags;
+use guest_layout::GuestMemory;
+use guest_layout::handle::DatumHandle;
+use guest_layout::tags::GroupTag;
+use guest_layout::view::Tags;
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, points};
 use tags::sound::h1_promotion::*;
 
@@ -70,7 +70,7 @@ fn charge(credit: u32, elapsed: u32, duration: u32, count: u32, has_target: bool
     }
 }
 
-fn choose(m: &mut dyn GuestMemory, mut id: u32) -> Result<Option<u32>, engine::MemFault> {
+fn choose(m: &mut dyn GuestMemory, mut id: u32) -> Result<Option<u32>, guest_layout::MemFault> {
     let mut now = None;
     loop {
         let Some(tag) = Tags.entry(m, DatumHandle(id))? else {
@@ -136,9 +136,9 @@ mod tests {
 
     #[test]
     fn a_promoted_impulse_uses_the_targets_own_rule() {
-        use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, index_layout};
+        use guest_layout::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, index_layout};
 
-        let mut m = engine::FlatMemory::new(0x0040_0000, 0x0020_0000);
+        let mut m = guest_layout::FlatMemory::new(0x0040_0000, 0x0020_0000);
         let index = 0x0059_0000;
         let entries = index + 0x100;
         let clock = index + 0x200;

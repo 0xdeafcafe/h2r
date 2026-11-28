@@ -60,7 +60,7 @@ pub(super) fn equipment_event(
 pub fn consumed_equipment(
     m: &dyn GuestMemory,
     sp: u32,
-) -> Result<Option<DatumHandle>, engine::MemFault> {
+) -> Result<Option<DatumHandle>, guest_layout::MemFault> {
     if m.u32(sp)? != 0x151fd2 {
         return Ok(None);
     }

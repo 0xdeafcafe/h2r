@@ -7,7 +7,7 @@ use agent_proto::raw::{
     PARTS, POKE_MAX, Poke, PokeParams, Raw, RawParams, RawPart, from_hex, method, to_hex,
 };
 use agent_proto::{RpcError, code};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use live_telemetry::raw::{self as rd, Part};
 use serde_json::Value;
 
@@ -116,7 +116,7 @@ fn poke_method(v: Value, ctx: &mut GameCtx<'_>, sim: &SimHandle) -> Result<Value
             .checked_add(p.offset)
             .filter(|addr| addr.checked_add(bytes.len() as u32 - 1).is_some())
             .ok_or_else(|| invalid("guest address range overflows"))?;
-        let fault = |e: engine::MemFault| {
+        let fault = |e: guest_layout::MemFault| {
             RpcError::new(
                 code::UNAVAILABLE,
                 format!("guest memory at {:#x} faulted", e.addr),
@@ -167,8 +167,8 @@ mod tests {
 
     use agent_proto::sim::{SessionKind, SessionView};
     use agent_proto::{Kind, Object};
-    use engine::testing::FakeGuest;
-    use engine::view::{fake, objects};
+    use guest_layout::testing::FakeGuest;
+    use guest_layout::view::{fake, objects};
     use live_telemetry::layout as l;
     use serde_json::json;
 
@@ -213,7 +213,7 @@ mod tests {
     /// rigid body with a motion and no shape.
     fn game() -> Game {
         let mut g = FakeGuest::new();
-        g.put_u32(engine::points::OBJECTS.base, OBJECTS_HDR);
+        g.put_u32(guest_layout::points::OBJECTS.base, OBJECTS_HDR);
         let table = fake::datums::<objects::Header>(&mut g, OBJECTS_HDR, 16);
         let (h, hdr) = fake::push(&mut g, &table);
         g.map(BODY, 0x464);

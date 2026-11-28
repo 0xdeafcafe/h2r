@@ -4,8 +4,8 @@
 //! and a geometry allocation. Each call materialises just the state it needs.
 //! No handle, pointer or clock survives a guest call or a checkpoint restore.
 use super::Port;
-use crate::datum::layout;
-use crate::points::{Loc, Point, Sig};
+use guest_layout::datum::layout;
+use guest_layout::points::{Loc, Point, Sig};
 use crate::sim_native;
 use crate::sim_objects::sse::{self, Ss};
 use crate::sim_physics::{arithmetic, byte, logic, pop, push, Result};

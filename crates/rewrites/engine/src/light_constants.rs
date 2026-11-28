@@ -28,14 +28,14 @@
 //! `engine/tests/light_constants_differential.rs` checks the block against
 //! the original, lifted and run on the IR interpreter, word for word.
 
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 mod screen_bounds;
 pub use screen_bounds::screen_bounds;
 
 /// `0x0004a1e0`: EAX the light's frame block, ECX the light volume, EDX
 /// the light datum (or -1), stack `(definition, unused, shadow, weight)`.
-pub const SET_LIGHT: u32 = crate::points::LIGHT_CONSTANTS.base;
+pub const SET_LIGHT: u32 = guest_layout::points::LIGHT_CONSTANTS.base;
 pub const SET_LIGHT_CLEANUP: u32 = 0x10;
 /// `0x000497a0`: the light's frame and colour scale (EAX the frame block
 /// out, ECX the context, eight stack arguments).

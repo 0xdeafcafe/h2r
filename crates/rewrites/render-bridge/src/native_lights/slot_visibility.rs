@@ -2,7 +2,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::render::light_gather::first_person::slots::Slots;
 use engine::render::light_gather::{Refusal, Result};
 use engine::render_loop::occlusion::guest::{FRAME, VIEW_INDEX};

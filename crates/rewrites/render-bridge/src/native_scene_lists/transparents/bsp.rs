@@ -167,7 +167,7 @@ impl SectionQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use native_render::world::Owner;
 
     #[test]

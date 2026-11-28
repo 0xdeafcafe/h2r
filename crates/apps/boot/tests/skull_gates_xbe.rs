@@ -1,4 +1,4 @@
-//! The AI skulls' campaign gates (`engine::points::skull_gates`) against
+//! The AI skulls' campaign gates (`guest_layout::points::skull_gates`) against
 //! the retail XBE: each site is a short `jne` falling through to the load
 //! of its skull's byte, and those loads are every absolute reference to
 //! an AI skull's byte but Famine's multiplayer reader. Addresses and
@@ -6,7 +6,7 @@
 //!
 //! `H2_XBE=/path/default.xbe cargo xtask test -p boot -- --ignored skull_gates`
 
-use engine::points::skull_gates::GATES;
+use guest_layout::points::skull_gates::GATES;
 
 /// The skull array (`SKULLS`).
 const ARRAY: u32 = 0x004f_55dc;

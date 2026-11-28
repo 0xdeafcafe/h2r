@@ -7,7 +7,7 @@
 //! Every count is checked against a cap, so a torn or stale read gives an
 //! error, not a runaway walk.
 
-use engine::{GuestMemory, MemFault};
+use guest_layout::{GuestMemory, MemFault};
 
 use crate::layout;
 

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use agent_proto::{RpcError, code, method};
 use bink_hle::addr::{ST_ACTIVE, ST_BINK, ST_MOVIE_OPEN};
-use engine::points::{
+use guest_layout::points::{
     CACHE_COPY_PENDING, UI_ATTRACT_RESET, UI_ATTRACT_START, UI_ATTRACT_TIMER, UI_CLOCK,
     UI_LAST_INPUT, UI_MOVIE_RETURN, UI_MUSIC_GATE,
 };

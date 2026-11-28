@@ -2,7 +2,7 @@
 
 use super::{BoundsQuery, Error, Fpu, Sse, X87, constant};
 use crate::function_eval::constant::{INDEFINITE, NO_REPORT};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use x87::abi::{self, arith_op, unary_op};
 
 const LOW_ANGLE: u32 = 0x0045_de34;
@@ -192,7 +192,7 @@ pub fn screen_bounds(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn eye_inside_uses_both_slope_limits_and_clamps_the_back_depth() {

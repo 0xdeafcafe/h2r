@@ -7,7 +7,7 @@
 //!
 //! **The playlists.** The OptiMatch playlist screen (loader `0x00230c8d`)
 //! builds its rows in `0x002b1ff4`, which asks
-//! [`HOPPER_LISTED`](engine::points::HOPPER_LISTED) (`0x00192db0`, ECX the
+//! [`HOPPER_LISTED`](guest_layout::points::HOPPER_LISTED) (`0x00192db0`, ECX the
 //! descriptor index, AL the answer) once per hopper and stores the index in
 //! each row. A `before` on it answers "not listed" for a hopper outside
 //! the [`Scope`] the opening press set: Clankermatch only the server's
@@ -19,10 +19,10 @@
 //! **Quickmatch** searches the playlist the player last picked in
 //! OptiMatch, which the playlist list's press saves (`0x001902fc`, from
 //! `0x002b21e3`). A clanker hopper is never saved: a `before` on
-//! [`PLAYLIST_REMEMBER`](engine::points::PLAYLIST_REMEMBER) skips the save
+//! [`PLAYLIST_REMEMBER`](guest_layout::points::PLAYLIST_REMEMBER) skips the save
 //! during Clankermatch or for a clanker hopper, so the human playlist
 //! picked before stays. And an `after` on
-//! [`QUICKMATCH_HOPPER`](engine::points::QUICKMATCH_HOPPER) answers "none"
+//! [`QUICKMATCH_HOPPER`](guest_layout::points::QUICKMATCH_HOPPER) answers "none"
 //! (-1, and Quickmatch starts nothing) for a clanker hopper saved anyway
 //! (a profile saved before the server marked it). See [`remembered`] and
 //! [`quickmatch_hopper`].
@@ -54,7 +54,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 
-use engine::entry::{EntryFuture, GuestCall, Ret};
+use guest_layout::entry::{EntryFuture, GuestCall, Ret};
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use live_proto::hopper::clankers::ClankerHoppers;
 use runtime::GuestFault;
@@ -304,7 +304,7 @@ impl hooks::Feature for SwitchRow {
         .doc("docs/game/bots.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        use engine::points::{
+        use guest_layout::points::{
             SQUAD_SETTINGS_LIST_CTOR as CTOR, SQUAD_SETTINGS_ROW_CHOSEN, SQUAD_SETTINGS_ROW_TEXT,
         };
         // The handler being built (ESI at entry); a stack in case of nesting.
@@ -442,7 +442,7 @@ pub fn balance(teams: u32, humans: &[(u8, f32)], skills: &[f32]) -> Vec<Option<u
 
 // ---- the hook ----
 
-/// The playlist filter on [`HOPPER_LISTED`](engine::points::HOPPER_LISTED).
+/// The playlist filter on [`HOPPER_LISTED`](guest_layout::points::HOPPER_LISTED).
 pub struct PlaylistFilter {
     /// `None` with no Live: every hopper is listed, as retail. Placed
     /// anyway, so the boot plan (and its tests) always holds the hook.
@@ -459,7 +459,7 @@ impl hooks::Feature for PlaylistFilter {
         .doc("docs/game/bots.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        use engine::points::{HOPPER_LISTED, PLAYLIST_REMEMBER, QUICKMATCH_HOPPER};
+        use guest_layout::points::{HOPPER_LISTED, PLAYLIST_REMEMBER, QUICKMATCH_HOPPER};
         let hle = self.hle.clone();
         let told = Arc::new(AtomicBool::new(false));
         b.raw()

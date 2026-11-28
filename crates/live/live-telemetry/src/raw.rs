@@ -6,8 +6,8 @@
 //! Each part is found through the one before it. A part whose pointer is
 //! unset or does not read is left out with the reason, not an error.
 
-use engine::view::objects;
-use engine::{DatumHandle, GuestMemory, MemFault};
+use guest_layout::view::objects;
+use guest_layout::{DatumHandle, GuestMemory, MemFault};
 
 use crate::layout;
 
@@ -213,8 +213,8 @@ pub fn object_parts(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
-    use engine::view::fake;
+    use guest_layout::testing::FakeGuest;
+    use guest_layout::view::fake;
 
     const OBJECTS_HDR: u32 = 0x8010_0000;
     const BODY: u32 = 0x8020_0000;
@@ -230,8 +230,8 @@ mod tests {
     /// region starts with a marker word.
     fn game(size: u16) -> (FakeGuest, u32) {
         let mut g = FakeGuest::new();
-        g.map(engine::points::OBJECTS.base, 4);
-        g.put_u32(engine::points::OBJECTS.base, OBJECTS_HDR);
+        g.map(guest_layout::points::OBJECTS.base, 4);
+        g.put_u32(guest_layout::points::OBJECTS.base, OBJECTS_HDR);
         let table = fake::datums::<objects::Header>(&mut g, OBJECTS_HDR, 16);
         let (h, hdr) = fake::push(&mut g, &table);
         g.map(BODY, 0x3000);

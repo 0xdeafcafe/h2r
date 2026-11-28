@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::render_loop::states::{HEADERS, MASKS};
 
 use crate::frame_step::layer::{SETUP, SETUP_OPEN};
@@ -129,7 +129,7 @@ pub fn replay(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use engine::render_loop::states::DIRTY;
 
     const DESCRIPTOR: u32 = 0x0045_1000;

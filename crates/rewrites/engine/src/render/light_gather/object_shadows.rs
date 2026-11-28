@@ -7,9 +7,9 @@ pub mod caster;
 pub mod rows;
 
 use super::{Refusal, Result, passes};
-use crate::entry::{Cx, EntryError, GuestCall, Ret};
-use crate::memory::GuestMemory;
-use crate::points;
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 
 /// The rows occupy the top of the frame; EBX, ESI and EDI are saved below.
 const ROW_BYTES: u32 = 0x280;

@@ -161,7 +161,7 @@ impl KitMaps {
 
     /// For the lobby as it stands: the map list read so far
     /// (`map_select::current`) and the lobby's map (`LOBBY_MAP`).
-    pub fn now(m: &dyn engine::memory::GuestMemory) -> KitMaps {
+    pub fn now(m: &dyn guest_layout::memory::GuestMemory) -> KitMaps {
         let catalogue = crate::map_select::current();
         let map = m.u32(crate::h1_options_row::LOBBY_MAP).ok();
         KitMaps::for_pick(catalogue.as_deref(), map, None, crate::map_variant::ground_on(map))
@@ -482,7 +482,7 @@ pub fn set_kit_map(map: Option<String>) {
 /// ([`KIT_NAME_PREFIX`]). `None` when the list is not read, there is no
 /// lobby map, or it is not a kit map (the probe's `Firefight Probe –
 /// <map>` is not one).
-pub fn kit_map_name(m: &dyn engine::memory::GuestMemory) -> Option<String> {
+pub fn kit_map_name(m: &dyn guest_layout::memory::GuestMemory) -> Option<String> {
     let id = m.u32(crate::h1_options_row::LOBBY_MAP).ok()?;
     let catalogue = crate::map_select::current()?;
     let map = catalogue.all().find(|map| map.id == id)?;

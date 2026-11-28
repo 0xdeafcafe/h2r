@@ -122,7 +122,7 @@ fn generated(m: &dyn GuestMemory, sc: u32, id: u32) -> R<bool> {
 fn cells(m: &dyn GuestMemory, sc: u32, i: u32) -> R<Option<u32>> {
     let n = m.u32(sc + 0x1c0)?;
     let pool = m.u32(GLOBALS)?;
-    if pool == 0 || i.saturating_add(CELLS) > n.min(m.u32(pool + engine::datum::layout::MAXIMUM_COUNT)?.saturating_sub(1053)) {
+    if pool == 0 || i.saturating_add(CELLS) > n.min(m.u32(pool + guest_layout::datum::layout::MAXIMUM_COUNT)?.saturating_sub(1053)) {
         return Ok(None);
     }
     let defs = m.u32(sc + 0x1c4)?;
@@ -467,7 +467,7 @@ mod tests {
     }
     #[test]
     fn changing_instance_restores_only_the_owned_falling_damage_flag() {
-        let mut m = engine::FlatMemory::new(0x004e_0000, 0x40000);
+        let mut m = guest_layout::FlatMemory::new(0x004e_0000, 0x40000);
         let array = 0x004e_2000;
         let header = 0x004e_2100;
         let body = 0x004e_2200;

@@ -14,9 +14,9 @@
 //! Every offset is recovered from engine code; the doc gives the address of
 //! each read and says which names are ours. Tests use invented records.
 
-use crate::datum::DatumArray;
-use crate::handle::DatumHandle;
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::datum::DatumArray;
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
 
 fn f32_at(b: &[u8], off: usize) -> f32 {
     f32::from_le_bytes(b[off..off + 4].try_into().unwrap())
@@ -565,9 +565,9 @@ mod tests {
     use super::layer::{self, Descriptor, List, Role};
     use super::light::{self, LightError, LightRecord, RECORD_SIZE, definition_flags as df};
     use super::stencil;
-    use crate::datum::{DatumArray, layout as dl};
-    use crate::handle::DatumHandle;
-    use crate::memory::{FlatMemory, GuestMemory};
+    use guest_layout::datum::{DatumArray, layout as dl};
+    use guest_layout::handle::DatumHandle;
+    use guest_layout::memory::{FlatMemory, GuestMemory};
 
     fn put_f32s(b: &mut [u8], off: usize, v: &[f32]) {
         for (i, x) in v.iter().enumerate() {

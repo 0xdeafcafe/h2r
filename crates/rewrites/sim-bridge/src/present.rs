@@ -21,7 +21,7 @@
 //! Their counters are `seats.aim` and `seats.respawn` in `sim.arms`. The
 //! pickup scan `1508e0` is a seat (`engine::sim_seats::player_objects`).
 
-use engine::points;
+use guest_layout::points;
 use engine::sim_seats::aim::arm;
 use engine::sim_seats::respawn;
 use engine::sim_tick::Present;
@@ -78,9 +78,9 @@ pub(crate) fn install(b: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::entry::{self, Regs};
+    use guest_layout::entry::{self, Regs};
     use engine::sim_tick::{self, PHASES};
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use hooks::Switches;
     use std::sync::Mutex;
 
@@ -92,15 +92,15 @@ mod tests {
     fn run(mode: Present, mapped: &[u32]) -> Vec<u32> {
         let mut g = FakeGuest::new();
         g.map(STACK - 0x8000, 0x10000).map(0x0051_0000, 0x1000).map(TIME, 0x1000).map(0x004e_8000, 0x1000).map(USERS, 0x1000);
-        g.put_u32(engine::points::GAME_TIME.base, TIME).put_u32(TIME + 8, 1).put_f32(TIME + 4, 0.25);
-        g.put_u32(engine::points::TICK_CLOCK.base, CLOCK).put_f32(CLOCK + 4, 1.0).put_u32(CLOCK + 0x14, 5);
+        g.put_u32(guest_layout::points::GAME_TIME.base, TIME).put_u32(TIME + 8, 1).put_f32(TIME + 4, 0.25);
+        g.put_u32(guest_layout::points::TICK_CLOCK.base, CLOCK).put_f32(CLOCK + 4, 1.0).put_u32(CLOCK + 0x14, 5);
         g.put_u32(sim_tick::LOCAL_USERS, USERS);
         for u in 0..4 {
             g.put_u32(USERS + 0xc + 4 * u, if mapped.contains(&u) { u } else { u32::MAX });
         }
         let ledger: &'static Mutex<sim_tick::Ledger> = Box::leak(Box::new(Mutex::new(sim_tick::Ledger::new())));
-        let f = move |cx: engine::entry::Cx| -> hooks::EntryFuture { Box::pin(sim_tick::run_with(cx, ledger, mode, sim_tick::Bodies::NONE)) };
-        let callee = |c: &engine::entry::GuestCall, m: &mut dyn engine::memory::GuestMemory| {
+        let f = move |cx: guest_layout::entry::Cx| -> hooks::EntryFuture { Box::pin(sim_tick::run_with(cx, ledger, mode, sim_tick::Bodies::NONE)) };
+        let callee = |c: &guest_layout::entry::GuestCall, m: &mut dyn guest_layout::memory::GuestMemory| {
             if c.target == sim_tick::RECORD_BEFORE || c.target == sim_tick::RECORD_AFTER {
                 m.set_u8(STACK - sim_tick::RECORD_SIZE + sim_tick::RUN_FLAG, 1).unwrap();
             }
@@ -134,16 +134,16 @@ mod tests {
         const SIM: u32 = 0x0054_0100;
         let mut g = FakeGuest::new();
         g.map(STACK - 0x8000, 0x10000).map(0x0051_0000, 0x1000).map(TIME, 0x1000).map(0x004e_8000, 0x1000).map(USERS, 0x1000).map(SEEDS, 0x1000).map(0x004e_7000, 0x1000);
-        g.put_u32(engine::points::GAME_TIME.base, TIME).put_u32(TIME + 8, 1).put_f32(TIME + 4, 0.25);
-        g.put_u32(engine::points::TICK_CLOCK.base, CLOCK).put_f32(CLOCK + 4, 1.0).put_u32(CLOCK + 0x14, 5);
+        g.put_u32(guest_layout::points::GAME_TIME.base, TIME).put_u32(TIME + 8, 1).put_f32(TIME + 4, 0.25);
+        g.put_u32(guest_layout::points::TICK_CLOCK.base, CLOCK).put_f32(CLOCK + 4, 1.0).put_u32(CLOCK + 0x14, 5);
         g.put_u32(sim_tick::LOCAL_USERS, USERS);
-        g.put_u32(engine::points::RANDOM_SEEDS.base, SEEDS).put_u32(SEEDS, 7).put_u32(SEEDS + 4, 11);
+        g.put_u32(guest_layout::points::RANDOM_SEEDS.base, SEEDS).put_u32(SEEDS, 7).put_u32(SEEDS + 4, 11);
         for u in 0..4 {
             g.put_u32(USERS + 0xc + 4 * u, if mapped.contains(&u) { u } else { u32::MAX });
         }
         let ledger: &'static Mutex<sim_tick::Ledger> = Box::leak(Box::new(Mutex::new(sim_tick::Ledger::new())));
-        let f = move |cx: engine::entry::Cx| -> hooks::EntryFuture { Box::pin(sim_tick::run_with(cx, ledger, mode, sim_tick::Bodies::NONE)) };
-        let callee = |c: &engine::entry::GuestCall, m: &mut dyn engine::memory::GuestMemory| {
+        let f = move |cx: guest_layout::entry::Cx| -> hooks::EntryFuture { Box::pin(sim_tick::run_with(cx, ledger, mode, sim_tick::Bodies::NONE)) };
+        let callee = |c: &guest_layout::entry::GuestCall, m: &mut dyn guest_layout::memory::GuestMemory| {
             if c.target == sim_tick::RECORD_BEFORE || c.target == sim_tick::RECORD_AFTER {
                 m.set_u8(STACK - sim_tick::RECORD_SIZE + sim_tick::RUN_FLAG, 1).unwrap();
             }
@@ -161,7 +161,7 @@ mod tests {
             Regs::default()
         };
         let r = entry::testing::run(&f, g, Regs { esp: STACK, ..Default::default() }, callee);
-        use engine::memory::GuestMemory;
+        use guest_layout::memory::GuestMemory;
         let g = r.guest;
         [g.u32(SEEDS).unwrap(), g.u32(SEEDS + 4).unwrap(), g.u32(SIM).unwrap(), g.u32(TIME + 8).unwrap()]
     }

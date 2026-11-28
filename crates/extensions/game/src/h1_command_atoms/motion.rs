@@ -178,11 +178,11 @@ mod tests {
     use super::*;
     #[test]
     fn active_root_channel_drives_physics_once_per_step() {
-        use engine::entry::{self, EntryFuture, Regs, Step as Transfer};
+        use guest_layout::entry::{self, EntryFuture, Regs, Step as Transfer};
         use std::sync::Mutex;
         let base = 0x500000;
         for motion in [Motion::Solid, Motion::Unobstructed] {
-            let mut m = engine::FlatMemory::new(base, 0x20000);
+            let mut m = guest_layout::FlatMemory::new(base, 0x20000);
             let body = objects::Body::at(base + 0x1000);
             let state = base + 0x2000;
             let input = base + 0x3000;

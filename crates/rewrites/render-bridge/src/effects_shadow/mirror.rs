@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use engine::function_eval::constant::BYTE;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::particle_emission::{Prediction, constant::TINT};
 use native_render::particle_mirror::{self as nm, Key};
 use native_render::particle_system::Spawn;
@@ -172,7 +172,7 @@ pub(crate) mod tests {
 
     use super::*;
     use crate::effects_shadow::fixtures::{ESP, world};
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use engine::particle_emission as pe;
 
     /// Takes what it is given; refuses one definition or every draw.

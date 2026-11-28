@@ -83,7 +83,7 @@ pub(crate) fn resolve(objects: &[Object], id: &str) -> Result<(u32, Option<[f64;
 
 fn read<T>(
     ctx: &mut GameCtx<'_>,
-    f: impl Fn(&dyn engine::GuestMemory) -> Result<T, engine::MemFault>,
+    f: impl Fn(&dyn guest_layout::GuestMemory) -> Result<T, guest_layout::MemFault>,
 ) -> Result<T, RpcError> {
     let mut out = None;
     let ran = ctx.reader.with_guest(&mut |m| out = Some(f(&*m)));

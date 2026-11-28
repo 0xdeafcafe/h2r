@@ -17,8 +17,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use engine::light_constants::{Call, Fpu};
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use engine::render::light_gather::first_person::{self, SlotRecords};
 use engine::render::light_gather::items::Made;
 use engine::render::light_gather::typed;
@@ -100,7 +100,7 @@ pub(super) fn install(b: &mut Builder) {
                         )
                         .await?;
                         SceneList::FirstPersonLights.count(SceneListResult::Native);
-                        Ok::<_, engine::entry::EntryError>(ret)
+                        Ok::<_, guest_layout::entry::EntryError>(ret)
                     })
                 })
             },
@@ -132,7 +132,7 @@ pub(super) fn install(b: &mut Builder) {
                     Box::pin(async move {
                         let (ret, records) = first_person::run_records(&cx, plan).await?;
                         count(&records);
-                        Ok::<_, engine::entry::EntryError>(ret)
+                        Ok::<_, guest_layout::entry::EntryError>(ret)
                     })
                 })
             },
@@ -295,7 +295,7 @@ fn count(records: &SlotRecords) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::FlatMemory;
+    use guest_layout::FlatMemory;
 
     #[test]
     fn a_cut_slots_candidate_carries_its_constants_and_its_definitions_gels() {

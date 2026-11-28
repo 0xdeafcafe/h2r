@@ -4,7 +4,7 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
-use engine::points;
+use guest_layout::points;
 
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 

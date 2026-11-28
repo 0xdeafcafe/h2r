@@ -51,7 +51,7 @@ impl Machine {
 
     pub(in crate::host_lobby) fn load(
         bytes: &[u8],
-        m: &dyn engine::GuestMemory,
+        m: &dyn guest_layout::GuestMemory,
     ) -> Result<Self, snapshot::Error> {
         let mut r = Reader::new(bytes, "host-lobby");
         let version = r.u8()?;
@@ -150,7 +150,7 @@ mod tests {
             }),
         };
         let bytes = state.save();
-        let mut m = engine::testing::FakeGuest::new();
+        let mut m = guest_layout::testing::FakeGuest::new();
         assert_eq!(Machine::load(&bytes, &m).unwrap().save(), bytes);
         assert!(Machine::load(&bytes[..bytes.len() - 1], &m).is_err());
 
@@ -182,7 +182,7 @@ mod tests {
             }),
         };
         let bytes = state.save();
-        let m = engine::testing::FakeGuest::new();
+        let m = guest_layout::testing::FakeGuest::new();
         let loaded = Machine::load(&bytes, &m).unwrap();
         assert_eq!(loaded.owned.as_ref().unwrap().config.variant, Variant::Absent);
         assert_eq!(loaded.save(), bytes);

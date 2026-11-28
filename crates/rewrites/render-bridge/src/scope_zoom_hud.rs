@@ -6,9 +6,9 @@
 //! [`zoom_blur`].
 
 use engine::glow::BlurArgs;
-use engine::handle::DatumHandle;
-use engine::memory::GuestMemory;
-use engine::tags::{entry_layout, tag_entry_checked};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::GuestMemory;
+use guest_layout::tags::{entry_layout, tag_entry_checked};
 use tags::scope_zoom::{MAGIC, Profile, WORDS};
 
 /// The return address of the HUD screen pass's call to the screen effect.

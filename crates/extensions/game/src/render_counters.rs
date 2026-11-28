@@ -19,7 +19,7 @@
 
 use std::sync::Mutex;
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use engine::render_loop::tick_writes::{self, Word, Words};
 use sim_bridge::sim_frame::{Addrs, FrameKind, frame_kind, idle_after};
 
@@ -68,7 +68,7 @@ impl Counters {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const A: Addrs = Addrs::HALO2;
     const GLOBALS: u32 = 0x0070_0000;

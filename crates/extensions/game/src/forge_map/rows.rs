@@ -18,7 +18,7 @@
 //! block is kept. Nothing here is written to the document or the network.
 use std::collections::BTreeMap;
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use forge::BlockKind;
 use forge_doc::{F32, Print, TagKey, Value};
 use map::scenario_layout::{self as layout, BlockDef, FieldDef, FieldType, Role};
@@ -148,7 +148,7 @@ pub(crate) fn read(m: &dyn GuestMemory, scenario: u32, names: Names<'_>) -> MapR
     out
 }
 
-fn fault(e: engine::MemFault) -> String {
+fn fault(e: guest_layout::MemFault) -> String {
     format!("guest memory at {:#x} does not read", e.addr)
 }
 

@@ -38,7 +38,7 @@
 //! set, which it clears).
 
 use super::{NONE, ONE, call, callee, owned, pop, push, ret, sx16};
-use crate::points;
+use guest_layout::points;
 use crate::sim_objects::functions::{fp_error, fpu, fpu_done};
 use crate::sim_objects::sse::{self, Ss};
 use crate::sim_objects::{Cx, Next, Result, unowned};

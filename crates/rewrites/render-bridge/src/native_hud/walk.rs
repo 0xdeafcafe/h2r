@@ -38,7 +38,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{LazyLock, Mutex};
 
 use engine::hud_effects;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use scene_extract::hud::{self, Blocks, GuestBitmap, walk};
 use scene_extract::ui::{Justify, UiText};
 pub use walk::{GlyphQuad, ScreenDraw};
@@ -959,7 +959,7 @@ pub fn owned(drawn: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn a_widget_is_the_guests_until_its_draws_matched() {

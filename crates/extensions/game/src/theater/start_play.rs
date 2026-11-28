@@ -15,7 +15,7 @@
 use super::start_point::StartPoint;
 use super::start_point_state::{self as state, ExtRecords};
 use anyhow::{Result, bail, ensure};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use film::file::{FLAG_START_POINT, FilmReader};
 use std::io::{Read, Seek};
 

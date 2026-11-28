@@ -1,6 +1,6 @@
 use super::*;
-use crate::FlatMemory;
-use crate::datum::layout;
+use guest_layout::FlatMemory;
+use guest_layout::datum::layout;
 
 const FPU: Fpu = Fpu {
     mxcsr: 0x1f80,

@@ -28,7 +28,7 @@ use std::collections::{BTreeMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use scene_extract::decals::{BUCKET_CLUSTERS, DECALS, GEOMETRY, GROUPS, RECORD_SIZE, STREAM};
 
 pub use native_render::decal_material::{decal_texture, tint};
@@ -397,7 +397,7 @@ pub fn rows() -> Vec<(&'static str, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const BASE: u32 = 0x004b_0000;
     const TABLE: u32 = 0x0056_0000;

@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use engine::render_loop::occlusion::guest::{FRAME, VIEW_INDEX};
 use frame_scene::{
     Camera, Cut, DeviceFog, FrameScene, GroupSite, LateInput, LateLayer, LateMaterial, LatePart,
@@ -2481,7 +2481,7 @@ mod tests {
 
         let mut record = Mem::default();
         camera_record(&mut record, RENDER_CAMERA);
-        let mut guest = engine::FlatMemory::new(RENDER_CAMERA, 0x100);
+        let mut guest = guest_layout::FlatMemory::new(RENDER_CAMERA, 0x100);
         for (addr, word) in record.0 {
             guest.set_u32(addr, word).unwrap();
         }
@@ -2518,7 +2518,7 @@ mod tests {
     /// structure of no clusters and no portals, empty guest lists, and the
     /// view's player word at none. Its Rust sets are empty and its lists
     /// read; the lists live at `LISTS`.
-    fn visibility_memory() -> engine::FlatMemory {
+    fn visibility_memory() -> guest_layout::FlatMemory {
         use engine::render_loop::occlusion::guest::{MAIN_VIS, VIEW_PLAYER, VIS_KIND, VIS_OBJECTS};
         use scene_extract::visibility::graph::layout as structure;
         use scene_extract::visibility::guest::{ACTIVE_STRUCTURE, ACTIVE_VIS, vis};
@@ -2528,7 +2528,7 @@ mod tests {
         const BSP: u32 = 0x004e_1100;
         let (regions, structure_list, object_list) = (LISTS, LISTS + 0x1000, LISTS + 0x2000);
 
-        let mut guest = engine::FlatMemory::new(0x004b_0000, (0x0054_b000 - 0x004b_0000) as usize);
+        let mut guest = guest_layout::FlatMemory::new(0x004b_0000, (0x0054_b000 - 0x004b_0000) as usize);
         let mut w = |at: u32, word: u32| guest.set_u32(at, word).unwrap();
         w(ACTIVE_VIS, MAIN_VIS);
         w(MAIN_VIS + VIS_KIND, 0);
@@ -2599,7 +2599,7 @@ mod tests {
         let mut cache = scene_extract::visibility::GraphCache::default();
         let mut arms = VisibilityArms { shadow: [Shadow::NEW; 3], on: true };
         let mut guest = visibility_memory();
-        let at = |guest: &mut engine::FlatMemory, frame: u32| {
+        let at = |guest: &mut guest_layout::FlatMemory, frame: u32| {
             guest.set_u32(engine::render_loop::occlusion::guest::FRAME, frame).unwrap();
         };
         let listed = || guest_lists(vec![2], vec![7]);
@@ -2668,7 +2668,7 @@ mod tests {
 
         // The struct is not the main view's on empty memory: the decline
         // keeps the guest's lists.
-        let empty = engine::FlatMemory::new(0x004b_0000, 0x100);
+        let empty = guest_layout::FlatMemory::new(0x004b_0000, 0x100);
         let lists = guest_lists(vec![2], vec![7]);
         let (gather, extra, _) =
             visibility_arm(&Ro(&empty), Some(&record), key, &mut cache, Some(lists.clone()), None, &mut arms);
@@ -2693,7 +2693,7 @@ mod tests {
         let mut cache = scene_extract::visibility::GraphCache::default();
         let mut arms = VisibilityArms { shadow: [Shadow::NEW; 3], on: true };
         let mut guest = visibility_memory();
-        let at = |guest: &mut engine::FlatMemory, frame: u32| {
+        let at = |guest: &mut guest_layout::FlatMemory, frame: u32| {
             guest.set_u32(engine::render_loop::occlusion::guest::FRAME, frame).unwrap();
         };
         for k in 0..PROVEN_AFTER as u32 {

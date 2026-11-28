@@ -2,7 +2,7 @@
 //! ([`super::scene_frame::groups`]): the shadow setup's stores laid over
 //! guest memory for the read, nothing written.
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::render::light_gather::Writes;
 
 /// Record the same stores the guest-memory writers make, for reads only.

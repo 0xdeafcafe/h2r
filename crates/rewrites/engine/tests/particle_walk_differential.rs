@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 mod common;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::particle_emission::{self as pe, EMIT};
 use engine::particle_walk::{self as pw, Call, EMITTERS, ENTRY, PARTICLES, Refused, TAGS};
 use ir::IrInsn;

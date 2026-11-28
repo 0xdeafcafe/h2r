@@ -2,7 +2,7 @@
 //! damage by impact speed. Both operate on the current collision substep.
 
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
-use engine::points::{DAMAGE_DATA_INIT, VECTOR_LENGTH_3D};
+use guest_layout::points::{DAMAGE_DATA_INIT, VECTOR_LENGTH_3D};
 use runtime::{Guest, GuestFault};
 use tags::H1_PROJECTILE_VELOCITY_CURVE;
 

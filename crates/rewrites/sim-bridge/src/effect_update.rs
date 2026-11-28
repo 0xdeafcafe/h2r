@@ -18,7 +18,7 @@
 
 use crate::sim_objects::original;
 use engine::effect_update::{TABLE, arm};
-use engine::points;
+use guest_layout::points;
 use engine::sim_objects::{self as objects, Body, Table};
 use hooks::Builder;
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};

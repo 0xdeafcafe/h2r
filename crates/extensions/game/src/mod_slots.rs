@@ -160,7 +160,7 @@ pub fn read_slots<M: Gm>(m: &M) -> Vec<Slot> {
 }
 
 /// Guest memory, mutably, as [`Gm`].
-pub struct WriteGm<'a>(pub &'a mut dyn engine::memory::GuestMemory);
+pub struct WriteGm<'a>(pub &'a mut dyn guest_layout::memory::GuestMemory);
 
 impl Gm for WriteGm<'_> {
     fn rd(&self, addr: u32, out: &mut [u8]) -> bool {

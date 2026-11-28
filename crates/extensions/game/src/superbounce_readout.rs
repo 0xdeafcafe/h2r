@@ -354,9 +354,9 @@ static INSET: Mutex<Option<(u32, f32, f32)>> = Mutex::new(None);
 /// for the mode `on` or off, each tick. The map's own value is read once
 /// per `hudg` and put back when the mode goes off. A map with no `hudg`
 /// loaded is left alone.
-pub fn keep_waypoint_inset(mem: &mut dyn engine::memory::GuestMemory, on: bool) {
+pub fn keep_waypoint_inset(mem: &mut dyn guest_layout::memory::GuestMemory, on: bool) {
     let Some(h) = mem
-        .u32(engine::points::HUD_GLOBALS_TAG.base)
+        .u32(guest_layout::points::HUD_GLOBALS_TAG.base)
         .ok()
         .filter(|&h| h != 0)
     else {

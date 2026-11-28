@@ -1,7 +1,7 @@
 //! Screen text and button labels. Retail entry points and field evidence are
 //! recorded in docs/graphics/notes/2026-11-24-menu-text.md.
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use scene_extract::GuestRead;
 use scene_extract::ui::{self, Justify, TextLayout, UiContent, UiWidget, Unread};
 
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn a_left_out_draw_writes_its_reveal_step() {
-        use engine::testing::FakeGuest;
+        use guest_layout::testing::FakeGuest;
         let (w, iface) = (0x1000, 0x1074);
         let mut g = FakeGuest::new();
         g.put_u32(w, 0x2000)

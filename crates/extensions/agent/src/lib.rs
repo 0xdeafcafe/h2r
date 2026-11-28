@@ -144,8 +144,8 @@ impl hooks::Feature for AgentFeature {
             })
             .last();
         for (point, on, label) in [
-            (&engine::points::CINEMATIC_START, true, "cinematic-start"),
-            (&engine::points::CINEMATIC_STOP, false, "cinematic-stop"),
+            (&guest_layout::points::CINEMATIC_START, true, "cinematic-start"),
+            (&guest_layout::points::CINEMATIC_STOP, false, "cinematic-stop"),
         ] {
             let a = self.0.clone();
             b.raw()
@@ -153,7 +153,7 @@ impl hooks::Feature for AgentFeature {
                 .optional();
         }
         let revert = self.0.clone();
-        b.raw().observe_after(&engine::points::GAME_STATE_REVERT, "mirror-cut", move |_| {
+        b.raw().observe_after(&guest_layout::points::GAME_STATE_REVERT, "mirror-cut", move |_| {
             revert.live_cut();
         }).optional();
         let (save, load) = (self.0.clone(), self.0.clone());
@@ -168,7 +168,7 @@ impl hooks::Feature for AgentFeature {
 /// Lifecycle hooks that must be present before a queued world edit can run.
 pub const EDIT_LIFECYCLE: &str = "agent-edit-lifecycle";
 
-pub type EditorActivation = std::sync::Arc<dyn Fn(&dyn engine::GuestMemory) + Send + Sync>;
+pub type EditorActivation = std::sync::Arc<dyn Fn(&dyn guest_layout::GuestMemory) + Send + Sync>;
 
 pub struct EditLifecycleFeature(pub sim::calls::Shared, pub Agent, pub Option<EditorActivation>);
 
@@ -189,7 +189,7 @@ impl hooks::Feature for EditLifecycleFeature {
             agent.live_cut();
         });
         let revert = self.0.clone();
-        b.raw().observe_after(&engine::points::GAME_STATE_REVERT, "checkpoint previews", move |_| {
+        b.raw().observe_after(&guest_layout::points::GAME_STATE_REVERT, "checkpoint previews", move |_| {
             calls::lock(&revert).checkpoint_reverted();
         });
         calls::install_reload_recovery(b, self.0.clone(), self.1.clone(), self.2.clone());

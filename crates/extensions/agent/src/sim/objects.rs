@@ -7,10 +7,10 @@ use agent_proto::sim::objects::{
     ObjectsParams, ObjectsReply, SimObject, SimSphere, SimUnit, SimVitality, handle,
 };
 use agent_proto::{RpcError, code};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use sim_state::{ObjectFlags, ObjectKind, ObjectView};
 
-fn fault(e: engine::MemFault) -> RpcError {
+fn fault(e: guest_layout::MemFault) -> RpcError {
     RpcError::new(
         code::UNAVAILABLE,
         format!("guest memory at {:#x} faulted", e.addr),
@@ -56,7 +56,7 @@ fn datum(d: guest_layout::Datum) -> Option<String> {
     d.get().map(handle)
 }
 
-fn object(o: &ObjectView<'_, dyn GuestMemory + '_>) -> Result<SimObject, engine::MemFault> {
+fn object(o: &ObjectView<'_, dyn GuestMemory + '_>) -> Result<SimObject, guest_layout::MemFault> {
     let t = o.transform()?;
     let sphere = o.bounding_sphere()?;
     let v = o.vitality()?;

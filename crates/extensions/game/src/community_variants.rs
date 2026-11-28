@@ -718,7 +718,7 @@ pub fn extend_with<M: Mem>(
 
 /// A listed record is identified by its display name and loader template.
 /// An already restored script record also matches on a second load.
-fn listed_record(m: &dyn engine::memory::GuestMemory, record: u32) -> Option<&'static Listed> {
+fn listed_record(m: &dyn guest_layout::memory::GuestMemory, record: u32) -> Option<&'static Listed> {
     let l = listed_by_display(&crate::tweakers::record_name(m, record)?)?;
     let ty = GameType::from_engine(crate::tweakers::record_engine(m, record)?);
     let want = l.record.game_type();
@@ -731,8 +731,8 @@ fn listed_record(m: &dyn engine::memory::GuestMemory, record: u32) -> Option<&'s
 /// files the record without it; from then a game on the built-in, and a
 /// copy Edit makes of it, name its script. How many changed.
 pub fn write_blocks(
-    m: &mut dyn engine::memory::GuestMemory,
-) -> Result<usize, engine::memory::MemFault> {
+    m: &mut dyn guest_layout::memory::GuestMemory,
+) -> Result<usize, guest_layout::memory::MemFault> {
     use crate::tweakers::{BUILTIN_LIST, BUILTIN_RECORD, BUILTIN_VARIANT};
     let list = m.u32(BUILTIN_LIST)?;
     if list == 0 {
@@ -759,11 +759,11 @@ pub fn write_blocks(
 /// Finish the record built from the goof template. Keep the loader's
 /// name, flags and selected settings, including the built-in icon.
 pub(crate) fn restore_script_record(
-    m: &mut dyn engine::memory::GuestMemory,
+    m: &mut dyn guest_layout::memory::GuestMemory,
     record: u32,
     ty: GameType,
     block: &[u8; ext::LEN],
-) -> Result<bool, engine::memory::MemFault> {
+) -> Result<bool, guest_layout::memory::MemFault> {
     let mut raw = [0; variants::record::RECORD_SIZE];
     m.read(record, &mut raw)?;
     let before = raw;

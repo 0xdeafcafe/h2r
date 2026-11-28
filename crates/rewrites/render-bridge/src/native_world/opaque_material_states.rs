@@ -2,8 +2,8 @@
 //! 0x1ab50). The deferred cases are guest stores, consumed by the next D3D
 //! flush. The immediate cases must also update D3D's pushed state.
 
-use engine::entry::{Cx, EntryError, GuestCall};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::render_loop::states::{self, ALPHA_SCALE, DEFS, DEVICE, DIRTY, HEADERS, MASKS, SHADOW, SIMPLE, STATE_88};
 
 const SAMPLER_DEFS: u32 = 0x0046_703c;
@@ -159,8 +159,8 @@ pub(super) async fn sampler(cx: &Cx, context: u32, span: u32, fcw: u16) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::entry::{EntryFuture, Regs, Ret, testing::run};
-    use engine::testing::FakeGuest;
+    use guest_layout::entry::{EntryFuture, Regs, Ret, testing::run};
+    use guest_layout::testing::FakeGuest;
 
     const CONTEXT: u32 = 0x2000;
     const DEFINITION: u32 = 0x3000;

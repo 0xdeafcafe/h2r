@@ -1,5 +1,5 @@
 use super::*;
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 
 const E: u32 = 0x8000;
 const A: u32 = 0xc000;
@@ -131,7 +131,7 @@ fn reads_arming_plant_and_actual_hill_scoring_mask() {
 
 #[test]
 fn applied_powerup_preserves_the_exact_object_even_without_a_player_or_placement() {
-    use engine::datum::layout as d;
+    use guest_layout::datum::layout as d;
     let mut m = FakeGuest::default();
     let sp = 0x2000;
     let body = 0x7000;
@@ -165,8 +165,8 @@ fn applied_powerup_preserves_the_exact_object_even_without_a_player_or_placement
 
 #[test]
 fn territory_owner_uses_the_salted_player_and_juggernaut_uses_engine_role_mask() {
-    use engine::datum::layout as d;
-    use engine::view::players::Player;
+    use guest_layout::datum::layout as d;
+    use guest_layout::view::players::Player;
 
     let mut m = game(8);
     let mut tracker = Tracker::default();

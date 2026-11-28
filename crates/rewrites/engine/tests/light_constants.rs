@@ -5,9 +5,9 @@
 //! their addresses, with the values the code's names say. The word-for-word
 //! check against the original is `light_constants_differential.rs`.
 
-use engine::FlatMemory;
+use guest_layout::FlatMemory;
 use engine::light_constants::{BoundsQuery, Call, Fpu, LightGlobals, constant, global, light_globals};
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 const ARRAY: u32 = 0x0058_0000;
 const RECORDS: u32 = 0x0058_1000;
@@ -288,7 +288,7 @@ fn typed_shadow_refuses_a_live_cached_texture_before_writing() {
 #[test]
 fn typed_plan_checks_the_last_flag_store_and_propagates_bounds_faults() {
     use engine::light_constants::Error;
-    use engine::memory::MemFault;
+    use guest_layout::memory::MemFault;
     use engine::render::light_gather::typed::{self, Site};
 
     // The first-person pass flags are written but never read during setup.

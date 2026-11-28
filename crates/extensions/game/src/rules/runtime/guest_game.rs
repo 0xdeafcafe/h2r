@@ -7,7 +7,7 @@ use std::cell::OnceCell;
 use ::rules::caps::id;
 use ::rules::types::Type;
 use ::rules::vm::{Arg, Call as VmCall, Game, Placed, ScriptError};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 
 use super::Call;
 use crate::firefight::runtime::read_players;
@@ -178,7 +178,7 @@ impl Game for GuestGame<'_> {
     fn read(&mut self, call: &VmCall) -> i32 {
         let m = self.m;
         let p = player(call, 0);
-        let on_player = |f: fn(&dyn GuestMemory, u8) -> Result<i32, engine::MemFault>| {
+        let on_player = |f: fn(&dyn GuestMemory, u8) -> Result<i32, guest_layout::MemFault>| {
             p.map_or(0, |p| f(m, p).unwrap_or(0))
         };
         match call.entry.id {

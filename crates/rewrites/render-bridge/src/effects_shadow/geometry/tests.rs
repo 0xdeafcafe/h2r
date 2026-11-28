@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use engine::memory::{FlatMemory, GuestMemory};
+use guest_layout::memory::{FlatMemory, GuestMemory};
 
 use super::*;
 
@@ -33,7 +33,7 @@ fn kept(name: &str) -> u64 {
 fn world() -> FlatMemory {
     let mut m = FlatMemory::new(BASE, 0x0070_0000);
     let w = |m: &mut FlatMemory, at: u32, v: u32| m.set_u32(at, v).unwrap();
-    w(&mut m, engine::tags::TAG_ENTRIES_GLOBAL, TABLE);
+    w(&mut m, guest_layout::tags::TAG_ENTRIES_GLOBAL, TABLE);
     for (i, group, data) in [
         (1, *b"shad", 0x0061_0000),
         (2, *b"stem", 0x0062_0000),

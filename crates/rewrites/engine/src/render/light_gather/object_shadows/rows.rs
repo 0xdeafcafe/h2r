@@ -2,9 +2,9 @@
 //! local-player predicates run at their guest call sites. The candidates
 //! use the lights' merge and rank, with a separate history per view.
 
-use crate::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
 use crate::light_constants::Fpu;
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use crate::render::light_gather::{
     History, HistoryRow, Refusal, Result, VisibleLight, Writes, guest, history, passes, visible,
 };
@@ -340,7 +340,7 @@ mod tests {
     #[test]
     fn an_object_shadow_row_keeps_the_buffers_stale_keep_byte() {
         let base = 0x2000;
-        let mut m = crate::FlatMemory::new(base, VISIBLE_BYTES);
+        let mut m = guest_layout::FlatMemory::new(base, VISIBLE_BYTES);
         for stale in 0..=u8::MAX {
             m.write(base, &[0xff, 0xff, 0xff, stale]).unwrap();
             finish_candidate(&mut m, base, 1).unwrap();

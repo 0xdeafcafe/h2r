@@ -12,7 +12,7 @@
 //! the lobby files it: under its game type, or under one of our rows
 //! when its script names one (`community_variants::filed_type`).
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use variants::record::{GameType, GameVariant, RECORD_SIZE};
 
 use crate::community_variants::{self, Row};

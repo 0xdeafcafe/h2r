@@ -9,8 +9,8 @@ use agent_proto::firefight::{
     State,
 };
 use agent_proto::{Object, code};
-use engine::GuestMemory;
-use engine::testing::FakeGuest;
+use guest_layout::GuestMemory;
+use guest_layout::testing::FakeGuest;
 use serde_json::{Value, json};
 
 use super::*;

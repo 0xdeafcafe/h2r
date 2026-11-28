@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Seek};
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use map::{FourCC, Map, TagId};
 use sim_state::NodeMatrix;
 use tags::collision::{Collision, PhysicsModel};
@@ -283,10 +283,7 @@ fn collision_regions(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{
-        testing::FakeGuest,
-        view::{fake, objects},
-    };
+    use guest_layout::{testing::FakeGuest, view::{fake, objects}};
     use guest_layout::{Datum, Object, Off};
 
     #[test]
@@ -363,7 +360,7 @@ mod tests {
     fn hitboxes_follow_the_selected_permutation_and_its_world_node_each_tick() {
         const BODY: u32 = 0x9000;
         let mut guest = FakeGuest::new();
-        guest.put_u32(engine::points::OBJECTS.base, 0x8000);
+        guest.put_u32(guest_layout::points::OBJECTS.base, 0x8000);
         let pool = fake::datums::<objects::Header>(&mut guest, 0x8000, 4);
         let (_, header) = fake::push(&mut guest, &pool);
         header.set_body(&mut guest, BODY).unwrap();

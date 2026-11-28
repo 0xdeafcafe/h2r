@@ -2,10 +2,10 @@
 //! association with local objects. The actor channel only reads that association.
 
 use ::actor_net::Control;
-use engine::entry::{Cx, EntryError, GuestCall};
-use engine::tags::GroupTag;
-use engine::view::{Tags, objects};
-use engine::{DatumHandle, GuestMemory, MemFault, points};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::tags::GroupTag;
+use guest_layout::view::{Tags, objects};
+use guest_layout::{DatumHandle, GuestMemory, MemFault, points};
 
 const DIST_CLIENT: u32 = 5;
 const WORLD: u32 = 0x4;

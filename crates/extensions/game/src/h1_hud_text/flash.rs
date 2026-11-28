@@ -2,7 +2,7 @@
 //! `hud_kit_core::flash`'s. The tick and restart state come from the
 //! corresponding Halo 2 builtin.
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 pub(super) const GAME_TIME: u32 = 0x0051_0c54;
 const STARTED: u32 = 0x1380;

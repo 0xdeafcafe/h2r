@@ -37,7 +37,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::render_loop::states::{
     self, COLOUR, Counts, DEFS, DEVICE, DIRTY, HEADERS, Mode, RenderStates, SETTERS, SHADOW,
     SIMPLE, STATE_88,

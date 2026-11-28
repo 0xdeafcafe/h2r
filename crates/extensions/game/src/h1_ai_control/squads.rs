@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use engine::{
+use guest_layout::{
     datum::DatumArray,
     entry::{Cx, EntryError, GuestCall},
     memory::{GuestMemory, MemFault},

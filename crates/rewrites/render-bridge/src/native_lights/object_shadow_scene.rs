@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use engine::light_constants::Fpu;
 use engine::light_passes as lp;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_scene::{FrameScene, GroupSite, LightStep, LightTarget, ShadowFilter, View, ViewSlot};
 use native_render::shadows::{CASTERS, RECEIVERS};
 use scene_extract::light_groups;
@@ -200,7 +200,7 @@ pub fn draw(mem: &mut dyn GuestMemory, passes: &[ObjectShadowPass]) -> usize {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use engine::FlatMemory;
+    use guest_layout::FlatMemory;
     use frame_scene::{GroupSite, LightGroup, SceneBuilder, SceneId, Stamp, ViewKey, ViewKind};
 
     use super::*;

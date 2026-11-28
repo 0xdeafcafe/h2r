@@ -1,6 +1,7 @@
 //! Immediate geometry of the HUD motion sensor backdrop. Texture selection, shader setup
 //! and render targets belong to the caller of each pass.
-use crate::{light_constants::Sse, memory::GuestMemory, ui_sprite::D24_FULL_SCALE};
+use guest_layout::memory::GuestMemory;
+use crate::{light_constants::Sse, ui_sprite::D24_FULL_SCALE};
 
 pub type Fan<const N: usize> = [[(u8, [f32; 4]); N]; 4];
 
@@ -113,7 +114,7 @@ pub fn composite(mem: &dyn GuestMemory, frame: u32, mxcsr: &mut u32) -> Option<F
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn wash_uses_the_live_colour_depth_and_parameter() {

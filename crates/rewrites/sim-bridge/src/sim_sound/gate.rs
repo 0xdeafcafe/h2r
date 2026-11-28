@@ -22,8 +22,8 @@ use std::cmp::Ordering;
 
 use super::levels::{GuestLevels, class_row};
 use super::playback::{GESTALT, definition};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::{PLAYER_GLOBALS, RANDOM_SEEDS, SOUND_GLOBALS};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{PLAYER_GLOBALS, RANDOM_SEEDS, SOUND_GLOBALS};
 use sim_core::det::X87;
 use sim_sound::environment::ClusterPair;
 use sim_sound::instances::{FPU_CONTROL, SourceParams, TagIndex};

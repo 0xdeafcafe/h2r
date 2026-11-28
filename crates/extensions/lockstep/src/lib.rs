@@ -537,8 +537,8 @@ impl TickHook {
     /// Halo 2: `game_tick` and the game-time pointer, from the points table
     /// (docs/game/high-framerate.md section 1).
     pub const HALO2: TickHook = TickHook {
-        entry: engine::points::GAME_TICK.base,
-        game_time: Some(engine::points::GAME_TIME.base),
+        entry: guest_layout::points::GAME_TICK.base,
+        game_time: Some(guest_layout::points::GAME_TIME.base),
     };
 }
 
@@ -684,7 +684,7 @@ pub fn install_tick_observer(
     let mut r = hooks::Registry::new(hooks::Switches::defaults());
     r.add(&TickObserver(recorder))
         .map_err(|e| format!("lockstep: {e}"))?;
-    let addrs = hooks::Remap::new(&[(&engine::points::GAME_TICK, hook.entry)]);
+    let addrs = hooks::Remap::new(&[(&guest_layout::points::GAME_TICK, hook.entry)]);
     let plan = r.build(&addrs).map_err(|c| {
         let c: Vec<String> = c.iter().map(|c| c.to_string()).collect();
         format!("lockstep: {}", c.join("; "))

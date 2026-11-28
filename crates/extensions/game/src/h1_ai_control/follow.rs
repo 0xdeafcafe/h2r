@@ -1,7 +1,7 @@
 //! Live encounter follow controls. The current native combat order supplies
 //! the areas, and its runtime follow fields take a per-squad target.
 
-use engine::{
+use guest_layout::{
     DatumHandle,
     entry::{Cx, EntryError, GuestCall},
     memory::{GuestMemory, MemFault},

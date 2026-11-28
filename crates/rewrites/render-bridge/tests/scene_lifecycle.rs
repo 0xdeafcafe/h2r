@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
 
-use engine::memory::FlatMemory;
+use guest_layout::memory::FlatMemory;
 use frame_scene::{Cut, FrameScene, SceneId};
 use render_bridge::{native_map_work, scene_step};
 

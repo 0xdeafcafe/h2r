@@ -35,7 +35,7 @@
 use super::{
     NONE, ONE, SMALL, VECTOR_A4, VECTOR_A8, byte, call, callee, fistp, imm, owned, pop, ret, sx8, sx16, x87,
 };
-use crate::points;
+use guest_layout::points;
 use crate::sim_objects::sse::{self, Ss};
 use crate::sim_objects::{Cx, Next, Result, unowned};
 use runtime::{CpuAbi, Guest, GuestFault};

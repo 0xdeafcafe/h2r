@@ -4,7 +4,7 @@
 //! delete and relink objects during either pass.
 
 use super::*;
-use crate::datum::layout;
+use guest_layout::datum::layout;
 
 const LIST_OWNER: u32 = 0x0051_07f0;
 const PHASE_STATE: u32 = 0x004d_e2f4;

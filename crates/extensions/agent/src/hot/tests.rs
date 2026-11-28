@@ -75,8 +75,8 @@ fn level() -> Guest {
         .unwrap();
     g.map_zeroed(0x1000_0000, 0x0001_0000, Permissions::RW)
         .unwrap();
-    g.set_u32(engine::points::TAG_INDEX.base, HEADER).unwrap();
-    g.set_u32(engine::points::TAG_ENTRIES.base, ENTRIES)
+    g.set_u32(guest_layout::points::TAG_INDEX.base, HEADER).unwrap();
+    g.set_u32(guest_layout::points::TAG_ENTRIES.base, ENTRIES)
         .unwrap();
     g.set_u32(HEADER + 0x0c, 0xe000_0000).unwrap();
     g.set_u32(HEADER + 0x18, 2).unwrap();
@@ -161,7 +161,7 @@ fn edit_methods_read_write_list_and_revert() {
     guest
         .lock()
         .unwrap()
-        .set_u32(engine::points::TAG_INDEX.base, 0)
+        .set_u32(guest_layout::points::TAG_INDEX.base, 0)
         .unwrap();
     let e = c.call(method::EDIT_TAGS, Value::Null);
     assert_eq!(e["error"]["code"], code::UNAVAILABLE, "{e}");

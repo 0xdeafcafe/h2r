@@ -23,7 +23,7 @@ fn movement(h: &mut Harness<'_>) {
                 c.eax = MANAGER;
                 word(m, STACK + 4, if seed == 0 { u32::MAX } else { 3 });
                 word(m, STACK + 8, OUT);
-                word(m, engine::points::OBJECTS.base, OBJECT_TABLE);
+                word(m, guest_layout::points::OBJECTS.base, OBJECT_TABLE);
                 word(m, OBJECT_TABLE + 68, POOL);
                 word(m, POOL + 3 * 12 + 8, OBJECT);
                 m.bytes[(OBJECT + 179) as usize] = u8::from(seed == 1);

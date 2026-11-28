@@ -179,7 +179,7 @@ impl hooks::Feature for Monitor {
         // Menus service sound even when the simulation is not ticking.
         b.raw()
             .observe_after(
-                &engine::points::SOUND_UPDATE,
+                &guest_layout::points::SOUND_UPDATE,
                 "looping-sound transitions",
                 move |o| {
                     let (map, tick, mut tracks, menu) = {

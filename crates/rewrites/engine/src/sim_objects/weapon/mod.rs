@@ -47,7 +47,7 @@ mod triggers;
 
 use super::sse;
 use super::{Cx, Next, Result, unowned};
-use crate::points;
+use guest_layout::points;
 use crate::sim_physics::{ARITH, arithmetic, byte, logic, status};
 use runtime::{CpuAbi, Guest};
 use x87::abi as fp;
@@ -297,7 +297,7 @@ fn fcomip_fstp(c: &mut CpuAbi, x: &mut fp::X87Abi, pc: u32) -> Result<()> {
 /// The body pointer re-read through the header: `[[objects]+44] +
 /// [esp+24] + 8`.
 fn body_now(c: &CpuAbi, g: &Guest) -> Result<u32> {
-    let data = g.u32(at(g.u32(points::OBJECTS.base)?, crate::datum::layout::DATA))?;
+    let data = g.u32(at(g.u32(points::OBJECTS.base)?, guest_layout::datum::layout::DATA))?;
     g.u32(at(at(data, slot(c, g, 0x24)?), 8))
 }
 

@@ -363,7 +363,7 @@ pub(super) fn install(b: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use flood::Rect;
 
     const S: Scratch = Scratch {

@@ -691,9 +691,9 @@ fn promote(rows: &mut [Row], mut priority: impl FnMut(u32) -> Result<bool>) -> R
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn light_object_gather_walks_both_partitions_and_stamps_each_visible_object_once() {

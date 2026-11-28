@@ -15,8 +15,8 @@ use std::sync::Mutex;
 
 use sim_effects::walk::{self, Stats};
 
-use crate::entry::{Cx, EntryError, GuestCall};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The walk's counters, over every phase this process ran.
 pub static STATS: Mutex<Stats> = Mutex::new(Stats {
@@ -64,7 +64,7 @@ fn count(f: impl FnOnce(&mut Stats)) {
 /// time that cannot be read is the guest's fault, raised.
 pub async fn run(cx: &Cx, reserve: u32) -> Result<(), EntryError> {
     let start = cx.read(|m| -> Result<_, MemFault> {
-        let dt = m.u32(m.u32(crate::points::GAME_TIME.base)?.wrapping_add(TIME_LENGTH))?;
+        let dt = m.u32(m.u32(guest_layout::points::GAME_TIME.base)?.wrapping_add(TIME_LENGTH))?;
         Ok((dt, walk::first(&View(m))?))
     });
     let (dt, mut at) = start?;
@@ -92,8 +92,8 @@ pub async fn run(cx: &Cx, reserve: u32) -> Result<(), EntryError> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::entry::{self, EntryFuture, Regs, Ret};
-    use crate::testing::FakeGuest;
+    use guest_layout::entry::{self, EntryFuture, Regs, Ret};
+    use guest_layout::testing::FakeGuest;
 
     pub(crate) const STACK: u32 = 0x0030_0000;
     pub(crate) const TIME: u32 = 0x0052_0000;
@@ -107,8 +107,8 @@ pub(crate) mod tests {
         let mut g = FakeGuest::new();
         g.map(STACK - 0x8000, 0x10000).map(TIME, 0x1000).map(HDR, 0x1000).map(BITS, 0x1000);
         g.map(DATA, 0x190 * 64);
-        g.map(walk::ARRAY & !0xfff, 0x1000).map(crate::points::GAME_TIME.base & !0xfff, 0x1000);
-        g.put_u32(crate::points::GAME_TIME.base, TIME).put_f32(TIME + 4, 1.0 / 30.0);
+        g.map(walk::ARRAY & !0xfff, 0x1000).map(guest_layout::points::GAME_TIME.base & !0xfff, 0x1000);
+        g.put_u32(guest_layout::points::GAME_TIME.base, TIME).put_f32(TIME + 4, 1.0 / 30.0);
         g.put_u32(walk::ARRAY, HDR);
         g.put_u32(HDR + walk::HEADER_SIZE, walk::DATUM).put_u32(HDR + walk::HEADER_COUNT, 64);
         g.put_u32(HDR + walk::HEADER_DATA, DATA).put_u32(HDR + walk::HEADER_BITS, BITS);

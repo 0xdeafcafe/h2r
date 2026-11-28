@@ -10,7 +10,7 @@
 //! is a segment body.
 
 use super::{Cx, Next, Result, unowned};
-use crate::points;
+use guest_layout::points;
 use crate::sim_physics::{arithmetic, byte, logic, pop, push};
 use guest_layout::{Fault, Mem, MemMut};
 use runtime::guest::{Access, FaultReason};
@@ -174,7 +174,7 @@ pub(super) fn early_mover_wake(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
             c.eax = g.u32(c.esp.wrapping_add(FRAME + 4))?;
             push(c, g, c.ebx)?;
             c.ebx = g.u32(points::OBJECTS.base)?;
-            c.ecx = g.u32(c.ebx.wrapping_add(crate::datum::layout::DATA))?;
+            c.ecx = g.u32(c.ebx.wrapping_add(guest_layout::datum::layout::DATA))?;
             push(c, g, c.ebp)?;
             c.eax &= 0xffff;
             push(c, g, RESULTS)?;
@@ -230,7 +230,7 @@ pub(super) fn early_mover_wake(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
 fn early_mover_results(c: &mut CpuAbi, g: &mut Guest) -> Result<Next> {
     loop {
         c.edi = g.u32(c.esp.wrapping_add(c.ebp.wrapping_mul(4)).wrapping_add(0x14))?;
-        c.ecx = g.u32(c.ebx.wrapping_add(crate::datum::layout::DATA))?;
+        c.ecx = g.u32(c.ebx.wrapping_add(guest_layout::datum::layout::DATA))?;
         c.eax = (c.edi & 0xffff) * 3;
         c.esi = c.ecx.wrapping_add(c.eax * 4);
         let flags = g.u8(c.esi.wrapping_add(2))?;

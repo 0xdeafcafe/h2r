@@ -44,7 +44,7 @@ use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::colour_pass::Parameters;
 use engine::glow::{self, BlurArgs, BlurDraw, PSDEF, PSDEF_WORDS, WideArgs, WideDraw};
 use engine::light_constants::Error;
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};
 

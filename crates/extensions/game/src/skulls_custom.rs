@@ -48,10 +48,10 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use engine::entry::{EntryFuture, GuestCall, Ret};
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::view::{objects, players};
+use guest_layout::entry::{EntryFuture, GuestCall, Ret};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::view::{objects, players};
 use settings::{Store, Value};
 
 use crate::skulls::{self, ABOUT, COUNT, SKULLS};
@@ -319,7 +319,7 @@ pub fn player_units(m: &dyn GuestMemory, local_only: bool) -> Result<Vec<LocalUn
     let Some(array) = players::array(m)? else {
         return Ok(Vec::new());
     };
-    if m.u32(array.array.addr.wrapping_add(engine::datum::layout::DATA))? == 0 {
+    if m.u32(array.array.addr.wrapping_add(guest_layout::datum::layout::DATA))? == 0 {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
@@ -521,7 +521,7 @@ pub fn weapon_definition(m: &dyn GuestMemory, weapon: u32) -> Result<Option<(u32
     let Some(def) = body.definition(m)? else {
         return Ok(None);
     };
-    let meta = engine::view::Tags.get(m, def, engine::tags::GroupTag::from_chars(*b"weap"))?;
+    let meta = guest_layout::view::Tags.get(m, def, guest_layout::tags::GroupTag::from_chars(*b"weap"))?;
     Ok(meta.map(|d| (body.addr, d)))
 }
 
@@ -1041,7 +1041,7 @@ impl Custom {
         // The hidden skull.
         let map = crate::telemetry::loaded_map_name(&mem).ok();
         let m: &mut dyn GuestMemory = &mut *mem;
-        let scenario = engine::view::Tags
+        let scenario = guest_layout::view::Tags
             .scenario(m)
             .ok()
             .flatten()
@@ -1184,11 +1184,11 @@ impl Custom {
 }
 
 async fn run_work(
-    cx: engine::entry::Cx,
+    cx: guest_layout::entry::Cx,
     s: Arc<Custom>,
     work: Vec<Work>,
     scratch: u32,
-) -> Result<Ret, engine::entry::EntryError> {
+) -> Result<Ret, guest_layout::entry::EntryError> {
     for w in work {
         match w {
             Work::Spawn { skull, tag, at } => {
@@ -1239,7 +1239,7 @@ async fn run_work(
     // Now the tick itself: its chain runs again, this time continuing.
     s.reentry.store(true, Ordering::SeqCst);
     let r = cx
-        .call(GuestCall::new(engine::points::GAME_TICK.base))
+        .call(GuestCall::new(guest_layout::points::GAME_TICK.base))
         .await;
     s.reentry.store(false, Ordering::SeqCst);
     r?;
@@ -1368,7 +1368,7 @@ pub fn report(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
         .chains
         .values()
         .find(|c| {
-            std::ptr::eq(c.point, &engine::points::GAME_TICK)
+            std::ptr::eq(c.point, &guest_layout::points::GAME_TICK)
                 && c.hooks().any(|h| h.feature == FEATURE)
         })
         .map(|c| (c.addr, installed.placed.contains(&c.addr)));

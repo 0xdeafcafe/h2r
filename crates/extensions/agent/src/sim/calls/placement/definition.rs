@@ -13,8 +13,8 @@
 
 use agent_proto::sim::Placement;
 use agent_proto::{ObjectId, RpcError};
-use engine::GuestMemory;
-use engine::entry::{Cx, EntryError, GuestCall};
+use guest_layout::GuestMemory;
+use guest_layout::entry::{Cx, EntryError, GuestCall};
 use serde_json::{Value, json};
 
 use super::super::{Outcome, RespawnTarget, Shared, addr, lock, object_delete, prepare_spawn};
@@ -36,7 +36,7 @@ struct Survey {
 /// The placements of every block that name `definition` (a tag datum
 /// handle), and the live objects of it that no placement made.
 fn survey(m: &dyn GuestMemory, definition: u32, previews: &Previews) -> Result<Survey, RpcError> {
-    let scnr = m.u32(engine::points::SCENARIO.base).map_err(fault)?;
+    let scnr = m.u32(guest_layout::points::SCENARIO.base).map_err(fault)?;
     let mut candidates = Vec::new();
     if scnr != 0 {
         for &(block, _, ty) in BLOCKS {

@@ -21,7 +21,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 use super::{count, view_update, with_gate};
 use crate::native_world::scene_build;
@@ -105,7 +105,7 @@ fn tag_group(m: &dyn GuestMemory, table: u32, datum: u32) -> Result<u32, Refusal
 }
 
 fn shader_group(m: &dyn GuestMemory, shader: u32) -> Result<(), Refusal> {
-    let table = m.u32(engine::tags::TAG_ENTRIES_GLOBAL).map_err(|_| Refusal::Fault)?;
+    let table = m.u32(guest_layout::tags::TAG_ENTRIES_GLOBAL).map_err(|_| Refusal::Fault)?;
     match tag_group(m, table, shader)? {
         PRTM | PRT3 => Err(Refusal::ParticleMaterial),
         SHAD => Ok(()),
@@ -119,7 +119,7 @@ pub fn passes(m: &dyn GuestMemory, shader: u32) -> Result<u32, Refusal> {
     shader_group(m, shader)?;
     let rd = |at: Option<u32>| at.ok_or(Refusal::Layout).and_then(|a| m.u32(a).map_err(|_| Refusal::Fault));
     let nonzero = |v: u32| if v == 0 { Err(Refusal::Layout) } else { Ok(v) };
-    let table = nonzero(rd(Some(engine::tags::TAG_ENTRIES_GLOBAL))?)?;
+    let table = nonzero(rd(Some(guest_layout::tags::TAG_ENTRIES_GLOBAL))?)?;
     let data = |datum: u32| nonzero(rd(table.checked_add((datum & 0xffff) * 16 + 8))?);
     let material = data(shader)?;
     let instance = nonzero(rd(material.checked_add(0x24))?)?;

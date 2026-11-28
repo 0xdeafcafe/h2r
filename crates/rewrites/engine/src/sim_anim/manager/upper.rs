@@ -1,7 +1,7 @@
 //! Channel motion, sample masks and the three pose evaluation calls.
 use super::{Body, Bus};
 use ::sim_anim::manager_channels::{playback_rate, PlaybackRate};
-use crate::points::{self, TAG_ENTRIES};
+use guest_layout::points::{self, TAG_ENTRIES};
 use crate::sim_native::Memory;
 use crate::sim_physics::{arithmetic, logic, pop, push};
 use runtime::{CpuAbi, GuestFault, TransferAbi};

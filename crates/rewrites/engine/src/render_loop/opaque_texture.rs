@@ -2,7 +2,7 @@
 //! cache are inputs to later shaders, including when the stage is unbound.
 
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// Ordered comparisons for the slot cache, preserving MXCSR denormal mode.
 pub fn above(a: u32, b: u32, mxcsr: u32) -> Result<bool, Error> {

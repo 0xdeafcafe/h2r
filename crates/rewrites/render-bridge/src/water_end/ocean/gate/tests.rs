@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::native_flare_query::{Counts, DeviceResult, Host, State};
-use engine::memory::FlatMemory;
+use guest_layout::memory::FlatMemory;
 
 struct Pending;
 

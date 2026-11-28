@@ -39,9 +39,9 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::handle::DatumHandle;
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use engine::render::light;
 use native_render::camera::GuestRead;
 use native_render::light_list::{self, SortedCall};
@@ -1153,7 +1153,7 @@ mod tests {
     /// The tests that install a host hold this: the host is global.
     static HOST_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
     use super::*;
-    use engine::FlatMemory;
+    use guest_layout::FlatMemory;
 
     const DIFFUSE_RETURN: u32 = 0x0003_144f;
     const SPECULAR_RETURN: u32 = 0x0003_14cf;

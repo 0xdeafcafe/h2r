@@ -59,11 +59,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
 use std::time::Instant;
 
-use engine::entry::{EntryFuture, GuestCall, Ret};
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
-use engine::tags::{GroupTag, tag_get_checked};
+use guest_layout::entry::{EntryFuture, GuestCall, Ret};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
+use guest_layout::tags::{GroupTag, tag_get_checked};
 use hooks::{BuildError, Builder, Flow};
 use hud_kit_core::Mode;
 use hud_kit_core::model::{
@@ -632,10 +632,10 @@ pub fn notify_call(user: u32, at: u32) -> GuestCall {
 /// Makes the calls, then runs the tick itself (the hook's chain again,
 /// which passes the notifications' hook by [`NOTES_REENTRY`]).
 async fn send_notes(
-    cx: engine::entry::Cx,
+    cx: guest_layout::entry::Cx,
     region: (u32, u32),
     notes: Vec<Note>,
-) -> Result<Ret, engine::entry::EntryError> {
+) -> Result<Ret, guest_layout::entry::EntryError> {
     let calls = cx.write(|m| stage_notes(m, region, &notes))?;
     for call in calls {
         cx.call(call).await?;

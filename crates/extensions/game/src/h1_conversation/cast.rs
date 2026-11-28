@@ -610,7 +610,7 @@ mod tests {
 
     #[test]
     fn live_campaign_alliance_and_passenger_preference() {
-        let mut m = engine::testing::FakeGuest::new();
+        let mut m = guest_layout::testing::FakeGuest::new();
         let table = 0x1000;
         m.put_u32(TEAM_RELATIONSHIPS, table);
         // Human (2) and player (1) can be allied as distinct teams.

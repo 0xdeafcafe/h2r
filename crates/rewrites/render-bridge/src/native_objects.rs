@@ -17,8 +17,8 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use frame_scene::{FrameScene, View, ViewKind, ViewSlot};
 use native_render::camera::GuestRead;
 use native_render::object_walk::{self, Entry, Run, SortedObjects};

@@ -1,9 +1,9 @@
 //! H1 0x8ba10 and H2 0xba160 both resolve an attached object's local
 //! origin through the parent node. Parent node matrices are in world space.
-use engine::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::tags::GroupTag;
-use engine::view::{Tags, objects};
+use guest_layout::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::tags::GroupTag;
+use guest_layout::view::{Tags, objects};
 
 pub(super) fn position(
     mem: &dyn GuestMemory,
@@ -174,7 +174,7 @@ fn node_point(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn detached_target_uses_its_own_origin() {

@@ -11,7 +11,7 @@
 //! saved state is attached, so play does not change; films recorded and
 //! watched in any order start from the same arena.
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use hooks::points::GAME_ACTIVATE;
 
 pub const FEATURE: &str = "data-salts";

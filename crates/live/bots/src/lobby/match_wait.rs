@@ -10,7 +10,7 @@
 //! registers it. The matchmaking start (`0x66050`) wants every peer's
 //! status for the lobby's hopper to be 1. A countdown set
 //! (`+0x49a8`) is no wait.
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 use super::{COUNTDOWN, NETWORKING, SESSION_TYPE, TARGET_SESSION, matchmaking_host};
 use crate::guest::R;
@@ -247,7 +247,7 @@ impl MatchWait {
 mod tests {
     use super::super::{HOST_PEER, LOBBY_ON, PEER, SESSION, STATE};
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const S: u32 = 0x0070_0000;
     const T: u32 = 0x0072_0000;

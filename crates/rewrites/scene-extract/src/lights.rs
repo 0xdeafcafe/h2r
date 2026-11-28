@@ -6,11 +6,11 @@
 pub mod gather;
 mod volume;
 
-use engine::datum::DatumArray;
-use engine::handle::DatumHandle;
+use guest_layout::datum::DatumArray;
+use guest_layout::handle::DatumHandle;
 use engine::light_constants as lc;
 use engine::light_passes as lp;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::render::light::{self, LightRecord};
 use engine::shadow_constants as sc;
 use frame_scene::{InstanceKey, Light, LightCandidate, LightConstants, LightProjection, LightVariants};
@@ -110,7 +110,7 @@ fn tag(m: &dyn GuestMemory, datum: u32, group: &[u8; 4]) -> Option<u32> {
     if datum == u32::MAX {
         return None;
     }
-    let table = m.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?;
+    let table = m.u32(guest_layout::tags::TAG_ENTRIES_GLOBAL).ok()?;
     let slot = table.checked_add(u32::from(datum as u16) * 16)?;
     if m.u32(slot).ok()? != u32::from_be_bytes(*group) || m.u32(slot.checked_add(4)?).ok()? != datum {
         return None;

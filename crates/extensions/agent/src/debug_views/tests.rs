@@ -1,6 +1,6 @@
 use super::*;
 use crate::ConnId;
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 use serde_json::{Value, json};
 use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{Receiver, sync_channel};
@@ -205,7 +205,7 @@ fn reads_only_mapped_split_seats_even_when_a_listener_stays_active() {
     let sound = 0x30000;
     guest
         .put_u32(PLAYER_GLOBALS.base, players)
-        .put_u32(engine::points::SOUND_GLOBALS.base, sound);
+        .put_u32(guest_layout::points::SOUND_GLOBALS.base, sound);
     for (seat, datum) in [u32::MAX, 0xa000_0001, u32::MAX, 0xb000_0002]
         .into_iter()
         .enumerate()

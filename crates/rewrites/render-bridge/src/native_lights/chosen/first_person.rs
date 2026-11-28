@@ -184,7 +184,7 @@ pub struct FirstPersonPass {
 /// Retail's first-person pass begins: draws the chosen lights it did not
 /// record over the first-person parts, and counts. Returns the lights the
 /// host queued.
-pub fn at_pass(mem: &mut dyn engine::memory::GuestMemory) -> usize {
+pub fn at_pass(mem: &mut dyn guest_layout::memory::GuestMemory) -> usize {
     match crate::scene_step::first_person_chosen(&*mem) {
         Some(pass) => draw(mem, &pass),
         None => 0,
@@ -192,7 +192,7 @@ pub fn at_pass(mem: &mut dyn engine::memory::GuestMemory) -> usize {
 }
 
 /// Draws `pass`'s lights over its parts and counts the outcome.
-pub fn draw(mem: &mut dyn engine::memory::GuestMemory, pass: &FirstPersonPass) -> usize {
+pub fn draw(mem: &mut dyn guest_layout::memory::GuestMemory, pass: &FirstPersonPass) -> usize {
     UNREAD.fetch_add(pass.set.unread as u64, Ordering::Relaxed);
     FAR.fetch_add(pass.set.far as u64, Ordering::Relaxed);
     PARTS_LEFT.fetch_add(pass.left as u64, Ordering::Relaxed);

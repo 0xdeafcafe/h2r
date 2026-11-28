@@ -5,13 +5,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use agent_proto::sim::REFUSED;
-use engine::GuestMemory;
-use engine::entry::testing::run as drive;
-use engine::entry::{Cx, EntryFn, EntryFuture, GuestCall, Regs, Ret};
-use engine::testing::FakeGuest;
-use engine::view::fake;
-use engine::view::objects::{Body, Header};
-use engine::view::players::Player;
+use guest_layout::GuestMemory;
+use guest_layout::entry::testing::run as drive;
+use guest_layout::entry::{Cx, EntryFn, EntryFuture, GuestCall, Regs, Ret};
+use guest_layout::testing::FakeGuest;
+use guest_layout::view::fake;
+use guest_layout::view::objects::{Body, Header};
+use guest_layout::view::players::Player;
 use serde_json::json;
 
 use super::*;
@@ -32,8 +32,8 @@ struct World {
 fn world() -> World {
     let mut g = FakeGuest::new();
     for (global, hdr) in [
-        (engine::points::PLAYERS.base, PLAYERS_HDR),
-        (engine::points::OBJECTS.base, OBJECTS_HDR),
+        (guest_layout::points::PLAYERS.base, PLAYERS_HDR),
+        (guest_layout::points::OBJECTS.base, OBJECTS_HDR),
     ] {
         g.map(global, 4);
         g.put_u32(global, hdr);
@@ -182,7 +182,7 @@ fn a_teleport_the_placement_refuses_is_an_error_and_nothing_turns() {
 fn a_seated_unit_moves_only_by_its_position_and_says_why_it_did_not_turn() {
     let mut w = world();
     Body::at(UNIT_BODY)
-        .set_parent(&mut w.g, Some(engine::handle::DatumHandle(0x1234_0005)))
+        .set_parent(&mut w.g, Some(guest_layout::handle::DatumHandle(0x1234_0005)))
         .unwrap();
     let player = w.player;
     let (out, calls, _) = one(
@@ -201,10 +201,10 @@ fn a_seated_unit_moves_only_by_its_position_and_says_why_it_did_not_turn() {
 #[test]
 fn a_teleport_of_a_player_between_lives_is_refused_before_any_call() {
     let mut w = world();
-    let p = engine::view::players::array(&w.g)
+    let p = guest_layout::view::players::array(&w.g)
         .unwrap()
         .unwrap()
-        .get(&w.g, engine::handle::DatumHandle(w.player))
+        .get(&w.g, guest_layout::handle::DatumHandle(w.player))
         .unwrap()
         .unwrap();
     p.set_unit(&mut w.g, None).unwrap();
@@ -353,7 +353,7 @@ fn a_successful_spawn_can_enroll_the_new_object_before_the_tick() {
     assert_eq!(r.result, Ok(Ret::new(0, 0)));
     let targets: Vec<_> = r.calls.iter().map(|call| call.target).collect();
     assert_eq!(targets, [
-        addr::PLACEMENT_NEW, addr::OBJECT_NEW, ENROLL, engine::points::GAME_TICK.base,
+        addr::PLACEMENT_NEW, addr::OBJECT_NEW, ENROLL, guest_layout::points::GAME_TICK.base,
     ]);
     assert_eq!(r.calls[2].args, [MADE]);
     assert_eq!(ticket.outcome().unwrap().unwrap()["object"], hex(MADE));
@@ -402,7 +402,7 @@ fn queued_calls_run_then_the_tick_with_reentry_set() {
     });
     let seen = Arc::clone(&reentry);
     let r = drive(&*f, w.g, Regs::default(), move |c, _| {
-        if c.target == engine::points::GAME_TICK.base {
+        if c.target == guest_layout::points::GAME_TICK.base {
             assert!(
                 seen.load(Ordering::SeqCst),
                 "the tick runs with reentry set"
@@ -413,7 +413,7 @@ fn queued_calls_run_then_the_tick_with_reentry_set() {
     assert_eq!(r.result, Ok(Ret::new(0, 0)));
     assert_eq!(
         r.calls.last().unwrap().target,
-        engine::points::GAME_TICK.base
+        guest_layout::points::GAME_TICK.base
     );
     assert!(!reentry.load(Ordering::SeqCst));
     assert!(lock(&q).live().is_none(), "the call finished");
@@ -633,9 +633,9 @@ fn placed_object(kind: agent_proto::Kind, ty: u8, group: [u8; 4], block: u32) ->
     let tags = 0x8104_0000;
     let group = u32::from_be_bytes(group);
     for (global, ptr) in [
-        (engine::points::SCENARIO.base, root),
-        (engine::points::TAG_INDEX.base, index),
-        (engine::points::TAG_ENTRIES.base, tags),
+        (guest_layout::points::SCENARIO.base, root),
+        (guest_layout::points::TAG_INDEX.base, index),
+        (guest_layout::points::TAG_ENTRIES.base, tags),
     ] {
         g.map(global, 4).put_u32(global, ptr);
     }
@@ -648,7 +648,7 @@ fn placed_object(kind: agent_proto::Kind, ty: u8, group: [u8; 4], block: u32) ->
     put_vec(g, ENTRY + 8, [3.0, -4.0, 8.0]).unwrap();
     put_vec(g, ENTRY + 0x14, [0.0, 0.0, std::f32::consts::FRAC_PI_2]).unwrap();
     g.map(PALETTE, 0x50).put_u32(PALETTE + 0x28, group).put_u32(PALETTE + 0x2c, TAG);
-    g.map(index, 0x20).put_u32(index + engine::tags::index_layout::TAG_COUNT, 2);
+    g.map(index, 0x20).put_u32(index + guest_layout::tags::index_layout::TAG_COUNT, 2);
     g.map(tags, 0x20).put_u32(tags + 0x10, group)
         .put_u32(tags + 0x14, TAG).put_u32(tags + 0x18, 0x8110_0000);
     g.put_u16(0x8110_0000, ty.into());
@@ -914,7 +914,7 @@ fn reload_world_without_destination() -> (World, Vec<u8>) {
     let base = 0x8140_0000;
     let mut options = vec![0; OPTIONS_SIZE as usize];
     options[..4].copy_from_slice(&MODE_CAMPAIGN.to_le_bytes());
-    w.g.put_u32(engine::points::GAME_GLOBALS.base, base);
+    w.g.put_u32(guest_layout::points::GAME_GLOBALS.base, base);
     w.g.put(base + OPTIONS, &options);
     w.g.put_u8(base + GameGlobals::MAP_ACTIVE.offset, 1);
     w.g.put_u8(OPTIONS_PENDING, 0);
@@ -931,7 +931,7 @@ fn a_reload_preflights_the_whole_pending_destination_before_reserving() {
     let binding = PreparedMapReload::new(42, || panic!("reserved an unreadable transition"));
     let ticket = queue_reload(&q, options, Some(binding)).unwrap();
     let (cx, mut future) = queued_future(&q, world.g, SCRATCH, &Arc::new(AtomicBool::new(false)));
-    expect_guest_call(&mut future, &cx, engine::points::GAME_TICK.base);
+    expect_guest_call(&mut future, &cx, guest_layout::points::GAME_TICK.base);
     assert_eq!(ticket.outcome().unwrap().unwrap_err().code, REFUSED);
     assert_eq!(cx.read(|m| m.u8(OPTIONS_PENDING)).unwrap(), 0);
 }
@@ -947,10 +947,10 @@ fn ordinary_game_queues_keep_retails_pending_transition_rules() {
     assert!(queue_reload(&q, options.clone(), None).is_err());
     let (cx, mut future) = queued_future(&q, world.g, SCRATCH, &Arc::new(AtomicBool::new(false)));
     for _ in 0..2 {
-        expect_guest_call(&mut future, &cx, engine::points::OPTIONS_QUEUE.base);
-        engine::entry::resume(&cx, Regs::default());
+        expect_guest_call(&mut future, &cx, guest_layout::points::OPTIONS_QUEUE.base);
+        guest_layout::entry::resume(&cx, Regs::default());
     }
-    expect_guest_call(&mut future, &cx, engine::points::GAME_TICK.base);
+    expect_guest_call(&mut future, &cx, guest_layout::points::GAME_TICK.base);
     assert!(first.outcome().unwrap().is_ok());
     assert!(second.outcome().unwrap().is_ok());
 
@@ -1003,8 +1003,8 @@ fn queued_future(
 }
 
 fn expect_guest_call(future: &mut EntryFuture, cx: &Cx, target: u32) {
-    match engine::entry::poll(future, cx) {
-        engine::entry::Step::Call(call) => assert_eq!(call.target, target),
+    match guest_layout::entry::poll(future, cx) {
+        guest_layout::entry::Step::Call(call) => assert_eq!(call.target, target),
         other => panic!("expected call to {target:#x}, got {other:?}"),
     }
 }
@@ -1030,7 +1030,7 @@ fn dropping_the_reentered_tick_resets_the_hook() {
     let q = shared();
     let reentry = Arc::new(AtomicBool::new(false));
     let (cx, mut future) = queued_future(&q, world().g, SCRATCH, &reentry);
-    expect_guest_call(&mut future, &cx, engine::points::GAME_TICK.base);
+    expect_guest_call(&mut future, &cx, guest_layout::points::GAME_TICK.base);
     assert!(reentry.load(Ordering::SeqCst));
     drop(future);
     assert!(!reentry.load(Ordering::SeqCst));
@@ -1068,8 +1068,8 @@ fn unreadable_omitted_axis_only_fails_its_edit() {
     let (cx, mut future) = queued_future(&q, w.g, SCRATCH, &reentry);
     expect_guest_call(&mut future, &cx, addr::OBJECT_DELETE);
     assert_eq!(first.outcome().unwrap().unwrap_err().code, code::UNAVAILABLE);
-    engine::entry::resume(&cx, Regs::default());
-    expect_guest_call(&mut future, &cx, engine::points::GAME_TICK.base);
+    guest_layout::entry::resume(&cx, Regs::default());
+    expect_guest_call(&mut future, &cx, guest_layout::points::GAME_TICK.base);
     assert!(second.outcome().unwrap().is_ok());
 }
 
@@ -1085,9 +1085,9 @@ fn all_65_callers_retain_their_outcomes_from_one_tick() {
     let (cx, mut future) = queued_future(&q, w.g, SCRATCH, &reentry);
     for _ in &tickets {
         expect_guest_call(&mut future, &cx, addr::OBJECT_DELETE);
-        engine::entry::resume(&cx, Regs::default());
+        guest_layout::entry::resume(&cx, Regs::default());
     }
-    expect_guest_call(&mut future, &cx, engine::points::GAME_TICK.base);
+    expect_guest_call(&mut future, &cx, guest_layout::points::GAME_TICK.base);
     for ticket in tickets {
         assert!(ticket.outcome().unwrap().is_ok());
         assert!(ticket.outcome().is_none());
@@ -1113,8 +1113,8 @@ fn scratch_fault_answers_later_drained_calls_without_executing_them() {
     let reentry = Arc::new(AtomicBool::new(false));
     let (cx, mut future) = queued_future(&q, w.g, 0x9020_0000, &reentry);
     assert!(matches!(
-        engine::entry::poll(&mut future, &cx),
-        engine::entry::Step::Done(Err(EntryError::Fault(_)))
+        guest_layout::entry::poll(&mut future, &cx),
+        guest_layout::entry::Step::Done(Err(EntryError::Fault(_)))
     ));
     assert_eq!(first.outcome().unwrap().unwrap_err().code, code::UNAVAILABLE);
     assert_eq!(next.outcome().unwrap().unwrap_err().code, code::UNAVAILABLE);
@@ -1132,8 +1132,8 @@ fn dropping_a_drained_waiter_skips_its_call() {
     let (cx, mut future) = queued_future(&q, w.g, SCRATCH, &reentry);
     expect_guest_call(&mut future, &cx, addr::OBJECT_DELETE);
     drop(next);
-    engine::entry::resume(&cx, Regs::default());
-    expect_guest_call(&mut future, &cx, engine::points::GAME_TICK.base);
+    guest_layout::entry::resume(&cx, Regs::default());
+    expect_guest_call(&mut future, &cx, guest_layout::points::GAME_TICK.base);
     assert!(first.outcome().unwrap().is_ok());
     assert!(lock(&q).live().is_none());
 }
@@ -1161,7 +1161,7 @@ fn interrupted_options_queue_reconciles_the_binding_before_the_transition() {
         let (cx, mut future) = queued_future(
             &q, w.g, SCRATCH, &Arc::new(AtomicBool::new(false)),
         );
-        expect_guest_call(&mut future, &cx, engine::points::OPTIONS_QUEUE.base);
+        expect_guest_call(&mut future, &cx, guest_layout::points::OPTIONS_QUEUE.base);
         let skulls = effects.clone();
         let options = SCRATCH + SCRATCH_OPTIONS;
         assert!(!lock(&q).stage_reload_skulls(options + 4, || || panic!("unrelated options")));
@@ -1206,12 +1206,12 @@ fn returning_without_a_pending_reload_leaves_the_skull_selection_alone() {
     let (world, options) = reload_world();
     let request = queue_reload(&q, options, None).unwrap();
     let (cx, mut future) = queued_future(&q, world.g, SCRATCH, &Arc::new(AtomicBool::new(false)));
-    expect_guest_call(&mut future, &cx, engine::points::OPTIONS_QUEUE.base);
+    expect_guest_call(&mut future, &cx, guest_layout::points::OPTIONS_QUEUE.base);
     assert!(lock(&q).stage_reload_skulls(SCRATCH + SCRATCH_OPTIONS, || {
         || panic!("an unaccepted reload changed the skulls")
     }));
-    engine::entry::resume(&cx, Regs::default());
-    expect_guest_call(&mut future, &cx, engine::points::GAME_TICK.base);
+    guest_layout::entry::resume(&cx, Regs::default());
+    expect_guest_call(&mut future, &cx, guest_layout::points::GAME_TICK.base);
     assert!(request.outcome().unwrap().unwrap_err().message.contains("did not queue"));
     assert!(lock(&q).live().is_none());
 }
@@ -1228,7 +1228,7 @@ fn unreadable_interrupted_reload_finishes_and_releases_the_reservation() {
     });
     let request = queue_reload(&q, options, Some(binding)).unwrap();
     let (cx, mut future) = queued_future(&q, world.g, SCRATCH, &Arc::new(AtomicBool::new(false)));
-    expect_guest_call(&mut future, &cx, engine::points::OPTIONS_QUEUE.base);
+    expect_guest_call(&mut future, &cx, guest_layout::points::OPTIONS_QUEUE.base);
     drop(future);
     reconcile_reload(&q, |_| Err("unreadable pending options".into()));
     assert_eq!(request.outcome().unwrap().unwrap_err().message, "unreadable pending options");
@@ -1257,7 +1257,7 @@ fn partial_cache_retirement_keeps_only_the_repair_after_answering() {
     });
     let request = queue_reload(&q, options, Some(binding)).unwrap();
     let (cx, mut future) = queued_future(&q, world.g, SCRATCH, &Arc::new(AtomicBool::new(false)));
-    expect_guest_call(&mut future, &cx, engine::points::GAME_TICK.base);
+    expect_guest_call(&mut future, &cx, guest_layout::points::GAME_TICK.base);
     let error = request.outcome().unwrap().unwrap_err();
     assert!(error.message.contains("second key failed"));
     assert!(error.message.contains("cache key is unwritable"));
@@ -1279,13 +1279,13 @@ fn a_dropped_object_new_blocks_snapshots_but_a_known_refusal_does_not() {
         let request = submit(&q, respawn(vehicle_placement())).unwrap();
         let (cx, mut future) = queued_future(&q, world.g, SCRATCH, &Arc::new(AtomicBool::new(false)));
         expect_guest_call(&mut future, &cx, addr::PLACEMENT_NEW);
-        engine::entry::resume(&cx, Regs::default());
+        guest_layout::entry::resume(&cx, Regs::default());
         expect_guest_call(&mut future, &cx, addr::OBJECT_NEW);
         if interrupted {
             drop(future);
         } else {
-            engine::entry::resume(&cx, al(u32::MAX));
-            expect_guest_call(&mut future, &cx, engine::points::GAME_TICK.base);
+            guest_layout::entry::resume(&cx, al(u32::MAX));
+            expect_guest_call(&mut future, &cx, guest_layout::points::GAME_TICK.base);
         }
         assert!(request.outcome().unwrap().is_err());
         assert_eq!(lock(&q).preview_refusal().is_some(), interrupted);
@@ -1303,7 +1303,7 @@ fn interrupted_deletion_refuses_a_third_copy_of_the_placement() {
     let ticket = submit(&q, respawn(vehicle_placement())).unwrap();
     let (cx, mut future) = queued_future(&q, world.g, SCRATCH, &Arc::new(AtomicBool::new(false)));
     expect_guest_call(&mut future, &cx, addr::PLACEMENT_NEW);
-    engine::entry::resume(&cx, Regs::default());
+    guest_layout::entry::resume(&cx, Regs::default());
     expect_guest_call(&mut future, &cx, addr::OBJECT_NEW);
     let made = cx.write(|m| {
         let pool = objects::array(m).unwrap().unwrap();
@@ -1316,7 +1316,7 @@ fn interrupted_deletion_refuses_a_third_copy_of_the_placement() {
         m.set_u16(body + guest_layout::Object::PLACEMENT_INDEX.offset, u16::MAX).unwrap();
         made
     });
-    engine::entry::resume(&cx, al(made.raw()));
+    guest_layout::entry::resume(&cx, al(made.raw()));
     expect_guest_call(&mut future, &cx, addr::OBJECT_DELETE);
     drop(future);
     assert!(ticket.outcome().unwrap().is_err());
@@ -1340,10 +1340,10 @@ fn interrupted_or_faulted_placement_preparation_keeps_the_occupant() {
         if interrupt {
             drop(future);
         } else {
-            engine::entry::resume(&cx, Regs::default());
+            guest_layout::entry::resume(&cx, Regs::default());
             assert!(matches!(
-                engine::entry::poll(&mut future, &cx),
-                engine::entry::Step::Done(Err(EntryError::Fault(_)))
+                guest_layout::entry::poll(&mut future, &cx),
+                guest_layout::entry::Step::Done(Err(EntryError::Fault(_)))
             ));
         }
         let error = request.outcome().unwrap().unwrap_err();
@@ -1570,7 +1570,7 @@ fn a_stale_forge_object_is_a_named_refusal_before_any_guest_call() {
 
 #[test]
 fn probe_animation_uses_the_units_graph_and_resolves_the_engine_selection() {
-    use engine::tags::{GroupTag, TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL};
+    use guest_layout::tags::{GroupTag, TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL};
     let mut w = world();
     let tag = 0x45670000;
     let group = GroupTag::from_chars(*b"jmad").0;
@@ -1632,8 +1632,8 @@ const GLOBALS: u32 = 0x8050_0000;
 
 fn structure_world(loaded: i16, active: i16) -> World {
     let mut w = world();
-    w.g.map(engine::points::GAME_GLOBALS.base, 4);
-    w.g.put_u32(engine::points::GAME_GLOBALS.base, GLOBALS);
+    w.g.map(guest_layout::points::GAME_GLOBALS.base, 4);
+    w.g.put_u32(guest_layout::points::GAME_GLOBALS.base, GLOBALS);
     w.g.map(GLOBALS, 0x10);
     w.g.put_u16(GLOBALS + addr::GAME_GLOBALS_ACTIVE_BSP, active as u16);
     w.g.map(addr::LOADED_STRUCTURE_BSP, 2);
@@ -1646,9 +1646,9 @@ fn structure_world(loaded: i16, active: i16) -> World {
 fn structure_callees(to: i16) -> impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs {
     move |c, m| {
         let at = GLOBALS + addr::GAME_GLOBALS_ACTIVE_BSP;
-        if c.target == engine::points::STRUCTURE_BSP_DEACTIVATE.base {
+        if c.target == guest_layout::points::STRUCTURE_BSP_DEACTIVATE.base {
             m.set_u16(at, u16::MAX).unwrap();
-        } else if c.target == engine::points::STRUCTURE_BSP_ACTIVATE.base {
+        } else if c.target == guest_layout::points::STRUCTURE_BSP_ACTIVATE.base {
             m.set_u16(at, to as u16).unwrap();
         }
         Regs::default()
@@ -1663,8 +1663,8 @@ fn reactivating_the_structure_deactivates_then_activates_the_loaded_bsp() {
     assert_eq!(
         targets,
         [
-            engine::points::STRUCTURE_BSP_DEACTIVATE.base,
-            engine::points::STRUCTURE_BSP_ACTIVATE.base
+            guest_layout::points::STRUCTURE_BSP_DEACTIVATE.base,
+            guest_layout::points::STRUCTURE_BSP_ACTIVATE.base
         ]
     );
     // Neither takes an argument.
@@ -1834,7 +1834,7 @@ fn body_world() -> (World, u32, crate::forge::local::Guard) {
     let scenario = 0x8100_0000;
     let mut w = world();
     w.g.put_u32(guest_layout::global::SCENARIO.base, scenario);
-    let objects = engine::view::objects::array(&w.g).unwrap().unwrap();
+    let objects = guest_layout::view::objects::array(&w.g).unwrap().unwrap();
     let (body_h, body_hdr) = fake::push(&mut w.g, &objects);
     w.g.map(BODY, 0x400);
     body_hdr.set_body(&mut w.g, BODY).unwrap();
@@ -1899,7 +1899,7 @@ fn leaving_a_forge_body_puts_the_biped_where_the_body_is() {
     const BODY: u32 = 0x8030_0000;
     let (mut w, made, guard) = body_world();
     let (player, biped) = (w.player, w.unit);
-    let players = engine::view::players::array(&w.g).unwrap().unwrap();
+    let players = guest_layout::view::players::array(&w.g).unwrap().unwrap();
     let p = players.get(&w.g, DatumHandle(player)).unwrap().unwrap();
     p.set_unit(&mut w.g, DatumHandle::from_raw(made)).unwrap();
     Body::at(BODY).set_position(&mut w.g, [4.0, 5.0, 6.0]).unwrap();

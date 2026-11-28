@@ -364,16 +364,16 @@ fn the_rules_runtime_puts_in_the_script_index_engine_object_unless_turned_off() 
     assert!(hooks("-rules").is_empty());
     // The spawn gather's site and its resume are image entries.
     let entries: Vec<u32> = crate::image_entries().collect();
-    assert!(entries.contains(&engine::points::game_types::SPAWN_TYPE_MASK.base));
-    assert!(entries.contains(&engine::points::game_types::SPAWN_TYPE_MASK_SLAYER));
+    assert!(entries.contains(&guest_layout::points::game_types::SPAWN_TYPE_MASK.base));
+    assert!(entries.contains(&guest_layout::points::game_types::SPAWN_TYPE_MASK_SLAYER));
 }
 
 /// With the multiplayer skulls on, every AI skull reader's campaign gate
-/// (`engine::points::skull_gates`) has the feature's one `before`, and each
+/// (`guest_layout::points::skull_gates`) has the feature's one `before`, and each
 /// gate's site and fall-through are image entries; off, no gate is hooked.
 #[test]
 fn every_ai_skull_gate_has_the_multiplayer_skulls_before_unless_turned_off() {
-    use engine::points::skull_gates::GATES;
+    use guest_layout::points::skull_gates::GATES;
     let hooked = |switches: &str| {
         let plan = plan(&Case::full(switches)).unwrap();
         let mut at: Vec<u32> = plan
@@ -405,13 +405,13 @@ fn every_ai_skull_gate_has_the_multiplayer_skulls_before_unless_turned_off() {
 }
 
 /// With Firefight on, the AI's multiplayer gate in
-/// `ai_initialize_for_new_map` (`engine::points::ai_gates`) has the
+/// `ai_initialize_for_new_map` (`guest_layout::points::ai_gates`) has the
 /// feature's one `before`, so a kit map's AI is initialised and squads can
 /// be placed; the gate's site and its target are image entries. Off, the
 /// gate is not hooked and a multiplayer map's AI stays off as in retail.
 #[test]
 fn a_firefight_map_initialises_its_ai_unless_firefight_is_off() {
-    use engine::points::ai_gates::{AI_NEW_MAP_INITIALISE, AI_NEW_MAP_MULTIPLAYER};
+    use guest_layout::points::ai_gates::{AI_NEW_MAP_INITIALISE, AI_NEW_MAP_MULTIPLAYER};
     let hooked = |switches: &str| {
         let plan = plan(&Case::full(switches)).unwrap();
         plan.chains
@@ -868,7 +868,7 @@ fn the_lobby_copy_boost_is_on_for_light_hosts_unless_switched_off() {
 
 #[test]
 fn native_subsystems_install_on_every_profile() {
-    use engine::points::{COLLISION_LOCATION, OBJECT_FUNCTION_VALUE, SIM_ANIMATION_STREAM};
+    use guest_layout::points::{COLLISION_LOCATION, OBJECT_FUNCTION_VALUE, SIM_ANIMATION_STREAM};
     let runtime = runtime::Runtime::new(runtime::Guest::new(), runtime::Dispatch::default());
     let points = [
         &SIM_ANIMATION_STREAM,
@@ -897,7 +897,7 @@ fn native_subsystems_install_on_every_profile() {
 
 #[test]
 fn viewer_skips_follow_the_light_profile_and_independent_switches() {
-    use engine::points::PREDICT_RESOURCES;
+    use guest_layout::points::PREDICT_RESOURCES;
     // The seats' prediction walk owns the point (sim-bridge/src/sim_seats.rs):
     // no viewer skip hooks it.
     for (light, spec, predicted) in [
@@ -1272,14 +1272,14 @@ fn a_replay_renders_on_the_stream_its_recording_did() {
 /// Controls row text replaces its entry in every profile.
 #[test]
 fn the_controls_row_text_is_replaced_in_every_profile() {
-    let entry = engine::points::CONTROLS_ROW_TEXT.base;
-    let replaced = super::replaced_entries(&[entry, engine::points::TEXT_SET.base].into_iter().collect());
+    let entry = guest_layout::points::CONTROLS_ROW_TEXT.base;
+    let replaced = super::replaced_entries(&[entry, guest_layout::points::TEXT_SET.base].into_iter().collect());
     assert_eq!(replaced.keys().copied().collect::<Vec<_>>(), [entry]);
     // The build's list names the feature and keeps what the port calls.
-    let lift = super::lift_replaced(&[entry, engine::points::TEXT_SET.base].into_iter().collect());
+    let lift = super::lift_replaced(&[entry, guest_layout::points::TEXT_SET.base].into_iter().collect());
     let root = &lift.entries[&entry];
     assert_eq!((root.point.as_str(), root.feature.as_str()), ("CONTROLS_ROW_TEXT", crate::controls_text::ID));
-    assert!(lift.calls.contains(&engine::points::TEXT_SET.base), "{:x?}", lift.calls);
+    assert!(lift.calls.contains(&guest_layout::points::TEXT_SET.base), "{:x?}", lift.calls);
 }
 
 /// A pruned module whose cut root's feature is switched off refuses the
@@ -1287,7 +1287,7 @@ fn the_controls_row_text_is_replaced_in_every_profile() {
 /// (docs/lifter/lift-pruning.md, "Boot safety").
 #[test]
 fn a_pruned_root_whose_feature_is_off_refuses_the_boot_by_name() {
-    let entry = engine::points::CONTROLS_ROW_TEXT.base;
+    let entry = guest_layout::points::CONTROLS_ROW_TEXT.base;
     let roots = [emit::pruned::Root {
         entry,
         point: "CONTROLS_ROW_TEXT".into(),

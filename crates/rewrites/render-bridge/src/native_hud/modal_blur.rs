@@ -20,8 +20,8 @@
 //! [`Host::finish_modal_blur`]: super::Host::finish_modal_blur
 
 use engine::glow::{self, BlurArgs, BlurDraw, Psdef};
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use frame_scene::OverlayBlur;
 use hooks::Builder;
 use timeline::native::Ui;
@@ -299,7 +299,7 @@ pub(super) fn place(b: &mut Builder<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const ESP: u32 = 0x0010_0000;
     const MXCSR: u32 = 0x1f80;

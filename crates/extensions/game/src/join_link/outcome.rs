@@ -1,7 +1,7 @@
 //! A result belongs to the FindFromID request the title is driving. A
 //! previously connected squad or a key registered for a QoS probe cannot
 //! complete it. The host's advertised ID and its squad's XNKID may differ.
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use hooks::{Builder, points};
 use std::sync::{
     Arc, Mutex,
@@ -116,7 +116,7 @@ impl Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn only_the_requested_join_can_report_a_promotion_or_failure() {

@@ -11,7 +11,7 @@
 use std::sync::Arc;
 
 use agent_proto::{RpcError, code};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -175,7 +175,7 @@ mod tests {
     use std::time::Duration;
 
     use agent_proto::Object;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use serde_json::json;
 
     use super::*;

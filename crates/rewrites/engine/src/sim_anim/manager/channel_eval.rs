@@ -2,7 +2,7 @@
 //! walks mode/class/type matches in the graph and then each inherited graph.
 //! The five fallback combinations use distinct, resumable cache requests.
 use super::*;
-use crate::points::TAG_ENTRIES;
+use guest_layout::points::TAG_ENTRIES;
 use crate::sim_native::sub_flags;
 use crate::sim_physics::{arithmetic, byte, logic};
 

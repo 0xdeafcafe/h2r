@@ -2,7 +2,7 @@
 //! Retail can rewrite an effective profile without publishing a membership revision.
 
 use super::{MAX, at::*};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 
 #[derive(Default)]
 pub(in crate::phantom) struct LobbyMembership {

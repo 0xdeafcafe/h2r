@@ -5,7 +5,7 @@
 //! Every value here is a sum, product or square root of guest floats taken
 //! in table order, so every console computes the same spots bit for bit.
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 use super::{NONE, Player, distance, object, world_position};
 

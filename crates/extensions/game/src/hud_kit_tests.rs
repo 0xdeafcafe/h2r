@@ -3,8 +3,8 @@
 //! kit widget and passing a retail one through, the crop, and the
 //! training, prompt, navpoint and notification channels.
 
-use engine::memory::FlatMemory;
-use engine::tags::{
+use guest_layout::memory::FlatMemory;
+use guest_layout::tags::{
     TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, group_layout, index_layout,
 };
 use hud_kit_core::model::{Anchor, Art, Element, Font, Justify, Place};

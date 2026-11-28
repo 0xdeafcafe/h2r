@@ -21,7 +21,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::points;
+use guest_layout::points;
 use engine::sim_tick::{self, Ledger};
 use hooks::{BuildError, Builder, EntryFuture, Feature, Manifest, SnapshotPolicy};
 
@@ -48,11 +48,11 @@ pub const AS_SEEN: &str = "particles age as if seen";
 /// "The sound phase"). It runs once per tick number, so a tick whose
 /// run flag held the count does not step the sounds again.
 pub async fn run(
-    cx: engine::entry::Cx,
+    cx: guest_layout::entry::Cx,
     present: sim_tick::Present,
     bodies: sim_tick::Bodies,
     sound: Option<crate::sim_sound::entries::Shared>,
-) -> engine::entry::EntryResult {
+) -> guest_layout::entry::EntryResult {
     let ret = sim_tick::run_with(cx.clone(), &LEDGER, present, bodies).await?;
     engine::tick_poses::run(&cx, sim_tick::RECORD_SIZE).await?;
     if let Some(table) = sound {
@@ -94,7 +94,7 @@ impl Feature for TickDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::entry::{self, Regs};
+    use guest_layout::entry::{self, Regs};
     use engine::sim_tick::{Owner, PHASES};
 
     #[test]
@@ -103,8 +103,8 @@ mod tests {
         let rust: Vec<_> = PHASES.iter().filter(|p| p.owner == Owner::Rust).map(|p| p.name).collect();
         assert_eq!(rust, ["ai", "script_scheduler", "effects", "post_game", "countdown_requests"]);
     }
-    use engine::memory::GuestMemory;
-    use engine::testing::FakeGuest;
+    use guest_layout::memory::GuestMemory;
+    use guest_layout::testing::FakeGuest;
     use hooks::Flow;
 
     const STACK: u32 = 0x0030_0000;
@@ -125,9 +125,9 @@ mod tests {
     /// step sets the run flag to `flag`; the close sets it to `after`.
     fn tick_with(from: u32, flag: u8, after: u8) -> (entry::testing::Run, &'static Mutex<Ledger>) {
         let ledger: &'static Mutex<Ledger> = Box::leak(Box::new(Mutex::new(Ledger::new())));
-        let f = move |cx: engine::entry::Cx| -> EntryFuture { Box::pin(sim_tick::run(cx, ledger)) };
+        let f = move |cx: guest_layout::entry::Cx| -> EntryFuture { Box::pin(sim_tick::run(cx, ledger)) };
         let regs = Regs { esp: STACK, ..Default::default() };
-        let callee = move |c: &engine::entry::GuestCall, m: &mut dyn GuestMemory| {
+        let callee = move |c: &guest_layout::entry::GuestCall, m: &mut dyn GuestMemory| {
             let at = RECORD + sim_tick::RUN_FLAG;
             if c.target == sim_tick::RECORD_BEFORE {
                 m.set_u8(at, flag).unwrap();
@@ -228,7 +228,7 @@ mod tests {
             g.put_u16(slot, 7).put_u32(slot + 8, body);
             g.put_u32(body + BODY_FLAGS, flags).put_u32(body + PARENT, u32::MAX);
         }
-        let callee = |c: &engine::entry::GuestCall, m: &mut dyn GuestMemory| {
+        let callee = |c: &guest_layout::entry::GuestCall, m: &mut dyn GuestMemory| {
             let at = RECORD + sim_tick::RUN_FLAG;
             match c.target {
                 sim_tick::RECORD_BEFORE | sim_tick::RECORD_AFTER => m.set_u8(at, 1).unwrap(),
@@ -241,7 +241,7 @@ mod tests {
             }
             Regs::default()
         };
-        let f = |cx: engine::entry::Cx| -> EntryFuture {
+        let f = |cx: guest_layout::entry::Cx| -> EntryFuture {
             Box::pin(run(cx, sim_tick::Present::Always, sim_tick::Bodies::NONE, None))
         };
         let r = entry::testing::run(&f, g, Regs { esp: STACK, ..Default::default() }, callee);
@@ -263,7 +263,7 @@ mod tests {
         let regs = Regs { esp: STACK, ..Default::default() };
         let mut g = guest(5);
         g.map(0x004e_0000, 0x1_0000).put_u32(points::RANDOM_SEEDS.base, TIME + 0x200);
-        let callee = |c: &engine::entry::GuestCall, m: &mut dyn GuestMemory| {
+        let callee = |c: &guest_layout::entry::GuestCall, m: &mut dyn GuestMemory| {
             let at = RECORD + sim_tick::RUN_FLAG;
             if c.target == sim_tick::RECORD_BEFORE {
                 m.set_u8(at, 1).unwrap();
@@ -274,7 +274,7 @@ mod tests {
         };
         for _ in 0..2 {
             let t = Arc::clone(&table);
-            let f = move |cx: engine::entry::Cx| -> EntryFuture {
+            let f = move |cx: guest_layout::entry::Cx| -> EntryFuture {
                 Box::pin(run(cx, sim_tick::Present::Always, sim_tick::Bodies::NONE, Some(Arc::clone(&t))))
             };
             let r = entry::testing::run(&f, g.clone(), regs, callee);

@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, sync::Mutex};
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use live_hle::{
     Hle,
     actor_net::{Budget, Packet, Stats, WireError},

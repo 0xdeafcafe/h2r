@@ -1,6 +1,6 @@
 //! Shape-local edges are reusable. The component tells us which shapes
 //! actually exist and the motion supplies their complete world transform.
-use engine::{DatumHandle, GuestMemory};
+use guest_layout::{DatumHandle, GuestMemory};
 use guest_layout::tags::{GroupTag, tag_get_checked};
 use live_telemetry::{havok, havok_agents, layout};
 use map::TagId;
@@ -325,7 +325,7 @@ pub(super) fn live_edges(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn the_biped_wrapper_uses_the_current_child_and_radius() {

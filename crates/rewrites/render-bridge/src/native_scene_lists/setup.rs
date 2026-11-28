@@ -675,7 +675,7 @@ mod tests {
 #[cfg(test)]
 mod setup_tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use native_render::object_nodes::{BLOCK_MATRICES, MATRIX_STRIDE, NODE_BLOCKS};
     use native_render::skip::{RENDER_RECORD_SIZE, RENDER_RECORDS};
 

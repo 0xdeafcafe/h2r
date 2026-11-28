@@ -35,7 +35,7 @@ use engine::light_passes::{
     self as lp, CHOOSE_DIFFUSE, CHOOSE_DIFFUSE_CLEANUP, CHOOSE_SPECULAR, CHOOSE_SPECULAR_CLEANUP, FLAGS_EXITS,
     FLAGS_START, RENDER_LIGHT_PASSES, constant, flag, global,
 };
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};
 

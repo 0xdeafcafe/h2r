@@ -33,7 +33,7 @@ use engine::light_constants::{
     self as lc, BoundsQuery, Call, Fpu, SCREEN_BOUNDS, SCREEN_BOUNDS_CLEANUP, SET_LIGHT,
     UPLOAD_LIGHT_FRAME, global,
 };
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};
 

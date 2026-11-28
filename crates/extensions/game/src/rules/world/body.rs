@@ -18,7 +18,7 @@
 //! the host's; clients get the unit, whose type is the body's.
 
 use ::rules::bodies::Body;
-use engine::{GuestMemory, MemFault};
+use guest_layout::{GuestMemory, MemFault};
 
 use crate::firefight::guest as ff;
 

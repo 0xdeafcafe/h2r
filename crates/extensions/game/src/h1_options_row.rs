@@ -37,8 +37,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use engine::entry::{EntryFuture, GuestCall, Ret};
-use engine::memory::GuestMemory;
+use guest_layout::entry::{EntryFuture, GuestCall, Ret};
+use guest_layout::memory::GuestMemory;
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
@@ -115,9 +115,9 @@ pub fn converted_map_name(content_root: &Path, map_id: u32) -> Option<String> {
 }
 
 /// The actions of the list at `list`, in slot order.
-pub fn setup_actions(m: &dyn GuestMemory, list: u32) -> Result<Vec<i16>, engine::memory::MemFault> {
-    let array = engine::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS))?);
-    let hw = array.header_field(m, engine::datum::layout::HIGH_WATER)?;
+pub fn setup_actions(m: &dyn GuestMemory, list: u32) -> Result<Vec<i16>, guest_layout::memory::MemFault> {
+    let array = guest_layout::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS))?);
+    let hw = array.header_field(m, guest_layout::datum::layout::HIGH_WATER)?;
     let mut out = Vec::new();
     for i in 0..hw.max(0) {
         if let Some(elem) = array.get_absolute(m, i)? {
@@ -160,7 +160,7 @@ pub fn insert_row_ordered(
     list: u32,
     order: impl FnOnce(&[i16]) -> Vec<i16>,
 ) -> Result<usize, String> {
-    let e = |e: engine::memory::MemFault| format!("{e:?}");
+    let e = |e: guest_layout::memory::MemFault| format!("{e:?}");
     let actions = setup_actions(m, list).map_err(e)?;
     let order = order(&actions);
     let adds = order
@@ -168,9 +168,9 @@ pub fn insert_row_ordered(
         .checked_sub(actions.len())
         .filter(|n| *n > 0)
         .ok_or_else(|| format!("{} rows asked for {} there", order.len(), actions.len()))?;
-    let array = engine::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS)).map_err(e)?);
-    let room = array.header_field(m, engine::datum::layout::MAXIMUM_COUNT).map_err(e)?
-        - array.header_field(m, engine::datum::layout::ACTIVE_COUNT).map_err(e)?;
+    let array = guest_layout::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS)).map_err(e)?);
+    let room = array.header_field(m, guest_layout::datum::layout::MAXIMUM_COUNT).map_err(e)?
+        - array.header_field(m, guest_layout::datum::layout::ACTIVE_COUNT).map_err(e)?;
     if (room.max(0) as usize) < adds {
         return Err(format!("the list has room for {room} rows, not {adds}"));
     }
@@ -178,7 +178,7 @@ pub fn insert_row_ordered(
         array.new_datum(m).map_err(e)?.ok_or("the list is full")?;
     }
     let hw = array
-        .header_field(m, engine::datum::layout::HIGH_WATER)
+        .header_field(m, guest_layout::datum::layout::HIGH_WATER)
         .map_err(e)?;
     let mut elems = Vec::new();
     for i in 0..hw.max(0) {
@@ -205,11 +205,11 @@ pub fn insert_row_ordered(
 /// one's action written. The new count. A Game Setup row of ours that hides
 /// a row (the lobby's mode, `crate::lobby_mode`) passes the list without it.
 pub fn rewrite_rows(m: &mut dyn GuestMemory, list: u32, order: &[i16]) -> Result<usize, String> {
-    let e = |e: engine::memory::MemFault| format!("{e:?}");
-    let array = engine::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS)).map_err(e)?);
+    let e = |e: guest_layout::memory::MemFault| format!("{e:?}");
+    let array = guest_layout::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS)).map_err(e)?);
     let elems = |m: &dyn GuestMemory| -> Result<Vec<(i32, u32)>, String> {
         let hw = array
-            .header_field(m, engine::datum::layout::HIGH_WATER)
+            .header_field(m, guest_layout::datum::layout::HIGH_WATER)
             .map_err(e)?;
         let mut out = Vec::new();
         for i in 0..hw.max(0) {
@@ -241,9 +241,9 @@ pub fn rewrite_rows(m: &mut dyn GuestMemory, list: u32, order: &[i16]) -> Result
 
 /// The action of the row whose handle is `row` on the list at `list`.
 pub fn row_action(m: &dyn GuestMemory, list: u32, row: u32) -> Option<i16> {
-    let array = engine::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS)).ok()?);
+    let array = guest_layout::datum::DatumArray::at(m.u32(list.wrapping_add(SETUP_ROWS)).ok()?);
     let elem = array
-        .try_get(m, engine::DatumHandle::from_raw(row)?)
+        .try_get(m, guest_layout::DatumHandle::from_raw(row)?)
         .ok()??;
     m.u16(elem.wrapping_add(SETUP_ACTION))
         .ok()
@@ -400,7 +400,7 @@ impl hooks::Feature for SetupRow {
         .doc("docs/halo1/multiplayer.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        use engine::points::{
+        use guest_layout::points::{
             SQUAD_SETTINGS_LIST_CTOR as CTOR, SQUAD_SETTINGS_ROW_CHOSEN, SQUAD_SETTINGS_ROW_TEXT,
         };
         let request_at = b.guest_alloc(0x1000, Permissions::RW)?;
@@ -475,7 +475,7 @@ pub(crate) fn test_page() -> Arc<KitScreen> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn a_snapshot_waits_while_a_game_setup_list_is_built() {

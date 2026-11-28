@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use agent_proto::{RpcError, code};
-use engine::{GuestMemory, MemFault, view::Datums};
+use guest_layout::{GuestMemory, MemFault, view::Datums};
 use guest_layout::ObjectType;
 use serde_json::{Value, json};
 
@@ -102,7 +102,7 @@ impl hooks::Feature for NetFeature {
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         b.raw()
             .observe_before(
-                &engine::points::SIM_EVENT_GENERATE,
+                &guest_layout::points::SIM_EVENT_GENERATE,
                 "count replication events",
                 |o| {
                     if let Some(kind) = o.arg_u32("kind") {
@@ -115,7 +115,7 @@ impl hooks::Feature for NetFeature {
     }
 }
 
-engine::record! {
+guest_layout::record! {
     // The 0xc-byte object header: the type byte and the body's address.
     struct Header: 0xc {
         kind @ 0x3: u8,
@@ -163,7 +163,7 @@ fn mode_name(mode: u32) -> &'static str {
 
 /// The world's mode, `None` before the simulation globals exist.
 fn world_mode(m: &dyn GuestMemory) -> Result<Option<u32>, MemFault> {
-    let globals = m.u32(engine::points::SIM_GLOBALS.base)?;
+    let globals = m.u32(guest_layout::points::SIM_GLOBALS.base)?;
     if globals == 0 {
         return Ok(None);
     }
@@ -179,7 +179,7 @@ struct KindCount {
 
 fn objects(m: &dyn GuestMemory) -> Result<BTreeMap<&'static str, KindCount>, MemFault> {
     let mut kinds = BTreeMap::new();
-    let Some(pool) = Datums::<Header>::from_global(m, engine::points::OBJECTS.base)? else {
+    let Some(pool) = Datums::<Header>::from_global(m, guest_layout::points::OBJECTS.base)? else {
         return Ok(kinds);
     };
     for (_, header) in pool.live(m, MAX_OBJECTS)? {
@@ -289,7 +289,7 @@ pub fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{testing::FakeGuest, view::fake};
+    use guest_layout::{testing::FakeGuest, view::fake};
 
     const SIM: u32 = 0x9000;
     const POOL: u32 = 0x10000;
@@ -299,10 +299,10 @@ mod tests {
     fn guest(mode: u32) -> (FakeGuest, Datums<Header>) {
         let mut m = FakeGuest::new();
         m.map(SIM, 0x40);
-        m.put_u32(engine::points::SIM_GLOBALS.base, SIM)
+        m.put_u32(guest_layout::points::SIM_GLOBALS.base, SIM)
             .put_u32(SIM + SIM_MODE, mode);
         let pool = fake::datums::<Header>(&mut m, POOL, 16);
-        m.put_u32(engine::points::OBJECTS.base, pool.array.addr);
+        m.put_u32(guest_layout::points::OBJECTS.base, pool.array.addr);
         (m, pool)
     }
 
@@ -339,8 +339,8 @@ mod tests {
     #[test]
     fn reports_no_mode_and_no_objects_before_the_simulation_exists() {
         let mut m = FakeGuest::new();
-        m.put_u32(engine::points::SIM_GLOBALS.base, 0)
-            .put_u32(engine::points::OBJECTS.base, 0);
+        m.put_u32(guest_layout::points::SIM_GLOBALS.base, 0)
+            .put_u32(guest_layout::points::OBJECTS.base, 0);
         let r = reply(&m, &EventCounts::new(), None, CreatureReplication::default()).unwrap();
         assert!(r["world_mode"].is_null());
         assert!(r["mode"].is_null());

@@ -1,7 +1,7 @@
 use super::*;
-use engine::datum::layout as dl;
-use engine::points;
-use engine::testing::FakeGuest;
+use guest_layout::datum::layout as dl;
+use guest_layout::points;
+use guest_layout::testing::FakeGuest;
 
 fn kill(attacker: Option<u32>, victim: u32, betrayal: bool, at: Vec3, tick: u32) -> Kill {
     Kill {

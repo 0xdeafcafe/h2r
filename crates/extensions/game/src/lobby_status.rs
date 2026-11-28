@@ -7,7 +7,7 @@
 //! mode picked in the GAME MODE picker did not switch, for four seconds.
 
 use bots::{lobby, phantom};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 
 use phantom::session::{self, at::*};
 
@@ -126,7 +126,7 @@ impl hooks::Feature for MatchCountdown {
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
         b.raw()
             .before(
-                &engine::points::HUD_TEXT_SUBSTITUTE,
+                &guest_layout::points::HUD_TEXT_SUBSTITUTE,
                 "name bot setup on the matchmaking countdown",
                 |c| {
                     let sp = c.cpu.esp;
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn an_active_zero_counts_pending_phantoms_in_its_own_session() {
         const S: u32 = 0x0060_0000;
-        let mut g = engine::testing::FakeGuest::new();
+        let mut g = guest_layout::testing::FakeGuest::new();
         g.put_u8(S + lobby::COUNTDOWN, 1);
         let phantoms = phantom::Phantoms::default();
         let phantom = phantoms

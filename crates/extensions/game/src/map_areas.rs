@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex};
 
 use ::game_markers::record::{self, Flag, Row};
-use engine::{GuestMemory, MemFault, points};
+use guest_layout::{GuestMemory, MemFault, points};
 use forge_doc::{BlockKind, LabelledThing};
 
 use crate::bots_nav_auto::VfsFile;
@@ -91,7 +91,7 @@ pub fn attach(things: &mut [LabelledThing], flags: &[Flag], rows: &[Row]) {
 #[cfg(test)]
 mod tests {
     use ::game_markers::Area;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     use super::*;
 

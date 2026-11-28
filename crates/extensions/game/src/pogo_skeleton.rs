@@ -11,10 +11,10 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
-use engine::DatumHandle;
-use engine::memory::GuestMemory;
-use engine::tags::GroupTag;
-use engine::view::Tags;
+use guest_layout::DatumHandle;
+use guest_layout::memory::GuestMemory;
+use guest_layout::tags::GroupTag;
+use guest_layout::view::Tags;
 
 use crate::pogo_pose::{Bone, Skeleton, rest_of};
 
@@ -202,8 +202,8 @@ pub fn request(map: &str, mode: u32) -> Option<Arc<Skeleton>> {
 
 #[cfg(test)]
 mod tests {
-    use engine::points;
-    use engine::testing::FakeGuest;
+    use guest_layout::points;
+    use guest_layout::testing::FakeGuest;
     use guest_layout::tags as guest_tags;
 
     use super::*;

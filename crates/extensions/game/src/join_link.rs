@@ -9,8 +9,8 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::{memory::GuestMemory, points};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::{memory::GuestMemory, points};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use live_hle::{
     Hle,
@@ -234,7 +234,7 @@ async fn dispatch_record(
             let mut record = [0; 156];
             m.read(scratch, &mut record)?;
             m.write(selection, &selected(&record))?;
-            Ok::<[u8; 8], engine::MemFault>(record[40..48].try_into().unwrap())
+            Ok::<[u8; 8], guest_layout::MemFault>(record[40..48].try_into().unwrap())
         })
         .map_err(|e| EntryError::from(e).to_string())?;
     outcome.begin(requested);

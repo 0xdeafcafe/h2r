@@ -38,8 +38,8 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use frame_scene::View;
 use native_render::camera::{GuestRead, GuestWrite};
 use native_render::skip::{self, Cleared, LIGHTMAP_LAYER, StencilPlan};
@@ -160,7 +160,7 @@ pub enum OpaqueSubmitError {
 /// Resource setters can enter the game to deliver a fence callback or the
 /// destructor of the resource that just lost its last device reference.
 pub type OpaqueStreams<'a> = std::pin::Pin<Box<dyn std::future::Future<
-    Output = Result<bool, engine::entry::EntryError>,
+    Output = Result<bool, guest_layout::entry::EntryError>,
 > + Send + 'a>>;
 
 /// Resources retained for one sorted BSP handler. A submission refusal
@@ -574,7 +574,7 @@ impl Feature for NativeWorld {
 #[cfg(test)]
 mod display_fade_tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn the_display_fade_follows_the_view_word_and_the_reference_policy() {

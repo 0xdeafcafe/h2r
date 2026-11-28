@@ -15,7 +15,7 @@
 use std::sync::{Arc, Mutex};
 
 use ::sim_ext::State;
-use engine::{GuestMemory, points};
+use guest_layout::{GuestMemory, points};
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
 pub const ID: &str = "sim-ext";
@@ -139,7 +139,7 @@ impl Feature for SimExtFeature {
 mod tests {
     use super::*;
     use ::sim_ext::{FORGE, RULES};
-    use engine::FlatMemory;
+    use guest_layout::FlatMemory;
 
     fn guest(last: u16) -> FlatMemory {
         let mut mem = FlatMemory::new(CHECKPOINT_SLOT & !0xfff, 0x1000);

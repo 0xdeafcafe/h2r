@@ -1,6 +1,6 @@
 //! Shared by interactive play, headless simulation and dedicated hosts.
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
-use engine::points;
+use guest_layout::points;
 use engine::sim_physics::PORTS;
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, Inline, TransferAbi};
 

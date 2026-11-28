@@ -14,7 +14,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use engine::entry::{EntryFuture, GuestCall, Ret};
+use guest_layout::entry::{EntryFuture, GuestCall, Ret};
 use hooks::{Call, Flow};
 use runtime::GuestFault;
 use settings::Store;

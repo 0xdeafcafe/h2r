@@ -1897,7 +1897,7 @@ impl hooks::Feature for SimMetrics {
                     // (docs/runtime/sim.md §6).
                     let fired_by = {
                         let g = o.guest();
-                        bots::vehicle::read::firing_player(&*g, engine::DatumHandle(w))
+                        bots::vehicle::read::firing_player(&*g, guest_layout::DatumHandle(w))
                             .ok()
                             .flatten()
                     };
@@ -2177,7 +2177,7 @@ const PRIMED_WORD: u32 = 0xffff_fffd;
 
 /// Sets `unit`'s level pair word to -3 (`havok.pair.set`'s write). False
 /// when it has no single pair against the level, or the write faulted.
-fn drill_arm(m: &mut dyn engine::GuestMemory, unit: u32) -> bool {
+fn drill_arm(m: &mut dyn guest_layout::GuestMemory, unit: u32) -> bool {
     use live_telemetry::havok_agents as hk;
     let Ok(Some(entry)) = hk::fixed_pair(&*m, unit) else {
         return false;
@@ -2616,7 +2616,7 @@ mod tests {
     fn mounted_fire_is_the_seated_players_shot_and_handheld_waits_for_its_holder() {
         // The sample's unit is the holder's own raw datum, so the two
         // agree by construction (`player_of_unit` compares raws).
-        let holder = engine::DatumHandle::new(0xe, 1);
+        let holder = guest_layout::DatumHandle::new(0xe, 1);
         let snap = telemetry::Snapshot {
             players: vec![
                 player(0, None, holder.raw()),
@@ -2864,7 +2864,7 @@ mod tests {
         let mut held = HostPadState::default();
         held.left_stick = (0.25, -0.5);
         assert!(seat.hold_pad(Some(held)));
-        let g = engine::testing::FakeGuest::new();
+        let g = guest_layout::testing::FakeGuest::new();
         let f = Frame {
             frame: 0,
             tick: 1,

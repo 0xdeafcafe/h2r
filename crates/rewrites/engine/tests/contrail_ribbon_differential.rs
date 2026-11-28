@@ -26,7 +26,7 @@ mod common;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::contrail_ribbon::{self as cr, ENTRY, NORMAL_DEPTH, POP, constant};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};
 

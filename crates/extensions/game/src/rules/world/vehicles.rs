@@ -6,8 +6,8 @@ pub use flight::{Flights, MAX_FLIGHTS, Step, Stepped};
 
 use ::rules::caps::id;
 use ::rules::vm::{Arg, Call as VmCall};
-use engine::entry::{Cx, GuestCall};
-use engine::{GuestMemory, points};
+use guest_layout::entry::{Cx, GuestCall};
+use guest_layout::{GuestMemory, points};
 
 use super::super::census::Table;
 use super::super::runtime::Call;

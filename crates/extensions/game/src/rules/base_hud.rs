@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use hud_kit_core::model::{Value, Values};
 use hud_kit_core::views::objective::{Base, base};
 

@@ -36,7 +36,7 @@
 //! the caller's MXCSR, x87 under its control word.
 
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use crate::screen_grid;
 
 /// The planar fog's quad, called between the sky and layer 16
@@ -465,7 +465,7 @@ fn other_corners(mem: &dyn GuestMemory, sse: &mut Sse, rect_at: u32, depth: u32)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     fn mem() -> FlatMemory {
         let mut m = FlatMemory::new(0x0040_0000, 0x0012_0000);

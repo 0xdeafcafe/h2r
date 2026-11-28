@@ -38,7 +38,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use forge_doc::BlockKind;
 use game_markers::Area;
 
@@ -378,10 +378,10 @@ mod tests {
     const FLAGS_AT: u32 = SCNR + 0x400;
 
     /// A guest whose scenario holds `flags` (position, type, team).
-    fn flag_map(flags: &[([f32; 3], u16, u16)]) -> engine::testing::FakeGuest {
+    fn flag_map(flags: &[([f32; 3], u16, u16)]) -> guest_layout::testing::FakeGuest {
         use engine::objectives::{FLAG_TEAM, FLAG_TYPE, NETGAME_FLAG_STRIDE, NETGAME_FLAGS};
-        let mut m = engine::testing::FakeGuest::new();
-        m.put_u32(engine::points::SCENARIO.base, SCNR);
+        let mut m = guest_layout::testing::FakeGuest::new();
+        m.put_u32(guest_layout::points::SCENARIO.base, SCNR);
         m.map(SCNR, 0x2000);
         m.put_u32(SCNR + NETGAME_FLAGS, flags.len() as u32)
             .put_u32(SCNR + NETGAME_FLAGS + 4, FLAGS_AT);

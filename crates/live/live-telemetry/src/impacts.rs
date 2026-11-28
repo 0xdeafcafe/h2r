@@ -4,10 +4,7 @@
 
 use std::sync::Arc;
 
-use engine::{
-    DatumHandle, GuestMemory, MemFault, points,
-    view::{Record as _, objects},
-};
+use guest_layout::{DatumHandle, GuestMemory, MemFault, points, view::{Record as _, objects}};
 use live_proto::film::events::{
     Event, Record,
     ballistics::{Barrel, Endpoint, Impact},

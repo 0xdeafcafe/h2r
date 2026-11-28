@@ -58,7 +58,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use content::MapId;
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use live_hle::maps::Refusal;
 use live_hle::mods::{self, InstallDone, ListDone, ModEntry, ModPage, ModsError, Progress};
 use live_proto::maps::FEATURES;

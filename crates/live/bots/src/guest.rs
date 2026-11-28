@@ -5,10 +5,10 @@
 //! Everything here works on [`GuestMemory`], so the tests run on synthetic
 //! guest memory. Addresses are research notes; no game data is here.
 
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
-use engine::view::{objects, players};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
+use guest_layout::view::{objects, players};
 
 use crate::brain::{Me, Perception, Seen};
 pub(crate) mod intel;

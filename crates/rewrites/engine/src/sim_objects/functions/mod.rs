@@ -45,9 +45,9 @@ mod curve_tests;
 
 use super::{Next, Result};
 #[cfg(test)]
-use crate::datum::layout;
+use guest_layout::datum::layout;
 use crate::light_constants::{Error, X87};
-use crate::points;
+use guest_layout::points;
 use crate::sim_physics::ARITH;
 use runtime::{CpuAbi, Guest, GuestFault};
 

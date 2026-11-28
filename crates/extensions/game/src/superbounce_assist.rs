@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use input::gamepad::{AnalogButton, Gamepad};
 use superbounce::{Kind, Spot, Vec3};
 use xapi::tap::{InputTap, PACKET};

@@ -2,7 +2,7 @@
 //! to the title. Its timing totals include instrumentation overhead.
 
 use anyhow::Result;
-use engine::points;
+use guest_layout::points;
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -24,7 +24,7 @@ struct TagSpan {
 }
 
 fn tag_spans(g: &runtime::Guest) -> Vec<TagSpan> {
-    use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, index_layout};
+    use guest_layout::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, index_layout};
     let read = |at| g.u32(at).unwrap_or(0);
     let index = read(TAG_INDEX_GLOBAL);
     let entries = read(TAG_ENTRIES_GLOBAL);

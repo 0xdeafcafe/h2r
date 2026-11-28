@@ -758,7 +758,7 @@ pub mod tests {
         let events = Arc::clone(&seen);
         sources.on_change(move |f| events.lock().unwrap().push(f.map(|f| f.path.clone())));
 
-        let mut guest = engine::testing::FakeGuest::new();
+        let mut guest = guest_layout::testing::FakeGuest::new();
         let key = RECORDS + 3 * STRIDE + HEADER + PATH;
         guest.map(key, 0x100);
         guest.map(CURRENT, 4);

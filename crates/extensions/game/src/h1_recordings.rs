@@ -1,11 +1,11 @@
 //! Apply converted single-weapon recordings with Halo 2's unit control
 //! function. Only the recording player's call (0x1fb630) can enter here.
 
-use engine::DatumHandle;
-use engine::entry::{Cx, EntryFuture, EntryResult, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::UNIT_APPLY_CONTROL;
-use engine::view::objects;
+use guest_layout::DatumHandle;
+use guest_layout::entry::{Cx, EntryFuture, EntryResult, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::UNIT_APPLY_CONTROL;
+use guest_layout::view::objects;
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use map::recording;
 
@@ -129,9 +129,9 @@ impl Feature for Playback {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::entry::{Regs, testing::run};
-    use engine::testing::FakeGuest;
-    use engine::view::fake;
+    use guest_layout::entry::{Regs, testing::run};
+    use guest_layout::testing::FakeGuest;
+    use guest_layout::view::fake;
 
     #[test]
     fn converted_packet_reaches_the_native_unit_and_action_readers() {
@@ -164,7 +164,7 @@ mod tests {
             header.set_body(&mut guest, BODY).unwrap();
             let seated = kind == objects::BIPED;
             guest
-                .put_u32(engine::points::OBJECTS.base, 0x3000)
+                .put_u32(guest_layout::points::OBJECTS.base, 0x3000)
                 .put(CONTROL, &source)
                 .put(BODY + 0x70, &forward)
                 .put_u32(BODY + 0x14, if seated { 1 } else { u32::MAX })

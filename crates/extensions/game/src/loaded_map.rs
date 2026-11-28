@@ -7,7 +7,7 @@
 
 use std::sync::{Arc, Mutex, Weak};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
 /// Publishes the name in the loaded cache header, if it can be read: to
@@ -157,7 +157,7 @@ impl Feature for LoadedMap {
 mod tests {
     use super::*;
     use crate::health::CACHE_MAP_NAME;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn a_load_publishes_the_loaded_maps_name() {

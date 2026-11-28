@@ -3,8 +3,8 @@
 //! passes, the blur at the radius these values carry
 //! (`render_bridge::scope_zoom_hud::zoom_blur`).
 
-use engine::handle::DatumHandle;
-use engine::memory::GuestMemory;
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::GuestMemory;
 use engine::render_loop::occlusion::guest::{CAMERA, VIEW_PLAYER, body};
 use runtime::guest::Permissions;
 use tags::scope_zoom::MAGIC;
@@ -223,9 +223,9 @@ fn prepare_blur(mem: &mut dyn GuestMemory, esp: u32) -> Option<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use render_bridge::scope_zoom_hud::HUD_SCREEN_RETURN;
-    use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, index_layout};
+    use guest_layout::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, index_layout};
     use tags::scope_zoom::{Blur, Filter, Profile};
 
     #[test]

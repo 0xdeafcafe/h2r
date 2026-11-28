@@ -14,7 +14,7 @@ use crate::superbounce_mode::{Course, Predicted, ScanState};
 use crate::superbounce_options::TargetMode;
 use crate::superbounce_second::Ranked;
 use crate::superbounce_targets::{Mark, Marks};
-use engine::GuestMemory as _;
+use guest_layout::GuestMemory as _;
 
 const M: f32 = METRES_PER_UNIT;
 
@@ -1108,7 +1108,7 @@ fn the_targets_outside_the_aim_cone_are_cleared() {
 /// with it off, and never lowered below the map's own.
 #[test]
 fn the_waypoint_bottom_inset_is_raised_while_the_mode_is_on() {
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     assert_eq!(waypoint_inset(10.0, false), 10.0);
     assert_eq!(waypoint_inset(10.0, true), WAYPOINT_BOTTOM_INSET);
     assert_eq!(waypoint_inset(120.0, true), 120.0);
@@ -1122,7 +1122,7 @@ fn the_waypoint_bottom_inset_is_raised_while_the_mode_is_on() {
     );
 
     const HUDG: u32 = 0x7e00_0000;
-    let pointer = engine::points::HUD_GLOBALS_TAG.base;
+    let pointer = guest_layout::points::HUD_GLOBALS_TAG.base;
     let at = HUDG + HUDG_WAYPOINT_BOTTOM_INSET;
     let mut g = FakeGuest::new();
     g.map(HUDG, 0x1000).map(pointer, 4);

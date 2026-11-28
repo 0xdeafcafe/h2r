@@ -15,10 +15,10 @@
 
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-use crate::datum::layout;
-use crate::entry::{Cx, EntryError, GuestCall};
-use crate::memory::{GuestMemory, MemFault};
-use crate::points;
+use guest_layout::datum::layout;
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 
 /// Object body flags (`body + 4`).
 pub const BODY_FLAGS: u32 = 4;

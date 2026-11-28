@@ -5,7 +5,7 @@
 //! block. Two peers that part need more than "they differ": they need the
 //! part of the block that differs first. The block is bump-allocated by the
 //! engine and most of what lives in it are datum arrays, each starting with
-//! a named header ([`engine::datum::layout`]). [`find_pools`] cuts the block
+//! a named header ([`guest_layout::datum::layout`]). [`find_pools`] cuts the block
 //! at every such header, so a pool is "the array called `objects` and
 //! whatever was allocated after it up to the next array". Bytes before the
 //! first header are the pool [`HEAD`].
@@ -43,9 +43,9 @@ pub struct Pool {
 }
 
 /// A datum array header's signature, `'d@t@'`.
-const SIGNATURE: u32 = engine::datum::SIGNATURE;
+const SIGNATURE: u32 = guest_layout::datum::SIGNATURE;
 const NAME_LEN: usize = 0x20;
-const SIGNATURE_AT: usize = engine::datum::layout::SIGNATURE as usize;
+const SIGNATURE_AT: usize = guest_layout::datum::layout::SIGNATURE as usize;
 
 /// The name of a datum array header at the start of `h`, if it is one: the
 /// signature in place and a NUL-terminated name of printable ASCII without
@@ -78,7 +78,7 @@ pub fn find_pools(block: &[u8]) -> Vec<Pool> {
     while at + SIGNATURE_AT + 4 <= block.len() {
         if let Some(name) = header_name(&block[at..]) {
             starts.push((at, name));
-            at += engine::datum::layout::HEADER_SIZE as usize;
+            at += guest_layout::datum::layout::HEADER_SIZE as usize;
         } else {
             at += 4;
         }

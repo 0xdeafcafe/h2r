@@ -40,7 +40,8 @@ mod spatial;
 mod straight;
 
 use engine::sim_collision::{self as adapter, CollisionWorld, layout};
-use engine::{points, sim_native as sim};
+use guest_layout::points;
+use engine::sim_native as sim;
 use ir::interp::{self, Cpu};
 use lift::harness::HARNESS_EXIT;
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi, guest::{Access, FaultReason, Permissions}};

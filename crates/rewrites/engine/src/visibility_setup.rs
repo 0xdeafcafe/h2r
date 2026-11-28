@@ -35,7 +35,7 @@
 //! reset count over 512, a BSP walk past 4096 nodes, and memory that does
 //! not read.
 
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use crate::shadow_arm::{Proposal, Shadowed};
 
 /// The image's words and the guest's sites the port names.
@@ -409,7 +409,7 @@ pub mod arm {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const V: u32 = 0x0010_0000;
     const BUFFER: u32 = 0x0020_0000;

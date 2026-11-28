@@ -2,7 +2,8 @@
 //! its bounds, so a later reference is suppressed even if the first missed.
 use super::spatial::{fp_error, scalar};
 use super::*;
-use crate::{datum::layout, light_constants::Sse};
+use guest_layout::datum::layout;
+use crate::light_constants::Sse;
 
 pub(crate) const SITES: [u32; 3] = [0xbb0e9, 0xbb17e, 0xbb2c4];
 const FRAME: u32 = 0x420;

@@ -4,7 +4,7 @@
 //! and layer draws. Otherwise the sole surviving store restores the
 //! cursor the function saved on entry (docs/graphics/native-light-gather.md).
 
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use crate::render::light_gather::guest::{List, at, ptr};
 use crate::render::light_gather::{Refusal, Result};
 
@@ -66,7 +66,7 @@ pub fn empty(m: &dyn GuestMemory) -> Result<Empty> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FlatMemory;
+    use guest_layout::FlatMemory;
 
     const VIS: u32 = 0x1000;
     const OBJECTS: u32 = 0x1200;

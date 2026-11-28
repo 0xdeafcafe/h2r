@@ -20,8 +20,8 @@ pub mod walk;
 
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use runtime::abi::TransferAbi;
 use scene_extract::hud;
 use scene_extract::hud::walk::Kind;
@@ -372,7 +372,7 @@ fn menu_list(mem: &mut dyn GuestMemory, ebp: u32, edi: u32) {
 /// its first, then the draw left out, resuming after the call as a
 /// host-drawn widget does.
 pub(crate) fn menu_item(c: &mut hooks::Call<'_>, mem: &mut dyn GuestMemory, stack: u32) -> Option<TransferAbi> {
-    use engine::points::ui_render::ITEM_CONTINUATION;
+    use guest_layout::points::ui_render::ITEM_CONTINUATION;
     use ui_overlay::Item;
     let (frame, ordinal) = (c.cpu.ebp, c.cpu.ebx);
     match ui_overlay::at_item(frame, ordinal) {
@@ -864,7 +864,7 @@ impl Feature for NativeHud {
             // after a left-out draw and the list's end, which closes it.
             // Without one a claimed draw would not be left out, or the
             // claim would stay open to the next list at its frame.
-            use engine::points::ui_render::{ITEM_CONTINUATION, ITEM_RETURN};
+            use guest_layout::points::ui_render::{ITEM_CONTINUATION, ITEM_RETURN};
             if !rt.read_dispatch(|d| {
                 d.has_resume(ITEM_CONTINUATION)
                     && d.has_generated(ITEM_RETURN.base)
@@ -930,7 +930,7 @@ impl Feature for NativeHud {
 #[cfg(test)]
 mod walk_tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn the_hud_walk_uses_the_live_corner_order_and_separate_uv_register() {

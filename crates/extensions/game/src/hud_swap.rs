@@ -35,9 +35,9 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::tags::{GroupTag, entry_layout, tag_entry_checked, tag_get_checked};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::tags::{GroupTag, entry_layout, tag_entry_checked, tag_get_checked};
 
 pub use crate::hud::HudStyle;
 

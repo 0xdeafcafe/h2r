@@ -28,8 +28,8 @@ use super::alu::{cmp16, rmw8, shl};
 use super::frame::{pop, push, set_slot, slot};
 use super::sse::{self, below_or_equal};
 use super::{Cx, Next, Result, unowned};
-use crate::datum::layout::DATA;
-use crate::points;
+use guest_layout::datum::layout::DATA;
+use guest_layout::points;
 use crate::sim_physics::{ARITH, arithmetic, byte, logic, status};
 use runtime::{CpuAbi, Guest};
 

@@ -18,7 +18,7 @@
 
 use super::sse::{Ss, lane0, load, ss, ss_reg};
 use super::{Cx, Next, Result, unowned};
-use crate::points;
+use guest_layout::points;
 use crate::sim_physics::{arithmetic, byte, logic, pop, push};
 use runtime::{CpuAbi, Guest};
 
@@ -106,7 +106,7 @@ fn entry(c: &mut CpuAbi, g: &mut Guest) -> Result<Next> {
     c.ebx = c.ecx;
     c.ecx = g.u32(points::OBJECTS.base)?;
     c.ebx = c.ebx.wrapping_mul(0xe8);
-    c.edx = ld(g, c.ecx, crate::datum::layout::DATA)?;
+    c.edx = ld(g, c.ecx, guest_layout::datum::layout::DATA)?;
     c.eax &= 0xffff;
     push(c, g, c.ebp)?;
     c.eax *= 3;
@@ -442,7 +442,7 @@ mod tests {
         g.map_zeroed(0x0051_0000, 0x10000, Permissions::RW).unwrap();
         g.map_zeroed(D, 0x10000, Permissions::RW).unwrap();
         g.set_u32(points::OBJECTS.base, D).unwrap();
-        g.set_u32(D + crate::datum::layout::DATA, HEADERS).unwrap();
+        g.set_u32(D + guest_layout::datum::layout::DATA, HEADERS).unwrap();
         g.set_u32(HEADERS + 2 * 12 + 8, BODY).unwrap();
         g.set_u32(BODY, 1).unwrap();
         g.set_u32(BODY + 0xb4, component).unwrap();

@@ -18,7 +18,7 @@
 
 use std::cell::RefCell;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_scene::transparent::{DisplayTransparentPart, DisplayTransparentQueue};
 
 use super::Host;
@@ -149,7 +149,7 @@ pub fn end() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use frame_scene::transparent::DisplayTransparentSlot::{Geometry, Reference};
     use std::sync::Mutex;
 

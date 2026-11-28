@@ -4,12 +4,12 @@
 
 use std::cell::{Cell, RefCell};
 
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::{
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{
     HUD_TEXT_BOUNDS, HUD_TEXT_DRAW, HUD_TEXT_MEASURE, HUD_TEXT_SETUP, HUD_TEXT_SUBSTITUTE, SCENARIO,
 };
-use engine::tags::{entry_layout, tag_entry_checked};
+use guest_layout::tags::{entry_layout, tag_entry_checked};
 use hooks::{BuildError, Builder, Manifest};
 use h1_contract::hud::{
     EVENT_LAYOUT_SIZE, EVENT_MARKER, GROUP, LEGACY_MARKER, LEGACY_SIZE, MARKER, MARKER_AT,
@@ -379,7 +379,7 @@ pub fn install(registry: &mut hooks::Registry) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn legacy_message_copies_text_and_controller_action() {

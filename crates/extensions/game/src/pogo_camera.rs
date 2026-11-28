@@ -39,7 +39,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
 
-use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE};
+use guest_layout::{GuestMemory, points};
+use engine::render_loop::views::VIEW_STRIDE;
 use hooks::Flow;
 use superbounce::Vec3;
 
@@ -359,7 +360,7 @@ fn hides_first_person() -> bool {
 mod tests {
     use super::*;
     use crate::spectator_view::blank_view;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     fn length(v: Vec3) -> f32 {
         (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt()

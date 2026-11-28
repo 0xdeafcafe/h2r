@@ -69,7 +69,7 @@
 use super::functions::{Ss, above, call, fp_error, fpu, fpu_done, lo, load, movaps, ret, ss, ucomiss_lahf_jp, zero};
 use super::{Cx, Next, Result, unowned};
 use crate::light_constants::X87;
-use crate::points;
+use guest_layout::points;
 use crate::sim_physics::unit_aim;
 use crate::sim_physics::{ARITH, byte, logic, pop, push};
 use runtime::{CpuAbi, Guest};

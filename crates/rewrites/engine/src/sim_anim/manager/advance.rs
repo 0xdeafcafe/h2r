@@ -289,7 +289,7 @@ fn channel_motion(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Resul
             let suppressed = if missing {
                 false
             } else {
-                c.ecx = g.u32(crate::points::OBJECTS.base)?;
+                c.ecx = g.u32(guest_layout::points::OBJECTS.base)?;
                 c.ecx = g.u32(at(c.ecx, 0x44))?;
                 c.eax &= 0xffff;
                 logic(c, c.eax, 1 << 31);
@@ -447,7 +447,7 @@ fn blend_rate(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Result {
             push(c, g, c.ebx)?;
             c.ebx = 0;
             if !cmp(c, c.eax, u32::MAX, 32) {
-                c.ecx = g.u32(crate::points::OBJECTS.base)?;
+                c.ecx = g.u32(guest_layout::points::OBJECTS.base)?;
                 c.edx = g.u32(at(c.ecx, 0x44))?;
                 c.eax &= 0xffff;
                 logic(c, c.eax, 1 << 31);

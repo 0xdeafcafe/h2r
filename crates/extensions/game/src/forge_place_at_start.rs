@@ -15,7 +15,7 @@
 //! map and the session, which a snapshot does not rewind either, so the
 //! feature is stateless to snapshots.
 use agent::forge::{place_at_start, spare_clips};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 
 /// The feature's id (`features.forge-place-at-start`).
 pub const FEATURE: &str = "forge-place-at-start";
@@ -51,7 +51,7 @@ impl hooks::Feature for PlaceAtStart {
             place_at_start::clear();
         });
         b.raw().observe_after(
-            &engine::points::ENGINE_ROUND_RESET,
+            &guest_layout::points::ENGINE_ROUND_RESET,
             "forge place at start: hold back",
             |o| {
                 let mut mem = o.guest();
@@ -66,7 +66,7 @@ impl hooks::Feature for PlaceAtStart {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use guest_layout::global;
 
     #[test]

@@ -2,10 +2,10 @@
 
 use super::{R, Vec3};
 use crate::vehicle::Entry;
-use engine::handle::DatumHandle;
-use engine::memory::GuestMemory;
-use engine::tags::GroupTag;
-use engine::view::{Tags, objects};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::GuestMemory;
+use guest_layout::tags::GroupTag;
+use guest_layout::view::{Tags, objects};
 
 /// Entry marker (0xc6fb0) and admission limits (0xc9040). See
 /// h1objects/tests/vehicle_ground_disc.rs.

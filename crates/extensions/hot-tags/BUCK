@@ -41,6 +41,7 @@ workspace_library(
     deps = [
         "//crates/formats/map:map",
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/rewrites/engine:engine",
         "//crates/runtime/runtime:runtime",
         "//third-party/rust:serde",
@@ -61,6 +62,7 @@ workspace_test(
     deps = [
         "//crates/formats/map:map",
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/rewrites/engine:engine",
         "//crates/runtime/runtime:runtime",
         "//third-party/rust:serde",

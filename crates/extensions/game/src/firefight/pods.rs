@@ -23,9 +23,9 @@
 
 use std::collections::BTreeMap;
 
-use engine::entry::{Cx, GuestCall};
-use engine::view::objects;
-use engine::{DatumHandle, GuestMemory, points};
+use guest_layout::entry::{Cx, GuestCall};
+use guest_layout::view::objects;
+use guest_layout::{DatumHandle, GuestMemory, points};
 
 use super::guest::{KitLayout, PodFall, call};
 use super::ship::{self, Launch, ShipPut};

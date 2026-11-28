@@ -1,7 +1,7 @@
 //! Bind clips to the manager's three channels and advance their blend state.
 use super::*;
 use crate::function_eval::constant::ONE;
-use crate::points::TAG_ENTRIES;
+use guest_layout::points::TAG_ENTRIES;
 use crate::sim_native::Memory;
 use crate::sim_objects::sse::{Ss, comiss, cvtsi2ss, lane0 as lane, load as load_ss, ss};
 use crate::sim_physics::{arithmetic, byte, logic};

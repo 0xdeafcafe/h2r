@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use ::rules::labels::Census;
 use agent_proto::rules as wire;
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use forge_doc::CensusOf;
 use variants::ext::{self, Ext, Mode};
 

@@ -108,7 +108,7 @@ fn answer_empty(
 
 pub const MARK_BASE: u32 = 0x004e_7c20;
 /// The next global bounds the instance mark array, independently of the placement block.
-pub const MARK_SLOTS: u32 = (crate::points::PLAYER_GLOBALS.base - MARK_BASE) / 4;
+pub const MARK_SLOTS: u32 = (guest_layout::points::PLAYER_GLOBALS.base - MARK_BASE) / 4;
 const BREAKABLE_BASE: u32 = 0x004e_d280;
 const DEFAULT_MATERIAL: u32 = 0x0047_d8e0;
 

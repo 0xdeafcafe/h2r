@@ -8,8 +8,8 @@ use agent_proto::host_lobby::{EmptyResult, OpenResult, Phase, Player, StateResul
 use agent_proto::{RpcError, code};
 use bots::lobby;
 use bots::phantom::session::{self, at::*};
-use engine::entry::{Cx, GuestCall};
-use engine::{GuestMemory, MemFault};
+use guest_layout::entry::{Cx, GuestCall};
+use guest_layout::{GuestMemory, MemFault};
 use hooks::points;
 use live_proto::hopper::variant;
 use serde_json::{Value, json};

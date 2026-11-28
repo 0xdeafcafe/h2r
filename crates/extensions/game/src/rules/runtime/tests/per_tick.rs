@@ -111,14 +111,14 @@ impl<'a> CountingMemory<'a> {
 }
 
 impl GuestMemory for CountingMemory<'_> {
-    fn read(&self, addr: u32, buf: &mut [u8]) -> Result<(), engine::MemFault> {
+    fn read(&self, addr: u32, buf: &mut [u8]) -> Result<(), guest_layout::MemFault> {
         if addr == points::PLAYERS.base {
             self.players.set(self.players.get() + 1);
         }
         self.m.read(addr, buf)
     }
-    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), engine::MemFault> {
-        Err(engine::MemFault {
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), guest_layout::MemFault> {
+        Err(guest_layout::MemFault {
             addr,
             len: data.len() as u32,
             write: true,

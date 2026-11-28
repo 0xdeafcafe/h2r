@@ -29,7 +29,7 @@
 //! guest's divide error; the body reports it as a fault at `c0b3b`.
 
 use super::{at, flags_undefined, fpu, fpu_done};
-use crate::points;
+use guest_layout::points;
 use crate::sim_objects::{Cx, Next, Result, sse, unowned};
 use crate::sim_physics::{pop, push};
 use runtime::{CpuAbi, Guest, GuestFault};

@@ -18,8 +18,8 @@
 //! does. A read that faults is the guest's own: the lifted body faults on
 //! the same read.
 
-use crate::entry::{Cx, EntryError, GuestCall};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::memory::{GuestMemory, MemFault};
 use std::sync::Mutex;
 
 /// The phase's guest entry.
@@ -137,8 +137,8 @@ pub async fn run(cx: &Cx, reserve: u32) -> Result<(), EntryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entry::{self, EntryFuture, Regs, Ret};
-    use crate::testing::FakeGuest;
+    use guest_layout::entry::{self, EntryFuture, Regs, Ret};
+    use guest_layout::testing::FakeGuest;
 
     const STACK: u32 = 0x0030_0000;
     const G: u32 = 0x0060_0000;

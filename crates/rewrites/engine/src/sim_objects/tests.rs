@@ -3,7 +3,7 @@
 //! table's consistency rules. No image needed.
 
 use super::*;
-use crate::points::Sig;
+use guest_layout::points::Sig;
 use runtime::guest::Permissions;
 
 const DOC: &str = "docs/engine/object-update.md";
@@ -81,21 +81,21 @@ fn slice_one_bodies_form_a_table_that_owns_their_entries_and_sites() {
         }
     }
     for point in [
-        &crate::points::OBJECTS_PRE_PHYSICS,
-        &crate::points::OBJECTS_POST_PHYSICS,
-        &crate::points::OBJECTS_FINALIZE,
-        &crate::points::OBJECT_PRE_UPDATE,
-        &crate::points::OBJECT_POST_UPDATE,
-        &crate::points::OBJECT_TYPE_UPDATE,
-        &crate::points::OBJECT_TYPE_POST_UPDATE,
-        &crate::points::OBJECT_TYPE_POSE,
-        &crate::points::OBJECT_TYPE_AFTER_ROOT,
-        &crate::points::OBJECT_WAKE,
-        &crate::points::OBJECT_ROOT,
-        &crate::points::OBJECT_WAKE_FOR_POST,
-        &crate::points::OBJECT_WAKE_CHILDREN,
-        &crate::points::OBJECT_EARLY_MOVER_WAKE,
-        &crate::points::OBJECT_DAMAGE_UPDATE,
+        &guest_layout::points::OBJECTS_PRE_PHYSICS,
+        &guest_layout::points::OBJECTS_POST_PHYSICS,
+        &guest_layout::points::OBJECTS_FINALIZE,
+        &guest_layout::points::OBJECT_PRE_UPDATE,
+        &guest_layout::points::OBJECT_POST_UPDATE,
+        &guest_layout::points::OBJECT_TYPE_UPDATE,
+        &guest_layout::points::OBJECT_TYPE_POST_UPDATE,
+        &guest_layout::points::OBJECT_TYPE_POSE,
+        &guest_layout::points::OBJECT_TYPE_AFTER_ROOT,
+        &guest_layout::points::OBJECT_WAKE,
+        &guest_layout::points::OBJECT_ROOT,
+        &guest_layout::points::OBJECT_WAKE_FOR_POST,
+        &guest_layout::points::OBJECT_WAKE_CHILDREN,
+        &guest_layout::points::OBJECT_EARLY_MOVER_WAKE,
+        &guest_layout::points::OBJECT_DAMAGE_UPDATE,
     ] {
         assert!(TABLE.owns(point.base), "{}", point.name);
     }
@@ -135,7 +135,7 @@ fn handle(salt: u16, slot: u16) -> u32 {
 fn pool(g: &mut Guest, slots: &[(u16, u16, u8, u8)]) {
     g.map_zeroed(POOL_MAP, 0x6_0000, Permissions::RW).unwrap();
     g.set_u32(PHASE_STATE, PHASE).unwrap();
-    g.set_u32(crate::points::OBJECTS.base, ARRAY).unwrap();
+    g.set_u32(guest_layout::points::OBJECTS.base, ARRAY).unwrap();
     g.set_u32(ARRAY + 0x24, 12).unwrap();
     g.set_u32(ARRAY + 0x44, HEADERS).unwrap();
     g.set_u32(ARRAY + 0x48, BITMAP).unwrap();
@@ -182,7 +182,7 @@ fn finalize_clears_defer_deletes_and_records_each_deletion() {
     pool(&mut g, &[(0, 0x8000, 0x21, 6), (1, 0x8001, 0x11, 2), (3, 0x8003, 0x31, 5)]);
     events::clear();
     let t = &walks_alone();
-    let fin = crate::points::OBJECTS_FINALIZE.base;
+    let fin = guest_layout::points::OBJECTS_FINALIZE.base;
     // Pass A, then the deferred weapon fire.
     let out = drive(&mut cpu, &mut g, t, fin).unwrap();
     assert_eq!(out, TransferAbi::call(0xfd910, 0xb71a0));
@@ -227,7 +227,7 @@ fn finalize_passes_over_a_run_of_idle_slots_with_retail_registers() {
     pool(&mut g, &slots);
     ::sim_objects::events::clear();
     let t = &walks_alone();
-    let fin = crate::points::OBJECTS_FINALIZE.base;
+    let fin = guest_layout::points::OBJECTS_FINALIZE.base;
     let out = drive(&mut cpu, &mut g, t, fin).unwrap();
     assert_eq!(out, TransferAbi::call(0xfd910, 0xb71a0));
     for &(slot, _, flags, _) in &slots {
@@ -258,7 +258,7 @@ fn the_wake_leaf_returns_with_retail_registers() {
     cpu.eax = handle(0x8002, 2);
     cpu.ebx = 0x1111;
     cpu.esi = 0x2222;
-    let out = drive(&mut cpu, &mut g, &TABLE, crate::points::OBJECT_WAKE.base).unwrap();
+    let out = drive(&mut cpu, &mut g, &TABLE, guest_layout::points::OBJECT_WAKE.base).unwrap();
     assert_eq!(out, TransferAbi::ret(CALLER));
     assert_eq!(cpu.esp, STACK + 4);
     for slot in [1, 2] {

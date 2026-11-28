@@ -52,7 +52,7 @@
 //! that becomes refused while on is switched off and undone.
 //!
 //! Research points (addresses and offsets only):
-//! * game time at `[0x510c54]` (`engine::points::GAME_TIME`): `+0x2` the
+//! * game time at `[0x510c54]` (`guest_layout::points::GAME_TIME`): `+0x2` the
 //!   tick rate (i16), `+0x4` seconds per tick (f32), `+0xc` the speed
 //!   (f32). Its update (`0x146660`) runs `rate * speed * dt` ticks a
 //!   frame; `0x1465b0` (a new map) puts the speed back to 1;
@@ -69,7 +69,7 @@
 //!   `0xb75a0`, stores it at `0xb74c4`);
 //! * the HUD globals at `[0x510c4c]`: `+0x1d2` the shown flag (byte; set
 //!   to 1 at `0x1391a1`);
-//! * the AI globals at `[0x4f55d0]` (`engine::points::AI_GLOBALS`): `+0`
+//! * the AI globals at `[0x4f55d0]` (`guest_layout::points::AI_GLOBALS`): `+0`
 //!   the on byte. `ai_update` checks it at `0x1c83d8` before running any
 //!   actor (docs/game/bots.md 2.4, docs/engine/engine-map.md), and the
 //!   script's `ai` switch stores its boolean there at `0x2a4d31`
@@ -84,7 +84,7 @@ use std::sync::{Arc, Mutex};
 
 use agent::Access;
 use agent_proto::{RpcError, code};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use serde_json::{Value, json};
 
 use crate::skulls_custom::{
@@ -113,7 +113,7 @@ pub const WEAP_LOADED_MAX: u32 = 0xa;
 /// The HUD globals pointer, and its shown flag (byte).
 pub const HUD_GLOBALS: u32 = 0x0051_0c4c;
 pub const HUD_SHOWN: u32 = 0x1d2;
-/// The AI globals' on byte (the pointer is `engine::points::AI_GLOBALS`).
+/// The AI globals' on byte (the pointer is `guest_layout::points::AI_GLOBALS`).
 pub const AI_ON: u32 = 0x0;
 
 /// The game modes cheats act in (the game globals' mode): campaign and
@@ -155,7 +155,7 @@ pub fn refusal(sim_mode: Option<u32>, lockstep: bool) -> Option<String> {
 
 /// The simulation's mode, read as `coop_probe::read_sim` does.
 pub fn sim_mode(m: &dyn GuestMemory) -> Option<u32> {
-    let g = m.u32(engine::points::SIM_GLOBALS.base).ok()?;
+    let g = m.u32(guest_layout::points::SIM_GLOBALS.base).ok()?;
     if g == 0 {
         return None;
     }
@@ -450,7 +450,7 @@ impl Cheats {
     }
 
     fn tick_seconds(&self, m: &dyn GuestMemory) -> Result<f32, MemFault> {
-        let t = m.u32(engine::points::GAME_TIME.base)?;
+        let t = m.u32(guest_layout::points::GAME_TIME.base)?;
         if t == 0 {
             return Ok(DEFAULT_TICK);
         }
@@ -466,7 +466,7 @@ impl Cheats {
         if self.speed == 1.0 && !self.sped {
             return Ok(());
         }
-        let t = m.u32(engine::points::GAME_TIME.base)?;
+        let t = m.u32(guest_layout::points::GAME_TIME.base)?;
         if t == 0 {
             return Ok(());
         }
@@ -497,7 +497,7 @@ impl Cheats {
     /// AI off: the AI globals' on byte held at 0. A value the game writes
     /// while we hold it (a script's `ai` switch) is what goes back.
     fn ai(&mut self, m: &mut dyn GuestMemory) -> Result<(), MemFault> {
-        hold_zero(m, &mut self.ai, self.ai_off, engine::points::AI_GLOBALS.base, AI_ON)
+        hold_zero(m, &mut self.ai, self.ai_off, guest_layout::points::AI_GLOBALS.base, AI_ON)
     }
 
     /// Fly and noclip for each local biped on foot.

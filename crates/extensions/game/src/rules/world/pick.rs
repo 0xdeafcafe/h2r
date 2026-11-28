@@ -27,8 +27,8 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use ::rules::vm::Vm;
-use engine::entry::{Cx, EntryError, GuestCall};
-use engine::{GuestMemory, points};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::{GuestMemory, points};
 
 use crate::list_class;
 use crate::ui_kit::dialog_tag;

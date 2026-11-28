@@ -1,7 +1,7 @@
 //! Inputs to the loading bitmap fan at `0x0002ae60`. The caller has picked
 //! the sampler register and rectangles and already set its shader and target.
 use crate::light_constants::Sse;
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use crate::screen_grid::constant::ONE;
 
 /// Full integer depth range used for the loading sprites' z and w.
@@ -48,7 +48,7 @@ pub fn mapped_rectangle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn bitmap_fan_uses_the_live_register_rectangles_and_reciprocals() {

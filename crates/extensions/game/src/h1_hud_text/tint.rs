@@ -2,8 +2,8 @@
 
 use std::cell::RefCell;
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::{
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{
     HUD_MATERIAL_CONSTANTS, HUD_MATERIAL_PIXEL_SHADER, HUD_MATERIAL_READY, SHADER_DRAW_BEGIN,
 };
 use hooks::{Builder, Flow};
@@ -180,7 +180,7 @@ pub(super) fn register(b: &mut Builder, rows: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn argb_is_applied_to_both_endpoints_and_the_native_cache_is_restored() {

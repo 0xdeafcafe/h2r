@@ -1,10 +1,6 @@
 //! Halo 1 playfight modifiers at the native AI damage and firing transitions.
 
-use engine::{
-    DatumHandle,
-    entry::Cx,
-    memory::{GuestMemory, MemFault},
-};
+use guest_layout::{DatumHandle, entry::Cx, memory::{GuestMemory, MemFault}};
 use hooks::{Builder, points};
 use hs::h1_ai_slots::Registry;
 

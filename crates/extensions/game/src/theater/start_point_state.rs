@@ -10,7 +10,7 @@
 //! engine needs restored is what the load's `matches` answers.
 use super::start_point::StartPoint;
 use anyhow::{Context, Result, ensure};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use lockstep::SimRegion;
 
 /// The extension records, as a start point holds them. The process's are
@@ -119,7 +119,7 @@ pub fn load(
 #[cfg(test)]
 pub(super) mod fakes {
     use super::*;
-    use engine::FlatMemory;
+    use guest_layout::FlatMemory;
 
     pub const POINTER: u32 = 0x004e_6080;
     pub const ARENA: u32 = 0x004e_7000;

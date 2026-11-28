@@ -43,11 +43,11 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
-use engine::datum::DatumArray;
-use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
-use engine::view::ui::{self, ListHandler};
+use guest_layout::datum::DatumArray;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
+use guest_layout::view::ui::{self, ListHandler};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use runtime::guest::Permissions;
 use variants::record::{GameType, GameVariant, RECORD_SIZE};
@@ -204,7 +204,7 @@ pub fn placed(actions: &[u16]) -> Vec<u16> {
 }
 
 fn elements(m: &dyn GuestMemory, a: DatumArray) -> Result<Vec<u32>, MemFault> {
-    let high = a.header_field(m, engine::datum::layout::HIGH_WATER)?;
+    let high = a.header_field(m, guest_layout::datum::layout::HIGH_WATER)?;
     let mut out = Vec::new();
     for i in 0..high.max(0) {
         if let Some(e) = a.get_absolute(m, i)? {

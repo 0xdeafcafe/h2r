@@ -19,8 +19,8 @@ use std::collections::VecDeque;
 use std::sync::Mutex;
 
 use ::rules::ty::MAX_PLAYERS;
-use engine::GuestMemory;
-use engine::view::players;
+use guest_layout::GuestMemory;
+use guest_layout::view::players;
 use ::rules::vm::{MAX_PICKS, MAX_PICK_ROWS};
 
 /// One player's pick: the roster slot it was made for, the picker's
@@ -251,15 +251,15 @@ mod tests {
 
     /// A roster of four: slot 0 local on this machine, 1 and 2 remote on
     /// `THEIRS`, 3 remote on another machine.
-    fn roster() -> engine::testing::FakeGuest {
-        use engine::view::{fake, players::Player};
-        let mut m = engine::testing::FakeGuest::new();
-        m.put_u32(engine::points::PLAYERS.base, PLAYERS);
+    fn roster() -> guest_layout::testing::FakeGuest {
+        use guest_layout::view::{fake, players::Player};
+        let mut m = guest_layout::testing::FakeGuest::new();
+        m.put_u32(guest_layout::points::PLAYERS.base, PLAYERS);
         let players = fake::datums::<Player>(&mut m, PLAYERS, 16);
         for (local, machine) in [(0i16, MINE), (-1, THEIRS), (-1, THEIRS), (-1, [2, 7, 7, 7, 7, 7])] {
             let (_, p) = fake::push(&mut m, &players);
             p.set_local_user(&mut m, local).unwrap();
-            m.put(p.addr + engine::view::players::MACHINE, &machine);
+            m.put(p.addr + guest_layout::view::players::MACHINE, &machine);
         }
         m
     }

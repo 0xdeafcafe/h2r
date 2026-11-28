@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::memory::{FlatMemory, GuestMemory};
+use guest_layout::memory::{FlatMemory, GuestMemory};
 use frame_scene::{
     FrameScene, InstanceInput, InstanceKey, ItemKey, RenderCamera, SceneBuilder, SceneId, Stamp, ViewKey, ViewKind,
     ViewSlot,

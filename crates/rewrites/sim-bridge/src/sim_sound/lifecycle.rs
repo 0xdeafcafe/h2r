@@ -23,11 +23,11 @@
 //! and the buffers at `[0x51ebe4]`, read by the per-map init `0x191270`,
 //! the pause and Bink).
 
-use engine::GuestMemory;
-use engine::MemFault;
-use engine::datum::{DatumArray, bitmap_bytes, layout};
-use engine::entry::{Cx, EntryError, GuestCall};
-use engine::points;
+use guest_layout::GuestMemory;
+use guest_layout::MemFault;
+use guest_layout::datum::{DatumArray, bitmap_bytes, layout};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::points;
 use crate::sim_sound::clock::system_time;
 
 /// `[0x4e6374]`: create's reference count. Only the first create and the

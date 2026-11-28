@@ -25,8 +25,8 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use engine::entry::{Cx, EntryError, GuestCall};
-use engine::memory::MemFault;
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::memory::MemFault;
 
 /// Retail's close of a window's top screen.
 pub const SCREEN_CLOSE: u32 = 0x0014_800c;
@@ -82,7 +82,7 @@ pub fn window_object(window: u32, slot: u32) -> Option<u32> {
 }
 
 /// Whether `screen` takes a close message: not already closing.
-pub fn takes_close(m: &dyn engine::memory::GuestMemory, screen: u32) -> Result<bool, MemFault> {
+pub fn takes_close(m: &dyn guest_layout::memory::GuestMemory, screen: u32) -> Result<bool, MemFault> {
     Ok(m.u8(screen + SCREEN_STATE)? & 2 == 0)
 }
 
@@ -120,7 +120,7 @@ pub fn capped(delay: u32, length: u32, budget: u32) -> (u32, u32) {
 /// gone (and freed) by then whatever its tracks ask for. A screen in
 /// neither is left alone. Returns the transition it held, if any.
 pub fn cap_transition(
-    m: &mut dyn engine::memory::GuestMemory,
+    m: &mut dyn guest_layout::memory::GuestMemory,
     screen: u32,
 ) -> Result<Option<crate::ui_kit::animation::Transition>, MemFault> {
     use crate::ui_kit::animation::Transition;
@@ -200,7 +200,7 @@ pub fn forget_closing(screen: u32) {
 /// the first widget accepting the controller only after verifying that
 /// root, as 0x23515d does. Pending replacements consume the press.
 fn beneath_for(
-    m: &dyn engine::GuestMemory,
+    m: &dyn guest_layout::GuestMemory,
     screen: u32,
     mask: u16,
 ) -> Result<Option<u32>, MemFault> {
@@ -241,7 +241,7 @@ fn beneath_for(
 /// screen to hand it to, or `Some(None)` to drop it (inside the close
 /// guard, or nothing beneath). `now` is when the press came.
 pub fn while_closing(
-    m: &dyn engine::memory::GuestMemory,
+    m: &dyn guest_layout::memory::GuestMemory,
     screen: u32,
     now: std::time::Instant,
     controller: u32,
@@ -271,7 +271,7 @@ pub async fn hand_down(cx: &Cx, to: u32, ev: u32) -> Result<u32, EntryError> {
 /// The row handle on the channel's focused widget path for `list`, as
 /// LIST_FOCUSED_ROW finds it via the focused item's membership in that path.
 pub(crate) fn focused_row_handle(
-    m: &dyn engine::GuestMemory,
+    m: &dyn guest_layout::GuestMemory,
     channel: u32,
     list: u32,
 ) -> Option<u32> {
@@ -339,7 +339,7 @@ impl<T> AfterClose<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::GuestMemory;
+    use guest_layout::memory::GuestMemory;
 
     /// The crash picking a map in Select Map's second step: the categories
     /// were closed by window and slot from the maps screen's destructor.
@@ -349,7 +349,7 @@ mod tests {
     /// slot 4). The screen itself still reads.
     #[test]
     fn a_screen_under_one_being_freed_closes_by_itself_not_by_its_window() {
-        let mut g = engine::testing::FakeGuest::new();
+        let mut g = guest_layout::testing::FakeGuest::new();
         let window = window_object(3, 4).unwrap();
         assert_eq!(window, 0x0054_d84c, "the ESI of the crash");
         g.map(0x0054_d000, 0x1000);
@@ -388,8 +388,8 @@ mod tests {
 
     const SCREEN: u32 = 0x8000_1000;
 
-    fn screen_with(state: u8, delay: u32, length: u32) -> engine::testing::FakeGuest {
-        let mut g = engine::testing::FakeGuest::new();
+    fn screen_with(state: u8, delay: u32, length: u32) -> guest_layout::testing::FakeGuest {
+        let mut g = guest_layout::testing::FakeGuest::new();
         g.map(SCREEN, 0x1000);
         g.put_u8(SCREEN + SCREEN_STATE, state)
             .put_u32(SCREEN + SCREEN_DELAY, delay)
@@ -430,7 +430,7 @@ mod tests {
     #[test]
     fn a_closing_dialog_only_forwards_to_the_next_active_widgets() {
         use std::time::{Duration, Instant};
-        let mut m = engine::testing::FakeGuest::new();
+        let mut m = guest_layout::testing::FakeGuest::new();
         let (dialog, setup, item) = (0x8100_0000, 0x8101_0000, 0x8102_0000);
         let slot = crate::ui_watch::SHARED;
         let channel = crate::ui_watch::channel(3, slot).unwrap();

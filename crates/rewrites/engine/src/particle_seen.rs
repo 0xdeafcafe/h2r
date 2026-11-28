@@ -11,7 +11,7 @@
 //! path whatever the render did, and the render's own stamps stay out of
 //! the arena (`render_bridge::effects_shadow::stamps`).
 
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The render frame counter (`render_views`).
 pub const FRAME: u32 = 0x004b_a034;
@@ -33,7 +33,7 @@ pub fn seen(m: &dyn GuestMemory, location: u32) -> Result<bool, MemFault> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const SEEN: u32 = 0x0060_0000;
     const UNSEEN: u32 = 0x0060_0040;

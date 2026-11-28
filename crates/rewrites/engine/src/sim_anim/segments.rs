@@ -2,7 +2,8 @@
 //! call sites. Both keep their frames in guest memory across callouts.
 use super::filter;
 use crate::sim_native::{SegmentMemory, plan::segment};
-use crate::{points, sim_physics};
+use guest_layout::points;
+use crate::sim_physics;
 use runtime::{CpuAbi, GuestFault, TransferAbi};
 
 pub const UNIT_AIM_SITES: &[u32] = sim_physics::unit_aim::SITES;

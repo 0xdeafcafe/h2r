@@ -82,7 +82,7 @@ pub struct Placed {
 }
 
 /// What the VM reads from and does to the game. The host implements it
-/// over `engine::entry::Cx`; tests implement it over a fake.
+/// over `guest_layout::entry::Cx`; tests implement it over a fake.
 pub trait Game {
     /// The variant's type announces a round, including one with no handler.
     fn start_line(&mut self, _ty: crate::types::Type) {}

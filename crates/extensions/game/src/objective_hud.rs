@@ -16,7 +16,7 @@ use std::sync::{Arc, OnceLock};
 
 use ::rules::ir::Ir;
 use ::rules::vm::{MarkKind as Kind, Objective, RulesExt};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use hud_kit_core::views::script_objective::{self as kit, Mark, MarkKind, ScriptObjective, View};
 
 use crate::hud_kit::{self, Handle, USERS};

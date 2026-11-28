@@ -12,7 +12,7 @@
 //!
 //! Every constant is the image's own word, read when the guest reads it.
 
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use crate::shadow_arm::{Proposal, Shadowed};
 use x87::{F80, Mode};
 
@@ -486,7 +486,7 @@ pub fn build(m: &dyn GuestMemory, float: Float) -> Result<Built> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn the_grid_grows_columns_or_rows_by_the_split() {

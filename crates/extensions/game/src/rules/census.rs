@@ -25,7 +25,7 @@ use ::rules::labels::{self, Census, Class};
 use ::rules::vm::Placed;
 use agent_proto::rules as wire;
 use engine::objectives::{self as objs, check_span};
-use engine::{GuestMemory, MemFault, points};
+use guest_layout::{GuestMemory, MemFault, points};
 use forge_doc::{BlockKind, CENSUS_ENTRY_LIMIT, CENSUS_FLAG_LIMIT, FlagRow, LabelledThing, MapRows};
 
 /// The bit every labelled thing's handle carries.

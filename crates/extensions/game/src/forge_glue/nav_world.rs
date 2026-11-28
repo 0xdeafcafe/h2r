@@ -160,7 +160,7 @@ pub use gpu::register;
 
 #[cfg(feature = "gpu")]
 mod gpu {
-    use engine::GuestMemory;
+    use guest_layout::GuestMemory;
 
     use super::*;
     use crate::world_lines::{ImageMarks, LineStyle, WorldLine, WorldLineSource};

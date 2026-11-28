@@ -8,7 +8,7 @@
 
 use std::sync::Mutex;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_scene::{ClipRect, Overlay, OverlayBlur};
 use frame_types::Slot;
 use native_render::overlay::{NoGlyphs, OverlayPlan};

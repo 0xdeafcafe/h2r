@@ -3,7 +3,7 @@
 //! step. Guest callbacks can inspect the result, free the datum, and even
 //! relocate the pool, so only the original frame survives those calls.
 use super::Port;
-use crate::points;
+use guest_layout::points;
 use crate::sim_objects::frame::{pop, push, set_slot, slot};
 use crate::sim_objects::sse::{self, Ss};
 use crate::sim_physics::{arithmetic, byte, logic};

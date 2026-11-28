@@ -35,8 +35,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ::firefight::{Def, Difficulty, builtin};
-use engine::entry::{EntryFuture, GuestCall, Ret};
-use engine::memory::GuestMemory;
+use guest_layout::entry::{EntryFuture, GuestCall, Ret};
+use guest_layout::memory::GuestMemory;
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
@@ -614,7 +614,7 @@ impl hooks::Feature for SetupRow {
         .doc("docs/game/firefight.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        use engine::points::{
+        use guest_layout::points::{
             SQUAD_SETTINGS_LIST_CTOR as CTOR, SQUAD_SETTINGS_ROW_CHOSEN, SQUAD_SETTINGS_ROW_TEXT,
         };
         let request_at = b.guest_alloc(0x1000, Permissions::RW)?;

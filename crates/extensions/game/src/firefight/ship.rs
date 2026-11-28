@@ -18,9 +18,9 @@
 //! the rest of the squad on foot, as [`guest::place_squad`] does, and is the
 //! whole squad's placement when the ship has no free seat or cannot load.
 
-use engine::entry::{Cx, GuestCall};
-use engine::view::{Datums, objects};
-use engine::{DatumHandle, GuestMemory, points};
+use guest_layout::entry::{Cx, GuestCall};
+use guest_layout::view::{Datums, objects};
+use guest_layout::{DatumHandle, GuestMemory, points};
 
 use ::firefight::ShipKind;
 
@@ -265,7 +265,7 @@ fn stage(cx: &Cx, kit: &KitLayout, p: &Placement, squad: u16, at: [f32; 3]) -> a
         let scnr = m.u32(points::SCENARIO.base)?;
         let rec = *guest::block(m, scnr, scenario::SQUADS)?
             .get(usize::from(squad))
-            .ok_or(engine::MemFault {
+            .ok_or(guest_layout::MemFault {
                 addr: scnr + scenario::SQUADS.0,
                 len: 4,
                 write: false,
@@ -278,7 +278,7 @@ fn stage(cx: &Cx, kit: &KitLayout, p: &Placement, squad: u16, at: [f32; 3]) -> a
             }
             m.set_u16(start + scenario::START_REFERENCE_FRAME, frame)?;
         }
-        Ok::<_, engine::MemFault>(())
+        Ok::<_, guest_layout::MemFault>(())
     })
     .map_err(guest::guest)?;
     Ok(())

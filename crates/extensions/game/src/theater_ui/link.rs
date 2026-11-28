@@ -1,10 +1,7 @@
 use super::{DETAIL, Entry, FILMS, Location, Theater, adapter};
 use crate::{layout_glue::ReadGm, list_class, ui_watch};
 use agent_proto::{RpcError, code, theater as api};
-use engine::{
-    entry::{GuestCall, Ret},
-    points,
-};
+use guest_layout::{entry::{GuestCall, Ret}, points};
 use hooks::{Feature, Flow};
 use live_proto::theater_link::TheaterLink;
 use serde_json::Value;

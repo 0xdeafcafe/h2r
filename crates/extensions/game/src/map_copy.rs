@@ -31,7 +31,7 @@
 //! Link lobby waits on while the match's map copies into its slot. Elsewhere
 //! the main loop keeps its pace. `H2_FEATURES=-map-copy` turns it all off.
 
-use engine::entry::{Cx, EntryFuture, EntryResult, GuestCall, Ret};
+use guest_layout::entry::{Cx, EntryFuture, EntryResult, GuestCall, Ret};
 use hooks::{BuildError, Builder, Flow, Manifest};
 
 pub const FEATURE: &str = "map-copy";
@@ -104,7 +104,7 @@ fn plan_call(
 /// Stops when the machine is idle or a job is still running after `yields`
 /// yields. Returns the last step's AL.
 pub async fn steps(cx: Cx, steps: u32, yields: u32) -> EntryResult {
-    let copy = GuestCall::new(engine::points::CACHE_COPY_STEP.base);
+    let copy = GuestCall::new(guest_layout::points::CACHE_COPY_STEP.base);
     let mut eax = cx.call(copy.clone()).await?.eax;
     for _ in 1..steps {
         if cx.read(|m| m.u32(crate::map_slots::STATE))? == 0 {
@@ -140,7 +140,7 @@ impl hooks::Feature for MapCopy {
         let fast_boot = b.switches().feature("map-copy.boot", true);
         let lobby = b.switches().feature(LOBBY, false);
         b.raw().before(
-            &engine::points::CACHE_COPY_STEP,
+            &guest_layout::points::CACHE_COPY_STEP,
             "several copy steps a loading frame",
             move |c| {
                 let mem = c.ctx.runtime().memory();
@@ -173,9 +173,9 @@ impl hooks::Feature for MapCopy {
 mod tests {
     use super::*;
     use crate::map_slots::STATE;
-    use engine::entry::{EntryError, Regs, testing};
-    use engine::memory::GuestMemory;
-    use engine::testing::FakeGuest;
+    use guest_layout::entry::{EntryError, Regs, testing};
+    use guest_layout::memory::GuestMemory;
+    use guest_layout::testing::FakeGuest;
 
     const MIB: usize = 1 << 20;
 
@@ -270,7 +270,7 @@ mod tests {
         }
         fn callee(&mut self, c: &GuestCall, m: &mut dyn GuestMemory) -> Regs {
             let eax = match c.target {
-                t if t == engine::points::CACHE_COPY_STEP.base => self.step(m),
+                t if t == guest_layout::points::CACHE_COPY_STEP.base => self.step(m),
                 SWITCH_TO_THREAD => {
                     self.yield_(m);
                     1
@@ -395,7 +395,7 @@ mod tests {
             m.callee(c, mem)
         });
         assert_eq!(run.result, Ok(Ret::new(1, 0)));
-        let copy = GuestCall::new(engine::points::CACHE_COPY_STEP.base);
+        let copy = GuestCall::new(guest_layout::points::CACHE_COPY_STEP.base);
         let mut want = vec![copy];
         want.extend((0..YIELDS).map(|_| GuestCall::new(SWITCH_TO_THREAD)));
         assert_eq!(run.calls, want);
@@ -416,7 +416,7 @@ mod tests {
         assert_eq!(run.guest.u32(STATE), Ok(0));
         assert_eq!(
             run.calls.last(),
-            Some(&GuestCall::new(engine::points::CACHE_COPY_STEP.base))
+            Some(&GuestCall::new(guest_layout::points::CACHE_COPY_STEP.base))
         );
         assert_eq!(m.slot, m.source);
     }
@@ -431,7 +431,7 @@ mod tests {
         });
         assert_eq!(
             run.calls,
-            [GuestCall::new(engine::points::CACHE_COPY_STEP.base)]
+            [GuestCall::new(guest_layout::points::CACHE_COPY_STEP.base)]
         );
         assert_eq!(run.result, Ok(Ret::new(1, 0)));
     }

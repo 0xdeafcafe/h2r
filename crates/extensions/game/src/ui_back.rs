@@ -5,8 +5,8 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::points;
 
 use crate::layout_glue::{Gm, ReadGm};
 use crate::ui_kit::input::Input;
@@ -61,7 +61,7 @@ impl Navigation {
 
     /// Capture a lobby replacement before retail disposes of its predecessor.
     /// Resolve the saved focus against the newly constructed parent list.
-    fn pushed(&self, m: &dyn engine::GuestMemory, child: u32, request: u32) -> Option<u32> {
+    fn pushed(&self, m: &dyn guest_layout::GuestMemory, child: u32, request: u32) -> Option<u32> {
         let mem = ReadGm(m);
         if let Some(setup) = capture_setup(m, child, request) {
             self.game_setup().insert(child, setup);
@@ -198,9 +198,9 @@ fn is_setup_selector(id: u32, loader: u32) -> bool {
     }
 }
 
-fn setup_handle(m: &dyn engine::GuestMemory, list: u32, action: i16) -> Option<u32> {
+fn setup_handle(m: &dyn guest_layout::GuestMemory, list: u32, action: i16) -> Option<u32> {
     use crate::h1_options_row::{SETUP_ACTION, SETUP_ROWS};
-    use engine::datum::{DatumArray, layout::HIGH_WATER};
+    use guest_layout::datum::{DatumArray, layout::HIGH_WATER};
 
     let array = DatumArray::at(m.u32(list + SETUP_ROWS).ok()?);
     let count = array.header_field(m, HIGH_WATER).ok()?;
@@ -213,7 +213,7 @@ fn setup_handle(m: &dyn engine::GuestMemory, list: u32, action: i16) -> Option<u
     })
 }
 
-fn capture_setup(memory: &dyn engine::GuestMemory, child: u32, request: u32) -> Option<SetupReturn> {
+fn capture_setup(memory: &dyn guest_layout::GuestMemory, child: u32, request: u32) -> Option<SetupReturn> {
     let m = ReadGm(memory);
     let (source, ch) = DialogChannel::of(&m, child)?;
     if source.window != LOBBY_DIALOG
@@ -336,7 +336,7 @@ mod tests {
     }
     #[test]
     fn setup_must_be_the_active_opener_of_the_same_controller() {
-        let mut mem = engine::testing::FakeGuest::new();
+        let mut mem = guest_layout::testing::FakeGuest::new();
         let slot = 4;
         let channel = channel(LOBBY_DIALOG, slot).unwrap();
         let setup = 0x10000;
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn lobby_variants_restore_the_category_focus_and_setup_return_across_reuse() {
-        use engine::{GuestMemory, datum::DatumArray, testing::FakeGuest};
+        use guest_layout::{GuestMemory, datum::DatumArray, testing::FakeGuest};
 
         let nav = Navigation::default();
         let mut m = FakeGuest::new();
@@ -452,7 +452,7 @@ mod tests {
         });
         let plan = registry.build(&hooks::Base).unwrap();
         let nav = Navigation::default();
-        let mut m = engine::testing::FakeGuest::new();
+        let mut m = guest_layout::testing::FakeGuest::new();
         let ch = channel(LOBBY_DIALOG, 4).unwrap();
         let (setup, page, request) = (0x10000, 0x20000, 0x30000);
         m.put_u32(page + SCREEN_WINDOW, LOBBY_DIALOG)

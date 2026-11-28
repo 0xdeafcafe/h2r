@@ -60,7 +60,7 @@ impl Lighting {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FlatMemory;
+    use guest_layout::FlatMemory;
 
     #[test]
     fn gathered_caster_has_separate_identity_fade_and_priority() {
