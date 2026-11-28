@@ -38,7 +38,7 @@
 
 use std::sync::{Mutex, MutexGuard};
 
-use engine::entry::{Cx, EntryError, EntryResult, GuestCall, Ret};
+use engine::entry::{Cx, EntryResult, GuestCall, Ret};
 use engine::memory::{GuestMemory, MemFault};
 use engine::points;
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
@@ -353,10 +353,11 @@ async fn answer_object(cx: Cx, entry: object::Inputs) -> EntryResult {
         let v = |at: u32| -> Result<[u32; 3], MemFault> { Ok([m.u32(at)?, m.u32(at.wrapping_add(4))?, m.u32(at.wrapping_add(8))?]) };
         Ok((v(i.effect.wrapping_add(0x30))?, v(i.frame.wrapping_add(object::SUMS))?))
     })?;
-    // The dispatch refuses an MXCSR with an exception unmasked, so the sums
-    // cannot fault here.
-    let sums = object::sums(i.mxcsr, offset, placed)
-        .map_err(|_| EntryError::IsolatedCall("effect object arm: an addss faulted under a masked MXCSR".into()))?;
+    // The adds run under the MXCSR as it stands; one that raises an
+    // unmasked exception is the guest's `#XM`.
+    let Ok(sums) = object::sums(i.mxcsr, offset, placed) else {
+        unimplemented!("effects parts: an object part's offset add raises an unmasked exception (MXCSR {:#x})", i.mxcsr);
+    };
     cx.write(|m: &mut dyn GuestMemory| put_words(m, i.frame.wrapping_add(object::SUMS), &sums))?;
     cx.call(leaf(object::VELOCITY, &i.velocity_args(), i.velocity_regs()).xmm0(u128::from(sums[2]))).await?;
     let [_, _, _, _, p30, p34] = i.velocity_regs();
@@ -441,10 +442,10 @@ async fn answer_character(cx: Cx, i: character::Inputs, node: u32) -> EntryResul
     Ok(Ret::new(r.eax, POP as u16))
 }
 
-/// The answer's x87 work cannot refuse: the dispatch takes a decal part
-/// only when no exception is pending and all are masked.
-fn quiet<T>(r: Result<T, random::Refused>) -> Result<T, EntryError> {
-    r.map_err(|_| EntryError::IsolatedCall("effect decal arm: an x87 step refused under a quiet x87 state".into()))
+/// A decal draw under the x87 control word as it stands: one that raises
+/// an unmasked exception is the guest's `#MF`.
+fn drawn<T>(r: Result<T, random::Refused>) -> T {
+    r.unwrap_or_else(|random::Refused| unimplemented!("effects parts: a decal draw raises an unmasked x87 exception"))
 }
 
 fn read_u32(cx: &Cx, at: u32) -> Result<u32, MemFault> {
@@ -460,7 +461,7 @@ async fn answer_decal(cx: Cx, i: decal::Inputs) -> EntryResult {
     if i.gated() {
         let r = cx.call(leaf(decal::NEAR, &[], i.near_regs()).xmm0(u128::from(i.radius))).await?;
         if r.eax & 0xff == 0 {
-            let (seed, on) = quiet(i.gate(&mut fpu, read_u32(&cx, i.seed_at())?))?;
+            let (seed, on) = drawn(i.gate(&mut fpu, read_u32(&cx, i.seed_at())?));
             cx.write(|m: &mut dyn GuestMemory| m.set_u32(i.seed_at(), seed))?;
             if !on {
                 return Ok(Ret::new(seed >> 16, POP as u16));
@@ -468,7 +469,7 @@ async fn answer_decal(cx: Cx, i: decal::Inputs) -> EntryResult {
         }
     }
     cx.call(leaf(object::PLACE, &i.place_args(), i.place_regs())).await?;
-    let (seed, value) = quiet(i.draw(&mut fpu, read_u32(&cx, i.seed_at())?))?;
+    let (seed, value) = drawn(i.draw(&mut fpu, read_u32(&cx, i.seed_at())?));
     cx.write(|m: &mut dyn GuestMemory| m.set_u32(i.seed_at(), seed))?;
     let decals = read_u32(&cx, decal::DECALS)?;
     let r = cx.call(leaf(decal::CREATE, &i.create_args(value), i.create_regs(decals))).await?;

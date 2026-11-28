@@ -38,9 +38,6 @@ pub const SUMS: u32 = 0x74;
 pub const VELOCITY_OUT: u32 = 0x80;
 pub const PLACE_OUT: u32 = 0xf8;
 
-/// MXCSR's exception masks. The arm answers only with all six set: then
-/// the step 5 adds cannot fault mid-answer.
-pub const MASKED: u32 = 0x1f80;
 
 /// The shared stream's pointer, passed to both drawing leaves.
 pub const RNG: u32 = 0x004e_7408;

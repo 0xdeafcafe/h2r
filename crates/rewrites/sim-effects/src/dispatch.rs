@@ -10,8 +10,10 @@
 //! - every other group: retail's `0x17adb3` sets the warning byte
 //!   [`WARNED`] once and returns ([`Action::Warn`]).
 //!
-//! A part Rust cannot answer (its inputs unreadable, or arithmetic that
-//! could raise an unmasked exception) panics with its cause.
+//! A part Rust cannot answer (its inputs unreadable, an x87 exception
+//! pending, or arithmetic that raises an unmasked exception) panics with
+//! its cause. Each arm runs under the guest's float state as it stands:
+//! a mask matters only when its exception is raised.
 
 use crate::parts::{Part, PartClass};
 use crate::scene::Queue;
@@ -124,9 +126,9 @@ impl Parts {
                 Action::Damage(damage::Call::predict(i))
             }
             (PartClass::Object, Some(Inputs::Object(i))) => {
-                if i.mxcsr & object::MASKED != object::MASKED {
-                    unimplemented!("effects parts: an object part under MXCSR {:#x}, an exception unmasked", i.mxcsr);
-                }
+                // The step 5 adds run under the MXCSR as it stands; only an
+                // add that raises an unmasked exception refuses
+                // ([`object::sums`]).
                 s.object += 1;
                 Action::Object(*i)
             }
@@ -149,8 +151,8 @@ impl Parts {
                 Action::Coln(call)
             }
             (PartClass::Decal, Some(Inputs::Decal(i))) => {
-                if !i.quiet_fpu() {
-                    unimplemented!("effects parts: a decal part under an x87 state that could fault");
+                if i.fpu_pending() {
+                    unimplemented!("effects parts: a decal part with an x87 exception pending");
                 }
                 s.decal += 1;
                 Action::Decal(*i)
@@ -271,19 +273,27 @@ mod tests {
         );
     }
 
+    /// An exception unmasked is not a refusal by itself: the parts answer
+    /// under the guest's state as it stands.
     #[test]
-    #[should_panic(expected = "effects parts: an object part under MXCSR 0x1f00")]
-    fn an_unmasked_object_part_panics() {
+    fn unmasked_states_answer() {
+        let mut q = Queue::new();
         let unmasked = object::Inputs { mxcsr: 0x1f00, ..crate::object::tests::inputs() };
-        Parts::new().enter(&part(0, group::OBJECT), Some(&Inputs::Object(unmasked)), &mut Queue::new());
+        let a = Parts::new().enter(&part(0, group::OBJECT), Some(&Inputs::Object(unmasked)), &mut q);
+        assert_eq!(a, Action::Object(unmasked));
+        let di = crate::decal::tests::inputs();
+        let loud = decal::Inputs { fpu: x87::abi::X87Abi { control: 0x027e, ..di.fpu }, ..di };
+        let a = Parts::new().enter(&part(0, group::DECAL), Some(&Inputs::Decal(loud)), &mut q);
+        assert_eq!(a, Action::Decal(loud));
     }
 
     #[test]
-    #[should_panic(expected = "effects parts: a decal part under an x87 state that could fault")]
-    fn a_loud_decal_part_panics() {
+    #[should_panic(expected = "effects parts: a decal part with an x87 exception pending")]
+    fn a_pending_decal_part_panics() {
         let di = crate::decal::tests::inputs();
-        let loud = decal::Inputs { fpu: x87::abi::X87Abi { control: 0x027e, ..di.fpu }, ..di };
-        Parts::new().enter(&part(0, group::DECAL), Some(&Inputs::Decal(loud)), &mut Queue::new());
+        let pending = x87::abi::X87Abi { status: x87::abi::SW_ES | x87::abi::H2_FP_IE, ..di.fpu };
+        let di = decal::Inputs { fpu: pending, ..di };
+        Parts::new().enter(&part(0, group::DECAL), Some(&Inputs::Decal(di)), &mut Queue::new());
     }
 
     #[test]
