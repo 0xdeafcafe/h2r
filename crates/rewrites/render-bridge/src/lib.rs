@@ -92,6 +92,7 @@ pub mod open_shader;
 pub mod cut;
 pub mod frame_step;
 pub mod frame_wait;
+pub mod device_state;
 pub mod guest_entries;
 pub mod game_random;
 pub mod render_frame;
