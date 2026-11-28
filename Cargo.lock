@@ -5805,7 +5805,10 @@ dependencies = [
  "runtime",
  "runtime-test-probe",
  "scene-extract",
+ "sim-bridge",
  "sim-effects",
+ "sim-objects",
+ "sim-players",
  "simd",
  "tags",
  "timeline",
@@ -6323,6 +6326,8 @@ dependencies = [
  "frame-scene",
  "guest-layout",
  "hud-kit-core",
+ "sim-objects",
+ "sim-state",
 ]
 
 [[package]]

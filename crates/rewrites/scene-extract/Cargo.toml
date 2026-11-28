@@ -10,8 +10,12 @@ frame-scene = { path = "../frame-scene" }
 bytemuck = { version = "1", features = ["derive"] }
 engine = { path = "../engine" }
 guest-layout = { path = "../../hooking/guest-layout" }
+sim-state = { path = "../sim-state" }
 # The HUD walk the guest readers in `hud` feed.
 hud-kit-core = { path = "../hud-kit-core" }
+
+[dev-dependencies]
+sim-objects = { workspace = true, features = ["synth"] }
 
 [lints]
 workspace = true

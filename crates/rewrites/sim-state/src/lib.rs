@@ -274,6 +274,20 @@ impl<'a, M: Mem + ?Sized> ObjectView<'a, M> {
         })
     }
 
+    /// The second sphere, the one a view of kind not 0 tests: the centre
+    /// offset and the radius scaled by the definition's dynamic fields.
+    pub fn dynamic_sphere(&self) -> Result<Sphere, Fault> {
+        Ok(Sphere {
+            center: self.obj.body.dynamic_center(self.m)?,
+            radius: self.obj.body.dynamic_radius(self.m)?,
+        })
+    }
+
+    /// The type byte the body repeats (`Object::BODY_KIND`).
+    pub fn body_kind(&self) -> Result<u8, Fault> {
+        self.obj.body.body_kind(self.m)
+    }
+
     pub fn vitality(&self) -> Result<Vitality, Fault> {
         let (b, m) = (self.obj.body, self.m);
         Ok(Vitality {

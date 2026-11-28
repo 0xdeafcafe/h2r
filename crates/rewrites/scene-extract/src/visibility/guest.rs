@@ -6,8 +6,7 @@
 //! XBE; no value read here is committed.
 
 use engine::render_loop::occlusion::guest::{
-    BODY_SPHERE_CENTER, BODY_SPHERE_RADIUS, HEADER_BODY, HEADER_SIZE, MAIN_VIS, OBJECTS,
-    VIEW_PLAYER, VIS_KIND, VIS_OBJECTS,
+    MAIN_VIS, VIEW_PLAYER, VIS_KIND, VIS_OBJECTS,
 };
 
 use super::Decline;
@@ -35,12 +34,6 @@ pub const CLUSTER_OBJECTS: [(u32, u32); 2] =
 pub const SKY_CLUSTER_ENABLED: u32 = 0x004b_9ee9;
 pub const SKY_CLUSTER_PREDICATE: u32 = 0x0046_86c4;
 pub const SKY_CLUSTER_INDEX: u32 = 0x004b_9eec;
-/// An object body's type byte.
-pub const BODY_TYPE: u32 = 0xaa;
-/// The second sphere a view of kind not 0 tests (`0x001330bc`): centre and
-/// radius.
-pub const BODY_LIGHT_SPHERE_CENTER: u32 = 0x50;
-pub const BODY_LIGHT_SPHERE_RADIUS: u32 = 0x5c;
 
 /// Offsets in the visibility struct (`0x00132b80` fills them).
 pub mod vis {
@@ -209,39 +202,24 @@ fn sky_cluster(mem: &dyn GuestRead, structure: u32) -> Result<Option<u16>, Decli
     Ok((cluster != u16::MAX).then_some(cluster))
 }
 
-/// Which of a body's two spheres a view tests (`0x00133050`): the main
-/// view's `+0x30`/`+0x3c`, every other kind's `+0x50`/`+0x5c`.
-#[derive(Clone, Copy)]
-struct SphereAt {
-    centre: u32,
-    radius: u32,
-}
-
-const MAIN_SPHERE: SphereAt = SphereAt {
-    centre: BODY_SPHERE_CENTER,
-    radius: BODY_SPHERE_RADIUS,
-};
-const LIGHT_SPHERE: SphereAt = SphereAt {
-    centre: BODY_LIGHT_SPHERE_CENTER,
-    radius: BODY_LIGHT_SPHERE_RADIUS,
-};
-
+/// One object's sphere and type from the sim's views (`sim-state`).
 fn object(
-    mem: &dyn GuestRead,
-    objects: &Pool,
+    objects: &dyn guest_layout::Mem,
     handle: u32,
-    sphere: SphereAt,
+    light: bool,
 ) -> Result<ObjectInfo, Decline> {
     let u = Decline::Unread;
     if handle & 0xffff >= MAX_OBJECT_INDEX {
         return Err(Decline::Layout);
     }
-    let slot = objects.slot(mem, handle)?;
-    let body = ptr_at(mem, at(slot, HEADER_BODY).ok_or(u)?).ok_or(u)?;
+    let view = sim_state::object(objects, sim_state::ObjectId(handle))
+        .map_err(|_| u)?
+        .ok_or(Decline::Layout)?;
+    let sphere = if light { view.dynamic_sphere() } else { view.bounding_sphere() }.map_err(|_| u)?;
     Ok(ObjectInfo {
-        centre: vec3_at(mem, at(body, sphere.centre).ok_or(u)?).ok_or(u)?,
-        radius: f32_at(mem, at(body, sphere.radius).ok_or(u)?).ok_or(u)?,
-        kind: u8_at(mem, at(body, BODY_TYPE).ok_or(u)?).ok_or(u)?,
+        centre: sphere.center,
+        radius: sphere.radius,
+        kind: view.body_kind().map_err(|_| u)?,
     })
 }
 
@@ -281,11 +259,11 @@ pub fn view_player_unit(mem: &dyn GuestRead) -> Result<Option<u32>, Decline> {
     if user >= 4 {
         return Err(l);
     }
-    let globals = ptr_at(mem, PLAYER_GLOBALS).ok_or(u)?;
-    let player = u32_at(mem, at(globals, LOCAL_PLAYERS + 4 * user).ok_or(l)?).ok_or(u)?;
-    if player == NONE {
+    let player = crate::guest::with_players(mem, |players| sim_state::local_users(players))
+        .map_err(|_| u)?[user as usize];
+    let Some(player) = player else {
         return Ok(None);
-    }
+    };
     let camera = USER_CAMERAS + USER_CAMERA_SIZE * user;
     let kind = u32_at(mem, camera + USER_CAMERA_KIND).ok_or(u)?;
     let test = f32_at(mem, camera + USER_CAMERA_TEST).ok_or(u)?;
@@ -293,15 +271,12 @@ pub fn view_player_unit(mem: &dyn GuestRead) -> Result<Option<u32>, Decline> {
     if kind != FIRST_PERSON_CAMERA || test != zero {
         return Ok(None);
     }
-    let players = ptr_at(mem, PLAYERS).ok_or(u)?;
-    let data = ptr_at(mem, at(players, 0x44).ok_or(l)?).ok_or(u)?;
-    let slot = (player & 0xffff)
-        .checked_mul(PLAYER_SIZE)
-        .and_then(|o| at(data, o))
-        .and_then(|s| at(s, PLAYER_UNIT))
-        .ok_or(l)?;
-    let unit = u32_at(mem, slot).ok_or(u)?;
-    Ok((unit != NONE).then_some(unit))
+    let unit = crate::guest::with_players(mem, |players| {
+        sim_state::players(players)
+            .map_err(|_| u)
+            .map(|all| all.into_iter().find(|p| p.id.index() == player as u16).and_then(|p| p.unit))
+    })?;
+    Ok(unit.map(|id| id.0))
 }
 
 /// The references of `clusters` (and of the sky cluster), and the objects
@@ -321,7 +296,7 @@ pub fn object_world(
         return Ok(world);
     }
     world.sky = sky_cluster(mem, view.structure)?;
-    references_into(mem, &mut world, clusters, MAIN_SPHERE)?;
+    references_into(mem, &mut world, clusters, false)?;
     Ok(world)
 }
 
@@ -341,7 +316,7 @@ pub fn light_object_world(
     if view.flags & super::objects::view_flags::NO_OBJECTS != 0 || clusters.is_empty() {
         return Ok(world);
     }
-    references_into(mem, &mut world, clusters, LIGHT_SPHERE)?;
+    references_into(mem, &mut world, clusters, true)?;
     Ok(world)
 }
 
@@ -351,29 +326,26 @@ fn references_into(
     mem: &dyn GuestRead,
     world: &mut ObjectWorld,
     clusters: &[u16],
-    sphere: SphereAt,
+    light: bool,
 ) -> Result<(), Decline> {
-    let u = Decline::Unread;
-    let objects = Pool::read(mem, ptr_at(mem, OBJECTS).ok_or(u)?).ok_or(Decline::Layout)?;
-    if objects.stride != HEADER_SIZE {
-        return Err(Decline::Layout);
-    }
-    for &cluster in clusters.iter().chain(world.sky.as_ref()) {
-        if usize::from(cluster) >= super::graph::MAX_CLUSTERS || world.refs.contains_key(&cluster) {
-            continue;
-        }
-        let lists = [
-            references(mem, CLUSTER_OBJECTS[0], cluster)?,
-            references(mem, CLUSTER_OBJECTS[1], cluster)?,
-        ];
-        for &handle in lists.iter().flatten() {
-            if let std::collections::hash_map::Entry::Vacant(e) = world.objects.entry(handle) {
-                e.insert(object(mem, &objects, handle, sphere)?);
+    crate::guest::with_objects(mem, |pool| {
+        for &cluster in clusters.iter().chain(world.sky.as_ref()) {
+            if usize::from(cluster) >= super::graph::MAX_CLUSTERS || world.refs.contains_key(&cluster) {
+                continue;
             }
+            let lists = [
+                references(mem, CLUSTER_OBJECTS[0], cluster)?,
+                references(mem, CLUSTER_OBJECTS[1], cluster)?,
+            ];
+            for &handle in lists.iter().flatten() {
+                if let std::collections::hash_map::Entry::Vacant(e) = world.objects.entry(handle) {
+                    e.insert(object(pool, handle, light)?);
+                }
+            }
+            world.refs.insert(cluster, lists);
         }
-        world.refs.insert(cluster, lists);
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// The guest's own sets for the main view, from its lists.
@@ -551,4 +523,57 @@ pub fn window_frusta(mem: &dyn GuestRead) -> Result<super::frusta::WindowFrusta,
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use guest_layout::object::header;
+    use guest_layout::{Mem as _, Object, ObjectType};
+    use sim_objects::synth::Pool;
+    use sim_objects::{ObjectTable, PoolMem};
+
+    /// A synthetic arena read by words, as the guest's memory is.
+    struct Words<'a>(&'a guest_layout::FlatRam);
+
+    impl GuestRead for Words<'_> {
+        fn read_u32(&self, addr: u32) -> Option<u32> {
+            let mut b = [0; 4];
+            self.0.read_bytes(addr, &mut b).ok()?;
+            Some(u32::from_le_bytes(b))
+        }
+    }
+
+    /// The sim's view of an object is the object the guest-memory read finds,
+    /// for either sphere, a stale handle and a handle past the pool.
+    #[test]
+    fn the_sim_views_answer_as_the_guest_reads_do() {
+        let mut p = Pool::new();
+        let a = p.add(3, 0x8003, ObjectType::Biped, header::ACTIVE);
+        let b = p.add(9, 0x8009, ObjectType::Crate, header::ACTIVE);
+        for (slot, kind, c, r, dc, dr) in [(3, 1u8, [1.0, 2.0, 3.0], 0.5, [4.0, 5.0, 6.0], 0.75), (9, 0, [-1.0, 0.0, 8.0], 2.0, [0.0, 1.0, 2.0], 3.0)] {
+            let body = p.body(slot);
+            body.set(&mut p.ram, Object::BOUND_CENTER, c).unwrap();
+            body.set(&mut p.ram, Object::BOUND_RADIUS, r).unwrap();
+            body.set(&mut p.ram, Object::DYNAMIC_CENTER, dc).unwrap();
+            body.set(&mut p.ram, Object::DYNAMIC_RADIUS, dr).unwrap();
+            body.set(&mut p.ram, Object::BODY_KIND, kind).unwrap();
+        }
+        let table = ObjectTable::import(&p.ram).unwrap().unwrap();
+        let pool = PoolMem::new(&table);
+        let words = Words(&p.ram);
+        let guest = crate::guest::WordMem(&words);
+        for handle in [a.raw(), b.raw(), 0x8004_0003, 0x8003_0009, 0x8003_0800, u32::MAX] {
+            for light in [false, true] {
+                let sim = object(&pool, handle, light);
+                let read = object(&guest, handle, light);
+                assert_eq!(sim.is_ok(), read.is_ok(), "{handle:#x} light {light}");
+                if let (Ok(sim), Ok(read)) = (sim, read) {
+                    assert_eq!((sim.centre, sim.radius, sim.kind), (read.centre, read.radius, read.kind));
+                }
+            }
+        }
+        let on = object(&pool, a.raw(), true).unwrap();
+        assert_eq!((on.centre, on.radius, on.kind), ([4.0, 5.0, 6.0], 0.75, 1));
+    }
 }
