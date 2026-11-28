@@ -359,7 +359,7 @@ impl Glue {
         }
         let layer = a.layer as usize;
         let draws = self.scene_light_draws(mem, &ready, a.group, &c, false)?;
-        let prepared = self.prepare_planned(mem, Arc::clone(&ready), c, draws, None, None)?;
+        let prepared = self.prepare_planned(mem, Arc::clone(&ready), c, draws, None, Some(LAYER_SCISSOR))?;
         use native_render::light_passes;
         let drawn = light_passes::read(&ReadMemory(&*mem), c.flags, c.definition_flags)
             .map_or(0, |i| light_passes::steps(&i).drawn());
@@ -401,9 +401,9 @@ impl Glue {
     ) -> Result<PreparedLight, Keep> {
         let layer = usize::from(group.group.layer);
         if !matches!(layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER) {
-            return Err(Keep::Shadow("state"));
+            return Err(Keep::Shadow(native_render::shadow_scene::Refusal::Layer.name()));
         }
-        let shadow = group.group.pass.ok_or(Keep::Shadow("state"))?;
+        let shadow = group.group.pass.ok_or(Keep::Shadow(native_render::shadow_scene::Refusal::NoPass.name()))?;
         let projection = group.group.projection;
         let ready = self.ready(mem)?;
         let world = ready.lights.get().ok_or(Keep::NoWorld)?;
@@ -510,7 +510,7 @@ impl Glue {
                     })
             });
         let (shadow_map, frozen) = if needs_map {
-            let projection = projection.ok_or(Keep::Shadow("state"))?;
+            let projection = projection.ok_or(Keep::Shadow(native_render::shadow_scene::Refusal::NoProjection.name()))?;
             let projection = std::array::from_fn(|n| projection[n / 4][n % 4]);
             let kind = if shadow.colour_mask() {
                 native_render::shadow_gpu::MapKind::ColourMask
@@ -556,12 +556,12 @@ impl Glue {
         let group = a.group;
         let layer = usize::from(group.group.layer);
         if !matches!(layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER) {
-            return Err(Keep::Shadow("state"));
+            return Err(Keep::Shadow(native_render::shadow_scene::Refusal::Layer.name()));
         }
-        let shadow = group.group.pass.ok_or(Keep::Shadow("state"))?;
+        let shadow = group.group.pass.ok_or(Keep::Shadow(native_render::shadow_scene::Refusal::NoPass.name()))?;
         let colour_mask = layer == CASTER_LAYER && shadow.colour_mask();
         if render_bridge::scene_step::shadow_pass(&ReadMemory(&*mem), layer as u8) != Some(shadow) {
-            return Err(Keep::Shadow("state"));
+            return Err(Keep::Shadow("state: the group's shadow pass is not the one the layer set"));
         }
         let prepared = self.shadow_prepared(
             &*mem,
@@ -569,7 +569,7 @@ impl Glue {
             group,
             a.light,
             ShadowMap::Latest,
-            None,
+            Some(LAYER_SCISSOR),
             None,
         )?;
         let pass: Box<dyn Stage> = Box::new(RunPass::new(prepared));
@@ -592,6 +592,14 @@ impl Glue {
         Ok(())
     }
 }
+
+/// The scissor a light layer drawn alone takes: the whole target, cut by
+/// the view's rect when the pass records ([`RunPass::draws`]). The layer's
+/// target setter installs the viewport and resets the device scissor
+/// (docs/graphics/native-light-gather.md, step 3), and nothing sets one
+/// before the layer draws: no scissor holds a light's layers to its
+/// sphere (docs/graphics/native-light-tiles.md).
+const LAYER_SCISSOR: [u32; 4] = [0, 0, i32::MAX as u32, i32::MAX as u32];
 
 /// Where a receiver's frozen shadow map comes from.
 enum ShadowMap {
@@ -2089,6 +2097,15 @@ fn scale_scissor(rect: [u32; 4], guest: (u32, u32), target: (u32, u32)) -> Optio
     Some(scale.rect(x, y, w, h))
 }
 
+/// A light pass's GPU work is still being made, not refused: a pipeline
+/// compiling or a texture group whose gel or bitmap has yet to upload
+/// (`LightSet::draws`, `light_tiles_gpu`: "incomplete GPU resources"), or
+/// a pass whose material its upload worker holds ("light pass busy").
+/// The light draws nothing this frame and draws once they are made.
+fn gpu_pending(why: &str) -> bool {
+    matches!(why, "incomplete GPU resources" | "light pass busy")
+}
+
 /// Resources captured from this BSP and its material variants when the
 /// light is prepared.
 struct RetainedLight {
@@ -2108,11 +2125,15 @@ struct RunPass {
     /// E3's chosen lights draw only in an E3 frame
     /// (`render_bridge::native_lights::chosen`).
     lighting_only: Option<native_render::lighting::Lighting>,
+    /// Target 13 as the light's gel step drew it, for a light whose
+    /// layers sample its shader gel ([`PreparedLight::binding`],
+    /// [`scene::GelTarget`]).
+    gel: Option<scene::GelTarget>,
 }
 
 impl RunPass {
     fn new(light: PreparedLight) -> Self {
-        Self { retained: None, light, lighting_only: None }
+        Self { retained: None, light, lighting_only: None, gel: None }
     }
 }
 
@@ -2134,7 +2155,7 @@ impl RetainedLight {
                     .compiled
                     .gpu
                     .try_lock()
-                    .map_err(|_| Keep::Unsupported("light material is busy"))?;
+                    .map_err(|_| Keep::Loading("a light material its upload holds"))?;
                 Ok(gpu.retain())
             })
             .collect::<Result<Vec<_>, Keep>>()?;
@@ -2159,8 +2180,7 @@ impl Stage for RunPass {
     fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> StageWork {
         match self.draws(t, view) {
             Ok(draws) => StageWork::Draws(draws),
-            // A pipeline still compiling: nothing this frame.
-            Err("incomplete GPU resources") => StageWork::Draws(gfx::external::ExternalDraws {
+            Err(why) if gpu_pending(why) => StageWork::Draws(gfx::external::ExternalDraws {
                 ranges: 0,
                 packets: Vec::new(),
                 discards: false,
@@ -2195,10 +2215,14 @@ impl RunPass {
         )
         .ok_or("unsupported scissor scale")?;
         let view = ViewInputs { size: t.size, ..*request };
-        let sample: Option<&wgpu::TextureView> = match self.light.binding {
-            Some(_) => unimplemented!("lights: gel target 13's sample view"),
-            None => None,
+        // A shader gel's layers sample target 13's level 0 as the gel
+        // step left it, its coordinates in guest texels (`gel_scale`).
+        let gel = match (self.light.binding, &self.gel) {
+            (Some(_), Some(gel)) => Some(gel.get().ok_or("no gel drawn into target 13")?),
+            (Some(_), None) => unimplemented!("lights: a shader gel's layers outside its light's sequence"),
+            (None, _) => None,
         };
+        let sample = gel.as_ref();
         // A scene light's receivers sample the map its caster froze.
         let frozen = match &self.light.frozen {
             Some(frozen) => Some(frozen.get().ok_or("no caster map frozen")?),
@@ -2248,6 +2272,26 @@ impl RunPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_layer_drawn_alone_is_cut_to_the_views_rect_alone() {
+        for view in [(0, 0, 640, 480), (320, 0, 320, 240), (12, 34, 100, 50)] {
+            let (x, y, w, h) = view;
+            assert_eq!(intersect_scissor(LAYER_SCISSOR, view), [x, y, w, h]);
+        }
+    }
+
+    #[test]
+    fn a_pass_whose_gpu_work_is_still_being_made_waits_and_other_refusals_do_not() {
+        assert!(gpu_pending("incomplete GPU resources"));
+        assert!(gpu_pending("light pass busy"));
+        for why in ["no light ranges", "light index range unavailable", "tiled draw lights differ"] {
+            assert!(!gpu_pending(why), "{why}");
+        }
+        // A material its upload worker holds is loading, drawn a frame later.
+        assert!(Keep::Loading("a light material its upload holds").loading());
+        assert!(scene_drawn::<()>(Err(Keep::Loading("a light material its upload holds"))).is_none());
+    }
 
     #[test]
     fn a_scene_light_draws_with_the_constants_of_its_shadow_choice() {

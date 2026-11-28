@@ -25,7 +25,7 @@ use native_render::stage::{Stage, StageWork};
 use render_bridge::native_lights::{SceneDraw, ScenePass};
 
 use super::{
-    Glue, Keep, PreparedLight, RetainedLight, ShadowMap, constants, intersect_scissor, scale_scissor,
+    Glue, Keep, PreparedLight, RetainedLight, ShadowMap, constants, gpu_pending, intersect_scissor, scale_scissor,
     scene_light, structure_key,
 };
 
@@ -576,6 +576,14 @@ impl Stage for TiledRun {
     fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> StageWork {
         match self.encoded(t, view) {
             Ok(encoded) => StageWork::Encoded(encoded),
+            // A pass still being made ([`gpu_pending`]): the run draws
+            // nothing this frame.
+            Err(why) if gpu_pending(why) => StageWork::Encoded(gfx::external::ExternalEncoded {
+                ranges: 0,
+                draws: 0,
+                passes: 0,
+                commands: Box::new(|_: &mut wgpu::CommandEncoder| {}),
+            }),
             Err(why) => unimplemented!("lights: tiles: {why}"),
         }
     }

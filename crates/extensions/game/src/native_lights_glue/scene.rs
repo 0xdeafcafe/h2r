@@ -52,7 +52,7 @@ pub(super) enum Op {
 /// The map target of a caster's pass: 9 for the depth map, 10 for the
 /// colour mask (pass flag 4 set with 5 clear).
 fn caster_target(pass: Option<ShadowPass>) -> Result<u32, Keep> {
-    let pass = pass.ok_or(Keep::Shadow("state"))?;
+    let pass = pass.ok_or(Keep::Shadow(native_render::shadow_scene::Refusal::NoPass.name()))?;
     match (pass.colour_mask(), pass.target) {
         (false, 9) => Ok(9),
         (true, 10) => Ok(10),
@@ -97,7 +97,7 @@ pub(super) fn object_ops(layers: &[(u8, Option<ShadowPass>)], filter: bool) -> R
     }
     let mut out = ops(layers)?;
     if filter {
-        let at = out.iter().position(|op| *op == Op::Freeze(10)).ok_or(Keep::Shadow("state"))?;
+        let at = out.iter().position(|op| *op == Op::Freeze(10)).ok_or(Keep::Shadow("state: an object shadow with no mask freeze"))?;
         out.insert(at, Op::Filter);
     }
     Ok(out)
@@ -172,6 +172,22 @@ impl Frozen {
 
     /// The map last frozen.
     pub(super) fn get(&self) -> Option<SampledMap> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// Target 13 as a light's gel step drew it ([`GelPass`]), recorded
+/// before the layers that sample it.
+#[derive(Clone, Default)]
+pub(super) struct GelTarget(Arc<Mutex<Option<wgpu::TextureView>>>);
+
+impl GelTarget {
+    fn put(&self, view: wgpu::TextureView) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(view);
+    }
+
+    /// The target the gel last drew into.
+    pub(super) fn get(&self) -> Option<wgpu::TextureView> {
         self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
@@ -416,6 +432,8 @@ impl Glue {
             .and_then(|g| g.group.pass);
         // The receivers' map, filled when the freeze records.
         let frozen = caster.map(|_| Frozen::default());
+        // Target 13, filled when the gel step records.
+        let gel_target = gel.map(|_| GelTarget::default());
         let mut steps = Vec::with_capacity(ops.len());
         let mut drawn = 0;
         for op in ops {
@@ -427,7 +445,7 @@ impl Glue {
                 Op::Freeze(n) => Step {
                     targets: game_target(n),
                     stage: Box::new(FreezeMap {
-                        frozen: frozen.clone().ok_or(Keep::Shadow("state"))?,
+                        frozen: frozen.clone().ok_or(Keep::Shadow("state: a freeze with no caster pass"))?,
                         kind: if n == 10 { MapKind::ColourMask } else { MapKind::Depth },
                     }),
                 },
@@ -447,6 +465,7 @@ impl Glue {
                     Step {
                         targets: game_target(native_render::gels::TARGET),
                         stage: Box::new(GelPass {
+                            out: gel_target.clone().ok_or(Keep::Unsupported("a gel step with no gel"))?,
                             gels: Arc::clone(&ready_gels.scene_gels),
                             shader,
                             depth,
@@ -457,7 +476,7 @@ impl Glue {
                     }
                 }
                 Op::Filter => {
-                    let filter = filter.clone().ok_or(Keep::Shadow("state"))?;
+                    let filter = filter.clone().ok_or(Keep::Shadow("state: a filter step with no object shadow filter"))?;
                     Step {
                         targets: game_target(10),
                         stage: Box::new(crate::native_shadows_glue::ShadowFilterPass {
@@ -506,6 +525,7 @@ impl Glue {
                             retained: Some(retained),
                             light: prepared,
                             lighting_only: None,
+                            gel: gel_target.clone(),
                         }),
                     }
                 }
@@ -572,6 +592,8 @@ impl Glue {
 /// A scene light's shader gel drawn into target 13's level 0
 /// ([`Op::Gel`]): its layer-1 passes over the quad helper's strip.
 struct GelPass {
+    /// Where the layers after it find target 13.
+    out: GelTarget,
     gels: Arc<crate::native_gels_scene::Gels>,
     shader: u32,
     depth: (f32, f32),
@@ -605,6 +627,7 @@ impl Stage for GelPass {
             Ok(c) => c,
             Err(_) => unimplemented!("lights: the gel's passes do not prepare"),
         };
+        self.out.put(t.color.clone());
         StageWork::Encoded(gfx::external::ExternalEncoded {
             ranges: commands.ranges(),
             draws: commands.draws(),

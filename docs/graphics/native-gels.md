@@ -101,7 +101,10 @@ step on target 13's attachments:
   (`gels::quad_depth`). Only level 0 is drawn: the light's layers sample
   mip 0.
 - The light's layers after it take `Binding` for target 13's level-0
-  header as a read-only slot and sample it as engine texture 10.
+  header and sample it as engine texture 10: the gel step leaves the
+  target's view in the sequence's `scene::GelTarget`, and each layer's
+  `RunPass` binds it as its gel view, scaled to guest texels
+  (`Binding::tex_scale`).
 
 `gels::tests::the_gel_quad_covers_its_level_in_strip_order_at_the_helpers_depth`,
 `gels::tests::an_animated_gel_draws` and `scene::tests::a_gel_light_draws_its_gel_into_target_13_before_any_layer`
