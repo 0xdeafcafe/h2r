@@ -7,7 +7,6 @@ pub mod models;
 mod residency;
 mod scene;
 mod tiles;
-pub(crate) mod typed;
 pub mod walk;
 
 use crate::native_gels_glue::{Binding, Checkpoint, Outputs};
@@ -559,9 +558,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if !matches!(layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER) {
             return Err(Keep::Shadow("state"));
         }
-        if group.entries.iter().any(|e| e.binding.variant != 0 || e.binding.selector != 0) {
-            return Err(Keep::Unsupported("shadow entry selects a nonzero material LOD or pass"));
-        }
         let shadow = group.group.pass.ok_or(Keep::Shadow("state"))?;
         let projection = group.group.projection;
         let colour_mask = layer == CASTER_LAYER && shadow.colour_mask();
@@ -581,7 +577,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         )
         .map_err(|why| Keep::Shadow(why.name()))?;
         let mut draws: Vec<Planned> = Vec::new();
-        let mut run: Vec<(usize, WorldDraw, bool)> = Vec::new();
+        let mut run: Vec<(usize, WorldDraw, Option<(u8, u8)>, bool)> = Vec::new();
         let mut state_held = None;
         // A flagged shader's entry before the frame's structure target
         // copy, as in `gathered_draws`.
@@ -591,7 +587,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             uncopied |= e.state.shader_flag && e.state.uncopied;
             let aux = entry_state(d, mem, e, &mut state_held)?;
             if structure_key(e).is_some() {
-                run.extend(world.structure_entry(e)?.into_iter().map(|(draw, flipped)| (imp, draw, flipped)));
+                // The entry's level of detail and pass, as the handler
+                // binds them (`selected_light_look`).
+                let selection = Some((e.binding.variant, e.binding.selector));
+                run.extend(
+                    world
+                        .structure_entry(e)?
+                        .into_iter()
+                        .map(|(draw, flipped)| (imp, draw, selection, flipped)),
+                );
                 continue;
             }
             if !run.is_empty() {
@@ -721,9 +725,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let layer = usize::from(group.group.layer);
         if !matches!(layer, CASTER_LAYER | RECEIVER_LAYER | OPACITY_LAYER) {
             return Err(Keep::Shadow("state"));
-        }
-        if group.entries.iter().any(|e| e.binding.variant != 0 || e.binding.selector != 0) {
-            return Err(Keep::Unsupported("shadow entry selects a nonzero material LOD or pass"));
         }
         let shadow = group.group.pass.ok_or(Keep::Shadow("state"))?;
         let colour_mask = layer == CASTER_LAYER && shadow.colour_mask();
@@ -1228,21 +1229,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         draw: render_bridge::native_lights::chosen::first_person::FirstPersonDraw<'_>,
     ) -> usize {
         self.first_person_lights(mem, draw)
-    }
-
-    fn draw_typed(
-        &self,
-        mem: &mut dyn GuestMemory,
-        batch: &render_bridge::native_lights::TypedPasses<'_>,
-    ) -> bool {
-        self.refresh_edits(mem);
-        let result = self.typed(mem, batch);
-        let ok = result.is_ok();
-        let mut tally = self.tally.lock().unwrap_or_else(|e| e.into_inner());
-        for msg in tally.count(result) {
-            eprintln!("{msg}");
-        }
-        ok
     }
 
     fn draw_shadow_alone(
@@ -2180,10 +2166,13 @@ impl LightsWorld {
     }
 
     /// Structure caster parts resolved with their instance inputs alone.
-    fn resolve_shadow_parts(&self, parts: Vec<(usize, WorldDraw, bool)>) -> Result<Vec<Planned>, Keep> {
+    fn resolve_shadow_parts(
+        &self,
+        parts: Vec<(usize, WorldDraw, Option<(u8, u8)>, bool)>,
+    ) -> Result<Vec<Planned>, Keep> {
         let mut out: Vec<Planned> = Vec::new();
         let mut pending = false;
-        for (imp, draw, flipped) in parts {
+        for (imp, draw, selection, flipped) in parts {
             let m = draw.material;
             let end = draw
                 .first_index
@@ -2193,7 +2182,7 @@ impl LightsWorld {
             let lit = self.materials.get(&m).ok_or(Keep::NoMaterial)?;
             let placement = self.placement(draw.owner)?;
             let class = u32::from(residency::classification(draw.owner));
-            let resolved = match self.resolver.world_shadow(lit, imp, class) {
+            let resolved = match self.resolver.world_shadow(lit, imp, class, selection) {
                 Err(Keep::MaterialPending) => {
                     pending = true;
                     continue;
@@ -2298,12 +2287,12 @@ impl LightsWorld {
     fn resolve_receiver_parts(
         &self,
         layer: usize,
-        parts: Vec<(usize, WorldDraw, bool)>,
+        parts: Vec<(usize, WorldDraw, Option<(u8, u8)>, bool)>,
         produced_gel: bool,
     ) -> Result<Vec<Planned>, Keep> {
         let mut out: Vec<Planned> = Vec::new();
         let mut pending = false;
-        for (imp, draw, flipped) in parts {
+        for (imp, draw, selection, flipped) in parts {
             let m = draw.material;
             let end = draw
                 .first_index
@@ -2313,7 +2302,7 @@ impl LightsWorld {
             let lit = self.materials.get(&m).ok_or(Keep::NoMaterial)?;
             let placement = self.placement(draw.owner)?;
             let class = u32::from(residency::classification(draw.owner));
-            let resolved = match self.resolver.world_receiver(lit, layer, imp, class) {
+            let resolved = match self.resolver.world_receiver(lit, layer, imp, class, selection) {
                 Err(Keep::MaterialPending) => {
                     pending = true;
                     continue;

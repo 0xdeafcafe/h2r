@@ -297,6 +297,7 @@ impl Resolver {
         material: &LitMaterial,
         implementation: usize,
         vertex_class: u32,
+        selection: Option<(u8, u8)>,
     ) -> Result<Resolved, Keep> {
         let key = Variant {
             shader: material.shader,
@@ -304,7 +305,7 @@ impl Resolver {
             layer: native_render::shadow_look::CASTER_LAYER,
             implementation,
             vertex_class,
-            selection: None,
+            selection,
             model: None,
         };
         self.request(key, &material.instance, None, None)
@@ -317,6 +318,7 @@ impl Resolver {
         layer: usize,
         implementation: usize,
         vertex_class: u32,
+        selection: Option<(u8, u8)>,
     ) -> Result<Resolved, Keep> {
         let key = Variant {
             shader: material.shader,
@@ -324,7 +326,7 @@ impl Resolver {
             layer,
             implementation,
             vertex_class,
-            selection: None,
+            selection,
             model: None,
         };
         self.request(key, &material.instance, None, None)
@@ -346,7 +348,7 @@ impl Resolver {
             implementation: usize::from(entry.binding.implementation),
             model: Some((entry.model, entry.stream.section)),
             vertex_class: u32::from(entry.stream.vertex_class),
-            selection: None,
+            selection: Some((entry.binding.variant, entry.binding.selector)),
         };
         self.request(key, instance, None, Some(lights))
     }
@@ -389,7 +391,7 @@ impl Resolver {
             implementation: usize::from(entry.binding.implementation),
             model: Some((entry.model, entry.stream.section)),
             vertex_class: u32::from(entry.stream.vertex_class),
-            selection: None,
+            selection: Some((entry.binding.variant, entry.binding.selector)),
         };
         self.request(key, instance, None, Some(lights))
     }
@@ -429,12 +431,12 @@ impl Worker {
         // samples its constants at each draw's clock.
         let mut animation = None;
         let look = if key.layer == native_render::shadow_look::CASTER_LAYER {
-            native_render::shadow_look::shadow_look(&material, key.implementation)
+            native_render::shadow_look::shadow_look(&material, key.implementation, key.selection)
         } else if matches!(
             key.layer,
             native_render::shadow_look::RECEIVER_LAYER | native_render::shadow_look::OPACITY_LAYER
         ) {
-            native_render::shadow_look::receiver_look(&material, key.layer, key.implementation)
+            native_render::shadow_look::receiver_look(&material, key.layer, key.implementation, key.selection)
         } else {
             let properties = native_render::layer_pass::instance_properties(&self.lib, key.shader);
             animated_light_look(&material, key.layer, key.implementation, key.selection, Some(&properties))

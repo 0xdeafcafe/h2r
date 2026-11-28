@@ -20,13 +20,22 @@ pub const PROJECTION_DWORDS: usize = 36;
 
 /// A caster pass from the instance-resolved `material`, or why it stays
 /// on the resolved-draw path. Layer 10 has no light inputs of its own.
-pub fn shadow_look(material: &Material, implementation: usize) -> Result<LightLook, LightRefusal> {
-    let look = light_look::light_look(material, CASTER_LAYER, implementation)?;
+/// `selection` is the gathered entry's level of detail and pass
+/// ([`light_look::selected_light_look`]); `None` takes the first level's
+/// only pass.
+pub fn shadow_look(
+    material: &Material,
+    implementation: usize,
+    selection: Option<(u8, u8)>,
+) -> Result<LightLook, LightRefusal> {
+    let look = light_look::selected_light_look(material, CASTER_LAYER, implementation, selection)?;
+    let lod = selection.map_or(0, |(variant, _)| usize::from(variant));
     let imp = material
         .layers
         .iter()
-        .filter(|l| l.lod == 0 && l.layer == CASTER_LAYER)
+        .filter(|l| l.lod == lod && l.layer == CASTER_LAYER)
         .flat_map(|l| &l.passes)
+        .filter(|p| selection.is_none_or(|(_, selector)| p.index == usize::from(selector)))
         .flat_map(|p| &p.implementations)
         .find(|i| i.index == implementation)
         .expect("light_look found the implementation");
@@ -58,23 +67,34 @@ pub const OPACITY_LAYER: usize = 14;
 
 /// A receiver pass from the instance-resolved `material`. Layer 11 may
 /// sample the frozen depth map, filtered colour mask and light gel; layer
-/// 14 samples no shadow input.
+/// 14 samples no shadow input. `selection` picks the level of detail and
+/// pass as in [`shadow_look`].
 pub fn receiver_look(
     material: &Material,
     layer: usize,
     implementation: usize,
+    selection: Option<(u8, u8)>,
 ) -> Result<LightLook, LightRefusal> {
     if !matches!(layer, RECEIVER_LAYER | OPACITY_LAYER) {
         return Err(LightRefusal::NoLayer);
     }
+    let lod = selection.map_or(0, |(variant, _)| usize::from(variant));
     let resolved = material
         .layers
         .iter()
-        .find(|l| l.lod == 0 && l.layer == layer)
+        .find(|l| l.lod == lod && l.layer == layer)
         .filter(|l| !l.passes.is_empty())
         .ok_or(LightRefusal::NoLayer)?;
-    let [pass] = resolved.passes.as_slice() else {
-        return Err(LightRefusal::Passes(resolved.passes.len()));
+    let pass = match selection {
+        Some((_, selector)) => resolved
+            .passes
+            .iter()
+            .find(|p| p.index == usize::from(selector))
+            .ok_or(LightRefusal::NoPass(selector))?,
+        None => match resolved.passes.as_slice() {
+            [pass] => pass,
+            passes => return Err(LightRefusal::Passes(passes.len())),
+        },
     };
     let imp = pass
         .implementations
@@ -448,6 +468,53 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    /// `layer` at the first level with passes 0 and 1 (`TagId(25)`), and
+    /// at level 2 with pass 1 (`TagId(75)`); pass 1's implementation is 1.
+    fn selected(layer: usize) -> Material {
+        use tags::material::{ResolvedImplementation, ResolvedPass};
+        let plain = |index| -> ResolvedImplementation {
+            let mut imp = light_look::tests::implementation(index, TextureSource::None);
+            imp.input_reads = InputReads::default();
+            imp.textures[1] = None;
+            imp
+        };
+        let mut m = light_look::tests::material(layer, vec![plain(0)]);
+        let second = |pass| ResolvedPass {
+            index: 1,
+            pass: TagId(pass),
+            implementations: vec![plain(1)],
+        };
+        let mut lod = m.layers[0].clone();
+        lod.lod = 2;
+        lod.passes = vec![second(75)];
+        m.layers[0].passes.push(second(25));
+        m.layers.push(lod);
+        m
+    }
+
+    #[test]
+    fn a_shadow_entry_selects_its_lod_and_pass() {
+        for layer in [CASTER_LAYER, RECEIVER_LAYER, OPACITY_LAYER] {
+            let m = selected(layer);
+            let look = |imp, selection| match layer {
+                CASTER_LAYER => shadow_look(&m, imp, selection),
+                _ => receiver_look(&m, layer, imp, selection),
+            };
+            assert_eq!(look(1, Some((2, 1))).unwrap().pass, TagId(75), "layer {layer}");
+            assert_eq!(look(1, Some((0, 1))).unwrap().pass, TagId(25), "layer {layer}");
+            assert_eq!(look(0, Some((0, 0))).unwrap().pass, TagId(0xe000_0200), "layer {layer}");
+            assert_eq!(look(1, Some((1, 1))).unwrap_err(), LightRefusal::NoLayer, "layer {layer}");
+            assert_eq!(look(1, Some((2, 2))).unwrap_err(), LightRefusal::NoPass(2), "layer {layer}");
+            assert_eq!(
+                look(0, Some((2, 1))).unwrap_err(),
+                LightRefusal::NoImplementation(0),
+                "layer {layer}"
+            );
+            // Without a selection the first level must have one pass.
+            assert_eq!(look(0, None).unwrap_err(), LightRefusal::Passes(2), "layer {layer}");
         }
     }
 
