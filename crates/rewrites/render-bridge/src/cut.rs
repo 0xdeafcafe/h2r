@@ -49,9 +49,9 @@ pub const CUTS: &[Cut] = &[
         pop: 0,
     },
     // The object shadows (docs/graphics/native-shadows.md): the Rust list
-    // answers every call, and a shadow it cannot draw is
-    // `scene_dropped_object_shadows`. Its layers draw in slot 3, before
-    // layer 7. `eax` is the list's own count of casters, none on a drop.
+    // answers every call, and a shadow it cannot draw panics
+    // (`lights: object_shadows`). Its layers draw in slot 3, before
+    // layer 7. `eax` is the list's own count of casters.
     Cut {
         name: "object_shadows",
         entry: 0x0003_35e0,

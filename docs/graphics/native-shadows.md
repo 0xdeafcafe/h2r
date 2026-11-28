@@ -14,7 +14,7 @@ The shadow draw stage consumes the gathered lists from [native-light-gather.md](
 
 At each layer's build, a whole scene group instead goes through `shadow_look` and `shadow_scene`: structure and model parts compile from the map, the group's projection fills `c[40..48]`, and `native_lights_glue::shadow_alone` seals the packet run before the guest entry loop is emptied. Receivers bind the boundary's frozen map. The guest's target begin, clear and end still run.
 
-An object mask drawn alone takes a private chain: its casters, filter quads and final copy go into a pair the stage owns, and its receivers bind that mask with no freeze ([native-shadow-layers.md](native-shadow-layers.md), "A private chain"). The object shadow list `0x000335e0` is a cut producer (`render_bridge::cut`, row `object_shadows`): the Rust list answers every call and its layers draw in slot 3 before layer 7. A list, row gather or caster it cannot take is `scene_dropped_object_shadows`, never a guest body or a D3D draw.
+An object mask drawn alone takes a private chain: its casters, filter quads and final copy go into a pair the stage owns, and its receivers bind that mask with no freeze ([native-shadow-layers.md](native-shadow-layers.md), "A private chain"). The object shadow list `0x000335e0` is a cut producer (`render_bridge::cut`, row `object_shadows`): the Rust list answers every call and its layers draw in slot 3 before layer 7. A list, row gather or caster it cannot take panics (`lights: object_shadows <entry> <cause>`), never a guest body or a D3D draw.
 
 ## How it works
 
@@ -111,7 +111,7 @@ flowchart LR
 
 Under the scene path (`native_lights::scene_path_ready`) the caster body `0x00032350` (`engine::render::light_gather::object_shadows::caster`, `run_with`) stops after its item lists `0x00040e90`: its layer 10 begin, draw and end, the filter `0x000222a0`, layer 11 and the tail `0x0004a780` do not run. The volume, records, constants and shadow setup before them still run, so the lists, pass flags, definition and projection block are this caster's. `object_shadow_scene::cut` then plans the shadow from them as the cut light passes plan theirs (`typed_groups::plan` with `GroupSite::ObjectShadow`): layer 10 into target 10 and layer 11 on the view's target, when the casters hold layer 10 and the receivers layer 11, with the published weight and the filter `scene_extract::light_groups::shadow_filter` computes.
 
-A shadow that does not plan is `scene_dropped_object_shadows`. Off the scene path the guest body draws its own layers and the host is not asked, so each shadow draws once. A creature's ground shadow, a shadow that is not a mask caster followed by its receivers, or a caster region off its target's corner refuses the shadow.
+A shadow that does not plan panics (`lights: object_shadow plan`), and so does one the scene refuses (`lights: object_shadow scene`). The caster always stops after its item lists; a host that does not draw the scene panics (`lights: object_shadows host`). A creature's ground shadow, a shadow that is not a mask caster followed by its receivers, or a caster region off its target's corner refuses the shadow.
 
 `the_cut_casters_object_shadow_groups_equal_the_guests_layer_build` (`native_lights/walk.rs`) checks the planned groups against the guest's layer build.
 
@@ -122,7 +122,7 @@ Layers 10, 11 and 14 take the same entries as diffuse and specular:
 | Entry | How the shadow layer draws it |
 |---|---|
 | visible subparts | the spans' native ranges, a draw of its own (`light_scene::plan_entries`); a range at an odd strip start with the front face reversed (`split_wound`, `Planned::cull`) |
-| state (`frame_scene::EntryState`) | `native_lights_glue::entry_state`: the toggle's rows on a model entry, an unmasked fade and the structure's upload while the device holds them, else the light is dropped (`scene_dropped_light_host`) |
+| state (`frame_scene::EntryState`) | `native_lights_glue::entry_state`: the toggle's rows on a model entry, an unmasked fade and the structure's upload while the device holds them, else `lights: host` |
 | a LOD and pass selector | the material's pass at that level and selector (`shadow_look::shadow_look`, `receiver_look`), keyed by it in the resolver (`materials::Variant::selection`); a level or pass the material lacks is a named refusal (`LightRefusal::NoLayer`, `NoPass`) |
 
 ## Interfaces

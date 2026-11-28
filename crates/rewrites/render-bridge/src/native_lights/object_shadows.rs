@@ -1,7 +1,7 @@
 //! Install the object-shadow list, row gather and mask caster as three
 //! independent entries. The list is a cut (`crate::cut`, `object_shadows`):
-//! a call the Rust body cannot take, or a child it refuses, is
-//! `scene_dropped_object_shadows` under its cause, and the guest body never
+//! a call the Rust body cannot take, or a child it refuses, panics
+//! (`lights: object_shadows <entry> <cause>`), and the guest body never
 //! runs. The shadows draw in [`SLOT`], before layer 7.
 
 use engine::entry::{EntryError, Ret};
@@ -14,7 +14,6 @@ use engine::{memory::GuestMemory, points};
 use hooks::{Builder, Cx, EntryFuture};
 use timeline::native::{SceneList, SceneListResult};
 
-use super::frame::refused;
 use crate::native_map_work::Stage;
 use frame_scene::ViewSlot;
 
@@ -32,9 +31,9 @@ enum Entry {
 enum Body {
     List(object_shadows::Plan),
     Rows(rows::Plan),
-    /// The caster, and whether it stops after its item lists (the scene
-    /// path, [`super::object_shadow_scene::cut`]).
-    Caster(caster::Plan, bool),
+    /// The caster: it stops after its item lists, and its shadow goes
+    /// into the scene ([`super::object_shadow_scene::cut`]).
+    Caster(caster::Plan),
 }
 
 impl Entry {
@@ -51,8 +50,12 @@ impl Entry {
         match self {
             Self::List => object_shadows::plan(m, esp).map(Body::List),
             Self::Rows => rows::plan(m, esp, ebx, fpu).map(Body::Rows),
-            Self::Caster => caster::plan(m, esp, fpu)
-                .map(|p| Body::Caster(p, super::scene_path_ready())),
+            Self::Caster => {
+                if super::has_host() && !super::scene_path_ready() {
+                    unimplemented!("lights: object_shadows host");
+                }
+                caster::plan(m, esp, fpu).map(Body::Caster)
+            }
         }
     }
 }
@@ -62,8 +65,7 @@ impl Body {
         match self {
             Self::List(p) => object_shadows::run(cx, p).await,
             Self::Rows(p) => rows::run(cx, p).await.map(|(ret, _)| ret),
-            Self::Caster(p, false) => caster::run(cx, p).await,
-            Self::Caster(p, true) => {
+            Self::Caster(p) => {
                 caster::run_with(cx, p, |m, p| {
                     super::object_shadow_scene::cut(&*m, p.fpu());
                     true
@@ -97,7 +99,10 @@ pub(super) fn install(b: &mut Builder) {
     ] {
         b.raw()
             .implement(point, label, move |cpu, ctx, addr| {
-                if addr != point.base || Stage::Lights.standing_down() {
+                if addr != point.base {
+                    unimplemented!("lights: object_shadows {label} at {addr:#010x}");
+                }
+                if Stage::Lights.standing_down() {
                     return dropped(entry, cpu, ctx);
                 }
                 let fpu = Fpu {
@@ -111,10 +116,7 @@ pub(super) fn install(b: &mut Builder) {
                 };
                 let body = match body {
                     Ok(body) => body,
-                    Err(why) => {
-                        refused(stage, why);
-                        return dropped(entry, cpu, ctx);
-                    }
+                    Err(why) => unimplemented!("lights: object_shadows {label} {why:?}"),
                 };
                 hooks::entry::start_render(cpu, ctx, addr, move |cx: Cx| -> EntryFuture {
                     Box::pin(async move {
@@ -128,15 +130,15 @@ pub(super) fn install(b: &mut Builder) {
     }
 }
 
-/// The call answered with nothing drawn: no rows, no caster. The list's cut
-/// makes the frame step's writes first, as every cut does.
+/// The call answered with nothing drawn on a map with nothing native for
+/// the lights: no rows, no caster. The list's cut makes the frame step's
+/// writes first, as every cut does.
 fn dropped(
     entry: Entry,
     cpu: &mut runtime::CpuAbi,
     ctx: &mut runtime::ExecCtx,
 ) -> std::result::Result<runtime::TransferAbi, runtime::GuestFault> {
     use runtime::guest::{Access, FaultReason};
-    crate::native_shadows::dropped_object_shadows();
     let mut guest = ctx.memory();
     if matches!(entry, Entry::List) {
         crate::frame_step::before(&mut *guest, "object_shadows").map_err(|f| {

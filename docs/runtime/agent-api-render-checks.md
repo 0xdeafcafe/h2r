@@ -323,8 +323,7 @@ h2 agent render.parity '{"arm": true}'
   (caster, receiver and opacity groups drawn from the scene with no
   handler), `scene_dropped_shadow_layers_<cause>` (`remainder`, `stream`,
   `pose`, `program`, `state`, `target`, `callback`, `device`),
-  `scene_dropped_shadow_layers`, `scene_dropped_object_shadows` (an
-  object shadow list, row gather or caster the Rust body could not take), `scene_shadow_filters_native` (object
+  `scene_dropped_shadow_layers`, `scene_shadow_filters_native` (object
   filters replaced by native quads) and
   `scene_dropped_shadow_filter_<cause>` (`program`, `state`, `target`,
   `callback`, `device`), `scene_shadow_chains_private` (object masks

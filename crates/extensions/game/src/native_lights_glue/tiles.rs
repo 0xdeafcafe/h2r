@@ -394,15 +394,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         let mut drawn = 0;
         for held in &run.lights {
-            match self.scene_light_passes(mem, &held.passes, view_target) {
-                Ok(_) => drawn += 1,
-                Err(why) => {
-                    light_tiles::lost();
-                    let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
-                    for msg in t.count(Err(why)) {
-                        eprintln!("{msg}");
-                    }
-                }
+            if super::scene_drawn(self.scene_light_passes(mem, &held.passes, view_target)).is_some() {
+                drawn += 1;
             }
         }
         drawn

@@ -19,9 +19,6 @@ use scene_extract::light_groups;
 use super::{HOST, Ro, SceneGroup, VIEW_TARGET, typed_groups};
 use crate::native_map_work::Stage;
 
-/// While true the host is not asked and the guest's tail draws.
-pub const HELD: bool = false;
-
 /// The slot the object shadows draw in; layer 7 follows them.
 pub const SLOT: ViewSlot = ViewSlot::ShadowsAndLayer7;
 
@@ -131,19 +128,16 @@ pub fn cut_count() -> u64 {
 }
 
 /// The cut caster's item lists are made: its groups into the open object
-/// shadow. A shadow that does not plan, or that the scene refuses, is
-/// `scene_dropped_object_shadows`: nothing of it draws.
+/// shadow. A shadow that does not plan, or that the scene refuses, panics
+/// (`lights: object_shadow plan`, `lights: object_shadow scene`).
 pub fn cut(mem: &dyn GuestMemory, fpu: Fpu) {
-    let planned = plan(mem, fpu);
-    let put = planned.is_some_and(|p| {
-        crate::scene_step::object_shadow_groups(p.groups, p.weight, p.filter)
-    });
-    if put {
-        CUT.fetch_add(1, Ordering::Relaxed);
-    } else {
-        crate::scene_step::object_shadow_end();
-        crate::native_shadows::dropped_object_shadows();
+    let Some(p) = plan(mem, fpu) else {
+        unimplemented!("lights: object_shadow plan");
+    };
+    if !crate::scene_step::object_shadow_groups(p.groups, p.weight, p.filter) {
+        unimplemented!("lights: object_shadow scene");
     }
+    CUT.fetch_add(1, Ordering::Relaxed);
 }
 
 static DRAWN: AtomicU64 = AtomicU64::new(0);
@@ -154,14 +148,9 @@ pub fn drawn() -> u64 {
 }
 
 /// Draw the open view's object shadows, called before layer 7's draw.
-/// Returns the shadows drawn; none while [`HELD`], and none off the scene
-/// path, where the guest's caster drew its own layers.
+/// Returns the shadows drawn.
 pub fn draw(mem: &mut dyn GuestMemory, passes: &[ObjectShadowPass]) -> usize {
-    draw_with(mem, passes, HELD || !super::scene_path_ready())
-}
-
-fn draw_with(mem: &mut dyn GuestMemory, passes: &[ObjectShadowPass], held: bool) -> usize {
-    if held || passes.is_empty() || Stage::Lights.standing_down() {
+    if passes.is_empty() || Stage::Lights.standing_down() {
         return 0;
     }
     let Some(view_target) = VIEW_TARGET.get() else { return 0 };
@@ -253,8 +242,7 @@ mod tests {
         set_host(host.clone());
         VIEW_TARGET.set(Some([1; 8]));
         let mut m = FlatMemory::new(0, 0x1000);
-        assert_eq!(draw(&mut m, &passes), 0, "off the scene path the guest's caster draws");
-        assert_eq!(draw_with(&mut m, &passes, false), 1);
+        assert_eq!(draw(&mut m, &passes), 1);
         assert_eq!(*host.0.lock().unwrap(), [3]);
     }
 }

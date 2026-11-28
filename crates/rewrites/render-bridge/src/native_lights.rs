@@ -133,6 +133,11 @@ pub fn gather_scene_passes(scene: &frame_scene::FrameScene, view: &frame_scene::
 /// the scene's light layers, so the guest's light frame is cut
 /// ([`crate::cut`], row `dynamic_lights`). Without it the frame body
 /// gathers and the guest's passes draw.
+/// Whether a renderer (a host) is set. Without one nothing draws.
+pub fn has_host() -> bool {
+    HOST.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
 pub fn scene_path_ready() -> bool {
     HOST.lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -236,12 +241,6 @@ pub(crate) fn bound_target() -> Option<[u32; 8]> {
 /// First-person slots the scene path drew.
 pub fn first_person_scene_slots() -> u64 {
     first_person::scene_slots()
-}
-
-/// First-person slots the scene path dropped, by cause
-/// (`scene_dropped_first_person_<cause>`).
-pub fn first_person_dropped() -> Vec<(&'static str, u64)> {
-    first_person::dropped()
 }
 
 /// Draws the first-person lights' layers the scene path took
@@ -1554,9 +1553,8 @@ mod tests {
     }
 
     /// A cut light draws at its passes or not at all: a host that refuses
-    /// it, no host and no target all answer `false`, so the caller drops
-    /// the light (`scene_dropped_light_host`); a light with no drawn layer
-    /// needs no host.
+    /// it, no host and no target all answer `false`, and the caller panics
+    /// (`lights: host`); a light with no drawn layer needs no host.
     #[test]
     fn a_cut_light_the_host_refuses_is_not_drawn() {
         let _host = HOST_TEST.lock().unwrap_or_else(|e| e.into_inner());

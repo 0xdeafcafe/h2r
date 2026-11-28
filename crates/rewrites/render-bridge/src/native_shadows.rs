@@ -105,7 +105,6 @@ static ALONE: [std::sync::atomic::AtomicU64; 3] =
     [const { std::sync::atomic::AtomicU64::new(0) }; 3];
 static DROPPED_BY: [std::sync::atomic::AtomicU64; DROP_CAUSES.len()] =
     [const { std::sync::atomic::AtomicU64::new(0) }; DROP_CAUSES.len()];
-static DROPPED_LISTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 fn alone_index(layer: u32) -> Option<usize> {
     match layer {
@@ -184,10 +183,6 @@ pub fn alone_counters() -> Vec<(&'static str, u64)> {
         (name, count.load(std::sync::atomic::Ordering::Relaxed))
     }))
     .chain(std::iter::once((
-        "scene_dropped_object_shadows",
-        DROPPED_LISTS.load(std::sync::atomic::Ordering::Relaxed),
-    )))
-    .chain(std::iter::once((
         "scene_dropped_shadow_layers",
         DROPPED.load(std::sync::atomic::Ordering::Relaxed),
     )))
@@ -208,12 +203,6 @@ pub fn chain_private() {
 /// back into target 10 before the guest's quads.
 pub fn chain_spilled() {
     CHAINS_SPILLED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// An object shadow list, row gather or caster the Rust body could not take:
-/// the call answers with nothing drawn.
-pub fn dropped_object_shadows() {
-    DROPPED_LISTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// A shadow pass that could not be drawn, or that failed while recording on the render side.
