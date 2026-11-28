@@ -9,9 +9,9 @@
 //! record ([`super::request::read`]) and admit into [`Sounds`], the start
 //! layer runs its rows ([`start_layer`]), the stop
 //! and the stop-all walk end sounds in the table, the chooser entries run
-//! [`Chooser`](sim_sound::chooser::Chooser) and [`chooser::pick`], and the create body leaves the pool
-//! and channel globals 0, so a guest function that still reads the pool
-//! faults with its address.
+//! [`Chooser`](sim_sound::chooser::Chooser) and [`chooser::pick`], and the create and drop bodies
+//! are [`super::lifecycle`], which leaves the pool and channel globals 0,
+//! so a guest function that still reads the pool faults with its address.
 //!
 //! A body whose guest state is not in the table yet refuses by name
 //! ([`Body::refusal`]): it returns its empty answer and counts
@@ -87,10 +87,10 @@ use guest_tags::GESTALT;
 /// What one body does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Body {
-    /// `0x1253d0`: the guest's create, then the pool and channel globals 0
-    /// and a fresh table.
+    /// `0x1253d0`: [`super::lifecycle::create`] (the pool and channel
+    /// globals 0), then a fresh table.
     Create,
-    /// `0x125600`: the table dropped, then the guest's dispose.
+    /// `0x125600`: the table dropped, then [`super::lifecycle::dispose`].
     Drop,
     /// `0x125b40`: the outbox handed to the host; no sim work.
     Service,
@@ -153,7 +153,7 @@ impl Body {
 
     /// The body calls the guest function it replaces (pool-free work).
     fn calls_original(self) -> bool {
-        matches!(self, Body::Create | Body::Drop | Body::Listeners)
+        matches!(self, Body::Listeners)
     }
 }
 
@@ -226,8 +226,8 @@ pub struct SoundLedger {
     pub refused_choose: u64,
     /// Named refusals ([`Body::refusal`]) by entry address.
     pub refused_entry: BTreeMap<u32, u64>,
-    /// Guest calls the bodies make: the original create, dispose and
-    /// listener math, and the start gate.
+    /// Guest calls the bodies make: the sound cache's and the driver's
+    /// create and dispose, the original listener math, and the start gate.
     pub entry_guest_calls: u64,
     /// Loop starts the full loop pool refused (`sound.loops_full`).
     pub loops_full: u64,
@@ -963,17 +963,16 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
     }
     match entry.body {
         Body::Create => {
-            original(&cx, &table, entry, &busy).await?;
-            cx.write(|m| {
-                m.set_u32(points::SOUND_INSTANCES.base, 0)?;
-                m.set_u32(CHANNELS, 0)
-            })?;
-            lock(&table).reset();
+            let calls = super::lifecycle::create(&cx).await?;
+            let mut t = lock(&table);
+            t.ledger.entry_guest_calls += calls;
+            t.reset();
             Ok(Ret::new(0, 0))
         }
         Body::Drop => {
             lock(&table).reset();
-            original(&cx, &table, entry, &busy).await?;
+            let calls = super::lifecycle::dispose(&cx).await?;
+            lock(&table).ledger.entry_guest_calls += calls;
             Ok(Ret::new(0, 0))
         }
         Body::Listeners => {

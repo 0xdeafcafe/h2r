@@ -21,6 +21,7 @@ use sim_sound::schedule::Schedule;
 pub mod levels;
 pub mod entries;
 pub mod guest_tags;
+pub mod lifecycle;
 pub mod mixer_feed;
 pub mod owner_host;
 pub mod owners;

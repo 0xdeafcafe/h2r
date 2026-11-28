@@ -285,7 +285,7 @@ The guest keeps calling sound code until its callers are Rust. Each entry below 
 
 | Entry | Direct callers | Body |
 |---|---|---|
-| `0x1253d0`, `0x125600` | `0x12000`, `0x12080` | the guest's create (globals, loops, start layer: pool-free), then the pool and channel globals (`[0x4e637c]`, `[0x4e6378]`) 0 and a fresh `Sounds`; the drop empties the table, then runs the guest's dispose |
+| `0x1253d0`, `0x125600` | `0x12000`, `0x12080` | `sim_sound::lifecycle`: create and dispose in Rust ([Lifecycle](#lifecycle)), the pool and channel globals (`[0x4e637c]`, `[0x4e6378]`) left 0, then a fresh `Sounds`; the drop empties the table first |
 | `0x125b40` `SOUND_UPDATE` | main loop `0x12b450` | frame service: the outbox to the host, no sim work |
 | `0x125f10` | `0x18a40e`, `0x2a9d9b` | the cache request: nothing in the sim, the clip source decodes on demand |
 | `0x21d110` | `0x18a10c` | a start row for the sound's effect, the gate `0x126c30` (guest, pool-free) and the rule `0x126ec0` (Rust), then `request::read` and `admit` on the game's seed word, then the row's start ([The start layer](#the-start-layer)) |
@@ -322,6 +322,20 @@ Each call that reaches a loop marks it touched (`Sounds::loop_touch`: retail sta
 Tag readers with no state (`0x218c60` length, `0x218e50` mouth sample, `0x221810` class) stay guest code: they read tags only.
 
 **Design.** After `0x1253d0`'s Rust body, `[SOUND_INSTANCES]` is 0. A guest function that still reads the pool faults at once with its address, which is the named error for an entry this table missed.
+
+### Lifecycle
+
+`sim_sound::lifecycle` is `0x1253d0` and `0x125600`. Create counts at `[0x4e6374]` and works only on the first call; dispose only on the last. Create takes everything from the game-state allocator (`[0x510800]` base, `[0x510804]` used, `[0x510808]` the CRC-32 register of each size, `0x11cc20`'s inline body) and allocates no pool or channel records: those are the table's.
+
+| Global | What | Kept in guest memory for |
+|---|---|---|
+| `[0x4e6380]` | sound globals, `0x20c` bytes: on `+0x79`, ambience slots `+0x1b0` and `+0x1cc`, channel count `+0x208` (the classes' sum), `+0x20a` `0x33`, ready `+0x78` | the manager `0x125690` to `0x12af90`, the dialogue `0x189400` to `0x18d670` |
+| `[0x51ebd8]`, `[0x51ebdc]` | companions (`0x40` x `0x1c`) and their default record, seeded `time ^ KeTickCount` | `0x1257b0`, `0x127390`, `0x128ca0`, `native_sound_channel`, `native_sound_tick::seeds` |
+| `[0x502110]` | looping sounds (`0x80` x `0xd4`) | `0x1257b0` (null-checked), `native_sound_loops` |
+| `[0x51ebe0]` | start records (`0x10` x `0x14`) | `0x225b60`, `native_sound_scheduling::start` |
+| `[0x502114]` | class rows (`[0x44a0d4]` x `0x6c`) | `0x1295e0`, `0x21dde0` to `0x21e050` |
+
+Two subsystems stay guest calls: the sound cache (`0x2185d0`, `0x2186b0`), whose allocator vtables and cache object the cache code reads, and the driver (`0x21e4b0`, `0x21eae0`), `DirectSoundCreate` and the buffers at `[0x51ebe4]` that the per-map init `0x191270`, the pause and Bink read. A driver that does not come up leaves `+0x78` 0, as retail does. Dispose zeroes every global above, marking the class rows invalid first.
 
 ## Pool readers
 
