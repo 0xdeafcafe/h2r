@@ -1662,6 +1662,24 @@ impl Guest {
         (p.permissions & need != 0).then_some(p.physical as usize + off)
     }
 
+    /// The physical offset of `[addr, addr + len)` when the fast page table
+    /// alone shows `access` allowed on it ([`fast_offset`](Self::fast_offset)):
+    /// one whole page, no device memory, `alignment` met. The offset is
+    /// the one [`mappings`](Self::mappings) give for `addr`. `None` says
+    /// only that the table cannot answer (no table, a page crossing, a
+    /// partial page); [`check`](Self::check) has the full rules.
+    #[inline]
+    pub fn fast_physical(&self, addr: u32, len: usize, access: Access, alignment: u32) -> Option<u32> {
+        // The bits `Permissions::allows` tests.
+        let need = match access {
+            Access::Read => 1,
+            Access::Write => 2,
+            Access::Execute => 4,
+        };
+        self.fast_offset(addr, len, need, alignment)
+            .map(|physical| physical as u32)
+    }
+
     /// Inlined for the fast page table's one-lookup case, so a fixed-size
     /// read (`u32`, `f32`, a host struct) becomes a load at the call site;
     /// everything else takes [`read_bytes_slow`](Self::read_bytes_slow).

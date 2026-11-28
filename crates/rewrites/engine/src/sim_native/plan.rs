@@ -1,6 +1,7 @@
 //! Buffer one animation segment's stores until every input and destination is
 //! known. Later loads see earlier stores, including through physical aliases.
 use super::Memory;
+use std::mem::MaybeUninit;
 use runtime::{
     Guest, GuestFault,
     guest::{Access, FaultReason},
@@ -18,6 +19,11 @@ impl SegmentMemory for Guest {
         if self.has_trap() {
             return None;
         }
+        // One page of the fast page table answers most accesses with one
+        // lookup; it gives the physical offset the walk below would.
+        if let Some(physical) = self.fast_physical(addr, len, access, alignment) {
+            return Some(physical);
+        }
         self.check(addr, len, access, alignment).ok()?;
         let maps = self.mappings();
         let i = maps
@@ -34,7 +40,7 @@ impl SegmentMemory for Guest {
 // Common segments use only the inline log. A larger node or event copy
 // spills and indexes its stores by physical address for forwarding.
 #[derive(Clone, Copy, Default)]
-struct Store {
+pub(crate) struct Store {
     addr: u32,
     physical: u32,
     bytes: [u8; 4],
@@ -42,11 +48,32 @@ struct Store {
     alignment: u32,
 }
 
+/// The inline store log, held by the caller of a segment for as long as
+/// its [`Plan`] borrows it. Its slots are written before they are read
+/// (`Plan::count` of them), so it is never filled: a segment makes no copy
+/// of the log, neither to set it up nor to move the plan.
+pub(crate) struct Log<const N: usize>([MaybeUninit<Store>; N]);
+
+impl<const N: usize> Log<N> {
+    pub(crate) fn new() -> Self {
+        Self([const { MaybeUninit::uninit() }; N])
+    }
+
+    /// The first `count` stores, each written by `Plan::write_bytes`.
+    fn written(&self, count: usize) -> &[Store] {
+        let written = &self.0[..count.min(N)];
+        // SAFETY: `Plan` writes slot `i` before it counts it (`count` only
+        // grows past `i` after `self.0[i]` is written), and `Store` is
+        // plain `Copy` data, so the first `count` slots are initialised.
+        unsafe { std::slice::from_raw_parts(written.as_ptr().cast::<Store>(), written.len()) }
+    }
+}
+
 pub(crate) struct Plan<'a, M, const N: usize> {
     text: std::ops::Range<u64>,
     inline_text: std::ops::Range<u64>,
     ram: &'a mut M,
-    stores: [Store; N],
+    log: &'a mut Log<N>,
     count: usize,
     allow_spill: bool,
     spill: Vec<Store>,
@@ -63,14 +90,14 @@ fn decline(addr: u32, len: usize, access: Access) -> GuestFault {
 }
 
 impl<'a, M: SegmentMemory, const N: usize> Plan<'a, M, N> {
-    fn new(ram: &'a mut M, start: u32, end: u32) -> Option<Self> {
+    fn new(ram: &'a mut M, log: &'a mut Log<N>, start: u32, end: u32) -> Option<Self> {
         let len = end.checked_sub(start)?;
         let text = u64::from(ram.checked_offset(start, len as usize, Access::Read, 1)?);
         Some(Self {
             ram,
             text: text..text + u64::from(len),
             inline_text: 0..0,
-            stores: [Store::default(); N],
+            log,
             count: 0,
             allow_spill: false,
             spill: Vec::new(),
@@ -80,6 +107,7 @@ impl<'a, M: SegmentMemory, const N: usize> Plan<'a, M, N> {
 
     pub(crate) fn for_segment(
         ram: &'a mut M,
+        log: &'a mut Log<N>,
         cpu: &runtime::CpuAbi,
         pc: u32,
         text: std::ops::Range<u32>,
@@ -88,14 +116,19 @@ impl<'a, M: SegmentMemory, const N: usize> Plan<'a, M, N> {
         if !super::supported(cpu) || (pc != text.start && sites.binary_search(&pc).is_err()) {
             return None;
         }
-        Self::new(ram, text.start, text.end)
+        Self::new(ram, log, text.start, text.end)
+    }
+
+    /// The stores logged so far, oldest first; the spill follows them.
+    fn logged(&self) -> &[Store] {
+        self.log.written(self.count)
     }
 
     /// The value of each physical byte after the segment. Keep only the
     /// last write to an overlapping address, including through aliases.
     pub(crate) fn final_bytes(&self) -> Vec<(u32, u8)> {
         let mut bytes = Vec::new();
-        for store in self.stores[..self.count].iter().chain(&self.spill).rev() {
+        for store in self.logged().iter().chain(&self.spill).rev() {
             for (i, &value) in store.bytes[..usize::from(store.len)].iter().enumerate() {
                 bytes.push((store.physical + i as u32, value));
             }
@@ -128,7 +161,7 @@ impl<'a, M: SegmentMemory, const N: usize> Plan<'a, M, N> {
     }
 
     fn commit(self) -> Result<(), GuestFault> {
-        for store in self.stores[..self.count].iter().chain(&self.spill) {
+        for store in self.log.written(self.count).iter().chain(&self.spill) {
             self.ram.write_bytes(
                 store.addr,
                 &store.bytes[..usize::from(store.len)],
@@ -146,7 +179,7 @@ impl<const N: usize> Plan<'_, Guest, N> {
     pub(crate) fn unstaged_read(&mut self, addr: u32, len: usize) -> Option<&mut Guest> {
         let start = u64::from(self.ram.checked_offset(addr, len, Access::Read, 1)?);
         let end = start + len as u64;
-        let changed = self.stores[..self.count].iter().chain(&self.spill).any(|s| {
+        let changed = self.log.written(self.count).iter().chain(&self.spill).any(|s| {
             let written = u64::from(s.physical);
             written < end && start < written + u64::from(s.len)
         });
@@ -176,7 +209,7 @@ impl<M: SegmentMemory, const N: usize> Memory for Plan<'_, M, N> {
         }
         let start = u64::from(physical);
         let end = start + dst.len() as u64;
-        for store in &self.stores[..self.count] {
+        for store in self.logged() {
             let written = u64::from(store.physical);
             let lo = start.max(written);
             let hi = end.min(written + u64::from(store.len));
@@ -210,16 +243,17 @@ impl<M: SegmentMemory, const N: usize> Memory for Plan<'_, M, N> {
         store.len = src.len() as u8;
         store.alignment = alignment;
         if self.count < N {
-            self.stores[self.count] = store;
+            self.log.0[self.count] = MaybeUninit::new(store);
             self.count += 1;
         } else {
             // Bound malformed copy counts before anything reaches guest RAM.
             if !self.allow_spill || self.spill.len() >= 65536 {
                 return Err(err());
             }
+            let (log, count) = (&*self.log, self.count);
             let words = self.forwarded.get_or_insert_with(|| {
                 let mut words = std::collections::HashMap::new();
-                for previous in &self.stores[..self.count] {
+                for previous in log.written(count) {
                     Self::index_store(&mut words, previous);
                 }
                 words
@@ -241,7 +275,8 @@ pub(crate) fn segment<const N: usize, M: SegmentMemory>(
     sites: &[u32],
     body: impl FnOnce(&mut runtime::CpuAbi, &mut Plan<'_, M, N>, u32) -> super::Result,
 ) -> Result<Option<runtime::TransferAbi>, GuestFault> {
-    let Some(mut plan) = Plan::for_segment(ram, cpu, pc, text, sites) else {
+    let mut log = Log::new();
+    let Some(mut plan) = Plan::for_segment(ram, &mut log, cpu, pc, text, sites) else {
         return Ok(None);
     };
     let mut next = *cpu;
@@ -271,7 +306,8 @@ mod tests {
         }
         ram.map(0x30000, TEXT_LEN, 0x4000, Permissions::RW)
             .unwrap();
-        let mut plan = Plan::<_, 64>::new(&mut ram, TEXT_START, TEXT_START + TEXT_LEN).unwrap();
+        let mut log = Log::new();
+        let mut plan = Plan::<_, 64>::new(&mut ram, &mut log, TEXT_START, TEXT_START + TEXT_LEN).unwrap();
         assert!(plan.set_u8(0x30002, 0xf1).is_err());
         // A parent can spill into another mapping of its inlined leaf.
         plan.protect_inline_text(0x20080, 0x200c0);
@@ -285,13 +321,59 @@ mod tests {
     }
 
     #[test]
+    fn a_plan_borrows_its_store_log_so_moving_it_copies_no_log() {
+        // The manager's 128-store log is 2.5 KB; the plan is a few words.
+        assert!(size_of::<Log<128>>() >= 128 * size_of::<Store>());
+        assert!(size_of::<Plan<'static, Guest, 128>>() <= 256);
+    }
+
+    #[test]
+    fn the_fast_page_table_gives_the_offset_the_mapping_walk_gives() {
+        let layout = |ram: &mut Guest| {
+            ram.map(0x10000, 0x2000, 0, Permissions::RW).unwrap();
+            ram.map(0x20000, 0x1000, 0x2000, Permissions::READ).unwrap();
+            ram.map(0x30000, 0x1000, 0x3000, Permissions::RX).unwrap();
+            // An alias of the first page, and a partial page the table skips.
+            ram.map(0x40000, 0x1000, 0, Permissions::RW).unwrap();
+            ram.map(0x50800, 0x400, 0x4800, Permissions::RW).unwrap();
+        };
+        let (mut walked, mut paged) = (Guest::new(), Guest::new());
+        layout(&mut walked);
+        layout(&mut paged);
+        paged.prepare_fast_pages();
+        let mut fast = 0;
+        for base in [0x10000u32, 0x11ffc, 0x20000, 0x30010, 0x40ffe, 0x50800, 0x50bfe, 0x60000] {
+            for offset in [0u32, 1, 2, 4] {
+                for len in [1usize, 2, 4, 8, 16] {
+                    for access in [Access::Read, Access::Write, Access::Execute] {
+                        for alignment in [1, 4] {
+                            let addr = base + offset;
+                            let want = walked.checked_offset(addr, len, access, alignment);
+                            assert_eq!(walked.fast_physical(addr, len, access, alignment), None);
+                            assert_eq!(
+                                paged.checked_offset(addr, len, access, alignment),
+                                want,
+                                "{addr:#x} len {len} {access:?} align {alignment}"
+                            );
+                            fast += usize::from(paged.fast_physical(addr, len, access, alignment).is_some());
+                        }
+                    }
+                }
+            }
+        }
+        // The table answered the one-page accesses itself.
+        assert!(fast > 100, "{fast}");
+    }
+
+    #[test]
     fn spilled_stores_forward_through_aliases_and_commit_in_order() {
         let mut ram = Guest::new();
         ram.map(TEXT_START, TEXT_LEN, 0x4000, Permissions::RX).unwrap();
         for va in [0x10000, 0x20000] {
             ram.map(va, 0x1000, 0, Permissions::RW).unwrap();
         }
-        let mut plan = Plan::<_, 2>::new(&mut ram, TEXT_START, TEXT_START + TEXT_LEN).unwrap();
+        let mut log = Log::new();
+        let mut plan = Plan::<_, 2>::new(&mut ram, &mut log, TEXT_START, TEXT_START + TEXT_LEN).unwrap();
         plan.allow_large_segment();
         plan.set_u32(0x10002, 0x44332211).unwrap();
         plan.set_u16(0x10005, 0xabcd).unwrap();

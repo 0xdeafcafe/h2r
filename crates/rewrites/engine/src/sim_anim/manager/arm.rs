@@ -8,9 +8,11 @@
 //! is compared. Otherwise the Rust body answers. One difference ends the
 //! entry's take-over for the rest of the process.
 use super::{Body, Bus, evaluate, lookup};
+use crate::sim_native::plan::Log;
 use runtime::{CpuAbi, Guest, TransferAbi, abi};
 use std::collections::BTreeMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// Phase 1d's manager and graph entries: the Rust body answers once proven,
 /// and the guest answers every audit slot.
@@ -52,6 +54,27 @@ static STATS: Mutex<BTreeMap<u32, Stats>> = Mutex::new(BTreeMap::new());
 /// on no thread.
 static SLOTS: Mutex<BTreeMap<u32, u64>> = Mutex::new(BTreeMap::new());
 
+/// What an [`ENTRIES`] row's turn needs, outside both locks: its slot
+/// count, its proof (kept by [`record`]) and its answered count (merged
+/// into [`stats`]). A segment the Rust body answers takes no lock.
+struct Row {
+    slot: AtomicU64,
+    proven: AtomicBool,
+    answered: AtomicU64,
+}
+
+static ROWS: [Row; ENTRIES.len()] = [const {
+    Row { slot: AtomicU64::new(0), proven: AtomicBool::new(false), answered: AtomicU64::new(0) }
+}; ENTRIES.len()];
+
+fn row(entry: u32) -> Option<&'static Row> {
+    ENTRIES.iter().position(|&e| e == entry).map(|i| &ROWS[i])
+}
+
+fn is_proven(s: &Stats) -> bool {
+    s.differed == 0 && s.matched >= PROVEN_AFTER
+}
+
 /// Who answers a segment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Turn {
@@ -64,6 +87,11 @@ pub enum Turn {
 /// The turn for the segment at `pc`, or `None` when no arm entry owns it.
 pub fn turn(pc: u32) -> Option<Turn> {
     let entry = lookup(pc)?.entry;
+    if let Some(row) = row(entry) {
+        let slot = row.slot.fetch_add(1, Ordering::Relaxed);
+        let proven = row.proven.load(Ordering::Relaxed);
+        return Some(if proven && slot % AUDIT_EVERY != 0 { Turn::Answer } else { Turn::Compare });
+    }
     let slot = {
         let mut slots = SLOTS.lock().unwrap_or_else(|e| e.into_inner());
         let slot = slots.entry(entry).or_default();
@@ -74,14 +102,20 @@ pub fn turn(pc: u32) -> Option<Turn> {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .get(&entry)
-        .is_some_and(|s| s.differed == 0 && s.matched >= PROVEN_AFTER);
+        .is_some_and(is_proven);
     Some(if proven && slot % AUDIT_EVERY != 0 { Turn::Answer } else { Turn::Compare })
 }
 
 /// The Rust body answered a segment of the entry owning `pc`.
 pub fn answered(pc: u32) {
-    if let Some(body) = lookup(pc) {
-        record(body.entry, |s| s.answered += 1);
+    let Some(body) = lookup(pc) else {
+        return;
+    };
+    match row(body.entry) {
+        Some(row) => {
+            row.answered.fetch_add(1, Ordering::Relaxed);
+        }
+        None => record(body.entry, |s| s.answered += 1),
     }
 }
 
@@ -89,24 +123,30 @@ pub fn answered(pc: u32) {
 /// the proof and the counters stay.
 pub fn new_run() {
     SLOTS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    for row in &ROWS {
+        row.slot.store(0, Ordering::Relaxed);
+    }
 }
 
 fn record(entry: u32, f: impl FnOnce(&mut Stats)) {
-    f(STATS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .entry(entry)
-        .or_default());
+    let mut stats = STATS.lock().unwrap_or_else(|e| e.into_inner());
+    let s = stats.entry(entry).or_default();
+    f(s);
+    if let Some(row) = row(entry) {
+        row.proven.store(is_proven(s), Ordering::Relaxed);
+    }
 }
 
 /// Segment counts grouped by function, in entry address order.
 pub fn stats() -> Vec<(u32, Stats)> {
-    STATS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .map(|(&k, v)| (k, v.clone()))
-        .collect()
+    let mut stats = STATS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    for (&entry, row) in ENTRIES.iter().zip(&ROWS) {
+        let answered = row.answered.load(Ordering::Relaxed);
+        if answered != 0 {
+            stats.entry(entry).or_default().answered += answered;
+        }
+    }
+    stats.into_iter().collect()
 }
 
 #[must_use]
@@ -119,7 +159,8 @@ pub struct Prediction {
 }
 
 fn plan(body: &'static Body, cpu: &CpuAbi, ram: &mut Guest, pc: u32) -> Option<Prediction> {
-    let mut bus = Bus::for_segment(ram, cpu, pc, body.entry..body.end, body.sites)?;
+    let mut log = Log::new();
+    let mut bus = Bus::for_segment(ram, &mut log, cpu, pc, body.entry..body.end, body.sites)?;
     let mut cpu = *cpu;
     let transfer = evaluate(body, &mut cpu, &mut bus, pc).ok()?;
     // Both generated tiers spill the outgoing target to EIP at this
@@ -345,6 +386,29 @@ mod tests {
         assert_eq!(after.declined, initial.declined + 1);
         assert_eq!(after.matched, initial.matched);
         assert_eq!(after.differed, initial.differed);
+    }
+
+    #[test]
+    fn an_arm_entrys_turn_and_answer_stay_out_of_the_locks() {
+        // An entry no other test in this binary uses.
+        const ENTRY: u32 = 0x1cd590;
+        assert!(ENTRIES.contains(&ENTRY));
+        let counted = || stats().into_iter().find(|(e, _)| *e == ENTRY).map_or(0, |(_, s)| s.answered);
+        let before = counted();
+        record(ENTRY, |s| s.matched = PROVEN_AFTER);
+        let turns: Vec<_> = (0..AUDIT_EVERY).map(|_| turn(ENTRY).unwrap()).collect();
+        // One audit slot in the window (two if another test's new_run lands
+        // inside it); the rest answer.
+        assert!(turns.iter().filter(|&&t| t == Turn::Answer).count() >= AUDIT_EVERY as usize - 2);
+        for _ in 0..3 {
+            answered(ENTRY);
+        }
+        // Counted on the row: the slot map and the locked stats never saw it.
+        assert!(!SLOTS.lock().unwrap().contains_key(&ENTRY));
+        assert_eq!(STATS.lock().unwrap()[&ENTRY].answered, 0);
+        assert_eq!(counted(), before + 3);
+        record(ENTRY, |s| s.differed += 1);
+        assert!((0..AUDIT_EVERY).all(|_| turn(ENTRY) == Some(Turn::Compare)));
     }
 
     #[test]
