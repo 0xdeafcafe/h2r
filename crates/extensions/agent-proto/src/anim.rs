@@ -31,9 +31,6 @@ pub struct Body {
     pub native: u64,
     /// Nodes it posed.
     pub nodes: u64,
-    /// Calls the plan declined, left to the guest, by reason (`float`,
-    /// `fault`, `count`, `queue`, `alias`, `parent`).
-    pub declined: BTreeMap<String, u64>,
 }
 
 /// `anim.manager`: segment outcomes keyed by the function entry (8 hex digits).
@@ -46,8 +43,6 @@ pub struct Manager {
 pub struct ManagerEntry {
     pub matched: u64,
     pub differed: u64,
-    /// The Rust arm declined before the guest ran.
-    pub declined: u64,
     /// The guest exited before reaching the predicted boundary.
     pub interrupted: u64,
     /// Segments the Rust body answered without the guest.

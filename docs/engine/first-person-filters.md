@@ -69,17 +69,18 @@ animation switch off.
 
 - The seat update calls the kernel at four axis sites and one slot
   damping site. Its caller continues within the segment after a
-  successful inline call. A declined kernel emits the guest call to
-  `11eed0` with its original return address.
+  successful inline call. A declined kernel panics
+  `anim filter: <reason>`; the guest call to `11eed0` runs only when the
+  kernel's switch is off.
 - `step(&In) -> Result<Out, Decline>` is the call as a pure function of
   gathered state, for tests and later callers.
-- `engine::sim_anim::filter::stats()` counts calls, snaps and declines
-  by reason. The seat update publishes counts when the segment commits.
+- `engine::sim_anim::filter::stats()` counts calls and snaps. The seat
+  update publishes counts when the segment commits.
 
 ## Rules and limits
 
-The call declines, writing nothing (the port makes the guest call),
-when:
+The call declines, writing nothing, and the caller panics
+`anim filter: <reason>` (no guest call runs), when:
 
 - a guest read faults (`Fault`);
 - an instruction would deliver an unmasked SSE or x87 exception
@@ -112,7 +113,7 @@ so there is no fast-path range and no precision or rounding decline.
 
 - Run parity: the sim-budget match against the lifted build, identical
   `state_hashes_v1` and an empty `h2 sim diff`, with
-  a mapped local seat. The decline rate on real seats comes from `stats()`.
+  a mapped local seat. The decline rate on real seats is not measured.
 
 ## Related
 

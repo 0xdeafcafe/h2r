@@ -85,8 +85,7 @@ with each `s`-product and each sum one rounded binary32 operation.
   stay guest.
 - Writes nothing outside the marker records and `eax`; the dead stack
   below the port's frame stays unwritten.
-- `engine::sim_anim::markers::stats()` counts fills, records and
-  declines by reason.
+- `engine::sim_anim::markers::stats()` counts fills and records.
 - The kernel models the call as `b8d30` makes it: no remap table (the
   wrapper `1d90b0` is the only caller that passes one, and it stays
   guest), so a selection's node is the instance's byte and never
@@ -94,9 +93,9 @@ with each `s`-product and each sum one rounded binary32 operation.
 
 ## Rules and limits
 
-The fill declines, writing nothing (the port makes the guest `1d8f50`
-call, and the comparison still holds because both sides then run the
-same lifted code), when:
+The fill declines, writing nothing, and the port panics
+`anim marker: <reason>` (no guest `1d8f50` call runs; the guest call is
+the path of the switched-off kernel), when:
 
 - MXCSR is not masked, round-to-nearest and PE-sticky (`det::fast_env`),
   or any operand of any operation is off the fast path (`Float`);
@@ -104,7 +103,7 @@ same lifted code), when:
   (`Fault`; the window is read eagerly, so a read the guest would not
   make can only decline, never change a result);
 - the model has more groups than the port's scan bound (256) and none
-  matched (`Scan`; the port resumes the lifted scan);
+  matched (`Scan`);
 - the group has more instances than the kernel gathers, 4096 (`Count`);
 - the output overlaps a range the call reads, as virtual addresses
   (`Alias`; the guest interleaves its writes with those reads).
@@ -139,8 +138,8 @@ arm64 and x86-64 and MXCSR does not change.
 ## Not verified
 
 - Run parity: the sim-budget match against the lifted build, identical `state_hashes_v1` and an empty `h2 sim diff`; the
-  cross-architecture arm; the decline rate on real models (`stats()`),
-  and the time saved per tick on Waterworks.
+  cross-architecture arm; the decline rate on real models, and the time
+  saved per tick on Waterworks.
 
 ## Related
 

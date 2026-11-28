@@ -66,12 +66,11 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Why the step was left to the guest.
+/// Why the kernel declined the step; the port's loops run it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
 pub enum Decline {
     /// A guest read faulted.
-    Fault = 0,
+    Fault,
     /// A count passed the gather bound.
     Count,
     /// A write overlaps a range the step reads.
@@ -81,27 +80,22 @@ pub enum Decline {
     Direction,
 }
 
-const DECLINES: usize = 4;
-
-/// Call counts since start, for timing and the fallback rate.
+/// Call counts since start, for timing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     /// Steps the kernel filled.
     pub native: u64,
     /// Palette records it wrote.
     pub records: u64,
-    pub declined: [u64; DECLINES],
 }
 
 static NATIVE: AtomicU64 = AtomicU64::new(0);
 static RECORDS: AtomicU64 = AtomicU64::new(0);
-static DECLINED: [AtomicU64; DECLINES] = [const { AtomicU64::new(0) }; DECLINES];
 
 pub fn stats() -> Stats {
     Stats {
         native: NATIVE.load(Ordering::Relaxed),
         records: RECORDS.load(Ordering::Relaxed),
-        declined: std::array::from_fn(|i| DECLINED[i].load(Ordering::Relaxed)),
     }
 }
 
@@ -355,12 +349,8 @@ pub fn run(c: &mut CpuAbi, g: &mut impl Memory) -> Result<Option<TransferAbi>, G
     if !enabled() {
         return Ok(None);
     }
-    let plan = match plan(c, g) {
-        Ok(p) => p,
-        Err(why) => {
-            DECLINED[why as usize].fetch_add(1, Ordering::Relaxed);
-            return Ok(None);
-        }
+    let Ok(plan) = plan(c, g) else {
+        return Ok(None);
     };
     scatter(c, g, &plan).map(Some)
 }

@@ -1,6 +1,5 @@
 //! A phase 1d segment: the Rust body answers it. A segment the body
-//! declines leaves the frame intact; the original runs it, counted
-//! (`manager::arm::declined`).
+//! declines panics, naming the entry `name`; no guest runs it.
 use engine::sim_anim::manager::{self, arm};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
@@ -8,14 +7,13 @@ pub(super) fn run(
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
     pc: u32,
-    resume: bool,
+    name: &str,
 ) -> Result<TransferAbi, GuestFault> {
-    if let Some(transfer) = manager::run(cpu, &mut ctx.memory(), pc)? {
-        arm::answered(pc);
-        return Ok(transfer);
-    }
-    arm::declined(pc);
-    crate::sim_objects::original(cpu, ctx, pc, resume)
+    let Some(transfer) = manager::run(cpu, &mut ctx.memory(), pc)? else {
+        super::segment_declined(name, cpu, pc);
+    };
+    arm::answered(pc);
+    Ok(transfer)
 }
 
 #[cfg(test)]
@@ -70,7 +68,7 @@ mod tests {
         let before = counts();
         for _ in 0..8 {
             let mut cpu = entry;
-            let t = run(&mut cpu, &mut ctx, AFTER_CALLBACK, true).unwrap();
+            let t = run(&mut cpu, &mut ctx, AFTER_CALLBACK, "graph view").unwrap();
             assert_eq!(t, TransferAbi::call(RESOURCE, RETURN_TO));
             assert_eq!((cpu.esp, cpu.ecx, cpu.esi), (SP - 8, 0x35, 0x123456));
             assert_eq!(ctx.memory().u32(SP - 8).unwrap(), RETURN_TO);

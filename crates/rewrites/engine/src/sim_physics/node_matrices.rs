@@ -592,7 +592,7 @@ pub(crate) fn update(c: &mut CpuAbi, g: &mut Guest, mut pc: u32) -> Result<Trans
                         0xbd5f5
                     } else {
                         // Phase 1b: the whole walk in one Rust call,
-                        // or this loop when it declines (a counted
+                        // or this loop when it declines (a
                         // `skeleton::Decline`).
                         if !crate::sim_anim::skeleton::walk(c, g)? {
                             nodes(c, g)?;

@@ -4,9 +4,8 @@
 //! prediction belongs to the original invocation on the host stack, so a
 //! different guest thread or a nested call cannot consume it.
 //!
-//! The Rust body answers every segment it can (`sim_bridge`'s
-//! `manager_arm`); a segment it declines is the guest's, counted
-//! ([`declined`]).
+//! The Rust body answers every segment (`sim_bridge`'s `manager_arm`); a
+//! segment it declines panics there, naming the entry.
 use super::{Body, Bus, evaluate, lookup};
 use crate::sim_native::plan::Log;
 use runtime::{CpuAbi, Guest, TransferAbi, abi};
@@ -14,8 +13,8 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Phase 1d's manager and graph entries: the Rust body answers each
-/// segment it can, and the guest the ones it declines.
+/// Phase 1d's manager and graph entries: the Rust body answers every
+/// segment.
 pub const ENTRIES: [u32; 6] = [0x1c66a0, 0x1c6f60, 0x1cd590, 0x1daea0, 0x1dd9d0, 0x1ddb40];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -31,7 +30,6 @@ pub struct Mismatch {
 pub struct Stats {
     pub matched: u64,
     pub differed: u64,
-    pub declined: u64,
     /// The guest faulted, stopped, or yielded before its outgoing boundary.
     pub interrupted: u64,
     /// Segments the Rust body answered without the guest.
@@ -63,14 +61,6 @@ pub fn answered(pc: u32) {
             row.answered.fetch_add(1, Ordering::Relaxed);
         }
         None => record(body.entry, |s| s.answered += 1),
-    }
-}
-
-/// The Rust body declined a segment of the entry owning `pc`: the guest
-/// runs it.
-pub fn declined(pc: u32) {
-    if let Some(body) = lookup(pc) {
-        record(body.entry, |s| s.declined += 1);
     }
 }
 
@@ -120,12 +110,7 @@ fn plan(body: &'static Body, cpu: &CpuAbi, ram: &mut Guest, pc: u32) -> Option<P
 /// Evaluate the Rust segment on a CPU copy and a private store log. A late
 /// fault discards all predicted stores, including already prepared pushes.
 pub fn predict(cpu: &CpuAbi, ram: &mut Guest, pc: u32) -> Option<Prediction> {
-    let body = lookup(pc)?;
-    let prediction = plan(body, cpu, ram, pc);
-    if prediction.is_none() {
-        record(body.entry, |s| s.declined += 1);
-    }
-    prediction
+    plan(lookup(pc)?, cpu, ram, pc)
 }
 
 impl Prediction {
@@ -325,13 +310,12 @@ mod tests {
         let after = counts();
         assert_eq!(after.interrupted, initial.interrupted + 4);
         assert_eq!(after.answered, initial.answered);
-        assert_eq!(after.declined, initial.declined + 1);
         assert_eq!(after.matched, initial.matched);
         assert_eq!(after.differed, initial.differed);
     }
 
     #[test]
-    fn an_arm_entrys_answers_stay_out_of_the_lock_and_declines_are_counted() {
+    fn an_arm_entrys_answers_stay_out_of_the_lock() {
         // An entry no other test in this binary uses.
         const ENTRY: u32 = 0x1cd590;
         assert!(ENTRIES.contains(&ENTRY));
@@ -343,9 +327,8 @@ mod tests {
         // Counted on the row: the locked stats never saw it.
         assert!(STATS.lock().unwrap().get(&ENTRY).is_none_or(|s| s.answered == 0));
         assert_eq!(counted().answered, before.answered + 3);
-        declined(ENTRY);
-        assert_eq!(counted().declined, before.declined + 1);
         // No body owns it: nothing.
-        declined(0x123);
+        answered(0x123);
+        assert!(STATS.lock().unwrap().get(&0x123).is_none());
     }
 }
