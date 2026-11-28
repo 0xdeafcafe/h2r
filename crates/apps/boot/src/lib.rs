@@ -1528,11 +1528,11 @@ fn run_configured(
             lights.install(&a.agent);
         }
     }
-    if sim_mode.is_some() || host_light {
-        features
-            .add(&sim_bridge::sim_native::SimNative::new(&loaded.runtime))
-            .map_err(anyhow::Error::msg)?;
-    }
+    // Every profile runs the Rust simulation: the played game, `h2 sim`
+    // and the headless host (docs/engine/sim-rewrite.md).
+    features
+        .add(&sim_bridge::sim_native::SimNative::new(&loaded.runtime))
+        .map_err(anyhow::Error::msg)?;
     registration::register_viewer_skips(&mut features, host_light)?;
     if host_light {
         let frame = match &sim_mode {
