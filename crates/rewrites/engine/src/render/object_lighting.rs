@@ -79,7 +79,8 @@ pub fn sample(m: &mut dyn GuestMemory, object: u32, fpu: Fpu) -> Result<Sample, 
     if m.u32(b.wrapping_add(0x14))? != NONE {
         // 0x0003dcc8: a child asks for its parent's (0x000baf80) and
         // goes round again.
-        return sample(m, root(m, object)?, fpu);
+        let root = root(m, object)?;
+        return sample(m, root, fpu);
     }
     let handle = record(m, object, fpu)?;
     if handle == NONE {

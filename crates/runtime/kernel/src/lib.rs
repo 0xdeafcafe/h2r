@@ -506,6 +506,22 @@ impl Kernel {
     pub fn vfs(&self) -> Option<Arc<Mutex<vfs::Vfs>>> {
         self.lock().storage.clone()
     }
+    /// One positioned read through a guest file handle: the VFS read
+    /// `NtReadFile` makes (README "VFS boundaries"), for the native
+    /// streaming reads that stand in for the guest's I/O worker. The guest
+    /// handle needs read access; the file position is not touched. Fewer
+    /// bytes than `out` is the end of the file; none is `Ok(0)`.
+    pub fn read_at(&self, guest_handle: u32, offset: u64, out: &mut [u8]) -> Result<usize, vfs::Error> {
+        let (storage, handle) = {
+            let core = self.lock();
+            (core.storage.clone().ok_or(vfs::Error::InvalidHandle)?, core.file_handle(guest_handle)?)
+        };
+        let mut storage = storage.lock().unwrap_or_else(|e| e.into_inner());
+        match storage.read(handle, vfs::Offset::Absolute(offset), out) {
+            Err(vfs::Error::EndOfFile) => Ok(0),
+            other => other,
+        }
+    }
     /// The raw disk's written sectors, when the kernel mounted the device.
     pub fn raw_disk(&self) -> Option<rawdisk::RawSectors> {
         self.lock().raw_disk.clone()

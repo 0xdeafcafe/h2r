@@ -212,7 +212,7 @@ impl Core {
         let mut storage = storage.lock().unwrap_or_else(|e| e.into_inner());
         self.file_call_with(memory, a, &mut storage)
     }
-    fn file_handle(&self, handle: u32) -> vfs::Result<vfs::Handle> {
+    pub(crate) fn file_handle(&self, handle: u32) -> vfs::Result<vfs::Handle> {
         self.file_handles
             .get(&handle)
             .copied()
