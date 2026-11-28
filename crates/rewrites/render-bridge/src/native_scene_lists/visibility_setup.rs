@@ -163,8 +163,7 @@ fn compare(o: &hooks::Obs, producer: &Producer) {
 }
 
 /// Places the arm: the setup's entry and an observer at each producer's.
-/// `on` is `impl.render.native.visibility`: off, the arm compares and
-/// never answers.
+/// With `on` false, the arm compares and never answers.
 pub(super) fn install(b: &mut Builder, on: bool) {
     arm::set_on(on);
     b.raw()

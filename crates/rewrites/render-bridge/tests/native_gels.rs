@@ -12,11 +12,6 @@ fn the_switch_places_gels_and_hooks_are_render_context_only() {
         registry.add(&NativeGels).unwrap();
         registry.build(&Base).unwrap()
     };
-    assert!(
-        !plan("impl.render.native=off")
-            .text()
-            .contains("native_gels_")
-    );
     let on = plan("");
     assert!(on.text().contains("native_gels_quad_end"));
     let find = |name: &str| {

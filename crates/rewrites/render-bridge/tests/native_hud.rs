@@ -1,5 +1,5 @@
 //! The `native-hud` feature (docs/graphics/native-post-hud.md, stage 5):
-//! its plan (context-only hooks; none with the master switch off).
+//! its plan (context-only hooks).
 #![cfg(feature = "native-render")]
 
 use render_bridge::native_hud::{self, NativeHud};
@@ -13,21 +13,19 @@ fn plan(switches: &str) -> hooks::plan::Plan {
 }
 
 #[test]
-fn the_native_ui_defaults_on_and_the_master_disables_it() {
-    for (spec, expected) in [("", true), ("impl.render.native=off", false), ("impl.render=off", true)] {
+fn the_native_ui_defaults_on() {
+    for (spec, expected) in [("", true), ("impl.render=off", true)] {
         assert_eq!(native_hud::on(&Switches::parse(spec).unwrap()), expected);
     }
-    assert!(plan("impl.render.native=off").chains.is_empty());
 }
 
 /// The Rust HUD material is on with the native UI; its own switch turns
-/// only its setup hook off, and the master switch turns everything off.
+/// only its setup hook off.
 #[test]
 fn the_rust_hud_defaults_on_and_its_switch_only_turns_it_off() {
     for (spec, expected) in [
         ("", true),
         ("impl.render.native-hud=off", false),
-        ("impl.render.native=off", false),
         ("impl.render=off", true),
     ] {
         assert_eq!(native_hud::rust_hud_on(&Switches::parse(spec).unwrap()), expected, "{spec}");

@@ -180,9 +180,8 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAb
 
 /// Places the arm: the body at `RENDER_GAME_VIEWS` and the comparison at
 /// `RENDER_VIEWS`'s entry, an observer, so it runs before the features
-/// whose hooks there move the cameras. `on` is
-/// `impl.render.native.visibility`: off, the arm compares and never
-/// answers.
+/// whose hooks there move the cameras. With `on` false, the arm compares
+/// and never answers.
 pub(super) fn install(b: &mut Builder, on: bool) {
     with(|s| s.on = on);
     b.raw().implement(&points::RENDER_GAME_VIEWS, "native_view_records", body).optional();

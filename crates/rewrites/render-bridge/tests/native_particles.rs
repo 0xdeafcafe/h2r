@@ -4,13 +4,8 @@ use hooks::plan::Base;
 use hooks::{Registry, Switches};
 
 #[test]
-fn the_switch_off_and_no_parent_update_skip() {
+fn no_parent_update_skip() {
     use render_bridge::native_particle_walk::WALK;
-    let mut r = Registry::new(Switches::parse("impl.render.native=off").unwrap());
-    r.add(&NativeParticles).unwrap();
-    let off = r.build(&Base).unwrap();
-    assert!(!off.text().contains("native_particles"));
-    assert!(!off.chains.contains_key(&WALK.base), "the switch off keeps the guest's walk");
     let mut r = Registry::new(Switches::defaults());
     r.add(&NativeParticles).unwrap();
     let plan = r.build(&Base).unwrap();

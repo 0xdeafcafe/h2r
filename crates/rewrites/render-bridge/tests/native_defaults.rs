@@ -1,6 +1,4 @@
-//! Every native stage is on with the empty switch string, and
-//! `impl.render.native=off` is the only way to turn them off: one switch
-//! for the whole native renderer, looked up exactly.
+//! Every native stage is on with the empty switch string.
 #![cfg(feature = "native-render")]
 
 use hooks::plan::Base;
@@ -122,44 +120,18 @@ fn placed(feature: &dyn Feature, switches: &str) -> String {
     r.build(&Base).unwrap().text()
 }
 
-/// The empty switch string places every stage; the master switch off
-/// removes each one's hooks.
+/// The empty switch string places every stage.
 #[test]
-fn every_stage_is_on_by_default_and_off_with_the_master_switch() {
-    let off = Switches::parse("impl.render.native=off").unwrap();
+fn every_stage_is_on_by_default() {
     for stage in stages() {
         assert!((stage.on)(&Switches::defaults()), "{}", stage.name);
-        assert!(!(stage.on)(&off), "{}", stage.name);
         let on = placed(stage.feature, "");
         assert!(on.contains(stage.label), "{}: {on}", stage.name);
-        let off = placed(stage.feature, "impl.render.native=off");
-        assert!(!off.contains(stage.label), "{}: {off}", stage.name);
     }
-}
-
-fn plan(switches: Switches) -> hooks::Plan {
-    let mut registry = Registry::new(switches);
-    assert!(registry.add(&render_bridge::native_map_work::NativeMapWork).unwrap());
-    assert!(registry.add(&render_bridge::native_scene_lists::NativeSceneLists).unwrap());
-    for stage in stages() {
-        assert!(registry.add(stage.feature).unwrap());
-    }
-    registry.build(&Base).unwrap()
-}
-
-#[test]
-fn the_native_master_switch_removes_every_native_hook() {
-    let plan = plan(Switches::parse("impl.render.native=off").unwrap());
-    assert!(
-        plan.chains.is_empty() && plan.entries.is_empty(),
-        "{}",
-        plan.text(),
-    );
 }
 
 /// The old per-stage keys are gone: `H2_FEATURES` refuses them, and set
-/// directly they change nothing, so no stage can be turned on alone with
-/// the master off, or off alone with it on.
+/// directly they change nothing, so no stage can be turned off alone.
 #[test]
 fn the_old_stage_keys_reach_nothing() {
     for spec in [
@@ -169,17 +141,13 @@ fn the_old_stage_keys_reach_nothing() {
     ] {
         assert!(Switches::parse(spec).is_err(), "{spec} parses");
     }
-    for (master, stage_keys) in [
-        (false, [("impl.render.native_world", true), ("impl.render.native_lights", true)]),
-        (true, [("impl.render.native_world", false), ("impl.render.native_ui", false)]),
-    ] {
-        let mut switches = Switches::defaults().with("impl.render.native", master);
-        for (key, on) in stage_keys {
-            switches = switches.with(key, on);
-        }
-        for stage in stages() {
-            assert_eq!((stage.on)(&switches), master, "{stage_keys:?}: {}", stage.name);
-        }
+    let stage_keys = [("impl.render.native_world", false), ("impl.render.native_ui", false)];
+    let mut switches = Switches::defaults();
+    for (key, on) in stage_keys {
+        switches = switches.with(key, on);
+    }
+    for stage in stages() {
+        assert!((stage.on)(&switches), "{stage_keys:?}: {}", stage.name);
     }
 }
 
@@ -210,5 +178,4 @@ fn the_native_master_switch_gates_every_stage_and_walk() {
     };
     assert_eq!(enabled(""), [true; 8]);
     assert_eq!(enabled("impl.render=off"), [true; 8]);
-    assert_eq!(enabled("impl.render.native=off"), [false; 8]);
 }

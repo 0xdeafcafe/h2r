@@ -48,12 +48,10 @@ fn its_layer_draw_chain_runs_on_the_render_thread() {
     assert!(chain.render_thread().is_ok());
 }
 
-/// Off, it holds nothing and never blocks a snapshot; on (the default),
-/// its section (no bytes) drops the pending restore at a load.
+/// Its section (no bytes) drops the pending restore at a load.
 #[test]
-fn its_snapshot_policy_is_stateless_off_and_a_section_on() {
+fn its_snapshot_policy_is_a_section() {
     for (switches, policy) in [
-        ("impl.render.native=off", "stateless"),
         ("", "section"),
     ] {
         let mut r = Registry::new(Switches::parse(switches).unwrap());
@@ -81,12 +79,6 @@ fn it_is_on_by_default() {
     assert!(native_world::on(&Switches::parse("").unwrap()));
     let text = plan_text("");
     assert!(text.contains("native_world_skip"), "{text}");
-}
-
-#[test]
-fn the_master_switch_off_places_nothing() {
-    let text = plan_text("impl.render.native=off");
-    assert!(!text.contains("native_world"), "{text}");
 }
 
 const LIST: u32 = 0x004c_1a48;
@@ -297,7 +289,7 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
 fn the_world_build_places_only_context_only_scene_hooks() {
     let labels = ["native_world_visible_sections", "native_world_build_section",
         "native_world_build_entry", "native_world_empty_entries", "native_world_shader_states"];
-    for (settings, enabled) in [("", true), ("impl.render.native=off", false)] {
+    for (settings, enabled) in [("", true)] {
         let mut r = Registry::new(Switches::parse(settings).unwrap());
         r.add(&NativeWorld).unwrap();
         let plan = r.build(&Base).unwrap();

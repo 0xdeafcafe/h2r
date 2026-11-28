@@ -11,19 +11,6 @@ use native_render::camera::GuestRead;
 use native_render::skip::{RENDER_RECORDS, RENDER_RECORD_SIZE};
 use native_render::transparent::{DATA_OFFSET, GEOMETRY_HANDLER, Source};
 
-#[test]
-fn the_switch_off_places_nothing() {
-    let mut r = Registry::new(Switches::parse("impl.render.native=off").unwrap());
-    r.add(&NativeTransparents).unwrap();
-    let plan = r.build(&Base).unwrap();
-    let text = plan.text();
-    assert!(!text.contains("native_transparents"), "{text}");
-    assert!(!text.contains("native_water_composite"), "{text}");
-    assert!(!text.contains("native_late_subpart_draw"), "{text}");
-    // Nothing placed, nothing held: no snapshot blocker.
-    assert!(plan.snapshot_blockers().is_empty());
-}
-
 /// On too: what it holds lasts one view and changes no guest memory.
 #[test]
 fn on_its_snapshot_policy_is_stateless() {

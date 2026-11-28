@@ -21,10 +21,6 @@ const SHADER: u32 = 0x10;
 
 #[test]
 fn the_plan_places_the_cut_when_on() {
-    let mut off = Registry::new(Switches::parse("impl.render.native=off").unwrap());
-    off.add(&NativeFirstPerson).unwrap();
-    assert!(!off.build(&Base).unwrap().text().contains("native_first_person"));
-
     let mut on = Registry::new(Switches::defaults());
     on.add(&NativeFirstPerson).unwrap();
     let plan = on.build(&Base).unwrap();

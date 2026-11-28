@@ -24,17 +24,6 @@ fn the_plan_orders_it_inside_render_timing_and_the_world() {
     assert!(!text.contains("native_objects_restore"), "nothing after the body: {text}");
 }
 
-#[test]
-fn the_switch_off_places_nothing() {
-    let mut r = Registry::new(Switches::parse("impl.render.native=off").unwrap());
-    r.add(&NativeObjects).unwrap();
-    let plan = r.build(&Base).unwrap();
-    let text = plan.text();
-    assert!(!text.contains("native_objects"), "{text}");
-    // Nothing placed, nothing held: no snapshot blocker.
-    assert!(plan.snapshot_blockers().is_empty());
-}
-
 /// On, its section (no bytes) drops the walk's layer at a load.
 #[test]
 fn on_its_snapshot_policy_is_a_section() {

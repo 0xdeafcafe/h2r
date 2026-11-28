@@ -41,10 +41,21 @@ static VBLANKS: AtomicU32 = AtomicU32::new(0);
 static SWAPS: AtomicU32 = AtomicU32::new(0);
 static SWAPPED: AtomicBool = AtomicBool::new(false);
 
-/// Counts one `Swap`: the frame step sealed a frame.
+static ON_SWAP: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
+/// Counts one `Swap`: the frame step sealed a frame. Then runs the
+/// [`on_swap`] callback.
 pub fn swapped() {
     SWAPS.fetch_add(1, Ordering::Relaxed);
     SWAPPED.store(true, Ordering::Relaxed);
+    if let Some(f) = ON_SWAP.get() {
+        f();
+    }
+}
+
+/// Sets what runs after each `Swap` (the game's present count). Once.
+pub fn on_swap(f: fn()) {
+    let _ = ON_SWAP.set(f);
 }
 
 /// `Swap`s so far.
