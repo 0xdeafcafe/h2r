@@ -1,7 +1,8 @@
 //! Tick phase 17, `post_game` `0x0015ca10`, in Rust (docs/engine/sim-rewrite.md,
-//! "The tick driver"). The phase's own body is Rust; the twelve functions it
-//! calls are still the lifted ones, one guest call each, counted in
-//! [`Stats::calls`].
+//! "The tick driver"). The phase's own body is Rust, and so is the round
+//! state machine `15c550` ([`crate::round_state`]); the other eleven
+//! functions it calls are still the lifted ones, one guest call each,
+//! counted in [`Stats::calls`].
 //!
 //! The guest body, whole (`0x15ca10..0x15cb93`, read from `h2 disasm`).
 //! `G` is the game globals `[0x4e9ae8]`, `E` the engine globals `[0x4e6948]`:
@@ -57,7 +58,8 @@ pub const HELD: u32 = 0x0051_0cb1;
 pub const QUIET: u32 = 0x0051_0ca1;
 
 pub const STATE_CHANGE: u32 = 0x0015_fe50;
-pub const AFTER: u32 = 0x0015_c550;
+/// The round state machine, [`crate::round_state`].
+pub const AFTER: u32 = crate::round_state::ENTRY;
 pub const LAST: u32 = 0x0015_ba00;
 pub const END: u32 = 0x000a_7810;
 pub const SCORE: u32 = 0x0015_b330;
@@ -68,9 +70,9 @@ pub const POINTER: u32 = 0x0016_2030;
 pub const QUIET_A: u32 = 0x0015_c6f0;
 pub const QUIET_B: u32 = 0x0019_6430;
 pub const LOUD: u32 = 0x0019_6390;
-/// Every function the phase calls.
-pub const CALLEES: [u32; 12] =
-    [STATE_CHANGE, AFTER, LAST, END, SCORE, SCORED, FINISH, REQUEST, POINTER, QUIET_A, QUIET_B, LOUD];
+/// Every function the phase calls as a guest call.
+pub const CALLEES: [u32; 11] =
+    [STATE_CHANGE, LAST, END, SCORE, SCORED, FINISH, REQUEST, POINTER, QUIET_A, QUIET_B, LOUD];
 
 /// The guest's frame under its return address: `sub esp, 0x24`, `esi`,
 /// `ebx`, and the return address's own slot.
@@ -183,7 +185,7 @@ pub async fn run(cx: &Cx, reserve: u32) -> Result<(), EntryError> {
                 }
                 Round::Tick => {}
             }
-            cx.call(call(AFTER, g)).await?;
+            crate::round_state::run(cx, below, g, None).await?;
         }
         Plan::Over(g) => {
             if cx.read(|m| m.u8(g.wrapping_add(ENDED)))? != 0 {
@@ -203,7 +205,7 @@ pub async fn run(cx: &Cx, reserve: u32) -> Result<(), EntryError> {
                     closing = cx.read(|m| m.u32(g.wrapping_add(ENDING)))? != 1;
                 }
                 if closing {
-                    cx.call(call(AFTER, g).ebx(1)).await?;
+                    crate::round_state::run(cx, below, g, Some(1)).await?;
                 }
             }
             cx.call(call(FINISH, g).ebx(1)).await?;

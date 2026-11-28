@@ -380,12 +380,19 @@ fn ai_update_matches_lifted() {
 
 #[test]
 fn hs_update_matches_lifted() {
-    use engine::hs_update::{self, AFTER, ENABLED, EXECUTE};
+    use engine::hs_object_lists::{LISTS, NODES};
+    use engine::hs_update::{self, ENABLED, EXECUTE};
     let Some(ram) = image_ram() else { return };
     const POOL: u32 = 0x0060_0000;
     const BITMAP: u32 = 0x0060_0800;
     const DATA: u32 = 0x0060_1000;
     const THREAD: u32 = 0x418;
+    const LIST_POOL: u32 = 0x0061_0000;
+    const LIST_BITMAP: u32 = 0x0061_0800;
+    const LIST_DATA: u32 = 0x0061_1000;
+    const NODE_POOL: u32 = 0x0062_0000;
+    const NODE_BITMAP: u32 = 0x0062_0800;
+    const NODE_DATA: u32 = 0x0062_1000;
     let f: fn(entry::Cx) -> EntryFuture = |cx| {
         Box::pin(async move {
             hs_update::run(&cx, 0x40).await?;
@@ -428,10 +435,50 @@ fn hs_update_matches_lifted() {
             put(&mut mem, at + 8, &wake.to_le_bytes());
         }
         put(&mut mem, BITMAP, &bits.to_le_bytes());
-        let why = format!("case {case}: {slots} slots, bits {bits:#x}, enabled {enabled}");
+        // The tail call's object lists (12 bytes each) and their nodes
+        // (0x10 each, next at +8): each list holds a chain of 0..3 nodes.
+        let lists = 1 + next() % 8;
+        let mut list_bits = 0u32;
+        let mut node = 0u32;
+        for i in 0..lists {
+            let r = next();
+            if r % 4 == 0 {
+                continue;
+            }
+            list_bits |= 1 << i;
+            let at = LIST_DATA + 12 * i;
+            put(&mut mem, at, &(0x9000 + i as u16).to_le_bytes());
+            put(&mut mem, at + 4, &[(r >> 4) as u8 % 3, 0]);
+            let mut first = u32::MAX;
+            for _ in 0..(r >> 8) % 4 {
+                let n = NODE_DATA + 0x10 * node;
+                put(&mut mem, n, &(0xa000 + node as u16).to_le_bytes());
+                put(&mut mem, n + 8, &first.to_le_bytes());
+                first = (0xa000 + node) << 16 | node;
+                node += 1;
+            }
+            put(&mut mem, at + 8, &first.to_le_bytes());
+        }
+        let node_bits = if node == 0 { 0 } else { u32::MAX >> (32 - node) };
+        for (pool, size, high, live, data, bitmap, bits) in [
+            (LIST_POOL, 12u32, lists, list_bits.count_ones(), LIST_DATA, LIST_BITMAP, list_bits),
+            (NODE_POOL, 0x10, node, node, NODE_DATA, NODE_BITMAP, node_bits),
+        ] {
+            put(&mut mem, pool + 0x20, &32u32.to_le_bytes());
+            put(&mut mem, pool + 0x24, &size.to_le_bytes());
+            put(&mut mem, pool + 0x38, &high.to_le_bytes());
+            put(&mut mem, pool + 0x3c, &live.to_le_bytes());
+            put(&mut mem, pool + 0x44, &data.to_le_bytes());
+            put(&mut mem, pool + 0x48, &bitmap.to_le_bytes());
+            put(&mut mem, bitmap, &bits.to_le_bytes());
+        }
+        put(&mut mem, LISTS, &LIST_POOL.to_le_bytes());
+        put(&mut mem, NODES, &NODE_POOL.to_le_bytes());
+        let why = format!("case {case}: {slots} slots, bits {bits:#x}, enabled {enabled}, lists {list_bits:#x}");
         let (ours, guest) = rust_phase(f, &mem);
-        let lifted = lifted_phase(hs_update::ENTRY, &[EXECUTE, AFTER], &mut mem);
-        assert_eq!(ours, lifted, "{why}: the executor's threads (edi) and the tail call");
+        // The tail call runs lifted, whole: the sweep is compared byte for byte.
+        let lifted = lifted_phase(hs_update::ENTRY, &[EXECUTE], &mut mem);
+        assert_eq!(ours, lifted, "{why}: the executor's threads (edi)");
         same_ram(&mem, &guest, &why);
         ran += ours.iter().filter(|c| c.0 == EXECUTE).count();
     }
@@ -441,9 +488,15 @@ fn hs_update_matches_lifted() {
 #[test]
 fn post_game_matches_lifted() {
     use engine::post_game::{self, CALLEES, END, ENGINE, ENGINES, GAME, HELD, SCORED, SHOW};
+    use engine::round_state;
     let Some(ram) = image_ram() else { return };
     const G: u32 = 0x0060_0000;
     const E: u32 = 0x0060_2000;
+    const OBJ: u32 = 0x0060_4000;
+    const VT: u32 = 0x0060_4100;
+    const TICKS: u32 = 0x0060_4200;
+    /// The engine's state virtual: any address, stubbed.
+    const VCALL: u32 = 0x0015_8000;
     let f: fn(entry::Cx) -> EntryFuture = |cx| {
         Box::pin(async move {
             post_game::run(&cx, 0x40).await?;
@@ -457,7 +510,7 @@ fn post_game_matches_lifted() {
                 for state in [0i16, 1, 2, 3] {
                     for round in [0x1ei16, 0x1f] {
                         for countdown in [0u32, 1, 2] {
-                            for (ending, ended) in [(0u32, 0u8), (1, 0), (1, 1)] {
+                            for (ending, ended) in [(0u32, 0u8), (1, 0), (1, 1), (2, 0), (3, 0)] {
                                 for (show, held) in [(0u8, 0u8), (1, 0), (1, 1)] {
                                     let why = format!(
                                         "engine {engine} mode {mode} over {over} state {state} round {round} \
@@ -467,7 +520,14 @@ fn post_game_matches_lifted() {
                                     put(&mut mem, GAME, &G.to_le_bytes());
                                     put(&mut mem, ENGINE, &E.to_le_bytes());
                                     put(&mut mem, G + 0xc14, &2u32.to_le_bytes());
-                                    put(&mut mem, ENGINES + 8, &engine.to_le_bytes());
+                                    // The engine object, its vtable and its state virtual.
+                                    put(&mut mem, ENGINES + 8, &(if engine != 0 { OBJ } else { 0 }).to_le_bytes());
+                                    put(&mut mem, OBJ, &VT.to_le_bytes());
+                                    put(&mut mem, VT + round_state::VIRTUAL, &VCALL.to_le_bytes());
+                                    put(&mut mem, round_state::TIME, &TICKS.to_le_bytes());
+                                    put(&mut mem, TICKS + 2, &30u16.to_le_bytes());
+                                    put(&mut mem, TICKS + 8, &1234u32.to_le_bytes());
+                                    put(&mut mem, G + 0x24, &(if round == 0x1f { u32::MAX } else { 0x00ab_0001 }).to_le_bytes());
                                     put(&mut mem, E + 0xc, &[mode]);
                                     put(&mut mem, E + 0x1128, &[over]);
                                     put(&mut mem, G, &0x0100u32.to_le_bytes());
@@ -479,7 +539,10 @@ fn post_game_matches_lifted() {
                                     put(&mut mem, SHOW, &[show]);
                                     put(&mut mem, HELD, &[held]);
                                     let (ours, guest) = rust_phase(f, &mem);
-                                    let lifted = lifted_phase_popping(post_game::ENTRY, &CALLEES, &[(END, 4), (SCORED, 4)], &mut mem);
+                                    // The round step `15c550` runs lifted, whole, with its leaves stubbed.
+                                    let stubs: Vec<u32> = CALLEES.iter().chain(&round_state::CALLEES).copied().chain([VCALL]).collect();
+                                    let pops = [(END, 4), (SCORED, 4), (round_state::OBJECT_FLAGS, 8), (VCALL, 4)];
+                                    let lifted = lifted_phase_popping(post_game::ENTRY, &stubs, &pops, &mut mem);
                                     let targets = |v: &[Stubbed]| v.iter().map(|c| c.0).collect::<Vec<_>>();
                                     assert_eq!(targets(&ours), targets(&lifted), "{why}");
                                     same_ram(&mem, &guest, &why);
@@ -492,5 +555,5 @@ fn post_game_matches_lifted() {
             }
         }
     }
-    assert_eq!(cases, 2 * 2 * 2 * 4 * 2 * 3 * 3 * 3);
+    assert_eq!(cases, 2 * 2 * 2 * 4 * 2 * 3 * 5 * 3);
 }

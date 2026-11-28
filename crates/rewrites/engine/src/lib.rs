@@ -60,6 +60,7 @@ pub mod planar_fog;
 pub mod render;
 pub mod render_census;
 pub mod render_loop;
+pub mod round_state;
 pub mod scene_list_math;
 pub mod screen_effect;
 pub mod screen_effects;
@@ -68,6 +69,7 @@ pub mod shadow_arm;
 pub mod shadow_constants;
 pub mod skull_gate;
 pub mod hs_actions;
+pub mod hs_object_lists;
 pub mod hs_pool;
 pub mod hs_syntax;
 // Historical fixed-size partition fixture; the runtime reserves campaign_squad_pool.

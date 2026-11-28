@@ -129,7 +129,7 @@ the lifted execute `0x00209850`, counted in `hs_update::Stats::executed`.
 | 1 | returns at once, with no tail call, if scripts are off (`[0x4f9388]` 0); else reads `game_time + 8` once |
 | 2 | walks occupied slots in order with `data_next_index`, which re-reads the high-water mark |
 | 3 | runs every thread that is not category 4 and has `0 <= wake <= now` |
-| 4 | stops if the scheduler is disabled, then tail-calls `0x001deed0` (`Engine::after_update`) |
+| 4 | stops if the scheduler is disabled, then tail-calls `0x001deed0`, the object-list sweep: every list with no references (`+4` 0) is freed with its node chain (`0x2963b0`); Rust in `crates/rewrites/engine/src/hs_object_lists.rs` |
 
 So a thread woken by an earlier slot runs in the same tick, and one woken by
 a later slot runs on the next.
