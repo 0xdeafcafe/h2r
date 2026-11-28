@@ -15,8 +15,10 @@ const SCRATCH: u32 = 0x0050_9000;
 const BSP_AT: u32 = 0x0050_5000;
 const DEVICE_AT: u32 = 0x004f_8000;
 const STREAM_AT: u32 = 0x0050_7100;
+const BUFFER: u32 = 0x0050_7200;
 const VERTEX_TYPE: u32 = 5;
-const VERTEX_HANDLE: u32 = 0x77aa;
+/// The device pointer the clear's push reads.
+const DEVICE: u32 = 0x0040_7488;
 
 /// A definition whose shader `1` reaches implementation flags `flags`
 /// (template `2`, implementation `3`), one bitmap (`4`) of two images.
@@ -44,9 +46,6 @@ fn mem(flags: u32) -> FlatMemory {
     set(0x0050_6800 + 0x20, 0x0050_6900);
     set(0x0050_6900 + 4, IMPL);
     set(IMPL + 0x100, VERTEX_TYPE);
-    set(tag(VERTEX_TYPE) + 8, 0x0050_6d00);
-    set(0x0050_6d00 + 8, 0x0050_6e00);
-    set(0x0050_6e00 + 0x1c + 0x10, VERTEX_HANDLE);
     set(IMPL + 0x118, flags);
     set(tag(4) + 8, BITMAP);
     set(BITMAP + 0x44, 2);
@@ -56,12 +55,14 @@ fn mem(flags: u32) -> FlatMemory {
     set(BSP, BSP_AT);
     set(BSP_AT + WATER_COUNT, 1);
     set(GEO + GEOMETRY_STATE, STREAM_AT);
-    set(STREAM_AT + 8, 0x0050_7200);
-    set(state::DEVICE, DEVICE_AT);
+    set(STREAM_AT, 0x0300_0002);
+    set(STREAM_AT + 8, BUFFER);
+    set(STREAM_AT + 0x10, 0x40);
+    set(BUFFER + 4, 0x0012_3000);
+    set(DEVICE, DEVICE_AT);
     set(DEVICE_AT, 0x100);
     set(DEVICE_AT + 4, 0x1000);
-    set(crate::native_targets::STAGE_REQUESTED, 0x1234);
-    set(state::ONE, 1f32.to_bits());
+    set(0x0045_dbc0, 1f32.to_bits());
     // The structure upload's inputs (engine::render_loop::structure_parameters).
     set(0x0046_87b0, 0x0050_7300);
     set(0x0050_7300 + 8, 1f32.to_bits());
@@ -73,8 +74,9 @@ fn mem(flags: u32) -> FlatMemory {
     set(0x0045_dc38, 255f32.to_bits());
     set(GEO + QUAD_COUNT, 8);
     set(GEO + QUAD_INDICES, INDICES);
-    set(STATE_BLOCK, 0xdead);
-    set(STATE_BLOCK + 4 * (STATE_BLOCK_WORDS - 1), 0xdead);
+    for n in 0..12 {
+        set(ROWS + 4 * n, 0x3f80_0000 + n);
+    }
     m.write(0x0045_e450, &0.5f64.to_le_bytes()).unwrap();
     // The texture block loaded; both images current.
     m.write(DEF + TEXTURE_BLOCK + 0x1e, &[1]).unwrap();
@@ -90,6 +92,8 @@ fn mem(flags: u32) -> FlatMemory {
 }
 
 const CACHE_AT: u32 = 0x0050_a000;
+/// Where the grid leaves its rows (`scene_extract::late::OCEAN_ROWS`).
+const ROWS: u32 = scene_extract::late::OCEAN_ROWS;
 
 struct Recorder {
     host: Fake,
@@ -111,11 +115,11 @@ impl Device for Recorder {
     fn scratch(&self) -> u32 {
         SCRATCH
     }
-    fn draw(&mut self, _mem: &mut dyn GuestMemory, indices: u32, count: u32) -> Result<(), Cause> {
+    fn draw(&mut self, _mem: &mut dyn GuestMemory, draw: &Draw) -> Result<(), Cause> {
         if self.refuse_draw {
             return Err("draw");
         }
-        self.host.push(Event::Draw { indices, count });
+        self.host.push(Event::Draw(Box::new(draw.clone())));
         Ok(())
     }
     fn visible(&mut self, _mem: &mut dyn GuestMemory, definition: u32) -> Result<bool, Cause> {
@@ -130,83 +134,80 @@ impl Device for Recorder {
 
 /// An event's kind, for the order.
 fn kind(e: &Event) -> String {
-    match e {
-        Event::Guest(t) => format!("guest {t:#x}"),
-        other => format!("{other:?}").split([' ', '{', '(']).next().unwrap().to_owned(),
-    }
+    format!("{e:?}").split([' ', '{', '(']).next().unwrap().to_owned()
 }
 
-/// Steps the ocean to its return, each helper leaving AL from `al` (by
-/// target, 1 otherwise). The calls and the return.
-fn run(m: &mut FlatMemory, clear: bool, al: &dyn Fn(u32) -> u32) -> (Vec<Call>, Vec<Event>, Next) {
-    run_with(m, clear, al, Recorder::new())
+/// Runs the ocean to its return: the device's events and what it returns.
+fn run(m: &mut FlatMemory, clear: bool) -> (Vec<Event>, Ended) {
+    run_with(m, clear, Recorder::new())
 }
 
 /// [`run`] with the occlusion gate's answer `visible`.
-fn run_seen(m: &mut FlatMemory, clear: bool, visible: bool, al: &dyn Fn(u32) -> u32) -> (Vec<Call>, Vec<Event>, Next) {
-    run_with(m, clear, al, Recorder { visible, ..Recorder::new() })
+fn run_seen(m: &mut FlatMemory, clear: bool, visible: bool) -> (Vec<Event>, Ended) {
+    run_with(m, clear, Recorder { visible, ..Recorder::new() })
 }
 
-fn run_with(m: &mut FlatMemory, clear: bool, al: &dyn Fn(u32) -> u32, mut device: Recorder) -> (Vec<Call>, Vec<Event>, Next) {
-    let mut ocean = Ocean::new(DEF, clear, Regs { ebx: 0xb, esi: 0x5, edi: 0xd, ..Regs::default() });
-    let mut calls = Vec::new();
-    let mut returned = Regs::default();
-    loop {
-        match ocean.next(m, &mut device, returned).unwrap() {
-            Next::Call(c) => {
-                device.host.push(Event::Guest(c.target));
-                returned = Regs { eax: al(c.target), ..c.regs };
-                calls.push(c);
-            }
-            end @ Next::Return { .. } => return (calls, device.host.take(), end),
-        }
-    }
+fn run_with(m: &mut FlatMemory, clear: bool, mut device: Recorder) -> (Vec<Event>, Ended) {
+    let end = super::run(m, &mut device, DEF, clear, 0xecc).unwrap();
+    (device.host.take(), end)
+}
+
+/// The cause of the first step the ocean cannot make.
+fn cause(m: &mut FlatMemory, device: &mut Recorder) -> Cause {
+    super::run(m, device, DEF, false, 0).unwrap_err()
+}
+
+/// The draw the device was handed.
+fn drawn(events: &[Event]) -> &Draw {
+    events.iter().find_map(|e| if let Event::Draw(d) = e { Some(&**d) } else { None }).expect("a draw")
 }
 
 /// With the copy bit and the clear byte, the ocean makes the body's
-/// steps in its order: the grid, the gates, the copy, the clear, the
-/// draw state and stream commit, the quads, then the stamps.
+/// steps in its order: the gate, the copy, the clear, the draw, then the
+/// stamps; no draw state, shader begin or quads through the device.
 #[test]
-fn the_ocean_makes_the_bodys_steps_in_order() {
+fn the_ocean_makes_no_shader_begin() {
     let mut m = mem(1 << COPY_BIT);
-    m.write(state::DECOMPRESSION_PENDING, &[1]).unwrap();
-    let (calls, events, end) = run(&mut m, true, &|_| 1);
-    let mut order: Vec<String> = events.iter().map(kind).collect();
-    order.dedup();
-    let g = |t: u32| format!("guest {t:#x}");
-    let want: Vec<String> = [
-        "Visible".into(), "CopyView".into(), "Clear".into(),
-        "VertexProgram".into(), "Constants".into(), "VertexInput".into(), "SelectProgram".into(), "Constants".into(),
-        g(SHADER_BEGIN), "PushViewport".into(), "StageState".into(), "Registers".into(), "RenderState".into(),
-        "Registers".into(), "Texture".into(), "Draw".into(),
-    ].into();
-    assert_eq!(order, want);
+    let (events, end) = run(&mut m, true);
+    let order: Vec<String> = events.iter().map(kind).collect();
+    assert_eq!(order, ["Visible", "CopyView", "Clear", "Draw"]);
     assert!(events.contains(&Event::Clear { flags: 0x80, colour: 0x00ff_ffff }));
-    assert!(events.contains(&Event::VertexProgram { function: VERTEX_HANDLE, address: 0 }));
-    assert!(events.contains(&Event::Texture { stage: 0, texture: 0x1234 }));
-    assert!(events.contains(&Event::Draw { indices: INDICES, count: 8 }));
-    assert_eq!(events.iter().filter(|e| matches!(e, Event::StageState { .. })).count(), 12);
-    let by = |t: u32| calls.iter().find(|c| c.target == t).unwrap();
     // The copy into target 0x16 and the frame's flags (0x0003bea0).
     assert!(events.contains(&Event::CopyView { target: COPY_INTO }));
     assert_eq!((m.u8(TARGET_COPIED).unwrap(), m.u8(engine::render_loop::layer::DRAW_FLAG).unwrap()), (1, 1));
-    assert_eq!(by(SHADER_BEGIN).regs.esi, GEO);
-    assert_eq!(by(SHADER_BEGIN).regs.edi, SHADER_TAG);
-    assert_eq!(by(SHADER_BEGIN).args, vec![0, 3, 0, 0, 0x47c3_5000]);
-    // The body's EBP is the definition.
-    assert!(calls.iter().all(|c| c.regs.ebp == DEF));
     // The texture block's cache entry stamped with the cache's frame.
     assert_eq!(m.u32(CACHE_AT + 0x200 + 0x14).unwrap(), 7);
-    // The stream committed: its one input through the static shader.
-    assert!(events.contains(&Event::VertexInput { handle: state::STATIC_SHADER | 1, count: 1, inputs: state::STREAMS + state::RECORD_INPUTS }));
-    // The block 0x0001bd50 reads is zeroed and cached; the commit's count cleared.
-    assert_eq!((m.u32(STATE_BLOCK).unwrap(), m.u32(STATE_BLOCK + 4 * (STATE_BLOCK_WORDS - 1)).unwrap()), (0, 0));
-    assert_eq!(m.u32(state::STATE_CACHED).unwrap(), STATE_BLOCK);
-    assert_eq!(m.u32(state::STREAMS + 0x2d0).unwrap(), 0);
-    // The viewport push's put written back.
-    assert_eq!(m.u32(DEVICE_AT).unwrap(), 0x100 + super::fake::PUSH);
     // AL 1 over the bitmap count the loop ends on, ECX the count.
-    assert_eq!(end, Next::Return { eax: 1, ecx: 1 });
+    assert_eq!(end, Ended { eax: 1, ecx: 1 });
+}
+
+/// The draw carries the frame's record: the grid's rows, the definition's
+/// parameter block upload, the flags and the clear byte; and the quads and
+/// the grid's stream.
+#[test]
+fn the_ocean_draws_from_its_record() {
+    let mut m = mem(1 << COPY_BIT);
+    let (events, _) = run(&mut m, true);
+    let d = drawn(&events);
+    assert_eq!((d.ocean.definition, d.ocean.shader), (DEF, SHADER_TAG));
+    assert_eq!(d.ocean.rows[0], [0x3f80_0000, 0x3f80_0001, 0x3f80_0002, 0x3f80_0003]);
+    assert_eq!(d.ocean.rows[2][3], 0x3f80_000b);
+    assert_eq!(Some(d.ocean.structure), scene_extract::layout::structure_parameters::of(&TestRead(&m), DEF));
+    assert!(d.ocean.clear_alpha && d.ocean.copies && !d.ocean.reflects);
+    assert_eq!((d.indices, d.count), (INDICES, 8));
+    assert_eq!(d.stream, Stream { kind: 2, buffer: BUFFER, offset: 0x40 });
+    assert_eq!(d.stream.vertices(&m), Ok(0x8012_3040));
+    let (events, _) = run(&mut mem(0), false);
+    assert!(!drawn(&events).ocean.clear_alpha && !drawn(&events).ocean.copies);
+}
+
+/// Guest memory as extraction reads it.
+struct TestRead<'a>(&'a FlatMemory);
+
+impl scene_extract::GuestRead for TestRead<'_> {
+    fn read_u32(&self, addr: u32) -> Option<u32> {
+        self.0.u32(addr).ok()
+    }
 }
 
 /// A definition with an angle: a camera 3 above a 640x480 raster (its
@@ -235,8 +236,11 @@ fn grid_mem(raster: [u16; 4]) -> FlatMemory {
 #[test]
 fn the_grid_is_built_before_the_gates() {
     let mut m = grid_mem([7, 0, 487, 640]);
-    let (_, events, _) = run(&mut m, false, &|_| 1);
+    let (events, end) = run(&mut m, false);
     assert_eq!(events[0], Event::Visible);
+    assert_eq!(end, Ended { eax: 1, ecx: 1 });
+    // The record takes the rows the grid wrote.
+    assert_eq!(drawn(&events).ocean.rows[0][1], m.u32(ocean_grid::ROWS + 4).unwrap());
     assert_eq!(m.f32(ocean_grid::MATRIX).unwrap(), 3.0);
     // Forward along y and up along z: left along -x, the sideways span.
     let side = m.f32(ocean_grid::ROWS + 4).unwrap();
@@ -249,7 +253,7 @@ fn the_grid_is_built_before_the_gates() {
 fn an_unmasked_grid_exception_is_unimplemented() {
     // A zero raster: 0 / 0, with the invalid operation unmasked.
     let mut m = grid_mem([0; 4]);
-    run_with(&mut m, false, &|_| 1, Recorder { mxcsr: 0x1f80 & !0x80, ..Recorder::new() });
+    run_with(&mut m, false, Recorder { mxcsr: 0x1f80 & !0x80, ..Recorder::new() });
 }
 
 /// The implementation's copy bit picks the copy, once a frame; the clear
@@ -257,8 +261,8 @@ fn an_unmasked_grid_exception_is_unimplemented() {
 #[test]
 fn the_shader_flags_pick_the_copy() {
     let head = |m: &mut FlatMemory, clear: bool| {
-        let (_, events, _) = run(m, clear, &|_| 1);
-        events.into_iter().take_while(|e| !matches!(e, Event::VertexProgram { .. })).collect::<Vec<_>>()
+        let (events, _) = run(m, clear);
+        events.into_iter().take_while(|e| !matches!(e, Event::Draw(_))).collect::<Vec<_>>()
     };
     use Event::*;
     let gates = [Visible];
@@ -272,17 +276,6 @@ fn the_shader_flags_pick_the_copy() {
     assert_eq!(head(&mut copied, true), [&gates[..], &[Clear { flags: 0x80, colour: 0x00ff_ffff }]].concat());
 }
 
-/// The cause of the first step the ocean cannot make.
-fn cause(m: &mut FlatMemory, device: &mut Recorder) -> Cause {
-    let mut ocean = Ocean::new(DEF, false, Regs::default());
-    loop {
-        match ocean.next(m, device, Regs { eax: 1, ..Regs::default() }) {
-            Ok(Next::Call(_)) => continue,
-            Ok(end) => panic!("{end:?}"),
-            Err(cause) => break cause,
-        }
-    }
-}
 
 /// A copy the device refuses, a copy with no water in the BSP's way, and
 /// the sky pass into target 0x15 are named; a BSP that does not read too.
@@ -298,7 +291,7 @@ fn the_copies_name_what_they_cannot_make() {
     // With no water the copy is skipped and the flags still set.
     let mut m = mem(1 << COPY_BIT);
     m.set_u32(BSP_AT + WATER_COUNT, 0).unwrap();
-    let (_, events, _) = run(&mut m, false, &|_| 1);
+    let (events, _) = run(&mut m, false);
     assert!(!events.iter().any(|e| matches!(e, Event::CopyView { .. })));
     assert_eq!(m.u8(TARGET_COPIED).unwrap(), 1);
 }
@@ -309,28 +302,29 @@ fn the_copies_name_what_they_cannot_make() {
 #[test]
 fn a_closed_gate_goes_to_the_stamps() {
     use Event::*;
-    let (_, events, end) = run_seen(&mut mem(0), true, false, &|_| 1);
+    let (events, end) = run_seen(&mut mem(0), true, false);
     assert_eq!(events, vec![Visible]);
-    assert_eq!(end, Next::Return { eax: 1, ecx: 1 });
+    assert_eq!(end, Ended { eax: 1, ecx: 1 });
     let mut m = mem(0);
     m.write(DEF + TEXTURE_BLOCK + 0x1e, &[0]).unwrap();
-    let (_, events, end) = run(&mut m, true, &|_| 1);
+    let (events, end) = run(&mut m, true);
     assert_eq!(events, vec![Visible]);
-    assert_eq!(end, Next::Return { eax: 1, ecx: 1 });
+    assert_eq!(end, Ended { eax: 1, ecx: 1 });
     // The stamps run past a closed gate: an image the cache must load is
     // named.
     let mut m = mem(0);
     m.set_u32(IMAGES + 0x74 + 0x70, 0).unwrap();
     m.set_u32(IMAGES + 0x74 + 0x50, 0).unwrap();
     m.write(IMAGES + 0x74 + 0xf, &[2]).unwrap();
-    let mut ocean = Ocean::new(DEF, true, Regs::default());
     let mut device = Recorder { visible: false, ..Recorder::new() };
-    assert_eq!(ocean.next(&mut m, &mut device, Regs::default()), Err("texture_request"));
+    assert_eq!(super::run(&mut m, &mut device, DEF, true, 0), Err("texture_request"));
+    // No shader: EAX -1 under AL 1, ECX as the grid left it (skipped: the
+    // entry's).
     let mut m = mem(0);
     m.set_u32(DEF + SHADER, u32::MAX).unwrap();
-    let (_, events, end) = run(&mut m, true, &|_| 1);
+    let (events, end) = run(&mut m, true);
     assert_eq!(events, vec![Visible]);
-    assert!(matches!(end, Next::Return { eax: 0xffff_ff01, .. }));
+    assert_eq!(end, Ended { eax: 0xffff_ff01, ecx: 0xecc });
 }
 
 /// A bitmap index of -1 and a null image array are skipped as the guest
@@ -353,22 +347,11 @@ fn unmade_steps_are_named() {
     let mut m = mem(0);
     m.set_u32(TABLE + 16, GROUP_MTRP).unwrap();
     assert_eq!(shader(&m, SHADER_TAG), Err("shader_group"));
-    let cause = |m: &mut FlatMemory, refuse_draw: bool| {
-        let mut ocean = Ocean::new(DEF, false, Regs::default());
-        let mut device = Recorder { refuse_draw, ..Recorder::new() };
-        loop {
-            match ocean.next(m, &mut device, Regs { eax: 1, ..Regs::default() }) {
-                Ok(Next::Call(_)) => continue,
-                Ok(end) => panic!("{end:?}"),
-                Err(cause) => break cause,
-            }
-        }
-    };
-    assert_eq!(cause(&mut mem(0), true), "draw");
+    assert_eq!(cause(&mut mem(0), &mut Recorder { refuse_draw: true, ..Recorder::new() }), "draw");
     // A stream record that does not read.
     let mut m = mem(0);
     m.set_u32(GEO + GEOMETRY_STATE, 0x0010_0000).unwrap();
-    assert_eq!(cause(&mut m, false), "unread");
+    assert_eq!(cause(&mut m, &mut Recorder::new()), "unread");
     let mut m = mem(0);
     m.set_u32(TAGS, 0x0010_0000).unwrap();
     assert_eq!(shader(&m, SHADER_TAG), Err("unread"));

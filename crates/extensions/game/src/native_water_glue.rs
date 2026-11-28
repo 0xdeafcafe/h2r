@@ -70,7 +70,7 @@ impl WaterData {
 }
 
 /// The embedded texture header returned by `0x0001dcc0` for a live target.
-fn target_header(mem: &dyn GuestMemory, target: u32) -> Option<u32> {
+pub(crate) fn target_header(mem: &dyn GuestMemory, target: u32) -> Option<u32> {
     let descriptor = TARGETS.checked_add(TARGET_STRIDE.checked_mul(target)?)?;
     let disabled = descriptor.checked_add(0x95)?;
     if mem.u32(descriptor + 0x88).ok()? == 0 || mem.u8(disabled).ok()? != 0 {

@@ -1156,12 +1156,24 @@ pub struct LateStage {
     pub parts: Vec<LatePart>,
 }
 
-/// The mesh the teardown draws, owned by the keyed view. Its stage
-/// consumes this copy even when the layer-6 edge blend was empty.
-pub fn water_composite(mem: &dyn GuestMemory, indices: u32, count: u32) -> Option<frame_scene::late::WaterComposite> {
+/// The water end's ocean record of `definition` (its shader `shader`,
+/// the implementation's flags `flags`, `clear` the end's second argument):
+/// `scene_extract::late::ocean` over guest memory.
+pub fn ocean_record(mem: &dyn GuestMemory, definition: u32, shader: u32, flags: u32, clear: bool) -> Option<frame_scene::late::Ocean> {
+    scene_extract::late::ocean(&Ro(mem), definition, shader, flags, clear)
+}
+
+/// The ocean and the quads the teardown draws (`count` indices at
+/// `indices`), filed in the keyed view: the quads as the scene holds
+/// them. `None` when no view opens, the quads do not read or the builder
+/// refuses.
+pub fn set_ocean(mem: &dyn GuestMemory, ocean: frame_scene::late::Ocean, indices: u32, count: u32) -> Option<frame_scene::late::WaterComposite> {
     let key = late_key(mem)?;
     let geometry = scene_extract::late::water_composite(&Ro(mem), indices, count)?;
-    with_step(|step| step.builder.set_water_composite(key, geometry).ok().cloned())
+    with_step(|step| {
+        step.builder.set_ocean(key, ocean).ok()?;
+        step.builder.set_water_composite(key, geometry).ok().cloned()
+    })
 }
 
 /// The late layer `layer` (16 the fog, 6 the water) of the view being

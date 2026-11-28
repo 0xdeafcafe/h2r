@@ -151,6 +151,25 @@ pub(crate) fn place_text(
 
 /// Decodes the images `part`'s quads name into `assets`, their material's
 /// and their shader stages': whether each did.
+/// [`decode_images`], naming the image that did not decode.
+fn decode_named(a: &mut MenuArt, part: &Overlay, assets: &mut OverlayAssets) -> Result<(), String> {
+    let named = part.items.iter().flat_map(|item| {
+        std::iter::once(item.material.texture).chain(item.shader_stages.iter().flatten().copied())
+    });
+    for texture in named {
+        let OverlayTexture::Bitmap { tag, image } = texture else { continue };
+        if assets.images.contains_key(&(tag, image)) {
+            continue;
+        }
+        let (width, height, rgba) = a
+            .art
+            .image(&mut a.map, TagId(tag), usize::from(image))
+            .map_err(|e| format!("bitmap {tag:#010x} image {image} did not decode: {e:?}"))?;
+        assets.images.insert((tag, image), OverlayImage { width, height, rgba: rgba.into() });
+    }
+    Ok(())
+}
+
 fn decode_images(a: &mut MenuArt, part: &Overlay, assets: &mut OverlayAssets) -> bool {
     let named = part.items.iter().flat_map(|item| {
         std::iter::once(item.material.texture).chain(item.shader_stages.iter().flatten().copied())
@@ -407,13 +426,13 @@ pub fn place_menu(
     mem: &mut dyn GuestMemory,
     part: &Arc<Overlay>,
 ) -> bool {
-    let Some((art, assets)) = slot(mem) else { return false };
+    let Some((art, assets)) = slot(mem) else { unimplemented!("menus: pass: no overlay assets for this map") };
     let bitmaps = part.items.iter().any(|i| matches!(i.material.texture, OverlayTexture::Bitmap { .. }));
     if bitmaps {
-        let Some(art) = art else { return false };
+        let Some(art) = art else { unimplemented!("menus: pass: no map art to decode bitmaps from") };
         let mut a = art.lock().unwrap_or_else(|e| e.into_inner());
-        if !decode_images(&mut a, part, &mut assets.lock().unwrap_or_else(|e| e.into_inner())) {
-            return false;
+        if let Err(why) = decode_named(&mut a, part, &mut assets.lock().unwrap_or_else(|e| e.into_inner())) {
+            unimplemented!("menus: pass: {why}");
         }
     }
     // The pages hold the glyphs at the display's density, so text draws

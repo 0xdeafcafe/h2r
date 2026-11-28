@@ -18,7 +18,7 @@ use serde::Serialize;
 
 use crate::builder::{BuildError, SceneBuilder};
 use crate::object::Owner;
-use crate::scene::{FrameScene, View, ViewKey};
+use crate::scene::{FrameScene, StructureParameters, View, ViewKey};
 
 /// The fog render states, by slot: `FOGENABLE`, `FOGTABLEMODE`,
 /// `FOGSTART`, `FOGEND`, `FOGDENSITY`, `RANGEFOGENABLE`, `FOGCOLOR`
@@ -77,28 +77,37 @@ pub type FogState = LateLayer;
 /// The water edge blend of a view: its layer 6.
 pub type WaterState = LateLayer;
 
-/// The water composite's index window in the bound stream, copied from
-/// the draw at 0x0003c598. Quad corners are in the guest's winding order.
+/// The ocean's quads, `[geometry + 0x20]` indices at `[geometry + 0x24]`
+/// (the draw at `0x0003c598`), corners in the guest's winding order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct WaterComposite {
     pub quads: Vec<[u16; 4]>,
 }
 
-impl WaterComposite {
-    /// The device supplies vertices starting at the smallest index. Match
-    /// its live window before recording triangles from the scene's copy.
-    pub fn triangles(&self, window: &[u32]) -> Option<Vec<u32>> {
-        let first = *self.quads.iter().flatten().min()?;
-        let local = |i: u16| u32::from(i - first);
-        if !self.quads.iter().flatten().map(|&i| local(i)).eq(window.iter().copied()) {
-            return None;
-        }
-        Some(
-            self.quads.iter()
-                .flat_map(|&[a, b, c, d]| [a, b, c, a, c, d].map(local))
-                .collect(),
-        )
-    }
+
+/// The BSP ocean the water end draws in a view (`0x0003c3ff`; Code,
+/// docs/graphics/retire-d3d-display.md, "The water end"), as words: no
+/// handle, header or device state. The pass is compiled from the map
+/// (`native_render::ocean_gpu`); the quads are the view's
+/// [`WaterComposite`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct Ocean {
+    /// The water definition (`[bsp + 0x218]`'s first) and its shader's
+    /// tag index (`[definition + 4]`).
+    pub definition: u32,
+    pub shader: u32,
+    /// `c[50..53]`, the rows the grid call `0x0003ca90` leaves at
+    /// `0x004c1b38`.
+    pub rows: [[u32; 4]; 3],
+    /// What `0x0003bf00` uploads for the definition's parameter block:
+    /// `c[21..25]`, the bump matrices, the fog colour.
+    pub structure: StructureParameters,
+    /// The end's second argument: the bound target's alpha cleared first.
+    pub clear_alpha: bool,
+    /// The implementation's flags `+0x118`: bit 20, the pass reads the
+    /// scene copy (target `0x16`); bit 19, the reflection (target `0x15`).
+    pub copies: bool,
+    pub reflects: bool,
 }
 
 /// What a stage hands the builder for a late layer.
@@ -217,6 +226,12 @@ impl SceneBuilder {
         Ok(scene.views[view].water_composite.insert(composite))
     }
 
+    /// The view's ocean, replacing one set before.
+    pub fn set_ocean(&mut self, key: ViewKey, ocean: Ocean) -> Result<&Ocean, BuildError> {
+        let (scene, view) = self.keyed_mut(key)?;
+        Ok(scene.views[view].ocean.insert(ocean))
+    }
+
     /// The late layer `layer` (16 the fog, 6 the water) of the scene's last
     /// view of `key`, replacing one set before; not yet drawn
     /// ([`Self::late_drawn`]). The layers run after the view's opaque
@@ -297,6 +312,23 @@ impl SceneBuilder {
     }
 }
 
+/// The words an ocean adds to the summary hash: 0 without one.
+fn ocean_words(ocean: Option<&Ocean>, word: &mut dyn FnMut(u32)) {
+    let Some(o) = ocean else {
+        word(0);
+        return;
+    };
+    word(1);
+    word(o.definition);
+    word(o.shader);
+    o.rows.iter().flatten().for_each(|&w| word(w));
+    let p = &o.structure;
+    p.bump_env.iter().flatten().chain(p.constants.iter().flatten()).for_each(|&w| word(w));
+    word(p.fog_colour);
+    p.scratch.iter().for_each(|&w| word(w));
+    word(u32::from(o.clear_alpha) | u32::from(o.copies) << 1 | u32::from(o.reflects) << 2);
+}
+
 /// Every late layer's and post's ranges inside their arrays.
 pub(crate) fn check(scene: &FrameScene) -> Result<(), String> {
     fn within(r: &Range<u32>, len: usize, what: &str) -> Result<(), String> {
@@ -364,6 +396,7 @@ pub(crate) fn summary_words(scene: &FrameScene, v: &View, word: &mut dyn FnMut(u
             }
         }
     }
+    ocean_words(v.ocean.as_ref(), word);
     let Some(p) = &v.post else {
         word(0);
         return;
@@ -501,6 +534,55 @@ mod tests {
         assert_eq!(scene.views[0].water_composite.as_ref().unwrap().quads, [[3, 6, 7, 4]]);
         assert!(scene.views[1].water_composite.is_none());
         assert_ne!(summary_hash(&scene), summary_hash(&build([3, 7, 6, 4])));
+    }
+
+    fn ocean(definition: u32) -> Ocean {
+        Ocean {
+            definition,
+            shader: 0xe123_0004,
+            rows: [[1, 2, 3, 4], [5, 6, 7, 8], [9, 10, 11, 12]],
+            structure: StructureParameters { bump_env: [[1; 4]; 3], constants: [[2; 4]; 5], fog_colour: 3, scratch: [4; 13] },
+            clear_alpha: true,
+            copies: true,
+            reflects: false,
+        }
+    }
+
+    #[test]
+    fn the_ocean_record_belongs_to_its_view() {
+        let mut b = SceneBuilder::default();
+        b.begin(SceneId::default());
+        assert_eq!(b.set_ocean(key(0), ocean(1)).err(), Some(BuildError::NoView), "no view of the key");
+        b.open_view(key(0), camera()).unwrap();
+        b.open_view(key(1), camera()).unwrap();
+        b.set_ocean(key(0), ocean(1)).unwrap();
+        assert_eq!(*b.set_ocean(key(0), ocean(2)).unwrap(), ocean(2), "a later call replaces it");
+        let s = b.seal(Stamp::default()).unwrap();
+        assert_eq!(s.views[0].ocean, Some(ocean(2)));
+        assert!(s.views[1].ocean.is_none());
+    }
+
+    #[test]
+    fn the_ocean_record_changes_the_view_hash() {
+        let build = |o: Option<Ocean>| {
+            let mut b = SceneBuilder::default();
+            b.begin(SceneId::default());
+            b.open_view(key(0), camera()).unwrap();
+            if let Some(o) = o {
+                b.set_ocean(key(0), o).unwrap();
+            }
+            b.seal(Stamp::default()).unwrap()
+        };
+        let base = summary_hash(&build(Some(ocean(1))));
+        assert_ne!(base, summary_hash(&build(None)));
+        assert_ne!(base, summary_hash(&build(Some(ocean(2)))));
+        let mut moved = ocean(1);
+        moved.rows[2][3] ^= 1;
+        assert_ne!(base, summary_hash(&build(Some(moved))));
+        let mut lit = ocean(1);
+        lit.reflects = true;
+        assert_ne!(base, summary_hash(&build(Some(lit))));
+        assert_eq!(base, summary_hash(&build(Some(ocean(1)))));
     }
 
     #[test]

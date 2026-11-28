@@ -39,7 +39,7 @@ Each drawn widget is read (`scene_extract::ui::read_widget`) and listed on its o
 
 After a guest draw, each run refreshes only its own entries at placement so changes to focus, colours or resource state reach the pass. List planning and run refresh time count toward `native_ui_extract_ns`.
 
-At the sorted call of a run's first entry, the host places one overlay pass with the run's items (`Host::ui_pass`, `game::hud_overlay::place_menu`, over the map's overlay assets) and the items join `FrameScene::overlay`. A run with no items needs no pass. Each entry of a placed run resumes at `0x00235448` with its draw skipped, as a host-drawn widget's is. A run whose pass is not placed is the game's.
+At the sorted call of a run's first entry, the host places one overlay pass with the run's items (`Host::ui_pass`, `game::hud_overlay::place_menu`, over the map's overlay assets) and the items join `FrameScene::overlay`. A run with no items needs no pass. Each entry of a placed run resumes at `0x00235448` with its draw skipped, as a host-drawn widget's is. A pass that is not placed panics, named `menus: pass: <cause>`: no overlay assets for the map, no map art to decode bitmaps from, the bitmap image that did not decode (named), a pass outside its UI scope, or the device not taking it.
 
 At `0x0023545c` (`LIST_DONE`) the claim closes. One whose left-out draws are not its claimed ones counts `menu_mismatch`, and its screen is the game's until the next map. A list drawn inside another's draw has its own frame and closes inside out.
 
@@ -62,11 +62,11 @@ The remaining guest draws count by reason in `render.stats`:
 
 | Reason | Draw | What keeps it on the guest |
 |---|---|---|
-| `bitmap_state` | `0x002b0565`, `0x00235f31`, `0x002b07e2` | a draw the overlay does not make as the game does: the debug labels on, an image set at `+0x8c` that no loaded bitmap tag holds, an image not resident, a stage constant not white, the quads turned off, a meter's rasterizer bitmap with no second image |
+| `bitmap_state` | `0x002b0565`, `0x00235f31`, `0x002b07e2` | a draw the overlay does not make as the game does: the debug labels on, an image set at `+0x8c` that no loaded bitmap tag holds, a meter's rasterizer bitmap with no second image |
 | `text` | text or button label | by its gap, below |
 | `model` | model scene | by its gap, below |
 | `draw` | list, button or custom draw | by its gap, below |
-| `unlisted`, `pass` | any listed class | layout or pass preparation fails, including unavailable font pages or bitmap assets |
+| `unlisted` | any listed class | layout preparation fails, including unavailable font pages |
 
 Each text and class refusal is a `ui_overlay::Gap`: the draw and the first check that refused it, kept as `scene_kept_ui_widget_<cause>` ([retire-d3d-menus.md](retire-d3d-menus.md#what-is-kept)):
 
@@ -83,7 +83,7 @@ Each text and class refusal is a `ui_overlay::Gap`: the draw and the first check
 | `text_justify`, `text_case`, `text_colour`, `text_font` | an unknown justification; upper case of a non-ASCII unit; a channel outside 0 to 1; a font id past 16 bits |
 | `list_number`, `list_tag`, `list_globals`, `list_screen`, `list_tree`, `list_rows`, `list_pane` | the arrows' or the art's lookups: a number not finite, no tag, no interface globals, the screen not found, a parent chain or row chain that does not end, a row table the helper does not walk, a pane index below -1 |
 | `button_focus`, `button_class` | the focus accessors or the user's channel not retail's; a button draw slot not retail's |
-| `art_viewport`, `art_image`, `art_texture`, `art_scale`, `art_offset` | the art's viewport not the full canvas, image out of range or empty, image not resident, projection not finite, offset out of range |
+| `art_viewport`, `art_image`, `art_texture`, `art_scale`, `art_offset` | the art's viewport not the full canvas, image out of range or empty, projection not finite, offset out of range |
 | `draw_class`, `draw_runtime_class`, `draw_custom` | a draw no reader knows; a vtable outside the image's UI tables; a host-drawn picture (`Host::ui_custom_widget`) |
 
 ## Bitmap widgets
@@ -94,9 +94,9 @@ The bitmap widget's draw `0x002b0540` (Code, `h2 disasm`) draws nothing without 
 2. The tint: the alpha at `+0x64` and the colour at `+0x28` to `+0x30`, each times `[0x0045dc38]` and rounded by `fistp` (nearest, ties to even), packed ARGB by shifting left 8 and or-ing the next, with no masks, so a channel past 255 runs into the one above it.
 3. The image (`0x002b0b19`): the pointer at `+0x8c` when set, else the bitmap tag's image at `+0x88` when in range (the tag's count at `+0x44`, its images from `+0x48`, `0x74` bytes each), the first otherwise. The pointer's setters (`0x002b0a7b`) take it from a tag's images through `0x00137550` (datum, index) and keep only the image, so the overlay names it by the bitmap tag that holds it (`bitmaps::named_image`): the definition's own bitmap first, then each `bitm` entry of the tag index (`[0x00547f00]` `+0x18` slots at `[0x004e3b44]`), the answer kept per map (index entries and scenario) and checked again on each use. An image no loaded bitmap holds is `bitmap_state`.
 4. The rectangle (`0x0022ea81`): the header's, plus the animated offset's X and Y, both corners projected at the offset's Z (`0x0023618e`, `0x002360c3`). The projection depth is the depth plus the camera's distance `[0x0054d5b0]` (1 when under `[0x0045dbdc]` in magnitude), kept at least 1 when not below `[0x0045dbd8]` and at most `[0x0045dbcc]` when below. X is times one over the depth over the distance, plus half the view's width; Y is half the view's height less Y times that. Then the view's offset is added (Y negated).
-5. A definition that scrolls (`+0x10` or `+0x14` not 0, or either unordered) draws through `0x00235f31` ([Scrolling bitmaps](#scrolling-bitmaps)). Otherwise `0x00235e5e` takes coordinates from 0 to the image's size over that size (at least 1), at most 1, in texels for a linear image. `0x0023675a` makes the four corners (the far ones as the near plus the extent) and a screen-quad record of the image (clamped, linear filtering), with blend mode 1 when the definition's `+0x08` is 1, else 0. It draws through `0x00052040` when the image is resident (`0x00012360`: its `+0x70` past `[0x004e6488]` and its texture set).
+5. A definition that scrolls (`+0x10` or `+0x14` not 0, or either unordered) draws through `0x00235f31` ([Scrolling bitmaps](#scrolling-bitmaps)). Otherwise `0x00235e5e` takes coordinates from 0 to the image's size over that size (at least 1), at most 1, in texels for a linear image. `0x0023675a` makes the four corners (the far ones as the near plus the extent) and a screen-quad record of the image (clamped, linear filtering), with blend mode 1 when the definition's `+0x08` is 1, else 0. It draws through `0x00052040`. The overlay loads the bitmap by tag, so the guest's residency (`0x00012360`) does not gate it. Quads off (`0x00052040`) or an empty image draws nothing, and the widget is read as drawn with no quad.
 
-For a record of one image and no colour pointers, `0x00052040` writes a two-stage combiner: stage 0 multiplies the image by its first constant, stage 1 multiplies that by the vertex colour, and the final combiner outputs it. The constant is the colour `[0x00468710]` points at with alpha 1; when that colour is white, the combiner is `Combiner::Texture`. The begin's screen transform with its half pixel puts a guest pixel coordinate on the overlay's pixel edge of the same number.
+For a record of one image and no colour pointers, `0x00052040` writes a two-stage combiner: stage 0 multiplies the image by its first constant, stage 1 multiplies that by the vertex colour, and the final combiner outputs it. The constant is the colour `[0x00468710]` points at with alpha 1. The combiner is `Combiner::Texture` with that constant multiplied into the quad's colour (`bitmaps::default_tint`, `tinted`). The begin's screen transform with its half pixel puts a guest pixel coordinate on the overlay's pixel edge of the same number.
 
 ### Scrolling bitmaps
 
@@ -112,7 +112,7 @@ For a record of one image and no colour pointers, `0x00052040` writes a two-stag
 - A piece under one pixel wide or high (`comiss; jb`, so an unordered one too) is not drawn.
 - A linear image's coordinates are times its size. There is no clamp and no size floor, as `0x00235e5e` has.
 - The overlay lists the drawn pieces as one `UiDraw::Bitmap` each, in that order, under the widget's one draw. With none drawn the widget draws nothing.
-- The residency, stage constant and quads-off checks of step 5 hold for every piece: a refused scroll is `bitmap_state`.
+- The quads-off and empty-image checks of step 5 hold for every piece: either draws nothing. The tint constant multiplies each piece's colour.
 
 ### Meters
 
@@ -124,9 +124,9 @@ A meter's draw `0x002b07e2` is one filled rectangle (`ui_overlay::bitmaps::meter
 | Rectangle | `0x0022ea81` | as step 4, then each edge truncated (`cvttss2si`) and the view's offset added in 16 bits, Y as it is (not negated) |
 | Draw | `0x00147cbc`, `0x0013c050` | nothing with no scenario; else four corners from (left, top) clockwise, texture coordinate 0, the colour on each, and `0x0023675a`'s screen-quad record with blend mode 0 and image 1 of the bitmap the rasterizer globals name (`matg` `+0x108`, its first element's reference at `+0x60`); `0x00052040` draws it with no residency check and no image count check |
 
-The overlay draws it as a `UiContent::Bitmap` of that image at texel 0. An image that is not resident, a bitmap with one image, or the debug labels on is `bitmap_state`.
+The overlay draws it as a `UiContent::Bitmap` of that image at texel 0. A bitmap with one image, or the debug labels on, is `bitmap_state`. Quads off draws nothing.
 
-`ui_overlay::bitmaps::read` reads all of this at the sorted list into a `UiContent::Bitmap` (the quad's rectangle and colour as the draw makes them), or a scrolling bitmap's quads (`bitmaps::Drawn::Quads`), or refuses the widget: any state above it does not draw as the game does. The image is named by its tag datum and index (`OverlayTexture::Bitmap`), and the menu's pass decodes it from the map before it is placed (`game::hud_overlay::place_menu`, which reads the loaded map off the game thread once a map). While the map loads, or when the image does not decode, the run is not placed and the game draws it.
+`ui_overlay::bitmaps::read` reads all of this at the sorted list into a `UiContent::Bitmap` (the quad's rectangle and colour as the draw makes them), or a scrolling bitmap's quads (`bitmaps::Drawn::Quads`), or refuses the widget: any state above it does not draw as the game does. The image is named by its tag datum and index (`OverlayTexture::Bitmap`), and the menu's pass decodes it from the map before it is placed (`game::hud_overlay::place_menu`, which reads the loaded map off the game thread once a map). While the map loads or when the image does not decode, the pass panics (see above).
 
 ## The fade, the bars and the loading screen
 
@@ -143,6 +143,8 @@ The typed `UiDraw::Fade`, `Rect` and `Bitmap` of `scene_extract::ui` are not fil
 ### The fade in Rust
 
 A proven fade's body does not run (`native_hud::fade`). At its entry Rust reads the mode, the fraction, the colour and the view's rectangle (`[0x00485648]`: top, left, bottom, right as `i16`), packs the colour and its complement as `0x00131e50` does (`fade::pack`: each channel times 255.0, rounded to nearest with ties to even, alpha in the top byte), writes the PSDEF words of the mode's case to `0x00484f68` (`fade::psdef`) and returns. The overlay gets one `Fill` in slot `Fade`, between the HUD's items and the UI's (`fade::plan`). Mode 0 draws nothing and returns at once.
+
+The read's memory guard is dropped before the return locks the memory again.
 
 | Mode | Blend (source, dest, op) | Constant | Stage 0 inputs (alpha, colour) |
 |---|---|---|---|

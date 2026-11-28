@@ -42,6 +42,30 @@ pub fn water_composite(mem: &dyn GuestRead, indices: u32, count: u32) -> Option<
     Some(frame_scene::late::WaterComposite { quads })
 }
 
+/// Where the grid call `0x0003ca90` leaves the ocean's rows (`c[50..53]`,
+/// the twelve words `0x000151c0` uploads).
+pub const OCEAN_ROWS: u32 = 0x004c_1b38;
+
+/// The water end's ocean of `definition` (its shader `shader`, the
+/// implementation's flags `flags`, `clear` the end's second argument):
+/// the grid's rows and the definition's parameter block upload. `None`
+/// when a word does not read or the upload's arithmetic stops.
+pub fn ocean(mem: &dyn GuestRead, definition: u32, shader: u32, flags: u32, clear: bool) -> Option<frame_scene::late::Ocean> {
+    let mut rows = [[0u32; 4]; 3];
+    for (n, w) in rows.iter_mut().flatten().enumerate() {
+        *w = mem.read_u32(OCEAN_ROWS + 4 * n as u32)?;
+    }
+    Some(frame_scene::late::Ocean {
+        definition,
+        shader,
+        rows,
+        structure: crate::layout::structure_parameters::of(mem, definition)?,
+        clear_alpha: clear,
+        copies: flags >> 20 & 1 != 0,
+        reflects: flags >> 19 & 1 != 0,
+    })
+}
+
 /// The current list's items with `layer`'s bit set, when the current
 /// layer is `layer`: what the guest's layer draw would draw. `None` when
 /// another layer is current or the list does not read.
@@ -124,6 +148,34 @@ mod tests {
         mem.w(0x2016, (7 << 16) | 21);
         assert_eq!(water_composite(&mem, 0x2012, 4).unwrap().quads, [[11, 14, 21, 7]]);
         assert!(water_composite(&mem, u32::MAX - 5, 4).is_none());
+    }
+
+    #[test]
+    fn the_ocean_extract_reads_rows_structure_and_flags() {
+        let mut mem = crate::layout::structure_parameters::tests::guest();
+        let block = crate::layout::structure_parameters::tests::BLOCK;
+        for n in 0..12 {
+            mem.w(OCEAN_ROWS + 4 * n, 0x100 + n);
+        }
+        let o = ocean(&mem, block, 0xe000_0007, 1 << 20, true).expect("every word reads");
+        assert_eq!(o.rows, [[0x100, 0x101, 0x102, 0x103], [0x104, 0x105, 0x106, 0x107], [0x108, 0x109, 0x10a, 0x10b]]);
+        assert_eq!(o.structure, crate::layout::structure_parameters::of(&mem, block).unwrap());
+        assert_eq!(o.structure.constants[4], [3.0f32, 4.0, 5.0, 1.0].map(f32::to_bits));
+        assert_eq!((o.definition, o.shader, o.clear_alpha, o.copies, o.reflects), (block, 0xe000_0007, true, true, false));
+        let o = ocean(&mem, block, 0, 1 << 19, false).unwrap();
+        assert_eq!((o.clear_alpha, o.copies, o.reflects), (false, false, true));
+    }
+
+    #[test]
+    fn an_unread_definition_is_no_ocean() {
+        let mut mem = crate::layout::structure_parameters::tests::guest();
+        let block = crate::layout::structure_parameters::tests::BLOCK;
+        assert!(ocean(&mem, block, 0, 0, false).is_none(), "the rows do not read");
+        for n in 0..12 {
+            mem.w(OCEAN_ROWS + 4 * n, 0);
+        }
+        assert!(ocean(&mem, block, 0, 0, false).is_some());
+        assert!(ocean(&mem, 0x0070_0000, 0, 0, false).is_none(), "the block does not read");
     }
 
     const LIST: u32 = 0x0010_0000;

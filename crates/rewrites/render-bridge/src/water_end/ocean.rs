@@ -1,9 +1,8 @@
 //! The BSP ocean of the water end (Code, `0x0003c3ff..0x0003c632`;
-//! docs/graphics/retire-d3d-display.md, "The water end"), stepped in Rust.
+//! docs/graphics/retire-d3d-display.md, "The water end"), in Rust.
 //!
-//! [`Ocean::next`] makes each of the body's steps in the guest's order and
-//! hands back the next guest helper to call, with the registers and stack
-//! arguments the body gives it, until the return:
+//! [`run`] makes the body's steps in the guest's order, calls no guest
+//! helper, and returns what the body leaves in EAX and ECX:
 //!
 //! | Step | Made |
 //! |---|---|
@@ -14,29 +13,28 @@
 //! | copy `0x0003bea0` (bit 20) | Rust ([`first_copy`]): the frame's first call restores the open shader, copies the bound colour into `Game(0x16)` through [`Host::copy_view`](crate::native_targets::Host::copy_view) and sets the frame's flags |
 //! | pass `0x00131ed0`, `0x0003bd00` (bit 19) | not made: the sky drawn into `Game(0x15)`, `copy_pass` |
 //! | alpha clear `0x0003c515` | `native_targets::cut_clear(0x10, 0x00ffffff, 0, 0)` on the bound target |
-//! | vertex type `0x0001cbb0`, grid constants `0x000151c0`, stream `0x0001cda0` | Rust over [`Device::host`] ([`state`]) |
-//! | stream commit `0x0001c710` | Rust over [`Device::host`] ([`state::stream_commit`]) |
-//! | the 30 words at `0x004c1a90` zeroed, `0x0001bd50`, `0x0001cdd0` | Rust ([`state`]) |
-//! | shader begin `0x0001bbf0` | guest call |
-//! | viewport `0x00012d50`, structure constants `0x0003bf00`, the wrapper's stage commit `0x0001cf50` | Rust ([`state`]) |
-//! | quads `0x0001c8a0(8, [geometry + 0x24], [geometry + 0x20])` | [`Device::draw`]: `IndexedPass::water_quads` over the scene's `WaterComposite` |
+//! | the draw state, shader begin `0x0001bbf0`, quads `0x0001c8a0` | [`Device::draw`]: the native ocean program from the map over the frame's record ([`Draw`], `frame_scene::late::Ocean`) |
 //! | stamps `0x0003bcb0` | Rust per image ([`stamps`], [`cache::stamp`]) |
+//!
+//! No device state of the draw is written: the stream record
+//! `0x0051f0f0`, the block at `0x004c1a90`, the shader cache
+//! `0x00485b48` and the stage caches keep what the draw before left.
 //!
 //! What the stage cannot make is a cause, `unimplemented!("water ocean:
 //! <cause>")`, or for the copies `unimplemented!("water ocean copy:
 //! <cause>")` (`copy_cache`, `copy_restore`, `copy_target`, `copy_pass`):
 //! `unread`, `unwritable`, `shader_group` (a shader of group
 //! `MTRP` or `3trp`, whose template is a virtual call), `host`, `clear`,
-//! `device` (a draw-state call refused), `vertex_kind`,
-//! `position_compression`, `structure` (the upload's float model
-//! refused), `quads` (no keyed view's composite), `draw` (the native draw
-//! refused), `flare_host`, `placed` (the gate's count pass not placed),
-//! `vertex_declaration`, `vertex_format` (a stream format the commit
-//! cannot build), `texture_cold` (a texture block to stream),
-//! `texture_request` (an image the texture cache must load). The grid's
-//! are `unimplemented!("water ocean grid: <cause>")`: `unread`,
-//! `unwritable`, `simd` (an unmasked SSE exception), `x87` (an unmasked
-//! x87 exception or an operation the model stops on).
+//! `structure` (the upload's float model refused), `quads` (no keyed
+//! view), `program` (the load compiled no ocean pass), `stream` (the
+//! grid's vertices do not read or match the program), `target` (a
+//! sampled target not made or aliased), `draw` (the native draw refused),
+//! `flare_host`, `placed` (the gate's count pass not placed),
+//! `texture_cold` (a texture block to stream), `texture_request` (an
+//! image the texture cache must load). The grid's are
+//! `unimplemented!("water ocean grid: <cause>")`: `unread`, `unwritable`,
+//! `simd` (an unmasked SSE exception), `x87` (an unmasked x87 exception
+//! or an operation the model stops on).
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -49,15 +47,11 @@ use crate::native_targets::Host;
 
 pub mod cache;
 pub mod gate;
-pub mod state;
 #[cfg(test)]
 mod fake;
 
 /// A step the stage cannot make.
 pub type Cause = &'static str;
-
-/// The guest helpers the body calls.
-pub const SHADER_BEGIN: u32 = 0x0001_bbf0;
 
 /// The tag table's pointer: entries of 16 bytes, the group at `+0`, the
 /// data at `+8`.
@@ -70,13 +64,11 @@ pub const GROUP_3TRP: u32 = 0x7072_7433;
 pub const SHADER: u32 = 4;
 pub const GEOMETRY: u32 = 0xc;
 pub const TEXTURE_BLOCK: u32 = 0x10;
-/// The geometry's words: the state word, the quads' index count and list.
+/// The geometry's words: its stream record, the quads' index count and
+/// list.
 pub const GEOMETRY_STATE: u32 = 0x3c;
 pub const QUAD_COUNT: u32 = 0x20;
 pub const QUAD_INDICES: u32 = 0x24;
-/// The block `0x0001bd50` reads, zeroed first (30 words).
-pub const STATE_BLOCK: u32 = 0x004c_1a90;
-pub const STATE_BLOCK_WORDS: u32 = 0x1e;
 /// The frame's structure target copy flag (`0x0003bea0` sets it; the frame
 /// step clears it) and the game target the copy is made into.
 pub const TARGET_COPIED: u32 = 0x0050_9430;
@@ -85,44 +77,54 @@ pub const COPY_INTO: u32 = 0x16;
 pub const COPY_BIT: u32 = 20;
 pub const PASS_BIT: u32 = 19;
 
-/// The registers a helper is called with, or a call left.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Regs {
+/// What the body leaves at its return: `mov al, 1` over EAX, and ECX.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ended {
     pub eax: u32,
     pub ecx: u32,
-    pub edx: u32,
-    pub ebx: u32,
-    pub esi: u32,
-    pub edi: u32,
-    pub ebp: u32,
 }
 
-/// A guest helper to call: its address, registers and stack arguments
-/// (first argument first).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Call {
-    pub target: u32,
-    pub regs: Regs,
-    pub args: Vec<u32>,
+/// The grid's stream as the geometry names it (`[geometry + 0x3c]`, the
+/// record `0x0001cda0` reads): its type in the format table `0x0043f408`
+/// (`+0`), its vertex buffer (`+8`, a D3D resource) and byte offset
+/// (`+0x10`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stream {
+    pub kind: u8,
+    pub buffer: u32,
+    pub offset: u32,
 }
 
-/// What the stage does next.
+impl Stream {
+    pub fn read(mem: &dyn GuestMemory, at: u32) -> Result<Self, Cause> {
+        Ok(Self { kind: mem.u8(at).map_err(unread)?, buffer: word(mem, at.wrapping_add(8))?, offset: word(mem, at.wrapping_add(0x10))? })
+    }
+
+    /// The first vertex's address: the buffer's data word (`+4`, physical)
+    /// in the contiguous alias, plus the offset.
+    pub fn vertices(&self, mem: &dyn GuestMemory) -> Result<u32, Cause> {
+        Ok((word(mem, self.buffer.wrapping_add(4))? & 0x0fff_ffff | 0x8000_0000).wrapping_add(self.offset))
+    }
+}
+
+/// One ocean draw: the frame's record, the quads (`count` indices at
+/// `indices`, a quad list) and the grid's stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Next {
-    Call(Call),
-    /// The body's `mov al, 1` and return, EAX and ECX as the guest leaves
-    /// them; EBX, ESI, EDI and EBP are the caller's.
-    Return { eax: u32, ecx: u32 },
+pub struct Draw {
+    pub ocean: frame_scene::late::Ocean,
+    pub indices: u32,
+    pub count: u32,
+    pub stream: Stream,
 }
 
 /// The device side: boot's glue in a game, a recorder in the tests.
 pub trait Device {
-    /// The device calls of the clear and the draw state.
+    /// The device calls of the clear and the copy.
     fn host(&self) -> &dyn Host;
-    /// 64 bytes of guest stack the draw state stages its words in.
+    /// 64 bytes of guest stack the clear stages its words in.
     fn scratch(&self) -> u32;
-    /// The quads: `count` indices at `indices`, a quad list.
-    fn draw(&mut self, mem: &mut dyn GuestMemory, indices: u32, count: u32) -> Result<(), Cause>;
+    /// The ocean's pass from the map over `draw`, on the bound target.
+    fn draw(&mut self, mem: &mut dyn GuestMemory, draw: &Draw) -> Result<(), Cause>;
     /// The gate `0x0003c270(definition)`: whether the ocean is seen
     /// ([`gate::visible`] over the native flare query).
     fn visible(&mut self, mem: &mut dyn GuestMemory, definition: u32) -> Result<bool, Cause>;
@@ -186,11 +188,6 @@ impl Shader {
     }
     pub fn passes(&self) -> bool {
         (self.flags >> PASS_BIT) & 1 != 0
-    }
-    /// EBX from the lookup: `flags >> 19`, BL masked to bit 0.
-    fn ebx(&self) -> u32 {
-        let b = self.flags >> PASS_BIT;
-        (b & !0xff) | (b & 1)
     }
 }
 
@@ -284,130 +281,71 @@ pub fn stamps(mem: &dyn GuestMemory, index: u32) -> Result<(Vec<u32>, i32), Caus
     Ok((out, count))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Step {
-    Grid,
-    Gates,
-    Clear,
-    ShaderBegin,
-    Draw,
+/// The ocean of `definition`, the bound target's alpha cleared first when
+/// `clear`, entered with ECX `ecx`: the body's steps, then what it
+/// returns.
+pub fn run(mem: &mut dyn GuestMemory, device: &mut dyn Device, definition: u32, clear: bool, ecx: u32) -> Result<Ended, Cause> {
+    let d = definition;
+    let (mxcsr, control) = device.fp();
+    let mut mx = *mxcsr;
+    let grid = ocean_grid::grid(mem, d, &mut mx, control, device.lens());
+    *device.fp().0 = mx;
+    // A built grid leaves ECX 0; a skipped one the entry's.
+    let ecx = match grid.unwrap_or_else(|e| grid_unported(grid_cause(e))) {
+        ocean_grid::Grid::Built { widened, .. } => {
+            crate::scene_step::count_ocean_grid(widened);
+            0
+        }
+        ocean_grid::Grid::Skipped => ecx,
+    };
+    if !device.visible(mem, d)? || !cache::resident(mem, d.wrapping_add(TEXTURE_BLOCK))? {
+        return stamps_then_return(mem, d, ecx);
+    }
+    let index = word(mem, d.wrapping_add(SHADER))?;
+    if index == u32::MAX {
+        return stamps_then_return(mem, d, ecx);
+    }
+    let s = shader(mem, index)?;
+    // The pass into target 0x15 draws the sky; the copy goes first.
+    if s.copies() {
+        first_copy(mem, device)?;
+    }
+    if s.passes() {
+        return Err("copy_pass");
+    }
+    if clear {
+        let (host, scratch) = (device.host(), device.scratch());
+        crate::native_targets::cut_clear(mem, host, 0x10, 0x00ff_ffff, 0, 0, scratch)
+            .map_err(|cause| if cause == "device" { "clear" } else { cause })?;
+    }
+    let draw = draw_of(mem, d, index, s.flags, clear)?;
+    device.draw(mem, &draw)?;
+    stamps_then_return(mem, d, ecx)
 }
 
-/// One ocean's steps.
-#[derive(Clone, Debug)]
-pub struct Ocean {
-    definition: u32,
-    clear: bool,
-    regs: Regs,
-    step: Step,
-    shader: Option<Shader>,
+/// The draw of `definition` with shader `index` (flags `flags`): the
+/// record (`crate::scene_step::ocean_record`), the quads and the stream.
+pub fn draw_of(mem: &dyn GuestMemory, definition: u32, index: u32, flags: u32, clear: bool) -> Result<Draw, Cause> {
+    let geometry = word(mem, definition.wrapping_add(GEOMETRY))?;
+    let stream = Stream::read(mem, word(mem, geometry.wrapping_add(GEOMETRY_STATE))?)?;
+    let (count, indices) = (word(mem, geometry.wrapping_add(QUAD_COUNT))?, word(mem, geometry.wrapping_add(QUAD_INDICES))?);
+    let ocean = crate::scene_step::ocean_record(mem, definition, index, flags, clear).ok_or("structure")?;
+    Ok(Draw { ocean, indices, count, stream })
 }
 
-impl Ocean {
-    /// The ocean of `definition`; `entry` the registers the body was
-    /// entered with.
-    pub fn new(definition: u32, clear: bool, entry: Regs) -> Self {
-        Self { definition, clear, regs: Regs { ebp: definition, ..entry }, step: Step::Grid, shader: None }
+/// The stamps, then the return (`ecx` what ECX holds when the shader is
+/// -1 and no loop runs).
+fn stamps_then_return(mem: &mut dyn GuestMemory, definition: u32, ecx: u32) -> Result<Ended, Cause> {
+    let index = word(mem, definition.wrapping_add(SHADER))?;
+    if index == u32::MAX {
+        return Ok(Ended { eax: (index & !0xff) | 1, ecx });
     }
-
-    fn call(&mut self, next: Step, target: u32, regs: Regs, args: Vec<u32>) -> Result<Next, Cause> {
-        self.step = next;
-        self.regs = regs;
-        Ok(Next::Call(Call { target, regs, args }))
+    let (images, count) = stamps(mem, index)?;
+    for image in images {
+        cache::stamp(mem, image)?;
     }
-
-    /// The next step, `returned` the registers the last helper left (only
-    /// EAX, ECX and EDX are read; the callee keeps the rest).
-    pub fn next(&mut self, mem: &mut dyn GuestMemory, device: &mut dyn Device, returned: Regs) -> Result<Next, Cause> {
-        let d = self.definition;
-        let r = Regs { eax: returned.eax, ecx: returned.ecx, edx: returned.edx, ..self.regs };
-        match self.step {
-            Step::Grid => {
-                let (mxcsr, control) = device.fp();
-                let mut mx = *mxcsr;
-                let grid = ocean_grid::grid(mem, d, &mut mx, control, device.lens());
-                *device.fp().0 = mx;
-                let r = match grid.unwrap_or_else(|e| grid_unported(grid_cause(e))) {
-                    ocean_grid::Grid::Skipped => Regs { eax: d, ..r },
-                    ocean_grid::Grid::Built { eax, edx, widened } => {
-                        crate::scene_step::count_ocean_grid(widened);
-                        Regs { eax, ecx: 0, edx, ..r }
-                    }
-                };
-                self.regs = r;
-                self.step = Step::Gates;
-                self.next(mem, device, r)
-            }
-            Step::Gates => {
-                if !device.visible(mem, d)? || !cache::resident(mem, d.wrapping_add(TEXTURE_BLOCK))? {
-                    return self.stamps_then_return(mem, r);
-                }
-                let index = word(mem, d.wrapping_add(SHADER))?;
-                if index == u32::MAX {
-                    return self.stamps_then_return(mem, r);
-                }
-                let s = shader(mem, index)?;
-                self.shader = Some(s);
-                let r = Regs { eax: s.flags >> COPY_BIT, ecx: s.ecx, edx: s.edx, ebx: s.ebx(), esi: s.esi, edi: s.word, ..r };
-                // The pass into target 0x15 draws the sky; the copy goes first.
-                if s.copies() {
-                    first_copy(mem, device)?;
-                }
-                if s.passes() {
-                    return Err("copy_pass");
-                }
-                self.regs = r;
-                self.step = Step::Clear;
-                self.next(mem, device, r)
-            }
-            Step::Clear => {
-                let (host, scratch) = (device.host(), device.scratch());
-                if self.clear {
-                    crate::native_targets::cut_clear(mem, host, 0x10, 0x00ff_ffff, 0, 0, scratch)
-                        .map_err(|cause| if cause == "device" { "clear" } else { cause })?;
-                }
-                let geometry = word(mem, d.wrapping_add(GEOMETRY))?;
-                // 0x0001cbb0(eax 1, edi the implementation's vertex type, 1).
-                state::vertex_type(mem, host, r.edi, 1, 1)?;
-                state::grid_constants(mem, host)?;
-                let stream = word(mem, geometry.wrapping_add(GEOMETRY_STATE))?;
-                state::stream(mem, stream)?;
-                state::stream_commit(mem, host, state::STREAMS)?;
-                mem.write(STATE_BLOCK, &[0; 4 * STATE_BLOCK_WORDS as usize]).map_err(|_| "unwritable")?;
-                state::state_block(mem, STATE_BLOCK)?;
-                state::position_decompression(mem, host, device.scratch(), 0, 0)?;
-                let edi = self.shader.map_or(0, |s| s.index);
-                self.call(Step::ShaderBegin, SHADER_BEGIN, Regs { esi: geometry, edi, ..r }, vec![0, 3, 0, 0, 0x47c3_5000])
-            }
-            Step::ShaderBegin => {
-                let (host, scratch) = (device.host(), device.scratch());
-                state::viewport(mem, host, scratch)?;
-                state::structure(mem, host, scratch, d)?;
-                state::commit_stages(mem, host)?;
-                self.step = Step::Draw;
-                self.next(mem, device, r)
-            }
-            Step::Draw => {
-                let (count, indices) = (word(mem, r.esi.wrapping_add(QUAD_COUNT))?, word(mem, r.esi.wrapping_add(QUAD_INDICES))?);
-                device.draw(mem, indices, count)?;
-                self.stamps_then_return(mem, Regs { eax: 1, ..r })
-            }
-        }
-    }
-
-    /// The stamps, then the return.
-    fn stamps_then_return(&mut self, mem: &mut dyn GuestMemory, r: Regs) -> Result<Next, Cause> {
-        let index = word(mem, self.definition.wrapping_add(SHADER))?;
-        if index == u32::MAX {
-            return Ok(Next::Return { eax: (index & !0xff) | 1, ecx: r.ecx });
-        }
-        let (images, count) = stamps(mem, index)?;
-        for image in images {
-            cache::stamp(mem, image)?;
-        }
-        let ended = count.max(0) as u32;
-        Ok(Next::Return { eax: (ended & !0xff) | 1, ecx: count as u32 })
-    }
+    let ended = count.max(0) as u32;
+    Ok(Ended { eax: (ended & !0xff) | 1, ecx: count as u32 })
 }
 
 #[cfg(test)]

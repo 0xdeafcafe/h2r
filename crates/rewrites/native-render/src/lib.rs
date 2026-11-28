@@ -119,6 +119,8 @@ pub mod object_program;
 #[cfg(feature = "gpu")]
 pub mod object_program_gpu;
 #[cfg(feature = "gpu")]
+pub mod ocean_gpu;
+#[cfg(feature = "gpu")]
 pub mod object_state;
 pub mod object_streams;
 pub mod model_view;
