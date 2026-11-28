@@ -268,8 +268,7 @@ pub(crate) fn restore_list<B: d3d::backend::Backend>(
                 device.set_render_state(&mut crate::native_lights_glue::DeviceMemory(mem), slot, value).ok()
             }),
         };
-        // A write the device refused after others were made: the
-        // reference then writes the whole list again.
+        // A write the device refused after others were made.
         done.ok_or("write")?;
     }
     Ok(())

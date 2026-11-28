@@ -11,16 +11,10 @@
 //! ([`Write`]). Then the rest of the body's writes follow
 //! (`frame_step::layer::writes`).
 //!
-//! - **The replay.** The host writes the list through the device as the
-//!   guest's calls would ([`crate::native_layers::Host::restore`]).
-//! - **The reference.** The layer draw calls the guest's `0x00018900`
-//!   itself, then returns.
-//! - **The gate.** Until it answers, every call takes the reference; then
-//!   one call in [`SAMPLE`]. Each reference is compared with the
-//!   prediction ([`predict`]): the shadow word of every listed state and
-//!   D3D's dirty word, a mismatch counted by field. After [`CLEAN`] clean
-//!   references in a row the gate answers and the other calls replay; at
-//!   any difference it stops, until another clean run.
+//! The host writes the list through the device as the guest's calls
+//! would ([`crate::native_layers::Host::restore`], [`replay`]); the
+//! guest's `0x00018900` never runs. A list the host does not take panics,
+//! `open shader: <why>` (`host`, `unread`, the host's own cause).
 //!
 //! Counted in `render.scene` as `open_shader_<outcome>`.
 
@@ -28,7 +22,7 @@ use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use engine::memory::{GuestMemory, MemFault};
-use engine::render_loop::states::{DIRTY, HEADERS, MASKS, SHADOW};
+use engine::render_loop::states::{HEADERS, MASKS};
 
 use crate::frame_step::layer::{SETUP, SETUP_OPEN};
 
@@ -44,10 +38,6 @@ pub const DESCRIPTOR_STATES: u32 = 0x14;
 pub const ENTRY: u32 = 5;
 /// The setters of states `0x88` and up, by state.
 pub const SETTERS: u32 = 0x0040_38d8;
-/// One call in this many is compared once the gate answers.
-pub const SAMPLE: u64 = 64;
-/// Clean references in a row before the gate answers.
-pub const CLEAN: u32 = 16;
 
 /// One restore entry as `0x00018900` applies it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,79 +102,6 @@ pub fn read(mem: &dyn GuestMemory) -> Result<Option<Restore>, MemFault> {
     Ok(Some(Restore { implementation, writes }))
 }
 
-/// One predicted word: its field name, address and value.
-pub type Word = (String, u32, u32);
-
-/// The words the list leaves: each listed state's shadow
-/// (`0x00407498 + 4·state`, the last value written; a setter stores its
-/// own state's) and the dirty word with every deferred state's mask.
-pub fn predict(mem: &dyn GuestMemory, restore: &Restore) -> Result<Vec<Word>, MemFault> {
-    let mut shadow = BTreeMap::new();
-    let mut dirty = mem.u32(DIRTY)?;
-    for w in &restore.writes {
-        if let Write::Deferred { mask, .. } = *w {
-            dirty |= mask;
-        }
-        shadow.insert(w.state(), w.value());
-    }
-    let mut out: Vec<Word> =
-        shadow.into_iter().map(|(s, v)| (format!("state_{s:02x}"), SHADOW + 4 * u32::from(s), v)).collect();
-    out.push(("dirty".into(), DIRTY, dirty));
-    Ok(out)
-}
-
-/// The fields of `predicted` guest memory does not hold.
-pub fn differing(mem: &dyn GuestMemory, predicted: &[Word]) -> Vec<String> {
-    predicted
-        .iter()
-        .filter(|(_, at, v)| mem.u32(*at).ok() != Some(*v))
-        .map(|(name, ..)| name.clone())
-        .collect()
-}
-
-/// When the layer draw writes the list itself.
-#[derive(Debug, Default)]
-pub struct Gate {
-    calls: u64,
-    streak: u32,
-    answering: bool,
-}
-
-impl Gate {
-    /// Whether this call takes the reference: every call until the gate
-    /// answers, then one in [`SAMPLE`].
-    pub fn reference(&mut self) -> bool {
-        self.calls += 1;
-        !self.answering || self.calls % SAMPLE == 0
-    }
-
-    /// One reference compared: the fields that differed (none: it matched).
-    pub fn compared(&mut self, differed: &[String]) {
-        if differed.is_empty() {
-            count("matched", 1);
-            self.streak += 1;
-            if self.streak >= CLEAN && !self.answering {
-                self.answering = true;
-                count("opened", 1);
-            }
-            return;
-        }
-        for field in differed {
-            count(&format!("mismatched_{field}"), 1);
-        }
-        self.streak = 0;
-        if self.answering {
-            self.answering = false;
-            count("fallback", 1);
-        }
-    }
-
-    pub fn answering(&self) -> bool {
-        self.answering
-    }
-}
-
-static GATE: Mutex<Gate> = Mutex::new(Gate { calls: 0, streak: 0, answering: false });
 static COUNTS: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
 
 /// `open_shader_<outcome>`.
@@ -196,50 +113,24 @@ pub fn counters() -> Vec<(String, u64)> {
     COUNTS.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, &v)| (k.clone(), v)).collect()
 }
 
-/// How a call restores the list.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Plan {
-    /// The host wrote it.
-    Replayed,
-    /// Call the guest's [`RESTORE`], then compare with these words.
-    Reference(Vec<Word>),
-}
-
-/// This call's restore of `restore`: the replay through `replay` (the
-/// host's, [`crate::native_layers::Host::restore`]) when the gate
-/// answers, else the reference with its prediction. `Err` when the
-/// prediction does not read (the guest body runs). A declined replay
-/// takes the reference, counted `declined_<why>`.
-pub fn plan(
+/// `0x00018900` on `restore`: its writes through `replay` (the host's,
+/// [`crate::native_layers::Host::restore`]), counted `replayed`. `Err`
+/// names why the host did not take the list.
+pub fn replay(
     mem: &mut dyn GuestMemory,
     restore: &Restore,
     replay: impl FnOnce(&mut dyn GuestMemory, &[Write]) -> Result<(), &'static str>,
-) -> Result<Plan, MemFault> {
-    let reference = GATE.lock().unwrap_or_else(|e| e.into_inner()).reference();
-    if !reference {
-        match replay(mem, &restore.writes) {
-            Ok(()) => {
-                count("replayed", 1);
-                return Ok(Plan::Replayed);
-            }
-            Err(why) => count(&format!("declined_{why}"), 1),
-        }
-    }
-    let predicted = predict(&*mem, restore)?;
-    count("referenced", 1);
-    Ok(Plan::Reference(predicted))
-}
-
-/// After the guest's [`RESTORE`]: compares its words with `predicted`.
-pub fn compare(mem: &dyn GuestMemory, predicted: &[Word]) {
-    let differed = differing(mem, predicted);
-    GATE.lock().unwrap_or_else(|e| e.into_inner()).compared(&differed);
+) -> Result<(), &'static str> {
+    replay(mem, &restore.writes)?;
+    count("replayed", 1);
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use engine::memory::FlatMemory;
+    use engine::render_loop::states::DIRTY;
 
     const DESCRIPTOR: u32 = 0x0045_1000;
     const TABLE: u32 = 0x0045_2000;
@@ -281,66 +172,18 @@ mod tests {
     }
 
     #[test]
-    fn the_prediction_is_each_states_last_value_and_the_dirty_masks() {
+    fn the_replay_takes_the_whole_list_or_names_why_not() {
         let mut m = open();
         let r = read(&m).unwrap().unwrap();
-        let p = predict(&m, &r).unwrap();
-        assert_eq!(p, [
-            ("state_10".to_owned(), SHADOW + 0x40, 5),
-            ("state_60".to_owned(), SHADOW + 0x180, 7),
-            ("state_8f".to_owned(), SHADOW + 0x23c, 3),
-            ("dirty".to_owned(), DIRTY, 0x121),
-        ]);
-        // The guest's restore, as the original writes memory.
-        for (at, v) in [(SHADOW + 0x40, 5), (SHADOW + 0x180, 7), (SHADOW + 0x23c, 3), (DIRTY, 0x121)] {
-            m.set_u32(at, v).unwrap();
-        }
-        assert!(differing(&m, &p).is_empty());
-        m.set_u32(SHADOW + 0x23c, 4).unwrap();
-        assert_eq!(differing(&m, &p), ["state_8f"], "a setter that stored another slot");
-    }
-
-    #[test]
-    fn the_gate_answers_after_clean_references_and_stops_at_a_difference() {
-        let mut g = Gate::default();
-        for _ in 0..CLEAN {
-            assert!(g.reference(), "every call before it answers");
-            g.compared(&[]);
-        }
-        assert!(g.answering());
-        let references = (0..SAMPLE).filter(|_| g.reference()).count();
-        assert_eq!(references, 1, "then one call in {SAMPLE}");
-        g.compared(&["dirty".into()]);
-        assert!(!g.answering(), "a difference stops it");
-        assert!(g.reference());
-    }
-
-    #[test]
-    fn a_declined_replay_takes_the_reference() {
-        let mut m = open();
-        let r = read(&m).unwrap().unwrap();
-        // Open the shared gate.
-        for _ in 0..CLEAN {
-            GATE.lock().unwrap().compared(&[]);
-        }
-        let mut replays = 0;
-        let mut declined = 0;
-        for _ in 0..SAMPLE {
-            match plan(&mut m, &r, |_, writes| {
-                assert_eq!(writes.len(), 4);
-                Err("setter")
-            })
-            .unwrap()
-            {
-                Plan::Replayed => replays += 1,
-                Plan::Reference(p) => {
-                    declined += 1;
-                    assert_eq!(p.last().unwrap().0, "dirty");
-                }
-            }
-        }
-        assert_eq!((replays, declined), (0, SAMPLE as usize));
+        let mut seen = 0;
+        replay(&mut m, &r, |_, writes| {
+            seen = writes.len();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seen, 4);
+        assert_eq!(replay(&mut m, &r, |_, _| Err("setter")), Err("setter"));
         let c: BTreeMap<String, u64> = counters().into_iter().collect();
-        assert!(c["open_shader_declined_setter"] >= SAMPLE - 1);
+        assert!(c["open_shader_replayed"] >= 1);
     }
 }

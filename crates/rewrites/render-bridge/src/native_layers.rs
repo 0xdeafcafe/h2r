@@ -761,25 +761,16 @@ pub fn layer_turn(mem: &mut dyn GuestMemory, ret: u32, standing_down: bool) -> T
 
 /// The open shader's restore, as the body runs it: the drawn layer and
 /// the draw byte the body sets before `0x00016b10`, then the host's
-/// replay or the reference's prediction ([`crate::open_shader::plan`]).
-/// `Err` when neither can be made: the guest body runs, counted
-/// `guest_open_shader`.
+/// replay ([`crate::open_shader::replay`]). `Err` names why it was not
+/// made: `unwritable`, `host` (none installed), the host's cause.
 pub fn begin_restore(
-    mem: &mut dyn GuestMemory, restore: &crate::open_shader::Restore, site: &str, layer: u32,
-) -> Result<crate::open_shader::Plan, MemFault> {
+    mem: &mut dyn GuestMemory, restore: &crate::open_shader::Restore, layer: u32,
+) -> Result<(), &'static str> {
     let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
-    let planned = (|| {
-        mem.set_u32(crate::frame_step::layer::DRAWN_LAYER, layer)?;
-        mem.set_u8(crate::frame_step::layer::DRAW_FLAG, 1)?;
-        crate::open_shader::plan(mem, restore, |mem, writes| match &host {
-            Some(host) => host.restore(mem, writes),
-            None => Err("host"),
-        })
-    })();
-    if planned.is_err() {
-        count_return(site, layer, "guest_open_shader");
-    }
-    planned
+    mem.set_u32(crate::frame_step::layer::DRAWN_LAYER, layer).map_err(|_| "unwritable")?;
+    mem.set_u8(crate::frame_step::layer::DRAW_FLAG, 1).map_err(|_| "unwritable")?;
+    let host = host.ok_or("host")?;
+    crate::open_shader::replay(mem, restore, |mem, writes| host.restore(mem, writes))
 }
 
 /// After the restore: the body's remaining writes
@@ -841,42 +832,13 @@ impl Feature for NativeLayers {
                         Turn::Return => return g.ret(cpu, 0),
                         Turn::Guest => {}
                         Turn::Restore { restore, site, layer } => {
-                            match begin_restore(&mut *g, &restore, site, layer) {
-                                Ok(crate::open_shader::Plan::Replayed) => {
-                                    if finish_restore(&mut *g, site, layer).is_ok() {
-                                        return g.ret(cpu, 0);
-                                    }
-                                    crate::open_shader::count("unfinished", 1);
-                                }
-                                Ok(crate::open_shader::Plan::Reference(predicted)) => {
-                                    // `0x00016b10`'s call: the range, then the
-                                    // context, pushed right to left.
-                                    let saved = *cpu;
-                                    let range = restore.implementation.wrapping_add(crate::open_shader::IMPLEMENTATION_RESTORE);
-                                    cpu.esp = cpu.esp.wrapping_sub(4);
-                                    g.set_u32(cpu.esp, range)?;
-                                    cpu.esp = cpu.esp.wrapping_sub(4);
-                                    g.set_u32(cpu.esp, crate::frame_step::layer::SETUP)?;
-                                    return ctx.call_guest_named(
-                                        cpu, &mut g, crate::open_shader::RESTORE, "layer draw: the open shader's restore",
-                                        move |cpu, ctx| {
-                                            *cpu = saved;
-                                            let rt = Arc::clone(ctx.runtime());
-                                            let mut g = rt.memory();
-                                            crate::open_shader::compare(&*g, &predicted);
-                                            if finish_restore(&mut *g, site, layer).is_ok() {
-                                                return g.ret(cpu, 0);
-                                            }
-                                            // The body's writes did not take: it
-                                            // runs, restoring the same list again.
-                                            drop(g);
-                                            crate::open_shader::count("unfinished", 1);
-                                            original(cpu, ctx, points::LAYER_DRAW.base)
-                                        },
-                                    );
-                                }
-                                Err(_) => {}
+                            if let Err(cause) = begin_restore(&mut *g, &restore, layer) {
+                                unimplemented!("open shader: {cause}");
                             }
+                            if finish_restore(&mut *g, site, layer).is_err() {
+                                unimplemented!("open shader: unwritable");
+                            }
+                            return g.ret(cpu, 0);
                         }
                     }
                 }
@@ -1219,13 +1181,13 @@ mod tests {
     }
 
     /// A layer draw whose items are all native but whose cache holds an
-    /// open shader restores its list and returns: the guest's restore
-    /// (the reference) until the gate answers, then the body's writes;
-    /// with an item still holding the bit the body runs.
+    /// open shader restores its list through the host (none here: it
+    /// names `host`), then the body's writes; with an item still holding
+    /// the bit the body runs.
     #[test]
     fn an_open_shader_with_every_item_native_is_restored_and_returns() {
         use crate::frame_step::layer as fl;
-        use crate::open_shader::{IMPLEMENTATION_RESTORE, Plan};
+        use crate::open_shader::IMPLEMENTATION_RESTORE;
         use engine::memory::FlatMemory;
         let get = |k: &str| counters().into_iter().find(|(n, _)| n == k).map_or(0, |(_, v)| v);
         let mut mem = FlatMemory::new(0x0040_0000, 0x10_0000);
@@ -1244,7 +1206,7 @@ mod tests {
             panic!("the open shader alone holds the body");
         };
         assert_eq!((restore.implementation, site, layer), (implementation, "alt", 1));
-        assert!(matches!(begin_restore(&mut mem, &restore, site, layer).unwrap(), Plan::Reference(_)), "before the gate answers");
+        assert_eq!(begin_restore(&mut mem, &restore, layer), Err("host"), "no host installed");
         assert_eq!(mem.u32(fl::DRAWN_LAYER).unwrap(), 1, "the body's drawn layer during the restore");
         let returned = get("layer_return_alt1_returned_open_shader");
         finish_restore(&mut mem, site, layer).unwrap();
