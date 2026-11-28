@@ -13,11 +13,21 @@
 # Requires h2 (or $H2), jq and a GPU. Pass --dest to keep the frame folders
 # somewhere else, then pass that directory to scripts/readme-art.sh --frames.
 # Commit only the final documentation media under docs/images/** (Git LFS).
+#
+# Scenes: oldmombasa, deltaapproach, ascension (campaign and multiplayer
+# levels with a stick pan and walk), then the staged scenes of
+# scripts/readme-scenes.sh: clankers, firefight, forge, siege, superbounce
+# (its header says how each starts and what moves).
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-names=(oldmombasa deltaapproach ascension)
-levels=(03a_oldmombasa 05a_deltaapproach ascension)
+. "$root/scripts/readme-scenes.sh"
+names=(oldmombasa deltaapproach ascension "${scene_names[@]}")
+levels=(03a_oldmombasa 05a_deltaapproach ascension "${scene_levels[@]}")
+preps=("" "" "" "${scene_preps[@]}")
+acts=("" "" "" "${scene_acts[@]}")
+drives=(pad pad pad "${scene_drives[@]}")
+huds=(0 0 0 "${scene_huds[@]}")
 clip_ticks=180
 
 usage() {
@@ -28,7 +38,8 @@ Usage: scripts/readme-video.sh --out-image <dir> [--disc <iso>] [--only <names>]
 
   --out-image <dir>  game image built with the same H2_OPT (default: 2), required
   --disc <iso>       your disc image (default: $H2_DISC, else disc/halo2.iso)
-  --only <names>     comma-separated names (oldmombasa, deltaapproach, ascension)
+  --only <names>     comma-separated names (oldmombasa, deltaapproach, ascension,
+                     clankers, firefight, forge, siege, superbounce)
   --dest <dir>       where to save frame folders (default: docs/images/readme/frames)
   --settle <s>       gameplay seconds before the move (default: 20)
   --size WxH        exact crop and output size, e.g. 3840x2160
@@ -147,8 +158,11 @@ agent_wait() {
 }
 
 capture() {
-  local name="$1" level="$2" gfx="$scratch/$1" socket="$1.sock"
+  local name="$1" level="$2" prep="$3" act="$4" drive="$5" hud="$6"
+  local gfx="$scratch/$1" socket="$1.sock" nav=0
   local i ready map tick start_tick capture_tick params queued armed clip_id result recorded
+  # A Clanker playing the seat needs the level's nav mesh, built on the way in.
+  [[ "$drive" == bot ]] && nav=1
   serve_log="$scratch/$name.log"
   mkdir "$gfx"
   echo "$name: starting $level at ${scale}x, $fps fps${size:+, $size output}"
@@ -157,7 +171,7 @@ capture() {
     unset H2_BOOT_GFX_SIZE
     if [[ -n "$size" ]]; then export H2_BOOT_GFX_SIZE="$size"; fi
     exec env H2_OPT="${H2_OPT:-2}" H2_LEVEL="$level" H2_RENDER_SCALE="$scale" H2_FPS="$fps" \
-      H2_FEATURES="$features" H2_BOTS_NAV_AUTO=0 \
+      H2_FEATURES="$features" H2_BOTS_NAV_AUTO="$nav" \
       H2_BOOT_GFX="$gfx" H2_BOOT_GFX_EVERY=never H2_BOOT_GFX_LIGHTING_AB=0 \
       H2_BOOT_GFX_SHADOWS=0 H2_BOOT_GFX_BETWEEN=0 \
       "$h2" serve "$disc" --out "$image" --socket "$socket" \
@@ -174,9 +188,16 @@ capture() {
 
   ready="$(agent_wait "$socket" '{"phase":"gameplay","map_ticks":30}')"
   map="$(jq -er '.at.map' <<< "$ready")"
+  if [[ -n "$prep" ]]; then
+    scene_map=""
+    "prep_$prep" "$socket"
+    [[ -z "$scene_map" ]] || map="$scene_map"
+  fi
   agent_wait "$socket" "$(jq -cn --arg map "$map" --argjson ticks "$settle_ticks" \
     '{phase:"gameplay", $map, $ticks}')" >/dev/null
-  agent "$socket" cheat.set '{"name":"hide_hud","value":true}' >/dev/null
+  if [[ "$hud" != 1 ]]; then agent "$socket" cheat.set '{"name":"hide_hud","value":true}' >/dev/null; fi
+  # What the scene stages starts here, so it is under way when the clip is.
+  if [[ -n "$act" ]]; then "act_$act" "$socket"; fi
   tick="$(agent "$socket" status | jq -er '.at.tick')"
   start_tick=$((tick + 60))
   capture_tick="$start_tick"
@@ -184,16 +205,20 @@ capture() {
     --argjson ticks "$clip_ticks" --argjson fps "$fps" '{$tick, $ticks, $fps}')")"
   clip_id="$(jq -ce '{id}' <<< "$armed")"
 
-  # One stick sample per game tick. The cosine ramps occupy the first and
-  # last second, with a steady pan and walk in between.
-  params="$(jq -cn --argjson start "$start_tick" --argjson count "$clip_ticks" '
-    {at_tick:$start, steps:[range($count) as $i |
-      ([$i, $count - 1 - $i, 30] | min) as $ramp |
-      ((1 - (($ramp / 30 * 3.141592653589793) | cos)) / 2) as $ease |
-      {left:[0, $ease * 0.34], right:[$ease * 0.32, 0], ticks:1}]}')"
-  queued="$(agent "$socket" input.pad "$params")"
-  jq -e --argjson count "$clip_ticks" '.open and .queued == $count' <<< "$queued" >/dev/null \
-    || fail "$name: player one's pad is not open or the move was not queued"
+  if [[ "$drive" == pad ]]; then
+    # One stick sample per game tick. The cosine ramps occupy the first and
+    # last second, with a steady pan and walk in between. The Forge scene
+    # presses A twice, to pick an aimed thing up and put it down.
+    params="$(jq -cn --argjson start "$start_tick" --argjson count "$clip_ticks" --arg name "$name" '
+      {at_tick:$start, steps:[range($count) as $i |
+        ([$i, $count - 1 - $i, 30] | min) as $ramp |
+        ((1 - (($ramp / 30 * 3.141592653589793) | cos)) / 2) as $ease |
+        {left:[0, $ease * 0.34], right:[$ease * 0.32, 0], ticks:1}
+        + (if $name == "forge" and ($i == 60 or $i == 120) then {buttons:["a"]} else {} end)]}')"
+    queued="$(agent "$socket" input.pad "$params")"
+    jq -e --argjson count "$clip_ticks" '.open and .queued == $count' <<< "$queued" >/dev/null \
+      || fail "$name: player one's pad is not open or the move was not queued"
+  fi
 
   # The renderer permits two guest frames in flight. Give the last
   # capture and its replays time to drain before querying the PNG writer.
@@ -224,6 +249,6 @@ capture() {
 
 for ((i = 0; i < ${#names[@]}; i++)); do
   if [[ -z "$only" || ",$only," == *",${names[i]},"* ]]; then
-    capture "${names[i]}" "${levels[i]}"
+    capture "${names[i]}" "${levels[i]}" "${preps[i]}" "${acts[i]}" "${drives[i]}" "${huds[i]}"
   fi
 done

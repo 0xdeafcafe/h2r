@@ -12,6 +12,14 @@
 #   oldmombasa-4x      03a_oldmombasa
 #   deltaapproach-4x   05a_deltaapproach
 #   ascension-4x       ascension
+#   clankers-4x        ascension, a Clanker plays the local seat
+#   firefight-4x       the Firefight probe map on Coagulation, Elites vs a Clanker
+#   forge-4x           the Forge monitor over Ascension
+#   siege-4x           the Siege script on Zanzibar, a Clanker attacking
+#   superbounce-4x     the Superbounce script on Ascension, a bounce under way
+# The last five are staged by scripts/readme-scenes.sh (its header says how
+# each starts); they need jq and `h2 rules build`, and keep the HUD on where
+# it is the point (forge, siege, superbounce).
 #
 # Every shot renders at H2_RENDER_SCALE=4, with H2_OPT=2 (it must match the
 # image's build, or the image recompiles), and passes H2_FLAT_RAM through if
@@ -80,20 +88,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
+. "$root/scripts/readme-scenes.sh"
+command -v jq >/dev/null || { echo "needs jq (brew install jq)" >&2; exit 1; }
+
+# The scene helpers' view of the agent API.
+agent() { "$h2" agent --socket "$1" "${@:2}"; }
+agent_wait() { "$h2" agent --socket "$1" wait "$2" 600000; }
+
 wanted() {
   [[ -z "$only" || ",$only," == *",$1,"* ]]
 }
 
-# shot <name> <level>
+# shot <name> <level> [prep act hud]
 shot() {
-  local name="$1" level="$2"
+  local name="$1" level="$2" prep="${3:-}" act="${4:-}" hud="${5:-0}" nav=1
+  # A scene that builds a map (the Firefight probe) keeps it out of your data.
+  local data_args=()
+  [[ -z "$prep" ]] || data_args=(--data "$scratch/data-$name")
   wanted "$name" || return 0
-  local gfx="$scratch/$name" sock="$scratch/$level.sock"
+  local gfx="$scratch/$name" sock="$scratch/$name.sock"
   mkdir -p "$gfx"
   echo "$name: starting $level at 4x"
   env H2_OPT=2 H2_LEVEL="$level" H2_RENDER_SCALE=4 \
+    H2_BOTS_NAV_AUTO="$nav" \
     H2_BOOT_GFX="$gfx" H2_BOOT_GFX_EVERY=30 ${H2_FLAT_RAM:+H2_FLAT_RAM="$H2_FLAT_RAM"} \
-    "$h2" serve "$disc" --out "$image" --socket "$sock" >"$scratch/$name.log" 2>&1 &
+    "$h2" serve "$disc" --out "$image" --socket "$sock" ${data_args[@]+"${data_args[@]}"} >"$scratch/$name.log" 2>&1 &
   serve_pid=$!
   # The socket appears once the serve is listening.
   local i
@@ -103,7 +122,11 @@ shot() {
     sleep 1
   done
   "$h2" agent wait '{"phase":"gameplay","map_ticks":30}' 600000 --socket "$sock" >/dev/null
+  if [[ -n "$prep" ]]; then "prep_$prep" "$sock"; fi
   sleep "$settle"
+  if [[ -n "$prep$act" && "$hud" != 1 ]]; then agent "$sock" cheat.set '{"name":"hide_hud","value":true}' >/dev/null; fi
+  # What the scene stages starts here; a few seconds later the frame shows it.
+  if [[ -n "$act" ]]; then "act_$act" "$sock"; sleep 4; fi
   # The newest frame may still be written; take the one before it.
   local frame
   frame="$(ls "$gfx"/frame-*.png | sort | tail -2 | head -1)"
@@ -117,3 +140,6 @@ shot() {
 shot oldmombasa-4x 03a_oldmombasa
 shot deltaapproach-4x 05a_deltaapproach
 shot ascension-4x ascension
+for ((n = 0; n < ${#scene_names[@]}; n++)); do
+  shot "${scene_names[n]}-4x" "${scene_levels[n]}" "${scene_preps[n]}" "${scene_acts[n]}" "${scene_huds[n]}"
+done
