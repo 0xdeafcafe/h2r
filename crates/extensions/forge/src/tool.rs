@@ -98,7 +98,7 @@ pub enum Overlay {
     /// The last **Generate nav**'s problems (docs/game/forge-nav.md).
     Nav,
     /// Barriers and `Nodraw` faces, drawn in their family's colour
-    /// (docs/game/forge-blockout.md, "Dev view").
+    /// (docs/game/forge-blockout.md, "The dev textures").
     Blockout,
 }
 

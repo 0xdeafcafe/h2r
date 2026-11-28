@@ -203,8 +203,8 @@ h2 agent host.pause '{"on":false}'
 
 ### Window screenshots: detail
 
-`host.screenshot {path?}` writes the window's newest published frame — the
-one it is showing, without the debug menu or the overlays — as a PNG, and
+`host.screenshot {path?}` writes the window's newest published frame, the
+one it is showing, without the debug menu or the overlays, as a PNG, and
 answers `{path, width, height}` with what it wrote. With no `path` it
 names a new file in the window's screenshots directory (`h2 play`'s is
 `screenshots/` under the data root).
@@ -337,7 +337,7 @@ another object answers `GONE` and never another object's data.
   `crouch_request`. It is the superbounce mode's capsule test against the
   loaded map's collision (`crates/extensions/game/src/superbounce_capsule.rs`),
   so it is there only while that mode is on and its scan is ready
-  ([superbounce.md](../../game/superbounce.md#charge)).
+  ([superbounce.md](../../game/superbounce-landings.md#charge)).
   Poll `object player.0` on one `h2 agent -` connection and keep one reply
   per stamped tick for a movement trace, or use [a trace](../agent-api.md#tick-traces-and-the-flight-recorder).
 
@@ -369,9 +369,9 @@ the two bytes of the AI globals (`[0x4f55d0]`, `+0` and `+1`) that
 `ai_update` (`0x1c83c0`) needs set before it runs any actor, or null
 before the globals exist. Each allocated actor has its
 salted AI `datum`, its `unit` ID (for `world.object`), character tag
-datum, team, scenario squad index, current behavior ID, its retail name
+datum, team, scenario squad index, current behaviour ID, its retail name
 when available (`behavior_name`), and combat status. A missing unit,
-squad or behavior is JSON null. The actor datum and unit ID have separate
+squad or behaviour is JSON null. The actor datum and unit ID have separate
 lifetimes: compare the same unit across ticks to measure movement, weapon
 and vehicle changes.
 
@@ -380,12 +380,12 @@ range, otherwise null; `location_cached` distinguishes a pending refresh
 from a completed lookup. The observer only reads this cache. Retail
 `0x0026c180` refreshes it, and `0x00297e15` passes its sector to the mesh
 walk at `0x0026c590`, which bounds it against the mesh's sector count. The
-behavior ID comes from the top of the four-frame stack used at
+behaviour ID comes from the top of the four-frame stack used at
 `0x001a813d`; its label from the loaded executable's parallel name table
 at `0x0046f0c8`. Combat status is the signed value the `ai_combat_status`
 builtin reads per actor (`0x00276070`). `focus_object` follows the
 actor's selected perception record to the object datum used at
-`0x001b368a`; the fight behavior reads the same record at `0x001af0c2`.
+`0x001b368a`; the fight behaviour reads the same record at `0x001af0c2`.
 Compare it with the player's `unit` in `world.query` to see attention on
 the player. A remembered object can stay selected after contact is lost.
 
@@ -490,11 +490,11 @@ empty manifold is still a candidate in the query box.
 
 ### `superbounce`: state row `targets`
 
-| `targets` | the seam targets ([superbounce.md](../../game/superbounce.md#targets)): `mode` (`common`, `likely` or `all`: the option's value, or the kinds the player switched to with a double tap of the flashlight), `count` (the seams `mode` shows on this map), `tag` (the tagged seam's point; absent with none) `marked` (the seams with a target navpoint, two at most: `second`'s in the flight after a bounce, none otherwise; the set's other seams are lines on the map) and `second` (absent when empty: in the flight after a bounce, the seams it can reach, the best first, each with `at`, `time`, `steer`, `reach`, `speed`, `need`, `cost` and `caught`; [superbounce.md](../../game/superbounce.md#the-second-bounce)) |
+| `targets` | the seam targets ([superbounce.md](../../game/superbounce.md#targets)): `mode` (`common`, `likely` or `all`: the option's value, or the kinds the player switched to with a double tap of the flashlight), `count` (the seams `mode` shows on this map), `tag` (the tagged seam's point; absent with none) `marked` (the seams with a target navpoint, two at most: `second`'s in the flight after a bounce, none otherwise; the set's other seams are lines on the map) and `second` (absent when empty: in the flight after a bounce, the seams it can reach, the best first, each with `at`, `time`, `steer`, `reach`, `speed`, `need`, `cost` and `caught`; [superbounce.md](../../game/superbounce-game-type.md#the-second-bounce)) |
 
 ### `superbounce`: state row `guide`
 
-| `guide` | the [approach guide](../../game/superbounce.md#the-approach-guide) on the seam the player is going for, absent while it is not shown: `seam` (its landing point), `call` (`off_line`, `lined_up`, `too_shallow`, `too_high`, `off_edge`, `no_drift`, `crouching`, `will_bounce`), `jump` (the player is on the ground: the landing is the jump's from the takeoff's line), `impact` (the pipper), `row` (the last free row), `ticks` to it and `speed` on it (units/s down), `caught` (within the catch), `deep` with `depth` (the margin under the depth cut; negative is too shallow) and `past` (the row's place past the edge along the drift), `across` (the speed along the drift), `chance` (the bounce's predicted [chance](../../game/superbounce.md#the-chance) in a fall, 0 to 1: the call's confidence) and `chance_capped` (the seam has no measured landing and `chance` was cut to 0.6), on the ground the [jump cue](../../game/superbounce.md#the-jump-cue): `jump_in` (game ticks until the box says `Jump now`, 0 on the line, while it counts), `cue` (the box's words, settled: `Climb up`, `Walk to line`, `Jump in 0.7 s`, `Jump now` or `Walk off`) and `takeoff` (the [takeoff](../../game/superbounce.md#the-takeoff): `at`, the line's centre on its floor, `heading`, the way to run over it, `half`, half the band along it, `speed`, the ground speed it is for, and `walk`, the cue is not a count), and `strength` (the fade, 0 to 1). The fields from `impact` to `speed` are absent with no landing by the seam, `deep`, `depth`, `past` and `across` on a seam with no drift, `chance` on the ground, while not primed, on a seam with no drift, with no landing by the seam and in a fall slower than 5.2 units/s, `impact` to `speed` on the ground too unless the cue counts, `takeoff` and `cue` in the air, while not primed and where no takeoff is found for the seam, and `jump_in` too while the cue is not a count. The guide is absent while not primed |
+| `guide` | the [approach guide](../../game/superbounce.md#the-approach-guide) on the seam the player is going for, absent while it is not shown: `seam` (its landing point), `call` (`off_line`, `lined_up`, `too_shallow`, `too_high`, `off_edge`, `no_drift`, `crouching`, `will_bounce`), `jump` (the player is on the ground: the landing is the jump's from the takeoff's line), `impact` (the pipper), `row` (the last free row), `ticks` to it and `speed` on it (units/s down), `caught` (within the catch), `deep` with `depth` (the margin under the depth cut; negative is too shallow) and `past` (the row's place past the edge along the drift), `across` (the speed along the drift), `chance` (the bounce's predicted [chance](../../game/superbounce-guide.md#the-chance) in a fall, 0 to 1: the call's confidence) and `chance_capped` (the seam has no measured landing and `chance` was cut to 0.6), on the ground the [jump cue](../../game/superbounce.md#the-jump-cue): `jump_in` (game ticks until the box says `Jump now`, 0 on the line, while it counts), `cue` (the box's words, settled: `Climb up`, `Walk to line`, `Jump in 0.7 s`, `Jump now` or `Walk off`) and `takeoff` (the [takeoff](../../game/superbounce.md#the-takeoff): `at`, the line's centre on its floor, `heading`, the way to run over it, `half`, half the band along it, `speed`, the ground speed it is for, and `walk`, the cue is not a count), and `strength` (the fade, 0 to 1). The fields from `impact` to `speed` are absent with no landing by the seam, `deep`, `depth`, `past` and `across` on a seam with no drift, `chance` on the ground, while not primed, on a seam with no drift, with no landing by the seam and in a fall slower than 5.2 units/s, `impact` to `speed` on the ground too unless the cue counts, `takeoff` and `cue` in the air, while not primed and where no takeoff is found for the seam, and `jump_in` too while the cue is not a count. The guide is absent while not primed |
 
 ### `superbounce`: state row `medals`
 
@@ -1531,7 +1531,7 @@ before the climb to name the growing tag or GPU count, then restart with
   Settings and Voice children report classes `video` and `voice` on
   screen 200. Press B or Back with `h2 agent press` (`input.pad`) to
   check that the previous screen returns on the same window and slot. See the
-  [pause Settings walkthrough](../../game/settings-menu.md#to-check-in-game).
+  [pause Settings walkthrough](../../game/settings-menu-screens.md#to-check-in-game).
   The main menu's one row of ours, Theater, follows System Link, so
   Campaign, Xbox Live, Split Screen and System Link keep their retail rows
   0 to 3 and lobby scripts press them there. `main_menu_theater` and
@@ -1921,7 +1921,7 @@ traces sampled for it. The overlay projects the sample with the image's
 split-screen cameras and draws hidden edges at full strength. The source
 and capture code live in `crates/extensions/game/src/debug_views.rs` and
 `crates/extensions/agent/src/debug_views/mod.rs`. See
-[Drawing world-space lines over the frame](../agent-api.md#drawing-world-space-lines-over-the-frame).
+[Drawing world-space lines over the frame](../agent-api-edit.md#drawing-world-space-lines-over-the-frame).
 
 Traces observe the named `SIM_COLLISION_QUERY` entry and its return while
 enabled. A true hit draws the world position from the result record. The
@@ -2412,10 +2412,10 @@ type `-1` for starting locations, flag type `0xffff` for netgame flags
 and a null item datum for netgame equipment. A block without a known
 marker reports `null`. The kit probe adds a runtime object census by
 group and the live actor count for base-versus-kit comparisons. The
-candidates' behavior is measured in the game.
+candidates' behaviour is measured in the game.
 
 **Replication.** The host must be in a ticking `mp_host` session. The
-group must be one that [`sim.spawn`](../agent-api.md#the-games-own-functions-teleport-give-spawn)
+group must be one that [`sim.spawn`](../agent-api-sim.md#the-games-own-functions-teleport-give-spawn)
 accepts. A tag may be a datum or name in that group. With the group alone,
 the probe uses its first valid loaded tag in index order. With `pos`
 omitted, it uses one world unit above the first eligible scenario
@@ -3388,13 +3388,13 @@ Single lines whose names or values the page no longer carries.
 | `yaw` | the way the local player's unit aims, radians from +X toward +Y: the first-person camera's yaw |
 | `velocity` | the local player's velocity, world units a second; absent without a player |
 | `options` | the HUD's pieces this game, the Superbounce script's options as the variant set them: `targets` (`common`, `likely`, `all`) and the bools `velocity`, `alignment`, `miss_info`, `medals`, `second_bounce`, `approach_guide`, `charge_segments` ([superbounce.md](../../game/superbounce.md#the-huds-options)) |
-| `charge` | the charge meter: `phase` (`near`, `under`, `held`, `primed`, `lost`), `fill` (0, 1/3, 2/3, then 1 less `still_ticks` over 38 while primed, 0 while lost) and `still_ticks`; absent while hidden ([superbounce.md](../../game/superbounce.md#charge)) |
+| `charge` | the charge meter: `phase` (`near`, `under`, `held`, `primed`, `lost`), `fill` (0, 1/3, 2/3, then 1 less `still_ticks` over 38 while primed, 0 while lost) and `still_ticks`; absent while hidden ([superbounce.md](../../game/superbounce-landings.md#charge)) |
 | `verb` | the prompt line's verb: `let_go_of_crouch` while `under`, `walk_out_to_stand` while `held`, `keep_moving` while primed and still for 19 ticks or more, `charge_again` for 150 ticks after a loss while no crouch step has begun |
-| `lost_reason` | why the charge went, while `lost` and while the verb is `charge_again`: `stood_still` (the word left −3 after 30 still ticks or more), `crouched` (a crouch while primed), `unknown` (the word left −3 for another reason); absent otherwise ([superbounce.md](../../game/superbounce.md#charge)) |
+| `lost_reason` | why the charge went, while `lost` and while the verb is `charge_again`: `stood_still` (the word left −3 after 30 still ticks or more), `crouched` (a crouch while primed), `unknown` (the word left −3 for another reason); absent otherwise ([superbounce.md](../../game/superbounce-landings.md#charge)) |
 | `nav_target` | the navpoint's target: `at` (the spot's stand point), `kind` (`crouch` while not primed, `strip` while primed: the chosen strip, [superbounce.md](../../game/superbounce.md#floor-marks)), `distance` (world units), `fall` (a strip's drop, world units; 0 for a crouch spot) |
 | `landing` | while airborne and falling toward a strip, the landing the assist predicts: `at` (at the strip's floor height), `verdict` (`on_slot`, `fixable`, `miss`), `speed` (the touchdown speed, units/s), the strip's `need`, `miss` (world units outside the slot, 0 inside) and `locked` (in the slot at `need` or faster: the [lock-on](../../game/superbounce.md#lock-on) is red) |
-| `last_landing` | the last touchdown within 0.5 of a strip, or primed bounce anywhere, filed when its launch window (the touchdown tick and the 3 after) closes, or a primed fall through a strip's floor, filed on the tick it crosses: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`, `through`), the touchdown's game `tick` (for `through`, the touchdown's it followed, else the crossing's) and the origin `at` on the tick before ([superbounce.md](../../game/superbounce.md#landings)) |
-| `off_spot` | the local player's last 16 bounces no marked strip accounts for (none within 0.5, or outside the catch of the one there is), oldest first; absent when none: the touchdown's `tick`, the origin `at`, the `edge` of the scanned bounce spot within 0.5 (absent with none), `speed_in` and `launch` ([superbounce.md](../../game/superbounce.md#landings)) |
+| `last_landing` | the last touchdown within 0.5 of a strip, or primed bounce anywhere, filed when its launch window (the touchdown tick and the 3 after) closes, or a primed fall through a strip's floor, filed on the tick it crosses: `result` (`bounce`, `not_primed`, `missed`, `too_slow`, `no_bounce`, `through`), the touchdown's game `tick` (for `through`, the touchdown's it followed, else the crossing's) and the origin `at` on the tick before ([superbounce.md](../../game/superbounce-landings.md#landings)) |
+| `off_spot` | the local player's last 16 bounces no marked strip accounts for (none within 0.5, or outside the catch of the one there is), oldest first; absent when none: the touchdown's `tick`, the origin `at`, the `edge` of the scanned bounce spot within 0.5 (absent with none), `speed_in` and `launch` ([superbounce.md](../../game/superbounce-landings.md#landings)) |
 | `standing_fits` | whether the standing capsule fits at the player's origin, as `world.object`'s `physics.standing_fits`; absent before the scan is ready |
 - `superbounce.set {"on": false|null}` (access: act) forces the mode off in
 - any game (`false`), or follows the game again (`null` or `{}`: its

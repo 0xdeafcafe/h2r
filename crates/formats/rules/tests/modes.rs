@@ -134,7 +134,7 @@ fn siege_attackers_take_the_sites_then_the_flag_stand() {
 
 /// Each site and the final stand show their boundary in the defenders'
 /// colour, and a site the attackers take turns to theirs
-/// (docs/game/gametype-markers.md, "The boundary in play").
+/// (docs/game/gametype-markers.md, "In a script").
 #[test]
 fn siege_shows_each_site_in_its_holders_colour() {
     let (ir, _) = siege(&[]);

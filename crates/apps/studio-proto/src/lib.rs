@@ -346,7 +346,7 @@ pub mod method {
     pub const MARKERS_RENDER: &str = "markers.render";
     pub const MARKERS_AREA_SET: &str = "markers.area.set";
     pub const MARKERS_AREA_CONVERT: &str = "markers.area.convert";
-    // Forge block-out pieces (docs/game/forge-blockout.md, "Studio").
+    // Forge block-out pieces (docs/game/forge-blockout.md, "Interfaces").
     pub const BLOCKOUT_RENDER: &str = "blockout.render";
     pub const BLOCKOUT_DESCRIBE: &str = "blockout.describe";
     pub const GEOMETRY_LIST: &str = "geometry.list";

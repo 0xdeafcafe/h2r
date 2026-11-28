@@ -1,4 +1,4 @@
-//! The viewport's world on the native renderer (docs/editor/editor.md, "Lighting"): one BSP
+//! The viewport's world on the native renderer (docs/editor/editor.md, "What the viewport shows, and what it does not yet"): one BSP
 //! loaded with `native_render::load::load_world`, its base maps and
 //! lightmap pages decoded by the renderer's own decodes, uploaded with
 //! `GpuWorld::new` and drawn with the editor's camera into the viewport's

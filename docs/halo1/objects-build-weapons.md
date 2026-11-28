@@ -261,7 +261,7 @@ magnum and shotgun on Coagulation and Zanzibar.
 A zero count lets Halo 2 use the player's binocular zoom. Converted unscoped weapons set `weap +0x12c` bit 16 to skip that
 fallback (E `0x000c89c1..0x000c89df`). This keeps the assault rifle
 and other unscoped Halo 1 weapons at the unzoomed field of view.
-Scope HUD conversion is described in [hud.md](hud.md#scope-mask).
+Scope HUD conversion is described in [hud.md](hud-weapons.md#scope-mask).
 
 ### Ammunition counter (**Built**)
 

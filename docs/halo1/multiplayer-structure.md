@@ -228,7 +228,7 @@ The base's old BSP region stays in the file, unused.
   the borders): Blood Gulch 220,160 for 126,016, c20's largest structure
   7.7 million for 2.9 million. The bitmap takes the
   slot of the base's own lightmap bitmap, which nothing else names
-  ([Freed slots](#vehicles)), through `h1models::Converted::install_at`.
+  ([Freed slots](multiplayer-vehicles.md#vehicles)), through `h1models::Converted::install_at`.
   The lightmap coordinates (stream `1f`, in every cluster section as on
   retail maps) are page-relative, in [0, 1]. Retail lightmaps also carry
   per-vertex lighting buckets (`+0x40`, streams `30` and `2f`); clusters

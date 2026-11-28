@@ -1,4 +1,4 @@
-//! `blockout.*` (docs/game/forge-blockout.md, "Studio"): a block-out
+//! `blockout.*` (docs/game/forge-blockout.md, "Interfaces"): a block-out
 //! definition drawn offscreen with its dev plates on (`blockout.render`),
 //! the contact sheet of every shape of every family (`blockout.render`
 //! with no shape), and what a definition is as text (`blockout.describe`).

@@ -1153,7 +1153,7 @@ pub fn moved_list(screen: &str) -> Option<[i16; 2]> {
 }
 
 /// Writes `anchor` as the anchor of screen tag `tag`'s first pane's first
-/// list (docs/formats/ui.md "List placement"). A tag with no pane or no
+/// list (docs/formats/ui.md "Screen and list classes (code, not tags)"). A tag with no pane or no
 /// list is left.
 fn place_list(m: &mut dyn GuestMemory, tag: u32, anchor: [i16; 2]) -> Result<(), MemFault> {
     if m.u32(tag + SCREEN_PANES)? == 0 {

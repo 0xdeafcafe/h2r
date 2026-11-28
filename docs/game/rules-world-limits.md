@@ -201,7 +201,7 @@ ai-networking.md measures it.
 
 **Bench gates.** Each slice is measured before it lands, on the quiet
 laptop through `h2 lab bench` (600 ticks, the same level and settings
-for both runs; [lab.md](../runtime/lab.md#--serve-and-bench)): run A is
+for both runs; [lab.md](../runtime/lab-runs.md#--serve-and-bench)): run A is
 the revision before the slice, run B the slice with its stress script,
 each cap of the slice held at its limit every tick. Two profile
 counters, `rules.vm_ns` and `rules.world_ns`, are added with slice W0
@@ -239,4 +239,4 @@ wrong is changed here with a link to that entry.
 - [rules-engine.md](rules-engine.md#security-and-usability): the VM as the boundary, the op budget, the policy and the allow-list
 - [rules-start-gate.md](rules-start-gate.md): the hopper gate's pair check
 - [ai-networking.md](ai-networking.md#budgets): the actor channel's budget and probe P4
-- [lab.md](../runtime/lab.md#--serve-and-bench): the bench the gates run on
+- [lab.md](../runtime/lab-runs.md#--serve-and-bench): the bench the gates run on

@@ -98,7 +98,7 @@ the heap-tag census (`mem-watch` tags) that names the rest.
 
 **S**: the note counts all 64 MiB as dirty. What a match writes after
 load is not measured: `guest_written_pages` is only reported over a
-copy-on-write base ([sim.md §6.2](../runtime/sim.md#62-sharing-guest-ram-with-machine-snapshots)).
+copy-on-write base ([sim.md §6.2](../runtime/sim-metrics.md#62-sharing-guest-ram-with-machine-snapshots)).
 L1 adds a census without a base: hash every 4 KiB page at the first
 counted tick and at the end, report pages changed at 4 KiB and at 16 KiB
 grain. That number sizes rows 6 and 7.

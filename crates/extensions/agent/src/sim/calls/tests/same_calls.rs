@@ -1,7 +1,7 @@
 //! A Forge edit and the agent method it stands for make the same guest
 //! calls: each runs over the same fake game and the two traces are
 //! compared call for call, with the vectors each call reads.
-//! (docs/game/forge-design.md, "F4 in detail"; docs/runtime/agent-api.md,
+//! (docs/game/forge-design.md, "Slices"; docs/runtime/agent-api.md,
 //! "Object edits").
 use super::*;
 use crate::forge::base::{BaseStep, RowBytes, inert_row};

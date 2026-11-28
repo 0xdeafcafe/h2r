@@ -199,7 +199,7 @@ sprite placement. Their draw is not checked in a game run.
 The converter keeps the zoom levels of Halo 1's pistol and sniper
 rifle. The assault rifle and other unscoped weapons have
 zero levels and suppress Halo 2's binocular fallback.
-See [Weapon zoom](objects.md#weapon-zoom).
+See [Weapon zoom](objects-build-weapons.md#weapon-zoom).
 
 ### Scope mask
 

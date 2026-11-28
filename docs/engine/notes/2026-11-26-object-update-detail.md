@@ -1202,7 +1202,7 @@ byte of its saved `ecx`, so `ecx` returns it. Both are leaves: no call.
 unit whose team is none, outside `0..10`, or not friendly to the local
 player's (`bfe60`, `al`) gets body `+134` bit 3. Outside the campaign the
 body passes the mode test only where `engine::skull_gate` answers it for
-Assassins (a Firefight host, [skulls.md](../../game/skulls.md#the-campaign-gate)),
+Assassins (a Firefight host, [skulls.md](../../game/skulls-modes.md#the-campaign-gate)),
 as the lifted code does with the hook at its `jne` (`c683f`). The level `+2b0` moves
 by `+2b8` times the tick toward 1 (bit 3) or 0, clamped; reaching 1 with
 an effect at `+d4` calls `b58c0(+d4, mask)`. The level `+2b4` moves by

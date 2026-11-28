@@ -1,4 +1,4 @@
-//! The deactivation test `0x00316b30` (docs/engine/havok-deactivation.md):
+//! The deactivation test `0x00316b30` (docs/engine/havok-integrate.md):
 //! thiscall on the island, two stack arguments (the out byte, the step),
 //! `ret 8`. It returns the out pointer in eax, and `0x0030fef0` reads the
 //! byte: 1 deactivates the island.

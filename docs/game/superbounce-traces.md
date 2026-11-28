@@ -77,7 +77,7 @@ right, jump, fall onto the crack below.
 - **The landing.** The floor below is z 2.10 meeting a 17.6° ramp
   (normal (0, 0.3033, 0.9529)) along y −26.70, rising south to z 2.40.
   That crack is one concave crease, not two joints, so it is no
-  [slot](#bounce). The first try fell from z 5.5 at −4.5 units/s near
+  [slot](superbounce-spots.md#bounce). The first try fell from z 5.5 at −4.5 units/s near
   (4.73, −26.15) and made a small pop. The second fell straight onto
   (4.876, −26.748), 5 cm on the ramp side of the crease, and went
   through the floor (z 2.86, then 0.44, then the player died).
@@ -87,7 +87,7 @@ right, jump, fall onto the crack below.
   time it did not.
 
 Both prime places are rows in `superbounce::PROVEN`, and the crease is
-what [single creases](#single-creases) look for.
+what [single creases](superbounce-spots.md#single-creases) look for.
 
 ### The contacts on a bounce tick (Trace)
 
