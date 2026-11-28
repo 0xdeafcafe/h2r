@@ -334,18 +334,6 @@ fn sorted(m: &dyn GuestMemory, first: u32, end: u32) -> Result<Vec<u16>> {
     Ok(indices)
 }
 
-/// The order the guest's sort gives the live list now, as `build`
-/// publishes it; `None` when the list does not read. The caller
-/// checks the SSE state (`fp_supported`).
-pub(crate) fn order(m: &dyn GuestMemory) -> Option<Vec<u16>> {
-    let end = m.u32(LIST_END).ok()?;
-    let first = m.u32(LIST_FIRST).ok()?;
-    if first > end || end > CAPACITY {
-        return None;
-    }
-    sorted(m, first, end).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -132,41 +132,63 @@ fn ribbon(mut green: ImmediateDrawSnapshot<'static>) -> ImmediateDrawSnapshot<'s
     green
 }
 
-#[test]
-fn admission_refuses_partial_geometry_unknown_depth_and_bad_clip() {
-    let s = snapshot(1, 4., [1.; 4]);
-    assert_eq!(s.validate(), Ok(()));
-    let mut bad = s.clone();
-    bad.indices.to_mut().push(0);
-    assert_eq!(bad.validate(), Err(Refused::Geometry("indices")));
-    bad = s.clone();
-    bad.indices.to_mut()[0] = 4;
-    assert_eq!(bad.validate(), Err(Refused::Geometry("indices")));
-    bad = s.clone();
-    bad.depth.depth_compare = None;
-    assert_eq!(bad.validate(), Err(Refused::State));
-    bad = s.clone();
-    bad.shader.pixel_options.w_buffer = true;
-    assert_eq!(bad.validate(), Err(Refused::State));
-    bad = s.clone();
-    bad.scissor[0] = u32::MAX;
-    assert_eq!(bad.validate(), Err(Refused::Scissor));
-    bad = s;
-    bad.identity.generation = 0;
-    assert_eq!(bad.validate(), Err(Refused::Identity));
+fn drawn(s: &ImmediateDrawSnapshot<'_>) -> Option<Drawn> {
+    s.validate().unwrap()
 }
 
 #[test]
-fn weather_lines_require_pairs_and_points_remain_unadmitted() {
+fn a_trailing_partial_primitive_is_dropped_as_d3d_drops_it() {
+    let s = snapshot(1, 4., [1.; 4]);
+    assert_eq!(drawn(&s), Some(Drawn { scissor: [0, 0, SIZE, SIZE], indices: 6 }));
+    let mut partial = s.clone();
+    partial.indices.to_mut().extend([0, 1]);
+    assert_eq!(drawn(&partial).map(|d| d.indices), Some(6));
+    let mut one = s.clone();
+    one.indices = Cow::Borrowed(&[0, 1]);
+    assert_eq!(drawn(&one), None, "no whole triangle rasterises nothing");
+    let mut strip = s;
+    strip.primitive.topology = wgpu::PrimitiveTopology::TriangleStrip;
+    strip.indices = Cow::Borrowed(&[0, 1]);
+    assert_eq!(drawn(&strip), None);
+}
+
+#[test]
+fn the_scissor_is_clamped_to_the_target_and_an_empty_one_draws_nothing() {
+    let mut s = snapshot(1, 4., [1.; 4]);
+    s.scissor = [8, 4, u32::MAX, 100];
+    assert_eq!(drawn(&s).map(|d| d.scissor), Some([8, 4, SIZE - 8, SIZE - 4]));
+    s.scissor = [u32::MAX, 0, 4, 4];
+    assert_eq!(drawn(&s), None);
+    s.scissor = [0, 0, 0, SIZE];
+    assert_eq!(drawn(&s), None);
+}
+
+#[test]
+#[should_panic(expected = "index lists stay inside")]
+fn an_index_past_the_vertices_is_an_adapter_bug_not_a_refusal() {
+    let mut s = snapshot(1, 4., [1.; 4]);
+    s.indices.to_mut()[0] = 4;
+    let _ = s.validate();
+}
+
+#[test]
+#[should_panic(expected = "device and generation")]
+fn an_unnamed_draw_is_an_adapter_bug_not_a_refusal() {
+    let mut s = snapshot(1, 4., [1.; 4]);
+    s.identity.generation = 0;
+    let _ = s.validate();
+}
+
+#[test]
+fn weather_lines_draw_whole_pairs_and_points_remain_unadmitted() {
     let mut s = snapshot(1, 4., [1.; 4]);
     s.primitive.topology = wgpu::PrimitiveTopology::LineList;
     s.indices = Cow::Borrowed(&[0, 1, 2, 3]);
-    assert_eq!(s.validate(), Ok(()));
+    assert_eq!(drawn(&s).map(|d| d.indices), Some(4));
     s.indices.to_mut().pop();
-    assert_eq!(s.validate(), Err(Refused::Geometry("indices")));
-    s.indices.to_mut().push(3);
+    assert_eq!(drawn(&s).map(|d| d.indices), Some(2));
     s.primitive.topology = wgpu::PrimitiveTopology::PointList;
-    assert!(s.validate().is_err());
+    assert_eq!(s.validate(), Err(Refused::State));
 }
 
 #[test]
@@ -227,26 +249,13 @@ fn two_views_keep_distinct_geometry_and_uniforms_in_one_submission() {
         occlusion_query_set: None,
         multiview_mask: None,
     }));
-    assert_eq!(
-        a.record(&mut encoder, red.identity, red.target, &cv, &dv)
-            .unwrap()
-            .indices,
-        6
-    );
-    assert_eq!(
-        b.record(&mut encoder, green.identity, green.target, &cv, &dv)
-            .unwrap()
-            .draws,
-        1
-    );
-    // A stale target must refuse without opening any render pass.
-    let stale = renderer.prepare(&ctx.device, &red).unwrap();
-    let mut changed = red.target;
-    changed.color += 1;
-    assert_eq!(
-        stale.record(&mut encoder, red.identity, changed, &cv, &dv),
-        Err(Refused::Identity)
-    );
+    assert_eq!(a.record(&mut encoder, red.identity, red.target, &cv, &dv).indices, 6);
+    assert_eq!(b.record(&mut encoder, green.identity, green.target, &cv, &dv).draws, 1);
+    // A draw that rasterises nothing records no pass.
+    let mut empty = red.clone();
+    empty.scissor = [0, 0, 0, 0];
+    let none = renderer.prepare(&ctx.device, &empty).unwrap();
+    assert_eq!(none.record(&mut encoder, empty.identity, empty.target, &cv, &dv).draws, 0);
     let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
         label: None,
         size: (SIZE * SIZE * 4) as u64,
@@ -422,7 +431,7 @@ fn frame(
     if packets {
         let draws: Vec<_> = scene
             .iter()
-            .map(|s| renderer.draws(&ctx.device, &ctx.queue, &arena, s).unwrap())
+            .filter_map(|s| renderer.draws(&ctx.device, &ctx.queue, &arena, s).unwrap())
             .collect();
         let target = gfx::RenderTarget {
             color: &cv,
@@ -439,7 +448,7 @@ fn frame(
     } else {
         for s in scene {
             let prepared = renderer.prepare(&ctx.device, s).unwrap();
-            prepared.record(&mut encoder, s.identity, s.target, &cv, &dv).unwrap();
+            prepared.record(&mut encoder, s.identity, s.target, &cv, &dv);
         }
         ctx.queue.submit([encoder.finish()]);
     }
@@ -498,7 +507,7 @@ fn a_second_identical_frame_creates_no_programs_pipelines_groups_or_buffers() {
 }
 
 #[test]
-fn a_packet_refuses_a_stencil_reference_it_cannot_carry() {
+fn a_packet_takes_any_stencil_reference_masked_to_eight_bits() {
     let Ok(ctx) = gfx::GfxContext::headless() else {
         eprintln!("no GPU adapter; skipped");
         return;
@@ -506,9 +515,27 @@ fn a_packet_refuses_a_stencil_reference_it_cannot_carry() {
     let mut renderer = ParticleRenderer::new(1);
     let arena = gfx::ring::UploadPool::default().begin();
     let mut s = snapshot(1, 4., [1.; 4]);
-    s.stencil_reference = 256;
-    assert_eq!(renderer.draws(&ctx.device, &ctx.queue, &arena, &s).err(), Some(Refused::State));
-    assert!(renderer.prepare(&ctx.device, &s).is_ok(), "the isolated pass still takes it");
+    s.stencil_reference = 0x1ff;
+    assert!(renderer.draws(&ctx.device, &ctx.queue, &arena, &s).unwrap().is_some());
+}
+
+#[test]
+fn a_sampled_stage_with_no_texture_reads_zero() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no GPU adapter; skipped");
+        return;
+    };
+    let mut renderer = ParticleRenderer::new(1);
+    let pool = gfx::ring::UploadPool::default();
+    let texture = solid_texture(&ctx, &mut renderer, [255, 128, 0, 255]);
+    let mut unbound = textured(snapshot(2, 4., [1.; 4]), texture);
+    unbound.textures[0] = None;
+    let scene = [snapshot(1, 4., [1., 0., 0., 1.]), unbound];
+    for packets in [false, true] {
+        let pixels = frame(&ctx, &mut renderer, &pool, &scene, packets);
+        let i = ((32 * SIZE + 12) * 4) as usize;
+        assert_eq!(pixels[i..i + 4], [0, 0, 0, 255], "zero colour over the red quad, v0 alpha");
+    }
 }
 
 /// One textured packet of `texture`, staged in a fresh arena as frame `n`.
@@ -521,7 +548,7 @@ fn textured_packet(
     renderer.begin_frame(n);
     let arena = gfx::ring::UploadPool::default().begin();
     let s = textured(snapshot(1, 4., [1.; 4]), texture);
-    renderer.draws(&ctx.device, &ctx.queue, &arena, &s).unwrap();
+    renderer.draws(&ctx.device, &ctx.queue, &arena, &s).unwrap().unwrap();
 }
 
 #[test]

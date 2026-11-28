@@ -85,7 +85,7 @@ pub(super) fn install(b: &mut Builder) {
 
     b.raw().before(&points::WORLD_GEOMETRY_BUILD, "native_world_build_entry", |c| {
         // The transparent handler's own build (layer 15): R2's geometry arm
-        // opens on sampled frames and answers once it is proven.
+        // makes the slot and AL in Rust on every frame.
         let handler = crate::effects_shadow::geometry::build(&mut *c.ctx.runtime().memory(), c.cpu.esp);
         if let Some(accepted) = handler {
             c.cpu.eax = c.cpu.eax & !0xff | u32::from(accepted);

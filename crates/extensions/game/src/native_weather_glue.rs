@@ -4,8 +4,8 @@
 //! setup still runs; the strip's vertices, its scroll constants
 //! (`c[21..24]`, hardware order) and the definition words the placement
 //! writes are Rust's, and the strip is recorded natively as an indexed
-//! pass. One draw in 64 is the guest's own, compared with Rust's field by
-//! field; a difference falls back for the session.
+//! pass. Every plate is Rust's; a strip Rust cannot draw is a named
+//! refusal (`weather_plate_refused_<reason>`).
 
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ResolvedDraw}
 use gfx::vertex::{PrimitiveType, StreamLayout, VertexDataType};
 use native_render::weather_quad::{Quad, SCROLL_CONSTANT};
 use native_render::world_layers_gpu::IndexedPass;
-use render_bridge::native_weather::{self as host, Decision, Draw};
+use render_bridge::native_weather::{self as host, Draw};
 
 /// The strip's corners as two triangles (`PrimitiveType::to_host`'s
 /// order for one quad of a strip: `b, b+1, b+3, b+2`).
@@ -95,39 +95,6 @@ fn floats(
             for (c, value) in values.into_iter().take(n).enumerate() {
                 out.push((v, r, v * stride + at[r] + 4 * c, value));
             }
-        }
-    }
-    Ok(out)
-}
-
-/// The guest's strip against Rust's: differing fields by name
-/// (`vertex<n>_r<register>`, `constant<slot>`, `combiner_w<n>`).
-fn compare(
-    layout: &StreamLayout,
-    bytes: &[u8],
-    constants: &[[f32; 4]],
-    combiner: &[u32; 57],
-    rust: &Draw,
-) -> Result<Vec<String>, &'static str> {
-    let mut out: Vec<String> = Vec::new();
-    for (v, r, o, want) in floats(layout, &rust.quad)? {
-        let got = bytes.get(o..o + 4).ok_or("vertex_bytes")?;
-        let name = format!("vertex{v}_r{r}");
-        if u32::from_le_bytes(got.try_into().expect("four bytes")) != want.to_bits()
-            && !out.contains(&name)
-        {
-            out.push(name);
-        }
-    }
-    for (i, row) in rust.quad.constants.iter().enumerate() {
-        let slot = SCROLL_CONSTANT + i;
-        if constants.get(slot).map(|c| c.map(f32::to_bits)) != Some(row.map(f32::to_bits)) {
-            out.push(format!("constant{slot}"));
-        }
-    }
-    for (n, word) in combiner.iter().enumerate() {
-        if rust.written[n] && *word != rust.define[n] {
-            out.push(format!("combiner_w{n}"));
         }
     }
     Ok(out)
@@ -221,7 +188,7 @@ impl DrawAdmission for Glue {
             Ok(Some(rust)) => rust,
             Ok(None) => {
                 // Rust's placement refused a plate the guest draws.
-                host::record(&["placement".to_owned()]);
+                host::refuse("placement");
                 return None;
             }
             Err(why) => {
@@ -230,55 +197,34 @@ impl DrawAdmission for Glue {
             }
         };
         let d = snapshot.draw;
-        match host::decide() {
-            Decision::Guest => None,
-            Decision::Compare => {
-                let fields = strip(d).and_then(|(layout, stream)| {
-                    compare(
-                        layout,
-                        &stream.data,
-                        &d.shader.constants[..],
-                        &d.shader.combiner_state,
-                        &rust,
-                    )
-                });
-                match fields {
-                    Ok(fields) => host::record(&fields),
-                    Err(why) => host::refuse(why),
-                }
-                None
+        let made = stages(snapshot)
+            .and_then(|()| rust_draw(d, &rust))
+            .and_then(|draw| {
+                IndexedPass::new(
+                    &draw,
+                    self.cache.get(),
+                    crate::d3d_diag::presents() + 1,
+                    None,
+                )
+                .ok_or("pass")
+            });
+        let pass = match made {
+            Ok(pass) => pass,
+            Err(why) => {
+                host::refuse(why);
+                return None;
             }
-            Decision::Rust => {
-                let made = stages(snapshot)
-                    .and_then(|()| rust_draw(d, &rust))
-                    .and_then(|draw| {
-                        IndexedPass::new(
-                            &draw,
-                            self.cache.get(),
-                            crate::d3d_diag::presents() + 1,
-                            None,
-                        )
-                        .ok_or("pass")
-                    });
-                let pass = match made {
-                    Ok(pass) => pass,
-                    Err(why) => {
-                        host::refuse(why);
-                        return None;
-                    }
-                };
-                host::admitted();
-                Some((
-                    ExternalPlan {
-                        stage: timeline::native::Stage::Effects,
-                        view: 0,
-                        ranges: 1,
-                        slots: Vec::new(),
-                    },
-                    Box::new(pass),
-                ))
-            }
-        }
+        };
+        host::admitted();
+        Some((
+            ExternalPlan {
+                stage: timeline::native::Stage::Effects,
+                view: 0,
+                ranges: 1,
+                slots: Vec::new(),
+            },
+            Box::new(pass),
+        ))
     }
 }
 
@@ -335,55 +281,6 @@ mod tests {
             far: 100.0,
         })
         .unwrap()
-    }
-
-    /// The guest's state as Rust would leave it.
-    fn guest(rust: &Draw) -> (Vec<u8>, Vec<[f32; 4]>, [u32; 57]) {
-        let bytes = rust_bytes(&layout(), &[0; 4 * 48], &rust.quad).unwrap();
-        let mut constants = vec![[0.0; 4]; 192];
-        for (i, row) in rust.quad.constants.iter().enumerate() {
-            constants[SCROLL_CONSTANT + i] = *row;
-        }
-        let mut combiner = [0xdead_beef; 57];
-        for (n, w) in combiner.iter_mut().enumerate() {
-            if rust.written[n] {
-                *w = rust.define[n];
-            }
-        }
-        (bytes, constants, combiner)
-    }
-
-    #[test]
-    fn a_plate_strip_rust_would_draw_compares_clean() {
-        let rust = draw();
-        let (bytes, constants, combiner) = guest(&rust);
-        assert_eq!(
-            compare(&layout(), &bytes, &constants, &combiner, &rust),
-            Ok(vec![])
-        );
-        // Words the placement does not write are the buffer's, not compared.
-        assert!(!rust.written[0] && combiner[0] == 0xdead_beef);
-    }
-
-    #[test]
-    fn a_plate_strip_that_differs_is_named_by_field() {
-        let rust = draw();
-        let (mut bytes, mut constants, mut combiner) = guest(&rust);
-        // Vertex 2's w (register 0), vertex 3's second layer (register 3).
-        bytes[2 * 48 + 12..2 * 48 + 16].copy_from_slice(&7.0f32.to_le_bytes());
-        bytes[3 * 48 + 32..3 * 48 + 36].copy_from_slice(&7.0f32.to_le_bytes());
-        constants[SCROLL_CONSTANT + 1][0] = 9.0;
-        let n = rust.written.iter().position(|&w| w).unwrap();
-        combiner[n] ^= 1;
-        assert_eq!(
-            compare(&layout(), &bytes, &constants, &combiner, &rust),
-            Ok(vec![
-                "vertex2_r0".to_owned(),
-                "vertex3_r3".to_owned(),
-                "constant22".to_owned(),
-                format!("combiner_w{n}")
-            ])
-        );
     }
 
     #[test]

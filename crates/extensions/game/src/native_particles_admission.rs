@@ -17,7 +17,7 @@ use native_render::effect_geometry::{self, DynamicCall};
 use native_render::effect_immediate::{self, Site};
 use native_render::flares;
 use native_render::particle_gpu::*;
-use native_render::particles::{self, Declaration, DrawIdentity, Vertex};
+use native_render::particles::{self, DrawIdentity, Vertex};
 
 use crate::native_lights_glue::DeviceMemory;
 use timeline::native::{Metric, Stage};
@@ -74,7 +74,7 @@ fn producer_label(producer: Producer) -> &'static str {
 /// Every `Refused::Geometry` reason with the counter name it logs under:
 /// `Particle/Geometry/primitive`. A reason not listed counts as `Geometry`
 /// (the test below keeps the list whole).
-const GEOMETRY_REASONS: [(&str, &str); 22] = [
+const GEOMETRY_REASONS: [(&str, &str); 20] = [
     ("indexed", "Geometry/indexed"),
     ("pretransformed", "Geometry/pretransformed"),
     ("layouts", "Geometry/layouts"),
@@ -87,8 +87,6 @@ const GEOMETRY_REASONS: [(&str, &str); 22] = [
     ("data_len", "Geometry/data_len"),
     ("data_type", "Geometry/data_type"),
     ("inputs", "Geometry/inputs"),
-    ("corner_vertices", "Geometry/corner_vertices"),
-    ("corner_compare", "Geometry/corner_compare"),
     ("corner_differs", "Geometry/corner_differs"),
     ("unpublished", "Geometry/unpublished"),
     ("data_differs", "Geometry/data_differs"),
@@ -105,13 +103,9 @@ fn geometry_label(reason: &str) -> &'static str {
 
 fn refusal_label(why: Refused) -> &'static str {
     match why {
-        Refused::Identity => "Identity",
-        Refused::Target => "Target",
-        Refused::Scissor => "Scissor",
         Refused::Geometry(reason) => geometry_label(reason),
         Refused::Effect(reason) => reason,
         Refused::State => "State",
-        Refused::Texture(_) => "Texture",
         Refused::Shader(_) => "Shader",
     }
 }
@@ -215,11 +209,10 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
             id: self.admission.serial.fetch_add(1, Ordering::Relaxed),
         };
         if let Some(supplied) = material_proof::held(Kind::Particle) {
-            let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles, proof: Mutex::new(None) };
+            let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles };
             return self.supplied_draw(mem, Kind::Particle, PrimitiveType::QuadList, data, &carried, &supplied, &candidate);
         }
-        let proof = Mutex::new(material_proof::particle(mem, call.return_address));
-        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles, proof };
+        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles };
         self.device.lock().is_ok_and(|mut device| {
             device.try_native_inline_draw(
                 &mut DeviceMemory(mem), PrimitiveType::QuadList, data, &carried, &candidate,
@@ -254,19 +247,18 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
             effect_geometry::Kind::Contrail => material_proof::held(Kind::Contrail),
             effect_geometry::Kind::EffectQuad => None,
         };
-        if let Some(supplied) = held {
+        if call.kind == effect_geometry::Kind::Contrail {
+            // The setup's inputs are this draw's alone.
             render_bridge::effect_materials::take_contrail_inputs(call.context);
-            let candidate = Direct { admission: &self.admission, pending, stage: Stage::Effects, proof: Mutex::new(None) };
+        }
+        if let Some(supplied) = held {
+            let candidate = Direct { admission: &self.admission, pending, stage: Stage::Effects };
             let drawn = self.supplied_draw(mem, Kind::Contrail, primitive, generated, &[None; 16], &supplied, &candidate);
             self.admission.scope.lock().unwrap_or_else(|e| e.into_inner()).waiting = None;
             Stage::Effects.count(Metric::WalkSuppressed, 1);
             return drawn;
         }
-        let proof = match call.kind {
-            effect_geometry::Kind::Contrail => material_proof::contrail(mem, call.context),
-            effect_geometry::Kind::EffectQuad => None,
-        };
-        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Effects, proof: Mutex::new(proof) };
+        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Effects };
         let drawn = self.device.lock().is_ok_and(|mut device| {
             device.try_native_inline_draw(
                 &mut DeviceMemory(mem), primitive, generated, &[None; 16], &candidate,
@@ -474,10 +466,7 @@ fn geometry(
             if draw.shader.provided_inputs != 1 {
                 return Err(Refused::Geometry("inputs"));
             }
-            let expected = call
-                .emission
-                .vertices(Declaration::CornerShort4, draw.shader.vertex_defaults)
-                .map_err(|_| Refused::Geometry("corner_vertices"))?;
+            let expected = call.emission.vertices(draw.shader.vertex_defaults);
             let actual: [Vertex; 4] = std::array::from_fn(|corner| {
                 let mut registers = draw.shader.vertex_defaults;
                 registers[0] = std::array::from_fn(|i| {
@@ -486,10 +475,7 @@ fn geometry(
                 });
                 Vertex { registers }
             });
-            if particles::differing_registers(&expected, &actual)
-                .map_err(|_| Refused::Geometry("corner_compare"))?
-                != 0
-            {
+            if particles::differing_registers(&expected, &actual) != 0 {
                 return Err(Refused::Geometry("corner_differs"));
             }
             Ok((expected.to_vec(), None, Cow::Borrowed(&particles::QUAD_INDICES)))
@@ -584,16 +570,10 @@ struct Direct<'a> {
     admission: &'a Admission,
     pending: Pending,
     stage: Stage,
-    /// The sampled draw's Rust material, compared with the first draw
-    /// offered (`material_proof`).
-    proof: Mutex<Option<material_proof::Expected>>,
 }
 
 impl DrawAdmission for Direct<'_> {
     fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
-        if let Some(e) = self.proof.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            material_proof::record(&e, snapshot.draw);
-        }
         self.admission.plan(snapshot, &self.pending, self.stage, false)
     }
 }
@@ -687,7 +667,6 @@ struct Pass {
 /// isolated recording's `ExternalTarget` or the open pass's attachments.
 struct CopyView<'a> {
     device: &'a wgpu::Device,
-    guest_size: (u32, u32),
     size: (u32, u32),
     color_format: wgpu::TextureFormat,
     depth_format: wgpu::TextureFormat,
@@ -698,7 +677,6 @@ impl<'a> CopyView<'a> {
     fn of_target(t: &ExternalTarget<'a>) -> Self {
         Self {
             device: t.device,
-            guest_size: t.guest_size,
             size: t.size,
             color_format: t.color_format,
             depth_format: t.depth_format,
@@ -709,7 +687,6 @@ impl<'a> CopyView<'a> {
     fn of_attachments(t: &'a ExternalAttachments, request: &d3d::ExternalPassRequest) -> Self {
         Self {
             device: &t.device,
-            guest_size: request.surface_size,
             size: t.size,
             color_format: t.color_format,
             depth_format: t.depth_format,
@@ -741,10 +718,9 @@ impl Pass {
     ) -> Result<ImmediateDrawSnapshot<'_>, Refused> {
         let draw = self.draw.for_copy(t.copy);
         let d = draw.as_ref();
-        if t.guest_size != (d.target.width, d.target.height) {
-            return Err(Refused::Target);
-        }
-        let scale = d3d::scaled::RenderScale::between(t.guest_size, t.size).ok_or(Refused::Target)?;
+        // The draw's own surface scaled to this copy's host texture.
+        let scale = d3d::scaled::RenderScale::between((d.target.width, d.target.height), t.size)
+            .expect("a bound target has a size");
         let caps = gfx::translate::Capabilities::from_features(t.device.features());
         let program = d3d::nv2a::resolved::resolve(d, t.stages.map(|v| v.is_some()), caps, scale)
             .map_err(|reason| Refused::Shader(reason.into()))?;
@@ -759,7 +735,7 @@ impl Pass {
         primitive.strip_index_format = (primitive.topology
             == wgpu::PrimitiveTopology::TriangleStrip)
             .then_some(wgpu::IndexFormat::Uint32);
-        let clip = d.display_rect(d.clip.ok_or(Refused::Scissor)?);
+        let clip = d.display_rect(d.clip.expect("plan admits only clipped draws"));
         let scissor = scale.rect(clip.x, clip.y, clip.width, clip.height);
         let mut textures = [None, None, None, None];
         for (n, slot) in textures.iter_mut().enumerate() {
@@ -1012,17 +988,14 @@ impl ExternalPass for Pass {
             Ok(s) => s,
             Err(why) => return Some(Err(refusal(why))),
         };
-        if snapshot.stencil_reference > u32::from(u8::MAX) {
-            return None;
-        }
         Some(
             match renderer.draws(&t.device, &t.queue, &t.uploads, &snapshot) {
-                Ok((packet, discards)) => Ok(ExternalDraws {
-                    ranges: 1,
-                    packets: vec![packet],
-                    discards,
-                    writes: Vec::new(),
-                }),
+                // A draw that rasterises nothing is still the guest's
+                // draw, taken: one range, no packet.
+                Ok(drawn) => {
+                    let (packets, discards) = drawn.map_or((Vec::new(), false), |(p, d)| (vec![p], d));
+                    Ok(ExternalDraws { ranges: 1, packets, discards, writes: Vec::new() })
+                }
                 Err(why) => Err(refusal(why)),
             },
         )
@@ -1039,10 +1012,8 @@ impl ExternalPass for Pass {
         {
             return 0;
         }
-        usize::from(
-            draw.record(target.encoder, identity, key, target.color, target.depth)
-                .is_ok(),
-        )
+        draw.record(target.encoder, identity, key, target.color, target.depth);
+        1
     }
 }
 

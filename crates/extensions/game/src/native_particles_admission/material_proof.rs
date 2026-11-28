@@ -1,78 +1,22 @@
-//! The Rust particle and contrail materials against the draws the native
-//! admission takes (docs/graphics/retire-d3d-r2.md, "R2's materials"):
-//! one admitted draw in 64 of each kind is compared, field by field, with
-//! the material made from the setup's inputs (`render_bridge::
-//! effect_materials`) and the tags. The particle material needs the map's
-//! shader library, read off the game thread once a map.
+//! The Rust particle and contrail materials a cut setup's draws take
+//! (docs/graphics/retire-d3d-r2.md, "R2's materials"): made from the
+//! setup's inputs (`render_bridge::effect_materials`) and the tags, as the
+//! device's supplied draw state. No draw is compared with the guest's. The
+//! particle material needs the map's shader library, read off the game
+//! thread once a map.
 
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
-use d3d::shader::VertexProcessing;
 use engine::memory::GuestMemory;
-use native_render::effect_material::{self, Material, Observed, Resolved};
+use native_render::effect_material::{self, Material, Resolved};
 use native_render::{contrail_material, particle_material};
 use render_bridge::effect_materials::{self as proof, Kind};
 use tags::material::ShaderLibrary;
 
-/// A sampled draw's material and its textures and program, to compare
-/// with the draw the device admits.
-pub(super) struct Expected {
-    kind: Kind,
-    material: Material,
-    resolved: Resolved,
-    /// The state arrays at the call of the draw's setup.
-    before: Option<effect_material::State>,
-}
-
-fn made(kind: Kind, outcome: Result<(Material, Resolved), &'static str>) -> Option<Expected> {
-    let before = proof::take_state(kind);
-    match outcome {
-        Ok((material, resolved)) => Some(Expected { kind, material, resolved, before }),
-        Err(why) => {
-            proof::record(kind, Err(why));
-            None
-        }
-    }
-}
-
 fn resolved(mem: &dyn GuestMemory, material: Material) -> Result<(Material, Resolved), &'static str> {
     let r = effect_material::resolve(&material, &|a| mem.u32(a).ok(), &|a, n| mem.bytes(a, n).ok())?;
     Ok((material, r))
-}
-
-/// The particle emission `call`'s material when it is sampled: only an
-/// emission of the particle walk (its return to `0x00224cd7`), which the
-/// particle draw's setup precedes.
-pub(super) fn particle(mem: &dyn GuestMemory, return_address: u32) -> Option<Expected> {
-    if return_address != engine::particle_emission::EMIT_RETURN || !proof::sample(Kind::Particle) {
-        return None;
-    }
-    let outcome = (|| {
-        let inputs = proof::particle_inputs().ok_or("no_setup")?;
-        particle_material::check(&inputs).map_err(particle_material::Refused::name)?;
-        resolved(mem, library_material(mem, &inputs)?)
-    })();
-    made(Kind::Particle, outcome)
-}
-
-/// The contrail draw's material when it is sampled; `context` is the
-/// dynamic draw's builder context (the setup's entry data). The setup's
-/// inputs are taken whether or not the draw is sampled.
-pub(super) fn contrail(mem: &dyn GuestMemory, context: u32) -> Option<Expected> {
-    let inputs = proof::take_contrail_inputs(context);
-    if !proof::sample(Kind::Contrail) {
-        return None;
-    }
-    let outcome = (|| {
-        let inputs = inputs.ok_or("no_setup")?;
-        let word = |a: u32| mem.u32(a).ok();
-        let shader = effect_material::engine_vertex_shader(&word, contrail_material::VERTEX_SLOT)
-            .ok_or("vertex_program_unread")?;
-        let material = contrail_material::material(&inputs, shader).map_err(contrail_material::Refused::name)?;
-        resolved(mem, material)
-    })();
-    made(Kind::Contrail, outcome)
 }
 
 /// The inline array formats of the particle walk's vertices: `v0` four
@@ -88,7 +32,7 @@ pub(super) const PARTICLE_FORMATS: [u32; 16] = {
 /// The material of the setup of `kind` running now as the device's
 /// supplied draw takes it, for [`Host::material_cut`]: its material,
 /// textures and program made, or the refusal named, which keeps the
-/// guest's setup. Must not record a proof (the caller holds it).
+/// guest's setup.
 ///
 /// [`Host::material_cut`]: render_bridge::native_particles::Host::material_cut
 pub(super) fn cut(mem: &dyn GuestMemory, kind: Kind) -> Result<d3d::SuppliedState, &'static str> {
@@ -153,50 +97,6 @@ pub(super) fn held(kind: Kind) -> Option<Arc<d3d::SuppliedState>> {
         return None;
     }
     HELD.lock().unwrap_or_else(|e| e.into_inner())[kind as usize].clone()
-}
-
-/// Compares `draw` with `e` and records the differing fields.
-pub(super) fn record(e: &Expected, draw: &d3d::ResolvedDraw) {
-    let program = match &draw.shader.vertex {
-        VertexProcessing::Program { microcode, .. } => {
-            let mut code = vec![0x78, 0x20];
-            code.extend_from_slice(&((microcode.len() / 4) as u16).to_le_bytes());
-            code.extend(microcode.iter().flat_map(|w| w.to_le_bytes()));
-            Some(code)
-        }
-        VertexProcessing::FixedFunction { .. } => None,
-    };
-    let s = &draw.raw.stages;
-    let observed = Observed {
-        render: &draw.raw.render,
-        stages: [&s[0], &s[1], &s[2], &s[3]],
-        combiner: draw.shader.pixel_shader.as_deref(),
-        textures: draw.textures,
-        constants: &draw.shader.constants[..],
-        program,
-    };
-    let mut fields = effect_material::compare(&e.material, &e.resolved, &observed);
-    // The rest of the draw's state is what the arrays held at its setup's
-    // call: what a cut draw takes from the device.
-    match &e.before {
-        Some(before) => fields.extend(effect_material::compare_state(&e.material, before, observed.render, observed.stages)),
-        None => {
-            proof::record(e.kind, Err("state_unread"));
-            return;
-        }
-    }
-    if let VertexProcessing::Program { start, .. } = &draw.shader.vertex
-        && *start != 0
-    {
-        fields.push("vertex_program_start".to_owned());
-    }
-    if e.kind == Kind::Particle && draw.layout.streams.first().map(|st| st.stride) != Some(8) {
-        fields.push("vertex_format".to_owned());
-    }
-    if supplied(&e.material, &e.resolved).is_err() {
-        fields.push("supplied".to_owned());
-    }
-    proof::record(e.kind, Ok(&fields));
 }
 
 /// The map's shader library and the particle materials made from it.

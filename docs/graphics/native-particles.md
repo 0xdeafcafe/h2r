@@ -390,10 +390,26 @@ mode or all rain another.
 
 Other named admission refusals are `MissingColorTarget`,
 `MissingDepthTarget`, `UnsupportedClip`, `GlyphFiltering`,
-`UnresolvedState`, plus renderer `State`, `Shader`, `Texture`, `Target`,
-`Scissor`, `Geometry` and `Identity`. Preparation uses the live shader,
-textures and state on each copy; it never substitutes an approximate
-material. Diagnostics are bounded and are not replacement receipts.
+`UnresolvedState`, plus renderer `State`, `Shader` and `Geometry`.
+Preparation uses the live shader, textures and state on each copy; it
+never substitutes an approximate material. Diagnostics are bounded and are
+not replacement receipts.
+
+What the renderer draws rather than refuses
+(`ImmediateDrawSnapshot::validate`, `native-render/src/particle_gpu.rs`):
+
+| Draw shape | Drawn as |
+|---|---|
+| Scissor past the target | clamped to the target |
+| Empty scissor, no whole primitive | taken, nothing rasterised |
+| Trailing partial triangle or line | dropped, as D3D drops it |
+| Sampled stage with no texture | one zeroed texel of the stage's dimension |
+| Stencil reference above 255 | its low 8 bits, as the GPU masks it |
+| Wireframe or point fill mode | `PolygonMode::Line`/`Point` where the device has it |
+
+The adapter's own invariants (a named device and generation, bound
+targets, indices inside their vertices, textures bound for this draw) are
+asserts: a break is a bug, never a draw left to the guest.
 
 ### Walking completed emission inputs
 
@@ -695,7 +711,7 @@ the stage draws.
 - `crates/rewrites/native-render/tests/particles_compute_gpu.rs` runs an invented system for forty frames on the GPU and on the CPU reference, more than a workgroup of particles dying across blocks, and requires the same particles in the same order within float tolerance (frame windows are skipped within 1e-3 of a frame boundary). It checks that a dead particle is compacted out, that births past the capacity drop, and that the draw's instance count is the GPU's: a stale record past it is not drawn. It skips without a GPU adapter.
 - One `GpuParticles::update` per submission: the step and births go through the queue.
 - `frame_graph/particles.rs` tests: a published system plans one stage a view, after the op that ends in slot 9 and before the next that starts there, holding the system's own bitmap; no system, no birth, no D24 W-buffer or no game view plans none.
-- `crates/rewrites/native-render/tests/particles_gpu.rs` draws a canonical particle and a packed ribbon strip into one submission with invented microcode and checks colour readback and refusal of a changed attachment identity. It skips without a GPU adapter. Pure tests cover dynamic register assignment, colour channel order, z/w reset, NaN and signed zero, missing memory, alias and overflow refusal, clip and depth mismatch and malformed geometry; `effect_immediate::` tests cover winding, caller allowlisting, defaults and point and odd-line refusals.
+- `crates/rewrites/native-render/tests/particles_gpu.rs` draws a canonical particle and a packed ribbon strip into one submission with invented microcode and checks colour readback, an unbound sampled stage reading zero and an empty draw recording nothing. It skips without a GPU adapter. Pure tests cover dynamic register assignment (two slots on one register draw the later write), the emitter gate, colour channel order, z/w reset, NaN and signed zero, missing memory, register and overflow refusal, scissor clamping and trailing partial primitives; `effect_immediate::` tests cover winding, caller allowlisting, defaults and point and odd-line refusals.
 
 ## Not verified
 

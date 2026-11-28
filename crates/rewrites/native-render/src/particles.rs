@@ -16,15 +16,18 @@ pub const ATTRIBUTE_REGISTERS: u32 = 0x0047_0a3c;
 /// Eight arguments popped by the emitter; EBX carries a ninth pointer.
 pub const STACK_BYTES: u16 = 32;
 
+/// Why a guest call's inputs cannot be read. The emission itself has no
+/// refusals: [`read_emission`] reads every call the guest's emitter would
+/// draw. `Disabled` and `Geometry` are the dynamic builders' own
+/// ([`crate::effect_geometry::read_call`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refused {
     Unreadable,
     AddressOverflow,
     Disabled,
+    /// An attribute register past the NV2A's sixteen.
     AttributeRegister,
-    Declaration,
     Geometry,
-    Identity,
 }
 
 /// Inputs copied at the emission boundary. Missing registers retain the
@@ -48,20 +51,21 @@ fn words<const N: usize>(mem: &dyn GuestRead, at: u32) -> Result<[u32; N], Refus
 }
 
 /// Decode the helper's entry ABI. Read-only; partial reads never admit a
-/// draw. Dynamic register assignments are validated, not hard-coded from
-/// the executable's initializer.
-pub fn read_emission(mem: &dyn GuestRead, esp: u32, ebx: u32) -> Result<Emission, Refused> {
+/// draw. Dynamic register assignments are read, not hard-coded from the
+/// executable's initializer. `None` is the emitter's gate (`0x00470a38`)
+/// off: the guest draws nothing then either.
+///
+/// Two slots naming one register write it in instruction order, so the
+/// later write is the one drawn, as on the NV2A. A slot naming v0 is
+/// overwritten by the corner stream ([`Emission::vertices`]).
+pub fn read_emission(mem: &dyn GuestRead, esp: u32, ebx: u32) -> Result<Option<Emission>, Refused> {
     if mem.read_u32(EMIT_ENABLED).ok_or(Refused::Unreadable)? & 0xff == 0 {
-        return Err(Refused::Disabled);
+        return Ok(None);
     }
     let args = words::<8>(mem, esp.checked_add(4).ok_or(Refused::AddressOverflow)?)?;
     let registers = words::<8>(mem, ATTRIBUTE_REGISTERS)?;
-    let mut used = 1u16; // v0 is the corner stream, never a constant attribute.
-    for &r in &registers {
-        if r >= 16 || used & (1 << r) != 0 {
-            return Err(Refused::AttributeRegister);
-        }
-        used |= 1 << r;
+    if registers.iter().any(|&r| r >= 16) {
+        return Err(Refused::AttributeRegister);
     }
     let one = 1.0f32.to_bits();
     let vector = |at| words::<3>(mem, at).map(|v| [v[0], v[1], v[2], one]);
@@ -85,15 +89,7 @@ pub fn read_emission(mem: &dyn GuestRead, esp: u32, ebx: u32) -> Result<Emission
     ] {
         attributes[registers[slot] as usize] = Some(value);
     }
-    Ok(Emission { attributes })
-}
-
-/// The only proved inline declaration for this first slice. The adapter
-/// must check the *live* declaration: v0 SHORT4, 8 bytes, no other streams.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Declaration {
-    CornerShort4,
-    Unsupported,
+    Ok(Some(Emission { attributes }))
 }
 
 #[repr(C)]
@@ -106,25 +102,20 @@ impl Emission {
     /// Expand the emitted SHORT4 corners exactly; w is zero, not one.
     /// Other registers keep their issue-time values, overridden by the
     /// helper's writes. D3D performs the same exact i16-to-f32 conversion.
-    pub fn vertices(
-        &self,
-        declaration: Declaration,
-        defaults: [[f32; 4]; 16],
-    ) -> Result<[Vertex; 4], Refused> {
-        if declaration != Declaration::CornerShort4 {
-            return Err(Refused::Declaration);
-        }
+    /// The adapter checks the live declaration (v0 SHORT4, 8 bytes, one
+    /// stream) before it expands.
+    pub fn vertices(&self, defaults: [[f32; 4]; 16]) -> [Vertex; 4] {
         let mut registers = defaults;
         for (r, value) in registers.iter_mut().zip(&self.attributes) {
             if let Some(value) = value {
                 *r = value.map(f32::from_bits);
             }
         }
-        Ok([[0., 0.], [1., 0.], [1., 1.], [0., 1.]].map(|[x, y]| {
+        [[0., 0.], [1., 0.], [1., 1.], [0., 1.]].map(|[x, y]| {
             let mut registers = registers;
             registers[0] = [x, y, 0., 0.];
             Vertex { registers }
-        }))
+        })
     }
 }
 
@@ -145,10 +136,7 @@ pub struct DrawIdentity {
 
 /// Bitwise compare: float equality hides signed zero and cannot pair NaNs.
 /// This is deliberately independent of shader/material matching.
-pub fn differing_registers(expected: &[Vertex], actual: &[Vertex]) -> Result<u16, Refused> {
-    if expected.len() != actual.len() {
-        return Err(Refused::Geometry);
-    }
+pub fn differing_registers(expected: &[Vertex; 4], actual: &[Vertex; 4]) -> u16 {
     let mut mask = 0;
     for (e, a) in expected.iter().zip(actual) {
         for r in 0..16 {
@@ -157,7 +145,7 @@ pub fn differing_registers(expected: &[Vertex], actual: &[Vertex]) -> Result<u16
             }
         }
     }
-    Ok(mask)
+    mask
 }
 
 #[cfg(test)]
@@ -200,10 +188,10 @@ mod tests {
     fn emission_matches_attribute_write_semantics_and_keeps_defaults() {
         let m = memory();
         let before = m.0.clone();
-        let e = read_emission(&m, 0x100, 0x280).unwrap();
+        let e = read_emission(&m, 0x100, 0x280).unwrap().unwrap();
         let mut defaults = [[42.; 4]; 16];
         defaults[12][0] = f32::from_bits(0x7fc0_0042);
-        let v = e.vertices(Declaration::CornerShort4, defaults).unwrap();
+        let v = e.vertices(defaults);
         assert_eq!(v[0].registers[1], [544., 545., 546., 1.]);
         assert_eq!(v[0].registers[2], [0.25, 0., 0., 1.]);
         assert_eq!(v[0].registers[4], [512., 513., 514., 1.]);
@@ -217,37 +205,44 @@ mod tests {
         assert_eq!(m.0, before, "never writes the particle or device state");
     }
     #[test]
-    fn missing_words_aliases_and_wrong_declarations_refuse() {
+    fn missing_words_and_registers_past_sixteen_refuse() {
         let mut m = memory();
         m.0.remove(&0x28c);
         assert_eq!(read_emission(&m, 0x100, 0x280), Err(Refused::Unreadable));
         let mut m = memory();
-        m.0.insert(ATTRIBUTE_REGISTERS, 2);
-        assert_eq!(
-            read_emission(&m, 0x100, 0x280),
-            Err(Refused::AttributeRegister)
-        );
+        m.0.insert(ATTRIBUTE_REGISTERS, 16);
+        assert_eq!(read_emission(&m, 0x100, 0x280), Err(Refused::AttributeRegister));
         let m = memory();
-        assert_eq!(
-            read_emission(&m, u32::MAX, 0),
-            Err(Refused::AddressOverflow)
-        );
-        let e = read_emission(&m, 0x100, 0x280).unwrap();
-        assert_eq!(
-            e.vertices(Declaration::Unsupported, [[0.; 4]; 16]),
-            Err(Refused::Declaration)
-        );
+        assert_eq!(read_emission(&m, u32::MAX, 0), Err(Refused::AddressOverflow));
     }
     #[test]
-    fn compare_is_bitwise_and_never_pairs_different_geometry() {
-        let e = read_emission(&memory(), 0x100, 0x280).unwrap();
-        let v = e
-            .vertices(Declaration::CornerShort4, [[0.; 4]; 16])
-            .unwrap();
+    fn the_emitter_gate_off_draws_nothing_rather_than_refusing() {
+        let mut m = memory();
+        m.0.insert(EMIT_ENABLED, 0x100);
+        assert_eq!(read_emission(&m, 0x100, 0x280), Ok(None));
+    }
+    #[test]
+    fn two_slots_on_one_register_draw_the_later_write() {
+        // Slot 0 (the vector at args[1]) and slot 1 (args[5]) both name
+        // register 2; slot 1 is written after slot 0.
+        let mut m = memory();
+        m.0.insert(ATTRIBUTE_REGISTERS, 2);
+        m.0.insert(ATTRIBUTE_REGISTERS + 4, 2);
+        let v = read_emission(&m, 0x100, 0x280).unwrap().unwrap().vertices([[0.; 4]; 16]);
+        assert_eq!(v[0].registers[2], [0.25, 0., 0., 1.]);
+        // A slot on v0 is overwritten by the corner stream.
+        let mut m = memory();
+        m.0.insert(ATTRIBUTE_REGISTERS, 0);
+        let v = read_emission(&m, 0x100, 0x280).unwrap().unwrap().vertices([[0.; 4]; 16]);
+        assert_eq!(v[1].registers[0], [1., 0., 0., 0.]);
+    }
+    #[test]
+    fn compare_is_bitwise() {
+        let e = read_emission(&memory(), 0x100, 0x280).unwrap().unwrap();
+        let v = e.vertices([[0.; 4]; 16]);
         let mut other = v;
         other[2].registers[9][1] = -0.0;
-        assert_eq!(differing_registers(&v, &other), Ok(1 << 9));
-        assert_eq!(differing_registers(&v, &other[..3]), Err(Refused::Geometry));
+        assert_eq!(differing_registers(&v, &other), 1 << 9);
         assert_eq!(QUAD_INDICES, [0, 1, 2, 0, 2, 3]);
     }
 }

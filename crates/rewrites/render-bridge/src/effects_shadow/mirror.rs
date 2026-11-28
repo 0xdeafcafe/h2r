@@ -8,8 +8,8 @@
 //! another [`Key`], first draws the held batch, then goes on as before
 //! (the answer's direct draw). A batch the host then refuses has no guest
 //! draw left (the callbacks returned): it is dropped by name,
-//! `layer_plan_15_effects_shadow_mirror_dropped_<cause>`, and the gate
-//! stops answering. What is not taken is
+//! `layer_plan_15_effects_shadow_mirror_dropped_<cause>`. What is not
+//! taken is
 //! `scene_kept_15_particle_mirror_<cause>`.
 
 use std::cell::RefCell;
@@ -23,7 +23,7 @@ use engine::particle_emission::{Prediction, constant::TINT};
 use native_render::particle_mirror::{self as nm, Key};
 use native_render::particle_system::Spawn;
 
-use super::{count, with_gate};
+use super::count;
 
 /// One system's particles of one particle draw, in the guest's order.
 #[derive(Clone, Debug, PartialEq)]
@@ -154,7 +154,6 @@ pub(super) fn finish(m: &mut dyn GuestMemory) {
         Ok(()) => count("answer_mirrored", n),
         Err(cause) => {
             count(&format!("mirror_dropped_{cause}"), n);
-            with_gate(|g| g.spoil());
         }
     }
 }
@@ -172,7 +171,7 @@ pub(crate) mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::effects_shadow::emission::tests::{ESP, world};
+    use crate::effects_shadow::fixtures::{ESP, world};
     use engine::memory::FlatMemory;
     use engine::particle_emission as pe;
 
@@ -262,13 +261,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_batch_the_host_refuses_is_dropped_by_name_and_the_gate_stops_answering() {
+    fn a_batch_the_host_refuses_is_dropped_by_name() {
         let mut m = mirror_world();
         let p = pe::predict(&m, ESP, 0x1f80, 0x027f).unwrap();
         set_host(Arc::new(Records { refuse_draw: true, ..Records::default() }));
-        with_gate(|g| g.answering = true);
+        let dropped = || crate::effects_shadow::tested_prefix("mirror_dropped_");
+        let before = dropped();
         assert!(take(&mut m, ESP, &p));
         finish(&mut m);
-        assert!(!with_gate(|g| g.answering()), "a dropped batch closes the gate");
+        assert_eq!(dropped(), before + 1, "dropped by name");
     }
 }

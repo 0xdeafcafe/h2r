@@ -10,11 +10,10 @@
 //! admission (`game/src/native_weather_glue.rs`) takes the plate's
 //! resolved strip while the call runs ([`take_draw`]).
 //!
-//! The arm ([`Arm`]): Rust draws the plate. One draw in [`SAMPLE`] (the
-//! first, then every 64th) is the guest's own, compared with Rust's; any
-//! difference falls back for the session, and the guest's draw stands from
-//! then on. `render.scene` carries `weather_plate_{admitted,compared,matched,mismatched,fallback}`,
-//! `weather_plate_mismatched_<field>` and `weather_plate_refused_<reason>`.
+//! Rust draws every plate; there is no guest comparison draw. A plate
+//! Rust cannot draw is a named refusal ([`Arm::refuse`]): the guest's
+//! draw stands for that call. `render.scene` carries
+//! `weather_plate_admitted` and `weather_plate_refused_<reason>`.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -43,8 +42,6 @@ pub const VIEW_FAR: u32 = 0x0048_5ad8;
 /// `ebx` at `0x00037da4..0x00037da7`: 0, 0, 1). The fourth push, also
 /// `ebx`, skips the setup.
 pub const FLAGS: [bool; 3] = [false, false, true];
-/// One draw in this many is compared (the first, then every 64th).
-pub const SAMPLE: u64 = 64;
 
 /// What the plate draw reads.
 #[derive(Clone, Debug, PartialEq)]
@@ -84,92 +81,28 @@ pub fn plan(i: &Inputs) -> Option<Draw> {
     })
 }
 
-/// What the host does with one plate draw.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Decision {
-    /// Rust's draw replaces the guest's.
-    Rust,
-    /// The guest's draw stands and is compared with Rust's.
-    Compare,
-    /// Fallen back: the guest's draw stands.
-    Guest,
-}
-
-/// The arm's tally.
+/// The host's tally.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Arm {
-    seen: u64,
     pub admitted: u64,
-    pub compared: u64,
-    pub matched: u64,
-    pub mismatched: u64,
-    pub fallen_back: bool,
-    pub fields: BTreeMap<String, u64>,
     pub refused: BTreeMap<&'static str, u64>,
 }
 
 impl Arm {
     const fn new() -> Self {
         Self {
-            seen: 0,
             admitted: 0,
-            compared: 0,
-            matched: 0,
-            mismatched: 0,
-            fallen_back: false,
-            fields: BTreeMap::new(),
             refused: BTreeMap::new(),
         }
     }
 
-    /// At a plate draw Rust has a plan for.
-    pub fn decide(&mut self) -> Decision {
-        if self.fallen_back {
-            return Decision::Guest;
-        }
-        self.seen += 1;
-        if (self.seen - 1) % SAMPLE == 0 {
-            Decision::Compare
-        } else {
-            Decision::Rust
-        }
-    }
-
-    /// A compared draw's differing fields; any falls back for the session.
-    pub fn record(&mut self, fields: &[String]) {
-        self.compared += 1;
-        if fields.is_empty() {
-            self.matched += 1;
-            return;
-        }
-        self.mismatched += 1;
-        self.fallen_back = true;
-        for f in fields {
-            *self.fields.entry(f.clone()).or_default() += 1;
-        }
-    }
-
-    /// A draw Rust could not make or compare: the guest's stands.
+    /// A draw Rust could not make: named and counted; the guest's stands.
     pub fn refuse(&mut self, why: &'static str) {
         *self.refused.entry(why).or_default() += 1;
     }
 
     fn counters(&self) -> Vec<(String, u64)> {
-        let mut out = vec![
-            ("weather_plate_admitted".to_owned(), self.admitted),
-            ("weather_plate_compared".to_owned(), self.compared),
-            ("weather_plate_matched".to_owned(), self.matched),
-            ("weather_plate_mismatched".to_owned(), self.mismatched),
-            (
-                "weather_plate_fallback".to_owned(),
-                u64::from(self.fallen_back),
-            ),
-        ];
-        out.extend(
-            self.fields
-                .iter()
-                .map(|(f, n)| (format!("weather_plate_mismatched_{f}"), *n)),
-        );
+        let mut out = vec![("weather_plate_admitted".to_owned(), self.admitted)];
         out.extend(
             self.refused
                 .iter()
@@ -183,16 +116,6 @@ static ARM: Mutex<Arm> = Mutex::new(Arm::new());
 
 fn with<T>(f: impl FnOnce(&mut Arm) -> T) -> T {
     f(&mut ARM.lock().unwrap_or_else(|e| e.into_inner()))
-}
-
-/// [`Arm::decide`].
-pub fn decide() -> Decision {
-    with(Arm::decide)
-}
-
-/// [`Arm::record`].
-pub fn record(fields: &[String]) {
-    with(|a| a.record(fields));
 }
 
 /// [`Arm::refuse`].
@@ -359,28 +282,23 @@ mod tests {
     }
 
     #[test]
-    fn rust_draws_one_draw_in_64_is_compared_and_a_difference_falls_back_for_the_session() {
+    fn every_plate_is_rusts_and_a_gap_is_a_named_refusal() {
         let mut a = Arm::new();
-        assert_eq!(a.decide(), Decision::Compare);
-        assert!((1..SAMPLE).all(|_| a.decide() == Decision::Rust));
-        assert_eq!(a.decide(), Decision::Compare);
-        a.record(&[]);
-        assert_eq!(a.decide(), Decision::Rust);
-        a.record(&["vertex0_r0".to_owned(), "constant21".to_owned()]);
-        assert!((0..2 * SAMPLE).all(|_| a.decide() == Decision::Guest));
+        a.admitted += 3;
         a.refuse("vertex_declaration");
+        a.refuse("placement");
         let rows = a.counters();
         for (name, n) in [
-            ("weather_plate_compared", 2),
-            ("weather_plate_matched", 1),
-            ("weather_plate_mismatched", 1),
-            ("weather_plate_fallback", 1),
-            ("weather_plate_mismatched_vertex0_r0", 1),
-            ("weather_plate_mismatched_constant21", 1),
+            ("weather_plate_admitted", 3),
             ("weather_plate_refused_vertex_declaration", 1),
+            ("weather_plate_refused_placement", 1),
         ] {
             assert!(rows.contains(&(name.to_owned(), n)), "{name}");
         }
+        assert!(
+            rows.iter().all(|(n, _)| !n.contains("compared") && !n.contains("fallback")),
+            "no comparison arm"
+        );
     }
 
     #[test]

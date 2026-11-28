@@ -168,94 +168,117 @@ impl RawVertices {
     }
 }
 
+/// Why the native path cannot draw a snapshot. Every other shape of a
+/// snapshot draws: see [`ImmediateDrawSnapshot::validate`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Refused {
-    Identity,
-    Target,
-    Scissor,
     /// The named geometry check that failed; the particle admission
     /// counts and samples each name apart.
     Geometry(&'static str),
     Effect(&'static str),
     State,
-    Texture(usize),
     Shader(Arc<str>),
 }
 
+/// What a snapshot draws once validated: the scissor clamped to the
+/// target and the indices of its whole primitives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Drawn {
+    pub scissor: [u32; 4],
+    pub indices: u32,
+}
+
 impl ImmediateDrawSnapshot<'_> {
-    /// Checks independent of a GPU. Unknown attachment/depth state, partial
-    /// triangles, texture generations and mismatched clip modes fail closed.
-    pub fn validate(&self) -> Result<(), Refused> {
-        if self.identity.device == 0 || self.identity.generation == 0 {
-            return Err(Refused::Identity);
-        }
-        if self.target.color == 0
-            || self.target.depth == 0
-            || self.target.size.0 == 0
-            || self.target.size.1 == 0
-            || self.depth.format != self.target.depth_format
-        {
-            return Err(Refused::Target);
-        }
-        let [x, y, w, h] = self.scissor;
-        if w == 0
-            || h == 0
-            || x.checked_add(w).is_none_or(|r| r > self.target.size.0)
-            || y.checked_add(h).is_none_or(|b| b > self.target.size.1)
-        {
-            return Err(Refused::Scissor);
-        }
+    /// What the draw rasterises, as D3D rasterises it. `None` draws
+    /// nothing: an empty scissor, or no whole primitive.
+    ///
+    /// - The scissor is clamped to the target, as D3D clamps it to the
+    ///   surface.
+    /// - A trailing partial primitive is dropped, as D3D drops it.
+    /// - Point lists are `Refused::State`: a point sprite is a quad on the
+    ///   NV2A, which a wgpu point is not.
+    ///
+    /// The adapter's own invariants (identity, target handles, texture
+    /// bindings, indices in range, uniforms from one resolve) are asserted:
+    /// a break is a bug in the adapter, never a draw left to the guest.
+    pub fn validate(&self) -> Result<Option<Drawn>, Refused> {
+        assert!(
+            self.identity.device != 0 && self.identity.generation != 0,
+            "the adapter names every draw's device and generation"
+        );
+        assert!(
+            self.target.color != 0
+                && self.target.depth != 0
+                && self.target.size.0 != 0
+                && self.target.size.1 != 0,
+            "the adapter draws only into bound colour and depth targets"
+        );
         let vertex_count = self
             .raw_vertices
             .as_deref()
             .map_or(self.vertices.len(), RawVertices::vertex_count);
-        let strip = self.primitive.topology == wgpu::PrimitiveTopology::TriangleStrip;
-        let lines = self.primitive.topology == wgpu::PrimitiveTopology::LineList;
-        if vertex_count == 0
-            || vertex_count > 65536
-            || self.indices.is_empty()
-            || self.indices.len() > 393216
-            || if strip {
-                self.indices.len() < 3
-            } else if lines {
-                !self.indices.len().is_multiple_of(2)
-            } else {
-                !self.indices.len().is_multiple_of(3)
-            }
-            || self.indices.iter().any(|&i| i as usize >= vertex_count)
-        {
-            return Err(Refused::Geometry("indices"));
-        }
-        if (!strip && !lines && self.primitive.topology != wgpu::PrimitiveTopology::TriangleList)
-            || self.primitive.strip_index_format != strip.then_some(wgpu::IndexFormat::Uint32)
-            || self.primitive.polygon_mode != wgpu::PolygonMode::Fill
-            || self.primitive.conservative
-            || self.depth.depth_write_enabled.is_none()
-            || self.depth.depth_compare.is_none()
-            || self.shader.pixel_options.flat_shading != self.shader.flat_shading
-            || (self.shader.pixel_options.w_buffer && self.vertex_uniforms.w_clip.is_none())
-            || self
-                .vertex_uniforms
-                .surface
-                .iter()
-                .any(|v| !v.is_finite() || *v <= 0.)
-            || !self.vertex_uniforms.z_max.is_finite()
-            || self.vertex_uniforms.z_max <= 0.
-        {
-            return Err(Refused::State);
-        }
-        for (n, texture) in self.textures.iter().enumerate() {
-            if let Some(t) = texture {
-                if t.device != self.identity.device
-                    || t.generation != self.identity.generation
-                    || t.identity == 0
-                    || self.shader.pixel_options.texture_dims[n] != Some(t.dimension)
-                {
-                    return Err(Refused::Texture(n));
-                }
+        assert!(
+            self.indices.iter().all(|&i| (i as usize) < vertex_count),
+            "the adapter's index lists stay inside their vertices"
+        );
+        assert!(
+            self.shader.pixel_options.flat_shading == self.shader.flat_shading
+                && (!self.shader.pixel_options.w_buffer || self.vertex_uniforms.w_clip.is_some())
+                && self.vertex_uniforms.surface.iter().all(|v| v.is_finite() && *v > 0.)
+                && self.vertex_uniforms.z_max.is_finite()
+                && self.vertex_uniforms.z_max > 0.,
+            "the program and its uniforms come from one resolve"
+        );
+        for (n, t) in self.textures.iter().enumerate() {
+            if let Some(t) = t {
+                assert!(
+                    t.device == self.identity.device
+                        && t.generation == self.identity.generation
+                        && t.identity != 0
+                        && self.shader.pixel_options.texture_dims[n] == Some(t.dimension),
+                    "stage {n} is bound for this draw"
+                );
             }
         }
-        Ok(())
+        use wgpu::PrimitiveTopology as T;
+        let whole = self.indices.len() as u32;
+        let indices = match self.primitive.topology {
+            T::TriangleList => whole - whole % 3,
+            T::LineList => whole - whole % 2,
+            T::TriangleStrip if whole >= 3 => whole,
+            T::LineStrip if whole >= 2 => whole,
+            T::TriangleStrip | T::LineStrip => 0,
+            T::PointList => return Err(Refused::State),
+        };
+        let (width, height) = self.target.size;
+        let [x, y, w, h] = self.scissor;
+        let (left, top) = (x.min(width), y.min(height));
+        let right = x.saturating_add(w).min(width);
+        let bottom = y.saturating_add(h).min(height);
+        let scissor = [left, top, right - left, bottom - top];
+        if vertex_count == 0 || indices == 0 || scissor[2] == 0 || scissor[3] == 0 {
+            return Ok(None);
+        }
+        Ok(Some(Drawn { scissor, indices }))
+    }
+
+    /// The primitive state the pipeline is made with: strips restart on
+    /// 32-bit indices, as the index buffer is.
+    fn primitive(&self) -> wgpu::PrimitiveState {
+        use wgpu::PrimitiveTopology as T;
+        let strip = matches!(self.primitive.topology, T::TriangleStrip | T::LineStrip);
+        wgpu::PrimitiveState {
+            strip_index_format: strip.then_some(wgpu::IndexFormat::Uint32),
+            ..self.primitive
+        }
+    }
+
+    /// The depth state the pipeline is made with, on the target's format.
+    fn depth(&self) -> wgpu::DepthStencilState {
+        wgpu::DepthStencilState {
+            format: self.target.depth_format,
+            ..self.depth.clone()
+        }
     }
 }
 
@@ -378,6 +401,9 @@ pub struct ParticleRenderer {
     uniforms: Option<wgpu::BindGroupLayout>,
     samplers: Cache<gfx::translate::SamplerKey, wgpu::Sampler, SAMPLER_CAPACITY>,
     groups: TextureGroups<GroupKey>,
+    /// What a sampled stage with no texture reads: one zeroed texel of the
+    /// stage's dimension, as the NV2A reads a stage it fetches nothing for.
+    unbound: HashMap<psh::TextureDim, (wgpu::TextureView, wgpu::Sampler)>,
     created: Created,
 }
 
@@ -390,6 +416,7 @@ impl ParticleRenderer {
             uniforms: None,
             samplers: Cache::new(),
             groups: TextureGroups::new(&GROUP_BYTES),
+            unbound: HashMap::new(),
             created: Created::default(),
         }
     }
@@ -422,24 +449,50 @@ impl ParticleRenderer {
         sampler
     }
 
-    /// Validates, then finds or makes the program and pipeline, and checks
-    /// every sampled level. Nothing is uploaded and no group is made.
+    /// The zeroed texel a sampled stage with no texture reads, made once
+    /// per dimension.
+    fn unbound(&mut self, device: &wgpu::Device, dim: psh::TextureDim) -> (wgpu::TextureView, wgpu::Sampler) {
+        self.unbound
+            .entry(dim)
+            .or_insert_with(|| {
+                let (dimension, layers, view) = match dim {
+                    psh::TextureDim::D2 => (wgpu::TextureDimension::D2, 1, wgpu::TextureViewDimension::D2),
+                    psh::TextureDim::D3 => (wgpu::TextureDimension::D3, 1, wgpu::TextureViewDimension::D3),
+                    psh::TextureDim::Cube => (wgpu::TextureDimension::D2, 6, wgpu::TextureViewDimension::Cube),
+                };
+                // wgpu zeroes a texture before its first use.
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("particle unbound stage"),
+                    size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: layers },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                    dimension: Some(view),
+                    ..Default::default()
+                });
+                (view, device.create_sampler(&Default::default()))
+            })
+            .clone()
+    }
+
+    /// Finds or makes the program and pipeline. Nothing is uploaded and no
+    /// group is made. The snapshot is validated first.
     fn resolve(
         &mut self,
         device: &wgpu::Device,
         s: &ImmediateDrawSnapshot<'_>,
     ) -> Result<(Arc<Program>, Cached), Refused> {
-        s.validate()?;
-        if self.device != s.identity.device {
-            return Err(Refused::Identity);
-        }
-        if s.primitive.unclipped_depth
-            && !device
-                .features()
-                .contains(wgpu::Features::DEPTH_CLIP_CONTROL)
-        {
-            return Err(Refused::State);
-        }
+        assert_eq!(self.device, s.identity.device, "a renderer draws for its own device");
+        assert!(
+            !s.primitive.unclipped_depth
+                || device.features().contains(wgpu::Features::DEPTH_CLIP_CONTROL),
+            "depth is unclipped only where the device can"
+        );
         let mut code = s.shader.pixel.clone();
         code.constant0 = [0; 8];
         code.constant1 = [0; 8];
@@ -464,20 +517,16 @@ impl ParticleRenderer {
             self.programs.insert_miss(key, program.clone());
             program?
         };
-        // Check every sampled level before pipeline/groups/uploads. A missing
-        // stage cannot turn into a skipped range in the recording loop.
         for (n, dim) in program.sampled.iter().enumerate() {
-            if let Some(dim) = dim {
-                let t = s.textures[n].as_ref().ok_or(Refused::Texture(n))?;
-                if t.dimension != *dim {
-                    return Err(Refused::Texture(n));
-                }
+            if let (Some(dim), Some(t)) = (dim, &s.textures[n]) {
+                assert_eq!(t.dimension, *dim, "stage {n} is bound as the program samples it");
             }
         }
+        let (primitive, depth) = (s.primitive(), s.depth());
         let pipeline_key = RenderPipelineKey {
             program: program.id,
-            primitive: s.primitive,
-            depth: s.depth.clone(),
+            primitive,
+            depth: depth.clone(),
             color: wgpu::ColorTargetState {
                 format: s.target.color_format,
                 blend: s.blend,
@@ -526,8 +575,8 @@ impl ParticleRenderer {
                             attributes: &attributes,
                         })],
                     },
-                    primitive: s.primitive,
-                    depth_stencil: Some(s.depth.clone()),
+                    primitive,
+                    depth_stencil: Some(depth.clone()),
                     multisample: wgpu::MultisampleState::default(),
                     fragment: Some(wgpu::FragmentState {
                         module: &program.module,
@@ -546,8 +595,8 @@ impl ParticleRenderer {
             described: PipelineKey {
                 shader: PARTICLE_PROGRAM,
                 vertex_buffers: Vec::new(),
-                primitive: s.primitive,
-                depth_stencil: Some(s.depth.clone()),
+                primitive,
+                depth_stencil: Some(depth),
                 color_target,
                 samples: 1,
             },
@@ -562,9 +611,9 @@ impl ParticleRenderer {
     /// views and samplers and kept while draws use it.
     fn texture_group(&mut self, device: &wgpu::Device, program: &Program, s: &ImmediateDrawSnapshot<'_>) -> wgpu::BindGroup {
         let bound = std::array::from_fn(|n| {
-            program.sampled[n].map(|_| {
-                let t = s.textures[n].as_ref().expect("validated before any recording");
-                (t.view.clone(), t.sampler.clone())
+            program.sampled[n].map(|dim| match &s.textures[n] {
+                Some(t) => (t.view.clone(), t.sampler.clone()),
+                None => self.unbound(device, dim),
             })
         });
         let key = (program.textures.clone(), bound);
@@ -607,18 +656,20 @@ impl ParticleRenderer {
     /// geometry staged in `uploads`, uniforms at dynamic offsets in a run
     /// of the same arena, pipeline and texture group cached. It draws what
     /// [`PreparedDraw::record`] draws: the whole surface as viewport, the
-    /// snapshot's scissor, blend constant and stencil reference. A
-    /// The flag is whether the pixel program discards (`ExternalDraws::discards`).
-    /// A stencil reference above 255 (outside what a packet carries) is
-    /// `Refused::State`; the caller then takes [`ParticleRenderer::prepare`].
+    /// clamped scissor, blend constant and stencil reference. The flag is
+    /// whether the pixel program discards (`ExternalDraws::discards`).
+    /// The stencil reference keeps its low 8 bits, as the GPU masks it to
+    /// the stencil format. `None` is a draw that rasterises nothing
+    /// ([`ImmediateDrawSnapshot::validate`]).
     pub fn draws(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         uploads: &gfx::ring::SubmissionUploads,
         s: &ImmediateDrawSnapshot<'_>,
-    ) -> Result<(RecordedDraw, bool), Refused> {
-        let reference = u8::try_from(s.stencil_reference).map_err(|_| Refused::State)?;
+    ) -> Result<Option<(RecordedDraw, bool)>, Refused> {
+        let Some(drawn) = s.validate()? else { return Ok(None) };
+        let reference = (s.stencil_reference & 0xff) as u8;
         let (program, cached) = self.resolve(device, s)?;
         let textures = self.texture_group(device, &program, s);
         let run = uploads
@@ -638,7 +689,7 @@ impl ParticleRenderer {
             .raw_vertices
             .as_ref()
             .map_or_else(|| bytemuck::cast_slice(&s.vertices), |r| r.bytes.as_ref());
-        let index_bytes: &[u8] = bytemuck::cast_slice(&s.indices);
+        let index_bytes: &[u8] = bytemuck::cast_slice(&s.indices[..drawn.indices as usize]);
         let (vertices, vertex_at) = uploads.stage(device, queue, vertex_bytes);
         let (indices, index_at) = uploads.stage(device, queue, index_bytes);
         let groups = vec![
@@ -649,20 +700,20 @@ impl ParticleRenderer {
             stencil: gfx::state::StencilState { reference, ..Default::default() },
             ..Default::default()
         };
-        let [x, y, width, height] = s.scissor;
+        let [x, y, width, height] = drawn.scissor;
         let draw = RecordedDraw::prepared_indexed(
             &cached.described,
             cached.pending,
             vec![(vertices, vertex_at, vertex_bytes.len() as u64)],
             (indices, index_at, index_bytes.len() as u64),
-            s.indices.len() as u32,
+            drawn.indices,
             groups,
             &render,
             s.target.size,
             ScissorRect { x, y, width, height },
         )
         .with_blend_constant(s.blend_constant);
-        Ok((draw, program.discards))
+        Ok(Some((draw, program.discards)))
     }
 
     /// Resolves everything and uploads owned geometry/uniforms, without
@@ -673,6 +724,9 @@ impl ParticleRenderer {
         device: &wgpu::Device,
         s: &ImmediateDrawSnapshot<'_>,
     ) -> Result<PreparedDraw, Refused> {
+        let Some(drawn) = s.validate()? else {
+            return Ok(PreparedDraw { identity: s.identity, target: s.target, draw: None });
+        };
         let (program, cached) = self.resolve(device, s)?;
         let buffer = |label, bytes: &[u8], usage| {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -706,9 +760,7 @@ impl ParticleRenderer {
             ],
         });
         let textures = self.texture_group(device, &program, s);
-        Ok(PreparedDraw {
-            identity: s.identity,
-            target: s.target,
+        let draw = Prepared {
             pipeline: cached.pipeline,
             uniforms,
             textures,
@@ -721,14 +773,15 @@ impl ParticleRenderer {
             ),
             indices: buffer(
                 "particle dynamic indices",
-                bytemuck::cast_slice(&s.indices),
+                bytemuck::cast_slice(&s.indices[..drawn.indices as usize]),
                 wgpu::BufferUsages::INDEX,
             ),
-            index_count: s.indices.len() as u32,
+            index_count: drawn.indices,
             blend_constant: s.blend_constant,
             stencil_reference: s.stencil_reference,
-            scissor: s.scissor,
-        })
+            scissor: drawn.scissor,
+        };
+        Ok(PreparedDraw { identity: s.identity, target: s.target, draw: Some(draw) })
     }
 }
 
@@ -823,6 +876,11 @@ fn compile(
 pub struct PreparedDraw {
     identity: DrawIdentity,
     target: TargetKey,
+    /// `None` rasterises nothing ([`ImmediateDrawSnapshot::validate`]).
+    draw: Option<Prepared>,
+}
+
+struct Prepared {
     pipeline: wgpu::RenderPipeline,
     uniforms: wgpu::BindGroup,
     textures: wgpu::BindGroup,
@@ -847,8 +905,8 @@ impl PreparedDraw {
         self.identity == identity && self.target == target
     }
 
-    /// Records exactly one draw or refuses before touching the encoder.
-    /// Only a successful receipt allows the adapter to suppress this copy.
+    /// Records the draw, or nothing for a draw that rasterises nothing.
+    /// The adapter records a copy only into the target it was prepared for.
     pub fn record(
         self,
         encoder: &mut wgpu::CommandEncoder,
@@ -856,10 +914,11 @@ impl PreparedDraw {
         target: TargetKey,
         color: &wgpu::TextureView,
         depth: &wgpu::TextureView,
-    ) -> Result<Recorded, Refused> {
-        if !self.matches(identity, target) {
-            return Err(Refused::Identity);
-        }
+    ) -> Recorded {
+        assert!(self.matches(identity, target), "a prepared copy records into its own target");
+        let Some(draw) = self.draw else {
+            return Recorded { identity, indices: 0, draws: 0 };
+        };
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("native particles/effects"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -892,21 +951,21 @@ impl PreparedDraw {
         // The translated program already applies the guest viewport using
         // its constants. As D3D, rasterize against the whole host surface.
         pass.set_viewport(0., 0., target.size.0 as f32, target.size.1 as f32, 0., 1.);
-        let [x, y, w, h] = self.scissor;
+        let [x, y, w, h] = draw.scissor;
         pass.set_scissor_rect(x, y, w, h);
-        pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.uniforms, &[0, 0]);
-        pass.set_bind_group(1, &self.textures, &[]);
-        pass.set_blend_constant(self.blend_constant);
-        pass.set_stencil_reference(self.stencil_reference);
-        pass.set_vertex_buffer(0, self.vertices.slice(..));
-        pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
-        pass.draw_indexed(0..self.index_count, 0, 0..1);
+        pass.set_pipeline(&draw.pipeline);
+        pass.set_bind_group(0, &draw.uniforms, &[0, 0]);
+        pass.set_bind_group(1, &draw.textures, &[]);
+        pass.set_blend_constant(draw.blend_constant);
+        pass.set_stencil_reference(draw.stencil_reference);
+        pass.set_vertex_buffer(0, draw.vertices.slice(..));
+        pass.set_index_buffer(draw.indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..draw.index_count, 0, 0..1);
         drop(pass);
-        Ok(Recorded {
+        Recorded {
             identity,
-            indices: self.index_count,
+            indices: draw.index_count,
             draws: 1,
-        })
+        }
     }
 }

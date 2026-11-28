@@ -1,6 +1,6 @@
 # Retiring D3D: R2, transparents and effects
 
-Status: Partly built. The display queue's runs and the shadow arm are built; the rest of R2 is in retire-d3d.md, "Slices".
+Status: Partly built. Rust answers every frame of the bodies under the sorted dispatch, with no guest comparison draws; the rest of R2 is in retire-d3d.md, "Slices".
 Code: see each section. Tests: named per section.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -35,19 +35,19 @@ the guest in "R2's shadow arm".
 
 ## R2's shadow arm
 
-Built (**Code**): `render-bridge/src/effects_shadow.rs`. The state that
-blocks replacing `0x0001e370`, made in Rust and compared with the guest's.
-Switch `frame-scene.effects-shadow` (on).
+Built (**Code**): `render-bridge/src/effects_shadow.rs`. The bodies under
+`0x0001e370`, made in Rust on every frame. No frame is the guest's for
+comparison. Switch `frame-scene.effects-shadow` (on).
 
-| Arm | Rust | Compared at the return with |
-|---|---|---|
-| Stamps | `effects_shadow/view_update.rs`: each outermost `0x00174420` call, its callees `0x001751d0`, `0x00137bd0`, `0x0003eb20`, `0x00165010`, `0x00181800`, `0x00249bb0` and its queue call `0x0001e4e0` | systems, particles, the two particle-model singletons, the list's end and overflow byte, the rows it queues, the seeds |
-| Dispatch | `effects_shadow/dispatch.rs`: the loop's entries in order, each handler named | the Rust sort's order (at `TRANSPARENT_ORDER_READY`); seeds, systems, particles, the list and its live rows unchanged across the loop |
-| Emission | `engine/src/particle_emission.rs`: the particle callback `0x00224550` to its emitter call, its callees `0x00173ba0`, `0x00248df0`, `0x0004efb0`, `0x00246cd0`, `0x00246d80`, `0x00131bb0`, `0x00131e50`, `0x00016ae0` | at the emitter `0x0023ed30` called from `0x00224cd7`: the eight words, EBX, the two windows and the corners they point at, the input block and the draw context |
-| Ribbon | `engine/src/contrail_ribbon.rs`: the contrail builder `0x00042cf0` to its return, its callees `0x000bad50`, `0x00042c50`, `0x0017ca10` ("R2's ribbon arm") | at its return: the vertices from its first argument, AL, every other byte it wrote, the draw context |
-| Effects seed | no path under `0x00174420` or the named handlers loads `[0x004e7408]` (the lifted image's call graph) | both arms: the seeds do not move |
+| Body | Rust |
+|---|---|
+| Stamps | `effects_shadow/view_update.rs`: each outermost `0x00174420` call, its callees `0x001751d0`, `0x00137bd0`, `0x0003eb20`, `0x00165010`, `0x00181800`, `0x00249bb0` and its queue call `0x0001e4e0` |
+| Dispatch | `effects_shadow/dispatch.rs`: the loop's entries in order, each handler named; the decal runs between them |
+| Emission | `engine/src/particle_emission.rs`: the particle callback `0x00224550` to its emitter call, its callees `0x00173ba0`, `0x00248df0`, `0x0004efb0`, `0x00246cd0`, `0x00246d80`, `0x00131bb0`, `0x00131e50`, `0x00016ae0` |
+| Ribbon | `engine/src/contrail_ribbon.rs`: the contrail builder `0x00042cf0` to its return, its callees `0x000bad50`, `0x00042c50`, `0x0017ca10` ("R2's ribbon arm") |
+| Effects seed | no path under `0x00174420` or the named handlers loads `[0x004e7408]` (the lifted image's call graph) |
 
-What the stamps arm writes:
+What the stamps body writes:
 
 | Field | Write |
 |---|---|
@@ -64,36 +64,28 @@ Where the guest body runs, the table is lent to the arena at the outermost
 call's entry and taken back at its return; the answer reads the arena through
 the table and writes only the singletons and the list.
 
-The dispatch arm leaves the singletons out: `0x00137bd0` sets one before
-every read, so the loop's last value is never read. The handlers' other
-writes (`0x00035b00`'s `0x004670bc`, D3D state) are not compared.
+The gate (`Gate`) counts each frame once (`answering_frames`) and each
+named refusal. A body the answer does not take runs as the guest's and is
+counted `scene_kept_15_<kind>_<cause>` (["R2's answer"](#r2s-answer)); each
+run of consecutive decal entries (`0x00041cc0`, `0x000423c0`) goes to
+`RunHost::draw_display_entries` at `TRANSPARENT_DISPATCH_NEXT` after its
+last entry.
 
-The gate, per frame of `0x004ba034`:
-
-| Rule | Value |
-|---|---|
-| frames compared | 1 in 64 (`SAMPLE`) |
-| answers after | 8 sampled frames in a row compared clean (`CLEAN`); a sampled frame with nothing to compare neither counts nor breaks the run |
-| stops answering | at the first difference or refusal |
-| while answering | on frames not sampled, "R2's answer" (the outermost `0x00174420` call too); each run of consecutive decal entries (`0x00041cc0`, `0x000423c0`) goes to `RunHost::draw_display_entries` at `TRANSPARENT_DISPATCH_NEXT` after its last entry |
-
-The model refuses, by name: `fault`, `layout`, `no_definition`,
+The stamps model refuses, by name: `fault`, `layout`, `no_definition`,
 `no_model`, `singleton_vtable`, `object_path` (a shader flag besides
 `0x8000` calls `0x00040e30`), `x87` (the distance sum at 64-bit precision
-or another rounding mode), `distance_range`, `depth`, `cycle`, `mxcsr`.
+or another rounding mode), `distance_range`, `depth`, `cycle`, `mxcsr`,
+and `frame` (the frame counter does not read).
 
 `render.stats`, each `layer_plan_15_effects_shadow_<outcome>`:
 
 | Counter | Counts |
 |---|---|
-| `stamps_matched`, `stamps_mismatched_{seed,systems,particles,singletons,list,entries}`, `stamps_refused_<reason>`, `stamps_unbalanced`, `stamps_entries_queued` | outermost `0x00174420` calls on sampled frames (`stamps_entries_queued` counts answered calls too) |
-| `answer_stamps`, `stamps_unlent`, `stamps_unbalanced_lend` | answered calls; guest bodies run without the table (the arrays unreadable); an outer call whose return was not seen |
-| `dispatch_matched`, `dispatch_mismatched_{order,seed,systems,particles,list,rows}`, `dispatch_refused_{plan,order,mxcsr,<reason>}`, `dispatch_unbalanced` | sorted dispatches on sampled frames |
-| `dispatch_entries_{geometry,particle,contrail,decal,null,other}` | entries of sampled dispatches, by handler |
-| `emission_matched`, `emission_mismatched_{words,window,corners,inputs,sequence,writes}`, `emission_refused_<reason>`, `emission_unbalanced` | particle callbacks on sampled frames |
-| `ribbon_matched`, `ribbon_mismatched_{vertices,return,writes,context}`, `ribbon_refused_<reason>`, `ribbon_unbalanced` | contrail builds on sampled frames |
-| `frames_sampled`, `frames_clean`, `frames_unclean`, `frames_empty`, `opened`, `fallback`, `answering_frames` | the gate |
-| `entry_runs_planned_<kind>`, `entry_runs_drawn_<kind>`, `entry_runs_entries_<kind>`, `entry_runs_refused_<kind>`, `entry_runs_no_host_<kind>`, `entry_runs_undrawn` | the runs while answering |
+| `answer_stamps`, `stamps_entries_queued`, `stamps_unlent`, `stamps_unbalanced_lend` | answered calls and the entries they queue; guest bodies run without the table (the arrays unreadable); an outer call whose return was not seen |
+| `dispatch_refused_plan`, `dispatch_unbalanced` | sorted dispatches |
+| `dispatch_entries_{geometry,particle,contrail,decal,null,other}` | entries of each dispatch, by handler |
+| `answering_frames` | the gate |
+| `entry_runs_planned_<kind>`, `entry_runs_drawn_<kind>`, `entry_runs_entries_<kind>`, `entry_runs_refused_<kind>`, `entry_runs_no_host_<kind>`, `entry_runs_undrawn` | the decal runs |
 
 Tests: `view_update.rs` (`a_forced_system_stamps_and_queues_each_particle`,
 `the_other_view_stamps_only_and_a_rejected_particle_is_not_stamped`,
@@ -101,13 +93,14 @@ Tests: `view_update.rs` (`a_forced_system_stamps_and_queues_each_particle`,
 `what_the_model_cannot_make_is_a_named_refusal`,
 `the_distance_keeps_the_x87_precision_or_refuses`,
 `the_fade_and_the_frustum_follow_the_guests_compares`), `dispatch.rs`,
-`effects_shadow.rs` (the gate, a matching and a differing call and
-dispatch, the runs, `the_frame_step_leaves_the_particle_arrays_as_the_tick_left_them`),
+`effects_shadow.rs` (`the_gate_counts_each_frame_once_and_names_its_refusals`,
+`a_dispatch_counts_its_entries_by_kind`,
+`an_answering_gate_draws_each_decal_run_after_its_last_entry`,
+`the_frame_step_leaves_the_particle_arrays_as_the_tick_left_them`),
 `stamps.rs`.
 
-Still the guest's: the handlers' material setup (`0x00174f80`,
-`0x002243c0`, `0x00035b00`), the decal-list replays, the calls of
-`0x00174420` on sampled frames and refusals, and `0x00040e30`.
+Still the guest's: the material setup `0x00174f80`, the decal-list
+replays, the calls of `0x00174420` the model refuses, and `0x00040e30`.
 
 
 ## R2's geometry arm
@@ -120,73 +113,33 @@ count `>> 9`), and per pass `i` calls the build `(shader, 0, 0, 15, i,
 argument, slot)` and, when its AL is set, the draw. Layer 15 takes the
 build's generic arm (the jump table `0x0004d054` sends layers 4 to 15 to
 `0x0004ce0f`), which `native_world::scene_build::build` ports for layers 1,
-3, 5 to 8 and 16 and now for 15.
+3, 5 to 8, 15 and 16.
 
-| Compared | Rust | At |
-|---|---|---|
-| Passes | the template's layer-15 count | the handler's return: the builds it called, their pass numbers in order |
-| Build | `scene_build::build` for layer 15 | each build's return (`0x00040ff7`): the 24-byte sort slot and AL |
-
-The arm opens on sampled frames (the shared 1 in 64) and has a gate of its
-own: 16 sampled frames in a row compared clean, then it answers.
-
-A difference stops it
-(`geometry_fallback`); a refusal is counted and leaves that build to the
-guest. While it answers, on the frames not sampled, the handler's build does
-not run: the slot and AL are made in Rust and the build returns. The draw
-`0x0004d0b0`, the material's textures, samplers and constants stay the
-guest's. The build's answer hooks in `native_world/scene_walk.rs`
-(`native_world_build_entry`), so the arm runs where the native world is on.
-
-Refusals, by name, `geometry_refused_<name>`: `fault`, `particle_material`
-(`PRTM`, `prt3`: a virtual call, left to the particle lane), `not_shader`,
-`record`, `passes`, `layout`. `render.stats`, each
-`layer_plan_15_effects_shadow_<outcome>`: `geometry_{build,passes}_matched`,
-`geometry_{build,passes}_mismatched_<field>` (`slot`, `return`, `fault`,
-`count`, `order`), `geometry_refused_<name>`, `geometry_opened`,
-`geometry_fallback`, `answer_geometry`, `geometry_{handler,build}_unbalanced`;
-kept builds count `scene_kept_15_geometry_<name>`.
+On every frame the handler's build does not run: the 24-byte sort slot
+and AL are made in Rust (`scene_build::build` for layer 15) and the build
+returns (`ret 28`, `answer_geometry`). The build's answer hooks in
+`native_world/scene_walk.rs` (`native_world_build_entry`), so it runs
+where the native world is on. A build the model refuses runs as the
+guest's, counted `scene_kept_15_geometry_<name>`: `fault`,
+`particle_material` (`PRTM`, `prt3`: a virtual call, left to the particle
+path), `not_shader`, `record`, `passes`, `layout`.
 
 ### The draw's material
 
 The draw `0x0004d0b0` applies the pass's implementation
 (`ResolvedImplementation`, from the shader's template at layer 15) to the
-device. `native_render::transparent_material::compare` checks a resolved
-draw against it: the bound textures (bound or not), the render words by
-slot (the later value of a state set twice), the stage words of each bound
-stage (address, filters, mip bias and level, anisotropy, border colour),
-the 60-word pixel shader definition and the vertex constants `c[18 + i]`
-(hardware slot register + 96, the written lanes). What an engine input
-drives (`engine_render`, `engine_stage`) and the definition and constants
-of an implementation that reads a per-draw input (`combiner`, `constants`)
-are skipped by name.
-
-On a sampled frame the handler's latest build names the pass (shader,
-selector, the slot's implementation byte). At the indexed call that
-follows, `native_transparents_glue` finds the shader in the world's loaded
-materials (`LayersView.materials`), compares the implementation with the
-draw's snapshot and records the result. Counted
-`layer_plan_15_effects_shadow_geometry_material_<outcome>`: `matched`,
-`mismatched_<field>` (`texture_<n>_unbound`, `render_<slot>`,
-`stage<n>_<field>`, `combiner_w<n>`, `combiner_missing`, `constant_<register>`),
-`skipped_<part>`, `refused_{no_layers,not_a_world_material,no_implementation}`
-and `proven`, which fires once after 16 matches in a row
-(`geometry::material_proven`). A difference ends that streak only; the
-build answer's gate is its own.
+device. The answered draw takes it from the world's layer-15 set (below);
+no draw is compared with the guest's.
 
 ### The draw's answer
 
 Built (**Code**): `geometry::answer_handler` (`render-bridge`) and
-`native_layers_glue::TransparentAnswer` (`game`). Once the build answer and
-the material have both proved (16 sampled draws in a row each, no
-difference since: `geometry::proven`), on a frame that is not sampled, a
-BSP cluster or placement entry's handler `0x00041020` does not run. The world's layer-15
+`native_layers_glue::TransparentAnswer` (`game`). On every frame a BSP
+cluster or placement entry's handler `0x00041020` does not run. The world's layer-15
 set draws it: `layers_load` compiles layer 15 for every world material with
 the planned layers (`TRANSPARENT_LAYER`), and the glue reserves a
 `LayerViewPass` of one run, the entry's `(Owner::Cluster or Owner::Instance, part)`, in the
 ordered stream at the handler's place; the handler returns (`ret 4`).
-Sampled frames run the guest, so the build and material arms keep
-comparing.
 
 The entry is answered only when:
 
@@ -202,7 +155,7 @@ The entry is answered only when:
   (`warming`) and the world unchanged (`world_changed`).
 
 A refusal keeps the guest's handler and is counted
-`scene_kept_15_geometry_draw_<cause>` (also `entry`,
+`scene_kept_15_geometry_draw_<cause>` (also `frame`, `entry`,
 `no_passes`, the build model's `particle_material`, `not_shader`, `record`,
 `passes`, `layout`, and the glue's `world_pending`, `no_layers`, `no_layer`,
 `set`, `material`, `layer`, `device`, `viewport`, `cached_state`, `fog`,
@@ -281,28 +234,20 @@ scene; the callback `0x00044040` is then cut, and `0x00041cc0`, `0x000423c0`
 
 The decal material is ported as data (`native_render::decal_material`:
 each mode's render states from `0x000222d0` calls and its 60-word combiner
-block from `0x00043a40`). The game proves it: one resolved decal draw in 64
-is compared with it (`game/src/native_decals_glue.rs`), `render.scene`
-carries `decal_material_{sampled,clean,mismatched,proven}` and
-`decal_material_mismatch_<field>` (`combiner_w<n>`, `render_<index>`), and
-`native_decals::material_proven()` holds after 8 clean samples in a row.
+block from `0x00043a40`). Every admitted decal draw takes its combiner from
+the mode's Rust material and its position matrix rows from the open view
+(`apply_rust` in `game/src/native_decals_glue.rs`); no draw is the guest's
+for comparison. The rows are the four the program's position goes through
+(`position_base`, the relation of `d3d` `scene_sink/camera.rs`); other
+registers keep the draw's own constants.
 
-The view's matrix constants are compared with the same sample
-(`native_render::decal_material::compare_constants`). Of the registers the
-program reads (`constant_reads`, decoded with `shaders::vsh`), the four rows
-its position goes through must equal the open view's view-projection rows
-bit for bit and the draw's viewport its camera's rectangle (the relation of
-`d3d` `scene_sink/camera.rs`). Mismatch fields: `constant_c<n>`,
-`constant_c<n>_scaled` (the row times one factor), `constant_viewport`,
-`constant_view_unread`, `constant_relative`, and `constant_c<n>_ungiven`
-for a register nothing in Rust sets yet, so the proof stays open until the
-live fields name none.
+| Refused, in the decal refusal tally | Why |
+|---|---|
+| `material_program` | no vertex program, or a position that does not go through four rows |
+| `material_view` | no open view |
 
-Once the material is proven (`material_proven()`), an admitted decal draw
-takes its combiner from the mode's Rust material and its position matrix
-rows from the open view (`apply_rust` in `native_decals_glue.rs`); one draw
-in 64 stays the guest's own and is the comparison. A call of `0x00044040` is
-cut where its records draw from the mode's template, not the scene's items
+A call of `0x00044040` is cut where its
+records draw from the mode's template, not the scene's items
 ([retire-d3d-decals.md](retire-d3d-decals.md)).
 
 The weather plates' host (**Code**): `render-bridge/src/native_weather.rs`
@@ -324,36 +269,30 @@ strip is recorded as an indexed pass (`IndexedPass`, two triangles in
 
 | Arm | |
 |---|---|
-| Rust draws | every plate draw but the sampled ones; `weather_plate_admitted` |
-| Compared | the first draw, then one in 64: the guest's draw stands and is compared field by field (`vertex<n>_r<register>`, `constant<slot>`, `combiner_w<n>`); `weather_plate_{compared,matched,mismatched}` |
-| Placement | a plate Rust's placement refuses but the guest draws is the mismatch `placement` |
-| Fallback | any mismatch: the guest's draw stands for the rest of the session; `weather_plate_fallback` is 1 |
-| Refused | the guest's draw stands, `weather_plate_refused_<reason>`: `view_unread`, `element_unread`, `globals_unread`, `geometry`, `vertex_streams`, `vertex_bytes`, `vertex_declaration`, `texture_unbound`, `texture_target`, `texture_binding`, `pass`, `second_draw`, and `unseen` (a call Rust expected to draw whose strip no admission saw) |
+| Rust draws | every plate draw; `weather_plate_admitted`. No draw is the guest's for comparison |
+| Refused | the guest's draw stands for that call, `weather_plate_refused_<reason>`: `placement` (Rust's placement refuses a plate the guest draws), `view_unread`, `element_unread`, `globals_unread`, `geometry`, `vertex_streams`, `vertex_bytes`, `vertex_declaration`, `texture_unbound`, `texture_target`, `texture_binding`, `pass`, `second_draw`, and `unseen` (a call Rust expected to draw whose strip no admission saw) |
 
 Tests: `native_weather.rs`
 (`a_plate_is_drawn_at_its_placements_depth_result`,
-`rust_draws_one_draw_in_64_is_compared_and_a_difference_falls_back_for_the_session`,
+`every_plate_is_rusts_and_a_gap_is_a_named_refusal`,
 `a_call_hands_its_plan_to_its_first_draw_only`), `native_weather_glue.rs`
-(`a_plate_strip_rust_would_draw_compares_clean`,
-`a_plate_strip_that_differs_is_named_by_field`,
-`rusts_strip_writes_its_floats_and_leaves_the_rest`,
+(`rusts_strip_writes_its_floats_and_leaves_the_rest`,
 `a_strip_without_the_plates_registers_is_refused_by_name`).
 
 Not built: nothing draws the scene's decal items, and the plates' host
-draws the guest's call, not the scene's `WeatherPlate` items. The decal vertex program is compared with the engine slot 3's `vrtx` programs read from the tags (`vertex_program` mismatch field). Undrawn items are
+draws the guest's call, not the scene's `WeatherPlate` items. Undrawn items are
 `scene_dropped_decal_<cause>` and `scene_dropped_weather_plate_<cause>`
 once a host takes the slots; until then the guest draws them.
 
 ## R2's answer
 
-Built (**Code**): `render-bridge/src/effects_shadow/answer.rs`. While the
-gate answers, on the frames it does not sample, the modelled bodies do not
-run. A sampled frame runs the guest, so the arms go on comparing.
+Built (**Code**): `render-bridge/src/effects_shadow/answer.rs`. On every
+frame the modelled bodies do not run.
 
 | Body | The answer | Kept, `scene_kept_15_<kind>_<cause>` |
 |---|---|---|
-| particle callback `0x00224550` | the emission from `particle_emission`, held by [the mirror](#r2s-particle-mirror) or drawn through the native particle path's direct draw (`native_particles::draw_emission`); its writes made in the guest; `ret 0x1c`. The emitter `0x0023ed30` never runs | `particle_<refusal>`, `particle_{refused,no_host,declaration,register,unreadable,...}`, `particle_stack` |
-| contrail builder `0x00042cf0` | the ribbon from `contrail_ribbon` written at its first argument, its writes, AL; `ret 0xc`. The polygon handler draws it by the native effect path | `contrail_<refusal>` |
+| particle callback `0x00224550` | the emission from `particle_emission`, held by [the mirror](#r2s-particle-mirror) or drawn through the native particle path's direct draw (`native_particles::draw_emission`); its writes made in the guest; `ret 0x1c`. The emitter `0x0023ed30` never runs | `particle_<refusal>`, `particle_{refused,no_host,declaration,register,unreadable,frame,...}`, `particle_stack` |
+| contrail builder `0x00042cf0` | the ribbon from `contrail_ribbon` written at its first argument, its writes, AL; `ret 0xc`. The polygon handler draws it by the native effect path | `contrail_<refusal>`, `contrail_frame` |
 | decal runs | `RunHost` (the seam for the decal replays from the scene) | `decal_replay`, each entry while no host is installed |
 
 A kept body runs as the guest's, with nothing made before it. `render.stats`
@@ -365,7 +304,7 @@ the setup leaves (`native_render::particle_gpu`).
 
 Tests: `answer.rs`
 (`an_answered_particle_draws_from_the_rust_emission_and_a_refused_one_keeps_its_guest_body`,
-`a_sampled_frame_or_a_closed_gate_runs_the_guest_and_the_arm_compares`),
+`every_frame_is_the_answers_and_an_unread_frame_is_kept_by_name`),
 `effects_shadow.rs` (`an_answering_gate_draws_each_decal_run_after_its_last_entry`).
 
 ## R2's particle mirror
@@ -412,7 +351,7 @@ is the mirror's own: `GpuParticles::mirror`, then one
 |---|---|
 | batch drawn | `layer_plan_15_effects_shadow_answer_mirrored` (particles) |
 | not taken: direct draw | `scene_kept_15_particle_mirror_<cause>`: `no_host`, `orientation` (`0x0023ea80`'s class, definition `+4`, not 0), `tint_scale` (flag `0x180` with `BYTE * TINT` not 1/255), `unreadable`, or the host's: `uncut` (no cut setup), `tag_unread`, `bitmap_unread`, `bitmap_sequences`, `bitmap_sprites`, or the `particle_definition::Refused` name |
-| batch refused: no guest draw is left | `layer_plan_15_effects_shadow_mirror_dropped_<cause>`; the gate stops answering. `unfinished`: a batch no draw's return took. The host's: `uncut`, `capacity`, `no_colour`, `no_depth`, `clip_rects`, `z_buffered`, the state `ParticleDraw` does not draw (`depth_off`, `depth_write`, `depth_func`, `color_write`, `alpha_test`, `opaque`, `blend`: other than alpha or additive), or the supplied draw's (`boundary`, `admission`, ...) |
+| batch refused: no guest draw is left | `layer_plan_15_effects_shadow_mirror_dropped_<cause>`. `unfinished`: a batch no draw's return took. The host's: `uncut`, `capacity`, `no_colour`, `no_depth`, `clip_rects`, `z_buffered`, the state `ParticleDraw` does not draw (`depth_off`, `depth_write`, `depth_func`, `color_write`, `alpha_test`, `opaque`, `blend`: other than alpha or additive), or the supplied draw's (`boundary`, `admission`, ...) |
 | refused while recording | `native-particles` refusals, `Mirror/<cause>` (`texture`, `view_size`, `z_scale`, `view_rows`, `capacity`, `sprites`, `viewport`): the batch does not draw |
 
 A batch's system is made for each recording (its births go through the
@@ -421,7 +360,7 @@ queue, so two batches never share buffers in one submission); the pipelines, per
 Tests: `mirror.rs`
 (`a_particle_draws_batched_at_the_draws_return_from_its_state_as_the_callback_leaves_it`,
 `a_particle_the_mirror_refuses_draws_the_held_batch_first_and_is_kept_by_name`,
-`a_batch_the_host_refuses_is_dropped_by_name_and_the_gate_stops_answering`),
+`a_batch_the_host_refuses_is_dropped_by_name`),
 `mirror_host.rs` (`a_system_is_built_once_a_map_by_tag_and_its_refusal_is_kept`,
 `a_particle_without_a_cut_setup_or_whose_tag_does_not_build_is_refused_by_name`,
 `a_zeroed_tag_is_refused_for_its_missing_functions_and_a_bitmap_not_of_sprites_has_no_sheet`,
@@ -433,8 +372,8 @@ Tests: `mirror.rs`
 ## R2's materials
 
 Built (**Code**): the material each handler's setup leaves on the device,
-made in Rust as data (`native_render::effect_material::Material`) and
-compared with the draw the native admission takes, one in 64 of each kind
+made in Rust as data (`native_render::effect_material::Material`): the
+state every cut setup's draws take
 (`game/src/native_particles_admission/material_proof.rs`).
 
 | | Particles | Contrails |
@@ -443,17 +382,13 @@ compared with the draw the native admission takes, one in 64 of each kind
 | Inputs, read at | the draw's entry: shader, layer, pass, the system's `+4`, the view matrix `[0x004687d0]` | the setup's entry: material block `e[+0xc]` (`+0x24` type, `+0x28` flags, `+0x2a` blend mode, `+0x2e` map flags), bitmap `e[+0x18]`, image `e[+0x1c]` |
 | Port | `particle_material`: `STIPPLEENABLE` off, then implementation 0 of lod 0, layer, pass from `tags::material` (`0x00016b90`) | `contrail_material`: `0x00052d40` as data, the blend tables `0x004506b8`, `0x004506e8`, `0x00450718` copied from the image |
 | Render and stage states | the implementation's, in set order; stage states as `0x000189a0` writes them | cull, colour write, blend, alpha test, stencil, depth, z bias; stage 0's addressing and filters |
-| Combiner | the implementation's 60 words; constants its draw-time inputs drive are not compared | the 60 words built at `0x00484f68` |
+| Combiner | the implementation's 60 words; a word its draw-time inputs drive refuses the cut (`combiner_driven`) | the 60 words built at `0x00484f68` |
 | Textures | each bound stage's bitmap image (`0x000143c0`) | stage 0's bitmap image |
 | Constants (hardware slots, register + 96) | implementation 0's `c[18 + i]` (`0x00018eab`), then `0xae..0xb0`, the view matrix | `0xae..0xb0`, the identity |
 | Vertex program | program `class + 7` of implementation 0's `vrtx` | engine slot 4's program 0 |
 
-`compare` names each differing field: `render_<index>`, `stage<n>_<index>`,
-`combiner_w<n>`, `texture<n>`, `constant<slot>`, `vertex_program`. A
-state set twice is compared at its last value. `render.scene` carries
-`<kind>_material_{sampled,matched,mismatched,open,fallback,cut}`,
-`<kind>_material_mismatched_<field>`, `<kind>_material_refused_<reason>`
-and `<kind>_material_dropped_<cause>` for `particle` and `contrail` (`render-bridge/src/effect_materials.rs`).
+`render.scene` carries `<kind>_material_{cut,refused_<cause>,dropped_<cause>}`
+for `particle` and `contrail` (`render-bridge/src/effect_materials.rs`).
 
 Refused, by name, rather than approximated:
 
@@ -471,10 +406,9 @@ Refused, by name, rather than approximated:
 | `vertex_builtin`, `vertex_not_vrtx`, `vertex_program_index` | both | a program not in a `vrtx` tag |
 | `no_setup` | both | no setup read for the draw |
 
-Not compared field by field: the stipple pattern (`0x003f8cc0`), the
-polygon offsets `SetRenderState_ZBias` derives (slots 77 to 81), the
-vertex declaration and the other vertex constants. The whole-state check
-in "The cut" covers the render slots.
+Not carried: the stipple pattern (`0x003f8cc0`) and the polygon offsets
+`SetRenderState_ZBias` derives (slots 77 to 81); the cut draw takes them
+from the device.
 
 ### The cut
 
@@ -482,23 +416,11 @@ Built (**Code**): `render-bridge/src/effect_materials.rs`. A gate per kind:
 
 | | |
 |---|---|
-| Opens | 8 matched comparisons in a row |
-| Closes | any mismatch, refusal or dropped draw; closing an open gate counts `<kind>_material_fallback` |
-| Open | at the setup's call (`0x0023ea80` returning to `0x0022441e`, `0x00043720` returning to `0x00035b23`) one call in 64 runs the guest's setup and its first draw is compared; the others ask the host (`Host::material_cut`) |
-| Cut | the host holds the material as a supplied state and the setup does not run: `0x0023ea80` returns AL 1 (`ret 0xc`), `0x00043720` returns (`ret 4`); `<kind>_material_cut` |
-| Kept | the host's refusal, `scene_kept_15_<kind>_material_<cause>`, runs the guest's setup and closes the gate |
-| Dropped | a cut setup's draw the device refuses: its setup did not run, so the guest does not draw it either; `<kind>_material_dropped_<cause>`, and the gate closes |
+| Cut | at every setup's call (`0x0023ea80` returning to `0x0022441e`, `0x00043720` returning to `0x00035b23`) the host (`Host::material_cut`) holds the material as a supplied state and the setup does not run: `0x0023ea80` returns AL 1 (`ret 0xc`), `0x00043720` returns (`ret 4`); `<kind>_material_cut` |
+| Kept | the host's refusal runs the guest's setup for that call: `scene_kept_15_<kind>_material_<cause>`, `<kind>_material_refused_<cause>` |
+| Dropped | a cut setup's draw the device refuses: its setup did not run, so the guest does not draw it either; `<kind>_material_dropped_<cause>` |
 
-A compared draw is checked against its whole state, not only the
-material's fields. At the call of the setup whose draw is compared next,
-the guest's arrays (`D3D__RenderState` `0x00407498`, 166 words;
-`D3D__TextureState` `0x00404dd0`, 4 x 32) are read; the draw's render and
-stage words must be those arrays with the material over them
-(`effect_material::compare_state`, fields `state_render_<n>`,
-`state_stage<s>_<n>`). A setup write the material does not carry (the
-restore of the implementation before, a state the tag does not list) so
-keeps the gate shut. The draw's program must start at slot 0 and a
-particle's vertex must be 8 bytes.
+No setup is the guest's for comparison.
 
 The cut draw (`d3d::Device::try_native_supplied_draw`,
 `d3d/src/device/supplied.rs`):
@@ -542,16 +464,13 @@ The material's own refusals reach the same counter
 R2's answer (`effects_shadow/answer.rs`) reaches the cut draw through
 `native_particles::draw_emission` and the host's `try_emit`.
 
-Tests: `effect_materials.rs` (`a_proven_material_cuts_the_handler_setup`,
-`one_draw_in_64_keeps_the_guest_setup_and_compares`,
+Tests: `effect_materials.rs` (`every_setup_the_host_makes_is_cut`,
 `a_refused_material_keeps_the_guest_setup_by_name`,
-`a_cut_draw_the_device_refuses_is_dropped_by_name_and_closes_the_gate`,
-`the_state_is_read_at_the_setup_of_the_draw_compared_next_only`),
+`a_cut_draw_the_device_refuses_is_dropped_by_name`),
 `d3d/tests/admission_scope.rs`
 (`a_cut_draw_uses_the_supplied_state_not_the_previous_draws`,
 `the_device_state_after_a_cut_draw_is_the_guests`,
 `a_cut_draw_without_a_program_is_refused_by_name`),
-`effect_material.rs` (`a_setup_write_the_material_does_not_carry_is_named_by_its_slot`),
 `native_particles_admission.rs`
 (`a_cut_setups_material_is_the_state_its_draw_is_supplied`,
 `a_material_the_supplied_draw_cannot_hold_keeps_the_guest_setup_by_name`,
@@ -562,8 +481,7 @@ Tests: `effect_material.rs`
 `a_draw_that_differs_is_named_by_field_and_a_state_set_twice_by_its_last_value`),
 `contrail_material.rs` (`the_blend_mode_comes_from_the_images_tables_and_mode_ten_turns_blending_off`,
 `the_combiner_has_one_or_three_stages_then_the_blend_modes`),
-`particle_material.rs` (`only_a_shad_without_reset_or_override_reaches_the_shader_setup`),
-`effect_materials.rs` (`one_draw_in_sixty_four_is_compared_and_each_outcome_is_counted_by_name`).
+`particle_material.rs` (`only_a_shad_without_reset_or_override_reaches_the_shader_setup`).
 
 ## Related
 
@@ -594,8 +512,7 @@ Tests: `particle_emission/tests.rs`
 `the_colour_lanes_are_clamped_before_they_are_packed`,
 `a_sequence_bitmap_picks_the_particles_sequence_and_blends_two_frames`,
 `what_the_model_cannot_read_is_a_named_refusal`),
-`effects_shadow/emission.rs` (a match, a differing word and input, another
-caller, a refusal), and against the lifted original
+and against the lifted original
 `engine/tests/particle_emission_differential.rs` (feature `differential`,
 needs the XBE).
 
@@ -633,8 +550,6 @@ Tests: `contrail_ribbon/tests.rs`
 `an_object_tints_the_colour_by_its_function_source`,
 `an_unknown_facing_returns_zero_after_the_texture_words`,
 `an_empty_list_still_clears_the_ends_it_is_told_of`,
-`a_cycle_and_a_fault_are_named_refusals`), `effects_shadow/ribbon.rs` (a
-match, a differing vertex, result and context, an unseen return, a
-refusal), and against the lifted original
+`a_cycle_and_a_fault_are_named_refusals`), and against the lifted original
 `engine/tests/contrail_ribbon_differential.rs` (feature `differential`,
 needs the XBE).

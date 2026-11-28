@@ -1,6 +1,5 @@
-//! R2's answer (docs/graphics/retire-d3d.md, "R2's answer"): while the
-//! gate answers, on the frames it does not sample, the bodies the arms
-//! model do not run.
+//! R2's answer (docs/graphics/retire-d3d-r2.md, "R2's answer"): on every
+//! frame the bodies Rust models do not run.
 //!
 //! - **Particles.** At `0x00224550`'s entry the emission is made in Rust
 //!   ([`engine::particle_emission`]) and drawn through the native
@@ -25,26 +24,22 @@
 //! What the answer does not take keeps its guest body, counted
 //! `scene_kept_15_<kind>_<cause>`: the model's refusal (`fault`, `simd`,
 //! `x87`, `unbounded`, ...) or the native draw's (`refused`, `no_host`,
-//! `declaration`, ...). A sampled frame runs the guest so the arms keep
-//! comparing.
+//! `declaration`, ...).
 
 use engine::contrail_ribbon as cr;
 use engine::memory::GuestMemory;
 use engine::particle_emission as pe;
 
-use super::{answering, count, emission, mirror, ribbon, sse_supported, stamps, view_update, with_gate};
+use super::{count, mirror, sse_supported, stamps, view_update, with_gate};
 
-/// Whether this call is the answer's: the gate answers and the frame is
-/// not sampled. A sampled frame opens `arm` instead.
-fn ours(m: &dyn GuestMemory, arm: impl FnOnce()) -> bool {
+/// Whether this call is the answer's: every call in a frame that reads.
+/// One whose frame does not read keeps its body, `scene_kept_15_<kind>_frame`.
+fn ours(m: &dyn GuestMemory, kind: &str) -> bool {
     let Ok(frame) = m.u32(view_update::FRAME) else {
+        kept(kind, "frame");
         return false;
     };
-    let sampled = with_gate(|g| g.frame(frame));
-    if sampled || !answering() {
-        arm();
-        return false;
-    }
+    with_gate(|g| g.frame(frame));
     true
 }
 
@@ -103,7 +98,7 @@ pub(super) fn view_update(m: &mut dyn GuestMemory, esp: u32, mxcsr: u32, cw: u16
 /// particle is drawn (or the emitter is off) and the callback returns
 /// (`ret 0x1c`); false runs the guest's body.
 pub(super) fn particle(m: &mut dyn GuestMemory, esp: u32, mxcsr: u32, fcw: u16) -> bool {
-    if !ours(&*m, || emission::begin(&*m, esp, mxcsr, fcw)) {
+    if !ours(&*m, "particle") {
         return false;
     }
     let p = match pe::predict(&*m, esp, mxcsr, fcw) {
@@ -148,7 +143,7 @@ pub(super) fn particle(m: &mut dyn GuestMemory, esp: u32, mxcsr: u32, fcw: u16) 
 /// the ribbon is written and the builder returns (`ret 0xc`); `None` runs
 /// the guest's body.
 pub(super) fn contrail(m: &mut dyn GuestMemory, esp: u32, mxcsr: u32, fcw: u16) -> Option<u8> {
-    if !ours(&*m, || ribbon::begin(&*m, esp, mxcsr, fcw)) {
+    if !ours(&*m, "contrail") {
         return None;
     }
     let p = match cr::predict(&*m, esp, mxcsr, fcw) {
@@ -172,7 +167,7 @@ mod tests {
 
     use super::*;
     use crate::native_particles::{self as np, Call, Host, Producer};
-    use emission::tests::{ESP, world};
+    use super::super::fixtures::{ESP, world};
     use engine::memory::FlatMemory;
 
     fn counter(name: &str) -> u64 {
@@ -205,19 +200,14 @@ mod tests {
         fn finish(&self, _: &mut dyn GuestMemory, _: Producer) {}
     }
 
-    /// The world at a frame the gate does not sample, the emitter on and
-    /// its register table the retail one, the gate answering.
+    /// The world with the emitter on and its register table the retail
+    /// one.
     fn answering_world() -> FlatMemory {
         let mut m = world();
-        m.set_u32(view_update::FRAME, super::super::SAMPLE * 7 + 1).unwrap();
         m.set_u8(native_render::particles::EMIT_ENABLED, 1).unwrap();
         for (i, r) in [1u32, 2, 3, 4, 5, 6, 7, 8].into_iter().enumerate() {
             m.set_u32(native_render::particles::ATTRIBUTE_REGISTERS + 4 * i as u32, r).unwrap();
         }
-        with_gate(|g| {
-            g.frame(super::super::SAMPLE * 7 + 1);
-            g.answering = true;
-        });
         m
     }
 
@@ -248,16 +238,18 @@ mod tests {
         assert!(!particle(&mut m, ESP, 0x1f80, 0x027f));
         assert_eq!(counter("scene_kept_15_particle_refused"), kept + 1);
         assert_eq!(m.u32(0x004c_2000 + 0x44).unwrap(), before, "the guest makes the writes itself");
-        with_gate(|g| g.answering = false);
     }
 
     #[test]
-    fn a_sampled_frame_or_a_closed_gate_runs_the_guest_and_the_arm_compares() {
-        let mut m = world();
-        assert!(!particle(&mut m, ESP, 0x1f80, 0x027f), "the gate is closed");
+    fn every_frame_is_the_answers_and_an_unread_frame_is_kept_by_name() {
         let mut m = answering_world();
-        m.set_u32(view_update::FRAME, super::super::SAMPLE * 8).unwrap();
-        assert!(!particle(&mut m, ESP, 0x1f80, 0x027f), "a sampled frame");
-        with_gate(|g| g.answering = false);
+        for frame in [64, 65, 128] {
+            m.set_u32(view_update::FRAME, frame).unwrap();
+            assert!(ours(&m, "particle"), "frame {frame}");
+        }
+        let unread = FlatMemory::new(0x0010_0000, 0x10);
+        let before = counter("scene_kept_15_particle_frame");
+        assert!(!ours(&unread, "particle"));
+        assert_eq!(counter("scene_kept_15_particle_frame"), before + 1);
     }
 }

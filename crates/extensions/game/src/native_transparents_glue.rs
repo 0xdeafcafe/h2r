@@ -24,40 +24,7 @@ struct Walk<B: d3d::Backend> {
     packed: Arc<Mutex<Cache>>,
 }
 
-/// A sampled transparent geometry draw's material from the tags, to be
-/// compared with the device's (`effects_shadow::geometry`, R2's geometry
-/// arm).
-struct MaterialProof {
-    pass: render_bridge::effects_shadow::geometry::Pass,
-    material: Arc<tags::material::Material>,
-}
-
-impl MaterialProof {
-    /// The tags' state of the pass against the draw's own.
-    fn check(&self, d: &ResolvedDraw) {
-        use render_bridge::effects_shadow::geometry as arm;
-        let imp = self.material.layers.iter()
-            .find(|l| l.lod == 0 && l.layer == arm::LAYER as usize)
-            .and_then(|l| l.passes.iter().find(|p| p.index == usize::from(self.pass.selector)))
-            .and_then(|p| p.implementations.iter().find(|i| i.index == usize::from(self.pass.imp)));
-        let Some(imp) = imp else {
-            arm::material_refused("no_implementation");
-            return;
-        };
-        let words = native_render::transparent_material::DrawWords {
-            render: &d.raw.render[..],
-            stages: std::array::from_fn(|n| &d.raw.stages[n][..]),
-            textures: std::array::from_fn(|n| d.texture_info[n].is_some()),
-            combiner: d.shader.pixel_shader.as_deref(),
-            constants: &d.shader.constants[..],
-        };
-        let compared = native_render::transparent_material::compare(imp, &words);
-        arm::material_record(&compared.fields, &compared.skipped);
-    }
-}
-
 struct IndexedRange<'a> {
-    proof: Option<MaterialProof>,
     stage: Stage,
     water: Option<&'a frame_scene::late::WaterComposite>,
     frame: u64,
@@ -67,9 +34,6 @@ struct IndexedRange<'a> {
 
 impl d3d::DrawAdmission for IndexedRange<'_> {
     fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
-        if let Some(proof) = &self.proof {
-            proof.check(snapshot.draw);
-        }
         let pass = if let Some(geometry) = self.water {
             IndexedPass::water_quads(snapshot.draw, geometry, Arc::clone(self.cache), self.frame)?
         } else {
@@ -81,34 +45,6 @@ impl d3d::DrawAdmission for IndexedRange<'_> {
             ranges: 1,
             slots: Vec::new(),
         }, Box::new(pass)))
-    }
-}
-
-impl<B: d3d::Backend + Send + 'static> Walk<B> {
-    /// On a sampled frame, the handler's pass whose material the world's
-    /// loaded shaders give (layer 15 of the shader's template).
-    fn material_proof(&self, mem: &dyn engine::memory::GuestMemory, stage: Stage) -> Option<MaterialProof> {
-        use render_bridge::effects_shadow::geometry as arm;
-        if stage != Stage::Transparents {
-            return None;
-        }
-        let pass = arm::material_sample(mem)?;
-        let ready = {
-            let state = self.state.lock().ok()?;
-            crate::native_world_glue::current_ready(&state, mem).map(Arc::clone)
-        };
-        let Some((layers, _)) = ready.as_ref().and_then(|r| r.layers.get()) else {
-            arm::material_refused("no_layers");
-            return None;
-        };
-        let found = layers.materials.iter().find(|(k, _)| **k & 0xffff == pass.shader & 0xffff);
-        match found {
-            Some((_, material)) => Some(MaterialProof { pass, material: Arc::clone(material) }),
-            None => {
-                arm::material_refused("not_a_world_material");
-                None
-            }
-        }
     }
 }
 
@@ -136,8 +72,7 @@ impl<B: d3d::Backend + Send + 'static> native_transparents::WalkHost for Walk<B>
             native_transparents::IndexTopology::Water(geometry) => (PrimitiveType::QuadList, Some(geometry)),
         };
         let cache = self.cache.get();
-        let proof = self.material_proof(&*mem, stage);
-        let candidate = IndexedRange { proof, stage, water, view, frame: crate::d3d_diag::presents() + 1, cache: &cache };
+        let candidate = IndexedRange { stage, water, view, frame: crate::d3d_diag::presents() + 1, cache: &cache };
         // The device names the first step the draw did not pass.
         let mut device = self.device.lock().map_err(|_| ReservationCause::Error)?;
         match device.try_native_indexed_draw_why(
