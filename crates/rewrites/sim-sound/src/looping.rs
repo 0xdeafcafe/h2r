@@ -132,6 +132,13 @@ pub struct Looping {
     pub alternate: bool,
     /// Stopped: the tracks play their outs and fade, then the loop is freed.
     pub stopping: bool,
+    /// Its owner reached it this tick (`0x21a250` stamps `+0x53` with the
+    /// sound globals' frame byte `+0x7f`). One its owner left is freed by
+    /// [`Sounds::free_unrefreshed_loops`].
+    pub touched: bool,
+    /// `+0x50` bit 1, the last call's flag bit 1: a loop its owner left
+    /// lives on while a sound of it plays.
+    pub keep: bool,
     pub tracks: Vec<Track>,
     /// `+0x58`: per detail sound, the mixer clock (ms) it next plays after.
     pub details: Vec<i32>,
@@ -210,6 +217,8 @@ impl Sounds {
             source,
             alternate,
             stopping: false,
+            touched: true,
+            keep: false,
             tracks: vec![Track::default(); def.tracks.len()],
             details: vec![0; def.details.len()],
         };
@@ -219,14 +228,14 @@ impl Sounds {
             let overlay = Segments::from_track_flags(track.flags).overlay(0);
             match intro {
                 Some(sound) if !overlay => {
-                    let primary = self.play(rng, tags, levels, handle, i, sound, tick);
+                    let primary = self.play(rng, tags, levels, handle, i, sound, None, tick);
                     self.set_track(handle, i, Segment::IN, primary);
                 }
                 _ => {
                     if let Some(sound) = intro {
-                        self.play(rng, tags, levels, handle, i, sound, tick);
+                        self.play(rng, tags, levels, handle, i, sound, None, tick);
                     }
-                    self.advance(rng, tags, levels, handle, i, Segment::IN, tick);
+                    self.advance(rng, tags, levels, handle, i, Segment::IN, None, tick);
                 }
             }
         }
@@ -269,7 +278,7 @@ impl Sounds {
             }
             let old = t.primary;
             let current = t.current;
-            self.advance(rng, tags, levels, handle, i, current, tick);
+            self.advance(rng, tags, levels, handle, i, current, None, tick);
             if let Some(old) = old
                 && track.flags & 4 != 0
                 && self.loops.get(handle).and_then(|l| l.tracks.get(i)).is_some_and(|t| t.primary != Some(old))
@@ -310,7 +319,7 @@ impl Sounds {
                 OutSegment::Alternate => Segment::ALT_OUT,
                 OutSegment::Normal => Segment::OUT,
             };
-            let played = track.sound(out).and_then(|sound| self.play(rng, tags, levels, handle, i, sound, tick));
+            let played = track.sound(out).and_then(|sound| self.play(rng, tags, levels, handle, i, sound, None, tick));
             self.set_track(handle, i, out, played);
         }
         true
@@ -321,6 +330,35 @@ impl Sounds {
     pub fn loop_find(&self, tag: TagIndex, owner: u32) -> Option<Handle> {
         let of = || self.loops.iter().filter(move |(_, l)| l.tag == tag && l.owner == owner);
         of().find(|(_, l)| !l.stopping).or_else(|| of().next()).map(|(h, _)| h)
+    }
+
+    /// Its owner reached the loop this tick (`0x21a250`'s stamp, `0x21a521`),
+    /// with the call's flag bit 1 (`0x21abb0`).
+    pub fn loop_touch(&mut self, handle: Handle, keep: bool) {
+        if let Some(l) = self.loops.get_mut(handle) {
+            l.touched = true;
+            l.keep = keep;
+        }
+    }
+
+    /// `0x21b0e0`'s first test, in slot order, before the loops step: a
+    /// playing loop its owner did not reach since the last call is freed
+    /// (`0x21b070`), unless it keeps (flag bit 1) and a sound of it plays.
+    /// Its sounds play out on their own end ticks; it starts no more. Then
+    /// every loop waits for its owner again. Freed loops' handles return.
+    pub fn free_unrefreshed_loops(&mut self) -> Vec<Handle> {
+        let mut freed = Vec::new();
+        for handle in self.loops.handles() {
+            let Some(l) = self.loops.get_mut(handle) else { continue };
+            let sounding = l.tracks.iter().any(|t| !t.members.is_empty());
+            if !l.stopping && !l.touched && !(l.keep && sounding) {
+                let _ = self.loops.free(handle);
+                freed.push(handle);
+                continue;
+            }
+            l.touched = false;
+        }
+        freed
     }
 
     /// A loop's new source: the sounds it admits from here on play there.
@@ -372,8 +410,9 @@ impl Sounds {
                 let due = t.primary.and_then(|p| self.instances.get(p)).is_some_and(|p| {
                     p.phase == Phase::Playing && p.end.is_some_and(|end| end <= tick)
                 });
+                // The next segment continues the one ending now.
                 if due {
-                    self.advance(rng, tags, levels, handle, i, t.current, tick);
+                    self.advance(rng, tags, levels, handle, i, t.current, t.primary, tick);
                 }
             }
             let Some(def) = tags.looping(l.tag) else { continue };
@@ -397,9 +436,11 @@ impl Sounds {
     }
 
     /// Move track `i` on from `from`: the chain's overlay, then its primary.
-    /// A chain that stays put replays the segment's own sound.
+    /// A chain that stays put replays the segment's own sound. `follows` is
+    /// the primary ending on this tick, which the new primary continues.
+    #[allow(clippy::too_many_arguments)]
     fn advance(&mut self, rng: &mut Rng, tags: &dyn SoundTags,
-        levels: &dyn Levels, handle: Handle, i: usize, from: Segment, tick: u32) {
+        levels: &dyn Levels, handle: Handle, i: usize, from: Segment, follows: Option<Handle>, tick: u32) {
         let Some(l) = self.loops.get(handle) else { return };
         let alternate = l.alternate;
         let Some(track) = tags.looping(l.tag).and_then(|d| d.tracks.get(i)).copied() else { return };
@@ -414,12 +455,12 @@ impl Sounds {
         .expect("the chain reads no fallible state");
         let segment = Segment(choice.segment as u8);
         if choice.overlay != NONE {
-            self.play(rng, tags, levels, handle, i, TagIndex(choice.overlay), tick);
+            self.play(rng, tags, levels, handle, i, TagIndex(choice.overlay), None, tick);
         }
         let primary = if choice.primary != NONE {
-            self.play(rng, tags, levels, handle, i, TagIndex(choice.primary), tick)
+            self.play(rng, tags, levels, handle, i, TagIndex(choice.primary), follows, tick)
         } else if segment == from && from.next(alternate) == from {
-            track.sound(from).and_then(|sound| self.play(rng, tags, levels, handle, i, sound, tick))
+            track.sound(from).and_then(|sound| self.play(rng, tags, levels, handle, i, sound, follows, tick))
         } else {
             None
         };
@@ -435,12 +476,13 @@ impl Sounds {
     }
 
     /// Admit one sound for track `i` and link it to the track.
+    #[allow(clippy::too_many_arguments)]
     fn play(&mut self, rng: &mut Rng, tags: &dyn SoundTags,
-        levels: &dyn Levels, handle: Handle, i: usize, sound: TagIndex, tick: u32) -> Option<Handle> {
+        levels: &dyn Levels, handle: Handle, i: usize, sound: TagIndex, follows: Option<Handle>, tick: u32) -> Option<Handle> {
         let source = self.loops.get(handle)?.source;
         let owner = Owner::Loop { looping: handle, track: i as u8 };
         let level = levels.level(sound, &source);
-        let request = Request { owner, track: Some((handle, i as u8)), source, level, ..Request::new(sound) };
+        let request = Request { owner, track: Some((handle, i as u8)), source, level, follows, ..Request::new(sound) };
         let played = self.admit(rng, tags, request, tick).ok()?;
         if let Some(t) = self.loops.get_mut(handle).and_then(|l| l.tracks.get_mut(i)) {
             t.members.push(played);
@@ -481,7 +523,7 @@ impl Record for Looping {
         for word in self.source.0 {
             w.u32(word);
         }
-        w.u8(u8::from(self.alternate) | (u8::from(self.stopping) << 1));
+        w.u8(u8::from(self.alternate) | (u8::from(self.stopping) << 1) | (u8::from(self.touched) << 2) | (u8::from(self.keep) << 3));
         w.u8(self.tracks.len() as u8);
         for t in &self.tracks {
             w.u8(t.current.0);
@@ -507,7 +549,7 @@ impl Record for Looping {
             *word = r.u32()?;
         }
         let flags = r.u8()?;
-        if flags & !3 != 0 {
+        if flags & !0xf != 0 {
             return Err(bad("loop flags"));
         }
         let count = usize::from(r.u8()?);
@@ -525,7 +567,17 @@ impl Record for Looping {
         }
         let n = r.u16()?;
         let details = (0..n).map(|_| r.u32().map(|v| v as i32)).collect::<Result<_, _>>()?;
-        Ok(Self { tag, owner, source, alternate: flags & 1 != 0, stopping: flags & 2 != 0, tracks, details })
+        Ok(Self {
+            tag,
+            owner,
+            source,
+            alternate: flags & 1 != 0,
+            stopping: flags & 2 != 0,
+            touched: flags & 4 != 0,
+            keep: flags & 8 != 0,
+            tracks,
+            details,
+        })
     }
 }
 

@@ -83,6 +83,9 @@ dsound = { path = "../../platform/dsound", default-features = false }
 # Voice chat's media objects (voice_glue); devices come from the host.
 voice = { workspace = true, optional = true }
 audio = { path = "../../platform/audio", default-features = false }
+# The sound table's clips (sound_feed.rs).
+sound-clips = { path = "../../platform/sound-clips" }
+wma = { path = "../../platform/wma" }
 bink-hle = { path = "../../platform/bink-hle", default-features = false }
 # Where `h2 movies` installs (movies_glue).
 movies = { workspace = true, optional = true }

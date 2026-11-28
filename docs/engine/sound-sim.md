@@ -1,7 +1,7 @@
 # The sound simulation
 
 Status: Partly built. The schedule, the events, the host feed and the instance-based guest hooks are written; the mixer's clip source is open, and `h2 sim diff` is identical with the switch off and on ([note](notes/2026-11-27-sound-events-parity.md)).
-Code: `crates/rewrites/sim-sound/src/{events,schedule,feed}.rs`, `crates/rewrites/sim-bridge/src/sim_sound.rs`, `crates/rewrites/sim-bridge/src/sim_sound/{mixer_feed,owners}.rs`. Tests: the same files (`sound_phase_ledger_is_zero`, `script_wait_ends_on_computed_tick`, `null_sink_host_hash_equals_audible`, and the schedule's unit tests).
+Code: `crates/rewrites/sim-sound/src/{events,schedule,feed}.rs`, `crates/rewrites/sim-bridge/src/sim_sound.rs`, `crates/rewrites/sim-bridge/src/sim_sound/owners.rs`. Tests: the same files (`sound_phase_ledger_is_zero`, `script_wait_ends_on_computed_tick`, `null_sink_host_hash_equals_audible`, and the schedule's unit tests).
 Switch: `impl.sim.sound-events`, off in play (boot reads it with a default of off), listed in [switches.md](../runtime/switches.md). With it on the game is silent: see [sound-instances.md](sound-instances.md), "DirectSound cut", stage D0.
 
 A sound started in the sim is a record: id, source, tag, start tick and an end tick computed from the engine's own instance for it. There are no voices, channels, priorities or culling in the sim. The host mixer is fed from the sim's events and cannot change anything the sim reads. The rule that must hold: the sim's sound state, [`Schedule::hash`], is the same with any host or none.
@@ -15,7 +15,7 @@ A sound started in the sim is a record: id, source, tag, start tick and an end t
 
 ## The host feed
 
-`SoundSim::service` hands the events the ticks made to a `Host` ([`sim_sound::feed`]). `MixerHost` turns a start into a mixer buffer, a stop into its removal, and sweeps the buffers that have played out. `NullHost` hears nothing. Test: `null_sink_host_hash_equals_audible`. The feed reads the events and never the sim, so the hash is the same with any host or none.
+`SoundSim::service` hands the events the ticks made to a `Host` ([`sim_sound::feed`]); a host reads them and never the sim, so the hash is the same with any host or none (`null_sink_host_hash_equals_audible`). Boot gives this arm `NullHost`, so it plays no sound; the audible feed is the table's ([sound-instances.md](sound-instances.md), "Mixer feed").
 
 ## Where the sound runs
 
@@ -48,7 +48,6 @@ Tests: `the_admission_is_the_engines_and_its_instance_is_entered`, `a_tick_start
 - Reads from guest memory: the tick (`GAME_TIME` + 8), the admission's stack arguments and returned instance, and the instance records above.
 - Writes guest memory: the mixer clock.
 - `Durations` (`sim_sound.rs`) is what the sim reads of a tag when a sound is started without an instance (tests); `NoDurations` ends every such sound on its start tick.
-- `Clips` (`mixer_feed.rs`) is what the mixer plays for a tag. It is presentation: the permutation choice is the host's.
 - With the switch on, the exact port `impl.sim.native.sound` stands down (`crates/apps/boot/src/registration.rs`).
 
 ## Rules and limits
@@ -63,7 +62,6 @@ Tests: `the_admission_is_the_engines_and_its_instance_is_entered`, `a_tick_start
 - The playback ratio of the sound formats (`0x21f650`): the sim assumes 1.
 - That a guest call to `SOUND_IMPULSE_ALLOCATE` and `GAME_TICK` from a hook re-enters the chain (the admission guards with a busy flag, the tick with the per-tick delivery).
 - That `h2 sim diff` matches over a run with the switch on, on a map with dialogue.
-- The mixer wiring at boot (`MixerHost` needs a `Clips` over the decoded sound data).
 
 ## Related
 

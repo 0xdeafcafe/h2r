@@ -213,6 +213,33 @@ pub fn decode_permutation(
 /// [`ResourceReader`] over the map's raw-resource files.
 pub struct Raw<'a>(pub &'a mut assets::ResourceFiles);
 
+/// [`Raw`] owning its files: the reader a [`GestaltLibrary`] keeps.
+pub struct OwnedRaw(pub assets::ResourceFiles);
+
+impl ResourceReader for OwnedRaw {
+    fn check(&self, p: RawPointer, size: u32) -> tags::Result<()> {
+        let Some(length) = self.0.length(p.file) else {
+            return Err(tags::Error::MissingResource(p.file));
+        };
+        if u64::from(p.offset) + u64::from(size) > length {
+            return Err(tags::Error::ResourceBounds {
+                file: p.file,
+                offset: p.offset,
+                size,
+                length,
+            });
+        }
+        Ok(())
+    }
+
+    fn read_raw(&mut self, p: RawPointer, size: u32) -> tags::Result<Vec<u8>> {
+        self.check(p, size)?;
+        self.0
+            .read(p.file, p.offset, size)
+            .map_err(|_| tags::Error::Invalid("a raw resource file did not read"))
+    }
+}
+
 impl ResourceReader for Raw<'_> {
     fn check(&self, p: RawPointer, size: u32) -> tags::Result<()> {
         let Some(length) = self.0.length(p.file) else {

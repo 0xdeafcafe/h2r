@@ -62,6 +62,28 @@ impl GestaltLibrary {
         self.headers.insert(tag, header);
     }
 
+    /// Every `snd!` tag of `map` over its gestalt. A tag whose header does
+    /// not read is left out, so asking for it fails by name.
+    pub fn from_map<R: std::io::Read + std::io::Seek>(
+        file: &mut map::Map<R>,
+        reader: Box<dyn ResourceReader + Send>,
+    ) -> Result<Self, ClipError> {
+        let gestalt = Gestalt::read(file).map_err(|e| ClipError::Failed(e.to_string()))?;
+        let sounds: Vec<TagId> = file
+            .tags()
+            .iter()
+            .filter(|t| t.group == map::FourCC(*b"snd!"))
+            .map(|t| t.id)
+            .collect();
+        let mut library = Self::new(gestalt, reader);
+        for id in sounds {
+            if let Ok(header) = tags::sound::read_header(file, id) {
+                library.add(id, header);
+            }
+        }
+        Ok(library)
+    }
+
     fn chunk(&self, key: &ClipKey, index: usize) -> Result<tags::sound::Chunk, ClipError> {
         let header = self.header(key.tag)?;
         let sound = self

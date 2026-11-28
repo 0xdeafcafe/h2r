@@ -92,6 +92,18 @@ pub fn class_flags(m: &dyn GuestMemory, def: u32) -> Result<u8, MemFault> {
     m.u8(class_row(m, def)?.wrapping_add(0xa))
 }
 
+/// The tag's minimum and maximum distance (`0x124fc0`, `0x125010` with
+/// no source override): tag `+1` bit 2 takes the minimum from the class
+/// row's `+0x18`, bit 3 the maximum from `+0x1c`; else playback row `p`'s
+/// `+0` and `+4`.
+pub fn distance(m: &dyn GuestMemory, def: u32, p: u32) -> Result<[f32; 2], MemFault> {
+    let flags = m.u8(def.wrapping_add(1))?;
+    let class = if flags & 0b1100 != 0 { class_row(m, def)? } else { 0 };
+    let min = if flags & 4 != 0 { m.f32(class.wrapping_add(0x18))? } else { m.f32(p)? };
+    let max = if flags & 8 != 0 { m.f32(class.wrapping_add(0x1c))? } else { m.f32(p.wrapping_add(4))? };
+    Ok([min, max])
+}
+
 /// `0x124f90` on the tag's class row: its word `+8` sets bit 1 or 3, or
 /// its word `+0xa` bit 11. A start's sound whose owner is gone keeps its
 /// start from updating then (`0x127f8b`).
@@ -202,6 +214,7 @@ impl Snapshot {
             range_count: m.u8(def.wrapping_add(0xa))? as i8,
             scale: m.u8(def.wrapping_add(0xb))? as i8,
             promotion: m.u8(def.wrapping_add(0xc))?,
+            distance: distance(m, def, p)?,
         };
         for i in 0..i32::from(sound.range_count).max(0) {
             self.read_range(m, i32::from(sound.first_range) + i)?;
@@ -306,6 +319,19 @@ mod tests {
         assert_eq!(s.scale(1), Some(&Scale { pitch: [10, 20] }));
         assert_eq!(s.promotion(0, 2), Some(1));
         assert!(t.history_off(), "class flag bit 5");
+    }
+
+    #[test]
+    fn a_tags_distances_come_from_its_playback_row_or_its_class() {
+        let mut g = guest();
+        g.put_f32(PLAYBACK + 0x38, 2.0).put_f32(PLAYBACK + 0x38 + 4, 40.0);
+        g.put_f32(CLASSES + 4 * 0x5c + 0x18, 5.0).put_f32(CLASSES + 4 * 0x5c + 0x1c, 90.0);
+        let read = |g: &FakeGuest| Snapshot::of_tag(g, TAG, -1).unwrap().sound(TAG).unwrap().distance;
+        assert_eq!(read(&g), [2.0, 40.0]);
+        g.put_u8(DEF + 1, 4);
+        assert_eq!(read(&g), [5.0, 40.0], "flag 0x400: the class's minimum");
+        g.put_u8(DEF + 1, 8);
+        assert_eq!(read(&g), [2.0, 90.0], "flag 0x800: the class's maximum");
     }
 
     #[test]

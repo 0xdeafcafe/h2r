@@ -172,6 +172,8 @@ pub struct MountedVfs {
     active: Mutex<Option<ActiveSource>>,
     /// The file the game loaded the running map from.
     loaded: Mutex<Option<LoadedSlot>>,
+    /// The running map's name, with or without a recorded path.
+    running: Mutex<Option<String>>,
 }
 
 /// The running map's name and the VFS path of the file its cache slot was
@@ -200,6 +202,7 @@ pub fn mount(vfs: Arc<Mutex<Vfs>>, rebind: Option<vfs::MapRebind>, data_root: &s
         rebind,
         active: Mutex::new(None),
         loaded: Mutex::new(None),
+        running: Mutex::new(None),
     });
     *SOURCES.lock().unwrap_or_else(|e| e.into_inner()) = Arc::downgrade(&sources);
     sources
@@ -266,8 +269,16 @@ pub(crate) fn set_loaded_slot(name: &str, path: Option<String>) {
             *last = name.to_owned();
         }
     }
+    *sources.running.lock().unwrap_or_else(|e| e.into_inner()) = Some(name.to_owned());
     *sources.loaded.lock().unwrap_or_else(|e| e.into_inner()) =
         path.map(|path| LoadedSlot { name: name.to_owned(), path });
+}
+
+/// The running map's name, set at each game start: `None` before the
+/// first or without a mount.
+pub(crate) fn running_name() -> Option<String> {
+    let sources = SOURCES.lock().unwrap_or_else(|e| e.into_inner()).upgrade()?;
+    sources.running.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 /// The boot's mount, or why there is none: no boot has mounted one, or

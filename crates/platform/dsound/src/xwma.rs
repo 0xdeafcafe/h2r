@@ -92,6 +92,12 @@ impl WmaHle {
         })
     }
 
+    /// The codec tables, for other decoders of the game's codec streams
+    /// (the sound table's clip source).
+    pub fn tables(&self) -> Arc<wma::Tables> {
+        Arc::clone(&self.tables)
+    }
+
     /// Reads the codec tables out of the retail `default.xbe` bytes (the
     /// SHA-256 is checked first, see `docs/audio/wma.md`).
     pub fn from_xbe(xbe: &[u8]) -> Result<Arc<Self>, wma::Error> {

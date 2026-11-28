@@ -1191,6 +1191,12 @@ fn run_configured(
                 );
         } else {
             setup_audible_mixer(&mixer, features.switches());
+            // The sound table's sounds play through this mixer
+            // (game/src/sound_feed.rs, docs/engine/sound-instances.md,
+            // "Mixer feed").
+            if sim_bridge::sim_sound::entries::on(features.switches()) {
+                game::sound_feed::connect(Arc::clone(&mixer), audio.wma.as_ref().map(|w| w.tables()));
+            }
         }
     }
     // A default recording and its replay both plan Forge (registration::local_forge).
