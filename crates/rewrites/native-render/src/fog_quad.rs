@@ -125,6 +125,8 @@ pub struct FogOtherDraw {
     /// The weather plate's block (`engine::planar_fog::Other::Plate`):
     /// stage 0 alone, tested less or equal.
     pub plate: bool,
+    /// Stage 2's ramp header ([`ramp_texture`]); 0 for the plate.
+    pub ramp: u32,
 }
 
 impl FogOtherDraw {
@@ -140,19 +142,23 @@ impl FogOtherDraw {
             return Err(Shape::NotRectangle);
         }
         let at = |n: usize| ([p[n][0], p[n][1]], t[n]);
-        Ok(Self { combiner, strip: [at(0), at(1), at(3), at(2)], z: p[0][2], w: p[0][3], depth_test, plate: false })
+        Ok(Self { combiner, strip: [at(0), at(1), at(3), at(2)], z: p[0][2], w: p[0][3], depth_test, plate: false, ramp: 0 })
     }
 }
 
 /// The texture header `0x000143c0` binds at stage 2 for the other setup:
 /// image 0 of the rasterizer's bitmap `[[0x00485a80] + 0x14]`, or of its
 /// default bitmap `+0x64` when that is -1 or has no image 0; its header
-/// (`+0x50`) only while resident (`0x00012310`).
+/// (`+0x50`) when `0x00012310`'s fast arm takes it: a header with a stamp
+/// `+0x70` past the cache's, or one not streamed (`+0x0f` bit 1 clear,
+/// `0x0012cd2c`). Otherwise [`Ramp::Streaming`]: the guest's `0x00012310`
+/// asks the texture cache, which may start the load and returns the header
+/// it has.
 ///
 /// `Err` names what the guest would do that this does not: `ramp_unbound`
 /// (nothing bound, the stage keeps the last texture), `ramp_image`,
-/// `ramp_streaming` (the loader runs), `ramp_unread`.
-pub fn ramp_texture(word: &dyn Fn(u32) -> Option<u32>) -> Result<u32, &'static str> {
+/// `ramp_unread`.
+pub fn ramp_texture(word: &dyn Fn(u32) -> Option<u32>) -> Result<Ramp, &'static str> {
     use crate::decal_material::{RASTERIZER, image_at, tag_data};
     const UNREAD: &str = "ramp_unread";
     let rasterizer = word(RASTERIZER).ok_or(UNREAD)?;
@@ -178,10 +184,21 @@ pub fn ramp_texture(word: &dyn Fn(u32) -> Option<u32>) -> Result<u32, &'static s
     }
     let stamp = word(image.wrapping_add(0x70)).ok_or(UNREAD)? as i32;
     let header = word(image.wrapping_add(0x50)).ok_or(UNREAD)?;
-    if stamp <= word(crate::effect_material::RESIDENT_STAMP).ok_or(UNREAD)? as i32 || header == 0 {
-        return Err("ramp_streaming");
+    let streamed = (word(image.wrapping_add(0xc)).ok_or(UNREAD)? >> 24) & 2 != 0;
+    let fresh = stamp > word(crate::effect_material::RESIDENT_STAMP).ok_or(UNREAD)? as i32;
+    if header != 0 && (fresh || !streamed) {
+        return Ok(Ramp::Header(header));
     }
-    Ok(header)
+    Ok(Ramp::Streaming { image })
+}
+
+/// What [`ramp_texture`] finds for stage 2.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ramp {
+    /// The resident header.
+    Header(u32),
+    /// Not resident: the image the guest's `0x00012310` is asked about.
+    Streaming { image: u32 },
 }
 
 #[cfg(feature = "gpu")]
@@ -524,10 +541,17 @@ mod tests {
         m.insert(image + 0x50, 0x00ab_cd00);
         m.insert(crate::effect_material::RESIDENT_STAMP, 4);
         let word = |a: u32| m.get(&a).copied();
-        assert_eq!(ramp_texture(&word), Ok(0x00ab_cd00));
-        let mut streaming = m.clone();
-        streaming.insert(crate::effect_material::RESIDENT_STAMP, 5);
-        assert_eq!(ramp_texture(&|a| streaming.get(&a).copied()), Err("ramp_streaming"));
+        assert_eq!(ramp_texture(&word), Ok(Ramp::Header(0x00ab_cd00)));
+        // An old stamp: a header not streamed is still taken (0x0012cd2c),
+        // a streamed one (`+0x0f` bit 1) or none goes to the cache.
+        let mut stale = m.clone();
+        stale.insert(crate::effect_material::RESIDENT_STAMP, 5);
+        assert_eq!(ramp_texture(&|a| stale.get(&a).copied()), Ok(Ramp::Header(0x00ab_cd00)));
+        stale.insert(image + 0xc, 0x0200_0000);
+        assert_eq!(ramp_texture(&|a| stale.get(&a).copied()), Ok(Ramp::Streaming { image }));
+        let mut empty = m.clone();
+        empty.insert(image + 0x50, 0);
+        assert_eq!(ramp_texture(&|a| empty.get(&a).copied()), Ok(Ramp::Streaming { image }));
         let mut none = m.clone();
         none.insert(raster + 0x14, u32::MAX);
         assert_eq!(ramp_texture(&|a| none.get(&a).copied()), Err("ramp_unbound"));

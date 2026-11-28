@@ -1,7 +1,7 @@
 # Retiring D3D: the planar fog's screen quad
 
 Status: Built. The cut and the GPU pass have not been seen in a run.
-Code: `crates/rewrites/engine/src/planar_fog.rs` (`setup`, `draws`, `colour`, `quad`, `other`), `crates/rewrites/engine/src/fog_fans.rs` (`PlateArgs::planar`, `weather_plate_placement` kind 1), `crates/rewrites/render-bridge/src/native_fog_quad.rs` (`turn`, `turn_other`, `before_fog`), `crates/rewrites/native-render/src/fog_quad.rs` (`FogQuadDraw`, `FogOtherDraw`, `ramp_texture`, `FogQuadGpu`), `crates/extensions/game/src/native_fog_quad_glue.rs` (the host). Tests: in those files.
+Code: `crates/rewrites/engine/src/planar_fog.rs` (`setup`, `draws`, `colour`, `quad`, `other`), `crates/rewrites/engine/src/fog_fans.rs` (`PlateArgs::planar`, `weather_plate_placement` kind 1), `crates/rewrites/render-bridge/src/native_fog_quad.rs` (`turn`, `turn_other`, `turn_other_with`, `before_fog`), `crates/rewrites/native-render/src/fog_quad.rs` (`FogQuadDraw`, `FogOtherDraw`, `ramp_texture`, `FogQuadGpu`), `crates/extensions/game/src/native_fog_quad_glue.rs` (the host). Tests: in those files.
 Switch: none. On with the native renderer (`impl.render.native`), listed in [switches.md](../runtime/switches.md).
 
 A residual caller of [retire-d3d-remainders.md](retire-d3d-remainders.md) ("The residual callers"): `0x00025d50`, one inline fan a frame ([notes/residual-callers.md](notes/residual-callers.md)). In every view mode the native renderer draws the quad and the guest's setup returns as it does when there is no fog to draw, so the fan never reaches D3D. Neither setup's body runs.
@@ -47,7 +47,7 @@ way, by an `implement` at `PLANAR_FOG_OTHER_SETUP`.
 | The block (`planar_fog::other_combiner`) | two combiner stages and the texture shader: modes `0x2621` (2D, dot product, dot ST), dot mapping `0x44` (HILO 1) | `0x00025e50`, then `0x0001ccf0` |
 | The attributes | per corner: the position at the clip far, attributes 1 and 4 the rectangle's lerp, 2 and 3 the near and far planes `[k / range, 0, -start / range, 0]` | `0x00026812` |
 | Stage 0 (`FogQuadGpu::record_other`) | the bound depth's D24S8 words as LIN A8R8G8B8, made by a prepass from the depth view into an RGBA8 copy | target 3 of `0x00014bc0` |
-| Stage 2 (`fog_quad::ramp_texture`) | image 0 of the rasterizer's ramp bitmap, or of its default, decoded as a decal bitmap | `0x000143c0` |
+| Stage 2 (`fog_quad::ramp_texture`) | image 0 of the rasterizer's ramp bitmap, or of its default, decoded as a decal bitmap. A header past the cache's stamp, or one not streamed (`+0x0f` bit 1 clear), is taken at once; otherwise the cut calls the guest's texture cache `0x00012310` (eax the image, xmm2 0) as `0x000143c0` does, which may start the load, and finishes with the header it returns (`Turn::Stream`). A header of 0 binds no ramp: the strip is not drawn that frame, the depth word is written | `0x000143c0`, `0x00012310`, `0x0012cd2c` |
 | The draw | one strip through `QuadDrawer::grid_program`, its depth the clip far tested greater unless `[0x0048575d]` is set, the planar fog's blend | the fan's `Begin(7)` .. `End` |
 
 ### The plate (kind 1)
@@ -89,7 +89,8 @@ Every path the cut does not draw is `unimplemented!("fog quad: <cause>")`:
 | Cause | When |
 |---|---|
 | `other_placed` | the device did not take the other setup's pass |
-| `ramp_unread`, `ramp_unbound`, `ramp_image`, `ramp_streaming` | the ramp bitmap does not read, binds nothing, has no image 0, or is not resident |
+| `ramp_unread`, `ramp_unbound`, `ramp_image` | the ramp bitmap does not read, binds nothing, or has no image 0 |
+| `ramp_stack`, `ramp_stream` | the cache's call returned on another stack, or the cut asked it twice |
 | `other_depth_binding`, `other_combiner`, `depth_clip`, `ramp` | the depth view cannot be sampled, the block does not translate, a tested strip has no clip, or the fog strip has no ramp |
 | `host` | no host is installed |
 | `placed` | the device did not take the pass |
@@ -110,6 +111,7 @@ Tests: `planar_fog.rs`
 `another_caller_runs_the_setup`,
 `a_pass_the_device_does_not_place_panics`, `no_host_panics`,
 `the_other_setup_is_cut_and_draws_its_strip`,
+`a_streaming_ramp_asks_the_cache_and_draws_what_it_returns`,
 `the_other_setups_plate_draws_its_block_at_its_depth`,
 `an_other_pass_the_device_does_not_place_panics`,
 `every_mode_passes_the_branch`,
@@ -137,6 +139,11 @@ Tests: `planar_fog.rs`
   ramp (`h2 disasm` of `0x25e50`, `0x26812`, `0x143c0`).
 - **E**: the plate's call and kind 1 (`h2 disasm` of `0x25e50`,
   `0x3a5c0 1500`, the table at `0x3b88c`, `0x26515`).
+- **E**: the texture cache's fast arm and its streamed bit
+  (`h2 disasm` of `0x12310`, `0x12ccf0`; the call at `0x25f45`, xmm2 0).
+- **S**: a stage-2 header of 0 leaves the fog's ramp lookup with no
+  texture, so drawing no strip that frame matches the guest's fan. A
+  frame that streams its ramp would show the difference.
 - **S**: the plate's vertex program (slot `0xc`) passes the position in
   pixels and attribute 1 to texture coordinate 0 through.
 - **S**: the other setup's vertex program passes attributes 1 to 4 to
