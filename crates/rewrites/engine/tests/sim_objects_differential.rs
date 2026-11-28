@@ -1648,11 +1648,64 @@ fn scenery_update() {
 #[test]
 fn device_update() {
     dressed(&points::DEVICE_UPDATE, 6);
+    dressed_with(&points::DEVICE_UPDATE, 16, dress_device);
 }
 
 #[test]
 fn machine_update() {
     dressed(&points::MACHINE_UPDATE, 6);
+    dressed_with(&points::MACHINE_UPDATE, 16, dress_device);
+}
+
+/// The device group datum array the device and machine updates read
+/// (`[4e0328]`, `+44` the data), and four groups of `0xc` bytes there,
+/// the value at `+4`.
+const DEVICE_GROUPS_GLOBAL: u32 = 0x004e_0328;
+const DEVICE_GROUP_ARRAY: u32 = 0x006a_0000;
+const DEVICE_GROUP_DATA: u32 = 0x006a_0100;
+
+/// [`dress`] with the device and machine paths opened on the object a
+/// root is called on: the power and position flags (`+12c` bits 2, 3,
+/// 5, 6 and 7), the power group `+13c` and position group `+130` (each
+/// none in turn), the position `+134`, its target `+138`, the power
+/// `+140`, the change rate `+144` and the delay counter `+148`; on the
+/// definition the rates `+c8..+d4`, the delay `+10c`, the machine kind
+/// `+11c` (0 a door, 1, 2 a cycling machine) and the door's close time
+/// `+120`.
+fn dress_device(g: &mut Guest, case: u32) {
+    let c = case as usize;
+    word(g, DEVICE_GROUPS_GLOBAL, DEVICE_GROUP_ARRAY);
+    word(g, DEVICE_GROUP_ARRAY + 0x44, DEVICE_GROUP_DATA);
+    for (i, v) in [0.0f32, 0.5, 1.0, 0.25].into_iter().enumerate() {
+        f32w(g, DEVICE_GROUP_DATA + 0xc * i as u32 + 4, v);
+    }
+    let body = g.u32(DATA + 12 * (object(case) & 0xffff) + 8).unwrap();
+    word(g, body + 0x12c, [0x08, 0x28, 0x88, 0x84, 0x80, 0x40, 0x00, 0xc8, 0x10, 0x50, 0x04, 0x98][c % 12]);
+    word(g, body + 0x13c, if case % 4 == 3 { u32::MAX } else { handle(case % 3) });
+    word(g, body + 0x130, if case % 3 == 2 { u32::MAX } else { handle((case + 1) % 4) });
+    f32w(g, body + 0x134, [0.0, 0.3, 1.0, 0.75][c % 4]);
+    f32w(g, body + 0x138, [1.0, 0.0, 0.5, 0.75, 0.25][c % 5]);
+    f32w(g, body + 0x140, [0.0, 0.5, 1.0, 0.2, 0.9][c % 5]);
+    f32w(g, body + 0x144, [0.0, 0.1, -0.2, 0.0, 3.0, -0.05][c % 6]);
+    g.set_u16(body + 0x148, [0, 1, 5, 0, 30, 2, 0][c % 7]).unwrap();
+    word(g, body + 0x1d0, [0, 1, 0xffff_fffd, 40][c % 4]);
+    for (off, v) in [(0xc8, 0.5f32), (0xcc, 1.0), (0xd0, 0.25), (0xd4, 2.0)] {
+        f32w(g, DEFINITION + off, v * (1 + case % 3) as f32);
+    }
+    f32w(g, DEFINITION + 0x10c, [0.0, 0.1, 1.0][c % 3]);
+    word(g, DEFINITION + 0x11c, [0, 2, 1, 2][c % 4]);
+    f32w(g, DEFINITION + 0x120, [0.0, 1.0, 0.5][c % 3]);
+}
+
+/// [`dress_device`] when the object a root is called on is a machine,
+/// control or light fixture (types 7, 8 and 9, body `+aa`), so the
+/// dispatcher reaches the device level over its dressing and every other
+/// type over [`dress`] alone.
+fn dress_device_family(g: &mut Guest, case: u32) {
+    let body = g.u32(DATA + 12 * (object(case) & 0xffff) + 8).unwrap();
+    if (7..=9).contains(&g.u8(body + 0xaa).unwrap()) {
+        dress_device(g, case);
+    }
 }
 
 #[test]
@@ -4473,8 +4526,8 @@ fn type_post_update_dispatch_reaches_the_biped() {
 /// vehicle, projectile (with its step) and scenery updates, the unit
 /// leaves `cba50` and `111650`, and the dispatchers reaching the biped's
 /// two, the vehicle and every small type, with every body outside the
-/// table a callout (the device, machine, crate and creature updates, the
-/// transform setters and getters). Without the aim update
+/// table a callout (the crate and creature updates, the transform setters
+/// and getters). Without the aim update
 /// (`native_walk::WITHOUT_AIM`, the animation subsystem's hand-off) the
 /// movement's call to `c7840` is a callout. Again under flush to zero and
 /// denormals as zero, outside the float environment: every type callback
@@ -4511,6 +4564,11 @@ fn walk_table_types() {
         dressed_with_in(&points::OBJECT_TYPE_UPDATE, 13, undressed, table, mxcsr);
         dressed_with_in(&points::VEHICLE_UPDATE, 11, dress_vehicle, table, mxcsr);
         dressed_with_in(&points::OBJECT_TYPE_UPDATE, 11, dress_vehicle, table, mxcsr);
+        dressed_with_in(&points::DEVICE_UPDATE, 6, undressed, table, mxcsr);
+        dressed_with_in(&points::DEVICE_UPDATE, 16, dress_device, table, mxcsr);
+        dressed_with_in(&points::MACHINE_UPDATE, 6, undressed, table, mxcsr);
+        dressed_with_in(&points::MACHINE_UPDATE, 16, dress_device, table, mxcsr);
+        dressed_with_in(&points::OBJECT_TYPE_UPDATE, 26, dress_device_family, table, mxcsr);
     }
 }
 
