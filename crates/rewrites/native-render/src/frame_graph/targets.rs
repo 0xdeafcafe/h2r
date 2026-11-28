@@ -217,7 +217,7 @@ impl Shape {
     /// The shape of `d`; `None` when the frame names no size or format
     /// for it.
     pub fn of(d: &Declared) -> Option<Shape> {
-        let texture = !d.depth && matches!(d.role, Some(TargetRole::GameLevel(_)));
+        let texture = !d.depth && matches!(d.role, Some(TargetRole::GameLevel { .. }));
         Some(Shape { size: d.size?, depth: d.depth, format: d.format?, texture })
     }
 

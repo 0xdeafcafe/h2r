@@ -91,9 +91,9 @@ impl<B: Backend> Device<B> {
     /// The role of the target at `header` (`parent` its texture for a
     /// level, else 0); `None` without a role table. A header the table
     /// does not name is a gap.
-    fn role_of(&self, header: u32, parent: u32) -> Option<frame_types::TargetRole> {
+    fn role_of(&self, mem: &dyn GuestMemory, header: u32, parent: u32) -> Option<frame_types::TargetRole> {
         let table = self.cfg.roles?;
-        Some(table(header, parent).unwrap_or_else(|| {
+        Some(table(header, &|at| mem.read_u32(at).ok()).unwrap_or_else(|| {
             unimplemented!("d3d targets: {header:#010x} (texture {parent:#010x}) has no role")
         }))
     }
@@ -281,12 +281,12 @@ pub struct DeviceConfig {
     /// `+0x934` alone (zero), so those reads fault.
     pub nv2a_window: Option<u32>,
     /// The game's role for the render target or depth surface at a
-    /// header (`header`, its texture `parent` for a level, else 0)
+    /// header, given a reader of guest words
     /// (docs/graphics/retire-d3d-display.md, "The graph's targets"). Set,
     /// every target is made by role ([`Backend::create_target`]) and a
     /// header with no role panics by name; `None` (the crate's own tests)
     /// makes each as any surface.
-    pub roles: Option<fn(u32, u32) -> Option<frame_types::TargetRole>>,
+    pub roles: Option<fn(u32, &dyn Fn(u32) -> Option<u32>) -> Option<frame_types::TargetRole>>,
 }
 
 impl DeviceConfig {
@@ -5164,7 +5164,7 @@ impl<B: Backend> Device<B> {
         if let Some((_, old)) = self.other_surfaces.remove(&header) {
             self.drop_surface(old)?;
         }
-        let role = self.role_of(header, 0);
+        let role = self.role_of(&*mem, header, 0);
         let s = self.make_target(role, desc.format, desc.width, desc.height, depth, false)?;
         self.other_surfaces.insert(header, (id, s));
         self.note_depth_color(header, &h, &desc, depth);

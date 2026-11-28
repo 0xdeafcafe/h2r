@@ -268,8 +268,24 @@ Every render target and depth surface the device makes is the frame graph's, key
 |---|---|---|
 | `Display(n)` | swap-chain buffer `n` (the back buffers, then the display surface) | `Direct3D_CreateDevice` |
 | `DisplayDepth` | the device's depth buffer | `Direct3D_CreateDevice` |
-| `Game(n)` | entry `n` of Halo's target table `0x004b4b58` (stride `0x98`): its surface header `+0x18` | the first bind of the header |
-| `GameLevel(n)` | a level of entry `n`'s texture (`+4`) bound as a target | the first bind of the level |
+| `Game(n)` | entry `n` of Halo's target table `0x004b4b58` (stride `0x98`): its first surface header `+0x18` (`0x0001dcf0`) | the first bind of the header |
+| `GameLevel { target, level }` | surface `level` (1 to 3) of entry `target`, `+0x18 + 0x18 * level` (`0x0001dd20`: target `0xd`'s cube faces) | the first bind of the header |
+| `Slot(global)` | the target whose header the game keeps at `global` (`native_targets::TARGET_SLOTS`, below) | the first bind of the header |
+
+The game binds every target through its select `0x00014bc0(index)` (Code; the case bytes at `0x00014f30`, the jumps at `0x00014ed0`); the other `SetRenderTarget` callers are the XDK's own, on the device's buffers. By index:
+
+| Index | Colour | Role |
+|---|---|---|
+| 0, 4 | `[0x0050935c]`, `[0x00509360]`: the device's back buffer and display surface | `Display(n)` |
+| 1, 5 to 8, `0xa` to `0xc`, `0xf`, `0x12` to `0x16`, `0x19` to `0x1b` | the table entry's first surface | `Game(n)` |
+| `0xd` | the table entry's surface of the call's second argument | `Game(0xd)`, `GameLevel` |
+| 3 | `[0x00509370]`: a colour surface over the depth buffer's memory (`0x00014600`) | `Slot(0x00509370)` |
+| `0x10`, `0x1d`; `0x11` | `[0x00509378]`, `[0x00509380]`: level 0 of the 64 x 64 textures `[0x00509374]`, `[0x0050937c]` (`0x00014850` through `0x000158f0` and `0x003fb7a0`, on the heap) | `Slot(..)` |
+| 9 | `[0x00509384]`: the static surface `0x00484f50`, entry 9's memory as linear A8R8G8B8 | `Slot(0x00509384)` |
+| `0x21` to `0x26` | `[0x00509390]` to `[0x005093a4]`, depth `[0x005093a8]`; no code names them as written | `Slot(..)` |
+| 2, `0xe`, `0x17`, `0x18`, `0x1c`, `0x1e` to `0x20` | none | |
+
+The depth is `[0x00509364]` (`DisplayDepth`) for indices 0, 1, 3, 5 to 8, `0xf` and `0x12`, else none.
 
 ```mermaid
 flowchart LR
@@ -283,7 +299,7 @@ flowchart LR
   O -->|TargetStore::map at the present| P[the replay's targets]
 ```
 
-- **The role table.** `render_bridge::native_targets::role(header, parent)` names the table's entries (`TARGET_COUNT` of them, **S**: that there are no more). Boot's glue sets it as `d3d::DeviceConfig::roles` with the native renderer on. The device asks it in `surface_for` and `rtt_surface`, and makes the surface with `Backend::create_target`; a header it does not name panics, `d3d targets: <header> (texture <parent>) has no role`. One role has one live device surface: a second panics, `d3d targets: two live surfaces for <role>`. A rewritten header gives its old surface back (`Backend::release_target`) before the new one is made.
+- **The role table.** `render_bridge::native_targets::role(header, word)` names the table's surfaces (`TARGET_COUNT` entries, `TARGET_LEVELS` surfaces each) by address, and a header one of the select's globals holds (`word` reads it) as that global's `Slot`. Boot's glue sets it as `d3d::DeviceConfig::roles` with the native renderer on. The device asks it in `surface_for` and `rtt_surface`, and makes the surface with `Backend::create_target`; a header it does not name panics, `d3d targets: <header> (texture <parent>) has no role`. One role has one live device surface: a second panics, `d3d targets: two live surfaces for <role>`. A rewritten header gives its old surface back (`Backend::release_target`) before the new one is made.
 - **The frame's roles.** The scene sink keeps each surface's role and the recorder files them per frame, `ReplayFrame::roles` (`ReplayFrame::role`), after the present's renaming. `targets::declare` puts each target's role in its `Declared`.
 - **The store.** `ThreadedBackend::with_target_store` installs `frame_graph::targets::Store` (a `d3d::threaded::owner::TargetStore`) on the render thread, so the worker's `create_target` and `release_target` go to it. `targets::Owned` holds one surface per role across frames and devices: the same shape keeps its surface, a new shape makes another. The device's handles for a role come and go; a surface a new shape replaces while a handle to it is live is retired and freed when that handle comes back, since commands queued before the new one can still draw on it. A role's surface outlives its handle, so a device made again after a teardown gets the same surfaces.
 - **The replay.** At the present the worker takes the graph's map, `TargetStore::map`: each declared target's surface by its role. The guest's commands drew on the same surfaces, so a frame's carried work and its replay share them. A declared target with no role, or a role the store does not hold, panics, `graph targets: <cause>`.
@@ -294,7 +310,7 @@ flowchart LR
 
 `Owned` counts `graph_targets_made`, `_kept`, `_released` and `graph_targets_refused_<cause>` (`unsized`, `unroled`, `allocation`) for a frame it owns directly (`Owned::own`). Without a role table (the `d3d` crate's own tests) the device makes each target as any surface, and without a store the worker makes them on its backend.
 
-Tests: `a_game_target_is_named_by_its_table_entry` (`native_targets.rs`), `each_frame_names_its_targets_roles` (`d3d/src/scene_sink/replay.rs`), `a_role_keeps_its_surface_when_its_number_moves`, `the_store_frees_a_replaced_surface_when_its_handle_comes_back` and `the_graph_owns_its_targets_across_frames` (`frame_graph/targets.rs`).
+Tests: `a_game_target_is_named_by_its_table_entry_or_its_global` (`native_targets.rs`), `each_frame_names_its_targets_roles` (`d3d/src/scene_sink/replay.rs`), `a_role_keeps_its_surface_when_its_number_moves`, `the_store_frees_a_replaced_surface_when_its_handle_comes_back` and `the_graph_owns_its_targets_across_frames` (`frame_graph/targets.rs`).
 
 ## The post and the screen effects
 

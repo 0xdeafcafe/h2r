@@ -549,7 +549,7 @@ mod tests {
         let fan = drawn(Setup::Composite, &mut m);
         assert_eq!(fan.dest, VIEW);
         assert_eq!(fan.sources[0], Some(Source::Surface(game(3))));
-        assert_eq!(crate::native_targets::role(game(3), 0), Some(TargetRole::Game(3)));
+        assert_eq!(crate::native_targets::role(game(3), &|_| None), Some(TargetRole::Game(3)));
         assert_eq!(fan.draw.strip[3].0, [640.0, 480.0]);
         assert_eq!(fan.draw.strip[3].1[0], [640.0, 480.0, 0.0, 1.0]);
         assert_eq!(fan.draw.combiner[43], 0x00ff_0000);
@@ -565,7 +565,7 @@ mod tests {
         }
         let fan = drawn(Setup::Layers, &mut m);
         assert_eq!(fan.dest, game(0x13));
-        assert_eq!(crate::native_targets::role(fan.dest, 0), Some(TargetRole::Game(0x13)));
+        assert_eq!(crate::native_targets::role(fan.dest, &|_| None), Some(TargetRole::Game(0x13)));
         assert_eq!(fan.sources[2], Some(Source::Texture(PATCH_HEADER + 0x100 * 9)));
         assert_eq!(fan.draw.raster, FanRaster::Opaque);
         assert!(fan.draw.stages.iter().all(|s| *s == Some(FanStage { coords: Coords::Unit, wrap: true })));

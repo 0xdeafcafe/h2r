@@ -1612,7 +1612,7 @@ mod tests {
         m.set_u32(e + 0x78, 1).unwrap();
         let slot = post_slot(&m, role, false).unwrap();
         assert_eq!(slot.header, e + 0x18);
-        assert_eq!(render_bridge::native_targets::role(slot.header, 0), Some(TargetRole::Game(7)), "the role it names");
+        assert_eq!(render_bridge::native_targets::role(slot.header, &|_| None), Some(TargetRole::Game(7)), "the role it names");
         m.write(e + 0x95, &[1]).unwrap();
         assert!(post_slot(&m, role, false).is_err(), "a hidden size");
         assert!(post_slot(&m, PostTarget::Role(TargetRole::DisplayDepth), false).is_err());

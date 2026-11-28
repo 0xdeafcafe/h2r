@@ -178,10 +178,13 @@ pub enum TargetRole {
     Display(u8),
     /// The device's own depth buffer.
     DisplayDepth,
-    /// Entry `n` of the game's render-target table: its surface.
+    /// Entry `n` of the game's render-target table: its first surface.
     Game(u8),
-    /// A level of entry `n`'s texture bound as a target.
-    GameLevel(u8),
+    /// Surface `level` (1 to 3) of entry `target` (a cube map's face).
+    GameLevel { target: u8, level: u8 },
+    /// The target whose header the game keeps at this global (the frame
+    /// buffers' aliases and its own small targets, made at boot).
+    Slot(u32),
 }
 
 /// How a carried op samples a target on the GPU, in order.

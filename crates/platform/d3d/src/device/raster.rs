@@ -837,7 +837,7 @@ impl<B: Backend> Device<B> {
             self.depth_level_tex.remove(&header);
             self.drop_surface(old.surface)?;
         }
-        let role = self.role_of(header, h.parent);
+        let role = self.role_of(&*mem, header, h.parent);
         let surface = self.make_target(role, desc.format, desc.width, desc.height, depth, !depth)?;
         let target = RttTarget {
             surface,

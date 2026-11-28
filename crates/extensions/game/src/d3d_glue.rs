@@ -1779,7 +1779,7 @@ fn install_device<B: d3d::backend::Backend + Send + 'static>(
         upload,
         nv2a_window: Some(NV2A_BASE),
         #[cfg(feature = "desktop-runtime")]
-        roles: native.then_some(render_bridge::native_targets::role as fn(u32, u32) -> Option<frame_scene::TargetRole>),
+        roles: native.then_some(render_bridge::native_targets::role as fn(u32, &dyn Fn(u32) -> Option<u32>) -> Option<frame_scene::TargetRole>),
         #[cfg(not(feature = "desktop-runtime"))]
         roles: { let _ = native; None },
         ..DeviceConfig::halo2(
