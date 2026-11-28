@@ -303,7 +303,7 @@ fn liquid(
     let v = dot(fp, n, ray.delta);
     // `comiss x, 0; jbe` for each: a NaN is not above zero.
     let above = |fp: &mut Fp, x| fp.comiss(x, 0) == Some(Ordering::Greater);
-    if above(fp, s) == above(fp, v) {
+    if above(&mut *fp, s) == above(&mut *fp, v) {
         return Ok(false);
     }
     // `fld v; fabs; fstp m32` then `fld s; fabs; fld m32; fcomip; jbe`.

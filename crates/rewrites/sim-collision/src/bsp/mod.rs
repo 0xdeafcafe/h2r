@@ -101,9 +101,12 @@ pub struct Ref {
     pub plane: u16,
     pub node: u16,
     /// `2 * axis + sign`, an index into [`Bsp::projection`]; [`BAD`] when
-    /// the plane is out of range or not ordinary.
+    /// the plane is out of range or the image's zero is not ordinary.
     pub row: u8,
-    reserved: u8,
+    /// What the matcher's pick of the row raises each time it runs: IE and
+    /// DE of the MXCSR in bits 0 and 1, of the x87 in bits 4 and 5. Zero
+    /// unless a normal component is a NaN or subnormal.
+    pub flags: u8,
 }
 
 /// A 2D node: `a * u + b * v - d`, then the back and front children
@@ -168,8 +171,7 @@ pub struct Bsp {
     mapped_overhead: usize,
     pub nodes: Column<Node>,
     pub planes: Column<[u32; 4]>,
-    /// The dominant axis of each plane as the matcher picks it, [`BAD`]
-    /// when a normal component is not ordinary.
+    /// The dominant axis of each plane as the matcher picks it.
     pub axis: Column<u8>,
     pub leaves: Column<Leaf>,
     pub refs: Column<Ref>,
@@ -216,29 +218,50 @@ pub(crate) fn hash(seed: u64, bytes: &[u8]) -> u64 {
 
 pub(crate) const HASH_SEED: u64 = 0xcbf2_9ce4_8422_2325;
 
-fn abs(x: u32) -> f32 {
-    f32::from_bits(x & 0x7fff_ffff)
+/// The projection's axis and sign as the guest picks them for any normal.
+pub(crate) struct Pick {
+    pub axis: usize,
+    pub positive: bool,
+    /// The MXCSR flags and the x87 exception flags the pick raises.
+    pub flags: (u32, u16),
 }
 
-/// The matcher's dominant axis (`0x1dea57`..`0x1deab8`): z unless
-/// `|nz| < |ny|` or `|nz| < |nx|`, else y when `|ny| >= |nx|`, else x.
-///
-/// The row is decided once per BSP, so its compares (`fld`, `fcomip`,
-/// `comiss`) must raise no flag: zero, normal and infinite components
-/// raise none. A NaN or subnormal one would, so its row is `BAD`.
-fn dominant_axis(n: &[u32; 4]) -> u8 {
-    if !(compared1(n[0]) && compared1(n[1]) && compared1(n[2])) {
-        return BAD;
-    }
-    // Compared values are never NaN, so `>=` is the guest's "not below".
-    let (x, y, z) = (abs(n[0]), abs(n[1]), abs(n[2]));
-    if z >= y && z >= x {
+/// The pick in the matcher (`0x1dea57`..`0x1deac9`) and in `0x00120850`:
+/// `fld; fabs; fstp m32` per component (a subnormal raises DE, an SNaN IE
+/// and is quieted), then `fcomip` of `|z|` with `|y|` and `comiss |z|,
+/// |x|` (each `jb`: unordered is below) choose z, and `comiss |y|, |x|`
+/// (`jae`) y over x. Then `comiss normal[axis], zero; jbe`: positive only
+/// when ordered greater. Every step is exact, so the flags do not depend
+/// on the precision or rounding control; only IE and DE can be raised.
+pub(crate) fn pick(normal: [u32; 3], zero: u32) -> Pick {
+    use sim_core::det::{Fp, X87};
+    use std::cmp::Ordering;
+    let x = X87::new(0x027f);
+    let mut fp = Fp::guest(0x1f80);
+    let abs: [u32; 3] = std::array::from_fn(|i| x.store32(x.abs(x.load32(normal[i]))));
+    let [ax, ay, az] = abs;
+    let at_least = |o: Option<Ordering>| matches!(o, Some(Ordering::Greater | Ordering::Equal));
+    let z_over_y = at_least(x.compare(x.load32(az), x.load32(ay), false));
+    let axis = if z_over_y && at_least(fp.comiss(az, ax)) {
         2
-    } else if y >= x {
+    } else if at_least(fp.comiss(ay, ax)) {
         1
     } else {
         0
+    };
+    let positive = fp.comiss(normal[axis], zero) == Some(Ordering::Greater);
+    Pick {
+        axis,
+        positive,
+        flags: (fp.mxcsr().unwrap_or_default() & 0x3f, x.flags()),
     }
+}
+
+/// [`Ref::flags`] for a pick's flags: IE and DE of the MXCSR in bits 0
+/// and 1, of the x87 in bits 4 and 5.
+fn ref_flags((sse, x87): (u32, u16)) -> u8 {
+    debug_assert_eq!((sse & !3, x87 & !3), (0, 0), "a pick raises only IE and DE");
+    (sse & 3) as u8 | ((x87 & 3) as u8) << 4
 }
 
 impl Bsp {
@@ -425,7 +448,10 @@ impl Bsp {
             .iter()
             .map(|p| std::array::from_fn(|k| word(p, 4 * k)))
             .collect();
-        let axis = planes.iter().map(dominant_axis).collect::<Vec<_>>();
+        let axis = planes
+            .iter()
+            .map(|p| pick([p[0], p[1], p[2]], 0).axis as u8)
+            .collect::<Vec<_>>();
 
         let nodes = raw[block::NODES]
             .as_chunks::<8>()
@@ -484,19 +510,18 @@ impl Bsp {
                 let plane = half(b, 0);
                 let index = usize::from(plane & 0x7fff);
                 let flip = plane >> 15 != 0;
-                let row = match axis.get(index) {
-                    Some(&a) if a != BAD && zero_ok => {
-                        let n = f32::from_bits(planes[index][usize::from(a)]);
-                        let sign = n > f32::from_bits(consts.zero);
-                        2 * a + u8::from(sign != flip)
+                let (row, flags) = match planes.get(index) {
+                    Some(p) if zero_ok => {
+                        let k = pick([p[0], p[1], p[2]], consts.zero);
+                        (2 * k.axis as u8 + u8::from(k.positive != flip), ref_flags(k.flags))
                     }
-                    _ => BAD,
+                    _ => (BAD, 0),
                 };
                 Ref {
                     plane,
                     node: half(b, 2),
                     row,
-                    reserved: 0,
+                    flags,
                 }
             })
             .collect();

@@ -313,6 +313,39 @@ fn projection_rows_follow_axis_sign_and_flip() {
 }
 
 #[test]
+fn nan_and_subnormal_normals_get_the_guest_row_and_its_flags() {
+    let mut b = Builder::default();
+    let tiny = f32::from_bits(1);
+    b.planes.push([tiny, 0.0, 1.0, 0.0]);
+    b.planes.push([f32::NAN, 0.0, 0.0, 0.0]);
+    for p in 0..2u16 {
+        b.refs.push((p, 0));
+        b.refs.push((p | 0x8000, 0));
+    }
+    let bsp = decode(&image(&b));
+    let got: Vec<(u8, u8)> = bsp.refs.iter().map(|r| (r.row, r.flags)).collect();
+    // z (the `comiss |z|, |x|` raises DE, the `fld` of x DE on the x87);
+    // then x: every compare with the NaN is unordered, its `comiss` IE.
+    assert_eq!(got, [(5, 0x22), (4, 0x22), (0, 0x01), (1, 0x01)]);
+}
+
+#[test]
+fn the_matcher_raises_a_subnormal_normal_under_the_guest_state() {
+    let mut b = wall(0);
+    b.planes[0][1] = f32::from_bits(1);
+    let img = image(&b);
+    let bsp = decode(&img);
+    let q = query([-1.0, 0.0, 0.0], [4.0, 0.0, 0.0], 1);
+    assert_eq!(run(&img, &bsp, &q), Err(Bail::Float));
+    let out = bsp
+        .vector_test_under(0x1f80, 0x027f, &img, &q, 0, 0, 1.0f32.to_bits())
+        .unwrap();
+    assert_eq!(out.hit.unwrap().fraction, 0.25f32.to_bits());
+    // Only the matcher's `fld` of the normal loads it on the x87.
+    assert_ne!(out.x87_flags & 0x02, 0);
+}
+
+#[test]
 fn the_decoder_marks_what_the_guest_would_read_out_of_range() {
     // A node plane past the planes.
     let mut b = wall(0);

@@ -11,18 +11,8 @@ pub(super) fn matrix(g: &impl GuestRead, at: u32) -> Result<PlacementMatrix, Bai
     })))
 }
 
-pub(super) fn local_ray(
-    matrix: PlacementMatrix,
-    one: u32,
-    start: [u32; 3],
-    delta: [u32; 3],
-) -> Result<([u32; 3], [u32; 3]), Bail> {
-    let mut fp = Fp::new();
-    let ray = local_ray_with(&mut fp, matrix, one, start, delta);
-    fp.exact().then_some(ray).ok_or(Bail::Float)
-}
-
-/// [`local_ray`] in the caller's `fp` ([`Fp::guest`] runs any operand).
+/// The ray in node space, in the caller's `fp` ([`Fp::guest`] runs any
+/// operand; [`Fp::new`] leaves [`Fp::exact`] false off the exact path).
 pub(super) fn local_ray_with(
     fp: &mut Fp,
     matrix: PlacementMatrix,
@@ -66,7 +56,9 @@ mod tests {
         // Adding one to -2^26 loses it; the cancelling pair recovers it
         // only on X, where the two large terms are added first.
         let v = [67108864., -67108864., 1.0].map(f32::to_bits);
-        let (start, delta) = local_ray(matrix, words[0], v, v).unwrap();
+        let mut fp = Fp::new();
+        let (start, delta) = local_ray_with(&mut fp, matrix, words[0], v, v);
+        assert!(fp.exact());
         assert_eq!(start, [words[0], 0, 0]);
         assert_eq!(delta, start);
     }

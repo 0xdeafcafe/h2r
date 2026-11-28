@@ -46,7 +46,7 @@ pub(super) fn nudge(
     let leaf = |env: &mut Env, b: &Bsp, pos| -> Result<u32, Bail> {
         Ok(b.point_result_with(&mut env.fp, 0, pos)?.leaf)
     };
-    let primary_matches = last == NONE || leaf(env, &primary, pos)? == last;
+    let primary_matches = last == NONE || leaf(&mut *env, &primary, pos)? == last;
     if primary_matches && (model.is_none() || model_leaf == NONE) {
         return Ok(());
     }
@@ -54,7 +54,7 @@ pub(super) fn nudge(
     if primary_matches
         && model
             .as_ref()
-            .map(|b| leaf(env, b, pos))
+            .map(|b| leaf(&mut *env, b, pos))
             .transpose()?
             == Some(model_leaf)
     {
@@ -70,21 +70,21 @@ pub(super) fn nudge(
     }
     env.exact()?;
     let locate = |env: &mut Env, pos| -> Result<Location, Bail> {
-        let leaf = if index == -1 { NONE } else { leaf(env, &primary, pos)? };
+        let leaf = if index == -1 { NONE } else { leaf(&mut *env, &primary, pos)? };
         location(&m, structure, index, leaf)
     };
     let valid = |env: &mut Env, loc: Location, pos| -> Result<bool, Bail> {
         Ok(loc.leaf != NONE
             && model
                 .as_ref()
-                .map(|b| leaf(env, b, pos))
+                .map(|b| leaf(&mut *env, b, pos))
                 .transpose()?
                 .is_none_or(|leaf| leaf != NONE))
     };
     record.set_position(pos);
-    let loc = locate(env, pos)?;
+    let loc = locate(&mut *env, pos)?;
     record.put_location(0x1c, loc);
-    if valid(env, loc, pos)? {
+    if valid(&mut *env, loc, pos)? {
         return Ok(());
     }
     let d = clusters::dot(&mut env.fp, normal, ray.delta);
@@ -112,11 +112,11 @@ pub(super) fn nudge(
             return Err(Bail::Depth);
         }
         let pos = ray.position(env, t)?;
-        let loc = locate(env, pos)?;
+        let loc = locate(&mut *env, pos)?;
         record.put(4, t);
         record.set_position(pos);
         record.put_location(0x1c, loc);
-        if t == 0 || valid(env, loc, pos)? {
+        if t == 0 || valid(&mut *env, loc, pos)? {
             return Ok(());
         }
     }

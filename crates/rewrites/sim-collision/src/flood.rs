@@ -184,42 +184,6 @@ pub fn dominant_axis(normal: [u32; 3]) -> usize {
     }
 }
 
-/// The projection's axis and sign, as `0x00120850` and the portal test's
-/// `comiss normal[axis], 0; jbe` decide them for any normal.
-struct Pick {
-    axis: usize,
-    positive: bool,
-    flags: (u32, u16),
-}
-
-/// `0x00120850` for any normal: `fld; fabs; fstp m32` per component (a
-/// subnormal raises DE, an SNaN IE and is quieted), then `fcomip` of
-/// `|z|` with `|y|` and `comiss |z|, |x|` (each `jb`: unordered is below)
-/// choose z, and `comiss |y|, |x|` y over x. Then the sign test. The flags
-/// do not depend on the precision or rounding control: every step is exact.
-fn pick(normal: [u32; 3]) -> Pick {
-    use sim_core::det::{Fp, X87};
-    let x = X87::new(0x027f);
-    let mut fp = Fp::guest(0x1f80);
-    let abs: [u32; 3] = std::array::from_fn(|i| x.store32(x.abs(x.load32(normal[i]))));
-    let [ax, ay, az] = abs;
-    let at_least = |o: Option<Ordering>| matches!(o, Some(Ordering::Greater | Ordering::Equal));
-    let z_over_y = at_least(x.compare(x.load32(az), x.load32(ay), false));
-    let axis = if z_over_y && at_least(fp.comiss(az, ax)) {
-        2
-    } else if at_least(fp.comiss(ay, ax)) {
-        1
-    } else {
-        0
-    };
-    let positive = fp.comiss(normal[axis], 0) == Some(Ordering::Greater);
-    Pick {
-        axis,
-        positive,
-        flags: (fp.mxcsr().unwrap_or_default() & 0x3f, x.flags()),
-    }
-}
-
 impl Topology {
     /// Decode the graph behind `key`. `projection` is the image's table of
     /// projection rows (`2 * axis + positive`, the `u` and `v` axes first).
@@ -359,11 +323,11 @@ impl PortalBuilder {
         use layout::*;
         let normal = r.bytes(planes.normal.wrapping_add(plane_offset), 12)?;
         let normal: [u32; 3] = std::array::from_fn(|k| word(&normal, 4 * k));
-        let Pick {
+        let crate::bsp::Pick {
             axis,
             positive,
             flags: pick_flags,
-        } = pick(normal);
+        } = crate::bsp::pick(normal, 0);
         let row = planes.projection[2 * axis + usize::from(positive)];
         let axes = [row[0], row[1]];
         if axes.iter().any(|&a| !(0..3).contains(&a)) {
