@@ -73,7 +73,7 @@ Each text and class refusal is a `ui_overlay::Gap`: the draw and the first check
 | Cause | Kept because |
 |---|---|
 | `text_viewport` | the draw's viewport is not the full canvas |
-| `text_debug`, `button_debug` | the widget index display or the rectangle outlines are on |
+| `text_debug` | the widget index display or the rectangle outlines are on (a button's art draws the same; only its label changes) |
 | `text_interface` | the text accessor, the string slot or the buffer setter is not retail's |
 | `text_glyphs` | glyph output is off, or no glyph ring or bitmap is active |
 | `text_style` | interface flags past bit 2, or its `+0x16`, `+0x18`, `+0x20` overrides |
@@ -81,10 +81,12 @@ Each text and class refusal is a `ui_overlay::Gap`: the draw and the first check
 | `text_token` | a private-use unit whose handler writes text at the draw (a name, a clock) |
 | `text_scale`, `text_offset` | a projection scale not 1; an animated offset out of range |
 | `text_justify`, `text_case`, `text_colour`, `text_font` | an unknown justification; upper case of a non-ASCII unit; a channel outside 0 to 1; a font id past 16 bits |
-| `list_number`, `list_tag`, `list_globals`, `list_screen`, `list_tree`, `list_rows`, `list_pane` | the arrows' or the art's lookups: a number not finite, no tag, no interface globals, the screen not found, a parent chain or row chain that does not end, a row table the helper does not walk, a pane index below -1 |
-| `button_focus`, `button_class` | the focus accessors or the user's channel not retail's; a button draw slot not retail's |
-| `art_viewport`, `art_image`, `art_texture`, `art_scale`, `art_offset` | the art's viewport not the full canvas, image out of range or empty, projection not finite, offset out of range |
-| `draw_class`, `draw_runtime_class`, `draw_custom` | a draw no reader knows; a vtable outside the image's UI tables; a host-drawn picture (`Host::ui_custom_widget`) |
+| `list_number`, `list_tree` | the arrows' or the art's lookups: a depth, alpha or offset not finite; a parent or sibling chain past 65536 links (a cycle, which hangs the guest) |
+| `button_focus`, `button_class` | a focus accessor not retail's (the button's `+0x2c`, `+0x30`, the screen's `+0x50`, `+0x54`); an image slot (`+0x44`) that is neither the button's `0x00254173` nor the keyboard key's `0x002377f6` |
+| `art_image`, `art_texture`, `art_scale` | image out of range, empty or not resident; projection not finite or not positive |
+| `draw_keyboard`, `draw_class`, `draw_runtime_class`, `draw_custom` | the virtual keyboard's draw (`0x00237c04`, caret and key art); a draw no reader knows; a vtable outside the image's UI tables; a host-drawn picture (`Host::ui_custom_widget`) |
+
+The lookups that find nothing draw nothing, as the guest's do: no screen collection (`0x001482e8`), no UI globals (`0x00148350`), no skin, a none datum, a screen id no `wgit` has. A screen lookup that misses writes the id to `0x0047ff54` (`0x001480ff`); a left-out button or list draw writes it too (`ui_overlay::left_out`). The art is centred in its view's extent (`0x002360c3`: half the view's width and height), so an inset view moves it; an animated offset converts as `cvttss2si` does, out of range adding 0.
 
 ## Bitmap widgets
 
@@ -157,11 +159,9 @@ The read's memory guard is dropped before the return locks the memory again.
 
 The cut makes no render-state, texture, program or draw call. The device and the game's state cache (`0x004b81fc`, and D3D's mirror `0x00407498`) keep their values, so they still agree. The PSDEF is game memory, and a bar with no image draws with it, so the cut writes it.
 
-A mode is cut only after a guest call of that mode has been checked and matched. After that, one call in 64 runs the body.
+The fill covers the view clipped to the target. A view that is empty, flipped or off the target covers no pixel: the PSDEF is still written and no item is drawn.
 
-A checked call's fan is taken on the overlay as usual (`hud_overlay::draw_screen` hands it to `fade::guest_drew`). At the body's return (`0x00040dbf`) its PSDEF words, target, clip, blend, constant, combiner and colour writes are compared with the cut's. Its corners must also cover the clip. A difference sends every later call to the body for the session.
-
-Counters in `render.scene`: `fade_{calls,cut,checked}`, and `scene_kept_fade_<cause>` for a call whose body ran (`fallback`, `mode`, `rect`, `scene`, `target`, `append`, `uncaptured` when the overlay did not take a checked fan, `mismatch`).
+A fade the cut cannot make panics as `fade: <cause>`: `mode` past 6 (the body's jump through `0x00040dc0` has no bound, so the game would run the padding after the table), `no scene being built`, `target 0's size`, `unread`, `return`, `PSDEF unwritable`, `append`.
 
 ## Model views
 
