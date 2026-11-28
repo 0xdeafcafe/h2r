@@ -262,20 +262,24 @@ triangles before each source position, so each span is one native range:
 | strip | it starts at an even position | the span's native triangles |
 | strip | it starts at an odd position: a sub-strip winds each window by its parity from its own start, so every triangle winds the other way | the same native triangles, drawn with the front face reversed |
 
-- Only layers 12 and 13 take an entry with subparts
-  (`light_groups::taken`); the per-handler path and the shadow layers
-  stay `Subparts`.
+- Every layer takes an entry with subparts (`light_groups::taken`): the
+  shadow layers draw the spans as diffuse and specular do. Only the
+  per-handler path stays `Subparts`.
 - The host draws a structure entry's spans from
   `world::light_parts::ResidentRanges::subpart_draws_wound`, an object's
   from `LightModels::part_wound`, each range with whether it winds the
   other way. Such a range is a draw of its own, its pass's cull with the
   front face reversed (`program::reversed_winding`, `Planned::cull`); a
-  pass that culls nothing is unchanged.
+  pass that culls nothing is unchanged. Layers 10, 11 and 14 split a
+  model entry's ranges the same way (`split_wound`), and a structure
+  run keeps each range's winding.
 - A span past the part or off a triangle has no range: the light is
   dropped (`scene_dropped_light_host`).
 
-Tests: `visible_subparts_short_of_the_whole_part_are_the_entrys_spans_for_diffuse_and_specular`
+Tests: `visible_subparts_short_of_the_whole_part_are_the_entrys_spans_in_every_layer`
 (`scene_extract::light_groups`),
+`an_entry_with_visible_subparts_is_a_draw_of_its_own_in_a_shadow_layer`
+(`light_scene`),
 `a_strip_with_degenerates_maps_each_even_sub_strip_to_its_own_native_triangles`
 (`subpart_map`; its odd start is `wound`'s reversed range),
 `a_reversed_winding_flips_the_culled_face_s_front_and_leaves_an_unculled_pass`,

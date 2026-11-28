@@ -603,11 +603,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         )
         .map_err(|why| Keep::Shadow(why.name()))?;
         let mut draws: Vec<Planned> = Vec::new();
-        let mut run: Vec<(usize, WorldDraw)> = Vec::new();
+        let mut run: Vec<(usize, WorldDraw, bool)> = Vec::new();
         for e in &group.entries {
             let imp = usize::from(e.binding.implementation);
             if structure_key(e).is_some() {
-                run.extend(world.structure_entry(e)?.into_iter().map(|(d, _)| (imp, d)));
+                run.extend(world.structure_entry(e)?.into_iter().map(|(d, flipped)| (imp, d, flipped)));
                 continue;
             }
             if !run.is_empty() {
@@ -621,9 +621,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 "the map's model shadow parts are loading",
             ))?;
             if layer == CASTER_LAYER {
-                draws.push(world.resolve_shadow_model(lights, e, group.rows_of(e))?);
+                draws.extend(world.resolve_shadow_model(lights, e, group.rows_of(e))?);
             } else {
-                draws.push(world.resolve_receiver_model(lights, e, group.rows_of(e), layer, gel.is_some())?);
+                draws.extend(world.resolve_receiver_model(lights, e, group.rows_of(e), layer, gel.is_some())?);
             }
         }
         if !run.is_empty() {
@@ -821,21 +821,32 @@ struct Held<'a> {
 }
 
 impl native_render::light_scene::Resident for Held<'_> {
+    /// The entry's part, or for visible subparts the span their native
+    /// ranges cover (a range that winds the other way draws with the front
+    /// face reversed, [`Planned::cull`]).
     fn part(&self, e: &LightEntry) -> Option<native_render::light_scene::ResidentPart> {
         if structure_key(e).is_none() {
-            let (_, ranges) = self.models?.part(e)?;
-            let [indices] = <[_; 1]>::try_from(ranges).ok()?;
+            let (_, wound) = self.models?.part_wound(e)?;
             return Some(native_render::light_scene::ResidentPart {
                 stream: LightModels::stream(e),
-                indices,
+                indices: covering(wound.into_iter().map(|(r, _)| r))?,
             });
         }
-        let [(d, false)] = <[_; 1]>::try_from(self.world.structure_entry(e).ok()?).ok()? else { return None };
+        let draws = self.world.structure_entry(e).ok()?;
+        let ranges = draws
+            .iter()
+            .map(|(d, _)| Some(d.first_index..d.first_index.checked_add(d.index_count)?))
+            .collect::<Option<Vec<_>>>()?;
         Some(native_render::light_scene::ResidentPart {
             stream: 0,
-            indices: d.first_index..d.first_index.checked_add(d.index_count)?,
+            indices: covering(ranges.into_iter())?,
         })
     }
+}
+
+/// The span `ranges` cover, or `None` for none.
+fn covering(ranges: impl Iterator<Item = Range<u32>>) -> Option<Range<u32>> {
+    ranges.reduce(|a, b| a.start.min(b.start)..a.end.max(b.end))
 }
 
 /// What the device holds for an entry's state
@@ -1793,6 +1804,19 @@ impl Planned {
     }
 }
 
+/// `planned` over `wound`'s ranges: the forward ones, then the reversed
+/// ones as a draw of their own with the front face reversed.
+fn split_wound(wound: Vec<(Range<u32>, bool)>, planned: Planned) -> Vec<Planned> {
+    let (reversed, forward): (Vec<_>, Vec<_>) = wound.into_iter().partition(|&(_, r)| r);
+    let backward = Planned {
+        ranges: reversed.into_iter().map(|(r, _)| r).collect(),
+        flipped: true,
+        ..planned.clone()
+    };
+    let forward = Planned { ranges: forward.into_iter().map(|(r, _)| r).collect(), ..planned };
+    [forward, backward].into_iter().filter(|p| !p.ranges.is_empty()).collect()
+}
+
 /// [`Planned::material`] of a model's part.
 const MODEL_MATERIAL: u16 = u16::MAX;
 
@@ -2127,10 +2151,10 @@ impl LightsWorld {
     }
 
     /// Structure caster parts resolved with their instance inputs alone.
-    fn resolve_shadow_parts(&self, parts: Vec<(usize, WorldDraw)>) -> Result<Vec<Planned>, Keep> {
+    fn resolve_shadow_parts(&self, parts: Vec<(usize, WorldDraw, bool)>) -> Result<Vec<Planned>, Keep> {
         let mut out: Vec<Planned> = Vec::new();
         let mut pending = false;
-        for (imp, draw) in parts {
+        for (imp, draw, flipped) in parts {
             let m = draw.material;
             let end = draw
                 .first_index
@@ -2157,6 +2181,7 @@ impl LightsWorld {
             if let Some(previous) = out.last_mut()
                 && previous.placement.is_none() && placement.is_none()
                 && previous.material == m
+                && previous.flipped == flipped
                 && Arc::ptr_eq(&previous.compiled, &compiled)
             {
                 previous.ranges.push(range);
@@ -2168,7 +2193,7 @@ impl LightsWorld {
                 layer: CASTER_LAYER,
                 implementation: imp,
                 ranges: vec![range],
-                flipped: false,
+                flipped,
                 sample: None,
                 placement,
                 model: None,
@@ -2181,16 +2206,18 @@ impl LightsWorld {
         }
     }
 
-    /// A model caster part over its resident section's vertex buffer.
+    /// A model caster part over its resident section's vertex buffer: one
+    /// draw, and one more with the front face reversed for visible
+    /// subparts at an odd strip start ([`split_wound`]).
     fn resolve_shadow_model(
         &self,
         lights: &Arc<models::ModelLights>,
         entry: &LightEntry,
         rows: &[Row],
-    ) -> Result<Planned, Keep> {
-        let (section, indices) = lights
+    ) -> Result<Vec<Planned>, Keep> {
+        let (section, wound) = lights
             .models
-            .part(entry)
+            .part_wound(entry)
             .ok_or(Keep::Unsupported("scene shadow entry has no native stream"))?;
         let (shader, instance) = lights
             .instances
@@ -2218,12 +2245,12 @@ impl LightsWorld {
             ));
         }
         self.binds(&compiled.program, None, false, &lights.images)?;
-        Ok(Planned {
+        Ok(split_wound(wound, Planned {
             material: MODEL_MATERIAL,
             layer: CASTER_LAYER,
             implementation: usize::from(entry.binding.implementation),
             compiled,
-            ranges: indices,
+            ranges: Vec::new(),
             flipped: false,
             sample: None,
             placement: None,
@@ -2235,19 +2262,19 @@ impl LightsWorld {
                 rows: rows.to_vec(),
                 aux_depth: None,
             }),
-        })
+        }))
     }
 
     /// Structure receiver parts resolved with their instance inputs alone.
     fn resolve_receiver_parts(
         &self,
         layer: usize,
-        parts: Vec<(usize, WorldDraw)>,
+        parts: Vec<(usize, WorldDraw, bool)>,
         produced_gel: bool,
     ) -> Result<Vec<Planned>, Keep> {
         let mut out: Vec<Planned> = Vec::new();
         let mut pending = false;
-        for (imp, draw) in parts {
+        for (imp, draw, flipped) in parts {
             let m = draw.material;
             let end = draw
                 .first_index
@@ -2274,6 +2301,7 @@ impl LightsWorld {
             if let Some(previous) = out.last_mut()
                 && previous.placement.is_none() && placement.is_none()
                 && previous.material == m
+                && previous.flipped == flipped
                 && Arc::ptr_eq(&previous.compiled, &compiled)
             {
                 previous.ranges.push(range);
@@ -2285,7 +2313,7 @@ impl LightsWorld {
                 layer,
                 implementation: imp,
                 ranges: vec![range],
-                flipped: false,
+                flipped,
                 sample: None,
                 placement,
                 model: None,
@@ -2298,7 +2326,8 @@ impl LightsWorld {
         }
     }
 
-    /// A model receiver part over its resident section's vertex buffer.
+    /// A model receiver part over its resident section's vertex buffer,
+    /// split by winding as [`Self::resolve_shadow_model`].
     fn resolve_receiver_model(
         &self,
         lights: &Arc<models::ModelLights>,
@@ -2306,8 +2335,8 @@ impl LightsWorld {
         rows: &[Row],
         layer: usize,
         produced_gel: bool,
-    ) -> Result<Planned, Keep> {
-        let (section, indices) = lights.models.part(entry).ok_or(Keep::Unsupported(
+    ) -> Result<Vec<Planned>, Keep> {
+        let (section, wound) = lights.models.part_wound(entry).ok_or(Keep::Unsupported(
             "scene receiver entry has no native stream",
         ))?;
         let (shader, instance) = lights
@@ -2336,12 +2365,12 @@ impl LightsWorld {
             ));
         }
         self.binds(&compiled.program, None, produced_gel, &lights.images)?;
-        Ok(Planned {
+        Ok(split_wound(wound, Planned {
             material: MODEL_MATERIAL,
             layer,
             implementation: usize::from(entry.binding.implementation),
             compiled,
-            ranges: indices,
+            ranges: Vec::new(),
             flipped: false,
             sample: None,
             placement: None,
@@ -2353,7 +2382,7 @@ impl LightsWorld {
                 rows: rows.to_vec(),
                 aux_depth: None,
             }),
-        })
+        }))
     }
 
     /// Whether every texture `program` samples is loaded (its stage

@@ -112,7 +112,7 @@ pub enum Cause {
     /// does not take them ([`state_taken`]).
     State,
     /// The record's visible subparts do not read or run past its part,
-    /// or a shadow layer or the per-handler path would draw them.
+    /// or the per-handler path would draw them.
     Subparts,
     /// A template callback, or a shader whose tag or flagged inputs do not
     /// read.
@@ -400,14 +400,12 @@ pub fn state_taken(layer: u8, state: EntryState) -> bool {
 }
 
 /// Whether a group of `layer` can hold `entry`: its state
-/// ([`state_taken`]) and its visible subparts, which only the diffuse and
-/// specular layers draw (the shadow layers draw whole parts), or why not.
+/// ([`state_taken`]), or why not. Visible subparts are taken in every
+/// layer: the emitter draws them in the shadow layers as in diffuse and
+/// specular, and so does the host.
 pub fn taken(layer: u8, entry: &LightEntry) -> R<()> {
     if !state_taken(layer, entry.state) {
         return Err(Cause::State);
-    }
-    if entry.subparts.is_some() && !matches!(layer, 12 | 13) {
-        return Err(Cause::Subparts);
     }
     Ok(())
 }
@@ -807,7 +805,7 @@ mod tests {
     }
 
     #[test]
-    fn visible_subparts_short_of_the_whole_part_are_the_entrys_spans_for_diffuse_and_specular() {
+    fn visible_subparts_short_of_the_whole_part_are_the_entrys_spans_in_every_layer() {
         let mut m = fixture();
         let rec = RENDER_RECORDS + RENDER_RECORD_SIZE;
         let (bitmap, subparts) = (0x0069_0000, 0x0069_1000);
@@ -824,10 +822,8 @@ mod tests {
         m.w(bitmap, 0b10);
         assert_eq!(spans(&m), Ok(Some(std::iter::once(3..6).collect())));
         let (e, _) = entry(&m, ITEMS, sorted(0)).unwrap();
-        assert_eq!(taken(12, &e), Ok(()));
-        assert_eq!(taken(13, &e), Ok(()));
-        for layer in [10, 11, 14] {
-            assert_eq!(taken(layer, &e), Err(Cause::Subparts), "layer {layer} draws whole parts");
+        for layer in [10, 11, 14, 12, 13] {
+            assert_eq!(taken(layer, &e), Ok(()), "layer {layer} draws the spans");
         }
         m.w(bitmap, 0b11);
         assert_eq!(spans(&m), Ok(None), "both visible: the whole part");
