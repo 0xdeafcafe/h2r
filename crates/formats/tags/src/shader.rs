@@ -28,12 +28,24 @@ pub const STEM: FourCC = FourCC(*b"stem");
 pub const SPAS: FourCC = FourCC(*b"spas");
 pub const VRTX: FourCC = FourCC(*b"vrtx");
 pub const BITM: FourCC = FourCC(*b"bitm");
+/// The particle and the model particle, whose tags a particle draw's
+/// shader begin takes in a `shad`'s place.
+pub const PRT3: FourCC = FourCC(*b"prt3");
+pub const PRTM: FourCC = FourCC(*b"PRTM");
 
 /// Root sizes, fixed by the smallest in-tag child pointer on every disc tag
 /// and by the engine's highest root read.
 pub const SHAD_ROOT: usize = 0x54;
 pub const STEM_ROOT: usize = 0x60;
 pub const SPAS_ROOT: usize = 0x24;
+pub const PRT3_ROOT: usize = 0xbc;
+pub const PRTM_ROOT: usize = 0xdc;
+/// `prt3 +0x8c`: the particle's compiled shader, a block of
+/// [`SHAD_POSTPROCESS`] elements laid out as `shad +0x20`'s.
+pub const PRT3_POSTPROCESS_BLOCK: usize = 0x8c;
+/// `PRTM +0x18`: the model particle's `shad` reference (its datum at
+/// `+0x1c`).
+pub const PRTM_SHADER: usize = 0x18;
 /// Element strides (engine address arithmetic, see each record).
 pub const SHAD_POSTPROCESS: usize = 0x7c;
 pub const STEM_POSTPROCESS: usize = 0x28;
@@ -432,6 +444,21 @@ impl ShaderInstance {
 }
 
 impl ShaderPostprocess {
+    /// A particle's (`prt3`) compiled shader: element 0 of its `+0x8c`
+    /// block ([`PRT3_POSTPROCESS_BLOCK`]), which the shader begin draws
+    /// as a `shad`'s `+0x20`.
+    pub fn decode_particle(meta: &Metadata, address: u32) -> Result<Self> {
+        let budget = Budget::default();
+        let root = meta.bytes(address, PRT3_ROOT)?;
+        block(meta, &budget, root, PRT3_POSTPROCESS_BLOCK, SHAD_POSTPROCESS, |b| {
+            ShaderPostprocess::decode(meta, &budget, b)
+        })
+        .map_err(ctx("prt3", "postprocess"))?
+        .into_iter()
+        .next()
+        .ok_or(Error::Invalid("prt3 has no postprocess element"))
+    }
+
     fn decode(meta: &Metadata, budget: &Budget, b: &[u8]) -> Result<Self> {
         let r = |v: &[u8]| Ok(IndexRange::decode(u16_at(v, 0)));
         Ok(Self {
