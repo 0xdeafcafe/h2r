@@ -188,3 +188,64 @@ fn restore_refuses_inconsistent_pools() {
         Err(RestoreError::Corrupt { kind: kind::PROBE, .. })
     ));
 }
+
+/// A subsystem store for the tests: one `u32`, saved in the sound kind.
+struct Counter(u32);
+
+impl Store for Counter {
+    fn kind(&self) -> u16 {
+        kind::SOUND
+    }
+    fn version(&self) -> u16 {
+        1
+    }
+    fn encode(&self) -> Vec<u8> {
+        self.0.to_le_bytes().to_vec()
+    }
+    fn decode(&self, version: u16, body: &[u8]) -> Result<Box<dyn Any + Send>, RestoreError> {
+        if version != 1 {
+            return Err(RestoreError::SectionVersion { kind: kind::SOUND, version });
+        }
+        let mut r = Reader::new(body);
+        let v = r.u32()?;
+        r.end(kind::SOUND)?;
+        Ok(Box::new(v))
+    }
+    fn install(&mut self, state: Box<dyn Any + Send>) {
+        self.0 = *state.downcast::<u32>().unwrap();
+    }
+}
+
+fn held(w: &World) -> u32 {
+    u32::from_le_bytes(w.store(kind::SOUND).unwrap().encode().try_into().unwrap())
+}
+
+#[test]
+fn a_held_store_saves_in_its_kinds_place_and_restores_in_place() {
+    let mut w = sample();
+    w.attach(Box::new(Counter(41))).unwrap();
+    assert!(w.attach(Box::new(Counter(0))).is_err(), "one store a kind");
+    let (bytes, hash) = (w.save(), w.sim_hash());
+    // RNG, then sound, then the probe.
+    let mut r = Reader::new(&bytes);
+    save::read_header(&mut r).unwrap();
+    let mut kinds = Vec::new();
+    while !r.is_empty() {
+        kinds.push(r.u16().unwrap());
+        r.u16().unwrap();
+        let len = r.u32().unwrap() as usize;
+        r.take(len).unwrap();
+    }
+    assert_eq!(kinds, [kind::RNG, kind::SOUND, kind::PROBE]);
+
+    let mut back = World::new(1);
+    back.attach(Box::new(Counter(0))).unwrap();
+    back.restore_into(&bytes).unwrap();
+    assert_eq!((held(&back), back.save(), back.sim_hash()), (41, bytes.clone(), hash));
+    // A world without the store refuses the section by kind.
+    assert_eq!(World::restore(&bytes).err(), Some(RestoreError::UnknownKind { kind: kind::SOUND }));
+    // A save without it is refused by a world that holds it, unchanged.
+    let plain = sample().save();
+    assert_eq!(back.restore_into(&plain).err(), Some(RestoreError::MissingSection { kind: kind::SOUND }));
+    assert_eq!(back.save(), bytes);
+}

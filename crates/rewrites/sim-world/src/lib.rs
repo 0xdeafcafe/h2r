@@ -15,6 +15,7 @@ pub use pool::{Handle, Pool, Record, StaleHandle};
 pub use rng::Rng;
 pub use save::{BUILD_STAMP, Reader, RestoreError, Writer};
 
+use std::any::Any;
 use std::cell::Cell;
 
 /// Section kinds, in the order sections are saved and hashed. A store
@@ -64,11 +65,31 @@ impl Record for Probe {
     }
 }
 
+/// A subsystem's store held by the world through its section: a crate
+/// that depends on this one (sound) owns the type, the world saves,
+/// hashes and restores it in its kind's place.
+pub trait Store: Send {
+    /// The section kind ([`kind`]).
+    fn kind(&self) -> u16;
+    fn version(&self) -> u16;
+    /// The section's canonical bytes.
+    fn encode(&self) -> Vec<u8>;
+    fn section_hash(&self) -> u64 {
+        Fnv64::of(&self.encode())
+    }
+    /// A saved section checked and decoded; nothing changes yet.
+    fn decode(&self, version: u16, body: &[u8]) -> Result<Box<dyn Any + Send>, RestoreError>;
+    /// Put in what [`Store::decode`] returned.
+    fn install(&mut self, state: Box<dyn Any + Send>);
+}
+
 /// The world: every store, then the RNG. Fields are public; a `&mut`
 /// borrow of a pool invalidates its cached section hash.
 pub struct World {
     pub rng: Rng,
     pub probe: Pool<Probe>,
+    /// The subsystems' stores ([`Store`]), in kind order.
+    stores: Vec<Box<dyn Store>>,
     /// Cached `sim_hash`, cleared by anything that can change a section.
     rng_hash: Cell<Option<(u32, u64)>>,
 }
@@ -85,8 +106,26 @@ impl World {
         Self {
             rng: Rng::new(seed),
             probe: Pool::new(PROBE_CAPACITY, PROBE_NAME),
+            stores: Vec::new(),
             rng_hash: Cell::new(None),
         }
+    }
+
+    /// Hold `store` in its kind's place. A kind already held, or one that
+    /// is not a subsystem's between the RNG and the probe, is refused.
+    pub fn attach(&mut self, store: Box<dyn Store>) -> Result<(), RestoreError> {
+        let k = store.kind();
+        if k <= kind::RNG || k >= kind::PROBE || self.stores.iter().any(|s| s.kind() == k) {
+            return Err(RestoreError::Corrupt { kind: k, what: "store kind taken or reserved" });
+        }
+        let at = self.stores.partition_point(|s| s.kind() < k);
+        self.stores.insert(at, store);
+        Ok(())
+    }
+
+    /// The store of `kind`, if one is held.
+    pub fn store(&self, k: u16) -> Option<&dyn Store> {
+        self.stores.iter().find(|s| s.kind() == k).map(|s| &**s)
     }
 
     /// The canonical bytes: magic, build stamp, then one section per
@@ -106,13 +145,25 @@ impl World {
 
     /// A world from saved bytes. A save from another build stamp is refused
     /// by name; any other fault is a typed error. Nothing is built unless
-    /// the whole save is valid.
+    /// the whole save is valid. A fresh world holds no subsystem store, so
+    /// a save with one is refused as [`RestoreError::UnknownKind`]; restore
+    /// it into a world that holds the store ([`World::restore_into`]).
     pub fn restore(bytes: &[u8]) -> Result<World, RestoreError> {
+        let mut world = World::new(1);
+        world.restore_into(bytes)?;
+        Ok(world)
+    }
+
+    /// Replace this world's state with a saved one: the RNG, the probe and
+    /// every held store. A held store the save lacks is
+    /// [`RestoreError::MissingSection`]. On any error `self` is left
+    /// exactly as it was.
+    pub fn restore_into(&mut self, bytes: &[u8]) -> Result<(), RestoreError> {
         let mut r = Reader::new(bytes);
         save::read_header(&mut r)?;
-        let mut world = World::new(1);
         let mut last = 0u16;
-        let (mut saw_rng, mut saw_probe) = (false, false);
+        let (mut rng, mut probe) = (None, None);
+        let mut states: Vec<(usize, Box<dyn Any + Send>)> = Vec::new();
         while !r.is_empty() {
             let kind = r.u16()?;
             let version = r.u16()?;
@@ -123,30 +174,29 @@ impl World {
             }
             last = kind;
             match kind {
-                kind::RNG => {
-                    world.rng = Rng::decode(version, body)?;
-                    saw_rng = true;
-                }
+                kind::RNG => rng = Some(Rng::decode(version, body)?),
                 kind::PROBE => {
-                    world.probe = Pool::decode(kind::PROBE, PROBE_CAPACITY, PROBE_NAME, version, body)?;
-                    saw_probe = true;
+                    probe = Some(Pool::decode(kind::PROBE, PROBE_CAPACITY, PROBE_NAME, version, body)?);
                 }
-                other => return Err(RestoreError::UnknownKind { kind: other }),
+                other => {
+                    let Some(at) = self.stores.iter().position(|s| s.kind() == other) else {
+                        return Err(RestoreError::UnknownKind { kind: other });
+                    };
+                    states.push((at, self.stores[at].decode(version, body)?));
+                }
             }
         }
-        if !saw_rng {
-            return Err(RestoreError::MissingSection { kind: kind::RNG });
+        let rng = rng.ok_or(RestoreError::MissingSection { kind: kind::RNG })?;
+        let probe = probe.ok_or(RestoreError::MissingSection { kind: kind::PROBE })?;
+        if let Some((_, s)) = self.stores.iter().enumerate().find(|(i, _)| !states.iter().any(|(at, _)| at == i)) {
+            return Err(RestoreError::MissingSection { kind: s.kind() });
         }
-        if !saw_probe {
-            return Err(RestoreError::MissingSection { kind: kind::PROBE });
+        self.rng = rng;
+        self.probe = probe;
+        self.rng_hash.set(None);
+        for (at, state) in states {
+            self.stores[at].install(state);
         }
-        Ok(world)
-    }
-
-    /// Replace this world with a saved one. On any error `self` is left
-    /// exactly as it was.
-    pub fn restore_into(&mut self, bytes: &[u8]) -> Result<(), RestoreError> {
-        *self = World::restore(bytes)?;
         Ok(())
     }
 
@@ -164,13 +214,13 @@ impl World {
     }
 
     fn sections(&self) -> Vec<(u16, u16, Vec<u8>)> {
-        vec![
-            (kind::RNG, Rng::VERSION, self.rng.encode()),
-            (kind::PROBE, self.probe.version(), self.probe.encode()),
-        ]
+        let mut out = vec![(kind::RNG, Rng::VERSION, self.rng.encode())];
+        out.extend(self.stores.iter().map(|s| (s.kind(), s.version(), s.encode())));
+        out.push((kind::PROBE, self.probe.version(), self.probe.encode()));
+        out
     }
 
-    fn section_hashes(&self) -> [(u16, u16, u64); 2] {
+    fn section_hashes(&self) -> Vec<(u16, u16, u64)> {
         let state = self.rng.state();
         let rng = match self.rng_hash.get() {
             Some((s, h)) if s == state => h,
@@ -180,10 +230,10 @@ impl World {
                 h
             }
         };
-        [
-            (kind::RNG, Rng::VERSION, rng),
-            (kind::PROBE, self.probe.version(), self.probe.section_hash()),
-        ]
+        let mut out = vec![(kind::RNG, Rng::VERSION, rng)];
+        out.extend(self.stores.iter().map(|s| (s.kind(), s.version(), s.section_hash())));
+        out.push((kind::PROBE, self.probe.version(), self.probe.section_hash()));
+        out
     }
 }
 
