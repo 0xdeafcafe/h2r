@@ -430,7 +430,7 @@ pub fn overlay_shader_words(
 /// Sampler paired with the border-axis mask from [`shader_border`].
 pub fn sampler_key(
     stage: &TextureStageState,
-    caps: gfx::translate::Capabilities,
+    caps: crate::translate::Capabilities,
     shader_border: u8,
 ) -> SamplerKey {
     let mut key = SamplerKey::from_stage(stage, caps);
