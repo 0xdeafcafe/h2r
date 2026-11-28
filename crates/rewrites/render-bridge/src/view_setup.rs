@@ -591,7 +591,7 @@ fn setup_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32)
     let host = native_targets::installed("view_setup");
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
-    let made = mem.u32(cpu.esp.wrapping_add(4)).map_err(unread).and_then(|view| plan(&*mem, view)).and_then(|s| {
+    let made = word(&*mem, cpu.esp.wrapping_add(4)).and_then(|view| plan(&*mem, view)).and_then(|s| {
         apply(&mut *mem, &*host, &s, cpu.esp.wrapping_sub(SCRATCH))?;
         Ok(s.fog_effect)
     });

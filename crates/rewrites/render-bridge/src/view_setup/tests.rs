@@ -268,7 +268,8 @@ fn a_wide_clear_makes_the_prelude() {
     let mut m = mem();
     m.set_u8(VIEW + 7, 1).unwrap();
     let dev = Device::default();
-    apply(&mut m, &dev, &plan_of(&m), STACK).unwrap();
+    let plan = plan_of(&m);
+    apply(&mut m, &dev, &plan, STACK).unwrap();
     let ops = dev.ops();
     let screen = [0, 0, 640, 480, 0, 1f32.to_bits()];
     assert_eq!(ops[4..9], [Op::Viewport(screen), Op::Viewport(screen), Op::Clear(0xf0, 0), Op::Viewport([0; 6]), Op::Clear(0xf3, 0x00ff_8000)]);
