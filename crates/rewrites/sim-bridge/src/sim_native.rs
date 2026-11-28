@@ -897,7 +897,7 @@ mod tests {
     }
 
     #[test]
-    fn collision_entries_count_the_environment_before_declining() {
+    fn collision_entries_count_the_environment_then_panic_by_name() {
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();
         let plan = registry.build(&Base).unwrap();
@@ -909,17 +909,23 @@ mod tests {
         };
         cpu.x87.control = 0x017f; // Reserved PC; rejected before any memory access.
         let before = engine::sim_collision::stats();
-        for (point, _, _) in COLLISION_ENTRIES {
-            let hook = plan.chains[&point.base].implement.as_ref().unwrap();
-            let hooks::Run::Implement(run) = &hook.run else {
-                unreachable!()
-            };
-            run(&mut cpu, &mut ctx, point.base).unwrap();
-        }
-        for (point, _) in COLLISION_PARTIAL {
+        let implemented: Vec<(&points::Point, Entry)> = COLLISION_ENTRIES
+            .iter()
+            .map(|(point, entry, _)| (*point, *entry))
+            .chain(COLLISION_PARTIAL.iter().copied())
+            .collect();
+        // An environment no kernel runs is not left to the lifted guest:
+        // the call panics with the entry and both control words.
+        for &(point, entry) in &implemented {
             let hook = plan.chains[&point.base].implement.as_ref().unwrap();
             let hooks::Run::Implement(run) = &hook.run else { unreachable!() };
-            run(&mut cpu, &mut ctx, point.base).unwrap();
+            let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = run(&mut cpu, &mut ctx, point.base);
+            }))
+            .expect_err("an unsupported environment panics");
+            let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+            let want = format!("collision: {}: env (mxcsr 0x1f3d, x87 control 0x17f", entry.name());
+            assert!(message.contains(&want), "{message}");
         }
         for (point, _, _) in COLLISION_OBSERVED {
             let hook = &plan.chains[&point.base].before[0];
@@ -928,22 +934,30 @@ mod tests {
             assert!(matches!(flow, hooks::Flow::Continue));
         }
         let after = engine::sim_collision::stats();
-        for entry in Entry::ALL {
+        // The spatial visit has no hook of its own (a body of `sim_objects`).
+        let hooked = implemented
+            .iter()
+            .map(|&(_, entry)| entry)
+            .chain(COLLISION_OBSERVED.iter().map(|(_, entry, _)| *entry));
+        for entry in hooked {
             let old = &before.entries[entry as usize];
             let new = &after.entries[entry as usize];
+            let name = entry.name();
             assert_eq!(
-                new.mxcsr[&cpu.mxcsr],
-                old.mxcsr.get(&cpu.mxcsr).copied().unwrap_or(0) + 1
+                new.mxcsr.get(&cpu.mxcsr).copied().unwrap_or(0),
+                old.mxcsr.get(&cpu.mxcsr).copied().unwrap_or(0) + 1,
+                "{name}"
             );
             assert_eq!(
-                new.x87_control[&cpu.x87.control],
-                old.x87_control.get(&cpu.x87.control).copied().unwrap_or(0) + 1
+                new.x87_control.get(&cpu.x87.control).copied().unwrap_or(0),
+                old.x87_control.get(&cpu.x87.control).copied().unwrap_or(0) + 1,
+                "{name}"
             );
             let env = Bail::Env as usize;
             assert_eq!(
                 new.bails[env] - old.bails[env],
-                u64::from(COLLISION_ENTRIES.iter().any(|(_, native, _)| *native == entry)
-                    || COLLISION_PARTIAL.iter().any(|(_, native)| *native == entry))
+                u64::from(implemented.iter().any(|&(_, e)| e == entry)),
+                "{name}"
             );
         }
     }
