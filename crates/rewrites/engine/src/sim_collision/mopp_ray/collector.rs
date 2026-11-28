@@ -125,7 +125,8 @@ enum Resume {
 /// once and supply the returned CPU on resumption. A decline after a
 /// callback has run cannot hand the query back to the lifted entry: the
 /// installer names it (`collision: mopp_ray: <cause>`).
-pub struct CollectorCast {
+pub struct CollectorCast<'w> {
+    world: &'w CollisionWorld,
     vm: u32,
     entry_sp: u32,
     root_sp: u32,
@@ -135,11 +136,11 @@ pub struct CollectorCast {
     resume: Resume,
 }
 
-impl CollectorCast {
+impl<'w> CollectorCast<'w> {
     pub fn begin(
         cpu: &CpuAbi,
         g: &mut impl CollisionMemory,
-        world: &CollisionWorld,
+        world: &'w CollisionWorld,
     ) -> Result<Self, Bail> {
         let (setup, walk) = prepare(cpu, g, world)?;
         // Aligned setup locals, root interpreter arguments, and its own
@@ -148,6 +149,7 @@ impl CollectorCast {
         let root_sp = aligned.checked_sub(0x210).ok_or(Bail::Fault)?;
         setup.write(g)?;
         Ok(Self {
+            world,
             vm: cpu.ecx,
             entry_sp: cpu.esp,
             root_sp,
@@ -199,7 +201,7 @@ impl CollectorCast {
         while let Some(call) = self.next(g, cpu)? {
             // Each callback runs under the flags the walk has raised.
             self.raise_into(cpu);
-            cpu.eax = callbacks::call(g, cpu, &call)?;
+            cpu.eax = callbacks::call(g, self.world, cpu, &call)?;
         }
         self.raise_into(cpu);
         Ok(())

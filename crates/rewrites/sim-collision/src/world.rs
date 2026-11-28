@@ -63,13 +63,13 @@ pub enum Entry {
 
 pub const ENTRIES: usize = 11;
 /// Retained map arrays, BSP owners and address index capacity.
-pub const MAP_BUDGET: u64 = 8 << 20;
+pub const MAP_BUDGET: u64 = 32 << 20;
 /// Bounds address-index bookkeeping independently of decoded array size:
 /// an empty or intrinsically malformed BSP still occupies a cache slot.
-const MAP_SLOTS: usize = 8192;
+const MAP_SLOTS: usize = 32768;
 /// Decoded MOPP programs held at once; a guest naming more bails
 /// [`Bail::Budget`] for the rest.
-const MOPP_SLOTS: usize = 4096;
+const MOPP_SLOTS: usize = 16384;
 /// Covers the BSP owner, its inline header, Rust container descriptors,
 /// reference counts and alignment, irrespective of host lock layout.
 pub(crate) const BSP_OWNER_BYTES: u64 = 512;

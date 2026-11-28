@@ -370,16 +370,162 @@ fn an_object_hit_asks_again_for_the_structure_alone() {
     assert_eq!((m.u32(out + 0xc).unwrap(), m.u32(out + 0x10).unwrap()), (8, 9));
 }
 
+/// Object 5's render model (tag 8) with one lit section holding the
+/// cluster's triangle for node 0, a collision model (tag 9) with one BSP
+/// on the surface, and one node placed at (1, 0, 0). The body's
+/// permutation table gives region 0 permutation `permutation`.
+fn lit_model(m: &mut Flat, permutation: u8) -> u32 {
+    let other = other_object(m, true);
+    let (body, mode, collision) = (0x11_1000, 0x13_3000, 0x13_4000);
+    tag(m, 9, collision);
+    m.h(body + 0x11a, 0x200);
+    m.set_u8(body + 0x200, permutation).unwrap();
+    m.h(body + 0x114, 0x34);
+    m.h(body + 0x116, 0x300);
+    let identity = |m: &mut Flat, at: u32, origin: [f32; 3]| {
+        m.f(at, 1.0);
+        for (i, a) in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]].into_iter().enumerate() {
+            m.vec(at + 4 + 12 * i as u32, a);
+        }
+        m.vec(at + 0x28, origin);
+    };
+    identity(m, body + 0x300, [1.0, 0.0, 0.0]);
+    m.w(mode + 0x4c, 0x19_5000);
+    identity(m, 0x19_5000 + 0x28, [0.0; 3]);
+    // Region 0, permutation 0: section 0, in the tag.
+    m.w(mode + 0x18, 0x19_0000);
+    m.w(mode + 0x20, 0x19_1000);
+    m.w(0x19_1000 + 0xc, 0x19_2000);
+    m.h(0x19_2000 + 0xc, 0);
+    m.w(mode + 0x28, 0x19_3000);
+    m.w(0x19_3000 + 0x38, NONE);
+    m.h(0x19_3000 + 0x54, 0xfff8);
+    m.set_u8(0x19_3000 + 0x56, 1).unwrap();
+    let section = 0x19_4000;
+    m.w(0x19_3000 + 0x34, section);
+    m.w(section, 1);
+    m.w(section + 4, 0x19_a000);
+    m.h(0x19_a000 + 8, 3);
+    m.w(section + 0x24, 0x19_b000);
+    for (i, v) in [0u16, 1, 2].into_iter().enumerate() {
+        m.h(0x19_b000 + 2 * i as u32, v);
+    }
+    m.w(section + 0x3c, 0x19_c000);
+    m.set_u8(0x19_c000, 1).unwrap();
+    m.w(0x19_c000 + 8, 0x19_d000);
+    m.vec(0x19_d000, [0.0, 0.0, 0.0]);
+    m.vec(0x19_d000 + 12, [1.0, 0.0, 0.0]);
+    m.vec(0x19_d000 + 24, [0.0, 1.0, 0.0]);
+    m.w(section + 0x64, 1);
+    m.w(section + 0x68, 0x19_e000);
+    // The lighting block: node 0's entry, for BSP 0x55, one run of one
+    // triangle (words 0, 9) on surface reference 0.
+    m.w(mode + 0x80, 0x19_6000);
+    m.w(0x19_6000 + 4, 0x19_7000);
+    m.w(0x19_7000, 0x55);
+    m.w(0x19_7000 + 4, 0x19_8000);
+    m.w(0x19_7000 + 8, 1);
+    m.w(0x19_7000 + 0xc, 0x19_9000);
+    m.h(0x19_8000 + 2, 1);
+    m.h(0x19_9000 + 2, 9);
+    m.w(0x19_9000 + 4, 0);
+    // The collision BSP: one surface.
+    m.w(collision + 0x20, 0x19_f000);
+    m.w(0x19_f000 + 8, 0x1a_0000);
+    m.w(0x1a_0000 + 8, 0x1a_1000);
+    m.w(0x1a_1000 + 4, 1);
+    m.w(0x1a_1000 + 8, 0x1a_2000);
+    m.h(0x1a_2000, SURFACE as u16);
+    m.w(0x1a_1000 + 0x14, 0x55);
+    other
+}
+
+/// A J record of object `other`'s node 0 at (x, y, 0).
+fn object_hit(other: u32, x: f32, y: f32) -> Vec<(u32, u32)> {
+    vec![
+        (0x40, other),
+        (8, x.to_bits()),
+        (0xc, y.to_bits()),
+        (0x10, 0),
+        (0x44, 0),
+        (0x48, 0),
+        (0x4c, 0),
+        (0x54, SURFACE),
+        (0x58, 0),
+    ]
+}
+
 #[test]
-#[should_panic(expected = "lightmap: a hit on object")]
-fn an_object_hit_on_a_lit_render_model_is_not_ported() {
+fn an_object_hit_on_a_lit_render_model_resolves_its_triangle() {
     let mut m = world();
-    let other = other_object(&mut m, true);
+    let other = lit_model(&mut m, 0);
     let s = Rc::new(RefCell::new(Script::default()));
-    s.borrow_mut().answers = vec![Some(vec![(0x40, other)])];
+    s.borrow_mut().answers = vec![Some(object_hit(other, 1.25, 0.5))];
     let store = Store::empty();
     let mut r = Run::new(&mut m, &store, FPU, scripted(&s));
-    let _ = ray(&mut r, ENTRY, 1, 0x20_0000, 0x20_0100, [ONE_DIRECTION, OBJECT, 1, 0x20_0200]);
+    let out = 0x20_0200;
+    assert!(ray(&mut r, ENTRY, 1, 0x20_0000, 0x20_0100, [ONE_DIRECTION, OBJECT, 1, out]).unwrap());
+    assert_eq!(s.borrow().calls.len(), 1);
+    let words: Vec<u32> = (0..12).map(|i| m.u32(out + 4 * i).unwrap()).collect();
+    // -1, -1, the object, the render model, -1, the section, -1, the
+    // region, the part, the first index, the word, the node.
+    assert_eq!(words, [NONE, NONE, other, 8, NONE, 0, NONE, 0, 0, 0, 9, 0]);
+    // The point in the node's space: (0.25, 0.5, 0).
+    assert_eq!((m.fv(out + 0x30), m.fv(out + 0x34)), (0.25, 0.5));
+    assert_eq!(m.u8(ENTRY + 0x10).unwrap(), 1);
+}
+
+#[test]
+fn an_object_hit_off_its_triangles_or_without_a_section_resolves_nothing() {
+    for (permutation, x, section) in [(0, 3.0, 0), (0xff, 1.25, 0xff)] {
+        let mut m = world();
+        let other = lit_model(&mut m, permutation);
+        let s = Rc::new(RefCell::new(Script::default()));
+        s.borrow_mut().answers = vec![Some(object_hit(other, x, 3.0))];
+        let store = Store::empty();
+        let mut r = Run::new(&mut m, &store, FPU, scripted(&s));
+        let out = 0x20_0200;
+        assert!(!ray(&mut r, ENTRY, 1, 0x20_0000, 0x20_0100, [ONE_DIRECTION, OBJECT, 1, out]).unwrap());
+        // No structure query after it, and no restart (`+0x58` clear).
+        assert_eq!(s.borrow().calls.len(), 1);
+        assert_eq!(m.u32(out + 0x14).unwrap(), section);
+        // The render and collision words the model test gave are -1 again.
+        assert_eq!((m.u32(out + 0xc).unwrap(), m.u32(out + 0x10).unwrap()), (NONE, NONE));
+        assert_eq!(m.u32(out + 0x30).unwrap(), 0);
+    }
+}
+
+#[test]
+fn the_vertex_fetch_by_its_blocks_kind() {
+    let mut m = world();
+    let (section, block, verts, bounds, out, node) = (0x20_0000, 0x20_0100, 0x20_0200, 0x20_0300, 0x20_0400, 0x20_0410);
+    m.w(section + 0x3c, block);
+    m.w(block + 8, verts - 0x10);
+    m.w(block + 0xc, 0x10);
+    m.f(0x0045_dc0c, 0.5);
+    m.f(0x0045_ddd0, 0.5);
+    m.f(0x0045_dbbc, 0.0);
+    for (i, b) in [1.0f32, 3.0, 0.0, 2.0, -1.0, 1.0].into_iter().enumerate() {
+        m.f(bounds + 4 * i as u32, b);
+    }
+    m.w(0x0046_8788, 0x20_0500);
+    m.vec(0x20_0500, [7.0, 8.0, 9.0]);
+    let store = Store::empty();
+    let s = Rc::new(RefCell::new(Script::default()));
+    // Kind 2 (vertex 1 of 6 bytes) and kind 4 (vertex 1 of 8, node byte
+    // 5): (2, 0, -2) in the bounds; another kind: the default.
+    for (kind, stride, want, n) in [(2u8, 6, [3.0, 1.0, -1.0], 0), (4, 8, [3.0, 1.0, -1.0], 5), (9, 8, [7.0, 8.0, 9.0], 0)] {
+        m.set_u8(block, kind).unwrap();
+        for (i, c) in [2i16, 0, -2].into_iter().enumerate() {
+            m.h(verts + stride + 2 * i as u32, c as u16);
+        }
+        m.set_u8(verts + stride + 6, 5).unwrap();
+        m.w(node, 7);
+        let mut r = Run::new(&mut m, &store, FPU, scripted(&s));
+        model_hit::vertex(&mut r, section, bounds, out, node, 1).unwrap();
+        assert_eq!([m.fv(out), m.fv(out + 4), m.fv(out + 8)], want, "kind {kind}");
+        assert_eq!(m.u32(node).unwrap(), n, "kind {kind}");
+    }
 }
 
 #[test]

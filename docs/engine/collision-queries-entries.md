@@ -105,8 +105,11 @@ interpreter's order with the deepest nesting of its self-calls. The
 adapter (`engine::sim_collision::mopp_box`) appends the keys at
 `data + 4 * size` and stores the new size when there is at least one key.
 The interpreter appends one key at a time and calls the array's grow
-routine `0x2d91d0` when `size == capacity & 0x7fffffff`; an answer that
-does not fit the room left bails with `grow` before any write. The key
+routine `0x2d91d0` when `size == capacity & 0x7fffffff`. The adapter does
+the same on a journal: twice the size (one when empty) from the memory
+system `[0x480118]` through `sim_havok::mem`, the old keys copied, the old
+block freed when owned, then the header. A route the allocator model does
+not cover bails with `grow` before any write. The key
 write span must also be physically disjoint from the VM, array descriptor,
 return slot and guest frame.
 
@@ -182,13 +185,17 @@ No callback runs in the guest. A slot that resolves anywhere else is
 | Slot | Address | Object | Port |
 |---|---|---|---|
 | filter `vt[0]` | `0x2df8f0` | the group filter's ray interface (filter `+0x10`, vtables `0x41258c`, `0x4555d8`) | bit `info & 31` of row `[ray input +0x20] & 31` at `+0x0c`; the info is the collection's `vt[+0x38]`, `0x11ca70`, always 0 |
-| collection `vt[+0x34]` | `0x1ef950` | the level (`0x4560f8`, tree `0x456160`) | key filter `0x1ef3e0` (types 1 to 5); a rejected key gets the empty shape `0x456134`; type 1 the surface polygon (`0x1edd00`, flag 1, owner -1, tail the key) |
+| collection `vt[+0x34]` | `0x1ef950` | the level (`0x4560f8`, tree `0x456160`) | key filter `0x1ef3e0` (types 1 to 5); a rejected key gets the empty shape `0x456134`; type 1 the surface polygon (`0x1edd00`, flag 1, owner -1, tail the key); type 2 the transform shape `0x4553f0` (`0x2de890`) over the instance definition's tree (collection `[def+0xb4]`, tree at `+0x40`) with the placement as its transform (`0x181f80`, no scale); type 5 (`0x1ee500`) the definition surface's polygon under the placement (flag 0, the collection's owner, tail the key) |
 | | `0x1ee4d0` | an object BSP (`0x456194`, tree `0x455f58`) | the surface polygon, owner `+0x30` |
 | | `0x244bb0` | instanced geometry (`0x459e0c`, entry E's tree) | the shape `0x459de4` naming `+0x0c` and the key |
 | child `vt[+0x24]` | `0x2df110` | the polygon `0x4560b8` | `vt[+0x20]` `0x1edf50` casts at the collector's fraction; a hit's normal is turned by `[body+8] + 0x20` |
 | | `0x2dae30` | the empty shape | returns |
 | | `0x244be0` | an instance key's shape | a hit at fraction one to the collector |
+| | `0x2deb20` | the transform shape `0x4553f0` | both ray ends into the child's space (`R^T (p - t)`, packed); a body for the child whose motion composes the body's with the shape's (`0x2da450`); the child's ray with the same collector |
+| | `0x2fc0a0` | a shape over one child (`+0x0c`) | the child's ray with a body naming the child |
+| | `0x2df720` | a MOPP tree shape | entry I again, below this frame, with the shape's collection and code and no filter (`0x2df670`) |
 | collector `vt[0]` | `0x1829b0` | Halo's phantom ray collector (`0x453b88`, from `0x182800`) | keeps a facing hit below one and its result's fraction, not on the ignored object |
+| | `0x244c10` | entry E's instance collector (`0x459e48`) | marks the key, then the placement test `0x1691a0` (the same code as E's native trace, `instance::placement`) and the fraction update (steps 1 to 4 under [entry E](#entry-e---instance-trace-of-one-cluster)) |
 
 The polygon cast `0x1edf50` takes the plane from the first three
 vertices, `(v1 - v0) x (v2 - v0)`, normalised unless its x87 length is
@@ -198,11 +205,15 @@ normal's major axis and sign (`0x440b94`), inside the ring (`0x23a220`,
 no edge with the point on its right). Its projected ring sits 0x40 below
 its entry ESP, so a ring past eight vertices declines (`data`).
 
-Not ported, each named when reached: the level's key types 2 (an
-instance's transform shape, whose ray `0x2deb20` nests I again through the
-welding wrapper `0x2fc0a0`), 5 (`0x1ee500`) and the rest (`0x1ef070`);
-entry E's instance collector `0x244c10`, reached when E's native trace
-declines; any other convex cast or collector.
+The nesting rays (`0x2deb20`, `0x2fc0a0`, `0x2df720`) keep their locals
+at retail's stack addresses below the callee's ESP, because the nested
+walk reads its ray, body and motion from guest memory. A type-2 key whose
+tree's reference count drops to zero outside the tag cache (`0x279740`)
+would run the shape's destructor, which is not ported.
+
+Not ported, each named when reached: the level's other key types
+(`0x1ef070`), the type-2 destructor, any other child ray, convex cast or
+collector.
 
 A callback can change the bytecode, the VM's endpoints or the walk's
 constants; the next step then declines `data`. Queries nest (a child

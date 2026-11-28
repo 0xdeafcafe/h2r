@@ -10,14 +10,18 @@
 //! |---|---|---|
 //! | filter `vt[0]` | `0x002df8f0`, the group filter's ray interface | [`group_filter`] |
 //! | collection `vt[+0x38]` (from the filter) | `0x0011ca70`, filter info 0 | [`group_filter`] |
-//! | collection `vt[+0x34]` | `0x001ef950`, the level (vtable `0x004560f8`) | [`level_child`]: key types 1 and filtered keys |
+//! | collection `vt[+0x34]` | `0x001ef950`, the level (vtable `0x004560f8`) | [`level_child`]: key types 1, 2, 5 and filtered keys |
 //! | collection `vt[+0x34]` | `0x001ee4d0`, an object BSP (vtable `0x00456194`) | [`bsp_child`] |
 //! | collection `vt[+0x34]` | `0x00244bb0`, instanced geometry (vtable `0x00459e0c`) | [`instance_child`] |
 //! | child `vt[+0x24]` | `0x002df110`, the convex ray with a collector | [`convex_ray`] |
 //! | child `vt[+0x24]` | `0x002dae30`, the empty shape (vtable `0x00456134`) | returns |
 //! | child `vt[+0x24]` | `0x00244be0`, an instance key's shape (vtable `0x00459de4`) | [`instance_ray`] |
+//! | child `vt[+0x24]` | `0x002deb20`, the transform shape (vtable `0x004553f0`) | [`transform_ray`] |
+//! | child `vt[+0x24]` | `0x002fc0a0`, a shape wrapping one child | [`wrapper_ray`] |
+//! | child `vt[+0x24]` | `0x002df720`, a MOPP tree shape: entry I again | [`tree_ray`] |
 //! | convex `vt[+0x20]` | `0x001edf50`, the structure polygon | [`polygon_cast`] |
 //! | collector `vt[0]` | `0x001829b0`, Halo's phantom ray collector (vtable `0x00453b88`) | [`phantom_collector`] |
+//! | collector `vt[0]` | `0x00244c10`, entry E's instance collector (vtable `0x00459e48`) | [`instance_collector`] |
 //!
 //! SSE runs through [`Fp::guest`] under the guest's MXCSR, which gains the
 //! flags it raises. The polygon's x87 length runs in the guest's precision
@@ -25,12 +29,18 @@
 //! the x87 status word is not modelled, as for the walk. Stack scratch the
 //! callees keep below the entry ESP (hit records, the polygon's projected
 //! ring) is dead at I's return and stays in Rust; the shapes the children
-//! build go into the buffer the walk passes, as retail's do.
-use crate::sim_collision::CollisionMemory;
+//! build go into the buffer the walk passes, as retail's do. The shapes
+//! that nest (the transform, the wrapper, the tree) keep their locals in
+//! guest memory at retail's stack addresses below the callee's ESP
+//! ([`GuestCall::esp`]), because the nested walk and its callbacks read
+//! them there.
+use super::CollectorCast;
+use crate::sim_collision::instance::{self, Query};
+use crate::sim_collision::{CollisionMemory, layout};
 use crate::sim_native::Memory;
 use guest_layout::entry::GuestCall;
 use runtime::CpuAbi;
-use sim_collision::Bail;
+use sim_collision::{Bail, CollisionWorld};
 use sim_collision::mopp::ray::Precision;
 use sim_core::det::{Fp, St, X87};
 use sim_havok::mem::{Journal, Words};
@@ -49,14 +59,33 @@ pub mod target {
     pub const INSTANCE_RAY: u32 = 0x0024_4be0;
     pub const POLYGON_CAST: u32 = 0x001e_df50;
     pub const PHANTOM_COLLECTOR: u32 = 0x0018_29b0;
+    pub const TRANSFORM_RAY: u32 = 0x002d_eb20;
+    pub const WRAPPER_RAY: u32 = 0x002f_c0a0;
+    pub const TREE_RAY: u32 = 0x002d_f720;
+    pub const INSTANCE_COLLECTOR: u32 = 0x0024_4c10;
 }
 
 /// Shapes and globals the ports read or write.
 pub mod data {
     /// The empty shape `0x001ef950` builds for a key its filter rejects.
     pub const EMPTY_SHAPE: u32 = 0x0045_6134;
+    /// Entry E's instance mark epoch; the marks are
+    /// [`instance::MARK_BASE`].
+    pub const INSTANCE_EPOCH: u32 = 0x004e_7c1c;
     /// The shape `0x00244bb0` builds for an instanced-geometry key.
     pub const INSTANCE_SHAPE: u32 = 0x0045_9de4;
+    /// The transform shape `0x002de890` builds for a level key of type 2.
+    pub const TRANSFORM_SHAPE: u32 = 0x0045_53f0;
+    /// `0x00279740`: the tag cache starts at `TAG_BASE`; when the byte at
+    /// `TAG_LOADED` is set it spans `[TAG_SIZE]` bytes.
+    pub const TAG_BASE: u32 = 0x8006_1000;
+    pub const TAG_LOADED: u32 = 0x0054_76f8;
+    pub const TAG_SIZE: u32 = 0x0054_771c;
+    /// The instance definitions' collision collection: `+0xb4` of a
+    /// definition (stride `0xc8` at structure `+0x13c`), its child tree at
+    /// `+0x40`.
+    pub const DEFINITION_COLLECTION: u32 = 0xb4;
+    pub const COLLECTION_TREE: u32 = 0x40;
     /// The active structure's collision BSP.
     pub const STRUCTURE_BSP: u32 = 0x004e_0340;
     /// The active structure.
@@ -96,6 +125,10 @@ fn rd_i16(g: &impl Memory, at: u32) -> Result<i32, Bail> {
     Ok(i32::from(g.u16(at).map_err(|_| Bail::Fault)? as i16))
 }
 
+fn rd3(g: &impl Memory, at: u32) -> Result<[u32; 3], Bail> {
+    Ok([rd(g, at)?, rd(g, at.wrapping_add(4))?, rd(g, at.wrapping_add(8))?])
+}
+
 fn rd_u8(g: &impl Memory, at: u32) -> Result<u8, Bail> {
     g.u8(at).map_err(|_| Bail::Fault)
 }
@@ -116,9 +149,15 @@ fn method(g: &impl Memory, this: u32, slot: u32) -> Result<u32, Bail> {
     rd(g, rd(g, this)?.wrapping_add(slot))
 }
 
-/// Run one callback. `cpu` brings the MXCSR and the x87 control word and
-/// takes back the MXCSR; the return is the callee's EAX.
-pub fn call(g: &mut impl CollisionMemory, cpu: &mut CpuAbi, c: &GuestCall) -> Result<u32, Bail> {
+/// Run one callback. `cpu` brings the MXCSR, the x87 control word and
+/// I's entry ESP and takes back the MXCSR and the x87 flags raised; the
+/// return is the callee's EAX.
+pub fn call(
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    cpu: &mut CpuAbi,
+    c: &GuestCall,
+) -> Result<u32, Bail> {
     let this = c.ecx.ok_or(Bail::Data)?;
     let arg = |k: usize| c.args.get(k).copied().ok_or(Bail::Data);
     let mut fp = Fp::guest(cpu.mxcsr);
@@ -127,22 +166,240 @@ pub fn call(g: &mut impl CollisionMemory, cpu: &mut CpuAbi, c: &GuestCall) -> Re
         target::LEVEL_CHILD => level_child(g, arg(0)?, arg(1)?, cpu.mxcsr)?,
         target::BSP_CHILD => bsp_child(g, this, arg(0)?, arg(1)?, cpu.mxcsr)?,
         target::INSTANCE_CHILD => instance_child(g, this, arg(0)?, arg(1)?)?,
-        // `ret 0xc`: EAX is the shape the walk called it with.
-        target::EMPTY_RAY => c.eax.unwrap_or(this),
-        target::CONVEX_RAY => {
-            let precision = Precision::from_control(cpu.x87.control)?;
-            convex_ray(g, &mut fp, precision, this, arg(0)?, arg(1)?, arg(2)?)?
+        target::EMPTY_RAY
+        | target::CONVEX_RAY
+        | target::INSTANCE_RAY
+        | target::TRANSFORM_RAY
+        | target::WRAPPER_RAY
+        | target::TREE_RAY => {
+            let call = RayCall {
+                target: c.target,
+                shape: this,
+                eax: c.eax,
+                input: arg(0)?,
+                body: arg(1)?,
+                collector: arg(2)?,
+                esp: c.esp(cpu.esp),
+            };
+            shape_ray(g, world, cpu, &mut fp, &call)?
         }
-        target::INSTANCE_RAY => instance_ray(g, &mut fp, arg(1)?, arg(2)?)?,
         other => unimplemented!("collision: mopp_ray: callback {other:#010x}"),
     };
+    settle(cpu, &fp)?;
+    Ok(eax)
+}
+
+/// The SSE flags `fp` raised into the CPU, or `float` when it met an
+/// operation it does not model.
+fn settle(cpu: &mut CpuAbi, fp: &Fp) -> Result<(), Bail> {
     if !fp.exact() {
         return Err(Bail::Float);
     }
     if let Some(m) = fp.mxcsr() {
         cpu.mxcsr = m;
     }
-    Ok(eax)
+    Ok(())
+}
+
+/// A child's ray method (`vt[+0x24]`, `ret 0xc`): `shape` in ECX, the
+/// input, body and collector on the stack, `esp` the callee's ESP at its
+/// first instruction, `eax` the caller's EAX.
+#[derive(Clone, Copy, Debug)]
+pub struct RayCall {
+    pub target: u32,
+    pub shape: u32,
+    pub eax: Option<u32>,
+    pub input: u32,
+    pub body: u32,
+    pub collector: u32,
+    pub esp: u32,
+}
+
+/// One child ray method by its address; the return is its EAX.
+pub fn shape_ray(
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    cpu: &mut CpuAbi,
+    fp: &mut Fp,
+    c: &RayCall,
+) -> Result<u32, Bail> {
+    Ok(match c.target {
+        // `ret 0xc`: EAX is what the caller left there.
+        target::EMPTY_RAY => c.eax.unwrap_or(c.shape),
+        target::CONVEX_RAY => {
+            let precision = Precision::from_control(cpu.x87.control)?;
+            convex_ray(g, world, cpu, fp, precision, c.shape, c.input, c.body, c.collector)?
+        }
+        target::INSTANCE_RAY => instance_ray(g, world, cpu, fp, c.body, c.collector)?,
+        target::TRANSFORM_RAY => transform_ray(g, world, cpu, fp, c)?,
+        target::WRAPPER_RAY => wrapper_ray(g, world, cpu, fp, c)?,
+        target::TREE_RAY => tree_ray(g, world, cpu, fp, c)?,
+        other => unimplemented!("collision: mopp_ray: child ray {other:#010x}"),
+    })
+}
+
+/// Call `shape`'s `vt[+0x24]` from a nesting ray: the callee's ESP is
+/// `esp`, below the three arguments and the return address.
+#[allow(clippy::too_many_arguments)]
+fn child_ray(
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    cpu: &mut CpuAbi,
+    fp: &mut Fp,
+    shape: u32,
+    eax: u32,
+    [input, body, collector]: [u32; 3],
+    esp: u32,
+) -> Result<u32, Bail> {
+    let target = method(g, shape, 0x24)?;
+    for (k, v) in [input, body, collector].into_iter().enumerate() {
+        wr32(g, esp.wrapping_add(4 + 4 * k as u32), v)?;
+    }
+    let call = RayCall { target, shape, eax: Some(eax), input, body, collector, esp };
+    shape_ray(g, world, cpu, fp, &call)
+}
+
+/// The transform `0x002deb20` reads: three columns, then the translation.
+fn transform(g: &impl Memory, at: u32) -> Result<[[u32; 4]; 4], Bail> {
+    Ok([vec4(g, at)?, vec4(g, at.wrapping_add(0x10))?, vec4(g, at.wrapping_add(0x20))?, vec4(g, at.wrapping_add(0x30))?])
+}
+
+/// `0x002deb20`'s packed inverse of `p`: `d = p - t`, then lane `j` of
+/// `(r0 * d.x + r1 * d.y) + r2 * d.z` with row `j` the column `j` (lane 3
+/// repeats column 2).
+fn untransform(fp: &mut Fp, t: &[[u32; 4]; 4], p: [u32; 4]) -> [u32; 4] {
+    let d: [u32; 4] = std::array::from_fn(|k| fp.sub(p[k], t[3][k]));
+    std::array::from_fn(|j| {
+        let row = t[j.min(2)];
+        let y = fp.mul(row[1], d[1]);
+        let x = fp.mul(row[0], d[0]);
+        let z = fp.mul(row[2], d[2]);
+        let xy = fp.add(x, y);
+        fp.add(xy, z)
+    })
+}
+
+/// `0x002da450` (ecx out, `a`, `b`): `out[k] = (a0 * b[k].x + a1 * b[k].y)
+/// + a2 * b[k].z` for the three columns and the translation of `b`, then
+/// the translation gains `a`'s.
+fn compose(fp: &mut Fp, a: &[[u32; 4]; 4], b: &[[u32; 4]; 4]) -> [[u32; 4]; 4] {
+    let mut out = [[0; 4]; 4];
+    for (k, o) in out.iter_mut().enumerate() {
+        *o = std::array::from_fn(|l| {
+            let z = fp.mul(a[2][l], b[k][2]);
+            let y = fp.mul(a[1][l], b[k][1]);
+            let x = fp.mul(a[0][l], b[k][0]);
+            let xy = fp.add(x, y);
+            fp.add(xy, z)
+        });
+    }
+    out[3] = std::array::from_fn(|l| fp.add(out[3][l], a[3][l]));
+    out
+}
+
+fn wr_vec4(g: &mut impl CollisionMemory, at: u32, v: [u32; 4]) -> Result<(), Bail> {
+    for (k, w) in v.into_iter().enumerate() {
+        wr32(g, at.wrapping_add(4 * k as u32), w)?;
+    }
+    Ok(())
+}
+
+/// `0x002deb20`, `ret 0xc`: the transform shape's ray. `this+0x10` is the
+/// child's transform, `this+0x0c` the child. Its frame (`S`, ESP after the
+/// aligned 0xa8 bytes and ESI): the ray in the child's space at `S+0x1c`
+/// (both ends inverse-transformed, the input's `+0x20` and `+0x24` kept),
+/// a body at `S+0x0c` (the child, the body's key, the motion at `S+0x4c`,
+/// the body) whose motion copies the body's first 0x20 bytes and composes
+/// its transform (`[body+8] + 0x20`) with the shape's (`0x002da450`). The
+/// child's ray runs with them and the same collector.
+pub fn transform_ray(
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    cpu: &mut CpuAbi,
+    fp: &mut Fp,
+    c: &RayCall,
+) -> Result<u32, Bail> {
+    let aligned = c.esp.wrapping_sub(4) & !15;
+    let s = aligned.wrapping_sub(0xac);
+    let local = transform(g, c.shape.wrapping_add(0x10))?;
+    let from = untransform(fp, &local, vec4(g, c.input)?);
+    let to = untransform(fp, &local, vec4(g, c.input.wrapping_add(0x10))?);
+    let info = rd(g, c.input.wrapping_add(0x20))?;
+    let filter = rd(g, c.input.wrapping_add(0x24))?;
+    let motion = rd(g, c.body.wrapping_add(8))?;
+    let head = [vec4(g, motion)?, vec4(g, motion.wrapping_add(0x10))?];
+    let composed = compose(fp, &transform(g, motion.wrapping_add(0x20))?, &local);
+    let input = s.wrapping_add(0x1c);
+    wr_vec4(g, input, from)?;
+    wr_vec4(g, input.wrapping_add(0x10), to)?;
+    wr32(g, input.wrapping_add(0x20), info)?;
+    wr32(g, input.wrapping_add(0x24), filter)?;
+    let moved = s.wrapping_add(0x4c);
+    for (k, v) in head.into_iter().chain(composed).enumerate() {
+        wr_vec4(g, moved.wrapping_add(0x10 * k as u32), v)?;
+    }
+    let child = rd(g, c.shape.wrapping_add(0x0c))?;
+    let key = rd(g, c.body.wrapping_add(4))?;
+    let body = s.wrapping_add(0x0c);
+    for (k, v) in [child, key, moved, c.body].into_iter().enumerate() {
+        wr32(g, body.wrapping_add(4 * k as u32), v)?;
+    }
+    child_ray(g, world, cpu, fp, child, input, [input, body, c.collector], s.wrapping_sub(0x14))
+}
+
+/// `0x002fc0a0`, `ret 0xc`: a shape that hands the ray to its child
+/// (`this+0x0c`) with a body 0x10 below its ESP: the child, the body's key
+/// and `+8`, the body.
+pub fn wrapper_ray(
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    cpu: &mut CpuAbi,
+    fp: &mut Fp,
+    c: &RayCall,
+) -> Result<u32, Bail> {
+    let frame = c.esp.wrapping_sub(0x10);
+    let child = rd(g, c.shape.wrapping_add(0x0c))?;
+    let info = rd(g, c.body.wrapping_add(8))?;
+    let key = rd(g, c.body.wrapping_add(4))?;
+    for (k, v) in [child, key, info, c.body].into_iter().enumerate() {
+        wr32(g, frame.wrapping_add(4 * k as u32), v)?;
+    }
+    // `mov eax, [ecx]; call [eax+0x24]`: EAX is the child's vtable.
+    let table = rd(g, child)?;
+    child_ray(g, world, cpu, fp, child, table, [c.input, frame, c.collector], frame.wrapping_sub(0x10))
+}
+
+/// `0x002df720`, `ret 0xc`: a MOPP tree shape's ray. It builds the VM
+/// 0x70 below its aligned frame with no filter (`0x002df670`, `+0x44`
+/// zero) and calls entry I with the shape's collection (`+0x0c`) and code
+/// (`+0x10`) and its own three arguments: I runs again in Rust
+/// ([`CollectorCast`]), below this frame. The return is I's EAX.
+pub fn tree_ray(
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    cpu: &mut CpuAbi,
+    fp: &mut Fp,
+    c: &RayCall,
+) -> Result<u32, Bail> {
+    let aligned = c.esp.wrapping_sub(4) & !15;
+    let vm = aligned.wrapping_sub(0x70);
+    wr32(g, vm.wrapping_add(0x44), 0)?;
+    let collection = rd(g, c.shape.wrapping_add(0x0c))?;
+    let code = rd(g, c.shape.wrapping_add(0x10))?;
+    let esp = aligned.wrapping_sub(0x98);
+    for (k, v) in [collection, code, c.input, c.body, c.collector].into_iter().enumerate() {
+        wr32(g, esp.wrapping_add(4 + 4 * k as u32), v)?;
+    }
+    // The nested walk starts from the flags raised so far.
+    settle(cpu, fp)?;
+    let mut nested = *cpu;
+    (nested.esp, nested.ecx, nested.eax) = (esp, vm, code);
+    let mut cast = CollectorCast::begin(&nested, g, world)?;
+    cast.run(g, &mut nested)?;
+    cpu.mxcsr = nested.mxcsr;
+    cpu.x87.status = nested.x87.status;
+    *fp = Fp::guest(cpu.mxcsr);
+    Ok(nested.eax)
 }
 
 /// `0x002df8f0`, `ret 0x10`: the group filter's ray-collection test.
@@ -285,15 +542,62 @@ fn polygon(g: &mut impl CollisionMemory, a: &Args, mxcsr: u32) -> Result<u32, Ba
     Ok(a.shape)
 }
 
+/// `0x00279740`: whether `at` is in the tag cache (signed compares, as
+/// retail's).
+fn in_tags(g: &impl Memory, at: u32) -> Result<bool, Bail> {
+    let base = data::TAG_BASE as i32;
+    if (at as i32) < base {
+        return Ok(at == data::TAG_BASE);
+    }
+    let size = if rd_u8(g, data::TAG_LOADED)? != 0 { rd(g, data::TAG_SIZE)? } else { 0 };
+    let end = size.wrapping_add(data::TAG_BASE) as i32;
+    Ok(at as i32 <= end)
+}
+
+/// `0x00181f80` (ecx the instance, eax `out`): the instance's placement as
+/// a transform, three columns from `+4`, `+0x10`, `+0x1c` and the position
+/// at `+0x28`, each with a zero fourth lane.
+fn instance_transform(g: &mut impl CollisionMemory, instance: u32, out: u32) -> Result<(), Bail> {
+    for (k, from) in [4u32, 0x10, 0x1c, 0x28].into_iter().enumerate() {
+        let at = out.wrapping_add(0x10 * k as u32);
+        for l in 0..3 {
+            wr32(g, at.wrapping_add(4 * l), rd(g, instance.wrapping_add(from + 4 * l))?)?;
+        }
+        wr32(g, at.wrapping_add(12), 0)?;
+    }
+    Ok(())
+}
+
+/// The instance `index` of the active structure and its definition's
+/// collision collection.
+fn instance_collection(g: &impl Memory, index: u32) -> Result<(u32, u32), Bail> {
+    let structure = rd(g, data::STRUCTURE)?;
+    let instance = index.wrapping_mul(0x58).wrapping_add(rd(g, structure.wrapping_add(0x144))?);
+    let definition = rd_i16(g, instance.wrapping_add(0x34))? as u32;
+    let definitions = rd(g, structure.wrapping_add(0x13c))?;
+    let collection = rd(
+        g,
+        definition
+            .wrapping_mul(0xc8)
+            .wrapping_add(definitions)
+            .wrapping_add(data::DEFINITION_COLLECTION),
+    )?;
+    Ok((instance, collection))
+}
+
 /// `0x001ef950`, `ret 8`: the level collection's child for `key` in
 /// `buffer`. A rejected key gets the empty shape; type 1 the surface's
-/// polygon (flag 1, owner -1, tail the key). Types 2 (an instance's
-/// transform shape), 5 (`0x001ee500`) and the rest (`0x001ef070`) have no
-/// port.
+/// polygon (flag 1, owner -1, tail the key); type 2 a transform shape
+/// (`0x002de890`) over the instance definition's tree with the instance's
+/// placement (`0x00181f80`); type 5 (`0x001ee500`) the definition
+/// surface's polygon under the instance's transform (flag 0, the
+/// collection's owner, tail the key). The rest (`0x001ef070`) have no port.
 pub fn level_child(g: &mut impl CollisionMemory, key: u32, buffer: u32, mxcsr: u32) -> Result<u32, Bail> {
     if !level_key(&*g, key)? {
         return empty_shape(g, buffer);
     }
+    let index = key & 0xffff;
+    let part = (key >> 16) & 0x1fff;
     match key >> 29 {
         1 if buffer == 0 => Ok(0),
         1 => {
@@ -304,6 +608,54 @@ pub fn level_child(g: &mut impl CollisionMemory, key: u32, buffer: u32, mxcsr: u
                 flag: 1,
                 owner: u32::MAX,
                 surface: key & 0xffff,
+                tail: key,
+            };
+            polygon(g, &a, mxcsr)
+        }
+        2 => {
+            let (instance, collection) = instance_collection(&*g, index)?;
+            let child = collection.wrapping_add(data::COLLECTION_TREE);
+            if buffer != 0 {
+                // `0x002de890`: references 1, the child, the identity
+                // (`movaps`).
+                if buffer & 15 != 0 {
+                    return Err(Bail::Fault);
+                }
+                wr32(g, buffer.wrapping_add(0x0c), child)?;
+                wr(g, buffer.wrapping_add(6), &1u16.to_le_bytes())?;
+                wr32(g, buffer.wrapping_add(8), 0)?;
+                wr32(g, buffer, data::TRANSFORM_SHAPE)?;
+                let one = 1f32.to_bits();
+                for k in 0..4 {
+                    let column: [u32; 4] = std::array::from_fn(|l| if l == k && k < 3 { one } else { 0 });
+                    wr_vec4(g, buffer.wrapping_add(0x10 + 0x10 * k as u32), column)?;
+                }
+                let refs = g.u16(child.wrapping_add(6)).map_err(|_| Bail::Fault)?;
+                wr(g, child.wrapping_add(6), &refs.wrapping_add(1).to_le_bytes())?;
+            }
+            // The local reference is dropped again; a child that reaches
+            // zero outside the tag cache is freed by its destructor.
+            let refs = g.u16(child.wrapping_add(6)).map_err(|_| Bail::Fault)?.wrapping_sub(1);
+            wr(g, child.wrapping_add(6), &refs.to_le_bytes())?;
+            if refs == 0 {
+                if !in_tags(&*g, child)? {
+                    unimplemented!("collision: mopp_ray: level child 0x001ef950 frees shape {child:#010x} (vt[0])");
+                }
+                wr(g, child.wrapping_add(6), &1u16.to_le_bytes())?;
+            }
+            instance_transform(g, instance, buffer.wrapping_add(0x10))?;
+            Ok(buffer)
+        }
+        5 if buffer == 0 => Ok(0),
+        5 => {
+            let (instance, collection) = instance_collection(&*g, index)?;
+            let a = Args {
+                shape: buffer,
+                transform: instance,
+                bsp: rd(g, collection.wrapping_add(0x0c))?,
+                flag: 0,
+                owner: rd(g, collection.wrapping_add(0x30))?,
+                surface: part,
                 tail: key,
             };
             polygon(g, &a, mxcsr)
@@ -347,17 +699,98 @@ pub fn instance_child(g: &mut impl CollisionMemory, this: u32, key: u32, buffer:
 
 /// `0x00244be0`, `ret 0xc`: an instance key's ray hands the collector a
 /// hit at fraction one; the collector tests the instance.
-pub fn instance_ray(g: &mut impl CollisionMemory, fp: &mut Fp, body: u32, collector: u32) -> Result<u32, Bail> {
+pub fn instance_ray(
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    cpu: &mut CpuAbi,
+    fp: &mut Fp,
+    body: u32,
+    collector: u32,
+) -> Result<u32, Bail> {
     let hit = Hit { normal: [0; 4], key: 0, fraction: rd(g, data::ONE)? };
-    collect(g, fp, collector, body, &hit)
+    collect(g, world, cpu, fp, collector, body, &hit)
 }
 
 /// A collector's `vt[0]` (`addRayHit`: body, hit; `ret 8`).
-fn collect(g: &mut impl CollisionMemory, fp: &mut Fp, collector: u32, body: u32, hit: &Hit) -> Result<u32, Bail> {
+fn collect(
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    cpu: &mut CpuAbi,
+    fp: &mut Fp,
+    collector: u32,
+    body: u32,
+    hit: &Hit,
+) -> Result<u32, Bail> {
     match method(g, collector, 0)? {
         target::PHANTOM_COLLECTOR => phantom_collector(g, fp, collector, body, hit),
+        target::INSTANCE_COLLECTOR => instance_collector(g, world, cpu, fp, collector, body),
         other => unimplemented!("collision: mopp_ray: ray collector {other:#010x}"),
     }
+}
+
+/// `0x00244c10`, `ret 8`: entry E's collector. `this+4` the early-out
+/// fraction, `+8` the query flags, `+0x0c` the BSP filter, `+0x10` and
+/// `+0x14` the start and delta, `+0x18` the hit byte, `+0x1c` the result.
+/// The mark `[0x4e7c20 + 4 * i]`, `i` the key's signed low half, equal to
+/// the epoch `[0x4e7c1c]` skips the key; otherwise it takes the epoch
+/// before `0x001691a0` tests the placement the full key names at the
+/// result's `+4` ([`instance::placement`]). A hit writes the result, sets
+/// the hit byte and lowers the fraction: to zero under flag `0x10000000`,
+/// else to the result's when that is strictly lower. EAX is the key for a
+/// marked key, the result after a lowered fraction and otherwise
+/// `0x001691a0`'s AL (its upper bytes are not modelled; no caller of a
+/// collector reads EAX).
+pub fn instance_collector(
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    cpu: &mut CpuAbi,
+    fp: &mut Fp,
+    this: u32,
+    body: u32,
+) -> Result<u32, Bail> {
+    let key = rd(g, body.wrapping_add(4))?;
+    let epoch = rd(g, data::INSTANCE_EPOCH)?;
+    let mark = instance::MARK_BASE.wrapping_add((key as u16 as i16 as i32 as u32).wrapping_mul(4));
+    if rd(g, mark)? == epoch {
+        return Ok(key);
+    }
+    let result = rd(g, this.wrapping_add(0x1c))?;
+    wr32(g, mark, epoch)?;
+    let flags = rd(g, this.wrapping_add(8))?;
+    let (start, delta) = (rd(g, this.wrapping_add(0x10))?, rd(g, this.wrapping_add(0x14))?);
+    let q = Query {
+        cluster: 0,
+        start: rd3(&*g, start)?,
+        delta: rd3(&*g, delta)?,
+        flags,
+        filter: rd(g, this.wrapping_add(0x0c))?,
+        limit: rd(g, result.wrapping_add(4))?,
+    };
+    let structure = rd(g, layout::ACTIVE_STRUCTURE)?;
+    let one = rd(g, layout::ONE)?;
+    let mut x87 = 0u16;
+    let hit = instance::placement(g, world, &q, structure, key, q.limit, one, cpu.x87.control, fp, &mut x87)?;
+    cpu.x87.status |= x87 & 0x3f;
+    let Some(hit) = hit else {
+        return Ok(0);
+    };
+    let mut writes = Vec::new();
+    hit.writes(|at, v| writes.push((result.wrapping_add(at), v.to_vec())));
+    for (at, v) in writes {
+        wr(g, at, &v)?;
+    }
+    if flags & 0x1000_0000 != 0 {
+        wr32(g, this.wrapping_add(4), 0)?;
+        wr(g, this.wrapping_add(0x18), &[1])?;
+        return Ok(1);
+    } else {
+        let fraction = rd(g, result.wrapping_add(4))?;
+        if gt(fp, rd(g, this.wrapping_add(4))?, fraction) {
+            wr32(g, this.wrapping_add(4), fraction)?;
+        }
+    }
+    wr(g, this.wrapping_add(0x18), &[1])?;
+    Ok(result)
 }
 
 fn vec4(g: &impl Memory, at: u32) -> Result<[u32; 4], Bail> {
@@ -376,8 +809,11 @@ fn vec4(g: &impl Memory, at: u32) -> Result<[u32; 4], Bail> {
 /// shape's `vt[+0x20]` casts with the collector's fraction (`+4`); on a hit
 /// the normal is rotated by the body's transform (`[body+8] + 0x20`, three
 /// columns) and the hit, with the body's key, goes to the collector.
+#[allow(clippy::too_many_arguments)]
 pub fn convex_ray(
     g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    cpu: &mut CpuAbi,
     fp: &mut Fp,
     precision: Precision,
     shape: u32,
@@ -404,7 +840,7 @@ pub fn convex_ray(
         *o = fp.add(xy, z);
     }
     hit.normal = out;
-    collect(g, fp, collector, body, &hit)
+    collect(g, world, cpu, fp, collector, body, &hit)
 }
 
 /// `ucomiss`: a NaN operand declines rather than modelling which raise IE.
