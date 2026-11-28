@@ -1,22 +1,30 @@
 //! The walks in Rust (docs/engine/object-update.md, "The walks in Rust"):
 //! pre-physics `b6f10`, post-physics `b7060`, the per-object updates
 //! `bc470` and `bc820` with the node matrices `bd090`, the four type
-//! dispatchers, the wake leaves and the early-mover wake `109580`. On by
-//! default with `impl.sim.native.objects.walk`; `sim_bridge::sim_objects`
-//! installs [`TABLE`] when `impl.sim.native.objects` is off (on, every
-//! body is installed and these with them).
+//! dispatchers, the wake leaves and the early-mover wake `109580`, and the
+//! type callbacks of the objects a multiplayer game has most of: the biped
+//! update `dd360` and post-physics update `dd990` with the ported part of
+//! their trees (slices 7a and 7b), and the weapon update `fdfb0` (slice
+//! 9). The dispatchers call them in Rust. On by default with
+//! `impl.sim.native.objects.walk`; `sim_bridge::sim_objects` installs
+//! [`TABLE`] when `impl.sim.native.objects` is off (on, every body is
+//! installed and these with them).
 //!
 //! The Rust body answers every segment; nothing is compared. A body the
 //! Rust cannot take for one call is a [`Refusal`]: the guest runs that
-//! call (one object's `bd090`) and the caller's Rust frame resumes at its
-//! site. Every other body in [`TABLE`] reads and writes no float state
-//! ([`FLOAT_FREE`]), so it runs whatever the float environment and never
-//! refuses.
+//! call (one object's `bd090`, one weapon's `fdfb0`) and the caller's Rust
+//! frame resumes at its site. The walks, the updates, the dispatchers and
+//! the wake leaves read and write no float state ([`FLOAT_FREE`]), so they
+//! run whatever the float environment and never refuse; `bd090` and the
+//! type callbacks ([`TYPES`]) run only inside it.
 //!
-//! **Other types.** Only [`POINTS`] are in [`TABLE`]: each type's
-//! descriptor callbacks, damage, functions, the rest of the post-update
-//! shell, lights and finalize `b7150` are calls to the guest, through the
-//! runtime, as any callout.
+//! **Other types.** Only [`POINTS`] and [`TYPES`] are in [`TABLE`]: the
+//! unit level of a biped (`c6b30` and its tree), the item level of a
+//! weapon (`10b4d0`), the other types' callbacks, damage, functions, the rest of the
+//! post-update shell, lights and finalize `b7150` are calls to the guest,
+//! through the runtime, as any callout. So are the two unit leaves the
+//! biped tree calls, the direction clamp `cba50` and the animation state
+//! `111650`.
 
 use super::{BODIES, Body, Table};
 use crate::points::{self, Point};
@@ -24,8 +32,9 @@ use runtime::{CpuAbi, Guest, TransferAbi};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// The bodies: the two walks, the per-object updates, `bd090`, the type
-/// dispatchers, the wake leaves and the early-mover wake.
+/// The walk bodies: the two walks, the per-object updates, `bd090`, the
+/// type dispatchers, the wake leaves and the early-mover wake. [`TABLE`]
+/// holds these and [`TYPES`].
 pub const POINTS: &[&Point] = &[
     &points::OBJECTS_PRE_PHYSICS,
     &points::OBJECTS_POST_PHYSICS,
@@ -41,6 +50,35 @@ pub const POINTS: &[&Point] = &[
     &points::OBJECT_WAKE_FOR_POST,
     &points::OBJECT_WAKE_CHILDREN,
     &points::OBJECT_EARLY_MOVER_WAKE,
+];
+
+/// The type callbacks in [`TABLE`]: the `bipd` descriptor's slots `+40`
+/// (`dd360`, slice 7a) and `+44` (`dd990`, slice 7b) with every body their
+/// trees fuse, and the `weap` slot `+40` (`fdfb0`, slice 9). Each checks
+/// the float environment at its entry and its sites.
+pub const TYPES: &[&Point] = &[
+    &points::BIPED_UPDATE,
+    &points::OBJECT_CARRIER,
+    &points::BIPED_TIMER_UPDATE,
+    &points::GAME_SECONDS_TO_TICKS,
+    &points::UNIT_ACTIONS_UPDATE,
+    &points::BIPED_ACTION,
+    &points::BIPED_ANIMATION_KIND,
+    &points::BIPED_AIRBORNE_TEST,
+    &points::BIPED_FALL_UPDATE,
+    &points::BIPED_ANIMATION_STATE_UPDATE,
+    &points::BIPED_LOOK_UPDATE,
+    &points::BIPED_POST_UPDATE,
+    &points::BIPED_CROUCH_STEP,
+    &points::BIPED_CROUCH_HEIGHT,
+    &points::BIPED_CROUCH_FORCED,
+    &points::BIPED_GROUND_PROBE,
+    &points::BIPED_GROUND_FLAG,
+    &points::BIPED_JUMP_UPDATE,
+    &points::BIPED_PHYSICS_INPUT,
+    &points::BIPED_LANDING_UPDATE,
+    &points::BIPED_CONTACT_UPDATE,
+    &points::WEAPON_UPDATE,
 ];
 
 /// The entries whose bodies make no float instruction: every one in
@@ -71,9 +109,10 @@ pub const REPLACES_GUEST: &[u32] = &[
     points::OBJECT_POST_UPDATE.base,
 ];
 
-/// [`POINTS`]' bodies, indexed, with [`FLOAT_FREE`] marked.
+/// [`POINTS`]' and [`TYPES`]' bodies, indexed, with [`FLOAT_FREE`]
+/// marked.
 pub static TABLE: LazyLock<Table> = LazyLock::new(|| {
-    Table::new(BODIES.iter().filter(|b| POINTS.iter().any(|p| p.base == b.point.base)))
+    Table::new(BODIES.iter().filter(|b| POINTS.iter().chain(TYPES).any(|p| p.base == b.point.base)))
         .expect("BODIES is consistent")
         .float_free(FLOAT_FREE)
 });
@@ -81,8 +120,8 @@ pub static TABLE: LazyLock<Table> = LazyLock::new(|| {
 /// Why the guest runs one call of a body in [`TABLE`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Refusal {
-    /// `bd090` entered or resumed outside the float environment its
-    /// arithmetic assumes ([`super::supported`]).
+    /// `bd090` or a type callback entered or resumed outside the float
+    /// environment its arithmetic assumes ([`super::supported`]).
     FloatEnv,
 }
 

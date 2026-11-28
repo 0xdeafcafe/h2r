@@ -31,12 +31,14 @@
 //!
 //! With [`OBJECTS`] off and [`WALK`] on (the default), only the walks
 //! `b6f10` and `b7060`, the per-object updates `bc470` and `bc820` with
-//! `bd090`, the type dispatchers and the wake leaves
+//! `bd090`, the type dispatchers, the wake leaves, and the biped (`dd360`,
+//! `dd990`) and weapon (`fdfb0`) callbacks with their trees
 //! (`engine::sim_objects::native_walk::TABLE`) are installed, and the Rust
-//! answers every segment. `bd090` outside its float environment is the one
-//! refusal: the guest runs that call, counted as `float_env`. Every other
-//! body is the guest's: the types' callbacks, damage, functions, lights
-//! and finalize.
+//! answers every segment. `bd090` or a type callback outside its float
+//! environment is the one refusal: the guest runs that call, counted as
+//! `float_env`. Every other body is the guest's: the other types'
+//! callbacks (the unit and item levels too), damage, functions, lights and
+//! finalize.
 //!
 //! [`crate::sim_native::SimNative`] calls [`install`]: the bodies hold no
 //! state, so the feature's snapshot policy does not change. The arms'
@@ -147,10 +149,10 @@ const FUNCTION_ARM_RESET: &str = "objects: reset the function arm";
 /// The walk table's bodies (`native_walk::TABLE`), each entry and site
 /// answered by the Rust: [`objects::drive_with`] fuses every transfer
 /// between them and counts each segment. A body outside the float
-/// environment it needs (only `bd090`) is refused for that call, counted,
-/// and the guest runs it; the caller's Rust frame resumes at its site. The
-/// walks and the per-object updates never refuse, so their hooks are
-/// marked [`hooks::HookRef::replaces_guest`] (`native_walk::REPLACES_GUEST`).
+/// environment it needs (`bd090`, the type callbacks) is refused for that
+/// call, counted, and the guest runs it; the caller's Rust frame resumes
+/// at its site. The walks and the per-object updates never refuse, so
+/// their hooks are marked [`hooks::HookRef::replaces_guest`] (`native_walk::REPLACES_GUEST`).
 fn install_walk(b: &mut Builder) {
     let table: &'static Table = &native_walk::TABLE;
     for &body in table.bodies() {
@@ -578,12 +580,18 @@ mod tests {
             );
             assert!(owns(&Switches::defaults(), body.point.base));
         }
-        // The other types, damage, functions, lights and finalize are the
-        // guest's.
+        // The bipeds' and weapons' callbacks are the walk table's.
+        for point in [&points::BIPED_UPDATE, &points::BIPED_POST_UPDATE, &points::WEAPON_UPDATE] {
+            let implement = plan.chains[&point.base].implement.as_ref().unwrap();
+            assert_eq!(implement.label, WALK_LABEL, "{}", point.name);
+            assert!(!implement.replaces_guest(), "{} refuses outside its float environment", point.name);
+        }
+        // The other types (the unit level of a biped, the item level of a
+        // weapon), damage, functions, lights and finalize are the guest's.
         for point in [
             &points::OBJECTS_FINALIZE,
-            &points::BIPED_UPDATE,
             &points::UNIT_UPDATE,
+            &points::ITEM_UPDATE,
             &points::VEHICLE_UPDATE,
             &points::OBJECT_DAMAGE_UPDATE,
             &points::OBJECT_FUNCTION_VALUE,

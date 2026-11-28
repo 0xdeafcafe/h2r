@@ -39,21 +39,31 @@ The tag-function curve evaluator `13b390` runs as an arm: the idiomatic kernel `
 
 `impl.sim.native.objects.walk` (on) installs the walk table on its own when `impl.sim.native.objects` is off (`engine::sim_objects::native_walk::TABLE`, installer `sim_bridge::sim_objects::install_walk`). With `impl.sim.native.objects` on, every body is installed and these with them. `-impl.sim.native` turns it off with the other subsystems.
 
-| In Rust (`native_walk::POINTS`) | The guest's |
+| In Rust | The guest's |
 |---|---|
-| the walks `b6f10` and `b7060`, the per-object updates `bc470` and `bc820`, the node matrices `bd090`, the four type dispatchers, the wake leaves, the early-mover wake `109580` | finalize `b7150`, every type's descriptor callbacks, damage `d5de0`, change colours `be8e0`, the rest of the post-update shell (`bc5e0`, `bdef0`, `bef30`, `be1d0`), functions, lights |
+| walks (`native_walk::POINTS`): the walks `b6f10` and `b7060`, the per-object updates `bc470` and `bc820`, the node matrices `bd090`, the four type dispatchers, the wake leaves, the early-mover wake `109580` | finalize `b7150`, damage `d5de0`, change colours `be8e0`, the rest of the post-update shell (`bc5e0`, `bdef0`, `bef30`, `be1d0`), functions, lights |
+| type callbacks (`native_walk::TYPES`): the biped update `dd360` (slot `+40`) and post-physics update `dd990` (slot `+44`) with every body of slices 7a and 7b, the weapon update `fdfb0` (slot `+40`, slice 9) | the unit level of a biped (`c6b30` and its tree), the unit leaves the biped tree calls (`cba50`, `111650`), the item level of a weapon (`10b4d0`), every other type's callbacks |
+
+Bipeds and weapons first because a multiplayer game is mostly them:
+each player is a biped with two weapons, and the dropped and spawned
+weapons are on the map besides. In the Waterworks attribution
+([sim-10x.md](../perf/notes/sim-10x.md), "the Lockout budget model")
+units are 6.66% of the thread, bipeds 2.74%, vehicles 2.85% and weapons
+1.46%; the unit level (`c6b30`) is the next to join.
 
 ```
 entry or site of a table body at pc
-  float-free body (every one but bd090)  -> Rust, fused into each next table body
-  bd090, float environment holds          -> Rust
-  bd090, float environment fails          -> refused: float_env; the guest runs that call,
-                                             bc820's Rust frame resumes at its site
+  float-free body (the walk bodies but bd090)  -> Rust, fused into each next table body
+  bd090 or a type callback, float env holds   -> Rust, fused the same way
+  bd090 or a type callback, float env fails   -> refused: float_env; the guest runs that call
+                                                 (entry) or the rest of it (site), and the
+                                                 caller's Rust frame resumes at its site
 ```
 
-- **Answers:** the Rust runs every segment it is given. Nothing is predicted or compared; the disc differential harness is the proof (`walk_table_roots` in `crates/rewrites/engine/tests/sim_objects_differential.rs`: the four roots over the walk table, at the default float environment and with flush to zero and denormals as zero).
-- **Float-free bodies:** the walks, the updates, the dispatchers and the wake leaves make no float instruction, so `Table::float_free` marks them and `Table::supports_at` lets them run whatever MXCSR and the x87 hold. Only `bd090` checks `engine::sim_objects::supported`.
-- **Refusals:** `float_env` is the only one. It is per call: one object's `bd090` is the guest's, the walk and the update around it stay Rust.
+- **Answers:** the Rust runs every segment it is given. Nothing is predicted or compared; the disc differential harness is the proof, in `crates/rewrites/engine/tests/sim_objects_differential.rs`, at the default float environment and with flush to zero and denormals as zero: `walk_table_roots` (the four walk roots over the walk table) and `walk_table_types` (the roots `fdfb0`, `dd360` and `dd990` over their dressings, and the two dispatchers over a biped, with every body outside the table a callout).
+- **Float-free bodies:** the walks, the updates, the dispatchers and the wake leaves make no float instruction, so `Table::float_free` marks them and `Table::supports_at` lets them run whatever MXCSR and the x87 hold. `bd090` and the type callbacks check `engine::sim_objects::supported`.
+- **Refusals:** `float_env` is the only one. It is per call: one object's `bd090` or one weapon's `fdfb0` is the guest's, the walk, the update and the dispatcher around it stay Rust. A callee that changes the float environment and returns to a type callback's site refuses the rest of that call.
+- **Shared points:** a type callback another feature hooks too is guarded (`Table::guard`, through `HookRef::when_shared`), so the dispatcher's call goes through the chain and that feature's hooks run around the body. No feature hooks one today.
 - **Replaced:** the hooks at `b6f10`, `b7060`, `bc470` and `bc820` never reach their guest bodies, so they carry `replaces_guest` (`native_walk::REPLACES_GUEST`). Each resumes at its sites, so `Plan::replaced` keeps their bodies lifted ([lift-pruning.md](../lifter/lift-pruning.md#the-replaced-list)). The dispatchers and wake leaves are not marked: the site-less leaves would leave the lift, and `-impl.sim.native` would then refuse to boot.
 - **Counters:** `native_walk::stats`, per body: segments the Rust ran and calls refused by reason. `sim.arms` reports one arm per body, `objects.walk.<entry>` (`answered` the segments, `declined` the refusals).
 

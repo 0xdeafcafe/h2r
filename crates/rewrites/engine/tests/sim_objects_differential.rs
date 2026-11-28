@@ -327,6 +327,9 @@ fn cleanup(target: u32) -> u32 {
         // The damage update, a callout of the pre-update under the walk
         // table alone.
         0xd5de0 => 4,
+        // The unit leaves the biped tree calls, callouts under the walk
+        // table alone: the direction clamp and the animation state.
+        0xcba50 | 0x111650 => 8,
         t if SLOT_UPDATE.contains(&t) || SLOT_POST.contains(&t) => 4,
         0xb83b0 | 0xb8460 => 8,
         t if SLOT_AFTER_ROOT.contains(&t) => 8,
@@ -924,11 +927,12 @@ fn early_mover_wake() {
 }
 
 /// The walks in Rust as installed by default (`native_walk::TABLE`): the
-/// walks, the per-object updates and `bd090` fused, every type callback a
-/// callout. Again under flush to zero and denormals as zero, outside the
-/// float environment: every body but `bd090` still runs, and `bd090` is
-/// the lifted original's (the `float_env` refusal), resumed from at the
-/// post-update's site.
+/// walks, the per-object updates, `bd090` and the biped and weapon
+/// callbacks fused, every other type callback a callout. Again under
+/// flush to zero and denormals as zero, outside the float environment:
+/// every walk body but `bd090` still runs, and `bd090` and the type
+/// callbacks are the lifted original's (the `float_env` refusal), resumed
+/// from at the caller's site.
 #[test]
 fn walk_table_roots() {
     let table: &Table = &engine::sim_objects::native_walk::TABLE;
@@ -1787,8 +1791,13 @@ fn dressed_step(point: &points::Point, cases: u32) {
 
 /// [`dressed`] with `extra` dressing the pool further.
 fn dressed_with(point: &points::Point, cases: u32, extra: fn(&mut Guest, u32)) {
+    dressed_with_in(point, cases, extra, &sim_objects::TABLE, None);
+}
+
+/// [`dressed_with`] with `table`'s bodies fused and every other callee a
+/// callout, every run starting with `mxcsr` when given.
+fn dressed_with_in(point: &points::Point, cases: u32, extra: fn(&mut Guest, u32), table: &Table, mxcsr: Option<u32>) {
     let Some((image, ram)) = image() else { return };
-    let table: &Table = &*sim_objects::TABLE;
     let mut code = image.original();
     code.prime(point.base);
     for body in table.bodies() {
@@ -1800,9 +1809,12 @@ fn dressed_with(point: &points::Point, cases: u32, extra: fn(&mut Guest, u32)) {
     for case in 0..cases {
         h.case = case;
         let fresh = || {
-            let (cpu, mut g) = start(ram, point.base, case);
+            let (mut cpu, mut g) = start(ram, point.base, case);
             dress(&mut g, case);
             extra(&mut g, case);
+            if let Some(mxcsr) = mxcsr {
+                cpu.mxcsr = mxcsr;
+            }
             (cpu, g)
         };
         let (cpu, g) = fresh();
@@ -3818,8 +3830,13 @@ fn biped_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
 
 /// [`transcripts`] of a slice 7a root over a [`dress_biped`]ed pool.
 fn biped_transcripts(point: &points::Point, cases: u32) {
+    biped_transcripts_in(point, cases, &sim_objects::TABLE, None);
+}
+
+/// [`biped_transcripts`] over `table`, every run starting with `mxcsr`
+/// when given.
+fn biped_transcripts_in(point: &points::Point, cases: u32, table: &Table, mxcsr: Option<u32>) {
     let Some((image, ram)) = image() else { return };
-    let table: &Table = &*sim_objects::TABLE;
     let mut code = image.original();
     code.prime(point.base);
     for body in table.bodies() {
@@ -3837,6 +3854,9 @@ fn biped_transcripts(point: &points::Point, cases: u32) {
             dress(&mut g, case);
             dress_biped(&mut g, case);
             biped_entry(&mut g, &mut cpu, point.base, case);
+            if let Some(mxcsr) = mxcsr {
+                cpu.mxcsr = mxcsr;
+            }
             (cpu, g)
         };
         let (cpu, g) = fresh();
@@ -4210,8 +4230,13 @@ fn biped_post_entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
 
 /// [`transcripts`] of a slice 7b root over a [`dress_biped_post`]ed pool.
 fn biped_post_transcripts(point: &points::Point, cases: u32) {
+    biped_post_transcripts_in(point, cases, &sim_objects::TABLE, None);
+}
+
+/// [`biped_post_transcripts`] over `table`, every run starting with
+/// `mxcsr` when given.
+fn biped_post_transcripts_in(point: &points::Point, cases: u32, table: &Table, mxcsr: Option<u32>) {
     let Some((image, ram)) = image() else { return };
-    let table: &Table = &*sim_objects::TABLE;
     let mut code = image.original();
     code.prime(point.base);
     for body in table.bodies() {
@@ -4230,6 +4255,9 @@ fn biped_post_transcripts(point: &points::Point, cases: u32) {
             dress_biped(&mut g, case);
             dress_biped_post(&mut g, case);
             biped_post_entry(&mut g, &mut cpu, point.base, case);
+            if let Some(mxcsr) = mxcsr {
+                cpu.mxcsr = mxcsr;
+            }
             (cpu, g)
         };
         let (cpu, g) = fresh();
@@ -4281,4 +4309,29 @@ fn type_post_update_dispatch_reaches_the_biped() {
     BIPED_POST.with(|b| b.set(true));
     dressed_with(&points::OBJECT_TYPE_POST_UPDATE, 12, dress_biped_both);
     BIPED_POST.with(|b| b.set(false));
+}
+
+/// The biped and weapon callbacks as the walk table runs them by default
+/// (`native_walk::TYPES`): each root, and the dispatchers reaching the
+/// biped's two, with every body outside the table a callout (the unit
+/// level `c6b30`, the item level `10b4d0`, the unit leaves `cba50` and
+/// `111650`). Again under flush to zero and denormals as zero, outside the
+/// float environment: every type callback is then the lifted original's
+/// (the `float_env` refusal), entered and resumed from its sites, with the
+/// dispatchers around it still Rust.
+#[test]
+fn walk_table_types() {
+    let table: &Table = &engine::sim_objects::native_walk::TABLE;
+    let outside = 0x1f80 | 0x8040;
+    for mxcsr in [None, Some(outside)] {
+        dressed_with_in(&points::WEAPON_UPDATE, 16, dress_weapon, table, mxcsr);
+        biped_transcripts_in(&points::BIPED_UPDATE, 24, table, mxcsr);
+        biped_post_transcripts_in(&points::BIPED_POST_UPDATE, 42, table, mxcsr);
+        BIPED.with(|b| b.set(true));
+        dressed_with_in(&points::OBJECT_TYPE_UPDATE, 12, dress_biped, table, mxcsr);
+        BIPED.with(|b| b.set(false));
+        BIPED_POST.with(|b| b.set(true));
+        dressed_with_in(&points::OBJECT_TYPE_POST_UPDATE, 12, dress_biped_both, table, mxcsr);
+        BIPED_POST.with(|b| b.set(false));
+    }
 }
