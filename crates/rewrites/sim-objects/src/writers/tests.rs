@@ -140,3 +140,49 @@ fn an_unlive_slot_is_a_named_error() {
     let e = free_object(&mut ram.clone(), &mut t, handle(9, 0xef70)).unwrap_err();
     assert_eq!(e, WriterError::Stale(handle(9, 0xef70)));
 }
+
+#[test]
+fn alloc_places_the_body_above_the_highest_block_and_names_the_datum() {
+    let mut ram = guest();
+    put(&mut ram, HEAP_AT + 0x28, block(0));
+    put(&mut ram, HEAP_AT + 0x2c, 0x2000);
+    let h = alloc_in_guest(&mut ram, 0x40).unwrap().unwrap();
+    assert_eq!(h.index(), 4);
+    // 0x40 + the 0x10 header is 0x50, above block 3's 0x170.
+    let new = block(3) + 0x170;
+    assert_eq!(word(&ram, new), 0x50);
+    assert_eq!(word(&ram, new + 4), synth::DATA + 4 * 12 + 8);
+    assert_eq!((word(&ram, new + 8), word(&ram, new + 0x0c)), (0, block(3)));
+    assert_eq!(word(&ram, block(3) + 8), new);
+    assert_eq!((word(&ram, HEAP_AT + 0x30), word(&ram, HEAP_AT + 0x38)), (1000 - 0x50, new));
+    assert_eq!(word(&ram, synth::DATA + 4 * 12 + 8), new + 0x10);
+    // The table sees the datum with its zeroed body.
+    let t = table(&ram);
+    let r = t.get(h).unwrap();
+    assert_eq!((r.body_addr, r.body_size, r.body.clone()), (new + 0x10, 0x40, vec![0; 0x40]));
+    assert_eq!(t.len(), 5);
+}
+
+#[test]
+fn alloc_then_free_restores_the_pool_and_the_table() {
+    let mut ram = guest();
+    put(&mut ram, HEAP_AT + 0x28, block(0));
+    put(&mut ram, HEAP_AT + 0x2c, 0x2000);
+    let before = (word(&ram, HEAP_AT + 0x30), word(&ram, HEAP_AT + 0x34), word(&ram, HEAP_AT + 0x38));
+    let h = alloc_in_guest(&mut ram, 0x40).unwrap().unwrap();
+    free_in_guest(&mut ram, h).unwrap();
+    assert_eq!((word(&ram, HEAP_AT + 0x30), word(&ram, HEAP_AT + 0x34), word(&ram, HEAP_AT + 0x38)), before);
+    assert_eq!(table(&ram).len(), 4);
+}
+
+#[test]
+fn alloc_in_a_full_pool_deletes_the_datum_again() {
+    let mut ram = guest();
+    // The region ends where the last block does.
+    put(&mut ram, HEAP_AT + 0x28, block(0));
+    put(&mut ram, HEAP_AT + 0x2c, block(3) + 0x170 - block(0));
+    assert_eq!(alloc_in_guest(&mut ram, 0x40).unwrap(), None);
+    assert_eq!(table(&ram).len(), 4);
+    assert_eq!(word(&ram, HEAP_AT + 0x30), 1000);
+    assert_eq!(table(&ram).high_water(), 4);
+}
