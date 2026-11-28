@@ -12,9 +12,6 @@ use std::sync::{Arc, Mutex};
 use sim_bridge::sim_sound::mixer_feed::{Chunks, Clips, MixerHost};
 use sound_clips::{ClipError, ClipKey, ClipSource, GestaltLibrary, Got, OwnedRaw};
 
-/// Decoded bytes the clip cache keeps (clips a voice holds stay past it).
-pub const BUDGET: usize = 64 << 20;
-
 /// The running map's clips.
 pub struct MapClips {
     tables: Option<Arc<wma::Tables>>,
@@ -55,7 +52,7 @@ impl MapClips {
 fn open(name: &str, tables: Option<Arc<wma::Tables>>) -> Result<ClipSource, String> {
     let (mut map, files) = crate::native_map::open(name).map_err(|e| e.to_string())?;
     let library = GestaltLibrary::from_map(&mut map, Box::new(OwnedRaw(files))).map_err(|e| e.to_string())?;
-    Ok(ClipSource::new(library, tables, BUDGET))
+    Ok(ClipSource::new(library, tables, ClipSource::DEFAULT_BUDGET))
 }
 
 impl Clips for MapClips {

@@ -180,10 +180,6 @@ impl TrackStream {
         };
         total.saturating_sub(played)
     }
-
-    fn frames_ms(&self, frames: u64) -> u64 {
-        frames * 1000 / u64::from(self.rate.max(1))
-    }
 }
 
 pub struct MixerHost<C: Clips> {
