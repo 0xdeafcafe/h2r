@@ -217,7 +217,7 @@ model.
 (installed by `sim-bridge/src/present.rs`):
 
 ```
-entry -> predict -> declined?  -> named error; the lifted body runs it  (declined[float, triggers, fault])
+entry -> predict -> declined?  -> unimplemented!("seats: aim-assist: <float|triggers|fault>")
                  -> else       -> Rust answers: record, al, eax, ecx, edx, xmm0-3, x87, ret 4 (answered)
 ```
 
@@ -340,9 +340,9 @@ event (scratch, never applied), and the timer, the fade and the update word
 address is written back as it is (so a fault lands none). Registers are
 left as retail leaves them.
 
-The paths that reach further guest systems are not ported yet. Each is a
-named, counted error, logged the first time each map, and the lifted body
-runs the call:
+The paths that reach further guest systems are not ported yet. Each is
+`unimplemented!("seats: respawn-ready: <decline>")`; no lifted body runs
+in its place:
 
 | Decline | Where | The guest goes on to |
 |---|---|---|
@@ -351,35 +351,24 @@ runs the call:
 | `every-player` | `19eb30`, event player `-1` | the iterator `19f240`; `15dd40` never builds such an event |
 | `fault` | any read, or a seconds divisor of 0 | the whole call |
 
-Until they are ported the point is not `replaces_guest`. `sim.arms`
-reports `seats.respawn`, its `declined` the count of these errors. `respawn_ready_and_its_callees_match_lifted` puts
+`sim.arms` reports `seats.respawn`, its calls answered. `respawn_ready_and_its_callees_match_lifted` puts
 the body and each callee against the lifted functions, and checks each
 decline by the original reaching the decline's address.
 
 *The pickup scan.* `1508e0` (`PLAYER_PICKUP_SCAN`, `ret 4`, the argument a
-player index) is called by `players_after` for each player. Its kernel
-(`engine/src/sim_seats/player_objects.rs`, always on)
-covers the whole body except the pickup call:
+player index) is called by `players_after` for each player. It is the seat
+`sim.seats.player_pickup_scan` (`engine/src/sim_seats/player_objects.rs`),
+a segment body over the retail frame:
 
 | Part | Guest | Rust |
 |---|---|---|
 | no unit, or the unit's object has a parent | return | the two exits |
-| object query, capacity 16 | `bb050`, `14a5b0`, `14a370`, `23a160`, `b8940`, `b8a10` | `sim_collision::plan_visit_at` (the entry H kernel, planned with the arguments the scan pushes) and `visit_writes` |
-| type 2 or 3 | `150e30` | `candidate_exits`: no unit, a parent that is not a machine or crate, the object held by the unit (`+0x14c`), or out of reach |
-| type 7 or 11 | the `+0x10` / `+0xc` link walk, up to 16 handles | the same walk |
+| object query, capacity 16 | `call bb050` | the call, resumed at `150959`; `bb050` is the object walk's body |
+| type 2 or 3 | `call 150e30 (player, handle)` | the call, resumed at `150994`; the Halo 1 prompt feature's `before` hook sees every one |
+| type 7 or 11 | the `+0x10` / `+0xc` link walk, up to 16 handles | the same walk, into the frame's list |
 
-`eax`, `ecx` and `edx` are the scan's callee scratch and are not reproduced
-(`players_after` reloads them); the callee-saved registers and `esp` are, and
-the prediction carries every word the query writes (the flood epoch, the
-cluster and object marks, the generation and the two active bytes).
-
-The kernel refuses by name, each a counted error the lifted body runs: `visit` (the collision kernel
-declines the plan), `candidate` (a type 2 or 3 handle: the Halo 1 prompt
-feature has a `before` hook on `150e30` that sees every call, so skipping
-even an early-exit call changes what it records), `pickup` (a `150e30` past
-its early exits, which loops the unit's seats through `ffc60`, posts events
-and calls `badc0`, `ccba0`, `ccb80`, `138880`, `151ea0`, `cd7b0`, `150dd0`,
-`a8f10` and `15e8e0`; only reachable with `Candidates::Port`) and `fault`.
-So the point is not `replaces_guest` yet. `sim.arms` reports `seats.player-objects`;
-`player_objects_match_lifted` puts the body, the query writes and
-`candidate_exits` against the lifted functions.
+At every call and the return the registers, flags and frame are retail's.
+It declines only on the float environment, which panics by name like every
+seat. `sim.arms` reports it with the other seats;
+`player_pickup_scan_matches_lifted` (`engine/tests/sim_seats_differential.rs`)
+puts every boundary against the lifted function.

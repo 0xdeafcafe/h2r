@@ -4,9 +4,9 @@
 //! reads (the unit's hands, each weapon's tag fields and trigger states)
 //! and the image's `pow` on the x87 model for the zoom.
 //!
-//! **The kernel answers every call.** A call it cannot answer is a named,
-//! counted error ([`Decline`], logged the first time each map), not a
-//! fallback; the differential test (`tests/sim_seats_differential.rs`)
+//! **The kernel answers every call.** A call it cannot answer is
+//! `unimplemented!("seats: aim-assist: <cause>")`, by its [`Decline`]; no
+//! lifted body runs in its place. The differential test (`tests/sim_seats_differential.rs`)
 //! holds [`predict`] to the lifted body.
 //!
 //! **What an answer leaves** is what retail leaves, but the arithmetic
@@ -34,7 +34,7 @@ pub const ARGS: u32 = 4;
 /// declined.
 pub const MAX_TRIGGERS: usize = 16;
 
-/// Why a call was left to the guest.
+/// Why the kernel cannot answer a call: the cause its panic names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
     /// MXCSR or the x87 not in the pinned state, or an operand off the
@@ -56,52 +56,29 @@ impl Decline {
             Decline::Fault => "fault",
         }
     }
-
-    fn index(self) -> usize {
-        self as usize
-    }
 }
 
 /// The arm's counters since the map loaded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Status {
     pub answered: u64,
-    /// Calls the kernel cannot answer yet, by [`Decline::ALL`] order:
-    /// named errors, each logged once a map, that the lifted body still
-    /// runs.
-    pub declined: [u64; 3],
-}
-
-impl Status {
-    pub fn declined_total(&self) -> u64 {
-        self.declined.iter().sum()
-    }
 }
 
 static ANSWERED: AtomicU64 = AtomicU64::new(0);
-static DECLINED: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
 pub fn status() -> Status {
     let read = |c: &AtomicU64| c.load(Ordering::Relaxed);
-    Status { answered: read(&ANSWERED), declined: std::array::from_fn(|i| read(&DECLINED[i])) }
+    Status { answered: read(&ANSWERED) }
 }
 
-/// Clear the counters. Called at map load, so each map logs its first
-/// error of each kind.
+/// Clear the counter. Called at map load.
 pub fn reset() {
     ANSWERED.store(0, Ordering::Relaxed);
-    for c in &DECLINED {
-        c.store(0, Ordering::Relaxed);
-    }
 }
 
-/// Count a call the kernel cannot answer, and say so the first time each
-/// map: it is an unported path, not a fallback.
-fn decline(why: Decline) -> Step {
-    if DECLINED[why.index()].fetch_add(1, Ordering::Relaxed) == 0 {
-        eprintln!("sim: seats aim-assist: unported path `{}`; the lifted body runs it (counted in sim.arms)", why.name());
-    }
-    Step::Guest
+/// A call the kernel cannot answer: an unported path, by name.
+fn decline(why: Decline) -> ! {
+    unimplemented!("seats: aim-assist: {}", why.name())
 }
 
 /// One call's prediction: the registers at the return and the record.
@@ -146,29 +123,13 @@ impl Prediction {
     }
 }
 
-/// What [`enter`] did with a call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Step {
-    /// The kernel answered: `cpu` and the record hold the result; the
-    /// caller returns to `target`.
-    Answered { target: u32 },
-    /// An unported path: a counted, logged [`Decline`]; the lifted body runs it.
-    Guest,
-}
-
-/// At the entry: the kernel answers, or the call is a counted [`Decline`].
-pub fn enter(cpu: &mut CpuAbi, guest: &mut Guest) -> Step {
-    let prediction = match predict(cpu, guest) {
-        Ok(p) => p,
-        Err(why) => return decline(why),
-    };
-    match apply(&prediction, cpu, guest) {
-        Ok(target) => {
-            ANSWERED.fetch_add(1, Ordering::Relaxed);
-            Step::Answered { target }
-        }
-        Err(_) => decline(Decline::Fault),
-    }
+/// At the entry: the kernel answers, and the caller returns to the
+/// target. A call it cannot answer panics by its [`Decline`].
+pub fn enter(cpu: &mut CpuAbi, guest: &mut Guest) -> u32 {
+    let prediction = predict(cpu, guest).unwrap_or_else(|why| decline(why));
+    let target = apply(&prediction, cpu, guest).unwrap_or_else(|_| decline(Decline::Fault));
+    ANSWERED.fetch_add(1, Ordering::Relaxed);
+    target
 }
 
 /// Put `prediction` in place of the call: the record, the registers and

@@ -138,21 +138,24 @@ fn the_unarmed_exits_leave_retails_registers() {
     );
 }
 
+/// Each decline panics by name, before anything is written.
 #[test]
-fn declines_are_counted_by_reason() {
+fn declines_panic_by_name() {
     let _one = ARM.lock().unwrap_or_else(|e| e.into_inner());
-    reset();
     let (cpu, mut g) = call();
+    let panics = |cpu: CpuAbi, g: &mut Guest| {
+        let message = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| enter(&mut { cpu }, g)))
+            .expect_err("a decline panics");
+        message.downcast_ref::<String>().cloned().unwrap_or_default()
+    };
     let mut env = cpu;
     env.mxcsr = 0x1f80;
-    assert_eq!(enter(&mut env, &mut g), Step::Guest);
+    assert!(panics(env, &mut g).ends_with("seats: aim-assist: float"));
     g.set_u32(DEF + 0x2c8, MAX_TRIGGERS as u32 + 1).unwrap();
-    assert_eq!(enter(&mut { cpu }, &mut g), Step::Guest);
+    assert!(panics(cpu, &mut g).ends_with("seats: aim-assist: triggers"));
     g.set_u32(DEF + 0x2c8, 1).unwrap();
     g.set_u32(DATA + 2 * 12 + 8, 0x0100_0000).unwrap();
-    assert_eq!(enter(&mut { cpu }, &mut g), Step::Guest);
-    assert_eq!(status().declined, [1, 1, 1]);
-    assert_eq!(status().answered, 0);
+    assert!(panics(cpu, &mut g).ends_with("seats: aim-assist: fault"));
 }
 
 /// The kernel answers every call from the first, with nothing proven
@@ -165,11 +168,11 @@ fn the_kernel_answers_from_the_first_call() {
     for _ in 0..3 {
         g.set_u32(OUT + 0x14, 0).unwrap();
         let mut entering = cpu;
-        assert_eq!(enter(&mut entering, &mut g), Step::Answered { target: RETURN });
+        assert_eq!(enter(&mut entering, &mut g), RETURN);
         assert_eq!(entering.esp, STACK + 8);
         assert_eq!(g.u32(OUT + 0x14).unwrap(), 0x20, "the answer writes the record");
     }
-    assert_eq!(status(), Status { answered: 3, declined: [0; 3] });
+    assert_eq!(status(), Status { answered: 3 });
     reset();
     assert_eq!(status(), Status::default());
 }

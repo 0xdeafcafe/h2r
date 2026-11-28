@@ -76,7 +76,9 @@ pub(crate) fn install(b: &mut Builder) {
                 if pc == point.base || site {
                     let mut mem = ctx.memory();
                     let Some(transfer) = run(cpu, &mut mem, pc)? else {
-                        unimplemented!("seats: {}: unported path at {pc:#x}", sim_seats::SEATS[i].name);
+                        let cause = engine::sim_native::take_decline()
+                            .map_or_else(|| format!("unported path at {pc:#x}"), |(at, why)| format!("{why} at {at:#x}"));
+                        unimplemented!("seats: {}: {cause}", sim_seats::SEATS[i].name);
                     };
                     ANSWERED[i].fetch_add(1, Ordering::Relaxed);
                     return Ok(transfer);

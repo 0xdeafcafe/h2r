@@ -30,10 +30,9 @@
 //! `8b4d0`), [`Decline::Announce`] (a local player's HUD text and announcer
 //! sound in `19e890`) and [`Decline::EveryPlayer`] (an event naming no
 //! player, which `15dd40` never builds); and [`Decline::Fault`], a read
-//! that faults or a seconds divisor of 0. Each is a named, counted error
-//! (logged the first time each map) that the lifted body still runs, so
-//! the point is **not** `replaces_guest` until they are ported. Every
-//! other call the kernel answers.
+//! that faults or a seconds divisor of 0. Each is
+//! `unimplemented!("seats: respawn-ready: <cause>")`; no lifted body runs
+//! in its place. Every other call the kernel answers.
 
 mod countdown;
 
@@ -61,7 +60,7 @@ const TICKS: u32 = 0x0051_0c54;
 const USERS: u32 = 0x0055_e4d0;
 const STRIDE: u32 = 0x21c;
 
-/// Why a call was left to the guest.
+/// Why the kernel cannot answer a call: the cause its panic names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
     /// A read of the call's inputs faulted, or the seconds divisor
@@ -89,52 +88,29 @@ impl Decline {
             Decline::EveryPlayer => "every-player",
         }
     }
-
-    fn index(self) -> usize {
-        self as usize
-    }
 }
 
 /// The arm's counters since the map loaded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Status {
     pub answered: u64,
-    /// Calls the kernel cannot answer yet, by [`Decline::ALL`] order:
-    /// named errors, each logged once a map, that the lifted body still
-    /// runs.
-    pub declined: [u64; 4],
-}
-
-impl Status {
-    pub fn declined_total(&self) -> u64 {
-        self.declined.iter().sum()
-    }
 }
 
 static ANSWERED: AtomicU64 = AtomicU64::new(0);
-static DECLINED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
 pub fn status() -> Status {
     let read = |c: &AtomicU64| c.load(Ordering::Relaxed);
-    Status { answered: read(&ANSWERED), declined: std::array::from_fn(|i| read(&DECLINED[i])) }
+    Status { answered: read(&ANSWERED) }
 }
 
-/// Clear the counters. Called at map load, so each map logs its first
-/// error of each kind.
+/// Clear the counter. Called at map load.
 pub fn reset() {
     ANSWERED.store(0, Ordering::Relaxed);
-    for c in &DECLINED {
-        c.store(0, Ordering::Relaxed);
-    }
 }
 
-/// Count a call the kernel cannot answer, and say so the first time each
-/// map: it is an unported path, not a fallback.
-fn decline(why: Decline) -> Step {
-    if DECLINED[why.index()].fetch_add(1, Ordering::Relaxed) == 0 {
-        eprintln!("sim: seats respawn-ready: unported path `{}`; the lifted body runs it (counted in sim.arms)", why.name());
-    }
-    Step::Guest
+/// A call the kernel cannot answer: an unported path, by name.
+fn decline(why: Decline) -> ! {
+    unimplemented!("seats: respawn-ready: {}", why.name())
 }
 
 /// `eax`, `ecx` and `edx` as a callee leaves them.
@@ -394,15 +370,6 @@ impl Prediction {
     }
 }
 
-/// What [`enter`] did with a call.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Step {
-    /// The kernel answered; the caller returns to `target`.
-    Answered { target: u32 },
-    /// An unported path: a counted, logged [`Decline`]; the lifted body runs it.
-    Guest,
-}
-
 /// The kernel's prediction for the call `cpu` is entering.
 pub fn predict(cpu: &CpuAbi, g: &Guest) -> Result<Prediction, Decline> {
     let mut m = Mem::new(g);
@@ -434,19 +401,13 @@ pub fn apply(prediction: &Prediction, cpu: &mut CpuAbi, guest: &mut Guest) -> Re
     Ok(target)
 }
 
-/// At the entry: the kernel answers, or the call is a counted [`Decline`].
-pub fn enter(cpu: &mut CpuAbi, guest: &mut Guest) -> Step {
-    let prediction = match predict(cpu, guest) {
-        Ok(p) => p,
-        Err(why) => return decline(why),
-    };
-    match apply(&prediction, cpu, guest) {
-        Ok(target) => {
-            ANSWERED.fetch_add(1, Ordering::Relaxed);
-            Step::Answered { target }
-        }
-        Err(_) => decline(Decline::Fault),
-    }
+/// At the entry: the kernel answers, and the caller returns to the
+/// target. A call it cannot answer panics by its [`Decline`].
+pub fn enter(cpu: &mut CpuAbi, guest: &mut Guest) -> u32 {
+    let prediction = predict(cpu, guest).unwrap_or_else(|why| decline(why));
+    let target = apply(&prediction, cpu, guest).unwrap_or_else(|_| decline(Decline::Fault));
+    ANSWERED.fetch_add(1, Ordering::Relaxed);
+    target
 }
 
 /// The point the arm is installed at.
