@@ -146,6 +146,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         // Only the indexed range hook can establish this handler's layer.
         return;
     }
+    crate::native_layers::counts_own(&Mem(&mut *mem), FOG_LAYER as u32);
     let mut left = Left::default();
     if claim(mem, ret, &mut left) {
         count_late_kept(&Mem(&mut *mem), FOG_LAYER as u32, &left);

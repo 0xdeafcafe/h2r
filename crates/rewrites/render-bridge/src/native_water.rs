@@ -182,6 +182,7 @@ pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
         return;
     }
     WATER_VIEWS.fetch_add(1, Ordering::Relaxed);
+    crate::native_layers::counts_own(&crate::native_fog::Mem(&mut *mem), WATER_LAYER);
     let mut left = crate::native_layers::Left::default();
     if claim(mem, ret, &mut left) {
         crate::native_fog::count_late_kept(&crate::native_fog::Mem(&mut *mem), WATER_LAYER, &left);

@@ -179,6 +179,15 @@ pub mod layer {
     /// hologram 21. The same body runs for them: each is in the draw mask
     /// `0x00bffdee` with no condition of its own.
     pub const LATE_LAYERS: [u32; 5] = [2, 17, 18, 19, 21];
+    /// The late passes' fog (16) and water (6) at the scene's calls
+    /// (`native_fog`, `native_water`), which count every item they leave.
+    pub const FOG_WATER_LAYERS: [u32; 2] = [16, 6];
+    /// Layer 16's own gate in the body (`0x00044582`): it builds entries
+    /// only when the fog mode is 3 or byte 1 or 2 of the word at
+    /// [`FOG_BYTES`] is set (`native_render::fog::layer_draws`).
+    pub const FOG_LAYER: u32 = 16;
+    pub const FOG_MODE: u32 = 0x0048_574c;
+    pub const FOG_BYTES: u32 = 0x0048_5a74;
     /// The current layer the draw reads.
     pub const CURRENT_LAYER: u32 = 0x0046_7130;
     /// The current list the draw reads.
@@ -258,6 +267,9 @@ pub mod layer {
     /// read): what the guest body draws. `Err` when the list does not
     /// read. Reads only.
     pub fn held(mem: &dyn GuestMemory, layer: u32) -> Result<Vec<(u32, Keep)>, Keep> {
+        if !builds(mem, layer)? {
+            return Ok(Vec::new());
+        }
         let list = mem.u32(CURRENT_LIST).map_err(unread)?;
         if list == 0 {
             return Err(Keep::Unread);
@@ -280,6 +292,16 @@ pub mod layer {
             at = at.wrapping_add(1);
         }
         Ok(out)
+    }
+
+    /// Whether the body builds `layer`'s entries at all: false only for
+    /// layer 16 with its gate off ([`FOG_LAYER`]), which then draws no
+    /// item whatever its bits.
+    pub fn builds(mem: &dyn GuestMemory, layer: u32) -> Result<bool, Keep> {
+        if layer != FOG_LAYER || mem.u32(FOG_MODE).map_err(unread)? == 3 {
+            return Ok(true);
+        }
+        Ok(mem.u32(FOG_BYTES).map_err(unread)? & 0x00ff_ff00 != 0)
     }
 
     /// Whether `layer`'s draw over the current list must run the guest

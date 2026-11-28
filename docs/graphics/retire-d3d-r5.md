@@ -1,6 +1,6 @@
 # Retiring D3D: R5, the rest of a game view
 
-Status: Partly built. Fog, water and layers 2 and 17 draw per item; layers 2, 17, 18, 19 and 21 return without the guest body when the scene draws every item; the sky's constants, rows, look and geometry come from the plan, and its cut passes over the guest's sky.
+Status: Partly built. Fog, water and layers 2 and 17 draw per item; layers 2, 6, 16, 17, 18, 19 and 21 return without the guest body when the scene draws every item; the sky's constants, rows, look and geometry come from the plan, and its cut passes over the guest's sky.
 Code: `crates/rewrites/render-bridge/src/late_sorted.rs` (the sorted runs), `crates/rewrites/native-render/src/sorted_entries.rs`, `crates/rewrites/native-render/src/fog.rs` (`clear_fog`, `sorted_run`), `crates/rewrites/native-render/src/layer_pass.rs` (`sorted_layer_run`), `crates/rewrites/render-bridge/src/native_layers.rs` (`RUN_LAYERS`), `crates/rewrites/native-render/src/sky_material.rs`, `crates/extensions/game/src/native_sky_glue.rs`. Tests: in those files, `crates/rewrites/render-bridge/tests/native_fog.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -30,28 +30,34 @@ keeps its guest draw").
 
 ## The layer draws' return
 
-The layer draw `0x00044550` returns without its body for layers 2, 17,
-18, 19 and 21 as it does for the opaque block's
-(`frame_step::layer::LATE_LAYERS`, `native_layers::return_site`): once no
-item of the list holds the layer's bit, the call makes the body's own
-writes and returns. The body is the same for every layer in the draw mask
-`0x00bffdee`, and none of these has a condition of its own (layer 16's
-does, so fog stays the body's).
+The layer draw `0x00044550` returns without its body for layers 2, 6,
+16, 17, 18, 19 and 21 as it does for the opaque block's
+(`frame_step::layer::LATE_LAYERS`, `FOG_WATER_LAYERS`,
+`native_layers::return_site`): once no item of the list holds the layer's
+bit, the call makes the body's own writes and returns. The body is the
+same for every layer in the draw mask `0x00bffdee`. Layer 16 has a gate of
+its own (`0x00044582`: fog mode 3, or byte 1 or 2 of `0x00485a74`); with
+it off the body builds no entry, so the call returns with its items held
+(`frame_step::layer::builds`).
 
 | Layer | Site | Return counted |
 |---|---|---|
 | 2 | the scene's `0x0002c060`, the alternate view's `0x0002bda8`, the first person's `0x00040289` | `layer_return_{,alt,fp}2_*` |
+| 6, 16 | the late passes' `0x0002c120`, `0x0002c0e9` (not the first person's 16: its items draw at the indexed range hook inside the body) | `layer_return_{6,16}_*` |
 | 17 | the scene's `0x0002c30b` | `layer_return_17_*` |
 | 18, 19 | the camouflage handler's `0x00042015`, `0x0004205f` | `layer_return_{18,19}_*` |
 | 21 | the hologram handler's `0x00042721` | `layer_return_21_*` |
 
 A call with an item held runs the body, `layer_return_<site><layer>_guest_<cause>`;
 each item the body draws is one `scene_kept_*` count, those a stage did not
-count before the call under `unnamed` or the stage's cause. The residual
+count before the call under `unnamed` or the stage's cause. The fog and
+the water count every item they leave themselves (`native_layers::counts_own`). The residual
 census files these calls `kept` (`residual_census::KEPT_LAYERS`), the
 sorted handlers' under the site `sorted`. Tests:
-`r5s_layer_draws_return_when_every_item_is_native` (`native_layers`),
-`a_returned_layer_draw_leaves_the_words_the_guest_body_leaves`
+`r5s_layer_draws_return_when_every_item_is_native`,
+`the_scenes_fog_and_water_return_and_their_kept_items_are_counted_once`
+(`native_layers`), `a_returned_layer_draw_leaves_the_words_the_guest_body_leaves`,
+`a_fog_layer_with_its_gate_off_returns_with_its_items_held`
 (`tests/frame_step_layer.rs`).
 
 ## Fog and water per item

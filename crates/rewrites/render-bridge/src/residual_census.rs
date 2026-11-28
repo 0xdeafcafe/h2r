@@ -470,12 +470,10 @@ pub const LAYER_SITES: [&str; 7] = [
 /// The layer draws a native stage draws items of from the scene, skipping
 /// those items' guest draws, while the guest body runs for every call
 /// (docs/graphics/retire-d3d.md, "By caller"), by [`LAYER_SITES`] index:
-/// the scene's layers 6 (water) and 16 (fog), the first person's 16, the
-/// light passes' 12 and 13, and the object shadow's caster and receiver
-/// layers 10 and 11. Each is [`Status::Partial`]: what its stages refuse
-/// stays the guest's.
-pub const PARTIAL_LAYERS: [(u8, &[u8]); 4] = [
-    (0, &[6, 16]),
+/// the first person's layer 16, the light passes' 12 and 13, and the
+/// object shadow's caster and receiver layers 10 and 11. Each is
+/// [`Status::Partial`]: what its stages refuse stays the guest's.
+pub const PARTIAL_LAYERS: [(u8, &[u8]); 3] = [
     (2, &[16]),
     (3, &[12, 13]),
     (4, &[10, 11]),
@@ -486,10 +484,11 @@ pub const PARTIAL_LAYERS: [(u8, &[u8]); 4] = [
 /// 7, 8 and 20, the alternate view's 1, 3 and 5, the first person's 1, 3,
 /// 7, 8 and 20: `frame_step::layer::LAYERS`) and R5's (the scene's 2 and
 /// 17, the alternate view's and the first person's 2, the sorted
-/// handlers' 18, 19 and 21: `frame_step::layer::LATE_LAYERS`), at the
-/// sites `native_layers::return_site` names. Each is [`Status::Kept`].
+/// handlers' 18, 19 and 21: `frame_step::layer::LATE_LAYERS`; the scene's
+/// water 6 and fog 16: `FOG_WATER_LAYERS`), at the sites
+/// `native_layers::return_site` names. Each is [`Status::Kept`].
 pub const KEPT_LAYERS: [(u8, &[u8]); 4] = [
-    (0, &[1, 2, 3, 5, 7, 8, 17, 20]),
+    (0, &[1, 2, 3, 5, 6, 7, 8, 16, 17, 20]),
     (1, &[1, 2, 3, 5]),
     (2, &[1, 2, 3, 7, 8, 20]),
     (6, &[18, 19, 21]),
@@ -1608,10 +1607,7 @@ mod tests {
         for layer in [1, 3, 5, 7, 8, 20] {
             assert_eq!(status(0, layer), "kept", "the scene's layer {layer}");
         }
-        for layer in [6, 16] {
-            assert_eq!(status(0, layer), "partial", "the scene's layer {layer}");
-        }
-        for layer in [2, 17] {
+        for layer in [2, 6, 16, 17] {
             assert_eq!(status(0, layer), "kept", "the scene's layer {layer}");
         }
         for layer in [18, 19, 21] {
@@ -1640,7 +1636,8 @@ mod tests {
         for &(_, layers) in &KEPT_LAYERS {
             let returns = |l: &u8| {
                 let l = u32::from(*l);
-                crate::frame_step::layer::LAYERS.contains(&l) || crate::frame_step::layer::LATE_LAYERS.contains(&l)
+                use crate::frame_step::layer::{FOG_WATER_LAYERS, LATE_LAYERS, LAYERS};
+                LAYERS.contains(&l) || LATE_LAYERS.contains(&l) || FOG_WATER_LAYERS.contains(&l)
             };
             assert!(layers.iter().all(returns), "a kept layer's draw can return");
         }
