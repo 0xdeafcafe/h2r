@@ -928,16 +928,6 @@ fn range_word(m: &dyn GuestMemory, range: u32, tag: u32) -> Result<u32, MemFault
     })
 }
 
-/// `0x2194a0`: tag `+0xd` is the bank, `0xff` for none.
-fn promotion_bank(m: &dyn GuestMemory, tag: u32) -> Result<u32, MemFault> {
-    let bank = m.u8(tag.wrapping_add(0xd))?;
-    if bank == 0xff {
-        return Ok(0);
-    }
-    let banks = m.u32(m.u32(GESTALT)?.wrapping_add(0x34))?;
-    Ok(banks.wrapping_add((bank as i8 as i32 * 0x34) as u32))
-}
-
 /// The entry's empty answer: its return value and argument bytes.
 fn empty(point: &Point) -> Ret {
     let (ret, pop) = match point.sig {
@@ -1031,7 +1021,7 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
         Body::Pick => pick(&cx, &table).await,
         Body::PromotionBank => {
             let tag = cx.entry().eax;
-            Ok(Ret::new(cx.read(|m| promotion_bank(m, tag))?, 0))
+            Ok(Ret::new(cx.read(|m| engine::sim_sound::playback::bank_row(m, tag))?, 0))
         }
         Body::LoopUpdate => {
             let args = [cx.arg(0)?, cx.arg(1)?, cx.arg(2)?, cx.arg(3)?, cx.arg(4)?, cx.arg(5)?, cx.arg(6)?, cx.arg(7)?];

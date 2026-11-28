@@ -14,6 +14,14 @@ const TIME: u32 = 0x0052_0000;
 const SEEDS: u32 = 0x0052_0100;
 const GLOBALS: u32 = TIME + 0x2800;
 const RECORD: u32 = 0x0060_0000;
+/// The map's tag entries and tag data ([`guest`], [`with_effect`]).
+const TAGS: u32 = 0x0062_0000;
+const SOUND_DEF: u32 = TAGS + 0x100;
+const GESTALT_AT: u32 = TAGS + 0x200;
+const BANKS: u32 = TAGS + 0x300;
+const LIST_DEF: u32 = TAGS + 0x400;
+const LIST_ROWS: u32 = TAGS + 0x500;
+const SCENARIO_AT: u32 = TAGS + 0x800;
 const TAG: TagIndex = TagIndex(0xe100_0001);
 
 /// Levels that name their source as not ready.
@@ -52,6 +60,10 @@ fn guest(tick: u32) -> FakeGuest {
         g.put_u8(GLOBALS + o, 1);
     }
     g.put_u32(points::OBJECTS.base, TIME + 0x2000);
+    // The map's tags: tag 1 ([`TAG`]) of no group yet, its definition with
+    // bank 0 and no promotion.
+    g.map(TAGS, 0x1000).put_u32(points::TAG_ENTRIES.base, TAGS).put_u32(TAGS + 16 + 8, SOUND_DEF);
+    g.put_u8(SOUND_DEF + 0xc, 0xff).put_u8(SOUND_DEF + 0xd, 0);
     g
 }
 
@@ -288,7 +300,6 @@ fn start(levels: Arc<dyn Levels + Send + Sync>, gate: u32) -> (Shared, entry::te
     record(&mut g);
     let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, move |c, m| {
         match c.target {
-            start_layer::EFFECT_OF => Regs::default(),
             START_GATE => {
                 m.set_u32(c.args[1], 3).unwrap();
                 Regs { eax: gate, ..Default::default() }
@@ -314,11 +325,7 @@ fn a_start_record_is_admitted_into_the_table() {
     let mut g = with_tag(guest(4));
     record(&mut g);
     let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, |c, m| match c.target {
-        // The sound's custom playback row has no effect: no start row.
-        start_layer::EFFECT_OF => {
-            assert_eq!((c.edi, c.args[0]), (Some(TAG.0), NONE));
-            Regs::default()
-        }
+        // The sound's tag is of no group: no effect, no start row.
         START_GATE => {
             assert_eq!((c.eax, c.args[0]), (Some(RECORD), TAG.0));
             m.set_u32(c.args[1], 3).unwrap();
@@ -337,7 +344,7 @@ fn a_start_record_is_admitted_into_the_table() {
     assert_eq!((i.tag, i.start, i.options.channel), (TAG, 4, 3));
     assert_eq!(t.ledger.draws, 2, "the gain and pitch draws");
     assert_ne!(r.guest.u32(SEEDS + 4), Ok(0x1234_5678), "the seed word moved");
-    assert_eq!(t.ledger.entry_guest_calls, 3);
+    assert_eq!(t.ledger.entry_guest_calls, 2);
     assert!(t.sounds.starts().is_empty());
 }
 
@@ -352,7 +359,7 @@ fn a_start_refuses_by_name_when_its_levels_do() {
     // A closed gate admits nothing and calls no rule.
     let (t, r) = start(Arc::new(Flat(10.0)), 0);
     assert_eq!(r.result.unwrap().eax, NONE);
-    assert_eq!(r.calls.iter().map(|c| c.target).collect::<Vec<_>>(), [start_layer::EFFECT_OF, START_GATE]);
+    assert_eq!(r.calls.iter().map(|c| c.target).collect::<Vec<_>>(), [START_GATE]);
     assert!(lock(&t).sounds.instances().is_empty());
 }
 
@@ -531,10 +538,19 @@ fn the_ambience_runs_the_guests_blend_with_its_candidates() {
 }
 
 const EFFECT: u32 = RECORD + 0x800;
-const CUSTOM: u32 = 0xe400_0009;
+/// A custom playback word: row 9 of the scenario's list (kind 2).
+const CUSTOM: u32 = (2 << 30) | 9;
 
-/// An effect in the map: its components (group, tag, gain, flags).
+/// An effect in the map: its components (group, tag, gain, flags). Both
+/// [`TAG`]'s bank row (now a `snd!`) and [`CUSTOM`]'s row name it.
 fn with_effect(g: &mut FakeGuest, parts: &[(u32, TagIndex, f32, u32)]) {
+    g.put_u32(TAGS + 16, engine::sim_sound::playback::SOUND_GROUP);
+    g.put_u32(GESTALT, GESTALT_AT).put_u32(GESTALT_AT + 0x34, BANKS);
+    g.put_u32(points::SCENARIO.base, SCENARIO_AT).put_u32(SCENARIO_AT + 0x324, 3);
+    g.put_u32(TAGS + 3 * 16 + 8, LIST_DEF).put_u32(LIST_DEF + 4, LIST_ROWS);
+    for row in [BANKS, LIST_ROWS + 9 * 0x38 + 4] {
+        g.put_u32(row + 0x2c, 1).put_u32(row + 0x30, EFFECT);
+    }
     g.put_u32(EFFECT + 8, parts.len() as u32).put_u32(EFFECT + 0xc, EFFECT + 0x10);
     for (i, (group, tag, gain, flags)) in parts.iter().enumerate() {
         let c = EFFECT + 0x10 + 16 * i as u32;
@@ -542,15 +558,10 @@ fn with_effect(g: &mut FakeGuest, parts: &[(u32, TagIndex, f32, u32)]) {
     }
 }
 
-/// The start layer's guest calls: the effect found, every gate open, no
-/// rule, no custom playback row. The gates' records' flags, in order.
+/// The start layer's guest calls: every gate open, no rule. The gates'
+/// records' flags, in order.
 fn start_layer_guest(gates: &mut Vec<(u32, u32)>, open: bool) -> impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs + '_ {
     move |c, m| match c.target {
-        start_layer::EFFECT_OF => {
-            m.set_u32(c.args[1], EFFECT).unwrap();
-            Regs { eax: 1, ..Default::default() }
-        }
-        start_layer::PLAYBACK_ROW => Regs::default(),
         START_GATE => {
             let record = c.eax.unwrap();
             gates.push((m.u32(record).unwrap(), m.u32(record + 0x58).unwrap()));
@@ -577,8 +588,6 @@ fn a_tag_start_admits_its_sound_and_starts_its_loop_on_its_own_handle() {
     let ret = r.result.unwrap();
     assert_eq!(ret.pop, 4);
     let start = Handle::from_raw(ret.eax);
-    assert_eq!(r.calls[0].edi, Some(NONE), "a tag start has no sound tag");
-    assert_eq!(r.calls[0].args[0], CUSTOM);
     // The component's record: flags 0x95 with bit 5, the start's table.
     assert_eq!(gates, [(0xb5, STARTED_TABLE)]);
     let t = lock(&t);
