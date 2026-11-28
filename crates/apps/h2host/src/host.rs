@@ -33,16 +33,14 @@ fn environment(layout: &Layout) -> Vec<(&'static str, PathBuf)> {
 fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
     Box::new(move |mut host: app::GuestHost| -> Result<()> {
         let xbe = boot::read_xbe(&layout.disc)?;
-        let configure = |backend: d3d::GfxBackend| match d3d::pipeline_store::default_path() {
-            Some(path) => backend.with_pipeline_cache(path),
-            None => backend,
+        let view = boot::run_opts::DisplayView {
+            native_target: Arc::new(host.native_target()),
+            viewer_output: None,
+            viewer_lod: None,
+            display_size: Arc::new(host.display_size()),
         };
-        let (gfx, view) = boot::d3d_glue::window_targets(
-            &store,
-            Arc::new(host.native_target()), host.display_size(),
-            || configure(d3d::GfxBackend::new(host.gfx_context())),
-            || configure(d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())),
-        );
+        let gfx = host.gfx_context();
+        let presenter = host.presenter(|| app::overlay::marks::FrameMarks::Raw);
         let input = host.take_input();
         // The player-one pad's handle: no key arrives, but it records the
         // device last used, which picks the button icons (the remote's, or
@@ -60,8 +58,8 @@ fn guest(layout: Layout, store: Arc<settings::Store>) -> app::worker::GuestFn {
         let cloud = cloud_saves(&live, &layout.data, &store);
         let hosted = boot::Host {
             gfx: Some(gfx),
+            presenter: Some(presenter),
             gfx_view: Some(view),
-            render_thread: boot::d3d_glue::render_thread_requested(),
             host_light: false,
             host_bots: false,
             audio_sink: Some(audio_sink()),

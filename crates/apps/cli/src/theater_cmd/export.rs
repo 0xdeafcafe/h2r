@@ -300,7 +300,7 @@ pub(super) fn host(capture: Arc<ClipCapture>, host_bots: bool) -> Result<boot::H
     let raster: boot::run_opts::NativeSize = Arc::new(|| SIZE);
     let writer = capture.clone();
     let view = boot::theater::HostView::new(
-        boot::d3d_glue::share_context(frames.context()),
+        boot::render_glue::share_context(frames.context()),
         raster,
         |size| size,
         move |view, size| {

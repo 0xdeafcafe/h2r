@@ -4,7 +4,7 @@ The host shell: the window, presentation of the guest's frames, live input, the 
 
 ## Where it sits
 
-`apps`. Uses `gfx`, `input`, `audio`, `xapi`, `timeline`, `debug-menu` and `lockstep`. Used by `cli`, `h2host` and `uwp-host`; `d3d` names it in its tests.
+`apps`. Uses `gfx`, `input`, `audio`, `xapi`, `timeline`, `debug-menu` and `lockstep`. Used by `cli`, `h2host` and `uwp-host`.
 
 ## Layout
 

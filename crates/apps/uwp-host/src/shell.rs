@@ -234,7 +234,7 @@ fn run() -> Result<()> {
     }
     if std::env::var_os("H2_PIPELINE_CACHE").is_none() {
         // SAFETY: before the guest, render and audio threads exist.
-        unsafe { std::env::set_var("H2_PIPELINE_CACHE", local.join("cache").join(d3d::pipeline_store::FILE_NAME)) };
+        unsafe { std::env::set_var("H2_PIPELINE_CACHE", local.join("cache").join(gfx::pipeline_store::FILE_NAME)) };
     }
     let layout = h2host::Layout::for_package(&package, &local);
     let size = pixel_size(&window)?;
