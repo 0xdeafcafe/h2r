@@ -355,7 +355,7 @@ pub fn predict(c: &CpuAbi, m: &impl Memory, sp: u32, port: u32) -> Result<Predic
     };
 
     let mut x = load_fpu(c);
-    let (outcome, mxcsr) = read_tracked(
+    let (outcome, mxcsr) = read_guest(
         &device,
         c.mxcsr,
         &mut Model {
