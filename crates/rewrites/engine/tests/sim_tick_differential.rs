@@ -17,8 +17,9 @@
 //! loaded that the driver does not). Both runs seed the tick clock, and the
 //! page compare covers its writes.
 //!
-//! `ai_update_matches_lifted`, `hs_update_matches_lifted`: the Rust phase
-//! bodies against their lifted functions, the unported callees stubbed.
+//! `ai_update_matches_lifted`, `hs_update_matches_lifted`,
+//! `post_game_matches_lifted`: the Rust phase bodies against their lifted
+//! functions, the unported callees stubbed.
 //!
 //! Needs the user's XBE (`lifted::image`); skipped without it.
 #![cfg(feature = "differential")]
@@ -264,6 +265,13 @@ type Stubbed = (u32, u32);
 /// The lifted function at `entry`, run to its return on `mem`: its calls
 /// into `stubs`. A tail jump into a stub counts as its call.
 fn lifted_phase(entry: u32, stubs: &[u32], mem: &mut FlatMemory) -> Vec<Stubbed> {
+    lifted_phase_popping(entry, stubs, &[], mem)
+}
+
+/// [`lifted_phase`] where the stubs in `pops` return as `ret n` does,
+/// popping `n` bytes of stack arguments.
+fn lifted_phase_popping(entry: u32, stubs: &[u32], pops: &[(u32, u32)], mem: &mut FlatMemory) -> Vec<Stubbed> {
+    let pop = |t: u32| pops.iter().find(|p| p.0 == t).map_or(0, |p| p.1);
     let image = lifted::image::Image::get().expect("image");
     let mut code = image.original();
     code.prime(entry);
@@ -286,7 +294,7 @@ fn lifted_phase(entry: u32, stubs: &[u32], mem: &mut FlatMemory) -> Vec<Stubbed>
                 seen.push((target, cpu.gpr[7]));
                 let sp = cpu.gpr[4];
                 cpu.eip = mem.read_u32(sp).unwrap();
-                cpu.gpr[4] = sp + 4;
+                cpu.gpr[4] = sp + 4 + pop(target);
                 cpu.gpr[0] = 0;
             }
             Flow::Return { target } if target == EXIT => return seen,
@@ -428,4 +436,61 @@ fn hs_update_matches_lifted() {
         ran += ours.iter().filter(|c| c.0 == EXECUTE).count();
     }
     assert!(ran > 100, "the cases ran threads: {ran}");
+}
+
+#[test]
+fn post_game_matches_lifted() {
+    use engine::post_game::{self, CALLEES, END, ENGINE, ENGINES, GAME, HELD, SCORED, SHOW};
+    let Some(ram) = image_ram() else { return };
+    const G: u32 = 0x0060_0000;
+    const E: u32 = 0x0060_2000;
+    let f: fn(entry::Cx) -> EntryFuture = |cx| {
+        Box::pin(async move {
+            post_game::run(&cx, 0x40).await?;
+            Ok(entry::Ret::new(0, 0))
+        })
+    };
+    let mut cases = 0;
+    for engine in [0u32, 1] {
+        for mode in [1u8, 4] {
+            for over in [0u8, 1] {
+                for state in [0i16, 1, 2, 3] {
+                    for round in [0x1ei16, 0x1f] {
+                        for countdown in [0u32, 1, 2] {
+                            for (ending, ended) in [(0u32, 0u8), (1, 0), (1, 1)] {
+                                for (show, held) in [(0u8, 0u8), (1, 0), (1, 1)] {
+                                    let why = format!(
+                                        "engine {engine} mode {mode} over {over} state {state} round {round} \
+                                         countdown {countdown} ending {ending} ended {ended} show {show} held {held}"
+                                    );
+                                    let mut mem = ram.clone();
+                                    put(&mut mem, GAME, &G.to_le_bytes());
+                                    put(&mut mem, ENGINE, &E.to_le_bytes());
+                                    put(&mut mem, G + 0xc14, &2u32.to_le_bytes());
+                                    put(&mut mem, ENGINES + 8, &engine.to_le_bytes());
+                                    put(&mut mem, E + 0xc, &[mode]);
+                                    put(&mut mem, E + 0x1128, &[over]);
+                                    put(&mut mem, G, &0x0100u32.to_le_bytes());
+                                    put(&mut mem, G + 0x6c, &state.to_le_bytes());
+                                    put(&mut mem, G + 0x6e, &round.to_le_bytes());
+                                    put(&mut mem, G + 0xc00, &countdown.to_le_bytes());
+                                    put(&mut mem, G + 0xc04, &ending.to_le_bytes());
+                                    put(&mut mem, G + 0xc08, &[ended]);
+                                    put(&mut mem, SHOW, &[show]);
+                                    put(&mut mem, HELD, &[held]);
+                                    let (ours, guest) = rust_phase(f, &mem);
+                                    let lifted = lifted_phase_popping(post_game::ENTRY, &CALLEES, &[(END, 4), (SCORED, 4)], &mut mem);
+                                    let targets = |v: &[Stubbed]| v.iter().map(|c| c.0).collect::<Vec<_>>();
+                                    assert_eq!(targets(&ours), targets(&lifted), "{why}");
+                                    same_ram(&mem, &guest, &why);
+                                    cases += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(cases, 2 * 2 * 2 * 4 * 2 * 3 * 3 * 3);
 }
