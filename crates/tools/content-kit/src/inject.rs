@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::kit::{self, Facts};
 use crate::placed::Placed;
-use crate::{KIT_VERSION, Style};
+use crate::Style;
 
 /// What the kit costs a map.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,9 +58,10 @@ pub struct Added {
     pub costs: Costs,
 }
 
-/// The string a map carrying this kit interns.
+/// The string a map carrying this kit interns: the manifest's
+/// `<item>_kit_v<kit_version>`.
 pub fn marker_string() -> String {
-    format!("pogo_kit_v{KIT_VERSION}")
+    crate::source::manifest().marker_string()
 }
 
 /// What [`add_pogo`] reads from the map, given instead.

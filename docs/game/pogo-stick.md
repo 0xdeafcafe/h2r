@@ -60,7 +60,7 @@ triggers, barrels, magazines, melee damage or zoom.
 It is held as a weapon class both player animation graphs already have an
 `idle` for, because a unit refuses a weapon whose class its graph lacks
 ([objects.md](../halo1/objects.md)): the magnum's, `pistol` and `hp`
-(`kit::PREFERRED_CLASS`), named in each weapon's tag file. The package's
+(`hold.class` in `content/pogo/kit.yaml`), named in each weapon's tag file. The package's
 build does not read the player graphs; `inject::add_pogo` does
 (`kit::player_class`), and the ignored disc test
 `every_multiplayer_map_holds_the_class` says whether every map has the
@@ -104,7 +104,7 @@ package give the same bytes on every machine, and the bytes equal
   under the map file's stem and the name in its header. A map without all
   three (not multiplayer, refused, off) has none, and then nothing below
   happens on it.
-- **The kit's version.** `KIT_VERSION` (in `crates/formats/pogo`) is 2
+- **The kit's version.** `kit_version` in `content/pogo/kit.yaml` is 2
   and is the version of `inject::add_pogo`'s output, which interns
   `pogo_kit_v<n>` in the map it builds (Studio's `model.*` with `pogo:
   true` uses it). The package's build interns no string; a changed

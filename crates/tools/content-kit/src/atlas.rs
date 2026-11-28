@@ -7,6 +7,13 @@
 //! The Pogo Stick (`content/pogo/kit.yaml`) and the Flood pod
 //! (`content/flood-pod/kit.yaml`) are items; the builders that turn an item
 //! into tags (`kit`, `inject`) read the manifest, never a table of their own.
+//! Beside the atlas the manifest holds the item's kit version, tag paths,
+//! material, region, bounding sphere, physics, rig, node and marker names
+//! and the weapon class it is held as; every field but `item` and `atlas`
+//! is optional, and an accessor names the field a builder needs when the
+//! item has none.
+
+use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
@@ -21,6 +28,101 @@ pub struct Manifest {
     /// The most triangles the item's mesh has; none for no limit.
     #[serde(default)]
     pub max_triangles: Option<usize>,
+    /// The kit's version: part of the string (`<item>_kit_v<n>`) a map
+    /// carrying the kit interns.
+    #[serde(default)]
+    pub kit_version: Option<u32>,
+    /// The tag path the item's tags are named by (the same for each group).
+    #[serde(default)]
+    pub tag_path: Option<String>,
+    /// The folder under which an item with several looks names its tags.
+    #[serde(default)]
+    pub folder: Option<String>,
+    /// The global material the item is made of, where the map has it.
+    #[serde(default)]
+    pub material: Option<String>,
+    /// The one region and permutation of the item's model.
+    #[serde(default)]
+    pub region: Option<String>,
+    /// The object's bounding sphere, model space.
+    #[serde(default)]
+    pub bounding: Option<Bounding>,
+    /// The physics model's one sphere.
+    #[serde(default)]
+    pub physics: Option<Physics>,
+    /// The unit's field of view, radians.
+    #[serde(default)]
+    pub field_of_view: Option<f32>,
+    /// Where the item's moving parts and contact points are.
+    #[serde(default)]
+    pub rig: RigData,
+    /// The nodes a source has, in order, each with its parent.
+    #[serde(default)]
+    pub nodes: Vec<NodeSpec>,
+    /// The markers a source has, each on its node.
+    #[serde(default)]
+    pub markers: Vec<MarkerSpec>,
+    /// The weapon class and type the item is held as.
+    #[serde(default)]
+    pub hold: Option<Hold>,
+}
+
+/// A bounding sphere, model space: its middle and radius.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Bounding {
+    pub offset: [f32; 3],
+    pub radius: f32,
+}
+
+/// A physics model's one sphere.
+#[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Physics {
+    pub centre: [f32; 3],
+    pub radius: f32,
+    /// Kilograms.
+    pub mass: f32,
+}
+
+/// An item's rig: named points (model space, world units) and named
+/// numbers (lengths, angles, counts).
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RigData {
+    #[serde(default)]
+    pub points: BTreeMap<String, [f32; 3]>,
+    #[serde(default)]
+    pub values: BTreeMap<String, f32>,
+}
+
+/// A node a source has: its name and its parent's, none for the root.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NodeSpec {
+    pub name: String,
+    #[serde(default)]
+    pub parent: Option<String>,
+}
+
+/// A marker a source has: its name and its node's. Its place is the rig
+/// point of the same name when the rig has one.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MarkerSpec {
+    pub name: String,
+    pub node: String,
+}
+
+/// The weapon an item is held as: the player bipeds whose animation
+/// graphs must hold it, the class and type preferred, and the animation
+/// mode a unit on foot holds a weapon in.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hold {
+    pub bipeds: Vec<String>,
+    pub class: [String; 2],
+    pub mode: String,
 }
 
 /// An atlas: its size in pixels and its named rectangles.
@@ -44,6 +146,86 @@ pub struct Region {
 }
 
 impl Manifest {
+    fn need<'a, T>(&self, field: &str, v: &'a Option<T>) -> &'a T {
+        match v {
+            Some(v) => v,
+            None => panic!("content/{}/kit.yaml has no `{field}`", self.item),
+        }
+    }
+
+    /// The kit's version.
+    pub fn kit_version(&self) -> u32 {
+        *self.need("kit_version", &self.kit_version)
+    }
+
+    /// The string a map carrying this kit interns: `<item>_kit_v<n>`.
+    pub fn marker_string(&self) -> String {
+        format!("{}_kit_v{}", self.item, self.kit_version())
+    }
+
+    /// The tag path the item's tags are named by.
+    pub fn tag_path(&self) -> &str {
+        self.need("tag_path", &self.tag_path)
+    }
+
+    /// The folder an item's looks are named under.
+    pub fn folder(&self) -> &str {
+        self.need("folder", &self.folder)
+    }
+
+    /// The global material the item is made of.
+    pub fn material(&self) -> &str {
+        self.need("material", &self.material)
+    }
+
+    /// The one region and permutation of the item's model.
+    pub fn region(&self) -> &str {
+        self.need("region", &self.region)
+    }
+
+    /// The bounding sphere.
+    pub fn bounding(&self) -> Bounding {
+        *self.need("bounding", &self.bounding)
+    }
+
+    /// The physics sphere.
+    pub fn physics(&self) -> Physics {
+        *self.need("physics", &self.physics)
+    }
+
+    /// The unit's field of view, radians.
+    pub fn field_of_view(&self) -> f32 {
+        *self.need("field_of_view", &self.field_of_view)
+    }
+
+    /// The weapon class the item is held as.
+    pub fn hold(&self) -> &Hold {
+        self.need("hold", &self.hold)
+    }
+
+    /// A rig point by name.
+    pub fn point(&self, name: &str) -> [f32; 3] {
+        *self
+            .rig
+            .points
+            .get(name)
+            .unwrap_or_else(|| panic!("content/{}/kit.yaml: no rig point {name}", self.item))
+    }
+
+    /// A rig number by name.
+    pub fn value(&self, name: &str) -> f32 {
+        *self
+            .rig
+            .values
+            .get(name)
+            .unwrap_or_else(|| panic!("content/{}/kit.yaml: no rig value {name}", self.item))
+    }
+
+    /// The node names, in order.
+    pub fn node_names(&self) -> Vec<&str> {
+        self.nodes.iter().map(|n| n.name.as_str()).collect()
+    }
+
     /// Parses and checks a manifest: every region inside the atlas, with
     /// area, named once, and none overlapping another.
     pub fn parse(text: &str) -> Result<Manifest> {
@@ -71,6 +253,30 @@ impl Manifest {
                     o.name
                 );
             }
+        }
+        for (i, n) in m.nodes.iter().enumerate() {
+            ensure!(
+                m.nodes[..i].iter().all(|o| o.name != n.name),
+                "{}: node {} twice",
+                m.item,
+                n.name
+            );
+            if let Some(p) = &n.parent {
+                ensure!(
+                    m.nodes[..i].iter().any(|o| &o.name == p),
+                    "{}: node {} has parent {p}, which does not come before it",
+                    m.item,
+                    n.name
+                );
+            }
+        }
+        for k in &m.markers {
+            ensure!(
+                m.nodes.iter().any(|n| n.name == k.node),
+                "{}: marker {} on no node of the manifest",
+                m.item,
+                k.name
+            );
         }
         Ok(m)
     }

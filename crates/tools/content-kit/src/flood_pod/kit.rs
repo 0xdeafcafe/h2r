@@ -1,7 +1,7 @@
 //! The pod as tags in a map's [`TagSet`]: its atlas (`bitm`), a shader
 //! drawing it (`shad`), its render model (`mode`), a physics model
 //! (`phmo`), its model (`hlmt`) and the object (`vehi`), all named
-//! [`super::TAG_PATH`].
+//! [`super::tag_path`].
 //!
 //! Nothing here is copied from a retail tag. What a map must supply is read
 //! from it when the kit is built ([`Facts`]) and names tags the map already
@@ -11,7 +11,7 @@
 //!   onto a retail template the map has (`crate::kit::LAYOUTS`, the
 //!   first the map can draw), with our atlas as its base map.
 //! - **The material.** The `hlmt` and `phmo` name one of the map's global
-//!   materials: [`MATERIAL`] where the map has it.
+//!   materials: the manifest's `material` where the map has it.
 //!
 //! **The object is a vehicle**, the class Halo 2's own insertion pod is
 //! (docs/game/firefight.md, "The Flood pod"), so the arrival code that
@@ -36,27 +36,8 @@ use crate::kit::Shading;
 use crate::mesh::{self, Mesh};
 use crate::texture::{self, Rgba};
 
-use super::TAG_PATH;
 use super::source::{self, Source};
-
-/// The global material the pod is made of, where the map has it; else the
-/// map's first.
-pub const MATERIAL: &str = "soft_organic_flesh";
-
-/// The pod's bounding sphere, model space: its middle, and a radius
-/// covering the tendrils and the petals laid open.
-pub const BOUNDING_OFFSET: [f32; 3] = [0.0, 0.0, 0.6];
-pub const BOUNDING_RADIUS: f32 = 1.3;
-/// The physics model's one sphere: the root bulb.
-pub const PHYSICS_CENTRE: [f32; 3] = [0.0, 0.0, 0.38];
-pub const PHYSICS_RADIUS: f32 = 0.38;
-/// Kilograms.
-pub const PHYSICS_MASS: f32 = 600.0;
-/// The unit's field of view, radians (70 degrees): no seat shows it.
-pub const FIELD_OF_VIEW: f32 = 1.221_730_5;
-
-/// The one region and permutation of the pod.
-pub const REGION: &str = "default";
+use super::{manifest, tag_path};
 
 /// What a map supplies to the kit.
 #[derive(Clone, Debug)]
@@ -71,10 +52,11 @@ impl Facts {
     pub fn read<R: Read + Seek>(map: &mut Map<R>) -> Result<Facts> {
         let meta = tags::object::Metadata::read(map).map_err(|e| anyhow!("tag memory: {e}"))?;
         let mut shading = Shading::read_with(map, &meta)?;
+        let material = manifest().material();
         let globals =
             h1convert::materials::global_materials(map, &meta).map_err(|e| anyhow!("{e}"))?;
-        if let Some(index) = globals.iter().position(|g| g == MATERIAL) {
-            shading.material = (MATERIAL.to_owned(), index as i16);
+        if let Some(index) = globals.iter().position(|g| g == material) {
+            shading.material = (material.to_owned(), index as i16);
         }
         Ok(Facts { shading })
     }
@@ -158,9 +140,9 @@ pub fn model(source: &Source, mesh: &Mesh) -> Result<src::Model> {
         markers,
         nodes,
         regions: vec![src::Region {
-            name: REGION.to_owned(),
+            name: manifest().region().to_owned(),
             permutations: vec![src::Permutation {
-                name: REGION.to_owned(),
+                name: manifest().region().to_owned(),
                 flags: 0,
                 lods: [0; 5],
             }],
@@ -226,9 +208,10 @@ pub fn install_from(
     atlas: &Rgba,
 ) -> Result<Tags> {
     groups(set);
+    let tag_path = tag_path();
     for group in GROUPS {
-        if set.find(FourCC(*group), TAG_PATH).is_some() {
-            bail!("the map already has {TAG_PATH}.{}", FourCC(*group));
+        if set.find(FourCC(*group), tag_path).is_some() {
+            bail!("the map already has {tag_path}.{}", FourCC(*group));
         }
     }
     ensure!(
@@ -245,7 +228,7 @@ pub fn install_from(
     let shading = &facts.shading;
 
     let bitmap = texture::bitmap(atlas)?
-        .install(set, TAG_PATH)
+        .install(set, tag_path)
         .map_err(|e| anyhow!("bitm: {e}"))?;
     let maps = HashMap::from([(
         Role::Base,
@@ -259,7 +242,7 @@ pub fn install_from(
         .library
         .build(shading.layout, &maps)
         .map_err(|e| anyhow!("shad: {e}"))?;
-    let shader = set.add_tag(FourCC(*b"shad"), TAG_PATH, TagPayload::Built(shader))?;
+    let shader = set.add_tag(FourCC(*b"shad"), tag_path, TagPayload::Built(shader))?;
 
     let render = convert_model(
         &model,
@@ -269,17 +252,18 @@ pub fn install_from(
             strips: false,
         },
     )
-    .and_then(|c| c.install(set, TAG_PATH))
+    .and_then(|c| c.install(set, tag_path))
     .map_err(|e| anyhow!("mode: {e}"))?;
 
+    let sphere = manifest().physics();
     let physics = rebuild::sphere_physics(
-        PHYSICS_RADIUS,
-        PHYSICS_CENTRE,
-        PHYSICS_MASS,
+        sphere.radius,
+        sphere.centre,
+        sphere.mass,
         &shading.material.0,
     )
     .map_err(|e| anyhow!("phmo: {e}"))?;
-    let physics = set.add_tag(FourCC(*b"phmo"), TAG_PATH, TagPayload::Built(physics))?;
+    let physics = set.add_tag(FourCC(*b"phmo"), tag_path, TagPayload::Built(physics))?;
 
     let hlmt = rebuild::model(&rebuild::Model {
         render,
@@ -288,10 +272,10 @@ pub fn install_from(
         physics: Some(physics),
         nodes: hlmt_nodes(&model),
         regions: vec![rebuild::Region {
-            name: REGION.to_owned(),
+            name: manifest().region().to_owned(),
             collision: -1,
             physics: -1,
-            permutations: vec![(REGION.to_owned(), -1, -1)],
+            permutations: vec![(manifest().region().to_owned(), -1, -1)],
         }],
         materials: vec![rebuild::ModelMaterial {
             name: shading.material.0.clone(),
@@ -300,10 +284,10 @@ pub fn install_from(
         }],
     })
     .map_err(|e| anyhow!("hlmt: {e}"))?;
-    let hlmt = set.add_tag(FourCC(*b"hlmt"), TAG_PATH, TagPayload::Built(hlmt))?;
+    let hlmt = set.add_tag(FourCC(*b"hlmt"), tag_path, TagPayload::Built(hlmt))?;
 
     let vehicle = vehicle(hlmt, render, bitmap)?;
-    let vehicle = set.add_tag(FourCC(*b"vehi"), TAG_PATH, TagPayload::Built(vehicle))?;
+    let vehicle = set.add_tag(FourCC(*b"vehi"), tag_path, TagPayload::Built(vehicle))?;
     Ok(Tags {
         vehicle,
         model: hlmt,
@@ -317,15 +301,16 @@ pub fn install_from(
 /// The `vehi`: a stationary vehicle with the pod's model and bounding
 /// sphere and nothing else, every other field at its definition's default.
 pub fn vehicle(hlmt: TagId, render: TagId, bitmap: TagId) -> Result<map::build::Block> {
+    let bounding = manifest().bounding();
     rebuild::vehicle(&VehicleSpec {
         object: &h1objects::h1::Object::default(),
         source: &[],
         references: &[],
-        bounds: Some((BOUNDING_RADIUS, BOUNDING_OFFSET)),
+        bounds: Some((bounding.radius, bounding.offset)),
         hlmt: Some(hlmt),
         seats: &[],
         predicted: &[Predicted::RenderModel(render), Predicted::Bitmap(bitmap)],
-        camera_field_of_view: FIELD_OF_VIEW,
+        camera_field_of_view: manifest().field_of_view(),
         vehicle_type: rebuild::ROLE_VEHICLE_TYPE as u16,
         flags: 0,
         weapons: &[],

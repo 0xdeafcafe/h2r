@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use boot::new_maps::{Disc, IsoDisc};
-use content_kit::flood_pod::{TAG_PATH, source};
+use content_kit::flood_pod::{source, tag_path};
 use scenario_edit::MapSource;
 
 const USAGE: &str = "usage: h2 flood-pod kit MAP [--out FILE] [--disc ISO_OR_EXTRACTED_DISC]
@@ -100,7 +100,7 @@ fn kit(map: &str, out: Option<PathBuf>, disc: Option<PathBuf>) -> Result<()> {
         ("shad", t.shader),
         ("bitm", t.bitmap),
     ] {
-        println!("{TAG_PATH}.{group}  {:#010x}", id.0);
+        println!("{}.{group}  {:#010x}", tag_path(), id.0);
     }
     println!("{}", added.costs);
     if let Some(out) = out {

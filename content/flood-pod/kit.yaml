@@ -1,8 +1,48 @@
 # The Flood pod's kit manifest (crates/tools/content-kit, `atlas`): its atlas,
-# the regions a part names and the most triangles the pod has. The table
-# scripts/flood-pod-atlas.py paints and README.md lists.
+# the regions a part names (the table scripts/flood-pod-atlas.py paints and
+# README.md lists), the most triangles the pod has, and the rest of what the
+# kit builds the pod from.
 item: flood_pod
 max_triangles: 2000
+kit_version: 1
+tag_path: objects\vehicles\flood_pod\flood_pod
+material: soft_organic_flesh
+region: default
+# The pod's bounding sphere: its middle, and a radius covering the tendrils
+# and the petals laid open.
+bounding: { offset: [0.0, 0.0, 0.6], radius: 1.3 }
+# The physics model's one sphere: the root bulb. Kilograms.
+physics: { centre: [0.0, 0.0, 0.38], radius: 0.38, mass: 600.0 }
+# The unit's field of view, radians (70 degrees): no seat shows it.
+field_of_view: 1.2217305
+# Where the pod's moving parts are, model space, world units: +X forward, +Y
+# left, +Z up, the origin the point of the tip. A petal's hinge is
+# `hinge_radius` from the axis and `hinge_height` up; a squad exit is
+# `exit_radius` from the axis on the ground; `open` is the angle a petal
+# turns about its hinge from shut to open, radians.
+rig:
+  values:
+    hinge_radius: 0.345
+    hinge_height: 0.54
+    exit_radius: 0.75
+    open: 1.9
+# The shell is the root; four petals are hinged on it, `petal_0` on +X then
+# anticlockwise seen from above (+Y, -X, -Y).
+nodes:
+  - { name: shell }
+  - { name: petal_0, parent: shell }
+  - { name: petal_1, parent: shell }
+  - { name: petal_2, parent: shell }
+  - { name: petal_3, parent: shell }
+# `impact` is the point of the tip, where the pod meets the ground: the
+# model's origin. Squad exit `k` is a place on the ground beside the pod,
+# between petals `k` and `k + 1`, where a member of the squad is put.
+markers:
+  - { name: impact, node: shell }
+  - { name: squad_exit_0, node: shell }
+  - { name: squad_exit_1, node: shell }
+  - { name: squad_exit_2, node: shell }
+  - { name: squad_exit_3, node: shell }
 atlas:
   width: 512
   height: 256
