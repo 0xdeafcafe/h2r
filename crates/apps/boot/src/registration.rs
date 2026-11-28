@@ -62,7 +62,7 @@ pub(crate) fn register_viewer_skips(
         features
             .add(&sim_bridge::sim_observer::ObserverResources)
             .map_err(anyhow::Error::msg)?;
-        // Off unless `impl.sim.status-poll` is set (docs/runtime/cache-slots.md).
+        // The map status poll memo (docs/runtime/cache-slots.md, "The status poll").
         features
             .add(&sim_bridge::sim_status_poll::StatusPoll)
             .map_err(anyhow::Error::msg)?;

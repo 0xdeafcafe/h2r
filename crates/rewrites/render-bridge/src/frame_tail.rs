@@ -513,9 +513,13 @@ mod tests {
         let dev = Device::default();
         let setup = setup(&m).unwrap();
         assert_eq!(finish(&mut m, &dev, &setup, AT), Ok(Made { copied: false, composited: true }));
-        let o = &dev.placed.lock().unwrap()[0];
-        assert_eq!(o.items.len(), 1);
-        assert_eq!(o.items[0].shader_stages[0], Some(OverlayTexture::Held { hold: HOLD }));
+        {
+            // Scoped: `&guard[0]` keeps the guard to the block's end, and
+            // the lock below would then wait on itself.
+            let placed = dev.placed.lock().unwrap();
+            assert_eq!(placed[0].items.len(), 1);
+            assert_eq!(placed[0].items[0].shader_stages[0], Some(OverlayTexture::Held { hold: HOLD }));
+        }
         m.set_u32(AT + FADE, 0.0f32.to_bits()).unwrap();
         assert_eq!(finish(&mut m, &dev, &setup, AT), Ok(Made::default()));
         assert_eq!(finish(&mut m, &dev, &setup, 0), Ok(Made::default()), "no record");
