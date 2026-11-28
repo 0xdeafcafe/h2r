@@ -17,29 +17,48 @@ fn of(entry: u32) -> Stats {
 }
 
 #[test]
-fn the_table_holds_the_walks_bd090_and_the_biped_and_weapon_callbacks_and_nothing_else() {
+fn the_table_holds_the_walks_bd090_and_the_unit_biped_and_weapon_callbacks_and_nothing_else() {
     assert_eq!(TABLE.bodies().len(), POINTS.len() + TYPES.len());
     for point in POINTS.iter().chain(TYPES) {
         assert!(TABLE.owns(point.base), "{}", point.name);
     }
     assert!(POINTS.iter().all(|p| !TYPES.iter().any(|t| t.base == p.base)), "listed once");
-    for point in [&points::BIPED_UPDATE, &points::BIPED_POST_UPDATE, &points::WEAPON_UPDATE] {
+    for point in [&points::UNIT_UPDATE, &points::BIPED_UPDATE, &points::BIPED_POST_UPDATE, &points::WEAPON_UPDATE] {
         assert!(TYPES.iter().any(|t| t.base == point.base), "{}", point.name);
     }
-    // Every body the biped and weapon trees fuse in the full table, but
-    // the unit leaves, is in this one: a call between two of them stays
-    // Rust.
+    // Every body the unit, biped and weapon trees fuse in the full table
+    // is in this one: a call between two of them stays Rust. The unit
+    // leaves the biped tree calls are among them.
+    for point in [
+        &points::UNIT_UPDATE_CONTROL,
+        &points::UNIT_UPDATE_STATE,
+        &points::UNIT_IDLE_TEST,
+        &points::UNIT_MOVEMENT,
+        &points::UNIT_CLAMP_DIRECTION,
+        &points::UNIT_AIM_UPDATE,
+        &points::UNIT_POWERED_SEATS,
+        &points::UNIT_CONTROL_REFRESH,
+        &points::UNIT_TIMERS,
+        &points::UNIT_DIALOGUE_UPDATE,
+        &points::UNIT_TEAM_UPDATE,
+        &points::UNIT_SEATS_BEGIN,
+        &points::UNIT_SEATS_NEXT,
+        &points::UNIT_CAMO_UPDATE,
+        &points::UNIT_LIGHT_UPDATE,
+        &points::UNIT_ANIMATION_STATE,
+    ] {
+        assert!(TABLE.owns(point.base), "{} is in the unit tree", point.name);
+    }
     for other in [
         &points::OBJECTS_FINALIZE,
-        &points::UNIT_UPDATE,
-        &points::UNIT_CLAMP_DIRECTION,
-        &points::UNIT_ANIMATION_STATE,
         &points::ITEM_UPDATE,
         &points::VEHICLE_UPDATE,
         &points::OBJECT_DAMAGE_UPDATE,
         &points::OBJECT_FUNCTION_VALUE,
+        &points::UNIT_FUNCTION_IMPORT,
         &points::OBJECT_CHANGE_COLORS,
         &points::OBJECT_BOUNDS,
+        &points::OBJECT_WORLD_BASIS,
         &points::LIGHTS_UPDATE,
     ] {
         assert!(!TABLE.owns(other.base), "{} is the guest's", other.name);
@@ -51,6 +70,28 @@ fn the_table_holds_the_walks_bd090_and_the_biped_and_weapon_callbacks_and_nothin
     assert!(REPLACES_GUEST.iter().all(|e| FLOAT_FREE.contains(e)), "a replacing body never refuses");
     assert!(!FLOAT_FREE.contains(&points::OBJECT_NODE_MATRICES.base));
     assert!(TYPES.iter().all(|t| !FLOAT_FREE.contains(&t.base) && !REPLACES_GUEST.contains(&t.base)));
+}
+
+#[test]
+fn without_the_aim_update_the_table_is_the_same_but_c7840() {
+    let aim = points::UNIT_AIM_UPDATE.base;
+    assert!(TABLE.owns(aim) && !WITHOUT_AIM.owns(aim));
+    assert_eq!(WITHOUT_AIM.bodies().len(), TABLE.bodies().len() - 1);
+    for body in TABLE.bodies().iter().filter(|b| b.point.base != aim) {
+        assert!(WITHOUT_AIM.owns(body.point.base), "{}", body.point.name);
+        // Every other body keeps its sites, `c60c0`'s after its call to
+        // `c7840` among them.
+        assert!(body.sites.iter().all(|&s| WITHOUT_AIM.resumes(s)), "{}", body.point.name);
+    }
+    for &site in TABLE.at(aim).unwrap().0.sites {
+        assert!(!WITHOUT_AIM.resumes(site), "{site:#x}");
+    }
+    // The float-free bodies are the same, and the counters are TABLE's.
+    for body in WITHOUT_AIM.bodies() {
+        let ftz = CpuAbi { mxcsr: 0x9f80, ..Default::default() };
+        assert_eq!(WITHOUT_AIM.supports_at(body.point.base, &ftz), TABLE.supports_at(body.point.base, &ftz));
+        assert!(TABLE.index(body.point.base).is_some());
+    }
 }
 
 #[test]

@@ -4,28 +4,30 @@
 //! dispatchers, the wake leaves, the early-mover wake `109580`, the leaves
 //! `bd090` calls (`b8bd0`, `bf5a0`, `bfc90`, `bff10`, `bfe80`, `bfed0`,
 //! `bfe20`, `b6780`), and the type callbacks of the objects a multiplayer
-//! game has most of: the biped update `dd360` and post-physics update
-//! `dd990` with the ported part of their trees (slices 7a and 7b), and the
-//! weapon update `fdfb0` (slice 9). The dispatchers call them in Rust. On by
+//! game has most of: the unit update `c6b30` with its tree (slices 6a, 6b
+//! and 6c), the biped update `dd360` and post-physics update `dd990` with
+//! the ported part of their trees (slices 7a and 7b), and the weapon
+//! update `fdfb0` (slice 9). The dispatchers call them in Rust. On by
 //! default with `impl.sim.native.objects.walk`; `sim_bridge::sim_objects`
 //! installs [`TABLE`] when `impl.sim.native.objects` is off (on, every
-//! body is installed and these with them).
+//! body is installed and these with them), or [`WITHOUT_AIM`] when the
+//! animation subsystem owns the aim update `c7840`.
 //!
 //! The Rust body answers every segment; nothing is compared. A body the
 //! Rust cannot take for one call is a [`Refusal`]: the guest runs that
-//! call (one object's `bd090`, one weapon's `fdfb0`) and the caller's Rust
-//! frame resumes at its site. The walks, the updates, the dispatchers and
-//! the wake leaves read and write no float state ([`FLOAT_FREE`]), so they
-//! run whatever the float environment and never refuse; `bd090` and the
-//! type callbacks ([`TYPES`]) run only inside it.
+//! call (one object's `bd090`, one unit's `c6b30`, one weapon's `fdfb0`)
+//! and the caller's Rust frame resumes at its site. The walks, the
+//! updates, the dispatchers and the wake leaves read and write no float
+//! state ([`FLOAT_FREE`]), so they run whatever the float environment and
+//! never refuse; `bd090` and the type callbacks ([`TYPES`]) run only
+//! inside it.
 //!
 //! **Other types.** Only [`POINTS`] and [`TYPES`] are in [`TABLE`]: the
-//! unit level of a biped (`c6b30` and its tree), the item level of a
-//! weapon (`10b4d0`), the other types' callbacks, damage, functions, the
-//! rest of the post-update shell, lights and finalize `b7150` are calls to
-//! the guest. So are the two unit leaves the biped tree calls, the
-//! direction clamp `cba50` and the animation state `111650`. Each is made
-//! in place when the runtime can (`runtime::ExecCtx::call_inline`, from
+//! item level of a weapon (`10b4d0`), the other types' callbacks (the
+//! vehicle update `efde0` too), damage, functions, the rest of the
+//! post-update shell, lights and finalize `b7150` are calls to the guest,
+//! as are the unit tree's own guest callees. Each is made in place when
+//! the runtime can (`runtime::ExecCtx::call_inline`, from
 //! `sim_bridge::sim_objects`), else through the runner, counted either
 //! way ([`callout`]).
 
@@ -63,11 +65,33 @@ pub const POINTS: &[&Point] = &[
     &points::ANIMATION_VALID,
 ];
 
-/// The type callbacks in [`TABLE`]: the `bipd` descriptor's slots `+40`
-/// (`dd360`, slice 7a) and `+44` (`dd990`, slice 7b) with every body their
-/// trees fuse, and the `weap` slot `+40` (`fdfb0`, slice 9). Each checks
-/// the float environment at its entry and its sites.
+/// The type callbacks in [`TABLE`]: the `unit` descriptor's slot `+40`
+/// (`c6b30`, slices 6a, 6b and 6c, which bipeds and vehicles inherit), the
+/// `bipd` descriptor's slots `+40` (`dd360`, slice 7a) and `+44` (`dd990`,
+/// slice 7b), each with every body its tree fuses, and the `weap` slot
+/// `+40` (`fdfb0`, slice 9). Each checks the float environment at its
+/// entry and its sites.
 pub const TYPES: &[&Point] = &[
+    // The unit level: `c6b30`, its nine children and theirs, and the
+    // animation state `111650` the biped tree calls.
+    &points::UNIT_UPDATE,
+    &points::UNIT_UPDATE_CONTROL,
+    &points::UNIT_UPDATE_STATE,
+    &points::UNIT_IDLE_TEST,
+    &points::UNIT_MOVEMENT,
+    &points::UNIT_CLAMP_DIRECTION,
+    &points::UNIT_AIM_UPDATE,
+    &points::UNIT_POWERED_SEATS,
+    &points::UNIT_CONTROL_REFRESH,
+    &points::UNIT_TIMERS,
+    &points::UNIT_DIALOGUE_UPDATE,
+    &points::UNIT_TEAM_UPDATE,
+    &points::UNIT_SEATS_BEGIN,
+    &points::UNIT_SEATS_NEXT,
+    &points::UNIT_CAMO_UPDATE,
+    &points::UNIT_LIGHT_UPDATE,
+    &points::UNIT_ANIMATION_STATE,
+    // The biped and the weapon.
     &points::BIPED_UPDATE,
     &points::OBJECT_CARRIER,
     &points::BIPED_TIMER_UPDATE,
@@ -132,6 +156,17 @@ pub const REPLACES_GUEST: &[u32] = &[
 /// marked.
 pub static TABLE: LazyLock<Table> = LazyLock::new(|| {
     Table::new(BODIES.iter().filter(|b| POINTS.iter().chain(TYPES).any(|p| p.base == b.point.base)))
+        .expect("BODIES is consistent")
+        .float_free(FLOAT_FREE)
+});
+
+/// [`TABLE`] without the aim update `c7840`: with `impl.sim.native.anim`
+/// on, the animation subsystem implements that point, so the movement
+/// `c60c0` calls it as a callout and its hook answers
+/// (`sim_bridge::sim_objects`, as for the full table). The counters stay
+/// [`TABLE`]'s.
+pub static WITHOUT_AIM: LazyLock<Table> = LazyLock::new(|| {
+    Table::new(TABLE.bodies().iter().copied().filter(|b| b.point.base != points::UNIT_AIM_UPDATE.base))
         .expect("BODIES is consistent")
         .float_free(FLOAT_FREE)
 });

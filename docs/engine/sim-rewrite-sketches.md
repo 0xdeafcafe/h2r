@@ -76,11 +76,11 @@ What each phase of [sim-rewrite.md](sim-rewrite.md) takes over: its data, its en
 - *Orchestration.* With `impl.sim.native.objects.walk` (on), the walk
   table `engine::sim_objects::native_walk` runs the pre-physics `b6f10`
   and post-physics `b7060` walks, `bc470` and `bc820` with `bd090` per
-  object, the type dispatchers, the wake leaves, and the biped (`dd360`,
-  `dd990`) and weapon (`fdfb0`) callbacks with their trees, and answers
-  every segment; nothing is compared. Finalize `b7150` and the other
-  types' callbacks (unit `+0x40` `c6b30`, the item level `10b4d0`,
-  vehicles, the small types) are guest calls through the runtime
+  object, the type dispatchers, the wake leaves, and the unit `+0x40`
+  (`c6b30`), biped (`dd360`, `dd990`) and weapon (`fdfb0`) callbacks
+  with their trees, and answers every segment; nothing is compared.
+  Finalize `b7150` and the other types' callbacks (the item level
+  `10b4d0`, vehicles, the small types) are guest calls through the runtime
   ([feature-engine.md](feature-engine.md), "Calling code that is still
   recompiled"); they join type by type. The one refusal is `bd090` or a
   type callback outside its float environment (`float_env`): the guest

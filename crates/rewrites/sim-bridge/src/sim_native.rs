@@ -709,9 +709,12 @@ mod tests {
         let walk = &plan.chains[&points::ANIM_GRAPH_MATRICES.base];
         assert_eq!(walk.implement.as_ref().unwrap().label, ANIM);
         assert_eq!((walk.before.len(), walk.after.len()), (0, 0));
-        // The walk table is on by default.
-        let walk = engine::sim_objects::native_walk::TABLE.bodies().len();
+        // The walk table is on by default, without the aim update the
+        // subsystem owns.
+        let walk = engine::sim_objects::native_walk::WITHOUT_AIM.bodies().len();
         assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len() + walk);
+        let aim = plan.chains[&points::UNIT_AIM_UPDATE.base].implement.as_ref().unwrap();
+        assert_eq!(aim.label, ANIM);
         assert_eq!(plan.save_sections(), vec![("sim-native", Vec::new())]);
 
         // The subsystem owns both shared points when their individual
@@ -728,9 +731,12 @@ mod tests {
         let pose = plan.chains[&points::SIM_UNIT_POSE.base].implement.as_ref().unwrap();
         assert_eq!(pose.label, ANIM);
         assert_eq!(pose.continuation_sites().0, sim::unit::SITES);
-        // The walk table is on by default.
-        let walk = engine::sim_objects::native_walk::TABLE.bodies().len();
+        // The walk table is on by default, without the aim update the
+        // subsystem owns.
+        let walk = engine::sim_objects::native_walk::WITHOUT_AIM.bodies().len();
         assert_eq!(plan.chains.len(), 3 + ANIM_BODIES.len() + ANIM_INVALIDATE.len() + walk);
+        let aim = plan.chains[&points::UNIT_AIM_UPDATE.base].implement.as_ref().unwrap();
+        assert_eq!(aim.label, ANIM);
 
         // The retired per-function switches are gone from the table.
         for key in ["sim.native_rotation_codec", "sim.native_animation_stream", "sim.native_graph_resolve"] {
@@ -764,6 +770,26 @@ mod tests {
                     assert_eq!(hook.continuation_sites().0, sites);
                 }
             }
+        }
+    }
+
+    /// The walk table makes the same hand-off: its aim update is the
+    /// walk's with the subsystem off, the subsystem's with it on.
+    #[test]
+    fn animation_owns_aim_over_the_walk_table_too() {
+        for anim in [false, true] {
+            let switches = Switches::defaults().with("impl.sim.native_unit_aim", true).with("impl.sim.native.anim", anim);
+            assert!(crate::sim_objects::walk_on(&switches));
+            assert_eq!(crate::sim_objects::owns(&switches, points::UNIT_AIM_UPDATE.base), !anim);
+            let mut registry = Registry::new(switches);
+            registry.add(&SimNative::for_tests()).unwrap();
+            registry.add(&crate::sim_physics::NativePhysics).unwrap();
+            let plan = registry.build(&Base).unwrap();
+            let hook = plan.chains[&points::UNIT_AIM_UPDATE.base].implement.as_ref().unwrap();
+            assert_eq!(hook.label, if anim { ANIM } else { crate::sim_objects::WALK_LABEL });
+            // The movement that calls it is the walk's either way.
+            let movement = plan.chains[&points::UNIT_MOVEMENT.base].implement.as_ref().unwrap();
+            assert_eq!(movement.label, crate::sim_objects::WALK_LABEL);
         }
     }
 

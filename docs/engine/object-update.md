@@ -42,14 +42,17 @@ The tag-function curve evaluator `13b390` runs as an arm: the idiomatic kernel `
 | In Rust | The guest's |
 |---|---|
 | walks (`native_walk::POINTS`): the walks `b6f10` and `b7060`, the per-object updates `bc470` and `bc820`, the node matrices `bd090`, the four type dispatchers, the wake leaves, the early-mover wake `109580`, the eight leaves `bd090` calls (below) | finalize `b7150`, damage `d5de0`, change colours `be8e0`, the rest of the post-update shell (`bc5e0`, `bdef0`, `bef30`, `be1d0`), functions, lights |
-| type callbacks (`native_walk::TYPES`): the biped update `dd360` (slot `+40`) and post-physics update `dd990` (slot `+44`) with every body of slices 7a and 7b, the weapon update `fdfb0` (slot `+40`, slice 9) | the unit level of a biped (`c6b30` and its tree), the unit leaves the biped tree calls (`cba50`, `111650`), the item level of a weapon (`10b4d0`), every other type's callbacks |
+| type callbacks (`native_walk::TYPES`): the unit update `c6b30` (slot `+40` of `unit`, which bipeds and vehicles inherit) with every body of slices 6a, 6b and 6c, the aim update `c7840` among them; the biped update `dd360` (slot `+40`) and post-physics update `dd990` (slot `+44`) with every body of slices 7a and 7b; the weapon update `fdfb0` (slot `+40`, slice 9) | the unit tree's own guest callees ([object-update-bodies-units.md](object-update-bodies-units.md)), the item level of a weapon (`10b4d0`), the vehicle update `efde0`, every other type's callbacks |
 
-Bipeds and weapons first because a multiplayer game is mostly them:
-each player is a biped with two weapons, and the dropped and spawned
-weapons are on the map besides. In the Waterworks attribution
-([sim-10x.md](../perf/notes/sim-10x.md), "the Lockout budget model")
-units are 6.66% of the thread, bipeds 2.74%, vehicles 2.85% and weapons
-1.46%; the unit level (`c6b30`) is the next to join.
+Units, bipeds and weapons first because a multiplayer game is mostly
+them: each player is a biped (a unit) with two weapons, and the dropped
+and spawned weapons are on the map besides. In the Waterworks
+attribution ([sim-10x.md](../perf/notes/sim-10x.md), "the Lockout budget
+model") units are 6.66% of the thread, bipeds 2.74%, vehicles 2.85% and
+weapons 1.46%. A biped's update is its unit level `c6b30` then `dd360`,
+both Rust; a vehicle's unit level is Rust and its `efde0` the guest's.
+
+- **The aim hand-off:** with `impl.sim.native.anim` on, the animation subsystem implements `c7840`, so the installer takes `native_walk::WITHOUT_AIM` (the table without it; `sim_bridge::sim_objects::walk_table`), as `sim_bridge::sim_objects::table` does for the full table. The movement `c60c0`'s call to `c7840` is then a callout, made in place, and its hook answers.
 
 ```
 entry or site of a table body at pc
@@ -60,7 +63,7 @@ entry or site of a table body at pc
                                                  caller's Rust frame resumes at its site
 ```
 
-- **Answers:** the Rust runs every segment it is given. Nothing is predicted or compared; the disc differential harness is the proof, in `crates/rewrites/engine/tests/sim_objects_differential.rs`, at the default float environment and with flush to zero and denormals as zero: `walk_table_roots` (the four walk roots over the walk table) and `walk_table_types` (the roots `fdfb0`, `dd360` and `dd990` over their dressings, and the two dispatchers over a biped, with every body outside the table a callout); `walk_table_getters` and `node_matrix_getters` run each `bd090` leaf as a root over the dressed pool, against the lifted original's registers, flags and memory.
+- **Answers:** the Rust runs every segment it is given. Nothing is predicted or compared; the disc differential harness is the proof, in `crates/rewrites/engine/tests/sim_objects_differential.rs`, at the default float environment and with flush to zero and denormals as zero: `walk_table_roots` (the four walk roots over the walk table) and `walk_table_types` (the roots `c6b30` over the slice 6a, 6b and 6c dressings, `c60c0` with and without `c7840`, `cba50`, `111650`, `fdfb0`, `dd360` and `dd990` over theirs, and the dispatchers over a biped and a vehicle, with every body outside the table a callout); `walk_table_getters` and `node_matrix_getters` run each `bd090` leaf as a root over the dressed pool, against the lifted original's registers, flags and memory.
 - **Float-free bodies:** the walks, the updates, the dispatchers, the wake leaves and the `bd090` leaves make no float instruction, so `Table::float_free` marks them and `Table::supports_at` lets them run whatever MXCSR and the x87 hold. `bd090` and the type callbacks check `engine::sim_objects::supported`.
 - **The `bd090` leaves** (`engine::sim_objects::getters`): `bd090` calls up to 15 guest functions per object. Eight are small leaves that call nothing and make no float instruction, so each is a table body and `bd090` and the guest's own callers reach it without a guest call. Each returns the registers, flags and memory retail does (`ebx` and `edi` that `bfed0` pushes and pops return unchanged); `bfed0` honours the direction flag as its `rep stosd` does.
 
@@ -76,8 +79,8 @@ entry or site of a table body at pc
 | `b6780` | `ANIMATION_VALID` | `eax` record | `eax` 1 when dword `+68`, dword `+0` and word `+6` are all not none |
 
   Seven callees stay guest calls: `e1670` (calls `1ec640`, float), `1d3920` (component nodes, a large frame and a long body), `16d940` (the orientation seed, an `xmm` loop), `bdb60` (the animation, calls `13e530` and more), `1c6440` (calls `1daea0`), `a98b0` and `a9940` (the motion position and basis, each a large body). None is a leaf of the small kind.
-- **Refusals:** `float_env` is the only one. It is per call: one object's `bd090` or one weapon's `fdfb0` is the guest's, the walk, the update and the dispatcher around it stay Rust. A callee that changes the float environment and returns to a type callback's site refuses the rest of that call.
-- **Shared points:** a type callback another feature hooks too is guarded (`Table::guard`, through `HookRef::when_shared`), so the dispatcher's call goes through the chain and that feature's hooks run around the body. No feature hooks one today.
+- **Refusals:** `float_env` is the only one. It is per call: one object's `bd090`, one unit's `c6b30` or one weapon's `fdfb0` is the guest's, the walk, the update and the dispatcher around it stay Rust. A callee that changes the float environment and returns to a type callback's site refuses the rest of that call.
+- **Shared points:** a type callback another feature hooks too is guarded (`Table::guard`, through `HookRef::when_shared`), so the dispatcher's call goes through the chain and that feature's hooks run around the body. The Halo 1 features' `before`s on the dialogue update `114c60` and the integrated light `c50a0` are such hooks. The Assassins skull gate at `c683f`, inside `c6810`, is read by the body itself (`engine::skull_gate`).
 - **Replaced:** the hooks at `b6f10`, `b7060`, `bc470` and `bc820` never reach their guest bodies, so they carry `replaces_guest` (`native_walk::REPLACES_GUEST`). Each resumes at its sites, so `Plan::replaced` keeps their bodies lifted ([lift-pruning.md](../lifter/lift-pruning.md#the-replaced-list)). The dispatchers and wake leaves are not marked: the site-less leaves would leave the lift, and `-impl.sim.native` would then refuse to boot.
 - **Callouts:** a call from a table body to the guest is made in place (`sim_bridge::sim_objects::drive_in_place`, `ExecCtx::call_inline`) and the Rust carries on at the site; the runtime leaves it to the runner, by a named fallback, when the runner would have work ([sim-10x-callouts.md](../perf/sim-10x-callouts.md)).
 - **Counters:** `native_walk::stats`, per body: segments the Rust ran, calls refused by reason, callouts back in place (`inline`) and callouts left to the runner by fallback (`left`). `sim.arms` reports one arm per body, `objects.walk.<entry>` (`answered` the segments, `declined` the refusals).

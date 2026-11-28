@@ -31,14 +31,16 @@
 //!
 //! With [`OBJECTS`] off and [`WALK`] on (the default), only the walks
 //! `b6f10` and `b7060`, the per-object updates `bc470` and `bc820` with
-//! `bd090`, the type dispatchers, the wake leaves, and the biped (`dd360`,
-//! `dd990`) and weapon (`fdfb0`) callbacks with their trees
-//! (`engine::sim_objects::native_walk::TABLE`) are installed, and the Rust
-//! answers every segment. `bd090` or a type callback outside its float
-//! environment is the one refusal: the guest runs that call, counted as
-//! `float_env`. Every other body is the guest's: the other types'
-//! callbacks (the unit and item levels too), damage, functions, lights and
-//! finalize.
+//! `bd090`, the type dispatchers, the wake leaves, and the unit (`c6b30`),
+//! biped (`dd360`, `dd990`) and weapon (`fdfb0`) callbacks with their
+//! trees (`engine::sim_objects::native_walk::TABLE`) are installed, and
+//! the Rust answers every segment. `bd090` or a type callback outside its
+//! float environment is the one refusal: the guest runs that call, counted
+//! as `float_env`. Every other body is the guest's: the other types'
+//! callbacks (the item level and the vehicle update too), damage,
+//! functions, lights and finalize. With the animation subsystem on, the
+//! aim update `c7840` is its (`native_walk::WITHOUT_AIM`), as in
+//! `table`.
 //!
 //! [`crate::sim_native::SimNative`] calls [`install`]: the bodies hold no
 //! state, so the feature's snapshot policy does not change. The arms'
@@ -85,7 +87,7 @@ pub fn walk_on(switches: &hooks::Switches) -> bool {
 /// Whether the per-function port at `addr` stands down: a body installed
 /// by either switch owns the point.
 pub fn owns(switches: &hooks::Switches, addr: u32) -> bool {
-    owns_in(on(switches), table(switches), addr) || (walk_on(switches) && native_walk::TABLE.owns(addr))
+    owns_in(on(switches), table(switches), addr) || (walk_on(switches) && walk_table(switches).owns(addr))
 }
 
 fn owns_in(on: bool, table: &Table, addr: u32) -> bool {
@@ -101,6 +103,12 @@ fn table(switches: &hooks::Switches) -> &'static Table {
             .expect("BODIES is consistent")
     });
     if crate::sim_native::anim_on(switches) { &WITHOUT_AIM } else { &objects::TABLE }
+}
+
+// The walk table makes the same hand-off: with the animation subsystem on,
+// c7840 is its hook, and c60c0's call to it is a callout.
+fn walk_table(switches: &hooks::Switches) -> &'static Table {
+    if crate::sim_native::anim_on(switches) { &native_walk::WITHOUT_AIM } else { &native_walk::TABLE }
 }
 
 // Each listed segment reads or writes only its CpuAbi and Guest. Bodies
@@ -146,20 +154,20 @@ pub(crate) fn install(b: &mut Builder) {
 const CURVE_ARM_RESET: &str = "objects: reset the curve arm";
 /// The map-load observer that clears the function arm and its data.
 const FUNCTION_ARM_RESET: &str = "objects: reset the function arm";
-/// The walk table's bodies (`native_walk::TABLE`), each entry and site
-/// answered by the Rust: [`objects::drive_with`] fuses every transfer
-/// between them and counts each segment. A body outside the float
+/// The walk table's bodies ([`walk_table`]), each entry and site answered
+/// by the Rust: [`objects::drive_with`] fuses every transfer between them
+/// and counts each segment. A body outside the float
 /// environment it needs (`bd090`, the type callbacks) is refused for that
 /// call, counted, and the guest runs it; the caller's Rust frame resumes
 /// at its site. The walks and the per-object updates never refuse, so
 /// their hooks are marked [`hooks::HookRef::replaces_guest`] (`native_walk::REPLACES_GUEST`).
 fn install_walk(b: &mut Builder) {
-    let table: &'static Table = &native_walk::TABLE;
+    let table = walk_table(b.switches());
     for &body in table.bodies() {
         let point = body.point;
         let hook = b
             .raw()
-            .implement(point, WALK_LABEL, move |cpu, ctx, pc| walk_segment(cpu, ctx, pc, body.sites))
+            .implement(point, WALK_LABEL, move |cpu, ctx, pc| walk_segment(cpu, ctx, table, pc, body.sites))
             .resumes(body.sites)
             .context_only()
             .when_shared(move |entry| {
@@ -171,12 +179,17 @@ fn install_walk(b: &mut Builder) {
     }
 }
 
-/// One entry or site of a walk-table body at `pc`: the Rust runs it and
-/// every body it reaches, and carries on after each true callout the
-/// runtime makes in place ([`drive_in_place`]); a refused one is the
-/// guest's. Each callout is counted ([`native_walk::callout`]).
-fn walk_segment(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32, sites: &[u32]) -> Result<TransferAbi, GuestFault> {
-    let table: &'static Table = &native_walk::TABLE;
+/// One entry or site of a body of the walk table `table` at `pc`: the
+/// Rust runs it and every body it reaches, and carries on after each true
+/// callout the runtime makes in place ([`drive_in_place`]); a refused one
+/// is the guest's. Each callout is counted ([`native_walk::callout`]).
+fn walk_segment(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    table: &'static Table,
+    pc: u32,
+    sites: &[u32],
+) -> Result<TransferAbi, GuestFault> {
     drive_in_place(
         cpu,
         ctx,
@@ -531,7 +544,8 @@ mod tests {
         let on = Switches::defaults().with(&format!("impl.{OBJECTS}"), true);
         assert!(owns(&on, points::OBJECTS_PRE_PHYSICS.base));
         assert!(owns(&Switches::defaults(), points::OBJECTS_PRE_PHYSICS.base));
-        assert!(!owns(&Switches::defaults(), points::UNIT_UPDATE.base));
+        assert!(owns(&Switches::defaults(), points::UNIT_UPDATE.base));
+        assert!(!owns(&Switches::defaults(), points::ITEM_UPDATE.base));
         assert!(!owns(&Switches::defaults().with("impl.sim.native", false), points::OBJECTS_PRE_PHYSICS.base));
     }
 
@@ -645,17 +659,16 @@ mod tests {
             );
             assert!(owns(&Switches::defaults(), body.point.base));
         }
-        // The bipeds' and weapons' callbacks are the walk table's.
-        for point in [&points::BIPED_UPDATE, &points::BIPED_POST_UPDATE, &points::WEAPON_UPDATE] {
+        // The units', bipeds' and weapons' callbacks are the walk table's.
+        for point in [&points::UNIT_UPDATE, &points::BIPED_UPDATE, &points::BIPED_POST_UPDATE, &points::WEAPON_UPDATE] {
             let implement = plan.chains[&point.base].implement.as_ref().unwrap();
             assert_eq!(implement.label, WALK_LABEL, "{}", point.name);
             assert!(!implement.replaces_guest(), "{} refuses outside its float environment", point.name);
         }
-        // The other types (the unit level of a biped, the item level of a
-        // weapon), damage, functions, lights and finalize are the guest's.
+        // The other types (the item level of a weapon, the vehicle
+        // update), damage, functions, lights and finalize are the guest's.
         for point in [
             &points::OBJECTS_FINALIZE,
-            &points::UNIT_UPDATE,
             &points::ITEM_UPDATE,
             &points::VEHICLE_UPDATE,
             &points::OBJECT_DAMAGE_UPDATE,
@@ -715,12 +728,12 @@ mod tests {
         };
         let before = (count(root), count(pose), GUEST.load(Ordering::Relaxed));
         let mut cpu = ftz();
-        let t = walk_segment(&mut cpu, &mut ctx, root, &[]).unwrap();
+        let t = walk_segment(&mut cpu, &mut ctx, &native_walk::TABLE, root, &[]).unwrap();
         assert_eq!(t, TransferAbi::ret(CALLER));
         assert_eq!((cpu.eax, cpu.esp), (u32::MAX, STACK + 4));
         assert_eq!(count(root).segments, before.0.segments + 1);
         let mut cpu = ftz();
-        walk_segment(&mut cpu, &mut ctx, pose, &[]).unwrap();
+        walk_segment(&mut cpu, &mut ctx, &native_walk::TABLE, pose, &[]).unwrap();
         assert_eq!(GUEST.load(Ordering::Relaxed), before.2 + 1);
         let after = count(pose);
         assert_eq!(after.refused[0], before.1.refused[0] + 1);
