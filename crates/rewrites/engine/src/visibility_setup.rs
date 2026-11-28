@@ -237,8 +237,8 @@ pub fn build(m: &dyn GuestMemory, call: &Call, mxcsr: u32) -> Result<Built, Refu
 
     // The location, `0x0011bed0`, from the centre.
     if call.start == u32::MAX {
-        let point = [0, 4, 8].map(|o| s.f32(call.centre.wrapping_add(o)));
-        let point = [point[0]?, point[1]?, point[2]?];
+        let [x, y, z] = [0, 4, 8].map(|o| s.f32(call.centre.wrapping_add(o)));
+        let point = [x?, y?, z?];
         let (leaf, cluster) = locate(&s, point)?;
         s.put_u32("location", at(vis::LOCATION)?, leaf)?;
         s.put_u16("start", at(vis::START)?, cluster)?;
