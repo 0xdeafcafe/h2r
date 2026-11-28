@@ -6,18 +6,21 @@ use scene_extract::{
     ui::{UiBitmap, Unread},
 };
 
-type Read<T> = Result<T, Unread>;
+use super::Gap;
+
+type Read<T> = Result<T, Gap>;
 
 struct Reader<'a>(&'a dyn GuestRead);
 
 impl Reader<'_> {
     fn word(&self, p: u32, off: u32) -> Read<u32> {
         if p == 0 {
-            return Err(Unread::Unreadable);
+            return Err(Unread::Unreadable.into());
         }
-        self.0
+        Ok(self
+            .0
             .read_u32(p.checked_add(off).ok_or(Unread::Unreadable)?)
-            .ok_or(Unread::Unreadable)
+            .ok_or(Unread::Unreadable)?)
     }
 
     fn short(&self, p: u32, off: u32) -> Read<i16> {
@@ -30,13 +33,13 @@ impl Reader<'_> {
         if f.is_finite() {
             Ok(f)
         } else {
-            Err(Unread::Draw)
+            Err(Gap::class("list_number"))
         }
     }
 
     fn tag(&self, datum: u32) -> Read<u32> {
         if datum == u32::MAX {
-            return Err(Unread::Draw);
+            return Err(Gap::class("list_tag"));
         }
         self.word(self.word(0x004e_3b44, 0)?, (datum & 0xffff) * 16 + 8)
     }
@@ -45,14 +48,14 @@ impl Reader<'_> {
         let scenario = self.word(0x004e_0350, 0)?;
         let globals = self.word(0x004e_034c, 0)?;
         if self.word(globals, 0x110)? == 0 {
-            return Err(Unread::Draw);
+            return Err(Gap::class("list_globals"));
         }
         let interface = self.word(globals, 0x114)?;
         let off = match self.short(scenario, 0x10)? {
             0 => 0x8c,
             1 => 0x94,
             2 => 0x84,
-            _ => return Err(Unread::Draw),
+            _ => return Err(Gap::class("list_globals")),
         };
         self.tag(self.word(interface, off)?)
     }
@@ -62,7 +65,7 @@ impl Reader<'_> {
     fn retail_table(&self, widget: u32) -> Read<u32> {
         let table = self.word(widget, 0)?;
         if !(0x0045_8700..0x0047_0000).contains(&table) {
-            return Err(Unread::Draw);
+            return Err(Gap::class("draw_runtime_class"));
         }
         Ok(table)
     }
@@ -73,7 +76,7 @@ impl Reader<'_> {
         let group = self.collection()?;
         let count = self.word(group, 8)?;
         if count > 1024 {
-            return Err(Unread::Draw);
+            return Err(Gap::class("list_screen"));
         }
         let base = self.word(group, 12)?;
         for i in 0..count {
@@ -86,7 +89,7 @@ impl Reader<'_> {
             }
         }
         // Failed guest lookup can write its missing id at 0x00148112.
-        Err(Unread::Draw)
+        Err(Gap::class("list_screen"))
     }
 
     fn ancestor(&self, mut at: u32, needle: Option<u32>) -> Read<Option<u32>> {
@@ -103,7 +106,7 @@ impl Reader<'_> {
             }
             at = parent;
         }
-        Err(Unread::Draw)
+        Err(Gap::class("list_tree"))
     }
 
     fn arrows_visible(&self, list: u32) -> Read<[bool; 2]> {
@@ -118,7 +121,7 @@ impl Reader<'_> {
             if next == 0 {
                 let limit = self.word(array, 0x38)?;
                 if limit > u32::from(u16::MAX) {
-                    return Err(Unread::Draw);
+                    return Err(Gap::class("list_rows"));
                 }
                 let first_key = self.word(first, 0x70)?;
                 let last_key = self.word(last, 0x70)?;
@@ -127,12 +130,12 @@ impl Reader<'_> {
                 if first_key != u32::MAX {
                     let end = first_key & 0xffff;
                     if end > limit {
-                        return Err(Unread::Draw);
+                        return Err(Gap::class("list_rows"));
                     }
                     let stride = self.word(array, 0x24)?;
                     let rows = self.word(array, 0x44)?;
                     if stride < 2 || stride & 1 != 0 {
-                        return Err(Unread::Draw);
+                        return Err(Gap::class("list_rows"));
                     }
                     for i in (0..end).rev() {
                         if self.short(rows, i.checked_mul(stride).ok_or(Unread::Unreadable)?)? != 0
@@ -158,7 +161,7 @@ impl Reader<'_> {
             }
             last = next;
         }
-        Err(Unread::Draw)
+        Err(Gap::class("list_tree"))
     }
 
     fn focused(&self, button: u32, root: u32) -> Read<bool> {
@@ -169,11 +172,11 @@ impl Reader<'_> {
             || self.word(table, 0x50)? != 0x0023_012c
             || self.word(table, 0x54)? != 0x0023_0130
         {
-            return Err(Unread::Draw);
+            return Err(Gap::class("button_focus"));
         }
         let user = self.word(root, 0x78)?;
         if user > 4 {
-            return Err(Unread::Draw);
+            return Err(Gap::class("button_focus"));
         }
         let channel = match self.word(root, 0x74)? {
             0 if user == 4 => 0x0054_d99c,
@@ -182,7 +185,7 @@ impl Reader<'_> {
             3 => 0x0054_d76c + 0x38 * user,
             4 if user == 4 => 0x0054_d9e0,
             5 => 0x0054_d62c + 0x40 * user,
-            _ => return Err(Unread::Draw),
+            _ => return Err(Gap::class("button_focus")),
         };
         Ok(self
             .ancestor(self.word(channel, 0x34)?, Some(button))?
@@ -199,11 +202,11 @@ impl Reader<'_> {
         alpha: f32,
     ) -> Read<UiBitmap> {
         if self.word(viewport, 0)? != 0 || self.word(viewport, 4)? != (640 << 16 | 480) {
-            return Err(Unread::Draw);
+            return Err(Gap::class("art_viewport"));
         }
         let bitm = self.tag(tag)?;
         if u32::from(image) >= self.word(bitm, 0x44)? {
-            return Err(Unread::Bitmap);
+            return Err(Gap::new(Unread::Bitmap, "art_image"));
         }
         let record = self
             .word(bitm, 0x48)?
@@ -215,12 +218,12 @@ impl Reader<'_> {
             || self.word(record, 0x50)? == 0
             || self.short(0x0048_5602, 0)? != 0
         {
-            return Err(Unread::Bitmap);
+            return Err(Gap::new(Unread::Bitmap, "art_texture"));
         }
         let width = self.short(record, 4)?;
         let height = self.short(record, 6)?;
         if width <= 0 || height <= 0 || !(0.0..=1.0).contains(&alpha) {
-            return Err(Unread::Bitmap);
+            return Err(Gap::new(Unread::Bitmap, "art_image"));
         }
         let depth = self.float(widget, 0x60)?;
         let mut camera = self.float(0x0054_d5b0, 0)?;
@@ -238,7 +241,7 @@ impl Reader<'_> {
         }
         let scale = one / ((one / camera) * z);
         if !scale.is_finite() || scale <= 0.0 {
-            return Err(Unread::Draw);
+            return Err(Gap::class("art_scale"));
         }
         let [x, y] = anchor;
         let w = f32::from(width);
@@ -250,7 +253,7 @@ impl Reader<'_> {
             240.0 - (y - h) * scale,
         ];
         if !rect.iter().all(|v| v.is_finite()) {
-            return Err(Unread::Draw);
+            return Err(Gap::class("art_scale"));
         }
         let byte = (alpha * self.float(0x0045_dc38, 0)?).round_ties_even();
         Ok(UiBitmap {
@@ -280,7 +283,7 @@ pub(super) fn arrows(mem: &dyn GuestRead, widget: u32, viewport: u32) -> Read<Ve
         let screen = r.screen(root)?;
         let index = r.short(root, 0x5f0)?;
         if index < -1 {
-            return Err(Unread::Draw);
+            return Err(Gap::class("list_pane"));
         }
         if index >= 0 && i32::from(index) < r.word(screen, 0x20)? as i32 {
             let pane = r
@@ -313,7 +316,7 @@ pub(super) fn arrows(mem: &dyn GuestRead, widget: u32, viewport: u32) -> Read<Ve
     let animated_edge = |edge, offset| -> Read<i16> {
         let delta = r.float(widget, offset)?;
         if !(-2147483648.0..2147483648.0).contains(&delta) {
-            return Err(Unread::Draw);
+            return Err(Gap::class("art_offset"));
         }
         Ok(r.short(widget, edge)?.wrapping_add(delta as i32 as i16))
     };
@@ -348,9 +351,10 @@ pub(super) fn button_art(
 ) -> Read<Option<UiBitmap>> {
     let r = Reader(mem);
     if (r.word(0x0054_d59c, 0)? >> 24) != 0 {
-        return Err(Unread::Draw);
+        // The widget index display is on.
+        return Err(Gap::class("button_debug"));
     }
-    let root = r.ancestor(widget, None)?.ok_or(Unread::Draw)?;
+    let root = r.ancestor(widget, None)?.ok_or(Gap::class("list_tree"))?;
     if root == widget && r.word(widget, 4)? != 0 {
         return Ok(None);
     }
@@ -372,7 +376,7 @@ pub(super) fn button_art(
         return Ok(None);
     }
     if r.word(r.word(widget, 0)?, 0x44)? != 0x0025_4173 {
-        return Err(Unread::Draw);
+        return Err(Gap::class("button_class"));
     }
     let count = r.word(r.tag(tag)?, 0x44)?;
     let selected = count > 1 && r.focused(widget, root)?;
@@ -419,7 +423,7 @@ mod tests {
         m.w(last + 0x70, u32::MAX);
         assert_eq!(Reader(&m).arrows_visible(list), Ok([false, false]));
         m.w(last + 0x18, first);
-        assert_eq!(Reader(&m).arrows_visible(list), Err(Unread::Draw));
+        assert_eq!(Reader(&m).arrows_visible(list), Err(Gap::class("list_tree")));
     }
 
     #[test]
@@ -479,6 +483,6 @@ mod tests {
         assert_eq!(art.rect, [331.0, 220.0, 368.0, 233.0]);
         assert_eq!(art.color, [1.0, 1.0, 1.0, 128.0 / 255.0]);
         m.w(image + 0x70, 7);
-        assert_eq!(read(&m), Err(Unread::Bitmap));
+        assert_eq!(read(&m), Err(Gap::new(Unread::Bitmap, "art_texture")));
     }
 }

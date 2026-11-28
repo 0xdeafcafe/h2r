@@ -722,6 +722,29 @@ mod tests {
         assert!(none.runs.is_empty(), "only the text is drawn");
     }
 
+    /// A widget gap counts its own cause under `widget`; one with no
+    /// finer name counts the draw's, as the coarse counter does.
+    #[test]
+    fn a_widget_gap_is_kept_under_its_own_name() {
+        let _s = super::super::kept::tests::SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let kept = |name: &str| {
+            super::super::kept::counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n)
+        };
+        let (tabs, text, view) = (
+            kept("scene_kept_ui_widget_text_tabs"),
+            kept("scene_kept_ui_widget_text"),
+            kept("scene_kept_ui_widget_model_view"),
+        );
+        MenuRefusal::from(Gap::text("text_tabs")).count();
+        MenuRefusal::from(Unread::Text).count();
+        MenuRefusal::from(Gap::model("model_view")).count();
+        MenuRefusal::from(Unread::Shader).count();
+        assert_eq!(kept("scene_kept_ui_widget_text_tabs"), tabs + 1);
+        assert_eq!(kept("scene_kept_ui_widget_text"), text + 1);
+        assert_eq!(kept("scene_kept_ui_widget_model_view"), view + 1);
+        assert_eq!(kept("scene_kept_ui_widget_shader"), 0, "a shader bitmap is drawn at its quad");
+    }
+
     #[test]
     fn a_custom_picture_splits_the_run_even_when_its_guest_draw_has_no_pixels() {
         let mut mem = widgets();
