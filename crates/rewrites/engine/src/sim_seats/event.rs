@@ -374,6 +374,9 @@ mod tests {
     /// subject none and the third player 2.
     fn world(mode: u8) -> (CpuAbi, Guest) {
         let mut g = Guest::new();
+        // The bodies' text, `a7c50` and `19de80..19ebac`: a segment reads it.
+        g.map_zeroed(0x000a_7000, 0x1000, Permissions::RW).unwrap();
+        g.map_zeroed(0x0019_d000, 0x2000, Permissions::RW).unwrap();
         g.map_zeroed(0x004c_0000, 0x0004_0000, Permissions::RW).unwrap();
         g.map_zeroed(MODE_RECORD, 0x0001_0000, Permissions::RW).unwrap();
         g.map_zeroed(STACK - 0x2000, 0x3000, Permissions::RW).unwrap();
@@ -403,7 +406,9 @@ mod tests {
     }
 
     fn step(body: fn(&mut CpuAbi, &mut Guest, u32) -> Boundary, cpu: &mut CpuAbi, g: &mut Guest, pc: u32) -> TransferAbi {
-        body(cpu, g, pc).unwrap().expect("the body answers")
+        body(cpu, g, pc)
+            .unwrap()
+            .unwrap_or_else(|| panic!("the body answers: declined {:?}", crate::sim_native::plan::take_decline()))
     }
 
     #[test]
