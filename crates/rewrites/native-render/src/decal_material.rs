@@ -175,13 +175,13 @@ impl View {
 }
 
 /// A tag's data: `[[TAG_TABLE] + 16 * index + 8]`.
-fn tag_data(word: &dyn Fn(u32) -> Option<u32>, datum: u32) -> Option<u32> {
+pub(crate) fn tag_data(word: &dyn Fn(u32) -> Option<u32>, datum: u32) -> Option<u32> {
     word(word(TAG_TABLE)?.checked_add((datum & 0xffff) * 16 + 8)?)
 }
 
 /// The image `0x00137550` gives for image `index` of `bitmap`: 0 for a
 /// tag that is not there or an index outside the tag's images.
-fn image_at(word: &dyn Fn(u32) -> Option<u32>, bitmap: u32, index: i32) -> Option<u32> {
+pub(crate) fn image_at(word: &dyn Fn(u32) -> Option<u32>, bitmap: u32, index: i32) -> Option<u32> {
     let tag = tag_data(word, bitmap)?;
     let index = index as i16;
     if tag == 0 || index < 0 {

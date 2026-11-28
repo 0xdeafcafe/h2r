@@ -1188,6 +1188,10 @@ points! { ALL;
     /// `0x00034420` calls through EDI (return `0x0003452e`): one stack
     /// argument, `ret 4`, AL whether the fan draws.
     PLANAR_FOG_SETUP @ 0x0002_6520: [opaque]; "docs/graphics/retire-d3d-fog-quad.md";
+    /// The planar fog quad's setup for view modes 1, 4 and 5, which the
+    /// fan `0x00034420` calls through EDI (return `0x0003452e`): one stack
+    /// argument, `ret 4`, AL whether the fan draws.
+    PLANAR_FOG_OTHER_SETUP @ 0x0002_5e50: [opaque]; "docs/graphics/retire-d3d-fog-quad.md";
     /// Resets the record counters immediately before the two structure walks.
     RESET_SCENE_RECORDS @ 0x0002_cb30: [fn() ret 0]; "docs/graphics/occlusion-culling.md";
     /// Main view's visible structure cluster and placement record walks.

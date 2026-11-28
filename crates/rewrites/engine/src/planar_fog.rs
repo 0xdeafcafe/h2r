@@ -244,6 +244,200 @@ pub fn quad(mem: &dyn GuestMemory, mxcsr: u32, x87_control: u16, rect_at: u32) -
     Ok(FogQuad { colour, combiner: combiner(colour), depth, rect, positions })
 }
 
+/// The setup of view modes 1, 4 and 5 (`0x00025e50`, `h2 disasm 0x25e50
+/// 470`), as the native pass draws its fan.
+///
+/// With [`other::PLATE`] equal to 0 it first asks `0x0003a5c0` (the
+/// weather plate's placement, not read: [`Other::Plate`]). Otherwise it
+/// writes the clip far to the depth word, selects the view's target,
+/// binds target 3 (the depth buffer's `D24S8` words as `LIN_A8R8G8B8`,
+/// `0x00014f60`) at stage 0 and the rasterizer's bitmap
+/// `[[0x00485a80] + 0x14]` (image 0, `0x000143c0`) at stage 2, sets the
+/// planar fog's blend (`STATES`' blend rows), cull, stencil and alpha test
+/// off, z write off, and the depth test W-buffered `GL_GREATER` unless the
+/// byte [`other::NO_DEPTH_TEST`] is set (then off, `GL_ALWAYS`). Its block
+/// ([`other_combiner`]) is a texture-shader fog: stage 0 the depth bits,
+/// stages 1 and 2 `DOTPRODUCT` and `DOT_ST` of their `HILO_1` halves with
+/// attributes 2 and 3, the ramp sampled at the two dots. AL 1.
+pub mod other {
+    /// Compared with 0 first: equal asks the plate.
+    pub const PLATE: u32 = 0x0048_578c;
+    /// The planes' ranges: attribute 2 from the first pair, 3 the second.
+    pub const NEAR_START: u32 = 0x0048_5778;
+    pub const NEAR_END: u32 = 0x0048_577c;
+    pub const FAR_START: u32 = 0x0048_5790;
+    pub const FAR_END: u32 = 0x0048_5794;
+    /// The depth's scale both planes take.
+    pub const DEPTH_SCALE: u32 = 0x0048_565c;
+    /// The smallest range (`comiss; ja`).
+    pub const TINY: u32 = 0x0045_dbdc;
+    /// Set: no depth test.
+    pub const NO_DEPTH_TEST: u32 = 0x0048_575d;
+    /// The block's other inputs, each clamped to `[0, 1]`.
+    pub const MIX: u32 = 0x0048_5868;
+    pub const AMOUNT: u32 = 0x0048_5774;
+    /// Three `f32`s times [`AMOUNT`].
+    pub const FIRST: u32 = 0x0048_5768;
+    /// Three `f32`s times [`PLATE`].
+    pub const SECOND: u32 = 0x0048_5780;
+    /// `GL_GREATER`, `GL_ALWAYS`.
+    pub const Z_GREATER: u32 = 0x0204;
+    pub const Z_ALWAYS: u32 = 0x0207;
+}
+
+/// What the other setup does this call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Other {
+    /// [`other::PLATE`] is 0: the plate `0x0003a5c0` is asked first.
+    Plate,
+    /// The fan, drawn by the main path.
+    Quad(OtherQuad),
+}
+
+/// The other setup's fan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OtherQuad {
+    pub combiner: [u32; WORDS],
+    /// The depth word: the clip far.
+    pub depth: u32,
+    /// The fan's rectangle: left, right, top, bottom (f32 bits).
+    pub rect: [u32; 4],
+    /// Per vertex in push order: attribute 0 (the position), then 1 to 4
+    /// (texture coordinates 0 to 3; f32 bits).
+    pub positions: [[u32; 4]; 4],
+    pub coordinates: [[[u32; 4]; 4]; 4],
+    /// `GL_GREATER` W-buffered, or no test ([`other::NO_DEPTH_TEST`]).
+    pub depth_test: bool,
+}
+
+/// `0x00025e50`'s block (`0x000263ab`..`0x000264ef`) from its packed
+/// constants: `c0` and `c1` of stages 0 and 1 and `c0` of stage 3.
+pub fn other_combiner(c0: [u32; 2], c1: [u32; 2], c0_3: u32) -> [u32; WORDS] {
+    let mut w = [0; WORDS];
+    w[0] = 0x111a_120a; // alpha inputs, stages 0 to 3
+    w[1] = 0x110a_121a;
+    w[2] = 0x3c3d_0820;
+    w[3] = 0x3d3c_1d11;
+    w[8] = 0x0c; // final combiner ABCD
+    w[9] = 0x1c00; // final combiner EFG
+    w[10] = c0[0]; // constant 0 of stages 0, 1 and 3
+    w[11] = c0[1];
+    w[13] = c0_3;
+    w[18] = c1[0]; // constant 1 of stages 0 and 1
+    w[19] = c1[1];
+    w[26] = 0xcd; // alpha outputs
+    w[27] = 0xcd;
+    w[28] = 0xcd;
+    w[29] = 0xc00;
+    w[34] = 0x010a_021a; // RGB inputs, stages 0, 1 and 3
+    w[35] = 0x0c3c_0d3d;
+    w[37] = 0x3d0c_1d01;
+    w[45] = 0xcd; // RGB outputs
+    w[46] = 0xc00;
+    w[48] = 0xc00;
+    w[53] = 0x0001_1004; // four stages, unique c0 and c1
+    w[54] = 0x2621; // texture modes: 2D, DOTPRODUCT, DOT_ST, none
+    w[55] = 0x44; // dot mappings: HILO_1 at stages 1 and 2
+    w
+}
+
+/// `fld v; fld scale; fmulp; fistp; shl 24`.
+fn alpha_byte(v: u32, scale: u32, x87_control: u16) -> Result<u32, Error> {
+    let mut x87 = X87::new(x87_control);
+    x87.fld(v)?;
+    x87.fld(scale)?;
+    x87.arith_reg(x87::abi::arith_op::MUL, 1, 0, true)?;
+    Ok(crate::colour_pass::fistp(&mut x87)? << 24)
+}
+
+/// A plane attribute (`0x0002675c`, `0x000267ab`): the depth's scale and
+/// offset over the range `[start, end]`, `(k / r, 0, 0 - start / r, 0)`
+/// with `r` at least [`other::TINY`].
+fn plane(mem: &dyn GuestMemory, sse: &mut Sse, start: u32, end: u32) -> Result<[u32; 4], Error> {
+    let (start, end) = (mem.u32(start)?, mem.u32(end)?);
+    let range = sse.sub(end, start)?;
+    let tiny = mem.u32(other::TINY)?;
+    let range = if sse.above(tiny, range)? { tiny } else { range };
+    let inv = sse.div(mem.u32(screen_grid::constant::ONE)?, range)?;
+    let s = sse.mul(mem.u32(other::DEPTH_SCALE)?, inv)?;
+    let c = sse.mul(start, inv)?;
+    Ok([s, 0, sse.sub(0, c)?, 0])
+}
+
+/// `0x00025e50` for the fan whose rectangle is at `rect_at`, under the
+/// call's MXCSR and x87 control word.
+pub fn other(mem: &dyn GuestMemory, mxcsr: u32, x87_control: u16, rect_at: u32) -> Result<Other, Error> {
+    use crate::planar_fog::other as o;
+    let mut sse = Sse { mxcsr };
+    let zero = mem.u32(global::ZERO)?;
+    let plate = mem.u32(o::PLATE)?;
+    if sse.equal(plate, zero)? {
+        return Ok(Other::Plate);
+    }
+    let one = mem.u32(screen_grid::constant::ONE)?;
+    let (mix, amount) = (mem.u32(o::MIX)?, mem.u32(o::AMOUNT)?);
+    // 0x000260e2..0x000263a5: each product, then each lane, clamped to
+    // [0, 1] in the order the original makes them.
+    let product = |sse: &mut Sse, a: u32, b: u32| -> Result<u32, Error> {
+        let p = sse.mul(a, b)?;
+        sse.clamp(p, 0, one)
+    };
+    let first = |i: u32| mem.u32(o::FIRST + 4 * i);
+    let second = |i: u32| mem.u32(o::SECOND + 4 * i);
+    let inv_mix = sse.sub(one, mix)?;
+    let c0 = [
+        product(&mut sse, inv_mix, plate)?,
+        product(&mut sse, first(0)?, amount)?,
+        product(&mut sse, first(1)?, amount)?,
+        product(&mut sse, first(2)?, amount)?,
+    ];
+    let c1 = [
+        product(&mut sse, amount, mix)?,
+        product(&mut sse, second(0)?, plate)?,
+        product(&mut sse, second(1)?, plate)?,
+        product(&mut sse, second(2)?, plate)?,
+    ];
+    let amount_clamped = sse.clamp(amount, 0, one)?;
+    let plate_clamped = sse.clamp(plate, 0, one)?;
+    let fog = [
+        sse.clamp(mem.u32(global::DENSITY)?, 0, one)?,
+        sse.clamp(mem.u32(global::COLOUR)?, 0, one)?,
+        sse.clamp(mem.u32(global::COLOUR + 4)?, 0, one)?,
+        sse.clamp(mem.u32(global::COLOUR + 8)?, 0, one)?,
+    ];
+    let scale = mem.u32(global::SCALE)?;
+    let pack = |v: [u32; 4]| crate::colour_pass::pack_colour(v, scale, x87_control);
+    let combiner = other_combiner(
+        [pack(c0)?, alpha_byte(amount_clamped, scale, x87_control)?],
+        [pack(c1)?, alpha_byte(plate_clamped, scale, x87_control)?],
+        pack(fog)?,
+    );
+    let depth = mem.u32(global::CLIP_FAR)?;
+    let mut rect = [0; 4];
+    for (i, r) in rect.iter_mut().enumerate() {
+        *r = mem.u32(rect_at.wrapping_add(4 * i as u32))?;
+    }
+    let near = plane(mem, &mut sse, o::NEAR_START, o::NEAR_END)?;
+    let far = plane(mem, &mut sse, o::FAR_START, o::FAR_END)?;
+    let (mut positions, mut coordinates) = ([[0; 4]; 4], [[[0; 4]; 4]; 4]);
+    for (n, [u, v]) in CORNER_UV.into_iter().enumerate() {
+        let uv = [if u { one } else { 0 }, if v { one } else { 0 }];
+        positions[n] = screen_grid::position(mem, &mut sse, &rect, uv, depth)?;
+        // 0x00026812: attributes 1 and 4, the rectangle's lerp, z 0, w 1.
+        let [left, right, top, bottom] = rect;
+        let x = sse.sub(right, left)?;
+        let x = sse.mul(x, uv[0])?;
+        let x = sse.add(x, left)?;
+        let y = sse.sub(bottom, top)?;
+        let y = sse.mul(y, uv[1])?;
+        let y = sse.add(y, top)?;
+        let lerp = [x, y, 0, one];
+        coordinates[n] = [lerp, near, far, lerp];
+    }
+    let depth_test = mem.u8(o::NO_DEPTH_TEST)? == 0;
+    Ok(Other::Quad(OtherQuad { combiner, depth, rect, positions, coordinates, depth_test }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +530,70 @@ mod tests {
         assert!(q.positions.iter().all(|p| f32::from_bits(p[3]) == 16_777_215.0));
         assert!(q.positions.iter().all(|p| p[2] == q.positions[0][2]));
         assert_eq!(q.combiner[word::CONSTANT0], q.colour);
+    }
+
+    fn other_mem() -> FlatMemory {
+        let mut m = mem();
+        let f = |m: &mut FlatMemory, a: u32, v: f32| m.set_f32(a, v).unwrap();
+        f(&mut m, other::PLATE, 0.5);
+        f(&mut m, other::MIX, 0.25);
+        f(&mut m, other::AMOUNT, 2.0);
+        f(&mut m, other::TINY, 0.0001);
+        f(&mut m, other::DEPTH_SCALE, 1.0);
+        f(&mut m, other::NEAR_START, 0.25);
+        f(&mut m, other::NEAR_END, 0.75);
+        f(&mut m, other::FAR_START, 0.5);
+        f(&mut m, other::FAR_END, 0.5);
+        for i in 0..3 {
+            f(&mut m, other::FIRST + 4 * i, 0.25);
+            f(&mut m, other::SECOND + 4 * i, 1.5);
+        }
+        let rect = 0x0050_0000;
+        for (i, v) in [0.0f32, 640.0, 0.0, 480.0].into_iter().enumerate() {
+            f(&mut m, rect + 4 * i as u32, v);
+        }
+        m
+    }
+
+    #[test]
+    fn the_other_setup_asks_the_plate_when_its_word_is_zero() {
+        let mut m = other_mem();
+        m.set_f32(other::PLATE, 0.0).unwrap();
+        assert_eq!(other(&m, MXCSR, CONTROL, 0x0050_0000).unwrap(), Other::Plate);
+        m.set_f32(other::PLATE, f32::NAN).unwrap();
+        assert!(matches!(other(&m, MXCSR, CONTROL, 0x0050_0000).unwrap(), Other::Quad(_)));
+    }
+
+    #[test]
+    fn the_other_block_is_the_texture_shader_fog_with_clamped_constants() {
+        let m = other_mem();
+        let Other::Quad(q) = other(&m, MXCSR, CONTROL, 0x0050_0000).unwrap() else { panic!("a quad") };
+        let w = &q.combiner;
+        assert_eq!((w[53], w[54], w[55]), (0x0001_1004, 0x2621, 0x44));
+        // (1 - 0.25) * 0.5, then 0.25 * 2 three times: 0.375, 0.5.
+        assert_eq!(w[10], 96 << 24 | 128 << 16 | 128 << 8 | 128);
+        // AMOUNT clamps to 1.
+        assert_eq!(w[11], 255 << 24);
+        // 2 * 0.25, then 1.5 * 0.5 three times.
+        assert_eq!(w[18], 128 << 24 | 191 << 16 | 191 << 8 | 191);
+        assert_eq!(w[19], 128 << 24);
+        // Density 0.5, colour 1, 0.5, 0.25.
+        assert_eq!(w[13], 128 << 24 | 255 << 16 | 128 << 8 | 64);
+        assert!(q.depth_test);
+    }
+
+    #[test]
+    fn the_other_fans_attributes_are_the_lerp_and_the_two_planes() {
+        let m = other_mem();
+        let Other::Quad(q) = other(&m, MXCSR, CONTROL, 0x0050_0000).unwrap() else { panic!("a quad") };
+        let f = |v: [u32; 4]| v.map(f32::from_bits);
+        assert_eq!(f(q.coordinates[2][0]), [640.0, 480.0, 0.0, 1.0]);
+        assert_eq!(f(q.coordinates[2][3]), [640.0, 480.0, 0.0, 1.0]);
+        // 1 / (0.75 - 0.25): (2, 0, -0.5, 0).
+        assert_eq!(f(q.coordinates[0][1]), [2.0, 0.0, -0.5, 0.0]);
+        // An empty range takes the smallest.
+        let far = f(q.coordinates[0][2]);
+        assert_eq!(far[0], 1.0 / 0.0001f32);
+        assert!(q.positions.iter().all(|p| f32::from_bits(p[3]) == 16_777_215.0));
     }
 }

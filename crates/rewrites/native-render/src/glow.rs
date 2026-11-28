@@ -318,7 +318,7 @@ struct GridIn {
 @vertex
 fn vs_main(v: GridIn) -> XboxVaryings {
     var o: XboxVaryings;
-    o.position = vec4f(v.position.x * glow.dest.x - 1.0, 1.0 - v.position.y * glow.dest.y, 0.0, 1.0);
+    o.position = vec4f(v.position.x * glow.dest.x - 1.0, 1.0 - v.position.y * glow.dest.y, glow.dest.z, 1.0);
     o.d0 = vec4f(0.0);
     o.d1 = vec4f(0.0);
     o.b0 = vec4f(0.0);
@@ -336,7 +336,9 @@ fn vs_main(v: GridIn) -> XboxVaryings {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GridFrame {
-    /// `2 / width`, `2 / height` of the target (guest pixels).
+    /// `2 / width`, `2 / height` of the target (guest pixels), then the
+    /// strips' depth (`[0, 1]`, what a [`QuadDepth`] test compares; 0 in
+    /// [`GridFrame::of`]).
     pub dest: [f32; 4],
 }
 
