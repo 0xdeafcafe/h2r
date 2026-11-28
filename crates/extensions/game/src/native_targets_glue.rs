@@ -91,6 +91,27 @@ impl<B: d3d::Backend + Send + 'static> Host for Targets<B> {
         made.map_or_else(|e| self.refused("the constants", e), |()| true)
     }
 
+    fn registers(&self, mem: &mut dyn GuestMemory, register: u32, data: u32, count: u32) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        let made = device.set_vertex_shader_constant(&mut DeviceMemory(mem), register, data, count, true);
+        drop(device);
+        made.map_or_else(|e| self.refused("the constant registers", e), |()| true)
+    }
+
+    fn texture_stage_state(&self, mem: &mut dyn GuestMemory, stage: u32, state: u32, value: u32) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        let made = device.set_texture_stage_state(&mut DeviceMemory(mem), stage, state, value);
+        drop(device);
+        made.map_or_else(|e| self.refused("a texture stage state", e), |()| true)
+    }
+
+    fn vertex_program(&self, mem: &mut dyn GuestMemory, function: u32, address: u32) -> bool {
+        let Ok(mut device) = self.device.lock() else { return false };
+        let made = device.load_vertex_shader_program(&mut DeviceMemory(mem), function, address);
+        drop(device);
+        made.map_or_else(|e| self.refused("a vertex program", e), |()| true)
+    }
+
     fn constant(&self, r: usize) -> Option<[u32; 4]> {
         // 192 registers (`d3d::Device::constant`'s hardware order).
         (r < 192).then(|| self.device.lock().ok().map(|d| d.constant(r).map(f32::to_bits))).flatten()

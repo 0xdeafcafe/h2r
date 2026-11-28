@@ -128,6 +128,22 @@ pub trait Host: Send + Sync {
     fn constants(&self, _mem: &mut dyn GuestMemory, _register: u32, _data: u32, _dwords: u32) -> bool {
         false
     }
+    /// `D3DDevice_SetVertexShaderConstant1` / `4` (`0x003f71d0`,
+    /// `0x003f7280`): `count` registers from `register` (ECX) at `data`,
+    /// the guest shadow updated. `false`: refused.
+    fn registers(&self, _mem: &mut dyn GuestMemory, _register: u32, _data: u32, _count: u32) -> bool {
+        false
+    }
+    /// `D3DDevice_SetTextureState_BumpEnv` (`0x003f5e30`): stage `stage`'s
+    /// state `state` to `value`. `false`: refused.
+    fn texture_stage_state(&self, _mem: &mut dyn GuestMemory, _stage: u32, _state: u32, _value: u32) -> bool {
+        false
+    }
+    /// `D3DDevice_LoadVertexShaderProgram(function, address)`
+    /// (`0x003f6c60`). `false`: refused.
+    fn vertex_program(&self, _mem: &mut dyn GuestMemory, _function: u32, _address: u32) -> bool {
+        false
+    }
     /// Constant register `r` (hardware order, register + 96) as bits.
     fn constant(&self, _r: usize) -> Option<[u32; 4]> {
         None
