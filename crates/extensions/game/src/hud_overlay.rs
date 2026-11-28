@@ -134,11 +134,7 @@ where
     F: FnOnce(&mut d3d::device::Device<B>, &mut dyn d3d::GuestMemory, &dyn DrawAdmission) -> Result<bool, d3d::D3dError>,
 {
     let source = if what == ScreenDraw::Fade { Source::Fade } else { Source::Screen };
-    let (taken, item) = capture_item(device, mem, source, issue);
-    if let (ScreenDraw::Fade, Some(item)) = (what, &item) {
-        // A checked call of the fade made in Rust compares this.
-        render_bridge::native_hud::fade::guest_drew(item);
-    }
+    let (taken, _) = capture_item(device, mem, source, issue);
     if taken {
         what.counter().count();
     } else {

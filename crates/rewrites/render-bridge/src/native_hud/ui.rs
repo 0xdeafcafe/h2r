@@ -391,16 +391,13 @@ pub(super) fn place(b: &mut Builder<'_>) {
     for (scope, start, end, alternate) in SCOPES {
         b.raw().before(start, "native_ui_enter", move |c| {
             // The fade made in Rust returns before its scope opens.
-            if start.base == FADE_DRAW.base && let Some(transfer) = super::fade::enter(c) {
-                return Ok(Flow::Return(transfer));
+            if start.base == FADE_DRAW.base {
+                return Ok(Flow::Return(super::fade::enter(c)));
             }
             Ok(enter(c, scope, end, alternate).map_or(Flow::Continue, Flow::Return))
         }).context_only().optional();
         for end in [Some(end), alternate].into_iter().flatten() {
             b.raw().before(end, "native_ui_leave", move |c| {
-                if end.base == FADE_RETURN.base {
-                    super::fade::returned(&*c.ctx.memory());
-                }
                 leave(c, scope);
                 Ok(Flow::Continue)
             }).context_only().optional();
