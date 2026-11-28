@@ -1,7 +1,7 @@
 # Retiring D3D: movies, frames outside a game view and the display (R8)
 
-Status: Partly built. The frame step, the movie's picture, the publish (in the frame step and the three frame loops outside it), the frame tail, the frame's finish and the view setup and view end are native, the frame wait calls no D3D entry, and every render target and depth surface is the frame graph's, by role; a frame tail or view setup it does not cover and a frame with a carried slot keep the guest's D3D calls, each under a named `render.residual` row.
-Code: `crates/rewrites/render-bridge/src/render_frame.rs` (the frame step), `native_targets.rs` (the finish), `render_frame/publish.rs`, `d3d::Device::publish` and `game::d3d_glue::SinkDrain` (the publish), `crates/platform/bink-hle/src/display.rs` and `crates/rewrites/render-bridge/src/native_movie.rs` (the movie), `crates/extensions/game/src/movie_display_glue.rs` and `hud_overlay::place_movie` (the glue), `render_frame::loop_present` (the frame loops' present), `frame_tail.rs` with `hud_overlay::place_tail` and `frame_scene::OverlayKind::Hold` (the frame tail), `view_setup.rs` (the view setup and view end), `native-render/src/frame_graph/targets.rs`, `native_targets::role`, `d3d::Device::make_target` and `d3d::threaded::owner::TargetStore` (the graph's targets), `residual_census::REGISTRY` (the rows). Tests: in each, `the_frame_finish_makes_no_d3d_entry` (`native_targets.rs`), `a_frame_with_a_screen_effect_makes_no_d3d_entry` and `uncovered_tails_are_refused_by_name` (`frame_tail.rs`), `the_view_setup_makes_no_d3d_entry`, `uncovered_setups_are_refused_by_name` and `a_check_compares_the_guest_bodys_state` (`view_setup/tests.rs`), `the_graph_owns_its_targets_across_frames` (`frame_graph/targets.rs`), `a_held_texture_survives_into_the_next_frame` (`native-render/src/ui_gpu.rs`), `the_frame_wait_is_outside_the_render` and `the_frames_own_calls_are_named_rows_inside_and_outside_the_frame_step` (`residual_census.rs`), `a_loop_frame_from_the_scene_is_published_with_no_d3d_entry` (`render_frame.rs`), `a_native_display_takes_the_picture_and_leaves_the_guest_texture_alone` (`crates/platform/bink-hle/tests/synthetic.rs`) and `a_published_frame_presents_with_the_frame_steps_ramp_and_the_next_vblank_reports_its_swap` (`crates/platform/d3d/tests/round7.rs`).
+Status: Partly built. The frame step, the movie's picture, the present (in the frame step and the three frame loops outside it, made in Rust with no guest present), the frame tail, the frame's finish and the view setup and view end are native, the frame wait calls no D3D entry, and every render target and depth surface is the frame graph's, by role; a frame tail or view setup it does not cover keep the guest's D3D calls, each under a named `render.residual` row.
+Code: `crates/rewrites/render-bridge/src/render_frame.rs` (the frame step), `native_targets.rs` (the finish), `render_frame/publish.rs` (the present), `crates/platform/bink-hle/src/display.rs` and `crates/rewrites/render-bridge/src/native_movie.rs` (the movie), `crates/extensions/game/src/movie_display_glue.rs` and `hud_overlay::place_movie` (the glue), `render_frame::loop_present` (the frame loops' present), `frame_tail.rs` with `hud_overlay::place_tail` and `frame_scene::OverlayKind::Hold` (the frame tail), `view_setup.rs` (the view setup and view end), `native-render/src/frame_graph/targets.rs`, `native_targets::role`, `d3d::Device::make_target` and `d3d::threaded::owner::TargetStore` (the graph's targets), `residual_census::REGISTRY` (the rows). Tests: in each, `the_frame_finish_makes_no_d3d_entry` (`native_targets.rs`), `a_frame_with_a_screen_effect_makes_no_d3d_entry` and `uncovered_tails_are_refused_by_name` (`frame_tail.rs`), `the_view_setup_makes_no_d3d_entry`, `uncovered_setups_are_refused_by_name` and `a_check_compares_the_guest_bodys_state` (`view_setup/tests.rs`), `the_graph_owns_its_targets_across_frames` (`frame_graph/targets.rs`), `a_held_texture_survives_into_the_next_frame` (`native-render/src/ui_gpu.rs`), `the_frame_wait_is_outside_the_render` and `the_frames_own_calls_are_named_rows_inside_and_outside_the_frame_step` (`residual_census.rs`), `the_present_is_made_in_rust_not_called` (`render_frame.rs`), `a_changed_display_is_latched_as_the_guest_latches_it` (`render_frame/publish.rs`) and `a_native_display_takes_the_picture_and_leaves_the_guest_texture_alone` (`crates/platform/bink-hle/tests/synthetic.rs`).
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). Off, the frame is the guest's and the movie fills and draws the guest's texture.
 
 Slice R8 of [retire-d3d.md](retire-d3d.md). `render_frame_and_present` `0x00223240` is Rust: the frame step calls each part of the guest's frame in its order, so each part goes native in place. The exit: from boot to gameplay and back to the menu, `render.residual`'s `d3d_entries` grow only under `outside_render`. R7 owns the menus, R6 the HUD; R8 takes the frame itself, the movie, and what neither draws.
@@ -14,9 +14,8 @@ flowchart LR
   M --> D[native movie draw]
   D --> OV[overlay pass]
   F --> W[0x0012b2e0 frame wait]
-  W -->|caches idle| PB{every slot from the scene}
-  PB -->|yes| N[publish: native present, ramp, swap]
-  PB -->|no, counted| P[0x00013f10 present]
+  W -->|caches idle| P[present in Rust: blit, latch, counter]
+  P --> S[scene seal: the swap]
 ```
 
 ## The frame step
@@ -29,13 +28,13 @@ flowchart LR
 | 2 | `0x002234e0`, the views | the skip returned 0 |
 | 2 | `0x002232a0`, the frame outside a view | otherwise |
 | 3 | `0x0012b2e0`, the frame wait | always |
-| 4 | `0x00013f10(0, 0)`, the present | both cache countdowns (`0x004e6470`, `0x004e64a0`), read after step 2, at or below 0, and the publish keeps the frame ([below](#the-final-display)) |
+| 4 | none: `0x00013f10(0, 0)`'s writes in Rust ([below](#the-final-display)) | both cache countdowns (`0x004e6470`, `0x004e64a0`), read after step 2, at or below 0 |
 
-`render_frame::next` is the table as data, tested against the guest's order; `render_frame::after_wait` skips step 4 for a published frame. Each step is a `call_guest_named` from the frame's own stack; the frame returns to its caller after the last. Every other feature's hooks on `RENDER_FRAME` (render timing, the bots' pads, the map slots) still run around it. A light host's `sim-frame` owns the point, so the frame step is not added there (`crates/apps/boot/src/lib.rs`).
+`render_frame::next` is the table as data (`Action::Call`, `Action::Present`, `Action::Return`), tested against the guest's order; `render_frame::after_call` is the step each call returns to. Steps 1 to 3 are `call_guest_named` from the frame's own stack; step 4 is `render_frame::publish::present`, so the frame never enters the guest's present and its `Swap`. The frame returns to its caller after the last step with the present's EAX. Every other feature's hooks on `RENDER_FRAME` (render timing, the bots' pads, the map slots) still run around it. A light host's `sim-frame` owns the point, so the frame step is not added there (`crates/apps/boot/src/lib.rs`).
 
-The frame wait is outside the render: the wait (`d3d::FrameWait`, a Rust override) calls no D3D entry, and the vblank callback `0x00014280` it delivers only counts. What other threads call while it yields is theirs, not the frame's.
+The frame wait is outside the render: the wait (`render_bridge::frame_wait`, a Rust override) calls no D3D entry, and the vblank callback `0x00014280` it delivers only counts. What other threads call while it yields is theirs, not the frame's.
 
-Besides the present, the step replaces nothing by itself. What makes a frame native is the step's callees: the views' stages ([retire-d3d.md](retire-d3d.md), R1 to R5), the overlay's producers (R6, R7) and the movie (below).
+Besides the present, the step replaces no callee by itself. What makes a frame native is the step's callees: the views' stages ([retire-d3d.md](retire-d3d.md), R1 to R5), the overlay's producers (R6, R7) and the movie (below).
 
 ## Movies
 
@@ -107,7 +106,7 @@ Three frame loops run outside `0x00223240` (**Code**):
 | the map load, movie playing (`[0x004e9194]` and `[0x004e9188]` set) | `0x002232a0` at `0x00163a1a` | the frame wait, the present at `0x00163a28` |
 | the map load, after it | `0x002232a0` at `0x00163acd` | the frame wait, the present at `0x00163adb` |
 
-Each present asks the publish as the frame step's does (`render_frame::loop_present`, an implementation of `points::RENDER_PRESENT` that acts only for these three return addresses and no readback): shown from the scene, it returns as the guest's `ret 8` with no guest D3D entry, the counter moved; kept, the guest's body runs. `render_frame::Stats` counts both (`loop_published`, `loop_presents`); `publish_*` counts the outcome by name.
+Their presents are the only guest calls of `0x00013f10`. `render_frame::loop_present` implements `points::RENDER_PRESENT`: the present's writes as in the frame step, the swap counted for the next vertical blank (`frame_wait::swapped`; no scene is open outside the frame step), then the guest's `ret 8` with the counter's high dword in EAX. `render_frame::Stats::loop_presents` counts them.
 
 The frame's own calls:
 
@@ -116,51 +115,31 @@ The frame's own calls:
 | `views` | `render_views` `0x0002b5d0` | `kept` | a refused view setup's or view end's body |
 | `outside_view` | `0x002232a0` | `kept` | the same, for `0x0002c8a0`'s view |
 | `frame_loop` | `0x0012b6f0` | `kept` | the same, for its view `0x0002ca00` |
-| `present` | `0x00013f10` | `kept` | a kept frame's `Swap` |
+| `present` | `0x00013f10` | `kept` | nothing: the present is made in Rust ([below](#the-final-display)) |
 
 ## The final display
 
-At step 4 the frame step asks the publish (`render_frame::publish::present`) first. The present with first argument 0 asks no readback and runs from `0x000140e6` (**Code**):
+`render_frame::publish::present` is the present `0x00013f10` with first argument 0, which asks no readback and runs from `0x000140e6` (**Code**):
 
-| Guest | What | The publish |
+| Guest | What | In Rust |
 |---|---|---|
-| `0x00013d80` | with an image `[0x005093c8]` set, its CPU blit into the rectangle at `0x005093c0` of the back buffer ([below](#the-back-buffers-blit)) | one overlay picture over the back buffer |
-| `0x003f9df0(1, 1)`, `Swap(0)`, `0x003f9df0(1, 1)` | the back buffer scale and the swap | `d3d::Device::publish`: the back buffer to the backend with the frame step's ramp, the swap counted |
-| `0x00014110..0x00014194` | `[0x00485acc]` against `[0x00467008]`, byte `[0x00485ad0]` against `[0x0046700c]`; when either differs, the TV encoder option, the flicker filter `0x003f8c70` and the latch | kept |
-| `0x00014196..0x000141ae` | the present counter `0x00485aa0`, 64-bit, +1 | `engine::render_loop::tick_writes::present_counter` |
+| `0x00013d80` | with an image `[0x005093c8]` set, its CPU blit into the rectangle at `0x005093c0` of the back buffer ([below](#the-back-buffers-blit)) | one overlay picture over the frame |
+| `0x003f9df0(1, 1)`, `Swap(0)`, `0x003f9df0(1, 1)` | the back buffer scale and the swap | the scene's seal (`scene_step::seal`, after `RENDER_FRAME`), which counts the swap (`frame_wait::swapped`) |
+| `0x00014110..0x0001412a` | `[0x00485acc]` against `[0x00467008]`, byte `[0x00485ad0]` against `[0x0046700c]` | the same test |
+| `0x0001412c..0x00014163` | the encoder latch `[0x00408640]` clear or `[0x00408638]` not the option: `AvSendTVEncoderOption(miniport, 0xb, option, 0)`, then the latch 1 and the option | the latch written; the host display has no TV encoder |
+| `0x00014169..0x0001418d` | the flicker filter `0x003f8c70`, then `[0x0046700c]` and `[0x00467008]` latched | the latches written; the host display has no flicker filter |
+| `0x00014196..0x000141b7` | the present counter `0x00485aa0`, 64-bit, +1; EAX its high dword; `ret 8` | `engine::render_loop::tick_writes::present_counter`, EAX the same |
 
-```text
-present step
-  host's open frame (SceneSink, after the push buffer drains)
-    a slot with a guest op ........ kept: publish_kept_<slot>
-    a write with no slot .......... kept: publish_kept_untracked
-  TV option or flicker changed .... kept: publish_kept_display
-  blit not placed ................. kept: publish_kept_border_<cause>
-  no host ......................... kept: publish_kept_host
-  host's present fails ............ kept: publish_failed
-  otherwise ....................... publish_native, 0x00013f10 skipped
-```
-
-A kept frame runs the guest's `0x00013f10(0, 0)` as before. Every outcome is counted in `render.scene` by the names above; `<slot>` is the first slot in the frame's order with a guest op (`opaque` to `outside`, as `frame_types::Slot::name`).
-
-- **The open frame.** `d3d::scene_sink` marks each slot it files a guest op in, and a write while no slot is declared, from one present to the next (`scene_sink::open_frame`). A native producer's draw files nothing, so a frame drawn only by the scene's stages and the overlay has no mark. The host (`game::d3d_glue::SinkDrain`) runs the device's push buffer before it reads the marks.
-- **The present.** `Device::publish` presents the back buffer the scene drew into through the backend with flags 5, so the scene sink ends the frame and the frame owner takes it as at a `Swap`. The frame-buffer headers do not rotate and no fence is set: no guest op drew into the frame.
-- **The vblank.** `Device::publish` counts the swap (`+0x2478`), so the next vertical blank's record carries the swap count and `D3DVBLANK_SWAPDONE`, which `0x00014280` records ([d3d-timing.md](d3d-timing.md#vertical-blank)).
-- **The gamma ramp.** The frame step reads the ramp the brightness update (`0x00012c71..0x00012d08`) last loaded into the miniport: device `[0x00407488]`, miniport `+0x1c28`, ramp `+0x1dc + 0x300 * [+0x7e4]`. An all-zero ramp is none loaded. The device's own copy (`Device::gamma_ramp`) is not used for a published frame.
-- **The frame wait** is step 3 and runs before the publish either way.
-- **Readbacks.** None is asked: the present's four callers (`0x00223296`, `0x0012b784`, `0x00163a28`, `0x00163adb`, **Code**) all push `(0, 0)`, so its surface lock and copy (`0x00013f21..0x000140e4`) never run. The other three are the frame loops [above](#frames-outside-a-game-view), published the same way.
+- **The vblank.** The swap's count (`frame_wait::swapped`) gives the next vertical blank's record its swap count and `D3DVBLANK_SWAPDONE`, which `0x00014280` records.
+- **The gamma ramp.** `publish::gamma` reads the ramp the brightness update (`0x00012c71..0x00012d08`) last loaded into the miniport: device `[0x00407488]`, miniport `+0x1c28`, ramp `+0x1dc + 0x300 * [+0x7e4]`. An all-zero ramp is none loaded. The sealed scene carries no ramp.
+- **The frame wait** is step 3 and runs before the present.
+- **Readbacks.** The present's four callers (`0x00223296`, `0x0012b784`, `0x00163a28`, `0x00163adb`, **Code**) all push `(0, 0)`, so its surface lock and copy (`0x00013f21..0x000140e4`) never run. A call with one (`publish::readback`) is `unimplemented!`.
 
 ### The back buffer's blit
 
 `0x00013d50` (the disc-error screen's three calls, `0x002134ef..0x0021359d`) sets an image of one byte a pixel `[0x005093c8]`, its rectangle `0x005093c0` (top, left, bottom, right, 16 bits each) and a scale `[0x005093cc]` (`0x55`). The present's `0x00013d80` (**Code** `0x00013d80..0x00013f0e`) then locks the back buffer and writes each byte times the scale, clamped to 0..255, into all four bytes of its pixel, when the rectangle is inside 640 x 480.
 
-`render_frame::blit::read` makes the same pixels as a BGRA picture; `blit::overlay` draws it as one `MovieFrame` item over the 640 x 480 canvas, point-sampled, no blend (picture id `0x00013d80`, its frame a hash of the texels so the upload moves only with the picture). The publish asks `Publish::blit` after the display check, so a kept frame leaves the whole blit to the guest; the host (`hud_overlay::place_blit`) places it unfitted over the bound target. Counted `publish_blit_native`; not placed, the frame keeps the guest's present, `publish_kept_border_<cause>`:
-
-| Cause | When |
-|---|---|
-| `host` | no GPU overlay |
-| `target` | the bound colour is not the device's back buffer `[device + 0x1a14]` |
-| `pass` | the device did not take the pass |
+`render_frame::blit::read` makes the same pixels as a BGRA picture; `blit::overlay` draws it as one `MovieFrame` item over the 640 x 480 canvas, point-sampled, no blend (picture id `0x00013d80`, its frame a hash of the texels so the upload moves only with the picture). The present places it through the host's `publish::PlaceBlit` (`hud_overlay::place_blit`, registered by `render_glue` with the GPU overlay), unfitted over the bound target. No host, or a host that refuses it, is `unimplemented!` by cause.
 
 **S**: that the guest's own checks on the back buffer (its size against `width * height * 4`, the lock) always pass, since the device's back buffer is the linear guest-size one.
 
@@ -170,8 +149,7 @@ A kept frame runs the guest's `0x00013f10(0, 0)` as before. Every outcome is cou
 - The combiner is `Combiner::Texture` with white corners. **S**: that the begin's combiner reduces to the texture for this record (the text path makes the same assumption).
 - `0x004c1a18` is left as it is: the native draw sets no state, so it has none to restore.
 - The frame step holds a named continuation across each guest call of the frame, as `sim-frame` does.
-- A published frame skips `0x003f9df0(1, 1)`. **S**: that nothing sets another back buffer scale for the next frame to inherit.
-- Without a kernel clock, the vertical blanks a published swap counts (`Device::set_vblanks_per_swap`) are delivered at the next `Swap`'s return, not at the publish.
+- The present skips `0x003f9df0(1, 1)`. **S**: that nothing sets another back buffer scale for the next frame to inherit.
 - The frame tail `0x00013b90` runs inside `render_views` before the present, and does nothing unless `0x0001fd20` returns a record with `+0xa4` above `[0x0045dbd8]`. A native tail's overlay files nothing; a kept tail's native fans file nothing, and a refused fan carries `overlay` and keeps the frame ([below](#the-frame-tail)).
 
 ## The frame tail
@@ -349,11 +327,10 @@ Tests: `a_resize_writes_the_table_and_both_headers`, `the_end_writes_the_saved_s
 - The view setup in a game: its frames on screen against the guest's, a view of kind 1 and a scaled view among them.
 - The graph's targets in a game: which headers panic `d3d targets: <header> has no role`, and whether two levels of one entry's texture are ever bound at once.
 - The frame tail in a game: a screen effect's freeze frame on screen against the guest's, at 1x and at render scale, and `frame_tail_native` against `frame_tail_calls`; a tail with a view of kind 1 panics (`target`).
-- A frame loop's published frame on screen, and its `loop_published` against `loop_presents` over a map load.
+- What a frame loop shows over a map load: no scene is sealed outside the frame step.
 - The frame's finish in a game: whether a `release` panics.
 - The water end's ocean in a game (Delta Towers' bay is one): its pass on screen against the guest's, its copy on `Game(0x16)`, and which steps panic `water ocean: <cause>` (bit 19's reflection: the sky in `Game(0x15)` mirrored, and whether the native sky's replay draws with no depth bound).
-- How many frames publish in a game: the `publish_*` counters over the census corpus.
-- A published frame on screen: its pixels and brightness against the guest's present.
+- The brightness: the sealed scene carries no gamma ramp (`publish::gamma`).
 - Snapshot quiescence with the frame step's continuations.
 
 ## Related

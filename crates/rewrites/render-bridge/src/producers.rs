@@ -241,9 +241,8 @@ pub const REGISTRY: &[Row] = &[
         status: Status::Kept,
         slot: "outside",
     },
-    // The present: a published frame returns without its body
-    // (`render_frame::publish`), so its work here is only the kept
-    // frames' `Swap`.
+    // The present: made in Rust (`render_frame::publish`), so its guest
+    // body, and the `Swap` in it, never runs.
     Row {
         name: "present",
         entry: 0x0001_3f10,
