@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 44;
+pub const BUDGET: usize = 43;
 
 use Initial::{Group, Off, On};
 
@@ -122,8 +122,6 @@ pub const TABLE: &[Switch] = &[
         "the sound simulation (docs/engine/sound-sim.md); h2 sim diff of firefight-beavercreek is identical over 10351 ticks"),
     sw("impl.sim.sound-events.table", Off, "sim", "2026-11-27",
         "the sound table's entry bodies and tick phase (docs/engine/sound-instances.md): on after h2 sim diff parity with sound.table in the series"),
-    sw("impl.sim.effects-parts", On, "sim", "2026-11-27",
-        "the effects phase in Rust (docs/engine/effects-parts.md): the effect walk, the damage part arm, visual parts as scene events; off runs the guest phase, the A arm of h2 sim diff"),
     sw("impl.sim.arena-hash", Off, "sim", "2026-11-20", DIAGNOSTIC),
     sw("impl.sim.frame-guard", Off, "sim", "2026-11-28",
         "the frame guard (lockstep::frame_guard, docs/engine/sim-render-split.md): a test mode; goes when the render-blind gate (slice 10) holds the rule in h2 sim and the ladder"),

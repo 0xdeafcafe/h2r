@@ -1,4 +1,4 @@
-//! The per-effect bodies under `impl.sim.effects-parts`
+//! The per-effect bodies of the effects phase in Rust
 //! (docs/engine/effects-parts.md, "The per-effect bodies"): the alive
 //! test `1794e0`, the cull `179730`, the delete `1774f0` and the event
 //! clock `1792b0` the effect walk calls, through their arm
@@ -108,7 +108,7 @@ mod tests {
     use hooks::{Base, Registry, Switches};
 
     #[test]
-    fn the_switch_installs_every_body_with_its_sites_and_the_resets() {
+    fn the_feature_installs_every_body_with_its_sites_and_the_resets() {
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimEffectsParts).unwrap();
         let plan = registry.build(&Base).unwrap();
@@ -121,13 +121,6 @@ mod tests {
         assert!(load.observe_before.iter().any(|h| h.label == RESET));
         for (point, label) in NEW_RUN {
             assert!(plan.chains[&point.base].observe_before.iter().any(|h| h.label == label), "{label}");
-        }
-        // Off: none of them.
-        let mut registry = Registry::new(Switches::parse("-impl.sim.effects-parts").unwrap());
-        registry.add(&SimEffectsParts).unwrap();
-        let plan = registry.build(&Base).unwrap();
-        for p in engine::effect_update::POINTS {
-            assert!(!plan.chains.contains_key(&p.base), "{}", p.name);
         }
     }
 

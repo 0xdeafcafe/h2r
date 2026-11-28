@@ -281,7 +281,8 @@ pub async fn run(cx: Cx, ledger: &'static Mutex<Ledger>) -> EntryResult {
 /// is a guest call, counted in the ledger like any guest phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Bodies {
-    /// The effects phase, [`crate::effects_phase`] (`impl.sim.effects-parts`).
+    /// The effects phase, [`crate::effects_phase`]; off only in tests, as
+    /// the lifted reference.
     pub effects: bool,
 }
 

@@ -86,8 +86,8 @@ field: physics and collision have no `checked` (it is `matched` plus
 `mismatched`; shadow ports have no `answered` and their
 `skipped` is `declined`; `sound.voices` counts ticks for `checked`
 (sampled ticks with voices), `matched` and `mismatched`, and voices for
-`answered`. `effects-parts` is the effects phase in Rust, under
-`impl.sim.effects-parts` rather than an `impl.sim.native.*` switch: its
+`answered`. `effects-parts` is the effects phase in Rust, always on
+with no switch (its `switch` is empty): its
 `effects.damage`, `effects.object`, `effects.sound`,
 `effects.character`, `effects.coln`, `effects.decal` and `effects.light`
 arms are `sim_effects_parts::status`'s part arms, and `effects.parts` counts

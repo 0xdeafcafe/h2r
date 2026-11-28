@@ -82,7 +82,7 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
             }),
             subsystem(switches, "effects", group(engine::sim_effects::GROUP)),
             subsystem(switches, "sound", vec![sound_wire(&voices::stats())]),
-            effects_parts(switches, sim_bridge::sim_effects_parts::status(), engine::effect_update::arm::stats()),
+            effects_parts(sim_bridge::sim_effects_parts::status(), engine::effect_update::arm::stats()),
         ],
     }
 }
@@ -107,18 +107,16 @@ fn verdict(name: &str, switch: String, on: bool, arms: Vec<Arm>) -> Subsystem {
     }
 }
 
-/// The effects phase in Rust (`impl.sim.effects-parts`, on by default):
+/// The effects phase in Rust, always on, with no switch (`switch` empty):
 /// the damage, object, sound, character, `coln`, decal and light arms, and
 /// the part switch's other parts
 /// (`answered` the ones returned from Rust, `declined` the ones the guest's
 /// arm ran unchecked), then the per-effect bodies' arm, one arm per entry
 /// (`effects.body.<entry>`).
 fn effects_parts(
-    switches: &Switches,
     (parts, arms): (EffectParts, EffectArms),
     bodies: Vec<(u32, segment_arm::Stats)>,
 ) -> Subsystem {
-    let on = sim_bridge::sim_effects_parts::on(switches);
     let wire = |name: &str, a: EffectArm| Arm {
         name: name.to_owned(),
         checked: a.checked,
@@ -143,7 +141,7 @@ fn effects_parts(
         },
     ];
     arms.extend(segment_wire("effects.body", bodies));
-    verdict("effects-parts", "impl.sim.effects-parts".to_owned(), on, arms)
+    verdict("effects-parts", String::new(), true, arms)
 }
 
 fn physics_arms() -> Vec<Arm> {
@@ -366,8 +364,8 @@ mod tests {
         let r = read(&Switches::default(), shadow);
         let names: Vec<_> = r.subsystems.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["physics", "objects", "anim", "collision", "seats", "effects", "sound", "effects-parts"]);
-        assert_eq!(r.subsystems[7].switch, "impl.sim.effects-parts");
-        assert!(r.subsystems[7].on, "on by default");
+        assert_eq!(r.subsystems[7].switch, "", "no switch");
+        assert!(r.subsystems[7].on, "always on");
         for s in &r.subsystems {
             if s.name != "effects-parts" {
                 assert_eq!(s.switch, format!("impl.sim.native.{}", s.name));
@@ -463,7 +461,6 @@ mod tests {
         assert_eq!(w[0].name, "objects.walk.000bd090");
         assert_eq!((w[0].checked, w[0].mismatched, w[0].answered, w[0].declined), (0, 0, 4, 2));
         let e = effects_parts(
-            &Switches::default(),
             (
                 EffectParts { returned: 4, guest_other: 2, declined_fault: 1, ..EffectParts::default() },
                 EffectArms {

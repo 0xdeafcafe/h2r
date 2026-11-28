@@ -61,11 +61,9 @@ pub async fn run(
     Ok(ret)
 }
 
-/// The Rust phase bodies the switches leave on: the effects phase with
-/// `impl.sim.effects-parts` (on by default; off, the guest runs it).
-pub fn bodies(switches: &hooks::Switches) -> sim_tick::Bodies {
-    sim_tick::Bodies { effects: crate::sim_effects_parts::on(switches) }
-}
+/// The Rust phase bodies: every one, the effects phase included. The
+/// lifted form ([`sim_tick::Bodies::NONE`]) is the tests' reference only.
+pub const BODIES: sim_tick::Bodies = sim_tick::Bodies::ALL;
 
 impl Feature for TickDriver {
     fn manifest(&self) -> Manifest {
@@ -77,7 +75,7 @@ impl Feature for TickDriver {
         // ledger is a counter of this process, not of the game.
         b.snapshot(SnapshotPolicy::Stateless);
         let present = crate::present::mode(b.switches());
-        let bodies = bodies(b.switches());
+        let bodies = BODIES;
         let sound = crate::sim_sound::entries::on(b.switches()).then(|| Arc::clone(&crate::sim_sound::entries::SHARED));
         b.raw().implement_async(&points::GAME_TICK, "tick driver", move |cx| -> EntryFuture {
             Box::pin(run(cx, present, bodies, sound.clone()))
@@ -99,10 +97,8 @@ mod tests {
     use engine::sim_tick::{Owner, PHASES};
 
     #[test]
-    fn the_effects_body_follows_its_switch() {
-        let on = |spec: &str| bodies(&hooks::Switches::parse(spec).unwrap()).effects;
-        assert!(on(""));
-        assert!(!on("-impl.sim.effects-parts"));
+    fn the_effects_body_always_runs() {
+        assert!(BODIES.effects);
         assert_eq!(PHASES.iter().filter(|p| p.owner == Owner::Rust).count(), 1);
     }
     use engine::memory::GuestMemory;

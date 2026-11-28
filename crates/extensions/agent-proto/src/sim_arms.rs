@@ -26,7 +26,8 @@ pub struct Subsystem {
     /// The subsystem's name: `physics`, `objects`, `anim`, `collision`,
     /// `seats` or `effects`.
     pub name: String,
-    /// The switch the subsystem runs under (`impl.sim.native.<name>`).
+    /// The switch the subsystem runs under (`impl.sim.native.<name>`);
+    /// empty for `effects-parts`, which always runs.
     pub switch: String,
     /// Whether the switch is on in this process.
     pub on: bool,
