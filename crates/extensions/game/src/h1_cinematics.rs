@@ -6,10 +6,9 @@ use engine::{
     points,
 };
 use h1_contract::cinematics::{Field, MARKER};
+#[cfg(feature = "gpu")]
 use std::sync::{Arc, Mutex};
 
-#[cfg(feature = "gpu")]
-mod gpu;
 #[cfg(test)]
 mod tests;
 
@@ -219,35 +218,91 @@ impl Frame {
     }
 }
 
-#[cfg_attr(not(feature = "gpu"), allow(dead_code))]
-type Draw = dyn Fn(&mut dyn GuestMemory, Frame) + Send + Sync;
-static DRAW: Mutex<Option<Arc<Draw>>> = Mutex::new(None);
+/// One frame's pass for the native post glue to draw.
+#[cfg(feature = "gpu")]
+pub struct Request {
+    pub params: native_render::cinematic_gpu::Params,
+    /// The loaded map, for the video effect's bitmaps.
+    pub map: Option<String>,
+}
 
 #[cfg(feature = "gpu")]
-pub fn install_device<B: d3d::backend::Backend + Send + 'static>(
-    device: &d3d::abi::SharedDevice<B>,
-) {
-    let device = device.clone();
-    let cache = Arc::new(Mutex::new(gpu::Cache::default()));
-    *DRAW.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(move |mem, frame| {
-        let mut d = device.lock().unwrap_or_else(|e| e.into_inner());
-        let map = frame
+type Draw = dyn Fn(&mut dyn GuestMemory, Request) + Send + Sync;
+#[cfg(feature = "gpu")]
+static DRAW: Mutex<Option<Arc<Draw>>> = Mutex::new(None);
+
+/// Installs what draws the pass (`native_cinematic_glue`).
+#[cfg(feature = "gpu")]
+pub fn install_draw(draw: Arc<Draw>) {
+    *DRAW.lock().unwrap_or_else(|e| e.into_inner()) = Some(draw);
+}
+
+/// H1 0x6bc52 samples the render random stream twice for the noise UVs.
+/// Seek directly to this tick's pair so both target copies and restored
+/// frames see the same phase without advancing the simulation's random seed.
+#[cfg_attr(not(any(test, feature = "gpu")), allow(dead_code))]
+pub(crate) fn video_offset(tick: u32) -> [f32; 2] {
+    use render_bridge::game_random::{RANDOM_A, RANDOM_C};
+    let (mut mult, mut add) = (RANDOM_A, RANDOM_C);
+    let mut seed = 0u32;
+    let mut steps = tick.wrapping_mul(2);
+    while steps != 0 {
+        if steps & 1 != 0 {
+            seed = seed.wrapping_mul(mult).wrapping_add(add);
+        }
+        add = add.wrapping_mul(mult.wrapping_add(1));
+        mult = mult.wrapping_mul(mult);
+        steps >>= 1;
+    }
+    std::array::from_fn(|_| {
+        seed = seed.wrapping_mul(RANDOM_A).wrapping_add(RANDOM_C);
+        (seed >> 16) as f32 / 65535.
+    })
+}
+
+/// The video effect's mask and noise bitmaps from map `name`.
+#[cfg(feature = "gpu")]
+pub fn video_images(name: &str) -> Option<[native_render::gpu::Image; 2]> {
+    use crate::native_world_glue::decode_image;
+    let (mut map, mut files) = crate::native_map::open(name).ok()?;
+    let [mask, noise] = h1_contract::cinematics::VIDEO_BITMAPS.map(|tag| {
+        let id = map
+            .tags()
+            .iter()
+            .find(|t| t.group == map::FourCC(*b"bitm") && t.name.as_deref() == Some(tag))?
+            .id;
+        decode_image(&mut map, &mut files, id, 0)
+    });
+    Some([mask?, noise?])
+}
+
+#[cfg(feature = "gpu")]
+impl Frame {
+    fn request(self, mem: &dyn GuestMemory) -> Option<Request> {
+        let map = self
             .video
             .then(|| crate::health::loaded_map_name(mem).ok())
             .flatten();
-        if frame.video && map.is_none() {
-            return;
+        if self.video && map.is_none() {
+            return None;
         }
-        let pass = gpu::Pass {
-            frame,
+        Some(Request {
+            params: native_render::cinematic_gpu::Params {
+                passes: self.passes,
+                kernel: self.kernel,
+                radius: self.radius,
+                light: self.light,
+                desat: self.desat,
+                tint: self.tint,
+                filtered: self.filtered,
+                video: self.video,
+                gain: self.gain,
+                noise: self.noise,
+                shift: if self.video { video_offset(self.tick) } else { [0.; 2] },
+            },
             map,
-            cache: Arc::clone(&cache),
-        };
-        let _ = d.external_pass_now(
-            &mut crate::native_lights_glue::DeviceMemory(mem),
-            Box::new(pass),
-        );
-    }));
+        })
+    }
 }
 
 pub fn hooks(b: &mut hooks::Builder) {
@@ -257,10 +312,13 @@ pub fn hooks(b: &mut hooks::Builder) {
             "Draw Halo 1 cinematic screen effect",
             |c| {
                 let mut m = c.ctx.memory();
+                #[cfg(not(feature = "gpu"))]
+                let _ = &mut m;
+                #[cfg(feature = "gpu")]
                 if let Some(frame) = Frame::read(&*m) {
                     let draw = DRAW.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                    if let Some(draw) = draw {
-                        draw(&mut *m, frame);
+                    if let (Some(draw), Some(request)) = (draw, frame.request(&*m)) {
+                        draw(&mut *m, request);
                     }
                 }
                 Ok(hooks::Flow::Continue)

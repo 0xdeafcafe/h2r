@@ -1,13 +1,52 @@
-use super::Frame;
-use native_render::gpu::Image;
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-};
+//! The Halo 1 cinematic screen pass: blur, light, desaturation, tint and the
+//! video effect over a colour target (docs/graphics/native-post-hud.md).
+//! The host (the game's `native_cinematic_glue`) supplies the target and the
+//! parameters; nothing here reads guest memory or names the device.
+use crate::gpu::Image;
+use std::collections::HashMap;
 use wgpu::util::DeviceExt;
 
+/// One frame's controls, read from the campaign's globals by the host.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Params {
+    pub passes: u16,
+    pub kernel: i16,
+    pub radius: f32,
+    pub light: f32,
+    pub desat: f32,
+    pub tint: [f32; 3],
+    pub filtered: bool,
+    pub video: bool,
+    pub gain: f32,
+    pub noise: f32,
+    /// The video noise's UV offset for this tick.
+    pub shift: [f32; 2],
+}
+
+/// What the pass draws into.
+pub struct Target<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    pub color: &'a wgpu::TextureView,
+    pub color_format: wgpu::TextureFormat,
+    /// The viewport `(x, y, width, height)` in the target's texels.
+    pub viewport: [f32; 4],
+    /// The target's size in guest pixels and in this copy's texels.
+    pub guest_size: (u32, u32),
+    pub size: (u32, u32),
+    /// The display copy, against the render copy: each has its own scratch.
+    pub display: bool,
+}
+
+/// The video effect's bitmaps by map: a mask and a noise.
+pub struct Video<'a> {
+    pub map: &'a str,
+    pub images: &'a dyn Fn() -> Option<[Image; 2]>,
+}
+
 #[derive(Default)]
-pub(super) struct Cache {
+pub struct Cache {
     pipelines: HashMap<wgpu::TextureFormat, wgpu::RenderPipeline>,
     sampler: Option<wgpu::Sampler>,
     copies: [Option<[wgpu::TextureView; 2]>; 2],
@@ -17,7 +56,7 @@ pub(super) struct Cache {
 fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderPipeline {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("Halo 1 cinematic screen effect"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("screen.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(include_str!("cinematic.wgsl").into()),
     });
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("Halo 1 cinematic screen effect"),
@@ -46,21 +85,7 @@ fn pipeline(device: &wgpu::Device, format: wgpu::TextureFormat) -> wgpu::RenderP
     })
 }
 
-fn video_images(name: &str) -> Option<[Image; 2]> {
-    use crate::native_world_glue::decode_image;
-    let (mut map, mut files) = crate::native_map::open(name).ok()?;
-    let [mask, noise] = h1_contract::cinematics::VIDEO_BITMAPS.map(|tag| {
-        let id = map
-            .tags()
-            .iter()
-            .find(|t| t.group == map::FourCC(*b"bitm") && t.name.as_deref() == Some(tag))?
-            .id;
-        decode_image(&mut map, &mut files, id, 0)
-    });
-    Some([mask?, noise?])
-}
-
-fn upload(t: &d3d::ExternalTarget<'_>, image: &Image) -> wgpu::TextureView {
+fn upload(t: &Target<'_>, image: &Image) -> wgpu::TextureView {
     let texture = t.device.create_texture_with_data(
         t.queue,
         &wgpu::TextureDescriptor {
@@ -83,52 +108,15 @@ fn upload(t: &d3d::ExternalTarget<'_>, image: &Image) -> wgpu::TextureView {
     texture.create_view(&Default::default())
 }
 
-/// H1 0x6bc52 samples the render random stream twice for the noise UVs.
-/// Seek directly to this tick's pair so both target copies and restored
-/// frames see the same phase without advancing the simulation's random seed.
-pub(super) fn video_offset(tick: u32) -> [f32; 2] {
-    use render_bridge::game_random::{RANDOM_A, RANDOM_C};
-    let (mut mult, mut add) = (RANDOM_A, RANDOM_C);
-    let mut seed = 0u32;
-    let mut steps = tick.wrapping_mul(2);
-    while steps != 0 {
-        if steps & 1 != 0 {
-            seed = seed.wrapping_mul(mult).wrapping_add(add);
-        }
-        add = add.wrapping_mul(mult.wrapping_add(1));
-        mult = mult.wrapping_mul(mult);
-        steps >>= 1;
-    }
-    std::array::from_fn(|_| {
-        seed = seed.wrapping_mul(RANDOM_A).wrapping_add(RANDOM_C);
-        (seed >> 16) as f32 / 65535.
-    })
-}
-
-pub(super) struct Pass {
-    pub(super) frame: Frame,
-    pub(super) map: Option<String>,
-    pub(super) cache: Arc<Mutex<Cache>>,
-}
-
-impl d3d::ExternalPass for Pass {
-    fn colour_only(&self) -> bool {
-        true
-    }
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites {
-            color: true,
-            depth_stencil: false,
-        }
-    }
-
-    fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
-        let f = self.frame;
-        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
-        let color = t.color.texture();
+impl Cache {
+    /// Encodes the pass over `t`. `false`: the video bitmaps were missing and
+    /// nothing was drawn.
+    pub fn encode(&mut self, t: Target<'_>, f: Params, video: Option<Video<'_>>) -> bool {
+        let cache = self;
+        let color = t.color.texture().clone();
         let extent = color.size();
         let format = t.color_format;
-        let slot = &mut cache.copies[usize::from(t.copy == d3d::TargetCopy::Display)];
+        let slot = &mut cache.copies[usize::from(t.display)];
         if slot.as_ref().is_none_or(|views| {
             views[0].texture().size() != extent || views[0].texture().format() != format
         }) {
@@ -165,18 +153,17 @@ impl d3d::ExternalPass for Pass {
                 })
             })
             .clone();
-        let video = if let Some(name) = &self.map {
-            if cache.video.as_ref().is_none_or(|(key, _)| key != name) {
-                let Some(images) = video_images(name) else {
-                    return;
+        let video = if let Some(v) = video {
+            if cache.video.as_ref().is_none_or(|(key, _)| key != v.map) {
+                let Some(images) = (v.images)() else {
+                    return false;
                 };
-                cache.video = Some((name.clone(), images.map(|im| upload(&t, &im))));
+                cache.video = Some((v.map.to_owned(), images.map(|im| upload(&t, &im))));
             }
             Some(cache.video.as_ref().unwrap().1.clone())
         } else {
             None
         };
-        drop(cache);
         let scale = [
             t.size.0 as f32 / t.guest_size.0 as f32,
             t.size.1 as f32 / t.guest_size.1 as f32,
@@ -186,11 +173,7 @@ impl d3d::ExternalPass for Pass {
             scratch[0].texture().as_image_copy(),
             extent,
         );
-        let shift = if f.video {
-            video_offset(f.tick)
-        } else {
-            [0.; 2]
-        };
+        let shift = if f.video { f.shift } else { [0.; 2] };
         let count = if f.kernel != 0 && f.radius > 0. {
             // The pass loop compares the low signed word at H1 0x6c4dd.
             (f.passes as i16).wrapping_add(1).wrapping_mul(2).max(0) as usize
@@ -291,5 +274,20 @@ impl d3d::ExternalPass for Pass {
             pass.set_bind_group(0, &group, &[]);
             pass.draw(0..3, 0..1);
         }
+        true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn cinematic_shader_validates() {
+        let module = wgpu::naga::front::wgsl::parse_str(include_str!("cinematic.wgsl")).unwrap();
+        wgpu::naga::valid::Validator::new(
+            wgpu::naga::valid::ValidationFlags::all(),
+            wgpu::naga::valid::Capabilities::empty(),
+        )
+        .validate(&module)
+        .unwrap();
     }
 }

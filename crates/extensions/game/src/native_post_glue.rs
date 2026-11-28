@@ -1922,7 +1922,7 @@ fn load_effects(name: &str) -> Result<ScreenEffects, native_render::load::Error>
 /// Installs the host over `device`. It loads each map's screen effects
 /// itself ([`EffectsSlot`]).
 pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    crate::h1_cinematics::install_device(device);
+    crate::native_cinematic_glue::install(device);
     render_bridge::native_post::set_host(Arc::new(Glue {
         device: Arc::clone(device),
         gpu: Arc::new(Mutex::new(GpuGlow::new())),
