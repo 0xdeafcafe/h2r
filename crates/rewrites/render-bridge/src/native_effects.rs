@@ -1,5 +1,6 @@
 //! Context-only observers for effect leaves. No handler or simulation skip.
 use crate::native_particles::{LOG_LIMIT, Producer, HOST};
+use engine::memory::GuestMemory;
 use engine::points::scene_effects::*;
 use engine::points::{Point, Sig};
 use native_render::effect_immediate::Site;
@@ -75,16 +76,121 @@ pub(crate) fn build(b: &mut hooks::Builder) {
             eprintln!("native-particles-refused: queue=0x00041490 callback={callback:?} reason=UnownedMaterialCallback");
         }
     }).context_only().optional();
-    let wrapped = AtomicU64::new(0);
     b.raw().observe_before(&CALLBACK_WRAPPER, "native_particles_callback_wrapper", move |o| {
-        if wrapped.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-            (count < LOG_LIMIT).then_some(count + 1)
-        }).is_err() {
-            return;
+        let callback = wrapper_callback_at(&*o.guest(), o.cpu.esp);
+        let wrapped = wrapper_callback(callback);
+        WRAPPED[wrapped.index()].fetch_add(1, Ordering::Relaxed);
+        if let Some(reason) = wrapped.refusal() {
+            if REFUSED_WRAPPED.fetch_add(1, Ordering::Relaxed) < LOG_LIMIT {
+                eprintln!("native-particles-refused: handler=0x00048e40 callback={callback:?} reason={reason}");
+            }
         }
-        let mem = o.guest();
-        let callback = o.cpu.esp.checked_add(4).and_then(|at| mem.u32(at).ok()).and_then(|data| data.checked_add(8)).and_then(|at| mem.u32(at).ok());
-        let reason = if callback == Some(0x0024_dc50) { "NoGeometryCallback" } else { "UnownedMaterialCallback" };
-        eprintln!("native-particles-refused: handler=0x00048e40 callback={callback:?} reason={reason}");
     }).context_only().optional();
+}
+
+/// The antenna widget's geometry callback. The `ant!` row of the widget
+/// table `0x00467498` has draw `0x00116080`. For each antenna, that draw queues the sorted wrapper
+/// `0x00048e40` through producer `0x00047870` (call `0x001160b3`). The callback is a bare
+/// `ret 8`. It writes no vertex, sets no state and draws nothing, on the
+/// Xbox or anywhere else.
+pub const ANTENNA_GEOMETRY: u32 = 0x0024_dc50;
+
+/// What the callback wrapper `0x00048e40` calls, after its own layer
+/// setup (`[0x004670bc]` set, `0x00016b10` on `0x00485b48`). That setup stays the guest's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WrapperCallback {
+    /// [`ANTENNA_GEOMETRY`]: the native path owns it. Its geometry is
+    /// empty, so there is no draw to move to the GPU and none left on D3D.
+    Antenna,
+    /// A callback outside the researched set: refused by name.
+    Unowned,
+    /// The entry's data or callback word does not read.
+    Unreadable,
+}
+
+impl WrapperCallback {
+    fn index(self) -> usize {
+        self as usize
+    }
+
+    /// The named refusal, `None` for an owned callback.
+    pub fn refusal(self) -> Option<&'static str> {
+        match self {
+            Self::Antenna => None,
+            Self::Unowned => Some("UnownedWrapperCallback"),
+            Self::Unreadable => Some("UnreadableWrapperCallback"),
+        }
+    }
+}
+
+/// The callback the wrapper is about to call, read at its entry. The
+/// wrapper's argument (ESP+4) is the entry's data `+0x24`: its `+0` and
+/// `+4` are the callback's two arguments, and its `+8` is the callback.
+pub fn wrapper_callback_at(mem: &dyn GuestMemory, esp: u32) -> Option<u32> {
+    let data = mem.u32(esp.checked_add(4)?).ok()?;
+    mem.u32(data.checked_add(8)?).ok()
+}
+
+/// The wrapper's callback by its address.
+pub fn wrapper_callback(callback: Option<u32>) -> WrapperCallback {
+    match callback {
+        Some(ANTENNA_GEOMETRY) => WrapperCallback::Antenna,
+        Some(_) => WrapperCallback::Unowned,
+        None => WrapperCallback::Unreadable,
+    }
+}
+
+static WRAPPED: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+static REFUSED_WRAPPED: AtomicU64 = AtomicU64::new(0);
+
+/// Wrapper calls seen so far, as `(antenna, unowned, unreadable)`.
+pub fn wrapper_counts() -> (u64, u64, u64) {
+    let n = |w: WrapperCallback| WRAPPED[w.index()].load(Ordering::Relaxed);
+    (n(WrapperCallback::Antenna), n(WrapperCallback::Unowned), n(WrapperCallback::Unreadable))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_antenna_callback_is_owned_with_no_geometry() {
+        assert_eq!(wrapper_callback(Some(0x0024_dc50)), WrapperCallback::Antenna);
+        assert_eq!(WrapperCallback::Antenna.refusal(), None);
+    }
+
+    #[test]
+    fn other_wrapper_callbacks_keep_a_named_refusal() {
+        for callback in [0x0024_dc53, 0x0024_4610, 0x0011_6080, 0] {
+            assert_eq!(wrapper_callback(Some(callback)), WrapperCallback::Unowned);
+        }
+        assert_eq!(WrapperCallback::Unowned.refusal(), Some("UnownedWrapperCallback"));
+        assert_eq!(wrapper_callback(None), WrapperCallback::Unreadable);
+        assert_eq!(WrapperCallback::Unreadable.refusal(), Some("UnreadableWrapperCallback"));
+    }
+
+    #[test]
+    fn the_callback_is_read_through_the_wrappers_argument() {
+        use engine::memory::FlatMemory;
+        const ESP: u32 = 0x0010_0000;
+        const DATA: u32 = 0x0010_0100;
+        let mut m = FlatMemory::new(0x0010_0000, 0x1000);
+        m.set_u32(ESP + 4, DATA).unwrap();
+        m.set_u32(DATA, 0x0001_2345).unwrap();
+        m.set_u32(DATA + 4, 0x0006_789a).unwrap();
+        m.set_u32(DATA + 8, ANTENNA_GEOMETRY).unwrap();
+        assert_eq!(wrapper_callback_at(&m, ESP), Some(ANTENNA_GEOMETRY));
+        assert_eq!(wrapper_callback(wrapper_callback_at(&m, ESP)), WrapperCallback::Antenna);
+        m.set_u32(ESP + 4, 0x0020_0000).unwrap();
+        assert_eq!(wrapper_callback(wrapper_callback_at(&m, ESP)), WrapperCallback::Unreadable);
+    }
+
+    #[test]
+    fn the_counts_index_each_variant_once() {
+        let all = [WrapperCallback::Antenna, WrapperCallback::Unowned, WrapperCallback::Unreadable];
+        let mut seen = all.map(WrapperCallback::index);
+        seen.sort_unstable();
+        assert_eq!(seen, [0, 1, 2]);
+        assert!(seen.iter().all(|&i| i < WRAPPED.len()));
+    }
 }
