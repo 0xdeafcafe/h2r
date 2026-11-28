@@ -5,6 +5,7 @@
 use crate::sim_objects::Table;
 use std::sync::LazyLock;
 
+pub mod ambience;
 pub mod clock;
 pub mod levels;
 pub mod playback;

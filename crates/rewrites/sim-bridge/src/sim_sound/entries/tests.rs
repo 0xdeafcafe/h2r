@@ -543,16 +543,18 @@ fn a_stop_frees_a_loop_that_holds_no_sound_at_once() {
 }
 
 #[test]
-fn the_ambience_runs_the_guests_blend_with_its_candidates() {
+fn the_ambience_blends_its_slots_toward_the_candidates_with_no_guest_call() {
+    use engine::sim_sound::ambience::{FLOOR, FRAME_TIME, FULL, PAIR_SCALE, SLOTS};
     let t = table(Arc::new(Flat(10.0)));
-    let mut called = Vec::new();
-    let r = run_body(&t, Body::Ambience, guest(0), Regs { eax: RECORD, ..regs() }, |call, _| {
-        called.push((call.target, call.eax));
-        Regs::default()
-    });
+    let mut g = guest(0);
+    g.put_f32(FLOOR, 0.0).put_f32(PAIR_SCALE, 2.0).put_f32(FULL, 1.0).put_f32(GLOBALS + FRAME_TIME, 0.1);
+    // Candidate 0: id 7 over 1 s; candidate 1 and both slots empty.
+    g.put_f32(RECORD, 1.0).put_u32(RECORD + 8, 7).put_u32(RECORD + 0x1c + 8, NONE);
+    g.put_u32(GLOBALS + SLOTS + 8, NONE).put_u32(GLOBALS + SLOTS + 0x1c + 8, NONE);
+    let r = run_body(&t, Body::Ambience, g, Regs { eax: RECORD, ..regs() }, |c, _| panic!("no guest call: {:#x}", c.target));
     assert_eq!(r.result, Ok(Ret::new(0, 0)));
-    assert_eq!(called, [(0x0012_6660, Some(RECORD))]);
-    assert_eq!(lock(&t).ledger.entry_guest_calls, 1);
+    assert_eq!(r.guest.u32(GLOBALS + SLOTS + 0x1c + 8), Ok(7), "the last free slot");
+    assert_eq!(r.guest.f32(GLOBALS + SLOTS + 0x1c + 4), Ok(0.1));
 }
 
 const EFFECT: u32 = RECORD + 0x800;

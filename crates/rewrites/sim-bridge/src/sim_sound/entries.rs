@@ -112,10 +112,10 @@ pub enum Body {
     Stop,
     /// `0x126400`: every sound finished with [`Reason::Cleared`].
     StopAll,
-    /// `0x126660`: the guest's blend of the two background ambience slots
-    /// (sound globals `+0x1a8`, `0x1c` bytes each) toward the candidates;
-    /// it reads no pool or channel global, and the listener math reads the
-    /// slots.
+    /// `0x126660`: the blend of the two background ambience slots (sound
+    /// globals `+0x1a8`, `0x1c` bytes each) toward the candidates
+    /// ([`engine::sim_sound::ambience::blend`]); the listener math reads
+    /// the slots.
     Ambience,
     /// `0x1272c0`: the environment words of the sound globals.
     Environment,
@@ -153,7 +153,7 @@ impl Body {
 
     /// The body calls the guest function it replaces (pool-free work).
     fn calls_original(self) -> bool {
-        matches!(self, Body::Create | Body::Drop | Body::Listeners | Body::Ambience)
+        matches!(self, Body::Create | Body::Drop | Body::Listeners)
     }
 }
 
@@ -981,7 +981,8 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
             Ok(Ret::new(0, 4))
         }
         Body::Ambience => {
-            original(&cx, &table, entry, &busy).await?;
+            let candidates = cx.entry().eax;
+            cx.write(|m| engine::sim_sound::ambience::blend(m, candidates))?;
             Ok(Ret::new(0, 0))
         }
         Body::Service => {
