@@ -116,6 +116,8 @@ pub const TABLE: &[Switch] = &[
         "ticks with no local user skip the presentation phases (sim-bridge/src/present.rs); h2 sim diff of lockout-2v2 is identical over 9000 ticks"),
     sw("impl.sim.aim-assist", Off, "sim", "2026-11-27",
         "the aim-assist cone 1a50a0 as the sim-objects kernel's shadow arm (sim-bridge/src/present.rs): promote after h2 sim diff parity and seats.aim clean"),
+    sw("impl.sim.respawn-ready", Off, "sim", "2026-11-28",
+        "the respawn gate 15dd40 and its leaf callees as the sim-seats kernel's shadow arm (sim-bridge/src/present.rs); a timer above zero stays the guest's: promote after h2 sim diff parity and seats.respawn clean"),
     sw("impl.sim.sound-events", On, "sim", "2026-11-27",
         "the sound simulation (docs/engine/sound-sim.md); h2 sim diff of firefight-beavercreek is identical over 10351 ticks"),
     sw("impl.sim.sound-events.table", Off, "sim", "2026-11-27",

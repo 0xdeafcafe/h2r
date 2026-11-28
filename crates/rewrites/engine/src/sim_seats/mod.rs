@@ -36,6 +36,7 @@ pub mod hud;
 pub mod leaf;
 pub mod look;
 pub mod resources;
+pub mod respawn;
 pub mod targeting;
 
 /// One replaced function: the point it is entered at, the sites its

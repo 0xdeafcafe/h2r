@@ -17,9 +17,18 @@
 //! then the kernel answers and one call in 64 is still compared; a
 //! mismatch gives every call back to the guest until the next map. Its
 //! counters are `seats.aim` in `sim.arms`.
+//!
+//! **`impl.sim.respawn-ready`** (off): the respawn gate `15dd40`
+//! (`PLAYER_RESPAWN_READY`) and its callees `158a50`, `15db30` and `15b2f0`
+//! as the kernel `engine::sim_seats::respawn`, run as the same shadow arm.
+//! A respawn timer above zero is declined by name (`countdown`): the
+//! entity mark `a7840` and the death event `19eb90` are guest. It is not a
+//! replacement of the guest function. Its counters are `seats.respawn` in
+//! `sim.arms`.
 
 use engine::points;
 use engine::sim_seats::aim::arm::{self, Step};
+use engine::sim_seats::respawn;
 use engine::sim_tick::Present;
 use hooks::Builder;
 use runtime::TransferAbi;
@@ -31,6 +40,13 @@ pub const AIM: &str = "sim.aim-assist";
 
 pub fn mode(switches: &hooks::Switches) -> Present {
     if switches.implementation(PRESENT, true) { Present::LocalOnly } else { Present::Always }
+}
+
+/// The respawn gate arm's switch, without its `impl.` prefix.
+pub const RESPAWN: &str = "sim.respawn-ready";
+
+pub fn respawn_on(switches: &hooks::Switches) -> bool {
+    switches.implementation(RESPAWN, false)
 }
 
 pub fn aim_on(switches: &hooks::Switches) -> bool {
@@ -45,6 +61,47 @@ const AIM_RESET: &str = "seats: reset the aim-assist arm";
 /// alone (it is not one of the seats), so the plan holds one
 /// implementation there, beside the `aim-assist` feature's `after`.
 pub(crate) fn install(b: &mut Builder) {
+    install_aim(b);
+    install_respawn(b);
+}
+
+/// The respawn gate's arm at `PLAYER_RESPAWN_READY`, and its reset.
+fn install_respawn(b: &mut Builder) {
+    if !respawn_on(b.switches()) {
+        return;
+    }
+    let point = &points::PLAYER_RESPAWN_READY;
+    b.raw()
+        .implement(point, RESPAWN, move |cpu, ctx, pc| {
+            if pc == point.base {
+                let step = {
+                    let mem = ctx.memory();
+                    respawn::enter(cpu, &mem)
+                };
+                match step {
+                    respawn::Step::Answered { target } => return Ok(TransferAbi::ret(target)),
+                    respawn::Step::Audit(prediction) => {
+                        let watched = ctx.observe_guest_return(cpu, respawn::ARGS, move |c, _| {
+                            respawn::compare(&prediction, c)
+                        });
+                        if !watched {
+                            respawn::dropped();
+                        }
+                    }
+                    respawn::Step::Guest => {}
+                }
+            }
+            crate::sim_objects::original(cpu, ctx, pc, false)
+        })
+        .context_only()
+        .optional();
+    b.raw().observe_before(&points::CACHE_TAGS_LOAD, RESPAWN_RESET, |_| respawn::reset());
+}
+
+/// The map-load observer that clears the respawn arm's proof.
+const RESPAWN_RESET: &str = "seats: reset the respawn-ready arm";
+
+fn install_aim(b: &mut Builder) {
     if !aim_on(b.switches()) {
         return;
     }

@@ -26,6 +26,7 @@ use engine::effect_update::arm as segment_arm;
 use engine::sim_objects::native_walk;
 use engine::sim_physics::parity as physics;
 use engine::sim_seats::aim::arm as aim;
+use engine::sim_seats::respawn;
 use engine::sim_seats::device::arm as device;
 use engine::sim_seats::leaf;
 use hooks::Switches;
@@ -74,6 +75,7 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
                 let mut arms = group(sim_bridge::sim_seats::GROUP);
                 arms.push(aim_wire(aim::status()));
                 arms.push(device_wire(device::status()));
+                arms.push(respawn_wire(respawn::status()));
                 arms.extend(leaf::Leaf::ALL.map(|l| leaf_wire(l, leaf::status(l))));
                 arms
             }),
@@ -173,6 +175,19 @@ fn objects_wire(s: objects::Status) -> Arm {
 fn aim_wire(s: aim::Status) -> Arm {
     Arm {
         name: "seats.aim".to_owned(),
+        checked: s.checked,
+        matched: s.matched,
+        mismatched: s.mismatched,
+        answered: s.answered,
+        declined: s.declined_total() + s.dropped,
+    }
+}
+
+/// The respawn gate's kernel arm (`impl.sim.respawn-ready`); a countdown
+/// the guest answers counts as declined.
+fn respawn_wire(s: respawn::Status) -> Arm {
+    Arm {
+        name: "seats.respawn".to_owned(),
         checked: s.checked,
         matched: s.matched,
         mismatched: s.mismatched,
@@ -353,7 +368,7 @@ mod tests {
             }
         }
         let seats = &r.subsystems[4];
-        assert_eq!(seats.arms.len(), 3 + leaf::Leaf::ALL.len());
+        assert_eq!(seats.arms.len(), 4 + leaf::Leaf::ALL.len());
         assert_eq!(seats.arms[0].name, "sim.seats_a");
         assert_eq!(seats.arms[1].name, "seats.aim");
         assert_eq!(seats.arms[2].name, "seats.device");

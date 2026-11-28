@@ -325,3 +325,26 @@ and `weapon_ready_declines_a_wrapping_count` and
 
 The bodies' other callees (the look curve and the bodies that are seats
 themselves aside) call further guest code and stay guest calls.
+
+*The respawn gate.* `15dd40` (`PLAYER_RESPAWN_READY`, `eax` the slot, `al`
+the answer) is called by `players_before` for each candidate. Unlike the
+leaves it has its own shadow arm at its entry
+(`engine/src/sim_seats/respawn.rs`, `impl.sim.respawn-ready`, off), with
+three of its callees in Rust: `158a50` (takes part: flags `+2`, `+0xc0`,
+unit slot `+0x2c`, then `15db30`, out of lives: the lives setting
+`[[4e6948] + 0x1b8]`, no unit, `+0x1ac` zero) and `15b2f0` (a local user
+mapped, `[game + 0x6c] == 1`, and a client or `[game + 0xc04] == 1`). The
+body then answers no on a negative timer `+0x164`, and on a zero timer the
+staggered check (ticks since `[game + 0x70]` over 3, their remainder by 32
+against the slot's). The arm is proven and audited as the aim arm is, and
+leaves `eax`, `ecx`, `edx` and `esp` as retail does; no memory is written.
+
+A timer above zero is declined by name (`countdown`) and the guest runs:
+that path decrements the timer, writes `+0x170`, calls `a7840` (a tail call
+into the network entity queue `b58c0`) and, at one, two and three seconds,
+`19eb90` (`a7c50` posts through `b5a70`; `19eb30` walks every player through
+`19de80`, `19df10` and the announcement formatter `19e890`). Those trees
+are not ported, so the arm does not replace the guest function. The other
+decline is `fault`. `sim.arms` reports `seats.respawn`;
+`respawn_ready_and_its_callees_match_lifted` puts each callee and the body
+against the lifted functions.

@@ -1244,3 +1244,170 @@ fn init_packet_declines_an_overlap() {
         assert_eq!(got, want, "packet {packet:#x} eflags {eflags:#x}");
     }
 }
+
+// The respawn gate `15dd40` and its callees `15db30`, `158a50` and `15b2f0`
+// through their kernel (`engine::sim_seats::respawn`), each against the
+// lifted original with its real callees (no stubs). The world is drawn
+// from a seeded xorshift so every branch of the four bodies is taken: the
+// local-user cell empty, a player's flags, its `+0xc0` and unit slot, the
+// lives setting and lives, the user count, the machine mode, the timer
+// (below zero, zero, and above, which the kernel declines by name), and
+// the staggered check's tick delta against the slot.
+
+const RS_GAME: u32 = RECORDS + 0x100;
+const RS_HEADER: u32 = RECORDS + 0x400;
+const RS_DATA: u32 = RECORDS + 0x1000;
+const RS_MODE: u32 = RECORDS + 0x4000;
+const RS_TICKS: u32 = RECORDS + 0x4100;
+const RS_USERS: u32 = 0x0055_e4d0;
+const RS_GAME_CELL: u32 = 0x004e_9ae8;
+const RS_PLAYERS_CELL: u32 = 0x004e_8c24;
+const RS_MODE_CELL: u32 = 0x004e_6948;
+const RS_TICKS_CELL: u32 = 0x0051_0c54;
+const RS_STRIDE: u32 = 0x21c;
+
+struct Xorshift(u32);
+
+impl Xorshift {
+    fn next(&mut self) -> u32 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 17;
+        self.0 ^= self.0 << 5;
+        self.0
+    }
+    fn pick<T: Copy>(&mut self, from: &[T]) -> T {
+        from[self.next() as usize % from.len()]
+    }
+}
+
+/// A random world and the registers of a call: the slot in `eax` (with
+/// garbage above its low word), garbage in the rest.
+fn respawn_world(m: &mut FlatMemory, r: &mut Xorshift) -> (u32, [u32; 8]) {
+    let user = r.pick(&[0u32, 1, 1, 1]);
+    word(m, RS_GAME_CELL, RS_GAME);
+    word(m, RS_GAME + 0xc14, 2);
+    word(m, RS_USERS + 8, user * 0x1234);
+    word(m, RS_GAME + 0x6c, r.pick(&[1, 1, 1, 2]));
+    word(m, RS_GAME + 0x70, 1000);
+    word(m, RS_GAME + 0xc04, r.pick(&[1, 0, 1]));
+    word(m, RS_PLAYERS_CELL, RS_HEADER);
+    word(m, RS_HEADER + 0x44, RS_DATA);
+    word(m, RS_MODE_CELL, RS_MODE);
+    m.bytes[(RS_MODE + 0xc) as usize] = r.pick(&[4, 0, 5, 0]);
+    word(m, RS_MODE + 0x1b8, r.pick(&[0, 3, 3, 0xffff_fffe]));
+    word(m, RS_TICKS_CELL, RS_TICKS);
+    let slot = r.pick(&[0u32, 3, 5, 15, 33, 0x10005]);
+    for i in 0..16u32 {
+        let p = RS_DATA + i * RS_STRIDE;
+        m.bytes[(p + 2) as usize..][..2].copy_from_slice(&r.pick(&[1u16, 1, 1, 0, 3, 0x4001, 0x4000]).to_le_bytes());
+        m.bytes[(p + 0xc0) as usize] = r.pick(&[0xff, 1, 1]);
+        word(m, p + 0x2c, r.pick(&[u32::MAX, u32::MAX, 0x1234]));
+        m.bytes[(p + 0x1ac) as usize..][..2].copy_from_slice(&r.pick(&[0u16, 0, 2]).to_le_bytes());
+        word(m, p + 0x164, r.pick(&[0u32, 0, 0, 0xffff_fff0, 7]));
+    }
+    let delta = r.pick(&[-4i32, 0, 3, 4, 5, 32 + (slot & 0x1f) as i32, 37, 64 + (slot & 0x1f) as i32]);
+    word(m, RS_TICKS + 8, (1000 + delta) as u32);
+    let regs = [r.next(), r.next(), r.next(), 0, STACK, r.next(), r.next(), r.next()];
+    (slot, regs)
+}
+
+fn respawn_guest(mem: &FlatMemory) -> Guest {
+    let mut g = Guest::new();
+    g.map_zeroed(0, RAM as u32, Permissions::RW).unwrap();
+    g.write_bytes(0, &mem.bytes, 1).unwrap();
+    g
+}
+
+fn at(image: &lifted::image::Image, addr: u32) -> lifted::Original {
+    let mut code = image.original();
+    code.prime(addr);
+    assert!(code.insn(addr).is_some(), "{addr:#x}");
+    code
+}
+
+#[test]
+fn respawn_ready_and_its_callees_match_lifted() {
+    use engine::sim_seats::respawn::{self, Decline, Regs};
+    let Some((image, ram)) = image() else { return };
+    let mut gate = at(image, points::PLAYER_RESPAWN_READY.base);
+    let mut part = at(image, 0x0015_8a50);
+    let mut lives = at(image, 0x0015_db30);
+    let mut user = at(image, 0x0015_b2f0);
+    let mut rng = Xorshift(0x9e37_79b9);
+    let (mut answered, mut countdown) = (0, 0);
+    let (mut yes, mut no) = (0, 0);
+    for case in 0..6000 {
+        let mut mem = ram.clone();
+        word(&mut mem, STACK, EXIT);
+        let (slot, regs) = respawn_world(&mut mem, &mut rng);
+        let why = format!("case {case} slot {slot:#x}");
+        let run = |code: &mut lifted::Original, entry: u32, gpr: [u32; 8], mem: &mut FlatMemory| {
+            let mut cpu = Cpu { gpr, eip: entry, eflags: 0x2, mxcsr: 0x1fa0, ..Default::default() };
+            lifted::code::run_until(code, &mut cpu, mem, 1_000_000, |c| c.eip == EXIT)
+                .unwrap_or_else(|e| panic!("{e}"));
+            cpu
+        };
+        let g = respawn_guest(&mem);
+        let gprs = |c: &runtime::CpuAbi| [c.eax, c.ecx, c.edx, c.ebx, c.esp, c.ebp, c.esi, c.edi];
+        let player_regs = |gpr: [u32; 8]| Regs { eax: gpr[0], ecx: gpr[1], edx: gpr[2] };
+
+        // 15db30 (ecx: the player).
+        let mut gpr = regs;
+        gpr[1] = slot;
+        let want = run(&mut lives, 0x0015_db30, gpr, &mut mem.clone());
+        let (got, r) = respawn::out_of_lives(&g, player_regs(gpr)).unwrap();
+        assert_eq!((r.eax, r.ecx, r.edx), (want.gpr[0], want.gpr[1], want.gpr[2]), "{why}: 15db30");
+        assert_eq!(got, want.gpr[0] & 0xff != 0, "{why}: 15db30 al");
+
+        // 158a50 (esi: the player, ebx low byte clear as the gate leaves it).
+        let mut gpr = regs;
+        gpr[6] = slot;
+        gpr[3] = 0;
+        let want = run(&mut part, 0x0015_8a50, gpr, &mut mem.clone());
+        let a = respawn::takes_part(&g, slot).unwrap();
+        assert_eq!((a.regs.eax, a.regs.ecx, a.regs.edx), (want.gpr[0], want.gpr[1], want.gpr[2]), "{why}: 158a50");
+        assert_eq!(a.ready, want.gpr[0] & 0xff != 0, "{why}: 158a50 al");
+
+        // 15b2f0 (no inputs).
+        let want = run(&mut user, 0x0015_b2f0, regs, &mut mem.clone());
+        let a = respawn::user_ready(&g, regs[0]).unwrap();
+        assert_eq!((a.regs.eax, a.regs.ecx, a.regs.edx), (want.gpr[0], want.gpr[1], want.gpr[2]), "{why}: 15b2f0");
+        assert_eq!(a.ready, want.gpr[0] & 0xff != 0, "{why}: 15b2f0 al");
+
+        // 15dd40 (eax: the player), the whole body, through the arm's
+        // prediction and its apply.
+        let mut gpr = regs;
+        gpr[0] = (regs[0] & 0xffff_0000) | slot;
+        gpr[0] = (gpr[0] & 0xffff_0000) | (slot & 0xffff);
+        let mut cpu_regs = abi_cpu(&Cpu { gpr, eip: points::PLAYER_RESPAWN_READY.base, eflags: 0x2, mxcsr: 0x1fa0, ..Default::default() });
+        match respawn::predict(&cpu_regs, &g) {
+            Err(Decline::Countdown) => {
+                countdown += 1;
+                continue;
+            }
+            Err(d) => panic!("{why}: declined {d:?}"),
+            Ok(prediction) => {
+                answered += 1;
+                let mut native = respawn_guest(&mem);
+                let target = respawn::apply(&prediction, &mut cpu_regs, &native).unwrap();
+                assert_eq!(target, EXIT, "{why}");
+                let want = run(&mut gate, points::PLAYER_RESPAWN_READY.base, gpr, &mut mem);
+                let want = abi_cpu(&want);
+                assert_eq!(gprs(&cpu_regs), gprs(&want), "{why}: 15dd40 eax ecx edx ebx esp ebp esi edi");
+                assert_eq!(prediction.differs(&want), None, "{why}");
+                if want.eax & 0xff == 0 { no += 1 } else { yes += 1 }
+                // No memory is written: every byte above the dead stack.
+                let start = native.mappings()[0].physical_start as usize;
+                let live = &native.physical_ram()[start..start + RAM];
+                let dead = (STACK - 0x1_0000) as usize..STACK as usize;
+                let first = mem.bytes.iter().zip(live).enumerate()
+                    .find(|(i, (a, b))| a != b && !dead.contains(i))
+                    .map(|(i, _)| i);
+                assert_eq!(first, None, "{why}: first differing byte");
+                let _ = &mut native;
+            }
+        }
+    }
+    assert!(answered > 500 && countdown > 10, "answered {answered}, countdown {countdown}");
+    assert!(yes > 5 && no > 50, "yes {yes}, no {no}");
+}
