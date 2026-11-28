@@ -60,7 +60,14 @@ Every other draw is the game's, counted by what is not read (`render.stats`, `na
   | `0x0022df04` | `0xe456`, `0xe457` (move, look) | `0xe110` or `0xe111` by the layout's sticks (`+0x18`) |
   | `0x0022e1ed` | `0xe459`, `0xe45a` (the animated sticks) | one of three frames by the UI clock modulo 500 |
 
-  The other 40 bodies (65 units: names, gamertags, Live, the variant, the countdowns, the clock, storage counts) keep the text the game's.
+  | `0x0022d82c` | `build_number`, `vehicle_set` | nothing |
+  | `0x0022d503` | `variant` | the session's game variant's name (`+0x4db0 + 4`, a session mode 3 to 8 by `0x000597d0`), else the default variant's (`0x0054e4a0 + 4`) |
+  | `0x0022d7a1` | `new-content` | `0xe007` while `[0x0051055d]` is set |
+  | `0x0022d99e` | `live_ui_driver_gamertag` | the bytes at `0x0054e438` widened, past `0x7f` as `0x25a1` (`0x0013fc90`) |
+  | `0x0022d9e0`, `0x0022da0d` | `hud_quantity`, `hud_betraying_player` | the HUD state's quantity (`[[0x00510c4c] + 0x1b0]`); the betrayer's name by the player datum at `+0x1b8`, else `??` |
+  | `0x0022e148` to `0x0022e1d0` | `hour_12`, `hour_24`, `minute`, `day`, `month`, `year` | the clock's fields (`0x0054e7ce`..`0x0054e7d8`), the minute two digits, `hour_12` less 12 past noon |
+
+  Any other body (the profile names, gamertags, Live clans, the countdowns, the map, game type and hopper names, the scoreboard, storage counts) panics: `ui text: token <name>`.
 - The line renderer `0x0013f0e0` runs in Rust (`ui::TextLayout`, `game::ui_kit::preview::text_layout::segments`, `UiText::shape_layout`):
 
   | Input | Where it comes from | What it does |
@@ -105,7 +112,6 @@ Each text, class and model refusal is a `ui_overlay::Gap`: the draw and the firs
 | `text_glyphs` | glyph output is off, or no glyph ring or bitmap is active |
 | `text_style` | interface flags past bit 2, or its `+0x16`, `+0x18`, `+0x20` overrides |
 | `text_tab_overrun` | a tab count past the interface's eight stops: retail copies past its stack buffer |
-| `text_token` | a token whose handler is not ported: a name, a gamertag, Live, the variant, a countdown, the clock, a storage count |
 | `text_offset` | an animated offset out of range |
 | `text_justify`, `text_colour`, `text_font` | an unknown justification; a channel outside 0 to 1; a font id past 16 bits |
 | `list_number`, `list_tag`, `list_globals`, `list_screen`, `list_tree`, `list_rows`, `list_pane` | the arrows' or the art's lookups: a number not finite, no tag, no interface globals, the screen not found, a parent chain or row chain that does not end, a row table the helper does not walk, a pane index below -1 |
