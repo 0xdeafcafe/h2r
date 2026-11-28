@@ -5,7 +5,6 @@
 //! picture".
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use engine::memory::GuestMemory;
@@ -216,30 +215,24 @@ struct Pass {
     renderer: Arc<Mutex<Renderer>>,
 }
 
-impl d3d::ExternalPass for Pass {
-    fn colour_only(&self) -> bool {
-        true
+impl native_render::Stage for Pass {
+    fn name(&self) -> &'static str {
+        "skulls model"
     }
 
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites {
-            color: true,
-            depth_stencil: false,
-        }
-    }
-
-    fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
-        let mut r = self.renderer.lock().unwrap_or_else(|e| e.into_inner());
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> native_render::StageWork {
+        let renderer = Arc::clone(&self.renderer);
+        let mut r = renderer.lock().unwrap_or_else(|e| e.into_inner());
         let r = &mut *r;
-        if r.showcase.as_ref().is_none_or(|(d, _)| d != t.device) {
-            r.showcase = Some((t.device.clone(), Showcase::new(t.device, t.queue)));
+        if r.showcase.as_ref().is_none_or(|(d, _)| *d != t.device) {
+            r.showcase = Some((t.device.clone(), Showcase::new(&t.device, &t.queue)));
             r.mesh = None;
             r.glyph = None;
         }
         let (_, showcase) = r.showcase.as_mut().expect("made above");
         let key = Arc::as_ptr(&self.skull) as usize;
         if r.mesh != Some(key) {
-            showcase.set_mesh(t.device, t.queue, &self.skull.mesh, &self.skull.bases);
+            showcase.set_mesh(&t.device, &t.queue, &self.skull.mesh, &self.skull.bases);
             r.mesh = Some(key);
         }
         let glyph = self.look.glyph().map(|_| self.look.skull);
@@ -249,21 +242,22 @@ impl d3d::ExternalPass for Pass {
                     let field = r.fields.entry(i).or_insert_with(|| {
                         skull_glyphs::distance_field(strokes, skull_glyphs::FIELD)
                     });
-                    showcase.set_glyph(t.device, t.queue, skull_glyphs::FIELD, field);
+                    showcase.set_glyph(&t.device, &t.queue, skull_glyphs::FIELD, field);
                 }
-                None => showcase.set_glyph(t.device, t.queue, 0, &[]),
+                None => showcase.set_glyph(&t.device, &t.queue, 0, &[]),
             }
             r.glyph = Some(glyph);
         }
-        let [x, y, w, h] = super::guest_rect(crate::skulls_menu::PICTURE_BOX, t.guest_size);
-        let sx = t.size.0 as f32 / t.guest_size.0.max(1) as f32;
-        let sy = t.size.1 as f32 / t.guest_size.1.max(1) as f32;
-        // The box in this copy's own texels: the window's copy is the
-        // window's pixels, so the picture is drawn at the size it is seen.
+        let guest = view.guest_size;
+        let [x, y, w, h] = super::guest_rect(crate::skulls_menu::PICTURE_BOX, guest);
+        let sx = t.size.0 as f32 / guest.0.max(1) as f32;
+        let sy = t.size.1 as f32 / guest.1.max(1) as f32;
+        // The box in the target's own texels: the target is the window's
+        // pixels, so the picture is drawn at the size it is seen.
         let Some(fit) = showcase::Fit::of([x * sx, y * sy, w * sx, h * sy]) else {
-            return;
+            unimplemented!("skulls model: an empty picture box");
         };
-        if t.copy == d3d::TargetCopy::Display && r.said != Some((fit.width, fit.height)) {
+        if r.said != Some((fit.width, fit.height)) {
             r.said = Some((fit.width, fit.height));
             eprintln!(
                 "skulls model: the picture is {} by {} texels, {} samples each, for a {} by {} \
@@ -283,16 +277,14 @@ impl d3d::ExternalPass for Pass {
             silhouette: self.look.silhouette(),
             glyph: glyph.is_some(),
         };
-        if showcase.draw(t.device, &mut *t.encoder, fit.width, fit.height, &look) {
-            showcase.composite(
-                t.device,
-                &mut *t.encoder,
-                t.color,
-                t.color_format,
-                fit.rect,
-                self.alpha,
-            );
-        }
+        let (device, color, color_format, alpha) = (t.device.clone(), t.color.clone(), t.color_format, self.alpha);
+        crate::native_targets_glue::encoded(move |encoder| {
+            let mut r = renderer.lock().unwrap_or_else(|e| e.into_inner());
+            let Some((_, showcase)) = r.showcase.as_mut() else { return };
+            if showcase.draw(&device, encoder, fit.width, fit.height, &look) {
+                showcase.composite(&device, encoder, &color, color_format, fit.rect, alpha);
+            }
+        })
     }
 }
 
@@ -303,18 +295,11 @@ fn enabled() -> bool {
     *ON
 }
 
-/// Said once: the pass could not be queued.
-static REFUSED: AtomicBool = AtomicBool::new(false);
-
 /// The native UI walk is about to draw widget `widget`: when it is the
 /// page's noted picture and the skull has loaded, queue the model picture
 /// in its place and answer true (the game's draw is skipped). Anything
 /// else answers false and the game draws the widget.
-pub fn replace_widget<B: d3d::backend::Backend + Send + 'static>(
-    device: &d3d::abi::SharedDevice<B>,
-    mem: &mut dyn GuestMemory,
-    widget: u32,
-) -> bool {
+pub fn replace_widget(mem: &mut dyn GuestMemory, widget: u32) -> bool {
     if !enabled() {
         return false;
     }
@@ -340,20 +325,6 @@ pub fn replace_widget<B: d3d::backend::Backend + Send + 'static>(
         alpha,
         renderer: Arc::clone(&RENDERER),
     };
-    let Ok(mut d) = device.lock() else {
-        return false;
-    };
-    match d.external_pass_now(
-        &mut crate::native_lights_glue::DeviceMemory(mem),
-        Box::new(pass),
-    ) {
-        Ok(true) => true,
-        Ok(false) => false,
-        Err(e) => {
-            if !REFUSED.swap(true, Ordering::Relaxed) {
-                eprintln!("skulls model: the picture's pass was refused: {e:?}");
-            }
-            false
-        }
-    }
+    crate::native_targets_glue::push(&*mem, frame_types::Slot::Overlay, pass);
+    true
 }
