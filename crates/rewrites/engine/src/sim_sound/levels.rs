@@ -24,6 +24,18 @@ const DUCKS: u32 = 0x28;
 /// Sound globals `+0x1f8`: the duck state.
 const DUCK_STATE: u32 = 0x1f8;
 
+/// `0x221810(class)`: the class's row in the sound globals' classes. The
+/// class index is the low word sign-extended (`movsx`).
+pub fn class_row(m: &dyn GuestMemory, class: i32) -> Result<u32, MemFault> {
+    let globals = m.u32(GLOBALS_TAG.base)?;
+    let reference = if m.u32(globals.wrapping_add(0xc0))? != 0 { m.u32(globals.wrapping_add(0xc4))? } else { 0 };
+    let tag = m.u32(reference.wrapping_add(4))?;
+    let entries = m.u32(TAG_ENTRIES.base)?;
+    let classes = m.u32(m.u32(entries.wrapping_add((tag & 0xffff) << 4).wrapping_add(8))?.wrapping_add(4))?;
+    let class = i32::from(class as i16);
+    Ok(classes.wrapping_add((class as u32).wrapping_mul(CLASS_ROW)))
+}
+
 pub struct GuestLevels<'a> {
     m: &'a dyn GuestMemory,
     /// Levels a read fault stopped (`sound.level_faults`): each plays at
@@ -42,13 +54,8 @@ impl<'a> GuestLevels<'a> {
         self.m.u32(entries.wrapping_add((index & 0xffff) << 4).wrapping_add(8))
     }
 
-    /// `0x221810`: the class's row in the sound globals' classes.
     fn class_row(&self, class: i32) -> Result<u32, MemFault> {
-        let globals = self.m.u32(GLOBALS_TAG.base)?;
-        let reference = if self.m.u32(globals.wrapping_add(0xc0))? != 0 { self.m.u32(globals.wrapping_add(0xc4))? } else { 0 };
-        let tag = self.m.u32(reference.wrapping_add(4))?;
-        let classes = self.m.u32(self.definition(tag)?.wrapping_add(4))?;
-        Ok(classes.wrapping_add((class as u32).wrapping_mul(CLASS_ROW)))
+        class_row(self.m, class)
     }
 
     fn duck(&self, class_row: u32, index: i32) -> Result<Duck, MemFault> {
@@ -93,6 +100,13 @@ impl<'a> GuestLevels<'a> {
             offset: source.0[2],
             scale: source.0[1],
         })
+    }
+}
+
+impl GuestLevels<'_> {
+    /// `0x1251e0`'s answer as bits, or the fault that stopped its reads.
+    pub fn level_bits(&self, tag: TagIndex, source: &SourceParams) -> Result<u32, MemFault> {
+        Ok(level(&Constants::RETAIL, &self.inputs(tag, source)?))
     }
 }
 

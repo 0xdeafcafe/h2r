@@ -294,20 +294,57 @@ fn record(g: &mut FakeGuest) {
     g.put_u32(RECORD, 1 << 10).put_u16(RECORD + 0x9c, 0).put_u16(RECORD + 0x9e, 0);
 }
 
-fn start(levels: Arc<dyn Levels + Send + Sync>, gate: u32) -> (Shared, entry::testing::Run) {
+fn start(levels: Arc<dyn Levels + Send + Sync>, open: bool) -> (Shared, entry::testing::Run) {
     let t = table(levels);
     let mut g = with_tag(guest(4));
     record(&mut g);
-    let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, move |c, m| {
-        match c.target {
-            START_GATE => {
-                m.set_u32(c.args[1], 3).unwrap();
-                Regs { eax: gate, ..Default::default() }
-            }
-            other => panic!("unexpected call {other:#x}"),
-        }
-    });
+    with_gate(&mut g, open);
+    let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, no_calls);
     (t, r)
+}
+
+/// No guest call: the gate and the rule run in Rust.
+fn no_calls(c: &GuestCall, _: &mut dyn GuestMemory) -> Regs {
+    panic!("unexpected call {:#x}", c.target)
+}
+
+const GATE_DEFAULTS: u32 = TAGS + 0xc00;
+const GATE_SCALES: u32 = TAGS + 0xd00;
+const GATE_ROWS: u32 = TAGS + 0xe00;
+const GATE_GLOBALS: u32 = TAGS + 0xf00;
+const GATE_CLASSES: u32 = TAGS + 0x1000;
+const GATE_STATES: u32 = TAGS + 0x1200;
+const GATE_USERS: u32 = TAGS + 0x1300;
+
+/// What `0x126c30` reads for [`TAG`] (`engine::sim_sound::gate`), and the
+/// image constants it reads (test values). Open: the class plays, a chance
+/// of -1 never skips, 0 dB at the first mapped user (3), over a floor of
+/// -64. Closed: the class does not play.
+fn with_gate(g: &mut FakeGuest, open: bool) {
+    use engine::sim_sound::gate::{CLOSE, FLOOR, ONE, SEED_SCALE, SHORTEST};
+    g.put_f32(FLOOR, -64.0).put_f32(SHORTEST, 0.001).put_f32(ONE, 1.0).put_f32(CLOSE, 0.0625).put_f32(SEED_SCALE, 1.0 / 65536.0);
+    g.put_u8(SOUND_DEF + 5, u8::from(open)).put_u8(SOUND_DEF + 0xa, 1);
+    g.put_u32(GESTALT, GESTALT_AT).put_u32(GESTALT_AT + 4, GATE_DEFAULTS).put_u32(GESTALT_AT + 0xc, GATE_SCALES);
+    g.put_u32(GESTALT_AT + 0x24, GATE_ROWS).put_u16(GATE_ROWS + 0xa, 1);
+    g.put_f32(GATE_DEFAULTS, 1.0).put_f32(GATE_DEFAULTS + 4, 10.0).put_f32(GATE_DEFAULTS + 8, -1.0);
+    g.put_f32(GATE_SCALES + 0xc, 1.0).put_f32(GATE_SCALES + 0x10, 1.0);
+    // Class 0: the globals' sound classes are tag 5's; its runtime state
+    // takes no ducking.
+    g.put_u32(points::GLOBALS_TAG.base, GATE_GLOBALS).put_u32(GATE_GLOBALS + 0xc0, 1).put_u32(GATE_GLOBALS + 0xc4, GATE_GLOBALS + 0x40);
+    g.put_u32(GATE_GLOBALS + 0x44, 5).put_u32(TAGS + 5 * 16 + 8, GATE_CLASSES).put_u32(GATE_CLASSES + 4, GATE_CLASSES + 0x100);
+    g.map(GATE_CLASSES + 0x100, 0x100);
+    g.put_u32(engine::sim_sound::levels::CLASS_STATES, GATE_STATES).put_u8(GATE_STATES + 0xc, 1);
+    g.put_u32(points::PLAYER_GLOBALS.base, GATE_USERS);
+    for n in 0..3 {
+        g.put_u32(GATE_USERS + 0xc + 4 * n, NONE);
+    }
+    g.put_u32(GATE_USERS + 0x18, 0);
+}
+
+/// The record the last component admission built (its flags and `+0x58`).
+fn component_record(r: &entry::testing::Run) -> (u32, u32) {
+    let record = STACK - start_layer::FRAME;
+    (r.guest.u32(record).unwrap(), r.guest.u32(record + 0x58).unwrap())
 }
 
 fn with_tag(mut g: FakeGuest) -> FakeGuest {
@@ -320,15 +357,9 @@ fn a_start_record_is_admitted_into_the_table() {
     let t = table(Arc::new(Flat(10.0)));
     let mut g = with_tag(guest(4));
     record(&mut g);
-    let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, |c, m| match c.target {
-        // The sound's tag is of no group: no effect, no start row.
-        START_GATE => {
-            assert_eq!((c.eax, c.args[0]), (Some(RECORD), TAG.0));
-            m.set_u32(c.args[1], 3).unwrap();
-            Regs { eax: 1, ..Default::default() }
-        }
-        other => panic!("unexpected call {other:#x}"),
-    });
+    with_gate(&mut g, true);
+    // The sound's tag is of no group: no effect, no start row.
+    let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, no_calls);
     let handle = r.result.unwrap().eax;
     assert_ne!(handle, NONE);
     let t = lock(&t);
@@ -336,7 +367,7 @@ fn a_start_record_is_admitted_into_the_table() {
     assert_eq!((i.tag, i.start, i.options.channel), (TAG, 4, 3));
     assert_eq!(t.ledger.draws, 2, "the gain and pitch draws");
     assert_ne!(r.guest.u32(SEEDS + 4), Ok(0x1234_5678), "the seed word moved");
-    assert_eq!(t.ledger.entry_guest_calls, 1, "the gate");
+    assert_eq!(t.ledger.entry_guest_calls, 0, "the gate is Rust");
     assert!(t.sounds.starts().is_empty());
 }
 
@@ -353,13 +384,8 @@ fn a_start_in_its_promotions_cooldown_is_refused_by_the_rule_in_rust() {
     g.put_u32(p + 0x10, 0).put_u32(p + 0x18, 50);
     g.put_u16(rules + 2, 1).put_u32(rules + 8, 5);
     g.put_u32(GLOBALS + 0x84, 10);
-    let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, |c, m| match c.target {
-        START_GATE => {
-            m.set_u32(c.args[1], 3).unwrap();
-            Regs { eax: 1, ..Default::default() }
-        }
-        other => panic!("unexpected call {other:#x}"),
-    });
+    with_gate(&mut g, true);
+    let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, no_calls);
     assert_eq!(r.result.unwrap().eax, NONE);
     assert!(lock(&t).sounds.instances().is_empty());
     assert_eq!(r.guest.u32(p + 0x14), Ok(10), "the rule kept the clock it saw");
@@ -368,16 +394,16 @@ fn a_start_in_its_promotions_cooldown_is_refused_by_the_rule_in_rust() {
 
 #[test]
 fn a_start_refuses_by_name_when_its_levels_do() {
-    let (t, r) = start(Arc::new(Refusing), 1);
+    let (t, r) = start(Arc::new(Refusing), true);
     assert_eq!(r.result.unwrap().eax, NONE);
     let t = lock(&t);
     assert_eq!(t.ledger.refused_no_level, 1);
     assert_eq!(t.ledger.draws, 0, "a refusal takes no draw");
     assert!(t.sounds.instances().is_empty());
     // A closed gate admits nothing and calls no rule.
-    let (t, r) = start(Arc::new(Flat(10.0)), 0);
+    let (t, r) = start(Arc::new(Flat(10.0)), false);
     assert_eq!(r.result.unwrap().eax, NONE);
-    assert_eq!(r.calls.iter().map(|c| c.target).collect::<Vec<_>>(), [START_GATE]);
+    assert!(r.calls.is_empty());
     assert!(lock(&t).sounds.instances().is_empty());
 }
 
@@ -578,34 +604,20 @@ fn with_effect(g: &mut FakeGuest, parts: &[(u32, TagIndex, f32, u32)]) {
     }
 }
 
-/// The start layer's guest calls: every gate open. The gates' records'
-/// flags, in order.
-fn start_layer_guest(gates: &mut Vec<(u32, u32)>, open: bool) -> impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs + '_ {
-    move |c, m| match c.target {
-        START_GATE => {
-            let record = c.eax.unwrap();
-            gates.push((m.u32(record).unwrap(), m.u32(record + 0x58).unwrap()));
-            m.set_u32(c.args[1], 3).unwrap();
-            Regs { eax: u32::from(open), ..Default::default() }
-        }
-        other => panic!("unexpected call {other:#x}"),
-    }
-}
-
 #[test]
 fn a_tag_start_admits_its_sound_and_starts_its_loop_on_its_own_handle() {
     let t = loop_table();
     let mut g = guest(4);
     with_effect(&mut g, &[(SOUND_GROUP, TAG, 0.5, 0), (LOOP_GROUP, LOOP_TAG, 0.25, 0)]);
     g.put_u32(STACK + 4, 3);
-    let mut gates = Vec::new();
+    with_gate(&mut g, true);
     let regs = Regs { ecx: CUSTOM, xmm0: u128::from(2.0f32.to_bits()), ..regs() };
-    let r = run_body(&t, Body::StartLayerNew, g, regs, start_layer_guest(&mut gates, true));
+    let r = run_body(&t, Body::StartLayerNew, g, regs, no_calls);
     let ret = r.result.unwrap();
     assert_eq!(ret.pop, 4);
     let start = Handle::from_raw(ret.eax);
     // The component's record: flags 0x95 with bit 5, the start's table.
-    assert_eq!(gates, [(0xb5, STARTED_TABLE)]);
+    assert_eq!(component_record(&r), (0xb5, STARTED_TABLE));
     let t = lock(&t);
     let row = *t.sounds.starts().get(start).unwrap();
     assert_eq!((row.of, row.word, row.effect, row.flags()), (StartOf::Tag { scale: 2.0 }, 3, EFFECT, 0));
@@ -622,13 +634,14 @@ fn a_tag_start_stops_its_loop_and_the_walk_frees_it() {
     let mut g = guest(4);
     // The second sound plays at the stop only (component flag bit 1).
     with_effect(&mut g, &[(SOUND_GROUP, TAG, 0.0, 0), (LOOP_GROUP, LOOP_TAG, 0.0, 0), (SOUND_GROUP, TAG, 0.0, 3)]);
-    let mut gates = Vec::new();
-    let r = run_body(&t, Body::StartLayerNew, g.clone(), Regs { ecx: CUSTOM, ..regs() }, start_layer_guest(&mut gates, true));
+    with_gate(&mut g, true);
+    let r = run_body(&t, Body::StartLayerNew, g.clone(), Regs { ecx: CUSTOM, ..regs() }, no_calls);
+    assert_eq!(component_record(&r), (0xb5, STARTED_TABLE));
     let start = Handle::from_raw(r.result.unwrap().eax);
     let looping = lock(&t).sounds.loop_find(LOOP_TAG, start.raw() | OWNER_BIT).unwrap();
-    let r = run_body(&t, Body::StartLayerPlay, g.clone(), Regs { ecx: start.raw(), ..regs() }, start_layer_guest(&mut gates, true));
+    let r = run_body(&t, Body::StartLayerPlay, g.clone(), Regs { ecx: start.raw(), ..regs() }, no_calls);
     assert_eq!(r.result, Ok(Ret::new(0, 0)));
-    assert_eq!(gates, [(0xb5, STARTED_TABLE), (0x95, 0)], "the stop's sound is not owned");
+    assert_eq!(component_record(&r), (0x95, 0), "the stop's sound is not owned");
     {
         let t = lock(&t);
         assert_eq!(t.sounds.starts().get(start).unwrap().flags(), 0x19);
@@ -651,11 +664,12 @@ fn a_sound_start_binds_its_record_and_its_stop_runs_the_starts_stop() {
     record(&mut g);
     with_effect(&mut g, &[(SOUND_GROUP, TAG, 0.0, 0)]);
     g.put_u16(RECORD + 4, 0x0102);
-    let mut gates = Vec::new();
-    let r = run_body(&t, Body::StartRecord, g.clone(), Regs { eax: RECORD, ..regs() }, start_layer_guest(&mut gates, true));
+    with_gate(&mut g, true);
+    let r = run_body(&t, Body::StartRecord, g.clone(), Regs { eax: RECORD, ..regs() }, no_calls);
     let sound = Handle::from_raw(r.result.unwrap().eax);
     // The record now names the start's table (`0x21dc60`); then the component's.
-    assert_eq!(gates, [((1 << 10) | 0x20, SOUND_TABLE), (0xb5, STARTED_TABLE)]);
+    assert_eq!((r.guest.u32(RECORD), r.guest.u32(RECORD + 0x58)), (Ok((1 << 10) | 0x20), Ok(SOUND_TABLE)));
+    assert_eq!(component_record(&r), (0xb5, STARTED_TABLE));
     assert_eq!(r.guest.u32(RECORD + request::OWN_TABLE_AT), Ok(0));
     let start = {
         let t = lock(&t);
@@ -666,12 +680,12 @@ fn a_sound_start_binds_its_record_and_its_stop_runs_the_starts_stop() {
         start
     };
     // Its sound's stop gives the sound back and stops the start, cut.
-    let r = run_body(&t, Body::Stop, g, Regs { ebx: sound.raw(), ..regs() }, start_layer_guest(&mut gates, true));
+    let r = run_body(&t, Body::Stop, g, Regs { ebx: sound.raw(), ..regs() }, no_calls);
     assert_eq!(r.result, Ok(Ret::new(0, 0)));
     let t = lock(&t);
     assert_eq!(t.sounds.get(sound).unwrap().owner, Owner::None);
     assert_eq!(t.sounds.starts().get(start).unwrap().flags(), 0x1b);
-    assert_eq!(gates.len(), 2, "no component plays at the stop");
+    assert_eq!(component_record(&r), (0, 0), "no component plays at the stop");
 }
 
 #[test]
@@ -680,8 +694,8 @@ fn a_refused_sound_start_frees_its_row() {
     let mut g = with_tag(guest(4));
     record(&mut g);
     with_effect(&mut g, &[(SOUND_GROUP, TAG, 0.0, 0)]);
-    let mut gates = Vec::new();
-    let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, start_layer_guest(&mut gates, false));
+    with_gate(&mut g, false);
+    let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, no_calls);
     assert_eq!(r.result.unwrap().eax, NONE);
     let t = lock(&t);
     assert!(t.sounds.starts().is_empty());
@@ -697,11 +711,11 @@ fn the_walk_releases_a_sound_start_whose_unit_is_gone() {
     g.put_u32(RECORD, (1 << 10) | (1 << 5)).put_u32(RECORD + 0x58, unit_table).put_u32(RECORD + 0x5c, 0xe001_0007);
     g.put_u32(unit_table + 0x10, request::UNIT_FINISH);
     with_effect(&mut g, &[(SOUND_GROUP, TAG, 0.0, 1)]);
-    let mut gates = Vec::new();
-    run_body(&t, Body::StartRecord, g.clone(), Regs { eax: RECORD, ..regs() }, start_layer_guest(&mut gates, true));
+    with_gate(&mut g, true);
+    run_body(&t, Body::StartRecord, g.clone(), Regs { eax: RECORD, ..regs() }, no_calls);
     let start = lock(&t).sounds.starts().handles()[0];
     assert!(!lock(&t).sounds.starts().get(start).unwrap().released);
-    run_body(&t, Body::StartsUpdate, g, regs(), start_layer_guest(&mut gates, true));
+    let r = run_body(&t, Body::StartsUpdate, g, regs(), no_calls);
     assert!(lock(&t).sounds.starts().get(start).unwrap().released);
-    assert_eq!(gates.len(), 1, "an update plays no sound");
+    assert_eq!(component_record(&r), (0, 0), "an update plays no sound");
 }
