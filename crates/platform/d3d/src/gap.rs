@@ -9,7 +9,9 @@
 //! The caller is the return address at `[esp]` of the D3D entry being
 //! run (or, for a draw game code wrote inline, of the entry whose drain
 //! decoded it): [`crate::runtime_glue`] stores it at every entry
-//! ([`set_caller`]).
+//! ([`set_caller`], through [`caller_at`]). A fan of the screen-quad
+//! fan `0x00034420` is drained at the next fan's first entry
+//! ([`FAN_DRAIN`]), so there the caller is that fan's own return address.
 
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -25,9 +27,10 @@ pub enum Gap {
     DecalDecorator,
     /// A sky strip of `0x0004c690` the sky stage refused.
     SkyStrip,
-    /// The planar fog's screen quad of a mode the fog-quad stage does
-    /// not take (`0x00025d50` after `0x00025e50`).
-    FogQuad,
+    /// The fans of `0x00025dc0`, drawn when the datum `[0x004857b8]` is
+    /// set and `[0x004857d8]` is above 0 (S: a second fog): setups
+    /// `0x00026880`, `0x00026e50` and `0x000276d0`, no native stage.
+    FogFans,
     /// A particle drawn as a model part, the callback `0x00224fd0`.
     ParticleModel,
     /// A swallowed post call whose native pass refused: its packets.
@@ -40,7 +43,7 @@ const GAPS: [Gap; 7] = [
     Gap::EmitterRefusal,
     Gap::DecalDecorator,
     Gap::SkyStrip,
-    Gap::FogQuad,
+    Gap::FogFans,
     Gap::ParticleModel,
     Gap::PostSwallow,
     Gap::Other,
@@ -53,7 +56,7 @@ impl Gap {
             Gap::EmitterRefusal => "emitter_refusal",
             Gap::DecalDecorator => "decal_decorator",
             Gap::SkyStrip => "sky_strip",
-            Gap::FogQuad => "fog_quad",
+            Gap::FogFans => "fog_fans",
             Gap::ParticleModel => "particle_model",
             Gap::PostSwallow => "post_swallow",
             Gap::Other => "other",
@@ -67,7 +70,7 @@ impl Gap {
             0x0004_daa0..0x0004_dfa0 => Gap::EmitterRefusal,
             0x0004_ebd0..0x0004_ee00 => Gap::DecalDecorator,
             0x0004_c690..0x0004_ca00 => Gap::SkyStrip,
-            0x0002_5d50..0x0002_5e50 => Gap::FogQuad,
+            0x0002_5dc0..0x0002_5e50 => Gap::FogFans,
             0x0022_4fd0..0x0022_5700 => Gap::ParticleModel,
             _ => Gap::Other,
         }
@@ -75,6 +78,22 @@ impl Gap {
 
     const fn index(self) -> usize {
         self as usize
+    }
+}
+
+/// The return of the screen-quad fan's first D3D entry (`call 0x00400fa0`
+/// at `0x000345b4`): the drain of the fan before it.
+pub const FAN_DRAIN: u32 = 0x0003_45b9;
+/// The fan's own return address above `[esp]` there: its `sub esp, 0x54`,
+/// two pushes, and the entry's return.
+pub const FAN_FRAME: u32 = 0x60;
+
+/// The caller a D3D entry at `esp` files its draws under: its return
+/// address, or at [`FAN_DRAIN`] the fan's.
+pub fn caller_at(read: impl Fn(u32) -> Option<u32>, esp: u32) -> u32 {
+    match read(esp) {
+        Some(FAN_DRAIN) => read(esp.wrapping_add(FAN_FRAME)).unwrap_or(FAN_DRAIN),
+        ret => ret.unwrap_or(0),
     }
 }
 
@@ -148,10 +167,27 @@ mod tests {
         assert_eq!(Gap::of_caller(0x0004_edc8), Gap::DecalDecorator);
         assert_eq!(Gap::of_caller(0x0004_c6bf), Gap::SkyStrip);
         assert_eq!(Gap::of_caller(0x0004_c9e8), Gap::SkyStrip);
-        assert_eq!(Gap::of_caller(0x0002_5db3), Gap::FogQuad);
+        assert_eq!(Gap::of_caller(0x0002_5e2d), Gap::FogFans);
+        assert_eq!(Gap::of_caller(0x0002_5e43), Gap::FogFans);
+        // The planar fog's quad is cut (render_bridge::native_fog_quad).
+        assert_eq!(Gap::of_caller(0x0002_5db3), Gap::Other);
         assert_eq!(Gap::of_caller(0x0022_56a8), Gap::ParticleModel);
         assert_eq!(Gap::of_caller(0x0022_56c7), Gap::ParticleModel);
         assert_eq!(Gap::of_caller(0x0010_0000), Gap::Other);
+    }
+
+    #[test]
+    fn a_fan_drained_at_the_next_fan_is_filed_under_the_fans_caller() {
+        let words = |a: u32| match a {
+            0x1000 => Some(FAN_DRAIN),
+            0x1060 => Some(0x0002_5e2d),
+            0x2000 => Some(0x0004_c6bf),
+            _ => None,
+        };
+        assert_eq!(caller_at(words, 0x1000), 0x0002_5e2d);
+        assert_eq!(Gap::of_caller(caller_at(words, 0x1000)), Gap::FogFans);
+        assert_eq!(caller_at(words, 0x2000), 0x0004_c6bf);
+        assert_eq!(caller_at(words, 0x3000), 0);
     }
 
     #[test]

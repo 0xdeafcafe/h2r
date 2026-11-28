@@ -121,7 +121,6 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
         .chain(render_bridge::native_targets::counters())
         .chain(render_bridge::native_flare_query::counters())
         .chain(render_bridge::native_flare_draw::counters())
-        .chain(render_bridge::native_fog_quad::counters())
         .chain(render_bridge::native_transparents::sort::counters())
         .chain(render_bridge::native_hud::walk::counters())
         .chain(render_bridge::native_hud::strings::counters())

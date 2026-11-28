@@ -20,17 +20,6 @@ struct FogQuadPass {
     /// The W clip a W-buffered draw issued now takes; the setup sets
     /// `ZEnable(2)`, so the fan is W-buffered whatever the device holds.
     test: Option<DepthTest>,
-    /// Counted once, however many target copies record.
-    dropped: bool,
-}
-
-impl FogQuadPass {
-    fn drop_once(&mut self, why: &'static str) {
-        if !self.dropped {
-            self.dropped = true;
-            native_fog_quad::dropped(why);
-        }
-    }
 }
 
 impl d3d::ExternalPass for FogQuadPass {
@@ -51,8 +40,7 @@ impl d3d::ExternalPass for FogQuadPass {
     /// Drawn on every copy (the reference and the display).
     fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
         let Some(test) = self.test else {
-            self.drop_once("depth_clip");
-            return 0;
+            native_fog_quad::unported("depth_clip");
         };
         let mut gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
         if gpu.as_ref().is_none_or(|(d, _)| d != t.device) {
@@ -71,11 +59,7 @@ impl d3d::ExternalPass for FogQuadPass {
         };
         match pass.record(target, t.encoder, &self.draw, test) {
             Ok(_) => 1,
-            Err(why) => {
-                drop(gpu);
-                self.drop_once(why);
-                0
-            }
+            Err(why) => native_fog_quad::unported(why),
         }
     }
 }
@@ -87,7 +71,7 @@ struct Draw<B: d3d::Backend + Send + 'static> {
 impl<B: d3d::Backend + Send + 'static> Host for Draw<B> {
     fn draw(&self, mem: &mut dyn GuestMemory, draw: &FogQuadDraw) -> bool {
         let Ok(mut device) = self.device.lock() else { return false };
-        let pass = FogQuadPass { draw: draw.clone(), test: None, dropped: false };
+        let pass = FogQuadPass { draw: draw.clone(), test: None };
         matches!(device.external_pass_now(&mut DeviceMemory(mem), Box::new(pass)), Ok(true))
     }
 }
