@@ -36,6 +36,8 @@ pub mod kind {
     /// The extension records (rules VM state, Forge state) and their
     /// checkpoint slot copies ([`crate::ext`]).
     pub const EXT: u16 = 10;
+    /// The lights datum array (`sim_objects::lights::LightTable`).
+    pub const LIGHTS: u16 = 11;
     /// The test store; the one store wave 1 fills.
     pub const PROBE: u16 = 0x100;
 }

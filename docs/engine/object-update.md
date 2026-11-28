@@ -213,6 +213,8 @@ How the slice 4 bodies keep the contract is in "Slice 4 bodies" below.
 
 ### Slice 5: lights
 
+The light array is a Rust pool, `sim_objects::lights::LightTable` (kind `LIGHTS`, held by the `World`; `import` and `scatter` convert to the guest array). The tick's walk `c1400` (`lights::walk`), the expiry `c3260` (`lights::expire`) and the unlink `c3220` (`lights::unlink`) are Rust over that pool; the record update `c0c80`, the link `c2d00` and the list removal `1cae40` stay behind `lights::LightHost`.
+
 | Entry | Point | ABI | Kind |
 |---|---|---|---|
 | `c1400` | `LIGHTS_UPDATE` | no arguments; `ret` | segment |

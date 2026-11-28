@@ -80,6 +80,7 @@ writes no section and a save that carries one is refused as `UnknownKind`.
 | sound | `sim_sound::instances::Sounds` ([sound-instances.md](sound-instances.md)) | instances (384), loops (128), starts (16), and the chooser | `sim_bridge::sim_sound::entries::SoundTable`, every run; the `World` holds it as `world::SoundStore` |
 | objects | `sim_objects::ObjectTable` (`crates/rewrites/sim-objects/src/table.rs`) | the objects array (capacity from the guest array, 2048 in retail), each slot a header and its body bytes | `sim_bridge::world::OBJECT_TABLE`; the `World` holds it as `world::ObjectStore` |
 | ext | `sim_world::ext::State` (`crates/rewrites/sim-world/src/ext`) | the rules VM and Forge records, and one copy of both per checkpoint slot | `sim_world::ext::global`; the `World` holds it as `ext::store::ExtStore`, attached by `sim_bridge::world` |
+| lights | `sim_objects::LightTable` (`crates/rewrites/sim-objects/src/lights.rs`) | the lights array (`[4e030c]`, `0x110`-byte elements), each slot the element bytes | `sim_bridge::world::LIGHT_TABLE`, imported with the objects; the `World` holds it as `world::LightStore` |
 | test | `Probe` | one | the unit tests |
 
 ### The object table
