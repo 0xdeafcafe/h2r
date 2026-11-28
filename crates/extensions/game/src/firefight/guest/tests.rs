@@ -130,6 +130,7 @@ fn scenario() -> FakeGuest {
     }
 
     pair(&mut m, SCNR + 0x178, 3, 0x2_6000);
+    fake_characters(&mut m, 0x2_6000, 3);
     pair(&mut m, SCNR + 0x240, 5, ORDERS);
     m.map(ORDERS, 5 * 0x7c);
     named(&mut m, ORDERS, "ff_other");
@@ -500,6 +501,55 @@ fn a_placement_the_kit_cannot_hold_writes_and_calls_nothing() {
         assert!(calls.is_empty());
         assert_eq!(m.u16(SQUADS + 0x74 + 0x36).unwrap(), 0xffff);
     }
+}
+
+/// The fault at `0x1f911a`: an actor whose character and parents have no
+/// movement row reads a null row's `+4` on its first update. A class
+/// whose character lacks the row, or a palette row naming none, is refused
+/// before the squad is written or the engine is called; one that takes
+/// the row from a parent is placed.
+#[test]
+fn a_class_whose_character_has_no_movement_row_is_not_placed() {
+    let definition = |row: u32| FAKE_CHARACTERS + 0x100 * row;
+    let unready = |m: &mut FakeGuest| {
+        // Row 1 (the Grunt) has no movement row; its parent, row 2's tag,
+        // has none either.
+        m.put_u32(definition(1) + 0x5c, 0)
+            .put_u32(definition(1) + 8, 0xe000_0002)
+            .put_u32(definition(2) + 0x5c, 0);
+    };
+    let mut m = scenario();
+    unready(&mut m);
+    let error = character_ready(&m, 1).unwrap_err().to_string();
+    assert_eq!(
+        error,
+        "palette row 1's character 0xe0000001 and its parents have no movement row, which the engine reads unchecked on an actor's first update (0x1f911a), so the class is not placed"
+    );
+    let kit = read_kit(&m).unwrap().unwrap();
+    let (result, calls, m) = drive(
+        m,
+        move |cx| {
+            let kit = kit.clone();
+            Box::pin(async move { place_squad(&cx, &kit, placement(0, 1, 0)).await })
+        },
+        returns(0),
+    );
+    assert_eq!(result.unwrap_err().to_string(), error);
+    assert!(calls.is_empty(), "{calls:?}");
+    assert_eq!(m.u16(SQUADS + 0x74 + 0x36).unwrap(), 0xffff);
+
+    // The row from a parent is the engine's row: the class is ready.
+    let mut m = scenario();
+    unready(&mut m);
+    m.put_u32(definition(2) + 0x5c, 1);
+    character_ready(&m, 1).unwrap();
+    character_ready(&m, 0).unwrap();
+
+    // A palette row that names no character is refused by its row.
+    let mut m = scenario();
+    m.put_u32(0x2_6000 + 8 * 2 + 4, u32::MAX);
+    let error = character_ready(&m, 2).unwrap_err().to_string();
+    assert!(error.contains("palette row 2 names no character"), "{error}");
 }
 
 #[test]

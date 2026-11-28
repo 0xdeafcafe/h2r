@@ -264,6 +264,90 @@ impl KitLayout {
     }
 }
 
+/// The character property blocks an actor's update reads with no check
+/// that its character has a row, by name and offset in the `char` tag
+/// (`crates/formats/tags/src/defs/char.txt`). The engine takes the first
+/// row up the `parent` chain (`0x1e4a50`: the block's count at the
+/// offset, then the parent datum at `+8`) and returns null when no tag in
+/// the chain has one; `0x1f90f0` reads the movement row's `+4` at
+/// `0x1f911a` on the actor's first update, so a character without one
+/// faults there (docs/game/firefight.md, "Characters, stage 1").
+pub const UNCHECKED_ROWS: &[(&str, u32)] = &[("movement", 0x5c)];
+
+/// A `char` definition's parent reference datum (the tag reference at
+/// `+4`, its datum at `+8`).
+const CHAR_PARENT: u32 = 0x08;
+
+/// Whether palette row `row`'s character can drive an actor: its palette
+/// entry names a loaded `char` tag, and that tag or one of its parents
+/// has a row of each of [`UNCHECKED_ROWS`]. The error names the row, the
+/// tag datum and the missing properties, so a class whose character would
+/// fault on its first update is refused before any actor is placed.
+pub fn character_ready(m: &dyn GuestMemory, row: u16) -> anyhow::Result<()> {
+    let fault = |e: MemFault| anyhow::anyhow!("reading palette row {row}'s character faulted at {:#010x}", e.addr);
+    let u32_at = |at: u32| m.u32(at).map_err(fault);
+    let scnr = u32_at(points::SCENARIO.base)?;
+    let entry = *block(m, scnr, scenario::CHARACTER_PALETTE)
+        .map_err(fault)?
+        .get(usize::from(row))
+        .ok_or_else(|| anyhow::anyhow!("character {row} is outside the map's palette"))?;
+    let character = u32_at(entry + 4)?;
+    anyhow::ensure!(
+        character != u32::MAX,
+        "palette row {row} names no character, so the engine would place an actor with none"
+    );
+    let table = u32_at(guest_layout::global::TAG_ENTRIES.base)?;
+    let mut missing: Vec<&str> = UNCHECKED_ROWS.iter().map(|(name, _)| *name).collect();
+    let mut datum = character;
+    // A parent chain longer than this is a loop, not a character.
+    for _ in 0..16 {
+        if datum == u32::MAX || missing.is_empty() {
+            break;
+        }
+        let definition = u32_at(table.wrapping_add((datum & 0xffff) * 16 + 8))?;
+        anyhow::ensure!(
+            definition != 0,
+            "palette row {row}'s character {character:#010x} (or its parent {datum:#010x}) is not loaded"
+        );
+        for &(name, offset) in UNCHECKED_ROWS {
+            if u32_at(definition + offset)? > 0 {
+                missing.retain(|n| *n != name);
+            }
+        }
+        datum = u32_at(definition + CHAR_PARENT)?;
+    }
+    anyhow::ensure!(
+        missing.is_empty(),
+        "palette row {row}'s character {character:#010x} and its parents have no {} row, which the engine reads unchecked on an actor's first update (0x1f911a), so the class is not placed",
+        missing.join(", ")
+    );
+    Ok(())
+}
+
+/// Test fixture for [`character_ready`]: `rows` palette entries at
+/// `palette`, row `i` naming the loaded `char` tag `0xe000_0000 | i`,
+/// whose definition is at [`FAKE_CHARACTERS`] `+ 0x100 * i`, has no
+/// parent and has one row of each of [`UNCHECKED_ROWS`].
+#[cfg(test)]
+pub(super) fn fake_characters(m: &mut engine::testing::FakeGuest, palette: u32, rows: u32) {
+    m.put_u32(guest_layout::global::TAG_ENTRIES.base, FAKE_TAGS);
+    for i in 0..rows {
+        let definition = FAKE_CHARACTERS + 0x100 * i;
+        m.put_u32(palette + 8 * i, u32::from_le_bytes(*b"char"))
+            .put_u32(palette + 8 * i + 4, 0xe000_0000 | i)
+            .put_u32(FAKE_TAGS + 16 * i + 8, definition)
+            .map(definition, 0xec)
+            .put_u32(definition + CHAR_PARENT, u32::MAX);
+        for &(_, offset) in UNCHECKED_ROWS {
+            m.put_u32(definition + offset, 1).put_u32(definition + offset + 4, definition + 0xf0);
+        }
+    }
+}
+#[cfg(test)]
+pub(super) const FAKE_TAGS: u32 = 0xa_0000;
+#[cfg(test)]
+pub(super) const FAKE_CHARACTERS: u32 = 0xb_0000;
+
 /// A block's elements: `(address, count)`.
 pub(super) fn block(m: &dyn GuestMemory, owner: u32, (field, size): (u32, u32)) -> Result<Vec<u32>, MemFault> {
     let count = m.u32(owner + field)?;
@@ -603,6 +687,7 @@ pub async fn place_squad(cx: &Cx, kit: &KitLayout, p: Placement) -> anyhow::Resu
         p.character,
         kit.characters
     );
+    cx.read(|m| character_ready(m, p.character))?;
     cx.write(|m| {
         let scnr = m.u32(points::SCENARIO.base)?;
         let at = *block(m, scnr, scenario::SQUADS)?
