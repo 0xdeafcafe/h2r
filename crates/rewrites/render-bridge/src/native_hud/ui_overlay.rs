@@ -27,7 +27,7 @@ mod list;
 pub(super) mod model;
 mod text;
 
-pub use scene_extract::ui::{BUTTON_GLYPHS, Justify, UiText};
+pub use scene_extract::ui::{BUTTON_GLYPHS, Justify, TextLayout, UiText};
 use std::cell::RefCell;
 use std::collections::HashSet;
 
@@ -518,6 +518,21 @@ pub fn run_part(frame: u32, run: usize, mem: &dyn GuestMemory) -> Option<Overlay
     Some(refreshed)
 }
 
+/// Entry `ordinal` of the list at `frame` was left out: the guest state
+/// its draw writes, written in its place (a text or button's reveal
+/// cursor, `text::left_out`). Other draws write none the overlay reads.
+pub fn left_out(mem: &mut dyn GuestMemory, frame: u32, ordinal: u32) {
+    use walk::draws;
+    let Some(widget) = ListFrame::read(&*mem, frame).and_then(|l| l.entry(&*mem, ordinal)).map(|e| e.widget) else {
+        return;
+    };
+    match walk::widget_draw(&Ro(&*mem), widget) {
+        Ok(draws::TEXT) => text::left_out(mem, widget, false),
+        Ok(draws::BUTTON) => text::left_out(mem, widget, true),
+        _ => {}
+    }
+}
+
 /// Records whether run `run` of the claim at `frame` was placed; when it
 /// was, its first entry is left out (counted as skipped).
 pub fn placed(frame: u32, run: usize, placed: bool) {
@@ -730,16 +745,16 @@ mod tests {
         let kept = |name: &str| {
             super::super::kept::counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n)
         };
-        let (tabs, text, view) = (
-            kept("scene_kept_ui_widget_text_tabs"),
+        let (overrun, text, view) = (
+            kept("scene_kept_ui_widget_text_tab_overrun"),
             kept("scene_kept_ui_widget_text"),
             kept("scene_kept_ui_widget_model_view"),
         );
-        MenuRefusal::from(Gap::text("text_tabs")).count();
+        MenuRefusal::from(Gap::text("text_tab_overrun")).count();
         MenuRefusal::from(Unread::Text).count();
         MenuRefusal::from(Gap::model("model_view")).count();
         MenuRefusal::from(Unread::Shader).count();
-        assert_eq!(kept("scene_kept_ui_widget_text_tabs"), tabs + 1);
+        assert_eq!(kept("scene_kept_ui_widget_text_tab_overrun"), overrun + 1);
         assert_eq!(kept("scene_kept_ui_widget_text"), text + 1);
         assert_eq!(kept("scene_kept_ui_widget_model_view"), view + 1);
         assert_eq!(kept("scene_kept_ui_widget_shader"), 0, "a shader bitmap is drawn at its quad");

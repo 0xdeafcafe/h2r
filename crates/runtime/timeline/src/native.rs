@@ -662,7 +662,7 @@ impl SceneList {
     }
 }
 
-const UI_COLUMNS: [&str; Ui::ModelViewRustFallback as usize + 1] = [
+const UI_COLUMNS: [&str; Ui::OverlayMenuRevealUnwritten as usize + 1] = [
     "items",
     "item_refused",
     "fallback_geometry",
@@ -762,6 +762,7 @@ const UI_COLUMNS: [&str; Ui::ModelViewRustFallback as usize + 1] = [
     "model_view_rust_mismatch_camera",
     "model_view_rust_refused",
     "model_view_rust_fallback",
+    "overlay_menu_reveal_unwritten",
 ];
 const UI_OFFSET: usize = SCENE_LIST_START + SCENE_LISTS.len() * SCENE_LIST_RESULTS.len();
 const ANIMATION_OFFSET: usize = UI_OFFSET + UI_COLUMNS.len();
@@ -964,6 +965,10 @@ pub enum Ui {
     ModelViewRustMismatchCamera,
     ModelViewRustRefused,
     ModelViewRustFallback,
+    /// Left-out text draws whose reveal cursor step could not be read or
+    /// written (docs/graphics/native-menus-overlay.md, "What the list
+    /// reads").
+    OverlayMenuRevealUnwritten,
 }
 
 impl Ui {
@@ -1241,7 +1246,7 @@ mod tests {
         let animation = phase::Counter::ALL.len() + ANIMATION_OFFSET;
         assert_eq!(
             columns[animation - 1].1,
-            "native_ui_model_view_rust_fallback"
+            "native_ui_overlay_menu_reveal_unwritten"
         );
         assert_eq!(columns[animation].1, "native_shader_animation_layers_drawn");
         assert_eq!(

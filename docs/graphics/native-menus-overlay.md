@@ -53,6 +53,25 @@ Every other draw is the game's, counted by what is not read (`render.stats`, `na
 
 - Text and button labels use the live UTF-16 interface, font, justification, colour, clipping rectangle, shadow and flash. The shaper uses the game font's advances and kerning to wrap and justify each line. Each pass fills the same glyph pages as the HUD before the guest draw is skipped ([text draw and interface reads](notes/2026-11-24-menu-text.md)).
 - The substitution pass `0x0022d2ee` runs in Rust over a copy of the string (`text::substitute`): each named sequence of `0x0044a3f0` becomes its unit, the last match at a position winning, and the scan moves one unit on. A private-use unit with no handler in `0x00470204` stays and is laid out as a character (`UiText::shape_buttons`, the scanner's type 4 at `0x0013f5a0`).
+- The line renderer `0x0013f0e0` runs in Rust (`ui::TextLayout`, `game::ui_kit::preview::text_layout::segments`, `UiText::shape_layout`):
+
+  | Input | Where it comes from | What it does |
+  |---|---|---|
+  | Rectangle | the offset rectangle's corners projected at the widget's Z about the canvas's centre (`0x002360c3`), truncated to `i16` (`text::projected`) | the layout and the clip |
+  | Advance scale `[esp+94h]` | the projected width over the rectangle's (`0x0022d047`) | times every metric: advances, offsets, kerning, line heights, stops, indents and each glyph's quad (`0x0001f3a0`); the shadow moves by it (`0x0001f530`) |
+  | Tab stops `0x004e73de`, count `0x004e73dc` | the interface's eight at `+0x28`, count `+0x38`, each plus the projected left (`0x0022d007`, `0x0013eb20`) | column `n` runs from stop `n - 1` to stop `n`; column 0 from the left plus the indent, the last to the right |
+  | Indents `0x004e73fe`, `0x004e7400` | the renderer's state | the first row group's, then the rest's |
+
+  The scanner ends a segment at `\r` (the next row group, under the deepest row of this one, column 0), a tab (one column on and the group's first row, or nothing past the last stop), an alignment unit U+E405 to U+E407 (left, right, centre for what follows, the group's first row) or a glyph that does not fit (one row down). Each segment is justified in its column (`0x0013f2d7`).
+- The reveal cursor (`0x0022cdbf` to `0x0022ce2d`, `text::Reveal`) is shown and stepped in Rust:
+
+  | Step | What it does |
+  |---|---|
+  | Show | a cursor at `+0x3c` not negative, clamped to `0x3fe`, cuts the copy there with its glyph (the shared UI globals' `+0x4a`, else `0xdb`); one past the end leaves the string |
+  | Step | written when the draw is left out (`ui_overlay::left_out`), only for a string not empty in a rectangle with width and height: the clamped cursor back to `+0x3c`; the first draw stamps the UI clock `[0x0054d5b8]` at `+0x40`; once the globals' ticks (`+0x48`, an `i16` compared unsigned, else 50) have passed, the cursor moves one on and the clock is stamped, and a cursor that reaches `+0x3e` is set to -1 |
+
+  A step that does not read or write counts `native_ui_overlay_menu_reveal_unwritten`.
+- Upper case (interface flag bit 1, `0x0013fae0`, `text::upper`) maps `a` to `z`, `é` to `É` and `ó` to `Ó`, and leaves every other unit.
 - The list emits scroll arrows using the bound first and last rows, live row occupancy and the active skin. The sorted children carry the row layout and animated highlight. A button's bitmap uses its focus state and precedes its label in the same claim ([list and button draws](notes/2026-11-24-menu-list-button.md)).
 - An idle model scene or a selection without objects or lights can produce an empty claim. At the nested camera call an active scene records its viewport, camera and ordered object handles as a `ModelView`, and its geometry still draws through the model material hooks ([model selection and camera](notes/2026-11-24-menu-model-selection.md)).
 
@@ -77,10 +96,10 @@ Each text, class and model refusal is a `ui_overlay::Gap`: the draw and the firs
 | `text_interface` | the text accessor, the string slot or the buffer setter is not retail's |
 | `text_glyphs` | glyph output is off, or no glyph ring or bitmap is active |
 | `text_style` | interface flags past bit 2, or its `+0x16`, `+0x18`, `+0x20` overrides |
-| `text_tabs`, `text_reveal` | explicit tab stops (`+0x38`); the reveal cursor (`+0x3c`), which writes guest state |
+| `text_tab_overrun` | a tab count past the interface's eight stops: retail copies past its stack buffer |
 | `text_token` | a private-use unit whose handler writes text at the draw (a name, a clock) |
-| `text_scale`, `text_offset` | a projection scale not 1; an animated offset out of range |
-| `text_justify`, `text_case`, `text_colour`, `text_font` | an unknown justification; upper case of a non-ASCII unit; a channel outside 0 to 1; a font id past 16 bits |
+| `text_offset` | an animated offset out of range |
+| `text_justify`, `text_colour`, `text_font` | an unknown justification; a channel outside 0 to 1; a font id past 16 bits |
 | `list_number`, `list_tag`, `list_globals`, `list_screen`, `list_tree`, `list_rows`, `list_pane` | the arrows' or the art's lookups: a number not finite, no tag, no interface globals, the screen not found, a parent chain or row chain that does not end, a row table the helper does not walk, a pane index below -1 |
 | `button_focus`, `button_class` | the focus accessors or the user's channel not retail's; a button draw slot not retail's |
 | `art_viewport`, `art_image`, `art_texture`, `art_scale`, `art_offset` | the art's viewport not the full canvas, image out of range or empty, image not resident, projection not finite, offset out of range |

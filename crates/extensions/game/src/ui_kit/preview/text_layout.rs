@@ -180,6 +180,165 @@ pub fn lines_drawn(height: i32, ascent: i32, line_height: i32) -> usize {
     ((height - ascent - 1) / line_height.max(1)) as usize + 1
 }
 
+/// A segment's justification: the scanner's `+0x10`, which the
+/// alignment units U+E405, U+E406 and U+E407 set to left, right and
+/// centre (`0x13f614`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Align {
+    Left,
+    Right,
+    Centre,
+}
+
+/// What `0x13f0e0` lays a string out in, guest pixels: the rectangle's
+/// left and right, the tab stops (canvas pixels), the first row group's
+/// and the rest's indents, the advance scale and the justification it
+/// starts with. Stops and indents are times the scale, as every metric.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Frame<'a> {
+    pub left: f32,
+    pub right: f32,
+    pub stops: &'a [i16],
+    pub indents: [i16; 2],
+    pub scale: f32,
+    pub align: Align,
+}
+
+/// One measured piece of a row: its characters, where its pen starts
+/// once justified, and its row (the row groups' rows above it plus its
+/// own in its group).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Segment {
+    pub text: String,
+    pub x: f32,
+    pub row: i32,
+}
+
+/// Why the measure (`0x13ef40`) ended a segment: the scanner's type at
+/// the unit that ended it (`0x13f5a0`: 0 the end, 1 `\r`, 2 a tab, 3 an
+/// alignment unit, 4 a character that did not fit).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum End {
+    Text,
+    Line,
+    Tab,
+    Align(Align),
+    Wrap,
+}
+
+/// One segment from `start` as `0x13ef40` measures it, the pen at `pen`
+/// and the column's right edge at `right`: the units it draws (`start` to
+/// the first returned), where the next starts, its width and why it
+/// ended. `parts(prev, c)` is the glyph's scaled advance, x offset and
+/// kerning; a glyph fits while the right edge is past
+/// `pen + advance + x offset + kerning + width`, summed in that order.
+fn measure(
+    chars: &[char],
+    start: usize,
+    pen: f32,
+    right: f32,
+    parts: &dyn Fn(Option<char>, char) -> [f32; 3],
+) -> (usize, usize, f32, End) {
+    let (mut width, mut count) = (0f32, 0usize);
+    let mut brk: Option<(usize, f32)> = None;
+    let (mut before, mut glyph): (Option<char>, Option<char>) = (None, None);
+    for (i, &c) in chars.iter().enumerate().skip(start) {
+        let end = match c {
+            '\r' => Some(End::Line),
+            '\t' => Some(End::Tab),
+            '\u{e405}' => Some(End::Align(Align::Left)),
+            '\u{e406}' => Some(End::Align(Align::Right)),
+            '\u{e407}' => Some(End::Align(Align::Centre)),
+            _ => None,
+        };
+        if let Some(end) = end {
+            return (i, i + 1, width, end);
+        }
+        if i > start && before.is_some_and(|p| breaks_between(p, c)) {
+            brk = Some((i, width));
+        }
+        let [a, x, k] = parts(glyph, c);
+        // `comiss; ja`: unordered does not fit.
+        let fits = right > pen + a + x + k + width;
+        if !fits && count > 0 {
+            return match brk {
+                Some((at, w)) => (at, at, w, End::Wrap),
+                None => (i + 1, i + 1, width, End::Wrap),
+            };
+        }
+        width = a + x + k + width;
+        count += 1;
+        before = Some(c);
+        glyph = Some(c);
+    }
+    (chars.len(), chars.len(), width, End::Text)
+}
+
+/// `text`'s segments as the line renderer `0x13f0e0` places them. Each
+/// row has columns: with no stops one, the rectangle's left plus the
+/// indent to its right; with stops, column 0 runs from there to stop 0,
+/// column `n` from stop `n - 1` to stop `n`, the last to the rectangle's
+/// right. The indent is the first's while no `\r` has passed, else the
+/// second's (`0x13f1d3`). Each segment is justified in its column
+/// (`0x13f2d7`): left at its pen, right with its width against the
+/// column's right, centred in the room left over.
+///
+/// What ended a segment moves the next (`0x13f3d2`): `\r` starts a row
+/// group under the deepest row of this one, back at column 0; a tab
+/// moves one column on, to the group's first row, unless it is past the
+/// last stop, when nothing moves; an alignment unit sets the next
+/// segment's justification and goes back to the group's first row; a
+/// wrap goes one row down. `\n` is skipped (`0x13f5c8`).
+pub fn segments(text: &str, frame: &Frame, parts: &dyn Fn(Option<char>, char) -> [f32; 3]) -> Vec<Segment> {
+    let chars: Vec<char> = text.chars().filter(|&c| c != '\n').collect();
+    let s = frame.scale;
+    let (mut tab, mut group, mut deepest, mut row) = (0usize, 0i32, 0i32, 0i32);
+    let mut align = frame.align;
+    let mut pos = 0;
+    let mut out = Vec::new();
+    loop {
+        let indent = frame.indents[usize::from(group != 0)];
+        let first = f32::from(indent) * s + frame.left;
+        let (x0, right) = if frame.stops.is_empty() {
+            (first, frame.right)
+        } else {
+            let x0 = if tab == 0 { first } else { f32::from(frame.stops[tab - 1]) * s };
+            let right = frame.stops.get(tab).map_or(frame.right, |&stop| f32::from(stop) * s);
+            (x0, right)
+        };
+        let (to, next, width, end) = measure(&chars, pos, x0, right, parts);
+        let x = match align {
+            Align::Left => x0,
+            Align::Right => (right - x0) + x0 - width,
+            Align::Centre => (right - x0 - width) * 0.5 + x0,
+        };
+        out.push(Segment { text: chars[pos..to].iter().collect(), x, row: group + row });
+        pos = next;
+        match end {
+            End::Text => break,
+            End::Line => {
+                group += deepest + 1;
+                (tab, deepest, row) = (0, 0, 0);
+            }
+            End::Tab => {
+                if tab < frame.stops.len() {
+                    tab += 1;
+                    row = 0;
+                }
+            }
+            End::Align(a) => {
+                align = a;
+                row = 0;
+            }
+            End::Wrap => {
+                row += 1;
+                deepest = deepest.max(row);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +412,54 @@ mod tests {
         assert_eq!(lines_drawn(28, 12, 16), 1);
         assert_eq!(lines_drawn(29, 12, 16), 2);
         assert_eq!(lines_drawn(45, 12, 16), 3);
+    }
+
+    fn tens(_: Option<char>, _: char) -> [f32; 3] {
+        [10.0, 0.0, 0.0]
+    }
+
+    fn frame(stops: &[i16]) -> Frame<'_> {
+        Frame { left: 100.0, right: 300.0, stops, indents: [0; 2], scale: 1.0, align: Align::Left }
+    }
+
+    fn placed(s: &[Segment]) -> Vec<(&str, f32, i32)> {
+        s.iter().map(|s| (s.text.as_str(), s.x, s.row)).collect()
+    }
+
+    #[test]
+    fn tabs_start_columns_at_the_stops_which_are_not_the_rectangles() {
+        let s = segments("ab\tcd\tef\tgh", &frame(&[150, 250]), &tens);
+        // Past the last stop a tab moves nothing: "gh" draws over "ef".
+        assert_eq!(placed(&s), [("ab", 100.0, 0), ("cd", 150.0, 0), ("ef", 250.0, 0), ("gh", 250.0, 0)]);
+        // Right-justified in its column: against the next stop.
+        let right = Frame { align: Align::Right, ..frame(&[150, 250]) };
+        assert_eq!(segments("ab\tcd", &right, &tens)[0].x, 130.0);
+        assert_eq!(segments("ab\tcd", &right, &tens)[1].x, 230.0);
+    }
+
+    #[test]
+    fn a_row_group_ends_under_its_deepest_column() {
+        // Column 0 is 50 wide: four glyphs fit and the fifth, with no
+        // break, joins them; the tab goes back to row 0 and "\r" starts
+        // the next group under row 1.
+        let s = segments("aaaaaa\tb\rc", &frame(&[150]), &tens);
+        assert_eq!(placed(&s), [("aaaaa", 100.0, 0), ("a", 100.0, 1), ("b", 150.0, 0), ("c", 100.0, 2)]);
+    }
+
+    #[test]
+    fn an_alignment_unit_justifies_what_follows_on_the_groups_first_row() {
+        let s = segments("ab\u{e406}cd\u{e407}e", &frame(&[]), &tens);
+        assert_eq!(placed(&s), [("ab", 100.0, 0), ("cd", 280.0, 0), ("e", 195.0, 0)]);
+    }
+
+    #[test]
+    fn the_scale_multiplies_the_stops_and_indents_and_the_first_indent_holds_for_the_first_group() {
+        let half = |_: Option<char>, _: char| [5.0, 0.0, 0.0];
+        let f = Frame { indents: [8, 2], scale: 0.5, ..frame(&[400]) };
+        let s = segments("a\tb\rc", &f, &half);
+        assert_eq!(placed(&s), [("a", 104.0, 0), ("b", 200.0, 0), ("c", 101.0, 1)]);
+        // A wrapped row of the first group keeps the first indent.
+        let narrow = Frame { right: 135.0, indents: [8, 2], scale: 1.0, ..frame(&[]) };
+        assert_eq!(placed(&segments("a a", &narrow, &tens)), [("a ", 108.0, 0), ("a", 108.0, 1)]);
     }
 }

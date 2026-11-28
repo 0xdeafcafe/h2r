@@ -1,8 +1,9 @@
 //! Screen text and button labels. Retail entry points and field evidence are
 //! recorded in docs/graphics/notes/2026-11-24-menu-text.md.
 
+use engine::memory::GuestMemory;
 use scene_extract::GuestRead;
-use scene_extract::ui::{self, Justify, UiContent, UiWidget, Unread};
+use scene_extract::ui::{self, Justify, TextLayout, UiContent, UiWidget, Unread};
 
 use super::Gap;
 
@@ -126,6 +127,206 @@ fn substitute(mem: &dyn GuestRead, text: &[u16]) -> Result<Vec<u16>, Gap> {
     Ok(buf)
 }
 
+/// The UI clock (`[0x0054d5b8]`): the reveal cursor's and the flash's.
+const UI_CLOCK: u32 = 0x0054_d5b8;
+/// The last unit the reveal cursor writes at: the copy's capacity less
+/// the cursor and its terminator.
+const REVEAL_LAST: i16 = 0x3fe;
+/// With no shared UI globals: the cursor glyph and the ticks per step.
+const REVEAL_GLYPH: u16 = 0xdb;
+const REVEAL_TICKS: u32 = 0x32;
+/// The shared UI globals' (`wigl`) ticks per step (`i16`) and cursor glyph.
+const WIGL_REVEAL_TICKS: u32 = 0x48;
+const WIGL_REVEAL_GLYPH: u32 = 0x4a;
+
+/// The interface's reveal cursor (`0x0022cdbf` to `0x0022ce2d`): the unit
+/// it is at (`+0x3c`, off when negative), the unit it stops at (`+0x3e`)
+/// and the clock of its last step (`+0x40`, 0 before the first).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Reveal {
+    cursor: i16,
+    end: i16,
+    last: u32,
+}
+
+impl Reveal {
+    /// The cursor; its end and clock only when it is on (the draw reads
+    /// them only then).
+    fn read(mem: &dyn GuestRead, iface: u32) -> Result<Reveal, Unread> {
+        let cursor = half(mem, iface, 0x3c)? as i16;
+        if cursor < 0 {
+            return Ok(Reveal { cursor, end: 0, last: 0 });
+        }
+        Ok(Reveal { cursor, end: half(mem, iface, 0x3e)? as i16, last: word(mem, iface, 0x40)? })
+    }
+
+    /// The unit of the draw's copy the cursor glyph is written at, then a
+    /// terminator: `None` when the cursor is off.
+    fn at(self) -> Option<i16> {
+        (self.cursor >= 0).then(|| self.cursor.min(REVEAL_LAST))
+    }
+
+    /// The string as the draw shows it: cut at the cursor with its glyph
+    /// written there. A cursor past the end leaves the string, whose
+    /// terminator comes first.
+    fn show(self, text: &mut Vec<u16>, glyph: u16) {
+        if let Some(at) = self.at().map(|at| at as usize)
+            && at <= text.len()
+        {
+            text.truncate(at);
+            text.push(glyph);
+        }
+    }
+
+    /// The state the draw leaves at `clock`: the clamped cursor written
+    /// back; the first draw stamps the clock; once `ticks` have passed
+    /// (unsigned) the cursor moves on one and the clock is stamped, and a
+    /// cursor that reaches its end is turned off.
+    fn step(self, clock: u32, ticks: u32) -> Reveal {
+        let Some(at) = self.at() else { return self };
+        if self.last == 0 {
+            return Reveal { cursor: at, last: clock, ..self };
+        }
+        if clock.wrapping_sub(self.last) < ticks {
+            return Reveal { cursor: at, ..self };
+        }
+        let next = at + 1;
+        Reveal { cursor: if next == self.end { -1 } else { next }, last: clock, ..self }
+    }
+}
+
+/// The cursor glyph and the ticks per step: the shared UI globals' (the
+/// ticks an `i16`, compared unsigned), else `0xdb` and 50.
+fn reveal_style(mem: &dyn GuestRead) -> Result<(u16, u32), Unread> {
+    match super::bitmaps::shared_globals(mem).ok_or(Unread::Unreadable)? {
+        Some(wigl) => Ok((
+            half(mem, wigl, WIGL_REVEAL_GLYPH)?,
+            half(mem, wigl, WIGL_REVEAL_TICKS)? as i16 as i32 as u32,
+        )),
+        None => Ok((REVEAL_GLYPH, REVEAL_TICKS)),
+    }
+}
+
+/// The interface of a text or button widget whose draw reaches the
+/// reveal cursor with it on: a string not empty in a rectangle with width
+/// and height (`0x0022cd5e` to `0x0022cd8a`).
+fn revealing(mem: &dyn GuestRead, widget: u32, button: bool) -> Result<Option<u32>, Gap> {
+    let (iface, capacity) = interface(mem, widget, button)?;
+    if string(mem, iface, capacity)?.is_empty() || Reveal::read(mem, iface)?.at().is_none() {
+        return Ok(None);
+    }
+    let mut w = ui::read_widget_header(mem, widget, 0.0, UiContent::None)?;
+    offset_rect(&mut w)?;
+    let [top, left, bottom, right] = w.rect;
+    Ok((top != bottom && left != right).then_some(iface))
+}
+
+/// A text or button widget's draw the overlay left out: the reveal
+/// cursor's step its draw makes (`0x0022cdc8`), written as the draw
+/// writes it. A widget with the cursor off writes nothing; one that does
+/// not read is counted and writes nothing.
+pub(super) fn left_out(mem: &mut dyn GuestMemory, widget: u32, button: bool) {
+    let step = {
+        let ro = super::Ro(&*mem);
+        let read = || -> Result<Option<(u32, Reveal)>, Gap> {
+            let Some(iface) = revealing(&ro, widget, button)? else { return Ok(None) };
+            let (_, ticks) = reveal_style(&ro)?;
+            let clock = word(&ro, UI_CLOCK, 0)?;
+            Ok(Some((iface, Reveal::read(&ro, iface)?.step(clock, ticks))))
+        };
+        read()
+    };
+    match step {
+        Ok(None) => {}
+        Ok(Some((iface, next))) => {
+            let cursor = iface.checked_add(0x3c).map(|at| mem.write(at, &(next.cursor as u16).to_le_bytes()));
+            let last = iface.checked_add(0x40).map(|at| mem.write(at, &next.last.to_le_bytes()));
+            if !matches!((cursor, last), (Some(Ok(())), Some(Ok(())))) {
+                timeline::native::Ui::OverlayMenuRevealUnwritten.count();
+            }
+        }
+        Err(_) => timeline::native::Ui::OverlayMenuRevealUnwritten.count(),
+    }
+}
+
+/// The draw's upper case (`0x0013fae0`): basic Latin `a` to `z`, and of
+/// the rest only `é` and `ó`.
+fn upper(unit: u16) -> u16 {
+    match unit {
+        0x61..=0x7a => unit - 0x20,
+        0xe9 => 0xc9,
+        0xf3 => 0xd3,
+        _ => unit,
+    }
+}
+
+/// The rectangle helper `0x0022e9c6`: the header's, plus the animated
+/// offset's X and Y, truncated to `i32` and added as `i16`.
+fn offset_rect(w: &mut UiWidget) -> Result<(), Gap> {
+    for (i, delta) in w.offset.into_iter().enumerate() {
+        if !delta.is_finite() || delta.abs() >= i32::MAX as f32 {
+            return Err(Gap::text("text_offset"));
+        }
+        let first = 1 - i;
+        for edge in [first, first + 2] {
+            w.rect[edge] = w.rect[edge].wrapping_add(delta as i32 as i16);
+        }
+    }
+    w.offset = [0.0; 2];
+    Ok(())
+}
+
+/// The line renderer's two indents (`0x0013f1d9`): the first row
+/// group's and the rest's, as the renderer holds them; the interface
+/// draw does not set them.
+const INDENTS: [u32; 2] = [0x004e_73fe, 0x004e_7400];
+/// The interface's tab stops (`+0x28`, eight `i16`) and their count
+/// (`+0x38`).
+const STOPS: u32 = 0x28;
+const STOP_COUNT: u32 = 0x38;
+const MAX_STOPS: i32 = 8;
+
+/// The interface draw's rectangle and advance scale (`0x0022cef5` to
+/// `0x0022d067`): the rectangle's corners projected at the widget's Z
+/// about the full canvas's centre (`0x002360c3`) and truncated to `i16`,
+/// `[top, left, bottom, right]` Y down; the scale is the projected width
+/// over the rectangle's, times the interface's `+0x20` (1, `text_style`).
+fn projected(mem: &dyn GuestRead, widget: u32, [top, left, bottom, right]: [i16; 4]) -> Result<([i16; 4], f32), Gap> {
+    use super::bitmaps::{project, truncated, Lens};
+    let lens = Lens::read(mem).ok_or(Unread::Unreadable)?;
+    let z = number(mem, widget, 0x60)?;
+    let near = project(&lens, [f32::from(left), f32::from(top), z], super::FULL_SCREEN);
+    let far = project(&lens, [f32::from(right), f32::from(bottom), z], super::FULL_SCREEN);
+    let scale = (far[0] - near[0]) / (i32::from(right) - i32::from(left)) as f32;
+    let rect = [truncated(near[1]), truncated(near[0]), truncated(far[1]), truncated(far[0])];
+    Ok((rect, scale))
+}
+
+/// A projected rectangle (Y down from the canvas's corner) as a header's
+/// (Y up about its centre), which `ui::widget_rect` turns back.
+fn rect_about_centre([top, left, bottom, right]: [i16; 4]) -> [i16; 4] {
+    let [cx, cy] = ui::CANVAS.map(|v| (v / 2) as i16);
+    [cy.wrapping_sub(top), left.wrapping_sub(cx), cy.wrapping_sub(bottom), right.wrapping_sub(cx)]
+}
+
+/// The tab stops the draw hands the line renderer (`0x0022d007`,
+/// `0x0013eb20`): a count at `+0x38` not above 0 is none; otherwise each
+/// stop is the interface's plus the projected rectangle's left, as `i16`.
+/// The interface holds eight: a larger count runs the copy past the
+/// draw's stack buffer (`text_tab_overrun`).
+fn stops(mem: &dyn GuestRead, iface: u32, left: i16) -> Result<Vec<i16>, Gap> {
+    let count = word(mem, iface, STOP_COUNT)? as i32;
+    if count <= 0 {
+        return Ok(Vec::new());
+    }
+    if count > MAX_STOPS {
+        return Err(Gap::text("text_tab_overrun"));
+    }
+    (0..count as u32)
+        .map(|i| -> Result<i16, Gap> { Ok((half(mem, iface, STOPS + i * 2)? as i16).wrapping_add(left)) })
+        .collect()
+}
+
 /// The caller checks the full-canvas viewport and, for a button, the optional bitmap.
 pub(super) fn read_widget(
     mem: &dyn GuestRead,
@@ -134,10 +335,7 @@ pub(super) fn read_widget(
     button: bool,
 ) -> Result<UiWidget, Gap> {
     let mut w = ui::read_widget_header(mem, widget, depth, UiContent::None)?;
-    if word(mem, 0x0054_d59c, 0)? >> 24 != 0
-        || word(mem, 0x0051_ec04, 0)? as u8 != 0
-        || half(mem, 0x004e_73dc, 0)? != 0
-    {
+    if word(mem, 0x0054_d59c, 0)? >> 24 != 0 || word(mem, 0x0051_ec04, 0)? as u8 != 0 {
         // The widget index display or the rectangle outlines are on.
         return Err(Gap::text("text_debug"));
     }
@@ -162,36 +360,30 @@ pub(super) fn read_widget(
     {
         return Err(Gap::text("text_style"));
     }
-    if word(mem, iface, 0x38)? != 0 {
-        return Err(Gap::text("text_tabs"));
-    }
-    if (half(mem, iface, 0x3c)? as i16) >= 0 {
-        // The reveal cursor writes its glyph and advances guest state.
-        return Err(Gap::text("text_reveal"));
+    // The reveal cursor: shown here, its step written when the draw is
+    // left out (`left_out`).
+    let mut text = text;
+    let reveal = Reveal::read(mem, iface)?;
+    if reveal.at().is_some() {
+        reveal.show(&mut text, reveal_style(mem)?.0);
     }
     let mut text = substitute(mem, &text)?;
     if text.is_empty() {
         return Ok(w);
     }
-    let camera = number(mem, 0x0054_d5b0, 0)?;
-    let epsilon = number(mem, 0x0045_dbdc, 0)?;
-    let camera = if camera.abs() < epsilon { 1.0 } else { camera };
-    let z = camera + number(mem, widget, 0x60)?;
-    let z = if z >= 0.0 { z.max(1.0) } else { z.min(-1.0) };
-    let scale = 1.0 / ((1.0 / camera) * z);
-    if scale != 1.0 {
-        return Err(Gap::text("text_scale"));
+    offset_rect(&mut w)?;
+    let [top, left, bottom, right] = w.rect;
+    if top == bottom || left == right {
+        // `0x0022cd71`: no width or no height, nothing drawn.
+        return Ok(w);
     }
-    for (i, delta) in w.offset.into_iter().enumerate() {
-        if !delta.is_finite() || delta.abs() >= i32::MAX as f32 {
-            return Err(Gap::text("text_offset"));
-        }
-        let first = 1 - i;
-        for edge in [first, first + 2] {
-            w.rect[edge] = w.rect[edge].wrapping_add(delta as i32 as i16);
-        }
-    }
-    w.offset = [0.0; 2];
+    let (rect, scale) = projected(mem, widget, w.rect)?;
+    let layout = TextLayout {
+        scale,
+        stops: stops(mem, iface, rect[1])?,
+        indents: [half(mem, INDENTS[0], 0)? as i16, half(mem, INDENTS[1], 0)? as i16],
+    };
+    w.rect = rect_about_centre(rect);
     let justify = match word(mem, iface, 0x1c)? {
         0 => Justify::Left,
         1 => Justify::Right,
@@ -223,11 +415,7 @@ pub(super) fn read_widget(
     }
     if flags & 2 != 0 {
         for unit in &mut text {
-            let ascii = u8::try_from(*unit)
-                .ok()
-                .filter(|c| c.is_ascii())
-                .ok_or(Gap::text("text_case"))?;
-            *unit = u16::from(ascii.to_ascii_uppercase());
+            *unit = upper(*unit);
         }
     }
     // The glyph scanner packs each channel via the truncating _ftol
@@ -249,6 +437,7 @@ pub(super) fn read_widget(
         color,
         justify,
         shadow: flags & 4 == 0,
+        layout,
     };
     Ok(w)
 }
@@ -289,9 +478,14 @@ mod tests {
             (0x004b_62ac, 0x5000),
             (0x0045_df00, 0.5f32.to_bits()),
             (0x0051_ec04, 0),
-            (0x004e_73dc, 0),
+            (0x004e_73fc, 0),
+            (0x004e_7400, 0),
             (0x0054_d5b0, 1f32.to_bits()),
+            (0x0045_dbbc, 0.5f32.to_bits()),
+            (0x0045_dbc0, 1f32.to_bits()),
             (0x0045_dbdc, 0.001f32.to_bits()),
+            (0x0045_dbd8, 0f32.to_bits()),
+            (0x0045_dbcc, (-0.001f32).to_bits()),
             (w + 4, 6),
             (w + 0x20, 0),
             (w + 0x24, 0x0010_0010),
@@ -331,6 +525,7 @@ mod tests {
                 color: [31.0 / 255.0, 31.0 / 255.0, 31.0 / 255.0, 1.0],
                 justify: Justify::Right,
                 shadow: false,
+                layout: TextLayout::default(),
             }
         );
         m.0.insert(iface + 0x14, 0x0001_0001);
@@ -342,11 +537,111 @@ mod tests {
             flash.content,
             UiContent::Text { shadow: true, .. }
         ));
+        // The reveal cursor at 0 shows only its glyph; no shared UI
+        // globals: `0xdb`.
+        m.0.insert(0x004e_0350, 0);
+        m.0.insert(0x004e_034c, 0);
         m.0.insert(iface + 0x3c, 0);
-        assert_eq!(read_widget(&m, w, 2.0, false), Err(Gap::text("text_reveal")));
+        m.0.insert(iface + 0x40, 0);
+        let revealing = read_widget(&m, w, 2.0, false).unwrap();
+        assert!(matches!(&revealing.content, UiContent::Text { text, .. } if text == &[0xdb]));
         m.0.insert(iface + 0x3c, 0xffff);
-        m.0.insert(iface + 0x38, 1);
-        assert_eq!(read_widget(&m, w, 2.0, false), Err(Gap::text("text_tabs")));
+        // Two stops, each plus the projected rectangle's left (1 + 320).
+        m.0.insert(iface + 0x38, 2);
+        m.0.insert(iface + 0x28, 0xfffe_0010);
+        m.0.insert(0x004e_73fc, 5 << 16);
+        m.0.insert(0x004e_7400, 0xfffd);
+        let tabbed = read_widget(&m, w, 2.0, false).unwrap();
+        assert!(matches!(
+            &tabbed.content,
+            UiContent::Text { layout, .. } if *layout == TextLayout { scale: 1.0, stops: vec![337, 319], indents: [5, -3] }
+        ));
+        m.0.insert(iface + 0x38, 9);
+        assert_eq!(read_widget(&m, w, 2.0, false), Err(Gap::text("text_tab_overrun")));
+        m.0.insert(iface + 0x38, -1i32 as u32);
+        assert!(matches!(read_widget(&m, w, 2.0, false).unwrap().content, UiContent::Text { layout, .. } if layout.stops.is_empty()));
+        // Behind the camera's plane by 1: half the size about the centre,
+        // the rectangle truncated and the advance scale its width's.
+        m.0.insert(iface + 0x38, 0);
+        m.0.insert(w + 0x60, 1f32.to_bits());
+        let far = read_widget(&m, w, 2.0, false).unwrap();
+        assert_eq!(far.rect, [-1, 0, 7, 8]);
+        assert!(matches!(far.content, UiContent::Text { layout, .. } if layout.scale == 0.5));
+        // No width: the draw returns before the line renderer.
+        m.0.insert(w + 0x60, 0);
+        m.0.insert(w + 0x24, 0x0000_0010);
+        assert_eq!(read_widget(&m, w, 2.0, false).unwrap().content, UiContent::None);
+    }
+
+    #[test]
+    fn the_reveal_cursor_cuts_the_string_at_its_glyph() {
+        let units = |s: &str| s.encode_utf16().collect::<Vec<_>>();
+        let at = |cursor| Reveal { cursor, end: 9, last: 0 };
+        let shown = |cursor| {
+            let mut text = units("abc");
+            at(cursor).show(&mut text, 0x5f);
+            text
+        };
+        assert_eq!(shown(1), units("a_"));
+        assert_eq!(shown(3), units("abc_"), "at the terminator: the glyph follows");
+        assert_eq!(shown(4), units("abc"), "past the end: the terminator comes first");
+        assert_eq!(shown(-1), units("abc"), "off");
+        assert_eq!(at(0x7fff).at(), Some(REVEAL_LAST), "clamped to the copy");
+    }
+
+    #[test]
+    fn the_reveal_cursor_steps_once_its_ticks_pass_and_stops_at_its_end() {
+        let r = |cursor, last| Reveal { cursor, end: 3, last };
+        assert_eq!(r(-1, 5).step(100, 50), r(-1, 5), "off: nothing written");
+        assert_eq!(r(1, 0).step(100, 50), r(1, 100), "the first draw stamps the clock");
+        assert_eq!(r(1, 60).step(100, 50), r(1, 60), "too soon");
+        assert_eq!(r(1, 50).step(100, 50), r(2, 100));
+        assert_eq!(r(2, 50).step(100, 50), r(-1, 100), "its end turns it off");
+        assert_eq!(r(1, 200).step(100, 50), r(2, 100), "the clock's distance is unsigned");
+        assert_eq!(r(0x7fff, 0).step(7, 50), r(REVEAL_LAST, 7), "the clamped cursor is written back");
+        // Ticks read as an `i16` and compared unsigned: a negative never passes.
+        assert_eq!(r(1, 1).step(100, -1i16 as i32 as u32), r(1, 1));
+    }
+
+    #[test]
+    fn a_left_out_draw_writes_its_reveal_step() {
+        use engine::testing::FakeGuest;
+        let (w, iface) = (0x1000, 0x1074);
+        let mut g = FakeGuest::new();
+        g.put_u32(w, 0x2000)
+            .put_u32(0x203c, 0x0022_f57f)
+            .put_u32(iface, 0x3000)
+            .put_u32(0x3004, 0x0022_f50d)
+            .put_u32(0x3008, 0x0022_f52e)
+            .put_u32(w + 0x24, 0x0010_0010)
+            .put_u16(iface + 0x44, 0x61)
+            .put_u16(iface + 0x3c, 0)
+            .put_u16(iface + 0x3e, 2)
+            .put_u32(iface + 0x40, 10)
+            .put_u32(0x004e_0350, 0)
+            .put_u32(0x004e_034c, 0)
+            .put_u32(UI_CLOCK, 100);
+        left_out(&mut g, w, false);
+        assert_eq!((g.u16(iface + 0x3c).unwrap(), g.u32(iface + 0x40).unwrap()), (1, 100));
+        left_out(&mut g, w, false);
+        assert_eq!(g.u16(iface + 0x3c).unwrap(), 1, "fewer than 50 ticks since");
+        g.put_u32(UI_CLOCK, 150);
+        left_out(&mut g, w, false);
+        assert_eq!(g.u16(iface + 0x3c).unwrap(), 0xffff, "its end turns it off");
+        // A zero-width rectangle: the draw returns before the cursor.
+        g.put_u16(iface + 0x3c, 0).put_u32(w + 0x24, 0x0000_0010);
+        left_out(&mut g, w, false);
+        assert_eq!(g.u32(iface + 0x40).unwrap(), 150, "nothing written");
+    }
+
+    #[test]
+    fn upper_case_is_basic_latin_and_two_accented_vowels() {
+        let units = |s: &str| s.encode_utf16().collect::<Vec<_>>();
+        let up = |s: &str| units(s).into_iter().map(upper).collect::<Vec<_>>();
+        assert_eq!(up("az{AZ09"), units("AZ{AZ09"));
+        assert_eq!(up("éó"), units("ÉÓ"));
+        assert_eq!(up("àüñ"), units("àüñ"), "the rest of Latin-1 is left as it is");
+        assert_eq!(upper(0xe105), 0xe105, "a button glyph");
     }
 
     /// Aliases at 0x5000 ("ab" to 0xe101), 0x5100 ("a" to 0xe102) and the

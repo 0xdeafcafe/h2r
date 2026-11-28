@@ -582,7 +582,7 @@ pub fn meter_tint(mem: &dyn GuestRead, channel: f32) -> Option<u32> {
 
 /// `cvttss2si` into a 16-bit add: toward zero, the integer indefinite
 /// (low half 0) out of range.
-fn truncated(v: f32) -> i16 {
+pub(super) fn truncated(v: f32) -> i16 {
     if v.is_finite() && (-2_147_483_648.0..2_147_483_648.0).contains(&v) {
         v as i32 as i16
     } else {

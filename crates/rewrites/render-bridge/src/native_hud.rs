@@ -417,6 +417,8 @@ pub(crate) fn menu_item(c: &mut hooks::Call<'_>, mem: &mut dyn GuestMemory, stac
             }
         }
     }
+    // The guest state the left-out draw would have written.
+    ui_overlay::left_out(mem, frame, ordinal);
     Ui::OverlayMenuSkipped.count();
     Stage::Ui.count(Metric::BuildsSkipped, 1);
     c.cpu.esp = stack;
