@@ -69,6 +69,14 @@ pub enum TableEvent {
         /// A loop's detail sound: the host places it (presentation, its own
         /// seed copy, the listener); the sim took no placement draw.
         detail: bool,
+        /// `0x1251e0`'s level for the request, dB: the volume is `level + gain`.
+        level: f32,
+        /// Minimum and maximum distance ([`crate::instances::distances`]).
+        distance: [f32; 2],
+        /// The loop and track that hold it.
+        track: Option<(sim_world::Handle, u8)>,
+        /// The track sound it continues with no gap (a loop's next segment).
+        follows: Option<sim_world::Handle>,
         tick: u32,
     },
     /// A stop: the sound fades for `fade_ticks`, then ends with `Faded`.

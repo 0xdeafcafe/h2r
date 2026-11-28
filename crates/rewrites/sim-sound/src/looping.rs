@@ -219,14 +219,14 @@ impl Sounds {
             let overlay = Segments::from_track_flags(track.flags).overlay(0);
             match intro {
                 Some(sound) if !overlay => {
-                    let primary = self.play(rng, tags, levels, handle, i, sound, tick);
+                    let primary = self.play(rng, tags, levels, handle, i, sound, None, tick);
                     self.set_track(handle, i, Segment::IN, primary);
                 }
                 _ => {
                     if let Some(sound) = intro {
-                        self.play(rng, tags, levels, handle, i, sound, tick);
+                        self.play(rng, tags, levels, handle, i, sound, None, tick);
                     }
-                    self.advance(rng, tags, levels, handle, i, Segment::IN, tick);
+                    self.advance(rng, tags, levels, handle, i, Segment::IN, None, tick);
                 }
             }
         }
@@ -269,7 +269,7 @@ impl Sounds {
             }
             let old = t.primary;
             let current = t.current;
-            self.advance(rng, tags, levels, handle, i, current, tick);
+            self.advance(rng, tags, levels, handle, i, current, None, tick);
             if let Some(old) = old
                 && track.flags & 4 != 0
                 && self.loops.get(handle).and_then(|l| l.tracks.get(i)).is_some_and(|t| t.primary != Some(old))
@@ -310,7 +310,7 @@ impl Sounds {
                 OutSegment::Alternate => Segment::ALT_OUT,
                 OutSegment::Normal => Segment::OUT,
             };
-            let played = track.sound(out).and_then(|sound| self.play(rng, tags, levels, handle, i, sound, tick));
+            let played = track.sound(out).and_then(|sound| self.play(rng, tags, levels, handle, i, sound, None, tick));
             self.set_track(handle, i, out, played);
         }
         true
@@ -372,8 +372,9 @@ impl Sounds {
                 let due = t.primary.and_then(|p| self.instances.get(p)).is_some_and(|p| {
                     p.phase == Phase::Playing && p.end.is_some_and(|end| end <= tick)
                 });
+                // The next segment continues the one ending now.
                 if due {
-                    self.advance(rng, tags, levels, handle, i, t.current, tick);
+                    self.advance(rng, tags, levels, handle, i, t.current, t.primary, tick);
                 }
             }
             let Some(def) = tags.looping(l.tag) else { continue };
@@ -397,9 +398,11 @@ impl Sounds {
     }
 
     /// Move track `i` on from `from`: the chain's overlay, then its primary.
-    /// A chain that stays put replays the segment's own sound.
+    /// A chain that stays put replays the segment's own sound. `follows` is
+    /// the primary ending on this tick, which the new primary continues.
+    #[allow(clippy::too_many_arguments)]
     fn advance(&mut self, rng: &mut Rng, tags: &dyn SoundTags,
-        levels: &dyn Levels, handle: Handle, i: usize, from: Segment, tick: u32) {
+        levels: &dyn Levels, handle: Handle, i: usize, from: Segment, follows: Option<Handle>, tick: u32) {
         let Some(l) = self.loops.get(handle) else { return };
         let alternate = l.alternate;
         let Some(track) = tags.looping(l.tag).and_then(|d| d.tracks.get(i)).copied() else { return };
@@ -414,12 +417,12 @@ impl Sounds {
         .expect("the chain reads no fallible state");
         let segment = Segment(choice.segment as u8);
         if choice.overlay != NONE {
-            self.play(rng, tags, levels, handle, i, TagIndex(choice.overlay), tick);
+            self.play(rng, tags, levels, handle, i, TagIndex(choice.overlay), None, tick);
         }
         let primary = if choice.primary != NONE {
-            self.play(rng, tags, levels, handle, i, TagIndex(choice.primary), tick)
+            self.play(rng, tags, levels, handle, i, TagIndex(choice.primary), follows, tick)
         } else if segment == from && from.next(alternate) == from {
-            track.sound(from).and_then(|sound| self.play(rng, tags, levels, handle, i, sound, tick))
+            track.sound(from).and_then(|sound| self.play(rng, tags, levels, handle, i, sound, follows, tick))
         } else {
             None
         };
@@ -435,12 +438,13 @@ impl Sounds {
     }
 
     /// Admit one sound for track `i` and link it to the track.
+    #[allow(clippy::too_many_arguments)]
     fn play(&mut self, rng: &mut Rng, tags: &dyn SoundTags,
-        levels: &dyn Levels, handle: Handle, i: usize, sound: TagIndex, tick: u32) -> Option<Handle> {
+        levels: &dyn Levels, handle: Handle, i: usize, sound: TagIndex, follows: Option<Handle>, tick: u32) -> Option<Handle> {
         let source = self.loops.get(handle)?.source;
         let owner = Owner::Loop { looping: handle, track: i as u8 };
         let level = levels.level(sound, &source);
-        let request = Request { owner, track: Some((handle, i as u8)), source, level, ..Request::new(sound) };
+        let request = Request { owner, track: Some((handle, i as u8)), source, level, follows, ..Request::new(sound) };
         let played = self.admit(rng, tags, request, tick).ok()?;
         if let Some(t) = self.loops.get_mut(handle).and_then(|l| l.tracks.get_mut(i)) {
             t.members.push(played);

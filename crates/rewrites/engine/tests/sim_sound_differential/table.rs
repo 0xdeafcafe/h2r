@@ -120,6 +120,7 @@ fn params(case: u32) -> Params {
         range_count,
         scale: 0,
         promotion: if r.chance(2) { 0xff } else { 0 },
+        distance: [0.0, 0.0],
     };
     tags.sounds.insert(TagIndex(TAG), tag);
     let history = tags

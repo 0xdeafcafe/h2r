@@ -320,3 +320,65 @@ fn a_loop_with_no_sound_is_freed_at_once() {
     assert!(s.loop_free_silent(h));
     assert!(s.loops().get(h).is_none());
 }
+
+/// What one event did to which sound: the order the host hears.
+fn order(events: &[TableEvent]) -> Vec<(&'static str, Handle)> {
+    events
+        .iter()
+        .map(|e| match e {
+            TableEvent::Started { handle, .. } => ("start", *handle),
+            TableEvent::Stopped { handle, .. } => ("stop", *handle),
+            TableEvent::Ended { handle, .. } => ("end", *handle),
+        })
+        .collect()
+}
+
+#[test]
+fn a_tick_runs_its_calls_then_the_loops_update_then_the_ends_as_the_guest_frame_does() {
+    // The guest's order: the tick's calls (starts, stops) before the frame,
+    // then in the frame `0x21b0e0` (a loop's next segment) before
+    // `0x1290d0` (the instances' ends, in slot order).
+    let t = tags(0, 1, vec![]);
+    let mut s = Sounds::new();
+    let mut rng = Rng::new(1);
+    let h = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    let intro = s.loops().get(h).unwrap().tracks[0].primary.unwrap();
+    let early = s.admit(&mut rng, &t, Request::new(OUT), 0).unwrap();
+    let long = s.admit(&mut rng, &t, Request::new(LOOP), 0).unwrap();
+    let first = tick(&mut s, &mut rng, &t, 0);
+    assert_eq!(order(&first), [("start", intro), ("start", early), ("start", long)]);
+    match first[0] {
+        TableEvent::Started { track, follows, .. } => assert_eq!((track, follows), (Some((h, 0)), None)),
+        _ => unreachable!(),
+    }
+    let shot = s.admit(&mut rng, &t, Request::new(DETAIL), 3).unwrap();
+    assert!(s.stop(long, 3, 3, &mut NullOwners));
+    let events = tick(&mut s, &mut rng, &t, 3);
+    let next = s.loops().get(h).unwrap().tracks[0].primary.unwrap();
+    assert_eq!(
+        order(&events),
+        [("start", shot), ("stop", long), ("start", next), ("end", intro), ("end", early)],
+    );
+    match events[2] {
+        TableEvent::Started { track, follows, .. } => assert_eq!((track, follows), (Some((h, 0)), Some(intro)), "the loop continues the in"),
+        _ => unreachable!(),
+    }
+    match events[0] {
+        TableEvent::Started { track, follows, .. } => assert_eq!((track, follows), (None, None)),
+        _ => unreachable!(),
+    }
+}
+
+#[test]
+fn a_track_sound_plays_at_its_loops_source_as_the_owner_moves_it() {
+    let t = tags(0, 1, vec![]);
+    let mut s = Sounds::new();
+    let mut rng = Rng::new(1);
+    let h = s.loop_start(&mut rng, &t, &Flat(0.0), LOOP_TAG, 7, SourceParams::default(), false, 0).unwrap();
+    let shot = s.admit(&mut rng, &t, Request::new(OUT), 0).unwrap();
+    let mut moved = SourceParams::default();
+    moved.0[3] = 5.0f32.to_bits();
+    assert!(s.loop_set_source(h, moved));
+    let intro = s.loops().get(h).unwrap().tracks[0].primary.unwrap();
+    assert_eq!(s.sources(), [(intro, moved), (shot, SourceParams::default())]);
+}

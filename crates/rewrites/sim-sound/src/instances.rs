@@ -100,6 +100,11 @@ pub struct SoundTag {
     pub scale: i8,
     /// Tag `+12`: the promotion bank, `0xff` for none.
     pub promotion: u8,
+    /// The minimum and maximum distance: the class row's `+0x18` and
+    /// `+0x1c` when tag flag `0x400` or `0x800` sets it, else playback `+0`
+    /// and `+4` (`0x124fc0`, `0x125010`). A source can override each
+    /// ([`distances`]). Presentation only: nothing in the table reads it.
+    pub distance: [f32; 2],
 }
 
 impl SoundTag {
@@ -206,6 +211,16 @@ impl SourceParams {
     }
 }
 
+/// A sound's minimum and maximum distance (`0x124fc0`, `0x125010`): source
+/// word 0 bit 2 takes the minimum from word 13, bit 3 the maximum from word
+/// 14, else the tag's ([`SoundTag::distance`]).
+pub fn distances(tag: &SoundTag, source: &SourceParams) -> [f32; 2] {
+    let word0 = source.0[0];
+    let min = if word0 & (1 << 2) != 0 { f32::from_bits(source.0[13]) } else { tag.distance[0] };
+    let max = if word0 & (1 << 3) != 0 { f32::from_bits(source.0[14]) } else { tag.distance[1] };
+    [min, max]
+}
+
 /// `0x1251e0`'s value for a sound the phase admits itself (loop segments,
 /// detail sounds): the tag's and class's level for the source's scale. The
 /// bridge reads the inputs (the tag's curves, the class's runtime state)
@@ -287,6 +302,9 @@ pub struct Request {
     /// A looping sound's detail sound: where it plays is the host's
     /// (presentation draws from its own seed copy and reads the listener).
     pub detail: bool,
+    /// The track sound this one continues with no gap: a loop's next
+    /// segment, started on its predecessor's end tick. Presentation only.
+    pub follows: Option<Handle>,
 }
 
 impl Request {
@@ -308,6 +326,7 @@ impl Request {
             extra_98: None,
             level: 0.0,
             detail: false,
+            follows: None,
         }
     }
 }
@@ -512,6 +531,20 @@ impl Sounds {
     pub fn live(&self, handle: Handle) -> bool {
         self.instances.get(handle).is_some()
     }
+    /// Every running sound and where it plays now, in slot order: a track
+    /// sound at its loop's current source (the owner moves it,
+    /// [`Sounds::loop_set_source`]), any other at its request's. The host's
+    /// scene reads this once a frame.
+    pub fn sources(&self) -> Vec<(Handle, SourceParams)> {
+        self.instances
+            .iter()
+            .map(|(handle, i)| {
+                let looped = i.track.and_then(|(l, _)| self.loops.get(l)).map(|l| l.source);
+                (handle, looped.unwrap_or(i.source))
+            })
+            .collect()
+    }
+
     pub fn chooser(&self) -> &Chooser {
         &self.chooser
     }
@@ -572,6 +605,10 @@ impl Sounds {
                     source: instance.source,
                     looping: instance.track.is_some(),
                     detail: request.detail,
+                    level: request.level,
+                    distance: distances(&tag, &instance.source),
+                    track: instance.track,
+                    follows: request.follows,
                     tick,
                 });
                 Ok(handle)
