@@ -26,7 +26,7 @@
 
 use crate::function_eval::{self, fld_m64};
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::GuestMemory;
+use crate::memory::{GuestMemory, MemFault};
 
 use x87::abi::arith_op;
 
@@ -243,6 +243,187 @@ pub fn draw(mem: &dyn GuestMemory, mxcsr: u32, control: u16, user: u32, point: [
     Ok(Some(Sensor { centre, blips, value }))
 }
 
+/// The HUD's globals: `+0x110` whether `+0x114` holds the HUD's
+/// interface, whose `+0x64` and `+0x6c` are the blip bitmaps' tag indices.
+pub const HUD_GLOBALS: u32 = 0x004e_034c;
+/// The tag instances, `0x10` bytes each, the definition at `+8`.
+pub const TAG_INSTANCES: u32 = 0x004e_3b44;
+/// The texture cache's stamp a resident bitmap's `+0x70` is past.
+pub const CACHE_STAMP: u32 = 0x004e_6488;
+/// The byte that lets a blip draw (`0x00254560`).
+pub const BLIPS_DRAW: u32 = 0x0051_ec9a;
+/// The four stages' textures to bind (`0x0001cf50` binds those that are
+/// not the bound ones at `TEXTURES_BOUND`).
+pub const TEXTURES: u32 = 0x0051_f3d8;
+pub const TEXTURES_BOUND: u32 = 0x0051_f3c8;
+/// The blip's vertex program record (`0x0001c710`'s argument) and its
+/// three dirty bytes and its count.
+pub const BLIP_PROGRAM: u32 = 0x0051_f0f0;
+const PROGRAM_DIRTY: [u32; 3] = [0x20c, 0x2d4, 0x88];
+const PROGRAM_COUNT: u32 = 0x2d0;
+/// The bound bitmap's width and height the body writes (`i16`, widened).
+pub const BITMAP_WIDTH: u32 = 0x0048_5af4;
+pub const BITMAP_HEIGHT: u32 = 0x0048_5b04;
+/// The cull mode and the z bias the body writes before it sets them to 0.
+pub const CULL_MODE: u32 = 0x004b_8448;
+pub const Z_BIAS: u32 = 0x004b_8450;
+/// The half size factor (`0x0025457c`) and the blip's depth (`0x002546fe`).
+const HALF: u32 = 0x0045_dc0c;
+const DEPTH: u32 = 0x0045_dd40;
+
+/// The push words one blip takes: Begin, the colour, four vertices of a
+/// texture coordinate and a position, End.
+pub const BLIP_PUSH_BYTES: u32 = (2 + 5 + 4 * (2 + 5) + 2) * 4;
+
+/// One blip draw `0x00254490` as its body makes it, from its arguments
+/// (Code, `h2 disasm 0x00254490 200`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlipDraw {
+    /// `[0x0051ec9a]` is set: the body reaches its state and its quad.
+    pub draws: bool,
+    /// The bitmap's texture, for stage 0 (`[0x0051f3d8]`).
+    pub texture: u32,
+    /// The bitmap's `+4` and `+6`, widened.
+    pub width: i32,
+    pub height: i32,
+    /// The quad: the colour (register 5), the texture coordinate
+    /// (register 1) and the position (register 0) of each vertex.
+    pub vertices: crate::ui_backdrop::Fan<3>,
+    /// MXCSR after the body's SSE operations.
+    pub mxcsr: u32,
+}
+
+/// Why Rust cannot make a blip's draw as its body does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlipRefusal {
+    /// A bitmap is missing or not resident: the body asks the texture
+    /// cache (`0x0012ccf0`, `0x0012ce00`).
+    Bitmap,
+    /// Guest memory did not read, or an SSE exception is unmasked.
+    Unread,
+}
+
+/// A bitmap of the HUD's interface at `field`, as `0x002544b4`..
+/// `0x002544d6` finds it: the first bitmap of its tag.
+fn blip_bitmap(mem: &dyn GuestMemory, interface: u32, field: u32) -> Result<u32, BlipRefusal> {
+    let read = |at: u32| mem.u32(at).map_err(|_| BlipRefusal::Unread);
+    let index = read(interface.wrapping_add(field))? & 0xffff;
+    let definition = read(read(TAG_INSTANCES)?.wrapping_add(index << 4).wrapping_add(8))?;
+    if definition == 0 || read(definition.wrapping_add(0x44))? as i32 <= 0 {
+        return Err(BlipRefusal::Bitmap);
+    }
+    match read(definition.wrapping_add(0x48))? {
+        0 => Err(BlipRefusal::Bitmap),
+        bitmap => Ok(bitmap),
+    }
+}
+
+/// `0x00012360` and `0x00012310` with no call: a bitmap whose `+0x70` is
+/// past the cache's stamp gives its texture `+0x50` at once.
+fn resident(mem: &dyn GuestMemory, bitmap: u32) -> Result<u32, BlipRefusal> {
+    let read = |at: u32| mem.u32(at).map_err(|_| BlipRefusal::Unread);
+    let stamp = read(bitmap.wrapping_add(0x70))? as i32;
+    if stamp <= read(CACHE_STAMP)? as i32 {
+        return Err(BlipRefusal::Bitmap);
+    }
+    match read(bitmap.wrapping_add(0x50))? {
+        0 => Err(BlipRefusal::Bitmap),
+        texture => Ok(texture),
+    }
+}
+
+/// The draw of the blip whose call's stack is at `esp` (the return
+/// address at `[esp]`, the five arguments after it).
+pub fn blip_draw(mem: &dyn GuestMemory, esp: u32, mxcsr: u32) -> Result<BlipDraw, BlipRefusal> {
+    let read = |at: u32| mem.u32(at).map_err(|_| BlipRefusal::Unread);
+    let arg = |n: u32| read(esp.wrapping_add(4 + 4 * n));
+    let globals = read(HUD_GLOBALS)?;
+    let interface = if read(globals.wrapping_add(0x110))? != 0 { read(globals.wrapping_add(0x114))? } else { 0 };
+    if interface == 0 {
+        return Err(BlipRefusal::Bitmap);
+    }
+    let first = blip_bitmap(mem, interface, 0x64)?;
+    let second = blip_bitmap(mem, interface, 0x6c)?;
+    resident(mem, first)?;
+    resident(mem, second)?;
+    let bitmap = if arg(4)? as u8 != 0 { second } else { first };
+    let texture = resident(mem, bitmap)?;
+    let short = |at: u32| mem.u16(at).map(|v| i32::from(v as i16)).map_err(|_| BlipRefusal::Unread);
+    let (width, height) = (short(bitmap.wrapping_add(4))?, short(bitmap.wrapping_add(6))?);
+    let draws = mem.u8(BLIPS_DRAW).map_err(|_| BlipRefusal::Unread)? != 0;
+
+    let at = arg(0)?;
+    let (px, py) = (read(at)?, read(at.wrapping_add(4))?);
+    let (shade, size, colour) = (arg(1)?, arg(2)?, arg(3)?);
+    let (alpha, depth) = (read(ONE)?, read(DEPTH)?);
+    let mut sse = Sse { mxcsr };
+    let mut ops = || -> Result<_, Error> {
+        let half = sse.mul(size, mem.u32(HALF)?)?;
+        let b = sse.mul(mem.u32(colour.wrapping_add(8))?, shade)?;
+        let g = sse.mul(mem.u32(colour.wrapping_add(4))?, shade)?;
+        let r = sse.mul(mem.u32(colour)?, shade)?;
+        let left = sse.sub(px, half)?;
+        let top = sse.add(py, half)?;
+        let right = sse.add(px, half)?;
+        let bottom = sse.sub(py, half)?;
+        Ok(([r, g, b, alpha], [left, top, right, bottom]))
+    };
+    let (rgba, [left, top, right, bottom]) = ops().map_err(|_| BlipRefusal::Unread)?;
+    let f = f32::from_bits;
+    let colour = (5u8, rgba.map(f));
+    let corner = |u: f32, v: f32, x: u32, y: u32| [colour, (1u8, [u, v, 0.0, 1.0]), (0u8, [f(x), f(y), f(depth), f(depth)])];
+    Ok(BlipDraw {
+        draws,
+        texture,
+        width,
+        height,
+        vertices: [
+            corner(0.0, 0.0, left, top),
+            corner(1.0, 0.0, right, top),
+            corner(1.0, 1.0, right, bottom),
+            corner(0.0, 1.0, left, bottom),
+        ],
+        mxcsr: sse.mxcsr,
+    })
+}
+
+/// What leaving out the state setup of a blip `draw` would leave
+/// different from running it, `None` when nothing: a stage texture
+/// `0x0001cf50` would bind (`"texture"`), or the blip's vertex program
+/// marked dirty, which `0x0001c710` would select again (`"shader"`). The
+/// cull mode and z bias it sets to 0 and its deferred state commit are
+/// left as the blip before it in the same sensor call left them.
+pub fn blip_state(mem: &dyn GuestMemory, draw: &BlipDraw) -> Result<Option<&'static str>, BlipRefusal> {
+    let read = |at: u32| mem.u32(at).map_err(|_| BlipRefusal::Unread);
+    for stage in 0..4 {
+        let want = if stage == 0 { draw.texture } else { read(TEXTURES + 4 * stage)? };
+        if want != read(TEXTURES_BOUND + 4 * stage)? {
+            return Ok(Some("texture"));
+        }
+    }
+    for dirty in PROGRAM_DIRTY {
+        if mem.u8(BLIP_PROGRAM + dirty).map_err(|_| BlipRefusal::Unread)? != 0 {
+            return Ok(Some("shader"));
+        }
+    }
+    if read(CULL_MODE)? != 0 || read(Z_BIAS)? != 0 {
+        return Ok(Some("state"));
+    }
+    Ok(None)
+}
+
+/// The writes the body makes to guest memory beyond the device when its
+/// state setup changes nothing ([`blip_state`] gave `None`): the bitmap's
+/// texture and size, the program record's count, the cull mode and z bias.
+pub fn blip_writes(mem: &mut dyn GuestMemory, draw: &BlipDraw) -> Result<(), MemFault> {
+    mem.set_u32(TEXTURES, draw.texture)?;
+    mem.set_i32(BITMAP_WIDTH, draw.width)?;
+    mem.set_i32(BITMAP_HEIGHT, draw.height)?;
+    mem.set_u32(BLIP_PROGRAM + PROGRAM_COUNT, 0)?;
+    mem.set_u32(CULL_MODE, 0)?;
+    mem.set_u32(Z_BIAS, 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -379,5 +560,106 @@ mod tests {
         assert_eq!(draw(&m, MXCSR, CONTROL, 1, [0, 0]).unwrap().unwrap().blips, []);
         m.put_u32(GLOBALS + 3 * FRAME_LEN + FRAME_COUNT, (MOST_BLIPS + 1) as u32);
         assert_eq!(draw(&m, MXCSR, CONTROL, 0, [0, 0]), Err(Error::Unbounded));
+    }
+
+    /// A blip image: the HUD's interface naming two resident bitmaps
+    /// (textures `0x7100` and `0x7200`, 16 by 8 and 32 by -2), the
+    /// retail constants, the blips allowed to draw, and a call's stack at
+    /// `ESP` for a blip at (10, 20) of size 4, shade 0.5, colour
+    /// (0.5, 0.25, 1).
+    const ESP: u32 = 0x0070_0000;
+    const INTERFACE: u32 = 0x0071_0000;
+    const BITMAPS: [u32; 2] = [0x0072_0000, 0x0072_1000];
+
+    fn blip_image(pulse: bool) -> FakeGuest {
+        let mut m = FakeGuest::new();
+        m.put_u32(HUD_GLOBALS, 0x0073_0000).put_u32(0x0073_0110, 1).put_u32(0x0073_0114, INTERFACE);
+        m.put_u32(INTERFACE + 0x64, 0xe001_0002).put_u32(INTERFACE + 0x6c, 0xe002_0003);
+        m.put_u32(TAG_INSTANCES, 0x0074_0000).put_u32(CACHE_STAMP, 100);
+        for (index, (definition, bitmap)) in [(2u32, (0x0075_0000u32, BITMAPS[0])), (3, (0x0075_1000, BITMAPS[1]))] {
+            m.put_u32(0x0074_0000 + 16 * index + 8, definition);
+            m.put_u32(definition + 0x44, 1).put_u32(definition + 0x48, bitmap);
+        }
+        for (bitmap, texture, [w, h]) in [(BITMAPS[0], 0x7100, [16u16, 8]), (BITMAPS[1], 0x7200, [32, 0xfffe])] {
+            m.put_u32(bitmap + 0x70, 101).put_u32(bitmap + 0x50, texture);
+            m.put_u16(bitmap + 4, w).put_u16(bitmap + 6, h);
+        }
+        m.put_u8(BLIPS_DRAW, 1).put_f32(ONE, 1.0).put_f32(HALF, 0.5).put_f32(DEPTH, 16_777_215.0);
+        m.put_u32(ESP, 0x001a_2219).put_u32(ESP + 4, 0x0076_0000).put_f32(ESP + 8, 0.5).put_f32(ESP + 12, 4.0);
+        m.put_u32(ESP + 16, 0x0077_0000).put_u32(ESP + 20, u32::from(pulse) | 0xab00);
+        m.put_f32(0x0076_0000, 10.0).put_f32(0x0076_0004, 20.0);
+        m.put_f32(0x0077_0000, 0.5).put_f32(0x0077_0004, 0.25).put_f32(0x0077_0008, 1.0);
+        m.put_u32(TEXTURES, 0x7100).put_u32(TEXTURES_BOUND, 0x7100);
+        m.put_u32(CULL_MODE, 0).put_u32(Z_BIAS, 0).put_u32(BITMAP_WIDTH, 0).put_u32(BITMAP_HEIGHT, 0);
+        m
+    }
+
+    #[test]
+    fn a_blips_quad_is_its_bodys_corners_colour_and_texture() {
+        let m = blip_image(false);
+        let d = blip_draw(&m, ESP, MXCSR).unwrap();
+        assert!(d.draws);
+        assert_eq!((d.texture, d.width, d.height), (0x7100, 16, 8));
+        let colour = (5, [0.25, 0.125, 0.5, 1.0]);
+        let z = 16_777_215.0;
+        // Half the size about the position, y up first, in the body's order.
+        assert_eq!(d.vertices[0], [colour, (1, [0.0, 0.0, 0.0, 1.0]), (0, [8.0, 22.0, z, z])]);
+        assert_eq!(d.vertices[1], [colour, (1, [1.0, 0.0, 0.0, 1.0]), (0, [12.0, 22.0, z, z])]);
+        assert_eq!(d.vertices[2], [colour, (1, [1.0, 1.0, 0.0, 1.0]), (0, [12.0, 18.0, z, z])]);
+        assert_eq!(d.vertices[3], [colour, (1, [0.0, 1.0, 0.0, 1.0]), (0, [8.0, 18.0, z, z])]);
+        assert_eq!(blip_state(&m, &d), Ok(None));
+    }
+
+    #[test]
+    fn a_pulsing_blip_takes_the_second_bitmap_widened_and_a_held_flag_draws_nothing() {
+        let mut m = blip_image(true);
+        let d = blip_draw(&m, ESP, MXCSR).unwrap();
+        assert_eq!((d.texture, d.width, d.height), (0x7200, 32, -2));
+        // Stage 0 holds the first bitmap's texture: the setup would bind.
+        assert_eq!(blip_state(&m, &d), Ok(Some("texture")));
+        m.put_u8(BLIPS_DRAW, 0);
+        assert!(!blip_draw(&m, ESP, MXCSR).unwrap().draws);
+    }
+
+    #[test]
+    fn a_bitmap_the_cache_must_load_is_refused() {
+        // The stamp not past the cache's: the body calls the cache.
+        let mut m = blip_image(false);
+        m.put_u32(BITMAPS[1] + 0x70, 100);
+        assert_eq!(blip_draw(&m, ESP, MXCSR), Err(BlipRefusal::Bitmap));
+        let mut m = blip_image(false);
+        m.put_u32(BITMAPS[0] + 0x50, 0);
+        assert_eq!(blip_draw(&m, ESP, MXCSR), Err(BlipRefusal::Bitmap));
+        let mut m = blip_image(false);
+        m.put_u32(0x0073_0110, 0);
+        assert_eq!(blip_draw(&m, ESP, MXCSR), Err(BlipRefusal::Bitmap));
+    }
+
+    #[test]
+    fn a_dirty_program_another_stage_or_a_set_cull_mode_needs_the_setup() {
+        let m = blip_image(false);
+        let d = blip_draw(&m, ESP, MXCSR).unwrap();
+        for dirty in PROGRAM_DIRTY {
+            let mut m = blip_image(false);
+            m.put_u8(BLIP_PROGRAM + dirty, 1);
+            assert_eq!(blip_state(&m, &d), Ok(Some("shader")), "{dirty:#x}");
+        }
+        let mut m = blip_image(false);
+        m.put_u32(TEXTURES + 8, 0x9000);
+        assert_eq!(blip_state(&m, &d), Ok(Some("texture")));
+        let mut m = blip_image(false);
+        m.put_u32(CULL_MODE, 0x405);
+        assert_eq!(blip_state(&m, &d), Ok(Some("state")));
+    }
+
+    #[test]
+    fn a_left_out_setup_writes_what_the_body_writes() {
+        let mut m = blip_image(true);
+        m.put_u32(BLIP_PROGRAM + PROGRAM_COUNT, 3);
+        let d = blip_draw(&m, ESP, MXCSR).unwrap();
+        blip_writes(&mut m, &d).unwrap();
+        assert_eq!(m.u32(TEXTURES).unwrap(), 0x7200);
+        assert_eq!((m.i32(BITMAP_WIDTH).unwrap(), m.i32(BITMAP_HEIGHT).unwrap()), (32, -2));
+        assert_eq!(m.u32(BLIP_PROGRAM + PROGRAM_COUNT).unwrap(), 0);
     }
 }

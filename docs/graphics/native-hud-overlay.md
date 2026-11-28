@@ -258,7 +258,28 @@ flowchart LR
 
 Hooks (`native_hud::place_sensor`, with `place_walk`): observers before `HUD_SENSOR_DRAW`, `HUD_SENSOR_BLIP` and `HUD_SENSOR_COMPOSITE`, and after `HUD_SENSOR_DRAW`. Being observers they need no order with `h1_hud_text`'s hook on `HUD_SENSOR_DRAW`. Counters as the walk's (`native_ui_overlay_hud_walk_sensor_*`): `matched`, `proven`, `differed` with the part (`differed_point`, `differed_drawn`, `differed_blips`, `differed_composite`), `guest`, `unseen`, `read`.
 
-The fans the composite draws are the host's ([What is kept](#what-is-kept)). The sensor's target (`0x00254200`: target `0x1d` cleared, its blend states) and the blip quads (`0x00254490`) are the guest's.
+The fans the composite draws are the host's ([What is kept](#what-is-kept)), and so are the blip quads after the first of a call ([The blips](#the-blips)). The sensor's target (`0x00254200`: target `0x1d` cleared, its blend states) and each call's first blip are the guest's.
+
+### The blips
+
+A blip draw `0x00254490` binds its bitmap's texture to stage 0 (`0x0001cf50`, which binds only the stages whose texture is not the bound one), selects the blip's vertex program `0x0051f0f0` when its record is dirty (`0x0001c710`), sets the cull mode and z bias to 0, commits the deferred state and pushes one quad into the sensor's target. Between two blip calls of one `0x001a2823` the guest makes no D3D call (its loop and `0x001a2197` are arithmetic), so a blip's setup after the first changes the device only through the texture and the program record. `native_hud::blips` reads both, and where neither would change, the host draws the quad and the call returns without its body (Code, `h2 disasm 0x00254490 200`).
+
+| Part | Guest | Rust |
+|---|---|---|
+| Bitmaps | the HUD interface `[[0x004e034c] + 0x114]` (when `+0x110` is set), the first bitmap of the tags at `+0x64` and `+0x6c`; the second for a pulsing blip | `hud_sensor::blip_draw` |
+| Residency | `0x00012360`, `0x00012310`: a bitmap whose `+0x70` is past `[0x004e6488]` gives its texture `+0x50` with no call | the same test; any other bitmap keeps the body (`bitmap`) |
+| Writes | `[0x0051f3d8]` the texture, `[0x00485af4]` and `[0x00485b04]` the bitmap's `+4` and `+6`, the record's count `+0x2d0`, `[0x004b8448]` and `[0x004b8450]` | `hud_sensor::blip_writes` |
+| Quad | colour (register 5) the blip's colour times its shade, alpha `[0x0045dbc0]`; corners at the position plus and minus half the size (`[0x0045dc0c]`), y up first; coordinates 0 and 1 (register 1); depth `[0x0045dd40]`; SSE in the body's order | `BlipDraw::vertices`, drawn as a fan through the device's pushed draw (`Host::sensor_blip`) |
+
+| Rule | Why |
+|---|---|
+| The first blip of each call runs its body (`first`) | it follows the sensor's target setup |
+| A blip whose texture would bind (`texture`), whose program record is dirty (`shader`) or whose cull mode or z bias global is set (`state`) runs its body | its setup would change the device |
+| A blip the body would draw nothing for (`[0x0051ec9a]` clear) runs it, counted nowhere | the body stops before its state |
+| A blip Rust does not read (`bitmap`, `unread`), or one from a caller other than `0x001a2197`, runs its body and makes the next one first | the body may stop before its state |
+| A blip the host refuses runs its body under the host's cause | as a fan's |
+
+Counters: `scene_kept_overlay_sensor_blip_<cause>`, `native_ui_overlay_hud_walk_sensor_blip_returned`. Switch: `impl.render.native-hud-blips=off` keeps every blip on its body. Tests: `hud_sensor`'s `a_blips_quad_*`, `a_pulsing_blip_*`, `a_bitmap_the_cache_must_load_is_refused`, `a_dirty_program_*`, `a_left_out_setup_*`; `native_hud::blips`'s tests.
 
 Not built: the sensor drawn from Rust's list (its target, the blips and the fans as overlay items in slot `Hud`); the rest of the HUD render `0x0013954b` (the record's fill `0x0013992a`, then `0x0015ea50`, `0x00200462` and `0x001e6fe0` after the sensor: the messages and training); and the screen effect's draw from the scene. It is the post's transaction over the guest's execution of `0x0002d140`.
 
@@ -336,6 +357,7 @@ A text run's combiner (`Combiner::TextureAlpha`) samples coverage alone, so a co
 - That the 12 widget quads a frame `refused` counted in a 16-bot game were not `texture` too; `refused_<cause>` names them.
 - That the measure's callback sees the glyphs `shape` gives and no others (a space has none), and that `_ftol` at `0x00322b0c` truncates.
 - That a `TransferAbi::call` returned from a before hook enters `SCREEN_EFFECT` through its hooks, as the guest's own call does.
+- That a blip drawn by the host lands on the pixels its body's quad does (a fan of the same four vertices), and that the body's quad costs more than the host's pushed draw (`render.residual` of `0x00254490` before and after).
 - That retail sensor calls match (`sensor_differed` at zero), that no blip draw comes from elsewhere while the call runs, and that `0x00016a90` changes no state when `0x0013a690` is given 4 (**S**: its result is read only for an argument of 3).
 - That the navpoint, waypoint, training and indicator shaders prove: each is checked as a widget's is, and `mismatch_*` names what differs.
 - That the outline `0x0024f0fc`'s six quad calls are all the outline's (**S**).

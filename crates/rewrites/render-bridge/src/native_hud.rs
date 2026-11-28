@@ -4,6 +4,7 @@
 //! walk keeps the game's order, state setup and layout callbacks.
 
 mod backdrop;
+pub mod blips;
 pub mod definitions;
 pub mod fade;
 pub mod hud_inputs;
@@ -246,6 +247,13 @@ pub trait Host: Send + Sync {
     }
 
     fn backdrop_wash(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
+        false
+    }
+
+    /// A motion sensor blip's quad ([`blips`]) under the state the device
+    /// holds, as the push buffer's Begin, vertices and End the body would
+    /// write: true when drawn, so the body is left out.
+    fn sensor_blip(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
         false
     }
 
@@ -677,6 +685,29 @@ fn place_sensor(b: &mut Builder) {
     }).optional();
 }
 
+/// The blips' cut ([`blips`]): a blip whose setup would change nothing
+/// is the host's quad and returns without its body. The sensor's check
+/// observes the blip before this runs.
+fn place_blips(b: &mut Builder) {
+    b.raw().observe_before(&points::HUD_SENSOR_DRAW, "native_hud_blips_enter", |_| blips::edge()).optional();
+    b.raw().observe_after(&points::HUD_SENSOR_DRAW, "native_hud_blips_leave", |_| blips::edge()).optional();
+    b.raw().before(&points::HUD_SENSOR_BLIP, "native_hud_blips", |c| {
+        let rt = Arc::clone(c.ctx.runtime());
+        let mut mem = rt.memory();
+        let host = host();
+        let turn = blips::turn(&mut *mem, c.cpu.esp, c.cpu.mxcsr, |m, v| {
+            host.as_ref().is_some_and(|h| h.sensor_blip(m, v))
+        });
+        match turn {
+            blips::Turn::Guest => Ok(Flow::Continue),
+            blips::Turn::Return { mxcsr } => {
+                c.cpu.mxcsr = mxcsr;
+                Ok(Flow::Return(mem.ret(c.cpu, 20)?))
+            }
+        }
+    }).context_only().optional();
+}
+
 /// The walk's hooks ([`walk`]): Rust's selection and, once proven, its
 /// loop at the walk's entry; the guest's widget calls for the check; and
 /// each widget's draw.
@@ -859,6 +890,9 @@ impl Feature for NativeHud {
             place_definitions(b);
             place_sensor(b);
             place_strings(b);
+        }
+        if b.switches().feature("impl.render.native-hud-blips", true) {
+            place_blips(b);
         }
         b.raw().before(&HUD_QUAD_READY, "native_hud_walk_quad", |c| {
             let rt = Arc::clone(c.ctx.runtime());
