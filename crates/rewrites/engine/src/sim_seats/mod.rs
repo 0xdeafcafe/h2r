@@ -26,7 +26,23 @@
 //! (`crate::sim_physics::ORACLES`).
 
 use crate::points::{self, Point};
+use crate::sim_native::{Decline, decline};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
+
+/// `eflags`' direction flag, which a guard refuses ([`guard`]).
+pub(crate) const DIRECTION_FLAG: u32 = 1 << 10;
+/// The x87 rounding control field, which a guard refuses unless nearest.
+pub(crate) const ROUNDING: u32 = 0xc00;
+
+/// What a body's entry guard refuses: the direction flag and, with
+/// [`ROUNDING`] in `checks`, an x87 rounding mode other than nearest.
+pub(crate) fn guard(c: &CpuAbi, checks: u32) -> Option<Decline> {
+    if checks & DIRECTION_FLAG != 0 && c.eflags & DIRECTION_FLAG != 0 {
+        return Some(Decline::Direction);
+    }
+    let control = c.x87.control;
+    (checks & ROUNDING != 0 && u32::from(control) & ROUNDING != 0).then_some(Decline::Rounding { control })
+}
 
 pub mod aim;
 pub mod announce;
@@ -64,7 +80,8 @@ type Step = Result<Option<TransferAbi>, GuestFault>;
 /// and float-environment checks the original port had.
 fn observer(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Step {
     if !camera::supported(c, g) {
-        return Ok(None);
+        let why = if crate::sim_physics::observer::disjoint(c, g) { Decline::Float } else { Decline::Unported { addr: pc, what: "aliased observer spans" } };
+        return decline(pc, why);
     }
     camera::run(c, g, pc).map(Some)
 }
@@ -73,14 +90,14 @@ fn observer(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Step {
 /// buffering), so their guard is the float environment alone.
 fn shot(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Step {
     if !crate::sim_native::supported(c) {
-        return Ok(None);
+        return decline(pc, Decline::Float);
     }
     aim::shot(c, g, pc).map(Some)
 }
 
 fn params(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Step {
     if !crate::sim_native::supported(c) {
-        return Ok(None);
+        return decline(pc, Decline::Float);
     }
     aim::params(c, g, pc).map(Some)
 }
@@ -249,3 +266,43 @@ pub const SEATS: &[Seat] = &[
         run: resources::run,
     },
 ];
+
+#[cfg(test)]
+mod decline_tests {
+    use super::*;
+
+    /// A guard that refuses a seat records why, so the live seat's panic
+    /// names it rather than a bare pc.
+    #[test]
+    fn a_refused_entry_names_its_decline() {
+        let mut g = Guest::new();
+        let ready = CpuAbi::default();
+        let df = CpuAbi { eflags: ready.eflags | DIRECTION_FLAG, ..ready };
+        let mut rounding = ready;
+        rounding.x87.control |= 0x400;
+        let float = CpuAbi { mxcsr: 0, ..ready };
+        let cases: [(&Seat, CpuAbi, Decline); 5] = [
+            (&SEATS[2], df, Decline::Direction),
+            (&SEATS[2], rounding, Decline::Rounding { control: rounding.x87.control }),
+            (&SEATS[4], df, Decline::Direction),
+            (&SEATS[6], rounding, Decline::Rounding { control: rounding.x87.control }),
+            (&SEATS[9], float, Decline::Float),
+        ];
+        for (seat, cpu, why) in cases {
+            let mut c = cpu;
+            let pc = seat.point.base;
+            let _ = crate::sim_native::take_decline();
+            assert_eq!((seat.run)(&mut c, &mut g, pc), Ok(None), "{}", seat.name);
+            assert_eq!(c, cpu, "{}", seat.name);
+            assert_eq!(crate::sim_native::take_decline(), Some((pc, why)), "{}", seat.name);
+        }
+    }
+
+    #[test]
+    fn the_guarded_seats_are_the_ones_named() {
+        assert_eq!(SEATS[2].point.base, points::PLAYER_ACTION_TO_UNIT_CONTROL.base);
+        assert_eq!(SEATS[4].point.base, points::UNIT_APPLY_CONTROL.base);
+        assert_eq!(SEATS[6].point.base, points::AIM_TARGET_UPDATE.base);
+        assert_eq!(SEATS[9].point.base, points::SEAT_SHOT_AIM.base);
+    }
+}

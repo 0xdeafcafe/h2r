@@ -65,8 +65,8 @@ impl UnitControl {
 }
 
 pub fn apply(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Step {
-    if c.eflags & DIRECTION_FLAG != 0 {
-        return Ok(None);
+    if let Some(why) = super::super::guard(c, DIRECTION_FLAG) {
+        return decline(pc, why);
     }
     segment::<40, _>(
         c,

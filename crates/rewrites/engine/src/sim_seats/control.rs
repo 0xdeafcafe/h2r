@@ -5,7 +5,8 @@
 //! three distinct view directions.
 use super::leaf::{self, Leaf};
 use crate::points;
-use crate::sim_native::{Memory, plan::segment};
+use crate::sim_native::{Memory, decline, plan::segment};
+use super::{DIRECTION_FLAG, ROUNDING};
 use crate::sim_physics::{
     arithmetic, logic, pop, push,
     spatial::{finish_fpu, fp_error, load_fpu},
@@ -28,7 +29,6 @@ const MOVEMENT_BASIS: u32 = 0x150400;
 // Operand of the action's assignment of the control header. The build's
 // default comes from the mapped image, including when init was hooked.
 const ACTION_CONTROL_HEADER: u32 = 0x150720;
-const DIRECTION_FLAG: u32 = 1 << 10;
 
 fn at(base: u32, offset: u32) -> u32 {
     base.wrapping_add(offset)
@@ -193,8 +193,8 @@ fn submit(c: &mut CpuAbi, m: &mut impl Memory) -> Result<TransferAbi> {
 }
 
 pub fn action(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Step {
-    if c.eflags & DIRECTION_FLAG != 0 || c.x87.control & 0xc00 != 0 {
-        return Ok(None);
+    if let Some(why) = super::guard(c, DIRECTION_FLAG | ROUNDING) {
+        return decline(pc, why);
     }
     // An answered `c6ef0` lays its packet in the same segment as `submit`:
     // 31 block pieces and about 30 stores.

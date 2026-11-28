@@ -257,6 +257,8 @@ fn follow(c: &mut CpuAbi, g: &mut impl Memory, pc: u32) -> Transfer {
 }
 
 pub fn update(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Boundary {
-    if c.x87.control & 0xc00 != 0 { return Ok(None); }
+    if let Some(why) = super::super::guard(c, super::super::ROUNDING) {
+        return crate::sim_native::decline(pc, why);
+    }
     segment::<16, _>(c, g, pc, 0x1a4900..0x1a4bfc, UPDATE_SITES, |c, p, pc| follow(c, p, pc))
 }
