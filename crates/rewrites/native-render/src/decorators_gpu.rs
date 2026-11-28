@@ -354,7 +354,12 @@ impl MaterialGpu {
 
     /// Whether the pass's fragments draw nothing where the depth hides
     /// them under `draw`'s stencil (`gpu::depth_hides`).
+    /// A pass with a polygon offset may draw in front of the depth that
+    /// hides its bounds, so it is never culled by it.
     pub fn hidden_draws_nothing(&self, depth: wgpu::TextureFormat, draw: DrawKey) -> bool {
+        if self.program.state.depth_offset.is_some() {
+            return false;
+        }
         let stencil = crate::fog_gpu::layer_stencil(&draw.stencil, depth);
         let (_, (_, compare)) = pipeline_state(Some(&self.program.state), None);
         crate::gpu::depth_hides(compare, &stencil)

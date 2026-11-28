@@ -142,7 +142,6 @@ pub fn decorator_look(
     look.stage_states = applied.stage_states;
     let state = geometry_pass_state(&applied.render_states)
         .and_then(PassState::device_stencil_only)
-        .and_then(PassState::no_depth_offset)
         .map_err(|r| format!("render states: {r:?}"))?;
     let (microcode, semantics) =
         program(look.vertex_shader).ok_or("the vrtx has no classification-1 program")?;
@@ -265,6 +264,9 @@ pub fn compile(look: &DecoratorLook, stream: &[StreamElement]) -> Result<Decorat
         },
         two_sided,
     )?;
+    // The pass's polygon offset is its fragments' (`frame_pixel` keeps it).
+    let mut pixel = t.pixel;
+    crate::pass_state::DepthOffset::apply(look.state.depth_offset, &mut pixel);
     Ok(DecoratorProgram {
         wgsl: t.wgsl,
         stages: pass.textures,
@@ -272,7 +274,7 @@ pub fn compile(look: &DecoratorLook, stream: &[StreamElement]) -> Result<Decorat
         dims: t.dims,
         signed: t.signed,
         vertex: t.vertex,
-        pixel: t.pixel,
+        pixel,
         state: look.state,
         declaration,
         inherits_cull: look.inherits_cull,
@@ -482,6 +484,25 @@ pub(crate) mod tests {
         );
         assert!(p.wgsl.contains("vs_main") && p.wgsl.contains("fs_main"));
         assert_eq!(p.state, state());
+    }
+
+    #[test]
+    fn a_pass_draws_its_polygon_offset_in_its_fragments() {
+        let mut d = decorator(None);
+        d.state.depth_offset = Some(crate::pass_state::DepthOffset { units: -1.0, slope: 2.0 });
+        let p = compile(&d, &stream()).unwrap();
+        assert_eq!((p.pixel.depth[1], p.pixel.depth[2]), (-1.0, 2.0));
+        let view = ViewInputs {
+            constants: [[0.0; 4]; VIEW_CONSTANTS],
+            guest_size: (8, 8),
+            size: (8, 8),
+            z_scale: 16_777_215.0,
+            w_clip: None,
+        };
+        let (_, pixel) = uniforms(&p, &view, [0.0; 4]);
+        assert_eq!((pixel.depth[1], pixel.depth[2]), (-1.0, 2.0), "over the frame's depth scale");
+        let plain = compile(&decorator(None), &stream()).unwrap();
+        assert_eq!((plain.pixel.depth[1], plain.pixel.depth[2]), (0.0, 0.0));
     }
 
     #[test]
