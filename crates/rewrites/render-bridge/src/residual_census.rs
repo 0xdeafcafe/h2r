@@ -215,7 +215,10 @@ pub enum Status {
     /// `scene_kept_<site><layer>_<kind>_<cause>` count
     /// (`native_layers::layer_return`). Its work here is only those items'.
     /// The present is kept the same way: a published frame returns without
-    /// its body, a kept one (`publish_kept_<cause>`) runs it.
+    /// its body, a kept one (`publish_kept_<cause>`) runs it. So are the
+    /// frame's own rows (`views`, `outside_view`, `frame_loop`): their view
+    /// setup and view end run the body only when refused
+    /// (`scene_kept_view_setup_<cause>`, `scene_kept_view_end_<cause>`).
     Kept,
     /// Still drawn by the guest front-end through `d3d`.
     D3d,
@@ -416,27 +419,31 @@ pub const REGISTRY: &[Row] = &[
     // these rows their entries were `unknown` inside the frame step and
     // `outside_render` in the frame loops outside it.
     //
-    // `render_views`' begin-frame setup and its loop over the views.
+    // `render_views`' begin-frame setup and its loop over the views. Its
+    // only D3D was the view setup and view end (`render_bridge::view_setup`):
+    // a setup or end the cut refuses runs the body, counted
+    // `scene_kept_view_setup_<cause>`, so its work here is only those.
     Row {
         name: "views",
         entry: 0x0002_b5d0,
-        status: Status::D3d,
+        status: Status::Kept,
         slot: "opaque",
     },
     // The frame outside a game view's own setup (the target, the clear,
     // the viewport through `0x0002c8a0`), from the frame step and the map
-    // load's two frame loops.
+    // load's two frame loops: the view setup's, kept as `views` is.
     Row {
         name: "outside_view",
         entry: 0x0022_32a0,
-        status: Status::D3d,
+        status: Status::Kept,
         slot: "outside",
     },
-    // A frame loop outside the frame step: its view `0x0002ca00`.
+    // A frame loop outside the frame step: its view `0x0002ca00`'s setup
+    // and end, kept as `views` is.
     Row {
         name: "frame_loop",
         entry: 0x0012_b6f0,
-        status: Status::D3d,
+        status: Status::Kept,
         slot: "outside",
     },
     // The present: a published frame returns without its body
@@ -1545,7 +1552,7 @@ mod tests {
         assert!(!p.contains_key(&Producer::OutsideRender), "nothing of the loop is outside the render");
         assert_eq!(present.status(), Status::Kept);
         for name in ["views", "outside_view", "frame_loop"] {
-            assert_eq!(producer(name).status(), Status::D3d, "{name}");
+            assert_eq!(producer(name).status(), Status::Kept, "{name}: the view setup's refusals only");
         }
     }
 
@@ -1647,7 +1654,7 @@ mod tests {
                 r.status,
                 if r.name == "object_shadows" {
                     Status::Native
-                } else if r.name == "present" {
+                } else if matches!(r.name, "present" | "views" | "outside_view" | "frame_loop") {
                     Status::Kept
                 } else if matches!(
                     r.name,
