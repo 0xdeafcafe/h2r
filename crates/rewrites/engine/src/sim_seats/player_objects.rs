@@ -51,12 +51,6 @@ fn at(p: u32, n: u32) -> u32 {
     p.wrapping_add(n)
 }
 
-/// `[[OBJECTS + 44] + (handle & ffff) * 12 + 8]`, with `ebx` the pool.
-fn object(g: &impl Memory, pool: u32, handle: u32) -> Result<u32> {
-    let table = g.u32(at(pool, 0x44))?;
-    g.u32(at(table, (handle & 0xffff).wrapping_mul(12).wrapping_add(8)))
-}
-
 /// `add esp, 40h; ret 4` at `1509da`.
 fn leave(c: &mut CpuAbi, g: &impl Memory) -> Result<TransferAbi> {
     c.esp = arithmetic(c, c.esp, FRAME, false);
