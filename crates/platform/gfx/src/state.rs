@@ -208,7 +208,7 @@ xbox_enum! {
         Disabled = 0,
         /// Z-buffering.
         Z = 1,
-        /// W-buffering (`D3DZB_USEW`). Approximated with Z here; `d3d::nv2a`
+        /// W-buffering (`D3DZB_USEW`). Approximated with Z here; the guest-program translator
         /// has translated vertex programs store w (docs/graphics/shaders.md).
         W = 2,
     }

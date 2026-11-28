@@ -80,7 +80,7 @@ impl PixelShaderDef {
     }
 
     /// The structure from its 60 dwords, as [`from_bytes`](Self::from_bytes)
-    /// reads them (without the byte round trip or an allocation: the d3d
+    /// reads them (without the byte round trip or an allocation: the guest
     /// judge builds one per draw).
     pub fn from_words(w: &[u32; PSDEF_SIZE / 4]) -> Self {
         let arr = |at: usize| -> [u32; 8] { std::array::from_fn(|i| w[at + i]) };

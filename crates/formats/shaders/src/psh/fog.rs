@@ -24,7 +24,7 @@
 //! factor, never the colour's alpha.
 //!
 //! The formulas are the ones xemu's `glsl/vsh.c` evaluates and match the
-//! parameters D3D derives (see `d3d::nv2a::d3d_fog`), which give D3D's
+//! parameters D3D derives (see `gfx::guest_program::d3d_fog`), which give D3D's
 //! `(end − d)/(end − start)`, `e^(−density·d)` and `e^(−(density·d)²)`.
 //! Two choices here are not settled by hardware evidence in this
 //! repository:

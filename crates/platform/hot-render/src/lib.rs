@@ -5,7 +5,7 @@
 //!
 //! * **Overrides.** A directory of WGSL files named after the translated
 //!   program they replace (`<program id, 16 hex digits>[_note].wgsl`; the
-//!   id is `d3d::pipeline_store::program_id`, the same one the pipeline
+//!   id is `gfx::pipeline_store::program_id`, the same one the pipeline
 //!   cache records). [`Hub::reload`] reads them; [`watch`] does it when
 //!   the directory changes. The shader provider polls [`Hub::generation`]
 //!   once a frame and, when it moved, swaps each program's module for its

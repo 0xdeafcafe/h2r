@@ -66,29 +66,7 @@ impl<B: Backend> Device<B> {
 }
 
 #[cfg(feature = "gpu")]
-fn is_perspective(rows: &[[f32; 4]]) -> bool {
-    let m = std::array::from_fn(|i| rows[i].map(f64::from));
-    crate::clip_space::camera::Persp::split(&m).is_some()
-}
-
-/// Widen the lens of a captured perspective matrix, leaving orthographic
-/// matrices intact: a `factor` below 1 scales the horizontal row, one above
-/// 1 scales the vertical row by its inverse (`canvas_fit::Lens`).
-#[cfg(feature = "gpu")]
-pub fn widen_projection_rows(rows: &mut [[f32; 4]], factor: f32) -> bool {
-    if factor == 1.0
-        || !factor.is_finite()
-        || factor <= 0.0
-        || rows.len() != 4
-        || !is_perspective(rows)
-    {
-        return false;
-    }
-    let (x, y) = (canvas_fit::horizontal_term(factor), canvas_fit::vertical_term(factor));
-    rows[0] = rows[0].map(|v| v * x);
-    rows[1] = rows[1].map(|v| v * y);
-    true
-}
+pub use gfx::guest_program::{is_perspective, widen_projection_rows};
 
 #[cfg(feature = "gpu")]
 impl DisplayProjection {
@@ -97,6 +75,7 @@ impl DisplayProjection {
             return None;
         };
         use crate::clip_space::epilogue::Position;
+        use crate::shader::MicrocodeClip;
         let row = match microcode.clip_position() {
             Position::Rows(row) | Position::FarPlaneRows(row) => row,
             Position::Fixed | Position::Unknown => return None,
@@ -159,6 +138,7 @@ impl DisplayProjection {
 #[cfg(all(test, feature = "gpu"))]
 mod tests {
     use super::*;
+    use crate::shader::MicrocodeClip;
 
     #[test]
     fn immutable_capture_widens_only_the_perspective_program_on_a_scene_surface() {

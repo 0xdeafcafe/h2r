@@ -11,6 +11,12 @@ use gfx::{Clear, D3DFormat};
 
 use gfx::texture::TextureKind;
 
+pub use gfx::external::{
+    CachedBytes, CachedIndices, IndexData, PixelRect, StreamBytes, StreamData, TextureInfo, UiFit,
+};
+#[cfg(feature = "gpu")]
+pub use gfx::external::{ExternalAttachments, ExternalColor, SampledLevel};
+
 use crate::shader::ShaderInputs;
 use crate::state::{DrawState, StageExtras, StateWords};
 
@@ -37,222 +43,6 @@ pub struct RenderExtents {
 
 /// A display surface's extent and its tightly packed BGRA8 pixels.
 pub type DisplaySurfacePixels = ((u32, u32), Vec<u8>);
-
-/// A bound texture, as its guest header describes it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TextureInfo {
-    /// Texture header address.
-    pub header: u32,
-    /// Palette header (P8 only, else 0).
-    pub palette: u32,
-    /// Format.
-    pub format: D3DFormat,
-    /// 2D, cube or volume.
-    pub kind: TextureKind,
-    /// Base width.
-    pub width: u32,
-    /// Base height.
-    pub height: u32,
-    /// Base depth.
-    pub depth: u32,
-    /// Mip levels.
-    pub levels: u32,
-}
-
-/// One vertex stream, already read out of guest memory.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StreamBytes {
-    /// Bytes, first vertex first.
-    pub data: StreamData,
-    /// Stride in bytes.
-    pub stride: u32,
-}
-
-/// A stream's bytes: a copy made for this draw, or a shared snapshot from
-/// the device's vertex cache (`docs/graphics/d3d.md`, "Vertex cache"). Both read as
-/// `[u8]`, and compare by their bytes.
-#[derive(Clone)]
-pub enum StreamData {
-    /// Copied for this draw (the buffer goes back to the device's pool).
-    Owned(Vec<u8>),
-    /// Guest bytes no store has touched since they were read: the same
-    /// snapshot for every draw of the range until it is written.
-    Cached(CachedBytes),
-}
-
-/// A vertex cache snapshot. `id` names these exact bytes: a refill of the
-/// same guest range gets a new one, so a backend may keep a host copy (a
-/// GPU buffer) per id and never check it again.
-#[derive(Clone, Debug)]
-pub struct CachedBytes {
-    /// Unique per snapshot, never reused.
-    pub id: u64,
-    /// The bytes.
-    pub bytes: std::sync::Arc<[u8]>,
-}
-
-impl CachedBytes {
-    /// An immutable derived stream with its own GPU cache identity.
-    pub fn derived(bytes: Vec<u8>) -> Self {
-        Self { id: crate::vertex_cache::next_snapshot_id(), bytes: bytes.into() }
-    }
-}
-
-impl StreamData {
-    /// The cache snapshot's id, if this is one.
-    pub fn cache_id(&self) -> Option<u64> {
-        match self {
-            Self::Owned(_) => None,
-            Self::Cached(c) => Some(c.id),
-        }
-    }
-
-    /// Heap capacity a pool would keep (`0` for a shared snapshot).
-    pub fn capacity(&self) -> usize {
-        match self {
-            Self::Owned(v) => v.capacity(),
-            Self::Cached(_) => 0,
-        }
-    }
-
-    /// The copied buffer back, for reuse; `None` for a shared snapshot.
-    pub fn into_owned_buffer(self) -> Option<Vec<u8>> {
-        match self {
-            Self::Owned(v) => Some(v),
-            Self::Cached(_) => None,
-        }
-    }
-}
-
-impl Default for StreamData {
-    fn default() -> Self {
-        Self::Owned(Vec::new())
-    }
-}
-
-impl std::ops::Deref for StreamData {
-    type Target = [u8];
-    fn deref(&self) -> &[u8] {
-        match self {
-            Self::Owned(v) => v,
-            Self::Cached(c) => &c.bytes,
-        }
-    }
-}
-
-impl AsRef<[u8]> for StreamData {
-    fn as_ref(&self) -> &[u8] {
-        self
-    }
-}
-
-impl From<Vec<u8>> for StreamData {
-    fn from(v: Vec<u8>) -> Self {
-        Self::Owned(v)
-    }
-}
-
-impl PartialEq for StreamData {
-    fn eq(&self, other: &Self) -> bool {
-        **self == **other
-    }
-}
-
-impl Eq for StreamData {}
-
-impl PartialEq<Vec<u8>> for StreamData {
-    fn eq(&self, other: &Vec<u8>) -> bool {
-        **self == **other
-    }
-}
-
-impl PartialEq<[u8]> for StreamData {
-    fn eq(&self, other: &[u8]) -> bool {
-        **self == *other
-    }
-}
-
-impl std::fmt::Debug for StreamData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // Same output either way, so dumps of a draw do not depend on
-        // whether its bytes came from the cache.
-        std::fmt::Debug::fmt(&**self, f)
-    }
-}
-
-/// A draw's index list, rebased onto its vertex window: built for this
-/// draw, or a shared snapshot from the device's index cache. Reads as
-/// `[u32]` and compares by its values.
-#[derive(Clone)]
-pub enum IndexData {
-    /// Built for this draw.
-    Owned(Vec<u32>),
-    /// A guest index list no store has touched since it was read.
-    Cached(CachedIndices),
-}
-
-/// An index cache snapshot: the list's smallest and largest index and the
-/// list rebased by the smallest. `id` names these exact values (as for
-/// [`CachedBytes`]).
-#[derive(Clone, Debug)]
-pub struct CachedIndices {
-    /// Unique per snapshot, never reused.
-    pub id: u64,
-    /// Smallest guest index.
-    pub lo: u16,
-    /// Largest guest index.
-    pub hi: u16,
-    /// Each guest index minus `lo`.
-    pub rebased: std::sync::Arc<[u32]>,
-}
-
-impl CachedIndices {
-    /// An immutable derived index list with its own GPU cache identity:
-    /// `rebased` is each index minus `lo`, the largest index `hi`.
-    pub fn derived(lo: u16, hi: u16, rebased: Vec<u32>) -> Self {
-        Self { id: crate::vertex_cache::next_snapshot_id(), lo, hi, rebased: rebased.into() }
-    }
-}
-
-impl IndexData {
-    /// The cache snapshot's id, if this is one.
-    pub fn cache_id(&self) -> Option<u64> {
-        match self {
-            Self::Owned(_) => None,
-            Self::Cached(c) => Some(c.id),
-        }
-    }
-}
-
-impl std::ops::Deref for IndexData {
-    type Target = [u32];
-    fn deref(&self) -> &[u32] {
-        match self {
-            Self::Owned(v) => v,
-            Self::Cached(c) => &c.rebased,
-        }
-    }
-}
-
-impl From<Vec<u32>> for IndexData {
-    fn from(v: Vec<u32>) -> Self {
-        Self::Owned(v)
-    }
-}
-
-impl PartialEq for IndexData {
-    fn eq(&self, other: &Self) -> bool {
-        **self == **other
-    }
-}
-
-impl Eq for IndexData {}
-
-impl std::fmt::Debug for IndexData {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Debug::fmt(&**self, f)
-    }
-}
 
 /// Geometry in the vertex window selected by one complete part.
 pub struct IndexedStreams {
@@ -502,10 +292,7 @@ pub struct DepthClip {
     pub w_buffered: Option<bool>,
 }
 
-/// How many vertex constants [`ExternalPass::view_constants`] gives: the
-/// per-view block the game uploads before a view's draws
-/// (docs/graphics/native-world.md, "What a world pass reads").
-pub const VIEW_CONSTANTS: usize = 18;
+pub use gfx::external::VIEW_CONSTANTS;
 
 #[cfg(feature = "gpu")]
 /// What an [`ExternalPass`] draws into.
@@ -584,15 +371,6 @@ pub struct ExternalSlot {
     pub written: bool,
 }
 
-#[cfg(feature = "gpu")]
-pub struct ExternalColor {
-    pub guest_size: (u32, u32),
-    pub attachment: wgpu::TextureView,
-    pub sample: wgpu::TextureView,
-    pub format: wgpu::TextureFormat,
-    pub size: (u32, u32),
-}
-
 #[derive(Clone, Debug)]
 pub struct ExternalPlan {
     pub stage: timeline::native::Stage,
@@ -646,49 +424,6 @@ impl<S> ExternalSurfaces<S> {
 pub enum ExternalCopies<T = Vec<ExternalAttachments>> {
     Ready(T),
     Missing(TargetCopy),
-}
-
-/// GPU handles pinned for a complete prepare/record transaction.
-#[cfg(feature = "gpu")]
-pub struct ExternalAttachments {
-    pub targets: (gfx::surface::SurfaceId, gfx::surface::SurfaceId),
-    pub uploads: gfx::ring::SubmissionUploads,
-    pub device: wgpu::Device,
-    pub queue: wgpu::Queue,
-    pub color: wgpu::TextureView,
-    pub color_format: wgpu::TextureFormat,
-    pub depth: wgpu::TextureView,
-    pub depth_format: wgpu::TextureFormat,
-    pub size: (u32, u32),
-    pub sampled: Vec<Option<SampledLevel>>,
-    pub slots: Vec<Option<ExternalColor>>,
-    pub stages: [Option<wgpu::TextureView>; 4],
-    /// The active scaled policy requires just the display recording.
-    pub(crate) single_display: bool,
-    /// Lightmap arm permitted for this physical target. An isolated
-    /// display copy or a private capture may select reconstructed pages.
-    pub lighting: crate::Lighting,
-    pub copy: TargetCopy,
-}
-
-#[cfg(feature = "gpu")]
-impl ExternalAttachments {
-    fn target<'a>(
-        &'a self,
-        request: ExternalPassRequest,
-        encoder: &'a mut wgpu::CommandEncoder,
-        on_submit: Option<&'a mut Vec<Box<dyn FnOnce() + Send>>>,
-    ) -> ExternalTarget<'a> {
-        ExternalTarget {
-            device: &self.device, queue: &self.queue, encoder, color: &self.color, color_format: self.color_format,
-            depth: &self.depth, depth_format: self.depth_format, viewport: external_viewport(&request, self.size),
-            display_projection_factor: request.display_projection_factor,
-            z_scale: request.z_scale, guest_size: request.surface_size, size: self.size, sampled: &self.sampled,
-            uploads: &self.uploads, slots: &self.slots, stages: self.stages.each_ref().map(Option::as_ref), copy: self.copy,
-            lighting: self.lighting,
-            on_submit,
-        }
-    }
 }
 
 /// Sealed commands for a single physical target. Only complete recordings can be committed.
@@ -918,7 +653,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
         } else {
             let scope = check_recording.then(|| target.device.push_error_scope(wgpu::ErrorFilter::Validation));
             let mut encoder = target.device.create_command_encoder(&Default::default());
-            let ready = pass.prepare_copy(&target.target(request, &mut encoder, None)).is_ok();
+            let ready = pass.prepare_copy(&attachments_target(target, request, &mut encoder, None)).is_ok();
             if !scope.is_none_or(|scope| validated(scope.pop())) { cause = "prepare_copy validation".into(); Err(Metric::RefusedValidation) }
             else if !ready { cause = "prepare_copy refused".into(); Err(Metric::RefusedInputs) }
             else { Ok(Prepared::Commands(encoder)) }
@@ -955,7 +690,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
             Prepared::Encoded(encoded) => (encoded.ranges, ExternalCommands::Encoded(encoded), true),
             Prepared::Commands(mut encoder) => {
                 let scope = check_recording.then(|| target.device.push_error_scope(wgpu::ErrorFilter::Validation));
-                let bundles = pass.record_bundles(&mut target.target(request, &mut encoder, Some(&mut on_submit)));
+                let bundles = pass.record_bundles(&mut attachments_target(target, request, &mut encoder, Some(&mut on_submit)));
                 let (ranges, commands) = match bundles {
                     Some(draws) => {
                         // Bundle attachment compatibility is checked at execution.
@@ -970,7 +705,7 @@ pub(crate) fn prepare_external_recordings<T: AsRef<[ExternalAttachments]>>(
                         })
                     }
                     None => {
-                        let ranges = pass.record_ranges(target.target(request, &mut encoder, Some(&mut on_submit)));
+                        let ranges = pass.record_ranges(attachments_target(target, request, &mut encoder, Some(&mut on_submit)));
                         (ranges, ExternalCommands::Standalone(encoder.finish()))
                     }
                 };
@@ -1043,48 +778,32 @@ pub(crate) fn admit_draw(
     candidate
 }
 
-#[cfg(feature = "gpu")]
-/// A render-to-texture level an [`ExternalPass`] samples
-/// (`ExternalTarget::sampled`).
-#[derive(Clone, Debug)]
-pub struct SampledLevel {
-    pub view: wgpu::TextureView,
-    /// Its size in this copy's texels.
-    pub size: (u32, u32),
-}
-
-/// Where and how an [`ExternalPass`] runs, in guest terms.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct ExternalPassRequest {
-    /// The viewport `(x, y, width, height)` in guest pixels of targets
-    /// whose guest size is `surface_size`; a scaled backend scales it.
-    pub rect: (u32, u32, u32, u32),
-    pub surface_size: (u32, u32),
-    pub z_scale: f32,
-    pub display_projection_factor: f32,
-}
-
-impl ExternalPassRequest {
-    pub fn projection_factor(&self, copy: TargetCopy) -> f32 {
-        if copy == TargetCopy::Display { self.display_projection_factor } else { 1.0 }
-    }
-
-    #[cfg(feature = "gpu")]
-    pub fn view_constants(&self, copy: TargetCopy, mut c: [[f32; 4]; VIEW_CONSTANTS]) -> [[f32; 4]; VIEW_CONSTANTS] {
-        crate::device::widen_projection_rows(&mut c[..4], self.projection_factor(copy));
-        c
-    }
-}
+pub use gfx::external::ExternalPassRequest;
 
 /// The viewport of `request` in a `texels`-sized target: `[x, y, w, h]`.
 pub fn external_viewport(request: &ExternalPassRequest, texels: (u32, u32)) -> [f32; 4] {
-    let Some(scale) = gfx::raster::RenderScale::between(request.surface_size, texels) else {
-        return [0.0; 4];
-    };
-    let (x, y, w, h) = request.rect;
-    scale.rect(x, y, w, h).map(|n| n as f32)
+    gfx::external::external_viewport(request.rect, request.surface_size, texels)
 }
 
+/// What `request` draws into on `attachments`.
+#[cfg(feature = "gpu")]
+fn attachments_target<'a>(
+    attachments: &'a ExternalAttachments,
+    request: ExternalPassRequest,
+    encoder: &'a mut wgpu::CommandEncoder,
+    on_submit: Option<&'a mut Vec<Box<dyn FnOnce() + Send>>>,
+) -> ExternalTarget<'a> {
+    let this = attachments;
+    ExternalTarget {
+        device: &this.device, queue: &this.queue, encoder, color: &this.color, color_format: this.color_format,
+        depth: &this.depth, depth_format: this.depth_format, viewport: external_viewport(&request, this.size),
+        display_projection_factor: request.display_projection_factor,
+        z_scale: request.z_scale, guest_size: request.surface_size, size: this.size, sampled: &this.sampled,
+        uploads: &this.uploads, slots: &this.slots, stages: this.stages.each_ref().map(Option::as_ref), copy: this.copy,
+        lighting: this.lighting,
+        on_submit,
+    }
+}
 /// `D3DVIEWPORT8`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Viewport {
@@ -1100,124 +819,6 @@ pub struct Viewport {
     pub min_z: f32,
     /// Far depth.
     pub max_z: f32,
-}
-
-/// A rectangle in target pixels, `[x, x + width) x [y, y + height)`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub struct PixelRect {
-    /// Left edge.
-    pub x: u32,
-    /// Top edge.
-    pub y: u32,
-    /// Width.
-    pub width: u32,
-    /// Height.
-    pub height: u32,
-}
-
-impl PixelRect {
-    /// Reproject a perspective draw's guest scissor around its viewport
-    /// centre. A bound already clipped to the viewport remains there: its
-    /// original projected edge may have been outside the retail frame.
-    pub fn projected_x(self, viewport: (u32, u32, u32, u32), factor: f32) -> Self {
-        if factor == 1.0 || self.width == 0 { return self; }
-        let (left, _, width, _) = viewport;
-        let right = left.saturating_add(width);
-        let centre = f64::from(left) + f64::from(width) * 0.5;
-        let edge = |x| centre + (f64::from(x) - centre) * f64::from(factor);
-        let end = self.x.saturating_add(self.width);
-        let x = if self.x <= left { left } else { (edge(self.x).floor() as u32).clamp(left, right) };
-        let end = if end >= right { right } else { (edge(end).ceil() as u32).clamp(left, right) };
-        Self { x, width: end.saturating_sub(x), ..self }
-    }
-
-    /// [`PixelRect::projected_x`] on the vertical axis, for a `factor` above
-    /// 1 (the vertical lens grows by its inverse).
-    pub fn projected_y(self, viewport: (u32, u32, u32, u32), factor: f32) -> Self {
-        if factor == 1.0 || self.height == 0 { return self; }
-        let (_, top, _, height) = viewport;
-        let bottom = top.saturating_add(height);
-        let centre = f64::from(top) + f64::from(height) * 0.5;
-        let edge = |y| centre + (f64::from(y) - centre) / f64::from(factor);
-        let end = self.y.saturating_add(self.height);
-        let y = if self.y <= top { top } else { (edge(self.y).floor() as u32).clamp(top, bottom) };
-        let end = if end >= bottom { bottom } else { (edge(end).ceil() as u32).clamp(top, bottom) };
-        Self { y, height: end.saturating_sub(y), ..self }
-    }
-
-    /// Whether this is the whole `w x h` target.
-    pub fn is_whole(&self, w: u32, h: u32) -> bool {
-        self.x == 0 && self.y == 0 && self.width == w && self.height == h
-    }
-}
-
-/// Affine placement in the guest window, captured while a UI or projected
-/// sprite producer owns the draw.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct UiFit {
-    /// x' = x * sx + ox, y' = y * sy + oy, before the host raster shift.
-    pub transform: [f32; 4],
-    // A flare moves in its viewport. UI widgets carry a local scissor.
-    fit_scissor: bool,
-    /// Input register carrying a second copy of the guest window coordinates.
-    pub(crate) screen_input: Option<u8>,
-}
-
-impl UiFit {
-    pub const IDENTITY: Self = Self { transform: [1.0, 1.0, 0.0, 0.0], fit_scissor: true, screen_input: None };
-
-    /// A fit from a placement in guest window units
-    /// (`render_bridge::ui_layout`'s rule): x' = x*sx + ox, y' = y*sy + oy,
-    /// scissors fitted with it.
-    pub fn from_transform(transform: [f32; 4]) -> Self {
-        Self { transform, fit_scissor: true, screen_input: None }
-    }
-
-    /// Fit guest pixels uniformly on the output, about a pivot in guest
-    /// window coordinates. Each player's viewport has its own pivot.
-    pub fn about(output: (u32, u32), pivot: [f32; 2]) -> Option<Self> {
-        Self::from_pixel_ratio(canvas_fit::stretch_ratio(output)?.recip(), pivot)
-    }
-
-    /// Guest pixel width/height divided by displayed pixel width/height.
-    /// For anamorphic Xbox artwork the numerator already includes its lens.
-    pub fn from_pixel_ratio(ratio: f32, pivot: [f32; 2]) -> Option<Self> {
-        canvas_fit::fit_about(ratio, pivot).map(Self::from_transform)
-    }
-
-    /// A CPU-projected sprite or query retains its player's scissor.
-    pub fn projected_sprite(scale: f32, offset: f32) -> Self {
-        Self { transform: [scale, 1.0, offset, 0.0], fit_scissor: false, screen_input: None }
-    }
-
-    /// Also fit this vertex register before the guest shader uses it for a lookup.
-    pub fn with_screen_input(self, register: u8) -> Self {
-        Self { screen_input: Some(register), ..self }
-    }
-
-    pub(crate) fn applies_to_frame_sample(self) -> bool {
-        !self.fit_scissor
-    }
-
-    /// Fit a scissor into the box. An edge on the canvas boundary (0 or the
-    /// 640x480 far side) of a shrunk axis stays on the display boundary, so a
-    /// clip that is the whole canvas spans the whole display; interior edges
-    /// are fitted.
-    pub fn map_rect(&self, r: PixelRect) -> PixelRect {
-        if !self.fit_scissor { return r; }
-        let [sx, sy, ox, oy] = self.transform;
-        let axis = |s: f32, o: f32, size: u32, start: u32, len: u32| {
-            let end = start.saturating_add(len);
-            let edge = |e: u32| {
-                if s < 1.0 && (e == 0 || e == size) { e } else { (e as f32 * s + o).round() as u32 }
-            };
-            let lo = edge(start);
-            (lo, edge(end).saturating_sub(lo))
-        };
-        let (x, width) = axis(sx, ox, 640, r.x, r.width);
-        let (y, height) = axis(sy, oy, 480, r.y, r.height);
-        PixelRect { x, y, width, height }
-    }
 }
 
 /// Colour channels a clear writes (`D3DCLEAR_TARGET_R/G/B/A`, Xbox bits

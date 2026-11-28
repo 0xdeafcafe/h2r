@@ -7,10 +7,10 @@
 //! *keys*, not compiled code: the NV2A program a pipeline runs (vertex
 //! microcode or the synthesized pre-transformed program, the combiner
 //! program and the code-changing options) and its translated fixed-function
-//! state ([`gfx::pipeline::PipelineKey`]). On startup, and when a map
-//! loads, [`Nv2aShaders`](crate::nv2a::Nv2aShaders) translates a bounded
+//! state ([`crate::pipeline::PipelineKey`]). On startup, and when a map
+//! loads, the guest-program translator translates a bounded
 //! set of the recorded programs ([`select`]) on a thread of its own and
-//! queues their pipelines on gfx's compile workers ([`gfx::compile`]),
+//! queues their pipelines on gfx's compile workers ([`crate::compile`]),
 //! behind any a draw is waiting for.
 //!
 //! The file is JSON lines, appended as new pipelines show up, so several
@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use gfx::pipeline::PipelineKey;
+use crate::pipeline::PipelineKey;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -397,7 +397,7 @@ impl PipelineStore {
             match rewrite(path, &lines, &parsed.keep) {
                 Ok(()) => {
                     eprintln!(
-                        "d3d: pipeline cache {}: compacted {} lines to {}",
+                        "gfx: pipeline cache {}: compacted {} lines to {}",
                         path.display(),
                         parsed.lines,
                         parsed.keep.len()
@@ -405,7 +405,7 @@ impl PipelineStore {
                     torn_tail = false;
                 }
                 Err(e) => eprintln!(
-                    "d3d: pipeline cache {}: compacting: {e}; left as it is",
+                    "gfx: pipeline cache {}: compacting: {e}; left as it is",
                     path.display()
                 ),
             }
@@ -422,7 +422,7 @@ impl PipelineStore {
                     .append(true)
                     .open(path)
             })
-            .map_err(|e| eprintln!("d3d: pipeline cache {}: {e}; not recording", path.display()))
+            .map_err(|e| eprintln!("gfx: pipeline cache {}: {e}; not recording", path.display()))
             .ok();
         let store = Self {
             path: path.to_path_buf(),
@@ -459,7 +459,7 @@ impl PipelineStore {
                 Ok(()) => self.torn_tail = false,
                 Err(e) => {
                     eprintln!(
-                        "d3d: pipeline cache {}: {e}; not recording",
+                        "gfx: pipeline cache {}: {e}; not recording",
                         self.path.display()
                     );
                     self.file = None;
@@ -528,10 +528,10 @@ impl PipelineStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gfx::pipeline::{ShaderId, TargetFormats};
-    use gfx::state::RenderState;
-    use gfx::translate::Capabilities;
-    use gfx::vertex::{PrimitiveType, VertexLayout, fvf};
+    use crate::pipeline::{ShaderId, TargetFormats};
+    use crate::state::RenderState;
+    use crate::translate::Capabilities;
+    use crate::vertex::{PrimitiveType, VertexLayout, fvf};
 
     const V: u32 = 7;
 
@@ -556,7 +556,7 @@ mod tests {
 
     fn scratch(name: &str) -> PathBuf {
         let p = std::env::temp_dir()
-            .join(format!("d3d-pipeline-store-{}-{name}", std::process::id()))
+            .join(format!("gfx-pipeline-store-{}-{name}", std::process::id()))
             .join(FILE_NAME);
         let _ = std::fs::remove_dir_all(p.parent().unwrap());
         p

@@ -54,8 +54,8 @@ pub mod layout;
 #[cfg(feature = "gpu")]
 pub mod nv2a;
 #[cfg(feature = "gpu")]
-pub mod pipeline_store;
-pub mod present_camera;
+pub use gfx::pipeline_store;
+pub use gfx::present_camera;
 pub mod pushbuf;
 pub mod regs;
 pub mod residual;
@@ -107,40 +107,4 @@ pub use shader::ShaderProvider;
 pub use threaded::{RENDER_THREAD_START, ThreadedBackend};
 pub use vblank::{FrameWait, register_frame_wait};
 
-/// The largest render scale: 6x of 640x480 is 3840x2880.
-pub const MAX_SCALE: u32 = 6;
-
-/// The view's lighting (docs/graphics/e3-lighting-setting.md), chosen at
-/// launch by `H2_LIGHTING` (`scaled::lighting`); no setting holds it. Nothing
-/// of it reaches the guest: the reference draws retail whatever this is.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum Lighting {
-    /// The game's own: shadow maps at the guest's size, sampled as the
-    /// NV2A does (2x2 percentage-closer filtering when the stage filters).
-    #[default]
-    Retail,
-    /// E3: shadow maps at `shadow_scale` times their
-    /// size in the view, compared with one tap.
-    E3,
-    /// The privately reconstructed BSP lightmap with its selected lamp on.
-    RelightOn,
-    /// The privately reconstructed BSP lightmap with its selected lamp off.
-    RelightOff,
-}
-
-impl Lighting {
-    pub fn is_relight(self) -> bool {
-        matches!(self, Self::RelightOn | Self::RelightOff)
-    }
-
-    /// The two startup-only arms that need private BSP resources.
-    pub fn relight_from_name(name: &str) -> Option<Self> {
-        if name.trim().eq_ignore_ascii_case("relight-on") {
-            Some(Self::RelightOn)
-        } else if name.trim().eq_ignore_ascii_case("relight-off") {
-            Some(Self::RelightOff)
-        } else {
-            None
-        }
-    }
-}
+pub use gfx::external::{Lighting, MAX_SCALE};

@@ -74,12 +74,11 @@ use gfx::state::{
     TextureStageState,
 };
 use gfx::texture::TextureKind;
-use gfx::translate::SamplerKey;
 use gfx::xdk::RenderStateTable;
 use shaders::psh::bits::*;
 use shaders::psh::shadow::{DepthFormat, Shadow, ShadowAddress};
 use shaders::psh::{
-    self, AlphaFunc, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim, argb,
+    self, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim, argb,
 };
 use shaders::vsh::encode::{Inst, Operand, program};
 use gfx::repack::{AttributeFetch, FetchMode, RepackPlan};
@@ -93,6 +92,10 @@ use crate::hw::depth_clamp;
 pub use crate::hw::{
     CONTROL0_Z_PERSPECTIVE, RS_DEPTHCLIPCONTROL, clamps_depth, draw_clamps_depth, w_buffered,
     w_clip_range,
+};
+pub use gfx::guest_program::{
+    D3dFog, alpha_func, combiner_words, d3d_fog, exp2_fog_scale, exp_fog_scale, fog_gen,
+    guest_def, sampler_key, shader_border,
 };
 use crate::pipeline_store::{self, PipelineStore, Seen, StoredPipeline, program_id};
 use crate::shader::{PreparedShader, ShaderProvider, VertexProcessing};
@@ -660,78 +663,6 @@ fn view_dim(d: TextureDim) -> wgpu::TextureViewDimension {
         TextureDim::D3 => wgpu::TextureViewDimension::D3,
         TextureDim::Cube => wgpu::TextureViewDimension::Cube,
     }
-}
-
-/// The pixel translator's comparison for the device alpha-test state.
-pub fn alpha_func(f: CompareFunc) -> AlphaFunc {
-    match f {
-        CompareFunc::Never => AlphaFunc::Never,
-        CompareFunc::Less => AlphaFunc::Less,
-        CompareFunc::Equal => AlphaFunc::Equal,
-        CompareFunc::LessEqual => AlphaFunc::LessEqual,
-        CompareFunc::Greater => AlphaFunc::Greater,
-        CompareFunc::NotEqual => AlphaFunc::NotEqual,
-        CompareFunc::GreaterEqual => AlphaFunc::GreaterEqual,
-        CompareFunc::Always => AlphaFunc::Always,
-    }
-}
-
-/// The guest's combiner program: render-state slots 0..57, texture modes
-/// from slot 136, the last three dwords from the definition.
-///
-/// Whether there is a final combiner comes from the definition itself, as
-/// D3D latches it at `SetPixelShader` (`0x3fa452`, device `+0x788`) and the
-/// lazy commit reads the latch, not the definition: `final_latch` is that
-/// value ([`ShaderInputs::final_combiner_latch`]). A definition bound with
-/// a final combiner keeps it even when zero is later pushed to both
-/// final-combiner methods ([`PixelShaderDef::explicit_final`]), and editing
-/// the definition's buffer without rebinding changes neither way.
-///
-/// [`ShaderInputs::final_combiner_latch`]: crate::shader::ShaderInputs::final_combiner_latch
-pub fn guest_def(
-    psdef: &[u32; 60],
-    combiner_state: &[u32; 57],
-    texture_modes: u32,
-    final_latch: bool,
-) -> PixelShaderDef {
-    let words = combiner_words(psdef, combiner_state, texture_modes);
-    let mut def = PixelShaderDef::from_words(&words);
-    def.explicit_final = final_latch;
-    def
-}
-
-fn combiner_words(psdef: &[u32; 60], states: &[u32; 57], modes: u32) -> [u32; 60] {
-    let mut words = *psdef;
-    words[..57].copy_from_slice(states);
-    words[54] = modes;
-    words
-}
-
-/// Register combiners and their constants at this draw, suitable for
-/// carrying in a scene overlay without retaining the device or the draw.
-pub fn overlay_shader_words(draw: &ResolvedDraw) -> Option<[u32; 60]> {
-    static TABLE: std::sync::LazyLock<RenderStateTable> =
-        std::sync::LazyLock::new(RenderStateTable::default);
-    if polygon_stipple(&TABLE, draw) { return None; }
-    let words = combiner_words(
-        draw.shader.pixel_shader.as_deref()?,
-        &draw.shader.combiner_state,
-        draw.raw.render[slot::PS_TEXTURE_MODES as usize],
-    );
-    overlay_final(words, draw.shader.final_combiner_latch, draw.state.render.fog_enable,
-        raw(&TABLE, draw, rs::SPECULARENABLE) != 0)
-}
-
-fn overlay_final(mut words: [u32; 60], latch: bool, fog: bool, specular: bool) -> Option<[u32; 60]> {
-    if words[8] == 0 && words[9] == 0 {
-        // An explicitly programmed zero final needs the latch to distinguish
-        // it from an absent final. The overlay carries only the 60 words.
-        if latch {
-            return None;
-        }
-        (words[8], words[9]) = psh::d3d_default_final_combiner(fog, specular);
-    }
-    Some(words)
 }
 
 /// The fog coordinate of pre-transformed (`XYZRHW`) vertices: what the
@@ -1642,21 +1573,6 @@ pub fn sharp_shadow_stages(shadow: &[Option<Shadow>; 4]) -> u8 {
         .fold(0u8, |mask, n| mask | 1 << n)
 }
 
-/// [`PixelOptions::border`] for a stage: the `BORDER` axes when the stage
-/// reads signed channels, uses a non-preset colour, or the host cannot
-/// clamp to border. The shader path approximates linear filtering at edges.
-pub fn shader_border(s: &TextureStageState, sign: u8, clamp_to_border: bool) -> u8 {
-    if sign == 0 && clamp_to_border && matches!(s.border_color, 0 | 0xff00_0000 | 0xffff_ffff) {
-        return 0;
-    }
-    [s.address_u, s.address_v, s.address_w]
-        .iter()
-        .enumerate()
-        .fold(0, |m, (axis, &a)| {
-            m | u8::from(a == TextureAddress::Border) << axis
-        })
-}
-
 /// The texture unit's value for a stage's `D3DTSS_BORDERCOLOR`
 /// (`D3DCOLOR`, ARGB): signed channels read the border byte the way they
 /// read texel bytes (`2s/255`, clamped at -1), the others `b/255`.
@@ -1677,117 +1593,20 @@ fn eye_uniform(hw: &crate::hw::HwState) -> [f32; 4] {
     [x, y, z, 0.0]
 }
 
-/// The exp fog scale per unit density, `−1/(16 ln 2)`, so that
-/// `2^(16·scale·d)` is `e^(−density·d)`. D3D multiplies by its own
-/// constant (`0x45E378`), which differs from this by about 4e-6 relative;
-/// the ignored `tests/fog_xbe.rs` reads it from `$H2_XBE` and checks the
-/// tolerance.
-pub fn exp_fog_scale() -> f32 {
-    (-1.0 / (16.0 * std::f64::consts::LN_2)) as f32
-}
-
-/// The exp2 fog scale per unit density, `−1/√(32 ln 2)`, so that
-/// `2^(−32·(scale·d)²)` is `e^(−(density·d)²)`. D3D's own constant
-/// (`0x45E374`) differs from this by a similar few parts per million.
-pub fn exp2_fog_scale() -> f32 {
-    (-1.0 / (32.0 * std::f64::consts::LN_2).sqrt()) as f32
-}
-
-/// `NV097_SET_FOG_GEN_MODE` values D3D pushes.
-pub mod fog_gen {
-    /// `FOGGEN_SPEC_ALPHA`: the specular alpha (no fog table).
-    pub const SPEC_ALPHA: u32 = 0;
-    /// `FOGGEN_RADIAL`: the eye-space distance (`D3DRS_RANGEFOGENABLE`).
-    pub const RADIAL: u32 = 1;
-    /// `FOGGEN_PLANAR`: the eye-space depth.
-    pub const PLANAR: u32 = 2;
-}
-
-/// The fog state D3D's lazy commit pushes (`0x00400000`).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct D3dFog {
-    /// `NV097_SET_FOG_GEN_MODE` ([`fog_gen`]). It selects the coordinate
-    /// of the fixed-function transform only: vertex programs, D3D's
-    /// pass-through programs among them, supply the coordinate in `oFog`, so no
-    /// draw this provider translates reads it.
-    pub gen_mode: u32,
-    /// `NV097_SET_FOG_ENABLE`, `NV097_SET_FOG_MODE` and the bias and scale
-    /// of `NV097_SET_FOG_PARAMS`.
-    pub fog: psh::fog::Fog,
-}
-
-/// D3D's fog commit (`0x00400000`), from `D3DRS_FOGENABLE`,
-/// `D3DRS_FOGTABLEMODE`, `D3DRS_FOGSTART`, `D3DRS_FOGEND`,
-/// `D3DRS_FOGDENSITY` (the float states as their raw words) and
-/// `D3DRS_RANGEFOGENABLE`:
-///
-/// * fog off: only `SET_FOG_ENABLE` 0 is pushed. The other registers keep
-///   their old values, which no longer matter (the factor reads 1); this
-///   returns [`psh::fog::Fog::OFF`] and `SPEC_ALPHA`;
-/// * `D3DFOG_NONE`: `LINEAR` with bias 1 and scale 1, so the factor is the
-///   vertex's `oFog.x`, and generation mode `SPEC_ALPHA`;
-/// * `D3DFOG_LINEAR` (3): scale `−1/(end − start)` and bias
-///   `1 + end/(end − start)`, or scale `−8192` (`0x45DFF4`) when start and
-///   end compare equal (the x87 compare is unordered for NaN, which
-///   divides);
-/// * `D3DFOG_EXP` (1): bias 1.5 and scale `density ·` [`exp_fog_scale`];
-///   any other mode, `D3DFOG_EXP2` (2) included: bias 1.5 and scale
-///   `density ·` [`exp2_fog_scale`] (D3D's own constants differ from these
-///   closed forms by about 4e-6 relative);
-/// * with a table mode the generation mode is `RADIAL` when
-///   `D3DRS_RANGEFOGENABLE` is set and `PLANAR` otherwise.
-///
-/// The x87 code keeps intermediates in extended precision and rounds when
-/// it stores each parameter; here intermediates are `f64`.
-pub fn d3d_fog(
-    enable: bool,
-    table_mode: u32,
-    start: u32,
-    end: u32,
-    density: u32,
-    range_fog: bool,
-) -> D3dFog {
-    use psh::fog::{Fog, FogMode};
-    let f = |w: u32| f32::from_bits(w) as f64;
-    let table_gen = if range_fog {
-        fog_gen::RADIAL
-    } else {
-        fog_gen::PLANAR
-    };
-    let (gen_mode, fog) = match table_mode {
-        _ if !enable => (fog_gen::SPEC_ALPHA, Fog::OFF),
-        0 => (fog_gen::SPEC_ALPHA, Fog::FROM_VERTEX),
-        3 => {
-            let (start, end) = (f(start), f(end));
-            let k = if start == end {
-                8192.0
-            } else {
-                1.0 / (end - start)
-            };
-            let fog = Fog {
-                enable: true,
-                mode: FogMode::Linear,
-                bias: (end * k + 1.0) as f32,
-                scale: -k as f32,
-            };
-            (table_gen, fog)
-        }
-        m => {
-            let (mode, k) = if m == 1 {
-                (FogMode::Exp, exp_fog_scale())
-            } else {
-                (FogMode::Exp2, exp2_fog_scale())
-            };
-            let fog = Fog {
-                enable: true,
-                mode,
-                bias: 1.5,
-                scale: (f(density) * k as f64) as f32,
-            };
-            (table_gen, fog)
-        }
-    };
-    D3dFog { gen_mode, fog }
+/// Register combiners and their constants at this draw, suitable for
+/// carrying in a scene overlay without retaining the device or the draw.
+pub fn overlay_shader_words(draw: &ResolvedDraw) -> Option<[u32; 60]> {
+    static TABLE: std::sync::LazyLock<RenderStateTable> =
+        std::sync::LazyLock::new(RenderStateTable::default);
+    gfx::guest_program::overlay_shader_words(
+        draw.shader.pixel_shader.as_deref(),
+        &draw.shader.combiner_state,
+        draw.raw.render[slot::PS_TEXTURE_MODES as usize],
+        draw.shader.final_combiner_latch,
+        draw.state.render.fog_enable,
+        raw(&TABLE, draw, rs::SPECULARENABLE) != 0,
+        polygon_stipple(&TABLE, draw),
+    )
 }
 
 /// The fog register a draw's combiners read: the fog unit's uniform
@@ -1985,28 +1804,6 @@ fn module(device: &wgpu::Device, source: String) -> wgpu::ShaderModule {
     })
 }
 
-/// Sampler paired with the border-axis mask from [`shader_border`].
-pub fn sampler_key(
-    stage: &TextureStageState,
-    caps: gfx::translate::Capabilities,
-    shader_border: u8,
-) -> SamplerKey {
-    let mut key = SamplerKey::from_stage(stage, caps);
-    if shader_border != 0 {
-        // The shader supplies the border; the sampler clamps.
-        for (axis, mode) in [&mut key.address_u, &mut key.address_v, &mut key.address_w]
-            .into_iter()
-            .enumerate()
-        {
-            if shader_border >> axis & 1 != 0 {
-                *mode = wgpu::AddressMode::ClampToEdge;
-            }
-        }
-        key.border = None;
-    }
-    key
-}
-
 /// A translated program, before it has a module.
 struct Translation {
     source: String,
@@ -2040,26 +1837,6 @@ fn translate(key: &ProgramKey) -> Result<Translation, String> {
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn overlay_reads_live_registers_and_keeps_definition_mappings() {
-        let stored = std::array::from_fn(|i| 2000 + i as u32);
-        let live = std::array::from_fn(|i| 5000 + i as u32);
-        let words = super::combiner_words(&stored, &live, 73);
-        assert_eq!(words[..54], live[..54]);
-        assert_eq!(words[54], 73);
-        assert_eq!(words[55..57], live[55..]);
-        assert_eq!(words[57..], stored[57..]);
-        assert_eq!(super::overlay_final(words, true, false, false), Some(words));
-    }
-
-    #[test]
-    fn overlay_final_observes_the_bind_time_latch() {
-        let words = [0; 60];
-        assert!(super::overlay_final(words, true, false, false).is_none());
-        let defaulted = super::overlay_final(words, false, false, false).unwrap();
-        assert_eq!((defaulted[8], defaulted[9]), shaders::psh::d3d_default_final_combiner(false, false));
-    }
-
     #[test]
     fn a_map_change_scopes_its_own_programs_but_the_boot_menu_keeps_the_startup_set() {
         use super::next_scope;

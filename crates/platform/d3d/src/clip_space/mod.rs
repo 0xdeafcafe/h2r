@@ -6,7 +6,6 @@
 //! (`crate::scene_sink::camera`) and the device's projection checks
 //! (`crate::device::projection`) read them.
 
-pub mod camera;
+pub use gfx::guest_projection::{camera, math};
 pub mod epilogue;
-pub mod math;
 pub mod pass_through;
