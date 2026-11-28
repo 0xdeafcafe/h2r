@@ -844,7 +844,9 @@ fn sky_strip_draws_the_current_views_palette_and_its_own_stencil() {
     backend.clear(color, Some(depth), Clear::all([0.0; 4])).unwrap();
     let mut unmarked_template = None;
     assert!(after_compile(|| {
-        let pass = IndexedPass::for_sky(&unmarked, Arc::new(Cache::default()), 1, 9, item.clone(), SkyConstants::default(), None)
+        // The test's one cache: a fresh one per attempt would request its
+        // pipeline anew each time, never visible at the attempt's frame.
+        let pass = IndexedPass::for_sky(&unmarked, cache.clone(), 1, 9, item.clone(), SkyConstants::default(), None)
             .expect("an unmarked strip is drawn with its own stencil");
         unmarked_template = pass.sky_template();
         record_pass(&mut backend, surfaces.clone(), [None; 4], timeline::native::Stage::Sky, Box::new(pass))
