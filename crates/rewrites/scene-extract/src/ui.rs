@@ -121,10 +121,23 @@ impl UiModel {
                     up: MODEL_UP,
                     fov_y: f32::from_bits(fov),
                     planes: planes.map(f32::from_bits),
+                    projection: None,
                 },
                 objects,
             },
         }
+    }
+
+    /// The view with the projection its call `0x0002c560` builds at
+    /// `0x004b9e14` through `0x0002fd90`: `0x0002fb70`'s scales and
+    /// offsets for its FOV and its record's viewport (top, left, bottom,
+    /// right) under the lens inputs `k`
+    /// ([`crate::visibility::view::projection_terms`]).
+    pub fn with_lens(mut self, k: &crate::visibility::view::LensInputs) -> Self {
+        let [left, top, right, bottom] = self.viewport.map(|w| w as i16);
+        let c = &mut self.view.camera;
+        c.projection = Some(crate::visibility::view::projection_terms(c.fov_y, [top, left, bottom, right], k));
+        self
     }
 
     /// The viewport as the overlay's clip: `None` unless it lies wholly in
@@ -1175,6 +1188,7 @@ mod tests {
             up: [0.0, 0.0, 1.0],
             fov_y: 1.0,
             planes: [0.0625, 200.0],
+            projection: None,
         };
         picture.content = UiContent::Model(UiModel {
             viewport: [310, 230, 330, 250],
@@ -1355,5 +1369,33 @@ mod tests {
         let listed = draw_list(&frame, &Cells, &mut o);
         assert!(o.is_empty());
         assert!(listed[0].note.as_deref().unwrap().contains("Clip"));
+    }
+
+    /// A model view's lens is the one its call builds at `0x004b9e14`: the
+    /// record's viewport (top, left, bottom, right) from the call's left,
+    /// top, right, bottom, and the widescreen factor in the x scale.
+    #[test]
+    fn a_model_views_lens_is_the_projection_its_call_builds() {
+        use crate::visibility::view::{LensInputs, projection_terms};
+        let k = LensInputs {
+            extent_min: -1.0,
+            one: 1.0,
+            half: 0.5,
+            offset_scale: 1.0,
+            anamorphic: 4.0 / 3.0,
+            anamorphic_tan: 2.0,
+            widescreen: true,
+            display_flag: false,
+            override_lens: false,
+        };
+        let fov = std::f32::consts::FRAC_PI_2;
+        let model = UiModel::new(vec![1], [0; 3], [200, 120, 440, 300], fov.to_bits(), [0.0625f32, 200.0].map(f32::to_bits));
+        assert_eq!(model.view.camera.projection, None);
+        let lensed = model.with_lens(&k);
+        let p = lensed.view.camera.projection.unwrap();
+        assert_eq!(p, projection_terms(fov, [120, 200, 300, 440], &k));
+        // 240 by 180: aspect 4/3, times the anamorphic factor.
+        assert!((p[0] - 1.0 / (4.0 / 3.0 * 4.0 / 3.0)).abs() < 1e-5 && (p[1] - 1.0).abs() < 1e-5, "{p:?}");
+        assert_eq!(lensed.viewport, [200, 120, 440, 300], "the clip stays the call's");
     }
 }

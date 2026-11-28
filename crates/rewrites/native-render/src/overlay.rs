@@ -416,7 +416,7 @@ impl OverlayPlan {
             if item.kind == OverlayKind::ModelView {
                 let before = plan.batches.len() as u32;
                 let planned = overlay.model_view_of(item).ok_or(crate::model_view::Refusal::Camera)
-                    .and_then(|view| crate::model_view::plan(view, &item.clip, guest, target, before));
+                    .and_then(|view| crate::model_view::plan(view, &item.clip, guest, target, before, plan.blurs.len() as u32));
                 match planned {
                     Ok(view) => {
                         plan.model_views.push(view);

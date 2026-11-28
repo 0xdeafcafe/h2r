@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use scene_extract::ui::UiModel;
+use scene_extract::visibility::view::LensInputs;
 
 use engine::{memory::GuestMemory, points::ui_render::*, ui_model};
 use runtime::{CpuAbi, GuestFault, abi::TransferAbi};
@@ -63,15 +64,17 @@ static FALLEN_BACK: AtomicBool = AtomicBool::new(false);
 
 /// The view `widget` draws, read in Rust before its draw runs: the live
 /// objects its names select and the camera against `parent`, the parent
-/// view's `top, left, bottom, right`. `None`: no live object, lights, a
-/// camera that does not read.
+/// view's `top, left, bottom, right`, and the projection its camera call
+/// builds ([`UiModel::with_lens`]). `None`: no live object, lights, a
+/// camera or lens that does not read.
 pub(super) fn predict(mem: &dyn GuestMemory, widget: u32, parent: u32, mxcsr: u32) -> Option<UiModel> {
     let objects = super::ui_overlay::model::objects(&super::ui_overlay::Ro(mem), widget).ok()??;
     if objects.is_empty() {
         return None;
     }
     let camera = ui_model::camera(mem, widget, parent, mxcsr)?;
-    Some(UiModel::new(objects, camera.center, camera.bounds, camera.fov, camera.planes))
+    let lens = LensInputs::read(&super::ui_overlay::Ro(mem)).ok()?;
+    Some(UiModel::new(objects, camera.center, camera.bounds, camera.fov, camera.planes).with_lens(&lens))
 }
 
 /// The part of a view the Rust read and the game's disagree on.
@@ -90,6 +93,7 @@ fn same_camera(a: &UiModel, b: &UiModel) -> bool {
             c.up.map(f32::to_bits),
             c.fov_y.to_bits(),
             c.planes.map(f32::to_bits),
+            c.projection.map(|p| p.map(f32::to_bits)),
         )
     };
     a.viewport == b.viewport && bits(a) == bits(b)
@@ -268,10 +272,13 @@ fn read_view(
             up: vec3(up)?,
             fov_y: f32::from_bits(camera.fov),
             planes: camera.planes.map(f32::from_bits),
+            projection: None,
         },
         objects,
     };
-    Some(ModelScene { parent, model: UiModel { viewport: camera.bounds, view } })
+    // The lens `0x0002c560` builds at `0x004b9e14` once the call runs.
+    let lens = LensInputs::read(&super::ui_overlay::Ro(mem)).ok()?;
+    Some(ModelScene { parent, model: UiModel { viewport: camera.bounds, view }.with_lens(&lens) })
 }
 
 fn view(c: &Call<'_>) {
@@ -499,7 +506,16 @@ mod tests {
             .put_f32(ui_model::VIEW_NEAR, 0.0625)
             .put_f32(ui_model::VIEW_FAR, 200.0)
             .put_u32(stack + 16, forward)
-            .put_f32(stack + 20, 0.75);
+            .put_f32(stack + 20, 0.75)
+            // The lens `0x0002fb70` reads: one (also the FOV floor), the
+            // extents' minimum, half, the offsets' scale, the anamorphic
+            // factors and the widescreen byte, off.
+            .put_f32(0x0045_dbcc, -0.5)
+            .put_f32(0x0045_dbbc, 0.5)
+            .put_f32(0x0045_dbc4, 1.0)
+            .put_f32(0x0045_dfdc, 4.0 / 3.0)
+            .put_f32(0x0045_e108, 1.0)
+            .put_u32(0x0048_5ac0, 0);
         for (i, outer) in [0u16, 0, 480, 640].into_iter().enumerate() {
             let at = i as u32 * 2;
             mem.put_u16(bounds + at, outer)
@@ -533,6 +549,12 @@ mod tests {
         assert_eq!(view.camera.position, [0.0, 1.0, 2.0]);
         assert_eq!(view.camera.fov_y, 0.75);
         assert_eq!(view.camera.planes, [0.0625, 200.0]);
+        let lens = LensInputs::read(&super::super::ui_overlay::Ro(&mem)).unwrap();
+        assert_eq!(
+            view.camera.projection,
+            Some(scene_extract::visibility::view::projection_terms(0.75, [228, 310, 252, 330], &lens)),
+            "the lens the camera call builds for the record's viewport"
+        );
     }
 
     /// The item call's Rust read of the view, before the game's draw runs,

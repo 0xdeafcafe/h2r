@@ -257,6 +257,12 @@ pub struct OverlayCamera {
     pub fov_y: f32,
     /// The near and far planes of the view's render camera record.
     pub planes: [f32; 2],
+    /// The x and y scales and the two off-centre terms the view's
+    /// projection holds (`0x0002fd90` at `0x004b9e14 + 0x78`, `+0x8c`,
+    /// `+0x98`, `+0x9c`): the guest's own lens, the widescreen and display
+    /// factors in it. `None`: the lens from the FOV and the viewport.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projection: Option<[f32; 4]>,
 }
 
 /// A model widget's view (widget type 7, docs/formats/ui.md): the
@@ -571,7 +577,9 @@ impl Overlay {
     pub fn push_model_view(&mut self, viewport: ClipRect, view: OverlayModelView) -> Result<u32, OverlayError> {
         let clip = self.clip(viewport)?;
         let c = &view.camera;
-        if !finite(&c.position) || !finite(&c.forward) || !finite(&c.up) || !c.fov_y.is_finite() || !finite(&c.planes) {
+        if !finite(&c.position) || !finite(&c.forward) || !finite(&c.up) || !c.fov_y.is_finite() || !finite(&c.planes)
+            || c.projection.is_some_and(|p| !finite(&p) || p[0] <= 0.0 || p[1] <= 0.0)
+        {
             return Err(OverlayError::Geometry);
         }
         self.model_views.push(view);
@@ -996,7 +1004,7 @@ mod tests {
     }
 
     fn camera() -> OverlayCamera {
-        OverlayCamera { position: [0.0, -2.0, 0.5], forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 0.9, planes: [0.0625, 200.0] }
+        OverlayCamera { position: [0.0, -2.0, 0.5], forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 0.9, planes: [0.0625, 200.0], projection: None }
     }
 
     #[test]
@@ -1038,6 +1046,9 @@ mod tests {
         bad.fov_y = f32::INFINITY;
         let view = OverlayModelView { camera: bad, objects: vec![] };
         assert_eq!(o.push_model_view(all, view), Err(OverlayError::Geometry));
+        let lens = |projection| OverlayModelView { camera: OverlayCamera { projection: Some(projection), ..camera() }, objects: vec![] };
+        assert_eq!(o.push_model_view(all, lens([1.0, f32::NAN, 0.0, 0.0])), Err(OverlayError::Geometry), "a lens that is not finite");
+        assert_eq!(o.push_model_view(all, lens([0.0, 1.0, 0.0, 0.0])), Err(OverlayError::Geometry), "a lens with no x scale");
         let off = ClipRect { x: 640, y: 0, width: 4, height: 4 };
         assert_eq!(o.push_blur(off, OverlayBlur { tap: 0.5, spreads: vec![1.0], pick: 0.0 }), Err(OverlayError::Clip));
         assert!(o.is_empty() && o.blurs.is_empty() && o.model_views.is_empty(), "the list is left as it was");
@@ -1128,7 +1139,7 @@ mod tests {
         let glyph = [OverlayGlyph { index: 1, rect: [0.0, 0.0, 4.0, 4.0] }];
         let blur = OverlayBlur { tap: 1.0, spreads: vec![1.0], pick: 0.0 };
         let view = OverlayModelView {
-            camera: OverlayCamera { position: [0.0; 3], forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 1.0, planes: [0.0625, 200.0] },
+            camera: OverlayCamera { position: [0.0; 3], forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 1.0, planes: [0.0625, 200.0], projection: None },
             objects: vec![1],
         };
         o.push_movie_frame(sprite(), all, quad(0.0, 0.0), OverlayMovie { movie: 9, frame: 4 }).unwrap();
