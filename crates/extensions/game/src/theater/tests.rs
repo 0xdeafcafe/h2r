@@ -489,6 +489,24 @@ fn local_film_records_the_consumed_action_and_both_edges_of_a_tickless_pause() {
     std::fs::remove_dir_all(dir).unwrap();
 }
 
+/// More simulation updates than one tick can hold fail the recording, not
+/// the process.
+#[test]
+fn more_updates_than_a_tick_can_hold_fail_the_recording_not_the_process() {
+    let dir = std::env::temp_dir().join(format!("many-updates-{}", live_proto::sign::random_id()));
+    std::fs::create_dir(&dir).unwrap();
+    let rec = Session::open(Some(dir.join("many.h2film")), None, host_facts(), b"xbe", &options(&dir))
+        .unwrap()
+        .unwrap();
+    for _ in 0..super::record::MAX_UPDATES {
+        rec.record_actions(Vec::new());
+    }
+    assert!(rec.lock().failure.is_none());
+    rec.record_actions(Vec::new());
+    assert!(rec.lock().failure.is_some());
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[test]
 fn malformed_viewer_observations_leave_a_seekable_film_and_count_at_seal() {
     use live_proto::{
