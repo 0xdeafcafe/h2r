@@ -16,7 +16,11 @@ is implemented, or every one of its direct callers no longer runs. A
 caller with no direct caller (a fragment, a resume entry, a function
 pointer) counts as running, and so does one behind a conditional `before`
 hook. The list therefore over-counts: it is the set a crash can still
-come from, not the set that does.
+come from, not the set that does. One way it under-counts: an
+implementation that calls the original for some calls counts as stopping
+the body. The present `0x13f10` (`render_frame::loop_present`) is one: a
+kept loop frame runs its body, which reaches `SetBackBufferScale`, the
+flicker filter `0x3f8c70` (both gaps) and `Swap` (answered).
 
 **Answered** means every D3D entry the caller reaches now answers:
 render-state and texture-state setters store their slot
