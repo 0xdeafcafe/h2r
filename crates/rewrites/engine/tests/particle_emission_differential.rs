@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 mod common;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::particle_emission::{self as pe, EMIT, EMIT_DEPTH, ENTRY};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};

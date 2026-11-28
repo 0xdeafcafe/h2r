@@ -9,7 +9,7 @@ fn its_chains_run_on_the_render_thread() {
     let mut r = Registry::new(Switches::parse("").unwrap());
     assert!(r.add(&NativeLights).unwrap());
     let plan = r.build(&Base).unwrap();
-    use engine::points::{LIGHT_GEOMETRY_DRAW, Loc, Sig};
+    use guest_layout::points::{LIGHT_GEOMETRY_DRAW, Loc, Sig};
     let Sig::Fn { args, ret, pop } = LIGHT_GEOMETRY_DRAW.sig else {
         panic!("geometry admission requires a returnable handler");
     };

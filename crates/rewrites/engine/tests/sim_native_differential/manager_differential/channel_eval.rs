@@ -34,7 +34,7 @@ pub(super) fn cases(h: &mut Harness<'_>) {
                 c.ecx = CHOSEN;
                 c.edx = NAMES;
                 word(m, MANAGER + 0x68, 0x12340001);
-                word(m, engine::points::TAG_ENTRIES.base, TAGS);
+                word(m, guest_layout::points::TAG_ENTRIES.base, TAGS);
                 word(m, TAGS + 16 + 8, GRAPH);
                 word(m, TAGS + 32 + 8, PARENT);
                 word(m, GRAPH + 0x4c, u32::from(full));

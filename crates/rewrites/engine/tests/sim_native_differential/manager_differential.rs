@@ -251,7 +251,7 @@ fn channel_lookup_drives_graph_and_preload() {
             c.ecx = DATA;
             word(m, DATA, 3);
             word(m, DATA + 4, (1 << 16) | 0xffff);
-            word(m, engine::points::TAG_ENTRIES.base, tags);
+            word(m, guest_layout::points::TAG_ENTRIES.base, tags);
             word(m, tags + 3 * 16 + 8, graph);
             word(m, graph + 0x30, clips);
             m.bytes[engine::sim_native::graph::ENABLED as usize] = 0;

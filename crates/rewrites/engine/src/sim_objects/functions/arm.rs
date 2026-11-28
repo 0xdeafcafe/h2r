@@ -36,7 +36,7 @@ use super::{OBJECTS, ONE, TAGS, TYPES, ZERO, base, value};
 use crate::function_eval::constant::{
     BYTE, SHAPE_BIAS, SHAPE_SCALE, SHAPES, WAVE_SCALE, WAVES, WRAP_HIGH, WRAP_LOW,
 };
-use crate::points;
+use guest_layout::points;
 use crate::sim_physics::ARITH;
 use ::sim_objects::functions::curve::Image;
 use ::sim_objects::functions::evaluator::{

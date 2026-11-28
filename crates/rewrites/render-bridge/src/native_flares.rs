@@ -2,7 +2,7 @@
 //! tickets remain guest-owned. See the retail trace linked from
 //! docs/graphics/native-renderer.md.
 use crate::native_particles::{HOST, Producer};
-use engine::points::scene_effects::*;
+use guest_layout::points::scene_effects::*;
 use native_render::flares::Site;
 
 pub(super) fn reflection_caller(caller: Option<u32>) -> bool {
@@ -46,7 +46,7 @@ pub(super) fn build(b: &mut hooks::Builder) {
         .context_only()
         .optional();
     b.raw()
-        .observe_before(&engine::points::render_aspect::FLARE_QUERY_END, "native_flare_query_return", |o| {
+        .observe_before(&guest_layout::points::render_aspect::FLARE_QUERY_END, "native_flare_query_return", |o| {
             let host = HOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
             if let Some(host) = host {
                 host.finish(&mut *o.guest(), Producer::Flare(Site::Visibility));

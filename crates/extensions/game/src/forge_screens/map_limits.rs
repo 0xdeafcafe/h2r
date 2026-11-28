@@ -1,6 +1,6 @@
 //! The read-only Map limits page, fed by the same readers as `forge.capacity`.
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use forge::BlockKind;
 
 use super::sheet::{Act, Kind, Sheet, SheetRow};
@@ -80,8 +80,8 @@ mod tests {
     use super::*;
     use crate::forge_screens::{Facts, prepare, publish, screen};
     use crate::ui_kit::spec::Describe;
-    use engine::datum::layout::{ACTIVE_COUNT, MAXIMUM_COUNT};
-    use engine::testing::FakeGuest;
+    use guest_layout::datum::layout::{ACTIVE_COUNT, MAXIMUM_COUNT};
+    use guest_layout::testing::FakeGuest;
     use guest_layout::global;
     use map::scenario_layout;
 

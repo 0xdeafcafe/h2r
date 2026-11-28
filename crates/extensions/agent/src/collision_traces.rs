@@ -2,7 +2,7 @@
 //! names are in SIM_COLLISION_QUERY. The result's world position is in
 //! docs/engine/sim-rewrite-collision.md, "5.4 The collision query".
 
-use engine::{GuestMemory, points::SIM_COLLISION_QUERY};
+use guest_layout::{GuestMemory, points::SIM_COLLISION_QUERY};
 use guest_layout::points::Loc;
 use runtime::{Runtime, dispatch::ReturnObservation};
 use std::{

@@ -7,12 +7,12 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use engine::entry::{Cx, EntryError, GuestCall};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
 use engine::render_loop::opaque_material::ProjectedDistance;
 use native_render::world_ranges::SortedPart;
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::render_loop::states;
-use engine::tags::TAG_ENTRIES_GLOBAL;
+use guest_layout::tags::TAG_ENTRIES_GLOBAL;
 use native_render::skip::{RENDER_RECORDS, RENDER_RECORD_SIZE};
 
 use super::{opaque_material_animation as animation, opaque_material_pixel as pixel,
@@ -555,8 +555,8 @@ pub(super) async fn handoff(cx: &Cx, prepared: &Prepared, fcw: u16, mxcsr: u32) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::entry::{self, EntryFuture, Regs, Ret};
-    use engine::testing::FakeGuest;
+    use guest_layout::entry::{self, EntryFuture, Regs, Ret};
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn layer_reset_applies_outgoing_restore_before_releasing_implementation() {

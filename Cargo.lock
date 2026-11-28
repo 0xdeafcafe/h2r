@@ -700,7 +700,6 @@ dependencies = [
  "debug-menu",
  "dsound",
  "emit",
- "engine",
  "film",
  "firefight-kit",
  "font",
@@ -711,6 +710,7 @@ dependencies = [
  "frame-scene",
  "game",
  "gfx",
+ "guest-layout",
  "h1-contract",
  "h1-runtime",
  "hooks",
@@ -2853,6 +2853,7 @@ name = "h1-runtime"
 version = "0.1.0"
 dependencies = [
  "engine",
+ "guest-layout",
  "hooks",
  "render-bridge",
  "runtime",
@@ -3202,6 +3203,7 @@ name = "hot-tags"
 version = "0.1.0"
 dependencies = [
  "engine",
+ "guest-layout",
  "map",
  "runtime",
  "serde",
@@ -4173,7 +4175,7 @@ dependencies = [
 name = "lockstep"
 version = "0.1.0"
 dependencies = [
- "engine",
+ "guest-layout",
  "hooks",
  "input",
  "runtime",
@@ -5823,6 +5825,7 @@ dependencies = [
  "engine",
  "frame-scene",
  "frame-types",
+ "guest-layout",
  "hooks",
  "native-render",
  "runtime",
@@ -6344,6 +6347,7 @@ dependencies = [
  "bytemuck",
  "engine",
  "frame-scene",
+ "guest-layout",
  "hud-kit-core",
 ]
 
@@ -6682,6 +6686,7 @@ version = "0.1.0"
 dependencies = [
  "audio",
  "engine",
+ "guest-layout",
  "hooks",
  "hs",
  "ir",

@@ -18,9 +18,9 @@
 //! the rewrite places the same way everywhere), and from nothing else. So
 //! the feature is not a presentation one.
 
-use engine::GuestMemory;
-use engine::handle::DatumHandle;
-use engine::points;
+use guest_layout::GuestMemory;
+use guest_layout::handle::DatumHandle;
+use guest_layout::points;
 use hooks::Flow;
 use pogo::Style;
 use pogo::placed::Placed;
@@ -95,8 +95,8 @@ pub fn stick_style(definition: u32, placed: &Placed) -> Option<Style> {
 /// when the unit holds another weapon, or none.
 pub fn held_style(m: &dyn GuestMemory, unit_body: u32, placed: &Placed) -> Option<Style> {
     let weapon = guest_layout::Unit::at(unit_body).held_weapon(m).ok()??;
-    let (kind, body) = engine::view::objects::get(m, DatumHandle(weapon.raw())).ok()??;
-    if kind != engine::view::objects::WEAPON {
+    let (kind, body) = guest_layout::view::objects::get(m, DatumHandle(weapon.raw())).ok()??;
+    if kind != guest_layout::view::objects::WEAPON {
         return None;
     }
     let definition = body.definition(m).ok()??;
@@ -128,8 +128,8 @@ pub fn install_hooks(b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
-    use engine::view::{fake, objects};
+    use guest_layout::testing::FakeGuest;
+    use guest_layout::view::{fake, objects};
     use guest_layout::{ObjectHeader, Unit};
 
     const STICKS: [u32; 3] = [0xe1a2_0b01, 0xe1a3_0b02, 0xe1a4_0b03];

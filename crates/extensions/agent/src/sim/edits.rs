@@ -269,7 +269,7 @@ struct EditIdentity {
 impl EditIdentity {
     fn read(m: &dyn GuestMemory) -> Result<Self, RpcError> {
         use guest_layout::{game::cache_checksum, global};
-        let fault = |e: engine::MemFault| {
+        let fault = |e: guest_layout::MemFault| {
             refused(format!("cannot identify the active map and session at {:#x}", e.addr))
         };
         let mut name = [0; 32];
@@ -532,7 +532,7 @@ impl Sim {
 /// takes a complete options block in EAX (docs/runtime/level-boot.md).
 pub fn active_options(m: &dyn GuestMemory) -> Result<Vec<u8>, RpcError> {
     use guest_layout::game::{GameGlobals, MODE_CAMPAIGN, MODE_MULTIPLAYER};
-    let fault = |e: engine::MemFault| {
+    let fault = |e: guest_layout::MemFault| {
         refused(format!("cannot read active game options at {:#x}", e.addr))
     };
     let globals = GameGlobals::current(m)
@@ -556,7 +556,7 @@ pub(super) fn replay_options(bytes: Vec<u8>) -> Call {
         steps: vec![
             GameStep::Write { offset: 0, bytes },
             GameStep::Call {
-                target: engine::points::OPTIONS_QUEUE.base,
+                target: guest_layout::points::OPTIONS_QUEUE.base,
                 args: vec![],
                 eax: Some(Arg::Options(0)),
                 esi: None,

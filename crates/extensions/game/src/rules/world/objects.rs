@@ -26,9 +26,9 @@
 
 use ::rules::caps::id;
 use ::rules::vm::{Arg, Call as VmCall};
-use engine::entry::{Cx, GuestCall};
-use engine::view::objects;
-use engine::{DatumHandle, GuestMemory, points};
+use guest_layout::entry::{Cx, GuestCall};
+use guest_layout::view::objects;
+use guest_layout::{DatumHandle, GuestMemory, points};
 use guest_layout::object::{Object, ObjectHeader, header::DELETE};
 
 /// How far up an attachment chain a read looks for the root.
@@ -172,7 +172,7 @@ pub async fn put(cx: &Cx, place: Place) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn guest(e: impl Into<engine::entry::EntryError>) -> anyhow::Error {
+fn guest(e: impl Into<guest_layout::entry::EntryError>) -> anyhow::Error {
     anyhow::anyhow!("{}", e.into())
 }
 
@@ -180,9 +180,9 @@ fn guest(e: impl Into<engine::entry::EntryError>) -> anyhow::Error {
 mod tests {
     use super::*;
     use ::rules::caps::ENTRIES;
-    use engine::testing::FakeGuest;
-    use engine::view::fake;
-    use engine::view::objects::Header;
+    use guest_layout::testing::FakeGuest;
+    use guest_layout::view::fake;
+    use guest_layout::view::objects::Header;
 
     const OBJECTS: u32 = 0x1007_0000;
     const BODIES: u32 = 0x1008_0000;
@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn a_put_keeps_the_objects_facing_and_an_outside_position_is_refused() {
-        use engine::entry::{EntryFuture, Regs, Ret, testing};
+        use guest_layout::entry::{EntryFuture, Regs, Ret, testing};
         const STACK: u32 = 0x800100;
         let outcome = |eax: u32| {
             let (m, [a, _]) = world();

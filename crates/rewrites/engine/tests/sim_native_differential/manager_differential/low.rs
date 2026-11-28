@@ -13,7 +13,7 @@ fn setup(c: &mut CpuAbi, m: &mut FlatMemory, seed: u32) {
     for offset in (0..32).step_by(4) {
         word(m, CHANNEL + offset, rng.u32());
     }
-    word(m, engine::points::TAG_ENTRIES.base, TABLE);
+    word(m, guest_layout::points::TAG_ENTRIES.base, TABLE);
     word(m, TABLE + 16 + 8, GRAPH);
     word(m, CHANNEL, 0x3456_0001);
     word(m, CHANNEL + 4, 0x0013_0022);

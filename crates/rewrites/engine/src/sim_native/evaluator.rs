@@ -27,7 +27,7 @@ type Codec<M> = fn(&mut CpuAbi, &mut M) -> Result;
 
 /// The codecs that have a native body.
 fn native_codec<M: Memory>(target: u32) -> Option<Codec<M>> {
-    use crate::points::*;
+    use guest_layout::points::*;
     let body: Codec<M> = match target {
         t if t == ANIM_ROTATION_CODEC.base => super::pose::rotation_codec,
         t if t == ANIM_STATIC_ROTATION.base => super::codec::static_rotation,
@@ -138,7 +138,7 @@ pub const ADDITIVE_SITES: [u32; 6] = [0x280b82, 0x280bd2, 0x280dbf, 0x280e0f, 0x
 /// secondary frames, blends them by `5044b0`, then multiplies rotations
 /// into the pose, adds translations and multiplies scales.
 pub fn additive(c: &mut CpuAbi, g: &mut impl Memory, mut pc: u32) -> Result {
-    let entry = crate::points::ANIM_ADDITIVE_NODES.base;
+    let entry = guest_layout::points::ANIM_ADDITIVE_NODES.base;
     loop {
         pc = match pc {
             _ if pc == entry => {

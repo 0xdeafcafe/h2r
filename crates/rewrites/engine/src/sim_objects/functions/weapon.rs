@@ -31,7 +31,7 @@ use super::{
     Ss, above, byte, call, cvtsi2ss, imm, load, lo, movaps, pop, push, ret, slot, ss,
     ucomiss_lahf_jp, unowned, zero, OBJECTS, ONE, TAGS,
 };
-use crate::datum::layout;
+use guest_layout::datum::layout;
 use crate::sim_objects::{Cx, Next, Result};
 use runtime::{CpuAbi, Guest};
 

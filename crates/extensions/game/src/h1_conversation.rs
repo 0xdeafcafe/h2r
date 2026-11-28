@@ -1,10 +1,10 @@
 //! Native services used by converted Halo 1 conversation scripts.
 
-use engine::datum::DatumArray;
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::tags::{self, GroupTag};
+use guest_layout::datum::DatumArray;
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::tags::{self, GroupTag};
 use hooks::{BuildError, Builder, Flow, Manifest, points};
 use hs::h1_conversation::{AI, BUILTINS, LONG, NONE, OBJECT, Op, REAL, SHORT, SOUND};
 use runtime::guest::Permissions;

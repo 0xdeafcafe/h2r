@@ -341,7 +341,7 @@ fn restore<'a>(raw: &mut [u8; record::RECORD_SIZE], entries: &'a [Listed]) -> Op
     (*raw != before).then_some(entry)
 }
 
-pub fn restore_listed(m: &mut dyn engine::GuestMemory, record: u32) -> Result<bool, engine::MemFault> {
+pub fn restore_listed(m: &mut dyn guest_layout::GuestMemory, record: u32) -> Result<bool, guest_layout::MemFault> {
     let mut raw = [0; record::RECORD_SIZE];
     m.read(record, &mut raw)?;
     if restore(&mut raw, &listed()).is_none() {

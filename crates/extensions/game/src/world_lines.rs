@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use agent::editor::EditorLink;
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use gfx::world_lines::ImageSamples;
 pub use gfx::world_lines::{ImageMarks, ImageValidity, LineStyle, WorldLine};
 use render_bridge::scene_step::{self, PresentObserver, PresentPayload};
@@ -197,7 +197,7 @@ mod tests {
             enabled: AtomicBool::new(true),
             captures: AtomicUsize::new(0),
         })];
-        let guest = engine::FlatMemory::new(0, 0);
+        let guest = guest_layout::FlatMemory::new(0, 0);
         let image = capture_samples(Some(&editor), &sources, &guest).unwrap();
         let visit = |now| {
             let mut anchors = Vec::new();
@@ -250,7 +250,7 @@ mod tests {
             captures: AtomicUsize::new(0),
         });
         let sources: [Arc<dyn WorldLineSource>; 2] = [first.clone(), second.clone()];
-        let guest = engine::FlatMemory::new(0, 0);
+        let guest = guest_layout::FlatMemory::new(0, 0);
         assert!(capture_samples(None, &[], &guest).is_none());
 
         let image = capture_samples(None, &sources, &guest).unwrap();

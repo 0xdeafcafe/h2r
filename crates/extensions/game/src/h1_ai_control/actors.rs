@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use engine::{
+use guest_layout::{
     DatumHandle,
     datum::DatumArray,
     entry::{Cx, EntryError, GuestCall},
@@ -224,7 +224,7 @@ pub(super) fn migrate_to(m: &dyn GuestMemory, actor: Actor, to: u32) -> R<Option
 }
 
 fn character_type(m: &dyn GuestMemory, index: u16) -> R<Option<u32>> {
-    use engine::tags::{GroupTag, tag_get_checked};
+    use guest_layout::tags::{GroupTag, tag_get_checked};
     let scnr = m.u32(points::SCENARIO.base)?;
     let index = u32::from(index);
     if index >= m.u32(scnr + 0x178)? {
@@ -243,7 +243,7 @@ fn character_type(m: &dyn GuestMemory, index: u16) -> R<Option<u32>> {
 }
 
 pub(super) async fn attach_free(cx: &Cx, unit: u32, character: u32) -> Result<(), EntryError> {
-    use engine::tags::{GroupTag, tag_get_checked};
+    use guest_layout::tags::{GroupTag, tag_get_checked};
 
     let valid = cx.read(|m| {
         let Some((kind, body)) = objects::get(m, DatumHandle(unit))? else {
@@ -511,11 +511,11 @@ async fn teleport_unit(cx: &Cx, motion: Teleport) -> Result<(), EntryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn unsupported_teleport_uses_a_front_facing_bsp_ray() {
-        use engine::entry::{EntryFuture, Regs, Ret, testing};
+        use guest_layout::entry::{EntryFuture, Regs, Ret, testing};
 
         const STACK: u32 = 0x800100;
         let run = testing::run(
@@ -540,7 +540,7 @@ mod tests {
 
     #[test]
     fn teleports_unseat_transform_and_wake_the_same_unit() {
-        use engine::entry::{EntryFuture, Regs, Ret, testing};
+        use guest_layout::entry::{EntryFuture, Regs, Ret, testing};
 
         const STACK: u32 = 0x800100;
         const UNIT: u32 = 0x8a00_0123;

@@ -7,7 +7,7 @@
 //! Every address and offset is a research point from the read of the 1.0
 //! XBE (labels there); no game data.
 
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The main view's visibility struct (`0x00547f88`); the dynamic-light
 /// views use `0x0054aa68`.

@@ -17,9 +17,9 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use engine::view::objects;
-use engine::view::Tags;
-use engine::{DatumHandle, GuestMemory, MemFault};
+use guest_layout::view::objects;
+use guest_layout::view::Tags;
+use guest_layout::{DatumHandle, GuestMemory, MemFault};
 use guest_layout::{Weapon, global};
 
 /// The spawner's state array, from the game engine globals.

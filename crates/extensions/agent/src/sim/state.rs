@@ -1,5 +1,5 @@
 //! `sim.state.set`'s host writes and the `player` fields `sim.view` adds,
-//! through the typed guest views (`guest_layout`, `engine::view`): the
+//! through the typed guest views (`guest_layout`, `guest_layout::view`): the
 //! player record's team, and its unit's team, vitality, grenades and held
 //! weapon's magazine.
 //!
@@ -12,9 +12,9 @@
 
 use agent_proto::sim::SetParams;
 use agent_proto::{RpcError, code};
-use engine::GuestMemory;
-use engine::view::objects::{self, Body};
-use engine::view::players::{self, Player};
+use guest_layout::GuestMemory;
+use guest_layout::view::objects::{self, Body};
+use guest_layout::view::players::{self, Player};
 use guest_layout::{Off, Unit, Weapon};
 use serde_json::{Value, json};
 
@@ -23,7 +23,7 @@ pub const SHIELD_MAX: f64 = 3.0;
 /// The players array holds 16.
 pub const PLAYERS: u32 = 16;
 
-fn fault(e: engine::MemFault) -> RpcError {
+fn fault(e: guest_layout::MemFault) -> RpcError {
     RpcError::new(
         code::UNAVAILABLE,
         format!("guest memory at {:#x} faulted", e.addr),
@@ -61,7 +61,7 @@ pub fn unit(m: &dyn GuestMemory, p: Player) -> Result<Option<Body>, RpcError> {
 pub fn player_handle(m: &dyn GuestMemory, index: u32) -> Result<u32, RpcError> {
     let p = player(m, index)?;
     let salt = p.salt(m).map_err(fault)?;
-    Ok(engine::DatumHandle::new(salt, index).raw())
+    Ok(guest_layout::DatumHandle::new(salt, index).raw())
 }
 
 /// The player's unit's handle; `GONE` between lives.
@@ -89,7 +89,7 @@ pub fn set_magazine(
     weapon: u32,
     a: agent_proto::sim::Ammo,
 ) -> Result<(), RpcError> {
-    let h = engine::DatumHandle::from_raw(weapon)
+    let h = guest_layout::DatumHandle::from_raw(weapon)
         .ok_or_else(|| RpcError::new(code::GONE, "no weapon"))?;
     let (_, w) = objects::get(m, h)
         .map_err(fault)?
@@ -127,7 +127,7 @@ fn held_weapon(m: &dyn GuestMemory, unit: Body) -> Result<Option<Body>, RpcError
     let Some(datum) = Unit::at(unit.addr).held_weapon(m).map_err(fault)? else {
         return Ok(None);
     };
-    let Some(h) = engine::DatumHandle::from_raw(datum.raw()) else {
+    let Some(h) = guest_layout::DatumHandle::from_raw(datum.raw()) else {
         return Ok(None);
     };
     Ok(objects::get(m, h).map_err(fault)?.map(|(_, b)| b))
@@ -150,7 +150,7 @@ pub fn lives(m: &dyn GuestMemory, p: Player) -> Result<Option<i16>, RpcError> {
 /// Player `index`'s score in the game engine's stat row; `None` without a
 /// game engine (the menu, a campaign) or when its globals do not read.
 pub fn score(m: &dyn GuestMemory, index: u32) -> Option<i16> {
-    let engine = m.u32(engine::points::GAME_ENGINE.base).ok().filter(|&e| e != 0)?;
+    let engine = m.u32(guest_layout::points::GAME_ENGINE.base).ok().filter(|&e| e != 0)?;
     let row = engine.wrapping_add(STAT_ROWS + STAT_ROW_SIZE * index);
     m.u16(row).ok().map(|s| s as i16)
 }

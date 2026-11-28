@@ -1006,7 +1006,7 @@ fn install_sim(agent: &agent::Agent, allow_bot_add: bool) -> agent::sim::SimHand
 }
 
 /// [`crate::layout_glue::Gm`] over the agent's guest memory.
-struct Mem<'a>(&'a dyn engine::GuestMemory);
+struct Mem<'a>(&'a dyn guest_layout::GuestMemory);
 
 impl crate::layout_glue::Gm for Mem<'_> {
     fn rd(&self, addr: u32, out: &mut [u8]) -> bool {
@@ -1020,7 +1020,7 @@ impl crate::layout_glue::Gm for Mem<'_> {
 /// Called on an external Live service, at gameplay boundaries. Matchmaking plays
 /// in its target session, custom games in the squad. Refuse an unreadable
 /// session until the next probe can positively identify its network class.
-pub fn remote_live_game(m: &dyn engine::GuestMemory) -> bool {
+pub fn remote_live_game(m: &dyn guest_layout::GuestMemory) -> bool {
     use bots::lobby;
     use crate::variant_ext::{SESSION_NETWORK_CLASS, SYSTEM_LINK};
 
@@ -1045,7 +1045,7 @@ pub fn remote_live_game(m: &dyn engine::GuestMemory) -> bool {
 /// `confirm_peers`, a placement count change only with no other people.
 /// Matchmaking (life-cycle types 6 to 9, whoever hosts), a client and a
 /// session that cannot be read refuse.
-pub fn live_edit_refusal(m: &dyn engine::GuestMemory) -> Option<&'static str> {
+pub fn live_edit_refusal(m: &dyn guest_layout::GuestMemory) -> Option<&'static str> {
     use bots::lobby;
 
     if !remote_live_game(m) {
@@ -1072,7 +1072,7 @@ pub fn live_edit_refusal(m: &dyn engine::GuestMemory) -> Option<&'static str> {
 
 /// The session kind from the simulation mode, and the squad session
 /// (`coop_probe::read_sim`, `read_session`).
-pub fn session_view(m: &dyn engine::GuestMemory) -> agent_proto::sim::SessionView {
+pub fn session_view(m: &dyn guest_layout::GuestMemory) -> agent_proto::sim::SessionView {
     use crate::coop_probe::{protocol_name, read_session, read_sim};
     let m = Mem(m);
     let sim = read_sim(&m);
@@ -1288,7 +1288,7 @@ mod tests {
     fn remote_live_probe_uses_the_active_session_and_refuses_unreadable_state() {
         use bots::lobby;
         use crate::variant_ext::{SESSION_NETWORK_CLASS, SYSTEM_LINK};
-        let mut g = engine::testing::FakeGuest::new();
+        let mut g = guest_layout::testing::FakeGuest::new();
         assert!(remote_live_game(&g));
         let squad = 0x4000;
         let target = 0x14000;
@@ -1316,7 +1316,7 @@ mod tests {
         let squad = 0x4000;
         let target = 0x14000;
         let scene = |ty: u32, class: u32, squad_host: bool, target_host: bool| {
-            let mut g = engine::testing::FakeGuest::new();
+            let mut g = guest_layout::testing::FakeGuest::new();
             g.map(lobby::NETWORKING, 0x80)
                 .put_u8(lobby::NETWORKING, 1)
                 .put_u32(lobby::SESSION, squad)
@@ -1346,18 +1346,18 @@ mod tests {
         g.put_u8(lobby::NETWORKING, 0);
         assert_eq!(live_edit_refusal(&g), None);
         // An unreadable game is refused.
-        assert!(live_edit_refusal(&engine::testing::FakeGuest::new()).is_some());
+        assert!(live_edit_refusal(&guest_layout::testing::FakeGuest::new()).is_some());
         assert!(live_edit_refusal(&scene(5, 2, true, true)).unwrap().contains("custom game"));
     }
 
     #[test]
     fn the_sim_session_kind_comes_from_the_simulation_mode() {
         use agent_proto::sim::SessionKind;
-        let mut g = engine::testing::FakeGuest::new();
+        let mut g = guest_layout::testing::FakeGuest::new();
         assert_eq!(session_view(&g).kind, SessionKind::Unknown);
         let globals = 0x9000_0000;
-        g.map(engine::points::SIM_GLOBALS.base, 4);
-        g.put_u32(engine::points::SIM_GLOBALS.base, globals);
+        g.map(guest_layout::points::SIM_GLOBALS.base, 4);
+        g.put_u32(guest_layout::points::SIM_GLOBALS.base, globals);
         g.map(globals, 0x40);
         for (mode, kind) in [
             (2, SessionKind::CoopHost),

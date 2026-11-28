@@ -1,7 +1,7 @@
 //! Read the actor's decisions at the same tick boundary as world.query.
 
 use agent_proto::{Kind, ObjectId, RpcError, code};
-use engine::{GuestMemory, MemFault, view::Datums};
+use guest_layout::{GuestMemory, MemFault, view::Datums};
 use guest_layout::{actor::Actor, global::ACTORS};
 use serde_json::{Value, json};
 
@@ -14,7 +14,7 @@ const PROP_REFS: u32 = 0x00502418;
 const BEHAVIOR_NAMES: u32 = 0x0046f0c8;
 const NAMED_BEHAVIORS: u16 = 131;
 
-engine::record! {
+guest_layout::record! {
     // 0x001b368a follows actor +0x338 through this array, then uses
     // the object handle at +0x20 to read the target's object body.
     struct PropRef: 0x3c {
@@ -24,7 +24,7 @@ engine::record! {
 
 /// Count live actors without reading their bodies or behavior records.
 pub(crate) fn actor_count(m: &dyn GuestMemory) -> Result<u32, MemFault> {
-    use engine::datum::layout::ACTIVE_COUNT;
+    use guest_layout::datum::layout::ACTIVE_COUNT;
     let Some(pool) = Datums::<Actor>::from_global(m, ACTORS.base)? else {
         return Ok(0);
     };
@@ -44,7 +44,7 @@ fn sector_count(m: &dyn GuestMemory) -> Result<i32, MemFault> {
 /// `ai` switch (globals +0), `initialised` is set once AI is set up for the
 /// map (+1). `None` before the globals exist.
 fn globals(m: &dyn GuestMemory) -> Result<Option<Value>, MemFault> {
-    let g = m.u32(engine::points::AI_GLOBALS.base)?;
+    let g = m.u32(guest_layout::points::AI_GLOBALS.base)?;
     if g == 0 {
         return Ok(None);
     }
@@ -128,14 +128,14 @@ pub fn install(agent: &Agent) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{testing::FakeGuest, view::fake};
+    use guest_layout::{testing::FakeGuest, view::fake};
 
     #[test]
     fn reports_the_ai_globals_bytes() {
         let mut m = FakeGuest::new();
-        m.put_u32(engine::points::AI_GLOBALS.base, 0);
+        m.put_u32(guest_layout::points::AI_GLOBALS.base, 0);
         assert!(globals(&m).unwrap().is_none());
-        m.put_u32(engine::points::AI_GLOBALS.base, 0x50000)
+        m.put_u32(guest_layout::points::AI_GLOBALS.base, 0x50000)
             .put_u8(0x50000, 0)
             .put_u8(0x50001, 1);
         let g = globals(&m).unwrap().unwrap();

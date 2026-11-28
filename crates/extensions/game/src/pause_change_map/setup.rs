@@ -20,9 +20,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use engine::entry::{Cx, EntryError, GuestCall};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 
 use crate::list_class::{self, Action, ListClass, Rows};
 use crate::map_select::Category;

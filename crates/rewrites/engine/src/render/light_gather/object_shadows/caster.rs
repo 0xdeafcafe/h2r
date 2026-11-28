@@ -9,10 +9,10 @@
 //! callee, including the early return when the bounds miss the view.
 
 use super::super::{LIGHT_VIS, MAIN_VIS, Refusal, Result, frame, guest, passes, visible};
-use crate::entry::{Cx, EntryError, GuestCall, Regs, Ret};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Regs, Ret};
 use crate::light_constants::{Error, Fpu, Sse, X87};
 use crate::light_passes::global::{PASS_FLAGS, PASSES};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use crate::render::object_lighting;
 
 /// Locals and the four saved registers below the entry ESP.
@@ -728,7 +728,7 @@ async fn layers(cx: &Cx, p: &Plan, s: u32) -> Result<u32, EntryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FlatMemory;
+    use guest_layout::FlatMemory;
 
     #[test]
     fn a_root_without_a_lit_record_of_its_own_is_planned_not_refused() {

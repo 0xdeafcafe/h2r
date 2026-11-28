@@ -2,12 +2,12 @@
 //! Settings and Voice appended to either native list. See
 //! docs/game/settings-menu.md "Pause menu".
 
-use engine::DatumHandle;
-use engine::datum::DatumArray;
-use engine::entry::{Cx, EntryError, EntryFuture, Ret};
-use engine::memory::GuestMemory;
-use engine::points;
-use engine::view::ui::{self, Item, ListHandler};
+use guest_layout::DatumHandle;
+use guest_layout::datum::DatumArray;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, Ret};
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
+use guest_layout::view::ui::{self, Item, ListHandler};
 use hooks::{BuildError, Builder, Call, Feature, Flow, Manifest};
 use runtime::GuestFault;
 

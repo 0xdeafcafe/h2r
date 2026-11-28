@@ -19,8 +19,8 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use engine::memory::GuestMemory;
-use engine::points::{Point, Sig};
+use guest_layout::memory::GuestMemory;
+use guest_layout::points::{Point, Sig};
 use frame_scene::effect::WeatherPlate;
 use hooks::Builder;
 use native_render::{weather_place, weather_quad};

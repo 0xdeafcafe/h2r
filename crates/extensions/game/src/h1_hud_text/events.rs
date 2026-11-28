@@ -1,8 +1,8 @@
 //! Route the selected interaction and pickup fields through the Halo 1
 //! event list before the native queue and formatter run.
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::HUD_MESSAGE_LOOKUP;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::HUD_MESSAGE_LOOKUP;
 use hooks::{Builder, Flow};
 use h1_contract::hud::{CONTROL_PROMPTS, CUSTOM_DEVICE, EVENT_SIZE, EVENTS, SHARED_MESSAGES};
 
@@ -150,7 +150,7 @@ pub(super) fn register(b: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn native_event_key_picks_two_arguments_and_a_button_action() {

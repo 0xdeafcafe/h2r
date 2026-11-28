@@ -337,9 +337,9 @@ fn sorted(m: &dyn GuestMemory, first: u32, end: u32) -> Result<Vec<u16>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn effect_queue_publishes_callback_payload_and_camera_depth() {

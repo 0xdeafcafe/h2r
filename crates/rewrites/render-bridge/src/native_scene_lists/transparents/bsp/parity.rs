@@ -135,7 +135,7 @@ pub(crate) fn install(b: &mut hooks::Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn admission_requires_the_guest_output_for_this_section_and_both_lists() {

@@ -4,13 +4,13 @@
 //! (`lights: object_shadows <entry> <cause>`), and the guest body never
 //! runs. The shadows draw in [`SLOT`], before layer 7.
 
-use engine::entry::{EntryError, Ret};
+use guest_layout::entry::{EntryError, Ret};
 use engine::light_constants::Fpu;
 use engine::render::light_gather::{
     Result,
     object_shadows::{self, caster, rows},
 };
-use engine::{memory::GuestMemory, points};
+use guest_layout::{memory::GuestMemory, points};
 use hooks::{Builder, Cx, EntryFuture};
 use timeline::native::{SceneList, SceneListResult};
 

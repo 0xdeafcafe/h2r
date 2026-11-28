@@ -595,5 +595,5 @@ pub(super) fn split(
         0x0030_0ff2
     };
     push(c, g, c.ebx)?;
-    call(c, g, crate::points::SIM_MOPP_RAY.base, resume).map(Some)
+    call(c, g, guest_layout::points::SIM_MOPP_RAY.base, resume).map(Some)
 }

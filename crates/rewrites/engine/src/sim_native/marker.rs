@@ -1,6 +1,6 @@
 use super::*;
 use crate::function_eval::constant::ONE;
-use crate::points::{OBJECTS, TAG_ENTRIES};
+use guest_layout::points::{OBJECTS, TAG_ENTRIES};
 
 const PARENT_OBJECT: u32 = 0x000b_8ca0;
 const AFTER_PARENT: u32 = 0x000b_8d48;

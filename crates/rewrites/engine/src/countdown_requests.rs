@@ -15,7 +15,7 @@
 //! reproduced. `countdown_requests_match_lifted`
 //! (`tests/sim_seats_differential.rs`) holds it to the lifted body.
 
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use crate::view_records::{CAMERA_OVERRIDE, COUNTDOWN};
 
 /// The phase's guest entry.
@@ -50,7 +50,7 @@ pub fn run(m: &mut dyn GuestMemory) -> Result<(), MemFault> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const CAMERA: u32 = 0x0060_0000;
 

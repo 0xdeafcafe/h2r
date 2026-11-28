@@ -54,8 +54,8 @@ fn level() -> Guest {
     g.map_zeroed(0x0040_0000, 0x0020_0000, Permissions::RW)
         .unwrap();
     g.map_zeroed(META, 0x0001_0000, Permissions::RW).unwrap();
-    g.set_u32(engine::points::TAG_INDEX.base, HEADER).unwrap();
-    g.set_u32(engine::points::TAG_ENTRIES.base, ENTRIES)
+    g.set_u32(guest_layout::points::TAG_INDEX.base, HEADER).unwrap();
+    g.set_u32(guest_layout::points::TAG_ENTRIES.base, ENTRIES)
         .unwrap();
     g.set_u32(HEADER + index::HEADER_SCENARIO, SCNR).unwrap();
     g.set_u32(HEADER + index::HEADER_COUNT, 5).unwrap();
@@ -601,12 +601,12 @@ fn bsp_switch_revalidates_surviving_tag_allocations_and_write_history() {
     g.write_bytes(META + 1, &[0x55], 1).unwrap();
     // The shader datum survives, but its allocation moved.
     entry(&mut g, 1, b"shad", SHAD, META + 0x7000, 0x54);
-    g.set_u32(engine::points::TAG_INDEX.base, 0).unwrap();
+    g.set_u32(guest_layout::points::TAG_INDEX.base, 0).unwrap();
     assert_eq!(
         ed.at_epoch(&g, 2, 1).unwrap_err().kind,
         ErrorKind::Unavailable
     );
-    g.set_u32(engine::points::TAG_INDEX.base, HEADER).unwrap();
+    g.set_u32(guest_layout::points::TAG_INDEX.base, HEADER).unwrap();
     ed.at_epoch(&g, 2, 1).unwrap();
     let journal = ed.changes(&g);
     let changes = journal["changes"].as_array().unwrap();

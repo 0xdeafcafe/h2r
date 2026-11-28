@@ -7,8 +7,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use hooks::{Builder, Flow};
 use runtime::CpuAbi;
 use runtime::guest::Access;

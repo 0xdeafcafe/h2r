@@ -22,8 +22,8 @@
 
 use super::alu::cmp16;
 use super::{Cx, Next, Result, unowned};
-use crate::datum::layout::{DATA, ELEMENT_SIZE, HIGH_WATER};
-use crate::points;
+use guest_layout::datum::layout::{DATA, ELEMENT_SIZE, HIGH_WATER};
+use guest_layout::points;
 use crate::sim_physics::{arithmetic, byte, logic, pop, push};
 use runtime::{CpuAbi, Guest};
 

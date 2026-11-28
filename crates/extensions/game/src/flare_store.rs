@@ -28,7 +28,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use engine::{GuestMemory, points};
+use guest_layout::{GuestMemory, points};
 use hooks::{Builder, Feature, Manifest};
 
 pub const ID: &str = "flare-store";
@@ -100,7 +100,7 @@ pub fn free(bytes: &mut [u8], index: u32) {
 /// The salt of object slot `index`, 0 when the slot is free, past the
 /// high-water mark or the objects array is unread.
 fn object_salt(mem: &dyn GuestMemory, index: u32) -> u16 {
-    use engine::datum::layout;
+    use guest_layout::datum::layout;
     let read = || -> Option<u16> {
         let header = mem.u32(points::OBJECTS.base).ok().filter(|&h| h != 0)?;
         let high = mem.u32(header + layout::HIGH_WATER).ok()? as i32;
@@ -134,7 +134,7 @@ const MAP_NAME_LEN: usize = 32;
 
 fn map_name(mem: &dyn GuestMemory) -> [u8; MAP_NAME_LEN] {
     let mut name = [0; MAP_NAME_LEN];
-    if mem.read(engine::points::CACHE_MAP_NAME.base, &mut name).is_err() {
+    if mem.read(guest_layout::points::CACHE_MAP_NAME.base, &mut name).is_err() {
         name = [0; MAP_NAME_LEN];
     }
     name
@@ -259,14 +259,14 @@ pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const OBJECTS: u32 = 0x0060_0000;
     const DATA: u32 = 0x0060_1000;
     const OBJECT_SIZE: u32 = 0xc;
 
     fn guest() -> FakeGuest {
-        use engine::datum::layout;
+        use guest_layout::datum::layout;
         let mut m = FakeGuest::new();
         m.put(BASE, &vec![0; LEN]);
         m.put_u8(BASE, 1).put_u8(BASE + 1, 1);

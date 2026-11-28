@@ -13,7 +13,7 @@ pub mod squads;
 use std::sync::{Arc, Mutex};
 
 use ::actor_net::Record;
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
 /// The running rules script's show cues for this tick as `Cue` records
@@ -224,7 +224,7 @@ impl Feature for Capture {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{points, testing::FakeGuest};
+    use guest_layout::{points, testing::FakeGuest};
 
     #[test]
     fn only_a_distributed_host_has_a_capture_tick() {

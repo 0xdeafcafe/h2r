@@ -1,7 +1,7 @@
 //! Retail collision agent allocations and the BV-tree child list. Evidence in
 //! docs/engine/havok-runtime.md, "Collision agents".
 
-use engine::{GuestMemory, MemFault};
+use guest_layout::{GuestMemory, MemFault};
 
 use super::{array, bad, span};
 

@@ -53,7 +53,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use engine::points::{self, Point};
+use guest_layout::points::{self, Point};
 use hooks::{Call, Flow};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 

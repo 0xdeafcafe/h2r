@@ -85,7 +85,7 @@ fn sample_curve(c: &mut CpuAbi, m: &mut impl Memory, _: u32) -> Result {
 pub const UPDATE: u32 = 0x0018_5be0;
 pub const SITES: &[u32] = &[0x185ff9, 0x186012, 0x186105, 0x1861a6, 0x1863a6,
     0x1863c0, 0x1863f7, 0x186403, 0x1865c4, 0x1866b3, 0x186a94];
-const OBJECTS: u32 = crate::points::OBJECTS.base;
+const OBJECTS: u32 = guest_layout::points::OBJECTS.base;
 const SETTINGS: u32 = 0x004e_034c;
 const OBJECT_HEADER: u32 = 0x004e_0300;
 const PLAYER_HEADER: u32 = 0x0051_e9b8;

@@ -1,12 +1,7 @@
 //! The script preference belongs to the observing actor. Halo 2's own
 //! score still establishes whether a perceived object is a candidate.
 
-use engine::{
-    DatumHandle,
-    datum::DatumArray,
-    entry::Cx,
-    memory::{GuestMemory, MemFault},
-};
+use guest_layout::{DatumHandle, datum::DatumArray, entry::Cx, memory::{GuestMemory, MemFault}};
 use hs::h1_ai_slots::{Operation, Registry};
 
 use super::{NONE, actors, state};
@@ -109,7 +104,7 @@ pub(super) fn score_bonus(m: &dyn GuestMemory, stack_after_return: u32) -> R<f32
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{datum::layout, testing::FakeGuest};
+    use guest_layout::{datum::layout, testing::FakeGuest};
 
     #[test]
     fn preferred_player_bonus_is_local_to_the_salted_observer() {

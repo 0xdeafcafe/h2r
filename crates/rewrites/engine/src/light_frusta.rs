@@ -34,7 +34,7 @@
 //! reads.
 
 use self::guest::*;
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use crate::shadow_arm::Proposal;
 
 /// The image's words the builder reads.
@@ -592,7 +592,7 @@ fn projected(m: &dyn GuestMemory, f: &mut Rec, v: u32, pose: u32, c: &Consts) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const VOLUME: u32 = 0x0010_0000;
     const POSE: u32 = 0x0010_1000;
@@ -802,7 +802,7 @@ pub mod arm {
     }
 
     /// The guest made a sampled call: compare `proposal` with `m`.
-    pub fn compare(proposal: &crate::shadow_arm::Proposal, m: &dyn crate::memory::GuestMemory, frame: u32, light: u32) {
+    pub fn compare(proposal: &crate::shadow_arm::Proposal, m: &dyn guest_layout::memory::GuestMemory, frame: u32, light: u32) {
         with(|a, on| {
             a.compare(proposal, m, on, || format!("frame {frame} light {light:#010x}"));
         });

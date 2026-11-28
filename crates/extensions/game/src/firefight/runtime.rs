@@ -37,8 +37,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use ::firefight::director::SQUAD_SLOTS;
 use ::firefight::{Command, Def, Difficulty, MAX_TEAMS, Outcome, PlayerKill, Settings, Skull};
 use agent_proto::firefight as wire;
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::{GuestMemory, MemFault, points};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::{GuestMemory, MemFault, points};
 use sim_state::SimEvent;
 
 use super::guest::{self, KitLayout};
@@ -268,7 +268,7 @@ pub fn teams_refusal(teams: u8, team_play: Option<bool>) -> Option<&'static str>
 pub const OPTIONS_VARIANT_FLAGS: u32 = bots::guest::VARIANT_FLAGS;
 
 /// Whether `ai_initialize_for_new_map` takes the campaign's path on this
-/// multiplayer map (`engine::points::ai_gates`): the loaded scenario
+/// multiplayer map (`guest_layout::points::ai_gates`): the loaded scenario
 /// carries the Firefight kit. Retail leaves a multiplayer map's AI
 /// uninitialised, so the engine would place no actor. Every machine and a
 /// film's playback answer the same: each applies the host's placements.
@@ -352,7 +352,7 @@ fn palette_row(m: &dyn GuestMemory, character: u32) -> Option<u16> {
 /// The players in the game: each listed player's roster slot, team and
 /// unit, alive while its unit's body is not depleted.
 pub fn read_players(m: &dyn GuestMemory) -> Result<Vec<(PlayerView, Option<u32>)>, MemFault> {
-    use engine::view::{objects, players};
+    use guest_layout::view::{objects, players};
     let Some(array) = players::array(m)? else {
         return Ok(Vec::new());
     };

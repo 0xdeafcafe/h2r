@@ -1,8 +1,8 @@
 //! Campaign squad storage reserved by the retail game-state allocator.
 //! The group array keeps its retail capacity and does not move between maps.
 
-use crate::datum::{self, DatumArray, flags, layout};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::datum::{self, DatumArray, flags, layout};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// a50 has 384 live or script-addressed squads and two further maneuver targets.
 pub const LIMIT: usize = 386;
@@ -75,7 +75,7 @@ pub fn publish(
 /// Called between maps, at the same point the native initializer clears all
 /// active slots. The larger physical reservation never changes address.
 pub fn prepare(m: &mut dyn GuestMemory) -> Result<(), MemFault> {
-    let scenario = m.u32(crate::points::SCENARIO.base)?;
+    let scenario = m.u32(guest_layout::points::SCENARIO.base)?;
     let squads = m.u32(scenario + 0x160)? as usize;
     let groups = m.u32(scenario + 0x158)? as usize;
     if !holds(squads, groups) {
@@ -119,7 +119,7 @@ pub fn actor_state(m: &dyn GuestMemory, index: u16) -> Result<Option<u32>, MemFa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DatumHandle, memory::FlatMemory};
+    use guest_layout::{DatumHandle, memory::FlatMemory};
 
     #[test]
     fn named_destinations_have_independent_native_records_and_keep_group_storage() {
@@ -127,7 +127,7 @@ mod tests {
         let squad = 0x480000;
         let group = squad + SQUAD_BYTES;
         let scenario = 0x470000;
-        m.set_u32(crate::points::SCENARIO.base, scenario).unwrap();
+        m.set_u32(guest_layout::points::SCENARIO.base, scenario).unwrap();
         publish(&mut m, squad, group, 0x40000).unwrap();
         m.set_u32(group + GROUP_BYTES, 0x7856_3412).unwrap();
         m.set_u32(scenario + 0x160, LIMIT as u32).unwrap();

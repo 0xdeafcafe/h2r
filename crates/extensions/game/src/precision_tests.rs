@@ -1,6 +1,6 @@
 use super::*;
-use engine::memory::FlatMemory;
-use engine::tags::{
+use guest_layout::memory::FlatMemory;
+use guest_layout::tags::{
     TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, entry_layout, group_layout, index_layout,
 };
 

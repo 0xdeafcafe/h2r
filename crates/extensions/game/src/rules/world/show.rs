@@ -21,8 +21,8 @@ use ::rules::show::{self, Audience, Cue, HoleValue, Message, State, To};
 use ::rules::types::{StartLine, Type};
 use ::rules::vm::Arg;
 use ::rules::{Ir, caps};
-use engine::GuestMemory;
-use engine::entry::Cx;
+use guest_layout::GuestMemory;
+use guest_layout::entry::Cx;
 
 use crate::actor_net::client::ReceivedCue;
 use crate::rules::census::{self, Table};
@@ -332,7 +332,7 @@ pub(crate) struct Roster {
 
 /// The listed players: slot, team, name and local user reads.
 pub(crate) fn roster(m: &dyn GuestMemory) -> Vec<Roster> {
-    use engine::view::players;
+    use guest_layout::view::players;
     let Ok(Some(array)) = players::array(m) else {
         return Vec::new();
     };

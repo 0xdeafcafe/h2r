@@ -188,7 +188,7 @@ fn the_hash_shares_the_tick_with_another_listener() {
         Ok(())
     }))
     .unwrap();
-    let addrs = hooks::Remap::new(&[(&engine::points::GAME_TICK, synthetic::TICK)]);
+    let addrs = hooks::Remap::new(&[(&guest_layout::points::GAME_TICK, synthetic::TICK)]);
     r.build(&addrs).unwrap().install(&toy.runtime).unwrap();
     let (mut tap, _) = InputRecorder::new();
     for f in 0..FRAMES {

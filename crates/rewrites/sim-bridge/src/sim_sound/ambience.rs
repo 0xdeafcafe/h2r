@@ -15,8 +15,8 @@
 //! comparisons are `comiss`: a NaN takes the branch an unordered compare
 //! takes.
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::SOUND_GLOBALS;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::SOUND_GLOBALS;
 
 const NONE: u32 = u32::MAX;
 /// `[0x45dc70]`: the weight floor and the least fade time.
@@ -129,7 +129,7 @@ pub fn blend(m: &mut dyn GuestMemory, candidates: u32) -> Result<(), MemFault> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const GLOBALS: u32 = 0x0060_0000;
     const CANDIDATES: u32 = 0x0061_0000;

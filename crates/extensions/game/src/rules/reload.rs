@@ -25,7 +25,7 @@ use agent::rules::Reload;
 use agent::sim::calls::{Arg, GameStep};
 use agent_proto::rules::{LastReload, ReloadMode, ReloadParams, ReloadResult, Reloaded};
 use agent_proto::{RpcError, code};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use variants::ext::{self, Ext, Mode, Script};
 
 use super::feature::Shared;

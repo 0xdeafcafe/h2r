@@ -1,6 +1,6 @@
 use super::*;
-use engine::entry::{EntryError, EntryFuture, Regs, Ret, testing};
-use engine::testing::FakeGuest;
+use guest_layout::entry::{EntryError, EntryFuture, Regs, Ret, testing};
+use guest_layout::testing::FakeGuest;
 
 const S: u32 = 0x8100_0000;
 const GAME: u32 = 0x8200_0000;

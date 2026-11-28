@@ -37,7 +37,7 @@
 
 use std::collections::HashMap;
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use x87::abi::{self as fpu, arith_op, src_kind, unary_op, X87Abi};
 
 /// Why the port refuses; the caller names it.
@@ -1342,7 +1342,7 @@ fn body(m: &mut dyn GuestMemory, mxcsr: u32, cw: u16) -> Result<(), Cause> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const MXCSR: u32 = 0x1f80;
     const CW: u16 = 0x027f;

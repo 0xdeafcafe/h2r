@@ -10,8 +10,8 @@ use crate::event::{
     ProjectileState, Snapshot, Support, VehicleState, Weapon, World,
 };
 use crate::layout;
-use engine::DatumHandle;
-use engine::view::{Datums, players};
+use guest_layout::DatumHandle;
+use guest_layout::view::{Datums, players};
 use live_proto::game::ObjectKind;
 
 pub type ReadResult<T> = Result<T, GuestFault>;
@@ -156,7 +156,7 @@ fn appearance(guest: &Guest, local_user: i16) -> ReadResult<Appearance> {
 }
 
 /// A view's read fault as the runtime's (views report no reason).
-fn fault(f: engine::MemFault) -> GuestFault {
+fn fault(f: guest_layout::MemFault) -> GuestFault {
     GuestFault {
         addr: f.addr,
         len: f.len as usize,
@@ -202,7 +202,7 @@ fn players_into(
     // tick, which must not allocate.
     let high_water = players
         .array
-        .header_field(guest, engine::datum::layout::HIGH_WATER)
+        .header_field(guest, guest_layout::datum::layout::HIGH_WATER)
         .map_err(fault)?
         .clamp(0, 16);
     for slot in 0..high_water {
@@ -264,7 +264,7 @@ fn players_into(
                     .filter(|c| *c < 4)
             },
             machine: player.machine(guest).map_err(fault)?,
-            unit: engine::handle::raw_or_none(player.unit(guest).map_err(fault)?),
+            unit: guest_layout::handle::raw_or_none(player.unit(guest).map_err(fault)?),
             stats,
         });
     }
@@ -352,7 +352,7 @@ impl<'g> Objects<'g> {
             high_water: self.guest.u32(array + layout::DATUM_HIGH_WATER)? as i32,
             element_size: self
                 .guest
-                .u32(array + engine::datum::layout::ELEMENT_SIZE)? as i32,
+                .u32(array + guest_layout::datum::layout::ELEMENT_SIZE)? as i32,
         };
         self.table.set(Some(table));
         Ok(table)
@@ -360,7 +360,7 @@ impl<'g> Objects<'g> {
 
     /// An object's concrete type and body address, if `datum` names a live
     /// object: the high-water, salt and non-null body checks of
-    /// `0x000badc0`, as `engine::view::objects::get` makes them.
+    /// `0x000badc0`, as `guest_layout::view::objects::get` makes them.
     fn body(&self, datum: u32) -> ReadResult<Option<(u8, u32)>> {
         let Some(handle) = DatumHandle::from_raw(datum) else {
             return Ok(None);
@@ -802,10 +802,10 @@ fn clear(world: &mut World) {
 fn object_headers(guest: &Guest, headers: &mut Vec<u8>) -> ReadResult<()> {
     let array = ptr(guest, layout::OBJECTS_PTR)?;
     let field = |offset| array.checked_add(offset)
-        .ok_or_else(|| fault(engine::MemFault { addr: array, len: 4, write: false }));
+        .ok_or_else(|| fault(guest_layout::MemFault { addr: array, len: 4, write: false }));
     let high_water = guest.u32(field(layout::DATUM_HIGH_WATER)?)?;
     if high_water > layout::OBJECT_CAPACITY {
-        return Err(fault(engine::MemFault {addr: array, len: 4, write: false}));
+        return Err(fault(guest_layout::MemFault {addr: array, len: 4, write: false}));
     }
     let data = ptr(guest, field(layout::DATUM_DATA)?)?;
     headers.resize((high_water * layout::OBJECT_HEADER_SIZE) as usize, 0);
@@ -1404,13 +1404,13 @@ pub(crate) mod fixture {
         // The views read the element size from the array, as the game does.
         guest
             .set_u32(
-                PLAYERS + engine::datum::layout::ELEMENT_SIZE,
+                PLAYERS + guest_layout::datum::layout::ELEMENT_SIZE,
                 super::layout::PLAYER_SIZE,
             )
             .unwrap();
         guest
             .set_u32(
-                OBJECTS + engine::datum::layout::ELEMENT_SIZE,
+                OBJECTS + guest_layout::datum::layout::ELEMENT_SIZE,
                 super::layout::OBJECT_HEADER_SIZE,
             )
             .unwrap();

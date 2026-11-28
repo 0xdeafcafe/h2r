@@ -15,7 +15,7 @@
 //!   the tick's record (`engine::sim_lightmap::Fill`) before the call
 //!   returns. Neither path runs guest code.
 //! - map load and structure switch drop the store.
-use engine::points;
+use guest_layout::points;
 use engine::sim_lightmap::{self as lightmap, Fill, Site};
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};

@@ -1,11 +1,11 @@
 //! H1 endpoint ribbons on the H2 lightning queue. The callback data starts
 //! at queue entry +0x24 (0x429a0) and is passed to 0x508d0. Sorts move
 //! indices, leaving the owner's marker transforms in attachment order.
-use engine::handle::DatumHandle;
+use guest_layout::handle::DatumHandle;
 use engine::light_constants::global::SPECIAL_FORWARD;
-use engine::memory::{GuestMemory, MemFault};
-use engine::tags::GroupTag;
-use engine::view::{Tags, objects};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::tags::GroupTag;
+use guest_layout::view::{Tags, objects};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, points};
 use tags::effects::h1_lightning::{Endpoint, HEADER, MAGIC, STRIDE};
 
@@ -264,7 +264,7 @@ mod tests {
     }
     #[test]
     fn queued_markers_emit_one_tapered_segment_and_stop_at_the_end_marker() {
-        let mut m = engine::testing::FakeGuest::new();
+        let mut m = guest_layout::testing::FakeGuest::new();
         let (sp, layer, profile, queue, samples, clock) =
             (0x10000, 0x20000, 0x30000, 0x40000, 0x50000, 0x60000);
         let mut curve = vec![0; HEADER];

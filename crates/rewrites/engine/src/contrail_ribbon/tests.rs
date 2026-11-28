@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::FlatMemory;
+use guest_layout::memory::FlatMemory;
 
 const CW: u16 = 0x027f;
 const MXCSR: u32 = 0x1f80;

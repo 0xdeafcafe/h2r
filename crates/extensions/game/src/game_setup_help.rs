@@ -31,9 +31,9 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use hooks::{BuildError, Builder, Flow, Manifest};
 
 /// The feature (`features.game-setup-help` switches it).
@@ -205,7 +205,7 @@ pub fn install(registry: &mut hooks::Registry) -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use crate::list_class::{BITMAP_IMAGES, WIDGET_BLOCK};
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     /// A bitmap block's `bitm` datum.
     const BLOCK_BITMAP: u32 = 0x1c;

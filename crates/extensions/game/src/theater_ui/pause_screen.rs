@@ -18,9 +18,9 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 use hooks::Flow;
 
 use super::pages::{GuestTexts, SPARE, TEXTS};
@@ -373,7 +373,7 @@ fn class(screen: &Arc<Screen>) -> ListClass {
 }
 
 async fn set_row(cx: &Cx, screen: u32, row: usize) -> Result<(), EntryError> {
-    let list = screen.wrapping_add(engine::view::ui::LIST);
+    let list = screen.wrapping_add(guest_layout::view::ui::LIST);
     cx.call(GuestCall::new(list_class::LIST_SET_ROW).eax(list).args([row as u32]))
         .await?;
     Ok(())

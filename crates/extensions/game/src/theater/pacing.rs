@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 
 use super::{Mode, Session};
 
@@ -35,7 +35,7 @@ fn answer(
 
 pub(super) fn install(b: &mut hooks::Builder, session: Arc<Session>) {
     b.raw().before(
-        &engine::points::GAME_UPDATE_TICKS,
+        &guest_layout::points::GAME_UPDATE_TICKS,
         "film pacing",
         move |c| {
             // A ring jump loads its entry here, at the frame's start, before
@@ -103,7 +103,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::FlatMemory;
+    use guest_layout::FlatMemory;
 
     #[test]
     fn the_answer_changes_the_count_and_the_elapsed_seconds_and_nothing_else() {

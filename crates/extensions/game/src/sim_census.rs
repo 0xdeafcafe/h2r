@@ -10,8 +10,8 @@
 //! `None`, never as a count.
 
 use agent_proto::{RpcError, code};
-use engine::GuestMemory;
-use engine::datum::{SIGNATURE, layout};
+use guest_layout::GuestMemory;
+use guest_layout::datum::{SIGNATURE, layout};
 use serde_json::{Value, json};
 use sim_bench::metrics::{CENSUS_ARRAYS, CensusSample, GuestCensus};
 
@@ -70,13 +70,13 @@ fn pointer(m: &dyn GuestMemory, word: u32) -> Option<u32> {
 }
 
 fn local_users(m: &dyn GuestMemory) -> Option<u32> {
-    let globals = pointer(m, engine::points::PLAYER_GLOBALS.base)?;
+    let globals = pointer(m, guest_layout::points::PLAYER_GLOBALS.base)?;
     let count = m.u16(globals.wrapping_add(LOCAL_COUNT)).ok()? as i16;
     u32::try_from(count).ok()
 }
 
 fn local_visibility_empty(m: &dyn GuestMemory) -> Option<bool> {
-    let globals = pointer(m, engine::points::GAME_GLOBALS.base)?;
+    let globals = pointer(m, guest_layout::points::GAME_GLOBALS.base)?;
     let mut set = [0; VISIBILITY_BYTES];
     m.read(globals.wrapping_add(LOCAL_VISIBILITY), &mut set)
         .ok()?;
@@ -125,7 +125,7 @@ pub fn answer(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const PLAYER_GLOBALS: u32 = 0x0060_0000;
     const GAME_GLOBALS: u32 = 0x0061_0000;
@@ -143,8 +143,8 @@ mod tests {
     /// set, and every array set up.
     fn phantom_host() -> FakeGuest {
         let mut g = FakeGuest::new();
-        g.put_u32(engine::points::PLAYER_GLOBALS.base, PLAYER_GLOBALS)
-            .put_u32(engine::points::GAME_GLOBALS.base, GAME_GLOBALS)
+        g.put_u32(guest_layout::points::PLAYER_GLOBALS.base, PLAYER_GLOBALS)
+            .put_u32(guest_layout::points::GAME_GLOBALS.base, GAME_GLOBALS)
             .map(PLAYER_GLOBALS, 0x1c)
             .map(GAME_GLOBALS, 0x1200);
         for (i, ((word, name), live)) in ARRAYS.iter().zip([3, 2, 40, 1, 12]).enumerate() {

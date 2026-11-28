@@ -1,6 +1,6 @@
 use super::*;
-use crate::entry::{self, EntryFuture, Regs};
-use crate::testing::FakeGuest;
+use guest_layout::entry::{self, EntryFuture, Regs};
+use guest_layout::testing::FakeGuest;
 
 const STACK: u32 = 0x0030_0000;
 const TIME: u32 = 0x0052_0000;
@@ -19,7 +19,7 @@ fn guest(threads: &[Option<(u8, i32)>]) -> FakeGuest {
     let mut g = FakeGuest::new();
     g.map(STACK - 0x8000, 0x10000).map(0x004f_9000, 0x1000).map(TIME, 0x1000);
     g.map(POOL, 0x1000).map(DATA, THREAD * threads.len() as u32 + 0x10);
-    g.put_u32(crate::points::GAME_TIME.base, TIME).put_u32(TIME + 8, TICK as u32);
+    g.put_u32(guest_layout::points::GAME_TIME.base, TIME).put_u32(TIME + 8, TICK as u32);
     g.put_u8(ENABLED, 1).put_u32(THREADS, POOL);
     g.put_u32(POOL + layout::ELEMENT_SIZE, THREAD)
         .put_u32(POOL + layout::HIGH_WATER, threads.len() as u32)
@@ -59,7 +59,7 @@ fn run_on(g: FakeGuest, callee: impl FnMut(&GuestCall, &mut dyn GuestMemory) -> 
     let f = |cx: Cx| -> EntryFuture {
         Box::pin(async move {
             run(&cx, 0x40).await?;
-            Ok(crate::entry::Ret::new(0, 0))
+            Ok(guest_layout::entry::Ret::new(0, 0))
         })
     };
     entry::testing::run(&f, g, Regs { esp: STACK, ..Default::default() }, callee)

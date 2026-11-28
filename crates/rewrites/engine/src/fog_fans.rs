@@ -31,7 +31,7 @@
 //! (`0x000350e0`) and attribute 1 the lerp itself, z 0, w 1.
 
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use crate::screen_grid;
 
 /// `0x00025dc0`.
@@ -989,7 +989,7 @@ pub fn fans(mem: &dyn GuestMemory, mxcsr: u32, cl: u8, dl: u8) -> Result<Fans, E
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const MXCSR: u32 = 0x1f80;
 

@@ -2,8 +2,8 @@
 //! test values, each named where it is set.
 
 use super::*;
-use engine::points::{GLOBALS_TAG, TAG_ENTRIES};
-use engine::testing::FakeGuest;
+use guest_layout::points::{GLOBALS_TAG, TAG_ENTRIES};
+use guest_layout::testing::FakeGuest;
 
 const TAG: u32 = 0xe100_0003;
 const ENTRIES: u32 = 0x0060_0000;
@@ -69,7 +69,7 @@ fn guest() -> FakeGuest {
     let s = SCALES + 2 * 20;
     g.put_f32(s, 0.0).put_f32(s + 4, 0.0).put_f32(s + 0xc, 1.0).put_f32(s + 0x10, 1.0);
     g.put_u16(ROWS + 0xa, 1);
-    g.put_u32(engine::points::RANDOM_SEEDS.base, RNG).put_u32(RNG + 4, 0);
+    g.put_u32(guest_layout::points::RANDOM_SEEDS.base, RNG).put_u32(RNG + 4, 0);
     g.put_u32(PLAYER_GLOBALS.base, USERS).put_u32(USERS + 0xc, 0).put_u32(USERS + 0x10, NONE);
     g.put_u32(GLOBALS_TAG.base, GTAG).put_u32(GTAG + 0xc0, 1).put_u32(GTAG + 0xc4, GTAG + 0x100).put_u32(GTAG + 0x104, 7);
     g.put_u32(CLASSES_TAG + 4, CLASSES).map(CLASSES, 0x1000);

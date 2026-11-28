@@ -28,7 +28,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use ::rules::Ty;
 use ::rules::ir::{Ir, Quick};
 use agent_proto::{RpcError, code};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use hooks::{BuildError, Builder};
 use runtime::guest::Permissions;
 use variants::ext::{self, Ext, Mode};

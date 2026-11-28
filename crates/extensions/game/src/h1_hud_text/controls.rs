@@ -1,9 +1,9 @@
 //! Script control of the health, shield, motion sensor and crosshair
 //! widgets. The disc uses retired native Boolean slots for these calls.
 
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::{HS_UNUSED_EVALUATOR, HUD_SENSOR_DRAW, HUD_WIDGET_GATE};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{HS_UNUSED_EVALUATOR, HUD_SENSOR_DRAW, HUD_WIDGET_GATE};
 use hooks::{Builder, Flow};
 
 use h1_contract::hud::{

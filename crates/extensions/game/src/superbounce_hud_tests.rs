@@ -536,7 +536,7 @@ fn the_reticle_locks_with_the_landing() {
 /// answer; nothing else is touched.
 #[test]
 fn the_locked_reticle_reads_autoaimed() {
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     const SP: u32 = 0x0010_0000;
     const INPUTS: u32 = 0x0010_0100;
     const OUT: u32 = 0x0010_0200;

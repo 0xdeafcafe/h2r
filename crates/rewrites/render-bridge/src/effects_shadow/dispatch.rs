@@ -7,7 +7,7 @@
 //! `entry+0x24` for each index of `[0x004b628c]`, skipping a null handler,
 //! and reads the list's end again after every entry.
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 use super::view_update::{
     LIST_CAPACITY, LIST_END, LIST_ENTRIES, LIST_FIRST, LIST_ORDER, LIST_STRIDE, PARTICLE_HANDLER,
@@ -166,7 +166,7 @@ impl Plan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const ROWS: u32 = 0x004c_0000;
     const ORDER: u32 = 0x004d_0000;

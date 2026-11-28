@@ -9,8 +9,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use engine::entry::{EntryFuture, Ret};
-use engine::points::Point;
+use guest_layout::entry::{EntryFuture, Ret};
+use guest_layout::points::Point;
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 
@@ -53,8 +53,8 @@ fn once(seen: &AtomicBool, what: &str) {
 
 /// The handle of retail row `retail` on the list at `list` (its rows'
 /// datum array at `+0x70`).
-pub fn retail_handle(m: &dyn engine::memory::GuestMemory, list: u32, retail: i16) -> Option<u32> {
-    let array = engine::datum::DatumArray::at(m.u32(list.wrapping_add(LIST_ROWS)).ok()?);
+pub fn retail_handle(m: &dyn guest_layout::memory::GuestMemory, list: u32, retail: i16) -> Option<u32> {
+    let array = guest_layout::datum::DatumArray::at(m.u32(list.wrapping_add(LIST_ROWS)).ok()?);
     Some(array.handle_of(m, i32::from(retail)).ok()??.0)
 }
 
@@ -184,8 +184,8 @@ mod tests {
             id: "settings-rows",
             title: "Our rows on the Settings list",
             list: List::Settings,
-            text: &engine::points::SETTINGS_ROW_TEXT,
-            chosen: &engine::points::SETTINGS_ROW_CHOSEN,
+            text: &guest_layout::points::SETTINGS_ROW_TEXT,
+            chosen: &guest_layout::points::SETTINGS_ROW_CHOSEN,
             label_only: true,
             model: model(),
         })
@@ -210,8 +210,8 @@ mod tests {
             id: "controls-rows",
             title: "Our rows on the Controls list",
             list: List::Controls,
-            text: &engine::points::CONTROLS_ROW_TEXT,
-            chosen: &engine::points::CONTROLS_ROW_CHOSEN,
+            text: &guest_layout::points::CONTROLS_ROW_TEXT,
+            chosen: &guest_layout::points::CONTROLS_ROW_CHOSEN,
             label_only: false,
             model: model(),
         })

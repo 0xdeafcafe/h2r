@@ -1,4 +1,4 @@
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 use input::host::HostPadState;
 
 use super::{Frame, PadSource, Recorded, Scripted};

@@ -286,8 +286,8 @@ pub(super) fn init(m: &mut dyn GuestMemory, pending: u32) -> Result<(), MemFault
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::datum::layout;
-    use engine::testing::FakeGuest;
+    use guest_layout::datum::layout;
+    use guest_layout::testing::FakeGuest;
 
     const PENDING: u32 = 0x1000;
     const STR: u32 = 0x2000;

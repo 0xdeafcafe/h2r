@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use forge::look::body::Draw;
 use forge::look::census::{self, Entry};
 use native_render::bodies::{Body, BodyModel, Set};

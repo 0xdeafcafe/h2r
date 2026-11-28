@@ -22,7 +22,7 @@ static START_GAME: Point = Point::new(
 );
 
 pub fn reload_hook_points() -> [&'static Point; 3] {
-    [&engine::points::OPTIONS_QUEUE, &PROCESS_TRANSITION, &START_GAME]
+    [&guest_layout::points::OPTIONS_QUEUE, &PROCESS_TRANSITION, &START_GAME]
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,7 +103,7 @@ pub(crate) fn install_reload_recovery(
     // A dropped continuation might never reach a transition return. Recover
     // before the next editor call, outside the ordinary agent tick chain.
     let tick = queue.clone();
-    b.raw().before(&engine::points::GAME_TICK, "recover an abandoned reload", move |c| {
+    b.raw().before(&guest_layout::points::GAME_TICK, "recover an abandoned reload", move |c| {
         let (interrupted, transition) = {
             let q = lock(&tick);
             (q.repair.is_some() || q.handoff.as_ref().is_some_and(|h| h.interrupted), q.transition)
@@ -121,7 +121,7 @@ pub(crate) fn install_reload_recovery(
         Ok(hooks::Flow::Continue)
     }).first();
     let before_queue = queue.clone();
-    b.raw().before(&engine::points::OPTIONS_QUEUE, "reconcile interrupted queue", move |c| {
+    b.raw().before(&guest_layout::points::OPTIONS_QUEUE, "reconcile interrupted queue", move |c| {
         recover_before(c, &before_queue)?;
         lock(&before_queue).transition = None;
         Ok(hooks::Flow::Continue)
@@ -160,7 +160,7 @@ pub(crate) fn install_reload_recovery(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn a_reload_receipt_belongs_to_its_own_transition_and_full_start() {

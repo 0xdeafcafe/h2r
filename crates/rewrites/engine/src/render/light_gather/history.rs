@@ -9,7 +9,7 @@
 
 use super::visible::{VISIBLE_BYTES, VisibleLight};
 use super::{Refusal, Result, Writes};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// Rows a history holds.
 pub const ROWS: usize = 32;
@@ -311,7 +311,7 @@ mod tests {
 
     #[test]
     fn a_history_past_thirty_two_rows_is_refused() {
-        let mut m = crate::FlatMemory::new(0x1000, 0x1000);
+        let mut m = guest_layout::FlatMemory::new(0x1000, 0x1000);
         m.set_u32(0x1000 + COUNT, 33).unwrap();
         assert_eq!(History::decode(&m, 0x1000), Err(Refusal::Layout));
         m.set_u32(0x1000 + COUNT, 2).unwrap();

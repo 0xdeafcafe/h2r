@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use hooks::{BuildError, Builder, Feature, Manifest};
 pub use native_render::flare_draw_gpu::GlowDraw;
 use scene_extract::GuestRead;
@@ -226,7 +226,7 @@ impl Feature for NativeFlareDraw {
         if !on(b.switches()) {
             return Ok(());
         }
-        b.raw().implement(&engine::points::FLARE_GLOW, "native_flare_glow", glow_call).context_only();
+        b.raw().implement(&guest_layout::points::FLARE_GLOW, "native_flare_glow", glow_call).context_only();
         Ok(())
     }
 }
@@ -234,7 +234,7 @@ impl Feature for NativeFlareDraw {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use frame_scene::ViewSlot;
 
     /// The draw pass is the post's last call, and the post is the view's

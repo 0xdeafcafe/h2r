@@ -109,7 +109,7 @@ impl GuestMemory for Staged<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn recursive_setup_observes_only_latest_staged_writes() {

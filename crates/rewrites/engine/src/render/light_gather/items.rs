@@ -32,9 +32,9 @@ use std::ops::Range;
 use super::frame::{FIRST_PERSON_COUNT, FIRST_PERSON_SLOT, FIRST_PERSON_TABLE};
 use super::guest::{NONE, TAGS};
 use super::{Refusal, Result, Writes};
-use crate::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
 use crate::light_constants::constant::{ONE, TWO};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The guest functions the body calls.
 pub mod call {

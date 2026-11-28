@@ -29,9 +29,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::tags::{GroupTag, tag_get_checked};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::tags::{GroupTag, tag_get_checked};
 
 /// The feature's id (`features.h1-precision`).
 pub const FEATURE: &str = "h1-precision";

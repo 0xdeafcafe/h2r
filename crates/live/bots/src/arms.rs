@@ -26,10 +26,10 @@
 //! left-hand weapon's slot when dual wielding, `+0x23c` the grenade type
 //! selected.
 
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::tags::GroupTag;
-use engine::view::{Tags, objects};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::tags::GroupTag;
+use guest_layout::view::{Tags, objects};
 
 use crate::brain::Vec3;
 
@@ -275,7 +275,7 @@ impl DualGun {
         if m.u32(weap + 0x12c)? & (3 << 22) == 0 {
             return Ok(None);
         }
-        let matg = m.u32(engine::points::GLOBALS_TAG.base)?;
+        let matg = m.u32(guest_layout::points::GLOBALS_TAG.base)?;
         if matg == 0 {
             return Ok(None);
         }

@@ -15,9 +15,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use engine::datum::{DatumArray, SIGNATURE, layout};
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::datum::{DatumArray, SIGNATURE, layout};
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use native_render::decal::Mode;
 
 use hooks::{BuildError, Builder, Feature, Manifest};
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn decal_pool_reports_only_valid_live_and_capacity_counts() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let mut mem = FlatMemory::new(DECAL_DATUM_ARRAY, 0x100);
         let header = DECAL_DATUM_ARRAY + 0x40;
         assert_eq!(pool_counts(&mem), None);

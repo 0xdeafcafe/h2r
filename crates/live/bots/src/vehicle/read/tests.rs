@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::guest::{MODE_MULTIPLAYER, OPTIONS, PLAYER_MACHINE, VARIANT_FLAGS};
-use engine::datum::layout as dl;
-use engine::testing::FakeGuest;
+use guest_layout::datum::layout as dl;
+use guest_layout::testing::FakeGuest;
 
 const GAME: u32 = 0x0060_0000;
 const PLAYERS_HEADER: u32 = 0x0061_0000;

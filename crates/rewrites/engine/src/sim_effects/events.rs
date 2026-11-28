@@ -4,7 +4,7 @@
 //! particular damage, object creation and random draws can see every
 //! preceding event's writes. Only the current time slice lives in Rust.
 use super::Port;
-use crate::points::{Loc, Point, Sig};
+use guest_layout::points::{Loc, Point, Sig};
 use crate::sim_objects::sse::{self, Ss};
 use crate::sim_physics::spatial::{finish_fpu, fp_error, load_fpu};
 use crate::sim_physics::{arithmetic, byte, logic, pop, push};
@@ -187,7 +187,7 @@ fn advance(c: &mut CpuAbi, g: &mut Guest) -> Result<Option<TransferAbi>> {
             push(c, g, c.eax)?;
             push(c, g, c.ecx)?;
             push(c, g, c.edi)?;
-            return Ok(Some(g.call(c, crate::points::EFFECT_STEP_EMITTERS.base, EMITTERS)?));
+            return Ok(Some(g.call(c, guest_layout::points::EFFECT_STEP_EMITTERS.base, EMITTERS)?));
         }
         if let Some(xfer) = update_locations(c, g)? { return Ok(Some(xfer)); }
         return select_next(c, g);
@@ -202,7 +202,7 @@ fn step(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Result<TransferAbi> {
             c.eax = g.u32(EFFECT_POOL)?;
             c.ecx = g.u32(addr(c.eax, 0x44))?;
             c.esp = c.esp.wrapping_sub(12);
-            c.edx = g.u32(crate::points::TAG_ENTRIES.base)?;
+            c.edx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
             push(c, g, c.ebp)?;
             push(c, g, c.esi)?;
             push(c, g, c.edi)?;

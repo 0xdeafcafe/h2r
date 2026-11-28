@@ -4,11 +4,11 @@
 use std::sync::{Arc, Mutex};
 
 use agent::firefight::Refused;
-use engine::entry::{EntryFuture, Regs, testing};
-use engine::testing::FakeGuest;
-use engine::view::fake;
-use engine::view::objects::{Body, Header};
-use engine::view::players::Player;
+use guest_layout::entry::{EntryFuture, Regs, testing};
+use guest_layout::testing::FakeGuest;
+use guest_layout::view::fake;
+use guest_layout::view::objects::{Body, Header};
+use guest_layout::view::players::Player;
 use guest_layout::Datum;
 use serde_json::json;
 use sim_state::Damage;

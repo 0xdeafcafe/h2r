@@ -21,7 +21,7 @@
 use std::cell::Cell;
 
 use engine::hud_sensor::{self, BlipDraw, BlipRefusal};
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 use super::kept::{self, OverlayKind};
 use super::{HudVertices, walk};
@@ -108,7 +108,7 @@ pub fn turn(
 mod tests {
     use super::*;
     use engine::hud_sensor::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const ESP: u32 = 0x0070_0000;
 

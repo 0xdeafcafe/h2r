@@ -26,8 +26,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use engine::GuestMemory;
-use engine::points;
+use guest_layout::GuestMemory;
+use guest_layout::points;
 use hooks::{BuildError, Builder, Flow, Manifest};
 use variants::ext_weapons;
 
@@ -126,7 +126,7 @@ impl State {
     /// The datum of the weapon at `path` in the loaded map.
     fn tag_of(&self, m: &dyn GuestMemory, path: &str) -> Option<u32> {
         let map = crate::health::loaded_map_name(m).ok()?;
-        let scenario = engine::view::Tags.scenario(m).ok().flatten()?.raw();
+        let scenario = guest_layout::view::Tags.scenario(m).ok().flatten()?.raw();
         let key = (map.clone(), scenario);
         let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
         if cache.as_ref().map(|c| &c.key) != Some(&key) {

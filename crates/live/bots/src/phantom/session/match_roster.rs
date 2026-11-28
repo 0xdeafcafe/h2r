@@ -2,7 +2,7 @@
 //! The retail hosting state (0x71982) compares its count and every 12-byte ID
 //! against session membership before consulting the hopper's start wait.
 use super::{MAX, R, at::*, mac_at, peer, player};
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 const PRESENT: u32 = 0x49fd;
 const ROSTER: u32 = 0x4a00;

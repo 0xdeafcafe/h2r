@@ -17,7 +17,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use engine::points;
+use guest_layout::points;
 
 use crate::coop_probe::Arm;
 

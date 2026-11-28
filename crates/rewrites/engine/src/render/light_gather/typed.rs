@@ -5,7 +5,7 @@
 
 use crate::light_constants::{self as lc, Error, Fpu, LightGlobals, Sse};
 use crate::light_passes::{self as lp, PassFlags};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use crate::shadow_constants::{self as sc, ShadowGlobals};
 
 /// Which caller supplied the `0x0004a1e0` arguments.

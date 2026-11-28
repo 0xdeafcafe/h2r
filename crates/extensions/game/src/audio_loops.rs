@@ -2,12 +2,12 @@
 
 use std::collections::HashSet;
 
-use engine::datum::DatumArray;
-use engine::sound::{
+use guest_layout::datum::DatumArray;
+use guest_layout::sound::{
     LoopingSound, LoopingSoundTag, LoopingTrackTag, SoundChannel, SoundInstance, SoundStream,
 };
-use engine::tags::{self, GroupTag, entry_layout};
-use engine::{DatumHandle, GuestMemory, MemFault, points};
+use guest_layout::tags::{self, GroupTag, entry_layout};
+use guest_layout::{DatumHandle, GuestMemory, MemFault, points};
 use serde::Serialize;
 
 const LOOP_SLOTS: i32 = 128;
@@ -112,7 +112,7 @@ fn pool(
     let array = DatumArray::at(addr);
     let header = array.header(m)?;
     Ok((header.valid
-        && header.signature == engine::datum::SIGNATURE
+        && header.signature == guest_layout::datum::SIGNATURE
         && header.data != 0
         && header.bitmap != 0
         && header.element_size == stride as i32
@@ -246,9 +246,9 @@ fn stream_object(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::datum::layout;
-    use engine::tags::index_layout;
-    use engine::testing::FakeGuest;
+    use guest_layout::datum::layout;
+    use guest_layout::tags::index_layout;
+    use guest_layout::testing::FakeGuest;
 
     const LOOP_POOL: u32 = 0x20000;
     const SOUND_POOL: u32 = 0x21000;
@@ -281,7 +281,7 @@ mod tests {
             .put_u32(header + layout::MAXIMUM_COUNT, count)
             .put_u32(header + layout::HIGH_WATER, count)
             .put_u32(header + layout::ELEMENT_SIZE, size)
-            .put_u32(header + layout::SIGNATURE, engine::datum::SIGNATURE)
+            .put_u32(header + layout::SIGNATURE, guest_layout::datum::SIGNATURE)
             .put_u8(header + layout::VALID, 1)
             .put_u32(header + layout::DATA, data)
             .put_u32(header + layout::BITMAP, bitmap)
@@ -324,7 +324,7 @@ mod tests {
         g.put_u16(LOOP_ROW, LOOP_ID.salt())
             .put_u32(LOOP_ROW + LoopingSound::TAG.offset, LSND_ID.raw())
             .put_u32(track.addr, INTRO.raw())
-            .put_u8(track.addr + engine::sound::LoopingTrack::SEGMENT.offset, 1)
+            .put_u8(track.addr + guest_layout::sound::LoopingTrack::SEGMENT.offset, 1)
             .put_u32(points::TAG_INDEX.base, TAG_INDEX)
             .put_u32(TAG_INDEX + index_layout::TAG_COUNT, 1)
             .put_u32(points::TAG_ENTRIES.base, TAG_ENTRY)
@@ -387,7 +387,7 @@ mod tests {
         let mut g = fixture();
         let track = LoopingSound::at(LOOP_ROW).track(0).unwrap();
         g.put_u32(TRACK_TAG + LoopingTrackTag::ALT_LOOP.offset, LOOP_TAG.raw())
-            .put_u8(track.addr + engine::sound::LoopingTrack::SEGMENT.offset, 4)
+            .put_u8(track.addr + guest_layout::sound::LoopingTrack::SEGMENT.offset, 4)
             .put_u16(SOUND_ROWS + SoundInstance::CHANNEL.offset, 0)
             .put_u32(points::SOUND_CHANNELS.base, CHANNEL_ROWS)
             .put_u32(CHANNEL_ROWS + SoundChannel::OWNER.offset, LOOP.raw());

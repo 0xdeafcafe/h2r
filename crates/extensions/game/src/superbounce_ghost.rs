@@ -36,7 +36,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use gfx::world_lines::{ImageMarks, ImageValidity, LineStyle, WorldLine};
 use hud_kit_core::views::superbounce::{Medal, Verb};
 use superbounce::ghost::{self as file, Button, Frame, Ghost, MAX_FRAMES, Source, TICK_HZ};
@@ -962,7 +962,7 @@ fn bot_slots() -> Vec<u8> {
 /// A unit's crouch request and aim.
 fn read_unit(m: &dyn GuestMemory, unit: u32) -> Option<(bool, Vec3)> {
     use live_telemetry::layout::{UNIT_AIM, UNIT_FLAG_CROUCH, UNIT_FLAGS};
-    let (_, body) = engine::view::objects::get(m, engine::handle::DatumHandle(unit)).ok()??;
+    let (_, body) = guest_layout::view::objects::get(m, guest_layout::handle::DatumHandle(unit)).ok()??;
     let request = m
         .u32(body.addr.wrapping_add(UNIT_FLAGS))
         .is_ok_and(|f| f & UNIT_FLAG_CROUCH != 0);

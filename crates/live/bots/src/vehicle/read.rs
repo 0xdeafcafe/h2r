@@ -12,11 +12,11 @@
 //!   block (`0xb0` each), a seat's `+0` its flags (bit 2 driver, bit 3
 //!   gunner).
 
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
-use engine::tags::GroupTag;
-use engine::view::{Tags, objects, players};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
+use guest_layout::tags::GroupTag;
+use guest_layout::view::{Tags, objects, players};
 
 use super::{Class, Rider, Riding, Seat, SeatRole, Sight, Vehicle};
 use crate::brain::Vec3;

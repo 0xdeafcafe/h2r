@@ -44,7 +44,7 @@
 
 use std::sync::Mutex;
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 use crate::keyboard_glue::{BUFFER as SCREEN_BUFFER, CHANNEL, VTABLE};
 

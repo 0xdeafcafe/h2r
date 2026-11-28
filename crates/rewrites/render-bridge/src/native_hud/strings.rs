@@ -15,7 +15,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_scene::OverlayBlend;
 use scene_extract::hud::{self, walk};
 use scene_extract::ui::{Justify, UiText};
@@ -320,7 +320,7 @@ pub fn counters() -> Vec<(String, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     /// Every glyph 8 by 10, 2 under the line's top, 10 apart, lines 12
     /// apart; its index is its character. A left line ends after a glyph

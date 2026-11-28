@@ -2,7 +2,7 @@
 
 use std::cell::Cell;
 
-use engine::points;
+use guest_layout::points;
 use native_render::camera::GuestRead;
 use native_render::skip::{CURRENT_LAYER, CURRENT_LIST, STENCIL_OFF_FLAGS};
 use native_render::world_layers::{Site, Texaccum, layer_site, opaque_layer};

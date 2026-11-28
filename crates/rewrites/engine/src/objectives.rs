@@ -1,6 +1,6 @@
 //! Retail game-engine objective registration and scenario scoring zones.
 
-use crate::{DatumHandle, GuestMemory, MemFault, points};
+use guest_layout::{DatumHandle, GuestMemory, MemFault, points};
 
 /// Holds the game-engine globals' address (`0xc9c` bytes).
 pub const GAME_ENGINE: u32 = points::GAME_ENGINE.base;
@@ -137,7 +137,7 @@ pub struct TerritoryState {
 pub fn territories(m: &dyn GuestMemory, t: u32) -> Result<Vec<TerritoryState>, MemFault> {
     check_span(t, 0x116)?;
     let count = (m.u16(t + 0x114)? as i16).clamp(0, 8) as usize;
-    let players = crate::view::players::array(m)?;
+    let players = guest_layout::view::players::array(m)?;
     let mut occupants = [0u16; 8];
     if let Some(players) = &players {
         for (id, player) in players.live(m, 16)? {

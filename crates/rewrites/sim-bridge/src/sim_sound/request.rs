@@ -9,7 +9,7 @@
 //! start layer's two tables by address. A table that is none of them
 //! refuses the request.
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use sim_sound::instances::{Handle, Request, SourceParams, TagIndex};
 use sim_sound::owners::{Own, Owner};
 use sim_sound::starts::{STARTED_TABLE, SOUND_TABLE};
@@ -105,7 +105,7 @@ fn owner(m: &dyn GuestMemory, table: u32, record: u32) -> Result<Owner, RequestE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const RECORD: u32 = 0x0060_0000;
     const TABLE: u32 = 0x0060_1000;

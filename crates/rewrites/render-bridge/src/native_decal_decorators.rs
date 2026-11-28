@@ -32,8 +32,8 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use scene_extract::GuestRead;
 use scene_extract::layout::decorators::{
     ACTIVE_BSP, BLOCK_GEOMETRY, BLOCK_PLACEMENTS, BSP_DECORATORS, CLASS_SIZE, GEOMETRY_SIZE,

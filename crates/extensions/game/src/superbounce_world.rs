@@ -35,7 +35,7 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use gfx::world_lines::{Fade, Glow, LineStyle, Pulse};
 use superbounce::{Kind, Spot, Vec3};
 

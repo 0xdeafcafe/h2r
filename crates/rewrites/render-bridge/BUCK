@@ -43,6 +43,7 @@ workspace_library(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -73,6 +74,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -104,6 +106,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -136,6 +139,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -168,6 +172,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -200,6 +205,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -232,6 +238,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -264,6 +271,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -296,6 +304,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -328,6 +337,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -360,6 +370,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -392,6 +403,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -424,6 +436,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -456,6 +469,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -488,6 +502,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -520,6 +535,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -552,6 +568,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",
@@ -584,6 +601,7 @@ workspace_test(
     version = "0.1.0",
     deps = [
         "//crates/formats/tags:tags",
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/canvas-fit:canvas-fit",
         "//crates/platform/frame-types:frame-types",

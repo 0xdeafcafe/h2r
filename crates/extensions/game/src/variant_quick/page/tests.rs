@@ -1,6 +1,6 @@
 use super::*;
-use engine::entry::{Regs, testing};
-use engine::testing::FakeGuest;
+use guest_layout::entry::{Regs, testing};
+use guest_layout::testing::FakeGuest;
 use variants::ext::{Block, Mode};
 use variants::record::{GameType, RECORD_SIZE};
 

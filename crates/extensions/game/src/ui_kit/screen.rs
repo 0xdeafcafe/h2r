@@ -22,8 +22,8 @@ use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use engine::entry::{Cx, EntryError, GuestCall};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::memory::{GuestMemory, MemFault};
 use runtime::guest::Permissions;
 
 use crate::list_class::{
@@ -1760,10 +1760,10 @@ mod tests {
     #[test]
     fn a_full_press_sequence_on_the_runner() {
         use crate::list_class::{BUTTON_EVENT, RIGHT_EVENT, destructor, event, row_chosen};
-        use engine::entry::{EntryFuture, GuestCall as Gc, Regs, Ret, testing};
-        use engine::points;
-        use engine::testing::FakeGuest;
-        use engine::view::ui as vui;
+        use guest_layout::entry::{EntryFuture, GuestCall as Gc, Regs, Ret, testing};
+        use guest_layout::points;
+        use guest_layout::testing::FakeGuest;
+        use guest_layout::view::ui as vui;
 
         const SCREEN: u32 = 0x0010_0000;
         const EV: u32 = 0x0020_0000;
@@ -1907,7 +1907,7 @@ mod tests {
     /// waiting for a free; after a load every text is written again.
     #[test]
     fn a_snapshot_waits_for_the_screen_and_rewrites_its_texts() {
-        use engine::testing::FakeGuest;
+        use guest_layout::testing::FakeGuest;
         let s = Arc::new(example().0);
         assert_eq!(s.snapshot_live(), None);
         assert_eq!(s.press(3), Chosen::Act);

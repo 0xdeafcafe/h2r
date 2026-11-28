@@ -6,7 +6,7 @@
 //! `lifted`'s (docs/engine/shadow-exec.md).
 #![cfg(feature = "differential")]
 
-use engine::points;
+use guest_layout::points;
 use engine::sim_physics::{ORACLES, PORTS, Port};
 use ir::interp::{Cpu, FlatMemory, Flow};
 use lifted::Code;

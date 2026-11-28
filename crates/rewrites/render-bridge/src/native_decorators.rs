@@ -30,8 +30,8 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use native_render::camera::{GuestRead, GuestWrite};
 use native_render::decorators::{Material, Plan, plan};
 use native_render::skip::{CURRENT_LAYER, Cleared, LIGHTMAP_LAYER};

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, ensure};
 use bots::los::Walls;
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use forge::{BlockKind, PaletteItem, Session, Teleporter, tool::Extent};
 use forge_doc::{BuilderVersions, ForgeDoc, Limits, MapRef, Sha256, TagKey, WorldBounds};
 use guest_layout::{

@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::colour_pass::{self as cp, constant, global};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};
 

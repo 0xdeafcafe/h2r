@@ -5,7 +5,7 @@
 //! A script names a weapon by its tag path; the host gives only the
 //! multiplayer weapon list's (`rules::weapons`), by the starting-weapon
 //! value the game maps to the list's slot. The game's own routine
-//! [`STARTING_WEAPON_PICK`](engine::points::STARTING_WEAPON_PICK)
+//! [`STARTING_WEAPON_PICK`](guest_layout::points::STARTING_WEAPON_PICK)
 //! (`0x19eda0`) answers the tag of a value from the map's multiplayer
 //! globals, as the spawn's weapon pass asks it. Each weapon is then made
 //! and added as a starting profile does (`agent::sim::calls`, "Give"):
@@ -20,8 +20,8 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use agent::sim::calls::addr;
-use engine::entry::{Cx, GuestCall};
-use engine::points;
+use guest_layout::entry::{Cx, GuestCall};
+use guest_layout::points;
 
 /// The scratch block's size: a placement, rounded up.
 pub const SCRATCH_SIZE: u32 = 0x100;
@@ -126,7 +126,7 @@ pub async fn give(cx: &Cx, player: u8, primary: Option<&str>, secondary: Option<
     Ok(())
 }
 
-fn guest(e: impl Into<engine::entry::EntryError>) -> anyhow::Error {
+fn guest(e: impl Into<guest_layout::entry::EntryError>) -> anyhow::Error {
     anyhow::anyhow!("{}", e.into())
 }
 

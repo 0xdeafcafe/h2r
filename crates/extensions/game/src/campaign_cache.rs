@@ -111,7 +111,7 @@ impl hooks::Feature for CampaignLimit {
 
     fn build(&self, b: &mut Builder) -> std::result::Result<(), BuildError> {
         b.raw().before(
-            &engine::points::CACHE_TYPE_LIMIT,
+            &guest_layout::points::CACHE_TYPE_LIMIT,
             "converted campaign size",
             |c| {
                 // ESI is the header at 0x1228b8. Only interpret it at that call.

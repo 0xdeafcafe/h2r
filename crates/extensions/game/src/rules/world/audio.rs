@@ -33,8 +33,8 @@ use ::rules::labels::ANNOUNCER;
 use ::rules::show::{self as cue, Audience, Cue, SoundCue, To};
 use ::rules::vm::{Arg, Call as VmCall};
 use agent::sim::calls::addr;
-use engine::GuestMemory;
-use engine::entry::{Cx, EntryError, GuestCall};
+use guest_layout::GuestMemory;
+use guest_layout::entry::{Cx, EntryError, GuestCall};
 
 use super::super::runtime::Call;
 use super::show;
@@ -454,10 +454,10 @@ mod tests {
 
     #[test]
     fn a_played_sound_starts_at_each_unit_by_the_maps_datum() {
-        use engine::entry::{self, EntryFuture, Regs, Step};
+        use guest_layout::entry::{self, EntryFuture, Regs, Step};
         let _g = serial();
         let datum = install_invented();
-        let cx = Cx::new(std::sync::Mutex::new(engine::testing::FakeGuest::new()), Regs::default());
+        let cx = Cx::new(std::sync::Mutex::new(guest_layout::testing::FakeGuest::new()), Regs::default());
         let units = [0x8001_0003u32, 0x8002_0004];
         let mut f: EntryFuture = {
             let cx = cx.clone();

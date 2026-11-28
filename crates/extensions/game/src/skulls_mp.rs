@@ -481,7 +481,7 @@ pub fn gate_bits(role: &Role, on: &BTreeSet<::firefight::Skull>) -> u32 {
 /// the gate for the skulls in `answered` (bit `n` skull `n`): the
 /// fall-through, the load of the skull's byte, for an answered skull;
 /// nowhere (the `jne` decides, as retail) for any other.
-pub fn gate_resume(gate: &engine::points::skull_gates::Gate, answered: u32) -> Option<u32> {
+pub fn gate_resume(gate: &guest_layout::points::skull_gates::Gate, answered: u32) -> Option<u32> {
     (gate.skull < 32 && answered & (1 << gate.skull) != 0).then_some(gate.resume)
 }
 
@@ -853,7 +853,7 @@ impl hooks::Feature for SkullsMp {
         // (docs/game/skulls.md, "In Firefight"). Optional: an image built
         // without the gates' entries drops them with a note, and the rest
         // of the multiplayer skulls stay.
-        for gate in &engine::points::skull_gates::GATES {
+        for gate in &guest_layout::points::skull_gates::GATES {
             b.raw()
                 .before(
                     &gate.site,
@@ -940,7 +940,7 @@ pub fn report(plan: &hooks::Plan, installed: &hooks::Installed) -> String {
             None => format!("{} ({what}, NOT in the plan)", p.name),
         }
     };
-    let gates = &engine::points::skull_gates::GATES;
+    let gates = &guest_layout::points::skull_gates::GATES;
     let placed = gates
         .iter()
         .filter(|g| {
@@ -1145,9 +1145,9 @@ mod tests {
     #[test]
     fn a_live_guest_reads_the_network_class_not_the_stage() {
         use crate::coop_probe::layout as l;
-        use engine::points::{NETWORK_READY, SQUAD_SESSION};
+        use guest_layout::points::{NETWORK_READY, SQUAD_SESSION};
         const S: u32 = 0x10_0000;
-        let mut g = engine::testing::FakeGuest::new();
+        let mut g = guest_layout::testing::FakeGuest::new();
         g.map(NETWORK_READY.base, 1)
             .map(SQUAD_SESSION.base, 4)
             .map(S, 0x8000)
@@ -1420,7 +1420,7 @@ mod tests {
     #[test]
     fn a_hosts_ai_skulls_pass_each_readers_campaign_gate() {
         use ::firefight::Skull as S;
-        use engine::points::skull_gates::{GATES, of};
+        use guest_layout::points::skull_gates::{GATES, of};
         let every = ff(&[
             S::Assassins,
             S::Thunderstorm,
@@ -1462,7 +1462,7 @@ mod tests {
     /// entry dispatch, so a resume check refused it on every image.
     #[test]
     fn a_gate_enters_its_fall_through_as_the_image_builds_it() {
-        let to = engine::points::skull_gates::GATES[0].resume;
+        let to = guest_layout::points::skull_gates::GATES[0].resume;
         assert_eq!(gate_transfer(&runtime::Dispatch::default(), to), None);
         let mut d = runtime::Dispatch::default();
         d.register_generated_rust(to, |_, _, _| unreachable!())

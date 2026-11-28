@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use engine::function_eval::constant::BYTE;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::particle_emission::constant::TINT;
 use engine::particle_walk::{self as pw, Call, Emitted};
 use native_render::particle_mirror::{self as nm, Key};
@@ -65,7 +65,7 @@ pub fn batches(m: &dyn GuestMemory, draw: u32, emitted: &[Emitted]) -> Result<Ve
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const DRAW: u32 = 0x0041_0000;
     const DEF: u32 = 0x0041_0100;

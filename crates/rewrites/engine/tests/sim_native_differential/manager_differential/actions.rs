@@ -9,7 +9,7 @@ const RECORD: u32 = DATA + 0x6000;
 fn state(c: &mut CpuAbi, m: &mut FlatMemory, seed: u32) {
     c.eax = MANAGER;
     c.esi = DEST;
-    word(m, engine::points::TAG_ENTRIES.base, TAG_TABLE);
+    word(m, guest_layout::points::TAG_ENTRIES.base, TAG_TABLE);
     word(m, MANAGER + 104, 0xace00003);
     word(m, TAG_TABLE + 3 * 16 + 8, GRAPH);
     for i in 0..4 {

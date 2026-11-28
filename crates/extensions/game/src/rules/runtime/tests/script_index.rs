@@ -129,7 +129,7 @@ fn each_ready_round_posts_the_record_scripts_line_on_the_host() {
     let work = s.lock().pre_tick(&m).unwrap();
     assert!(work.calls.is_empty());
     drive(&s, m.clone(), work, true);
-    let players = engine::view::players::array(&m).unwrap().unwrap();
+    let players = guest_layout::view::players::array(&m).unwrap().unwrap();
     for slot in 0..2 {
         players.get_absolute(&m, slot).unwrap().unwrap().set_flags(&mut m, 1).unwrap();
     }
@@ -162,7 +162,7 @@ fn each_ready_round_posts_the_record_scripts_line_on_the_host() {
     }
 
     let (client, mut m, _, _, _) = carried(&Local::default(), &source, SCRIPT);
-    let players = engine::view::players::array(&m).unwrap().unwrap();
+    let players = guest_layout::view::players::array(&m).unwrap().unwrap();
     for slot in 0..2 {
         players.get_absolute(&m, slot).unwrap().unwrap().set_flags(&mut m, 1).unwrap();
     }

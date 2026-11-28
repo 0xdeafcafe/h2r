@@ -25,7 +25,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::ocean_grid::{self as og, Grid};
 use ir::IrInsn;
 use ir::interp::{self, Cpu, FlatMemory};

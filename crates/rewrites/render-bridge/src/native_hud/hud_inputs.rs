@@ -10,7 +10,7 @@
 //! of name come from a call: the view's user's state (`0x0022acb4`, as
 //! `scene_extract::hud::user_state`) and the UI's values ([`ui_value`]).
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use scene_extract::hud;
 
 /// The provider the quad passes to `0x0001bd50`: context, then callback.
@@ -101,7 +101,7 @@ pub fn provider_installed(mem: &dyn GuestMemory) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn the_callback_reads_each_named_value_and_one_for_the_rest() {

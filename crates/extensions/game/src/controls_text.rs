@@ -23,9 +23,9 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use hooks::{BuildError, Builder, Manifest};
 
 /// The feature id.
@@ -148,7 +148,7 @@ pub async fn row_text(cx: Cx) -> Result<Ret, EntryError> {
     let value_text = cx.call(text(1)).await?.eax;
     let (label, value) = cx.read(|m| {
         let row = m.u16(item.wrapping_add(0x70)).map(|v| v as i16)?;
-        Ok::<_, engine::memory::MemFault>(texts(m, row))
+        Ok::<_, guest_layout::memory::MemFault>(texts(m, row))
     })?;
     for (widget, id) in [(label_text, id(label)), (value_text, id(value))] {
         if let (true, Some(id)) = (widget != 0, id) {
@@ -192,8 +192,8 @@ impl hooks::Feature for ControlsText {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::entry::{GuestCall as Gc, Regs, testing};
-    use engine::testing::FakeGuest;
+    use guest_layout::entry::{GuestCall as Gc, Regs, testing};
+    use guest_layout::testing::FakeGuest;
     use std::sync::Arc;
 
     const STACK: u32 = 0x0030_0800;

@@ -1,7 +1,7 @@
 use super::*;
 use crate::h1_options_row::{OPTIONS_ACTION, QUICK_OPTIONS};
-use engine::datum::DatumArray;
-use engine::testing::FakeGuest;
+use guest_layout::datum::DatumArray;
+use guest_layout::testing::FakeGuest;
 
 const CLANKERS: i16 = crate::clankers::ROW_ACTION;
 const FIREFIGHT: i16 = ff::ROW_ACTION;

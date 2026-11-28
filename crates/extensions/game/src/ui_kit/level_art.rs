@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use tags::ui_levels::{self, CampaignLevel, MpLevel};
 
 pub(crate) fn stem(path: &str) -> String {
@@ -62,7 +62,7 @@ mod tests {
 
     #[test]
     fn loaded_slots_supply_their_own_art_and_skip_the_lobby_placeholder() {
-        use engine::testing::FakeGuest;
+        use guest_layout::testing::FakeGuest;
 
         let mut g = FakeGuest::new();
         let (matg, ui, slots) = (0x1000, 0x2000, 0x3000);

@@ -19,7 +19,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 use hud_kit_core::views::superbounce::{
     self as sb, Arm, ArmTrack, Change, Charge, Lost, Medal, Note, Phase, Scan, Superbounce, Target,

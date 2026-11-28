@@ -16,7 +16,7 @@
 
 use std::sync::Arc;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_scene::{ClipRect, Overlay, OverlayBlend};
 use hooks::Builder;
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
@@ -121,8 +121,8 @@ fn outline_call(cpu: &mut CpuAbi, ctx: &mut ExecCtx, _addr: u32) -> Result<Trans
 }
 
 pub(super) fn place(b: &mut Builder<'_>) {
-    b.raw().implement(&engine::points::UI_OVERLAY_RECT_DRAW, "native_ui_rect_fill", rect_call).context_only().optional();
-    b.raw().implement(&engine::points::UI_WIDGET_OUTLINE, "native_ui_outline", outline_call).context_only().optional();
+    b.raw().implement(&guest_layout::points::UI_OVERLAY_RECT_DRAW, "native_ui_rect_fill", rect_call).context_only().optional();
+    b.raw().implement(&guest_layout::points::UI_WIDGET_OUTLINE, "native_ui_outline", outline_call).context_only().optional();
 }
 
 #[cfg(test)]

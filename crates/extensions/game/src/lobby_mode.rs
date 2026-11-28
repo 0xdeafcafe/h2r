@@ -62,9 +62,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
-use engine::entry::{EntryFuture, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::entry::{EntryFuture, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
@@ -963,7 +963,7 @@ impl hooks::Feature for LobbyMode {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        use engine::points::{
+        use guest_layout::points::{
             SQUAD_SETTINGS_LIST_CTOR as CTOR, SQUAD_SETTINGS_ROW_CHOSEN, SQUAD_SETTINGS_ROW_TEXT,
         };
         // The texts: a slot each, served to TEXT_SET by our locale source.

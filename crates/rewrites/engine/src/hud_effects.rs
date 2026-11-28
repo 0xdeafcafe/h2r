@@ -21,7 +21,7 @@
 
 use crate::function_eval;
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use crate::screen_effects::ranged;
 
 use x87::abi::arith_op;
@@ -134,7 +134,7 @@ pub fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const ELEMENT: u32 = 0x4000;
     /// The x87 control word and MXCSR the game runs under.

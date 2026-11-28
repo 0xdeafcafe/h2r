@@ -4,7 +4,7 @@
 //! materialised in the guest frame at each callout. The point update
 //! (`17c540`) stays guest code.
 use super::Port;
-use crate::points::{Point, Sig};
+use guest_layout::points::{Point, Sig};
 use crate::sim_native::Result;
 use crate::sim_objects::sse::{self, Ss};
 use crate::sim_physics::{arithmetic, logic, pop, push};
@@ -40,7 +40,7 @@ fn datum(g: &Guest, array: u32, handle: u32, size: u32) -> std::result::Result<u
 }
 
 fn definition(g: &Guest, handle: u32) -> std::result::Result<u32, GuestFault> {
-    let tags = g.u32(crate::points::TAG_ENTRIES.base)?;
+    let tags = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
     g.u32(at(tags, (handle & 0xffff) * 16 + 8))
 }
 

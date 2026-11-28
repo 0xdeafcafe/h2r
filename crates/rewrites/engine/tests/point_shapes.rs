@@ -1,4 +1,4 @@
-//! Every point's shape against the user's XBE (`engine::point_shapes`):
+//! Every point's shape against the user's XBE (`guest_layout::point_shapes`):
 //! the check the plan runs at install, run here over the whole table so a
 //! wrong declaration is found before it turns a feature off.
 //!
@@ -13,9 +13,9 @@
 
 mod common;
 
-use engine::point_shapes::{self, DECLARED, Verdict};
-use engine::points::{self, Point, Sig};
-use engine::points::scene_effects::EFFECT_LEAVES;
+use guest_layout::point_shapes::{self, DECLARED, Verdict};
+use guest_layout::points::{self, Point, Sig};
+use guest_layout::points::scene_effects::EFFECT_LEAVES;
 
 fn reader<'a>(x: &'a xbe::Xbe<'_>) -> impl Fn(u32, &mut [u8]) -> bool + 'a {
     move |va: u32, buf: &mut [u8]| match x.bytes_at(va, buf.len()) {
@@ -52,7 +52,7 @@ fn every_point_has_its_shape_in_the_image() {
     let mut all: Vec<&Point> = points::ALL.to_vec();
     all.extend(DECLARED.iter().map(|(p, _)| *p));
     all.extend(engine::sim_anim::manager::bodies().map(|b| points::by_base(b.entry).unwrap_or(&b.point)));
-    let leaves: Vec<Point> = engine::abi::OVERRIDES
+    let leaves: Vec<Point> = guest_layout::abi::OVERRIDES
         .iter()
         .map(|o| Point::new(o.name, o.addr, Sig::Opaque, "docs/engine/README.md"))
         .collect();

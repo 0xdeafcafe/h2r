@@ -8,7 +8,7 @@
 //! `impl.render.layer_draw` switch (docs/graphics/render-loop.md).
 
 use super::{Regs, Step};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// A byte set to 1 at every layer draw.
 pub const DRAW_FLAG: u32 = 0x0046_70bc;

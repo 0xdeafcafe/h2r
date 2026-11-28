@@ -7,8 +7,8 @@
 
 use std::cell::Cell;
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::{GLOBALS_TAG, SOUND_GLOBALS, TAG_ENTRIES};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{GLOBALS_TAG, SOUND_GLOBALS, TAG_ENTRIES};
 use sim_sound::instances::{Levels, SourceParams, TagIndex};
 use sim_sound::levels::{Constants, Duck, Ducking, Inputs, level};
 
@@ -126,7 +126,7 @@ impl Levels for GuestLevels<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const TAG: TagIndex = TagIndex(0xe100_0003);
     const ENTRIES: u32 = 0x0060_0000;

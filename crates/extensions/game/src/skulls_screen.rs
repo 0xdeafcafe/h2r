@@ -66,8 +66,8 @@ use crate::skulls_menu::{self, SkullsScreen};
 use crate::ui_kit::input::OpenerGuard;
 use crate::ui_kit::lifecycle;
 use crate::ui_watch;
-use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
-use engine::memory::MemFault;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
+use guest_layout::memory::MemFault;
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
@@ -408,7 +408,7 @@ impl PageFlow {
 /// `at + 8`, whose `+4` is the player index, as `[[chain]]+4` is read) and
 /// the row at `at + 0x10`. Returns (chain, row pointer).
 pub fn write_press(
-    m: &mut dyn engine::memory::GuestMemory,
+    m: &mut dyn guest_layout::memory::GuestMemory,
     at: u32,
     p: &Pending,
 ) -> Result<(u32, u32), MemFault> {
@@ -423,7 +423,7 @@ pub fn write_press(
 /// part of the list a mode 0 press reads (`0x2c9d79`; the mode 0 path from
 /// `0x2c9d9b` never reads `this` again). Returns the list pointer to pass.
 pub fn write_stand_in(
-    m: &mut dyn engine::memory::GuestMemory,
+    m: &mut dyn guest_layout::memory::GuestMemory,
     at: u32,
     p: &Pending,
 ) -> Result<u32, MemFault> {
@@ -619,7 +619,7 @@ pub async fn continue_level(
     let r = match cx.write(|m| write_press(m, scratch, p)) {
         Ok((chain, row)) => {
             cx.call(
-                GuestCall::new(engine::points::DIFFICULTY_ROW_CHOSEN.base)
+                GuestCall::new(guest_layout::points::DIFFICULTY_ROW_CHOSEN.base)
                     .ecx(list)
                     .args([chain, row]),
             )
@@ -838,7 +838,7 @@ fn row_chosen(c: &mut Call, page: &DifficultyPage, seen: &AtomicBool) -> Result<
     let mask = 1u32 << pending.player;
     c.answer_async(move |cx| -> EntryFuture {
         Box::pin(async move {
-            cx.call(GuestCall::new(engine::points::OPEN_SCREEN.base).args([mask, loader]))
+            cx.call(GuestCall::new(guest_layout::points::OPEN_SCREEN.base).args([mask, loader]))
                 .await?;
             Ok(Ret::new(0, 8))
         })
@@ -864,7 +864,7 @@ impl hooks::Feature for DifficultyPage {
             store: Arc::clone(&self.store),
         };
         b.raw().before(
-            &engine::points::DIFFICULTY_ROW_CHOSEN,
+            &guest_layout::points::DIFFICULTY_ROW_CHOSEN,
             "the Skulls page before the level",
             move |c| row_chosen(c, &page, &seen),
         );
@@ -887,9 +887,9 @@ impl hooks::Feature for DifficultyPage {
 mod tests {
     use super::*;
     use crate::list_class::Rows;
-    use engine::entry::{GuestCall as Gc, Regs, testing};
-    use engine::memory::GuestMemory;
-    use engine::testing::FakeGuest;
+    use guest_layout::entry::{GuestCall as Gc, Regs, testing};
+    use guest_layout::memory::GuestMemory;
+    use guest_layout::testing::FakeGuest;
     use settings::Store;
 
     fn screen() -> Arc<SkullsScreen> {
@@ -1121,7 +1121,7 @@ mod tests {
     }
 
     fn the_press() -> Gc {
-        Gc::new(engine::points::DIFFICULTY_ROW_CHOSEN.base)
+        Gc::new(guest_layout::points::DIFFICULTY_ROW_CHOSEN.base)
             .ecx(LIST)
             .args([SCRATCH, SCRATCH + 0x10])
     }
@@ -1265,7 +1265,7 @@ mod tests {
         let stand_in = SCRATCH + STAND_IN;
         assert_eq!(
             run.calls,
-            [Gc::new(engine::points::DIFFICULTY_ROW_CHOSEN.base)
+            [Gc::new(guest_layout::points::DIFFICULTY_ROW_CHOSEN.base)
                 .ecx(stand_in)
                 .args([SCRATCH, SCRATCH + 0x10])],
             "the press, once, on the stand-in"

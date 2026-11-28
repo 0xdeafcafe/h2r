@@ -51,7 +51,7 @@ pub trait Reader {
     /// Runs `f` on guest memory, for the `sim.*` methods' own reads and
     /// their host writes (at a tick boundary). False where there is no
     /// guest (the default).
-    fn with_guest(&mut self, f: &mut dyn FnMut(&mut dyn engine::GuestMemory)) -> bool {
+    fn with_guest(&mut self, f: &mut dyn FnMut(&mut dyn guest_layout::GuestMemory)) -> bool {
         let _ = f;
         false
     }
@@ -126,7 +126,7 @@ where
     F: Fn() -> G,
     G: DerefMut<Target = Guest>,
 {
-    fn with_guest(&mut self, f: &mut dyn FnMut(&mut dyn engine::GuestMemory)) -> bool {
+    fn with_guest(&mut self, f: &mut dyn FnMut(&mut dyn guest_layout::GuestMemory)) -> bool {
         let mut g = (self.guest)();
         f(&mut *g);
         true

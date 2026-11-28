@@ -4,7 +4,7 @@ use std::io::{Cursor, Read, Seek};
 use std::path::PathBuf;
 
 use bots::arms::{self, Profile, Role, WeaponDef};
-use engine::{
+use guest_layout::{
     memory::GuestMemory,
     points,
     tags::{entry_layout, index_layout},

@@ -30,7 +30,7 @@
 //! or a locale other than C (`tolower` at `0x321846` then reads tables)
 //! is not cached: the original runs ([`Lookup::Bypass`]).
 
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// The slot records' resident paths: header `+0x20` of the records at
 /// `0x557c90` (stride `0x804`), which `0x214a60` walks.
@@ -286,7 +286,7 @@ pub fn read_state(mem: &dyn GuestMemory, out: &mut Vec<u8>) -> Result<(), &'stat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const ESP: u32 = 0x7f_f000;
     const PATH: u32 = 0x46_0000;

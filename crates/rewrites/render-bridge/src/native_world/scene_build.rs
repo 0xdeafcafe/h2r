@@ -2,7 +2,7 @@
 //! private sort slot. The emitter separately checks whether the visible
 //! subparts produce a single complete index range.
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use native_render::{object_nodes, skip};
 
 const FOG_ACTIVE: u32 = 0x004b_a004;
@@ -34,7 +34,7 @@ pub fn build(m: &dyn GuestMemory, shader: u32, lod: u8, layer: u32, selector: u8
     if !models && model != u32::MAX { return None; }
     let flags = m.u32(record).ok()?;
     let packed = m.u32(record + 12).ok()?;
-    let table = ptr(m, engine::tags::TAG_ENTRIES_GLOBAL)?;
+    let table = ptr(m, guest_layout::tags::TAG_ENTRIES_GLOBAL)?;
     let section_id = (packed >> 9) & 511;
     let (info, geometry) = if model != u32::MAX {
         if m.u32(table.checked_add((model & 0xffff) * 16)?).ok()? != u32::from_be_bytes(*b"mode") {
@@ -163,7 +163,7 @@ pub fn full_range(m: &dyn GuestMemory, geometry: u32, at: u32, bitmap: u32, stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn full_range_requires_live_mask_and_ordered_contiguous_indices() {

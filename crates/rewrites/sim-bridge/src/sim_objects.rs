@@ -39,7 +39,7 @@
 //! state, so the feature's snapshot policy does not change. The arms'
 //! Rust-owned data and counters are the map's, cleared after a map load.
 use hooks::Builder;
-use engine::points;
+use guest_layout::points;
 use engine::sim_objects::native_walk::{self, Refusal};
 use engine::sim_objects::{self as objects, Table, damage};
 use runtime::{CpuAbi, ExecCtx, Fallback, Guest, GuestFault, Inline, TransferAbi};
@@ -332,7 +332,7 @@ mod tests {
     use super::*;
     use crate::sim_native::SimNative;
     use hooks::{Base, Registry, Switches};
-    use engine::points::{self, Point};
+    use guest_layout::points::{self, Point};
     use engine::sim_objects::{Body, Cx, Next};
 
     fn ret(_: &mut Cx<'_>, _: u32) -> objects::Result<Next> {
@@ -353,7 +353,7 @@ mod tests {
 
     #[test]
     fn shadow_checks_a_fused_call_and_resume_without_replaying_the_callee() {
-        use engine::points::Sig;
+        use guest_layout::points::Sig;
         use lifted::code::Assembled;
         use runtime::guest::Permissions;
         use std::sync::atomic::{AtomicU32, Ordering};

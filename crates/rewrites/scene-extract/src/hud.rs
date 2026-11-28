@@ -4,7 +4,7 @@
 //! walk in Rust"). Reads only; the addresses are the ones the guest's
 //! walk loads (Code, `h2 disasm`, cited at each).
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 pub use hud_kit_core::walk;
 use hud_kit_core::walk::{Art, Bitmap, Definition, Image, Kind, Screen, Sequence, Session, SpriteRecord};
 
@@ -380,7 +380,7 @@ pub fn blocks(mem: &dyn GuestMemory, datum: u32) -> Option<Blocks> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn a_name_widget_reads_the_name_of_the_player_the_record_names() {

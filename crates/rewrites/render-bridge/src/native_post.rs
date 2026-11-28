@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::colour_pass::{self, Parameters};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 
 use hooks::{BuildError, Builder, Feature, Manifest};
 

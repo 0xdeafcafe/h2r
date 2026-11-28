@@ -2216,14 +2216,14 @@ fn a_spawners_spare_clips_row_sets_the_property_and_stages_the_games_step() {
 
 /// A guest with one local player (local user 0) standing at `at` facing
 /// +y in biped `biped`; the player's handle and the biped's.
-fn local_player_guest(at: [f32; 3]) -> (engine::testing::FakeGuest, u32, u32) {
-    use engine::view::{fake, objects, players};
+fn local_player_guest(at: [f32; 3]) -> (guest_layout::testing::FakeGuest, u32, u32) {
+    use guest_layout::view::{fake, objects, players};
     const PLAYERS: u32 = 0x8000_0000;
     const OBJECTS: u32 = 0x8010_0000;
     const BODY: u32 = 0x8020_0000;
-    let mut g = engine::testing::FakeGuest::new();
-    g.put_u32(engine::points::PLAYERS.base, PLAYERS)
-        .put_u32(engine::points::OBJECTS.base, OBJECTS);
+    let mut g = guest_layout::testing::FakeGuest::new();
+    g.put_u32(guest_layout::points::PLAYERS.base, PLAYERS)
+        .put_u32(guest_layout::points::OBJECTS.base, OBJECTS);
     let ps = fake::datums::<players::Player>(&mut g, PLAYERS, 16);
     let os = fake::datums::<objects::Header>(&mut g, OBJECTS, 16);
     let (unit, header) = fake::push(&mut g, &os);

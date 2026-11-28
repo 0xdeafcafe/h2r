@@ -144,7 +144,7 @@ pub(super) trait Ticket: Send {
 pub(super) trait Reloader: Send {
     fn request(
         &mut self,
-        m: &dyn engine::GuestMemory,
+        m: &dyn guest_layout::GuestMemory,
         file: &Path,
     ) -> Result<Box<dyn Ticket>, String>;
 }
@@ -153,7 +153,7 @@ pub(super) trait Reloader: Send {
 impl Reloader for agent::sim::MapReloader {
     fn request(
         &mut self,
-        m: &dyn engine::GuestMemory,
+        m: &dyn guest_layout::GuestMemory,
         file: &Path,
     ) -> Result<Box<dyn Ticket>, String> {
         let reload = self.reload(m, file)?;

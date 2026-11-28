@@ -38,8 +38,8 @@
 
 use super::sse::{self, Ss};
 use super::{Cx, Next, Result, unowned};
-use crate::datum::layout;
-use crate::points;
+use guest_layout::datum::layout;
+use guest_layout::points;
 use crate::sim_physics::{ARITH, arithmetic, byte, logic, pop, push, status};
 use runtime::{CpuAbi, Guest};
 use x87::abi as fp;

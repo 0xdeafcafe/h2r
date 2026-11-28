@@ -2,12 +2,12 @@
 //! share the middle row, with one source mast pin and material on each.
 use super::h1_particle_physics::{fault, in_liquid, point_velocity};
 use bots::objective;
-use engine::datum::DatumArray;
-use engine::entry::{Cx, EntryError, EntryResult, GuestCall, Ret};
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::tags::GroupTag;
-use engine::view::{Tags, objects};
+use guest_layout::datum::DatumArray;
+use guest_layout::entry::{Cx, EntryError, EntryResult, GuestCall, Ret};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::tags::GroupTag;
+use guest_layout::view::{Tags, objects};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, points};
 use tags::effects::h1_attachment::PointPhysics;
 
@@ -334,7 +334,7 @@ mod tests {
     }
     #[test]
     fn both_cloth_panels_share_the_seam_and_use_the_owning_teams_shader() {
-        use engine::{tags, testing::FakeGuest};
+        use guest_layout::{tags, testing::FakeGuest};
         let mut m = FakeGuest::new();
         let (array, instances, bitmap) = (0x10000, 0x20000, 0x30000);
         let (index, groups, entries) = (0x40000, 0x41000, 0x42000);

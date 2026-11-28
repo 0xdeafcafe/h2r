@@ -24,8 +24,8 @@
 
 use super::Result;
 use super::Refusal;
-use crate::entry::{Cx, EntryError, GuestCall};
-use crate::memory::GuestMemory;
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::memory::GuestMemory;
 
 /// `0x00174220`.
 pub const ENTRY: u32 = 0x0017_4220;
@@ -241,8 +241,8 @@ impl From<EntryError> for Stop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entry::{self, EntryFuture, Regs, Ret};
-    use crate::testing::FakeGuest;
+    use guest_layout::entry::{self, EntryFuture, Regs, Ret};
+    use guest_layout::testing::FakeGuest;
 
     const ARRAY: u32 = 0x0060_0000;
     const DATA: u32 = 0x0060_1000;

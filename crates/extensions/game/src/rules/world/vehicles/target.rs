@@ -2,9 +2,9 @@
 //! Census handles occupy bit 30 with bit 31 clear. Retail datum salts
 //! have bit 31 set and can also set bit 30 (docs/engine/datum_new.md).
 
-use engine::GuestMemory;
-use engine::handle::DatumHandle;
-use engine::view::objects::{self, Header};
+use guest_layout::GuestMemory;
+use guest_layout::handle::DatumHandle;
+use guest_layout::view::objects::{self, Header};
 use forge_doc::BlockKind;
 use guest_layout::{Object, ObjectHeader, object::header::DELETE};
 
@@ -54,9 +54,9 @@ mod tests {
     use super::*;
     use crate::rules::census::{HANDLE, Thing};
     use ::rules::labels::Class;
-    use engine::testing::FakeGuest;
-    use engine::view::objects::Body;
-    use engine::view::{Datums, fake};
+    use guest_layout::testing::FakeGuest;
+    use guest_layout::view::objects::Body;
+    use guest_layout::view::{Datums, fake};
 
     struct World(FakeGuest, Datums<Header>, u32);
 
@@ -64,8 +64,8 @@ mod tests {
         fn new() -> World {
             let mut g = FakeGuest::new();
             let pool = fake::datums::<Header>(&mut g, 0x2000_0100, 16);
-            g.map(engine::points::OBJECTS.base, 4)
-                .put_u32(engine::points::OBJECTS.base, 0x2000_0100);
+            g.map(guest_layout::points::OBJECTS.base, 4)
+                .put_u32(guest_layout::points::OBJECTS.base, 0x2000_0100);
             World(g, pool, 0x3000_0000)
         }
 

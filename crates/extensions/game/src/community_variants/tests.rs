@@ -392,7 +392,7 @@ fn the_party_games_row_holds_the_party_and_practice_scripts() {
 
 /// A built-in variant record at `at` named `name`, of type `ty`, with no
 /// block: as `0x149f88` files it.
-fn put_builtin(m: &mut dyn engine::memory::GuestMemory, at: u32, name: &str, ty: GameType) {
+fn put_builtin(m: &mut dyn guest_layout::memory::GuestMemory, at: u32, name: &str, ty: GameType) {
     let mut v = GameVariant::blank(ty);
     v.set_name(name).unwrap();
     m.write(at, v.bytes()).unwrap();
@@ -406,7 +406,7 @@ fn every_listed_record_gets_its_block_at_load() {
     };
     const RECORDS: u32 = 0x0060_0000;
     let all = all_listed();
-    let mut g = engine::testing::FakeGuest::new();
+    let mut g = guest_layout::testing::FakeGuest::new();
     g.map(BUILTIN_LIST & !0xfff, 0x1000).map(RECORDS, 0x4000);
     assert_eq!(write_blocks(&mut g), Ok(0), "no list yet");
     // A retail built-in, every listed one, then a listed name on another
@@ -462,12 +462,12 @@ fn every_listed_record_gets_its_block_at_load() {
 
 #[test]
 fn the_goof_template_becomes_a_script_record_before_selection_or_editing() {
-    use engine::memory::GuestMemory;
+    use guest_layout::memory::GuestMemory;
     use variants::record::{RECORD_SIZE, TYPE_AREA};
     let template = GameType::from_list_index(goof_type(GameType::Script).unwrap()).unwrap();
     assert_eq!(template, GameType::Slayer);
     let siege = listed_named("Siege").unwrap();
-    let mut g = engine::testing::FakeGuest::new();
+    let mut g = guest_layout::testing::FakeGuest::new();
     g.map(GOOF, RECORD_SIZE as u32);
     put_builtin(&mut g, GOOF, &siege.display_name(), template);
     g.set_u8(GOOF + TYPE_AREA.start as u32, 1).unwrap();

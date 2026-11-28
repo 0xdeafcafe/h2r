@@ -14,7 +14,7 @@ fn setup(c: &mut CpuAbi, m: &mut FlatMemory, seed: u32) {
     c.edx = OUTPUT + 32;
     c.edi = OUTPUT + 64;
     let handle = 0x4521_0000 | seed;
-    word(m, engine::points::TAG_ENTRIES.base, TABLE);
+    word(m, guest_layout::points::TAG_ENTRIES.base, TABLE);
     word(m, TABLE + 8 + 16 * seed, GRAPH);
     word(m, MANAGER + 0x68, handle);
     for i in 0..3 {

@@ -4,7 +4,7 @@
 //! transactionally replaces only complete target-13 packets.
 
 use hooks::{BuildError, Builder, Feature, Flow, Manifest};
-use engine::{memory::GuestMemory, points};
+use guest_layout::{memory::GuestMemory, points};
 use native_render::gels;
 use std::sync::{Arc, Mutex};
 

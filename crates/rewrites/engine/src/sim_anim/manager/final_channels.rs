@@ -73,7 +73,7 @@ fn update_movement(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Resu
             push(c, g, c.esi)?;
             c.esi = c.eax;
             if c.ebp != u32::MAX {
-                c.ecx = g.u32(crate::points::OBJECTS.base)?;
+                c.ecx = g.u32(guest_layout::points::OBJECTS.base)?;
                 c.edx = g.u32(at(c.ecx, 68))?;
                 let slot = (c.ebp & 0xffff) * 12;
                 c.eax = g.u32(at(c.edx, slot + 8))?;

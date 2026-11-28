@@ -2,8 +2,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::view::players;
-use engine::{DatumHandle, GuestMemory, MemFault, points};
+use guest_layout::view::players;
+use guest_layout::{DatumHandle, GuestMemory, MemFault, points};
 use guest_layout::sound::SoundListener;
 use hooks::{Builder, Flow};
 
@@ -230,7 +230,7 @@ mod tests {
     #[cfg(feature = "local-io")]
     #[test]
     fn listener_read_reports_even_a_stale_unmapped_listener() {
-        use engine::testing::FakeGuest;
+        use guest_layout::testing::FakeGuest;
         use serde_json::json;
 
         let mut g = FakeGuest::new();

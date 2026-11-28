@@ -20,7 +20,7 @@ pub use options::options_capacity;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 
-use engine::points::{
+use guest_layout::points::{
     CAMPAIGN_LEVEL_LIST, CAMPAIGN_LEVEL_LOOKUP, CAMPAIGN_START, LAST_LEVEL_SET, LEVEL_SELECT_NEW, NEXT_LEVEL,
     PROGRESS_MAX, PROGRESS_RAISE, SCREEN_REQUEST,
 };

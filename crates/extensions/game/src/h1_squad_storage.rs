@@ -1,11 +1,8 @@
 //! Reserve native game-state storage for the campaign squad arrays, and
 //! size the script pools a converted scenario needs.
 
-use engine::{
-    campaign_squad_pool as pool,
-    entry::{Cx, EntryError, GuestCall, Ret},
-    memory::MemFault,
-};
+use guest_layout::{entry::{Cx, EntryError, GuestCall, Ret}, memory::MemFault};
+use engine::campaign_squad_pool as pool;
 use hooks::{BuildError, Builder, Flow, Manifest, SnapshotPolicy, points};
 
 const ALLOCATOR: u32 = 0x0051_0c2c;
@@ -28,7 +25,7 @@ impl hooks::Feature for SquadStorage {
             "reserve AI game-state storage",
             |call| call.answer_async(|cx| Box::pin(allocate(cx))),
         );
-        type Prepare = fn(&mut dyn engine::GuestMemory) -> Result<(), MemFault>;
+        type Prepare = fn(&mut dyn guest_layout::GuestMemory) -> Result<(), MemFault>;
         for (point, label, prepare) in [
             (&points::AI_SQUADS_INITIALIZE, "set squad capacity before activation", pool::prepare as Prepare),
             (&points::HS_NEW_MAP, "size the campaign script pools", engine::hs_pool::prepare as Prepare),
@@ -111,10 +108,7 @@ async fn allocate(cx: Cx) -> Result<Ret, EntryError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{
-        entry::{EntryFuture, Regs, testing},
-        testing::FakeGuest,
-    };
+    use guest_layout::{entry::{EntryFuture, Regs, testing}, testing::FakeGuest};
 
     #[test]
     fn reserve_calls_the_guest_game_state_allocator_for_both_arrays() {

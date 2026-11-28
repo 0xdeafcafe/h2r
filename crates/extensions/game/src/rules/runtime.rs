@@ -70,7 +70,7 @@ use ::rules::policy::{self, Context};
 use ::rules::{Sha256, verify};
 use ::rules::types::Type;
 use agent_proto::rules as wire;
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use variants::ext::{Ext, Mode};
 
 use super::census::{self, Table};

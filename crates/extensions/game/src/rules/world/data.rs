@@ -17,8 +17,8 @@
 use ::rules::Input;
 use ::rules::fields::{Field, Kind, Schema, valid_path};
 use ::rules::ty::fixed;
-use engine::view::objects;
-use engine::{DatumHandle, GuestMemory};
+use guest_layout::view::objects;
+use guest_layout::{DatumHandle, GuestMemory};
 use sim_state::SimEvent;
 use tags::defs::{self, StructDef};
 

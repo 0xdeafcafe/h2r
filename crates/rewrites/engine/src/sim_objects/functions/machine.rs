@@ -8,7 +8,7 @@
 //! no component it returns 0 and stores nothing.
 
 use super::{byte, call, pop, push, ret, slot, unowned, OBJECTS};
-use crate::datum::layout;
+use guest_layout::datum::layout;
 use crate::sim_objects::{Cx, Next, Result};
 
 const ENTRY: u32 = 0x0011_bd60;

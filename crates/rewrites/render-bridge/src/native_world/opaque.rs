@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
-use engine::entry::EntryError;
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::entry::EntryError;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 use engine::render_loop::layer::HANDLER_CLEANUP;
 use native_render::world_layers::Site;
 use native_render::world_ranges::{Refusal, SortedPart, SortedRun};

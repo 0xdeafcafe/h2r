@@ -9,7 +9,7 @@ const ELEMENT: u32 = DATA + 0x5000;
 const RESULT: u32 = DATA + 0x6000;
 
 fn setup(m: &mut FlatMemory) {
-    word(m, engine::points::TAG_ENTRIES.base, TAGS);
+    word(m, guest_layout::points::TAG_ENTRIES.base, TAGS);
     word(m, TAGS + 16 + 8, GRAPH);
     word(m, MANAGER + 0x68, 1);
     word(m, MANAGER + 0x70, 0x1200);

@@ -142,7 +142,7 @@ struct Observation {
 /// handle in, the word out; `None` when it has no single pair against the
 /// level). The host installs it ([`set_pair_reader`]): the bots crate has
 /// no Havok layout of its own.
-pub type PairReader = fn(&dyn engine::memory::GuestMemory, u32) -> Option<u32>;
+pub type PairReader = fn(&dyn guest_layout::memory::GuestMemory, u32) -> Option<u32>;
 
 static PAIR_READER: std::sync::OnceLock<PairReader> = std::sync::OnceLock::new();
 
@@ -963,7 +963,7 @@ mod tests {
 
     #[test]
     fn the_brain_presses_nothing_outside_a_game() {
-        let g = engine::testing::FakeGuest::new();
+        let g = guest_layout::testing::FakeGuest::new();
         let mut brain = Brain::default();
         assert_eq!(
             brain.pad(&Frame {

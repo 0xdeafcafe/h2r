@@ -1,7 +1,7 @@
 //! One mapped user's simulation HUD update. The seat record (0x6c bytes)
 //! stays in the arena. Its widget description and two weapon views live in
 //! the original caller frame across the display and sound callbacks.
-use crate::points;
+use guest_layout::points;
 use crate::sim_native::{self, Memory, plan::segment};
 use crate::sim_objects::sse::{self, Ss};
 use crate::sim_physics::{arithmetic, logic, pop, push};
@@ -89,7 +89,7 @@ fn update_shield(c: &mut CpuAbi, g: &mut impl Memory) -> Result<()> {
     let tick = c.edx.wrapping_add(8);
     let timestep = c.edx.wrapping_add(4);
     c.ecx = g.u32(points::OBJECTS.base)?;
-    c.ecx = g.u32(c.ecx.wrapping_add(crate::datum::layout::DATA))?;
+    c.ecx = g.u32(c.ecx.wrapping_add(guest_layout::datum::layout::DATA))?;
     sse::load(c, 0, g.u32(displayed)?);
     c.eax = (c.eax & c.ebx).wrapping_mul(3);
     c.eax = g.u32(c.ecx.wrapping_add(c.eax.wrapping_mul(4)).wrapping_add(8))?;
@@ -226,7 +226,7 @@ fn step(c: &mut CpuAbi, g: &mut impl Memory, pc: u32) -> sim_native::Result {
         }
         PLAYER_FOUND => {
             c.ecx = g.u32(points::PLAYERS.base)?;
-            c.ecx = g.u32(c.ecx.wrapping_add(crate::datum::layout::DATA))?;
+            c.ecx = g.u32(c.ecx.wrapping_add(guest_layout::datum::layout::DATA))?;
             let player = (c.eax & c.ebx).wrapping_mul(0x21c);
             c.eax = g.u32(c.ecx.wrapping_add(player).wrapping_add(0x2c))?;
             if c.eax != NONE {

@@ -60,7 +60,7 @@ use std::sync::{Arc, Mutex};
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
 use engine::light_constants::Fpu;
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::render::light_gather::frame::{self, LightFrame};
 use engine::render::light_gather::{
     self as gather, LIGHT_VIS, extra_caster, geometry, history, visible, volume,
@@ -82,7 +82,7 @@ const LIGHT_VOLUME: u32 = 0x000c_17f0;
 // Guest globals the gather reads (research points, as the port names them).
 const LIGHTS_POINTER: u32 = engine::render::light::ARRAY_POINTER;
 const OBJECTS_POINTER: u32 = 0x004e_0300;
-const TAGS_POINTER: u32 = engine::tags::TAG_ENTRIES_GLOBAL;
+const TAGS_POINTER: u32 = guest_layout::tags::TAG_ENTRIES_GLOBAL;
 const SCENARIO_POINTER: u32 = 0x004e_0350;
 const CANDIDATES_POINTER: u32 = 0x0054_7f98;
 const FRAME: u32 = 0x004b_a034;
@@ -1311,11 +1311,11 @@ fn port_frame(
     seed: u64,
 ) -> (
     Vec<Callout>,
-    engine::entry::EntryResult,
+    guest_layout::entry::EntryResult,
     Option<LightFrame>,
     FlatMemory,
 ) {
-    use engine::entry::{Cx, EntryFuture, GuestCall, Regs, Step, poll, resume};
+    use guest_layout::entry::{Cx, EntryFuture, GuestCall, Regs, Step, poll, resume};
     let mem = Arc::new(Mutex::new(Ram(m)));
     let cx = Cx::new(
         Arc::clone(&mem),
@@ -1330,7 +1330,7 @@ fn port_frame(
     let mut fut: EntryFuture = Box::pin(async move {
         let (ret, light_frame) = frame::run(&body, plan).await?;
         *kept.lock().unwrap() = Some(light_frame);
-        Ok::<_, engine::entry::EntryError>(ret)
+        Ok::<_, guest_layout::entry::EntryError>(ret)
     });
     let mut transcript = Vec::new();
     let result = loop {
@@ -2133,11 +2133,11 @@ fn port_items(
     plan: items::Plan,
 ) -> (
     Vec<Callout>,
-    engine::entry::EntryResult,
+    guest_layout::entry::EntryResult,
     Option<LightItems>,
     FlatMemory,
 ) {
-    use engine::entry::{Cx, EntryFuture, Regs, Step, poll, resume};
+    use guest_layout::entry::{Cx, EntryFuture, Regs, Step, poll, resume};
     let mem = Arc::new(Mutex::new(Ram(m)));
     let cx = Cx::new(
         Arc::clone(&mem),
@@ -2152,7 +2152,7 @@ fn port_items(
     let mut fut: EntryFuture = Box::pin(async move {
         let (ret, light_items) = items::run(&body, plan).await?;
         *kept.lock().unwrap() = Some(light_items);
-        Ok::<_, engine::entry::EntryError>(ret)
+        Ok::<_, guest_layout::entry::EntryError>(ret)
     });
     let mut transcript = Vec::new();
     let result = loop {
@@ -2486,7 +2486,7 @@ fn original_passes(
 }
 
 fn passes_entry() -> u32 {
-    engine::points::RENDER_LIGHT_PASSES.base
+    guest_layout::points::RENDER_LIGHT_PASSES.base
 }
 
 /// The body, every guest call a stub, its return site the one its slot
@@ -2498,11 +2498,11 @@ fn port_passes(
     seed: u64,
 ) -> (
     Vec<Callout>,
-    engine::entry::EntryResult,
+    guest_layout::entry::EntryResult,
     Option<LightPasses>,
     FlatMemory,
 ) {
-    use engine::entry::{Cx, EntryFuture, GuestCall, Regs, Step, poll, resume};
+    use guest_layout::entry::{Cx, EntryFuture, GuestCall, Regs, Step, poll, resume};
     let mem = Arc::new(Mutex::new(Ram(m)));
     let cx = Cx::new(
         Arc::clone(&mem),
@@ -2517,7 +2517,7 @@ fn port_passes(
     let mut fut: EntryFuture = Box::pin(async move {
         let (ret, light) = passes::run(&body, plan).await?;
         *kept.lock().unwrap() = Some(light);
-        Ok::<_, engine::entry::EntryError>(ret)
+        Ok::<_, guest_layout::entry::EntryError>(ret)
     });
     let shadow_at = esp + 0xc;
     let mut transcript = Vec::new();
@@ -2779,13 +2779,13 @@ fn port_stubbed(
     m: FlatMemory,
     mut cpu: Cpu,
     esp: u32,
-    body: impl FnOnce(engine::entry::Cx) -> engine::entry::EntryFuture,
+    body: impl FnOnce(guest_layout::entry::Cx) -> guest_layout::entry::EntryFuture,
     leaves: &[u32],
     stubs: Stubs,
     sites: bool,
     mut effect: impl FnMut(usize, &Callout, &mut FlatMemory) -> (u32, u32),
-) -> (Vec<Callout>, engine::entry::EntryResult, FlatMemory) {
-    use engine::entry::{Cx, GuestCall, Regs, Step, poll, resume};
+) -> (Vec<Callout>, guest_layout::entry::EntryResult, FlatMemory) {
+    use guest_layout::entry::{Cx, GuestCall, Regs, Step, poll, resume};
     let mem = Arc::new(Mutex::new(Ram(m)));
     let cx = Cx::new(
         Arc::clone(&mem),
@@ -3024,11 +3024,11 @@ fn first_person_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             };
             let out: Arc<Mutex<Option<FirstPersonLights>>> = Arc::new(Mutex::new(None));
             let kept = Arc::clone(&out);
-            let body = move |cx: engine::entry::Cx| -> engine::entry::EntryFuture {
+            let body = move |cx: guest_layout::entry::Cx| -> guest_layout::entry::EntryFuture {
                 Box::pin(async move {
                     let (ret, lights) = first_person::run(&cx, plan).await?;
                     *kept.lock().unwrap() = Some(lights);
-                    Ok::<_, engine::entry::EntryError>(ret)
+                    Ok::<_, guest_layout::entry::EntryError>(ret)
                 })
             };
             let (port_calls, result, port) = port_stubbed(
@@ -3108,11 +3108,11 @@ fn first_person_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
 }
 
 fn first_person_entry() -> u32 {
-    engine::points::FIRST_PERSON_LIGHTS.base
+    guest_layout::points::FIRST_PERSON_LIGHTS.base
 }
 
 fn first_person_records_entry() -> u32 {
-    engine::points::FIRST_PERSON_LIGHT_RECORDS.base
+    guest_layout::points::FIRST_PERSON_LIGHT_RECORDS.base
 }
 
 /// A stubbed per-part callee's answer: a geometry of up to four parts or
@@ -3227,11 +3227,11 @@ fn first_person_records_cases(image: &FlatMemory, mut lifted: Lifted<'_>) {
             };
             let out: Arc<Mutex<Option<SlotRecords>>> = Arc::new(Mutex::new(None));
             let kept = Arc::clone(&out);
-            let body = move |cx: engine::entry::Cx| -> engine::entry::EntryFuture {
+            let body = move |cx: guest_layout::entry::Cx| -> guest_layout::entry::EntryFuture {
                 Box::pin(async move {
                     let (ret, records) = first_person::run_records(&cx, plan).await?;
                     *kept.lock().unwrap() = Some(records);
-                    Ok::<_, engine::entry::EntryError>(ret)
+                    Ok::<_, guest_layout::entry::EntryError>(ret)
                 })
             };
             let (stubs, leaves): (Stubs, &[u32]) = if stubbed {
@@ -3352,7 +3352,7 @@ fn compare_shadow_body(
     live: u32,
     pop: u16,
     stubs: Stubs,
-    body: impl FnOnce(engine::entry::Cx) -> engine::entry::EntryFuture,
+    body: impl FnOnce(guest_layout::entry::Cx) -> guest_layout::entry::EntryFuture,
     effect: impl Fn(usize, &Callout, &mut FlatMemory) -> (u32, u32) + Copy,
     label: &str,
 ) -> Vec<Callout> {

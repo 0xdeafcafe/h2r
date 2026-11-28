@@ -19,7 +19,7 @@ use std::cell::{Cell, RefCell};
 
 use engine::light_constants as lc;
 use engine::light_passes as lp;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::render::light_gather::Refusal;
 use engine::render::light_gather::frame::{Gathered, Passes};
 use engine::render::light_gather::items::LightItems;
@@ -117,7 +117,7 @@ impl Source {
 /// The `ligh` definition's address for the datum `definition`, from the
 /// tag table (`0x00031183`..`0x0003118c`).
 fn definition_data(mem: &dyn GuestMemory, definition: u32) -> Option<u32> {
-    let table = mem.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok()?;
+    let table = mem.u32(guest_layout::tags::TAG_ENTRIES_GLOBAL).ok()?;
     mem.u32(
         table
             .wrapping_add((definition & 0xffff) << 4)
@@ -285,7 +285,7 @@ fn not_taken() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::FlatMemory;
+    use guest_layout::FlatMemory;
     use engine::render::light_gather::items::ItemRange;
 
     const ESP: u32 = 0x0008_0000;
@@ -341,7 +341,7 @@ mod tests {
     /// tag table, and both lists as the last light left them.
     fn guest() -> FlatMemory {
         let mut m = FlatMemory::new(0, 0x0060_0000);
-        m.set_u32(engine::tags::TAG_ENTRIES_GLOBAL, TABLE).unwrap();
+        m.set_u32(guest_layout::tags::TAG_ENTRIES_GLOBAL, TABLE).unwrap();
         m.set_u32(TABLE + ((DEFINITION & 0xffff) << 4) + 8, DATA)
             .unwrap();
         m.set_u32(ESP, 0x0003_1f2b).unwrap();

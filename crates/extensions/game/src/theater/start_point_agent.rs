@@ -16,7 +16,7 @@ use agent_proto::theater::{
     StartPointLoaded,
 };
 use agent_proto::{RpcError, code};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use serde_json::Value;
 use std::path::Path;
 

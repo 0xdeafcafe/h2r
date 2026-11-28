@@ -8,9 +8,9 @@ use agent_proto::{
     Object,
     sim::{SessionKind, SessionView},
 };
-use engine::datum::layout;
-use engine::testing::FakeGuest;
-use engine::view::{fake, objects::Header};
+use guest_layout::datum::layout;
+use guest_layout::testing::FakeGuest;
+use guest_layout::view::{fake, objects::Header};
 use serde_json::{Value, json};
 
 use super::*;
@@ -179,7 +179,7 @@ fn capacity_reports_arena_pool_counts_caps_and_contiguous_kit_tails() {
     let h = Harness::new();
     let mut game = game(4);
     let m = &mut game.memory;
-    let pool = engine::view::Datums::<Header>::at(OBJECTS);
+    let pool = guest_layout::view::Datums::<Header>::at(OBJECTS);
     fake::push(m, &pool);
     fake::push(m, &pool);
     let scenery = 0x8100_0000;
@@ -249,7 +249,7 @@ fn kit_reports_candidate_rows_and_runtime_census_without_certifying_them() {
     assert_eq!(base["objects_by_group"], kit["objects_by_group"]);
     assert_eq!(base["actors"], kit["actors"]);
 
-    let pool = engine::view::Datums::<Header>::at(OBJECTS);
+    let pool = guest_layout::view::Datums::<Header>::at(OBJECTS);
     let (_, object) = fake::push(&mut game.memory, &pool);
     object
         .set_kind(&mut game.memory, sim_state::ObjectKind::Crate as u8)
@@ -323,7 +323,7 @@ fn replication_uses_a_loaded_group_tag_and_waits_for_the_tick_outcome() {
     let h = Harness::new();
     let mut game = game(4);
     let m = &mut game.memory;
-    use engine::tags::{entry_layout as entry, index_layout as index};
+    use guest_layout::tags::{entry_layout as entry, index_layout as index};
     m.put_u32(global::TAG_INDEX.base, TAG_INDEX)
         .put_u32(global::TAG_ENTRIES.base, TAG_ENTRIES)
         .put_u32(TAG_INDEX + index::TAG_COUNT, 2)
@@ -750,7 +750,7 @@ fn local_agent_reads_the_session_and_reports_a_refused_proposal() {
     use std::sync::{Arc, Mutex};
     struct Backend(Arc<Mutex<Looks>>);
     impl local::LocalApi for Backend {
-        fn who(&self, m: Option<&dyn engine::GuestMemory>) -> Who {
+        fn who(&self, m: Option<&dyn guest_layout::GuestMemory>) -> Who {
             Who {
                 profile: if m.is_some() { "Chief" } else { "default" }.into(),
                 colour: 4,
@@ -780,7 +780,7 @@ fn local_agent_reads_the_session_and_reports_a_refused_proposal() {
         }
         fn input(
             &self,
-            m: &dyn engine::GuestMemory,
+            m: &dyn guest_layout::GuestMemory,
             input: ::forge::tool::Input,
         ) -> Result<(), String> {
             if m.u32(global::SCENARIO.base).ok() != Some(SCENARIO) {
@@ -1212,7 +1212,7 @@ mod things {
     struct Host(Mutex<Arc<Session>>);
 
     impl LocalApi for Host {
-        fn who(&self, _: Option<&dyn engine::GuestMemory>) -> Who {
+        fn who(&self, _: Option<&dyn guest_layout::GuestMemory>) -> Who {
             Who {
                 profile: "default".into(),
                 colour: 0,
@@ -1246,7 +1246,7 @@ mod things {
         }
         fn input(
             &self,
-            _: &dyn engine::GuestMemory,
+            _: &dyn guest_layout::GuestMemory,
             _: ::forge::tool::Input,
         ) -> Result<(), String> {
             Err("Forge input requires the active local session.".into())
@@ -1751,7 +1751,7 @@ mod things {
         struct NetApi(Arc<Mutex<Machines>>);
 
         impl LocalApi for NetApi {
-            fn who(&self, _: Option<&dyn engine::GuestMemory>) -> Who {
+            fn who(&self, _: Option<&dyn guest_layout::GuestMemory>) -> Who {
                 Who {
                     profile: "default".into(),
                     colour: 0,
@@ -1784,7 +1784,7 @@ mod things {
             }
             fn input(
                 &self,
-                _: &dyn engine::GuestMemory,
+                _: &dyn guest_layout::GuestMemory,
                 _: ::forge::tool::Input,
             ) -> Result<(), String> {
                 Err("Forge input requires the active local session.".into())
@@ -2094,7 +2094,7 @@ mod ground {
     }
 
     impl LocalApi for Host {
-        fn who(&self, _: Option<&dyn engine::GuestMemory>) -> Who {
+        fn who(&self, _: Option<&dyn guest_layout::GuestMemory>) -> Who {
             Who {
                 profile: "default".into(),
                 colour: 0,
@@ -2131,7 +2131,7 @@ mod ground {
         }
         fn input(
             &self,
-            _: &dyn engine::GuestMemory,
+            _: &dyn guest_layout::GuestMemory,
             _: ::forge::tool::Input,
         ) -> Result<(), String> {
             Err("Forge input requires the active local session.".into())

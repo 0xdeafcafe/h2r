@@ -1,8 +1,8 @@
 use super::*;
-use engine::datum::layout as dl;
-use engine::points;
-use engine::testing::FakeGuest;
-use engine::view::Record;
+use guest_layout::datum::layout as dl;
+use guest_layout::points;
+use guest_layout::testing::FakeGuest;
+use guest_layout::view::Record;
 
 const OBJECTS_HEADER: u32 = 0x0062_0000;
 const OBJECTS_DATA: u32 = 0x0062_1000;

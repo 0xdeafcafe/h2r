@@ -1,8 +1,8 @@
 //! Live shader input and constant banks used by the opaque material binder.
 
-use engine::entry::{Cx, EntryError};
+use guest_layout::entry::{Cx, EntryError};
 use engine::light_constants::Error;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::render_loop::world_registers as registers;
 use native_render::camera::GuestRead;
 

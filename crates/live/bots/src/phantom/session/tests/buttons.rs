@@ -6,7 +6,7 @@ use crate::{
     phantom::{Identity, Phantoms, machine_id},
     tuning::PhantomLatency,
 };
-use engine::entry::{self, GuestCall, Regs, Ret};
+use guest_layout::entry::{self, GuestCall, Regs, Ret};
 use input::host::HostButton;
 
 const STACK: u32 = 0x781000;
@@ -387,8 +387,8 @@ fn phantom_acquires_an_enemy_on_the_tick_it_clears_cover_and_stops_at_cover() {
         mind::{Doing, Skill},
         tuning::{AimModel, Tuning},
     };
-    use engine::tags::{entry_layout, index_layout};
-    use engine::view::objects;
+    use guest_layout::tags::{entry_layout, index_layout};
+    use guest_layout::view::objects;
     use std::sync::Arc;
 
     // A tiny move across the wall's edge used to reuse a blocked ray

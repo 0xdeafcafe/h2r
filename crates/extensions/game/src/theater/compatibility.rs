@@ -5,7 +5,7 @@ use agent_proto::theater::{
     Compatibility, CompatibilityState, FilmContract, InstalledImage, MonitorLookSource,
 };
 use anyhow::{Result, ensure};
-use engine::points::{self, Loc, Sig};
+use guest_layout::points::{self, Loc, Sig};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
@@ -558,7 +558,7 @@ mod tests {
         struct Observer;
 
         impl PresentObserver for Observer {
-            fn capture(&self, _: &dyn engine::GuestMemory) -> Option<PresentPayload> {
+            fn capture(&self, _: &dyn guest_layout::GuestMemory) -> Option<PresentPayload> {
                 Some(Arc::new(()))
             }
 

@@ -20,7 +20,7 @@
 //! always the linear 640 x 480 one, so the size check and the lock pass
 //! (the device's back buffer is made at the display's guest size).
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The guest words `0x00013d50` sets and `0x00013d80` reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,7 +127,7 @@ pub fn overlay(blit: &Blit) -> frame_scene::Overlay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const A: Addrs = Addrs::HALO2;
     const IMAGE: u32 = 0x0060_0000;

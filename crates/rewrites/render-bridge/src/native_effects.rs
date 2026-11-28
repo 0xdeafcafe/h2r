@@ -1,8 +1,8 @@
 //! Context-only observers for effect leaves. No handler or simulation skip.
 use crate::native_particles::{LOG_LIMIT, Producer, HOST};
-use engine::memory::GuestMemory;
-use engine::points::scene_effects::*;
-use engine::points::{Point, Sig};
+use guest_layout::memory::GuestMemory;
+use guest_layout::points::scene_effects::*;
+use guest_layout::points::{Point, Sig};
 use native_render::effect_immediate::Site;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -171,7 +171,7 @@ mod tests {
 
     #[test]
     fn the_callback_is_read_through_the_wrappers_argument() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         const ESP: u32 = 0x0010_0000;
         const DATA: u32 = 0x0010_0100;
         let mut m = FlatMemory::new(0x0010_0000, 0x1000);

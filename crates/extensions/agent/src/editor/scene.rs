@@ -1,7 +1,7 @@
 use agent_proto::editor::{
     MAX_MARKS, Mark, MarkBox, MarkGeometry, MarkStyle, MarksParams, MarksResult, RefusedMark,
 };
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use sim_state::ObjectId;
 
 use super::*;
@@ -494,7 +494,7 @@ impl EditorLink {
 
     #[cfg(test)]
     pub(super) fn marks(&self, now: Instant) -> Option<(Vec<MarkShape>, Instant)> {
-        let guest = engine::testing::FakeGuest::new();
+        let guest = guest_layout::testing::FakeGuest::new();
         let frame = self.capture_marks(&guest, || now)?;
         let expires = self.frame_mark_deadline(&frame, || now)?;
         Some((frame.shapes, expires))

@@ -9,7 +9,8 @@ use std::sync::{
 use agent_proto::{
     CaptureCamera, CurrentView, CurrentViewParams, RpcError, SpawnViewParams, ViewParams, ViewRequest, code, method,
 };
-use engine::{GuestMemory, points, render_loop::views::VIEW_STRIDE};
+use guest_layout::{GuestMemory, points};
+use engine::render_loop::views::VIEW_STRIDE;
 use hooks::{Builder, Flow};
 use serde_json::{Value, json};
 
@@ -400,7 +401,7 @@ impl Drop for Pending {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     fn scenario() -> FakeGuest {
         let mut m = FakeGuest::new();

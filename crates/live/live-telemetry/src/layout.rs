@@ -4,18 +4,18 @@
 //! (docs/engine/guest-layout.md); the names here alias them for the
 //! readers that add by hand. A layout fix goes there, once.
 
-use engine::view::objects::{Body, Header as ObjectHeader};
-use engine::view::players::Player;
+use guest_layout::view::objects::{Body, Header as ObjectHeader};
+use guest_layout::view::players::Player;
 
-pub const GAME_GLOBALS_PTR: u32 = engine::points::GAME_GLOBALS.base;
-pub const GAME_TIME_PTR: u32 = engine::points::GAME_TIME.base;
+pub const GAME_GLOBALS_PTR: u32 = guest_layout::points::GAME_GLOBALS.base;
+pub const GAME_TIME_PTR: u32 = guest_layout::points::GAME_TIME.base;
 pub const ENGINE_GLOBALS_PTR: u32 = guest_layout::global::GAME_ENGINE.base;
-pub const PLAYERS_PTR: u32 = engine::points::PLAYERS.base;
-pub const OBJECTS_PTR: u32 = engine::points::OBJECTS.base;
+pub const PLAYERS_PTR: u32 = guest_layout::points::PLAYERS.base;
+pub const OBJECTS_PTR: u32 = guest_layout::points::OBJECTS.base;
 pub const CACHE_MAP_NAME: u32 = guest_layout::global::CACHE_MAP_NAME.base;
 
 // The hooked functions (match start, tick, end, kill, weapon fire) are
-// named in `engine::points`.
+// named in `guest_layout::points`.
 
 pub const OPTIONS: u32 = guest_layout::game::OPTIONS;
 pub const OPTIONS_TYPE: u32 = guest_layout::GameOptions::MODE.offset;
@@ -46,10 +46,10 @@ pub const GAME_ENDED: u32 = guest_layout::GameGlobals::GAME_ENDED.offset;
 pub const TIME_TICK: u32 = guest_layout::GameTime::TICK.offset;
 
 // Datum arrays, players and object headers are read through
-// `engine::view`; these names alias its offsets for the readers that still
+// `guest_layout::view`; these names alias its offsets for the readers that still
 // add them by hand and for the test fixtures.
-pub const DATUM_HIGH_WATER: u32 = engine::datum::layout::HIGH_WATER;
-pub const DATUM_DATA: u32 = engine::datum::layout::DATA;
+pub const DATUM_HIGH_WATER: u32 = guest_layout::datum::layout::HIGH_WATER;
+pub const DATUM_DATA: u32 = guest_layout::datum::layout::DATA;
 #[allow(dead_code)]
 pub const PLAYER_SIZE: u32 = Player::SIZE;
 #[allow(dead_code)]
@@ -64,11 +64,11 @@ pub const PLAYER_CONTROLLER: u32 = guest_layout::Player::CONTROLLER.offset;
 #[allow(dead_code)]
 pub const PLAYER_UNIT: u32 = Player::UNIT;
 #[allow(dead_code)]
-pub const PLAYER_NAME: u32 = engine::view::players::NAME;
+pub const PLAYER_NAME: u32 = guest_layout::view::players::NAME;
 #[allow(dead_code)]
 pub const PLAYER_TEAM: u32 = Player::TEAM;
 #[allow(dead_code)]
-pub const PLAYER_NAME_CODE_UNITS: usize = engine::view::players::NAME_UNITS;
+pub const PLAYER_NAME_CODE_UNITS: usize = guest_layout::view::players::NAME_UNITS;
 
 // Player appearance (profile colours and emblem layers). The player record's
 // confirmed local user index (`PLAYER_LOCAL_USER`, 0..3) selects one of four
@@ -139,7 +139,7 @@ pub const OBJECT_TYPE_WEAPON: u8 = guest_layout::ObjectType::Weapon as u8;
 // publishes the index header and reads the scenario datum from `+0x0c`
 // (`0x00122ad8`); the map file's own index carries the same datums, which is
 // how a host-side name table is checked against the loaded map.
-pub const TAG_INDEX_PTR: u32 = engine::points::TAG_INDEX.base;
+pub const TAG_INDEX_PTR: u32 = guest_layout::points::TAG_INDEX.base;
 pub const TAG_INDEX_SCENARIO: u32 = 0xc;
 
 // Unit body, players frame fields (docs/live/live-gamestate.md, "Unit aim and held
@@ -176,7 +176,7 @@ pub const UNIT_AIM: u32 = guest_layout::Unit::AIM.offset;
 /// body `+0x1a8 + 0x34 * barrel`) is set and then clears the flag. One call
 /// is one shot (likely: a shotgun's pellets are one call; a battle rifle's
 /// burst is three).
-pub const WEAPON_FIRE: u32 = engine::points::WEAPON_FIRE.base;
+pub const WEAPON_FIRE: u32 = guest_layout::points::WEAPON_FIRE.base;
 
 /// Fields whose names or semantics are only "likely" in the research document.
 /// They are not needed for the initial event contract. Runtime validation can
@@ -467,7 +467,7 @@ pub const BIPED_MODE_MELEE: u8 = guest_layout::unit::MODE_MELEE;
 pub const WEAPON_MAGAZINE_RESERVE: u32 = guest_layout::Weapon::MAGAZINE_RESERVE.offset;
 pub const WEAPON_MAGAZINE_LOADED: u32 = guest_layout::Weapon::MAGAZINE_LOADED.offset;
 
-// The damage report (`engine::points::DAMAGE_REPORT`, `0x000d9640`): custom
+// The damage report (`guest_layout::points::DAMAGE_REPORT`, `0x000d9640`): custom
 // ABI, `EDI` = the report, one stack argument (the victim object datum),
 // `ret 4`. Called for every damage instance applied to an object (four
 // callers: `0x0009c76e`, `0x000d8292`, `0x000d87a2`, `0x000dc211`); it adds

@@ -28,9 +28,9 @@
 
 use std::sync::Mutex;
 
-use engine::entry::{Cx, EntryError, GuestCall};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 
 use crate::ui_kit::animation::TransitionStyle;
 use crate::ui_kit::dialog::DialogBase;
@@ -802,7 +802,7 @@ mod tests {
     };
     use crate::ui_kit::input::{Glyph, Prompt};
     use crate::ui_kit::view::{FRAME_DIM, Opener, Synthetic};
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     /// The sign-in code page with an error showing.
     fn view() -> View {
@@ -1250,7 +1250,7 @@ mod tests {
 
     #[test]
     fn kit_dialog_labels_have_a_locale_even_when_the_error_frame_has_none() {
-        use engine::entry::{EntryFuture, Regs, Ret, testing};
+        use guest_layout::entry::{EntryFuture, Regs, Ret, testing};
 
         const ENTRIES: u32 = 0x0030_0000;
         const HOST: u32 = 0x0040_0000;
@@ -1383,7 +1383,7 @@ mod tests {
     #[test]
     fn closing_a_dialog_sends_the_close_message_once() {
         use crate::ui_kit::lifecycle::{SCREEN_CLOSE, SCREEN_SLOT, SCREEN_WINDOW};
-        use engine::entry::{EntryFuture, GuestCall as Gc, Regs, testing};
+        use guest_layout::entry::{EntryFuture, GuestCall as Gc, Regs, testing};
         const SCREEN: u32 = 0x0040_0000;
         let guest = |window: u32, state: u8| {
             let mut g = FakeGuest::new();
@@ -1400,7 +1400,7 @@ mod tests {
         let f = |cx| -> EntryFuture {
             Box::pin(async move {
                 close(&cx, SCREEN).await?;
-                Ok(engine::entry::Ret::new(0, 0))
+                Ok(guest_layout::entry::Ret::new(0, 0))
             })
         };
         let run = testing::run(&f, guest(DIALOG_WINDOW, 0), regs, |_, _| Regs::default());

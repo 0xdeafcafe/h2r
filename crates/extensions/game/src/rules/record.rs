@@ -33,14 +33,14 @@
 
 use std::sync::Arc;
 
-use engine::GuestMemory;
-use engine::points;
+use guest_layout::GuestMemory;
+use guest_layout::points;
 use variants::record::{self, CleanUp, RECORD_SIZE};
 use variants::wire::{self, Bits};
 
 /// The clean-up's answer for the record at `at`, applied to guest memory:
 /// `Some(al)` when it is answered here, `None` when the game's body runs.
-pub fn clean_up(m: &mut dyn GuestMemory, at: u32) -> Result<Option<u8>, engine::MemFault> {
+pub fn clean_up(m: &mut dyn GuestMemory, at: u32) -> Result<Option<u8>, guest_layout::MemFault> {
     let mut raw = [0u8; RECORD_SIZE];
     m.read(at, &mut raw)?;
     let was = raw;
@@ -60,7 +60,7 @@ pub const MAX_STREAM: u32 = 0x1_0000;
 
 /// The bit stream at `at` (`variants::wire::Bits`), or `None` when its
 /// size is past [`MAX_STREAM`] or its position is outside it.
-pub fn read_bits(m: &dyn GuestMemory, at: u32) -> Result<Option<Bits>, engine::MemFault> {
+pub fn read_bits(m: &dyn GuestMemory, at: u32) -> Result<Option<Bits>, guest_layout::MemFault> {
     let words = m.u32(at + wire::WORDS_AT)?;
     let size = m.u32(at + wire::SIZE_AT)?;
     let pos = m.u32(at + wire::POS_AT)?;
@@ -86,7 +86,7 @@ fn write_bits(
     at: u32,
     was: &Bits,
     bits: &Bits,
-) -> Result<(), engine::MemFault> {
+) -> Result<(), guest_layout::MemFault> {
     let words = m.u32(at + wire::WORDS_AT)?;
     for (i, (a, b)) in was.words.iter().zip(&bits.words).enumerate() {
         if a != b {
@@ -110,7 +110,7 @@ pub fn encode(
     m: &mut dyn GuestMemory,
     writer: u32,
     rec: u32,
-) -> Result<Option<()>, engine::MemFault> {
+) -> Result<Option<()>, guest_layout::MemFault> {
     let mut raw = [0u8; RECORD_SIZE];
     m.read(rec, &mut raw)?;
     let engine = &raw[record::ENGINE_AT..record::ENGINE_AT + 4];
@@ -134,7 +134,7 @@ pub fn decode(
     m: &mut dyn GuestMemory,
     rec: u32,
     reader: u32,
-) -> Result<Option<u8>, engine::MemFault> {
+) -> Result<Option<u8>, guest_layout::MemFault> {
     let Some(was) = read_bits(m, reader)? else {
         return Ok(None);
     };
@@ -214,7 +214,7 @@ fn builtin_record(raw: &[u8; RECORD_SIZE]) -> Result<Option<variants::GameVarian
 pub fn move_onto_script_index(
     m: &mut dyn GuestMemory,
     options: u32,
-) -> Result<Swap, engine::MemFault> {
+) -> Result<Swap, guest_layout::MemFault> {
     if m.u32(options)? != MODE_MULTIPLAYER {
         return Ok(Swap::Stayed);
     }

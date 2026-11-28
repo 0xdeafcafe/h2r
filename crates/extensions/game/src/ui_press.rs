@@ -5,7 +5,7 @@
 use agent::{Access, Agent};
 use agent_proto::sim::menu::{MODE_LIVE, PRESS_MS, PRESS_READS};
 use agent_proto::{Boundary, PadStep, Phase, RpcError, code, method};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 

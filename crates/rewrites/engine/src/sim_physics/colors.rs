@@ -5,7 +5,8 @@
 //! the installed body.
 use super::spatial::{fp_error, scalar};
 use super::*;
-use crate::{datum::layout, light_constants::Sse};
+use guest_layout::datum::layout;
+use crate::light_constants::Sse;
 
 pub(super) const SITES: [u32; 3] = [0xbe9c1, 0xbe9e4, 0xbea2c];
 const RGB_UPPER_BOUND: u32 = 0x0045_dbc0;

@@ -2,9 +2,9 @@
 
 use super::*;
 use ::actor_net::{Replica, decode, encode};
-use engine::testing::FakeGuest;
-use engine::view::{Datums, fake, objects::Header};
-use engine::{DatumHandle, points};
+use guest_layout::testing::FakeGuest;
+use guest_layout::view::{Datums, fake, objects::Header};
+use guest_layout::{DatumHandle, points};
 use guest_layout::{Datum, Object, Unit, actor::Actor as Slot};
 
 const ARENA: u32 = 0x10000;

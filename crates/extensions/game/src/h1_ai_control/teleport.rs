@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use hooks::{Builder, Flow, points};
 
 use super::state;
@@ -245,7 +245,7 @@ impl Pool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn required_starts_are_consumed_once_and_fallback_recycles_after_exhaustion() {

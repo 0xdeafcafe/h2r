@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use agent_proto::rules::{ReloadParams, ReloadResult, State, Zones, method};
 use agent_proto::{RpcError, code};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use serde_json::Value;
 
 use crate::sim::calls::{self, Call, GameStep};

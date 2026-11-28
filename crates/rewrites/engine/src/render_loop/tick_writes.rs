@@ -14,7 +14,7 @@
 //! tick what the guest's frame would have. [`Words`] reads them so a frame
 //! the guest renders can be checked against [`Words::predict`].
 
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The guest words the frame's writes go to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -148,7 +148,7 @@ impl Words {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const A: Addrs = Addrs {
         present_counter: 0x2030,

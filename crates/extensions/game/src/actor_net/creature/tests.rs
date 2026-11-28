@@ -1,5 +1,5 @@
 use super::*;
-use engine::{testing::FakeGuest, view::fake};
+use guest_layout::{testing::FakeGuest, view::fake};
 use guest_layout::tags::{GroupTag, entry_layout, index_layout};
 
 const REGISTRY: u32 = 0x1000;

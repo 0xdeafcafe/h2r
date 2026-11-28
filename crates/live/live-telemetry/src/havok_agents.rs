@@ -8,8 +8,8 @@ pub use cache::{Cache, Child, Convex, Tree};
 
 use std::collections::{HashMap, HashSet};
 
-use engine::view::objects;
-use engine::{DatumHandle, GuestMemory, MemFault};
+use guest_layout::view::objects;
+use guest_layout::{DatumHandle, GuestMemory, MemFault};
 
 use crate::havok::{self, bad, span};
 use crate::layout;

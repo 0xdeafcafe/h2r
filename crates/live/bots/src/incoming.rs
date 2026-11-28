@@ -1,8 +1,8 @@
 //! Live grenades near the bot and getting away from them: seeing one land
 //! close and stepping or jumping clear. Throwing is [`crate::grenades`].
 
-use engine::handle::DatumHandle;
-use engine::memory::GuestMemory;
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::GuestMemory;
 
 use crate::brain::{Me, Vec3};
 use crate::cache::MapData;

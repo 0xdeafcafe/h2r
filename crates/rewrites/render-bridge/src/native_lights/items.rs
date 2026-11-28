@@ -6,7 +6,7 @@
 //! The passes' own call (`handoff::ITEMS_RETURN`) of a light the frame
 //! body handed over then puts that light into the scene (slice L5).
 
-use engine::points;
+use guest_layout::points;
 use engine::render::light_gather::Refusal;
 use engine::render::light_gather::items::{self, LightItems, Made};
 use hooks::{Builder, Cx, EntryFuture};
@@ -59,7 +59,7 @@ pub(super) fn install(b: &mut Builder) {
                         if let Some(taken) = taken {
                             cx.read(|m| handoff::made(m, &taken, &light_items));
                         }
-                        Ok::<_, engine::entry::EntryError>(ret)
+                        Ok::<_, guest_layout::entry::EntryError>(ret)
                     })
                 })
             },

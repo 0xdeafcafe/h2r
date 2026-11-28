@@ -406,10 +406,10 @@ impl Feature for Lobby {
                             q.stage = TickStage::RetailTick;
                         }
                         let result = cx
-                            .call(engine::entry::GuestCall::new(points::GAME_TICK.base))
+                            .call(guest_layout::entry::GuestCall::new(points::GAME_TICK.base))
                             .await;
                         shared.lock().unwrap_or_else(|e| e.into_inner()).stage = TickStage::Idle;
-                        Ok(engine::entry::Ret::new(result?.eax, 0))
+                        Ok(guest_layout::entry::Ret::new(result?.eax, 0))
                     })
                 })
             })

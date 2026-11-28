@@ -18,8 +18,8 @@ fn no_parent_update_skip() {
     assert_eq!(plan.chains.len(), 31 + 3 + 1);
     let walk = plan.chains.get(&WALK.base).expect("the walk's chain");
     assert_eq!(walk.point.base, engine::particle_walk::ENTRY);
-    use engine::points::scene_effects::{EFFECT_LAYERED_A, EFFECT_LAYERED_B, EFFECT_QUERY};
-    use engine::points::render_aspect::FLARE_QUERY_END;
+    use guest_layout::points::scene_effects::{EFFECT_LAYERED_A, EFFECT_LAYERED_B, EFFECT_QUERY};
+    use guest_layout::points::render_aspect::FLARE_QUERY_END;
     for point in [EFFECT_LAYERED_A, EFFECT_LAYERED_B] {
         assert!(!plan.chains.contains_key(&point.base), "layered geometry belongs to transparents");
     }
@@ -32,7 +32,7 @@ fn no_parent_update_skip() {
     assert!(plan
         .chains
         .contains_key(&native_render::effect_geometry::DYNAMIC_DRAW));
-    let scene = engine::points::scene_effects::instruction_entries().collect::<Vec<_>>();
+    let scene = guest_layout::points::scene_effects::instruction_entries().collect::<Vec<_>>();
     for chain in plan.chains.values().filter(|c| c.point.name.starts_with("EFFECT_IMMEDIATE_")) {
         assert!(scene.contains(&chain.point.base));
     }

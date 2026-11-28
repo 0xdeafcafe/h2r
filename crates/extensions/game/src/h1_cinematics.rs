@@ -1,10 +1,6 @@
 //! Halo 1 cinematic controls on Halo 2's render path.
-use engine::{
-    datum::{DatumArray, layout},
-    hs_pool,
-    memory::{GuestMemory, MemFault},
-    points,
-};
+use guest_layout::{datum::{DatumArray, layout}, memory::{GuestMemory, MemFault}, points};
+use engine::hs_pool;
 use h1_contract::cinematics::{Field, MARKER};
 #[cfg(feature = "gpu")]
 use std::sync::{Arc, Mutex};

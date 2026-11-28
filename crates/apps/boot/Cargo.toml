@@ -42,7 +42,7 @@ h1-contract.workspace = true
 # Our settings (setting_defs, the ui model).
 settings = { path = "../../formats/settings" }
 hooks = { path = "../../hooking/hooks", default-features = false }
-engine = { path = "../../rewrites/engine", features = ["runtime-glue"] }
+guest-layout = { path = "../../hooking/guest-layout", features = ["runtime-glue"] }
 toml = { workspace = true }
 chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 font = { path = "../../formats/font" }

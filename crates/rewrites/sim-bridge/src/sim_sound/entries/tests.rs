@@ -1,6 +1,6 @@
 use super::*;
-use engine::entry::{self, EntryFuture, Regs};
-use engine::testing::FakeGuest;
+use guest_layout::entry::{self, EntryFuture, Regs};
+use guest_layout::testing::FakeGuest;
 use hooks::{Base, Registry, Switches};
 use sim_sound::instances::{Flat, Permutation, PitchRange, Request, Scale, SoundTag, SourceParams, TagTable};
 use sim_sound::looping::{LoopTag, Segment, TrackTag};

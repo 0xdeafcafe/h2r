@@ -27,7 +27,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use input::host::HostPadState;
 
 use crate::decisions::radio;

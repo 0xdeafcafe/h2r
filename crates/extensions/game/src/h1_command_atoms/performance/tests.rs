@@ -1,5 +1,5 @@
 use super::*;
-use engine::entry::{self, EntryFuture, Regs, Step};
+use guest_layout::entry::{self, EntryFuture, Regs, Step};
 use std::sync::Mutex;
 
 const COMMAND: u32 = 0x4eb000;
@@ -11,8 +11,8 @@ const TIME: u32 = 0x4ef000;
 const STATE: u32 = 0x4ef100;
 const SCRATCH: u32 = 0x4ef200;
 
-fn fixture(kind: u16, operand: u16, amount: f32) -> (engine::FlatMemory, Atom) {
-    let mut m = engine::FlatMemory::new(0x4e0000, 0x40000);
+fn fixture(kind: u16, operand: u16, amount: f32) -> (guest_layout::FlatMemory, Atom) {
+    let mut m = guest_layout::FlatMemory::new(0x4e0000, 0x40000);
     for (global, header, data) in [
         (COMMANDS, 0x4ea000, COMMAND),
         (ACTORS, 0x4ea100, ACTOR),
@@ -55,7 +55,7 @@ fn shot_requests_fire_before_acceptance_and_restarts_the_recovery_on_each_miss()
     m.set_u32(SC + 0x404, SC + 0x500).unwrap();
     m.set_u32(SC + 0x520, 1).unwrap();
     m.set_u32(SC + 0x524, SC + 0x600).unwrap();
-    let update = |m: &mut engine::FlatMemory, t, kind, x, begin| {
+    let update = |m: &mut guest_layout::FlatMemory, t, kind, x, begin| {
         m.set_u32(TIME + 8, t).unwrap();
         m.set_u16(ACTOR + 0x722, kind).unwrap();
         m.set_f32(ACTOR + 0x724, x).unwrap();

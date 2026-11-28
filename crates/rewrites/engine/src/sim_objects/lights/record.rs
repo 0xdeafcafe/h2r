@@ -26,7 +26,7 @@
 
 use ::sim_objects::light::{self, LightBlend};
 use crate::light_constants::{Error, Sse};
-use crate::points;
+use guest_layout::points;
 use crate::sim_objects::{Cx, Next, Result, unowned};
 use crate::sim_physics::{ARITH, arithmetic, byte, logic, pop, push, status};
 use runtime::{CpuAbi, Guest, GuestFault};

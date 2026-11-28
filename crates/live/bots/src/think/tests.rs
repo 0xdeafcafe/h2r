@@ -1,7 +1,7 @@
 //! Serial, batched and pipelined sampling give the same brains.
 use std::sync::{Arc, Mutex};
 
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 use input::host::HostPadState;
 
 use super::*;

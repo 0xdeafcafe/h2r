@@ -448,7 +448,7 @@ fn the_boot_s_features_plan_together_with_the_campaigns() {
 #[test]
 fn refreshing_offers_wraps_the_coop_tick_inside_agent_and_skull_calls() {
     use agent::sim::calls;
-    use engine::points::GAME_TICK;
+    use guest_layout::points::GAME_TICK;
 
     use crate::{coop_probe, skulls_custom};
 
@@ -536,12 +536,12 @@ fn rows_the_dialog_will_not_name_are_those_the_game_lacks_or_locks() {
 
 #[test]
 fn a_written_list_reads_back_as_the_game_reads_the_retail_one() {
-    let mut g = engine::testing::FakeGuest::new();
+    let mut g = guest_layout::testing::FakeGuest::new();
     g.map(0x5000_0000, 0x1000);
     let items = [(0x0a, 0), (0x14, 1), (0x2_0001, 0)];
     write_list(&mut g, 0x5000_0000, 0x5000_0800, &items).unwrap();
     assert_eq!(read_flags(&g, 0x5000_0000), items);
-    let a = engine::datum::DatumArray::at(0x5000_0000);
+    let a = guest_layout::datum::DatumArray::at(0x5000_0000);
     let h = a.header(&g).unwrap();
     assert_eq!((h.element_size, h.high_water, h.active_count), (8, 3, 3));
     // Written again with fewer: only those.
@@ -598,7 +598,7 @@ fn a_folder_return_arms_categories_even_after_the_original_is_freed() {
 
 #[test]
 fn folder_focus_uses_the_restored_order_and_live_datum_salt() {
-    let mut g = engine::testing::FakeGuest::new();
+    let mut g = guest_layout::testing::FakeGuest::new();
     let array = 0x5000_0000;
     g.map(array, 0x1000);
     let entries = [(0x0a, 0), (0x14, 0), (0x2_0001, 0)];
@@ -609,7 +609,7 @@ fn folder_focus_uses_the_restored_order_and_live_datum_salt() {
     // A category is absent in the rebuilt list. The opened category's ID
     // stays the same and its position changes.
     write_list(&mut g, array, array + 0x800, &entries[1..]).unwrap();
-    let data = engine::datum::DatumArray::at(array);
+    let data = guest_layout::datum::DatumArray::at(array);
     let entry = data.get_absolute(&g, 1).unwrap().unwrap();
     g.set_u16(entry, 0x9002).unwrap();
     assert_eq!(focus_handle(&g, array, 0x2_0001), Some(0x9002_0001));

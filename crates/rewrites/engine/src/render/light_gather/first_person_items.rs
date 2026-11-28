@@ -37,7 +37,7 @@ use super::guest::{NONE, TAGS};
 use super::items::{ALPHA_SCALE, List, Lod, PART, SCREEN_SCALE, part_visible, record_at, selected};
 use super::{Refusal, Result, Writes};
 use crate::light_constants::constant::ONE;
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// The record indices the first person draws (`u16`, `0xffff` none).
 pub const RECORDS: u32 = 0x004c_8740;

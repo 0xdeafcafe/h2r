@@ -17,7 +17,7 @@
 //! FTZ (`simd` otherwise); its sticky flags and the x87 status word are not
 //! kept.
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::view_projection::{self, Call, Refusal};
 
 pub use crate::view_setup::{CAMERA, CAMERA_POINTS};
@@ -615,7 +615,7 @@ fn inverse(g: &mut G<'_>, input: u32, output: u32) -> Result<(), Cause> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use engine::view_projection::guest as vp;
 
     const LOCAL: u32 = 0x0054_f000;

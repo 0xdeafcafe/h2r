@@ -847,7 +847,7 @@ fn only_a_flag_the_census_shows_has_a_play_entry_at_its_place_and_facing() {
 #[cfg(feature = "rules")]
 #[test]
 fn a_match_on_a_variants_map_lists_the_capture_plate_with_the_monitor_off() {
-    use engine::{points, testing::FakeGuest};
+    use guest_layout::{points, testing::FakeGuest};
     use game_markers::record::Row;
 
     const SCNR: u32 = 0x1006_0000;
@@ -916,7 +916,7 @@ fn a_match_on_a_variants_map_lists_the_capture_plate_with_the_monitor_off() {
 #[cfg(feature = "rules")]
 #[test]
 fn a_map_that_is_not_loaded_yet_leaves_the_play_forms_to_the_next_frame() {
-    use engine::{points, testing::FakeGuest};
+    use guest_layout::{points, testing::FakeGuest};
     let _one = GUARD.lock().unwrap_or_else(|e| e.into_inner());
     let mut m = FakeGuest::new();
     m.put_u32(points::SCENARIO.base, 0);

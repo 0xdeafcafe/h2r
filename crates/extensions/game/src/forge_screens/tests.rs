@@ -1,6 +1,6 @@
 use super::*;
 
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 
 use crate::list_class::Rows;
 use crate::ui::Chosen;

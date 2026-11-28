@@ -38,9 +38,9 @@
 
 use std::sync::{Mutex, MutexGuard};
 
-use engine::entry::{Cx, EntryResult, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::entry::{Cx, EntryResult, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 use sim_effects::damage::{self, Record};
@@ -602,8 +602,8 @@ mod tests {
     /// A switch entry for an object part: the effect, the part record
     /// (words `+0x14..+0x34` equal to their offsets), the three vectors
     /// and the stream pointer, as the switch's caller leaves them.
-    fn object_guest() -> (engine::testing::FakeGuest, object::Inputs) {
-        let mut g = engine::testing::FakeGuest::new();
+    fn object_guest() -> (guest_layout::testing::FakeGuest, object::Inputs) {
+        let mut g = guest_layout::testing::FakeGuest::new();
         g.map(STACK - 0x1000, 0x2000).map(EFFECT, 0x3000).map(object::RNG & !0xfff, 0x1000);
         let (pos, dir, src) = (VECS, VECS + 0x10, VECS + 0x20);
         g.put_u32(STACK + 4, EFFECT).put_u32(STACK + 8, RECORD).put_u32(STACK + 0xc, pos).put_u32(STACK + 0x10, dir);
@@ -641,7 +641,7 @@ mod tests {
     /// leaves that read them.
     #[test]
     fn the_object_answer_calls_the_leaves_in_retails_order() {
-        use engine::entry::{self, Regs};
+        use guest_layout::entry::{self, Regs};
         let (g, i) = object_guest();
         let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(answer_object(cx, i)) };
         let regs = Regs { esp: STACK, eax: i.source, ebx: 0x22, ebp: 0x33, esi: 0x44, edi: 0x55, ..Default::default() };
@@ -689,7 +689,7 @@ mod tests {
     /// retail's arm does, with the leaf's `EAX`.
     #[test]
     fn the_object_answer_returns_where_retails_arm_does() {
-        use engine::entry::{self, Regs};
+        use guest_layout::entry::{self, Regs};
         for (stop, eax, calls) in [(object::CHECK, 0xabcd_0000, 2), (object::NEW, u32::MAX, 5)] {
             let (g, i) = object_guest();
             let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(answer_object(cx, i)) };
@@ -707,13 +707,13 @@ mod tests {
     /// and the scale in `XMM0`.
     #[test]
     fn the_sound_answer_makes_retails_call() {
-        use engine::entry::{self, Regs};
+        use guest_layout::entry::{self, Regs};
         let i = sound::Inputs { tag: 0xe100_0001, effect: EFFECT, effect_20: 0x22, object: 0x0004_0007, source_eax: 0x66, ..Default::default() };
         let on = sound::Call::OnObject { eax: 1, ecx: 2, ebx: 3, esi: 4, edx: 5, args: [6, 7, 8] };
         let record: [u8; sound::RECORD] = std::array::from_fn(|n| n as u8);
         let point = sound::Call::AtPoint { record, tag: 0xe100_0001, scale: 0.5f32.to_bits() };
         for call in [on, point] {
-            let mut g = engine::testing::FakeGuest::new();
+            let mut g = guest_layout::testing::FakeGuest::new();
             g.map(STACK - 0x1000, 0x2000);
             let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(answer_sound(cx, call, i)) };
             let regs = Regs { esp: STACK, eax: 0x66, ..Default::default() };
@@ -745,8 +745,8 @@ mod tests {
     /// call has the arm's depth: the callee's `ESP` is the arm's.
     #[test]
     fn the_answer_calls_the_area_damage_from_the_arms_frame() {
-        use engine::entry::{self, Regs};
-        use engine::testing::FakeGuest;
+        use guest_layout::entry::{self, Regs};
+        use guest_layout::testing::FakeGuest;
         const STACK: u32 = 0x0030_0000;
         let record: Record = std::array::from_fn(|i| i as u8);
         let mut g = FakeGuest::new();
@@ -770,7 +770,7 @@ mod tests {
     /// the ticks first and `ESI` the tag.
     #[test]
     fn the_character_answer_pushes_as_retail() {
-        use engine::entry::{self, Regs};
+        use guest_layout::entry::{self, Regs};
         let i = character::Inputs {
             entry: STACK,
             effect: EFFECT,
@@ -783,7 +783,7 @@ mod tests {
             source: 0x66,
             ..character::Inputs::default()
         };
-        let mut g = engine::testing::FakeGuest::new();
+        let mut g = guest_layout::testing::FakeGuest::new();
         g.map(STACK - 0x1000, 0x2000);
         let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(answer_character(cx, i, 5)) };
         let regs = Regs { esp: STACK, eax: 0x66, ..Default::default() };
@@ -830,7 +830,7 @@ mod tests {
     /// stream word holds each seed where retail's draws leave it.
     #[test]
     fn the_decal_answer_draws_between_the_leaves() {
-        use engine::entry::{self, Regs};
+        use guest_layout::entry::{self, Regs};
         let stream = 0x0070_0004;
         for (near, limit, want) in [
             (1, 0.5f32, vec![decal::NEAR, object::PLACE, decal::CREATE]),
@@ -838,7 +838,7 @@ mod tests {
             (0, 0.1, vec![decal::NEAR]),
         ] {
             let i = decal::Inputs { limit: limit.to_bits(), ..decal_inputs() };
-            let mut g = engine::testing::FakeGuest::new();
+            let mut g = guest_layout::testing::FakeGuest::new();
             g.map(STACK - 0x1000, 0x2000).map(0x0070_0000, 0x1000).map(decal::DECALS & !0xfff, 0x1000);
             g.put_u32(stream, 0).put_u32(decal::DECALS, 0x0080_0000);
             let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(answer_decal(cx, i)) };
@@ -876,7 +876,7 @@ mod tests {
         }
         // Not gated: no near call, EDI the entry EAX.
         let i = decal::Inputs { flags: 0x10, ..decal_inputs() };
-        let mut g = engine::testing::FakeGuest::new();
+        let mut g = guest_layout::testing::FakeGuest::new();
         g.map(STACK - 0x1000, 0x2000).map(0x0070_0000, 0x1000).map(decal::DECALS & !0xfff, 0x1000);
         let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(answer_decal(cx, i)) };
         let run = entry::testing::run(&f, g, Regs { esp: STACK, eax: 0x66, ..Default::default() }, |_, _| Regs::default());
@@ -885,9 +885,9 @@ mod tests {
 
     #[test]
     fn the_light_answer_makes_retails_call() {
-        use engine::entry::{self, Regs};
+        use guest_layout::entry::{self, Regs};
         let call = light::Call::predict(&light::Inputs { object: u32::MAX, tag: 4, scale: 0.5f32.to_bits(), ..light::Inputs::default() });
-        let mut g = engine::testing::FakeGuest::new();
+        let mut g = guest_layout::testing::FakeGuest::new();
         g.map(STACK - 0x1000, 0x2000);
         let f = move |cx: Cx| -> hooks::EntryFuture { Box::pin(answer_light(cx, call)) };
         let run = entry::testing::run(&f, g, Regs { esp: STACK, ..Default::default() }, |c, _| {

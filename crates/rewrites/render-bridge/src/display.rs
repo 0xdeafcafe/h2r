@@ -28,9 +28,9 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
 /// The feature id.
@@ -330,8 +330,8 @@ fn load(bytes: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::entry::{self, Regs};
-    use engine::testing::FakeGuest;
+    use guest_layout::entry::{self, Regs};
+    use guest_layout::testing::FakeGuest;
 
     /// The callback and the ramp are process-wide: the tests that touch
     /// them take turns.

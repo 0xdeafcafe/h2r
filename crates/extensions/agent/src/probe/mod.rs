@@ -9,7 +9,7 @@ use agent_proto::{
     Boundary, RpcError, code, method,
     probe::{self, Animation, Hit, Weapon},
 };
-use engine::{DatumHandle, GuestMemory, MemFault, view::objects};
+use guest_layout::{DatumHandle, GuestMemory, MemFault, view::objects};
 use live_telemetry::layout as l;
 use serde_json::{Value, json};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -375,10 +375,10 @@ mod tests {
         assert!(p.begin(290, None).is_ok());
         assert!(p.begin(291, None).is_err());
     }
-    fn body(kind: u8) -> (engine::testing::FakeGuest, u32, u32) {
-        use engine::view::fake;
-        let mut m = engine::testing::FakeGuest::new();
-        m.put_u32(engine::points::OBJECTS.base, 0x2000);
+    fn body(kind: u8) -> (guest_layout::testing::FakeGuest, u32, u32) {
+        use guest_layout::view::fake;
+        let mut m = guest_layout::testing::FakeGuest::new();
+        m.put_u32(guest_layout::points::OBJECTS.base, 0x2000);
         let table = fake::datums::<objects::Header>(&mut m, 0x2000, 4);
         let (id, h) = fake::push(&mut m, &table);
         h.set_kind(&mut m, kind).unwrap();

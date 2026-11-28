@@ -1,5 +1,5 @@
 use super::*;
-use crate::points;
+use guest_layout::points;
 use mopp::boxvm::{Visit, diagonal, two_plane};
 use mopp::code::terminal_key;
 

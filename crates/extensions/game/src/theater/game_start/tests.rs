@@ -289,8 +289,8 @@ fn a_game_whose_first_update_cannot_be_read_still_records_its_ticks() {
 fn array_header(arena: &mut [u8], at: usize, name: &str) {
     arena[at..at + name.len()].copy_from_slice(name.as_bytes());
     arena[at + name.len()] = 0;
-    let sig = engine::datum::layout::SIGNATURE as usize;
-    arena[at + sig..at + sig + 4].copy_from_slice(&engine::datum::SIGNATURE.to_le_bytes());
+    let sig = guest_layout::datum::layout::SIGNATURE as usize;
+    arena[at + sig..at + sig + 4].copy_from_slice(&guest_layout::datum::SIGNATURE.to_le_bytes());
 }
 
 #[test]

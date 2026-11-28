@@ -1,6 +1,6 @@
 //! A particle callback's world for the answer's and the mirror's tests.
 
-use engine::memory::{FlatMemory, GuestMemory};
+use guest_layout::memory::{FlatMemory, GuestMemory};
 use engine::particle_emission::constant;
 
 use super::view_update;

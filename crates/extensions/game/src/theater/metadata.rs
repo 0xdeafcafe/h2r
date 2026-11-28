@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex, Weak};
 
 use anyhow::{Context, Result, ensure};
 use bots::phantom::session::at as net;
-use engine::view::players;
+use guest_layout::view::players;
 use film::blam::{Event, MapIdentity, MatchHeader, Mode, PlayerSummary, Seat, SeatKind, Summary};
 use runtime::Guest;
 use serde_json::{Value, json};

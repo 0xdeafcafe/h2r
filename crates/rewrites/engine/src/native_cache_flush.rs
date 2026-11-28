@@ -14,7 +14,7 @@
 //! | `0x12e0c0` ([`points::CACHE_FLUSH_SECOND`]) | empties the allocator `[0x4e649c]` and deletes every entry of `[0x4e6490]`, clearing bit 2 of its resource's `+0x1f` |
 //! | `0x12e150` ([`points::CACHE_UNLOAD_OWNER`]) | for the owner in EBX: unloads each `[0x4e648c]` entry's resource with `+0x18 == owner` (`0x12ddd0`), then deletes each `[0x4e6490]` entry whose resource has `+0x18 == owner` |
 
-use crate::points;
+use guest_layout::points;
 use crate::sim_objects::frame::{pop, push};
 use crate::sim_objects::{Body, Cx, Next, Result, Table};
 use runtime::{CpuAbi, Guest};

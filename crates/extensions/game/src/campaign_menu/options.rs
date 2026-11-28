@@ -3,11 +3,11 @@
 //! at +2; retail allocates three, and its widgets scroll over the array.
 use std::sync::Arc;
 
-use engine::datum::DatumArray;
-use engine::entry::{EntryFuture, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
-use engine::view::ui::{self, Screen};
+use guest_layout::datum::DatumArray;
+use guest_layout::entry::{EntryFuture, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
+use guest_layout::view::ui::{self, Screen};
 use hooks::{Builder, Flow};
 
 use super::{ID_BASE, LEVEL_SELECT_LOADER, Picker, State};
@@ -157,7 +157,7 @@ pub(super) fn checkpoint_selection(
 /// populated consecutive rows, so keep their salts, adding at most two.
 fn fill(m: &mut dyn GuestMemory, list: u32, rows: &[u16]) -> Result<(), MemFault> {
     let array = DatumArray::at(m.u32(list + 0x70)?);
-    if array.header_field(m, engine::datum::layout::MAXIMUM_COUNT)? < rows.len() as i32 {
+    if array.header_field(m, guest_layout::datum::layout::MAXIMUM_COUNT)? < rows.len() as i32 {
         return Ok(());
     }
     for (i, &action) in rows.iter().enumerate() {
@@ -473,7 +473,7 @@ fn scope_checkpoint(path: &mut [u8; 256], name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn new_game_opens_difficulty_and_resume_skips_it() {
@@ -604,7 +604,7 @@ mod tests {
 
     #[test]
     fn a_halo2_checkpoint_links_only_widgets_and_keeps_the_fourth_action() {
-        use engine::datum::layout::ACTIVE_COUNT;
+        use guest_layout::datum::layout::ACTIVE_COUNT;
         use runtime::{CpuAbi, Dispatch, ExecCtx, Guest, Runtime, guest::Permissions};
 
         let list = ui::ListHandler::at(0x1000);

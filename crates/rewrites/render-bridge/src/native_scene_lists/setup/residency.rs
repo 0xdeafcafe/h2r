@@ -86,7 +86,7 @@ pub(in crate::native_scene_lists) fn resource_cache_in_use(m: &dyn GuestMemory) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn resident_resource_writes_the_current_cache_epoch() {

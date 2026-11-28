@@ -21,7 +21,7 @@
 
 use std::sync::Arc;
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 use crate::native_targets::{self, unhandled, Arm, Host};
 
@@ -656,8 +656,8 @@ fn end_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -
 /// Places the setup's and the end's implementations (`native_targets`'
 /// feature).
 pub fn place(b: &mut hooks::Builder<'_>) {
-    b.raw().implement(&engine::points::RENDER_VIEW_SETUP, "native_view_setup", setup_call).context_only();
-    b.raw().implement(&engine::points::RENDER_VIEW_END, "native_view_end", end_call).context_only();
+    b.raw().implement(&guest_layout::points::RENDER_VIEW_SETUP, "native_view_setup", setup_call).context_only();
+    b.raw().implement(&guest_layout::points::RENDER_VIEW_END, "native_view_end", end_call).context_only();
 }
 
 #[cfg(test)]

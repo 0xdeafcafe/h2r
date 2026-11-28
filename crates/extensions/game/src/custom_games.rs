@@ -595,8 +595,8 @@ const LIST_SET_ROW: u32 = 0x0024_c591;
 const MENU_LIST: u32 = 0x818;
 
 /// `0x231170`'s steps on `screen`, with the cursor put on `row`.
-async fn build_menu(cx: engine::entry::Cx, screen: u32, row: u32) -> engine::entry::EntryResult {
-    use engine::entry::{GuestCall, Ret};
+async fn build_menu(cx: guest_layout::entry::Cx, screen: u32, row: u32) -> guest_layout::entry::EntryResult {
+    use guest_layout::entry::{GuestCall, Ret};
     cx.write(|m| {
         m.set_u32(SEARCH_STATE, u32::MAX)?;
         m.set_u8(SEARCH_FLAG, 0)
@@ -630,10 +630,10 @@ impl hooks::Feature for LiveMenuCursor {
         .doc("docs/game/bots.md")
     }
     fn build(&self, b: &mut hooks::Builder) -> Result<(), hooks::BuildError> {
-        use engine::entry::EntryFuture;
+        use guest_layout::entry::EntryFuture;
         use hooks::Flow;
         b.raw().before(
-            &engine::points::LIVE_MENU_CURSOR,
+            &guest_layout::points::LIVE_MENU_CURSOR,
             "the cursor on our row",
             |c| {
                 let screen = c.cpu.ecx;
@@ -1832,14 +1832,14 @@ mod tests {
 
     #[test]
     fn the_build_puts_the_cursor_on_our_row() {
-        use engine::GuestMemory;
-        use engine::entry::{Regs, Ret, testing};
-        let mut g = engine::testing::FakeGuest::new();
+        use guest_layout::GuestMemory;
+        use guest_layout::entry::{Regs, Ret, testing};
+        let mut g = guest_layout::testing::FakeGuest::new();
         g.map(SEARCH_FLAG, 8);
         g.write(SEARCH_STATE, &7u32.to_le_bytes()).unwrap();
         g.write(SEARCH_FLAG, &[1]).unwrap();
         const SCREEN: u32 = 0x0080_0000;
-        let f = |cx: engine::entry::Cx| -> engine::entry::EntryFuture {
+        let f = |cx: guest_layout::entry::Cx| -> guest_layout::entry::EntryFuture {
             Box::pin(build_menu(cx, SCREEN, 4))
         };
         let run = testing::run(&f, g, Regs::default(), |c, _| Regs {

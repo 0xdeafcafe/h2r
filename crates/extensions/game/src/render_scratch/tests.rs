@@ -1,5 +1,5 @@
 use super::*;
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 
 const CACHE: u32 = 0x0060_0000;
 const CACHE_DATA: u32 = 0x0060_1000;
@@ -14,7 +14,7 @@ const LIGHT_TICK_FIELD: u32 = LIGHT_DATA + 0x4c;
 
 fn header(m: &mut FakeGuest, at: u32, size: u32, count: u32, high_water: u32, data: u32, bitmap: u32) {
     m.map(at, layout::HEADER_SIZE)
-        .put_u32(at + layout::SIGNATURE, engine::datum::SIGNATURE)
+        .put_u32(at + layout::SIGNATURE, guest_layout::datum::SIGNATURE)
         .put_u32(at + layout::ELEMENT_SIZE, size)
         .put_u32(at + layout::MAXIMUM_COUNT, count)
         .put_u32(at + layout::HIGH_WATER, high_water)

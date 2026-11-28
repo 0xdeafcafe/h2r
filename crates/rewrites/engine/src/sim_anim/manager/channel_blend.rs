@@ -103,7 +103,7 @@ fn lookup_transition(c: &mut CpuAbi, g: &mut Bus<'_>, repeated: bool) -> sim_nat
         c.ecx = g.u32(at(c.ebx, 0x68))?;
     }
     push(c, g, c.edx)?;
-    c.edx = g.u32(crate::points::TAG_ENTRIES.base)?;
+    c.edx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
     c.eax = at(c.esp, if repeated { 0x48 } else { 0x4c });
     push(c, g, c.eax)?;
     c.ecx = slot_offset(c, c.ecx);
@@ -184,7 +184,7 @@ fn find_transition(c: &mut CpuAbi, g: &mut Bus<'_>, mut pc: u32) -> sim_native::
                 g.set_u32(at(sp, 0x14), 0)?;
                 if !missing {
                     c.ecx = g.u32(c.ebx)?;
-                    c.edx = g.u32(crate::points::TAG_ENTRIES.base)?;
+                    c.edx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
                     c.eax = g.u32(at(c.ebx, 4))?;
                     c.ecx = slot_offset(c, c.ecx);
                     c.edx = g.u32(at(at(c.ecx, c.edx), 8))?;
@@ -410,7 +410,7 @@ fn install_transition(c: &mut CpuAbi, g: &mut Bus<'_>, mut pc: u32) -> sim_nativ
                 g.set_u32(at(sp, 0x34), c.esi)?;
                 g.set_u8(at(sp, 0x13), 1)?;
                 if valid && g.u16(at(c.edi, 6))? != c.ecx as u16 {
-                    c.ecx = g.u32(crate::points::TAG_ENTRIES.base)?;
+                    c.ecx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
                     c.edx = g.u32(at(c.edi, 4))?;
                     c.eax = slot_offset(c, c.eax);
                     c.eax = g.u32(at(at(c.eax, c.ecx), 8))?;

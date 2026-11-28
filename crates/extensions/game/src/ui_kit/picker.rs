@@ -38,8 +38,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::entry::{Cx, EntryError};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::entry::{Cx, EntryError};
+use guest_layout::memory::{GuestMemory, MemFault};
 use runtime::guest::Permissions;
 
 use crate::list_class::{Action, ListClass, ListLayout, Rows, TextBlock};
@@ -339,9 +339,9 @@ impl Picker {
             Box::pin(async move {
                 if row != u32::MAX {
                     with_offer(|offer| offer.screen = Some(screen));
-                    let list = screen.wrapping_add(engine::view::ui::LIST);
+                    let list = screen.wrapping_add(guest_layout::view::ui::LIST);
                     cx.call(
-                        engine::entry::GuestCall::new(crate::list_class::LIST_SET_ROW)
+                        guest_layout::entry::GuestCall::new(crate::list_class::LIST_SET_ROW)
                             .eax(list)
                             .args([row]),
                     )

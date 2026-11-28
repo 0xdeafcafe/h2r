@@ -11,8 +11,8 @@
 //! world while the player flies, undamageable and not drawn
 //! (`forge_controls::render::park`).
 use agent::sim::calls::{self, BodyStep, Call, PendingCall};
-use engine::GuestMemory;
-use engine::view::{objects, players};
+use guest_layout::GuestMemory;
+use guest_layout::view::{objects, players};
 use forge::camera::Camera;
 use forge_doc::bodies::Body;
 use serde_json::Value;

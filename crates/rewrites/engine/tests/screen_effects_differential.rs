@@ -41,7 +41,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{IMAGE_SHA256, sha256, xbe_path};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::glow::{self, BlurArgs, WideArgs};
 use engine::screen_effect::{self as fx, Convolution};
 use engine::screen_effects::{self as se, Drawn};

@@ -9,6 +9,7 @@ license.workspace = true
 frame-scene = { path = "../frame-scene" }
 bytemuck = { version = "1", features = ["derive"] }
 engine = { path = "../engine" }
+guest-layout = { path = "../../hooking/guest-layout" }
 # The HUD walk the guest readers in `hud` feed.
 hud-kit-core = { path = "../hud-kit-core" }
 

@@ -550,7 +550,7 @@ pub(crate) fn segment<const N: usize, M: SegmentMemory>(
 mod tests {
     use super::*;
     use crate::sim_native::unit;
-    const TEXT_START: u32 = crate::points::SIM_UNIT_POSE.base;
+    const TEXT_START: u32 = guest_layout::points::SIM_UNIT_POSE.base;
     const TEXT_LEN: u32 = 0x112dbb - TEXT_START;
     use runtime::{CpuAbi, guest::Permissions};
 

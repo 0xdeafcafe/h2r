@@ -38,10 +38,10 @@ fn seat(displayed: f32, age: f32, last_tick: u32, shield: f32, tick: u32, step: 
     g.set_u16(TIME + 2, 2).unwrap();
     word(&mut g, points::GAME_TIME.base, TIME);
     word(&mut g, points::OBJECTS.base, HEADER);
-    word(&mut g, HEADER + crate::datum::layout::DATA, DATA);
+    word(&mut g, HEADER + guest_layout::datum::layout::DATA, DATA);
     word(&mut g, DATA + 2 * 12 + 8, BODY);
     word(&mut g, points::PLAYERS.base, PLAYER);
-    word(&mut g, PLAYER + crate::datum::layout::DATA, DATA);
+    word(&mut g, PLAYER + guest_layout::datum::layout::DATA, DATA);
     let mut c = CpuAbi {
         // The player the seat reports: mask 2 against ebx 3.
         eax: 0x0003_0002,

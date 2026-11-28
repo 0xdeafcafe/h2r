@@ -4,7 +4,7 @@ use crate::visibility::flood::tests::camera_at;
 use crate::visibility::flood::{Lens, Rect};
 use crate::visibility::frusta::WindowFrusta;
 use crate::visibility::frusta::tests::INPUTS;
-use engine::FlatMemory;
+use guest_layout::FlatMemory;
 
 const ARRAY: u32 = 0x0058_0000;
 const RECORDS: u32 = 0x0058_1000;
@@ -50,7 +50,7 @@ fn guest(view_index: i32) -> FlatMemory {
     }
     for (addr, value) in [
         (light::ARRAY_POINTER, ARRAY),
-        (engine::tags::TAG_ENTRIES_GLOBAL, 0x0059_0000),
+        (guest_layout::tags::TAG_ENTRIES_GLOBAL, 0x0059_0000),
         (ARRAY + 0x24, light::RECORD_SIZE as u32),
         (ARRAY + 0x38, SPHERES.len() as u32),
         (ARRAY + 0x44, RECORDS),

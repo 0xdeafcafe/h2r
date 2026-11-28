@@ -3,7 +3,7 @@
 //! overridden the definition's shape before the pose and scale were applied.
 
 use super::{f32_at, u16_at, vec3_at};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The builders at `0x000c1930` and `0x000c1980` initialize 31 words.
 pub const RECORD_SIZE: usize = 0x7c;

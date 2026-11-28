@@ -23,7 +23,8 @@
 mod common;
 
 use engine::sim_anim::markers as adapter;
-use engine::{points, sim_native as sim};
+use guest_layout::points;
+use engine::sim_native as sim;
 use ir::interp::{self, Cpu};
 use lift::harness::HARNESS_EXIT;
 use lifted::cpu::to_interp as ir_cpu;

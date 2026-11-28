@@ -6,9 +6,9 @@
 use std::ops::Range;
 
 use hooks::{Cx, GuestCall};
-use engine::entry::EntryError;
+use guest_layout::entry::EntryError;
 use engine::light_constants::Error;
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::render_loop::{opaque_animation as evaluate, states};
 use super::{opaque_material_registers, opaque_material_states};
 
@@ -237,9 +237,9 @@ pub(super) async fn constants_states(cx:&Cx,cache:u32,leaf:Leaf,fcw:u16,mxcsr:u3
 mod tests {
     use super::*;
     use hooks::{EntryFuture, Ret};
-    use engine::entry::{Regs, testing::run};
+    use guest_layout::entry::{Regs, testing::run};
     use engine::function_eval::constant::ONE;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const CACHE: u32 = 0x10000;
     const INSTANCE_DATA: u32 = 0x13000;

@@ -3,7 +3,7 @@
 
 use std::sync::Mutex;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 use crate::native_targets::{Bind, Host};
 

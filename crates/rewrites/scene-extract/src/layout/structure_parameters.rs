@@ -7,7 +7,7 @@
 //! the device and the engine already hold every word, so a word computed
 //! otherwise than the guest's declines; it does not draw wrong.
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::render_loop::structure_parameters as upload;
 use frame_scene::StructureParameters;
 

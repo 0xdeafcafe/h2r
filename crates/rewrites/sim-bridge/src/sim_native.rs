@@ -2,7 +2,8 @@
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use engine::sim_anim::manager;
 use engine::sim_collision::{Bail, Entry};
-use engine::{points, sim_native as sim};
+use guest_layout::points;
+use engine::sim_native as sim;
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 use std::sync::Arc;
 

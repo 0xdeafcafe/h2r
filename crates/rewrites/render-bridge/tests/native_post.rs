@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use engine::colour_pass::Parameters;
-use engine::memory::{FlatMemory, GuestMemory};
+use guest_layout::memory::{FlatMemory, GuestMemory};
 use render_bridge::native_post::{self, Fp, Host, NativePost, ScreenEffect};
 use hooks::plan::Base;
 use hooks::{Registry, Switches};

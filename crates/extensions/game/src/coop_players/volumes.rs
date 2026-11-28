@@ -17,8 +17,8 @@
 //! switch has its own gather). A volume parented to an object moves with
 //! it and its stored frame is not in world space: it is left out.
 
-use engine::memory::GuestMemory;
-use engine::points;
+use guest_layout::memory::GuestMemory;
+use guest_layout::points;
 
 use super::{FIRST_EXTRA, LEASH, NONE, Player, distance, object, script_players, world_position};
 

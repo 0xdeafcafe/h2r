@@ -4,7 +4,8 @@ use crate::sim_native::{
     Memory,
     plan::{Plan, segment},
 };
-use crate::{points, sim_native};
+use guest_layout::points;
+use crate::sim_native;
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi, abi};
 use std::sync::LazyLock;
 

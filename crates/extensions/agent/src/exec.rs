@@ -81,15 +81,15 @@ pub type GameMethod = Box<dyn FnMut(Value, &mut GameCtx<'_>) -> Result<Value, Rp
 /// Tells which external Live sessions refuse edits: `Some(why)` to refuse.
 /// A Live custom game this console hosts admits them, as a System Link
 /// host does; matchmaking, a client and an unreadable session do not.
-pub type LiveEditProbe = fn(&dyn engine::GuestMemory) -> Option<&'static str>;
+pub type LiveEditProbe = fn(&dyn guest_layout::GuestMemory) -> Option<&'static str>;
 
 /// Why edits are refused on an external Live session, if they are. With a
 /// [`LiveEditProbe`] it decides for a Live game; without one, any session
 /// the `live_session` probe calls external Live is refused.
 pub(crate) fn live_edit_refusal(
-    live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
+    live_session: Option<fn(&dyn guest_layout::GuestMemory) -> bool>,
     live_edit: Option<LiveEditProbe>,
-    m: &dyn engine::GuestMemory,
+    m: &dyn guest_layout::GuestMemory,
 ) -> Option<&'static str> {
     match live_edit {
         Some(probe) => probe(m),
@@ -107,7 +107,7 @@ pub struct GameCtx<'a> {
     pub(crate) map_epoch: u64,
     /// A queued edit reads the current epoch without taking the executor lock.
     map_lifetime: &'a mut Option<Arc<AtomicU64>>,
-    pub(crate) live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
+    pub(crate) live_session: Option<fn(&dyn guest_layout::GuestMemory) -> bool>,
     /// Which Live sessions still refuse edits ([`live_edit_refusal`]).
     pub(crate) live_edit: Option<LiveEditProbe>,
     /// The game at this boundary ([`Reader::with_guest`] for guest memory).
@@ -156,7 +156,7 @@ impl GameCtx<'_> {
     /// Runs an operation once with guest memory at this boundary.
     pub(crate) fn with_guest<T>(
         &mut self,
-        f: impl FnOnce(&mut dyn engine::GuestMemory) -> Result<T, RpcError>,
+        f: impl FnOnce(&mut dyn guest_layout::GuestMemory) -> Result<T, RpcError>,
     ) -> Result<T, RpcError> {
         let mut f = Some(f);
         let mut out = None;
@@ -175,7 +175,7 @@ impl GameCtx<'_> {
     }
 
     /// Inspect guest state at this game boundary.
-    pub fn read_guest<T>(&mut self, f: impl FnOnce(&dyn engine::GuestMemory) -> T) -> Result<T, RpcError> {
+    pub fn read_guest<T>(&mut self, f: impl FnOnce(&dyn guest_layout::GuestMemory) -> T) -> Result<T, RpcError> {
         self.with_guest(|m| Ok(f(m)))
     }
 
@@ -286,7 +286,7 @@ struct State {
     map_epoch: u64,
     activation: u64,
     map_lifetime: Option<Arc<AtomicU64>>,
-    live_session: Option<fn(&dyn engine::GuestMemory) -> bool>,
+    live_session: Option<fn(&dyn guest_layout::GuestMemory) -> bool>,
     live_edit: Option<LiveEditProbe>,
     pending: VecDeque<Queued>,
     waits: Vec<Waiting>,

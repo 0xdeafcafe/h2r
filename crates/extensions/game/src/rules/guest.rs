@@ -3,13 +3,13 @@
 //! behind its actions.
 //!
 //! Reads take guest memory directly. An action that calls the engine is an
-//! `async` body over a [`Cx`] (`engine::entry`), made at a tick boundary.
+//! `async` body over a [`Cx`] (`guest_layout::entry`), made at a tick boundary.
 //! Every call goes to the engine's own routine, named in `points.rs`; the
 //! lives and respawn bodies are Firefight's (`crate::firefight::guest`).
 
-use engine::entry::{Cx, EntryError, GuestCall};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
 use engine::objectives::{OBJECTIVE_COUNT, OBJECTIVE_MAX, OBJECTIVE_STRIDE, OBJECTIVES, RECORD_OBJECT};
-use engine::{GuestMemory, MemFault, points};
+use guest_layout::{GuestMemory, MemFault, points};
 use guest_layout::game::{PLAYER_STATS, PLAYER_STATS_STRIDE, TEAM_STATS, TEAM_STATS_STRIDE};
 
 use crate::firefight::guest as ff;

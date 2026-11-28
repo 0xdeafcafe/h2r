@@ -21,8 +21,8 @@
 
 use std::collections::BTreeMap;
 
-use engine::points;
-use engine::{GuestMemory, MemFault};
+use guest_layout::points;
+use guest_layout::{GuestMemory, MemFault};
 use sim_sound::instances::{Permutation, PitchRange, Playback, Scale, SoundTag, SoundTags, TagIndex};
 use sim_sound::looping::{DetailTag, LoopTag, Segment, TrackTag};
 
@@ -264,7 +264,7 @@ impl Snapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const ENTRIES: u32 = 0x0060_0000;
     const DEF: u32 = 0x0060_1000;

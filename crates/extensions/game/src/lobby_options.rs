@@ -21,9 +21,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use engine::GuestMemory;
-use engine::entry::{Cx, EntryFuture, GuestCall, Ret};
-use engine::points;
+use guest_layout::GuestMemory;
+use guest_layout::entry::{Cx, EntryFuture, GuestCall, Ret};
+use guest_layout::points;
 use hooks::{BuildError, Builder, Flow, Manifest};
 use settings::{Choice, Kind, Store};
 
@@ -306,7 +306,7 @@ impl LobbyOptions {
         screen: u32,
         variant: u32,
         slots: [u32; PANEL_ROWS],
-    ) -> Result<Ret, engine::entry::EntryError> {
+    ) -> Result<Ret, guest_layout::entry::EntryError> {
         // Retail marks each populated row visible again. Clearing first
         // removes the previous summary even if a new variant skips a row.
         cx.write(|m| {
@@ -394,7 +394,7 @@ impl hooks::Feature for LobbyOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     fn texts(ids: &[u32]) -> Vec<String> {
         let table = strings();

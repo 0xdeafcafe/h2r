@@ -2,7 +2,7 @@ use super::*;
 
 use std::collections::HashMap;
 
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 use variants::record::SettingId;
 
 use crate::community_variants::Row;

@@ -1,5 +1,5 @@
 use super::*;
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 
 const S: u32 = 0x0070_0000;
 const T: u32 = 0x0072_0000;

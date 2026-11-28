@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use bots::{decisions::Personality, guest, mind::Skill, name_profile::NameProfile, phantom};
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use live_proto::{Xuid, bots::is_bot_xuid};
 use runtime::GuestFault;
@@ -369,7 +369,7 @@ impl hooks::Feature for Options {
             &points::RECENT_PLAYERS_BUILD,
             "restore bot display names in the recent history rows",
             |c| {
-                use engine::datum::{DatumArray, layout};
+                use guest_layout::datum::{DatumArray, layout};
                 let m = &mut *c.ctx.memory();
                 let array = m.u32(c.cpu.eax + 0x70)?;
                 if array != 0 {
@@ -590,7 +590,7 @@ pub fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn options_route_uses_the_selected_identity_and_never_the_spelling() {

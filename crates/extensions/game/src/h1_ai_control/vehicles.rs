@@ -3,7 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use engine::{
+use guest_layout::{
     DatumHandle,
     entry::{Cx, EntryError, GuestCall},
     memory::{GuestMemory, MemFault},
@@ -343,7 +343,7 @@ fn squared_distance(a: [f32; 3], b: [f32; 3]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn native_seat_command_keeps_the_salted_vehicle_handle() {

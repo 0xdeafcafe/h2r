@@ -18,8 +18,8 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::view::players;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::view::players;
 
 use crate::guest;
 use crate::pad_source::PadSource;

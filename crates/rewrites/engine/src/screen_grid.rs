@@ -48,7 +48,7 @@
 //! `engine/tests/screen_grid_differential.rs`.
 
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// Image and engine constants.
 pub mod constant {
@@ -393,7 +393,7 @@ pub fn pushed(strips: &[Vec<GridVertex>]) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     fn f(v: f32) -> u32 {
         v.to_bits()

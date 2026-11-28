@@ -149,7 +149,7 @@ fn publish(c: &mut CpuAbi, g: &mut impl Memory) -> Transfer {
     }
     c.eax = g.u32(c.ebx)?;
     if c.eax != NONE {
-        c.edx = g.u32(crate::points::OBJECTS.base)?;
+        c.edx = g.u32(guest_layout::points::OBJECTS.base)?;
         c.ecx = (c.eax & 0xffff) * 3;
         c.eax = g.u32(at(c.edx, 0x44))?;
         c.esi = at(c.eax, c.ecx * 4);

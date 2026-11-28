@@ -11,6 +11,7 @@ map.workspace = true
 runtime.workspace = true
 # The tag-index globals (engine::points::TAG_INDEX, TAG_ENTRIES).
 engine = { path = "../../rewrites/engine" }
+guest-layout = { path = "../../hooking/guest-layout" }
 serde.workspace = true
 serde_json.workspace = true
 

@@ -41,7 +41,7 @@ use std::collections::BTreeMap;
 use crate::colour_pass::pack_colour;
 use crate::function_eval::{self, constant::{BYTE, ONE, ZERO}};
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use crate::render_loop::opaque_animation;
 
 /// The callback.

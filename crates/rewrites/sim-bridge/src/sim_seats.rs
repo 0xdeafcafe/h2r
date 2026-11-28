@@ -72,7 +72,7 @@ fn cause(pc: u32) -> String {
 }
 
 pub(crate) fn install(b: &mut Builder) {
-    b.raw().observe_before(&engine::points::CACHE_TAGS_LOAD, DEVICE_RESET, |_| {
+    b.raw().observe_before(&guest_layout::points::CACHE_TAGS_LOAD, DEVICE_RESET, |_| {
         sim_seats::leaf::reset();
         reset_stats();
     });
@@ -118,7 +118,7 @@ mod tests {
                 assert_eq!(implement.label, SEATS, "{}", seat.name);
                 assert_eq!(implement.continuation_sites().0, seat.sites, "{}", seat.name);
             }
-            let load = &plan.chains[&engine::points::CACHE_TAGS_LOAD.base];
+            let load = &plan.chains[&guest_layout::points::CACHE_TAGS_LOAD.base];
             assert!(load.observe_before.iter().any(|h| h.label == DEVICE_RESET));
         }
     }
@@ -157,18 +157,18 @@ mod tests {
         registry.add(&SimNative::for_tests()).unwrap();
         registry
             .add(&hooks::from_fn("aim-assist-shape", |b| {
-                b.raw().before(&engine::points::PLAYER_CONTROL_UPDATE, "open", |_| {
+                b.raw().before(&guest_layout::points::PLAYER_CONTROL_UPDATE, "open", |_| {
                     Ok(hooks::Flow::Continue)
                 });
-                b.raw().after(&engine::points::PLAYER_CONTROL_UPDATE, "close", |_| Ok(()));
+                b.raw().after(&guest_layout::points::PLAYER_CONTROL_UPDATE, "close", |_| Ok(()));
                 Ok(())
             }))
             .unwrap();
         let plan = registry.build(&Base).unwrap();
-        for point in [&engine::points::AIM_TARGET_UPDATE, &engine::points::AIM_TARGET_SEARCH] {
+        for point in [&guest_layout::points::AIM_TARGET_UPDATE, &guest_layout::points::AIM_TARGET_SEARCH] {
             assert!(plan.chains[&point.base].render_thread().is_ok(), "{}", point.name);
         }
-        assert!(plan.chains[&engine::points::PLAYER_CONTROL_UPDATE.base].render_thread().is_err());
+        assert!(plan.chains[&guest_layout::points::PLAYER_CONTROL_UPDATE.base].render_thread().is_err());
     }
 
     #[test]

@@ -36,7 +36,7 @@
 //! [`ForgeWorld`]: super::local::ForgeWorld
 use agent_proto::sim::REFUSED;
 use agent_proto::{Kind, ObjectId, RpcError, code};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use forge_doc::{TagKey, Value};
 use guest_layout::ObjectType;
 use map::scenario_layout::{self as layout, BlockKind, FieldDef, FieldType, Role};
@@ -187,7 +187,7 @@ fn refused(why: impl Into<String>) -> RpcError {
     RpcError::new(REFUSED, why)
 }
 
-fn fault(e: engine::MemFault) -> RpcError {
+fn fault(e: guest_layout::MemFault) -> RpcError {
     RpcError::new(
         code::UNAVAILABLE,
         format!("guest memory fault at {:#x}", e.addr),

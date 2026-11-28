@@ -1,6 +1,6 @@
 use super::*;
-use engine::entry::{self, Regs};
-use engine::testing::FakeGuest;
+use guest_layout::entry::{self, Regs};
+use guest_layout::testing::FakeGuest;
 
 const BLOCK: u32 = 0x0070_0000;
 const STACK: u32 = 0x0030_0800;

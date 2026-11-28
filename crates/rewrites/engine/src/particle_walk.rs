@@ -45,7 +45,7 @@ use std::collections::BTreeMap;
 
 use crate::function_eval::constant::ONE;
 use crate::light_constants::Error;
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use crate::particle_emission::{self as pe, CALLBACK_INPUTS, Model};
 
 /// The walk.
@@ -139,8 +139,8 @@ impl From<Error> for Refused {
     }
 }
 
-impl From<crate::memory::MemFault> for Refused {
-    fn from(f: crate::memory::MemFault) -> Self {
+impl From<guest_layout::memory::MemFault> for Refused {
+    fn from(f: guest_layout::memory::MemFault) -> Self {
         Refused::Eval(f.into())
     }
 }

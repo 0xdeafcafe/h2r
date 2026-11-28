@@ -4,7 +4,7 @@
 //! and its arguments are in [`super::calls::addr::RECORDING_PLAYER`]).
 
 use agent_proto::{RpcError, code};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 
 /// The block in the scenario: its count, then its elements' address.
 const BLOCK: u32 = 0x110;
@@ -15,7 +15,7 @@ const NAME: usize = 32;
 /// A sanity bound on the count, not the engine's.
 const MAX: u32 = 0x8000;
 
-fn fault(e: engine::MemFault) -> RpcError {
+fn fault(e: guest_layout::MemFault) -> RpcError {
     RpcError::new(
         code::UNAVAILABLE,
         format!("guest memory at {:#x} faulted", e.addr),
@@ -40,7 +40,7 @@ pub fn flags(mode: Option<&str>) -> Result<u32, RpcError> {
 /// its name as the scenario spells it. A refusal lists what the loaded
 /// scenario has.
 pub fn find(m: &dyn GuestMemory, name: &str) -> Result<(u16, String), RpcError> {
-    let scenario = m.u32(engine::points::SCENARIO.base).map_err(fault)?;
+    let scenario = m.u32(guest_layout::points::SCENARIO.base).map_err(fault)?;
     if scenario == 0 {
         return Err(RpcError::new(code::UNAVAILABLE, "no scenario is loaded"));
     }
@@ -80,11 +80,11 @@ pub fn find(m: &dyn GuestMemory, name: &str) -> Result<(u16, String), RpcError> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     fn scenario(names: &[&str]) -> FakeGuest {
         let mut g = FakeGuest::new();
-        g.put_u32(engine::points::SCENARIO.base, 0x1000);
+        g.put_u32(guest_layout::points::SCENARIO.base, 0x1000);
         g.put_u32(0x1000 + BLOCK, names.len() as u32);
         g.put_u32(0x1000 + BLOCK + 4, 0x2000);
         g.map(0x2000, 0x400);

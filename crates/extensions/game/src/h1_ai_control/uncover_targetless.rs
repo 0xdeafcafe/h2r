@@ -2,7 +2,7 @@
 //! Keep the native uncover action and use the engine's non-targeted
 //! firing-position planner for this form of its movement request.
 
-use engine::{
+use guest_layout::{
     DatumHandle,
     entry::{Cx, EntryError, GuestCall, Ret},
     memory::{GuestMemory, MemFault},
@@ -160,10 +160,7 @@ fn update(m: &mut dyn GuestMemory, actor: u32, record: u32) -> Result<(), MemFau
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{
-        entry::{EntryFuture, Regs, testing},
-        testing::FakeGuest,
-    };
+    use guest_layout::{entry::{EntryFuture, Regs, testing}, testing::FakeGuest};
 
     #[test]
     fn a_targetless_request_installs_a_real_position_and_restores_the_tick_gate() {

@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use hs::h1_ai_slots::{decode_words, migration as wire};
 
 use super::{actors, auto_migration as migration, points, squad_control, state};

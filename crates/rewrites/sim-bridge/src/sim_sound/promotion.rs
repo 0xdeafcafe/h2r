@@ -11,8 +11,8 @@
 //! The counting is `sim_sound::scheduling`'s.
 
 use super::playback::{GESTALT, definition};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::SOUND_GLOBALS;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::SOUND_GLOBALS;
 use sim_sound::scheduling::{Admission, PromotionCredit, admission, decay_counter};
 
 const NONE: u32 = u32::MAX;
@@ -99,8 +99,8 @@ pub fn select(m: &mut dyn GuestMemory, tag: u32) -> Result<Rule, MemFault> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::points::TAG_ENTRIES;
-    use engine::testing::FakeGuest;
+    use guest_layout::points::TAG_ENTRIES;
+    use guest_layout::testing::FakeGuest;
 
     const ENTRIES: u32 = 0x0060_0000;
     const DEF: u32 = 0x0060_1000;

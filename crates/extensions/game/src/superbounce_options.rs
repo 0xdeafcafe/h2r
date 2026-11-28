@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU16, Ordering};
 
 use pogo::Style;
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use ::rules::ir::Ir;
 
 /// The script's option names.

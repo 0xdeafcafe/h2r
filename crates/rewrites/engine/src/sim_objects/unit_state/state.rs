@@ -39,7 +39,7 @@
 //! or state changed.
 
 use super::{NONE, ONE, byte, call, callee, imm, owned, pop, push, ret, sx8, sx16};
-use crate::points;
+use guest_layout::points;
 use crate::sim_objects::sse::{self, Ss};
 use crate::sim_objects::{Cx, Next, Result, unowned};
 use runtime::CpuAbi;

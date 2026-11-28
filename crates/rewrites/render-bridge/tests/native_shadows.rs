@@ -1,7 +1,7 @@
 #![cfg(feature = "native-render")]
 use std::sync::{Arc, Mutex};
 
-use engine::{memory::GuestMemory, points};
+use guest_layout::{memory::GuestMemory, points};
 use frame_scene::{GroupSite, LightGroup, ShadowPass, ViewSlot};
 use hooks::{Registry, Switches, plan::Base};
 use native_render::shadows::Site;
@@ -64,7 +64,7 @@ fn group(layer: u8, size: [u32; 2]) -> SceneGroup {
 #[test]
 fn a_scaled_view_draws_its_shadow_layers() {
     let _turn = HOST_TURN.lock().unwrap_or_else(|e| e.into_inner());
-    let mut mem = engine::FlatMemory::new(0, 0x510000);
+    let mut mem = guest_layout::FlatMemory::new(0, 0x510000);
     let host = Arc::new(Scaled(Mutex::default()));
     native_shadows::set_host(host.clone());
     // Render scale 1 and 2: the size is the host's business, not a refusal.

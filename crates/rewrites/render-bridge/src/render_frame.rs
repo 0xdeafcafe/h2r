@@ -30,8 +30,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
@@ -294,7 +294,7 @@ fn run(me: &RenderFrame, frame: Frame, step: Step, cpu: &mut CpuAbi, ctx: &mut E
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const A: Addrs = Addrs::HALO2;
 

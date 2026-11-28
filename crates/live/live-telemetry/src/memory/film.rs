@@ -362,7 +362,7 @@ mod tests {
             .unwrap();
         guest.set_u32(objective::KOTH_GLOBALS, hill).unwrap();
         guest
-            .set_u32(engine::points::SCENARIO.base, scenario)
+            .set_u32(guest_layout::points::SCENARIO.base, scenario)
             .unwrap();
         guest
             .set_u32(scenario + objective::NETGAME_FLAGS, 8)

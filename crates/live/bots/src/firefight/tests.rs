@@ -375,17 +375,17 @@ fn bots_do_not_wander_to_a_drop_zone_alone() {
 
 #[test]
 fn actors_are_read_from_the_pool() {
-    use engine::datum::layout as dl;
-    use engine::handle::DatumHandle;
-    use engine::testing::FakeGuest;
-    use engine::view::fake;
+    use guest_layout::datum::layout as dl;
+    use guest_layout::handle::DatumHandle;
+    use guest_layout::testing::FakeGuest;
+    use guest_layout::view::fake;
 
     const OBJECTS_HEADER: u32 = 0x0062_0000;
     const OBJECTS_DATA: u32 = 0x0062_1000;
     const BODIES: u32 = 0x0063_0000;
     let mut g = FakeGuest::new();
     // Three units: a living biped, a dead one, a living vehicle.
-    g.put_u32(engine::points::OBJECTS.base, OBJECTS_HEADER);
+    g.put_u32(guest_layout::points::OBJECTS.base, OBJECTS_HEADER);
     g.map(OBJECTS_HEADER, 0x48)
         .put_u32(OBJECTS_HEADER + dl::ELEMENT_SIZE, 0xc)
         .put_u32(OBJECTS_HEADER + dl::HIGH_WATER, 3)

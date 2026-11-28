@@ -2,8 +2,8 @@
 //! final, independent text pass. The native evaluators still own its
 //! duration, pause, warning threshold and corner.
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::{HUD_TEXT_DRAW, HUD_TEXT_SETUP, HUD_TEXT_TAIL};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{HUD_TEXT_DRAW, HUD_TEXT_SETUP, HUD_TEXT_TAIL};
 use hooks::{Builder, Flow};
 
 use super::{HUD, flash, mission_hud};

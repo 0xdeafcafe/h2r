@@ -1,6 +1,6 @@
 use super::*;
-use engine::datum::layout as array;
-use engine::testing::FakeGuest;
+use guest_layout::datum::layout as array;
+use guest_layout::testing::FakeGuest;
 use live_telemetry::layout;
 use serde_json::json;
 use std::f32::consts::TAU;

@@ -12,7 +12,7 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::entry::{Cx, EntryResult, GuestCall, Ret};
+use guest_layout::entry::{Cx, EntryResult, GuestCall, Ret};
 
 /// Who runs a phase.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -337,9 +337,9 @@ impl PresentSeeds {
 
     /// Before a presentation phase: the sim's seeds out, the stream's in.
     /// Returns the sim's, or `None` (counted) when the seed words do not read.
-    fn swap_in(&self, m: &mut dyn crate::memory::GuestMemory) -> Option<(u32, [u32; 2])> {
-        let read = |m: &dyn crate::memory::GuestMemory| -> Option<(u32, [u32; 2])> {
-            let base = m.u32(crate::points::RANDOM_SEEDS.base).ok().filter(|&b| b != 0)?;
+    fn swap_in(&self, m: &mut dyn guest_layout::memory::GuestMemory) -> Option<(u32, [u32; 2])> {
+        let read = |m: &dyn guest_layout::memory::GuestMemory| -> Option<(u32, [u32; 2])> {
+            let base = m.u32(guest_layout::points::RANDOM_SEEDS.base).ok().filter(|&b| b != 0)?;
             Some((base, [m.u32(base).ok()?, m.u32(base.wrapping_add(4)).ok()?]))
         };
         let Some((base, sim)) = read(m) else {
@@ -353,7 +353,7 @@ impl PresentSeeds {
     }
 
     /// After it: the stream's seeds kept, the sim's put back.
-    fn swap_out(&self, m: &mut dyn crate::memory::GuestMemory, (base, sim): (u32, [u32; 2])) {
+    fn swap_out(&self, m: &mut dyn guest_layout::memory::GuestMemory, (base, sim): (u32, [u32; 2])) {
         if let (Ok(a), Ok(b)) = (m.u32(base), m.u32(base.wrapping_add(4))) {
             *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some([a, b]);
         }
@@ -394,7 +394,7 @@ pub const LOCAL_USER_SLOTS: u32 = 0xc;
 pub const LOCAL_USER_COUNT: u32 = 4;
 
 /// Mapped local users now.
-pub fn local_users(m: &dyn crate::memory::GuestMemory) -> u32 {
+pub fn local_users(m: &dyn guest_layout::memory::GuestMemory) -> u32 {
     let Ok(base) = m.u32(LOCAL_USERS) else { return LOCAL_USER_COUNT };
     let mut n = 0;
     for u in 0..LOCAL_USER_COUNT {
@@ -478,30 +478,30 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
         // After the phases, still in the run branch (0x1380b4..0x1380db):
         // the counter falls to zero, the clock gains the tick length.
         cx.write(|m| {
-            let clock = m.u32(crate::points::TICK_CLOCK.base)?;
+            let clock = m.u32(guest_layout::points::TICK_CLOCK.base)?;
             let counter = clock.wrapping_add(CLOCK_COUNTER);
             let left = m.u32(counter)?.saturating_sub(1);
             m.set_u32(counter, left)?;
-            let length = m.f32(m.u32(crate::points::GAME_TIME.base)?.wrapping_add(TIME_LENGTH))?;
+            let length = m.f32(m.u32(guest_layout::points::GAME_TIME.base)?.wrapping_add(TIME_LENGTH))?;
             let at = clock.wrapping_add(CLOCK_TIME);
             let now = m.f32(at)?;
             m.set_f32(at, now + length)?;
-            Ok::<_, crate::memory::MemFault>(())
+            Ok::<_, guest_layout::memory::MemFault>(())
         })?;
     }
     cx.call(call(RECORD_AFTER).esi(record)).await?;
     // The close may clear the flag; the tick counts only if it is still set.
     let advance = cx.read(|m| m.u8(flag_at))? != 0;
     let tick = cx.write(|m| {
-        let time = m.u32(crate::points::GAME_TIME.base)?;
+        let time = m.u32(guest_layout::points::GAME_TIME.base)?;
         let at = time.wrapping_add(TIME_TICK);
         let now = m.u32(at)?;
         if !advance {
-            return Ok::<_, crate::memory::MemFault>(now);
+            return Ok::<_, guest_layout::memory::MemFault>(now);
         }
         let next = now.wrapping_add(1);
         m.set_u32(at, next)?;
-        Ok::<_, crate::memory::MemFault>(next)
+        Ok::<_, guest_layout::memory::MemFault>(next)
     })?;
     // The census: bodies still carrying the dirty-pose bit as the tick ends.
     if let Some(scan) = cx.read(|m| crate::render_census::scan_poses(m)) {
@@ -533,11 +533,11 @@ mod tests {
     #[test]
     fn effects_phase_ledger_is_zero() {
         use crate::effects_phase::tests::{STACK, answer, guest};
-        use crate::entry::{self, EntryFuture, Regs};
+        use guest_layout::entry::{self, EntryFuture, Regs};
         let mut g = guest();
         let clock = 0x0052_0100;
-        g.map(crate::points::TICK_CLOCK.base & !0xfff, 0x1000);
-        g.put_u32(crate::points::TICK_CLOCK.base, clock).put_u32(clock + CLOCK_COUNTER, 5);
+        g.map(guest_layout::points::TICK_CLOCK.base & !0xfff, 0x1000);
+        g.put_u32(guest_layout::points::TICK_CLOCK.base, clock).put_u32(clock + CLOCK_COUNTER, 5);
         // The countdown requests' bytes, none pending; scripts off; AI
         // disabled (its globals at a zero page).
         g.map(crate::countdown_requests::FIRST, 2).map(crate::hs_update::ENABLED, 1);
@@ -581,7 +581,7 @@ mod tests {
     /// A zero page for the game globals in the driver tests.
     const GAME_GLOBALS: u32 = 0x0057_1000;
 
-    fn targets_of(run: &crate::entry::testing::Run) -> Vec<u32> {
+    fn targets_of(run: &guest_layout::entry::testing::Run) -> Vec<u32> {
         run.calls.iter().map(|c| c.target).collect()
     }
 

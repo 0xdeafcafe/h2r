@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use runtime::{CpuAbi, TransferAbi};
 use frame_scene::{ViewKind, VisibilitySource, scene::ClusterGather};
 use scene_extract::layout::{objects, skip};

@@ -2,10 +2,10 @@
 //! The converter encodes them as reserved bearings in the H2 direction
 //! command. Only a compiler-generated command_script can select this ABI.
 //! Both the actor and its blocking command remain owned by the AI scheduler.
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::view::{Tags, objects};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::view::{Tags, objects};
 use hooks::{Flow, points};
 
 mod control;
@@ -391,7 +391,7 @@ mod tests {
     use super::*;
     #[test]
     fn encoded_action_requires_a_generated_command_script() {
-        let mut m = engine::FlatMemory::new(0x004e_0000, 0x40000);
+        let mut m = guest_layout::FlatMemory::new(0x004e_0000, 0x40000);
         let array = 0x004e_2000;
         let cmd = 0x004e_3000;
         let scenario = 0x004e_4000;

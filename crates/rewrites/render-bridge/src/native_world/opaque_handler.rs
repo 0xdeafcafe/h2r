@@ -2,8 +2,8 @@
 //! the same state transitions as the indexed emitter. The outgoing cache
 //! and device are live before control returns to the sorted list.
 
-use engine::entry::{Cx, EntryError, GuestCall};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::memory::{GuestMemory, MemFault};
 use native_render::object_nodes::{BLOCK_MATRICES, BLOCK_PARTS, MATRIX_STRIDE, NODE_BLOCKS};
 use native_render::world_ranges::{Emitter, IndexedRange, Refusal, SortedPart};
 
@@ -38,7 +38,7 @@ pub(super) enum Emission {
 }
 
 fn tag(mem: &dyn GuestMemory, datum: u32) -> Result<u32, MemFault> {
-    let table = mem.u32(engine::tags::TAG_ENTRIES_GLOBAL)?;
+    let table = mem.u32(guest_layout::tags::TAG_ENTRIES_GLOBAL)?;
     mem.u32(table.wrapping_add(16 * (datum & 0xffff) + 8))
 }
 
@@ -125,7 +125,7 @@ async fn auxiliary_targets(cx: &Cx, material: u32, layer: u32) -> Result<(), Ent
         if let Some((shader, template_layer)) = pass {
             let selected = cx.call(GuestCall::new(TEMPLATE_LAYER).eax(template_layer)).await?;
             if selected.eax == layer {
-                cx.call(GuestCall::new(engine::points::TEMPLATE_PASS.base)
+                cx.call(GuestCall::new(guest_layout::points::TEMPLATE_PASS.base)
                     .args([shader, layer, u32::MAX, 0, target_slot, 1])).await?;
                 changed = true;
             }
@@ -402,8 +402,8 @@ pub(super) async fn handoff(cx: &Cx, part: &SortedPart, mut draw: Box<dyn Opaque
 mod tests {
     use super::*;
     use crate::native_world::DisplayFade;
-    use engine::entry::{EntryFuture, Regs, Ret, testing};
-    use engine::testing::FakeGuest;
+    use guest_layout::entry::{EntryFuture, Regs, Ret, testing};
+    use guest_layout::testing::FakeGuest;
 
     const RECORD: u32 = 0x10000;
     const PLACEMENT: u32 = 0x20000;

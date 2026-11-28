@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use engine::objectives::{self, Registered};
-use engine::{DatumHandle, GuestMemory, MemFault, points};
+use guest_layout::{DatumHandle, GuestMemory, MemFault, points};
 use live_proto::film::events::{
     Event,
     objective::{Change, Item, ItemChange},
@@ -190,7 +190,7 @@ fn powerup(
     unit: u32,
     definition: u32,
 ) -> Result<Option<Event>, MemFault> {
-    use engine::view::{objects, players};
+    use guest_layout::view::{objects, players};
 
     let Some(object) = bots::guest::pickups::consumed_equipment(m, sp)? else {
         return Ok(None);

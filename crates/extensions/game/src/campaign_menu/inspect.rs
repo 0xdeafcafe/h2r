@@ -1,7 +1,7 @@
 //! The shared player-one menu channel, read at an agent tick boundary.
-use engine::GuestMemory;
-use engine::datum::{DatumArray, layout::ACTIVE_COUNT};
-use engine::view::ui;
+use guest_layout::GuestMemory;
+use guest_layout::datum::{DatumArray, layout::ACTIVE_COUNT};
+use guest_layout::view::ui;
 use serde_json::{Value, json};
 
 use super::{
@@ -126,7 +126,7 @@ fn list_state(m: &dyn GuestMemory, screen: u32, press_offset: u32) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn shows_the_pick_request_and_the_options_list_as_built() {
@@ -172,7 +172,7 @@ mod tests {
             .put_u32(press.addr + 0x10, list.addr)
             .put_u32(
                 press.addr + 0x14,
-                engine::points::CAMPAIGN_OPTION_CHOSEN.base,
+                guest_layout::points::CAMPAIGN_OPTION_CHOSEN.base,
             );
         let menu = inspect_menu(&m, &state, channel, screen, false);
         assert_eq!(
@@ -185,7 +185,7 @@ mod tests {
         assert_eq!(menu["list"]["press_target"], list.addr);
         assert_eq!(
             menu["list"]["press_function"],
-            engine::points::CAMPAIGN_OPTION_CHOSEN.base
+            guest_layout::points::CAMPAIGN_OPTION_CHOSEN.base
         );
 
         state.selection.set_seen(Default::default());
@@ -217,7 +217,7 @@ mod tests {
         assert_eq!(picker["card"]["picture_datum"], json!(datum));
         s.selection.set(2);
         m.put_u32(screen + 0x70, 0xda);
-        let array = engine::datum::DatumArray::at(0x4000);
+        let array = guest_layout::datum::DatumArray::at(0x4000);
         m.map(array.addr, 0x1000)
             .put_u32(screen + ui::LIST + 0x70, array.addr);
         array

@@ -36,7 +36,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use frame_scene::{ClipRect, Overlay, OverlayBlend, OverlayItem, OverlayMaterial, OverlayTexture, OverlayVertex, Program, Sampler};
 use native_render::camera::GuestRead;
 use native_render::hud::Blend;
@@ -398,13 +398,13 @@ fn tail_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) 
 
 /// Places the tail's implementation (`native_targets`' feature).
 pub fn place(b: &mut hooks::Builder<'_>) {
-    b.raw().implement(&engine::points::RENDER_FRAME_TAIL, "native_frame_tail", tail_call).context_only();
+    b.raw().implement(&guest_layout::points::RENDER_FRAME_TAIL, "native_frame_tail", tail_call).context_only();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use frame_scene::OverlayKind;
 
     const AT: u32 = 0x0050_0000;

@@ -4,7 +4,7 @@
 //! (`tests/sim_native_differential.rs`).
 use super::*;
 use crate::function_eval::constant::ONE;
-use crate::points::OBJECTS;
+use guest_layout::points::OBJECTS;
 
 pub const DESCRIPTORS: u32 = 0x0046_8630;
 // The imm32 follows the opcode and ModR/M byte in both CMP EDI instructions.
@@ -138,7 +138,7 @@ pub fn value(c: &mut CpuAbi, g: &mut impl Memory) -> Result {
                 return call(
                     c,
                     g,
-                    crate::points::OBJECT_FUNCTION_IMPORT.base,
+                    guest_layout::points::OBJECT_FUNCTION_IMPORT.base,
                     AFTER_IMPORT,
                 );
             }
@@ -187,7 +187,7 @@ fn after_import(c: &mut CpuAbi, g: &mut impl Memory) -> Result {
         let slots = g.u32(at(objects, 0x44))?;
         c.ecx = g.u32(at(slots, at(c.esi, 8)))?;
         let tag = g.u32(c.ecx)?;
-        c.edi = tag_data(g, g.u32(crate::points::TAG_ENTRIES.base)?, tag)?;
+        c.edi = tag_data(g, g.u32(guest_layout::points::TAG_ENTRIES.base)?, tag)?;
         c.edx = g.u32(at(c.edi, 0x64))?;
         c.esi = 0;
         g.set_u32(at(c.esp, 32), c.ecx)?;
@@ -229,7 +229,7 @@ fn after_import(c: &mut CpuAbi, g: &mut impl Memory) -> Result {
                 for arg in [c.ebp, c.ecx, c.eax] {
                     push(c, g, arg)?;
                 }
-                return call(c, g, crate::points::OBJECT_FUNCTION_VALUE.base, 0x000b_ac74);
+                return call(c, g, guest_layout::points::OBJECT_FUNCTION_VALUE.base, 0x000b_ac74);
             }
         }
         put_xmm(c, 0, scalar(0));

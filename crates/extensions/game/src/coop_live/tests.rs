@@ -255,8 +255,8 @@ fn the_discs_co_op_levels_have_ids_and_names() {
 
 #[test]
 fn texts_are_slots_written_when_they_change() {
-    use engine::memory::GuestMemory as _;
-    use engine::testing::FakeGuest;
+    use guest_layout::memory::GuestMemory as _;
+    use guest_layout::testing::FakeGuest;
     let t = Texts::default();
     let id = t.set(3, "Waiting for Bravo");
     assert_eq!(id, TEXT_ID_BASE + 3);

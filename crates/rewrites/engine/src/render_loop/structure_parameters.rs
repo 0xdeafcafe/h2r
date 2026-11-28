@@ -31,7 +31,7 @@
 //! `c[24]` (`0x003f71d0` leaves it).
 
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// The active structure.
 pub const ACTIVE_BSP: u32 = 0x004e_0348;
@@ -257,7 +257,7 @@ impl StructureUpload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const BLOCK: u32 = 0x0060_0000;
     const BSP: u32 = 0x0061_0000;

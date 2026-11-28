@@ -3,8 +3,8 @@
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::{points, view::ui::Screen};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::{points, view::ui::Screen};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
@@ -289,7 +289,7 @@ impl Feature for Presentation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn the_browser_keeps_its_standard_buttons_and_uses_y_and_filtered_x() {

@@ -25,7 +25,7 @@
 
 use std::sync::OnceLock;
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::render_loop::tick_writes;
 
 /// Bytes of a gamma ramp: 256 red, 256 green, then 256 blue.
@@ -150,7 +150,7 @@ pub fn gamma(a: &Addrs, g: &dyn GuestMemory) -> Result<Option<Box<[u8; RAMP_BYTE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use std::sync::Mutex;
 
     const A: Addrs = Addrs::HALO2;

@@ -16,7 +16,7 @@
 //! resume at its site. No RNG draw moves: the draw `259d0` in the update
 //! is a guest call where retail makes it.
 
-use crate::points::{self, Point};
+use guest_layout::points::{self, Point};
 use crate::sim_objects::{Body, Table};
 use runtime::GuestFault;
 use std::sync::LazyLock;

@@ -40,7 +40,7 @@
 //! counters ([`stats`]) cover every body in `super::TABLE`.
 
 use super::{BODIES, Body, Table};
-use crate::points::{self, Point};
+use guest_layout::points::{self, Point};
 use runtime::{CpuAbi, Fallback, Guest, TransferAbi};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};

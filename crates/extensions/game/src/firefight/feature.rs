@@ -32,8 +32,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use ::firefight::{Def, Skull};
 use agent_proto::firefight as wire;
-use engine::GuestMemory;
-use engine::entry::EntryFuture;
+use guest_layout::GuestMemory;
+use guest_layout::entry::EntryFuture;
 
 use super::runtime::{self, Runtime, TestEnd, TestEvent, TestPhase};
 use crate::layout_glue::Gm;
@@ -132,12 +132,12 @@ impl hooks::Feature for Firefight {
         // AI on a Firefight map: retail's `ai_initialize_for_new_map`
         // leaves the AI uninitialised in every multiplayer game, and then
         // the engine places no actor. A kit map takes the campaign's path
-        // past the multiplayer return (`engine::points::ai_gates`,
+        // past the multiplayer return (`guest_layout::points::ai_gates`,
         // `runtime::initialises_ai`). Optional: an image built without the
         // gate's entries drops it with a note.
         b.raw()
             .before(
-                &engine::points::ai_gates::AI_NEW_MAP_MULTIPLAYER,
+                &guest_layout::points::ai_gates::AI_NEW_MAP_MULTIPLAYER,
                 "firefight: a Firefight map initialises its AI",
                 move |c| {
                     let rt = Arc::clone(c.ctx.runtime());
@@ -148,7 +148,7 @@ impl hooks::Feature for Firefight {
                     if !kit {
                         return Ok(Flow::Continue);
                     }
-                    let to = engine::points::ai_gates::AI_NEW_MAP_INITIALISE;
+                    let to = guest_layout::points::ai_gates::AI_NEW_MAP_INITIALISE;
                     let Some(transfer) = rt.read_dispatch(|d| crate::skulls_mp::gate_transfer(d, to))
                     else {
                         eprintln!(
@@ -167,7 +167,7 @@ impl hooks::Feature for Firefight {
         // open ones. With none open, or pods off, nothing is touched.
         let pick = Arc::clone(&self.0);
         b.raw().observe_before(
-            &engine::points::PLAYER_SPAWN_LOCATION,
+            &guest_layout::points::PLAYER_SPAWN_LOCATION,
             "firefight: a spawn prefers the team's open-sky starts",
             move |o| {
                 let found = {
@@ -180,7 +180,7 @@ impl hooks::Feature for Firefight {
         );
         let pick = Arc::clone(&self.0);
         b.raw().observe_after(
-            &engine::points::PLAYER_SPAWN_LOCATION,
+            &guest_layout::points::PLAYER_SPAWN_LOCATION,
             "firefight: the spawn pick ends",
             move |_| {
                 *pick.pick() = None;
@@ -188,7 +188,7 @@ impl hooks::Feature for Firefight {
         );
         let pick = Arc::clone(&self.0);
         b.raw().before(
-            &engine::points::SPAWN_LOCATION_FREE,
+            &guest_layout::points::SPAWN_LOCATION_FREE,
             "firefight: a start that is not open sky is taken",
             move |c| {
                 let blocked = pick.pick().as_ref().is_some_and(|f| !f.passes(c.cpu.ecx));
@@ -237,7 +237,7 @@ impl hooks::Feature for Firefight {
         let s = Arc::clone(&self.0);
         b.raw()
             .before(
-                &engine::points::GAME_TICK,
+                &guest_layout::points::GAME_TICK,
                 "apply Firefight's entries",
                 move |c| {
                     if s.reentry.load(Ordering::SeqCst) {

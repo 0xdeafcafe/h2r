@@ -10,7 +10,7 @@ use scene_extract::visibility::{
 };
 use std::sync::Mutex;
 
-use engine::points::scene_effects::{PORTAL_WINDOW_CALL, PORTAL_WINDOW_READY, PORTAL_WINDOW_RESUME};
+use guest_layout::points::scene_effects::{PORTAL_WINDOW_CALL, PORTAL_WINDOW_READY, PORTAL_WINDOW_RESUME};
 const VALIDATE_PLANES: u32 = 0x0047_ff86;
 const WINDOWS: u32 = 0x1974;
 const COUNT: u32 = 0x1970;
@@ -267,7 +267,7 @@ pub(super) fn install(b: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     fn scene() -> (FakeGuest, CpuAbi) {
         let mut m = FakeGuest::new();

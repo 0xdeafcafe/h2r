@@ -3,12 +3,7 @@
 
 use std::collections::BTreeSet;
 
-use engine::{
-    DatumHandle,
-    entry::Cx,
-    memory::{GuestMemory, MemFault},
-    view::objects,
-};
+use guest_layout::{DatumHandle, entry::Cx, memory::{GuestMemory, MemFault}, view::objects};
 use hs::h1_ai_slots::{FOLLOW_WORDS, MIGRATION_WORDS, Registry};
 
 use super::{
@@ -246,13 +241,13 @@ pub(super) fn plan(
     Ok(Some(Migration { destination, actors }))
 }
 
-pub(super) async fn apply(cx: &Cx, migration: Migration) -> Result<(), engine::entry::EntryError> {
+pub(super) async fn apply(cx: &Cx, migration: Migration) -> Result<(), guest_layout::entry::EntryError> {
     let dest = migration.destination;
     let current = cx.read(|m| {
         squad_control::runtime(m, dest.squad)?.map(|at| m.u16(at + 0x2a)).transpose()
     })?;
     if current != Some(dest.order) {
-        cx.call(engine::entry::GuestCall::new(0x0027_5cb0)
+        cx.call(guest_layout::entry::GuestCall::new(0x0027_5cb0)
             .eax(dest.squad).ecx(u32::from(dest.order))).await?;
     }
     for actor in migration.actors {

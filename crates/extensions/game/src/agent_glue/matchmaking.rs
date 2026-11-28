@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use agent_proto::{RpcError, code, method};
 use bots::{lobby, phantom::session::at};
-use engine::{memory::GuestMemory, points};
+use guest_layout::{memory::GuestMemory, points};
 use serde::Serialize;
 use serde_json::json;
 
@@ -343,7 +343,7 @@ pub(super) fn install(registry: &mut hooks::Registry, agent: &agent::Agent) -> a
 mod tests {
     use super::*;
     use bots::phantom::session;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn a_failed_result_after_an_active_one_is_named_once() {

@@ -2,7 +2,7 @@
 //! The confirmed prefix must suppress exactly those handler calls, even
 //! with a repeated item, an exclusion, and a D3D suffix sharing a shader.
 #![cfg(feature = "native-render")]
-use engine::memory::{FlatMemory, GuestMemory};
+use guest_layout::memory::{FlatMemory, GuestMemory};
 use engine::render_loop::{Regs, Step, layer};
 use native_render::camera::GuestRead;
 use native_render::light_list::{HANDLER_RETURN, sorted_at};

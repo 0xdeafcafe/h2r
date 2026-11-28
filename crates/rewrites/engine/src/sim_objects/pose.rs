@@ -22,7 +22,7 @@
 //! which makes the same push and pop at the same address.
 
 use super::{Cx, Next, Result, unowned};
-use crate::points;
+use guest_layout::points;
 use crate::sim_physics::node_matrices::{SITES, update};
 use runtime::abi;
 

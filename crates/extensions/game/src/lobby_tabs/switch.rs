@@ -29,8 +29,8 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use engine::entry::{Cx, EntryError, GuestCall};
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, GuestCall};
+use guest_layout::points;
 use settings::{Store, Value};
 
 use super::{Place, Reason, RetailMode, Tab, notice};
@@ -321,7 +321,7 @@ pub async fn run_to(
     present: super::Present,
     store: Option<Arc<Store>>,
 ) -> Result<(), EntryError> {
-    let read = |m: &dyn engine::memory::GuestMemory| {
+    let read = |m: &dyn guest_layout::memory::GuestMemory| {
         super::header::read(m)
             .map(|r| super::header::shown(&r, present, crate::lobby_start::mode()))
     };

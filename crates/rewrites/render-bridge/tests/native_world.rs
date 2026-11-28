@@ -9,7 +9,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::memory::{FlatMemory, GuestMemory};
+use guest_layout::memory::{FlatMemory, GuestMemory};
 use render_bridge::native_world::{self, Host, NativeWorld, PartSet};
 use hooks::plan::Base;
 use hooks::{Registry, Switches};
@@ -339,14 +339,14 @@ struct Unreadable {
 }
 
 impl GuestMemory for Unreadable {
-    fn read(&self, addr: u32, buf: &mut [u8]) -> Result<(), engine::memory::MemFault> {
+    fn read(&self, addr: u32, buf: &mut [u8]) -> Result<(), guest_layout::memory::MemFault> {
         if addr < self.hole.end && addr.saturating_add(buf.len() as u32) > self.hole.start {
-            return Err(engine::memory::MemFault { addr, len: buf.len() as u32, write: false });
+            return Err(guest_layout::memory::MemFault { addr, len: buf.len() as u32, write: false });
         }
         self.inner.read(addr, buf)
     }
 
-    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), engine::memory::MemFault> {
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), guest_layout::memory::MemFault> {
         self.inner.write(addr, data)
     }
 }

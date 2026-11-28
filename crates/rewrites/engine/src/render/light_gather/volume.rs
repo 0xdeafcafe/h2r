@@ -9,7 +9,7 @@
 
 use super::guest::{NONE, TAGS, at, lights, ptr, tag};
 use super::{Refusal, Result, Writes};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use crate::render::light::{LightRecord, RECORD_SIZE};
 use crate::scene_list_math::cone_slopes;
 

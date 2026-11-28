@@ -1,7 +1,7 @@
 //! The probe's payloads inside the retail bitstream. The caller still
 //! owns the operation framing, including the five-bit entity type.
 
-use engine::{GuestMemory, MemFault};
+use guest_layout::{GuestMemory, MemFault};
 
 pub(super) const POSITION_BYTES: usize = 3 * size_of::<f32>();
 pub(super) const CREATION_BYTES: usize = 2 + 3 * POSITION_BYTES;
@@ -158,7 +158,7 @@ pub(super) fn read_payload<const N: usize, T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const STREAM: u32 = 0x1000;
     const DATA: u32 = 0x2000;

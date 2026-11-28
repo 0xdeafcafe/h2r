@@ -3,7 +3,7 @@
 //! Compare the original region records on the first call for each input.
 use std::sync::Mutex;
 
-use engine::entry::{Cx, EntryResult, GuestCall, Ret};
+use guest_layout::entry::{Cx, EntryResult, GuestCall, Ret};
 use scene_extract::visibility::{self, GraphCache, flood, guest};
 
 use super::*;
@@ -331,8 +331,8 @@ pub(super) fn install(b: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::entry::{Regs, testing};
-    use engine::testing::FakeGuest;
+    use guest_layout::entry::{Regs, testing};
+    use guest_layout::testing::FakeGuest;
 
     const BASE: u32 = 0x2000;
     const CAMERA: u32 = 0x1000;

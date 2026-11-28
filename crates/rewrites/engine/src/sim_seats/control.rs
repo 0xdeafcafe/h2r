@@ -4,7 +4,7 @@
 //! following segment gathers. The neutral path carries forward the unit's
 //! three distinct view directions.
 use super::leaf::{self, Leaf};
-use crate::points;
+use guest_layout::points;
 use crate::sim_native::{Memory, decline, plan::segment};
 use super::{DIRECTION_FLAG, ROUNDING};
 use crate::sim_physics::{

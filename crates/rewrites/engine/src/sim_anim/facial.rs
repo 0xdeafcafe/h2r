@@ -20,8 +20,8 @@
 //! the live game's MXCSR, the two x87 chains through [`X87`] under its
 //! control word.
 
-use crate::memory::{GuestMemory, MemFault};
-use crate::points::{OBJECTS, TAG_ENTRIES};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{OBJECTS, TAG_ENTRIES};
 use sim_core::det::{self, Fp, X87};
 use std::cmp::Ordering;
 
@@ -322,7 +322,7 @@ pub fn blend(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const CHANNEL: u32 = 0x0070_0000;
     const SEQ: u32 = 0x0071_0000;

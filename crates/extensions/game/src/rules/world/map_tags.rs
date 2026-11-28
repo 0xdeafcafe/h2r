@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 use std::io::{BufReader, Read, Seek};
 use std::sync::{Arc, Mutex};
 
-use engine::tags::{entry_layout, tag_entry_checked};
-use engine::{DatumHandle, GuestMemory};
+use guest_layout::tags::{entry_layout, tag_entry_checked};
+use guest_layout::{DatumHandle, GuestMemory};
 use map::FourCC;
 use ::rules::fields::Field;
 use tags::defs::Defs;
@@ -149,8 +149,8 @@ pub fn read(m: &dyn GuestMemory, index: &TagIndex, defs: &Defs, entry: u16, tag:
 mod tests {
     use ::rules::caps::id;
     use ::rules::ty::fixed;
-    use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, index_layout};
-    use engine::testing::FakeGuest;
+    use guest_layout::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, index_layout};
+    use guest_layout::testing::FakeGuest;
 
     use super::*;
 

@@ -76,8 +76,8 @@ pub(super) async fn sight_bonus(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::entry::{EntryFuture, Regs, testing::run};
-    use engine::testing::FakeGuest;
+    use guest_layout::entry::{EntryFuture, Regs, testing::run};
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn casting_reads_a_padded_directional_bsp_row() {

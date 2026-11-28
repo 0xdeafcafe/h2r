@@ -148,8 +148,8 @@ pub fn camera(word: impl Fn(u32) -> Option<u32>, widget: u32, parent: u32, mxcsr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::GuestMemory;
-    use crate::testing::FakeGuest;
+    use guest_layout::memory::GuestMemory;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn camera_uses_live_animation_axis_order_and_split_context() {

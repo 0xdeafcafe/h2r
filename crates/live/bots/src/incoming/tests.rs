@@ -1,7 +1,7 @@
 use super::*;
 use crate::los::Walls;
 use crate::nav::{NavMesh, Poly};
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 
 fn floor() -> MapData {
     MapData {
@@ -105,7 +105,7 @@ fn grenades_behind_a_wall_or_an_edge_do_not_cause_blind_jumps() {
 
 #[test]
 fn the_world_scan_only_yields_nearby_grenade_projectiles() {
-    use engine::{datum::layout as dl, points};
+    use guest_layout::{datum::layout as dl, points};
 
     let mut g = FakeGuest::new();
     let globals = 0x1000;
@@ -152,7 +152,7 @@ fn the_world_scan_only_yields_nearby_grenade_projectiles() {
 #[test]
 fn loose_grenades_use_the_maps_equipment_refs_and_exclude_attached_objects() {
     use crate::grenades::Kind;
-    use engine::{datum::layout as dl, points};
+    use guest_layout::{datum::layout as dl, points};
 
     let mut g = FakeGuest::new();
     let [matg, block, array, headers, bodies] = [0x1000, 0x2000, 0x3000, 0x4000, 0x5000];

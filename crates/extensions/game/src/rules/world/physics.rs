@@ -23,8 +23,8 @@
 //! requires `hud.superbounce` runs.
 
 use ::rules::Input;
-use engine::GuestMemory;
-use engine::entry::Cx;
+use guest_layout::GuestMemory;
+use guest_layout::entry::Cx;
 
 use super::objects::to_fixed;
 use crate::rules::census::Table;

@@ -3,8 +3,8 @@
 //! invented guest memory: two territory flags, two players with units
 //! whose positions the test moves, and fake engine callees.
 
-use engine::view::Datums;
-use engine::view::objects::{Body, Header};
+use guest_layout::view::Datums;
+use guest_layout::view::objects::{Body, Header};
 
 use super::*;
 use crate::rules::world::loadout;
@@ -109,7 +109,7 @@ on tick { crouched = count(players p where p.crouching) }
 
     let objects = Datums::<Header>::at(OBJECTS);
     let vehicle = objects.get_absolute(&m, 1).unwrap().unwrap();
-    vehicle.set_kind(&mut m, engine::view::objects::VEHICLE).unwrap();
+    vehicle.set_kind(&mut m, guest_layout::view::objects::VEHICLE).unwrap();
     m.put_u32(body_of(1).addr + UNIT_FLAGS, UNIT_FLAG_CROUCH);
     assert_eq!(step(&mut m, 5), 0);
 }
@@ -381,7 +381,7 @@ on init {
     let v = units[0];
     let array = Datums::<Header>::at(OBJECTS);
     let header = array.get_absolute(&m, 0).unwrap().unwrap();
-    header.set_kind(&mut m, engine::view::objects::VEHICLE).unwrap();
+    header.set_kind(&mut m, guest_layout::view::objects::VEHICLE).unwrap();
     m.put_u16(body_of(0).addr + guest_layout::Object::PLACEMENT_INDEX.offset, 3);
     let table = Table::from_things(vec![census::Thing {
         text: "ship".into(),
@@ -441,7 +441,7 @@ on tick {
     let array = Datums::<Header>::at(OBJECTS);
     for i in 0..2 {
         let header = array.get_absolute(&m, i).unwrap().unwrap();
-        header.set_kind(&mut m, engine::view::objects::VEHICLE).unwrap();
+        header.set_kind(&mut m, guest_layout::view::objects::VEHICLE).unwrap();
         let body = body_of(i as usize);
         body.set_parent(&mut m, None).unwrap();
         m.put_u16(body.addr + guest_layout::Object::PLACEMENT_INDEX.offset, i as u16);

@@ -26,8 +26,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use engine::datum::layout;
-use engine::{GuestMemory, points};
+use guest_layout::datum::layout;
+use guest_layout::{GuestMemory, points};
 use hooks::{Builder, Feature, Flow, Manifest};
 
 pub const ID: &str = "render-scratch";
@@ -64,7 +64,7 @@ struct Array {
 fn array(m: &dyn GuestMemory, pointer: u32, size: u32) -> Option<Array> {
     let header = m.u32(pointer).ok().filter(|&h| h != 0)?;
     let field = |off| m.u32(header.wrapping_add(off)).ok();
-    if field(layout::SIGNATURE)? != engine::datum::SIGNATURE
+    if field(layout::SIGNATURE)? != guest_layout::datum::SIGNATURE
         || field(layout::ELEMENT_SIZE)? != size
     {
         return None;

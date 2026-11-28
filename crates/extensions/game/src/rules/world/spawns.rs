@@ -32,7 +32,7 @@ use std::collections::BTreeSet;
 
 use ::rules::vm::SpawnRule;
 use engine::objectives::check_span;
-use engine::{GuestMemory, MemFault, points};
+use guest_layout::{GuestMemory, MemFault, points};
 use forge_doc::{BlockKind, CENSUS_ENTRY_LIMIT};
 
 use super::super::census::Table;

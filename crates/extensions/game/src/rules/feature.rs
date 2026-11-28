@@ -59,8 +59,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Duration;
 
 use agent_proto::rules as wire;
-use engine::GuestMemory;
-use engine::entry::EntryFuture;
+use guest_layout::GuestMemory;
+use guest_layout::entry::EntryFuture;
 
 use super::runtime::{self, Runtime};
 use crate::layout_glue::{Gm, ReadGm};
@@ -311,7 +311,7 @@ impl hooks::Feature for Rules {
         let s = Arc::clone(&self.shared);
         b.raw()
             .before(
-                &engine::points::GAME_TICK,
+                &guest_layout::points::GAME_TICK,
                 "make the rules script's calls",
                 move |c| {
                     if s.reentry.load(Ordering::SeqCst) {
@@ -341,7 +341,7 @@ impl hooks::Feature for Rules {
             .after_feature(crate::coop_live::FEATURE);
         let s = Arc::clone(&self.shared);
         b.raw()
-            .observe_before(&engine::points::PLAYER_KILLED, "rules: on kill", move |o| {
+            .observe_before(&guest_layout::points::PLAYER_KILLED, "rules: on kill", move |o| {
                 let esp = o.cpu.esp;
                 let mem = o.guest();
                 let m: &dyn GuestMemory = &*mem;
@@ -362,7 +362,7 @@ impl hooks::Feature for Rules {
         // start with whatever the handler queued.
         let s = Arc::clone(&self.shared);
         b.raw().observe_after(
-            &engine::points::ENGINE_ROUND_RESET,
+            &guest_layout::points::ENGINE_ROUND_RESET,
             "rules: on round_start",
             move |o| {
                 let mem = o.guest();
@@ -372,7 +372,7 @@ impl hooks::Feature for Rules {
         );
         let s = Arc::clone(&self.shared);
         b.raw().observe_before(
-            &engine::points::ENGINE_PLAYER_LEFT,
+            &guest_layout::points::ENGINE_PLAYER_LEFT,
             "rules: on quit",
             move |o| {
                 let Some(player) = slot_of(o.cpu.esi) else {
@@ -424,7 +424,7 @@ fn register_spawns(b: &mut hooks::Builder, shared: &Arc<Shared>) {
     use hooks::Flow;
     let s = Arc::clone(shared);
     b.raw().observe_before(
-        &engine::points::PLAYER_SPAWN_LOCATION,
+        &guest_layout::points::PLAYER_SPAWN_LOCATION,
         "rules: the spawning team's starting locations",
         move |o| {
             let pick = {
@@ -437,7 +437,7 @@ fn register_spawns(b: &mut hooks::Builder, shared: &Arc<Shared>) {
     );
     let s = Arc::clone(shared);
     b.raw().observe_after(
-        &engine::points::PLAYER_SPAWN_LOCATION,
+        &guest_layout::points::PLAYER_SPAWN_LOCATION,
         "rules: the spawn pick ends",
         move |_| {
             *s.spawn_pick() = None;
@@ -445,7 +445,7 @@ fn register_spawns(b: &mut hooks::Builder, shared: &Arc<Shared>) {
     );
     let s = Arc::clone(shared);
     b.raw().before(
-        &engine::points::SPAWN_LOCATION_FREE,
+        &guest_layout::points::SPAWN_LOCATION_FREE,
         "rules: a starting location off the team's rule is taken",
         move |c| {
             let blocked = s.spawn_pick().as_ref().is_some_and(|f| !f.passes(c.cpu.ecx));
@@ -468,7 +468,7 @@ fn register_bodies(b: &mut hooks::Builder, shared: &Arc<Shared>) {
     use hooks::Flow;
     let s = Arc::clone(shared);
     b.raw().before(
-        &engine::points::PLAYER_SPAWN,
+        &guest_layout::points::PLAYER_SPAWN,
         "rules: the spawning team's body",
         move |c| {
             // One entry per spawn, written or not, so the after pops its own.
@@ -493,7 +493,7 @@ fn register_bodies(b: &mut hooks::Builder, shared: &Arc<Shared>) {
     .after_feature(crate::coop_players::FEATURE);
     let s = Arc::clone(shared);
     b.raw().after(
-        &engine::points::PLAYER_SPAWN,
+        &guest_layout::points::PLAYER_SPAWN,
         "rules: the player's own body again",
         move |c| {
             let Some(swap) = s.body_swap().pop().flatten() else {

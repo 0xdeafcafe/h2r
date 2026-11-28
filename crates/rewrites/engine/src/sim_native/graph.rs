@@ -1,5 +1,5 @@
 use super::*;
-use crate::points::TAG_ENTRIES;
+use guest_layout::points::TAG_ENTRIES;
 
 pub const ENABLED: u32 = 0x0051_0c20;
 const AFTER_GRAPH: u32 = 0x001d_da11;

@@ -4,10 +4,10 @@
 //! the particle, emitter and effect records, including their lifetime and
 //! collision queries. No timing or particle state is kept on the host.
 
-use engine::datum::{DatumArray, layout};
-use engine::handle::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::tags::tag_entry_checked;
+use guest_layout::datum::{DatumArray, layout};
+use guest_layout::handle::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::tags::tag_entry_checked;
 use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::{Access, FaultReason};
@@ -536,7 +536,7 @@ mod tests {
 
     #[test]
     fn population_hook_uses_live_salted_particles_and_skips_retail_effects() {
-        use engine::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, index_layout};
+        use guest_layout::tags::{TAG_ENTRIES_GLOBAL, TAG_INDEX_GLOBAL, index_layout};
         let mut m = fixture_memory();
         let (effect, system, emitter, particle) =
             (0x0060_0000, 0x0060_1000, 0x0060_2000, 0x0060_3000);

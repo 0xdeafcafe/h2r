@@ -23,11 +23,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Instant;
 
-use engine::entry::{Cx, EntryResult, GuestCall, Ret};
-use engine::points::{self, Point};
+use guest_layout::entry::{Cx, EntryResult, GuestCall, Ret};
+use guest_layout::points::{self, Point};
 use crate::sim_sound::clock::system_time;
 use crate::sim_sound::units;
-use engine::{GuestMemory, MemFault};
+use guest_layout::{GuestMemory, MemFault};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use sim_sound::chooser;
 use sim_sound::events::TableEvent;
@@ -427,7 +427,7 @@ fn permutation_at(m: &dyn GuestMemory, tag: TagIndex, selection: Selection) -> R
 /// Make the unit calls the step queued, in its order: a line's end
 /// through `0x18c8c0`'s gate and unit test ([`units::line_end`]), a mouth
 /// through `0x18c6a0` ([`crate::unit_mouth`]).
-async fn unit_calls(cx: &Cx, table: &Shared, calls: Vec<UnitCall>) -> Result<(), engine::entry::EntryError> {
+async fn unit_calls(cx: &Cx, table: &Shared, calls: Vec<UnitCall>) -> Result<(), guest_layout::entry::EntryError> {
     for call in calls {
         match call {
             UnitCall::LineEnded { object, tag } => {

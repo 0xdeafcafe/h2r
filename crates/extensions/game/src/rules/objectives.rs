@@ -11,9 +11,9 @@
 //! objective return `0x15e360`. The object keeps its datum, so the
 //! script's object variables stay with it.
 
-use engine::entry::{Cx, EntryError, GuestCall};
+use guest_layout::entry::{Cx, EntryError, GuestCall};
 use engine::objectives::{self as objs, Registered};
-use engine::{GuestMemory, MemFault, points};
+use guest_layout::{GuestMemory, MemFault, points};
 
 /// The engine index whose objectives a host returns.
 pub const ODDBALL: i32 = 3;

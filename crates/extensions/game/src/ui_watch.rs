@@ -57,7 +57,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use engine::points;
+use guest_layout::points;
 
 use crate::layout_glue::Gm;
 use crate::ui_audit::ObservedFindings;

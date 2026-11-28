@@ -2,8 +2,8 @@
 
 use super::{DatumHandle, GuestMemory, R, objects, points};
 use crate::decisions::supplies::{Powerup, Supply};
-use engine::tags::GroupTag;
-use engine::view::Tags;
+use guest_layout::tags::GroupTag;
+use guest_layout::view::Tags;
 
 pub(crate) const EQUIPMENT: u8 = 3;
 

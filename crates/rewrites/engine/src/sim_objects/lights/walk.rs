@@ -24,7 +24,7 @@
 //!    `comiss`) expires: `c3260(handle, 1)`.
 
 use super::{BITMAP, DATA, ELEMENT_SIZE, HIGH_WATER, LIGHT_LISTS, LIGHTS, STRIDE, at, flags_undefined};
-use crate::points;
+use guest_layout::points;
 use crate::sim_objects::{Cx, Next, Result, sse, unowned};
 use crate::sim_physics::{byte, pop, push};
 use runtime::Guest;

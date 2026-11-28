@@ -1,11 +1,8 @@
 //! Ordinary uncover gates from Halo 1 0x163c50. The recent body damage
 //! accumulator uses the source's 30 Hz aging rule.
 
-use engine::{
-    DatumHandle, campaign_squad_pool,
-    memory::{GuestMemory, MemFault},
-    view::{Record, objects},
-};
+use guest_layout::{DatumHandle, memory::{GuestMemory, MemFault}, view::{Record, objects}};
+use engine::campaign_squad_pool;
 use std::cmp::Ordering;
 
 use hooks::{Builder, Flow, points};
@@ -375,7 +372,7 @@ pub(super) fn register(b: &mut Builder<'_>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn ordinary_uncover_keeps_both_source_threshold_boundaries() {

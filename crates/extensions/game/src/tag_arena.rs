@@ -19,7 +19,7 @@
 //! only as those two immediates, and every tag address is relative to the
 //! fixed low end (`0x80061000`).
 
-use engine::points;
+use guest_layout::points;
 use hooks::{BuildError, Builder, Flow, Manifest};
 use map::arena::{ARENA, RETAIL_ARENA, cursors};
 

@@ -9,13 +9,13 @@ use std::sync::{Arc, Mutex};
 
 use agent_proto::sim::REFUSED;
 use agent_proto::{Kind, ObjectId, RpcError, code};
-use engine::GuestMemory;
-use engine::entry::testing::run as drive;
-use engine::entry::{Cx, EntryFn, EntryFuture, GuestCall, Regs, Ret};
-use engine::handle::DatumHandle;
-use engine::testing::FakeGuest;
-use engine::view::fake;
-use engine::view::objects::{self, Body, Header};
+use guest_layout::GuestMemory;
+use guest_layout::entry::testing::run as drive;
+use guest_layout::entry::{Cx, EntryFn, EntryFuture, GuestCall, Regs, Ret};
+use guest_layout::handle::DatumHandle;
+use guest_layout::testing::FakeGuest;
+use guest_layout::view::fake;
+use guest_layout::view::objects::{self, Body, Header};
 use serde_json::{Value, json};
 
 use super::super::super::{Call, Outcome, SCRATCH_SIZE, Shared, addr, lock, run, shared};
@@ -80,10 +80,10 @@ impl Scene {
         let spec = BlockSpec::named(block).unwrap();
         let stride = spec.stride;
         let mut g = FakeGuest::new();
-        g.map(engine::points::OBJECTS.base, 4).put_u32(engine::points::OBJECTS.base, OBJECTS_HDR);
+        g.map(guest_layout::points::OBJECTS.base, 4).put_u32(guest_layout::points::OBJECTS.base, OBJECTS_HDR);
         fake::datums::<Header>(&mut g, OBJECTS_HDR, 64);
         g.map(SCRATCH, SCRATCH_SIZE);
-        g.map(engine::points::SCENARIO.base, 4).put_u32(engine::points::SCENARIO.base, ROOT);
+        g.map(guest_layout::points::SCENARIO.base, 4).put_u32(guest_layout::points::SCENARIO.base, ROOT);
         g.map(ROOT, 0x800);
         g.map(BLOCK, (records.len() as u32 * stride).max(4));
         for (i, r) in records.iter().enumerate() {
@@ -97,12 +97,12 @@ impl Scene {
         g.put_u32(ROOT + 0x58, 1).put_u32(ROOT + 0x5c, PALETTE);
         g.map(PALETTE, 0x28).put_u32(PALETTE, group).put_u32(PALETTE + 4, TAG);
         for (global, ptr) in [
-            (engine::points::TAG_INDEX.base, TAG_INDEX),
-            (engine::points::TAG_ENTRIES.base, TAG_ENTRIES),
+            (guest_layout::points::TAG_INDEX.base, TAG_INDEX),
+            (guest_layout::points::TAG_ENTRIES.base, TAG_ENTRIES),
         ] {
             g.map(global, 4).put_u32(global, ptr);
         }
-        g.map(TAG_INDEX, 0x20).put_u32(TAG_INDEX + engine::tags::index_layout::TAG_COUNT, 2);
+        g.map(TAG_INDEX, 0x20).put_u32(TAG_INDEX + guest_layout::tags::index_layout::TAG_COUNT, 2);
         g.map(TAG_ENTRIES, 0x20)
             .put_u32(TAG_ENTRIES + 0x10, group)
             .put_u32(TAG_ENTRIES + 0x14, TAG)

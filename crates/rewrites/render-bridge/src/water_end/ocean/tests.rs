@@ -1,6 +1,6 @@
 use super::*;
 use super::fake::{Event, Fake};
-use engine::memory::FlatMemory;
+use guest_layout::memory::FlatMemory;
 
 const TABLE: u32 = 0x004f_0000;
 const DEF: u32 = 0x0051_0000;

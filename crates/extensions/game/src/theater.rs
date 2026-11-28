@@ -1244,7 +1244,7 @@ impl hooks::Feature for Observer {
         if self.0.has_unified_track() && self.0.telemetry_plan().enabled() {
             let session = self.0.clone();
             b.raw().observe_before(
-                &engine::points::PLAYER_KILLED,
+                &guest_layout::points::PLAYER_KILLED,
                 "film kill marker",
                 move |_| {
                     let mut s = session.lock();

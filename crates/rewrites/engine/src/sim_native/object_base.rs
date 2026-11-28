@@ -4,10 +4,8 @@
 //! Never installed: `crate::sim_objects::functions::base` owns the entry;
 //! this stays a test oracle.
 use super::*;
-use crate::{
-    function_eval::constant::ONE,
-    points::{OBJECTS, TAG_ENTRIES},
-};
+use guest_layout::points::{OBJECTS, TAG_ENTRIES};
+use crate::function_eval::constant::ONE;
 use std::cmp::Ordering::{self, Equal, Greater, Less};
 use x87::abi as fp;
 

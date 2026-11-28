@@ -44,7 +44,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use superbounce::view::{self as geo, Geometry, Level, LineOfSight, SightCache};
 use superbounce::{Kind, Spot, Status, Vec3};
 
@@ -1253,7 +1253,7 @@ pub(crate) fn flashlight_down(m: &dyn GuestMemory) -> bool {
 fn sensor(m: &dyn GuestMemory) -> Sensor {
     use crate::skulls_custom::{GAME_GLOBALS, GLOBALS_MODE};
     let range = m
-        .u32(engine::points::HUD_GLOBALS_TAG.base)
+        .u32(guest_layout::points::HUD_GLOBALS_TAG.base)
         .ok()
         .filter(|&h| h != 0)
         .and_then(|h| m.f32(h.wrapping_add(HUDG_RADAR_RANGE)).ok())

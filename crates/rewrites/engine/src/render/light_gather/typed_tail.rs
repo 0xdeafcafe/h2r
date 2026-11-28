@@ -9,7 +9,7 @@
 
 use super::{Writes, passes};
 use crate::light_passes::{flag, global};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 const DIFFUSE: u32 = 1 << 12;
 const SPECULAR: u32 = 1 << 13;
@@ -184,7 +184,7 @@ pub fn plan_dynamic(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::FlatMemory;
+    use guest_layout::FlatMemory;
     use crate::light_constants::Fpu;
 
     const COLOUR: u32 = 0x0040_1000;

@@ -30,9 +30,9 @@ use std::cell::Cell;
 use super::guest::{LIGHTS, MAIN_VIS, NONE, OBJECTS, TAGS};
 use super::visible::{self, VisibleLight, VisibleList};
 use super::{Refusal, Result, extra_caster, geometry, volume};
-use crate::entry::{Cx, EntryError, GuestCall, Regs, Ret};
+use guest_layout::entry::{Cx, EntryError, GuestCall, Regs, Ret};
 use crate::light_constants::Fpu;
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use crate::render_loop::world_walk::{self, Walk};
 
 /// The render frame counter the shadow arms sample by.
@@ -64,7 +64,7 @@ pub mod slot {
 
 /// The guest functions the body calls.
 pub mod call {
-    use crate::points;
+    use guest_layout::points;
     /// The marker name of an owner's attachment: ECX the owner, AX the index.
     pub const REPOSE_MARKER: u32 = 0x000b_8c40;
     /// The first-person marker frame: ECX the owner; stack (marker,

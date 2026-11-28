@@ -1,6 +1,6 @@
 use super::*;
-use engine::FlatMemory;
-use engine::datum::layout;
+use guest_layout::FlatMemory;
+use guest_layout::datum::layout;
 
 const POINTER: u32 = 0x004e_6080;
 const ARENA: u32 = 0x005e_0000;
@@ -15,7 +15,7 @@ fn guest() -> FlatMemory {
     {
         let at = ARENA + 0x40 + i as u32 * 0x400;
         m.write(at, name.as_bytes()).unwrap();
-        m.write(at + layout::SIGNATURE, &engine::datum::SIGNATURE.to_le_bytes()).unwrap();
+        m.write(at + layout::SIGNATURE, &guest_layout::datum::SIGNATURE.to_le_bytes()).unwrap();
         m.write(at + layout::NEXT_SALT, &salt.to_le_bytes()).unwrap();
     }
     m
@@ -51,7 +51,7 @@ const POOL_SIZE: u32 = 0x2000;
 fn pooled(live: i32) -> FlatMemory {
     let mut m = FlatMemory::new(0x004e_0000, 0x0050_0000);
     m.write(POINTER, &ARENA.to_le_bytes()).unwrap();
-    let sig = engine::datum::SIGNATURE.to_le_bytes();
+    let sig = guest_layout::datum::SIGNATURE.to_le_bytes();
     for (at, name) in [(OBJECTS, "object"), (ARENA + 0x4000, "actor")] {
         m.write(at, name.as_bytes()).unwrap();
         m.write(at + layout::SIGNATURE, &sig).unwrap();

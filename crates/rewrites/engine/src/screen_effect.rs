@@ -44,7 +44,7 @@
 
 use crate::glow::{self, Blur, BlurArgs, Wide, WideArgs};
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// The tag table: per datum index `0x10` bytes, `+0` the group, `+8` the
 /// definition.
@@ -555,7 +555,7 @@ pub fn plan_with(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const TT: u32 = 0x0060_0000;
     const EGOR: u32 = 0x0061_0000;

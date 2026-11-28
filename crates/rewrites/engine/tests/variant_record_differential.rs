@@ -30,7 +30,7 @@
 
 use std::collections::BTreeMap;
 
-use engine::points;
+use guest_layout::points;
 use ir::interp::{self, Cpu};
 use lift::harness::HARNESS_EXIT;
 use lifted::image::{Image, Rng};

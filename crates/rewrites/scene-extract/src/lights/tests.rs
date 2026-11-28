@@ -1,6 +1,6 @@
 use super::*;
-use engine::FlatMemory;
-use engine::datum::layout as datum;
+use guest_layout::FlatMemory;
+use guest_layout::datum::layout as datum;
 use engine::render::light::layout as record;
 use frame_scene::{FrameScene, RenderCamera, SceneBuilder, SceneId, Stamp, ViewKey, ViewKind};
 use std::sync::Arc;
@@ -60,7 +60,7 @@ fn guest() -> FlatMemory {
         (ARRAY + datum::ELEMENT_SIZE, light::RECORD_SIZE as u32),
         (ARRAY + datum::HIGH_WATER, 20),
         (ARRAY + datum::DATA, RECORDS),
-        (engine::tags::TAG_ENTRIES_GLOBAL, TAGS),
+        (guest_layout::tags::TAG_ENTRIES_GLOBAL, TAGS),
         (MAIN_LIGHT_LIST, LIST),
         (LIST, 32),
         (LIST + HANDLE_COLUMN, HANDLES),

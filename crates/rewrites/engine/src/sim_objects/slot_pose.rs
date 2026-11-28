@@ -18,8 +18,8 @@
 
 use super::alu::{cmp16, shl};
 use super::{Cx, Next, Result, unowned};
-use crate::datum::layout::DATA;
-use crate::points;
+use guest_layout::datum::layout::DATA;
+use guest_layout::points;
 use crate::sim_physics::{arithmetic, logic, pop, push};
 use runtime::{CpuAbi, Guest};
 

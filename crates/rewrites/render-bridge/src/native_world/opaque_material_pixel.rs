@@ -2,7 +2,7 @@
 //! fragment offsets live in the material cache across draws. Later constant
 //! bindings patch individual channels in this same buffer.
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 const PASS: u32 = 0x20;
 const IMPLEMENTATION: u32 = 0x24;
@@ -98,7 +98,7 @@ pub(super) fn build(mem: &mut dyn GuestMemory, cache: u32) -> Result<(), MemFaul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn selected_fragments_patch_only_their_combiner_words_and_offset_bytes() {

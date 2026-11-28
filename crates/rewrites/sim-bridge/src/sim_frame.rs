@@ -28,8 +28,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 use engine::render_loop::frame_wait::{self, Watch};
 use engine::render_loop::tick_writes::{self, Word, Words};
 use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
@@ -432,7 +432,7 @@ fn wait(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const A: Addrs = Addrs {
         wait: frame_wait::Addrs {

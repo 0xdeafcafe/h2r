@@ -1,6 +1,6 @@
 use std::sync::Mutex;
 
-use engine::memory::FlatMemory;
+use guest_layout::memory::FlatMemory;
 use scene_extract::layout::decorators::{
     CACHE_DATA, CACHE_ENTRIES, CACHE_ENTRY_SIZE, CACHE_ENTRY_STAMP, CACHE_STAMP, GEOMETRY_CACHE,
     TAG_TABLE,

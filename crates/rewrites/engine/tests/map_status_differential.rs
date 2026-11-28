@@ -23,8 +23,8 @@ use std::collections::BTreeMap;
 use engine::map_status::{
     self, Answer, Cache, Lookup, QUEUE, QUEUE_SECOND, REQUESTS, SLOT_PATHS, SLOT_STRIDE,
 };
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 use ir::interp::{self, Cpu};
 use lift::harness::HARNESS_EXIT;
 use lifted::image::{Image, Rng};

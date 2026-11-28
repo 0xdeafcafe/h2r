@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::firefight::guest::read_kit;
-use engine::entry::{EntryFuture, Regs, Ret, testing};
-use engine::testing::FakeGuest;
+use guest_layout::entry::{EntryFuture, Regs, Ret, testing};
+use guest_layout::testing::FakeGuest;
 
 const SCNR: u32 = 0x1_0000;
 const SQUADS: u32 = 0x2_0000;
@@ -133,8 +133,8 @@ fn scenario() -> FakeGuest {
     m
 }
 
-use engine::view::fake;
-use engine::view::objects::{Body as Obj, Header};
+use guest_layout::view::fake;
+use guest_layout::view::objects::{Body as Obj, Header};
 use guest_layout::actor::Actor;
 
 const ACTORS: u32 = 0x7000_0100;
@@ -172,7 +172,7 @@ fn world(riders: u8, pool: usize) -> World {
         next += 0x1000;
         (handle, body)
     };
-    let (ship, ship_body) = make(&mut m, engine::view::objects::VEHICLE);
+    let (ship, ship_body) = make(&mut m, guest_layout::view::objects::VEHICLE);
     ship_body.set_position(&mut m, SHIP_AT).unwrap();
     ship_body.set_up(&mut m, [0.0, 0.0, 1.0]).unwrap();
     // An actor and its unit, linked both ways as the engine's actors are, so
@@ -189,13 +189,13 @@ fn world(riders: u8, pool: usize) -> World {
         actor
     };
     for _ in 0..riders {
-        let (unit, body) = make(&mut m, engine::view::objects::BIPED);
+        let (unit, body) = make(&mut m, guest_layout::view::objects::BIPED);
         body.set_parent(&mut m, Some(ship)).unwrap();
         actor_of(&mut m, u32::from(OTHER), unit, body);
     }
     let pool = (0..pool)
         .map(|_| {
-            let (unit, body) = make(&mut m, engine::view::objects::BIPED);
+            let (unit, body) = make(&mut m, guest_layout::view::objects::BIPED);
             let actor = actor_of(&mut m, u32::from(OTHER), unit, body);
             (actor, body, unit.raw())
         })

@@ -1,7 +1,7 @@
 use super::*;
 use content::campaign_list::{FIXTURE, HALO1};
-use engine::memory::GuestMemory;
-use engine::testing::FakeGuest;
+use guest_layout::memory::GuestMemory;
+use guest_layout::testing::FakeGuest;
 
 /// The fake guest as the boot's memory trait.
 struct G(FakeGuest);

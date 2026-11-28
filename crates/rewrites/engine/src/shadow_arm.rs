@@ -22,7 +22,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// One frame in this many is compared with the guest's, whatever the
 /// arm's state.
@@ -388,7 +388,7 @@ fn intern(name: String) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn a_proposal_names_each_field_that_differs_once() {

@@ -60,7 +60,7 @@ use agent_proto::sim::{
     ViewParams, method,
 };
 use agent_proto::{Boundary, Kind, ObjectId, RpcError, code};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use input::backend::remote::Remote;
 use serde_json::{Map, Value, json};
 

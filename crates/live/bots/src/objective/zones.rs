@@ -10,11 +10,11 @@
 //! script that keeps no engine globals (docs/game/rules-engine.md,
 //! "Porting the seven engines").
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use engine::objectives::{
     FLAG_TEAM, FLAG_TYPE, NETGAME_FLAG_LIMIT, NETGAME_FLAG_STRIDE, NETGAME_FLAGS, check_span, kind,
 };
-use engine::points;
+use guest_layout::points;
 
 use super::{Goal, Hill, Objective, Territory, dist, dist_xy, member, nearest};
 use crate::brain::{Me, Seen, Vec3};

@@ -14,7 +14,7 @@
 use std::sync::{Arc, MutexGuard};
 
 use anyhow::{Context, Result, ensure};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use film::blam::{MAX_SEATS, SeatInput};
 
 use super::{Mode, Session, State, film_play, game_start};
@@ -251,7 +251,7 @@ pub(super) fn at_update(
 
 pub(super) fn install(b: &mut hooks::Builder, session: Arc<Session>) {
     b.raw().before(
-        &engine::points::SIM_UPDATE_APPLY,
+        &guest_layout::points::SIM_UPDATE_APPLY,
         "film simulation actions",
         move |c| {
             let state = session.lock();
@@ -271,7 +271,7 @@ pub(super) fn install(b: &mut hooks::Builder, session: Arc<Session>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::FlatMemory;
+    use guest_layout::FlatMemory;
 
     #[test]
     fn a_camera_that_is_not_first_person_leaves_the_look_alone() {
@@ -288,8 +288,8 @@ mod tests {
 
     #[test]
     fn gathered_actions_follow_sparse_player_slots_and_replay_ignores_pad_only_rows() {
-        let point = &engine::points::SIM_UPDATE_APPLY;
-        assert_eq!(point.sig.arg("update"), Some(engine::points::Loc::Stack(0)));
+        let point = &guest_layout::points::SIM_UPDATE_APPLY;
+        assert_eq!(point.sig.arg("update"), Some(guest_layout::points::Loc::Stack(0)));
         let mut mem = FlatMemory::new(0x8000, 0x4048);
         let update = mem.base;
         mem.bytes.fill(0xa5);

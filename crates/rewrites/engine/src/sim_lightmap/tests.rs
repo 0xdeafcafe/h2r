@@ -172,8 +172,8 @@ fn only_the_two_tick_reads_are_filled() {
 /// and a two-record cache.
 mod record {
     use super::*;
-    use crate::{FlatMemory, GuestMemory};
-    use crate::datum::layout;
+    use guest_layout::{FlatMemory, GuestMemory};
+    use guest_layout::datum::layout;
 
     const OBJECT: u32 = 0x0001_0002;
     const HEADERS: u32 = 0x2000;

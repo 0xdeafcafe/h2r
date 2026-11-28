@@ -37,8 +37,8 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use engine::entry::{EntryFuture, GuestCall, Ret};
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::entry::{EntryFuture, GuestCall, Ret};
+use guest_layout::memory::{GuestMemory, MemFault};
 use hooks::{BuildError, Builder, Call, Flow, Manifest};
 use runtime::GuestFault;
 use runtime::guest::Permissions;
@@ -652,7 +652,7 @@ fn row_text(c: &mut Call) -> Result<Flow, GuestFault> {
 fn row_chosen(c: &mut Call, request_at: u32) -> Result<Flow, GuestFault> {
     let (row, player, stack) = {
         let mem = c.ctx.runtime().memory();
-        let at = c.cpu.ecx.wrapping_sub(engine::view::ui::LIST);
+        let at = c.cpu.ecx.wrapping_sub(guest_layout::view::ui::LIST);
         let stack = mem
             .u32(at + SCREEN_WINDOW)
             .ok()
@@ -693,7 +693,7 @@ impl hooks::Feature for MoreRow {
         .doc("docs/game/game-options.md")
     }
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        use engine::points::{VARIANT_OPTIONS_ROW_CHOSEN, VARIANT_OPTIONS_ROW_TEXT};
+        use guest_layout::points::{VARIANT_OPTIONS_ROW_CHOSEN, VARIANT_OPTIONS_ROW_TEXT};
         let request_at = b.guest_alloc(0x1000, Permissions::RW)?;
         b.raw()
             .before(

@@ -67,7 +67,7 @@ fn select_mode(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Result {
                 c.edi = pop(c, g)?;
                 return g.ret(c, 0);
             }
-            c.eax = g.u32(crate::points::TAG_ENTRIES.base)?;
+            c.eax = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
             push(c, g, c.ebx)?;
             c.ecx = tag_index(c, c.ecx);
             c.ecx = graph(g, c.eax, c.ecx)?;
@@ -201,7 +201,7 @@ fn resolve_action(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Resul
         sub_flags(c, index, 0xffff, 16);
         if index != 0xffff {
             c.edx = g.u32(at(c.esi, 0x68))?;
-            c.eax = g.u32(crate::points::TAG_ENTRIES.base)?;
+            c.eax = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
             c.ecx = g.u32(at(c.esp, 12))?;
             c.edx = tag_index(c, c.edx);
             c.edx = graph(g, c.eax, c.edx)?;
@@ -331,7 +331,7 @@ fn choose_transition(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Re
     if pc == 0x1cbb50 {
         c.esp = c.esp.wrapping_sub(40);
         c.ecx = g.u32(at(c.esi, 0x68))?;
-        c.edx = g.u32(crate::points::TAG_ENTRIES.base)?;
+        c.edx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
         push(c, g, c.ebx)?;
         c.ecx = tag_index(c, c.ecx);
         c.ecx = graph(g, c.edx, c.ecx)?;
@@ -444,7 +444,7 @@ fn begin_transition(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Res
 
 fn query_action_state(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Result {
     if pc == 0x1cbce0 {
-        c.edx = g.u32(crate::points::TAG_ENTRIES.base)?;
+        c.edx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
         push(c, g, c.ebx)?;
         push(c, g, c.esi)?;
         c.esi = c.ecx;
@@ -466,7 +466,7 @@ fn query_graph_record(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::R
     if pc == 0x1cbd10 {
         c.edx = g.u32(at(c.ecx, 0x68))?;
         push(c, g, c.eax)?;
-        c.eax = g.u32(crate::points::TAG_ENTRIES.base)?;
+        c.eax = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
         c.edx = tag_index(c, c.edx);
         c.edx = graph(g, c.eax, c.edx)?;
         push(c, g, c.esi)?;
@@ -478,7 +478,7 @@ fn query_graph_record(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::R
 
 fn node_count(c: &mut CpuAbi, g: &mut Bus<'_>, _: u32) -> sim_native::Result {
     c.ecx = g.u32(at(c.eax, 0x68))?;
-    c.edx = g.u32(crate::points::TAG_ENTRIES.base)?;
+    c.edx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
     c.ecx = tag_index(c, c.ecx);
     c.eax = graph(g, c.edx, c.ecx)?;
     c.eax = (c.eax & !0xffff) | u32::from(g.u16(at(c.eax, 12))?);
@@ -492,7 +492,7 @@ fn build_matrices(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Resul
         push(c, g, c.ecx)?;
         c.ecx = g.u32(at(c.eax, 0x68))?;
         push(c, g, c.edx)?;
-        c.edx = g.u32(crate::points::TAG_ENTRIES.base)?;
+        c.edx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
         c.ecx = tag_index(c, c.ecx);
         c.eax = graph(g, c.edx, c.ecx)?;
         push(c, g, c.eax)?;
@@ -512,7 +512,7 @@ fn transform_graph(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Resu
         push(c, g, c.eax)?;
         c.eax = g.u32(at(c.edx, 0x68))?;
         push(c, g, c.ecx)?;
-        c.ecx = g.u32(crate::points::TAG_ENTRIES.base)?;
+        c.ecx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
         c.eax = tag_index(c, c.eax);
         c.edx = graph(g, c.ecx, c.eax)?;
         push(c, g, c.edx)?;
@@ -524,7 +524,7 @@ fn transform_graph(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Resu
 fn query_transform(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Result {
     if pc == 0x1cbdb0 {
         c.ecx = g.u32(at(c.eax, 0x68))?;
-        c.edx = g.u32(crate::points::TAG_ENTRIES.base)?;
+        c.edx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
         c.ecx = tag_index(c, c.ecx);
         c.eax = graph(g, c.edx, c.ecx)?;
         c.ecx = g.u32(at(c.esp, 12))?;
@@ -540,7 +540,7 @@ fn query_transform(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Resu
 
 fn find_node(c: &mut CpuAbi, g: &mut Bus<'_>, _: u32) -> sim_native::Result {
     c.ecx = g.u32(at(c.eax, 0x68))?;
-    c.edx = g.u32(crate::points::TAG_ENTRIES.base)?;
+    c.edx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
     c.ecx = tag_index(c, c.ecx);
     c.edx = graph(g, c.edx, c.ecx)?;
     c.ecx = g.u32(at(c.edx, 12))?;
@@ -572,7 +572,7 @@ fn graph_entry(c: &mut CpuAbi, g: &mut Bus<'_>, _: u32) -> sim_native::Result {
         logic_flags(c, 0);
     } else {
         c.edx = g.u32(at(c.ecx, 0x68))?;
-        c.ecx = g.u32(crate::points::TAG_ENTRIES.base)?;
+        c.ecx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
         c.edx = tag_index(c, c.edx);
         c.edx = graph(g, c.ecx, c.edx)?;
         c.ecx = g.u32(at(c.edx, 24))?;
@@ -596,7 +596,7 @@ fn reference_data(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Resul
         }
         c.eax = g.u32(at(c.esp, 4))?;
         c.eax = g.u32(at(c.eax, 0x68))?;
-        c.edx = g.u32(crate::points::TAG_ENTRIES.base)?;
+        c.edx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
         c.eax = tag_index(c, c.eax);
         c.eax = graph(g, c.edx, c.eax)?;
         push(c, g, c.edi)?;
@@ -610,7 +610,7 @@ fn reference_data(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Resul
 
 fn signed_node_count(c: &mut CpuAbi, g: &mut Bus<'_>, _: u32) -> sim_native::Result {
     c.edx = g.u32(at(c.ecx, 0x68))?;
-    c.ecx = g.u32(crate::points::TAG_ENTRIES.base)?;
+    c.ecx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
     c.edx = tag_index(c, c.edx);
     c.ecx = graph(g, c.ecx, c.edx)?;
     c.eax = 0;
@@ -641,7 +641,7 @@ fn sample_at_time(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Resul
         c.eflags_defined |= 0x8d5;
         if flags & 0x41 == 0 {
             c.eax = g.u32(at(c.esi, 0x68))?;
-            c.ecx = g.u32(crate::points::TAG_ENTRIES.base)?;
+            c.ecx = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
             c.eax = tag_index(c, c.eax);
             c.ebx = graph(g, c.ecx, c.eax)?;
             push(c, g, c.ebp)?;
@@ -651,7 +651,7 @@ fn sample_at_time(c: &mut CpuAbi, g: &mut Bus<'_>, pc: u32) -> sim_native::Resul
     }
     if pc == 0x1cbec0 || (pc == 0x1cbf03 && !test_al(c)) {
         c.edx = g.u32(at(c.esi, 0x68))?;
-        c.eax = g.u32(crate::points::TAG_ENTRIES.base)?;
+        c.eax = g.u32(guest_layout::points::TAG_ENTRIES.base)?;
         push(c, g, 1)?;
         push(c, g, c.ebp)?;
         push(c, g, 0)?;

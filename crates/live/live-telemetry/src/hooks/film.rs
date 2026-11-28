@@ -327,12 +327,12 @@ mod tests {
             thread_id: 1,
             cpu: &cpu,
             runtime: &runtime,
-            addr: engine::points::DAMAGE_REPORT.base,
-            point: &engine::points::DAMAGE_REPORT,
+            addr: guest_layout::points::DAMAGE_REPORT.base,
+            point: &guest_layout::points::DAMAGE_REPORT,
         };
         for source in ["weapon_fire", "impact", "projectile_end"] {
             crate::impacts::observe(&t, source, &o, |guest| {
-                engine::GuestMemory::u32(guest, 0x7000_0000).map(|_| None)
+                guest_layout::GuestMemory::u32(guest, 0x7000_0000).map(|_| None)
             });
         }
         crate::impacts::observe(&t, "impact", &o, |_| {

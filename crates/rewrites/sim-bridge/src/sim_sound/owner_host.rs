@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use sim_sound::impulse::Selection;
 use sim_sound::instances::{Handle, Sounds, TagIndex};
 use sim_sound::owners::{Owner, OwnerHost, Reason};
@@ -93,7 +93,7 @@ impl OwnerHost for GuestUnits<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use sim_sound::instances::{Permutation, PitchRange, Request, Rng, SoundTag, TagTable};
 
     const TAG: TagIndex = TagIndex(0xe100_0001);

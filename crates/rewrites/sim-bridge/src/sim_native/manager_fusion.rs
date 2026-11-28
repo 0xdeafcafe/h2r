@@ -96,7 +96,8 @@ impl Fusion {
 #[cfg(test)]
 mod tests {
     use super::super::{ANIM_INVALIDATE, SimNative};
-    use engine::{points::Point, sim_anim::manager};
+    use guest_layout::points::Point;
+    use engine::sim_anim::manager;
     use hooks::{Base, BuildError, Builder, Feature, Manifest, Registry, SnapshotPolicy, Switches};
     use runtime::{CpuAbi, Dispatch, ExecCtx, Guest, Runtime, TransferAbi, guest::Permissions};
 

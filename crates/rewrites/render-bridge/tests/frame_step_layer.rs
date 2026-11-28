@@ -5,7 +5,7 @@
 //! body would call a function (an item's build, the cache's restore
 //! `0x00018900`) the frame step runs the guest instead and writes nothing.
 
-use engine::memory::{FlatMemory, GuestMemory};
+use guest_layout::memory::{FlatMemory, GuestMemory};
 use render_bridge::frame_step::layer::{self, Keep};
 
 const BASE: u32 = 0x0045_0000;

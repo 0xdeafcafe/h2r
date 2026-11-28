@@ -47,7 +47,7 @@
 //! Needs the user's XBE (`lifted::image`); skipped without it.
 #![cfg(feature = "differential")]
 
-use engine::points;
+use guest_layout::points;
 use engine::sim_objects::{self, Table};
 use ir::interp::{Cpu, Flow, MemFault};
 use lifted::Code;

@@ -76,7 +76,7 @@ pub const REGISTRY: &[Row] = &[
     },
     Row {
         name: "sky",
-        entry: engine::points::RENDER_SKY.base,
+        entry: guest_layout::points::RENDER_SKY.base,
         status: Status::Partial,
         slot: "after_lights",
     },

@@ -19,8 +19,8 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use engine::entry::GuestCall;
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::entry::GuestCall;
+use guest_layout::memory::{GuestMemory, MemFault};
 
 use super::sheet::{Act, Choice, Kind, Look, NumberField, PickSpec, Sheet};
 use crate::list_class::{
@@ -352,7 +352,7 @@ impl ForgeScreen {
             let row = me.opening_focus.swap(u32::MAX, Ordering::SeqCst);
             Box::pin(async move {
                 if row != u32::MAX {
-                    let list = screen.wrapping_add(engine::view::ui::LIST);
+                    let list = screen.wrapping_add(guest_layout::view::ui::LIST);
                     cx.call(
                         GuestCall::new(crate::list_class::LIST_SET_ROW)
                             .eax(list)

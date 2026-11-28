@@ -24,8 +24,8 @@ pub(crate) use transparents::{bsp as transparent_bsp, display_sort_key};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::{self, Point};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{self, Point};
 use runtime::guest::Access;
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 use timeline::native::{SceneList, SceneListResult};
@@ -34,7 +34,7 @@ use hooks::{BuildError, Builder, Feature, Flow, Manifest, Switches};
 
 const ID: &str = "native-scene-lists";
 const NONE: u32 = u32::MAX;
-const TAGS: u32 = engine::tags::TAG_ENTRIES_GLOBAL;
+const TAGS: u32 = guest_layout::tags::TAG_ENTRIES_GLOBAL;
 const FRAME: u32 = 0x004b_a034;
 const OBJECTS: u32 = engine::render_loop::occlusion::guest::OBJECTS;
 
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn lod_scale_comes_from_the_supplied_view() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let address = 0x10000;
         let scale = ViewLodScale::new(address);
         let mut live = FlatMemory::new(address, 4);

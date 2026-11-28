@@ -5,7 +5,7 @@ use std::sync::{
     atomic::{AtomicU32, Ordering},
 };
 
-use engine::points;
+use guest_layout::points;
 use live_hle::Hle;
 use live_proto::{
     hopper::variant::{GameType, SIZE, VariantRecord},

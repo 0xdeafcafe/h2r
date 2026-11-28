@@ -2,7 +2,7 @@
 //! PC. The scheduler can stop in a child and recover the entire caller from
 //! the guest stack, just as it can for the generated implementation.
 
-use crate::points::{self, Point};
+use guest_layout::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
 mod alloc;

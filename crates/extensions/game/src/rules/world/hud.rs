@@ -35,9 +35,9 @@ use std::sync::{Arc, OnceLock};
 
 use ::rules::ir::Ir;
 use ::rules::show::{State, View, Viewer, view};
-use engine::GuestMemory;
-use engine::handle::DatumHandle;
-use engine::view::objects;
+use guest_layout::GuestMemory;
+use guest_layout::handle::DatumHandle;
+use guest_layout::view::objects;
 use hud_kit_core::model::{Describe, Values};
 use hud_kit_core::views::objective::{self, Fed, Widget};
 

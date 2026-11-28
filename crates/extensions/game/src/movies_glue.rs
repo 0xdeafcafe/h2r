@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn ui_attract_reads_the_menu_timer_at_a_slice() {
         use agent_proto::{Request, code, method};
-        use engine::points::{
+        use guest_layout::points::{
             SCENARIO, UI_ATTRACT_RESET, UI_ATTRACT_TIMEOUT, UI_CLOCK, UI_LAST_INPUT,
             UI_MUSIC_GATE, UI_MUSIC_STATE,
         };

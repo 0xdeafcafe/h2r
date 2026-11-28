@@ -25,7 +25,7 @@
 //! operand neither model makes exactly is `Err("x87")` or `Err("simd")`;
 //! an unreadable or unwritable address `Err("memory")`.
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 use runtime::cpu::{CpuAbi, X87Abi};
 use runtime::generated::x87_helpers as fx;
 
@@ -697,7 +697,7 @@ pub fn update(mem: &mut dyn GuestMemory, cpu: &mut CpuAbi) -> Result<u32, Cause>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const AT: u32 = 0x0050_0000;
     const ESP: u32 = 0x0060_0000;

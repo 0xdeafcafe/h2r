@@ -39,8 +39,8 @@ workspace_library(
     tree = ":lib-tree",
     version = "0.1.0",
     deps = [
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
-        "//crates/rewrites/engine:engine",
         "//crates/rewrites/sim-ext:sim-ext",
         "//crates/runtime/runtime:runtime",
     ],
@@ -57,10 +57,10 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/input:input",
         "//crates/platform/xapi:xapi",
-        "//crates/rewrites/engine:engine",
         "//crates/rewrites/sim-ext:sim-ext",
         "//crates/runtime/runtime:runtime",
     ],
@@ -77,10 +77,10 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/hooking/guest-layout:guest-layout",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/input:input",
         "//crates/platform/xapi:xapi",
-        "//crates/rewrites/engine:engine",
         "//crates/rewrites/sim-ext:sim-ext",
         "//crates/runtime/runtime:runtime",
         ":lockstep",

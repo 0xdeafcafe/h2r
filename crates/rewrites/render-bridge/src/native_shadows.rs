@@ -9,7 +9,8 @@
 
 use crate::native_world::Mem;
 use engine::render::light_gather::{object_shadows, passes};
-use engine::{memory::GuestMemory, points, shadow_constants};
+use guest_layout::{memory::GuestMemory, points};
+use engine::shadow_constants;
 use hooks::{BuildError, Builder, Feature, Manifest};
 use native_render::{
     shadows::{self, Item, Site},
@@ -535,7 +536,7 @@ mod tests {
 
     #[test]
     fn caster_owner_requires_a_live_row_in_its_own_frame() {
-        let mut m = engine::FlatMemory::new(0, 0x510000);
+        let mut m = guest_layout::FlatMemory::new(0, 0x510000);
         let esp = 0x1000;
         let last = esp + 24 + 8 + 31 * 20;
         m.set_u32(esp, object_shadows::site::CASTER).unwrap();
@@ -553,7 +554,7 @@ mod tests {
 
     #[test]
     fn only_the_wrappers_blur_scopes_a_filter_to_its_after_hook() {
-        let mut mem = engine::FlatMemory::new(0x1000, 0x100);
+        let mut mem = guest_layout::FlatMemory::new(0x1000, 0x100);
         let wrapper = 0x1080;
         let blur = wrapper - 44;
         mem.set_u32(wrapper, 0xbd00_0100).unwrap(); // synthetic after-hook token
@@ -601,7 +602,7 @@ mod tests {
     #[test]
     fn a_whole_caster_group_commits_and_a_refusal_is_dropped_under_its_cause() {
         let _turn = HOST_TURN.lock().unwrap_or_else(|e| e.into_inner());
-        let mut mem = engine::FlatMemory::new(0, 0x1000);
+        let mut mem = guest_layout::FlatMemory::new(0, 0x1000);
         let group = group();
         set_host(Arc::new(Stub(Ok(()))));
         let before = drawn_alone(10);
@@ -662,7 +663,7 @@ mod tests {
     fn a_filter_refused_before_the_host_tells_it_so_a_private_chain_can_spill() {
         let _turn = HOST_TURN.lock().unwrap_or_else(|e| e.into_inner());
         // No open frame step: the scene has no filter, so `program` refuses.
-        let mut mem = engine::FlatMemory::new(0, 0x1000);
+        let mut mem = guest_layout::FlatMemory::new(0, 0x1000);
         let host = Arc::new(Kept(std::sync::atomic::AtomicU32::new(0)));
         set_host(host.clone());
         assert!(!filter(&mut mem, 0x800, 0x1f80, 0x027f));

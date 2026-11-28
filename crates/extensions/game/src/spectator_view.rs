@@ -1,7 +1,8 @@
 //! Drawing one private, playerless world view for Theater or an agent camera.
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use engine::{GuestMemory, points, render_loop::{occlusion::guest::VIEW_PLAYER, views::VIEW_STRIDE}};
+use guest_layout::{GuestMemory, points};
+use engine::render_loop::{occlusion::guest::VIEW_PLAYER, views::VIEW_STRIDE};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 use serde::{Deserialize, Serialize};
 
@@ -262,7 +263,7 @@ pub(crate) fn replace_world_view<M: GuestMemory>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn replaces_both_world_cameras_and_preserves_the_source_view() {

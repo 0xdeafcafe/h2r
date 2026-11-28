@@ -135,7 +135,7 @@ pub(super) fn install(b: &mut Builder, scale: ViewLodScale) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn a_model_with_pose_dependent_sections_keeps_retail_hysteresis_inputs() {
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn guest_record_callers_scale_their_radius_once_and_bound_conversion() {
-        use engine::testing::FakeGuest;
+        use guest_layout::testing::FakeGuest;
         let esp = 0x10000;
         let arg = esp + 0x28;
         let mut m = FakeGuest::new();

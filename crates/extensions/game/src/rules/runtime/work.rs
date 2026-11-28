@@ -2,8 +2,8 @@
 //! runtime"): the authority check, the calls the handlers made, in order,
 //! and the sight traces, then the tick itself.
 
-use engine::entry::{Cx, EntryError, GuestCall, Ret};
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
+use guest_layout::points;
 
 use super::{Call, Work};
 use crate::rules::guest;

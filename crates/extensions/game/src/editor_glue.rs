@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use agent::editor::{EditorLink, MarkFrame};
 use agent_proto::editor::MarkStyle;
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use gfx::world_lines::{ImageMarks, ImageValidity, WorldLine};
 
 pub(crate) fn capture(link: &EditorLink, guest: &dyn GuestMemory) -> Option<Arc<dyn ImageMarks>> {

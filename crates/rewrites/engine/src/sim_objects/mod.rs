@@ -73,7 +73,7 @@ mod biped;
 // in Rust, always.
 pub mod native_walk;
 
-use crate::points::{self, Point};
+use guest_layout::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicBool, Ordering};

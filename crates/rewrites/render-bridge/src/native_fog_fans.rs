@@ -35,7 +35,7 @@
 use std::sync::{Arc, Mutex};
 
 use engine::fog_fans::{self as ff, LayersDest};
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_types::TargetRole;
 use hooks::{BuildError, Builder, Feature, Manifest};
 pub use native_render::fog_fans::{Coords, FanDraw, FanRaster, FanStage};
@@ -137,7 +137,7 @@ fn target3(mem: &dyn GuestMemory) -> Option<u32> {
 fn game(mem: &dyn GuestMemory, n: u8) -> Option<u32> {
     use crate::native_targets::{TARGET_STRIDE, TARGETS};
     let entry = TARGETS + TARGET_STRIDE * u32::from(n);
-    let live = (|| Ok::<_, engine::MemFault>(mem.u32(entry + 0x88)? != 0 && mem.u8(entry + 0x95)? == 0 && (mem.u32(entry + 0x78)? as i32) > 0))()
+    let live = (|| Ok::<_, guest_layout::MemFault>(mem.u32(entry + 0x88)? != 0 && mem.u8(entry + 0x95)? == 0 && (mem.u32(entry + 0x78)? as i32) > 0))()
         .unwrap_or_else(|_| unported("unread"));
     if !live {
         return None;
@@ -373,14 +373,14 @@ impl Feature for NativeFogFans {
             return Ok(());
         }
         b.raw()
-            .observe_before(&engine::points::FOG_FANS, "native_fog_fans", |o| {
+            .observe_before(&guest_layout::points::FOG_FANS, "native_fog_fans", |o| {
                 before_fans(&*o.guest(), o.cpu.mxcsr, o.cpu.ecx, o.cpu.edx)
             })
             .context_only();
         for (point, name) in [
-            (&engine::points::FOG_LAYERS_SETUP, "native_fog_fans_layers"),
-            (&engine::points::FOG_LAYERS_COMPOSITE_SETUP, "native_fog_fans_layers_composite"),
-            (&engine::points::FOG_COMPOSITE_SETUP, "native_fog_fans_composite"),
+            (&guest_layout::points::FOG_LAYERS_SETUP, "native_fog_fans_layers"),
+            (&guest_layout::points::FOG_LAYERS_COMPOSITE_SETUP, "native_fog_fans_layers_composite"),
+            (&guest_layout::points::FOG_COMPOSITE_SETUP, "native_fog_fans_composite"),
         ] {
             b.raw().implement(point, name, setup_call).context_only();
         }
@@ -392,7 +392,7 @@ impl Feature for NativeFogFans {
 mod tests {
     use super::*;
     use engine::fog_fans::{composite_global as cg, global, layers_global as lg};
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const MXCSR: u32 = 0x1f80;
     const CONTROL: u16 = 0x027f;
@@ -512,9 +512,9 @@ mod tests {
         assert_eq!(Setup::of(0x0002_6e50), Some(Setup::LayersComposite));
         assert_eq!(Setup::of(0x0002_76d0), Some(Setup::Composite));
         assert_eq!(Setup::of(0x0002_6520), None);
-        assert_eq!(engine::points::FOG_LAYERS_SETUP.base, ff::setup::LAYERS);
-        assert_eq!(engine::points::FOG_LAYERS_COMPOSITE_SETUP.base, ff::setup::LAYERS_COMPOSITE);
-        assert_eq!(engine::points::FOG_COMPOSITE_SETUP.base, ff::setup::COMPOSITE);
+        assert_eq!(guest_layout::points::FOG_LAYERS_SETUP.base, ff::setup::LAYERS);
+        assert_eq!(guest_layout::points::FOG_LAYERS_COMPOSITE_SETUP.base, ff::setup::LAYERS_COMPOSITE);
+        assert_eq!(guest_layout::points::FOG_COMPOSITE_SETUP.base, ff::setup::COMPOSITE);
     }
 
     #[test]

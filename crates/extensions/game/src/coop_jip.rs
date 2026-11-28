@@ -30,8 +30,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
-use engine::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
-use engine::points;
+use guest_layout::entry::{Cx, EntryError, EntryFuture, GuestCall, Ret};
+use guest_layout::points;
 use hooks::Flow;
 
 use crate::coop_probe::{Arm, Session, layout, read_session, read_session_at};

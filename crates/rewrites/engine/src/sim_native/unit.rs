@@ -47,7 +47,7 @@ fn drive(c: &mut CpuAbi, g: &mut impl Memory, mut pc: u32) -> Result {
 
 /// Entry-only port used by the independent per-function shadow switch.
 pub fn pose(c: &mut CpuAbi, g: &mut impl Memory) -> Result {
-    drive(c, g, crate::points::SIM_UNIT_POSE.base)
+    drive(c, g, guest_layout::points::SIM_UNIT_POSE.base)
 }
 
 /// Plan one segment with a private CPU and ordered stores. A callee may
@@ -58,7 +58,7 @@ pub fn run(
     pc: u32,
 ) -> std::result::Result<Option<TransferAbi>, GuestFault> {
     super::plan::segment::<64, _>(
-        c, g, pc, crate::points::SIM_UNIT_POSE.base..0x112dbb, SITES,
+        c, g, pc, guest_layout::points::SIM_UNIT_POSE.base..0x112dbb, SITES,
         |cpu, plan, site| drive(cpu, plan, site),
     )
 }

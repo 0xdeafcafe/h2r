@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use agent::sim::calls::{self, Call, PendingCall, Shared};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use live_telemetry::havok_agents::{self as hk, LevelPairs};
 use sim_bench::bounces::{BouncesRun, ForkAsk, ForkDone, Job, MAX_VARIANTS};
 use sim_bench::drops::{PairSense, SeatSense, Sense};

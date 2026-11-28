@@ -1,5 +1,5 @@
 use super::*;
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 use session::{add_peer, add_player, at::*};
 
 const SQUAD: u32 = 0x0070_0000;

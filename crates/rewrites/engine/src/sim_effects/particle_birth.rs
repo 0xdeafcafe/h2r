@@ -2,7 +2,7 @@
 //! particle is linked and gets its five local RNG draws before the shape
 //! initializer sees it. Guest callees run on the original birth frame.
 use super::Port;
-use crate::points::{self, Loc, Point, Sig};
+use guest_layout::points::{self, Loc, Point, Sig};
 use crate::sim_native::Result;
 use crate::sim_objects::sse;
 use crate::sim_physics::{arithmetic, logic, pop, push, spatial::{finish_fpu, fp_error, load_fpu}};

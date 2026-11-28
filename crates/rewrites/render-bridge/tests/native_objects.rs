@@ -121,7 +121,7 @@ fn an_item_is_accepted_only_for_the_part_and_implementation_its_record_picked() 
 /// keeps its guest handlers' draws.
 #[test]
 fn objects_draw_in_the_opaque_base_slot_and_a_declined_run_consumes_nothing() {
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use frame_scene::ViewSlot;
     use native_objects::Host;
     use timeline::native::ObjectWalk;

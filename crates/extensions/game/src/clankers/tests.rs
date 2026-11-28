@@ -486,8 +486,8 @@ fn with_live_every_phantom_is_a_server_bot_account() {
 
 #[test]
 fn the_hosted_session_is_told_of_the_bot_accounts_in_the_game() {
-    use engine::testing::FakeGuest;
-    use engine::view::{fake, players};
+    use guest_layout::testing::FakeGuest;
+    use guest_layout::view::{fake, players};
 
     const SESSION: &str = "0123456789abcdef";
     const PLAYERS: u32 = 0x0060_0000;
@@ -509,7 +509,7 @@ fn the_hosted_session_is_told_of_the_bot_accounts_in_the_game() {
     // The second phantom is still waiting for a player.
     let phantoms = ph.list();
     let mut guest = FakeGuest::new();
-    guest.put_u32(engine::points::PLAYERS.base, PLAYERS);
+    guest.put_u32(guest_layout::points::PLAYERS.base, PLAYERS);
     let player_rows = fake::datums::<players::Player>(&mut guest, PLAYERS, 5);
     for (i, phantom) in phantoms.iter().enumerate() {
         if i == 1 {

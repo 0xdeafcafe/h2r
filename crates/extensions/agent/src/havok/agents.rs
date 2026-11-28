@@ -49,7 +49,7 @@ pub(super) fn pair_set_method(
     sim.writable_session(ctx)?;
     let objects = objects(ctx)?;
     let (datum, _) = resolve(&objects, &p.object)?;
-    let fault = |e: engine::MemFault| {
+    let fault = |e: guest_layout::MemFault| {
         RpcError::new(
             code::UNAVAILABLE,
             format!("the Havok world at {:08x} faulted", e.addr),
@@ -181,7 +181,7 @@ mod tests {
     fn registered_read_resolves_a_player_and_stamps_the_agent_list() {
         use crate::{Agent, GameStatus, Reader};
         use agent_proto::{Kind, Object};
-        use engine::testing::FakeGuest;
+        use guest_layout::testing::FakeGuest;
 
         struct Game(FakeGuest);
         impl Reader for Game {
@@ -201,7 +201,7 @@ mod tests {
                 }])
             }
 
-            fn with_guest(&mut self, f: &mut dyn FnMut(&mut dyn engine::GuestMemory)) -> bool {
+            fn with_guest(&mut self, f: &mut dyn FnMut(&mut dyn guest_layout::GuestMemory)) -> bool {
                 f(&mut self.0);
                 true
             }

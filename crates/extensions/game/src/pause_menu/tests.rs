@@ -2,7 +2,7 @@ use super::*;
 
 use std::sync::Arc;
 
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 use settings::{Store, Value};
 
 use crate::list_class::ListClass;

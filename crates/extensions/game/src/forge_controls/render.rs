@@ -8,7 +8,8 @@
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use engine::{GuestMemory, handle::DatumHandle, points, render_loop::occlusion::guest as vis, view::objects};
+use guest_layout::{GuestMemory, handle::DatumHandle, points, view::objects};
+use engine::render_loop::occlusion::guest as vis;
 use forge::camera::Camera;
 use hooks::{BuildError, Builder, Flow};
 
@@ -182,7 +183,7 @@ pub fn camera_hooks(b: &mut Builder) -> Result<(), BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::{testing::FakeGuest, view::fake};
+    use guest_layout::{testing::FakeGuest, view::fake};
     use guest_layout::ObjectHeader;
 
     #[test]

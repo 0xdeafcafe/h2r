@@ -1,5 +1,5 @@
 use super::*;
-use crate::memory::FlatMemory;
+use guest_layout::memory::FlatMemory;
 
 const DEF: u32 = 0x0051_0000;
 const UP: u32 = 0x0051_1000;

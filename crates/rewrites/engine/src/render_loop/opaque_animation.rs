@@ -4,7 +4,7 @@
 use crate::colour_pass::{constant::PACK_SCALE, global::TIME};
 use crate::function_eval::{self, constant::{BYTE, ONE, SMALL}};
 use crate::light_constants::{Error, Sse, X87};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use x87::abi::{self, arith_op, src_kind};
 
 const ANGLE_SCALE: u32 = 0x0043_f17c;
@@ -197,7 +197,7 @@ pub fn transform(m: &mut dyn GuestMemory, slot: u32, dest: u32, mode: u32, fcw:u
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     #[test]
     fn packed_colour_interpolates_each_byte_with_signed_deltas() {

@@ -1,7 +1,7 @@
 //! Enter the real sort or the first unported build callback with the
 //! layer builder's own frame. The guest can change the list in that callback.
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use native_render::skip;
 use runtime::{CpuAbi, TransferAbi};
 
@@ -15,7 +15,7 @@ const CALLBACK_RETURN: u32 = 0x0003_bb2e;
 const SORT_RETURN: u32 = 0x0003_bb73;
 const DEFAULT_COMPARE: u32 = 0x0003_bb80;
 const DISTANCE_COMPARE: u32 = 0x0003_bbd0;
-const BUILD_CALLER: u32 = engine::points::scene_effects::LAYER_BUILD_RETURN;
+const BUILD_CALLER: u32 = guest_layout::points::scene_effects::LAYER_BUILD_RETURN;
 const SLOT: usize = 24;
 
 #[derive(Clone, Copy)]
@@ -131,7 +131,7 @@ fn resume(m: &mut dyn GuestMemory, c: &mut CpuAbi, build: Build) -> Option<(Tran
         write(28, if layer == 5 { DISTANCE_COMPARE } else { DEFAULT_COMPARE });
         write(32, skip::ITEM_SIZE);
         write(36, SORT_RETURN);
-        TransferAbi::call(engine::points::LAYER_SORT.base, SORT_RETURN)
+        TransferAbi::call(guest_layout::points::LAYER_SORT.base, SORT_RETURN)
     };
     // Buffer and private frame are disjoint at LAYER_ENTRIES' call site.
     if buffer < sp.checked_add(20)? { return None; }
@@ -163,7 +163,7 @@ fn resume(m: &mut dyn GuestMemory, c: &mut CpuAbi, build: Build) -> Option<(Tran
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
 
     pub(super) const SP: u32 = 0x510000;
@@ -181,7 +181,7 @@ mod tests {
             (LIST, 32), (LIST+4, 1), (LIST+20, ITEMS), (ITEMS, skip::GEOMETRY_BUILD), (ITEMS+8, 1), (ITEMS+16, 2),
             (skip::RENDER_RECORDS+4, u32::MAX), (crate::native_world::ACTIVE_BSP, BSP), (BSP+0xa0, SECTION),
             (SECTION+0x50, SECTION+0x80), (SECTION+0x80, 1),
-            (engine::tags::TAG_ENTRIES_GLOBAL, TABLE), (TABLE+16, u32::from_be_bytes(*b"shad")),
+            (guest_layout::tags::TAG_ENTRIES_GLOBAL, TABLE), (TABLE+16, u32::from_be_bytes(*b"shad")),
             (TABLE+24, HEADER+0x40), (HEADER+0x64, HEADER+0x80), (HEADER+0x80, 2),
             (TABLE+40, HEADER+0xc0), (HEADER+0x11c, HEADER), (HEADER+4, HEADER+0x140),
             (HEADER+12, HEADER+0x170), (HEADER+20, HEADER+0x190), (HEADER+0x194, 3),
@@ -197,7 +197,7 @@ mod tests {
         let mut m = fixture();
         let mut c = CpuAbi { esp: SP, ebp: 123, esi: 456, ..Default::default() };
         let (t, n) = prefix(&mut m, &mut c).unwrap();
-        assert_eq!((t.target_pc, t.resume_pc, n), (engine::points::LAYER_SORT.base, SORT_RETURN, 1));
+        assert_eq!((t.target_pc, t.resume_pc, n), (guest_layout::points::LAYER_SORT.base, SORT_RETURN, 1));
         assert_eq!((c.ecx,c.eax,c.esp), (1,BUF,SP-36));
         assert_eq!(m.u32(BUF+16).unwrap(), HEADER+0x220);
         assert_eq!(m.u32(SP-16).unwrap(), 123);

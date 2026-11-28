@@ -1,7 +1,7 @@
 //! HaloScript's checkpointed thread and global datum arrays. Retail allocates
 //! 0x51e74 and 0x61cc bytes respectively at 0x208ff0, before loading a map.
-use crate::datum::{self, layout};
-use crate::{GuestMemory, MemFault, points};
+use guest_layout::datum::{self, layout};
+use guest_layout::{GuestMemory, MemFault, points};
 
 pub const EXTERNALS: u32 = 0x41d;
 pub const THREADS: u32 = 0x004f_9384;
@@ -115,8 +115,8 @@ pub fn prepare(m: &mut dyn GuestMemory) -> Result<(), MemFault> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::datum::DatumArray;
-    use crate::memory::FlatMemory;
+    use guest_layout::datum::DatumArray;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn expansion_keeps_external_handles_and_survives_thread_initialization() {

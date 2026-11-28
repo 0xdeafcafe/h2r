@@ -2,11 +2,11 @@
 //! sampled on simulation ticks. The render fork only reads the saved ticks.
 mod origin;
 
-use engine::DatumHandle;
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
-use engine::tags::GroupTag;
-use engine::view::{Tags, objects};
+use guest_layout::DatumHandle;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
+use guest_layout::tags::GroupTag;
+use guest_layout::view::{Tags, objects};
 use hooks::{BuildError, Builder, Flow};
 use tags::weapon_hud as input;
 
@@ -753,7 +753,7 @@ pub(super) fn register(b: &mut Builder) -> Result<u32, BuildError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn warning_conditions_use_the_owning_weapon_and_local_inputs() {

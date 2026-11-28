@@ -7,12 +7,12 @@ use std::sync::{
     atomic::{AtomicU16, Ordering::Relaxed},
 };
 
-use engine::{
+use guest_layout::{
     entry::{Cx, EntryResult, GuestCall, Ret},
-    hs_actions::{LATCHED as ACTION_TEST_FLAGS, PLAYER_CONTROL},
     memory::{GuestMemory, MemFault},
     points,
 };
+use engine::hs_actions::{LATCHED as ACTION_TEST_FLAGS, PLAYER_CONTROL};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use h1_contract::unit_builtins::{RUNTIME_SLOTS, RuntimeBuiltin, RuntimeSlot};
 

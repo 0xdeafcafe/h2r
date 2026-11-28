@@ -4,13 +4,13 @@
 //! the incoming, active and outgoing screens on a populated lower layer.
 
 use agent_proto::{At, Boundary, Phase};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use serde_json::{Value, json};
 
 use crate::list_class::{MAIN_MENU_KIND, UI_GAME_KIND};
 use crate::ui_watch::{SHARED, channel};
 
-const UI_NOW: u32 = engine::points::UI_CLOCK.base;
+const UI_NOW: u32 = guest_layout::points::UI_CLOCK.base;
 const FADE_START: u32 = 0x0054_d5c0;
 const SCENE_MODE: u32 = 0x0048_5870;
 const SCENE_WEIGHT: u32 = 0x0048_5874;
@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn a_modal_can_hold_its_blur_until_the_user_closes_it() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
 
         let mut m = FlatMemory::new(0x0054_0000, 0x10000);
         let screen = 0x0054_1000;

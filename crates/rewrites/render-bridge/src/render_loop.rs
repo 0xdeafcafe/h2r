@@ -42,7 +42,7 @@ fn store(cpu: &mut CpuAbi, r: &Regs) {
     cpu.xmm[1] = r.xmm1.to_le_bytes();
 }
 
-fn fault(f: engine::memory::MemFault) -> GuestFault {
+fn fault(f: guest_layout::memory::MemFault) -> GuestFault {
     GuestFault {
         addr: f.addr,
         len: f.len as usize,

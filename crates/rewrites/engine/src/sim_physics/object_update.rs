@@ -1,7 +1,7 @@
 //! Per-object pre/post-physics traversal. The current child is looked up
 //! again after its callback: the callback may have changed its sibling.
 use super::*;
-use crate::datum::layout;
+use guest_layout::datum::layout;
 
 const COMPONENTS: u32 = 0x0051_e9b8;
 const COMPONENT_BYTES: u32 = 0xa0;

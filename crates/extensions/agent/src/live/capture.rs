@@ -1,7 +1,7 @@
 //! Copy a tick out of guest memory. Only the owned wire records cross threads.
 
 use agent_proto::live::{Layers, Object, Player, World};
-use engine::{GuestMemory, MemFault};
+use guest_layout::{GuestMemory, MemFault};
 use sim_state::{ObjectId, ObjectView};
 
 /// Replace the requested layers in a recycled buffer. On a fault the

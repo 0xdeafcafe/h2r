@@ -34,7 +34,7 @@
 //! | `texture_unread`, `texture_unwritable` | guest memory does not read or write |
 
 use crate::texture_io;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// Why the cache's get cannot finish in Rust.
 pub type Cause = &'static str;
@@ -446,7 +446,7 @@ pub fn header(mem: &mut dyn GuestMemory, image: u32, lod: f32) -> Result<u32, Ca
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const IMAGE: u32 = 0x0050_0000;
     const ENTRIES: u32 = 0x0051_1000;

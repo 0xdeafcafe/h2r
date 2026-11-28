@@ -571,7 +571,7 @@ impl hooks::Feature for FrameGuard {
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         let state = Arc::clone(&self.0);
         b.raw().observe_before(
-            &engine::points::RENDER_FRAME,
+            &guest_layout::points::RENDER_FRAME,
             "frame guard: enter",
             move |o| {
                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -582,7 +582,7 @@ impl hooks::Feature for FrameGuard {
         );
         let state = Arc::clone(&self.0);
         b.raw().observe_after(
-            &engine::points::RENDER_FRAME,
+            &guest_layout::points::RENDER_FRAME,
             "frame guard: leave",
             move |o| {
                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -614,8 +614,8 @@ mod tests {
     /// A datum array header named `name` at `at` (signature `'d@t@'`).
     fn header(block: &mut [u8], at: usize, name: &str) {
         block[at..at + name.len()].copy_from_slice(name.as_bytes());
-        let sig = at + engine::datum::layout::SIGNATURE as usize;
-        block[sig..sig + 4].copy_from_slice(&engine::datum::SIGNATURE.to_le_bytes());
+        let sig = at + guest_layout::datum::layout::SIGNATURE as usize;
+        block[sig..sig + 4].copy_from_slice(&guest_layout::datum::SIGNATURE.to_le_bytes());
     }
 
     /// Four arena pages: `(head)` on page 0, `object` from page 1, `lights`

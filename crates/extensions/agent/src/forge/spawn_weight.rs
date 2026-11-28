@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use engine::{GuestMemory, MemFault};
+use guest_layout::{GuestMemory, MemFault};
 use forge_doc::SpawnWeight;
 use map::scenario_layout::{BlockKind, block};
 
@@ -56,7 +56,7 @@ pub fn bias(weight: SpawnWeight) -> f32 {
 /// The index of the starting location at guest address `location` in the
 /// loaded scenario's block, or none when it is not one of its rows.
 pub fn index_of(m: &dyn GuestMemory, location: u32) -> Result<Option<u32>, MemFault> {
-    let scenario = m.u32(engine::points::SCENARIO.base)?;
+    let scenario = m.u32(guest_layout::points::SCENARIO.base)?;
     if scenario == 0 {
         return Ok(None);
     }
@@ -86,7 +86,7 @@ pub fn bias_at(m: &dyn GuestMemory, location: u32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const SCNR: u32 = 0x0070_0000;
     const STARTS: u32 = 0x0071_0000;
@@ -95,7 +95,7 @@ mod tests {
     fn a_location_is_found_by_its_row_and_takes_its_weights_bias() {
         let def = block(BlockKind::StartingLocations);
         let mut g = FakeGuest::new();
-        g.put_u32(engine::points::SCENARIO.base, SCNR)
+        g.put_u32(guest_layout::points::SCENARIO.base, SCNR)
             .map(SCNR + def.offset, 8)
             .put_u32(SCNR + def.offset, 3)
             .put_u32(SCNR + def.offset + 4, STARTS);

@@ -19,8 +19,8 @@
 //! | the resource cache | `[0x4e649c]` (slots `[+0x64]+0x44`, 24 bytes, stamp `+0x14` from `+0x38`), requests `[0x4e648c]+0x44` (12 bytes: `+2` done, `+3` priority), phase `[0x4e64a0]`, filter `[0x4e64a4]`, structure misses `[0x4e64a8]` |
 
 use super::units::{DIALOGUE, DIALOGUE_ON, UNIT_TYPES, object_of_types};
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::{GLOBALS_TAG, TAG_ENTRIES};
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{GLOBALS_TAG, TAG_ENTRIES};
 use engine::sim_anim::facial::{self, Curve, FCW, MXCSR};
 use sim_core::det::{self, Fp, X87};
 use std::cmp::Ordering;

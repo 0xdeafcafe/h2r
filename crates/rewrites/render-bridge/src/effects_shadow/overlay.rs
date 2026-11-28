@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 pub struct Overlay<'a> {
     base: &'a dyn GuestMemory,
@@ -65,7 +65,7 @@ impl GuestMemory for Overlay<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn reads_see_the_models_writes_and_the_guest_is_untouched() {

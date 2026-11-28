@@ -12,8 +12,8 @@
 //! ([`sync_props`]: this console's own map and hopper statuses, so the
 //! start checks pass) and even teams ([`lobby_team`], [`rebalance`]).
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points;
 
 use crate::guest;
 
@@ -132,7 +132,7 @@ pub mod at {
     pub const CONFIG_SIZE: usize = 0x90;
     pub const CONFIG_TEAM: usize = 0x7c;
     // 0x65e37 passes 32 units to the name builder. The look starts at +0x40.
-    pub const CONFIG_NAME_UNITS: usize = engine::view::players::NAME_UNITS;
+    pub const CONFIG_NAME_UNITS: usize = guest_layout::view::players::NAME_UNITS;
     /// The retail profile appearance inside a player configuration (0x18fd94).
     pub const CONFIG_LOOK: usize = 0x40;
     /// The configuration's handicap: 0 none, 1 to 3 the shields scaled to
@@ -1123,7 +1123,7 @@ pub fn player_id(xuid: u64, mac: [u8; 6]) -> [u8; 12] {
 /// and the host's level, both read from the host's own player (`+0xd4` of
 /// the first local player). `None` with no such player.
 pub fn config(m: &dyn GuestMemory, name: &str, team: Option<u8>) -> R<Option<[u8; CONFIG_SIZE]>> {
-    let Some(array) = engine::view::players::array(m)? else {
+    let Some(array) = guest_layout::view::players::array(m)? else {
         return Ok(None);
     };
     for (_, p) in array.live(m, 16)? {
@@ -1139,7 +1139,7 @@ pub fn config(m: &dyn GuestMemory, name: &str, team: Option<u8>) -> R<Option<[u8
 /// The host's own player's team (its first local listed player's
 /// configuration), or `None` with no such player.
 pub fn host_team(m: &dyn GuestMemory) -> R<Option<u8>> {
-    let Some(array) = engine::view::players::array(m)? else {
+    let Some(array) = guest_layout::view::players::array(m)? else {
         return Ok(None);
     };
     for (_, p) in array.live(m, 16)? {
@@ -1390,11 +1390,11 @@ pub fn slot_of(m: &dyn GuestMemory, mac: [u8; 6]) -> R<Option<u32>> {
 
 /// Player `p`'s unit's facing and current weapon, if it has a unit.
 pub fn facing(m: &dyn GuestMemory, player_addr: u32) -> R<Option<([f32; 3], i8)>> {
-    let p = engine::view::players::Player::at(player_addr);
+    let p = guest_layout::view::players::Player::at(player_addr);
     let Some(unit) = p.unit(m)? else {
         return Ok(None);
     };
-    let Some((_, body)) = engine::view::objects::get(m, unit)? else {
+    let Some((_, body)) = guest_layout::view::objects::get(m, unit)? else {
         return Ok(None);
     };
     let aim = m.vec3(body.addr + guest::UNIT_AIM)?;

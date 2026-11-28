@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use hooks::{BuildError, Builder, Feature, Manifest};
 use scene_extract::GuestRead;
 pub use scene_extract::flares::Quad;
@@ -576,8 +576,8 @@ impl Feature for NativeFlareQuery {
         if !on(b.switches()) {
             return Ok(());
         }
-        b.raw().implement(&engine::points::VISIBILITY_WALK, "native_flare_query_walk", walk_call).context_only();
-        b.raw().implement(&engine::points::VISIBILITY_READ, "native_flare_query_read", read_call).context_only();
+        b.raw().implement(&guest_layout::points::VISIBILITY_WALK, "native_flare_query_walk", walk_call).context_only();
+        b.raw().implement(&guest_layout::points::VISIBILITY_READ, "native_flare_query_read", read_call).context_only();
         Ok(())
     }
 }
@@ -585,7 +585,7 @@ impl Feature for NativeFlareQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     /// Counts the test sets by hand.
     struct Fixed(Mutex<Option<Arc<[u32]>>>);

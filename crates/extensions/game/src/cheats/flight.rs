@@ -11,8 +11,8 @@
 //! [`WATCH_SECONDS`]: shielded from damage, and put back on the last floor
 //! the physics stood it on if it is stuck or falls far.
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::view::objects;
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::view::objects;
 
 use crate::skulls_custom::{
     BIPED_MODE, BODY_PARENT, BODY_VELOCITY, FLY_SPEED, LocalUnit, MODE_GROUND,

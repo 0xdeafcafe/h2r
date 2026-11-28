@@ -45,7 +45,7 @@ fn output(m: &dyn GuestMemory, cpu: &CpuAbi) -> Result<Output> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use engine::view_projection::guest as g;
 
     const CAMERA: u32 = 0x0010_0000;

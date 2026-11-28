@@ -26,7 +26,7 @@ use std::sync::{Arc, Mutex};
 
 use ::rules::ty::MAX_PLAYERS;
 use ::rules::vm::Vm;
-use engine::entry::Cx;
+use guest_layout::entry::Cx;
 
 use super::pick::{Ask, next_ask};
 

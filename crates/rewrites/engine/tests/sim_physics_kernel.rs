@@ -12,7 +12,7 @@
 //! oracle reads; without it the tests return.
 #![cfg(feature = "differential")]
 
-use engine::points;
+use guest_layout::points;
 use engine::sim_physics::{ORACLES, PORTS, Port, supported};
 use lifted::image::{Image, Rng};
 use runtime::{CpuAbi, Guest, abi, guest::Permissions};

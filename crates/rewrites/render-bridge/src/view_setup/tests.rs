@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
-use engine::memory::FlatMemory;
+use guest_layout::memory::FlatMemory;
 
 use super::*;
 use crate::native_targets::Bind;

@@ -16,7 +16,7 @@ use ::bots::brain::{Order, Vec3};
 use ::bots::objective::script::{Aim, ScriptGoal};
 use ::rules::caps::id;
 use ::rules::vm::{Arg, Call as VmCall};
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 use forge_doc::BlockKind;
 
 use crate::rules::census::Table;
@@ -166,9 +166,9 @@ mod tests {
     }
 
     /// A guest whose scenario holds one territory flag at `at`.
-    fn flag_map(at: Vec3) -> engine::testing::FakeGuest {
-        let mut m = engine::testing::FakeGuest::new();
-        m.put_u32(engine::points::SCENARIO.base, SCNR);
+    fn flag_map(at: Vec3) -> guest_layout::testing::FakeGuest {
+        let mut m = guest_layout::testing::FakeGuest::new();
+        m.put_u32(guest_layout::points::SCENARIO.base, SCNR);
         m.map(SCNR, 0x1000);
         m.put_u32(SCNR + engine::objectives::NETGAME_FLAGS, 1)
             .put_u32(SCNR + engine::objectives::NETGAME_FLAGS + 4, FLAGS_AT);
@@ -190,7 +190,7 @@ mod tests {
 
     #[test]
     fn follow_attack_and_free_need_only_the_roster() {
-        let m = engine::testing::FakeGuest::new();
+        let m = guest_layout::testing::FakeGuest::new();
         assert_eq!(
             plan(&m, None, &call("bot_follow", vec![Arg::Player(Some(1)), Arg::Player(Some(0))])),
             Some((1, Some(Order::Follow(0))))

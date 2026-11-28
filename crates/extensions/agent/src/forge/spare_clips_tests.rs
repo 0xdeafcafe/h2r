@@ -1,10 +1,10 @@
 //! Spare clips over a fake game: one spawner state, one weapon object and
 //! its definition. All values are invented.
 use super::*;
-use engine::datum::layout;
-use engine::points;
-use engine::tags;
-use engine::testing::FakeGuest;
+use guest_layout::datum::layout;
+use guest_layout::points;
+use guest_layout::tags;
+use guest_layout::testing::FakeGuest;
 
 const ENGINE: u32 = 0x0080_0000;
 const OBJECT_ARRAY: u32 = 0x0086_0000;

@@ -20,7 +20,7 @@
 
 use crate::function_eval;
 use crate::light_constants::{Error, Sse};
-use crate::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 /// The scenario pointer.
 pub const SCENARIO: u32 = 0x004e_0350;
@@ -220,7 +220,7 @@ pub fn drawn(mem: &dyn GuestMemory, mxcsr: u32, control: u16) -> Result<Vec<Draw
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const SCEN: u32 = 0x0060_0000;
     const FUNCS: u32 = 0x0061_0000;

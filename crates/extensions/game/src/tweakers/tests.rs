@@ -1,8 +1,8 @@
 use super::*;
-use engine::DatumHandle;
-use engine::datum::DatumArray;
-use engine::entry::{self, Regs};
-use engine::testing::FakeGuest;
+use guest_layout::DatumHandle;
+use guest_layout::datum::DatumArray;
+use guest_layout::entry::{self, Regs};
+use guest_layout::testing::FakeGuest;
 use variants::ext::Ext;
 use variants::record::GameType;
 

@@ -25,7 +25,7 @@
 //! The observer camera stays as the `oracle.observer_camera` test oracle
 //! (`crate::sim_physics::ORACLES`).
 
-use crate::points::{self, Point};
+use guest_layout::points::{self, Point};
 use crate::sim_native::{Decline, decline};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 

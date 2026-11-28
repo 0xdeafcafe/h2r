@@ -156,7 +156,7 @@ fn queue(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     fn part(depth: f32) -> DisplayTransparentPart {
         DisplayTransparentPart {

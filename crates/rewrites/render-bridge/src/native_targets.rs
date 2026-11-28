@@ -25,7 +25,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 use hooks::{BuildError, Builder, Feature, Manifest};
 
@@ -480,9 +480,9 @@ impl Feature for NativeTargets {
         if !on(b.switches()) {
             return Ok(());
         }
-        b.raw().implement(&engine::points::SCENE_TARGET_SELECT, "native_targets_select", select_call).context_only();
-        b.raw().implement(&engine::points::SCENE_CLEAR, "native_targets_clear", clear_call).context_only();
-        b.raw().implement(&engine::points::RENDER_FRAME_FINISH, "native_targets_finish", finish_call).context_only();
+        b.raw().implement(&guest_layout::points::SCENE_TARGET_SELECT, "native_targets_select", select_call).context_only();
+        b.raw().implement(&guest_layout::points::SCENE_CLEAR, "native_targets_clear", clear_call).context_only();
+        b.raw().implement(&guest_layout::points::RENDER_FRAME_FINISH, "native_targets_finish", finish_call).context_only();
         // The frame tail before it (docs/graphics/retire-d3d-display.md,
         // "The frame tail").
         crate::frame_tail::place(b);
@@ -496,7 +496,7 @@ impl Feature for NativeTargets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     /// The table's entries and the select's globals have the same role
     /// in every frame; nothing else has one.

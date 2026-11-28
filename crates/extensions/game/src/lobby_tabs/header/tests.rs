@@ -1,6 +1,6 @@
 use super::*;
 use crate::lobby_tabs::Reason;
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 
 const SCREEN: u32 = 0x1000;
 const AREA: u32 = 0x10000;
@@ -246,7 +246,7 @@ fn ui_lobby_tabs_answers_each_mode_with_its_state_and_reason() {
 /// there is no strip, and the header stays visible.
 #[test]
 fn the_header_names_the_mode_after_retails_panel_update() {
-    use engine::entry::{Regs, testing};
+    use guest_layout::entry::{Regs, testing};
     install();
     let mut g = lobby(0, true);
     // Split Screen: not networked, a custom game's session type.

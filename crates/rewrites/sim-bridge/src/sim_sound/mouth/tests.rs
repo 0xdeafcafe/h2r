@@ -1,6 +1,6 @@
 use super::*;
-use engine::points::OBJECTS;
-use engine::testing::FakeGuest;
+use guest_layout::points::OBJECTS;
+use guest_layout::testing::FakeGuest;
 
 const ARRAY: u32 = 0x0060_0000;
 const HEADERS: u32 = 0x0060_1000;

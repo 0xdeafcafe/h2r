@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use native_render::gpu::Image;
 use native_render::showcase;
 use native_render::showcase::{Axis, Orientation};

@@ -1,5 +1,5 @@
 use super::*;
-use crate::points;
+use guest_layout::points;
 use x87::abi as fp;
 
 const AFTER_SUBTREE: u32 = 0x001d_e7dd;

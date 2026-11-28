@@ -1,7 +1,7 @@
 //! Supply map-owned glyphs to the native measuring and atlas upload paths.
 
-use engine::memory::{GuestMemory, MemFault};
-use engine::points::{
+use guest_layout::memory::{GuestMemory, MemFault};
+use guest_layout::points::{
     HUD_GLYPH_CREATE, HUD_GLYPH_FIND, HUD_GLYPH_LOAD, HUD_GLYPH_PIXELS, HUD_GLYPH_PIXELS_READY,
 };
 use hooks::{Builder, Flow};
@@ -181,7 +181,7 @@ pub(super) fn register(b: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn map_sprite_supplies_native_glyph_metrics_and_pixels() {

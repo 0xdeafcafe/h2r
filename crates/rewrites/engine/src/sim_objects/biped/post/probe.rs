@@ -2,8 +2,8 @@
 
 use super::{NONE, above, and32, at, below_or_equal, call, cmp8, cmp32, flags8, inc32, store_ss, sx8, sx16};
 use super::{Cx, Next, Result, unowned};
-use crate::datum::layout::DATA;
-use crate::points;
+use guest_layout::datum::layout::DATA;
+use guest_layout::points;
 use crate::sim_objects::alu;
 use crate::sim_objects::biped::{fld_fistp, less};
 use crate::sim_objects::frame::{set_slot, slot};

@@ -477,7 +477,7 @@ pub(super) fn install(b: &mut Builder) -> Result<Queue, BuildError> {
 
 #[cfg(test)]
 mod tests {
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     use super::*;
 

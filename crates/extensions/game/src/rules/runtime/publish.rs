@@ -4,7 +4,7 @@
 //! Each is sent when it changes, or again on its repeat, and nothing is
 //! copied or encoded on a tick that leaves it as it was.
 
-use engine::GuestMemory;
+use guest_layout::GuestMemory;
 
 use super::{Runtime, Status};
 

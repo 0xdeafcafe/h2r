@@ -459,7 +459,7 @@ const FILTER_GROWTH: u32 = 0x0002_22af;
 /// The object filter `0x000222a0` requests full-target quads and the
 /// plain blur combiner (the blur's ninth and tenth arguments are zero).
 pub fn shadow_filter(
-    mem: &dyn engine::memory::GuestMemory,
+    mem: &dyn guest_layout::memory::GuestMemory,
     mxcsr: u32,
     x87_control: u16,
 ) -> Option<ShadowFilter> {
@@ -1106,9 +1106,9 @@ mod tests {
 
     #[test]
     fn the_object_filter_carries_its_quads_combiner_signs_and_final_copy() {
-        use engine::GuestMemory as _;
+        use guest_layout::GuestMemory as _;
         use engine::shadow_constants::global::{TARGET_STRIDE, TARGETS};
-        let mut m = engine::FlatMemory::new(0, 0x0060_0000);
+        let mut m = guest_layout::FlatMemory::new(0, 0x0060_0000);
         for (at, value) in [
             (engine::glow::constant::ONE, 1.0f32.to_bits()),
             (engine::glow::constant::Y_SCALE, 2.0f32.to_bits()),

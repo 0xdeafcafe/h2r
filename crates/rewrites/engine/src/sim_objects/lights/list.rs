@@ -54,7 +54,7 @@
 //! Then `16ba40(eax handle, edx array)` frees the light.
 
 use super::{DATA, ELEMENT_SIZE, LIGHT_LISTS, LIGHTS, STRIDE, at, flags_undefined};
-use crate::points;
+use guest_layout::points;
 use crate::sim_objects::{Cx, Next, Result, sse, unowned};
 use crate::sim_physics::{byte, pop, push};
 use runtime::{CpuAbi, Guest};

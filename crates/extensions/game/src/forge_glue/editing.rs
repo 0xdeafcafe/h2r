@@ -1724,7 +1724,7 @@ impl Editor {
         bsp: Option<usize>,
         ui_up: bool,
         game: Option<i32>,
-        memory: &dyn engine::GuestMemory,
+        memory: &dyn guest_layout::GuestMemory,
     ) {
         self.now = tick;
         self.retire_nav();
@@ -1864,7 +1864,7 @@ impl Editor {
     }
 
     /// The session's state for the input bridge and the screens.
-    fn publish(&self, memory: &dyn engine::GuestMemory) {
+    fn publish(&self, memory: &dyn guest_layout::GuestMemory) {
         controls::publish(controls::State {
             active: true,
             monitor: self.tool.monitor,

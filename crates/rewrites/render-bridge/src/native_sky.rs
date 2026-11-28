@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 pub use scene_extract::layout::sky::{Refusal, SkyItem};
 

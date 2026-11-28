@@ -29,7 +29,7 @@
 //! answers; `engine/tests/light_passes.rs` checks invented lights.
 
 use crate::light_constants::{Error, LightGlobals, Sse};
-use crate::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 /// `render_light_passes`: EAX the light datum, ECX the projection volume, stack
 /// `(datum, frame, shadow, weight)`, `ret 0x10`.

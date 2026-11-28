@@ -1,7 +1,7 @@
 //! Observer frame. Each callback can change a later user's mapping or the
 //! listener's cluster, so the loop reads these at their use sites.
 use crate::light_constants::Error;
-use crate::points;
+use guest_layout::points;
 use crate::sim_native::sub_flags;
 use crate::sim_physics::spatial::fp_error;
 use crate::sim_physics::{Result, byte, logic, pop, push};

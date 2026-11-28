@@ -1,7 +1,7 @@
 //! The announcer for our medals against a fake speaker and a synthetic
 //! guest: what is queued, in what order, and when it may start.
 
-use engine::memory::{FlatMemory, GuestMemory};
+use guest_layout::memory::{FlatMemory, GuestMemory};
 use hud_kit_core::views::superbounce::{MEDALS, Medal};
 
 use super::*;

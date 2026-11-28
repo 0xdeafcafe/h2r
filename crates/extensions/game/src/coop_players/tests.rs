@@ -1,7 +1,7 @@
 use super::*;
-use engine::entry::Regs;
-use engine::entry::testing::run;
-use engine::testing::FakeGuest;
+use guest_layout::entry::Regs;
+use guest_layout::entry::testing::run;
+use guest_layout::testing::FakeGuest;
 
 const PLAYERS_HDR: u32 = 0x0010_0000;
 const PLAYERS_DATA: u32 = 0x0011_0000;
@@ -939,7 +939,7 @@ fn check(
     g: FakeGuest,
     sq: save::Squad,
     answer: impl Fn(&[u32]) -> bool + Send + 'static,
-) -> (engine::entry::testing::Run, Vec<Seen>) {
+) -> (guest_layout::entry::testing::Run, Vec<Seen>) {
     let regs = Regs {
         esp: STACK,
         ..Regs::default()

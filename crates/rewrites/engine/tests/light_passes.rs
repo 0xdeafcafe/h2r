@@ -7,8 +7,8 @@ use engine::light_constants::{Error, FRAME_WORDS, LightGlobals};
 use engine::light_passes::{
     self as lp, DEFINITION_BIT_5, PassFlags, constant, diffuse, flag, global, implementation, pass_flags, specular,
 };
-use engine::memory::GuestMemory;
-use engine::testing::FakeGuest;
+use guest_layout::memory::GuestMemory;
+use guest_layout::testing::FakeGuest;
 
 const DEFINITION: u32 = 0x0300_0000;
 const OVERRIDE: u32 = 0x0301_0000;

@@ -13,11 +13,7 @@
 //! is refused by name; control flow, arithmetic, comparison, `set` of a
 //! global (in the snapshot) and reads of scenario globals run.
 use agent_proto::{RpcError, code};
-use engine::{
-    GuestMemory, MemFault,
-    datum::{DatumArray, layout},
-    points,
-};
+use guest_layout::{GuestMemory, MemFault, datum::{DatumArray, layout}, points};
 use hs::vm::{Cell, Engine, EngineCall, EngineError, HsType, Value, Vm, VmImage};
 use hs::{Catalog, Message, Naming, Options, Scenario};
 use serde_json::{Value as Json, json};
@@ -402,7 +398,7 @@ impl Engine for Frozen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use hs::fixture::{Builtin, Exe, TYPES, Tables};
 
     /// Invented types and builtins at the indices the compiler reads.

@@ -24,7 +24,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use engine::memory::{GuestMemory, MemFault};
+use guest_layout::memory::{GuestMemory, MemFault};
 
 use super::view_update::{self, PARTICLE, PARTICLES, SYSTEM, SYSTEMS};
 
@@ -321,7 +321,7 @@ mod tests {
     use super::super::view_update::tests::{PART_DATA, SYS_DATA, particle, system, world};
     use super::super::view_update::{FRAME, predict};
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const CW: u16 = 0x027f;
 

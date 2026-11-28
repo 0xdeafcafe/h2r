@@ -1,6 +1,6 @@
 //! `forge_map::rows` over invented guest memory: each kind's things, the
 //! prints, and the blocks that do not read.
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 use forge::BlockKind;
 use forge_doc::{F32, TagKey, Value};
 use map::scenario_layout as layout;

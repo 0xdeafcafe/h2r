@@ -4,12 +4,12 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::entry::{Cx, EntryFuture, GuestCall, Regs, Ret, testing};
+use guest_layout::entry::{Cx, EntryFuture, GuestCall, Regs, Ret, testing};
 use engine::light_constants::Fpu;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::render::light_gather::frame::{self, LightFrame, call, site, slot};
 use engine::render::light_gather::{History, HistoryRow, MAIN_VIS, Refusal, VisibleLight, Writes};
-use engine::testing::FakeGuest;
+use guest_layout::testing::FakeGuest;
 
 const ENTRY_ESP: u32 = 0x0010_0000;
 const S: u32 = ENTRY_ESP - frame::FRAME;
@@ -78,7 +78,7 @@ fn world(lights: &[Lit]) -> FakeGuest {
     g.put_u32(engine::render::light::ARRAY_POINTER, LIGHT_POOL);
     g.put_u32(LIGHT_POOL + 0x44, LIGHT_DATA);
     g.map(LIGHT_DATA, 0x110 * lights.len().max(1) as u32);
-    g.put_u32(engine::tags::TAG_ENTRIES_GLOBAL, TAG_TABLE);
+    g.put_u32(guest_layout::tags::TAG_ENTRIES_GLOBAL, TAG_TABLE);
     g.put_u32(OBJECTS, OBJECT_POOL)
         .put_u32(OBJECT_POOL + 0x44, OBJECT_DATA);
     g.put_u32(OBJECT_DATA + (OWNER & 0xffff) * 12 + 8, OWNER_BODY);
@@ -140,7 +140,7 @@ fn run_frame(g: FakeGuest) -> Ran {
         Box::pin(async move {
             let (ret, light_frame) = frame::run(&cx, plan).await?;
             *kept.lock().unwrap() = Some(light_frame);
-            Ok::<_, engine::entry::EntryError>(ret)
+            Ok::<_, guest_layout::entry::EntryError>(ret)
         })
     };
     let mut sites = Vec::new();
@@ -296,7 +296,7 @@ fn each_light_is_handed_over_just_before_its_passes_with_their_call() {
         Box::pin(async move {
             let mut hand = |g: &frame::Gathered| kept.lock().unwrap().push(Event::Handed(g.passes));
             let (ret, _) = frame::run_with(&cx, plan, &mut hand).await?;
-            Ok::<_, engine::entry::EntryError>(ret)
+            Ok::<_, guest_layout::entry::EntryError>(ret)
         })
     };
     let stubbed = Arc::clone(&events);
@@ -506,7 +506,7 @@ mod items_body {
         g.put_u32(PLANES + 0x2c, 0x0001_e8c0)
             .put_u32(PLANES + 0x30, 0x0001_e8f0);
         // The shader: classification 5, one level.
-        g.put_u32(engine::tags::TAG_ENTRIES_GLOBAL, TABLE);
+        g.put_u32(guest_layout::tags::TAG_ENTRIES_GLOBAL, TABLE);
         g.put_u32(TABLE + (SHADER & 0xffff) * 16, u32::from_be_bytes(*b"shad"));
         g.put_u32(TABLE + (SHADER & 0xffff) * 16 + 8, SHADER_DATA);
         g.put_u16(SHADER_DATA + 0x3c, 5)
@@ -551,7 +551,7 @@ mod items_body {
             Box::pin(async move {
                 let (ret, light_items) = items::run(&cx, plan).await?;
                 *kept.lock().unwrap() = Some(light_items);
-                Ok::<_, engine::entry::EntryError>(ret)
+                Ok::<_, guest_layout::entry::EntryError>(ret)
             })
         };
         let regs = Regs {
@@ -863,7 +863,7 @@ mod passes_body {
             .put_u32(E + 8, POSITION)
             .put_u32(E + 0xc, 0x0000_ab00 | u32::from(shadow))
             .put_u32(E + 0x10, 0.5f32.to_bits());
-        g.put_u32(engine::tags::TAG_ENTRIES_GLOBAL, TABLE)
+        g.put_u32(guest_layout::tags::TAG_ENTRIES_GLOBAL, TABLE)
             .put_u32(TABLE + (DEFINITION & 0xffff) * 16 + 8, DATA);
         g.put_u8(DATA, 0)
             .put_u16(DATA + 4, 1)
@@ -901,7 +901,7 @@ mod passes_body {
             Box::pin(async move {
                 let (ret, light) = passes::run(&cx, plan).await?;
                 *kept.lock().unwrap() = Some(light);
-                Ok::<_, engine::entry::EntryError>(ret)
+                Ok::<_, guest_layout::entry::EntryError>(ret)
             })
         };
         let mut sites = Vec::new();
@@ -1156,7 +1156,7 @@ mod first_person_body {
         g.put_u32(LIGHT_POOL + 0x44, LIGHT_DATA);
         g.map(LIGHT_DATA, 0x400);
         g.put_u32(record(2) + 4, DEFINITION);
-        g.put_u32(engine::tags::TAG_ENTRIES_GLOBAL, TAG_TABLE)
+        g.put_u32(guest_layout::tags::TAG_ENTRIES_GLOBAL, TAG_TABLE)
             .put_u32(TAG_TABLE + (DEFINITION & 0xffff) * 16 + 8, DATA);
         g.put_u32(0x0004_0566, WEIGHT).put_u32(0x0004_056d, SCALE);
         g.put_f32(0x0048_5950, 0.5);
@@ -1195,7 +1195,7 @@ mod first_person_body {
             Box::pin(async move {
                 let (ret, lights) = first_person::run(&cx, plan).await?;
                 *kept.lock().unwrap() = Some(lights);
-                Ok::<_, engine::entry::EntryError>(ret)
+                Ok::<_, guest_layout::entry::EntryError>(ret)
             })
         };
         let mut sites = Vec::new();
@@ -1495,7 +1495,7 @@ mod first_person_body {
             Box::pin(async move {
                 let (ret, records) = first_person::run_records(&cx, plan).await?;
                 *kept.lock().unwrap() = Some(records);
-                Ok::<_, engine::entry::EntryError>(ret)
+                Ok::<_, guest_layout::entry::EntryError>(ret)
             })
         };
         let regs = Regs {
@@ -1557,7 +1557,7 @@ mod first_person_body {
         let f = move |cx: Cx| -> EntryFuture {
             let plan = plan.clone();
             Box::pin(async move {
-                Ok::<_, engine::entry::EntryError>(first_person::run_records(&cx, plan).await?.0)
+                Ok::<_, guest_layout::entry::EntryError>(first_person::run_records(&cx, plan).await?.0)
             })
         };
         let regs = Regs {

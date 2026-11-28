@@ -309,7 +309,7 @@ pub(super) fn install(b: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
 
     const FRAME: Frame = Frame {
         output: 0x8000,

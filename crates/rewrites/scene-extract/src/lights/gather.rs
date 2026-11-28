@@ -38,7 +38,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::render::light::{self, layout};
 use engine::render::light_gather::visible;
 
@@ -235,7 +235,7 @@ fn player_only(m: &dyn GuestMemory, array: u32, end: u32, data: u32) -> Option<V
         return Some(out);
     }
     let used = m.u32(array.checked_add(0x48)?).ok().filter(|&p| p != 0)?;
-    let tags = m.u32(engine::tags::TAG_ENTRIES_GLOBAL).ok().filter(|&p| p != 0)?;
+    let tags = m.u32(guest_layout::tags::TAG_ENTRIES_GLOBAL).ok().filter(|&p| p != 0)?;
     for index in 0..end {
         if out.len() == PLAYER_ONLY_LIMIT {
             break;
