@@ -98,6 +98,13 @@ pub fn refusal_counters() -> Vec<(String, u64)> {
     counts.iter().map(|(cause, &n)| (format!("native_ui_overlay_hud_rust_refused_{cause}"), n)).collect()
 }
 
+#[derive(Default)]
+struct State {
+    generation: Option<u64>,
+    library: Option<ShaderLibrary>,
+    shaders: HashMap<u32, Result<Arc<HudShader>, HudRefusal>>,
+}
+
 static STATE: LazyLock<Mutex<State>> = LazyLock::new(Mutex::default);
 
 fn state() -> std::sync::MutexGuard<'static, State> {
