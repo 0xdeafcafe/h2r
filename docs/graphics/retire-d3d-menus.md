@@ -1,7 +1,7 @@
 # Retiring the guest D3D path: the menus (R7)
 
-Status: Partly built. The menu frame's widgets, text (substituted in Rust, button glyphs included), fade, bars, loading screen and blur draw from the scene's overlay where they read; a string token whose handler is not ported panics (`ui text: token <name>`); every UI draw that does not is counted kept by kind and cause. Text and draw classes with a named gap (`draw_custom`, `draw_runtime_class` for a class the host does not place), and active model widgets (`model_view`), keep guest packets.
-Code: `crates/rewrites/render-bridge/src/native_hud.rs`, `native_hud/ui_overlay.rs`, `native_hud/ui.rs`, `native_hud/kept.rs` (`UiKind`, `begin_ui`, `ui`), `native_hud/ui_overlay/text.rs` (`substitute`), `ui_overlay::Gap`, `crates/extensions/game/src/hud_overlay.rs` (`Widget::plan`, `corner_order`), `native_hud_glue.rs` (`Glue::offer`). Tests: `render_bridge::native_hud::kept::tests`, `ui_overlay::tests`, `ui_overlay::bitmaps::tests::a_meter_reads_as_one_rectangle_of_the_meter_colour`, `ui_overlay::bitmaps::tests::a_scrolling_bitmap_reads_as_its_four_wrapped_quads`, `ui_overlay::bitmaps::tests::an_image_set_from_elsewhere_is_named_by_its_bitmap_tag`, `game::hud_overlay::tests`, `scene_extract::ui::tests::the_frame_draws_in_the_guests_order` (the UI order test), `scene_extract::ui::tests::a_labels_button_glyph_is_a_character_to_fonts_that_lay_buttons_out`, `ui_overlay::text::tests`, `ui_overlay::text::tokens::tests`, `ui_overlay::list::tests::a_runtime_list_class_places_its_arrows_by_the_hosts_offsets`, `game::ui_kit::preview::text_layout::tests`, `game::hud_overlay::menu_text::tests`, `ui_overlay::tests::a_widget_gap_is_kept_under_its_own_name`.
+Status: Partly built. The menu frame's widgets, text (substituted in Rust, button glyphs included), fade, bars, loading screen and blur draw from the scene's overlay where they read; every UI draw that does not is counted kept by kind and cause. Text and draw classes with a named gap keep guest packets. Model widgets are the overlay's, with no guest draw ([native-menus-overlay.md](native-menus-overlay.md#model-views)).
+Code: `crates/rewrites/render-bridge/src/native_hud.rs`, `native_hud/ui_overlay.rs`, `native_hud/ui.rs`, `native_hud/kept.rs` (`UiKind`, `begin_ui`, `ui`), `native_hud/ui_overlay/text.rs` (`substitute`), `ui_overlay::Gap`, `crates/extensions/game/src/hud_overlay.rs` (`Widget::plan`, `corner_order`), `native_hud_glue.rs` (`Glue::offer`). Tests: `render_bridge::native_hud::kept::tests`, `ui_overlay::tests`, `ui_overlay::bitmaps::tests::a_meter_reads_as_one_rectangle_of_the_meter_colour`, `ui_overlay::bitmaps::tests::a_scrolling_bitmap_reads_as_its_four_wrapped_quads`, `ui_overlay::bitmaps::tests::an_image_set_from_elsewhere_is_named_by_its_bitmap_tag`, `game::hud_overlay::tests`, `scene_extract::ui::tests::the_frame_draws_in_the_guests_order` (the UI order test), `scene_extract::ui::tests::a_labels_button_glyph_is_a_character_to_fonts_that_lay_buttons_out`, `ui_overlay::text::tests`, `ui_overlay::tests::a_widget_gap_is_kept_under_its_own_name`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Slice R7 of [retire-d3d.md](retire-d3d.md#slices). The menus share the overlay stage (`frame_scene::Overlay`, `FrameScene::overlay`) with the HUD of slice R6; R7 adds no stage of its own. The rule: a UI draw draws from the overlay or is counted `scene_kept_ui_<kind>_<cause>` at the first producer that refuses it. Nothing is dropped.
@@ -11,9 +11,7 @@ Slice R7 of [retire-d3d.md](retire-d3d.md#slices). The menus share the overlay s
 | Draw | Taken at | Page |
 |---|---|---|
 | Containers, plain bitmap widgets, supported text, lists and buttons | the sorted list `0x002353a5`, one pass per run | [native-menus-overlay.md](native-menus-overlay.md#the-menus-on-the-overlay) |
-| Text with named sequences, button glyphs and the button and stick tokens: the substitution pass `0x0022d2ee` in Rust | the sorted list, as text | [native-menus-overlay.md](native-menus-overlay.md#what-the-list-reads) |
-| Text with tab stops, alignment units or a projection scale: the line renderer `0x0013f0e0` in Rust | the sorted list, as text | [native-menus-overlay.md](native-menus-overlay.md#what-the-list-reads) |
-| Scroll arrows of our list classes, at their `ArrowPlace` | the sorted list, as a list | [native-menus-overlay.md](native-menus-overlay.md#what-the-list-reads) |
+| Text with named sequences and button glyphs: the substitution pass `0x0022d2ee` in Rust | the sorted list, as text | [native-menus-overlay.md](native-menus-overlay.md#what-the-list-reads) |
 | Meters: one rectangle of the UI globals' meter colour | the sorted list, as a bitmap widget | [native-menus-overlay.md](native-menus-overlay.md#meters) |
 | Scrolling bitmaps: up to four wrapped quads | the sorted list, as a bitmap widget | [native-menus-overlay.md](native-menus-overlay.md#scrolling-bitmaps) |
 | Bitmaps whose image is set at `+0x8c`: named by the bitmap tag that holds it | the sorted list, as a bitmap widget | [native-menus-overlay.md](native-menus-overlay.md#bitmap-widgets) |
@@ -22,7 +20,7 @@ Slice R7 of [retire-d3d.md](retire-d3d.md#slices). The menus share the overlay s
 | Bars: fans, quads, polygons and strips | the uploader `0x0004b252` from `0x00052ce7` | this page, "Bars" |
 | Loading background, sweep and spinner | `0x0002ae60`, `0x0002a1f4` | [native-ui-producers.md](native-ui-producers.md#native-ui) |
 | Blur under a dialog | `0x00235756` | [native-menus-overlay.md](native-menus-overlay.md#the-blur-under-a-dialog) |
-| Idle model widgets | the sorted call: the draw is skipped, nothing to draw | [native-ui-producers.md](native-ui-producers.md#native-ui) |
+| Model widgets | the sorted call: the draw is skipped; an active one is a `ModelView` item | [native-menus-overlay.md](native-menus-overlay.md#model-views) |
 
 The menu's 3D view (the city flyover, most of the menu frame's draws) is a game view: its layers draw through the world, object and late stages of slices R1 and R5. The UI scope (`Host::enter_ui`) drains the device's admission boundary first, so the view's work is the scene's and the menu's draws follow it.
 
@@ -45,11 +43,10 @@ Producers that refuse before any offer count their own (`kept::ui` for the `Ui` 
 
 | Kind | Draw | Causes |
 |---|---|---|
-| `widget` | a drawn widget of a sorted list, once per widget whatever it draws | `bitmap_state`, `unreadable`, `unlisted`, `pass` (per widget of a run not placed); a text, class or model gap by its own name: `text_*`, `list_*`, `button_*`, `art_*`, `draw_class`, `draw_runtime_class`, `draw_custom`, `model_view`, `model_*` ([native-menus-overlay.md](native-menus-overlay.md#what-stays-with-the-guest)) |
+| `widget` | a drawn widget of a sorted list, once per widget whatever it draws | `bitmap_state`, `unreadable`, `unlisted`, `pass` (per widget of a run not placed); a text, class or model gap by its own name: `text_*`, `list_*`, `button_*`, `art_*`, `draw_class`, `draw_runtime_class`, `draw_custom` ([native-menus-overlay.md](native-menus-overlay.md#what-stays-with-the-guest)) |
 | `list` | a whole sorted list | `frame` (viewport not the full canvas, or rounding not to nearest), `mismatched`, `pass` (the UI scope's order did not hold) |
 | `fade`, `bar`, `loading`, `quad` | a screen draw (`quad`: a generic widget fan or screen quad) | the capture's: `target`, `clip_rects`, `depth`, `fill`, `query`, `colour_write`, `shader`, `combiner`, `sampler`, `texture`, `vertices`, `strip_shape`, `primitive`, `culled`, `clip`, `overlay`, `device`; the producer's: `order`, `push`, `scope` (no overlay scope names it), `reservation`; `packet` |
 | `menu_shader` | a menu shader bitmap's quad | as `fade` |
-| `model` | an active model widget's material group | `entry`, `camera`, `caller`, `geometry`, `range_limit`, `texture_commit`, `reservation`, `builder_draw`, `packet` |
 | `outline` | a widget outline | `entry`, `inputs`, `reservation`, `packet` |
 | `blur` | a blur under a dialog | `replayed`, `pass`, `arguments`, `steps`, `combiner`, `targets` |
 
@@ -69,7 +66,7 @@ At each sorted list the guest's widgets are read and listed again every frame (`
 - Only `widget` and `list` causes are per sorted list; the others are per draw.
 - The cause is the first refusal on the path. A draw the packet path records after an overlay refusal counts once, as `packet`.
 - A UI item's guest draws are not the HUD's `untraced` ones: a kept menu draw owes the HUD no draw.
-- A widget gap counts its draw's `Ui` counter (`native_ui_overlay_menu_refused_text`, `_draw`, `_model`) and its own cause, never the draw's bare name too.
+- A widget gap counts its draw's `Ui` counter (`native_ui_overlay_menu_refused_text`, `_draw`) and its own cause, never the draw's bare name too.
 
 ## Not verified
 

@@ -13,7 +13,7 @@
 //! The menus' draws (slice R7, docs/graphics/retire-d3d-menus.md, "What is
 //! kept") count the same way under `scene_kept_ui_<kind>_<cause>`
 //! ([`UiKind`]): a screen draw is offered with [`begin_ui`], a menu
-//! widget, list, model, outline or blur the game keeps is counted where
+//! widget, list, outline or blur the game keeps is counted where
 //! its producer refuses it ([`ui`], [`count`]). A UI item's guest draws
 //! are not `untraced`: that is the HUD's.
 //!
@@ -112,8 +112,6 @@ pub enum UiKind {
     Quad,
     /// A menu shader bitmap's quad (`0x002b12ae`).
     MenuShader,
-    /// An active model widget's material group.
-    Model,
     /// A widget outline (`0x0001ed98`).
     Outline,
     /// The blur under a dialog (`0x00235756`).
@@ -121,7 +119,7 @@ pub enum UiKind {
 }
 
 impl UiKind {
-    pub const ALL: [UiKind; 10] = [
+    pub const ALL: [UiKind; 9] = [
         UiKind::Widget,
         UiKind::List,
         UiKind::Fade,
@@ -129,7 +127,6 @@ impl UiKind {
         UiKind::Loading,
         UiKind::Quad,
         UiKind::MenuShader,
-        UiKind::Model,
         UiKind::Outline,
         UiKind::Blur,
     ];
@@ -144,7 +141,6 @@ impl UiKind {
             UiKind::Loading => "loading",
             UiKind::Quad => "quad",
             UiKind::MenuShader => "menu_shader",
-            UiKind::Model => "model",
             UiKind::Outline => "outline",
             UiKind::Blur => "blur",
         }
@@ -398,21 +394,12 @@ pub fn count_n(kind: impl Into<Kind>, cause: &'static str, n: u64) {
 
 /// The kept menu-frame draw a count of `counter` is, as its kind and
 /// cause, when it is one: a menu widget or list the overlay does not
-/// draw, a model widget's or outline's draw (`packet` when the native UI
+/// draw, an outline's draw (`packet` when the native UI
 /// packet path records it), a blur the game draws. Counters of draws the
 /// overlay took, and of visits, are none.
 pub fn ui_kept(counter: Ui) -> Option<(UiKind, &'static str)> {
-    use UiKind::{Blur, List, Model, Outline, Widget};
+    use UiKind::{Blur, List, Outline, Widget};
     Some(match counter {
-        Ui::ModelGuestBuilderDraw => (Model, "builder_draw"),
-        Ui::ModelNativeGroup => (Model, "packet"),
-        Ui::ModelEntry => (Model, "entry"),
-        Ui::ModelCamera => (Model, "camera"),
-        Ui::ModelCaller => (Model, "caller"),
-        Ui::ModelGeometry => (Model, "geometry"),
-        Ui::ModelRangeLimit => (Model, "range_limit"),
-        Ui::ModelTextureCommit => (Model, "texture_commit"),
-        Ui::ModelReservation => (Model, "reservation"),
         Ui::OutlineNative => (Outline, "packet"),
         Ui::OutlineEntry => (Outline, "entry"),
         Ui::OutlineInputs => (Outline, "inputs"),

@@ -272,8 +272,8 @@ value picker"). Not built: the row joins the Forge menu with the page
   the look's colours, tint and light. No saved look, the marker, a model
   or variant the catalogue lacks, or a camera with no right axis adds
   nothing, so the page is retail's. `forge_glue::appearance_body` gives the
-  draw. The page's model widget is the game's: when it reads its view the
-  native path calls `Host::model_view` (`render_bridge::native_hud::model`)
+  draw. The page's model widget is the overlay's: at its item call the
+  native path reads its view and calls `Host::model_view` (`native_hud::ui`)
   with the widget's bounds and its camera and objects, and
   `monitor_model::gpu::appearance_view` queues a picture of the monitor
   (the Skulls page's showcase pass, `native_render::showcase_gpu`) in the

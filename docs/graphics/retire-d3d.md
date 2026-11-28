@@ -376,7 +376,7 @@ A `Blur` item blurs what the items before it drew, inside its clip: the menus' b
 
 Over a target it cannot copy or sample, every blur is dropped and counted (`refused_blur`). In the game the blur under a dialog is drawn this way in place of the Kawase blur's quads ([native-post-hud.md](native-post-hud.md#the-blur-under-a-dialog)). A `ModelView` item is a model widget's camera and objects with its viewport as the clip.
 
-The plan keeps it between the batches with its render camera and scissor; no stage draws one yet, so each is counted (`refused_model_view`), and one with no camera or scissor is counted `refused_model_view_camera` ([native-menus-overlay.md](native-menus-overlay.md#model-views)).
+The plan keeps it between the batches with its render camera and scissor, and `OverlayGpu` draws its objects in a pass of its own over the overlay's depth target ([native-menus-overlay.md](native-menus-overlay.md#model-views)).
 
 The HUD editor and HUD kit preview use `hud_edit::overlay::draw_list`. In the game, each bitmap or glyph is captured at its draw callback with the actual corners, inputs, bound image and evaluated shader constants. The guest still selects the visible widgets and places each shield layer and each glyph.
 

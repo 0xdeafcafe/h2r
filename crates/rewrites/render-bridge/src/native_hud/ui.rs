@@ -16,7 +16,6 @@ use super::{HudVertices, host};
 pub enum UiScope {
     Layers,
     Widget,
-    Model,
     Hud,
     Loading,
     Overlay,
@@ -65,7 +64,7 @@ fn widget_in_order(
 
 fn enter(
     c: &mut Call<'_>,
-    mut scope: UiScope,
+    scope: UiScope,
     finish: &Point,
     alternate: Option<&Point>,
 ) -> Option<TransferAbi> {
@@ -87,6 +86,9 @@ fn enter(
         }
         // The virtual call consumes its already-pushed argument.
         let stack = cpu.esp.checked_add(4)?;
+        if draw == Some(MODEL_WIDGET_DRAW) {
+            model_view(&mut *mem, c.cpu.ecx, c.cpu.esp);
+        }
         // A widget the overlay draws (`super::ui_overlay`) is left out.
         if draw.is_some() && let Some(transfer) = super::menu_item(c, &mut *mem, stack) {
             return Some(transfer);
@@ -94,12 +96,8 @@ fn enter(
         if draw.is_some() && let Some(transfer) = replaced(c, &mut *mem, stack) {
             return Some(transfer);
         }
-        if eligible && draw == Some(MODEL_WIDGET_DRAW) {
-            if let Some(transfer) = super::model::try_idle(c, &*mem, stack) {
-                return Some(transfer);
-            }
-            scope = UiScope::Model;
-            super::model::begin(c, &*mem, stack);
+        if draw == Some(MODEL_WIDGET_DRAW) {
+            unimplemented!("ui model: a model widget the overlay did not take (widget {:#x})", c.cpu.ecx);
         }
         (stack, eligible)
     } else {
@@ -112,6 +110,22 @@ fn enter(
         host.enter_ui(&mut *mem, scope, stack, eligible);
     }
     None
+}
+
+/// A model widget's view, read at its item call against the call's
+/// argument (the parent view at `[esp]`), handed to the host
+/// ([`super::Host::model_view`]).
+fn model_view(mem: &mut dyn GuestMemory, widget: u32, esp: u32) {
+    let Some(host) = host() else { return };
+    let Ok(parent) = mem.u32(esp) else {
+        unimplemented!("ui model: the item call's argument does not read");
+    };
+    let model = match super::ui_overlay::model::view(&super::ui_overlay::Ro(&*mem), widget, parent) {
+        Ok(Some(model)) => model,
+        Ok(None) => return,
+        Err(why) => unimplemented!("ui model: the view does not read ({why:?})"),
+    };
+    host.model_view(mem, model.viewport, &model.view);
 }
 
 /// A widget the host draws itself ([`super::Host::replace_widget`]): the
@@ -129,10 +143,7 @@ fn replaced(c: &mut Call<'_>, mem: &mut dyn GuestMemory, stack: u32) -> Option<T
     Some(TransferAbi::resume(ITEM_CONTINUATION))
 }
 
-fn leave(c: &mut Call<'_>, mut scope: UiScope) {
-    if scope == UiScope::Widget && super::model::end(c) {
-        scope = UiScope::Model;
-    }
+fn leave(c: &mut Call<'_>, scope: UiScope) {
     if scope == UiScope::Hud {
         TEXT_FRAME.set(None);
         super::kept::set_in_hud(false);
@@ -368,7 +379,6 @@ fn tail_caller(mem: &dyn GuestMemory, stack: u32, caller: u32) -> bool {
 
 pub(super) fn place(b: &mut Builder<'_>) {
     super::backdrop::place(b);
-    super::model::place(b);
     super::outline::place(b);
     for (start, end, caller) in [
         (&TAIL_COPY, &TAIL_COPY_END, TAIL_COPY_CALLER),

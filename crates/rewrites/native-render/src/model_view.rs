@@ -130,7 +130,7 @@ mod tests {
     use frame_scene::OverlayCamera;
     use scene_extract::testing::Mem;
 
-    /// The widget of `render_bridge::native_hud::model`'s tests: its camera
+    /// The widget of `ui_overlay::model`'s tests: its camera
     /// call's arguments, left, top, right, bottom `310, 228, 330, 252`.
     fn widget() -> (OverlayModelView, ClipRect) {
         let view = OverlayModelView {
