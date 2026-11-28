@@ -165,8 +165,6 @@ pub mod native_decal_decorators_glue;
 #[cfg(feature = "gpu")]
 pub mod native_decals_glue;
 #[cfg(feature = "gpu")]
-pub mod native_weather_glue;
-#[cfg(feature = "gpu")]
 pub mod native_decorators_glue;
 #[cfg(feature = "gpu")]
 pub mod native_sky_glue;
@@ -182,8 +180,6 @@ pub mod native_gels_glue;
 pub mod native_gels_scene;
 #[cfg(feature = "gpu")]
 pub mod native_layers_glue;
-#[cfg(feature = "gpu")]
-pub mod native_gels_replace;
 #[cfg(feature = "gpu")]
 pub mod native_hud_glue;
 #[cfg(feature = "gpu")]

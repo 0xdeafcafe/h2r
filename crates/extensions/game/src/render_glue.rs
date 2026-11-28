@@ -87,7 +87,6 @@ pub fn install_game(
         crate::native_objects_glue::install();
         crate::native_decals_glue::install();
         crate::native_decal_decorators_glue::install();
-        crate::native_weather_glue::install();
         crate::native_particles_glue::install();
         crate::native_first_person_glue::install();
         crate::native_world_layers_glue::install(rt);
@@ -97,6 +96,7 @@ pub fn install_game(
         crate::native_flare_draw_glue::install();
         crate::native_fog_quad_glue::install();
         crate::native_fog_fans_glue::install();
+        crate::native_cinematic_glue::install();
     }
     Ok(Installed {
         vblank,
@@ -129,7 +129,8 @@ pub fn capture(size: (u32, u32)) -> Option<native_render::gpu::Image> {
 /// pushed, goes to the owner.
 #[cfg(feature = "gpu")]
 fn sealed(_: u64, scene: Arc<frame_scene::FrameScene>) {
-    let present = gfx::present_camera::Present::Guest { image: gfx::present_camera::guest_image(), reference: false };
+    let image = crate::world_lines::take_mark_image().map(Arc::new);
+    let present = gfx::present_camera::Present::Guest { image, reference: false };
     let frame = native_render::frame_builder().seal(scene, present);
     if let Some(frames) = FRAMES.get() {
         let _ = frames.publish(frame);
@@ -159,8 +160,9 @@ pub fn describe(i: &Installed) -> String {
     )
 }
 
-/// The UI fit and projection factors the retail UI callbacks set
-/// (`crate::render_aspect`), for the native UI items to read.
+/// Where the retail UI callbacks (`crate::render_aspect`) put the layout:
+/// the fit to `crate::hud_overlay::set_ui_fit`, the projection factors
+/// here.
 #[cfg(feature = "gpu")]
 pub struct UiLayout;
 
@@ -168,15 +170,14 @@ pub struct UiLayout;
 #[cfg(feature = "gpu")]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UiState {
-    pub fit: Option<gfx::external::UiFit>,
     pub projection_factor: f32,
     pub camera_projection_factor: f32,
 }
 
 #[cfg(feature = "gpu")]
-static UI: Mutex<UiState> = Mutex::new(UiState { fit: None, projection_factor: 1.0, camera_projection_factor: 1.0 });
+static UI: Mutex<UiState> = Mutex::new(UiState { projection_factor: 1.0, camera_projection_factor: 1.0 });
 
-/// The UI layout the retail callbacks last set.
+/// The projection factors the retail callbacks last set.
 #[cfg(feature = "gpu")]
 pub fn ui_state() -> UiState {
     *UI.lock().unwrap_or_else(|e| e.into_inner())
@@ -191,7 +192,7 @@ impl crate::render_aspect::UiLayoutSink for UiLayout {
         UI.lock().unwrap_or_else(|e| e.into_inner()).camera_projection_factor = factor;
     }
     fn set_fit(&self, _: &mut runtime::Guest, fit: Option<gfx::external::UiFit>) {
-        UI.lock().unwrap_or_else(|e| e.into_inner()).fit = fit;
+        crate::hud_overlay::set_ui_fit(fit);
     }
 }
 

@@ -1259,7 +1259,11 @@ fn run_configured(
             && (editor_link.is_some() || !sources.is_empty())
         {
             let _ = device;
-            let observer = world_lines::present_observer(editor_link.clone(), sources);
+            let observer = world_lines::present_observer(
+                editor_link.clone(),
+                sources,
+                Arc::new(|| render_glue::ui_state().projection_factor),
+            );
             (Some(observer), None)
         } else {
             (None, Some("no world-line capture source"))
@@ -1414,10 +1418,6 @@ fn run_configured(
         // render.markers: the Forge game type markers the last present drew
         // (forge_glue/markers_world.rs).
         forge_glue::markers_world::add_method(&a.agent);
-        // render.particles.refusals: the native particle path's geometry
-        // refusals and a sample draw for each (native_particles_admission.rs).
-        #[cfg(feature = "gpu")]
-        game::native_particles_admission::add_refusals_method(&a.agent);
         // sim.give and sim.spawn find tags as edit.* does (agent_glue.rs).
         if let Some(sim) = &a.sim {
             sim.set_tags(Box::new(hot_glue::map_tags(&loaded.runtime, maps())));
