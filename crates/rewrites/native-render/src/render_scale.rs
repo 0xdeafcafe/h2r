@@ -3,6 +3,9 @@
 
 pub use gfx::renderer::RenderScale;
 
+/// The shadow maps' factor at a render scale ([`crate::lighting`]).
+pub use crate::lighting::shadow_scale;
+
 /// The largest whole render scale: 6x of 640x480 is 3840x2880.
 pub const MAX_SCALE: u32 = 6;
 
