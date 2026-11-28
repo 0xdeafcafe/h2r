@@ -1,5 +1,7 @@
 //! Every write a tick can make, by where it lands: a static pass over the
-//! lifted IR of a [`Closure`] (the tick's, or the whole image's).
+//! lifted IR of a [`Closure`] (the tick's, or the whole image's). The same
+//! walk classifies every load ([`Census::loads`]); [`super::readers`]
+//! matches them to named blocks of memory.
 //!
 //! The sim tier's memory contract (one contiguous mapping, no dirty
 //! marking) holds only if the tick's writes stay in memory the tier owns.
@@ -69,10 +71,21 @@ enum Abs {
     Under(Root),
 }
 
+/// Two global addresses this close join to an index off the lower: a
+/// pointer walking an array (`mov edi, base` then `add edi, 0x20` round a
+/// loop).
+const ARRAY_SPAN: u32 = 0x1_0000;
+
+fn global(c: u32) -> bool {
+    c >= 0x1_0000
+}
+
 fn join(a: Abs, b: Abs) -> Abs {
     use Abs::*;
     match (a, b) {
         _ if a == b => a,
+        (Const(x), Const(y)) if global(x) && global(y) && x.abs_diff(y) <= ARRAY_SPAN => Near(x.min(y)),
+        (Near(x), Const(y)) | (Const(y), Near(x)) if global(y) && y >= x && y - x <= ARRAY_SPAN => Near(x),
         (Stack(_), Stack(_)) => Stack(None),
         (At(r, _), At(q, _)) if r == q => At(r, None),
         (Near(x), Near(y)) if x == y => Near(x),
@@ -123,15 +136,15 @@ pub enum Kind {
     Unknown,
 }
 
-/// One store.
+/// One store, or one load in [`Census::loads`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Site {
     pub function: u32,
     pub pc: u32,
     pub kind: Kind,
-    /// Bytes per store.
+    /// Bytes per access.
     pub bytes: u32,
-    /// Inside a `rep` loop: the store repeats over a range.
+    /// Inside a `rep` loop: the access repeats over a range.
     pub repeat: bool,
 }
 
@@ -163,6 +176,21 @@ struct Walk<'a> {
     f: &'a IrFunction,
     temps: BTreeMap<u32, Abs>,
     sites: Vec<Site>,
+    loads: Vec<Site>,
+}
+
+/// Where an access to `addr` in segment `seg` lands.
+fn kind_of(seg: Segment, addr: Abs) -> Kind {
+    match (seg, addr) {
+        (Segment::Fs, Abs::Const(o)) => Kind::Fs(Some(o)),
+        (Segment::Fs, _) => Kind::Fs(None),
+        (_, Abs::Const(a)) => Kind::Absolute(a),
+        (_, Abs::Near(a)) => Kind::Indexed(a),
+        (_, Abs::Stack(_)) => Kind::Stack,
+        (_, Abs::At(r, o)) => Kind::Field(r, o),
+        (_, Abs::Under(r)) => Kind::Reachable(r),
+        (_, Abs::Unknown) => Kind::Unknown,
+    }
 }
 
 impl Walk<'_> {
@@ -201,17 +229,7 @@ impl Walk<'_> {
     }
 
     fn store(&mut self, pc: u32, seg: Segment, addr: Abs, bytes: u32, repeat: bool) {
-        let kind = match (seg, addr) {
-            (Segment::Fs, Abs::Const(o)) => Kind::Fs(Some(o)),
-            (Segment::Fs, _) => Kind::Fs(None),
-            (_, Abs::Const(a)) => Kind::Absolute(a),
-            (_, Abs::Near(a)) => Kind::Indexed(a),
-            (_, Abs::Stack(_)) => Kind::Stack,
-            (_, Abs::At(r, o)) => Kind::Field(r, o),
-            (_, Abs::Under(r)) => Kind::Reachable(r),
-            (_, Abs::Unknown) => Kind::Unknown,
-        };
-        self.sites.push(Site { function: self.f.entry, pc, kind, bytes, repeat });
+        self.sites.push(Site { function: self.f.entry, pc, kind: kind_of(seg, addr), bytes, repeat });
     }
 
     fn stmts(&mut self, list: &[Stmt], st: &mut State, pc: u32, repeat: bool) {
@@ -230,6 +248,7 @@ impl Walk<'_> {
                 }
                 Stmt::Load { dst, addr } => {
                     let a = self.value(&addr.offset);
+                    self.loads.push(Site { function: self.f.entry, pc, kind: kind_of(addr.seg, a), bytes: dst.width.bytes(), repeat });
                     let v = if addr.seg == Segment::Flat { self.load(dst.width, a) } else { Abs::Unknown };
                     self.temps.insert(dst.id, v);
                 }
@@ -271,11 +290,16 @@ impl Walk<'_> {
 /// Every store in `f`. `sigs` are the closure's recovered signatures: they
 /// say what a call leaves alone.
 pub fn function_sites(f: &IrFunction, sigs: &BTreeMap<u32, Signature>) -> Vec<Site> {
-    let mut w = Walk { f, temps: BTreeMap::new(), sites: Vec::new() };
+    function_accesses(f, sigs).0
+}
+
+/// Every store and every load in `f`, classified alike.
+pub fn function_accesses(f: &IrFunction, sigs: &BTreeMap<u32, Signature>) -> (Vec<Site>, Vec<Site>) {
+    let mut w = Walk { f, temps: BTreeMap::new(), sites: Vec::new(), loads: Vec::new() };
     let mut input: BTreeMap<u32, State> = BTreeMap::from([(f.entry, State::entry())]);
     let mut work = std::collections::VecDeque::from([f.entry]);
     let mut visits: BTreeMap<u32, u32> = BTreeMap::new();
-    let mut done: BTreeMap<u32, Vec<Site>> = BTreeMap::new();
+    let mut done: BTreeMap<u32, (Vec<Site>, Vec<Site>)> = BTreeMap::new();
     while let Some(pc) = work.pop_front() {
         let Some(b) = f.blocks.get(&pc) else { continue };
         let n = visits.entry(pc).or_default();
@@ -287,11 +311,12 @@ pub fn function_sites(f: &IrFunction, sigs: &BTreeMap<u32, Signature>) -> Vec<Si
             st = st.join(&State { regs: [Abs::Unknown; 8] });
         }
         w.sites.clear();
+        w.loads.clear();
         w.temps.clear();
         for i in &b.insns {
             w.stmts(&i.stmts, &mut st, i.pc, false);
         }
-        done.insert(pc, std::mem::take(&mut w.sites));
+        done.insert(pc, (std::mem::take(&mut w.sites), std::mem::take(&mut w.loads)));
         let mut next: Vec<(u32, State)> = crate::backedge::successors(b, &f.blocks).into_iter().map(|s| (s, st.clone())).collect();
         if let Some(Control::Call { target, continuation, .. }) = b.control()
             && f.blocks.contains_key(continuation)
@@ -323,7 +348,12 @@ pub fn function_sites(f: &IrFunction, sigs: &BTreeMap<u32, Signature>) -> Vec<Si
             }
         }
     }
-    done.into_values().flatten().collect()
+    let (mut stores, mut loads) = (Vec::new(), Vec::new());
+    for (s, l) in done.into_values() {
+        stores.extend(s);
+        loads.extend(l);
+    }
+    (stores, loads)
 }
 
 /// A named address range (an XBE section).
@@ -337,7 +367,10 @@ pub struct Region {
 /// The census of a closure.
 #[derive(Debug, Default)]
 pub struct Census {
+    /// Every store.
     pub sites: Vec<Site>,
+    /// Every load, classified as the stores are.
+    pub loads: Vec<Site>,
     pub functions: usize,
     pub missing: BTreeSet<u32>,
     /// Indirect call and jump sites (switches excluded), by PC.
@@ -355,7 +388,9 @@ pub fn census(closure: &Closure) -> Census {
         ..Census::default()
     };
     for f in closure.functions.values() {
-        c.sites.extend(function_sites(f, &sigs));
+        let (stores, loads) = function_accesses(f, &sigs);
+        c.sites.extend(stores);
+        c.loads.extend(loads);
         c.indirect.extend(super::edges(f).indirect);
     }
     c
@@ -482,5 +517,73 @@ mod tests {
         assert_eq!(plus(Abs::Const(0x50_0000), Abs::Unknown, false), Abs::Near(0x50_0000));
         assert_eq!(join(Abs::Stack(Some(4)), Abs::Stack(Some(8))), Abs::Stack(None));
         assert_eq!(join(Abs::Const(1), Abs::Const(2)), Abs::Unknown);
+    }
+
+    #[test]
+    fn a_pointer_walking_an_array_stays_indexed() {
+        // `mov edi, 0x51f40c` joined with `add edi, 0x20` at the loop head.
+        let head = join(Abs::Const(0x0051_f40c), Abs::Const(0x0051_f42c));
+        assert_eq!(head, Abs::Near(0x0051_f40c));
+        assert_eq!(join(head, plus(head, Abs::Const(0x20), false)), head);
+        assert_eq!(join(head, Abs::Const(0x0051_f44c)), head);
+        // Below the base, or far apart, is not the same array.
+        assert_eq!(join(head, Abs::Const(0x0051_f000)), Abs::Unknown);
+        assert_eq!(join(Abs::Const(0x0040_0000), Abs::Const(0x0050_0000)), Abs::Unknown);
+    }
+
+    fn t(id: u32) -> ir::Temp {
+        ir::Temp { id, width: Width::W32 }
+    }
+
+    fn flat(offset: Value) -> ir::Addr {
+        ir::Addr { seg: Segment::Flat, offset }
+    }
+
+    /// `mov eax, [0x485890]; mov ecx, [eax+0x10]; mov [0x500000], ecx; ret`.
+    fn through_a_global() -> IrFunction {
+        let body = ir::IrInsn {
+            pc: 0x1000,
+            len: 16,
+            atomic: None,
+            stmts: vec![
+                Stmt::Load { dst: t(0), addr: flat(Value::u32(0x0048_5890)) },
+                Stmt::Assign { dst: t(1), expr: Expr::Binary { op: BinOp::Add, a: t(0).into(), b: Value::u32(0x10) } },
+                Stmt::Load { dst: t(2), addr: flat(t(1).into()) },
+                Stmt::Store { addr: flat(Value::u32(0x0050_0000)), value: t(2).into() },
+            ],
+            control: Control::Next,
+        };
+        let ret = ir::IrInsn {
+            pc: 0x1010,
+            len: 1,
+            atomic: None,
+            stmts: vec![
+                Stmt::ReadReg { dst: t(3), reg: Gpr::Esp, slice: Slice::Full },
+                Stmt::Load { dst: t(4), addr: flat(t(3).into()) },
+            ],
+            control: Control::Return { target: t(4).into(), cleanup: 0 },
+        };
+        IrFunction {
+            entry: 0x1000,
+            blocks: BTreeMap::from([(0x1000, ir::IrBlock { start: 0x1000, insns: vec![body, ret] })]),
+            interior_entries: vec![],
+            errors: vec![],
+        }
+    }
+
+    #[test]
+    fn loads_are_classified_like_stores() {
+        let (stores, loads) = function_accesses(&through_a_global(), &BTreeMap::new());
+        assert_eq!(stores.iter().map(|s| s.kind).collect::<Vec<_>>(), vec![Kind::Absolute(0x0050_0000)]);
+        let kinds: Vec<(u32, Kind)> = loads.iter().map(|s| (s.pc, s.kind)).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                (0x1000, Kind::Absolute(0x0048_5890)),
+                (0x1000, Kind::Field(Root::Global(0x0048_5890), Some(0x10))),
+                (0x1010, Kind::Stack),
+            ]
+        );
+        assert!(loads.iter().all(|s| s.bytes == 4 && s.function == 0x1000));
     }
 }

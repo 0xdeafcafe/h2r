@@ -618,6 +618,34 @@ workspace_test(
 )
 
 workspace_test(
+    name = "render_readback_readers",
+    crate = "render_readback_readers",
+    crate_root = "crates/recompiler/emit/tests/render_readback_readers.rs",
+    description = "",
+    features = [],
+    manifest = "crates/recompiler/emit",
+    package = "emit",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/xbe:xbe",
+        "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/hostfault:hostfault",
+        "//crates/recompiler/ir:ir",
+        "//crates/recompiler/lift:lift",
+        "//crates/recompiler/opt:opt",
+        "//crates/recompiler/simd:simd",
+        "//crates/recompiler/sse-oracle:sse-oracle",
+        "//crates/recompiler/x87:x87",
+        "//crates/runtime/runtime:runtime",
+        "//third-party/rust:iced-x86",
+        "//third-party/rust:libc",
+        "//third-party/rust:libloading",
+        ":emit",
+    ],
+)
+
+workspace_test(
     name = "second_executor",
     crate = "second_executor",
     crate_root = "crates/recompiler/emit/tests/second_executor.rs",

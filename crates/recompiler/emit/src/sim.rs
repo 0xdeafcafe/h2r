@@ -40,6 +40,7 @@
 //! tier's state, and runs the root. MXCSR's sticky flags are not kept.
 
 pub mod census;
+pub mod readers;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
