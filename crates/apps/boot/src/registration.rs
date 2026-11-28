@@ -1053,6 +1053,11 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_fog_quad::NativeFogQuad)
             .map_err(|e| anyhow::anyhow!("native fog quad: {e}"))?;
+        // The second fog's fans 0x00025dc0: a named panic when one would
+        // draw, until the native renderer has their stage.
+        features
+            .add(&render_bridge::native_fog_fans::NativeFogFans)
+            .map_err(|e| anyhow::anyhow!("native fog fans: {e}"))?;
         // Native UI producers and the ordered menu, HUD and loading callbacks.
         // impl.render.native=off returns these draws to the ordinary device path.
         features

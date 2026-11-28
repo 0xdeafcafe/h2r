@@ -27,10 +27,6 @@ pub enum Gap {
     DecalDecorator,
     /// A sky strip of `0x0004c690` the sky stage refused.
     SkyStrip,
-    /// The fans of `0x00025dc0`, drawn when the datum `[0x004857b8]` is
-    /// set and `[0x004857d8]` is above 0 (S: a second fog): setups
-    /// `0x00026880`, `0x00026e50` and `0x000276d0`, no native stage.
-    FogFans,
     /// A particle drawn as a model part, the callback `0x00224fd0`.
     ParticleModel,
     /// A swallowed post call whose native pass refused: its packets.
@@ -39,11 +35,10 @@ pub enum Gap {
     Other,
 }
 
-const GAPS: [Gap; 7] = [
+const GAPS: [Gap; 6] = [
     Gap::EmitterRefusal,
     Gap::DecalDecorator,
     Gap::SkyStrip,
-    Gap::FogFans,
     Gap::ParticleModel,
     Gap::PostSwallow,
     Gap::Other,
@@ -56,7 +51,6 @@ impl Gap {
             Gap::EmitterRefusal => "emitter_refusal",
             Gap::DecalDecorator => "decal_decorator",
             Gap::SkyStrip => "sky_strip",
-            Gap::FogFans => "fog_fans",
             Gap::ParticleModel => "particle_model",
             Gap::PostSwallow => "post_swallow",
             Gap::Other => "other",
@@ -70,7 +64,6 @@ impl Gap {
             0x0004_daa0..0x0004_dfa0 => Gap::EmitterRefusal,
             0x0004_ebd0..0x0004_ee00 => Gap::DecalDecorator,
             0x0004_c690..0x0004_ca00 => Gap::SkyStrip,
-            0x0002_5dc0..0x0002_5e50 => Gap::FogFans,
             0x0022_4fd0..0x0022_5700 => Gap::ParticleModel,
             _ => Gap::Other,
         }
@@ -167,10 +160,11 @@ mod tests {
         assert_eq!(Gap::of_caller(0x0004_edc8), Gap::DecalDecorator);
         assert_eq!(Gap::of_caller(0x0004_c6bf), Gap::SkyStrip);
         assert_eq!(Gap::of_caller(0x0004_c9e8), Gap::SkyStrip);
-        assert_eq!(Gap::of_caller(0x0002_5e2d), Gap::FogFans);
-        assert_eq!(Gap::of_caller(0x0002_5e43), Gap::FogFans);
-        // The planar fog's quad is cut (render_bridge::native_fog_quad).
+        // The planar fog's quad is cut (render_bridge::native_fog_quad),
+        // and a fog fan of 0x00025dc0 panics before it draws
+        // (render_bridge::native_fog_fans).
         assert_eq!(Gap::of_caller(0x0002_5db3), Gap::Other);
+        assert_eq!(Gap::of_caller(0x0002_5e2d), Gap::Other);
         assert_eq!(Gap::of_caller(0x0022_56a8), Gap::ParticleModel);
         assert_eq!(Gap::of_caller(0x0022_56c7), Gap::ParticleModel);
         assert_eq!(Gap::of_caller(0x0010_0000), Gap::Other);
@@ -185,7 +179,6 @@ mod tests {
             _ => None,
         };
         assert_eq!(caller_at(words, 0x1000), 0x0002_5e2d);
-        assert_eq!(Gap::of_caller(caller_at(words, 0x1000)), Gap::FogFans);
         assert_eq!(caller_at(words, 0x2000), 0x0004_c6bf);
         assert_eq!(caller_at(words, 0x3000), 0);
     }
