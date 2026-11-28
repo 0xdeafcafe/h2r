@@ -7,7 +7,8 @@
 //!
 //! | Step | Made |
 //! |---|---|
-//! | grid `0x0003ca90`, gates `0x0003c270` and `0x0012de70` | guest calls; a gate's AL 0 goes to the stamps |
+//! | grid `0x0003ca90` | Rust ([`engine::ocean_grid`]), its aspect widened to [`grid_lens`] |
+//! | gates `0x0003c270` and `0x0012de70` | guest calls; a gate's AL 0 goes to the stamps |
 //! | the shader `[definition + 4]` to its implementation's flags `+0x118` | Rust ([`shader`]) |
 //! | copies `0x0003bea0` (bit 20), `0x00131ed0` then `0x0003bd00` (bit 19) | guest calls; their binds land on `Game(0x16)` and `Game(0x15)` through the device's role table |
 //! | alpha clear `0x0003c515` | `native_targets::cut_clear(0x10, 0x00ffffff, 0, 0)` on the bound target |
@@ -25,9 +26,15 @@
 //! `device` (a draw-state call refused), `vertex_kind`,
 //! `position_compression`, `structure` (the upload's float model
 //! refused), `quads` (no keyed view's composite), `draw` (the native draw
-//! refused).
+//! refused). The grid's are `unimplemented!("water ocean grid: <cause>")`:
+//! `unread`, `unwritable`, `simd` (an unmasked SSE exception), `x87` (an
+//! unmasked x87 exception or an operation the model stops on).
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
+use engine::light_constants::Error as FloatError;
 use engine::memory::{GuestMemory, MemFault};
+use engine::ocean_grid;
 
 use crate::native_targets::Host;
 
@@ -39,7 +46,6 @@ mod fake;
 pub type Cause = &'static str;
 
 /// The guest helpers the body calls.
-pub const GRID: u32 = 0x0003_ca90;
 pub const VISIBLE: u32 = 0x0003_c270;
 pub const TEXTURE: u32 = 0x0012_de70;
 pub const COPY_TARGET: u32 = 0x0003_bea0;
@@ -111,6 +117,43 @@ pub trait Device {
     fn scratch(&self) -> u32;
     /// The quads: `count` indices at `indices`, a quad list.
     fn draw(&mut self, mem: &mut dyn GuestMemory, indices: u32, count: u32) -> Result<(), Cause>;
+    /// The caller's MXCSR, which the grid's sticky flags land in, and its
+    /// x87 control word.
+    fn fp(&mut self) -> (&mut u32, u16);
+    /// The displayed lens's factor the grid's aspect widens by.
+    fn lens(&self) -> f32 {
+        grid_lens()
+    }
+}
+
+/// The displayed lens's factor, as f32 bits: 1 (the retail grid) until
+/// render-aspect sets its view lens.
+static GRID_LENS: AtomicU32 = AtomicU32::new(0x3f80_0000);
+
+/// Sets the factor the grid's aspect widens by
+/// ([`ocean_grid::widen_aspect`]): render-aspect's view lens, the
+/// fitted guest camera's or the device's per-draw lens.
+pub fn set_grid_lens(factor: f32) {
+    GRID_LENS.store(factor.to_bits(), Ordering::Relaxed);
+}
+
+pub fn grid_lens() -> f32 {
+    f32::from_bits(GRID_LENS.load(Ordering::Relaxed))
+}
+
+/// The grid's cause.
+fn grid_cause(e: FloatError) -> Cause {
+    match e {
+        FloatError::Memory(MemFault { write: true, .. }) => "unwritable",
+        FloatError::Memory(_) => "unread",
+        FloatError::Simd => "simd",
+        FloatError::X87(_) => "x87",
+        _ => "other",
+    }
+}
+
+fn grid_unported(cause: Cause) -> ! {
+    unimplemented!("water ocean grid: {cause}")
 }
 
 /// The shader's words the body reads (`0x0003c439..0x0003c4d6`).
@@ -216,7 +259,6 @@ pub fn stamps(mem: &dyn GuestMemory, index: u32) -> Result<(Vec<Stamp>, i32), Ca
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
     Grid,
-    Visible,
     Texture,
     Shader,
     PassSource,
@@ -260,8 +302,20 @@ impl Ocean {
         let r = Regs { eax: returned.eax, ecx: returned.ecx, edx: returned.edx, ..self.regs };
         let al = returned.eax & 0xff != 0;
         match self.step {
-            Step::Grid => self.call(Step::Visible, GRID, Regs { eax: d, ..r }, Vec::new()),
-            Step::Visible => self.call(Step::Texture, VISIBLE, r, vec![d]),
+            Step::Grid => {
+                let (mxcsr, control) = device.fp();
+                let mut mx = *mxcsr;
+                let grid = ocean_grid::grid(mem, d, &mut mx, control, device.lens());
+                *device.fp().0 = mx;
+                let r = match grid.unwrap_or_else(|e| grid_unported(grid_cause(e))) {
+                    ocean_grid::Grid::Skipped => Regs { eax: d, ..r },
+                    ocean_grid::Grid::Built { eax, edx, widened } => {
+                        crate::scene_step::count_ocean_grid(widened);
+                        Regs { eax, ecx: 0, edx, ..r }
+                    }
+                };
+                self.call(Step::Texture, VISIBLE, r, vec![d])
+            }
             Step::Texture if !al => self.to_stamps(mem, r),
             Step::Texture => self.call(Step::Shader, TEXTURE, Regs { eax: 3, ecx: d.wrapping_add(TEXTURE_BLOCK), ..r }, Vec::new()),
             Step::Shader if !al => self.to_stamps(mem, r),

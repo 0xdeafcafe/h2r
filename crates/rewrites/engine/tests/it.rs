@@ -33,6 +33,8 @@ mod light_passes;
 mod light_passes_differential;
 #[path = "map_status_differential.rs"]
 mod map_status_differential;
+#[path = "ocean_grid_differential.rs"]
+mod ocean_grid_differential;
 #[path = "particle_emission_differential.rs"]
 mod particle_emission_differential;
 #[path = "particle_walk_differential.rs"]

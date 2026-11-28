@@ -131,6 +131,8 @@ const BODY: u32 = 0x80;
 struct Live {
     host: Arc<dyn crate::native_targets::Host>,
     scratch: u32,
+    mxcsr: u32,
+    x87_control: u16,
 }
 
 impl ocean::Device for Live {
@@ -145,6 +147,10 @@ impl ocean::Device for Live {
     fn draw(&mut self, mem: &mut dyn GuestMemory, indices: u32, count: u32) -> Result<(), ocean::Cause> {
         let geometry = crate::scene_step::water_composite(&*mem, indices, count).ok_or("quads")?;
         crate::native_transparents::draw_water(mem, indices, count, geometry).then_some(()).ok_or("draw")
+    }
+
+    fn fp(&mut self) -> (&mut u32, u16) {
+        (&mut self.mxcsr, self.x87_control)
     }
 }
 
@@ -167,8 +173,9 @@ fn drive(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, mut ocean: ocean
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
     let host = crate::native_targets::host().unwrap_or_else(|| ocean_unported("host"));
-    let mut device = Live { host, scratch: frame.esp.wrapping_sub(SCRATCH) };
+    let mut device = Live { host, scratch: frame.esp.wrapping_sub(SCRATCH), mxcsr: cpu.mxcsr, x87_control: cpu.x87.control };
     let next = ocean.next(&mut *mem, &mut device, regs(cpu)).unwrap_or_else(|cause| ocean_unported(cause));
+    cpu.mxcsr = device.mxcsr;
     match next {
         ocean::Next::Call(call) => {
             let r = call.regs;

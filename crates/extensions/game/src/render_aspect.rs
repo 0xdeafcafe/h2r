@@ -255,22 +255,14 @@ fn widen_terms(mem: &mut impl GuestMemory, esp: u32, factor: f32, frustum: f32) 
 /// the cap's loss as well: it is multiplied by `tan(half) / tan(cap)`
 /// (the horizontal field of view at `0x00485640`, halved by `0x0045dbbc`),
 /// so the grid spans the window's real half angle with retail's margin.
+///
+/// The water end's Rust grid (`engine::ocean_grid`) widens by the same
+/// rule, at the same point, from the lens this sets
+/// (`render_bridge::water_end::ocean::set_grid_lens`).
 fn widen_ocean_grid(mem: &mut impl GuestMemory, esp: u32, factor: f32) -> bool {
-    if !(factor.is_finite() && factor > 0.0 && factor < 1.0) {
-        return false;
-    }
     let Some(at) = esp.checked_add(0x10) else { return false };
     let Ok(aspect) = mem.f32(at) else { return false };
-    let uncapped = match (mem.f32(0x0048_5640), mem.f32(0x0045_dbbc), mem.f32(0x0045_e2d4)) {
-        (Ok(fov), Ok(half), Ok(cap)) if cap > 0.0 && fov * half > cap && fov * half < 1.5 => {
-            (fov * half).tan() / cap.tan()
-        }
-        _ => 1.0,
-    };
-    let widened = aspect / factor * uncapped;
-    if !(aspect.is_finite() && aspect > 0.0 && widened.is_finite()) {
-        return false;
-    }
+    let Some(widened) = engine::ocean_grid::widen_aspect(&*mem, aspect, factor) else { return false };
     mem.write(at, &widened.to_le_bytes()).is_ok()
 }
 
@@ -695,6 +687,10 @@ impl Feature for RenderAspect {
                     let factor = projection_factor(&*o.guest(), size());
                     projected.store(false, Ordering::Relaxed);
                     lens.store(factor.to_bits(), Ordering::Relaxed);
+                    #[cfg(feature = "desktop-runtime")]
+                    if guest_lens {
+                        render_bridge::water_end::ocean::set_grid_lens(factor);
+                    }
                     gather.store(gather_factor(&*o.guest()).to_bits(), Ordering::Relaxed);
                     sink.set_projection_factor(factor);
                     #[cfg(feature = "desktop-runtime")]
