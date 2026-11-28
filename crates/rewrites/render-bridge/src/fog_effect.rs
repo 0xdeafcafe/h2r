@@ -1061,9 +1061,11 @@ fn body(m: &mut dyn GuestMemory, mxcsr: u32, cw: u16) -> Result<(), Cause> {
     let far_small = sse.above(small, far)?;
     let inv_span = sse.div(one, span)?;
     let h = sse.int(short(m, WINDOW + 4)?)?;
-    let h = sse.sub(h, sse.int(short(m, WINDOW)?)?)?;
+    let top = sse.int(short(m, WINDOW)?)?;
+    let h = sse.sub(h, top)?;
     let wd = sse.int(short(m, WINDOW + 6)?)?;
-    let wd = sse.sub(wd, sse.int(short(m, WINDOW + 2)?)?)?;
+    let left = sse.int(short(m, WINDOW + 2)?)?;
+    let wd = sse.sub(wd, left)?;
     let aspect = sse.div(h, wd)?;
     let far_ = if far_small { small } else { far };
     let q_small = sse.above(small, q)?;

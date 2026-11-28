@@ -380,8 +380,8 @@ fn tail_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) 
     let (esp, ret) = (cpu.esp, mem.u32(cpu.esp)?);
     // `push esi; xor eax, eax; call 0x0001fd20`: the two words written,
     // ESP at the call's return address.
-    mem.write(esp.wrapping_sub(4), &cpu.esi.to_le_bytes()).map_err(fault)?;
-    mem.write(esp.wrapping_sub(8), &CALL_RETURN.to_le_bytes()).map_err(fault)?;
+    mem.set_u32(esp.wrapping_sub(4), cpu.esi)?;
+    mem.set_u32(esp.wrapping_sub(8), CALL_RETURN)?;
     cpu.eax = 0;
     cpu.esp = esp.wrapping_sub(8);
     let record = crate::fade_record::update(&mut *mem, cpu).unwrap_or_else(|cause| crate::native_targets::unhandled("frame_tail", cause));

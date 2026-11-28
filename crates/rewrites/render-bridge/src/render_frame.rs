@@ -275,9 +275,6 @@ fn loop_present(me: &RenderFrame, cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32
 fn run(me: &RenderFrame, frame: Frame, step: Step, cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
-    if matches!(step, Step::Waited { .. }) {
-        crate::residual_census::frame_wait(&mut *mem, false);
-    }
     let outcome = match step {
         Step::Waited { present: true } => {
             let host = me.publish.clone().or_else(publish::installed);
@@ -308,9 +305,6 @@ fn run(me: &RenderFrame, frame: Frame, step: Step, cpu: &mut CpuAbi, ctx: &mut E
                 Called::FrameWait if present == Some(false) => me.stats.loading.fetch_add(1, Ordering::Relaxed),
                 _ => 0,
             };
-            if kind == Called::FrameWait {
-                crate::residual_census::frame_wait(&mut *mem, true);
-            }
             // Each call starts from the frame's own stack, its arguments
             // pushed right to left as the guest pushes them.
             cpu.esp = frame.esp;

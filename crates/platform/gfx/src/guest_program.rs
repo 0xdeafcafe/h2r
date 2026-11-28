@@ -7,7 +7,6 @@
 //! register or push-buffer type crosses: a caller hands in the values.
 
 use crate::state::CompareFunc;
-#[cfg(feature = "gpu")]
 use crate::state::TextureStageState;
 #[cfg(feature = "gpu")]
 use crate::translate::SamplerKey;
