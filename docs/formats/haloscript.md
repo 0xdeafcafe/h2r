@@ -1,6 +1,6 @@
 # HaloScript in the retail Xbox cache
 
-Status: Built. Code: `crates/formats/hs`. The game compares supported thread executions and VM operations against the [Rust VM](../engine/hs_vm.md#live-comparison). The format reader is unconditional.
+Status: Built. Code: `crates/formats/hs`. The [Rust VM](../engine/hs_vm.md) runs scripts. The format reader is unconditional.
 
 `crates/formats/hs` reads the compiled scenario tables, recovers the executable's type
 and builtin descriptors, and renders Lisp-like source. `h2 hs` prints source to

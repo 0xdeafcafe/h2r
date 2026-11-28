@@ -247,17 +247,6 @@ its backing state is unreadable or uninitialized.
   0 of each mask denotes the mapped action/reload button. The state is
   shared by local controls, so the method takes no player index.
 
-### `hs.parity`
-
-`h2 agent hs.parity` takes no parameters. It returns the switch name
-(`impl.sim.native.hs`) and a `checks` object keyed by VM operation.
-Each entry counts agreements (`matched`), disagreements (`mismatched`)
-and observations the Rust arm could not compare (`declined`).
-`first` holds the first mismatch description or `null`. The counters
-cover the lifetime of the process and can be read before a map loads.
-Compare two readings to see which checks ran during an encounter.
-[HaloScript VM](../engine/hs_vm.md)
-
 ### `hs.eval`
 
 `hs.eval {expression, type?}` compiles one HaloScript expression against

@@ -29,7 +29,6 @@ pub mod frame_graph;
 pub mod game_load;
 pub mod goto;
 pub mod havok;
-pub mod hs;
 pub mod player_bot;
 pub mod pogo;
 pub mod superbounce;

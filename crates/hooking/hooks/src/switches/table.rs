@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 24;
+pub const BUDGET: usize = 23;
 
 use Initial::{Group, Off, On};
 
@@ -92,8 +92,6 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim", Group, "sim", "2026-11-20", "goes with its last child"),
     sw("impl.sim.native", Group, "sim", "2026-11-20",
         "the parent of the subsystem rewrites (lane rules): each child goes when its subsystem defaults on"),
-    sw("impl.sim.native.hs", Off, "sim", "2026-11-25",
-        "HaloScript VM: retire after the campaign parity and timing ladder"),
     sw("impl.sim.native.sound", Off, "sim", "2026-11-25",
         "phase 4 sound simulation: promote after voice, arena and timing parity"),
     sw("impl.sim.present", On, "sim", "2026-11-27",
