@@ -237,6 +237,12 @@ preempted must unwind to the scheduler. A body that calls guest code is an
 - `Builder::entry(label, f)` places a body at a fresh address on a shared
   executable arena page, for a loader, a vtable slot or a callback
   the guest is handed. `Raw::implement_async` makes one a chain's body.
+- Nothing polls entries per frame. A body is polled when the guest reaches
+  it and again after each guest call it awaits (`entry::poll`, driven by
+  `hooks::entry::drive`), and polling takes no guest memory: only the
+  body's own `cx.read` and `cx.write` do. A chain runs only the links at
+  the address the guest reached (`install::place`). A profile frame under
+  these is the body's work or the wrapped original, not the driver.
 - `engine::entry::testing::run` drives a body in a test against fake
   callees on a `FakeGuest` and records the calls.
 - A future parked across a guest call holds a continuation slot
@@ -246,7 +252,8 @@ preempted must unwind to the scheduler. A body that calls guest code is an
 **Test:** `crates/hooking/hooks/tests/install.rs`
 (`an_entry_awaits_guest_calls_and_returns_as_stdcall`,
 `an_async_implementation_is_a_chains_body`), and the core's tests in
-`crates/hooking/guest-layout/src/entry.rs`.
+`crates/hooking/guest-layout/src/entry.rs`
+(`a_body_is_polled_once_per_guest_call_plus_one_and_takes_memory_only_when_it_asks`).
 
 ## Bridges
 

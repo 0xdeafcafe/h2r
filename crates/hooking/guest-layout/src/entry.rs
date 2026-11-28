@@ -599,6 +599,44 @@ mod tests {
     }
 
     #[test]
+    fn a_body_is_polled_once_per_guest_call_plus_one_and_takes_memory_only_when_it_asks() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // The driver's cost scales with the calls a body makes: one poll
+        // per call and one to finish. Polling never touches guest memory;
+        // only the body's own reads and writes do.
+        struct Counted(Mutex<FakeGuest>, Arc<AtomicUsize>);
+        impl Mem for Counted {
+            fn with(&self, f: &mut dyn FnMut(&mut dyn GuestMemory)) {
+                self.1.fetch_add(1, Ordering::Relaxed);
+                self.0.with(f)
+            }
+        }
+        let withs = Arc::new(AtomicUsize::new(0));
+        let mut g = FakeGuest::new();
+        g.map(0x5000, 4);
+        let cx = Cx::new(Counted(Mutex::new(g), Arc::clone(&withs)), Regs::default());
+        let body = cx.clone();
+        let mut fut: EntryFuture = Box::pin(async move {
+            for target in [0x100, 0x200, 0x300] {
+                body.call(GuestCall::new(target)).await?;
+            }
+            body.write(|m| m.set_u32(0x5000, 1))?;
+            Ok(Ret::new(body.read(|m| m.u32(0x5000))?, 0))
+        });
+        let mut polls = 0;
+        let result = loop {
+            polls += 1;
+            match poll(&mut fut, &cx) {
+                Step::Done(r) => break r,
+                Step::Call(_) => resume(&cx, Regs::default()),
+            }
+        };
+        assert_eq!(result, Ok(Ret::new(1, 0)));
+        assert_eq!(polls, 4, "three calls, then the finish");
+        assert_eq!(withs.load(Ordering::Relaxed), 2, "the body's write and read only");
+    }
+
+    #[test]
     fn a_call_without_a_reserve_is_made_at_the_entry_esp() {
         let call = GuestCall::new(1).args([1]);
         assert_eq!(call.reserve, 0);
