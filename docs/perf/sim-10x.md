@@ -158,8 +158,7 @@ Notes on rows the ask names:
   square roots).
 - **Light profile.** `h2 sim run` already runs the light profile
   ([sim.md §10](../runtime/sim.md#10-expected-speed-up)):
-  `impl.sim.observer-resources`, the packet clock
-  and the world-frame skip are on. The one profile switch a sim leaves
+  the packet clock and the world-frame skip are on. The one profile switch a sim leaves
   off is `host-light-native` (levers 4, 13 and 15). The tick pacer, mapped
   reads and sim stores do not change unpaced ms/tick.
 - **Output-only work.** A sim has no viewer and no listener. Under the

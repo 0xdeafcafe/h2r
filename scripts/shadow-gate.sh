@@ -10,7 +10,7 @@
 #   MAP     a multiplayer map (default lockout)
 #   TICKS   game ticks of gameplay to check (default 900: 30 s)
 #   PORTS   port switch names (sim.native_unit_pose), groups (sim.native,
-#           sim.physics, sim.native.objects, sim.seats), object point names,
+#           sim.physics, sim.native.objects), object point names,
 #           or all (the default standalone port set)
 #
 # Environment:
@@ -52,24 +52,6 @@ sim_physics=(
   sim.native_first_person_pose
   sim.native_first_person_filters
 )
-# Phase 7's seats share one switch; with their checks on they run as the
-# guest-authoritative arm (docs/engine/shadow-exec.md), so the match
-# answers exactly as retail and the bodies are the ones checked.
-sim_seats=(
-  sim.seats.player_look_curve
-  sim.seats.player_control_update
-  sim.seats.player_action_control
-  sim.seats.player_neutral_control
-  sim.seats.unit_apply_control
-  sim.seats.hud_seat_update
-  sim.seats.aim_target_update
-  sim.seats.aim_target_search
-  sim.seats.aim_target_compare
-  sim.seats.shot_aim
-  sim.seats.observer_camera
-  sim.seats.predict_resources
-)
-
 # The object bodies replace some standalone ports (including unit aim).
 # Select this group separately from the standalone "all" profile.
 sim_objects=(
@@ -84,13 +66,12 @@ sim_objects=(
 ports=()
 for name in "${selected[@]}"; do
   case "$name" in
-    all) ports+=("${sim_native[@]}" "${sim_physics[@]}" "${sim_seats[@]}") ;;
+    all) ports+=("${sim_native[@]}" "${sim_physics[@]}") ;;
     sim.native) ports+=("${sim_native[@]}") ;;
     sim.physics) ports+=("${sim_physics[@]}") ;;
     sim.native.objects) ports+=("${sim_objects[@]}") ;;
-    sim.seats) ports+=("${sim_seats[@]}") ;;
     *)
-      if [[ " ${sim_native[*]} ${sim_physics[*]} ${sim_objects[*]} ${sim_seats[*]} " != *" $name "* ]]; then
+      if [[ " ${sim_native[*]} ${sim_physics[*]} ${sim_objects[*]} " != *" $name "* ]]; then
         echo "shadow-gate: no port or group named $name" >&2
         exit 2
       fi
@@ -101,17 +82,10 @@ done
 
 features="${H2_FEATURES:-}"
 json_ports=""
-seats_flagged=0
 for p in "${ports[@]}"; do
   if [[ " ${sim_objects[*]} " == *" $p "* ]]; then
     if [[ ",$features," != *",impl.sim.native.objects,"* ]]; then
       features="${features:+$features,}impl.sim.native.objects"
-    fi
-  elif [[ $p == sim.seats.* ]]; then
-    # Every seat sits behind the one phase switch; name it once.
-    if (( seats_flagged == 0 )); then
-      features="${features:+$features,}impl.sim.native.seats"
-      seats_flagged=1
     fi
   else
     features="${features:+$features,}impl.$p"

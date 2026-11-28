@@ -1,25 +1,20 @@
-//! The aim-assist cone's shadow arm (docs/engine/sim-rewrite.md, "Seats
-//! and rules (phase 7)"; the pattern of `sim_objects::functions::parity`):
-//! at every call of `1a50a0` (`AIM_ASSIST_PARAMS`), the idiomatic kernel
+//! The aim-assist cone in Rust (docs/engine/sim-rewrite.md, "Seats and
+//! rules (phase 7)"): at every call of `1a50a0` (`AIM_ASSIST_PARAMS`), the idiomatic kernel
 //! `sim_objects::aim_assist` answers from a copy of every field the call
 //! reads (the unit's hands, each weapon's tag fields and trigger states)
 //! and the image's `pow` on the x87 model for the zoom.
 //!
-//! **Proof, then take-over.** Until [`PROVEN_AFTER`] calls have matched
-//! the guest's with no mismatch, the guest answers every call and the
-//! prediction made at the entry is compared at its return. After that the
-//! kernel answers, and one answerable call in [`AUDIT_EVERY`] still goes
-//! to the guest and is compared. A mismatch hands every call back to the
-//! guest until the next map. A declined call is the guest's, counted by
-//! reason; an audit whose return the runtime cannot watch is `dropped`.
+//! **The kernel answers every call.** A call it cannot answer is a named,
+//! counted error ([`Decline`], logged the first time each map), not a
+//! fallback; the differential test (`tests/sim_seats_differential.rs`)
+//! holds [`predict`] to the lifted body.
 //!
 //! **What an answer leaves** is what retail leaves, but the arithmetic
 //! flags (undefined), the x87 last-instruction pointers and the dead stack
 //! below the return's `esp`: the record at `esi` (nothing on an unarmed
 //! exit), `al`, the rest of `eax`, `ecx` (retail's `push ecx` slot holds
 //! the first bend and is popped into it), `edx`, `xmm0`..`xmm3`, the x87
-//! registers, tag and status after the zoom's `pow`, and `ret 4`. The
-//! audit compares all of them.
+//! registers, tag and status after the zoom's `pow`, and `ret 4`.
 
 use crate::function_eval::{self, constant::ONE};
 use crate::light_constants::X87;
@@ -35,10 +30,6 @@ use x87::abi::arith_op;
 
 /// The stack word `ret 4` pops, besides the return address.
 pub const ARGS: u32 = 4;
-/// Matched calls, with no mismatch, before the kernel answers.
-pub const PROVEN_AFTER: u64 = 4096;
-/// After that, one answerable call in this many is compared.
-pub const AUDIT_EVERY: u64 = 64;
 /// Triggers per weapon the capture copies; a definition with more is
 /// declined.
 pub const MAX_TRIGGERS: usize = 16;
@@ -74,13 +65,11 @@ impl Decline {
 /// The arm's counters since the map loaded.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Status {
-    pub checked: u64,
-    pub matched: u64,
-    pub mismatched: u64,
     pub answered: u64,
-    /// By [`Decline::ALL`] order.
+    /// Calls the kernel cannot answer yet, by [`Decline::ALL`] order:
+    /// named errors, each logged once a map, that the lifted body still
+    /// runs.
     pub declined: [u64; 3],
-    pub dropped: u64,
 }
 
 impl Status {
@@ -89,50 +78,30 @@ impl Status {
     }
 }
 
-static CHECKED: AtomicU64 = AtomicU64::new(0);
-static MATCHED: AtomicU64 = AtomicU64::new(0);
-static MISMATCHED: AtomicU64 = AtomicU64::new(0);
 static ANSWERED: AtomicU64 = AtomicU64::new(0);
-static ANSWERABLE: AtomicU64 = AtomicU64::new(0);
-static DROPPED: AtomicU64 = AtomicU64::new(0);
 static DECLINED: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
 
 pub fn status() -> Status {
     let read = |c: &AtomicU64| c.load(Ordering::Relaxed);
-    Status {
-        checked: read(&CHECKED),
-        matched: read(&MATCHED),
-        mismatched: read(&MISMATCHED),
-        answered: read(&ANSWERED),
-        declined: std::array::from_fn(|i| read(&DECLINED[i])),
-        dropped: read(&DROPPED),
-    }
+    Status { answered: read(&ANSWERED), declined: std::array::from_fn(|i| read(&DECLINED[i])) }
 }
 
-/// Forget the map's proof and counters. Called at map load.
+/// Clear the counters. Called at map load, so each map logs its first
+/// error of each kind.
 pub fn reset() {
-    for c in [
-        &CHECKED,
-        &MATCHED,
-        &MISMATCHED,
-        &ANSWERED,
-        &ANSWERABLE,
-        &DROPPED,
-    ] {
-        c.store(0, Ordering::Relaxed);
-    }
+    ANSWERED.store(0, Ordering::Relaxed);
     for c in &DECLINED {
         c.store(0, Ordering::Relaxed);
     }
 }
 
-/// An audit the runtime could not watch to its return.
-pub fn dropped() {
-    DROPPED.fetch_add(1, Ordering::Relaxed);
-}
-
-fn proven() -> bool {
-    MISMATCHED.load(Ordering::Relaxed) == 0 && MATCHED.load(Ordering::Relaxed) >= PROVEN_AFTER
+/// Count a call the kernel cannot answer, and say so the first time each
+/// map: it is an unported path, not a fallback.
+fn decline(why: Decline) -> Step {
+    if DECLINED[why.index()].fetch_add(1, Ordering::Relaxed) == 0 {
+        eprintln!("sim: seats aim-assist: unported path `{}`; the lifted body runs it (counted in sim.arms)", why.name());
+    }
+    Step::Guest
 }
 
 /// One call's prediction: the registers at the return and the record.
@@ -183,34 +152,22 @@ pub enum Step {
     /// The kernel answered: `cpu` and the record hold the result; the
     /// caller returns to `target`.
     Answered { target: u32 },
-    /// The guest answers; compare at its return ([`compare`]).
-    Audit(Prediction),
-    /// The guest answers alone: declined, counted.
+    /// An unported path: a counted, logged [`Decline`]; the lifted body runs it.
     Guest,
 }
 
-/// At the entry: predict the call and decide who answers.
+/// At the entry: the kernel answers, or the call is a counted [`Decline`].
 pub fn enter(cpu: &mut CpuAbi, guest: &mut Guest) -> Step {
     let prediction = match predict(cpu, guest) {
         Ok(p) => p,
-        Err(why) => {
-            DECLINED[why.index()].fetch_add(1, Ordering::Relaxed);
-            return Step::Guest;
-        }
+        Err(why) => return decline(why),
     };
-    let slot = ANSWERABLE.fetch_add(1, Ordering::Relaxed);
-    if !proven() || slot % AUDIT_EVERY == 0 {
-        return Step::Audit(prediction);
-    }
     match apply(&prediction, cpu, guest) {
         Ok(target) => {
             ANSWERED.fetch_add(1, Ordering::Relaxed);
             Step::Answered { target }
         }
-        Err(_) => {
-            DECLINED[Decline::Fault.index()].fetch_add(1, Ordering::Relaxed);
-            Step::Guest
-        }
+        Err(_) => decline(Decline::Fault),
     }
 }
 
@@ -236,32 +193,6 @@ pub fn apply(
     *cpu = prediction.cpu;
     cpu.eip = eip;
     Ok(target)
-}
-
-/// At the guest's return: compare with the prediction. The guest's answer
-/// stands either way.
-pub fn compare(prediction: &Prediction, cpu: &CpuAbi, guest: &Guest) {
-    CHECKED.fetch_add(1, Ordering::Relaxed);
-    let record = prediction.record.and_then(|(out, _)| {
-        let mut w = [0u32; 9];
-        for (i, slot) in w.iter_mut().enumerate() {
-            *slot = guest.u32(out.wrapping_add(4 * i as u32)).ok()?;
-        }
-        Some(w)
-    });
-    match prediction.differs(cpu, record) {
-        None => {
-            MATCHED.fetch_add(1, Ordering::Relaxed);
-        }
-        Some(what) => {
-            if MISMATCHED.fetch_add(1, Ordering::Relaxed) == 0 {
-                eprintln!(
-                    "sim: seats aim-assist arm: the guest's {what} differs from the prediction; \
-                     the guest answers every call until the next map"
-                );
-            }
-        }
-    }
 }
 
 /// The arm's whole answer for the call `cpu` is entering, without

@@ -52,7 +52,7 @@ With that, by retail's own tests (**E**):
 | Effects whose definition has flag bit 2 clear (the local class) | `0x179730` under the effect update `0x176e40` | see "Effects" below |
 
 So lever 8 of sim-10x.md ("phantom seat residue") has nothing to take in
-the guest, and `impl.sim.observer-resources` hooks a call the observer
+the guest, and the seats' prediction walk answers a call the observer
 never makes on a phantom-only host (its other callers are not read).
 Making the phantoms "remote-like" is what the roster already is. The
 opposite, local seats, brings back the 16% of the thread that

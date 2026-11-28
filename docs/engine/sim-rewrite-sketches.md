@@ -221,23 +221,18 @@ model.
 | The unit's two slots, each weapon's cone, class, flags and zoom range, the primary's trigger states and kinds | `Input` | copied from the guest per call |
 | The image's 1.0, the x87 state the zoom's `pow` runs on | `Input`, the arm's x87 model | per call |
 
-`engine::sim_seats::aim::arm` runs it as a shadow arm at each `1a50a0`
-entry, behind `impl.sim.aim-assist` (off; installed by
-`sim-bridge/src/present.rs`):
+`engine::sim_seats::aim::arm` answers each `1a50a0` entry, always on
+(installed by `sim-bridge/src/present.rs`):
 
 ```
-entry -> predict -> declined?  -> guest answers                  (declined[float, triggers, fault])
-                 -> unproven or slot % 64 == 0
-                               -> guest answers, compare at return (checked, matched, mismatched)
+entry -> predict -> declined?  -> named error; the lifted body runs it  (declined[float, triggers, fault])
                  -> else       -> Rust answers: record, al, eax, ecx, edx, xmm0-3, x87, ret 4 (answered)
 ```
 
 An answer leaves what retail leaves except the arithmetic flags, the x87
 last-instruction pointers and the dead stack below the return: `ecx` is the
 first bend (retail's `push ecx` slot holds it), `eax` and `edx` the values
-the exit path last loaded. Proof is 4096 matches with no mismatch, per map;
-a mismatch hands every call back to the guest until the next map.
-`sim.arms` reports it as `seats.aim`. `aim_assist_matches_lifted`
+the exit path last loaded. `sim.arms` reports it as `seats.aim`. `aim_assist_matches_lifted`
 (`engine/tests/sim_seats_differential.rs`) runs the arm's applied answer
 against the lifted original with its real callees, `pow` included. The
 register-level port stays as the differential oracle
@@ -330,8 +325,8 @@ themselves aside) call further guest code and stay guest calls.
 
 *The respawn gate.* `15dd40` (`PLAYER_RESPAWN_READY`, `eax` the slot, `al`
 the answer) is called by `players_before` for each candidate. Unlike the
-leaves it has its own shadow arm at its entry
-(`engine/src/sim_seats/respawn.rs`, `impl.sim.respawn-ready`, off), with
+leaves it has its own kernel at its entry
+(`engine/src/sim_seats/respawn.rs`, always on), with
 its callees in Rust: `158a50` (takes part: flags `+2`, `+0xc0`, unit slot
 `+0x2c`, then `15db30`, out of lives: the lives setting
 `[[4e6948] + 0x1b8]`, no unit, `+0x1ac` zero) and `15b2f0` (a local user
@@ -357,12 +352,12 @@ A timer above zero is the countdown (`respawn/countdown.rs`):
 The kernel reads through `Mem`, which holds the call's own writes: the
 event (scratch, never applied), and the timer, the fade and the update word
 (live). The live words ride in the prediction, land in `apply` after each
-address is written back as it is (so a fault lands none), and an audit
-compares them after the guest's return. Registers are left as retail
-leaves them.
+address is written back as it is (so a fault lands none). Registers are
+left as retail leaves them.
 
-The paths that reach further guest systems are declined by name and the
-guest runs the call:
+The paths that reach further guest systems are not ported yet. Each is a
+named, counted error, logged the first time each map, and the lifted body
+runs the call:
 
 | Decline | Where | The guest goes on to |
 |---|---|---|
@@ -371,15 +366,14 @@ guest runs the call:
 | `every-player` | `19eb30`, event player `-1` | the iterator `19f240`; `15dd40` never builds such an event |
 | `fault` | any read, or a seconds divisor of 0 | the whole call |
 
-So the arm does not replace the guest function (`replaces_guest`): on a
-networked host and for a local player the event ticks stay guest. `sim.arms`
-reports `seats.respawn`. `respawn_ready_and_its_callees_match_lifted` puts
+Until they are ported the point is not `replaces_guest`. `sim.arms`
+reports `seats.respawn`, its `declined` the count of these errors. `respawn_ready_and_its_callees_match_lifted` puts
 the body and each callee against the lifted functions, and checks each
 decline by the original reaching the decline's address.
 
 *The pickup scan.* `1508e0` (`PLAYER_PICKUP_SCAN`, `ret 4`, the argument a
-player index) is called by `players_after` for each player. Its shadow arm
-(`engine/src/sim_seats/player_objects.rs`, `impl.sim.player-objects`, off)
+player index) is called by `players_after` for each player. Its kernel
+(`engine/src/sim_seats/player_objects.rs`, always on)
 covers the whole body except the pickup call:
 
 | Part | Guest | Rust |
@@ -391,16 +385,16 @@ covers the whole body except the pickup call:
 
 `eax`, `ecx` and `edx` are the scan's callee scratch and are not reproduced
 (`players_after` reloads them); the callee-saved registers and `esp` are, and
-the return compare reads back every word the query writes (the flood epoch,
-the cluster and object marks, the generation and the two active bytes).
+the prediction carries every word the query writes (the flood epoch, the
+cluster and object marks, the generation and the two active bytes).
 
-The arm refuses by name and the guest answers: `visit` (the collision kernel
+The kernel refuses by name, each a counted error the lifted body runs: `visit` (the collision kernel
 declines the plan), `candidate` (a type 2 or 3 handle: the Halo 1 prompt
 feature has a `before` hook on `150e30` that sees every call, so skipping
 even an early-exit call changes what it records), `pickup` (a `150e30` past
 its early exits, which loops the unit's seats through `ffc60`, posts events
 and calls `badc0`, `ccba0`, `ccb80`, `138880`, `151ea0`, `cd7b0`, `150dd0`,
 `a8f10` and `15e8e0`; only reachable with `Candidates::Port`) and `fault`.
-So the arm is not `replaces_guest`. `sim.arms` reports `seats.player-objects`;
+So the point is not `replaces_guest` yet. `sim.arms` reports `seats.player-objects`;
 `player_objects_match_lifted` puts the body, the query writes and
 `candidate_exits` against the lifted functions.

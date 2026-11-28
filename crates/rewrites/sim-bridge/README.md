@@ -13,7 +13,7 @@ The guest side of the native simulation: adapters from hook entries to the sim c
 - `src/sim_frame.rs`: the tick driver.
 - `src/shadow.rs`: shadow checks against the guest.
 - `src/sim_ext.rs`: the `SimExt` records moved with checkpoint save, revert and full restore, and its snapshot section.
-- `src/sim_observer.rs`, `src/sim_status_poll.rs`: smaller ports.
+- `src/sim_status_poll.rs`: a smaller port.
 
 ## Tests
 

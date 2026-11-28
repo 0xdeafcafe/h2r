@@ -85,11 +85,10 @@ The instruction list identifies 11 more owners. Their hottest instruction can ra
 - **Observer.** `171d90` rewrites the per-seat basis at `+20..+37`, FOV at `+4c` and scale at `+50`. After its call at `171291`, `170fd0` uses the basis to place the camera and calls `171830` for collision. Particle input at `248a31` uses that same scale. The observer also reaches the shared resource cache through `3f450 → 3bcb0 → 12ce00`. Keep camera derivation, collision and resource requests. [Render and simulation dependencies](../graphics/notes/pipelined-render.md)
 - **Sound.** `127805` passes a listener point to `11bed0`, which calls `14a280` and returns the leaf, cluster and BSP. The listener stores the result at `127b04..127b0d`. Code at `221dd6..221e14` uses the cluster for a transmission threshold. The verdict at `127d9e` affects nearest-listener selection. Substituting a constant can change which voices play and when their packets complete, even on the silent clock. Keep the listener update, BSP queries, sound service and voice scheduling. Weapon collision shares `14a280`. [Listener ownership](../game/bots.md#43-hiding-the-views-traced) · [Clock-only host](../live/dedicated-host-light.md#light-host)
 
-- `impl.sim.observer-resources` shortens the current cluster's prediction list at `3f549 → 16e5e0`. In mode 1, types 0, 7 and 8 branch at `16e61c`, `16e6d6` and `16e6e8` straight to the common loop tail. Those cases issue no calls, touch no persistent state and leave accumulated success unchanged. The hook checks up to 64 trailing entries and passes a shortened block header in two unused caller stack words. The guest still executes the prefix over the same loaded BSP metadata and handles every cache request. The cluster's neighbour scan and its separate call at `3f619` run as before. Counting each retail cluster once, 298 of 616 entries qualify on Lockout (16 clusters) and 864 of 1,495 on Waterworks (56 clusters). Tick cost depends on which clusters the cameras visit. [Cluster resource layout](../formats/structure-bsp.md)
-- `impl.sim.native.seats` runs the whole prediction walk at `3f549 → 16e5e0` in Rust: the list is read, each entry dispatched by its type, and every cache request made as a guest call, with the same success accumulation (docs/engine/sim-rewrite.md, phase 7). The cluster's neighbour scan and its separate call at `3f619` stay guest code. An entry type an edited jump table names beyond the nine the image owns declines to the original, as does a count too long to trust. The switch is off by default. With it on, `impl.sim.observer-resources` stands down at this point, because the walk covers it; with it off, the trim above keeps the headless host from executing the mode-1 types 0, 7 and 8. [Cluster resource layout](../formats/structure-bsp.md)
+- The seats run the whole prediction walk at `3f549 → 16e5e0` in Rust: the list is read, each entry dispatched by its type, and every cache request made as a guest call, with the same success accumulation (docs/engine/sim-rewrite.md, phase 7). The cluster's neighbour scan and its separate call at `3f619` stay guest code. An entry type an edited jump table names beyond the nine the image owns declines to the original, as does a count too long to trust. The switch is off by default. With it on, `impl.sim.observer-resources` stands down at this point, because the walk covers it; with it off, the trim above keeps the headless host from executing the mode-1 types 0, 7 and 8. [Cluster resource layout](../formats/structure-bsp.md)
 - The sound arm computes the mix-in room and filter descriptors and submits both setters in guest order. Either setter can deliver a pending stream callback. After the first call the pass reloads the mix-in handle for the filter. Silent hosts use the same submissions on the packet clock. [Sound simulation](../engine/sim-rewrite.md#sketches) · [Callback delivery](../audio/dsound.md)
 
-Observer prediction defaults on in the light profile, and stands down when `impl.sim.native.seats` is on until the seats are promoted. Sound simulation is opt-in on both light and playback hosts.
+Sound simulation is opt-in on both light and playback hosts.
 
 ## Subsystem boundaries
 
@@ -149,8 +148,8 @@ Use one optimised coordinator-built CLI and its full clang image for every arm. 
 set -euo pipefail
 out=$(mktemp -d "${RUSH_KEEP:?}/guest-skips.XXXXXX")
 unset H2_PROFILE H2_TIMELINE H2_HOST_AUDIT H2_LOCKSTEP H2_HOST_MODULE H2_SERVER_MAP_DIR
-off='-impl.sim.observer-resources,-impl.sim.native.sound'
-on='impl.sim.observer-resources,impl.sim.native.sound'
+off='-impl.sim.native.sound'
+on='impl.sim.native.sound'
 
 run_arm() (
     arm=$1; pass=$2; arena=$3
@@ -181,7 +180,7 @@ for case_id in lockout waterworks; do
         bot: [range(4) as $i | {name: (["Red 1","Blue 1","Red 2","Blue 2"][$i]),
             skill: "legendary", team: ($i % 2)}]
     }' > "$out/$case_id.json"
-    for arm in off repeat observer-resources native.sound all; do
+    for arm in off repeat native.sound all; do
         run_arm "$arm" parity on
         diff -u <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.parity.off.json") \
                 <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.parity.$arm.json")
@@ -191,11 +190,11 @@ for case_id in lockout waterworks; do
         [[ "$result" == "identical: 1800 ticks, every component agrees" ]] || { echo "$result"; exit 1; }
     done
     for pass in 1 2 3; do
-        arms=(off observer-resources native.sound all)
-        if [[ $pass == 2 ]]; then arms=(all native.sound observer-resources off); fi
+        arms=(off native.sound all)
+        if [[ $pass == 2 ]]; then arms=(all native.sound off); fi
         for arm in "${arms[@]}"; do run_arm "$arm" "$pass" off; done
     done
-    for arm in off observer-resources native.sound all; do
+    for arm in off native.sound all; do
         for pass in 1 2 3; do
             diff -u <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.1.off.json") \
                     <(jq -c '."match", .state_hashes_v1[]' "$out/$case_id.$pass.$arm.json")
