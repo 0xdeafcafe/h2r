@@ -2,7 +2,7 @@
 
 Status: Built.
 Code: `crates/extensions/game/src/map_slots.rs`, `crates/extensions/game/src/map_copy.rs`, `crates/runtime/vfs/src/campaign_maps.rs`, `crates/rewrites/engine/src/map_status.rs`, `crates/rewrites/sim-bridge/src/sim_status_poll.rs`, `crates/apps/cli/src/sim_cmd/cache_template.rs`, `crates/runtime/vfs/src/host.rs` (`seed`), `crates/platform/xapi/src/vfs_storage.rs` (`mount_cache`). Tests: `crates/runtime/kernel/tests/cache_slots.rs` (ignored; needs the disc), `crates/rewrites/engine/tests/map_status_differential.rs` (needs `H2_XBE`), `sim_cmd::cache_template::tests`, `map_copy::tests`, `crates/platform/xapi/tests/cache_seed.rs`.
-Switches: `impl.sim.status-poll` ([The status poll](#the-status-poll), on by default), `map-copy.lobby` ([Copy speed on the loading screen](#copy-speed-on-the-loading-screen), on for light hosts), `H2_SIM_CACHE_TEMPLATE` ([Sim batches: a warm Z:](#sim-batches-a-warm-z), on by default).
+Switches: `map-copy.lobby` ([Copy speed on the loading screen](#copy-speed-on-the-loading-screen), on for light hosts), `H2_SIM_CACHE_TEMPLATE` ([Sim batches: a warm Z:](#sim-batches-a-warm-z), on by default).
 
 `crates/runtime/kernel/tests/cache_slots.rs` is an opt-in retail integration test.
 It reads and analyses the supplied XBE at runtime, lifts the cache path and its
@@ -290,8 +290,8 @@ a slow worker; a job that outlasts its yields; idle; the plan.
 
 ## The status poll
 
-A static read of the 1.0 XBE, and a memo of its answer under
-`impl.sim.status-poll` (on by default; `crates/rewrites/engine/src/map_status.rs`,
+A static read of the 1.0 XBE, and a memo of its answer, always on
+(`crates/rewrites/engine/src/map_status.rs`,
 the hooks in `crates/rewrites/sim-bridge/src/sim_status_poll.rs`, registered
 on light hosts).
 

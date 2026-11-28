@@ -1,6 +1,5 @@
 //! Answer the map cache status `0x213f10` from its last result while
-//! nothing it reads has changed (`impl.sim.status-poll`, on by default;
-//! [`engine::map_status`], docs/runtime/cache-slots.md, "The status poll").
+//! nothing it reads has changed ([`engine::map_status`], docs/runtime/cache-slots.md, "The status poll").
 //!
 //! A `before` hook looks the call up: on a hit it sets EAX, ECX, EDX and
 //! the arithmetic flags as the original left them for the same key and
@@ -14,9 +13,6 @@ use engine::map_status::{Answer, Cache, Lookup};
 use engine::points;
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use runtime::CpuAbi;
-
-/// The implementation switch: `impl.sim.status-poll`.
-pub const SWITCH: &str = "sim.status-poll";
 
 pub struct StatusPoll;
 
@@ -33,9 +29,6 @@ impl Feature for StatusPoll {
         // The cache is a memo of a pure function of guest memory, checked
         // against that memory on every call: a loaded snapshot needs nothing.
         b.snapshot(SnapshotPolicy::Stateless);
-        if !b.switches().implementation(SWITCH, true) {
-            return Ok(());
-        }
         let cache = Arc::new(Mutex::new(Cache::new()));
         let noted = AtomicBool::new(false);
         let before = Arc::clone(&cache);
@@ -120,14 +113,11 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_places_a_before_and_an_after_hook() {
-        assert!(plan("-impl.sim.status-poll").chains.is_empty());
-        for switches in ["", "impl.sim.status-poll"] {
-            let on = plan(switches);
-            let chain = &on.chains[&points::MAP_STATUS.base];
-            assert_eq!((chain.before.len(), chain.after.len()), (1, 1), "{switches:?}");
-            assert!(chain.implement.is_none());
-        }
+    fn the_feature_places_a_before_and_an_after_hook() {
+        let on = plan("");
+        let chain = &on.chains[&points::MAP_STATUS.base];
+        assert_eq!((chain.before.len(), chain.after.len()), (1, 1));
+        assert!(chain.implement.is_none());
     }
 
     /// A stand-in original: 3 when slot 0 holds the path, else 0, with
@@ -166,7 +156,7 @@ mod tests {
             .unwrap();
         g.write_bytes(PATH, MAIN_MENU, 1).unwrap();
         let rt = Runtime::new(g, d);
-        plan("impl.sim.status-poll").install(&rt).unwrap();
+        plan("").install(&rt).unwrap();
         rt
     }
 
