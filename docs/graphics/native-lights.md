@@ -222,10 +222,11 @@ entry carries them (`frame_scene::EntryState`, read by
 - `shader_flag` alone always holds (its residency request sets no device
   state); the rest is the R1 object items' rule
   ([native-objects-fade.md](native-objects-fade.md)).
-- Only layers 12 and 13 take an entry with state
-  (`light_groups::state_taken`). In layers 10, 11 and 14, and on the
-  per-handler path (`dispatched_entry`), it stays `State`, as does a
-  structure record's toggle or a toggle whose values do not read.
+- Every light and shadow layer takes an entry with state
+  (`light_groups::state_taken`), and the host draws it the same way in
+  each (`native_lights_glue::entry_state`). On the per-handler path
+  (`dispatched_entry`) it stays `State`, as does a structure record's
+  toggle or a toggle whose values do not read.
 - The cut asks the host once per light, and only for an entry with
   state (`Host::held_state`, `typed_groups::plan_or_refusal`). Not held:
   `scene_dropped_light_group_entry_state`, and the light is dropped.
@@ -233,10 +234,10 @@ entry carries them (`frame_scene::EntryState`, read by
   entry before the frame's copy drops the light when a program of the
   layer has flag bit 20 (`scene_dropped_light_host`).
 
-Tests: `an_objects_toggle_and_a_fade_byte_are_the_entrys_state_and_only_diffuse_and_specular_take_it`
+Tests: `an_objects_toggle_and_a_fade_byte_are_the_entrys_state_and_every_light_layer_takes_it`
 (`scene_extract::light_groups`),
-`a_faded_entry_draws_in_diffuse_only_while_the_host_holds_the_stipple_at_rest`,
-`a_flagged_entry_draws_in_diffuse_and_specular_and_asks_the_host_for_the_structure_upload_only_when_it_has_one`
+`a_faded_entry_draws_only_while_the_host_holds_the_stipple_at_rest`,
+`a_flagged_entry_draws_in_every_layer_and_asks_the_host_for_the_structure_upload_only_when_it_has_one`
 (`native_lights/walk.rs`),
 `a_flagged_shader_is_entry_state_with_the_structures_block_and_the_frames_target_copy`,
 `a_part_toggling_the_auxiliary_state_draws_with_its_rows_and_clip`

@@ -423,30 +423,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             let binding = entry.binding;
             uncopied |= entry.state.shader_flag && entry.state.uncopied;
             let selection = Some((binding.variant, binding.selector));
-            // An entry's state: the toggle's values it draws with, and an
-            // unmasked fade, only while the device holds what the
-            // handler's epilogue would leave.
-            let mut aux = None;
-            if !entry.state.plain() {
-                let (now, values) = *held.get_or_insert_with(|| (held_state(device, mem), held_aux(device, mem)));
-                if entry.state.fade && !now.fade {
-                    return Err(Keep::Unsupported("a faded entry, where the stipple is on or not at rest"));
-                }
-                if entry.state.structure && !now.structure {
-                    return Err(Keep::Unsupported(
-                        "a flagged entry whose structure parameter upload the device does not hold",
-                    ));
-                }
-                if entry.state.aux_depth {
-                    aux = Some(values.ok_or(Keep::Unsupported(
-                        "an entry toggling the auxiliary state, whose values the device does not hold off",
-                    ))?);
-                }
-            }
+            let aux = entry_state(device, mem, entry, &mut held)?;
             if structure_key(entry).is_some() {
-                if aux.is_some() {
-                    return Err(Keep::Unsupported("a structure entry toggling the auxiliary state"));
-                }
                 for (draw, flipped) in world.structure_entry(entry)? {
                     run.push((layer, usize::from(binding.implementation), draw, selection, flipped));
                 }
@@ -604,10 +582,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         .map_err(|why| Keep::Shadow(why.name()))?;
         let mut draws: Vec<Planned> = Vec::new();
         let mut run: Vec<(usize, WorldDraw, bool)> = Vec::new();
+        let mut state_held = None;
+        // A flagged shader's entry before the frame's structure target
+        // copy, as in `gathered_draws`.
+        let mut uncopied = false;
         for e in &group.entries {
             let imp = usize::from(e.binding.implementation);
+            uncopied |= e.state.shader_flag && e.state.uncopied;
+            let aux = entry_state(d, mem, e, &mut state_held)?;
             if structure_key(e).is_some() {
-                run.extend(world.structure_entry(e)?.into_iter().map(|(d, flipped)| (imp, d, flipped)));
+                run.extend(world.structure_entry(e)?.into_iter().map(|(draw, flipped)| (imp, draw, flipped)));
                 continue;
             }
             if !run.is_empty() {
@@ -620,11 +604,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             let lights = model_lights.as_ref().ok_or(Keep::Unsupported(
                 "the map's model shadow parts are loading",
             ))?;
-            if layer == CASTER_LAYER {
-                draws.extend(world.resolve_shadow_model(lights, e, group.rows_of(e))?);
+            let mut planned = if layer == CASTER_LAYER {
+                world.resolve_shadow_model(lights, e, group.rows_of(e))?
             } else {
-                draws.extend(world.resolve_receiver_model(lights, e, group.rows_of(e), layer, gel.is_some())?);
+                world.resolve_receiver_model(lights, e, group.rows_of(e), layer, gel.is_some())?
+            };
+            for p in &mut planned {
+                if let Some(model) = &mut p.model {
+                    model.aux_depth = aux;
+                }
             }
+            draws.extend(planned);
         }
         if !run.is_empty() {
             if layer == CASTER_LAYER {
@@ -632,6 +622,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             } else {
                 draws.extend(world.resolve_receiver_parts(layer, run, gel.is_some())?);
             }
+        }
+        if uncopied && draws.iter().any(|p| p.compiled.program.copies_target) {
+            return Err(Keep::Unsupported(
+                "a flagged shader's pass with flag bit 20, before the frame's structure target copy",
+            ));
         }
         let constants = match light {
             // A scene light's gel is drawn into target 13 ahead of its
@@ -870,6 +865,40 @@ fn held_state<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemor
         // flag bit 20 is checked where the entry's draws resolve.
         uncopied: false,
     }
+}
+
+/// An entry's state (`frame_scene::EntryState`) as its draw takes it: the
+/// toggle's values for an object entry toggling the auxiliary state, an
+/// unmasked fade, and the structure's upload, each only while the device
+/// holds what the handler's epilogue would leave. `held` is asked once per
+/// layer. Every light and shadow layer draws through it.
+fn entry_state<B: d3d::backend::Backend>(
+    device: &d3d::Device<B>,
+    mem: &dyn GuestMemory,
+    entry: &LightEntry,
+    held: &mut Option<(frame_scene::EntryState, Option<frame_scene::AuxDepth>)>,
+) -> Result<Option<frame_scene::AuxDepth>, Keep> {
+    if entry.state.plain() {
+        return Ok(None);
+    }
+    let (now, values) = *held.get_or_insert_with(|| (held_state(device, mem), held_aux(device, mem)));
+    if entry.state.fade && !now.fade {
+        return Err(Keep::Unsupported("a faded entry, where the stipple is on or not at rest"));
+    }
+    if entry.state.structure && !now.structure {
+        return Err(Keep::Unsupported(
+            "a flagged entry whose structure parameter upload the device does not hold",
+        ));
+    }
+    if !entry.state.aux_depth {
+        return Ok(None);
+    }
+    if structure_key(entry).is_some() {
+        return Err(Keep::Unsupported("a structure entry toggling the auxiliary state"));
+    }
+    values.map(Some).ok_or(Keep::Unsupported(
+        "an entry toggling the auxiliary state, whose values the device does not hold off",
+    ))
 }
 
 /// What the auxiliary state toggle sets for the current view, when the
