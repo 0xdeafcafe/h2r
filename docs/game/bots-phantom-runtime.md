@@ -118,6 +118,14 @@ animation-cache fill.
 Reading every phantom at the first gather therefore reads what each later
 slot would have read. The sim's state hashes should confirm this (§11).
 
+For the same reason the phantoms of one tick share one walk of the object
+table, in every mode (`arms::share_ground`, keyed by hosted game and tick in
+`Books::ground`; per call in `Thinker::sample_reports`). The first phantom's
+read walks it once for pickups, supplies, held power, loose and live
+grenades and vehicles (`arms::ground_for`); the others copy what it found
+and keep the live grenades within `incoming::DANGER` of their own feet. The
+walk costs once per tick, not once per bot.
+
 **Pipelined**, the thinks staged at tick N run while the guest simulates
 N, and their pads are tick N+1's: the bot acts on what it saw a tick ago.
 Each completed think carries its pad, transport timing and observed target

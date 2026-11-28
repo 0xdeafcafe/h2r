@@ -84,6 +84,7 @@ impl Phantoms {
             // pending brain jobs or buffered plans to reinstate.
             thinker: Thinker::default(),
             batch: None,
+            ground: Default::default(),
             lobby_membership: Default::default(),
             maintenance,
             write_streak: 0,

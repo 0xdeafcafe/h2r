@@ -198,6 +198,9 @@ struct Books {
     thinker: Thinker,
     /// The batch sampled at a tick of a hosted game: each phantom's pad.
     batch: Option<Batch>,
+    /// The object scan of the tick being sampled, shared by its phantoms
+    /// (`arms::share_ground`), keyed by session and tick.
+    ground: crate::arms::SharedGround,
     /// Phantoms join only once a game runs and leave when it ends (the
     /// lobby join off, [`LOBBY_ENV`]).
     game_only: bool,
