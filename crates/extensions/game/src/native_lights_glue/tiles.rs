@@ -3,11 +3,8 @@
 //! held at its passes ([`Glue::hold_light`]); the run draws when the
 //! next light draws on its own or the light frame ends
 //! ([`Glue::flush_run`]), as one sequence whose step bins the run's
-//! lights and draws their layers 12 and 13 instanced ([`TiledRun`]). The
-//! compare arm (`native_render::light_tiles::ARM`) draws a compared run
-//! per light and the tiled pass into a copy of the target, compared on
-//! the GPU ([`CompareRun`]) and read back a few runs later; a difference
-//! turns the arm off. A run that does not prepare draws per light.
+//! lights and draws their layers 12 and 13 instanced ([`TiledRun`]). A
+//! run of one light draws per light.
 //!
 //! A shadowed light's layers 10 and 11 draw ahead of the run, in the
 //! run's order, on the view's target; after each, the target's alpha (its
@@ -18,20 +15,18 @@
 //! masked run writes alpha, so each layer holds the alpha that light's
 //! passes read per light.
 
-use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::GuestMemory;
-use native_render::light_tiles::{self, ARM, Decision, MAX_RUN, Segment, TileRefusal, TileVolume};
-use native_render::light_tiles_gpu::{
-    self, AlphaRead, Compare, LightTiles, LitPass, MAX_SHADOWED, TiledDraw,
-};
+use native_render::light_tiles::{self, MAX_RUN, Segment, TileRefusal, TileVolume};
+use native_render::light_tiles_gpu::{self, AlphaRead, LightTiles, LitPass, MAX_SHADOWED, TiledDraw};
 use native_render::program::ViewInputs;
+use native_render::stage::{Stage, StageWork};
 use render_bridge::native_lights::{SceneDraw, ScenePass};
 
 use super::{
-    DeviceMemory, Glue, Keep, PreparedLight, RetainedLight, ShadowMap, constants, scale_scissor,
-    scene_light, structure_key,
+    Glue, Keep, PreparedLight, RetainedLight, ShadowMap, constants, intersect_scissor, scale_scissor,
+    scene_light, structure_key, view_constants, w_clip,
 };
 
 /// A world-space box (`min`, `max`).
@@ -99,100 +94,32 @@ impl Run {
     }
 }
 
-/// Each copy's masks of a run ([`Snapshot`]): a layer per shadowed light
-/// after the first, the target's format and size.
+/// A run's masks ([`Snapshot`]): a layer per shadowed light after the
+/// first, the target's format and size.
 #[derive(Clone, Default)]
-struct Masks(Arc<Mutex<Vec<(d3d::TargetCopy, wgpu::Texture)>>>);
+struct Masks(Arc<Mutex<Option<wgpu::Texture>>>);
 
 impl Masks {
-    fn on(&self, copy: d3d::TargetCopy) -> Option<wgpu::Texture> {
-        let held = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        held.iter()
-            .find(|(c, _)| *c == copy)
-            .map(|(_, t)| t.clone())
+    fn get(&self) -> Option<wgpu::Texture> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
-/// Each copy's scratch target a compared run draws its tiled pass into.
-#[derive(Clone, Default)]
-struct Scratch(Arc<Mutex<Vec<(d3d::TargetCopy, wgpu::Texture)>>>);
+/// The binning pipelines, per device.
+static GPU: Mutex<Vec<(wgpu::Device, LightTiles)>> = Mutex::new(Vec::new());
 
-impl Scratch {
-    fn on(&self, copy: d3d::TargetCopy) -> Option<wgpu::Texture> {
-        let held = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        held.iter()
-            .find(|(c, _)| *c == copy)
-            .map(|(_, t)| t.clone())
-    }
-}
-
-/// A compare's readback, mapped once its commands have long been
-/// submitted (`AGE` flushes on), then reported to the arm.
-struct Pending {
-    buffer: wgpu::Buffer,
-    lights: usize,
-    age: u32,
-    /// 0 waiting, 1 mapping, 2 mapped, 3 failed.
-    state: Arc<AtomicU8>,
-}
-
-const AGE: u32 = 8;
-
-static PENDING: Mutex<Vec<Pending>> = Mutex::new(Vec::new());
-
-/// The binning and compare pipelines, per device.
-static GPU: Mutex<Vec<(wgpu::Device, LightTiles, Compare)>> = Mutex::new(Vec::new());
-
-fn with_gpu<T>(device: &wgpu::Device, f: impl FnOnce(&mut LightTiles, &Compare) -> T) -> T {
+fn with_gpu<T>(device: &wgpu::Device, f: impl FnOnce(&mut LightTiles) -> T) -> T {
     let mut gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
-    if !gpu.iter().any(|(d, _, _)| d == device) {
-        gpu.push((
-            device.clone(),
-            LightTiles::new(device),
-            Compare::new(device),
-        ));
+    if !gpu.iter().any(|(d, _)| d == device) {
+        gpu.push((device.clone(), LightTiles::new(device)));
     }
-    let (_, tiles, compare) = gpu
-        .iter_mut()
-        .find(|(d, _, _)| d == device)
-        .expect("just made");
-    f(tiles, compare)
+    let (_, tiles) = gpu.iter_mut().find(|(d, _)| d == device).expect("just made");
+    f(tiles)
 }
 
-/// Maps the readbacks old enough and reports the mapped ones.
-fn poll_compares() {
-    let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
-    pending.retain_mut(|p| {
-        p.age += 1;
-        match p.state.load(Ordering::Acquire) {
-            0 if p.age >= AGE => {
-                p.state.store(1, Ordering::Release);
-                let state = Arc::clone(&p.state);
-                p.buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
-                    state.store(if r.is_ok() { 2 } else { 3 }, Ordering::Release);
-                });
-                true
-            }
-            2 => {
-                let difference = match p.buffer.slice(..).get_mapped_range() {
-                    Ok(bytes) => light_tiles_gpu::difference(&bytes),
-                    Err(_) => f32::INFINITY,
-                };
-                p.buffer.unmap();
-                ARM.report(difference <= light_tiles::tolerance(p.lights));
-                false
-            }
-            3 => false,
-            _ => true,
-        }
-    });
-}
-
-/// A map retired: the held run, pending compares and the arm start again.
+/// A map retired: the held run starts again.
 pub(super) fn retire(run: &Mutex<Run>) {
     *run.lock().unwrap_or_else(|e| e.into_inner()) = Run::default();
-    PENDING.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    ARM.reset();
 }
 
 fn refused(cause: TileRefusal) {
@@ -202,12 +129,9 @@ fn refused(cause: TileRefusal) {
     }]);
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+impl Glue {
     /// Holds `draw`'s light in the run when the tiled path takes it.
     pub(super) fn hold_light(&self, mem: &mut dyn GuestMemory, draw: &SceneDraw<'_>) -> bool {
-        if !ARM.on() {
-            return false;
-        }
         match self.admit(&*mem, draw) {
             Ok(held) => {
                 let full = {
@@ -255,7 +179,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return Err(Some(TileRefusal::GelTarget));
         }
         let c = constants(&light).map_err(|_| None)?;
-        let d = self.device.lock().map_err(|_| None)?;
         let ready = self.ready(mem).map_err(|_| None)?;
         let [_, _, x, y, w, h, _, _] = draw.view_target;
         let world = ready.lights.get().ok_or(None)?;
@@ -273,7 +196,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 }
                 let prepared = self
                     .shadow_prepared(
-                        &d,
                         mem,
                         view,
                         &pass.group,
@@ -302,19 +224,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 continue;
             }
             let draws = self
-                .scene_light_draws(&d, mem, &ready, &pass.group, &c, false)
+                .scene_light_draws(mem, &ready, &pass.group, &c, false)
                 .map_err(|_| None)?;
             let prepared = self
-                .prepare_planned(
-                    &d,
-                    mem,
-                    Arc::clone(&ready),
-                    c,
-                    draws,
-                    None,
-                    false,
-                    Some([x, y, w, h]),
-                )
+                .prepare_planned(mem, Arc::clone(&ready), c, draws, None, Some([x, y, w, h]))
                 .map_err(|_| None)?;
             if prepared.projection.is_some()
                 || prepared.shadow_map.is_some()
@@ -357,10 +270,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         })
     }
 
-    /// Draws the held run: tiled, compared, or per light when it does not
-    /// prepare. Returns the lights drawn.
+    /// Draws the held run: tiled, or per light for a run of one. Returns
+    /// the lights drawn.
     pub(super) fn flush_run(&self, mem: &mut dyn GuestMemory) -> usize {
-        poll_compares();
         let run = std::mem::take(&mut *self.run.lock().unwrap_or_else(|e| e.into_inner()));
         let Some(view_target) = run.view_target else {
             return 0;
@@ -370,28 +282,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return 0;
         }
         if n > 1 {
-            let decision = ARM.decide();
-            if decision != Decision::Off {
-                match self.draw_run(mem, view_target, &run.lights, decision) {
-                    Ok(()) => {
-                        light_tiles::count(&[Segment::Tiled(0..n)]);
-                        return n;
-                    }
-                    Err(why) => {
-                        light_tiles::fell_back();
-                        let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
-                        for msg in t.count(Err(why)) {
-                            eprintln!("{msg}");
-                        }
-                    }
-                }
-            }
-        } else {
-            light_tiles::count(&[Segment::PerLight {
-                light: 0,
-                refused: None,
-            }]);
+            light_tiles::count(&[Segment::Tiled(0..n)]);
+            return super::scene_drawn(self.draw_run(&*mem, &run.lights)).map_or(0, |()| n);
         }
+        light_tiles::count(&[Segment::PerLight {
+            light: 0,
+            refused: None,
+        }]);
         let mut drawn = 0;
         for held in &run.lights {
             if super::scene_drawn(self.scene_light_passes(mem, &held.passes, view_target)).is_some() {
@@ -401,31 +298,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         drawn
     }
 
-    /// The run as one sequence: its shadows and masks, then the tiled
-    /// step; or for a compared run a scratch copy of the target, every
-    /// light's per-light steps (the masks taken among them), the tiled
-    /// step into the scratch copy, and the compare.
-    fn draw_run(
-        &self,
-        mem: &mut dyn GuestMemory,
-        view_target: [u32; 8],
-        lights: &[Held],
-        decision: Decision,
-    ) -> Result<(), Keep> {
-        let mut d = self
-            .device
-            .lock()
-            .map_err(|_| Keep::Unsupported("device unavailable"))?;
-        if !d
-            .begin_external_boundary(&mut DeviceMemory(mem))
-            .map_err(|_| Keep::Unsupported("could not drain light state"))?
-        {
-            return Err(Keep::Unsupported("light has an outstanding push callback"));
-        }
-        if !d.can_external_pass() || d.bound_target() != view_target {
-            return Err(Keep::Unsupported("light view target changed"));
-        }
-        let ready = self.ready(&*mem)?;
+    /// The run as one sequence on the view's target: its shadows and
+    /// masks, then the tiled step.
+    fn draw_run(&self, mem: &dyn GuestMemory, lights: &[Held]) -> Result<(), Keep> {
+        let ready = self.ready(mem)?;
         if lights
             .iter()
             .flat_map(|h| &h.lit)
@@ -451,21 +327,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if ranges == 0 {
             return Err(Keep::Unsupported("a held run draws nothing"));
         }
-        let view = mem
-            .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
-            .unwrap_or(u32::MAX);
-        let [color, depth, x, y, w, h, _, _] = view_target;
-        let targets = || d3d::ExternalTargets {
-            color,
-            depth,
-            rect: (x, y, w, h),
-        };
-        let plan = |ranges| d3d::ExternalPlan {
-            stage: timeline::native::Stage::Lights,
-            view,
-            ranges,
-            slots: Vec::new(),
-        };
+        let targets = (frame_types::TargetRef::SceneColour, frame_types::TargetRef::SceneDepth);
         // The masks: layer 0 the alpha the run began with, then one per
         // shadowed light after its receivers; each light reads the layer
         // of the last shadowed light at or before it.
@@ -477,100 +339,46 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             alpha_layers.push(shadowed);
         }
         let masks = masked.then(Masks::default);
-        let snapshot = |layer: u32| d3d::ExternalStep {
-            targets: targets(),
-            plan: plan(1),
-            pass: Box::new(Snapshot {
+        let snapshot = |layer: u32| super::scene::Step {
+            targets,
+            stage: Box::new(Snapshot {
                 masks: masks.clone().unwrap_or_default(),
                 layer,
                 layers: shadowed + 1,
             }),
         };
-        // One light's steps from its own sequence: all of them, or its
-        // shadow's (`lit` false) or its layers 12 and 13 (`lit` true).
-        let light_steps =
-            |held: &Held, part: Option<bool>| -> Result<Vec<d3d::ExternalStep>, Keep> {
-                let mut sequence = self.light_sequence(&*mem, &held.passes)?;
-                if let Some(lit) = part {
-                    sequence = sequence.part(lit);
-                }
-                let (steps, _) = self.sequence_steps(
-                    &d,
-                    &*mem,
-                    view_target,
-                    &ready,
-                    sequence,
-                    timeline::native::Stage::Lights,
-                )?;
-                Ok(steps)
-            };
-        let scratch = (decision == Decision::Compare).then(Scratch::default);
+        // A shadowed light's shadow steps from its own sequence.
+        let shadow_steps = |held: &Held| -> Result<Vec<super::scene::Step>, Keep> {
+            let sequence = self.light_sequence(mem, &held.passes)?.part(false);
+            Ok(self.sequence_steps(mem, &ready, sequence)?.0)
+        };
         let mut steps = Vec::new();
-        if let Some(scratch) = &scratch {
-            steps.push(d3d::ExternalStep {
-                targets: targets(),
-                plan: plan(1),
-                pass: Box::new(ScratchCopy {
-                    scratch: scratch.clone(),
-                }),
-            });
-        }
         if masked {
             steps.push(snapshot(0));
         }
-        // The shadows ahead of the run, each followed by its mask layer;
-        // compared, every light's per-light steps on the target, with a
-        // shadowed light's mask layer between its receivers and its
-        // layers 12 and 13.
+        // The shadows ahead of the run, each followed by its mask layer.
         let mut layer = 0;
-        for held in lights {
-            match (&scratch, held.shadowed) {
-                (None, false) => {}
-                (None, true) => {
-                    layer += 1;
-                    steps.extend(light_steps(held, Some(false))?);
-                    steps.push(snapshot(layer));
-                }
-                (Some(_), false) => steps.extend(light_steps(held, None)?),
-                (Some(_), true) => {
-                    layer += 1;
-                    steps.extend(light_steps(held, Some(false))?);
-                    steps.push(snapshot(layer));
-                    steps.extend(light_steps(held, Some(true))?);
-                }
-            }
+        for held in lights.iter().filter(|h| h.shadowed) {
+            layer += 1;
+            steps.extend(shadow_steps(held)?);
+            steps.push(snapshot(layer));
         }
-        steps.push(d3d::ExternalStep {
-            targets: targets(),
-            plan: plan(ranges),
-            pass: Box::new(TiledRun {
+        steps.push(super::scene::Step {
+            targets,
+            stage: Box::new(TiledRun {
                 lit,
                 bounds: lights.iter().map(|h| h.bounds).collect(),
                 ranges,
-                view: None,
-                clip: None,
-                scratch: scratch.clone(),
                 masks,
                 alpha_layers,
             }),
         });
-        if let Some(scratch) = scratch {
-            steps.push(d3d::ExternalStep {
-                targets: targets(),
-                plan: plan(1),
-                pass: Box::new(CompareRun {
-                    scratch,
-                    lights: lights.len(),
-                    alpha: !masked,
-                }),
-            });
-        }
-        self.commit_steps(&mut d, mem, &ready, steps)
+        self.commit_steps(mem, &ready, frame_types::Slot::Opaque, steps)
     }
 }
 
 /// The run's binning and instanced layers 12 and 13 on the view's
-/// target, or, compared, on a scratch copy of it.
+/// target.
 struct TiledRun {
     /// Per light, in the run's order (its bit), each lit layer prepared
     /// and retained.
@@ -578,9 +386,6 @@ struct TiledRun {
     /// Per light, its box ([`Held::bounds`]).
     bounds: Vec<Option<Bounds>>,
     ranges: usize,
-    view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
-    clip: Option<d3d::DepthClip>,
-    scratch: Option<Scratch>,
     /// The run's masks and, per light, the layer its passes read.
     masks: Option<Masks>,
     alpha_layers: Vec<u32>,
@@ -607,32 +412,27 @@ fn same_draw(
 impl TiledRun {
     fn encoded(
         &mut self,
-        t: &d3d::backend::ExternalAttachments,
-        request: d3d::ExternalPassRequest,
-    ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
+        t: &gfx::external::ExternalAttachments,
+        request: &native_render::stage::ViewInputs,
+    ) -> Result<gfx::external::ExternalEncoded, &'static str> {
         let guest = request.surface_size;
-        let constants = self.view.ok_or("missing view constants")?;
-        let clip = self
-            .clip
-            .filter(|c| c.w_buffered == Some(true))
-            .ok_or("unknown W-buffer at issue")?;
         let view = ViewInputs {
-            constants: request.view_constants(t.copy, constants),
+            constants: view_constants(),
             guest_size: guest,
             size: t.size,
             z_scale: request.z_scale,
-            w_clip: Some((clip.range, clip.clamp)),
+            w_clip: Some(w_clip()),
         };
         let mut scissor = None;
         for (_, p, _) in self.lit.iter().flatten() {
-            let [x, y, width, height] = p.scissor;
-            let c = d3d::PixelRect {
+            let [x, y, width, height] = intersect_scissor(p.scissor, request.rect);
+            let c = gfx::external::PixelRect {
                 x,
                 y,
                 width,
                 height,
             }
-            .projected_x(request.rect, request.projection_factor(t.copy));
+            .projected_x(request.rect, request.display_projection_factor);
             let s = scale_scissor([c.x, c.y, c.width, c.height], guest, t.size)
                 .ok_or("unsupported scissor scale")?;
             if scissor.is_some_and(|o| o != s) {
@@ -698,7 +498,7 @@ impl TiledRun {
             rect: [0.0, 0.0, t.size.0 as f32, t.size.1 as f32],
             near: 0.0,
         };
-        // Each light's box through the copy's view (`TileVolume::from_bounds`);
+        // Each light's box through the view (`TileVolume::from_bounds`);
         // a light with no box covers the whole target from depth 0.
         let volumes: Vec<TileVolume> = self
             .bounds
@@ -708,24 +508,16 @@ impl TiledRun {
                     .unwrap_or(whole)
             })
             .collect();
-        let scratch = match &self.scratch {
-            Some(shared) => Some(
-                shared
-                    .on(t.copy)
-                    .ok_or("no compare copy on this target copy")?,
-            ),
-            None => None,
-        };
         let masks_view = match &self.masks {
             Some(masks) => Some(
                 masks
-                    .on(t.copy)
-                    .ok_or("no light masks on this target copy")?
+                    .get()
+                    .ok_or("no light masks")?
                     .create_view(&light_tiles_gpu::mask_view()),
             ),
             None => None,
         };
-        let (grid, tiled) = with_gpu(&t.device, |tiles, _| {
+        let (grid, tiled) = with_gpu(&t.device, |tiles| {
             let grid = tiles.prepare_bin(&t.device, &depth_sample, t.size, &volumes);
             let tiled = tiles.record_masked(
                 &t.device,
@@ -740,17 +532,11 @@ impl TiledRun {
             tiled.map(|tiled| (grid, tiled))
         })?;
         let draws = tiled.draws();
-        let target_view = match &scratch {
-            Some(s) => s.create_view(&wgpu::TextureViewDescriptor {
-                format: Some(t.color_format),
-                ..Default::default()
-            }),
-            None => t.color.clone(),
-        };
+        let target_view = t.color.clone();
         let depth_view = t.depth.clone();
         let stencil = t.depth_format.has_stencil_aspect();
         let (vertices, indices) = (first.vertices.clone(), first.indices.clone());
-        Ok(d3d::backend::ExternalEncoded {
+        Ok(gfx::external::ExternalEncoded {
             ranges: self.ranges,
             draws,
             passes: 1,
@@ -788,186 +574,40 @@ impl TiledRun {
     }
 }
 
-impl d3d::ExternalPass for TiledRun {
-    fn uses_validated_resources(&self) -> bool {
-        true
+impl Stage for TiledRun {
+    fn name(&self) -> &'static str {
+        "light tiles"
     }
 
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites {
-            color: self.scratch.is_none(),
-            depth_stencil: false,
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::stage::ViewInputs) -> StageWork {
+        match self.encoded(t, view) {
+            Ok(encoded) => StageWork::Encoded(encoded),
+            Err(why) => unimplemented!("lights: tiles: {why}"),
         }
-    }
-
-    fn record_encoded(
-        &mut self,
-        t: &d3d::backend::ExternalAttachments,
-        request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
-        Some(self.encoded(t, request))
-    }
-
-    fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
-        self.view = Some(*constants);
-    }
-
-    fn depth_clip(&mut self, clip: d3d::DepthClip) {
-        self.clip = Some(clip);
-    }
-}
-
-/// A compared run's last step: the per-light passes' result on the
-/// view's target against the tiled pass's on the scratch copy, the
-/// largest difference read back later ([`poll_compares`]).
-struct CompareRun {
-    scratch: Scratch,
-    lights: usize,
-    /// Compare alpha too: not for a masked run, whose tiled copy keeps the
-    /// alpha it began with.
-    alpha: bool,
-}
-
-impl d3d::ExternalPass for CompareRun {
-    fn uses_validated_resources(&self) -> bool {
-        true
-    }
-
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites::default()
-    }
-
-    fn record_encoded(
-        &mut self,
-        t: &d3d::backend::ExternalAttachments,
-        _request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
-        let Some(scratch) = self.scratch.on(t.copy) else {
-            return Some(Err("no tiled copy on this target copy"));
-        };
-        let colour = t.color.texture();
-        if !colour
-            .usage()
-            .contains(wgpu::TextureUsages::TEXTURE_BINDING)
-        {
-            return Some(Err("the view's target cannot be read for the compare"));
-        }
-        let diff = with_gpu(&t.device, |_, compare| {
-            compare.prepare_channels(
-                &t.device,
-                &scratch.create_view(&Default::default()),
-                &colour.create_view(&Default::default()),
-                t.size,
-                self.alpha,
-            )
-        });
-        PENDING
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(Pending {
-                buffer: diff.readback().clone(),
-                lights: self.lights,
-                age: 0,
-                state: Arc::new(AtomicU8::new(0)),
-            });
-        Some(Ok(d3d::backend::ExternalEncoded {
-            ranges: 1,
-            draws: 0,
-            passes: 0,
-            commands: Box::new(move |encoder| diff.encode(encoder)),
-        }))
-    }
-}
-
-/// A compared run's first step: each copy's scratch copy of the view's
-/// target as the run begins, which the tiled step draws into.
-struct ScratchCopy {
-    scratch: Scratch,
-}
-
-impl d3d::ExternalPass for ScratchCopy {
-    fn uses_validated_resources(&self) -> bool {
-        true
-    }
-
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites::default()
-    }
-
-    fn record_encoded(
-        &mut self,
-        t: &d3d::backend::ExternalAttachments,
-        _request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
-        let colour = t.color.texture().clone();
-        if !colour.usage().contains(wgpu::TextureUsages::COPY_SRC)
-            || (colour.width(), colour.height()) != t.size
-        {
-            return Some(Err("the view's target cannot be copied for the compare"));
-        }
-        let texture = t.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("light tiles compare copy"),
-            size: colour.size(),
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: colour.format(),
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_DST
-                | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[t.color_format],
-        });
-        {
-            let mut held = self.scratch.0.lock().unwrap_or_else(|e| e.into_inner());
-            held.retain(|(copy, _)| *copy != t.copy);
-            held.push((t.copy, texture.clone()));
-        }
-        Some(Ok(d3d::backend::ExternalEncoded {
-            ranges: 1,
-            draws: 0,
-            passes: 0,
-            commands: Box::new(move |encoder| {
-                encoder.copy_texture_to_texture(
-                    colour.as_image_copy(),
-                    texture.as_image_copy(),
-                    colour.size(),
-                );
-            }),
-        }))
     }
 }
 
 /// The view's target's alpha now, copied into layer `layer` of the run's
-/// masks on each copy (the whole texel, the format the passes read); the
-/// layer 0 step makes the copy's `layers`-layer array.
+/// masks (the whole texel, the format the passes read); the layer 0
+/// step makes the `layers`-layer array.
 struct Snapshot {
     masks: Masks,
     layer: u32,
     layers: u32,
 }
 
-impl d3d::ExternalPass for Snapshot {
-    fn uses_validated_resources(&self) -> bool {
-        true
+impl Stage for Snapshot {
+    fn name(&self) -> &'static str {
+        "light tiles mask"
     }
 
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites::default()
-    }
-
-    fn record_encoded(
-        &mut self,
-        t: &d3d::backend::ExternalAttachments,
-        _request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, _: &native_render::stage::ViewInputs) -> StageWork {
         let colour = t.color.texture().clone();
         if !colour.usage().contains(wgpu::TextureUsages::COPY_SRC)
             || (colour.width(), colour.height()) != t.size
             || colour.sample_count() != 1
         {
-            return Some(Err(
-                "the view's target cannot be copied into the light masks",
-            ));
+            unimplemented!("lights: the view's target cannot be copied into the light masks");
         }
         let masks = if self.layer == 0 {
             let texture = t.device.create_texture(&wgpu::TextureDescriptor {
@@ -984,21 +624,19 @@ impl d3d::ExternalPass for Snapshot {
                 usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
-            let mut held = self.masks.0.lock().unwrap_or_else(|e| e.into_inner());
-            held.retain(|(copy, _)| *copy != t.copy);
-            held.push((t.copy, texture.clone()));
+            *self.masks.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(texture.clone());
             texture
         } else {
-            match self.masks.on(t.copy) {
+            match self.masks.get() {
                 Some(texture) => texture,
-                None => return Some(Err("no light masks on this target copy")),
+                None => unimplemented!("lights: no light masks before layer {}", self.layer),
             }
         };
         if self.layer >= masks.depth_or_array_layers() {
-            return Some(Err("a light mask layer past the run's masks"));
+            unimplemented!("lights: a light mask layer past the run's masks");
         }
         let (layer, size) = (self.layer, t.size);
-        Some(Ok(d3d::backend::ExternalEncoded {
+        StageWork::Encoded(gfx::external::ExternalEncoded {
             ranges: 1,
             draws: 0,
             passes: 0,
@@ -1022,6 +660,6 @@ impl d3d::ExternalPass for Snapshot {
                     },
                 );
             }),
-        }))
+        })
     }
 }

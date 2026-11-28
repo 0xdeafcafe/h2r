@@ -1,12 +1,11 @@
 //! A cut light's layers drawn from the scene (docs/graphics/native-lights.md,
 //! "The light frame under the cut"). The guest's layer begin and end do
-//! not run, so the work they make on the device is the light's own steps
-//! of one external sequence, each on its explicit attachments
-//! (`d3d::Device::prepare_external_sequence`), with nothing rebound:
+//! not run, so the work they make is the light's own steps, each a stage
+//! pushed after a bind of its attachments:
 //!
 //! - layer 10: target 9's depth cleared to 1 and stencil 0 (the begin's
 //!   `0x00014b60`), the casters drawn into it, and the region they drew
-//!   frozen into a map on each target copy ([`Frozen`],
+//!   frozen into a map ([`Frozen`],
 //!   `gfx::depth_bits::DepthBits::convert_region`); a colour-mask caster
 //!   the same on target 10, cleared white with zero alpha, its colour
 //!   copied (an object shadow's filter runs between the casters and the
@@ -15,11 +14,11 @@
 //! - layer 14: target 1;
 //! - layers 12 and 13: the view's target.
 //!
-//! The sequence is committed whole with no light tail
-//! (`d3d::PreparedSequence::commit`), or not at all.
+//! The sequence is pushed whole, or not at all.
 
 use super::*;
 use frame_scene::ShadowPass;
+use frame_types::TargetRef;
 use native_render::shadow_gpu::{MapKind, SampledMap};
 use render_bridge::native_lights::{SceneGroup, ScenePass};
 
@@ -32,7 +31,7 @@ pub(super) enum Attach {
     Target(u32),
 }
 
-/// One ordered device operation of a light drawn from the scene.
+/// One ordered operation of a light drawn from the scene.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Op {
     /// Clear a shadow map target: target 9's depth to 1 and stencil to 0,
@@ -104,53 +103,22 @@ pub(super) fn object_ops(layers: &[(u8, Option<ShadowPass>)], filter: bool) -> R
     Ok(out)
 }
 
-/// The guest size of render target `n`: its `+0x80` and `+0x84` words.
-fn target_size(mem: &dyn GuestMemory, n: u32) -> Option<(u32, u32)> {
-    use engine::shadow_constants::global::{TARGETS, TARGET_STRIDE};
-    let entry = TARGETS.checked_add(n.checked_mul(TARGET_STRIDE)?)?;
-    let size = (
-        mem.u32(entry.checked_add(0x80)?).ok()?,
-        mem.u32(entry.checked_add(0x84)?).ok()?,
-    );
-    (size.0 != 0 && size.1 != 0 && size.0 <= i32::MAX as u32 && size.1 <= i32::MAX as u32)
-        .then_some(size)
-}
-
 /// Clears a shadow map (the layer begin's clear): target 9's depth and
 /// stencil, or target 10's colour (`colour`).
 struct ClearMap {
     colour: bool,
 }
 
-impl d3d::ExternalPass for ClearMap {
-    fn replays_scene(&self) -> bool {
-        true
+impl Stage for ClearMap {
+    fn name(&self) -> &'static str {
+        "light shadow clear"
     }
 
-    fn uses_validated_resources(&self) -> bool {
-        true
-    }
-
-    fn colour_only(&self) -> bool {
-        self.colour
-    }
-
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites {
-            color: self.colour,
-            depth_stencil: !self.colour,
-        }
-    }
-
-    fn record_encoded(
-        &mut self,
-        t: &d3d::backend::ExternalAttachments,
-        _: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, _: &native_render::stage::ViewInputs) -> StageWork {
         let (colour, depth) = (self.colour, t.depth.clone());
         let stencil = t.depth_format.has_stencil_aspect();
         let color = t.color.clone();
-        Some(Ok(d3d::backend::ExternalEncoded {
+        StageWork::Encoded(gfx::external::ExternalEncoded {
             ranges: 1,
             draws: 0,
             passes: 1,
@@ -180,7 +148,7 @@ impl d3d::ExternalPass for ClearMap {
                     multiview_mask: None,
                 }));
             }),
-        }))
+        })
     }
 }
 
@@ -192,38 +160,34 @@ const MASK_CLEAR: wgpu::Color = wgpu::Color {
     a: 0.0,
 };
 
-/// The caster maps a light froze, one per target copy: each copy records
-/// the whole sequence on its own attachments, its freeze before its
-/// receivers, so a receiver samples the map of the copy it records on.
+/// The caster map a light froze, its freeze recorded before its
+/// receivers, which sample it.
 #[derive(Clone, Default)]
-pub(super) struct Frozen(Arc<Mutex<Vec<(d3d::TargetCopy, SampledMap)>>>);
+pub(super) struct Frozen(Arc<Mutex<Option<SampledMap>>>);
 
 impl Frozen {
-    fn put(&self, copy: d3d::TargetCopy, map: SampledMap) {
-        let mut maps = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        maps.retain(|(c, _)| *c != copy);
-        maps.push((copy, map));
+    fn put(&self, map: SampledMap) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = Some(map);
     }
 
-    /// The map last frozen on `copy`.
-    pub(super) fn on(&self, copy: d3d::TargetCopy) -> Option<SampledMap> {
-        let maps = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        maps.iter().find(|(c, _)| *c == copy).map(|(_, map)| map.clone())
+    /// The map last frozen.
+    pub(super) fn get(&self) -> Option<SampledMap> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
-/// The texels of a copy's caster map: the caster's guest rect (from the
-/// target's top-left) scaled from the target's guest size to the copy's
-/// `texels`. `None` for an empty or offset rect, or one past the target.
-pub(super) fn frozen_size(request: &d3d::ExternalPassRequest, texels: (u32, u32)) -> Option<(u32, u32)> {
-    let (x, y, w, h) = request.rect;
-    let (gw, gh) = request.surface_size;
+/// The texels of a caster map: the caster's guest `rect` (from the
+/// target's top-left) scaled from the target's guest size `surface` to
+/// its `texels`. `None` for an empty or offset rect, or one past the
+/// target.
+pub(super) fn frozen_size(rect: (u32, u32, u32, u32), surface: (u32, u32), texels: (u32, u32)) -> Option<(u32, u32)> {
+    let (x, y, w, h) = rect;
+    let (gw, gh) = surface;
     if x != 0 || y != 0 || w == 0 || h == 0 || w > gw || h > gh {
         return None;
     }
-    let [_, _, sw, sh] = d3d::external_viewport(request, texels);
-    let size = (sw as u32, sh as u32);
-    (size.0 != 0 && size.1 != 0 && size.0 <= texels.0 && size.1 <= texels.1).then_some(size)
+    let [_, _, sw, sh] = gfx::raster::RenderScale::between(surface, texels)?.rect(x, y, w, h);
+    (sw != 0 && sh != 0 && sw <= texels.0 && sh <= texels.1).then_some((sw, sh))
 }
 
 /// The depth-bits pipeline of `device`, made once per device.
@@ -238,47 +202,28 @@ fn depth_bits(device: &wgpu::Device) -> Arc<gfx::depth_bits::DepthBits> {
     b
 }
 
-/// Freezes the region of a caster map its casters drew, on each copy at
-/// that copy's texels, for the receivers after it ([`Frozen`]): target 9's
-/// depth as its bits, target 10's colour mask as a copy.
+/// Freezes the region of a caster map its casters drew, at the target's
+/// texels, for the receivers after it ([`Frozen`]): target 9's depth as
+/// its bits, target 10's colour mask as a copy.
 struct FreezeMap {
     frozen: Frozen,
     kind: MapKind,
 }
 
-impl d3d::ExternalPass for FreezeMap {
-    fn replays_scene(&self) -> bool {
-        true
+impl Stage for FreezeMap {
+    fn name(&self) -> &'static str {
+        "light shadow freeze"
     }
 
-    fn uses_validated_resources(&self) -> bool {
-        true
-    }
-
-    fn colour_only(&self) -> bool {
-        self.kind == MapKind::ColourMask
-    }
-
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites {
-            color: false,
-            depth_stencil: false,
-        }
-    }
-
-    fn record_encoded(
-        &mut self,
-        t: &d3d::backend::ExternalAttachments,
-        request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, request: &native_render::stage::ViewInputs) -> StageWork {
         let source = match self.kind {
             MapKind::Depth => t.depth.texture().clone(),
             MapKind::ColourMask => t.color.texture().clone(),
         };
-        let Some(size) = frozen_size(&request, t.size)
+        let Some(size) = frozen_size(request.rect, request.surface_size, t.size)
             .filter(|&(w, h)| w <= source.width() && h <= source.height())
         else {
-            return Some(Err("a scene light caster map outside its target"));
+            unimplemented!("lights: a scene light caster map outside its target");
         };
         let usable = source.sample_count() == 1
             && match self.kind {
@@ -294,7 +239,7 @@ impl d3d::ExternalPass for FreezeMap {
                 }
             };
         if !usable {
-            return Some(Err("a scene light caster map that cannot be sampled"));
+            unimplemented!("lights: a scene light caster map that cannot be sampled");
         }
         let out = match self.kind {
             MapKind::Depth => gfx::depth_bits::DepthBits::output(&t.device, size),
@@ -314,7 +259,6 @@ impl d3d::ExternalPass for FreezeMap {
             }),
         };
         self.frozen.put(
-            t.copy,
             SampledMap {
                 kind: self.kind,
                 view: out.create_view(&Default::default()),
@@ -334,12 +278,12 @@ impl d3d::ExternalPass for FreezeMap {
                 )
             }),
         };
-        Some(Ok(d3d::backend::ExternalEncoded {
+        StageWork::Encoded(gfx::external::ExternalEncoded {
             ranges: 1,
             draws: 1,
             passes: 0,
             commands,
-        }))
+        })
     }
 }
 
@@ -370,7 +314,7 @@ impl Sequence<'_> {
     }
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+impl Glue {
     /// Draws one light's passes of the open view from the scene, as one
     /// sequence ([`ops`]). Returns the layers drawn.
     pub(super) fn scene_light_passes(
@@ -380,7 +324,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         view_target: [u32; 8],
     ) -> Result<usize, Keep> {
         let sequence = self.light_sequence(&*mem, passes)?;
-        self.scene_sequence(mem, view_target, sequence, timeline::native::Stage::Lights)
+        self.scene_sequence(mem, view_target, sequence, frame_types::Slot::Opaque)
     }
 
     /// What one light's passes draw as a sequence ([`ops`]).
@@ -430,46 +374,30 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             gel: None,
             ops: object_ops(&layers, pass.filter.is_some())?,
         };
-        self.scene_sequence(mem, view_target, sequence, timeline::native::Stage::Shadows)
+        self.scene_sequence(mem, view_target, sequence, frame_types::Slot::AfterLights)
     }
 
     fn scene_sequence(
         &self,
         mem: &mut dyn GuestMemory,
-        view_target: [u32; 8],
+        _view_target: [u32; 8],
         sequence: Sequence<'_>,
-        stage: timeline::native::Stage,
+        slot: frame_types::Slot,
     ) -> Result<usize, Keep> {
-        let mut d = self
-            .device
-            .lock()
-            .map_err(|_| Keep::Unsupported("device unavailable"))?;
-        if !d
-            .begin_external_boundary(&mut DeviceMemory(mem))
-            .map_err(|_| Keep::Unsupported("could not drain light state"))?
-        {
-            return Err(Keep::Unsupported("light has an outstanding push callback"));
-        }
-        if !d.can_external_pass() || d.bound_target() != view_target {
-            return Err(Keep::Unsupported("light view target changed"));
-        }
         let ready = self.ready(mem)?;
-        let (steps, drawn) = self.sequence_steps(&d, &*mem, view_target, &ready, sequence, stage)?;
-        self.commit_steps(&mut d, mem, &ready, steps)?;
+        let (steps, drawn) = self.sequence_steps(&*mem, &ready, sequence)?;
+        self.commit_steps(&*mem, &ready, slot, steps)?;
         Ok(drawn)
     }
 
-    /// The steps of one sequence ([`Self::scene_sequence`]), made under the
-    /// device lock with nothing issued; and the layers they draw.
+    /// The steps of one sequence ([`Self::scene_sequence`]), made with
+    /// nothing pushed; and the layers they draw.
     pub(super) fn sequence_steps(
         &self,
-        d: &d3d::Device<B>,
         mem: &dyn GuestMemory,
-        view_target: [u32; 8],
         ready: &Arc<Ready>,
         sequence: Sequence<'_>,
-        stage: timeline::native::Stage,
-    ) -> Result<(Vec<d3d::ExternalStep>, usize), Keep> {
+    ) -> Result<(Vec<Step>, usize), Keep> {
         let Sequence {
             groups,
             light,
@@ -481,53 +409,24 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let view = mem
             .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
             .unwrap_or(u32::MAX);
-        let [color, depth, x, y, w, h, _, _] = view_target;
-        let view_targets = d3d::ExternalTargets {
-            color,
-            depth,
-            rect: (x, y, w, h),
-        };
-        // The caster's map size is its pass's: the shadow setup's resize,
-        // which the cut frame did not write.
+        let view_targets = (TargetRef::SceneColour, TargetRef::SceneDepth);
         let caster = groups
             .iter()
             .find(|g| g.group.layer == 10)
             .and_then(|g| g.group.pass);
-        let caster_size = caster.map(|s| (s.size[0], s.size[1]));
-        let targets = |n: u32| -> Result<d3d::ExternalTargets, Keep> {
-            let [color, depth] = crate::native_shadows_glue::expected_targets(mem, n)
-                .ok_or(Keep::Shadow("target"))?;
-            let (w, h) = match (n, caster_size) {
-                (9 | 10, Some(size)) => size,
-                _ => target_size(mem, n).ok_or(Keep::Shadow("target"))?,
-            };
-            Ok(d3d::ExternalTargets {
-                color,
-                depth,
-                rect: (0, 0, w, h),
-            })
-        };
-        // Each copy's frozen map, filled as that copy records its freeze.
+        // The receivers' map, filled when the freeze records.
         let frozen = caster.map(|_| Frozen::default());
-        let plan = |ranges, slots| d3d::ExternalPlan {
-            stage,
-            view,
-            ranges,
-            slots,
-        };
         let mut steps = Vec::with_capacity(ops.len());
         let mut drawn = 0;
         for op in ops {
             let step = match op {
-                Op::Clear(n) => d3d::ExternalStep {
-                    targets: targets(n)?,
-                    plan: plan(1, Vec::new()),
-                    pass: Box::new(ClearMap { colour: n == 10 }),
+                Op::Clear(n) => Step {
+                    targets: game_target(n),
+                    stage: Box::new(ClearMap { colour: n == 10 }),
                 },
-                Op::Freeze(n) => d3d::ExternalStep {
-                    targets: targets(n)?,
-                    plan: plan(1, Vec::new()),
-                    pass: Box::new(FreezeMap {
+                Op::Freeze(n) => Step {
+                    targets: game_target(n),
+                    stage: Box::new(FreezeMap {
                         frozen: frozen.clone().ok_or(Keep::Shadow("state"))?,
                         kind: if n == 10 { MapKind::ColourMask } else { MapKind::Depth },
                     }),
@@ -545,10 +444,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                     if let Some(why) = ready_gels.scene_gels.clock_refusal(shader, time) {
                         return Err(Keep::Unsupported(why));
                     }
-                    d3d::ExternalStep {
-                        targets: targets(native_render::gels::TARGET)?,
-                        plan: plan(1, Vec::new()),
-                        pass: Box::new(GelPass {
+                    Step {
+                        targets: game_target(native_render::gels::TARGET),
+                        stage: Box::new(GelPass {
                             gels: Arc::clone(&ready_gels.scene_gels),
                             shader,
                             depth,
@@ -560,15 +458,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 }
                 Op::Filter => {
                     let filter = filter.clone().ok_or(Keep::Shadow("state"))?;
-                    let slot = |n| {
-                        crate::native_shadows_glue::target_header(mem, n)
-                            .map(|header| Some(d3d::ExternalSlot { header, written: true }))
-                            .ok_or(Keep::Shadow("target"))
-                    };
-                    d3d::ExternalStep {
-                        targets: targets(10)?,
-                        plan: plan(filter.draws.len().max(1), vec![slot(10)?, slot(11)?]),
-                        pass: Box::new(crate::native_shadows_glue::ShadowFilterPass {
+                    Step {
+                        targets: game_target(10),
+                        stage: Box::new(crate::native_shadows_glue::ShadowFilterPass {
                             filter,
                             drawer: crate::native_shadows_glue::FilterDrawer::Scene,
                             chain: None,
@@ -583,22 +475,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                     }
                     let targets = match attach {
                         Attach::View => view_targets,
-                        Attach::Target(t) => targets(t)?,
+                        Attach::Target(t) => game_target(t),
                     };
-                    let (tx, ty, tw, th) = targets.rect;
-                    let rect = Some([tx, ty, tw, th]);
-                    let colour_only = group.group.layer == 10 && group.group.pass.is_some_and(|p| p.colour_mask());
+                    // The whole target: the bind's viewport cuts it.
+                    let rect = Some(WHOLE_TARGET);
                     // A gel light's layers sample target 13 as its gel step
-                    // left it, through a read-only slot of their own.
+                    // left it.
                     let binding = gel.map(|(_, b)| b);
                     let prepared = match group.group.layer {
                         12 | 13 => {
                             let c = light.ok_or(Keep::NoConstants)?;
-                            let draws = self.scene_light_draws(d, mem, &ready, group, &c, binding.is_some())?;
-                            self.prepare_planned(d, mem, Arc::clone(&ready), c, draws, binding, false, rect)?
+                            let draws = self.scene_light_draws(mem, &ready, group, &c, binding.is_some())?;
+                            self.prepare_planned(mem, Arc::clone(&ready), c, draws, binding, rect)?
                         }
                         _ => self.shadow_prepared(
-                            d,
                             mem,
                             view,
                             group,
@@ -609,23 +499,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                         )?,
                     };
                     let retained = RetainedLight::of(&ready, &prepared)?;
-                    let ranges = prepared.draws.iter().map(|draw| draw.ranges.len()).sum();
-                    let slots: Vec<_> = prepared.binding.map(|b| Some(b.slot())).into_iter().collect();
-                    let gel_slot = (!slots.is_empty()).then_some(0);
                     drawn += 1;
-                    d3d::ExternalStep {
+                    Step {
                         targets,
-                        plan: plan(ranges, slots),
-                        pass: Box::new(RunPass {
+                        stage: Box::new(RunPass {
                             retained: Some(retained),
                             light: prepared,
-                            view: None,
-                            clip: None,
-                            gel_slot,
-                            fallback: None,
-                            colour_only,
                             lighting_only: None,
-                            cone_shadow: None,
                         }),
                     }
                 }
@@ -635,14 +515,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         Ok((steps, drawn))
     }
 
-    /// Prepares `steps` on every target copy and commits them as one
-    /// sequence, or issues nothing.
+    /// Pushes `steps` at `slot` as one sequence, each after a bind of its
+    /// attachments, or pushes nothing when the world changed under them.
     pub(super) fn commit_steps(
         &self,
-        d: &mut d3d::Device<B>,
-        mem: &mut dyn GuestMemory,
+        mem: &dyn GuestMemory,
         ready: &Arc<Ready>,
-        steps: Vec<d3d::ExternalStep>,
+        slot: frame_types::Slot,
+        steps: Vec<Step>,
     ) -> Result<(), Keep> {
         {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
@@ -650,15 +530,25 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 return Err(Keep::Unsupported("world changed during light preparation"));
             }
         }
-        d.prepare_external_sequence(&mut DeviceMemory(mem), steps)
-            .map_err(|_| Keep::Unsupported("device error preparing the scene light"))?
-            .ok_or(Keep::Unsupported("the scene light is not ready on a target copy"))?
-            .commit();
+        for Step { targets: (colour, depth), stage } in steps {
+            frame_builder().push(FrameOp::Bind { colour, depth });
+            push(mem, slot, stage);
+        }
         Ok(())
     }
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+/// One step of a sequence: the attachments it binds and its stage.
+pub(super) struct Step {
+    pub(super) targets: (TargetRef, TargetRef),
+    pub(super) stage: Box<dyn Stage>,
+}
+
+/// A scissor covering any target: the view's rect cuts it
+/// ([`RunPass::draws`]).
+const WHOLE_TARGET: [u32; 4] = [0, 0, i32::MAX as u32, i32::MAX as u32];
+
+impl Glue {
     /// Target 13's binding for a scene light's gel `shader`, when the map
     /// load translated it ([`crate::native_gels_scene`]) and the target is
     /// enabled: the read-only slot its layers sample, at level 0.
@@ -679,7 +569,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     }
 }
 
-/// A scene light's shader gel drawn into target 13's level 0 on each copy
+/// A scene light's shader gel drawn into target 13's level 0
 /// ([`Op::Gel`]): its layer-1 passes over the quad helper's strip.
 struct GelPass {
     gels: Arc<crate::native_gels_scene::Gels>,
@@ -690,33 +580,14 @@ struct GelPass {
     guest_size: (u32, u32),
 }
 
-impl d3d::ExternalPass for GelPass {
-    fn replays_scene(&self) -> bool {
-        true
+impl Stage for GelPass {
+    fn name(&self) -> &'static str {
+        "light gel"
     }
 
-    fn uses_validated_resources(&self) -> bool {
-        true
-    }
-
-    fn colour_only(&self) -> bool {
-        true
-    }
-
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites {
-            color: true,
-            depth_stencil: false,
-        }
-    }
-
-    fn record_encoded(
-        &mut self,
-        t: &d3d::backend::ExternalAttachments,
-        request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, request: &native_render::stage::ViewInputs) -> StageWork {
         if request.surface_size != self.guest_size {
-            return Some(Err("target 13 is not the gel's size"));
+            unimplemented!("lights: target 13 is not the gel's size");
         }
         let target = native_render::screen_gpu::ScreenTarget {
             device: &t.device,
@@ -732,14 +603,14 @@ impl d3d::ExternalPass for GelPass {
         };
         let commands = match self.gels.prepare(target, self.shader, self.depth, self.values, self.time) {
             Ok(c) => c,
-            Err(_) => return Some(Err("the gel's passes do not prepare")),
+            Err(_) => unimplemented!("lights: the gel's passes do not prepare"),
         };
-        Some(Ok(d3d::backend::ExternalEncoded {
+        StageWork::Encoded(gfx::external::ExternalEncoded {
             ranges: commands.ranges(),
             draws: commands.draws(),
             passes: commands.passes(),
             commands: Box::new(move |encoder| commands.record(encoder)),
-        }))
+        })
     }
 }
 
@@ -797,36 +668,27 @@ mod tests {
         );
     }
 
-    fn request(rect: (u32, u32, u32, u32), surface: (u32, u32)) -> d3d::ExternalPassRequest {
-        d3d::ExternalPassRequest {
-            rect,
-            surface_size: surface,
-            z_scale: 1.0,
-            display_projection_factor: 1.0,
-        }
-    }
-
     #[test]
-    fn each_copy_freezes_the_casters_region_at_its_own_scale() {
-        // A 1x copy of a target the casters fill.
-        assert_eq!(frozen_size(&request((0, 0, 512, 512), (512, 512)), (512, 512)), Some((512, 512)));
-        // The display copy at render scale 2 freezes twice the texels.
-        assert_eq!(frozen_size(&request((0, 0, 512, 512), (512, 512)), (1024, 1024)), Some((1024, 1024)));
+    fn a_caster_map_freezes_the_casters_region_at_the_targets_scale() {
+        // A 1x target the casters fill.
+        assert_eq!(frozen_size((0, 0, 512, 512), (512, 512), (512, 512)), Some((512, 512)));
+        // At render scale 2 it freezes twice the texels.
+        assert_eq!(frozen_size((0, 0, 512, 512), (512, 512), (1024, 1024)), Some((1024, 1024)));
         // A caster map smaller than its target (the shadow setup's size)
         // takes the top-left region, at 1x and scaled.
-        assert_eq!(frozen_size(&request((0, 0, 256, 128), (512, 512)), (512, 512)), Some((256, 128)));
-        assert_eq!(frozen_size(&request((0, 0, 256, 128), (512, 512)), (1536, 1536)), Some((768, 384)));
+        assert_eq!(frozen_size((0, 0, 256, 128), (512, 512), (512, 512)), Some((256, 128)));
+        assert_eq!(frozen_size((0, 0, 256, 128), (512, 512), (1536, 1536)), Some((768, 384)));
     }
 
     #[test]
     fn a_caster_region_off_its_targets_corner_or_past_it_freezes_nothing() {
-        assert_eq!(frozen_size(&request((8, 0, 256, 256), (512, 512)), (512, 512)), None);
-        assert_eq!(frozen_size(&request((0, 0, 1024, 512), (512, 512)), (512, 512)), None);
-        assert_eq!(frozen_size(&request((0, 0, 0, 512), (512, 512)), (512, 512)), None);
+        assert_eq!(frozen_size((8, 0, 256, 256), (512, 512), (512, 512)), None);
+        assert_eq!(frozen_size((0, 0, 1024, 512), (512, 512), (512, 512)), None);
+        assert_eq!(frozen_size((0, 0, 0, 512), (512, 512), (512, 512)), None);
     }
 
     #[test]
-    fn a_receiver_samples_the_map_frozen_on_its_own_copy() {
+    fn a_receiver_samples_the_newest_frozen_map() {
         let Ok(ctx) = gfx::GfxContext::headless() else { return };
         let map = |size| SampledMap {
             kind: MapKind::Depth,
@@ -834,15 +696,12 @@ mod tests {
             size,
         };
         let frozen = Frozen::default();
-        assert!(frozen.on(d3d::TargetCopy::Display).is_none(), "nothing frozen yet");
-        frozen.put(d3d::TargetCopy::Reference, map((512, 512)));
-        frozen.put(d3d::TargetCopy::Display, map((1024, 1024)));
-        assert_eq!(frozen.on(d3d::TargetCopy::Reference).unwrap().size, (512, 512));
-        assert_eq!(frozen.on(d3d::TargetCopy::Display).unwrap().size, (1024, 1024));
-        // A replay freezes again: the copy's map is the newest.
-        frozen.put(d3d::TargetCopy::Display, map((1024, 512)));
-        assert_eq!(frozen.on(d3d::TargetCopy::Display).unwrap().size, (1024, 512));
-        assert_eq!(frozen.0.lock().unwrap().len(), 2);
+        assert!(frozen.get().is_none(), "nothing frozen yet");
+        frozen.put(map((1024, 1024)));
+        assert_eq!(frozen.get().unwrap().size, (1024, 1024));
+        // A replay freezes again: the map is the newest.
+        frozen.put(map((1024, 512)));
+        assert_eq!(frozen.get().unwrap().size, (1024, 512));
     }
 
     #[test]
