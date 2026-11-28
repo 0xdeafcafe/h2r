@@ -568,12 +568,14 @@ impl IndexedPass {
         if draw.indices.as_ref().is_none_or(|indices| indices.iter().any(|&i| i >= draw.vertex_count)) {
             return Err("index_range");
         }
-        let mark = crate::object_state::structure_stencil(crate::object_state::STENCIL_MARK_REFERENCE);
-        if draw.state.render.stencil != mark {
-            return Err("stencil");
-        }
-        if !draw.target.depth_format.and_then(gfx::format::depth_format_to_wgpu)
-            .is_some_and(|format| format.has_stencil_aspect())
+        // The stencil is the draw's own as well: the pipeline key and the
+        // packet's reference come from the resolved state, so a strip
+        // drawn with the scene's mark (mode 2, `0x0002c0bc`) writes it and
+        // a strip whose state leaves the test off writes none, as on D3D.
+        // Only a stencil the target cannot hold is refused.
+        if draw.state.render.stencil.enable
+            && !draw.target.depth_format.and_then(gfx::format::depth_format_to_wgpu)
+                .is_some_and(|format| format.has_stencil_aspect())
         {
             return Err("stencil_target");
         }
@@ -1134,6 +1136,14 @@ pub struct SkyTemplate {
     draw: Arc<ResolvedDraw>,
     cache: Arc<Cache>,
     section: ((u64, u32), SectionKey),
+}
+
+impl SkyTemplate {
+    /// The stencil the strip drew with, which its replay draws with: the
+    /// cut's arm compares it between guest passes.
+    pub fn stencil(&self) -> &gfx::state::StencilState {
+        &self.draw.state.render.stencil
+    }
 }
 
 /// The sky's strips as one external pass, issued in slot 8 with

@@ -552,8 +552,8 @@ issue, and the pipeline takes the draw's own cull mode. A strip it refuses keeps
 `scene_kept_sky_<cause>`.
 
 The scene sets stencil mode 2 before the sky call at `0x0002c0bc` and
-restores mode 0 afterwards. The native strip requires the mode-2 state and a
-stencil attachment, and replaces stencil on passing fragments. Replay
+restores mode 0 afterwards. The native strip takes its stencil from the draw
+(a stencil the target cannot hold is refused, `stencil_target`). Replay
 retains the sky pass beside its original strip and records it against the
 replay's own attachments and textures. If extraction, admission or recording
 fails, the original strip draws in order.

@@ -758,7 +758,7 @@ fn sorted_pool_translates_the_resolved_ripple_and_scene_stages() {
 }
 
 #[test]
-fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
+fn sky_strip_draws_the_current_views_palette_and_its_own_stencil() {
     use native_render::object_state::{structure_stencil, STENCIL_MARK_REFERENCE};
     use native_render::program::MODEL_ROWS;
     use native_render::sky_material::SkyConstants;
@@ -793,9 +793,6 @@ fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
             model: 3, section: 1, part: 0, shader: 5, pass: 0,
             rows, decompression: [[0.0; 4]; 3],
         };
-        let mut unmarked = draw.clone();
-        unmarked.state.render.stencil.enable = false;
-        assert_eq!(IndexedPass::for_sky(&unmarked, cache.clone(), 1, 9, item.clone(), SkyConstants::default(), None).err(), Some("stencil"));
         backend.clear(color, Some(depth), Clear::all([0.0; 4])).unwrap();
         assert!(after_compile(|| {
             let pass = IndexedPass::for_sky(&draw, cache.clone(), 1, 9, item.clone(), SkyConstants::default(), None).unwrap();
@@ -836,6 +833,34 @@ fn sky_strip_draws_the_current_views_palette_and_writes_the_stencil_mark() {
     }));
     let pixels = backend.read_color(color).unwrap().0;
     assert_eq!(&pixels[pixel..pixel + 4], &[0, 255, 0, 255], "the replay draws the made rows");
+
+    // A strip whose state leaves the stencil off is drawn as well, with
+    // its own stencil: it writes no mark, so the probe reaches nothing.
+    let mut unmarked = draw.clone();
+    unmarked.state.render.stencil.enable = false;
+    let rows = vec![[1.0; 4]; 3];
+    Arc::make_mut(&mut unmarked.shader.constants)[MODEL_ROWS..MODEL_ROWS + 3].copy_from_slice(&rows);
+    let item = SkyItem { model: 3, section: 1, part: 0, shader: 5, pass: 0, rows, decompression: [[0.0; 4]; 3] };
+    backend.clear(color, Some(depth), Clear::all([0.0; 4])).unwrap();
+    let mut unmarked_template = None;
+    assert!(after_compile(|| {
+        let pass = IndexedPass::for_sky(&unmarked, Arc::new(Cache::default()), 1, 9, item.clone(), SkyConstants::default(), None)
+            .expect("an unmarked strip is drawn with its own stencil");
+        unmarked_template = pass.sky_template();
+        record_pass(&mut backend, surfaces.clone(), [None; 4], timeline::native::Stage::Sky, Box::new(pass))
+    }));
+    let pixels = backend.read_color(color).unwrap().0;
+    assert_eq!(&pixels[pixel..pixel + 4], &[255; 4]);
+    let mut probe = triangle(2.0, [0.0, 0.0, 0.0, 1.0], STENCIL_MARK_REFERENCE, false);
+    probe.state.render.depth_func = CompareFunc::Always;
+    probe.state.render.stencil.func = CompareFunc::Equal;
+    probe.state.render.stencil.pass = StencilOp::Keep;
+    assert_eq!(backend.draw(color, Some(depth), &probe, [None; 4]), Ok(DrawOutcome::Drawn));
+    let pixels = backend.read_color(color).unwrap().0;
+    assert_eq!(&pixels[pixel..pixel + 4], &[255; 4], "the unmarked strip wrote no mark");
+    let unmarked_template = unmarked_template.expect("an unmarked strip is a template");
+    assert!(!unmarked_template.stencil().enable);
+    assert_eq!(*template.stencil(), structure_stencil(STENCIL_MARK_REFERENCE));
 }
 
 /// A sky strip draws with its own cull mode, and each strip the stage
@@ -870,10 +895,17 @@ fn a_sky_strip_keeps_its_cull_and_each_refusal_is_named() {
         culled.state.render.cull_mode = cull;
         assert_eq!(admit(&culled), None, "{name}: the pipeline takes the draw's cull");
     }
+    // The stencil is the draw's own: off, or another test, is drawn; a
+    // stencil the target cannot hold is refused.
+    let unmarked = { let mut d = draw.clone(); d.state.render.stencil.enable = false; d };
+    assert_eq!(admit(&unmarked), None, "a strip with the stencil off");
+    let mut tested = draw.clone();
+    tested.state.render.stencil.func = CompareFunc::Equal;
+    tested.state.render.stencil.pass = StencilOp::Keep;
+    assert_eq!(admit(&tested), None, "a strip that tests the stencil");
     let mut cases: Vec<(&str, ResolvedDraw)> = Vec::new();
     cases.push(("topology", { let mut d = draw.clone(); d.primitive = PrimitiveType::TriangleList; d }));
     cases.push(("index_range", { let mut d = draw.clone(); d.indices = Some(vec![0, 1, 3].into()); d }));
-    cases.push(("stencil", { let mut d = draw.clone(); d.state.render.stencil.enable = false; d }));
     cases.push(("stencil_target", { let mut d = draw.clone(); d.target.depth_format = None; d }));
     cases.push(("program", { let mut d = draw.clone(); d.shader.vertex = VertexProcessing::FixedFunction { fvf: 0x002 }; d }));
     cases.push(("transform", {
