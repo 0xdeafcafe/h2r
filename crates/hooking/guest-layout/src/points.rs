@@ -2394,6 +2394,89 @@ points! { ALL;
     BIPED_LANDING_UPDATE @ 0x000e_4330: [fn(object: eax) ret 0], Hot; "docs/engine/object-update.md";
     /// The contact object at body `+394` and its counter `+398`.
     BIPED_CONTACT_UPDATE @ 0x000e_2fa0: [fn(object: eax, contact: ebx, unused: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    // The rasterizer's start-up and shutdown in Rust, with no device
+    // (docs/graphics/d3d-entries.md, "Start-up and shutdown").
+    /// `boot_display_once`: the boot device made and released.
+    BOOT_DISPLAY_ONCE @ 0x0001_2420: [fn() -> al ret 0]; "docs/graphics/d3d-entries.md";
+    /// `boot_device_create`: the first device, before the rasterizer's.
+    BOOT_DEVICE_CREATE @ 0x0001_2490: [fn() -> al ret 0]; "docs/graphics/d3d-entries.md";
+    /// `rasterizer_initialize`, from `0x12000`.
+    RASTERIZER_INITIALIZE @ 0x0001_2560: [fn() -> al ret 0]; "docs/graphics/d3d-entries.md";
+    /// `game_device_create`: the display mode words, then the device.
+    GAME_DEVICE_CREATE @ 0x0001_28c0: [fn(mode: eax) -> al ret 0]; "docs/graphics/d3d-entries.md";
+    /// The rasterizer's shutdown, from `0x12080`.
+    RASTERIZER_DISPOSE @ 0x0001_41c0: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// The frame buffers' globals and the textures over them.
+    FRAME_BUFFERS_CREATE @ 0x0001_4600: [fn() -> al ret 0]; "docs/graphics/d3d-entries.md";
+    /// [`FRAME_BUFFERS_CREATE`]'s globals dropped.
+    FRAME_BUFFERS_DISPOSE @ 0x0001_4980: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// The 64 x 64 targets of `0x14850` dropped.
+    SMALL_TARGETS_DISPOSE @ 0x0001_4a60: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// A state block's render states stored (`LAYER_SETUP` and two more).
+    STATE_BLOCK_APPLY @ 0x0001_8900: [fn(block: stack 0, entries: stack 1) ret 8], Hot; "docs/graphics/d3d-entries.md";
+    /// The three default textures (2D, volume, cube) and their texels.
+    DEFAULT_TEXTURES_CREATE @ 0x0001_d0e0: [fn() -> al ret 0]; "docs/graphics/d3d-entries.md";
+    /// [`DEFAULT_TEXTURES_CREATE`]'s globals dropped.
+    DEFAULT_TEXTURES_DISPOSE @ 0x0001_d2a0: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// A palette made and filled from a table.
+    PALETTE_CREATE @ 0x0001_d3f0: [fn(kind: eax, source: stack 0, out: stack 1) -> al ret 8]; "docs/graphics/d3d-entries.md";
+    /// A geometry cache block dropped (from the shutdown only).
+    CACHE_BLOCK_DISPOSE @ 0x0013_59d0: [fn(block: esi) ret 0]; "docs/graphics/d3d-entries.md";
+    // The game's own functions the start-up and shutdown call.
+    /// The display mode defaults (frame counter, aspect, refresh).
+    DISPLAY_DEFAULTS @ 0x0001_69f0: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// The window and safe-area shorts at `0x485a8a..0x485a98`.
+    DISPLAY_WINDOW @ 0x0001_6a30: [fn(safe_y: ecx, safe_x: edx, scale: xmm0) ret 0]; "docs/graphics/d3d-entries.md";
+    /// Rasterizer tables zeroed (`0x487288`).
+    RASTERIZER_TABLES_RESET @ 0x0001_c1b0: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// The texture switch's results (`0x51f3c8..`) reset.
+    TEXTURE_SWITCH_RESET @ 0x0001_c810: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// Rasterizer arrays zeroed (`0x487b18`, `0x4aeb1c`).
+    RASTERIZER_ARRAYS_RESET @ 0x0001_d660: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// The 64 x 64 textures `0x509374`, `0x50937c` and their surfaces.
+    SMALL_TARGETS_CREATE @ 0x0001_4850: [fn() -> al ret 0]; "docs/graphics/d3d-entries.md";
+    /// The render-target table `0x4b4b58`.
+    TARGETS_CREATE @ 0x0001_d770: [fn() -> al ret 0]; "docs/graphics/d3d-entries.md";
+    /// A rasterizer buffer of `0x1c000` bytes.
+    RASTERIZER_BUFFER_CREATE @ 0x0001_e110: [fn() -> al ret 0]; "docs/graphics/d3d-entries.md";
+    /// A rasterizer pool from `0x1358e0`.
+    RASTERIZER_POOL_CREATE @ 0x0001_eff0: [fn() -> al ret 0]; "docs/graphics/d3d-entries.md";
+    /// The fade record `[0x5093e0]` from the game-state allocator.
+    FADE_RECORD_CREATE @ 0x0001_fbb0: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// A geometry cache (`[0x468758]`'s allocator, `0x188c` bytes).
+    GEOMETRY_CACHE_CREATE @ 0x0012_d8b0: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// A texture cache (`[0x468758]`'s allocator, `0x508c` bytes).
+    TEXTURE_CACHE_CREATE @ 0x0012_c0d0: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// One bit of the `0x51f40c` table cleared.
+    RASTERIZER_BIT_CLEAR @ 0x0002_0e50: [fn(index: eax) ret 0]; "docs/graphics/d3d-entries.md";
+    /// The game-state allocator's checksum of one allocation's size.
+    GAME_STATE_SIZE_CRC @ 0x0016_3ba0: [fn(size: eax, words: edi, crc: stack 0) ret 4]; "docs/graphics/d3d-entries.md";
+    /// A `0x24`-byte game-state record.
+    RASTERIZER_STATE_CREATE @ 0x0002_0eb0: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// A palette header and its memory.
+    PALETTE_ALLOCATE @ 0x0001_5b10: [fn(kind: eax, out: ebx) -> al ret 0]; "docs/graphics/d3d-entries.md";
+    /// A 2D texture header and its memory.
+    TEXTURE_ALLOCATE @ 0x0001_58f0: [fn(flag: al, format: ecx, out: ebx, width: stack 0, height: stack 1, levels: stack 2, usage: stack 3) -> al ret 16]; "docs/graphics/d3d-entries.md";
+    /// A volume texture header and its memory.
+    VOLUME_ALLOCATE @ 0x0001_5a60: [fn(format: eax, usage: ecx, out: ebx, width: stack 0, height: stack 1, depth: stack 2, levels: stack 3) -> al ret 16]; "docs/graphics/d3d-entries.md";
+    /// A cube texture header and its memory.
+    CUBE_ALLOCATE @ 0x0001_59b0: [fn(edge: eax, format: ecx, out: ebx, levels: stack 0, usage: stack 1) -> al ret 8]; "docs/graphics/d3d-entries.md";
+    /// The video mode read before the boot device.
+    VIDEO_MODE_READ @ 0x0001_23b0: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// A rasterizer buffer `[0x4b6288]` freed.
+    RASTERIZER_BUFFER_DISPOSE @ 0x0001_e310: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// The rasterizer pool's entries freed.
+    RASTERIZER_POOL_DISPOSE @ 0x0001_f2b0: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// A cache block unlinked.
+    CACHE_BLOCK_UNLINK @ 0x0012_c770: [fn(block: stack 0) ret 4]; "docs/graphics/d3d-entries.md";
+    /// The texture cache dropped.
+    TEXTURE_CACHE_DISPOSE @ 0x0012_c190: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// The geometry cache dropped.
+    GEOMETRY_CACHE_DISPOSE @ 0x0012_d970: [fn() ret 0]; "docs/graphics/d3d-entries.md";
+    /// `NtFreeVirtualMemory` through its wrapper: nonzero on success.
+    VIRTUAL_FREE @ 0x0033_12fa: [fn(base: stack 0, size: stack 1, kind: stack 2) -> eax ret 12]; "docs/graphics/d3d-entries.md";
+    /// The fatal error for a failed free.
+    FREE_FAILED @ 0x002d_1d3e: [fn() ret 0]; "docs/graphics/d3d-entries.md";
 }
 
 /// The point at `base`, if the table names one.

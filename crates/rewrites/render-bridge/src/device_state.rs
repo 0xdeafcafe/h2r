@@ -168,19 +168,36 @@ pub fn set(s: Setter, cpu: &CpuAbi, mem: &mut Guest) -> Result<u32, GuestFault> 
 /// to single, from the x87 value), the three enables `bias != 0`, and
 /// `ZBIAS` the raw value.
 fn zbias(bias: u32, mem: &mut Guest) -> Result<(), GuestFault> {
+    let words = zbias_words(bias, mem.u32(ZBIAS_UNSIGNED)?, mem.u32(ZBIAS_SLOPE)?);
+    for (slot, value) in words {
+        mem.set_u32(render_state(slot), value)?;
+    }
+    Ok(())
+}
+
+/// The six slots `ZBias` stores for `bias`, in its order, `unsigned` and
+/// `slope` the bits of the image's two floats (`[0x0045dbb8]`,
+/// `[0x0045dc20]`).
+pub fn zbias_words(bias: u32, unsigned: u32, slope: u32) -> [(u32, u32); 6] {
     let mut x = bias as i32 as f64;
     if (bias as i32) < 0 {
-        x += f32::from_bits(mem.u32(ZBIAS_UNSIGNED)?) as f64;
+        x += f32::from_bits(unsigned) as f64;
     }
     let offset = -x;
-    let slope = offset * f32::from_bits(mem.u32(ZBIAS_SLOPE)?) as f64;
-    mem.set_u32(render_state(ZSLOPESCALE), (slope as f32).to_bits())?;
-    mem.set_u32(render_state(ZOFFSET), (offset as f32).to_bits())?;
-    for slot in OFFSET_ENABLES {
-        mem.set_u32(render_state(slot), (bias != 0) as u32)?;
-    }
-    mem.set_u32(render_state(ZBIAS), bias)
+    let scaled = offset * f32::from_bits(slope) as f64;
+    let enable = (bias != 0) as u32;
+    [
+        (ZSLOPESCALE, (scaled as f32).to_bits()),
+        (ZOFFSET, (offset as f32).to_bits()),
+        (OFFSET_ENABLES[0], enable),
+        (OFFSET_ENABLES[1], enable),
+        (OFFSET_ENABLES[2], enable),
+        (ZBIAS, bias),
+    ]
 }
+
+/// Where `ZBias` reads its two floats.
+pub const ZBIAS_FLOATS: [u32; 2] = [ZBIAS_UNSIGNED, ZBIAS_SLOPE];
 
 #[cfg(test)]
 mod tests {
