@@ -202,12 +202,12 @@ sequenceDiagram
   W->>N: layer 6 observer reserves the pass
   N->>T: layer 6 drawn
   T-->>T: gates: return, no work
-  Note over T: an ocean to draw panics, water end: ocean
+  Note over T: an ocean to draw: its steps (water_end::ocean)
 ```
 
-The water end after it is Rust (`render_bridge::water_end`, [retire-d3d-display.md](retire-d3d-display.md#the-water-end)). Its gates return with no work; the ocean, with its alpha clear `0x0003c515` and its indexed quads, has no native stage and panics, `water end: ocean`. The quads' native draw (`frame_scene::late::WaterComposite`, `scene_step::water_composite`, `world_layers_gpu::IndexedPass::water_quads`) is the piece that stage draws them with.
+The water end after it is Rust (`render_bridge::water_end`, [retire-d3d-display.md](retire-d3d-display.md#the-water-end)). Its gates return with no work; the ocean is `water_end::ocean`: its alpha clear `0x0003c515` through `native_targets::cut_clear` and its indexed quads drawn natively (`frame_scene::late::WaterComposite`, `scene_step::water_composite`, `world_layers_gpu::IndexedPass::water_quads`), its other helpers guest calls. A step it cannot make panics, `water ocean: <cause>`.
 
-**Layer-6 counters.** `scene_water_views`, `scene_water_drawn`, `scene_water_parts` and `native_water_walk_*` count only layer 6 and its composite, which Old Mombasa and Zanzibar use. They stay zero on Delta Towers, which has no layer-6 edge materials. Its `tower_pool` surfaces are drawn by the sorted pool pass (above), counted under `layer_plan_15_pool_*`. Its bay's open water is the BSP water definition's ocean grid (`water_ocean`), which the water end draws; with the native renderer it panics, `water end: ocean`. That grid is attached to the camera; its width in a wide window is in [high-resolution.md](high-resolution.md#widescreen-projection).
+**Layer-6 counters.** `scene_water_views`, `scene_water_drawn`, `scene_water_parts` and `native_water_walk_*` count only layer 6 and its composite, which Old Mombasa and Zanzibar use. They stay zero on Delta Towers, which has no layer-6 edge materials. Its `tower_pool` surfaces are drawn by the sorted pool pass (above), counted under `layer_plan_15_pool_*`. Its bay's open water is the BSP water definition's ocean grid (`water_ocean`), which the water end's ocean draws (`water_end::ocean`). That grid is attached to the camera; its width in a wide window is in [high-resolution.md](high-resolution.md#widescreen-projection).
 
 **Parts.** Layer 6 draws the kind-4 transparent parts of clusters and placements. A placement uses its own model rows at the rigid program's dynamic uniform offset. Each pass must compile the rigid classification and the part must supply every vertex input it reads. Missing rows, streams or rigid programs leave the placement on the guest path. The look is the material's own layer-6 pass (`fog_gpu::supplied_layer_passes`), accepted by the fog layer's rule: the states the implementation sets itself, a final combiner of its own, no device-state texture modes.
 

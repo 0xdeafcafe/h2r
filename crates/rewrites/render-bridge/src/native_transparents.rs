@@ -270,6 +270,13 @@ fn walk_range(mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> boo
     result.is_ok()
 }
 
+/// The water end's ocean quads (`crate::water_end::ocean`): `count`
+/// indices at `indices` as `geometry`'s quads, drawn by the walk host.
+/// `false`: refused (counted under `Stage::Water`).
+pub(crate) fn draw_water(mem: &mut dyn GuestMemory, indices: u32, count: u32, geometry: frame_scene::late::WaterComposite) -> bool {
+    walk_range(mem, Stage::Water, IndexRange { indices, count, topology: IndexTopology::Water(geometry) })
+}
+
 pub fn on(switches: &hooks::Switches) -> bool {
     hooks::switches::native_render_on(switches)
 }

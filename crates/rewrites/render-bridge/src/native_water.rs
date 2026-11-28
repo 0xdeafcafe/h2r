@@ -16,7 +16,8 @@
 //! the hook stores what was cleared for the restore at the next layer
 //! draw. The setup wrapper `0x0003ba90` before is never skipped: the
 //! native draws land after it. The water end `0x0003c3c0` after is Rust
-//! ([`crate::water_end`]): its gates return, its ocean panics.
+//! ([`crate::water_end`]): its gates return, its ocean is
+//! [`crate::water_end::ocean`].
 //!
 //! Every item the guest's layer draw still draws after the decision keeps
 //! its guest draw and is counted `scene_kept_6_<kind>_<cause>`, as the
@@ -309,8 +310,8 @@ impl Feature for NativeWater {
                 crate::late_sorted::after_entry(&SORTED, &mut *g, o.cpu.esi, &mut ask_run);
             })
             .context_only();
-        // The teardown after it: its gates in Rust, the ocean a named
-        // panic (docs/graphics/retire-d3d-display.md, "The water end").
+        // The teardown after it: its gates and its ocean's steps in Rust
+        // (docs/graphics/retire-d3d-display.md, "The water end").
         crate::water_end::place(b);
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         Ok(())
