@@ -1422,9 +1422,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     ) -> Result<(), String> {
         let mut device = self.device.lock().map_err(|_| "the device's lock")?;
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Post, view: 0, ranges, slots };
-        match device.prepare_external_pass(&mut DeviceMemory(mem), plan, pass) {
-            Ok(Some(prepared)) => {
-                prepared.commit();
+        // A typed scene stage: a replaying sink keeps it, where it refuses
+        // a post pass that reaches a plain reservation.
+        match device.reserve_scene_stage(&mut DeviceMemory(mem), plan, pass) {
+            Ok(Some(reservation)) => {
+                reservation.commit();
                 Ok(())
             }
             Ok(None) => Err("the device did not take the pass".into()),
