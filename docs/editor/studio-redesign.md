@@ -57,7 +57,7 @@ the calls before it):
 | Content | Source in Git | How it gets in |
 |---|---|---|
 | Halo 1 maps and campaign | the recipe, `content/halo1/convert/` (the bytes are the user's disc) | the `halo1` package's `convert` item, run before boot by `package_prepare::before_boot` (PK10, "Conversions"), writes converted levels to the tag store and campaign metadata to `<data>/campaigns/halo1/`; `campaigns::boot_state` and `new_maps::install_at_boot` list them |
-| Pogo Stick | `content/pogo/` (the `pogo` package) | `workspace::PackageRewrite` (PK4; `pogo_kit::served` reads the weapons it left) |
+| Pogo Stick | `content/pogo/` (the `pogo` package) | `workspace::PackageRewrite` (PK4; `content_kit::served` reads the weapons it left) |
 | Menu screens, retail screen edits | `content/ui/` (the `ui` package) | `workspace::PackageRewrite` (PK5) |
 | HUD kit HUDs | `hud` items (`content/{superbounce,forge,modes}/huds/`); their states in Rust (`crates/rewrites/hud-kit-core/src/views/`) | `hud_kit::install` in `boot/src/registration.rs`, compiled against the loaded map |
 | Firefight | the ground generator in Rust (`crates/tools/firefight-kit`); the wave sets are `rules` items of `modes` (`content/modes/firefight/*.firefight.json`, PK12) | `firefight_kit::ground::build` writes a map package per base map when asked (`h2 firefight kit`, `boot/src/test_maps_recipes.rs`, `crates/live/host-data/src/bundle/kits.rs`); the sets are read by `firefight::builtin` and `workspace::wave_sets` |
@@ -529,7 +529,7 @@ changes it. After an error the set is partly changed and is dropped.
   names the map in the file. In `content/ui`, these entries precede
   `screens` so the generator reads the edited templates.
 - **`model`** (`workspace/src/model.rs`): the source is our primitive YAML
-  (`pogo_kit::source`), its `atlas` names `<atlas>.png` beside it (a `data`
+  (`content_kit::source`), its `atlas` names `<atlas>.png` beside it (a `data`
   item of the package, so the package's id covers it). The item's `tag` is
   `<folder>\<look>\<name>`; the builder adds `bitm` (the atlas as a DXT5 mip
   chain), `shad` (written on a shader template the base map has, with the
@@ -708,7 +708,7 @@ paths in "What exists":
    `superbounce_font::Capture::keep`.
    `PackageRewrite::observed` hands
    each map, as the game is given it, to the boot's hook, which records
-   the pogo stick's weapons (`pogo_kit::served::publish`).
+   the pogo stick's weapons (`content_kit::served::publish`).
    Boot reads one set for map preparation and mounting. The runtime
    rewrite and store level builder share the enabled package payloads.
    `packages.list` keeps the set's summary and reads map results from
@@ -755,7 +755,7 @@ as its unit: a project is a `map` item, a `ContentKit` is a builder, and
 | `ui` (built, PK5) | `screens`, `screen-edits`; accepts `bitmap` items for art | `content/ui/` holds the design, screen docs and retail edits |
 | `modes` (built, PK8: `variant`, `rules`, `playlist`, `hud`) | `rules` (the community modes, Siege, Firefight's director with its wave sets (built, PK12), which the director script is built from), `variant`, `playlist`, `hud`, `sound` (start lines), `map` (our Firefight and Siege maps, with `ground`) | the rest of the scripts of `rules::builtin` (now `content/modes/rules/`), `community_variants`' table of scripts, `crates/formats/firefight`'s built-in sets, `huds/firefight.rs` |
 | `superbounce` | `rules`, `hud`, `sound` (the announcer clips), `screens` | `hud-kit-core/src/views/superbounce*.rs`' element lists, `art/announcer/` |
-| `pogo` (built, PK4) | `model`, `tag` (the weapons), `sound` (the clips `pogo_sound.rs` plays), `data` (the atlases, the pose set `pogo_pose.rs` reads) | `art/pogo/`, `PogoRewrite`; `pogo_kit::{kit, mesh, source, texture}` is the `model` builder's code and `inject::add_pogo` the test's reference |
+| `pogo` (built, PK4) | `model`, `tag` (the weapons), `sound` (the clips `pogo_sound.rs` plays), `data` (the atlases, the pose set `pogo_pose.rs` reads) | `art/pogo/`, `PogoRewrite`; `content_kit::{kit, mesh, source, texture}` is the `model` builder's code and `inject::add_pogo` the test's reference |
 | `halo1` | `convert` (built, PK10: converter `halo1`, every multiplayer map in both sandboxes and the campaign), `kit: campaign-cards` (built, PK12), `screens` | `h1_import::auto_import` (gone), `CardRewrite` |
 | `map-pack` (built, PK10: the `convert` item) | `convert` (converter `map-pack`: the nine maps and the title update from the user's Map Pack disc), `playlist` | `mappack_cmd::auto_install` at boot (`h2 import-mappack` and Live's capture still call it), the Map Pack rotations in `hopper/defaults.rs` |
 | `stage` | `map` (`fresh`), `model`, `bitmap` | `content/stage/map.toml` ([content-stage.md](content-stage.md)) |
@@ -1163,11 +1163,11 @@ follow. The build (`workspace::import`) does the rest: resampled to a rate
 the format field names, mono or stereo, encoded by `audio::adpcm::encode`,
 split into chunks and written as a `snd!`, with its rows appended to the
 map's gestalt by the Halo 1 converter's `ConvertedSound` path
-(`h1_assets::sounds`; `workspace` reaches it through `pogo-kit`'s
+(`h1_assets::sounds`; `workspace` reaches it through `content-kit`'s
 dependency already). `merge_sound`, which takes a `snd!` and its rows from
 another map's gestalt, is re-exported from `workspace::import` for the
 import of a retail sound; the gestalt model itself stays in `h1-assets`,
-which cannot depend on `workspace` (`workspace` depends on `pogo-kit`,
+which cannot depend on `workspace` (`workspace` depends on `content-kit`,
 which depends on it). Looping sounds (`lsnd`)
 take a start, a loop and an end file. The codec stream form (WMA) is
 decoded for audition only; nothing encodes it. That every sound class,
@@ -1260,7 +1260,7 @@ Rows are in build order.
 | SH2 | **The browser** (built: the rows and `asset.*`, `app/assets.rs`, the panel `ui/browser.rs` and the removal of the Maps list; the Tags tab list and the per-tool lists stay until their documents are kinds of the browser): the Tags root over `TagRepo` by path with variants, the Packages and Live roots, `asset.list`, `asset.thumb`, `asset.copy`, Kind, Map, search, badges; the Maps list removed | M | SH1, PK1, W3 | an invented tree of two maps and one package lists one row for a shared tag and two variants for one that differs; the Map picker gives one scenario's closure; each word of a query must match; a tag an edit line touches carries the package's badge; **New from this...** writes a `tag` item with no bytes of the source; the panel lists the tree's rows and a double-click on a scenario row opens the map's editor |
 | PK3 | **The game's side** (built): `PackageRewrite` as the one rewrite, the baked set, `<data>/packages`, features, the cache, the game's `packages.list` | M | PK2 | the rewrite's bytes equal `workspace::build`'s; a second read is a cache hit; a package off in `set.toml` or with its feature off adds nothing; a map that holds the content is left alone |
 | PK11 (built) | **HUDs as data** (built: the builder, the YAML and `views/`; `hud_kit::install` still reads the first-party YAML that `data::BUILTIN` embeds, and `workspace::huds` lists a set's HUDs for it): the `hud` builder, HUD kit YAML for the superbounce, Forge readout and Firefight HUDs in `content/{superbounce,forge,modes}/huds/`; the element lists in `hud-kit-core/src/huds/*.rs` deleted, the states that stay in `views/` | M | PK3 | each YAML is the `Hud` its Rust list built (`hud-kit-core/src/{expected,data_tests}.rs`), so it compiles to the same records (`hud-kit-core/src/tests.rs`' fixtures run on the YAML) |
-| PK4 | **Pogo as a package** (built): `content/pogo/`, the `model` and `sound` builders, the weapon as a `tag` item; `PogoRewrite` deleted | M | PK3 | on `pogo_kit::fixture`'s map the package builds the tags `pogo_kit::inject::add_pogo` built, compared group by group |
+| PK4 | **Pogo as a package** (built): `content/pogo/`, the `model` and `sound` builders, the weapon as a `tag` item; `PogoRewrite` deleted | M | PK3 | on `content_kit::fixture`'s map the package builds the tags `content_kit::inject::add_pogo` built, compared group by group |
 | PK5 | **Screens as a package** (built): the always-on `content/ui/` package serves `screens` and `screen-edits` through `PackageRewrite`; `ui.save` writes our screen YAML into the checkout’s UI package | M | PK3 | `workspace::screen_tests` compare the package with applying the retail edits and calling `ui_kit::inject::tag::add_screens` on each invented UI map; the Studio save test checks that only the package screen source changes |
 | PK6 (built: `app/package_doc.rs`, `api/packages.rs`) | **The package document and `package.*`**: list, read, new, set, items, target, enable, order, check, build, play, over the always-on rule `content::package::Set` keeps | M | PK2, SH1 | every method's example runs; a `set.toml` or a call that turns `core` off is refused by name; a reorder that breaks `requires` is refused; `package.check` names a cache map, a bundle and a dataset folder put in an invented package |
 | PK7 (built: `app/edit_target.rs`, `app/edit_lines.rs`; the game's and Live's readers of `active.toml` stand) | **Edits go to the edit target**: the journal as edit lines, the first-edit picker, **Export map...**; the package form and `active.toml` deleted | M | PK6 | a field set in the window and by `tag.set` write the same line; undo across a save removes it; with no target the API answers `NO_TARGET` |

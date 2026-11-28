@@ -2,7 +2,7 @@
 //! docs/editor/studio-redesign.md): a base clip of six frames whose arm
 //! turns 0, 45, 90, 90, 45, 0 degrees about z while it slides along x,
 //! and an overlay holding a quarter about x. The map is the Pogo kit's
-//! invented one (`pogo_kit::fixture`, no game data) with the graph added,
+//! invented one (`content_kit::fixture`, no game data) with the graph added,
 //! written with the Halo 1 converter's own writers (`h1-assets`), so what
 //! the decoders read is what a converted map holds.
 
@@ -114,7 +114,7 @@ fn animation(
 /// The invented map: the Pogo kit's, with the two-bone graph in it. Nothing
 /// uses the graph: the read needs no model.
 pub(crate) fn read_map() -> Vec<u8> {
-    let mut map = Map::from_reader(Cursor::new(pogo_kit::fixture::fixture(0))).unwrap();
+    let mut map = Map::from_reader(Cursor::new(content_kit::fixture::fixture(0))).unwrap();
     let mut set = TagSet::from_map(&mut map).unwrap();
     h1_assets::sounds::convert::make_index_room(&mut set);
     let graph = h1::Graph {

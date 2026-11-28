@@ -16,11 +16,14 @@ the kit is built, and is not stored.
 
 ## How it is built
 
-`crates/tools/flood-pod-kit` builds the pod's `bitm`, `shad`, `mode`,
+`crates/tools/content-kit` builds the pod's `bitm`, `shad`, `mode`,
 `phmo`, `hlmt` and `vehi`, all named `objects\vehicles\flood_pod\flood_pod`,
 into a multiplayer map. `h2 flood-pod kit MAP --out FILE` writes such a map
 to open in Studio, and `h2 flood-pod model --out DIR` writes the mesh as an
 OBJ file.
+
+`kit.yaml` is the item manifest (`crates/tools/content-kit`, `atlas`): the atlas size, its regions and the
+pod's triangle limit, read by the kit and checked on load.
 
 The source is the Pogo Stick's primitive YAML (`content/pogo/README.md`):
 a list of parts, each a `lathe`, a `sweep` or a `box`, on one node. Units
@@ -38,7 +41,7 @@ point of the tip, which is where the pod meets the ground. The pod is about
 
 The petals are drawn shut. A petal's node is its hinge, on the collar; the
 game opens the pod by turning each petal about the hinge's tangent
-(`flood_pod_kit::RIG`: `hinge_axis`, and `open`, 1.9 radians), which lays
+(`content_kit::flood_pod::RIG`: `hinge_axis`, and `open`, 1.9 radians), which lays
 it outward and down.
 
 | Marker | Node | At | For |
@@ -46,7 +49,7 @@ it outward and down.
 | `impact` | `shell` | 0 0 0 | the landing effect, and the point put on the ground |
 | `squad_exit_0` to `squad_exit_3` | `shell` | 0.75 from the axis on the ground, between two petals | where the squad's members are placed |
 
-`flood_pod_kit::source::parse` refuses a source whose nodes or markers are
+`content_kit::flood_pod::source::parse` refuses a source whose nodes or markers are
 not these.
 
 The atlas is painted by `scripts/flood-pod-atlas.py`, which uses the Python
@@ -58,7 +61,7 @@ python3 -I scripts/flood-pod-atlas.py
 
 `--check` exits 1 when the PNG's pixels differ from what the script paints.
 Both print the pixels' hash, which the kit's tests hold
-(`crates/tools/flood-pod-kit/src/tests.rs`, `ATLAS_PIXELS`): after a change
+(`crates/tools/content-kit/src/flood_pod/tests.rs`, `ATLAS_PIXELS`): after a change
 to the paint, write the PNG and put the new hash there.
 
 ## The atlas

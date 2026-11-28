@@ -24,7 +24,7 @@ pub enum CreateAsset {
 pub(crate) enum SourceView {
     Tag(String),
     Sound { clip: Clip, peaks: Vec<[i16; 2]> },
-    Model(pogo_kit::mesh::Mesh),
+    Model(content_kit::mesh::Mesh),
 }
 
 pub(crate) struct SourceAsset {
@@ -162,8 +162,8 @@ fn source_asset(data: &Path, package: &str, index: usize) -> Option<SourceAsset>
             SourceView::Sound { clip, peaks }
         }
         ItemKind::Model => {
-            let source = pogo_kit::source::parse(std::str::from_utf8(bytes).ok()?).ok()?;
-            SourceView::Model(pogo_kit::mesh::build(&source).ok()?)
+            let source = content_kit::source::parse(std::str::from_utf8(bytes).ok()?).ok()?;
+            SourceView::Model(content_kit::mesh::build(&source).ok()?)
         }
         _ => return None,
     };
@@ -189,7 +189,7 @@ fn import_model(data: &Path, file: &Path, package: &str, tag: &str) -> Result<Va
     let read = |path: &Path| fs::read(path).map_err(|e| Failed(format!("{}: {e}", path.display())));
     let yaml = read(file)?;
     let source =
-        pogo_kit::source::parse(std::str::from_utf8(&yaml).map_err(|e| Refused(e.to_string()))?)
+        content_kit::source::parse(std::str::from_utf8(&yaml).map_err(|e| Refused(e.to_string()))?)
             .map_err(|e| Refused(format!("{e:#}")))?;
     if source.atlas.is_empty() || source.atlas.contains(['/', '\\']) || source.atlas.contains("..")
     {

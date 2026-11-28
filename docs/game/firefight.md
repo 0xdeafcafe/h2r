@@ -1174,16 +1174,16 @@ limits").
 
 Flood squads arrive in a pod of our own, not a disc model: a fleshy seed
 that falls root first and bursts open, drawn in
-[art/flood-pod](../../art/flood-pod/README.md) and built by
-`crates/tools/flood-pod-kit` (`kit::install`) as `bitm`, `shad`, `mode`,
+[content/flood-pod](../../content/flood-pod/README.md) and built by
+`crates/tools/content-kit` (`kit::install`) as `bitm`, `shad`, `mode`,
 `phmo`, `hlmt` and `vehi` named `objects\vehicles\flood_pod\flood_pod`.
 The object is a seatless stationary vehicle, the class of Halo 2's
 insertion pod. Its model has a `shell` node and four `petal` nodes hinged
-on it (`flood_pod_kit::RIG` gives each hinge's axis and the open angle),
+on it (`content_kit::flood_pod::RIG` gives each hinge's axis and the open angle),
 an `impact` marker at the tip and `squad_exit_0` to `squad_exit_3` on the
 ground beside it. `h2 flood-pod kit MAP --out FILE` puts it into a disc
 multiplayer map to look at in Studio. A kit with a Flood class and a zone fall builds it in
-(`flood_pod_kit::kit::install`, in `assemble` after the classes) and parks it
+(`content_kit::flood_pod::kit::install`, in `assemble` after the classes) and parks it
 as its own pool `ff_fpod_NN`; `ff_pod_NN` (human squads) and `ff_ppod_NN`
 (players) stay the `insertion_pod`. A squad takes a free pod of its faction
 (`Kit::flood_classes`, `PodsSeen::free_flood`, the script's `pod_flood` and

@@ -1,7 +1,7 @@
 //! `h2 flood-pod`: the Flood pod's kit, looked at outside the game.
 //!
 //! `h2 flood-pod kit MAP` adds the pod to a multiplayer map of the user's
-//! disc (`flood_pod_kit::inject`) and says what it took; `--out` writes the
+//! disc (`content_kit::flood_pod::inject`) and says what it took; `--out` writes the
 //! map, which Studio opens to render the pod. `h2 flood-pod model` writes
 //! the mesh as an OBJ file.
 
@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use boot::new_maps::{Disc, IsoDisc};
-use flood_pod_kit::{TAG_PATH, source};
+use content_kit::flood_pod::{TAG_PATH, source};
 use scenario_edit::MapSource;
 
 const USAGE: &str = "usage: h2 flood-pod kit MAP [--out FILE] [--disc ISO_OR_EXTRACTED_DISC]
@@ -90,7 +90,7 @@ fn kit(map: &str, out: Option<PathBuf>, disc: Option<PathBuf>) -> Result<()> {
         .map_file(map)?
         .with_context(|| format!("{} has no maps/{map}.map", disc.display()))?;
     let bytes = MapSource::region(file.path, Some((file.offset, file.len))).read_base()?;
-    let added = flood_pod_kit::inject::add_flood_pod(&bytes, map)?;
+    let added = content_kit::flood_pod::inject::add_flood_pod(&bytes, map)?;
     let t = added.tags;
     for (group, id) in [
         ("vehi", t.vehicle),

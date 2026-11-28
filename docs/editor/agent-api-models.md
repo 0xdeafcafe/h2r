@@ -24,7 +24,7 @@ between calls:
 - `map: "<name>"`: that map of the source (`source.maps` lists them),
   opened as the HUD tool opens one.
 - `pogo: true`: that map with the Pogo Stick's kit added
-  (`pogo_kit::inject::add_pogo`, which the `pogo` package's build equals,
+  (`content_kit::inject::add_pogo`, which the `pogo` package's build equals,
   uncached). A map the kit cannot go into is `REFUSED` with
   `data.reason: "pogo_refused"` and the kit's reason. A map that already
   holds the kit (its `pogo_kit_v<n>` string) is read as it is. `pogo`
@@ -116,7 +116,7 @@ several tags is `INVALID_PARAMS` with the candidates.
   its `tag.set` path when one field is the fix (null otherwise). The
   answer also gives `counts`, `tag_memory`, `pogo` and `editable` (false
   when Studio added the kit: the kit's tags are fixed in
-  `crates/tools/pogo-kit`, not with `tag.set`). The codes:
+  `crates/tools/content-kit`, not with `tag.set`). The codes:
 
   | Code | Severity | Finding |
   |---|---|---|
@@ -318,7 +318,7 @@ editor side is small once the profile document exists.
 ### Tests
 
 `model.*` runs its examples in `every_method_in_methods_has_a_test` on
-the Pogo kit's invented map with the kit in it (`pogo_kit::fixture`, no
+the Pogo kit's invented map with the kit in it (`content_kit::fixture`, no
 game data). `api/models/tests.rs` checks the kit's weapons listed, a
 look with its first-person block taken out found by `model.check` and
 refused by a first-person render, the first-person view the kit copies

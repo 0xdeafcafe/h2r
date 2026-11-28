@@ -257,7 +257,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   flood-pod kit MAP [--out FILE]  add Firefight's Flood pod to a disc
                           multiplayer map and say what it took; flood-pod
                           model [--out DIR] writes its mesh as an OBJ file
-                          (art/flood-pod/README.md)
+                          (content/flood-pod/README.md)
   forge looks [--disc <iso>] [--json]  the models a Forge monitor can look like
   bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
   bitmap --all <map>      bulk decode check of every bitmap in a map

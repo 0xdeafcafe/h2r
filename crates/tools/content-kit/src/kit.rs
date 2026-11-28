@@ -716,13 +716,13 @@ pub fn install_model(
 ) -> Result<Models> {
     groups(set);
     ensure!(
-        (atlas.width, atlas.height) == (u32::from(source::ATLAS.0), u32::from(source::ATLAS.1)),
+        (atlas.width, atlas.height) == (u32::from(source::atlas_size().0), u32::from(source::atlas_size().1)),
         "{}: the atlas is {}x{}, want {}x{}",
         source.atlas,
         atlas.width,
         atlas.height,
-        source::ATLAS.0,
-        source::ATLAS.1
+        source::atlas_size().0,
+        source::atlas_size().1
     );
     let mesh = mesh::build(source)?;
     let model = model(source, &mesh)?;
@@ -735,7 +735,7 @@ pub fn install_model(
         Bound {
             id: bitmap,
             scale: [1.0, 1.0],
-            lod_offset: shad::lod_offset(source::ATLAS.0, source::ATLAS.1),
+            lod_offset: shad::lod_offset(source::atlas_size().0, source::atlas_size().1),
         },
     )]);
     let shader = shading

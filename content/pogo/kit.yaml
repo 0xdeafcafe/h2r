@@ -1,0 +1,17 @@
+# The Pogo Stick's kit manifest (crates/tools/content-kit, `atlas`): the
+# atlas the three looks share and the regions a part names. The table
+# scripts/pogo-atlas.py paints and content/pogo/README.md lists.
+item: pogo
+atlas:
+  width: 512
+  height: 256
+  inset: 2.0
+  regions:
+    - { name: body, rect: [0, 0, 256, 128] }
+    - { name: body_dark, rect: [256, 0, 384, 128] }
+    - { name: piston, rect: [384, 0, 512, 128] }
+    - { name: grip, rect: [0, 128, 128, 192] }
+    - { name: peg, rect: [0, 192, 128, 256] }
+    - { name: foot, rect: [128, 128, 256, 256] }
+    - { name: accent, rect: [256, 128, 384, 256] }
+    - { name: glow, rect: [384, 128, 512, 256] }

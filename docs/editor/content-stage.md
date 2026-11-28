@@ -362,7 +362,7 @@ takes S4 when it is there. S7 needs S5, S6 and W4.
 - The Pogo's kit is the `pogo` package, applied by `PackageRewrite` at
   the map's first read, from sources baked into the build
   (**Code**, `content/pogo`, `crates/tools/workspace/src/rewrite.rs`,
-  `model.rs`; `crates/tools/pogo-kit/src/inject.rs` is its reference
+  `model.rs`; `crates/tools/content-kit/src/inject.rs` is its reference
   and keeps the cost check).
 - The Pogo's sounds are host clips outside the game's sound tags and
   are dropped with no audio device (**Code**,

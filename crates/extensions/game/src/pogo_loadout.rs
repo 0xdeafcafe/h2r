@@ -7,7 +7,7 @@
 //! each tag and adds it to the unit (`0xb7930`, `0xb7b40`, then
 //! `unit_add_weapon` `0xcd0c0` in mode 1). The byte can only name a slot of
 //! the multiplayer globals' weapon list, and the stick is a tag of ours the
-//! map rewrite adds (`pogo_kit`), so the hook here answers the routine's
+//! map rewrite adds (`content_kit`), so the hook here answers the routine's
 //! two calls for the secondary with the stick's tag, whatever the byte
 //! says. The pass then treats it as any weapon.
 //!

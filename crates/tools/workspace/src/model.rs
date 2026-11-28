@@ -1,7 +1,7 @@
 //! The `model` builder: a look of the Pogo Stick as the tags a map holds a
 //! model by (docs/editor/studio-redesign.md, "Contents").
 //!
-//! The source is our primitive YAML (`pogo_kit::source`: nodes, markers and
+//! The source is our primitive YAML (`content_kit::source`: nodes, markers and
 //! lathes, sweeps and boxes), and the file its `atlas` names, `<atlas>.png`
 //! beside it, is the paint. The package names both (the atlas as a `data`
 //! item), so the package's identity covers both. The item's `tag` is the
@@ -22,9 +22,9 @@
 //!
 //! What the map lends (the shader template, the material) is read from it
 //! once by [`crate::build_map`]; nothing is copied from a retail tag.
-use pogo_kit::kit::{self, Models, Shared};
-use pogo_kit::source::{self, Source};
-use pogo_kit::texture::{self, Rgba};
+use content_kit::kit::{self, Models, Shared};
+use content_kit::source::{self, Source};
+use content_kit::texture::{self, Rgba};
 
 use map::FourCC;
 
@@ -89,8 +89,8 @@ fn parts(job: &Job<'_>) -> Result<Parts, Failure> {
 
 pub fn check(job: &Job<'_>) -> Result<(), Failure> {
     let p = parts(job)?;
-    pogo_kit::mesh::build(&p.source).map_err(|e| format!("{}: {e:#}", p.source.name))?;
-    let (w, h) = (u32::from(source::ATLAS.0), u32::from(source::ATLAS.1));
+    content_kit::mesh::build(&p.source).map_err(|e| format!("{}: {e:#}", p.source.name))?;
+    let (w, h) = (u32::from(source::atlas_size().0), u32::from(source::atlas_size().1));
     if (p.atlas.width, p.atlas.height) != (w, h) {
         return Err(format!(
             "the atlas is {}x{}, want {w}x{h}",

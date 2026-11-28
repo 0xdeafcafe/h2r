@@ -1,15 +1,15 @@
 //! `h2 pogo`: the pogo stick's kit, looked at outside the game.
 //!
 //! `h2 pogo kit MAP` adds the kit to a multiplayer map of the user's disc
-//! as the game does when it serves the map (`pogo_kit::inject`), and says
+//! as the game does when it serves the map (`content_kit::inject`), and says
 //! what it took. `h2 pogo models` writes the three looks as OBJ files.
 
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use boot::new_maps::{Disc, IsoDisc};
-use pogo_kit::Style;
-use pogo_kit::source::Source;
+use content_kit::Style;
+use content_kit::source::Source;
 use scenario_edit::MapSource;
 
 const USAGE: &str = "usage: h2 pogo kit MAP [--out FILE] [--disc ISO_OR_EXTRACTED_DISC]
@@ -91,7 +91,7 @@ fn kit(map: &str, out: Option<PathBuf>, disc: Option<PathBuf>) -> Result<()> {
         .map_file(map)?
         .with_context(|| format!("{} has no maps/{map}.map", disc.display()))?;
     let bytes = MapSource::region(file.path, Some((file.offset, file.len))).read_base()?;
-    let added = pogo_kit::inject::add_pogo(&bytes, map)?;
+    let added = content_kit::inject::add_pogo(&bytes, map)?;
     for style in Style::ALL {
         println!(
             "{:<10} {}.weap  {:#010x}",
@@ -112,7 +112,7 @@ fn models(out: &std::path::Path) -> Result<()> {
     std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
     for style in Style::ALL {
         let source = Source::builtin(style)?;
-        let mesh = pogo_kit::mesh::build(&source)?;
+        let mesh = content_kit::mesh::build(&source)?;
         let file = out.join(format!("{}.obj", source.name));
         std::fs::write(&file, mesh.obj(&source.name))
             .with_context(|| format!("writing {}", file.display()))?;

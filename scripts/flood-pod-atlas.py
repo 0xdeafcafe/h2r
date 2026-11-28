@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Paints the Flood pod's texture atlas (art/flood-pod/README.md).
+"""Paints the Flood pod's texture atlas (content/flood-pod/README.md).
 
-    python3 -I scripts/flood-pod-atlas.py            # writes art/flood-pod/flood_pod.png
+    python3 -I scripts/flood-pod-atlas.py            # writes content/flood-pod/flood_pod.png
     python3 -I scripts/flood-pod-atlas.py --check    # exits 1 if the PNG's pixels differ
 
 Standard library only, no input files, fixed seeds: the same pixels every
 run. The atlas is 512x256 RGBA, opaque. Its regions, in pixels
-(x0, y0, x1, y1), are the table `crates/tools/flood-pod-kit/src/source.rs`
-(`REGIONS`) holds, which the model's parts name:
+(x0, y0, x1, y1), are the table `content/flood-pod/kit.yaml`
+(`regions`) holds, which the model's parts name:
 
     flesh      0    0  256  128   the root bulb, u around it
     petal      256  0  512  128   a petal's plate, u from hinge to tip
@@ -21,7 +21,7 @@ its profile; a sweep maps u along its path and v around its section; a box
 maps the whole region onto each face.
 
 Both runs print the pixels' hash (FNV-1a, 64 bits, over the RGBA bytes row
-by row), which `flood-pod-kit`'s tests hold (`ATLAS_PIXELS`). `--check`
+by row), which `content-kit`'s tests hold (`ATLAS_PIXELS`). `--check`
 compares pixels, not file bytes: zlib builds differ in what they write.
 """
 
@@ -321,7 +321,7 @@ def paint(c):
 
 
 def main():
-    out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "art", "flood-pod")
+    out = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "content", "flood-pod")
     path = os.path.join(out, "flood_pod.png")
     c = Canvas()
     paint(c)

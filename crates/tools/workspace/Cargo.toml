@@ -49,7 +49,7 @@ h1-assets = { path = "../h1-assets" }
 vfs.workspace = true
 # The `model` builder: the primitive YAML's mesh, the atlas and the tags a
 # look is built into.
-pogo-kit = { path = "../pogo-kit" }
+content-kit = { path = "../content-kit" }
 
 # Firefight's wave sets: the `rules` items the director script is built from.
 firefight = { path = "../../formats/firefight" }
@@ -65,7 +65,7 @@ live-proto.workspace = true
 font = { path = "../../formats/font" }
 game = { path = "../../extensions/game", default-features = false, features = ["ui-fixture"] }
 # An invented multiplayer map and the kit built on it (PK4's test).
-pogo-kit = { path = "../pogo-kit", features = ["fixture"] }
+content-kit = { path = "../content-kit", features = ["fixture"] }
 
 [lints]
 workspace = true

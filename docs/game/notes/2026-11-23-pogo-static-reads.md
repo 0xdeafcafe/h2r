@@ -69,7 +69,7 @@ testing `al`; a run shows it).
 Both player unit graphs must hold an `idle` for the stick's class and
 type. The kit reads the pair from the owner's map when it builds
 (`kit::player_class` and `kit::choose_class`,
-`crates/tools/pogo-kit/src/kit.rs`): the first pair both graphs hold,
+`crates/tools/content-kit/src/kit.rs`): the first pair both graphs hold,
 preferring the one-handed pistol pair. Nothing about a
 weapon with no first-person animations is in the image reads or the docs:
 whether readying or swapping to it faults is for a run.
@@ -129,5 +129,5 @@ The kit adds 17 tags to a map: five a look (`bitm`, `shad`, `mode`,
 `hlmt`, `weap`) and two shared. Bitmap pixels and geometry are raw pages
 outside tag memory. The headroom check is
 `map::writer::max_metadata_size` against the built layout
-(`crates/tools/pogo-kit/src/inject.rs`, `Costs`);
+(`crates/tools/content-kit/src/inject.rs`, `Costs`);
 `every_multiplayer_map_has_the_room` prints it per map.

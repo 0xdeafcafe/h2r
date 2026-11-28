@@ -38,7 +38,7 @@ use crate::base::Base;
 use crate::builders::{self, BUILDERS_VERSION};
 use crate::hash::tag_hash;
 use crate::unpin::MapUnpin;
-pub use pogo_kit::kit::Shading;
+pub use content_kit::kit::Shading;
 
 /// A package with the bytes of the files its manifest names, by path in the
 /// package.

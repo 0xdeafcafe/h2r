@@ -259,11 +259,11 @@ fn a_png_import_refuses_what_it_cannot_build() {
 
 pub(super) fn model_files(dir: &std::path::Path) {
     std::fs::create_dir_all(dir).unwrap();
-    let frame = pogo_kit::NODE_FRAME;
+    let frame = content_kit::NODE_FRAME;
     std::fs::write(dir.join("model.yaml"), format!(
         "name: invented\natlas: invented\nnodes:\n  - name: {frame}\n    at: [0, 0, 0]\nmarkers: []\nparts:\n  - box:\n      node: {frame}\n      region: body\n      min: [-1, -1, -1]\n      max: [1, 1, 1]\n"
     )).unwrap();
-    let (w, h) = pogo_kit::source::ATLAS;
+    let (w, h) = content_kit::source::atlas_size();
     std::fs::write(dir.join("invented.png"), png(w.into(), h.into())).unwrap();
 }
 

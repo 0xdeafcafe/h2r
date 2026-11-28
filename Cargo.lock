@@ -670,6 +670,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "collision-build",
+ "content-kit",
  "dev-texture",
  "forge-shapes",
  "h1-assets",
@@ -677,7 +678,6 @@ dependencies = [
  "h1map",
  "h1objects",
  "map",
- "pogo-kit",
  "scenario-edit",
  "tags",
 ]
@@ -696,6 +696,7 @@ dependencies = [
  "bots",
  "chrono",
  "content",
+ "content-kit",
  "coop",
  "debug-menu",
  "dsound",
@@ -731,7 +732,6 @@ dependencies = [
  "native-render",
  "perf",
  "png",
- "pogo-kit",
  "recomp",
  "render-bridge",
  "runtime",
@@ -1051,6 +1051,7 @@ dependencies = [
  "cli-common",
  "cloud-saves",
  "content",
+ "content-kit",
  "debug-menu",
  "dhat",
  "dsound",
@@ -1058,7 +1059,6 @@ dependencies = [
  "film",
  "firefight-kit",
  "flate2",
- "flood-pod-kit",
  "font",
  "forge",
  "forge-doc",
@@ -1092,7 +1092,6 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "perf",
  "png",
- "pogo-kit",
  "ring",
  "rules",
  "rustls",
@@ -1282,6 +1281,27 @@ dependencies = [
  "toml",
  "zune-core",
  "zune-jpeg",
+]
+
+[[package]]
+name = "content-kit"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "content",
+ "h1-assets",
+ "h1convert",
+ "h1map",
+ "h1objects",
+ "map",
+ "png",
+ "pogo",
+ "serde",
+ "serde_json",
+ "serde_yaml_ng",
+ "tags",
+ "vfs",
+ "xiso",
 ]
 
 [[package]]
@@ -2147,7 +2167,6 @@ dependencies = [
  "bots",
  "content",
  "firefight",
- "flood-pod-kit",
  "h1-assets",
  "h1campaign",
  "h1convert",
@@ -2179,21 +2198,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b09cf3155332e944990140d967ff5eceb70df778b34f77d8075db46e4704e6d8"
 dependencies = [
  "num-traits",
-]
-
-[[package]]
-name = "flood-pod-kit"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "h1-assets",
- "h1convert",
- "h1map",
- "h1objects",
- "map",
- "pogo-kit",
- "serde_yaml_ng",
- "tags",
 ]
 
 [[package]]
@@ -5439,27 +5443,6 @@ name = "pogo"
 version = "0.1.0"
 
 [[package]]
-name = "pogo-kit"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "content",
- "h1-assets",
- "h1convert",
- "h1map",
- "h1objects",
- "map",
- "png",
- "pogo",
- "serde",
- "serde_json",
- "serde_yaml_ng",
- "tags",
- "vfs",
- "xiso",
-]
-
-[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7150,12 +7133,12 @@ version = "0.1.0"
 dependencies = [
  "collision-build",
  "content",
+ "content-kit",
  "gfx",
  "h1-assets",
  "h1convert",
  "h1map",
  "map",
- "pogo-kit",
  "scenario-edit",
  "serde",
  "serde_json",
@@ -7263,6 +7246,7 @@ dependencies = [
  "boot",
  "bots",
  "content",
+ "content-kit",
  "dear-imgui-rs",
  "dear-imgui-wgpu",
  "dear-imgui-winit",
@@ -7290,7 +7274,6 @@ dependencies = [
  "map",
  "mem-watch",
  "png",
- "pogo-kit",
  "pollster",
  "rfd",
  "rules",
@@ -9066,6 +9049,7 @@ dependencies = [
  "anim-edit",
  "audio",
  "content",
+ "content-kit",
  "firefight",
  "font",
  "forge-doc",
@@ -9075,7 +9059,6 @@ dependencies = [
  "live-proto",
  "map",
  "png",
- "pogo-kit",
  "rules",
  "serde",
  "serde_json",

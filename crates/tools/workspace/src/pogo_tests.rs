@@ -1,6 +1,6 @@
 //! PK4 (docs/editor/studio-redesign.md): the `pogo` package, `content/pogo`,
-//! on `pogo_kit::fixture`'s invented multiplayer map. The package builds the
-//! tags `pogo_kit::kit::install_all` builds (what `inject::add_pogo` is
+//! on `content_kit::fixture`'s invented multiplayer map. The package builds the
+//! tags `content_kit::kit::install_all` builds (what `inject::add_pogo` is
 //! made of), group by group; the `model`, `sound` and `data` builders refuse
 //! what they cannot build by name. No disc bytes.
 use std::collections::BTreeMap;
@@ -11,9 +11,9 @@ use std::sync::{Arc, Mutex};
 use content::package::MapScope;
 use map::build::TagSet;
 use map::{FourCC, Map};
-use pogo_kit::Style;
-use pogo_kit::fixture::{fixture, fixture_class, kitted};
-use pogo_kit::kit::{self, Facts};
+use content_kit::Style;
+use content_kit::fixture::{fixture, fixture_class, kitted};
+use content_kit::kit::{self, Facts};
 use vfs::Rewrite as _;
 
 use super::*;
@@ -159,7 +159,7 @@ fn the_weapon_borrows_the_first_person_view_of_the_maps_own_pistol() {
     let set = decomposed(&built);
     // The fixture's rifle has one element, its pistol two (one a player
     // character): the stick has the pistol's.
-    let want = pogo_kit::fixture::FIXTURE_FIRST_PERSON.len();
+    let want = content_kit::fixture::FIXTURE_FIRST_PERSON.len();
     let mut map = Map::from_reader(Cursor::new(built.as_slice())).unwrap();
     for style in Style::ALL {
         let id = set.find(FourCC(*b"weap"), &style.tag_path()).unwrap();
@@ -196,7 +196,7 @@ fn the_rewrite_serves_the_stick_and_says_which_weapons_it_holds() {
         .rewrite(r"maps\court.map", &fixture(0))
         .expect("the stick is added");
     let (placed, _) =
-        pogo_kit::served::placed_in(std::io::Cursor::new(&served)).expect("all three weapons");
+        content_kit::served::placed_in(std::io::Cursor::new(&served)).expect("all three weapons");
     assert_eq!(placed, kitted().placed);
     {
         let seen = seen.lock().unwrap();
@@ -204,7 +204,7 @@ fn the_rewrite_serves_the_stick_and_says_which_weapons_it_holds() {
         assert_eq!(seen[0].0, "court");
         assert!(seen[0].1 == served, "the observer reads the served map");
     }
-    assert_eq!(pogo_kit::served::placed_in(std::io::Cursor::new(fixture(0))), None);
+    assert_eq!(content_kit::served::placed_in(std::io::Cursor::new(fixture(0))), None);
 }
 
 #[test]

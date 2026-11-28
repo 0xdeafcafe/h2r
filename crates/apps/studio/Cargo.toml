@@ -44,7 +44,7 @@ hud-edit = { path = "../../tools/hud-edit" }
 hud-kit = { path = "../../tools/hud-kit" }
 # model.* on a map with the Pogo Stick's kit added as the game serves it
 # (api/models.rs). `boot` already depends on it.
-pogo-kit = { path = "../../tools/pogo-kit" }
+content-kit = { path = "../../tools/content-kit" }
 # The content stage's subject pad (src/app/subject.rs; docs/editor/live-editors.md).
 stage-kit = { path = "../../tools/stage-kit" }
 variants = { path = "../../formats/variants" }
@@ -129,7 +129,7 @@ firefight-kit = { path = "../../tools/firefight-kit", features = ["testkit"] }
 # The HUD tool's tests draw the invented HUD map.
 hud-edit = { path = "../../tools/hud-edit", features = ["fixture"] }
 # model.*'s tests put the kit into the kit's invented map.
-pogo-kit = { path = "../../tools/pogo-kit", features = ["fixture"] }
+content-kit = { path = "../../tools/content-kit", features = ["fixture"] }
 # anim.*'s tests build the invented two-bone model and its graph with the
 # Halo 1 converter's writers (api/anim/tests.rs).
 h1-assets = { path = "../../tools/h1-assets" }
