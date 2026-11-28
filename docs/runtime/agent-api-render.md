@@ -328,7 +328,7 @@ its window count is positive. The overlay's counters are its items by kind
 (`items`, `quads`, `text_runs`, `fills`, `glyphs`, `blurs`, `model_views`),
 the draws recorded (`batches`) and the items dropped, by reason
 (`refused_material`, `refused_clip`, `refused_glyph`, `refused_texture`,
-`refused_model_view`, `refused_model_view_camera`, `refused_blur`, `refused_movie`;
+`refused_blur`, `refused_movie`;
 [retire-d3d.md](../graphics/retire-d3d.md#what-replaces-each-subsystem)), and
 the movie frames it drew (`movie_frames`). `native_ui_movie_*` counts the
 movie's native draws: `placed` and `refused_{record,frame,picture,host,pass}`

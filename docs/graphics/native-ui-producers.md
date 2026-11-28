@@ -59,48 +59,14 @@ At the sorted virtual draw call `0x00235445`, the hook reads the ordinal, list r
 | Menu fade rectangles, cinematic bars and split-screen dividers | The completed quad copy at the `0x0004b252` uploader with return address `0x00052ce7`. The callback, mode, topology and copy length must agree | The copy callback and inline packet publication. The common uploader's caller runs its original state tail |
 | Loading spinners and background/sweep bitmaps | The spinner's two sets of completed UVs at `0x0002a1f4`. The bitmap at `0x0002ae60` supplies its two rectangles and UV divisors and Rust evaluates the multiplications with the live MXCSR | The immediate-mode submission of each fan. The loading animation, clears, target binds and presentation remain in guest order |
 | Motion sensor wash, tint, and composite | The wash uses the live tint and sample spread at `0x00254b95`. The tint at `0x00254e28` reads the loaded executable's immediate operands. The composite at `0x00255083` reads the selected centre and half extent | Each fan's geometry builder through End. Material and target changes keep their original order |
-| Model widgets | At the sorted call, Rust checks the selector and definition. For an active view it verifies the selected object and light handles, camera scale, animated offsets, field of view and viewport against the camera arguments. It walks the live mesh section, material group and visibility mask at `0x0004d621` | The entire virtual draw for an inactive widget or an empty name list. An accepted material group skips the indexed geometry builder at `0x0004daa0` and resumes at `0x0004d626` |
 | Debug/widget outlines | Five signed-short points and the converted colour at `0x0001ed98`, with the caller and the open line-strip Begin verified | The packed colour and vertex loop. The guest End closes the empty stream and restores line state |
-| Host-drawn widgets | At the sorted call, the host is asked whether it draws the validated widget itself (`native_hud::Host::replace_widget`). The Skulls page's model picture is the one such widget: the noted picture widget, its block and its alpha at `+0x64` ([skulls.md](../game/skulls.md#the-model-picture)) | The entire virtual draw, resuming at `0x00235448` as an idle model widget does. The host's pass is queued at that point in the walk (`Device::external_pass_now`) |
+| Host-drawn widgets | At the sorted call, the host is asked whether it draws the validated widget itself (`native_hud::Host::replace_widget`). The Skulls page's model picture is the one such widget: the noted picture widget, its block and its alpha at `+0x64` ([skulls.md](../game/skulls.md#the-model-picture)) | The entire virtual draw, resuming at `0x00235448`. The host's pass is queued at that point in the walk (`Device::external_pass_now`) |
 
-Active model widgets still use the guest's scenario-object updates, view and layer construction, and the material and transform uploads. When textures change, the same guest commit runs before native recording and updates the applied mirror. A refused range lets the guest emitter run at that draw position.
+Model widgets are the overlay's ([native-menus-overlay.md](native-menus-overlay.md#model-views)): the game's draw of one never runs, and one the sorted list does not take stops by name. At its item call the view is read (`ui_overlay::model::view`) and handed to the host (`Host::model_view`).
 
-Separate masked strips and disjoint triangle-list ranges reserve together, in guest order, and require that all draws can use the first draw's texture views. Each material group commits independently, so an active model widget can contain both native and guest groups. The menu backdrop reserves each fan independently, and the outline keeps the guest's rectangle transformation and state setup.
+The menu backdrop reserves each fan independently, and the outline keeps the guest's rectangle transformation and state setup.
 
 Uncovered HUD and widget helpers still build their draw packets. The scoped recorder can consume these packets with the resolved D3D draw available as ordered fallback. The host debug menu is drawn by the host over the presented frame ([debug-menu.md](../runtime/debug-menu.md)).
-
-### The model view in Rust
-
-An active model widget's view is read in Rust at its item call, before the guest's draw runs (`native_hud::model::predict`), and checked against the view the draw passes its camera call `0x0002c560` at `0x002b0e12` (`native_hud::model::check`).
-
-| Part | Rust read | Code |
-|---|---|---|
-| Objects | each non-empty name's first equal row of the scenario's object names (rows below 640), that row's handle when not the absent datum, in name order | `ui_overlay::model::objects` |
-| Camera | centre, viewport about the parent view (the item call's argument) and field of view | `engine::ui_model::camera` |
-| Axes | forward +Y, up +Z, as the draw builds them | `scene_extract::ui::MODEL_FORWARD`, `MODEL_UP` |
-| Item | one `ModelView` into the camera's viewport, not the widget's rectangle; a viewport past the canvas is not listed | `scene_extract::ui::UiModel` |
-
-A matching view is the one the host and the scene's overlay take. A difference sends every later view to the guest's read for the session. Every call is compared, since the guest's draw still runs whole: no stage draws a `ModelView` item yet (`native_ui_overlay_refused_model_view`, [native-menus-overlay.md](native-menus-overlay.md#model-views)), and lights are not read. Tests: `scene_extract::ui::tests::a_model_widget_is_one_model_view_item`, `native_hud::model::tests::the_rust_view_is_the_view_the_game_draws`, `a_view_that_differs_falls_back_for_the_session`, `ui_overlay::model::tests::the_names_select_their_live_handles_in_order`.
-
-### Draw state
-
-Native packets take their vertex and combiner programs, textures, flat shading, alpha comparison, fog and stipple from the same NV2A inputs as D3D. The GPU pipeline takes depth test/write, stencil operations and reference, fill, winding, clip, colour writes and blend from the live draw. Point or wireframe fill requires the matching device feature. The 1x and display copies have separate clip transforms, and the display uses the existing glyph shader option when enabled.
-
-Native UI uses the live textures, including the glyph cache. The guest lays out the string before `native_hud::ui::screen_quad` reads the corners, so a leading glyph quad with zero alpha keeps its draw position and the next glyph uses the guest's pen advance and kerning.
-
-Within an eligible HUD, UI layer or widget callback, the overlay also takes generic shader-helper fans and inline screen quads using the sampled textures and combiner at the draw. Tag and glyph captures take precedence.
-
-The shader helper observes API Begin state; the inline screen quad requires room in the guest push buffer and observes pushed state. An overlay refusal continues through the native UI packet path, and `native_ui_overlay_widget_quads` counts admitted generic fans. Ordered native packets can join the same GPU pass as adjacent compatible draws.
-
-### Fallback
-
-Each early producer observes the state point of the original operation, including the distinction between API Begin and inline pushed state. Register carry is installed only on commit. Every single-draw pass keeps its resolved D3D packet for ordered fallback.
-
-- Behind the render thread the producer's draw is queued with that packet and commits at once: the render thread records it or draws the packet, which is the draw the guest would have issued ([render-thread.md](render-thread.md), "Keeping guest-visible semantics exact").
-- A model draw with sibling ranges, or any draw on the synchronous backend, is validated against every required target copy and commits before the hook changes control flow. A refusal there leaves the guest to issue its original draw.
-- A scene that keeps the frame for a two-copy replay ([framescene.md](framescene.md), slice 6) carries the UI pass with it: a single-draw pass as its packet, a model draw with sibling ranges as its head and each sibling under one admission (`ExternalPass::resolved_packets`). Replay records the pass again at the head.
-
-Outstanding push callbacks, visibility queries, replay, unavailable resources or attachments, unsupported shaders or methods, and GPU preparation failure all preserve the original path. The built-in diffuse shader, backend-specific shadow textures and enabled shader overrides use the original renderer.
 
 ### Counters
 
@@ -111,10 +77,8 @@ Outstanding push callbacks, visibility queries, replay, unavailable resources or
 | `items`, `item_refused` | widget visits and list validation refusals |
 | `builds_skipped`, `walk_suppressed` | early geometry submissions skipped |
 | `fallback_*` | geometry, order, target, state, shader, texture, upload and reservation reasons; a preparation refusal may accompany a failed early reservation |
-| `guest_builder_draw`, `model_guest_builder_draw` | draws that still arrive as guest packets, and those inside a model widget |
+| `guest_builder_draw` | draws that still arrive as guest packets |
 | `backdrop_fallback_*`, `outline_fallback_*` | a missing entry, incompatible inputs and failed reservations |
-| `model_fallback_widget`, `model_fallback_*` | widgets with a recorded refusal, and the entry, camera, caller, geometry, range limit, texture commit or reservation reason |
-| `model_view_rust_matched`, `model_view_rust_mismatch_{objects,camera}`, `model_view_rust_refused`, `model_view_rust_fallback` | views whose Rust read matched the guest's; differed, by the first part (then the session takes the guest's); the Rust read refused; taken from the guest's after a mismatch ([The model view in Rust](#the-model-view-in-rust)) |
 | `scene_kept_overlay_<kind>_<cause>` (`render.scene`) | HUD items the overlay leaves to the guest's draw or packet, by kind and cause ([retire-d3d.md](retire-d3d.md#r6s-remainder)) |
 | `scene_kept_ui_<kind>_<cause>` (`render.scene`) | menu-frame draws the overlay leaves to the guest's draw or packet, by kind and cause ([retire-d3d-menus.md](retire-d3d-menus.md#what-is-kept)) |
 | `native_ui_overlay_*` | the typed overlay stage, which draws from the scene and not from these producers ([retire-d3d.md](retire-d3d.md#what-replaces-each-subsystem)); `render.stats` reports them |

@@ -68,7 +68,7 @@ The remaining guest draws count by reason in `render.stats`:
 | `draw` | list, button or custom draw | by its gap, below |
 | `unlisted`, `pass` | any listed class | layout or pass preparation fails, including unavailable font pages or bitmap assets |
 
-Each text, class and model refusal is a `ui_overlay::Gap`: the draw and the first check that refused it, kept as `scene_kept_ui_widget_<cause>` ([retire-d3d-menus.md](retire-d3d-menus.md#what-is-kept)):
+Each text and class refusal is a `ui_overlay::Gap`: the draw and the first check that refused it, kept as `scene_kept_ui_widget_<cause>` ([retire-d3d-menus.md](retire-d3d-menus.md#what-is-kept)):
 
 | Cause | Kept because |
 |---|---|
@@ -85,8 +85,6 @@ Each text, class and model refusal is a `ui_overlay::Gap`: the draw and the firs
 | `button_focus`, `button_class` | the focus accessors or the user's channel not retail's; a button draw slot not retail's |
 | `art_viewport`, `art_image`, `art_texture`, `art_scale`, `art_offset` | the art's viewport not the full canvas, image out of range or empty, image not resident, projection not finite, offset out of range |
 | `draw_class`, `draw_runtime_class`, `draw_custom` | a draw no reader knows; a vtable outside the image's UI tables; a host-drawn picture (`Host::ui_custom_widget`) |
-| `model_view` | an active model scene: no stage draws a planned `ModelView` yet ([Model views](#model-views)) |
-| `model_lights`, `model_names`, `model_name`, `model_rows` | a selection with lights, more than 32 names, a name with no terminator, a scenario with more rows than an `i16` |
 
 ## Bitmap widgets
 
@@ -165,7 +163,13 @@ Counters in `render.scene`: `fade_{calls,cut,checked}`, and `scene_kept_fade_<ca
 
 ## Model views
 
-An active model scene's `ModelView` item carries the camera its view call `0x0002c560` takes and its viewport as the clip. The overlay plan turns it into the render camera record that call fills, and keeps it between the batches in list order, as a blur (`native_render::model_view::PlanModelView`, `OverlayPlan::model_views`). The batch after it does not merge back across it.
+A model scene (type 7) is read at the sorted list (`ui_overlay::model::read`) and drawn by the overlay; the game's draw of the widget does not run. Its `ModelView` item carries the camera its view call `0x0002c560` would take and its viewport as the clip. The overlay plan turns it into the render camera record that call fills, and keeps it between the batches in list order, as a blur (`native_render::model_view::PlanModelView`, `OverlayPlan::model_views`). The batch after it does not merge back across it.
+
+| Part | Read | Code |
+|---|---|---|
+| Objects | each non-empty name's first equal row of the scenario's object names (rows below 640), that row's handle when not the absent datum, in name order | `ui_overlay::model::objects` |
+| Camera | centre, viewport about the parent view (the sorted draw's argument) and field of view | `engine::ui_model::camera` |
+| Lens | `0x0002fb70`'s scales and offsets for the FOV and the record's viewport, as `0x0002fd90` stores them at `0x004b9e14` | `scene_extract::ui::UiModel::with_lens` |
 
 | Record field | From |
 |---|---|
@@ -174,15 +178,23 @@ An active model scene's `ModelView` item carries the camera its view call `0x000
 | viewport (top, left, bottom, right) | the call's left, top, right, bottom: the item's clip |
 | near, far | `0x00467014`, `0x00467018` (`engine::ui_model::VIEW_NEAR`, `VIEW_FAR`), not the game view's |
 
-`0x0002c560` copies the record whole to the render camera `0x004b9da0` and builds its projection at `0x004b9e14`. The plan does not read that projection: the lens is `RenderCamera::projection`'s from the FOV and viewport. `model_view::view_inputs` gives the objects' vertex programs the camera's view-projection rows and clip range, with `c[10]`, `c[11]` mapping clip space to the viewport rather than the canvas. The scissor is the viewport in the target's pixels.
+`0x0002c560` copies the record whole to the render camera `0x004b9da0` and builds its projection at `0x004b9e14`. That projection is the camera's lens (`OverlayCamera::projection`, the record's `projection_xy`): with the widescreen byte set, its x scale differs from `RenderCamera::projection`'s from the FOV and viewport alone. `model_view::view_inputs` gives the objects' vertex programs the camera's view-projection rows and clip range, with `c[10]`, `c[11]` mapping clip space to the viewport rather than the canvas. The scissor is the viewport in the target's pixels.
 
-| Counter (`native_ui_overlay_*`) | Counts |
+`OverlayGpu::prepare_with_objects` draws each planned view in a pass of its own, in its place among the batches, holds and blurs: the target loaded, the overlay's depth target (`OverlayGpu::depth_target`, `OVERLAY_DEPTH`, D24 with stencil, one for each copy's size) cleared to the far plane, and the object stage's packets (`ModelViewObjects`) each scissored to the view. The overlay's own items draw with no depth.
+
+What the native code cannot take stops with a named `unimplemented!`; nothing falls back to the game's draw:
+
+| Message | When |
 |---|---|
-| `model_views` | `ModelView` items |
-| `refused_model_view_camera` | a view whose record is not a camera (`model_view_camera`) or whose viewport has no `i16` edges or target pixels (`model_view_clip`) |
-| `refused_model_view` | a planned view: no stage draws one yet |
+| `overlay model view: model_view_camera`, `model_view_clip` | a record that is not a camera; a viewport with no `i16` edges or target pixels |
+| `overlay model view: no object stage` | a pass with no object stage (`NoObjects`) |
+| `ui model: light names` | a selection with lights |
+| `ui model: … object names, past the draw's 32` | more than 32 names |
+| `ui model: a name of 32 bytes with no terminator` | a name that fills its 32 bytes |
+| `ui model: … scenario object names, past an i16` | a scenario with more rows than an `i16` |
+| `ui model: a model widget the overlay did not take` | a model widget the sorted list leaves to the game |
 
-The widget stays the guest's (`model_view`) until the object stage draws planned views into the overlay's target. Tests: `native_render::model_view::tests::a_widgets_camera_is_the_record_the_guest_fills`, `the_scissor_is_the_records_viewport_in_the_targets_pixels`, `the_view_constants_put_the_axis_on_the_viewports_centre`, `native_render::overlay::tests::a_blur_splits_the_batches_and_carries_its_steps_as_fractions`.
+Tests: `native_render::model_view::tests::a_widgets_camera_is_the_record_the_guest_fills`, `a_widgets_lens_is_the_projection_its_call_builds`, `the_scissor_is_the_records_viewport_in_the_targets_pixels`, `the_view_constants_put_the_axis_on_the_viewports_centre`, `native_render::overlay::tests::a_blur_splits_the_batches_and_carries_its_steps_as_fractions`, `native_render::ui_gpu::tests::the_depth_target_is_kept_for_each_copys_size`, `a_model_view_hands_its_objects_its_view_and_draws_over_the_depth`, `scene_extract::ui::tests::a_model_views_lens_is_the_projection_its_call_builds`, `ui_overlay::model::tests::a_live_selection_is_its_view_and_none_is_nothing`.
 
 ## The blur under a dialog
 
