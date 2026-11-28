@@ -130,20 +130,14 @@ for the cache's open shader (**Code**). The body's `0x00016b10` calls
 |---|---|---|
 | below `0x5c` | `SetRenderState_Simple` (header from `0x0043e6f0`), then the shadow `0x00407498` | `Device::set_render_state_simple`, then the shadow |
 | `0x5c..0x87` | the mask (`0x0043e4d0`) into the dirty word `0x00407490`, the shadow | the same words |
-| `0x88` and up | the setter at `0x004038d8 + 4·state` | `Device::set_render_state` on the setter's slot (`d3d::abi::RENDER_STATE_SETTERS`); another setter declines (`declined_setter`) |
+| `0x88` and up | the setter at `0x004038d8 + 4·state` | `Device::set_render_state` on the setter's slot (`d3d::abi::RENDER_STATE_SETTERS`); another setter is `setter` |
 
-Until the gate answers every call is a reference: the layer draw calls the
-guest's `0x00018900` (`call_guest`) and compares each listed state's
-shadow and the dirty word with the prediction (`open_shader::predict`).
-After 16 clean references it answers: one call in 64 stays a reference, the
-rest replay. Either way the body's writes follow and the call returns.
-`render.scene` carries `open_shader_<outcome>`: `referenced`, `replayed`,
-`matched`, `mismatched_<field>` (`state_<hex>`, `dirty`), `opened`,
-`fallback`, `declined_<why>`, `unfinished`. Tests:
+Every call replays (`open_shader::replay`); the guest's `0x00018900`
+never runs. The body's writes follow and the call returns. A list the host
+does not take panics, `open shader: <why>` (`host`, `unwritable`,
+`setter`, `write`). `render.scene` carries `open_shader_replayed`. Tests:
 `the_restore_list_is_read_and_classed_as_the_original_applies_it`,
-`the_prediction_is_each_states_last_value_and_the_dirty_masks`,
-`the_gate_answers_after_clean_references_and_stops_at_a_difference`,
-`a_declined_replay_takes_the_reference` (`open_shader`),
+`the_replay_takes_the_whole_list_or_names_why_not` (`open_shader`),
 `an_open_shader_with_every_item_native_is_restored_and_returns`
 (`native_layers`),
 `the_open_shaders_restore_writes_each_entry_as_its_call_would`

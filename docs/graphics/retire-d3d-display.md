@@ -85,9 +85,13 @@ The `views`, `outside_view` and `frame_loop` rows reach D3D only through two sha
 | the raw push | method `0x1af0`, four words: 0, `[0x0045dbbc]`, `[0x0045dbc0]`, `[0x0045e3b0]` (`MakeRequestedSpace` at the limit) | the same words at put, `Host::make_space` at the limit |
 | `[0x004b8428]` = `0x1b02` | `SetRenderState_FillMode(0x1b02)` | the write, `Host::render_state(139, 0x1b02)` |
 | `[0x004670bc]` = 1, `0x00016b10` (ESI `0x00485b48`) | the draw state's reset; `0x00018900` when `+0x24` is set: the 5-byte entries (slot, value) its `+0x11c` names, below slot `0x5c` `SetRenderState_Simple` with the header at `0x0043e6f0` and the slot's word at `0x00407498`, below `0x88` the dirty bits at `0x0043e4d0` or'd into `[0x00407490]` and the word, the rest their setter | the same writes; `view_setup::restore_list`, `Host::simple_state`, `Host::render_state`, after the fill mode |
-| with `+0x26c` set | `0x48` words from `+0x14c` to `0x0048574c`; `0x00025a10`: 24 words to `c[-84]` (shadowed at `0x004077f8`), the fog colour `0x00131ed0(+0x168)` to `[0x004b8424]` and `SetRenderState_FogColor`, then `0x00027aa0` | `view_setup::fog`; `Host::constants(12, 24)`, `Host::render_state(138, colour)`; with `+0x1b8` not 0 or -1, `0x00027aa0` (the fog's effect: game code, no D3D) as a guest call, last |
+| with `+0x26c` set | `0x48` words from `+0x14c` to `0x0048574c`; `0x00025a10`: 24 words to `c[-84]` (shadowed at `0x004077f8`), the fog colour `0x00131ed0(+0x168)` to `[0x004b8424]` and `SetRenderState_FogColor`, then `0x00027aa0` | `view_setup::fog`; `Host::constants(12, 24)`, `Host::render_state(138, colour)`; with `+0x1b8` not 0 or -1, `0x00027aa0` (the fog's effect: game code, no D3D) through `fog_effect::run`, last |
 
-The view end (**Code** `0x00013c20..0x00013cc6`): with `[0x004ba04c]` above 1, `D3DDevice_Clear(0, 0, 0x80, 0, 1.0, 0)` through `Host::clear`; the view stack `[0x0046701c]` popped; a view left (`0x004850d0 + 0x298 * n`), the guest call of the setup above for it, its kind to `[0x004b9ed4]`, its `+0x14c` to `0x004b9ef0` and `+0x18` to the camera `0x004b9da0`, and the guest calls of its camera `0x0002f970` and `0x0002fd90`, which call no D3D entry. It returns with EBX, ESI, EDI and EBP as they came in.
+The view end (**Code** `0x00013c20..0x00013cc6`): with `[0x004ba04c]` above 1, `D3DDevice_Clear(0, 0, 0x80, 0, 1.0, 0)` through `Host::clear`; the view stack `[0x0046701c]` popped; a view left (`0x004850d0 + 0x298 * n`), the setup above for it in Rust (`view_setup::setup`), its kind to `[0x004b9ed4]`, its `+0x14c` to `0x004b9ef0` and `+0x18` to the camera `0x004b9da0`, and its camera `0x0002f970` and `0x0002fd90` (`view_camera::update`, `view_camera::finish`). No guest body runs; it returns with EAX, ECX, EDX and the XMM registers as the camera leaves them.
+
+`render_bridge::view_camera` ports the end's camera bit for bit, the callees included: `update` is `0x0002f970` (the window over the viewport to the 16-byte local, the lens byte `[0x004ba019]`, the `+0x58` lens or `+0x68` shift) and `finish` is `0x0002fd90` (the projection `0x0002fb70` through `engine::view_projection`, the axes and position to `0x004b9e48`, their inverse `0x00141590` to `0x004b9e14`, the offsets and the clip rows to `+0xbc`). Each writes guest memory in the body's order, the local included, and leaves the bodies' dead frames alone. SSE follows x86's NaN rules; the x87 parts run at double precision, where `f64` is exact for these operands, and an x87 NaN is refused (`x87`). Both need MXCSR `0x1f80` (sticky flags aside) and `finish` the x87 control word `0x027f`, else `simd` or `x87`.
+
+`render_bridge::fog_effect::run` ports the fog's effect `0x00027aa0` bit for bit, its callees included: the wind `0x00028580` with its normalise `0x0002b400`, the transforms' inverse `0x00141590` and product `0x00142a60`, and the CRT's `floor` `0x00321099`, `_ftol` `0x00322b0c` and `pow` `0x00372d48`. SSE runs on the `simd` model under the caller's MXCSR, the x87 on the `x87` model under its control word from an empty stack. Every write is staged and made at the end in the body's order, so a refusal writes nothing: `x87` (an unmasked x87 exception, or one the model cannot make), `simd` (an unmasked SSE exception raised), `floor_nan` (a NaN to `floor`, the CRT's error path), `idiv` (a layer count of 0), `unread`, `unwritable`.
 
 No guest body of the setup or the end runs. A case the cut cannot make panics, named `view_setup: <cause>` or `view_end: <cause>`: `host` (none installed), `device` (a refused call), `unread`, `unwritable`. `render.scene` counts `view_setup_calls` and `view_end_calls`.
 
@@ -186,7 +190,7 @@ A kept frame runs the guest's `0x00013f10(0, 0)` as before. Every outcome is cou
 
 | Guest | Rust |
 |---|---|
-| `0x0001fd20` | the guest's call, EAX 0 (it has no D3D entry) |
+| `0x0001fd20` | `fade_record::update`, EAX 0: every write and register as the guest's body makes them, the stack slots and x87 marks included. The x87 blends run on the x87 crate's model under the caller's control word, the SSE under its MXCSR with x86's NaN rules and sticky flags; an operand either cannot make exactly panics (`x87`, `simd`) |
 | no record, or `+0xa4` at or below `[0x0045dbd8]` | return |
 | `0x0001dc40`, `0x0001de20`: target `0x12` | never allocated; the cache's drain does not run |
 | the copy `0x000351a0` | an `OverlayKind::Hold` of texture `0x12`: the bound target copied whole into a texture of its size and format, kept across frames in the overlay's residency (`ui_gpu::OverlayResidency::hold`), one per target copy |
@@ -204,6 +208,8 @@ No guest body of the tail runs. A tail it does not cover panics, named `frame_ta
 | `window` | the window is empty or outside target 0 |
 | `blend` | blend mode 7 is past the tables or names the constant colour |
 | `unread` | a word that does not read |
+| `x87`, `simd` | `0x0001fd20`'s x87 or SSE meets an operand or mode its model cannot make exactly (an unmasked exception, a NaN beside a denormal, a tiny inexact product) |
+| `memory` | `0x0001fd20` reads or writes an unmapped word |
 
 `frame_tail_calls`, `frame_tail_native`, `frame_tail_copies` and `frame_tail_composites` count the tails. `frame_tail_refused_pass` counts a pass the host did not place (a pending copy is then refused as `0x0001fcd0` refuses it); `frame_tail_refused_hold` a copy with no texture or over a target that cannot be copied, `frame_tail_refused_held` a composite whose held texture or combiner the GPU did not take.
 
@@ -294,7 +300,9 @@ The game binds every target through its select `0x00014bc0(index)` (Code; the ca
 | `0x21` to `0x26` | `[0x00509390]` to `[0x005093a4]`, depth `[0x005093a8]`; no code names them as written | `Slot(..)` |
 | 2, `0xe`, `0x17`, `0x18`, `0x1c`, `0x1e` to `0x20` | none | |
 
-The depth is `[0x00509364]` (`DisplayDepth`) for indices 0, 1, 3, 5 to 8, `0xf` and `0x12`, else none.
+The depth is `[0x00509364]` (`DisplayDepth`) for indices 0, 1, 3, 5 to 8, `0xf` and `0x12`, entry 9's surface for 9 (whose data and size words index 9 copies into `0x00484f50` first), else none; AL 0 drops it. The viewport follows the bind: 128 square for context kind 2, the context's window (`view_setup::viewport`) for 0, 1, 2, `0x12` and the screen target, else the colour's whole level-0 surface (`GetDesc`, `0x003fd9c0`).
+
+`render_bridge::target_bind` is this select in Rust (`bind`: `surfaces`, `native_targets::cut_select`, `viewport`, `Host::viewport`). An index the tables send nowhere is `index`; a viewport with no colour to size it by is `colour`. Tests: `each_index_binds_its_tables_surfaces`, `index_9_points_the_static_surface_at_target_9`, `the_viewport_is_the_window_for_the_view_and_the_surface_for_others`, `a_swizzled_surface_is_sized_by_its_format`.
 
 ```mermaid
 flowchart LR

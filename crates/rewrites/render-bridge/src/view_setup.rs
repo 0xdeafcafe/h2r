@@ -12,8 +12,9 @@
 //! declares (`native_render::frame_graph::targets`).
 //!
 //! No guest body runs. The fog's effect `0x00027aa0` (the view's
-//! `+0x1b8` not 0 or -1) is game code with no D3D call: the setup calls it
-//! as the body does, last. A setup the cut cannot make panics, named
+//! `+0x1b8` not 0 or -1) is [`crate::fog_effect::run`], last, as the body
+//! calls it; the view end's setup is [`setup`] and its camera
+//! [`crate::view_camera`]. A setup the cut cannot make panics, named
 //! `view_setup: <cause>` (`host`, `unread`, `unwritable`, `device`: a
 //! refused call); the end likewise, `view_end: <cause>`. Counted
 //! `view_setup_calls` and `view_end_calls`.
@@ -584,30 +585,30 @@ pub fn counters() -> Vec<(String, u64)> {
     VIEW_SETUP.counters().into_iter().chain(VIEW_END.counters()).collect()
 }
 
-/// `0x000132d0`'s entry: the plan made, then the fog's effect as the
-/// body's last call when it has one; it returns to the caller with `ret 4`.
+/// `0x000132d0(view)` in Rust, `esp` its entry: the plan made, then the
+/// fog's effect ([`crate::fog_effect::run`]) as the body's last call when
+/// it has one.
+fn setup(mem: &mut dyn GuestMemory, host: &dyn Host, view: u32, esp: u32, mxcsr: u32, x87_control: u16) -> Result<(), Cause> {
+    let s = plan(&*mem, view)?;
+    apply(mem, host, &s, esp.wrapping_sub(SCRATCH))?;
+    if s.fog_effect {
+        crate::fog_effect::run(mem, mxcsr, x87_control)?;
+    }
+    Ok(())
+}
+
+/// `0x000132d0`'s entry: [`setup`], then `ret 4`.
 fn setup_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
     VIEW_SETUP.call();
     let host = native_targets::installed("view_setup");
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
-    let made = word(&*mem, cpu.esp.wrapping_add(4)).and_then(|view| plan(&*mem, view)).and_then(|s| {
-        apply(&mut *mem, &*host, &s, cpu.esp.wrapping_sub(SCRATCH))?;
-        Ok(s.fog_effect)
-    });
-    let effect = made.unwrap_or_else(|cause| unhandled("view_setup", cause));
-    if !effect {
-        drop(mem);
-        return ctx.memory().ret(cpu, 4);
-    }
-    let (esp, ret) = (cpu.esp, mem.u32(cpu.esp)?);
-    // The body's frame: its three saved registers and EBX below the
-    // return address.
-    cpu.esp = esp.wrapping_sub(0x10);
-    ctx.call_guest_named(cpu, &mut mem, FOG_EFFECT, "render: the view setup's fog effect", move |cpu, _ctx| {
-        cpu.esp = esp.wrapping_add(8);
-        Ok(runtime::TransferAbi::ret(ret))
-    })
+    let (esp, mxcsr, control) = (cpu.esp, cpu.mxcsr, cpu.x87.control);
+    word(&*mem, esp.wrapping_add(4))
+        .and_then(|view| setup(&mut *mem, &*host, view, esp, mxcsr, control))
+        .unwrap_or_else(|cause| unhandled("view_setup", cause));
+    drop(mem);
+    ctx.memory().ret(cpu, 4)
 }
 
 /// What the end does before the setup of the view left: the alpha clear
@@ -636,48 +637,37 @@ fn end_copies(mem: &mut dyn GuestMemory) -> Result<(), Cause> {
     mem.write(CAMERA, &camera).map_err(unwritable)
 }
 
-/// `0x00013c20`'s entry: the clear and the pop in Rust, then the body's
-/// calls as guest calls: the setup `0x000132d0(view)` (this module's), the
-/// camera `0x0002f970` (EAX [`CAMERA`], ESI a 16-byte local) and
-/// `0x0002fd90` (EDX the local, EBX [`CAMERA_POINTS`], ESI [`CAMERA`]),
-/// neither of which calls D3D. It returns to the end's caller with EBX,
-/// ESI, EDI and EBP as they came in.
+/// `0x00013c20`'s entry in Rust: the clear and the pop, then for the view
+/// left the setup `0x000132d0(view)` ([`setup`], counted as a setup call),
+/// the copies, and the camera `0x0002f970` and `0x0002fd90`
+/// ([`crate::view_camera`]) on the body's 16-byte local below the return
+/// address. It returns with the registers the camera leaves.
 fn end_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
     VIEW_END.call();
     let host = native_targets::installed("view_end");
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
-    let view = end_begin(&mut *mem, &*host).unwrap_or_else(|cause| unhandled("view_end", cause));
-    let (esp, ret) = (cpu.esp, mem.u32(cpu.esp)?);
-    let Some(view) = view else {
+    let Some(view) = end_begin(&mut *mem, &*host).unwrap_or_else(|cause| unhandled("view_end", cause)) else {
         drop(mem);
         return ctx.memory().ret(cpu, 0);
     };
-    let saved = (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp);
-    // The body's frame: its 16-byte local below the return address, then
-    // its three saved registers; the view pushed for the setup's `ret 4`.
+    let (esp, mxcsr, control) = (cpu.esp, cpu.mxcsr, cpu.x87.control);
+    // The body's frame: the local below the return address, its three
+    // saved registers, the view pushed and the setup's return address.
     let local = esp.wrapping_sub(0x10);
-    cpu.esp = esp.wrapping_sub(0x1c).wrapping_sub(4);
-    mem.set_u32(cpu.esp, view)?;
-    ctx.call_guest_named(cpu, &mut mem, engine::points::RENDER_VIEW_SETUP.base, "render: the view end's setup", move |cpu, ctx| {
-        let rt = Arc::clone(ctx.runtime());
-        let mut mem = rt.memory();
-        end_copies(&mut *mem).unwrap_or_else(|cause| unhandled("view_end", cause));
-        cpu.eax = CAMERA;
-        cpu.esi = local;
-        ctx.call_guest_named(cpu, &mut mem, CAMERA_UPDATE, "render: the view end's camera", move |cpu, ctx| {
-            let rt = Arc::clone(ctx.runtime());
-            let mut mem = rt.memory();
-            cpu.edx = local;
-            cpu.ebx = CAMERA_POINTS;
-            cpu.esi = CAMERA;
-            ctx.call_guest_named(cpu, &mut mem, CAMERA_FINISH, "render: the view end's camera", move |cpu, _ctx| {
-                (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp) = saved;
-                cpu.esp = esp.wrapping_add(4);
-                Ok(runtime::TransferAbi::ret(ret))
-            })
-        })
-    })
+    VIEW_SETUP.call();
+    setup(&mut *mem, &*host, view, esp.wrapping_sub(0x24), mxcsr, control).unwrap_or_else(|cause| unhandled("view_setup", cause));
+    let finished = end_copies(&mut *mem)
+        .and_then(|()| crate::view_camera::update(&mut *mem, local, mxcsr))
+        .and_then(|_| crate::view_camera::finish(&mut *mem, local, esp.wrapping_sub(0x20), mxcsr, control))
+        .unwrap_or_else(|cause| unhandled("view_end", cause));
+    (cpu.eax, cpu.ecx, cpu.edx) = (finished.eax, finished.ecx, finished.edx);
+    for (x, lane) in cpu.xmm.iter_mut().zip(finished.xmm) {
+        *x = [0; 16];
+        x[..4].copy_from_slice(&lane.to_le_bytes());
+    }
+    drop(mem);
+    ctx.memory().ret(cpu, 0)
 }
 
 /// Places the setup's and the end's implementations (`native_targets`'

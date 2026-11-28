@@ -6,8 +6,8 @@
 //! The guest's body (Code, `0x00013b90..0x00013c17`):
 //!
 //! 1. `0x0001fd20` (EAX 0): the fade record `[0x005093e0]`, its fade
-//!    `+0xa4` brought up to the clock. The guest's call: it has no D3D
-//!    entry.
+//!    `+0xa4` brought up to the clock. In Rust ([`crate::fade_record`]),
+//!    its every write and register made as the guest's body makes them.
 //! 2. No record, or `+0xa4` at or below `[0x0045dbd8]`: return.
 //! 3. `+0xa0` set: target `0x12` allocated (`0x0001dc40`, unless
 //!    `[0x004b5690]`), the view's target copied into it (`0x000351a0`)
@@ -27,7 +27,7 @@
 //! No guest body runs: a tail this does not cover panics, named
 //! `frame_tail: <cause>` ([`setup`]): `host`, `target` (the view's target
 //! is not target 0, or target 0 is not the bound one), `size`, `window`,
-//! `blend`, `unread`. Native tails count `frame_tail_native`,
+//! `blend`, `unread`, and `0x0001fd20`'s `x87`, `simd`, `memory`. Native tails count `frame_tail_native`,
 //! `frame_tail_copies`, `frame_tail_composites`; a pass the host did not
 //! place `frame_tail_refused_pass`, and a hold or held texture the GPU
 //! refused `frame_tail_refused_hold` ([`refused`]).
@@ -41,8 +41,11 @@ use frame_scene::{ClipRect, Overlay, OverlayBlend, OverlayItem, OverlayMaterial,
 use native_render::camera::GuestRead;
 use native_render::hud::Blend;
 
-/// `0x0001fd20`: the fade record, brought up to the clock.
+/// `0x0001fd20`: the fade record, brought up to the clock
+/// ([`crate::fade_record`]).
 pub const FADE_RECORD: u32 = 0x0001_fd20;
+/// The tail's return address from that call.
+pub const CALL_RETURN: u32 = 0x0001_3b98;
 /// The fade record's pointer (`0x0001fd00`, `0x0001fcd0`).
 pub const RECORD: u32 = 0x0050_93e0;
 /// The record's copy flag (a byte), fade and exponent.
@@ -364,9 +367,9 @@ fn fault(f: MemFault) -> runtime::GuestFault {
     }
 }
 
-/// `0x00013b90`'s entry: the setup, then `0x0001fd20` as the guest's call
-/// and [`finish`] at its return, which returns to the tail's caller with
-/// its callee-saved registers as they came in.
+/// `0x00013b90`'s entry: the setup, then `0x0001fd20` in Rust
+/// ([`crate::fade_record::update`], EAX 0) and [`finish`] on the record it
+/// returns, returning to the tail's caller.
 fn tail_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
     COUNTS.calls.fetch_add(1, Ordering::Relaxed);
     let host = host().unwrap_or_else(|| crate::native_targets::unhandled("frame_tail", "host"));
@@ -375,24 +378,22 @@ fn tail_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) 
     let target = setup(&*mem).unwrap_or_else(|cause| crate::native_targets::unhandled("frame_tail", cause));
     COUNTS.native.fetch_add(1, Ordering::Relaxed);
     let (esp, ret) = (cpu.esp, mem.u32(cpu.esp)?);
-    let saved = (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp);
+    // `push esi; xor eax, eax; call 0x0001fd20`: the two words written,
+    // ESP at the call's return address.
+    mem.write(esp.wrapping_sub(4), &cpu.esi.to_le_bytes()).map_err(fault)?;
+    mem.write(esp.wrapping_sub(8), &CALL_RETURN.to_le_bytes()).map_err(fault)?;
     cpu.eax = 0;
-    ctx.call_guest_named(cpu, &mut mem, FADE_RECORD, "render: the frame tail", move |cpu, ctx| {
-        let rt = Arc::clone(ctx.runtime());
-        let made = {
-            let mut mem = rt.memory();
-            finish(&mut *mem, &*host, &target, cpu.eax).map_err(fault)?
-        };
-        if made.copied {
-            COUNTS.copies.fetch_add(1, Ordering::Relaxed);
-        }
-        if made.composited {
-            COUNTS.composites.fetch_add(1, Ordering::Relaxed);
-        }
-        (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp) = saved;
-        cpu.esp = esp.wrapping_add(4);
-        Ok(runtime::TransferAbi::ret(ret))
-    })
+    cpu.esp = esp.wrapping_sub(8);
+    let record = crate::fade_record::update(&mut *mem, cpu).unwrap_or_else(|cause| crate::native_targets::unhandled("frame_tail", cause));
+    let made = finish(&mut *mem, &*host, &target, record).map_err(fault)?;
+    if made.copied {
+        COUNTS.copies.fetch_add(1, Ordering::Relaxed);
+    }
+    if made.composited {
+        COUNTS.composites.fetch_add(1, Ordering::Relaxed);
+    }
+    cpu.esp = esp.wrapping_add(4);
+    Ok(runtime::TransferAbi::ret(ret))
 }
 
 /// Places the tail's implementation (`native_targets`' feature).
