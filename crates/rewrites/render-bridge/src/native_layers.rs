@@ -352,6 +352,7 @@ struct Tally {
     counted: HashSet<u32>,
     in_body: Vec<Keep>,
     causes: Vec<(Keep, &'static str)>,
+    own: bool,
 }
 
 thread_local! {
@@ -378,6 +379,13 @@ fn with_tally(mem: &dyn GuestRead, layer: u32, f: impl FnOnce(&mut Tally)) {
 /// opaque handlers): [`layer_return`] leaves them to it.
 pub fn in_body(mem: &dyn GuestRead, layer: u32, kind: Keep) {
     with_tally(mem, layer, |t| t.in_body.push(kind));
+}
+
+/// A stage counts every item of `layer`'s current call it leaves to the
+/// guest itself (the fog's and the water's `count_late_kept`, or their
+/// sorted runs when done): [`layer_return`] counts none of them again.
+pub fn counts_own(mem: &dyn GuestRead, layer: u32) {
+    with_tally(mem, layer, |t| t.own = true);
 }
 
 /// A stage leaves `kind`'s items of `layer`'s current call to the guest
@@ -426,6 +434,9 @@ fn unnamed_cause(tally: Option<&Tally>, site: &str, layer: u32, kind: Keep, call
 /// the body ([`in_body`]).
 fn count_unnamed(mem: &dyn GuestMemory, site: &str, layer: u32, tally: Option<&Tally>, call: Keep) {
     use crate::frame_step::layer as fl;
+    if tally.is_some_and(|t| t.own) {
+        return;
+    }
     let Ok(held) = fl::held(mem, layer) else {
         if tally.is_none_or(|t| t.counted.is_empty()) {
             count_kept_as(site, layer, "unreadable", "list", 1);
@@ -630,16 +641,23 @@ pub(crate) fn forget_pending() {
 }
 
 /// The site prefix of a layer draw that can return: `""` the opaque
-/// block's of the scene, `alt` the alternate view's, `fp` the first
-/// person's; `light`, `extra`, `shadow` and `fplight` the light passes'
+/// block's and R5's layers 2, 6, 16 and 17 of the scene and the sorted
+/// handlers' 18, 19 and 21, `alt` the alternate view's, `fp` the first person's; `light`, `extra`, `shadow` and `fplight` the light passes'
 /// and shadow layers' of a light, its additional casters, an object
 /// shadow and the first-person lights ([`light_site`]); `None` for every
 /// other call of the layer draw.
 pub fn return_site(layer: u32, ret: u32) -> Option<&'static str> {
-    if crate::frame_step::layer::LIGHT_LAYERS.contains(&layer) {
+    use crate::frame_step::layer::{FOG_WATER_LAYERS, LATE_LAYERS, LAYERS, LIGHT_LAYERS};
+    if LIGHT_LAYERS.contains(&layer) {
         return light_site(layer, ret);
     }
-    if !crate::frame_step::layer::LAYERS.contains(&layer) {
+    if FOG_WATER_LAYERS.contains(&layer) {
+        return scene_extract::late::scene_layer_call(layer, ret).then_some("");
+    }
+    if LATE_LAYERS.contains(&layer) && caller(layer, ret).is_some_and(|c| matches!(c, LayerCaller::Sorted(_))) {
+        return Some("");
+    }
+    if !LAYERS.contains(&layer) && !LATE_LAYERS.contains(&layer) {
         return None;
     }
     match layer_site(layer, ret) {
@@ -1285,8 +1303,96 @@ mod tests {
         let before = returns();
         assert!(!layer_return(&mut mem, 0x0004_1ffd, false), "a light pass's");
         mem.set_u32(fl::CURRENT_LAYER, 2).unwrap();
-        assert!(!layer_return(&mut mem, 0x0002_c060, false), "layer 2 is not the opaque block's");
+        assert!(!layer_return(&mut mem, 0x0002_c30b, false), "layer 2 from layer 17's site");
+        mem.set_u32(fl::CURRENT_LAYER, 18).unwrap();
+        assert!(!layer_return(&mut mem, 0x0002_c060, false), "layer 18 from no sorted handler");
         assert_eq!(returns(), before);
+    }
+
+    /// R5's layers return as the opaque block's do: the scene's 2 and 17,
+    /// the alternate view's and first person's 2, and the sorted
+    /// handlers' 18, 19 and 21, once no item holds the bit; an item kept
+    /// runs the body, counted by its kind.
+    #[test]
+    fn r5s_layer_draws_return_when_every_item_is_native() {
+        use crate::frame_step::layer as fl;
+        use engine::memory::FlatMemory;
+        let get = |k: &str| counters().into_iter().find(|(n, _)| n == k).map_or(0, |(_, v)| v);
+        let mut mem = FlatMemory::new(0x0045_0000, 0x7_0000);
+        let (list, items) = (0x004a_0000, 0x004a_0100);
+        mem.set_u32(fl::CURRENT_LIST, list).unwrap();
+        mem.set_u32(list + 4, 1).unwrap();
+        mem.set_u32(list + 0x14, items).unwrap();
+        mem.set_u32(items, fl::GEOMETRY_BUILD).unwrap();
+        mem.set_u32(items + 0xc, 3 << 8).unwrap();
+        mem.set_u32(fl::RENDER_RECORDS + 3 * 0x20 + 4, 0xe000_0003).unwrap();
+        for (layer, ret, site) in [
+            (2, 0x0002_c060, ""),
+            (2, 0x0002_bda8, "alt"),
+            (2, 0x0004_0289, "fp"),
+            (17, 0x0002_c30b, ""),
+            (18, 0x0004_2015, ""),
+            (19, 0x0004_205f, ""),
+            (21, 0x0004_2721, ""),
+        ] {
+            assert_eq!(return_site(layer, ret), Some(site), "{layer} at {ret:#x}");
+            mem.set_u32(fl::CURRENT_LAYER, layer).unwrap();
+            mem.set_u32(items + 0x10, 0).unwrap();
+            mem.set_u32(fl::DRAWN_LAYER, layer).unwrap();
+            let returned = get(&format!("layer_return_{site}{layer}_returned"));
+            assert!(layer_return(&mut mem, ret, false), "{layer} at {ret:#x}");
+            assert_eq!(get(&format!("layer_return_{site}{layer}_returned")), returned + 1);
+            assert_eq!(mem.u32(fl::DRAWN_LAYER).unwrap(), u32::MAX, "the body's writes made");
+            mem.set_u32(items + 0x10, 1 << layer).unwrap();
+            let object = get(&format!("layer_return_{site}{layer}_guest_object"));
+            assert!(!layer_return(&mut mem, ret, false), "{layer}: an item kept runs the body");
+            assert_eq!(get(&format!("layer_return_{site}{layer}_guest_object")), object + 1);
+        }
+        assert_eq!(return_site(17, 0x0002_bda8), None, "the alternate view has no layer 17");
+        assert_eq!(return_site(16, scene_extract::late::FIRST_PERSON_OVERLAY_RETURN), None, "the first person's fog is the range hook's");
+        assert_eq!(return_site(21, 0x0004_2015), None, "21 is the hologram's");
+    }
+
+    /// The scene's fog and water return once nothing holds the bit, and
+    /// fog with its gate off returns with its items held; the body they
+    /// run counts nothing again, as the fog and water count their own.
+    #[test]
+    fn the_scenes_fog_and_water_return_and_their_kept_items_are_counted_once() {
+        use crate::frame_step::layer as fl;
+        use engine::memory::FlatMemory;
+        use scene_extract::late::{SCENE_FOG_RETURN, SCENE_WATER_RETURN};
+        let get = |k: &str| counters().into_iter().find(|(n, _)| n == k).map_or(0, |(_, v)| v);
+        let mut mem = FlatMemory::new(0x0045_0000, 0x7_0000);
+        let (list, items) = (0x004a_0000, 0x004a_0100);
+        mem.set_u32(fl::CURRENT_LIST, list).unwrap();
+        mem.set_u32(list + 4, 1).unwrap();
+        mem.set_u32(list + 0x14, items).unwrap();
+        mem.set_u32(items, fl::GEOMETRY_BUILD).unwrap();
+        mem.set_u32(items + 0xc, 3 << 8).unwrap();
+        mem.set_u32(fl::RENDER_RECORDS + 3 * 0x20 + 4, u32::MAX).unwrap();
+        for (layer, ret) in [(6, SCENE_WATER_RETURN), (16, SCENE_FOG_RETURN)] {
+            assert_eq!(return_site(layer, ret), Some(""));
+            mem.set_u32(fl::CURRENT_LAYER, layer).unwrap();
+            mem.set_u32(fl::FOG_MODE, 3).unwrap();
+            mem.set_u32(items + 0x10, 0).unwrap();
+            let returned = get(&format!("layer_return_{layer}_returned"));
+            assert!(layer_return(&mut mem, ret, false), "{layer}");
+            assert_eq!(get(&format!("layer_return_{layer}_returned")), returned + 1);
+            // An item kept, counted by the stage before the call.
+            mem.set_u32(items + 0x10, 1 << layer).unwrap();
+            let unnamed = get(&format!("scene_kept_{layer}_world_unnamed"));
+            counts_own(&Ro(&mem), layer);
+            assert!(!layer_return(&mut mem, ret, false), "{layer}: the body draws it");
+            assert_eq!(get(&format!("scene_kept_{layer}_world_unnamed")), unnamed, "{layer}: counted once, by its stage");
+            assert!(get(&format!("layer_return_{layer}_guest_structure")) > 0);
+        }
+        // Fog's gate off: the body builds nothing, so the held item does not hold the call.
+        mem.set_u32(fl::FOG_MODE, 0).unwrap();
+        mem.set_u32(fl::FOG_BYTES, 0).unwrap();
+        assert!(layer_return(&mut mem, SCENE_FOG_RETURN, false), "gated fog returns");
+        mem.set_u32(fl::CURRENT_LAYER, 6).unwrap();
+        mem.set_u32(items + 0x10, 1 << 6).unwrap();
+        assert!(!layer_return(&mut mem, SCENE_WATER_RETURN, false), "the fog gate is layer 16's alone");
     }
 
     /// Every item a layer call's guest body draws is one `scene_kept_*`

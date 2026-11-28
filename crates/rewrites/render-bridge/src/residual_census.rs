@@ -457,39 +457,41 @@ pub fn row(name: &str) -> Option<usize> {
 
 /// Where a layer draw is called from: `render_bridge::entry_census`'s
 /// sites, by name.
-pub const LAYER_SITES: [&str; 6] = [
+pub const LAYER_SITES: [&str; 7] = [
     "scene",
     "alternate",
     "first_person",
     "light",
     "object_shadow",
     "other",
+    "sorted",
 ];
 
 /// The layer draws a native stage draws items of from the scene, skipping
 /// those items' guest draws, while the guest body runs for every call
 /// (docs/graphics/retire-d3d.md, "By caller"), by [`LAYER_SITES`] index:
-/// the scene's layers 2 and 17 (`frame-scene.layers`), 6 (water) and 16
-/// (fog), the alternate view's 2, the first person's 2 and 16, the light
-/// passes' 12 and 13, and the object shadow's caster and receiver layers
-/// 10 and 11. Each is [`Status::Partial`]: what its stages refuse stays
-/// the guest's.
-pub const PARTIAL_LAYERS: [(u8, &[u8]); 5] = [
-    (0, &[2, 6, 16, 17]),
-    (1, &[2]),
-    (2, &[2, 16]),
+/// the first person's layer 16, the light passes' 12 and 13, and the
+/// object shadow's caster and receiver layers 10 and 11. Each is
+/// [`Status::Partial`]: what its stages refuse stays the guest's.
+pub const PARTIAL_LAYERS: [(u8, &[u8]); 3] = [
+    (2, &[16]),
     (3, &[12, 13]),
     (4, &[10, 11]),
 ];
 
-/// The opaque block's layer draws, by [`LAYER_SITES`] index: the scene's
-/// layers 1, 3, 5, 7, 8 and 20, the alternate view's 1, 3 and 5, and the
-/// first person's 1, 3, 7, 8 and 20 (`frame_step::layer::LAYERS` at the
-/// sites `native_layers::return_site` names). Each is [`Status::Kept`].
-pub const KEPT_LAYERS: [(u8, &[u8]); 3] = [
-    (0, &[1, 3, 5, 7, 8, 20]),
-    (1, &[1, 3, 5]),
-    (2, &[1, 3, 7, 8, 20]),
+/// The layer draws that return when every item is native, by
+/// [`LAYER_SITES`] index: the opaque block's (the scene's layers 1, 3, 5,
+/// 7, 8 and 20, the alternate view's 1, 3 and 5, the first person's 1, 3,
+/// 7, 8 and 20: `frame_step::layer::LAYERS`) and R5's (the scene's 2 and
+/// 17, the alternate view's and the first person's 2, the sorted
+/// handlers' 18, 19 and 21: `frame_step::layer::LATE_LAYERS`; the scene's
+/// water 6 and fog 16: `FOG_WATER_LAYERS`), at the sites
+/// `native_layers::return_site` names. Each is [`Status::Kept`].
+pub const KEPT_LAYERS: [(u8, &[u8]); 4] = [
+    (0, &[1, 2, 3, 5, 6, 7, 8, 16, 17, 20]),
+    (1, &[1, 2, 3, 5]),
+    (2, &[1, 2, 3, 7, 8, 20]),
+    (6, &[18, 19, 21]),
 ];
 
 /// The status of the layer draw at site `at` ([`LAYER_SITES`]) of `layer`.
@@ -547,6 +549,7 @@ impl Producer {
             Producer::Layer { at: 0, layer: 6 | 16 } => "after_lights",
             Producer::Layer { at, .. } => match LAYER_SITES.get(usize::from(at)) {
                 Some(&"light") => "after_opaque",
+                Some(&"sorted") => "transparents",
                 _ => "opaque",
             },
             Producer::Unknown => "",
@@ -1069,6 +1072,7 @@ pub fn install(b: &mut hooks::Builder) {
                     Site::Scene => 0,
                     Site::AlternateView => 1,
                     Site::FirstPerson => 2,
+                    Site::Sky | Site::Other if native_render::world_layers::sorted_site(u32::from(layer), ret).is_some() => 6,
                     Site::Sky | Site::Other => match c.around() {
                         Some("light_passes") => 3,
                         Some("object_shadow") => 4,
@@ -1604,20 +1608,23 @@ mod tests {
             assert_eq!(status(0, layer), "kept", "the scene's layer {layer}");
         }
         for layer in [2, 6, 16, 17] {
-            assert_eq!(status(0, layer), "partial", "the scene's layer {layer}");
+            assert_eq!(status(0, layer), "kept", "the scene's layer {layer}");
         }
+        for layer in [18, 19, 21] {
+            assert_eq!(status(6, layer), "kept", "the sorted handlers' layer {layer}");
+            assert_eq!(status(5, layer), "d3d", "another caller's layer {layer}");
+        }
+        assert_eq!(Producer::Layer { at: 6, layer: 18 }.slot(), "transparents");
         for layer in [1, 3, 7, 8, 20] {
             assert_eq!(status(2, layer), "kept", "the first person's layer {layer}");
         }
-        for layer in [2, 16] {
-            assert_eq!(status(2, layer), "partial", "the first person's layer {layer}");
-        }
+        assert_eq!(status(2, 16), "partial", "the first person's layer 16");
+        assert_eq!(status(2, 2), "kept", "the first person's layer 2");
         assert_eq!(status(2, 5), "d3d", "the first person draws no layer 5");
         for layer in [6, 16] {
             assert_eq!(status(5, layer), "d3d", "a different caller keeps its draw");
         }
-        assert_eq!(status(1, 2), "partial", "an alternate view's layer 2");
-        for layer in [1, 3, 5] {
+        for layer in [1, 2, 3, 5] {
             assert_eq!(status(1, layer), "kept");
         }
         assert_eq!(status(1, 7), "d3d");
@@ -1627,7 +1634,12 @@ mod tests {
         assert_eq!(status(4, 10), "partial");
         assert_eq!(status(4, 11), "partial");
         for &(_, layers) in &KEPT_LAYERS {
-            assert!(layers.iter().all(|l| crate::frame_step::layer::LAYERS.contains(&u32::from(*l))), "a kept layer's draw can return");
+            let returns = |l: &u8| {
+                let l = u32::from(*l);
+                use crate::frame_step::layer::{FOG_WATER_LAYERS, LATE_LAYERS, LAYERS};
+                LAYERS.contains(&l) || LATE_LAYERS.contains(&l) || FOG_WATER_LAYERS.contains(&l)
+            };
+            assert!(layers.iter().all(returns), "a kept layer's draw can return");
         }
         assert_eq!(status(4, 14), "d3d");
         for r in REGISTRY {

@@ -661,16 +661,16 @@ h2 render gate                                 # the census corpus; exits 1 whil
   registry. Sky, clear, target selection, screen effects and `water_teardown`
   are `partial`. Water teardown can hand off its indexed composite and still
   owns its guest state changes and alpha clear. A layer draw of the opaque
-  block is `kept` (`residual_census::KEPT_LAYERS`: the scene's layers 1, 3,
-  5, 7, 8 and 20, the alternate view's 1, 3 and 5, the first person's 1, 3,
-  7, 8 and 20): a call whose items are all native returns without the
-  guest body, and each item a body draws is a `scene_kept_*` count in
-  `render.scene` ([retire-d3d.md](../graphics/retire-d3d.md), "R1's
-  remainder"). Another layer draw is `partial` when a native stage draws
-  some items from the scene and skips their guest draws:
-  `residual_census::PARTIAL_LAYERS` lists the scene's layers 2, 6, 16 and
-  17, the alternate view's 2, the first person's 2 and 16, the light
-  passes' 12 and 13 and the object shadow's 10 and 11. The `residual` is what the stages leave. `slot` is
+  block or of R5's is `kept` (`residual_census::KEPT_LAYERS`: the scene's
+  layers 1, 2, 3, 5, 6, 7, 8, 16, 17 and 20, the alternate view's 1, 2, 3 and 5,
+  the first person's 1, 2, 3, 7, 8 and 20, the sorted handlers' 18, 19 and
+  21 under the site `sorted`): a call whose items are all native returns
+  without the guest body, and each item a body draws is a `scene_kept_*`
+  count in `render.scene` ([retire-d3d.md](../graphics/retire-d3d.md),
+  "R1's remainder"). Another layer draw is `partial` when a native stage
+  draws some items from the scene and skips their guest draws:
+  `residual_census::PARTIAL_LAYERS` lists the first person's layer 16,
+  the light passes' 12 and 13 and the object shadow's 10 and 11. The `residual` is what the stages leave. `slot` is
   the carried slot the work lands in. `guest_ms` is the producer's exclusive
   time less its D3D time, `null` without
   `render-timing`; it ranks producers and is not a frame time.

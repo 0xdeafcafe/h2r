@@ -37,7 +37,10 @@ fn guest(m: &mut FlatMemory) -> Result<(), &'static str> {
         m.set_u32(s + at + 0x10, f).unwrap();
     }
     let bit = 1u32 << (current & 31);
-    if bit & DRAWN_MASK != 0 {
+    // Layer 16 draws only when the fog mode is 3 or byte 1 or 2 of
+    // `0x00485a74` is set (`0x00044582`).
+    let fog = m.u32(0x0048_574c).unwrap() == 3 || m.u32(0x0048_5a74).unwrap() & 0x00ff_ff00 != 0;
+    if bit & DRAWN_MASK != 0 && (current != 16 || fog) {
         // 0x0003bc30 → 0x0003bab0: every item of `first..count` whose mask
         // has the bit is built; none, no entry, no handler.
         let list = m.u32(layer::CURRENT_LIST).unwrap();
@@ -80,9 +83,15 @@ fn state(seed: u64, keep_bit: u32) -> (FlatMemory, u32) {
     for b in m.bytes.iter_mut() {
         *b = r.next() as u8;
     }
-    // The opaque block's layers and the light passes' and shadow layers'
-    // share the body.
-    let layers: Vec<u32> = layer::LAYERS.iter().chain(&layer::LIGHT_LAYERS).copied().collect();
+    // The opaque block's layers, the light passes' and shadow layers' and
+    // R5's late, fog and water layers share the body.
+    let layers: Vec<u32> = layer::LAYERS
+        .iter()
+        .chain(&layer::LIGHT_LAYERS)
+        .chain(&layer::LATE_LAYERS)
+        .chain(&layer::FOG_WATER_LAYERS)
+        .copied()
+        .collect();
     let layer = layers[r.below(layers.len() as u32) as usize];
     m.set_u32(layer::CURRENT_LAYER, layer).unwrap();
     m.set_u32(layer::CURRENT_LIST, LIST).unwrap();
@@ -109,12 +118,17 @@ fn state(seed: u64, keep_bit: u32) -> (FlatMemory, u32) {
     if r.below(4) != 0 {
         m.set_u32(layer::SETUP + layer::SETUP_OPEN, 0).unwrap();
     }
+    // Half the fog states have the gate off: no fog drawn.
+    if r.below(2) == 0 {
+        m.set_u32(layer::FOG_MODE, 0).unwrap();
+        m.set_u32(layer::FOG_BYTES, 0).unwrap();
+    }
     (m, layer)
 }
 
 #[test]
 fn a_returned_layer_draw_leaves_the_words_the_guest_body_leaves() {
-    let (mut returned, mut lights) = (0, 0);
+    let (mut returned, mut lights, mut late) = (0, 0, 0);
     for seed in 0..2_000 {
         let (start, layer) = state(seed, 0);
         let mut model = FlatMemory { base: start.base, bytes: start.bytes.clone() };
@@ -127,6 +141,7 @@ fn a_returned_layer_draw_leaves_the_words_the_guest_body_leaves() {
                 assert!(model.bytes == ours.bytes, "seed {seed}: the words differ from the body's");
                 returned += 1;
                 lights += u32::from(layer::LIGHT_LAYERS.contains(&layer));
+                late += u32::from(layer::LATE_LAYERS.contains(&layer));
             }
             Err(call) => {
                 assert_eq!(got, Err(Keep::OpenShader), "seed {seed}: the body calls {call}");
@@ -136,6 +151,7 @@ fn a_returned_layer_draw_leaves_the_words_the_guest_body_leaves() {
     }
     assert!(returned > 1_000, "most seeds return: {returned}");
     assert!(lights > 200, "the light passes' and shadow layers' too: {lights}");
+    assert!(late > 200, "R5's late layers too: {late}");
 }
 
 #[test]
@@ -175,4 +191,35 @@ fn a_list_that_does_not_read_runs_the_guest_body() {
     assert!(m.bytes == before);
     m.set_u32(layer::CURRENT_LIST, 0).unwrap();
     assert_eq!(layer::keep(&m, layer), Err(Keep::Unread), "no list");
+}
+
+/// Layer 16 with its gate off builds no entry whatever its items' bits,
+/// so its draw returns with them held; with the gate on an item held runs
+/// the body.
+#[test]
+fn a_fog_layer_with_its_gate_off_returns_with_its_items_held() {
+    let mut off = 0;
+    for seed in 0..2_000 {
+        let (start, current) = state(seed, 2);
+        if current != layer::FOG_LAYER {
+            continue;
+        }
+        let mut model = FlatMemory { base: start.base, bytes: start.bytes.clone() };
+        let mut ours = FlatMemory { base: start.base, bytes: start.bytes.clone() };
+        let want = guest(&mut model);
+        let got = layer::step(&mut ours, current);
+        let gate = layer::builds(&start, current).unwrap();
+        match want {
+            Ok(()) => {
+                assert_eq!(got, Ok(()), "seed {seed}");
+                assert!(model.bytes == ours.bytes, "seed {seed}");
+                if !gate {
+                    assert!(layer::held(&start, current).unwrap().is_empty(), "seed {seed}: the gate off holds nothing");
+                }
+                off += u32::from(!gate);
+            }
+            Err(_) => assert!(got.is_err() && ours.bytes == start.bytes, "seed {seed}"),
+        }
+    }
+    assert!(off > 20, "gated fog returns: {off}");
 }
