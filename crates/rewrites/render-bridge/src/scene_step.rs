@@ -1808,6 +1808,7 @@ pub(crate) fn set_native_visibility(on: bool) {
 fn visibility_arms_new_map() {
     with_arms(|arms| arms.shadow.iter_mut().for_each(|a| a.new_map()));
     crate::native_scene_lists::view_records::new_map();
+    crate::native_scene_lists::visibility_setup::new_map();
     engine::light_frusta::arm::new_map();
 }
 
@@ -2257,6 +2258,7 @@ pub fn counters() -> Vec<(&'static str, u64)> {
     )
     .chain(visibility_arm_counters())
     .chain(crate::native_scene_lists::view_records::counters())
+    .chain(engine::visibility_setup::arm::counters())
     .chain(engine::light_frusta::arm::counters())
     .chain(scene_extract::decorators::PlacementSource::ALL.map(|source| {
         (source.counter(), DECORATOR_PLACEMENTS[source as usize].load(Ordering::Relaxed))
