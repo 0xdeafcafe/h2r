@@ -1,6 +1,7 @@
 //! The process's `World` (docs/engine/sim-world.md, "Store slots"): it
 //! holds the sound table's `Sounds` as its sound store, the object
-//! table as its objects store and the players state as its players store, and its save is the one snapshot section of
+//! table as its objects store, the players state as its players store and
+//! the Havok heap as its physics store, and its save is the one snapshot section of
 //! the native sim's state. `World::save` is
 //! the format; no store saves itself elsewhere.
 
@@ -11,6 +12,7 @@ use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use sim_objects::{LightTable, ObjectTable};
 use sim_players::PlayersState;
 use sim_script::{ScriptStore, Shared as SharedScripts};
+use sim_havok::heap::Heap;
 use sim_sound::instances::Sounds;
 use sim_world::{RestoreError, Store, World, kind};
 
@@ -198,46 +200,96 @@ impl Store for PlayersStore {
     }
 }
 
+/// The shared Havok heap (docs/engine/sim-world.md, "The physics heap").
+pub type SharedHeap = Arc<Mutex<Heap>>;
+
+/// The process's Havok heap.
+pub static HAVOK_HEAP: LazyLock<SharedHeap> = LazyLock::new(SharedHeap::default);
+
+pub fn lock_heap(h: &Mutex<Heap>) -> MutexGuard<'_, Heap> {
+    h.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Read the guest's Havok heap and the memory system's globals into
+/// `heap`. No heap reserved (base 0) is an empty heap; a base whose block
+/// faults or whose size word is not retail's is a bug in what wrote it.
+pub fn import_heap(m: &(impl guest_layout::Mem + ?Sized), heap: &Mutex<Heap>) {
+    let read = |at: u32, buf: &mut [u8]| m.read_bytes(at, buf).ok();
+    let Some(h) = Heap::import(read) else {
+        panic!("physics: the Havok heap at [{:#x}] is unreadable or not retail's size", sim_havok::heap::BASE_GLOBAL);
+    };
+    *lock_heap(heap) = h;
+}
+
+/// The Havok heap as the world's physics store. As with the objects, a
+/// restore puts the decoded heap in the shared copy and guest memory
+/// returns with the machine snapshot taken in the same call.
+pub struct PhysicsStore(pub SharedHeap);
+
+impl Store for PhysicsStore {
+    fn kind(&self) -> u16 {
+        kind::PHYSICS
+    }
+    fn version(&self) -> u16 {
+        Heap::VERSION
+    }
+    fn encode(&self) -> Vec<u8> {
+        lock_heap(&self.0).encode()
+    }
+    fn decode(&self, version: u16, body: &[u8]) -> Result<Box<dyn Any + Send>, RestoreError> {
+        Ok(Box::new(Heap::decode(version, body)?))
+    }
+    fn install(&mut self, state: Box<dyn Any + Send>) {
+        if let Ok(heap) = state.downcast::<Heap>() {
+            *lock_heap(&self.0) = *heap;
+        }
+    }
+}
+
 /// The process's scripts section: the script runtime reads and commits its
 /// VM state here, and the world saves it ([`ScriptStore`]).
 pub static SCRIPT_TABLE: LazyLock<SharedScripts> = LazyLock::new(SharedScripts::default);
 
-/// A world that holds `table` as its sound store and a fresh object table.
+/// A world that holds `table` as its sound store and a fresh object table
+/// and heap.
 pub fn with_table(table: Shared) -> World {
     with_tables(table, SharedObjects::default())
 }
 
-/// A world that holds `sounds` and `objects` as its stores.
+/// A world that holds `sounds` and `objects` as its stores, and a fresh
+/// heap.
 pub fn with_tables(sounds: Shared, objects: SharedObjects) -> World {
     with_stores(sounds, objects, SharedLights::default(), SharedPlayers::default())
 }
 
 /// A world that holds `sounds`, `objects`, `lights` and `players` as its stores.
 pub fn with_stores(sounds: Shared, objects: SharedObjects, lights: SharedLights, players: SharedPlayers) -> World {
-    with_all_stores(sounds, objects, lights, players, SharedScripts::default())
+    with_all_stores(sounds, objects, lights, players, SharedScripts::default(), SharedHeap::default())
 }
 
 /// A world that holds every store: `sounds`, `objects`, `lights`,
-/// `players` and `scripts`.
+/// `players`, `scripts` and `heap`.
 pub fn with_all_stores(
     sounds: Shared,
     objects: SharedObjects,
     lights: SharedLights,
     players: SharedPlayers,
     scripts: SharedScripts,
+    heap: SharedHeap,
 ) -> World {
     let mut w = World::new(1);
     w.attach(Box::new(ScriptStore(scripts))).expect("a world without one takes the scripts store");
     w.attach(Box::new(LightStore(lights))).expect("a world without one takes the lights store");
     w.attach(Box::new(PlayersStore(players))).expect("a world without one takes the players store");
     w.attach(Box::new(ObjectStore(objects))).expect("an empty world takes the objects store");
+    w.attach(Box::new(PhysicsStore(heap))).expect("a world without one takes the physics store");
     w.attach(Box::new(SoundStore(sounds))).expect("a world without one takes the sound store");
     w.attach(Box::new(sim_world::ext::store::ExtStore)).expect("a world without one takes the extension store");
     w
 }
 
 /// The process's world, over the process's tables ([`entries::SHARED`],
-/// [`OBJECT_TABLE`]).
+/// [`OBJECT_TABLE`], [`HAVOK_HEAP`]).
 pub static WORLD: LazyLock<Mutex<World>> = LazyLock::new(|| {
     Mutex::new(with_all_stores(
         Arc::clone(&entries::SHARED),
@@ -245,6 +297,7 @@ pub static WORLD: LazyLock<Mutex<World>> = LazyLock::new(|| {
         Arc::clone(&LIGHT_TABLE),
         Arc::clone(&PLAYERS_STATE),
         Arc::clone(&SCRIPT_TABLE),
+        Arc::clone(&HAVOK_HEAP),
     ))
 });
 
@@ -361,5 +414,25 @@ mod tests {
             lock_players(&b).alloc(PlayerRecord::default()),
             lock_players(&a).alloc(PlayerRecord::default())
         );
+    }
+
+    /// The heap is the world's physics section, between the objects and
+    /// the sounds: a save carries its bytes and a restore puts them in the
+    /// other world's heap.
+    #[test]
+    fn the_world_saves_the_havok_heap_and_restores_it_into_its_heap() {
+        use sim_havok::heap::{HEADER, HEAP_SIZE};
+        let sounds = || Arc::new(Mutex::new(entries::Table::guest()));
+        let mut bytes = vec![0; (HEADER + HEAP_SIZE) as usize];
+        bytes[..4].copy_from_slice(&HEAP_SIZE.to_le_bytes());
+        bytes[0x40] = 7;
+        let a = Arc::new(Mutex::new(Heap { globals: [0x0080_0000, 0, 2, 0, 0, 0], bytes }));
+        let saved = with_all_stores(sounds(), SharedObjects::default(), SharedLights::default(), SharedPlayers::default(), SharedScripts::default(), Arc::clone(&a)).save();
+        let b = SharedHeap::default();
+        let mut world = with_all_stores(sounds(), SharedObjects::default(), SharedLights::default(), SharedPlayers::default(), SharedScripts::default(), Arc::clone(&b));
+        assert_ne!(world.save(), saved);
+        world.restore_into(&saved).unwrap();
+        assert_eq!(*lock_heap(&b), *lock_heap(&a));
+        assert_eq!(world.save(), saved);
     }
 }

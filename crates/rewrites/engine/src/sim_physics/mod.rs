@@ -98,14 +98,16 @@ pub const ISLAND_INTEGRATE: Port =
     port(&points::HAVOK_ISLAND_INTEGRATE, "sim.native.physics", Controls::World, world::INTEGRATE_SITES, world::integrate_island);
 
 /// The Havok world entries of phase 5, always installed
-/// (docs/engine/sim-rewrite-havok.md §7.8): the step wrapper and the
-/// island collide, which replay the retail frame, and the leaves below.
-/// The world phases between them are lifted code and drive these entries
-/// through the dispatcher. The island integrate is [`ISLAND_INTEGRATE`].
+/// (docs/engine/sim-rewrite-havok.md §7.8): the step wrapper, the collide
+/// phase and the island collide, which replay the retail frame, and the
+/// leaves below. The integrate phase is its arm
+/// (`parity`, [`integrate_phase`]); the island integrate is
+/// [`ISLAND_INTEGRATE`].
 pub const PHYSICS_PORTS: &[Port] = {
     use points::*;
     &[
         port(&HAVOK_WORLD_STEP, "sim.native.physics", Controls::World, world::WORLD_SITES, world::step),
+        port(&HAVOK_COLLIDE_PHASE, "sim.native.physics", Controls::World, world::COLLIDE_SITES, world::collide),
         port(&HAVOK_ISLAND_COLLIDE, "sim.native.physics", Controls::World, world::ISLAND_SITES, world::collide_island),
         // The island solve: no guest call inside; an island the model does
         // not cover runs the lifted entry and is counted

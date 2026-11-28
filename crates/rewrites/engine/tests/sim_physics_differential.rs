@@ -7,7 +7,7 @@
 #![cfg(feature = "differential")]
 
 use guest_layout::points;
-use engine::sim_physics::{ORACLES, PORTS, Port};
+use engine::sim_physics::{ORACLES, PHYSICS_PORTS, PORTS, Port};
 use ir::interp::{Cpu, FlatMemory, Flow};
 use lifted::Code;
 use lifted::cpu::from_interp as abi_cpu;
@@ -414,6 +414,80 @@ fn observer_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
     c.mxcsr |= (case % 4) << 13;
 }
 
+const COLLIDE_PENDING: u32 = 0x0030_f6b0;
+const COLLIDE_ISLAND: u32 = 0x0031_7d30;
+const COLLIDE_LISTENERS: u32 = 0x0031_88c0;
+const COLLIDE_MERGES: u32 = 0x0030_fc30;
+const COLLIDE_QUEUE: u32 = 0x0030_cda0;
+const COLLIDE_STEP_LISTENERS: u32 = 0x0031_87a0;
+const COLLIDE_WORLD: u32 = RECORDS;
+const COLLIDE_STEP: u32 = RECORDS + 0x400;
+const COLLIDE_SOURCE: u32 = RECORDS + 0x420;
+const COLLIDE_ISLANDS: u32 = RECORDS + 0x440;
+
+/// The collide phase `0x0030fcb0` (docs/engine/havok-collide.md): a world
+/// with up to three islands, the pending,
+/// listener, merge and queue words set by case, and step terms that
+/// round differently under each precision control (an iteration count
+/// past 2^24, a NaN scale, a denormal step).
+fn collide_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
+    let w = |off: u32| COLLIDE_WORLD + off;
+    // The monitor stream is off.
+    word(m, 0x0048_0154, 0x100);
+    word(m, 0x0048_0158, 0x100);
+    c.gpr[1] = COLLIDE_WORLD;
+    word(m, STACK + 4, COLLIDE_STEP);
+    let (dt, rate, scale, iterations) = match case {
+        0 => (1.0f32 / 30.0, 30.0f32, 1.0f32, 4i32),
+        1 => (1.0 / 60.0, 60.0, 0.9, 7),
+        2 => (0.1, 10.0, 1.1, 0x0100_0003),
+        3 => (f32::from_bits(0x0000_0400), 1.0e30, 1.0e-30, -5),
+        4 => (0.25, f32::from_bits(0x7fc1_2345), f32::from_bits(0x7f81_0000), 3),
+        5 => (1.0 / 3.0, 3.0, 0.7, i32::MAX),
+        _ => (0.0333, 30.03, 1.0 / 7.0, case as i32),
+    };
+    word(m, COLLIDE_STEP, dt.to_bits());
+    word(m, COLLIDE_STEP + 4, rate.to_bits());
+    word(m, w(0x180), scale.to_bits());
+    word(m, w(0x17c), iterations as u32);
+    word(m, w(0xcc), COLLIDE_SOURCE);
+    for i in 0..4 {
+        word(m, COLLIDE_SOURCE + 4 * i, 0x5100_0000 + i * 0x11 + case);
+    }
+    word(m, w(0x08), COLLIDE_ISLANDS);
+    word(m, w(0x0c), [0, 1, 2, 3, u32::MAX, 2, 1, 3][case as usize]);
+    for i in 0..3 {
+        word(m, COLLIDE_ISLANDS + 4 * i, RECORDS + 0x800 + 0x100 * i);
+    }
+    word(m, w(0xc4), RECORDS + 0x600);
+    word(m, w(0x24), [0, 1, 0, 2, 0, u32::MAX, 1, 1][case as usize]);
+    word(m, w(0xac), u32::from(case % 2 == 1));
+    word(m, w(0xf4), u32::from(case % 3 == 1));
+    word(m, w(0x100), u32::from(case % 3 == 2));
+    m.bytes[w(0x12c) as usize] = 0x5a;
+    m.bytes[w(0x12d) as usize] = 0xa5;
+}
+
+/// The callees change what the phase reads again: an island collide adds
+/// an island or queues an operation, a listener clears the pending count
+/// or queues a merge.
+fn collide_callback(mem: &mut FlatMemory, native: &mut Guest, target: u32, case: u32, n: u32) {
+    let w = |off: u32| COLLIDE_WORLD + off;
+    let mut set = |a: u32, v: u32| {
+        word(mem, a, v);
+        native.set_u32(a, v).unwrap();
+    };
+    match target {
+        COLLIDE_ISLAND if case == 6 && n < 3 => set(w(0x0c), 2),
+        COLLIDE_ISLAND if case == 7 && n == 1 => set(w(0x24), 1),
+        COLLIDE_LISTENERS if case == 3 => set(w(0x24), 0),
+        COLLIDE_LISTENERS if case == 5 => set(w(0xf4), 1),
+        COLLIDE_MERGES if case == 7 => set(w(0x100), 1),
+        COLLIDE_PENDING => set(w(0x24), if case == 7 && n == 0 { 3 } else { 0 }),
+        _ => {}
+    }
+}
+
 fn color_fixture(m: &mut FlatMemory, case: u32) {
     let object = RECORDS + 0x400;
     let tags = RECORDS + 0x6000;
@@ -748,6 +822,10 @@ fn compare(
             0xb8940 | 0xb8a10 => 8,
             0xbba20 | 0xa9570 | 0x1cd4e0 | 0x1ced00 | 0x108cd0 | 0xbe1d0 => 0,
             0x120850 | 0x109660 | 0xfd910 | 0xc5eb0 | 0xc6740 | 0x114c60 | 0xc6990 | 0xc6810 | 0xc50a0 => 0,
+            // The collide phase's callees: thiscall or cdecl with no
+            // callee cleanup, and the island collide's `ret 8`.
+            COLLIDE_PENDING | COLLIDE_LISTENERS | COLLIDE_MERGES | COLLIDE_QUEUE | COLLIDE_STEP_LISTENERS => 0,
+            COLLIDE_ISLAND => 8,
             _ => panic!("unexpected callee {target:#x}"),
         };
         let sp = cpu.gpr[4];
@@ -796,6 +874,9 @@ fn compare(
             let bits = [0, 0b0110, 0b1, 0b1010, 0, 0][case as usize % 6];
             word(&mut mem, mask, bits);
             native.set_u32(mask, bits).unwrap();
+        }
+        if port.point.base == points::HAVOK_COLLIDE_PHASE.base {
+            collide_callback(&mut mem, &mut native, target, case, n);
         }
         if target == 0xe1670 {cpu.xmm[0]=u128::from(1.25f32.to_bits());}
         if target == 0x14a5b0 {
@@ -875,7 +956,7 @@ fn compare(
         if [points::UNIT_UPDATE.base,points::OBJECTS_PRE_PHYSICS.base,
             points::OBJECTS_POST_PHYSICS.base,points::OBJECT_PRE_UPDATE.base,
             points::OBJECT_POST_UPDATE.base,points::OBJECT_NODE_MATRICES.base,
-            points::ANIM_ADDITIVE_NODES.base].contains(&port.point.base) {
+            points::ANIM_ADDITIVE_NODES.base,points::HAVOK_COLLIDE_PHASE.base].contains(&port.point.base) {
             cpu.gpr[1] = answer.rotate_left(9);
             cpu.gpr[2] = !answer;
         }
@@ -930,7 +1011,7 @@ fn run_fixtures(
 ) -> BTreeSet<u32> {
     let mut seen = BTreeSet::new();
     let Some((image, ram)) = image() else { return seen };
-    let port = PORTS.iter().chain(ORACLES).find(|p| p.point.base == point.base).unwrap();
+    let port = PORTS.iter().chain(ORACLES).chain(PHYSICS_PORTS).find(|p| p.point.base == point.base).unwrap();
     let mut code = original(image, point, inline);
     for case in 0..cases {
         let mut memory = ram.clone();
@@ -985,6 +1066,7 @@ fn first_person_filter_update() {
     });
 }
 differential!(observer_camera, OBSERVER_RESULT, false, 6, observer_fixture);
+differential!(havok_collide_phase, HAVOK_COLLIDE_PHASE, false, 8, collide_fixture);
 
 /// The palette step with the phase 1c kernel on: the port runs it as one
 /// Rust call, and every boundary must still match the lifted guest.
@@ -1085,7 +1167,7 @@ fn filter_body_fixture(m: &mut FlatMemory, c: &mut Cpu, case: u32) {
 }
 
 fn all_sites(point: &points::Point, count: usize, seen: &BTreeSet<u32>) {
-    let port = PORTS.iter().chain(ORACLES).find(|p| p.point.base == point.base).unwrap();
+    let port = PORTS.iter().chain(ORACLES).chain(PHYSICS_PORTS).find(|p| p.point.base == point.base).unwrap();
     let required: BTreeSet<_> = port.resumes.iter().copied().collect();
     assert_eq!(required.len(), count, "{} registered return sites", point.name);
     let missing: Vec<_> = required.difference(seen).copied().collect();

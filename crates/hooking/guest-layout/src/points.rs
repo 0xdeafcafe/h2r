@@ -582,6 +582,10 @@ points! { ALL;
     /// The Havok world step: collide, then integrate, each phase a guest
     /// call resumed inside the wrapper (sim-rewrite-havok.md §2).
     HAVOK_WORLD_STEP @ 0x0031_1100: [fn(world: ecx, step: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
+    /// The collide phase: the step terms, pending operations, every
+    /// island's collide and listeners, merges, the queue and the step
+    /// listeners (docs/engine/havok-collide.md).
+    HAVOK_COLLIDE_PHASE @ 0x0030_fcb0: [fn(world: ecx, step: stack 0) ret 4], Hot; "docs/engine/havok-collide.md";
     HAVOK_ISLAND_COLLIDE @ 0x0031_7d30: [fn(island: ecx, broadphase: stack 0, input: stack 1) ret 8], Hot; "docs/engine/sim-rewrite-havok.md";
     HAVOK_ISLAND_INTEGRATE @ 0x0031_6a20: [fn(island: ecx, input: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";
     /// The integrate phase and the island deactivation test it runs per

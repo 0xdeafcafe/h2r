@@ -6669,6 +6669,8 @@ dependencies = [
  "runtime",
  "sim-core",
  "sim-effects",
+ "sim-ext",
+ "sim-havok",
  "sim-objects",
  "sim-players",
  "sim-script",
@@ -6712,6 +6714,7 @@ name = "sim-havok"
 version = "0.1.0"
 dependencies = [
  "sim-core",
+ "sim-world",
  "simd",
  "x87",
 ]

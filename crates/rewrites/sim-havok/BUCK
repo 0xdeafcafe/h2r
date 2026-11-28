@@ -42,6 +42,7 @@ workspace_library(
         "//crates/recompiler/simd:simd",
         "//crates/recompiler/x87:x87",
         "//crates/rewrites/sim-core:sim-core",
+        "//crates/rewrites/sim-world:sim-world",
     ],
 )
 
@@ -59,6 +60,7 @@ workspace_test(
         "//crates/recompiler/simd:simd",
         "//crates/recompiler/x87:x87",
         "//crates/rewrites/sim-core:sim-core",
+        "//crates/rewrites/sim-world:sim-world",
     ],
 )
 
@@ -76,6 +78,7 @@ workspace_test(
         "//crates/recompiler/simd:simd",
         "//crates/recompiler/x87:x87",
         "//crates/rewrites/sim-core:sim-core",
+        "//crates/rewrites/sim-world:sim-world",
         ":sim-havok",
     ],
 )

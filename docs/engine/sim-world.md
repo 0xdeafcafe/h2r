@@ -2,9 +2,10 @@
 
 Status: `crates/rewrites/sim-world` is built with unit tests. Sound
 (`sim_sound::instances::Sounds`) and the object table
-(`sim_objects::ObjectTable`) are on its pools: the process's `World`
-(`sim_bridge::world::WORLD`) holds both at boot, and no other store is
-filled.
+(`sim_objects::ObjectTable`) are on its pools, and the Havok heap
+(`sim_havok::heap::Heap`) is its physics store: the process's `World`
+(`sim_bridge::world::WORLD`) holds all three at boot, and no other store
+is filled.
 
 The native simulation keeps its state in a Rust `World`, and that is the
 truth ([sim-rewrite.md](sim-rewrite.md)). The crate is pure: it depends on
@@ -83,6 +84,7 @@ writes no section and a save that carries one is refused as `UnknownKind`.
 | lights | `sim_objects::LightTable` (`crates/rewrites/sim-objects/src/lights.rs`) | the lights array (`[4e030c]`, `0x110`-byte elements), each slot the element bytes | `sim_bridge::world::LIGHT_TABLE`, imported with the objects; the `World` holds it as `world::LightStore` |
 | scripts | `sim_script::ScriptTable`, holding `hs::vm::VmState` (`crates/rewrites/sim-script/src/table.rs`) | the thread pool (`0x140` slots, salts and allocation cursor kept), each thread's frames, the global cells and the host strings | `sim_script::ScriptRuntime` updates it each tick; the `World` holds it as `sim_script::ScriptStore` |
 | players | `sim_players::PlayersState` (`crates/rewrites/sim-players`) | the players array (16 slots of `0x21c` bytes), the players' globals block (`0x130` bytes), the first-person block (`0x8330` bytes) | `sim_bridge::world::PLAYERS_STATE`; the `World` holds it as `world::PlayersStore` |
+| physics | `sim_havok::heap::Heap` (`crates/rewrites/sim-havok/src/heap.rs`) | none: one byte store, the heap at its retail addresses | `sim_bridge::world::HAVOK_HEAP`; the `World` holds it as `world::PhysicsStore` |
 | test | `Probe` | one | the unit tests |
 
 ### The object table
@@ -143,9 +145,28 @@ A subsystem whose records live here is the truth for them. Where guest code
 still reads that state, `sim-bridge` is the only place that touches guest
 memory for it: the sound readers are `sim-bridge/src/sim_sound/`.
 
-The physics heap will be a byte store with the retail allocation order kept,
-since Havok is ported bit for bit ([sim-rewrite-havok.md](sim-rewrite-havok.md)).
-Its kind is reserved, and a pool's section already keeps free slots in place.
+### The physics heap
+
+Havok is ported bit for bit ([sim-rewrite-havok.md](sim-rewrite-havok.md)),
+so its state is the heap's bytes at their retail addresses, in retail's
+allocation order. `Heap` holds the memory system's six globals
+(`0x00479888..0x004798a0`: the base, the pool mode and the three pool
+objects) and the block `[base - 8, base + 0x105470)`: the size and offset
+words `0x00146b30` stores below the base, then every pool, world, island,
+body and agent the allocator ([havok-step.md](havok-step.md), "Allocator")
+hands out. A section is `globals | u32 len | bytes`; a base of 0 (no heap
+reserved) has no bytes, and a length or size word other than retail's is
+`Corrupt`.
+
+`sim_bridge::world::import_heap` reads the guest's heap in at the tick's
+exit, after the object table, since the guest's Havok code still writes
+it; `Heap::scatter` gives the writes that put it back. A checkpoint is
+the section plus the machine snapshot, as for the objects. Tests:
+`the_heap_imports_from_its_base_and_scatters_back_byte_for_byte`,
+`a_save_restores_the_same_heap_and_a_bad_one_is_refused_by_name`,
+`no_base_is_an_empty_heap_and_a_fault_or_a_foreign_size_is_none`
+(`sim-havok`), `the_world_saves_the_havok_heap_and_restores_it_into_its_heap`
+(`sim-bridge`).
 
 ## Rules
 
