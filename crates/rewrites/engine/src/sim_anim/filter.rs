@@ -27,8 +27,8 @@
 //! and `cl`, `xmm0` to `xmm4`, `xmm6` and `xmm7`; and the flags of its
 //! closing `add esp, 0Ch`.
 //!
-//! It declines before writing anything (the port makes the guest call)
-//! when a read faults, when an emulated instruction would deliver an
+//! It declines before writing anything, and the caller panics with
+//! `anim filter: <reason>` (no guest call runs) when a read faults, when an emulated instruction would deliver an
 //! unmasked exception, or when stack or output stores alias the inputs
 //! used to plan the call or its instructions.
 use crate::light_constants::X87;
@@ -104,33 +104,39 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Why the call was left to the guest.
+/// Why the kernel declined the call; the caller panics with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
 pub enum Decline {
     /// A guest read faulted.
-    Fault = 0,
+    Fault,
     /// An instruction would deliver an unmasked SSE or x87 exception.
     Float,
     /// Stack or output storage aliases a gathered input or the body's instructions.
     Alias,
 }
 
-const DECLINES: usize = 3;
+impl Decline {
+    /// The reason as the panic names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Decline::Fault => "fault",
+            Decline::Float => "float",
+            Decline::Alias => "alias",
+        }
+    }
+}
 
-/// Call counts since start, for timing and the fallback rate.
+/// Call counts since start, for timing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     /// Calls the kernel ran.
     pub native: u64,
     /// Of those, calls that snapped to the target.
     pub snapped: u64,
-    pub declined: [u64; DECLINES],
 }
 
 static NATIVE: AtomicU64 = AtomicU64::new(0);
 static SNAPPED: AtomicU64 = AtomicU64::new(0);
-static DECLINED: [AtomicU64; DECLINES] = [const { AtomicU64::new(0) }; DECLINES];
 
 impl Stats {
     /// Publish the leaf calls in a committed first-person segment.
@@ -141,11 +147,6 @@ impl Stats {
         if self.snapped != 0 {
             SNAPPED.fetch_add(self.snapped, Ordering::Relaxed);
         }
-        for (counter, &count) in DECLINED.iter().zip(&self.declined) {
-            if count != 0 {
-                counter.fetch_add(count, Ordering::Relaxed);
-            }
-        }
     }
 }
 
@@ -153,7 +154,6 @@ pub fn stats() -> Stats {
     Stats {
         native: NATIVE.load(Ordering::Relaxed),
         snapped: SNAPPED.load(Ordering::Relaxed),
-        declined: std::array::from_fn(|i| DECLINED[i].load(Ordering::Relaxed)),
     }
 }
 
@@ -578,8 +578,8 @@ fn scatter(c: &mut CpuAbi, g: &mut impl Memory, p: &Plan) -> Result<(), GuestFau
 /// The call to `11eed0` that returns to `site`, with its arguments
 /// already on the stack at `esp`. `Ok(true)`: the kernel made the call
 /// — the stack is popped past the arguments and the caller carries on at
-/// `site`. `Ok(false)`: declined, nothing written; the caller makes the
-/// guest call.
+/// `site`. `Ok(false)`: the kernel is switched off; the caller makes the
+/// guest call. A decline panics `anim filter: <reason>`.
 pub fn run(c: &mut CpuAbi, g: &mut impl Memory, site: u32) -> Result<bool, GuestFault> {
     let mut counts = Stats::default();
     let result = run_counted(c, g, site, &mut counts)?;
@@ -599,10 +599,7 @@ pub(crate) fn run_counted(
     }
     let plan = match plan(c, g, site) {
         Ok(p) => p,
-        Err(why) => {
-            counts.declined[why as usize] += 1;
-            return Ok(false);
-        }
+        Err(why) => unimplemented!("anim filter: {}", why.name()),
     };
     scatter(c, g, &plan)?;
     counts.native += 1;

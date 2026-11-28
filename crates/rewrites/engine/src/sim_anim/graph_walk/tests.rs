@@ -202,7 +202,7 @@ fn equal(c: &Case) {
             let label = format!("count {} seed {:#x} simd {simd}", c.count, c.seed);
             let got = run(&mut cpu, &mut g)
                 .unwrap()
-                .unwrap_or_else(|| panic!("{label}: declined"));
+                .unwrap_or_else(|why| panic!("{label}: declined: {why:?}"));
             assert_eq!(got, want, "{label}");
             if let Some(at) = first_difference(ram(&ref_g), ram(&g)) {
                 let (entry, sim) = machine(c);
@@ -337,9 +337,7 @@ fn declines(c: &Case, edit: impl Fn(&mut CpuAbi, &mut Guest), why: Decline) {
     let (mut cpu, mut g) = machine(c);
     edit(&mut cpu, &mut g);
     assert_eq!(plan(&cpu, &g).err(), Some(why), "{why:?}");
-    let was = stats().declined[why as usize];
-    assert_eq!(run(&mut cpu, &mut g).unwrap(), None, "{why:?}");
-    assert!(stats().declined[why as usize] > was, "{why:?}");
+    assert_eq!(run(&mut cpu, &mut g).unwrap(), Err(why), "{why:?}");
     assert_eq!(cpu, before_cpu, "{why:?}");
     assert_eq!(first_difference(ram(&before), ram(&g)), None, "{why:?}");
 }

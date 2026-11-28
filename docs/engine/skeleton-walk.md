@@ -18,7 +18,7 @@ Code: `crates/rewrites/sim-anim/src/skeleton.rs` (`build_matrices`, `pose`,
 (`object_node_matrices`),
 `crates/rewrites/engine/tests/sim_anim_graph_differential.rs`.
 `bd090`'s walk always runs in Rust, with no switch; a walk it declines
-is a counted `Decline` and runs the port's per-node loop.
+is a `Decline` and runs the port's per-node loop (Rust, no guest call).
 The graph walk is native only too.
 
 Phase 1b of the [simulation rewrite](sim-rewrite.md). `bd090` turns an
@@ -99,16 +99,15 @@ before anything reads them.
   body; nothing else calls it.
 - Writes nothing outside the loop's own write set: the matrices of posed
   nodes, `[55ebb4]` and `[55ebb0]`, and the 16 bytes below `esp`.
-- `engine::sim_anim::skeleton::stats()` counts walks, nodes posed and
-  declines by reason.
+- `engine::sim_anim::skeleton::stats()` counts walks and nodes posed.
 - The pose and composition entries (`OBJECT_POSE_MATRIX`,
   `OBJECT_TRANSFORM_COMPOSE`) and their ports stay: other
   callers, among them `1dd1c0`, still reach them.
 - The graph walk is the point `ANIM_GRAPH_MATRICES` (`1dd1c0`). `sim-bridge` hooks it with a `before` that plans
   the call and answers with the body; it has no `after`.
-- `engine::sim_anim::graph_walk::stats()` counts the body's calls, nodes
-  and declines. The agent method `anim.graph_walk` returns
-  `{addr, body:{native,nodes,declined}}`
+- `engine::sim_anim::graph_walk::stats()` counts the body's calls and
+  nodes. The agent method `anim.graph_walk` returns
+  `{addr, body:{native,nodes}}`
   ([agent-api.md](../runtime/agent-api-checks.md#anim-the-animation-graph-walk)).
 
 ## Rules and limits
@@ -189,8 +188,8 @@ Both leaves initialise the cutoff on the first pose, as in `bd090`'s walk.
 root, the cutoff and the constants, builds the queue (`graph_order`),
 runs `graph_matrices` and returns every byte and register above without
 writing. The body (`run`, called by `enter`) writes the plan and returns
-without the guest. A declined plan is counted by reason and the call stays
-a guest call.
+without the guest. A declined plan returns its `Decline`, and the hook
+panics with `anim graph walk: <reason>`; no guest runs the call.
 
 `reference` is `1dd1c0` instruction by instruction with the exact
 `sim_native` leaves: the oracle of the engine tests and the third arm of
@@ -254,10 +253,9 @@ that is not mapped declines a call the guest would complete.
 - Run parity: `h2 sim diff` against the lifted build at the defaults
   (the walk table runs `bd090`), identical `state_hashes_v1`; the
   cross-architecture arm.
-- The decline rate on real skeletons (`stats()`), and the time saved per
-  tick on Waterworks.
+- The time saved per tick on Waterworks.
 - The graph walk in a run: `anim.graph_walk`, over the sim-budget matches and a campaign
-  level, should show a low `declined` rate. Its callers and call rate per tick are not measured.
+  level, without a decline panic. Its callers and call rate per tick are not measured.
 
 ## Related
 

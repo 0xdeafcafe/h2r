@@ -209,13 +209,12 @@ fn declines(c: &Case, edit: impl Fn(&mut CpuAbi, &mut Guest), why: Decline) {
     edit(&mut loop_cpu, &mut loop_run);
     let loop_transfer =
         crate::sim_physics::first_person::palette(&mut loop_cpu, &mut loop_run).unwrap();
-    let was = stats().declined[why as usize];
     set_enabled(true);
     let (mut cpu, mut g) = machine(c);
     edit(&mut cpu, &mut g);
+    assert_eq!(plan(&cpu, &g).err(), Some(why), "{why:?}");
     let transfer = crate::sim_physics::first_person::palette(&mut cpu, &mut g).unwrap();
     set_enabled(false);
-    assert!(stats().declined[why as usize] > was, "{why:?}");
     assert_eq!(cpu, loop_cpu, "{why:?}");
     assert_eq!(first_difference(ram(&loop_run), ram(&g)), None, "{why:?}");
     assert_eq!(transfer, loop_transfer, "{why:?}");

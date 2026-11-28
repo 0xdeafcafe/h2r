@@ -259,6 +259,8 @@ fn object_on_stack(root: u32) -> bool {
         // The pose slot callees.
         &points::VEHICLE_POSE,
         &points::DEVICE_POSE,
+        &points::VEHICLE_POSE_CHANNELS,
+        &points::VEHICLE_POSE_CALLBACK,
         // The after-root slot callees.
         &points::UNIT_AFTER_ROOT,
         &points::SCENERY_AFTER_ROOT,
@@ -292,6 +294,12 @@ fn entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
     };
     if let Some(reg) = reg {
         cpu.gpr[reg] = object(case);
+    }
+    if root == points::OBJECT_GET_TYPED.base {
+        // The typed lookup: a pool handle, none, a stale salt or a slot
+        // past every high-water mark, with type bits from none to all.
+        cpu.gpr[0] = [object(case), u32::MAX, object(case) ^ 0x0001_0000, handle(SLOTS - 1)][case as usize % 4];
+        word(g, STACK + 4, [u32::MAX, 0, 1 << (case % 13), !(1 << (case % 13)), 0x1fff][case as usize % 5]);
     }
     if function_root(root) {
         function_entry(g, cpu, root, case);
@@ -348,10 +356,16 @@ fn cleanup(target: u32) -> u32 {
         0xb83b0 | 0xb8460 => 8,
         0x1d3920 => 12,
         t if SLOT_POSE.contains(&t) => 16,
-        // The vehicle pose's channel setup and the device pose's channel
-        // evaluate (`slot_pose`).
-        0xf0760 => 12,
+        // The device pose's channel evaluate (`slot_pose`), and the
+        // vehicle pose channels' callees (`vehicle_channels`): the record
+        // init, the named and indexed finds, the bind, the graph's list,
+        // and the callback's two samples.
         0x1c6f60 => 16,
+        0x1c62f0 | 0x1cc1a0 | 0x1dceb0 => 0,
+        0x1cb9d0 => 4,
+        0x1c6470 => 20,
+        0x1c7100 => 24,
+        0x1c7200 => 16,
         0xbef30 => 20,
         0xbb050 => 28,
         0xbba20 | 0xa9570 | 0x1cd4e0 | 0x1ced00 | 0x108cd0 | 0xbe1d0 | 0x109660 | 0xfd910 | 0xbf380 => 0,
@@ -456,6 +470,10 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
         // and the collision, flyby and refresh answers in `al`.
         0xfd410 => if (n + case as usize) % 3 == 0 { u32::MAX } else { handle(3) },
         0xfc030 | 0x1897c0 | 0xb9d20 => (n as u32 + case) % 2,
+        // The vehicle pose channels': the bind by turns, the list walk
+        // two entries in three.
+        0x1c6470 => (n as u32 + case) % 2,
+        0x1dceb0 => u32::from((n as u32 + case) % 3 != 0),
         _ => 0x006e_1000 | (seed & 0xff),
     };
     cpu.gpr[1] = seed.rotate_left(9);
@@ -498,7 +516,6 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
     slice_6c_answer(cpu, g, target, n, case);
     slice_7a_answer(cpu, g, target, n, case);
     slice_7b_answer(cpu, g, &at_call, target, n, case);
-    after_root_answer(cpu, target, n, case);
     cpu.gpr[4] = sp + 4 + cleanup(target);
     cpu.eip = ret;
 }
@@ -922,6 +939,14 @@ fn type_pose_dispatch() {
     transcripts(&points::OBJECT_TYPE_POSE, 13);
 }
 
+/// The typed object lookup `badc0`, entered directly over the pool
+/// ([`entry`] picks the handle and the type bits by case) and reached
+/// from the item, weapon, projectile, biped and after-root trees.
+#[test]
+fn typed_lookup() {
+    transcripts(&points::OBJECT_GET_TYPED, 40);
+}
+
 /// The pose slot callees `f0f50` (`vehi`) and `107000` (`devi`), entered
 /// directly over a [`dress_pose`]d pool and through the pose dispatcher,
 /// which reaches them for vehicles, machines, controls and light fixtures.
@@ -930,6 +955,85 @@ fn pose_slot_callees() {
     dressed_with(&points::VEHICLE_POSE, 2, dress_pose);
     dressed_with(&points::DEVICE_POSE, 8, dress_pose);
     dressed_with(&points::OBJECT_TYPE_POSE, 13, dress_pose);
+}
+
+/// The vehicle pose's channels `f0760`, entered directly with the
+/// callback `f06e0` and a frame, and its callback entered directly; the
+/// pose slot test above reaches both through `f0f50`.
+#[test]
+fn vehicle_pose_channels() {
+    dressed_with(&points::VEHICLE_POSE_CHANNELS, 12, dress_channels);
+    dressed_with(&points::VEHICLE_POSE_CALLBACK, 6, dress_channel_callback);
+}
+
+/// The frame the vehicle pose hands its callback, and a channel record.
+const CHANNEL_FRAME: u32 = PHASE + 0x300;
+const CHANNEL_RECORD: u32 = PHASE + 0x340;
+
+/// The animation the stubs answer with (`0x006e_1000 | seed`) has the
+/// overlay kind `ff` at `+12` for every other low byte.
+fn sample_kinds(g: &mut Guest) {
+    for k in (0..0x100).step_by(2) {
+        byte(g, 0x006e_1012 + k, 0xff);
+    }
+}
+
+/// [`dress_pose`] with what `f0760` reads: the callback and the frame
+/// arguments, the block's animation against body `+400` (changed, the
+/// same, none) and its `+74` and `+78`, the six named channels' words,
+/// the definition's divisors (0 in some cases), the body's basis, speeds
+/// and weights, and the three tail entries at `+288`.
+fn dress_channels(g: &mut Guest, case: u32) {
+    dress_pose(g, case);
+    sample_kinds(g);
+    let c = case as usize;
+    word(g, STACK + 8, points::VEHICLE_POSE_CALLBACK.base);
+    word(g, STACK + 12, CHANNEL_FRAME);
+    for i in 0..3u32 {
+        f32w(g, CHANNEL_FRAME + 4 * i, [0.5, -1.0, 2.0][i as usize] * (case + 1) as f32);
+    }
+    let body = g.u32(DATA + 12 * (object(case) & 0xffff) + 8).unwrap();
+    let block = body + 0x180;
+    word(g, block + 0x68, [0x00e6_0004, 0x00e6_0004, u32::MAX, 0x00e6_0005][c % 4]);
+    word(g, body + 0x400, if c % 5 == 1 { 0x00e6_0004 } else { 0 });
+    word(g, block + 0x74, if c % 6 == 4 { u32::MAX } else { 1 });
+    word(g, block + 0x78, if c % 7 == 5 { u32::MAX } else { 2 });
+    for i in 0..6u32 {
+        let live = (i + case) % 3 != 0;
+        g.set_u16(body + 0x406 + 4 * i, if live { i as u16 } else { u16::MAX }).unwrap();
+    }
+    f32w(g, DEFINITION + 0x1f4, [2.0, 0.0, -1.0, 4.0][c % 4]);
+    f32w(g, DEFINITION + 0x1f8, [3.0, 1.5, 0.0][c % 3]);
+    f32w(g, DEFINITION + 0x20c, [0.0, 5.0][c % 2]);
+    for (i, v) in [0.25f32, -0.5, 1.0, 0.75, 2.0, -1.5].into_iter().enumerate() {
+        f32w(g, body + 0x70 + 4 * i as u32, v);
+    }
+    f32w(g, body + 0x354, [3.0, -2.0, 0.0][c % 3]);
+    f32w(g, body + 0x35c, 0.4);
+    f32w(g, body + 0x360, 2.5);
+    f32w(g, body + 0x364, -1.0);
+    let tail = body + 0x288;
+    for k in 0..3u32 {
+        f32w(g, tail + 4 * k, [-3.0, 0.5, 4.0][k as usize] + case as f32 * 0.25);
+        word(g, tail + 0x194 + 4 * k, 0x00e8_0000 | k);
+        g.set_u16(tail + 0x196 + 4 * k, if (k + case) % 4 == 3 { u16::MAX } else { 0 }).unwrap();
+    }
+}
+
+/// The callback's arguments: a record whose word `+6` is none in some
+/// cases (the kind then read at `0x12`), a weight, 0, 1.0 and the frame.
+fn dress_channel_callback(g: &mut Guest, case: u32) {
+    sample_kinds(g);
+    word(g, STACK + 12, CHANNEL_RECORD);
+    f32w(g, STACK + 16, 0.5 + case as f32);
+    word(g, STACK + 20, 0);
+    f32w(g, STACK + 24, 1.0);
+    word(g, STACK + 28, CHANNEL_FRAME);
+    word(g, CHANNEL_RECORD, 0x00e9_0000 | case);
+    word(g, CHANNEL_RECORD + 4, if case % 3 == 0 { 0xffff_0007 } else { 0x0001_0007 });
+    for i in 0..3u32 {
+        word(g, CHANNEL_FRAME + 4 * i, 0x00ea_0000 | i);
+    }
 }
 
 /// The model and animation graph the device pose reads.
@@ -1488,9 +1592,8 @@ fn the_harness_sees_a_difference() {
 /// Every guest function a slice 11 body calls, with the bytes its `ret`
 /// pops (docs/engine/object-update.md, "Slice 11 bodies").
 const SLICE_11_CALLEES: &[(u32, u32)] = &[
-    // Item `10b4d0`.
+    // Item `10b4d0` (the typed lookup `badc0` is a body).
     (0x184000, 0),
-    (0xbadc0, 4),
     // `b8bd0` (`ret 4`) is in `FUNCTION_CALLOUTS`.
     (0x142570, 4),
     (0x10d710, 8),
@@ -2939,8 +3042,8 @@ fn unit_idle_test() {
 // every root, comparing the float state at every callout.
 
 /// Every guest function `fdfb0` calls, with the bytes its `ret` pops
-/// (docs/engine/object-update.md, "Slice 9 body"). `1cb710`, `1daea0`
-/// and `badc0` are slice 11's.
+/// (docs/engine/object-update.md, "Slice 9 body"). `1cb710` and
+/// `1daea0` are slice 11's; `badc0` is a body.
 const SLICE_9_CALLEES: &[(u32, u32)] = &[
     (0x101690, 4),
     (0xd1490, 0),
@@ -4179,10 +4282,11 @@ fn type_update_dispatch_reaches_the_biped() {
 
 /// Every guest function a slice 7b body calls that no table above lists,
 /// with the bytes its `ret` pops (docs/engine/object-update.md, "Slice 7b
-/// bodies"). `1ec500`, `d6660`, `1c4b00`, `1d1c10`, `1e5a60`, `1e68a0`
-/// and `badc0` are slice 11's, `d7b80`, `b9b90` and `ba160` slice 10's,
+/// bodies"). `1ec500`, `d6660`, `1c4b00`, `1d1c10`, `1e5a60` and
+/// `1e68a0` are slice 11's, `d7b80`, `b9b90` and `ba160` slice 10's,
 /// `1201a0` slice 6a's, `d66d0` the damage update's; `baf80`, `ba1d0`,
-/// `b7740`, `b9dd0`, `b7360`, `bba20`, `1469f0` and `e4050` are bodies.
+/// `b7740`, `b9dd0`, `b7360`, `bba20`, `1469f0`, `e4050` and `badc0` are
+/// bodies.
 const SLICE_7B_CALLEES: &[(u32, u32)] = &[
     // The post-update `dd990`.
     (0x1efb40, 4),
@@ -4257,8 +4361,8 @@ const POST_CONTACT_COUNT: u32 = 3;
 /// range, at the count, past it) and an object through `ecx`; the
 /// velocity `ba160` and the rigid-body query `1d0870` fill their vectors;
 /// the actor scale `25aad0` its float; the shape `1efd80` answers one
-/// whose surfaces are [`POST_SURFACE_FLAGS`]; `badc0` answers none once in
-/// three.
+/// whose surfaces are [`POST_SURFACE_FLAGS`]. The typed lookup `badc0`
+/// is a body: it answers from the pool.
 fn slice_7b_answer(cpu: &mut Cpu, g: &mut Guest, at_call: &[u32; 8], target: u32, n: usize, case: u32) {
     if !BIPED_POST.with(std::cell::Cell::get) {
         return;
@@ -4267,11 +4371,6 @@ fn slice_7b_answer(cpu: &mut Cpu, g: &mut Guest, at_call: &[u32; 8], target: u32
     let sp = at_call[4];
     match target {
         0x1ec500 | 0x1d1c10 | 0x1efb40 | 0x1cfdf0 | 0x1fb6f0 | 0xe4770 | 0x1e68a0 => cpu.gpr[0] = k % 2,
-        0xbadc0 => {
-            if k % 3 == 0 {
-                cpu.gpr[0] = 0;
-            }
-        }
         0x1697c0 => {
             cpu.gpr[0] = u32::from(k % 3 != 0);
             let out = g.u32(sp + 0x18).unwrap();
@@ -4636,20 +4735,10 @@ fn undressed(_: &mut Guest, _: u32) {}
 /// dispatcher's second argument).
 const AFTER_ROOT_MATRIX: u32 = PHASE + 0x100;
 
-std::thread_local! {
-    /// Set while the after-root slot roots run: `badc0` then answers none
-    /// once in three.
-    static AFTER_ROOT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-fn after_root_answer(cpu: &mut Cpu, target: u32, n: usize, case: u32) {
-    if target == 0xbadc0 && AFTER_ROOT.with(std::cell::Cell::get) && (n as u32 + case) % 3 == 0 {
-        cpu.gpr[0] = 0;
-    }
-}
-
-/// The parent handle each slot callee reads (none, or a live slot), the
-/// parent's root node matrix and the matrix argument, varied by `case`.
+/// The parent handle each slot callee reads (none, or a pool slot, which
+/// the typed lookup `badc0` finds live or not by the case's high-water
+/// mark), the parent's root node matrix and the matrix argument, varied
+/// by `case`.
 fn dress_after_root(g: &mut Guest, case: u32) {
     let body = RECORDS + BODY * (object(case) & 0xffff);
     let parent = [NONE, handle(3), handle(7), handle(1)][case as usize % 4];
@@ -4668,9 +4757,7 @@ fn dress_after_root(g: &mut Guest, case: u32) {
 
 #[test]
 fn after_root_slots() {
-    AFTER_ROOT.with(|b| b.set(true));
     for point in [&points::UNIT_AFTER_ROOT, &points::SCENERY_AFTER_ROOT] {
         dressed_with(point, 8, dress_after_root);
     }
-    AFTER_ROOT.with(|b| b.set(false));
 }

@@ -263,7 +263,7 @@ fn graph_matrices_matches_the_guest() {
                 let mut cpu = entry;
                 let t = walk::run(&mut cpu, &mut g)
                     .unwrap()
-                    .unwrap_or_else(|| panic!("case {case}: declined"));
+                    .unwrap_or_else(|why| panic!("case {case}: declined: {why:?}"));
                 same(
                     &format!("body case {case} simd {simd}"),
                     &plan,

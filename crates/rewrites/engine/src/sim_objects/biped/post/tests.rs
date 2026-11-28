@@ -302,15 +302,16 @@ fn the_contact_counter_restarts_on_a_new_contact() {
     g.set_u32(BODY + 0x13c, 0x8001_0003).unwrap();
     g.set_u32(BODY + 0x394, 0x8001_0002).unwrap();
     g.set_u8(BODY + 0x398, 5).unwrap();
+    // The typed lookup `badc0` runs in the table: slot 3 is live below
+    // the high-water mark, so the contact's body answers and `1c9c00`
+    // follows.
+    g.set_u32(ARRAY + 0x24, 12).unwrap();
+    g.set_u32(ARRAY + 0x38, 4).unwrap();
     cpu.eax = BIPED;
     cpu.ebx = 0x8001_0003;
     let out = drive(&mut cpu, &mut g, &TABLE, points::BIPED_CONTACT_UPDATE.base).unwrap();
-    assert_eq!(out, TransferAbi::call(0x000b_adc0, 0xe3024));
-    assert_eq!((cpu.eax, g.u32(cpu.esp + 4).unwrap()), (0x8001_0003, NONE));
-    let site = returned(&mut cpu, &g, 4);
-    cpu.eax = 1;
-    let out = drive(&mut cpu, &mut g, &TABLE, site).unwrap();
     assert_eq!(out, TransferAbi::call(0x001c_9c00, 0xe3033));
+    assert_eq!(cpu.eax, 0x8001_0003);
     let site = returned(&mut cpu, &g, 0);
     let out = drive(&mut cpu, &mut g, &TABLE, site).unwrap();
     // A target: no `1fb6f0`; the new contact is stored, its counter 0.

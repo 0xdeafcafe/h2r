@@ -649,6 +649,8 @@ points! { ALL;
     OBJECT_HAS_ANIMATION @ 0x000b_f5a0: [fn(object: eax) -> al ret 0], Hot; "docs/engine/object-update.md";
     /// Whether the object is attached to something (`+b3` nonzero on its body).
     OBJECT_ATTACHED @ 0x000b_fc90: [fn(object: ecx) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// The body of a live object whose type bit is set in `types`, else 0 (the handle none, out of range or stale).
+    OBJECT_GET_TYPED @ 0x000b_adc0: [fn(object: eax, types: stack 0) -> eax ret 4], Hot; "docs/engine/object-update.md";
     /// Whether all eight words of a node mask are zero.
     NODE_MASK_EMPTY @ 0x000b_ff10: [fn(mask: ecx) -> al ret 0], Hot; "docs/engine/object-update.md";
     /// Invert a node mask (eight words; the last keeps its low byte).
@@ -2208,6 +2210,10 @@ points! { ALL;
     VEHICLE_CONTACTS_RESET @ 0x000f_06c0: [fn(buffer: eax) ret 0], Hot; "docs/engine/object-update.md";
     /// Vehicle pose: slot `+6c` of `vehi`; packs its arguments for `0xf0760`.
     VEHICLE_POSE @ 0x000f_0f50: [fn(object: stack 0, a: stack 1, b: stack 2, c: stack 3) ret 16], Hot; "docs/engine/object-update.md";
+    /// Vehicle pose channels: refreshes the vehicle's channel records at body `+400` when its animation changed, then calls `callback` per live channel.
+    VEHICLE_POSE_CHANNELS @ 0x000f_0760: [fn(object: stack 0, callback: stack 1, frame: stack 2) ret 12], Hot; "docs/engine/object-update.md";
+    /// The vehicle pose's per-channel callback: samples the channel record's animation (`0x1c7100`, or `0x1c7200` for an overlay).
+    VEHICLE_POSE_CALLBACK @ 0x000f_06e0: [fn(object: stack 0, graph: stack 1, record: stack 2, weight: stack 3, a: stack 4, scale: stack 5, frame: stack 6) ret 28], Hot; "docs/engine/object-update.md";
     // Slice 6b of docs/engine/sim-rewrite-objects.md: the unit update's state
     // children (`UNIT_CONTROL_REFRESH`, `ce0c0`, is named above).
     /// Unit control: desired aim and look, timed bits, the two linked objects (`UNIT_UPDATE`'s first call).

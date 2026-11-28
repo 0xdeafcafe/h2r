@@ -124,8 +124,9 @@ handle (unit: body `+ [body+33e] + 28`; scenery: body `+138`). When it is
 not none and `badc0(eax: handle, -1)` answers an object, they compose the
 matrix argument in place with the parent's root node matrix (body
 `+ [body+116]`) through `142a60`. The bodies
-(`engine::sim_objects::after_root`) call `badc0` as a guest call and run
-`142a60` inline through `sim_native::compose`, as `bd090` does.
+(`engine::sim_objects::after_root`) reach `badc0` as a table body
+(`OBJECT_GET_TYPED`) and run `142a60` inline through
+`sim_native::compose`, as `bd090` does.
 
 **RNG in function values.** C, for direct calls. No function reachable
 from `ba8c0`, `bab40`, `13bb90`, `bcc20`, the seven import handlers or

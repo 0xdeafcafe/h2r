@@ -58,11 +58,10 @@ pub const MAX_NODES: u32 = 1024;
 
 /// Why a walk was left to the loop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
 pub enum Decline {
     /// MXCSR not masked, nearest and PE-sticky, or an operand off the
     /// fast path.
-    Float = 0,
+    Float,
     /// A guest read faulted.
     Fault,
     /// The node count is below 2 or above [`MAX_NODES`].
@@ -74,27 +73,22 @@ pub enum Decline {
     Parent,
 }
 
-const DECLINES: usize = 5;
-
-/// Counts since start, for timing and the fallback rate.
+/// Counts since start, for timing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     /// Walks the kernel ran.
     pub native: u64,
     /// Nodes it posed.
     pub nodes: u64,
-    pub declined: [u64; DECLINES],
 }
 
 static NATIVE: AtomicU64 = AtomicU64::new(0);
 static POSED: AtomicU64 = AtomicU64::new(0);
-static DECLINED: [AtomicU64; DECLINES] = [const { AtomicU64::new(0) }; DECLINES];
 
 pub fn stats() -> Stats {
     Stats {
         native: NATIVE.load(Ordering::Relaxed),
         nodes: POSED.load(Ordering::Relaxed),
-        declined: std::array::from_fn(|i| DECLINED[i].load(Ordering::Relaxed)),
     }
 }
 
@@ -304,12 +298,8 @@ fn scatter(c: &mut CpuAbi, g: &mut Guest, p: &Plan) -> Result<(), GuestFault> {
 /// writes was read or checked first, so only a read-only page gets there.
 pub fn walk(c: &mut CpuAbi, g: &mut Guest) -> Result<bool, GuestFault> {
     debug_assert_eq!(c.esi, 1, "the walk starts at node 1");
-    let p = match plan(c, g) {
-        Ok(p) => p,
-        Err(why) => {
-            DECLINED[why as usize].fetch_add(1, Ordering::Relaxed);
-            return Ok(false);
-        }
+    let Ok(p) = plan(c, g) else {
+        return Ok(false);
     };
     scatter(c, g, &p)?;
     NATIVE.fetch_add(1, Ordering::Relaxed);

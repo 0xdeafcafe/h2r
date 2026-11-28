@@ -38,6 +38,7 @@ mod projectile;
 pub(crate) mod projectile_step;
 mod scenery;
 mod slot_pose;
+mod vehicle_channels;
 pub(crate) mod sse;
 // Slice 4: the post-update shell.
 mod bounds;
@@ -140,6 +141,8 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::NODE_MASK_TRIM, sites: &[], run: getters::mask_trim },
     Body { point: &points::NODE_MASK_SET, sites: &[], run: getters::mask_set },
     Body { point: &points::ANIMATION_VALID, sites: &[], run: getters::animation_valid },
+    // The typed object lookup every type tree calls.
+    Body { point: &points::OBJECT_GET_TYPED, sites: &[], run: getters::object_get_typed },
     // Slice 3: function values, the imports and change colours
     // (`functions`).
     Body { point: &points::OBJECT_FUNCTION_VALUE, sites: &functions::value::VALUE_SITES, run: functions::value::value },
@@ -255,6 +258,13 @@ pub const BODIES: &[Body] = &[
     // The pose slot callees: `vehi` and `devi` slot `+6c` (`slot_pose`).
     Body { point: &points::VEHICLE_POSE, sites: &slot_pose::VEHICLE_SITES, run: slot_pose::vehicle_pose },
     Body { point: &points::DEVICE_POSE, sites: &slot_pose::DEVICE_SITES, run: slot_pose::device_pose },
+    // The vehicle pose's channels `f0760` and their callback `f06e0`.
+    Body { point: &points::VEHICLE_POSE_CHANNELS, sites: &vehicle_channels::SITES, run: vehicle_channels::channels },
+    Body {
+        point: &points::VEHICLE_POSE_CALLBACK,
+        sites: &vehicle_channels::CALLBACK_SITES,
+        run: vehicle_channels::channel_callback,
+    },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.

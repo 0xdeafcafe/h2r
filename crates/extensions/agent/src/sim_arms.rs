@@ -7,7 +7,8 @@
 //! Where a source has no counter for a field the field is 0:
 //! * physics and collision count `matched` and `mismatched` only, so
 //!   `checked` is their sum, and `answered` is 0;
-//! * `anim.manager` reports `differed` for `mismatched`;
+//! * `anim.manager` reports `differed` for `mismatched`, and no `anim`
+//!   arm declines (a decline panics in its hook);
 //! * the shadow ports (`effects`) count `skipped` for `declined` and
 //!   `answered` 0;
 //! * `seats` has no switch and no guest arm: each seat body
@@ -269,12 +270,12 @@ fn segment_wire(prefix: &str, entries: Vec<(u32, segment_arm::Stats)>) -> Vec<Ar
         .collect()
 }
 
-/// The graph walk compares nothing: its body answers or declines by reason.
+/// The graph walk compares nothing: its body answers every call (a
+/// decline panics), so neither it nor a manager segment declines.
 fn anim_wire(body: &walk::Stats, segments: Vec<(u32, manager::Stats)>) -> Vec<Arm> {
     let mut arms = vec![Arm {
         name: "anim.graph_walk".to_owned(),
         answered: body.native,
-        declined: body.declined.iter().sum(),
         ..Arm::default()
     }];
     arms.extend(segments.into_iter().map(|(addr, s)| Arm {
@@ -283,7 +284,7 @@ fn anim_wire(body: &walk::Stats, segments: Vec<(u32, manager::Stats)>) -> Vec<Ar
         matched: s.matched,
         mismatched: s.differed,
         answered: s.answered,
-        declined: s.declined,
+        ..Arm::default()
     }));
     arms
 }
@@ -411,22 +412,20 @@ mod tests {
             dropped: 2,
         });
         assert_eq!((f.name.as_str(), f.checked, f.answered, f.declined), ("objects.function", 8, 5, 9));
-        let mut body = walk::Stats {
+        let body = walk::Stats {
             native: 3,
             ..Default::default()
         };
-        body.declined[0] = 2;
         let seg = manager::Stats {
             matched: 5,
             differed: 1,
-            declined: 2,
             answered: 9,
             ..Default::default()
         };
         let arms = anim_wire(&body, vec![(0x10100, seg)]);
-        assert_eq!((arms[0].checked, arms[0].answered, arms[0].declined), (0, 3, 2));
+        assert_eq!((arms[0].checked, arms[0].answered, arms[0].declined), (0, 3, 0));
         assert_eq!(arms[1].name, "anim.manager.00010100");
-        assert_eq!((arms[1].checked, arms[1].mismatched, arms[1].declined, arms[1].answered), (6, 1, 2, 9));
+        assert_eq!((arms[1].checked, arms[1].mismatched, arms[1].declined, arms[1].answered), (6, 1, 0, 9));
         let mut stats = world::Stats::default();
         stats.vector.matched = 2;
         stats.ray.mismatched = 1;

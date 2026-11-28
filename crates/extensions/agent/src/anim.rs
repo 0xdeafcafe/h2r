@@ -1,15 +1,14 @@
 //! Animation parity counters at a tick boundary. `anim.graph_walk` reports
 //! whole node walks and `anim.manager` reports manager and graph segments.
-//! Both read process counters; the Rust answers every call it does not
-//! decline, and a decline is counted by reason.
+//! Both read process counters; the Rust answers every call, and a decline
+//! panics in the hook, naming the reason.
 
 use crate::{Access, Agent};
 use agent_proto::anim::{
     Body, GraphWalk, Manager, ManagerEntry, SegmentMismatch, method,
 };
-use engine::sim_anim::graph_walk::{self as walk, Decline, Stats};
+use engine::sim_anim::graph_walk::{self as walk, Stats};
 use engine::sim_anim::manager::arm;
-use std::collections::BTreeMap;
 
 /// Registers `anim.*` on `agent`.
 pub fn install(agent: &Agent) {
@@ -29,7 +28,6 @@ fn manager_wire(stats: Vec<(u32, arm::Stats)>) -> Manager {
                 let entry = ManagerEntry {
                     matched: s.matched,
                     differed: s.differed,
-                    declined: s.declined,
                     interrupted: s.interrupted,
                     answered: s.answered,
                     first: s.first.map(|m| SegmentMismatch {
@@ -45,20 +43,12 @@ fn manager_wire(stats: Vec<(u32, arm::Stats)>) -> Manager {
     }
 }
 
-fn reasons(counts: &[u64]) -> BTreeMap<String, u64> {
-    Decline::ALL
-        .iter()
-        .map(|&d| (d.name().to_owned(), counts[d as usize]))
-        .collect()
-}
-
 fn wire(body: &Stats) -> GraphWalk {
     GraphWalk {
         addr: format!("{:08x}", walk::ENTRY),
         body: Body {
             native: body.native,
             nodes: body.nodes,
-            declined: reasons(&body.declined),
         },
     }
 }
@@ -68,16 +58,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_counters_name_every_reason() {
-        let mut body = Stats {
-            native: 4,
-            ..Stats::default()
-        };
-        body.declined[Decline::Alias as usize] = 3;
+    fn the_graph_walk_reports_its_calls_and_nodes() {
+        let body = Stats { native: 4, nodes: 9 };
         let w = wire(&body);
         assert_eq!(w.addr, "001dd1c0");
-        assert_eq!(w.body.declined.len(), Decline::ALL.len());
-        assert_eq!((w.body.native, w.body.declined["alias"]), (4, 3));
+        assert_eq!((w.body.native, w.body.nodes), (4, 9));
     }
 
     #[test]
@@ -85,7 +70,6 @@ mod tests {
         let stats = arm::Stats {
             matched: 7,
             differed: 2,
-            declined: 3,
             interrupted: 4,
             answered: 5,
             first: Some(arm::Mismatch {
@@ -100,7 +84,7 @@ mod tests {
             result,
             serde_json::json!({
                 "entries": { "00010100": {
-                    "matched": 7, "differed": 2, "declined": 3, "interrupted": 4, "answered": 5,
+                    "matched": 7, "differed": 2, "interrupted": 4, "answered": 5,
                     "first": {"pc": "00010124", "what": "eax", "plan": "1", "guest": "3"}
                 }}
             })

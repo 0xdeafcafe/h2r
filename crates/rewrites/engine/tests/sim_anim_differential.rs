@@ -591,25 +591,34 @@ fn entry_cpu(mxcsr: u32, status: u16) -> CpuAbi {
 
 /// Run the native body on `(c, m)` cold on host lanes, then warm on the
 /// scalar loop with the same store, and compare each with the guest.
-/// `false` when it declined (having written nothing).
-fn check(oracle: &mut Oracle<'_>, c: &CpuAbi, m: &Ram<'_>, store: &ClipStore, case: &str) -> bool {
+/// The [`adapter::Decline`] when it declined (having written nothing).
+fn check(
+    oracle: &mut Oracle<'_>,
+    c: &CpuAbi,
+    m: &Ram<'_>,
+    store: &ClipStore,
+    case: &str,
+) -> Result<(), adapter::Decline> {
     let mut reference: Option<(Cpu, Ram<'_>)> = None;
     for (simd, label) in [(true, "cold, host lanes"), (false, "warm, scalar")] {
         let (mut nc, mut nm) = (*c, m.clone());
         let got = engine::sim_native::with_simd(simd, || adapter::stream(&mut nc, &mut nm, store))
             .unwrap();
-        let Some(transfer) = got else {
-            assert_eq!(nm.overlay, m.overlay, "{case}: a declined call wrote");
-            assert_eq!(
-                visible(&ir_cpu(&nc)),
-                visible(&ir_cpu(c)),
-                "{case}: a declined call moved registers"
-            );
-            assert!(
-                simd,
-                "{case}: the warm call declined after the cold call ran"
-            );
-            return false;
+        let transfer = match got {
+            Ok(transfer) => transfer,
+            Err(why) => {
+                assert_eq!(nm.overlay, m.overlay, "{case}: a declined call wrote");
+                assert_eq!(
+                    visible(&ir_cpu(&nc)),
+                    visible(&ir_cpu(c)),
+                    "{case}: a declined call moved registers"
+                );
+                assert!(
+                    simd,
+                    "{case}: the warm call declined after the cold call ran"
+                );
+                return Err(why);
+            }
         };
         assert_eq!(transfer.target_pc, HARNESS_EXIT);
         let (guest_cpu, guest_mem) = reference.get_or_insert_with(|| {
@@ -637,7 +646,7 @@ fn check(oracle: &mut Oracle<'_>, c: &CpuAbi, m: &Ram<'_>, store: &ClipStore, ca
         store.stats().builds <= 1,
         "{case}: the warm call rebuilt the clip"
     );
-    true
+    Ok(())
 }
 
 static EPOCH: Epoch = Epoch::new();
@@ -666,7 +675,7 @@ fn animation_stream_matches_the_guest() {
             m.word(STACK, HARNESS_EXIT);
             let expect = case(&mut rng, &codecs, cutoffs, &mut c, &mut m);
             let store = ClipStore::new(&EPOCH);
-            if check(oracle, &c, &m, &store, &format!("case {n}")) {
+            if check(oracle, &c, &m, &store, &format!("case {n}")).is_ok() {
                 assert_eq!(expect, Expect::Match, "case {n}: should have declined");
                 native += 1;
             } else {
@@ -724,7 +733,7 @@ fn every_disc_animation_matches_the_guest() {
             Some(v)
         };
         let (mut animations, mut calls, mut native, mut skipped) = (0u64, 0u64, 0u64, 0u64);
-        let before = adapter::stats();
+        let mut declined: BTreeMap<&'static str, u64> = BTreeMap::new();
         for entry in entries
             .iter()
             .filter(|e| !e.is_dir && e.path.ends_with(".map"))
@@ -836,17 +845,14 @@ fn every_disc_animation_matches_the_guest() {
                         }
                         calls += 1;
                         let label = format!("animation {animations} frame {k}");
-                        if check(oracle, &c, &m, &store, &label) {
-                            native += 1;
+                        match check(oracle, &c, &m, &store, &label) {
+                            Ok(()) => native += 1,
+                            Err(why) => *declined.entry(why.name()).or_default() += 1,
                         }
                     }
                 }
             }
         }
-        let after = adapter::stats();
-        let declined: Vec<u64> = (0..after.declined.len())
-            .map(|i| after.declined[i] - before.declined[i])
-            .collect();
         eprintln!(
             "animation disc sweep: {animations} animations, {skipped} without readable data, \
              {calls} calls, {native} native; declined by reason {declined:?}"

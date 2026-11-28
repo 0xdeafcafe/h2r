@@ -99,6 +99,27 @@ pub(crate) fn dec32(c: &mut CpuAbi, v: u32) -> u32 {
     r
 }
 
+/// `inc r32`: CF kept.
+pub(crate) fn inc32(c: &mut CpuAbi, v: u32) -> u32 {
+    let r = v.wrapping_add(1);
+    let af = u32::from(v & 15 == 15) << 4;
+    let of = u32::from(v == 0x7fff_ffff) << 11;
+    let keep = ARITH & !1;
+    c.eflags = (c.eflags & !keep) | status(r, 1 << 31) | af | of;
+    c.eflags_defined |= keep;
+    r
+}
+
+/// `cmp r8, imm8` / `cmp r8, r8`.
+pub(crate) fn cmp8(c: &mut CpuAbi, a: u32, b: u32) {
+    let (a, b) = (a & 0xff, b & 0xff);
+    let v = a.wrapping_sub(b) & 0xff;
+    let cf = u32::from(a < b);
+    let of = u32::from((a ^ b) & (a ^ v) & 0x80 != 0) << 11;
+    c.eflags = (c.eflags & !ARITH) | status(v, 0x80) | cf | ((a ^ b ^ v) & AF) | of;
+    c.eflags_defined |= ARITH;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
