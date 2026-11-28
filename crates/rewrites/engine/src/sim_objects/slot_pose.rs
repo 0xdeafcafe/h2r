@@ -3,9 +3,9 @@
 //! pose dispatcher `109050` calls `(object, s0, s1, s2)`; both `ret 10`.
 //!
 //! **`f0f50` (vehicle).** Packs `s1`, `s2`, `s0` into a 12-byte frame
-//! and calls the vehicle pose `f0760(object, 0xf06e0, &frame)` (`ret c`;
-//! `0xf06e0` is the per-channel callback it passes, O). `f0760` stays a
-//! guest call: about 2 KB of animation channel setup.
+//! and calls the vehicle pose's channels `f0760(object, 0xf06e0, &frame)`
+//! (`ret c`; `0xf06e0` is the per-channel callback it passes). Both are
+//! bodies (`vehicle_channels`), so the call stays in Rust.
 //!
 //! **`107000` (device).** Reads the object's definition, its model
 //! (definition `+38`) and the model's animation graph (model `+4`); with
@@ -25,9 +25,9 @@ use runtime::{CpuAbi, Guest};
 
 const NONE: u32 = u32::MAX;
 /// The vehicle pose `f0f50` hands its frame to; `ret c`.
-const VEHICLE_POSE_CHANNELS: u32 = 0x000f_0760;
+const VEHICLE_POSE_CHANNELS: u32 = points::VEHICLE_POSE_CHANNELS.base;
 /// The per-channel callback `f0f50` passes it.
-const VEHICLE_POSE_CALLBACK: u32 = 0x000f_06e0;
+const VEHICLE_POSE_CALLBACK: u32 = points::VEHICLE_POSE_CALLBACK.base;
 /// The channel evaluate `(channel: ebx, weight, s0, s1, s2: stack)`;
 /// `ret 10`.
 const CHANNEL_EVALUATE: u32 = 0x001c_6f60;

@@ -2212,6 +2212,8 @@ points! { ALL;
     VEHICLE_POSE @ 0x000f_0f50: [fn(object: stack 0, a: stack 1, b: stack 2, c: stack 3) ret 16], Hot; "docs/engine/object-update.md";
     /// Vehicle pose channels: refreshes the vehicle's channel records at body `+400` when its animation changed, then calls `callback` per live channel.
     VEHICLE_POSE_CHANNELS @ 0x000f_0760: [fn(object: stack 0, callback: stack 1, frame: stack 2) ret 12], Hot; "docs/engine/object-update.md";
+    /// The vehicle pose's per-channel callback: samples the channel record's animation (`0x1c7100`, or `0x1c7200` for an overlay).
+    VEHICLE_POSE_CALLBACK @ 0x000f_06e0: [fn(object: stack 0, graph: stack 1, record: stack 2, weight: stack 3, a: stack 4, scale: stack 5, frame: stack 6) ret 28], Hot; "docs/engine/object-update.md";
     // Slice 6b of docs/engine/sim-rewrite-objects.md: the unit update's state
     // children (`UNIT_CONTROL_REFRESH`, `ce0c0`, is named above).
     /// Unit control: desired aim and look, timed bits, the two linked objects (`UNIT_UPDATE`'s first call).

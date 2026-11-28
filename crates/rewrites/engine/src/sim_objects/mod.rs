@@ -38,6 +38,7 @@ mod projectile;
 pub(crate) mod projectile_step;
 mod scenery;
 mod slot_pose;
+mod vehicle_channels;
 pub(crate) mod sse;
 // Slice 4: the post-update shell.
 mod bounds;
@@ -257,6 +258,13 @@ pub const BODIES: &[Body] = &[
     // The pose slot callees: `vehi` and `devi` slot `+6c` (`slot_pose`).
     Body { point: &points::VEHICLE_POSE, sites: &slot_pose::VEHICLE_SITES, run: slot_pose::vehicle_pose },
     Body { point: &points::DEVICE_POSE, sites: &slot_pose::DEVICE_SITES, run: slot_pose::device_pose },
+    // The vehicle pose's channels `f0760` and their callback `f06e0`.
+    Body { point: &points::VEHICLE_POSE_CHANNELS, sites: &vehicle_channels::SITES, run: vehicle_channels::channels },
+    Body {
+        point: &points::VEHICLE_POSE_CALLBACK,
+        sites: &vehicle_channels::CALLBACK_SITES,
+        run: vehicle_channels::channel_callback,
+    },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.
