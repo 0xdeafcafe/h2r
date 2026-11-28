@@ -106,21 +106,15 @@ What each phase of [sim-rewrite.md](sim-rewrite.md) takes over: its data, its en
   the parent. It declines, by reason, an override (body `+c0` bit 9), an
   import a type level or a base callout answers, curve kinds 9 and 10, an
   operand off the exact path, a fault and a recursion past 16.
-  `engine::sim_objects::functions::arm` runs it as a shadow arm at each
-  `bab40` entry the objects driver runs, behind
-  `impl.sim.native.objects.functions` (off):
+  `engine::sim_objects::functions::arm` answers at each
+  `bab40` entry the objects driver runs:
 
   ```
   entry -> evaluate -> declined?  -> guest answers                  (declined[reason])
-                    -> unproven or slot % 64 == 0
-                                  -> guest answers, compare at return (checked, matched, mismatched)
                     -> else       -> Rust answers: out, al, ecx, xmm0  (answered)
   ```
 
-  Proof is 4096 matches with no mismatch, per map. A mismatch hands every
-  call back to the guest until the next map. A compared call whose return
-  the driver never sees is `dropped`. `sim.arms` reports it as
-  `objects.function`.
+  `sim.arms` reports it as `objects.function`.
 - *Parallelism.* Pose and matrix passes run per object in hierarchy waves.
 
 **Sound sim (phase 4).**

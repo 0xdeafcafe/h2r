@@ -40,7 +40,7 @@ tag editor, and Halo 1 tags are in [click-to-edit.md](click-to-edit.md).
 | Tag field writes in the game | Built: View/Edit, field effects, the Pending tab, `edit.map`, conditional `edit.batch`, journal adoption and `edit.revert` | `crates/extensions/hot-tags`, [hot-iteration.md](../graphics/hot-iteration.md) |
 | No writes in co-op or as a client | Built | `agent_proto::sim::SessionKind::writes` |
 | Typed object reads | Built: transform, velocity, sphere, vitality, node matrices, unit player, team, seat, weapons and aim | `crates/rewrites/sim-state` (`ObjectView`, `UnitView`), over `crates/hooking/guest-layout` |
-| The tick's events | Built: `deleted` while finalize runs in Rust (by default), `damage` and `kill` while `impl.sim.native.objects` is on | `sim_state::events`, `sim.events` |
+| The tick's events | Built: `deleted` while finalize runs in Rust (by default), `damage` and `kill` always | `sim_state::events`, `sim.events` |
 | The game's cameras, drawn instances, lights | Built for a run that renders with the native renderer; the cameras and drawn handles stream as the `camera` layer | the sealed `FrameScene` (`frame_scene::View`, `Instance`), [framescene.md](../graphics/framescene.md) section 4 |
 | Object to placement link, a machine's position | Built | `live_telemetry::memory` (`placement`), `guest_layout::unit::Device::POSITION` |
 | Per-tick rows taken inside the tick observer | Built, as JSON to a file | `crates/extensions/agent/src/trace.rs` |

@@ -330,7 +330,7 @@ crates/rewrites/engine/src/sim_objects/    the guest boundary (needs `runtime`)
   functions/                      bab40, ba8c0, 108d90, bcc20, be8e0 and the import handlers (segments)
   item.rs, scenery.rs, ...        the slice 11 type updates; sse.rs, alu.rs their SSE and flag idioms
   ...                             one file per ported segment body
-crates/rewrites/sim-bridge/src/sim_objects.rs installer, `impl.sim.native.objects` (called by `sim_native`)
+crates/rewrites/sim-bridge/src/sim_objects.rs installer (called by `sim_native`)
 docs/engine/object-update.md      the contract page (engine README format)
 ```
 
@@ -861,7 +861,7 @@ The plan's ladder, with these specifics.
    updates): registers and RAM at the n-th call of a point, from a
    Waterworks match and from a campaign level; kept in the user's data
    directory, never committed.
-5. **Run parity**, `-impl.sim.native.objects` against on, with
+5. **Run parity**, the lifted build against the bodies, with
    `impl.sim.arena-hash`: the three sim-budget cases, plus a headless co-op
    campaign level through the agent API. Every `state_hashes_v1` row equal;
    `h2 sim diff` prints nothing (its per-component breakdown names the pool
@@ -884,7 +884,7 @@ as oracles while a test uses them).
 
 | # | Slice | Contents | Depends on | Testable result | Samples addressed |
 |---|---|---|---|---|---:|
-| 0 | Research and scaffolding | Contract page with the open items of section 13 resolved by static reading; register live-in/live-out scan for every entry and callout in slices 1 to 5 (linear scan from each call site and each callee entry until every register is written); crate skeletons; `BODIES` and `drive` with no bodies; installer and `impl.sim.native.objects` (default off); the two harness additions | `sim-core` exists | dispatcher unit tests; harness runs with zero bodies | 0 |
+| 0 | Research and scaffolding | Contract page with the open items of section 13 resolved by static reading; register live-in/live-out scan for every entry and callout in slices 1 to 5 (linear scan from each call site and each callee entry until every register is written); crate skeletons; `BODIES` and `drive` with no bodies; installer; the two harness additions | `sim-core` exists | dispatcher unit tests; harness runs with zero bodies | 0 |
 | 1 | Walks | `b6f10`, `b7060`, `b7150`, `bc470`, `bc820` adopted from the ports into `BODIES`; dispatchers `108c60`, `108cd0`, `109050`, `1090d0`; leaves `b7360`, `baf80`, `bba20`, `bc7b0`; `109580`; `ObjectDeleted` events. Retires `native_objects_pre_physics`, `native_objects_post_physics`, `native_object_pre_update`, `native_object_post_update` | 0 | fused transcripts for the three roots; run parity | 894 (`bc470` 148, `bc820` 126, `bc7b0` 98, `bba20` 79, `b6f10` 77, `b7150` 70, `108c60` 67, `b7060` 60, `baf80` 44, `109050` 42, `b7360` 36, `1090d0` 28, `108cd0` 19) |
 | 2 | Views and `sim-state` | `layout`, `view`, `DefTable`, `sim-state` objects API, unit tests on fake memory. Can run beside slice 1 | 0 | unit tests; an agent API method `sim.objects` listing typed objects (documented in agent-api.md, per AGENTS.md) | 0 |
 | 3 | Functions and colours | `bab40`, `ba8c0`, `108d90`, `bcc20`, `be8e0`; import handlers `c6b90` (with `d1210`, `d1410`), `ff5f0`, `f6d10`, `de3b0`, `fbe70`, `106d70`, `11bd60`. Retires `native_object_import`, `native_object_value`, `native_base_object_import`, `native_object_change_colors` | 1 | segment tests; evaluator becomes a leaf when all seven imports are in | 1,713 (`108d90` 317, `bab40` 282, `bcc20` 253, `f6d10` 224, `ff5f0` 204, `ba8c0` 163, `c6b90` 138, `13bb90` 74, `be8e0` 28, `d1210` 18, `de3b0` 12) |
@@ -901,7 +901,7 @@ as oracles while a test uses them).
 | 10 | Vehicle | `efde0` and tree | 6a | captures | ~1,450 |
 | 11 | Small types, campaign order | `10b4d0`, `10a2f0`, `106790`, `1152e0`, `115a40`, `f8de0` with `f8eb0`, `11bce0`, `118700`, `118b80`; order from the campaign census | 1 | captures from campaign | ~720 on Waterworks |
 | 12 | Parallel pose (gated) | Step 0: measure nodes posed per tick and time left in pose kernels on Waterworks and co-op campaign. Go only at 0.25 ms/tick or more. Then `Spec`, `Jobs`, `PoseSet`, waves, the worker arm | 4, phase 1c | `Spec` unit tests; worker arm | measured |
-| 13 | Retire | Default on, then delete `impl.sim.native.objects` and the remaining per-function switches in the plan's phase 3 list | exit | | |
+| 13 | Retire | Native only: no switch and the per-function switches in the plan's phase 3 list are gone | exit | | |
 
 The functions named in slices 1 to 7 hold 7,553 samples (8.95% of the
 thread, 1.26 to 1.60 ms). At 4× that removes 0.95 to 1.20 ms, which is at the
@@ -978,7 +978,7 @@ or imports by direct calls) and the unit offsets are contracts in
 
 ## Summary
 
-1. Phase 3 replaces the three object walks, the per-object pre and post update, the function evaluator, lights and the type update trees with Rust bodies under one switch, `impl.sim.native.objects`.
+1. Phase 3 replaces the three object walks, the per-object pre and post update, the function evaluator, lights and the type update trees with Rust bodies, native only.
 2. Addressable cost on Waterworks: core 4,749 samples (5.63% of the thread), type trees 8,520 (10.10%); the 1.2 ms exit needs the core plus the unit and biped trees, and is at the edge on the named functions alone (0.95 to 1.20 ms).
 3. There is no persistent Rust object table: typed views are the access path and SoA exists only as per-phase working sets.
 4. Bodies are segments over retail stack frames with all eight registers exact at every call out, so no Rust state crosses a guest call and the lifted code and Rust can swap at any return site.

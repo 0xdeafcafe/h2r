@@ -219,15 +219,15 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [engine-map-formats.md](engine/engine-map-formats.md): the engine map's data layouts: collision and physics models, UI tags, animation graphs, effects, objects and shaders
 - [feature-engine.md](engine/feature-engine.md): the feature engine: Rust subsystems at clean boundaries, hooks, settings; what is built and what is design
 - [guest-layout.md](engine/guest-layout.md): `crates/hooking/guest-layout`: guest structure offsets and globals, the `impl.*` switch table, hook point shapes
-- [anim-sampling.md](engine/anim-sampling.md): animation sampling in Rust (`sim-anim`) behind `impl.sim.native.anim`: the contract, the decoded clips and the disc sweep
+- [anim-sampling.md](engine/anim-sampling.md): animation sampling in Rust (`sim-anim`), native only: the contract, the decoded clips and the disc sweep
 - [skeleton-walk.md](engine/skeleton-walk.md): `bd090`'s skeleton walk (node records to node matrices) as one Rust call, `sim_anim::build_matrices`
-- [markers.md](engine/markers.md): `b8d30`'s marker lookup (the group scan `1d8f00` and the transform fill `1d8f50`) as one Rust call, `sim_anim::model_markers`, behind `impl.sim.native.anim`
-- [palette.md](engine/palette.md): the first-person bone palette of `16760c` (the identity fill and the model-node overlay) as one Rust call, `sim_anim::palette`, behind `impl.sim.native.anim`
+- [markers.md](engine/markers.md): `b8d30`'s marker lookup (the group scan `1d8f00` and the transform fill `1d8f50`) as one Rust call, `sim_anim::model_markers`, native only
+- [palette.md](engine/palette.md): the first-person bone palette of `16760c` (the identity fill and the model-node overlay) as one Rust call, `sim_anim::palette`, native only
 - [animation-manager.md](engine/animation-manager.md): channel advance, graph lookup, preload and selector fallback
 - [unit-pose.md](engine/unit-pose.md): the unit pose entry, aim channels, angle projection, overlay callouts and return-site fallback
 - [first-person-filters.md](engine/first-person-filters.md): the first-person seat and weapon-slot update `166d75`, including the inline axis filter `11eed0`
-- [sim-effects.md](engine/sim-effects.md): phase 6 effects, particles, contrails and decals ports behind `impl.sim.native.effects`, and their parity arm
-- [object-update.md](engine/object-update.md): the object update's contracts read from the lifted code (callouts, flag setters, register liveness) and how the phase 3 bodies behind `impl.sim.native.objects` keep them
+- [sim-effects.md](engine/sim-effects.md): phase 6 effects, particles, contrails and decals ports, always installed, and their parity arm
+- [object-update.md](engine/object-update.md): the object update's contracts read from the lifted code (callouts, flag setters, register liveness) and how the phase 3 bodies, native only, keep them
 - [object-update-bodies-core.md](engine/object-update-bodies-core.md): the object update bodies of slices 0, 1, 3 and 4 (walks, function values, post-update shell)
 - [object-update-bodies-types.md](engine/object-update-bodies-types.md): the bodies of slices 8, 11, 5 and 6b (damage, small types, lights, unit state)
 - [object-update-bodies-units.md](engine/object-update-bodies-units.md): the bodies of the unit, weapon, vehicle and biped updates

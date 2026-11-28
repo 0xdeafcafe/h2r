@@ -89,15 +89,17 @@ of two arms, and the two never mix on one port:
 - **`shadow::run`** (the per-function ports): the body is authoritative;
   a sampled call is checked before it runs. A guest-authoritative body
   that only compares uses `feature::shadow::compare_only`.
-- **`Shadow::check_before_original`**: while the port's checks are on,
-  the *original* answers on the live state, sampled or not and after a
-  mismatch too, and the sampled call runs the body on a copy for the
-  comparison. A body that declines is recorded as a skipped check.
-  Turning the checks off (`shadow.disable`) makes the bodies
-  authoritative.
+- **`Shadow::check_before_original`** (the seats, phase 7 of the
+  simulation rewrite): while the port's checks are on, the *original*
+  answers on the live state, sampled or not and after a mismatch too, and
+  the sampled call runs the body on a copy for the comparison. A body
+  that declines is recorded as a skipped check. Turning the checks off
+  (`shadow.disable`) makes the bodies authoritative. That is the seats'
+  rollout: parity first, authority after.
 
-Only installed ports are checked: a port's `impl.` switch puts it in the
-plan, and `shadow.enable` turns its checks on. Boot's run gives the registry
+Only installed ports are checked, and `shadow.enable` turns its checks on. The seats sit behind the
+one `impl.sim.native.seats` switch and are named per entry
+(`sim.seats.player_control_update`, ...). Boot's run gives the registry
 the image once the module is loaded
 (`recomp`'s [`fallback.rs`](../../crates/runtime/recomp/src/fallback.rs)
 `shadow_original`): the build's cached analysis, lifted on demand, built
@@ -124,8 +126,8 @@ Methods ([agent-api.md](../runtime/agent-api-checks.md#shadow-checks)):
 `shadow.enable`, `shadow.disable`, `shadow.status`.
 
 ```sh
-H2_FEATURES=impl.sim.native_unit_pose h2 serve ...
-h2 agent shadow.enable '{"ports":["sim.native_unit_pose","sim.physics"],"every":4}'
+h2 serve ...
+h2 agent shadow.enable '{"ports":["sim.port.unit_pose","sim.physics"],"every":4}'
 h2 agent shadow.status
 ```
 

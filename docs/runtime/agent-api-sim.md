@@ -409,8 +409,7 @@ or `null` for none. Each event has a `type`:
   `unit` is the object datum, `character` the character tag datum,
   `killer` the credited player datum, and `weapon` the packed damage code.
 
-Events are recorded only while `impl.sim.native.objects` is on; with it
-off the list is empty. The records and where they are read are in
+Events are always recorded. The records and where they are read are in
 [object-update.md](../engine/object-update.md), "Slice 8 body". The wire
 types are `agent_proto::sim::events`.
 

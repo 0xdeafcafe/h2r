@@ -78,7 +78,7 @@ quiet laptop runs every benchmark; a local run is a smoke check.
 
 | Candidate | Saving per tick (**S**) | Risk | Parity bar |
 |---|---:|---|---|
-| Native subsystems on in the light profile: `impl.sim.native.anim`, `impl.sim.native.objects` (collision is always native) | 1.5–2.5 ms | Low once each switch's ladder is clean; the work is turning on what exists | hashes equal to `-impl.sim.native` |
+| Native subsystems in the light profile: animation and objects are always native; `impl.sim.native.collision` is the one switch | 1.5–2.5 ms | Low once collision's ladder is clean; the work is turning on what exists | hashes equal to `-impl.sim.native` |
 | Sound sim in Rust on the silent clock (planned phase 4) | 0.5–0.8 ms | Medium: voice starts and completion events are gameplay-visible | hashes, plus voice start and completion order per tick |
 | Effects, particles and decals in Rust (planned phase 6) | 0.2–0.35 ms | High if pruned, medium if rewritten: effect dispatch can deal damage and spawn objects, and particles share the random stream | hashes |
 | Havok world and glue (planned phase 5) | 0.4–0.7 ms | High: its own acceptance bar in the rewrite plan | behaviour suites, cross-architecture hashes |
@@ -95,8 +95,13 @@ on large maps.
 **Native subsystems.** The projection is the rewrite plan's own model at
 *k* = 2 (10.77 of 14.12 ms after phase 3), with the local-seat share
 removed from the denominator. Phase 7 (seats) is skipped for hosts.
-Animation, collision and the object update always run in Rust, on hosts
-as everywhere, with no profile switch.
+The light profile offers animation, collision and object rewrites together through
+`host-light-native` in `crates/apps/boot/src/registration.rs`.
+
+Explicit subsystem
+and group selections take precedence. The profile switch defaults off pending
+a clean A/A, hash parity on both maps, and a Waterworks median saving of
+at least 1.5 ms per tick. The existing subsystem ladders still apply.
 [sim-10x.md](../perf/sim-10x.md#why-the-native-subsystems-save-nothing-as-wired)
 reads the bodies and expects far less from them as wired: the object
 bodies keep the lifted code's work and pay a runner round trip per

@@ -1,6 +1,6 @@
 # Object update bodies: walks, functions and the post-update shell
 
-Status: Built (behind `impl.sim.native.objects`). Slice 0 resolutions and the bodies of slices 1, 3 and 4: the walks and dispatchers, function values and change colours, and the post-update shell.
+Status: Built (native only). Slice 0 resolutions and the bodies of slices 1, 3 and 4: the walks and dispatchers, function values and change colours, and the post-update shell.
 Contract page for phase 3 of the [simulation rewrite](sim-rewrite-objects.md); entries and conventions are in [object-update.md](object-update.md).
 
 ## Resolved in slice 0
@@ -150,7 +150,7 @@ charge explicitly with `ExecCtx::charge_accesses`
 So a long Rust segment runs without expiring its slice, and the only
 preemption points inside a walk are the true callouts. That is
 deterministic. Whether to charge bodies is a decision, not a reading; a run
-with `impl.sim.native.objects` on and off over the same film shows whether
+over the same film, compared with `h2 sim diff` against the lifted build, shows whether
 thread interleaving changes.
 
 ## Slice 1 bodies
@@ -426,7 +426,7 @@ call nothing.
 
 - Captures and run parity (the slice's testable result): registers and
   RAM at the n-th call of `bc820` on Waterworks and a campaign level,
-  with `impl.sim.native.objects` on and off. The harness covers
+  compared with the lifted build. The harness covers
   synthetic pools.
 - The harness compares `xmm` registers at callouts for the slice 4 roots
   except `bd090`, whose port was differential-tested without them

@@ -1,10 +1,10 @@
 # Simulation rewrite, phase 6: effects, particles, contrails and decals
 
-Status: ports written, default off behind `impl.sim.native.effects`; run
+Status: ports written, native only; run
 parity and timing not yet recorded.
 
 Design for the phase is in [sim-rewrite.md](sim-rewrite.md) ("Effects
-(phase 6)"). This page states what runs under the switch.
+(phase 6)"). This page states what runs.
 
 ## What runs
 
@@ -30,26 +30,25 @@ update (`docs/graphics/native-particles.md`) and the render side of decals.
 They stay guest code and see the same datums. The phase's effect walk
 `176e40` and the part creation `17a8a0` are
 [effects-parts.md](effects-parts.md)'s. So is a second body of `1792b0`
-there; with this switch on, `events.rs` keeps the point and that body is
+there; `events.rs` keeps the point and that body is
 left out.
 
 RNG draws keep retail order: birth draws from the local effects stream in
 program order, and the shared stream `[0x4e7408]` is only touched by the
 guest callees.
 
-## Switch and parity arm
+## Install and parity arm
 
-`impl.sim.native.effects` (default off; `-impl.sim.native` turns it off with
-the other subsystems) installs every port through
-`sim_bridge::sim_effects`. `supported` gates each call: the float
+Every port always installs through
+`sim_bridge::sim_effects`, with no switch. `supported` gates each call: the float
 environment, bounded chains and loops, and no armed memory trap. A call the
-gate refuses runs the original.
+gate refuses is counted and runs the original.
 
 The parity arm is the shadow registry ([shadow-exec.md](shadow-exec.md)).
 Every port registers under its point's name in the group `sim.effects`,
-installed or not. With the switch on, `shadow.enable` over the agent API
+installed or not. `shadow.enable` over the agent API
 checks sampled calls against the lifted original while the port stays
-authoritative. There is no second switch.
+authoritative.
 
 ## Tests
 
@@ -59,7 +58,7 @@ authoritative. There is no second switch.
 - `tests/sim_effects_differential.rs` (`differential` feature, skipped
   without the image): the decal link and the contrail clock against the
   lifted original from one synthetic state.
-- `sim_bridge::sim_effects`: the switch installs every port with its
+- `sim_bridge::sim_effects`: the installer installs every port with its
   sites, and registers all of them with the shadow registry.
 
 The remaining ladder steps (sim-rewrite.md section 3: run parity on

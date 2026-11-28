@@ -1,6 +1,6 @@
 # Object update: register liveness
 
-Status: Built (behind `impl.sim.native.objects`). The register liveness scan over every entry and call site of the object update bodies.
+Status: Built (native only). The register liveness scan over every entry and call site of the object update bodies.
 Contract page for phase 3 of the [simulation rewrite](sim-rewrite-objects.md); entries and conventions are in [object-update.md](object-update.md).
 
 ## Register liveness

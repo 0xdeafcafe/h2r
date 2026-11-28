@@ -1,8 +1,8 @@
 # Object update: entries, conventions and liveness
 
-Status: Partly built. Slices 1, 3, 4, 5, 6a, 6b, 6c, 7a, 7b, 8, 9, 10 and 11 have bodies in the body table behind the switch (table below); the other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
+Status: Partly built. Slices 1, 3, 4, 5, 6a, 6b, 6c, 7a, 7b, 8, 9, 10 and 11 have bodies in the body table (table below); the other slices of [sim-rewrite-objects.md](sim-rewrite-objects.md) add the rest.
 Code: `crates/rewrites/sim-objects` (kernels and typed views, no `runtime` dependency: `src/wake.rs` the wake leaves, `src/events.rs` the tick's events, `src/damage.rs` the damage and kill event reads, `src/bounds.rs` the bounds kernel, `src/functions/curve.rs` the tag-function curve evaluator, `src/phase.rs` the walks' working set), `crates/rewrites/engine/src/sim_objects` (the guest boundary: `BODIES`, `drive`, `supported`, retail frame helpers; `walks.rs`, `object.rs`, `wake.rs` the slice 1 bodies; `functions/` the slice 3 bodies, `functions/parity.rs` the curve evaluator's capture arm; `lights/` the slice 5 bodies; `damage.rs` the slice 8 body and the event recorders; `item.rs`, `scenery.rs`, `device.rs`, `machine.rs`, `bloc.rs`, `creature.rs`, `projectile.rs`, `projectile_step.rs` the slice 11 bodies over `sse.rs` (scalar SSE on the guest registers) and `alu.rs` (shift and 16-bit flag idioms); `weapon/` the slice 9 body, one file per state group; `vehicle.rs` the slice 10 bodies; `biped/` the slice 7a bodies, `biped/post/` the slice 7b bodies; `post.rs`, `pose.rs`, `bounds.rs`, `transform.rs` the slice 4 bodies over `xform.rs` (the node-matrix rows); `unit.rs` the slice 6a bodies, with `sim_physics::unit_aim::step` for `c7840`; `unit_state/` the slice 6b bodies; `unit_rest.rs` and `unit_anim.rs` the slice 6c bodies; `native_walk.rs` the walk table and its counters), `crates/rewrites/sim-bridge/src/sim_objects.rs` (installer). Tests: `crates/rewrites/engine/src/sim_objects/native_walk/tests.rs` (the walk table, its float-free bodies and its counters), `crates/rewrites/sim-objects/src/phase.rs` (the working set), `crates/rewrites/engine/src/sim_objects/tests.rs` (the dispatcher, guarding, finalize and a leaf on a synthetic pool), `crates/rewrites/engine/src/sim_objects/functions/tests.rs` (the slice 3 helpers and the import dispatcher on synthetic memory), `crates/rewrites/engine/src/sim_objects/functions/curve_tests.rs` (the curve kernel against the `function_eval` oracle, and the arm's counters), `crates/rewrites/engine/src/sim_objects/damage/tests.rs` (the damage update's frame and the recorders), `crates/rewrites/engine/src/sim_objects/unit/tests.rs` (the slice 6a frames, callouts and stores), `crates/rewrites/engine/src/sim_objects/biped/tests.rs` (the slice 7a leaves, and the biped update's frame, callouts and stores), `crates/rewrites/engine/src/sim_objects/biped/post/tests.rs` (the slice 7b leaves, the crouch step, and the post-update's early returns, physics input path and contact counter), `crates/rewrites/engine/src/sim_objects/unit_state/tests.rs` (the slice 6b frames, callouts, stores and the divide error), `crates/rewrites/engine/src/sim_objects/lights/tests.rs` (the slice 5 bodies' frames, sites and stores on a synthetic light array), `crates/rewrites/sim-bridge/src/sim_objects.rs` (the installer, the guard, the event observers, and resumes at a body's sites on the unit shell), `crates/rewrites/engine/tests/sim_objects_differential.rs` (fused transcripts and mixed frames against the lifted original for every slice 1, slice 3, slice 4, slice 5, slice 6a, slice 6b, slice 6c, slice 7a, slice 7b, slice 8, slice 9, slice 10 and slice 11 root, comparing the integer registers, flags, memory, MXCSR, XMM registers and x87 state at every callout and return (`FLOAT_OPT_OUT` lists the roots that do not, each with its reason), feature `differential`), `crates/rewrites/sim-objects/src/wake/tests.rs` (the wake kernels), `crates/rewrites/sim-objects/src/damage/tests.rs` (the event reads), `crates/rewrites/sim-objects/src/bounds/tests.rs` (the bounds kernel), `crates/rewrites/engine/src/sim_objects/bounds/tests.rs` (`bdef0` against that kernel), and the views in `crates/rewrites/sim-objects` and `crates/rewrites/sim-state`.
-Switch: `impl.sim.native.objects` (default off), listed in [switches.md](../runtime/switches.md). The walk table has no switch.
+Native only, no switch.
 
 The contract page for phase 3 of the simulation rewrite: the object walks,
 the per-object pre- and post-update, the type dispatchers, function values,
@@ -33,11 +33,11 @@ eight integer registers equal retail's.
 | 7a | the biped update `dd360` with the carrier `baf40`, timer update `e2d80`, `1469f0`, action request `e68c0`, animation kind `dd300`, landing test `e4050`, fall update `e45e0`, animation state update `e4c50`, look update `de190` | the movement and animation steps, the seat updates |
 | 7b | the biped post-physics update `dd990` with crouch step `dd7d0`, crouch height `dd8e0` and its forced test `e0dc0`, ground probe `e30c0` and its surface test `ddf60`, jump update `e4680`, physics input `dd0d0`, landing update `e4330`, contact update `e2fa0` | the AI hooks, the damage packet, the physics step |
 
-The tag-function curve evaluator `13b390` runs as an arm: the idiomatic kernel `sim-objects/src/functions/curve.rs` predicts every call and the guest's answer is compared with it, until 4096 calls have matched with no mismatch; from then on the kernel answers, and one answerable call in 64 still goes to the guest and is compared, so a later mismatch returns every call to the guest. A map load (`CACHE_TAGS_LOAD`) clears the proof and any mismatch, so each map earns the take-over again. Counted in `engine::sim_objects::functions::parity`.
+The tag-function curve evaluator `13b390` is answered by the idiomatic kernel `sim-objects/src/functions/curve.rs`. Curve kinds 9 and 10 decline to the guest, counted by reason. Counted in `engine::sim_objects::functions::parity`.
 
 ## The walks in Rust
 
-The walk table always installs on its own when `impl.sim.native.objects` is off (`engine::sim_objects::native_walk::TABLE`, installer `sim_bridge::sim_objects::install_walk`). With `impl.sim.native.objects` on, every body is installed and these with them. No switch runs the guest's walks: a body the Rust refuses (`bd090` or a type callback outside its float environment) is counted as `float_env` and the guest runs that call. The differential tests (`walk_table_roots`, `walk_table_types`) call the lifted walks directly as the reference.
+The walk table installs with every body (`engine::sim_objects::native_walk::TABLE`, installer `sim_bridge::sim_objects::install_walk`). No switch runs the guest's walks: a call outside the float environment (`bd090` or a type callback) is counted as `float_env` and the Rust still answers. The differential tests (`walk_table_roots`, `walk_table_types`) call the lifted walks directly as the reference.
 
 | In Rust | The guest's |
 |---|---|
@@ -61,7 +61,7 @@ level `106790` then `1152e0`; a control's and a light fixture's is the
 device level alone. Crates and creatures close the type table: every
 slot `+40` and `+44` callback is then Rust.
 
-- **The aim hand-off:** with `impl.sim.native.anim` on, the animation subsystem implements `c7840`, so the installer takes `native_walk::WITHOUT_AIM` (the table without it, built from `TABLE`; `sim_bridge::sim_objects::walk_table`), as `sim_bridge::sim_objects::table` does for the full table. The movement `c60c0`'s call to `c7840` is then a callout, made in place, and its hook answers.
+- **The aim hand-off:** the animation subsystem implements `c7840`, so the installer takes `native_walk::WITHOUT_AIM` (the table without it, built from `TABLE`; `sim_bridge::sim_objects::walk_table`), as `sim_bridge::sim_objects::table` does for the full table. The movement `c60c0`'s call to `c7840` is then a callout, made in place, and its hook answers.
 
 ```
 entry or site of a table body at pc
@@ -90,8 +90,8 @@ entry or site of a table body at pc
   Seven callees stay guest calls: `e1670` (calls `1ec640`, float), `1d3920` (component nodes, a large frame and a long body), `16d940` (the orientation seed, an `xmm` loop), `bdb60` (the animation, calls `13e530` and more), `1c6440` (calls `1daea0`), `a98b0` and `a9940` (the motion position and basis, each a large body). None is a leaf of the small kind.
 - **Refusals:** `float_env` is the only one. It is per call: one object's `bd090`, one unit's `c6b30` or one weapon's `fdfb0` is the guest's, the walk, the update and the dispatcher around it stay Rust. A callee that changes the float environment and returns to a type callback's site refuses the rest of that call.
 - **Shared points:** a type callback another feature hooks too is guarded (`Table::guard`, through `HookRef::when_shared`), so the dispatcher's call goes through the chain and that feature's hooks run around the body. The Halo 1 features' `before`s on the dialogue update `114c60` and the integrated light `c50a0` are such hooks, and so are the opt-in creature probe's (`game::actor_net::creature`) on `118700` and `118b80`, which skip a replica's update. The Assassins skull gate at `c683f`, inside `c6810`, is read by the body itself (`engine::skull_gate`).
-- **Replaced:** the hooks at `b6f10`, `b7060`, `b7150`, `bc470` and `bc820` never reach their guest bodies, so they carry `replaces_guest` (`native_walk::REPLACES_GUEST`). Each resumes at its sites, so `Plan::replaced` keeps their bodies lifted ([lift-pruning.md](../lifter/lift-pruning.md#the-replaced-list)). The dispatchers and wake leaves are not marked: the site-less leaves would leave the lift, and `-impl.sim.native` would then refuse to boot.
-- **Events:** finalize appends an `ObjectDeleted` before each `b83b0` ("Slice 8 body"), so the walk table's installer empties the buffer at `GAME_TICK`'s entry (one extra chain beside the table's, `sim_objects::walk_chains`). The `Damage`, `Kill` and `ActorKilled` observers are `impl.sim.native.objects`'s alone.
+- **Replaced:** the hooks at `b6f10`, `b7060`, `b7150`, `bc470` and `bc820` never reach their guest bodies, so they carry `replaces_guest` (`native_walk::REPLACES_GUEST`). Each resumes at its sites, so `Plan::replaced` keeps their bodies lifted ([lift-pruning.md](../lifter/lift-pruning.md#the-replaced-list)). The dispatchers and wake leaves are not marked, so their bodies stay lifted.
+- **Events:** finalize appends an `ObjectDeleted` before each `b83b0` ("Slice 8 body"), so the walk table's installer empties the buffer at `GAME_TICK`'s entry (one extra chain beside the table's, `sim_objects::walk_chains`). The `Damage`, `Kill` and `ActorKilled` observers are always recorded.
 - **Callouts:** a call from a table body to the guest is made in place (`sim_bridge::sim_objects::drive_in_place`, `ExecCtx::call_inline`) and the Rust carries on at the site; the runtime leaves it to the runner, by a named fallback, when the runner would have work ([sim-10x-callouts.md](../perf/sim-10x-callouts.md)).
 - **Counters:** `native_walk::stats`, per body: segments the Rust ran, calls refused by reason, callouts back in place (`inline`) and callouts left to the runner by fallback (`left`). `sim.arms` reports one arm per body, `objects.walk.<entry>` (`answered` the segments, `declined` the refusals).
 
@@ -109,9 +109,8 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
 - `engine::sim_objects::drive` is the one local dispatcher: a call or
   return between two enabled bodies stays in Rust; anything else returns a
   `TransferAbi` to the runtime.
-- `sim_bridge::sim_objects` registers each body's entry and sites under
-  `impl.sim.native.objects`. Where the float environment check fails, the
-  original runs from the same frame. A per-function port at a point a body
+- `sim_bridge::sim_objects` registers each body's entry and sites. A call outside
+  the float environment is counted and the Rust still answers. A per-function port at a point a body
   owns (`sim_physics::PORTS`, `sim_native::ENTRIES`) stands down while the
   switch is on (`sim_bridge::sim_objects::owns`). The ports the slice 1
   bodies replaced (the two walks and the two per-object updates),
@@ -126,8 +125,8 @@ virtual addresses; bare numbers in tables are hex. Names are ours.
   (`sim_native::object`, `sim_native::object_base`) are not installed
   either; `tests/sim_native_differential.rs` keeps them as oracles. The
   node-matrix port `sim_physics::node_matrices` is the `bd090` body's
-  code (`pose.rs` runs it), so it stays installed under
-  `impl.sim.native_pose_matrix` for when this switch is off.
+  code (`pose.rs` runs it), so the port
+  `sim.port.pose_matrix` installs only where no body owns its point.
 - A body whose point another feature hooks too is guarded
   (`Table::guard`, which each body's implementation registers with
   `HookRef::when_shared` and the plan installer calls through
@@ -177,7 +176,7 @@ How the slice 1 bodies keep the contract is in "Slice 1 bodies" below.
 
 | Entry | Point | ABI | Kind |
 |---|---|---|---|
-| `bab40` | `OBJECT_FUNCTION_VALUE` | `(object: stack 0, name: stack 1, value: stack 2) -> al`; `ret 0c` | segment; with `impl.sim.native.objects.functions`, an arm (`functions/arm.rs`) over the Rust evaluator `sim-objects/src/functions/evaluator.rs` at the entry: the answer stores the value, sets `al`, `ecx`'s top byte (the frame's result byte) and `xmm0`'s low lane where retail leaves the value there, pops the frame, flags undefined; `eax` above `al`, `edx`, the other `xmm` state and the x87 status are untouched |
+| `bab40` | `OBJECT_FUNCTION_VALUE` | `(object: stack 0, name: stack 1, value: stack 2) -> al`; `ret 0c` | segment; the Rust evaluator `sim-objects/src/functions/evaluator.rs` answers at the entry (`functions/arm.rs`): the answer stores the value, sets `al`, `ecx`'s top byte (the frame's result byte) and `xmm0`'s low lane where retail leaves the value there, pops the frame, flags undefined; `eax` above `al`, `edx`, the other `xmm` state and the x87 status are untouched |
 | `ba8c0` | `OBJECT_FUNCTION_EVALUATE` | `(record: eax, object: stack 0, value out: stack 1) -> al`; `ret 8`; stores the `f32` at `[stack 1]` on every path except a scripted override | segment, then leaf |
 | `108d90` | `OBJECT_FUNCTION_IMPORT` | `(object: stack 0, name: stack 1, value: ebx, active: edi) -> al`; `ret 8`. Stores 0 to `[ebx]` and `[edi]` first, then calls slot `+4c` per ancestry level as `(object, name, value, active)` until one returns non-zero. Clobbers `xmm0` | segment (indirect callout) |
 | `bcc20` | `BASE_OBJECT_IMPORT` | `(object: stack 0, name: stack 1, value: stack 2, active: stack 3) -> al`; `ret 10` | segment, then leaf |
@@ -186,7 +185,7 @@ How the slice 1 bodies keep the contract is in "Slice 1 bodies" below.
 | `d1410` | `UNIT_IMPORT_ANIMATION` | `(unit: eax) -> xmm0`; `ret`. Calls `1c6e30` | segment |
 | `be8e0` | `OBJECT_CHANGE_COLORS` | `(object: stack 0) -> al`; `ret 4` | segment, then leaf |
 | `13bb90` | none yet | `(function: eax, stack 0, stack 1)`, input in `xmm0` (clamped), result in `xmm0`; `ret 8`. Calls the evaluator `13b390` | callout |
-| `13b390` | `FUNCTION_EVALUATE` | `(reference: edi, input: stack 0, range: stack 1) -> xmm0`; `ret 8`. The curve evaluator under every function value, light phase and screen effect ([engine-map.md](engine-map.md), `function_evaluate`) | arm (`functions/parity.rs`): the kernel `functions/curve.rs` predicts every call; the guest answers and is compared until 4096 matches with no mismatch, then the kernel answers (`xmm0`, the popped frame; `eax`, `ecx`, `edx`, `edi` untouched, flags undefined) and every 64th answerable call is compared; curve kinds 9 and 10 decline |
+| `13b390` | `FUNCTION_EVALUATE` | `(reference: edi, input: stack 0, range: stack 1) -> xmm0`; `ret 8`. The curve evaluator under every function value, light phase and screen effect ([engine-map.md](engine-map.md), `function_evaluate`) | the kernel `functions/curve.rs` answers (`xmm0`, the popped frame; `eax`, `ecx`, `edx`, `edi` untouched, flags undefined; `functions/parity.rs` counts); curve kinds 9 and 10 decline to the guest |
 
 ### Slice 4: post-update shell
 
@@ -444,7 +443,7 @@ In [object-update-liveness.md](object-update-liveness.md).
 - Liveness through the indirect jumps listed above, and of `xmm0` and x87
   state at every site.
 - Whether charging Rust bodies to the logical clock changes thread
-  interleaving in a film (on/off run parity with `impl.sim.arena-hash`).
+  interleaving in a film (film runs compared with `impl.sim.arena-hash`).
 
 ## Related
 

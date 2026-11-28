@@ -277,8 +277,7 @@ which the multiplayer path answers at its function's entry:
 The set a machine answers is `skulls_mp::gate_bits` (the
 `firefight_ai` set), stored in `engine::skull_gate` at each `Skull`
 command and cleared at every game start. The active camouflage
-`0xc6810` also runs as a native body (`impl.sim.native.objects`,
-`engine::sim_objects::unit_rest::camo`), where the lifted `jne` is never
+`0xc6810` also runs as a native body (`engine::sim_objects::unit_rest::camo`), where the lifted `jne` is never
 reached; the body asks `engine::skull_gate::passes` instead. The hooks
 are optional: an image built without the gates' entries drops them with
 a note, and the install line says how many of the thirteen are placed.

@@ -1,7 +1,7 @@
 # Animation sampling (`0x2798a0` and below)
 
-Phase 1a of the [simulation rewrite](sim-rewrite.md). Switch:
-`impl.sim.native.anim` (hierarchical, default off). Code:
+Phase 1a of the [simulation rewrite](sim-rewrite.md). Native only, no
+switch. Code:
 [`crates/rewrites/sim-anim`](../../crates/rewrites/sim-anim/src/lib.rs) (clips, codecs,
 sampler), [`crates/rewrites/sim-core`](../../crates/rewrites/sim-core/src/lib.rs) (float
 rules, lanes, epoch) and the adapter
