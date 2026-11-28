@@ -9,7 +9,7 @@
 //! | Setup (corners, fan's return) | Here |
 //! |---|---|
 //! | layers `0x00026880` (`0x00026ca0`, `0x00025e04`) | `engine::fog_fans::layers` into target `0x13`, the fog patch's bitmap at stages 0..3 |
-//! | layers' composite `0x00026e50` (`0x00027520`, `0x00025e2d`) | the set branch, `engine::fog_fans::layers_composite`; the clear branch's weather plate `0x0003a5c0` panics |
+//! | layers' composite `0x00026e50` (`0x00027520`, `0x00025e2d`) | the branch byte clear: the weather plate `0x0003a5c0` (`engine::fog_fans::weather_plate_placement`), true its block with target 3 at stage 0 and `0x13` at stage 1 (`engine::fog_fans::plate_fan`); false or the byte set: the set branch, `engine::fog_fans::layers_composite` |
 //! | composite `0x000276d0` (`0x00027960`, `0x00025e2d`) | `engine::fog_fans::composite` |
 //!
 //! [`Host::fan`] (`native_render::fog_fans`) draws the fan at this point in
@@ -22,8 +22,9 @@
 //! What the cut cannot draw is `unimplemented!("fog fans: <cause>")`: no
 //! host (`host`), a pass the device does not place (`placed`), the
 //! host's (a bitmap not loaded, a stage or copy it cannot make), a view
-//! target other than 0 (`composite into target <n>`), the weather plate
-//! (`layers composite weather plate (0x0003a5c0)`), a fan not finite
+//! target other than 0 (`composite into target <n>`), a weather plate
+//! call other than the composite's (`weather plate <cause>`: its kind,
+//! flags or result), a fan not finite
 //! (`fan_unfinite`), an operand the SSE or x87 model refuses (`simd`,
 //! `x87`), an unreadable input (`unread`), and a fan placed but not
 //! recorded ([`unported`], the GPU's cause).
@@ -190,7 +191,13 @@ pub fn fan(mem: &mut dyn GuestMemory, setup: Setup, rect_at: u32, mxcsr: u32, x8
         }
         Setup::LayersComposite => {
             if ff::weather_plate(&*mem).unwrap_or_else(|_| unported("unread")) {
-                unported("layers composite weather plate (0x0003a5c0)");
+                let args = ff::PlateArgs::fog(&*mem).unwrap_or_else(|_| unported("unread"));
+                if let Some(why) = args.unported() {
+                    unported(&format!("weather plate {why}"));
+                }
+                if let Some(plate) = ff::weather_plate_placement(mem, mxcsr, x87_control, &args).unwrap_or_else(|e| unported(cause(e))) {
+                    return plate_fan(mem, plate, rect_at, mxcsr);
+                }
             }
             let c = ff::layers_composite(mem, mxcsr, x87_control, rect_at).unwrap_or_else(|e| unported(cause(e)));
             let bitmap = mem
@@ -214,6 +221,23 @@ pub fn fan(mem: &mut dyn GuestMemory, setup: Setup, rect_at: u32, mxcsr: u32, x8
             Fan { draw, dest, sources }
         }
     }
+}
+
+/// The layers' composite's fan when the weather plate returned true:
+/// the plate's block and destination, target 3 at stage 0 (clamp, point)
+/// and target `0x13` at stage 1 (`0x00026efd`: clamp, linear), both in
+/// their pixels.
+fn plate_fan(mem: &mut dyn GuestMemory, plate: ff::WeatherPlate, rect_at: u32, mxcsr: u32) -> Fan {
+    let c = ff::plate_fan(mem, mxcsr, rect_at, plate).unwrap_or_else(|e| unported(cause(e)));
+    let raster = if c.blue_only() { FanRaster::BlueOnly } else { FanRaster::Constant };
+    let draw = FanDraw::from_fan(c.combiner, floats(c.positions), c.coordinates.map(floats), [PIXELS, PIXELS, None, None], raster)
+        .unwrap_or_else(|r| refused(r));
+    let dest = match c.dest {
+        LayersDest::View(n) => view_surface(&*mem, n),
+        LayersDest::Target3 => game(ff::COMPOSITE_SOURCE),
+    };
+    let sources = [Some(Source::Surface(game(ff::COMPOSITE_SOURCE))), Some(Source::Surface(game(ff::LAYERS_TARGET))), None, None];
+    Fan { draw, dest, sources }
 }
 
 /// The setup `setup`'s call at `esp` under the call's MXCSR and x87
@@ -436,12 +460,62 @@ mod tests {
         assert_eq!(fan.draw.raster, FanRaster::BlueOnly);
     }
 
-    #[test]
-    #[should_panic(expected = "fog fans: layers composite weather plate")]
-    fn the_weather_plate_panics() {
+    /// [`setup_mem`] with the branch byte clear and the plate's constants:
+    /// the fog from depth `near` to `far` over a scale of 1024.
+    fn plate_mem(near: f32, far: f32) -> FlatMemory {
+        use engine::fog_fans::plate_global as p;
         let mut m = setup_mem(Setup::LayersComposite);
         m.set_u8(lg::BRANCH, 0).unwrap();
-        turn(&mut m, Setup::LayersComposite, ESP, MXCSR, CONTROL, Some(&Drawn::default()));
+        for (a, v) in [
+            (p::ONE, 1.0f32),
+            (p::SCALE, 1024.0),
+            (p::CAP, 128.0),
+            (p::RESCALE, 256.0),
+            (p::UNRESCALE, 1.0 / 256.0),
+            (p::FIXED, 65536.0),
+            (p::UNFIXED, 1.0 / 65536.0),
+            (p::HALF, 0.5),
+            (p::LIMIT, 10.0),
+            (lg::SPAN_NEAR, near),
+            (lg::SPAN_FAR, far),
+            (lg::TARGET_SCALE, 0.5),
+        ] {
+            m.set_f32(a, v).unwrap();
+        }
+        m
+    }
+
+    #[test]
+    fn the_weather_plate_draws_target_3_and_0x13_at_its_depth() {
+        let mut m = plate_mem(24.0, 1048.0);
+        let fan = drawn(Setup::LayersComposite, &mut m);
+        assert_eq!(fan.dest, VIEW);
+        assert_eq!(fan.sources, [Some(Source::Surface(game(3))), Some(Source::Surface(game(0x13))), None, None]);
+        assert_eq!(fan.draw.stages, [PIXELS, PIXELS, None, None]);
+        assert_eq!(fan.draw.raster, FanRaster::Constant);
+        assert_eq!(fan.draw.combiner[54], 0x21);
+        // Stage 1 at the lerp times the target scale (corner (1, 1)).
+        assert_eq!(fan.draw.strip[3].1[1], [320.0, 240.0, 0.0, 1.0]);
+        // The plate's result, not the clip far.
+        assert_eq!(m.u32(cg::DEPTH).unwrap(), 24.0f32.to_bits());
+        // `dl` clear: into target 3, blue alone.
+        m.set_u8(global::FLAG_DL, 0).unwrap();
+        let fan = drawn(Setup::LayersComposite, &mut m);
+        assert_eq!(fan.dest, game(3));
+        assert_eq!(fan.draw.raster, FanRaster::BlueOnly);
+        assert_eq!(fan.draw.combiner[43], 0);
+    }
+
+    #[test]
+    fn a_refused_plate_takes_the_set_branch_with_the_scaled_lerp_at_stage_1() {
+        let mut m = plate_mem(24.0, 24.0);
+        let fan = drawn(Setup::LayersComposite, &mut m);
+        assert_eq!(fan.sources[2], Some(Source::Bitmap { datum: 0xdcba_0002, image: 0 }));
+        assert_eq!(fan.draw.combiner[54], 0xa621);
+        // The branch byte clear: attribute 2 is the scaled lerp, not the
+        // dot vector.
+        assert_eq!(fan.draw.strip[3].1[1], [320.0, 240.0, 0.0, 1.0]);
+        assert_eq!(m.u32(cg::DEPTH).unwrap(), 1024.0f32.to_bits());
     }
 
     #[test]

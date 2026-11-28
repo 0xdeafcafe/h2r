@@ -9,6 +9,7 @@
 //! |---|---|---|---|
 //! | composite (`0x000276d0`) | the view's target | 0: target 3 | blend [`crate::fog_quad::blend`], constant `0x00ffffff` |
 //! | layers (`0x00026880`) | target `0x13` | 0..3: the fog patch's bitmap, each layer's image, wrap | blend off |
+//! | layers' composite, weather plate (`0x0003a5c0` true) | as the set branch | 0: target 3; 1: target `0x13` | as the set branch |
 //! | layers' composite, set branch (`0x00026f81`) | the view's target, or target 3 | 0: target 3; 1: dot product; 2: the rasterizer bitmap (`DOT_ST`); 3: target `0x13` | into the view as the composite; into target 3 blue alone, blend off |
 //!
 //! Every fan has alpha test, cull, stencil and depth test off and its
