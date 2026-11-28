@@ -364,6 +364,18 @@ impl Mind {
         });
     }
 
+    /// The site of a show-off route that has jumped or dropped: a death
+    /// now came from the bounce. `None` before the first flight, for an
+    /// ordered or practice route, and with no route.
+    pub(super) fn show_off_flown(&self) -> Option<Vec3> {
+        let o = self.order.as_ref()?;
+        if o.run.show_off && !o.run.flights().is_empty() {
+            o.site
+        } else {
+            None
+        }
+    }
+
     fn end_order(&mut self, o: Ordered, result: Result<(), &'static str>, tick: u32) {
         // A practice that stopped to let a player go first comes back.
         if result.is_err()

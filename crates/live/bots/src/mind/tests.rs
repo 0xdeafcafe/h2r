@@ -2442,3 +2442,62 @@ fn a_named_bot_runs_at_full_stick_and_hops_as_its_name_likes() {
     assert!(most < 0.97, "{most}");
     assert!(!hopped);
 }
+
+/// Live games (bot-train-r4): bots fell out of Lockout and Ascension on
+/// show-off bounces, the same bot at the same site more than once a
+/// match. A death once a show-off has left the ground there rules the
+/// site out for the match; a death on the walk to it does not.
+#[test]
+fn a_bot_that_dies_on_a_show_off_bounce_never_shows_off_there_again() {
+    let spot = crate::glitches::Bounce {
+        map: "",
+        name: "test",
+        stand: [10.0, 0.0, 0.0],
+        spread: 0.03,
+        drift: [1.0, 0.0],
+        source: "scan",
+        takeoff: None,
+        landing: None,
+    };
+    let mut m = Mind::new(Skill::Normal, 1);
+    m.bounces = vec![spot];
+
+    m.stunt = Some(Stunt::Bounce(spot, None));
+    m.release(1);
+    assert!(m.deadly.is_empty(), "shot on the walk there");
+    assert!(matches!(m.pick_stunt([0.0; 3], 2), Some(Stunt::Bounce(..))));
+
+    let mut run = crate::glitches::BounceRun::new(spot, 3, 1, 7);
+    let mut tick = 1;
+    while !run.left_ground() {
+        assert!(tick < 200, "the run never jumped");
+        run.step(spot.stand, tick);
+        tick += 1;
+    }
+    m.stunt = Some(Stunt::Bounce(spot, Some(run)));
+    m.release(tick);
+    assert_eq!(m.deadly, vec![spot.stand]);
+    assert!(m.stunt.is_none());
+    // The next dead frame adds nothing.
+    m.release(tick + 1);
+    assert_eq!(m.deadly.len(), 1);
+    // The only spot is ruled out: the crouch jump instead.
+    assert!(matches!(
+        m.pick_stunt([0.0; 3], tick + 2),
+        Some(Stunt::Hop(_))
+    ));
+    assert!(!m.is_deadly([12.0, 0.0, 0.0]));
+}
+
+#[test]
+fn a_bot_remembers_its_last_deadly_sites_only() {
+    let mut m = Mind::new(Skill::Normal, 1);
+    for i in 0..=DEADLY_SITES {
+        m.mark_deadly([i as f32 * 5.0, 0.0, 0.0]);
+    }
+    assert_eq!(m.deadly.len(), DEADLY_SITES);
+    assert!(!m.is_deadly([0.0; 3]), "the oldest went first");
+    assert!(m.is_deadly([DEADLY_SITES as f32 * 5.0, 0.0, 0.0]));
+    // Another floor over or under the same point is another site.
+    assert!(!m.is_deadly([5.0, 0.0, 4.0]));
+}

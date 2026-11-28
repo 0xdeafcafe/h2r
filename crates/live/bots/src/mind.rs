@@ -396,6 +396,11 @@ pub struct Mind {
     route_pad: RoutePad,
     show_off: crate::glitches::ShowOff,
     stunt: Option<Stunt>,
+    /// Show-off bounce sites this bot died trying this match (at most
+    /// [`DEADLY_SITES`], the oldest going first): it never shows off at
+    /// them again until the map changes (docs/game/bots-glitches.md,
+    /// "A show-off that kills").
+    pub(crate) deadly: Vec<Vec3>,
     /// Practising bounces while the superbounce mode is on
     /// (`mind::practice`): no fight at all.
     practice: practice::Practice,
@@ -418,6 +423,9 @@ enum Stunt {
 
 /// A super bounce spot this far away (XY) or nearer is worth walking to.
 pub const BOUNCE_REACH: f32 = 60.0;
+
+/// The most show-off sites a bot remembers dying at ([`Mind::deadly`]).
+pub const DEADLY_SITES: usize = 8;
 
 fn sub(a: Vec3, b: Vec3) -> Vec3 {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
@@ -544,6 +552,7 @@ impl Mind {
             route_pad: RoutePad::default(),
             show_off: crate::glitches::ShowOff::new(seed ^ 0x5b0_0ce),
             stunt: None,
+            deadly: Vec::new(),
             practice: practice::Practice::new(seed),
             firefight: Default::default(),
             warmup: warmup::Warmup::Over,
@@ -641,6 +650,9 @@ impl Mind {
         self.left.reset();
         self.paired_pistol.reset();
         self.show_off.reset();
+        if let Some(site) = self.show_off_died_at() {
+            self.mark_deadly(site);
+        }
         self.stunt = None;
         self.cancel_order("died");
         self.vehicles.reset();
@@ -2166,6 +2178,33 @@ impl Mind {
 
     /// A show-off (crate::glitches): a super bounce at a spot of this
     /// map's within [`BOUNCE_REACH`], else a crouch jump.
+    /// The show-off bounce site a death now came from: a stunt or a
+    /// show-off route that has left the ground there.
+    fn show_off_died_at(&self) -> Option<Vec3> {
+        match &self.stunt {
+            Some(Stunt::Bounce(spot, Some(run))) if run.left_ground() => Some(spot.stand),
+            _ => self.show_off_flown(),
+        }
+    }
+
+    /// Never show off at `site` again this match ([`Mind::deadly`]).
+    pub(crate) fn mark_deadly(&mut self, site: Vec3) {
+        if self.is_deadly(site) {
+            return;
+        }
+        if self.deadly.len() >= DEADLY_SITES {
+            self.deadly.remove(0);
+        }
+        self.deadly.push(site);
+    }
+
+    /// Whether this bot died showing off at `site` this match.
+    pub(crate) fn is_deadly(&self, site: Vec3) -> bool {
+        self.deadly.iter().any(|&d| {
+            dist_xy(d, site) < crate::stuck::BLACKLIST_RADIUS && (d[2] - site[2]).abs() < 1.0
+        })
+    }
+
     fn pick_stunt(&mut self, at: Vec3, tick: u32) -> Option<Stunt> {
         // With a crouch spot to prime at, a bounce is a route: prime,
         // then the spot (an unprimed landing does not bounce). A proven
@@ -2182,6 +2221,7 @@ impl Mind {
                     s.plays()
                         && dist_xy(s.bounce.stand, at) < BOUNCE_REACH
                         && !self.stuck.blocked(s.bounce.stand, tick)
+                        && !self.is_deadly(s.bounce.stand)
                 })
                 .min_by(|a, b| {
                     (!a.proven())
@@ -2204,7 +2244,11 @@ impl Mind {
         let spot = self
             .bounces
             .iter()
-            .filter(|b| dist_xy(b.stand, at) < BOUNCE_REACH && !self.stuck.blocked(b.stand, tick))
+            .filter(|b| {
+                dist_xy(b.stand, at) < BOUNCE_REACH
+                    && !self.stuck.blocked(b.stand, tick)
+                    && !self.is_deadly(b.stand)
+            })
             .min_by(|a, b| dist_xy(a.stand, at).total_cmp(&dist_xy(b.stand, at)))
             .copied();
         if let Some(b) = spot {
