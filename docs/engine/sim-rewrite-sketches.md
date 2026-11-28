@@ -248,27 +248,20 @@ unblocked, the visibility walk blocked.
 | The port's rates and 20-word block, the vehicle seat's fields and velocity, the blocked flags, the wanted buttons, five image constants | `Device` | copied from the guest per read |
 | The x87 state the length, `pow`, magnitudes and hypot run on | the arm's x87 model (`Fpu`) | per read |
 
-`engine::sim_seats::device::arm` runs it as a shadow arm inside the seat
-body (no hook of its own; the proof resets at map load):
+`engine::sim_seats::device::arm` runs it inside the seat body (no hook of
+its own), and every read is the kernel's:
 
 ```
-0x185c6c -> predict -> declined?  -> guest answers                   (declined[float, fault, unseen, alias])
-                    -> unproven or slot % 64 == 0
-                                  -> guest answers, compare at the curve's entry
-                                     or the walk's return 0x1865c4   (checked, matched, mismatched)
-                    -> else       -> Rust answers: frame, record, input slot, buttons,
-                                     registers, x87, then the call    (answered)
+0x185c6c -> predict -> refused? -> unimplemented!("seats: device read: float | fault | alias")
+                    -> else     -> Rust answers: frame, record, input slot, buttons,
+                                   registers, x87, then the call or the walk
 ```
 
-At the curve's entry the audit compares every register, `xmm0`-`xmm7`, the
-x87 stack and the frame; at the walk's return, the callee-saved registers,
-the frame and the x87 control word. Both compare the record, the input slot
-and the buttons. A blocked read that skips the walk has no transfer to
-compare at, so its audit is declined as `unseen`; answered, it is laid down
-like the rest. `sim.arms` reports it as `seats.device`.
+A blocked read that skips the walk (a unit that is not a biped) goes on
+to `0x1865cc` in the body. The guest's read never runs.
 `bound_control_matches_lifted` (`engine/tests/sim_seats_differential.rs`)
 puts the applied answer against the lifted original with its real `24590`
-and `pow`; `bound_control_audits_through_the_guest` runs the audit path.
+and `pow`.
 
 *The leaf callees.* Eight guest functions the seat bodies call, which read
 only what their registers name, are kernels in

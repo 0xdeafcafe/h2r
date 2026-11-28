@@ -11,12 +11,12 @@
 //! * the shadow ports (`effects`) count `skipped` for `declined` and
 //!   `answered` 0;
 //! * `seats` has no switch and no guest arm: each seat body
-//!   (`sim.seats.<name>`) and the `seats.aim`, `seats.respawn` and
-//!   `seats.player-objects` kernels count segments or calls answered, and
-//!   their unported paths (which the lifted body runs) as `declined`; the
-//!   `seats.device` and `seats.leaf.*` arms also count unwatched audits as
-//!   `declined`. It is clean once something answered and nothing declined
-//!   or mismatched;
+//!   (`sim.seats.<name>`) counts segments answered (an unported path
+//!   panics, so it has no `declined`); the `seats.aim`, `seats.respawn`
+//!   and `seats.player-objects` kernels count calls answered and their
+//!   unported paths (which the lifted body runs) as `declined`; the
+//!   `seats.leaf.*` arms also count unwatched audits as `declined`. It is
+//!   clean once something answered and nothing declined or mismatched;
 //! * `sound.voices` counts ticks for `checked`, `matched` and `mismatched`
 //!   and voices for `answered` (`sim_bridge::sim_sound::voice_arm::Stats`).
 
@@ -32,7 +32,6 @@ use engine::sim_objects::native_walk;
 use engine::sim_physics::parity as physics;
 use engine::sim_seats::aim::arm as aim;
 use engine::sim_seats::{player_objects, respawn};
-use engine::sim_seats::device::arm as device;
 use engine::sim_seats::leaf;
 use hooks::Switches;
 use hooks::switches::table::{self, Initial};
@@ -78,7 +77,6 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
             native("seats", {
                 let mut arms = seat_wire(sim_bridge::sim_seats::stats());
                 arms.push(aim_wire(aim::status()));
-                arms.push(device_wire(device::status()));
                 arms.push(respawn_wire(respawn::status()));
                 arms.push(player_objects_wire(player_objects::status()));
                 arms.extend(leaf::Leaf::ALL.map(|l| leaf_wire(l, leaf::status(l))));
@@ -119,12 +117,11 @@ fn native(name: &str, arms: Vec<Arm>) -> Subsystem {
     }
 }
 
-/// The seat bodies, one arm per seat: segments answered, unported paths
-/// declined.
+/// The seat bodies, one arm per seat: segments answered.
 fn seat_wire(stats: Vec<sim_bridge::sim_seats::Stats>) -> Vec<Arm> {
     stats
         .into_iter()
-        .map(|s| Arm { name: s.name.to_owned(), answered: s.answered, declined: s.declined, ..Arm::default() })
+        .map(|s| Arm { name: s.name.to_owned(), answered: s.answered, ..Arm::default() })
         .collect()
 }
 
@@ -213,19 +210,6 @@ fn respawn_wire(s: respawn::Status) -> Arm {
 /// The `seats.player-objects` kernel: calls answered, unported paths declined.
 fn player_objects_wire(s: player_objects::Status) -> Arm {
     Arm { name: "seats.player-objects".to_owned(), answered: s.answered, declined: s.declined_total(), ..Arm::default() }
-}
-
-/// The bound controller's device arm (under the seats);
-/// audits whose transfer never came count as declined.
-fn device_wire(s: device::Status) -> Arm {
-    Arm {
-        name: "seats.device".to_owned(),
-        checked: s.checked,
-        matched: s.matched,
-        mismatched: s.mismatched,
-        answered: s.answered,
-        declined: s.declined_total() + s.dropped,
-    }
 }
 
 /// One seat leaf callee's arm (`seats.leaf.<name>`); audits whose
@@ -386,13 +370,12 @@ mod tests {
         }
         let seats = &r.subsystems[4];
         let n = engine::sim_seats::SEATS.len();
-        assert_eq!(seats.arms.len(), n + 4 + leaf::Leaf::ALL.len());
+        assert_eq!(seats.arms.len(), n + 3 + leaf::Leaf::ALL.len());
         assert_eq!(seats.arms[0].name, engine::sim_seats::SEATS[0].name);
         assert_eq!(seats.arms[n].name, "seats.aim");
-        assert_eq!(seats.arms[n + 1].name, "seats.device");
-        assert_eq!(seats.arms[n + 2].name, "seats.respawn");
-        assert_eq!(seats.arms[n + 3].name, "seats.player-objects");
-        assert_eq!(seats.arms[n + 4].name, "seats.leaf.visible");
+        assert_eq!(seats.arms[n + 1].name, "seats.respawn");
+        assert_eq!(seats.arms[n + 2].name, "seats.player-objects");
+        assert_eq!(seats.arms[n + 3].name, "seats.leaf.visible");
         assert!(r.subsystems[5].arms.is_empty());
     }
 
