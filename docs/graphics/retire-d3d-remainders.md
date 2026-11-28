@@ -185,7 +185,7 @@ What still reaches the guest's draws, by producer:
 | Producer | Still the guest's | Counted |
 |---|---|---|
 | Layers 2, 6, 16, 17, 18, 19, 21 | the body, for a call with an item held; the first person's 16 always | `layer_return_<site><layer>_guest_<cause>`, each item `scene_kept_*` |
-| Sky `0x0003ede0` | one pass in 64, every pass until the cut's arm is ready, a refused cut | `sky_cut_*`, `scene_kept_sky_*` |
+| Sky `0x0003ede0` | every pass until the cut's arm is ready, or after it stops for the BSP; a refused cut draws no sky (`scene_dropped_sky_*`) | `sky_cut_*`, `scene_kept_sky_*` |
 | Post `0x00013870` | its body: target setup, the colour pass and screen effects the host does not arm | `scene_kept_post_*` |
 | Flares `0x0002dd30`, `0x0002df00` | the passes' state setup and the draw pass's reflection walker; a glow or query the cut does not make | `scene_kept_flare_*` |
 | Clears `0x00014b60`, binds `0x0001cd30` | longer rectangle lists, final resource destruction, the viewport reset | none |

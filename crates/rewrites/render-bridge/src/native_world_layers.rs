@@ -82,15 +82,16 @@ impl Feature for NativeWorldLayers {
             })
             .context_only();
         // The sky's cut (docs/graphics/retire-d3d-r5.md, "The sky's cut"):
-        // once its arm is ready the native pass draws the sky and the
-        // guest's `0x0003ede0` is passed over, one pass in
-        // `native_sky::CUT_SAMPLE` still the guest's.
+        // once its arm is ready the guest's `0x0003ede0` is passed over at
+        // every pass, the native pass drawing the sky or its refusal
+        // counted `scene_dropped_sky_<why>`.
         b.raw()
             .before(&points::RENDER_SKY, "native_sky_cut", |c| {
                 let rt = std::sync::Arc::clone(c.ctx.runtime());
                 let cut = {
                     let mut guest = rt.memory();
-                    let cut = crate::native_sky::before_sky(&mut *guest, crate::native_map_work::bsp_generation());
+                    let cut = crate::native_sky::before_sky(&mut *guest, crate::native_map_work::bsp_generation())
+                        .passes_over();
                     // The census's `sky` end does not run for a pass passed over.
                     if cut {
                         crate::residual_census::passed_over(&mut *guest, points::RENDER_SKY.base);
