@@ -1,8 +1,9 @@
 //! Havok step, island callbacks and the Halo overflow bookkeeping. Every
 //! transfer parks the cursor in the caller's real frame. A callback can
-//! replace an island's arrays or the current motion's vtable. The two
-//! world phases stay guest code: their loops call the island entries
-//! below, which the dispatcher answers natively.
+//! replace an island's arrays or the current motion's vtable. The collide
+//! phase is a frame replay here; the integrate phase is its arm
+//! (`integrate_phase`). Both call the island entries below through the
+//! dispatcher.
 use super::*;
 
 const MONITOR_HEAD: u32 = 0x0048_0154;
@@ -94,6 +95,267 @@ pub(super) fn collide_island(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Result<T
         0x317d69 | 0x317d7c => {
             advance_stack(c, 4);
             restore_island(c, g, 8)
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// The collide phase's resumes: after the first pending pass, the island
+/// collide, the island listeners, the second pending pass, the merges,
+/// the queue, the third pending pass, and the step listeners.
+pub(super) const COLLIDE_SITES: &[u32] = &[0x30fd8b, 0x30fdb3, 0x30fdfc, 0x30fe59, 0x30fe6a, 0x30fe7b, 0x30fe89, 0x30feba];
+
+/// The world words the collide phase reads and writes
+/// (docs/engine/havok-collide.md).
+const W_ISLANDS: u32 = 0x08;
+const W_ISLAND_COUNT: u32 = 0x0c;
+const W_PENDING: u32 = 0x24;
+const W_ISLAND_LISTENERS: u32 = 0xac;
+const W_BROADPHASE: u32 = 0xc4;
+const W_INPUT_SOURCE: u32 = 0xcc;
+const W_MERGES: u32 = 0xf4;
+const W_QUEUE: u32 = 0x100;
+const W_LOCK: u32 = 0x12c;
+const W_COLLIDING: u32 = 0x12d;
+const W_INPUT: u32 = 0x140;
+const W_STEP: u32 = 0x150;
+const W_SCALED_DT: u32 = 0x170;
+const W_SCALED_RATE: u32 = 0x174;
+const W_ITERATIONS: u32 = 0x17c;
+const W_SCALE: u32 = 0x180;
+const W_SCALED_DT_COPY: u32 = 0x198;
+const W_SCALED_RATE_COPY: u32 = 0x19c;
+const W_ITERATION_DT: u32 = 0x1a0;
+const W_RATE_TERM: u32 = 0x1a4;
+
+const PENDING: u32 = 0x30f6b0;
+const ISLAND_COLLIDE: u32 = 0x317d30;
+const ISLAND_LISTENERS: u32 = 0x3188c0;
+const MERGES: u32 = 0x30fc30;
+const QUEUE: u32 = 0x30cda0;
+const STEP_LISTENERS: u32 = 0x3187a0;
+
+/// `cmp [MONITOR_HEAD], [MONITOR_END]` and its `jae`. The port's entry
+/// condition holds the stream off (`supported`); a callee turning it on
+/// would need the timer records retail writes with `rdtsc`.
+fn monitor_still_off(c: &mut CpuAbi, g: &Guest) -> Result<()> {
+    c.ecx = g.u32(MONITOR_HEAD)?;
+    let end = g.u32(MONITOR_END)?;
+    arithmetic(c, c.ecx, end, true);
+    if c.ecx < end {
+        unimplemented!("havok: the monitor stream turned on inside the collide phase");
+    }
+    Ok(())
+}
+
+/// `inc`: the carry flag is kept.
+fn increment(c: &mut CpuAbi, x: u32) -> u32 {
+    let carry = (c.eflags & 1, c.eflags_defined & 1);
+    let out = arithmetic(c, x, 1, false);
+    c.eflags = (c.eflags & !1) | carry.0;
+    c.eflags_defined = (c.eflags_defined & !1) | carry.1;
+    out
+}
+
+/// `mov eax, [esi+off]; test eax, eax`.
+fn test_world(c: &mut CpuAbi, g: &Guest, off: u32) -> Result<u32> {
+    c.eax = g.u32(c.esi.wrapping_add(off))?;
+    logic(c, c.eax, 1 << 31);
+    Ok(c.eax)
+}
+
+fn call_world(c: &mut CpuAbi, g: &mut Guest, target: u32, resume: u32) -> Result<TransferAbi> {
+    c.ecx = c.esi;
+    g.call(c, target, resume)
+}
+
+/// The step copy, the input copy and the four step terms
+/// (`0x0030fce2..0x0030fd76`), in retail's order of loads and stores.
+/// The x87 runs under the caller's control word, as retail's.
+fn collide_terms(c: &mut CpuAbi, g: &mut Guest) -> Result<()> {
+    use super::spatial::{fp_error, finish_fpu, load_fpu};
+    let world = c.esi;
+    let w = move |off: u32| world.wrapping_add(off);
+    c.eax = g.u32(w(W_INPUT_SOURCE))?;
+    c.ebp = g.u32(c.esp.wrapping_add(0x18))?;
+    c.ecx = g.u32(c.ebp)?;
+    g.set_u32(w(W_STEP), c.ecx)?;
+    c.edx = g.u32(c.ebp.wrapping_add(4))?;
+    g.set_u32(w(W_STEP + 4), c.edx)?;
+    c.ebx = w(W_INPUT);
+    c.ecx = c.ebx;
+    for i in 0..3 {
+        c.edx = g.u32(c.eax.wrapping_add(4 * i))?;
+        g.set_u32(c.ecx.wrapping_add(4 * i), c.edx)?;
+    }
+    c.eax = g.u32(c.eax.wrapping_add(0xc))?;
+    g.set_u32(c.ecx.wrapping_add(0xc), c.eax)?;
+    let mut x = load_fpu(c);
+    x.fld(g.u32(c.ebp)?).map_err(fp_error)?;
+    x.fmul_m(g.u32(w(W_SCALE))?).map_err(fp_error)?;
+    g.set_u32(w(W_SCALED_DT), x.fstp_m32().map_err(fp_error)?)?;
+    c.ecx = g.u32(w(W_SCALED_DT))?;
+    x.fild(g.u32(w(W_ITERATIONS))? as i32).map_err(fp_error)?;
+    x.fmul_m(g.u32(c.ebp.wrapping_add(4))?).map_err(fp_error)?;
+    g.set_u32(w(W_SCALED_RATE), x.fstp_m32().map_err(fp_error)?)?;
+    g.set_u32(w(W_SCALED_DT_COPY), c.ecx)?;
+    c.edx = g.u32(w(W_SCALED_RATE))?;
+    g.set_u32(w(W_SCALED_RATE_COPY), c.edx)?;
+    x.fild(g.u32(w(W_ITERATIONS))? as i32).map_err(fp_error)?;
+    x.fmul_m(g.u32(w(W_SCALED_DT))?).map_err(fp_error)?;
+    g.set_u32(w(W_ITERATION_DT), x.fstp_m32().map_err(fp_error)?)?;
+    x.fld(g.u32(w(W_SCALE))?).map_err(fp_error)?;
+    x.fmul_m(g.u32(w(W_SCALED_RATE))?).map_err(fp_error)?;
+    g.set_u32(w(W_RATE_TERM), x.fstp_m32().map_err(fp_error)?)?;
+    finish_fpu(c, &*g, x, 0x30fd70, w(W_RATE_TERM))
+}
+
+/// `0x0030fda0`: the island collide of island `edi`, `(broadphase, input)`.
+fn collide_next_island(c: &mut CpuAbi, g: &mut Guest) -> Result<TransferAbi> {
+    c.eax = g.u32(c.esi.wrapping_add(W_BROADPHASE))?;
+    c.ecx = g.u32(c.esi.wrapping_add(W_ISLANDS))?;
+    c.ecx = g.u32(c.ecx.wrapping_add(c.edi.wrapping_mul(4)))?;
+    push(c, g, c.ebx)?;
+    push(c, g, c.eax)?;
+    g.call(c, ISLAND_COLLIDE, COLLIDE_SITES[1])
+}
+
+/// `0x0030fe31`: the island count is read again after every island.
+fn collide_loop_tail(c: &mut CpuAbi, g: &mut Guest) -> Result<TransferAbi> {
+    c.eax = g.u32(c.esi.wrapping_add(W_ISLAND_COUNT))?;
+    c.edi = increment(c, c.edi);
+    arithmetic(c, c.edi, c.eax, true);
+    if (c.edi as i32) < (c.eax as i32) {
+        return collide_next_island(c, g);
+    }
+    collide_after_islands(c, g)
+}
+
+/// `0x0030fe3d`: release the lock bytes, then the second pending pass.
+fn collide_after_islands(c: &mut CpuAbi, g: &mut Guest) -> Result<TransferAbi> {
+    let pending = test_world(c, g, W_PENDING)?;
+    g.set_u8(c.esi.wrapping_add(W_COLLIDING), 0)?;
+    g.set_u8(c.esi.wrapping_add(W_LOCK), 0)?;
+    if pending as i32 > 0 {
+        return call_world(c, g, PENDING, COLLIDE_SITES[3]);
+    }
+    collide_merges(c, g)
+}
+
+/// `0x0030fe59`.
+fn collide_merges(c: &mut CpuAbi, g: &mut Guest) -> Result<TransferAbi> {
+    if test_world(c, g, W_MERGES)? != 0 {
+        return call_world(c, g, MERGES, COLLIDE_SITES[4]);
+    }
+    collide_queue(c, g)
+}
+
+/// `0x0030fe6a`.
+fn collide_queue(c: &mut CpuAbi, g: &mut Guest) -> Result<TransferAbi> {
+    if test_world(c, g, W_QUEUE)? != 0 {
+        return call_world(c, g, QUEUE, COLLIDE_SITES[5]);
+    }
+    collide_last_pending(c, g)
+}
+
+/// `0x0030fe7b`.
+fn collide_last_pending(c: &mut CpuAbi, g: &mut Guest) -> Result<TransferAbi> {
+    if test_world(c, g, W_PENDING)? as i32 > 0 {
+        return call_world(c, g, PENDING, COLLIDE_SITES[6]);
+    }
+    collide_step_listeners(c, g)
+}
+
+/// `0x0030fe89`: the step listeners, cdecl `(world, step)`.
+fn collide_step_listeners(c: &mut CpuAbi, g: &mut Guest) -> Result<TransferAbi> {
+    monitor_still_off(c, g)?;
+    push(c, g, c.ebp)?;
+    push(c, g, c.esi)?;
+    g.call(c, STEP_LISTENERS, COLLIDE_SITES[7])
+}
+
+/// The collide phase `0x0030fcb0` (thiscall world, `&{dt, 1/dt}`, `ret 4`):
+/// the step terms, the first pending pass, the island collide of every
+/// island with its listeners, the lock release, the second pending pass,
+/// merges, the queue, the third pending pass and the step listeners.
+/// Every call is a guest call; the frame lives in the guest's registers
+/// and stack as retail's does.
+pub(super) fn collide(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Result<TransferAbi> {
+    match pc {
+        0x30fcb0 => {
+            push(c, g, c.ecx)?;
+            c.eax = g.u32(MONITOR_END)?;
+            push(c, g, c.ebx)?;
+            push(c, g, c.ebp)?;
+            push(c, g, c.esi)?;
+            c.esi = c.ecx;
+            c.ecx = g.u32(MONITOR_HEAD)?;
+            arithmetic(c, c.ecx, c.eax, true);
+            push(c, g, c.edi)?;
+            if c.ecx < c.eax {
+                unimplemented!("havok: the collide phase entered with the monitor stream on");
+            }
+            collide_terms(c, g)?;
+            let pending = test_world(c, g, W_PENDING)?;
+            g.set_u8(c.esi.wrapping_add(W_LOCK), 1)?;
+            if pending as i32 > 0 {
+                return call_world(c, g, PENDING, COLLIDE_SITES[0]);
+            }
+            collide(c, g, COLLIDE_SITES[0])
+        }
+        0x30fd8b => {
+            let count = g.u32(c.esi.wrapping_add(W_ISLAND_COUNT))?;
+            c.eax = count;
+            c.edi = 0;
+            logic(c, count, 1 << 31);
+            g.set_u8(c.esi.wrapping_add(W_COLLIDING), 1)?;
+            if count as i32 <= 0 {
+                return collide_after_islands(c, g);
+            }
+            collide_next_island(c, g)
+        }
+        0x30fdb3 => {
+            if test_world(c, g, W_ISLAND_LISTENERS)? == 0 {
+                return collide_loop_tail(c, g);
+            }
+            monitor_still_off(c, g)?;
+            c.eax = g.u32(c.esi.wrapping_add(W_ISLANDS))?;
+            g.set_u8(c.esi.wrapping_add(W_COLLIDING), 0)?;
+            c.ecx = g.u32(c.eax.wrapping_add(c.edi.wrapping_mul(4)))?;
+            push(c, g, c.ebp)?;
+            push(c, g, c.ecx)?;
+            push(c, g, c.esi)?;
+            g.call(c, ISLAND_LISTENERS, COLLIDE_SITES[2])
+        }
+        0x30fdfc => {
+            g.set_u8(c.esi.wrapping_add(W_COLLIDING), 1)?;
+            c.ecx = g.u32(MONITOR_HEAD)?;
+            c.eax = g.u32(MONITOR_END)?;
+            advance_stack(c, 12);
+            arithmetic(c, c.ecx, c.eax, true);
+            if c.ecx < c.eax {
+                unimplemented!("havok: the monitor stream turned on inside the collide phase");
+            }
+            collide_loop_tail(c, g)
+        }
+        0x30fe59 => collide_merges(c, g),
+        0x30fe6a => collide_queue(c, g),
+        0x30fe7b => collide_last_pending(c, g),
+        0x30fe89 => collide_step_listeners(c, g),
+        0x30feba => {
+            c.ecx = g.u32(MONITOR_HEAD)?;
+            c.eax = g.u32(MONITOR_END)?;
+            advance_stack(c, 8);
+            arithmetic(c, c.ecx, c.eax, true);
+            c.edi = pop(c, g)?;
+            c.esi = pop(c, g)?;
+            c.ebp = pop(c, g)?;
+            c.ebx = pop(c, g)?;
+            if c.ecx < c.eax {
+                unimplemented!("havok: the monitor stream turned on inside the collide phase");
+            }
+            c.ecx = pop(c, g)?;
+            g.ret(c, 4)
         }
         _ => unreachable!(),
     }
@@ -438,5 +700,84 @@ mod tests {
         assert!(monitor_off(&g));
         let unmapped = Guest::new();
         assert!(!monitor_off(&unmapped));
+    }
+
+    #[test]
+    fn the_collide_phase_walks_the_islands_and_world_passes_in_retail_order() {
+        let mut g = guest();
+        // finish_fpu reads the last x87 instruction, `fstp [esi+1a4]`.
+        g.map_zeroed(0x0030_f000, 0x1000, Permissions::RW).unwrap();
+        g.set_u8(0x30fd70, 0xd9).unwrap();
+        g.set_u8(0x30fd71, 0x9e).unwrap();
+        let islands = INPUT + 0x100;
+        let source = INPUT + 0x200;
+        let w = |off: u32| WORLD_AT + off;
+        for (at, v) in [
+            (STEP, 0.25f32.to_bits()), (STEP + 4, 4.0f32.to_bits()),
+            (w(W_SCALE), 0.75f32.to_bits()), (w(W_ITERATIONS), 3),
+            (w(W_INPUT_SOURCE), source), (w(W_ISLANDS), islands), (w(W_ISLAND_COUNT), 2),
+            (w(W_BROADPHASE), 0xb0b0), (w(W_PENDING), 1), (w(W_ISLAND_LISTENERS), 1),
+            (w(W_MERGES), 1), (w(W_QUEUE), 0), (islands, 0x11), (islands + 4, 0x22),
+        ] {
+            g.set_u32(at, v).unwrap();
+        }
+        for i in 0..4 {
+            g.set_u32(source + 4 * i, 0xa0 + i).unwrap();
+        }
+        let mut c = cpu(&mut g, STACK, 0x1234_5678);
+        c.ecx = WORLD_AT;
+        g.set_u32(STACK + 4, STEP).unwrap();
+        let frame = STACK - 20;
+        // Entry: the terms, then the first pending pass (thiscall, no args).
+        assert_eq!(collide(&mut c, &mut g, 0x30fcb0).unwrap(), TransferAbi::call(PENDING, COLLIDE_SITES[0]));
+        assert_eq!((c.ecx, c.esp), (WORLD_AT, frame - 4));
+        assert_eq!(g.u8(w(W_LOCK)).unwrap(), 1);
+        assert_eq!(g.u32(w(W_STEP)).unwrap(), 0.25f32.to_bits());
+        assert_eq!(g.u32(w(W_INPUT + 12)).unwrap(), 0xa3);
+        let dt = 0.25f32 * 0.75;
+        let rate = 3.0f32 * 4.0;
+        for (off, v) in [
+            (W_SCALED_DT, dt), (W_SCALED_RATE, rate), (W_SCALED_DT_COPY, dt),
+            (W_SCALED_RATE_COPY, rate), (W_ITERATION_DT, 3.0 * dt), (W_RATE_TERM, 0.75 * rate),
+        ] {
+            assert_eq!(g.u32(w(off)).unwrap(), v.to_bits(), "{off:#x}");
+        }
+        assert_eq!(c.x87.data_pointer, w(W_RATE_TERM));
+        ret::<0>(&mut c, &mut g, COLLIDE_SITES[0]);
+        // Island 0: its collide `(broadphase, input)`, then its listeners.
+        for island in [0x11, 0x22] {
+            let pc = if island == 0x11 { COLLIDE_SITES[0] } else { COLLIDE_SITES[2] };
+            assert_eq!(collide(&mut c, &mut g, pc).unwrap(), TransferAbi::call(ISLAND_COLLIDE, COLLIDE_SITES[1]));
+            assert_eq!(c.ecx, island);
+            assert_eq!((g.u32(c.esp + 4).unwrap(), g.u32(c.esp + 8).unwrap()), (0xb0b0, w(W_INPUT)));
+            assert_eq!(g.u8(w(W_COLLIDING)).unwrap(), 1);
+            ret::<8>(&mut c, &mut g, COLLIDE_SITES[1]);
+            assert_eq!(collide(&mut c, &mut g, COLLIDE_SITES[1]).unwrap(), TransferAbi::call(ISLAND_LISTENERS, COLLIDE_SITES[2]));
+            assert_eq!(g.u8(w(W_COLLIDING)).unwrap(), 0);
+            assert_eq!(
+                [4, 8, 12].map(|o| g.u32(c.esp + o).unwrap()),
+                [WORLD_AT, island, STEP]
+            );
+            // cdecl: the phase pops the three arguments itself.
+            ret::<0>(&mut c, &mut g, COLLIDE_SITES[2]);
+        }
+        // A listener left nothing pending: the second pass is skipped.
+        g.set_u32(w(W_PENDING), 0).unwrap();
+        assert_eq!(collide(&mut c, &mut g, COLLIDE_SITES[2]).unwrap(), TransferAbi::call(MERGES, COLLIDE_SITES[4]));
+        assert_eq!((g.u8(w(W_COLLIDING)).unwrap(), g.u8(w(W_LOCK)).unwrap()), (0, 0));
+        assert_eq!((c.ecx, c.edi, c.esp), (WORLD_AT, 2, frame - 4));
+        ret::<0>(&mut c, &mut g, COLLIDE_SITES[4]);
+        // No queue; a merge queued an operation, so the third pass runs.
+        g.set_u32(w(W_PENDING), 1).unwrap();
+        assert_eq!(collide(&mut c, &mut g, COLLIDE_SITES[4]).unwrap(), TransferAbi::call(PENDING, COLLIDE_SITES[6]));
+        ret::<0>(&mut c, &mut g, COLLIDE_SITES[6]);
+        assert_eq!(collide(&mut c, &mut g, COLLIDE_SITES[6]).unwrap(), TransferAbi::call(STEP_LISTENERS, COLLIDE_SITES[7]));
+        assert_eq!([4, 8].map(|o| g.u32(c.esp + o).unwrap()), [WORLD_AT, STEP]);
+        ret::<0>(&mut c, &mut g, COLLIDE_SITES[7]);
+        assert_eq!(collide(&mut c, &mut g, COLLIDE_SITES[7]).unwrap(), TransferAbi::ret(0x1234_5678));
+        assert_eq!(c.esp, STACK + 8);
+        assert_eq!((c.ebx, c.ebp, c.esi, c.edi), (0x1111_2222, 0x3333_4444, 0x5555_6666, 0x7777_8888));
+        // `pop ecx` takes back the slot the entry pushed: the world.
+        assert_eq!((c.ecx, c.eax), (WORLD_AT, MONITOR_END));
     }
 }

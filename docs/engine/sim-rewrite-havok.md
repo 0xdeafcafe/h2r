@@ -25,7 +25,9 @@ solve entry `31c100` (slice 2). The per-function `native_havok_solver`,
 `native_havok_support_vertices`, `native_havok_weld` and `native_mopp_box`
 switches are retired; their bodies are differential oracles. The ladder
 beyond the differential tests (disc sweep, run parity, the behaviour
-suites) and the timing gate are open: the collide phase `30fcb0`, the
+suites) and the timing gate are open: the collide phase `30fcb0` runs as
+a Rust frame whose callees (pending operations, island updates and pair
+passes, listeners, merges) are lifted; the
 integrate phase's declined paths (pending work, listeners, splits, island
 deactivation), the manifold refresh `302eb0` (ported and compared, no
 arm), the add-point call's new slot and its cut `302a10` (ported and
