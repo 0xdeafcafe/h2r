@@ -277,7 +277,7 @@ impl Particle {
     /// parameters sampled at `time` as `0x0001b230` does under the
     /// particle provider, game-time curves only
     /// ([`crate::layer_pass::sample_with_frames`]), each animated bitmap
-    /// slot's frame bound as `0x0001b0a0` binds it ([`Texture::Frame`]).
+    /// slot's frame bound as `0x0001b0a0` binds it.
     pub fn material(&self, i: &Inputs, time: Option<f64>) -> Result<Material, Refused> {
         use tags::material::{TextureSource, VectorTarget};
         let base = &self.implementation;
@@ -288,12 +288,11 @@ impl Particle {
             return Err(Refused::EngineVariant);
         }
         let sampled;
-        let (imp, frames) = if self.implementation.animated.is_empty() {
-            (&self.implementation, Default::default())
+        let (imp, frames) = if base.animated.is_empty() {
+            (base, Default::default())
         } else {
-            let (out, frames) =
-                crate::layer_pass::sample_with_frames(&self.implementation, &self.properties, time, true, self.pass)
-                    .map_err(|r| Refused::Animation(r.name()))?;
+            let (out, frames) = crate::layer_pass::sample_with_frames(base, &self.properties, time, true, self.pass)
+                .map_err(|r| Refused::Animation(r.name()))?;
             sampled = out;
             (&sampled, frames)
         };
@@ -367,7 +366,10 @@ impl Particle {
                 return Err(Refused::VertexConstantDriven);
             }
         }
-        let whole = |r: &tags::material::Register| if r.written == 0xf { Ok((r.index, r.value)) } else { Err(Refused::VertexConstantLanes) };
+        let whole = |r: &tags::material::Register| match r.written {
+            0xf => Ok((r.index, r.value)),
+            _ => Err(Refused::VertexConstantLanes),
+        };
         // `0x00018eab`: `c[18 + i]`, its hardware slot `Register::index`
         // (`0x003f7230` loads ECX as the slot), the resolver's whole row.
         let mut constants = Vec::with_capacity(imp.vertex_constants.len() + 3);
@@ -397,7 +399,12 @@ impl Particle {
 /// (datum -1) where it gives none. A frame that is not finite takes the
 /// CRT's error path (`texture_frame`).
 #[cfg(feature = "gpu")]
-fn frame_texture(imp: &tags::material::ResolvedImplementation, stage: usize, bitmap: u32, frame: f32) -> Result<Texture, Refused> {
+fn frame_texture(
+    imp: &tags::material::ResolvedImplementation,
+    stage: usize,
+    bitmap: u32,
+    frame: f32,
+) -> Result<Texture, Refused> {
     if !frame.is_finite() {
         return Err(Refused::Animation("texture_frame"));
     }
@@ -405,8 +412,7 @@ fn frame_texture(imp: &tags::material::ResolvedImplementation, stage: usize, bit
         .animated
         .iter()
         .flat_map(|a| &a.stages)
-        .filter(|s| usize::from(s.stage) == stage)
-        .last()
+        .rfind(|s| usize::from(s.stage) == stage)
         .map_or(0, |s| s.images);
     Ok(match crate::layer_pass::frame_image(frame, images) {
         Some(image) => Texture::Bitmap { bitmap, image: image as i32 },
@@ -539,8 +545,16 @@ mod tests {
                     vec![],
                 )),
             ),
-            ("render target engine texture", Box::new(move |p| p.implementation.textures[0] = stage(TextureSource::Engine(20), None)), Err("engine_texture")),
-            ("lightmap", Box::new(move |p| p.implementation.textures[0] = stage(TextureSource::Lightmap, None)), Err("engine_texture")),
+            (
+                "render target engine texture",
+                Box::new(move |p| p.implementation.textures[0] = stage(TextureSource::Engine(20), None)),
+                Err("engine_texture"),
+            ),
+            (
+                "lightmap",
+                Box::new(move |p| p.implementation.textures[0] = stage(TextureSource::Lightmap, None)),
+                Err("engine_texture"),
+            ),
             (
                 "game-time vertex constant",
                 Box::new(|p| {
