@@ -96,21 +96,45 @@ pub fn extent(bsp: &Bsp) -> (usize, usize) {
         }
         ring = ring.max(n);
     }
+    // Longest root-to-leaf path. Merged scenery shares subtrees (a DAG), so
+    // heights are memoised per node; only a node reached again while it is
+    // still on the current path is a loop.
+    let n = bsp.nodes.len();
+    let mut height = vec![0usize; n];
+    let mut state = vec![0u8; n]; // 0 new, 1 on the path, 2 done
+    let kids = |i: usize| {
+        let node = &bsp.nodes[i];
+        [node.back, node.front].into_iter().filter_map(|c| match c {
+            Child::Node(k) if (k as usize) < n => Some(k as usize),
+            _ => None,
+        })
+    };
     let mut depth = 0;
-    let mut stack = vec![(0usize, 1usize)];
-    let mut visited = 0usize;
-    while let Some((i, d)) = stack.pop() {
-        let Some(node) = bsp.nodes.get(i) else { continue };
-        visited += 1;
-        if visited > bsp.nodes.len().saturating_mul(2).max(1) + 1 {
-            return (ring, usize::MAX);
-        }
-        depth = depth.max(d);
-        for c in [node.back, node.front] {
-            if let Child::Node(k) = c {
-                stack.push((k as usize, d + 1));
+    if n > 0 {
+        let mut stack = vec![(0usize, false)];
+        while let Some((i, leaving)) = stack.pop() {
+            if leaving {
+                height[i] = 1 + kids(i).map(|k| height[k]).max().unwrap_or(0);
+                state[i] = 2;
+                continue;
+            }
+            match state[i] {
+                2 => continue,
+                1 => return (ring, usize::MAX),
+                _ => {}
+            }
+            state[i] = 1;
+            stack.push((i, true));
+            for k in kids(i) {
+                if state[k] == 1 {
+                    return (ring, usize::MAX);
+                }
+                if state[k] == 0 {
+                    stack.push((k, false));
+                }
             }
         }
+        depth = height[0];
     }
     (ring, depth)
 }
@@ -309,6 +333,17 @@ mod bounds_tests {
             check_bounds(&chain(257)),
             Err(Error::CollisionBound { what: "tree depth", value: 257, max: 256 })
         ));
+    }
+
+    #[test]
+    fn shared_subtrees_are_not_a_loop() {
+        // 0 -> 1 on both sides; 1 -> 2 on both sides: many paths, depth 3.
+        let n = |b: u32, f: u32| Node3d { plane: 0, back: Child::Node(b), front: Child::Node(f) };
+        let mut b = Bsp { nodes: vec![n(1, 1), n(2, 2), n(2, 2)], ..Bsp::default() };
+        b.nodes[2].back = Child::Leaf(0);
+        b.nodes[2].front = Child::None;
+        assert_eq!(extent(&b).1, 3);
+        check_bounds(&b).unwrap();
     }
 
     #[test]
