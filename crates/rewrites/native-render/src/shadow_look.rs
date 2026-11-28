@@ -122,8 +122,8 @@ pub fn receiver_look(
     }
     let state =
         crate::pass_state::pass_state(&applied.render_states)
-            .and_then(crate::pass_state::PassState::device_stencil_only)
-            .map_err(LightRefusal::State)?;
+            .map_err(LightRefusal::State)?
+            .device_stencil_only("shadow passes");
     Ok(LightLook {
         layer,
         pass: pass.pass,

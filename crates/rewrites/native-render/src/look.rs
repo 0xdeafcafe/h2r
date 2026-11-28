@@ -233,9 +233,14 @@ pub const UNLIT_BSP_IMPLEMENTATION: usize = 3;
 fn world_pass(mut look: PassLook, imp: &ResolvedImplementation, inputs: &EngineInputs) -> Result<WorldPass, Refusal> {
     let applied = apply_static(imp, inputs).map_err(Refusal::EngineStates)?;
     look.stage_states = applied.stage_states;
+    // The structure draw `0x0004d0b0` applies an implementation's states
+    // only when the implementation changes (`opaque_material::handoff`,
+    // after the old one's restore range), then an item's stencil switch
+    // (mode 0 or 2) and, after it, mode 1. So a pass's own stencil holds
+    // only up to the first switching item of its run.
     let mut state = geometry_pass_state(&applied.render_states)
-        .and_then(crate::pass_state::PassState::device_stencil_only)
-        .map_err(Refusal::State)?;
+        .map_err(Refusal::State)?
+        .device_stencil_only("layers 1 and 3");
     if state.blend.is_some() {
         // The world issues opaque parts together. A replacement blend is
         // independent of the destination only when the operation is known.

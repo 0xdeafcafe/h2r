@@ -500,8 +500,8 @@ pub fn sorted_pool(template: Option<&str>, material: &tags::shader::TemplatePost
 pub fn water_passes(material: &tags::material::Material, rasterizer: Option<map::TagId>) -> Result<Vec<FogPass>, crate::fog_gpu::FogRefusal> {
     let passes = supplied_layer_passes(material, WATER_LAYER, rasterizer)?;
     // The water pass draws under the device's stencil only.
-    if let Some(pass) = passes.iter().position(|p| p.state.stencil.is_some()) {
-        return Err(crate::fog_gpu::FogRefusal::State { pass, refusal: crate::pass_state::StateRefusal::Stencil });
+    for p in &passes {
+        p.state.device_stencil_only("water passes");
     }
     Ok(passes)
 }

@@ -103,13 +103,14 @@ impl PassState {
     }
 
     /// The state for a native pass that draws only under the device's
-    /// stencil: a pass that sets its own is refused
-    /// ([`StateRefusal::Stencil`]), not drawn under the device's.
-    pub fn device_stencil_only(self) -> Result<Self, StateRefusal> {
-        match self.stencil {
-            Some(_) => Err(StateRefusal::Stencil),
-            None => Ok(self),
+    /// stencil. A pass that sets its own is not drawn (no pass of any
+    /// `shad` on the disc sets one: docs/graphics/e3-lighting.md, "Stencil:
+    /// every use, named"), and panics named with `area`.
+    pub fn device_stencil_only(self, area: &str) -> Self {
+        if self.stencil.is_some() {
+            unimplemented!("{area}: a pass that sets its own stencil");
         }
+        self
     }
 }
 
@@ -121,13 +122,6 @@ pub enum StateRefusal {
     Unset(&'static str),
     /// A value `gfx` does not decode.
     Invalid { state: u8, value: u32 },
-    /// The stencil test, set by the pass itself, where the native pass
-    /// that would draw it takes only the device's: the screen, shadow,
-    /// water and layer 1 and 3 geometry passes. The world layers', the
-    /// lights' and the decorators' passes draw their own
-    /// ([`PassState::stencil`]). No `shad` pass on the retail maps sets
-    /// one (docs/graphics/e3-lighting.md, "Stencil: every use, named").
-    Stencil,
     /// A polygon offset ([`PassState::depth_offset`]) where the native
     /// pass that would draw it does not, or one that is not finite.
     DepthBias,
@@ -457,6 +451,16 @@ mod tests {
             Err(StateRefusal::DepthBias),
             "an object's offset is the live device's"
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "screen passes: a pass that sets its own stencil")]
+    fn a_device_stencil_builder_panics_on_a_pass_stencil() {
+        let base = [v(RenderStateType::AlphaBlendEnable, 0), v(RenderStateType::ZWriteEnable, 0)];
+        assert_eq!(pass_state(&base).unwrap().device_stencil_only("screen passes").stencil, None);
+        let mut own = base.to_vec();
+        own.push(v(RenderStateType::StencilEnable, 0));
+        pass_state(&own).unwrap().device_stencil_only("screen passes");
     }
 
     #[test]
