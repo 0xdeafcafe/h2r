@@ -34,6 +34,7 @@ bytemuck = { version = "1", features = ["derive"] }
 # Reads the map's font tags into text::FontFace (text.rs).
 font = { path = "../../formats/font" }
 frame-scene = { path = "../frame-scene" }
+frame-types = { path = "../../platform/frame-types" }
 scene-extract = { path = "../scene-extract" }
 
 [dev-dependencies]
