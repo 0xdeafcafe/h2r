@@ -44,6 +44,8 @@ workspace_library(
     version = "0.1.0",
     deps = [
         "//crates/formats/hs:hs",
+        "//crates/rewrites/sim-core:sim-core",
+        "//crates/recompiler/simd:simd",
         "//crates/formats/map:map",
         "//crates/hooking/hooks:hooks",
         "//crates/platform/audio:audio",

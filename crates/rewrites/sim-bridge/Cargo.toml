@@ -11,6 +11,8 @@ doc = ["engine/sim-rewrite.md", "engine/shadow-exec.md"]
 
 [dependencies]
 hs.workspace = true
+sim-core = { workspace = true, features = ["override"] }
+simd.workspace = true
 hooks = { path = "../../hooking/hooks" }
 runtime.workspace = true
 # The ports the installs place (engine::sim_native, engine::sim_physics).
