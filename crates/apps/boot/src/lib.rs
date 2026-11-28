@@ -1104,8 +1104,12 @@ fn run_configured(
     // draws (a wider guest camera, Theater's free camera) never chooses the
     // simulation's random numbers, in lockstep and input tapes too
     // (docs/graphics/high-resolution.md, "Determinism").
+    // Its scratch in the arena (the render-state cache, object `+0xcc`,
+    // the light render fields) is the render's own copy while it draws
+    // (docs/engine/sim-render-split.md, "6. Render scratch and stamps").
     if opts.d3d && !host_light {
         render_rng::install(&mut features)?;
+        render_scratch::install(&mut features)?;
     }
     // Vblanks on the 60 Hz logical clock (docs/graphics/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.

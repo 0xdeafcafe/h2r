@@ -63,6 +63,7 @@ pub mod firefight;
 pub mod rules;
 pub mod fov_row;
 pub mod render_rng;
+pub mod render_scratch;
 #[cfg(feature = "gpu")]
 pub mod render_aspect;
 /// Without a window (the headless host) the UI lays out at the guest's

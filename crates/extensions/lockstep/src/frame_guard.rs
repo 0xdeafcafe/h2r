@@ -39,7 +39,7 @@ pub const ID: &str = "frame-guard";
 pub const PAGE: usize = 0x1000;
 /// The most entries `frame-guard.toml` may hold. Lower it when an entry
 /// goes; it is never raised.
-pub const MAX_ALLOWED: usize = 4;
+pub const MAX_ALLOWED: usize = 2;
 /// Trap hits kept per frame step: two per arena page is the most it logs.
 pub const LOG_CAP: usize = 1 << 13;
 /// Failure lines printed per process; the counts go on.
@@ -668,7 +668,10 @@ mod tests {
             a.0.iter()
                 .all(|e| SLICES.contains(&e.slice) && !e.why.is_empty())
         );
-        assert!(a.allows("lights") && a.allows("particles#2") && !a.allows("object"));
+        assert!(a.allows("particles#2") && !a.allows("object"));
+        // Slice 8 moved the light render fields and the render-state cache
+        // off the arena (game::render_scratch).
+        assert!(!a.allows("lights") && !a.allows("cached object render states"));
     }
 
     #[test]

@@ -320,6 +320,7 @@ pub(crate) fn registry_with_film(
     // Boot's render stream: every rendering session, lockstep's included.
     if !case.light {
         crate::render_rng::install(&mut features).unwrap();
+        crate::render_scratch::install(&mut features).unwrap();
     }
     let lockstep = lockstep_glue::Config {
         trace: case

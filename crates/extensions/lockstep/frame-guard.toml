@@ -10,13 +10,10 @@
 # The guard's game-end line names the entries no frame step wrote: those
 # go too.
 #
-# The seed is the render-side arrays of gameplay::RENDER_ARRAYS that the
-# couplings table names (6: light render fields, object +0xcc's render
-# states; 7: particle view stamps). Every other pool a frame step changes
-# is a finding.
+# What is left of the seed, the render-side arrays of
+# gameplay::RENDER_ARRAYS the couplings table names, is coupling 7's
+# particle view stamps. Every other pool a frame step changes is a finding.
 
 [allowed]
-"lights" = "8: the light render fields onto the overlay"
-"cached object render states" = "8: the render states object +0xcc names, onto the overlay"
 "particles" = "9: particle +0x30 to a side table"
 "particle_system" = "9: system +0x0c bit 0x400 and +0x0d bit 2 to a side table"
