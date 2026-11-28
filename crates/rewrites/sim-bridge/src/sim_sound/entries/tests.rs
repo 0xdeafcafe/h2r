@@ -215,6 +215,45 @@ fn the_hash_is_the_same_with_any_host() {
     assert!(lock(&t).ledger.service_events > 0);
 }
 
+/// What the host hears, in order.
+struct Recorder(Arc<Mutex<Vec<String>>>);
+
+impl TableHost for Recorder {
+    fn event(&mut self, e: &TableEvent) {
+        let kind = match e {
+            TableEvent::Started { .. } => "start",
+            TableEvent::Stopped { .. } => "stop",
+            TableEvent::Ended { .. } => "end",
+        };
+        self.0.lock().unwrap().push(format!("{kind} {:#x}", e.handle().raw()));
+    }
+    fn frame(&mut self, s: &Scene) {
+        self.0.lock().unwrap().push(format!("frame {} {}", s.tick, s.sources.len()));
+    }
+}
+
+#[test]
+fn the_service_hands_the_host_the_events_in_the_tables_order_then_the_scene() {
+    let t = table(Arc::new(Flat(10.0)));
+    let log = Arc::new(Mutex::new(Vec::new()));
+    lock(&t).set_host(Box::new(Recorder(Arc::clone(&log))));
+    let request = Request { selection: Some((0, 0)), level: 10.0, ..Request::new(TAG) };
+    // 100 ms: plays out on tick 3.
+    let a = lock(&t).sounds.admit(&mut Rng::new(1), &tags(), request, 0).unwrap();
+    run_phase(&t, guest(1));
+    let b = lock(&t).sounds.admit(&mut Rng::new(2), &tags(), request, 2).unwrap();
+    assert!(lock(&t).sounds.stop(b, 2, 3, &mut NullOwners));
+    run_phase(&t, guest(3));
+    assert!(log.lock().unwrap().is_empty(), "the phase hands nothing over");
+    run_body(&t, Body::Service, guest(3), regs(), |_, _| Regs::default());
+    let (a, b) = (a.raw(), b.raw());
+    assert_eq!(
+        *log.lock().unwrap(),
+        [format!("start {a:#x}"), format!("start {b:#x}"), format!("stop {b:#x}"), format!("end {a:#x}"), "frame 3 1".to_owned()],
+        "the tick's calls, then the ends, then the scene with the one sound left",
+    );
+}
+
 /// The record the start reads: explicit selection (flag bit 10).
 fn record(g: &mut FakeGuest) {
     g.put_u32(RECORD, 1 << 10).put_u16(RECORD + 0x9c, 0).put_u16(RECORD + 0x9e, 0);
