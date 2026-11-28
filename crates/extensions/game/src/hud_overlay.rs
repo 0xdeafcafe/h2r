@@ -774,9 +774,9 @@ pub(crate) fn place_text<B: d3d::Backend + Send + 'static>(
     device: &d3d::abi::SharedDevice<B>,
     mem: &mut dyn GuestMemory,
     mut part: Overlay,
-    slot: ViewSlot,
+    view: ViewSlot,
 ) -> bool {
-    part.set_slot(slot);
+    part.set_slot(view);
     let Some((_, assets)) = slot(mem) else { return false };
     let Some(fonts) = fonts() else { return false };
     {

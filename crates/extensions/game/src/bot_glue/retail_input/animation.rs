@@ -250,7 +250,7 @@ mod tests {
                             ..Default::default()
                         };
                         assert_eq!(
-                            gather(&input, &main, WORK, Path::Alias, Stage::Guest, cpu, seat, &cx).await,
+                            gather(&input, &main, WORK, Path::Alias, Stage::Guest, false, cpu, seat, &cx).await,
                             fill.then_some([42; ACTION_SIZE])
                         );
                         Ok(Ret::new(1, 8))
