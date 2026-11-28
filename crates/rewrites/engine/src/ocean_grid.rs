@@ -372,7 +372,8 @@ fn normalise(m: &mut dyn GuestMemory, f: &mut Sse, x: &mut X87, at: u32) -> Resu
     let v1 = f.mul(inv, m.u32(at.wrapping_add(4))?)?;
     let v2 = f.mul(inv, m.u32(at.wrapping_add(8))?)?;
     m.set_u32(at.wrapping_add(4), v1)?;
-    m.set_u32(at.wrapping_add(8), v2)
+    m.set_u32(at.wrapping_add(8), v2)?;
+    Ok(())
 }
 
 #[cfg(test)]
