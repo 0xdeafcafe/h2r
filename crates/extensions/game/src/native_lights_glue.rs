@@ -97,6 +97,27 @@ pub enum Keep {
     Unsupported(&'static str),
     /// A scene-caster refusal category reported by `native_shadows`.
     Shadow(&'static str),
+    /// The map's model parts for `what` are still loading.
+    Loading(&'static str),
+}
+
+impl Keep {
+    /// The world, a material variant, a texture or the model parts are
+    /// still loading: the light waits for them ([`scene_drawn`]).
+    fn loading(&self) -> bool {
+        matches!(self, Keep::NoWorld | Keep::MaterialPending | Keep::Unloaded(_) | Keep::Loading(_))
+    }
+}
+
+/// A scene light's or shadow's draw: the drawn value, `None` while what it
+/// needs is loading (it draws once it has loaded), and a panic for a
+/// refusal the native code does not handle (`lights: host: <why>`).
+fn scene_drawn<T>(result: Result<T, Keep>) -> Option<T> {
+    match result {
+        Ok(v) => Some(v),
+        Err(why) if why.loading() => None,
+        Err(why) => unimplemented!("lights: host: {why}"),
+    }
 }
 
 impl std::fmt::Display for Keep {
@@ -110,6 +131,7 @@ impl std::fmt::Display for Keep {
             Keep::Unloaded(what) => write!(f, "samples an unloaded {what}"),
             Keep::Unsupported(why) => f.write_str(why),
             Keep::Shadow(why) => write!(f, "scene caster refused: {why}"),
+            Keep::Loading(what) => write!(f, "{what} loading"),
         }
     }
 }
@@ -394,7 +416,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             &ready.upload_device.as_ref().ok_or(Keep::NoWorld)?.0,
             || native_render::object_streams::StreamFormats::read(&ReadMemory(mem)),
             || crate::native_world_glue::scene_load_palettes(device, mem),
-        ).ok_or(Keep::Unsupported("the map's model light parts are loading"))
+        ).ok_or(Keep::Loading("the map's model light parts"))
     }
 
     fn gathered_draws<'a>(
@@ -605,9 +627,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                     draws.extend(world.resolve_receiver_parts(layer, std::mem::take(&mut run), gel.is_some())?);
                 }
             }
-            let lights = model_lights.as_ref().ok_or(Keep::Unsupported(
-                "the map's model shadow parts are loading",
-            ))?;
+            let lights = model_lights.as_ref().ok_or(Keep::Loading("the map's model shadow parts"))?;
             let mut planned = if layer == CASTER_LAYER {
                 world.resolve_shadow_model(lights, e, group.rows_of(e))?
             } else {
@@ -1163,12 +1183,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 .count();
             let (light, after) = rest.split_at(n);
             rest = after;
-            let result = self.scene_light_passes(mem, light, draw.view_target);
-            drawn += result.as_ref().map_or(0, |&n| n);
-            let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
-            for msg in t.count(result.map(drop)) {
-                eprintln!("{msg}");
-            }
+            drawn += scene_drawn(self.scene_light_passes(mem, light, draw.view_target)).unwrap_or(0);
         }
         drawn
     }
@@ -1178,13 +1193,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         mem: &mut dyn GuestMemory,
         draw: render_bridge::native_lights::SceneDraw<'_>,
     ) -> bool {
-        let result = self.scene_light_passes(mem, draw.passes, draw.view_target);
-        let ok = result.is_ok();
-        let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
-        for msg in t.count(result.map(drop)) {
-            eprintln!("{msg}");
-        }
-        ok
+        // A light still loading is not drawn this frame and is not a
+        // refusal: it draws once its parts have loaded.
+        scene_drawn(self.scene_light_passes(mem, draw.passes, draw.view_target));
+        true
     }
 
     /// Each object shadow of the open view is one sequence
@@ -1197,12 +1209,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     ) -> usize {
         let mut drawn = 0;
         for pass in draw.passes {
-            let result = self.scene_object_shadow(mem, pass, draw.view_target);
-            drawn += usize::from(result.is_ok());
-            let mut t = self.tally.lock().unwrap_or_else(|e| e.into_inner());
-            for msg in t.count(result.map(drop)) {
-                eprintln!("{msg}");
-            }
+            drawn += usize::from(scene_drawn(self.scene_object_shadow(mem, pass, draw.view_target)).is_some());
         }
         drawn
     }
