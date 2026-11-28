@@ -6688,9 +6688,11 @@ dependencies = [
  "lifted",
  "map",
  "runtime",
+ "sim-core",
  "sim-effects",
  "sim-ext",
  "sim-sound",
+ "simd",
  "sound-clips",
  "x87",
 ]
