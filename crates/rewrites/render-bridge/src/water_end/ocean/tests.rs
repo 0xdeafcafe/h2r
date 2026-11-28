@@ -308,8 +308,9 @@ fn the_copies_name_what_they_cannot_make() {
 }
 
 /// A closed gate goes to the stamps: the occlusion query's, or a texture
-/// block not resident; a definition with no shader returns after the
-/// gates with EAX -1 under AL 1.
+/// block not resident (empty, or still loading: the ocean waits a
+/// frame); a definition with no shader returns after the gates with EAX
+/// -1 under AL 1.
 #[test]
 fn a_closed_gate_goes_to_the_stamps() {
     use Event::*;
@@ -321,14 +322,20 @@ fn a_closed_gate_goes_to_the_stamps() {
     let (events, end) = run(&mut m, true);
     assert_eq!(events, vec![Visible]);
     assert_eq!(end, Ended { eax: 1, ecx: 1 });
-    // The stamps run past a closed gate: an image the cache must load is
-    // named.
+    // A block with data still loading: not drawn this frame.
+    m.set_u32(DEF + TEXTURE_BLOCK + 8, 0x100).unwrap();
+    m.set_u32(DEF + TEXTURE_BLOCK + 0xc, 0).unwrap();
+    let (events, end) = run(&mut m, true);
+    assert_eq!(events, vec![Visible]);
+    assert_eq!(end, Ended { eax: 1, ecx: 1 });
+    // The stamps run past a closed gate: an image the cache does not hold
+    // yet is left for a later frame.
     let mut m = mem(0);
     m.set_u32(IMAGES + 0x74 + 0x70, 0).unwrap();
     m.set_u32(IMAGES + 0x74 + 0x50, 0).unwrap();
     m.write(IMAGES + 0x74 + 0xf, &[2]).unwrap();
     let mut device = Recorder { visible: false, ..Recorder::new() };
-    assert_eq!(super::run(&mut m, &mut device, DEF, true, 0), Err("texture_request"));
+    assert_eq!(super::run(&mut m, &mut device, DEF, true, 0), Ok(Ended { eax: 1, ecx: 1 }));
     // No shader: EAX -1 under AL 1, ECX as the grid left it (skipped: the
     // entry's).
     let mut m = mem(0);
@@ -352,12 +359,31 @@ fn the_stamps_skip_what_the_guest_skips() {
     assert_eq!(stamps(&m, SHADER_TAG).unwrap().0, vec![0x74]);
 }
 
+/// An `MTRP` or `3trp` shader's template comes through its group's
+/// object, which keeps the index and its data: 3trp's at its data's
+/// `+0x90`, MTRP's at the `+0x24` of the shader its data's `+0x1c` names.
+#[test]
+fn a_virtual_templates_group_reaches_the_same_implementation() {
+    let shad = shader(&mut mem(1 << COPY_BIT), SHADER_TAG).unwrap();
+    for (group, object) in [(GROUP_3TRP, OBJECT_3TRP), (GROUP_MTRP, OBJECT_MTRP)] {
+        let mut m = mem(1 << COPY_BIT);
+        m.set_u32(TABLE + 16, group).unwrap();
+        m.set_u32(0x0050_6000 + 0x24, 0).unwrap();
+        if group == GROUP_3TRP {
+            m.set_u32(0x0050_6000 + 0x90, BLOCK).unwrap();
+        } else {
+            m.set_u32(0x0050_6000 + 0x1c, 0xabcd_0005).unwrap();
+            m.set_u32(TABLE + 16 * 5 + 8, 0x0050_6d00).unwrap();
+            m.set_u32(0x0050_6d00 + 0x24, BLOCK).unwrap();
+        }
+        assert_eq!(shader(&mut m, SHADER_TAG), Ok(shad), "{group:#x}");
+        assert_eq!((m.u32(object + 4).unwrap(), m.u32(object + 8).unwrap()), (SHADER_TAG, 0x0050_6000));
+    }
+}
+
 /// The steps the stage cannot make are named.
 #[test]
 fn unmade_steps_are_named() {
-    let mut m = mem(0);
-    m.set_u32(TABLE + 16, GROUP_MTRP).unwrap();
-    assert_eq!(shader(&m, SHADER_TAG), Err("shader_group"));
     assert_eq!(cause(&mut mem(0), &mut Recorder { refuse_draw: true, ..Recorder::new() }), "draw");
     // A stream record that does not read.
     let mut m = mem(0);
@@ -365,7 +391,7 @@ fn unmade_steps_are_named() {
     assert_eq!(cause(&mut m, &mut Recorder::new()), "unread");
     let mut m = mem(0);
     m.set_u32(TAGS, 0x0010_0000).unwrap();
-    assert_eq!(shader(&m, SHADER_TAG), Err("unread"));
+    assert_eq!(shader(&mut m, SHADER_TAG), Err("unread"));
 }
 
 mod reflection;
