@@ -76,6 +76,7 @@ pub fn install_game(
     let (publisher, frames) = frame_scene::mailbox::channel(mode);
     anyhow::ensure!(FRAMES.set(publisher).is_ok(), "the renderer is installed once per process");
     render_bridge::scene_step::set_seal_observer(Some(render_bridge::scene_step::SealObserver { sealed, reset }));
+    crate::native_world_glue::set_render_device(ctx.device.clone(), ctx.queue.clone());
     let renderer = native_render::Renderer::new(ctx, output());
     let display = native_render::frame_graph::display_rate::Display::new(fps);
     let owner = native_render::FrameOwner::new(renderer, presenter, frames, display);

@@ -150,14 +150,25 @@ impl Ready {
     }
 }
 
+/// The renderer's device and queue, set once when the renderer is
+/// installed (`render_glue::install_game`).
+static RENDER_DEVICE: OnceLock<(wgpu::Device, wgpu::Queue)> = OnceLock::new();
+
+/// Records the renderer's device and queue for the loads and stages.
+pub(crate) fn set_render_device(device: wgpu::Device, queue: wgpu::Queue) {
+    let _ = RENDER_DEVICE.set((device, queue));
+}
+
 /// The renderer's device and its scene colour and depth formats.
 pub(crate) fn pipeline_target() -> (wgpu::Device, wgpu::TextureFormat, wgpu::TextureFormat) {
-    unimplemented!("world: pipeline target from the renderer")
+    let (device, _) = upload_device();
+    use native_render::frame_graph::targets::{COLOUR_FORMAT, DEPTH_FORMAT};
+    (device, COLOUR_FORMAT, DEPTH_FORMAT)
 }
 
 /// The renderer's device and queue, which a load uploads on.
 pub(crate) fn upload_device() -> (wgpu::Device, wgpu::Queue) {
-    unimplemented!("world: upload device from the renderer")
+    RENDER_DEVICE.get().cloned().unwrap_or_else(|| unimplemented!("world: a load with no renderer installed"))
 }
 
 /// The active BSP. The index and activation distinguish reused addresses
