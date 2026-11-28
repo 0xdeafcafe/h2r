@@ -98,7 +98,7 @@ fn model_entry(
     Some(entry(part, held, held.vertex_class?, implementation))
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+impl Glue {
     /// Draws `draw`'s lights over its parts, each a scene stage of E3
     /// alone at the view's target, and returns how many it queued. A
     /// light the passes cannot draw (the world or the models not loaded,
@@ -109,19 +109,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         mem: &mut dyn GuestMemory,
         draw: FirstPersonDraw<'_>,
     ) -> usize {
-        let mut device = match self.device.lock() {
-            Ok(d) => d,
-            Err(_) => {
-                self.count_host(Err(Keep::Unsupported("device unavailable")));
-                return 0;
-            }
-        };
-        let held = self
-            .begin_lights(&mut device, mem, draw.view_target)
-            .and_then(|ready| {
-                let models = self.model_lights(&device, &*mem, &ready)?;
-                Ok((ready, models))
-            });
+        let held = self.ready(&*mem).and_then(|ready| {
+            let models = self.model_lights(&*mem, &ready)?;
+            Ok((ready, models))
+        });
         let (ready, models) = match held {
             Ok(held) => held,
             Err(why) => {
@@ -133,8 +124,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         };
         let mut drawn = 0;
         for light in draw.lights {
-            let answer =
-                self.first_person_light(&mut device, mem, &ready, &models, draw.parts, light);
+            let answer = self.first_person_light(mem, &ready, &models, draw.parts, light);
             drawn += usize::from(answer.is_ok());
             self.count_host(answer);
         }
@@ -148,7 +138,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// this frame.
     fn first_person_light(
         &self,
-        d: &mut d3d::Device<B>,
         mem: &mut dyn GuestMemory,
         ready: &Arc<Ready>,
         lights: &Arc<models::ModelLights>,
@@ -187,17 +176,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                 "a first-person light meets no part with a native light pass",
             ));
         }
-        let prepared = self.prepare_planned(
-            &*d,
-            &*mem,
-            Arc::clone(ready),
-            *c,
-            planned,
-            None,
-            false,
-            Some(WHOLE),
-        )?;
-        self.e3_stage(d, mem, ready, prepared, None)
+        let prepared = self.prepare_planned(&*mem, Arc::clone(ready), *c, planned, None, Some(WHOLE))?;
+        self.e3_stage(&*mem, ready, prepared, None)
     }
 }
 

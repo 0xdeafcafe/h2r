@@ -1,7 +1,7 @@
 //! The native world's host (docs/graphics/native-world.md, stage 1):
 //! loads the active BSP's world from the loaded map's file when the BSP
-//! changes, on a worker, and asks the D3D device for the native pass at
-//! each view's layer 3 (`render_bridge::native_world`). Inert with
+//! changes, on a worker, and pushes each view's world pass as a frame
+//! stage at its layer 3 (`render_bridge::native_world`). Inert with
 //! `impl.render.native=off` (nothing asks).
 //!
 //! - **Load once.** On a new (map, BSP) the worker opens the map through
@@ -9,23 +9,20 @@
 //!   at the active BSP's address, builds the world (`native_render::load`),
 //!   decodes each lightmap page, and translates each material's layer-3
 //!   pass. The same worker uploads its buffers and material programs.
-//!   Until it is ready, or when it fails, the D3D path draws the world.
+//!   Until it is ready, or when it fails, no world draws.
 //! - **Per frame.** Completed stages publish before the views. A view supplies
-//!   the camera and one external pass. The device records it
-//!   after the next drain, in order with the draws.
+//!   the camera and pushes one stage (`FrameOp::Stage`, slot opaque).
 //! - **Material programs.** Each part needs a translated layer-3 pass with decoded
 //!   stage bitmaps, the inputs of its vertex classification, and any
 //!   sampled lightmap page (`program::part_fit`). The part draws with
 //!   its own vertex program, pixel shader, stage textures,
-//!   constants and render states, and the device's view constants each
-//!   frame. Every other material is left out of the world and keeps its
-//!   D3D draws (the skip clears only the items of the parts the world
-//!   draws, by owner and part index, whatever shares their shader). The load says
-//!   the coverage and each reason once, with counts. A palettized stage
-//!   bitmap (the bump map's P8) is expanded through the device palette
-//!   bound at its stage when the load started, as the D3D path samples
-//!   it; while that palette is no longer bound the D3D path draws the
-//!   world.
+//!   constants and render states, and the view's constants each frame.
+//!   Every other material is left out of the world (the skip clears only
+//!   the items of the parts the world draws, by owner and part index,
+//!   whatever shares their shader). The load says the coverage and each
+//!   reason once, with counts. A palettized stage bitmap (the bump map's
+//!   P8) is expanded through the palette bound at its stage when the load
+//!   started; while that palette is no longer bound the world refuses.
 //! - **Lights**: the lights' part of the world, loaded with it
 //!   (`native_lights_glue::load`).
 
@@ -56,9 +53,6 @@ use native_render::program::{self, MaterialProgram, ProgramSet, ViewInputs};
 use native_render::skip::StencilPlan;
 use native_render::world::{LightmapKey, Owner, World, WorldDraw};
 
-#[path = "native_world_materials.rs"]
-mod opaque_materials;
-
 type LayeredImages = HashMap<(TagId, u32), LayeredImage>;
 
 #[path = "native_world_setup.rs"]
@@ -72,7 +66,6 @@ use setup::StageReady;
 pub struct Ready {
     retire: Option<crate::native_map::RetireQueue>,
     pub(super) sun_world: Option<native_render::sun_casters::SharedWorld>,
-    opaque: opaque_materials::Library,
     gpu: Mutex<Option<GpuWorld>>,
     /// Published with the GPU bindings. A live edit clears it under the
     /// GPU lock. Testing scene ownership must never depend on lock contention.
@@ -141,16 +134,27 @@ impl Ready {
         self.gpu.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Check the actual attachment formats before any scene stage can
-    /// clear a guest mask. A busy GPU world leaves this draw on D3D.
-    pub(crate) fn with_pipeline_target<B: d3d::Backend, T>(
-        &self, device: &d3d::Device<B>, mem: &dyn GuestMemory,
+    /// The GPU world with the renderer's device and scene formats, for a
+    /// stage's prewarm before any guest mask is cleared. A busy GPU world
+    /// prepares nothing.
+    pub(crate) fn with_pipeline_target<T>(
+        &self,
         prepare: impl FnOnce(&mut GpuWorld, &wgpu::Device, wgpu::TextureFormat, wgpu::TextureFormat) -> Option<T>,
     ) -> Option<T> {
-        let (device, color, depth) = device.external_pipeline_target(&ReadMemory(mem))?;
+        let (device, color, depth) = pipeline_target();
         let mut guard = self.gpu.try_lock().ok()?;
         prepare(guard.as_mut()?, &device, color, depth)
     }
+}
+
+/// The renderer's device and its scene colour and depth formats.
+pub(crate) fn pipeline_target() -> (wgpu::Device, wgpu::TextureFormat, wgpu::TextureFormat) {
+    unimplemented!("world: pipeline target from the renderer")
+}
+
+/// The renderer's device and queue, which a load uploads on.
+pub(crate) fn upload_device() -> (wgpu::Device, wgpu::Queue) {
+    unimplemented!("world: upload device from the renderer")
 }
 
 /// The active BSP. The index and activation distinguish reused addresses
@@ -199,10 +203,8 @@ pub fn current_ready_keyed(state: &MapState, mem: &dyn GuestMemory) -> Option<(A
     Some((Arc::clone(ready), state.key.clone()?))
 }
 
-/// The host: the device and the current world.
-pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
-    watch: runtime::WatchId,
-    device: d3d::abi::SharedDevice<B>,
+/// The host: the current world.
+pub struct Glue {
     state: State,
     switches: hooks::Switches,
     ordered_scene_world: bool,
@@ -212,18 +214,14 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     refreshing: Arc<AtomicBool>,
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+impl Host for Glue {
     fn retire_bsp(&self) {
         self.retire_stale_bsp();
         crate::native_map::retire_indexed_caches();
     }
 
-    fn try_opaque_simple(&self, mem: &mut dyn GuestMemory, header: u32, value: u32) -> bool {
-        let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
-        self.device.lock().is_ok_and(|mut d| {
-            drain_opaque_writes(mem, &mut d, self.watch).is_ok()
-                && d.try_opaque_simple(&crate::native_lights_glue::DeviceMemory(mem), header, value)
-        })
+    fn try_opaque_simple(&self, _mem: &mut dyn GuestMemory, _header: u32, _value: u32) -> bool {
+        unimplemented!("world: opaque simple state write through the device")
     }
 
     fn load_bsp(&self, mem: &dyn GuestMemory, bsp: u32) -> bool {
@@ -249,17 +247,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             std::mem::replace(&mut *state, MapState::loading(key.clone(), pending))
         };
         retired.retire();
-        let inputs = self.device.lock().ok().and_then(|d| {
-            Some((d.backend.upload_device()?, scene_load_palettes(&d, mem)))
-        });
+        let device = upload_device();
+        let palettes = scene_load_palettes(mem);
         crate::native_objects_glue::install_function_tables(mem);
         let relight_requested = self.relight_requested;
         let launched = background::spawn("native-world load", move || {
-            if let Some((device, palettes)) = inputs
-                && let Err(e) = load_ready(&key, device, palettes, relight_requested, &finished)
+            if let Err(e) = load_ready(&key, device, palettes, relight_requested, &finished)
                 && key.current()
             {
-                eprintln!("native-world: {} BSP {} at {:#010x}: not loaded ({e}); the D3D path draws it", key.map, key.index, key.bsp);
+                eprintln!("native-world: {} BSP {} at {:#010x}: not loaded ({e})", key.map, key.index, key.bsp);
             }
         });
         if let Err(error) = launched {
@@ -294,23 +290,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn opaque_view(
-        &self, mem: &dyn GuestMemory, layer: render_bridge::native_world_layers::Layer,
+        &self, _mem: &dyn GuestMemory, _layer: render_bridge::native_world_layers::Layer,
     ) -> Result<Box<dyn render_bridge::native_world::OpaqueView>, &'static str> {
-        if !self.ordered_scene_world {
-            return Err("world programs disabled");
-        }
-        let state = self.state.lock().map_err(|_| "BSP loader unavailable")?;
-        let ready = Arc::clone(current_ready(&state, mem).ok_or("BSP load pending")?);
-        let key = state.key.as_ref().ok_or("BSP load pending")?;
-        Ok(Box::new(OpaqueView {
-            watch: self.watch,
-            device: Arc::clone(&self.device),
-            ready,
-            generation: key.generation,
-            bsp_index: key.index,
-            layer,
-            frame: crate::d3d_diag::presents() + 1,
-        }))
+        unimplemented!("world: sorted opaque part through the device")
     }
 
     fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, scene_view: &frame_scene::View, plan: &StencilPlan, claim_guest: bool) -> Result<native_render::skip::Cleared, &'static str> {
@@ -318,107 +300,61 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             Arc::clone(current_ready(&state, mem).ok_or("world_pending")?)
         };
-        let mut d = self.device.lock().map_err(|_| "device")?;
-        if !d.can_external_pass() || !matches!(d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)), Ok(true)) {
-            return Err("device");
-        }
-        if !crate::native_layers_glue::viewport_clip(&d, &ReadMemory(mem)) {
-            return Err("viewport");
-        }
-        // With a render thread that records scene stages, everything here
-        // is extraction: the guest reads and the checks that can refuse,
-        // which decide what the guest skips. The render thread binds
-        // the worker-built resources and records the selected packets
-        // (docs/graphics/framescene.md, slice 2).
-        let scene = d.queues_scene_stages(timeline::native::Stage::World);
-        let metric = if scene { timeline::native::Metric::ExtractNs } else { timeline::native::Metric::PrepareNs };
-        let planning = timeline::native::Timer::start(timeline::native::Stage::World, metric);
-        // The programs write w as depth and clip w (`xps_w_depth`): a view
-        // whose draws store z instead (`SET_CONTROL0` without
-        // z-perspective) is the D3D path's.
-        if d.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE == 0) {
-            let n = NOT_W_BUFFERED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if n % 600 == 0 {
-                eprintln!("native-world: {} views left to the D3D path: not W-buffered (SET_CONTROL0 without z-perspective)", n + 1);
-            }
-            return Err("w_buffer");
-        }
+        // Everything here is extraction: the guest reads and the checks
+        // that can refuse, which decide what the guest skips. The render
+        // thread binds the worker-built resources and records the stage.
+        let planning = timeline::native::Timer::start(timeline::native::Stage::World, timeline::native::Metric::ExtractNs);
         // The palettes the load expanded its palettized stage bitmaps
-        // through must still be the ones bound: otherwise the D3D path
-        // draws the world (its samples would differ).
-        if !palettes_hold(&ready.palettes, &|s| d.stage_palette(&ReadMemory(mem), s)) {
-            if !PALETTE_CHANGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                eprintln!("native-world: a stage palette changed since the load expanded its bitmaps through it; the D3D path draws the world");
-            }
+        // through must still be the ones bound.
+        if !palettes_hold(&ready.palettes, &stage_palette) {
             return Err("palettes");
         }
         // The stencil the layer's draws take now, and how its items switch
         // it (`skip::stencil_plan`).
-        let Some(stencil) = d.stencil_state(&ReadMemory(mem)) else {
-            if !STENCIL_UNREAD.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                eprintln!("native-world: the device's stencil state does not read; the D3D path draws the world");
-            }
-            return Err("stencil");
-        };
+        let stencil = layer_stencil();
         let drained_plan = native_render::skip::stencil_plan(&render_bridge::native_world::Mem(mem), native_render::skip::LIGHTMAP_LAYER)
             .ok_or("stencil_plan")?;
         if &drained_plan != plan { return Err("stencil_plan"); }
-        let Some(stencil) = pass_stencil(&stencil, plan) else {
-            let n = STENCIL_REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if n % 600 == 0 {
-                eprintln!(
-                    "native-world: {} views left to the D3D path: an item switches the stencil and layer 3 starts in another state ({stencil:?})",
-                    n + 1
-                );
-            }
-            return Err("stencil");
-        };
+        let stencil = pass_stencil(&stencil, plan).ok_or("stencil")?;
         // The cull layer 3 starts in: what the passes that do not set
         // `CULLMODE` inherit (`native_render::look::WorldPass::inherits_cull`).
-        let cull = d.cull_state(&ReadMemory(mem)).map(inherited_cull);
-        let target = d.external_ready(&ReadMemory(mem), false).map_err(|_| "target")?;
-        // Admit the union of both lenses. Exact readback renders the retail
-        // projection, and hardware clips a submitted part outside either copy.
-        let factor = d.projection_factor_for_target(target.surface_size);
-        let admission_camera = native_render::camera::display_camera(scene_view.camera, factor);
-        let frustum = GpuWorld::draw_frustum(&admission_camera.view_projection(), true);
+        let cull = layer_cull().map(inherited_cull);
+        let factor = projection_factor();
+        let cull_camera = native_render::camera::display_camera(scene_view.camera, factor);
+        let frustum = GpuWorld::draw_frustum(&cull_camera.view_projection(), true);
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let run = u64::from(d.swap_count()).wrapping_add(1);
-        let (device, color, depth) = d.external_pipeline_target(&ReadMemory(mem)).ok_or("target")?;
+        let run = render_bridge::frame_wait::presents().wrapping_add(1);
+        let (device, color, depth) = pipeline_target();
         let time = native_render::layer_pass::render_time(&ReadMemory(mem));
-        let accumulation = if d.samples_levels_in_place() {
-            accumulation_target(&ReadMemory(mem), d.bound_target())
-        } else { None };
-        // The parts' selection, or why it does not draw: the GPU world
-        // busy on a worker, not uploaded, a part or texaccum it cannot
-        // bind, an animation that does not read, pipelines still warming.
-        let select = |parts: &[(Owner, u8)], display_only| -> Result<Arc<WorldSelection>, &'static str> {
-            let mut guard = if display_only || ready.owns_display_lightmaps() {
-                ready.gpu()
-            } else {
-                ready.gpu.try_lock().map_err(|_| "gpu_busy")?
-            };
+        let accumulation = accumulation_target(&ReadMemory(mem));
+        // The parts' selection, or why it does not draw: the GPU world not
+        // uploaded, a part or texaccum it cannot bind, an animation that
+        // does not read, pipelines still warming.
+        let select = |parts: &[(Owner, u8)]| -> Result<Arc<WorldSelection>, &'static str> {
+            let mut guard = ready.gpu();
             let gpu = guard.as_mut().ok_or("gpu_pending")?;
             configure_world(gpu, depth, cull, &stencil);
-            // The guest's list whole: the GPU culls it by the admission
-            // lens (`WorldPass::record_encoded`).
+            // The guest's list whole: the GPU culls it by the lens.
             let mut selection = gpu.select_unculled(parts).ok_or("selection")?;
             if !gpu.select_texaccum(&mut selection, accumulation) { return Err("texaccum"); }
             gpu.animate_selection(&mut selection, time).map_err(|_| "animation")?;
             gpu.prewarm_world(&device, color, depth, &selection).then(|| Arc::new(selection)).ok_or("warming")
         };
-        let world_pass = |selection, display_only| WorldPass {
-            selection, display_only,
-            ready: Arc::clone(&ready),
-            camera: scene_view.camera,
-            cull_camera: admission_camera,
-            view: None,
-            w_clip: None,
-            stencil: stencil.clone(),
-            cull,
-            run,
-            token: view_token(run, view),
+        let push = |selection| {
+            native_render::stage::frame_builder().push(native_render::stage::FrameOp::Stage {
+                slot: frame_types::SlotAt { slot: frame_types::Slot::Opaque, view: view as u8 },
+                stage: Box::new(WorldPass {
+                    selection,
+                    ready: Arc::clone(&ready),
+                    camera: scene_view.camera,
+                    cull_camera,
+                    stencil: stencil.clone(),
+                    cull,
+                    token: view_token(run, view),
+                }),
+            });
         };
+        // Sections only the wider display lens sees, flooded in.
         if factor < 1.0 && let Some(visibility) = &scene_view.display_visibility && (!visibility.clusters.is_empty() || !visibility.placements.is_empty()) {
             let sections = visibility.clusters.iter().map(|&id| Owner::Cluster(u32::from(id)))
                 .chain(visibility.placements.iter().copied().filter(|&id| {
@@ -427,11 +363,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             let parts = display_section_parts(sections, &ready.section_parts,
                 &ready.part_bounds.read().unwrap_or_else(|e| e.into_inner()), &frustum);
             // Whole sections only, and none that samples an accumulation
-            // no display stage wrote (`GpuWorld::display_complete_parts`).
+            // no stage wrote (`GpuWorld::display_complete_parts`).
             let parts = ready.gpu().as_ref().map(|gpu| gpu.display_complete_parts(&parts)).unwrap_or_default();
-            if !parts.is_empty() && let Ok(selection) = select(&parts, true) {
-                let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges: parts.len(), slots: accumulation_slots(&selection) };
-                let _ = d.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, Box::new(world_pass(selection, true)));
+            if !parts.is_empty() && let Ok(selection) = select(&parts) {
+                push(selection);
             }
         }
         if !claim_guest { return Err("display_only"); }
@@ -445,56 +380,24 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             )
             .ok_or("masks")?
         };
-        let ranges = selected.len();
-        if ranges == 0 { return Err("part"); }
+        if selected.is_empty() { return Err("part"); }
         let counted = timeline::phase::enabled().then(|| selected.iter().map(|p| p.0).collect::<Vec<_>>());
-        let selection = select(&selected, false)?;
-        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::World, view, ranges, slots: accumulation_slots(&selection) };
-        let pass = || Box::new(world_pass(Arc::clone(&selection), false));
+        let selection = select(&selected)?;
         drop(planning);
-        // A scene stage: queued now, prepared and recorded when the render
-        // thread reaches it. Not taken, the pass is reserved here as before.
-        // A combined pass also validates alias identity on both pinned copies.
-        // Complete that check before clearing any guest mask.
-        let staged = if scene && selection.texaccum.is_none() {
-            let reserved = d.reserve_scene_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan.clone(), pass());
-            match reserved {
-                Ok(Some(reservation)) => {
-                    if !masks.apply(&mut render_bridge::native_world::Mem(mem)) {
-                        timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
-                        return Err("masks");
-                    }
-                    reservation.commit();
-                    true
-                }
-                Ok(None) => false,
-                Err(_) => return Err("reservation"),
-            }
-        } else {
-            false
-        };
-        if !staged {
-            let mut memory = crate::native_lights_glue::DeviceMemory(mem);
-            let reservation = if selection.texaccum.is_some() {
-                d.prepare_external_pass(&mut memory, plan, pass())
-            } else {
-                d.prepare_external_bound(&mut memory, plan, pass(), Vec::new())
-            }.ok().flatten().ok_or("reservation")?;
-            if !masks.apply(&mut render_bridge::native_world::Mem(mem)) {
-                timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, ranges as u64);
-                return Err("masks");
-            }
-            reservation.commit();
+        if !masks.apply(&mut render_bridge::native_world::Mem(mem)) {
+            timeline::native::Stage::World.count(timeline::native::Metric::RefusedMasks, selected.len() as u64);
+            return Err("masks");
         }
+        push(selection);
         if let Some(owners) = counted {
-            crate::native_world_layers_glue::count_frontend(crate::d3d_diag::presents() + 1, view, bsp,
+            crate::native_world_layers_glue::count_frontend(run, view, bsp,
                 timeline::native::WorldOpaque::Prereserved, owners);
         }
         Ok(cleared)
     }
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+impl Glue {
     fn retire_stale_bsp(&self) {
         let retired = self.state.lock().unwrap_or_else(|e| e.into_inner()).take_stale();
         if let Some(retired) = retired {
@@ -503,7 +406,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     }
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+impl Glue {
     /// Starts a live edit's refresh of the current world
     /// (docs/editor/realtime-edits.md, "The native refresh") once the
     /// world is resident and no refresh is running: the queued edits are
@@ -638,7 +541,7 @@ fn decode_pages<R: std::io::Read + std::io::Seek>(
 /// again at each stage that samples them and their textures rewritten.
 /// A section the world cannot take in place reloads the world
 /// (`native_map_work::reload_bsp`): until the reload publishes, its parts
-/// keep their D3D draws from guest memory. An image whose size, levels or
+/// keep their guest draws from guest memory. An image whose size, levels or
 /// format changed keeps its pixels until the map reloads, and says so.
 /// Edited shaders go first ([`refresh_shaders`]).
 fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edits::Edit]) {
@@ -714,7 +617,7 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
             Ok(_) => {
                 edited.insert(*owner);
             }
-            // It did not decode at load: the D3D path draws it.
+            // It did not decode at load: the guest draws it.
             Err(native_render::world::SectionRefusal::NoSection) => {}
             Err(why) => {
                 drop(guard);
@@ -741,7 +644,7 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
                 }
             }
             // It did not decode at load either, or no longer does: the
-            // D3D path draws what used it.
+            // the guest draws what used it.
             Err(why) if !gpu.page_textures(*page).is_empty() => {
                 eprintln!(
                     "native-world: {} BSP {}: lightmap page {} palette {:?} does not decode ({why}); it keeps its pixels",
@@ -808,7 +711,7 @@ fn edited_materials(shaders: &[TagId], edited: &mut dyn FnMut(TagId) -> bool) ->
 /// again as the load compiled it and put in place
 /// (`GpuWorld::refresh_programs`): its uniform buffers rewritten when
 /// only constants changed, its programs rebuilt otherwise. Materials the
-/// load left on the D3D path stay there; their draws read the edit from
+/// load left on the guest stay there; their draws read the edit from
 /// guest memory. Err says why the world reloads instead: another of this
 /// load's consumers (the fog, the water, the layers, the lights, the
 /// decorators or the opaque pass) draws an edited shader, or a refreshed
@@ -848,15 +751,6 @@ fn refresh_shaders(key: &BspKey, ready: &Ready, tags: &[u32]) -> Result<(), Stri
             .collect();
         if ids.into_iter().any(|s| shader_edited(&mut lib, &mut known, &edited, s)) {
             users.push("the decorators");
-        }
-    }
-    if !ready.opaque.is_empty() {
-        let mut shaders: Vec<TagId> = affected.iter().filter_map(|&m| ready.layer3.shaders.get(usize::from(m)).copied()).collect();
-        shaders.sort_unstable_by_key(|s| s.0);
-        shaders.dedup();
-        let fresh = opaque_materials::Library::load(&mut map, &shaders);
-        if shaders.iter().any(|s| !ready.opaque.same_for(&fresh, s.0)) {
-            users.push("the opaque pass");
         }
     }
     if !users.is_empty() {
@@ -918,148 +812,31 @@ fn refresh_shaders(key: &BspKey, ready: &Ready, tags: &[u32]) -> Result<(), Stri
     Ok(())
 }
 
-/// The ordinary ABI takes dirty pages on entry. The sorted handler bypasses
-/// that wrapper on both resource preparation and submission. A shader call
-/// in between can stream a new bitmap or rewrite a vertex/index buffer.
-/// The drain is the barrier's (`Guest::take_dirty`), so a flat-RAM image's
-/// card marks are folded here too.
-fn drain_opaque_writes<B: d3d::Backend>(
-    mem: &mut dyn GuestMemory, device: &mut d3d::Device<B>, watch: runtime::WatchId,
-) -> Result<(), &'static str> {
-    for range in mem.take_write_watch(watch).map_err(|_| "render memory missing D3D write watch")? {
-        device.note_written_pages(range.addr, range.len);
-    }
-    Ok(())
-}
-
-struct OpaqueView<B: d3d::Backend> {
-    watch: runtime::WatchId,
-    device: d3d::abi::SharedDevice<B>,
-    ready: Arc<Ready>,
-    generation: u64,
-    bsp_index: u16,
-    layer: render_bridge::native_world_layers::Layer,
-    frame: u64,
-}
-
-impl<B: d3d::Backend + Send + 'static> render_bridge::native_world::OpaqueView for OpaqueView<B> {
-    fn prepare_opaque(
-        &self, mem: &mut dyn GuestMemory, part: &native_render::world_ranges::SortedPart,
-    ) -> Result<Box<dyn render_bridge::native_world::OpaqueDraw>, &'static str> {
-        if native_map_work::generation() != self.generation || active_bsp_index(mem) != Some(self.bsp_index) {
-            return Err("BSP changed during sorted pass");
-        }
-        let material = self.ready.opaque.get(part)?;
-        let layer = self.layer;
-        let shader = engine::tags::tag_entry_checked(mem, engine::handle::DatumHandle(part.shader))
-            .ok().flatten().and_then(|entry| mem.u32(entry.checked_add(8)?).ok())
-            .filter(|&data| data != 0).ok_or("shader tag entry")?;
-        let flags = shader.checked_add(0x16).and_then(|at| mem.u16(at).ok()).ok_or("shader flags")?;
-        let streams = crate::opaque_streams::Plan::read(mem, part.section, part.geometry,
-            part.part_addr, part.program, part.record_addr, part.layer, flags)?;
-        let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
-        let mut device = self.device.lock().map_err(|_| "device unavailable")?;
-        drain_opaque_writes(mem, &mut device, self.watch)?;
-        let accumulation = if layer.number == 3 && material.samples_texaccum() {
-            let t = layer.texaccum.ok_or("accumulation level unavailable")?;
-            Some((t.surface.ok_or("accumulation surface unavailable")?, t.texture, t.size))
-        } else { None };
-        let targets = device.prepare_opaque_targets(&ReadMemory(mem), accumulation)
-            .ok_or("view attachments unavailable")?;
-        if layer.number == 1 && layer.texaccum.and_then(|t| t.surface) != Some(targets.bound[0]) {
-            return Err("layer 1 accumulation target");
-        }
-        let mut ranges = Vec::with_capacity(part.indices.len());
-        for r in &part.indices {
-            let addr = r.start.checked_mul(2).and_then(|n| part.index_buffer.checked_add(n))
-                .ok_or("world index offset")?;
-            ranges.push(device.prepare_index_range(&ReadMemory(mem), addr, r.end - r.start)
-                .map_err(|_| "world index range")?);
-        }
-        let owner = match part.owner { Owner::Cluster(n) => n, Owner::Instance(n) => n | (1 << 31) };
-        let vertex_key = [part.part_addr, part.program, owner];
-        let vertices = device.prepare_section_vertices(&ReadMemory(mem), vertex_key, &ranges, || streams.vertex_inputs(mem))
-            .map_err(|_| "world vertex windows")?;
-        let textures = material.textures(mem, &mut device, streams.lightmap());
-        Ok(Box::new(OpaquePass { watch: self.watch, device: Arc::clone(&self.device), streams, vertices,
-            ranges, code: material.code.clone(), textures, layer, targets,
-            frame: self.frame, display_stipple: None }))
-    }
-}
-
-struct OpaquePass<B: d3d::Backend> {
-    watch: runtime::WatchId,
-    device: d3d::abi::SharedDevice<B>,
-    streams: crate::opaque_streams::Plan,
-    vertices: d3d::device::PreparedWorldVertices,
-    ranges: Vec<d3d::device::PreparedIndexRange>,
-    code: Option<d3d::shader::Microcode>,
-    textures: [Option<d3d::device::PreparedStageTexture>; 4],
-    layer: render_bridge::native_world_layers::Layer,
-    targets: d3d::device::PreparedOpaqueTargets,
-    frame: u64,
-    /// The stipple the display copy draws with (two-copy rendering), in
-    /// place of the guest's pattern the reference copy keeps.
-    display_stipple: Option<[u32; 32]>,
-}
-
-impl<B: d3d::Backend + 'static> render_bridge::native_world::OpaqueDraw for OpaquePass<B> {
-    fn display_stipple(&mut self, rows: [u32; 32]) {
-        self.display_stipple = Some(rows);
-    }
-
-    fn bind_streams<'a>(&'a self, cx: &'a hooks::Cx) -> render_bridge::native_world::OpaqueStreams<'a> {
-        Box::pin(self.streams.handoff(cx))
-    }
-
-    fn submit(self: Box<Self>, mem: &mut dyn GuestMemory, part: &native_render::world_ranges::SortedPart)
-        -> Result<(), render_bridge::native_world::OpaqueSubmitError>
-    {
-        use render_bridge::native_world::OpaqueSubmitError::{BeforeDraw, Device};
-        let Self { watch, device, streams: _, vertices, ranges, code, textures, layer, targets, frame,
-            display_stipple } = *self;
-        let _phase = timeline::phase::enter(timeline::phase::Phase::D3d);
-        let mut device = device.lock().map_err(|_| Device("opaque device mutex poisoned".into()))?;
-        drain_opaque_writes(mem, &mut device, watch).map_err(BeforeDraw)?;
-        let primitive = if part.strip { gfx::vertex::PrimitiveType::TriangleStrip }
-            else { gfx::vertex::PrimitiveType::TriangleList };
-        device.set_display_stipple(display_stipple);
-        let sent = device.emit_world_ranges(&mut crate::native_lights_glue::DeviceMemory(mem),
-            primitive, ranges, vertices, code.as_ref(), &targets, &textures, part.shader,
-            |count| crate::native_world_layers_glue::enter_opaque_range(part, layer, frame, count))
-            .map_err(|e| Device(e.to_string()))?;
-        if sent { Ok(()) } else { Err(BeforeDraw("view changed, callback or capture boundary")) }
-    }
-}
-
-/// Installs the world host and the other native stages on the device.
-pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, watch: runtime::WatchId) -> Option<Arc<dyn d3d::DrawAdmission>> {
+/// Installs the world host and the other native stages.
+pub fn install() {
     let state: State = Arc::default();
     let switches = hooks::Switches::from_env().unwrap_or_default();
     render_bridge::native_world::set_host(Arc::new(Glue {
-        watch,
-        device: Arc::clone(device),
         state: Arc::clone(&state),
         ordered_scene_world: crate::native_world_layers_glue::owns_scene_world(&switches),
-        relight_requested: d3d::scaled::lighting().is_ok_and(d3d::Lighting::is_relight),
+        relight_requested: native_render::lighting::lighting().is_ok_and(native_render::lighting::Lighting::is_relight),
         switches,
         refreshing: Arc::default(),
     }));
-    crate::native_transparents_glue::install(device, Arc::clone(&state));
-    crate::native_fog_glue::install(device, Arc::clone(&state));
-    crate::native_water_glue::install(device, Arc::clone(&state));
-    crate::native_layers_glue::install(device, Arc::clone(&state));
-    crate::native_decorators_glue::install(device, Arc::clone(&state));
+    crate::native_transparents_glue::install(Arc::clone(&state));
+    crate::native_fog_glue::install(Arc::clone(&state));
+    crate::native_water_glue::install(Arc::clone(&state));
+    crate::native_layers_glue::install(Arc::clone(&state));
+    crate::native_decorators_glue::install(Arc::clone(&state));
     crate::native_sky_glue::install(Arc::clone(&state));
-    let gels = crate::native_gels_glue::install(device);
-    crate::native_lights_glue::install(device, state, gels);
+    crate::native_gels_glue::install();
+    crate::native_lights_glue::install(state);
     // The post loads its own screen effects (`native_post_glue::EffectsSlot`).
-    crate::native_post_glue::install(device);
-    let shadows = crate::native_shadows_glue::install(device);
-    crate::native_hud_glue::install(device);
+    crate::native_post_glue::install();
+    crate::native_shadows_glue::install();
+    crate::native_hud_glue::install();
     #[cfg(feature = "movie-playback")]
-    crate::movie_display_glue::install(device);
-    shadows
+    crate::movie_display_glue::install();
 }
 
 /// The flood supplies newly visible clusters and fully opaque rigid placements.
@@ -1078,51 +855,25 @@ fn display_section_parts(
     selected
 }
 
-/// Both headers identify target 1. The shader uses guest texel coordinates,
-/// so only a linear level of the descriptor's size can supply it.
-fn accumulation_target(mem: &ReadMemory<'_>, bound: [u32; 8]) -> Option<native_render::world_layers::Texaccum> {
-    use gfx::texture::{TextureDesc, TextureKind};
-    let target = native_render::world_layers::Texaccum::read(mem)?;
-    let surface = target.surface?;
-    if bound[..2].contains(&surface) { return None; }
-    let image = d3d::resource::PixelContainer::read(mem, target.texture).ok()?;
-    let desc = TextureDesc::from_header(image.format, image.size).ok()?;
-    (image.resource.kind() == d3d::resource::ResourceType::Texture
-        && desc.kind == TextureKind::D2 && desc.format.layout() == gfx::format::Layout::Linear
-        && desc.levels == 1 && (desc.width, desc.height) == target.size).then_some(target)
-}
-
-fn accumulation_slots(selection: &WorldSelection) -> Vec<Option<d3d::ExternalSlot>> {
-    selection.texaccum.and_then(|t| t.surface)
-        .map(|header| Some(d3d::ExternalSlot { header, written: false })).into_iter().collect()
+/// The accumulation level layer 3 samples (target 1), when the bound
+/// surfaces hold one of the descriptor's size.
+fn accumulation_target(_mem: &ReadMemory<'_>) -> Option<native_render::world_layers::Texaccum> {
+    unimplemented!("world: accumulation level from the bound targets")
 }
 
 /// One view's world pass.
 struct WorldPass {
-    display_only: bool,
     selection: Arc<WorldSelection>,
     ready: Arc<Ready>,
     camera: RenderCamera,
-    /// The lens the GPU culls the selection by: the union of the
-    /// reference and display copies' (`display_camera` at the target's
-    /// projection factor), as the admission took it.
+    /// The lens the GPU culls the selection by (`display_camera` at the
+    /// view's projection factor).
     cull_camera: RenderCamera,
-    /// The device's view constants at the pass (material programs).
-    view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
-    /// The device's W-buffer clip at the pass (`d3d::DepthClip`): the range
-    /// and clamp the D3D path draws the layer with. Without it the
-    /// programs culled what lies past `z_max`, where a cinematic's range
-    /// reaches further and clamps (03a's intro: distant buildings left as
-    /// sky-coloured slivers).
-    w_clip: Option<([f32; 2], bool)>,
     /// The stencil the pass draws with ([`pass_stencil`]).
     stencil: (gfx::state::StencilState, Vec<Owner>),
-    /// The device's cull at the layer-3 call ([`inherited_cull`]; `None`:
-    /// it did not read).
+    /// The cull at the layer-3 call ([`inherited_cull`]; `None`: it did
+    /// not read).
     cull: Option<native_render::program::Cull>,
-    /// The swap's run, shared with the object runs: adjacent reservations
-    /// reuse one pin of the attachments (`d3d::ExternalPass::batch_key`).
-    run: u64,
     /// This game view in this frame ([`view_token`]): its later layers'
     /// culls read the pyramid its cull builds.
     token: u64,
@@ -1130,13 +881,13 @@ struct WorldPass {
 
 /// A game view in one frame, for the pyramid its layer 3 builds
 /// (`GpuWorld::culled_selection_draws`) and its later layers read
-/// (`GpuWorld::culled_layer_draws`): the swap's run and the guest's view
+/// (`GpuWorld::culled_layer_draws`): the frame's run and the guest's view
 /// index.
 pub(crate) fn view_token(run: u64, view: u32) -> u64 {
     (run << 32) | u64::from(view)
 }
 
-/// `CULLMODE` and `FRONTFACE` as the D3D path's pipeline takes them
+/// `CULLMODE` and `FRONTFACE` as a pipeline takes them
 /// (`gfx::translate::primitive_state`).
 pub fn inherited_cull((cull, front): (gfx::state::CullMode, gfx::state::FrontFace)) -> native_render::program::Cull {
     let rs = gfx::state::RenderState {
@@ -1168,150 +919,82 @@ fn configure_world(
     gpu.set_stencil(stencil);
 }
 
-/// The exact guest reference always binds the retail atlas. An ordinary
-/// display or a private capture can request either reconstructed atlas.
-fn world_lighting(copy: d3d::TargetCopy, lighting: d3d::Lighting) -> d3d::Lighting {
-    match copy {
-        d3d::TargetCopy::Reference => d3d::Lighting::Retail,
-        d3d::TargetCopy::Display => lighting,
-    }
+/// The stencil state layer 3 starts in.
+fn layer_stencil() -> gfx::state::StencilState {
+    unimplemented!("world: layer-3 stencil state from the device")
 }
 
-impl d3d::ExternalPass for WorldPass {
-    fn display_only(&self) -> bool { self.display_only }
-    // The selection and constants belong to this view. Ready pins the BSP,
-    // and each recording binds the target copy passed to it by the renderer.
-    fn replays_scene(&self) -> bool { true }
+/// The `CULLMODE` and `FRONTFACE` layer 3 starts in.
+fn layer_cull() -> Option<(gfx::state::CullMode, gfx::state::FrontFace)> {
+    unimplemented!("world: layer-3 cull state from the device")
+}
 
-    fn sampled(&self) -> Vec<u32> {
-        self.selection.texaccum.iter().map(|t| t.texture).collect()
-    }
+/// The display lens over the retail one, for the one copy drawn.
+pub(crate) fn projection_factor() -> f32 {
+    unimplemented!("render: display projection factor from the present camera")
+}
 
-    fn relit_lightmap_ranges(&self) -> usize {
-        self.ready.gpu().as_ref().map_or(0, |gpu| gpu.relit_lightmap_ranges(&self.selection))
-    }
+/// The view's rectangle in guest pixels: the whole target, as there is
+/// no guest viewport.
+pub(crate) fn view_rect(view: &ViewInputs) -> (u32, u32, u32, u32) {
+    (0, 0, view.guest_size.0, view.guest_size.1)
+}
 
-    /// Packets need no worker round trip; the pin holds while no other
-    /// command intervenes (`d3d::ThreadedBackend`).
-    fn batch_key(&self) -> Option<u64> { Some(self.run) }
+/// The viewport `(x, y, width, height)` in `texels` of a view whose
+/// rectangle is in guest pixels of `view.guest_size`.
+pub(crate) fn stage_viewport(view: &native_render::program::ViewInputs, texels: (u32, u32)) -> [f32; 4] {
+    let Some(scale) = gfx::raster::RenderScale::between(view.guest_size, texels) else {
+        return [0.0; 4];
+    };
+    let (x, y, w, h) = view_rect(view);
+    scale.rect(x, y, w, h).map(|n| n as f32)
+}
 
-    fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
-        self.view = Some(*constants);
-    }
+impl native_render::stage::Stage for WorldPass {
+    fn name(&self) -> &'static str { "world" }
 
-    fn depth_clip(&mut self, clip: d3d::DepthClip) {
-        self.w_clip = Some((clip.range, clip.clamp));
-    }
-
-    fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
+    /// The material programs' parts as commands for the frame's encoder:
+    /// the view rows and the guest cull's inputs copied in draw order, the
+    /// cull (`GpuWorld::culled_selection_draws`), then the packets in a
+    /// pass that loads and keeps the attachments.
+    fn record(
+        &mut self, t: &gfx::external::ExternalAttachments, request: &native_render::program::ViewInputs,
+    ) -> native_render::stage::StageWork {
         let mut guard = self.ready.gpu();
-        let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
-        if gpu.has_programs() && self.view.is_none() { return Err("world view constants unavailable"); }
-        configure_world(gpu, t.depth_format, self.cull, &self.stencil);
-        let selection = &self.selection;
-        gpu.prepare_selection(t.device, t.color_format, t.depth_format, selection)
-            .then_some(()).ok_or("world part or program binding unavailable")
-    }
-
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites { color: true, depth_stencil: true }
-    }
-
-    /// Material programs' parts are a stage of their own in the frame's
-    /// open encoder: the view rows and the guest cull's inputs copied in
-    /// draw order, the cull (`GpuWorld::culled_selection_draws`), then the
-    /// packets in a pass that loads and keeps the attachments. The fixed
-    /// stage records on its own encoder (`None`).
-    fn record_encoded(
-        &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
-        let mut guard = self.ready.gpu();
-        let Some(gpu) = guard.as_mut() else { return Some(Err("world geometry unavailable")) };
-        if !gpu.has_programs() { return None; }
-        let Some(constants) = self.view else { return Some(Err("world view constants unavailable")) };
+        let Some(gpu) = guard.as_mut() else { unimplemented!("world: geometry not uploaded at the stage") };
+        if !gpu.has_programs() { unimplemented!("world: fixed stage with no material programs") }
         configure_world(gpu, t.depth_format, self.cull, &self.stencil);
         let selection = &self.selection;
         if !gpu.prepare_selection(&t.device, t.color_format, t.depth_format, selection) {
-            return Some(Err("world part or program binding unavailable"));
+            unimplemented!("world: part or program binding unavailable");
         }
-        let view = ViewInputs {
-            constants: request.view_constants(t.copy, constants), guest_size: request.surface_size, size: t.size, z_scale: request.z_scale, w_clip: self.w_clip,
-        };
-        let accumulation = if let Some(descriptor) = selection.texaccum {
-            let Some(level) = t.sampled.first().and_then(Option::as_ref) else {
-                return Some(Err("world accumulation level unavailable"));
-            };
-            let Some(source) = t.slots.first().and_then(Option::as_ref) else {
-                return Some(Err("world accumulation surface unavailable"));
-            };
-            if source.guest_size != descriptor.size || source.size != level.size
-                || source.sample.texture() != level.view.texture()
-                || level.view.texture() == t.color.texture() || level.view.texture() == t.depth.texture()
-                || !gfx::program::filterable(level.view.texture().format(), t.device.features())
-            {
-                return Some(Err("world accumulation target mismatch"));
-            }
-            Some((&t.device, &level.view))
-        } else { None };
-        // The pyramid's screen: this copy's lens into the request's
-        // rectangle, as the fixed stage draws the view.
-        let lens = native_render::camera::display_camera(self.camera, request.projection_factor(t.copy));
-        let [x, y, width, height] = d3d::backend::external_viewport(&request, t.size);
+        let view = ViewInputs { size: t.size, ..*request };
+        if selection.texaccum.is_some() {
+            unimplemented!("world: accumulation level from the targets");
+        }
+        // The pyramid's screen: the lens into the request's rectangle.
+        let lens = native_render::camera::display_camera(self.camera, projection_factor());
+        let [x, y, width, height] = stage_viewport(request, t.size);
         let occlusion = Some((t.depth.texture(), &lens, PassViewport { x, y, width, height }, self.token));
         let culled = gpu.culled_selection_draws(&t.uploads, &t.device, &t.queue, t.color_format, t.depth_format, t.size,
-            selection, &view, &self.cull_camera, world_lighting(t.copy, t.lighting), accumulation, occlusion);
-        Some(culled.and_then(|culled| {
-            let draws = crate::native_layers_glue::clip_packets(culled.draws, request, t.size)?;
-            let late = d3d::backend::ExternalDraws { ranges: 0, packets: culled.late, discards: true, writes: Vec::new() };
-            let late = crate::native_layers_glue::clip_packets(late, request, t.size)?.packets;
-            Ok(encoded_world(t, draws, late, culled.dispatch))
-        }))
-    }
-
-    fn encode(&mut self, t: d3d::ExternalTarget<'_>) { self.record_ranges(t); }
-
-    fn record_ranges(&mut self, mut t: d3d::ExternalTarget<'_>) -> usize {
-        let mut gpu = self.ready.gpu();
-        let Some(gpu) = gpu.as_mut() else { return 0 };
-        configure_world(gpu, t.depth_format, self.cull, &self.stencil);
-        let selection = &self.selection;
-        let view = self.view.map(|constants| ViewInputs {
-            constants: t.view_constants(constants), guest_size: t.guest_size, size: t.size, z_scale: t.z_scale, w_clip: self.w_clip,
-        });
-        let depth = DepthRule { full_scale: t.z_scale, floor: true };
-        let camera = native_render::camera::display_camera(self.camera, t.projection_factor());
-        if !gpu.write_selection(&mut t.encoder_uploads(), selection, view.as_ref(), &camera, depth) {
-            return 0;
+            selection, &view, &self.cull_camera, t.lighting, None, occlusion);
+        let encoded = culled.map(|culled| encoded_world(t, culled.draws, culled.late, culled.dispatch));
+        match encoded {
+            Ok(e) => native_render::stage::StageWork::Encoded(e),
+            Err(why) => unimplemented!("world: {why}"),
         }
-        let [x, y, width, height] = t.viewport;
-        let recorded = gpu.encode_selection_lit(
-            t.encoder,
-            t.color,
-            t.color_format,
-            t.depth,
-            t.depth_format,
-            PassViewport { x, y, width, height },
-            t.size,
-            selection,
-            world_lighting(t.copy, t.lighting),
-        );
-        let unbound = gpu.unbound_batches();
-        if unbound > 0 && !UNBOUND.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            eprintln!("native-world: {unbound} batch draws left out: their material program could not be bound");
-        }
-        recorded
     }
 }
 
 /// A game view's culled world parts as commands for the frame's encoder
-/// ([`WorldPass::record_encoded`]): the view rows staged now and copied in
+/// ([`WorldPass::record`]): the view rows staged now and copied in
 /// draw order, the early cull, the early packets in a pass over the
 /// attachments (loaded and kept), then with the pyramid its build from
 /// that depth, the late cull and the late packets in a second pass.
 fn encoded_world(
-    t: &d3d::backend::ExternalAttachments, draws: d3d::backend::ExternalDraws, late: Vec<gfx::RecordedDraw>,
+    t: &gfx::external::ExternalAttachments, draws: gfx::external::ExternalDraws, late: Vec<gfx::RecordedDraw>,
     dispatch: native_render::cull_gpu::GuestDispatch,
-) -> d3d::backend::ExternalEncoded {
+) -> gfx::external::ExternalEncoded {
     let writes: Vec<_> = draws.writes.iter()
         .map(|(dst, offset, bytes)| (t.uploads.stage(&t.device, &t.queue, bytes), dst.clone(), *offset, bytes.len() as u64))
         .collect();
@@ -1355,16 +1038,8 @@ fn encoded_world(
             draw(encoder, late);
         }
     };
-    d3d::backend::ExternalEncoded { ranges, draws: count, passes, commands: Box::new(commands) }
+    gfx::external::ExternalEncoded { ranges, draws: count, passes, commands: Box::new(commands) }
 }
-
-static NOT_W_BUFFERED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Said once when a material program could not be bound.
-static UNBOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static PALETTE_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static STENCIL_UNREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-static STENCIL_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The stencil the native pass draws layer 3 with, from the device's state
 /// as the layer starts (`now`) and how its items switch it (`plan`,
@@ -1374,7 +1049,7 @@ static STENCIL_REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 /// The native pass draws its parts before the layer's items and clears
 /// them, so their switches do not run. Without any switch, every item
 /// draws with `now`. With one, an item leaves mode 1, so `now` must be
-/// mode 1 for the items left to D3D to see what they would have: then the
+/// mode 1 for the items left to the guest to see what they would have: then the
 /// flags' mode 0 is the stencil off for every item, and otherwise a marked
 /// section draws with mode 1's state and reference `0xff` (mode 2), the
 /// rest with mode 1. Each part writes what its own item would have where
@@ -1392,9 +1067,14 @@ fn pass_stencil(now: &gfx::state::StencilState, plan: &StencilPlan) -> Option<(g
     Some((*now, plan.marked.clone()))
 }
 
+/// The palette bound at stage `stage` now.
+pub fn stage_palette(_stage: usize) -> Option<Vec<u32>> {
+    unimplemented!("world: stage palettes from the device")
+}
+
 /// The palettes bound at stages 0..3 now.
-pub fn stage_palettes<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> StagePalettes {
-    std::array::from_fn(|s| d.stage_palette(&ReadMemory(mem), s))
+pub fn stage_palettes() -> StagePalettes {
+    std::array::from_fn(stage_palette)
 }
 
 /// Guest pointer to the palette header read by the scene's texture reset (0x00015b70).
@@ -1402,10 +1082,15 @@ const DEFAULT_SCENE_PALETTE: u32 = 0x0048_4dbc;
 
 /// A loading/UI boundary may not have the scene's palette bound yet.
 /// The scene reset binds this palette; each native draw still checks its bindings.
-pub fn scene_load_palettes<B: d3d::backend::Backend>(d: &d3d::Device<B>, mem: &dyn GuestMemory) -> StagePalettes {
-    let mut bound = stage_palettes(d, mem);
-    supply_scene_palette(&mut bound, || d.palette_entries(&ReadMemory(mem), mem.u32(DEFAULT_SCENE_PALETTE).ok()?));
+pub fn scene_load_palettes(mem: &dyn GuestMemory) -> StagePalettes {
+    let mut bound = stage_palettes();
+    supply_scene_palette(&mut bound, || palette_entries(mem, mem.u32(DEFAULT_SCENE_PALETTE).ok()?));
     bound
+}
+
+/// The 256 entries of the palette whose header is `header`.
+fn palette_entries(_mem: &dyn GuestMemory, _header: u32) -> Option<Vec<u32>> {
+    unimplemented!("world: palette entries from the palette resource")
 }
 
 fn supply_scene_palette(bound: &mut StagePalettes, default: impl FnOnce() -> Option<Vec<u32>>) {
@@ -1426,23 +1111,11 @@ pub fn palettes_hold(used: &StagePalettes, bound: &dyn Fn(usize) -> Option<Vec<u
     used.iter().enumerate().all(|(s, p)| p.is_none() || bound(s) == *p)
 }
 
-/// The hook's guest memory as the device reads it, read-only.
+/// The hook's guest memory, read-only.
 pub struct ReadMemory<'a>(pub &'a dyn GuestMemory);
 
 impl native_render::camera::GuestRead for ReadMemory<'_> {
     fn read_u32(&self, addr: u32) -> Option<u32> { self.0.u32(addr).ok() }
-}
-
-impl d3d::GuestMemory for ReadMemory<'_> {
-    fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), d3d::GuestError> {
-        self.0.read(addr, out).map_err(|f| d3d::GuestError { addr: f.addr, len: f.len })
-    }
-    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), d3d::GuestError> {
-        Err(d3d::GuestError {
-            addr,
-            len: data.len() as u32,
-        })
-    }
 }
 
 /// Raw resource reads over the map and its shared maps.
@@ -1566,7 +1239,6 @@ fn load_ready(
         placements: world.placements.clone(),
         ..Default::default()
     };
-    let opaque = opaque_materials::Library::load(&mut map, &shaders);
     // Every opaque part, before the layer-3 filter: E3's sun tiles draw
     // object shadows on the structure (docs/graphics/e3-lighting.md, "Sun
     // shadows from objects"). Retail never reads it.
@@ -1593,11 +1265,11 @@ fn load_ready(
         let placed = world.draws.iter().filter(|d| native.contains(&d.material) && matches!(d.owner, Owner::Instance(_)));
         let (with, without) = placed.fold((0, 0), |(w, wo), d| if accepts(d) { (w + 1, wo) } else { (w, wo + 1) });
         eprintln!(
-            "native-world: {with} instanced-geometry parts draw natively with their rigid programs (the placement's rows in c[50..52] per draw, as 0x0004d830 uploads them); D3D keeps {without} of native materials without one"
+            "native-world: {with} instanced-geometry parts draw natively with their rigid programs (the placement's rows in c[50..52] per draw, as 0x0004d830 uploads them); the guest keeps {without} of native materials without one"
         );
         for (why, ms) in &rigid_refused {
             let parts = world.draws.iter().filter(|d| ms.contains(&d.material) && matches!(d.owner, Owner::Instance(_))).count();
-            eprintln!("native-world: D3D keeps the placements of {} materials ({parts} parts): {why}", ms.len());
+            eprintln!("native-world: the guest keeps the placements of {} materials ({parts} parts): {why}", ms.len());
         }
         if !palettized.is_empty() {
             // The materials whose look depends on a device palette (the
@@ -1666,7 +1338,7 @@ fn load_ready(
     if !send(StageReady::World(Arc::new(Ready {
         sun_world: Some(sun_world),
         relit: AtomicBool::new(gpu.has_relight()),
-        retire: Some(retire), opaque, part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts), section_parts,
+        retire: Some(retire), part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts), section_parts,
         layer3, pages: page_set,
         upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
         fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
@@ -1783,7 +1455,7 @@ fn part_set(world: &World, shaders: &[TagId]) -> PartSet {
         .collect()
 }
 
-/// Materials left to the D3D path, by reason.
+/// Materials left to the guest, by reason.
 type Refused = BTreeMap<String, Vec<u16>>;
 
 fn top_rejections(refused: &Refused) -> Vec<(String, usize)> {
@@ -1794,7 +1466,7 @@ fn top_rejections(refused: &Refused) -> Vec<(String, usize)> {
 }
 
 /// The coverage of one load on stderr: how many materials (and parts)
-/// draw natively, then one line per reason the rest stay on the D3D path,
+/// draw natively, then one line per reason the rest stay on the guest,
 /// most parts first, with a material that has it.
 fn log_coverage<R: std::io::Read + std::io::Seek>(
     map: &mut Map<R>,
@@ -1811,7 +1483,7 @@ fn log_coverage<R: std::io::Read + std::io::Seek>(
     let count = |ms: &[u16]| ms.iter().map(|m| parts.get(m).copied().unwrap_or(0)).sum::<usize>();
     let materials = world.materials();
     eprintln!(
-        "native-world: {} of {} materials draw natively with their own programs ({} of {} parts); {} stay on the D3D path for {} reasons",
+        "native-world: {} of {} materials draw natively with their own programs ({} of {} parts); {} stay on the guest for {} reasons",
         native.len(),
         materials.len(),
         drawn_parts,
@@ -1827,7 +1499,7 @@ fn log_coverage<R: std::io::Read + std::io::Seek>(
             .and_then(|&m| shaders.get(usize::from(m)))
             .and_then(|&s| map.tag(s).ok().and_then(|t| t.name.clone()))
             .unwrap_or_default();
-        eprintln!("native-world: D3D keeps {} materials ({n} parts): {why}; e.g. {example}", ms.len());
+        eprintln!("native-world: the guest keeps {} materials ({n} parts): {why}; e.g. {example}", ms.len());
     }
 }
 
@@ -1885,7 +1557,7 @@ struct Programs {
     programs: HashMap<u16, MaterialProgram>,
     images: StageImages,
     refused: Refused,
-    /// Native materials whose placements stay on the D3D path, by reason
+    /// Native materials whose placements stay on the guest, by reason
     /// (their rigid program does not translate or fit).
     rigid_refused: Refused,
     /// Materials with a palettized stage bitmap.
@@ -1894,7 +1566,7 @@ struct Programs {
 
 /// The world's layer-3 programs, the parts that supply their inputs
 /// (`program::part_fit`), the images their stages sample, and the
-/// others by the reason they stay on the D3D path. Stage images go
+/// others by the reason they stay on the guest. Stage images go
 /// through `decoder` (a palettized one expanded through its stage's
 /// palette, [`StageDecoder`]).
 fn material_programs<R: std::io::Read + std::io::Seek>(
@@ -1992,7 +1664,7 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
                 p.animation = animation;
                 if placed.contains(&m) {
                     // Its placements: the pass with the rigid
-                    // classification, or they stay on the D3D path.
+                    // classification, or they stay on the guest.
                     let rigid = look::vertex_program(lib.metadata(), vrtx, look::RIGID_CLASSIFICATION)
                         .ok_or_else(|| "no rigid vertex program".to_string())
                         .and_then(|code| {
@@ -2013,7 +1685,7 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
                     if p.dims[n].is_none() || layered.contains_key(&(bitmap, image)) {
                         continue;
                     }
-                    // A linear texture is addressed in texels on the D3D
+                    // A linear texture is addressed in texels on the guest
                     // path (`tex_scale`); the programs take normalised
                     // coordinates.
                     uses_palette |= decoder.decode(map, files, images, bitmap, image, n, true)?;
@@ -2044,7 +1716,7 @@ fn material_programs<R: std::io::Read + std::io::Seek>(
                 }
                 if hooks::native_verbose() {
                     for (why, count) in reasons {
-                        eprintln!("native-world: material {m} leaves {count} parts to D3D: {why}");
+                        eprintln!("native-world: material {m} leaves {count} parts to the guest: {why}");
                     }
                 }
                 programs.insert(m, p);
@@ -2143,15 +1815,6 @@ mod tests {
         assert!(!ready.owns_display_lightmaps());
     }
 
-    #[test]
-    fn replacement_arms_are_display_only() {
-        use d3d::{Lighting, TargetCopy};
-        for mode in [Lighting::Retail, Lighting::E3, Lighting::RelightOn, Lighting::RelightOff] {
-            assert_eq!(world_lighting(TargetCopy::Reference, mode), Lighting::Retail);
-            assert_eq!(world_lighting(TargetCopy::Display, mode), mode);
-        }
-    }
-
     /// A live edit's drain, sorted for the world of one BSP: its sections
     /// in place, another BSP's left for that BSP's load, a grown section
     /// (or one of an unknown kind) reloading the world, images rewritten,
@@ -2205,8 +1868,8 @@ mod tests {
     /// cluster's, and a placement's when the material has a rigid program
     /// (`rigid`). The passes after layer 3 (shadows 11, lights 12 and 13, fog
     /// 16, overlays 7) test `ZFUNC` equal against layer 3's depth, so the
-    /// native pass must write the D3D path's bits: a cluster goes through the
-    /// world program with the same position bits on both paths, and the D3D
+    /// native pass must write the guest's bits: a cluster goes through the
+    /// world program with the same position bits on both paths, and the guest
     /// path draws a placement with the rigid classification of the pass's
     /// vertex program, which places the definition's vertices on the GPU with
     /// the placement's rows in `c[50..52]` (`0x0004d830`: forward, left and up
@@ -2218,41 +1881,6 @@ mod tests {
             Owner::Cluster(_) => true,
             Owner::Instance(_) => rigid.contains(&d.material),
         }
-    }
-
-    #[test]
-    fn opaque_resource_boundaries_drain_the_same_runtime_watch_as_d3d() {
-        use d3d::device::{DeviceConfig, GuestRange};
-        use runtime::guest::Permissions;
-        use runtime::watch::CONTIGUOUS_BASE;
-
-        let mut mem = runtime::Guest::new();
-        let va = 0x10000;
-        let pa = 0x40000;
-        let folded = CONTIGUOUS_BASE | pa;
-        mem.map(va, 0x2000, pa, Permissions::RW).unwrap();
-        let watch = mem.subscribe_writes(crate::d3d_glue::WATCH_OWNER);
-        let foreign = mem.subscribe_writes("other observer");
-        for id in [watch, foreign] { mem.watch_writes(id, folded, 0x2000).unwrap(); }
-
-        let range = GuestRange { addr: 0x60000, len: 0x10000 };
-        let mut device = d3d::Device::new(DeviceConfig::halo2(range, range), d3d::RecordingBackend::new());
-        device.tracker.watch(folded, 0x2000);
-        let initial = device.tracker.generation();
-        mem.set_u32(va, 42).unwrap();
-        drain_opaque_writes(&mut mem, &mut device, watch).unwrap();
-        assert!(device.tracker.dirty_since(folded, 4, initial));
-        assert!(!mem.has_dirty(watch));
-
-        // A material or resource-destroy callback writes another page after
-        // prepare. Its store must be visible to the later ordered emit.
-        let prepared = device.tracker.generation();
-        mem.set_u32(va + 0x1004, 81).unwrap();
-        drain_opaque_writes(&mut mem, &mut device, watch).unwrap();
-        assert!(!device.tracker.dirty_since(folded, 4, prepared));
-        assert!(device.tracker.dirty_since(folded + 0x1004, 4, prepared));
-        assert!(!mem.has_dirty(watch));
-        assert_eq!(mem.take_dirty(foreign).unwrap(), [runtime::DirtyRange { addr: folded, len: 0x2000 }]);
     }
 
     #[test]
@@ -2312,7 +1940,7 @@ mod tests {
     }
 
     #[test]
-    fn materials_left_to_the_d3d_path_leave_the_world() {
+    fn materials_left_to_the_guest_leave_the_world() {
         let tri = |m| SectionInput {
             positions: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             parts: vec![PartInput {
@@ -2334,14 +1962,14 @@ mod tests {
     }
 
     #[test]
-    fn an_untranslated_material_keeps_its_d3d_draws_and_a_translated_one_is_skipped() {
+    fn an_untranslated_material_keeps_its_guest_draws_and_a_translated_one_is_skipped() {
         // The world as the loader leaves it with programs on: material 7
         // translated, materials 8 and 9 refused, 9 sharing 7's shader. 8
-        // and 9 are neither drawn natively nor skipped, so the D3D path
+        // and 9 are neither drawn natively nor skipped, so the guest
         // still draws them; 7's cluster part is drawn natively and
         // skipped, the shader's other parts not, and 7's part on an
-        // instanced placement stays on the D3D path without a rigid
-        // program (the D3D path places it on the GPU), and is drawn
+        // instanced placement stays on the guest without a rigid
+        // program (the guest places it on the GPU), and is drawn
         // natively with one.
         let tri = |m| PartInput {
             material: m,
@@ -2399,37 +2027,12 @@ mod tests {
     }
 
     #[test]
-    fn the_inherited_cull_is_the_device_s_as_the_d3d_pipeline_takes_it() {
-        // The D3D draws of placement 282 on 03a: `CULL_CW`, front face `CW`.
+    fn the_inherited_cull_is_the_pipeline_s() {
+        // Placement 282 on 03a: `CULL_CW`, front face `CW`.
         use gfx::state::{CullMode, FrontFace};
         assert_eq!(inherited_cull((CullMode::Cw, FrontFace::Cw)), (Some(wgpu::Face::Front), wgpu::FrontFace::Cw));
         assert_eq!(inherited_cull((CullMode::Ccw, FrontFace::Cw)), (Some(wgpu::Face::Back), wgpu::FrontFace::Cw));
         assert_eq!(inherited_cull((CullMode::None, FrontFace::Ccw)), (None, wgpu::FrontFace::Ccw));
-    }
-
-    #[test]
-    fn combined_world_draws_pin_the_linear_accumulation_level_at_its_guest_size() {
-        use d3d::resource::{ResourceType, common};
-        use native_render::object_nodes::{TEXACCUM_HEADER as header, TEXACCUM_TARGET as descriptor};
-        let mut mem = engine::memory::FlatMemory::new(descriptor, 0x98);
-        for (offset, word) in [(0x78, 1), (0x80, 8), (0x84, 3), (0x88, 1)] {
-            mem.set_u32(descriptor + offset, word).unwrap();
-        }
-        let format = |f: gfx::D3DFormat| (2 << 4) | (f.raw() << 8) | (1 << 16);
-        mem.set_u32(header, ResourceType::Texture.raw() << common::TYPE_SHIFT).unwrap();
-        mem.set_u32(header + 12, format(gfx::D3DFormat::LinA8R8G8B8)).unwrap();
-        mem.set_u32(header + 16, 7 | (2 << 12)).unwrap();
-        let bound = [0; 8];
-        let t = accumulation_target(&ReadMemory(&mem), bound).unwrap();
-        assert_eq!((t.texture, t.size), (header, (8, 3)));
-        let mut alias = bound;
-        alias[0] = t.surface.unwrap();
-        assert!(accumulation_target(&ReadMemory(&mem), alias).is_none());
-        mem.set_u32(descriptor + 0x80, 7).unwrap();
-        assert!(accumulation_target(&ReadMemory(&mem), bound).is_none());
-        mem.set_u32(descriptor + 0x80, 8).unwrap();
-        mem.set_u32(header + 12, format(gfx::D3DFormat::A8R8G8B8)).unwrap();
-        assert!(accumulation_target(&ReadMemory(&mem), bound).is_none());
     }
 
     #[test]
@@ -2531,7 +2134,7 @@ mod tests {
     /// item draws (`0x0004d640`, the draw, `0x0004d720`), against what the
     /// native pass writes for its part, over every stored value; and the
     /// device's state after the layer, which the native pass does not set
-    /// (the D3D items left in the layer and the passes after it see the
+    /// (the guest items left in the layer and the passes after it see the
     /// state the layer started in): the same as the game's after its last
     /// switching item, mode 1.
     #[test]

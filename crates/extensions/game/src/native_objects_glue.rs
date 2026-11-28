@@ -2,7 +2,7 @@
 //!
 //! The activation worker reads the mounted tag index and uploads each
 //! supported mode once. The sorted scene walk resolves every part of a
-//! run before reserving it for every live target copy.
+//! run, then pushes it as one frame stage (`FrameOp::Stage`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
@@ -31,7 +31,7 @@ use timeline::native::{ObjectWalk, ReservationCause, Stage as NativeStage};
 use native_render::program::ViewInputs;
 
 use crate::native_map::{self, NativeMap};
-use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, palettes_hold, scene_load_palettes};
+use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, palettes_hold, scene_load_palettes, stage_palette};
 
 mod display;
 mod palette;
@@ -119,7 +119,7 @@ impl MapState {
     }
 }
 
-/// The device at the layer-3 call: the render states the items' draws
+/// The draw state at the layer-3 call: the render states the items' draws
 /// inherit ([`EntryStates`]) and whether its draws are W-buffered.
 #[derive(Clone, Debug)]
 struct LayerEntry {
@@ -131,25 +131,78 @@ static STATE_TABLE: std::sync::LazyLock<gfx::xdk::RenderStateTable> =
     std::sync::LazyLock::new(gfx::xdk::RenderStateTable::default);
 
 impl LayerEntry {
-    fn read<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> Self {
-        let read = crate::native_world_glue::ReadMemory(mem);
-        Self::read_with(device, &|g| device.render_state(&read, g))
+    fn read() -> Self {
+        Self::read_with(&device_state::render_state)
     }
 
-    /// The render states from `states`, by guest slot; the W buffer the
-    /// device's.
-    fn read_with<B: d3d::backend::Backend>(device: &d3d::Device<B>, states: &dyn Fn(u32) -> Option<u32>) -> Self {
+    /// The render states from `states`, by guest slot.
+    fn read_with(states: &dyn Fn(u32) -> Option<u32>) -> Self {
         let table = &*STATE_TABLE;
         Self {
             states: EntryStates::read(|t| table.canonical_to_guest(t.index()).and_then(states)),
-            w_buffered: device.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE != 0),
+            w_buffered: device_state::w_buffered(),
         }
     }
 }
 
-/// The host: the device and the current map's models.
-pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
-    device: d3d::abi::SharedDevice<B>,
+/// The draw state the guest's D3D calls set, which the object, layer and
+/// first-person plans check and inherit. No owner yet: each read is a
+/// named gap.
+pub(crate) mod device_state {
+    /// The render state at guest slot `slot`.
+    pub(crate) fn render_state(_slot: u32) -> Option<u32> {
+        unimplemented!("objects: render state from the device")
+    }
+
+    /// Whether the draws are W-buffered (`SET_CONTROL0`'s z-perspective).
+    pub(crate) fn w_buffered() -> bool {
+        unimplemented!("objects: W-buffer control from the device")
+    }
+
+    /// The stencil the next draw takes.
+    pub(crate) fn stencil() -> Option<gfx::state::StencilState> {
+        unimplemented!("objects: stencil state from the device")
+    }
+
+    /// Vertex constant `c[register]`.
+    pub(crate) fn constant(_register: usize) -> [f32; 4] {
+        unimplemented!("objects: vertex constants from the device")
+    }
+
+    /// The polygon stipple switch (`SET_STIPPLE_CONTROL`).
+    pub(crate) fn stipple_control() -> Option<u32> {
+        unimplemented!("objects: stipple control from the device")
+    }
+
+    /// The polygon stipple pattern.
+    pub(crate) fn stipple_pattern() -> [u32; 32] {
+        unimplemented!("objects: stipple pattern from the device")
+    }
+
+    /// The W clip range pushed for a view whose far is `far`.
+    pub(crate) fn depth_clip_range(_far: f32) -> [f32; 2] {
+        unimplemented!("objects: depth clip from the device")
+    }
+
+    /// Texture stage `stage`'s state `state`.
+    pub(crate) fn texture_state(_stage: u32, _state: u32) -> Option<u32> {
+        unimplemented!("objects: texture stage states from the device")
+    }
+
+    /// The program clip words `[near, far]` and clip flags the game stores
+    /// in the device.
+    pub(crate) fn stored_clip() -> Option<([u32; 2], u32)> {
+        unimplemented!("objects: stored clip words from the device")
+    }
+
+    /// The fog words the draws inherit.
+    pub(crate) fn fog_words() -> [Option<u32>; 7] {
+        unimplemented!("objects: fog words from the device")
+    }
+}
+
+/// The host: the current map's models.
+pub struct Glue {
     state: Arc<Mutex<Option<MapState>>>,
     gpu: (wgpu::Device, wgpu::Queue),
     /// A live edit's refresh is running ([`refresh_models`]); edits wait
@@ -157,7 +210,7 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     refreshing: Arc<AtomicBool>,
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+impl Glue {
     fn load(&self, mem: &dyn GuestMemory) -> Option<(Arc<Models>, u64)> {
         let generation = native_map_work::generation();
         let mut field = [0; 32];
@@ -174,7 +227,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         let _dispatch = timeline::setup::dispatch();
         install_function_tables(mem);
-        let palettes = self.device.lock().ok().map(|d| scene_load_palettes(&d, mem)).unwrap_or_default();
+        let palettes = scene_load_palettes(mem);
         let formats = StreamFormats::read(&Ro(mem));
         let mut state = self.state.lock().ok()?;
         if generation != native_map_work::generation() {
@@ -210,12 +263,12 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     }
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+impl Glue {
     /// Starts a live edit's refresh of the resident models
     /// (docs/editor/realtime-edits.md, "The native refresh") when edits
     /// are queued and no refresh is running: on a worker
     /// ([`refresh_models`]), with the stage palettes and stream formats
-    /// the device holds now, as a load reads them.
+    /// bound now, as a load reads them.
     fn refresh_edits(&self, mem: &dyn GuestMemory, models: &Arc<Models>, generation: u64) {
         use render_bridge::native_edits::{self, Consumer};
         if !native_edits::pending(Consumer::Objects) || self.refreshing.load(Ordering::Acquire) {
@@ -229,7 +282,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         if edits.is_empty() {
             return;
         }
-        let palettes = self.device.lock().ok().map(|d| scene_load_palettes(&d, mem)).unwrap_or_default();
+        let palettes = scene_load_palettes(mem);
         let formats = StreamFormats::read(&Ro(mem));
         self.refreshing.store(true, Ordering::Release);
         let refreshing = Arc::clone(&self.refreshing);
@@ -298,7 +351,7 @@ fn shader_models(model_shaders: &[(u32, Vec<u32>)], edited: &mut dyn FnMut(TagId
 }
 
 /// Takes `mode` out of the draw set and the coverage: its parts keep
-/// their D3D draws, from guest memory, which the edit wrote.
+/// their guest draws, from guest memory, which the edit wrote.
 fn leave_native(models: &Models, mode: TagId) {
     let mut lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(lit) = lit.as_mut() {
@@ -405,7 +458,7 @@ fn refresh_models(
             Err(why) => Some(why),
         };
         if let Some(why) = why {
-            eprintln!("native-objects: {name}: model {:#010x} leaves the native path after a live edit ({why}); D3D draws it", mode.0);
+            eprintln!("native-objects: {name}: model {:#010x} leaves the native path after a live edit ({why})", mode.0);
             leave_native(models, mode);
         }
     }
@@ -443,7 +496,7 @@ fn refresh_models(
     queue.submit([]);
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+impl Host for Glue {
     fn retire_map(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let retired = if state.as_ref().is_some_and(|s| s.generation != native_map_work::generation()) {
@@ -484,12 +537,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn entry_state(&self, mem: &dyn GuestMemory, predict: bool) -> Option<Vec<render_bridge::native_objects::before::Field>> {
-        let device = self.device.lock().ok()?;
-        Some(entry_fields(&device, mem, predict))
+        Some(entry_fields(mem, predict))
     }
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+impl Glue {
     /// A run of layer 3's objects: at its first geometry handler
     /// (`before` false, the guest's layer setup run), or before the layer
     /// draw from the Rust-built list (`before` true): then the layer
@@ -502,13 +554,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         consume: &mut dyn FnMut(&mut dyn GuestMemory) -> bool, before: bool,
     ) -> Result<(), ObjectWalk> {
         use timeline::native::{Metric, Stage, Timer};
-        // With a render thread that records scene stages, the planning here
-        // is extraction: the guest and device reads and every check that
-        // can refuse, which decide the run the guest skips. The packets,
-        // pipelines and uploads are made on the render thread
-        // (docs/graphics/framescene.md, slice 2).
-        let staging = self.device.lock().is_ok_and(|d| d.queues_scene_stages(Stage::Objects));
-        let planning = Timer::start(Stage::Objects, if staging { Metric::ExtractNs } else { Metric::PrepareNs });
+        // The planning here is extraction: the guest reads and every check
+        // that can refuse, which decide the run the guest skips. The
+        // packets, pipelines and uploads are made on the render thread.
+        let planning = Timer::start(Stage::Objects, Metric::ExtractNs);
         if !before && mem.u8(engine::render_loop::layer::DRAW_FLAG) != Ok(0) {
             // The guest's first shader begin initializes the whole layer's
             // state and clears the cached texture-stage bindings.
@@ -516,88 +565,49 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         let (models, generation) = self.load(mem).ok_or(ObjectWalk::Model)?;
         self.refresh_edits(mem, &models, generation);
-        let mut device = self.device.lock().map_err(|_| refused(ReservationCause::Error))?;
-        // Before the layer draw the device holds what the work before it
-        // left: the draws run with the layer begin's `ZENABLE`, set before
-        // the drain as the world layers' objects set it.
-        if before && apply_layer_begin_zenable(&mut device, mem).is_err() {
-            return Err(ObjectWalk::State);
-        }
-        if !device.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem))
-            .map_err(|_| refused(ReservationCause::Error))?
-        {
-            return Err(refused(ReservationCause::Declined));
-        }
-        if !model_palettes_hold(&models, &device, mem) {
+        if !model_palettes_hold(&models) {
             return Err(ObjectWalk::Inputs);
         }
         // The view needs a render camera that reads, as the layer's draws
         // do: the frame step opened it with one (render_bridge::scene_step).
         let (scene, scene_view) = view.ok_or(ObjectWalk::Inputs)?;
-        let read = crate::native_world_glue::ReadMemory(mem);
-        if !crate::native_layers_glue::viewport_clip(&device, &read) {
-            return Err(ObjectWalk::State);
-        }
         // Before the call the cache is the one the layer setup clears.
         let cached = if before { Some(0) } else { None };
-        let draws = plan_walk(&models, &device, mem, scene, scene_view, first, run, cached)?;
-        let texaccum = sampled_texaccum(&device, mem, draws.iter().any(|(_, draw)| draw.texaccum))
+        let draws = plan_walk(&models, mem, scene, scene_view, first, run, cached, before)?;
+        let texaccum = sampled_texaccum(mem, draws.iter().any(|(_, draw)| draw.texaccum))
             .map_err(|()| ObjectWalk::Inputs)?;
-        let display_draws = display_lod.and_then(|lod| {
-            display::plan_lod(&models, &device, mem, scene, scene_view, run, &draws, lod)
-        });
-        let ranges = draws.len();
+        // The display's detail substitution, when one plans.
+        let draws = display_lod
+            .and_then(|lod| display::plan_lod(&models, mem, scene, scene_view, run, &draws, lod))
+            .unwrap_or(draws);
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let promise = d3d::ExternalPlan { stage: Stage::Objects, view, ranges, slots: Vec::new() };
-        let batch = u64::from(device.swap_count()).wrapping_add(1);
-        let pass = |draws: Vec<(u32, PlannedDraw)>| {
-            Box::new(ObjectsPass {
-                slot, display_only: false, display_draws: display_draws.clone(),
-                models: Arc::clone(&models), draws, texaccum, view: None, w_clip: None, run: batch,
-            })
-        };
         drop(planning);
-        // The load the run was planned against, held to the commit.
-        let current = || match self.state.lock() {
+        // The load the run was planned against, held to the push.
+        let _state = match self.state.lock() {
             Ok(state)
                 if state.as_ref().is_some_and(|s| {
                     s.generation == generation
                         && s.published.as_ref().is_some_and(|(_, current)| Arc::ptr_eq(current, &models))
                 }) && generation == native_map_work::generation() =>
             {
-                Ok(state)
+                state
             }
-            _ => Err(refused(ReservationCause::Stale)),
+            _ => return Err(refused(ReservationCause::Stale)),
         };
-        // A scene stage: queued now, its packets made when the render
-        // thread reaches it. Not taken, the run is reserved here as before.
-        if staging {
-            let reserved = device.reserve_scene_stage(
-                &mut crate::native_lights_glue::DeviceMemory(mem), promise.clone(), pass(draws.clone()),
-            );
-            if let Some(reservation) = reserved.map_err(|_| refused(ReservationCause::Error))? {
-                let _state = current()?;
-                if !consume(mem) {
-                    return Err(refused(ReservationCause::Consumed));
-                }
-                reservation.commit();
-                return Ok(());
-            }
-        }
-        let ready = match device.prepare_external_bound(
-            &mut crate::native_lights_glue::DeviceMemory(mem), promise, pass(draws), Vec::new(),
-        ) {
-            Ok(Some(ready)) => ready,
-            Ok(None) => return Err(refused(ReservationCause::Unbound)),
-            Err(_) => return Err(refused(ReservationCause::Error)),
-        };
-        let _state = current()?;
         if !consume(mem) {
             return Err(refused(ReservationCause::Consumed));
         }
-        ready.commit();
+        push_objects(view, ObjectsPass { slot, models: Arc::clone(&models), draws, texaccum });
         Ok(())
     }
+}
+
+/// Pushes an objects stage in view `view`'s opaque slot.
+fn push_objects(view: u32, pass: ObjectsPass) {
+    native_render::stage::frame_builder().push(native_render::stage::FrameOp::Stage {
+        slot: frame_types::SlotAt { slot: frame_types::Slot::Opaque, view: view as u8 },
+        stage: Box::new(pass),
+    });
 }
 
 /// A refused reservation of the objects walk: the cause is counted under
@@ -609,7 +619,7 @@ fn refused(cause: ReservationCause) -> ObjectWalk {
     ObjectWalk::Reservation
 }
 
-/// D3D's specular bit selects the colour term in its implicit final combiner.
+/// The specular bit selects the colour term in its implicit final combiner.
 const SPECULAR_ENABLE: u32 = 103;
 const STIPPLE_ENABLE: u32 = 83;
 const TWO_SIDED_LIGHTING: u32 = 141;
@@ -644,23 +654,31 @@ fn set_fog(draw: &mut PlannedDraw, words: [u32; 7], specular: Option<u32>) -> Op
 /// same render states it would inherit if the skipped programs had run.
 /// The guest's own shader/binding cache tracks the last real guest call.
 ///
-/// Plans a run of the walk: the state checks against the device and
+/// Plans a run of the walk: the state checks against the draw state and
 /// the guest's handler, and each part's draw from the frame step's view
 /// (`scene`, `view`): its object's frame and its rows as extraction read
 /// them. `first` is the run's first slot.
-fn plan_walk<B: d3d::backend::Backend>(
-    models: &Models, device: &d3d::Device<B>, mem: &dyn GuestMemory,
-    scene: &FrameScene, view: &View, first: usize, run: &[Entry], cached: Option<u32>,
+#[allow(clippy::too_many_arguments)]
+fn plan_walk(
+    models: &Models, mem: &dyn GuestMemory,
+    scene: &FrameScene, view: &View, first: usize, run: &[Entry], cached: Option<u32>, before: bool,
 ) -> Result<Vec<(u32, PlannedDraw)>, ObjectWalk> {
     use gfx::state::RenderStateType as R;
-    let mut entry = LayerEntry::read(device, mem);
+    let mut entry = LayerEntry::read();
+    // Before the layer draw, the draws run with the layer begin's
+    // `ZENABLE` (`D3DZB_USEW`, which W-buffers).
+    if before {
+        entry.w_buffered = true;
+        entry.states.0.retain(|(r, _)| *r != R::ZEnable);
+        entry.states.0.push((R::ZEnable, LAYER_BEGIN_ZENABLE));
+    }
     if !entry.w_buffered {
         return Err(ObjectWalk::State);
     }
     let read = crate::native_world_glue::ReadMemory(mem);
     let flags = mem.u32(native_render::skip::STENCIL_OFF_FLAGS).map_err(|_| ObjectWalk::Inputs)?;
     let stencil_during_draw = flags & 0x00ff_ff00 == 0;
-    let in_mode_1 = || mem.u16(SCENE_STENCIL_MODE) == Ok(1) && device.stencil_state(&read) == Some(scene_stencil());
+    let in_mode_1 = || in_stencil_mode_1_with(mem, device_state::stencil());
     if !stencil_during_draw {
         // The handler temporarily applies stencil mode 0 and leaves
         // mode 1. Skipping it is state-neutral only if it already holds 1.
@@ -691,7 +709,7 @@ fn plan_walk<B: d3d::backend::Backend>(
         matches!(e, Entry::Object { .. })
             && scene.part_at(view, (first + n) as u32).is_some_and(|(_, p)| p.flags.contains(PartFlags::AUX_DEPTH))
     });
-    if aux && !view.aux_depth.is_some_and(|a| aux_depth_at_rest(device, mem, &a)) {
+    if aux && !view.aux_depth.is_some_and(|a| aux_depth_at_rest(mem, &a)) {
         return Err(ObjectWalk::State);
     }
     // A part with a fade byte (`frame_scene::PartFlags::FADE`): it draws
@@ -703,7 +721,7 @@ fn plan_walk<B: d3d::backend::Backend>(
         matches!(e, Entry::Object { .. })
             && scene.part_at(view, (first + n) as u32).is_some_and(|(_, p)| p.flags.contains(PartFlags::FADE))
     });
-    if fades && !stipple_at_rest(device, mem) {
+    if fades && !stipple_at_rest(mem) {
         return Err(ObjectWalk::State);
     }
     // A part whose shader's prologue uploads the structure's parameter
@@ -714,12 +732,17 @@ fn plan_walk<B: d3d::backend::Backend>(
         matches!(e, Entry::Object { .. })
             && scene.part_at(view, (first + n) as u32).is_some_and(|(_, p)| p.flags.contains(PartFlags::STRUCTURE_PARAMETERS))
     });
-    if uploads && !view.structure_parameters.is_some_and(|p| structure_at_rest(device, mem, &p)) {
+    if uploads && !view.structure_parameters.is_some_and(|p| structure_at_rest(mem, &p)) {
         return Err(ObjectWalk::State);
     }
-    let fog_words = crate::native_fog_glue::device_fog_words(device, mem);
+    let fog_words = device_state::fog_words();
     let table = &*STATE_TABLE;
-    let device_state = |slot| device.render_state(&read, slot);
+    let device_state = |slot| {
+        if before && Some(slot) == table.canonical_to_guest(R::ZEnable.index()) {
+            return Some(LAYER_BEGIN_ZENABLE);
+        }
+        device_state::render_state(slot)
+    };
     let raw = |state| table.canonical_to_guest(state).and_then(device_state);
     let specular = raw(SPECULAR_ENABLE);
     if raw(TWO_SIDED_LIGHTING) != Some(0)
@@ -788,69 +811,55 @@ fn plan_walk<B: d3d::backend::Backend>(
         let fog = native_render::fog_gpu::FogWords::from_states(&pass.implementation.render_states)
             .resolve(&fog_words).ok_or(ObjectWalk::Inputs)?;
         set_fog(&mut draw, fog, specular).ok_or(ObjectWalk::Inputs)?;
-        // Under the device's stipple the draw masks with the pattern its
-        // record draws with: a faded record's, from the rest state
-        // checked above, else the device's.
-        draw.stipple = draw_stipple(device, mem, part.key.record, scene_part.flags.contains(PartFlags::FADE))
+        // Under the stipple the draw masks with the pattern its record
+        // draws with: a faded record's, from the rest state checked
+        // above, else the one bound.
+        draw.stipple = draw_stipple(mem, part.key.record, scene_part.flags.contains(PartFlags::FADE))
             .map_err(|()| ObjectWalk::State)?;
         draws.push((model, draw));
     }
     let lit = lit.ok_or(ObjectWalk::Model)?;
-    let (gpu, color, depth) =
-        device.external_pipeline_target(&read).ok_or_else(|| refused(ReservationCause::Unbound))?;
+    let (gpu, color, depth) = crate::native_world_glue::pipeline_target();
     if !lit.prewarm_draws(&gpu, color, depth, &draws) {
         return Err(refused(ReservationCause::Declined));
     }
     Ok(draws)
 }
 
-/// Whether the device holds what the auxiliary state toggle leaves off
-/// (`0x00012d50` with BL 0, `aux.rest_*`): the cached byte 0, `c[0..3]`
-/// the rows off, and the program clip range off, owned by the game and
-/// pushed. Every comparison is of the bits.
-pub(crate) fn aux_depth_at_rest<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>, mem: &dyn GuestMemory, aux: &frame_scene::AuxDepth,
-) -> bool {
-    use d3d::layout::device_field::{CLIP_FLAGS, CLIP_PROGRAM};
+/// Whether the draw state holds what the auxiliary state toggle leaves
+/// off (`0x00012d50` with BL 0, `aux.rest_*`): the cached byte 0,
+/// `c[0..3]` the rows off, and the program clip range off, owned by the
+/// game and pushed. Every comparison is of the bits.
+pub(crate) fn aux_depth_at_rest(mem: &dyn GuestMemory, aux: &frame_scene::AuxDepth) -> bool {
     let bits = |r: &[f32]| r.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-    let layout = d3d::layout::GuestLayout::HALO2;
-    let stored = mem.u32(layout.p_device).ok().and_then(|d| {
-        Some((
-            [mem.u32(d.checked_add(CLIP_PROGRAM)?).ok()?, mem.u32(d.checked_add(CLIP_PROGRAM + 4)?).ok()?],
-            mem.u32(d.checked_add(CLIP_FLAGS)?).ok()?,
-        ))
-    });
-    let read = crate::native_world_glue::ReadMemory(mem);
-    let pushed = device.depth_clip(&read, aux.rest_clip[1]).range;
+    let stored = device_state::stored_clip();
+    let pushed = device_state::depth_clip_range(aux.rest_clip[1]);
     mem.u8(native_render::aux_depth::CACHED) == Ok(0)
-        && (0..4).all(|r| bits(&device.constant(r)) == bits(&aux.rest_rows[r]))
+        && (0..4).all(|r| bits(&device_state::constant(r)) == bits(&aux.rest_rows[r]))
         && stored.is_some_and(|(clip, flags)| clip == [aux.rest_clip[0].to_bits(), aux.rest_clip[1].to_bits()] && flags & 2 != 0)
         && bits(&pushed) == bits(&aux.rest_clip)
 }
 
-/// Whether the device draws with the polygon stipple off
-/// (`SET_STIPPLE_CONTROL`, else `D3DRS_STIPPLEENABLE` as the device
-/// holds it): a record's fade pattern then masks nothing.
-pub(crate) fn stipple_off<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> bool {
-    let read = crate::native_world_glue::ReadMemory(mem);
-    let raw = |state| STATE_TABLE.canonical_to_guest(state).and_then(|slot| device.render_state(&read, slot));
-    device.hw().stipple_control.or_else(|| raw(STIPPLE_ENABLE)) == Some(0)
+/// The stipple switch: `SET_STIPPLE_CONTROL`, else `D3DRS_STIPPLEENABLE`.
+fn stipple_switch() -> Option<u32> {
+    device_state::stipple_control()
+        .or_else(|| STATE_TABLE.canonical_to_guest(STIPPLE_ENABLE).and_then(device_state::render_state))
 }
 
-/// The device's polygon stipple as an object's draw would take it:
-/// `Ok(None)` off (a record's pattern masks nothing), `Ok(Some(rows))` on
-/// with the pattern it holds; `Err` when its switch does not read or a
-/// display override stands in for the guest's pattern.
-pub(crate) fn device_stipple<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>, mem: &dyn GuestMemory,
-) -> Result<Option<[u32; 32]>, ()> {
-    let read = crate::native_world_glue::ReadMemory(mem);
-    let raw = |state| STATE_TABLE.canonical_to_guest(state).and_then(|slot| device.render_state(&read, slot));
-    match device.hw().stipple_control.or_else(|| raw(STIPPLE_ENABLE)) {
+/// Whether the draws take the polygon stipple off: a record's fade
+/// pattern then masks nothing.
+pub(crate) fn stipple_off() -> bool {
+    stipple_switch() == Some(0)
+}
+
+/// The polygon stipple as an object's draw would take it: `Ok(None)` off
+/// (a record's pattern masks nothing), `Ok(Some(rows))` on with the bound
+/// pattern; `Err` when its switch does not read.
+pub(crate) fn device_stipple() -> Result<Option<[u32; 32]>, ()> {
+    match stipple_switch() {
         Some(0) => Ok(None),
         None => Err(()),
-        Some(_) if device.hw().display_stipple.is_some() => Err(()),
-        Some(_) => Ok(Some(*device.stipple_pattern())),
+        Some(_) => Ok(Some(device_state::stipple_pattern())),
     }
 }
 
@@ -877,11 +886,9 @@ pub(crate) fn record_stipple(
     Ok((rows != [u32::MAX; 32]).then_some(rows))
 }
 
-/// [`record_stipple`] under the device's stipple now.
-pub(crate) fn draw_stipple<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>, mem: &dyn GuestMemory, record: u16, faded: bool,
-) -> Result<Option<[u32; 32]>, ()> {
-    record_stipple(mem, device_stipple(device, mem), record, faded)
+/// [`record_stipple`] under the stipple now.
+pub(crate) fn draw_stipple(mem: &dyn GuestMemory, record: u16, faded: bool) -> Result<Option<[u32; 32]>, ()> {
+    record_stipple(mem, device_stipple(), record, faded)
 }
 
 /// Whether the device and the engine hold what a faded record's epilogue
@@ -892,7 +899,7 @@ pub(crate) fn draw_stipple<B: d3d::backend::Backend>(
 /// From there the prologue sets the item's pattern and the epilogue
 /// puts both back, so skipping the record's draws leaves what drawing
 /// them would, however many there are.
-pub(crate) fn stipple_at_rest<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> bool {
+pub(crate) fn stipple_at_rest(mem: &dyn GuestMemory) -> bool {
     use engine::render_loop::opaque_material::{CACHED_FADE, rest_stipple_table};
     // The guest's MXCSR: nearest, every exception masked.
     const MXCSR: u32 = 0x1f80;
@@ -903,7 +910,7 @@ pub(crate) fn stipple_at_rest<B: d3d::backend::Backend>(device: &d3d::Device<B>,
     let Some(table) = rest_stipple_table(mem, MXCSR) else {
         return false;
     };
-    let pattern = device.stipple_pattern();
+    let pattern = device_state::stipple_pattern();
     (0..32u32).all(|row| mem.u32(table + 4 * row).ok() == Some(pattern[row as usize]))
 }
 
@@ -916,48 +923,41 @@ pub(crate) fn stipple_at_rest<B: d3d::backend::Backend>(device: &d3d::Device<B>,
 /// words, so skipping the draws that would run it leaves what drawing them
 /// would, however many there are; anything the host computed otherwise
 /// than the guest declines.
-pub(crate) fn structure_at_rest<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>, mem: &dyn GuestMemory, p: &frame_scene::StructureParameters,
-) -> bool {
-    structure_at_rest_with(device, mem, p, crate::native_fog_glue::device_fog_words(device, mem)[6])
+pub(crate) fn structure_at_rest(mem: &dyn GuestMemory, p: &frame_scene::StructureParameters) -> bool {
+    structure_at_rest_with(mem, p, device_state::fog_words()[6])
 }
 
 /// [`structure_at_rest`] with the fog colour `fog_colour` (a run's, as the
 /// restore leaves it).
-pub(crate) fn structure_at_rest_with<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>, mem: &dyn GuestMemory, p: &frame_scene::StructureParameters, fog_colour: Option<u32>,
+pub(crate) fn structure_at_rest_with(
+    mem: &dyn GuestMemory, p: &frame_scene::StructureParameters, fog_colour: Option<u32>,
 ) -> bool {
     use engine::render_loop::structure_parameters::SCRATCH;
     const BUMPENVMAT00: u32 = 22;
-    let layout = &device.config().layout;
     let stages = (1..4u32).all(|stage| {
         (0..4u32).all(|n| {
-            mem.u32(layout.texture_state_slot(stage, BUMPENVMAT00 + n)).ok()
-                == Some(p.bump_env[stage as usize - 1][n as usize])
+            device_state::texture_state(stage, BUMPENVMAT00 + n) == Some(p.bump_env[stage as usize - 1][n as usize])
         })
     });
     let first = frame_scene::StructureParameters::FIRST_CONSTANT;
-    let constants = (0..5).all(|n| device.constant(first + n).map(f32::to_bits) == p.constants[n]);
+    let constants = (0..5).all(|n| device_state::constant(first + n).map(f32::to_bits) == p.constants[n]);
     let fog = fog_colour == Some(p.fog_colour);
     let scratch = (0..13u32).all(|n| mem.u32(SCRATCH + 4 * n).ok() == Some(p.scratch[n as usize]));
     stages && constants && fog && scratch
 }
 
-/// What a layer-3 run's plan reads of the device and the engine
+/// What a layer-3 run's plan reads of the draw state and the engine
 /// ([`plan_walk`], [`Glue::draw_run`]), by field: the entry render states,
 /// the W buffer, the stencil words, the stipple, specular, two-sided
 /// lighting and shade mode, the shader cache, the fog words and the
 /// auxiliary toggle's byte. `predict`: as they will be at the layer's first
-/// geometry handler, from the device before the layer draw: the layer
+/// geometry handler, from the draw state before the layer draw: the layer
 /// begin's `ZENABLE` (`D3DZB_USEW`, which W-buffers) and the cache
 /// `0x00016b10` clears (`render_bridge::native_objects::before`).
-fn entry_fields<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>, mem: &dyn GuestMemory, predict: bool,
-) -> Vec<render_bridge::native_objects::before::Field> {
+fn entry_fields(mem: &dyn GuestMemory, predict: bool) -> Vec<render_bridge::native_objects::before::Field> {
     use gfx::state::RenderStateType as R;
-    let entry = LayerEntry::read(device, mem);
-    let read = crate::native_world_glue::ReadMemory(mem);
-    let raw = |state| STATE_TABLE.canonical_to_guest(state).and_then(|slot| device.render_state(&read, slot));
+    let entry = LayerEntry::read();
+    let raw = |state| STATE_TABLE.canonical_to_guest(state).and_then(device_state::render_state);
     let mut out: Vec<render_bridge::native_objects::before::Field> = Vec::with_capacity(48);
     for t in native_render::object_state::FIELDS {
         let value = if predict && t == R::ZEnable { Some(LAYER_BEGIN_ZENABLE) } else { entry.states.get(t) };
@@ -967,16 +967,16 @@ fn entry_fields<B: d3d::backend::Backend>(
     out.push(("w_buffered".into(), Some(u32::from(w))));
     out.push(("stencil_off_flags".into(), mem.u32(native_render::skip::STENCIL_OFF_FLAGS).ok()));
     out.push(("stencil_mode".into(), mem.u16(SCENE_STENCIL_MODE).ok().map(u32::from)));
-    out.push(("stencil_mode_1".into(), Some(u32::from(device.stencil_state(&read) == Some(scene_stencil())))));
-    out.push(("stipple".into(), device.hw().stipple_control.or_else(|| raw(STIPPLE_ENABLE))));
-    out.push(("stipple_at_rest".into(), Some(u32::from(stipple_at_rest(device, mem)))));
+    out.push(("stencil_mode_1".into(), Some(u32::from(device_state::stencil() == Some(scene_stencil())))));
+    out.push(("stipple".into(), stipple_switch()));
+    out.push(("stipple_at_rest".into(), Some(u32::from(stipple_at_rest(mem)))));
     out.push(("specular".into(), raw(SPECULAR_ENABLE)));
     out.push(("two_sided_lighting".into(), raw(TWO_SIDED_LIGHTING)));
     out.push(("shade_mode".into(), raw(R::ShadeMode.index())));
     for (name, at) in [("cached_implementation", CACHED_IMPLEMENTATION), ("cached_descriptor", CACHED_PASS_DESCRIPTOR)] {
         out.push((name.into(), if predict { Some(0) } else { mem.u32(at).ok() }));
     }
-    for (n, word) in crate::native_fog_glue::device_fog_words(device, mem).into_iter().enumerate() {
+    for (n, word) in device_state::fog_words().into_iter().enumerate() {
         out.push((format!("fog_{n}"), word));
     }
     out.push(("aux_cached".into(), mem.u8(native_render::aux_depth::CACHED).ok().map(u32::from)));
@@ -1014,7 +1014,7 @@ fn stable_render_states(
     states.iter().all(|s| read(u32::from(s.state)) == Some(s.value))
 }
 
-/// Items the plan gave back to the D3D path, and the first of each reason
+/// Items the plan gave back to the guest, and the first of each reason
 /// (logged once).
 static REFUSED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static REASONS: Mutex<Option<HashSet<String>>> = Mutex::new(None);
@@ -1024,16 +1024,14 @@ fn count_refusal(why: &str) {
     let mut seen = REASONS.lock().unwrap_or_else(|e| e.into_inner());
     let seen = seen.get_or_insert_with(HashSet::new);
     if seen.len() < 64 && seen.insert(why.to_owned()) {
-        eprintln!("native-objects: an item keeps its D3D draw: {why} (each reason logged once)");
+        eprintln!("native-objects: an item is left to the guest: {why} (each reason logged once)");
     }
 }
 
 static PALETTE_CHANGED: AtomicBool = AtomicBool::new(false);
 
-fn model_palettes_hold<B: d3d::backend::Backend>(
-    models: &Models, device: &d3d::Device<B>, mem: &dyn GuestMemory,
-) -> bool {
-    let hold = palettes_hold(&models.palettes, &|s| device.stage_palette(&crate::native_world_glue::ReadMemory(mem), s));
+fn model_palettes_hold(models: &Models) -> bool {
+    let hold = palettes_hold(&models.palettes, &stage_palette);
     if !hold && !PALETTE_CHANGED.swap(true, Ordering::Relaxed) {
         eprintln!("native-objects: the stage palette changed since a base map was expanded");
     }
@@ -1049,20 +1047,19 @@ impl native_render::camera::GuestRead for Ro<'_> {
     }
 }
 
-/// Installs the host on the device (beside the world's).
-pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
+/// Installs the host (beside the world's).
+pub fn install() {
     let switches = hooks::Switches::from_env().unwrap_or_default();
     palette::clear();
     *LAYER_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if !render_bridge::native_objects::on(&switches) {
         return;
     }
-    let Some(gpu) = device.lock().ok().and_then(|d| d.backend.upload_device()) else { return };
+    let gpu = crate::native_world_glue::upload_device();
     let state = Arc::new(Mutex::new(None));
     *LAYER_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&state));
     render_bridge::native_objects::set_host(Arc::new(Glue {
         gpu,
-        device: Arc::clone(device),
         state,
         refreshing: Arc::default(),
     }));
@@ -1087,9 +1084,7 @@ impl crate::native_layers_glue::LayerModels for Models {
 /// draws from, once the load has published them (the objects host's own
 /// walk starts the load; this never does), and only while the stage
 /// palettes they were expanded through hold.
-pub(crate) fn layer_models<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>, mem: &dyn GuestMemory,
-) -> Option<Arc<dyn crate::native_layers_glue::LayerModels>> {
+pub(crate) fn layer_models(mem: &dyn GuestMemory) -> Option<Arc<dyn crate::native_layers_glue::LayerModels>> {
     let source = LAYER_SOURCE.lock().ok()?.clone()?;
     let generation = native_map_work::generation();
     let mut field = [0; 32];
@@ -1099,7 +1094,7 @@ pub(crate) fn layer_models<B: d3d::backend::Backend>(
         let s = state.as_ref().filter(|s| s.generation == generation && s.name == name)?;
         s.resident(timeline::frames())?
     };
-    if !model_palettes_hold(&models, device, mem) {
+    if !model_palettes_hold(&models) {
         return None;
     }
     Some(models)
@@ -1127,24 +1122,21 @@ pub(crate) fn install_function_tables(mem: &dyn GuestMemory) {
 }
 
 /// The render states an object's draw inherits at a layer call
-/// ([`EntryStates`]), and whether the device's draws are W-buffered.
-pub(crate) fn entry_states<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>, mem: &dyn GuestMemory,
-) -> (native_render::object_program_gpu::ObjectLayerEntry, bool) {
-    let read = crate::native_world_glue::ReadMemory(mem);
-    entry_states_with(device, mem, &|g| device.render_state(&read, g))
+/// ([`EntryStates`]), and whether the draws are W-buffered.
+pub(crate) fn entry_states(mem: &dyn GuestMemory) -> (native_render::object_program_gpu::ObjectLayerEntry, bool) {
+    entry_states_with(mem, &device_state::render_state)
 }
 
 /// [`entry_states`] with the render states from `states`, by guest slot:
-/// a device as a restore list leaves it
+/// the state as a restore list leaves it
 /// (`native_render::sorted_entries::after_restore`), for a draw in a
 /// layer's sorted entries.
-pub(crate) fn entry_states_with<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>, mem: &dyn GuestMemory, states: &dyn Fn(u32) -> Option<u32>,
+pub(crate) fn entry_states_with(
+    mem: &dyn GuestMemory, states: &dyn Fn(u32) -> Option<u32>,
 ) -> (native_render::object_program_gpu::ObjectLayerEntry, bool) {
     use native_render::object_program_gpu::{MaterialConstant18, ObjectLayerEntry};
     use engine::render_loop::layer::SETUP_CONTEXT;
-    let entry = LayerEntry::read_with(device, states);
+    let entry = LayerEntry::read_with(states);
     let bank = (|| {
         let mut row = [0; 4];
         for (lane, word) in row.iter_mut().enumerate() {
@@ -1153,7 +1145,7 @@ pub(crate) fn entry_states_with<B: d3d::backend::Backend>(
         Some(row)
     })();
     let dirty = mem.u32(SETUP_CONTEXT + 0x1734).ok().map(|mask| mask & 1 != 0);
-    let c18 = MaterialConstant18::new(device.constant(18), bank, dirty);
+    let c18 = MaterialConstant18::new(device_state::constant(18), bank, dirty);
     (ObjectLayerEntry { states: entry.states, c18 }, entry.w_buffered)
 }
 
@@ -1162,38 +1154,16 @@ pub(crate) fn entry_states_with<B: d3d::backend::Backend>(
 /// `SetRenderState_ZEnable`).
 pub(crate) const LAYER_BEGIN_ZENABLE: u32 = 2;
 
-/// Whether the device's `ZENABLE` (`None`: it does not read) is another
-/// than the one the layer's draws run with ([`LAYER_BEGIN_ZENABLE`]).
-pub(crate) fn needs_layer_begin_zenable(device_zenable: Option<u32>) -> bool {
-    device_zenable != Some(LAYER_BEGIN_ZENABLE)
+/// Whether a held `ZENABLE` (`None`: it does not read) is another than
+/// the one the layer's draws run with ([`LAYER_BEGIN_ZENABLE`]).
+pub(crate) fn needs_layer_begin_zenable(held: Option<u32>) -> bool {
+    held != Some(LAYER_BEGIN_ZENABLE)
 }
 
-/// Gives the device, at a layer call, the depth mode the layer's draws run
-/// with: the layer's first shader begin sets `ZENABLE` to `D3DZB_USEW`
-/// through D3D, which redoes the transform fragments (`SET_CONTROL0`'s
-/// z-perspective, the viewport and the W clip). At the call the device
-/// still holds what the work before the layer left: before a view's layer
-/// 1 that is the last view's screen passes, drawn unbuffered, so every
-/// layer-1 object item read as not W-buffered (`object_w_buffer`). The
-/// guest's begin sets the same value again, so its kept draws are as
-/// before. Run before the boundary's drain, which consumes the pushed
-/// fragments. `Ok(true)` when it set the state.
-pub(crate) fn apply_layer_begin_zenable<B: d3d::backend::Backend>(
-    device: &mut d3d::Device<B>, mem: &mut dyn GuestMemory,
-) -> Result<bool, d3d::D3dError> {
-    let held = device.render_state(&crate::native_world_glue::ReadMemory(&*mem), d3d::state::slot::ZENABLE);
-    if !needs_layer_begin_zenable(held) {
-        return Ok(false);
-    }
-    device.set_render_state(&mut crate::native_lights_glue::DeviceMemory(mem), d3d::state::slot::ZENABLE, LAYER_BEGIN_ZENABLE)?;
-    Ok(true)
-}
-
-/// The device's specular bit, which a draw on the implicit final combiner
-/// takes ([`object_fog`]).
-pub(crate) fn device_specular<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> Option<u32> {
-    let read = crate::native_world_glue::ReadMemory(mem);
-    specular_with(&|g| device.render_state(&read, g))
+/// The specular bit, which a draw on the implicit final combiner takes
+/// ([`object_fog`]).
+pub(crate) fn device_specular() -> Option<u32> {
+    specular_with(&device_state::render_state)
 }
 
 /// [`device_specular`] from `states`, by guest slot.
@@ -1202,8 +1172,8 @@ pub(crate) fn specular_with(states: &dyn Fn(u32) -> Option<u32>) -> Option<u32> 
 }
 
 /// The stencil a draw would take from `states`, by guest slot, decoded
-/// as `Device::stencil_state` decodes the guest's array: a device as a
-/// restore list leaves it (`native_render::sorted_entries::after_restore`).
+/// as the guest's render-state array holds it: the state as a restore
+/// list leaves it (`native_render::sorted_entries::after_restore`).
 /// `None` when a slot does not read or holds a value outside its enum.
 pub(crate) fn stencil_with(states: &dyn Fn(u32) -> Option<u32>) -> Option<gfx::state::StencilState> {
     use gfx::state::RenderStateType as R;
@@ -1220,35 +1190,32 @@ pub(crate) fn stencil_with(states: &dyn Fn(u32) -> Option<u32>) -> Option<gfx::s
 
 /// Whether the draws are W-buffered once `restore` is written: its
 /// `ZENABLE`, whose setter redoes `SET_CONTROL0`'s z-perspective, is
-/// `D3DZB_USEW`. `None` when it writes no `ZENABLE` (the device's
-/// control stands).
+/// `D3DZB_USEW`. `None` when it writes no `ZENABLE` (the held control
+/// stands).
 pub(crate) fn w_buffered_after(restore: &[(u32, u32)]) -> Option<bool> {
-    let zenable = d3d::state::slot::ZENABLE;
+    let zenable = STATE_TABLE.canonical_to_guest(gfx::state::RenderStateType::ZEnable.index())?;
     restore.iter().rev().find(|&&(slot, _)| slot == zenable).map(|&(_, v)| v == LAYER_BEGIN_ZENABLE)
 }
 
 /// [`device_stipple`] once `restore` is written: its stipple switch, which
-/// its setter pushes, stands for the device's control.
-pub(crate) fn device_stipple_after<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>, mem: &dyn GuestMemory, restore: &[(u32, u32)],
-) -> Result<Option<[u32; 32]>, ()> {
+/// its setter pushes, stands for the held control.
+pub(crate) fn device_stipple_after(restore: &[(u32, u32)]) -> Result<Option<[u32; 32]>, ()> {
     let slot = STATE_TABLE.canonical_to_guest(STIPPLE_ENABLE);
     match restore.iter().rev().find(|&&(s, _)| Some(s) == slot).map(|&(_, v)| v) {
-        None => device_stipple(device, mem),
+        None => device_stipple(),
         Some(0) => Ok(None),
-        Some(_) if device.hw().display_stipple.is_some() => Err(()),
-        Some(_) => Ok(Some(*device.stipple_pattern())),
+        Some(_) => Ok(Some(device_state::stipple_pattern())),
     }
 }
 
-/// Whether the scene is in stencil mode 1 with the device's stencil `stencil` (a run's, as
+/// Whether the scene is in stencil mode 1 with the stencil `stencil` (a run's, as
 /// the restore leaves it: [`stencil_with`]).
 pub(crate) fn in_stencil_mode_1_with(mem: &dyn GuestMemory, stencil: Option<gfx::state::StencilState>) -> bool {
     mem.u16(SCENE_STENCIL_MODE) == Ok(1) && stencil == Some(scene_stencil())
 }
 
 /// Puts the fog of `draw`'s pass in, as layer 3's walk does: the
-/// implementation's own fog states over the device's (`fog_words`), and
+/// implementation's own fog states over the inherited ones (`fog_words`), and
 /// the specular bit for the implicit final combiner.
 pub(crate) fn layer_draw_fog(
     lit: &LitObjects, model: u32, draw: &mut PlannedDraw, fog_words: &[Option<u32>; 7], specular: Option<u32>,
@@ -1258,7 +1225,7 @@ pub(crate) fn layer_draw_fog(
     set_fog(draw, fog, specular)
 }
 
-/// Whether `draws` write depth or stencil (`d3d::ExternalWrites`).
+/// Whether `draws` write depth or stencil.
 pub(crate) fn draws_write_depth_stencil<'a>(draws: impl IntoIterator<Item = &'a PlannedDraw>) -> bool {
     draws.into_iter().any(|d| {
         use gfx::state::StencilOp;
@@ -1484,7 +1451,7 @@ struct Opened {
     /// The vector normalization cube, loaded as the lights load it at the
     /// first lit model (`Some(None)`: it does not load).
     normalization: Option<Option<Arc<StaticLightTexture>>>,
-    /// The game's stream formats (`None`: lit materials stay on D3D).
+    /// The game's stream formats (`None`: lit materials are left out).
     formats: Option<StreamFormats>,
     /// What an object's draw samples for the lightmap (the globals'
     /// rasterizer bitmap at `+0x64`, `object_program::OBJECT_LIGHTMAP`),
@@ -1784,7 +1751,7 @@ fn lit_parts(o: &mut Opened, geo: &RenderModelGeometry, materials: &HashMap<u16,
                     eprintln!("native-objects: the objects' lightmap stage loads ({}x{}, uniform)", i.width, i.height);
                 }
             }
-            Err(why) => eprintln!("native-objects: the objects' lightmap stage stays on D3D: {why}"),
+            Err(why) => eprintln!("native-objects: the objects' lightmap stage is left out: {why}"),
         }
         o.lightmap = Some(l);
     }
@@ -1886,129 +1853,64 @@ fn object_vertex_program(o: &mut Opened, vs: TagId, geometry: u16, influences: u
 }
 
 /// One sorted run's objects: the draws planned at the walk, in the list's
-/// order. The pass replays on a kept scene (`d3d::ExternalPass::replays_scene`):
-/// it owns everything it records from (`models` is an `Arc`; `draws`,
-/// `texaccum`, `view` and `w_clip` are owned values) and reads no guest
+/// order. The stage owns everything it records from (`models` is an
+/// `Arc`; `draws` and `texaccum` are owned values) and reads no guest
 /// state after the walk.
 struct ObjectsPass {
-    /// The view slot the run draws in ([`render_bridge::native_objects::SLOT`]):
-    /// the place in the traced draw order the frame graph orders it by.
+    /// The view slot the run draws in ([`render_bridge::native_objects::SLOT`]).
     slot: ViewSlot,
-    display_only: bool,
-    /// Alternative geometry for the display. The original run still owns
-    /// all guest writes and is the only geometry sent to the reference.
-    display_draws: Option<Vec<(u32, PlannedDraw)>>,
     models: Arc<Models>,
     /// The planned draws with their model index.
     draws: Vec<(u32, PlannedDraw)>,
     /// Guest descriptor captured at the same boundary as the draws.
     texaccum: Option<native_render::world_layers::Texaccum>,
-    /// The view's constants, for the lit parts' programs.
-    view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
-    /// The device's W-buffer clip at the pass (`d3d::DepthClip`), as the
-    /// world's: the range the D3D path draws the layer with (the clamp is
-    /// each draw's, `object_state`). Without it the programs clipped w at
-    /// 0, not at the view's near (03a: 256 depth units), and drew the part
-    /// of an object nearer than that, which the D3D path culls.
-    w_clip: Option<([f32; 2], bool)>,
-    /// Groups adjacent reservations within a swap: they share one pin of
-    /// the attachments (`d3d::ExternalPass::batch_key`).
-    run: u64,
 }
 
-impl d3d::ExternalPass for ObjectsPass {
-    fn display_only(&self) -> bool { self.display_only }
+impl native_render::stage::Stage for ObjectsPass {
+    fn name(&self) -> &'static str { "objects" }
 
-    fn replays_scene(&self) -> bool { debug_assert_eq!(self.slot, ViewSlot::OpaqueBase); true }
-
-    fn batch_key(&self) -> Option<u64> { Some(self.run) }
-
-    fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
-        self.view = Some(*constants);
-    }
-
-    fn depth_clip(&mut self, clip: d3d::DepthClip) {
-        self.w_clip = Some((clip.range, clip.clamp));
-    }
-
-    fn sampled(&self) -> Vec<u32> {
-        self.texaccum.iter().map(|target| target.texture).collect()
-    }
-
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites {
-            color: self.draws.iter().any(|(_, d)| !d.state.color_writes.is_empty()),
-            depth_stencil: draws_write_depth_stencil(self.draws.iter().map(|(_, d)| d)),
+    fn record(
+        &mut self, t: &gfx::external::ExternalAttachments, request: &native_render::program::ViewInputs,
+    ) -> native_render::stage::StageWork {
+        debug_assert_eq!(self.slot, ViewSlot::OpaqueBase);
+        match self.packets(t, request) {
+            Ok(draws) => native_render::stage::StageWork::Draws(draws),
+            Err(why) => unimplemented!("objects: {why}"),
         }
-    }
-
-    /// The run's packets join the D3D render pass already open on these
-    /// attachments: no pass, command buffer or bundle of its own.
-    fn record_draws(
-        &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
-        if t.copy == d3d::TargetCopy::Display
-            && let Some(draws) = &self.display_draws
-            && let Ok(mut packets) = self.packets(t, request, draws, false)
-        {
-            // Ranges describe the guest run represented by these packets.
-            packets.ranges = self.draws.len();
-            return Some(Ok(packets));
-        }
-        Some(self.packets(t, request, &self.draws, true))
     }
 }
 
 impl ObjectsPass {
     fn packets(
-        &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
-        draws: &[(u32, PlannedDraw)],
-        report_missing: bool,
-    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
-        let constants = self.view.ok_or("object view constants unavailable")?;
-        let texaccum = texaccum_level(t, self.texaccum)?;
+        &self, t: &gfx::external::ExternalAttachments, request: &native_render::program::ViewInputs,
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
+        if self.texaccum.is_some() {
+            unimplemented!("objects: accumulation level for the stage");
+        }
         let mut lit = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
-        let lit = lit.as_mut().ok_or_else(|| {
-            if report_missing {
-                for (_, draw) in draws {
-                    d3d::scene_stage::residency::missing_object(draw.instance);
-                }
-            }
-            "planned object geometry unavailable"
-        })?;
-        let mut missing = draws.iter().filter(|(model, draw)| !lit.has_draw_assets(*model, draw)).peekable();
-        if missing.peek().is_some() {
-            if report_missing {
-                for (_, draw) in missing {
-                    d3d::scene_stage::residency::missing_object(draw.instance);
-                }
-            }
+        let lit = lit.as_mut().ok_or("planned object geometry unavailable")?;
+        if self.draws.iter().any(|(model, draw)| !lit.has_draw_assets(*model, draw)) {
             return Err("planned object geometry or material unavailable");
         }
-        if draws.iter().any(|(_, d)| d.indices.is_empty()) {
+        if self.draws.iter().any(|(_, d)| d.indices.is_empty()) {
             return Err("planned object indices empty");
         }
-        let view = ViewInputs {
-            constants: request.view_constants(t.copy, constants),
-            guest_size: request.surface_size,
-            size: t.size,
-            z_scale: request.z_scale,
-            w_clip: self.w_clip,
-        };
-        let draws = lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view, request.projection_factor(t.copy), draws, texaccum)?;
-        crate::native_layers_glue::clip_packets(draws, request, t.size)
+        let view = ViewInputs { size: t.size, ..*request };
+        let draws = lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view,
+            crate::native_world_glue::projection_factor(), &self.draws, None)?;
+        Ok(draws)
     }
 }
 
 /// The texture accumulation level a pass sampling `target` (the guest's
 /// engine texture 3, read when the pass was planned:
 /// `world_layers::Texaccum::read`) binds on this target copy: the first
-/// level the pass asked for (`d3d::ExternalPass::sampled`, the target's
-/// texture header), at the target's guest size. `None` without a target;
+/// sampled level the targets give (the target's texture header), at the
+/// target's guest size. `None` without a target;
 /// an error when the level is not given or is one of the attachments
 /// the pass draws into (the layer that accumulates into it).
 pub(crate) fn texaccum_level(
-    t: &d3d::backend::ExternalAttachments, target: Option<native_render::world_layers::Texaccum>,
+    t: &gfx::external::ExternalAttachments, target: Option<native_render::world_layers::Texaccum>,
 ) -> Result<Option<Texaccum<'_>>, &'static str> {
     let Some(target) = target else { return Ok(None) };
     let level = t.sampled.first().and_then(Option::as_ref).ok_or("object texture accumulation unavailable")?;
@@ -2020,18 +1922,14 @@ pub(crate) fn texaccum_level(
 
 /// The texture accumulation target a pass whose draws sample it binds,
 /// read at the hook as layer 3's objects read it: the guest binds one
-/// only while `0x0001dcc0` gives it (`world_layers::Texaccum::read`), and
-/// the pass is given the level only where levels are sampled in place.
+/// only while `0x0001dcc0` gives it (`world_layers::Texaccum::read`).
 /// `Ok(None)` when no draw samples it; `Err` when one does and it cannot
 /// be bound.
-pub(crate) fn sampled_texaccum<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>, mem: &dyn GuestMemory, samples: bool,
+pub(crate) fn sampled_texaccum(
+    mem: &dyn GuestMemory, samples: bool,
 ) -> Result<Option<native_render::world_layers::Texaccum>, ()> {
     if !samples {
         return Ok(None);
-    }
-    if !device.samples_levels_in_place() {
-        return Err(());
     }
     native_render::world_layers::Texaccum::read(&Ro(mem)).map(Some).ok_or(())
 }
@@ -2050,9 +1948,8 @@ mod tests {
     use super::*;
 
     /// A layer's draws run with the `ZENABLE` its first shader begin sets,
-    /// `D3DZB_USEW` (`0x0001bbf0`): the layer glue sets it at the call
-    /// over any other value or one that does not read, and leaves a
-    /// device that already holds it alone (nothing pushed).
+    /// `D3DZB_USEW` (`0x0001bbf0`): any other held value, or one that does
+    /// not read, needs it.
     #[test]
     fn the_layer_begin_zenable_is_set_over_anything_but_usew() {
         assert_eq!(LAYER_BEGIN_ZENABLE, 2, "D3DZB_USEW");
@@ -2062,117 +1959,9 @@ mod tests {
         assert!(!needs_layer_begin_zenable(Some(2)));
     }
 
-    /// A pass whose draws sample the texture accumulation target binds it
-    /// only where the device samples render-to-texture levels in place and
-    /// the guest has the target to bind (`0x0001dcc0`); a pass with no
-    /// such draw asks for nothing. Every caller (layer 3's objects, the
-    /// first person's layer 3, the world layers' object items) declines
-    /// on the error.
-    #[test]
-    fn a_pass_sampling_the_accumulation_target_binds_it_only_where_it_is_there_and_sampled_in_place() {
-        use native_render::object_nodes::TEXACCUM_TARGET;
-        let config = d3d::DeviceConfig::halo2(
-            d3d::GuestRange { addr: 0x0041_0000, len: 0x1_0000 },
-            d3d::GuestRange { addr: 0x0042_0000, len: 0x1000 },
-        );
-        let mut mem = engine::memory::FlatMemory::new(0x0040_0000, 0x20_0000);
-        mem.set_u32(TEXACCUM_TARGET + 0x80, 640).unwrap();
-        mem.set_u32(TEXACCUM_TARGET + 0x84, 480).unwrap();
-        mem.set_u32(TEXACCUM_TARGET + 0x88, 0x0050_0000).unwrap();
-        let elsewhere = d3d::Device::new(config, d3d::RecordingBackend::default());
-        assert!(!elsewhere.samples_levels_in_place());
-        assert_eq!(sampled_texaccum(&elsewhere, &mem, false), Ok(None), "nothing samples it");
-        assert_eq!(sampled_texaccum(&elsewhere, &mem, true), Err(()), "a level the pass would not be given");
-        let mut backend = d3d::RecordingBackend::new();
-        backend.sample_surfaces = true;
-        let in_place = d3d::Device::new(config, backend);
-        assert!(in_place.samples_levels_in_place());
-        let got = sampled_texaccum(&in_place, &mem, true).unwrap().expect("the bound target");
-        assert_eq!((got.texture, got.size), (native_render::object_program::TEXACCUM_HEADER, (640, 480)));
-        // The byte at `+0x95` set: the game binds no texture there.
-        mem.set_u32(TEXACCUM_TARGET + 0x94, 1 << 8).unwrap();
-        assert_eq!(sampled_texaccum(&in_place, &mem, true), Err(()));
-    }
-
-    /// A faded record's draws are skipped only where the engine caches a
-    /// fade of exactly one and the device holds the table's pattern for
-    /// one, which the record's epilogue leaves (`0x0004d720`); a cached
-    /// fade, a pattern or a table entry the rounding modes disagree on
-    /// declines.
-    #[test]
-    fn a_faded_record_is_skipped_only_where_the_epilogue_leaves_the_device_as_it_is() {
-        use engine::render_loop::opaque_material::CACHED_FADE;
-        const ONE: u32 = engine::light_constants::constant::ONE;
-        const TABLE_SCALE: u32 = 0x0044_541c;
-        const REST: u32 = 0x0048_7288 + 0x80 * 16;
-        let config = d3d::DeviceConfig::halo2(
-            d3d::GuestRange { addr: 0x0041_0000, len: 0x1_0000 },
-            d3d::GuestRange { addr: 0x0042_0000, len: 0x1000 },
-        );
-        let mut mem = engine::memory::FlatMemory::new(0x0040_0000, 0x20_0000);
-        mem.set_u32(ONE, 1f32.to_bits()).unwrap();
-        mem.set_u32(TABLE_SCALE, 16f32.to_bits()).unwrap();
-        mem.set_u32(CACHED_FADE, 1f32.to_bits()).unwrap();
-        // A new device's pattern is all zeros, as the rest entry here.
-        let device = d3d::Device::new(config, d3d::RecordingBackend::default());
-        assert_eq!(device.stipple_pattern(), &[0; 32]);
-        assert!(stipple_at_rest(&device, &mem));
-        mem.set_u32(CACHED_FADE, 0.5f32.to_bits()).unwrap();
-        assert!(!stipple_at_rest(&device, &mem), "a fade the epilogue would put back to one");
-        mem.set_u32(CACHED_FADE, 1f32.to_bits()).unwrap();
-        mem.set_u32(REST + 4 * 7, u32::MAX).unwrap();
-        assert!(!stipple_at_rest(&device, &mem), "a pattern the epilogue would set");
-        mem.set_u32(REST + 4 * 7, 0).unwrap();
-        mem.set_u32(TABLE_SCALE, 2.5f32.to_bits()).unwrap();
-        assert!(!stipple_at_rest(&device, &mem), "an entry the rounding modes disagree on");
-    }
-
-    /// Under the device's stipple a faded record draws with its byte's
-    /// table pattern and any other with the device's; with the stipple
-    /// off, or a solid pattern, nothing is masked; a byte whose pattern
-    /// the rounding modes disagree on declines.
-    #[test]
-    fn a_draw_under_the_stipple_masks_with_its_records_pattern() {
-        use engine::render_loop::opaque_material::{CACHED_FADE, RECORD_FADE, RENDER_RECORD_SIZE, RENDER_RECORDS};
-        const ONE: u32 = engine::light_constants::constant::ONE;
-        const FADE_SCALE: u32 = 0x0045_dbb4;
-        const EPSILON: u32 = 0x0045_dbdc;
-        const TABLE_SCALE: u32 = 0x0044_541c;
-        const PATTERN_1: u32 = 0x0048_7288 + 0x80;
-        let config = d3d::DeviceConfig::halo2(
-            d3d::GuestRange { addr: 0x0041_0000, len: 0x1_0000 },
-            d3d::GuestRange { addr: 0x0042_0000, len: 0x1000 },
-        );
-        let mut mem = engine::memory::FlatMemory::new(0x0040_0000, 0x20_0000);
-        mem.set_u32(ONE, 1f32.to_bits()).unwrap();
-        mem.set_u32(CACHED_FADE, 1f32.to_bits()).unwrap();
-        mem.set_u32(FADE_SCALE, 0.125f32.to_bits()).unwrap();
-        mem.set_u32(EPSILON, 0.02f32.to_bits()).unwrap();
-        mem.set_u32(TABLE_SCALE, 2f32.to_bits()).unwrap();
-        for row in 0..32 {
-            mem.set_u32(PATTERN_1 + 4 * row, 0x00ff_0000 | row).unwrap();
-        }
-        // Record 3's byte 4: a fade of 0.5, pattern 1.
-        mem.set_u8(RENDER_RECORDS + 3 * RENDER_RECORD_SIZE + RECORD_FADE, 4).unwrap();
-        let device = d3d::Device::new(config, d3d::RecordingBackend::default());
-        assert_eq!(draw_stipple(&device, &mem, 3, true), Ok(None), "the stipple off masks nothing");
-        let enable = device.config().layout.render_state_slot(STATE_TABLE.canonical_to_guest(STIPPLE_ENABLE).unwrap());
-        mem.set_u32(enable, 1).unwrap();
-        let faded = draw_stipple(&device, &mem, 3, true).unwrap().expect("the byte's pattern");
-        assert_eq!((faded[0], faded[31]), (0x00ff_0000, 0x00ff_001f));
-        assert_eq!(draw_stipple(&device, &mem, 3, false), Ok(Some([0; 32])), "an unfaded record: the device's");
-        mem.set_u8(RENDER_RECORDS + 3 * RENDER_RECORD_SIZE + RECORD_FADE, 5).unwrap();
-        assert_eq!(draw_stipple(&device, &mem, 3, true), Err(()), "1.25 rounds to 1 or 2");
-        for row in 0..32 {
-            mem.set_u32(PATTERN_1 + 4 * row, u32::MAX).unwrap();
-        }
-        mem.set_u8(RENDER_RECORDS + 3 * RENDER_RECORD_SIZE + RECORD_FADE, 4).unwrap();
-        assert_eq!(draw_stipple(&device, &mem, 3, true), Ok(None), "a solid pattern masks nothing");
-    }
-
     /// A live edit's drain names the native models it edited, each once
     /// and by the load's own tag (matched by index), and every image;
-    /// a model the load left to D3D and a structure section are not the
+    /// a model the load left out and a structure section are not the
     /// objects' to refresh.
     #[test]
     fn a_drain_names_the_resident_models_once_and_every_image() {
@@ -2205,33 +1994,6 @@ mod tests {
         ];
         let picked = shader_models(&model_shaders, &mut |s| s == TagId(0xe000_0011));
         assert_eq!(picked, vec![TagId(0xe1c0_0040), TagId(0xe1c0_0042)]);
-    }
-
-    /// The lit parts are W-buffered programs as the world's: they clip w
-    /// to the range the device draws the layer with, not from 0, or an
-    /// object nearer than the view's near is drawn where the D3D path
-    /// culls it.
-    #[test]
-    fn the_lit_parts_clip_w_as_the_device_draws_the_layer() {
-        use d3d::ExternalPass;
-        let mut pass = ObjectsPass {
-            slot: ViewSlot::OpaqueBase,
-            display_only: false,
-            display_draws: None,
-            models: Arc::new(Models::default()),
-            draws: Vec::new(),
-            texaccum: None,
-            view: None,
-            w_clip: None,
-            run: 0,
-        };
-        pass.depth_clip(d3d::DepthClip { range: [256.0, 16_777_215.0], clamp: false, w_buffered: Some(true) });
-        assert_eq!(pass.w_clip, Some(([256.0, 16_777_215.0], false)));
-        assert!(pass.sampled().is_empty(), "no draw samples the texture accumulation level");
-        let constants = [[0.0; 4]; d3d::VIEW_CONSTANTS];
-        let view = ViewInputs { constants, guest_size: (640, 480), size: (640, 480), z_scale: 16_777_215.0, w_clip: pass.w_clip };
-        let u = native_render::program::frame_vertex(&Default::default(), &view);
-        assert_eq!(u.w_clip, Some([256.0, 16_777_215.0]), "near at the device's 256, not 0");
     }
 
     #[test]

@@ -1,29 +1,23 @@
 //! Private object-shadow chains (docs/graphics/native-shadow-layers.md,
 //! "A private chain"). When an object's layer-10 group draws alone, its
 //! casters go into a `native_render::shadow_chain::Pair` instead of the
-//! guest's target 10, the filter runs over that pair, and the receivers
-//! sample its mask. The guest's begin still clears target 10; nothing else
-//! of the chain writes targets 10 or 11, and the freeze does not run.
-//!
-//! A filter the stage does not take hands the casters back: [`Spill`]
-//! copies the private mask into target 10 before the guest's quads, and
-//! from there the chain is the guest's (freeze included).
+//! object's target 10, the filter runs over that pair, and the receivers
+//! sample its mask.
 
 use crate::native_shadows_draw::Output;
+use gfx::external::{ExternalAttachments, ExternalEncoded};
 use native_render::shadow_chain::Pair;
+use native_render::program::ViewInputs;
+use native_render::stage::{Stage, StageWork};
 use std::cell::RefCell;
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Mutex};
 
 /// One generation's private chain, shared by its caster pass, its filter
 /// pass and the receiver boundary.
 pub struct Chain {
     ctx: gfx::GfxContext,
-    /// One pair per target copy (a scaled backend records two sizes).
+    /// The pairs by size: one per render scale the chain recorded at.
     pairs: Mutex<Vec<Arc<Pair>>>,
-    spilled: AtomicBool,
     output: Output,
 }
 
@@ -34,19 +28,8 @@ impl Chain {
         Arc::new(Self {
             ctx,
             pairs: Mutex::new(Vec::new()),
-            spilled: AtomicBool::new(false),
             output,
         })
-    }
-
-    /// Whether the chain went back to the guest's targets.
-    pub fn spilled(&self) -> bool {
-        self.spilled.load(Ordering::Acquire)
-    }
-
-    /// Mark the chain spilled; `true` only for the call that did.
-    pub fn spill_once(&self) -> bool {
-        !self.spilled.swap(true, Ordering::AcqRel)
     }
 
     /// The last pair the caster pass made when it recorded.
@@ -96,50 +79,38 @@ pub(crate) fn withdraw() -> Option<Arc<Chain>> {
     OFFER.take()
 }
 
-/// The caster pass recorded into the chain's pair. The inner pass's
-/// packets are recorded for the bound target 10's formats and size, the
+/// The caster pass recorded into the chain's pair. The inner stage's
+/// packets are recorded for the bound attachments' formats and size, the
 /// pair's own.
 pub struct PrivateCasters {
-    inner: Box<dyn d3d::ExternalPass>,
+    inner: Box<dyn Stage>,
     chain: Arc<Chain>,
 }
 
 impl PrivateCasters {
-    pub fn new(inner: Box<dyn d3d::ExternalPass>, chain: Arc<Chain>) -> Self {
+    pub fn new(inner: Box<dyn Stage>, chain: Arc<Chain>) -> Self {
         Self { inner, chain }
     }
 
-    fn encoded(
-        &mut self,
-        t: &d3d::backend::ExternalAttachments,
-        request: d3d::ExternalPassRequest,
-    ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
-        let draws = self
-            .inner
-            .record_draws(t, request)
-            .unwrap_or(Err("caster pass has no packets"))?;
+    fn encoded(&mut self, t: &ExternalAttachments, view: &ViewInputs) -> Result<ExternalEncoded, &'static str> {
+        let StageWork::Draws(draws) = self.inner.record(t, view) else {
+            return Err("caster pass has no packets");
+        };
         if draws.packets.iter().any(gfx::RecordedDraw::counts_samples) {
             return Err("caster writes a visibility query");
         }
         let pair = Arc::new(
-            Pair::scaled(
-                &t.device,
-                t.color_format,
-                Some(t.depth_format),
-                t.size,
-                request.surface_size,
-            )
-            .ok_or("private shadow pair unavailable")?,
+            Pair::scaled(&t.device, t.color_format, Some(t.depth_format), t.size, view.guest_size)
+                .ok_or("private shadow pair unavailable")?,
         );
-        // The packets' persistent bytes go ahead of the commands, as the
-        // backend writes them for a packet run.
+        // The packets' persistent bytes go ahead of the commands.
         for (buffer, offset, bytes) in &draws.writes {
             t.queue.write_buffer(buffer, *offset, bytes);
         }
         self.chain.add(&pair)?;
         let ctx = self.chain.ctx.clone();
         let packets = draws.packets;
-        Ok(d3d::backend::ExternalEncoded {
+        Ok(ExternalEncoded {
             ranges: draws.ranges,
             draws: packets.len(),
             passes: 1,
@@ -151,73 +122,15 @@ impl PrivateCasters {
     }
 }
 
-impl d3d::ExternalPass for PrivateCasters {
-    fn uses_validated_resources(&self) -> bool {
-        true
+impl Stage for PrivateCasters {
+    fn name(&self) -> &'static str {
+        "shadow_private_casters"
     }
 
-    fn colour_only(&self) -> bool {
-        true
-    }
-
-    /// Nothing bound is written: the pair is the stage's own.
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites::default()
-    }
-
-    fn record_encoded(
-        &mut self,
-        t: &d3d::backend::ExternalAttachments,
-        request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
-        let result = self.encoded(t, request);
-        if let Err(why) = result {
-            render_bridge::native_shadows::dropped_layer();
-            eprintln!("native-shadows: a private caster pass failed while recording: {why}");
-        }
-        Some(result)
-    }
-
-    fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
-        self.inner.view_constants(constants);
-    }
-
-    fn depth_clip(&mut self, clip: d3d::DepthClip) {
-        self.inner.depth_clip(clip);
-    }
-}
-
-/// Copy a private mask into the guest's target 10 (`header`), so the
-/// guest's filter and the freeze after it see the casters.
-pub struct Spill {
-    pub chain: Arc<Chain>,
-    pub header: u32,
-}
-
-impl d3d::ExternalPass for Spill {
-    fn colour_only(&self) -> bool {
-        true
-    }
-
-    fn sampled(&self) -> Vec<u32> {
-        vec![self.header]
-    }
-
-    fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
-        let [Some(level)] = t.sampled else {
-            render_bridge::native_shadows::dropped_layer();
-            eprintln!("native-shadows: a spilled chain has no target 10 to copy into");
-            return;
-        };
-        let dest = level.view.texture();
-        match self.chain.pair_for(t.size) {
-            Some(pair) if pair.spills_into(dest) => {
-                pair.spill(t.encoder, dest);
-            }
-            _ => {
-                render_bridge::native_shadows::dropped_layer();
-                eprintln!("native-shadows: a spilled chain's mask does not fit target 10");
-            }
+    fn record(&mut self, t: &ExternalAttachments, view: &ViewInputs) -> StageWork {
+        match self.encoded(t, view) {
+            Ok(encoded) => StageWork::Encoded(encoded),
+            Err(why) => panic!("shadows: private caster pass: {why}"),
         }
     }
 }
@@ -264,21 +177,17 @@ mod tests {
     }
 
     #[test]
-    fn a_chain_spills_once_and_publishes_its_mask_into_the_shared_output() {
+    fn a_chain_publishes_its_mask_into_the_shared_output() {
         let Ok(ctx) = gfx::GfxContext::headless() else {
             return;
         };
         let output: Output = Default::default();
         let chain = Chain::new(ctx.clone(), Arc::clone(&output));
-        assert!(!chain.spilled());
         assert!(chain.pair().is_none());
         let pair = Pair::new(&ctx.device, wgpu::TextureFormat::Rgba8Unorm, None, (8, 4)).unwrap();
         chain.publish(&pair);
         let map = output.lock().unwrap().latest().cloned().unwrap();
         assert_eq!(map.size, (8, 4));
         assert_eq!(map.view.texture(), pair.mask.texture());
-        assert!(chain.spill_once());
-        assert!(!chain.spill_once());
-        assert!(chain.spilled());
     }
 }
