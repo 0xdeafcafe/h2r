@@ -34,7 +34,7 @@ Sources: [high-resolution.md](../graphics/high-resolution.md), "Determinism"; [s
 
 | # | Coupling | Guest site | Reaches the sim through | Owner at the end |
 |---|---|---|---|---|
-| 1 | Animation variant pick | object setup `0x00133790` -> pose request `0x000bd610` -> channel select `0x001cb410` -> selector `0x001dd630` | the pick written into the object's shared channel; the seed draw at `0x001dd6e1` when the manager's gameplay bit is set | the tick ([1](#1-animation-variant-picks)) |
+| 1 | Animation variant pick | object setup `0x00133790` -> pose request `0x000bd610` -> animate `0x000bdb60` -> overlays `0x000bd970` -> channel select `0x001cb410` (flags `0x7f`) -> selector `0x001dd630` | a stack channel, so only the seed draw at `0x001dd6e1` (gameplay bit set) and the pose it feeds | couplings 2 and 3 ([1](#1-animation-variant-picks)) |
 | 2 | Node matrices | `0x000bd610`: the section test at `0x000bd750`, the evaluation at `0x000bd7b2` | shared node matrices, body flag bit 30 cleared; marker lookup reads them | the tick ([2](#2-node-matrices)) |
 | 3 | Shared random seed | object code `0x001032a0` reached from the render; `[0x004e7408]` | the tick's next random numbers | built: `render_rng.rs` ([3](#3-the-random-stream)) |
 | 4 | Flare visibility byte | writer `0x00020bb0`, reader `0x00020770` (its count read at `0x000207b0`'s call `0x00020840`) | a GPU sample count smoothed into the array at `[0x0051f40c]` | the renderer ([4](#4-the-flare-visibility-byte)) |
@@ -51,13 +51,13 @@ Frame timing (`0x0012b2e0`, the vblank count) is the logical clock, not the rend
 
 | | |
 |---|---|
-| Guest | A setup whose model has pose-dependent sections asks for the object's pose (`0x000bd610`). A channel with no chosen variant is resolved there: `0x001cb410` calls the selector `0x001dd630`, which draws from the seed at `0x001dd6e1` and takes the weighted variant at `0x001dd6b9` (**E**; **Code**: `crates/rewrites/engine/src/sim_anim/manager/tracks/bind.rs`). |
-| Why it couples | Only listed objects are set up, so the camera chooses which channels are resolved, when, and in what order. The pick lands in the shared channel even when the draw comes from the render's private stream. |
-| Move | A tick phase after the object walk, `sim_anim::resolve_pending`, resolves every pending channel of every object that has an animation manager, in object index order, on the simulation's seed. It calls the bar-E port of `0x001cb410` (`sim_anim/manager/tracks/bind.rs::select`). The setup then finds every channel chosen. |
-| Bar | Contract D, not bar E ([sim-rewrite.md](sim-rewrite.md), section 3): retail has no camera-free order to match. The kernel stays bar E. Golden films are re-recorded once. |
-| Proof | Unit: two objects, one listed and one not, give the same channel bytes and seed after the phase as with both listed. Differential: `manager_differential/tracks.rs` already proves `select`. Run: `sim.render_writes` reports zero setup-time selector calls over the run-parity matches. |
+| Guest | The pose request `0x000bd610` calls the animate `0x000bdb60` at `0x000bd7ba`, as the tick's `0x000bd090` does at `0x000bd358`. Its overlay loop `0x000bd970` builds a channel on its own stack (`esp+0x24`, `0x20` bytes, at `0x000bd98d`..`0x000bd9cc`) and binds each overlay into it with `0x001cb410`, flags `0x7f` (bit `0x10` remaps through `0x001dd630`, `0x000bda53`), then samples it (`0x001c6f60`). The facial update `0x0010e530` binds with flags 0 (`0x0010e822`), so it never reaches the selector (**E**, lifted image; **Code**: `sim_anim/manager/tracks/bind.rs`). |
+| Why it couples | Every evaluation picks again into a channel that dies with the frame, so no pick is left in a shared channel. What the render's extra evaluation changes is the seed (a draw when the manager's gameplay bit is set) and the node matrices the pick feeds. |
+| Move | None of its own. The draw is coupling 3, closed for every session by slice 5; the matrices are coupling 2, closed by slice 4. With both, the render's evaluation reads a pose the tick built and draws only from the render stream. |
+| Bar | Contract D, as slices 4 and 5 ([sim-rewrite.md](sim-rewrite.md), section 3). |
+| Proof | Run: `sim.render_writes` reports zero gameplay-bit seed draws inside a frame (slice 5's error) and zero setup-time pose evaluations (slice 4). |
 
-**S**: whether a pending channel is a flag on the channel or the absence of a variant index, and whether resolving a channel the tick never plays changes a later tick's behaviour. The census slice answers both before the phase is written.
+**S**: the object type's own animate, `[type +0x6c]` from the table at `0x00468630` (the indirect call at `0x001090a5`), for types other than the unit; the unit's (`0x00112070`) binds without bit `0x10` (`sim_native/unit/tail.rs`, `0x00112cd8`). A type whose animate remaps into the object's own manager channels would leave a pick in the arena; slice 0's selector counter names it if one exists.
 
 ### 2. Node matrices
 
@@ -147,7 +147,7 @@ Each is one lane of a day or less. A slice lands when its proof row passes; 11 w
 | 0 | Census counters and `sim.render_writes`, with a note of the counts per map | Sonnet | the numbers that size 3, 4 and 8 |
 | 1 | Frame guard and its shrinking allowlist | Opus | the rule as a test mode |
 | 2 | Reader census for the flare array and the callback's stores; static trace of `0x00024970` | Opus | couplings 4 and 5 proven unused, or their tick readers named |
-| 3 | `sim_anim::resolve_pending`: variant picks at tick end | Opus | coupling 1 |
+| 3 | Folded into 4 and 5: the render's variant picks land in a stack channel | none | coupling 1, with 4 and 5 |
 | 4 | Node matrices at tick end; the setup's pose path read-only | Opus | coupling 2 |
 | 5 | Render stream for every session; gameplay-bit draw in a frame is an error | Sonnet | coupling 3 |
 | 6 | Flare array and query in the render-private store, counts from the display depth | Opus | coupling 4 |
@@ -158,7 +158,7 @@ Each is one lane of a day or less. A slice lands when its proof row passes; 11 w
 | 11 | Delete exact mode | Opus | the end state below |
 | 12 | Film compare behind `film.verify` | Sonnet | the end state below |
 
-Slices 0 to 2 run together. 3 and 4 follow 0; 6 and 7 follow 2; 5, 8 and 9 follow 1.
+Slices 0 to 2 run together. 4 follows 0; 6 and 7 follow 2; 5, 8 and 9 follow 1.
 
 ## End state
 
