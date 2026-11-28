@@ -1831,7 +1831,7 @@ confirmed by the same run: `place_squad_in` seats the free seats and no
 unattached actor stands under the ship.
 
 Kills come from `SimEvent::ActorKilled` (AN6), which is filled only while
-the object update runs in Rust (`impl.sim.native.objects`). The killer's
+the object update runs in Rust. The killer's
 player datum maps to its roster slot, and the kill's character tag to
 its row in the scenario's character palette. The assist is the latest
 other player in the victim's `SimEvent::Damage` history over the last

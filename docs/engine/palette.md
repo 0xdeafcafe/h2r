@@ -9,9 +9,9 @@ step is [first-person-filters.md](first-person-filters.md)). Code: `crates/rewri
 `crates/rewrites/engine/src/sim_anim/palette/tests.rs`,
 `crates/rewrites/engine/tests/sim_physics_differential.rs`
 (`first_person_pose_palette_kernel`).
-Switch: `impl.sim.native.anim` (the first-person port's own
-`impl.sim.native_first_person_pose` gates the vehicle), listed in
-[switches.md](../runtime/switches.md).
+Native only, no switch. The first-person port is the label
+`sim.port.first_person_pose`, which installs where no subsystem body
+owns its point.
 
 Phase 1c of the [simulation rewrite](sim-rewrite.md). A first-person
 seat draws its weapon and arms from a palette of 32-byte node records,
@@ -97,8 +97,7 @@ The step declines, writing nothing (the port's loops run), when:
 
 ## Not verified
 
-- Run parity: the sim-budget A/B with `-impl.sim.native.anim` against
-  on, identical `state_hashes_v1` and an empty `h2 sim diff`; the
+- Run parity: the sim-budget match against the lifted build, identical `state_hashes_v1` and an empty `h2 sim diff`; the
   cross-architecture arm; the decline rate on real seats (`stats()`),
   and the time saved per tick on Waterworks.
 

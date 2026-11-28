@@ -218,7 +218,7 @@ counts and three timed medians each (sim-10x.md, M2).
 
 ## Not verified
 
-- How many true callouts a tick makes with `impl.sim.native.objects` on.
+- How many true callouts a tick makes with the native objects.
   If M2 counts under 100 a tick, this lane is not worth building for the
   objects and waits for the tier.
 - That no body relies on the runner's safe point between its callouts to

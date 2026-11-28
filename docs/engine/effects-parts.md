@@ -75,11 +75,9 @@ The walk's four callees are Rust bodies (`sim_objects::Body`): an entry and the 
 
 Every segment's flags are its last flag-setting instruction's, so a callee that reads them, and the return, see retail's. The draw `259d0` stays the guest's, called where retail calls it; Rust stores its `fstp` with the recompiler's x87 helpers. No draw moves.
 
-The arm (`effect_update::arm`) is a segment arm over these four. Each segment gets a turn: until its entry has matched 4096 segments, and on every 64th after, the guest answers, and the Rust segment, run on the same state inside a trial that puts every byte back, is compared at the guest's transfer: the transfer, every register, the flags both define, x87, XMM and each byte Rust stored. Otherwise Rust answers, fusing from `1794e0` into `1774f0` when that turn is an answer too.
+Rust answers these four segments (`effect_update::arm`), fusing from `1794e0` into `1774f0` when that turn is an answer too. An unsupported float environment is counted as `declined`.
 
-One difference hands all four back to the guest until the next map; a revert or a restore starts the audit slots over. An unsupported float environment runs the guest's, counted as `declined`.
-
-`impl.sim.native.effects` ports `1792b0` too (`engine::sim_effects::events`); with it on, that port keeps the point and the update body is not installed.
+The effect ports always install and port `1792b0` too (`engine::sim_effects::events`); that port keeps the point and the update body is not installed.
 
 ## Interfaces
 

@@ -1,6 +1,6 @@
 # Object update bodies: damage, small types and lights
 
-Status: Built (behind `impl.sim.native.objects`). The bodies of slices 8, 11, 5 and 6b: the damage update, the item, scenery, device, machine, crate, creature and projectile updates, the lights, and the unit state.
+Status: Built (native only). The bodies of slices 8, 11, 5 and 6b: the damage update, the item, scenery, device, machine, crate, creature and projectile updates, the lights, and the unit state.
 Contract page for phase 3 of the [simulation rewrite](sim-rewrite-objects.md); entries and conventions are in [object-update.md](object-update.md).
 
 ## Slice 8 body
@@ -61,7 +61,7 @@ ones over a match:
 The buffer (`sim_objects::events`, read through `sim_state::events` and
 the agent API's `sim.events`) belongs to the game thread and is emptied
 at `GAME_TICK`'s entry, so at a tick boundary it holds the tick that
-just ran. Events are recorded only while `impl.sim.native.objects` is on.
+just ran. Events are always recorded.
 
 **The Halo 1 health model** ([health.md](../halo1/health.md)) hooks
 this point with a `before` and an `after`. With both on, the installer
@@ -167,7 +167,7 @@ after it); `faa30` is entered with `xmm0` set. Callee cleanup: `fd410`,
 - Captures from campaign (the slice's testable result): registers and
   RAM at the n-th call of each slice 11 point, on a level with machines
   and doors, creatures, scenery animations, crates, and items that reach
-  their garbage timer, compared with `impl.sim.native.objects` off. The
+  their garbage timer, compared with the lifted build. The
   harness covers synthetic pools only.
 - The harness's stubs answer in a float register only for `30bf0`,
   `1e9700` (`xmm0`) and `24590` (`st(0)`). Other callees that return a
@@ -257,7 +257,7 @@ lights with `16bc00`), and frees the light (`16ba40`).
 - Captures from campaign and multiplayer: registers and RAM at the n-th
   call of `c0c80` and `c2d00` on a level with lights that have a function
   source (owner node matrices and markers) and marker-parent lights,
-  compared with `impl.sim.native.objects` off. The synthetic record fixture
+  compared with the lifted build. The synthetic record fixture
   exercises a function source through both colour calls. Captures cover the
   owner-marker path (`b8c40`, `16640f`, `b8d30`) with real attachments.
 - The harness answers `16bc00` from the synthetic bitmap; the iterator's
@@ -329,8 +329,7 @@ the runtime, which runs the hook, then the body.
 
 - Captures from Waterworks and a campaign level with vehicles and
   turrets (the slice's testable result): registers and RAM at the n-th
-  call of each of the four, compared with `impl.sim.native.objects`
-  off. The harness covers synthetic pools with stubbed callees.
+  call of each of the four, compared with the lifted build. The harness covers synthetic pools with stubbed callees.
 - The harness dresses only units whose linked objects are pool objects;
   a linked object of another type, and `10f5f0`'s names beyond the two
   the bodies test for, are read only from the code.

@@ -4,9 +4,7 @@ Status: Built. Part of the [agent API](agent-api.md), which holds the wire, the 
 
 ## `anim`: the animation graph walk
 
-Under `impl.sim.native.anim` the animation graph's node walk `1dd1c0`
-runs as an arm: the guest answers each call, and the Rust result planned
-at the entry is compared with what the guest left
+The animation graph's node walk `1dd1c0` is answered by the Rust body
 ([skeleton-walk.md](../engine/skeleton-walk.md#the-graph-walk-1dd1c0)).
 The game method reads process counters at a tick boundary. Code:
 `crates/extensions/agent/src/anim.rs`, wire types in
@@ -14,32 +12,23 @@ The game method reads process counters at a tick boundary. Code:
 
 | Method | Access | Params and result |
 |---|---|---|
-| `anim.graph_walk` | read | No parameters. Returns `switch`, `addr` (`001dd1c0`), `arm` and `body`. |
-| `anim.manager` | read | No parameters. Returns `switch` and `entries`, keyed by the eight-digit guest address of each observed manager or graph function. |
+| `anim.graph_walk` | read | No parameters. Returns `addr` (`001dd1c0`) and `body`. |
+| `anim.manager` | read | No parameters. Returns `entries`, keyed by the eight-digit guest address of each observed manager or graph function. |
 
-`arm` has `checked`, `matched` and `mismatched` calls, `dropped` plans
-(calls that entered and never returned), `declined` by reason (`float`,
-`fault`, `count`, `queue`, `alias`, `parent`; the guest ran unchecked)
-and `first`: the first mismatch since start, or absent. `first.what`
-names the register or byte (`ecx`, `xmm3`, `matrix 2 +0x10`, `stack
-entry-0x3f8 (queue entry 1)`), `plan` and `guest` give both values in hex,
-and `entry` the general registers and MXCSR at that call's entry. `body`
-counts calls the Rust body answered without the guest (`native`, `nodes`
-posed, `declined`); it stays zero while the arm is installed. The counters
-are zero with the switch off. Sample before and after a scenario and
+`body` counts calls the Rust body answered without the guest (`native`, `nodes`
+posed, `declined`); a declined plan stays a guest call. Sample before and after a scenario and
 subtract to isolate that run.
 
 ```sh
 h2 agent anim.graph_walk
 ```
 
-Parity is `mismatched` 0 over the run ladder's matches, with `declined`
-small against `checked`.
+`declined` should stay small against `native`.
 
 `anim.manager` counts segments starting at a function entry or resuming
 after a call. For each observed function, `matched` and `differed` count
-completed comparisons. `declined` counts segments the Rust arm could
-not predict. `interrupted` counts predictions for which the guest exited
+completed comparisons. `declined` counts segments the Rust could
+not predict; they stay guest calls. `interrupted` counts predictions for which the guest exited
 before a comparison boundary. `answered` counts segments the Rust body
 answered without the guest. The first difference for each function is
 retained in `first`, with the starting selector (`pc`), differing field
@@ -64,8 +53,9 @@ wire types in `crates/extensions/agent-proto/src/sim_arms.rs`.
 |---|---|---|
 | `sim.arms` | read | No parameters. Returns `subsystems`: `physics`, `objects`, `anim`, `collision`, `seats`, `effects`, `sound`, `effects-parts`, in that order. |
 
-Each subsystem has `name`, `switch` (`impl.sim.native.<name>`), `on` (the
-switch in this process), `arms` and `clean`: `checked > 0 && mismatched
+Each subsystem has `name`, `switch` (`impl.sim.native.<name>`, or `""`
+for `objects`, `anim`, `effects` and `effects-parts`, which have none),
+`on` (the switch in this process; always true with no switch), `arms` and `clean`: `checked > 0 && mismatched
 == 0`, summed over the arms. Each arm has `name`, `checked`, `matched`,
 `mismatched`, `answered` (calls Rust answered in the guest's place) and
 `declined` (calls left to the guest unchecked, summed over reasons). The
@@ -74,7 +64,7 @@ sources are `sim_physics::parity::status`, `sim_objects::functions::parity::stat
 whose `declined` adds its `dropped` audits), `sim_objects::native_walk::stats`
 (`objects.walk.<entry>`, one arm per walk-table body: `answered` its
 segments, `declined` its refused calls, nothing `checked`),
-the graph walk's `arm_stats` and `stats`, `sim_anim::manager::arm::stats`,
+the graph walk's `stats`, `sim_anim::manager::arm::stats`,
 `sim_collision::WORLD.stats`, the shadow registry's `sim.seats` and
 `sim.effects` groups, `sim_seats::aim::arm::status` (`seats.aim`, the
 aim-assist cone's kernel arm, whose `declined` adds its unwatched
@@ -315,10 +305,9 @@ Design: [shadow-exec.md](../engine/shadow-exec.md). Host methods
 `feature::shadow`'s registry. A native sim port is checked against the
 lifted original, each on its own copy of guest memory from the state the
 game reached, then runs on the live Guest as usual. Only installed ports
-are checked: a port's `impl.` switch puts it in the plan, and
-`shadow.enable` is the only switch for the checks.
+are checked, and `shadow.enable` is the only switch for the checks.
 
-Select ports by switch name (`sim.native_unit_pose`), object point name
+Select ports by port label (`sim.port.unit_pose`), object point name
 (`OBJECT_FUNCTION_VALUE`), group (`sim.native`, `sim.physics`,
 `sim.native.objects`) or `all`. The object group samples individual entries
 and resumes, including those reached inside a fused walk.
@@ -330,8 +319,8 @@ and resumes, including those reached inside a fused walk.
 | `shadow.status` | read | `{on, ready, every, step_limit, calls, checked, matched, mismatched, skipped, ports, mismatches, mismatches_dropped}`. Each port: `name`, `group`, `point`, `function`, `installed`, `on`, `calls`, `checked`, `matched`, `mismatched`, `skipped`, `skip_reasons`. Each mismatch (at most 64 kept): `port`, `group`, `point`, `function`, `pc` (entry or resume), `tick`, `call` (which call since `enable`), `kind` (`transfer`, `registers`, `memory`, `returned`, `nondeterministic`), `summary`, `transfer` (`port`, `original`), `registers` (`name`, `port`, `original`), `memory` (runs of bytes: `address` folded physical, `virtual_addresses`, `before`, `port`, `original`), `memory_bytes`, `steps`, `entry` (every register at entry, hex) |
 
 ```sh
-H2_FEATURES=impl.sim.native_unit_pose h2 serve ...
-h2 agent shadow.enable '{"ports":["sim.native_unit_pose"]}'
+h2 serve ...
+h2 agent shadow.enable '{"ports":["sim.port.unit_pose"]}'
 h2 agent session.wait '{"until":{"ticks":300}}'
 h2 agent shadow.status
 ```

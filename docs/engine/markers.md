@@ -8,10 +8,9 @@ pose, aim and first-person parts of phase 1c are not. Code:
 (`run`, `fill`). Tests: `crates/rewrites/sim-anim/src/markers_tests.rs`,
 `crates/rewrites/engine/src/sim_anim/markers/tests.rs`,
 `crates/rewrites/engine/tests/marker_differential.rs`.
-Switch: `impl.sim.native.anim` (the marker port's own
-`impl.sim.native_marker_transforms` gates the vehicle; the subsystem
-entry wins when both are on), listed in
-[switches.md](../runtime/switches.md).
+Native only, no switch. The marker port is the label
+`sim.port.marker_transforms`; it installs where no subsystem body owns
+its point.
 
 Phase 1c of the [simulation rewrite](sim-rewrite.md). `b8d30` finds a
 model's marker groups by string ID and turns a group's instances into
@@ -139,8 +138,7 @@ arm64 and x86-64 and MXCSR does not change.
 
 ## Not verified
 
-- Run parity: the sim-budget A/B with `-impl.sim.native.anim` against
-  on, identical `state_hashes_v1` and an empty `h2 sim diff`; the
+- Run parity: the sim-budget match against the lifted build, identical `state_hashes_v1` and an empty `h2 sim diff`; the
   cross-architecture arm; the decline rate on real models (`stats()`),
   and the time saved per tick on Waterworks.
 

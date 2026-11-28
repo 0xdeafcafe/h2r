@@ -5,7 +5,7 @@ Code: `crates/rewrites/engine/src/sim_anim/segments.rs`,
 `sim_anim/filter.rs`, `sim_physics/first_person.rs` and `sim_physics/weapon_slots.rs`.
 Tests: `crates/rewrites/engine/src/sim_anim/filter/tests.rs` and
 `crates/rewrites/engine/tests/sim_physics_differential.rs`.
-Switch: [sim.native.anim](../runtime/switches.md).
+Native only, no switch.
 
 `engine::sim_anim::first_person_filters` runs the seat update from
 `166d75` through its final return. It gathers the seat, steps its four
@@ -110,8 +110,8 @@ so there is no fast-path range and no precision or rounding decline.
 
 ## Not verified
 
-- Run parity: the sim-budget A/B with `-impl.sim.native.anim` against
-  on, identical `state_hashes_v1` and an empty `h2 sim diff`, with
+- Run parity: the sim-budget match against the lifted build, identical
+  `state_hashes_v1` and an empty `h2 sim diff`, with
   a mapped local seat. The decline rate on real seats comes from `stats()`.
 
 ## Related

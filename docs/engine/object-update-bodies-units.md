@@ -1,6 +1,6 @@
 # Object update bodies: units, weapons, vehicles and bipeds
 
-Status: Built (behind `impl.sim.native.objects`). The bodies of slices 6a, 9, 10, 6c, 7a and 7b: the unit update, the weapon, the vehicle and the biped. Contract page for [sim-rewrite-objects.md](sim-rewrite-objects.md) phase 3; entries are in [object-update.md](object-update.md).
+Status: Built (native only). The bodies of slices 6a, 9, 10, 6c, 7a and 7b: the unit update, the weapon, the vehicle and the biped. Contract page for [sim-rewrite-objects.md](sim-rewrite-objects.md) phase 3; entries are in [object-update.md](object-update.md).
 
 ## Slice 6a bodies
 
@@ -77,7 +77,7 @@ drivers use the guest frame across all nine return sites.
 
 - Captures from Waterworks and a campaign level: registers and RAM at
   the n-th call of `c6b30`, `c60c0`, `cba50`, `c85c0` and `c7840`,
-  compared with `impl.sim.native.objects` off. The harness covers
+  compared with the lifted build. The harness covers
   synthetic pools only.
 - The harness compares the eight integer registers, the flags, memory,
   `xmm` and the x87 state at callouts. `_ftol2`'s stub pops the x87
@@ -147,7 +147,7 @@ and `103b70` (4; `eax`), `102d60` (0; `eax`, `ecx`), `102e10` and
 - Captures (the slice's testable result): registers and RAM at the n-th
   call of `WEAPON_UPDATE` from a Waterworks match (charging and
   overheating weapons, dual wielding, a vehicle turret) and from a
-  campaign level, compared with `impl.sim.native.objects` off. The
+  campaign level, compared with the lifted build. The
   harness covers synthetic pools only.
 - The x87 state at callouts: the harness compares integer registers,
   flags, XMM and memory, not `st(0)`. `_ftol2` takes its argument
@@ -217,8 +217,7 @@ segment keeps every frame slot and register they read.
 - Captures from a match with vehicles (the slice's testable result):
   registers and RAM at the n-th call of `VEHICLE_UPDATE`, one per
   vehicle type the table dispatches (tread, wheel, the flier types,
-  turrets), on the ground and woken by an early mover, compared with
-  `impl.sim.native.objects` off. The harness covers synthetic pools,
+  turrets), on the ground and woken by an early mover, compared with the lifted build. The harness covers synthetic pools,
   with stubbed callees.
 - The harness does not compare x87 state at callouts. `372d48` takes
   its two operands on the x87 stack and returns in `st(0)`; the body's
@@ -340,7 +339,7 @@ instructions that carry them.
 
 - Captures from Waterworks and a campaign level (the slice's testable
   result): registers and RAM at the n-th call of each body, compared
-  with `impl.sim.native.objects` off. The harness covers synthetic
+  compared with the lifted build. The harness covers synthetic
   pools with stubbed callees; the player, actor, skull and dialogue
   paths are reached only with dressed fields.
 - `111650`'s field names and what its callees do are read from data
@@ -423,7 +422,7 @@ lane's body; the segments keep every frame slot and register they read.
 - Captures from a match and a campaign level (the slice's testable
   result): registers and RAM at the n-th call of `BIPED_UPDATE`, for a
   biped on foot, airborne, seated in a vehicle and riding a biped,
-  compared with `impl.sim.native.objects` off. The harness covers
+  compared with the lifted build. The harness covers
   synthetic pools, with stubbed callees.
 - `1469f0` has callers outside the biped update (one returns to
   `167507`), and the leaves may have others; the bodies run there too
@@ -516,7 +515,7 @@ read.
 - Captures from a match and a campaign level (the slice's testable
   result): registers and RAM at the n-th call of `BIPED_POST_UPDATE`, for
   a biped standing, crouching, jumping, landing and on each contact kind,
-  compared with `impl.sim.native.objects` off. The harness covers
+  compared with the lifted build. The harness covers
   synthetic pools, with stubbed callees.
 - The leaves and segments may have callers outside the post-update; the
   bodies run there too when the switch is on. The harness enters them

@@ -131,7 +131,7 @@ discounted by risk.
 | 1 | Bot thinks on worker threads (`H2_BOT_THREADS`; `H2_BOT_PIPELINE`) | 0.2–0.3 batched, 0.35–0.4 pipelined | 0.45 | built; one small lane to make it the single-match default | low: batched equals serial by design; pipelined is a different, repeatable match | do first |
 | 2 | Flat RAM (`H2_FLAT_RAM=1`, slice F3) | 0.25–0.35 | 0.45 | built, unmeasured; coordinator time and a fix lane if fixups are not zero | medium: the earlier flat model was slower and diverged | measure first |
 | 3 | Thin transfers T1–T3 measured, T4 if earned | 0–0.3 | 0.6 | built; unknown whether the 5.5 ms image has them | low | measure first |
-| 4 | Native animation on (`impl.sim.native.anim`) | 0.10–0.15 | 0.19 | built, never timed; its run ladder is not climbed | low | measure, then default on in sim |
+| 4 | Native animation (always on) | 0.10–0.15 | 0.19 | built, never timed | low | measure |
 | 5 | Small host fixes: map status poll, input sync with no pad, file path rebuild, per-tick component strings | 0.10–0.20 | 0.25 | two small lanes | low | do |
 | 6 | Sound off in sims through the title's own no-device path | 0.5–0.65 | 0.73 | one static-reading step, one lane | medium: leaves bar E; needs sign-off unless the gameplay digest holds | blocked: the read found no complete no-device path; the per-map init calls DirectSound with the null interface ([note](notes/sim-10x.md#2026-11-22-lane-c1s-read-the-titles-no-sound-path)) |
 | 7 | **The sim tier in the image**: tick closures recompiled with registers as locals, unchecked flat memory, host floats, exact fallback | 0.9 (leaf families), 1.7 (60% of guest time), 2.4–3.0 (85%) | 3.7 | six to eight lanes; [spec](sim-10x-tier.md) | high: its 5× gate has no number yet | the only route to 20×; start with its two measurements |
@@ -323,12 +323,12 @@ transfer slices are already in the baseline); sound and effects rows.
 **M2. Native subsystems.** Needs `f50dc1ba6` (the install fix).
 
 ```bash
-for s in anim collision objects; do
+for s in collision; do
     arm lockout native-$s-hash H2_FEATURES=impl.sim.native.$s,$hash
     h2 sim diff "$out/lockout-aa1.json" "$out/lockout-native-$s-hash.json"
     timed lockout native-$s H2_FEATURES=impl.sim.native.$s
 done
-arm lockout native-objects-entries H2_FEATURES=impl.sim.native.objects H2_ENTRY_STATS=1
+arm lockout native-objects-entries H2_ENTRY_STATS=1
 grep -i 'sim-native\|sim.native' "$out/lockout-native-objects-hash.log" | head   # the plan line: installed, not refused
 ```
 

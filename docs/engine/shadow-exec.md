@@ -97,8 +97,7 @@ of two arms, and the two never mix on one port:
   (`shadow.disable`) makes the bodies authoritative. That is the seats'
   rollout: parity first, authority after.
 
-Only installed ports are checked: a port's `impl.` switch puts it in the
-plan, and `shadow.enable` turns its checks on. The seats sit behind the
+Only installed ports are checked, and `shadow.enable` turns its checks on. The seats sit behind the
 one `impl.sim.native.seats` switch and are named per entry
 (`sim.seats.player_control_update`, ...). Boot's run gives the registry
 the image once the module is loaded
@@ -127,8 +126,8 @@ Methods ([agent-api.md](../runtime/agent-api-checks.md#shadow-checks)):
 `shadow.enable`, `shadow.disable`, `shadow.status`.
 
 ```sh
-H2_FEATURES=impl.sim.native_unit_pose,impl.sim.native.physics h2 serve ...
-h2 agent shadow.enable '{"ports":["sim.native_unit_pose","sim.physics"],"every":4}'
+h2 serve ...
+h2 agent shadow.enable '{"ports":["sim.port.unit_pose","sim.physics"],"every":4}'
 h2 agent shadow.status
 ```
 

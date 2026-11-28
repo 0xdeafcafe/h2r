@@ -78,7 +78,7 @@ quiet laptop runs every benchmark; a local run is a smoke check.
 
 | Candidate | Saving per tick (**S**) | Risk | Parity bar |
 |---|---:|---|---|
-| Native subsystems on in the light profile: `impl.sim.native.anim`, `impl.sim.native.collision`, `impl.sim.native.objects` | 1.5–2.5 ms | Low once each switch's ladder is clean; the work is turning on what exists | hashes equal to `-impl.sim.native` |
+| Native subsystems in the light profile: animation and objects are always native; `impl.sim.native.collision` is the one switch | 1.5–2.5 ms | Low once collision's ladder is clean; the work is turning on what exists | hashes equal to `-impl.sim.native` |
 | Sound sim in Rust on the silent clock (planned phase 4) | 0.5–0.8 ms | Medium: voice starts and completion events are gameplay-visible | hashes, plus voice start and completion order per tick |
 | Effects, particles and decals in Rust (planned phase 6) | 0.2–0.35 ms | High if pruned, medium if rewritten: effect dispatch can deal damage and spawn objects, and particles share the random stream | hashes |
 | Havok world and glue (planned phase 5) | 0.4–0.7 ms | High: its own acceptance bar in the rewrite plan | behaviour suites, cross-architecture hashes |

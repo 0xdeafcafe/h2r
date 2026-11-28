@@ -9,7 +9,7 @@ Code: `crates/rewrites/sim-anim/src/skeleton.rs` (`build_matrices`, `pose`,
 (`graph_matrices`, `graph_order`),
 `crates/rewrites/engine/src/sim_anim/skeleton.rs` (`walk`),
 `crates/rewrites/engine/src/sim_anim/graph_walk.rs` (`plan`, `run`,
-`enter`, `audit`, `compare`, `reference`). Tests:
+`enter`, `compare`, `reference`). Tests:
 `crates/rewrites/sim-anim/src/skeleton_tests.rs`,
 `crates/rewrites/sim-anim/src/graph_walk_tests.rs`,
 `crates/rewrites/engine/src/sim_anim/skeleton/tests.rs`,
@@ -19,8 +19,7 @@ Code: `crates/rewrites/sim-anim/src/skeleton.rs` (`build_matrices`, `pose`,
 `crates/rewrites/engine/tests/sim_anim_graph_differential.rs`.
 `bd090`'s walk always runs in Rust, with no switch; a walk it declines
 is a counted `Decline` and runs the port's per-node loop.
-`impl.sim.native.anim` (off) switches the graph walk's arm, listed in
-[switches.md](../runtime/switches.md).
+The graph walk is native only too.
 
 Phase 1b of the [simulation rewrite](sim-rewrite.md). `bd090` turns an
 object's node records (the 32-byte records [animation
@@ -34,8 +33,8 @@ the same, so the guest cannot tell which ran.
 
 `bd090` runs natively as the register-level port
 `engine::sim_physics::node_matrices` (as the body `sim_objects::pose`
-in the walk table, always, or under `impl.sim.native.objects`; or
-under `impl.sim.native_pose_matrix`). At the
+in the walk table; or as the port
+`sim.port.pose_matrix`). At the
 loop's entry (`bd50c`, node count above 1, `esi` 1) it calls
 `engine::sim_anim::skeleton::walk`, and runs its own per-node loop `nodes`
 only when that returns `false`.
@@ -103,15 +102,13 @@ before anything reads them.
 - `engine::sim_anim::skeleton::stats()` counts walks, nodes posed and
   declines by reason.
 - The pose and composition entries (`OBJECT_POSE_MATRIX`,
-  `OBJECT_TRANSFORM_COMPOSE`) and their per-function switches stay: other
-  callers, among them `1dd1c0` while its arm runs, still reach them.
-- The graph walk is the point `ANIM_GRAPH_MATRICES` (`1dd1c0`). Under
-  `impl.sim.native.anim`, `sim-bridge` hooks it with a `before` that plans
-  the call and an `after` that compares; it has no implementation hook.
+  `OBJECT_TRANSFORM_COMPOSE`) and their ports stay: other
+  callers, among them `1dd1c0`, still reach them.
+- The graph walk is the point `ANIM_GRAPH_MATRICES` (`1dd1c0`). `sim-bridge` hooks it with a `before` that plans
+  the call and answers with the body; it has no `after`.
 - `engine::sim_anim::graph_walk::stats()` counts the body's calls, nodes
-  and declines; `arm_stats()` counts the arm's checks, matches,
-  mismatches, declines and dropped plans, and keeps the first mismatch.
-  The agent method `anim.graph_walk` returns both
+  and declines. The agent method `anim.graph_walk` returns
+  `{addr, body:{native,nodes,declined}}`
   ([agent-api.md](../runtime/agent-api-checks.md#anim-the-animation-graph-walk)).
 
 ## Rules and limits
@@ -191,29 +188,9 @@ Both leaves initialise the cutoff on the first pose, as in `bd090`'s walk.
 `plan` reads the arguments, the graph, the records, the matrices, the
 root, the cutoff and the constants, builds the queue (`graph_order`),
 runs `graph_matrices` and returns every byte and register above without
-writing. Two consumers use it:
-
-- **The arm** runs under `impl.sim.native.anim`. `enter` plans the call
-  at the entry and decides who answers. While the arm is unproven, and on
-  every audit slot after, the guest runs. `audit`, at the return (the
-  runtime's return observer, `esp` past the arguments), compares the plan
-  with what the guest left: the general registers, MXCSR, EFLAGS on the
-  arithmetic bits both sides define, XMM0 to XMM7, then each written byte
-  in write order. It counts a match or a mismatch and keeps the first
-  mismatch by name (`ecx`, `xmm3`, `matrix 2 +0x10`, `stack
-  entry-0x3f8 (queue entry 1)`) with the entry registers. The guest's
-  result stands either way. A declined plan is counted by reason, the
-  guest runs unchecked and the call is not a match.
-- **The body** (`run`, called by `enter`) writes the plan and returns
-  without the guest. The arm is proven after `PROVEN_AFTER` (4096)
-  matched calls with no mismatch ever; from then on the body answers every
-  answerable call except each `AUDIT_EVERY`th (64), which the guest
-  answers and the arm compares. The audit slot is the count of answerable
-  calls since the last map load, checkpoint revert or restore
-  (`arm_new_run`), so it depends on no thread. One mismatch ends the
-  take-over for good: the guest answers every call from then on, and a new
-  run does not undo it. The same constants and rules as the object
-  function curve arm (`sim_objects::functions::parity`).
+writing. The body (`run`, called by `enter`) writes the plan and returns
+without the guest. A declined plan is counted by reason and the call stays
+a guest call.
 
 `reference` is `1dd1c0` instruction by instruction with the exact
 `sim_native` leaves: the oracle of the engine tests and the third arm of
@@ -264,13 +241,11 @@ that is not mapped declines a call the guest would complete.
   synthetic guest memory, counts 0 to 255, random trees with unlinked
   nodes, forward and self parents, both cutoff states, both lane paths;
   RAM byte for byte and every CPU field must match. Every decline leaves
-  RAM and CPU untouched. The arm counts a match against the reference,
-  a decline, and a deliberate mismatch (a register, an XMM lane, a matrix
-  byte, a queue entry, the scratch, a return address), which `compare`
-  names.
+  RAM and CPU untouched. `compare` names a deliberate mismatch (a register,
+  an XMM lane, a matrix byte, a queue entry, the scratch, a return address).
 - `sim_anim_graph_differential.rs` (`H2_XBE`): the lifted `1dd1c0` with
   both leaves on the interpreter against `run` (both lane paths),
-  `reference` and the arm's plan, over 24 synthetic graphs; all memory
+  `reference` and the plan, over 24 synthetic graphs; all memory
   and registers. A byte and a register changed in the guest's result are
   named by `compare`.
 
@@ -281,10 +256,8 @@ that is not mapped declines a call the guest would complete.
   cross-architecture arm.
 - The decline rate on real skeletons (`stats()`), and the time saved per
   tick on Waterworks.
-- The graph walk's arm in a run: `anim.graph_walk` with
-  `impl.sim.native.anim` on, over the sim-budget matches and a campaign
-  level, must show `mismatched` 0 and a low decline rate before `run`
-  replaces the arm. Its callers and call rate per tick are not measured.
+- The graph walk in a run: `anim.graph_walk`, over the sim-budget matches and a campaign
+  level, should show a low `declined` rate. Its callers and call rate per tick are not measured.
 
 ## Related
 
