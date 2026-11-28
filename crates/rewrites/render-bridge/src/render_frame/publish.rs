@@ -19,17 +19,15 @@
 //! front buffer back into a bitmap through D3D surfaces: no frame loop or
 //! the frame step asks it, and it is not ported ([`readback`]).
 //!
-//! The gamma ramp the brightness update (`0x00012c71..0x00012d08`) loads
-//! into the miniport is [`gamma`]: device `[0x00407488]`, miniport
-//! `+0x1c28`, ramp `+0x1dc + 0x300 * [+0x7e4]`.
+//! The gamma ramp is the display's own: the view begin's brightness
+//! update builds it from the game's brightness setting
+//! ([`crate::display`]) and the present applies it when it copies a frame
+//! to the window (`gfx::display_gamma`). The present reads no device.
 
 use std::sync::OnceLock;
 
 use guest_layout::memory::{GuestMemory, MemFault};
 use engine::render_loop::tick_writes;
-
-/// Bytes of a gamma ramp: 256 red, 256 green, then 256 blue.
-pub const RAMP_BYTES: usize = 768;
 
 /// The guest words the present reads and writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,8 +40,6 @@ pub struct Addrs {
     pub latched: (u32, u32),
     /// The TV encoder's latch: whether an option was sent, and which.
     pub encoder: (u32, u32),
-    /// The D3D device pointer.
-    pub device: u32,
     /// The present counter.
     pub ticks: tick_writes::Addrs,
 }
@@ -54,16 +50,9 @@ impl Addrs {
         display: (0x0048_5acc, 0x0048_5ad0),
         latched: (0x0046_7008, 0x0046_700c),
         encoder: (0x0040_8640, 0x0040_8638),
-        device: 0x0040_7488,
         ticks: tick_writes::Addrs::HALO2,
     };
 }
-
-/// The miniport in the device, its ramps and the selected one.
-const MINIPORT: u32 = 0x1c28;
-const RAMPS: u32 = 0x1dc;
-const RAMP_STRIDE: u32 = 0x300;
-const RAMP_SELECT: u32 = 0x7e4;
 
 /// The host's placing of `0x00013d80`'s blit over the frame (one overlay
 /// picture, [`super::blit::overlay`]). `Err`: not placed, by cause.
@@ -133,20 +122,6 @@ pub fn readback(g: &dyn GuestMemory, arg: u32) -> Result<bool, MemFault> {
     Ok(arg != 0 && g.u32(arg.wrapping_add(0x54))? != 0)
 }
 
-/// The ramp the brightness update last loaded; `None` before one is (the
-/// miniport's ramps are zero until then, and an all-zero ramp is black).
-pub fn gamma(a: &Addrs, g: &dyn GuestMemory) -> Result<Option<Box<[u8; RAMP_BYTES]>>, MemFault> {
-    let device = g.u32(a.device)?;
-    if device == 0 {
-        return Ok(None);
-    }
-    let miniport = device.wrapping_add(MINIPORT);
-    let select = g.u32(miniport.wrapping_add(RAMP_SELECT))? & 1;
-    let mut ramp = Box::new([0u8; RAMP_BYTES]);
-    g.read(miniport.wrapping_add(RAMPS).wrapping_add(RAMP_STRIDE * select), &mut ramp[..])?;
-    Ok(ramp.iter().any(|&b| b != 0).then_some(ramp))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -154,7 +129,6 @@ mod tests {
     use std::sync::Mutex;
 
     const A: Addrs = Addrs::HALO2;
-    const DEVICE: u32 = 0x0070_0000;
     const IMAGE: u32 = 0x0060_0000;
 
     /// What `0x00013d50` leaves for a 2 x 1 image at (4, 3).
@@ -164,20 +138,10 @@ mod tests {
         g.put_u32(A.blit.scale, 0x55);
     }
 
-    fn ramp(n: u8) -> Vec<u8> {
-        (0..RAMP_BYTES).map(|i| (i as u8).wrapping_mul(3).wrapping_add(n)).collect()
-    }
-
-    /// A guest with the device, a loaded ramp in the miniport's second
-    /// slot and the display words latched.
+    /// A guest with the display words latched.
     fn guest() -> FakeGuest {
         let mut g = FakeGuest::new();
         g.map(0x0040_7000, 0x2000).map(0x0046_7000, 0x1000).map(0x0048_5000, 0x1000).map(0x0050_9000, 0x1000);
-        g.map(DEVICE, 0x3000);
-        g.put_u32(A.device, DEVICE);
-        let miniport = DEVICE + MINIPORT;
-        g.put(miniport + RAMPS, &ramp(1)).put(miniport + RAMPS + RAMP_STRIDE, &ramp(2));
-        g.put_u32(miniport + RAMP_SELECT, 1);
         g.put_u32(A.display.0, 7).put_u32(A.latched.0, 7).put_u8(A.display.1, 1).put_u32(A.latched.1, 1);
         g.put_u32(A.encoder.0, 1).put_u32(A.encoder.1, 7);
         g.put_u32(A.ticks.present_counter, 41);
@@ -267,17 +231,5 @@ mod tests {
         assert!(!readback(&g, 0x0060_0000).unwrap(), "+0x54 clear: the guest jumps to 0x000140e6");
         g.put_u32(0x0060_0054, 1);
         assert!(readback(&g, 0x0060_0000).unwrap());
-    }
-
-    #[test]
-    fn the_ramp_is_the_selected_one_and_none_before_a_load() {
-        let mut g = guest();
-        assert_eq!(gamma(&A, &g).unwrap().map(|r| r.to_vec()), Some(ramp(2)));
-        g.put_u32(DEVICE + MINIPORT + RAMP_SELECT, 0);
-        assert_eq!(gamma(&A, &g).unwrap().map(|r| r.to_vec()), Some(ramp(1)));
-        g.put(DEVICE + MINIPORT + RAMPS, &[0; RAMP_BYTES]);
-        assert_eq!(gamma(&A, &g).unwrap(), None, "zero until the brightness update loads one");
-        g.put_u32(A.device, 0);
-        assert_eq!(gamma(&A, &g).unwrap(), None, "no device");
     }
 }

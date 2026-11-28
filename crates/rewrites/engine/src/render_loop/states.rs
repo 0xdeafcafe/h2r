@@ -51,10 +51,6 @@ pub const COLOUR: u32 = 0x0013_1ed0;
 pub const SHADOW: u32 = 0x0040_7498;
 /// D3D's dirty mask for the deferred states.
 pub const DIRTY: u32 = 0x0040_7490;
-/// The guest D3D device pointer. Nothing here reads it; its last readers
-/// are render-bridge's `native_world::opaque_material` uploads, which
-/// still push to the guest device.
-pub const DEVICE: u32 = 0x0040_7488;
 /// State `0x88`'s mirror.
 pub const STATE_88: u32 = 0x0040_76b8;
 /// Push headers of the Simple states, dirty bits of the deferred ones.

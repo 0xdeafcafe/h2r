@@ -249,10 +249,6 @@ pub fn indexed_draw() -> Option<DrawContext> {
     DRAW.get()
 }
 
-pub fn owns_scene_world(switches: &hooks::Switches) -> bool {
-    render_bridge::native_world_layers::on(switches)
-}
-
 #[cfg(test)]
 mod section_count_tests {
     use super::SectionCounts;

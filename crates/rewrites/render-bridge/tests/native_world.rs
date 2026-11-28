@@ -88,15 +88,9 @@ const BSP: u32 = 0x0080_0000;
 struct Stub {
     asked: Mutex<Vec<(u32, RenderCamera, StencilPlan)>>,
     parts: Arc<PartSet>,
-    resolved: std::sync::atomic::AtomicBool,
 }
 
 impl Host for Stub {
-    fn use_resolved_scene(&self, _: &dyn GuestMemory, bsp: u32) -> bool {
-        assert_eq!(bsp, BSP);
-        self.resolved.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
     fn ask(&self, mem: &mut dyn GuestMemory, bsp: u32, view: &frame_scene::View, stencil: &StencilPlan, claim_guest: bool) -> Result<native_render::skip::Cleared, &'static str> {
         assert!(claim_guest);
         self.asked.lock().unwrap().push((bsp, view.camera, stencil.clone()));
@@ -159,7 +153,6 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
 
     let stub = Arc::new(Stub {
         asked: Mutex::default(),
-        resolved: Default::default(),
         parts: Arc::new([((Owner::Cluster(0), 0), 0xe000_0010u32)].into_iter().collect()),
     });
     native_world::set_host(stub.clone());
@@ -265,23 +258,6 @@ fn the_world_items_skip_layer_3_and_get_it_back_at_the_next_layer_draw() {
     m.set_u32(RENDER_RECORDS + 0x20 * 2 + 4, u32::MAX).unwrap();
     native_world::before_layer(&mut m, 0);
     assert_eq!(stub.asked.lock().unwrap().len(), asked + 1);
-    native_world::restore_pending(&mut m);
-
-    // With resolved scene draws enabled, the opaque handler hooks consume
-    // the guest's entries one by one and no bit is touched. The alternate
-    // view can still use the mask reservation.
-    let mut m = guest();
-    stub.resolved.store(true, std::sync::atomic::Ordering::Relaxed);
-    native_world::before_layer(&mut m, native_render::objects::SCENE_LAYER3_RETURN);
-    assert_eq!(masks(&m), vec![0b1010; 3]);
-    assert_eq!(stub.asked.lock().unwrap().len(), asked + 1);
-    native_world::before_layer(&mut m, 0x0002_bd74);
-    assert_eq!(masks(&m), vec![0b0010, 0b1010, 0b1010]);
-    assert_eq!(stub.asked.lock().unwrap().len(), asked + 2);
-    render_bridge::scene_step::with_open(|open| {
-        let (_, view) = open.expect("alternate layer 3 opened a view");
-        assert_eq!(view.key.kind, frame_scene::ViewKind::Alternate);
-    });
     native_world::restore_pending(&mut m);
 }
 

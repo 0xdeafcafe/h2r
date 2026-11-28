@@ -340,16 +340,7 @@ h2 agent render.parity '{"arm": true}'
   `scene_stages_<stage>`, the scene stages queued to the render thread,
   and `scene_dropped_<stage>`, those it could not record after the guest
   skipped their items, for `world` and `objects` (framescene.md, slice
-  2) and `fog` and `water` (slice 5). The world stipple counters
-  `scene_world_stipple_records`, `scene_world_stipple_solid`,
-  `scene_world_stipple_faded` and `scene_world_stipple_unreadable` count
-  the records the sorted handler enters with a placement fade below full
-  opacity, and of those how many the display detail drew solid (LOD
-  Distance; [occlusion-culling.md](../graphics/occlusion-culling.md),
-  "Projected size and level of detail"), how many still drew a stipple
-  pattern, and how many fell back to the record's own byte because the
-  placement did not read. They are session totals: the delta between two
-  `render.scene` replies is a frame's. The counters
+  2) and `fog` and `water` (slice 5). The counters
   `layer_plan_{6,16}_refused_<cause>` count fog and water batch refusals.
   Item causes are `build`, `handler`, `record`, `object`, `subparts`, `material` and
   `order`. View causes include `stencil_view`, `palette_view`,

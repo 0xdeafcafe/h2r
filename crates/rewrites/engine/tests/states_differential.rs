@@ -43,7 +43,7 @@ use std::collections::BTreeMap;
 use common::{IMAGE_SHA256, sha256, xbe_path};
 use guest_layout::memory::{GuestMemory, MemFault};
 use engine::render_loop::states::{
-    self, COLOUR, Counts, DEFS, DEVICE, DIRTY, HEADERS, Mode, RenderStates, SETTERS, SHADOW,
+    self, COLOUR, Counts, DEFS, DIRTY, HEADERS, Mode, RenderStates, SETTERS, SHADOW,
     SIMPLE, STATE_88,
 };
 use engine::render_loop::{Regs, Step};
@@ -60,6 +60,9 @@ const PASS: u32 = 0x0281_0000;
 const ENTRIES: u32 = 0x0282_0000;
 const LIST_WORD: u32 = 0x0283_0000;
 const DEV: u32 = 0x0284_0000;
+/// `D3D__pDevice`, which only the original reads (its `+0x790` copy of
+/// state `0x88`). The port has no device.
+const ORIGINAL_DEVICE: u32 = 0x0040_7488;
 /// Shadow dwords the states reach (0 to 0xb0).
 const SHADOW_LEN: u32 = 0xb1 * 4;
 
@@ -335,7 +338,7 @@ fn state(image: &FlatMemory, seed: u64, case: u32) -> (FlatMemory, Regs, u16) {
         put(&mut mem, SHADOW + 4 * s, v);
     }
     put(&mut mem, DIRTY, r.u32());
-    put(&mut mem, DEVICE, DEV);
+    put(&mut mem, ORIGINAL_DEVICE, DEV);
     put(&mut mem, STATE_88, r.u32());
     // 64 state definitions: Simple, deferred, 0x88, setters, unknown.
     for d in 0..64u32 {

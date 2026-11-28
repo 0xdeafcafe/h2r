@@ -46,7 +46,6 @@ use native_render::skip::{self, Cleared, LIGHTMAP_LAYER, StencilPlan};
 use native_render::world::Owner;
 
 use crate::native_map_work::{self, BSP_LOAD_PENDING, Stage};
-use crate::native_scene_lists::{LodDetail, ViewLodScale};
 use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-world";
@@ -55,78 +54,8 @@ pub fn on(_: &hooks::Switches) -> bool {
     true
 }
 
-/// How a record's fade byte becomes the display's stipple choice in the
-/// sorted handler. The guest walk always publishes its retail (or recorded)
-/// fade; this is the display-side policy, from the render context's
-/// [`ViewLodScale`] display word.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum DisplayFade {
-    /// Each record's own byte: Retail detail or no view.
-    Retail,
-    /// The projected size counts `factor` guest pixels per output pixel.
-    Scaled(f32),
-    /// The finest detail at any distance: every placement fade draws solid.
-    Highest,
-}
-
-impl DisplayFade {
-    /// `mem` the live guest, `lod` the render context's scale (set per view
-    /// by the `lod-distance` feature).
-    pub fn resolve(m: &dyn GuestMemory, lod: Option<ViewLodScale>) -> Self {
-        let Some(lod) = lod else {
-            return Self::Retail;
-        };
-        match lod.display(m) {
-            LodDetail::Highest => Self::Highest,
-            LodDetail::Scaled(factor) => Self::Scaled(factor),
-            LodDetail::Retail => Self::Retail,
-        }
-    }
-}
-
-/// Where a [`DisplayFade`] lands. The fade is always the display's; what
-/// differs is whether the guest's own draws are the display.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FadePlan {
-    pub fade: DisplayFade,
-    /// Two-copy rendering (a distinct reference copy at guest resolution
-    /// plus the display copy, always so while a run is protected: network,
-    /// film or lockstep). The guest keeps the record's retail byte, so the
-    /// reference copy and every readback stay retail, and the fade reaches
-    /// the display copy alone as a stipple override on the draw
-    /// ([`OpaqueDraw::display_stipple`]). Without it (single-copy
-    /// rendering) the guest draws the display, so the fade replaces the
-    /// byte the guest's `SetStipple` takes.
-    pub distinct: bool,
-}
-
-impl FadePlan {
-    /// `single` whether the guest's draws render the display with no
-    /// distinct reference copy behind them.
-    pub fn resolve(m: &dyn GuestMemory, lod: Option<ViewLodScale>, single: bool) -> Self {
-        Self { fade: DisplayFade::resolve(m, lod), distinct: !single }
-    }
-}
-
-impl From<DisplayFade> for FadePlan {
-    /// Single-copy: the fade replaces the guest's own byte.
-    fn from(fade: DisplayFade) -> Self {
-        Self { fade, distinct: false }
-    }
-}
-
 mod layer_build;
 pub(crate) use layer_build::counters as geometry_list_counters;
-mod opaque;
-mod opaque_handler;
-mod opaque_material;
-mod opaque_material_animation;
-mod opaque_material_pixel;
-mod opaque_material_registers;
-mod opaque_material_states;
-mod opaque_material_textures;
-#[cfg(test)]
-mod opaque_interleave_tests;
 pub(crate) mod scene_build;
 mod scene_walk;
 mod section;
@@ -150,43 +79,6 @@ pub const ACTIVE_BSP: u32 = 0x004e_0348;
 /// shader by tag index (the low word of the datum an item's `+8` holds).
 pub type PartSet = HashMap<(Owner, u8), u32>;
 
-/// Only a refusal before the first range can restart at the indexed emitter.
-#[derive(Debug)]
-pub enum OpaqueSubmitError {
-    BeforeDraw(&'static str),
-    Device(String),
-}
-
-/// Resource setters can enter the game to deliver a fence callback or the
-/// destructor of the resource that just lost its last device reference.
-pub type OpaqueStreams<'a> = std::pin::Pin<Box<dyn std::future::Future<
-    Output = Result<bool, guest_layout::entry::EntryError>,
-> + Send + 'a>>;
-
-/// Resources retained for one sorted BSP handler. A submission refusal
-/// precedes its first draw, so the emitter can use the indexed backend.
-pub trait OpaqueDraw: Send + Sync {
-    /// Select the declaration and bind the streams after the handler sets
-    /// world constants. Missing shader inputs can suppress only the emit.
-    fn bind_streams<'a>(&'a self, cx: &'a hooks::Cx) -> OpaqueStreams<'a>;
-
-    fn submit(
-        self: Box<Self>, mem: &mut dyn GuestMemory, part: &native_render::world_ranges::SortedPart,
-    ) -> Result<(), OpaqueSubmitError>;
-
-    /// The stipple rows the display copy draws this entry with, in place of
-    /// the pattern the guest set (two-copy rendering; [`FadePlan`]). The
-    /// reference copy keeps the guest's pattern. Set before `submit`.
-    fn display_stipple(&mut self, _rows: [u32; 32]) {}
-}
-
-/// Active map, BSP and view used for one consecutive sequence of BSP entries.
-pub trait OpaqueView: Send + Sync {
-    fn prepare_opaque(
-        &self, mem: &mut dyn GuestMemory, part: &native_render::world_ranges::SortedPart,
-    ) -> Result<Box<dyn OpaqueDraw>, &'static str>;
-}
-
 /// What draws the world: boot's glue over the GPU world and the device.
 pub trait Host: Send + Sync {
     /// Release the displaced BSP before any stage asks for new resources.
@@ -198,23 +90,6 @@ pub trait Host: Send + Sync {
     /// Starts the shared BSP load once the scene binds its world palettes.
     fn load_bsp(&self, _mem: &dyn GuestMemory, _bsp: u32) -> bool {
         false
-    }
-
-    /// Prefer resolved scene draws retaining individual fallbacks.
-    fn use_resolved_scene(&self, _mem: &dyn GuestMemory, _bsp: u32) -> bool { false }
-
-
-    /// Apply an ordinary register-only state change if no queued device
-    /// work, resource callbacks or diagnostics require the full ABI path.
-    fn try_opaque_simple(&self, _mem: &mut dyn GuestMemory, _header: u32, _value: u32) -> bool {
-        false
-    }
-
-    /// Pin the map generation before the first section is prepared.
-    fn opaque_view(
-        &self, _mem: &dyn GuestMemory, _layer: crate::native_world_layers::Layer,
-    ) -> Result<Box<dyn OpaqueView>, &'static str> {
-        Err("no opaque draw host")
     }
 
     /// Before layer 3 of a view (`mem` the guest, read only): `bsp` the active BSP's address, `view`
@@ -248,16 +123,6 @@ static DRAWN: AtomicU64 = AtomicU64::new(0);
 static ITEMS: AtomicU64 = AtomicU64::new(0);
 static STENCIL: AtomicU64 = AtomicU64::new(0);
 static WITHOUT_WORLD: AtomicU64 = AtomicU64::new(0);
-/// Records the sorted handler enters with a fade byte below full.
-static FADE_RECORDS: AtomicU64 = AtomicU64::new(0);
-/// Of those, the ones whose display detail draws solid: no stipple.
-static FADE_SOLID: AtomicU64 = AtomicU64::new(0);
-/// Of those, the ones a stipple pattern still draws: the remaining
-/// screen-door.
-static FADE_STIPPLED: AtomicU64 = AtomicU64::new(0);
-/// The display rescale could not read the placement; the record's own byte
-/// drew.
-static FADE_UNREAD: AtomicU64 = AtomicU64::new(0);
 
 /// Installs the host (boot). Without one nothing is skipped.
 pub fn set_host(host: Arc<dyn Host>) {
@@ -287,40 +152,6 @@ pub fn stencil_views() -> u64 {
 /// the host is not asked.
 pub fn views_without_world() -> u64 {
     WITHOUT_WORLD.load(Ordering::Relaxed)
-}
-
-/// Records the sorted handler entered with a fade byte below full: the
-/// retail stipple candidates. Counted once per record, on its enter.
-pub fn fade_record() {
-    FADE_RECORDS.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Of those: `solid` when the display detail draws the record solid (no
-/// stipple), else a stipple pattern still draws it.
-pub fn fade_resolved(solid: bool) {
-    if solid {
-        FADE_SOLID.fetch_add(1, Ordering::Relaxed);
-    } else {
-        FADE_STIPPLED.fetch_add(1, Ordering::Relaxed);
-    }
-}
-
-/// A stippled record whose display rescale could not read the placement:
-/// the record's own byte drew.
-pub fn fade_unreadable() {
-    FADE_UNREAD.fetch_add(1, Ordering::Relaxed);
-}
-
-/// `scene_world_stipple_*` for `render.scene`'s counters: how many records
-/// the sorted handler saw in a placement fade, and how the display detail
-/// resolved them. Session totals; the delta between two reads is a frame's.
-pub fn stipple_counters() -> [(&'static str, u64); 4] {
-    [
-        ("scene_world_stipple_records", FADE_RECORDS.load(Ordering::Relaxed)),
-        ("scene_world_stipple_solid", FADE_SOLID.load(Ordering::Relaxed)),
-        ("scene_world_stipple_faded", FADE_STIPPLED.load(Ordering::Relaxed)),
-        ("scene_world_stipple_unreadable", FADE_UNREAD.load(Ordering::Relaxed)),
-    ]
 }
 
 /// The guest's memory as `native_render` reads and writes it.
@@ -359,10 +190,7 @@ pub fn plan_parts(mem: &dyn GuestRead, parts: &PartSet, keep: impl Fn(Owner, u8)
 /// does not draw keeps its guest draw and is counted
 /// `scene_kept_3_world_<cause>` ([`crate::native_layers::count_kept`]):
 /// the host's cause, `part` for a part outside the drawn set, under the
-/// site's prefix (`alt` for the alternate view). Only the resolved-scene
-/// arm, whose guest entries are consumed one by one by the opaque handler
-/// hooks, is counted by those hooks instead
-/// ([`crate::native_layers::in_body`]).
+/// site's prefix (`alt` for the alternate view).
 pub fn before_layer(mem: &mut dyn GuestMemory, ret: u32) {
     restore_pending(mem);
     let m = Mem(mem);
@@ -391,12 +219,7 @@ fn claim_layer(mem: &mut dyn GuestMemory, ret: u32) -> Option<crate::native_laye
     use native_render::world_layers::{Site, layer_site};
     let site = layer_site(LIGHTMAP_LAYER, ret);
     let bsp = m.read_u32(ACTIVE_BSP)?;
-    let resolved = site == Site::Scene && host.use_resolved_scene(m.0, bsp);
-    if resolved {
-        // The opaque handler hooks draw or count each structure entry.
-        crate::native_layers::in_body(&m, LIGHTMAP_LAYER, crate::native_layers::Keep::Structure);
-    }
-    let has_world = !resolved && skip::has_structure_items(&m, LIGHTMAP_LAYER) == Some(true);
+    let has_world = skip::has_structure_items(&m, LIGHTMAP_LAYER) == Some(true);
     if !has_world && site != Site::Scene {
         WITHOUT_WORLD.fetch_add(1, Ordering::Relaxed);
         return None;
@@ -408,7 +231,7 @@ fn claim_layer(mem: &mut dyn GuestMemory, ret: u32) -> Option<crate::native_laye
         return has_world.then_some(left);
     };
     if site != Site::Scene { view.display_visibility = None; }
-    let claim_guest = has_world && !resolved;
+    let claim_guest = has_world;
     if !claim_guest && view.display_visibility.as_ref().is_none_or(|v| v.clusters.is_empty() && v.placements.is_empty()) {
         return None;
     }
@@ -513,32 +336,18 @@ pub(crate) fn load_active_bsp(mem: &dyn GuestMemory) {
 
 pub struct NativeWorld;
 
-impl NativeWorld {
-    /// The world whose placement fades follow the view's display detail:
-    /// `lod` the render context's scale (the `lod-distance` feature's
-    /// words), `display_draws` whether these draws render the display with
-    /// no distinct reference copy behind them (single-copy rendering).
-    pub fn with_display_fade(lod: Option<ViewLodScale>, display_draws: bool) -> WorldScene {
-        WorldScene(lod, display_draws)
-    }
-}
-
-/// The world feature with its display-fade configuration.
-pub struct WorldScene(Option<ViewLodScale>, bool);
-
-impl Feature for WorldScene {
+impl Feature for NativeWorld {
     fn manifest(&self) -> Manifest {
-        NativeWorld.manifest()
+        Manifest::new(ID, "The static world drawn by the native GPU renderer")
+            .doc("docs/graphics/native-renderer.md")
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        let fade = (self.0, self.1);
         if !on(b.switches()) {
             b.snapshot(hooks::SnapshotPolicy::Stateless);
             return Ok(());
         }
         scene_walk::install(b);
-        opaque::install(b, fade);
         b.snapshot(hooks::SnapshotPolicy::section(Vec::new, |_, _| {
             forget_pending();
             Ok(())
@@ -557,44 +366,5 @@ impl Feature for WorldScene {
             .after_feature(native_map_work::ID)
             .context_only();
         Ok(())
-    }
-}
-
-impl Feature for NativeWorld {
-    fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "The static world drawn by the native GPU renderer")
-            .doc("docs/graphics/native-renderer.md")
-    }
-
-    fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        WorldScene(None, false).build(b)
-    }
-}
-
-#[cfg(test)]
-mod display_fade_tests {
-    use super::*;
-    use guest_layout::memory::FlatMemory;
-
-    #[test]
-    fn the_display_fade_follows_the_view_word_and_the_reference_policy() {
-        let address = 0x10000;
-        let scale = ViewLodScale::new(address);
-        let mut m = FlatMemory::new(address, 8);
-        // No view scale, or a run whose draws a protected reference copy
-        // watches: the record's own byte.
-        assert_eq!(DisplayFade::resolve(&m, None), DisplayFade::Retail);
-        // Two-copy runs resolve the same display fade, delivered to the
-        // display copy alone.
-        assert_eq!(FadePlan::resolve(&m, Some(scale), false),
-            FadePlan { fade: DisplayFade::Retail, distinct: true });
-        // The display word: absent (retail), a multiplier, and Highest,
-        // including under a menu model view's marking bit.
-        assert_eq!(DisplayFade::resolve(&m, Some(scale)), DisplayFade::Retail);
-        m.set_f32(address + 4, 3.5).unwrap();
-        assert_eq!(DisplayFade::resolve(&m, Some(scale)), DisplayFade::Scaled(3.5));
-        m.set_u32(address + 4, LodDetail::Highest.guest_word() | ViewLodScale::MODEL_VIEW)
-            .unwrap();
-        assert_eq!(DisplayFade::resolve(&m, Some(scale)), DisplayFade::Highest);
     }
 }

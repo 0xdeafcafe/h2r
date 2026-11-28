@@ -87,7 +87,7 @@
 //!   two distance words at the shader context's `+0x28` and `+0x2c`
 //!   (`0x00016c6e`..`0x00016cb0`). Only the texture-stage resolve reads
 //!   them, for the level of detail it asks residency for
-//!   (`0x0001b0a0`; `render_bridge`'s `opaque_material_textures`), so the
+//!   (`0x0001b0a0`), so the
 //!   byte changes no render state, constant or binding of the draw. The
 //!   item's `+0x15` and `+0x14` bytes are the draw's third and fifth
 //!   arguments (`0x0003bc7b`..`0x0003bc8d`), the shader level and the

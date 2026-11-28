@@ -68,7 +68,6 @@ fn counters() -> BTreeMap<String, u64> {
         .chain(crate::hud_native::refusal_counters())
         .chain(render_bridge::native_sky::counters())
         .chain(render_bridge::native_first_person::counters())
-        .chain(render_bridge::native_world::stipple_counters().map(|(k, v)| (k.to_owned(), v)))
         .collect();
     #[cfg(feature = "gpu")]
     counts.extend(crate::native_post_glue::counters());

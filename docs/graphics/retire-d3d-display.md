@@ -131,7 +131,7 @@ The frame's own calls:
 | `0x00014196..0x000141b7` | the present counter `0x00485aa0`, 64-bit, +1; EAX its high dword; `ret 8` | `engine::render_loop::tick_writes::present_counter`, EAX the same |
 
 - **The vblank.** The swap's count (`frame_wait::swapped`) gives the next vertical blank's record its swap count and `D3DVBLANK_SWAPDONE`, which `0x00014280` records.
-- **The gamma ramp.** `publish::gamma` reads the ramp the brightness update (`0x00012c71..0x00012d08`) last loaded into the miniport: device `[0x00407488]`, miniport `+0x1c28`, ramp `+0x1dc + 0x300 * [+0x7e4]`. An all-zero ramp is none loaded. The sealed scene carries no ramp.
+- **The gamma ramp.** The view begin's brightness update (`0x00012bb6..0x00012d0d`) builds the ramp from the game's brightness setting (`display::ramp`) and makes it the display's (`frame_types::display`); the present applies it when it copies a frame to the window (`gfx::display_gamma`). The present reads no device.
 - **The frame wait** is step 3 and runs before the present.
 - **Readbacks.** The present's four callers (`0x00223296`, `0x0012b784`, `0x00163a28`, `0x00163adb`, **Code**) all push `(0, 0)`, so its surface lock and copy (`0x00013f21..0x000140e4`) never run. A call with one (`publish::readback`) is `unimplemented!`.
 
@@ -346,7 +346,7 @@ Tests: `a_resize_writes_the_table_and_both_headers`, `the_end_writes_the_saved_s
 - What a frame loop shows over a map load: no scene is sealed outside the frame step.
 - The frame's finish in a game: whether a `release` panics.
 - The water end's ocean in a game (Delta Towers' bay is one): its pass on screen against the guest's, its copy on `Game(0x16)`, and which steps panic `water ocean: <cause>` (bit 19's reflection: the sky in `Game(0x15)` mirrored, and whether the native sky's replay draws with no depth bound).
-- The brightness: the sealed scene carries no gamma ramp (`publish::gamma`).
+- The brightness: a changed brightness setting changes the window's gamma (`display::ramp`, `gfx::display_gamma`).
 - Snapshot quiescence with the frame step's continuations.
 
 ## Related

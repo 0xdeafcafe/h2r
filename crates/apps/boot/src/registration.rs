@@ -892,10 +892,7 @@ pub(crate) fn register_late_for_profile(
         // runs after render-timing's. The world reads its map and resources
         // through the VFS (native_map).
         features
-            .add(&render_bridge::native_world::NativeWorld::with_display_fade(
-                view_scale,
-                false,
-            ))
+            .add(&render_bridge::native_world::NativeWorld)
             .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
         // Planar fog, layer 16, on the native GPU renderer
         // (on by default since 2026-11-20;
