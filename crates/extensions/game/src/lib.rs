@@ -62,6 +62,7 @@ pub mod firefight;
 #[cfg(feature = "rules")]
 pub mod rules;
 pub mod fov_row;
+pub mod render_counters;
 pub mod render_rng;
 #[cfg(feature = "gpu")]
 pub mod render_aspect;

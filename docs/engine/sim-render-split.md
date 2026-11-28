@@ -1,7 +1,7 @@
 # Sim and render split
 
-Status: Design. The render random stream, the gather-lens exit the frame guard (slice 1) and the tick-end node matrices (slice 4) are built; every other row is a slice below.
-Code: `crates/extensions/game/src/render_rng.rs` (the private stream), `crates/extensions/lockstep/src/frame_guard.rs` and `frame-guard.toml` (the frame guard and its allowlist), `crates/rewrites/engine/src/tick_poses.rs` (the tick-end node matrices), `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs` (`outside_gather_lens`, the object setup seam), `crates/platform/d3d/src/scaled.rs` (`ScaledBackend`, the reference copy), `crates/extensions/game/src/d3d_glue.rs` (`protected_readbacks`, `single_copy`). Tests: `crates/platform/d3d/tests/render_scale.rs`, the unit tests in `frame_guard.rs`.
+Status: Design. The render random stream, the gather-lens exit the frame guard (slice 1) the tick-end node matrices (slice 4) and the counters and the gate (slice 10) are built; every other row is a slice below.
+Code: `crates/extensions/game/src/render_rng.rs` (the private stream), `crates/extensions/lockstep/src/frame_guard.rs` and `frame-guard.toml` (the frame guard and its allowlist), `crates/rewrites/engine/src/tick_poses.rs` (the tick-end node matrices), `crates/extensions/game/src/render_counters.rs` and `render_loop/tick_writes.rs` (`settle`, the frame counters), `crates/live/sim-bench/src/blind.rs` and `scripts/render-blind-gate.sh` (the gate), `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs` (`outside_gather_lens`, the object setup seam), `crates/platform/d3d/src/scaled.rs` (`ScaledBackend`, the reference copy), `crates/extensions/game/src/d3d_glue.rs` (`protected_readbacks`, `single_copy`). Tests: `crates/platform/d3d/tests/render_scale.rs`, the unit tests in `frame_guard.rs`.
 Switch: `impl.sim.frame-guard` (off, **Code**) and `film.verify` (off, Design, added to [switches.md](../runtime/switches.md) by slice 12).
 
 ```mermaid
@@ -42,8 +42,8 @@ Sources: [high-resolution.md](../graphics/high-resolution.md), "Determinism"; [s
 | 6 | Render scratch in the arena | the gathers and the setup: object visit marks, object `+0xcc`, light render fields, lighting cache | the arena hash only (census class a: the tick does not read them) | the render-private store ([6](#6-render-scratch-and-stamps)) |
 | 7 | Particle view stamps | per-view update `0x00174420` | system `+0x0d` bit 2 and `+0xc` bit `0x400`, particle `+0x30` | the render-private store ([6](#6-render-scratch-and-stamps)) |
 | 8 | Animation cache | get `0x001237e0` from the render, request `0x001236f0` from the tick | use stamps `+0x14`; which clips are resident when the tick samples | the clip store ([6](#6-render-scratch-and-stamps)) |
-| 9 | Frame counters | present `0x00013f10` (`0x00485aa0`), `render_views` (`0x004ba034`, byte `0x004e6098`) | the tick's effect and particle code | the tick driver ([7](#7-frame-counters)) |
-| 10 | Game-time bracket | `0x00146de0`, `0x00146b80` around `render_views` | not identified (**S**) | settled by the frame guard |
+| 9 | Frame counters | present `0x00013f10` (`0x00485aa0`), `render_views` (`0x004ba034`, byte `0x004e6098`) | the tick's effect and particle code | built: `render_counters.rs` ([7](#7-frame-counters)) |
+| 10 | Game-time bracket | `0x00146de0`, `0x00146b80` around `render_views` | not identified (**S**) | settled by the gate: if the five arms agree no tick reader of it exists; if not, the frame guard's page names it |
 
 Frame timing (`0x0012b2e0`, the vblank count) is the logical clock, not the render, and stays as it is ([d3d-timing.md](../graphics/d3d-timing.md)).
 
@@ -115,7 +115,17 @@ After this slice the gather-lens exit (`outside_gather_lens`) is a cost saving o
 
 ### 7. Frame counters
 
-`engine::render_loop::tick_writes` makes the present counter, the render-frame counter and the one-shot byte for a skipped frame ([sim.md](../runtime/sim.md)). It becomes their only writer in every mode, on the logical frame clock, and a drawn frame's present does not add to them. Proof: the existing check on rendered frames, turned from a comparison into the single write, and the render-blind gate at two frame rates.
+`engine::render_loop::tick_writes` makes the present counter, the render-frame counter and the one-shot byte for a skipped frame ([sim.md](../runtime/sim.md)), and is their only writer in every mode, on the logical frame clock.
+
+| Frame | Who writes the words |
+|---|---|
+| Headless, skipped | `tick_writes::frame` (`SimFrame`) |
+| Drawn world frame that presented | the guest's frame, then `tick_writes::settle`: `Words::predict` of the entry's words, whatever the views, presents or reference copy did (`render_counters::Counters`, on the two `RENDER_FRAME` hooks of `render_rng.rs`) |
+| Loading frame (a cache still running) or outside the world | the guest's words stand |
+| Light host's rendered frame (`sim.render_every`) | the guest's; `SimFrame::check` compares with the prediction and falls back on a difference |
+| Loop frames outside `0x00223240` (`0x0012b6f0`, the map load's two) | the publish adds to the present counter; they run only outside gameplay |
+
+Proof: the unit tests in `tick_writes.rs` and `render_counters.rs` (a drawn frame with any number of presents leaves the headless step's words), and the render-blind gate at two frame rates.
 
 ## The render-private store
 
@@ -135,8 +145,27 @@ It is host memory, outside guest RAM: no checkpoint, film, keyframe or hash hold
 |---|---|---|
 | Frame guard (`impl.sim.frame-guard`) | at the entry of `0x00223240` the write watch over the arena's pages is drained, the arena copied and the access trap armed for writes on it; at the exit each written page is compared with the copy, and the `SimExt` digest with its entry value | no changed page outside the allowlist; a failure names the page, the pools its changed bytes lie in and the first writer's `pc` (or the host). The allowlist is `frame-guard.toml`, by pool, each entry naming the slice that empties it; it only shrinks (`MAX_ALLOWED`), like `tick-ledger.toml`, and the game-end line names entries no frame wrote |
 | Census (`sim.render_writes`, agent API) | counters per frame: setup-time selector calls, setup-time pose evaluations, gameplay-bit seed draws inside a frame, objects with bit 30 at tick end, guarded pages dirtied | all zero but the tick-end count |
-| Render-blind gate | one input tape, seed 7, 1,800 ticks, Lockout and Waterworks and one campaign level, in five arms: render skipped (`h2 sim`); 640x480; a 32:9 window at 4x; Theater's free camera; 30 and 120 display frames a second | every `state_hashes_v1` row and arena block equal on every tick; `h2 sim diff` prints nothing |
+| Render-blind gate (`scripts/render-blind-gate.sh`, `h2 sim blind`) | one input tape, seed 7, 1,800 ticks, Lockout and Waterworks and one campaign level, in five arms: render skipped (`h2 sim`); 640x480; a 32:9 window at 4x; Theater's free camera; 30 and 120 display frames a second | every `state_hashes_v1` row and arena block equal on every tick; `h2 sim diff` prints nothing |
 | Cross-machine | the gate's skipped arm on arm64 and x86-64 against a drawn arm on the other | equal hash series |
+
+### Running the gate
+
+Per map (Lockout, Waterworks, one campaign level), with `impl.sim.arena-hash` on in every arm. Record the tape once from a saved start (`state.save`, then `input.record` for 1,800 ticks, seed 7); each arm is one game started with the arm's setting, held at that start:
+
+| Arm | Game |
+|---|---|
+| `skipped` (the reference) | `h2 sim run <match> --socket S` (no render), or a game with `sim.render_every` 0 |
+| `640x480` | a window at 640x480, scale 1 |
+| `wide` | a 32:9 window, `H2_RENDER_SCALE=4` |
+| `camera` | Theater's free camera over the tape's game |
+| `fps30`, `fps120` | `H2_FPS=30` and `H2_FPS=120` |
+
+```sh
+scripts/render-blind-gate.sh $OUT <snapshot> <tape> 1800 \
+  skipped=$S0 w640=$S1 wide=$S2 camera=$S3 fps30=$S4 fps120=$S5
+```
+
+For each arm the script loads the snapshot, replays the tape for 1,800 ticks (it fails if the tape ran out or read no inputs), reads `sim.hashes` and writes `$OUT/<arm>.json`; then `h2 sim blind --ticks 1800 skipped=... wide=...` compares every arm with the first. It exits non-zero on the first differing tick (naming the arm and whether the gameplay or the arena digest differs), on an arm with fewer ticks or without the arena hash, and on a tick one arm lacks. `h2 sim blind` also reads sim reports (`state_hashes_v1`), so a `h2 sim run --report` file is an arm as it is. Per-block arena names for a failing pair come from `h2 sim diff` of two sim reports.
 
 The gate is step 4 of the verification ladder in [sim-rewrite.md](sim-rewrite.md) with the render as the variable. It joins the ladder as a step every later phase climbs.
 
@@ -156,7 +185,7 @@ Each is one lane of a day or less. A slice lands when its proof row passes; 11 w
 | 7 | Callback value from native post; cut the insert | Opus | coupling 5 |
 | 8 | Object, light and cache scratch onto the overlay | Opus | coupling 6 |
 | 9 | Particle stamps to a side table; animation sampling off the guest cache | Opus | couplings 7 and 8 |
-| 10 | Counters from the tick driver in every mode; the render-blind gate in `h2 sim` and the ladder | Sonnet | coupling 9, the gate, coupling 10's answer |
+| 10 (built) | Counters from the tick driver in every mode; the render-blind gate in `h2 sim` and the ladder | Sonnet | coupling 9, the gate, coupling 10's answer |
 | 11 | Delete exact mode | Opus | the end state below |
 | 12 | Film compare behind `film.verify` | Sonnet | the end state below |
 

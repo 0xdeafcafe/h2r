@@ -62,6 +62,20 @@ pub fn frame(a: &Addrs, g: &mut dyn GuestMemory) -> Result<(), MemFault> {
     next.write(a, g)
 }
 
+/// Makes the words `before.predict()` names, whatever the frame left in
+/// them: the tick driver is their only writer in every mode (docs/engine/
+/// sim-render-split.md, slice 10). Returns the words the frame had moved
+/// elsewhere, by name, for a census; a fault writes nothing.
+pub fn settle(a: &Addrs, g: &mut dyn GuestMemory, before: Words) -> Result<Vec<Word>, MemFault> {
+    let left = Words::read(a, g)?;
+    let want = before.predict();
+    let moved = left.diff(want);
+    if !moved.is_empty() {
+        want.write(a, g)?;
+    }
+    Ok(moved)
+}
+
 /// The three words as the guest holds them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Words {
@@ -110,7 +124,8 @@ impl Words {
         }
     }
 
-    fn write(self, a: &Addrs, g: &mut dyn GuestMemory) -> Result<(), MemFault> {
+    /// Writes the three words, in the guest frame's order.
+    pub fn write(self, a: &Addrs, g: &mut dyn GuestMemory) -> Result<(), MemFault> {
         g.write(a.frame_counter, &self.frame_counter.to_le_bytes())?;
         g.write(a.one_shot, &[self.one_shot])?;
         g.write(a.present_counter, &self.present_counter.to_le_bytes())
@@ -166,6 +181,57 @@ mod tests {
         off.frame_counter += 1;
         off.present_counter += 2;
         assert_eq!(after.diff(off), [Word::FrameCounter, Word::PresentCounter]);
+    }
+
+    /// A frame that drew twice, or presented twice, leaves the words the
+    /// tick driver would have: the settle names what moved and writes the
+    /// one prediction.
+    #[test]
+    fn settle_makes_the_tick_drivers_words_whatever_the_frame_left() {
+        let mut g = FakeGuest::new();
+        g.map(0x2000, 0x100);
+        g.put_u32(A.present_counter, 9).put_u32(A.frame_counter, 4).put_u8(A.one_shot, 1);
+        let before = Words::read(&A, &g).unwrap();
+        // A drawn frame: the guest's views and present, then a second present
+        // (a reference copy, a loop frame) and a stray frame counter step.
+        frame(&A, &mut g).unwrap();
+        present_counter(&A, &mut g).unwrap();
+        frame_counter(&A, &mut g).unwrap();
+        let moved = settle(&A, &mut g, before).unwrap();
+        assert_eq!(moved, [Word::FrameCounter, Word::PresentCounter]);
+        assert_eq!(Words::read(&A, &g).unwrap(), before.predict());
+        // A frame that left them right: nothing moved, nothing written.
+        let before = Words::read(&A, &g).unwrap();
+        frame(&A, &mut g).unwrap();
+        assert!(settle(&A, &mut g, before).unwrap().is_empty());
+        assert_eq!(Words::read(&A, &g).unwrap(), before.predict());
+        // The one-shot byte the frame forgot to clear.
+        let before = Words::read(&A, &g).unwrap();
+        g.put_u8(A.one_shot, 1);
+        assert_eq!(settle(&A, &mut g, before).unwrap(), [Word::OneShot]);
+        assert_eq!(g.u8(A.one_shot), Ok(0));
+    }
+
+    /// Same words after the same ticks however many presents a frame made:
+    /// the settle is the single write.
+    #[test]
+    fn a_skipped_frame_and_a_drawn_one_settle_to_the_same_words() {
+        let run = |presents: u32| {
+            let mut g = FakeGuest::new();
+            g.map(0x2000, 0x100);
+            g.put_u32(A.present_counter, 0xffff_fffe).put_u32(A.frame_counter, 7);
+            for _ in 0..50 {
+                let before = Words::read(&A, &g).unwrap();
+                frame(&A, &mut g).unwrap();
+                for _ in 1..presents {
+                    present_counter(&A, &mut g).unwrap();
+                }
+                settle(&A, &mut g, before).unwrap();
+            }
+            Words::read(&A, &g).unwrap()
+        };
+        assert_eq!(run(1), run(2));
+        assert_eq!(run(1), run(5));
     }
 
     #[test]

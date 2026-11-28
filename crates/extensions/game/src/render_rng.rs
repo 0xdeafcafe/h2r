@@ -12,6 +12,9 @@
 //! of every session that renders. Both use
 //! the one process stream ([`shared`]); a second enter in the same frame
 //! is a no-op, so the frame is entered once and left once.
+//!
+//! The same two hooks give a drawn world frame the tick driver's frame
+//! counters ([`crate::render_counters`], slice 10).
 
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -121,9 +124,14 @@ impl Feature for RenderRng {
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         let seeds = shared();
         let entering = seeds.clone();
+        // The frame counters ride the same two hooks (render_counters.rs).
+        let counters = Arc::new(crate::render_counters::Counters::default());
+        let reading = counters.clone();
+        let addrs = sim_bridge::sim_frame::Addrs::HALO2;
         b.raw()
             .before(&points::RENDER_FRAME, "enter the render's random stream", move |call| {
                 let mut guest = call.ctx.memory();
+                reading.enter(&addrs, &*guest);
                 if private_frame(&*guest) {
                     entering.lock().unwrap_or_else(|e| e.into_inner()).enter(&mut *guest);
                 }
@@ -133,7 +141,9 @@ impl Feature for RenderRng {
             .after_feature(THEATER_CAMERA);
         b.raw()
             .after(&points::RENDER_FRAME, "restore the simulation's random stream", move |call| {
-                seeds.lock().unwrap_or_else(|e| e.into_inner()).leave(&mut *call.ctx.memory());
+                let mut guest = call.ctx.memory();
+                seeds.lock().unwrap_or_else(|e| e.into_inner()).leave(&mut *guest);
+                counters.leave(&addrs, &mut *guest);
                 Ok(())
             })
             .after_feature(crate::bot_glue::ID)

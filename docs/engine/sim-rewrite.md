@@ -293,6 +293,10 @@ films and goldens get re-recorded per build.
    ticks, `impl.sim.arena-hash` on. Every `state_hashes_v1` row and arena
    block must match, and `h2 sim diff` must print nothing. Add a headless
    campaign level through the agent API, with arena hashes.
+4b. **Render-blind arm.** The same tape from one snapshot with the render
+   skipped and drawn in five windows, lenses and frame rates must give
+   identical hashes: `scripts/render-blind-gate.sh`
+   ([sim-render-split.md](sim-render-split.md), "Running the gate").
 5. **Cache-cold arm.** The same runs with derived caches dropped every tick
    must give identical hashes.
 6. **Cross-architecture.** The same match on arm64 and x86-64 gives identical
