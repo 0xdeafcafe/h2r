@@ -5,6 +5,7 @@
 use crate::sim_objects::Table;
 use std::sync::LazyLock;
 
+pub mod clock;
 pub mod levels;
 
 pub static TABLE: LazyLock<Table> = LazyLock::new(|| {

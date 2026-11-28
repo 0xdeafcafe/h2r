@@ -25,6 +25,7 @@ use std::time::Instant;
 
 use engine::entry::{Cx, EntryResult, GuestCall, Ret};
 use engine::points::{self, Point};
+use engine::sim_sound::clock::system_time;
 use engine::{GuestMemory, MemFault};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use sim_sound::chooser;
@@ -71,8 +72,6 @@ pub const UNIT_MOUTH: u32 = 0x0018_c6a0;
 pub const START_GATE: u32 = 0x0012_6c30;
 /// `0x126ec0(ecx = tag, &rule) -> eax`: the promotion rule, 0 to start.
 pub const START_RULE: u32 = 0x0012_6ec0;
-/// `0x3314b0`: the system time the pause records at sound globals `+0x80`.
-pub const SYSTEM_TIME: u32 = 0x0033_14b0;
 /// The stop's fade (`0x1263e5`: 300 ms at instance `+0xb4`).
 pub const STOP_FADE_MS: u32 = 300;
 /// Sound globals: sound on (`+0x78`, `+0x79`, `+0x7a`), paused (`+0x7b`),
@@ -904,9 +903,10 @@ fn first_listener(m: &dyn GuestMemory) -> Result<u32, MemFault> {
     Ok(0)
 }
 
-/// `0x125a90`: the paused byte and, on a pause, the time it began. The
-/// channel calls are the host's and are not made.
-async fn paused(cx: &Cx, table: &Shared) -> EntryResult {
+/// `0x125a90`: the paused byte and, on a pause, the time it began
+/// (`0x3314b0`, [`system_time`]). The channel calls are the host's and are
+/// not made.
+fn paused(cx: &Cx) -> EntryResult {
     let paused = cx.entry().eax;
     let g = cx.read(|m| m.u32(points::SOUND_GLOBALS.base))?;
     let flag = u8::from(paused == 0);
@@ -918,9 +918,10 @@ async fn paused(cx: &Cx, table: &Shared) -> EntryResult {
         m.set_u8(g.wrapping_add(sg::PAUSED), flag)
     })?;
     if paused == 1 {
-        let now = cx.call(GuestCall::new(SYSTEM_TIME)).await?.eax;
-        lock(table).ledger.entry_guest_calls += 1;
-        cx.write(|m| m.set_u32(g.wrapping_add(sg::PAUSE_TIME), now))?;
+        cx.write(|m| {
+            let now = system_time(&*m)?;
+            m.set_u32(g.wrapping_add(sg::PAUSE_TIME), now)
+        })?;
     }
     cx.write(|m| m.set_u8(g.wrapping_add(sg::BUSY), 0))?;
     Ok(Ret::new(0, 0))
@@ -1036,7 +1037,7 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
             Ok(Ret::new(0, 0))
         }
         Body::FirstListener => Ok(Ret::new(cx.read(first_listener)?, 0)),
-        Body::Paused => paused(&cx, &table).await,
+        Body::Paused => paused(&cx),
         Body::Choose => choose(&cx, &table).await,
         Body::Pick => pick(&cx, &table).await,
         Body::PromotionBank => {

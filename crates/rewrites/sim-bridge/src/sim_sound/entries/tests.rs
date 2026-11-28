@@ -382,6 +382,19 @@ fn the_environment_and_the_first_listener_are_the_guests_words() {
 }
 
 #[test]
+fn a_pause_records_the_kernel_tick_count_with_no_guest_call() {
+    let t = table(Arc::new(Flat(10.0)));
+    let mut g = guest(0);
+    let ticks = TIME + 0x3000;
+    g.put_u32(engine::sim_sound::clock::TICK_COUNT_IMPORT, ticks).put_u32(ticks, 98_765).put_u8(GLOBALS + sg::PAUSED, 1);
+    let r = run_body(&t, Body::Paused, g, Regs { eax: 1, ..regs() }, |c, _| panic!("no guest call: {:#x}", c.target));
+    assert_eq!(r.result, Ok(Ret::new(0, 0)));
+    assert_eq!(r.guest.u8(GLOBALS + sg::PAUSED), Ok(0));
+    assert_eq!(r.guest.u32(GLOBALS + sg::PAUSE_TIME), Ok(98_765));
+    assert_eq!(r.guest.u8(GLOBALS + sg::BUSY), Ok(0));
+}
+
+#[test]
 fn the_range_word_is_read_only_for_a_class_with_flag_bit_5() {
     let t = table(Arc::new(Flat(10.0)));
     // The tag's class 0 row in the sound globals tag's classes.
