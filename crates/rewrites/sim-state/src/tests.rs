@@ -157,3 +157,48 @@ fn a_stale_id_does_not_resolve() {
     p.add(9, 0x800a, ObjectKind::Scenery, header::ACTIVE);
     assert!(object(&p.ram, a.into()).unwrap().is_none());
 }
+
+/// The pool answers the readers as the arena does: the same ids, kinds,
+/// flags, transforms and child links.
+#[test]
+fn the_object_table_reads_as_the_arena_does() {
+    let mut p = Pool::new();
+    let a = p.add(0, 0xef62, ObjectKind::Biped, header::ACTIVE | header::AWAKE);
+    let b = p.add(2, 0xef64, ObjectKind::Weapon, header::ACTIVE | header::POST);
+    for slot in [0, 2] {
+        p.header(slot).set(&mut p.ram, ObjectHeader::BODY_SIZE, 0x130).unwrap();
+        p.body(slot).set(&mut p.ram, Object::POSITION, [slot as f32, 1.0, 2.0]).unwrap();
+    }
+    p.attach(b, a);
+    let set = |ram: &mut FlatRam, at: u32, v: &[u8]| guest_layout::MemMut::write_bytes(ram, synth::POOL + at, v).unwrap();
+    set(&mut p.ram, 0x34, &1i32.to_le_bytes());
+    set(&mut p.ram, 0x40, &0xef65u16.to_le_bytes());
+    let table = ObjectTable::import(&p.ram).unwrap().unwrap();
+    let mem = PoolMem::new(&table);
+    let summary = |m: &dyn Fn() -> Vec<(ObjectId, Option<ObjectKind>, u8, [f32; 3], Vec<ObjectId>)>| m();
+    let from_arena = summary(&|| {
+        objects(&p.ram)
+            .unwrap()
+            .map(|o| {
+                let o = o.unwrap();
+                let kids = o.children().map(|c| c.unwrap().id()).collect();
+                (o.id(), o.kind().unwrap(), o.flag_bits().unwrap(), o.transform().unwrap().position, kids)
+            })
+            .collect()
+    });
+    let from_pool = summary(&|| {
+        objects(&mem)
+            .unwrap()
+            .map(|o| {
+                let o = o.unwrap();
+                let kids = o.children().map(|c| c.unwrap().id()).collect();
+                (o.id(), o.kind().unwrap(), o.flag_bits().unwrap(), o.transform().unwrap().position, kids)
+            })
+            .collect()
+    });
+    assert_eq!(from_arena.len(), 2);
+    assert_eq!(from_pool, from_arena);
+    assert_eq!(from_pool[0].4, [ObjectId::from(b)]);
+    assert!(object(&mem, ObjectId::from(a)).unwrap().is_some());
+    assert!(object(&mem, ObjectId(0xef62_0009)).unwrap().is_none());
+}

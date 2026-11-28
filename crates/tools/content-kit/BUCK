@@ -34,7 +34,7 @@ workspace_library(
     name = "content-kit",
     crate = "content_kit",
     crate_root = "crates/tools/content-kit/src/lib.rs",
-    description = "The Pogo Stick's models, built from content/pogo into each multiplayer map",
+    description = "The content kit: one tool that builds an item's content/<item>/ (parametric YAML sources, atlases, a manifest) into tags; the Pogo Stick and the Flood pod are its items",
     features = [
         "fixture",
     ],
@@ -64,7 +64,7 @@ workspace_test(
     name = "unit-tests",
     crate = "content_kit",
     crate_root = "crates/tools/content-kit/src/lib.rs",
-    description = "The Pogo Stick's models, built from content/pogo into each multiplayer map",
+    description = "The content kit: one tool that builds an item's content/<item>/ (parametric YAML sources, atlases, a manifest) into tags; the Pogo Stick and the Flood pod are its items",
     features = [
         "fixture",
     ],

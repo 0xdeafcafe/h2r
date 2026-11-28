@@ -43,6 +43,7 @@ workspace_library(
     deps = [
         "//crates/hooking/guest-layout:guest-layout",
         "//crates/rewrites/sim-core:sim-core",
+        "//crates/rewrites/sim-world:sim-world",
     ],
 )
 
@@ -61,5 +62,6 @@ workspace_test(
     deps = [
         "//crates/hooking/guest-layout:guest-layout",
         "//crates/rewrites/sim-core:sim-core",
+        "//crates/rewrites/sim-world:sim-world",
     ],
 )
