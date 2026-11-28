@@ -235,7 +235,7 @@ The render census ([notes/pipelined-render.md](notes/pipelined-render.md), "Ever
 | Game-time bracket | `0x00146de0` and `0x00146b80` around `render_views` | guest code keeps running |
 | Render frame counter `0x004ba034`, the one-shot byte `0x004e6098` | `render_views`, `0x00223080` | guest code keeps running |
 | Texture, geometry and animation residency, the async I/O pool | the render's cache requests | the object setup (`0x00133790`, [native-objects.md](native-objects.md), "Object setup") makes the guest's stamps and requests in its own turn; a request that needs a new queue entry is the guest cache's service; the renderer's own resources come from the tags and do not depend on them |
-| Object visit marks, the object `+0xcc` handle, light render fields | the gathers | not read by the tick (class a); kept while any guest consumer is left, then dropped |
+| Object visit marks, the object `+0xcc` handle, light render fields, the render-state cache | the gathers and the object setup | the frame writes the render's own copy, and the tick's bytes go back at the frame's end (`game::render_scratch`, [sim-render-split.md](../engine/sim-render-split.md), "6. Render scratch and stamps"); the visit marks are not in the store |
 
 Each slice that replaces an entry adds its row to a table in `scene-extract`'s doc comment naming the writes it reproduces and the test that proves each. The gate in every slice is the gameplay digest series (and the arena hash) of a run, identical with `impl.render.native=off` and `on` ([framescene-parity.md](framescene-parity.md)).
 

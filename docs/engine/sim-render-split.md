@@ -1,8 +1,8 @@
 # Sim and render split
 
-Status: Design. The render random stream, the gather-lens exit, the frame guard (slice 1), the tick-end node matrices (slice 4), the flare store (slice 6), the particle view stamps (slice 9) and the counters and the gate (slice 10) are built; every other row is a slice below.
-Code: `crates/extensions/game/src/render_rng.rs` (the private stream), `crates/extensions/game/src/render_counters.rs` and `render_loop/tick_writes.rs` (`settle`, the frame counters), `crates/live/sim-bench/src/blind.rs` and `scripts/render-blind-gate.sh` (the gate), `crates/extensions/game/src/flare_store.rs` (the flare store), `crates/rewrites/render-bridge/src/effects_shadow/stamps.rs` (the particle stamps), `crates/rewrites/engine/src/particle_seen.rs` (particles age as if seen), `crates/extensions/lockstep/src/frame_guard.rs` and `frame-guard.toml` (the frame guard and its allowlist), `crates/rewrites/engine/src/tick_poses.rs` (the tick-end node matrices), `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs` (`outside_gather_lens`, the object setup seam), `crates/platform/d3d/src/scaled.rs` (`ScaledBackend`, the reference copy), `crates/extensions/game/src/d3d_glue.rs` (`protected_readbacks`, `single_copy`). Tests: `crates/platform/d3d/tests/render_scale.rs`, the unit tests in `frame_guard.rs`.
-Switch: `impl.sim.frame-guard` (off, **Code**) and `film.verify` (off, Design, added to [switches.md](../runtime/switches.md) by slice 12).
+Status: Design. The render random stream, the gather-lens exit, the frame guard (slice 1), the tick-end node matrices (slice 4), the flare store (slice 6), the render scratch store (slice 8), the particle view stamps (slice 9), the simulation's lightmap sample (slice 8, the effect tint) and the counters and the gate (slice 10) are built; every other row is a slice below.
+Code: `crates/extensions/game/src/render_rng.rs` (the private stream), `crates/extensions/game/src/render_counters.rs` and `render_loop/tick_writes.rs` (`settle`, the frame counters), `crates/live/sim-bench/src/blind.rs` and `scripts/render-blind-gate.sh` (the gate), `crates/extensions/game/src/flare_store.rs` (the flare store), `crates/extensions/game/src/render_scratch.rs` (the render scratch store), `crates/rewrites/engine/src/sim_lightmap/` and `crates/rewrites/sim-bridge/src/sim_lightmap.rs` (the lightmap store and sample), `crates/rewrites/render-bridge/src/effects_shadow/stamps.rs` (the particle stamps), `crates/rewrites/engine/src/particle_seen.rs` (particles age as if seen), `crates/extensions/lockstep/src/frame_guard.rs` and `frame-guard.toml` (the frame guard and its allowlist), `crates/rewrites/engine/src/tick_poses.rs` (the tick-end node matrices), `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs` (`outside_gather_lens`, the object setup seam), `crates/platform/d3d/src/scaled.rs` (`ScaledBackend`, the reference copy), `crates/extensions/game/src/d3d_glue.rs` (`protected_readbacks`, `single_copy`). Tests: `crates/platform/d3d/tests/render_scale.rs`, the unit tests in `frame_guard.rs` and `render_scratch/tests.rs`.
+Switch: `impl.sim.frame-guard` (off, **Code**), `impl.sim.lightmap-store` (on, **Code**) and `film.verify` (off, Design, added to [switches.md](../runtime/switches.md) by slice 12).
 
 ```mermaid
 flowchart LR
@@ -39,7 +39,7 @@ Sources: [high-resolution.md](../graphics/high-resolution.md), "Determinism"; [s
 | 3 | Shared random seed | object code `0x001032a0` reached from the render; `[0x004e7408]` | the tick's next random numbers | built: `render_rng.rs` ([3](#3-the-random-stream)) |
 | 4 | Flare visibility byte | writer `0x00020bb0`, reader `0x00020770` (its count read at `0x000207b0`'s call `0x00020840`) | a GPU sample count smoothed into byte 3 of each entry of the array at `0x0051f40c`. No tick code reads the byte; `object_new` reads the entries' heads to free an owner's flares | the renderer ([4](#4-the-flare-visibility-byte)) |
 | 5 | Push-buffer callback texels | insert `0x0002460e` in `0x000245c0`, callback `0x00024970`, texels through `0x003fdbc0` and `0x00024a70` | none: the one call passes mode 0, so the insert is never reached | nobody, dead code ([5](#5-the-push-buffer-callback)) |
-| 6 | Render scratch in the arena | the gathers and the setup: object visit marks, object `+0xcc`, light render fields, lighting cache | the arena hash only (census class a: the tick does not read them) | the render-private store ([6](#6-render-scratch-and-stamps)) |
+| 6 | Render scratch in the arena | the gathers and the setup: object visit marks, object `+0xcc`, light render fields, lighting cache | the arena hash, and the tick's effect update through `0x0003ddd0` ([6](#6-render-scratch-and-stamps)) | built: `render_scratch.rs` ([6](#6-render-scratch-and-stamps)) |
 | 7 | Particle view stamps | per-view update `0x00174420` | system `+0x0d` bit 2 and `+0xc` bit `0x400`, particle `+0x30`; the stamp read by the location move at `0x00248870` | built: `effects_shadow/stamps.rs`, `particle_seen.rs` ([6](#6-render-scratch-and-stamps)) |
 | 8 | Animation cache | get `0x001237e0` from the render, request `0x001236f0` from the tick | use stamps `+0x14`; which clips are resident when the tick samples | the clip store ([6](#6-render-scratch-and-stamps)) |
 | 9 | Frame counters | present `0x00013f10` (`0x00485aa0`), `render_views` (`0x004ba034`, byte `0x004e6098`) | the tick's effect and particle code | built: `render_counters.rs` ([7](#7-frame-counters)) |
@@ -104,12 +104,60 @@ After this slice the gather-lens exit (`outside_gather_lens`) is a cost saving o
 
 | State | Move | Proof |
 |---|---|---|
-| Object visit marks, object `+0xcc`, light render fields, lighting cache, palettes, records | The setup's private overlay is the only writer's target (`native_scene_lists/setup.rs` keeps the display's there already). A guest body that still writes them runs against the overlay's copy. | frame guard: no dirty page under the object, light and cache pools |
+| Object `+0xcc`, light render fields, the render-state cache | `game::render_scratch` holds the render's copy of each field. At the entry of a world frame step (`RENDER_FRAME`, first of its befores) it puts the render's copy in every field the tick has not written since the last frame; at the exit (last of its afters) it keeps the render's bytes and puts the tick's back. Every writer in the frame step, a guest body or a Rust port, writes the render's copy (**Code**) | frame guard: no dirty page under the object, light and cache pools; unit (**Test**): `a_frame_leaves_the_arena_as_it_found_it`, `the_tick_sees_the_same_bytes_with_the_frame_skipped_or_drawn` |
+| Object visit marks, palettes, records | The marks' stamps are not located in the arena (**S**). Palettes and records are outside it, and the display's stay on the setup's private overlay (`native_scene_lists/setup.rs`) | frame guard |
 | Particle view stamps (`0x00174420`) | **Code.** The stamps live in a side table keyed by element and checked by the datum's salt (`effects_shadow::stamps`). On answered frames the model makes the call over the arena with the table laid on it, and only its singleton and list writes reach guest memory. Where the guest body runs, the table is lent to the arena before it and taken back after it. The director's location move (`0x00248750`, from `0x00176f60` -> `0x00174990` -> `0x00174a30`) follows its emitters only when `+0x30 + 1` is the frame counter; the tick driver's observer at its entry sets that stamp for every location (`engine::particle_seen`), so every system ages as if seen. | frame guard; `particle_seen`'s `a_seen_and_an_unseen_system_age_alike`, `stamps.rs` and `the_frame_step_leaves_the_particle_arrays_as_the_tick_left_them` |
 | Animation cache use stamps and residency | The tick samples from the clip store (`sim-rewrite.md`, section 2, static data), which holds every clip of the map. The guest cache serves only the render, and its stamps are render-private. The resident get's stamp is one store, `0x0012387a`: the cache's use counter `[[0x004e3b54]+0x38]` into `[[[0x004e3b54]+0x64]+0x44] + 24 × (record +0xc & 0xffff) + 0x14` (**Code**, the lifted image). | cache-cold arm of the verification ladder, with the guest animation cache emptied each tick |
 | Texture and geometry residency, the async I/O pool | Render only (collision is in the tags). | none needed |
 
-**S**: which of these fields lie inside `SimRegion::HALO2`. The frame guard's first run lists them.
+The store's fields, by `render_scratch::fields`:
+
+| Field | Where | Span |
+|---|---|---|
+| Render-state cache | the datum array at `[0x00509434]`, `0x100`-byte records | header, bitmap and every record, each its own field |
+| Light render fields | the lights array at `[0x004e030c]`, `0x110`-byte records | `+0x84` and `+0xac` (the re-pose, 0x18 bytes each), `+0xf8..+0x110` |
+| Object render-state handle | body `+0xcc` of each live object (`[0x004e0300]`, below the high water) | 4 bytes |
+
+A field whose tick bytes differ from the ones the last frame put back was written by the tick since, and the frame starts it from the tick's bytes: a datum reused, a map loaded and a revert drop the render's copy of what they changed. A game's end drops every copy. The tick does write the cache: the effect update calls `0x0003ddd0` (`engine::effect_update::alive`, step 5) and reads the record's lighting into the effect's `+0x104` and `+0x108`. With the store it reads the tick's own record, which only the tick's own sample reaches (the effect tint, below).
+
+**The effect tint.** The tick's read, `alive.rs` at `0x001796e2`: when the record's byte `+2` is set it copies the record's `+0x2c` to the effect's `+0x104` and `+0x28` to `+0x108`. Both sides of it are read (**E**, `h2 disasm` and the lifted C):
+
+| | Who | Inputs |
+|---|---|---|
+| Record byte `+2` | `0x0003dfe0` sets it at `0x0003e14f` when the sample `0x000d1850` at the object's centre succeeds; `0x0003ddd0` clears it on a new record (`0x0003df22`) | `0x0003dfe0`'s one caller is `0x0003db00` (`0x0003db98`), whose one caller is the object setup's `0x0004b5d0` (`0x0004ba21`): frame-step code only |
+| Record `+0x1c..+0x30` | The 0x14-byte sample lands at `+0x30`; `+0x1c` gets a copy of it (`0x0003e28a`) or a blend towards it (`0x0003e262`..`0x0003e283`). `+0x28` and `+0x2c` are its words 3 and 4, two packed colours | the object's centre `+0x30` (sim) and the BSP lightmap (tags), read through the geometry cache: `0x000d1e10` asks `0x0012de70` (flags 3) for the cluster's block (`0x000d1d70`) and, on an instance hit, the PRT entries `0x004b89b0` the render rebuilds at each view (`0x00022850`; read at `0x000d21fd`, `0x000d241e`). Paced by the render frame counter `0x004ba034` against record `+8` (`0x0003dfe8`, `0x0003e132`). Render state |
+| `0x000d3e46`, `0x000d3e92`, `0x000d4682` | `0x000d4080` (from `0x0003e309`, ESI record `+0x54`) and `0x000d37f0` under it build the `+0x54` sample from `+0x1c` | not `+0x28` or `+0x2c` |
+
+The effect's two words are read by the tick only: no render function in the effect code reads them (a scan of the lifted C over `0x00174000`..`0x0017ffff`, `0x0018c000`..`0x0018cfff` and `0x00246000`..`0x00249fff`, direct calls only).
+
+| Effect `+0x104`, `+0x108` | Site | Reached from |
+|---|---|---|
+| Written: `0xff808080` each | `0x00178213`, `0x00178219` (`0x00178120`) | the effect new `0x00175fa0` (`0x00175fd1`) |
+| Written: a parent's `+0x54`, `+0x58`; else the object's record, as at `0x001796e2` (`0x0017b63f`); else its own sample at the effect's location, `0x000d2a50` (`0x0017b6e7`), defaults `0xff404040` | `0x0017b5d0` | the effect new (`0x00176182`) |
+| Written: the record's copy | `0x001796e2` | the effect walk `0x00176e40`, tick |
+| Read: into the event's particle systems | `0x00178cb3`, `0x00178cb9` (`0x00178c80`) | `0x00176e40` -> `0x001792b0` -> `0x00179020`; `0x00178eb0` (`0x00179001`) |
+| Read: the particle system's colour `+0x50` (`0x00175a80`) | `0x001770a4`, `0x001770aa` (`0x00177040`) | the frame-time update `0x00137ed0` -> `0x00176f60` (`0x00176fc1`), the simulation's side of the frame |
+| Read: copied to the parent's `+0x54`, `+0x58` | `0x0017b729`, `0x0017b732` | the effect new |
+
+So the value is made in the tick, from sim state. The guest's sample cannot make it: called from the tick it reads the geometry cache's residency, which follows the I/O queue and the render's requests, and the PRT entries, which only a drawn view builds, so the tick's words would differ between a drawn and a skipped run. The effect new's own sample (`0x0017b6e7`) already reads them that way, and with the store the tick's record never has byte `+2`, so `0x0017b5d0` takes that sample whenever its caller asks for one (**E**).
+
+**The simulation's sample** (`engine::sim_lightmap`, switch `impl.sim.lightmap-store`, on; **Code**, not yet run):
+
+| Piece | What it does |
+|---|---|
+| The store (`sim_lightmap/store.rs`) | Every geometry block of the active structure (clusters `+0xa0`, instanced definitions `+0x13c`, the info at `+0x28`) and of its lightmap's buckets (`+0x0c`), and level 0 of each lightmap bitmap image, read from the map file at the first sample after a map load or structure switch. Each block sits at a token address (`0xd0000000` up) with its resources fixed up as `0x00223c70` fixes them in the cache. A block or image the load did not list (a model's section, a shader's base map) is read at its first ask; its bytes are the map file's either way |
+| The view (`sim_lightmap/view.rs`) | Guest memory with the store over the token window. `0x0012de70` and the runtime section pointer become `View::section` (the store's token; an in-tag section's own pointer); the texture cache's gets and the lock `0x0001d2f0` become `View::pixels`; `[0x005093e8]`, the PRT table's count, is 0, the answer of a frame no view drew |
+| The port (`sim_lightmap/sample.rs`, `sample/`) | `0x000d1e10` and its callees in Rust over the view, both paths (structure and object), the P8 and DXT texel reads, the colour packs. The palette table `0x00484dd4` that `0x00015b70` builds at a BSP load is rebuilt from the same tag reads. Not ported: `0x000241c0` and the PRT arm `0x000d2491`..`0x000d286a` (only with PRT entries), the mip-level branch of `0x001362b0` (both callers pass level 0) |
+| The hook (`sim-bridge/src/sim_lightmap.rs`) | `0x000d1e10` for every caller: the port answers, its stores outside its frame are committed, a store into a held section is dropped (`0x000d35a0` sets it again before reading it). A call the store cannot answer runs the guest's body, named once |
+| The tick's record | At the two tick reads (`0x001796e2`, `0x0017b61f`), after `0x0003ddd0` gives the record, `0x000d1850` samples the object (EDI, first-sample byte 1, out at record `+0x30`, as `0x0003e146`); on success `+0x30..+0x44` is copied to `+0x1c` and `+2` set, so the read copies words 3 and 4 into the effect's `+0x104` and `+0x108`. No blend: the frame step's pacing is the render's |
+
+`0x000d1850` and `0x000d2a50` stay the guest's: they read the object, the tags and the ray `0x0014af40`, which is the simulation's collision (`0x001697c0`). The effect new's own sample (`0x0017b6e7`) reaches the port through `0x000d2a50`.
+
+Proof: the unit tests in `sim_lightmap/tests.rs` (the fixup, the view, the record) and `sim_lightmap/sample/tests.rs` (each path on hand-built sections, palettes and pixels); Contract D, `engine/tests/sim_lightmap_differential.rs`: the lifted `0x000d1e10` with every block resident against the port; then the render-blind gate with effects owned by moving objects.
+
+The render-state records under the render scratch store: a tick fill changes the tick's bytes of the record, so the next frame starts the record from them and its own `0x0003dfe0` samples again.
+
+**S**: which other render fields lie inside `SimRegion::HALO2`. The frame guard's first run lists them.
 
 ### 7. Frame counters
 
@@ -131,7 +179,8 @@ Proof: the unit tests in `tick_writes.rs` and `render_counters.rs` (a drawn fram
 |---|---|---|
 | the render random seed | process | a session |
 | the flare state `0x0051f408..0x005234c8` and the owners' salts | entry | a map: dropped when the simulation's bytes or the map's name change |
-| object overlay: pose for display, palettes, records, lighting, visit marks | object datum | a frame, or until the datum is reused |
+| object overlay: pose for display, palettes, records | object datum | a frame |
+| render scratch: render-state cache, object `+0xcc`, light render fields (`render_scratch.rs`) | arena address | until the tick writes the field, or the game ends |
 | particle view stamps | system or particle element, its salt | until the datum is reused or the tick writes the field |
 
 It is host memory, outside guest RAM: no checkpoint, film, keyframe or hash holds it. A revert or a film seek drops it, and the next frame rebuilds it. **Design.**
@@ -206,7 +255,12 @@ Slices 0 to 2 run together. 4 follows 0; 6 and 7 follow 2; 5, 8 and 9 follow 1.
 - That `0x000bd090` gives the matrices `0x000bd7b2` gave for the same object, machines included: the post update (`0x000bc820`) skips `0x000bd090` for type 7, and the tick-end build does not.
 - How a pending variant is marked in a channel, and whether an eager pick alters a channel the tick would have replaced before playing it.
 - That no tick code reached through an indirect call reads the flare state: the static census follows direct calls and tail transfers only. The run-time census answers it.
-- Which render-written fields lie inside the hashed region: the frame guard has not run on a game, so its first findings, and whether the seed's four pools are written in a frame step, are open.
+- Which render-written fields lie inside the hashed region: the frame guard has not run on a game, so its first findings, and whether the seed's pools are written in a frame step, are open.
+- That the light render fields are the three spans `render_scratch::LIGHT_FIELDS` names, and that no frame writes a light byte outside them.
+- That the object `+0xcc` the tick sees, now never a render's handle, leaves the hash series of a recorded film unchanged; golden films may need re-recording.
+- That the port matches the lifted sampler on a real map: Contract D runs on synthetic worlds; the lock's format round trip (`0x0001d2f0`) is read from the code, not compared, and the image's own `+0x54` path (both texture gets resident) reads 0 on every tag image.
+- What the tick fill costs: one ray and one sample per lit effect of an object per tick.
+- Frames outside `0x00223240` (the loops at `0x0012b6f0` and the map load's): they draw without the store.
 - Arena writes made through another alias of a page: the watch sees them, the trap does not, so their writer reads `unseen`.
 - That no render reader besides `0x00174420` reads a particle's `+0x30` (the census found only the location move); a sampled or refused frame still writes and restores the stamps, so the frame guard sees those pages dirty.
 - That `0x00248750` runs in `h2 sim` as in a drawn session, and the visual effect of every system taking the seen path.

@@ -61,6 +61,8 @@ mod sim_effects_differential;
 mod sim_objects_differential;
 #[path = "sim_havok_differential.rs"]
 mod sim_havok_differential;
+#[path = "sim_lightmap_differential.rs"]
+mod sim_lightmap_differential;
 #[path = "sim_native_differential.rs"]
 mod sim_native_differential;
 #[path = "sim_physics_differential.rs"]

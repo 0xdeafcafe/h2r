@@ -765,6 +765,12 @@ fn run_configured(
             vfs.lock().unwrap_or_else(|e| e.into_inner()).rescan_maps();
         }));
     }
+    // The lightmap store reads the loaded map's geometry blocks and
+    // lightmap pixels through the VFS, as the guest's caches would
+    // (docs/engine/sim-render-split.md, "6. Render scratch and stamps").
+    if let Some(vfs) = k.vfs() {
+        hot_glue::install_lightmap_files(vfs);
+    }
     let uses = opts
         .stopgaps
         .then(|| stopgaps::install(&k, &loaded.runtime));
@@ -1104,8 +1110,12 @@ fn run_configured(
     // draws (a wider guest camera, Theater's free camera) never chooses the
     // simulation's random numbers, in lockstep and input tapes too
     // (docs/graphics/high-resolution.md, "Determinism").
+    // Its scratch in the arena (the render-state cache, object `+0xcc`,
+    // the light render fields) is the render's own copy while it draws
+    // (docs/engine/sim-render-split.md, "6. Render scratch and stamps").
     if opts.d3d && !host_light {
         render_rng::install(&mut features)?;
+        render_scratch::install(&mut features)?;
         // The flare state is the render's: the simulation's bytes are
         // put back after every frame (docs/engine/sim-render-split.md,
         // "4. The flare visibility byte").
@@ -1554,6 +1564,11 @@ fn run_configured(
     // and the headless host (docs/engine/sim-rewrite.md).
     features
         .add(&sim_bridge::sim_native::SimNative::new(&loaded.runtime))
+        .map_err(anyhow::Error::msg)?;
+    // The simulation's lightmap sample (docs/engine/sim-render-split.md,
+    // "6. Render scratch and stamps"): the tick's effect tint.
+    features
+        .add(&sim_bridge::sim_lightmap::LightmapStore)
         .map_err(anyhow::Error::msg)?;
     registration::register_viewer_skips(&mut features, host_light)?;
     if host_light {

@@ -102,7 +102,7 @@ pub(crate) fn networked(mem: &dyn GuestMemory) -> bool {
 /// Whether a frame takes the private stream: every world frame, whatever
 /// the number of machines. The stream is render-only, so peers that render
 /// differently still draw the same simulation random numbers.
-fn private_frame(mem: &dyn GuestMemory) -> bool {
+pub(crate) fn private_frame(mem: &dyn GuestMemory) -> bool {
     sim_bridge::sim_frame::frame_kind(&sim_bridge::sim_frame::Addrs::HALO2, mem)
         == sim_bridge::sim_frame::FrameKind::World
 }

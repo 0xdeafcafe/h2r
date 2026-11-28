@@ -320,6 +320,7 @@ pub(crate) fn registry_with_film(
     // Boot's render stream: every rendering session, lockstep's included.
     if !case.light {
         crate::render_rng::install(&mut features).unwrap();
+        crate::render_scratch::install(&mut features).unwrap();
         crate::flare_store::install(&mut features).unwrap();
     }
     let lockstep = lockstep_glue::Config {
@@ -406,6 +407,9 @@ pub(crate) fn registry_with_film(
     if case.light {
         features
             .add(&sim_bridge::sim_native::SimNative::new(&rt))
+            .unwrap();
+        features
+            .add(&sim_bridge::sim_lightmap::LightmapStore)
             .unwrap();
     }
     super::register_viewer_skips(&mut features, case.light).unwrap();

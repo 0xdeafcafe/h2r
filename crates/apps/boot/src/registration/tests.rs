@@ -562,6 +562,7 @@ const BOOT_SITES: &[(&str, &str)] = &[
     ),
     ("render_aspect::install", "Case::drawing (gpu)"),
     ("render_rng::install", "every case but Case::light"),
+    ("render_scratch::install", "every case but Case::light"),
     ("flare_store::install", "every case but Case::light"),
     ("register_late_for_profile", "registry_for_profile"),
     (
@@ -1237,6 +1238,11 @@ fn a_default_play_fits_the_guest_camera_and_renders_on_its_own_stream() {
     let lockstep = Case { lockstep: true, ..play.clone() };
     assert!(hooked_at(registry_for_profile(&lockstep, profile), "VIEW_PROJECTION_TERMS").is_empty());
     assert!(hooked_at(registry_for_profile(&lockstep, profile), "RENDER_FRAME").contains(&crate::render_rng::ID));
+    // The render's arena scratch is its own copy in every rendering
+    // session too (docs/engine/sim-render-split.md, slice 8).
+    for case in [&play, &lockstep] {
+        assert!(hooked_at(registry_for_profile(case, profile), "RENDER_FRAME").contains(&crate::render_scratch::ID));
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

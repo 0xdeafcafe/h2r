@@ -64,6 +64,7 @@ pub mod rules;
 pub mod fov_row;
 pub mod render_counters;
 pub mod render_rng;
+pub mod render_scratch;
 // The flare state held by the render between frames (docs/engine/sim-render-split.md, slice 6).
 pub mod flare_store;
 #[cfg(feature = "gpu")]
