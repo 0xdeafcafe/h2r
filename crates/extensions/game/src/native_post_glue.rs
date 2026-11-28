@@ -1143,6 +1143,7 @@ fn post_raster(
             clip.height,
         ]),
         fog: planned_inputs.map(|_| d3d::nv2a::draw_fog(draw)),
+        wrap: [false; 4],
     })
 }
 

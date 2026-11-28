@@ -686,6 +686,9 @@ pub struct PostRaster {
     /// uniform and colour (`d3d::nv2a::draw_fog`). `None` leaves the
     /// program's (fog off).
     pub fog: Option<([f32; 4], [f32; 4])>,
+    /// The stages whose sampler repeats (D3D address 1, wrap) in a
+    /// [`crate::glow::QuadDrawer`] draw; the rest clamp.
+    pub wrap: [bool; 4],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -787,6 +790,7 @@ impl Default for PostRaster {
             opaque_view: [false; 4],
             clip: None,
             fog: None,
+            wrap: [false; 4],
         }
     }
 }
