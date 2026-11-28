@@ -92,19 +92,17 @@ Every other draw is the game's, counted by what is not read (`render.stats`, `na
 
 ### What stays with the guest
 
-The remaining guest draws count by reason in `render.stats`:
+A list entry the overlay does not draw panics, named (`MenuRefusal::panic`, `menus: <cause>`); no guest draw takes it, and nothing is counted kept. So do a viewport that is not the full screen, a host that refuses the run's pass, a rounding mode not to nearest at the list, and a claim whose draws did not all come (`menus: claim at ... skipped n of m draws`). A shader bitmap's widget draw stays the game's, its quad taken at the shader quad.
 
-| Reason | Draw | What keeps it on the guest |
+| Reason | Draw | Why |
 |---|---|---|
-| `bitmap_state` | `0x002b0565`, `0x00235f31`, `0x002b07e2` | a draw the overlay does not make as the game does: the debug labels on, an image set at `+0x8c` that no loaded bitmap tag holds, an image not resident, a stage constant not white, the quads turned off, a meter's rasterizer bitmap with no second image |
-| `text` | text or button label | by its gap, below |
-| `model` | model scene | by its gap, below |
-| `draw` | list, button or custom draw | by its gap, below |
+| `Bitmap` | `0x002b0565`, `0x00235f31`, `0x002b07e2` | a draw the overlay does not make as the game does: the debug labels on, an image set at `+0x8c` that no loaded bitmap tag holds, an image not resident, a stage constant not white, the quads turned off, a meter's rasterizer bitmap with no second image |
+| `Text`, `Model`, `Draw` | text or button label, model scene, list, button or custom draw | by its gap, below |
 | `unlisted`, `pass` | any listed class | layout or pass preparation fails, including unavailable font pages or bitmap assets |
 
-Each text, class and model refusal is a `ui_overlay::Gap`: the draw and the first check that refused it, kept as `scene_kept_ui_widget_<cause>` ([retire-d3d-menus.md](retire-d3d-menus.md#what-is-kept)):
+Each text, class and model refusal is a `ui_overlay::Gap`: the draw and the first check that refused it, the panic's `<draw> <cause>`:
 
-| Cause | Kept because |
+| Cause | Panics because |
 |---|---|
 | `text_viewport` | the draw's viewport is not the full canvas |
 | `text_debug`, `button_debug` | the widget index display or the rectangle outlines are on |
