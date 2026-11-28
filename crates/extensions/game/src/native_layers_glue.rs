@@ -1093,7 +1093,6 @@ fn plan_objects<B: d3d::backend::Backend>(
         }
         // Layer 5's PRT stream, gathered from guest memory now
         // (`LitObjects::fill_prt`).
-        let mut draws = draws;
         if item.prt.is_some() {
             let formats = prt_formats.get_or_insert_with(|| StreamFormats::read(&Words(mem)));
             let filled = match formats {

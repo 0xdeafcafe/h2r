@@ -241,7 +241,7 @@ fn a_portal_edge_over_a_hole_is_refused_by_name() {
     let raised: Vec<Tri> = floor.iter().map(|t| Tri { points: t.points.map(|p| [p[0], p[1], 0.25]), ..*t }).collect();
     let moved = follow(&pts, [1.0, 0.0, 0.0], PORTAL_X, &floor, (&floor, &raised), &raised).unwrap().unwrap();
     assert_eq!(moved.first(), Some(&[PORTAL_X, 0.0, 0.25]));
-    assert!(moved.iter().any(|p| *p == [PORTAL_X, 4.0, 0.25]));
+    assert!(moved.contains(&[PORTAL_X, 4.0, 0.25]));
     assert!(moved.iter().filter(|p| p[2] == HEIGHT).count() == 2);
     // An edge off the changed surface is left alone.
     let elsewhere = strip(5.0, 6.0);

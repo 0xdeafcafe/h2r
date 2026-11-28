@@ -177,7 +177,7 @@ fn world(riders: u8, pool: usize) -> World {
     ship_body.set_up(&mut m, [0.0, 0.0, 1.0]).unwrap();
     // An actor and its unit, linked both ways as the engine's actors are, so
     // the guest's own count of a squad's actors sees them.
-    let mut actor_of = |m: &mut FakeGuest, squad: u32, unit: DatumHandle, body: Obj| {
+    let actor_of = |m: &mut FakeGuest, squad: u32, unit: DatumHandle, body: Obj| {
         let (id, actor) = fake::push(m, &actors);
         actor.set_unit(m, Some(unit)).unwrap();
         actor.set_squad(m, squad).unwrap();
@@ -432,7 +432,7 @@ fn the_game_keeps_a_launch_and_defers_a_drop() {
     g.begin_entry(4);
     g.fly(launch.clone()).unwrap();
     g.drop_squad(boarding(3, 4, launch.ship)).unwrap();
-    assert_eq!(g.launches, [launch.clone()]);
+    assert_eq!(g.launches, std::slice::from_ref(&launch));
     assert_eq!(g.calls, [(4, Call::Drop(boarding(3, 4, launch.ship)))]);
 }
 

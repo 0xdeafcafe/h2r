@@ -136,7 +136,7 @@ pub fn walk(mem: &dyn GuestMemory, list: u32) -> Result<Walk, &'static str> {
         let bytes = mem
             .bytes(base.wrapping_add(offset), (count * VERTEX_SIZE) as usize)
             .ok()
-            .map(|b| Arc::<[u8]>::from(b));
+            .map(Arc::<[u8]>::from);
         let decal = word(mem, at.wrapping_add(0x2c))?;
         let image = (packed >> 8) as u8 as i8;
         records.push(Record {

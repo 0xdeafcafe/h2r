@@ -217,11 +217,11 @@ impl PodDrops {
                     if !here || seen.object.is_none() {
                         self.slots[i] = Slot::Free;
                         self.count(if here { Reason::PodGone } else { Reason::Gone });
-                    } else if tick >= due {
+                    } else if let (true, Some(object)) = (tick >= due, seen.object) {
                         self.slots[i] = Slot::Dropping { player, unit, fall };
                         acts.push(Act::Drop {
                             pod: i,
-                            object: seen.object.expect("checked"),
+                            object,
                             unit,
                             fall,
                         });
@@ -446,7 +446,6 @@ const TAG_TABLE: u32 = 0x004e_3b44;
 /// A vehicle definition's seats block and its elements' size and label
 /// (`docs/game/bots.md`, "seats").
 const SEATS: u32 = 0x1c8;
-const SEAT_STRIDE: u32 = 0xb0;
 const SEAT_LABEL: u32 = 0x04;
 
 /// The label (string ID) of the pod's first seat, which the entry routine

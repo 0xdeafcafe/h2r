@@ -697,7 +697,7 @@ impl Builder {
         if !self.rust(seat_input::READ_PADS, &regs(0, 0), read) {
             call(&mut self.exec, 3, seat_input::READ_PADS, 0, 0, &[elapsed])?;
         }
-        if !self.rust(seat_input::REMAP, &regs(0, 0), |m, c| seat_input::remap(m, c)) {
+        if !self.rust(seat_input::REMAP, &regs(0, 0), seat_input::remap) {
             call(&mut self.exec, 4, seat_input::REMAP, 0, 0, &[])?;
         }
         let out = work + 0x40;

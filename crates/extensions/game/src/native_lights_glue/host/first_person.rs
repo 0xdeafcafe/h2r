@@ -293,7 +293,7 @@ mod tests {
         );
         assert_eq!(e.pose, LightPose::Rows(0..6));
         let (_, found) = models.part(&e).expect("the held part");
-        assert_eq!(found, [held.indices.clone()]);
+        assert_eq!(found, std::slice::from_ref(&held.indices));
         let other = entry(&part(1, 10), &held, 1, 4);
         assert!(models.part(&other).is_none(), "a part the section lacks");
     }

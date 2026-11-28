@@ -197,11 +197,12 @@ fn float(g: &Guest, at: u32) -> Result<f32, Decline> {
 /// leaves through one of the three exits before its first call, with
 /// nothing written. `index` is the player's slot, `handle` the object.
 ///
-/// 1. the player has no unit, 2. the object has a parent that is neither a
-/// machine (type 7) nor a crate (11), or its `+0x14c` is the player's
-/// unit, 3. the object's centre is not within the unit's radius plus
-/// `[0x44ae90]` (squared distance summed z, x, y; the compare is `jbe`, so
-/// a NaN leaves).
+/// 1. the player has no unit;
+/// 2. the object has a parent that is neither a machine (type 7) nor a
+///    crate (11), or its `+0x14c` is the player's unit;
+/// 3. the object's centre is not within the unit's radius plus
+///    `[0x44ae90]` (squared distance summed z, x, y; the compare is `jbe`,
+///    so a NaN leaves).
 pub fn candidate_exits(g: &Guest, index: u32, handle: u32) -> Result<bool, Decline> {
     let player = player_at(g, index)?;
     let unit = fault(g.u32(player.wrapping_add(0x2c)))?;

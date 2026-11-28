@@ -129,6 +129,41 @@ workspace_test(
 )
 
 workspace_test(
+    name = "film_tape",
+    crate = "film_tape",
+    crate_root = "crates/live/live-hle/tests/film_tape.rs",
+    description = "Opt-in Xbox Live public API HLE for Halo 2 retail 5849",
+    features = [],
+    manifest = "crates/live/live-hle",
+    package = "live-hle",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/content:content",
+        "//crates/live/actor-net:actor-net",
+        "//crates/live/cloud-saves:cloud-saves",
+        "//crates/live/coop:coop",
+        "//crates/live/film:film",
+        "//crates/live/live-proto:live-proto",
+        "//crates/live/live-server:live-server",
+        "//crates/runtime/background:background",
+        "//crates/runtime/runtime:runtime",
+        "//third-party/rust:flate2",
+        "//third-party/rust:polling",
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        "//third-party/rust:thiserror",
+        "//third-party/rust:time",
+        "//third-party/rust:tokio",
+        "//third-party/rust:toml",
+        "//third-party/rust:tungstenite",
+        "//third-party/rust:ureq",
+        "//third-party/rust:url",
+        ":live-hle",
+    ],
+)
+
+workspace_test(
     name = "maps",
     crate = "maps",
     crate_root = "crates/live/live-hle/tests/maps.rs",

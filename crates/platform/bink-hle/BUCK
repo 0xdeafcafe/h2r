@@ -60,6 +60,7 @@ workspace_library(
         "//crates/formats/movies:movies",
         "//crates/platform/audio:audio",
         "//crates/runtime/runtime:runtime",
+        "//crates/runtime/timeline:timeline",
     ],
 )
 
@@ -82,6 +83,7 @@ workspace_test(
         "//crates/formats/xiso:xiso",
         "//crates/platform/audio:audio",
         "//crates/runtime/runtime:runtime",
+        "//crates/runtime/timeline:timeline",
     ],
 )
 
@@ -104,6 +106,7 @@ workspace_test(
         "//crates/formats/xiso:xiso",
         "//crates/platform/audio:audio",
         "//crates/runtime/runtime:runtime",
+        "//crates/runtime/timeline:timeline",
         ":bink-hle",
     ],
 )
@@ -127,6 +130,7 @@ workspace_test(
         "//crates/formats/xiso:xiso",
         "//crates/platform/audio:audio",
         "//crates/runtime/runtime:runtime",
+        "//crates/runtime/timeline:timeline",
         ":bink-hle",
     ],
 )
@@ -150,6 +154,7 @@ workspace_test(
         "//crates/formats/xiso:xiso",
         "//crates/platform/audio:audio",
         "//crates/runtime/runtime:runtime",
+        "//crates/runtime/timeline:timeline",
         ":bink-hle",
     ],
 )
@@ -173,6 +178,7 @@ workspace_test(
         "//crates/formats/xiso:xiso",
         "//crates/platform/audio:audio",
         "//crates/runtime/runtime:runtime",
+        "//crates/runtime/timeline:timeline",
         ":bink-hle",
     ],
 )

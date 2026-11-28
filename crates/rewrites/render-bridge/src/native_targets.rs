@@ -595,7 +595,7 @@ mod tests {
     #[test]
     fn the_frame_finish_makes_no_d3d_entry() {
         let dev = Device::default();
-        let mut m = finish_mem(2 * DEVICE_REF | 1);
+        let mut m = finish_mem((2 * DEVICE_REF) | 1);
         assert_eq!(cut_finish(&mut m, &dev), Ok(()));
         assert_eq!(*dev.textures.lock().unwrap(), [(0, 0), (2, 0)], "the committed stages, in order");
         assert_eq!(*dev.shaders.lock().unwrap(), [0], "the pixel shader none");

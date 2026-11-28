@@ -362,6 +362,7 @@ impl Audit {
         self.calls = 0;
     }
 
+    #[cfg(test)]
     fn fallen_back(&self) -> bool {
         self.fallen
     }

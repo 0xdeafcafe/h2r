@@ -71,6 +71,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -98,6 +99,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -126,6 +128,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -154,6 +157,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -182,6 +186,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -210,6 +215,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -238,6 +244,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -266,6 +273,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -294,6 +302,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -322,6 +331,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -350,6 +360,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -378,6 +389,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -406,6 +418,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -434,6 +447,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -462,6 +476,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -490,6 +505,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -518,6 +534,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -546,6 +563,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -574,6 +592,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -602,6 +621,36 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
+        "//crates/recompiler/hostfault:hostfault",
+        "//crates/recompiler/ir:ir",
+        "//crates/recompiler/lift:lift",
+        "//crates/recompiler/opt:opt",
+        "//crates/recompiler/simd:simd",
+        "//crates/recompiler/sse-oracle:sse-oracle",
+        "//crates/recompiler/x87:x87",
+        "//crates/runtime/runtime:runtime",
+        "//third-party/rust:iced-x86",
+        "//third-party/rust:libc",
+        "//third-party/rust:libloading",
+        ":emit",
+    ],
+)
+
+workspace_test(
+    name = "prune",
+    crate = "prune",
+    crate_root = "crates/recompiler/emit/tests/prune.rs",
+    description = "",
+    features = [],
+    manifest = "crates/recompiler/emit",
+    package = "emit",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/xbe:xbe",
+        "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -630,6 +679,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -658,6 +708,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -686,6 +737,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -714,6 +766,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -742,6 +795,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -770,6 +824,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",
@@ -798,6 +853,7 @@ workspace_test(
     deps = [
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/analyze:analyze",
+        "//crates/recompiler/clif:clif",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/ir:ir",
         "//crates/recompiler/lift:lift",

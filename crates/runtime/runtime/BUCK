@@ -18,6 +18,7 @@ crate_tree(
     name = "lib-tree",
     files = [
         ":src",
+        "//crates/recompiler/emit:src",
     ],
 )
 
@@ -26,6 +27,7 @@ crate_tree(
     files = [
         ":all",
         "//:docs",
+        "//crates/recompiler/emit:src",
     ],
 )
 
@@ -42,6 +44,7 @@ workspace_library(
     tree = ":lib-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -71,6 +74,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -102,6 +106,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -134,6 +139,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -166,6 +172,40 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
+        "//crates/formats/xbe:xbe",
+        "//crates/recompiler/hostfault:hostfault",
+        "//crates/recompiler/x87:x87",
+        "//crates/runtime/runtime/test-probe:runtime-test-probe",
+        "//crates/runtime/timeline:timeline",
+        "//crates/runtime/vfs:vfs",
+        "//third-party/rust:iced-x86",
+        "//third-party/rust:libc",
+        "//third-party/rust:rustc-hash",
+        "//third-party/rust:thiserror",
+        ":runtime",
+    ] + select({
+        "config//os:windows": [
+            "//third-party/rust:windows-sys",
+        ],
+        "DEFAULT": [],
+    }),
+)
+
+workspace_test(
+    name = "inline_callouts",
+    crate = "inline_callouts",
+    crate_root = "crates/runtime/runtime/tests/inline_callouts.rs",
+    description = "",
+    features = [
+        "guest-file-reads",
+    ],
+    manifest = "crates/runtime/runtime",
+    package = "runtime",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -198,6 +238,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -230,6 +271,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -262,6 +304,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -294,6 +337,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -326,6 +370,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -358,6 +403,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -390,6 +436,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -422,6 +469,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -454,6 +502,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -486,6 +535,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -518,6 +568,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -550,6 +601,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",
@@ -582,6 +634,7 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
+        "//crates/formats/map:map",
         "//crates/formats/xbe:xbe",
         "//crates/recompiler/hostfault:hostfault",
         "//crates/recompiler/x87:x87",

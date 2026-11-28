@@ -41,6 +41,7 @@ workspace_library(
     deps = [
         "//crates/formats/map:map",
         "//crates/formats/mopp:mopp",
+        "//crates/formats/pathfind:pathfind",
         "//crates/formats/tags:tags",
         "//crates/tools/collision-build:collision-build",
         "//crates/tools/editor-core:editor-core",
@@ -61,6 +62,7 @@ workspace_test(
     deps = [
         "//crates/formats/map:map",
         "//crates/formats/mopp:mopp",
+        "//crates/formats/pathfind:pathfind",
         "//crates/formats/tags:tags",
         "//crates/tools/collision-build:collision-build",
         "//crates/tools/editor-core:editor-core",

@@ -32,7 +32,6 @@ use host_log::{Entry, Log, LogHead, Sha256};
 use ::firefight::ShipKind;
 
 use super::guest::PodFall;
-use super::pods::FALL_TICKS;
 use super::ship::{Boarding, FLY_TICKS, Launch, Ship, ShipPath};
 use super::squad_pods::{Fallback, Falling, Kind, SquadPods};
 use crate::actor_net::squads::{Placement, SquadEntry, SquadOp};

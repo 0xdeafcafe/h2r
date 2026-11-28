@@ -1,6 +1,7 @@
 //! The host runtime over a fake game that records every engine call.
 
 use super::*;
+use crate::firefight::pods::FALL_TICKS;
 use ::firefight::{Difficulty, ScoreReason, builtin};
 
 /// The kit's invented character slot for its Elite class.

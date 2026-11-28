@@ -206,8 +206,8 @@ def root_exports():
             "content/ui/screens/forge.games.yaml",
             "content/ui/screens/forge.link.yaml",
             "content/ui/screens/forge.map-limits.yaml",
-            "content/ui/screens/forge.object-actions.yaml",
             "content/ui/screens/forge.menu.yaml",
+            "content/ui/screens/forge.object-actions.yaml",
             "content/ui/screens/forge.objects.yaml",
             "content/ui/screens/forge.properties.yaml",
             "content/ui/screens/forge.question.yaml",
@@ -278,6 +278,7 @@ def root_exports():
     crate_files(
         name = "docs",
         srcs = [
+            "docs/engine/sound-instances.md",
             "docs/formats/haloscript.md",
             "docs/game/mod-credits.toml",
             "docs/game/mod-details.toml",

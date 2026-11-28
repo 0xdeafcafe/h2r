@@ -71,7 +71,7 @@ pub(super) fn ops(layers: &[(u8, Option<ShadowPass>)]) -> Result<Vec<Op>, Keep> 
                 let t = caster_target(pass)?;
                 out.extend([Op::Clear(t), Op::Draw(n, Attach::Target(t)), Op::Freeze(t)]);
             }
-            11 | 12 | 13 => out.push(Op::Draw(n, Attach::View)),
+            11..=13 => out.push(Op::Draw(n, Attach::View)),
             14 => out.push(Op::Draw(n, Attach::Target(1))),
             _ => return Err(Keep::Unsupported("a scene light layer the passes do not draw")),
         }
@@ -594,11 +594,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                     let prepared = match group.group.layer {
                         12 | 13 => {
                             let c = light.ok_or(Keep::NoConstants)?;
-                            let draws = self.scene_light_draws(&d, mem, &ready, group, &c, binding.is_some())?;
-                            self.prepare_planned(&d, mem, Arc::clone(&ready), c, draws, binding, false, rect)?
+                            let draws = self.scene_light_draws(d, mem, &ready, group, &c, binding.is_some())?;
+                            self.prepare_planned(d, mem, Arc::clone(&ready), c, draws, binding, false, rect)?
                         }
                         _ => self.shadow_prepared(
-                            &d,
+                            d,
                             mem,
                             view,
                             group,

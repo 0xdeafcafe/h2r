@@ -278,7 +278,7 @@ pub fn starting_level(name: &str, skill: Skill) -> u8 {
         Skill::Legendary => (41, 50),
     };
     let mut h = 2_166_136_261u32;
-    for b in name.to_lowercase().split_whitespace().flat_map(|w| w.bytes().chain([b' '])) {
+    for b in name.to_lowercase().split_whitespace().flat_map(|w| w.bytes().chain(*b" ")) {
         h = (h ^ u32::from(b)).wrapping_mul(16_777_619);
     }
     h ^= h >> 15;

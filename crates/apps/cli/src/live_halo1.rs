@@ -64,10 +64,12 @@ pub struct FailedMap {
 }
 
 /// The longest reason in a help line, in characters.
+#[cfg(test)]
 const HELP_CHARS: usize = 80;
 
 impl FailedMap {
     /// The help text for its greyed row: one short line with the reason.
+    #[cfg(test)]
     pub fn help(&self) -> String {
         let one: String = self.reason.split_whitespace().collect::<Vec<_>>().join(" ");
         let cut = if one.chars().count() > HELP_CHARS {

@@ -56,6 +56,8 @@ pub mod simplex {
 /// A support triple ([`support`]'s output): A's point, B's in B's frame,
 /// B's in A's frame, and (from [`tri_support`]) its height.
 mod triple {
+    // Offset 0: reads take the record's base, so the name documents the layout.
+    #[allow(dead_code)]
     pub const A: u32 = 0x00;
     pub const LOCAL_B: u32 = 0x10;
     pub const B: u32 = 0x20;

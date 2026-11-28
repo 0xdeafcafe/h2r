@@ -18,6 +18,7 @@ crate_tree(
     name = "lib-tree",
     files = [
         ":src",
+        "//:docs",
         "//:scripts",
     ],
 )
@@ -26,6 +27,7 @@ crate_tree(
     name = "test-tree",
     files = [
         ":all",
+        "//:docs",
         "//:scripts",
     ],
 )

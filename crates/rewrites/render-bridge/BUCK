@@ -44,6 +44,7 @@ workspace_library(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -70,6 +71,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -97,11 +99,40 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
         "//crates/rewrites/scene-extract:scene-extract",
         "//crates/rewrites/sim-effects:sim-effects",
+        "//crates/runtime/runtime/test-probe:runtime-test-probe",
+        "//crates/runtime/runtime:runtime",
+        "//crates/runtime/timeline:timeline",
+        ":render-bridge",
+    ],
+)
+
+workspace_test(
+    name = "frame_step_layer",
+    crate = "frame_step_layer",
+    crate_root = "crates/rewrites/render-bridge/tests/frame_step_layer.rs",
+    description = "The guest side of the native renderer until FrameScene replaces it: the stage hooks, admissions and the frame step's scene (docs/graphics/framescene.md)",
+    features = [
+        "default",
+        "native-render",
+    ],
+    manifest = "crates/rewrites/render-bridge",
+    package = "render-bridge",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//crates/formats/tags:tags",
+        "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
+        "//crates/rewrites/engine:engine",
+        "//crates/rewrites/frame-scene:frame-scene",
+        "//crates/rewrites/native-render:native-render",
+        "//crates/rewrites/scene-extract:scene-extract",
         "//crates/rewrites/sim-effects:sim-effects",
         "//crates/runtime/runtime/test-probe:runtime-test-probe",
         "//crates/runtime/runtime:runtime",
@@ -126,6 +157,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -154,6 +186,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -182,6 +215,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -210,6 +244,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -238,6 +273,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -266,6 +302,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -294,6 +331,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -322,6 +360,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -350,6 +389,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -378,6 +418,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -406,6 +447,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -434,6 +476,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -462,6 +505,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -490,6 +534,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",
@@ -518,6 +563,7 @@ workspace_test(
     deps = [
         "//crates/formats/tags:tags",
         "//crates/hooking/hooks:hooks",
+        "//crates/platform/canvas-fit:canvas-fit",
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
         "//crates/rewrites/native-render:native-render",

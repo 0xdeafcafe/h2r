@@ -145,6 +145,23 @@ workspace_test(
 )
 
 workspace_test(
+    name = "sculpt",
+    crate = "sculpt",
+    crate_root = "crates/tools/mesh-edit/tests/sculpt.rs",
+    description = "The modeling kernel of h2-editor: a radial-edge mesh in index arenas, selection, MeshOp operations as values, import and stable export (docs/editor/modeling.md)",
+    features = [],
+    manifest = "crates/tools/mesh-edit",
+    package = "mesh-edit",
+    tree = ":test-tree",
+    version = "0.1.0",
+    deps = [
+        "//third-party/rust:serde",
+        "//third-party/rust:serde_json",
+        ":mesh-edit",
+    ],
+)
+
+workspace_test(
     name = "select",
     crate = "select",
     crate_root = "crates/tools/mesh-edit/tests/select.rs",

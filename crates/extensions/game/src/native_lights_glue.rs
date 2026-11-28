@@ -590,7 +590,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let ready = self.ready(mem)?;
         let world = ready.lights.get().ok_or(Keep::NoWorld)?;
         let objects = group.entries.iter().any(|e| structure_key(e).is_none());
-        let model_lights = objects.then(|| self.model_lights(&d, mem, &ready)).transpose()?;
+        let model_lights = objects.then(|| self.model_lights(d, mem, &ready)).transpose()?;
         let held = Held {
             world,
             models: model_lights.as_deref().map(|m| &m.models),
@@ -690,7 +690,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             (None, None)
         };
         let mut prepared = self.prepare_planned(
-            &d,
+            d,
             mem,
             Arc::clone(&ready),
             constants,

@@ -1537,9 +1537,8 @@ mod tests {
         }
         // Nine at once would need 18 apart, under the least pitch: it does
         // not fit, so eight show and the rest scroll.
-        for rows in [9i16] {
-            assert!(room / (rows - 1) < MIN_PITCH, "{rows} rows");
-        }
+        let rows = 9i16;
+        assert!(room / (rows - 1) < MIN_PITCH, "{rows} rows");
         // The tag: the list shows eight; its anchor and the hints stay.
         let mut m = Fake::default();
         let wgit = live_tag(&mut m, 4);

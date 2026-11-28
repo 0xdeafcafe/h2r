@@ -780,7 +780,7 @@ impl TiledRun {
                             load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
                         }),
-                        stencil_ops: stencil.then(|| wgpu::Operations {
+                        stencil_ops: stencil.then_some(wgpu::Operations {
                             load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,
                         }),

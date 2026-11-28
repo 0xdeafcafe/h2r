@@ -742,7 +742,7 @@ fn run_configured(
         let variants = h1_variants::mp_variants();
         // A member builds a map variant from its own disc, the AI ground
         // with it (docs/game/forge-firefight.md, "Playing it").
-        gate.on_build(Box::new(|document| game::map_variant::build_document(document)));
+        gate.on_build(Box::new(game::map_variant::build_document));
         gate.on_prepare(Box::new(move |id| {
             // The package this game loads, for a replica's Firefight genesis.
             game::map_variant::set_loaded(Some(id));

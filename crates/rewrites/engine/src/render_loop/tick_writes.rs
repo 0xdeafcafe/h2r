@@ -207,6 +207,7 @@ mod tests {
         assert_eq!(Words::read(&A, &g).unwrap(), before.predict());
         // The one-shot byte the frame forgot to clear.
         let before = Words::read(&A, &g).unwrap();
+        frame(&A, &mut g).unwrap();
         g.put_u8(A.one_shot, 1);
         assert_eq!(settle(&A, &mut g, before).unwrap(), [Word::OneShot]);
         assert_eq!(g.u8(A.one_shot), Ok(0));

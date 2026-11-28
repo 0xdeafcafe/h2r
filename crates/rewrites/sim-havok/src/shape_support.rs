@@ -284,7 +284,7 @@ pub fn polygon_vertices(j: &mut Journal, this: u32, ids_at: u32, count: u32, out
 pub fn biped_vertices(
     j: &mut Journal,
     this: u32,
-    ids_at: u32,
+    _ids_at: u32,
     count: u32,
     out: u32,
     esp: u32,

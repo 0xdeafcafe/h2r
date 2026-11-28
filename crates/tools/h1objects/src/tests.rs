@@ -3262,7 +3262,7 @@ fn seat_vehicle(
                 e.set("entry_marker_facing_angle", Val::Float(radius * 2.0)).unwrap();
                 e.set("maximum_relative_velocity", Val::Float(radius * 3.0)).unwrap();
                 e.set("enter_seat_string", Val::text(prompt)).unwrap();
-                e.set("ai_seat_role", Val::Enum((*radius as u32).into())).unwrap();
+                e.set("ai_seat_role", Val::Enum(*radius as u32)).unwrap();
                 e
             })
             .collect();

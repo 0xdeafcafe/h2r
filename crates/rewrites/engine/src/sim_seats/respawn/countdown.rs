@@ -59,7 +59,6 @@ struct Write {
     addr: u32,
     value: u32,
     size: u8,
-    live: bool,
 }
 
 /// The live words a call wrote, last value per address, in first-write
@@ -162,7 +161,7 @@ impl<'g> Mem<'g> {
         if live {
             self.live.put(addr, value)?;
         }
-        self.writes[self.len] = Write { addr, value, size, live };
+        self.writes[self.len] = Write { addr, value, size };
         self.len += 1;
         Ok(())
     }

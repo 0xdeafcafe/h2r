@@ -21,7 +21,7 @@ use d3d::backend::{
     SceneStage,
 };
 use d3d::scene_sink::{ReplayFrame, ReplayOp};
-use frame_scene::{D24_SCALE, FrameScene, RenderCamera, Slot, TargetRef, ViewKind, ViewSlot};
+use frame_scene::{D24_SCALE, FrameScene, RenderCamera, Slot, TargetRef, ViewKind};
 use gfx::D3DFormat;
 use gfx::external::ExternalEncoded;
 use wgpu::util::DeviceExt;
@@ -30,8 +30,6 @@ use crate::particle_compute::{Blend, DrawBinding, GpuParticles, ParticleCompute,
 use crate::particle_set::{self, Set, SpriteBitmap};
 use crate::particle_system::MAX_CAPACITY;
 
-/// The slot every system draws in: 9, with the transparents and effects.
-pub(crate) const SLOT: ViewSlot = ViewSlot::Transparents;
 
 /// One device's kernels, pipelines and sprite textures, kept across
 /// frames. A bitmap is held here while the set names it, so a pointer
@@ -328,6 +326,9 @@ impl ParticleStage {
 
 #[cfg(test)]
 mod tests {
+    use frame_scene::ViewSlot;
+    /// The slot every system draws in: 9, with the transparents and effects.
+    const SLOT: ViewSlot = ViewSlot::Transparents;
     use super::*;
     use crate::gpu::Image;
     use crate::particle_set::System;

@@ -327,6 +327,7 @@ impl Editor {
     }
 
     /// The body the player flies and its unit, for `forge.status`.
+    #[cfg(test)]
     pub fn flying(&self) -> Option<(forge_doc::bodies::Body, u32)> {
         self.swap.flying()
     }

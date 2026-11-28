@@ -241,7 +241,7 @@ fn drive_in_place(
         }
         let transfer = {
             let mut mem = ctx.memory();
-            drive(cpu, &mut *mem, pc)?
+            drive(cpu, &mut mem, pc)?
         };
         let at = transfer.resume_pc;
         if transfer.kind != runtime::abi::CALL || !table.resumes(at) {

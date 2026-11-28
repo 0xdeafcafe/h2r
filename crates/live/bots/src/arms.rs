@@ -1363,7 +1363,7 @@ pub(crate) fn ground_for(
         if let Some(headers) = vehicle_headers {
             headers.extend_from_slice(&scan.vehicles);
         }
-        scan.result.clone()?;
+        scan.result?;
         let g = &scan.ground;
         out.loose_grenades.clear();
         out.loose_grenades.extend_from_slice(&g.loose_grenades);

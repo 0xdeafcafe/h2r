@@ -266,8 +266,8 @@ impl<'a> Model<'a> {
     /// particle's, the walk's `0x107f0` the system's and location's.
     pub(crate) fn input(&mut self, i: u32, s: u32, l: u32, p: u32) -> Result<u32, Error> {
         let v = match i {
-            0 | 1 | 2 | 3 | 11 | 14 | 15 if p == 0 => 0,
-            4 | 5 | 6 if s == 0 => 0,
+            0..=3 | 11 | 14 | 15 if p == 0 => 0,
+            4..=6 if s == 0 => 0,
             7 | 16 if l == 0 => 0,
             4 => self.u32(s.wrapping_add(4))?,
             5 | 6 => self.u32(s.wrapping_add(0x14 + 4 * i))?,

@@ -150,7 +150,7 @@ fn shader(mem: &dyn GuestMemory, datum: u32) -> Result<Arc<HudShader>, Unpredict
         return known.clone().map_err(Unpredicted::Refused);
     }
     if s.library.is_none() {
-        let read = crate::hud_overlay::with_art_map(mem, |map| ShaderLibrary::read(map)).ok_or(Unpredicted::Loading)?;
+        let read = crate::hud_overlay::with_art_map(mem, ShaderLibrary::read).ok_or(Unpredicted::Loading)?;
         match read {
             Ok(library) => s.library = Some(library),
             Err(e) => {

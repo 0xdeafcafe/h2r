@@ -41,6 +41,7 @@ workspace_library(
     deps = [
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
+        "//crates/rewrites/hud-kit-core:hud-kit-core",
         "//third-party/rust:bytemuck",
     ],
 )
@@ -58,6 +59,7 @@ workspace_test(
     deps = [
         "//crates/rewrites/engine:engine",
         "//crates/rewrites/frame-scene:frame-scene",
+        "//crates/rewrites/hud-kit-core:hud-kit-core",
         "//third-party/rust:bytemuck",
     ],
 )

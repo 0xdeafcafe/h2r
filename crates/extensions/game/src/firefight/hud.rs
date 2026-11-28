@@ -306,7 +306,7 @@ impl Mode {
 
     /// The blob's bytes, at most [`MAX_BLOB`].
     pub fn encode(&self) -> Vec<u8> {
-        let flags = u8::from(self.boss) * FLAG_BOSS | u8::from(self.endless) * FLAG_ENDLESS;
+        let flags = (u8::from(self.boss) * FLAG_BOSS) | (u8::from(self.endless) * FLAG_ENDLESS);
         let mut out = vec![
             VERSION,
             self.stage as u8,

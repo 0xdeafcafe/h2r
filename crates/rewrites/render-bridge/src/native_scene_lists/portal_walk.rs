@@ -20,7 +20,6 @@ const CORNER_COUNT: u32 = 4 + NODE_SIZE * flood::MAX_NODES as u32;
 const CORNERS: u32 = CORNER_COUNT + 4;
 const CHAIN_HEADS: u32 = 0x40;
 const CHAIN_LINKS: u32 = 0x440;
-const FRUSTUM_SIZE: usize = 0x1bc;
 
 #[derive(Clone, Copy)]
 struct Scratch {

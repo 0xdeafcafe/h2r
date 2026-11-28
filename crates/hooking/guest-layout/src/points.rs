@@ -764,7 +764,7 @@ points! { ALL;
     ANIMATION_RESOURCE_GET @ 0x0012_37e0: [opaque], Optional, Hot; "docs/engine/engine-map.md";
     /// The particle systems' per-view update the render reaches from the
     /// object and effect draw paths: their visibility and location stamps.
-    PARTICLE_VIEW_UPDATE @ 0x0017_4420: [opaque], Optional; "docs/graphics/native-particles.md";
+    PARTICLE_VIEW_UPDATE @ 0x0017_4420: [fn(a0: stack 0, a1: stack 1, a2: stack 2, a3: stack 3) ret 16], Optional; "docs/graphics/native-particles.md";
     /// A particle location's per-frame move (EBX the location), from the
     /// director's particle update (`0x00176f60` -> `0x00174990` ->
     /// `0x00174a30`): its emitters follow it when its stamp `+0x30` is the

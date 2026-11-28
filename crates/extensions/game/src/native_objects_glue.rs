@@ -1258,14 +1258,6 @@ pub(crate) fn layer_draw_fog(
     set_fog(draw, fog, specular)
 }
 
-/// Whether the device holds stencil mode 1 (`0x00467010` says 1 and the
-/// device's stencil is `object_state::structure_stencil(0)`): what the
-/// geometry draw's epilogue leaves in layers 1 and 3.
-pub(crate) fn in_stencil_mode_1<B: d3d::backend::Backend>(device: &d3d::Device<B>, mem: &dyn GuestMemory) -> bool {
-    let read = crate::native_world_glue::ReadMemory(mem);
-    mem.u16(SCENE_STENCIL_MODE) == Ok(1) && device.stencil_state(&read) == Some(scene_stencil())
-}
-
 /// Whether `draws` write depth or stencil (`d3d::ExternalWrites`).
 pub(crate) fn draws_write_depth_stencil<'a>(draws: impl IntoIterator<Item = &'a PlannedDraw>) -> bool {
     draws.into_iter().any(|d| {
