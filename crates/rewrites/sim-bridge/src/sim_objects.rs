@@ -32,7 +32,7 @@
 //! The function value `bab40` runs the Rust evaluator
 //! (`engine::sim_objects::functions::arm`) over its register-level body:
 //! the evaluator answers once proven against the body, which answers
-//! until then. The tag-function curve evaluator `13b390` is the kernel's
+//! until then. The tag-function curve evaluator `13b390` is Rust's
 //! ([`install_curve_arm`]).
 //!
 //! [`crate::sim_native::SimNative`] calls [`install`]: the bodies hold no
@@ -201,26 +201,23 @@ fn drive_in_place(
     }
 }
 
-/// The tag-function curve evaluator `13b390` (`FUNCTION_EVALUATE`): the
-/// idiomatic kernel answers every call
-/// (`engine::sim_objects::functions::parity::enter`). A call it cannot
-/// take (the float environment, curve kinds 9 and 10, a faulting read)
-/// is the guest's, counted by reason.
+/// The tag-function curve evaluator `13b390` (`FUNCTION_EVALUATE`): Rust
+/// answers every call (`engine::sim_objects::functions::parity::enter`),
+/// the idiomatic kernel or, for what it does not carry, the
+/// register-level port.
 fn install_curve_arm(b: &mut Builder) {
-    use engine::sim_objects::functions::parity::{self, Step};
+    use engine::sim_objects::functions::parity;
     let point = &points::FUNCTION_EVALUATE;
     b.raw()
         .implement(point, OBJECTS, move |cpu, ctx, pc| {
-            if pc == point.base {
-                let step = {
-                    let mem = ctx.memory();
-                    parity::enter(cpu, &mem)
-                };
-                if let Step::Answered { target } = step {
-                    return Ok(TransferAbi::ret(target));
-                }
+            if pc != point.base {
+                unimplemented!("objects curve: entered at {pc:#x}, not the entry");
             }
-            original(cpu, ctx, pc, false)
+            let target = {
+                let mem = ctx.memory();
+                parity::enter(cpu, &mem)
+            };
+            Ok(TransferAbi::ret(target))
         })
         .context_only()
         .optional();

@@ -202,7 +202,7 @@ fn an_empty_reference_is_zero_in_both() {
 }
 
 #[test]
-fn kinds_nine_and_ten_decline_while_the_port_answers() {
+fn kinds_nine_and_ten_go_to_the_port() {
     let mut m = image();
     for kind in [9u8, 10] {
         blob(&mut m, kind, 0, [0, 0], WORDS);

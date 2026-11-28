@@ -33,7 +33,7 @@ eight integer registers equal retail's.
 | 7a | the biped update `dd360` with the carrier `baf40`, timer update `e2d80`, `1469f0`, action request `e68c0`, animation kind `dd300`, landing test `e4050`, fall update `e45e0`, animation state update `e4c50`, look update `de190` | the movement and animation steps, the seat updates |
 | 7b | the biped post-physics update `dd990` with crouch step `dd7d0`, crouch height `dd8e0` and its forced test `e0dc0`, ground probe `e30c0` and its surface test `ddf60`, jump update `e4680`, physics input `dd0d0`, landing update `e4330`, contact update `e2fa0` | the AI hooks, the damage packet, the physics step |
 
-The tag-function curve evaluator `13b390` is answered by the idiomatic kernel `sim-objects/src/functions/curve.rs`. Curve kinds 9 and 10 decline to the guest, counted by reason. Counted in `engine::sim_objects::functions::parity`.
+The tag-function curve evaluator `13b390` is answered by the idiomatic kernel `sim-objects/src/functions/curve.rs`. What it does not carry (curve kinds 9 and 10, a float environment or operand off its exact path) the register-level port `engine::function_eval` answers; a fault or an exception the port does not model panics (`objects curve:`). Counted in `engine::sim_objects::functions::parity`.
 
 ## The walks in Rust
 
@@ -185,7 +185,7 @@ How the slice 1 bodies keep the contract is in "Slice 1 bodies" below.
 | `d1410` | `UNIT_IMPORT_ANIMATION` | `(unit: eax) -> xmm0`; `ret`. Calls `1c6e30` | segment |
 | `be8e0` | `OBJECT_CHANGE_COLORS` | `(object: stack 0) -> al`; `ret 4` | segment, then leaf |
 | `13bb90` | none yet | `(function: eax, stack 0, stack 1)`, input in `xmm0` (clamped), result in `xmm0`; `ret 8`. Calls the evaluator `13b390` | callout |
-| `13b390` | `FUNCTION_EVALUATE` | `(reference: edi, input: stack 0, range: stack 1) -> xmm0`; `ret 8`. The curve evaluator under every function value, light phase and screen effect ([engine-map.md](engine-map.md), `function_evaluate`) | the kernel `functions/curve.rs` answers (`xmm0`, the popped frame; `eax`, `ecx`, `edx`, `edi` untouched, flags undefined; `functions/parity.rs` counts); curve kinds 9 and 10 decline to the guest |
+| `13b390` | `FUNCTION_EVALUATE` | `(reference: edi, input: stack 0, range: stack 1) -> xmm0`; `ret 8`. The curve evaluator under every function value, light phase and screen effect ([engine-map.md](engine-map.md), `function_evaluate`) | the kernel `functions/curve.rs` answers (`xmm0`, the popped frame; `eax`, `ecx`, `edx`, `edi` untouched, flags undefined; `functions/parity.rs` counts); curve kinds 9 and 10 and off-path floats go to the register-level port `function_eval` |
 
 ### Slice 4: post-update shell
 

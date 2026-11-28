@@ -23,8 +23,8 @@
 //! - 6, 8 and above 10: 0.
 //!
 //! Kinds 9 (exponent) and 10 (spline 2) run CRT `pow` sequences on the
-//! x87 that this kernel does not carry; it declines them, counted by the
-//! caller, and the guest answers. The shape and wave tables, and every
+//! x87 that this kernel does not carry; it declines them, and the caller
+//! runs the register-level port `engine::function_eval`. The shape and wave tables, and every
 //! scale constant, are inputs: the adapter reads them from the image, so
 //! the same kernel runs on synthetic memory in tests.
 
@@ -52,7 +52,7 @@ pub struct Image {
     pub waves: u32,
 }
 
-/// Why a call was left to the guest.
+/// Why the kernel hands a call to the register-level port.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
     /// MXCSR not in the pinned state, the x87 not rounding to nearest, an
@@ -75,7 +75,7 @@ impl Decline {
 }
 
 /// One call's answer: the result as f32 bits, or why there is none. A
-/// declined call is the guest's to answer.
+/// declined call is the register-level port's.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Answer {
     Value(u32),
@@ -90,7 +90,7 @@ const PARAMS: u32 = 0x14;
 /// are the caller's, and the kernel declines unless MXCSR is in the
 /// pinned state and the x87 rounds to nearest (the only bit of its state
 /// the stores read). `word` and `byte` read guest memory; a read that
-/// fails is the caller's error, and the guest answers the call.
+/// fails is the caller's error.
 pub fn evaluate<E>(
     image: &Image,
     mxcsr: u32,
