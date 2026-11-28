@@ -11,35 +11,18 @@
 //! and [`native_targets::cut_clear`]'s, on the targets the frame graph
 //! declares (`native_render::frame_graph::targets`).
 //!
-//! The arm: one call in [`native_targets::CHECK_EVERY`] runs the guest body
-//! and compares what it left with the plan ([`check`]): every planned
-//! word, the transform and fog constants, the three render states and the
-//! bound target. A difference sends every later call to the guest body,
-//! counted `scene_kept_view_setup_mismatch`. A setup the plan does not
-//! cover runs the body, counted `scene_kept_view_setup_<cause>`:
-//!
-//! | Cause | When |
-//! |---|---|
-//! | `host` | no host installed |
-//! | `target` | view kind 1: target `0x12`, the cache's (`0x0001dcf0`) |
-//! | `scale` | the viewport's scale (`[0x004670c8]` clamped) is not 1.0 |
-//! | `prelude` | a clear whose prelude `0x00014ac0` would run |
-//! | `restore` | the draw state's restore list `0x00018900` is not empty |
-//! | `fog_effect` | the fog's effect `0x00027aa0` would run (`+0x1b8` not 0 or -1) |
-//! | `unread`, `unwritable` | a word that does not read or write |
-//! | `device` | the device refused a call (the body repeats the prefix made) |
-//!
-//! The end has no arm of its own: its only D3D call is the alpha clear,
-//! and the setup of the view left is the guest call `0x000132d0`, which is
-//! this setup. Counted `view_end_calls`, `view_end_cut` and
-//! `scene_kept_view_end_<cause>` (`host`, `device`, `unread`,
-//! `unwritable`).
+//! No guest body runs. The fog's effect `0x00027aa0` (the view's
+//! `+0x1b8` not 0 or -1) is game code with no D3D call: the setup calls it
+//! as the body does, last. A setup the cut cannot make panics, named
+//! `view_setup: <cause>` (`host`, `unread`, `unwritable`, `device`: a
+//! refused call); the end likewise, `view_end: <cause>`. Counted
+//! `view_setup_calls` and `view_end_calls`.
 
 use std::sync::Arc;
 
 use engine::memory::{GuestMemory, MemFault};
 
-use crate::native_targets::{self, Arm, Host};
+use crate::native_targets::{self, unhandled, Arm, Host};
 
 /// The render context the view is copied to, and the view's size.
 pub const CONTEXT: u32 = 0x0048_5600;
@@ -77,9 +60,32 @@ pub const CAMERA_POINTS: u32 = 0x004b_9e14;
 pub const CAMERA_UPDATE: u32 = 0x0002_f970;
 pub const CAMERA_FINISH: u32 = 0x0002_fd90;
 
-/// The target-0 surfaces the target switch `0x00014bc0` binds.
+/// The target-0 surfaces the target switch `0x00014bc0` binds; target
+/// `0x12` binds the cache's surface for it ([`cached`]) on the same depth.
 pub const VIEW_COLOUR: u32 = 0x0050_935c;
 pub const VIEW_DEPTH: u32 = 0x0050_9364;
+/// View kind 1's target.
+pub const CACHED_TARGET: u32 = 0x12;
+/// The render-target cache `0x0001dcf0` reads: records of `0x98` bytes.
+pub const TARGET_CACHE: u32 = 0x004b_4b58;
+pub const TARGET_RECORD: u32 = 0x98;
+/// The screen-target pick `0x00025960` reads: two records' live word and
+/// their off byte.
+pub const SCREEN_A: (u32, u32) = (0x004b_57c0, 0x004b_57cd);
+pub const SCREEN_B: (u32, u32) = (0x004b_5690, 0x004b_569d);
+/// The fog's effect, called last when the view's `+0x1b8` is not 0 or -1.
+pub const FOG_EFFECT: u32 = 0x0002_7aa0;
+/// The D3D render-state array, the deferred states' dirty word, and the
+/// tables of the simple states' push headers and the deferred states'
+/// dirty bits the restore `0x00018900` reads.
+pub const RENDER_STATES: u32 = 0x0040_7498;
+pub const DEFERRED_DIRTY: u32 = 0x0040_7490;
+pub const SIMPLE_HEADERS: u32 = 0x0043_e6f0;
+pub const DEFERRED_BITS: u32 = 0x0043_e4d0;
+/// The restore's slot ranges: below, simple; below, deferred; the rest
+/// through their setters.
+pub const SIMPLE_SLOTS: u8 = 0x5c;
+pub const DEFERRED_SLOTS: u8 = 0x88;
 /// The device pointer, the push-buffer threshold `MakeRequestedSpace` is
 /// asked for, and the device's clip range and its flags (`+0x1c18` bit 1:
 /// the game owns it).
@@ -178,6 +184,8 @@ pub struct Setup {
     pub transform: [u32; 48],
     pub colour: u32,
     pub depth: u32,
+    /// The target select's flag byte: 1 for target 0, 0 for `0x12`.
+    pub flag: u8,
     /// `x, y, width, height, min_z, max_z`.
     pub viewport: [u32; 6],
     /// The clear's game flags and colour.
@@ -185,7 +193,24 @@ pub struct Setup {
     /// The raw push: method `0x1af0`, four words (0, `[0x0045dbbc]`,
     /// `[0x0045dbc0]`, `[0x0045e3b0]`).
     pub push: [u32; 5],
+    /// The draw state's restore list, in its order.
+    pub restore: Vec<Restore>,
     pub fog: Option<Fog>,
+    /// Whether the fog's effect [`FOG_EFFECT`] is called last.
+    pub fog_effect: bool,
+}
+
+/// One entry of the draw state's restore list (`0x00018900`): a slot byte
+/// and its value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Restore {
+    /// Below [`SIMPLE_SLOTS`]: `SetRenderState_Simple(header, value)`,
+    /// then the slot's word.
+    Simple { slot: u8, header: u32, value: u32 },
+    /// Below [`DEFERRED_SLOTS`]: the dirty bits or'd in and the slot's word.
+    Deferred { slot: u8, bits: u32, value: u32 },
+    /// The rest: the slot's `SetRenderState_*` setter.
+    Setter { slot: u8, value: u32 },
 }
 
 /// The scale `0x00012fa0` and `0x00014bc0` clamp: `[0x004670c8]` into
@@ -278,22 +303,60 @@ pub fn transform(mem: &dyn GuestMemory, view: u32) -> Result<[u32; 48], Cause> {
     Ok(out)
 }
 
-/// The viewport `0x00014bc0` sets for target 0 (**Code**
-/// `0x00014d47..0x00014ebe`): 128 square for view kind 2, else the
-/// context's window. A scale other than 1.0 is refused (`scale`): its
-/// `fild`, `fmul` and `_ftol` are not made here.
-pub fn viewport(mem: &dyn GuestMemory, view: u32) -> Result<[u32; 6], Cause> {
-    let one = float(mem, ONE)?.to_bits();
+/// The screen target `0x00025960` picks: `0x14` while the first screen
+/// record is live and not off, else `0x12` for the second, else -1.
+pub fn screen_target(mem: &dyn GuestMemory) -> Result<i32, Cause> {
+    for ((live, off), target) in [(SCREEN_A, 0x14), (SCREEN_B, 0x12)] {
+        if word(mem, live)? != 0 && byte(mem, off)? == 0 {
+            return Ok(target);
+        }
+    }
+    Ok(-1)
+}
+
+/// The cache's surface for `target` (`0x0001dcf0`): the record's `+0x18`
+/// when it has a texture (`+0x88`), is not off (`+0x95`) and has a size
+/// (`+0x78` above 0), else null.
+pub fn cached(mem: &dyn GuestMemory, target: u32) -> Result<u32, Cause> {
+    let r = TARGET_CACHE.wrapping_add(target.wrapping_mul(TARGET_RECORD));
+    let live = word(mem, r.wrapping_add(0x88))? != 0 && byte(mem, r.wrapping_add(0x95))? == 0 && mem.i32(r.wrapping_add(0x78)).map_err(unread)? > 0;
+    Ok(if live { r.wrapping_add(0x18) } else { 0 })
+}
+
+/// `_ftol` (`0x00322b0c`) of `n * scale` as the x87 makes it: the product
+/// is exact in 53 bits; truncated toward zero, out of range the indefinite.
+fn scaled(n: i32, scale: f32) -> u32 {
+    let p = (f64::from(n) * f64::from(scale)).trunc();
+    if p.is_finite() && p >= f64::from(i32::MIN) && p <= f64::from(i32::MAX) { p as i32 as u32 } else { 0x8000_0000 }
+}
+
+/// The viewport `0x00014bc0` sets for `target` (0 or `0x12`, **Code**
+/// `0x00014d47..0x00014ebe`): 128 square for view kind 2; the 640 x 480
+/// screen for the screen target ([`screen_target`]) with the view's `+7`;
+/// else the context's window times the scale, which is
+/// [`view_scale`]'s off the screen target and 1.0 on it.
+pub fn viewport(mem: &dyn GuestMemory, view: u32, target: u32) -> Result<[u32; 6], Cause> {
+    let one = float(mem, ONE)?;
     let at = |off: u32| view.wrapping_add(off);
     if short(mem, at(2))? == 2 {
-        return Ok([0, 0, 0x80, 0x80, 0, one]);
+        return Ok([0, 0, 0x80, 0x80, 0, one.to_bits()]);
     }
-    if view_scale(mem, view)?.to_bits() != one {
-        return Err("scale");
+    let on_screen = screen_target(mem)? == target as i32;
+    let wide = byte(mem, at(7))? != 0;
+    if on_screen && wide {
+        return Ok([0, 0, 0x280, 0x1e0, 0, one.to_bits()]);
     }
+    let scale = if on_screen { one } else { view_scale(mem, view)? };
     let (top, left) = (short(mem, at(0x48))?, short(mem, at(0x4a))?);
     let (bottom, right) = (short(mem, at(0x4c))?, short(mem, at(0x4e))?);
-    Ok([left as u32, top as u32, right.wrapping_sub(left) as u32, bottom.wrapping_sub(top) as u32, 0, one])
+    Ok([
+        scaled(left, scale),
+        scaled(top, scale),
+        scaled(right.wrapping_sub(left), scale),
+        scaled(bottom.wrapping_sub(top), scale),
+        0,
+        one.to_bits(),
+    ])
 }
 
 /// `0x00131ed0`: the red, green and blue floats at `at` times
@@ -347,17 +410,35 @@ pub fn fog(mem: &dyn GuestMemory, view: u32) -> Result<Fog, Cause> {
     Ok(Fog { block, colour: pack(mem, view.wrapping_add(0x14c + 0x1c))? })
 }
 
+/// The restore list `0x00018900` (Code `0x00018900..0x00018996`) of the
+/// draw state's implementation `implementation`: `[+0x11c]`'s low 9 bits
+/// index the 5-byte entries at `[[DRAW_STATE + 0x20] + 0x14]`, its high
+/// bits count them.
+pub fn restore_list(mem: &dyn GuestMemory, implementation: u32) -> Result<Vec<Restore>, Cause> {
+    let head = u32::from(mem.u16(implementation.wrapping_add(0x11c)).map_err(unread)?);
+    let base = word(mem, word(mem, DRAW_STATE + 0x20)?.wrapping_add(0x14))?.wrapping_add((head & 0x1ff) * 5);
+    (0..head >> 9)
+        .map(|i| {
+            let e = base.wrapping_add(5 * i);
+            let raw = mem.bytes(e, 5).map_err(unread)?;
+            let (slot, value) = (raw[0], u32::from_le_bytes([raw[1], raw[2], raw[3], raw[4]]));
+            let table = |t: u32| word(mem, t.wrapping_add(4 * u32::from(slot)));
+            Ok(if slot < SIMPLE_SLOTS {
+                Restore::Simple { slot, header: table(SIMPLE_HEADERS)?, value }
+            } else if slot < DEFERRED_SLOTS {
+                Restore::Deferred { slot, bits: table(DEFERRED_BITS)?, value }
+            } else {
+                Restore::Setter { slot, value }
+            })
+        })
+        .collect()
+}
+
 /// The draw state's reset `0x00016b10` (ESI [`DRAW_STATE`]): an
-/// implementation's restore `0x00018900` is taken only with an empty list
-/// (`restore` otherwise), whose words the guest still reads.
-fn draw_state(mem: &dyn GuestMemory, writes: &mut Vec<Write>) -> Result<(), Cause> {
+/// implementation's restore list, then the reset's words.
+fn draw_state(mem: &dyn GuestMemory, writes: &mut Vec<Write>) -> Result<Vec<Restore>, Cause> {
     let implementation = word(mem, DRAW_STATE + 0x24)?;
-    if implementation != 0 {
-        if mem.u16(implementation.wrapping_add(0x11c)).map_err(unread)? >> 9 != 0 {
-            return Err("restore");
-        }
-        word(mem, word(mem, DRAW_STATE + 0x20)?.wrapping_add(0x14))?;
-    }
+    let restore = if implementation != 0 { restore_list(mem, implementation)? } else { Vec::new() };
     let scalar = word(mem, RESET_SCALAR)?;
     let mut put = |at: u32, v: u32| writes.push(Write { at, bytes: v.to_le_bytes().to_vec() });
     for off in (0xc..=0x24).step_by(4) {
@@ -369,21 +450,19 @@ fn draw_state(mem: &dyn GuestMemory, writes: &mut Vec<Write>) -> Result<(), Caus
     for off in [0x1330, 0x1370, 0x13b0, 0x13f0] {
         put(DRAW_STATE + off, scalar);
     }
-    Ok(())
+    Ok(restore)
 }
 
 /// The setup `0x000132d0(view)` as a plan (**Code**
 /// `0x000132d0..0x0001344d`; the stencil helper `0x00015370` is called
-/// with BX 0, its case 0 only). `Err` names why the body runs.
+/// with BX 0, its case 0 only). View kind 1 draws to target `0x12`, any
+/// other to target 0. `Err` names a word that does not read.
 pub fn plan(mem: &dyn GuestMemory, view: u32) -> Result<Setup, Cause> {
     let at = |off: u32| view.wrapping_add(off);
-    let kind = short(mem, at(2))?;
-    if kind == 1 {
-        return Err("target");
-    }
+    let target = if short(mem, at(2))? == 1 { CACHED_TARGET } else { 0 };
     let mut writes = vec![Write { at: CONTEXT, bytes: mem.bytes(view, VIEW_SIZE as usize).map_err(unread)? }];
     let put = |writes: &mut Vec<Write>, at: u32, bytes: &[u8]| writes.push(Write { at, bytes: bytes.to_vec() });
-    put(&mut writes, TARGET, &0u32.to_le_bytes());
+    put(&mut writes, TARGET, &target.to_le_bytes());
     put(&mut writes, STENCIL_ENABLE, &0u32.to_le_bytes());
     put(&mut writes, STENCIL_MODE, &0u16.to_le_bytes());
     for (a, v) in SETUP_WORDS {
@@ -397,13 +476,11 @@ pub fn plan(mem: &dyn GuestMemory, view: u32) -> Result<Setup, Cause> {
     if shadow {
         put(&mut writes, TRANSFORM_SHADOW, &words_le(&transform));
     }
-    let (colour, depth) = (word(mem, VIEW_COLOUR)?, word(mem, VIEW_DEPTH)?);
-    let viewport = viewport(mem, view)?;
+    // `0x00014bc0`'s cases 0 and `0x12` (its table at `0x00014ed0`).
+    let depth = word(mem, VIEW_DEPTH)?;
+    let (colour, flag) = if target == 0 { (word(mem, VIEW_COLOUR)?, 1) } else { (cached(mem, target)?, 0) };
+    let viewport = viewport(mem, view, target)?;
     let clear = if short(mem, at(8))? != 0 {
-        if byte(mem, at(7))? != 0 {
-            // `0x00014b60`'s prelude `0x00014ac0` (the context's `+7`, target 0).
-            return Err("prelude");
-        }
         Some(if byte(mem, CLEAR_PLAIN)? != 0 { (1, 0) } else { (0x61, pack(mem, at(0xc))?) })
     } else {
         None
@@ -411,23 +488,20 @@ pub fn plan(mem: &dyn GuestMemory, view: u32) -> Result<Setup, Cause> {
     let push = [0x0010_1af0, 0, word(mem, HALF)?, word(mem, ONE)?, word(mem, PUSH_W)?];
     put(&mut writes, FILL_MODE, &SOLID.to_le_bytes());
     put(&mut writes, DRAW_BEGIN, &[1]);
-    draw_state(mem, &mut writes)?;
-    let fog = if byte(mem, at(0x26c))? != 0 {
+    let restore = draw_state(mem, &mut writes)?;
+    let (fog, fog_effect) = if byte(mem, at(0x26c))? != 0 {
         put(&mut writes, FOG_BLOCK, &mem.bytes(at(0x14c), 0x48 * 4).map_err(unread)?);
         let effect = word(mem, at(0x1b8))?;
-        if effect != u32::MAX && effect != 0 {
-            return Err("fog_effect");
-        }
         let fog = fog(mem, view)?;
         if shadow {
             put(&mut writes, FOG_SHADOW, &words_le(&fog.block));
         }
         put(&mut writes, FOG_COLOUR, &fog.colour.to_le_bytes());
-        Some(fog)
+        (Some(fog), effect != u32::MAX && effect != 0)
     } else {
-        None
+        (None, false)
     };
-    Ok(Setup { view, writes, clip, transform, colour, depth, viewport, clear, push, fog })
+    Ok(Setup { view, writes, clip, transform, colour, depth, flag, viewport, clear, push, restore, fog, fog_effect })
 }
 
 fn stage(mem: &mut dyn GuestMemory, at: u32, words: &[u32]) -> Result<(), Cause> {
@@ -447,9 +521,9 @@ fn reserve(mem: &mut dyn GuestMemory, host: &dyn Host, device: u32) -> Result<u3
 }
 
 /// Makes `s`: the game-side words, then the device's calls in the body's
-/// order, staged in the guest stack at `scratch`. `Err` names why the
-/// guest body runs from where the cut stopped; each of its steps sets the
-/// same state again.
+/// order, staged in the guest stack at `scratch`. The fog's effect is the
+/// caller's ([`Setup::fog_effect`]). `Err` names the call it could not
+/// make.
 pub fn apply(mem: &mut dyn GuestMemory, host: &dyn Host, s: &Setup, scratch: u32) -> Result<(), Cause> {
     for w in &s.writes {
         mem.write(w.at, &w.bytes).map_err(unwritable)?;
@@ -463,16 +537,19 @@ pub fn apply(mem: &mut dyn GuestMemory, host: &dyn Host, s: &Setup, scratch: u32
     mem.set_u32(device, put).map_err(unwritable)?;
     stage(mem, scratch, &s.transform)?;
     refused(host.constants(mem, 0, scratch, 48))?;
-    native_targets::cut_select(mem, host, s.colour, s.depth, 1)?;
+    native_targets::cut_select(mem, host, s.colour, s.depth, s.flag)?;
     stage(mem, scratch, &s.viewport)?;
     refused(host.viewport(mem, scratch))?;
     if let Some((flags, colour)) = s.clear {
-        native_targets::cut_clear(mem, host, flags, colour, 1f32.to_bits(), 0)?;
+        native_targets::cut_clear(mem, host, flags, colour, 1f32.to_bits(), 0, scratch)?;
     }
     let put = reserve(mem, host, device)?;
     stage(mem, put, &s.push)?;
     mem.set_u32(device, put.wrapping_add(0x14)).map_err(unwritable)?;
     refused(host.render_state(mem, SLOT_FILL_MODE, SOLID))?;
+    for r in &s.restore {
+        restore(mem, host, *r)?;
+    }
     if let Some(fog) = &s.fog {
         stage(mem, scratch, &fog.block)?;
         refused(host.constants(mem, 0xc, scratch, 0x18))?;
@@ -481,54 +558,25 @@ pub fn apply(mem: &mut dyn GuestMemory, host: &dyn Host, s: &Setup, scratch: u32
     Ok(())
 }
 
-/// A check: what the guest body left against `s`. `bound` is the bound
-/// target the cut would leave (the pair from the select, the planned
-/// viewport); the device clips the viewport's far edges to the target, so
-/// its width and height are compared as at most the planned ones.
-pub fn check(mem: &dyn GuestMemory, host: &dyn Host, s: &Setup, bound: [u32; 8]) -> Result<(), String> {
-    for w in &s.writes {
-        if mem.bytes(w.at, w.bytes.len()).ok().as_deref() != Some(&w.bytes[..]) {
-            return Err(format!("the words at {:#010x}", w.at));
-        }
-    }
-    let device = mem.u32(DEVICE).map_err(|_| "the device".to_string())?;
-    for (i, v) in s.clip.iter().enumerate() {
-        if mem.u32(device.wrapping_add(DEVICE_CLIP + 4 * i as u32)).ok() != Some(*v) {
-            return Err(format!("the clip word {i}"));
-        }
-    }
-    let constants = |base: usize, words: &[u32]| -> Result<(), String> {
-        for (r, row) in words.chunks(4).enumerate() {
-            if host.constant(base + r).as_ref().map(|c| &c[..]) != Some(row) {
-                return Err(format!("c[{}]", base + r));
+/// One restore entry as `0x00018900` makes it.
+pub fn restore(mem: &mut dyn GuestMemory, host: &dyn Host, r: Restore) -> Result<(), Cause> {
+    let slot_word = |slot: u8| RENDER_STATES.wrapping_add(4 * u32::from(slot));
+    match r {
+        Restore::Simple { slot, header, value } => {
+            if !host.simple_state(mem, header, value) {
+                return Err("device");
             }
+            mem.set_u32(slot_word(slot), value).map_err(unwritable)
         }
-        Ok(())
-    };
-    constants(0, &s.transform)?;
-    let mut states = vec![(SLOT_STENCIL_ENABLE, 0), (SLOT_FILL_MODE, SOLID)];
-    if let Some(fog) = &s.fog {
-        constants(12, &fog.block)?;
-        states.push((SLOT_FOG_COLOUR, fog.colour));
-    }
-    for (slot, v) in states {
-        if host.stored_state(mem, slot) != Some(v) {
-            return Err(format!("render state {slot}"));
+        Restore::Deferred { slot, bits, value } => {
+            let dirty = word(mem, DEFERRED_DIRTY)? | bits;
+            mem.set_u32(DEFERRED_DIRTY, dirty).map_err(unwritable)?;
+            mem.set_u32(slot_word(slot), value).map_err(unwritable)
+        }
+        Restore::Setter { slot, value } => {
+            if host.render_state(mem, u32::from(slot), value) { Ok(()) } else { Err("device") }
         }
     }
-    let Some(guest) = host.bound() else { return Err("no bound target".into()) };
-    let same = [0, 1, 2, 3, 6, 7].iter().all(|&i| guest[i] == bound[i]) && guest[4] <= bound[4] && guest[5] <= bound[5];
-    if !same {
-        return Err(format!("the bound target (cut {bound:08x?}, guest {guest:08x?})"));
-    }
-    Ok(())
-}
-
-/// The bound target the cut leaves from `before`.
-pub fn expected(before: [u32; 8], bind: native_targets::Bind, s: &Setup) -> [u32; 8] {
-    let mut out = native_targets::expected(before, bind, s.colour, s.depth);
-    out[2..].copy_from_slice(&s.viewport);
-    out
 }
 
 /// The counters `render.scene` reports.
@@ -536,83 +584,37 @@ pub fn counters() -> Vec<(String, u64)> {
     VIEW_SETUP.counters().into_iter().chain(VIEW_END.counters()).collect()
 }
 
-fn original(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    if let Some(original) = ctx.runtime().resolve_original(addr) {
-        return Ok(original.invoke(cpu, ctx, addr));
-    }
-    let event = ctx.emit(runtime::Event::UnsupportedTarget { pc: cpu.eip, target: addr, kind: runtime::abi::JUMP, route: runtime::abi::ENTRY });
-    Ok(runtime::TransferAbi::fault(event))
-}
-
-fn setup_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    let arm = &VIEW_SETUP;
-    let check_call = arm.next_is_check();
-    let Some(host) = native_targets::host() else {
-        arm.keep("host");
-        return original(cpu, ctx, addr);
-    };
-    if arm.fallen_back() {
-        arm.keep("fallback");
-        return original(cpu, ctx, addr);
-    }
+/// `0x000132d0`'s entry: the plan made, then the fog's effect as the
+/// body's last call when it has one; it returns to the caller with `ret 4`.
+fn setup_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    VIEW_SETUP.call();
+    let host = native_targets::installed("view_setup");
     let rt = Arc::clone(ctx.runtime());
-    let planned = {
-        let mem = rt.memory();
-        let m: &dyn GuestMemory = &*mem;
-        m.u32(cpu.esp.wrapping_add(4)).map_err(unread).and_then(|view| plan(m, view))
-    };
-    let s = match planned {
-        Ok(s) => s,
-        Err(cause) => {
-            arm.keep(cause);
-            return original(cpu, ctx, addr);
-        }
-    };
-    if check_call {
-        let before = {
-            let mem = rt.memory();
-            native_targets::select(&*mem, s.colour, s.depth).ok().zip(host.bound())
-        };
-        let out = original(cpu, ctx, addr)?;
-        if let Some((bind, before)) = before {
-            let mem = rt.memory();
-            arm.prove(check(&*mem, &*host, &s, expected(before, bind, &s)));
-        }
-        return Ok(out);
+    let mut mem = rt.memory();
+    let made = mem.u32(cpu.esp.wrapping_add(4)).map_err(unread).and_then(|view| plan(&*mem, view)).and_then(|s| {
+        apply(&mut *mem, &*host, &s, cpu.esp.wrapping_sub(SCRATCH))?;
+        Ok(s.fog_effect)
+    });
+    let effect = made.unwrap_or_else(|cause| unhandled("view_setup", cause));
+    if !effect {
+        drop(mem);
+        return ctx.memory().ret(cpu, 4);
     }
-    let made = {
-        let mut mem = rt.memory();
-        apply(&mut *mem, &*host, &s, cpu.esp.wrapping_sub(SCRATCH))
-    };
-    match made {
-        Ok(()) => {
-            arm.made();
-            ctx.memory().ret(cpu, 4)
-        }
-        Err(cause) => {
-            arm.keep(cause);
-            original(cpu, ctx, addr)
-        }
-    }
-}
-
-/// A copy the end cannot make after its setup ran: the guest's own fault
-/// at the view records.
-fn fault(_: Cause) -> runtime::GuestFault {
-    runtime::GuestFault {
-        addr: VIEW_RECORDS,
-        len: VIEW_SIZE as usize,
-        access: runtime::guest::Access::Read,
-        reason: runtime::guest::FaultReason::Unmapped,
-    }
+    let (esp, ret) = (cpu.esp, mem.u32(cpu.esp)?);
+    // The body's frame: its three saved registers and EBX below the
+    // return address.
+    cpu.esp = esp.wrapping_sub(0x10);
+    ctx.call_guest_named(cpu, &mut mem, FOG_EFFECT, "render: the view setup's fog effect", move |cpu, _ctx| {
+        cpu.esp = esp.wrapping_add(8);
+        Ok(runtime::TransferAbi::ret(ret))
+    })
 }
 
 /// What the end does before the setup of the view left: the alpha clear
 /// when `[0x004ba04c]` is above 1, and the pop. `Ok(None)`: the stack is
 /// empty, the end returns.
-fn end_begin(mem: &mut dyn GuestMemory, host: Option<&dyn Host>) -> Result<Option<u32>, Cause> {
+fn end_begin(mem: &mut dyn GuestMemory, host: &dyn Host) -> Result<Option<u32>, Cause> {
     if mem.i32(ALPHA_GATE).map_err(unread)? > 1 {
-        let host = host.ok_or("host")?;
         if !host.clear(mem, 0x80, 0, 1f32.to_bits(), 0) {
             return Err("device");
         }
@@ -640,21 +642,12 @@ fn end_copies(mem: &mut dyn GuestMemory) -> Result<(), Cause> {
 /// `0x0002fd90` (EDX the local, EBX [`CAMERA_POINTS`], ESI [`CAMERA`]),
 /// neither of which calls D3D. It returns to the end's caller with EBX,
 /// ESI, EDI and EBP as they came in.
-fn end_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    let arm = &VIEW_END;
-    arm.call();
-    let host = native_targets::host();
+fn end_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    VIEW_END.call();
+    let host = native_targets::installed("view_end");
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
-    let view = match end_begin(&mut *mem, host.as_deref()) {
-        Ok(v) => v,
-        Err(cause) => {
-            drop(mem);
-            arm.keep(cause);
-            return original(cpu, ctx, addr);
-        }
-    };
-    arm.made();
+    let view = end_begin(&mut *mem, &*host).unwrap_or_else(|cause| unhandled("view_end", cause));
     let (esp, ret) = (cpu.esp, mem.u32(cpu.esp)?);
     let Some(view) = view else {
         drop(mem);
@@ -669,7 +662,7 @@ fn end_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) ->
     ctx.call_guest_named(cpu, &mut mem, engine::points::RENDER_VIEW_SETUP.base, "render: the view end's setup", move |cpu, ctx| {
         let rt = Arc::clone(ctx.runtime());
         let mut mem = rt.memory();
-        end_copies(&mut *mem).map_err(fault)?;
+        end_copies(&mut *mem).unwrap_or_else(|cause| unhandled("view_end", cause));
         cpu.eax = CAMERA;
         cpu.esi = local;
         ctx.call_guest_named(cpu, &mut mem, CAMERA_UPDATE, "render: the view end's camera", move |cpu, ctx| {

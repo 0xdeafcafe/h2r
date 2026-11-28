@@ -80,18 +80,16 @@ The `views`, `outside_view` and `frame_loop` rows reach D3D only through two sha
 | `0x00015370` (BX 0, its case 0 only) | `[0x004b843c]` = 0, `SetRenderState_StencilEnable(0)`, word `[0x00467010]` = 0 | the writes, `Host::render_state(144, 0)` |
 | | `[0x005093b4]` = `0x901`, `[0x005093b8]` = `0x900` | the same writes |
 | `0x00012fa0` (ECX `+0x18`, EAX `+0x8c`, byte `+7`, word `+2`), `ret 8` | `0x00012d50` with BL 0: the device's clip range `+0x1c10` = `[0x0045dbc0] * [0x00485adc]`, `+0x1c14` = `[0x00485ae0]`, `+0x1c18` bit 1, the viewport push `0x003f6190`, the view-projection rows; then 48 words to `c[-96]` (`SetVertexShaderConstantNotInlineFast`), shadowed at `0x00407738` unless `[0x00404fe8]` bit 4 | `view_setup::transform` (the rows as `aux_depth::rows` orders them, the view's words from `+0xc4` and `+0x18`, the window's mapping); the clip words, `Host::push_viewport`, `Host::constants(0, 48)` |
-| `0x00014bc0(1, [0x004858b8], 0)` | target 0: `0x0001cd30` with `[0x0050935c]`, `[0x00509364]`, flag 1; the viewport: 128 square for view kind 2, else the window `0x00485648` times the scale | `native_targets::cut_select`; `Host::viewport` with the window; a scale other than 1.0 refused (`scale`) |
-| `0x00014b60`, with `+8` set | flags 1, or `0x61` with the colour `0x00131ed0(0x0048560c)` when `[0x004670cd]` is 0; Z 1.0 | `native_targets::cut_clear`; a clear whose prelude would run refused (`prelude`) |
+| `0x00014bc0(1, [0x004858b8], 0)` | view kind 1's target `0x12`: `0x0001cd30` with the cache's surface `0x0001dcf0(0x12)` (`0x004b4b58 + 0x98 * 0x12`, its `+0x18` when `+0x88` is set, `+0x95` clear and `+0x78` above 0, else null), `[0x00509364]`, flag 0; any other kind's target 0: `[0x0050935c]`, `[0x00509364]`, flag 1. The viewport: 128 square for view kind 2; 640 x 480 on the screen target `0x00025960` (`0x14`, `0x12` or -1) with `+7`; else the window `0x00485648` times the scale (1.0 on the screen target), each `_ftol`'d | `native_targets::cut_select` with `view_setup::cached`; `Host::viewport` with `view_setup::viewport` |
+| `0x00014b60`, with `+8` set | flags 1, or `0x61` with the colour `0x00131ed0(0x0048560c)` when `[0x004670cd]` is 0; Z 1.0. At target 0 with `+7`, the prelude `0x00014ac0` first: the device's viewport `+0xee0` saved, `SetViewport(0, 0, 640, 480, 0, 1)`, `Clear(0xf0, 0)`, the saved viewport set again | `native_targets::cut_clear` and `native_targets::prelude`, through `Host::viewport` and `Host::clear` |
 | the raw push | method `0x1af0`, four words: 0, `[0x0045dbbc]`, `[0x0045dbc0]`, `[0x0045e3b0]` (`MakeRequestedSpace` at the limit) | the same words at put, `Host::make_space` at the limit |
 | `[0x004b8428]` = `0x1b02` | `SetRenderState_FillMode(0x1b02)` | the write, `Host::render_state(139, 0x1b02)` |
-| `[0x004670bc]` = 1, `0x00016b10` (ESI `0x00485b48`) | the draw state's reset; `0x00018900` when `+0x24` is set | the same writes; a restore list that is not empty refused (`restore`) |
-| with `+0x26c` set | `0x48` words from `+0x14c` to `0x0048574c`; `0x00025a10`: 24 words to `c[-84]` (shadowed at `0x004077f8`), the fog colour `0x00131ed0(+0x168)` to `[0x004b8424]` and `SetRenderState_FogColor`, then `0x00027aa0` | `view_setup::fog`; `Host::constants(12, 24)`, `Host::render_state(138, colour)`; `0x00027aa0` runs only with `+0x1b8` not 0 or -1, refused (`fog_effect`) |
+| `[0x004670bc]` = 1, `0x00016b10` (ESI `0x00485b48`) | the draw state's reset; `0x00018900` when `+0x24` is set: the 5-byte entries (slot, value) its `+0x11c` names, below slot `0x5c` `SetRenderState_Simple` with the header at `0x0043e6f0` and the slot's word at `0x00407498`, below `0x88` the dirty bits at `0x0043e4d0` or'd into `[0x00407490]` and the word, the rest their setter | the same writes; `view_setup::restore_list`, `Host::simple_state`, `Host::render_state`, after the fill mode |
+| with `+0x26c` set | `0x48` words from `+0x14c` to `0x0048574c`; `0x00025a10`: 24 words to `c[-84]` (shadowed at `0x004077f8`), the fog colour `0x00131ed0(+0x168)` to `[0x004b8424]` and `SetRenderState_FogColor`, then `0x00027aa0` | `view_setup::fog`; `Host::constants(12, 24)`, `Host::render_state(138, colour)`; with `+0x1b8` not 0 or -1, `0x00027aa0` (the fog's effect: game code, no D3D) as a guest call, last |
 
 The view end (**Code** `0x00013c20..0x00013cc6`): with `[0x004ba04c]` above 1, `D3DDevice_Clear(0, 0, 0x80, 0, 1.0, 0)` through `Host::clear`; the view stack `[0x0046701c]` popped; a view left (`0x004850d0 + 0x298 * n`), the guest call of the setup above for it, its kind to `[0x004b9ed4]`, its `+0x14c` to `0x004b9ef0` and `+0x18` to the camera `0x004b9da0`, and the guest calls of its camera `0x0002f970` and `0x0002fd90`, which call no D3D entry. It returns with EBX, ESI, EDI and EBP as they came in.
 
-One setup in 64 runs the guest body and compares what it left with the plan (`view_setup::check`): every planned word, the clip words, `c[0..12]` and the fog's `c[12..18]`, render states 144, 139 and 138, and the bound target (the pair, the viewport's origin and depth range exactly; its width and height at most the plan's, since the device clips the far edges to the target). A difference sends every later setup to the guest body. The raw and viewport pushes are not compared.
-
-A setup it does not cover runs the guest body, counted `scene_kept_view_setup_<cause>` in `render.scene`: `host`, `target`, `scale`, `prelude`, `restore`, `fog_effect`, `unread`, `unwritable`, `device` (a refused call: the body sets the same state again), `mismatch`, `fallback`. `view_setup_calls`, `view_setup_cut` and `view_setup_checked` count the rest; the end counts `view_end_calls`, `view_end_cut` and `scene_kept_view_end_<cause>` (`host`, `device`, `unread`, `unwritable`).
+No guest body of the setup or the end runs. A case the cut cannot make panics, named `view_setup: <cause>` or `view_end: <cause>`: `host` (none installed), `device` (a refused call), `unread`, `unwritable`. `render.scene` counts `view_setup_calls` and `view_end_calls`.
 
 The bind and the clear land on the frame graph's targets: the scene sink files them as the `TargetRef`s `frame_graph::targets::declare` names, and `targets::Owned` is the graph's own set of them, one surface per declared target across frames (the same shape keeps its surface, a new one frees it and makes another), counted `graph_targets_made`, `_kept`, `_released` and `graph_targets_refused_<cause>` (`unsized`, `allocation`). A refused target has no surface: nothing stands in. The replay still takes its map from the threaded owner (`d3d::threaded::owner`), not from `Owned`.
 
@@ -197,7 +195,7 @@ A kept frame runs the guest's `0x00013f10(0, 0)` as before. Every outcome is cou
 
 `hud_overlay::place_tail` places the list as one unfitted overlay pass over the bound target. A frame with no copy samples the texture an earlier frame kept.
 
-A tail it does not cover runs the guest's body, counted `scene_kept_frame_tail_<cause>` in `render.scene`:
+No guest body of the tail runs. A tail it does not cover panics, named `frame_tail: <cause>`:
 
 | Cause | When |
 |---|---|
@@ -208,7 +206,7 @@ A tail it does not cover runs the guest's body, counted `scene_kept_frame_tail_<
 | `blend` | blend mode 7 is past the tables or names the constant colour |
 | `unread` | a word that does not read |
 
-`frame_tail_calls`, `frame_tail_native`, `frame_tail_copies` and `frame_tail_composites` count the rest. `frame_tail_refused_pass` counts a pass the host did not place (a pending copy is then refused as `0x0001fcd0` refuses it); `frame_tail_refused_hold` a copy with no texture or over a target that cannot be copied, `frame_tail_refused_held` a composite whose held texture or combiner the GPU did not take.
+`frame_tail_calls`, `frame_tail_native`, `frame_tail_copies` and `frame_tail_composites` count the tails. `frame_tail_refused_pass` counts a pass the host did not place (a pending copy is then refused as `0x0001fcd0` refuses it); `frame_tail_refused_hold` a copy with no texture or over a target that cannot be copied, `frame_tail_refused_held` a composite whose held texture or combiner the GPU did not take.
 
 **S**: that nothing else reads target `0x12`; that the state the guest's copy and composite leave (texture stage 0, the stage caches, the viewport) is not read before the next frame sets its own; that a fade whose copy was native is not composited by a kept tail (it would sample target `0x12`, never filled).
 
@@ -220,20 +218,20 @@ A tail it does not cover runs the guest's body, counted `scene_kept_frame_tail_<
 |---|---|
 | `[0x0051f3d8..0x0051f3e8]` = 0, `[0x00467004]` = -1 | the same writes |
 | `0x0001cf50`: `D3DDevice_SetTexture(stage, 0)` for each stage whose `[0x0051f3c8 + 4 * stage]` is not 0, then that word 0 | `Device::set_texture` through the host, then the word |
-| `[0x00408338]` = 0; the index buffer `[device + 0x7a0]` loses `0x80000`, `D3D_DestroyResource` when no reference is left; `+0x7a0` and `+0x1c` 0 | the same writes; the last reference is the body's |
+| `[0x00408338]` = 0; the index buffer `[device + 0x7a0]` loses `0x80000`, `D3D_DestroyResource` when no reference is left; `+0x7a0` and `+0x1c` 0 | the same writes; the last reference (its destroy) is not made here |
 | tail jump to `D3DDevice_SetPixelShader(0)` | `Device::set_pixel_shader` through the host |
 
-Each step is a no-op once made, so a cut stopped part way runs the guest body, which repeats the prefix to the same end. `render.scene` counts `frame_finish_calls`, `frame_finish_cut` and `scene_kept_frame_finish_<cause>`: `host`, `device` (a refused set), `release` (the last reference), `unread`, `unwritable`.
+No guest body of the finish runs. A finish the cut cannot make panics, named `frame_finish: <cause>`: `host`, `device` (a refused set), `release` (the last reference), `unread`, `unwritable`. `render.scene` counts `frame_finish_calls`.
 
 ## Not verified
 
 - A movie on screen with the native display: its placement against the guest's draw at 1x and at render scale.
 - That `d3d_entries` grow only under `outside_render` from boot to gameplay and back (the R8 exit); it needs R1 to R7.
-- The view setup in a game: `view_setup_cut` against `view_setup_calls`, which causes are kept and how often, and that no check differs.
+- The view setup in a game: its frames on screen against the guest's, a view of kind 1 and a scaled view among them.
 - `targets::Owned` drawing a frame: the replay takes the map from the threaded owner, not from the graph.
-- The frame tail in a game: a screen effect's freeze frame on screen against the guest's, at 1x and at render scale, and `frame_tail_native` against `frame_tail_calls`.
+- The frame tail in a game: a screen effect's freeze frame on screen against the guest's, at 1x and at render scale, and `frame_tail_native` against `frame_tail_calls`; a tail with a view of kind 1 panics (`target`).
 - A frame loop's published frame on screen, and its `loop_published` against `loop_presents` over a map load.
-- The frame's finish in a game: `frame_finish_cut` against `frame_finish_calls`, and that a `release` is rare.
+- The frame's finish in a game: whether a `release` panics.
 - How many frames publish in a game: the `publish_*` counters over the census corpus.
 - A published frame on screen: its pixels and brightness against the guest's present.
 - Snapshot quiescence with the frame step's continuations.

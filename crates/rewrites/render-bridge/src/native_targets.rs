@@ -4,9 +4,10 @@
 //! renderer.
 //!
 //! Both are thin wrappers of a D3D entry. The cut makes the wrapper's
-//! decision in Rust and hands the device the bind or the clear through the
-//! [`Host`] (boot's glue over the shared device), so a game view's binds
-//! and clears make no guest D3D entry call:
+//! decision in Rust, the clear's prelude `0x00014ac0` too, and hands the
+//! device the bind or the clear through the [`Host`] (boot's glue over the
+//! shared device), so a game view's binds and clears make no guest D3D
+//! entry call:
 //!
 //! | Guest | Decision | Device |
 //! |---|---|---|
@@ -16,22 +17,12 @@
 //! | `0x000132d0(view)`, `ret 4`, and `0x00013c20()`, `ret`: the view setup and view end | [`crate::view_setup`]: the context, the transform, the target, the clear, the fog | this host's other calls |
 //! | `0x00013cd0()`, `ret`, `eax = 0`: the frame's finish | the four stage slots cleared and committed against their cache, the index buffer's device reference dropped, the pixel shader none ([`cut_finish`]) | [`Host::texture`], [`Host::pixel_shader`] |
 //!
-//! The arm: one call in [`CHECK_EVERY`] of each runs the guest body and
-//! compares the device's bound target after it with the cut's
-//! ([`Host::bound`]: the colour and depth surfaces, and the viewport where
-//! the bind keeps it; a full bind's viewport is the device's own reset, the
-//! same call either way). A difference
-//! sends every later call to the guest body for the session, counted
-//! `scene_kept_<call>_mismatch`. A call the cut does not make (no host, a
-//! clear whose prelude `0x00014ac0` would run, a refused device call) runs
-//! the guest body, counted `scene_kept_<call>_<cause>`.
-//!
-//! The finish has no arm: it is the body's own writes and calls in its
-//! order, and a cut stopped part way leaves a prefix of them, which the
-//! guest body then repeats to the same end (each of its steps is a no-op
-//! once made).
+//! No guest body runs: a call the cut cannot make (no host, a refused
+//! device call, a word that does not read or write, the finish's last
+//! index-buffer reference) panics, named `<call>: <cause>`
+//! ([`unhandled`]). Each call is counted `<call>_calls` in `render.scene`.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::{GuestMemory, MemFault};
@@ -39,9 +30,6 @@ use engine::memory::{GuestMemory, MemFault};
 use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-targets";
-
-/// One call in this many runs the guest body and is compared.
-pub const CHECK_EVERY: u64 = 64;
 
 /// The target select's cache of the bound pair and the call's flag byte.
 pub const CACHE_COLOUR: u32 = 0x0051_f3f4;
@@ -126,6 +114,11 @@ pub trait Host: Send + Sync {
     fn render_state(&self, _mem: &mut dyn GuestMemory, _slot: u32, _value: u32) -> bool {
         false
     }
+    /// `SetRenderState_Simple` (`0x003f5cf0`): the push header and the
+    /// value. `false`: refused.
+    fn simple_state(&self, _mem: &mut dyn GuestMemory, _header: u32, _value: u32) -> bool {
+        false
+    }
     /// What guest render-state slot `slot` holds (`d3d::Device::render_state`).
     fn stored_state(&self, _mem: &dyn GuestMemory, _slot: u32) -> Option<u32> {
         None
@@ -155,7 +148,7 @@ pub trait Host: Send + Sync {
 
 static HOST: Mutex<Option<Arc<dyn Host>>> = Mutex::new(None);
 
-/// Installs the host (boot). Without one every call runs the guest body.
+/// Installs the host (boot). Without one every call panics.
 pub fn set_host(host: Arc<dyn Host>) {
     *HOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(host);
 }
@@ -164,88 +157,34 @@ pub(crate) fn host() -> Option<Arc<dyn Host>> {
     HOST.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// One of the two calls, with its arm.
+/// A call's count.
 pub struct Arm {
     name: &'static str,
     calls: AtomicU64,
-    cut: AtomicU64,
-    checked: AtomicU64,
-    fallback: AtomicBool,
-    kept: Mutex<std::collections::BTreeMap<&'static str, u64>>,
 }
 
 impl Arm {
     pub const fn new(name: &'static str) -> Self {
-        Self {
-            name,
-            calls: AtomicU64::new(0),
-            cut: AtomicU64::new(0),
-            checked: AtomicU64::new(0),
-            fallback: AtomicBool::new(false),
-            kept: Mutex::new(std::collections::BTreeMap::new()),
-        }
+        Self { name, calls: AtomicU64::new(0) }
     }
 
-    /// Whether this call is a check (the guest body, compared).
-    pub fn next_is_check(&self) -> bool {
-        self.calls.fetch_add(1, Ordering::Relaxed) % CHECK_EVERY == 0
-    }
-
-    pub fn fallen_back(&self) -> bool {
-        self.fallback.load(Ordering::Relaxed)
-    }
-
-    /// The guest body ran for `cause`.
-    pub fn keep(&self, cause: &'static str) {
-        *self.kept.lock().unwrap_or_else(|e| e.into_inner()).entry(cause).or_default() += 1;
-    }
-
-    /// A check's comparison of `words`: equal targets pass; a difference
-    /// falls back.
-    pub fn compare(&self, cut: [u32; 8], guest: [u32; 8], words: std::ops::Range<usize>) -> bool {
-        self.checked.fetch_add(1, Ordering::Relaxed);
-        let same = cut[words.clone()] == guest[words];
-        if !same {
-            self.keep("mismatch");
-            if !self.fallback.swap(true, Ordering::Relaxed) {
-                eprintln!("native-targets: {} differs from the guest body (cut {cut:08x?}, guest {guest:08x?}); the guest body runs from here", self.name);
-            }
-        }
-        same
-    }
-
-    /// A call counted without a check (a call with no arm).
     pub(crate) fn call(&self) {
         self.calls.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// A call the cut made.
-    pub(crate) fn made(&self) {
-        self.cut.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// A check's outcome: `Err` names what differed, and falls back.
-    pub(crate) fn prove(&self, outcome: Result<(), String>) -> bool {
-        self.checked.fetch_add(1, Ordering::Relaxed);
-        let Err(what) = outcome else { return true };
-        self.keep("mismatch");
-        if !self.fallback.swap(true, Ordering::Relaxed) {
-            eprintln!("native-targets: {} differs from the guest body ({what}); the guest body runs from here", self.name);
-        }
-        false
-    }
-
     pub(crate) fn counters(&self) -> Vec<(String, u64)> {
-        let mut out = vec![
-            (format!("{}_calls", self.name), self.calls.load(Ordering::Relaxed)),
-            (format!("{}_cut", self.name), self.cut.load(Ordering::Relaxed)),
-            (format!("{}_checked", self.name), self.checked.load(Ordering::Relaxed)),
-        ];
-        out.extend(
-            self.kept.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(c, n)| (format!("scene_kept_{}_{c}", self.name), *n)),
-        );
-        out
+        vec![(format!("{}_calls", self.name), self.calls.load(Ordering::Relaxed))]
     }
+}
+
+/// A call the cut cannot make: there is no guest body to run instead.
+pub(crate) fn unhandled(call: &str, cause: &str) -> ! {
+    unimplemented!("{call}: {cause}")
+}
+
+/// The installed host; none is [`unhandled`].
+pub(crate) fn installed(call: &str) -> Arc<dyn Host> {
+    host().unwrap_or_else(|| unhandled(call, "host"))
 }
 
 pub static TARGET_SELECT: Arm = Arm::new("target_select");
@@ -258,29 +197,8 @@ pub fn counters() -> Vec<(String, u64)> {
         .chain(crate::frame_tail::counters()).chain(crate::view_setup::counters()).collect()
 }
 
-/// The words of the bound target a check compares for `bind`: the pair,
-/// and the viewport unless a full bind resets it.
-pub fn compared(bind: Bind) -> std::ops::Range<usize> {
-    match bind {
-        Bind::Full => 0..2,
-        Bind::Kept | Bind::SameSize => 0..8,
-    }
-}
-
-/// The bound target the cut leaves for `bind` from `before`: the new pair
-/// (a null colour keeps the bound one), the viewport as it was; see
-/// [`compared`] for a full bind's.
-pub fn expected(before: [u32; 8], bind: Bind, colour: u32, depth: u32) -> [u32; 8] {
-    let mut after = before;
-    if bind != Bind::Kept {
-        after[0] = if colour == 0 { before[0] } else { colour };
-        after[1] = depth;
-    }
-    after
-}
-
 /// The target select's cut: the bind through `host` and the cache words,
-/// `eax` 1. `Err` names why the guest body runs instead (nothing written).
+/// `eax` 1. `Err` names the call it could not make (nothing written).
 pub fn cut_select(mem: &mut dyn GuestMemory, host: &dyn Host, colour: u32, depth: u32, flag: u8) -> Result<Bind, &'static str> {
     let bind = select(&*mem, colour, depth).map_err(|_| "unread")?;
     if bind == Bind::Kept {
@@ -296,16 +214,41 @@ pub fn cut_select(mem: &mut dyn GuestMemory, host: &dyn Host, colour: u32, depth
     Ok(bind)
 }
 
-/// The clear's cut: `Err` names why the guest body runs instead.
-pub fn cut_clear(mem: &mut dyn GuestMemory, host: &dyn Host, flags: u32, colour: u32, z: u32, stencil: u8) -> Result<(), &'static str> {
+/// The clear's cut (`0x00014b60`, Code), staging the prelude's viewports
+/// in the guest stack at `scratch`. `Err` names the call it could not make.
+pub fn cut_clear(mem: &mut dyn GuestMemory, host: &dyn Host, flags: u32, colour: u32, z: u32, stencil: u8, scratch: u32) -> Result<(), &'static str> {
     let d3d = clear_flags(flags);
     if d3d == 0 {
         return Ok(());
     }
     if mem.u8(CLEAR_PRELUDE_ON).map_err(|_| "unread")? != 0 && mem.u32(CLEAR_PRELUDE_TARGET).map_err(|_| "unread")? == 0 {
-        return Err("prelude");
+        prelude(mem, host, scratch)?;
     }
     if !host.clear(mem, d3d, colour, z, u32::from(stencil)) {
+        return Err("device");
+    }
+    Ok(())
+}
+
+/// The device's viewport (`x, y, width, height, min_z, max_z`).
+pub const DEVICE_VIEWPORT: u32 = 0xee0;
+/// `1.0f`, the guest's constant.
+const ONE: u32 = 0x0045_dbc0;
+
+/// The clear's prelude `0x00014ac0` (Code `0x00014ac0..0x00014b57`): the
+/// whole 640 x 480 screen's colour cleared to black, the device's viewport
+/// set to it and back.
+pub fn prelude(mem: &mut dyn GuestMemory, host: &dyn Host, scratch: u32) -> Result<(), &'static str> {
+    let device = mem.u32(DEVICE).map_err(|_| "unread")?;
+    let saved = mem.bytes(device.wrapping_add(DEVICE_VIEWPORT), 24).map_err(|_| "unread")?;
+    let screen = [0, 0, 0x280, 0x1e0, 0, mem.u32(ONE).map_err(|_| "unread")?];
+    let staged: Vec<u8> = screen.iter().flat_map(|w: &u32| w.to_le_bytes()).collect();
+    mem.write(scratch, &staged).map_err(|_| "unwritable")?;
+    if !host.viewport(mem, scratch) || !host.clear(mem, 0xf0, 0, 0, 0) {
+        return Err("device");
+    }
+    mem.write(scratch, &saved).map_err(|_| "unwritable")?;
+    if !host.viewport(mem, scratch) {
         return Err("device");
     }
     Ok(())
@@ -317,9 +260,9 @@ pub fn cut_clear(mem: &mut dyn GuestMemory, host: &dyn Host, flags: u32, colour:
 /// `[0x00408338]` cleared; the device's index buffer, when it has one,
 /// loses its device reference and the device's index buffer and base
 /// vertex are cleared; the pixel shader none through `host`. `Err` names
-/// why the guest body runs from where the cut stopped: `release` when
-/// the reference is the index buffer's last, whose destroy
-/// (`D3D_DestroyResource` `0x003fb520`) the body makes.
+/// what the cut could not make: `release` when the reference is the index
+/// buffer's last, whose destroy (`D3D_DestroyResource` `0x003fb520`) is
+/// not made here.
 pub fn cut_finish(mem: &mut dyn GuestMemory, host: &dyn Host) -> Result<(), &'static str> {
     let unwritable = |_| "unwritable";
     for stage in 0..4 {
@@ -354,29 +297,16 @@ pub fn cut_finish(mem: &mut dyn GuestMemory, host: &dyn Host) -> Result<(), &'st
     Ok(())
 }
 
-fn finish_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    let arm = &FRAME_FINISH;
-    arm.calls.fetch_add(1, Ordering::Relaxed);
-    let Some(host) = host() else {
-        arm.keep("host");
-        return original(cpu, ctx, addr);
-    };
+fn finish_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    FRAME_FINISH.call();
+    let host = installed("frame_finish");
     let rt = Arc::clone(ctx.runtime());
-    let made = {
-        let mut mem = rt.memory();
-        cut_finish(&mut *mem, &*host)
-    };
-    match made {
-        Ok(()) => {
-            arm.cut.fetch_add(1, Ordering::Relaxed);
-            cpu.eax = 0;
-            ctx.memory().ret(cpu, 0)
-        }
-        Err(cause) => {
-            arm.keep(cause);
-            original(cpu, ctx, addr)
-        }
+    let made = cut_finish(&mut *rt.memory(), &*host);
+    if let Err(cause) = made {
+        unhandled("frame_finish", cause);
     }
+    cpu.eax = 0;
+    ctx.memory().ret(cpu, 0)
 }
 
 /// Whether the native targets are placed: with the native renderer on,
@@ -385,95 +315,43 @@ pub fn on(switches: &hooks::Switches) -> bool {
     hooks::switches::native_render_on(switches) && switches.feature(ID, true)
 }
 
-fn original(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    if let Some(original) = ctx.runtime().resolve_original(addr) {
-        return Ok(original.invoke(cpu, ctx, addr));
-    }
-    let event = ctx.emit(runtime::Event::UnsupportedTarget { pc: cpu.eip, target: addr, kind: runtime::abi::JUMP, route: runtime::abi::ENTRY });
-    Ok(runtime::TransferAbi::fault(event))
-}
-
-fn select_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    let arm = &TARGET_SELECT;
-    let check = arm.next_is_check();
-    let Some(host) = host() else {
-        arm.keep("host");
-        return original(cpu, ctx, addr);
-    };
-    if arm.fallen_back() {
-        arm.keep("fallback");
-        return original(cpu, ctx, addr);
-    }
+fn select_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    TARGET_SELECT.call();
+    let host = installed("target_select");
     let (colour, depth) = (cpu.esi, cpu.eax);
     let rt = Arc::clone(ctx.runtime());
-    if check {
-        let predicted = {
-            let mem = rt.memory();
-            let bind = select(&*mem, colour, depth).ok();
-            bind.zip(host.bound()).map(|(bind, before)| (bind, expected(before, bind, colour, depth)))
-        };
-        let out = original(cpu, ctx, addr)?;
-        if let (Some((bind, cut)), Some(guest)) = (predicted, host.bound()) {
-            arm.compare(cut, guest, compared(bind));
-        }
-        return Ok(out);
-    }
     let made = {
         let mut mem = rt.memory();
-        let flag = mem.u8(cpu.esp.wrapping_add(4)).unwrap_or(0);
+        let flag = mem.u8(cpu.esp.wrapping_add(4)).unwrap_or_else(|_| unhandled("target_select", "unread"));
         cut_select(&mut *mem, &*host, colour, depth, flag)
     };
-    match made {
-        Ok(_) => {
-            arm.cut.fetch_add(1, Ordering::Relaxed);
-            // `mov al, 1` after the bind's `eax = 0`, or over the cached colour.
-            cpu.eax = 1;
-            ctx.memory().ret(cpu, 4)
-        }
-        Err(cause) => {
-            arm.keep(cause);
-            original(cpu, ctx, addr)
-        }
+    if let Err(cause) = made {
+        unhandled("target_select", cause);
     }
+    // `mov al, 1` after the bind's `eax = 0`, or over the cached colour.
+    cpu.eax = 1;
+    ctx.memory().ret(cpu, 4)
 }
 
-fn clear_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    let arm = &SCENE_CLEAR;
-    let check = arm.next_is_check();
-    let Some(host) = host() else {
-        arm.keep("host");
-        return original(cpu, ctx, addr);
-    };
-    if arm.fallen_back() {
-        arm.keep("fallback");
-        return original(cpu, ctx, addr);
-    }
-    if check {
-        let before = host.bound();
-        let out = original(cpu, ctx, addr)?;
-        if let (Some(before), Some(after)) = (before, host.bound()) {
-            arm.compare(before, after, 0..8);
-        }
-        return Ok(out);
-    }
+/// The words of guest stack below the call the clear stages the
+/// prelude's viewports in.
+const SCRATCH: u32 = 0x100;
+
+fn clear_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    SCENE_CLEAR.call();
+    let host = installed("scene_clear");
     let rt = Arc::clone(ctx.runtime());
     let made = {
         let mut mem = rt.memory();
-        let word = |at: u32| mem.u32(cpu.esp.wrapping_add(at)).unwrap_or(0);
+        let word = |at: u32| mem.u32(cpu.esp.wrapping_add(at)).unwrap_or_else(|_| unhandled("scene_clear", "unread"));
         let (colour, z, stencil) = (word(4), word(8), word(0xc) as u8);
-        cut_clear(&mut *mem, &*host, cpu.eax, colour, z, stencil)
+        cut_clear(&mut *mem, &*host, cpu.eax, colour, z, stencil, cpu.esp.wrapping_sub(SCRATCH))
     };
-    match made {
-        Ok(()) => {
-            arm.cut.fetch_add(1, Ordering::Relaxed);
-            cpu.eax = 0;
-            ctx.memory().ret(cpu, 0xc)
-        }
-        Err(cause) => {
-            arm.keep(cause);
-            original(cpu, ctx, addr)
-        }
+    if let Err(cause) = made {
+        unhandled("scene_clear", cause);
     }
+    cpu.eax = 0;
+    ctx.memory().ret(cpu, 0xc)
 }
 
 pub struct NativeTargets;
@@ -484,8 +362,7 @@ impl Feature for NativeTargets {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        // The arm's fallback is session state no save holds: a load keeps
-        // whichever path the session is on, and both bind the same target.
+        // No session state: the calls are counted only.
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         if !on(b.switches()) {
             return Ok(());
@@ -514,7 +391,8 @@ mod tests {
         clears: Mutex<Vec<[u32; 5]>>,
         textures: Mutex<Vec<(u32, u32)>>,
         shaders: Mutex<Vec<u32>>,
-        refuse: AtomicBool,
+        viewports: Mutex<Vec<[u32; 6]>>,
+        refuse: std::sync::atomic::AtomicBool,
     }
 
     impl Host for Device {
@@ -543,6 +421,10 @@ mod tests {
             self.shaders.lock().unwrap().push(handle);
             true
         }
+        fn viewport(&self, mem: &mut dyn GuestMemory, at: u32) -> bool {
+            self.viewports.lock().unwrap().push(std::array::from_fn(|i| mem.u32(at + 4 * i as u32).unwrap()));
+            true
+        }
     }
 
     const A: u32 = 0x0060_0000;
@@ -562,8 +444,7 @@ mod tests {
     }
 
     /// A game view's binds and clears go to the device through the host,
-    /// never through the guest's D3D entries: only one call in 64 runs the
-    /// guest body, to compare.
+    /// never through the guest's D3D entries.
     #[test]
     fn a_game_view_makes_no_target_bind() {
         let dev = Device::default();
@@ -574,12 +455,9 @@ mod tests {
         assert_eq!(cut_select(&mut m, &dev, B, Z, 0), Ok(Bind::SameSize));
         assert_eq!(cut_select(&mut m, &dev, C, 0, 0), Ok(Bind::Full), "another size");
         assert_eq!(*dev.binds.lock().unwrap(), [(Bind::Full, A, Z), (Bind::SameSize, B, Z), (Bind::Full, C, 0)]);
-        assert_eq!(cut_clear(&mut m, &dev, 1 | 1 << 5 | 1 << 6, 0xff00_0000, 0x3f80_0000, 0), Ok(()));
-        assert_eq!(cut_clear(&mut m, &dev, 0, 0, 0, 0), Ok(()), "no flags: no clear");
+        assert_eq!(cut_clear(&mut m, &dev, 1 | 1 << 5 | 1 << 6, 0xff00_0000, 0x3f80_0000, 0, SCRATCH_AT), Ok(()));
+        assert_eq!(cut_clear(&mut m, &dev, 0, 0, 0, 0, SCRATCH_AT), Ok(()), "no flags: no clear");
         assert_eq!(dev.clears.lock().unwrap().len(), 1);
-        let arm = Arm::new("test");
-        let checks = (0..CHECK_EVERY * 2).filter(|_| arm.next_is_check()).count();
-        assert_eq!(checks, 2, "one call in 64 runs the guest body");
     }
 
     #[test]
@@ -592,37 +470,40 @@ mod tests {
         assert_eq!(clear_flags(0), 0);
     }
 
-    /// A refused device call, or a clear whose prelude would run, leaves
-    /// the call to the guest body with nothing written.
+    /// A refused device call is named, with nothing written.
     #[test]
-    fn a_call_the_cut_cannot_make_runs_the_guest_body_untouched() {
+    fn a_refused_call_is_named() {
         let dev = Device::default();
         let mut m = mem();
         dev.refuse.store(true, Ordering::Relaxed);
         assert_eq!(cut_select(&mut m, &dev, A, Z, 1), Err("device"));
         assert_eq!(m.u32(CACHE_COLOUR).unwrap(), 0, "the cache unchanged");
-        m.write(CLEAR_PRELUDE_ON, &[1]).unwrap();
-        assert_eq!(cut_clear(&mut m, &dev, 1, 0, 0, 0), Err("prelude"));
-        assert!(dev.clears.lock().unwrap().is_empty());
     }
 
-    /// A check compares the target the cut would leave with the guest's;
-    /// a difference falls back for good and is counted.
+    /// The prelude `0x00014ac0` at target 0 with the context's `+7` set:
+    /// the 640 x 480 screen cleared black, the device's viewport put back,
+    /// then the clear.
     #[test]
-    fn a_check_that_differs_falls_back() {
-        let before = [A, Z, 0, 0, 640, 480, 0, 1f32.to_bits()];
-        assert_eq!(expected(before, Bind::Kept, A, Z), before);
-        assert_eq!(expected(before, Bind::SameSize, B, 0)[..3], [B, 0, 0]);
-        assert_eq!(expected(before, Bind::Full, 0, Z)[..2], [A, Z], "a null colour keeps the bound one");
-        let arm = Arm::new("check");
-        let reset = [C, Z, 0, 0, 1280, 720, 0, 1f32.to_bits()];
-        assert!(arm.compare(expected(before, Bind::Full, C, Z), reset, compared(Bind::Full)), "a full bind's viewport is the device's");
-        assert!(!arm.fallen_back());
-        assert!(!arm.compare(before, expected(before, Bind::SameSize, B, Z), compared(Bind::SameSize)));
-        assert!(arm.fallen_back());
-        let c: std::collections::BTreeMap<_, _> = arm.counters().into_iter().collect();
-        assert_eq!((c["check_checked"], c["scene_kept_check_mismatch"]), (2, 1));
+    fn the_prelude_clears_the_screen_and_puts_the_viewport_back() {
+        let dev = Device::default();
+        let mut m = FlatMemory::new(0x0040_0000, 0x0030_0000);
+        m.set_u32(DEVICE, PRELUDE_DEVICE).unwrap();
+        m.set_u32(ONE, 1f32.to_bits()).unwrap();
+        let saved = [8, 16, 320, 240, 0, 1f32.to_bits()];
+        for (i, w) in saved.iter().enumerate() {
+            m.set_u32(PRELUDE_DEVICE + DEVICE_VIEWPORT + 4 * i as u32, *w).unwrap();
+        }
+        m.write(CLEAR_PRELUDE_ON, &[1]).unwrap();
+        assert_eq!(cut_clear(&mut m, &dev, 1 | 1 << 5, 0x0011_2233, 0x3f80_0000, 0, SCRATCH_AT), Ok(()));
+        assert_eq!(*dev.viewports.lock().unwrap(), [[0, 0, 640, 480, 0, 1f32.to_bits()], saved]);
+        assert_eq!(*dev.clears.lock().unwrap(), [[0, 0xf0, 0, 0, 0], [0, 0xf1, 0x0011_2233, 0x3f80_0000, 0]]);
+        m.set_u32(CLEAR_PRELUDE_TARGET, 0x12).unwrap();
+        assert_eq!(cut_clear(&mut m, &dev, 1, 0, 0, 0, SCRATCH_AT), Ok(()));
+        assert_eq!(dev.viewports.lock().unwrap().len(), 2, "no prelude off target 0");
     }
+
+    const SCRATCH_AT: u32 = 0x0061_0000;
+    const PRELUDE_DEVICE: u32 = 0x0062_0000;
 
     const DEVICE_AT: u32 = 0x0050_0000;
     const INDICES: u32 = 0x0060_0100;
@@ -666,21 +547,21 @@ mod tests {
         assert_eq!(m.u32(INDICES).unwrap(), DEVICE_REF | 1, "no index buffer to release");
     }
 
-    /// The index buffer's last reference is the body's to drop (its
-    /// destroy); a refused stage stops the cut where the body picks up.
+    /// The index buffer's last reference (its destroy) and a refused stage
+    /// are named.
     #[test]
-    fn a_finish_the_cut_cannot_make_leaves_a_prefix_of_the_body() {
+    fn a_finish_the_cut_cannot_make_is_named() {
         let dev = Device::default();
         let mut m = finish_mem(DEVICE_REF);
         assert_eq!(cut_finish(&mut m, &dev), Err("release"));
-        assert_eq!(m.u32(INDICES).unwrap(), DEVICE_REF, "the reference left for the body");
+        assert_eq!(m.u32(INDICES).unwrap(), DEVICE_REF, "the reference not dropped");
         assert_eq!(m.u32(DEVICE_AT + DEVICE_INDICES).unwrap(), INDICES);
         assert!(dev.shaders.lock().unwrap().is_empty());
         let dev = Device::default();
         dev.refuse.store(true, Ordering::Relaxed);
         let mut m = finish_mem(2 * DEVICE_REF);
         assert_eq!(cut_finish(&mut m, &dev), Err("device"));
-        assert_eq!(m.u32(STAGE_COMMITTED).unwrap(), A, "the stage's cache kept for the body's commit");
+        assert_eq!(m.u32(STAGE_COMMITTED).unwrap(), A, "the stage's cache kept");
         assert_eq!(m.u32(FINISH_CLEARED).unwrap(), 7);
     }
 }
