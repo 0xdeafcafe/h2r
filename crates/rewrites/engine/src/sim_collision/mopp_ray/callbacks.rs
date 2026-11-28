@@ -32,7 +32,7 @@ use guest_layout::entry::GuestCall;
 use runtime::CpuAbi;
 use sim_collision::Bail;
 use sim_collision::mopp::ray::Precision;
-use sim_core::det::Fp;
+use sim_core::det::{Fp, St, X87};
 use sim_havok::mem::{Journal, Words};
 use sim_havok::structure::{self, Args, Fallback};
 use std::cmp::Ordering;
@@ -429,7 +429,7 @@ fn plain32(bits: u32) -> bool {
 /// `fld; fmul` the three squares, `faddp` them as `(z² + y²) + x²`,
 /// `fsqrt`, then `fst m32`: the stored length and `|st0|`. Declines a
 /// result the host formats would not round as the x87 does.
-fn x87_length(precision: Precision, [x, y, z]: [u32; 3]) -> Result<(u32, f64), Bail> {
+fn x87_length(precision: Precision, [x, y, z]: [u32; 3]) -> Result<(u32, Magnitude), Bail> {
     if ![x, y, z].iter().all(|&b| plain32(b)) {
         return Err(Bail::Float);
     }
@@ -448,7 +448,7 @@ fn x87_length(precision: Precision, [x, y, z]: [u32; 3]) -> Result<(u32, f64), B
                 return Err(Bail::Float);
             }
             let r = sum.sqrt();
-            Ok((r.to_bits(), f64::from(r.abs())))
+            Ok((r.to_bits(), Magnitude::Host(f64::from(r.abs()))))
         }
         Precision::Double => {
             // Squares of binary32 values are exact and in range in binary64.
@@ -458,7 +458,42 @@ fn x87_length(precision: Precision, [x, y, z]: [u32; 3]) -> Result<(u32, f64), B
             if !plain32(stored.to_bits()) || (stored == 0.0 && r != 0.0) {
                 return Err(Bail::Float);
             }
-            Ok((stored.to_bits(), r.abs()))
+            Ok((stored.to_bits(), Magnitude::Host(r.abs())))
+        }
+        Precision::Extended => {
+            // On the x87 model: the 64-bit sum can round where binary64's
+            // would not.
+            let fpu = X87::new(EXTENDED_CONTROL);
+            let square = |b: u32| fpu.mul(fpu.load32(b), fpu.load32(b));
+            let r = fpu.sqrt(fpu.add(fpu.add(square(z), square(y)), square(x)));
+            let stored = fpu.store32(r);
+            let nonzero = [x, y, z].iter().any(|&b| b & 0x7fff_ffff != 0);
+            if !plain32(stored) || (stored & 0x7fff_ffff == 0 && nonzero) {
+                return Err(Bail::Float);
+            }
+            Ok((stored, Magnitude::Wide(fpu.abs(r))))
+        }
+    }
+}
+
+/// The masked, round-to-nearest control word at 64-bit precision.
+const EXTENDED_CONTROL: u16 = 0x037f;
+
+/// `|st0|` after [`x87_length`], in the format its precision left it.
+enum Magnitude {
+    Host(f64),
+    Wide(St),
+}
+
+impl Magnitude {
+    /// `min <= |st0|` as the `fcom` that follows decides it.
+    fn at_least(&self, min: u32) -> bool {
+        match *self {
+            Magnitude::Host(m) => f64::from(f32::from_bits(min)) <= m,
+            Magnitude::Wide(m) => {
+                let fpu = X87::new(EXTENDED_CONTROL);
+                matches!(fpu.compare(fpu.load32(min), m, false), Some(Ordering::Less | Ordering::Equal))
+            }
         }
     }
 }
@@ -545,7 +580,7 @@ pub fn polygon_cast(
     if !plain32(min) {
         return Err(Bail::Float);
     }
-    if f64::from(f32::from_bits(min)) <= magnitude {
+    if magnitude.at_least(min) {
         let inverse = fp.div(rd(g, data::ONE)?, length);
         nx = fp.mul(inverse, nx);
         ny = fp.mul(ny, inverse);
