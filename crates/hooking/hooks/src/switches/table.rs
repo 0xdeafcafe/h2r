@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 43;
+pub const BUDGET: usize = 41;
 
 use Initial::{Group, Off, On};
 
@@ -132,10 +132,6 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.native_simd", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.phantom-alias", On, "sim", "2026-11-22",
         "the phantoms' action build on live RAM with an undo journal (docs/perf/sim-phantom-build.md, P1): the view path stays as the check mode's reference and the flat-RAM path; the switch goes once a release has run with it on"),
-    sw("impl.sim.phantom-input", On, "sim", "2026-11-28",
-        "the phantoms' input stage in Rust (engine::sim_seats::input): off runs the lifted stage; the switch goes once a release has run with it on"),
-    sw("impl.sim.phantom-body", On, "sim", "2026-11-28",
-        "the phantoms' action builder 0x186ab0, its interaction search and the seats under them in Rust, callees made in place (docs/perf/sim-phantom-build.md, P3 and P4): off runs the guest builder, the check mode's reference; the switch goes once a release has run with it on"),
     // Simulation: hand ports (`sim_bridge::sim_native`).
     sw("impl.sim.native_transform_compose", Off, "sim", "2026-11-20", SIM_PORT),
     sw("impl.sim.native_pose_matrix", Off, "sim", "2026-11-20", SIM_PORT),
