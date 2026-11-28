@@ -20,7 +20,7 @@ mod transparents;
 pub(crate) mod view_records;
 pub(crate) mod visibility_setup;
 mod window;
-pub(crate) use transparents::{bsp as transparent_bsp, display_sort_key, order as transparent_order};
+pub(crate) use transparents::{bsp as transparent_bsp, display_sort_key};
 
 use std::collections::HashMap;
 use std::sync::Arc;

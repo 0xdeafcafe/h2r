@@ -3,7 +3,6 @@ use std::sync::Mutex;
 use engine::memory::{FlatMemory, GuestMemory};
 
 use super::*;
-use crate::effects_shadow::SAMPLE;
 
 /// The counters and the pass hooks' state are global: these tests take turns.
 static TURN: Mutex<()> = Mutex::new(());
@@ -21,6 +20,13 @@ const SHADER: u32 = 1;
 
 fn counter(name: &str) -> u64 {
     super::super::tested(name)
+}
+
+fn kept(name: &str) -> u64 {
+    crate::native_layers::counters()
+        .into_iter()
+        .find(|(k, _)| *k == name)
+        .map_or(0, |(_, v)| v)
 }
 
 /// A BSP part drawn by a shader whose template has two layer-15 passes.
@@ -80,26 +86,6 @@ fn select(m: &mut FlatMemory, pass: u32) {
     m.set_u32(ESP + 4 * 5, pass).unwrap();
 }
 
-/// The guest's build: the model's slot, as the arm predicts it.
-fn guest_builds(m: &mut FlatMemory) -> u32 {
-    let a = args(&*m, ESP).unwrap();
-    let built = predict(&*m, &a).unwrap();
-    m.write(a.slot, &built.slot).unwrap();
-    0x1234_5600 | u32::from(built.al)
-}
-
-/// One handler on a sampled frame with the guest's two builds.
-fn handler(m: &mut FlatMemory) {
-    begin_handler(&*m, HESP);
-    for pass in 0..2 {
-        select(m, pass);
-        assert_eq!(build(m, ESP), None);
-        let eax = guest_builds(m);
-        end_build(&*m, ESP + 4 + POP, eax);
-    }
-    end_handler(HESP + 8);
-}
-
 #[test]
 fn the_build_makes_the_slot_from_the_records_chain() {
     let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
@@ -127,53 +113,14 @@ fn only_the_handlers_layer_15_call_is_the_arms() {
 }
 
 #[test]
-fn a_handler_the_guest_runs_as_the_model_does_matches() {
-    let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
-    let mut m = world();
-    frame(&mut m, SAMPLE * 3);
-    let (builds, passes) = (counter("geometry_build_matched"), counter("geometry_passes_matched"));
-    handler(&mut m);
-    assert_eq!(counter("geometry_build_matched"), builds + 2);
-    assert_eq!(counter("geometry_passes_matched"), passes + 1);
-}
-
-#[test]
-fn a_slot_a_result_or_a_pass_count_the_model_did_not_make_differs() {
-    let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
-    let mut m = world();
-    frame(&mut m, SAMPLE * 4);
-    let slot = counter("geometry_build_mismatched_slot");
-    assert_eq!(build(&mut m, ESP), None);
-    let eax = guest_builds(&mut m);
-    m.set_u8(SLOT + 9, 7).unwrap();
-    end_build(&m, ESP + 4 + POP, eax);
-    assert_eq!(counter("geometry_build_mismatched_slot"), slot + 1);
-
-    let ret = counter("geometry_build_mismatched_return");
-    assert_eq!(build(&mut m, ESP), None);
-    let eax = guest_builds(&mut m);
-    end_build(&m, ESP + 4 + POP, eax & !0xff);
-    assert_eq!(counter("geometry_build_mismatched_return"), ret + 1);
-
-    // A handler that builds once where the template has two passes.
-    let count = counter("geometry_passes_mismatched_count");
-    begin_handler(&m, HESP);
-    assert_eq!(build(&mut m, ESP), None);
-    let eax = guest_builds(&mut m);
-    end_build(&m, ESP + 4 + POP, eax);
-    end_handler(HESP + 8);
-    assert_eq!(counter("geometry_passes_mismatched_count"), count + 1);
-}
-
-#[test]
 fn what_the_model_cannot_make_is_a_named_refusal() {
     let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
     let mut m = world();
-    frame(&mut m, SAMPLE * 5);
+    frame(&mut m, 5);
     m.set_u32(TABLE + 16, u32::from_be_bytes(*b"PRTM")).unwrap();
-    let before = counter("geometry_refused_particle_material");
-    assert_eq!(build(&mut m, ESP), None);
-    assert_eq!(counter("geometry_refused_particle_material"), before + 1);
+    let before = kept("scene_kept_15_geometry_particle_material");
+    assert_eq!(build(&mut m, ESP), None, "the guest builds it");
+    assert_eq!(kept("scene_kept_15_geometry_particle_material"), before + 1);
     assert_eq!(passes(&m, SHADER), Err(Refusal::ParticleMaterial));
     m.set_u32(TABLE + 16, u32::from_be_bytes(*b"foo ")).unwrap();
     assert_eq!(passes(&m, SHADER), Err(Refusal::NotShader));
@@ -187,65 +134,21 @@ fn what_the_model_cannot_make_is_a_named_refusal() {
 }
 
 #[test]
-fn the_arm_answers_after_clean_sampled_frames_and_falls_back_at_a_difference() {
+fn every_frames_build_is_made_in_rust() {
     let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
     let mut m = world();
-    for k in 1..=CLEAN {
-        frame(&mut m, k * SAMPLE);
-        handler(&mut m);
-        assert!(!with_proof(|p| p.answering()), "not before {CLEAN} clean frames");
+    for f in [64, 65] {
+        frame(&mut m, f);
+        let answered = counter("answer_geometry");
+        select(&mut m, 1);
+        m.write(SLOT, &[0xee; 24]).unwrap();
+        let expect = predict_from(&m, &args(&m, ESP).unwrap(), [0xee; 24]).unwrap();
+        assert_eq!(build(&mut m, ESP), Some(true), "frame {f}");
+        assert_eq!(counter("answer_geometry"), answered + 1);
+        let mut written = [0; 24];
+        m.read(SLOT, &mut written).unwrap();
+        assert_eq!(written, expect.slot, "the slot is the model's, made in Rust");
     }
-    // The next frame's first hook closes the last sampled one.
-    frame(&mut m, CLEAN * SAMPLE + 1);
-    let answered = counter("answer_geometry");
-    select(&mut m, 1);
-    m.write(SLOT, &[0xee; 24]).unwrap();
-    assert_eq!(build(&mut m, ESP), Some(true));
-    assert!(with_proof(|p| p.answering()));
-    assert_eq!(counter("answer_geometry"), answered + 1);
-    let expect = predict(&m, &args(&m, ESP).unwrap()).unwrap();
-    let mut written = [0; 24];
-    m.read(SLOT, &mut written).unwrap();
-    assert_eq!(written, expect.slot, "the slot is the model's, made in Rust");
-
-    // A sampled frame runs the guest; a difference ends the answer.
-    frame(&mut m, (CLEAN + 1) * SAMPLE);
-    let fallback = counter("geometry_fallback");
-    assert_eq!(build(&mut m, ESP), None);
-    let eax = guest_builds(&mut m);
-    m.set_u8(SLOT + 8, 9).unwrap();
-    end_build(&m, ESP + 4 + POP, eax);
-    assert_eq!(counter("geometry_fallback"), fallback + 1);
-    frame(&mut m, (CLEAN + 1) * SAMPLE + 1);
-    assert_eq!(build(&mut m, ESP), None, "the guest builds again");
-}
-
-#[test]
-fn a_sampled_draw_takes_the_pass_its_build_made_once_and_the_material_streak_proves() {
-    let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
-    let mut m = world();
-    frame(&mut m, SAMPLE * 40);
-    select(&mut m, 1);
-    assert_eq!(build(&mut m, ESP), None);
-    let pass = material_sample(&m).unwrap();
-    assert_eq!((pass.shader, pass.selector, pass.imp), (SHADER, 1, 0));
-    assert_eq!(material_sample(&m), None, "once");
-    // An unsampled frame, or a build of another frame, is nobody's.
-    assert_eq!(build(&mut m, ESP), None);
-    frame(&mut m, SAMPLE * 40 + 1);
-    assert_eq!(material_sample(&m), None);
-
-    material_record(&["render_0x3b".to_owned()], &[]);
-    assert!(!material_proven());
-    for _ in 0..CLEAN {
-        material_record(&[], &["combiner"]);
-    }
-    assert!(material_proven());
-    let proven = counter("geometry_material_proven");
-    material_record(&["stage0_address_u".to_owned()], &[]);
-    assert!(!material_proven(), "a difference ends the streak");
-    assert!(counter("geometry_material_mismatched_stage0_address_u") > 0);
-    assert_eq!(counter("geometry_material_proven"), proven);
 }
 
 struct Host(Mutex<Vec<Request>>, Result<(), &'static str>);
@@ -258,7 +161,7 @@ impl AnswerHost for Host {
 }
 
 #[test]
-fn a_proven_cluster_or_placement_entry_is_drawn_by_the_host_and_a_refusal_keeps_the_guests_handler() {
+fn a_cluster_or_placement_entry_is_drawn_by_the_host_and_a_refusal_keeps_the_guests_handler() {
     use std::sync::Arc;
     let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
     let mut m = world();
@@ -268,20 +171,7 @@ fn a_proven_cluster_or_placement_entry_is_drawn_by_the_host_and_a_refusal_keeps_
     let host = Arc::new(Host(Mutex::default(), Ok(())));
     set_answer_host(Some(host.clone()));
 
-    frame(&mut m, SAMPLE * 50 + 1);
-    assert!(!answer_handler(&mut m, HESP), "nothing is proven yet");
-    for k in 51..51 + CLEAN {
-        frame(&mut m, k * SAMPLE);
-        handler(&mut m);
-    }
-    for _ in 0..CLEAN {
-        material_record(&[], &[]);
-    }
-    // A sampled frame runs the guest; the next one answers.
-    frame(&mut m, (51 + CLEAN) * SAMPLE);
-    assert!(!answer_handler(&mut m, HESP));
-    frame(&mut m, (51 + CLEAN) * SAMPLE + 1);
-    assert!(proven());
+    frame(&mut m, 50);
     let drawn = counter("answer_geometry_draw");
     assert!(answer_handler(&mut m, HESP));
     assert_eq!(*host.0.lock().unwrap(), [Request { shader: SHADER, owner: Owner::Cluster(0), record: RECORD_INDEX as u16, part: 2, passes: 2 }]);
@@ -301,11 +191,10 @@ fn a_proven_cluster_or_placement_entry_is_drawn_by_the_host_and_a_refusal_keeps_
     assert!(!answer_handler(&mut m, HESP), "no vertex class to draw");
     assert_eq!(host.0.lock().unwrap().len(), 2);
     set_answer_host(None);
-    material_record(&["render_0x3b".to_owned()], &[]);
 }
 
 #[test]
-fn a_proven_object_entry_is_drawn_by_the_host_as_the_objects() {
+fn an_object_entry_is_drawn_by_the_host_as_the_objects() {
     use std::sync::Arc;
     use scene_extract::layout::objects::{RECORD_LIGHTING, RECORD_MODEL};
     let _t = TURN.lock().unwrap_or_else(|e| e.into_inner());
@@ -330,19 +219,7 @@ fn a_proven_object_entry_is_drawn_by_the_host_as_the_objects() {
     m.set_u32(record + RECORD_LIGHTING, scene_extract::testing::lighting(4 + 7)).unwrap();
     let host = Arc::new(Host(Mutex::default(), Ok(())));
     set_answer_host(Some(host.clone()));
-    for k in 51..51 + CLEAN {
-        frame(&mut m, k * SAMPLE);
-        handler(&mut m);
-    }
-    for _ in 0..CLEAN {
-        material_record(&[], &[]);
-    }
-    // A sampled frame runs the guest, and its first hook closes the last
-    // compared one; the next frame answers.
-    frame(&mut m, (51 + CLEAN) * SAMPLE);
-    assert!(!answer_handler(&mut m, HESP));
-    frame(&mut m, (51 + CLEAN) * SAMPLE + 1);
-    assert!(proven());
+    frame(&mut m, 51);
     assert!(answer_handler(&mut m, HESP));
     assert_eq!(
         *host.0.lock().unwrap(),
@@ -355,5 +232,4 @@ fn a_proven_object_entry_is_drawn_by_the_host_as_the_objects() {
         assert!(!answer_handler(&mut m, HESP), "{why} keeps the guest's handler");
     }
     set_answer_host(None);
-    material_record(&["render_0x3b".to_owned()], &[]);
 }

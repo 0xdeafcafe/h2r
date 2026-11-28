@@ -215,11 +215,10 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
             id: self.admission.serial.fetch_add(1, Ordering::Relaxed),
         };
         if let Some(supplied) = material_proof::held(Kind::Particle) {
-            let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles, proof: Mutex::new(None) };
+            let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles };
             return self.supplied_draw(mem, Kind::Particle, PrimitiveType::QuadList, data, &carried, &supplied, &candidate);
         }
-        let proof = Mutex::new(material_proof::particle(mem, call.return_address));
-        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles, proof };
+        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Particles };
         self.device.lock().is_ok_and(|mut device| {
             device.try_native_inline_draw(
                 &mut DeviceMemory(mem), PrimitiveType::QuadList, data, &carried, &candidate,
@@ -254,19 +253,18 @@ impl<B: d3d::backend::Backend + 'static> Host for ImmediateAdmission<B> {
             effect_geometry::Kind::Contrail => material_proof::held(Kind::Contrail),
             effect_geometry::Kind::EffectQuad => None,
         };
-        if let Some(supplied) = held {
+        if call.kind == effect_geometry::Kind::Contrail {
+            // The setup's inputs are this draw's alone.
             render_bridge::effect_materials::take_contrail_inputs(call.context);
-            let candidate = Direct { admission: &self.admission, pending, stage: Stage::Effects, proof: Mutex::new(None) };
+        }
+        if let Some(supplied) = held {
+            let candidate = Direct { admission: &self.admission, pending, stage: Stage::Effects };
             let drawn = self.supplied_draw(mem, Kind::Contrail, primitive, generated, &[None; 16], &supplied, &candidate);
             self.admission.scope.lock().unwrap_or_else(|e| e.into_inner()).waiting = None;
             Stage::Effects.count(Metric::WalkSuppressed, 1);
             return drawn;
         }
-        let proof = match call.kind {
-            effect_geometry::Kind::Contrail => material_proof::contrail(mem, call.context),
-            effect_geometry::Kind::EffectQuad => None,
-        };
-        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Effects, proof: Mutex::new(proof) };
+        let candidate = Direct { admission: &self.admission, pending, stage: Stage::Effects };
         let drawn = self.device.lock().is_ok_and(|mut device| {
             device.try_native_inline_draw(
                 &mut DeviceMemory(mem), primitive, generated, &[None; 16], &candidate,
@@ -584,16 +582,10 @@ struct Direct<'a> {
     admission: &'a Admission,
     pending: Pending,
     stage: Stage,
-    /// The sampled draw's Rust material, compared with the first draw
-    /// offered (`material_proof`).
-    proof: Mutex<Option<material_proof::Expected>>,
 }
 
 impl DrawAdmission for Direct<'_> {
     fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
-        if let Some(e) = self.proof.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            material_proof::record(&e, snapshot.draw);
-        }
         self.admission.plan(snapshot, &self.pending, self.stage, false)
     }
 }
