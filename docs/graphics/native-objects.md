@@ -64,11 +64,27 @@ A native run contains every live layer-3 dispatch of each object it covers. It m
 
 The host checks the material and vertex program, render-state writes and restore lists, view and clip, buffer ranges, textures and current map generation. The layer's first shader begin runs on the guest because it initialises the shader and texture caches. A pass transition is eligible when its render-state changes are already reflected in the live state.
 
-Fog uses the D3D fog mode, start, end, density and colour from the device and the implementation. The vertex program supplies `oFog`. An implicit final combiner uses the fog factor and D3D's specular-enable bit, with normal alpha semantics.
+Fog uses the fog mode, start, end, density and colour from the render-state shadow and the implementation. The vertex program supplies `oFog`. An implicit final combiner uses the fog factor and D3D's specular-enable bit, with normal alpha semantics.
 
 The walk handles the scene's zero-reference stencil state and its temporary stencil-off bracket when mode 1 is already set. Draws outside those conditions use the original handler.
 
 After every required target copy records the whole run, the hook adjusts ESI and the saved loop count and returns with the handler's normal stack cleanup. The guest loop advances to the next entry in its original order. If planning or reservation fails, the cursor stays put and the original handler runs.
+
+#### The entry state
+
+There is no device. The draw state the walk checks and inherits is what the guest's D3D library keeps in guest memory (`native_objects_glue::device_state`):
+
+| State | Where |
+|---|---|
+| Render states, fog words, stencil, stipple switch | shadow `0x00407498 + 4·slot`, 166 slots |
+| W buffer | slot 143 (`ZENABLE`) is `D3DZB_USEW`; `0x003f54f0` redoes `SET_CONTROL0` from it |
+| Texture-stage states | `0x00404dd0 + 4·(32·stage + state)`, as `0x003f5e30` stores them |
+| Vertex constants | `0x00407738 + 16·register`, as `SetVertexShaderConstant1` (`0x003f71d0`) keeps them |
+| `c[18]` | the material bank at setup context `+0x1630`: `0x00018e80` uploads it through `0x003f7230`, which keeps no shadow |
+| Stipple pattern | device `+0x197c`, as `SetStipple` (`0x003f8cc0`) stores it |
+| Program clip range and its owner | device `+0x1c10` and the flags at `+0x1c18` |
+
+The auxiliary toggle's rest check compares the cached byte and the stored clip. Its rows reach `c[0..3]` through the push buffer alone, which nothing reads.
 
 The scene list builders supply visibility, LOD inputs and supported records. The object setup tail supplies the palettes consumed by the walk, lights, shadows and later passes.
 
@@ -208,16 +224,12 @@ An object item's draw reads three things beyond its material: the fade byte, the
 
 ### Depth mode at the layer call
 
-A layer's object items are planned at the layer call, before its first shader begin (`0x0001bbf0`) sets `ZENABLE` to `D3DZB_USEW` (`push 2` at `0x0001bc11`). The device at the call holds what the work before left: before layer 1 that is the last view's screen passes, drawn unbuffered.
+A layer's object items are planned at the layer call, before its first shader begin (`0x0001bbf0`) sets `ZENABLE` to `D3DZB_USEW` (`push 2` at `0x0001bc11`). The shadow at the call holds what the work before left: before layer 1 that is the last view's screen passes, drawn unbuffered.
 
 | Step | Where |
 |---|---|
-| Set the begin's `ZENABLE` through D3D when the device holds another | `native_objects_glue::apply_layer_begin_zenable`, before the boundary's drain |
-| The drain consumes the pushed `SET_CONTROL0`, viewport and W clip | `Device::begin_external_boundary` |
-| The W check reads the drained device | `entry_states`; refused: `object_w_buffer` |
-| A D3D error setting it | every item kept, `object_layer_begin` |
-
-The guest's begin sets the same value again, so its kept draws are unchanged.
+| Before the layer draw, plan with the begin's `ZENABLE` | `plan_walk` with `before`, `LAYER_BEGIN_ZENABLE` |
+| The W check reads the shadow's `ZENABLE` | `entry_states`, `device_state::w_buffered`; refused: `object_w_buffer` |
 
 ### Texture accumulation order
 

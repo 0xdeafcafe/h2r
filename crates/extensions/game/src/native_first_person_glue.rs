@@ -206,9 +206,9 @@ impl Host for Glue {
         let entry = {
             let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
             let stencil_off = mem.u32(native_render::skip::STENCIL_OFF_FLAGS).ok().map(|flags| flags & 0x00ff_ff00 != 0);
-            let stencil_mode_1 = crate::native_objects_glue::in_stencil_mode_1_with(mem, device_state::stencil());
+            let stencil_mode_1 = crate::native_objects_glue::in_stencil_mode_1_with(mem, device_state::stencil(mem));
             let mut states = EntryStates::read(|state| {
-                table.canonical_to_guest(state.index()).and_then(device_state::render_state)
+                table.canonical_to_guest(state.index()).and_then(|slot| device_state::render_state(mem, slot))
             });
             // Inside the stencil-off bracket every part draws with the
             // test off (mode 0), as layer 3's walk takes it.
@@ -220,13 +220,13 @@ impl Host for Glue {
                 states,
                 stencil_off,
                 stencil_mode_1,
-                fog_words: device_state::fog_words(),
-                specular: crate::native_objects_glue::device_specular(),
-                w_buffered: device_state::w_buffered(),
+                fog_words: device_state::fog_words(mem),
+                specular: crate::native_objects_glue::device_specular(mem),
+                w_buffered: device_state::w_buffered(mem),
                 aux: native_render::aux_depth::read(&Ro(mem))
                     .filter(|aux| crate::native_objects_glue::aux_depth_at_rest(mem, aux)),
                 texaccum: crate::native_objects_glue::sampled_texaccum(mem, true).ok().flatten(),
-                stipple: crate::native_objects_glue::device_stipple(),
+                stipple: crate::native_objects_glue::device_stipple(mem),
                 stipple_at_rest: crate::native_objects_glue::stipple_at_rest(mem),
                 structure: native_render::structure_parameters::read(&Ro(mem))
                     .filter(|p| crate::native_objects_glue::structure_at_rest(mem, p)),

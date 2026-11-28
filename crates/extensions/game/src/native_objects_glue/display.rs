@@ -12,10 +12,10 @@ impl Glue {
         if !model_palettes_hold(&models) {
             return None;
         }
-        let entry = LayerEntry::read();
+        let entry = LayerEntry::read(mem);
         if !entry.w_buffered { return None; }
-        let fog = device_state::fog_words();
-        let specular = device_specular();
+        let fog = device_state::fog_words(mem);
+        let specular = device_specular(mem);
         // A guest camera's objects outside the gather lens's set are drawn
         // whatever the view's own factor (`scene_step::gather_lens_object`).
         if !visibility.guest_lens && projection_factor() >= 1.0 { return None; }
@@ -85,8 +85,8 @@ pub(super) fn plan_lod(
     if !w_buffered || stencil & 0x00ff_ff00 != 0 {
         return None;
     }
-    let fog = device_state::fog_words();
-    let specular = device_specular();
+    let fog = device_state::fog_words(mem);
+    let specular = device_specular(mem);
     let (gpu, color, depth) = crate::native_world_glue::pipeline_target();
     let mut lit = models.lit.try_lock().ok()?;
     let lit = lit.as_mut()?;

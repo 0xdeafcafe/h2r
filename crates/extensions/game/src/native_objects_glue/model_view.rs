@@ -26,9 +26,9 @@ pub(crate) struct Planned {
 pub(crate) fn plan(mem: &dyn GuestMemory, handles: &[u32]) -> Planned {
     let mut planned = Planned { models: super::layer_source_models(mem), objects: HashMap::new() };
     let Some(models) = planned.models.clone() else { return planned };
-    let entry = LayerEntry::read();
-    let fog = device_state::fog_words();
-    let specular = device_specular();
+    let entry = LayerEntry::read(mem);
+    let fog = device_state::fog_words(mem);
+    let specular = device_specular(mem);
     let mut lit = models.lit.lock().unwrap_or_else(|e| e.into_inner());
     let Some(lit) = lit.as_mut() else {
         planned.models = None;

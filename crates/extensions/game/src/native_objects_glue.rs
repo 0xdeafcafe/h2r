@@ -132,73 +132,131 @@ static STATE_TABLE: std::sync::LazyLock<gfx::xdk::RenderStateTable> =
     std::sync::LazyLock::new(gfx::xdk::RenderStateTable::default);
 
 impl LayerEntry {
-    fn read() -> Self {
-        Self::read_with(&device_state::render_state)
+    fn read(mem: &dyn GuestMemory) -> Self {
+        Self::read_with(&|slot| device_state::render_state(mem, slot))
     }
 
-    /// The render states from `states`, by guest slot.
+    /// The render states from `states`, by guest slot, and the W buffer
+    /// their `ZENABLE` sets ([`device_state::w_buffered_with`]).
     fn read_with(states: &dyn Fn(u32) -> Option<u32>) -> Self {
         let table = &*STATE_TABLE;
         Self {
             states: EntryStates::read(|t| table.canonical_to_guest(t.index()).and_then(states)),
-            w_buffered: device_state::w_buffered(),
+            w_buffered: device_state::w_buffered_with(states),
         }
     }
 }
 
-/// The draw state the guest's D3D calls set, which the object, layer and
-/// first-person plans check and inherit. No owner yet: each read is a
-/// named gap.
+/// The draw state the guest's D3D library keeps in its own memory, which
+/// the object, layer and first-person plans check and inherit. There is
+/// no device behind it: the render-state and texture-stage shadows, the
+/// vertex-constant shadow and the device object's stored fields are the
+/// state (docs/graphics/native-objects.md, "The entry state"). Each read
+/// is of guest memory; `None` where a word does not read.
 pub(crate) mod device_state {
-    /// The render state at guest slot `slot`.
-    pub(crate) fn render_state(_slot: u32) -> Option<u32> {
-        unimplemented!("objects: render state from the device")
+    use engine::memory::GuestMemory;
+    use engine::render_loop::states::SHADOW;
+
+    /// Render-state slots in the shadow (`D3D__RenderState`).
+    pub(crate) const RENDER_STATE_SLOTS: u32 = 166;
+    /// `D3D__TextureState`: four stages of [`STAGE_SLOTS`] words.
+    pub(crate) const TEXTURE_STATE: u32 = 0x0040_4dd0;
+    pub(crate) const STAGES: u32 = 4;
+    pub(crate) const STAGE_SLOTS: u32 = 32;
+    /// The vertex-constant shadow, 16 bytes per register in hardware
+    /// numbering, which `SetVertexShaderConstant1` keeps (`0x003f71d0`:
+    /// `0x407738 + 16·ECX`).
+    pub(crate) const CONSTANTS: u32 = 0x0040_7738;
+    pub(crate) const CONSTANT_REGISTERS: usize = 192;
+    /// The stipple pattern `SetStipple` stores in the device (`0x003f8cc0`:
+    /// 32 words at `+0x197c`).
+    pub(crate) const STIPPLE: u32 = 0x197c;
+    /// The program clip range `{min, max}` the game stores in the device,
+    /// and the flags that say it owns it (bit 1), `0x00012da9`.
+    pub(crate) const CLIP_PROGRAM: u32 = 0x1c10;
+    pub(crate) const CLIP_FLAGS: u32 = 0x1c18;
+    /// `D3DZB_USEW`.
+    const USEW: u32 = 2;
+
+    /// The render state at guest slot `slot`, from the shadow at
+    /// `0x00407498` the inline setters, the restore lists
+    /// (`native_layers_glue::restore_list`) and every `SetRenderState_*`
+    /// store to.
+    pub(crate) fn render_state(mem: &dyn GuestMemory, slot: u32) -> Option<u32> {
+        (slot < RENDER_STATE_SLOTS).then(|| mem.u32(SHADOW + 4 * slot).ok()).flatten()
     }
 
-    /// Whether the draws are W-buffered (`SET_CONTROL0`'s z-perspective).
-    pub(crate) fn w_buffered() -> bool {
-        unimplemented!("objects: W-buffer control from the device")
+    /// Whether the draws are W-buffered: `SetRenderState_ZEnable`
+    /// (`0x003f54f0`) stores `ZENABLE` at slot 143 and redoes
+    /// `SET_CONTROL0`'s z-perspective from it (`0x003f6840`), set exactly
+    /// when it is `D3DZB_USEW`.
+    pub(crate) fn w_buffered(mem: &dyn GuestMemory) -> bool {
+        w_buffered_with(&|slot| render_state(mem, slot))
     }
 
-    /// The stencil the next draw takes.
-    pub(crate) fn stencil() -> Option<gfx::state::StencilState> {
-        unimplemented!("objects: stencil state from the device")
+    /// [`w_buffered`] from `states`, by guest slot.
+    pub(crate) fn w_buffered_with(states: &dyn Fn(u32) -> Option<u32>) -> bool {
+        let zenable = super::STATE_TABLE.canonical_to_guest(gfx::state::RenderStateType::ZEnable.index());
+        zenable.and_then(states) == Some(USEW)
     }
 
-    /// Vertex constant `c[register]`.
-    pub(crate) fn constant(_register: usize) -> [f32; 4] {
-        unimplemented!("objects: vertex constants from the device")
+    /// The stencil the next draw takes, decoded from the shadow
+    /// ([`super::stencil_with`]).
+    pub(crate) fn stencil(mem: &dyn GuestMemory) -> Option<gfx::state::StencilState> {
+        super::stencil_with(&|slot| render_state(mem, slot))
     }
 
-    /// The polygon stipple switch (`SET_STIPPLE_CONTROL`).
-    pub(crate) fn stipple_control() -> Option<u32> {
-        unimplemented!("objects: stipple control from the device")
+    /// Vertex constant `c[register]` (hardware numbering) from the
+    /// shadow ([`CONSTANTS`]).
+    pub(crate) fn constant(mem: &dyn GuestMemory, register: usize) -> Option<[f32; 4]> {
+        if register >= CONSTANT_REGISTERS {
+            return None;
+        }
+        let at = CONSTANTS + 16 * register as u32;
+        let mut row = [0.0; 4];
+        for (lane, value) in row.iter_mut().enumerate() {
+            *value = f32::from_bits(mem.u32(at + 4 * lane as u32).ok()?);
+        }
+        Some(row)
     }
 
-    /// The polygon stipple pattern.
-    pub(crate) fn stipple_pattern() -> [u32; 32] {
-        unimplemented!("objects: stipple pattern from the device")
+    /// The device object `D3D__pDevice` names.
+    fn device(mem: &dyn GuestMemory) -> Option<u32> {
+        mem.u32(render_bridge::guest_entries::P_DEVICE).ok().filter(|&d| d != 0)
     }
 
-    /// The W clip range pushed for a view whose far is `far`.
-    pub(crate) fn depth_clip_range(_far: f32) -> [f32; 2] {
-        unimplemented!("objects: depth clip from the device")
+    /// The polygon stipple pattern the device holds ([`STIPPLE`]).
+    pub(crate) fn stipple_pattern(mem: &dyn GuestMemory) -> Option<[u32; 32]> {
+        let at = device(mem)?.checked_add(STIPPLE)?;
+        let mut rows = [0; 32];
+        for (n, row) in rows.iter_mut().enumerate() {
+            *row = mem.u32(at + 4 * n as u32).ok()?;
+        }
+        Some(rows)
     }
 
-    /// Texture stage `stage`'s state `state`.
-    pub(crate) fn texture_state(_stage: u32, _state: u32) -> Option<u32> {
-        unimplemented!("objects: texture stage states from the device")
+    /// Texture stage `stage`'s state `state` from `D3D__TextureState`.
+    pub(crate) fn texture_state(mem: &dyn GuestMemory, stage: u32, state: u32) -> Option<u32> {
+        if stage >= STAGES || state >= STAGE_SLOTS {
+            return None;
+        }
+        mem.u32(TEXTURE_STATE + 4 * (stage * STAGE_SLOTS + state)).ok()
     }
 
-    /// The program clip words `[near, far]` and clip flags the game stores
-    /// in the device.
-    pub(crate) fn stored_clip() -> Option<([u32; 2], u32)> {
-        unimplemented!("objects: stored clip words from the device")
+    /// The program clip words `[min, max]` and the clip flags the game
+    /// stores in the device ([`CLIP_PROGRAM`], [`CLIP_FLAGS`]).
+    pub(crate) fn stored_clip(mem: &dyn GuestMemory) -> Option<([u32; 2], u32)> {
+        let d = device(mem)?;
+        Some((
+            [mem.u32(d.checked_add(CLIP_PROGRAM)?).ok()?, mem.u32(d.checked_add(CLIP_PROGRAM + 4)?).ok()?],
+            mem.u32(d.checked_add(CLIP_FLAGS)?).ok()?,
+        ))
     }
 
-    /// The fog words the draws inherit.
-    pub(crate) fn fog_words() -> [Option<u32>; 7] {
-        unimplemented!("objects: fog words from the device")
+    /// The fog words the draws inherit, from the shadow
+    /// (`native_fog_glue::fog_words_with`).
+    pub(crate) fn fog_words(mem: &dyn GuestMemory) -> [Option<u32>; 7] {
+        crate::native_fog_glue::fog_words_with(&|slot| render_state(mem, slot))
     }
 }
 
@@ -665,7 +723,7 @@ fn plan_walk(
     scene: &FrameScene, view: &View, first: usize, run: &[Entry], cached: Option<u32>, before: bool,
 ) -> Result<Vec<(u32, PlannedDraw)>, ObjectWalk> {
     use gfx::state::RenderStateType as R;
-    let mut entry = LayerEntry::read();
+    let mut entry = LayerEntry::read(mem);
     // Before the layer draw, the draws run with the layer begin's
     // `ZENABLE` (`D3DZB_USEW`, which W-buffers).
     if before {
@@ -679,7 +737,7 @@ fn plan_walk(
     let read = crate::native_world_glue::ReadMemory(mem);
     let flags = mem.u32(native_render::skip::STENCIL_OFF_FLAGS).map_err(|_| ObjectWalk::Inputs)?;
     let stencil_during_draw = flags & 0x00ff_ff00 == 0;
-    let in_mode_1 = || in_stencil_mode_1_with(mem, device_state::stencil());
+    let in_mode_1 = || in_stencil_mode_1_with(mem, device_state::stencil(mem));
     if !stencil_during_draw {
         // The handler temporarily applies stencil mode 0 and leaves
         // mode 1. Skipping it is state-neutral only if it already holds 1.
@@ -736,13 +794,13 @@ fn plan_walk(
     if uploads && !view.structure_parameters.is_some_and(|p| structure_at_rest(mem, &p)) {
         return Err(ObjectWalk::State);
     }
-    let fog_words = device_state::fog_words();
+    let fog_words = device_state::fog_words(mem);
     let table = &*STATE_TABLE;
     let device_state = |slot| {
         if before && Some(slot) == table.canonical_to_guest(R::ZEnable.index()) {
             return Some(LAYER_BEGIN_ZENABLE);
         }
-        device_state::render_state(slot)
+        device_state::render_state(mem, slot)
     };
     let raw = |state| table.canonical_to_guest(state).and_then(device_state);
     let specular = raw(SPECULAR_ENABLE);
@@ -827,40 +885,32 @@ fn plan_walk(
     Ok(draws)
 }
 
-/// Whether the draw state holds what the auxiliary state toggle leaves
-/// off (`0x00012d50` with BL 0, `aux.rest_*`): the cached byte 0,
-/// `c[0..3]` the rows off, and the program clip range off, owned by the
-/// game and pushed. Every comparison is of the bits.
+/// Whether the guest holds what the auxiliary state toggle leaves off
+/// (`0x00012d50` with BL 0, `aux.rest_*`): the cached byte 0 and the
+/// program clip range off, stored in the device and owned by the game.
+/// The rows go to `c[0..3]` through the push buffer alone, which nothing
+/// reads: no device draws after the toggle, so they hold nothing a skip
+/// could leave otherwise. Every comparison is of the bits.
 pub(crate) fn aux_depth_at_rest(mem: &dyn GuestMemory, aux: &frame_scene::AuxDepth) -> bool {
-    let bits = |r: &[f32]| r.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-    let stored = device_state::stored_clip();
-    let pushed = device_state::depth_clip_range(aux.rest_clip[1]);
+    let stored = device_state::stored_clip(mem);
     mem.u8(native_render::aux_depth::CACHED) == Ok(0)
-        && (0..4).all(|r| bits(&device_state::constant(r)) == bits(&aux.rest_rows[r]))
         && stored.is_some_and(|(clip, flags)| clip == [aux.rest_clip[0].to_bits(), aux.rest_clip[1].to_bits()] && flags & 2 != 0)
-        && bits(&pushed) == bits(&aux.rest_clip)
 }
 
-/// The stipple switch: `SET_STIPPLE_CONTROL`, else `D3DRS_STIPPLEENABLE`.
-fn stipple_switch() -> Option<u32> {
-    device_state::stipple_control()
-        .or_else(|| STATE_TABLE.canonical_to_guest(STIPPLE_ENABLE).and_then(device_state::render_state))
-}
-
-/// Whether the draws take the polygon stipple off: a record's fade
-/// pattern then masks nothing.
-pub(crate) fn stipple_off() -> bool {
-    stipple_switch() == Some(0)
+/// The stipple switch, `D3DRS_STIPPLEENABLE` (a deferred state, which D3D
+/// pushes as `SET_STIPPLE_CONTROL` from the shadow).
+fn stipple_switch(mem: &dyn GuestMemory) -> Option<u32> {
+    STATE_TABLE.canonical_to_guest(STIPPLE_ENABLE).and_then(|slot| device_state::render_state(mem, slot))
 }
 
 /// The polygon stipple as an object's draw would take it: `Ok(None)` off
-/// (a record's pattern masks nothing), `Ok(Some(rows))` on with the bound
-/// pattern; `Err` when its switch does not read.
-pub(crate) fn device_stipple() -> Result<Option<[u32; 32]>, ()> {
-    match stipple_switch() {
+/// (a record's pattern masks nothing), `Ok(Some(rows))` on with the
+/// device's pattern; `Err` when its switch or pattern does not read.
+pub(crate) fn device_stipple(mem: &dyn GuestMemory) -> Result<Option<[u32; 32]>, ()> {
+    match stipple_switch(mem) {
         Some(0) => Ok(None),
         None => Err(()),
-        Some(_) => Ok(Some(device_state::stipple_pattern())),
+        Some(_) => device_state::stipple_pattern(mem).map(Some).ok_or(()),
     }
 }
 
@@ -889,7 +939,7 @@ pub(crate) fn record_stipple(
 
 /// [`record_stipple`] under the stipple now.
 pub(crate) fn draw_stipple(mem: &dyn GuestMemory, record: u16, faded: bool) -> Result<Option<[u32; 32]>, ()> {
-    record_stipple(mem, device_stipple(), record, faded)
+    record_stipple(mem, device_stipple(mem), record, faded)
 }
 
 /// Whether the device and the engine hold what a faded record's epilogue
@@ -911,7 +961,9 @@ pub(crate) fn stipple_at_rest(mem: &dyn GuestMemory) -> bool {
     let Some(table) = rest_stipple_table(mem, MXCSR) else {
         return false;
     };
-    let pattern = device_state::stipple_pattern();
+    let Some(pattern) = device_state::stipple_pattern(mem) else {
+        return false;
+    };
     (0..32u32).all(|row| mem.u32(table + 4 * row).ok() == Some(pattern[row as usize]))
 }
 
@@ -925,7 +977,7 @@ pub(crate) fn stipple_at_rest(mem: &dyn GuestMemory) -> bool {
 /// would, however many there are; anything the host computed otherwise
 /// than the guest declines.
 pub(crate) fn structure_at_rest(mem: &dyn GuestMemory, p: &frame_scene::StructureParameters) -> bool {
-    structure_at_rest_with(mem, p, device_state::fog_words()[6])
+    structure_at_rest_with(mem, p, device_state::fog_words(mem)[6])
 }
 
 /// [`structure_at_rest`] with the fog colour `fog_colour` (a run's, as the
@@ -937,11 +989,11 @@ pub(crate) fn structure_at_rest_with(
     const BUMPENVMAT00: u32 = 22;
     let stages = (1..4u32).all(|stage| {
         (0..4u32).all(|n| {
-            device_state::texture_state(stage, BUMPENVMAT00 + n) == Some(p.bump_env[stage as usize - 1][n as usize])
+            device_state::texture_state(mem, stage, BUMPENVMAT00 + n) == Some(p.bump_env[stage as usize - 1][n as usize])
         })
     });
     let first = frame_scene::StructureParameters::FIRST_CONSTANT;
-    let constants = (0..5).all(|n| device_state::constant(first + n).map(f32::to_bits) == p.constants[n]);
+    let constants = (0..5).all(|n| device_state::constant(mem, first + n).map(|c| c.map(f32::to_bits)) == Some(p.constants[n]));
     let fog = fog_colour == Some(p.fog_colour);
     let scratch = (0..13u32).all(|n| mem.u32(SCRATCH + 4 * n).ok() == Some(p.scratch[n as usize]));
     stages && constants && fog && scratch
@@ -957,8 +1009,8 @@ pub(crate) fn structure_at_rest_with(
 /// `0x00016b10` clears (`render_bridge::native_objects::before`).
 fn entry_fields(mem: &dyn GuestMemory, predict: bool) -> Vec<render_bridge::native_objects::before::Field> {
     use gfx::state::RenderStateType as R;
-    let entry = LayerEntry::read();
-    let raw = |state| STATE_TABLE.canonical_to_guest(state).and_then(device_state::render_state);
+    let entry = LayerEntry::read(mem);
+    let raw = |state| STATE_TABLE.canonical_to_guest(state).and_then(|slot| device_state::render_state(mem, slot));
     let mut out: Vec<render_bridge::native_objects::before::Field> = Vec::with_capacity(48);
     for t in native_render::object_state::FIELDS {
         let value = if predict && t == R::ZEnable { Some(LAYER_BEGIN_ZENABLE) } else { entry.states.get(t) };
@@ -968,8 +1020,8 @@ fn entry_fields(mem: &dyn GuestMemory, predict: bool) -> Vec<render_bridge::nati
     out.push(("w_buffered".into(), Some(u32::from(w))));
     out.push(("stencil_off_flags".into(), mem.u32(native_render::skip::STENCIL_OFF_FLAGS).ok()));
     out.push(("stencil_mode".into(), mem.u16(SCENE_STENCIL_MODE).ok().map(u32::from)));
-    out.push(("stencil_mode_1".into(), Some(u32::from(device_state::stencil() == Some(scene_stencil())))));
-    out.push(("stipple".into(), stipple_switch()));
+    out.push(("stencil_mode_1".into(), Some(u32::from(device_state::stencil(mem) == Some(scene_stencil())))));
+    out.push(("stipple".into(), stipple_switch(mem)));
     out.push(("stipple_at_rest".into(), Some(u32::from(stipple_at_rest(mem)))));
     out.push(("specular".into(), raw(SPECULAR_ENABLE)));
     out.push(("two_sided_lighting".into(), raw(TWO_SIDED_LIGHTING)));
@@ -977,7 +1029,7 @@ fn entry_fields(mem: &dyn GuestMemory, predict: bool) -> Vec<render_bridge::nati
     for (name, at) in [("cached_implementation", CACHED_IMPLEMENTATION), ("cached_descriptor", CACHED_PASS_DESCRIPTOR)] {
         out.push((name.into(), if predict { Some(0) } else { mem.u32(at).ok() }));
     }
-    for (n, word) in device_state::fog_words().into_iter().enumerate() {
+    for (n, word) in device_state::fog_words(mem).into_iter().enumerate() {
         out.push((format!("fog_{n}"), word));
     }
     out.push(("aux_cached".into(), mem.u8(native_render::aux_depth::CACHED).ok().map(u32::from)));
@@ -1132,7 +1184,7 @@ pub(crate) fn install_function_tables(mem: &dyn GuestMemory) {
 /// The render states an object's draw inherits at a layer call
 /// ([`EntryStates`]), and whether the draws are W-buffered.
 pub(crate) fn entry_states(mem: &dyn GuestMemory) -> (native_render::object_program_gpu::ObjectLayerEntry, bool) {
-    entry_states_with(mem, &device_state::render_state)
+    entry_states_with(mem, &|slot| device_state::render_state(mem, slot))
 }
 
 /// [`entry_states`] with the render states from `states`, by guest slot:
@@ -1153,7 +1205,15 @@ pub(crate) fn entry_states_with(
         Some(row)
     })();
     let dirty = mem.u32(SETUP_CONTEXT + 0x1734).ok().map(|mask| mask & 1 != 0);
-    let c18 = MaterialConstant18::new(device_state::constant(18), bank, dirty);
+    // `c[18]` has no shadow: `0x00018e80` uploads it from the bank
+    // through `SetVertexShaderConstant1Fast` (`0x003f7230`), which keeps
+    // none, and clears the bank's dirty bit. With no device the bank is
+    // the register: clean, it is what was uploaded; dirty, the guest
+    // uploads it before the next draw.
+    let Some(row) = bank else {
+        unimplemented!("objects: the material bank's c[18] row at the setup context does not read");
+    };
+    let c18 = MaterialConstant18::new(row.map(f32::from_bits), bank, dirty);
     (ObjectLayerEntry { states: entry.states, c18 }, entry.w_buffered)
 }
 
@@ -1170,8 +1230,8 @@ pub(crate) fn needs_layer_begin_zenable(held: Option<u32>) -> bool {
 
 /// The specular bit, which a draw on the implicit final combiner takes
 /// ([`object_fog`]).
-pub(crate) fn device_specular() -> Option<u32> {
-    specular_with(&device_state::render_state)
+pub(crate) fn device_specular(mem: &dyn GuestMemory) -> Option<u32> {
+    specular_with(&|slot| device_state::render_state(mem, slot))
 }
 
 /// [`device_specular`] from `states`, by guest slot.
@@ -1207,12 +1267,12 @@ pub(crate) fn w_buffered_after(restore: &[(u32, u32)]) -> Option<bool> {
 
 /// [`device_stipple`] once `restore` is written: its stipple switch, which
 /// its setter pushes, stands for the held control.
-pub(crate) fn device_stipple_after(restore: &[(u32, u32)]) -> Result<Option<[u32; 32]>, ()> {
+pub(crate) fn device_stipple_after(mem: &dyn GuestMemory, restore: &[(u32, u32)]) -> Result<Option<[u32; 32]>, ()> {
     let slot = STATE_TABLE.canonical_to_guest(STIPPLE_ENABLE);
     match restore.iter().rev().find(|&&(s, _)| Some(s) == slot).map(|&(_, v)| v) {
-        None => device_stipple(),
+        None => device_stipple(mem),
         Some(0) => Ok(None),
-        Some(_) => Ok(Some(device_state::stipple_pattern())),
+        Some(_) => device_state::stipple_pattern(mem).map(Some).ok_or(()),
     }
 }
 
@@ -1954,6 +2014,130 @@ pub(crate) fn accumulation_target(mem: &dyn GuestMemory) -> Option<native_render
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The draw state's words, as the guest's D3D library lays them out:
+    /// the render-state, texture-stage and constant shadows and the
+    /// device object `D3D__pDevice` names.
+    fn draw_state() -> engine::testing::FakeGuest {
+        use render_bridge::guest_entries::{DEVICE, P_DEVICE};
+        let mut g = engine::testing::FakeGuest::new();
+        g.map(device_state::TEXTURE_STATE, 0x4000)
+            .map(DEVICE, 0x2000)
+            .put_u32(P_DEVICE, DEVICE);
+        g
+    }
+
+    /// Every render state reads from its shadow word, and none past the
+    /// 166 slots.
+    #[test]
+    fn render_states_read_the_shadow_by_guest_slot() {
+        use engine::render_loop::states::SHADOW;
+        let mut g = draw_state();
+        g.put_u32(SHADOW + 4 * 143, 2).put_u32(SHADOW + 4 * 165, 7);
+        assert_eq!(device_state::render_state(&g, 143), Some(2));
+        assert_eq!(device_state::render_state(&g, 165), Some(7));
+        assert_eq!(device_state::render_state(&g, 166), None);
+        assert_eq!(SHADOW + 4 * 143, 0x0040_76d4, "SetRenderState_ZEnable's store");
+    }
+
+    /// The draws are W-buffered exactly when the shadow's `ZENABLE` is
+    /// `D3DZB_USEW`; the layer begin sets it.
+    #[test]
+    fn the_w_buffer_follows_the_shadow_zenable() {
+        use engine::render_loop::states::SHADOW;
+        let mut g = draw_state();
+        for (zenable, w) in [(0, false), (1, false), (LAYER_BEGIN_ZENABLE, true)] {
+            g.put_u32(SHADOW + 4 * 143, zenable);
+            assert_eq!(device_state::w_buffered(&g), w, "ZENABLE {zenable}");
+            assert_eq!(LayerEntry::read(&g).w_buffered, w);
+        }
+        assert!(!device_state::w_buffered(&engine::testing::FakeGuest::new()), "an unread shadow");
+    }
+
+    /// Texture-stage states read `D3D__TextureState` as
+    /// `SetTextureState_BumpEnv` stores them (`0x003f5e8d`), constants
+    /// the shadow `SetVertexShaderConstant1` keeps (`0x003f71fa`).
+    #[test]
+    fn texture_states_and_constants_read_their_shadows() {
+        let mut g = draw_state();
+        g.put_u32(0x0040_4dd0 + 4 * (32 + 22), 0x3f80_0000);
+        assert_eq!(device_state::texture_state(&g, 1, 22), Some(0x3f80_0000));
+        assert_eq!(device_state::texture_state(&g, 4, 0), None);
+        assert_eq!(device_state::texture_state(&g, 0, 32), None);
+        for (lane, v) in [1.0f32, 2.0, 3.0, 4.0].into_iter().enumerate() {
+            g.put_f32(0x0040_7738 + 16 * 21 + 4 * lane as u32, v);
+        }
+        assert_eq!(device_state::constant(&g, 21), Some([1.0, 2.0, 3.0, 4.0]));
+        assert_eq!(device_state::constant(&g, 192), None);
+    }
+
+    /// The stipple pattern and the program clip read the device object's
+    /// fields; with no device named, neither reads.
+    #[test]
+    fn the_stipple_and_the_stored_clip_read_the_device_object() {
+        use render_bridge::guest_entries::DEVICE;
+        let mut g = draw_state();
+        for row in 0..32 {
+            g.put_u32(DEVICE + 0x197c + 4 * row, 0x100 + row);
+        }
+        g.put_f32(DEVICE + 0x1c10, 0.0).put_f32(DEVICE + 0x1c14, 1000.0).put_u32(DEVICE + 0x1c18, 2);
+        let pattern = device_state::stipple_pattern(&g).unwrap();
+        assert_eq!((pattern[0], pattern[31]), (0x100, 0x11f));
+        assert_eq!(device_state::stored_clip(&g), Some(([0, 1000.0f32.to_bits()], 2)));
+        g.put_u32(render_bridge::guest_entries::P_DEVICE, 0);
+        assert_eq!(device_state::stipple_pattern(&g), None);
+        assert_eq!(device_state::stored_clip(&g), None);
+    }
+
+    /// The stipple switch is the shadow's `STIPPLEENABLE`: off, a record
+    /// masks nothing; on, it takes the device's pattern.
+    #[test]
+    fn the_stipple_switch_reads_the_shadow() {
+        use engine::render_loop::states::SHADOW;
+        use render_bridge::guest_entries::DEVICE;
+        let mut g = draw_state();
+        let slot = STATE_TABLE.canonical_to_guest(STIPPLE_ENABLE).unwrap();
+        g.put_u32(DEVICE + 0x197c, 0xf0f0);
+        assert_eq!(device_stipple(&g), Ok(None));
+        g.put_u32(SHADOW + 4 * slot, 1);
+        assert_eq!(device_stipple(&g).map(|p| p.map(|p| p[0])), Ok(Some(0xf0f0)));
+        assert_eq!(device_stipple_after(&g, &[(slot, 0)]), Ok(None), "a restore turning it off");
+    }
+
+    /// The fog words are the shadow's fog states, in `FOG_WORD_SLOTS`
+    /// order.
+    #[test]
+    fn the_fog_words_read_the_shadow() {
+        use engine::render_loop::states::SHADOW;
+        let mut g = draw_state();
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slots = native_render::fog_gpu::FOG_WORD_SLOTS.map(|s| table.canonical_to_guest(s).unwrap());
+        for (n, slot) in slots.iter().enumerate() {
+            g.put_u32(SHADOW + 4 * slot, 0x10 + n as u32);
+        }
+        assert_eq!(device_state::fog_words(&g), std::array::from_fn(|n| Some(0x10 + n as u32)));
+    }
+
+    /// The auxiliary toggle is at rest with its cached byte 0 and the
+    /// rest clip stored and owned by the game.
+    #[test]
+    fn the_aux_toggle_is_at_rest_with_the_stored_clip() {
+        use render_bridge::guest_entries::DEVICE;
+        const CACHED: u32 = native_render::aux_depth::CACHED;
+        let aux = frame_scene::AuxDepth {
+            scale: 1.0, rows: [[0.0; 4]; 4], clip: [0.0, 1.0], rest_rows: [[0.0; 4]; 4], rest_clip: [0.0, 1000.0],
+        };
+        let mut g = draw_state();
+        g.map(CACHED, 1);
+        g.put_f32(DEVICE + 0x1c10, 0.0).put_f32(DEVICE + 0x1c14, 1000.0).put_u32(DEVICE + 0x1c18, 2);
+        assert!(aux_depth_at_rest(&g, &aux));
+        g.put_u32(DEVICE + 0x1c18, 1);
+        assert!(!aux_depth_at_rest(&g, &aux), "the game does not own the program range");
+        g.put_u32(DEVICE + 0x1c18, 2).put_u8(CACHED, 1);
+        assert!(!aux_depth_at_rest(&g, &aux), "the toggle is on");
+        g.put_u8(CACHED, 0).put_f32(DEVICE + 0x1c14, 500.0);
+        assert!(!aux_depth_at_rest(&g, &aux), "another range");
+    }
 
     /// A layer's draws run with the `ZENABLE` its first shader begin sets,
     /// `D3DZB_USEW` (`0x0001bbf0`): any other held value, or one that does
