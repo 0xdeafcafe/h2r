@@ -26,7 +26,7 @@ use engine::effect_update::arm as segment_arm;
 use engine::sim_objects::native_walk;
 use engine::sim_physics::parity as physics;
 use engine::sim_seats::aim::arm as aim;
-use engine::sim_seats::respawn;
+use engine::sim_seats::{player_objects, respawn};
 use engine::sim_seats::device::arm as device;
 use engine::sim_seats::leaf;
 use hooks::Switches;
@@ -76,6 +76,7 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
                 arms.push(aim_wire(aim::status()));
                 arms.push(device_wire(device::status()));
                 arms.push(respawn_wire(respawn::status()));
+                arms.push(player_objects_wire(player_objects::status()));
                 arms.extend(leaf::Leaf::ALL.map(|l| leaf_wire(l, leaf::status(l))));
                 arms
             }),
@@ -189,6 +190,19 @@ fn aim_wire(s: aim::Status) -> Arm {
 fn respawn_wire(s: respawn::Status) -> Arm {
     Arm {
         name: "seats.respawn".to_owned(),
+        checked: s.checked,
+        matched: s.matched,
+        mismatched: s.mismatched,
+        answered: s.answered,
+        declined: s.declined_total() + s.dropped,
+    }
+}
+
+/// The pickup scan's kernel arm (`impl.sim.player-objects`); a candidate
+/// or pickup the guest answers counts as declined.
+fn player_objects_wire(s: player_objects::Status) -> Arm {
+    Arm {
+        name: "seats.player-objects".to_owned(),
         checked: s.checked,
         matched: s.matched,
         mismatched: s.mismatched,

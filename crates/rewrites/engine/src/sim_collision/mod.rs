@@ -23,7 +23,7 @@ mod sphere;
 pub mod straight;
 mod topology;
 pub mod vector_parity;
-pub use flood::{cluster_flood, object_spatial_visit};
+pub use flood::{VisitPlan, cluster_flood, object_spatial_visit, plan_visit_at, visit_writes};
 pub use mopp_box::mopp_box;
 pub use point::{location, point_to_leaf};
 pub use preflight::CollisionMemory;

@@ -27,10 +27,19 @@
 //! (`every-player`) are declined by name to the guest, so it is not a
 //! replacement of the guest function. Its counters are `seats.respawn` in
 //! `sim.arms`.
+//!
+//! **`impl.sim.player-objects`** (off): the pickup scan `1508e0`
+//! (`PLAYER_PICKUP_SCAN`) as the kernel `engine::sim_seats::player_objects`,
+//! run as the same shadow arm: the object query `bb050` (through
+//! `engine::sim_collision::plan_visit_at`), the type 7 and 11 link walk and
+//! `150e30`'s early exits. A type 2 or 3 handle in the list is declined by
+//! name (`candidate`: the Halo 1 prompt hook observes every `150e30` call),
+//! so it is not a replacement of the guest function either. Its counters are
+//! `seats.player-objects` in `sim.arms`.
 
 use engine::points;
 use engine::sim_seats::aim::arm::{self, Step};
-use engine::sim_seats::respawn;
+use engine::sim_seats::{player_objects, respawn};
 use engine::sim_tick::Present;
 use hooks::Builder;
 use runtime::TransferAbi;
@@ -51,6 +60,13 @@ pub fn respawn_on(switches: &hooks::Switches) -> bool {
     switches.implementation(RESPAWN, false)
 }
 
+/// The pickup scan arm's switch, without its `impl.` prefix.
+pub const PLAYER_OBJECTS: &str = "sim.player-objects";
+
+pub fn player_objects_on(switches: &hooks::Switches) -> bool {
+    switches.implementation(PLAYER_OBJECTS, false)
+}
+
 pub fn aim_on(switches: &hooks::Switches) -> bool {
     switches.implementation(AIM, false)
 }
@@ -65,7 +81,44 @@ const AIM_RESET: &str = "seats: reset the aim-assist arm";
 pub(crate) fn install(b: &mut Builder) {
     install_aim(b);
     install_respawn(b);
+    install_player_objects(b);
 }
+
+/// The pickup scan's arm at `PLAYER_PICKUP_SCAN`, and its reset.
+fn install_player_objects(b: &mut Builder) {
+    if !player_objects_on(b.switches()) {
+        return;
+    }
+    let point = &points::PLAYER_PICKUP_SCAN;
+    b.raw()
+        .implement(point, PLAYER_OBJECTS, move |cpu, ctx, pc| {
+            if pc == point.base {
+                let step = {
+                    let mut mem = ctx.memory();
+                    player_objects::enter(cpu, &mut mem, &engine::sim_collision::WORLD)
+                };
+                match step {
+                    player_objects::Step::Answered { target } => return Ok(TransferAbi::ret(target)),
+                    player_objects::Step::Audit(prediction) => {
+                        let watched = ctx.observe_guest_return(cpu, player_objects::ARGS, move |c, ctx| {
+                            player_objects::compare(&prediction, c, &ctx.runtime().memory())
+                        });
+                        if !watched {
+                            player_objects::dropped();
+                        }
+                    }
+                    player_objects::Step::Guest => {}
+                }
+            }
+            crate::sim_objects::original(cpu, ctx, pc, false)
+        })
+        .context_only()
+        .optional();
+    b.raw().observe_before(&points::CACHE_TAGS_LOAD, PLAYER_OBJECTS_RESET, |_| player_objects::reset());
+}
+
+/// The map-load observer that clears the pickup scan arm's proof.
+const PLAYER_OBJECTS_RESET: &str = "seats: reset the player-objects arm";
 
 /// The respawn gate's arm at `PLAYER_RESPAWN_READY`, and its reset.
 fn install_respawn(b: &mut Builder) {

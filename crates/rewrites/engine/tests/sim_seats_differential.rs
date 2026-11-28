@@ -1645,3 +1645,211 @@ fn respawn_ready_and_its_callees_match_lifted() {
     assert!(n("15dd40 announce") + n("15dd40 post") > 0, "outcomes {outcomes:?}");
     assert!(yes > 5 && no > 50, "yes {yes}, no {no}");
 }
+
+// The pickup scan `1508e0` and its callee `150e30` through their kernel
+// (`engine::sim_seats::player_objects`), each against the lifted original
+// with its real callees (the object query `bb050` and everything under it
+// run as lifted code; nothing is stubbed). The world is drawn from a seeded
+// generator: a portal graph and two reference lists (`sim_collision::synth`),
+// a pool of objects of every type the query asks for with parents, owners,
+// link chains and positions, and four players with and without a unit. The
+// scan's output, its registers and every byte of RAM outside the dead stack
+// must agree; a call the kernel refuses is not run on the guest, because the
+// guest's pickup path calls the rest of the game.
+
+const PO_PLAYERS: u32 = 0x0068_0000;
+const PO_POOL: u32 = 0x0068_2000;
+const PO_OBJECTS: u32 = 0x0068_4000;
+const PO_TOPOLOGY: u32 = 0x006a_0000;
+const PO_REFS: [(u32, u32, u32); 2] = [(0x006b_0000, 0x006b_0100, 0x006b_0400), (0x006b_2000, 0x006b_2100, 0x006b_2400)];
+const PO_UNIT: u32 = 0x7001_0001;
+
+fn po_handle(i: u32) -> u32 {
+    0x5a00_0000 | i
+}
+
+fn pick(x: u32, from: &[u32]) -> u32 {
+    from[x as usize % from.len()]
+}
+
+/// A random world; returns the player slot the scan is called with.
+fn objects_world(m: &mut FlatMemory, r: &mut sim_collision::synth::Rng) -> u32 {
+    use engine::sim_collision::layout;
+    use sim_collision::synth::{self, Reference, References};
+    m.bytes[layout::OBJECT_MARKS as usize..][..4 * layout::OBJECT_MARK_SLOTS as usize].fill(0);
+    m.bytes[layout::CLUSTER_MARKS as usize..][..4 * 512].fill(0);
+    word(m, 0x004e_8c24, PO_PLAYERS);
+    word(m, PO_PLAYERS + 0x44, PO_PLAYERS + 0x100);
+    word(m, 0x004e_0300, PO_POOL);
+    word(m, PO_POOL + 0x44, PO_POOL + 0x100);
+    for p in 0..4 {
+        let unit = if r.chance(5) { u32::MAX } else { PO_UNIT };
+        word(m, PO_PLAYERS + 0x100 + p * 0x21c + 0x2c, unit);
+    }
+    let n = 2 + r.below(3);
+    for i in 0..16u32 {
+        let entry = PO_POOL + 0x100 + i * 12;
+        let object = PO_OBJECTS + i * 0x200;
+        word(m, entry, (0x5a00 + i) << 16 | i);
+        m.bytes[(entry + 3) as usize] = pick(r.next(), &[0, 1, 2, 3, 4, 7, 11, 7, 11]) as u8;
+        word(m, entry + 8, object);
+        m.bytes[(object + 0xaa) as usize] = pick(r.next(), &[2, 3, 4, 7, 11, 0, 5, 2, 3, 4]) as u8;
+        let parent = if i == 1 {
+            pick(r.next(), &[u32::MAX, u32::MAX, u32::MAX, u32::MAX, po_handle(5)])
+        } else {
+            pick(r.next(), &[u32::MAX, u32::MAX, u32::MAX, po_handle(1 + r.below(12)), po_handle(2 + r.below(10))])
+        };
+        word(m, object + 0x14, parent);
+        word(m, object + 0x10, pick(r.next(), &[u32::MAX, po_handle(2 + r.below(10)), po_handle(2 + r.below(10))]));
+        word(m, object + 0xc, pick(r.next(), &[u32::MAX, u32::MAX, po_handle(2 + r.below(10))]));
+        word(m, object + 0x14c, pick(r.next(), &[PO_UNIT, 0x1234, u32::MAX, PO_UNIT]));
+        let cluster = if r.chance(10) { 0xffff } else { r.below(n) as u16 };
+        m.bytes[(object + 0x2c) as usize..][..2].copy_from_slice(&cluster.to_le_bytes());
+        for (o, scale) in [(0x30u32, 2), (0x34, 2), (0x38, 1)] {
+            float(m, object + o, r.eighths(scale));
+        }
+        float(m, object + 0x3c, [0.5, 1.0, 2.0, 0.0, -1.0, 3.0][r.below(6) as usize]);
+    }
+    let portals = synth::random_portals(r, n);
+    let (_, bsp) = portals.write(PO_TOPOLOGY, |a, d| assert!(m.load(a, d)));
+    word(m, layout::ACTIVE_STRUCTURE, PO_TOPOLOGY);
+    word(m, layout::STRUCTURE_BSP, bsp);
+    let lists = [
+        (layout::COLLIDEABLE_HEADS, layout::COLLIDEABLE_ARRAY),
+        (layout::OTHER_HEADS, layout::OTHER_ARRAY),
+    ];
+    for (k, ((heads_cell, array_cell), (heads, array, data))) in lists.into_iter().zip(PO_REFS).enumerate() {
+        let mut clusters = Vec::new();
+        for _ in 0..n {
+            let mut list = Vec::new();
+            for _ in 0..r.below(if k == 0 { 5 } else { 3 }) {
+                list.push(Reference {
+                    handle: po_handle(1 + r.below(12)),
+                    kind: pick(r.next(), &[2, 3, 4, 7, 11, 0, 5, 2, 7, 11]) as u8,
+                    bounds: [r.eighths(2), r.eighths(2), r.eighths(1), [0.5, 1.0, 2.0][r.below(3) as usize]],
+                });
+            }
+            clusters.push(list);
+        }
+        References { clusters }.write(heads, array, data, |a, d| assert!(m.load(a, d)));
+        word(m, heads_cell, heads);
+        word(m, array_cell, array);
+    }
+    word(m, layout::FLOOD_EPOCH, pick(r.next(), &[9, u32::MAX, 0x1234]));
+    word(m, layout::VISIT_GENERATION, pick(r.next(), &[5, u32::MAX, 0x1234]));
+    m.bytes[layout::FLOOD_ACTIVE as usize] = r.below(2) as u8;
+    m.bytes[layout::VISIT_ACTIVE as usize] = r.below(2) as u8;
+    pick(r.next(), &[0, 1, 2, 0x3_0001])
+}
+
+#[test]
+fn player_objects_match_lifted() {
+    use engine::sim_collision::CollisionWorld;
+    use engine::sim_seats::player_objects::{self, Candidates, Decline};
+    use sim_collision::synth::Rng;
+    static EPOCH: sim_core::Epoch = sim_core::Epoch::new();
+    let Some((image, ram)) = image() else { return };
+    let world = CollisionWorld::new(&EPOCH);
+    let mut scan = at(image, points::PLAYER_PICKUP_SCAN.base);
+    let mut candidate = at(image, points::PLAYER_PICKUP_CANDIDATE.base);
+    for callee in [0x000b_b050, 0x0014_a5b0, 0x0014_a370, 0x0023_a160, 0x000b_8940, 0x000b_8a10, 0x0012_0850] {
+        scan.prime(callee);
+    }
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
+    let (mut answered, mut walked, mut observed_ok) = (0, 0, 0);
+    let (mut visit, mut candidates, mut pickups, mut no_unit) = (0, 0, 0, 0);
+    let (mut exits, mut passes) = (0, 0);
+    for case in 0..4000 {
+        let mut mem = ram.clone();
+        word(&mut mem, STACK, EXIT);
+        let slot = objects_world(&mut mem, &mut rng);
+        word(&mut mem, STACK + 4, slot);
+        let why = format!("case {case} slot {slot:#x}");
+        let gpr = [rng.next(), rng.next(), rng.next(), rng.next(), STACK, rng.next(), rng.next(), rng.next()];
+        let start = |eip: u32| {
+            let mut cpu = Cpu { gpr, eip, eflags: 0x2, mxcsr: 0x1fa0, ..Default::default() };
+            cpu.x87.control = 0x027f;
+            cpu.x87.tag = 0xffff;
+            cpu.x87.status = 0x20;
+            cpu
+        };
+        let gprs = |c: &runtime::CpuAbi| [c.ebx, c.esp, c.ebp, c.esi, c.edi];
+        let cpu = start(points::PLAYER_PICKUP_SCAN.base);
+        let mut cpu_regs = abi_cpu(&cpu);
+        let mut native = respawn_guest(&mem);
+
+        // The scan, in both candidate modes.
+        let observed = player_objects::predict(&cpu_regs, &mut native, &world, Candidates::Observed);
+        let port = player_objects::predict(&cpu_regs, &mut native, &world, Candidates::Port);
+        match (&observed, &port) {
+            (Ok(a), Ok(b)) => {
+                assert_eq!(a, b, "{why}: the modes agree when no candidate is called");
+                observed_ok += 1;
+            }
+            (Err(Decline::Candidate), Err(Decline::Pickup)) | (Err(Decline::Candidate), Ok(_)) => candidates += 1,
+            (Err(Decline::Visit), Err(Decline::Visit)) => visit += 1,
+            (Err(a), Err(b)) if a == b => {}
+            other => panic!("{why}: the modes disagree: {other:?}"),
+        }
+        if let Err(Decline::Pickup) = port {
+            pickups += 1;
+        }
+        if let Ok(prediction) = port {
+            answered += 1;
+            if prediction.writes.is_empty() {
+                no_unit += 1;
+            } else if prediction.writes.len() > 3 {
+                walked += 1;
+            }
+            let target = player_objects::apply(&prediction, &mut cpu_regs, &mut native).unwrap();
+            assert_eq!(target, EXIT, "{why}");
+            let mut cpu = cpu;
+            lifted::code::run_until(&mut scan, &mut cpu, &mut mem, 5_000_000, |c| c.eip == EXIT)
+                .unwrap_or_else(|e| panic!("{why}: {e}"));
+            let want = abi_cpu(&cpu);
+            assert_eq!(gprs(&cpu_regs), gprs(&want), "{why}: ebx esp ebp esi edi");
+            assert_eq!(prediction.differs(&want), None, "{why}");
+            assert_eq!(prediction.differs_in(&native), None, "{why}: a predicted word");
+            // Every byte above the dead stack.
+            let base = native.mappings()[0].physical_start as usize;
+            let live = &native.physical_ram()[base..base + RAM];
+            let dead = (STACK - 0x1_0000) as usize..STACK as usize;
+            let first = mem.bytes.iter().zip(live).enumerate()
+                .find(|(i, (a, b))| a != b && !dead.contains(i))
+                .map(|(i, _)| i);
+            assert_eq!(first, None, "{why}: first differing byte");
+        }
+
+        // 150e30 on the object the case names, against the guest up to its
+        // first call.
+        let handle = po_handle(2 + rng.below(10));
+        let mut probe = mem.clone();
+        word(&mut probe, STACK, EXIT);
+        word(&mut probe, STACK + 4, slot);
+        word(&mut probe, STACK + 8, handle);
+        let guest = respawn_guest(&probe);
+        let mut cpu = start(points::PLAYER_PICKUP_CANDIDATE.base);
+        let stop = |c: &Cpu| c.eip == EXIT || c.eip == 0x000f_fc60 || c.eip == 0x000b_adc0;
+        lifted::code::run_until(&mut candidate, &mut cpu, &mut probe, 1_000_000, stop)
+            .unwrap_or_else(|e| panic!("{why}: {e}"));
+        let left = cpu.eip == EXIT;
+        assert_eq!(player_objects::candidate_exits(&guest, slot, handle).unwrap(), left, "{why}: 150e30 exit for {handle:#x}");
+        if left {
+            exits += 1;
+            let want = abi_cpu(&cpu);
+            assert_eq!(gprs(&want), [gpr[3], STACK + 12, gpr[5], gpr[6], gpr[7]], "{why}: 150e30 preserved registers");
+            let base = guest.mappings()[0].physical_start as usize;
+            let live = &guest.physical_ram()[base..base + RAM];
+            let dead = (STACK - 0x1_0000) as usize..STACK as usize;
+            let first = probe.bytes.iter().zip(live).enumerate()
+                .find(|(i, (a, b))| a != b && !dead.contains(i))
+                .map(|(i, _)| i);
+            assert_eq!(first, None, "{why}: 150e30 wrote a byte");
+        } else {
+            passes += 1;
+        }
+    }
+    assert!(answered > 200 && walked > 30 && no_unit > 20, "answered {answered}, walked {walked}, no unit {no_unit}");
+    assert!(observed_ok > 20 && candidates > 20, "observed {observed_ok}, candidates {candidates}, visit {visit}");
+    assert!(exits > 200 && passes > 100 && pickups > 5, "150e30 exits {exits}, passes {passes}; pickups {pickups}");
+}

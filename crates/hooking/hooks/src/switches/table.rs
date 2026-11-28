@@ -118,6 +118,8 @@ pub const TABLE: &[Switch] = &[
         "the aim-assist cone 1a50a0 as the sim-objects kernel's shadow arm (sim-bridge/src/present.rs): promote after h2 sim diff parity and seats.aim clean"),
     sw("impl.sim.respawn-ready", Off, "sim", "2026-11-28",
         "the respawn gate 15dd40 with its callees and countdown as the sim-seats kernel's shadow arm (sim-bridge/src/present.rs); a host's event post and a local player's announcement stay the guest's: promote after h2 sim diff parity and seats.respawn clean"),
+    sw("impl.sim.player-objects", Off, "sim", "2026-11-28",
+        "the pickup scan 1508e0 with its object query (bb050 through the collision kernel), link walk and 150e30's early exits as the sim-seats kernel's shadow arm (sim-bridge/src/present.rs); a type 2 or 3 handle stays the guest's: promote after h2 sim diff parity and seats.player-objects clean"),
     sw("impl.sim.sound-events", On, "sim", "2026-11-27",
         "the sound simulation (docs/engine/sound-sim.md); h2 sim diff of firefight-beavercreek is identical over 10351 ticks"),
     sw("impl.sim.sound-events.table", Off, "sim", "2026-11-27",

@@ -182,7 +182,7 @@ pub fn cluster_flood(
 }
 
 /// What a visit writes, decided before anything is written.
-struct VisitPlan {
+pub struct VisitPlan {
     target: u32,
     out: u32,
     flood_epoch: u32,
@@ -191,7 +191,7 @@ struct VisitPlan {
     lists: u32,
     types: u32,
     radius: u32,
-    visit: Visit,
+    pub visit: Visit,
 }
 
 /// Entry H, `0x0bb050`: stack: lists, types, location, centre, radius,
@@ -201,15 +201,34 @@ fn plan_visit(
     g: &mut impl CollisionMemory,
     world: &CollisionWorld,
 ) -> Result<VisitPlan, Bail> {
-    sse_ready(c)?;
     let sp = c.esp;
-    let (args, cluster, zero) = {
+    let args = {
         let m = Read(&*g, (0, 0));
         let mut args = [0; 7];
         for (k, a) in args.iter_mut().enumerate() {
             *a = m.u32(sp.wrapping_add(4 + 4 * k as u32))?;
         }
-        (args, m.u16(args[2].wrapping_add(4))?, m.u32(layout::ZERO)?)
+        args
+    };
+    plan_visit_at(c, g, world, sp, args)
+}
+
+/// The visit `0x0bb050` would make as called with `args` (lists, types,
+/// location, centre, radius, out, capacity) and the stack pointer `sp` at
+/// its entry (the return address's slot), without the arguments being on
+/// the stack. A caller that is itself a Rust body plans the visit it would
+/// have called this way ([`visit_writes`] is what the visit leaves).
+pub fn plan_visit_at(
+    c: &CpuAbi,
+    g: &mut impl CollisionMemory,
+    world: &CollisionWorld,
+    sp: u32,
+    args: [u32; 7],
+) -> Result<VisitPlan, Bail> {
+    sse_ready(c)?;
+    let (cluster, zero) = {
+        let m = Read(&*g, (0, 0));
+        (m.u16(args[2].wrapping_add(4))?, m.u32(layout::ZERO)?)
     };
     let [lists, types, location, centre_at, radius, out, capacity] = args;
     // The graph is needed only when the visit floods.
@@ -288,25 +307,41 @@ fn plan_visit(
     })
 }
 
-fn commit_visit(c: &mut CpuAbi, g: &mut impl Memory, p: VisitPlan) -> Result<TransferAbi, GuestFault> {
+/// The words a visit leaves, as (address, value, width in bytes): the
+/// flood's epoch, its clusters' marks and its active byte, the visit's
+/// generation, the objects' marks and its active byte.
+pub fn visit_writes(p: &VisitPlan) -> Vec<(u32, u32, u8)> {
     let v = &p.visit;
+    let mut writes = Vec::new();
     if let Some(f) = &v.flood {
         let epoch = p.flood_epoch.wrapping_add(1);
-        g.set_u32(layout::FLOOD_EPOCH, epoch)?;
+        writes.push((layout::FLOOD_EPOCH, epoch, 4));
         for &cluster in &f.clusters {
-            g.set_u32(layout::CLUSTER_MARKS + 4 * u32::from(cluster), epoch)?;
+            writes.push((layout::CLUSTER_MARKS + 4 * u32::from(cluster), epoch, 4));
         }
-        g.set_u8(layout::FLOOD_ACTIVE, 0)?;
+        writes.push((layout::FLOOD_ACTIVE, 0, 1));
     }
     let generation = p.generation.wrapping_add(1);
-    g.set_u32(layout::VISIT_GENERATION, generation)?;
+    writes.push((layout::VISIT_GENERATION, generation, 4));
     for &slot in &v.marks {
-        g.set_u32(layout::OBJECT_MARKS + 4 * u32::from(slot), generation)?;
+        writes.push((layout::OBJECT_MARKS + 4 * u32::from(slot), generation, 4));
+    }
+    writes.push((layout::VISIT_ACTIVE, 0, 1));
+    writes
+}
+
+fn commit_visit(c: &mut CpuAbi, g: &mut impl Memory, p: VisitPlan) -> Result<TransferAbi, GuestFault> {
+    let v = &p.visit;
+    for (at, value, width) in visit_writes(&p) {
+        if width == 1 {
+            g.set_u8(at, value as u8)?;
+        } else {
+            g.set_u32(at, value)?;
+        }
     }
     for (i, &handle) in v.handles.iter().enumerate() {
         g.set_u32(p.out.wrapping_add(4 * i as u32), handle)?;
     }
-    g.set_u8(layout::VISIT_ACTIVE, 0)?;
     c.eax = v.eax();
     // Both returns end with `add esp, 0x420`.
     add_flags(c, c.esp.wrapping_sub(0x420), 0x420);

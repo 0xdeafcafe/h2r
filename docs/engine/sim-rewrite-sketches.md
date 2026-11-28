@@ -376,3 +376,31 @@ networked host and for a local player the event ticks stay guest. `sim.arms`
 reports `seats.respawn`. `respawn_ready_and_its_callees_match_lifted` puts
 the body and each callee against the lifted functions, and checks each
 decline by the original reaching the decline's address.
+
+*The pickup scan.* `1508e0` (`PLAYER_PICKUP_SCAN`, `ret 4`, the argument a
+player index) is called by `players_after` for each player. Its shadow arm
+(`engine/src/sim_seats/player_objects.rs`, `impl.sim.player-objects`, off)
+covers the whole body except the pickup call:
+
+| Part | Guest | Rust |
+|---|---|---|
+| no unit, or the unit's object has a parent | return | the two exits |
+| object query, capacity 16 | `bb050`, `14a5b0`, `14a370`, `23a160`, `b8940`, `b8a10` | `sim_collision::plan_visit_at` (the entry H kernel, planned with the arguments the scan pushes) and `visit_writes` |
+| type 2 or 3 | `150e30` | `candidate_exits`: no unit, a parent that is not a machine or crate, the object held by the unit (`+0x14c`), or out of reach |
+| type 7 or 11 | the `+0x10` / `+0xc` link walk, up to 16 handles | the same walk |
+
+`eax`, `ecx` and `edx` are the scan's callee scratch and are not reproduced
+(`players_after` reloads them); the callee-saved registers and `esp` are, and
+the return compare reads back every word the query writes (the flood epoch,
+the cluster and object marks, the generation and the two active bytes).
+
+The arm refuses by name and the guest answers: `visit` (the collision kernel
+declines the plan), `candidate` (a type 2 or 3 handle: the Halo 1 prompt
+feature has a `before` hook on `150e30` that sees every call, so skipping
+even an early-exit call changes what it records), `pickup` (a `150e30` past
+its early exits, which loops the unit's seats through `ffc60`, posts events
+and calls `badc0`, `ccba0`, `ccb80`, `138880`, `151ea0`, `cd7b0`, `150dd0`,
+`a8f10` and `15e8e0`; only reachable with `Candidates::Port`) and `fault`.
+So the arm is not `replaces_guest`. `sim.arms` reports `seats.player-objects`;
+`player_objects_match_lifted` puts the body, the query writes and
+`candidate_exits` against the lifted functions.

@@ -35,6 +35,7 @@ pub mod device;
 pub mod hud;
 pub mod leaf;
 pub mod look;
+pub mod player_objects;
 pub mod resources;
 pub mod respawn;
 pub mod targeting;
