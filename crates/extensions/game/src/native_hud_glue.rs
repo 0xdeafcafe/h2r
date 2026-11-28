@@ -42,14 +42,6 @@ impl Host for Glue {
         guest("screen quad")
     }
 
-    fn draw_text_quad(&self, _: &mut dyn GuestMemory, shader: u32, _: &HudVertices) -> bool {
-        guest(&format!("text quad of shader {shader:#x}"))
-    }
-
-    fn screen_fan(&self, _: &mut dyn GuestMemory, _: &HudVertices) -> bool {
-        guest("screen fan")
-    }
-
     fn fade_fan(&self, _: &mut dyn GuestMemory, _: &[[(u8, [f32; 4]); 1]; 4]) -> bool {
         guest("fade fan")
     }

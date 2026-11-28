@@ -5,21 +5,15 @@
 //! and their colours, as the glyph callback `0x0001f490` would push them
 //! to the screen quad `0x000363a0`.
 //!
-//! A string is the guest's until [`PROOF_DRAWS`](super::walk::PROOF_DRAWS) draws from its call site
-//! (the return into `0x0001fa50`'s caller) matched Rust's quads at the
-//! screen quad: corners and packed colour bit for bit, and each quad's
-//! texel extent the size of its glyph, in order and as many. After that
-//! the host draws the site's strings as text runs over its glyph pages
-//! ([`super::Host::rust_string`]) and the string draw is left out; one
-//! draw in [`RECHECK`](super::walk::RECHECK) is still the guest's and is checked again. A draw
-//! that differs keeps the site on the guest for the map.
-//!
-//! What the layout does not read is refused by name and counted
-//! (`native_ui_overlay_string_<cause>`): the guest draws it.
+//! The draw is Rust's: its early returns (`0x0001f07f`..`0x0001f0c4`)
+//! as the guest takes them ([`enter`]), then the host draws the string as
+//! text runs over its glyph pages ([`super::Host::rust_string`]). The
+//! guest's body, its batch (`0x00035b90`) and its glyph quads
+//! (`0x0001f490`, `0x0001f3a0`, `0x000363a0`) never run. What the layout
+//! does not read panics by name.
 
-use std::cell::RefCell;
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{LazyLock, Mutex};
+use std::collections::BTreeMap;
+use std::sync::Mutex;
 
 use engine::memory::GuestMemory;
 use frame_scene::OverlayBlend;
@@ -27,8 +21,6 @@ use scene_extract::hud::{self, walk};
 use scene_extract::ui::{Justify, UiText};
 
 pub use walk::GlyphQuad;
-
-use super::walk::{Arm, Proof};
 
 /// The string draw's return into `0x0001fa50`, which turns a string's
 /// UTF-16 into the units the draw takes, and into the HUD's `0x0001fb10`.
@@ -192,14 +184,6 @@ pub fn lay_out(mem: &dyn GuestMemory, call: &StringCall, fonts: &dyn UiText) -> 
     if call.clip != 0 {
         return Err("clip");
     }
-    // What the draw itself returns from draws nothing: the guest's.
-    if read(mem.u8(TEXT_OFF).ok())? != 0
-        || read(mem.u16(QUADS_OFF).ok())? != 0
-        || read(mem.u8(CACHE_READY).ok())? == 0
-        || read(mem.u32(GLYPH_BITMAP).ok())? == 0
-    {
-        return Err("off");
-    }
     let font = u16::try_from(read(mem.u32(FONT).ok())?).map_err(|_| "font")?;
     if read(mem.u16(TABS).ok())? != 0 {
         return Err("tabs");
@@ -257,9 +241,6 @@ pub fn lay_out(mem: &dyn GuestMemory, call: &StringCall, fonts: &dyn UiText) -> 
             return Err("overflow");
         }
     }
-    if glyphs.is_empty() {
-        return Err("empty");
-    }
     let colour = read(four(mem, COLOUR))?;
     let shadow = if read(mem.u8(SHADOW_ON).ok())? != 0 { Some(read(four(mem, SHADOW))?) } else { None };
     let (main, shadow) = walk::text_colours(&colour, shadow.as_ref()).ok_or("colour")?;
@@ -279,44 +260,49 @@ pub fn lay_out(mem: &dyn GuestMemory, call: &StringCall, fonts: &dyn UiText) -> 
     Ok(StringRun { font, quads, origin: [f32::from(wl), f32::from(wt)], blend })
 }
 
-/// Whether the guest's screen quad at `corners` (four vertices of x, y,
-/// u, v and a packed colour, `0x0001f3a0`) is `quad`: its corners and
-/// colour bit for bit, and its texels as wide and as high as its glyph
-/// (the glyph cache's texels are the glyph's own, one to one).
-pub fn glyph_matches(mem: &dyn GuestMemory, corners: u32, quad: &GlyphQuad) -> bool {
-    let [x0, y0, x1, y1] = quad.rect;
-    let read = || {
-        let mut uv = [[0.0f32; 2]; 4];
-        for (i, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].into_iter().enumerate() {
-            let at = corners.checked_add(i as u32 * 0x14)?;
-            let word = |o: u32| mem.u32(at.checked_add(o)?).ok();
-            if [word(0)?, word(4)?, word(16)?] != [x.to_bits(), y.to_bits(), quad.colour] {
-                return Some(false);
-            }
-            uv[i] = [f32::from_bits(word(8)?), f32::from_bits(word(12)?)];
-        }
-        let square = uv[1][1] == uv[0][1] && uv[3][0] == uv[0][0] && uv[2] == [uv[1][0], uv[3][1]];
-        Some(square && uv[1][0] - uv[0][0] == x1 - x0 && uv[3][1] - uv[0][1] == y1 - y0)
-    };
-    read().unwrap_or(false)
+/// What the draw's entry does before its layout.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Entry {
+    /// It returns before it counts the draw: text off (`0x0051080c`), or
+    /// the screen quads off (`0x00485602`).
+    Off,
+    /// It counts the draw ([`DRAW_COUNT`]) and returns: the glyph cache
+    /// not ready or not made, or the string empty.
+    Nothing,
+    /// It counts the draw and lays the string out: the run the host draws.
+    Draw(StringRun),
 }
 
-#[derive(Default)]
-struct State {
-    generation: Option<u64>,
-    /// By the call site.
-    proofs: HashMap<u32, Proof>,
-}
-
-static STATE: LazyLock<Mutex<State>> = LazyLock::new(Mutex::default);
-
-fn proof<T>(site: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
-    let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
-    let generation = crate::native_map_work::generation();
-    if s.generation != Some(generation) {
-        *s = State { generation: Some(generation), ..State::default() };
+/// `STRING_DRAW`'s entry (`esp` its return slot), as `0x0001f07f`..
+/// `0x0001f0c4` takes it, then the layout. `Err`: what Rust does not lay
+/// out, and the call's site.
+pub fn enter(mem: &mut dyn GuestMemory, esp: u32, eax: u32, ecx: u32, fonts: Option<&dyn UiText>) -> Result<Entry, String> {
+    let read = |v: Option<u32>| v.ok_or_else(|| "the draw's state does not read".to_string());
+    if read(mem.u8(TEXT_OFF).ok().map(u32::from))? != 0 || read(mem.u16(QUADS_OFF).ok().map(u32::from))? != 0 {
+        return Ok(Entry::Off);
     }
-    f(s.proofs.entry(site).or_default())
+    let moved = read(mem.u16(DRAW_COUNT).ok().map(u32::from))?.wrapping_add(1) as u16;
+    if mem.write(DRAW_COUNT, &moved.to_le_bytes()).is_err() {
+        return Err(format!("the draw counter at {DRAW_COUNT:#x} did not take its word"));
+    }
+    let Some(call) = StringCall::read(&*mem, esp, eax, ecx) else {
+        return Err("the call does not read".to_string());
+    };
+    if read(mem.u8(CACHE_READY).ok().map(u32::from))? == 0 || read(mem.u32(GLYPH_BITMAP).ok())? == 0 {
+        return Ok(Entry::Nothing);
+    }
+    if read(mem.u32(call.units).ok())? == 0 {
+        return Ok(Entry::Nothing);
+    }
+    let site = call.site;
+    let Some(fonts) = fonts else { return Err(format!("no fonts (from {site:#x})")) };
+    match lay_out(&*mem, &call, fonts) {
+        Ok(run) => {
+            count("drawn");
+            Ok(Entry::Draw(run))
+        }
+        Err(why) => Err(format!("{why} (from {site:#x})")),
+    }
 }
 
 static COUNTS: Mutex<BTreeMap<&'static str, u64>> = Mutex::new(BTreeMap::new());
@@ -331,99 +317,9 @@ pub fn counters() -> Vec<(String, u64)> {
     counts.iter().map(|(what, &n)| (format!("native_ui_overlay_string_{what}"), n)).collect()
 }
 
-/// A shadowed draw: the quads Rust laid out, and how far the guest's
-/// matched.
-struct Expect {
-    site: u32,
-    quads: Vec<GlyphQuad>,
-    next: usize,
-    matched: bool,
-}
-
-thread_local! {
-    static EXPECT: RefCell<Option<Expect>> = const { RefCell::new(None) };
-}
-
-/// What the string draw's entry does.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Plan {
-    /// The guest draws it.
-    Guest,
-    /// Rust draws it.
-    Own(StringRun),
-}
-
-/// `STRING_DRAW`'s entry (`esp` its return slot): whose the draw is.
-/// `fonts` lays the string out; with none the guest does.
-pub fn plan(mem: &dyn GuestMemory, esp: u32, eax: u32, ecx: u32, fonts: Option<&dyn UiText>) -> Plan {
-    // A check the draw's return did not finish (an unwind) has no answer.
-    if EXPECT.with(|e| e.borrow_mut().take()).is_some() {
-        count("unfinished");
-    }
-    let refused = |why: &'static str| {
-        count(why);
-        Plan::Guest
-    };
-    let Some(call) = StringCall::read(mem, esp, eax, ecx) else { return refused("read") };
-    // A site whose draw differed is not laid out again on this map.
-    if proof(call.site, |p| p.failed()) {
-        return refused("differed");
-    }
-    let Some(fonts) = fonts else { return refused("fonts") };
-    let run = match lay_out(mem, &call, fonts) {
-        Ok(run) => run,
-        Err(why) => return refused(why),
-    };
-    match proof(call.site, Proof::arm) {
-        Arm::Guest => refused("differed"),
-        Arm::Shadow => {
-            EXPECT.with(|e| *e.borrow_mut() = Some(Expect { site: call.site, quads: run.quads, next: 0, matched: true }));
-            Plan::Guest
-        }
-        Arm::Own => Plan::Own(run),
-    }
-}
-
-/// The guest's screen quad at `corners`, in a shadowed string's draw:
-/// checked against the next quad Rust laid out.
-pub fn observe_glyph(mem: &dyn GuestMemory, corners: u32) {
-    EXPECT.with(|e| {
-        let mut e = e.borrow_mut();
-        let Some(e) = e.as_mut() else { return };
-        let matched = e.quads.get(e.next).is_some_and(|quad| glyph_matches(mem, corners, quad));
-        e.matched &= matched;
-        e.next += 1;
-    });
-}
-
-/// `STRING_DRAW`'s return: a shadowed draw's answer.
-pub fn finish() {
-    let Some(e) = EXPECT.with(|e| e.borrow_mut().take()) else { return };
-    let matched = e.matched && e.next == e.quads.len();
-    count(if matched { "shadow_matched" } else { "shadow_differed" });
-    if proof(e.site, |p| p.checked(matched)) {
-        count("proven");
-    }
-}
-
-/// A proven string's draw by the host: counted, and the draw's counter
-/// moved as the guest's draw moves it.
-pub fn owned(mem: &mut dyn GuestMemory, drawn: bool) {
-    if !drawn {
-        count("host");
-        return;
-    }
-    count("drawn");
-    let moved = mem.u16(DRAW_COUNT).ok().map(|n| n.wrapping_add(1).to_le_bytes());
-    if !moved.is_some_and(|word| mem.write(DRAW_COUNT, &word).is_ok()) {
-        eprintln!("native strings: the draw counter at {DRAW_COUNT:#x} did not take its word");
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::walk::PROOF_DRAWS;
     use engine::testing::FakeGuest;
 
     /// Every glyph 8 by 10, 2 under the line's top, 10 apart, lines 12
@@ -477,7 +373,7 @@ mod tests {
             m.put_u16(hud::WINDOW + 2 * i as u32, v);
         }
         m.put_u32(0x004e_6948, 0).put_u8(0x0048_5ac2, 0);
-        m.put_u8(TEXT_OFF, 0).put_u16(QUADS_OFF, 0).put_u8(CACHE_READY, 1).put_u32(GLYPH_BITMAP, 0x9000);
+        m.put_u8(TEXT_OFF, 0).put_u16(QUADS_OFF, 0).put_u8(CACHE_READY, 1).put_u32(GLYPH_BITMAP, 0x9000).put_u16(DRAW_COUNT, 0);
         m.put_u32(FONT, 6).put_u32(WRAP, 0).put_u16(LIMIT, u16::MAX).put_u32(JUSTIFY, 0);
         m.put_u16(TABS, 0).put_u16(INDENTS[0], 0).put_u16(INDENTS[1], 0);
         for i in 0..4 {
@@ -526,8 +422,6 @@ mod tests {
         assert_eq!(refusal(&|_, c| c.scale = 0.5), "scale");
         assert_eq!(refusal(&|_, c| c.extra = [0, 4]), "extra");
         assert_eq!(refusal(&|_, c| c.clip = 0x10), "clip");
-        assert_eq!(refusal(&|m, _| { m.put_u16(QUADS_OFF, 1); }), "off");
-        assert_eq!(refusal(&|m, _| { m.put_u8(CACHE_READY, 0); }), "off");
         assert_eq!(refusal(&|m, _| { m.put_u32(FONT, 0x1_0000); }), "font");
         assert_eq!(refusal(&|m, _| { m.put_u16(TABS, 2); }), "tabs");
         assert_eq!(refusal(&|m, _| { m.put_u16(INDENTS[1], 4); }), "indent");
@@ -547,70 +441,42 @@ mod tests {
         assert!(lay_out(&m, &call, &Cells).is_ok());
     }
 
-    /// The guest's glyph quad as `0x0001f3a0` pushes it: the cache's
-    /// texels at `(u, v)`, one to one.
-    fn guest_glyph(m: &mut FakeGuest, at: u32, quad: &GlyphQuad, (u, v): (f32, f32)) {
-        let [x0, y0, x1, y1] = quad.rect;
-        let (w, h) = (x1 - x0, y1 - y0);
-        for (i, [x, y, s, t]) in [[x0, y0, u, v], [x1, y0, u + w, v], [x1, y1, u + w, v + h], [x0, y1, u, v + h]].into_iter().enumerate() {
-            let c = at + 0x14 * i as u32;
-            m.put_f32(c, x).put_f32(c + 4, y).put_f32(c + 8, s).put_f32(c + 12, t).put_u32(c + 16, quad.colour);
+    #[test]
+    fn the_entry_returns_where_the_guest_does_and_counts_as_it_does() {
+        let go = |m: &mut FakeGuest| enter(m, ESP, 0, RECT, Some(&Cells));
+        let draws = |m: &FakeGuest| m.u16(DRAW_COUNT).unwrap();
+        // Text off or the quads off: back before the count.
+        let offs: [fn(&mut FakeGuest); 2] = [|m| { m.put_u8(TEXT_OFF, 1); }, |m| { m.put_u16(QUADS_OFF, 1); }];
+        for off in offs {
+            let mut m = plain();
+            off(&mut m);
+            assert_eq!(go(&mut m), Ok(Entry::Off));
+            assert_eq!(draws(&m), 0);
         }
-    }
-
-    #[test]
-    fn a_runs_quad_is_the_guests_place_texels_and_colour() {
-        let quad = GlyphQuad { index: 7, rect: [40.0, 22.0, 48.0, 32.0], colour: 0xffff_ffff };
-        let mut m = FakeGuest::new();
-        guest_glyph(&mut m, 0x5000, &quad, (100.0, 30.0));
-        assert!(glyph_matches(&m, 0x5000, &quad));
-        assert!(!glyph_matches(&m, 0x5000, &GlyphQuad { colour: 0xff00_0000, ..quad }), "colour");
-        assert!(!glyph_matches(&m, 0x5000, &GlyphQuad { rect: [41.0, 22.0, 49.0, 32.0], ..quad }), "place");
-        // Texels of another size: the cache's glyph is not this one.
-        m.put_f32(0x5000 + 0x14 + 8, 107.0).put_f32(0x5000 + 0x28 + 8, 107.0);
-        assert!(!glyph_matches(&m, 0x5000, &quad), "texels");
-    }
-
-    #[test]
-    fn a_site_is_the_guests_until_its_strings_matched_then_rusts() {
+        // The cache not ready or not made, or no units: counted, nothing drawn.
+        let nothings: [fn(&mut FakeGuest); 3] = [
+            |m| { m.put_u8(CACHE_READY, 0); },
+            |m| { m.put_u32(GLYPH_BITMAP, 0); },
+            |m| { m.put_u32(UNITS, 0); },
+        ];
+        for nothing in nothings {
+            let mut m = plain();
+            nothing(&mut m);
+            assert_eq!(go(&mut m), Ok(Entry::Nothing));
+            assert_eq!(draws(&m), 1);
+        }
         let mut m = plain();
-        let site = 0x0016_1a99;
-        m.put_u32(ESP + PLAIN_RETURN_FROM_ESP, site);
         let laid = lay_out(&m, &call(&m), &Cells).unwrap();
-        for (n, quad) in laid.quads.iter().enumerate() {
-            guest_glyph(&mut m, 0x6000 + 0x50 * n as u32, quad, (8.0 * n as f32, 0.0));
-        }
-        for _ in 0..PROOF_DRAWS {
-            assert_eq!(plan(&m, ESP, 0, RECT, Some(&Cells)), Plan::Guest);
-            for n in 0..laid.quads.len() as u32 {
-                observe_glyph(&m, 0x6000 + 0x50 * n);
-            }
-            finish();
-        }
-        assert_eq!(plan(&m, ESP, 0, RECT, Some(&Cells)), Plan::Own(laid.clone()));
-        // No fonts: the guest's.
-        assert_eq!(plan(&m, ESP, 0, RECT, None), Plan::Guest);
+        assert_eq!(go(&mut m), Ok(Entry::Draw(laid)));
+        assert_eq!(go(&mut m).map(|_| draws(&m)), Ok(2));
     }
 
     #[test]
-    fn a_draw_that_differs_keeps_the_site_on_the_guest() {
+    fn a_string_the_layout_does_not_read_names_its_cause_and_site() {
         let mut m = plain();
-        let site = 0x0016_1ae6;
-        m.put_u32(ESP + PLAIN_RETURN_FROM_ESP, site);
-        let laid = lay_out(&m, &call(&m), &Cells).unwrap();
-        for (n, quad) in laid.quads.iter().enumerate() {
-            guest_glyph(&mut m, 0x6000 + 0x50 * n as u32, quad, (0.0, 0.0));
-        }
-        assert_eq!(plan(&m, ESP, 0, RECT, Some(&Cells)), Plan::Guest);
-        // One quad fewer than Rust's.
-        for n in 0..laid.quads.len() as u32 - 1 {
-            observe_glyph(&m, 0x6000 + 0x50 * n);
-        }
-        finish();
-        for _ in 0..PROOF_DRAWS + 1 {
-            assert_eq!(plan(&m, ESP, 0, RECT, Some(&Cells)), Plan::Guest);
-            finish();
-        }
-        assert!(!proof(site, |p| p.proven()));
+        m.put_u16(TABS, 2);
+        assert_eq!(enter(&mut m, ESP, 0, RECT, Some(&Cells)), Err(format!("tabs (from {SITE:#x})")));
+        let mut m = plain();
+        assert_eq!(enter(&mut m, ESP, 0, RECT, None), Err(format!("no fonts (from {SITE:#x})")));
     }
 }

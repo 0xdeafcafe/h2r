@@ -22,7 +22,10 @@
 //! and drawn in the guest's order and the guest's walk is left out. One
 //! walk in [`RECHECK`] is the guest's, with every widget checked again.
 //!
-//! A widget is the guest's until [`PROOF_DRAWS`] of its draws matched
+//! A text widget laid out in Rust is Rust's at its draw ([`plan_text`]):
+//! the host draws its glyph quads and the guest's string draw never runs.
+//!
+//! A bitmap widget is the guest's until [`PROOF_DRAWS`] of its draws matched
 //! Rust's quad for quad (the vertices, the bitmap, image and shader and
 //! the globals, bit for bit, at `HUD_QUAD_SETUP`). After that Rust draws
 //! it through the host ([`super::Host::rust_hud_widget`]) and the guest's
@@ -273,7 +276,6 @@ struct Active {
     /// not Rust's to check.
     foreign: bool,
     expect: Option<Expect>,
-    text: Option<ExpectText>,
     screen: Option<ExpectScreen>,
 }
 
@@ -284,17 +286,6 @@ struct ExpectScreen {
     widget: u32,
     draw: ScreenDraw,
     calls: u32,
-    matched: bool,
-}
-
-/// A shadowed text draw: the glyph quads Rust laid out, and how far the
-/// guest's matched.
-#[derive(Clone, Debug, PartialEq)]
-struct ExpectText {
-    widget: u32,
-    quads: Vec<GlyphQuad>,
-    globals: Vec<(u32, u32)>,
-    next: usize,
     matched: bool,
 }
 
@@ -330,7 +321,7 @@ pub fn enter(mem: &dyn GuestMemory, definition: u32, player: u32, record: u32, s
             };
             (0..block.len() / kind.size()).any(|i| foreign(mem, blocks.address(kind, i)))
         });
-        Some(Active { blocks, shown, calls: Vec::new(), foreign: any_foreign, expect: None, text: None, screen: None })
+        Some(Active { blocks, shown, calls: Vec::new(), foreign: any_foreign, expect: None, screen: None })
     };
     let active = read();
     if active.is_none() {
@@ -381,7 +372,9 @@ pub fn plan_loop() -> LoopPlan {
     if shown.iter().any(|s| s.0 == Kind::Screen) {
         return refused("loop_screen");
     }
-    if !shown.iter().all(|s| proof(s.1, |p| p.proven())) {
+    // A text widget is Rust's at its draw ([`plan_text`]): only the
+    // bitmaps' proofs hold the loop.
+    if !shown.iter().all(|s| s.0 == Kind::Text || proof(s.1, |p| p.proven())) {
         return refused("loop_unproven");
     }
     LoopPlan::Own(shown)
@@ -780,57 +773,7 @@ pub fn plan_text(mem: &dyn GuestMemory, fp: Fp, fonts: Option<&dyn UiText>, reco
             return refused(why);
         }
     };
-    match arm(widget) {
-        Arm::Guest => refused("text_differed"),
-        Arm::Shadow => {
-            let e = ExpectText { widget, quads: laid.quads, globals: laid.writes, next: 0, matched: true };
-            ACTIVE.with(|a| {
-                if let Some(a) = a.borrow_mut().as_mut() {
-                    a.text = Some(e);
-                }
-            });
-            TextPlan::Guest
-        }
-        Arm::Own => TextPlan::Own(laid),
-    }
-}
-
-/// Whether the guest's glyph quad at `corners` (four vertices of x, y,
-/// u, v and a packed colour, `0x0001f3a0`) is `quad`.
-fn glyph_matches(mem: &dyn GuestMemory, corners: u32, quad: &GlyphQuad) -> bool {
-    let [x0, y0, x1, y1] = quad.rect.map(f32::to_bits);
-    let read = || {
-        for (i, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].into_iter().enumerate() {
-            let at = corners.checked_add(i as u32 * 0x14)?;
-            if [mem.u32(at).ok()?, mem.u32(at.checked_add(4)?).ok()?, mem.u32(at.checked_add(16)?).ok()?] != [x, y, quad.colour] {
-                return Some(false);
-            }
-        }
-        Some(true)
-    };
-    read().unwrap_or(false)
-}
-
-/// The guest's screen quad, in a shadowed text widget's draw: a glyph
-/// of its string, checked against the next quad Rust laid out.
-pub fn observe_glyph(mem: &dyn GuestMemory, corners: u32) {
-    ACTIVE.with(|a| {
-        let mut a = a.borrow_mut();
-        let Some(e) = a.as_mut().and_then(|a| a.text.as_mut()) else { return };
-        let matched = e.quads.get(e.next).is_some_and(|quad| glyph_matches(mem, corners, quad));
-        e.matched &= matched;
-        e.next += 1;
-    });
-}
-
-/// `HUD_TEXT_WIDGET`'s return: a shadowed draw's answer.
-pub fn finish_text(mem: &dyn GuestMemory) {
-    let Some(e) = ACTIVE.with(|a| a.borrow_mut().as_mut().and_then(|a| a.text.take())) else { return };
-    let matched = e.matched && e.next == e.quads.len() && globals_hold(mem, &e.globals);
-    count(if matched { "text_shadow_matched" } else { "text_shadow_differed" });
-    if proof(e.widget, |p| p.checked(matched)) {
-        count("text_proven");
-    }
+    TextPlan::Own(laid)
 }
 
 /// The screen-effect widget at `widget` worked out in Rust with `inputs`.
@@ -1086,7 +1029,7 @@ mod tests {
 
     fn shadow(e: Expect) {
         let blocks = Blocks::default();
-        ACTIVE.with(|a| *a.borrow_mut() = Some(Active { blocks, shown: Vec::new(), calls: Vec::new(), foreign: false, expect: Some(e), text: None, screen: None }));
+        ACTIVE.with(|a| *a.borrow_mut() = Some(Active { blocks, shown: Vec::new(), calls: Vec::new(), foreign: false, expect: Some(e), screen: None }));
     }
 
     fn answer(m: &FakeGuest) -> Expect {
@@ -1170,7 +1113,7 @@ mod tests {
         let mut blocks = Blocks::default();
         blocks.bitmaps = (0x3000, vec![0; 2 * walk::BITMAP_SIZE]);
         let shown = vec![Shown { kind: Kind::Bitmap, index: 1, inputs: [1.0, 0.0, 0.0, 0.5] }];
-        let active = Active { blocks, shown, calls: Vec::new(), foreign: false, expect: None, text: None, screen: None };
+        let active = Active { blocks, shown, calls: Vec::new(), foreign: false, expect: None, screen: None };
         assert_eq!(expected_calls(&active), vec![(Kind::Bitmap, 0x3000 + walk::BITMAP_SIZE as u32, bits(&[1.0, 0.0, 0.0, 0.5]))]);
     }
 
@@ -1184,7 +1127,7 @@ mod tests {
         blocks.bitmaps = (0x3000, vec![0; walk::BITMAP_SIZE]);
         // Selected with other inputs than the guest gives.
         let shown = vec![Shown { kind: Kind::Bitmap, index: 0, inputs: [0.5; 4] }];
-        ACTIVE.with(|a| *a.borrow_mut() = Some(Active { blocks, shown, calls: Vec::new(), foreign: false, expect: None, text: None, screen: None }));
+        ACTIVE.with(|a| *a.borrow_mut() = Some(Active { blocks, shown, calls: Vec::new(), foreign: false, expect: None, screen: None }));
         let fp = Fp { mxcsr: 0x1f80, control: 0x027f };
         assert_eq!(plan(&m, fp, 0, 0x6000, 0x3000, 0x7000), Plan::Guest);
         assert!(ACTIVE.with(|a| a.borrow().as_ref().unwrap().expect.is_none()));
@@ -1291,57 +1234,8 @@ mod tests {
         assert_eq!(lay_out_text(&m, FP, &Cells, RECORD, TEXT, &[1.0; 4]), Ok(None));
     }
 
-    /// The guest's glyph quad for `quad` at `at` (`0x0001f3a0`).
-    fn guest_glyph(m: &mut FakeGuest, at: u32, quad: &GlyphQuad) {
-        let [x0, y0, x1, y1] = quad.rect;
-        for (i, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].into_iter().enumerate() {
-            let v = at + 0x14 * i as u32;
-            m.put_f32(v, x).put_f32(v + 4, y).put_u32(v + 16, quad.colour);
-        }
-    }
-
-    fn shadow_text(quads: Vec<GlyphQuad>) {
-        let e = ExpectText { widget: 0x5100, quads, globals: Vec::new(), next: 0, matched: true };
-        ACTIVE.with(|a| {
-            *a.borrow_mut() = Some(Active { blocks: Blocks::default(), shown: Vec::new(), calls: Vec::new(), foreign: false, expect: None, text: Some(e), screen: None });
-        });
-    }
-
-    fn text_answer() -> ExpectText {
-        ACTIVE.with(|a| a.borrow().as_ref().and_then(|a| a.text.clone())).unwrap()
-    }
-
     #[test]
-    fn the_guests_glyph_quads_match_rusts_in_order_place_and_colour() {
-        let quads = vec![
-            GlyphQuad { index: 1, rect: [11.0, 21.0, 19.0, 31.0], colour: 0x8000_0000 },
-            GlyphQuad { index: 1, rect: [10.0, 20.0, 18.0, 30.0], colour: 0xffff_ffff },
-        ];
-        let mut m = FakeGuest::new();
-        shadow_text(quads.clone());
-        for quad in &quads {
-            guest_glyph(&mut m, 0x9000, quad);
-            observe_glyph(&m, 0x9000);
-        }
-        let e = text_answer();
-        assert!(e.matched && e.next == 2);
-        // The same quads with the shadow after its glyph differ.
-        shadow_text(quads.clone());
-        for quad in quads.iter().rev() {
-            guest_glyph(&mut m, 0x9000, quad);
-            observe_glyph(&m, 0x9000);
-        }
-        assert!(!text_answer().matched);
-        // Another colour differs.
-        shadow_text(quads.clone());
-        guest_glyph(&mut m, 0x9000, &GlyphQuad { colour: 0x7f00_0000, ..quads[0] });
-        observe_glyph(&m, 0x9000);
-        assert!(!text_answer().matched);
-        ACTIVE.with(|a| *a.borrow_mut() = None);
-    }
-
-    #[test]
-    fn a_text_widget_rust_did_not_select_or_with_no_fonts_is_the_guests() {
+    fn a_selected_text_widget_is_rusts_and_one_not_selected_or_with_no_fonts_the_guests() {
         let mut m = number_widget();
         for i in 0..4 {
             m.put_f32(0x7800 + 4 * i, 1.0);
@@ -1349,17 +1243,18 @@ mod tests {
         let mut blocks = Blocks::default();
         blocks.texts = (TEXT, vec![0; walk::TEXT_SIZE]);
         let shown = vec![Shown { kind: Kind::Text, index: 0, inputs: [1.0; 4] }];
-        let active = || Active { blocks: blocks.clone(), shown: shown.clone(), calls: Vec::new(), foreign: false, expect: None, text: None, screen: None };
+        let active = || Active { blocks: blocks.clone(), shown: shown.clone(), calls: Vec::new(), foreign: false, expect: None, screen: None };
         ACTIVE.with(|a| *a.borrow_mut() = Some(active()));
         assert_eq!(plan_text(&m, FP, None, RECORD, TEXT, 0x7800), TextPlan::Guest);
-        // Selected, with fonts: an unproven widget is shadowed.
-        assert_eq!(plan_text(&m, FP, Some(&Cells), RECORD, TEXT, 0x7800), TextPlan::Guest);
-        assert_eq!(text_answer().quads.len(), 4);
+        // Selected, with fonts: Rust's, with no proof.
+        match plan_text(&m, FP, Some(&Cells), RECORD, TEXT, 0x7800) {
+            TextPlan::Own(text) => assert_eq!(text.quads.len(), 4),
+            TextPlan::Guest => panic!("a selected text widget is Rust's"),
+        }
         // Other inputs than Rust's walk gave: not laid out.
         ACTIVE.with(|a| *a.borrow_mut() = Some(active()));
         m.put_f32(0x7800, 0.5);
         assert_eq!(plan_text(&m, FP, Some(&Cells), RECORD, TEXT, 0x7800), TextPlan::Guest);
-        assert!(ACTIVE.with(|a| a.borrow().as_ref().unwrap().text.is_none()));
         ACTIVE.with(|a| *a.borrow_mut() = None);
     }
 
@@ -1423,7 +1318,7 @@ mod tests {
             }
             ACTIVE.with(|a| {
                 let e = ExpectScreen { widget: 0x5200, draw: draw.clone(), calls: 0, matched: true };
-                *a.borrow_mut() = Some(Active { blocks: Blocks::default(), shown: Vec::new(), calls: Vec::new(), foreign: false, expect: None, text: None, screen: Some(e) });
+                *a.borrow_mut() = Some(Active { blocks: Blocks::default(), shown: Vec::new(), calls: Vec::new(), foreign: false, expect: None, screen: Some(e) });
             });
             observe_screen(&m, eax, esp);
             let e = ACTIVE.with(|a| a.borrow().as_ref().and_then(|a| a.screen.clone())).unwrap();
@@ -1434,7 +1329,7 @@ mod tests {
 
     /// A walk of `definition` showing `shown`, as [`enter`] leaves it.
     fn walking(definition: u32, blocks: &Blocks, shown: &[Shown]) {
-        let active = Active { blocks: blocks.clone(), shown: shown.to_vec(), calls: Vec::new(), foreign: false, expect: None, text: None, screen: None };
+        let active = Active { blocks: blocks.clone(), shown: shown.to_vec(), calls: Vec::new(), foreign: false, expect: None, screen: None };
         ACTIVE.with(|a| *a.borrow_mut() = Some(active));
         LOOP.with(|l| *l.borrow_mut() = Loop { definition, ..Loop::default() });
     }

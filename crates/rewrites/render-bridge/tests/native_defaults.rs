@@ -108,7 +108,7 @@ fn stages() -> Vec<Stage> {
         Stage {
             name: "ui",
             on: render_bridge::native_hud::on,
-            label: "native_ui_screen_fan",
+            label: "native_ui_fade_fan",
             feature: &render_bridge::native_hud::NativeHud,
         },
     ]
