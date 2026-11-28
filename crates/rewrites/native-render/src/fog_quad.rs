@@ -539,6 +539,8 @@ mod tests {
         m.insert(tag + 0x48, images);
         m.insert(image + 0x70, 5);
         m.insert(image + 0x50, 0x00ab_cd00);
+        // Not streamed (`+0x0f` bit 1 clear).
+        m.insert(image + 0xc, 0);
         m.insert(crate::effect_material::RESIDENT_STAMP, 4);
         let word = |a: u32| m.get(&a).copied();
         assert_eq!(ramp_texture(&word), Ok(Ramp::Header(0x00ab_cd00)));
