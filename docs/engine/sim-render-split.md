@@ -1,8 +1,8 @@
 # Sim and render split
 
-Status: Design. The render random stream and the gather-lens exit are built; every other row is a slice below.
-Code: `crates/extensions/game/src/render_rng.rs` (the private stream), `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs` (`outside_gather_lens`, the object setup seam), `crates/platform/d3d/src/scaled.rs` (`ScaledBackend`, the reference copy), `crates/extensions/game/src/d3d_glue.rs` (`protected_readbacks`, `single_copy`). Tests: `crates/platform/d3d/tests/render_scale.rs`.
-Switch: `impl.sim.frame-guard` and `film.verify` (both off, both Design), added to [switches.md](../runtime/switches.md) by the slices that build them.
+Status: Design. The render random stream, the gather-lens exit and the frame guard (slice 1) are built; every other row is a slice below.
+Code: `crates/extensions/game/src/render_rng.rs` (the private stream), `crates/extensions/lockstep/src/frame_guard.rs` and `frame-guard.toml` (the frame guard and its allowlist), `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs` (`outside_gather_lens`, the object setup seam), `crates/platform/d3d/src/scaled.rs` (`ScaledBackend`, the reference copy), `crates/extensions/game/src/d3d_glue.rs` (`protected_readbacks`, `single_copy`). Tests: `crates/platform/d3d/tests/render_scale.rs`, the unit tests in `frame_guard.rs`.
+Switch: `impl.sim.frame-guard` (off, **Code**) and `film.verify` (off, Design, added to [switches.md](../runtime/switches.md) by slice 12).
 
 ```mermaid
 flowchart LR
@@ -131,7 +131,7 @@ It is host memory, outside guest RAM: no checkpoint, film, keyframe or hash hold
 
 | Check | What runs | Pass |
 |---|---|---|
-| Frame guard (`impl.sim.frame-guard`) | the 4 KiB write tracker is read at frame-step entry and exit | no hashed page is dirty; a failure names the page, the owning pool and the writer's `pc`. An allowlist of known pages only shrinks, like `sim.ledger` |
+| Frame guard (`impl.sim.frame-guard`) | at the entry of `0x00223240` the write watch over the arena's pages is drained, the arena copied and the access trap armed for writes on it; at the exit each written page is compared with the copy, and the `SimExt` digest with its entry value | no changed page outside the allowlist; a failure names the page, the pools its changed bytes lie in and the first writer's `pc` (or the host). The allowlist is `frame-guard.toml`, by pool, each entry naming the slice that empties it; it only shrinks (`MAX_ALLOWED`), like `tick-ledger.toml`, and the game-end line names entries no frame wrote |
 | Census (`sim.render_writes`, agent API) | counters per frame: setup-time selector calls, setup-time pose evaluations, gameplay-bit seed draws inside a frame, objects with bit 30 at tick end, guarded pages dirtied | all zero but the tick-end count |
 | Render-blind gate | one input tape, seed 7, 1,800 ticks, Lockout and Waterworks and one campaign level, in five arms: render skipped (`h2 sim`); 640x480; a 32:9 window at 4x; Theater's free camera; 30 and 120 display frames a second | every `state_hashes_v1` row and arena block equal on every tick; `h2 sim diff` prints nothing |
 | Cross-machine | the gate's skipped arm on arm64 and x86-64 against a drawn arm on the other | equal hash series |
@@ -178,7 +178,8 @@ Slices 0 to 2 run together. 3 and 4 follow 0; 6 and 7 follow 2; 5, 8 and 9 follo
 - How a pending variant is marked in a channel, and whether an eager pick alters a channel the tick would have replaced before playing it.
 - What `0x00024970` stores from the texels it reads, and who reads that.
 - That no tick code reads the flare array.
-- Which render-written fields lie inside the hashed region.
+- Which render-written fields lie inside the hashed region: the frame guard has not run on a game, so its first findings, and whether the seed's four pools are written in a frame step, are open.
+- Arena writes made through another alias of a page: the watch sees them, the trap does not, so their writer reads `unseen`.
 - What the game-time bracket writes.
 - The tick-end phase's cost on a full campaign level and on a dedicated host.
 

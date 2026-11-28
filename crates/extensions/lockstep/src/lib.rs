@@ -15,6 +15,7 @@
 //! (or all off), never one of each. Per-present records taken between
 //! scheduler slices add nothing to the guest's run.
 
+pub mod frame_guard;
 pub mod gameplay;
 pub mod pools;
 pub mod synthetic;

@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 46;
+pub const BUDGET: usize = 47;
 
 use Initial::{Group, Off, On};
 
@@ -131,6 +131,8 @@ pub const TABLE: &[Switch] = &[
     sw("impl.sim.effects-parts", On, "sim", "2026-11-27",
         "the effects phase in Rust (docs/engine/effects-parts.md): the effect walk, the damage part arm, visual parts as scene events; off runs the guest phase, the A arm of h2 sim diff"),
     sw("impl.sim.arena-hash", Off, "sim", "2026-11-20", DIAGNOSTIC),
+    sw("impl.sim.frame-guard", Off, "sim", "2026-11-28",
+        "the frame guard (lockstep::frame_guard, docs/engine/sim-render-split.md): a test mode; goes when the render-blind gate (slice 10) holds the rule in h2 sim and the ladder"),
     sw("impl.sim.metrics-projection", On, "sim", "2026-11-20", EXACT),
     sw("impl.sim.page-census", On, "sim", "2026-11-22",
         "the guest page census in the report (docs/perf/sim-light.md, L1): a timing arm turns it off; deleted when the page figures are measured for good"),

@@ -522,6 +522,24 @@ mod tests {
         assert_eq!(hits(&mut g), [(RW + 1, true, 0)]);
     }
 
+    /// `arm_writes` arms only its range, only for writes.
+    #[test]
+    fn a_write_range_arms_its_pages_for_writes_only() {
+        let mut g = guest();
+        g.arm_writes(RW + PAGE_SIZE + 8, 2);
+        assert_eq!(fast(&mut g, RW) & 3, 3, "the page before is untouched");
+        assert_eq!(fast(&mut g, RW + PAGE_SIZE) & 3, 1, "reads inline, writes armed");
+        assert_eq!(fast(&mut g, RW + 2 * PAGE_SIZE) & 3, 3, "the page after is untouched");
+        g.write_bytes_from(0x10, RW, &[1], 1).unwrap();
+        let mut b = [0];
+        g.read_bytes_from(0x20, RW + PAGE_SIZE, &mut b, 1).unwrap();
+        assert!(hits(&mut g).is_empty(), "outside the range, and a read");
+        g.write_bytes_from(0x30, RW + PAGE_SIZE + 0x100, &[2], 1).unwrap();
+        assert_eq!(hits(&mut g), [(RW + PAGE_SIZE + 0x100, true, 0x30)]);
+        g.arm_writes(RW, 0);
+        assert_eq!(fast(&mut g, RW) & 3, 3, "an empty range arms nothing");
+    }
+
     #[test]
     fn a_span_across_pages_logs_once_and_opens_both() {
         let mut g = guest();

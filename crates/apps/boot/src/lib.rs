@@ -485,6 +485,10 @@ fn run_configured(
         audit.is_none() || !switches.feature("render-census", false),
         "host audit and render-census both use the guest access trap"
     );
+    anyhow::ensure!(
+        audit.is_none() || !switches.implementation("sim.frame-guard", false),
+        "host audit and impl.sim.frame-guard both use the guest access trap"
+    );
     let lockstep_on = lockstep_config.enabled();
     #[cfg(feature = "gpu")]
     let protected_readbacks = d3d_glue::protected_readbacks(_live.is_some(), film.is_some(), lockstep_on);
