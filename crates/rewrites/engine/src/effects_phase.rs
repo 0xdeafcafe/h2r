@@ -26,7 +26,6 @@ pub static STATS: Mutex<Stats> = Mutex::new(Stats {
     culled: 0,
     retired: 0,
     updated: 0,
-    declined_fault: 0,
 });
 
 /// A copy of the counters now.
@@ -56,32 +55,19 @@ impl walk::Mem for View<'_> {
     }
 }
 
-/// What the body did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Walked {
-    /// The walk ran in Rust.
-    Ran,
-    /// Refused before anything ran (the array or the game time could not
-    /// be read), counted in [`Stats::declined_fault`]: the driver calls the
-    /// guest phase.
-    Declined,
-}
-
 fn count(f: impl FnOnce(&mut Stats)) {
     f(&mut STATS.lock().unwrap_or_else(|e| e.into_inner()))
 }
 
 /// The phase. `reserve` is the stack the driver keeps below its entry (the
-/// update record); the callees go below it and [`FRAME`].
-pub async fn run(cx: &Cx, reserve: u32) -> Result<Walked, EntryError> {
+/// update record); the callees go below it and [`FRAME`]. An array or game
+/// time that cannot be read is the guest's fault, raised.
+pub async fn run(cx: &Cx, reserve: u32) -> Result<(), EntryError> {
     let start = cx.read(|m| -> Result<_, MemFault> {
         let dt = m.u32(m.u32(crate::points::GAME_TIME.base)?.wrapping_add(TIME_LENGTH))?;
         Ok((dt, walk::first(&View(m))?))
     });
-    let Ok((dt, mut at)) = start else {
-        count(|s| s.declined_fault += 1);
-        return Ok(Walked::Declined);
-    };
+    let (dt, mut at) = start?;
     count(|s| s.phases += 1);
     let call = |target: u32, handle: u32| GuestCall::new(target).reserve(reserve + FRAME).ebx(handle);
     while let Some(handle) = at {
@@ -100,7 +86,7 @@ pub async fn run(cx: &Cx, reserve: u32) -> Result<Walked, EntryError> {
         }
         at = cx.read(|m| walk::next(&View(m), handle))?;
     }
-    Ok(Walked::Ran)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -148,7 +134,7 @@ pub(crate) mod tests {
     fn the_walk_calls_the_callees_in_retail_order() {
         let f = |cx: Cx| -> EntryFuture {
             Box::pin(async move {
-                assert_eq!(run(&cx, 0x100).await?, Walked::Ran);
+                run(&cx, 0x100).await?;
                 Ok(Ret::new(0, 0))
             })
         };
@@ -176,18 +162,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_unreadable_array_is_refused_before_any_call() {
+    fn an_unreadable_array_faults_before_any_call() {
         let f = |cx: Cx| -> EntryFuture {
             Box::pin(async move {
-                assert_eq!(run(&cx, 0).await?, Walked::Declined);
+                run(&cx, 0).await?;
                 Ok(Ret::new(0, 0))
             })
         };
         let mut g = FakeGuest::new();
         g.map(STACK - 0x8000, 0x10000);
-        let before = stats().declined_fault;
         let run = entry::testing::run(&f, g, Regs { esp: STACK, ..Default::default() }, answer);
-        assert_eq!((run.result, run.calls.len()), (Ok(Ret::new(0, 0)), 0));
-        assert!(stats().declined_fault > before);
+        assert!(run.result.is_err());
+        assert_eq!(run.calls.len(), 0);
     }
 }

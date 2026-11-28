@@ -108,18 +108,6 @@ impl Call {
     }
 }
 
-impl crate::arm::Prediction for Call {
-    /// A byte offset in the record; [`SIZE`] for the second argument.
-    fn first_difference(&self, seen: &Call) -> Option<usize> {
-        first_difference(&self.record, &seen.record).or((self.except != seen.except).then_some(SIZE))
-    }
-}
-
-/// The first byte at which two records differ.
-pub fn first_difference(a: &Record, b: &Record) -> Option<usize> {
-    a.iter().zip(b).position(|(x, y)| x != y)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,14 +162,5 @@ mod tests {
         // A NaN payload and a negative zero are kept as bits.
         assert_eq!(u32_at(&r, 0x44), 0x7fc0_0001);
         assert_eq!(u32_at(&r, 0x40), 0x8000_0000);
-    }
-
-    #[test]
-    fn the_first_difference_is_named() {
-        let a = record(&inputs());
-        let mut b = a;
-        assert_eq!(first_difference(&a, &b), None);
-        b[0x55] ^= 1;
-        assert_eq!(first_difference(&a, &b), Some(0x55));
     }
 }

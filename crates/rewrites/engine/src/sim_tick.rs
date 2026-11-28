@@ -427,12 +427,12 @@ pub async fn run_with(cx: Cx, ledger: &'static Mutex<Ledger>, present: Present, 
             if views == 0 && is_presentation(i) {
                 continue;
             }
-            // A Rust body that refuses before it starts (a named counter)
-            // leaves the phase to the guest.
             let guest = !bodies.runs(phase)
                 || match phase.entry {
-                    EFFECTS => crate::effects_phase::run(&cx, RECORD_SIZE).await?
-                        == crate::effects_phase::Walked::Declined,
+                    EFFECTS => {
+                        crate::effects_phase::run(&cx, RECORD_SIZE).await?;
+                        false
+                    }
                     _ => true,
                 };
             if guest {

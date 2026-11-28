@@ -33,8 +33,7 @@ use hooks::Switches;
 use hooks::switches::table::{self, Initial};
 use sim_bridge::shadow::{SHADOW, Shadow};
 use sim_bridge::sim_sound::voice_arm as voices;
-use sim_effects::arm::Stats as EffectArm;
-use sim_effects::dispatch::{Arms as EffectArms, Stats as EffectParts};
+use sim_effects::dispatch::Stats as EffectParts;
 
 /// Registers `sim.arms` on `agent`.
 pub fn install(agent: &Agent) {
@@ -113,37 +112,21 @@ fn verdict(name: &str, switch: String, on: bool, arms: Vec<Arm>) -> Subsystem {
 }
 
 /// The effects phase in Rust, always on, with no switch (`switch` empty):
-/// the damage, object, sound, character, `coln`, decal and light arms, and
-/// the part switch's other parts
-/// (`answered` the ones returned from Rust, `declined` the ones the guest's
-/// arm ran unchecked), then the per-effect bodies' arm, one arm per entry
-/// (`effects.body.<entry>`).
-fn effects_parts(
-    (parts, arms): (EffectParts, EffectArms),
-    bodies: Vec<(u32, segment_arm::Stats)>,
-) -> Subsystem {
-    let wire = |name: &str, a: EffectArm| Arm {
-        name: name.to_owned(),
-        checked: a.checked,
-        matched: a.matched,
-        mismatched: a.mismatched,
-        answered: a.answered,
-        declined: a.declined(),
-    };
+/// the parts each class's arm answered (`effects.<class>`), the parts
+/// returned from Rust with no leaf (`effects.parts`: `lens`, `MGS2`,
+/// `tdtl` and unknown groups), then the per-effect bodies' arm, one arm per
+/// entry (`effects.body.<entry>`).
+fn effects_parts(parts: EffectParts, bodies: Vec<(u32, segment_arm::Stats)>) -> Subsystem {
+    let wire = |name: &str, answered: u64| Arm { name: name.to_owned(), answered, ..Arm::default() };
     let mut arms = vec![
-        wire("effects.damage", arms.damage),
-        wire("effects.object", arms.object),
-        wire("effects.sound", arms.sound),
-        wire("effects.character", arms.character),
-        wire("effects.coln", arms.coln),
-        wire("effects.decal", arms.decal),
-        wire("effects.light", arms.light),
-        Arm {
-            name: "effects.parts".to_owned(),
-            answered: parts.returned,
-            declined: parts.refused(),
-            ..Arm::default()
-        },
+        wire("effects.damage", parts.damage),
+        wire("effects.object", parts.object),
+        wire("effects.sound", parts.sound),
+        wire("effects.character", parts.character),
+        wire("effects.coln", parts.coln),
+        wire("effects.decal", parts.decal),
+        wire("effects.light", parts.light),
+        wire("effects.parts", parts.returned + parts.other),
     ];
     arms.extend(segment_wire("effects.body", bodies));
     verdict("effects-parts", String::new(), true, arms)
@@ -461,16 +444,7 @@ mod tests {
         assert_eq!(w[0].name, "objects.walk.000bd090");
         assert_eq!((w[0].checked, w[0].mismatched, w[0].answered, w[0].declined), (0, 0, 4, 2));
         let e = effects_parts(
-            (
-                EffectParts { returned: 4, guest_other: 2, declined_fault: 1, ..EffectParts::default() },
-                EffectArms {
-                    damage: EffectArm { checked: 6, matched: 5, mismatched: 1, answered: 3, unreached: 2, ..EffectArm::default() },
-                    object: EffectArm { checked: 4, matched: 4, answered: 9, declined_fault: 1, ..EffectArm::default() },
-                    sound: EffectArm { checked: 2, matched: 2, ..EffectArm::default() },
-                    decal: EffectArm { answered: 5, ..EffectArm::default() },
-                    ..EffectArms::default()
-                },
-            ),
+            EffectParts { returned: 4, other: 2, damage: 3, object: 9, decal: 5, ..EffectParts::default() },
             vec![(0x1794e0, segment_arm::Stats { answered: 2, float_env: 1 })],
         );
         let names: Vec<&str> = e.arms.iter().map(|a| a.name.as_str()).collect();
@@ -489,9 +463,8 @@ mod tests {
             ]
         );
         assert_eq!(e.arms[5].answered, 5);
-        assert_eq!((e.arms[0].checked, e.arms[0].answered, e.arms[0].declined), (6, 3, 2));
-        assert_eq!((e.arms[1].checked, e.arms[1].answered, e.arms[1].declined), (4, 9, 1));
-        assert_eq!((e.arms[7].answered, e.arms[7].declined), (4, 3));
+        assert_eq!((e.arms[0].checked, e.arms[0].answered, e.arms[0].declined), (0, 3, 0));
+        assert_eq!((e.arms[1].answered, e.arms[7].answered, e.arms[7].declined), (9, 6, 0));
         assert_eq!((e.arms[8].checked, e.arms[8].answered, e.arms[8].declined), (0, 2, 1));
         assert!(!e.clean);
         let v = sound_wire(&voices::Stats { matched: 4, mismatched: 1, quiet: 9, declined: 2, answered: 7, ..Default::default() });

@@ -7,29 +7,24 @@
 //! `EFFECT_PART_CREATE` (`0x17a8a0`) that decodes each part and hands it to
 //! [`sim_effects::dispatch::Parts`]:
 //!
-//! - every class the switch handles has an arm. Until an arm is
-//!   proven the guest's arm runs and observers at its leaves compare what
-//!   the guest passes with Rust's prediction. Once proven Rust makes the
-//!   leaf calls itself, and one part in 64 is still the guest's and
-//!   compared. A difference returns that arm's parts to the guest until
-//!   the next map load.
+//! - every class the switch handles is answered in Rust from the first
+//!   part, with retail's leaf calls in retail's order:
 //!   - damage: `DAMAGE_AREA_APPLY` (`0xd6c80`, from `0x17aa4f`).
-//!   - object: `EFFECT_PART_PLACE` (`0x177d10`, from `0x17abe2`) at entry
-//!     and return, then `EFFECT_PART_VELOCITY` (`0x177f60`, from
-//!     `0x17ac3a`). Rust's answer calls all seven leaves in retail's order.
-//!   - sound: `SOUND_START_ON_OBJECT` (`0x189060`, from `0x17ad24`) or
-//!     `SOUND_START_AT_POINT` (`0x1895f0`, from `0x17ad9a`).
-//!   - character: `EFFECT_PART_CHARACTER` (`0x1ca290`, from `0x17a93d`),
-//!     an early return at the switch's return.
-//!   - `coln`: the switch's return (the stream, `EAX`, the x87 state).
-//!   - decal: `EFFECT_PART_PLACE` from `0x17aad4` at entry and return,
-//!     `DECAL_CREATE` (`0x17e670`, from `0x17ab0b`), a gated-out part at
-//!     the switch's return.
-//!   - light: `LIGHT_CREATE` (`0xc0350`, from `0x17acab` and `0x17acdd`).
+//!   - object: the seven leaves, `EFFECT_PART_PLACE` (`0x177d10`) and
+//!     `EFFECT_PART_VELOCITY` (`0x177f60`) among them.
+//!   - sound: `SOUND_START_ON_OBJECT` (`0x189060`) or `SOUND_START_AT_POINT`
+//!     (`0x1895f0`).
+//!   - character: `EFFECT_PART_CHARACTER` (`0x1ca290`), or an early return.
+//!   - `coln`: the draw, then the switch's return.
+//!   - decal: `EFFECT_PART_PLACE`, `DECAL_CREATE` (`0x17e670`) and the
+//!     draws between them.
+//!   - light: `LIGHT_CREATE` (`0xc0350`).
 //! - `lens`, `MGS2` and `tdtl` return from Rust: retail's arm is the epilogue.
 //! - decal, light and lens flare parts also become scene events
 //!   ([`sim_effects::scene`]) the frame step puts in the renderer's scene.
-//! - any other group runs the guest's arm, a named refusal.
+//! - any other group sets retail's warning byte and returns.
+//! - a part Rust cannot answer panics with its cause; a read retail's arm
+//!   makes faulting raises that fault.
 //!
 //! No RNG draw moves: the damage, sound, light and character arms draw
 //! nothing in the switch; the object arm's draws are inside `0x177d10` and
@@ -37,16 +32,9 @@
 //! draws are Rust's ([`sim_effects::random`]), made where retail makes
 //! them.
 //!
-//! Hooks this adds, and their order: the implementation of
-//! `EFFECT_PART_CREATE` (the only one there; `host_audit`'s observers stay
-//! outside it) and an `observe_after` there, which runs after it through
-//! the chain's shadow; an `observe_before` on `DAMAGE_AREA_APPLY`,
-//! `EFFECT_PART_VELOCITY`, `SOUND_START_ON_OBJECT`, `SOUND_START_AT_POINT`,
-//! `EFFECT_PART_CHARACTER`, `DECAL_CREATE` and `LIGHT_CREATE`, and an
-//! `observe_before` and an `observe_after` on `EFFECT_PART_PLACE` (each
-//! point's only hooks); and an `observe_before` on `CACHE_TAGS_LOAD`
-//! beside the other arms' resets.
-//! Observers need no order: each filters on its caller's return address.
+//! Hooks this adds: the implementation of `EFFECT_PART_CREATE` (the only
+//! one there; `host_audit`'s observers stay outside it) and an
+//! `observe_before` on `CACHE_TAGS_LOAD` beside the other arms' resets.
 
 use std::sync::{Mutex, MutexGuard};
 
@@ -56,7 +44,7 @@ use engine::points;
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
 use sim_effects::damage::{self, Record};
-use sim_effects::dispatch::{Action, Arms, Inputs, Parts, Stats};
+use sim_effects::dispatch::{Action, Inputs, Parts, Stats};
 use sim_effects::{character, coln, decal, light, object, random, sound, Part, PartClass};
 
 /// The feature's id.
@@ -79,10 +67,9 @@ fn parts() -> MutexGuard<'static, Parts> {
     PARTS_STATE.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The counters now: the parts by what happened to them, and the arms.
-pub fn status() -> (Stats, Arms) {
-    let p = parts();
-    (p.stats(), p.arms())
+/// The counters now: the parts by class.
+pub fn status() -> Stats {
+    parts().stats()
 }
 
 fn to_x87(r: &runtime::cpu::X87Abi) -> x87::abi::X87Abi {
@@ -505,35 +492,29 @@ fn return_now(cpu: &mut CpuAbi, ctx: &mut ExecCtx, eax: u32) -> Result<TransferA
     Ok(TransferAbi::ret(target))
 }
 
-/// The original switch.
-fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> Result<TransferAbi, GuestFault> {
-    let handler = ctx.runtime().resolve_original(pc).ok_or(GuestFault {
-        addr: pc,
-        len: 1,
-        access: runtime::guest::Access::Execute,
-        reason: runtime::guest::FaultReason::Unmapped,
-    })?;
-    Ok(handler.invoke(cpu, ctx, pc))
-}
-
 fn enter(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> Result<TransferAbi, GuestFault> {
-    let decoded = {
+    // A read retail's arm makes faulting is the guest's fault, raised here.
+    let (part, inputs) = {
         let mem = ctx.memory();
-        decode(&mem, cpu)
+        decode(&mem, cpu)?
     };
-    let (action, group) = match decoded {
-        Ok((part, inputs)) => {
-            let mut queue = sim_effects::scene::QUEUE.lock().unwrap_or_else(|e| e.into_inner());
-            (parts().enter(&part, inputs.as_ref(), &mut queue), part.group)
-        }
-        Err(_) => {
-            parts().fault();
-            (Action::Guest, 0)
-        }
+    let group = part.group;
+    let action = {
+        let mut queue = sim_effects::scene::QUEUE.lock().unwrap_or_else(|e| e.into_inner());
+        parts().enter(&part, inputs.as_ref(), &mut queue)
     };
     match action {
-        Action::Guest => original(cpu, ctx, pc),
         Action::Return => return_now(cpu, ctx, group),
+        Action::Warn => {
+            // `0x17adb3`: `mov al, [WARNED]`; set it to 1 if it was 0.
+            let mut mem = ctx.memory();
+            let warned = mem.u8(sim_effects::dispatch::WARNED)?;
+            if warned == 0 {
+                mem.set_u8(sim_effects::dispatch::WARNED, 1)?;
+            }
+            drop(mem);
+            return_now(cpu, ctx, (group & !0xff) | u32::from(warned))
+        }
         Action::Damage(call) => {
             hooks::entry::start_with(cpu, ctx, pc, move |cx| Box::pin(answer_damage(cx, call.record)))
         }
@@ -559,319 +540,6 @@ fn enter(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> Result<TransferAbi, Gu
     }
 }
 
-/// The first mismatch of an arm, said once per map.
-fn mismatch(arm: &str, first: bool, at: Option<usize>) {
-    if first {
-        eprintln!(
-            "sim: effects {arm} arm: the guest's leaf call differs from Rust's at {:#x}; \
-             the guest answers every {arm} part until the next map load",
-            at.unwrap_or(0)
-        );
-    }
-}
-
-/// The six registers the comparisons read, in [`leaf`]'s order.
-fn regs(cpu: &CpuAbi) -> [u32; 6] {
-    [cpu.eax, cpu.ecx, cpu.edx, cpu.ebx, cpu.esi, cpu.edi]
-}
-
-fn words<const N: usize>(g: &Guest, at: u32) -> Result<[u32; N], GuestFault> {
-    let mut out = [0; N];
-    for (n, w) in out.iter_mut().enumerate() {
-        *w = g.u32(at.wrapping_add(4 * n as u32))?;
-    }
-    Ok(out)
-}
-
-/// At `0xd6c80`, called from the switch's damage arm: compare.
-fn compare_damage(g: &Guest, esp: u32) {
-    let Ok(DAMAGE_RETURN) = g.u32(esp) else { return };
-    let seen = (|| -> Result<damage::Call, GuestFault> {
-        let at = g.u32(esp.wrapping_add(4))?;
-        let mut record = [0u8; damage::SIZE];
-        g.read_bytes(at, &mut record, 1)?;
-        Ok(damage::Call { record, except: g.u32(esp.wrapping_add(8))? })
-    })();
-    let mut p = parts();
-    let Ok(seen) = seen else {
-        p.damage.declined_fault();
-        return;
-    };
-    let first = p.damage.stats().mismatched == 0;
-    if p.damage.seen(&seen) == Some(false) {
-        mismatch("damage", first, p.damage.stats().first_mismatch_at);
-    }
-}
-
-/// At `0x177d10`'s entry from the object arm: the copies, the arguments
-/// and the registers. `S` is `ESP + 0x28` (nine arguments and the return).
-fn compare_place(g: &Guest, cpu: &CpuAbi) {
-    if g.u32(cpu.esp).ok() == Some(decal::PLACE_RETURN) {
-        return compare_decal_place(g, cpu);
-    }
-    let Ok(object::PLACE_RETURN) = g.u32(cpu.esp) else { return };
-    let frame = cpu.esp.wrapping_add(0x28);
-    let mut p = parts();
-    let Some(plan) = p.object.pending_mut().filter(|plan| plan.inputs.frame == frame) else { return };
-    let seen = (|| -> Result<object::PlaceSeen, GuestFault> {
-        Ok(object::PlaceSeen {
-            words: words(g, frame.wrapping_add(object::COPIES))?,
-            args: words(g, cpu.esp.wrapping_add(4))?,
-            regs: regs(cpu),
-        })
-    })();
-    let Ok(seen) = seen else {
-        p.object.declined_fault();
-        return;
-    };
-    match plan.place_difference(&seen) {
-        None => plan.placed = true,
-        Some(at) => {
-            let first = p.object.stats().mismatched == 0;
-            p.object.verdict(Some(at));
-            mismatch("object", first, Some(at));
-        }
-    }
-}
-
-/// At `0x177d10`'s return to the object arm (`ESP` back at `S`): the sums
-/// the arm will make from what it placed.
-fn predict_sums(g: &Guest, cpu: &CpuAbi) {
-    predict_decal_draw(g, cpu);
-    let mut p = parts();
-    let Some(plan) = p.object.pending_mut().filter(|plan| plan.placed && plan.sums.is_none()) else { return };
-    if plan.inputs.frame != cpu.esp {
-        return;
-    }
-    let i = plan.inputs;
-    let read = (|| -> Result<([u32; 3], [u32; 3]), GuestFault> {
-        Ok((vec3(g, i.effect.wrapping_add(0x30))?, vec3(g, i.frame.wrapping_add(object::SUMS))?))
-    })();
-    match read.map(|(offset, placed)| object::sums(i.mxcsr, offset, placed)) {
-        Ok(Ok(sums)) => plan.sums = Some(sums),
-        // Left pending: counted unreached at the next object part.
-        _ => p.object.declined_fault(),
-    }
-}
-
-/// At `0x177f60`'s entry from the object arm: the sums, the arguments and
-/// the registers. `S` is `ESP + 0x14`.
-fn compare_velocity(g: &Guest, cpu: &CpuAbi) {
-    let Ok(object::VELOCITY_RETURN) = g.u32(cpu.esp) else { return };
-    let frame = cpu.esp.wrapping_add(0x14);
-    let mut p = parts();
-    let Some(plan) = p.object.pending_mut().filter(|plan| plan.inputs.frame == frame && plan.placed) else {
-        return;
-    };
-    let seen = (|| -> Result<object::VelocitySeen, GuestFault> {
-        Ok(object::VelocitySeen {
-            words: words(g, frame.wrapping_add(object::SUMS))?,
-            args: words(g, cpu.esp.wrapping_add(4))?,
-            regs: regs(cpu),
-        })
-    })();
-    let Ok(seen) = seen else {
-        p.object.declined_fault();
-        return;
-    };
-    let at = plan.velocity_difference(&seen);
-    let first = p.object.stats().mismatched == 0;
-    if !p.object.verdict(at) {
-        mismatch("object", first, at);
-    }
-}
-
-/// At `0x177d10`'s entry from the decal arm (`S` = `ESP + 0x28`): the
-/// stream after the gate, the arguments and the registers.
-fn compare_decal_place(g: &Guest, cpu: &CpuAbi) {
-    let entry = cpu.esp.wrapping_add(0x28 + FRAME);
-    let mut p = parts();
-    let Some(plan) = p.decal.pending_mut().filter(|plan| plan.inputs.entry == entry && !plan.placed) else {
-        return;
-    };
-    let seen = (|| -> Result<decal::Seen<9>, GuestFault> {
-        Ok(decal::Seen {
-            seed: g.u32(plan.inputs.seed_at())?,
-            args: words(g, cpu.esp.wrapping_add(4))?,
-            regs: regs(cpu),
-        })
-    })();
-    let Ok(seen) = seen else {
-        p.decal.declined_fault();
-        return;
-    };
-    if let Some(at) = plan.place(&seen) {
-        let first = p.decal.stats().mismatched == 0;
-        p.decal.verdict(Some(at));
-        mismatch("decal", first, Some(at));
-    }
-}
-
-/// At `0x177d10`'s return to the decal arm (`ESP` back at `S`): the draw
-/// the arm makes next, from the stream `0x177d10` left.
-fn predict_decal_draw(g: &Guest, cpu: &CpuAbi) {
-    let mut p = parts();
-    let Some(plan) = p
-        .decal
-        .pending_mut()
-        .filter(|plan| plan.placed && plan.draw.is_none() && plan.inputs.entry == cpu.esp.wrapping_add(FRAME))
-    else {
-        return;
-    };
-    match g.u32(plan.inputs.seed_at()).map(|seed| plan.predict_draw(seed)) {
-        Ok(Ok(())) => {}
-        // Left pending: the switch's return names it.
-        _ => p.decal.declined_fault(),
-    }
-}
-
-/// At `0x17e670`'s entry from the decal arm (`S` = `ESP + 0x1c`).
-fn compare_decal_create(g: &Guest, cpu: &CpuAbi) {
-    let Ok(decal::CREATE_RETURN) = g.u32(cpu.esp) else { return };
-    let entry = cpu.esp.wrapping_add(0x1c + FRAME);
-    let mut p = parts();
-    let Some(plan) = p.decal.pending_mut().filter(|plan| plan.inputs.entry == entry && plan.placed) else {
-        return;
-    };
-    let seen = (|| -> Result<(decal::Seen<6>, u32), GuestFault> {
-        let seen =
-            decal::Seen { seed: g.u32(plan.inputs.seed_at())?, args: words(g, cpu.esp.wrapping_add(4))?, regs: regs(cpu) };
-        Ok((seen, g.u32(decal::DECALS)?))
-    })();
-    let Ok((seen, decals)) = seen else {
-        p.decal.declined_fault();
-        return;
-    };
-    let at = plan.create_difference(&seen, decals);
-    let first = p.decal.stats().mismatched == 0;
-    if !p.decal.verdict(at) {
-        mismatch("decal", first, at);
-    }
-}
-
-/// At `0x1ca290`'s entry from the `char` arm (`S` = `ESP + 0x1c`).
-fn compare_character(g: &Guest, cpu: &CpuAbi) {
-    let Ok(character::START_RETURN) = g.u32(cpu.esp) else { return };
-    let entry = cpu.esp.wrapping_add(0x1c + FRAME);
-    let mut p = parts();
-    let Some(want) = p.character.pending_mut().filter(|c| c.entry == entry).copied() else { return };
-    let Ok(args) = words::<5>(g, cpu.esp.wrapping_add(8)) else {
-        p.character.declined_fault();
-        return;
-    };
-    let seen = character::Call {
-        plan: character::Plan::Start { node: args[1] },
-        esi: cpu.esi,
-        ebx: cpu.ebx,
-        edi: cpu.edi,
-        args,
-        ..want
-    };
-    let first = p.character.stats().mismatched == 0;
-    if p.character.seen(&seen) == Some(false) {
-        mismatch("character", first, p.character.stats().first_mismatch_at);
-    }
-}
-
-/// At `0xc0350`'s entry from the `ligh` arm, on the object or at a point.
-fn compare_light(g: &Guest, cpu: &CpuAbi) {
-    let on_object = match g.u32(cpu.esp) {
-        Ok(light::ON_OBJECT_RETURN) => true,
-        Ok(light::AT_POINT_RETURN) => false,
-        _ => return,
-    };
-    let Ok(args) = words::<4>(g, cpu.esp.wrapping_add(4)) else {
-        parts().light.declined_fault();
-        return;
-    };
-    let xmm0 = u32::from_le_bytes(cpu.xmm[0][..4].try_into().expect("four bytes"));
-    let seen = light::Call { on_object, args, regs: regs(cpu), xmm0 };
-    let mut p = parts();
-    let first = p.light.stats().mismatched == 0;
-    if p.light.seen(&seen) == Some(false) {
-        mismatch("light", first, p.light.stats().first_mismatch_at);
-    }
-}
-
-/// At the switch's return (`ESP` = entry `+ 0x18`): the arms whose guest
-/// path may end without a leaf call. A `char` part that returned early, a
-/// `coln` part (the stream, `EAX` and the x87 state it left) and a decal
-/// part the gate stopped, or one that placed but never created.
-fn compare_exit(g: &Guest, cpu: &CpuAbi) {
-    let entry = cpu.esp.wrapping_sub(4 + POP);
-    let mut p = parts();
-    if let Some(want) = p.character.pending_mut().filter(|c| c.entry == entry).copied() {
-        let seen = character::Call { plan: character::Plan::Return(cpu.eax), ..want };
-        let first = p.character.stats().mismatched == 0;
-        if p.character.seen(&seen) == Some(false) {
-            mismatch("character", first, p.character.stats().first_mismatch_at);
-        }
-    }
-    if let Some(want) = p.coln.pending_mut().filter(|c| c.entry == entry).copied() {
-        match g.u32(want.seed_at) {
-            Ok(seed) => {
-                let seen = coln::Call { seed, eax: cpu.eax, fpu: to_x87(&cpu.x87), ..want };
-                let first = p.coln.stats().mismatched == 0;
-                if p.coln.seen(&seen) == Some(false) {
-                    mismatch("coln", first, p.coln.stats().first_mismatch_at);
-                }
-            }
-            Err(_) => p.coln.declined_fault(),
-        }
-    }
-    if let Some(plan) = p.decal.pending_mut().filter(|plan| plan.inputs.entry == entry).copied() {
-        let at = if plan.placed {
-            Some(31)
-        } else {
-            match g.u32(plan.inputs.seed_at()) {
-                Ok(seed) => plan.gated_out_difference(seed, cpu.eax),
-                Err(_) => {
-                    p.decal.declined_fault();
-                    return;
-                }
-            }
-        };
-        let first = p.decal.stats().mismatched == 0;
-        if !p.decal.verdict(at) {
-            mismatch("decal", first, at);
-        }
-    }
-}
-
-/// At `0x189060` or `0x1895f0` from the sound arm: compare the call.
-fn compare_sound(g: &Guest, cpu: &CpuAbi, on_object: bool) {
-    let want = if on_object { sound::ON_OBJECT_RETURN } else { sound::AT_POINT_RETURN };
-    if g.u32(cpu.esp).ok() != Some(want) {
-        return;
-    }
-    let seen = (|| -> Result<sound::Call, GuestFault> {
-        let args: [u32; 3] = words(g, cpu.esp.wrapping_add(4))?;
-        if on_object {
-            return Ok(sound::Call::OnObject {
-                eax: cpu.eax,
-                ecx: cpu.ecx,
-                ebx: cpu.ebx,
-                esi: cpu.esi,
-                edx: cpu.edx,
-                args,
-            });
-        }
-        let mut record = [0u8; sound::RECORD];
-        g.read_bytes(cpu.edx, &mut record, 1)?;
-        let scale = u32::from_le_bytes(cpu.xmm[0][..4].try_into().expect("four bytes"));
-        Ok(sound::Call::AtPoint { record, tag: args[0], scale })
-    })();
-    let mut p = parts();
-    let Ok(seen) = seen else {
-        p.sound.declined_fault();
-        return;
-    };
-    let first = p.sound.stats().mismatched == 0;
-    if p.sound.seen(&seen) == Some(false) {
-        mismatch("sound", first, p.sound.stats().first_mismatch_at);
-    }
-}
-
 pub struct SimEffectsParts;
 
 impl Feature for SimEffectsParts {
@@ -882,59 +550,12 @@ impl Feature for SimEffectsParts {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        // The arms' proofs and the scene queue are the process's, not the
-        // game's: both answers leave the same guest state.
+        // The counters and the scene queue are the process's, not the
+        // game's.
         b.snapshot(SnapshotPolicy::Stateless);
         b.raw().implement(&points::EFFECT_PART_CREATE, "effect part arm", enter).context_only();
         // The effect walk's four callees, through their own arm.
         crate::effect_update::install(b);
-        b.raw()
-            .observe_before(&points::DAMAGE_AREA_APPLY, "effect damage arm: compare", |o| {
-                compare_damage(&o.guest(), o.cpu.esp)
-            })
-            .optional();
-        b.raw()
-            .observe_before(&points::EFFECT_PART_PLACE, "effect object and decal arms: compare the placing", |o| {
-                compare_place(&o.guest(), o.cpu)
-            })
-            .optional();
-        b.raw()
-            .observe_after(&points::EFFECT_PART_PLACE, "effect object and decal arms: predict the sums and the draw", |o| {
-                predict_sums(&o.guest(), o.cpu)
-            })
-            .optional();
-        b.raw()
-            .observe_before(&points::EFFECT_PART_VELOCITY, "effect object arm: compare the velocity", |o| {
-                compare_velocity(&o.guest(), o.cpu)
-            })
-            .optional();
-        b.raw()
-            .observe_before(&points::SOUND_START_ON_OBJECT, "effect sound arm: compare on the object", |o| {
-                compare_sound(&o.guest(), o.cpu, true)
-            })
-            .optional();
-        b.raw()
-            .observe_before(&points::SOUND_START_AT_POINT, "effect sound arm: compare at a point", |o| {
-                compare_sound(&o.guest(), o.cpu, false)
-            })
-            .optional();
-        b.raw()
-            .observe_after(&points::EFFECT_PART_CREATE, "effect part arms: compare at the return", |o| {
-                compare_exit(&o.guest(), o.cpu)
-            });
-        b.raw()
-            .observe_before(&points::EFFECT_PART_CHARACTER, "effect character arm: compare", |o| {
-                compare_character(&o.guest(), o.cpu)
-            })
-            .optional();
-        b.raw()
-            .observe_before(&points::DECAL_CREATE, "effect decal arm: compare the create", |o| {
-                compare_decal_create(&o.guest(), o.cpu)
-            })
-            .optional();
-        b.raw()
-            .observe_before(&points::LIGHT_CREATE, "effect light arm: compare", |o| compare_light(&o.guest(), o.cpu))
-            .optional();
         b.raw().observe_before(&points::CACHE_TAGS_LOAD, "effect part arm: reset", |_| {
             parts().reset();
             sim_effects::scene::QUEUE.lock().unwrap_or_else(|e| e.into_inner()).clear();
@@ -955,22 +576,12 @@ mod tests {
             registry.add(&SimEffectsParts).unwrap();
             let plan = registry.build(&Base).unwrap();
             assert!(plan.chains.contains_key(&points::EFFECT_PART_CREATE.base));
-            for p in [
-                &points::DAMAGE_AREA_APPLY,
-                &points::EFFECT_PART_PLACE,
-                &points::EFFECT_PART_VELOCITY,
-                &points::SOUND_START_ON_OBJECT,
-                &points::SOUND_START_AT_POINT,
-                &points::EFFECT_PART_CHARACTER,
-                &points::DECAL_CREATE,
-                &points::LIGHT_CREATE,
-            ] {
-                assert!(plan.chains.contains_key(&p.base), "{}", p.name);
-            }
+            // No observer compares the leaves: the arms are Rust's alone.
+            assert!(!plan.chains.contains_key(&points::DAMAGE_AREA_APPLY.base));
         }
     }
 
-    /// The points the observers sit on are the leaves the arms call.
+    /// The named points are the leaves the arms call.
     #[test]
     fn the_points_are_the_arms_leaves() {
         assert_eq!(points::EFFECT_PART_PLACE.base, object::PLACE);

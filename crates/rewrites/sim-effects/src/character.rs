@@ -11,7 +11,6 @@
 //!
 //! No draw in the arm. The audit compares step 4's call ([`Call`]).
 
-use crate::arm::Prediction;
 
 /// The leaves.
 pub const TICKS: u32 = 0x0014_69f0;
@@ -98,24 +97,6 @@ impl Call {
     }
 }
 
-impl Prediction for Call {
-    /// 0 to 2 `ESI`, `EBX`, `EDI`; 3 to 7 the arguments; 8 the plan (the
-    /// guest returned where Rust would call, or the other way round, or
-    /// with another `EAX`); 9 a different part.
-    fn first_difference(&self, seen: &Call) -> Option<usize> {
-        if self.entry != seen.entry {
-            return Some(9);
-        }
-        match (self.plan, seen.plan) {
-            (Plan::Start { .. }, Plan::Start { .. }) => {}
-            (a, b) => return (a != b).then_some(8),
-        }
-        let want = [self.esi, self.ebx, self.edi];
-        let got = [seen.esi, seen.ebx, seen.edi];
-        want.iter().chain(&self.args).zip(got.iter().chain(&seen.args)).position(|(a, b)| a != b)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,18 +128,5 @@ mod tests {
         assert_eq!(Inputs { tag: u32::MAX, node: 0x8002, ..i }.plan(), Plan::Return(0x6368_6172));
         assert_eq!(i.start_args(5), [0x0004_0007, 5, 0x14, 0x18, 0x0060_0008]);
         assert_eq!(i.ticks_regs(), [0x0004_0007, 2.0f32.to_bits(), 0x14]);
-    }
-
-    #[test]
-    fn the_call_names_where_it_differs() {
-        let c = Call::predict(&inputs());
-        assert_eq!(c.first_difference(&c), None);
-        assert_eq!(c.first_difference(&Call { esi: 0, ..c }), Some(0));
-        let mut args = c.args;
-        args[1] = 9;
-        assert_eq!(c.first_difference(&Call { args, ..c }), Some(4));
-        assert_eq!(c.first_difference(&Call { plan: Plan::Return(1), ..c }), Some(8));
-        let r = Call::predict(&Inputs { tag: u32::MAX, ..inputs() });
-        assert_eq!(r.first_difference(&Call { args: [0; 5], ..r }), None, "a return has no call");
     }
 }

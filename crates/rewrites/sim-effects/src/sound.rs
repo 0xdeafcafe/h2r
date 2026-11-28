@@ -13,7 +13,6 @@
 //!   direction packed by `0x188dd0` ([`pack_direction`]), the vector at
 //!   `[0x4687a4]` and the effect's `+0x1c` and `+0x20`.
 
-use crate::arm::Prediction;
 
 /// The leaves.
 pub const ON_OBJECT: u32 = 0x0018_9060;
@@ -158,31 +157,6 @@ impl Call {
     }
 }
 
-impl Prediction for Call {
-    /// On the object: 0 to 4 the registers, 5 to 7 the arguments. At a
-    /// point: the record's word, 9 the tag, 10 the scale. 100 a different
-    /// path.
-    fn first_difference(&self, seen: &Call) -> Option<usize> {
-        match (self, seen) {
-            (
-                Call::OnObject { eax, ecx, ebx, esi, edx, args },
-                Call::OnObject { eax: a, ecx: c, ebx: b, esi: s, edx: d, args: g },
-            ) => {
-                let want = [*eax, *ecx, *ebx, *esi, *edx, args[0], args[1], args[2]];
-                let got = [*a, *c, *b, *s, *d, g[0], g[1], g[2]];
-                want.iter().zip(&got).position(|(x, y)| x != y)
-            }
-            (Call::AtPoint { record, tag, scale }, Call::AtPoint { record: r, tag: t, scale: s }) => record
-                .chunks(4)
-                .zip(r.chunks(4))
-                .position(|(x, y)| x != y)
-                .or((tag != t).then_some(9))
-                .or((scale != s).then_some(10)),
-            _ => Some(100),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,10 +230,5 @@ mod tests {
             assert_eq!([w(4), w(5), w(6), w(7), w(8)], [7, 8, 9, 0x11, 0x22]);
             assert_eq!((tag, scale), (i.tag, i.scale));
         }
-        let point = Call::predict(&Inputs { dl: 1, ..inputs() }).unwrap();
-        assert_eq!(on.first_difference(&point), Some(100));
-        let Call::AtPoint { mut record, tag, scale } = point else { unreachable!() };
-        record[13] ^= 1;
-        assert_eq!(point.first_difference(&Call::AtPoint { record, tag, scale }), Some(3));
     }
 }

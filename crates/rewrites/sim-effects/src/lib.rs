@@ -13,19 +13,16 @@
 //!   `char`, `coln`, `deca` and `ligh` arms make them.
 //! - [`random`]: the shared stream's two draws, run on the guest's x87
 //!   state with the recompiler's x87 helpers.
-//! - [`arm`]: each part arm's proof: compared with the guest until it has
-//!   matched [`arm::PROVEN_AFTER`] parts, then answering, one part in
-//!   [`arm::AUDIT_EVERY`] still compared, the guest on any difference.
 //! - [`dispatch`]: what the switch's Rust entry does with each part.
 //! - [`scene`]: decal, light and lens flare parts as events for the
 //!   renderer's scene. They live in Rust, never in guest memory, so the
 //!   arena hash does not see them.
 //!
-//! Refusals are named counters in each module's stats.
+//! A part Rust cannot answer panics with its cause; nothing runs the
+//! guest's arm.
 
 #![forbid(unsafe_code)]
 
-pub mod arm;
 pub mod character;
 pub mod coln;
 pub mod damage;
