@@ -1352,15 +1352,23 @@ points! { ALL;
     /// A batch of screen quads begins (`0x00035b90`): stdcall `(record)`,
     /// `ret 4`. The record (`native_render::hud::Record`) names the
     /// bitmaps, address modes, filter, blend mode and colours; the begin
-    /// sets that state and the combiner. Text (`0x0001f070`) is drawn this
-    /// way, one quad per glyph.
+    /// sets that state and the combiner. Its callers, the string draw
+    /// (`0x0001f070`, one quad per glyph) and the movie's draw
+    /// (`0x00156960`), are Rust's, so the batch is `render_bridge`'s
+    /// named panic.
     SCREEN_QUADS_BEGIN @ 0x0003_5b90: [fn(record: stack 0) ret 4]; "docs/graphics/native-renderer.md";
     /// One screen quad (`0x000363a0`): stdcall `(&corners)`, four corners
     /// of `0x14` bytes (x, y, u, v, colour), pushed as one inline
     /// `Begin(7)`/`End` with no D3D entry. `ret 4`.
     SCREEN_QUAD @ 0x0003_63a0: [fn(corners: stack 0) ret 4], Hot; "docs/graphics/native-renderer.md";
-    /// The batch's end (`0x00036560`): no arguments, `ret`.
+    /// The batch's end (`0x00036560`): no arguments, `ret`. With
+    /// `[0x004c1a18]` set it calls [`SCREEN_STATE_RESET`] with 1.
     SCREEN_QUADS_END @ 0x0003_6560: [fn() ret 0]; "docs/graphics/native-renderer.md";
+    /// The device state's reset after a screen-quad batch (`0x0001e930`):
+    /// clears the combiner block at `0x00484f68` and sets the render
+    /// states back. Stdcall `(flag)`, `ret 4`. Its only callers are
+    /// [`SCREEN_QUADS_END`] and the movie's draw `0x00156960`.
+    SCREEN_STATE_RESET @ 0x0001_e930: [fn(flag: stack 0) ret 4]; "docs/graphics/native-ui-producers.md";
     /// One HUD shader quad (`0x0022a664`): ECX the four corners, EAX the
     /// coordinate rectangle, stack `(bitmap datum, bitmap index, shader)`,
     /// `ret 0xc`. A shader draw (`0x0001bbf0`) and one

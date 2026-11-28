@@ -38,18 +38,20 @@ fn the_rust_hud_defaults_on_and_its_switch_only_turns_it_off() {
 
 /// The string draw in Rust is the walk's: placed with it, off with it.
 #[test]
-fn the_string_draw_is_placed_with_the_hud_walk() {
-    let placed = |spec| plan(spec).chains.values().any(|c| c.point.name == "STRING_DRAW");
-    assert!(placed(""));
-    assert!(!placed("impl.render.native-hud-walk=off"));
-    assert!(!placed("impl.render.native-hud=off"));
+fn the_string_draw_and_the_screen_quads_are_rusts_with_the_native_hud() {
+    for point in ["STRING_DRAW", "SCREEN_QUADS_BEGIN", "SCREEN_QUAD", "SCREEN_QUADS_END", "SCREEN_STATE_RESET"] {
+        let placed = |spec| plan(spec).chains.values().any(|c| c.point.name == point);
+        assert!(placed(""), "{point}");
+        assert!(placed("impl.render.native-hud-walk=off"), "{point}: not the walk's");
+        assert!(!placed("impl.render.native-hud=off"), "{point}");
+    }
 }
 
 #[test]
 fn the_ui_hooks_can_run_on_the_render_thread() {
     let plan = plan("");
     let points = [
-        "UI_RENDER_LAYERS", "UI_ITEM_CALL", "UI_ITEM_RETURN", "UI_SCREEN_QUAD_READY",
+        "UI_RENDER_LAYERS", "UI_ITEM_CALL", "UI_ITEM_RETURN",
         "UI_LOADING_SPINNER_READY", "UI_LOADING_BITMAP_READY",
         "UI_LOADING_RETURN", "UI_LOADING_EMPTY_RETURN", "UI_FADE_FAN_READY", "HUD_QUAD_READY", "HUD_QUAD_SETUP",
         "UI_LIST_READY", "UI_LIST_DONE",

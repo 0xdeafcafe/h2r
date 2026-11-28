@@ -222,14 +222,6 @@ pub trait Host: Send + Sync {
         false
     }
 
-    fn draw_text_quad(&self, _mem: &mut dyn GuestMemory, _shader: u32, _vertices: &HudVertices) -> bool {
-        false
-    }
-
-    fn screen_fan(&self, _mem: &mut dyn GuestMemory, _vertices: &HudVertices) -> bool {
-        false
-    }
-
     fn fade_fan(&self, _mem: &mut dyn GuestMemory, _vertices: &[[(u8, [f32; 4]); 1]; 4]) -> bool {
         false
     }
@@ -452,39 +444,62 @@ fn own_text(mem: &mut dyn GuestMemory, text: &WalkText) -> bool {
     drawn
 }
 
-/// A proven string's draw: the host's text runs.
-fn own_string(mem: &mut dyn GuestMemory, run: &strings::StringRun) -> bool {
-    let drawn = host().is_some_and(|host| host.rust_string(mem, run));
-    strings::owned(mem, drawn);
-    if drawn {
-        Stage::Ui.count(Metric::BuildsSkipped, run.quads.len() as u64);
-        ui::record(true);
+/// A string's draw: the host's text runs. One it does not draw panics.
+fn own_string(mem: &mut dyn GuestMemory, run: &strings::StringRun) {
+    if run.quads.is_empty() {
+        return;
     }
-    drawn
+    if !host().is_some_and(|host| host.rust_string(mem, run)) {
+        unimplemented!("strings: the host did not draw a string of font {}", run.font);
+    }
+    Stage::Ui.count(Metric::BuildsSkipped, run.quads.len() as u64);
+    ui::record(true);
 }
 
-/// The string draw's hooks ([`strings`]): Rust's layout and, once its
-/// site is proven, its draw at the entry; the check at the return.
+/// The string draw `0x0001f070` in Rust ([`strings`]): its early returns,
+/// the layout and the host's draw, `ret 0x1c`.
+fn string_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _: u32) -> Result<TransferAbi, runtime::GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    let fonts = host().and_then(|host| host.ui_text(&*mem));
+    match strings::enter(&mut *mem, cpu.esp, cpu.eax, cpu.ecx, fonts.as_deref()) {
+        Ok(strings::Entry::Draw(run)) => own_string(&mut *mem, &run),
+        Ok(strings::Entry::Off | strings::Entry::Nothing) => {}
+        Err(cause) => unimplemented!("strings: {cause}"),
+    }
+    let ret = mem.u32(cpu.esp)?;
+    cpu.esp = cpu.esp.wrapping_add(4 + strings::ARGUMENT_BYTES);
+    Ok(TransferAbi::ret(ret))
+}
+
 fn place_strings(b: &mut Builder) {
-    b.raw().before(&points::STRING_DRAW, "native_ui_string", |c| {
-        let rt = Arc::clone(c.ctx.runtime());
-        let owned = {
-            let mut mem = rt.memory();
-            let fonts = host().and_then(|host| host.ui_text(&*mem));
-            match strings::plan(&*mem, c.cpu.esp, c.cpu.eax, c.cpu.ecx, fonts.as_deref()) {
-                strings::Plan::Guest => false,
-                strings::Plan::Own(run) => own_string(&mut *mem, &run),
-            }
-        };
-        if !owned {
-            return Ok(Flow::Continue);
-        }
-        c.ret(strings::ARGUMENT_BYTES).map(Flow::Return)
-    }).context_only().optional();
-    b.raw().after(&points::STRING_DRAW, "native_ui_string_done", |_| {
-        strings::finish();
-        Ok(())
-    }).optional();
+    b.raw().implement(&points::STRING_DRAW, "native_ui_string", string_call).context_only();
+}
+
+/// The screen-quad batch (`0x00035b90` begin, `0x000363a0` one quad,
+/// `0x00036560` end, and the end's state reset `0x0001e930`;
+/// docs/graphics/native-ui-producers.md). Their callers are the string
+/// draw ([`place_strings`]) and the movie's draw (`0x00156960`,
+/// `bink_hle`), both Rust's, so these bodies and the state helpers below
+/// them (`0x000142f0`, `0x00015180`, `0x0001ef70`, `0x0001cf50`,
+/// `0x000222d0`, `0x00014bc0`, `0x0001c590`, `0x0001c710`) never run from
+/// here: a call is a caller not yet ported.
+fn place_screen_quads(b: &mut Builder) {
+    fn caller(cpu: &runtime::CpuAbi, ctx: &mut runtime::ExecCtx) -> u32 {
+        GuestMemory::u32(&*ctx.memory(), cpu.esp).unwrap_or(0)
+    }
+    b.raw().implement(&points::SCREEN_QUADS_BEGIN, "native_screen_quads_begin", |cpu, ctx, _| {
+        unimplemented!("screen quads: a batch begun from {:#x}", caller(cpu, ctx))
+    }).context_only();
+    b.raw().implement(&points::SCREEN_QUAD, "native_screen_quad", |cpu, ctx, _| {
+        unimplemented!("screen quads: a quad from {:#x}", caller(cpu, ctx))
+    }).context_only();
+    b.raw().implement(&points::SCREEN_QUADS_END, "native_screen_quads_end", |cpu, ctx, _| {
+        unimplemented!("screen quads: a batch ended from {:#x}", caller(cpu, ctx))
+    }).context_only();
+    b.raw().implement(&points::SCREEN_STATE_RESET, "native_screen_state_reset", |cpu, ctx, _| {
+        unimplemented!("screen quads: the state reset from {:#x}", caller(cpu, ctx))
+    }).context_only();
 }
 
 /// A walk Rust loops ([`walk::plan_loop`]): each widget shown is laid
@@ -787,11 +802,6 @@ fn place_walk(b: &mut Builder) {
         }
         c.ret(16).map(Flow::Return)
     }).context_only().optional();
-    b.raw().after(&points::HUD_TEXT_WIDGET, "native_hud_walk_text_done", |c| {
-        let rt = Arc::clone(c.ctx.runtime());
-        walk::finish_text(&*rt.memory());
-        Ok(())
-    }).optional();
     b.raw().before(&points::HUD_BITMAP_WIDGET, "native_hud_walk_bitmap", |c| {
         let rt = Arc::clone(c.ctx.runtime());
         let owned = {
@@ -841,6 +851,8 @@ impl Feature for NativeHud {
         }
         ui::place(b);
         modal_blur::place(b);
+        place_strings(b);
+        place_screen_quads(b);
         // The menus on the overlay (`ui_overlay`): a list's claim opens
         // when it is sorted and closes, checked, when its draws are done.
         // A claimed draw is left out by resuming after its call: without
@@ -892,7 +904,6 @@ impl Feature for NativeHud {
             place_walk(b);
             place_definitions(b);
             place_sensor(b);
-            place_strings(b);
         }
         if b.switches().feature("impl.render.native-hud-blips", true) {
             place_blips(b);

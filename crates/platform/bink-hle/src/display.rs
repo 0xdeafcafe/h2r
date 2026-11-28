@@ -4,8 +4,8 @@
 //! The wrapper's tick (`0x00156040`) runs its decode and blit
 //! (`0x001568d0`: `BinkDoFrame`, `BinkNextFrame`, a lock of its texture,
 //! `BinkCopyToBuffer`) and its draw (`0x00156960`: one screen quad over that
-//! texture). With a native display ([`BinkHle::use_native_display`]) both
-//! are replaced: the decode and blit only advances the stream, the frame
+//! texture). Playback replaces both: the decode and blit only advances
+//! the stream, the frame
 //! stays in the host buffer, and the draw hands the host the quad the
 //! guest would have drawn and the decoded picture ([`MovieDisplay`]). The
 //! guest's texture is never locked or written, so a draw the host does not
@@ -128,21 +128,7 @@ impl DrawInputs {
 }
 
 impl crate::BinkHle {
-    /// Replace the wrapper's decode and blit and its draw
-    /// ([`crate::addr::MOVIE_DECODE_AND_BLIT`], [`crate::addr::MOVIE_DRAW`])
-    /// when [`crate::register`] installs playback: the picture goes to the
-    /// host set by [`set_display`] instead of the guest's texture. Off,
-    /// the wrapper locks and fills its texture and draws it as the game
-    /// does.
-    pub fn use_native_display(&self, on: bool) {
-        self.native_display.store(on, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    pub fn native_display(&self) -> bool {
-        self.native_display.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// `0x001568d0` with a native display: `BinkDoFrame` and
+    /// `0x001568d0` in Rust: `BinkDoFrame` and
     /// `BinkNextFrame` on the open movie, as the guest calls them; no lock
     /// and no copy. EAX 0, the guest's after a copy that wrote.
     pub(crate) fn decode_native(&self, cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx) -> R {
@@ -154,8 +140,9 @@ impl crate::BinkHle {
         mem.ret(cpu, 0)
     }
 
-    /// `0x00156960` with a native display: the guest's quad and the
-    /// movie's picture to the host, in place of the screen-quad batch.
+    /// `0x00156960` in Rust: the guest's quad and the movie's picture to
+    /// the host set by [`set_display`], in place of the screen-quad batch
+    /// (`0x00035b90`, `0x000363a0`), which never runs.
     pub(crate) fn draw_native(&self, cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx) -> R {
         use timeline::native::Ui;
         let mut mem = ctx.memory();

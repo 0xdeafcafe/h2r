@@ -1,6 +1,5 @@
 //! Live UI producer boundaries. An unavailable entry, stack or draw keeps
 //! the guest at the original instruction.
-use std::cell::Cell;
 use std::sync::Arc;
 
 use engine::memory::GuestMemory;
@@ -35,7 +34,6 @@ const WIDGET_LIST_FROM_EBP: u32 = 0xc0c;
 const WIDGET_ENTRY_BYTES: u32 = 0xc;
 const MAX_WIDGETS: u32 = 256;
 const WIDGET_DRAW_SLOT: u32 = 0x10;
-const SCREEN_VERTEX_BYTES: u32 = 0x14;
 const RECT_VERTEX_COUNT: u32 = 4;
 const RECT_VERTEX_BYTES: u32 = 20;
 const RECT_BYTES: u32 = RECT_VERTEX_COUNT * RECT_VERTEX_BYTES;
@@ -144,29 +142,12 @@ fn replaced(c: &mut Call<'_>, mem: &mut dyn GuestMemory, stack: u32) -> Option<T
 
 fn leave(c: &mut Call<'_>, scope: UiScope) {
     if scope == UiScope::Hud {
-        TEXT_FRAME.set(None);
         super::kept::set_in_hud(false);
     }
     if let Some(host) = host() {
         let rt = Arc::clone(c.ctx.runtime());
         host.leave_ui(&mut *rt.memory(), scope, c.cpu.esp);
     }
-}
-
-fn screen_vertices(mem: &dyn GuestMemory, corners: u32) -> Option<HudVertices> {
-    let mut out = [[(0, [0.0; 4]); 3]; 4];
-    for (index, vertex) in out.iter_mut().enumerate() {
-        let address = corners.checked_add(index as u32 * SCREEN_VERTEX_BYTES)?;
-        let word = |offset| mem.u32(address.checked_add(offset)?).ok();
-        let f = |offset| word(offset).map(f32::from_bits);
-        let [b, g, r, a] = word(16)?.to_le_bytes();
-        *vertex = [
-            (9, [r, g, b, a].map(|v| f32::from(v) / 255.0)),
-            (3, [f(8)?, f(12)?, 0.0, 1.0]),
-            (0, [f(0)?, f(4)?, 0.0, 1.0]),
-        ];
-    }
-    Some(out)
 }
 
 fn fade_vertices(width: u32, height: u32) -> [[(u8, [f32; 4]); 1]; 4] {
@@ -180,78 +161,6 @@ pub(super) fn record(drawn: bool) {
         Stage::Ui.count(Metric::BuildsSkipped, 1);
     }
     Stage::Ui.count(if drawn { Metric::WalkSuppressed } else { Metric::WalkRefusedReservation }, 1);
-}
-
-// The text widget has already selected its shader when it asks for its
-// anchor. Its nested string draw owns each glyph until that draw returns.
-const TEXT_ANCHOR_RETURN: u32 = 0x0022_ab1c;
-const TEXT_STRING_RETURN: u32 = 0x0022_acad;
-const GLYPH_QUAD_RETURN: u32 = 0x0001_f489;
-
-thread_local! {
-    static TEXT_FRAME: Cell<Option<u32>> = const { Cell::new(None) };
-}
-
-fn glyph_shader(mem: &dyn GuestMemory, frame: u32, stack: u32, caller: u32) -> Option<u32> {
-    // Locals, three saved registers and the string draw's two arguments
-    // put its return address at ebp-0x23c throughout glyph layout.
-    let slot = frame.checked_sub(0x23c)?;
-    if caller != GLYPH_QUAD_RETURN || stack >= slot || mem.u32(slot).ok()? != TEXT_STRING_RETURN {
-        return None;
-    }
-    let widget = mem.u32(frame.checked_add(0x10)?).ok()?;
-    let shader = mem.u32(widget.checked_add(0x24)?).ok()?;
-    (shader != u32::MAX).then_some(shader)
-}
-
-fn screen_quad(c: &mut Call<'_>) -> Option<TransferAbi> {
-    Stage::Ui.count(Metric::WalkExamined, 1);
-    let rt = Arc::clone(c.ctx.runtime());
-    let mut mem = rt.memory();
-    // Return address above locals and the saved ESI. The state commit and
-    // XDK deferred-state flush have both run at this point.
-    let saved_esi = mem.u32(c.cpu.esp).ok()?;
-    let stack = c.cpu.esp.checked_add(0x14)?;
-    let ret = mem.u32(stack).ok()?;
-    let next_stack = stack.checked_add(8)?;
-    let corners = mem.u32(stack.checked_add(4)?).ok()?;
-    // A shadowed text widget's glyph is checked against Rust's layout.
-    super::walk::observe_glyph(&*mem, corners);
-    // So is a shadowed string's (`super::strings`).
-    super::strings::observe_glyph(&*mem, corners);
-    // A screen quad in the HUD is a glyph of one of its strings.
-    let hud = super::kept::in_hud();
-    let Some(vertices) = screen_vertices(&*mem, corners) else {
-        if hud {
-            super::kept::count(super::kept::OverlayKind::Text, "inputs");
-        }
-        return geometry_refused();
-    };
-    if hud {
-        super::kept::begin(super::kept::OverlayKind::Text);
-    }
-    let drawn = host().is_some_and(|host| {
-        let shader = TEXT_FRAME.get().and_then(|frame| glyph_shader(&*mem, frame, stack, ret));
-        if let Some(shader) = shader {
-            if host.draw_text_quad(&mut *mem, shader, &vertices) {
-                Ui::OverlayHudTextQuads.count();
-                return true;
-            }
-            Ui::OverlayHudTextFallback.count();
-        }
-        host.screen_fan(&mut *mem, &vertices)
-    });
-    if hud {
-        super::kept::end(drawn);
-    }
-    record(drawn);
-    if drawn {
-        c.cpu.esi = saved_esi;
-        c.cpu.esp = next_stack;
-        Some(TransferAbi::ret(ret))
-    } else {
-        None
-    }
 }
 
 fn fade_fan(c: &mut Call<'_>) -> Option<TransferAbi> {
@@ -422,13 +331,11 @@ pub(super) fn place(b: &mut Builder<'_>) {
         Ok(loading_fan(c, false).map_or(Flow::Continue, Flow::Return))
     }).context_only().optional();
     use engine::points::render_aspect::{ANCHOR, GROUPS};
-    b.raw().before(&ANCHOR, "native_hud_text_frame", |c| {
-        match GuestMemory::u32(&*c.ctx.memory(), c.cpu.esp).ok() {
-            Some(TEXT_ANCHOR_RETURN) => TEXT_FRAME.set(Some(c.cpu.ebp)),
-            // A bitmap widget's anchor id (EAX): the centre's is the
-            // reticle (`kept::quad_kind`).
-            Some(super::kept::BITMAP_ANCHOR_RETURN) => super::kept::set_widget_anchor(Some(c.cpu.eax)),
-            _ => {}
+    b.raw().before(&ANCHOR, "native_hud_bitmap_anchor", |c| {
+        // A bitmap widget's anchor id (EAX): the centre's is the reticle
+        // (`kept::quad_kind`).
+        if GuestMemory::u32(&*c.ctx.memory(), c.cpu.esp).ok() == Some(super::kept::BITMAP_ANCHOR_RETURN) {
+            super::kept::set_widget_anchor(Some(c.cpu.eax));
         }
         Ok(Flow::Continue)
     }).context_only().after_feature("render-aspect").optional();
@@ -438,15 +345,6 @@ pub(super) fn place(b: &mut Builder<'_>) {
         super::kept::set_widget_anchor(None);
         Ok(Flow::Continue)
     }).context_only().after_feature("render-aspect").optional();
-    let text_end = GROUPS.iter().find(|(ret, _)| *ret == TEXT_ANCHOR_RETURN)
-        .expect("text anchor group");
-    b.raw().before(&text_end.1, "native_hud_text_end", |_| {
-        TEXT_FRAME.set(None);
-        Ok(Flow::Continue)
-    }).context_only().after_feature("render-aspect").optional();
-    b.raw().before(&SCREEN_QUAD_READY, "native_ui_screen_fan", |c| {
-        Ok(screen_quad(c).map_or(Flow::Continue, Flow::Return))
-    }).context_only().optional();
     b.raw().before(&FADE_FAN_READY, "native_ui_fade_fan", |c| {
         Ok(fade_fan(c).map_or(Flow::Continue, Flow::Return))
     }).context_only().optional();
@@ -471,20 +369,6 @@ mod tests {
     }
 
     #[test]
-    fn glyph_belongs_to_current_shader_only_inside_the_text_widget_string_call() {
-        let mut mem = FakeGuest::new();
-        let frame = 0x4100;
-        let slot = frame - 0x23c;
-        mem.put_u32(slot, TEXT_STRING_RETURN).put_u32(frame + 0x10, 0x5200)
-            .put_u32(0x5224, 0x4983);
-        assert_eq!(glyph_shader(&mem, frame, slot - 20, GLYPH_QUAD_RETURN), Some(0x4983));
-        assert_eq!(glyph_shader(&mem, frame, slot, GLYPH_QUAD_RETURN), None);
-        assert_eq!(glyph_shader(&mem, frame, slot - 20, 0x8590), None);
-        mem.put_u32(slot, 0);
-        assert_eq!(glyph_shader(&mem, frame, slot - 20, GLYPH_QUAD_RETURN), None);
-    }
-
-    #[test]
     fn the_widget_callback_must_match_the_live_order_entry() {
         let mut mem = FakeGuest::new();
         let frame = 0x3000;
@@ -504,105 +388,6 @@ mod tests {
         assert_eq!(widget_in_order(&mem, frame, 1, item, widget, vtable + 4), None);
         mem.put_u32(frame - WIDGET_COUNT_FROM_EBP, MAX_WIDGETS + 1);
         assert_eq!(widget_in_order(&mem, frame, 1, item, widget, vtable), None);
-    }
-
-    #[test]
-    fn screen_quad_writes_rgba_uv_and_position_in_issue_order() {
-        let mut mem = FakeGuest::new();
-        let corners = 0x1000;
-        for i in 0..4u32 {
-            let addr = corners + i * 0x14;
-            mem.put_f32(addr, i as f32)
-                .put_f32(addr + 4, -0.0)
-                .put_f32(addr + 8, 8.0 + i as f32)
-                .put_f32(addr + 12, 5.0)
-                .put_u32(addr + 16, 0xc0_80_40_10);
-        }
-        let quad = screen_vertices(&mem, corners).unwrap();
-        assert_eq!(quad[3][0], (9, [128., 64., 16., 192.].map(|c| c / 255.)));
-        assert_eq!(quad[3][1], (3, [11.0, 5.0, 0.0, 1.0]));
-        assert_eq!(quad[3][2].1.map(f32::to_bits), [3.0, -0.0, 0.0, 1.0].map(f32::to_bits));
-        assert!(screen_vertices(&mem, u32::MAX).is_none());
-    }
-
-    #[test]
-    fn screen_quad_keeps_the_transparent_leading_glyph() {
-        use std::sync::Mutex;
-
-        use runtime::guest::Permissions;
-        use runtime::{CpuAbi, Dispatch, ExecCtx, Guest, Runtime};
-
-        #[derive(Default)]
-        struct Record(Mutex<Vec<HudVertices>>);
-
-        impl super::super::Host for Record {
-            fn screen_fan(&self, _mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
-                self.0.lock().unwrap().push(*vertices);
-                true
-            }
-        }
-
-        let first = 0x1000;
-        let next = first + 4 * SCREEN_VERTEX_BYTES;
-        let mut mem = Guest::new();
-        mem.map_zeroed(first, 0x1000, Permissions::RW).unwrap();
-        for (base, x, u, color) in [
-            (first, 8.0_f32, 0.0_f32, 0x00ff_ffff),
-            (next, 13.0, 12.0, 0xffff_ffff),
-        ] {
-            let offsets: [[f32; 2]; 4] = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
-            for (i, [dx, dy]) in offsets.into_iter().enumerate() {
-                let corner = base + i as u32 * SCREEN_VERTEX_BYTES;
-                for (offset, word) in [
-                    (0, (x + dx).to_bits()),
-                    (4, (6.0 + dy).to_bits()),
-                    (8, (u + dx).to_bits()),
-                    (12, dy.to_bits()),
-                    (16, color),
-                ] {
-                    mem.set_u32(corner + offset, word).unwrap();
-                }
-            }
-        }
-        let stack = 0x1100;
-        let saved_esi = 0x1234;
-        let ret = 0x2020;
-        mem.set_u32(stack, saved_esi).unwrap();
-        mem.set_u32(stack + 0x14, ret).unwrap();
-        let rt = Runtime::new(mem, Dispatch::default());
-        let mut ctx = ExecCtx::new(Arc::clone(&rt), 1);
-        let recorder = Arc::new(Record::default());
-        let previous = super::super::HOST.lock().unwrap().replace(recorder.clone());
-
-        let transfers = [first, next].map(|corners| {
-            rt.memory().set_u32(stack + 0x18, corners).unwrap();
-            let mut cpu = CpuAbi {
-                esp: stack,
-                ..Default::default()
-            };
-            let transfer = screen_quad(&mut Call {
-                cpu: &mut cpu,
-                ctx: &mut ctx,
-                addr: SCREEN_QUAD_READY.base,
-                point: &SCREEN_QUAD_READY,
-            });
-            (transfer, cpu.esp, cpu.esi)
-        });
-
-        *super::super::HOST.lock().unwrap() = previous;
-        assert_eq!(
-            transfers,
-            [(Some(TransferAbi::ret(ret)), stack + 0x1c, saved_esi); 2]
-        );
-        let quads = recorder.0.lock().unwrap();
-        let [leading, visible] = &quads[..] else {
-            panic!("expected two ordered glyph quads, got {}", quads.len());
-        };
-        assert!(leading.iter().all(|vertex| vertex[0] == (9, [1.0, 1.0, 1.0, 0.0])));
-        assert_eq!(leading[0][2], (0, [8.0, 6.0, 0.0, 1.0]));
-        assert_eq!(visible[0][0], (9, [1.0; 4]));
-        assert_eq!(visible[0][1], (3, [12.0, 0.0, 0.0, 1.0]));
-        assert_eq!(visible[0][2], (0, [13.0, 6.0, 0.0, 1.0]));
     }
 
     #[test]
