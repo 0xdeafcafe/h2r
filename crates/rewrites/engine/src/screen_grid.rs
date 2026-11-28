@@ -184,8 +184,9 @@ fn block(mem: &dyn GuestMemory, sse: &mut Sse, g: &Grid) -> Result<Block, Error>
     })
 }
 
-/// `0x000350e0`: the rectangle at `uv`, and z and w from `depth`.
-fn position(mem: &dyn GuestMemory, sse: &mut Sse, rect: &[u32; 4], uv: [u32; 2], depth: u32) -> Result<[u32; 4], Error> {
+/// `0x000350e0`: the rectangle at `uv`, and z and w from `depth`. The
+/// planar fog's corners are this call too (`crate::planar_fog`).
+pub(crate) fn position(mem: &dyn GuestMemory, sse: &mut Sse, rect: &[u32; 4], uv: [u32; 2], depth: u32) -> Result<[u32; 4], Error> {
     let [left, right, top, bottom] = *rect;
     let x = sse.sub(right, left)?;
     let x = sse.mul(x, uv[0])?;

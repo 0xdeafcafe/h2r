@@ -117,7 +117,7 @@ pub(crate) fn fld_f64(x87: &mut X87, bits: u64) -> Result<(), Error> {
 }
 
 /// `fistp dword`, rounding under the control word.
-fn fistp(x87: &mut X87) -> Result<u32, Error> {
+pub(crate) fn fistp(x87: &mut X87) -> Result<u32, Error> {
     let (code, store) = x87::abi::st_i32(&x87.0, 0);
     X87::ok(code)?;
     x87::abi::store_commit(&mut x87.0, store.status, true);

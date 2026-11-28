@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 44;
+pub const BUDGET: usize = 46;
 
 use Initial::{Group, Off, On};
 
@@ -77,6 +77,8 @@ pub const TABLE: &[Switch] = &[
         "HUD widget quads from their Rust material, no guest shader setup (docs/graphics/native-hud-overlay.md): deleted with the guest HUD walk (retire-d3d R6)"),
     sw("impl.render.native-hud-walk", On, "render", "2026-11-27",
         "HUD bitmap, text and screen-effect widgets laid out in Rust, no guest draw once proven (docs/graphics/native-hud-overlay.md): deleted with the guest HUD walk (retire-d3d R6)"),
+    sw("impl.render.native-fog-quad", On, "render", "2026-11-28",
+        "the planar fog's screen quad 0x25d50 drawn natively, its fan cut once a reference matches (docs/graphics/retire-d3d-fog-quad.md): deleted with the guest fog setup (retire-d3d R10)"),
     // Engine leaves (the per-function keys are `crate::leaves`').
     sw("impl.engine", Group, "engine", "2026-11-16", "goes with its last group"),
     sw("impl.engine.locale", On, "engine", "2026-11-16", EXACT),
