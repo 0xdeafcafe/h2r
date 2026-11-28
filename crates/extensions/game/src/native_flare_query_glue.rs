@@ -1,7 +1,11 @@
 //! The host of `render_bridge::native_flare_query`: the flares' count
 //! pass placed on the shared device where the guest's walker would draw
 //! its quads, and the device's counts of the slots the guest ended
-//! (docs/graphics/d3d-visibility.md, "The query in Rust").
+//! (docs/graphics/d3d-visibility.md, "The query in Rust"). The counts are
+//! the display copy's: under exact mode, which records the pass on the
+//! reference copy first, the display copy's recording replaces it when
+//! the display is drawn through the guest's lens
+//! (docs/engine/sim-render-split.md, slice 6).
 
 use std::sync::{Arc, Mutex};
 
@@ -19,7 +23,7 @@ struct PassCounts(Mutex<Recording>);
 enum Recording {
     #[default]
     Waiting,
-    Recorded(QueryReadback),
+    Recorded(QueryReadback, d3d::TargetCopy),
     /// The pass did not record: its counts never come, and the bytes keep
     /// their values.
     Refused,
@@ -28,7 +32,7 @@ enum Recording {
 impl Counts for PassCounts {
     fn read(&self) -> Option<Arc<[u32]>> {
         match &*self.0.lock().unwrap_or_else(|e| e.into_inner()) {
-            Recording::Recorded(r) => r.try_read(),
+            Recording::Recorded(r, _) => r.try_read(),
             Recording::Waiting | Recording::Refused => None,
         }
     }
@@ -54,10 +58,15 @@ impl d3d::ExternalPass for FlareQueryPass {
         self.test = DepthTest { w_buffered: clip.w_buffered.unwrap_or(true), range: clip.range, clamp: clip.clamp };
     }
 
-    /// Counted once, on the first copy recorded.
+    /// Counted on the display copy, or on the only copy recorded.
     fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
         let mut slot = self.counts.0.lock().unwrap_or_else(|e| e.into_inner());
-        if !matches!(*slot, Recording::Waiting) {
+        let recorded = match &*slot {
+            Recording::Waiting => None,
+            Recording::Recorded(_, copy) => Some(*copy),
+            Recording::Refused => return,
+        };
+        if !counts_on(recorded, t.copy, t.projection_factor() == 1.0) {
             return;
         }
         let mut gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
@@ -66,12 +75,23 @@ impl d3d::ExternalPass for FlareQueryPass {
         }
         let Some((_, pass)) = gpu.as_ref() else { return };
         *slot = match pass.record(t.device, t.encoder, t.depth.texture(), t.guest_size, self.test, t.z_scale, &self.quads) {
-            Ok(r) => Recording::Recorded(r),
+            Ok(r) => Recording::Recorded(r, t.copy),
             Err(why) => {
                 native_flare_query::QUERY.dropped(why_cause(why));
                 Recording::Refused
             }
         };
+    }
+}
+
+/// Whether a recording on `copy` counts, given the copy already recorded
+/// (`None`: none yet): the first one, and the display copy's after a
+/// reference copy's when the display is drawn through the guest's own
+/// lens (`same_lens`), the one the quads are projected with.
+fn counts_on(recorded: Option<d3d::TargetCopy>, copy: d3d::TargetCopy, same_lens: bool) -> bool {
+    match recorded {
+        None => true,
+        Some(r) => r != d3d::TargetCopy::Display && copy == d3d::TargetCopy::Display && same_lens,
     }
 }
 
@@ -110,4 +130,22 @@ pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice
         return;
     }
     native_flare_query::set_host(Arc::new(Query { device: Arc::clone(device) }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use d3d::TargetCopy::{Display, Reference};
+
+    /// Exact mode records the reference copy first: the display copy's
+    /// recording takes its place, so the bytes come from the display depth.
+    #[test]
+    fn the_display_copys_count_is_the_one_kept() {
+        assert!(counts_on(None, Reference, true), "the only copy of a plain backend");
+        assert!(counts_on(None, Display, false));
+        assert!(counts_on(Some(Reference), Display, true), "the display copy replaces the reference's");
+        assert!(!counts_on(Some(Reference), Display, false), "a widened display keeps the reference's count");
+        assert!(!counts_on(Some(Display), Reference, true));
+        assert!(!counts_on(Some(Display), Display, true), "counted once on the display copy");
+    }
 }

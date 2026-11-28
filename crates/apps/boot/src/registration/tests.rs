@@ -562,6 +562,7 @@ const BOOT_SITES: &[(&str, &str)] = &[
     ),
     ("render_aspect::install", "Case::drawing (gpu)"),
     ("render_rng::install", "every case but Case::light"),
+    ("flare_store::install", "every case but Case::light"),
     ("register_late_for_profile", "registry_for_profile"),
     (
         "forge_glue::install",
@@ -1254,6 +1255,20 @@ fn the_view_projection_is_native_unless_its_switch_is_off() {
     let off = Case::full("impl.render.native.visibility=off");
     for point in ["VIEW_PROJECTION_BUILD", "VIEW_SPHERE_REGIONS", "VIEW_PVS_REGIONS"] {
         assert!(hooked_at(registry_for_profile(&off, profile), point).is_empty(), "{point}");
+    }
+}
+
+/// Every rendering session holds the flare state in the render's store,
+/// lockstep and replays included, so its bytes in the arena are the
+/// simulation's alone (docs/engine/sim-render-split.md, slice 6).
+#[test]
+fn every_rendering_session_keeps_the_flare_state_out_of_the_arena() {
+    let profile = super::compiled_render_hooks();
+    let play = Case { coop_live: true, ..Case::full("") };
+    let lockstep = Case { lockstep: true, ..play.clone() };
+    let replay = Case { replaying: true, ..play.clone() };
+    for case in [&play, &lockstep, &replay] {
+        assert!(hooked_at(registry_for_profile(case, profile), "RENDER_FRAME").contains(&crate::flare_store::ID));
     }
 }
 

@@ -1,6 +1,6 @@
 # Sim and render split
 
-Status: Design. The render random stream and the gather-lens exit are built; every other row is a slice below.
+Status: Design. The render random stream, the gather-lens exit and the flare store are built; every other row is a slice below.
 Code: `crates/extensions/game/src/render_rng.rs` (the private stream), `crates/rewrites/render-bridge/src/native_scene_lists/setup.rs` (`outside_gather_lens`, the object setup seam), `crates/platform/d3d/src/scaled.rs` (`ScaledBackend`, the reference copy), `crates/extensions/game/src/d3d_glue.rs` (`protected_readbacks`, `single_copy`). Tests: `crates/platform/d3d/tests/render_scale.rs`.
 Switch: `impl.sim.frame-guard` and `film.verify` (both off, both Design), added to [switches.md](../runtime/switches.md) by the slices that build them.
 
@@ -86,9 +86,10 @@ After this slice the gather-lens exit (`outside_gather_lens`) is a cost saving o
 |---|---|
 | Guest | The writer `0x00020bb0` counts samples of a quad per flare; the reader `0x00020770` divides the count from two frames back by the quad's area and smooths the entry's byte ([d3d-visibility.md](../graphics/d3d-visibility.md)). The draw pass `0x0002df00` reads the byte. |
 | Sim readers | None known: the byte gates flare draws, and the scripted look tests pass on their own conditions (**S**, from the static trace in d3d-visibility.md). Slice 2 proves it: a read census of the array with the tick's code as the reader set ([pipelined-render-census.md](../graphics/notes/pipelined-render-census.md) has the tool), zero reads expected. |
-| Move | The array is render state. `render_bridge::native_flare_query` owns the query and the reader for every caller, the water's class 5 query included, and keeps the entries in the render-private store. The count comes from the display copy's depth, one sample per guest pixel (**Test**: `single_copy_visibility_counts_guest_pixels`). A headless run has no entries. |
+| Move | The flare state `0x0051f408..0x005234c8` is render state (**Code**: `crates/extensions/game/src/flare_store.rs`). Around every `RENDER_FRAME` the region holds the render's copy; at the frame's end the copy goes to the render-private store and the simulation's bytes are put back, as the render stream does for the seed. The guest's registration, query, reader and draw pass, the water's class 5 query included, run on the render's copy. A headless run has no entries, and a drawn run's region holds the same bytes. When the simulation's bytes or the loaded map's name (`0x00547898`) change between frames, the copy is dropped. The native query counts on the display copy's depth, one sample per guest pixel, and keeps the reference copy's count only when the display is drawn through a wider lens than the quads (`native_flare_query_glue::counts_on`; **Test**: `single_copy_visibility_counts_guest_pixels`). |
+| The tick's free | `object_new` (`0x000b7b40`) calls `0x0002e1e0`, which frees through `0x00020e50` every in-use entry (head bit 4) whose owner (bits 6 to 17) is the new object's index. In the simulation's bytes no entry is in use, so it writes nothing. The store keeps each in-use entry's owner salt at a frame's end and, before the next frame, frees an entry whose owner slot holds a live object of another salt (`Store::enter`). |
 | If the census finds a tick reader | That reader gets a value made from sim state: the flare's marker tested against the collision world from the listener's camera, in the tick. No pixel count reaches it. |
-| Proof | The census result as a note. Test: the arena bytes are equal across a frame with a flare fully visible and fully hidden. |
+| Proof | The census result as a note. **Test**: `flare_store::a_frame_leaves_the_flare_state_as_the_simulation_left_it` (the region's bytes equal across a frame with a flare fully visible and fully hidden), `a_reused_owner_slot_frees_its_flares`; boot's `every_rendering_session_keeps_the_flare_state_out_of_the_arena`. |
 
 ### 5. The push-buffer callback
 
@@ -120,7 +121,7 @@ After this slice the gather-lens exit (`outside_gather_lens`) is a cost saving o
 | Holds | Keyed by | Lifetime |
 |---|---|---|
 | the render random seed | process | a session |
-| flare entries and their counts | flare slot | a map |
+| the flare state `0x0051f408..0x005234c8` and the owners' salts | entry | a map: dropped when the simulation's bytes or the map's name change |
 | the callback's reduction | view | a frame |
 | object overlay: pose for display, palettes, records, lighting, visit marks | object datum | a frame, or until the datum is reused |
 | particle view stamps | system datum | until the datum is reused |
