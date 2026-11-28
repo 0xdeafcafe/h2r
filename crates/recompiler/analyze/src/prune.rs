@@ -9,10 +9,13 @@
 //! dropped only when no root reaches it without passing a cut.
 //!
 //! [`Graph::build`] reads the analyzer's CFGs once; [`keep_in`] walks a
-//! graph, so tests can hand it an invented one. All inputs are sorted maps
+//! graph, so tests can hand it an invented one. The walk is breadth-first
+//! and records how it first reached each kept function ([`Why`]), so
+//! [`Keep::path`] answers "why is this kept" with a shortest chain back to
+//! a root. All inputs are sorted maps
 //! and sets: the result and its digest do not depend on hash order.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 
 use xbe::Xbe;
@@ -55,13 +58,60 @@ pub struct Dropped {
     pub bytes: u32,
 }
 
+/// How the walk first reached a kept function.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Why {
+    /// A root: found by something other than a direct call or tail call
+    /// (`Entry`, `CodeRef`, `DataPointer`, `GapScan`, ...).
+    Found(Source),
+    /// A root: a code address stored in the image (an immediate or
+    /// displacement in decoded code, an aligned word in a data section:
+    /// vtables, callback and handler tables). `at` is the stored value, an
+    /// interior entry when it is not the owner's.
+    Stored { at: u32 },
+    /// A root the caller gave ([`keep`]'s `extra_roots`). `at` as above.
+    Extra { at: u32 },
+    /// An exiting edge of the kept function `caller`: a direct call, tail
+    /// transfer, or branch or switch case landing on another entry. `at` is
+    /// the edge's target, an interior entry when it is not the owner's.
+    From { caller: u32, at: u32 },
+}
+
+impl Why {
+    /// Whether this is a root rather than an edge.
+    pub fn is_root(self) -> bool {
+        !matches!(self, Why::From { .. })
+    }
+}
+
 /// The result of [`keep`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Keep {
     pub kept: BTreeSet<u32>,
+    /// How the walk first reached each kept owner; its keys are `kept`.
+    pub why: BTreeMap<u32, Why>,
     pub dropped: BTreeMap<u32, Dropped>,
     /// FNV-1a over the replaced entries and the dropped set, in order.
     pub digest: u64,
+}
+
+impl Keep {
+    /// Why `owner` is kept: its own step first, then each caller's, ending
+    /// at a root. A shortest such chain (the walk is breadth-first). `None`
+    /// when `owner` is not a kept owner (dropped, unknown, or an interior
+    /// address: map it through [`Graph::interior`] first).
+    pub fn path(&self, owner: u32) -> Option<Vec<(u32, Why)>> {
+        let mut out = Vec::new();
+        let mut cur = owner;
+        loop {
+            let why = *self.why.get(&cur)?;
+            out.push((cur, why));
+            match why {
+                Why::From { caller, .. } => cur = caller,
+                _ => return Some(out),
+            }
+        }
+    }
 }
 
 impl Graph {
@@ -132,23 +182,31 @@ pub fn keep_in(graph: &Graph, replaced: &BTreeSet<u32>, extra_roots: &BTreeSet<u
             graph.interior.get(&va).copied()
         }
     };
+    // Roots in a fixed order: discovery sources, then stored addresses, then
+    // the caller's. The first reason to reach an owner is the one kept.
     let roots = graph
         .functions
         .iter()
         .filter(|(_, n)| !matches!(n.source, Source::Call | Source::TailCall))
-        .map(|(&va, _)| va)
-        .chain(graph.stored.iter().copied())
-        .chain(extra_roots.iter().copied());
-    let mut kept = BTreeSet::new();
-    let mut work: Vec<u32> = roots.filter_map(reach).collect();
-    while let Some(owner) = work.pop() {
-        if !kept.insert(owner) {
+        .map(|(&va, n)| (va, Why::Found(n.source)))
+        .chain(graph.stored.iter().map(|&at| (at, Why::Stored { at })))
+        .chain(extra_roots.iter().map(|&at| (at, Why::Extra { at })));
+    let mut why: BTreeMap<u32, Why> = BTreeMap::new();
+    let mut work: VecDeque<(u32, Why)> = roots.filter_map(|(va, w)| Some((reach(va)?, w))).collect();
+    while let Some((owner, w)) = work.pop_front() {
+        if why.contains_key(&owner) {
             continue;
         }
+        why.insert(owner, w);
         if let Some(node) = graph.functions.get(&owner) {
-            work.extend(node.targets.iter().copied().filter_map(reach));
+            for &at in &node.targets {
+                if let Some(next) = reach(at).filter(|n| !why.contains_key(n)) {
+                    work.push_back((next, Why::From { caller: owner, at }));
+                }
+            }
         }
     }
+    let kept: BTreeSet<u32> = why.keys().copied().collect();
 
     let mut dropped: BTreeMap<u32, Dropped> = graph
         .functions
@@ -182,7 +240,7 @@ pub fn keep_in(graph: &Graph, replaced: &BTreeSet<u32>, extra_roots: &BTreeSet<u
     for &d in dropped.keys() {
         h.word(d);
     }
-    Keep { kept, dropped, digest: h.0 }
+    Keep { kept, why, dropped, digest: h.0 }
 }
 
 struct Fnv(u64);
@@ -281,6 +339,43 @@ pub fn report(graph: &Graph, keep: &Keep, replaced: &BTreeMap<u32, String>, shar
         emptied.len(),
         keep.digest
     );
+    out
+}
+
+/// `h2 analyze --prune-report --why <addr>`: why `va` is kept or dropped,
+/// tab-separated. `interior` maps an interior address to its owner; each
+/// `why` row is one step from the function back to a root (kind `found`,
+/// `stored`, `extra` or `edge`, then the address the step lands on and the
+/// caller or `-`); a `dropped` row lists the replaced entries whose bodies
+/// reach it; `unknown` is an address that is not code.
+pub fn why(graph: &Graph, keep: &Keep, va: u32) -> String {
+    let mut out = String::new();
+    let owner = if graph.functions.contains_key(&va) {
+        va
+    } else if let Some(&owner) = graph.interior.get(&va) {
+        let _ = writeln!(out, "interior\t{va:#010x}\t{owner:#010x}");
+        owner
+    } else {
+        let _ = writeln!(out, "unknown\t{va:#010x}");
+        return out;
+    };
+    if let Some(path) = keep.path(owner) {
+        let _ = writeln!(out, "# why\tentry\tkind\tat\tcaller");
+        for (f, w) in path {
+            let (kind, at, caller) = match w {
+                Why::Found(s) => (format!("found:{s:?}"), f, None),
+                Why::Stored { at } => ("stored".to_owned(), at, None),
+                Why::Extra { at } => ("extra".to_owned(), at, None),
+                Why::From { caller, at } => ("edge".to_owned(), at, Some(caller)),
+            };
+            let caller = caller.map_or_else(|| "-".to_owned(), |c| format!("{c:#010x}"));
+            let _ = writeln!(out, "why\t{f:#010x}\t{kind}\t{at:#010x}\t{caller}");
+        }
+    } else if let Some(d) = keep.dropped.get(&owner) {
+        let by: Vec<String> = d.by.iter().map(|b| format!("{b:#010x}")).collect();
+        let by = if by.is_empty() { "-".to_owned() } else { by.join(",") };
+        let _ = writeln!(out, "dropped\t{owner:#010x}\t{by}");
+    }
     out
 }
 
@@ -396,6 +491,97 @@ mod tests {
         assert_eq!(a, keep_in(&g, &set(&[0x2000]), &set(&[])));
         assert_ne!(a.digest, keep_in(&g, &set(&[0x2100]), &set(&[])).digest);
         assert_ne!(a.digest, keep_in(&g, &set(&[]), &set(&[])).digest);
+    }
+
+    #[test]
+    fn why_names_every_kept_function_and_only_those() {
+        let k = keep_in(&graph(), &set(&[0x2000]), &set(&[]));
+        assert_eq!(k.why.keys().copied().collect::<BTreeSet<_>>(), k.kept);
+        assert!(k.path(0x2100).is_none(), "dropped functions have no path");
+        assert!(k.path(0x9999).is_none());
+    }
+
+    #[test]
+    fn path_runs_back_through_callers_to_the_entry() {
+        let k = keep_in(&graph(), &set(&[0x2000]), &set(&[]));
+        assert_eq!(
+            k.path(0x3100).unwrap(),
+            vec![
+                (0x3100, Why::From { caller: 0x3000, at: 0x3100 }),
+                (0x3000, Why::From { caller: 0x1000, at: 0x3000 }),
+                (0x1000, Why::Found(Source::Entry)),
+            ]
+        );
+    }
+
+    #[test]
+    fn path_is_a_shortest_chain() {
+        // 0x2200 is reachable as entry → 0x3000 → 0x3100 → 0x2100 → 0x2200
+        // and as entry → 0x3000 → 0x2200; the walk names the second.
+        let mut g = graph();
+        g.functions.get_mut(&0x3100).unwrap().targets.insert(0x2100);
+        g.functions.get_mut(&0x3000).unwrap().targets.insert(0x2200);
+        let k = keep_in(&g, &set(&[0x2000]), &set(&[]));
+        let p = k.path(0x2200).unwrap();
+        assert_eq!(p.len(), 3, "{p:?}");
+        assert_eq!(p[1].0, 0x3000);
+    }
+
+    /// A function only an indirect call reaches: its address sits in a
+    /// vtable word, so the stored-address root keeps it and the path says so.
+    #[test]
+    fn indirect_target_in_a_table_is_kept_with_a_stored_root() {
+        let mut g = graph();
+        // 0x4000 is called only through a table; it calls 0x4100.
+        g.functions.insert(0x4000, node(Source::Call, &[0x4100]));
+        g.functions.insert(0x4100, node(Source::Call, &[]));
+        g.stored.insert(0x4000);
+        let k = keep_in(&g, &set(&[0x2000]), &set(&[]));
+        assert!(k.kept.contains(&0x4000) && k.kept.contains(&0x4100));
+        assert_eq!(
+            k.path(0x4100).unwrap(),
+            vec![(0x4100, Why::From { caller: 0x4000, at: 0x4100 }), (0x4000, Why::Stored { at: 0x4000 })]
+        );
+        // Without the table word nothing reaches it.
+        g.stored.clear();
+        let k = keep_in(&g, &set(&[0x2000]), &set(&[]));
+        assert!(k.dropped.contains_key(&0x4000) && k.dropped[&0x4000].by.is_empty());
+    }
+
+    #[test]
+    fn replaced_owner_kept_by_an_interior_entry_says_which() {
+        let mut g = graph();
+        g.interior.insert(0x2008, 0x2000);
+        g.stored.insert(0x2008);
+        let k = keep_in(&g, &set(&[0x2000]), &set(&[]));
+        assert_eq!(k.path(0x2000).unwrap(), vec![(0x2000, Why::Stored { at: 0x2008 })]);
+        assert_eq!(k.why[&0x2100], Why::From { caller: 0x2000, at: 0x2100 });
+    }
+
+    #[test]
+    fn extra_root_is_named() {
+        let k = keep_in(&graph(), &set(&[0x2000]), &set(&[0x2100]));
+        assert_eq!(k.why[&0x2100], Why::Extra { at: 0x2100 });
+        assert!(k.why[&0x2100].is_root());
+        assert_eq!(k.path(0x2200).unwrap().last().unwrap().1, Why::Extra { at: 0x2100 });
+    }
+
+    #[test]
+    fn why_report_rows() {
+        let mut g = graph();
+        g.interior.insert(0x3104, 0x3100);
+        let k = keep_in(&g, &set(&[0x2000]), &set(&[]));
+        let r = why(&g, &k, 0x3104);
+        assert_eq!(
+            r,
+            "interior\t0x00003104\t0x00003100\n\
+             # why\tentry\tkind\tat\tcaller\n\
+             why\t0x00003100\tedge\t0x00003100\t0x00003000\n\
+             why\t0x00003000\tedge\t0x00003000\t0x00001000\n\
+             why\t0x00001000\tfound:Entry\t0x00001000\t-\n"
+        );
+        assert_eq!(why(&g, &k, 0x2100), "dropped\t0x00002100\t0x00002000\n");
+        assert_eq!(why(&g, &k, 0x5555), "unknown\t0x00005555\n");
     }
 
     #[test]

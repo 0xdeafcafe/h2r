@@ -311,9 +311,11 @@ const USAGE: &str = "usage: h2 <command> [disc]
   disasm <addr> [count]   decode instructions at a virtual address
   analyze [--functions <out.txt>] [--against <ghidra-functions.tsv>] [--explain <addr>]...
                           function discovery and coverage
-  analyze --prune-report [--replaced <entries.txt>]
+  analyze --prune-report [--replaced <entries.txt>] [--why <addr>]...
                           TSV of what leaving the replaced entries out of the lift
-                          would drop (docs/lifter/lift-pruning.md); drops nothing
+                          would drop (docs/lifter/lift-pruning.md); drops nothing.
+                          --why prints only the chain from <addr> back to the
+                          root that keeps it, or what drops it
   fpstats [--root <addr>]...
                           floating-point and SIMD instruction mix, control-word
                           writes, compare idioms and x87 stack-depth walk;
@@ -526,6 +528,7 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
     let mut explain = Vec::new();
     let mut prune_report = false;
     let mut replaced = None;
+    let mut why = Vec::new();
     let mut list = false;
     let mut no_xcheck = false;
     let mut db_dir = None;
@@ -546,6 +549,7 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
                     args.next().context("--replaced needs a path")?,
                 ))
             }
+            "--why" => why.push(args.next().context("--why needs an address")?),
             "--against" => {
                 against = Some(PathBuf::from(
                     args.next().context("--against needs a path")?,
@@ -618,7 +622,7 @@ fn desktop_command(cmd: String, mut args: impl Iterator<Item = String>) -> Resul
         ("extract", []) => extract(&disc, &repo_root().join("disc/extracted"), force),
         ("extract-xbe", [out]) => extract_xbe(&disc, out, force),
         ("extract-xbe", []) => extract_xbe(&disc, &repo_root().join("disc/default.xbe"), force),
-        ("analyze", []) if prune_report => run_prune_report(&disc, replaced.as_deref()),
+        ("analyze", []) if prune_report => run_prune_report(&disc, replaced.as_deref(), &why),
         ("analyze", []) => run_analyze(&disc, functions_out, against, &explain, force),
         ("fpstats", []) => run_fpstats(&disc, &roots),
         ("symbols", []) => run_symbols(&disc, list, !no_xcheck, db_dir),
@@ -926,7 +930,8 @@ fn run_fpstats(path: &Path, roots: &[String]) -> Result<()> {
 /// `h2 analyze --prune-report`: slice 1 of docs/lifter/lift-pruning.md.
 /// The replaced list is hand-given until the plan names its replaced points.
 #[cfg(feature = "desktop")]
-fn run_prune_report(path: &Path, replaced: Option<&Path>) -> Result<()> {
+fn run_prune_report(path: &Path, replaced: Option<&Path>, why: &[String]) -> Result<()> {
+    let why = why.iter().map(|s| parse_hex(s)).collect::<Result<Vec<_>>>()?;
     let replaced = match replaced {
         Some(file) => {
             let text = fs::read_to_string(file)
@@ -945,6 +950,12 @@ fn run_prune_report(path: &Path, replaced: Option<&Path>) -> Result<()> {
         &replaced.keys().copied().collect(),
         &Default::default(),
     );
+    if !why.is_empty() {
+        for va in why {
+            print!("{}", analyze::prune::why(&graph, &keep, va));
+        }
+        return Ok(());
+    }
     print!(
         "{}",
         analyze::prune::report(&graph, &keep, &replaced, emit::SHARD_SHIFT)

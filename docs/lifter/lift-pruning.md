@@ -109,6 +109,24 @@ The walk runs on the analyzer's CFG, before lifting, so a dropped function
 costs no lift, optimisation or emission time. It is deterministic: sorted
 inputs, no hash-map order.
 
+The walk is breadth-first and records how it first reached each kept
+function (`prune::Why`): a root (`Found` with the discovery source,
+`Stored` with the stored address, `Extra` for a plan root) or an edge
+(`From` with the caller and the address the edge lands on). `Keep::path`
+follows those back to a root, a shortest chain, so "why is X kept" has an
+answer before a range such as the D3D code is cut:
+
+```
+h2 analyze --prune-report --replaced cut.txt --why 0x3f6000
+```
+
+| Row | Fields |
+|---|---|
+| `interior` | the address, its owner |
+| `why` | one step, the function first: entry, kind (`found:<Source>`, `stored`, `extra`, `edge`), the address it lands on, the caller or `-` |
+| `dropped` | entry, the replaced entries whose bodies reach it, or `-` |
+| `unknown` | an address that is not code |
+
 ### Boot safety
 
 ```mermaid
@@ -164,13 +182,13 @@ set, so a pruned function still lifts on demand. **Code**:
 | `Plan::replaced(&self, entries: &BTreeSet<u32>) -> BTreeMap<u32, &'static Point>` | the conditions above |
 | `hooks::replaced_in_every(plans, entries) -> BTreeMap<u32, &'static Point>` | `Plan::replaced` in every plan; none given, none replaced |
 | `boot::registration::replaced_entries(entries: &BTreeSet<u32>) -> BTreeMap<u32, &'static Point>` | the window, playback and light-host cases of `registration/profiles.rs`, default switches; panics if a profile's registration or plan fails |
-| `analyze::prune::keep(xbe, analysis, replaced: &BTreeSet<u32>, extra_roots: &BTreeSet<u32>) -> Keep` | `Keep { kept: BTreeSet<u32>, dropped: BTreeMap<u32, Dropped>, digest: u64 }`; `Dropped { by, bytes }`, `by` the replaced entries whose cut bodies reach it through dropped code; digest FNV-1a over replaced then dropped |
+| `analyze::prune::keep(xbe, analysis, replaced: &BTreeSet<u32>, extra_roots: &BTreeSet<u32>) -> Keep` | `Keep { kept: BTreeSet<u32>, why: BTreeMap<u32, Why>, dropped: BTreeMap<u32, Dropped>, digest: u64 }`; `Keep::path(owner) -> Option<Vec<(u32, Why)>>`, the chain back to a root; `Dropped { by, bytes }`, `by` the replaced entries whose cut bodies reach it through dropped code; digest FNV-1a over replaced then dropped |
 | `emit::plan_image(analysis, xbe, passes, keep: Option<&Keep>)` | `None` lifts everything; `emit::lifted_entries` is its entry list, which both tiers' builds lift |
 | `emit::pruned::Table` | `root` rows (entry, point, feature) and `range` rows (start, end, root), tab-separated text, exported NUL-terminated as `h2gen_pruned_v1`: `h2gen_pruned.c` on clang (`emit::pruned::write_c`), a data object on the fast tier (`clif::build_dylib_pruned`). No symbol, nothing left out. `recomp::load_module` reads it into `Module::pruned`, the dispatch tables and the interpreter |
 | `boot::registration::lift_replaced(entries) -> emit::pruned::Replaced` | `replaced_entries` with each entry's feature, plus every profile's `Plan::calls_guest` as roots. `boot::register_image_entries` registers it (`recomp::register_lift_replaced`); `recomp::prune::plan` calls it when `H2_LIFT_PRUNE` is on, and nothing replaced lifts everything |
 | `boot::registration::check_pruned(roots, plan)` | boot's refusal: a cut root `plan.replaced` no longer holds, named with its feature and `H2_LIFT_PRUNE=0` |
 | `Event::Pruned { caller, target, root, point }` | the stop; `runtime::pruned::hits()` is `lift_pruned_hits` |
-| `h2 analyze --prune-report [--replaced FILE]` | TSV, three row kinds, each after a `#` header. `point`: entry, name, body (`dropped`, `kept`, `unknown`), functions dropped alone and shared, bytes alone, shards, shards it alone empties. `function`: entry, source, bytes, shard, the points that drop it. `total`: functions, kept, dropped, bytes, shards touched, emptied, digest. `FILE` is one hex entry per line and an optional name; slice 2's list replaces it |
+| `h2 analyze --prune-report [--replaced FILE] [--why ADDR]...` | with `--why`, only the rows of `prune::why` for each address (see "Reachability"). Otherwise TSV, three row kinds, each after a `#` header. `point`: entry, name, body (`dropped`, `kept`, `unknown`), functions dropped alone and shared, bytes alone, shards, shards it alone empties. `function`: entry, source, bytes, shard, the points that drop it. `total`: functions, kept, dropped, bytes, shards touched, emptied, digest. `FILE` is one hex entry per line and an optional name; slice 2's list replaces it |
 
 ### Build caches
 
