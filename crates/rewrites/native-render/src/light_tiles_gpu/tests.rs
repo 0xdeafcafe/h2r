@@ -476,7 +476,7 @@ fn tiled_shading_equals_the_per_light_passes() {
     // and fails in the others; the small quad (0.4) passes in (0, 0).
     let depth = scene_depth(device, queue, SIZE, &[0.8, 0.3, 0.45, 0.8], 2);
     let depth_view = depth.create_view(&Default::default());
-    let mut constants = [[0.0; 4]; d3d::VIEW_CONSTANTS];
+    let mut constants = [[0.0; 4]; gfx::external::VIEW_CONSTANTS];
     constants[0] = [1.0, 0.0, 0.0, 0.0];
     constants[1] = [0.0, 1.0, 0.0, 0.0];
     constants[2] = [0.0, 0.0, 1.0, 0.0];
@@ -984,7 +984,7 @@ fn a_masked_run_reads_each_lights_alpha_as_its_per_light_pass_did() {
     const SIZE: (u32, u32) = (32, 32);
     let depth = scene_depth(device, queue, SIZE, &[0.8; 4], 2);
     let depth_view = depth.create_view(&Default::default());
-    let mut constants = [[0.0; 4]; d3d::VIEW_CONSTANTS];
+    let mut constants = [[0.0; 4]; gfx::external::VIEW_CONSTANTS];
     constants[0] = [1.0, 0.0, 0.0, 0.0];
     constants[1] = [0.0, 1.0, 0.0, 0.0];
     constants[2] = [0.0, 0.0, 1.0, 0.0];

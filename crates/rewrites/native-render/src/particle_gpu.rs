@@ -60,7 +60,7 @@ pub struct TextureBinding {
 #[derive(Clone, Debug)]
 pub struct ShaderSnapshot {
     /// Read from the user's executable/map at runtime, never embedded.
-    pub microcode: d3d::shader::Microcode,
+    pub microcode: gfx::guest_program::Microcode,
     pub pixel: psh::PixelShaderDef,
     pub pixel_options: psh::PixelOptions,
     pub flat_shading: bool,
@@ -284,7 +284,7 @@ impl ImmediateDrawSnapshot<'_> {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ShaderKey {
-    microcode: d3d::shader::Microcode,
+    microcode: gfx::guest_program::Microcode,
     pixel: psh::PixelShaderDef,
     options: psh::PixelOptions,
     flat: bool,

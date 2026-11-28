@@ -153,7 +153,7 @@ pub const TAG_TABLE: u32 = 0x004e_3b44;
 /// What the Rust side gives the view's matrix block: the open view's
 /// viewport rectangle (left, top, width, height) and the rows of its
 /// view-projection in register order, as bits, the relation the carried
-/// draws' camera classification proves (`d3d` `scene_sink/camera.rs`).
+/// draws' camera classification proves.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct View {
     pub rect: [u32; 4],

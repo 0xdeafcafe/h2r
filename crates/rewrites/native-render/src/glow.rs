@@ -469,8 +469,8 @@ pub struct PostSurface<'a> {
     pub guest_size: (u32, u32),
 }
 
-impl<'a> From<&'a d3d::ExternalColor> for PostSurface<'a> {
-    fn from(color: &'a d3d::ExternalColor) -> Self {
+impl<'a> From<&'a gfx::external::ExternalColor> for PostSurface<'a> {
+    fn from(color: &'a gfx::external::ExternalColor) -> Self {
         Self { view: &color.attachment, guest_size: color.guest_size }
     }
 }

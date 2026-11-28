@@ -142,47 +142,23 @@ impl SkyLook {
         let program = shaders::vsh::Program::parse(microcode).ok()?;
         Some(Self { words: program.instructions.iter().flat_map(|i| i.words).collect(), stages })
     }
-
-    /// Whether the guest's draw runs this program and samples these
-    /// stages: `matched`, or the first that differs, `program` or
-    /// `textures` (the plan's look stands beside the draw's until the cut
-    /// binds it; counted `sky_plan_<outcome>`).
-    pub fn check(&self, draw: &d3d::ResolvedDraw) -> &'static str {
-        let d3d::shader::VertexProcessing::Program { microcode, .. } = &draw.shader.vertex else { return "program" };
-        if microcode[..] != self.words[..] {
-            return "program";
-        }
-        let sampled = draw.sampled_texture_stages();
-        let planned = self.stages.map(|s| !matches!(s, crate::look::Stage::Empty));
-        if sampled != planned {
-            return "textures";
-        }
-        "matched"
-    }
 }
 
 /// A sky model section's geometry as the load read it from the map
 /// (`tags::model::RenderModelGeometry`, the section's raw block): each
 /// vertex stream's stride and bytes, in descriptor order, and each part's
 /// index run with its vertex window cut at the load, every window and
-/// index list a snapshot of its own (`CachedBytes::derived`,
-/// `CachedIndices::derived`), so the strip cache keeps one resident
-/// `SectionKey::Sky` entry per part from these bytes, not the draw's.
+/// index list a snapshot of its own.
 #[derive(Clone, Debug, Default)]
 pub struct SkySection {
     pub streams: Vec<(u32, Vec<u8>)>,
     pub parts: Vec<SkyPart>,
 }
 
-/// One part of a [`SkySection`]: its index run and, per section stream,
-/// the part's vertex window (`None` when the run indexes past it).
+/// One part of a [`SkySection`]: its index run.
 #[derive(Clone, Debug)]
 pub struct SkyPart {
     pub run: Vec<u16>,
-    lo: u16,
-    count: u32,
-    rebased: d3d::backend::CachedIndices,
-    windows: Vec<Option<d3d::backend::CachedBytes>>,
 }
 
 impl SkySection {
@@ -197,74 +173,8 @@ impl SkySection {
 
     /// The section of these streams (stride, bytes) and part index runs.
     pub fn new(streams: Vec<(u32, Vec<u8>)>, runs: Vec<Vec<u16>>) -> Self {
-        let parts = runs.into_iter().map(|run| {
-            let lo = run.iter().copied().min().unwrap_or(0);
-            let hi = run.iter().copied().max().unwrap_or(0);
-            let count = u32::from(hi - lo) + 1;
-            let rebased = d3d::backend::CachedIndices::derived(lo, hi, run.iter().map(|&i| u32::from(i - lo)).collect());
-            let windows = streams.iter().map(|(stride, bytes)| {
-                let stride = *stride as usize;
-                let start = usize::from(lo) * stride;
-                bytes.get(start..start + count as usize * stride).map(|w| d3d::backend::CachedBytes::derived(w.to_vec()))
-            }).collect();
-            SkyPart { run, lo, count, rebased, windows }
-        }).collect();
+        let parts = runs.into_iter().map(|run| SkyPart { run }).collect();
         Self { streams, parts }
-    }
-
-    /// Whether the guest's draw of part `part` is this section's: its
-    /// index list (absolute, or rebased by the part's smallest index) and
-    /// each of its streams the section stream of its stride over the
-    /// part's vertex window. `matched`, or the first that differs: `part`
-    /// (no such part, or an empty one), `indices`, `window` (the part
-    /// indexes past a stream), `streams`. Counted `sky_geometry_<outcome>`.
-    pub fn check(&self, part: u32, draw: &d3d::ResolvedDraw) -> &'static str {
-        self.compare(part, draw).map_or_else(|why| why, |_| "matched")
-    }
-
-    /// The strip's draw with its streams and indices the load's, for the
-    /// resident `SectionKey::Sky` entry: the part's rebased index list and,
-    /// per draw stream, the load's window of the same stride and bytes.
-    /// Refused as [`Self::check`] names it, or `absolute` (the draw indexes
-    /// the whole section, not the part's window).
-    pub fn resident(&self, part: u32, draw: &d3d::ResolvedDraw) -> Result<d3d::ResolvedDraw, &'static str> {
-        let (part, rebased, windows) = self.compare(part, draw)?;
-        if !rebased && part.lo != 0 {
-            return Err("absolute");
-        }
-        let mut native = draw.clone();
-        native.streams = draw.streams.iter().zip(windows).map(|(s, w)| d3d::backend::StreamBytes {
-            data: d3d::backend::StreamData::Cached(w.clone()), stride: s.stride,
-        }).collect();
-        native.indices = Some(d3d::backend::IndexData::Cached(part.rebased.clone()));
-        native.vertex_count = part.count;
-        Ok(native)
-    }
-
-    /// The part, whether the draw's indices are rebased, and per draw
-    /// stream the load's window that matched it.
-    fn compare(&self, part: u32, draw: &d3d::ResolvedDraw) -> Result<(&SkyPart, bool, Vec<&d3d::backend::CachedBytes>), &'static str> {
-        let part = usize::try_from(part).ok().and_then(|p| self.parts.get(p)).filter(|p| !p.run.is_empty()).ok_or("part")?;
-        let (run, lo) = (&part.run, part.lo);
-        let indices = draw.indices.as_deref().ok_or("indices")?;
-        let absolute = indices.len() == run.len() && indices.iter().zip(run).all(|(&d, &r)| d == u32::from(r));
-        let rebased = indices.len() == run.len() && indices.iter().zip(run).all(|(&d, &r)| d == u32::from(r - lo));
-        if !absolute && !rebased {
-            return Err("indices");
-        }
-        let first = if rebased { 0 } else { usize::from(lo) };
-        let mut matched = Vec::with_capacity(draw.streams.len());
-        for stream in &draw.streams {
-            let same: Vec<usize> = (0..self.streams.len()).filter(|&n| self.streams[n].0 == stream.stride).collect();
-            let windows: Vec<&d3d::backend::CachedBytes> = same.iter().filter_map(|&n| part.windows[n].as_ref()).collect();
-            if windows.is_empty() {
-                return Err(if same.is_empty() { "streams" } else { "window" });
-            }
-            let offset = first * stream.stride as usize;
-            let found = windows.into_iter().find(|w| stream.data.get(offset..offset + w.bytes.len()) == Some(&w.bytes[..]));
-            matched.push(found.ok_or("streams")?);
-        }
-        Ok((part, rebased, matched))
     }
 }
 

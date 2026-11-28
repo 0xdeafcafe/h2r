@@ -108,7 +108,7 @@ impl HudPipeline {
     ) -> Option<Self> {
         let sampled = hud_stage(&key.def)?;
         let alpha_test = match key.alpha_func {
-            Some(func) => Some(d3d::nv2a::alpha_func(gfx::state::CompareFunc::from_xbox(
+            Some(func) => Some(gfx::guest_program::alpha_func(gfx::state::CompareFunc::from_xbox(
                 func,
             )?)),
             None => None,

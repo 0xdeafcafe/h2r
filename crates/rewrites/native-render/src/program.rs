@@ -23,7 +23,7 @@ use crate::pass_state::PassState;
 use crate::world::{LightmapKey, ModelRows, Owner, World, WorldDraw, WorldVertex};
 
 /// The per-view vertex constants the device gives the pass
-/// (`d3d::VIEW_CONSTANTS`).
+/// (`gfx::external::VIEW_CONSTANTS`).
 pub const VIEW_CONSTANTS: usize = 18;
 
 /// The texture-coordinate decompression register the world programs read
@@ -954,7 +954,7 @@ fn translate_program(
     }
     let (c0, c1) = def.embedded_constants();
     // `D3DTSS_MIPMAPLODBIAS`, applied in the shader as the D3D path does
-    // (`d3d::nv2a`; a wgpu sampler has no bias).
+    // (a wgpu sampler has no bias).
     let mut pixel = PixelUniforms {
         c0,
         c1,
@@ -1031,7 +1031,7 @@ fn only_dead_outputs(program: &vsh::Program, missing: u16, def: &PixelShaderDef)
 }
 
 /// Each stage's `D3DTSS_MIPMAPLODBIAS` (f32 bits), zero when not finite,
-/// as `d3d::nv2a` passes it (the shader clamps it to the NV2A's range).
+/// as the guest passes it (the shader clamps it to the NV2A's range).
 pub fn lod_bias(samplers: [Option<StageStates>; 4]) -> [f32; 4] {
     samplers.map(|s| {
         let b = s.map_or(0.0, |s| f32::from_bits(s.mip_lod_bias));
@@ -1209,7 +1209,7 @@ pub struct ViewInputs {
     pub z_scale: f32,
     /// The W-buffer's clip range in depth units and whether out-of-range
     /// depth is clamped rather than culled, as the device holds them when
-    /// the pass is issued (`d3d::DepthClip`: `SET_CLIP_MIN`/`MAX`,
+    /// the pass is issued (`SET_CLIP_MIN`/`MAX`,
     /// `D3DRS_DEPTHCLIPCONTROL`), what the D3D path draws the layer's
     /// draws with. `None`: the whole range, culled.
     pub w_clip: Option<([f32; 2], bool)>,
@@ -1339,8 +1339,8 @@ pub(crate) fn target_shift(guest: (u32, u32), host: (u32, u32)) -> [f32; 2] {
 
 /// Clip a resolved draw's guest rectangle to this target copy in host pixels.
 pub(crate) fn scaled_scissor(
-    clip: &d3d::backend::PixelRect,
-    scale: d3d::scaled::RenderScale,
+    clip: &gfx::external::PixelRect,
+    scale: crate::render_scale::RenderScale,
     extent: (u32, u32),
 ) -> Option<gfx::ScissorRect> {
     let [x, y, width, height] = scale.rect(clip.x, clip.y, clip.width, clip.height);
@@ -1944,7 +1944,7 @@ impl Gpu {
     }
 
     /// [`Gpu::prepare_with`]'s two blocks as writes ahead of a pass's
-    /// packets (`d3d::backend::ExternalDraws::writes`).
+    /// packets (`gfx::external::ExternalDraws::writes`).
     pub(crate) fn prepare_writes(
         &self,
         view: &ViewInputs,
@@ -2336,7 +2336,7 @@ impl ProgramSet {
                 continue;
             }
             let key = batch.lightmap.ok_or("world batch has no lightmap key")?;
-            self.lit_batch_binding(index, d3d::Lighting::Retail).ok_or("world batch has no retail binding")?;
+            self.lit_batch_binding(index, crate::lighting::Lighting::Retail).ok_or("world batch has no retail binding")?;
             let (on_view, off_view, changed) = match pages.entry(key) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 std::collections::hash_map::Entry::Vacant(e) => {
@@ -2375,15 +2375,15 @@ impl ProgramSet {
             .is_some_and(|b| b.changed)
     }
 
-    pub(crate) fn lit_batch_textures(&self, index: usize, lighting: d3d::Lighting) -> Option<&wgpu::BindGroup> {
+    pub(crate) fn lit_batch_textures(&self, index: usize, lighting: crate::lighting::Lighting) -> Option<&wgpu::BindGroup> {
         self.lit_batch_binding(index, lighting)?.resident()
     }
 
-    pub(crate) fn lit_batch_binding(&self, index: usize, lighting: d3d::Lighting) -> Option<&BatchTextures> {
+    pub(crate) fn lit_batch_binding(&self, index: usize, lighting: crate::lighting::Lighting) -> Option<&BatchTextures> {
         if let Some(batch) = self.relit.as_ref().and_then(|v| v.get(index)).and_then(Option::as_ref) {
             match lighting {
-                d3d::Lighting::RelightOn => return Some(&batch.on),
-                d3d::Lighting::RelightOff => return Some(&batch.off),
+                crate::lighting::Lighting::RelightOn => return Some(&batch.on),
+                crate::lighting::Lighting::RelightOff => return Some(&batch.off),
                 _ => {}
             }
         }
@@ -2755,7 +2755,7 @@ impl ProgramSet {
     }
 
     /// [`ProgramSet::write_selected`]'s copies as writes ahead of the
-    /// world's packets (`d3d::backend::ExternalDraws::writes`).
+    /// world's packets (`gfx::external::ExternalDraws::writes`).
     pub(crate) fn selected_writes(
         &self,
         view: &ViewInputs,
@@ -3256,7 +3256,7 @@ mod tests {
         let p = frame_pixel(&offset, &ViewInputs { z_scale: 65_535.0, ..view });
         assert_eq!(p.depth, [65_535.0, -2.0, 1.5, 1.0], "the pass's polygon offset over the frame's scale");
         // The device's clip range and clamp, as the D3D path takes them
-        // (`d3d::nv2a`'s `w_clip_range`, `depth_clamp`): a cinematic's
+        // (`w_clip_range`, `depth_clamp`): a cinematic's
         // range past the camera's far, clamped.
         let clipped = ViewInputs {
             w_clip: Some(([0.0, 33_554_430.0], true)),
@@ -4052,17 +4052,17 @@ mod tests {
         let mut images = Vec::new();
         // Packets first: the rows they read are only those written ahead.
         let retail_cases = [
-            (d3d::Lighting::Retail, true, [10, 50, 90]),
-            (d3d::Lighting::Retail, false, [10, 50, 90]),
-            (d3d::Lighting::RelightOn, true, [240, 60, 90]),
-            (d3d::Lighting::RelightOn, false, [240, 60, 90]),
-            (d3d::Lighting::RelightOff, true, [20, 60, 90]),
-            (d3d::Lighting::RelightOff, false, [20, 60, 90]),
-            (d3d::Lighting::Retail, true, [10, 50, 90]),
+            (crate::lighting::Lighting::Retail, true, [10, 50, 90]),
+            (crate::lighting::Lighting::Retail, false, [10, 50, 90]),
+            (crate::lighting::Lighting::RelightOn, true, [240, 60, 90]),
+            (crate::lighting::Lighting::RelightOn, false, [240, 60, 90]),
+            (crate::lighting::Lighting::RelightOff, true, [20, 60, 90]),
+            (crate::lighting::Lighting::RelightOff, false, [20, 60, 90]),
+            (crate::lighting::Lighting::Retail, true, [10, 50, 90]),
         ];
         let combined_cases = [
-            (d3d::Lighting::Retail, true, [31, 75, 95]),
-            (d3d::Lighting::Retail, true, [75, 31, 95]),
+            (crate::lighting::Lighting::Retail, true, [31, 75, 95]),
+            (crate::lighting::Lighting::Retail, true, [75, 31, 95]),
         ];
         let cases: &[_] = if accumulation { &combined_cases } else { &retail_cases };
         for &(lighting, packets, expected) in cases {
@@ -4312,14 +4312,14 @@ mod tests {
             let draws = if culled {
                 let crate::gpu::CulledSelection { draws, late, dispatch } = gpu.culled_selection_draws(&arena,
                     &ctx.device, &ctx.queue, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), selection, &view, &camera,
-                    d3d::Lighting::Retail, None, None).unwrap();
+                    crate::lighting::Lighting::Retail, None, None).unwrap();
                 assert!(late.is_empty() && !dispatch.has_late(), "no depth to test: the frustum's set");
                 assert_eq!((draws.ranges, draws.packets.len()), (4, 2), "slots 0..3 in one run, the repeat its own");
                 dispatch.record(&mut enc);
                 draws
             } else {
                 gpu.selection_draws_bound(F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), selection, &view,
-                    d3d::Lighting::Retail, None).unwrap()
+                    crate::lighting::Lighting::Retail, None).unwrap()
             };
             for (buffer, offset, bytes) in &draws.writes {
                 arena.write_front(&ctx.device, &ctx.queue, buffer, *offset, bytes);
@@ -4431,7 +4431,7 @@ mod tests {
             }));
             let CulledSelection { draws, late, dispatch } = gpu.culled_selection_draws(&arena, &ctx.device,
                 &ctx.queue, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selection, &view, &camera,
-                d3d::Lighting::Retail, None, Some((depth, &camera, full, 1))).unwrap();
+                crate::lighting::Lighting::Retail, None, Some((depth, &camera, full, 1))).unwrap();
             for (buffer, offset, bytes) in &draws.writes {
                 arena.write_front(&ctx.device, &ctx.queue, buffer, *offset, bytes);
             }
@@ -5235,7 +5235,7 @@ mod tests {
     }
 
     /// The native module is the D3D path's for the same draw, text for
-    /// text: `d3d::nv2a`'s `translate` decodes the words as `Normal`, with
+    /// text: `gfx::guest_program` decodes the words as `Normal`, with
     /// the layout's fetch (the world's frame and lighting vector bound as
     /// `NORMPACKED3` words, as 03a's draws bind them), and links the
     /// pixel shader from the same definition and options. So the position

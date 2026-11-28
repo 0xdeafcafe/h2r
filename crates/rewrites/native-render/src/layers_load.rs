@@ -615,7 +615,7 @@ fn compile_layer3<R: std::io::Read + std::io::Seek>(
 /// The cull a layer-3 pass that leaves `CULLMODE` unset draws with when
 /// no game holds the device's (`look::WorldPass::inherits_cull`): the D3D
 /// device's default, `CULLMODE` CCW with `FRONTFACE` CW. The source is
-/// `d3d::state::StateWords::defaults`, which translates to
+/// the guest device default, which translates to
 /// `gfx::state::RenderState::default()` (its test
 /// `defaults_translate_cleanly_to_gfx_defaults`), and the world draws
 /// keep it unless a pass sets its own.

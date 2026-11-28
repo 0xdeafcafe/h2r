@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use d3d::TargetCopy;
+use gfx::external::TargetCopy;
 use gfx::compile::{Pending, PendingPipeline};
 use gfx::pipeline::{PipelineKey, ShaderId};
 use gfx::{BoundGroup, RecordedDraw, ScissorRect};
@@ -44,7 +44,7 @@ pub struct ClipRect {
 }
 
 impl ClipRect {
-    fn scaled(self, scale: d3d::scaled::RenderScale) -> ScissorRect {
+    fn scaled(self, scale: crate::render_scale::RenderScale) -> ScissorRect {
         let [x, y, width, height] = scale.rect(self.x, self.y, self.width, self.height);
         ScissorRect {
             x,
@@ -93,11 +93,11 @@ pub struct Prepared {
 
 #[derive(Clone, Debug)]
 pub struct ReferenceCopy {
-    pub constants: d3d::shader::Constants,
+    pub constants: gfx::guest_program::Constants,
     pub clips: Vec<ClipRect>,
 }
 
-/// The target contract boot fills from `d3d::ExternalTarget`.
+/// The target contract the stage fills from its attachments.
 pub struct DecalTarget<'a> {
     pub device: &'a wgpu::Device,
     pub queue: &'a wgpu::Queue,
@@ -291,7 +291,7 @@ fn writes_w_depth(w_buffered: bool, render: &RenderState) -> bool {
 
 fn pixel_options(shader: &ShaderSnapshot, caps: Capabilities) -> PixelOptions {
     let mut border = [0; 4];
-    border[0] = d3d::nv2a::shader_border(&shader.stages[0], 0, caps.clamp_to_border);
+    border[0] = gfx::guest_program::shader_border(&shader.stages[0], 0, caps.clamp_to_border);
     PixelOptions {
         texture_dims: [Some(TextureDim::D2), None, None, None],
         alpha_kill: shader.extras.map(|e| e.alpha_kill & 4 != 0),
@@ -442,7 +442,7 @@ fn compile(
         immediate_size: 0,
     });
     let sampler = device.create_sampler(
-        &d3d::nv2a::sampler_key(&shader.stages[0], caps, options.border[0]).descriptor(),
+        &gfx::guest_program::sampler_key(&shader.stages[0], caps, options.border[0]).descriptor(),
     );
     let pixel = base_pixel(shader);
     let primitive = gfx::translate::primitive_state(
@@ -491,7 +491,7 @@ fn draw_uniforms(
     let mut vu = vertex.clone();
     if let Some(copy) = reference {
         vu.constants = *copy.constants;
-        vu.ui_transform = d3d::backend::UiFit::IDENTITY.transform;
+        vu.ui_transform = gfx::external::UiFit::IDENTITY.transform;
     }
     vu.surface = [guest_size.0 as f32, guest_size.1 as f32];
     vu.z_max = z_scale;
@@ -607,7 +607,7 @@ impl DecalGpu {
         {
             return false;
         }
-        let Some(scale) = d3d::scaled::RenderScale::between(t.guest_size, t.size) else {
+        let Some(scale) = crate::render_scale::RenderScale::between(t.guest_size, t.size) else {
             return false;
         };
         let reference = self.reference.as_ref().filter(|_| t.copy == TargetCopy::Reference);
@@ -870,7 +870,7 @@ impl DecalCache {
         }
         let caps = Capabilities::from_features(device.features());
         let scale =
-            d3d::scaled::RenderScale::between(t.guest_size, t.size).ok_or("target scale")?;
+            crate::render_scale::RenderScale::between(t.guest_size, t.size).ok_or("target scale")?;
         let reference = prepared.reference.as_ref().filter(|_| t.copy == TargetCopy::Reference);
         let clips = reference.map_or(prepared.clips.as_slice(), |copy| copy.clips.as_slice());
         if clips.is_empty() {
@@ -922,7 +922,7 @@ impl DecalCache {
         };
         let textures = if program.sampled {
             let view = t.stage0.ok_or("texture view")?;
-            let key = d3d::nv2a::sampler_key(&shader.stages[0], caps, border);
+            let key = gfx::guest_program::sampler_key(&shader.stages[0], caps, border);
             let created = &mut self.created;
             let sampler = self
                 .samplers

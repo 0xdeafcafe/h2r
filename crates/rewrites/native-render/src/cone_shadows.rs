@@ -7,8 +7,8 @@
 //!   apex, axis and far extents make a projection ([`Cone::of`]).
 //! - **The no-shadow flag is ignored for cones.** Definition bit 3
 //!   ([`NO_SHADOW`]) is the content's "no stencil shadow"; E3 casts from a
-//!   cone that has it. A light the guest shadowed keeps the guest's tile
-//!   (`d3d::gfx_backend::guest_draw_pass::tiles`) and is [`Source::Guest`];
+//!   cone that has it. A light with a supplied tile keeps it
+//!   (`light_tiles_gpu`) and is [`Source::Guest`];
 //!   the rest are the renderer's own ([`Source::Renderer`]).
 //! - **Four slots** ([`SHADOW_CAP`]) a frame, shared between the views of
 //!   split screen as `light_choice` shares its sixteen ([`slot_caps`]).
@@ -19,7 +19,7 @@
 //!   order. The guest's shadowed lights keep their shadow past the cap:
 //!   the guest draws them whatever the renderer chooses.
 //! - **Tiles.** One slot of the local lights' atlas each ([`ATLAS_EDGE`],
-//!   four [`SLOT_EDGE`] squares): `d3d::scaled::shadow_scale` times the
+//!   four [`SLOT_EDGE`] squares): `crate::render_scale::shadow_scale` times the
 //!   guest's 512-square level, at most [`SLOT_EDGE`]; the flashlight's is
 //!   [`FLASHLIGHT_EDGE`] ([`tile_edge`]).
 //! - **Casters and receivers** are the view's instances whose bounding

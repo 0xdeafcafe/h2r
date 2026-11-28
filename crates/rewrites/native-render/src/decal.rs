@@ -1,5 +1,5 @@
-//! Shared dynamic decal types. Admission and resources come from the ordered
-//! `d3d::DrawAdmission` snapshot; this module has no guest-memory decoder.
+//! Shared dynamic decal types. Resources come from typed scene values;
+//! this module has no guest-memory decoder.
 
 /// Bytes in one guest decal vertex: float3 position and a packed 11:11:10
 /// signed normalised vector (`NORMPACKED3`, semantic 3).

@@ -683,7 +683,7 @@ pub struct PostRaster {
     /// The effective scissor in guest target pixels.
     pub clip: Option<[u32; 4]>,
     /// The fog register the live draw's combiners read: the fog unit's
-    /// uniform and colour (`d3d::nv2a::draw_fog`). `None` leaves the
+    /// uniform and colour (`gfx::guest_program::draw_fog`). `None` leaves the
     /// program's (fog off).
     pub fog: Option<([f32; 4], [f32; 4])>,
     /// The stages whose sampler repeats (D3D address 1, wrap) in a
@@ -750,7 +750,7 @@ impl PostRaster {
 
     pub(crate) fn scissor(self, guest: (u32, u32), size: (u32, u32)) -> Result<[u32; 4], ScreenRefused> {
         let [x, y, w, h] = self.clip.unwrap_or([0, 0, guest.0, guest.1]);
-        let scale = d3d::scaled::RenderScale::between(guest, size).ok_or(ScreenRefused::Clip)?;
+        let scale = crate::render_scale::RenderScale::between(guest, size).ok_or(ScreenRefused::Clip)?;
         if w == 0 || h == 0
             || x > guest.0 || w > guest.0 - x || y > guest.1 || h > guest.1 - y
         {

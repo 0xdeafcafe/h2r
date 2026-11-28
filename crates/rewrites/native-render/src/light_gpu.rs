@@ -8,7 +8,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use d3d::backend::ExternalDraws;
+use gfx::external::ExternalDraws;
 use gfx::compile::PendingPipeline;
 use gfx::pipeline::{PipelineKey, ShaderId, ShaderProgram};
 use gfx::ring::{SubmissionUploads, UniformRun};
@@ -1238,7 +1238,7 @@ mod tests {
             animation: None,
         };
         let view = ViewInputs {
-            constants: [[0.; 4]; d3d::VIEW_CONSTANTS],
+            constants: [[0.; 4]; gfx::external::VIEW_CONSTANTS],
             guest_size: (8, 8),
             size: (8, 8),
             z_scale: 1.,
@@ -1428,7 +1428,7 @@ mod tests {
             },
         );
         let view = ViewInputs {
-            constants: [[0.; 4]; d3d::VIEW_CONSTANTS],
+            constants: [[0.; 4]; gfx::external::VIEW_CONSTANTS],
             guest_size: (SIZE, SIZE),
             size: (SIZE, SIZE),
             z_scale: 1.,
@@ -1672,7 +1672,7 @@ mod tests {
         let program = additive_program([0.5, 0.0, 0.0, 1.0], wgpu::Color::WHITE);
         let gpu = prepared_gpu(device, queue, &set, &program);
         let view = ViewInputs {
-            constants: [[0.; 4]; d3d::VIEW_CONSTANTS],
+            constants: [[0.; 4]; gfx::external::VIEW_CONSTANTS],
             guest_size: (SIZE, SIZE),
             size: (SIZE, SIZE),
             z_scale: 1.,
@@ -1855,7 +1855,7 @@ mod tests {
         };
         let gpu = prepared_gpu(device, queue, &set, &program);
         let view = ViewInputs {
-            constants: [[0.; 4]; d3d::VIEW_CONSTANTS],
+            constants: [[0.; 4]; gfx::external::VIEW_CONSTANTS],
             guest_size: (SIZE, SIZE),
             size: (SIZE, SIZE),
             z_scale: 1.,
