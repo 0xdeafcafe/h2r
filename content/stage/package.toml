@@ -9,8 +9,8 @@ authors = ["Alexander Forbes-Reed"]
 notes = "Original layout, geometry and textures, drawn in code."
 
 # The map is built on the user's machine from their disc's base map, at
-# prepare (workspace::prepare, stage_kit::fresh), and written to
-# <data>/maps/stage/. The layout is art/stage/stage.yaml.
+# prepare (workspace::prepare, workspace::stage::fresh), and written to
+# <data>/maps/stage/. The layout is content/stage/layout.yaml.
 [[item]]
 kind = "map"
 source = "map.toml"

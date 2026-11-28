@@ -332,7 +332,7 @@ child's world stream as it takes a paired game's.
 | PT5 (built) | The overlays and the panel | `studio/src/viewport/playtest.rs`, `studio/src/ui/playtest.rs`, `view.layers` | each layer counts its marks and changes the snapshot's pixels on an invented result | the layers draw over a map in the window |
 | PT6 (built) | Before and after: `playtest.compare`, difference layers, the baseline, swapped sides | `sim-bench/src/spatial/compare.rs`, `studio/src/app/playtest.rs` | two invented results: a change inside the spread is not called out and one outside it is | moving a spawn shows its fairness change |
 | PT7 | The pool: `match.start`, kept children, the sizing, the measured speeds | `crates/extensions/game/src/sim_glue.rs`, `crates/apps/cli/src/sim_cmd.rs`, `studio/src/app/playtest.rs`, `docs/editor/notes/playtest.md` | a second match on a fake sim starts from a clean tally; the pool is sized from cores and memory | the note has matches a minute, cold and warm |
-| PT8 | Fresh maps: the readiness list, the mesh on a hand-made level, the stage as the test | `studio/src/app/playtest_static.rs`, the bots' mesh builder, `stage-kit` (a playable bay) | the stage's ramps and ledges give the links the layout expects | a probe plays on the stage |
+| PT8 | Fresh maps: the readiness list, the mesh on a hand-made level, the stage as the test | `studio/src/app/playtest_static.rs`, the bots' mesh builder, `content-kit` (its `stage` module) (a playable bay) | the stage's ramps and ledges give the links the layout expects | a probe plays on the stage |
 
 PT1, PT2 and PT3 need nothing. PT4 needs PT2 and the workspace's W2.
 PT5 needs PT3. PT6 needs PT4 and PT5. PT7 needs PT4. PT8 needs PT1 and

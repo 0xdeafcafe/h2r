@@ -1,7 +1,7 @@
 # Forge block-out: pieces, the natural set and the dev textures
 
-Status: Partly built. Slices BO1 and BO3 are built: `forge-shapes` has the definition, the canonical name, the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch), `STARTER`, and the natural set (`noise`, `hull` and the five rock generators). Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. Slice BO5 is built: `forge-doc` has `Forge::Piece`, `PIECE_TAG`, the validator's rules and `ForgeDoc::pieces` (document format 6). Slice BO4 is built: `crates/tools/blockout-kit` installs a definition as tags with the dev set and its `Cost`, and has an invented map for tests. Slice BO11 is built: Studio's `blockout.render` (a definition or the contact sheet) and `blockout.describe` in `crates/apps/studio/src/api/blockout.rs`. Slice BO6 is built: `forge_build::blockout` materialises a document's pieces (the definitions, the crate palette rows, the starter set and the cut order in the kit) and `blockout_kit::palette` is the palette survey. Slice BO7 is built: the session places, changes and drops pieces and knows each one's state (`Session::{place_piece, set_piece, pieces}`, `forge::piece`, `World::piece_loaded`), and `forge.pieces` lists them. Slice BO8 is built: the monitor's Structure and Natural groups, Resize and its draft, Size, Material, Reroll, the Block-out grid, the ghost and the Block-out overlay. The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
-Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/forge-doc/src/piece.rs` (the document), `crates/formats/dev-texture` (the dev textures), `crates/tools/blockout-kit` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/{piece.rs,session/pieces.rs}` (the session), `crates/extensions/agent/src/forge/pieces.rs` (`forge.pieces`), `crates/extensions/forge/src/{piece.rs,tool.rs}` (the grid, `Draft`, the resize steps), `crates/extensions/game/src/forge_screens/blockout.rs` and `forge_glue/{editing/resize.rs,pieces_world.rs}` (the monitor), `crates/apps/studio/src/api/blockout.rs` (Studio's render and describe). Tests: named per slice under "Slices".
+Status: Partly built. Slices BO1 and BO3 are built: `forge-shapes` has the definition, the canonical name, the structural generators (block, wall, floor plate, ramp, wedge, stairs, cylinder, arch), `STARTER`, and the natural set (`noise`, `hull` and the five rock generators). Slice BO2 is built: `crates/formats/dev-texture` has the rasters, the font and the label layout. Slice BO5 is built: `forge-doc` has `Forge::Piece`, `PIECE_TAG`, the validator's rules and `ForgeDoc::pieces` (document format 6). Slice BO4 is built: `crates/tools/content-kit/src/blockout` installs a definition as tags with the dev set and its `Cost`, and has an invented map for tests. Slice BO11 is built: Studio's `blockout.render` (a definition or the contact sheet) and `blockout.describe` in `crates/apps/studio/src/api/blockout.rs`. Slice BO6 is built: `forge_build::blockout` materialises a document's pieces (the definitions, the crate palette rows, the starter set and the cut order in the kit) and `content_kit::blockout::palette` is the palette survey. Slice BO7 is built: the session places, changes and drops pieces and knows each one's state (`Session::{place_piece, set_piece, pieces}`, `forge::piece`, `World::piece_loaded`), and `forge.pieces` lists them. Slice BO8 is built: the monitor's Structure and Natural groups, Resize and its draft, Size, Material, Reroll, the Block-out grid, the ghost and the Block-out overlay. The rest of the page is a design. It is slice F8 of [forge-design.md](forge-design.md), split into slices BO1 to BO12 below.
+Code: `crates/formats/forge-shapes` (the definitions and generators), `crates/formats/forge-doc/src/piece.rs` (the document), `crates/formats/dev-texture` (the dev textures), `crates/tools/content-kit/src/blockout` (a definition as tags), `crates/tools/forge-build/src/blockout.rs` (materialising), `crates/extensions/forge/src/{piece.rs,session/pieces.rs}` (the session), `crates/extensions/agent/src/forge/pieces.rs` (`forge.pieces`), `crates/extensions/forge/src/{piece.rs,tool.rs}` (the grid, `Draft`, the resize steps), `crates/extensions/game/src/forge_screens/blockout.rs` and `forge_glue/{editing/resize.rs,pieces_world.rs}` (the monitor), `crates/apps/studio/src/api/blockout.rs` (Studio's render and describe). Tests: named per slice under "Slices".
 Switch: none. Two settings of the profile's store, `forge.blockout.grid` and `forge.blockout.dev_view` ("In the monitor").
 
 A monitor builds a level out of **pieces**: blocks, ramps, stairs,
@@ -139,9 +139,9 @@ placements with equal definitions share one set of tags.
 
 ## A definition as tags
 
-`blockout_kit::install(&mut TagSet, &PieceDef, &Facts) -> Result<Installed>`
+`content_kit::blockout::install(&mut TagSet, &PieceDef, &Facts) -> Result<Installed>`
 adds a definition's tags to a map's tag set, as `pogo_kit::kit` and
-`stage_kit::kit` add theirs. `Facts` is what is read from the base map
+`content_kit::stage::kit` add theirs. `Facts` is what is read from the base map
 when it is built: the shader templates (`h1convert::shad::Library`,
 of which the pieces draw with `shad::TEX_BUMP`), the global material
 (`h1objects::rebuild::PIECE_MATERIAL`'s where the map has it, else the
@@ -150,17 +150,17 @@ is at the definition's path, and a definition the set already holds is
 refused; so is one that does not generate, whose collision fails its
 check, or whose `Map` material names a shader the set lacks, with
 nothing added. A set made with `TagSet::from_map` takes
-`blockout_kit::make_index_room` first.
+`content_kit::blockout::make_index_room` first.
 
 | Tag | Made from | With |
 |---|---|---|
-| `bloc` | its definition in `tags::defs`, as `h1objects::rebuild::scenery` writes a `scen` (`blockout-kit/src/object.rs`) | the `hlmt`, the bounding sphere of the bounds |
+| `bloc` | its definition in `tags::defs`, as `h1objects::rebuild::scenery` writes a `scen` (`content-kit/src/blockout/object.rs`) | the `hlmt`, the bounding sphere of the bounds |
 | `hlmt` | `h1objects::rebuild::model` | the `mode` (none for a barrier), `coll` and `phmo`; one region and permutation, `default`; one node, `piece`, at the origin; the collision material `blockout` mapped to the global one |
-| `mode` | the mesh of `blockout_kit::mesh`, through `h1_assets::models::mode::convert_model` as `pogo_kit::kit::install_model` does | one part per shader in use, triangle lists; absent when every face is `Nodraw` or `Clip` |
-| `coll` | `collision_build::build` over the shell, checked by `collision_build::verify::check`, the BSP's eight blocks (`Bsp::encode_blocks`) written as a tag tree so the set interns its names (`blockout_kit::collision`) | one BSP, one material, one node, no BSP physics slots |
-| `phmo` | `h1objects::rebuild::physics_model` over the hulls (`blockout_kit::physics`) | one rigid body on no node, `blockout_kit::piece_body`: flags 0, motion 5, the size class `+0x1e` of the retail band its bounding sphere falls in; a mass of 1,000 kg whatever the size |
+| `mode` | the mesh of `content_kit::blockout::mesh`, through `h1_assets::models::mode::convert_model` as `pogo_kit::kit::install_model` does | one part per shader in use, triangle lists; absent when every face is `Nodraw` or `Clip` |
+| `coll` | `collision_build::build` over the shell, checked by `collision_build::verify::check`, the BSP's eight blocks (`Bsp::encode_blocks`) written as a tag tree so the set interns its names (`content_kit::blockout::collision`) | one BSP, one material, one node, no BSP physics slots |
+| `phmo` | `h1objects::rebuild::physics_model` over the hulls (`content_kit::blockout::physics`) | one rigid body on no node, `content_kit::blockout::piece_body`: flags 0, motion 5, the size class `+0x1e` of the retail band its bounding sphere falls in; a mass of 1,000 kg whatever the size |
 
-**The render mesh** (`blockout_kit::mesh::build`). A face draws with
+**The render mesh** (`content_kit::blockout::mesh::build`). A face draws with
 its role's material: `Dev` the role's tile, `Map` the named shader,
 `Nodraw` and `Clip` not at all. A `Dev` face that is a rectangle, on a
 shape that is not a rock, carries its plate: the face is cut into four
@@ -192,7 +192,7 @@ physics slots (**V**, the rule in the same section).
 
 `Installed` lists the tags and `Cost`: what the install added, the dev
 set included when this install added it. `Cost::tag_memory` is each
-added tag's size as `map::build` lays it out (`blockout_kit::tag_size`:
+added tag's size as `map::build` lays it out (`content_kit::blockout::tag_size`:
 the blocks in emission order, each at its alignment),
 `Cost::raw` the raw bytes, `Cost::tags` the index entries. Tag memory is the scarce one: multiplayer maps
 have 0.1 to 1.5 MiB of headroom and one has none
@@ -215,7 +215,7 @@ engine allows at runtime".
 **Materialising.** `forge_build::blockout::definitions` collects the
 definitions of the document's live pieces in name order, once each.
 `blockout::install` installs each on the base map
-(`blockout_kit::install` over `TagSet::from_map`) and writes the
+(`content_kit::blockout::install` over `TagSet::from_map`) and writes the
 scenario's crate palette again as a new block: the base's rows, then one
 row a definition. The scenario editor then opens the map that gives, and
 the placement edits go through it as any other: a `PIECE_TAG` palette
@@ -283,7 +283,7 @@ stand-in size: `Box` (block, wall, floor plate), `Prism3` (ramp, wedge)
 and `Cylinder16`. Within a class every size has the same counts of
 vertices, faces, planes and hull corners, so a slot becomes any
 definition of its class by writing values and no block grows
-(`blockout_kit::slot::plan(&PieceDef) -> Patch`).
+(`content_kit::blockout::slot::plan(&PieceDef) -> Patch`).
 
 | Tag | Written through | Path of [realtime-edits.md](../editor/realtime-edits.md) |
 |---|---|---|
@@ -294,7 +294,7 @@ definition of its class by writing values and no block grows
 
 Then the slot's objects are made again (`world.object.respawn` with a
 definition), since a live body keeps the shape it was built with. The
-kit reserves `blockout_kit::slot::COUNTS` slots a class (16 boxes, 8
+kit reserves `content_kit::blockout::slot::COUNTS` slots a class (16 boxes, 8
 prisms, 4 cylinders). A slot is taken by the first definition a session
 needs and freed by the next rebuild, which bakes that definition as a
 tag of its own. Stairs, arches and the natural set have no slot: their
@@ -317,7 +317,7 @@ A face draws with the material of its role.
 - **`Clip`** on every role is a barrier: no render model at all
   ([forge-features.md](forge-features.md), "Invisible barriers").
 
-**The palette survey.** `blockout_kit::palette::survey(&mut Map, raw)`
+**The palette survey.** `content_kit::blockout::palette::survey(&mut Map, raw)`
 lists the surfaces the level is made of, for the Material picker: for
 each shader drawn by the scenario's structure BSPs
 (`scenario_edit::geometry::world_parts`, transparent parts left out),

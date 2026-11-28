@@ -316,7 +316,7 @@ The template is data, not code: `content/new-map/courtyard.yaml`.
 
 | Step | What it makes | Code |
 |---|---|---|
-| Floor | a 32 m lit floor: render mesh, collision from the collision compiler with its MOPP, the lightmap from the sun and sky fill, the sky | `stage_kit::map::build_over` |
+| Floor | a 32 m lit floor: render mesh, collision from the collision compiler with its MOPP, the lightmap from the sun and sky fill, the sky | `content_kit::stage::map::build_over` |
 | Pieces | 4 walls, a ramp, a platform, 3 cover blocks, 2 pillars: block-out pieces, each with its `bloc`, render model, `coll` and `phmo`, placed as crates | `forge_build::blockout::install` ([forge-blockout.md](../game/forge-blockout.md)) |
 | Placements | spawns, netgame flags, equipment, through a scenario-edit recipe, each checked as the editor checks it | `starter_map::build::place` |
 | Check | the scenario read back starts every mode the template claims | `starter_map::coverage` |
@@ -334,9 +334,9 @@ names the gap.
 
 **Where a tag-workspace project plugs in.** The base's tags come through
 `tags::repo::TagSource`. A disc map is `starter_map::build` over a
-`MapSource`. A project is a `TagSource` and a `stage_kit::map::Base`
+`MapSource`. A project is a `TagSource` and a `content_kit::stage::map::Base`
 passed to `starter_map::build::build_over`, and adds its own tags to the
-closure through `stage_kit::map::Over::roots`.
+closure through `content_kit::stage::map::Over::roots`.
 
 Not built yet:
 

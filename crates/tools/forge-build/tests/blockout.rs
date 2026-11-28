@@ -1,9 +1,9 @@
-//! Block-out pieces materialised on blockout-kit's invented map
+//! Block-out pieces materialised on content-kit's block-out invented map
 //! (docs/game/forge-blockout.md, "Materialising" and "The cut order").
 //! Every definition, map and shader here is invented.
 use std::io::Cursor;
 
-use blockout_kit::fixture::{ROCK_SHADER, fixture};
+use content_kit::blockout::fixture::{ROCK_SHADER, fixture};
 use forge_build::{Built, Error, VERSIONS, blockout, build};
 use forge_doc::{
     BlockKind, Edit, Endpoint, FORMAT, FieldWrite, Forge, ForgeDoc, MapRef, Op, OpId, Placement,

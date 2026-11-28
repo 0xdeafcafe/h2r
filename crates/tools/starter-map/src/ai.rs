@@ -16,7 +16,7 @@
 use std::f32::consts::FRAC_PI_2;
 
 use map::FourCC;
-use stage_kit::map::set_block;
+use content_kit::stage::map::set_block;
 use tags::repo::{Node, TagKey, Tree, Value};
 
 use crate::template::Ai;

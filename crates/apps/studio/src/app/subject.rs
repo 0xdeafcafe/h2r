@@ -45,7 +45,7 @@ impl Scene {
 
     /// The flat bay's pad of the shipped stage layout.
     pub fn stage() -> Result<Self, String> {
-        let at = stage_kit::subject_place(STAGE_BAY).map_err(|e| e.to_string())?;
+        let at = content_kit::stage::subject_place(STAGE_BAY).map_err(|e| e.to_string())?;
         Ok(Self::Stage {
             bay: at.bay,
             pad: at.point,

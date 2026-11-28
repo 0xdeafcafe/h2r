@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::sync::Arc;
 
-use blockout_kit::{Cost, cost_since};
+use content_kit::blockout::{Cost, cost_since};
 use forge_doc::bodies::{Body, Refused, Spec, TagPath};
 use map::build::TagSet;
 use map::{FourCC, Map, TagQuery};
@@ -166,7 +166,7 @@ pub fn install(
             return Ok((None, report));
         }
     };
-    blockout_kit::make_index_room(&mut set);
+    content_kit::blockout::make_index_room(&mut set);
     let mut used = 0;
     let mut carried = false;
     for body in Body::ALL {
@@ -234,7 +234,7 @@ mod tests {
     }
 
     fn base() -> Vec<u8> {
-        blockout_kit::fixture::fixture()
+        content_kit::blockout::fixture::fixture()
     }
 
     #[test]

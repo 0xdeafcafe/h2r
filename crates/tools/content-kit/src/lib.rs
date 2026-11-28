@@ -1,8 +1,13 @@
 //! The content kit: one tool that builds an item's content (`content/<item>/`:
 //! parametric YAML sources, painted atlases and a manifest) into the tags a
 //! map needs to hold it. The items are the Pogo Stick (this crate's root
-//! modules, three looks, `content/pogo/`) and the Flood pod ([`flood_pod`],
-//! `content/flood-pod/`). The data model every item shares is the manifest
+//! modules, three looks, `content/pogo/`), the Flood pod ([`flood_pod`],
+//! `content/flood-pod/`), the content stage ([`stage`], `content/stage/`:
+//! layout and `kit.yaml`) and the Forge block-out pieces ([`blockout`],
+//! `content/blockout/kit.yaml`, over the shapes of `forge-shapes` and the dev
+//! tiles of `dev-texture`). Each item's `kit.yaml` is data the builders read
+//! (`stage::data`, `blockout::data`, [`atlas`]), with every unknown key
+//! refused. The data model every item shares is the manifest
 //! ([`atlas`]), the source ([`source`]), the mesher ([`mesh`]) and the atlas
 //! writer ([`texture`]); an item adds its rig and its tag layout.
 //!
@@ -30,12 +35,14 @@
 //! weapon class it is held as. The Rust here reads them.
 
 pub mod atlas;
+pub mod blockout;
 pub mod flood_pod;
 pub mod inject;
 pub mod kit;
 pub mod mesh;
 pub mod served;
 pub mod source;
+pub mod stage;
 pub mod texture;
 
 /// An invented map for other crates' tests (feature `fixture`).

@@ -3,7 +3,7 @@
 //!
 //! [`definitions`] collects the definitions of a document's live pieces,
 //! once each, in name order. [`install`] adds their tags to the base map
-//! (`blockout_kit::install`), one crate palette row a definition after the
+//! (`content_kit::blockout::install`), one crate palette row a definition after the
 //! map's own rows, and with the kit also the dev set and the starter set
 //! (`crate::kit::starter`) after them. The scenario editor then opens the
 //! map it gives, and each piece's placement takes its definition's row
@@ -18,7 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::io::Cursor;
 
-use blockout_kit::{Cost, Facts, cost_since, dev};
+use content_kit::blockout::{Cost, Facts, cost_since, dev};
 use forge_doc::{BlockKind, Pieces};
 use forge_shapes::{Material, PieceDef, Role};
 use map::build::{Block, TagPayload, TagSet};
@@ -174,7 +174,7 @@ fn trial(pristine: &TagSet, facts: &Facts, dev: bool, defs: &[PieceDef]) -> Resu
     let mut ids = Vec::with_capacity(defs.len());
     for def in defs {
         let had = has_dev_set(&set);
-        let installed = blockout_kit::install(&mut set, def, facts)
+        let installed = content_kit::blockout::install(&mut set, def, facts)
             .map_err(|e| Error::Piece(format!("{e:#}")))?;
         costs.push((installed.cost, !had && has_dev_set(&set)));
         ids.push(installed.crate_tag);
@@ -305,7 +305,7 @@ pub fn install(
     let (base_count, base_rows) = base_palette(&mut map)?;
     report.base_rows = base_count;
     let mut pristine = TagSet::from_map(&mut map)?;
-    blockout_kit::make_index_room(&mut pristine);
+    content_kit::blockout::make_index_room(&mut pristine);
     for def in needed {
         check_shaders(&pristine, def)?;
     }

@@ -45,8 +45,6 @@ hud-kit = { path = "../../tools/hud-kit" }
 # model.* on a map with the Pogo Stick's kit added as the game serves it
 # (api/models.rs). `boot` already depends on it.
 content-kit = { path = "../../tools/content-kit" }
-# The content stage's subject pad (src/app/subject.rs; docs/editor/live-editors.md).
-stage-kit = { path = "../../tools/stage-kit" }
 variants = { path = "../../formats/variants" }
 # The game type script editor: the language intelligence (`rules::ide`),
 # the check report and the compiler (src/app/rules_edit.rs).
@@ -102,7 +100,6 @@ forge-doc.workspace = true
 # (api/blockout.rs; docs/game/forge-blockout.md).
 forge-shapes = { path = "../../formats/forge-shapes" }
 dev-texture = { path = "../../formats/dev-texture" }
-blockout-kit = { path = "../../tools/blockout-kit" }
 # The map variants on this machine a game variant may suggest
 # (`forge::files::variants::suggestable`; src/api/variants.rs).
 forge.workspace = true

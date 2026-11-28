@@ -1,5 +1,5 @@
 //! The template, its coverage, its collision, the campaign AI and the
-//! placements on blockout-kit's invented map. No game data.
+//! placements on content-kit's block-out invented map. No game data.
 
 use std::io::Cursor;
 
@@ -17,7 +17,7 @@ fn template() -> Template {
     Template::builtin().expect("the shipped template parses")
 }
 
-const STAND_IN: stage_kit::Player = stage_kit::Player {
+const STAND_IN: content_kit::stage::Player = content_kit::stage::Player {
     height: 0.7,
     radius: 0.2,
 };
@@ -88,7 +88,7 @@ fn every_piece_generates_and_its_collision_compiles() {
     let t = template();
     for d in t.defs() {
         let solid = d.generate().unwrap_or_else(|e| panic!("{}: {e}", d.name()));
-        let compiled = blockout_kit::collision::compile(&solid)
+        let compiled = content_kit::blockout::collision::compile(&solid)
             .unwrap_or_else(|e| panic!("{}: {e:#}", d.name()));
         assert!(!compiled.bsp.surfaces.is_empty(), "{}", d.name());
     }
@@ -98,7 +98,7 @@ fn every_piece_generates_and_its_collision_compiles() {
 fn the_floor_collision_compiles() {
     let t = template();
     let layout = t.layout(STAND_IN).unwrap();
-    let mesh = stage_kit::mesh::Mesh::build(&layout);
+    let mesh = content_kit::stage::mesh::Mesh::build(&layout);
     let compiled = mesh.collision().expect("the floor compiles");
     assert!(!compiled.bsp.surfaces.is_empty());
 }
@@ -188,7 +188,7 @@ fn count_at(tree: &Tree, node: usize, at: u32) -> u32 {
 }
 
 fn child_of(tree: &Tree, node: u32, at: u32) -> u32 {
-    stage_kit::map::child(tree, node, at).unwrap_or_else(|| panic!("no block at +{at:#x}"))
+    content_kit::stage::map::child(tree, node, at).unwrap_or_else(|| panic!("no block at +{at:#x}"))
 }
 
 #[test]
@@ -245,13 +245,13 @@ fn the_campaign_clear_list_covers_the_ai_blocks() {
     }
 }
 
-// The placements, on blockout-kit's invented map with a weapon and a
+// The placements, on content-kit's block-out invented map with a weapon and a
 // vehicle added.
 
 fn invented(t: &Template) -> Vec<u8> {
-    let mut map = Map::from_reader(Cursor::new(blockout_kit::fixture::fixture())).unwrap();
+    let mut map = Map::from_reader(Cursor::new(content_kit::blockout::fixture::fixture())).unwrap();
     let mut set = TagSet::from_map(&mut map).unwrap();
-    blockout_kit::make_index_room(&mut set);
+    content_kit::blockout::make_index_room(&mut set);
     for it in &t.multiplayer.items {
         let (g, path) = it.key().unwrap();
         set.add_group(FourCC(g), None, None);
@@ -307,7 +307,7 @@ fn a_map_without_a_named_tag_is_refused_by_name() {
     let t = template();
     let req = Request::new("Yard", Kind::Multiplayer).unwrap();
     // The pieces without the weapon and the vehicle.
-    let base = blockout_kit::fixture::fixture();
+    let base = content_kit::blockout::fixture::fixture();
     let headroom = forge_build::blockout::headroom(&base).unwrap();
     let bytes = forge_build::blockout::install(&base, &t.defs(), false, headroom)
         .unwrap()
@@ -354,9 +354,9 @@ fn report_stub(placed: scenario_edit::recipe::Built) -> build::Report {
         notes: placed.notes,
         modes: Vec::new(),
         ai: None,
-        stage: stage_kit::map::Report {
+        stage: content_kit::stage::map::Report {
             key: String::new(),
-            version: stage_kit::VERSION,
+            version: content_kit::stage::version(),
             name: "yard".into(),
             base: "invented".into(),
             scenario: String::new(),

@@ -7,7 +7,7 @@ license.workspace = true
 
 [dependencies]
 # Block-out definitions as tags, the dev set and what each costs.
-blockout-kit = { path = "../blockout-kit" }
+content-kit = { path = "../content-kit" }
 content.workspace = true
 firefight-kit = { path = "../firefight-kit" }
 forge-doc.workspace = true
@@ -22,7 +22,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 # The invented map the block-out pieces build on.
-blockout-kit = { path = "../blockout-kit", features = ["fixture"] }
+content-kit = { path = "../content-kit", features = ["fixture"] }
 # The bots' teleporter reader, to check a link is one the generator pairs.
 bots = { path = "../../live/bots" }
 firefight-kit = { path = "../firefight-kit", features = ["testkit"] }

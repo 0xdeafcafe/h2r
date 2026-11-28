@@ -6,7 +6,7 @@
 //! [`build::build`] in order:
 //!
 //! 1. **The floor.** The template's `ground` is a one-bay stage layout:
-//!    the content stage's fresh build (`stage_kit::map::build_over`) makes
+//!    the content stage's fresh build (`content_kit::stage::map::build_over`) makes
 //!    the structure BSP (floor render mesh, collision from the collision
 //!    compiler with its MOPP, one cluster), the lightmap from the bay's
 //!    sun and sky fill, and the sky, over the base's globals and shaders.
@@ -27,10 +27,10 @@
 //!
 //! The base's tags come through `tags::repo::TagSource`: a disc map today
 //! ([`build::build`] over `MapSource`), the extracted tag tree with
-//! [`build::build_over`] and `stage_kit::map::Base::from_repo`. A
+//! [`build::build_over`] and `content_kit::stage::map::Base::from_repo`. A
 //! tag-workspace project plugs in at the same place: it is a `TagSource`
 //! and a `Base`, and adds its own tags to the closure through
-//! `stage_kit::map::Over::roots`.
+//! `content_kit::stage::map::Over::roots`.
 #![forbid(unsafe_code)]
 
 pub mod ai;
@@ -59,7 +59,7 @@ pub enum Error {
     Name(String),
     /// The floor, lightmap, sky or fresh build failed.
     #[error(transparent)]
-    Stage(#[from] stage_kit::Error),
+    Stage(#[from] content_kit::stage::Error),
     /// The base map lacks what the template names, or the disc lacks the
     /// base.
     #[error("new map base: {0}")]

@@ -1,0 +1,51 @@
+# The Forge block-out pieces' manifest (crates/tools/content-kit,
+# `blockout::data`): what a piece's tags are named and made of. The shapes
+# are crates/formats/forge-shapes (`PieceDef`, the generators) and the dev
+# tiles and font atlas are crates/formats/dev-texture; this is the data the
+# kit adds to turn a definition into tags.
+#
+# Every key is required and an unknown key is refused.
+item: blockout
+# The one node of every piece: its origin, the lowest corner of its bounds.
+node: piece
+# The one region and permutation of a piece's `mode`, `coll`, `phmo` and
+# `hlmt`.
+region: default
+# `obje.object_type` of a crate (`bloc`): its index in the engine's object
+# type table.
+crate_type: 11
+# The one collision material's name; the `hlmt` maps it to the map's global
+# material.
+collision_material: blockout
+# The tag folder of the dev set: the tiles' bitmaps and shaders, and the
+# font atlas.
+dev_folder: forge\blockout\dev
+# A piece's one fixed rigid body.
+physics:
+  # `+0x18`: no flag. Bit 1 would put the body on collision layer 2, which
+  # meets layers 0 to 2 only.
+  flags: 0
+  # `+0x1a`: motion 5, Havok's fixed motion.
+  motion: 5
+  # Kilograms. A fixed body does not move, so the mass only has to be
+  # positive; one figure for every size keeps the bytes a function of the
+  # shape alone.
+  mass: 1000.0
+palette:
+  # The largest tile repeat a piece's surface takes.
+  max_tile: 32768
+  # Words of a global material's name that make it rock or ground.
+  rock_and_ground:
+    - rock
+    - stone
+    - boulder
+    - cliff
+    - dirt
+    - ground
+    - terrain
+    - sand
+    - gravel
+    - grass
+    - mud
+    - snow
+    - soil

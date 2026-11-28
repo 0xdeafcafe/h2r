@@ -8,7 +8,7 @@
 //! The roots are the `tags_root` setting (the tree), the data root, and the
 //! checkout Studio was built from (the packages `content/*/`,
 //! `assets/tag-edits/`); a project is a package's `map` item. The kits a project can name are
-//! `stage_kit::project_kit::KITS`.
+//! `workspace::stage::project_kit::KITS`.
 use std::time::Instant;
 
 use serde_json::{Value, json};
@@ -100,8 +100,8 @@ impl Provider for Projects {
 
 fn tools() -> Tools<'static> {
     Tools {
-        kits: stage_kit::project_kit::KITS,
-        keep: stage_kit::project_kit::KEEP,
+        kits: workspace::stage::project_kit::KITS,
+        keep: workspace::stage::project_kit::KEEP,
     }
 }
 

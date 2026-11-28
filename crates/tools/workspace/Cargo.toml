@@ -48,8 +48,10 @@ h1-assets = { path = "../h1-assets" }
 # `PackageRewrite` is the VFS's rewrite of the game's maps.
 vfs.workspace = true
 # The `model` builder: the primitive YAML's mesh, the atlas and the tags a
-# look is built into.
+# look is built into; the content stage (`stage`) is its map build.
 content-kit = { path = "../content-kit" }
+# The stage kit's fresh keep lists (`stage::project_kit`).
+h1convert = { path = "../h1convert" }
 
 # Firefight's wave sets: the `rules` items the director script is built from.
 firefight = { path = "../../formats/firefight" }

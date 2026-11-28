@@ -90,7 +90,7 @@ crates = [
     "editor-core", "firefight-kit", "forge-build", "geometry-edit", "h1-assets", "h1campaign",
     "h1convert", "h1map", "h1objects", "hopper-edit", "hud-edit", "hud-kit", "live-art", "mesh-edit",
     "perf",
-    "scenario-edit", "stage-kit", "xtask",
+    "scenario-edit", "xtask",
 ]
 live_owned = ["live-art"]
 

@@ -1,0 +1,91 @@
+# The content stage's manifest (crates/tools/content-kit, `stage::data`):
+# what the stage's builders read that is data, not structure. The layout is
+# layout.yaml; the project (its scenario, base and kits) is map.toml.
+#
+# Every key is required and an unknown key is refused.
+item: stage
+# The build version: part of every build key. Bump it when the same
+# sources would give other bytes.
+version: 2
+# The multiplayer player's biped, whose size the scale references take.
+biped: objects\characters\masterchief\masterchief_mp
+# The global material every stage surface is made of: footsteps, impacts
+# and decals as on stone.
+floor_material: hard_terrain_stone
+# The salt of retail slot 0: every disc map numbers slot `n`
+# `(salt + n) << 16 | n`.
+salt: 57716 # 0xe174
+sky:
+  # The dome's radius, world units: past the stage's far corner.
+  radius: 1000.0
+  # Quads round and from pole to pole.
+  segments: 48
+  rings: 24
+  # The picture's size.
+  width: 1024
+  height: 512
+  # The compass letters: the letter and the azimuth it stands at, degrees
+  # counter-clockwise from +x seen from above.
+  compass:
+    - { letter: "N", azimuth: 0.0 }
+    - { letter: "W", azimuth: 90.0 }
+    - { letter: "S", azimuth: 180.0 }
+    - { letter: "E", azimuth: -90.0 }
+  # How high the letters stand, degrees over the horizon.
+  letter_elevation: 16.0
+  # A letter's pixel scale: a glyph is 5 by 7 of them.
+  letter_scale: 6
+  # The sun's disc radius and the glow's, degrees.
+  disc: 3.0
+  glow: 15.0
+  # The horizon line's half thickness, degrees.
+  line_half: 0.4
+  # The cutoff angle of the sun's light: radians, in the range retail's
+  # lights hold (0.0035 to 0.35).
+  light_cutoff: 0.035
+  # RGBA.
+  colors:
+    zenith: [38, 92, 200, 255]
+    horizon: [190, 215, 245, 255]
+    ground_near: [78, 80, 86, 255]
+    ground_far: [34, 36, 40, 255]
+    line: [20, 20, 24, 255]
+    sun: [255, 246, 214, 255]
+    plate: [236, 236, 236, 255]
+    ink: [16, 16, 16, 255]
+light:
+  # Texels to the world unit on a day face.
+  texels_per_unit: 4.0
+  # The least density the packer falls back to.
+  min_density: 0.5
+  # The largest page side.
+  max_page: 2048
+  # Texels between two cells.
+  gap: 1
+  # The side of the cell a flat or dark bay's faces share.
+  constant_side: 2
+  # The byte for full light.
+  half: 128.0
+  # How far a shadow ray's origin is lifted off its face.
+  bias: 0.01
+texture:
+  # The font's scale: a glyph is 5 by 7 of them, so 10 by 14 texels.
+  scale: 2
+  # RGBA.
+  colors:
+    check_light: [180, 180, 180, 255]
+    check_dark: [164, 164, 164, 255]
+    line: [128, 128, 128, 255]
+    heavy: [80, 80, 80, 255]
+    axis_x: [192, 48, 48, 255]
+    axis_y: [48, 160, 48, 255]
+    subject: [232, 128, 32, 255]
+    pad: [48, 96, 208, 255]
+    plate: [236, 236, 236, 255]
+    ink: [16, 16, 16, 255]
+  # The ruler: texels per world unit, and its colours.
+  ruler:
+    texels: 256
+    base: [216, 200, 96, 255]
+    tick: [64, 64, 64, 255]
+    edge: [24, 24, 24, 255]

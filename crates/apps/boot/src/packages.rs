@@ -204,7 +204,7 @@ pub fn prepare_maps(data_root: &Path, disc: &Path, loaded: &[workspace::Loaded])
         disc: disc.to_path_buf(),
         open: RefCell::new(None),
     };
-    let stage = stage_kit::fresh::StageFresh { bases: &bases };
+    let stage = workspace::stage::fresh::StageFresh { bases: &bases };
     // The Firefight kit builds the ground a `map` item's ground file asks
     // for; a build without it leaves such a map failed, by name.
     #[cfg(feature = "test-maps")]

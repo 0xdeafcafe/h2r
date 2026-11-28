@@ -39,7 +39,7 @@ hud-kit = { path = "../../tools/hud-kit" }
 # `h2 package check|build`: the package build (docs/editor/studio-redesign.md).
 workspace = { path = "../../tools/workspace" }
 # `h2 tags build --project`: the content stage (docs/editor/content-stage.md).
-stage-kit = { path = "../../tools/stage-kit" }
+content-kit = { path = "../../tools/content-kit" }
 # `h2 superbounce scan` (docs/game/superbounce.md, "Spots in the geometry").
 superbounce = { path = "../../live/superbounce" }
 # `h2 rules`: the scripted game types' tooling (docs/game/rules-engine.md).

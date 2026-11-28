@@ -16,7 +16,7 @@ use super::sheet::{
 pub struct PieceFacts {
     pub id: OpId,
     pub def: PieceDef,
-    /// The shaders of the map's surfaces, as `blockout_kit::palette::survey`
+    /// The shaders of the map's surfaces, as `content_kit::blockout::palette::survey`
     /// ranks them, for the Material picker after **Dev**.
     pub surfaces: Vec<String>,
 }

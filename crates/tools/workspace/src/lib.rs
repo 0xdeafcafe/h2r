@@ -97,6 +97,7 @@ pub mod project_build;
 mod recipe;
 mod rewrite;
 mod sound;
+pub mod stage;
 mod screens;
 mod tagitem;
 mod unpin;

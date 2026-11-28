@@ -1,7 +1,7 @@
 # The tag workspace: Studio as the whole tools suite
 
 Status: In progress. Built: the tag repository and its extraction versions ([tag-repo.md](../formats/tag-repo.md)); Studio's first start (W3: the start page, `workspace.*`, the game's `maps.load` rescan); edit files over the tree, the layers with the authored layer, projects (a package's `map` item) and the build of a project into its map package, `onto` adding new tags, with the stage as its first kit (`project.*`, `edits.*`, `h2 tags project`, `h2 tags edits`). Not built: Studio's save writing edit lines and `doc.open {project}` (W5's journal), `project.play`, import layers' store (W9), the incremental cache (W6), `ContentKit` (W4). None of the built parts has run on the disc yet. "Open questions" records the owner's decisions.
-Code: `crates/formats/tags/src/repo` (the tree, extraction, closure, `to_tag_set`, `onto_retail_adding`), `crates/tools/workspace/src/{edits.rs, layer.rs, authored.rs, project.rs, project_build.rs, maps.rs}` (edit files, layers, the authored layer, projects, the build, the `map` item), `crates/tools/stage-kit/src/project_kit.rs` (the stage as a kit), `crates/apps/studio/src/api/{workspace.rs, projects.rs}` (`workspace.*`, `project.*`, `edits.*`), `crates/apps/h2-tools/src/{tag_repo_cmd.rs, tag_project_cmd.rs}` (`h2 tags`). Tests: `crates/formats/tags/src/repo/tests.rs`, `crates/tools/workspace/src/{tests.rs, edits_tests.rs, project_tests.rs}`, `crates/apps/studio/src/api/tests.rs` (`projects_and_edit_files_resolve_over_an_invented_tree`), `crates/formats/tags/tests/tag_repo.rs` (`#[ignore]`, the disc).
+Code: `crates/formats/tags/src/repo` (the tree, extraction, closure, `to_tag_set`, `onto_retail_adding`), `crates/tools/workspace/src/{edits.rs, layer.rs, authored.rs, project.rs, project_build.rs, maps.rs}` (edit files, layers, the authored layer, projects, the build, the `map` item), `crates/tools/workspace/src/stage/project_kit.rs` (the stage as a kit), `crates/apps/studio/src/api/{workspace.rs, projects.rs}` (`workspace.*`, `project.*`, `edits.*`), `crates/apps/h2-tools/src/{tag_repo_cmd.rs, tag_project_cmd.rs}` (`h2 tags`). Tests: `crates/formats/tags/src/repo/tests.rs`, `crates/tools/workspace/src/{tests.rs, edits_tests.rs, project_tests.rs}`, `crates/apps/studio/src/api/tests.rs` (`projects_and_edit_files_resolve_over_an_invented_tree`), `crates/formats/tags/tests/tag_repo.rs` (`#[ignore]`, the disc).
 Switch: none.
 
 Studio is the one tool for content: it edits levels (the scenario tool),
@@ -270,8 +270,8 @@ roots, the stack as a `TagSource`, and the tag set so far; it installs
 into the set, makes it (a fresh project's first kit, when no layer holds
 the scenario), or lays out the whole map into `KitStep::bytes`, which
 makes it the project's last. The caller passes the kits it has (`Tools`);
-`stage_kit::project_kit::{KITS, KEEP}` is the list Studio and `h2` pass,
-with the stage (`StageKit`, over `stage_kit::map::build`) its one kit. A
+`workspace::stage::project_kit::{KITS, KEEP}` is the list Studio and `h2` pass,
+with the stage (`StageKit`, over `content_kit::stage::map::build`) its one kit. A
 name the build lacks is an error listing the ones it has.
 
 `content::kit::ContentKit` is the shape for content added by code that
@@ -369,7 +369,7 @@ The CLI, over the same crate: `h2 tags extract --update`, `h2 tags
 project list|show|build`, `h2 tags edits list|check|set` (`--repo`,
 `--data`, `--checkout`, `--json`), and `h2 tags import` (not built).
 `h2 tags build --project FILE` is the stage's own build from the disc or
-a tree (`stage_kit::map`). The game gains nothing but `maps.load` finding
+a tree (`content_kit::stage::map`). The game gains nothing but `maps.load` finding
 a package written while it runs.
 
 ## Rules and limits
