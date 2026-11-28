@@ -114,7 +114,7 @@ impl Stage for ClearMap {
         "light shadow clear"
     }
 
-    fn record(&mut self, t: &gfx::external::ExternalAttachments, _: &native_render::stage::ViewInputs) -> StageWork {
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, _: &native_render::program::ViewInputs) -> StageWork {
         let (colour, depth) = (self.colour, t.depth.clone());
         let stencil = t.depth_format.has_stencil_aspect();
         let color = t.color.clone();
@@ -215,12 +215,12 @@ impl Stage for FreezeMap {
         "light shadow freeze"
     }
 
-    fn record(&mut self, t: &gfx::external::ExternalAttachments, request: &native_render::stage::ViewInputs) -> StageWork {
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, request: &native_render::program::ViewInputs) -> StageWork {
         let source = match self.kind {
             MapKind::Depth => t.depth.texture().clone(),
             MapKind::ColourMask => t.color.texture().clone(),
         };
-        let Some(size) = frozen_size(request.rect, request.surface_size, t.size)
+        let Some(size) = frozen_size(crate::native_world_glue::view_rect(request), request.guest_size, t.size)
             .filter(|&(w, h)| w <= source.width() && h <= source.height())
         else {
             unimplemented!("lights: a scene light caster map outside its target");
@@ -585,8 +585,8 @@ impl Stage for GelPass {
         "light gel"
     }
 
-    fn record(&mut self, t: &gfx::external::ExternalAttachments, request: &native_render::stage::ViewInputs) -> StageWork {
-        if request.surface_size != self.guest_size {
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, request: &native_render::program::ViewInputs) -> StageWork {
+        if request.guest_size != self.guest_size {
             unimplemented!("lights: target 13 is not the gel's size");
         }
         let target = native_render::screen_gpu::ScreenTarget {

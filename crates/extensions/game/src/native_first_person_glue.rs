@@ -635,23 +635,12 @@ struct FirstPersonPass {
     texaccum: Option<native_render::world_layers::Texaccum>,
 }
 
-/// The view's vertex constants `c[0..18]`, its projection rows widened to
-/// the display's lens.
-fn view_constants() -> [[f32; 4]; 18] {
-    unimplemented!("first person: view constants from the device")
-}
-
-/// The W-buffer clip range and clamp the layer draws with.
-fn depth_clip() -> ([f32; 2], bool) {
-    unimplemented!("first person: depth clip from the device")
-}
-
 impl FirstPersonPass {
     /// The call's packets for the frame's open pass on these attachments.
     fn packets(
         &self,
         target: &gfx::external::ExternalAttachments,
-        request: &native_render::stage::ViewInputs,
+        request: &native_render::program::ViewInputs,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
         let mut guard = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
         let lit = guard
@@ -664,13 +653,7 @@ impl FirstPersonPass {
         {
             return Err("planned first-person geometry unavailable");
         }
-        let view = ViewInputs {
-            constants: view_constants(),
-            guest_size: request.surface_size,
-            size: target.size,
-            z_scale: request.z_scale,
-            w_clip: Some(depth_clip()),
-        };
+        let view = ViewInputs { size: target.size, ..*request };
         if self.texaccum.is_some() {
             unimplemented!("first person: accumulation level for the stage");
         }
@@ -682,7 +665,7 @@ impl FirstPersonPass {
             target.depth_format,
             target.size,
             &view,
-            request.display_projection_factor,
+            crate::native_world_glue::projection_factor(),
             &self.draws,
             None,
         )?;
@@ -696,7 +679,7 @@ impl native_render::stage::Stage for FirstPersonPass {
     fn record(
         &mut self,
         target: &gfx::external::ExternalAttachments,
-        view: &native_render::stage::ViewInputs,
+        view: &native_render::program::ViewInputs,
     ) -> native_render::stage::StageWork {
         match self.packets(target, view) {
             Ok(draws) => native_render::stage::StageWork::Draws(draws),

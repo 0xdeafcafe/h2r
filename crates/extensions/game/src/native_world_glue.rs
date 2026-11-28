@@ -929,28 +929,24 @@ fn layer_cull() -> Option<(gfx::state::CullMode, gfx::state::FrontFace)> {
     unimplemented!("world: layer-3 cull state from the device")
 }
 
-/// The view's projection factor (display lens over the retail one).
-fn projection_factor() -> f32 {
-    unimplemented!("world: projection factor from the render scale")
+/// The display lens over the retail one, for the one copy drawn.
+pub(crate) fn projection_factor() -> f32 {
+    unimplemented!("render: display projection factor from the present camera")
 }
 
-/// The view's vertex constants `c[0..18]` the material programs read.
-fn view_constants() -> [[f32; 4]; 18] {
-    unimplemented!("world: view constants from the device")
-}
-
-/// The W-buffer clip range and clamp the layer draws with.
-fn depth_clip() -> ([f32; 2], bool) {
-    unimplemented!("world: depth clip from the device")
+/// The view's rectangle in guest pixels: the whole target, as there is
+/// no guest viewport.
+pub(crate) fn view_rect(view: &ViewInputs) -> (u32, u32, u32, u32) {
+    (0, 0, view.guest_size.0, view.guest_size.1)
 }
 
 /// The viewport `(x, y, width, height)` in `texels` of a view whose
-/// rectangle is in guest pixels of `view.surface_size`.
-pub(crate) fn stage_viewport(view: &native_render::stage::ViewInputs, texels: (u32, u32)) -> [f32; 4] {
-    let Some(scale) = gfx::raster::RenderScale::between(view.surface_size, texels) else {
+/// rectangle is in guest pixels of `view.guest_size`.
+pub(crate) fn stage_viewport(view: &native_render::program::ViewInputs, texels: (u32, u32)) -> [f32; 4] {
+    let Some(scale) = gfx::raster::RenderScale::between(view.guest_size, texels) else {
         return [0.0; 4];
     };
-    let (x, y, w, h) = view.rect;
+    let (x, y, w, h) = view_rect(view);
     scale.rect(x, y, w, h).map(|n| n as f32)
 }
 
@@ -962,7 +958,7 @@ impl native_render::stage::Stage for WorldPass {
     /// cull (`GpuWorld::culled_selection_draws`), then the packets in a
     /// pass that loads and keeps the attachments.
     fn record(
-        &mut self, t: &gfx::external::ExternalAttachments, request: &native_render::stage::ViewInputs,
+        &mut self, t: &gfx::external::ExternalAttachments, request: &native_render::program::ViewInputs,
     ) -> native_render::stage::StageWork {
         let mut guard = self.ready.gpu();
         let Some(gpu) = guard.as_mut() else { unimplemented!("world: geometry not uploaded at the stage") };
@@ -972,15 +968,12 @@ impl native_render::stage::Stage for WorldPass {
         if !gpu.prepare_selection(&t.device, t.color_format, t.depth_format, selection) {
             unimplemented!("world: part or program binding unavailable");
         }
-        let view = ViewInputs {
-            constants: view_constants(), guest_size: request.surface_size, size: t.size, z_scale: request.z_scale,
-            w_clip: Some(depth_clip()),
-        };
+        let view = ViewInputs { size: t.size, ..*request };
         if selection.texaccum.is_some() {
             unimplemented!("world: accumulation level from the targets");
         }
         // The pyramid's screen: the lens into the request's rectangle.
-        let lens = native_render::camera::display_camera(self.camera, request.display_projection_factor);
+        let lens = native_render::camera::display_camera(self.camera, projection_factor());
         let [x, y, width, height] = stage_viewport(request, t.size);
         let occlusion = Some((t.depth.texture(), &lens, PassViewport { x, y, width, height }, self.token));
         let culled = gpu.culled_selection_draws(&t.uploads, &t.device, &t.queue, t.color_format, t.depth_format, t.size,

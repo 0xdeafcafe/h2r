@@ -413,26 +413,20 @@ impl TiledRun {
     fn encoded(
         &mut self,
         t: &gfx::external::ExternalAttachments,
-        request: &native_render::stage::ViewInputs,
+        request: &native_render::program::ViewInputs,
     ) -> Result<gfx::external::ExternalEncoded, &'static str> {
-        let guest = request.surface_size;
-        let view = ViewInputs {
-            constants: view_constants(),
-            guest_size: guest,
-            size: t.size,
-            z_scale: request.z_scale,
-            w_clip: Some(w_clip()),
-        };
+        let guest = request.guest_size;
+        let view = ViewInputs { size: t.size, ..*request };
         let mut scissor = None;
         for (_, p, _) in self.lit.iter().flatten() {
-            let [x, y, width, height] = intersect_scissor(p.scissor, request.rect);
+            let [x, y, width, height] = intersect_scissor(p.scissor, crate::native_world_glue::view_rect(request));
             let c = gfx::external::PixelRect {
                 x,
                 y,
                 width,
                 height,
             }
-            .projected_x(request.rect, request.display_projection_factor);
+            .projected_x(crate::native_world_glue::view_rect(request), crate::native_world_glue::projection_factor());
             let s = scale_scissor([c.x, c.y, c.width, c.height], guest, t.size)
                 .ok_or("unsupported scissor scale")?;
             if scissor.is_some_and(|o| o != s) {
@@ -579,7 +573,7 @@ impl Stage for TiledRun {
         "light tiles"
     }
 
-    fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::stage::ViewInputs) -> StageWork {
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> StageWork {
         match self.encoded(t, view) {
             Ok(encoded) => StageWork::Encoded(encoded),
             Err(why) => unimplemented!("lights: tiles: {why}"),
@@ -601,7 +595,7 @@ impl Stage for Snapshot {
         "light tiles mask"
     }
 
-    fn record(&mut self, t: &gfx::external::ExternalAttachments, _: &native_render::stage::ViewInputs) -> StageWork {
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, _: &native_render::program::ViewInputs) -> StageWork {
         let colour = t.color.texture().clone();
         if !colour.usage().contains(wgpu::TextureUsages::COPY_SRC)
             || (colour.width(), colour.height()) != t.size

@@ -28,7 +28,7 @@ use native_render::light_models::LightModels;
 use native_render::lights::{Light, LightConstants};
 use native_render::look;
 use native_render::program::InheritedCull;
-use native_render::program::{VIEW_CONSTANTS, ViewInputs};
+use native_render::program::ViewInputs;
 use native_render::stage::{FrameOp, Stage, StageWork, frame_builder};
 use native_render::shadow_look::{CASTER_LAYER, OPACITY_LAYER, RECEIVER_LAYER};
 use native_render::world::{ModelRows, Owner, World, WorldDraw};
@@ -2156,7 +2156,7 @@ impl Stage for RunPass {
         self.lighting_only
     }
 
-    fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::stage::ViewInputs) -> StageWork {
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> StageWork {
         match self.draws(t, view) {
             Ok(draws) => StageWork::Draws(draws),
             // A pipeline still compiling: nothing this frame.
@@ -2171,46 +2171,30 @@ impl Stage for RunPass {
     }
 }
 
-/// The view's vertex constants `c[0..VIEW_CONSTANTS]` the light programs read.
-fn view_constants() -> [[f32; 4]; VIEW_CONSTANTS] {
-    unimplemented!("lights: view constants from the device")
-}
-
-/// The W-buffer's clip range and clamp the light programs draw with.
-fn w_clip() -> ([f32; 2], bool) {
-    unimplemented!("lights: depth clip from the device")
-}
-
 impl RunPass {
     /// The scissor cut to the view's rect and scaled to the target's
     /// texels, the gel and frozen map sampled where the light has them.
     fn draws(
         &self,
         t: &gfx::external::ExternalAttachments,
-        request: &native_render::stage::ViewInputs,
+        request: &native_render::program::ViewInputs,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
-        let guest_size = request.surface_size;
-        let [x, y, width, height] = intersect_scissor(self.light.scissor, request.rect);
+        let guest_size = request.guest_size;
+        let [x, y, width, height] = intersect_scissor(self.light.scissor, crate::native_world_glue::view_rect(request));
         let clip = gfx::external::PixelRect {
             x,
             y,
             width,
             height,
         }
-        .projected_x(request.rect, request.display_projection_factor);
+        .projected_x(crate::native_world_glue::view_rect(request), crate::native_world_glue::projection_factor());
         let scissor = scale_scissor(
             [clip.x, clip.y, clip.width, clip.height],
             guest_size,
             t.size,
         )
         .ok_or("unsupported scissor scale")?;
-        let view = ViewInputs {
-            constants: view_constants(),
-            guest_size,
-            size: t.size,
-            z_scale: request.z_scale,
-            w_clip: Some(w_clip()),
-        };
+        let view = ViewInputs { size: t.size, ..*request };
         let sample: Option<&wgpu::TextureView> = match self.light.binding {
             Some(_) => unimplemented!("lights: gel target 13's sample view"),
             None => None,

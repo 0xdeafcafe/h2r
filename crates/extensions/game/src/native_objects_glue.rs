@@ -1870,7 +1870,7 @@ impl native_render::stage::Stage for ObjectsPass {
     fn name(&self) -> &'static str { "objects" }
 
     fn record(
-        &mut self, t: &gfx::external::ExternalAttachments, request: &native_render::stage::ViewInputs,
+        &mut self, t: &gfx::external::ExternalAttachments, request: &native_render::program::ViewInputs,
     ) -> native_render::stage::StageWork {
         debug_assert_eq!(self.slot, ViewSlot::OpaqueBase);
         match self.packets(t, request) {
@@ -1882,7 +1882,7 @@ impl native_render::stage::Stage for ObjectsPass {
 
 impl ObjectsPass {
     fn packets(
-        &self, t: &gfx::external::ExternalAttachments, request: &native_render::stage::ViewInputs,
+        &self, t: &gfx::external::ExternalAttachments, request: &native_render::program::ViewInputs,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
         if self.texaccum.is_some() {
             unimplemented!("objects: accumulation level for the stage");
@@ -1895,27 +1895,11 @@ impl ObjectsPass {
         if self.draws.iter().any(|(_, d)| d.indices.is_empty()) {
             return Err("planned object indices empty");
         }
-        let view = ViewInputs {
-            constants: view_constants(),
-            guest_size: request.surface_size,
-            size: t.size,
-            z_scale: request.z_scale,
-            w_clip: Some(depth_clip()),
-        };
+        let view = ViewInputs { size: t.size, ..*request };
         let draws = lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view,
-            request.display_projection_factor, &self.draws, None)?;
+            crate::native_world_glue::projection_factor(), &self.draws, None)?;
         crate::native_layers_glue::clip_packets(draws, request, t.size)
     }
-}
-
-/// The view's vertex constants `c[0..18]` the lit parts' programs read.
-fn view_constants() -> [[f32; 4]; 18] {
-    unimplemented!("objects: view constants from the device")
-}
-
-/// The W-buffer clip range and clamp the layer draws with.
-fn depth_clip() -> ([f32; 2], bool) {
-    unimplemented!("objects: depth clip from the device")
 }
 
 /// The texture accumulation level a pass sampling `target` (the guest's
