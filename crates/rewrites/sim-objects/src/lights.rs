@@ -388,5 +388,7 @@ fn is_post(objects: &ObjectTable, handle: u32) -> bool {
         .is_some_and(|r| r.flags & OBJECT_POST != 0)
 }
 
+pub mod record;
+
 #[cfg(test)]
 mod tests;
