@@ -179,6 +179,16 @@ POST is set after it, `bc820`. Pass B keeps the slot in `edi` and the
 handle in `esi` and calls `b83b0(handle, 1)` then `b8460(handle, 1)` for
 each DELETE object. The phase byte is cleared after `pop edi`, `pop esi`
 and `pop ebp`, before `pop ebx` and the jump to `bf380`.
+Neither pass steps register by register through a run of slots it only
+passes over (pass A: not due, so only DEFER is cleared; pass B: no
+DELETE). `walks::skip_idle` reads the run once, stores the cleared
+flags, and leaves the slot register one live slot before the last idle
+slot, so the loop replays that slot and the one after it and every
+transfer shows retail's registers. No callout happens inside the run.
+The tick's finalize is then one pass over the bitmap plus the due
+objects' callouts. The walk keeps no compare arm and has no refusal of
+its own: the float-environment decline (`supported`) is the only one,
+counted by `walk_arm::declined` when the arm is on.
 
 **Events.** Before finalize's `b83b0` call the body appends
 `ObjectDeleted { id, kind, definition }` (the handle, header `+3`, body

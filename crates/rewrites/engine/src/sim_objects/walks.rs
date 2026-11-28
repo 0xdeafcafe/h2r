@@ -361,8 +361,57 @@ fn scan(c: &mut CpuAbi, g: &Guest) -> Result<bool> {
     Ok(false)
 }
 
+/// The live slots after `last` (one slot before the first to look at; all
+/// ones for none) that `idle` passes over, up to the first it does not or
+/// the end, with `idle`'s byte stored to each header's flags when `store`.
+/// Returns the live slot just before the last idle one, which the caller
+/// puts in its slot register so the register loop replays that last idle
+/// slot and everything after it: the registers every transfer shows then
+/// depend only on slots the loop ran, as in retail. `None` when fewer than
+/// two slots were passed over. Pass A and pass B make no callout between
+/// those slots and read nothing a callout could change, so the whole run
+/// is read from the array once.
+fn skip_idle(
+    c: &CpuAbi,
+    g: &mut Guest,
+    last: u32,
+    store: bool,
+    idle: impl Fn(u8) -> Option<u8>,
+) -> Result<Option<u32>> {
+    let from = last.wrapping_add(1);
+    let high = g.u32(c.ebp.wrapping_add(layout::HIGH_WATER))?;
+    if (from as i32) < 0 || from as i32 >= high as i32 {
+        return Ok(None);
+    }
+    let bitmap = g.u32(c.ebp.wrapping_add(layout::BITMAP))?;
+    let stride = g.u32(c.ebp.wrapping_add(layout::ELEMENT_SIZE))?;
+    let data = g.u32(c.ebp.wrapping_add(layout::DATA))?;
+    let (mut at, mut passed, mut latest) = (from, None, None);
+    while let Some(slot) = walk::next_live(at..high, |at| g.u32(bitmap.wrapping_add(4 * (at >> 5))))? {
+        let flags_at = data.wrapping_add(slot.wrapping_mul(stride)).wrapping_add(HEADER_FLAGS);
+        let Some(byte) = idle(g.u8(flags_at)?) else {
+            break;
+        };
+        if store {
+            g.set_u8(flags_at, byte)?;
+        }
+        passed = latest;
+        latest = Some(slot);
+        at = slot + 1;
+    }
+    Ok(passed)
+}
+
 /// Finalize pass A from `b7166`.
 fn finalize_new(c: &mut CpuAbi, g: &mut Guest) -> Result<Next> {
+    let due = header::NEW | header::ACTIVE | header::AWAKE;
+    let idle = |flags: u8| {
+        let kept = flags & !header::DEFER;
+        (kept & (due | header::DELETE) != due).then_some(kept)
+    };
+    if let Some(before) = skip_idle(c, g, c.ebx, true, idle)? {
+        c.ebx = before;
+    }
     loop {
         c.eax = c.ebx.wrapping_add(1);
         if !scan(c, g)? {
@@ -398,6 +447,10 @@ fn finalize_new(c: &mut CpuAbi, g: &mut Guest) -> Result<Next> {
 
 /// Finalize pass B from `b71b0`.
 fn finalize_delete(c: &mut CpuAbi, g: &mut Guest) -> Result<Next> {
+    let idle = |flags: u8| (flags & header::DELETE == 0).then_some(flags);
+    if let Some(before) = skip_idle(c, g, c.edi, false, idle)? {
+        c.edi = before;
+    }
     loop {
         c.eax = c.edi.wrapping_add(1);
         if !scan(c, g)? {

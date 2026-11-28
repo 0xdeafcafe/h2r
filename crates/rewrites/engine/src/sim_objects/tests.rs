@@ -206,6 +206,40 @@ fn finalize_clears_defer_deletes_and_records_each_deletion() {
 }
 
 #[test]
+fn finalize_passes_over_a_run_of_idle_slots_with_retail_registers() {
+    let (mut cpu, mut g) = guest();
+    // Slots 0..30 live: every one deferred (idle for pass A) except 7 and
+    // 29, marked for deletion; a gap at 12 and 13.
+    let slots: Vec<_> = (0..30u16)
+        .filter(|s| !matches!(s, 12 | 13))
+        .map(|s| (s, 0x8000 + s, if matches!(s, 7 | 29) { 0x31 } else { 0x21 }, 5))
+        .collect();
+    pool(&mut g, &slots);
+    ::sim_objects::events::clear();
+    let t = &*TABLE;
+    let fin = crate::points::OBJECTS_FINALIZE.base;
+    let out = drive(&mut cpu, &mut g, t, fin).unwrap();
+    assert_eq!(out, TransferAbi::call(0xfd910, 0xb71a0));
+    for &(slot, _, flags, _) in &slots {
+        assert_eq!(g.u8(HEADERS + 12 * u32::from(slot) + 2).unwrap(), flags & !0x20, "slot {slot}");
+    }
+    // The slot register is the last slot pass A visited.
+    assert_eq!(cpu.ebx, 29);
+    let mut site = returned(&mut cpu, &g, 0);
+    for slot in [7, 29] {
+        for (callee, next) in [(0xb83b0, 0xb7282), (0xb8460, 0xb728a)] {
+            let out = drive(&mut cpu, &mut g, t, site).unwrap();
+            assert_eq!(out, TransferAbi::call(callee, next));
+            assert_eq!(g.u32(cpu.esp + 4).unwrap(), handle(0x8000 + slot, slot));
+            site = returned(&mut cpu, &g, 8);
+        }
+    }
+    let out = drive(&mut cpu, &mut g, t, site).unwrap();
+    assert_eq!(out, TransferAbi::jump(0xbf380));
+    assert_eq!(cpu.esp, STACK);
+}
+
+#[test]
 fn the_wake_leaf_returns_with_retail_registers() {
     let (mut cpu, mut g) = guest();
     // A weapon (slot 2) held by a biped (slot 1).

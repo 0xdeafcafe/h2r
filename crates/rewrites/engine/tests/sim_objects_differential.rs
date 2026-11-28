@@ -857,7 +857,9 @@ fn objects_post_physics() {
 
 #[test]
 fn objects_finalize() {
-    transcripts(&points::OBJECTS_FINALIZE, 6);
+    // Past the first six cases the flag pattern shifts, so pass A's and
+    // pass B's runs of idle slots land on every word and array edge.
+    transcripts(&points::OBJECTS_FINALIZE, 24);
 }
 
 #[test]
