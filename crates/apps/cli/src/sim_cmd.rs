@@ -16,6 +16,8 @@
 //!   match processes, then the ranked report (`bounces.json`,
 //!   `bounces.md`, `bounces.verified`).
 //! - `diff <a.json> <b.json>`: the first differing state of two reports.
+//! - `blind [--ticks N] [--no-arena] <arm=file>...`: the render-blind gate's
+//!   comparison of one tape's hash series in several arms.
 //! - `spatial <trace or dir>...`: the measures of spatial traces
 //!   (`sim_bench::spatial::measure`).
 
@@ -54,6 +56,7 @@ const USAGE: &str = "usage:
   h2 sim bounces <bounces.toml> [--parallel N] [--dry-run] [--merge] [--keep-data]
                           [--disc ISO] [--out DIR] [--data DIR] [--tier ...] [--pace PACE]
   h2 sim diff <report a.json> <report b.json> [--sound]
+  h2 sim blind [--ticks N] [--no-arena] <name=file>...
   h2 sim spatial <spatial.bin | run dir | results dir>...
   h2 sim audit-merge OUTPUT INPUT [INPUT ...]
   h2 sim audit-coverage OUTPUT AUDIT [AUDIT ...]
@@ -126,6 +129,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             Ok(())
         }
         Some("spatial") => spatial(it.collect()),
+        Some("blind") => blind(it.collect()),
         Some("diff") => {
             let a = it.next().context(USAGE)?;
             let b = it.next().context(USAGE)?;
@@ -174,6 +178,32 @@ pub fn run(args: Vec<String>) -> Result<()> {
         }
         _ => bail!("{USAGE}"),
     }
+}
+
+/// `h2 sim blind [--ticks N] [--no-arena] <name=file>...`: the first arm is
+/// the reference (the render skipped); each file is a sim report or a
+/// `sim.hashes` reply. Fails unless every arm has the reference's series
+/// (docs/engine/sim-render-split.md, "The proof").
+fn blind(args: Vec<String>) -> Result<()> {
+    let mut needs = sim_bench::blind::Needs { ticks: 0, arena: true };
+    let mut arms = Vec::new();
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--ticks" => needs.ticks = it.next().context(USAGE)?.parse().context("--ticks")?,
+            "--no-arena" => needs.arena = false,
+            _ => {
+                let (name, path) = a.split_once('=').with_context(|| format!("{a}: want name=file\n{USAGE}"))?;
+                let text = std::fs::read_to_string(path).with_context(|| format!("reading {path}"))?;
+                let rows = sim_bench::blind::rows(&text).map_err(anyhow::Error::msg).with_context(|| path.to_owned())?;
+                arms.push(sim_bench::blind::Arm { name: name.to_owned(), rows });
+            }
+        }
+    }
+    let verdict = sim_bench::blind::compare(&arms, needs);
+    print!("{}", verdict.render());
+    anyhow::ensure!(verdict.passed(), "the render-blind gate failed");
+    Ok(())
 }
 
 /// What `run` and `batch` share: where the disc, the image and the data are.

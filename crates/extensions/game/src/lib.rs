@@ -62,6 +62,7 @@ pub mod firefight;
 #[cfg(feature = "rules")]
 pub mod rules;
 pub mod fov_row;
+pub mod render_counters;
 pub mod render_rng;
 // The flare state held by the render between frames (docs/engine/sim-render-split.md, slice 6).
 pub mod flare_store;

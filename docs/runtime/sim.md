@@ -351,6 +351,8 @@ Each new sim report records `state_hashes_v1` in guest tick order. Detail: [Sim 
 
 `h2 sim diff <a.json> <b.json>` says which state differs first, not only that a digest does. Detail: [Sim mode: state hashes and bot navigation cost](sim-determinism.md).
 
+`h2 sim blind [--ticks N] [--no-arena] <arm=file>...` holds every arm's hash series (a report, or a `sim.hashes` reply) against the first and names the first differing tick and arm: the comparison of the render-blind gate ([sim-render-split.md](../engine/sim-render-split.md), "Running the gate").
+
 #### Bot thinking across cores
 
 See [Sim mode: state hashes and bot navigation cost](sim-determinism.md).
