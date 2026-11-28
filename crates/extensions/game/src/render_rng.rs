@@ -9,7 +9,7 @@
 //!
 //! Two features enter it: Theater's camera, while it changes what a
 //! replay draws (`theater/camera.rs`), and [`RenderRng`], every world frame
-//! of a session whose guest camera can take the window's aspect. Both use
+//! of every session that renders. Both use
 //! the one process stream ([`shared`]); a second enter in the same frame
 //! is a no-op, so the frame is entered once and left once.
 
@@ -82,7 +82,8 @@ const VALID_MACHINES: u32 = 0x2c;
 
 /// A game of more than one machine (another console, or a bot's phantom
 /// machine): its peers simulate the same world through their own retail
-/// cameras, so it keeps the retail lens and the retail random stream.
+/// cameras, so it keeps the retail lens (the random stream does not
+/// depend on it).
 /// Unreadable globals count as networked; none yet (the menus) does not.
 pub(crate) fn networked(mem: &dyn GuestMemory) -> bool {
     let Ok(globals) = mem.u32(PLAYER_GLOBALS) else { return true };
@@ -95,18 +96,18 @@ pub(crate) fn networked(mem: &dyn GuestMemory) -> bool {
     }
 }
 
-/// Whether a frame takes the private stream: a world frame of a game on
-/// one machine.
+/// Whether a frame takes the private stream: every world frame, whatever
+/// the number of machines. The stream is render-only, so peers that render
+/// differently still draw the same simulation random numbers.
 fn private_frame(mem: &dyn GuestMemory) -> bool {
     sim_bridge::sim_frame::frame_kind(&sim_bridge::sim_frame::Addrs::HALO2, mem)
         == sim_bridge::sim_frame::FrameKind::World
-        && !networked(mem)
 }
 
-/// Every world frame of a one-machine game renders on the private stream.
-/// Registered by boot for every session that renders, except lockstep and
-/// input tapes; the same rule on the recording and the replay, so a film
-/// replays whatever window either had.
+/// Every world frame renders on the private stream. Registered by boot for
+/// every session that renders, lockstep and input tapes included
+/// (docs/engine/sim-render-split.md, slice 5); a headless host has no
+/// render and registers nothing.
 pub struct RenderRng;
 
 impl Feature for RenderRng {
@@ -194,6 +195,27 @@ mod tests {
         seeds.leave(&mut mem);
         seeds.leave(&mut mem); // the second leave: nothing
         assert_eq!(seed(&mem), [3; 8]);
+    }
+
+    /// The render-blind rule for the seed: a frame that draws N times leaves
+    /// the simulation's seed bytes as they were, and the next frame
+    /// continues the render's own stream, not the simulation's.
+    #[test]
+    fn a_frame_that_draws_n_times_leaves_the_seed_bytes_as_they_were() {
+        let mut mem = guest([5, 4, 3, 2, 1, 0, 9, 8]);
+        let mut seeds = Seeds::default();
+        for n in [0u8, 1, 7, 200] {
+            let before = seed(&mem);
+            seeds.enter(&mut mem);
+            for i in 0..n {
+                let s = seed(&mem);
+                mem.put(SEED, &s.map(|b| b.wrapping_mul(33).wrapping_add(i)));
+            }
+            seeds.leave(&mut mem);
+            assert_eq!(seed(&mem), before, "after {n} draws");
+            // The simulation's own draw between frames.
+            mem.put(SEED, &before.map(|b| b.wrapping_add(1)));
+        }
     }
 
     #[test]

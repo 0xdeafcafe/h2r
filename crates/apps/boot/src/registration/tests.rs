@@ -561,7 +561,7 @@ const BOOT_SITES: &[(&str, &str)] = &[
         "registry_for_profile (a film's session is not covered: it needs a recording)",
     ),
     ("render_aspect::install", "Case::drawing (gpu)"),
-    ("render_rng::install", "every case but Case::light and Case::lockstep"),
+    ("render_rng::install", "every case but Case::light"),
     ("register_late_for_profile", "registry_for_profile"),
     (
         "forge_glue::install",
@@ -1218,7 +1218,7 @@ fn hooked_at(registry: hooks::Registry, point: &str) -> Vec<&'static str> {
 /// A default play (autorecorded, signed in to Live, in a window) fits the
 /// guest camera to the window and renders on the private random stream:
 /// neither the film nor the Live HLE turns either off. Lockstep keeps the
-/// retail camera and the retail stream (docs/graphics/high-resolution.md,
+/// retail camera and takes the private stream (docs/graphics/high-resolution.md,
 /// "Widescreen projection" and "Determinism").
 #[cfg(feature = "gpu")]
 #[test]
@@ -1235,7 +1235,7 @@ fn a_default_play_fits_the_guest_camera_and_renders_on_its_own_stream() {
 
     let lockstep = Case { lockstep: true, ..play.clone() };
     assert!(hooked_at(registry_for_profile(&lockstep, profile), "VIEW_PROJECTION_TERMS").is_empty());
-    assert!(!hooked_at(registry_for_profile(&lockstep, profile), "RENDER_FRAME").contains(&crate::render_rng::ID));
+    assert!(hooked_at(registry_for_profile(&lockstep, profile), "RENDER_FRAME").contains(&crate::render_rng::ID));
     std::fs::remove_dir_all(&dir).unwrap();
 }
 

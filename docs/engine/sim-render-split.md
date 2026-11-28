@@ -76,8 +76,8 @@ After this slice the gather-lens exit (`outside_gather_lens`) is a cost saving o
 | | |
 |---|---|
 | Guest | The render steps the shared seed through object code (`0x001032a0`). |
-| Built | `RENDER_FRAME` swaps the seed for a private stream and restores the simulation's at the frame's end (`render_rng.rs`, `Seeds::enter`, `Seeds::leave`). Lockstep and input-tape sessions do not register it. |
-| Move | Register it for every session that renders, lockstep and tapes included. The private seed lives in the render-private store. Once slices 3 and 4 land, a gameplay-bit draw inside a frame is a named error under the frame guard. |
+| Built | `RENDER_FRAME` swaps the seed for a private stream and restores the simulation's at the frame's end (`render_rng.rs`, `Seeds::enter`, `Seeds::leave`). Every session that renders registers it, lockstep and tapes included. |
+| Move | Built: registered for every session that renders. Open: the private seed lives in the render-private store. Once slices 3 and 4 land, a gameplay-bit draw inside a frame is a named error under the frame guard. |
 | Proof | Test: the seed bytes before `RENDER_FRAME` equal the bytes after it for a frame that draws N times. Run: the render-blind gate. |
 
 ### 4. The flare visibility byte
