@@ -79,7 +79,9 @@ pub static STORE: LazyLock<ClipStore> = LazyLock::new(|| ClipStore::new(&sim_cor
 /// Why the kernel declined a call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
-    /// MXCSR not masked/nearest/PE-sticky, or an operand off the fast path.
+    /// An SSE exception the guest's MXCSR leaves unmasked (`#XM` in the
+    /// guest). Every other MXCSR runs: the call computes under it
+    /// (`Fp::guest`) and writes back its flags.
     Float,
     /// A guest read faulted.
     Fault,
@@ -93,9 +95,8 @@ pub enum Decline {
     Layout,
     /// The record buffer is misaligned or aliases the inputs or scratch.
     Records,
-    /// The kernel declined: an unknown codec, a key past the blob, the
-    /// broken evaluator pair, a misaligned float key.
-    Kernel,
+    /// The kernel declined, and why ([`::sim_anim::Refusal`]).
+    Kernel(::sim_anim::Refusal),
     /// The element's node count exceeds the view's, so the guest's walk
     /// would read flag bits past the view's nodes.
     Nodes,
@@ -111,8 +112,18 @@ impl Decline {
             Decline::DirectTest => "direct-test",
             Decline::Layout => "layout",
             Decline::Records => "records",
-            Decline::Kernel => "kernel",
+            Decline::Kernel(_) => "kernel",
             Decline::Nodes => "nodes",
+        }
+    }
+}
+
+impl std::fmt::Display for Decline {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Decline::Float => write!(f, "float: unmasked SSE exception"),
+            Decline::Kernel(why) => write!(f, "kernel: {why}"),
+            other => write!(f, "{}", other.name()),
         }
     }
 }
@@ -216,13 +227,12 @@ struct Plan {
     effects: Effects,
 }
 
-/// `Ok(None)`: the call is inactive (weight at or below the cutoff) and
-/// writes nothing.
-fn plan(c: &CpuAbi, g: &impl Memory, store: &ClipStore) -> Step<Option<Plan>> {
-    if !det::fast_env(c.mxcsr) {
-        return Err(Decline::Float);
-    }
-    let mut fp = Fp::new();
+/// `Ok(Err(mxcsr))`: the call is inactive (weight at or below the cutoff)
+/// and writes nothing but the MXCSR its compare leaves.
+fn plan(c: &CpuAbi, g: &impl Memory, store: &ClipStore) -> Step<Result<Plan, u32>> {
+    // The setup and the evaluators run under the guest's MXCSR, whatever
+    // it holds, as retail's SSE code does.
+    let mut fp = Fp::guest(c.mxcsr);
     let sp = c.esp;
     let arg = |k: u32| read(g.u32(sp.wrapping_add(4 * k)));
     let xmm = |i: usize| u32::from_le_bytes(c.xmm[i][..4].try_into().unwrap());
@@ -234,7 +244,7 @@ fn plan(c: &CpuAbi, g: &impl Memory, store: &ClipStore) -> Step<Option<Plan>> {
         return Err(Decline::Float);
     }
     if det::compare(weight, cutoff).is_le() {
-        return Ok(None);
+        return Ok(Err(fp.mxcsr().unwrap_or(c.mxcsr)));
     }
 
     let (skeleton_cap, remap, mask_at, out) = (arg(3)?, arg(4)?, arg(5)?, arg(6)?);
@@ -252,6 +262,11 @@ fn plan(c: &CpuAbi, g: &impl Memory, store: &ClipStore) -> Step<Option<Plan>> {
     if last < 0 || !det::truncates(frame) {
         return Err(Decline::Frames);
     }
+    // `cvttss2si` of a fraction raises PE.
+    let inexact = |x: u32| f32::from_bits(det::from_int(det::truncate(x))) != f32::from_bits(x);
+    if inexact(frame) {
+        fp.raise(simd::PE);
+    }
     let i = clamp(det::truncate(frame), last);
     let mut f = Frame { a: i, b: i, w: 0 };
     let mut secondary = None;
@@ -259,6 +274,9 @@ fn plan(c: &CpuAbi, g: &impl Memory, store: &ClipStore) -> Step<Option<Plan>> {
         let t = arg(9)?;
         if !det::truncates(t) {
             return Err(Decline::Frames);
+        }
+        if inexact(t) {
+            fp.raise(simd::PE);
         }
         let j = det::truncate(t);
         let start = clamp(j, last);
@@ -404,11 +422,12 @@ fn plan(c: &CpuAbi, g: &impl Memory, store: &ClipStore) -> Step<Option<Plan>> {
         sign,
         data_addr: data,
         streams,
+        mxcsr: fp.mxcsr().unwrap_or(c.mxcsr),
     };
     let mut written = vec![0u8; live];
     let effects = ::sim_anim::sample(&request, &clip, &mut records, &mut written)
-        .map_err(|_| Decline::Kernel)?;
-    Ok(Some(Plan {
+        .map_err(Decline::Kernel)?;
+    Ok(Ok(Plan {
         out,
         records,
         written,
@@ -433,9 +452,13 @@ pub fn stream(
         Ok(p) => p,
         Err(why) => return Ok(Err(why)),
     };
-    let Some(plan) = plan else {
-        INACTIVE.fetch_add(1, Ordering::Relaxed);
-        return finish(c, g).map(Ok);
+    let plan = match plan {
+        Ok(plan) => plan,
+        Err(mxcsr) => {
+            INACTIVE.fetch_add(1, Ordering::Relaxed);
+            c.mxcsr = mxcsr;
+            return finish(c, g).map(Ok);
+        }
     };
     for (n, (rec, &bits)) in plan.records.iter().zip(&plan.written).enumerate() {
         if bits == 0 {
@@ -455,6 +478,7 @@ pub fn stream(
             g.write_bytes(at.wrapping_add(0x1c), &bytes(7..8), 1)?;
         }
     }
+    c.mxcsr = plan.effects.mxcsr;
     if plan.effects.mmx {
         // The int16 codecs end with `emms`: TOP 0, every tag empty.
         c.x87.status &= !0x3800;

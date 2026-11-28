@@ -28,7 +28,6 @@ use crate::points::TAG_ENTRIES;
 use crate::sim_native::Memory;
 use ::sim_anim::markers::{self, Constants, Marker};
 use runtime::{CpuAbi, GuestFault, TransferAbi};
-use sim_core::det;
 use sim_core::math::NodeMatrix;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -64,9 +63,10 @@ pub fn enabled() -> bool {
 /// Why the kernel declined the call; the port panics with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
-    /// MXCSR not masked, nearest and PE-sticky, or an operand off the
-    /// fast path.
-    Float,
+    /// An operation raised an SSE exception the guest's MXCSR leaves
+    /// unmasked (`#XM` in the guest). Any other MXCSR runs: the kernel
+    /// computes under it and writes back its flags (`Fp::guest`).
+    Unmasked,
     /// A guest read faulted.
     Fault,
     /// The model has more groups than the scan bound and none matched.
@@ -81,7 +81,7 @@ impl Decline {
     /// The reason as the panic names it.
     pub fn name(self) -> &'static str {
         match self {
-            Decline::Float => "float",
+            Decline::Unmasked => "unmasked SSE exception",
             Decline::Fault => "fault",
             Decline::Scan => "scan",
             Decline::Count => "count",
@@ -123,12 +123,11 @@ fn overlaps(a: (u32, u32), b: (u32, u32)) -> bool {
 struct Plan {
     out: u32,
     records: Vec<Marker>,
+    /// The guest's MXCSR after the call's SSE operations.
+    mxcsr: u32,
 }
 
 fn plan(c: &CpuAbi, g: &impl Memory) -> Step<Plan> {
-    if !det::fast_env(c.mxcsr) {
-        return Err(Decline::Float);
-    }
     let sp = c.esp;
     // The registers `b8d30` holds at the call to `1d8f50`.
     let (handle, name) = (c.ecx, c.edi);
@@ -161,6 +160,7 @@ fn plan(c: &CpuAbi, g: &impl Memory) -> Step<Plan> {
             return Ok(Plan {
                 out,
                 records: Vec::new(),
+                mxcsr: c.mxcsr,
             });
         };
         let group = array.wrapping_add(GROUP_BYTES * index as u32);
@@ -207,9 +207,13 @@ fn plan(c: &CpuAbi, g: &impl Memory) -> Step<Plan> {
     if writes.1 < writes.0 || read_spans.iter().any(|&r| overlaps(writes, r)) {
         return Err(Decline::Alias);
     }
-    let records = markers::model_markers(&k, &instances, &sel, &matrices, mirror)
-        .map_err(|_| Decline::Float)?;
-    Ok(Plan { out, records })
+    let (records, mxcsr) = if sel.is_empty() {
+        (Vec::new(), c.mxcsr)
+    } else {
+        markers::model_markers_guest(c.mxcsr, &k, &instances, &sel, &matrices, mirror)
+            .map_err(|_| Decline::Unmasked)?
+    };
+    Ok(Plan { out, records, mxcsr })
 }
 
 /// The render model's group table, or `None` when `1d8f00` would not
@@ -240,6 +244,7 @@ fn scatter(c: &mut CpuAbi, g: &mut impl Memory, p: &Plan) -> Result<TransferAbi,
         )?;
     }
     c.eax = p.records.len() as u32;
+    c.mxcsr = p.mxcsr;
     NATIVE.fetch_add(1, Ordering::Relaxed);
     WRITTEN.fetch_add(p.records.len() as u64, Ordering::Relaxed);
     Ok(TransferAbi::resume(AFTER_MARKERS))

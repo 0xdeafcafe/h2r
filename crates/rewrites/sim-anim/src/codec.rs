@@ -101,6 +101,8 @@ pub struct Ctx {
     pub data_addr: u32,
     /// `0x45dbc0`, read from the image by the adapter.
     pub one: u32,
+    /// The last sample refused a `movaps` key off 16 bytes.
+    pub misaligned: bool,
 }
 
 /// Unpack an int16 quaternion and convert each lane (`punpck*wd`,
@@ -251,6 +253,7 @@ impl RotOp {
                 // `movaps` loads: a misaligned key faults in the guest.
                 for at in [at_a, at_b] {
                     if cx.data_addr.wrapping_add(clip.blob_offset(s, at)) & 15 != 0 {
+                        cx.misaligned = true;
                         return None;
                     }
                 }
