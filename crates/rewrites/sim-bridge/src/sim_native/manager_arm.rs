@@ -85,7 +85,7 @@ mod tests {
         g.set_u32(DATA + 0x230, DATA + 0x300).unwrap();
         g.set_u32(DATA + 4, 0x0001ffff).unwrap();
         let rt = Runtime::new(g, d);
-        let mut registry = Registry::new(Switches::defaults().with("impl.sim.native.anim", true));
+        let mut registry = Registry::new(Switches::defaults().with("impl.sim.native.anim", true).with("impl.sim.native.objects.walk", false));
         registry.add(&SimNative::new(&rt)).unwrap();
         registry.build(&Base).unwrap().install(&rt).unwrap();
         let handler = |pc| rt.read_dispatch(|d| d.override_handler(pc)).unwrap();

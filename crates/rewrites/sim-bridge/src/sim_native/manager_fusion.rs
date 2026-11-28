@@ -138,7 +138,7 @@ mod tests {
             g.map_zeroed(0x1cb000, 0x1000, Permissions::RX).unwrap();
             g.map_zeroed(0x30000, 0x1000, Permissions::RW).unwrap();
             let rt = Runtime::new(g, dispatch);
-            let mut r = Registry::new(Switches::defaults().with("impl.sim.native.anim", true));
+            let mut r = Registry::new(Switches::defaults().with("impl.sim.native.anim", true).with("impl.sim.native.objects.walk", false));
             r.add(&SimNative::new(&rt)).unwrap();
             if shared {
                 let setup = manager::bodies().find(|b| b.entry == SETUP).unwrap();

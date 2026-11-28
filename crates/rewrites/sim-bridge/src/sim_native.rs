@@ -823,7 +823,7 @@ mod tests {
                 }
             }
             let rt = runtime::Runtime::new(Guest::new(), dispatch);
-            let switches = Switches::defaults().with("impl.sim.native.anim", true);
+            let switches = Switches::defaults().with("impl.sim.native.anim", true).with("impl.sim.native.objects.walk", false);
             let mut registry = Registry::new(switches);
             registry.add(&SimNative::new(&rt)).unwrap();
             let plan = registry.build(&Base).unwrap();
