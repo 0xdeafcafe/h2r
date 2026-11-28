@@ -17,18 +17,21 @@
 //! - [`view`]: guest memory with the store over a token window, and the
 //!   three residency seams;
 //! - [`sample`]: `0x000d1e10` and its callees in Rust over a [`View`];
-//!   `0x000d1850` and `0x000d2a50` stay the guest's, as they read only
-//!   the object, the tags and the ray, which is the simulation's
-//!   collision (`0x001697c0`);
+//! - [`object`]: `0x000d1850` and its callees but the sampler in Rust:
+//!   the directions `0x000d2a50`, the ray `0x0014af40` through entry J
+//!   (`0x001697c0`, natively) and its structure hit `0x0014ac60`, the
+//!   sky `0x000d1a30`. An object hit on a render model with lighting
+//!   blocks (`0x0014a8e0`) is not ported and stops by name;
 //! - [`answer`]: the `0x000d1e10` hook's body, for every caller;
 //! - [`record_call`]: the `0x0003ddd0` hook's body, for every caller
 //!   ([`crate::render::object_lighting::record`]);
 //! - [`Fill`]: the tick's record. The record's sample is made only in the
 //!   frame step (`0x0003dfe0`, from the object setup), so under the
 //!   render scratch store the tick's copy never has one. At the two tick
-//!   reads, after `0x0003ddd0` gives the record, the hook samples the
-//!   object at its centre (`0x000d1850`, as `0x0003e146` calls it) into
-//!   the tick's record and marks it (`+2`), so the read finds it.
+//!   reads, after `0x0003ddd0` gives the record, [`tick_sample`] samples
+//!   the object at its centre (the port of `0x000d1850`, as `0x0003e146`
+//!   calls it) into the tick's record and marks it (`+2`), so the read
+//!   finds it. No guest code runs.
 //!
 //! Nothing here is guest state: the store is derived from the map file
 //! and the tags, and a map load or structure switch drops it
@@ -38,6 +41,7 @@ use runtime::{CpuAbi, GuestFault, TransferAbi};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
+pub mod object;
 pub mod sample;
 pub mod store;
 pub mod view;
@@ -516,6 +520,35 @@ pub fn record_call(c: &mut CpuAbi, g: &mut dyn crate::GuestMemory) -> Result<u32
     };
     c.esp = c.esp.wrapping_add(8);
     Ok(ret)
+}
+
+/// The tick record's sample: `0x000d1850` by the port
+/// ([`object::sample`]) as `0x0003e146` calls it, EDI the object and the
+/// arguments [`Fill::args`], its frame below `entry` (the record get's
+/// ESP at its entry), entry J natively ([`object::collide`]) under `c`'s
+/// float state; then [`Fill::finish`]. With no store the sample cannot be
+/// made, and stops by name.
+pub fn tick_sample(c: &CpuAbi, g: &mut runtime::Guest, entry: u32, fill: Fill) -> Result<bool, GuestFault> {
+    let store = match ensure(g) {
+        Ok(store) => store,
+        Err(gap) => unimplemented!("lightmap: the tick record's sample: {gap}"),
+    };
+    let fpu = crate::light_constants::Fpu {
+        mxcsr: c.mxcsr,
+        x87_control: c.x87.control,
+    };
+    let [out, first] = fill.args();
+    // The two pushes and the call: the sample's return address 12 below.
+    let at = entry.wrapping_sub(12);
+    let cpu = *c;
+    let sampled = {
+        let j = |g: &mut runtime::Guest, esp| object::collide(&cpu, g, esp);
+        let mut r = object::Run::new(&mut *g, &store, fpu, j);
+        object::push_args(&mut r, at, 0x0003_e14b, &[first, out])?;
+        object::sample(&mut r, at, fill.object, [first, out])?
+    };
+    fill.finish(g, sampled)?;
+    Ok(sampled)
 }
 
 /// A tick record to sample: after `0x0003ddd0` returned `handle` for the

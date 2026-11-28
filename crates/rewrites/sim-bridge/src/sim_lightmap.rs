@@ -10,9 +10,10 @@
 //!   runs the guest's body; the gap is named once and counted.
 //! - `0x0003ddd0`, every caller: the Rust port
 //!   (`engine::sim_lightmap::record_call`). Called from the tick's two
-//!   reads (`0x001796e2`, `0x0017b61f`), `0x000d1850` then samples the
-//!   object into the tick's record (`engine::sim_lightmap::Fill`) before
-//!   the call returns.
+//!   reads (`0x001796e2`, `0x0017b61f`), the port of `0x000d1850`
+//!   (`engine::sim_lightmap::tick_sample`) then samples the object into
+//!   the tick's record (`engine::sim_lightmap::Fill`) before the call
+//!   returns. Neither path runs guest code.
 //! - map load and structure switch drop the store.
 use engine::points;
 use engine::sim_lightmap::{self as lightmap, Fill, Site};
@@ -103,24 +104,10 @@ fn install_record(b: &mut Builder) {
                 return Ok(TransferAbi::ret(ret));
             };
             let object = site.object(cpu);
-            let got = *cpu;
-            let Some(fill) = Fill::new(&*mem, object, got.eax)? else {
-                return Ok(TransferAbi::ret(ret));
-            };
-            // `0x000d1850` as `0x0003e13f`..`0x0003e146` call it: EDI the
-            // object, then the first-sample byte above the record's `+0x30`.
-            let [out, first] = fill.args();
-            cpu.edi = object;
-            cpu.esp = entry.wrapping_sub(8);
-            mem.set_u32(cpu.esp, first)?;
-            mem.set_u32(cpu.esp.wrapping_add(4), out)?;
-            let origin = "lightmap store: the tick record's sample";
-            ctx.call_guest_named(cpu, &mut mem, lightmap::OBJECT_SAMPLE, origin, move |cpu, ctx| {
-                let sampled = cpu.eax as u8 != 0;
-                fill.finish(&mut *ctx.runtime().memory(), sampled)?;
-                *cpu = got;
-                Ok(TransferAbi::ret(ret))
-            })
+            if let Some(fill) = Fill::new(&*mem, object, cpu.eax)? {
+                lightmap::tick_sample(cpu, &mut *mem, entry, fill)?;
+            }
+            Ok(TransferAbi::ret(ret))
         })
         .context_only()
         .optional();
