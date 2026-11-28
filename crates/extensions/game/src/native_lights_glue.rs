@@ -359,7 +359,7 @@ impl Glue {
         }
         let layer = a.layer as usize;
         let draws = self.scene_light_draws(mem, &ready, a.group, &c, false)?;
-        let prepared = self.prepare_planned(mem, Arc::clone(&ready), c, draws, None, None)?;
+        let prepared = self.prepare_planned(mem, Arc::clone(&ready), c, draws, None, Some(LAYER_SCISSOR))?;
         use native_render::light_passes;
         let drawn = light_passes::read(&ReadMemory(&*mem), c.flags, c.definition_flags)
             .map_or(0, |i| light_passes::steps(&i).drawn());
@@ -569,7 +569,7 @@ impl Glue {
             group,
             a.light,
             ShadowMap::Latest,
-            None,
+            Some(LAYER_SCISSOR),
             None,
         )?;
         let pass: Box<dyn Stage> = Box::new(RunPass::new(prepared));
@@ -592,6 +592,14 @@ impl Glue {
         Ok(())
     }
 }
+
+/// The scissor a light layer drawn alone takes: the whole target, cut by
+/// the view's rect when the pass records ([`RunPass::draws`]). The layer's
+/// target setter installs the viewport and resets the device scissor
+/// (docs/graphics/native-light-gather.md, step 3), and nothing sets one
+/// before the layer draws: no scissor holds a light's layers to its
+/// sphere (docs/graphics/native-light-tiles.md).
+const LAYER_SCISSOR: [u32; 4] = [0, 0, i32::MAX as u32, i32::MAX as u32];
 
 /// Where a receiver's frozen shadow map comes from.
 enum ShadowMap {
@@ -2264,6 +2272,14 @@ impl RunPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_layer_drawn_alone_is_cut_to_the_views_rect_alone() {
+        for view in [(0, 0, 640, 480), (320, 0, 320, 240), (12, 34, 100, 50)] {
+            let (x, y, w, h) = view;
+            assert_eq!(intersect_scissor(LAYER_SCISSOR, view), [x, y, w, h]);
+        }
+    }
 
     #[test]
     fn a_pass_whose_gpu_work_is_still_being_made_waits_and_other_refusals_do_not() {

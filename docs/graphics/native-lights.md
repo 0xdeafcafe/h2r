@@ -421,11 +421,12 @@ with no handler: `boot::native_lights_glue` (`Glue::alone`, behind
 `render_bridge::native_lights::Host::draw_alone`) holds the world's
 structure parts and the map's model parts as the `Resident` (`Held`),
 resolves each entry's material pass for the light as the resolved-draw
-path does, takes the scissor, stencil, W-buffer, palettes and cull from
-the device at that point, and requests a complete packet reservation
-on every target copy (`Device::prepare_external_bound`). The guest
-handlers run when any shader, pipeline or target copy is unavailable. Structure
-entries (clusters and placements) draw from the world's buffers.
+path does, and pushes it as one stage. Its scissor is the whole target
+cut to the view's rect (`LAYER_SCISSOR`): the layer's target setter
+resets the device scissor and nothing sets one before the layer draws.
+A pass whose pipeline or texture group is still being made draws
+nothing that frame (`gpu_pending`). Structure entries (clusters and
+placements) draw from the world's buffers.
 
 Object entries draw from model parts built once per map on a worker
 (`native_lights_glue/models.rs`, `native_render::light_models`), at the
@@ -536,9 +537,8 @@ the counters.
 - **Shading.** Each draw takes its view constants and W range at issue,
   the light's 36 frame words in `c[31..39]`, material colours and
   inherited device culling. The sphere projection supplies six float
-  words in guest memory. The device scissor comes from the render state
-  at the draw, reset to the viewport when layers 12 and 13 bind the view
-  target, intersected with the viewport and scaled per copy as a
+  words in guest memory. The scissor is the viewport, as layers 12 and
+  13 leave it when they bind the view target, scaled per copy as a
   half-open pixel rectangle; empty rectangles cover no pixels.
 - **Material animation.** A shader whose `+0x24` block `+0x3c` is set
   animates its passes' constants. A lit pass compiles from its baseline
