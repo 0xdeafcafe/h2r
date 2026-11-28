@@ -68,6 +68,22 @@ A draw that is not placed shows nothing, since no guest texture is behind it. Ea
 
 `0x002232a0` draws what is not a game view: the menus, the loading screen and the movie. The tick `0x00156040` has two callers, `0x0002bc31` and `0x0002c99d` (**Code**; **S**: which views they sit in). Its draws are the overlay producers' ([native-post-hud.md](native-post-hud.md#the-fade-the-bars-and-the-loading-screen), [native-menus-overlay.md](native-menus-overlay.md)) and the movie's. Its own setup (the target, the clear, the viewport, through `0x0002c8a0`) is the guest's, through `d3d`.
 
+The `views`, `outside_view` and `frame_loop` rows reach D3D only through two shared calls, so cutting those two cuts all three (**Code**):
+
+| Call | Callers | What it does | D3D entries |
+|---|---|---|---|
+| `0x000132d0(view)`, `ret 4`: the view setup | `0x0002c990` (`0x0002c8a0`), `0x0002cafd` (`0x0002ca00`), `0x00013c60`, the views | copies the view's `0x298` bytes to the render context `0x00485600`; `[0x004858b8]` = `0x12` for view kind `+2` = 1, else 0 | none |
+| | | `0x00015370` (BX the kind, a seven-way switch): case 0 `[0x004b843c]` = 0 | `SetRenderState_StencilEnable(0)` (the other six cases not read) |
+| | | `[0x005093b4]` = `0x901`, `[0x005093b8]` = `0x900`; `0x00012fa0` (ECX `+0x18`, EAX `+0x8c`, byte `+7`, word `+2`) | `0x00012d50`, `SetVertexShaderConstantNotInlineFast` |
+| | | with `+8` set: the target switch `0x00014bc0(1, [0x004858b8], 0)` and the clear `0x00014b60` (colour flags 1, or `0x61` with `0x00131ed0(0x0048560c)` when `[0x004670cd]` is 0; Z 1.0); else the switch alone | the native select and clear, then `0x003fdb20`, `SetViewport` |
+| | | five words pushed straight into the push buffer: method `0x1af0`, count 4, `0`, `[0x0045dbbc]`, `[0x0045dbc0]`, `[0x0045e3b0]` | the raw push (`MakeRequestedSpace` when full) |
+| | | `[0x004b8428]` = `0x1b02` | `SetRenderState_FillMode(0x1b02)` |
+| | | `0x00016b10` (ESI `0x00485b48`): its record reset, `0x00018900` when `+0x24` is set | `0x00018900`'s (not read) |
+| | | with `+0x26c` set: `0x48` words from `+0x14c` to `0x0048574c`, then `0x00025a10` | `SetRenderState_FogColor`, `SetVertexShaderConstantNotInlineFast`, `0x00027aa0`'s |
+| `0x00013c20()`, `ret`: the view end | every view's tail | with `[0x004ba04c]` above 1, `D3DDevice_Clear(0, 0, 0x80, 0, 1.0, 0)` (alpha only); pops the view stack `[0x0046701c]` and, a view left, runs `0x000132d0` for it, then its camera (`0x0002f970`, `0x0002fd90`) | `Clear`, and the setup's |
+
+Neither is cut: each is a guest body today, and the rows stay `d3d` until both are.
+
 Three frame loops run outside `0x00223240` (**Code**):
 
 | Loop | View | Then |
