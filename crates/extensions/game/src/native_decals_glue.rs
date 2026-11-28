@@ -167,7 +167,7 @@ type Views = HashMap<(wgpu::Device, u64), wgpu::TextureView>;
 static VIEWS: Mutex<Option<Views>> = Mutex::new(None);
 
 #[allow(clippy::mutable_key_type)] // wgpu's Device is a handle; it hashes by identity
-fn texture_view(device: &wgpu::Device, queue: &wgpu::Queue, b: &DecalBitmap) -> wgpu::TextureView {
+pub(crate) fn texture_view(device: &wgpu::Device, queue: &wgpu::Queue, b: &DecalBitmap) -> wgpu::TextureView {
     let mut views = VIEWS.lock().unwrap_or_else(|e| e.into_inner());
     let views = views.get_or_insert_with(HashMap::new);
     if let Some(v) = views.get(&(device.clone(), b.key)) {

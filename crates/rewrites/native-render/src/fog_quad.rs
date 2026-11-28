@@ -101,15 +101,221 @@ pub fn blend_constant(argb: u32) -> [f64; 4] {
     [c(16), c(8), c(0), c(24)]
 }
 
+/// The other setup's fan (`0x00025e50`, view modes 1, 4 and 5) as the
+/// native pass draws it: one strip with its four texture coordinates.
+///
+/// | Guest (`0x00025e50`, `0x00026710`) | Here |
+/// |---|---|
+/// | target 3 at stage 0: the depth buffer's `D24S8` words as `LIN_A8R8G8B8`, clamp, point | the bound depth written as those words into an `Rgba8Unorm` copy ([`FogQuadGpu::record_other`]), sampled at texel centres; its guest size the stage's scale (coordinate 0 is in its pixels) |
+/// | stages 1 and 2 `DOTPRODUCT` and `DOT_ST` of the `HILO_1` halves with coordinates 1 and 2 | the block translated as the post's are (`psh`'s texture shader) |
+/// | the rasterizer's bitmap `[[0x00485a80] + 0x14]` at stage 2, clamp, linear | the decoded bitmap ([`ramp_texture`]'s header), stage scale 1 (the dots are its normalised coordinates) |
+/// | W-buffered `GL_GREATER`, no depth write, or no test with `[0x0048575d]` set | [`FogOtherDraw::depth_test`]: the strip's stored depth tested `Greater` against the bound depth |
+/// | the planar fog's blend, constant `0x00ffffff` | [`blend`] with [`blend_constant`] |
+#[derive(Clone, Debug, PartialEq)]
+pub struct FogOtherDraw {
+    pub combiner: [u32; WORDS],
+    /// The strip: each vertex's position x and y (the target's guest
+    /// pixels) and its four texture coordinates.
+    pub strip: [([f32; 2], [[f32; 4]; 4]); 4],
+    /// Every vertex's z and w.
+    pub z: f32,
+    pub w: f32,
+    pub depth_test: bool,
+}
+
+impl FogOtherDraw {
+    /// The strip of a fan whose positions and coordinates are in the
+    /// order the fan pushes its corners, `(0, 0)`, `(0, 1)`, `(1, 1)`,
+    /// `(1, 0)`: a strip takes the last two swapped.
+    pub fn from_fan(combiner: [u32; WORDS], p: [[f32; 4]; 4], t: [[[f32; 4]; 4]; 4], depth_test: bool) -> Result<Self, Shape> {
+        if p.iter().flatten().chain(t.iter().flatten().flatten()).any(|v| !v.is_finite()) {
+            return Err(Shape::NotFinite);
+        }
+        let same = |a: f32, b: f32| a.to_bits() == b.to_bits();
+        if !p.iter().all(|v| same(v[2], p[0][2]) && same(v[3], p[0][3])) {
+            return Err(Shape::NotRectangle);
+        }
+        let at = |n: usize| ([p[n][0], p[n][1]], t[n]);
+        Ok(Self { combiner, strip: [at(0), at(1), at(3), at(2)], z: p[0][2], w: p[0][3], depth_test })
+    }
+}
+
+/// The texture header `0x000143c0` binds at stage 2 for the other setup:
+/// image 0 of the rasterizer's bitmap `[[0x00485a80] + 0x14]`, or of its
+/// default bitmap `+0x64` when that is -1 or has no image 0; its header
+/// (`+0x50`) only while resident (`0x00012310`).
+///
+/// `Err` names what the guest would do that this does not: `ramp_unbound`
+/// (nothing bound, the stage keeps the last texture), `ramp_image`,
+/// `ramp_streaming` (the loader runs), `ramp_unread`.
+pub fn ramp_texture(word: &dyn Fn(u32) -> Option<u32>) -> Result<u32, &'static str> {
+    use crate::decal_material::{RASTERIZER, image_at, tag_data};
+    const UNREAD: &str = "ramp_unread";
+    let rasterizer = word(RASTERIZER).ok_or(UNREAD)?;
+    let default = || word(rasterizer.wrapping_add(0x64)).ok_or(UNREAD);
+    let mut bitmap = word(rasterizer.wrapping_add(0x14)).ok_or(UNREAD)?;
+    if bitmap == u32::MAX {
+        bitmap = default()?;
+        if bitmap == u32::MAX {
+            return Err("ramp_unbound");
+        }
+    }
+    let mut tag = tag_data(word, bitmap).ok_or(UNREAD)?;
+    if tag != 0 && word(tag.wrapping_add(0x44)).ok_or(UNREAD)? as i32 <= 0 {
+        bitmap = default()?;
+        tag = tag_data(word, bitmap).ok_or(UNREAD)?;
+    }
+    if tag == 0 || word(tag.wrapping_add(0x44)).ok_or(UNREAD)? as i32 <= 0 {
+        return Err("ramp_unbound");
+    }
+    let image = image_at(word, bitmap, 0).ok_or(UNREAD)?;
+    if image == 0 {
+        return Err("ramp_image");
+    }
+    let stamp = word(image.wrapping_add(0x70)).ok_or(UNREAD)? as i32;
+    let header = word(image.wrapping_add(0x50)).ok_or(UNREAD)?;
+    if stamp <= word(crate::effect_material::RESIDENT_STAMP).ok_or(UNREAD)? as i32 || header == 0 {
+        return Err("ramp_streaming");
+    }
+    Ok(header)
+}
+
 #[cfg(feature = "gpu")]
-pub use gpu::{FogQuadGpu, FogQuadTarget, blend};
+pub use gpu::{FogOtherTarget, FogQuadGpu, FogQuadTarget, blend};
 
 #[cfg(feature = "gpu")]
 mod gpu {
-    use super::{BLEND_COLOUR, FogQuadDraw, blend_constant};
+    use super::{BLEND_COLOUR, FogOtherDraw, FogQuadDraw, blend_constant};
     use crate::flare_gpu::{self, DepthTest};
-    use crate::glow::{PostSurface, Quad, QuadDepth, QuadDrawer};
-    use crate::screen_gpu::{FragmentRaster, PostRaster};
+    use crate::glow::{GridFrame, PostSurface, Quad, QuadDepth, QuadDrawer};
+    use crate::screen_gpu::{FragmentRaster, PostRaster, StripVertex};
+
+    /// The bound depth as the `D24S8` words the guest's target 3 reads,
+    /// one `Rgba8Unorm` texel each in `A8R8G8B8`'s channels (`a` bits
+    /// 31..24, `r` 23..16, `g` 15..8, `b` 7..0), the depth rounded as
+    /// `gfx::guest_words`' `depth_word` encodes it; stencil 0 (the planes
+    /// weight the low half by 0).
+    const DEPTH_WORDS: &str = r#"
+@group(0) @binding(0) var depth: texture_depth_2d;
+
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+    let p = vec2f(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4f(p * 2.0 - 1.0, 0.0, 1.0);
+}
+
+@fragment
+fn fs_main(@builtin(position) at: vec4f) -> @location(0) vec4f {
+    let d = textureLoad(depth, vec2i(at.xy), 0);
+    let x = clamp(d, 0.0, 1.0) * 16777215.0;
+    let t = trunc(x);
+    var z = u32(t);
+    if (x - t >= 0.5) { z = z + 1u; }
+    let w = z << 8u;
+    return vec4f(vec4u((w >> 16u) & 255u, (w >> 8u) & 255u, w & 255u, w >> 24u)) / 255.0;
+}
+"#;
+
+    /// The depth-words pass and its last copy.
+    #[derive(Default)]
+    struct DepthWords {
+        pipeline: Option<wgpu::RenderPipeline>,
+        copy: Option<(wgpu::Texture, wgpu::TextureView)>,
+    }
+
+    impl DepthWords {
+        /// Records `depth` written as words into the copy, sized as it.
+        fn record(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, depth: &wgpu::TextureView) -> Result<wgpu::TextureView, &'static str> {
+            let texture = depth.texture();
+            if !texture.format().has_depth_aspect() || texture.sample_count() != 1
+                || !texture.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING)
+            {
+                return Err("other_depth_binding");
+            }
+            let size = texture.size();
+            let pipeline = self.pipeline.get_or_insert_with(|| {
+                let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("fog other depth words"),
+                    source: wgpu::ShaderSource::Wgsl(DEPTH_WORDS.into()),
+                });
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some("fog other depth words"),
+                    layout: None,
+                    vertex: wgpu::VertexState {
+                        module: &module,
+                        entry_point: Some("vs_main"),
+                        compilation_options: Default::default(),
+                        buffers: &[],
+                    },
+                    primitive: Default::default(),
+                    depth_stencil: None,
+                    multisample: Default::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &module,
+                        entry_point: Some("fs_main"),
+                        compilation_options: Default::default(),
+                        targets: &[Some(wgpu::TextureFormat::Rgba8Unorm.into())],
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            });
+            if self.copy.as_ref().is_none_or(|(t, _)| t.size() != wgpu::Extent3d { depth_or_array_layers: 1, ..size }) {
+                let t = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("fog other depth words"),
+                    size: wgpu::Extent3d { width: size.width, height: size.height, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                });
+                let v = t.create_view(&Default::default());
+                self.copy = Some((t, v));
+            }
+            let Some((_, out)) = self.copy.as_ref() else { return Err("other_depth_binding") };
+            let source = texture.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("fog other depth"),
+                aspect: wgpu::TextureAspect::DepthOnly,
+                ..Default::default()
+            });
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("fog other depth words"),
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&source) }],
+            });
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("fog other depth words"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: out,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store },
+                })],
+                ..Default::default()
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &group, &[]);
+            pass.draw(0..3, 0..1);
+            drop(pass);
+            Ok(out.clone())
+        }
+    }
+
+    /// Where the other setup's fan draws: the bound colour and depth, and
+    /// the decoded ramp bitmap.
+    pub struct FogOtherTarget<'a> {
+        pub device: &'a wgpu::Device,
+        pub queue: &'a wgpu::Queue,
+        pub uploads: &'a gfx::ring::SubmissionUploads,
+        pub color: &'a wgpu::TextureView,
+        pub color_format: wgpu::TextureFormat,
+        pub depth: &'a wgpu::TextureView,
+        pub guest: (u32, u32),
+        pub z_scale: f32,
+        pub ramp: &'a wgpu::TextureView,
+    }
 
     /// The fan's blend: the constant's factor on colour and alpha (the
     /// NV2A blends alpha with the colour's factors), one less the source's
@@ -137,10 +343,11 @@ mod gpu {
         pub z_scale: f32,
     }
 
-    /// The fan's programs and pipelines on one device, kept across frames.
+    /// The fans' programs and pipelines on one device, kept across frames.
     #[derive(Default)]
     pub struct FogQuadGpu {
         quads: QuadDrawer,
+        words: DepthWords,
     }
 
     impl FogQuadGpu {
@@ -203,12 +410,117 @@ mod gpu {
             command.record(encoder);
             Ok(true)
         }
+
+        /// Records the other setup's `draw` into `encoder` over `t`,
+        /// tested under `test` when it tests depth: first the bound depth
+        /// as target 3's words, then the strip sampling them and the ramp.
+        /// `Ok(false)`: a fan the W clip culls.
+        pub fn record_other(
+            &mut self,
+            t: FogOtherTarget<'_>,
+            encoder: &mut wgpu::CommandEncoder,
+            draw: &FogOtherDraw,
+            test: Option<DepthTest>,
+        ) -> Result<bool, &'static str> {
+            let (ct, dt) = (t.color.texture(), t.depth.texture());
+            if !dt.format().has_depth_aspect() || dt.size() != ct.size() || dt.sample_count() != 1 {
+                return Err("depth");
+            }
+            if t.guest.0 == 0 || t.guest.1 == 0 {
+                return Err("outside");
+            }
+            let reference = match (draw.depth_test, test) {
+                (false, _) => None,
+                (true, None) => return Err("depth_clip"),
+                (true, Some(test)) => {
+                    let probe = scene_extract::flares::Quad { x0: 0, y0: 0, x1: 1, y1: 1, z: draw.z, w: draw.w, area: 1 };
+                    let Some(r) = flare_gpu::reference(&probe, test, t.z_scale) else {
+                        return Ok(false);
+                    };
+                    Some(r)
+                }
+            };
+            let words = self.words.record(t.device, encoder, t.depth)?;
+            // Stage 0 in the target's guest pixels, stage 2 in the ramp's
+            // normalised coordinates.
+            let program = self
+                .quads
+                .grid_program(&draw.combiner, [Some(t.guest), None, Some((1, 1)), None])
+                .map_err(|_| "other_combiner")?;
+            let strip: Vec<StripVertex> = draw
+                .strip
+                .iter()
+                .map(|&([x, y], texcoords)| StripVertex { position: [x, y, 0.0, 1.0], texcoords })
+                .collect();
+            let [r, g, b, a] = blend_constant(BLEND_COLOUR);
+            let raster = PostRaster {
+                blend: Some(blend()),
+                blend_constant: wgpu::Color { r, g, b, a },
+                writes: wgpu::ColorWrites::ALL,
+                ..PostRaster::default()
+            };
+            let frame = GridFrame { dest: [2.0 / t.guest.0 as f32, 2.0 / t.guest.1 as f32, reference.unwrap_or(0.0), 0.0] };
+            let command = self
+                .quads
+                .prepare_tested(
+                    (t.device, t.queue, t.uploads),
+                    &program,
+                    bytemuck::bytes_of(&frame),
+                    Some(std::slice::from_ref(&strip)),
+                    (PostSurface { view: t.color, guest_size: t.guest }, t.color_format, raster),
+                    reference.map(|_| QuadDepth { view: t.depth, compare: wgpu::CompareFunction::Greater }),
+                    [Some(&words), None, Some(t.ramp), None],
+                )?
+                .ok_or("empty")?;
+            command.record(encoder);
+            Ok(true)
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_other_fan_is_a_strip_with_its_coordinates() {
+        let p = [[0.0, 0.0, 0.5, 9.0], [0.0, 480.0, 0.5, 9.0], [640.0, 480.0, 0.5, 9.0], [640.0, 0.0, 0.5, 9.0]];
+        let t = [0.0f32, 1.0, 2.0, 3.0].map(|n| [[n; 4]; 4]);
+        let d = FogOtherDraw::from_fan([0; WORDS], p, t, true).unwrap();
+        let xy: Vec<[f32; 2]> = d.strip.iter().map(|v| v.0).collect();
+        assert_eq!(xy, [[0.0, 0.0], [0.0, 480.0], [640.0, 0.0], [640.0, 480.0]]);
+        assert_eq!(d.strip[2].1, [[3.0; 4]; 4]);
+        assert_eq!((d.z, d.w), (0.5, 9.0));
+        let mut bad = t;
+        bad[1][2][0] = f32::NAN;
+        assert_eq!(FogOtherDraw::from_fan([0; WORDS], p, bad, true), Err(Shape::NotFinite));
+    }
+
+    #[test]
+    fn the_ramp_is_image_0_of_the_rasterizers_bitmap_or_its_default() {
+        use crate::decal_material::{RASTERIZER, TAG_TABLE};
+        use std::collections::HashMap;
+        let (raster, table, tag, images, image) = (0x1000, 0x2000, 0x3000, 0x4000, 0x4000);
+        let mut m: HashMap<u32, u32> = HashMap::new();
+        m.insert(RASTERIZER, raster);
+        m.insert(raster + 0x14, 0xe000_0002);
+        m.insert(raster + 0x64, u32::MAX);
+        m.insert(TAG_TABLE, table);
+        m.insert(table + 2 * 16 + 8, tag);
+        m.insert(tag + 0x44, 1);
+        m.insert(tag + 0x48, images);
+        m.insert(image + 0x70, 5);
+        m.insert(image + 0x50, 0x00ab_cd00);
+        m.insert(crate::effect_material::RESIDENT_STAMP, 4);
+        let word = |a: u32| m.get(&a).copied();
+        assert_eq!(ramp_texture(&word), Ok(0x00ab_cd00));
+        let mut streaming = m.clone();
+        streaming.insert(crate::effect_material::RESIDENT_STAMP, 5);
+        assert_eq!(ramp_texture(&|a| streaming.get(&a).copied()), Err("ramp_streaming"));
+        let mut none = m.clone();
+        none.insert(raster + 0x14, u32::MAX);
+        assert_eq!(ramp_texture(&|a| none.get(&a).copied()), Err("ramp_unbound"));
+    }
 
     fn fan(x: [f32; 2], y: [f32; 2]) -> [[f32; 4]; 4] {
         let at = |a: f32, b: f32| [a, b, 0.5, 16_777_215.0];
