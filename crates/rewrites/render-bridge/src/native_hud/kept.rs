@@ -42,6 +42,8 @@ pub enum OverlayKind {
     Text,
     /// The motion sensor's wash, tint and composite fans (`0x002548f0`).
     MotionSensor,
+    /// A motion sensor blip's quad (`0x00254490`, `native_hud::blips`).
+    SensorBlip,
     /// A navpoint's arrow (`0x0024e9c7`) or its outline (`0x0024f0fc`).
     Navpoint,
     /// A navpoint's waypoint marker (`0x0024ef29`, from `0x0024ecae`).
@@ -59,11 +61,12 @@ pub enum OverlayKind {
 }
 
 impl OverlayKind {
-    pub const ALL: [OverlayKind; 11] = [
+    pub const ALL: [OverlayKind; 12] = [
         OverlayKind::Widget,
         OverlayKind::Crosshair,
         OverlayKind::Text,
         OverlayKind::MotionSensor,
+        OverlayKind::SensorBlip,
         OverlayKind::Navpoint,
         OverlayKind::Waypoint,
         OverlayKind::Indicator,
@@ -80,6 +83,7 @@ impl OverlayKind {
             OverlayKind::Crosshair => "crosshair",
             OverlayKind::Text => "text",
             OverlayKind::MotionSensor => "motion_sensor",
+            OverlayKind::SensorBlip => "sensor_blip",
             OverlayKind::Navpoint => "navpoint",
             OverlayKind::Waypoint => "waypoint",
             OverlayKind::Indicator => "indicator",
@@ -464,11 +468,11 @@ pub fn counters() -> Vec<(String, u64)> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     /// The tests share the counters: serialise them.
-    static SERIAL: Mutex<()> = Mutex::new(());
+    pub(in crate::native_hud) static SERIAL: Mutex<()> = Mutex::new(());
 
     fn kept_count(name: &str) -> u64 {
         counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n)

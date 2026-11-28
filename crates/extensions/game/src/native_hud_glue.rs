@@ -504,6 +504,11 @@ impl<B: d3d::Backend + Send + 'static> Host for Glue<B> {
         self.fan(mem, vertices, None)
     }
 
+    fn sensor_blip(&self, mem: &mut dyn GuestMemory, vertices: &HudVertices) -> bool {
+        // The body's quad is a four-vertex fan's two triangles.
+        self.fan(mem, vertices, Some(engine::hud_sensor::BLIP_PUSH_BYTES))
+    }
+
     fn model_ranges(&self, mem: &mut dyn GuestMemory, ranges: &[engine::ui_model::Range]) -> bool {
         if !SCOPES.with(|s| {
             s.borrow().active(self.admission.owner)
