@@ -10,17 +10,30 @@
 //! | grid `0x0003ca90`, gates `0x0003c270` and `0x0012de70` | guest calls; a gate's AL 0 goes to the stamps |
 //! | the shader `[definition + 4]` to its implementation's flags `+0x118` | Rust ([`shader`]) |
 //! | copies `0x0003bea0` (bit 20), `0x00131ed0` then `0x0003bd00` (bit 19) | guest calls; their binds land on `Game(0x16)` and `Game(0x15)` through the device's role table |
-//! | alpha clear `0x0003c515` | [`Device::clear`]: `native_targets::cut_clear(0x10, 0x00ffffff, 0, 0)` on the bound target |
-//! | state `0x0001cbb0` .. `0x0003bf00`, the wrapper's stage commit `0x0001cf50` | guest calls; the 30 words at `0x004c1a90` zeroed in Rust |
+//! | alpha clear `0x0003c515` | `native_targets::cut_clear(0x10, 0x00ffffff, 0, 0)` on the bound target |
+//! | vertex type `0x0001cbb0`, grid constants `0x000151c0`, stream `0x0001cda0` | Rust over [`Device::host`] ([`state`]) |
+//! | stream commit `0x0001c710` | guest call |
+//! | the 30 words at `0x004c1a90` zeroed, `0x0001bd50`, `0x0001cdd0` | Rust ([`state`]) |
+//! | shader begin `0x0001bbf0` | guest call |
+//! | viewport `0x00012d50`, structure constants `0x0003bf00`, the wrapper's stage commit `0x0001cf50` | Rust ([`state`]) |
 //! | quads `0x0001c8a0(8, [geometry + 0x24], [geometry + 0x20])` | [`Device::draw`]: `IndexedPass::water_quads` over the scene's `WaterComposite` |
 //! | stamps `0x0003bcb0` | a guest call per image ([`stamps`]) |
 //!
 //! What the stage cannot make is a cause, `unimplemented!("water ocean:
 //! <cause>")`: `unread`, `unwritable`, `shader_group` (a shader of group
 //! `MTRP` or `3trp`, whose template is a virtual call), `host`, `clear`,
-//! `quads` (no keyed view's composite), `draw` (the native draw refused).
+//! `device` (a draw-state call refused), `vertex_kind`,
+//! `position_compression`, `structure` (the upload's float model
+//! refused), `quads` (no keyed view's composite), `draw` (the native draw
+//! refused).
 
 use engine::memory::{GuestMemory, MemFault};
+
+use crate::native_targets::Host;
+
+pub mod state;
+#[cfg(test)]
+mod fake;
 
 /// A step the stage cannot make.
 pub type Cause = &'static str;
@@ -32,16 +45,8 @@ pub const TEXTURE: u32 = 0x0012_de70;
 pub const COPY_TARGET: u32 = 0x0003_bea0;
 pub const PASS_SOURCE: u32 = 0x0013_1ed0;
 pub const PASS_TARGET: u32 = 0x0003_bd00;
-pub const STATE_A: u32 = 0x0001_cbb0;
-pub const STATE_B: u32 = 0x0001_51c0;
-pub const STATE_C: u32 = 0x0001_cda0;
-pub const STATE_D: u32 = 0x0001_c710;
-pub const STATE_E: u32 = 0x0001_bd50;
-pub const STATE_F: u32 = 0x0001_cdd0;
+pub const STREAM_COMMIT: u32 = 0x0001_c710;
 pub const SHADER_BEGIN: u32 = 0x0001_bbf0;
-pub const SHADER_PASS: u32 = 0x0001_2d50;
-pub const CONSTANTS: u32 = 0x0003_bf00;
-pub const COMMIT: u32 = 0x0001_cf50;
 pub const STAMP: u32 = 0x0003_bcb0;
 
 /// The tag table's pointer: entries of 16 bytes, the group at `+0`, the
@@ -100,8 +105,10 @@ pub enum Next {
 
 /// The device side: boot's glue in a game, a recorder in the tests.
 pub trait Device {
-    /// The alpha clear `0x00014b60(eax 0x10, 0x00ffffff, 0, 0)`.
-    fn clear(&mut self, mem: &mut dyn GuestMemory) -> Result<(), Cause>;
+    /// The device calls of the clear and the draw state.
+    fn host(&self) -> &dyn Host;
+    /// 64 bytes of guest stack the draw state stages its words in.
+    fn scratch(&self) -> u32;
     /// The quads: `count` indices at `indices`, a quad list.
     fn draw(&mut self, mem: &mut dyn GuestMemory, indices: u32, count: u32) -> Result<(), Cause>;
 }
@@ -215,15 +222,8 @@ enum Step {
     PassSource,
     PassTarget,
     Clear,
-    StateB,
-    StateC,
-    StateD,
-    StateE,
-    StateF,
+    StreamCommit,
     ShaderBegin,
-    ShaderPass,
-    Constants,
-    Commit,
     Draw,
     Stamp(usize),
 }
@@ -292,31 +292,35 @@ impl Ocean {
                 self.call(Step::Clear, PASS_TARGET, Regs { ecx: pass, ..r }, vec![pass, returned.eax])
             }
             Step::Clear => {
+                let (host, scratch) = (device.host(), device.scratch());
                 if self.clear {
-                    device.clear(mem)?;
+                    crate::native_targets::cut_clear(mem, host, 0x10, 0x00ff_ffff, 0, 0, scratch)
+                        .map_err(|cause| if cause == "device" { "clear" } else { cause })?;
                 }
                 let geometry = word(mem, d.wrapping_add(GEOMETRY))?;
-                self.call(Step::StateB, STATE_A, Regs { eax: 1, esi: geometry, ..r }, vec![1])
+                // 0x0001cbb0(eax 1, edi the implementation's vertex type, 1).
+                state::vertex_type(mem, host, r.edi, 1, 1)?;
+                state::grid_constants(mem, host)?;
+                let stream = word(mem, geometry.wrapping_add(GEOMETRY_STATE))?;
+                state::stream(mem, stream)?;
+                self.call(Step::StreamCommit, STREAM_COMMIT, Regs { esi: geometry, ..r }, vec![state::STREAMS])
             }
-            Step::StateB => self.call(Step::StateC, STATE_B, Regs { edx: 0x004c_1b38, ..r }, Vec::new()),
-            Step::StateC => {
-                let state = word(mem, r.esi.wrapping_add(GEOMETRY_STATE))?;
-                self.call(Step::StateD, STATE_C, Regs { ecx: state, ..r }, Vec::new())
-            }
-            Step::StateD => self.call(Step::StateE, STATE_D, r, vec![0x0051_f0f0]),
-            Step::StateE => {
+            Step::StreamCommit => {
+                let host = device.host();
                 mem.write(STATE_BLOCK, &[0; 4 * STATE_BLOCK_WORDS as usize]).map_err(|_| "unwritable")?;
-                let edi = STATE_BLOCK + 4 * STATE_BLOCK_WORDS;
-                self.call(Step::StateF, STATE_E, Regs { eax: STATE_BLOCK, ecx: 0, edi, ..r }, Vec::new())
-            }
-            Step::StateF => self.call(Step::ShaderBegin, STATE_F, Regs { eax: 0, ..r }, vec![0]),
-            Step::ShaderBegin => {
+                state::state_block(mem, STATE_BLOCK)?;
+                state::position_decompression(mem, host, device.scratch(), 0, 0)?;
                 let edi = self.shader.map_or(0, |s| s.index);
-                self.call(Step::ShaderPass, SHADER_BEGIN, Regs { edi, ..r }, vec![0, 3, 0, 0, 0x47c3_5000])
+                self.call(Step::ShaderBegin, SHADER_BEGIN, Regs { edi, ..r }, vec![0, 3, 0, 0, 0x47c3_5000])
             }
-            Step::ShaderPass => self.call(Step::Constants, SHADER_PASS, Regs { eax: 0, ebx: r.ebx & !0xff, ..r }, vec![0]),
-            Step::Constants => self.call(Step::Commit, CONSTANTS, Regs { eax: d, ..r }, Vec::new()),
-            Step::Commit => self.call(Step::Draw, COMMIT, r, Vec::new()),
+            Step::ShaderBegin => {
+                let (host, scratch) = (device.host(), device.scratch());
+                state::viewport(mem, host, scratch)?;
+                state::structure(mem, host, scratch, d)?;
+                state::commit_stages(mem, host)?;
+                self.step = Step::Draw;
+                self.next(mem, device, r)
+            }
             Step::Draw => {
                 let (count, indices) = (word(mem, r.esi.wrapping_add(QUAD_COUNT))?, word(mem, r.esi.wrapping_add(QUAD_INDICES))?);
                 device.draw(mem, indices, count)?;

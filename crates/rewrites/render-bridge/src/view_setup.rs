@@ -511,7 +511,7 @@ fn stage(mem: &mut dyn GuestMemory, at: u32, words: &[u32]) -> Result<(), Cause>
 /// The push buffer's put, made room for as the body's inline writers do:
 /// at or past the limit `+4`, `MakeRequestedSpace([0x00408648] / 2,
 /// [0x00408648])`.
-fn reserve(mem: &mut dyn GuestMemory, host: &dyn Host, device: u32) -> Result<u32, Cause> {
+pub(crate) fn reserve(mem: &mut dyn GuestMemory, host: &dyn Host, device: u32) -> Result<u32, Cause> {
     let put = word(mem, device)?;
     if put < word(mem, device.wrapping_add(4))? {
         return Ok(put);
