@@ -8,23 +8,19 @@
 //! geometry without publishing pose, palette or cache writes: the native
 //! display passes, and the D3D fallback's draw-boundary swap.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use crate::setting_defs::{GUEST_FRAME, LOD_DISTANCE, LOD_HIGHEST, lod_pixel_multiplier};
-use d3d::scaled::ScaleStats;
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy, points};
 use render_bridge::native_scene_lists::{LodDetail, NativeSceneLists, ViewLodScale};
 use runtime::{Guest, GuestFault, guest::Permissions};
 
 #[derive(Clone)]
 pub struct LodDistance {
-    scale_stats: Option<Arc<Mutex<ScaleStats>>>,
+    output: Option<crate::run_opts::NativeSize>,
     distance: Option<settings::Setting<u32>>,
     startup_distance: u32,
     reference_multiplier: Option<f32>,
-    /// The guest's own D3D draws render the display (single-copy: no
-    /// distinct reference copy), so they take the draw-boundary swap.
-    d3d_display: bool,
     /// Guest address published during registration for the native object walk.
     view_scale: OnceLock<ViewLodScale>,
 }
@@ -32,7 +28,7 @@ pub struct LodDistance {
 impl LodDistance {
     pub fn new(
         store: Option<&settings::Store>,
-        scale_stats: Option<Arc<Mutex<ScaleStats>>>,
+        output: Option<crate::run_opts::NativeSize>,
         viewer_distance: Option<settings::Setting<u32>>,
     ) -> anyhow::Result<Self> {
         let distance = viewer_distance.or_else(|| store.map(|s| s.handle(LOD_DISTANCE.key)));
@@ -45,11 +41,10 @@ impl LodDistance {
                 .map_err(anyhow::Error::msg)?;
         }
         Ok(Self {
-            scale_stats,
+            output,
             view_scale: OnceLock::new(),
             distance,
             reference_multiplier: None,
-            d3d_display: false,
             startup_distance: value.as_int().expect("LOD Distance is a numeric choice") as u32,
         })
     }
@@ -61,20 +56,9 @@ impl LodDistance {
         self
     }
 
-    /// The guest's own D3D draws render the display (single-copy: no
-    /// distinct reference copy takes the readbacks), so the Highest choice
-    /// swaps their drawn geometry at the draw boundary.
-    pub fn with_d3d_display(mut self, display: bool) -> Self {
-        self.d3d_display = display;
-        self
-    }
-
-    /// The active target at the last frame boundary. A plain GPU backend
-    /// renders the guest frame at its original size.
+    /// The render's output height now; the guest frame's with no renderer.
     fn output_height(&self) -> u32 {
-        self.scale_stats.as_ref().map_or(GUEST_FRAME.1, |s| {
-            s.lock().unwrap_or_else(|e| e.into_inner()).output.1
-        })
+        self.output.as_ref().map_or(GUEST_FRAME.1, |output| output().1)
     }
 
     pub fn view_scale(&self) -> Option<ViewLodScale> {
@@ -105,11 +89,7 @@ impl Feature for LodDistance {
         self.view_scale
             .set(view_scale)
             .map_err(|_| BuildError("LOD distance already registered".into()))?;
-        // Without a distinct reference copy (single-copy rendering), the
-        // guest's own D3D draws are the display and take the draw-boundary
-        // geometry swap.
-        let d3d_display = self.d3d_display;
-        NativeSceneLists::install_guest_lod(b, view_scale, d3d_display);
+        NativeSceneLists::install_guest_lod(b, view_scale, false);
         let setting = self.clone();
         b.raw()
             .before(
@@ -239,11 +219,10 @@ mod tests {
     #[test]
     fn detail_follows_the_active_render_target_and_live_distance() {
         let store = settings::Store::defaults(crate::setting_defs::ALL);
-        let stats = Arc::new(Mutex::new(ScaleStats {
-            output: GUEST_FRAME,
-            ..Default::default()
-        }));
-        let lod = LodDistance::new(Some(&store), Some(stats.clone()), None).unwrap();
+        let stats = Arc::new(std::sync::Mutex::new(GUEST_FRAME));
+        let read = Arc::clone(&stats);
+        let output: crate::run_opts::NativeSize = Arc::new(move || *read.lock().unwrap());
+        let lod = LodDistance::new(Some(&store), Some(output), None).unwrap();
         store
             .set(
                 crate::setting_defs::RESOLUTION.key,
@@ -253,7 +232,7 @@ mod tests {
         assert_eq!(lod.detail(), LodDetail::Highest);
         store.set(LOD_DISTANCE.key, LOD_DISTANCE.parse("1").unwrap()).unwrap();
         assert_eq!(lod.detail(), LodDetail::Retail);
-        stats.lock().unwrap().output = (2560, 1600);
+        *stats.lock().unwrap() = (2560, 1600);
         assert_eq!(lod.detail(), LodDetail::Scaled(1600.0 / 480.0));
         store.set(LOD_DISTANCE.key, LOD_DISTANCE.parse("1.5").unwrap()).unwrap();
         assert_eq!(lod.detail(), LodDetail::Scaled(5.0));

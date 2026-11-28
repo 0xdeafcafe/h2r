@@ -724,16 +724,12 @@ pub enum AgentSource {
     Socket(PathBuf),
 }
 
-/// What [`register_late`] needs: the registrations after the host's d3d,
-/// audio and input are in.
+/// What [`register_late`] needs: the registrations after the host's
+/// render, audio and input are in.
 pub struct LateInputs<'a> {
-    /// The effective resolution source of the backend drawing this run.
+    /// The renderer's output size now, when one draws this run.
     #[cfg(feature = "gpu")]
-    pub view: Option<&'a crate::d3d_glue::DrawingView>,
-    /// Single-copy rendering: the guest's own D3D draws render the display,
-    /// so they take the draw-boundary geometry swap.
-    #[cfg(feature = "gpu")]
-    pub d3d_display: bool,
+    pub output: Option<crate::run_opts::NativeSize>,
     #[cfg(feature = "gpu")]
     pub viewer_lod: Option<settings::Setting<u32>>,
     #[cfg(feature = "gpu")]
@@ -863,13 +859,6 @@ pub(crate) fn register_late_for_profile(
     features
         .add(&render_bridge::render_timing::RenderTiming::new())
         .map_err(|e| anyhow::anyhow!("render timing: {e}"))?;
-    // Which pages the render front-end writes and the sim reads, when
-    // H2_FEATURES has render-census (off by default;
-    // docs/graphics/notes/pipelined-render.md).
-    let census = render_bridge::render_census::RenderCensus::new()
-        .with_region(crate::d3d_glue::PUSH_BASE, crate::d3d_glue::PUSH_BASE + crate::d3d_glue::PUSH_LEN, "push_buffer")
-        .with_region(crate::d3d_glue::SCRATCH_BASE, crate::d3d_glue::SCRATCH_BASE + 0x1000, "d3d_scratch");
-    features.add(&census).map_err(|e| anyhow::anyhow!("render census: {e}"))?;
     // The frame step leaves the game-state arena as it found it, under
     // impl.sim.frame-guard (off; docs/engine/sim-render-split.md, "The proof").
     features
@@ -879,11 +868,10 @@ pub(crate) fn register_late_for_profile(
     if render_hooks == film::RenderHooks::Gpu {
         use render_bridge::native_scene_lists::NativeSceneLists;
 
-        let view_scale = if let Some(view) = i.view {
+        let view_scale = if let Some(output) = i.output.clone() {
             let lod = crate::lod_distance::LodDistance::new(
-                i.settings.as_deref(), view.scale_stats.clone(), i.viewer_lod,
+                i.settings.as_deref(), Some(output), i.viewer_lod,
             )?;
-            let lod = lod.with_d3d_display(i.d3d_display);
             features.add(&lod).map_err(|e| anyhow::anyhow!("LOD distance: {e}"))?;
             lod.view_scale()
         } else {
@@ -906,7 +894,7 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_world::NativeWorld::with_display_fade(
                 view_scale,
-                i.d3d_display,
+                false,
             ))
             .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
         // Planar fog, layer 16, on the native GPU renderer

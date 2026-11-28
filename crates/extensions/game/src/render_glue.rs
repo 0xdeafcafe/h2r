@@ -142,6 +142,13 @@ fn reset() {
     native_render::frame_builder().discard();
 }
 
+impl Installed {
+    /// Whether a renderer draws this run's frames.
+    pub fn has_renderer(&self) -> bool {
+        self.renderer
+    }
+}
+
 /// The run report's render line.
 pub fn describe(i: &Installed) -> String {
     format!(
@@ -270,4 +277,28 @@ mod tests {
         assert_eq!(fps_from(Some("fast")), 30);
         assert_eq!(fps_from(None), 30);
     }
+}
+
+/// Xbox D3D addresses the same physical page three ways: the contiguous
+/// window `0x80000000 | phys`, the GPU's `phys`, and the CPU write-combined
+/// window `0xf0000000 | phys` (Halo's CPU blits use the last, e.g.
+/// `or [esp+0Ch], 0xF0000000` at 0x13e4b). The runtime maps none of
+/// 0xf0000000. Boot stopgap: alias `0xf0000000 | (va & 0x0fffffff)` onto
+/// the physical pages behind `va` for the ranges the boot maps. Blocker:
+/// runtime/kernel (the write-combined window over all contiguous memory).
+pub const WC_BASE: u32 = 0xf000_0000;
+
+/// The write-combined window of every physical reservation (the loader was
+/// given `WC_BASE | start` as an extra alias).
+pub fn map_reserved_write_combined(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    let mut mem = rt.memory();
+    let rs: Vec<_> = mem
+        .physical_reservations()
+        .iter()
+        .map(|r| (r.id, r.physical_start, r.len))
+        .collect();
+    for (id, start, len) in rs {
+        mem.map_reserved(id, WC_BASE | start, len, runtime::guest::Permissions::RW)?;
+    }
+    Ok(())
 }

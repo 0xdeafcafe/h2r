@@ -298,13 +298,13 @@ fn run_configured(
     #[cfg(feature = "gpu")]
     let rendered_replay = replaying && render_every != 0 && sim_mode.is_none() && host.gfx.is_some();
     #[cfg(feature = "gpu")]
-    let host_graphics = !rendered_replay && (host.gfx.is_some() || host.gfx_view.is_some() || host.render_thread);
+    let host_graphics = !rendered_replay && (host.gfx.is_some() || host.gfx_view.is_some());
     #[cfg(not(feature = "gpu"))]
     let host_graphics = false;
     if host_light || sim_mode.is_some() {
         anyhow::ensure!(
-            !host_graphics && std::env::var_os("H2_BOOT_GFX").is_none(),
-            "light host and sim require a headless backend (unset H2_BOOT_GFX)"
+            !host_graphics,
+            "light host and sim run with no renderer"
         );
         anyhow::ensure!(
             opts.d3d && opts.bink && opts.dsound && opts.xapi,
@@ -313,7 +313,7 @@ fn run_configured(
     }
     bots::vis::set_light_index_budget(host_light);
     let bots = opts.xapi && (!host_light || sim_mode.is_some() || host.host_bots);
-    d3d_diag::keep_present_history(!host_light);
+    presents::keep_present_history(!host_light);
     let x = xbe::Xbe::parse(xbe_bytes)?;
     let slim_stamp = host_light.then(|| current_slim_stamp(xbe_bytes, dylib)).flatten();
     let tier = if slim_stamp.is_some() {
@@ -351,18 +351,18 @@ fn run_configured(
     options.map_guest_reads = host_light && switches.implementation("sim.mapped-reads", true);
     if opts.stopgaps {
         for r in &mut options.physical_reservations {
-            r.aliases.push(d3d_glue::WC_BASE | r.physical.start);
+            r.aliases.push(render_glue::WC_BASE | r.physical.start);
         }
     }
     let mut loaded = runtime::load_xbe_with(xbe_bytes, &options).context("mapping the XBE")?;
     if opts.stopgaps {
-        d3d_glue::map_reserved_write_combined(&loaded.runtime)?;
+        render_glue::map_reserved_write_combined(&loaded.runtime)?;
     }
     for n in &loaded.permission_notes {
         log::note(&format!("page {:#x} widened to {:?}", n.page, n.effective));
     }
     let t = Instant::now();
-    // Shadow pages: trace 0xa0ff0000, d3d 0xa0ff2000,
+    // Shadow pages: trace 0xa0ff0000,
     // barrier 0xa0ff4000, live notice 0xa0ff6000. Hooks placed by the
     // feature plan (telemetry, lockstep, the level-loaded mark, our strings)
     // take theirs from the feature arena (`hooks::arena`).
@@ -512,8 +512,6 @@ fn run_configured(
         "host audit and impl.sim.frame-guard both use the guest access trap"
     );
     let lockstep_on = lockstep_config.enabled();
-    #[cfg(feature = "gpu")]
-    let protected_readbacks = d3d_glue::protected_readbacks(_live.is_some(), film.is_some(), lockstep_on);
     let mut features = hooks::Registry::new(registration::profile_switches(switches, host_light));
     #[cfg(feature = "gpu")]
     let native_target: run_opts::NativeTarget = host.gfx_view.as_ref().map(|view| view.native_target.clone())
@@ -522,17 +520,17 @@ fn run_configured(
     let native_target: run_opts::NativeTarget = Arc::new(|| settings::NativeTarget::windowed(setting_defs::GUEST_FRAME));
     #[cfg(feature = "gpu")]
     let output_size = if opts.d3d && ((!host_light && sim_mode.is_none()) || rendered_replay)
-        && (host.gfx_view.is_some() || (host.gfx.is_none() && std::env::var_os("H2_BOOT_GFX").is_some()))
+        && host.gfx_view.is_some()
     {
         match host.gfx_view.as_ref().and_then(|v| v.viewer_output.clone()) {
             Some(output) => Some(output),
-            None => Some(d3d_glue::output_size(host.settings.as_deref(), native_target.clone())?),
+            None => Some(render_glue::output_size(host.settings.as_deref(), native_target.clone())?),
         }
     } else {
         None
     };
     #[cfg(feature = "gpu")]
-    let mut display_size = host.gfx_view.as_ref().map(|view| Arc::clone(&view.display_size));
+    let display_size = host.gfx_view.as_ref().map(|view| Arc::clone(&view.display_size));
     #[cfg(feature = "gpu")]
     let viewer_lod = host.gfx_view.as_ref().and_then(|view| view.viewer_lod.clone());
     #[cfg(feature = "gpu")]
@@ -996,112 +994,36 @@ fn run_configured(
             map_override::active_map_source(&mut v, guest, binding.as_ref())
         }));
     }
-    // Sample the render thread too when profiling.
-    #[cfg(all(feature = "perf", feature = "gpu"))]
-    let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
     // The frame rate for the frame owner's display frames between scenes
     // (docs/graphics/framescene.md, section 7).
     #[cfg(feature = "gpu")]
-    let fps = opts.d3d.then(|| d3d_glue::frame_rate(host.settings.as_ref()));
+    let fps = render_glue::frame_rate(host.settings.as_ref());
     // No window: a headless run, which skips the movies by default.
     #[cfg(feature = "gpu")]
-    let headless = host.gfx.is_none();
+    let headless = host.presenter.is_none();
     #[cfg(not(feature = "gpu"))]
     let headless = true;
-    #[cfg(feature = "gpu")]
-    let single = opts.d3d && host.gfx_view.is_some()
-        && d3d_glue::single_copy(host.settings.as_deref(), protected_readbacks)?;
-    #[cfg(feature = "gpu")]
-    // The display can draw different geometry than the copy the guest
-    // readbacks read: every non-single-copy drawing view.
-    let display_split = !single && host.gfx_view.is_some();
-    #[cfg(feature = "gpu")]
-    if single && d3d_glue::locked_retail_target(host.settings.as_deref())
-        && let Some(view) = &mut host.gfx_view && view.viewer_output.is_none()
-        && let Some(display) = view.backend.take()
-    {
-        let (width, height) = setting_defs::GUEST_FRAME;
-        let (dw, dh) = native_target().drawable;
-        eprintln!("d3d: rendering at {width}x{height}; drawable {dw}x{dh}; single copy {single}");
-        host.gfx = Some(display.as_only_display());
-    }
-    #[cfg(feature = "gpu")]
-    // Match the paired reference path even when a film has no visible copy.
-    if !protected_readbacks && opts.d3d && host.gfx_view.as_ref().is_none_or(|view| view.backend.is_none())
-        && let Some(b) = &mut host.gfx
-    {
-        native_shadows_glue::configure_single(b);
-    }
     let render_hooks = film.as_ref()
         .map_or_else(run_plan::compiled_render_hooks, |s| s.render_hooks());
     // A present-limited run consumes every sealed frame in order.
     let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().and_then(|v| v.parse().ok());
+    // The guest's D3D entries and frame wait in every run; a renderer
+    // only with a window (docs/graphics/native-renderer.md).
     #[cfg(feature = "gpu")]
-    let private = d3d_glue::PrivateScenes::requested(
-        features.switches(), render_hooks, headless || host.unpaced_display || stop_at.is_some(),
-    );
-    // A film export presents each frame before the next is encoded.
-    #[cfg(feature = "gpu")]
-    let render_thread = host.render_thread.then_some(d3d_glue::RenderThread {
-        synchronous_presents: host.film_capture.is_some(),
-    });
-    #[cfg(feature = "gpu")]
-    let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
-        (false, _) => None,
-        (true, Some(b)) => Some(match host.gfx_view.take().and_then(|view| view.backend) {
-            Some(view) => {
-                let output = output_size.expect("display view has an output size");
-                let (width, height) = output();
-                let scale = d3d::scaled::RenderScale::for_output(width, height).map_err(anyhow::Error::msg)?;
-                let mut b = d3d::ScaledBackend::with_resolution(b, view, scale, single).map_err(anyhow::Error::msg)?;
-                if display_split && hooks::switches::native_render_on(features.switches()) {
-                    b.keep_display_copy();
-                }
-                let (dw, dh) = native_target().drawable;
-                eprintln!("d3d: rendering at {width}x{height}; drawable {dw}x{dh}; single copy {single}");
-                // The Video screen's Resolution row changes the scale at the
-                // next frame boundary (docs/graphics/high-resolution.md).
-                b.follow_resolution(move || {
-                    let (width, height) = output();
-                    d3d::scaled::RenderScale::for_output(width, height)
-                        .expect("the resolution picker and drawable publish validated sizes")
-                });
-                // A review launch's lamp arm (docs/graphics/relighting-review.md).
-                if let Some(lighting) = d3d_glue::review_lighting() {
-                    b.set_lighting(lighting);
-                }
-                // A failed resize keeps the previous grid. The lens follows the
-                // dimensions the render thread actually accepted at present.
-                if let Some(viewport) = display_size.take() {
-                    b.follow_presentation(move |src| viewport(src));
-                }
-                let stats = b.shared_stats();
-                active_size = Some(Arc::new(move || {
-                    stats.lock().unwrap_or_else(|e| e.into_inner()).presentation
-                }));
-                d3d_glue::install_scaled_view(
-                    &loaded.runtime, b, fps, render_thread, render_hooks, private,
-                )?
-            }
-            None => d3d_glue::install_game_view(
-                &loaded.runtime, b, fps, render_thread, render_hooks, private,
-            )?,
-        }),
-        (true, None) if host_light => Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?),
-        (true, None) => Some(d3d_glue::install_headless_with_scenes(
-            &loaded.runtime, fps, render_hooks, host.settings.as_deref(), protected_readbacks, private,
-        )?),
-    };
-    #[cfg(all(not(feature = "gpu"), feature = "desktop-runtime"))]
-    let mut d3d_calls = opts.d3d.then(|| {
-        if host_light {
-            d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)
-        } else {
-            d3d_glue::install_headless_cpu_for_profile(&loaded.runtime, render_hooks)
+    let mut d3d_calls = match (opts.d3d, host.gfx.take(), host.presenter.take()) {
+        (false, _, _) => None,
+        (true, Some(ctx), Some(presenter)) if !host_light => {
+            let output = output_size.clone().expect("a window has an output size");
+            let (width, height) = output();
+            let (dw, dh) = native_target().drawable;
+            eprintln!("render: {width}x{height}; drawable {dw}x{dh}");
+            let locked = host.unpaced_display || stop_at.is_some() || host.film_capture.is_some();
+            Some(render_glue::install_game(&loaded.runtime, ctx, presenter, output, fps, locked, render_hooks)?)
         }
-    }).transpose()?;
-    #[cfg(not(feature = "desktop-runtime"))]
-    let mut d3d_calls = Some(d3d_glue::install_light_for_profile(&loaded.runtime, render_hooks)?);
+        (true, _, _) => Some(render_glue::install_headless(&loaded.runtime)?),
+    };
+    #[cfg(not(feature = "gpu"))]
+    let mut d3d_calls = opts.d3d.then(|| render_glue::install_headless(&loaded.runtime)).transpose()?;
     #[cfg(feature = "gpu")]
     if let (Some(active_size), Some(device)) = (active_size, &d3d_calls) {
         let projected_size: run_opts::NativeSize = Arc::new(move || {
@@ -1150,9 +1072,6 @@ fn run_configured(
             handler,
         })
         .map_err(|e| anyhow::anyhow!("vblank source: {e:?}"))?;
-    }
-    if d3d_calls.is_some() && uses.is_some() {
-        d3d_glue::install_back_surfaces(&loaded.runtime)?;
     }
     #[cfg(feature = "local-io")]
     let pad = host.pad_speaker.take();
@@ -1339,11 +1258,8 @@ fn run_configured(
         } else if let Some(device) = &d3d_calls
             && (editor_link.is_some() || !sources.is_empty())
         {
-            let observer = world_lines::present_observer(
-                editor_link.clone(),
-                sources,
-                device.snapshot.clone(),
-            );
+            let _ = device;
+            let observer = world_lines::present_observer(editor_link.clone(), sources);
             (Some(observer), None)
         } else {
             (None, Some("no world-line capture source"))
@@ -1374,9 +1290,7 @@ fn run_configured(
         &mut features,
         registration::LateInputs {
             #[cfg(feature = "gpu")]
-            view: d3d_calls.as_ref().and_then(|d| d.view.as_ref()),
-            #[cfg(feature = "gpu")]
-            d3d_display: single,
+            output: output_size.clone(),
             #[cfg(feature = "gpu")]
             viewer_lod,
             #[cfg(feature = "gpu")]
@@ -1604,7 +1518,7 @@ fn run_configured(
             // guest skipped every world render, including the shared RNG draws.
             None => sim_bridge::sim_frame::SimFrame::new(
                 if film.as_ref().is_some_and(|s| s.has_engine_track()) { 0 } else { render_every }
-            ).on_skip(d3d_diag::note_skipped_present),
+            ).on_skip(presents::note_skipped_present),
         };
         anyhow::ensure!(
             features.add(&frame).map_err(anyhow::Error::msg)?,
@@ -1989,7 +1903,6 @@ fn run_configured(
     let snap_host = snapshot_glue::Host {
         editor_agent: agent.as_ref().map(|a| &a.agent),
         rt: &loaded.runtime,
-        d3d: d3d_calls.as_ref().map(|i| i.snapshot.as_ref()),
         audio: ds.as_ref(),
         xapi: xa.as_ref(),
         bink: bink.as_deref(),
@@ -2022,7 +1935,7 @@ fn run_configured(
     // 5 s of where frame time goes on this host (host_perf.rs); it starts
     // frame stats quietly if nothing else has.
     #[cfg(feature = "gpu")]
-    let threaded = host.render_thread || d3d_glue::render_thread_requested();
+    let threaded = d3d_calls.as_ref().is_some_and(render_glue::Installed::has_renderer);
     #[cfg(not(feature = "gpu"))]
     let threaded = false;
     let host_perf = host_perf::start_from_env(threaded);
@@ -2030,9 +1943,9 @@ fn run_configured(
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
     let gpu = cfg!(feature = "gpu")
-        && (!headless || std::env::var_os("H2_BOOT_GFX").is_some());
-    if let Some(note) = d3d_glue::frame_stats_gpu_note(frame_stats && d3d_calls.is_some(), gpu) {
-        eprintln!("{note}");
+        && !headless;
+    if frame_stats && !gpu {
+        eprintln!("frame stats: no renderer in this run (headless), so the GPU counters stay 0");
     }
     // H2_PERF_FROM=N (cli built with `--features perf`): open
     // `perf::Session::from_env()` (H2_PROFILE, H2_TIMELINE) at present N;
@@ -2081,15 +1994,15 @@ fn run_configured(
                 }
             }
         }
-        if stop_at.is_some_and(|n| d3d_diag::presents() >= n) {
+        if stop_at.is_some_and(|n| presents::presents() >= n) {
             break;
         }
         #[cfg(feature = "perf")]
         if let Some(from) = perf_from
-            && from.due(d3d_diag::presents(), level_boot::loaded_at())
+            && from.due(presents::presents(), level_boot::loaded_at())
         {
             perf_from = None;
-            let n = d3d_diag::presents();
+            let n = presents::presents();
             match (from, &level_name) {
                 (level_boot::PerfFrom::Level, Some(l)) => {
                     eprintln!("perf: session from present {n}, the first after {l} loaded")
@@ -2167,10 +2080,10 @@ fn run_configured(
             input_errors += 1;
         }
         if let Some(h) = &harness {
-            h.after_slice(&loaded.runtime, d3d_diag::presents());
+            h.after_slice(&loaded.runtime, presents::presents());
         }
         if let Some(a) = &agent {
-            a.after_slice(&loaded.runtime, d3d_diag::presents());
+            a.after_slice(&loaded.runtime, presents::presents());
         }
         // A `state.save` or `state.load` is due: run it here, between
         // slices (the agent's tick observer ended the slice for it).
@@ -2178,7 +2091,7 @@ fn run_configured(
             && a.agent.snapshot_pending()
         {
             let mut machine =
-                snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
+                snap_host.machine(&mut m, &plan, &rebuilders, shelf, presents::presents());
             a.agent.run_snapshots(&mut machine);
         }
         // The bounce search asked for a fork at this tick and its tick
@@ -2189,7 +2102,7 @@ fn run_configured(
         {
             let forked = {
                 let mut machine =
-                    snap_host.machine(&mut m, &plan, &rebuilders, shelf, d3d_diag::presents());
+                    snap_host.machine(&mut m, &plan, &rebuilders, shelf, presents::presents());
                 sim_bounces::between_slices(&mut machine)
             };
             match forked {
@@ -2341,7 +2254,7 @@ fn run_configured(
     let fps_from = std::env::var("H2_BOOT_FPS_FROM")
         .ok()
         .and_then(|v| v.parse().ok());
-    if let Some(fps) = d3d_diag::frame_rate(t, 100, fps_from) {
+    if let Some(fps) = presents::frame_rate(t, 100, fps_from) {
         eprintln!("{fps}");
     }
     for th in m.threads() {
@@ -2402,7 +2315,7 @@ fn run_configured(
         eprintln!("xapi: registered; input pump errors {input_errors}");
     }
     if let Some(i) = &d3d_calls {
-        eprintln!("{}", d3d_glue::describe(i));
+        eprintln!("{}", render_glue::describe(i));
     }
     if let Some(s) = fallback::STATS.lock().unwrap().as_ref() {
         let first: Vec<String> = s.first.iter().map(|f| format!("{:#x}", f.0)).collect();

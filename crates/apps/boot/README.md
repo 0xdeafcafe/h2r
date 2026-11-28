@@ -4,7 +4,7 @@ The composition root. It runs a built module on the runtime with the kernel HLE 
 
 ## Where it sits
 
-`apps`. Depends on nearly every domain: `recomp`, `runtime`, `kernel`, `hooks`, `engine`, `game`, `d3d`, `dsound`, `live-hle` and the rest of the stack. Used by `cli`, `h2host` and `studio`.
+`apps`. Depends on nearly every domain: `recomp`, `runtime`, `kernel`, `hooks`, `engine`, `game`, `dsound`, `live-hle` and the rest of the stack. Used by `cli`, `h2host` and `studio`.
 
 ## Layout
 
