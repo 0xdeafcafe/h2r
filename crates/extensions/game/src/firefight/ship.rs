@@ -260,6 +260,7 @@ fn stage(cx: &Cx, kit: &KitLayout, p: &Placement, squad: u16, at: [f32; 3]) -> a
         p.character,
         kit.characters
     );
+    cx.read(|m| guest::character_ready(m, p.character))?;
     cx.write(|m| {
         let scnr = m.u32(points::SCENARIO.base)?;
         let rec = *guest::block(m, scnr, scenario::SQUADS)?

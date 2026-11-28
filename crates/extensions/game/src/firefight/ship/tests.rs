@@ -124,6 +124,7 @@ fn scenario() -> FakeGuest {
     }
 
     pair(&mut m, SCNR + 0x178, 3, 0x2_6000);
+    crate::firefight::guest::fake_characters(&mut m, 0x2_6000, 3);
     pair(&mut m, SCNR + 0x240, 3, ORDERS);
     m.map(ORDERS, 3 * 0x7c);
     named(&mut m, ORDERS, "ff_other");
