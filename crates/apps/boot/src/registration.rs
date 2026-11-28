@@ -1060,6 +1060,12 @@ pub(crate) fn register_late_for_profile(
         features
             .add(&render_bridge::native_flare_draw::NativeFlareDraw)
             .map_err(|e| anyhow::anyhow!("native flare draw: {e}"))?;
+        // The planar fog's screen quad 0x00025d50 drawn on the device, its
+        // fan cut once a reference body matches, one in 64 checked
+        // (native_fog_quad_glue, installed with the device).
+        features
+            .add(&render_bridge::native_fog_quad::NativeFogQuad)
+            .map_err(|e| anyhow::anyhow!("native fog quad: {e}"))?;
         // Native UI producers and the ordered menu, HUD and loading callbacks.
         // impl.render.native=off returns these draws to the ordinary device path.
         features

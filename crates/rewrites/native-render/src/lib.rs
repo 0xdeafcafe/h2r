@@ -61,6 +61,7 @@ pub mod effect_material;
 pub mod flare_draw_gpu;
 pub mod flare_gpu;
 pub mod flares;
+pub mod fog_quad;
 #[cfg(feature = "gpu")]
 pub mod engine_states;
 pub mod fog;

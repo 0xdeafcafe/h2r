@@ -1124,6 +1124,14 @@ points! { ALL;
     /// One late-list glow of the flare draw pass (`eax` the lens datum,
     /// `ecx` its position), called from `0x0002e1c5`. `ret`.
     FLARE_GLOW @ 0x0004_6ea0: [opaque]; "docs/graphics/d3d-visibility.md";
+    /// The planar fog's screen quad, called between the sky and layer 16
+    /// (`0x0002c0d1`): its setup by view mode, the fan `0x00034420`, then
+    /// the depth clip control set to 0. No arguments, `ret`.
+    PLANAR_FOG @ 0x0002_5d50: [fn() ret 0]; "docs/graphics/retire-d3d-fog-quad.md";
+    /// The planar fog quad's setup for view modes 2 and 3, which the fan
+    /// `0x00034420` calls through EDI (return `0x0003452e`): one stack
+    /// argument, `ret 4`, AL whether the fan draws.
+    PLANAR_FOG_SETUP @ 0x0002_6520: [opaque]; "docs/graphics/retire-d3d-fog-quad.md";
     /// Resets the record counters immediately before the two structure walks.
     RESET_SCENE_RECORDS @ 0x0002_cb30: [fn() ret 0]; "docs/graphics/occlusion-culling.md";
     /// Main view's visible structure cluster and placement record walks.
