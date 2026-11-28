@@ -309,12 +309,11 @@ impl MaterialGpu {
     }
 
     /// The pipeline for `color` and `depth` under `draw`, `None` when the
-    /// stencil tests or writes on a depth with no stencil aspect, or the
     /// pass inherits a cull that did not read.
     fn pipeline(
         &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, draw: DrawKey,
     ) -> Option<&Arc<PendingPipeline>> {
-        let stencil = crate::fog_gpu::layer_stencil(&draw.stencil, depth)?;
+        let stencil = crate::fog_gpu::layer_stencil(&draw.stencil, depth);
         let cull = if self.program.inherits_cull { Some(draw.cull?) } else { None };
         Some(self.formats.entry((color, depth, draw)).or_insert_with(|| {
             let state = &self.program.state;
@@ -356,7 +355,7 @@ impl MaterialGpu {
     /// Whether the pass's fragments draw nothing where the depth hides
     /// them under `draw`'s stencil (`gpu::depth_hides`).
     pub fn hidden_draws_nothing(&self, depth: wgpu::TextureFormat, draw: DrawKey) -> bool {
-        let Some(stencil) = crate::fog_gpu::layer_stencil(&draw.stencil, depth) else { return false };
+        let stencil = crate::fog_gpu::layer_stencil(&draw.stencil, depth);
         let (_, (_, compare)) = pipeline_state(Some(&self.program.state), None);
         crate::gpu::depth_hides(compare, &stencil)
     }
@@ -672,9 +671,9 @@ struct Out { @builtin(position) pos: vec4f, @location(0) c: vec4f }
         let gpu = materials.get_mut(&material).unwrap();
         let draw = DrawKey::default();
         assert!(gpu.pipeline(device, F::Rgba8Unorm, F::Depth32Float, draw).unwrap().get().is_some());
-        // A stencil the depth cannot hold has no pipeline.
+        // On a depth with no stencil aspect the stencil is off, as on D3D.
         let stenciled = DrawKey { stencil: crate::object_state::structure_stencil(0), ..draw };
-        assert!(gpu.pipeline(device, F::Rgba8Unorm, F::Depth32Float, stenciled).is_none());
+        assert!(gpu.pipeline(device, F::Rgba8Unorm, F::Depth32Float, stenciled).unwrap().get().is_some());
         assert!(gpu.pipeline(device, F::Rgba8Unorm, F::Depth24PlusStencil8, stenciled).unwrap().get().is_some());
         // A pass that inherits the cull needs the device's.
         gpu.program.inherits_cull = true;

@@ -59,6 +59,16 @@ struct LayerEntry {
     /// already hold it (`native_objects_glue::structure_at_rest`); an item
     /// uploading it refuses without.
     structure: Option<frame_scene::StructureParameters>,
+    /// Whether the stencil-off flags (`native_render::skip::STENCIL_OFF_FLAGS`,
+    /// bits 8..24) are set at the call; `None` when they do not read. With
+    /// them set the geometry draw's prologue sets stencil mode 0 and its
+    /// epilogue mode 1; without, a marked record's sets mode 2 and its
+    /// epilogue mode 1 (`frame_scene::PartFlags::STENCIL_MARK`).
+    stencil_off: Option<bool>,
+    /// Whether the device holds stencil mode 1
+    /// (`native_objects_glue::in_stencil_mode_1`): what either bracket's
+    /// epilogue leaves, so skipping it is state-neutral only from there.
+    stencil_mode_1: bool,
 }
 
 /// A live shader edit (`native_edits::Edit::Shader`;
@@ -215,12 +225,23 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             }
             let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
             let clip = device.depth_clip(&read, native_render::camera::D24_SCALE);
+            let stencil_off = mem.u32(native_render::skip::STENCIL_OFF_FLAGS).ok().map(|flags| flags & 0x00ff_ff00 != 0);
+            let stencil_mode_1 = crate::native_objects_glue::in_stencil_mode_1(&device, mem);
+            let mut states = EntryStates::read(|state| {
+                table
+                    .canonical_to_guest(state.index())
+                    .and_then(|guest| device.render_state(&read, guest))
+            });
+            // Inside the stencil-off bracket every part draws with the
+            // test off (mode 0), as layer 3's walk takes it.
+            if stencil_off == Some(true) {
+                states.0.retain(|(r, _)| *r != gfx::state::RenderStateType::StencilEnable);
+                states.0.push((gfx::state::RenderStateType::StencilEnable, 0));
+            }
             LayerEntry {
-                states: EntryStates::read(|state| {
-                    table
-                        .canonical_to_guest(state.index())
-                        .and_then(|guest| device.render_state(&read, guest))
-                }),
+                states,
+                stencil_off,
+                stencil_mode_1,
                 fog_words: crate::native_fog_glue::device_fog_words(&device, mem),
                 specular: crate::native_objects_glue::device_specular(&device, mem),
                 w_buffered: clip.w_buffered == Some(true),
@@ -590,8 +611,20 @@ fn plan_parts(
             if part.flags.contains(frame_scene::PartFlags::STRUCTURE_PARAMETERS) && entry.structure.is_none() {
                 return Err("the structure's parameter block, whose upload the device and the engine do not hold".into());
             }
+            // The stencil brackets the geometry draw's prologue and
+            // epilogue make, as layer 3's walk draws them: mode 0 with the
+            // stencil-off flags set, mode 2 for a marked record otherwise,
+            // each leaving mode 1.
+            let stencil_off = entry.stencil_off.ok_or("the stencil-off flags, which do not read")?;
+            let marked = !stencil_off && part.flags.contains(frame_scene::PartFlags::STENCIL_MARK);
+            if (stencil_off || marked) && !entry.stencil_mode_1 {
+                return Err("the stencil bracket of the geometry draw, where the device does not hold stencil mode 1, which its epilogue leaves".into());
+            }
             let lit = lit.as_ref().ok_or("no first-person model is uploaded")?;
             let mut draw = lit.plan_part_of(model, scene, instance, part, &entry.states, time, entry.structure.as_ref())?;
+            if marked {
+                native_render::object_state::mark(&mut draw.state);
+            }
             draw.stipple = stipple;
             // A record toggling the auxiliary state draws with what the
             // toggle sets for the first person's view.
@@ -724,7 +757,7 @@ impl d3d::ExternalPass for FirstPersonPass {
                 .draws
                 .iter()
                 .any(|(_, draw)| !draw.state.color_writes.is_empty()),
-            depth_stencil: self.draws.iter().any(|(_, draw)| draw.state.depth_write),
+            depth_stencil: crate::native_objects_glue::draws_write_depth_stencil(self.draws.iter().map(|(_, draw)| draw)),
         }
     }
 

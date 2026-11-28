@@ -589,17 +589,17 @@ pub(crate) struct LayerSlots<'a> {
 /// native pass takes come before any object item the guest keeps that
 /// switches it (`layer_pass::clear_layer_items`), so every one of them draws under that
 /// state. The pipelines' stencil state (the packets set its reference,
-/// [`FogSet::draws_stencil`]); `None` when the state tests or writes the
-/// stencil and `depth` has no stencil aspect.
-pub fn layer_stencil(device: &gfx::state::StencilState, depth: wgpu::TextureFormat) -> Option<wgpu::StencilState> {
-    if !device.enable {
-        return Some(wgpu::StencilState::default());
-    }
-    if !depth.has_stencil_aspect() {
-        return None;
+/// [`FogSet::draws_stencil`]). A `depth` with no stencil aspect is a
+/// guest `D16` surface, which has no stencil on the Xbox either: the test
+/// is off there, as the D3D path's pipeline takes it
+/// (`gfx::translate::depth_stencil_state`).
+pub fn layer_stencil(device: &gfx::state::StencilState, depth: wgpu::TextureFormat) -> wgpu::StencilState {
+    if !device.enable || !depth.has_stencil_aspect() {
+        return wgpu::StencilState::default();
     }
     let rs = gfx::state::RenderState { stencil: *device, ..Default::default() };
-    Some(gfx::translate::depth_stencil_state(&rs, Some(depth), wgpu::PrimitiveTopology::TriangleList)?.stencil)
+    gfx::translate::depth_stencil_state(&rs, Some(depth), wgpu::PrimitiveTopology::TriangleList)
+        .map_or_else(wgpu::StencilState::default, |d| d.stencil)
 }
 
 /// Whether drawing under `device`'s stencil changes the stencil buffer:
@@ -955,7 +955,7 @@ impl FogSet {
     /// [`FogSet::draws`] under the device's stencil at the layer call
     /// ([`layer_stencil`]): the pipelines made with its state
     /// ([`FogSet::prepare_pipelines_stencil`]), each packet setting its
-    /// reference. Refused when the state needs a stencil `depth` lacks.
+    /// reference.
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::mutable_key_type)]
     pub(crate) fn draws_stencil(
@@ -975,7 +975,7 @@ impl FogSet {
         mut culled: Option<LayerSlots<'_>>,
     ) -> Result<d3d::backend::ExternalDraws, &'static str> {
         use gfx::{BoundGroup, RecordedDraw};
-        let stencil = layer_stencil(device_stencil, depth).ok_or("the layer's stencil needs a stencil attachment")?;
+        let stencil = layer_stencil(device_stencil, depth);
         // The packets set the stencil reference from the render state.
         let render = gfx::state::RenderState { stencil: *device_stencil, ..Default::default() };
         let mut packets = Vec::new();
@@ -1437,10 +1437,10 @@ pub(crate) mod tests {
     fn a_layers_stencil_is_the_devices_and_needs_a_stencil_aspect_only_when_on() {
         use gfx::state::{CompareFunc, StencilOp, StencilState};
         let off = StencilState::default();
-        assert_eq!(layer_stencil(&off, F::Depth32Float), Some(wgpu::StencilState::default()));
+        assert_eq!(layer_stencil(&off, F::Depth32Float), wgpu::StencilState::default());
         assert!(!stencil_writes(&off), "the test off writes nothing");
         let mode1 = crate::object_state::structure_stencil(0);
-        let state = layer_stencil(&mode1, F::Depth24PlusStencil8).expect("a stencil aspect holds mode 1");
+        let state = layer_stencil(&mode1, F::Depth24PlusStencil8);
         assert_eq!((state.read_mask, state.write_mask), (0xff, 0xff));
         for face in [state.front, state.back] {
             assert_eq!(face.compare, wgpu::CompareFunction::Always);
@@ -1449,9 +1449,9 @@ pub(crate) mod tests {
             ));
         }
         assert!(stencil_writes(&mode1), "mode 1 writes its reference on pass");
-        assert_eq!(layer_stencil(&mode1, F::Depth32Float), None, "no stencil aspect: refused, not drawn without it");
+        assert_eq!(layer_stencil(&mode1, F::Depth32Float), wgpu::StencilState::default(), "no stencil aspect: the test off, as on D3D");
         let test_only = StencilState { enable: true, func: CompareFunc::Equal, reference: 3, ..off };
-        assert_eq!(layer_stencil(&test_only, F::Depth24PlusStencil8).map(|s| s.front.compare), Some(wgpu::CompareFunction::Equal));
+        assert_eq!(layer_stencil(&test_only, F::Depth24PlusStencil8).front.compare, wgpu::CompareFunction::Equal);
         assert!(!stencil_writes(&test_only), "a test that keeps every value writes nothing");
         assert!(!stencil_writes(&StencilState { write_mask: 0, pass: StencilOp::Replace, ..test_only }), "no write mask");
     }

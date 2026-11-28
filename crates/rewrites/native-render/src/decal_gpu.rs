@@ -134,12 +134,11 @@ fn expected_blend(mode: Mode) -> Option<(BlendFactor, BlendFactor, BlendOp)> {
     })
 }
 
-/// Checks the effective state captured after `0x00043a40`. In particular,
-/// stencil is inherited and is admitted only when resolved disabled.
+/// Checks the effective state captured after `0x00043a40`. The stencil is
+/// inherited and draws as resolved: its test and operations in the
+/// pipeline (off on a depth with no stencil aspect, `fog_gpu::layer_stencil`),
+/// its reference set on the pass and the packets.
 pub fn check_state(mode: Mode, rs: &RenderState, extras: &[StageExtras; 4]) -> Result<(), &'static str> {
-    if rs.stencil.enable {
-        return Err("stencil enabled");
-    }
     if rs.alpha_test_enable || rs.color_write.xbox_value() != 0x0001_0101 {
         return Err("colour/alpha state");
     }
@@ -189,6 +188,8 @@ struct Compiled {
     pixel: PixelUniforms,
     primitive: wgpu::PrimitiveState,
     depth: wgpu::DepthStencilState,
+    /// The inherited stencil, which each target format's pipeline takes.
+    stencil: gfx::state::StencilState,
     blend: Option<wgpu::BlendState>,
     blend_constant: wgpu::Color,
     color_writes: wgpu::ColorWrites,
@@ -464,6 +465,7 @@ fn compile(
         pixel,
         primitive,
         depth,
+        stencil: shader.render.stencil,
         blend: gfx::translate::blend_state(&shader.render),
         blend_constant: gfx::translate::blend_constant(&shader.render),
         color_writes: gfx::translate::color_writes(shader.render.color_write),
@@ -564,6 +566,7 @@ impl DecalGpu {
             let attributes = vertex_attributes(self.packed_location);
             let mut ds = c.depth.clone();
             ds.format = depth;
+            ds.stencil = crate::fog_gpu::layer_stencil(&c.stencil, depth);
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("native decal program"),
                 layout: Some(&c.layout),
@@ -715,6 +718,7 @@ impl DecalGpu {
         pass.set_bind_group(0, &uniforms, &[]);
         pass.set_bind_group(1, &textures, &[]);
         pass.set_blend_constant(self.compiled.blend_constant);
+        pass.set_stencil_reference(u32::from(self.compiled.stencil.reference));
         let count = self.indices.size() as u32 / 4;
         for c in clips {
             pass.set_scissor_rect(c.x, c.y, c.width, c.height);
@@ -845,7 +849,7 @@ impl DecalCache {
     /// One packet per clip rectangle for the D3D pass open on the
     /// target's attachments, with what `DecalGpu::encode` records: the
     /// whole surface as viewport, each clip as scissor, the draw's blend
-    /// constant, no stencil. The flag is whether the pixel program
+    /// constant and stencil reference. The flag is whether the pixel program
     /// discards. `Ok(None)` when the whole draw is clipped away (the caller
     /// takes the isolated recording, which then records no draw).
     pub fn draws(
@@ -989,7 +993,7 @@ impl DecalCache {
         let (vertices, vertex_at) = uploads.stage(device, queue, vertex_bytes);
         let (index_buffer, index_at) = uploads.stage(device, queue, index_bytes);
         let blend_constant = gfx::translate::blend_constant(&shader.render);
-        let render = RenderState::default();
+        let render = RenderState { stencil: shader.render.stencil, ..RenderState::default() };
         let packets = clips
             .iter()
             .map(|c| {
@@ -1158,7 +1162,7 @@ mod tests {
     }
 
     #[test]
-    fn every_mode_checks_blend_and_rejects_inherited_stencil() {
+    fn every_mode_checks_blend_and_draws_the_inherited_stencil() {
         let extras = [StageExtras::default(); 4];
         for mode in [
             Mode::Alpha0,
@@ -1175,11 +1179,8 @@ mod tests {
                 "{mode:?}"
             );
             let mut stencil = state(mode);
-            stencil.stencil.enable = true;
-            assert_eq!(
-                check_state(mode, &stencil, &extras),
-                Err("stencil enabled")
-            );
+            stencil.stencil = crate::object_state::structure_stencil(0);
+            assert_eq!(check_state(mode, &stencil, &extras), Ok(()), "{mode:?} under mode 1");
             let mut blend = state(mode);
             blend.blend_enable = !blend.blend_enable;
             assert_eq!(

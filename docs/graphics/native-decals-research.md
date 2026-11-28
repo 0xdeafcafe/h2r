@@ -98,7 +98,7 @@ The mode's combiner block at `0x00484f68` is part of the snapshot and is transla
 blocks, set at `0x00043d23`, `0x00043db9`, `0x00043e7d`, `0x00043f0f` and
 `0x00043c88` respectively.
 
-**Stencil is inherited.** `0x00043a40` does not set it. Its call to `0x00016b10` reaches `0x00018900`, which can apply the previous shader implementation's restore-state list, so the effective stencil state is read from the device's ordered state at the callback. The native path admits only a resolved disabled stencil state; enabled or unreadable stencil stays on D3D.
+**Stencil is inherited.** `0x00043a40` does not set it. Its call to `0x00016b10` reaches `0x00018900`, which can apply the previous shader implementation's restore-state list, so the effective stencil state is read from the device's ordered state at the callback. The native path draws the resolved state: its test and operations in the pipeline (off on a depth with no stencil aspect, `fog_gpu::layer_stencil`), its reference on the pass and each packet (`decal_gpu::check_state`).
 
 The observers scope the current mode and outer-list entry. The replacement
 point is the ordered `d3d::DrawAdmission` at each resolved
@@ -122,7 +122,7 @@ The reference copy uses the original constants and guest scissors; the display c
 
 | Input | Rule |
 |---|---|
-| Stencil | disabled only |
+| Stencil | the resolved device state |
 | Fill, blend, colour state | supported combinations only |
 | Final combiner | explicit, without fog, eye or bump inputs |
 | Depth | the resolved z-perspective state selects W clipping; with W depth the fragment shader applies the live constant and slope offsets before storing or comparing W |

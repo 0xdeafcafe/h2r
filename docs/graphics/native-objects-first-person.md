@@ -87,6 +87,16 @@ Record `+4`, not the owner definition's third-person model, names the `mode` to 
 
 The per-part rules are those of scene objects: the topology and subparts the record picks (`part_ranges`), the fade byte and the flagged shader ([native-objects-fade.md](native-objects-fade.md)), the auxiliary depth state (`aux_depth::read`) and the texture accumulation target (`sampled_texaccum`).
 
+The stencil follows layer 3's walk ([native-objects.md](native-objects.md)):
+
+| At the call | A part draws | Needs |
+|---|---|---|
+| stencil-off flags set (`skip::STENCIL_OFF_FLAGS`, bits 8..24) | with the test off (mode 0) | the device in mode 1 |
+| a marked record (`PartFlags::STENCIL_MARK`) | in mode 2 (`object_state::mark`) | the device in mode 1 |
+| neither | under the device's stencil | its fields read |
+
+Mode 1 is what both brackets' epilogues leave (`native_objects_glue::in_stencil_mode_1`); without it the part is `unsupported`. The pass reports a depth-stencil write when a draw writes either (`draws_write_depth_stencil`).
+
 ## Tests
 
 | Test | Shows |

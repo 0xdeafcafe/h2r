@@ -1047,8 +1047,7 @@ impl GpuWorld {
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
         let Self { layers, packet_pipelines, program_vertices, indices, .. } = self;
         let set = layers.get_mut(&layer).ok_or("layer materials unavailable")?;
-        let pipeline_stencil =
-            crate::fog_gpu::layer_stencil(stencil, depth_format).ok_or("the layer's stencil needs a stencil attachment")?;
+        let pipeline_stencil = crate::fog_gpu::layer_stencil(stencil, depth_format);
         set.prepare_pipelines_stencil(device, color_format, depth_format, &pipeline_stencil, PipelineUse::Direct);
         if packet_pipelines.len() > 4096 {
             packet_pipelines.clear();
@@ -1078,8 +1077,7 @@ impl GpuWorld {
     ) -> Result<(Vec<gfx::external::ExternalDraws>, GuestDispatch), &'static str> {
         let Self { layers, packet_pipelines, program_vertices, indices, part_slots, layer_cull, guest_cull, world, .. } = self;
         let set = layers.get_mut(&layer).ok_or("layer materials unavailable")?;
-        let pipeline_stencil =
-            crate::fog_gpu::layer_stencil(stencil, depth_format).ok_or("the layer's stencil needs a stencil attachment")?;
+        let pipeline_stencil = crate::fog_gpu::layer_stencil(stencil, depth_format);
         set.prepare_pipelines_stencil(device, color_format, depth_format, &pipeline_stencil, PipelineUse::Direct);
         if packet_pipelines.len() > 4096 {
             packet_pipelines.clear();
@@ -1501,7 +1499,7 @@ impl GpuWorld {
         &mut self, layer: u8, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat,
         stencil: &gfx::state::StencilState,
     ) -> bool {
-        let Some(stencil) = crate::fog_gpu::layer_stencil(stencil, depth) else { return false };
+        let stencil = crate::fog_gpu::layer_stencil(stencil, depth);
         self.layers.get_mut(&layer).is_some_and(|set| set.prepare_pipelines_stencil(device, color, depth, &stencil, PipelineUse::Preflight))
     }
 

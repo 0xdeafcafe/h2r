@@ -40,7 +40,10 @@ pub enum StateRefusal {
     Invalid { state: u8, value: u32 },
     /// Fixed-function fog (the native pass has none).
     Fog,
-    /// The stencil test.
+    /// The stencil test, set by the pass itself. The native passes draw
+    /// under the device's stencil (`fog_gpu::layer_stencil`); a pass's own
+    /// over it is not drawn. No `shad` pass on the retail maps sets one
+    /// (docs/graphics/e3-lighting.md, "Stencil: every use, named").
     Stencil,
     /// A depth bias.
     DepthBias,

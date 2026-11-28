@@ -542,22 +542,15 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         let stencil = stencil.stencil;
         // Pipelines warmed before any bit is cleared: a set not warm yet
-        // (or that the bound depth cannot hold) leaves its items to D3D.
+        // leaves its items to D3D.
         if !taken.is_empty() {
             let warm = ready.as_ref().and_then(|ready| {
                 ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
-                    if native_render::fog_gpu::layer_stencil(&stencil, depth).is_none() {
-                        return Some(Err(()));
-                    }
-                    Some(Ok(gpu.prewarm_layer(l, device, color, depth, &stencil)))
+                    Some(gpu.prewarm_layer(l, device, color, depth, &stencil))
                 })
             });
             match warm {
-                Some(Ok(true)) => {}
-                Some(Err(())) => {
-                    *outcomes.entry("stencil").or_default() += taken.len() as u64;
-                    taken.drain().for_each(|(slot, _)| left.item(slot, "stencil"));
-                }
+                Some(true) => {}
                 _ => {
                     *outcomes.entry("warming").or_default() += taken.len() as u64;
                     taken.drain().for_each(|(slot, _)| left.item(slot, "warming"));
@@ -1234,15 +1227,10 @@ impl<B: d3d::backend::Backend + Send + 'static> render_bridge::effects_shadow::g
             (layer_pass::item_stencil(L, false, device_stencil, false).stencil, fog)
         };
         let warm = ready.with_pipeline_target(&d, &*mem, |gpu, device, color, depth| {
-            if native_render::fog_gpu::layer_stencil(&stencil, depth).is_none() {
-                return Some(Err(()));
-            }
-            Some(Ok(gpu.prewarm_layer(L, device, color, depth, &stencil)))
+            Some(gpu.prewarm_layer(L, device, color, depth, &stencil))
         });
-        match warm {
-            Some(Ok(true)) => {}
-            Some(Err(())) => return Err("stencil"),
-            _ => return Err("warming"),
+        if warm != Some(true) {
+            return Err("warming");
         }
         let view_index = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
         let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Transparents, view: view_index, ranges: 1, slots: Vec::new() };
