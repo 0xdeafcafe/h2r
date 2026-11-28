@@ -631,6 +631,10 @@ points! { ALL;
     OBJECT_TYPE_POSE @ 0x0010_9050: [fn(object: ebx, a: stack 0, b: stack 1, c: stack 2) ret 12], Hot; "docs/engine/object-update.md";
     /// Type after-root dispatch: slot `+70`, called with the root node matrix.
     OBJECT_TYPE_AFTER_ROOT @ 0x0010_90d0: [fn(object: ebx, matrix: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    /// Unit after-root: slot `+70` of `unit`; composes the matrix with the parent's root node matrix.
+    UNIT_AFTER_ROOT @ 0x0011_2dc0: [fn(object: stack 0, matrix: stack 1) ret 8], Hot; "docs/engine/object-update.md";
+    /// Scenery after-root: slot `+70` of `scen`; composes the matrix with the parent's root node matrix.
+    SCENERY_AFTER_ROOT @ 0x0010_a390: [fn(object: stack 0, matrix: stack 1) ret 8], Hot; "docs/engine/object-update.md";
     /// Set AWAKE on an object and its parent chain.
     OBJECT_WAKE @ 0x000b_7360: [fn(object: eax) ret 0], Hot; "docs/engine/object-update.md";
     /// The root ancestor of an object.

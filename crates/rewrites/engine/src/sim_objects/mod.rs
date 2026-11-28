@@ -21,6 +21,8 @@
 pub mod damage;
 pub mod frame;
 mod object;
+// The after-root slot `+70` callees.
+mod after_root;
 mod wake;
 mod walks;
 pub mod functions;
@@ -120,6 +122,8 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::OBJECT_TYPE_POST_UPDATE, sites: &object::POST_UPDATE_SITES, run: object::type_post_update },
     Body { point: &points::OBJECT_TYPE_POSE, sites: &object::POSE_SITES, run: object::type_pose },
     Body { point: &points::OBJECT_TYPE_AFTER_ROOT, sites: &object::AFTER_ROOT_SITES, run: object::type_after_root },
+    Body { point: &points::UNIT_AFTER_ROOT, sites: &after_root::UNIT_SITES, run: after_root::unit },
+    Body { point: &points::SCENERY_AFTER_ROOT, sites: &after_root::SCENERY_SITES, run: after_root::scenery },
     Body { point: &points::OBJECT_WAKE, sites: &[], run: wake::wake },
     Body { point: &points::OBJECT_ROOT, sites: &[], run: wake::root },
     Body { point: &points::OBJECT_WAKE_FOR_POST, sites: &[], run: wake::wake_for_post },
