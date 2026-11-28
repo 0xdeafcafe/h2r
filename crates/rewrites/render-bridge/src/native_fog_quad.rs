@@ -12,9 +12,9 @@
 //! then `0x00025d50`'s depth clip control. No later draw can depend on the
 //! state the setup leaves, as that path leaves none.
 //!
-//! The arm: the first call, every call in [`CHECK_EVERY`] after, and any
-//! call whose view target or bound pair is not the one the last reference
-//! left, runs the guest body as a reference: its writes (the combiner
+//! The arm: the first call, and any call whose view target or bound pair
+//! is not the one the last reference left, runs the guest body as a
+//! reference: its writes (the combiner
 //! block, the depth word, each render state's game and D3D words) are
 //! compared with the cut's ([`engine::planar_fog::differences`]); a
 //! difference sends every later call to the guest body for the session,
@@ -22,15 +22,19 @@
 //! `0x00014bc0` binds another pair proves nothing (`fog_quad_select_bound`):
 //! the cut draws into the bound target and needs the select to keep it.
 //!
+//! Once a target is proven the guest body does not run for it: a quad the
+//! cut cannot draw there returns as the gate does, with no fan, and is
+//! `scene_dropped_fog_quad_<cause>` (`host`, `placed`, a fan that is not
+//! one quad: `fan_shape`, `fan_unfinite`), as is a quad placed but not
+//! recorded on the GPU.
+//!
 //! Every fan the guest draws is one `scene_kept_fog_quad_<cause>`: the
-//! reference's `check`, `unproven` or `target`, `fallback`, `host`,
-//! `placed`, `unread`, `simd`, `x87`, a fan that is not one quad
-//! (`fan_shape`, `fan_unfinite`), and `other_setup` for the fan of the
-//! setup `0x00025e50` (modes 1, 4 and 5), which nothing here draws. A
-//! quad placed but not recorded on the GPU is `scene_dropped_fog_quad_<cause>`.
+//! reference's `unproven` or `target`, `fallback`, `unread`, `simd`,
+//! `x87`, and `other_setup` for the fan of the setup `0x00025e50` (modes
+//! 1, 4 and 5), which nothing here draws.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use engine::memory::{GuestMemory, MemFault};
@@ -41,9 +45,6 @@ pub use native_render::fog_quad::FogQuadDraw;
 pub const ID: &str = "native-fog-quad";
 /// The switch that turns the cut off.
 pub const SWITCH: &str = "impl.render.native-fog-quad";
-
-/// One call in this many runs the guest body as a reference.
-pub const CHECK_EVERY: u64 = 64;
 
 /// The target select's cache of the bound pair (`0x0001cd30`).
 pub const BOUND_COLOUR: u32 = 0x0051_f3f4;
@@ -104,7 +105,6 @@ static COUNTS: Mutex<Option<Counts>> = Mutex::new(None);
 static FALLBACK: AtomicBool = AtomicBool::new(false);
 /// The target the last clean reference was called with and left.
 static PROOF: Mutex<Option<Target>> = Mutex::new(None);
-static CALLS: AtomicU64 = AtomicU64::new(0);
 
 fn counts<R>(f: impl FnOnce(&mut Counts) -> R) -> R {
     f(COUNTS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Counts::default))
@@ -175,7 +175,6 @@ pub fn turn(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: u16, h
     let Some(rect_at) = quad_call(&*mem, esp) else {
         return Turn::Guest;
     };
-    let n = CALLS.fetch_add(1, Ordering::Relaxed);
     counts(|c| c.calls += 1);
     match pf::draws(&*mem, mxcsr) {
         Ok(true) => {}
@@ -205,37 +204,30 @@ pub fn turn(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: u16, h
         return Turn::Guest;
     };
     let proven = proof();
-    if n % CHECK_EVERY == 0 || proven != Some(before) {
-        keep(if proven.is_none() {
-            "unproven"
-        } else if proven != Some(before) {
-            "target"
-        } else {
-            "check"
-        });
+    if proven != Some(before) {
+        keep(if proven.is_none() { "unproven" } else { "target" });
         return Turn::Reference(Reference { expected, before });
     }
-    let Some(host) = host else {
-        keep("host");
-        return Turn::Guest;
+    // Proven: the body does not run. A quad not drawn is dropped, counted.
+    let placed = match host {
+        None => Err("host"),
+        Some(host) => match FogQuadDraw::from_fan(expected.combiner, fan(&expected)) {
+            Err(shape) => Err(shape.cause()),
+            Ok(draw) if !host.draw(mem, &draw) => Err("placed"),
+            Ok(_) => Ok(()),
+        },
     };
-    let draw = match FogQuadDraw::from_fan(expected.combiner, fan(&expected)) {
-        Ok(d) => d,
-        Err(shape) => {
-            keep(shape.cause());
-            return Turn::Guest;
-        }
-    };
-    if !host.draw(mem, &draw) {
-        keep("placed");
-        return Turn::Guest;
+    if let Err(why) = placed {
+        dropped(why);
     }
     if pf::gate_writes(mem).is_err() {
         // The quad is placed and cannot be taken back; the depth word is
         // the one write the gate makes.
         mismatch(&["depth_write".to_owned()]);
     }
-    counts(|c| c.cut += 1);
+    if placed.is_ok() {
+        counts(|c| c.cut += 1);
+    }
     Turn::Return
 }
 
@@ -381,7 +373,6 @@ mod tests {
         *COUNTS.lock().unwrap() = None;
         *PROOF.lock().unwrap() = None;
         FALLBACK.store(false, Ordering::Relaxed);
-        CALLS.store(1, Ordering::Relaxed);
         g
     }
 
@@ -477,17 +468,15 @@ mod tests {
     }
 
     #[test]
-    fn every_sixty_fourth_call_and_a_new_target_are_references() {
+    fn a_new_target_is_a_reference_and_a_proven_one_never_runs_the_body() {
         let _g = reset();
         let mut m = mem();
         let host = Draws::default();
         reference(&mut m, &host);
-        // Calls 2 to 63 are cut; call 64 is the check.
-        for _ in 2..CHECK_EVERY {
+        for _ in 0..256 {
             assert_eq!(turn(&mut m, ESP, MXCSR, CONTROL, Some(&host)), Turn::Return);
         }
-        reference(&mut m, &host);
-        assert_eq!(count("scene_kept_fog_quad_check"), 1);
+        assert_eq!(count("scene_kept_fog_quad_check"), 0);
         m.set_u32(BOUND_COLOUR, 0x00cc_0000).unwrap();
         reference(&mut m, &host);
         assert_eq!(count("scene_kept_fog_quad_target"), 1);
@@ -527,15 +516,18 @@ mod tests {
     }
 
     #[test]
-    fn a_call_the_cut_does_not_make_runs_the_body_counted_by_cause() {
+    fn a_proven_call_the_cut_does_not_draw_is_dropped_counted_by_cause() {
         let _g = reset();
         let mut m = mem();
         let refusing = Draws(Mutex::new(Vec::new()), true);
         reference(&mut m, &refusing);
-        assert_eq!(turn(&mut m, ESP, MXCSR, CONTROL, Some(&refusing)), Turn::Guest);
-        assert_eq!(count("scene_kept_fog_quad_placed"), 1);
-        assert_eq!(turn(&mut m, ESP, MXCSR, CONTROL, None), Turn::Guest);
-        assert_eq!(count("scene_kept_fog_quad_host"), 1);
+        let cut = count("fog_quad_cut");
+        assert_eq!(turn(&mut m, ESP, MXCSR, CONTROL, Some(&refusing)), Turn::Return);
+        assert_eq!(count("scene_dropped_fog_quad_placed"), 1);
+        assert_eq!(turn(&mut m, ESP, MXCSR, CONTROL, None), Turn::Return);
+        assert_eq!(count("scene_dropped_fog_quad_host"), 1);
+        assert_eq!(count("fog_quad_cut"), cut, "a drop is not a cut");
+        assert_eq!(count("scene_kept_fog_quad_placed") + count("scene_kept_fog_quad_host"), 0);
         // No fog to draw: the body stops at its gate, nothing is kept.
         m.set_f32(global::DENSITY, 0.0).unwrap();
         assert_eq!(turn(&mut m, ESP, MXCSR, CONTROL, Some(&refusing)), Turn::Guest);

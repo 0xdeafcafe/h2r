@@ -47,7 +47,6 @@ game makes the same path whenever the density is not above 0 (**Design**).
 | Reference | When | Kept as |
 |---|---|---|
 | `unproven` | no clean reference yet, or the last one differed | `scene_kept_fog_quad_unproven` |
-| `check` | one call in 64 once proven | `scene_kept_fog_quad_check` |
 | `target` | the view target (`0x004858b8`) or the bound pair (`0x0051f3f4`, `0x0051f3f8`) is not the one the last reference was called with | `scene_kept_fog_quad_target` |
 
 A reference runs the guest body, then compares its writes with the cut's
@@ -59,12 +58,16 @@ guest body for the session (`fog_quad_fallback` 1). A clean reference
 whose select bound another pair proves nothing (`fog_quad_select_bound`):
 the cut draws into the bound target, so it needs the select to keep it.
 
-A fan the guest draws for any other reason is
-`scene_kept_fog_quad_<cause>`: `fallback`, `host`, `placed` (the device
-did not take the pass), `unread`, `simd`, `x87`, `fan_shape`,
-`fan_unfinite`, and `other_setup` (the fan of `0x00025e50`, not read). A
-quad placed but not recorded is `scene_dropped_fog_quad_<cause>`
-(`depth`, `outside`, `combiner`, `depth_clip`, the quad drawer's). All in
+Once its target is proven a call never runs the guest body. A quad the
+cut does not draw there returns as the gate does, with no fan, and is
+`scene_dropped_fog_quad_<cause>`: `host`, `placed` (the device did not
+take the pass), `fan_shape`, `fan_unfinite`, and a quad placed but not
+recorded (`depth`, `outside`, `combiner`, `depth_clip`, the quad
+drawer's).
+
+A fan the guest draws is `scene_kept_fog_quad_<cause>`: a reference's,
+`fallback`, `unread`, `simd`, `x87`, and `other_setup` (the fan of
+`0x00025e50`, not read). All in
 `render.scene` with `fog_quad_{calls,cut,referenced,matched,undrawn,proven}`.
 
 ## Tests and limits
@@ -77,10 +80,10 @@ Tests: `planar_fog.rs`
 `the_corners_are_the_rectangle_at_the_clip_far`,
 `a_reference_body_is_compared_by_field`), `native_fog_quad.rs`
 (`the_first_call_is_a_reference_and_the_next_is_cut_without_the_body`,
-`every_sixty_fourth_call_and_a_new_target_are_references`,
+`a_new_target_is_a_reference_and_a_proven_one_never_runs_the_body`,
 `a_reference_that_differs_sends_the_session_to_the_body`,
 `a_reference_whose_select_binds_another_pair_proves_nothing`,
-`a_call_the_cut_does_not_make_runs_the_body_counted_by_cause`,
+`a_proven_call_the_cut_does_not_draw_is_dropped_counted_by_cause`,
 `the_other_setups_fan_is_counted_kept`,
 `the_native_raster_is_the_setups_state`), `fog_quad.rs`
 (`a_fan_of_the_four_corners_is_one_quad`,
