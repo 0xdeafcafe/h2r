@@ -115,6 +115,16 @@ A shadow that does not plan is `scene_dropped_object_shadows`. Off the scene pat
 
 `the_cut_casters_object_shadow_groups_equal_the_guests_layer_build` (`native_lights/walk.rs`) checks the planned groups against the guest's layer build.
 
+### Shadow entries
+
+Layers 10, 11 and 14 take the same entries as diffuse and specular:
+
+| Entry | How the shadow layer draws it |
+|---|---|
+| visible subparts | the spans' native ranges, a draw of its own (`light_scene::plan_entries`); a range at an odd strip start with the front face reversed (`split_wound`, `Planned::cull`) |
+| state (`frame_scene::EntryState`) | `native_lights_glue::entry_state`: the toggle's rows on a model entry, an unmasked fade and the structure's upload while the device holds them, else the light is dropped (`scene_dropped_light_host`) |
+| a nonzero LOD or pass selector | not drawn: the light is dropped (`scene_dropped_light_host`) |
+
 ## Interfaces
 
 `native_render::shadow_gpu::Producer` accepts the ordered caster batches on their encoder and returns a generation-owned `SampledMap`. The GPU differential (`crates/rewrites/native-render/tests/shadow_gpu.rs`) compares all four channels, including stencil for D24.
