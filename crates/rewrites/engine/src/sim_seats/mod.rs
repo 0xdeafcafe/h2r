@@ -34,6 +34,7 @@ pub mod builder;
 pub mod camera;
 pub mod control;
 pub mod device;
+pub mod event;
 pub mod hud;
 pub mod input;
 pub mod interaction;
@@ -198,6 +199,36 @@ pub const SEATS: &[Seat] = &[
         name: "sim.seats.observer_camera",
         sites: &[],
         run: observer,
+    },
+    Seat {
+        point: &points::GAME_EVENT_POST,
+        name: "sim.seats.event_post",
+        sites: event::POST_SITES,
+        run: event::post,
+    },
+    Seat {
+        point: &points::GAME_EVENT_SEND,
+        name: "sim.seats.event_send",
+        sites: event::SEND_SITES,
+        run: event::send,
+    },
+    Seat {
+        point: &points::GAME_EVENT_SHOW,
+        name: "sim.seats.event_show",
+        sites: event::SHOW_SITES,
+        run: event::show,
+    },
+    Seat {
+        point: &points::GAME_EVENT_SUBJECTS,
+        name: "sim.seats.event_subjects",
+        sites: event::SUBJECTS_SITES,
+        run: event::subjects,
+    },
+    Seat {
+        point: &points::GAME_EVENT_ROW,
+        name: "sim.seats.event_row",
+        sites: &[],
+        run: event::row_answer,
     },
     Seat {
         point: &points::GAME_EVENT_ANNOUNCE,
