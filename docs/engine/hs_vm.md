@@ -121,15 +121,19 @@ reached again:
 Because a continuous thread completes at its wake tick and only restarts on
 the next update, `(sleep 10)` in a continuous script repeats every 11 ticks.
 
-`hs_update` (`0x00209310`) is Rust: tick phase 8 of the tick driver,
-`crates/rewrites/engine/src/hs_update.rs`, which hands each thread it picks
-to the lifted execute `0x00209850` (counted in `hs_update::Stats::executed`).
-It reads `game_time + 8` once. It walks occupied
-slots in order with `data_next_index`, which re-reads the high-water mark, and
-runs every thread that is not category 4, has wake >= 0 and wake <= now. It
-stops if the scheduler is disabled, then tail-jumps to `0x001deed0`
-(`Engine::after_update`). So a thread woken by an earlier slot runs in the
-same tick, and one woken by a later slot runs on the next.
+`hs_update` (`0x00209310`) is Rust: tick phase 8 of the tick driver
+(`crates/rewrites/engine/src/hs_update.rs`). Each thread it picks runs in
+the lifted execute `0x00209850`, counted in `hs_update::Stats::executed`.
+
+| Step | What the update does |
+|---|---|
+| 1 | reads `game_time + 8` once |
+| 2 | walks occupied slots in order with `data_next_index`, which re-reads the high-water mark |
+| 3 | runs every thread that is not category 4 and has `0 <= wake <= now` |
+| 4 | stops if the scheduler is disabled, then tail-calls `0x001deed0` (`Engine::after_update`) |
+
+So a thread woken by an earlier slot runs in the same tick, and one woken by
+a later slot runs on the next.
 
 ## Evaluation
 
