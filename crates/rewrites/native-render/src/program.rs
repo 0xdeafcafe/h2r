@@ -409,6 +409,8 @@ pub fn compile_section(
     world_constants_read(&pass.look, microcode)?;
     let mut p = compile_with_textures(&pass.look, microcode, pass.state.alpha_test, dims)?;
     p.texaccum_dimensions.clone_from(&pass.texaccum_dimensions);
+    // The pass's polygon offset is its fragments' (`frame_pixel` keeps it).
+    crate::pass_state::DepthOffset::apply(pass.state.depth_offset, &mut p.pixel);
     p.state = Some(pass.state);
     p.inherits_cull = pass.inherits_cull;
     Ok(p)
@@ -2868,6 +2870,15 @@ impl ProgramSet {
         writes
     }
 
+    /// Whether `material`'s pass draws a polygon offset: its fragments may
+    /// draw in front of the depth that hides its bounds, so its draws keep
+    /// their order (the frustum alone culls them, as [`crate::gpu::keeps_order`]'s).
+    pub(crate) fn offsets_depth(&self, material: u16) -> bool {
+        self.materials
+            .get(&material)
+            .is_some_and(|g| g.program.state.is_some_and(|s| s.depth_offset.is_some()))
+    }
+
     /// What a world packet drawing `material`'s clusters (or, `rigid`, a
     /// placement's parts) reports to the pass it joins: the state its
     /// pipeline was made with ([`ProgramSet::cluster`], [`ProgramSet::rigid`]).
@@ -4989,6 +5000,17 @@ mod tests {
         pass.inherits_cull = true;
         let p = compile_world(&pass, &plain_program()).expect("compiles");
         assert!(p.inherits_cull);
+    }
+
+    #[test]
+    fn a_world_pass_draws_its_polygon_offset_in_its_fragments() {
+        let mut pass = world_pass(final_look(false));
+        pass.state.depth_offset = Some(crate::pass_state::DepthOffset { units: -1.0, slope: 4.0 });
+        let p = compile_world(&pass, &plain_program()).expect("compiles");
+        assert_eq!((p.pixel.depth[1], p.pixel.depth[2]), (-1.0, 4.0));
+        assert_eq!(p.state.and_then(|s| s.depth_offset), pass.state.depth_offset);
+        let plain = compile_world(&world_pass(final_look(false)), &plain_program()).unwrap();
+        assert_eq!((plain.pixel.depth[1], plain.pixel.depth[2]), (0.0, 0.0));
     }
 
     #[test]

@@ -235,7 +235,6 @@ fn world_pass(mut look: PassLook, imp: &ResolvedImplementation, inputs: &EngineI
     look.stage_states = applied.stage_states;
     let mut state = geometry_pass_state(&applied.render_states)
         .and_then(crate::pass_state::PassState::device_stencil_only)
-        .and_then(crate::pass_state::PassState::no_depth_offset)
         .map_err(Refusal::State)?;
     if state.blend.is_some() {
         // The world issues opaque parts together. A replacement blend is

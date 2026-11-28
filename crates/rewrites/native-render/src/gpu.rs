@@ -1970,7 +1970,7 @@ impl GpuWorld {
                     let mut state = gfx::state::RenderState::default();
                     // Set only with a stencil aspect, as the pass sets it.
                     state.stencil.reference = if has_stencil { reference as u8 } else { 0 };
-                    let ordered = keeps_order(&key);
+                    let ordered = keeps_order(&key) || p.offsets_depth(batch.material);
                     bound = Some((binding, Bound {
                         ordered,
                         key,
