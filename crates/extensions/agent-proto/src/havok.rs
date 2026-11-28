@@ -402,6 +402,11 @@ mod tests {
                 "fallbacks": [{"reason": "commit", "count": 4}],
                 "proven": false, "ended": false,
             },
+            "commit": {
+                "answered": 3, "matched": 5, "mismatched": 0, "declined": 1,
+                "fallbacks": [{"reason": "walk", "count": 1}],
+                "proven": false, "ended": false,
+            },
         });
         let i: Islands = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!((i.solved, i.declined, i.fallbacks.len()), (40, 3, 2));

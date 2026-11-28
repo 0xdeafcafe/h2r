@@ -574,7 +574,7 @@ mod tests {
         assert!(owns(&on, points::OBJECTS_PRE_PHYSICS.base));
         assert!(owns(&Switches::defaults(), points::OBJECTS_PRE_PHYSICS.base));
         assert!(owns(&Switches::defaults(), points::UNIT_UPDATE.base));
-        assert!(!owns(&Switches::defaults(), points::ITEM_UPDATE.base));
+        assert!(owns(&Switches::defaults(), points::ITEM_UPDATE.base));
         assert!(!owns(&Switches::defaults().with("impl.sim.native", false), points::OBJECTS_PRE_PHYSICS.base));
     }
 

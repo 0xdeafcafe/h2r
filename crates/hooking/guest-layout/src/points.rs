@@ -570,7 +570,6 @@ points! { ALL;
     LIGHT_RECORD_UPDATE @ 0x000c_0c80: [fn(light: stack 0) ret 4], Hot; "docs/perf/sim-budget.md";
     HAVOK_WELD_CONTACTS @ 0x002f_a2f0: [opaque], Hot; "docs/perf/sim-budget.md";
     HAVOK_SOLVER @ 0x0031_c940: [opaque], Hot; "docs/perf/sim-budget.md";
-    HAVOK_SUPPORT_VERTICES @ 0x0030_48a0: [opaque], Hot; "docs/perf/sim-budget.md";
     /// The Havok world step: collide, then integrate, each phase a guest
     /// call resumed inside the wrapper (sim-rewrite-havok.md §2).
     HAVOK_WORLD_STEP @ 0x0031_1100: [fn(world: ecx, step: stack 0) ret 4], Hot; "docs/engine/sim-rewrite-havok.md";

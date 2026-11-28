@@ -8,7 +8,7 @@ pub(super) const SITES: &[u32] = &[0x3048e0,0x3048f8,0x3049f0,0x304a41,0x304ab4,
 const INITIAL_TOLERANCE_OPERAND: u32 = 0x0030_48d9;
 
 pub(super) fn vertices(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Result<TransferAbi> {
-    if pc == points::HAVOK_SUPPORT_VERTICES.base {
+    if pc == points::HAVOK_CLOSEST_QUERY.base {
         push(c,g,c.ebp)?;
         c.ebp = c.esp;
         let aligned = c.esp & !15;

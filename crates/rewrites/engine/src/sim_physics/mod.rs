@@ -141,7 +141,7 @@ pub const ORACLES: &[Port] = {
             generated_sites: havok::SOLVER_REST,
             ..port(&HAVOK_SOLVER, "oracle.havok_solver", Mixed, havok::SOLVER_SITES, havok::solve)
         },
-        port(&HAVOK_SUPPORT_VERTICES, "oracle.havok_support_vertices", Mixed, support::SITES, support::vertices),
+        port(&HAVOK_CLOSEST_QUERY, "oracle.havok_support_vertices", Mixed, support::SITES, support::vertices),
         port(&HAVOK_WELD_CONTACTS, "oracle.havok_weld", Weld, weld::SITES, weld::contacts),
         port(&OBJECT_SPATIAL_VISIT, "oracle.spatial_visit", Sse, &visit::SITES, visit::objects),
         port(&OBJECT_SPATIAL_PORTAL, "oracle.spatial_portal", Mixed, &spatial::SITES, spatial::portal),

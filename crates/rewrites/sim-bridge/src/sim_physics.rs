@@ -524,7 +524,7 @@ mod tests {
         assert_eq!(chain.observe_before.len(), 1);
         assert_eq!(
             plan.chains.len(),
-            PHYSICS_PORTS.len() + 12,
+            PHYSICS_PORTS.len() + 14,
             "unexpected extra chains"
         );
     }

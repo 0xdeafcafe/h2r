@@ -963,7 +963,7 @@ macro_rules! differential {
 }
 
 differential!(havok_solver, HAVOK_SOLVER, false, 23, solver_fixture);
-differential!(havok_support_vertices, HAVOK_SUPPORT_VERTICES, false, 6, support_fixture);
+differential!(havok_support_vertices, HAVOK_CLOSEST_QUERY, false, 6, support_fixture);
 differential!(havok_weld_contacts, HAVOK_WELD_CONTACTS, false, 6, weld_fixture);
 differential!(objects_pre_physics, OBJECTS_PRE_PHYSICS, true, 6, |_,_,_| {});
 differential!(objects_post_physics, OBJECTS_POST_PHYSICS, true, 6, |_,_,_| {});
