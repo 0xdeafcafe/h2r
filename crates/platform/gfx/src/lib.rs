@@ -42,6 +42,8 @@ pub mod encode;
 pub mod external;
 pub mod raster;
 pub mod format;
+#[cfg(feature = "gpu")]
+pub mod host_texture;
 pub mod guest_program;
 pub mod guest_projection;
 #[cfg(feature = "gpu")]
