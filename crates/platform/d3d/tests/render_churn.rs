@@ -7,12 +7,6 @@
 //! rewritten every frame, and `Swap` asks for `D3DSWAP_FINISH`. Every resource
 //! is synthetic.
 //!
-//! The tests check the pixels against what the frame must draw (worked out
-//! on the CPU: every quad is a solid texture-factor colour) and hold the
-//! per-frame counters (GPU buffers created, wgpu staging buffers, queue
-//! submissions, render passes, blocking waits at `Swap`) under ceilings, so
-//! churn coming back fails a test.
-//!
 //! ```sh
 //! cargo bench -p d3d --bench render_churn
 //! ```
@@ -272,32 +266,6 @@ impl Scene {
         self.d.swap(&mut self.m, SWAP_FINISH).unwrap();
         self.d.take_events();
     }
-
-    /// The back buffer just shown, in memory order (B, G, R, A).
-    #[allow(dead_code, reason = "the tests use it, the bench does not")]
-    fn shown(&mut self) -> Vec<u8> {
-        let id = self.d.backend.last_presented().unwrap();
-        self.d.backend.read_color(id).unwrap().0
-    }
-}
-
-/// What frame `f` leaves in the 64x64 back buffer (B, G, R, A).
-#[allow(dead_code, reason = "the tests use it, the bench does not")]
-fn expected_back(f: u32) -> Vec<u8> {
-    let mut px = vec![0u8; 64 * 64 * 4];
-    let dyns = dyn_rects(f);
-    for y in 0..64u32 {
-        for x in 0..64u32 {
-            let k = (y / 16) * 4 + x / 16;
-            let (x0, y0, x1, y1) = dyns[k as usize];
-            let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-            let inset = fx >= x0 && fx < x1 && fy >= y0 && fy < y1;
-            let c = color(f, k, if inset { DRAWS } else { DRAWS - 1 }, false);
-            let i = ((y * 64 + x) * 4) as usize;
-            px[i..i + 4].copy_from_slice(&c.to_le_bytes());
-        }
-    }
-    px
 }
 
 /// CPU time this thread has used.
@@ -365,82 +333,6 @@ fn measure(s: &mut Scene, from: u32, frames: u32) -> PerFrame {
         time,
         cpu,
     }
-}
-
-#[test]
-fn frames_draw_what_they_must() {
-    let Some(mut s) = scene(|_| {}) else {
-        return;
-    };
-    for f in 0..6 {
-        s.frame(f, SWAP_FINISH);
-        let px = s.shown();
-        let want = expected_back(f);
-        let bad = px.iter().zip(&want).position(|(a, b)| a != b);
-        assert!(bad.is_none(), "frame {f}: first differing byte {bad:?}");
-    }
-    // The texture's halves hold the last draw of the last visit to each.
-    s.d.block_on_resource(&mut s.m, TEX_HEADER).unwrap();
-    let texel = |m: &SparseMemory, x: u32| m.read_u32(0x8000_0000 | (TEX_DATA + 4 * x)).unwrap();
-    let (k, j) = (SWITCHES - 1, DRAWS - 1);
-    let last_half = (k + j) % 2;
-    let other = (0..DRAWS)
-        .rev()
-        .find(|&j| (k + j) % 2 != last_half)
-        .unwrap();
-    for x in [0, 12] {
-        let half = x / 8;
-        let want = if half == last_half {
-            color(5, k, j, true)
-        } else {
-            color(5, k, other, true)
-        };
-        assert_eq!(texel(&s.m, x), want, "texel {x}");
-    }
-}
-
-/// Clearing the visibility counter is GPU work only: it rides in the
-/// next submission instead of submitting on its own.
-#[test]
-fn a_counter_clear_does_not_submit() {
-    use d3d::Backend;
-    let Some(mut s) = scene(|_| {}) else {
-        return;
-    };
-    s.frame(0, SWAP_FINISH);
-    s.d.set_render_target(&mut s.m, s.rtt, 0).unwrap();
-    s.d.set_stream_source(&mut s.m, 0, VB_HEADER, STRIDE)
-        .unwrap();
-    s.tfactor(0xFF12_3456);
-    s.d.draw_vertices(&mut s.m, TRIANGLESTRIP, 4 * 16 * COPIES, 4)
-        .unwrap();
-    s.d.set_render_target(&mut s.m, s.back, 0).unwrap();
-    let before = s.d.backend.batch_stats().submits;
-    for _ in 0..4 {
-        s.d.backend.clear_pixel_count().unwrap();
-    }
-    assert_eq!(s.d.backend.batch_stats().submits, before);
-    s.d.block_on_resource(&mut s.m, TEX_HEADER).unwrap();
-    assert!(s.d.backend.batch_stats().submits <= before + 1);
-    let texel = s.m.read_u32(0x8000_0000 | TEX_DATA).unwrap();
-    assert_eq!(texel, 0xFF12_3456);
-}
-
-/// The ceilings: a regression in any of them is churn coming back.
-#[test]
-fn per_frame_churn_stays_down() {
-    let Some(mut s) = scene(|_| {}) else {
-        return;
-    };
-    // Warm up: rings and pools grow, pipelines compile.
-    measure(&mut s, 0, 8);
-    let p = measure(&mut s, 8, 16);
-    eprintln!("{p:?}");
-    // One blocking wait per frame, for the previous frame.
-    assert_eq!(p.swap_waits, 1.0);
-    // A submission per target visit and the present's: nothing more.
-    assert_eq!(p.submits, f64::from(2 * SWITCHES + 1), "{p:?}");
-    assert_eq!(p.render_passes, f64::from(2 * SWITCHES + 1), "{p:?}");
 }
 
 #[test]

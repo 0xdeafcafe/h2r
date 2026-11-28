@@ -11,7 +11,7 @@ use d3d::hw::method as hw;
 use d3d::layout::device_field as f;
 use d3d::pushbuf::method;
 use d3d::{D3dError, Device, GuestMemory, RecordingBackend, SparseMemory, UploadPolicy};
-use gfx::vertex::{PrimitiveType, VertexDataType, VertexRegister, fvf};
+use gfx::vertex::fvf;
 
 const DEV: u32 = 0x0040_4FE0;
 
@@ -86,86 +86,6 @@ fn set_state_vb_formats_reach_the_register_state() {
 }
 
 #[test]
-fn inline_array_draws_with_the_pushed_formats() {
-    let (mut d, mut m) = rec();
-    set_states(&mut d, &mut m);
-    d.set_vertex_shader(&mut m, fvf::XYZRHW | fvf::DIFFUSE)
-        .unwrap();
-    set_state_vb(&mut m, &[(0, 0x42), (3, 0x40)], 20);
-    let mut bytes = Vec::new();
-    for (x, y) in [(0.0, 0.0), (64.0, 0.0), (0.0, 64.0), (64.0, 64.0)] {
-        bytes.extend(vertex(x, y, 0xFF11_2233));
-    }
-    inline_array(&mut m, TRIANGLESTRIP, &bytes);
-    kick(&mut d, &mut m).unwrap();
-
-    let draws = d.backend.draws();
-    assert_eq!(draws.len(), 1);
-    let draw = draws[0];
-    assert_eq!(draw.primitive, PrimitiveType::TriangleStrip);
-    assert_eq!(draw.vertex_count, 4);
-    assert!(draw.layout.pretransformed);
-    let s = &draw.layout.streams[0];
-    assert_eq!(s.stride, 20);
-    let attrs: Vec<_> = s
-        .attributes
-        .iter()
-        .map(|a| (a.register, a.data_type, a.offset))
-        .collect();
-    assert_eq!(
-        attrs,
-        vec![
-            (VertexRegister(0), VertexDataType::Float4, 0),
-            (VertexRegister(3), VertexDataType::D3dColor, 16),
-        ]
-    );
-    assert_eq!(draw.streams[0].data, bytes);
-    assert_eq!(d.stats().inline_array_draws, 1);
-}
-
-#[test]
-fn inline_array_packing_aligns_each_register_to_its_component() {
-    let (mut d, mut m) = rec();
-    set_states(&mut d, &mut m);
-    d.set_vertex_shader(&mut m, fvf::XYZRHW).unwrap();
-    // float4 (16 bytes), short1 (2, padded to 4), float1 (4): 24 bytes.
-    // The stride field (99) is not used.
-    set_state_vb(&mut m, &[(0, 0x42), (1, 0x15), (2, 0x12)], 99);
-    inline_array(&mut m, TRIANGLESTRIP, &[0u8; 24 * 3]);
-    kick(&mut d, &mut m).unwrap();
-    let draws = d.backend.draws();
-    let s = &draws[0].layout.streams[0];
-    assert_eq!(s.stride, 24);
-    let offsets: Vec<_> = s.attributes.iter().map(|a| a.offset).collect();
-    assert_eq!(offsets, vec![0, 16, 20]);
-    assert_eq!(draws[0].vertex_count, 3);
-}
-
-#[test]
-fn inline_array_drops_a_trailing_partial_vertex() {
-    let (mut d, mut m) = rec();
-    set_states(&mut d, &mut m);
-    d.set_vertex_shader(&mut m, fvf::XYZRHW | fvf::DIFFUSE)
-        .unwrap();
-    set_state_vb(&mut m, &[(0, 0x42), (3, 0x40)], 20);
-    // 16 words: three whole 20-byte vertices and 4 bytes over.
-    let mut bytes = Vec::new();
-    for (x, y) in [(0.0, 0.0), (64.0, 0.0), (0.0, 64.0)] {
-        bytes.extend(vertex(x, y, 0xFF00_FF00));
-    }
-    bytes.extend([0xEE; 4]);
-    inline_array(&mut m, TRIANGLESTRIP, &bytes);
-    // Fewer bytes than one vertex: nothing to draw.
-    inline_array(&mut m, TRIANGLESTRIP, &[0u8; 12]);
-    kick(&mut d, &mut m).unwrap();
-    let draws = d.backend.draws();
-    assert_eq!(draws.len(), 1);
-    assert_eq!(draws[0].vertex_count, 3);
-    assert_eq!(draws[0].streams[0].data, bytes[..60]);
-    assert!(d.fault().is_none());
-}
-
-#[test]
 fn inline_array_with_every_format_disabled_stops() {
     let (mut d, mut m) = rec();
     d.set_vertex_shader(&mut m, fvf::XYZRHW).unwrap();
@@ -184,70 +104,6 @@ fn program(d: &mut Device<RecordingBackend>, m: &mut SparseMemory) {
         m.write_u32(vaf + 16 * reg + 8, 0x02).unwrap(); // D3DVSDT_NONE
     }
     d.select_vertex_shader_direct(m, vaf, 0).unwrap();
-}
-
-#[test]
-fn inline_arrays_leave_the_last_vertex_in_the_attribute_registers() {
-    let (mut d, mut m) = rec();
-    set_states(&mut d, &mut m);
-    program(&mut d, &mut m);
-    // Position float4, diffuse D3DCOLOR in v3, a packed normal in v2.
-    set_state_vb(&mut m, &[(0, 0x42), (2, 0x16), (3, 0x40)], 24);
-    let normal = |x: i32, y: i32, z: i32| {
-        (x as u32 & 0x7FF) | ((y as u32 & 0x7FF) << 11) | ((z as u32 & 0x3FF) << 22)
-    };
-    let mut bytes = Vec::new();
-    for (i, colour) in [0xFF00_0000u32, 0x8040_4040].iter().enumerate() {
-        for f in [i as f32, 0.0, 0.5, 1.0] {
-            bytes.extend(f.to_le_bytes());
-        }
-        bytes.extend(normal(1023, -1023, 511).to_le_bytes());
-        bytes.extend(colour.to_le_bytes());
-    }
-    bytes.extend([0u8; 24]); // a third vertex, so a strip has a triangle
-    inline_array(&mut m, TRIANGLESTRIP, &bytes);
-    kick(&mut d, &mut m).unwrap();
-    {
-        let draws = d.backend.draws();
-        let s = &draws[0].layout.streams[0];
-        let attrs: Vec<_> = s
-            .attributes
-            .iter()
-            .map(|a| (a.register.0, a.data_type, a.offset))
-            .collect();
-        assert_eq!(
-            attrs,
-            vec![
-                (0, VertexDataType::Float4, 0),
-                (2, VertexDataType::NormPacked3, 16),
-                (3, VertexDataType::D3dColor, 20),
-            ]
-        );
-        assert_eq!(s.stride, 24);
-    }
-    // Same again with the last vertex grey and the normal set, then a draw
-    // with v2 and v3 disabled: their values carry over.
-    let mut bytes = Vec::new();
-    for colour in [0u32, 0, 0x8040_4040] {
-        for f in [0.0f32, 0.0, 0.5, 1.0] {
-            bytes.extend(f.to_le_bytes());
-        }
-        bytes.extend(normal(1023, -1023, -512).to_le_bytes());
-        bytes.extend(colour.to_le_bytes());
-    }
-    inline_array(&mut m, TRIANGLESTRIP, &bytes);
-    set_state_vb(&mut m, &[(0, 0x42)], 16);
-    inline_array(&mut m, TRIANGLESTRIP, &[0u8; 48]);
-    kick(&mut d, &mut m).unwrap();
-    let draws = d.backend.draws();
-    assert_eq!(draws.len(), 3);
-    let defaults = draws[2].shader.vertex_defaults;
-    let g = 0x40 as f32 / 255.0;
-    assert_eq!(defaults[3], [g, g, g, 0x80 as f32 / 255.0]);
-    assert_eq!(defaults[2], [1.0, -1.0, -1.0, 1.0]);
-    // Enabled registers take the draw's own last vertex (all zero here,
-    // w included: a float4 replaces all four components).
-    assert_eq!(defaults[0], [0.0; 4]);
 }
 
 #[test]

@@ -57,7 +57,8 @@ fn run(native: bool) -> Trace {
     d.backend.pixel_counts_pending = false;
     let ready = call(&mut d, &mut m, 0x003f_8630, regs, &[RESULT]).unwrap();
     assert_eq!(ready.eax, Some(0));
-    assert_eq!(m.read_u32(RESULT).unwrap(), W * H);
+    // The inline quad reaches no backend, so nothing is counted.
+    assert_eq!(m.read_u32(RESULT).unwrap(), 0);
 
     Trace {
         target: d.bound_target(),

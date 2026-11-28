@@ -828,6 +828,76 @@ fn gpu_render_to_texture_starts_from_the_guest_texels() {
 }
 
 #[test]
+fn gpu_persist_display_keeps_what_a_copy_swap_showed() {
+    let Some((mut d, mut m)) = gpu_copy_swap() else {
+        return;
+    };
+    d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
+    let shown = d.back_buffer().unwrap();
+    d.swap(&mut m, 0).unwrap(); // COPY | FINISH
+    assert_eq!(d.backend.last_presented(), Some(shown));
+    // A COPY swap leaves the ring as it is: the image is back0, not front.
+    d.persist_display(&mut m).unwrap();
+    let saved = d.persisted_surface().unwrap();
+    let (px, _) = d.backend.read_color(saved).unwrap();
+    assert_eq!(pixel(&px, 0, 0), [0, 0, 255, 255], "B, G, R, A: red");
+    d.release_device(&mut m, DEV).unwrap();
+    let (px, _) = d.backend.read_color(saved).unwrap();
+    assert_eq!(pixel(&px, 0, 0), [0, 0, 255, 255], "kept through teardown");
+}
+
+#[test]
+fn persist_display_survives_device_teardown() {
+    let (mut d, mut m) = rec();
+    d.persist_display(&mut m).unwrap();
+    let saved = d.persisted_surface().unwrap();
+    d.release_device(&mut m, DEV).unwrap();
+    assert!(
+        !d.backend
+            .calls
+            .iter()
+            .any(|c| matches!(c, Recorded::DestroySurface { id } if *id == saved))
+    );
+    assert_eq!(d.persisted_surface(), Some(saved));
+}
+
+#[test]
+fn gpu_render_to_texture_starts_from_the_guest_texels() {
+    let Some((mut d, mut m)) = gpu() else {
+        return;
+    };
+    texture(&mut m, 0);
+    // Red texels (A8R8G8B8 in memory: B, G, R, A).
+    for i in 0..64u32 {
+        m.write_u32(0x8000_0000 | (TEX_DATA + 4 * i), 0xFFFF_0000)
+            .unwrap();
+    }
+    let surf = MISC + 0x7200;
+    let mut h =
+        d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 4, 64, TEX_DATA);
+    h.parent = TEX_HEADER;
+    h.write(&mut m, surf).unwrap();
+    let back = m.read_u32(DEV + f::RENDER_TARGET).unwrap();
+    d.set_render_target(&mut m, surf, 0).unwrap();
+    // Clear only {0, 0, 4, 4} (D3DRECT x1, y1, x2, y2) to green.
+    let rect = MISC + 0x7300;
+    for (i, v) in [0u32, 0, 4, 4].iter().enumerate() {
+        m.write_u32(rect + 4 * i as u32, *v).unwrap();
+    }
+    d.clear(&mut m, 1, rect, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
+    d.set_render_target(&mut m, back, 0).unwrap();
+    d.block_on_resource(&mut m, TEX_HEADER).unwrap();
+    let texel = |m: &SparseMemory, x: u32, y: u32| {
+        m.read_u32(0x8000_0000 | (TEX_DATA + 64 * y + 4 * x))
+            .unwrap()
+    };
+    assert_eq!(texel(&m, 0, 0), 0xFF00_FF00, "cleared");
+    assert_eq!(texel(&m, 3, 3), 0xFF00_FF00, "cleared");
+    assert_eq!(texel(&m, 8, 0), 0xFFFF_0000, "kept from guest memory");
+    assert_eq!(texel(&m, 15, 3), 0xFFFF_0000, "kept from guest memory");
+}
+
+#[test]
 fn gpu_indexed_draw_renders_through_the_index_list() {
     let Some((mut d, mut m)) = gpu() else {
         return;

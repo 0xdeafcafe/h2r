@@ -120,10 +120,6 @@ name = "gpu_depth_alias"
 path = "tests/gpu_depth_alias.rs"
 
 [[test]]
-name = "hot_overrides"
-path = "tests/hot_overrides.rs"
-
-[[test]]
 name = "pipeline_cache"
 path = "tests/pipeline_cache.rs"
 

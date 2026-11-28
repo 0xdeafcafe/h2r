@@ -19,6 +19,29 @@ fn colour() -> AuxTarget {
     }
 }
 
+/// Offered a guest draw, keeps its resolved packet and refuses it.
+#[derive(Default)]
+struct Capture(std::sync::Mutex<Option<d3d::ResolvedDraw>>);
+
+impl d3d::DrawAdmission for Capture {
+    fn admit(
+        &self,
+        snapshot: &d3d::DrawSnapshot<'_>,
+    ) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
+        *self.0.lock().unwrap() = Some(snapshot.draw.clone());
+        None
+    }
+}
+
+/// The resolved packet of the one textured quad the guest draws on the
+/// left half of the frame.
+fn left_quad(device: &mut d3d::Device<RecordingBackend>, memory: &mut d3d::SparseMemory) -> d3d::ResolvedDraw {
+    let capture = std::sync::Arc::new(Capture::default());
+    device.add_draw_admission(capture.clone());
+    textured_quad(device, memory, (0., 0., W as f32 / 2., H as f32));
+    capture.0.lock().unwrap().take().expect("the draw was offered to the admission")
+}
+
 fn clear(colour: TargetRef, rgba: [f32; 4]) -> ReplayOp {
     ReplayOp::Clear {
         colour,
@@ -37,8 +60,7 @@ fn a_carried_copy_samples_scene_colour_as_it_was_before_the_copy() {
     texture(&mut memory, 0x7f);
     recording.set_texture(&mut memory, 0, TEX_HEADER).unwrap();
     // Draw only on the left. The right side must retain the later clear.
-    textured_quad(&mut recording, &mut memory, (0., 0., W as f32 / 2., H as f32));
-    let draw = (*recording.backend.draws()[0]).clone();
+    let draw = left_quad(&mut recording, &mut memory);
     assert!(draw.texture_info[0].is_some());
     let scene = TargetRef::SceneColour;
     let aux = TargetRef::Aux(0);
@@ -296,8 +318,7 @@ fn an_earlier_snapshot_survives_guest_release_and_replays_after_either_present_p
     set_states(&mut device, &mut memory);
     texture(&mut memory, 0x7f);
     device.set_texture(&mut memory, 0, TEX_HEADER).unwrap();
-    textured_quad(&mut device, &mut memory, (0., 0., W as f32 / 2., H as f32));
-    let draw = device.backend.draws()[0].clone();
+    let draw = left_quad(&mut device, &mut memory);
 
     for adopt_first in [false, true] {
         let shown = Arc::new(AtomicUsize::new(0));

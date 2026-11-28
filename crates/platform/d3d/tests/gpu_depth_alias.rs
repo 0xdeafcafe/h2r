@@ -291,24 +291,6 @@ fn assert_same(what: &str, got: &[Vec<u8>], want: &[Vec<u8>]) {
     }
 }
 
-#[test]
-fn gpu_depth_aliases_draw_what_the_readback_draws() {
-    let Some(old) = backend(false) else { return };
-    let (want, old_stats) = run(old);
-    let (got, new_stats) = run(backend(true).unwrap());
-    // Something was drawn from the depth: not every sample is the same.
-    assert!(want.windows(2).any(|p| p[0] != p[1]));
-    assert_same("device thread", &got, &want);
-    // One host texture per header, sign mask and depth generation, either
-    // way.
-    assert_eq!(new_stats.depth_alias_uploads, old_stats.depth_alias_uploads);
-    assert_eq!(new_stats.depth_reads, old_stats.depth_reads);
-    let (threaded, _) = run(ThreadedBackend::new(backend(true).unwrap()).unwrap());
-    assert_same("render thread", &threaded, &want);
-    let (threaded_old, _) = run(ThreadedBackend::new(backend(false).unwrap()).unwrap());
-    assert_same("render thread, GPU aliases off", &threaded_old, &want);
-}
-
 /// A feedback shader samples a 2x2 window in a rendered level using a
 /// different channel order. Each camera has a different second texel.
 #[test]

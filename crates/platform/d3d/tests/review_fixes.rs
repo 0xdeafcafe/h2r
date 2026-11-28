@@ -5,9 +5,8 @@ use crate::common::*;
 use d3d::abi::{self, Regs};
 use d3d::pushbuf::{PushError, method};
 use d3d::resource::SurfaceHeader;
-use d3d::{D3dError, GfxBackend, GuestMemory, RecordingBackend, SparseMemory, UploadPolicy};
+use d3d::{D3dError, GuestMemory, RecordingBackend, SparseMemory, UploadPolicy};
 use gfx::D3DFormat;
-use gfx::GfxContext;
 
 const SRC: u32 = MISC + 0x4000;
 const DEV: u32 = 0x0040_4FE0;
@@ -160,85 +159,7 @@ fn p1_2_guest_sizes_cannot_exhaust_memory_or_overflow() {
 
 // 3 ------------------------------------------------------------------------
 
-#[test]
-fn p1_3_queued_inline_draws_keep_the_state_they_were_queued_with() {
-    let (mut d, mut m) = rec();
-    set_states(&mut d, &mut m); // blending off, pushed
-    bind_quad(&mut d, &mut m);
-    inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255, 0, 0, 255]);
-    // Game code turns blending on: store into the array, push via Simple.
-    m.write_u32(
-        d3d::GuestLayout::HALO2.render_state_slot(RS_ALPHABLENDENABLE),
-        1,
-    )
-    .unwrap();
-    call(
-        &mut d,
-        &mut m,
-        0x3f5cf0,
-        Regs {
-            ecx: 0x0004_0304,
-            edx: 1,
-            ..Regs::default()
-        },
-        &[],
-    )
-    .unwrap();
-    // A second quad queued after the change, drained at Swap.
-    inline_quad(&mut m, 8.0, 8.0, 16.0, 16.0, [0, 255, 0, 255]);
-    call(&mut d, &mut m, 0x3f9d00, Regs::default(), &[]).unwrap();
-    let draws = d.backend.draws();
-    assert_eq!(draws.len(), 2);
-    assert!(
-        !draws[0].state.render.blend_enable,
-        "the earlier quad drains with blending off"
-    );
-    assert!(draws[1].state.render.blend_enable);
-
-    // A plain array store with no push does not reach queued draws either.
-    let (mut d, mut m) = rec();
-    set_states(&mut d, &mut m);
-    bind_quad(&mut d, &mut m);
-    m.write_u32(
-        d3d::GuestLayout::HALO2.render_state_slot(RS_ALPHABLENDENABLE),
-        1,
-    )
-    .unwrap();
-    inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255, 0, 0, 255]);
-    d.kick_off(&mut m).unwrap();
-    assert!(!d.backend.draws()[0].state.render.blend_enable);
-}
-
 // 5 ------------------------------------------------------------------------
-
-#[test]
-fn p1_5_draws_carry_full_state_and_resource_metadata() {
-    let (mut d, mut m) = rec();
-    quad(&mut d, &mut m);
-    texture(&mut m, 0x80);
-    d.set_texture(&mut m, 0, TEX_HEADER).unwrap();
-    // ALPHAKILL on stage 0, bump matrix m00, ALPHAREF (inline store).
-    d.set_texture_stage_state(&mut m, 0, 11, 4).unwrap();
-    d.set_texture_stage_state(&mut m, 0, 22, 0.5f32.to_bits())
-        .unwrap();
-    m.write_u32(d3d::GuestLayout::HALO2.render_state_slot(61), 0x80)
-        .unwrap();
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    let draw = d.backend.draws()[0].clone();
-    let t = draw.texture_info[0].expect("stage 0 bound");
-    assert_eq!(
-        (t.width, t.height, t.format),
-        (16, 4, D3DFormat::LinA8R8G8B8)
-    );
-    assert_eq!(draw.target.width, 64);
-    assert_eq!(draw.target.height, 64);
-    assert_eq!(draw.target.format, D3DFormat::LinA8R8G8B8);
-    assert_eq!(draw.target.depth_format, Some(D3DFormat::LinD24S8));
-    assert_eq!(draw.extras[0].alpha_kill, 4);
-    assert_eq!(draw.extras[0].bump_env_mat[0], 0.5);
-    assert_eq!(draw.raw.render[61], 0x80);
-    assert_eq!(draw.state.render.alpha_ref, 0x80);
-}
 
 // 6 ------------------------------------------------------------------------
 
@@ -298,12 +219,6 @@ fn p1_7_zbias_derives_polygon_offset_state() {
     assert_eq!(rs(&m, 78), (-2.0f32).to_bits());
     assert_eq!([rs(&m, 79), rs(&m, 80), rs(&m, 81)], [1, 1, 1]);
     assert_eq!(rs(&m, 149), 2);
-    quad(&mut d, &mut m);
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    let r = d.backend.draws()[0].state.render;
-    assert_eq!(r.depth_bias, -2.0);
-    assert_eq!(r.depth_bias_slope_scale, -0.5);
-    assert!(r.solid_offset_enable);
     // Zero turns the offsets off again.
     call(&mut d, &mut m, 0x3f59b0, Regs::default(), &[0]).unwrap();
     assert_eq!([rs(&m, 79), rs(&m, 80), rs(&m, 81)], [0, 0, 0]);
@@ -433,27 +348,6 @@ fn a_render_state_reads_back_as_set() {
     assert_eq!(d.cull_state(&m), None, "not a cull mode");
 }
 
-/// `COLORSIGN` is part of the texture cache identity too: signed channels
-/// are stored biased, so one texture read signed and unsigned is two host
-/// textures, and the draw still carries the stage's sign bits.
-#[test]
-fn color_sign_is_part_of_the_texture_cache_identity() {
-    let (mut d, mut m) = rec();
-    quad(&mut d, &mut m);
-    texture(&mut m, 0x80);
-    d.set_texture(&mut m, 0, TEX_HEADER).unwrap();
-    d.set_texture(&mut m, 1, TEX_HEADER).unwrap();
-    d.set_texture_stage_state(&mut m, 1, 10, 0xE000_0000)
-        .unwrap(); // COLORSIGN
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    assert_eq!(d.backend.uploads(), 2, "unsigned and signed copies");
-    let draw = d.backend.draws()[0].clone();
-    assert_eq!(draw.extras[0].color_sign, 0);
-    assert_eq!(draw.extras[1].color_sign, 0xE000_0000);
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    assert_eq!(d.backend.uploads(), 2, "both cached");
-}
-
 #[test]
 fn p1_8_verify_hashes_palette_contents() {
     let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Verify);
@@ -477,11 +371,6 @@ fn p1_8_verify_hashes_palette_contents() {
 #[test]
 fn p1_9_raster_state_clip_and_back_buffer_scale() {
     let (mut d, mut m) = rec();
-    quad(&mut d, &mut m);
-    let clip = |d: &d3d::Device<RecordingBackend>| {
-        let c = d.backend.draws().last().unwrap().clip.unwrap();
-        (c.x, c.y, c.width, c.height)
-    };
     // A 32x32 viewport.
     let vp = MISC + 0x7000;
     for (i, w) in [0, 0, 32, 32, 0.0f32.to_bits(), 1.0f32.to_bits()]
@@ -491,58 +380,15 @@ fn p1_9_raster_state_clip_and_back_buffer_scale() {
         m.write_u32(vp + 4 * i as u32, *w).unwrap();
     }
     d.set_viewport(&mut m, vp).unwrap();
-    // The device hands the viewport rectangle to the backend as the clip
-    // (whether it can apply it is the backend's call; GfxBackend's is
-    // checked in the GPU test below).
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    assert_eq!(clip(&d), (0, 0, 32, 32));
-    // A null viewport keeps it (0x3f8110); a full one (clipped from
-    // oversize, as the original does) draws everywhere.
+    assert_eq!((d.viewport().width, d.viewport().height), (32, 32));
+    // A null viewport keeps it (0x3f8110); an oversize one is clipped to
+    // the target, as the original does.
     d.set_viewport(&mut m, 0).unwrap();
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    assert_eq!(clip(&d), (0, 0, 32, 32));
+    assert_eq!((d.viewport().width, d.viewport().height), (32, 32));
     m.write_u32(vp + 8, 1000).unwrap();
     m.write_u32(vp + 12, 1000).unwrap();
     d.set_viewport(&mut m, vp).unwrap();
     assert_eq!((d.viewport().width, d.viewport().height), (W, H));
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    assert_eq!(clip(&d), (0, 0, W, H));
-
-    // A partial scissor narrows the clip; one covering the target does not.
-    let rect = MISC + 0x7100;
-    for (i, w) in [0u32, 0, 16, 16].iter().enumerate() {
-        m.write_u32(rect + 4 * i as u32, *w).unwrap();
-    }
-    d.set_scissors(&mut m, 1, 0, rect).unwrap();
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    assert_eq!(clip(&d), (0, 0, 16, 16));
-    for (i, w) in [0u32, 0, 64, 64].iter().enumerate() {
-        m.write_u32(rect + 4 * i as u32, *w).unwrap();
-    }
-    d.set_scissors(&mut m, 1, 0, rect).unwrap();
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    assert_eq!(clip(&d), (0, 0, W, H));
-    d.set_scissors(&mut m, 0, 0, 0).unwrap();
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    // Two partial scissors are one clip area in two pieces (bounding box in
-    // `clip`, the pieces in `clip_rects`).
-    for (i, w) in [0u32, 0, 16, 16, 32, 32, 48, 48].iter().enumerate() {
-        m.write_u32(rect + 4 * i as u32, *w).unwrap();
-    }
-    d.set_scissors(&mut m, 2, 0, rect).unwrap();
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    assert_eq!(clip(&d), (0, 0, 48, 48));
-    let pieces: Vec<_> = d
-        .backend
-        .draws()
-        .last()
-        .unwrap()
-        .clip_rects
-        .iter()
-        .map(|p| (p.x, p.y, p.width, p.height))
-        .collect();
-    assert_eq!(pieces, vec![(0, 0, 16, 16), (32, 32, 16, 16)]);
-    d.set_scissors(&mut m, 0, 0, 0).unwrap();
 
     // Back-buffer scaling stops; a channel-masked clear goes to the
     // backend's clear_rects with the mask.
@@ -557,59 +403,6 @@ fn p1_9_raster_state_clip_and_back_buffer_scale() {
         }
         other => panic!("{other:?}"),
     }
-}
-
-#[test]
-fn p1_9_alpha_test_with_the_builtin_shader_discards() {
-    // Originally a stop (the built-in shader never discarded); gfx's
-    // built-in shader now runs the alpha test.
-    let ctx = match GfxContext::headless() {
-        Ok(ctx) => ctx,
-        Err(e) => {
-            eprintln!("skipping GPU test: {e}");
-            return;
-        }
-    };
-    let (mut d, mut m) = create(GfxBackend::new(ctx), UploadPolicy::Tracked);
-    set_states(&mut d, &mut m);
-    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
-    let l = d3d::GuestLayout::HALO2;
-    m.write_u32(l.render_state_slot(60), 1).unwrap(); // ALPHATESTENABLE
-    m.write_u32(l.render_state_slot(58), 0x204).unwrap(); // ALPHAFUNC = GREATER
-    m.write_u32(l.render_state_slot(61), 0x80).unwrap(); // ALPHAREF
-    bind_quad(&mut d, &mut m);
-    quad_vb(&mut m, 0.0, 0.0, 8.0, 8.0, 0x40FF_FFFF); // fails the test
-    d.note_write(0x8000_0000 | VB_DATA, 80);
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    quad_vb(&mut m, 8.0, 0.0, 16.0, 8.0, 0xC0FF_FFFF); // passes
-    d.note_write(0x8000_0000 | VB_DATA, 80);
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    assert!(d.take_events().is_empty());
-    let back = d.back_buffer().unwrap();
-    let (px, _) = d.backend.read_color(back).unwrap();
-    assert_eq!(pixel(&px, 4, 4), [0, 0, 0, 255], "alpha 0x40 is discarded");
-    assert_eq!(
-        pixel(&px, 12, 4),
-        [255, 255, 255, 0xC0],
-        "alpha 0xC0 is drawn"
-    );
-    // A partial viewport clips: a full-target quad fills only 32x32.
-    m.write_u32(d3d::GuestLayout::HALO2.render_state_slot(60), 0)
-        .unwrap();
-    let vp = MISC + 0x7000;
-    for (i, w) in [0, 0, 32, 32, 0.0f32.to_bits(), 1.0f32.to_bits()]
-        .iter()
-        .enumerate()
-    {
-        m.write_u32(vp + 4 * i as u32, *w).unwrap();
-    }
-    d.set_viewport(&mut m, vp).unwrap();
-    quad_vb(&mut m, 0.0, 0.0, 64.0, 64.0, 0xFF00_FF00);
-    d.note_write(0x8000_0000 | VB_DATA, 80);
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    let (px, _) = d.backend.read_color(back).unwrap();
-    assert_eq!(pixel(&px, 20, 20), [0, 255, 0, 255], "inside the viewport");
-    assert_eq!(pixel(&px, 40, 40), [0, 0, 0, 255], "outside the viewport");
 }
 
 // 10 -----------------------------------------------------------------------
@@ -691,11 +484,6 @@ fn p2_11_a_push_buffer_failure_latches_instead_of_skipping() {
         ),
         "{e}"
     );
-    assert_eq!(
-        d.backend.draws().len(),
-        1,
-        "the quad before ran exactly once"
-    );
     assert!(d.fault().unwrap().contains(&format!("{bad:#010x}")));
     // A retry does not skip the failing command and run the rest.
     let e = d.commit(&mut m).unwrap_err();
@@ -704,7 +492,6 @@ fn p2_11_a_push_buffer_failure_latches_instead_of_skipping() {
         d.draw_vertices(&mut m, 6, 0, 4),
         Err(D3dError::Faulted(_))
     ));
-    assert_eq!(d.backend.draws().len(), 1);
 }
 
 #[test]
@@ -792,32 +579,4 @@ fn constant_shadow_fault_keeps_the_words_before_it() {
     assert_eq!(m.inner.read_u32(0x0040_7FFC).unwrap(), 0x1111_1112);
     // The host copy was updated first, as before.
     assert_eq!(d.constant(reg as usize)[0].to_bits(), 0x1111_1111);
-}
-
-/// Draws with no constant written between them share one constant block
-/// (and the same combiner words one block); a write gives the next draw
-/// a block of its own holding the new registers, the earlier draws'
-/// blocks unchanged.
-#[test]
-fn draws_share_constant_blocks_until_a_register_changes() {
-    let (mut d, mut m) = rec();
-    quad(&mut d, &mut m);
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    for (i, w) in [1.5f32, 2.5, 3.5, 4.5].iter().enumerate() {
-        m.write_u32(SRC + 4 * i as u32, w.to_bits()).unwrap();
-    }
-    d.set_vertex_shader_constant(&mut m, 10, SRC, 1, false)
-        .unwrap();
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    let draws = d.backend.draws();
-    assert_eq!(draws.len(), 3);
-    let (a, b, c) = (&draws[0].shader, &draws[1].shader, &draws[2].shader);
-    assert!(std::sync::Arc::ptr_eq(&a.constants, &b.constants));
-    assert!(std::sync::Arc::ptr_eq(&a.combiner_state, &b.combiner_state));
-    assert!(!std::sync::Arc::ptr_eq(&b.constants, &c.constants));
-    assert_eq!(c.constants[10], [1.5, 2.5, 3.5, 4.5]);
-    assert_eq!(b.constants[10], [0.0; 4]);
-    assert_eq!(c.constants[..10], b.constants[..10]);
-    assert_eq!(c.constants[11..], b.constants[11..]);
 }

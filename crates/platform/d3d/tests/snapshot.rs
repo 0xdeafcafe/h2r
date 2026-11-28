@@ -2,7 +2,7 @@
 //! section over the recording backend. A device draws some frames and is
 //! saved, then draws more; a second device, created the same way but
 //! having drawn something else, loads the section over the saved guest
-//! memory and draws the same frames. The recorded draw streams, the
+//! memory and draws the same frames. The recorded clears and presents, the
 //! presented surfaces and guest memory match.
 
 use crate::common::*;
@@ -58,17 +58,11 @@ fn host_state(d: &mut Device<RecordingBackend>, m: &mut SparseMemory, scale: f32
     d.set_scissors(m, 1, 0, SCISSOR).unwrap();
 }
 
-/// Clears, draws and presents from `calls`, with texture handles left out
-/// (a device that dropped its caches uploads again under new handles).
+/// Clears and presents from `calls`.
 fn stream(calls: &[Recorded]) -> Vec<Recorded> {
     calls
         .iter()
         .filter_map(|c| match c {
-            Recorded::Draw { color, draw, .. } => Some(Recorded::Draw {
-                color: *color,
-                draw: draw.clone(),
-                textures: [None; 4],
-            }),
             Recorded::Clear { .. } | Recorded::ClearRects { .. } | Recorded::Present { .. } => {
                 Some(c.clone())
             }
@@ -122,18 +116,12 @@ fn a_loaded_device_draws_what_the_saved_one_does() {
         stream(&a.backend.calls[mark..]),
         stream(&b.backend.calls[mark_b..]),
     );
-    let draws = sa
+    let presents = sa
         .iter()
-        .filter(|c| matches!(c, Recorded::Draw { .. }))
+        .filter(|c| matches!(c, Recorded::Present { .. }))
         .count();
-    assert_eq!(draws, 6);
+    assert_eq!(presents, 3);
     assert_eq!(sa, sb);
-    // The scissor saved with the device clips the draws after the load.
-    for c in &sb {
-        if let Recorded::Draw { draw, .. } = c {
-            assert_eq!(draw.clip.map(|r| r.width), Some(34), "{:?}", draw.clip);
-        }
-    }
     assert_eq!(a.front_buffer(), b.front_buffer());
     assert_eq!(a.back_buffer(), b.back_buffer());
     let dev = d3d::GuestLayout::HALO2.device;

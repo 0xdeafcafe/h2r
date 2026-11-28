@@ -28,7 +28,7 @@ filter = 'package(h1objects) | package(h1convert) | package(h1campaign) | binary
 test-group = 'disc'
 
 [[profile.default.overrides]]
-filter = 'binary(/^(perf|pacing|lock_contention|vblank_clock|threaded|threaded_frame_stats|visibility_async|pipeline_cache|hot_overrides)$/) | binary(/bench|churn|cost/)'
+filter = 'binary(/^(perf|pacing|lock_contention|vblank_clock|threaded|threaded_frame_stats|visibility_async|pipeline_cache)$/) | binary(/bench|churn|cost/)'
 test-group = 'timing'
 
 # The profile `cargo xtask test` runs (crates/tools/xtask). A hung test is

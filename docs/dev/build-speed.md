@@ -137,12 +137,12 @@ named `it`. 96 executables become 4.
 - Feature-gated files keep their own `#![cfg(feature = "...")]` line,
   which works on a module.
 
-Thirteen `d3d` files keep a process and a `[[test]]` of their own: the
+Twelve `d3d` files keep a process and a `[[test]]` of their own: the
 benches and corpus runs (`draw_bench`, `draw_churn`, `render_churn`,
 `pipeline_cost`, `shader_corpus`), and the files that time threads,
 count process-wide work or watch the filesystem (`threaded`,
 `threaded_frame_stats`, `vblank_clock`, `visibility_async`,
-`alias_mirror`, `gpu_depth_alias`, `hot_overrides`, `pipeline_cache`).
+`alias_mirror`, `gpu_depth_alias`, `pipeline_cache`).
 
 **What can differ.** Under `cargo test`, the merged files now share one
 process, where each had its own. The merged crates were chosen and

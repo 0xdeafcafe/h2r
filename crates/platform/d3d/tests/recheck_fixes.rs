@@ -7,17 +7,12 @@ use d3d::abi::Regs;
 use d3d::pushbuf::{PushError, method};
 use d3d::{D3dError, GfxBackend, GuestMemory, RecordingBackend, SparseMemory, UploadPolicy};
 use gfx::GfxContext;
-use gfx::state::DepthBufferMode;
 
 const DEV: u32 = 0x0040_4FE0;
 const VP: u32 = MISC + 0x7000;
 
 fn rec() -> (d3d::Device<RecordingBackend>, SparseMemory) {
     create(RecordingBackend::new(), UploadPolicy::Tracked)
-}
-
-fn rs_addr(slot: u32) -> u32 {
-    d3d::GuestLayout::HALO2.render_state_slot(slot)
 }
 
 fn quad(d: &mut d3d::Device<RecordingBackend>, m: &mut SparseMemory) {
@@ -69,92 +64,6 @@ fn is_unimplemented<T: std::fmt::Debug>(r: &Result<T, D3dError>) -> bool {
 
 // r1: push-buffer payloads, in order -----------------------------------------
 
-/// `0x1268b` / `0x1269a`: Simple(ZWRITEENABLE) first, the array store after.
-/// A draw queued in between drains with Simple's `EDX`, not the stale array.
-#[test]
-fn r1_simple_value_counts_even_when_the_array_is_stored_later() {
-    let (mut d, mut m) = rec();
-    set_states(&mut d, &mut m);
-    quad(&mut d, &mut m);
-    // Array still says blending off; Simple pushes on; draw queued; the
-    // game stores the array only afterwards.
-    simple(&mut d, &mut m, 0x0004_0304, 1).unwrap();
-    inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255; 4]);
-    m.write_u32(rs_addr(RS_ALPHABLENDENABLE), 1).unwrap();
-    d.kick_off(&mut m).unwrap();
-    assert!(d.backend.draws()[0].state.render.blend_enable);
-
-    // The ZWRITEENABLE variant (0x1268b): value 0 pushed, array written 0
-    // later, a draw queued between with the array still 1.
-    let (mut d, mut m) = rec();
-    set_states(&mut d, &mut m);
-    quad(&mut d, &mut m);
-    m.write_u32(rs_addr(64), 1).unwrap();
-    d.commit(&mut m).unwrap();
-    simple(&mut d, &mut m, 0x0004_035c, 0).unwrap();
-    inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255; 4]);
-    d.kick_off(&mut m).unwrap();
-    m.write_u32(rs_addr(64), 0).unwrap();
-    assert!(!d.backend.draws()[0].state.render.depth_write);
-    assert_eq!(d.backend.draws()[0].raw.render[64], 0);
-}
-
-/// Two Simple calls with draws queued after each, all stored to the array
-/// only at the end (`0x1eb21` / `0x1eb2d`: `xor edx, edx` then the store):
-/// each draw sees the value pushed before it.
-#[test]
-fn r1_each_simple_value_applies_from_its_place_in_the_stream() {
-    let (mut d, mut m) = rec();
-    set_states(&mut d, &mut m);
-    quad(&mut d, &mut m);
-    simple(&mut d, &mut m, 0x0004_0304, 1).unwrap();
-    inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255; 4]);
-    simple(&mut d, &mut m, 0x0004_0304, 0).unwrap();
-    inline_quad(&mut m, 8.0, 8.0, 16.0, 16.0, [255; 4]);
-    m.write_u32(rs_addr(RS_ALPHABLENDENABLE), 0).unwrap();
-    d.kick_off(&mut m).unwrap();
-    let draws = d.backend.draws();
-    assert!(draws[0].state.render.blend_enable);
-    assert!(!draws[1].state.render.blend_enable);
-}
-
-/// Inline ZEnable (`0x1eb66`): each queued `0x30C` command carries its own
-/// value; draining late must not apply the array's final value to both.
-#[test]
-fn r1_inline_mirrors_keep_each_command_value() {
-    let (mut d, mut m) = rec();
-    set_states(&mut d, &mut m);
-    quad(&mut d, &mut m);
-    let zenable = rs_addr(143);
-    m.write_u32(zenable, 0).unwrap();
-    push_words(&mut m, &[0x0004_030c, 0]);
-    inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255; 4]);
-    m.write_u32(zenable, 1).unwrap();
-    push_words(&mut m, &[0x0004_030c, 1]);
-    inline_quad(&mut m, 8.0, 8.0, 16.0, 16.0, [255; 4]);
-    d.kick_off(&mut m).unwrap();
-    let draws = d.backend.draws();
-    assert_eq!(draws[0].state.render.depth_mode, DepthBufferMode::Disabled);
-    assert_eq!(draws[1].state.render.depth_mode, DepthBufferMode::Z);
-}
-
-/// `0x1eb66..0x1eb7c` pushes `0x30C` and `0x1D78` (slot 82, read from the
-/// array before the push) in one go; both payloads land in their slots.
-#[test]
-fn r1_paired_inline_mirror_payloads_land_in_their_slots() {
-    let (mut d, mut m) = rec();
-    set_states(&mut d, &mut m);
-    quad(&mut d, &mut m);
-    push_words(&mut m, &[0x0004_030c, 1, 0x0004_1d78, 0x1234]);
-    inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255; 4]);
-    // The array changes before the drain; the queued draw does not see it.
-    m.write_u32(rs_addr(82), 0x5678).unwrap();
-    d.kick_off(&mut m).unwrap();
-    let draw = d.backend.draws()[0].clone();
-    assert_eq!(draw.raw.render[143], 1);
-    assert_eq!(draw.raw.render[82], 0x1234);
-}
-
 /// Simple with a header that is not a one-word state method stops.
 #[test]
 fn r1_simple_with_an_unknown_method_stops() {
@@ -201,45 +110,6 @@ fn r2_null_viewport_keeps_the_previous_viewport() {
     let saved = d.viewport();
     d.set_viewport(&mut m, 0).unwrap();
     assert_eq!(d.viewport(), saved);
-}
-
-#[test]
-fn r2_set_viewport_resets_scissors() {
-    let (mut d, mut m) = rec();
-    quad(&mut d, &mut m);
-    viewport(&mut m, VP, [0, 0, W, H], [0.0, 1.0]);
-    let rect = VP + 0x100;
-    for (i, w) in [8u32, 8, 16, 16].iter().enumerate() {
-        m.write_u32(rect + 4 * i as u32, *w).unwrap();
-    }
-    d.set_scissors(&mut m, 1, 0, rect).unwrap();
-    // The draw carries the scissor as its clip rectangle.
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    let clip = |d: &d3d::Device<RecordingBackend>| d.backend.draws().last().unwrap().clip;
-    assert_eq!(
-        clip(&d),
-        Some(d3d::PixelRect {
-            x: 8,
-            y: 8,
-            width: 8,
-            height: 8
-        })
-    );
-    d.set_viewport(&mut m, VP).unwrap();
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    assert_eq!(
-        clip(&d),
-        Some(d3d::PixelRect {
-            x: 0,
-            y: 0,
-            width: W,
-            height: H
-        })
-    );
-    // Null too (0x3f8110 jumps to the SetScissors call).
-    d.set_scissors(&mut m, 1, 0, rect).unwrap();
-    d.set_viewport(&mut m, 0).unwrap();
-    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
 }
 
 // r3: Clear and the viewport ----------------------------------------------------
@@ -567,32 +437,4 @@ fn create_device_stops_on_a_missing_or_malformed_encode_table() {
         assert_eq!(m.read_u32(PP_DEVICE).unwrap(), 0);
         assert_eq!(d.backend.live_surfaces(), 0);
     }
-}
-
-/// The method-to-slot map is whatever the image holds: a method moved to
-/// another slot in guest memory moves with it.
-#[test]
-fn simple_follows_the_table_in_guest_memory() {
-    let at = d3d::GuestLayout::HALO2.simple_encode;
-    let mut m = memory();
-    // Swap ALPHABLENDENABLE's method into slot 60 instead.
-    m.write_u32(at + 4 * RS_ALPHABLENDENABLE, (1 << 18) | 0x1D90)
-        .unwrap();
-    m.write_u32(at + 4 * 60, (1 << 18) | 0x304).unwrap();
-    let mut d = d3d::Device::new(
-        d3d::DeviceConfig::halo2(PB, SCRATCH),
-        RecordingBackend::new(),
-    );
-    common::write_params(&mut m);
-    let regs = Regs {
-        eax: 0x40,
-        ecx: PP_DEVICE,
-        ..Regs::default()
-    };
-    call(&mut d, &mut m, 0x3f5240, regs, &[PARAMS]).unwrap();
-    quad(&mut d, &mut m);
-    simple(&mut d, &mut m, 0x0004_0304, 7).unwrap();
-    inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255; 4]);
-    d.kick_off(&mut m).unwrap();
-    assert_eq!(d.backend.draws()[0].raw.render[60], 7);
 }

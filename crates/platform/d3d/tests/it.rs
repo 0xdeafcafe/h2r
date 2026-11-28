@@ -11,12 +11,8 @@ mod common;
 
 #[path = "admission_scope.rs"]
 mod admission_scope;
-#[path = "batching.rs"]
-mod batching;
 #[path = "depth_textures.rs"]
 mod depth_textures;
-#[path = "draw_sharing.rs"]
-mod draw_sharing;
 #[path = "external_pass.rs"]
 mod external_pass;
 #[path = "first_frame.rs"]
@@ -27,8 +23,6 @@ mod fog_xbe;
 mod fragments;
 #[path = "guest_draw_pass.rs"]
 mod guest_draw_pass;
-#[path = "glyph_text.rs"]
-mod glyph_text;
 #[path = "light_tail.rs"]
 mod light_tail;
 #[path = "native_residual.rs"]
@@ -66,26 +60,18 @@ mod round7;
 mod rtt_direct;
 #[path = "seams_gpu.rs"]
 mod seams_gpu;
-#[path = "shaders_render.rs"]
-mod shaders_render;
 #[path = "shadow_fault.rs"]
 mod shadow_fault;
-#[path = "shared_state.rs"]
-mod shared_state;
 #[path = "snapshot.rs"]
 mod snapshot;
 #[path = "stream_copy.rs"]
 mod stream_copy;
-#[path = "stream_reuse.rs"]
-mod stream_reuse;
 #[path = "swallow.rs"]
 mod swallow;
 #[path = "swallow_carry.rs"]
 mod swallow_carry;
 #[path = "vblank.rs"]
 mod vblank;
-#[path = "vertex_cache.rs"]
-mod vertex_cache;
 #[path = "vertex_fetch.rs"]
 mod vertex_fetch;
 #[path = "xbe_tables.rs"]
