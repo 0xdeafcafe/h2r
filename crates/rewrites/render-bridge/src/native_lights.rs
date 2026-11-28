@@ -1574,10 +1574,11 @@ mod tests {
     }
 
     /// A cut light draws at its passes or not at all: a host that refuses
-    /// it, no host and no target all answer `false`, so the caller runs
-    /// the guest's passes; a light with no drawn layer needs no host.
+    /// it, no host and no target all answer `false`, so the caller drops
+    /// the light (`scene_dropped_light_host`); a light with no drawn layer
+    /// needs no host.
     #[test]
-    fn a_cut_light_the_host_refuses_is_left_to_the_guests_passes() {
+    fn a_cut_light_the_host_refuses_is_not_drawn() {
         let _host = HOST_TEST.lock().unwrap_or_else(|e| e.into_inner());
         let pass = ScenePass {
             slot: LIGHT_SLOT,

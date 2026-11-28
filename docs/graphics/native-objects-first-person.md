@@ -1,7 +1,7 @@
 # Native objects: the first person
 
 Status: Built. The first-person arms and weapon draw from the scene once a frame proves the native path; the lights' layers 12 and 13 draw from the scene ([native-lights.md](native-lights.md)), their layers 11 and 14 on D3D. Part of stage 2 ([native-objects.md](native-objects.md)).
-Code: `crates/rewrites/render-bridge/src/native_first_person.rs` (the cut, `held`, `Gate`, `build`), `crates/extensions/game/src/native_first_person_glue.rs`, `native_first_person_load.rs`, `crates/rewrites/engine/src/render/light_gather/{first_person_items,first_person_effects}.rs`. Tests: `crates/rewrites/render-bridge/tests/native_first_person.rs`, `crates/rewrites/engine/tests/light_gather_differential.rs`.
+Code: `crates/rewrites/render-bridge/src/native_first_person.rs` (the cut, `cut_call`, `build`), `crates/extensions/game/src/native_first_person_glue.rs`, `native_first_person_load.rs`, `crates/rewrites/engine/src/render/light_gather/{first_person_items,first_person_effects}.rs`. Tests: `crates/rewrites/render-bridge/tests/native_first_person.rs`, `crates/rewrites/engine/tests/light_gather_differential.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 | Piece | Value |
@@ -25,17 +25,7 @@ The local player's third-person body draws natively like any biped when the game
 
 ## The cut
 
-```mermaid
-stateDiagram-v2
-  [*] --> Held
-  Held --> Held: a call fails its Check, or a frame draws no part
-  Held --> Released: a frame (call 0 then call 1) passes both Checks and draws at least one part
-  Released --> Released: cut_call draws from the scene; the body never runs
-```
-
-- **Held.** The entry runs the body as a guest call of itself (`held_call`), so the guest draws the arms and weapon and its layer draws put their parts in the first person's view. Before the body it counts the parts the guest draws (`guest_parts`: the item build's list-0 items, once per layer the call draws that each holds). After it, the native path plans the view's parts of the call without reserving or drawing (`probe`, `Host::plan`).
-  A call passes its `Check` when the view holds the guest's count, the plan would draw all of them and drops none.
-- **Released.** The entry makes the frame step's writes for the row, answers the call and draws from the scene (`cut_call`). The body never runs for either argument. The cut is released for the rest of the run (`native_first_person::held`).
+`0x0003fdf0` is a cut from the first frame, for both arguments. The entry makes the frame step's writes for the row, answers the call and draws from the scene (`native_first_person::cut_call`). The body never runs, and a part the native path cannot draw is a named drop (`native_first_person::Dropped`).
 
 ## Items
 
@@ -75,7 +65,7 @@ There is no D3D draw and no mask edit. A part that does not draw is a named drop
 | `unsupported` | the model is resident, not this part or implementation |
 | `reservation` | the host's |
 
-`render.scene` reports them with `first_person_calls`, `first_person_drawn`, `first_person_checked`, `first_person_check_passed` and `first_person_held` (`native_first_person::counters`). A part is readable when its instance and rows are in the scene.
+`render.scene` reports them with `first_person_calls`, `first_person_drawn` and `first_person_dropped_<cause>` (`native_first_person::counters`). A part is readable when its instance and rows are in the scene.
 
 ## Host
 

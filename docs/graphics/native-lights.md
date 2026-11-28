@@ -1,6 +1,6 @@
 # Native renderer stage 4: lights and shadows
 
-Status: Partly built. Rust gathers visible lights and their lists. Under the cut light frame each light's groups go into the scene with no guest pass, and the host draws all five layers from them on the single 1x backend; pixel parity is not verified. The ordered light graph admits dynamic and first-person lights whose draws all fit the view's layers 12 and 13, and lights with no draws. Other lights use per-layer scene draws, gathered handlers and D3D. Live coverage, pixel parity and timing of whole passes remain unverified.
+Status: Partly built. Rust gathers visible lights and their lists, and the guest's light frame `0x00031c80` and passes `0x00031170` never run. Each light's groups go into the scene, and the host draws all five layers from them on the single 1x backend; a light it cannot take is a named, counted drop. First-person lights (`0x000404b0`) keep their guest steps for a slot the scene refuses. Live coverage, pixel parity and timing of whole passes remain unverified.
 Code: `crates/rewrites/engine/src/render/light_gather/typed.rs`, `crates/rewrites/render-bridge/src/native_lights/typed.rs`, `crates/rewrites/native-render/src/light_graph.rs`, `crates/rewrites/render-bridge/src/native_lights.rs`, `native_lights/walk.rs`, `native_lights/scene_frame.rs`, `crates/extensions/game/src/native_lights_glue.rs`, `native_lights_glue/walk.rs`, `native_lights_glue/models.rs`, `native_lights_glue/scene.rs`, `crates/rewrites/native-render/src/lights.rs`, `light_gpu.rs`, `light_scene.rs`, `light_models.rs`, `crates/rewrites/scene-extract/src/layout/light_passes.rs`, `crates/rewrites/scene-extract/src/light_groups.rs`, `crates/rewrites/scene-extract/src/lights/gather.rs`, `crates/rewrites/frame-scene/src/light_group.rs`. Constants, implementations and the native look are in [native-lights-constants.md](native-lights-constants.md). Tests: `scene_extract::lights::gather::tests`, `crates/rewrites/render-bridge/tests/native_lights.rs`, `native_lights_split.rs`, `crates/rewrites/engine/tests/light_passes.rs`, `light_constants.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
@@ -153,25 +153,25 @@ The light frame is a cut producer (`render_bridge::cut::CUTS`, row
 
 Each light draws at its own passes, in the guest's order (`native_lights::draw_cut_light`). A light with a shader gel draws it first.
 
-When the host draws the scene's light layers
-(`render_bridge::native_lights::scene_path_ready`, the host's
-`draws_scene`), the guest's `0x00031c80` never runs. The Rust frame body
-(`native_lights/frame.rs`) still gathers every drawn light as the guest
-does: the visible list and history, the volume, frusta, visibility,
-records and part visibility.
+The guest's `0x00031c80` and `0x00031170` never run. The Rust frame body
+(`native_lights/frame.rs`) gathers every drawn light as the guest does:
+the visible list and history, the volume, frusta, visibility, records and
+part visibility. A frame it cannot take draws no light:
+
+| Frame drop (`scene_dropped_light_frame_<cause>`) | When |
+|---|---|
+| `standing_down` | the lights stage stands down on the map (`Stage::Lights`) |
+| `host` | no host draws the scene's light layers (`native_lights::scene_path_ready`, the host's `draws_scene`) |
+| `plan` | the frame's plan refused (`frame::plan`); the call is answered as the cut |
+| `passes` | a light's passes' entry plan refused (`passes::plan`); they return at once |
 
 Each light's passes (`native_lights/passes.rs`, `scene_passes`) make
 only their first step, the item lists `0x00040e90` (the item body,
 `light_gather::items`), and stop. No constants, target, stencil or
-layer draw is made, and the call returns as `ret 0x10`. A frame plan
-that refuses is answered as the cut. A light the scene cannot take keeps
-the guest's draw:
-
-| Where it refuses | What draws the light |
-|---|---|
-| the passes' entry plan | the whole original `0x00031170` |
-| `scene_frame::light`, after the item lists | the guest's remaining passes: constants, shadow setup, layers 10 to 14 (`passes::after_lists` returns `None`) |
-| the host's draw of the light (`Host::draw_scene_light` false) | the same: the guest's remaining passes, counted `scene_kept_light_host` |
+layer draw is made, and the call returns as `ret 0x10`
+(`passes::after_lists`), whether the scene took the light or not. A
+light the scene cannot take is dropped for the frame and counted by
+cause (`scene_frame::Dropped`).
 
 `native_lights::scene_frame` puts what the remaining steps would draw
 into the scene. The light and its steps come from the hand-off at the
@@ -185,21 +185,26 @@ only.
 Each drawn layer of the steps is one group of the light,
 `typed_groups::plan` over the lists the item body just made: the entries
 the guest's layer build would keep, in its sorted order. A light whose
-groups cannot all be made puts none in, and the guest's passes draw it.
-A light with the additional casters (`0x00030ed0`), whose record walk
-the cut does not make, is the guest's whole.
+groups cannot all be made puts none in and is dropped.
+
+The additional casters' pair (`0x00030ed0`) is decided at the item lists
+by `passes::additional::empty`. When no candidate's first match in the
+current visibility list is marked `0x1000`, the pair makes no suffix and
+draws nothing, so the light draws its own steps. A pair that would make a
+suffix needs the marker lookup and the suffix's record walk, which are
+not built: `scene_dropped_light_additional_casters`.
 
 | Counter (`render.scene`) | Counts |
 |---|---|
 | `scene_cut_lights`, `scene_cut_light_groups` | lights and groups the scene took |
-| `scene_kept_light_<cause>` | lights the guest draws: `unread`, `constants`, `projection`, `group`, `light`, `additional_casters`, `host` |
-| `scene_kept_light_group_<refusal>` | `group` by the first step that did not read whole (`typed_groups::GroupRefusal`): `layer`, `memory`, `suffix`, `mask`, `sort`, `pass`, `projection`, or `entry_<cause>` (`scene_extract::light_groups::Cause`) |
+| `scene_dropped_light_frame_<cause>` | frames or passes calls that drew nothing (table above) |
+| `scene_dropped_light_<cause>` | lights dropped: `unread`, `constants`, `projection`, `group`, `light`, `additional_casters`, `host` |
+| `scene_dropped_light_group_<refusal>` | `group` by the first step that did not read whole (`typed_groups::GroupRefusal`): `layer`, `memory`, `suffix`, `mask`, `sort`, `pass`, `projection`, or `entry_<cause>` (`scene_extract::light_groups::Cause`) |
 
-Tests: `a_light_the_scene_cannot_take_runs_the_guests_passes`,
-`a_kept_light_is_counted_by_cause_and_group_refusal`
+Tests: `a_light_the_scene_cannot_take_returns_after_its_lists_and_the_guest_draws_nothing`,
+`a_dropped_light_is_counted_by_cause_and_group_refusal`
 (`native_lights/passes.rs`),
-`a_cut_light_the_host_refuses_is_left_to_the_guests_passes`
-(`native_lights.rs`).
+`a_cut_light_the_host_refuses_is_not_drawn` (`native_lights.rs`).
 
 ### Entry state
 
@@ -223,11 +228,10 @@ entry carries them (`frame_scene::EntryState`, read by
   structure record's toggle or a toggle whose values do not read.
 - The cut asks the host once per light, and only for an entry with
   state (`Host::held_state`, `typed_groups::plan_or_refusal`). Not held:
-  `scene_kept_light_group_entry_state`, and the guest's passes draw the
-  light.
+  `scene_dropped_light_group_entry_state`, and the light is dropped.
 - The host checks again at the draw (`gathered_draws`), and a flagged
-  entry before the frame's copy keeps the light when a program of the
-  layer has flag bit 20 (`scene_kept_light_host`).
+  entry before the frame's copy drops the light when a program of the
+  layer has flag bit 20 (`scene_dropped_light_host`).
 
 Tests: `an_objects_toggle_and_a_fade_byte_are_the_entrys_state_and_only_diffuse_and_specular_take_it`
 (`scene_extract::light_groups`),
@@ -267,8 +271,8 @@ triangles before each source position, so each span is one native range:
   other way. Such a range is a draw of its own, its pass's cull with the
   front face reversed (`program::reversed_winding`, `Planned::cull`); a
   pass that culls nothing is unchanged.
-- A span past the part or off a triangle has no range: the guest's
-  passes draw the light (`scene_kept_light_host`).
+- A span past the part or off a triangle has no range: the light is
+  dropped (`scene_dropped_light_host`).
 
 Tests: `visible_subparts_short_of_the_whole_part_are_the_entrys_spans_for_diffuse_and_specular`
 (`scene_extract::light_groups`),
@@ -574,7 +578,7 @@ The layer draw `0x00044550` of layers 10 to 14 returns without its body on the o
 
 - A whole scene group of layer 12 or 13 can skip its handlers for both structure and model entries. Individual indexed emissions keep the handler's ordering and use its resolved draw as the fallback.
 - A material with an unsupplied input or unsupported shadow map binding can decline the resident plan. The indexed path requires a supported resolved shader and state and all sampled resources on each target copy.
-- The visible-light gather, first-person record replay and ranked object-shadow list run as Rust bodies. The dynamic pass body offers the current light after its item lists are ready. A complete admission takes every supported draw and the tail together. A refusal continues at the next guest step with the same lists. The per-layer path keeps the original calls for shader setup, targets and draws. See [native-light-gather.md](native-light-gather.md).
+- The visible-light gather, first-person record replay and ranked object-shadow list run as Rust bodies. The light frame's guest leaves still run as guest calls: the re-pose markers, the visibility `0x001320f0`, the records reset `0x0002cb30`, the object records `0x00133720` and the part visibility `0x00044720`, and a volume, frusta, geometry-flag, extra-caster or record-walk leaf that refuses. None of them draws. See [native-light-gather.md](native-light-gather.md).
 - Diagnostics print as `native-lights:` on stderr: at load, each light texture with its size or why it did not load, plus resident structure parts and unread materials; at run time, each refusal reason on its first occurrence, and counts by reason every 1800 host decisions.
 
 ## Not verified

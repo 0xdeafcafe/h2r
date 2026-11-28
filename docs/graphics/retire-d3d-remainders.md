@@ -89,10 +89,9 @@ What keeps an item, by stage (**Code**):
   globals bitmap is not uniform, a skip that would change a render
   state, and a view whose W mode, stage palettes, stencil or inherited
   cull do not read or hold ([native-decorators.md](native-decorators.md)).
-- **The first person**: `0x0003fdf0` is a cut once a frame's check passes
-  (`native_first_person::held`); until then its body draws, layer 3 all
-  the guest's. After it no layer draw runs under it, and a part it cannot
-  draw is a named drop (`native_first_person::Dropped`).
+- **The first person**: `0x0003fdf0` is a cut from the first frame. No
+  layer draw runs under it, and a part it cannot draw is a named drop
+  (`native_first_person::Dropped`).
 
 ### Layer 3's objects before the call
 
