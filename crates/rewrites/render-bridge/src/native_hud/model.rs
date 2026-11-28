@@ -71,7 +71,7 @@ pub(super) fn predict(mem: &dyn GuestMemory, widget: u32, parent: u32, mxcsr: u3
         return None;
     }
     let camera = ui_model::camera(mem, widget, parent, mxcsr)?;
-    Some(UiModel::new(objects, camera.center, camera.bounds, camera.fov))
+    Some(UiModel::new(objects, camera.center, camera.bounds, camera.fov, camera.planes))
 }
 
 /// The part of a view the Rust read and the game's disagree on.
@@ -84,7 +84,13 @@ enum Mismatch {
 fn same_camera(a: &UiModel, b: &UiModel) -> bool {
     let bits = |m: &UiModel| {
         let c = &m.view.camera;
-        (c.position.map(f32::to_bits), c.forward.map(f32::to_bits), c.up.map(f32::to_bits), c.fov_y.to_bits())
+        (
+            c.position.map(f32::to_bits),
+            c.forward.map(f32::to_bits),
+            c.up.map(f32::to_bits),
+            c.fov_y.to_bits(),
+            c.planes.map(f32::to_bits),
+        )
     };
     a.viewport == b.viewport && bits(a) == bits(b)
 }
@@ -261,6 +267,7 @@ fn read_view(
             forward: vec3(mem.u32(stack.checked_add(16)?).ok()?)?,
             up: vec3(up)?,
             fov_y: f32::from_bits(camera.fov),
+            planes: camera.planes.map(f32::from_bits),
         },
         objects,
     };
@@ -489,6 +496,8 @@ mod tests {
             .put_f32(0x0045_dbc0, 0.5)
             .put_f32(0x0045_e5b0, 2.5)
             .put_f32(0x0045_e5ac, 0.5)
+            .put_f32(ui_model::VIEW_NEAR, 0.0625)
+            .put_f32(ui_model::VIEW_FAR, 200.0)
             .put_u32(stack + 16, forward)
             .put_f32(stack + 20, 0.75);
         for (i, outer) in [0u16, 0, 480, 640].into_iter().enumerate() {
@@ -523,6 +532,7 @@ mod tests {
         assert_eq!(view.camera.up, [0.0, 0.0, 1.0]);
         assert_eq!(view.camera.position, [0.0, 1.0, 2.0]);
         assert_eq!(view.camera.fov_y, 0.75);
+        assert_eq!(view.camera.planes, [0.0625, 200.0]);
     }
 
     /// The item call's Rust read of the view, before the game's draw runs,

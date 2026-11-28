@@ -14,6 +14,11 @@ const CAMERA_BOUNDS: u32 = 0x38;
 const FOV_MIN: u32 = 0x0045_dbc0;
 const FOV_MAX: u32 = 0x0045_e5b0;
 const FOV_FACTOR: u32 = 0x0045_e5ac;
+/// The near and far planes the model view `0x0002c560` puts in its render
+/// camera (`+0x40`, `+0x44`; `0x0002c586`, `0x0002c5da`): its own, not the
+/// game view's (`0x00485ad4`).
+pub const VIEW_NEAR: u32 = 0x0046_7014;
+pub const VIEW_FAR: u32 = 0x0046_7018;
 
 const SECTION_RANGES: u32 = 0x0c;
 const SECTION_INDICES: u32 = 0x24;
@@ -67,6 +72,8 @@ pub struct Camera {
     pub center: [u32; 3],
     pub bounds: [u16; 4],
     pub fov: u32,
+    /// Near and far ([`VIEW_NEAR`], [`VIEW_FAR`]) as `f32` bits.
+    pub planes: [u32; 2],
 }
 
 fn bounds(mem: &dyn GuestMemory, at: u32) -> Option<[i32; 4]> {
@@ -122,7 +129,12 @@ pub fn camera(mem: &dyn GuestMemory, widget: u32, parent: u32, mxcsr: u32) -> Op
     if !center.iter().chain([&fov]).all(|&bits| f32::from_bits(bits).is_finite()) {
         return None;
     }
-    Some(Camera { center, bounds: viewport, fov })
+    let planes = [mem.u32(VIEW_NEAR).ok()?, mem.u32(VIEW_FAR).ok()?];
+    let [near, far] = planes.map(f32::from_bits);
+    if !(near.is_finite() && far.is_finite() && near > 0.0 && far > near) {
+        return None;
+    }
+    Some(Camera { center, bounds: viewport, fov, planes })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,6 +252,8 @@ mod tests {
             .put_f32(FOV_MIN, 1.0)
             .put_f32(FOV_MAX, 10.0)
             .put_f32(FOV_FACTOR, 0.25)
+            .put_f32(VIEW_NEAR, 0.0625)
+            .put_f32(VIEW_FAR, 200.0)
             .put_f32(def + CAMERA_FOV, 15.0);
         for (i, (base, scale, anim)) in [(25.0, 2.0, 3.0), (40.0, 1.0, 5.0), (51.0, 4.0, 7.0)]
             .into_iter().enumerate()
@@ -257,6 +271,9 @@ mod tests {
         assert_eq!(pose.center.map(f32::from_bits), [19.0, 33.0, 31.0]);
         assert_eq!(pose.bounds, [150, 111, 170, 161]);
         assert_eq!(f32::from_bits(pose.fov), 2.5);
+        assert_eq!(pose.planes.map(f32::from_bits), [0.0625, 200.0]);
+        mem.put_f32(VIEW_FAR, 0.03125);
+        assert_eq!(camera(&mem, widget, context, 0x1f80), None, "a far plane before the near one");
     }
 
     #[test]

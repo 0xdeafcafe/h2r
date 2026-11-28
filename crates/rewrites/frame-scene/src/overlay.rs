@@ -255,6 +255,8 @@ pub struct OverlayCamera {
     pub up: [f32; 3],
     /// The vertical field of view, radians.
     pub fov_y: f32,
+    /// The near and far planes of the view's render camera record.
+    pub planes: [f32; 2],
 }
 
 /// A model widget's view (widget type 7, docs/formats/ui.md): the
@@ -569,7 +571,7 @@ impl Overlay {
     pub fn push_model_view(&mut self, viewport: ClipRect, view: OverlayModelView) -> Result<u32, OverlayError> {
         let clip = self.clip(viewport)?;
         let c = &view.camera;
-        if !finite(&c.position) || !finite(&c.forward) || !finite(&c.up) || !c.fov_y.is_finite() {
+        if !finite(&c.position) || !finite(&c.forward) || !finite(&c.up) || !c.fov_y.is_finite() || !finite(&c.planes) {
             return Err(OverlayError::Geometry);
         }
         self.model_views.push(view);
@@ -994,7 +996,7 @@ mod tests {
     }
 
     fn camera() -> OverlayCamera {
-        OverlayCamera { position: [0.0, -2.0, 0.5], forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 0.9 }
+        OverlayCamera { position: [0.0, -2.0, 0.5], forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 0.9, planes: [0.0625, 200.0] }
     }
 
     #[test]
@@ -1126,7 +1128,7 @@ mod tests {
         let glyph = [OverlayGlyph { index: 1, rect: [0.0, 0.0, 4.0, 4.0] }];
         let blur = OverlayBlur { tap: 1.0, spreads: vec![1.0], pick: 0.0 };
         let view = OverlayModelView {
-            camera: OverlayCamera { position: [0.0; 3], forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 1.0 },
+            camera: OverlayCamera { position: [0.0; 3], forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 1.0, planes: [0.0625, 200.0] },
             objects: vec![1],
         };
         o.push_movie_frame(sprite(), all, quad(0.0, 0.0), OverlayMovie { movie: 9, frame: 4 }).unwrap();
