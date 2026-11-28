@@ -22,13 +22,12 @@ pub enum UiScope {
     FrameTail,
 }
 
-const SCOPES: [(UiScope, &Point, &Point, Option<&Point>); 6] = [
+const SCOPES: [(UiScope, &Point, &Point, Option<&Point>); 5] = [
     (UiScope::Layers, &UI_RENDER_LAYERS, &LAYERS_RETURN, None),
     (UiScope::Widget, &ITEM_CALL, &ITEM_RETURN, None),
     (UiScope::Hud, &HUD_DRAW, &HUD_RETURN, Some(&HUD_HIDDEN_RETURN)),
     (UiScope::Loading, &LOADING_DRAW, &LOADING_RETURN, Some(&LOADING_EMPTY_RETURN)),
     (UiScope::Overlay, &FADE_DRAW, &FADE_RETURN, None),
-    (UiScope::Overlay, &OVERLAY_RECT_DRAW, &OVERLAY_RECT_RETURN, None),
 ];
 
 const WIDGET_COUNT_FROM_EBP: u32 = 4;
@@ -379,7 +378,7 @@ fn tail_caller(mem: &dyn GuestMemory, stack: u32, caller: u32) -> bool {
 
 pub(super) fn place(b: &mut Builder<'_>) {
     super::backdrop::place(b);
-    super::outline::place(b);
+    super::screen_draw::place(b);
     for (start, end, caller) in [
         (&TAIL_COPY, &TAIL_COPY_END, TAIL_COPY_CALLER),
         (&TAIL_COMPOSITE, &TAIL_COMPOSITE_END, TAIL_COMPOSITE_CALLER),

@@ -8,20 +8,16 @@
 //! combine 1, 0, the strength `[0x0045dc20]`, `y` 0.0; then a bare RET.
 //! The blur's call returns to `0x00235794`.
 //!
-//! At that call's entry ([`read`]) the draws are what `engine::glow::blur`
-//! gives for those words and the combiner what `engine::glow::blur_combiner`
-//! gives for the strength and `y`. The guest's code runs whole: its target
-//! binds, texture stage writes, combiner block and dirty bits stay its own.
-//! The host arms the device to leave out its draws and draw the overlay's
-//! blur in their place when the wrapper returns ([`Host::modal_blur`],
-//! [`Host::finish_modal_blur`]); a draw that does not match the plan, or a
-//! pass that does not record, gives the guest's draws back in order. A
-//! call that does not read is the game's, counted by reason ([`Refusal`]).
+//! [`wrapper`] builds the call's words from the fraction and the globals
+//! and gives what `engine::glow::blur` gives for them and what
+//! `engine::glow::blur_combiner` gives for the strength and `y`. The
+//! wrapper is implemented here ([`place`]): the guest's blur body never
+//! runs, the host places the pass ([`Host::modal_blur`],
+//! [`Host::finish_modal_blur`]) and the overlay's blur is listed. A call
+//! the plan cannot take stops by name ([`Refusal`]).
 //!
 //! [`Host::modal_blur`]: super::Host::modal_blur
 //! [`Host::finish_modal_blur`]: super::Host::finish_modal_blur
-
-use std::cell::RefCell;
 
 use engine::glow::{self, BlurArgs, BlurDraw, Psdef};
 use engine::memory::GuestMemory;
@@ -44,6 +40,10 @@ const WORDS: u32 = 10;
 const PSDEF_ALPHA_2: u32 = 0x0048_4f70;
 const PSDEF_CONSTANTS: [u32; 3] = [0x0048_4f94, 0x0048_4fa0, 0x0048_4fac];
 const PSDEF_COUNT: u32 = 0x0048_503c;
+/// The wrapper's multiplier of the fraction (`mulss`) and the strength it
+/// pushes.
+const STEPS_FACTOR: u32 = 0x0045_de14;
+const STRENGTH: u32 = 0x0045_dc20;
 /// Stage 2's alpha inputs of the form without `y`.
 const ALPHA_2_PLAIN: u32 = 0x1c20_1d20;
 const ONE: u32 = 0x3f80_0000;
@@ -119,6 +119,9 @@ pub fn pick(psdef: &Psdef) -> Option<f32> {
 
 /// The blur under a dialog at the entry of `0x000211a0`: `esp` its entry
 /// ESP, `source` EAX. `Ok(None)`: another caller's call, or no draws.
+/// (The words as the guest pushed them; the replacement builds them with
+/// [`wrapper`].)
+#[cfg(test)]
 pub fn read(
     mem: &dyn GuestMemory,
     esp: u32,
@@ -134,6 +137,41 @@ pub fn read(
     for (i, w) in words.iter_mut().enumerate() {
         *w = arg(i as u32).ok_or(Refusal::Arguments)?;
     }
+    let wrapper_esp = esp.checked_add(4 + 4 * WORDS).ok_or(Refusal::Arguments)?;
+    let caller = word(mem, wrapper_esp).ok_or(Refusal::Arguments)?;
+    build(mem, words, source, wrapper_esp, caller, mxcsr, x87_control)
+}
+
+/// The blur `0x00235756` makes, from its argument: `fraction` the screen's
+/// transition fraction (XMM0), `esp` the wrapper's return slot. The words
+/// are the ones the wrapper pushes for `0x000211a0` (steps, scale 1.0,
+/// growth 1.0, dest 1, other -1, last 0, combine 1, 0, the strength
+/// `[0x0045dc20]`, `y` 0.0). `Ok(None)`: no draws.
+pub fn wrapper(
+    mem: &dyn GuestMemory,
+    fraction: f32,
+    esp: u32,
+    mxcsr: u32,
+    x87_control: u16,
+) -> Result<Option<ModalBlur>, Refusal> {
+    let factor = f32::from_bits(word(mem, STEPS_FACTOR).ok_or(Refusal::Arguments)?);
+    let steps = (fraction * factor).to_bits();
+    let strength = word(mem, STRENGTH).ok_or(Refusal::Arguments)?;
+    let words = [steps, ONE, ONE, 1, u32::MAX, 0, 1, 0, strength, 0];
+    let caller = word(mem, esp).ok_or(Refusal::Arguments)?;
+    build(mem, words, 0, esp, caller, mxcsr, x87_control)
+}
+
+/// The blur for `words` (the ten the blur takes) from `source`.
+fn build(
+    mem: &dyn GuestMemory,
+    words: [u32; WORDS as usize],
+    source: u32,
+    wrapper_esp: u32,
+    caller: u32,
+    mxcsr: u32,
+    x87_control: u16,
+) -> Result<Option<ModalBlur>, Refusal> {
     let [
         steps,
         scale,
@@ -157,8 +195,6 @@ pub fn read(
     {
         return Err(Refusal::Arguments);
     }
-    let wrapper_esp = esp.checked_add(4 + 4 * WORDS).ok_or(Refusal::Arguments)?;
-    let caller = word(mem, wrapper_esp).ok_or(Refusal::Arguments)?;
     let args = BlurArgs {
         source,
         steps,
@@ -214,55 +250,6 @@ pub fn read(
     }))
 }
 
-thread_local! {
-    /// The armed call: its wrapper's return slot and its blur.
-    static ARMED: RefCell<Option<(u32, OverlayBlur)>> = const { RefCell::new(None) };
-}
-
-/// At the blur's entry: arms the host's replacement for a call of the
-/// blur under a dialog.
-fn enter(mem: &mut dyn GuestMemory, esp: u32, source: u32, mxcsr: u32, x87_control: u16) {
-    if word(mem, esp) != Some(BLUR_RETURN) {
-        return;
-    }
-    // A call left armed by an unwind is not this one.
-    ARMED.with(|a| a.borrow_mut().take());
-    let call = match read(mem, esp, source, mxcsr, x87_control) {
-        Ok(Some(call)) => call,
-        Ok(None) => return,
-        Err(why) => {
-            super::kept::ui(why.counter());
-            return;
-        }
-    };
-    let Some(host) = host() else { return };
-    if host.modal_blur(mem, &call) {
-        ARMED.with(|a| *a.borrow_mut() = Some((call.wrapper_esp, call.blur)));
-    } else {
-        super::kept::ui(Ui::OverlayModalBlurRefusedPass);
-    }
-}
-
-/// At the wrapper's return (`esp` its return slot): the host commits the
-/// replacement, and the blur joins the scene's overlay.
-fn leave(mem: &mut dyn GuestMemory, esp: u32) {
-    let Some((armed, blur)) = ARMED.with(|a| a.borrow_mut().take()) else {
-        return;
-    };
-    if armed != esp {
-        return;
-    }
-    let Some(host) = host() else { return };
-    if !host.finish_modal_blur(mem, esp) {
-        super::kept::ui(Ui::OverlayModalBlurReplayed);
-        return;
-    }
-    Ui::OverlayModalBlurs.count();
-    if record(blur) == Some(false) {
-        eprintln!("ui overlay: the scene's overlay refused a dialog's blur");
-    }
-}
-
 /// Lists `blur` in the scene's overlay over the UI's canvas.
 fn record(blur: OverlayBlur) -> Option<bool> {
     let size = scene_extract::ui::CANVAS;
@@ -272,32 +259,41 @@ fn record(blur: OverlayBlur) -> Option<bool> {
     crate::scene_step::with_overlay(|o| o.append(&part).is_ok())
 }
 
+/// `0x00235756` in Rust: the blur the wrapper asks `0x000211a0` for is
+/// placed over the bound target and in the scene's overlay, and the
+/// wrapper returns. The guest's blur body (`0x000211a0` and its combiner,
+/// target binds, quads and copy) never runs.
+fn replace(
+    cpu: &mut runtime::CpuAbi,
+    ctx: &mut runtime::ExecCtx,
+    _addr: u32,
+) -> Result<runtime::TransferAbi, runtime::GuestFault> {
+    let rt = std::sync::Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    let esp = cpu.esp;
+    let ret = mem.u32(esp)?;
+    let fraction = f32::from_le_bytes([cpu.xmm[0][0], cpu.xmm[0][1], cpu.xmm[0][2], cpu.xmm[0][3]]);
+    let planned = wrapper(&*mem, fraction, esp, cpu.mxcsr, cpu.x87.control)
+        .unwrap_or_else(|why| unimplemented!("dialog blur: {why:?}"));
+    if let Some(call) = planned {
+        let host = host().unwrap_or_else(|| unimplemented!("dialog blur: no host"));
+        if !host.modal_blur(&mut *mem, &call) || !host.finish_modal_blur(&mut *mem, esp) {
+            unimplemented!("dialog blur: the device did not take the pass");
+        }
+        Ui::OverlayModalBlurs.count();
+        if record(call.blur) != Some(true) {
+            unimplemented!("dialog blur: the scene's overlay refused it");
+        }
+    }
+    // The wrapper's bare RET pops its return slot.
+    cpu.esp = esp.wrapping_add(4);
+    Ok(runtime::TransferAbi::ret(ret))
+}
+
 pub(super) fn place(b: &mut Builder<'_>) {
     b.raw()
-        .observe_before(
-            &points::SCREEN_CONVOLUTION_BLUR,
-            "native_ui_modal_blur",
-            |o| {
-                let mut mem = o.guest();
-                enter(
-                    &mut *mem,
-                    o.cpu.esp,
-                    o.cpu.eax,
-                    o.cpu.mxcsr,
-                    o.cpu.x87.control,
-                );
-            },
-        )
-        .context_only()
-        .optional();
-    b.raw()
-        .observe_after(&points::UI_MODAL_BLUR, "native_ui_modal_blur_end", |o| {
-            let mut mem = o.guest();
-            // The wrapper's bare RET pops its return slot.
-            leave(&mut *mem, o.cpu.esp.wrapping_sub(4));
-        })
-        .context_only()
-        .optional();
+        .implement(&points::UI_MODAL_BLUR, "native_ui_modal_blur", replace)
+        .context_only();
 }
 
 #[cfg(test)]
@@ -442,6 +438,22 @@ mod tests {
             Err(Refusal::Arguments),
             "taps not a square"
         );
+    }
+
+    /// The wrapper's own words (the fraction times its factor, the fixed
+    /// ones, the strength global) give the blur the guest's stack gave.
+    #[test]
+    fn the_wrapper_builds_the_blur_the_guest_pushed() {
+        let mut mem = fixture(3.5, 0.25);
+        mem.put_f32(STEPS_FACTOR, 7.0).put_f32(STRENGTH, 0.25);
+        // The wrapper's return slot holds its caller.
+        mem.put_u32(ESP + 44, 0x0023_512d);
+        let from_stack = read(&mem, ESP, 0, MXCSR, X87).unwrap().unwrap();
+        let from_wrapper = wrapper(&mem, 0.5, ESP + 44, MXCSR, X87).unwrap().unwrap();
+        assert_eq!(from_wrapper.blur, from_stack.blur);
+        assert_eq!(from_wrapper.draws.len(), from_stack.draws.len());
+        assert_eq!(from_wrapper.copy, from_stack.copy);
+        assert_eq!(wrapper(&mem, 0.0, ESP + 44, MXCSR, X87), Ok(None));
     }
 
     /// Each refusal has its own counter.

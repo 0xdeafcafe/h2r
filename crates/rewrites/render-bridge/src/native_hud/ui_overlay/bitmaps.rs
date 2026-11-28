@@ -597,7 +597,7 @@ pub fn meter_tint(mem: &dyn GuestRead, channel: f32) -> Option<u32> {
 
 /// `cvttss2si` into a 16-bit add: toward zero, the integer indefinite
 /// (low half 0) out of range.
-pub(super) fn truncated(v: f32) -> i16 {
+pub fn truncated(v: f32) -> i16 {
     if v.is_finite() && (-2_147_483_648.0..2_147_483_648.0).contains(&v) {
         v as i32 as i16
     } else {
@@ -632,32 +632,15 @@ fn placed(
     Ok([near[0], far[0], near[1], far[1]])
 }
 
-/// The meter widget's draw `0x002b07e2`: one rectangle of the meter
-/// colour over texel 0 of the rasterizer bitmap's second image, or why
-/// the game draws it. No scenario draws nothing.
-pub fn meter(
-    mem: &dyn GuestRead,
-    mut header: UiWidget,
-    widget: u32,
-    view_at: u32,
-) -> Result<UiWidget, Refusal> {
+/// `0x0013c050`'s rectangle `[x0, y0, x1, y1]` in colour `argb`: one quad
+/// over texel 0 of the rasterizer bitmap's second image, drawn by
+/// `0x00052040`; `None` when it draws nothing (no scenario, quads off), or
+/// why the game draws it.
+pub fn rect_bitmap(mem: &dyn GuestRead, rect: [f32; 4], argb: u32) -> Result<Option<UiBitmap>, Refusal> {
     use Refusal::{State, Unreadable};
     let w32 = |a: Option<u32>| a.and_then(|a| word(mem, a)).ok_or(Unreadable);
-    let channel = float(mem, at::CHANNEL).ok_or(Unreadable)?;
-    let argb = meter_tint(mem, channel).ok_or(Unreadable)?;
-    let view = view(mem, view_at).ok_or(Unreadable)?;
-    if byte(mem, at::DEBUG_LABELS).ok_or(Unreadable)? != 0 {
-        return Err(State);
-    }
-    let lens = Lens::read(mem).ok_or(Unreadable)?;
-    let [x0, x1, y0, y1] = placed(mem, &lens, &header, widget, view)?;
-    let [px, py] = view_offset(view);
-    let x = |v: f32| truncated(v).wrapping_add(px);
-    let y = |v: f32| truncated(v).wrapping_add(py);
-    let rect = [x(x0), y(y0), x(x1), y(y1)].map(f32::from);
-    // `0x0013c050`.
     if w32(Some(at::SCENARIO))? == 0 {
-        return Ok(header);
+        return Ok(None);
     }
     let matg = w32(Some(at::GLOBALS))?;
     let Some(rasterizer) = first(
@@ -675,18 +658,18 @@ pub fn meter(
     if (w32(data.checked_add(IMAGE_COUNT))? as i32) <= i32::from(METER_IMAGE) {
         return Err(State);
     }
-    let image = w32(data.checked_add(IMAGES))?
+    // The guest reads the image's record before it draws.
+    w32(data.checked_add(IMAGES))?
         .checked_add(u32::from(METER_IMAGE) * IMAGE_BYTES)
         .ok_or(Unreadable)?;
     // `0x00052040`.
     // Quads off: the guest draws none. The native overlay loads the
     // bitmap by tag, so the guest's residency does not gate it.
     if short(mem, at::QUADS_OFF).ok_or(Unreadable)? != 0 {
-        return Ok(header);
+        return Ok(None);
     }
-    let _ = image;
     let shade = default_tint(mem).ok_or(Unreadable)?;
-    header.content = UiContent::Bitmap(UiBitmap {
+    Ok(Some(UiBitmap {
         texture: OverlayTexture::Bitmap {
             tag: datum,
             image: METER_IMAGE,
@@ -700,7 +683,35 @@ pub fn meter(
             point: false,
         },
         blend: blend(mem, 0).ok_or(Unreadable)?,
-    });
+    }))
+}
+
+/// The meter widget's draw `0x002b07e2`: one rectangle of the meter
+/// colour over texel 0 of the rasterizer bitmap's second image, or why
+/// the game draws it. No scenario draws nothing.
+pub fn meter(
+    mem: &dyn GuestRead,
+    mut header: UiWidget,
+    widget: u32,
+    view_at: u32,
+) -> Result<UiWidget, Refusal> {
+    use Refusal::{State, Unreadable};
+    let channel = float(mem, at::CHANNEL).ok_or(Unreadable)?;
+    let argb = meter_tint(mem, channel).ok_or(Unreadable)?;
+    let view = view(mem, view_at).ok_or(Unreadable)?;
+    if byte(mem, at::DEBUG_LABELS).ok_or(Unreadable)? != 0 {
+        return Err(State);
+    }
+    let lens = Lens::read(mem).ok_or(Unreadable)?;
+    let [x0, x1, y0, y1] = placed(mem, &lens, &header, widget, view)?;
+    let [px, py] = view_offset(view);
+    let x = |v: f32| truncated(v).wrapping_add(px);
+    let y = |v: f32| truncated(v).wrapping_add(py);
+    let rect = [x(x0), y(y0), x(x1), y(y1)].map(f32::from);
+    // `0x0013c050`.
+    if let Some(quad) = rect_bitmap(mem, rect, argb)? {
+        header.content = UiContent::Bitmap(quad);
+    }
     Ok(header)
 }
 

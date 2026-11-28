@@ -822,6 +822,12 @@ points! { ALL;
     UI_HUD_DRAW @ 0x0019_17eb: [fn() ret 0], Optional; "docs/graphics/native-renderer.md";
     UI_FADE_DRAW @ 0x0004_0890: [fn() ret 0], Optional; "docs/graphics/native-renderer.md";
     UI_OVERLAY_RECT_DRAW @ 0x0013_c050: [fn(bounds: ecx, color: eax) ret 0], Optional; "docs/graphics/native-renderer.md";
+    /// A widget's debug outline (`0x00235d69`): EAX the widget's rectangle
+    /// (`i16` top, left, bottom, right), ESI its view's, XMM0 the depth,
+    /// stack 0 the colour (four floats, alpha first); `ret 4`. It projects
+    /// the four corners, packs the colour (`0x00131e50`) and draws the closed
+    /// strip of five points.
+    UI_WIDGET_OUTLINE @ 0x0023_5d69: [fn(rect: eax, view: esi, depth: xmm0, colour: stack 0) ret 4], Optional; "docs/graphics/native-renderer.md";
     UI_LOADING_DRAW @ 0x0002_89e0: [fn() -> al ret 0], Optional; "docs/graphics/native-renderer.md";
     NETWORK_PRE_UPDATE @ 0x0008_df50: [opaque], Optional; "docs/engine/engine-map.md";
     NETWORK_POST_UPDATE @ 0x0008_dfc0: [opaque], Optional; "docs/engine/engine-map.md";

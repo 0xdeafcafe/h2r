@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use engine::memory::GuestMemory;
-use render_bridge::native_hud::{Host, HudTagQuad, HudVertices, OutlineVertices, UiScope};
+use render_bridge::native_hud::{Host, HudTagQuad, HudVertices, UiScope};
 
 struct Glue;
 
@@ -72,10 +72,6 @@ impl Host for Glue {
 
     fn sensor_blip(&self, _: &mut dyn GuestMemory, _: &HudVertices) -> bool {
         guest("motion sensor blip")
-    }
-
-    fn outline(&self, _: &mut dyn GuestMemory, _: &OutlineVertices) -> bool {
-        guest("outline strip")
     }
 
     fn inline_ui_quad(&self, _: &mut dyn GuestMemory, primitive: u32, _: Vec<u8>) -> bool {

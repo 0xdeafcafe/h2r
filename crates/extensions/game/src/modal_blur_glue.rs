@@ -4,7 +4,7 @@
 //! item is placed as a stage over the bound target (target 0, the UI's),
 //! drawn with the call's steps (the copy back after an odd count of steps
 //! is one more of them). A quad that names a target other than 0 or 1 is
-//! not planned, and the game's code draws the blur.
+//! not planned and stops by name.
 
 use std::sync::Mutex;
 
