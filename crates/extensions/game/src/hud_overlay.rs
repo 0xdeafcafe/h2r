@@ -376,8 +376,21 @@ pub fn ui_fit() -> Option<UiFit> {
 /// frame, in the UI fit set here: whether it was placed.
 pub fn place(mem: &mut dyn GuestMemory, overlay: Arc<Overlay>, assets: Arc<Mutex<OverlayAssets>>) -> bool {
     let fit = ui_fit().map(|f| f.transform);
-    crate::native_targets_glue::push(&*mem, FrameSlot::Overlay, OverlayPass { overlay, assets: Some(assets), movie: None, fit, tail: false });
+    let objects = model_view_objects(&*mem, &overlay);
+    let pass = OverlayPass { overlay, assets: Some(assets), movie: None, objects, fit, tail: false };
+    crate::native_targets_glue::push(&*mem, FrameSlot::Overlay, pass);
     true
+}
+
+/// The objects of `overlay`'s model views, planned here, at the hook
+/// (`native_objects_glue::model_view`); `None` for a list with no model
+/// view.
+fn model_view_objects(mem: &dyn GuestMemory, overlay: &Overlay) -> Option<crate::native_objects_glue::model_view::Planned> {
+    if overlay.model_views.is_empty() {
+        return None;
+    }
+    let handles: Vec<u32> = overlay.model_views.iter().flat_map(|v| v.objects.iter().copied()).collect();
+    Some(crate::native_objects_glue::model_view::plan(mem, &handles))
 }
 
 /// A movie's frame (`render_bridge::native_movie`): its overlay placed at
@@ -385,7 +398,7 @@ pub fn place(mem: &mut dyn GuestMemory, overlay: Arc<Overlay>, assets: Arc<Mutex
 /// the stage records. Whether it was placed.
 pub fn place_movie(mem: &mut dyn GuestMemory, overlay: Overlay, movie: native_render::overlay::MovieImage) -> bool {
     let fit = ui_fit().map(|f| f.transform);
-    let pass = OverlayPass { overlay: Arc::new(overlay), assets: None, movie: Some(movie), fit, tail: false };
+    let pass = OverlayPass { overlay: Arc::new(overlay), assets: None, movie: Some(movie), objects: None, fit, tail: false };
     crate::native_targets_glue::push(&*mem, FrameSlot::Overlay, pass);
     true
 }
@@ -402,7 +415,7 @@ pub fn place_blit(mem: &mut dyn GuestMemory, blit: &render_bridge::render_frame:
         height: blit.size[1],
         bgra: Arc::from(blit.bgra.as_slice()),
     };
-    let pass = OverlayPass { overlay: Arc::new(blit::overlay(blit)), assets: None, movie: Some(picture), fit: None, tail: false };
+    let pass = OverlayPass { overlay: Arc::new(blit::overlay(blit)), assets: None, movie: Some(picture), objects: None, fit: None, tail: false };
     crate::native_targets_glue::push(&*mem, FrameSlot::Outside, pass);
     Ok(())
 }
@@ -412,7 +425,7 @@ pub fn place_blit(mem: &mut dyn GuestMemory, blit: &render_bridge::render_frame:
 /// unfitted (the guest's quads are the window's, in the target's pixels).
 /// Whether it was placed.
 pub fn place_tail(mem: &mut dyn GuestMemory, overlay: Overlay) -> bool {
-    let pass = OverlayPass { overlay: Arc::new(overlay), assets: None, movie: None, fit: None, tail: true };
+    let pass = OverlayPass { overlay: Arc::new(overlay), assets: None, movie: None, objects: None, fit: None, tail: true };
     crate::native_targets_glue::push(&*mem, FrameSlot::Outside, pass);
     true
 }
@@ -491,6 +504,9 @@ struct OverlayPass {
     assets: Option<Arc<Mutex<OverlayAssets>>>,
     /// The movie frame the list's movie item shows, uploaded first.
     movie: Option<native_render::overlay::MovieImage>,
+    /// The model views' objects, planned at the hook; `None` for a list
+    /// with no model view, which draws with no object stage.
+    objects: Option<crate::native_objects_glue::model_view::Planned>,
     fit: Option<[f32; 4]>,
     /// The frame tail's: its refusals are counted as the tail's.
     tail: bool,
@@ -537,7 +553,14 @@ impl Stage for OverlayPass {
             }
             None => OverlayPlan::new(overlay, [size.width, size.height], &NoGlyphs),
         };
-        let (encoded, stats) = gpu.prepare(&t.device, &t.color, &plan, residency).unwrap_or_else(|why| unimplemented!("overlay: {why}"));
+        let prepared = match &self.objects {
+            Some(planned) => {
+                let mut objects = crate::native_objects_glue::model_view::Objects { planned, t };
+                gpu.prepare_with_objects(&t.device, &t.color, &plan, residency, &mut objects)
+            }
+            None => gpu.prepare(&t.device, &t.color, &plan, residency),
+        };
+        let (encoded, stats) = prepared.unwrap_or_else(|why| unimplemented!("overlay: {why}"));
         native_render::ui_gpu::count_overlay(&stats);
         if self.tail && stats.refused_hold != 0 {
             render_bridge::frame_tail::refused("hold");

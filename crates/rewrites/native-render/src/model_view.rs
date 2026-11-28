@@ -32,31 +32,47 @@ use crate::overlay::{Scissor, scissor};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// The record would not be a camera: a FOV, plane or axis that does not
-    /// make one ([`RenderCamera::is_usable`]).
+    /// make one ([`RenderCamera::is_usable`]). The widget's reader never
+    /// gives one (`engine::ui_model::camera` clamps the FOV to the game's
+    /// limits, takes the game's planes and the constant axes, and the
+    /// overlay refuses words that are not finite), so this names a broken
+    /// invariant, not a view the game draws.
     Camera,
-    /// The viewport does not fit the record's `i16` edges, or leaves no
-    /// pixel of the target.
-    Clip,
 }
 
 impl Refusal {
     pub fn name(self) -> &'static str {
         match self {
             Refusal::Camera => "model_view_camera",
-            Refusal::Clip => "model_view_clip",
         }
     }
 }
 
+/// One of the record's `i16` viewport edges for a canvas pixel `v`: the
+/// low half of the call's argument, as `0x0002c560` stores it.
+fn edge(v: u32) -> i16 {
+    v as u16 as i16
+}
+
+/// The record's viewport `[top, left, bottom, right]` for `viewport`
+/// (canvas pixels), its edges as the call stores them ([`edge`]).
+pub fn record_viewport(viewport: &ClipRect) -> [i16; 4] {
+    let (left, top) = (viewport.x, viewport.y);
+    let (right, bottom) = (left.wrapping_add(viewport.width), top.wrapping_add(viewport.height));
+    [edge(top), edge(left), edge(bottom), edge(right)]
+}
+
 /// The render camera record `0x0002c560` fills for `view` drawn into
 /// `viewport` (canvas pixels), as `scene_extract::layout::camera::read`
-/// reads it back with no paired projection.
-pub fn camera(view: &OverlayModelView, viewport: &ClipRect) -> Result<RenderCamera, Refusal> {
-    let edge = |v: Option<u32>| v.and_then(|v| i16::try_from(v).ok()).ok_or(Refusal::Clip);
-    let left = edge(Some(viewport.x))?;
-    let top = edge(Some(viewport.y))?;
-    let right = edge(viewport.x.checked_add(viewport.width))?;
-    let bottom = edge(viewport.y.checked_add(viewport.height))?;
+/// reads it back with no paired projection. `Ok(None)`: the record's
+/// viewport holds no pixel (an edge past `i16` wraps, as the call's
+/// 16-bit stores do, and leaves right of left or bottom over top), so the
+/// view draws nothing, as the game's draws clipped to it do.
+pub fn camera(view: &OverlayModelView, viewport: &ClipRect) -> Result<Option<RenderCamera>, Refusal> {
+    let [top, left, bottom, right] = record_viewport(viewport);
+    if right <= left || bottom <= top {
+        return Ok(None);
+    }
     let c = &view.camera;
     let camera = RenderCamera {
         position: c.position,
@@ -68,7 +84,7 @@ pub fn camera(view: &OverlayModelView, viewport: &ClipRect) -> Result<RenderCame
         near: c.planes[0],
         far: c.planes[1],
     };
-    if camera.is_usable() { Ok(camera) } else { Err(Refusal::Camera) }
+    if camera.is_usable() { Ok(Some(camera)) } else { Err(Refusal::Camera) }
 }
 
 /// A model view between the overlay's batches, for the object stage.
@@ -92,7 +108,9 @@ pub struct PlanModelView {
 
 /// The view of an overlay item: `view` into `clip` (pixels of a `guest`
 /// canvas) drawn into a `target` of the renderer's size, after `before`
-/// batches and `blurs` blurs.
+/// batches and `blurs` blurs. `Ok(None)`: its viewport leaves no pixel of
+/// the record ([`camera`]) or of the target (no canvas, or a scissor
+/// that rounds to nothing), and the view draws nothing.
 pub fn plan(
     view: &OverlayModelView,
     clip: &ClipRect,
@@ -100,10 +118,10 @@ pub fn plan(
     target: [u32; 2],
     before: u32,
     blurs: u32,
-) -> Result<PlanModelView, Refusal> {
-    let camera = camera(view, clip)?;
-    let scissor = scissor(clip, guest, target).ok_or(Refusal::Clip)?;
-    Ok(PlanModelView { before, blurs, guest, scissor, camera, objects: view.objects.clone() })
+) -> Result<Option<PlanModelView>, Refusal> {
+    let Some(camera) = camera(view, clip)? else { return Ok(None) };
+    let Some(scissor) = scissor(clip, guest, target) else { return Ok(None) };
+    Ok(Some(PlanModelView { before, blurs, guest, scissor, camera, objects: view.objects.clone() }))
 }
 
 /// The view constants a model view's object draws take on a `guest`
@@ -177,7 +195,7 @@ mod tests {
     fn a_widgets_camera_is_the_record_the_guest_fills() {
         let (view, clip) = widget();
         let guest = read(&guest_record(&view, [310, 228, 330, 252]), RENDER_CAMERA).unwrap();
-        let native = camera(&view, &clip).unwrap();
+        let native = camera(&view, &clip).unwrap().unwrap();
         assert_eq!(native, guest);
         assert_eq!(native.view_projection(), guest.view_projection(), "the same matrices");
         assert_eq!(native.viewport, [228, 310, 252, 330]);
@@ -189,10 +207,10 @@ mod tests {
     #[test]
     fn a_widgets_lens_is_the_projection_its_call_builds() {
         let (mut view, clip) = widget();
-        let own = camera(&view, &clip).unwrap().projection();
+        let own = camera(&view, &clip).unwrap().unwrap().projection();
         view.camera.projection = Some([own[0][0] * 0.75, own[1][1], 0.0, 0.0]);
         let guest = read(&guest_record(&view, [310, 228, 330, 252]), RENDER_CAMERA).unwrap();
-        let native = camera(&view, &clip).unwrap();
+        let native = camera(&view, &clip).unwrap().unwrap();
         assert_eq!(native, guest);
         assert_eq!(native.projection_xy, view.camera.projection);
         assert_eq!(native.projection()[0][0], own[0][0] * 0.75, "the guest's x scale, not the FOV's");
@@ -204,10 +222,10 @@ mod tests {
         let (view, clip) = widget();
         let guest = read(&guest_record(&view, [310, 228, 330, 252]), RENDER_CAMERA).unwrap();
         let [top, left, bottom, right] = guest.viewport.map(|e| e as u32);
-        let at_canvas = plan(&view, &clip, [640, 480], [640, 480], 3, 1).unwrap();
+        let at_canvas = plan(&view, &clip, [640, 480], [640, 480], 3, 1).unwrap().unwrap();
         assert_eq!((at_canvas.blurs, at_canvas.guest), (1, [640, 480]));
         assert_eq!(at_canvas.scissor, Scissor { x: left, y: top, width: right - left, height: bottom - top });
-        let doubled = plan(&view, &clip, [640, 480], [1280, 960], 3, 0).unwrap();
+        let doubled = plan(&view, &clip, [640, 480], [1280, 960], 3, 0).unwrap().unwrap();
         assert_eq!(doubled.scissor, Scissor { x: 2 * left, y: 2 * top, width: 2 * (right - left), height: 2 * (bottom - top) });
         assert_eq!((doubled.before, doubled.objects.as_slice(), doubled.camera), (3, &[42, 17][..], guest));
     }
@@ -218,7 +236,7 @@ mod tests {
     #[test]
     fn the_view_constants_put_the_axis_on_the_viewports_centre() {
         let (view, clip) = widget();
-        let camera = camera(&view, &clip).unwrap();
+        let camera = camera(&view, &clip).unwrap().unwrap();
         let inputs = view_inputs(&camera, [640, 480], [1280, 960]);
         let whole = crate::program::ViewInputs::from_camera(&camera, (640, 480));
         assert_eq!(inputs.constants[..4], whole.constants[..4], "the view-projection rows are the camera's");
@@ -234,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn a_view_that_is_not_a_camera_or_does_not_fit_is_refused_by_name() {
+    fn a_view_that_is_not_a_camera_is_refused_by_name() {
         let (view, clip) = widget();
         let mut flat = view.clone();
         flat.camera.fov_y = 0.0;
@@ -242,9 +260,45 @@ mod tests {
         let mut inverted = view.clone();
         inverted.camera.planes = [200.0, 0.0625];
         assert_eq!(camera(&inverted, &clip), Err(Refusal::Camera));
-        let wide = ClipRect { x: 32_760, y: 0, width: 16, height: 16 };
-        assert_eq!(camera(&view, &wide), Err(Refusal::Clip));
-        assert_eq!(plan(&view, &clip, [0, 0], [640, 480], 0, 0), Err(Refusal::Clip), "no canvas, no scissor");
-        assert_eq!((Refusal::Camera.name(), Refusal::Clip.name()), ("model_view_camera", "model_view_clip"));
+        let mut parallel = view.clone();
+        parallel.camera.up = parallel.camera.forward;
+        assert_eq!(camera(&parallel, &clip), Err(Refusal::Camera));
+        assert_eq!(Refusal::Camera.name(), "model_view_camera");
+    }
+
+    /// The record's edges are the call's arguments' low halves: an edge
+    /// past `i16` wraps, as the 16-bit stores leave it, and the camera
+    /// takes the wrapped edges the guest's record holds.
+    #[test]
+    fn the_records_edges_are_the_arguments_low_halves() {
+        let clip = ClipRect { x: 310, y: 228, width: 20, height: 24 };
+        assert_eq!(record_viewport(&clip), [228, 310, 252, 330]);
+        let past = ClipRect { x: 32_760, y: 0, width: 16, height: 16 };
+        assert_eq!(record_viewport(&past), [0, 32_760, 16, -32_760], "right wraps to the negative half");
+        let beyond = ClipRect { x: 65_536 + 10, y: 65_536 + 20, width: 30, height: 40 };
+        assert_eq!(record_viewport(&beyond), [20, 10, 60, 40], "the high halves are dropped");
+        let (view, _) = widget();
+        let wrapped = camera(&view, &beyond).unwrap().unwrap();
+        assert_eq!(wrapped.viewport, [20, 10, 60, 40]);
+        let guest = read(&guest_record(&view, [10, 20, 40, 60]), RENDER_CAMERA).unwrap();
+        assert_eq!(wrapped, guest, "the record the guest fills from the same arguments");
+    }
+
+    /// A viewport with no pixel, in the record or in the target, draws
+    /// nothing: no camera, no plan, no refusal.
+    #[test]
+    fn a_viewport_with_no_pixel_draws_nothing() {
+        let (view, clip) = widget();
+        let past = ClipRect { x: 32_760, y: 0, width: 16, height: 16 };
+        assert_eq!(camera(&view, &past), Ok(None), "the wrapped right edge is left of the left");
+        assert_eq!(plan(&view, &past, [640, 480], [640, 480], 0, 0), Ok(None));
+        let flat = ClipRect { width: 0, ..clip };
+        assert_eq!(camera(&view, &flat), Ok(None), "no width");
+        assert_eq!(plan(&view, &clip, [0, 0], [640, 480], 0, 0), Ok(None), "no canvas, no scissor");
+        let off = ClipRect { x: 640, y: 0, width: 16, height: 16 };
+        assert_eq!(plan(&view, &off, [640, 480], [1280, 960], 0, 0), Ok(None), "past the canvas: no target pixel");
+        let mut broken = view.clone();
+        broken.camera.fov_y = 0.0;
+        assert_eq!(plan(&broken, &past, [640, 480], [640, 480], 0, 0), Ok(None), "no pixel before any camera check");
     }
 }
