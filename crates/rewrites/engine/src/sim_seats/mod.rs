@@ -29,6 +29,7 @@ use crate::points::{self, Point};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
 pub mod aim;
+pub mod announce;
 pub mod builder;
 pub mod camera;
 pub mod control;
@@ -197,6 +198,12 @@ pub const SEATS: &[Seat] = &[
         name: "sim.seats.observer_camera",
         sites: &[],
         run: observer,
+    },
+    Seat {
+        point: &points::GAME_EVENT_ANNOUNCE,
+        name: "sim.seats.event_announce",
+        sites: announce::SITES,
+        run: announce::run,
     },
     Seat {
         point: &points::PLAYER_PICKUP_SCAN,

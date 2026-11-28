@@ -18,7 +18,7 @@
 //! | Point | Kernel | Unported paths |
 //! |---|---|---|
 //! | `AIM_ASSIST_PARAMS` `1a50a0` | `engine::sim_seats::aim::arm` over `sim_objects::aim_assist` | `float`, `triggers`, `fault` |
-//! | `PLAYER_RESPAWN_READY` `15dd40` | `engine::sim_seats::respawn` (the gate, its callees, the countdown with `a7840` and `19eb90`) | `post` (a host's event message), `announce` (a local player's HUD text and sound), `every-player`, `fault` |
+//! | `PLAYER_RESPAWN_READY` `15dd40` | `engine::sim_seats::respawn` (the gate, its callees, the countdown with `a7840` and `19eb90`; a local player's announcement is a call to the seat `19e890`, resumed at `15de0a`) | `post` (a host's event message), `every-player`, `fault` |
 //!
 //! Their counters are `seats.aim` and `seats.respawn` in `sim.arms`. The
 //! pickup scan `1508e0` is a seat (`engine::sim_seats::player_objects`).
@@ -61,10 +61,14 @@ pub(crate) fn install(b: &mut Builder) {
     b.raw()
         .implement(&points::PLAYER_RESPAWN_READY, RESPAWN, move |cpu, ctx, pc| {
             if pc == points::PLAYER_RESPAWN_READY.base {
-                return Ok(TransferAbi::ret(respawn::enter(cpu, &mut ctx.memory())));
+                return Ok(respawn::enter(cpu, &mut ctx.memory()));
+            }
+            if pc == respawn::RESUME {
+                return Ok(respawn::resume(cpu, &mut ctx.memory()));
             }
             crate::sim_objects::original(cpu, ctx, pc, false)
         })
+        .resumes(&[respawn::RESUME])
         .context_only()
         .optional();
     b.raw().observe_before(&points::CACHE_TAGS_LOAD, RESET, |_| {
