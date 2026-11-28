@@ -132,7 +132,7 @@ pub(super) fn prepare(
         HIGHEST_LOD
     } else {
         let old = if (0..4).contains(&view) {
-            let entry = lighting::cache(m, handle, body, scene.frame)?;
+            let entry = lighting::cache(m, handle)?;
             m.u8(at(entry, 0xbc + view as u32)?)?
         } else {
             ABSENT
@@ -238,7 +238,7 @@ fn prepare_model(
         Some(_) => return Err(Refusal::ObjectModel),
         None => None,
     };
-    let entry = lighting::cache(m, owner, owner_body, scene.frame)?;
+    let entry = lighting::cache(m, owner)?;
     let old = if (0..4).contains(&view) {
         m.u8(at(entry, 0xbc + view as u32)?)?
     } else {
@@ -264,7 +264,7 @@ fn prepare_model(
         && old != ABSENT && saved_palette != NONE && m.u32(at(entry, 0x50)?)? == token;
     let write_lod = |m: &mut Staged<'_>, lod| -> Result<()> {
         if (0..4).contains(&view) {
-            let cache = lighting::cache(m, requested, requested_body, scene.frame)?;
+            let cache = lighting::cache(m, requested)?;
             m.set_u8(at(cache, 0xbc + view as u32)?, lod)?;
         }
         Ok(())

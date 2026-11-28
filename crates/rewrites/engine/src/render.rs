@@ -40,6 +40,9 @@ pub mod light_gather;
 /// Per-caster inputs to the object-shadow projection.
 pub mod object_shadow;
 
+/// The object lighting cache's records (`0x0003dc90`, `0x0003ddd0`).
+pub mod object_lighting;
+
 /// The engine's dynamic lights.
 pub mod light {
     use super::*;

@@ -1,5 +1,9 @@
 //! The mask caster in `0x00032350`. Its volume, bounds, frusta, records,
 //! filter and layer draws use the original callees and their return sites.
+//! The lighting lookup `0x0003dc90` is the Rust port
+//! ([`crate::render::object_lighting::sample`]): it makes the object's
+//! lighting record when it has none, and a record not lit yet ends the
+//! caster at `0x00032a0f`.
 //! The posed volume and bounds live in the caster's guest frame because
 //! the callees take their addresses. Caller-visible writes follow each
 //! callee, including the early return when the bounds miss the view.
@@ -9,6 +13,7 @@ use crate::entry::{Cx, EntryError, GuestCall, Regs, Ret};
 use crate::light_constants::{Error, Fpu, Sse, X87};
 use crate::light_passes::global::{PASS_FLAGS, PASSES};
 use crate::memory::{GuestMemory, MemFault};
+use crate::render::object_lighting;
 
 /// Locals and the four saved registers below the entry ESP.
 pub const FRAME: u32 = 0xb50;
@@ -63,34 +68,37 @@ pub struct Plan {
     body: u32,
 }
 
-/// Read the sample for a root without asking the render cache to allocate
-/// (`0x0003dc90`, `0x0003ddd0`). The original owns a missing cache entry.
-fn sample(m: &dyn GuestMemory, body: u32, object: u32) -> Result<u32> {
+/// The lighting a root already has, read without making a record: the
+/// default lighting, or its own lit record's `+0x54`. `None` when the run's
+/// lookup makes the record ([`object_lighting::sample`]) and ends there.
+fn resident_sample(m: &dyn GuestMemory, body: u32, object: u32) -> Result<Option<u32>> {
     if m.u8(body + 7)? & 1 != 0 {
-        return guest::at(guest::ptr(m, 0x004d_e2f4)?, 0x1c);
+        return guest::at(guest::ptr(m, 0x004d_e2f4)?, 0x1c).map(Some);
     }
     let id = m.u32(body + 0xcc)?;
     if id == guest::NONE {
-        return Err(Refusal::Residency);
+        return Ok(None);
     }
-    let pool = guest::ptr(m, 0x0050_9434)?;
+    let pool = guest::ptr(m, object_lighting::CACHE)?;
     let data = guest::ptr(m, guest::at(pool, 0x44)?)?;
     let entry = guest::at(data, (id & 0xffff) << 8)?;
     if m.u32(guest::at(entry, 4)?)? != object || m.u8(guest::at(entry, 3)?)? == 0 {
-        return Err(Refusal::Residency);
+        return Ok(None);
     }
-    guest::at(entry, 0x54)
+    guest::at(entry, 0x54).map(Some)
 }
 
-/// Admit a visible root of the mask kind with resident lighting. Planning
-/// only reads. Eligibility, extents and the bounds test are real calls
-/// during the body and their answers are consumed at their guest sites.
+/// Admit a visible root of the mask kind. Planning only reads. Eligibility,
+/// extents and the bounds test are real calls during the body and their
+/// answers are consumed at their guest sites; the lighting lookup and its
+/// strength test are the body's, which ends at `0x00032a0f` on an unlit,
+/// weak or new record as the guest does.
 pub fn plan(m: &dyn GuestMemory, entry_esp: u32, fpu: Fpu) -> Result<Plan> {
     visible::fp_supported(fpu)?;
     let s = entry_esp.checked_sub(FRAME + 0x20).ok_or(Refusal::Layout)?;
     m.bytes(s, (FRAME + 0x20) as usize)?;
     let object = m.u32(guest::at(entry_esp, 4)?)?;
-    let fade = m.f32(guest::at(entry_esp, 8)?)?;
+    m.f32(guest::at(entry_esp, 8)?)?;
     let pool = guest::ptr(m, guest::OBJECTS)?;
     let headers = guest::ptr(m, guest::at(pool, 0x44)?)?;
     let header = guest::at(headers, (object & 0xffff) * 12)?;
@@ -115,12 +123,11 @@ pub fn plan(m: &dyn GuestMemory, entry_esp: u32, fpu: Fpu) -> Result<Plan> {
     if !(mode == 2 || (mode == 0 && matches!(kind, 0 | 1))) {
         return Err(Refusal::Unsupported);
     }
-    let lighting = sample(m, body, object)?;
-    let strength = m.f32(guest::at(lighting, 0x1c)?)?;
-    m.vec3(guest::at(lighting, 0xc)?)?;
-    if !(strength > m.f32(ZERO)? && fade > 0.0) {
-        return Err(Refusal::Unsupported);
+    if let Some(lighting) = resident_sample(m, body, object)? {
+        m.f32(guest::at(lighting, 0x1c)?)?;
+        m.vec3(guest::at(lighting, 0xc)?)?;
     }
+    m.u32(ZERO)?;
     m.bytes(body + 0x2c, 0x14)?;
     for slot in [PRIMARY_AXIS, OTHER_AXIS] {
         m.bytes(guest::ptr(m, slot)?, 12)?;
@@ -423,28 +430,22 @@ pub async fn run_with(
     if cx.read(|m| m.u8(s + 0x1b))? != 0 {
         return creature(cx, &p, s, visible.eax).await;
     }
-    let radius = cx
-        .write(|m| -> Result<u32, Error> {
-            let body_radius = m.u32(body + 0x3c)?;
-            let floor = m.u32(RADIUS_FLOOR)?;
-            let r = if sse.above(body_radius, floor)? {
-                body_radius
-            } else {
-                floor
-            };
-            m.set_u32(s + 0x20, r)?;
-            m.set_u32(s + 0x24, r)?;
-            Ok(r)
-        })
+    cx.write(|m| -> Result<(), Error> {
+        let body_radius = m.u32(body + 0x3c)?;
+        let floor = m.u32(RADIUS_FLOOR)?;
+        let r = if sse.above(body_radius, floor)? {
+            body_radius
+        } else {
+            floor
+        };
+        m.set_u32(s + 0x20, r)?;
+        Ok(m.set_u32(s + 0x24, r)?)
+    })
+    .map_err(fp_error)?;
+    // 0x0003240b: the lighting lookup, which makes the object's record.
+    let lighting = cx
+        .write(|m| object_lighting::sample(m, object, p.fpu))
         .map_err(fp_error)?;
-    let req = GuestCall::new(0x0003_dc90)
-        .args([object])
-        .eax(low(visible.eax, 0))
-        .ebx(body)
-        .esi(object)
-        .edi(s + 0x1c)
-        .xmm0(radius.into());
-    let lighting = p.call(cx, 0x0003_2410, req).await?;
     let not_vehicle = cx.read(|m| m.u8(body + 0xaa))? != 1;
     cx.write(|m| m.set_u8(s + 0x28, not_vehicle as u8))?;
     if lighting.eax == 0 {
@@ -730,19 +731,21 @@ mod tests {
     use crate::FlatMemory;
 
     #[test]
-    fn an_unowned_or_unlit_cache_entry_stays_with_the_guest() {
+    fn a_root_without_a_lit_record_of_its_own_is_planned_not_refused() {
         let mut m = FlatMemory::new(0, 0x510000);
         let (body, object, pool, entry) = (0x1000, 0x0001_0005, 0x2000, 0x3000);
+        m.set_u32(body + 0xcc, guest::NONE).unwrap();
+        assert_eq!(resident_sample(&m, body, object), Ok(None), "no record: the run makes it");
         m.set_u32(body + 0xcc, 0x0010_0000).unwrap();
-        m.set_u32(0x0050_9434, pool).unwrap();
+        m.set_u32(object_lighting::CACHE, pool).unwrap();
         m.set_u32(pool + 0x44, entry).unwrap();
         m.set_u8(entry + 3, 1).unwrap();
-        assert_eq!(sample(&m, body, object), Err(Refusal::Residency));
+        assert_eq!(resident_sample(&m, body, object), Ok(None), "another object's record");
         m.set_u32(entry + 4, object).unwrap();
         m.set_u8(entry + 3, 0).unwrap();
-        assert_eq!(sample(&m, body, object), Err(Refusal::Residency));
+        assert_eq!(resident_sample(&m, body, object), Ok(None), "not lit yet");
         m.set_u8(entry + 3, 1).unwrap();
-        assert_eq!(sample(&m, body, object), Ok(entry + 0x54));
+        assert_eq!(resident_sample(&m, body, object), Ok(Some(entry + 0x54)));
     }
 
     #[test]
