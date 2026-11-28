@@ -583,6 +583,10 @@ const BOOT_SITES: &[(&str, &str)] = &[
         "not covered: its constructor is crate-private to game and needs the bink HLE",
     ),
     ("SimNative", "Case::light"),
+    (
+        "LightmapStore",
+        "not covered: its store reads the running map's lightmap files",
+    ),
     ("SimFrame", "Case::light"),
     (
         "RenderFrame",
