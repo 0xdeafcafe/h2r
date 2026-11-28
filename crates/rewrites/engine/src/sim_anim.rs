@@ -13,9 +13,9 @@
 //! [`stream`] reads the arguments and the view, repeats the setup's
 //! arithmetic, takes the clip from the store (copying the blob the first
 //! time), samples, and writes back only the record fields the guest would
-//! write. It returns `Ok(None)` before writing anything when the call is
-//! outside what the kernel reproduces exactly; the installer then runs the
-//! original. The family's scratch globals (`0x504410..0x5044c4`,
+//! write. It returns the [`Decline`] before writing anything when the call
+//! is outside what the kernel reproduces exactly; the hook then panics
+//! with its name. The family's scratch globals (`0x504410..0x5044c4`,
 //! `0x55e530..0x55e590`, `0x55ebb8..0x55ebe8`) and the dead stack slots
 //! are left unwritten: nothing outside the family reads them.
 //!
@@ -76,12 +76,11 @@ const SCRATCH: [(u32, u32); 4] = [
 /// The process-wide clip store.
 pub static STORE: LazyLock<ClipStore> = LazyLock::new(|| ClipStore::new(&sim_core::epoch::SIM));
 
-/// Why a call was left to the guest.
+/// Why the kernel declined a call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
 pub enum Decline {
     /// MXCSR not masked/nearest/PE-sticky, or an operand off the fast path.
-    Float = 0,
+    Float,
     /// A guest read faulted.
     Fault,
     /// No frames (`last < 0`) or a frame beyond `cvttss2si`'s range.
@@ -102,19 +101,31 @@ pub enum Decline {
     Nodes,
 }
 
-const DECLINES: usize = 9;
+impl Decline {
+    pub fn name(self) -> &'static str {
+        match self {
+            Decline::Float => "float",
+            Decline::Fault => "fault",
+            Decline::Frames => "frames",
+            Decline::Remap => "remap",
+            Decline::DirectTest => "direct-test",
+            Decline::Layout => "layout",
+            Decline::Records => "records",
+            Decline::Kernel => "kernel",
+            Decline::Nodes => "nodes",
+        }
+    }
+}
 
-/// Call counts since start, for timing and the fallback rate.
+/// Call counts since start, for timing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     pub native: u64,
     pub inactive: u64,
-    pub declined: [u64; DECLINES],
 }
 
 static NATIVE: AtomicU64 = AtomicU64::new(0);
 static INACTIVE: AtomicU64 = AtomicU64::new(0);
-static DECLINED: [AtomicU64; DECLINES] = [const { AtomicU64::new(0) }; DECLINES];
 
 /// Guest memory changed under the store (map load, checkpoint revert or
 /// restore, snapshot load): move the epoch and drop every derived clip now,
@@ -127,7 +138,6 @@ pub fn stats() -> Stats {
     Stats {
         native: NATIVE.load(Ordering::Relaxed),
         inactive: INACTIVE.load(Ordering::Relaxed),
-        declined: std::array::from_fn(|i| DECLINED[i].load(Ordering::Relaxed)),
     }
 }
 
@@ -412,23 +422,20 @@ fn finish(c: &mut CpuAbi, g: &impl Memory) -> Result<TransferAbi, GuestFault> {
     Ok(TransferAbi::ret(target))
 }
 
-/// `0x2798a0` natively. `Ok(None)` when the original must run instead;
-/// nothing has been written then.
+/// `0x2798a0` natively. `Ok(Err(why))` when the kernel declines; nothing
+/// has been written then.
 pub fn stream(
     c: &mut CpuAbi,
     g: &mut impl Memory,
     store: &ClipStore,
-) -> Result<Option<TransferAbi>, GuestFault> {
+) -> Result<Result<TransferAbi, Decline>, GuestFault> {
     let plan = match plan(c, g, store) {
         Ok(p) => p,
-        Err(why) => {
-            DECLINED[why as usize].fetch_add(1, Ordering::Relaxed);
-            return Ok(None);
-        }
+        Err(why) => return Ok(Err(why)),
     };
     let Some(plan) = plan else {
         INACTIVE.fetch_add(1, Ordering::Relaxed);
-        return finish(c, g).map(Some);
+        return finish(c, g).map(Ok);
     };
     for (n, (rec, &bits)) in plan.records.iter().zip(&plan.written).enumerate() {
         if bits == 0 {
@@ -454,5 +461,5 @@ pub fn stream(
         c.x87.tag = 0xffff;
     }
     NATIVE.fetch_add(1, Ordering::Relaxed);
-    finish(c, g).map(Some)
+    finish(c, g).map(Ok)
 }

@@ -61,13 +61,12 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Why the call was left to the guest.
+/// Why the kernel declined the call; the port makes the guest call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
 pub enum Decline {
     /// MXCSR not masked, nearest and PE-sticky, or an operand off the
     /// fast path.
-    Float = 0,
+    Float,
     /// A guest read faulted.
     Fault,
     /// The model has more groups than the scan bound and none matched.
@@ -78,27 +77,22 @@ pub enum Decline {
     Alias,
 }
 
-const DECLINES: usize = 5;
-
-/// Call counts since start, for timing and the fallback rate.
+/// Call counts since start, for timing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     /// Calls the kernel filled.
     pub native: u64,
     /// Marker records it wrote.
     pub markers: u64,
-    pub declined: [u64; DECLINES],
 }
 
 static NATIVE: AtomicU64 = AtomicU64::new(0);
 static WRITTEN: AtomicU64 = AtomicU64::new(0);
-static DECLINED: [AtomicU64; DECLINES] = [const { AtomicU64::new(0) }; DECLINES];
 
 pub fn stats() -> Stats {
     Stats {
         native: NATIVE.load(Ordering::Relaxed),
         markers: WRITTEN.load(Ordering::Relaxed),
-        declined: std::array::from_fn(|i| DECLINED[i].load(Ordering::Relaxed)),
     }
 }
 
@@ -241,20 +235,38 @@ fn scatter(c: &mut CpuAbi, g: &mut impl Memory, p: &Plan) -> Result<TransferAbi,
 /// The marker fill, entered where the port would call `1d8f50`.
 /// `Ok(None)`: declined, nothing written; the port makes the guest call.
 pub fn run(c: &mut CpuAbi, g: &mut impl Memory) -> Result<Option<TransferAbi>, GuestFault> {
-    if enabled() { fill(c, g) } else { Ok(None) }
+    if !enabled() {
+        return Ok(None);
+    }
+    match fill(c, g)? {
+        Ok(transfer) => Ok(Some(transfer)),
+        Err(_why) => {
+            #[cfg(test)]
+            LAST_DECLINE.with(|last| last.set(Some(_why)));
+            Ok(None)
+        }
+    }
 }
 
 /// [`run`] without the switch: the gather, the kernel call and the
-/// scatter, with the declines counted.
-pub fn fill(c: &mut CpuAbi, g: &mut impl Memory) -> Result<Option<TransferAbi>, GuestFault> {
-    let plan = match plan(c, g) {
-        Ok(p) => p,
-        Err(why) => {
-            DECLINED[why as usize].fetch_add(1, Ordering::Relaxed);
-            return Ok(None);
-        }
-    };
-    scatter(c, g, &plan).map(Some)
+/// scatter. `Ok(Err(why))`: declined, nothing written.
+pub fn fill(c: &mut CpuAbi, g: &mut impl Memory) -> Result<Result<TransferAbi, Decline>, GuestFault> {
+    match plan(c, g) {
+        Ok(plan) => scatter(c, g, &plan).map(Ok),
+        Err(why) => Ok(Err(why)),
+    }
+}
+
+// The tests enter through the port, which calls [`run`] partway through:
+// the last decline on this thread names the reason the kernel gave.
+#[cfg(test)]
+thread_local! {
+    static LAST_DECLINE: std::cell::Cell<Option<Decline>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+fn take_last_decline() -> Option<Decline> {
+    LAST_DECLINE.with(|last| last.take())
 }
 
 #[cfg(test)]

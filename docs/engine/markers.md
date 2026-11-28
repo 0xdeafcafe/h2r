@@ -85,8 +85,7 @@ with each `s`-product and each sum one rounded binary32 operation.
   stay guest.
 - Writes nothing outside the marker records and `eax`; the dead stack
   below the port's frame stays unwritten.
-- `engine::sim_anim::markers::stats()` counts fills, records and
-  declines by reason.
+- `engine::sim_anim::markers::stats()` counts fills and records.
 - The kernel models the call as `b8d30` makes it: no remap table (the
   wrapper `1d90b0` is the only caller that passes one, and it stays
   guest), so a selection's node is the instance's byte and never
@@ -139,8 +138,8 @@ arm64 and x86-64 and MXCSR does not change.
 ## Not verified
 
 - Run parity: the sim-budget match against the lifted build, identical `state_hashes_v1` and an empty `h2 sim diff`; the
-  cross-architecture arm; the decline rate on real models (`stats()`),
-  and the time saved per tick on Waterworks.
+  cross-architecture arm; the decline rate on real models, and the time
+  saved per tick on Waterworks.
 
 ## Related
 

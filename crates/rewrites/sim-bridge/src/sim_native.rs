@@ -156,7 +156,8 @@ fn original(cpu: &mut CpuAbi, ctx: &mut ExecCtx, addr: u32) -> Result<TransferAb
 /// channel manager, graph resolve, stream, marker, unit pose, unit aim and
 /// first-person filter entries and the graph walk; the palette, marker and
 /// filter kernels run inside them. Each answers from Rust; a call a
-/// kernel declines is the guest's, counted by reason.
+/// kernel declines panics with the kernel and the reason, and no guest
+/// runs it.
 pub const ANIM: &str = "sim.native.anim";
 
 /// Points after which guest memory no longer matches the clip store: map
@@ -236,20 +237,16 @@ fn install_anim_bodies(b: &mut Builder, exports: &[AnimBody]) {
             .implement(body.point, ANIM, move |cpu, ctx, pc| {
                 let transfer = match body.run {
                     AnimRun::Pose(run) => run(cpu, &mut ctx.memory(), pc)?,
-                    AnimRun::ManagerArm => {
-                        return manager_arm::run(cpu, ctx, pc, pc != body.point.base);
-                    }
+                    AnimRun::ManagerArm => return manager_arm::run(cpu, ctx, pc, body.point.name),
                     AnimRun::Manager => {
                         let available = run_fusion.available(ctx.runtime());
                         manager::drive(cpu, &mut ctx.memory(), pc, |next| available(next.entry))?
                     }
                 };
-                if let Some(transfer) = transfer {
-                    return Ok(transfer);
+                match transfer {
+                    Some(transfer) => Ok(transfer),
+                    None => segment_declined(body.point.name, cpu, pc),
                 }
-                // A kernel decline, counted by reason in its own stats
-                // (`engine::sim_anim`, `manager`): the guest runs it.
-                crate::sim_objects::original(cpu, ctx, pc, body.sites.contains(&pc))
             })
             .resumes(body.sites)
             .context_only();
@@ -262,22 +259,29 @@ fn install_anim_bodies(b: &mut Builder, exports: &[AnimBody]) {
     }
 }
 
+/// A segment body declined at `pc`: no guest runs it.
+/// `plan::segment` declines before it plans when the float environment is
+/// not the ports', and otherwise on a fault inside the plan; either way it
+/// leaves `cpu` as it was.
+fn segment_declined(name: &str, cpu: &CpuAbi, pc: u32) -> ! {
+    let why = if sim::supported(cpu) { "fault" } else { "float" };
+    unimplemented!("anim {name}: {why} at {pc:#x}")
+}
+
 /// The stream, marker and graph walk points of the animation group.
 fn install_anim_points(b: &mut Builder) {
     let point = &points::SIM_ANIMATION_STREAM;
     b.raw()
         .implement(point, ANIM, move |cpu, ctx, addr| {
-            // The kernel checks the float environment itself and counts a
-            // decline by reason (`engine::sim_anim::stats`).
-            if addr == point.base {
-                let mut mem = ctx.memory();
-                if let Some(transfer) =
-                    engine::sim_anim::stream(cpu, &mut *mem, &engine::sim_anim::STORE)?
-                {
-                    return Ok(transfer);
-                }
+            // The kernel checks the float environment itself.
+            if addr != point.base {
+                unimplemented!("anim stream: entered at {addr:#x}, not its entry");
             }
-            original(cpu, ctx, addr)
+            let mut mem = ctx.memory();
+            match engine::sim_anim::stream(cpu, &mut *mem, &engine::sim_anim::STORE)? {
+                Ok(transfer) => Ok(transfer),
+                Err(why) => unimplemented!("anim stream: {}", why.name()),
+            }
         })
         .context_only();
     // The marker lookup, run by the register-level port with the Rust
@@ -287,7 +291,7 @@ fn install_anim_points(b: &mut Builder) {
     b.raw()
         .implement(marker, ANIM, move |cpu, ctx, addr| {
             if addr != marker.base {
-                return original(cpu, ctx, addr);
+                unimplemented!("anim marker transforms: entered at {addr:#x}, not its entry");
             }
             if !sim::supported(cpu) {
                 outside(MARKER);
@@ -296,19 +300,20 @@ fn install_anim_points(b: &mut Builder) {
             sim::marker::transforms(cpu, &mut *mem)
         })
         .context_only();
-    // The graph walk `1dd1c0`: the body answers every call it can plan
+    // The graph walk `1dd1c0`: the body answers every call
     // (docs/engine/skeleton-walk.md, "The graph walk `1dd1c0`"); a
-    // declined plan is the guest's, counted by reason.
+    // declined plan panics with its reason.
     let walk = &points::ANIM_GRAPH_MATRICES;
     b.raw()
         .implement(walk, ANIM, move |cpu, ctx, addr| {
-            if addr == walk.base {
-                let mut mem = ctx.memory();
-                if let Some(transfer) = engine::sim_anim::graph_walk::run(cpu, &mut *mem)? {
-                    return Ok(transfer);
-                }
+            if addr != walk.base {
+                unimplemented!("anim graph walk: entered at {addr:#x}, not its entry");
             }
-            original(cpu, ctx, addr)
+            let mut mem = ctx.memory();
+            match engine::sim_anim::graph_walk::run(cpu, &mut *mem)? {
+                Ok(transfer) => Ok(transfer),
+                Err(why) => unimplemented!("anim graph walk: {}", why.name()),
+            }
         })
         .context_only()
         .optional();
@@ -641,11 +646,10 @@ mod tests {
         assert_eq!(pose.label, "sim.port.first_person_pose");
     }
 
-    #[test]
-    fn a_declined_animation_segment_invokes_the_original_selector() {
+    /// The animation plan with every body's original registered, so a hook
+    /// that still fell back to the guest would return its selector.
+    fn anim_with_originals() -> (hooks::Plan, ExecCtx) {
         let mut dispatch = runtime::Dispatch::default();
-        // The return PCs can belong to another generated entry. Give it
-        // different selectors so a raw return PC cannot pass this check.
         let owner = 0x14000;
         dispatch.register_generated_rust(owner, |_, _, selector| Ok(TransferAbi::ret(selector))).unwrap();
         for body in ANIM_BODIES.iter() {
@@ -660,18 +664,39 @@ mod tests {
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::new(&rt)).unwrap();
         let plan = registry.build(&Base).unwrap();
-        let mut ctx = ExecCtx::new(rt, 1);
+        (plan, ExecCtx::new(rt, 1))
+    }
+
+    #[test]
+    #[should_panic(expected = ": float at")]
+    fn a_declined_animation_segment_panics_and_never_runs_the_original() {
+        let (plan, mut ctx) = anim_with_originals();
+        let entry = ANIM_BODIES[0].point.base;
+        let hook = plan.chains[&entry].implement.as_ref().unwrap();
+        let hooks::Run::Implement(run) = &hook.run else { unreachable!() };
+        // MXCSR 0 is off the ports' float environment: every segment declines.
         let mut cpu = CpuAbi { mxcsr: 0, ..CpuAbi::default() };
-        let initial = cpu;
+        let _ = run(&mut cpu, &mut ctx, entry);
+    }
+
+    #[test]
+    fn every_animation_entry_and_site_panics_on_a_decline() {
+        let (plan, mut ctx) = anim_with_originals();
+        let cpu = CpuAbi { mxcsr: 0, ..CpuAbi::default() };
         for body in ANIM_BODIES.iter() {
             let entry = body.point.base;
             let hook = plan.chains[&entry].implement.as_ref().unwrap();
             let hooks::Run::Implement(run) = &hook.run else { unreachable!() };
-            assert_eq!(run(&mut cpu, &mut ctx, entry).unwrap(), TransferAbi::jump(entry), "{entry:#x}");
-            assert_eq!(cpu, initial);
-            for &pc in body.sites {
-                assert_eq!(run(&mut cpu, &mut ctx, pc).unwrap(), TransferAbi::ret(pc - entry), "{pc:#x}");
-                assert_eq!(cpu, initial);
+            for pc in std::iter::once(entry).chain(body.sites.iter().copied()) {
+                let mut at = cpu;
+                let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let _ = run(&mut at, &mut ctx, pc);
+                }))
+                .expect_err("a declined segment panics");
+                let message = err.downcast_ref::<String>().map(String::as_str).unwrap_or_default();
+                let want = format!("not implemented: anim {}: float at {pc:#x}", body.point.name);
+                assert_eq!(message, want, "{pc:#x}");
+                assert_eq!(at, cpu, "{pc:#x}");
             }
         }
     }

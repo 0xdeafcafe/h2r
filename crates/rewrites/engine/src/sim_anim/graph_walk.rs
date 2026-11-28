@@ -23,8 +23,8 @@
 //! exact `sim_native` leaves, one node at a time: the oracle of the engine
 //! tests, and the third arm of the lifted differential.
 //!
-//! The plan declines (nothing is written; the guest runs that call,
-//! counted by [`Decline`] in [`stats`]) when MXCSR is not
+//! The plan declines (nothing is written; [`run`] returns the
+//! [`Decline`] and the hook panics with its name) when MXCSR is not
 //! masked, nearest and PE-sticky, when an operand is off the fast path,
 //! when the node count is above [`MAX_NODES`], when a queued link or a
 //! visited node's parent is outside the nodes, when the queue would pass
@@ -76,12 +76,11 @@ const SAVED_EDI: u32 = 0x444;
 /// The leaves' arguments, return addresses and the pose's saved `ebp`,
 /// below the saved registers: the lowest byte the call writes.
 const DEAD: u32 = 0x454;
-/// The largest node count the plan takes; larger ones run the guest.
+/// The largest node count the plan takes; larger ones decline.
 pub const MAX_NODES: u32 = 1024;
 
-/// Why a call was left to the guest.
+/// Why the plan declined a call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
 pub enum Decline {
     /// MXCSR not masked, nearest and PE-sticky, or an operand off the
     /// fast path.
@@ -100,18 +99,7 @@ pub enum Decline {
     Parent,
 }
 
-const DECLINES: usize = 6;
-
 impl Decline {
-    pub const ALL: [Decline; DECLINES] = [
-        Decline::Float,
-        Decline::Fault,
-        Decline::Count,
-        Decline::Queue,
-        Decline::Alias,
-        Decline::Parent,
-    ];
-
     pub fn name(self) -> &'static str {
         match self {
             Decline::Float => "float",
@@ -386,44 +374,33 @@ pub fn plan(c: &CpuAbi, g: &impl Memory) -> Result<Outcome, Decline> {
     })
 }
 
-/// Why calls were left to the guest, and calls taken.
+/// Calls taken.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     /// Calls [`run`] answered.
     pub native: u64,
     /// Nodes it posed.
     pub nodes: u64,
-    /// Calls left to the guest, by [`Decline`].
-    pub declined: [u64; DECLINES],
 }
 
 static NATIVE: AtomicU64 = AtomicU64::new(0);
 static POSED: AtomicU64 = AtomicU64::new(0);
-static DECLINED: [AtomicU64; DECLINES] = [const { AtomicU64::new(0) }; DECLINES];
 
 pub fn stats() -> Stats {
     Stats {
         native: NATIVE.load(Ordering::Relaxed),
         nodes: POSED.load(Ordering::Relaxed),
-        declined: std::array::from_fn(|i| DECLINED[i].load(Ordering::Relaxed)),
     }
 }
 
-fn decline(why: Decline) {
-    DECLINED[why as usize].fetch_add(1, Ordering::Relaxed);
-}
-
 /// The body: the call answered from [`plan`] without the guest.
-/// `Ok(None)`: declined, nothing written; the caller runs the original. A
-/// fault while writing is the guest's own: every address written was
-/// checked readable, so only a read-only page gets there.
-pub fn run(c: &mut CpuAbi, g: &mut impl Memory) -> Result<Option<TransferAbi>, GuestFault> {
+/// `Ok(Err(why))`: declined, nothing written; the hook panics with
+/// `why`. A fault while writing is the guest's own: every address written
+/// was checked readable, so only a read-only page gets there.
+pub fn run(c: &mut CpuAbi, g: &mut impl Memory) -> Result<Result<TransferAbi, Decline>, GuestFault> {
     match plan(c, g) {
-        Ok(o) => apply(o, c, g).map(Some),
-        Err(why) => {
-            decline(why);
-            Ok(None)
-        }
+        Ok(o) => apply(o, c, g).map(Ok),
+        Err(why) => Ok(Err(why)),
     }
 }
 

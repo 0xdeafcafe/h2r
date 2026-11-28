@@ -44,8 +44,8 @@ lanes on and off, and the `#[ignore]` disc sweep at four frames per animation.
 loop's entry in `bd090` ([skeleton-walk.md](skeleton-walk.md)). `1dd1c0` runs
 the same leaves for the animation graph's callers; `sim_anim::graph_matrices`
 computes it in one call ([skeleton-walk.md](skeleton-walk.md#the-graph-walk-1dd1c0)).
-The body answers (`anim.graph_walk`); a plan the walk declines stays a guest
-call, counted by reason. The ports `sim.port.transform_compose` and
+The body answers (`anim.graph_walk`); a plan the walk declines panics with
+its reason. The ports `sim.port.transform_compose` and
 `sim.port.pose_matrix` install only where no subsystem body owns their point.
 
 Each 1c slice has the same shape: a gather, one Rust kernel call, a
@@ -70,7 +70,8 @@ advance four seat axes and visit both weapon slots, including their motion
 tracks and idle timers.
 
 Each body resumes after a guest callee using the live guest frame. A declined
-segment starts the original at its entry or return selector. An image must
+segment panics, naming the body, the reason (`float` or `fault`) and the
+selector; no guest runs it. An image must
 export the entry and every return selector for that body.
 
 The differential in

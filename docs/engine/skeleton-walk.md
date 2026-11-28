@@ -106,9 +106,9 @@ before anything reads them.
   callers, among them `1dd1c0`, still reach them.
 - The graph walk is the point `ANIM_GRAPH_MATRICES` (`1dd1c0`). `sim-bridge` hooks it with a `before` that plans
   the call and answers with the body; it has no `after`.
-- `engine::sim_anim::graph_walk::stats()` counts the body's calls, nodes
-  and declines. The agent method `anim.graph_walk` returns
-  `{addr, body:{native,nodes,declined}}`
+- `engine::sim_anim::graph_walk::stats()` counts the body's calls and
+  nodes. The agent method `anim.graph_walk` returns
+  `{addr, body:{native,nodes}}`
   ([agent-api.md](../runtime/agent-api-checks.md#anim-the-animation-graph-walk)).
 
 ## Rules and limits
@@ -189,8 +189,8 @@ Both leaves initialise the cutoff on the first pose, as in `bd090`'s walk.
 root, the cutoff and the constants, builds the queue (`graph_order`),
 runs `graph_matrices` and returns every byte and register above without
 writing. The body (`run`, called by `enter`) writes the plan and returns
-without the guest. A declined plan is counted by reason and the call stays
-a guest call.
+without the guest. A declined plan returns its `Decline`, and the hook
+panics with `anim graph walk: <reason>`; no guest runs the call.
 
 `reference` is `1dd1c0` instruction by instruction with the exact
 `sim_native` leaves: the oracle of the engine tests and the third arm of
@@ -257,7 +257,7 @@ that is not mapped declines a call the guest would complete.
 - The decline rate on real skeletons (`stats()`), and the time saved per
   tick on Waterworks.
 - The graph walk in a run: `anim.graph_walk`, over the sim-budget matches and a campaign
-  level, should show a low `declined` rate. Its callers and call rate per tick are not measured.
+  level, without a decline panic. Its callers and call rate per tick are not measured.
 
 ## Related
 

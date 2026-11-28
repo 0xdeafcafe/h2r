@@ -60,8 +60,7 @@ gathers the inputs and the kernel builds the palette span in Rust.
 - Writes nothing outside the palette span and the frame slots named
   above; the step is pure copying, no float arithmetic, so there is no
   fast-path decline and MXCSR cannot change.
-- `engine::sim_anim::palette::stats()` counts steps, records and
-  declines by reason.
+- `engine::sim_anim::palette::stats()` counts steps and records.
 
 ## Rules and limits
 
@@ -98,8 +97,8 @@ The step declines, writing nothing (the port's loops run), when:
 ## Not verified
 
 - Run parity: the sim-budget match against the lifted build, identical `state_hashes_v1` and an empty `h2 sim diff`; the
-  cross-architecture arm; the decline rate on real seats (`stats()`),
-  and the time saved per tick on Waterworks.
+  cross-architecture arm; the decline rate on real seats, and the time
+  saved per tick on Waterworks.
 
 ## Related
 

@@ -320,12 +320,12 @@ fn declines(w: &World, edit: impl Fn(&mut CpuAbi, &mut Guest), why: Decline) {
     edit(&mut off_cpu, &mut off);
     let off_result = crate::sim_native::marker::transforms(&mut off_cpu, &mut off).unwrap();
     set_enabled(true);
-    let was = stats().declined[why as usize];
+    take_last_decline();
     let (mut cpu, mut g) = machine(w);
     edit(&mut cpu, &mut g);
     let on = crate::sim_native::marker::transforms(&mut cpu, &mut g).unwrap();
     set_enabled(false);
-    assert!(stats().declined[why as usize] > was, "{why:?}");
+    assert_eq!(take_last_decline(), Some(why), "{why:?}");
     assert_eq!(cpu, off_cpu, "{why:?}");
     assert_eq!(first_difference(ram(&off), ram(&g)), None, "{why:?}");
     assert_eq!(on, off_result, "{why:?}");

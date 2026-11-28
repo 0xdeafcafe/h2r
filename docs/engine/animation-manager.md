@@ -22,7 +22,7 @@ evaluates the segment on a CPU copy and a private store log, the bridge
 runs the generated selector once with direct calls routed through the
 dispatcher, and it compares the transfer before the callee can change the
 frame. Otherwise `manager::run` runs the segment and commits it, and the
-guest does not run. A declined segment goes to the guest. One difference
+guest does not run. A declined segment panics, naming the entry. One difference
 returns that entry to the guest for the rest of the process. The audit
 slots restart at map load, checkpoint revert and restore. The
 differential tests call the lifted entries directly as the reference.
@@ -45,9 +45,11 @@ request and RNG paths. A callback can replace a channel or change an alias
 before the caller reads it again.
 
 The bridge installs a body only when the image exports its entry and all
-return selectors. A declined first segment uses the generated selector.
-If a child declines after its caller commits, the bridge hands the pending
-transfer and the caller's committed frame back to the dispatcher.
+return selectors. A declined first segment panics
+(`anim <entry>: <float|fault> at <pc>`). If a child declines after its
+caller commits, the bridge hands the pending transfer and the caller's
+committed frame back to the dispatcher, whose hook for the child then
+panics the same way.
 `sim_native::plan` indexes long store logs by physical address so reads
 through guest aliases see pending channel copies.
 
@@ -75,7 +77,7 @@ search order.
 ## Verification
 
 The read-only agent method `anim.manager` reports matched, differed,
-declined, interrupted and answered segments per entry and retains the
+interrupted and answered segments per entry and retains the
 first difference. The live arm checks the transfer, CPU state (including defined
 flags, x87 and XMM) and final bytes at predicted physical write addresses.
 See the [agent API](../runtime/agent-api-checks.md#anim-the-animation-graph-walk).

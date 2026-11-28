@@ -16,19 +16,16 @@ The game method reads process counters at a tick boundary. Code:
 | `anim.manager` | read | No parameters. Returns `entries`, keyed by the eight-digit guest address of each observed manager or graph function. |
 
 `body` counts calls the Rust body answered without the guest (`native`, `nodes`
-posed, `declined`); a declined plan stays a guest call. Sample before and after a scenario and
+posed); a declined plan panics in the hook with its reason. Sample before and after a scenario and
 subtract to isolate that run.
 
 ```sh
 h2 agent anim.graph_walk
 ```
 
-`declined` should stay small against `native`.
-
 `anim.manager` counts segments starting at a function entry or resuming
 after a call. For each observed function, `matched` and `differed` count
-completed comparisons. `declined` counts segments the Rust could
-not predict; they stay guest calls. `interrupted` counts predictions for which the guest exited
+completed comparisons. `interrupted` counts predictions for which the guest exited
 before a comparison boundary. `answered` counts segments the Rust body
 answered without the guest. The first difference for each function is
 retained in `first`, with the starting selector (`pc`), differing field
@@ -73,7 +70,8 @@ controller's device read, likewise), `sim_seats::leaf::status`
 (`seats.leaf.<name>`, one arm per leaf callee, likewise), and `sim_sound::voice_arm::stats` (`sound.voices`). A source without a counter reports 0 for that
 field: physics and collision have no `checked` (it is `matched` plus
 `mismatched`) and no `answered`; `anim.manager`'s `differed` is
-`mismatched`; shadow ports have no `answered` and their
+`mismatched`; the `anim` arms have no `declined` (a decline panics);
+shadow ports have no `answered` and their
 `skipped` is `declined`; `sound.voices` counts ticks for `checked`
 (sampled ticks with voices), `matched` and `mismatched`, and voices for
 `answered`. `effects-parts` is the effects phase in Rust, always on

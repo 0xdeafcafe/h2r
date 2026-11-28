@@ -73,8 +73,8 @@ animation switch off.
   `11eed0` with its original return address.
 - `step(&In) -> Result<Out, Decline>` is the call as a pure function of
   gathered state, for tests and later callers.
-- `engine::sim_anim::filter::stats()` counts calls, snaps and declines
-  by reason. The seat update publishes counts when the segment commits.
+- `engine::sim_anim::filter::stats()` counts calls and snaps. The seat
+  update publishes counts when the segment commits.
 
 ## Rules and limits
 
@@ -112,7 +112,7 @@ so there is no fast-path range and no precision or rounding decline.
 
 - Run parity: the sim-budget match against the lifted build, identical
   `state_hashes_v1` and an empty `h2 sim diff`, with
-  a mapped local seat. The decline rate on real seats comes from `stats()`.
+  a mapped local seat. The decline rate on real seats is not measured.
 
 ## Related
 

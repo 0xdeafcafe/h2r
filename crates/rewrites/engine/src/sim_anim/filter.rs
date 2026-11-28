@@ -104,33 +104,28 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Why the call was left to the guest.
+/// Why the kernel declined the call; the port makes the guest call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(usize)]
 pub enum Decline {
     /// A guest read faulted.
-    Fault = 0,
+    Fault,
     /// An instruction would deliver an unmasked SSE or x87 exception.
     Float,
     /// Stack or output storage aliases a gathered input or the body's instructions.
     Alias,
 }
 
-const DECLINES: usize = 3;
-
-/// Call counts since start, for timing and the fallback rate.
+/// Call counts since start, for timing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stats {
     /// Calls the kernel ran.
     pub native: u64,
     /// Of those, calls that snapped to the target.
     pub snapped: u64,
-    pub declined: [u64; DECLINES],
 }
 
 static NATIVE: AtomicU64 = AtomicU64::new(0);
 static SNAPPED: AtomicU64 = AtomicU64::new(0);
-static DECLINED: [AtomicU64; DECLINES] = [const { AtomicU64::new(0) }; DECLINES];
 
 impl Stats {
     /// Publish the leaf calls in a committed first-person segment.
@@ -141,11 +136,6 @@ impl Stats {
         if self.snapped != 0 {
             SNAPPED.fetch_add(self.snapped, Ordering::Relaxed);
         }
-        for (counter, &count) in DECLINED.iter().zip(&self.declined) {
-            if count != 0 {
-                counter.fetch_add(count, Ordering::Relaxed);
-            }
-        }
     }
 }
 
@@ -153,7 +143,6 @@ pub fn stats() -> Stats {
     Stats {
         native: NATIVE.load(Ordering::Relaxed),
         snapped: SNAPPED.load(Ordering::Relaxed),
-        declined: std::array::from_fn(|i| DECLINED[i].load(Ordering::Relaxed)),
     }
 }
 
@@ -597,12 +586,8 @@ pub(crate) fn run_counted(
     if !enabled() {
         return Ok(false);
     }
-    let plan = match plan(c, g, site) {
-        Ok(p) => p,
-        Err(why) => {
-            counts.declined[why as usize] += 1;
-            return Ok(false);
-        }
+    let Ok(plan) = plan(c, g, site) else {
+        return Ok(false);
     };
     scatter(c, g, &plan)?;
     counts.native += 1;

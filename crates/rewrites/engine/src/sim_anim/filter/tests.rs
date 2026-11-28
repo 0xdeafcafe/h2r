@@ -185,7 +185,6 @@ fn check_stores(k: Case, expected: &[(u32, f32)], snapped: bool) {
     assert_eq!(trace.writes, words);
     assert_eq!(counts.native, 1);
     assert_eq!(counts.snapped, u64::from(snapped));
-    assert_eq!(counts.declined, [0; DECLINES]);
 }
 
 #[test]
@@ -348,11 +347,10 @@ fn declines(k: &Case, edit: impl FnOnce(&mut CpuAbi, &mut Guest), why: Decline) 
     let (mut c, mut g) = machine(k);
     edit(&mut c, &mut g);
     let (cpu, mem) = (c, ram(&g));
-    let before = stats().declined[why as usize];
+    assert_eq!(plan(&c, &g, SITE).err(), Some(why), "{why:?}");
     assert!(!with(true, || run(&mut c, &mut g, SITE)).unwrap());
     assert_eq!(c, cpu);
     assert!(ram(&g) == mem, "RAM written on a decline");
-    assert!(stats().declined[why as usize] > before);
 }
 
 #[test]
