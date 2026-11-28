@@ -79,7 +79,8 @@ pub const POINTS: &[&Point] = &[
 /// `+40` (`10a2f0`), the `devi` slot `+40` (`106790`, which `mach`, `ctrl`
 /// and `lifi` inherit; `ctrl` and `lifi` have no slot of their own), the
 /// `mach` slot `+40` (`1152e0`), the `bloc` slot `+40` (`11bce0`)
-/// and the `crea` slots `+40` (`118700`) and `+44` (`118b80`, slice 11).
+/// and the `crea` slots `+40` (`118700`) and `+44` (`118b80`, slice 11),
+/// and the `vehi` and `devi` pose slots `+6c` (`f0f50`, `107000`).
 /// Each checks the float environment at its entry and its sites. The
 /// opt-in creature probe (`game::actor_net::creature`) skips the
 /// creature's two for a replica with a `before`; with it on they are
@@ -144,6 +145,8 @@ pub const TYPES: &[&Point] = &[
     &points::CRATE_UPDATE,
     &points::CREATURE_UPDATE,
     &points::CREATURE_POST_UPDATE,
+    &points::VEHICLE_POSE,
+    &points::DEVICE_POSE,
 ];
 
 /// The entries whose bodies make no float instruction: every one in

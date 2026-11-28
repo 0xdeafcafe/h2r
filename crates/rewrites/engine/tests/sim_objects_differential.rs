@@ -256,6 +256,9 @@ fn object_on_stack(root: u32) -> bool {
         &points::WEAPON_UPDATE,
         // Slice 10.
         &points::VEHICLE_UPDATE,
+        // The pose slot callees.
+        &points::VEHICLE_POSE,
+        &points::DEVICE_POSE,
     ]
     .iter()
     .any(|p| p.base == root)
@@ -314,7 +317,7 @@ const SLOT_UPDATE: &[u32] = &[
     0xc6b30, 0xdd360, 0xefde0, 0x10b4d0, 0xfdfb0, 0xf8de0, 0x10a2f0, 0x106790, 0x1152e0, 0x11bce0, 0x118700,
 ];
 const SLOT_POST: &[u32] = &[0xdd990, 0x118b80];
-const SLOT_POSE: &[u32] = &[0x112070, 0xf0f50, 0x107000];
+const SLOT_POSE: &[u32] = &[0x112070];
 const SLOT_AFTER_ROOT: &[u32] = &[0x112dc0, 0x10a390];
 
 /// The stack probe `109580` makes its frame with.
@@ -338,6 +341,10 @@ fn cleanup(target: u32) -> u32 {
         t if SLOT_AFTER_ROOT.contains(&t) => 8,
         0x1d3920 => 12,
         t if SLOT_POSE.contains(&t) => 16,
+        // The vehicle pose's channel setup and the device pose's channel
+        // evaluate (`slot_pose`).
+        0xf0760 => 12,
+        0x1c6f60 => 16,
         0xbef30 => 20,
         0xbb050 => 28,
         0xbba20 | 0xa9570 | 0x1cd4e0 | 0x1ced00 | 0x108cd0 | 0xbe1d0 | 0x109660 | 0xfd910 | 0xbf380 => 0,
@@ -905,6 +912,38 @@ fn type_post_update_dispatch() {
 #[test]
 fn type_pose_dispatch() {
     transcripts(&points::OBJECT_TYPE_POSE, 13);
+}
+
+/// The pose slot callees `f0f50` (`vehi`) and `107000` (`devi`), entered
+/// directly over a [`dress_pose`]d pool and through the pose dispatcher,
+/// which reaches them for vehicles, machines, controls and light fixtures.
+#[test]
+fn pose_slot_callees() {
+    dressed_with(&points::VEHICLE_POSE, 2, dress_pose);
+    dressed_with(&points::DEVICE_POSE, 8, dress_pose);
+    dressed_with(&points::OBJECT_TYPE_POSE, 13, dress_pose);
+}
+
+/// The model and animation graph the device pose reads.
+const POSE_MODEL: u32 = 0x006b_0000;
+const POSE_GRAPH: u32 = 0x006b_0100;
+
+/// [`dress`] with the device pose's path on the object a root is called
+/// on: the definition's model (`+38`, tag `40`) and the model's graph
+/// (`+4`, tag `41`), each none in one case, and the two channels at body
+/// `+18c` and `+1ac` with their handle or `+6` word none in turn. Case 0
+/// has no animation block ([`dress`]).
+fn dress_pose(g: &mut Guest, case: u32) {
+    let c = case as usize % 8;
+    word(g, TAGS + 16 * 0x40 + 8, POSE_MODEL);
+    word(g, TAGS + 16 * 0x41 + 8, POSE_GRAPH);
+    word(g, DEFINITION + 0x38, if c == 1 { u32::MAX } else { 0xe140_0040 });
+    word(g, POSE_MODEL + 4, if c == 2 { u32::MAX } else { 0xe141_0041 });
+    let body = g.u32(DATA + 12 * (object(case) & 0xffff) + 8).unwrap();
+    for (off, none, quiet) in [(0x18c, [3, 7], 4), (0x1ac, [5, 7], 6)] {
+        word(g, body + off, if none.contains(&c) { u32::MAX } else { 0xe150_0000 | off });
+        g.set_u16(body + off + 6, if c == quiet { u16::MAX } else { 1 }).unwrap();
+    }
 }
 
 #[test]
@@ -4568,6 +4607,7 @@ fn walk_table_types() {
         dressed_with_in(&points::OBJECT_TYPE_UPDATE, 11, dress_vehicle, table, mxcsr);
         dressed_with_in(&points::DEVICE_UPDATE, 6, undressed, table, mxcsr);
         dressed_with_in(&points::DEVICE_UPDATE, 16, dress_device, table, mxcsr);
+        dressed_with_in(&points::OBJECT_TYPE_POSE, 13, dress_pose, table, mxcsr);
         dressed_with_in(&points::MACHINE_UPDATE, 6, undressed, table, mxcsr);
         dressed_with_in(&points::MACHINE_UPDATE, 16, dress_device, table, mxcsr);
         dressed_with_in(&points::OBJECT_TYPE_UPDATE, 26, dress_device_family, table, mxcsr);

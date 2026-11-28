@@ -2130,6 +2130,8 @@ points! { ALL;
     MACHINE_UPDATE @ 0x0011_52e0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
     /// Machine slot `+48`: whether any of the machine's entries has its bit set in `bits`; 1 to `[out]` on a hit.
     MACHINE_SLOT_48 @ 0x0011_5a40: [fn(object: stack 0, bits: stack 1, out: stack 2) -> al ret 12], Hot; "docs/engine/object-update.md";
+    /// Device pose: slot `+6c` of `devi`; evaluates the channels at body `+18c` and `+1ac`.
+    DEVICE_POSE @ 0x0010_7000: [fn(object: stack 0, a: stack 1, b: stack 2, c: stack 3) ret 16], Hot; "docs/engine/object-update.md";
     /// Projectile update: slot `+40` of `proj`; calls the projectile step `0xf8eb0`.
     PROJECTILE_UPDATE @ 0x000f_8de0: [fn(object: stack 0) -> al ret 4], Hot; "docs/engine/object-update.md";
     /// Crate update: slot `+40` of `bloc`.
@@ -2191,6 +2193,8 @@ points! { ALL;
     /// Sets the first word of the vehicle update's 16 contact records
     /// (`d8` bytes each, from `buffer + bc0`) to none.
     VEHICLE_CONTACTS_RESET @ 0x000f_06c0: [fn(buffer: eax) ret 0], Hot; "docs/engine/object-update.md";
+    /// Vehicle pose: slot `+6c` of `vehi`; packs its arguments for `0xf0760`.
+    VEHICLE_POSE @ 0x000f_0f50: [fn(object: stack 0, a: stack 1, b: stack 2, c: stack 3) ret 16], Hot; "docs/engine/object-update.md";
     // Slice 6b of docs/engine/sim-rewrite-objects.md: the unit update's state
     // children (`UNIT_CONTROL_REFRESH`, `ce0c0`, is named above).
     /// Unit control: desired aim and look, timed bits, the two linked objects (`UNIT_UPDATE`'s first call).
