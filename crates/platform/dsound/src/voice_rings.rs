@@ -186,6 +186,25 @@ mod tests {
     }
 
     #[test]
+    fn the_rings_taps_leave_the_mixer_deferrable() {
+        // The title's talker streams sit on their port's bin alone, so a
+        // mixer with the four rings' taps still mixes on the audio-mix
+        // thread (`DirectSound::render_leased_job`).
+        let vr = VoiceRings::new(&[(0x1000, 64, 0x2000); 4]);
+        let mut m = Mixer::new(48_000);
+        m.set_taps(&vr.bins());
+        let fmt = audio::WaveFormat::pcm16(1, 8_000).unwrap();
+        let id = m.add_stream(audio::Stream::new(fmt).unwrap());
+        m.stream_mut(id).unwrap().set_mix_bins(Some(vec![(bin(2), 0)]));
+        m.stream_mut(id).unwrap().submit(&[0u8; 64]).unwrap();
+        let sound = m.add_buffer(
+            audio::SoundBuffer::from_data(fmt, vec![0u8; 64]).unwrap(),
+        );
+        m.buffer_mut(sound).unwrap().play(true);
+        assert!(m.can_defer());
+    }
+
+    #[test]
     fn the_dsp_base_gives_back_the_bin_as_0x333330_derives_it() {
         for port in 0..4 {
             assert_eq!((dsp_base(bin(port)) - 0x1400) >> 5, bin(port));

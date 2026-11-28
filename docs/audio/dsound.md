@@ -601,7 +601,11 @@ With logical pacing, `Output::enable_mix_thread()` (on in `h2 play`;
   the playout queue, in quantum order. The thread takes none of the locks the
   game takes.
 
-A quantum that cannot defer (bins tapped, `Mixer::can_defer`) is mixed on the
+The game's voice-ring taps (`voice_rings`) do not stop this: the talker
+streams sit on their tapped bin alone, so the state half fills the taps in
+order and `service_all` pumps them into guest memory before `advance_to`
+returns. A quantum that cannot defer (a voice on a tapped bin and another bin,
+or a mix-in reading one; `Mixer::can_defer`) is mixed on the
 caller's thread and queued as PCM behind the jobs before it.
 
 The FIFO holds 64 quanta; a caller that outruns the thread waits for room.
