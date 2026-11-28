@@ -223,6 +223,27 @@ A swallowed post call whose pass records again (the glow and the screen effects,
 
 ## What R10 and R11 delete
 
+### What R10 moves first
+
+The native stages record on `d3d`'s host, so R10's files are not a
+plain delete. What the stages import from the modules R10 lists (**Code**,
+`git grep 'd3d::' -- crates/rewrites/native-render crates/extensions/game crates/rewrites/render-bridge`):
+
+| Module | Used by the native side for |
+|---|---|
+| `backend` | the `Backend` trait the stages run on (`run_scene_stage`, `external_pass`, surfaces, present, pixel counts), `ExternalPass`, `ExternalWrites`, `TargetCopy`, `ExternalDraws`, `CachedBytes`, `PixelRect` |
+| `gfx_backend` | `GfxBackend`, `HostTexture`, `GuestDrawPass` and its tiles (`frame_graph/display_rate.rs`, `cone_shadows.rs`) |
+| `threaded`, `scaled` | `ThreadedBackend`, `owner::{Outputs, DisplayRate}`, `RenderScale`, `shadow_scale`, `private_scene::MixedPrivatePass` |
+| `nv2a`, `shader`, `state` | `NativeDrawKey`, `NativeDrawMaterial`, `NativeDrawShader` (`world_layers_gpu.rs`, `ui_gpu.rs`), `sampler_key`, `shader_border`, `alpha_func`, `w_buffered`, `Microcode`, `StateWords` |
+| `scene_sink`, `scene_stage` | `Retarget`, the carried slots (`frame-scene`, `render-bridge`) |
+| `ResolvedDraw` | the sky's material check (`sky_material.rs`) |
+
+`game` names `d3d::` in 75 files. R10 is in two steps: the host
+(device, surfaces, targets, scale, render thread, external and scene
+passes) and the program translation the stages use move to the native
+side behind their own types; then the files above are deleted with the
+guest's draw entries.
+
 **R10 deletes**: `pushbuf.rs`, `state.rs`, `nv2a.rs`, `nv2a_draw.rs`,
 `nv2a_hot.rs`, `shader.rs`, `vertex_cache.rs`, `dirty.rs`, `regs.rs`,
 `glyph.rs`, `pipeline_store.rs`, `device/` except what R11 lists,
