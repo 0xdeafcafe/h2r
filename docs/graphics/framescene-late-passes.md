@@ -7,7 +7,7 @@ Code: `crates/rewrites/frame-scene/src/late.rs`, `crates/rewrites/scene-extract/
 |---|---|---|---|
 | Fog (layer 16) | `View::fog` (`FogState`) | yes, one queued scene stage | no |
 | Water (layer 6) | `View::water`, `View::water_composite` | yes, one queued scene stage | no |
-| Post | `View::post` (`PostParams`) | glow and effects as a carried stage, through the swallow | no |
+| Post | `View::post` (`PostParams`) | glow and effects, native passes from the Rust bodies ([native-post.md](native-post.md)) | no |
 
 ## The types
 
@@ -51,25 +51,19 @@ The load is pinned until the masks and the commands commit, and only then does `
 - Counters: `scene_fog_*`, `scene_water_*`, `scene_post_*`, `scene_stages_{fog,water}`, `scene_dropped_{fog,water}`.
 - The entry census names the late passes' calls `layer.scene.16` and `layer.scene.6` (`entry_census::late_site`) and counts `colour_pass` and each `screen_effect` under `screen_effects`.
 
-## The post swallow, carried
+## The post passes, replayed
 
-The glow (`GlowPass`) and each screen effect (`ScreenPass`, both `game::native_post_glue`) record again on any copy's attachments once `SwallowPass::validate` has frozen their raster (`replays_scene`). Their slots and stages come from the copy being recorded.
+The glow (`GlowPass`) and each screen call (`ScreenPass`, both `game::native_post_glue`) are native passes of `Stage::Post` (`Device::prepare_external_pass`), committed at the call ([native-post.md](native-post.md#the-native-passes)). Both record again on any copy's attachments (`replays_scene`), so the display copy replays them on its own attachments.
 
-- At the call's return `Device::swallow_commit` builds a `SceneStage` of `Stage::Post` from the call's surfaces and plan.
-- When the backend can commit one (`can_commit_carried`), it is queued to a render thread that takes scene stages (`queue_scene_stage`; a drop stands Post down). Otherwise every copy is sealed (`prepare_carried_stage`) and committed (`commit_carried_stage`).
-- A replaying sink retains the stage as a `ReplayOp::Stage` in place of the call's packets, so the display copy replays the glow and the effects on its own attachments.
-- A stage carries no entry textures: the glow takes its down-sample's entry from the view's slot, copied with alpha one where the guest read it as `X8` (`OpaqueEntry`), as the device's framebuffer snapshot does.
-- A pass that does not record again, a refused carry, or a frame the guest reference asked for (`can_commit_carried` is false) takes the D3D path: `prepare_external` with the entry textures, which a replaying sink refuses, and the packets replay.
-
-Tests: `d3d`'s `tests/swallow_carry.rs`.
+- No guest draw is resolved: the raster is the plan's.
+- The glow takes its down-sample's entry from the view's slot, copied with alpha one where the guest reads it as `X8` (`OpaqueEntry`), as the device's framebuffer snapshot does.
 
 ## Not built
 
 - The replacement of layers 16 and 6 and of `render_screen_effects` (8.2: their census over the corpus, the table of writes, the differentials).
-- The post stage drawing from `PostParams` on the render thread, owning its bloom and effect targets, in place of the swallow. The swallow matches the guest's draws as they run and replays them on a mismatch, so it needs the guest's calls.
-- Under a render thread with a frame owner, `ThreadedBackend::prepare_carried_stage` seals only light stages, so the carried post stage is refused there and the call keeps the D3D path.
+- The post stage drawing from `PostParams` on the render thread, in place of the Rust bodies' passes at the call.
 - The deletion of the three stages' glue.
-- Screen effects the scope-zoom HUD draws are not put in the scene (`native_post` leaves them to the HUD).
+- A converted Halo 1 scope-zoom profile's screen effect (it panics, `post: scope_zoom`).
 
 ## Tests and gate
 

@@ -1,23 +1,27 @@
-//! The `native-post` host (docs/graphics/native-post-hud.md, stage 5):
-//! the colour pass of `render_screen_effects` (`0x000214f0`) as the game
-//! runs it, with its quads dropped on the device and the native glow
-//! drawn in place of the last.
+//! The `native-post` host (docs/graphics/native-post-hud.md, stage 5;
+//! docs/graphics/retire-d3d-display.md, "The post and the screen
+//! effects"): the glow of the colour pass `0x000214f0` and each screen
+//! effect `0x0002d140`, drawn as native passes on the frame graph's
+//! targets while the calls' guest bodies do not run
+//! (`render_bridge::native_post`).
 //!
-//! Entry hooks plan the guest's glow and screen draws. The device retains
-//! their original packets through the call's return, then either commits
-//! a complete native recording on every live copy or replays the packets.
-//! Each native pass uses the original targets' live attachments and
-//! formats. The checks run on every call, including after a map reload.
+//! Each pass names its slots by what they are to the game
+//! ([`PostTarget`]): the view (target 0's colour) or a role of Halo's
+//! target table (`frame_scene::TargetRole::Game`). The device resolves
+//! them to the graph's surfaces (`d3d::Device::surface_for`, the role
+//! table). Raster state is the plan's: the glow's blend, a template
+//! pass's own states (`ScreenProgram::state`). What a call needs that is
+//! not drawn natively is an `Err` the feature panics with, `post: <cause>`.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
-use engine::colour_pass;
+use engine::colour_pass::Parameters;
 use engine::glow::{self as game_glow, BlurArgs, WideArgs, WideDraw};
 use engine::memory::GuestMemory;
 use engine::screen_effect::{self, Convolution, Effect};
 use engine::screen_grid::{self, Grid};
-use gfx::vertex::PrimitiveType;
+use frame_scene::TargetRole;
 use map::TagId;
 use native_render::camera::GuestRead;
 use native_render::glow::{self, Blend, Draw, GlowTarget, GpuGlow, Plan, Surface};
@@ -26,9 +30,7 @@ use native_render::screen_gpu::{
     ScreenKey, ScreenTarget, PostRaster, StripVertex,
 };
 use native_render::screen_look::{CombinerInputs, ScreenStage};
-use render_bridge::native_post::{
-    self as post_feature, CallSite, Fp, Host, PostCall, ScreenEffect,
-};
+use render_bridge::native_post::{self as post_feature, Fp, Host, ScreenEffect};
 
 use crate::native_lights_glue::DeviceMemory;
 use crate::native_map;
@@ -46,22 +48,18 @@ fn err<E: std::fmt::Debug>(what: &'static str) -> impl Fn(E) -> String {
     move |e| format!("{what}: {e:?}")
 }
 
-/// The glow `0x000214f0` draws for `args`, or `None` when it draws
-/// nothing; `Err` when it draws something this cannot plan.
-pub fn plan(mem: &dyn GuestMemory, args: [u32; 7], fp: Fp) -> Result<Option<Plan>, String> {
-    let p = colour_pass::parameters(mem, args, fp.mxcsr).map_err(err("parameters"))?;
-    if !p.draws {
-        return Ok(None);
-    }
+/// The glow `0x000214f0` draws for parameters `p` (which draw); `Err`
+/// when it draws something this cannot plan.
+pub fn plan(mem: &dyn GuestMemory, p: &Parameters, fp: Fp) -> Result<Plan, String> {
     let mut plan = glow::read_frame(&Ro(mem)).ok_or("the window, signs or target sizes")?;
-    let pass_a = game_glow::pass_a(mem, &p, fp.x87_control).map_err(err("pass_a"))?;
+    let pass_a = game_glow::pass_a(mem, p, fp.x87_control).map_err(err("pass_a"))?;
     let blur_combiner = game_glow::blur_combiner(mem, p.args[4], p.y, fp.mxcsr, fp.x87_control)
         .map_err(err("blur_combiner"))?;
-    let blur = game_glow::blur(mem, &BlurArgs::of(&p), fp.mxcsr).map_err(err("blur"))?;
+    let blur = game_glow::blur(mem, &BlurArgs::of(p), fp.mxcsr).map_err(err("blur"))?;
     if blur.copy.is_some() {
         return Err("the blur copies its result (0x000351a0)".into());
     }
-    let pass_b = game_glow::pass_b(mem, &p, fp.x87_control).map_err(err("pass_b"))?;
+    let pass_b = game_glow::pass_b(mem, p, fp.x87_control).map_err(err("pass_b"))?;
     let view = mem
         .u32(glow::VIEW_TARGET)
         .map_err(err("the view's target"))? as u16 as i16 as i32 as u32;
@@ -100,7 +98,7 @@ pub fn plan(mem: &dyn GuestMemory, args: [u32; 7], fp: Fp) -> Result<Option<Plan
         spread: 0.0,
         blend: Blend::of_states(source, dest),
     });
-    Ok(Some(plan))
+    Ok(plan)
 }
 
 /// A piece a screen effect needs that does not draw natively yet.
@@ -149,29 +147,28 @@ impl Missing {
 /// `0x0002d4b7..0x0002d4be`: such a pass is skipped whole, its strips
 /// and its convolutions, `0x0002d4be` jumping to the next pass at
 /// `0x0002dabf`). `engine::screen_effect::plan` has every pass drawn, as
-/// the differential stubs `0x00016610`; without this the swallow would
-/// wait for strips the game never draws. The passes it left out, or
+/// the differential stubs `0x00016610`; without this the native pass would
+/// draw passes the game skips. The passes it left out, or
 /// `None` when a gate could not be read ([`Missing::TemplateSkipped`]).
 pub fn skip_undrawn(mem: &dyn GuestMemory, effect: &mut Effect) -> Option<usize> {
-    let shader = effect.shader;
-    let mut drawn = Vec::with_capacity(effect.passes.len());
-    for p in &effect.passes {
-        let implementation = i32::try_from(p.implementation).unwrap_or(-2);
-        drawn.push(
-            screen_effect::template_draws(
-                mem,
-                shader,
-                screen_effect::TEMPLATE_LAYER,
-                implementation,
-                p.selector,
-            )
-            .ok()?,
-        );
-    }
+    let drawn = template_gates(mem, effect)?;
     let before = effect.passes.len();
     let mut d = drawn.into_iter();
     effect.passes.retain(|_| d.next().unwrap_or(false));
     Some(before - effect.passes.len())
+}
+
+/// Per pass of `effect`, whether `0x00016610` draws it
+/// (`screen_effect::template_draws`); `None` when a gate could not be read.
+pub fn template_gates(mem: &dyn GuestMemory, effect: &Effect) -> Option<Vec<bool>> {
+    effect
+        .passes
+        .iter()
+        .map(|p| {
+            let implementation = i32::try_from(p.implementation).unwrap_or(-2);
+            screen_effect::template_draws(mem, effect.shader, screen_effect::TEMPLATE_LAYER, implementation, p.selector).ok()
+        })
+        .collect()
 }
 
 /// Whether the native screen pass draws `p` of egor `egor`: its program
@@ -468,44 +465,32 @@ pub fn plan_effect(
     Ok(effect.map(|e| (e, values)))
 }
 
-static EFFECT_REFUSED: [AtomicU64; Missing::ALL.len()] =
-    [const { AtomicU64::new(0) }; Missing::ALL.len()];
-static EFFECT_LOGGED: [AtomicBool; Missing::ALL.len()] =
-    [const { AtomicBool::new(false) }; Missing::ALL.len()];
-static EFFECT_PLAN_LOGGED: AtomicBool = AtomicBool::new(false);
-
-/// Screen-effect preflight refusals for the frame scene's counter map.
-pub(crate) fn refusal_counters() -> impl Iterator<Item = (String, u64)> {
-    Missing::ALL.into_iter().zip(&EFFECT_REFUSED).map(|(cause, count)| {
-        (format!("post_effect_refused_{}", missing_name(cause)), count.load(Ordering::Relaxed))
-    })
-}
-
-/// A refusal's counter name.
-fn missing_name(m: Missing) -> &'static str {
-    match m {
-        Missing::TemplatePass => "template_pass",
-        Missing::PassTarget => "pass_target",
-        Missing::ViewTarget => "view_target",
-        Missing::Blur => "blur",
-        Missing::Wide => "wide",
-        Missing::StandIns => "stand_ins",
-        Missing::TemplateSkipped => "template_skipped",
+impl Missing {
+    /// Its name in the panic, `post: screen effect: <name>`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Missing::TemplatePass => "template_pass",
+            Missing::PassTarget => "pass_target",
+            Missing::ViewTarget => "view_target",
+            Missing::Blur => "blur",
+            Missing::Wide => "wide",
+            Missing::StandIns => "stand_ins",
+            Missing::TemplateSkipped => "template_skipped",
+        }
     }
 }
 
-/// A call refused for `m`: counted, and logged once per reason. The call
-/// keeps it as its cause (`scene_kept_post_screen_effect_<cause>`, or a
-/// HUD widget's `scene_kept_overlay_screen_effect_<cause>`).
-fn refused(m: Missing) {
-    render_bridge::native_hud::kept::refuse(missing_name(m));
-    let i = Missing::ALL.iter().position(|a| *a == m).unwrap_or(0);
-    EFFECT_REFUSED[i].fetch_add(1, Ordering::Relaxed);
-    if !EFFECT_LOGGED[i].swap(true, Ordering::Relaxed) {
-        eprintln!(
-            "native-post: screen effects keep their D3D draws: {m:?} does not draw natively yet (logged once per reason)"
-        );
-    }
+/// Screen-effect calls that drew nothing because the map's effects were
+/// still loading ([`EffectsSlot`]): the call's guest writes are made, its
+/// passes are not drawn.
+static EFFECTS_LOADING: AtomicU64 = AtomicU64::new(0);
+static LOADING_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// The glue's counters for the frame scene's counter map.
+pub(crate) fn counters() -> impl Iterator<Item = (String, u64)> {
+    post_feature::counters()
+        .into_iter()
+        .chain([("post_screen_effect_loading".to_string(), EFFECTS_LOADING.load(Ordering::Relaxed))])
 }
 
 /// A call as the native pass draws it: per pass its key, destination,
@@ -569,69 +554,137 @@ pub fn screen_call(
     })
 }
 
-/// A swallow's plan: each draw's slot, and its shape.
-pub type SwallowPlan = (Vec<u8>, Vec<(PrimitiveType, usize)>);
-
-/// The slot of a call's passes into the bound target. Not 0, the target
-/// bound when the swallow is armed: `0x00016610` binds the pass's target
-/// itself (`0x00014bc0` of 0 or 1, Code, `0x0001675c..0x00016765`), so
-/// the strips go to target 0 whatever the caller had bound (the UI's call
-/// at `0x0022bbbb` as much as `render_screen_effects`' at `0x00013b52`).
+/// The slots of a screen call's native pass ([`screen_slots`]): 0 is
+/// unused, 1 the bound target (`0x00016610` binds target 0 itself,
+/// `0x00014bc0` of 0 or 1, Code, `0x0001675c..0x00016765`, so the
+/// strips go to target 0 whatever the caller had bound: the UI's call at
+/// `0x0022bbbb` as much as `render_screen_effects`' at `0x00013b52`),
+/// 2 target 1, 3 to 5 the stand-ins `0x19` to `0x1b`.
 pub const SLOT_BOUND: u8 = 1;
-/// Target 1's slot, and the first stand-in's (`0x19`; `0x1a` and `0x1b`
-/// after it).
 pub const SLOT_TARGET1: u8 = 2;
 pub const SLOT_STAND_INS: u8 = 3;
 
-/// The swallow of a call's draws in order: per pass its strips, each a
-/// triangle strip (`SET_BEGIN_END` 6) of twice the columns, then its
-/// convolutions' draws, a blur's each a quad ([`QUAD`]), a wide one's
-/// each its grid's strips (`0x00034770`: per row a triangle strip of
-/// twice the columns and one); each with its slot ([`SLOT_BOUND`],
-/// [`SLOT_TARGET1`], [`SLOT_STAND_INS`] plus `n` for stand-in `n` of
-/// `screen_gpu::STAND_INS`), none of them 0.
-pub fn screen_swallow(call: &ScreenCall) -> Option<SwallowPlan> {
-    let mut draws = Vec::new();
-    for (_, d, strips, convolutions) in &call.passes {
-        let slot = if *d == Dest::Bound {
-            SLOT_BOUND
-        } else {
-            SLOT_TARGET1
-        };
-        for s in strips {
-            draws.push((slot, (PrimitiveType::TriangleStrip, s.len())));
+/// What a post pass's slot is to the game: the view (target 0's colour,
+/// `[0x0050935c]`, a surface of the device's) or a role of Halo's target
+/// table, its surface header at `+0x18` (`render_bridge::native_targets::role`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PostTarget {
+    View,
+    Role(TargetRole),
+}
+
+/// The surface header of `t` for the device, written or only read;
+/// `Err` for a table entry that is not made (no surface, a hidden size,
+/// no levels: `0x0001dcf0` returns none) or a role the table does not
+/// hold.
+pub fn post_slot(mem: &dyn GuestMemory, t: PostTarget, written: bool) -> Result<d3d::ExternalSlot, String> {
+    let header = match t {
+        PostTarget::View => mem
+            .u32(post_feature::TARGET0_COLOUR)
+            .ok()
+            .filter(|&h| h != 0)
+            .ok_or("the view's colour surface")?,
+        PostTarget::Role(TargetRole::Game(n)) => {
+            target_level_surface(mem, u32::from(n)).ok_or(format!("target {n:#x} is not made"))?
         }
-        for q in convolutions.iter().flat_map(|c| &c.draws) {
-            let slot = SLOT_STAND_INS + screen_gpu::stand_in(q.dest)? as u8;
-            match &q.grid {
-                None => draws.push((slot, QUAD)),
-                Some(g) => draws.extend(
-                    g.strips
-                        .iter()
-                        .map(|s| (slot, (PrimitiveType::TriangleStrip, s.len()))),
-                ),
+        PostTarget::Role(role) => return Err(format!("{role:?} is no post target")),
+    };
+    Ok(d3d::ExternalSlot { header, written })
+}
+
+/// Whether the view reads as `X8` (alpha one) where a pass samples Halo's
+/// target `index`: the texture `0x00014f60` binds for it
+/// (`native_post::target_texture`) is `LIN_X8R8G8B8`.
+pub fn reads_opaque(mem: &dyn GuestMemory, index: u32) -> Result<bool, String> {
+    let header = post_feature::target_texture(mem, index).map_err(|e| format!("the view's texture: {e}"))?;
+    let format = mem.u32(header.wrapping_add(0xc)).map_err(|_| "the view's texture header")?;
+    Ok(gfx::D3DFormat::from_raw((format >> 8) & 0xff) == Some(gfx::D3DFormat::LinX8R8G8B8))
+}
+
+/// The guest ranges a screen call's pass records: each pass's strips,
+/// each convolution's quad or grid strips (`ScreenCommands::ranges`).
+pub fn screen_ranges(call: &ScreenCall) -> usize {
+    call.passes
+        .iter()
+        .map(|(_, _, strips, convolutions)| {
+            strips.len()
+                + convolutions
+                    .iter()
+                    .flat_map(|c| &c.draws)
+                    .map(|q| q.grid.as_ref().map_or(1, |g| g.strips.len()))
+                    .sum::<usize>()
+        })
+        .sum()
+}
+
+/// A screen call's slots by [`SLOT_BOUND`], [`SLOT_TARGET1`] and
+/// [`SLOT_STAND_INS`]: the view when a pass draws into it or reads it,
+/// target 1 when a pass draws into it, each stand-in a convolution draws
+/// into or reads.
+pub fn screen_slot_targets(call: &ScreenCall) -> [Option<(PostTarget, bool)>; 6] {
+    let mut slots = [None; 6];
+    slots[usize::from(SLOT_BOUND)] = Some((PostTarget::View, call.passes.iter().any(|p| p.1 == Dest::Bound)));
+    if call.passes.iter().any(|p| matches!(p.1, Dest::Target1 { .. })) {
+        slots[usize::from(SLOT_TARGET1)] = Some((PostTarget::Role(TargetRole::Game(1)), true));
+    }
+    for q in call.passes.iter().flat_map(|p| &p.3).flat_map(|c| &c.draws) {
+        for (target, written) in [(q.dest, true), (q.source, false)] {
+            if let Some(i) = screen_gpu::stand_in(target) {
+                let slot = &mut slots[usize::from(SLOT_STAND_INS) + i];
+                let was = slot.is_some_and(|(_, w)| w);
+                *slot = Some((PostTarget::Role(TargetRole::Game(0x19 + i as u8)), was || written));
             }
         }
     }
-    if draws.is_empty() {
-        return None;
-    }
-    Some(draws.into_iter().unzip())
+    slots
 }
 
-/// The direct D3DDevice_End at the end of a layer-15 strip.
-const SCREEN_STRIP_END: u32 = post_feature::SCREEN_STRIP_TAIL;
+/// [`screen_slot_targets`] as the device's slots.
+fn screen_slots(mem: &dyn GuestMemory, call: &ScreenCall) -> Result<Vec<Option<d3d::ExternalSlot>>, String> {
+    screen_slot_targets(call)
+        .into_iter()
+        .map(|s| s.map(|(t, written)| post_slot(mem, t, written)).transpose())
+        .collect()
+}
 
-fn screen_end_returns(call: &ScreenCall) -> Vec<Option<u32>> {
-    let mut returns = Vec::new();
-    for (_, _, strips, convolutions) in &call.passes {
-        returns.extend(std::iter::repeat_n(Some(SCREEN_STRIP_END), strips.len()));
-        for draw in convolutions.iter().flat_map(|c| &c.draws) {
-            let count = draw.grid.as_ref().map_or(1, |g| g.strips.len());
-            returns.extend(std::iter::repeat_n(None, count));
+/// The glow's slots: the view 0, target 7 1, target 8 2.
+pub const GLOW_TARGETS: [PostTarget; 3] =
+    [PostTarget::View, PostTarget::Role(TargetRole::Game(7)), PostTarget::Role(TargetRole::Game(8))];
+
+/// The body's target-table writes (`0x0001ddd0`) in its order, for
+/// `effect` as planned and `drawn` its passes' template gates: before a
+/// pass's gate (`0x0002d49f`, ahead of `0x00016610` at `0x0002d4b7`),
+/// target 1 at its size; past a drawn one's gate, each drawn
+/// convolution's two stand-ins (`0x0002da3e`, `0x0002da47`).
+pub fn resizes(effect: &Effect, drawn: &[bool]) -> Vec<(u32, (i32, i32))> {
+    let mut out = Vec::new();
+    for (p, &d) in effect.passes.iter().zip(drawn) {
+        if let Some(size) = p.size {
+            out.push((1, size));
+        }
+        if !d {
+            continue;
+        }
+        for c in &p.convolutions {
+            match c {
+                Convolution::Kept { .. } => {}
+                Convolution::Blur { size, args, .. } => out.extend([(args.dest, *size), (args.other, *size)]),
+                Convolution::Wide { size, args, .. } => out.extend([(args.dest, *size), (args.other, *size)]),
+            }
         }
     }
-    returns
+    out
+}
+
+/// One size per target in a call: the native pass draws each target at
+/// one shape. `Err` names a target the call sizes twice.
+pub fn one_size_each(resizes: &[(u32, (i32, i32))]) -> Result<(), String> {
+    for (i, (t, s)) in resizes.iter().enumerate() {
+        if resizes[..i].iter().any(|(u, z)| u == t && z != s) {
+            return Err(format!("target {t:#x} sized twice in one call"));
+        }
+    }
+    Ok(())
 }
 
 /// The embedded level-zero surface returned by the guest's
@@ -691,25 +744,10 @@ impl<'a> PostCopy<'a> {
     }
 }
 
-fn call_entry(kind: PostCall) -> u32 {
-    match kind {
-        PostCall::Colour => 0x0002_14f0,
-        PostCall::Screen => 0x0002_d140,
-    }
-}
-
-fn swallow_call(site: CallSite) -> d3d::SwallowCall {
-    d3d::SwallowCall {
-        entry: call_entry(site.kind),
-        esp: site.esp,
-        ret: site.ret,
-    }
-}
-
 struct ScreenPass {
     effects: Arc<ScreenEffects>,
     call: ScreenCall,
-    raster: OnceLock<Vec<ScreenRaster>>,
+    raster: Vec<ScreenRaster>,
 }
 
 struct ScreenRaster {
@@ -718,6 +756,31 @@ struct ScreenRaster {
 }
 
 impl ScreenPass {
+    /// The call's pass, its raster made from the plan: each template
+    /// pass's own states (`ScreenProgram::state`), the view read as `X8`
+    /// where `view_opaque` says so, each convolution quad or grid with no
+    /// blend and every channel written (`0x000211a0`, `0x00021360`). `Err`
+    /// for a pass without its program or out of order
+    /// (`screen_gpu::Drawn`).
+    fn new(effects: Arc<ScreenEffects>, call: ScreenCall, view_opaque: bool) -> Result<Self, String> {
+        let mut drawn = screen_gpu::Drawn::default();
+        let mut raster = Vec::with_capacity(call.passes.len());
+        for (key, dest, _, convolutions) in &call.passes {
+            let program = effects.program(call.egor, key.1, key.2).ok_or("missing screen program")?;
+            let reads = drawn.reads(program, *dest).map_err(|e| format!("{e:?}"))?;
+            let mut strip = PostRaster::from(program.state);
+            for (stage, source) in reads.iter().enumerate() {
+                if *source == Some(0) {
+                    strip.opaque_view[stage] = view_opaque;
+                }
+            }
+            let convolutions_raster = convolutions.iter().flat_map(|c| &c.draws).map(|_| PostRaster::default()).collect();
+            raster.push(ScreenRaster { strip, convolutions: convolutions_raster });
+            drawn.pass(program, *dest, convolutions).map_err(|e| format!("{e:?}"))?;
+        }
+        Ok(Self { effects, call, raster })
+    }
+
     fn effect(&self, key: ScreenKey) -> Option<&native_render::screen_look::ScreenProgram> {
         self.effects.program(self.call.egor, key.1, key.2)
     }
@@ -730,11 +793,7 @@ impl ScreenPass {
     ) -> Result<screen_gpu::ScreenCommands, screen_gpu::ScreenRefused> {
         let mut screens = self.effects.screens.lock().unwrap_or_else(|e| e.into_inner());
         let mut draws = Vec::new();
-        let raster = self
-            .raster
-            .get()
-            .ok_or(screen_gpu::ScreenRefused::NoProgram)?;
-        for ((key, dest, strips, convolutions), raster) in self.call.passes.iter().zip(raster) {
+        for ((key, dest, strips, convolutions), raster) in self.call.passes.iter().zip(&self.raster) {
             let program = self
                 .effect(*key)
                 .ok_or(screen_gpu::ScreenRefused::NoProgram)?;
@@ -772,13 +831,9 @@ impl ScreenPass {
             .prepare(target, &draws, self.call.frame.as_ref(), &mut stage_image)
     }
 
-    fn refused(&self, error: screen_gpu::ScreenRefused) {
-        log_rejection(|| {
-            format!(
-                "screen effect {:#010x} on live target: {error:?}",
-                self.call.egor.0
-            )
-        });
+    /// A copy the GPU could not record: there is no guest draw behind it.
+    fn refused(&self, error: screen_gpu::ScreenRefused) -> ! {
+        post_feature::unhandled(format!("screen effect {:#010x} on the graph's targets: {error:?}", self.call.egor.0))
     }
 }
 
@@ -787,15 +842,14 @@ impl d3d::ExternalPass for ScreenPass {
         true
     }
 
-    // Frozen by `validate`: the call, its values and its raster are the
-    // pass's own, and every source is a slot or the view's copy made in
-    // the recording. So a scene replay can record it again on its
-    // attachments (docs/graphics/framescene.md, slice 5).
+    // The call, its values and its raster are the pass's own, and every
+    // source is a slot or the view's copy made in the recording. So a
+    // scene replay can record it again on its attachments
+    // (docs/graphics/framescene.md, slice 5).
     fn replays_scene(&self) -> bool {
-        self.raster.get().is_some()
+        true
     }
 
-    // Only prepared recordings can replace a screen call.
     fn encode(&mut self, _: d3d::ExternalTarget<'_>) {}
 
     fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
@@ -804,10 +858,7 @@ impl d3d::ExternalPass for ScreenPass {
                 commands.record(t.encoder);
                 commands.ranges()
             }
-            Err(error) => {
-                self.refused(error);
-                0
-            }
+            Err(error) => self.refused(error),
         }
     }
 
@@ -827,100 +878,9 @@ impl d3d::ExternalPass for ScreenPass {
                     commands.record(encoder)
                 }),
             }),
-            Err(error) => {
-                self.refused(error);
-                Err("screen effect refused on the live target")
-            }
+            Err(error) => self.refused(error),
         })
     }
-}
-
-impl d3d::SwallowPass for ScreenPass {
-    fn validate(
-        &self,
-        originals: &[d3d::SwallowOriginal<'_>],
-        slots: &[Option<d3d::SwallowTarget>],
-    ) -> Result<(), String> {
-        let mut originals = originals.iter();
-        let mut drawn = screen_gpu::Drawn::default();
-        let mut raster = Vec::with_capacity(self.call.passes.len());
-        for (key, dest, strips, convolutions) in &self.call.passes {
-            let program = self.effect(*key).ok_or("missing screen program")?;
-            let reads = drawn.reads(program, *dest).map_err(|e| format!("{e:?}"))?;
-            let mut pass_raster = None;
-            for strip in strips {
-                let original = originals.next().ok_or("missing screen strip")?;
-                if !matches_strip(original.draw, strip) {
-                    return Err(
-                        "the resolved screen strip differs from the planned vertices".into(),
-                    );
-                }
-                let mut live = post_raster(original.draw, Some(program.combiner_inputs))
-                .map_err(|why| format!("screen effect {:#010x}: {why}", self.call.egor.0))?;
-                for (stage, source) in reads.iter().enumerate() {
-                    if let Some(index) = source {
-                        let is_view = *index == 0;
-                        check_bound_source(original, stage, screen_slot(*index), slots, is_view)?;
-                        if is_view {
-                            live.opaque_view[stage] = original.draw.texture_info[stage]
-                                .is_some_and(|info| info.format == gfx::D3DFormat::LinX8R8G8B8);
-                        }
-                    }
-                }
-                if pass_raster.replace(live).is_some_and(|first| first != live) {
-                    return Err("screen strip raster state changed within the pass".into());
-                }
-            }
-            let strip = pass_raster.ok_or("the screen pass has no strips")?;
-            let mut convolution_rasters = Vec::new();
-            for q in convolutions.iter().flat_map(|c| &c.draws) {
-                let frame = self.call.frame.as_ref().ok_or("missing convolution frame")?;
-                let inputs = CombinerInputs::read(&shaders::PixelShaderDef::from_words(&frame.combiner));
-                let mut grid_raster = None;
-                for _ in 0..q.grid.as_ref().map_or(1, |g| g.strips.len()) {
-                    let original = originals.next().ok_or("missing convolution draw")?;
-                    let live = post_raster(original.draw, Some(inputs))
-                        .map_err(|why| format!("screen convolution into {}: {why}", q.dest))?;
-                    if grid_raster.replace(live).is_some_and(|first| first != live) {
-                        return Err("screen convolution raster state changed within the grid".into());
-                    }
-                    for stage in 0..4 {
-                        if original.sampled[stage] {
-                            check_source(original, stage, screen_slot(q.source), slots)?;
-                        }
-                    }
-                }
-                convolution_rasters.push(grid_raster.ok_or("the convolution has no strips")?);
-            }
-            raster.push(ScreenRaster { strip, convolutions: convolution_rasters });
-            drawn
-                .pass(program, *dest, convolutions)
-                .map_err(|e| format!("{e:?}"))?;
-        }
-        if originals.next().is_some() {
-            return Err("unexpected post packet".into());
-        }
-        self.raster
-            .set(raster)
-            .map_err(|_| "screen raster was already captured".to_owned())
-    }
-}
-
-fn screen_slot(target: u32) -> Option<u8> {
-    match target {
-        0 => Some(SLOT_BOUND),
-        1 => Some(SLOT_TARGET1),
-        _ => screen_gpu::stand_in(target).map(|i| SLOT_STAND_INS + i as u8),
-    }
-}
-
-fn check_source(
-    original: &d3d::SwallowOriginal<'_>,
-    stage: usize,
-    slot: Option<u8>,
-    slots: &[Option<d3d::SwallowTarget>],
-) -> Result<(), String> {
-    check_bound_source(original, stage, slot, slots, false)
 }
 
 pub(crate) fn check_bound_source(
@@ -954,48 +914,6 @@ pub(crate) fn check_bound_source(
     Err(format!(
         "live source for stage {stage} differs from post slot {slot:?} ({info:?})"
     ))
-}
-
-fn matches_strip(draw: &d3d::ResolvedDraw, strip: &[StripVertex]) -> bool {
-    use gfx::vertex::VertexDataType::Float4;
-    let ([layout], [stream]) = (draw.layout.streams.as_slice(), draw.streams.as_slice()) else {
-        return false;
-    };
-    if layout.stream != 0
-        || layout.stride != 256
-        || stream.stride != 256
-        || draw.layout.pretransformed
-        || draw.indices.is_some()
-        || draw.vertex_count as usize != strip.len()
-        || stream.data.len() != strip.len() * 256
-        || draw.shader.provided_inputs != 0x1f
-        || layout.attributes.len() != 5
-    {
-        return false;
-    }
-    for register in 0..5u8 {
-        if !layout.attributes.iter().any(|a| {
-            a.register.0 == register
-                && a.data_type == Float4
-                && a.offset == 16 * u32::from(register)
-        }) {
-            return false;
-        }
-    }
-    // Compare the issued attribute words, including signed zero and NaNs.
-    strip
-        .iter()
-        .zip(stream.data.chunks_exact(256))
-        .all(|(vertex, issued)| {
-            let mut expected = std::iter::once(vertex.position)
-                .chain(vertex.texcoords)
-                .flatten()
-                .flat_map(f32::to_le_bytes);
-            issued[..80]
-                .iter()
-                .copied()
-                .all(|byte| expected.next() == Some(byte))
-        })
 }
 
 // A colour-only recording can omit a bound depth attachment if all fragments
@@ -1161,46 +1079,11 @@ pub(crate) fn matches_colour_state(
     })
 }
 
-fn log_rejection(detail: impl FnOnce() -> String) {
-    static LOGGED: Mutex<Vec<String>> = Mutex::new(Vec::new());
-    let mut logged = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
-    let detail = detail();
-    if logged.len() < 32 && !logged.contains(&detail) {
-        eprintln!("native-post: {detail}. Using the D3D draws.");
-        logged.push(detail);
-    }
-}
-
-/// The swallow's slot per quad: the view 0, target 7 1, target 8 2.
-pub fn targets(plan: &Plan) -> Vec<u8> {
-    plan.draws.iter().map(|d| glow_slot(d.dest)).collect()
-}
-
-fn glow_slot(surface: Surface) -> u8 {
-    match surface {
-        Surface::View => 0,
-        Surface::Down => 1,
-        Surface::Other => 2,
-    }
-}
-
-fn glow_headers(mem: &dyn GuestMemory) -> Vec<Option<u32>> {
-    vec![
-        None, // The swallow pins the view from the bound target.
-        target_level_surface(mem, glow::TARGET_DOWN),
-        target_level_surface(mem, glow::TARGET_OTHER),
-    ]
-}
-
-/// A quad of `0x00034420`: four vertices between pushed Begin(7) and End.
-pub const QUAD: (PrimitiveType, usize) = (PrimitiveType::TriangleFan, 4);
-
 /// The native glow, recorded against the call's view and blur levels.
 struct GlowPass {
-    raster: OnceLock<Vec<PostRaster>>,
     /// Per stage, whether the down-sample's entry reads the view as `X8`
-    /// (alpha one), captured with the raster.
-    opaque_entry: OnceLock<[bool; 4]>,
+    /// (alpha one): [`reads_opaque`] for the stages it binds the view at.
+    opaque_entry: [bool; 4],
     plan: Plan,
     gpu: Arc<Mutex<GpuGlow>>,
     entry: Arc<Mutex<OpaqueEntry>>,
@@ -1211,24 +1094,20 @@ impl d3d::ExternalPass for GlowPass {
         true
     }
 
-    // Frozen by `validate`: the plan, the raster and the entry's format
-    // are the call's own, and a copy given no entry textures reads the
-    // view from its own slot. So a scene replay can record it again on
-    // its attachments (docs/graphics/framescene.md, slice 5).
+    // The plan and the entry's format are the call's own, and a copy
+    // given no entry textures reads the view from its own slot. So a
+    // scene replay can record it again on its attachments
+    // (docs/graphics/framescene.md, slice 5).
     fn replays_scene(&self) -> bool {
-        self.raster.get().is_some() && self.opaque_entry.get().is_some()
+        true
     }
 
     fn encode(&mut self, _: d3d::ExternalTarget<'_>) {}
 
     fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
-        match self.prepare(PostCopy::of_target(&t)) {
-            Some(recording) => {
-                recording.record(t.encoder);
-                self.plan.draws.len()
-            }
-            None => 0,
-        }
+        let recording = self.prepare(PostCopy::of_target(&t));
+        recording.record(t.encoder);
+        self.plan.draws.len()
     }
 
     // The blur levels are targets of the glow's own: its quads go in the
@@ -1238,33 +1117,31 @@ impl d3d::ExternalPass for GlowPass {
         t: &d3d::backend::ExternalAttachments,
         request: d3d::ExternalPassRequest,
     ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
-        Some(match self.prepare(PostCopy::of_attachments(t, request)) {
-            Some(recording) => Ok(d3d::backend::ExternalEncoded {
-                ranges: self.plan.draws.len(),
-                draws: recording.passes(),
-                passes: recording.passes(),
-                commands: Box::new(move |encoder: &mut wgpu::CommandEncoder| {
-                    recording.record(encoder)
-                }),
-            }),
-            None => Err("glow refused on the live target"),
-        })
+        let recording = self.prepare(PostCopy::of_attachments(t, request));
+        Some(Ok(d3d::backend::ExternalEncoded {
+            ranges: self.plan.draws.len(),
+            draws: recording.passes(),
+            passes: recording.passes(),
+            commands: Box::new(move |encoder: &mut wgpu::CommandEncoder| recording.record(encoder)),
+        }))
     }
 }
 
 impl GlowPass {
-    /// The plan's quads on one copy, prepared; `None` (logged) when
-    /// refused. The cache's lock is released when this returns.
+    /// The plan's quads on one copy, prepared, with the plan's raster
+    /// (each quad's blend, every channel written: `0x00034a90`'s
+    /// `0x01010101`). A copy the GPU cannot record panics: there is no
+    /// guest draw behind it. The cache's lock is released when this
+    /// returns.
     ///
     /// The down-sample's entry reads the view: through the copy's stage
     /// textures when it has them (the device's resolved inputs, with
     /// the `X8` alpha already one), else from the view's own slot, made
-    /// opaque first where the guest read it as `X8`. A carried scene
+    /// opaque first where the guest reads it as `X8`. A carried scene
     /// stage and its replay have no stage textures.
-    fn prepare(&self, t: PostCopy<'_>) -> Option<GlowRecording> {
-        let view = slot(t.slots, 0)?;
-        let raster = self.raster.get()?;
-        let opaque = *self.opaque_entry.get()?;
+    fn prepare(&self, t: PostCopy<'_>) -> GlowRecording {
+        let view = slot(t.slots, 0).unwrap_or_else(|| post_feature::unhandled("glow: no view slot"));
+        let opaque = self.opaque_entry;
         let intermediates = [1, 2].map(|i| slot(t.slots, i).map(glow::PostSurface::from));
         let given = t.stages.iter().any(Option::is_some);
         let entry = (!given && opaque.contains(&true))
@@ -1279,7 +1156,7 @@ impl GlowPass {
                 })
             })
         };
-        let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare_raster(
+        let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare(
             GlowTarget {
                 device: t.device,
                 queue: t.queue,
@@ -1289,12 +1166,11 @@ impl GlowPass {
                 intermediates,
             },
             &self.plan,
-            Some(raster),
         );
-        result
-            .map(|commands| GlowRecording { entry, commands })
-            .map_err(|error| log_rejection(|| format!("glow on live target: {error:?}")))
-            .ok()
+        match result {
+            Ok(commands) => GlowRecording { entry, commands },
+            Err(error) => post_feature::unhandled(format!("glow on the graph's targets: {error:?}")),
+        }
     }
 }
 
@@ -1460,43 +1336,6 @@ impl OpaqueEntry {
     }
 }
 
-impl d3d::SwallowPass for GlowPass {
-    fn entry_samples(&self) -> bool {
-        true
-    }
-
-    fn validate(
-        &self,
-        originals: &[d3d::SwallowOriginal<'_>],
-        slots: &[Option<d3d::SwallowTarget>],
-    ) -> Result<(), String> {
-        if originals.len() != self.plan.draws.len() {
-            return Err("glow quad count differs from plan".into());
-        }
-        let mut rasters = Vec::with_capacity(originals.len());
-        let mut opaque_entry = [false; 4];
-        for (i, (original, want)) in originals.iter().zip(&self.plan.draws).enumerate() {
-            let inputs = CombinerInputs::read(&shaders::PixelShaderDef::from_words(&want.combiner));
-            let raster = post_raster(original.draw, Some(inputs))?;
-            rasters.push(raster);
-            for stage in 0..4 {
-                if original.sampled[stage] {
-                    let source = want.stages[stage];
-                    let entry = i == 0 && source == Some(Surface::View);
-                    check_bound_source(original, stage, source.map(glow_slot), slots, entry)?;
-                    opaque_entry[stage] = entry
-                        && original.draw.texture_info[stage]
-                            .is_some_and(|info| info.format == gfx::D3DFormat::LinX8R8G8B8);
-                }
-            }
-        }
-        self.opaque_entry
-            .set(opaque_entry)
-            .map_err(|_| "glow entry already captured".to_owned())?;
-        self.raster.set(rasters).map_err(|_| "glow raster already captured".to_owned())
-    }
-}
-
 struct Glue<B: d3d::backend::Backend + Send + 'static> {
     device: d3d::abi::SharedDevice<B>,
     gpu: Arc<Mutex<GpuGlow>>,
@@ -1505,48 +1344,6 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     /// The current map's screen effects, loaded here whatever the native
     /// world does ([`EffectsSlot`]).
     effects: Arc<Mutex<EffectsSlot>>,
-}
-
-/// Read the live pass and both rows after the template sets its state.
-fn live_strip(mem: &dyn GuestMemory, esp: u32, mxcsr: u32) -> Option<Vec<[[f32; 4]; 5]>> {
-    let word = |offset| mem.u32(esp.checked_add(offset)?).ok();
-    let columns = word(0xb0)?;
-    if !(2..=MAX_CORNERS / 2).contains(&columns) {
-        return None;
-    }
-    let row = word(0x18)?;
-    let row_bytes = word(0x34)?;
-    if row == 0 || row_bytes != columns * 16 {
-        return None;
-    }
-    let pass = word(0x20)?;
-    let bounds = [word(0x58)?, word(0x5c)?, word(0x60)?, word(0x64)?];
-    let corner = |a: u32| {
-        Some([
-            mem.u32(a).ok()?,
-            mem.u32(a.checked_add(4)?).ok()?,
-            mem.u32(a.checked_add(8)?).ok()?,
-            mem.u32(a.checked_add(12)?).ok()?,
-        ])
-    };
-    let rows = (0..columns)
-        .map(|i| {
-            let a = row.checked_add(i * 16)?;
-            Some([corner(a)?, corner(a.checked_add(row_bytes)?)?])
-        })
-        .collect::<Option<Vec<_>>>()?;
-    let depth = f32::from_bits(mem.u32(screen_effect::constant::DEPTH).ok()?);
-    let vertices = screen_effect::strip_vertices(mem, pass, bounds, &rows, mxcsr).ok()?;
-    Some(
-        vertices
-            .into_iter()
-            .map(|v| {
-                let [x, y] = v.position.map(f32::from_bits);
-                let [t0, t1, t2, t3] = v.texcoords.map(|t| t.map(f32::from_bits));
-                [[x, y, depth, depth], t0, t1, t2, t3]
-            })
-            .collect(),
-    )
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
@@ -1558,245 +1355,110 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
     }
 
-    fn draw_strip(
-        &self,
-        mem: &mut dyn GuestMemory,
-        esp: u32,
-        call_esp: u32,
-        mxcsr: u32,
-    ) -> Result<bool, runtime::GuestFault> {
-        use timeline::native::{Metric, Stage};
-        let Ok(mut device) = self.device.lock() else {
-            return Ok(false);
-        };
-        let entry = call_entry(PostCall::Screen);
-        let end = post_feature::SCREEN_STRIP_TAIL;
-        Stage::Post.count(Metric::WalkExamined, 1);
-        if !device.owns_post_strip(&DeviceMemory(mem), entry, call_esp, end) {
-            Stage::Post.count(Metric::WalkRefusedReservation, 1);
-            return Ok(false);
-        }
-        let Some(vertices) = live_strip(mem, esp, mxcsr) else {
-            Stage::Post.count(Metric::WalkRefusedInputs, 1);
-            return Ok(false);
-        };
-        match device.try_post_strip(&mut DeviceMemory(mem), entry, call_esp, end, &vertices) {
-            Ok(drawn) => {
-                if !drawn {
-                    Stage::Post.count(Metric::WalkRefusedReservation, 1);
-                }
-                Ok(drawn)
-            }
-            Err(error) => {
-                eprintln!("native-post: issuing screen strip: {error}");
-                Err(runtime::GuestFault {
-                    addr: post_feature::SCREEN_STRIP_TAIL,
-                    len: 0,
-                    access: runtime::guest::Access::Execute,
-                    reason: runtime::guest::FaultReason::InvalidOperation,
-                })
-            }
-        }
-    }
-
-    fn colour_pass(
-        &self,
-        mem: &mut dyn GuestMemory,
-        site: CallSite,
-        args: [u32; 7],
-        fp: Fp,
-    ) -> bool {
-        use render_bridge::native_hud::kept;
-        self.interrupt();
-        let plan = match plan(&*mem, args, fp) {
-            Ok(Some(p)) => p,
-            Ok(None) => {
-                // The glow is off: the call draws nothing.
-                kept::empty();
-                return false;
-            }
-            Err(error) => {
-                kept::refuse("plan");
-                log_rejection(|| format!("glow plan: {error}"));
-                return false;
-            }
-        };
-        let targets = targets(&plan);
-        let pass: Box<dyn d3d::SwallowPass> = Box::new(GlowPass {
-            raster: OnceLock::new(),
-            opaque_entry: OnceLock::new(),
+    fn glow(&self, mem: &mut dyn GuestMemory, p: &Parameters, fp: Fp) -> Result<(), String> {
+        let plan = plan(&*mem, p, fp)?;
+        let view = u32::from(mem.u32(glow::VIEW_TARGET).map_err(|_| "the view's target")? as u16);
+        let opaque = reads_opaque(&*mem, view)?;
+        let entry = plan.draws.first().ok_or("the glow has no down-sample")?;
+        let opaque_entry = std::array::from_fn(|n| opaque && entry.stages[n] == Some(Surface::View));
+        let slots = GLOW_TARGETS
+            .into_iter()
+            .map(|t| post_slot(&*mem, t, true).map(Some))
+            .collect::<Result<Vec<_>, _>>()?;
+        let ranges = plan.draws.len();
+        let pass = GlowPass {
+            opaque_entry,
             plan,
             gpu: Arc::clone(&self.gpu),
             entry: Arc::clone(&self.entry),
-        });
-        let headers = glow_headers(mem);
-        let armed = self.arm(
-            mem,
-            d3d::Swallow {
-                call: Some(swallow_call(site)),
-                end_returns: Vec::new(),
-                headers,
-                targets,
-                primitive: QUAD.0,
-                vertices: QUAD.1,
-                shapes: Vec::new(),
-                drop: true,
-                pass,
-            },
-        );
-        if !armed {
-            kept::refuse("arm");
-        }
-        armed
+        };
+        self.commit(mem, ranges, slots, Box::new(pass))
     }
 
-    fn screen_effect(
-        &self,
-        mem: &mut dyn GuestMemory,
-        site: CallSite,
-        call: ScreenEffect,
-        fp: Fp,
-    ) -> bool {
-        self.interrupt();
-        self.effect(mem, site, call, fp)
-    }
-
-    fn finish(&self, mem: &mut dyn GuestMemory, kind: PostCall, esp: u32) {
-        if let Ok(mut device) = self.device.lock() {
-            let before = device.stats();
-            if let Err(error) = device.finish_swallow(&mut DeviceMemory(mem), call_entry(kind), esp)
-            {
-                eprintln!("native-post: finishing {kind:?}: {error}");
-            }
-            let after = device.stats();
-            if after.swallow_refusals > before.swallow_refusals
-                && let Some(detail) = device.swallow_mismatch()
-            {
-                log_rejection(|| format!("{kind:?}: {detail}"));
-            }
+    fn screen_effect(&self, mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> Result<bool, String> {
+        let Some((mut effect, values)) = plan_effect(&*mem, call, fp).map_err(|e| format!("plan: {e}"))? else {
+            // `0x0002d140` returns at once (no egor, an empty window, or
+            // another view's target).
+            return Ok(false);
+        };
+        let saved = post_feature::save_sizes(&*mem).map_err(|e| format!("saved sizes ({e:?})"))?;
+        let drawn = template_gates(&*mem, &effect).ok_or(Missing::TemplateSkipped.name())?;
+        let sizes = resizes(&effect, &drawn);
+        one_size_each(&sizes)?;
+        for (t, (w, h)) in &sizes {
+            post_feature::resize(mem, *t, *w as u32, *h as u32).map_err(|e| format!("resize ({e:?})"))?;
         }
+        let mut gate = drawn.into_iter();
+        effect.passes.retain(|_| gate.next().unwrap_or(false));
+        if !effect.passes.is_empty() {
+            self.draw_effect(mem, call, effect, values, fp)?;
+        }
+        post_feature::end_writes(mem, &saved)?;
+        Ok(true)
     }
 }
 
 impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
-    fn interrupt(&self) {
-        if let Ok(mut device) = self.device.lock()
-            && let Err(error) = device.interrupt_swallow()
-        {
-            eprintln!("native-post: replaying interrupted call: {error}");
+    /// Places `pass` at this point in the frame over `slots`, with
+    /// `ranges` guest ranges; `Err` when the device does not take it.
+    fn commit(
+        &self,
+        mem: &mut dyn GuestMemory,
+        ranges: usize,
+        slots: Vec<Option<d3d::ExternalSlot>>,
+        pass: Box<dyn d3d::ExternalPass>,
+    ) -> Result<(), String> {
+        let mut device = self.device.lock().map_err(|_| "the device's lock")?;
+        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Post, view: 0, ranges, slots };
+        match device.prepare_external_pass(&mut DeviceMemory(mem), plan, pass) {
+            Ok(Some(prepared)) => {
+                prepared.commit();
+                Ok(())
+            }
+            Ok(None) => Err("the device did not take the pass".into()),
+            Err(error) => Err(format!("the device: {error}")),
         }
     }
 
-    /// [`Host::screen_effect`]'s body.
-    fn effect(
+    /// The drawn passes of `effect`, called with `values`, as one native
+    /// pass. While the map's effects load nothing is drawn (counted
+    /// `post_screen_effect_loading`).
+    fn draw_effect(
         &self,
         mem: &mut dyn GuestMemory,
-        site: CallSite,
         call: ScreenEffect,
+        effect: Effect,
+        values: [u32; 4],
         fp: Fp,
-    ) -> bool {
-        use render_bridge::native_hud::kept::refuse;
-        let (mut effect, values) = match plan_effect(&*mem, call, fp) {
-            Ok(Some(e)) => e,
-            Ok(None) => {
-                refuse("unplanned");
-                return false;
-            }
-            Err(e) => {
-                refuse("plan");
-                if !EFFECT_PLAN_LOGGED.swap(true, Ordering::Relaxed) {
-                    eprintln!(
-                        "native-post: a screen effect keeps its D3D draws: {e} (logged once)"
-                    );
-                }
-                return false;
-            }
-        };
-        let effects = self.screen_effects(&*mem);
+    ) -> Result<(), String> {
         let egor = TagId(call.datum);
-        let skipped = skip_undrawn(&*mem, &mut effect);
-        let ordered = call_ordered(effects.as_deref(), egor, &effect);
-        if effects.is_none() {
-            // The first call on a map starts their load: nothing is
-            // missing yet, they are not in.
-            refuse("loading");
-            return false;
-        }
+        let Some(effects) = self.screen_effects(&*mem) else {
+            EFFECTS_LOADING.fetch_add(1, Ordering::Relaxed);
+            if !LOADING_LOGGED.swap(true, Ordering::Relaxed) {
+                eprintln!("native-post: a screen effect waits for its map's effects to load (logged once)");
+            }
+            return Ok(());
+        };
         let frame = quad_frame(&*mem, fp);
-        let mut m = missing(
-            &effect,
-            &|p| pass_drawable(effects.as_deref(), egor, p),
-            frame.is_some(),
-        );
-        if let Err(reason) = ordered && !m.contains(&reason) {
+        let mut m = missing(&effect, &|p| pass_drawable(Some(&*effects), egor, p), frame.is_some());
+        if let Err(reason) = call_ordered(Some(&*effects), egor, &effect) {
             m.push(reason);
         }
-        if skipped.is_none() {
-            m.push(Missing::TemplateSkipped);
+        if let Some(first) = m.first() {
+            return Err(first.name().into());
         }
-        for m in &m {
-            refused(*m);
-        }
-        // Armed only once nothing is missing (never while the stand-ins
-        // are); until then the D3D path draws every effect.
-        if !m.is_empty() {
-            return false;
-        }
-        let Some(effects) = effects else { return false };
-        let Ok(depth) = mem.u32(screen_effect::constant::DEPTH) else {
-            refuse("effect_depth");
-            return false;
-        };
+        let depth = mem.u32(screen_effect::constant::DEPTH).map_err(|_| "the effect's depth")?;
         let grid = |p: &screen_effect::Pass, a: &WideArgs, size: (i32, i32), d: &WideDraw| {
-            grid_of(
-                &*mem,
-                fp,
-                &wide_grid(a, size, d, wide_source(&*mem, p, a.source)?),
-            )
+            grid_of(&*mem, fp, &wide_grid(a, size, d, wide_source(&*mem, p, a.source)?))
         };
-        let Some(call) = screen_call(&effect, egor, values, depth, frame, &grid) else {
-            refused(Missing::Wide);
-            return false;
-        };
-        let Some(plan) = screen_swallow(&call) else {
-            refuse("swallow");
-            return false;
-        };
-        let (targets, shapes) = plan;
-        let (primitive, vertices) = shapes[0];
-        let end_returns = screen_end_returns(&call);
-        // Target 0 comes from a device surface, outside the level table.
-        // Its first strip pins SLOT_BOUND after the guest binds it.
-        let headers = [None, None, Some(1), Some(0x19), Some(0x1a), Some(0x1b)]
-            .map(|index| index.and_then(|index| target_level_surface(mem, index)))
-            .to_vec();
-        let pass = Box::new(ScreenPass {
-            effects,
-            call,
-            raster: OnceLock::new(),
-        });
-        let armed = self.arm(
-            mem,
-            d3d::Swallow {
-                call: Some(swallow_call(site)),
-                end_returns,
-                headers,
-                targets,
-                primitive,
-                vertices,
-                shapes,
-                drop: true,
-                pass,
-            },
-        );
-        if !armed {
-            refuse("arm");
-        }
-        armed
+        let call = screen_call(&effect, egor, values, depth, frame, &grid).ok_or(Missing::Wide.name())?;
+        let opaque = reads_opaque(&*mem, 0)?;
+        let slots = screen_slots(&*mem, &call)?;
+        let ranges = screen_ranges(&call);
+        let pass = ScreenPass::new(effects, call, opaque)?;
+        self.commit(mem, ranges, slots, Box::new(pass))
     }
-}
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
     /// The loaded map's screen effects: `None` until they load, the first
     /// call on a map starting their load ([`spawn_load`]).
     fn screen_effects(&self, mem: &dyn GuestMemory) -> Option<Arc<ScreenEffects>> {
@@ -1804,19 +1466,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             spawn_load(name, generation, Arc::clone(&self.effects))
         })
     }
-
-    fn arm(&self, mem: &mut dyn GuestMemory, swallow: d3d::Swallow) -> bool {
-        let Ok(mut device) = self.device.lock() else {
-            return false;
-        };
-        device
-            .swallow(&mut DeviceMemory(mem), swallow)
-            .unwrap_or_else(|error| {
-                eprintln!("native-post: arming the call: {error}");
-                false
-            })
-    }
 }
+
 
 /// The screen effects of the map the game has loaded, which the post
 /// glue loads itself: the hook runs with the native post on, whether or
@@ -1893,7 +1544,7 @@ pub fn map_effects(
 }
 
 /// Loads map `name`'s screen effects on a thread of their own into
-/// `slot`; a map that does not load keeps every effect on D3D.
+/// `slot`; a map that does not load draws no screen effect, which the feature names.
 fn spawn_load(name: String, generation: u64, slot: Arc<Mutex<EffectsSlot>>) {
     let spawned = background::spawn("native-post load", move || {
         let current = || generation == render_bridge::native_map_work::generation();
@@ -1904,12 +1555,12 @@ fn spawn_load(name: String, generation: u64, slot: Arc<Mutex<EffectsSlot>>) {
                 slot.lock().unwrap_or_else(|e| e.into_inner()).loaded(&name, generation, e);
             }
             Ok(_) => {}
-            Err(e) => eprintln!("native-post: {name}: the screen effects did not load ({e}); every screen effect keeps its D3D draws"),
+            Err(e) => eprintln!("native-post: {name}: the screen effects did not load ({e}); no screen effect draws"),
         }
     });
     if let Err(e) = spawned {
         eprintln!(
-            "native-post: {e}: the screen effects did not load; every screen effect keeps its D3D draws"
+            "native-post: {e}: the screen effects did not load; no screen effect draws"
         );
     }
 }
@@ -1936,238 +1587,49 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
 mod tests {
     use super::*;
 
-    /// The colour pass's stand-in now that the A/B capture is gone: it
-    /// draws nothing and binds no depth.
-    struct CapturePass(Option<String>);
-
-    impl d3d::ExternalPass for CapturePass {
-        fn colour_only(&self) -> bool {
-            true
-        }
-
-        fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
-            let _ = (&self.0, t.device.poll(wgpu::PollType::Poll));
-        }
-    }
-
-    impl d3d::SwallowPass for CapturePass {}
-
-    fn draw(dest: Surface) -> Draw {
-        Draw {
-            dest,
-            stages: [None; 4],
-            combiner: [0; glow::COMBINER_WORDS],
-            taps: 4,
-            spread: 0.0,
-            blend: None,
-        }
-    }
-
+    /// The glow's and a screen call's slots are the view and Halo's table
+    /// entries by role: each entry's surface header, and only while the
+    /// entry is made (`0x0001dcf0`).
     #[test]
-    fn a_live_strip_reads_paired_rows_and_refuses_an_inconsistent_stride() {
+    fn post_slots_name_the_view_and_table_roles() {
         use engine::memory::FlatMemory;
-        let mut mem = FlatMemory::new(0x0040_0000, 0x0010_0000);
-        let (stack, pass, corners) = (0x0048_0000, 0x0049_0000, 0x004a_0000);
-        for (offset, word) in [(0xb0, 2), (0x18, corners), (0x34, 32), (0x20, pass)] {
-            mem.set_u32(stack + offset, word).unwrap();
-        }
-        mem.set_u32(screen_effect::constant::ONE, 1.0f32.to_bits())
-            .unwrap();
-        mem.set_u32(screen_effect::constant::DEPTH, 0.5f32.to_bits())
-            .unwrap();
-        for (i, corner) in [
-            [1.0f32, 2.0, 0.25, 0.5],
-            [3.0, 2.0, 0.75, 0.5],
-            [1.0, 4.0, 0.25, 1.0],
-            [3.0, 4.0, 0.75, 1.0],
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            for (n, value) in corner.into_iter().enumerate() {
-                mem.set_u32(corners + 16 * i as u32 + 4 * n as u32, value.to_bits())
-                    .unwrap();
-            }
-        }
-        let strip = live_strip(&mem, stack, 0x1f80).unwrap();
-        assert_eq!(
-            strip
-                .iter()
-                .map(|registers| registers[0][..2].to_vec())
-                .collect::<Vec<_>>(),
-            [
-                vec![1.0, 2.0],
-                vec![1.0, 4.0],
-                vec![3.0, 2.0],
-                vec![3.0, 4.0],
-            ]
-        );
-        assert_eq!(strip[1][0], [1.0, 4.0, 0.5, 0.5]);
-        assert_eq!(strip[1][4], [0.25, 1.0, 0.0, 1.0]);
-        mem.set_u32(stack + 0x34, 16).unwrap();
-        assert!(live_strip(&mem, stack, 0x1f80).is_none());
+        let mut m = FlatMemory::new(0x0040_0000, 0x0020_0000);
+        m.set_u32(post_feature::TARGET0_COLOUR, 0x0051_0000).unwrap();
+        let view = post_slot(&m, PostTarget::View, true).unwrap();
+        assert_eq!((view.header, view.written), (0x0051_0000, true));
+        let role = PostTarget::Role(TargetRole::Game(7));
+        assert!(post_slot(&m, role, true).is_err(), "target 7 not made");
+        let e = glow::TARGETS + 7 * glow::TARGET_STRIDE;
+        m.set_u32(e + 0x88, 0x0052_0000).unwrap();
+        m.set_u32(e + 0x78, 1).unwrap();
+        let slot = post_slot(&m, role, false).unwrap();
+        assert_eq!(slot.header, e + 0x18);
+        assert_eq!(render_bridge::native_targets::role(slot.header, 0), Some(TargetRole::Game(7)), "the role it names");
+        m.write(e + 0x95, &[1]).unwrap();
+        assert!(post_slot(&m, role, false).is_err(), "a hidden size");
+        assert!(post_slot(&m, PostTarget::Role(TargetRole::DisplayDepth), false).is_err());
+        assert_eq!(GLOW_TARGETS[1], PostTarget::Role(TargetRole::Game(glow::TARGET_DOWN as u8)));
+        assert_eq!(GLOW_TARGETS[2], PostTarget::Role(TargetRole::Game(glow::TARGET_OTHER as u8)));
+        m.set_u32(post_feature::TARGET0_COLOUR, 0).unwrap();
+        assert!(post_slot(&m, PostTarget::View, true).is_err(), "no view surface");
     }
 
+    /// The view reads as `X8` where the texture `0x00014f60` binds for it
+    /// is `LIN_X8R8G8B8`.
     #[test]
-    fn the_colour_swallow_matches_the_embedded_surfaces_in_pass_order() {
-        use d3d::GuestMemory as _;
-        use d3d::pushbuf::method;
-        use d3d::resource::{ResourceType, common};
+    fn the_view_reads_opaque_through_an_x8_texture() {
         use engine::memory::FlatMemory;
-        use gfx::vertex::fvf;
-
-        let plan = Plan {
-            window: [0.0; 4],
-            signs: [0.0; 2],
-            view: (32, 32),
-            down: (16, 16),
-            other: (16, 16),
-            draws: [
-                Surface::Down,
-                Surface::Other,
-                Surface::Down,
-                Surface::Other,
-                Surface::Down,
-                Surface::View,
-            ]
-            .map(draw)
-            .to_vec(),
-        };
-        let call = d3d::SwallowCall {
-            entry: call_entry(PostCall::Colour),
-            esp: 0x0043_0100,
-            ret: 0x2000,
-        };
-        let config = d3d::DeviceConfig::halo2(
-            d3d::GuestRange {
-                addr: 0x0041_0000,
-                len: 0x1_0000,
-            },
-            d3d::GuestRange {
-                addr: 0x0042_0000,
-                len: 0x1000,
-            },
-        );
-        let down = glow::TARGETS + glow::TARGET_DOWN * glow::TARGET_STRIDE;
-        let other = glow::TARGETS + glow::TARGET_OTHER * glow::TARGET_STRIDE;
-
-        for wrong_target in [false, true] {
-            let mut mem = FlatMemory::new(0x0040_0000, 0x10_0000);
-            for slot in 0..d3d::pushbuf::SIMPLE_ENCODE_SLOTS as u32 {
-                let header = (1 << 18) | (4 * (slot + 1));
-                mem.set_u32(config.layout.simple_encode + 4 * slot, header)
-                    .unwrap();
-            }
-            for (descriptor, data, (width, height)) in [
-                (down, 0x0010_0000, plan.down),
-                (other, 0x0011_0000, plan.other),
-            ] {
-                mem.set_u32(descriptor + 0x88, data).unwrap();
-                mem.set_u32(descriptor + 0x78, 1).unwrap();
-                let surface = descriptor + 0x18;
-                let resource = (ResourceType::Surface.raw() << common::TYPE_SHIFT) | 1;
-                let format = (2 << 4) | (gfx::D3DFormat::LinA8R8G8B8.raw() << 8) | (1 << 16);
-                let size = (width - 1) | ((height - 1) << 12);
-                for (i, word) in [resource, data, 0, format, size, 0].into_iter().enumerate() {
-                    mem.set_u32(surface + 4 * i as u32, word).unwrap();
-                }
-            }
-            let headers = glow_headers(&mem);
-            let mut dm = DeviceMemory(&mut mem);
-            let mut backend = d3d::RecordingBackend::new();
-            backend.external_passes = true;
-            let mut device = d3d::Device::new(config, backend);
-            let params = 0x0043_0000;
-            d3d::PresentParameters {
-                width: plan.view.0,
-                height: plan.view.1,
-                back_buffer_format: gfx::D3DFormat::A8R8G8B8.raw(),
-                back_buffer_count: 1,
-                multisample_type: 0,
-                swap_effect: 0,
-                enable_auto_depth_stencil: false,
-                auto_depth_stencil_format: 0,
-                flags: 0,
-                refresh_rate: 0,
-                presentation_interval: 0,
-                buffer_surface: 0,
-                depth_stencil_surface: 0,
-            }
-            .write(&mut dm, params)
-            .unwrap();
-            device.create_device(&mut dm, 0, params, 0).unwrap();
-            device.set_vertex_shader(&mut dm, fvf::XYZRHW).unwrap();
-            let view = device.bound_target()[0];
-            let swallow = d3d::Swallow {
-                call: Some(call),
-                end_returns: Vec::new(),
-                headers,
-                targets: targets(&plan),
-                primitive: QUAD.0,
-                vertices: QUAD.1,
-                shapes: Vec::new(),
-                drop: true,
-                pass: Box::new(CapturePass(None)),
-            };
-            assert!(device.swallow(&mut dm, swallow).unwrap());
-
-            // Downsample, four ping-pong blur draws, then the composite.
-            // The guest binds the embedded surfaces and pushes a fan with
-            // the position register last for each corner.
-            let (down, other) = (down + 0x18, other + 0x18);
-            let first_blur = if wrong_target { down } else { other };
-            for target in [down, first_blur, down, other, down, view] {
-                device.set_render_target(&mut dm, target, 0).unwrap();
-                let mut put = dm.read_u32(config.layout.device).unwrap();
-                let mut push = |words: &[u32]| {
-                    for &word in words {
-                        dm.write_u32(put, word).unwrap();
-                        put += 4;
-                    }
-                };
-                push(&[(1 << 18) | method::BEGIN_END, 7]);
-                for (x, y) in [(0.0_f32, 0.0_f32), (0.0, 8.0), (8.0, 8.0), (8.0, 0.0)] {
-                    push(&[
-                        (4 << 18) | (method::VERTEX_DATA4F + 16),
-                        x.to_bits(),
-                        y.to_bits(),
-                        0,
-                        0,
-                    ]);
-                    push(&[
-                        (4 << 18) | method::VERTEX4F,
-                        x.to_bits(),
-                        y.to_bits(),
-                        0,
-                        1.0_f32.to_bits(),
-                    ]);
-                }
-                push(&[(1 << 18) | method::BEGIN_END, 0]);
-                dm.write_u32(config.layout.device, put).unwrap();
-            }
-            assert_eq!(device.drain_until_callback(&mut dm).unwrap(), None);
-            assert_eq!(device.stats().draws, if wrong_target { 6 } else { 0 });
-            device
-                .finish_swallow(&mut dm, call.entry, call.esp)
-                .unwrap();
-            let (matched, reason) = if wrong_target {
-                (1, d3d::SwallowRefusal::Shape)
-            } else {
-                // The recorder cannot encode a replacement. It reaches
-                // the encode boundary with all six originals still held.
-                (6, d3d::SwallowRefusal::Encode)
-            };
-            let stats = device.stats();
-            assert_eq!(stats.swallowed_draws, matched);
-            assert_eq!(stats.swallow_draws_replayed, matched);
-            assert_eq!(
-                stats.swallow_reasons[reason.index()],
-                1,
-                "{:?}",
-                device.swallow_mismatch()
-            );
-            assert_eq!(stats.draws, 6);
-        }
+        let mut m = FlatMemory::new(0x0001_0000, 0x0060_0000);
+        m.write(post_feature::TEXTURE_CASE, &[2]).unwrap();
+        m.set_u32(post_feature::TEXTURE_JUMP + 8, 0x0001_4ffc).unwrap();
+        m.set_u32(0x0050_9374, 0x0051_0000).unwrap();
+        let format = |f: gfx::D3DFormat| (2 << 4) | (f.raw() << 8) | (1 << 16);
+        m.set_u32(0x0051_000c, format(gfx::D3DFormat::LinX8R8G8B8)).unwrap();
+        assert_eq!(reads_opaque(&m, 0), Ok(true));
+        m.set_u32(0x0051_000c, format(gfx::D3DFormat::LinA8R8G8B8)).unwrap();
+        assert_eq!(reads_opaque(&m, 0), Ok(false));
+        m.set_u32(post_feature::TEXTURE_JUMP + 8, 0x0001_5050).unwrap();
+        assert!(reads_opaque(&m, 0).is_err(), "a case not read");
     }
 
     fn pass(kind: u16, convolutions: Vec<Convolution>) -> screen_effect::Pass {
@@ -2182,34 +1644,10 @@ mod tests {
         }
     }
 
-    /// What arms a screen call's swallow: no draw is slot 0's (the target
-    /// bound when armed), since `0x00016610` binds the pass's target
-    /// itself; the mainmenu A/B's call mismatched at its first strip
-    /// before.
-    #[test]
-    fn a_screen_swallow_takes_the_target_its_pass_binds() {
-        let effect = Effect {
-            shader: 0,
-            implementations: 2,
-            passes: vec![drawn_pass(2, 3)],
-        };
-        let call = screen_call(&effect, EGOR, [0; 4], 0, None, &unmade_grid).unwrap();
-        let plan = screen_swallow(&call).unwrap();
-        assert!(!plan.0.contains(&0), "{:?}", plan.0);
-        assert_eq!(plan.0, [1, 1]);
-        assert_eq!(
-            plan.1,
-            [
-                (PrimitiveType::TriangleStrip, 6),
-                (PrimitiveType::TriangleStrip, 6)
-            ]
-        );
-    }
-
-    /// A call is armed only when `0x00016610` draws every pass the plan
-    /// has (the gate itself: engine's
+    /// A pass `0x00016610` does not draw is left out of the native pass
+    /// (the gate itself: engine's
     /// `the_template_pass_draws_only_an_implementation_with_a_vertex_shader`);
-    /// a template that does not read keeps it on D3D.
+    /// a template that does not read is `template_skipped`.
     #[test]
     fn a_pass_the_template_skips_is_left_out_and_an_unread_gate_refuses() {
         use engine::memory::FlatMemory;
@@ -2269,7 +1707,7 @@ mod tests {
         assert_eq!(
             missing(&effect(vec![pass(0, vec![])]), yes, false),
             vec![],
-            "armed"
+            "drawn natively"
         );
         assert_eq!(
             missing(
@@ -2865,7 +2303,7 @@ mod tests {
         assert_eq!(call_ordered(Some(&e), EGOR, &call(vec![into_1.clone()])), Err(Missing::ViewTarget));
         assert!(
             call_ordered(Some(&e), EGOR, &call(vec![back.clone()])).is_err(),
-            "target 1 as D3D left it"
+            "target 1 as the call came in"
         );
         assert!(
             call_ordered(Some(&e), EGOR, &call(vec![back, into_1])).is_err(),
@@ -3018,7 +2456,7 @@ mod tests {
     }
 
     #[test]
-    fn a_calls_strips_are_one_swallow_into_the_bound_target() {
+    fn a_calls_ranges_and_slots_are_its_strips_and_targets() {
         let effect = Effect {
             shader: 0,
             implementations: 2,
@@ -3027,162 +2465,68 @@ mod tests {
         let values = [0.5f32.to_bits(), 0, 0, 0];
         let call = screen_call(&effect, EGOR, values, 0x4b7f_ffff, None, &unmade_grid).unwrap();
         assert_eq!(call.passes.len(), 2);
-        assert_eq!(
-            call.values, values,
-            "what the passes' engine constants read"
-        );
-        assert_eq!(
-            call.passes[0].0,
-            (EGOR.0, 1, 0),
-            "(egor, layer pass, implementation)"
-        );
+        assert_eq!(call.values, values, "what the passes' engine constants read");
+        assert_eq!(call.passes[0].0, (EGOR.0, 1, 0), "(egor, layer pass, implementation)");
         assert_eq!(call.passes[0].1, Dest::Bound);
         assert_eq!(call.passes[0].2[0][0].position[2].to_bits(), 0x4b7f_ffff);
-        let strip = (PrimitiveType::from_xbox(6).unwrap(), 8);
-        assert_eq!(
-            screen_swallow(&call),
-            Some((vec![SLOT_BOUND; 6], vec![strip; 6])),
-            "SET_BEGIN_END 6"
-        );
-        let uneven = Effect {
-            passes: vec![drawn_pass(1, 4), drawn_pass(1, 3)],
-            ..effect.clone()
-        };
-        let shapes =
-            screen_swallow(&screen_call(&uneven, EGOR, [0; 4], 0, None, &unmade_grid).unwrap())
-                .map(|s| s.1);
-        assert_eq!(
-            shapes,
-            Some(vec![strip, (PrimitiveType::TriangleStrip, 6)]),
-            "each strip its own count"
-        );
-        let empty = Effect {
-            passes: vec![],
-            ..effect.clone()
-        };
-        assert_eq!(
-            screen_swallow(&screen_call(&empty, EGOR, [0; 4], 0, None, &unmade_grid).unwrap()),
-            None
-        );
-        // Target 1's strips go to slot 2, the target the first finds; no
-        // draw is slot 0's (the target bound when armed).
-        let into_1 = screen_effect::Pass {
-            kind: 1,
-            size: Some((640, 480)),
-            ..drawn_pass(2, 4)
-        };
-        let both = Effect {
-            passes: vec![into_1, drawn_pass(3, 4)],
-            ..effect
-        };
+        assert_eq!(screen_ranges(&call), 6, "each pass's strips");
+        let view = Some((PostTarget::View, true));
+        assert_eq!(screen_slot_targets(&call), [None, view, None, None, None, None]);
+        let empty = Effect { passes: vec![], ..effect.clone() };
+        let call = screen_call(&empty, EGOR, [0; 4], 0, None, &unmade_grid).unwrap();
+        assert_eq!(screen_ranges(&call), 0);
+        // Target 1's strips go to its slot; the view's is read-only.
+        let into_1 = screen_effect::Pass { kind: 1, size: Some((640, 480)), ..drawn_pass(2, 4) };
+        let both = Effect { passes: vec![into_1, drawn_pass(3, 4)], ..effect };
         let call = screen_call(&both, EGOR, [0; 4], 0, None, &unmade_grid).unwrap();
         assert_eq!(call.passes[0].1, Dest::Target1 { guest: (640, 480) });
-        assert_eq!(
-            screen_swallow(&call).map(|s| s.0),
-            Some(vec![2, 2, 1, 1, 1])
-        );
-        // A blur after the first pass: its quads into 0x19 (slot 3) and
-        // 0x1a (slot 4), between the passes' strips.
-        let args = BlurArgs {
-            source: 1,
-            steps: 0,
-            scale: 0,
-            growth: 0,
-            dest: 0x19,
-            other: 0x1a,
-            last: u32::MAX,
-        };
+        assert_eq!(screen_ranges(&call), 5);
+        let target1 = Some((PostTarget::Role(TargetRole::Game(1)), true));
+        assert_eq!(screen_slot_targets(&call)[..3], [None, view, target1]);
+        let only_1 = Effect { passes: vec![both.passes[0].clone()], ..both.clone() };
+        let call = screen_call(&only_1, EGOR, [0; 4], 0, None, &unmade_grid).unwrap();
+        assert_eq!(screen_slot_targets(&call)[1], Some((PostTarget::View, false)), "read, not drawn into");
+        // A blur after the first pass: its quads into 0x19 and 0x1a.
+        let args = BlurArgs { source: 1, steps: 0, scale: 0, growth: 0, dest: 0x19, other: 0x1a, last: u32::MAX };
         let draws = vec![
-            game_glow::BlurDraw {
-                source: 1,
-                dest: 0x19,
-                spread: 0,
-            },
-            game_glow::BlurDraw {
-                source: 0x19,
-                dest: 0x1a,
-                spread: 0,
-            },
+            game_glow::BlurDraw { source: 1, dest: 0x19, spread: 0 },
+            game_glow::BlurDraw { source: 0x19, dest: 0x1a, spread: 0 },
         ];
-        let blur = game_glow::Blur {
-            draws,
-            result: 0x1a,
-            copy: None,
-        };
+        let blur = game_glow::Blur { draws, result: 0x1a, copy: None };
         let into_1 = screen_effect::Pass {
-            convolutions: vec![Convolution::Blur {
-                size: (320, 240),
-                args,
-                blur,
-            }],
+            convolutions: vec![Convolution::Blur { size: (320, 240), args, blur }],
             ..both.passes[0].clone()
         };
-        let blurred = Effect {
-            passes: vec![into_1, both.passes[1].clone()],
-            ..both.clone()
-        };
-        let (slots, shapes) =
-            screen_swallow(&screen_call(&blurred, EGOR, [0; 4], 0, None, &unmade_grid).unwrap())
-                .unwrap();
-        assert_eq!(slots, vec![2, 2, 3, 4, 1, 1, 1]);
-        assert_eq!(shapes[2..4], [QUAD, QUAD]);
+        let blurred = Effect { passes: vec![into_1, both.passes[1].clone()], ..both.clone() };
+        let call = screen_call(&blurred, EGOR, [0; 4], 0, None, &unmade_grid).unwrap();
+        assert_eq!(screen_ranges(&call), 7, "two strips, two quads, three strips");
+        let stand_in = |n: u8| Some((PostTarget::Role(TargetRole::Game(n)), true));
+        assert_eq!(screen_slot_targets(&call)[3..], [stand_in(0x19), stand_in(0x1a), None]);
+        // The body's resizes: target 1 before the pass's gate, the blur's
+        // pair after it; a pass the gate skips resizes target 1 alone.
+        let sizes = resizes(&blurred, &[true, true]);
+        assert_eq!(sizes, [(1, (640, 480)), (0x19, (320, 240)), (0x1a, (320, 240))]);
+        assert_eq!(resizes(&blurred, &[false, true]), [(1, (640, 480))]);
+        assert!(one_size_each(&sizes).is_ok());
+        assert!(one_size_each(&[(0x19, (320, 240)), (0x19, (160, 120))]).is_err());
         // A wide one: each draw its grid's strips, into its stand-in.
-        let args = WideArgs {
-            source: 1,
-            taps: 2,
-            scale: 0,
-            words: [0; 2],
-            dest: 0x19,
-            other: 0x1a,
-            last: u32::MAX,
-        };
+        let args = WideArgs { source: 1, taps: 2, scale: 0, words: [0; 2], dest: 0x19, other: 0x1a, last: u32::MAX };
         let draws = vec![
-            WideDraw {
-                source: 1,
-                dest: 0x19,
-                offsets: [0; 4],
-            },
-            WideDraw {
-                source: 0x19,
-                dest: 0x1a,
-                offsets: [0; 4],
-            },
+            WideDraw { source: 1, dest: 0x19, offsets: [0; 4] },
+            WideDraw { source: 0x19, dest: 0x1a, offsets: [0; 4] },
         ];
-        let wide = game_glow::Wide {
-            draws,
-            result: 0x1a,
-            copy: None,
-        };
+        let wide = game_glow::Wide { draws, result: 0x1a, copy: None };
         let into_1 = screen_effect::Pass {
-            convolutions: vec![Convolution::Wide {
-                size: (320, 240),
-                args,
-                wide,
-            }],
+            convolutions: vec![Convolution::Wide { size: (320, 240), args, wide }],
             ..both.passes[0].clone()
         };
-        let widened = Effect {
-            passes: vec![into_1, both.passes[1].clone()],
-            ..both
-        };
+        let widened = Effect { passes: vec![into_1, both.passes[1].clone()], ..both };
         let grid = |_: &screen_effect::Pass, _: &WideArgs, _: (i32, i32), _: &WideDraw| {
-            Some(ConvolutionGrid {
-                bound: (640, 480),
-                strips: vec![vec![StripVertex::default(); 42]; 2],
-            })
+            Some(ConvolutionGrid { bound: (640, 480), strips: vec![vec![StripVertex::default(); 42]; 2] })
         };
-        let (slots, shapes) =
-            screen_swallow(&screen_call(&widened, EGOR, [0; 4], 0, None, &grid).unwrap()).unwrap();
-        assert_eq!(slots, vec![2, 2, 3, 3, 4, 4, 1, 1, 1]);
-        assert_eq!(
-            shapes[2..6],
-            [(PrimitiveType::TriangleStrip, 42); 4],
-            "0x00034770's SET_BEGIN_END 6"
-        );
-        assert!(
-            screen_call(&widened, EGOR, [0; 4], 0, None, &|_, _, _, _| None).is_none(),
-            "a grid not made"
-        );
+        let call = screen_call(&widened, EGOR, [0; 4], 0, None, &grid).unwrap();
+        assert_eq!(screen_ranges(&call), 9, "two strips, two grids of two, three strips");
+        assert!(screen_call(&widened, EGOR, [0; 4], 0, None, &|_, _, _, _| None).is_none(), "a grid not made");
     }
 
     #[test]
@@ -3265,7 +2609,7 @@ mod tests {
     }
 
     #[test]
-    fn every_pass_is_colour_only() {
+    fn every_pass_is_colour_only_and_records_again() {
         use d3d::ExternalPass;
         let plan = Plan {
             window: [0.0; 4],
@@ -3276,63 +2620,41 @@ mod tests {
             draws: vec![],
         };
         let glow = GlowPass {
-            raster: OnceLock::new(),
-            opaque_entry: OnceLock::new(),
-            plan: plan.clone(),
+            opaque_entry: [false; 4],
+            plan,
             gpu: Arc::new(Mutex::new(GpuGlow::new())),
             entry: Arc::default(),
         };
         assert!(glow.colour_only(), "the composite binds no depth");
-        assert!(CapturePass(None).colour_only());
+        assert!(glow.replays_scene(), "the plan is the call's own");
         let effects = Arc::new(crate::native_post_load::ScreenEffects::default());
-        let call = || ScreenCall {
-            egor: EGOR,
-            passes: Vec::new(),
-            values: [0; 4],
-            frame: None,
-        };
-        assert!(
-            ScreenPass {
-                effects,
-                call: call(),
-                raster: OnceLock::new()
-            }
-            .colour_only(),
-            "the screen passes bind no depth"
-        );
+        let call = ScreenCall { egor: EGOR, passes: Vec::new(), values: [0; 4], frame: None };
+        let screen = ScreenPass::new(effects, call, false).unwrap();
+        assert!(screen.colour_only(), "the screen passes bind no depth");
+        assert!(screen.replays_scene());
     }
 
-    /// A post pass is a scene stage a replay can record again only once
-    /// its call's raster is frozen.
+    /// A screen pass's raster is its template's states, the view read as
+    /// `X8` at the stages that sample it when the view is.
     #[test]
-    fn post_passes_record_again_only_once_validated() {
-        use d3d::{ExternalPass, SwallowPass};
-        let glow = GlowPass {
-            raster: OnceLock::new(),
-            opaque_entry: OnceLock::new(),
-            plan: Plan {
-                window: [0.0; 4],
-                signs: [0.0; 2],
-                view: (640, 480),
-                down: (160, 120),
-                other: (160, 120),
-                draws: vec![],
-            },
-            gpu: Arc::new(Mutex::new(GpuGlow::new())),
-            entry: Arc::default(),
-        };
-        assert!(!glow.replays_scene());
-        glow.validate(&[], &[]).unwrap();
-        assert!(glow.replays_scene());
-        assert_eq!(glow.opaque_entry.get(), Some(&[false; 4]));
-
-        let screen = ScreenPass {
-            effects: Arc::new(crate::native_post_load::ScreenEffects::default()),
-            call: ScreenCall { egor: EGOR, passes: Vec::new(), values: [0; 4], frame: None },
-            raster: OnceLock::new(),
-        };
-        assert!(!screen.replays_scene());
-        screen.validate(&[], &[]).unwrap();
-        assert!(screen.replays_scene());
+    fn a_screen_pass_rasters_from_its_template() {
+        let mut stages = effects([ScreenStage::Engine(5), ScreenStage::Empty, ScreenStage::Empty, ScreenStage::Empty]);
+        let blend = Some(wgpu::BlendState::ALPHA_BLENDING);
+        for p in stages.effects.get_mut(&EGOR).unwrap().programs.values_mut() {
+            p.state.blend = blend;
+            p.state.color_writes = wgpu::ColorWrites::COLOR;
+        }
+        let effects = Arc::new(stages);
+        let effect = Effect { shader: 0, implementations: 2, passes: vec![drawn_pass(2, 4)] };
+        let call = || screen_call(&effect, EGOR, [0; 4], 0, None, &unmade_grid).unwrap();
+        let opaque = ScreenPass::new(Arc::clone(&effects), call(), true).unwrap();
+        let strip = opaque.raster[0].strip;
+        assert_eq!((strip.blend, strip.writes), (blend, wgpu::ColorWrites::COLOR));
+        assert_eq!(strip.opaque_view, [true, false, false, false]);
+        assert!(opaque.raster[0].convolutions.is_empty());
+        let plain = ScreenPass::new(Arc::clone(&effects), call(), false).unwrap();
+        assert_eq!(plain.raster[0].strip.opaque_view, [false; 4]);
+        let other = ScreenCall { egor: TagId(0xe000_0009), ..call() };
+        assert!(ScreenPass::new(effects, other, false).is_err(), "no program");
     }
 }

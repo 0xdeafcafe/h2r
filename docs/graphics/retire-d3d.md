@@ -102,7 +102,7 @@ these per caller with every stage on: the column "Count" says what exists.
 | Particles `0x0023ed5c`, effect quads and contrails `0x0004b252`, `0x0004b28c` | inline quads and strips | the draw packet | iteration, property evaluation, ribbon construction, the per-view update `0x00174420`; unknown builders | not broken out |
 | Decals `0x00044040` | array quad lists | ordered packets using each copy's constants and scissors, with live depth, offset and texture border state; the callback's body, where every record it draws is drawn from its mode's template ([retire-d3d-decals.md](retire-d3d-decals.md)) | guest allocation, retirement and the mode's state setup `0x00043a40`; the body of each mode's first call with records, and of a call whose record Rust cannot draw (`scene_kept_decal_call_<cause>`). Packets can fall back when their resources or shader cannot be recorded. | resolved draws per present interval and guest pool occupancy; `decal_call_*`, `decal_cut_records` |
 | Lens flares: writer `0x00020bb0`, reader `0x00020770` | a counted draw between an inline begin and `EndVisibilityTest` | the pixel counter, on the GPU | the counted draw, the report slots, `GetVisibilityTestResult` | none |
-| Post: `0x00013870`, colour pass `0x000214f0`, screen effect `0x0002d140` | strips into side targets | glow, screen strips, blur and convolutions, as one transaction per call, including glow quads with live blend and channel masks, mixed A8/X8 framebuffer reads, and a final strip or convolution into a side target | a call with an unsupported input or a missing live target (`scene_kept_post_*`); a reference-only intermediate under scaling | 0.76 ms, 164 entries [a] |
+| Post: `0x00013870`, colour pass `0x000214f0`, screen effect `0x0002d140` | strips into side targets | both calls Rust bodies; glow, screen strips, blur and convolutions as one native pass per call on the graph's targets by role ([native-post.md](native-post.md)) | none: an uncovered call panics (`post: <cause>`) | 0.76 ms, 164 entries [a] |
 | `0x0002dd30`, `0x0002df00` (the flares' tests and draws) | a counted visibility fan, reflection billboards and a filtered composite | six colour fan sites ([retail trace](notes/2026-11-24-lens-flares.md)) | visibility test and feedback, guest queue and target changes, refused colour fans (`scene_kept_flare_*`) | committed fan ranges per copy in `render.scene` |
 | Layer 17 `0x0002c30b` (S: bloom) | indexed | its structure and object items from the scene's plan (`frame-scene.layers`) | what layers 1, 5, 7, 8 and 20 refuse (`scene_kept_17_*`); other callers (`scene_kept_17_*_caller`) | none |
 | HUD `0x001917eb` (tail `0x0013954b`), shader quad `0x0022a664` | immediate quads through a shader | every HUD caller's tag-shader quad through the overlay (widgets, crosshair, training frame, navpoints, waypoints, indicator), HUD glyphs, motion sensor compositing fans; a proven shader's quads with no shader draw; a proven bitmap or text widget with no guest draw; a proven definition's walk with no guest loop | the shader draw `0x0001bbf0` per quad of an unproven or refused shader and one proven quad in 32; what "R6's remainder" counts; the built-in diffuse shader; an unproven definition's loop, an unproven widget's draw, a screen effect's call | none: the HUD is outside the timed scene-pass sites |
@@ -211,7 +211,7 @@ caller, what the guest front-end still asks `d3d` to do.
 
 **Attribution.** A D3D entry has a caller: the adapter in
 `crates/platform/d3d/src/runtime_glue.rs` reads the return address at
-`[esp]` (it already does while a post call is being swallowed) and the
+`[esp]` (it already does while a call is being swallowed) and the
 census files the call, its time in the `d3d` phase and any draw the entry
 itself resolves under that address. An inline draw has no entry. It is
 charged to the producer that was open when its words were written, which
@@ -474,7 +474,7 @@ map as `overlay_<kind>_<cause>`.
 | `shader`, `combiner`, `sampler`, `texture`, `glyph_cache`, `vertices`, `culled`, `clip`, `overlay` | its combiner, stages or corners are outside the overlay |
 | `device` | the device did not take the draw (push room, a pending fence) |
 | `packet`, `reservation` | the guest's resolved packet drew it (the carried grade), or that failed too |
-| `template_pass` .. `template_skipped`, `plan`, `unplanned`, `loading`, `effect_depth`, `swallow`, `arm`, `scope_zoom` | a screen effect's preflight refusal, its plan, the map's effects still loading, or a converted scope-zoom profile |
+| `screen_effect` | a screen effect's call from a HUD widget, which panics where the native pass does not cover it (`post: <cause>`) |
 | `packet`, `scope` (`untraced` only) | drawn by its packet, or outside an eligible scope |
 
 A kept item's own guest draw is not counted again as `untraced`, nor are a kept screen effect's strips (`kept::hold` until the call returns).

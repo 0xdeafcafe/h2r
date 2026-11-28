@@ -372,9 +372,9 @@ h2 agent render.parity '{"arm": true}'
   `scene_kept_ui_<kind>_<cause>` counts UI draws that do not draw from the
   scene's overlay, totals since start
   ([retire-d3d-menus.md](../graphics/retire-d3d-menus.md#what-is-kept)).
-  `post_effect_refused_<cause>` counts screen-effect preflight refusals.
-  A call that needs the view but has no view strip increments `view_target`. A missing or empty
-  target 1 size increments `pass_target`.
+  `post_colour_calls`, `post_colour_glows`, `post_screen_effect_calls`,
+  `post_screen_effect_ended` and `post_screen_effect_loading` count the post
+  bodies; an uncovered call panics, `post: <cause>`.
   Unless
   `frame-scene.layers=off` is in `H2_FEATURES`, `layer_plan_asked`, `layer_plan_drawn`,
   `layer_plan_items` and the plan's outcomes by layer,

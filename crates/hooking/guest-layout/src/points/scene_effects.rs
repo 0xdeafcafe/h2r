@@ -84,9 +84,6 @@ pub const HUD_QUAD_READY: Point = Point::new("HUD_QUAD_READY", 0x0022_a7f6, Sig:
 /// (docs/graphics/native-hud-overlay.md, "The material in Rust").
 pub const HUD_QUAD_SETUP: Point = Point::new("HUD_QUAD_SETUP", 0x0022_a7b3, Sig::Site, RENDERER);
 
-/// The screen strip's BEGIN is published and its current row is known.
-pub const SCREEN_STRIP_READY: Point = Point::new("SCREEN_STRIP_READY", 0x0002_d565, Sig::Site, RENDERER);
-
 // After the allocator succeeds and the caller's preserved ESI/EDI have
 // been popped. ESP is still one word below the emitter's entry frame.
 pub const PARTICLE_EMIT_READY: Point = Point::new("PARTICLE_EMIT_READY", 0x0023_ed5c, Sig::Site, PARTICLES);
@@ -197,7 +194,6 @@ pub fn instruction_entries() -> impl Iterator<Item = u32> {
         PORTAL_WINDOW_READY.base,
         HUD_QUAD_READY.base,
         HUD_QUAD_SETUP.base,
-        SCREEN_STRIP_READY.base,
         PARTICLE_EMIT_READY.base,
         PARTICLE_PUBLISH.base,
         PARTICLE_END.base,

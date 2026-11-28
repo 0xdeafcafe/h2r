@@ -284,9 +284,25 @@ flowchart LR
 - **The replay.** At the present the worker takes the graph's map, `TargetStore::map`: each declared target's surface by its role. The guest's commands drew on the same surfaces, so a frame's carried work and its replay share them. A declared target with no role, or a role the store does not hold, panics, `graph targets: <cause>`.
 - **The post and the screen effects.** The colour pass `0x000214f0` and the screen effects `0x0002d140` are still guest work. Their binds, clears and external slots (target 1, the stand-ins `0x19` to `0x1b`, the bound colour) reach the device through `surface_for`, so each is drawn on its role's graph surface. The water end's ocean clears the bound target's alpha with `native_targets::cut_clear` and draws its quads natively; its copies are guest calls whose binds go the same way ("The water end").
 
+- **The water.** The water teardown `0x0003c3c0` with its alpha clear `0x0003c515` is still guest work. Its binds and clears reach the device through `surface_for`, so each is drawn on its role's graph surface.
+- **The post.** The colour pass and the screen effects name their slots by role ([below](#the-post-and-the-screen-effects)).
+
 `Owned` counts `graph_targets_made`, `_kept`, `_released` and `graph_targets_refused_<cause>` (`unsized`, `unroled`, `allocation`) for a frame it owns directly (`Owned::own`). Without a role table (the `d3d` crate's own tests) the device makes each target as any surface, and without a store the worker makes them on its backend.
 
 Tests: `a_game_target_is_named_by_its_table_entry` (`native_targets.rs`), `each_frame_names_its_targets_roles` (`d3d/src/scene_sink/replay.rs`), `a_role_keeps_its_surface_when_its_number_moves`, `the_store_frees_a_replaced_surface_when_its_handle_comes_back` and `the_graph_owns_its_targets_across_frames` (`frame_graph/targets.rs`).
+
+## The post and the screen effects
+
+The colour pass `0x000214f0` and the screen effect `0x0002d140` are Rust bodies (`render_bridge::native_post`): no guest body runs, so none of their binds, clears or draws reach the device. Each drawn call is one native pass of `Stage::Post` (`Device::prepare_external_pass`), its slots named by role and resolved through `surface_for` and the role table:
+
+| Pass | View (target 0's colour) | Roles |
+|---|---|---|
+| Glow | read and written | `Game(7)`, `Game(8)` |
+| Screen call | read; written by a pass into it | `Game(1)`, `Game(0x19)` to `Game(0x1b)` (the stand-ins) |
+
+The bodies make the guest's writes the rest of the game reads: target 1 and the stand-ins' sizes in the table and both headers (`0x0001ddd0`), the saved sizes back at the end, the template cache reset, the results and the end flag. Raster state is the plan's, not a guest draw's. A call the bodies or the passes do not cover panics, `post: <cause>`. The page: [native-post.md](native-post.md).
+
+Tests: `a_resize_writes_the_table_and_both_headers`, `the_end_writes_the_saved_sizes_back_in_the_originals_order` (`render-bridge/tests/native_post.rs`), `post_slots_name_the_view_and_table_roles` (`native_post_glue.rs`).
 
 ## Not verified
 

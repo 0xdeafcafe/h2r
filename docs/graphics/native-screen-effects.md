@@ -4,14 +4,13 @@ Status: Partly built. The scenario screen effects draw natively, with their conv
 Code: `crates/rewrites/engine/src/screen_effects.rs`, `screen_effect.rs`, `function_eval.rs`, `glow.rs`, `screen_grid.rs`; `crates/rewrites/native-render/src/screen_look.rs`, `screen_gpu.rs`; `crates/extensions/game/src/native_post_glue.rs`, `native_post_load.rs`. Tests: `crates/rewrites/engine/tests/screen_effects_differential.rs`, `glow_differential.rs`, `screen_grid_differential.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-A scenario screen effect is an `egor` tag whose shader has layer-15 passes. The guest draws each one through `0x0002d140`; the host plans the same draws from the tag and the function values, and the native renderer draws them. The call transaction is in [native-post.md](native-post.md#the-call-transaction); the call order is in [native-post-frame.md](native-post-frame.md).
+A scenario screen effect is an `egor` tag whose shader has layer-15 passes. The guest draws each one through `0x0002d140`; the host plans the same draws from the tag and the function values, and the native renderer draws them. The Rust body and its native pass are in [native-post.md](native-post.md#the-bodies); the call order is in [native-post-frame.md](native-post-frame.md).
 
 ```mermaid
 flowchart LR
   L[load: egor shaders translated] --> P[plan: which entries draw, per pass target and strips]
   P --> G[screen_look: layer-15 pass to a native pass]
-  G --> W[swallow holds the guest strips]
-  W --> D[screen_gpu draws strips + convolutions]
+  G --> D[screen_gpu draws strips + convolutions, one native pass]
 ```
 
 | Piece | Where | Role |
@@ -41,7 +40,7 @@ flowchart LR
 | Convolutions | per entry of its block (`+0xa4` count, `+0xa8` address, `0x5c` bytes): a size from the target's (`0x0001dd60`) times `+0x58`, at least 64 and its area capped at `0x12c00` by a square root (`0x00322b0c` rounds), targets `0x19`/`0x1a` (first) or `0x1b`; with flag bit 2 `0x00021360` (`engine::glow::wide`), else the blur `0x000211a0` (`engine::glow::blur`). The result is in `[0x00485a78 + 4 i]` |
 | End of the call | targets 1, `0x19`, `0x19` and `0x1b` are set back, `[0x004670bc]` set, the draw state reset (`0x00016b10`) and `0x00485a78`/`7c` cleared |
 
-The native side swallows the draws as the glow's are (the hand-pushed strip is an inline `Begin(6)` of four vertices; the blurs are `0x00034a90` quads). The entry hook (`feature::native_post`) hands boot's host EAX and the four stack words. The host plans the drawn passes and refuses unsupported inputs before arming, and the return hooks commit the staged recording or replay the call.
+No guest body runs: `native_post::screen_effect` is the call (`implement`), and hands the host EAX and the four stack words. The host plans the drawn passes, makes the call's size writes and its end, and draws the passes as one native pass; an input it does not cover panics, `post: screen effect: <cause>`.
 
 ## Which entries draw
 
@@ -163,7 +162,7 @@ The quads bind the live levels `0x19`..`0x1b` (slots 3..5), and engine textures 
 
 `screen_gpu::ConvolutionGrid`, `native_post_glue::wide_grid`, `grid_of`. `0x0002d140` passes `0x00021360` the words `+0x50`, `+0x54`, the convolution targets, -1, 1, 0, 0. Its combiner is the blur's (`0x00020f30` with XMM0 0 and XMM3 its eighth word, 0) and its stages are bound as the blur's (clamp, linear). Each draw is `0x00034d90` (`0x00021455..0x00021485`) with the same screen vertex shader (`0x0001c590`) and states as the quad's: the window's rectangle (word 7's low byte clear), depth `1.0`, the two words its radii and EDI the draw's offsets.
 
-Each stage's ratio is the size `0x00014f60` bound the source at (`0x0001dd60` of it: the pass's target as the call sized it, `screen_effect::target_size`, or a convolution target at the pair's size) over the target's. The glue makes each draw's 30 strips of 42 vertices with `engine::screen_grid::strips` (the original's arithmetic, under the call's MXCSR and x87 control word), the taps in texels of that bound size. `glow::QuadDrawer::draw_grid` draws them through `glow::GRID_VERTEX` (attribute 0 the position in the target's pixels, 1..4 the taps; z and w ignored as the quad's are: no depth test and w the same at every vertex) and the blur's combiner with its stages scaled by the bound size. The swallow takes each strip as `SET_BEGIN_END` 6 of 42 (`0x00034770`) into the target's slot.
+Each stage's ratio is the size `0x00014f60` bound the source at (`0x0001dd60` of it: the pass's target as the call sized it, `screen_effect::target_size`, or a convolution target at the pair's size) over the target's. The glue makes each draw's 30 strips of 42 vertices with `engine::screen_grid::strips` (the original's arithmetic, under the call's MXCSR and x87 control word), the taps in texels of that bound size. `glow::QuadDrawer::draw_grid` draws them through `glow::GRID_VERTEX` (attribute 0 the position in the target's pixels, 1..4 the taps; z and w ignored as the quad's are: no depth test and w the same at every vertex) and the blur's combiner with its stages scaled by the bound size. Each strip is a range of the call's pass into the target's slot.
 
 A grid that cannot be made keeps the call on D3D (`Missing::Wide`), as does a missing frame, and a grid with a strip under a triangle is refused (`ScreenRefused::NoStrips`). A wide convolution is armed whenever the native post is.
 
