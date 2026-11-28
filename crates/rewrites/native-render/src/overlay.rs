@@ -412,7 +412,9 @@ impl OverlayPlan {
                 let planned = overlay.model_view_of(item).ok_or(crate::model_view::Refusal::Camera)
                     .and_then(|view| crate::model_view::plan(view, &item.clip, guest, target, before, plan.blurs.len() as u32));
                 match planned {
-                    Ok(view) => plan.model_views.push(view),
+                    Ok(Some(view)) => plan.model_views.push(view),
+                    // No pixel to draw: the view draws nothing.
+                    Ok(None) => {}
                     Err(why) => unimplemented!("overlay model view: {}", why.name()),
                 }
                 continue;
@@ -803,6 +805,23 @@ mod tests {
         let camera = OverlayCamera { forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 0.0, planes: [0.0625, 200.0], ..OverlayCamera::default() };
         o.push_model_view(ClipRect { x: 10, y: 10, width: 64, height: 48 }, OverlayModelView { camera, objects: vec![7] }).unwrap();
         OverlayPlan::new(&o, [1280, 960], &NoGlyphs);
+    }
+
+    /// A view whose viewport rounds to no pixel of the target draws
+    /// nothing: no view in the plan, and the quads either side batch
+    /// together as if it were not there.
+    #[test]
+    fn a_model_view_with_no_target_pixel_draws_nothing() {
+        use frame_scene::{OverlayCamera, OverlayModelView};
+        let mut o = Overlay::new([640, 480]);
+        o.push_quad(sprite(1), all(), quad(0.0)).unwrap();
+        let camera = OverlayCamera { forward: [0.0, 1.0, 0.0], up: [0.0, 0.0, 1.0], fov_y: 1.0, planes: [0.0625, 200.0], ..OverlayCamera::default() };
+        o.push_model_view(ClipRect { x: 10, y: 10, width: 1, height: 1 }, OverlayModelView { camera, objects: vec![7] }).unwrap();
+        o.push_quad(sprite(1), all(), quad(8.0)).unwrap();
+        let p = OverlayPlan::new(&o, [64, 48], &NoGlyphs);
+        assert!(p.model_views.is_empty());
+        assert_eq!(p.batches.len(), 1, "nothing stands between the quads");
+        assert_eq!(p.batches[0].items, 2);
     }
 
     #[test]

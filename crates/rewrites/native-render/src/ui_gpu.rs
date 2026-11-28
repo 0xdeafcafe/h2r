@@ -795,7 +795,8 @@ impl OverlayGpu {
     /// batch, in order. Adjacent packets on one target share a render
     /// pass, so a run of widget quads costs one pass, not one each
     /// (docs/graphics/native-post-hud.md, "The HUD on the overlay"). A
-    /// plan with a blur needs passes of its own and is refused.
+    /// plan with a blur, a hold or a model view needs passes of its own
+    /// ([`Self::prepare_with_objects`]) and is refused.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_packets(
         &mut self,
@@ -816,10 +817,10 @@ impl OverlayGpu {
         if !plan.holds.is_empty() {
             return Err("overlay hold needs its own copy");
         }
-        let mut stats = plan.stats;
         if !plan.model_views.is_empty() {
-            unimplemented!("overlay packets: a model view needs the overlay's depth pass");
+            return Err("overlay model view needs the overlay's depth pass");
         }
+        let mut stats = plan.stats;
         let draws = self.batch_draws(device, format, plan, textures, &mut stats);
         if draws.is_empty() {
             return Ok((Vec::new(), stats));
