@@ -336,9 +336,9 @@ range and rings that exceed the cache budget.
 
 ### 4.5 Memory
 
-Per map on the multiplayer set the structure BSP is the bulk. The budget is **≤ 8 MiB
-per loaded map** for the whole collision world, inside the +32 MiB the plan
-allows all Rust sim state. The world charges decoded array capacity,
+Per map on the multiplayer set the structure BSP is the bulk. The budget is **≤ 32 MiB
+per loaded map** for the whole collision world (`sim_collision::world::MAP_BUDGET`),
+with at most 16,384 decoded MOPP programs. The world charges decoded array capacity,
 including ring edges and packed groups, the packed leaf table,
 reserved address-index capacity and the BSP owners.
 On first overflow it releases expanded rings and uses scalar guest edge

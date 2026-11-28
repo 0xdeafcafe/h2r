@@ -105,8 +105,11 @@ interpreter's order with the deepest nesting of its self-calls. The
 adapter (`engine::sim_collision::mopp_box`) appends the keys at
 `data + 4 * size` and stores the new size when there is at least one key.
 The interpreter appends one key at a time and calls the array's grow
-routine `0x2d91d0` when `size == capacity & 0x7fffffff`; an answer that
-does not fit the room left bails with `grow` before any write. The key
+routine `0x2d91d0` when `size == capacity & 0x7fffffff`. The adapter does
+the same on a journal: twice the size (one when empty) from the memory
+system `[0x480118]` through `sim_havok::mem`, the old keys copied, the old
+block freed when owned, then the header. A route the allocator model does
+not cover bails with `grow` before any write. The key
 write span must also be physically disjoint from the VM, array descriptor,
 return slot and guest frame.
 

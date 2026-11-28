@@ -89,8 +89,8 @@ pub enum Bail {
     /// The resident budget or bounded address index cannot admit this BSP
     /// or MOPP program.
     Budget,
-    /// The guest's output array is too small for the answer: the original
-    /// grows it with a guest call (entry F's `hkArray`).
+    /// Entry F's `hkArray` is full and its growth (`0x002d91d0`) would take
+    /// a memory-system route the allocator model does not cover.
     Grow,
 }
 

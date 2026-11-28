@@ -404,12 +404,12 @@ hook reads for the panic.
 | `env` | MXCSR or the x87 environment is outside the checks above |
 | `float` | a read-only caller outside the entries (`Fp::new`, `Bsp::vector_test`) met an operand off the exact path |
 | `fault` | an unreadable input, unwritable output or unusable stack range |
-| `data` | invalid block sizes or indices, a ring that cannot be decoded, a walk exceeding the available node count, or an epoch change during decode; for F, a bad program size, a reached trap, a `guest_only` program, or an inverted or far box |
+| `data` | invalid block sizes or indices, a ring that cannot be decoded, a walk exceeding the available node count, or an epoch change during decode; for F, a bad program size, an array size past its capacity, a reached trap, a `guest_only` program, or an inverted or far box |
 | `depth` | the walk went deeper than 256 levels, or F's query nests more than 256 self-calls |
 | `alias` | overlap, or a physically contiguous span cannot be established |
 | `trap` | the debugger observes guest memory accesses and needs the lifted instruction sequence |
-| `budget` | the essential decoded BSP and its index entry exceed the remaining map budget, or the index is full; for F, the decoded tree does not fit or 4,096 programs are held |
-| `grow` | F's answer has more keys than the array has room for: the original grows it |
+| `budget` | the essential decoded BSP and its index entry exceed the remaining map budget, or the index is full; for F, the decoded tree does not fit or 16,384 programs are held |
+| `grow` | F's array is full and the growth `0x2d91d0` would take a memory-system route `sim_havok::mem` does not model (another dispatcher, a null block, the overflow object) |
 
 `CollisionWorld` decodes each BSP on first use and keys it by address. It
 compares the 16 header words on every lookup. The runtime adapter watches
@@ -422,10 +422,10 @@ remembers invalid headers and BSPs too large for an empty world. A change
 in the header permits a fresh decode. The fixed-capacity charges are 96
 bytes per allocated address record and 512 per retained BSP owner. Both
 cover the host layout, including padding and Arc bookkeeping. The index
-grows geometrically to at most 8,192 named BSP addresses per generation.
+grows geometrically to at most 32,768 named BSP addresses per generation.
 
 `Stats.bytes` adds these charges to the allocated array capacities, the
-packed cluster table and the MOPP trees (nodes and the kept bytecode). The 8 MiB limit covers live map allocations
+packed cluster table and the MOPP trees (nodes and the kept bytecode). The 32 MiB limit covers live map allocations
 owned by the cache. Decode scratch, completed generations held by callers,
 process-wide counters and runtime write-watch infrastructure are separate.
 The first overflow drops expanded ring arrays across the active world.

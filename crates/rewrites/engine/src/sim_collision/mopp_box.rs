@@ -8,9 +8,14 @@
 //! the keys at `array.data[size..]` and the new `array.size`, callee-saved
 //! registers as they were, and EFLAGS from the interpreter's last
 //! epilogue. `eax`, `ecx`, `edx`, the x87 condition codes and the dead
-//! stack below the entry are the declared clobbers. It declines before any
-//! write when the answer would need the array to grow, when an output
-//! overlaps an input or the dead stack, or off the checked float path.
+//! stack below the entry are the declared clobbers. An array that fills
+//! grows as retail's does (`0x002d91d0` at `0x002ffe7d`: twice the size,
+//! one when empty, from the memory system `[0x00480118]` with the old data
+//! copied and, when owned, freed), each time the size reaches the
+//! capacity, through the allocator model `sim_havok::mem`. It declines
+//! before any write when the allocator takes a route the model does not
+//! cover (`grow`), when an output overlaps an input or the dead stack, or
+//! off the checked float path.
 use super::layout::mopp_box as l;
 use super::preflight::{CollisionMemory, Outputs};
 use super::{Read, finish};
@@ -19,6 +24,15 @@ use runtime::{CpuAbi, GuestFault, TransferAbi};
 use sim_collision::mopp::{Corners, Found};
 use sim_collision::{Bail, CollisionWorld, Entry, GuestRead};
 use sim_core::det;
+use sim_havok::array::Header;
+use sim_havok::mem::{Journal, System, Words};
+
+/// The memory system's dispatcher slots `0x002d91d0` calls (allocate with
+/// class `0x12`, free), and the bodies the model transcribes.
+const ALLOCATE_SLOT: u32 = 0x10;
+const ALLOCATE: u32 = 0x0014_72c0;
+const FREE_SLOT: u32 = 0x14;
+const FREE: u32 = 0x0014_7320;
 
 /// What the entry writes, decided before anything is written.
 struct Plan {
@@ -34,6 +48,81 @@ struct Plan {
     /// rounded), for the status word.
     x87_flags: u16,
     keys: Vec<u32>,
+    /// When the array grew: its final data pointer and raw capacity, and
+    /// every store in retail's order folded to its last value (the keys in
+    /// each block, the allocator's words, the copies, the header).
+    growth: Option<Growth>,
+}
+
+struct Growth {
+    data: u32,
+    capacity: u32,
+    stores: Vec<(u32, u32)>,
+}
+
+struct View<'a, M>(&'a M);
+
+impl<M: Memory> Words for View<'_, M> {
+    fn get(&self, addr: u32) -> Option<u32> {
+        self.0.u32(addr).ok()
+    }
+}
+
+/// `0x002d91d0(array, 4)` on the journal, the array's size current: the
+/// new block's pointer, or `None` off the allocator model.
+fn expand(j: &mut Journal, array: u32) -> Option<u32> {
+    let system = j.get(sim_havok::layout::MEMORY_SYSTEM)?;
+    let table = j.get(system)?;
+    if j.get(table.wrapping_add(ALLOCATE_SLOT))? != ALLOCATE || j.get(table.wrapping_add(FREE_SLOT))? != FREE {
+        return None;
+    }
+    let pools = System::read(j)?;
+    let header = Header {
+        data: j.get(array.wrapping_add(l::DATA))?,
+        count: j.get(array.wrapping_add(l::SIZE))?,
+        capacity: j.get(array.wrapping_add(l::CAPACITY))?,
+    };
+    let grow = header.grow(4);
+    let block = pools.allocate(j, grow.allocate)?;
+    if block == 0 {
+        return None;
+    }
+    // `0x002d8db0`: `rep movsd` forward.
+    for at in (0..grow.copy).step_by(4) {
+        let word = j.get(header.data.wrapping_add(at))?;
+        j.put(block.wrapping_add(at), word)?;
+    }
+    if let Some((old, bytes)) = grow.free {
+        pools.free(j, old, bytes)?;
+    }
+    j.put(array.wrapping_add(l::DATA), block)?;
+    j.put(array.wrapping_add(l::CAPACITY), grow.capacity)?;
+    Some(block)
+}
+
+/// The keys appended one at a time as the interpreter's leaves do
+/// (`0x002ffe62`): grow when the size equals the capacity, store, then
+/// the new size.
+fn grow(g: &impl CollisionMemory, array: u32, data: u32, size: u32, keys: &[u32]) -> Result<Growth, Bail> {
+    let view = View(g);
+    let mut j = Journal::new(&view);
+    let mut data = data;
+    let mut count = size;
+    for &key in keys {
+        let capacity = j.get(array.wrapping_add(l::CAPACITY)).ok_or(Bail::Fault)?;
+        if count == capacity & l::CAPACITY_MASK {
+            data = expand(&mut j, array).ok_or(Bail::Grow)?;
+        }
+        j.put(data.wrapping_add(count.wrapping_mul(4)), key).ok_or(Bail::Fault)?;
+        count = count.wrapping_add(1);
+        j.put(array.wrapping_add(l::SIZE), count).ok_or(Bail::Fault)?;
+    }
+    let capacity = j.get(array.wrapping_add(l::CAPACITY)).ok_or(Bail::Fault)?;
+    let stores: Vec<(u32, u32)> = j.finish().into_iter().collect();
+    if stores.iter().any(|&(at, _)| !g.writable(at, 4)) {
+        return Err(Bail::Fault);
+    }
+    Ok(Growth { data, capacity, stores })
 }
 
 /// The original's lowest stack byte for `frames` self-calls of the
@@ -66,9 +155,17 @@ fn plan(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Res
     let data = m.u32(array.wrapping_add(l::DATA))?;
     let size = m.u32(array.wrapping_add(l::SIZE))?;
     let capacity = m.u32(array.wrapping_add(l::CAPACITY))? & l::CAPACITY_MASK;
-    let room = capacity.checked_sub(size).ok_or(Bail::Grow)?;
-    let Found { keys, frames } = tree.query_box(&corners, room as usize)?;
-    let keys_at = data.wrapping_add(size.wrapping_mul(4));
+    // A size past the capacity never equals it: retail writes on past the
+    // block without growing.
+    let room = capacity.checked_sub(size).ok_or(Bail::Data)?;
+    let Found { keys, frames } = tree.query_box(&corners, usize::MAX)?;
+    let growth = if keys.len() > room as usize {
+        Some(grow(&*g, array, data, size, &keys)?)
+    } else {
+        None
+    };
+    let final_data = growth.as_ref().map_or(data, |grown| grown.data);
+    let keys_at = final_data.wrapping_add(size.wrapping_mul(4));
     let bytes = keys.len() as u32 * 4;
     let key_range = if bytes == 0 { (sp, 0) } else { (keys_at, bytes) };
     let outputs = Outputs::new(
@@ -94,6 +191,7 @@ fn plan(c: &CpuAbi, g: &mut impl CollisionMemory, world: &CollisionWorld) -> Res
         corners,
         x87_flags,
         keys,
+        growth,
     })
 }
 
@@ -128,6 +226,12 @@ fn commit(c: &mut CpuAbi, g: &mut impl Memory, p: Plan) -> Result<TransferAbi, G
     for (offset, value) in p.vm_words() {
         g.set_u32(p.vm.wrapping_add(offset), value)?;
     }
+    if let Some(grown) = &p.growth {
+        for &(at, value) in &grown.stores {
+            g.set_u32(at, value)?;
+        }
+        return Ok(p.finish(c));
+    }
     for (i, &key) in p.keys.iter().enumerate() {
         g.set_u32(p.keys_at.wrapping_add(4 * i as u32), key)?;
     }
@@ -160,6 +264,10 @@ pub fn capture(c: &CpuAbi, g: &mut runtime::Guest) -> Option<Prediction> {
     let mut array = [0; l::ARRAY_SIZE as usize];
     g.read_bytes(p.array, &mut array, 1).ok()?;
     array[l::SIZE as usize..l::SIZE as usize + 4].copy_from_slice(&p.final_size().to_le_bytes());
+    if let Some(grown) = &p.growth {
+        array[l::DATA as usize..l::DATA as usize + 4].copy_from_slice(&grown.data.to_le_bytes());
+        array[l::CAPACITY as usize..l::CAPACITY as usize + 4].copy_from_slice(&grown.capacity.to_le_bytes());
+    }
     let mut cpu = *c;
     p.finish(&mut cpu);
     Some(Prediction {
@@ -298,6 +406,67 @@ mod tests {
         g.set_u32(data + 8, 2).unwrap();
         g.set_u32(vm + 4, 0).unwrap();
         assert!(!p.matches(&cpu, &g));
+    }
+
+    /// A full array grows as `0x002d91d0` grows it: the key that fits goes
+    /// into the old block, then a block of twice the size from the memory
+    /// system (mode 1, the directory pool) takes a copy and the rest.
+    #[test]
+    fn a_full_array_grows_through_the_memory_system() {
+        use runtime::{Guest, guest::Permissions};
+        use sim_collision::mopp::{HEADER_BYTES, SIZE};
+        use sim_havok::layout as h;
+
+        let base = 0x30000;
+        let (sp, vm, aabb, array, data, code) =
+            (base + 0x800, base + 0x810, base + 0x900, base + 0xa00, base + 0xb00, base + 0xc00);
+        let (system, table, pool, heap) = (base + 0x1800, base + 0x1840, base + 0x1900, base + 0x1c00);
+        let mut g = Guest::new();
+        g.map(base, 0x2000, 0, Permissions::RW).unwrap();
+        g.map(0x0045_7000, 0x2a000, 0x2000, Permissions::RW).unwrap();
+        let instructions = [0x10, 255, 0, 6, 0x10, 255, 0, 1, 0x37, 0x32, 0x37];
+        g.write_bytes(code + HEADER_BYTES, &instructions, 1).unwrap();
+        for (at, value) in [
+            (sp, base),
+            (sp + 4, code),
+            (sp + 8, aabb),
+            (sp + 12, array),
+            (code + 12, 1f32.to_bits()),
+            (code + SIZE, HEADER_BYTES + instructions.len() as u32),
+            (aabb + l::AABB_MAX, 2f32.to_bits()),
+            (array, data),
+            (array + l::SIZE, 1),
+            (array + l::CAPACITY, 2 | h::ARRAY_NOT_OWNED),
+            (data, 0x1234),
+            (h::MEMORY_SYSTEM, system),
+            (system, table),
+            (table + ALLOCATE_SLOT, ALLOCATE),
+            (table + FREE_SLOT, FREE),
+            (h::POOL_MODE, 1),
+            (h::DIRECTORY_POOL, pool),
+            (pool, h::DIRECTORY_VTABLE),
+            (h::DIRECTORY_VTABLE + 8, 0x0022_c0d0),
+            (h::DIRECTORY_VTABLE + 0xc, 0x0022_c280),
+            (h::DIRECTORY_VTABLE + 0x10, 0x0022_c300),
+            (h::DIRECTORY_VTABLE + 0x14, 0x0022_c320),
+            (pool + h::DIR_BASE, heap),
+            (pool + h::DIR_BYTES, 0x200),
+            (pool + h::DIR_COUNT, 0),
+        ] {
+            g.set_u32(at, value).unwrap();
+        }
+        let mut cpu = CpuAbi { esp: sp, ecx: vm, ..CpuAbi::default() };
+        cpu.x87.control = 0x027f;
+        cpu.x87.status = l::X87_PE;
+        let p = capture(&cpu, &mut g).unwrap();
+        assert!(mopp_box(&mut cpu, &mut g, &super::super::WORLD).unwrap().is_some());
+        assert!(p.matches(&cpu, &g));
+        assert_eq!(g.u32(data + 4).unwrap(), 7, "the key that fit, in the old block");
+        let header = [l::DATA, l::SIZE, l::CAPACITY].map(|o| g.u32(array + o).unwrap());
+        assert_eq!(header, [heap, 4, 4], "the new block, owned");
+        assert_eq!([0, 4, 8, 12].map(|o| g.u32(heap + o).unwrap()), [0x1234, 7, 2, 7]);
+        assert_eq!(g.u32(pool + h::DIR_COUNT).unwrap(), 1);
+        assert_eq!([0x1f8, 0x1fc].map(|o| g.u32(heap + o).unwrap()), [0, 16], "the directory entry");
     }
 
     /// The live game enters with the x87 PE clear. The setup sets it only
