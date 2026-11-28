@@ -19,7 +19,7 @@ host-log.workspace = true
 # Rules scripts: the verifier and VM the host runtime runs (rules/).
 rules = { workspace = true, optional = true }
 # The RULES record the rules runtime keeps in the SimExt blob.
-sim-ext.workspace = true
+sim-world.workspace = true
 guest-layout = { path = "../../hooking/guest-layout" }
 actor-net = { path = "../../live/actor-net" }
 # Build and load (docs/dev/crate-structure.md, S4).

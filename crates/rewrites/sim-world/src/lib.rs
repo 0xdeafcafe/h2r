@@ -5,6 +5,7 @@
 //! Float rules are `sim-core`'s: `clippy.toml` bans `mul_add`.
 #![deny(clippy::disallowed_methods)]
 
+pub mod ext;
 pub mod hash;
 pub mod pool;
 pub mod rng;
@@ -32,6 +33,9 @@ pub mod kind {
     pub const EFFECTS: u16 = 7;
     pub const AI: u16 = 8;
     pub const SCRIPTS: u16 = 9;
+    /// The extension records (rules VM state, Forge state) and their
+    /// checkpoint slot copies ([`crate::ext`]).
+    pub const EXT: u16 = 10;
     /// The test store; the one store wave 1 fills.
     pub const PROBE: u16 = 0x100;
 }

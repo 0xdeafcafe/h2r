@@ -11,7 +11,7 @@
 //! The snapshot section ([`State::save_section`]) holds the live records
 //! and both slot copies. Film keyframes are machine snapshots, so they
 //! carry the same section.
-use crate::{Error, Reader, SimExt};
+use super::{Error, Reader, SimExt};
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 /// The guest's checkpoint slots.

@@ -301,7 +301,7 @@ pub(super) fn hash_detail(g: &Guest) -> Option<film::start::HashDetail> {
         &mut bytes,
         &mut pages,
     )?;
-    Some(film::start::HashDetail { ext: sim_ext::digest(), pages })
+    Some(film::start::HashDetail { ext: sim_world::ext::digest(), pages })
 }
 
 /// How many owners a start's report names.

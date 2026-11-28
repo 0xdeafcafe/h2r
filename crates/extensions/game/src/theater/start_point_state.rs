@@ -24,20 +24,20 @@ pub trait ExtRecords {
     fn digest(&self) -> Option<u64>;
 }
 
-/// The process's `SimExt` state (`sim_ext::global`).
+/// The process's `SimExt` state (`sim_world::ext::global`).
 pub struct Global;
 
 impl ExtRecords for Global {
     fn save(&self) -> Vec<u8> {
-        sim_ext::global().save_section()
+        sim_world::ext::global().save_section()
     }
     fn load(&mut self, bytes: &[u8]) -> Result<(), String> {
-        sim_ext::global()
+        sim_world::ext::global()
             .load_section(bytes)
             .map_err(|e| e.to_string())
     }
     fn digest(&self) -> Option<u64> {
-        sim_ext::digest()
+        sim_world::ext::digest()
     }
 }
 

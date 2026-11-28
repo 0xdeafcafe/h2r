@@ -2538,9 +2538,9 @@ dependencies = [
  "shaders",
  "sim-bench",
  "sim-bridge",
- "sim-ext",
  "sim-sound",
  "sim-state",
+ "sim-world",
  "snapshot",
  "sound-clips",
  "superbounce",
@@ -4174,7 +4174,7 @@ dependencies = [
  "hooks",
  "input",
  "runtime",
- "sim-ext",
+ "sim-world",
  "xapi",
 ]
 
@@ -6669,7 +6669,6 @@ dependencies = [
  "runtime",
  "sim-core",
  "sim-effects",
- "sim-ext",
  "sim-objects",
  "sim-sound",
  "sim-world",
@@ -6705,10 +6704,6 @@ dependencies = [
  "simd",
  "x87",
 ]
-
-[[package]]
-name = "sim-ext"
-version = "0.1.0"
 
 [[package]]
 name = "sim-havok"

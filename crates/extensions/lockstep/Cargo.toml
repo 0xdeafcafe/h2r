@@ -10,7 +10,7 @@ runtime.workspace = true
 hooks = { path = "../../hooking/hooks", default-features = false }
 guest-layout = { path = "../../hooking/guest-layout" }
 # The extension records `hash_sim` folds into the arena hash.
-sim-ext.workspace = true
+sim-world.workspace = true
 
 [dev-dependencies]
 xapi = { path = "../../platform/xapi" }

@@ -72,13 +72,14 @@ first draws and an fnv64 of the first 1,024 from seed 7.
 ## Store slots
 
 `kind` names the reserved sections: objects, physics heap, animation, players,
-sound, effects, AI and scripts. Each is filled by its own slice; until then it
+sound, effects, AI, scripts and the extension records. Each is filled by its own slice; until then it
 writes no section and a save that carries one is refused as `UnknownKind`.
 
 | Kind | Store | Pools | Held by |
 |---|---|---|---|
 | sound | `sim_sound::instances::Sounds` ([sound-instances.md](sound-instances.md)) | instances (384), loops (128), starts (16), and the chooser | `sim_bridge::sim_sound::entries::SoundTable`, every run; the `World` holds it as `world::SoundStore` |
 | objects | `sim_objects::ObjectTable` (`crates/rewrites/sim-objects/src/table.rs`) | the objects array (capacity from the guest array, 2048 in retail), each slot a header and its body bytes | `sim_bridge::world::OBJECT_TABLE`; the `World` holds it as `world::ObjectStore` |
+| ext | `sim_world::ext::State` (`crates/rewrites/sim-world/src/ext`) | the rules VM and Forge records, and one copy of both per checkpoint slot | `sim_world::ext::global`; the `World` holds it as `ext::store::ExtStore`, attached by `sim_bridge::world` |
 | test | `Probe` | one | the unit tests |
 
 ### The object table

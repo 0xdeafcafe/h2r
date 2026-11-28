@@ -1,8 +1,7 @@
-//! The guest side of `SimExt` (docs/engine/sim-rewrite.md section 2, the
-//! **Extension** kind): the process's extension records move with the
-//! guest's checkpoints and are a snapshot section, so film keyframes
-//! (machine snapshots) carry them too. `lockstep::hash_sim` folds them into
-//! the arena hash.
+//! The guest side of the extension records (`sim_world::ext`): the process's
+//! records move with the guest's checkpoints. They are the world's
+//! `kind::EXT` section (`world.rs`), so snapshots and film keyframes carry
+//! them. `lockstep::hash_sim` folds them into the arena hash.
 //!
 //! - Save `0x123e20` (observer before): copy the records into the slot the
 //!   guest is about to write.
@@ -14,9 +13,9 @@
 //!   any.
 use std::sync::{Arc, Mutex};
 
-use ::sim_ext::State;
+use ::sim_world::ext::State;
 use guest_layout::{GuestMemory, points};
-use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
+use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "sim-ext";
 
@@ -64,7 +63,7 @@ pub fn on_full_restore(state: &mut State) -> usize {
 }
 
 /// Always registered: it hooks nothing a run without extension records
-/// would notice, and its snapshot section is empty then.
+/// would notice.
 pub struct SimExtFeature;
 
 impl Feature for SimExtFeature {
@@ -77,19 +76,11 @@ impl Feature for SimExtFeature {
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        b.snapshot(SnapshotPolicy::section(
-            || ::sim_ext::global().save_section(),
-            |bytes, _| {
-                ::sim_ext::global()
-                    .load_section(bytes)
-                    .map_err(|e| e.to_string())
-            },
-        ));
         b.raw()
             .observe_before(&points::GAME_STATE_SAVE, "sim-ext-save", |o| {
                 let slot = last_slot(&*o.guest());
                 let result = match slot {
-                    Some(last) => ::sim_ext::global()
+                    Some(last) => ::sim_world::ext::global()
                         .checkpoint_saved(next_slot(last))
                         .map_err(|e| e.to_string()),
                     None => Err("the checkpoint slot index is unreadable".into()),
@@ -114,7 +105,7 @@ impl Feature for SimExtFeature {
         b.raw()
             .observe_after(&points::GAME_STATE_REVERT, "sim-ext-revert", move |_| {
                 let slot = pending.lock().unwrap_or_else(|e| e.into_inner()).take();
-                if let Err(e) = on_revert(slot, &mut ::sim_ext::global()) {
+                if let Err(e) = on_revert(slot, &mut ::sim_world::ext::global()) {
                     eprintln!("sim-ext: checkpoint revert: {e}");
                 }
             })
@@ -122,7 +113,7 @@ impl Feature for SimExtFeature {
             .optional();
         b.raw()
             .observe_after(&points::GAME_STATE_RESTORE, "sim-ext-restore", |_| {
-                let dropped = on_full_restore(&mut ::sim_ext::global());
+                let dropped = on_full_restore(&mut ::sim_world::ext::global());
                 if dropped > 0 {
                     eprintln!(
                         "sim-ext: full restore: the save file holds no extension records; {dropped} cleared"
@@ -138,7 +129,7 @@ impl Feature for SimExtFeature {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::sim_ext::{FORGE, RULES};
+    use ::sim_world::ext::{FORGE, RULES};
     use guest_layout::FlatMemory;
 
     fn guest(last: u16) -> FlatMemory {

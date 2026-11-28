@@ -102,7 +102,7 @@ each one holds:
   `skulls-mp`, `hud`, `h1-hud`, `lockstep`'s counters, `agent`'s view of the
   game, `loaded_map`, `aim-assist`, `game-variants`' listing of the store
   variants the guest's variant list names (not the store on disk, and not
-  the sim's script block, which is the run's setting), and `sim-ext`'s extension records with
+  the sim's script block, which is the run's setting), and `sim-world`'s extension records (`ext`) with
   their checkpoint-slot copies, empty when there are none;
   [sim-rewrite.md](../engine/sim-rewrite.md), "The `SimExt` blob").
 

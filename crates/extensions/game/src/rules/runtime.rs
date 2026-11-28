@@ -267,25 +267,25 @@ pub trait Store: Send {
     fn remove(&mut self);
 }
 
-/// The process's `SimExt` blob (`sim_ext::global`), which checkpoints,
+/// The process's `SimExt` blob (`sim_world::ext::global`), which checkpoints,
 /// snapshots, film keyframes and the sim hash carry.
 pub struct SimExtStore;
 
 impl Store for SimExtStore {
     fn get(&self) -> Option<Vec<u8>> {
-        sim_ext::global().ext.get(&sim_ext::RULES).map(<[u8]>::to_vec)
+        sim_world::ext::global().ext.get(&sim_world::ext::RULES).map(<[u8]>::to_vec)
     }
     fn same(&self, written: &[u8]) -> Option<bool> {
-        sim_ext::global().ext.get(&sim_ext::RULES).map(|now| now == written)
+        sim_world::ext::global().ext.get(&sim_world::ext::RULES).map(|now| now == written)
     }
     fn set(&mut self, bytes: Vec<u8>) -> Result<(), String> {
-        sim_ext::global()
+        sim_world::ext::global()
             .ext
-            .set(&sim_ext::RULES, bytes)
+            .set(&sim_world::ext::RULES, bytes)
             .map_err(|e| e.to_string())
     }
     fn remove(&mut self) {
-        sim_ext::global().ext.remove(&sim_ext::RULES);
+        sim_world::ext::global().ext.remove(&sim_world::ext::RULES);
     }
 }
 

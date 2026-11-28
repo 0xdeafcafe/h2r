@@ -19,12 +19,15 @@
 //! version, a record over its kind's cap, a container over [`MAX_BYTES`],
 //! and any blob that is not canonical, and changes nothing when it refuses.
 //!
-//! [`checkpoint::State`] keeps the copies taken at checkpoint saves and
-//! the snapshot section; `sim_bridge::sim_ext` moves them with the guest's
-//! checkpoints, and `lockstep::hash_sim` folds [`digest`] into the arena
-//! hash when the container holds a record.
+//! [`checkpoint::State`] keeps the copies taken at checkpoint saves.
+//! [`store::ExtStore`] holds the process's state as the world's `kind::EXT`
+//! section, so `World::save`, `World::restore_into` and `World::sim_hash`
+//! cover it and film keyframes carry it. `sim_bridge::sim_ext` moves the
+//! slot copies with the guest's checkpoints, and `lockstep::hash_sim` folds
+//! [`digest`] into the arena hash when the container holds a record.
 
 pub mod checkpoint;
+pub mod store;
 pub use checkpoint::{SLOTS, State, digest, global};
 
 use std::collections::BTreeMap;

@@ -390,7 +390,7 @@ impl Guard {
         self.before.resize(len as usize, 0);
         g.read_bytes(base, &mut self.before, 1)
             .map_err(|e| format!("arena read: {e:?}"))?;
-        self.ext = sim_ext::digest();
+        self.ext = sim_world::ext::digest();
         g.install_trap(LOG_CAP);
         let _ = g.take_trap_hits();
         g.arm_writes(base, len);
@@ -437,7 +437,7 @@ impl Guard {
         );
         let frame = Frame {
             findings,
-            ext_changed: sim_ext::digest() != self.ext,
+            ext_changed: sim_world::ext::digest() != self.ext,
         };
         let s = &mut self.stats;
         s.frames += 1;

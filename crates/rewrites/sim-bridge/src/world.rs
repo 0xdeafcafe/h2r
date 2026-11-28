@@ -103,6 +103,7 @@ pub fn with_tables(sounds: Shared, objects: SharedObjects) -> World {
     let mut w = World::new(1);
     w.attach(Box::new(ObjectStore(objects))).expect("an empty world takes the objects store");
     w.attach(Box::new(SoundStore(sounds))).expect("a world without one takes the sound store");
+    w.attach(Box::new(sim_world::ext::store::ExtStore)).expect("a world without one takes the extension store");
     w
 }
 
