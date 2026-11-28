@@ -1,7 +1,8 @@
 # The simulation world: pools, save, hash and RNG
 
-Status: `crates/rewrites/sim-world` is built with unit tests. Only a test
-store is filled; no guest store is wired to it.
+Status: `crates/rewrites/sim-world` is built with unit tests. Sound is the
+first subsystem on its pools (`sim_sound::instances::Sounds`); no `World`
+holds it at boot yet, and no other store is filled.
 
 The native simulation keeps its state in a Rust `World`, and that is the
 truth ([sim-rewrite.md](sim-rewrite.md)). The crate is pure: it depends on
@@ -62,8 +63,16 @@ first draws and an fnv64 of the first 1,024 from seed 7.
 
 `kind` names the reserved sections: objects, physics heap, animation, players,
 sound, effects, AI and scripts. Each is filled by its own slice; until then it
-writes no section and a save that carries one is refused as `UnknownKind`. The
-test store (`Probe`) is the only filled one.
+writes no section and a save that carries one is refused as `UnknownKind`.
+
+| Kind | Store | Pools | Held by |
+|---|---|---|---|
+| sound | `sim_sound::instances::Sounds` ([sound-instances.md](sound-instances.md)) | instances (384), loops (128), starts (16), and the chooser | `sim_bridge::sim_sound::entries::SoundTable`, behind `impl.sim.sound-events.table` |
+| test | `Probe` | one | the unit tests |
+
+A subsystem whose records live here is the truth for them. Where guest code
+still reads that state, `sim-bridge` is the only place that touches guest
+memory for it: the sound readers are `sim-bridge/src/sim_sound/`.
 
 The physics heap will be a byte store with the retail allocation order kept,
 since Havok is ported bit for bit ([sim-rewrite-havok.md](sim-rewrite-havok.md)).

@@ -48,7 +48,6 @@ Tests: `the_admission_is_the_engines_and_its_instance_is_entered`, `a_tick_start
 - Reads from guest memory: the tick (`GAME_TIME` + 8), the admission's stack arguments and returned instance, and the instance records above.
 - Writes guest memory: the mixer clock.
 - `Durations` (`sim_sound.rs`) is what the sim reads of a tag when a sound is started without an instance (tests); `NoDurations` ends every such sound on its start tick.
-- With the switch on, the exact port `impl.sim.native.sound` stands down (`crates/apps/boot/src/registration.rs`).
 
 ## Rules and limits
 

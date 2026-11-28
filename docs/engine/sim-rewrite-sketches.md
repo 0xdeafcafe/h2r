@@ -126,46 +126,15 @@ What each phase of [sim-rewrite.md](sim-rewrite.md) takes over: its data, its en
   `128ca0`, `129aa0`), game sound for objects and loops (`18a7b0`, `18c060`,
   `18d730`), gain and filter conversion (`2195f0`, `21fa80`, `21a250`), and
   environment and obstruction (`221a70`, `221da0`).
-- *Guest boundary.* Sound records and the listener stay in guest layout.
-  Voice start, pitch, completion order and the callback grid must match,
-  because completion feeds the guest ([sim-budget.md](../perf/sim-budget.md),
-  "Headless guest dependencies").
-- *Implementation.* `sim-sound` owns the working data for a sound update,
-  including listener axes, channel levels, track selection and obstruction
-  weights. The engine adapters gather each set of inputs from the current
-  guest state. They submit the results to the existing mixer and reload live
-  records across callbacks. The driver fuses calls between sound bodies and
-  uses the original stack at calls to other systems. Reverting an arena
-  restores the persistent sound records directly.
-- *Channel choice.* The census (`128500`), class ranking (`128b90`), pick
-  (`128700`), pressure scan (`128920`) and per-class ceiling (`128a60`) run
-  as bodies in `native_sound_sources/channels.rs`, deciding through
-  `sim_sound::{sources::VoicePriority, scheduling::CappedSelection}`. Their
-  synthetic differential cases are in `tests/sim_sound_differential/channel_choice.rs`.
-- *Voice update.* `sim_sound::voices::Voices` owns the running voices: a
-  one-shot plays out on `end_tick(start, ms)`, a loop (or flags `+4` without
-  bits 9 and 6) never does, and a stop or a finish for another reason than
-  2 interrupts it. Each tick it reports its starts in admission order and
-  its play-outs in pool slot order, the order of the walk `128020`. The arm
-  (`sim_sound/voice_arm.rs`) feeds it the admissions (`126000`, after), the
-  stops (`126360`) and the finishes (`127320`) and compares per tick:
-
-  | Tick | Turn | Counted |
-  |---|---|---|
-  | `tick % 64 == 0` | compare the whole report | `matched`, `mismatched`, `quiet` (no voices), `declined` (a voice it never saw start, or of unknown length) |
-  | other, not proven | the update steps only | `skipped` |
-  | other, proven (64 matched ticks with voices, no difference) | the update finishes its play-outs at the service `125b40`, then the guest's report must hold the rest | `answered`, `stale`, `mismatched` |
-
-  Interruptions are counted (`interrupted`) and are inputs, never
-  differences. One difference ends the answers for the process. The voices
-  are saved with snapshots; the tick going back forgets them.
-- *Verification.* Full sim reports with arena hashes include the ordered
-  `sound.voices` component. Compare complete reports from the lifted and
-  native arms with `h2 sim diff`. A quiet tick has an empty event list.
-  The clock-only arm still submits the room and filter parameters and
-  delivers any callbacks at the setters. [Sound reporting](../runtime/sim.md#finding-the-first-differing-state)
-- *Hosts.* Per-voice DirectSound submissions still drive the silent clock. Replacing
-  a submission requires preserving its completion and callback order.
+- *State.* The sound table (`sim_sound::instances::Sounds`) holds the
+  instances, the chooser, the looping sounds and the start rows on
+  `sim-world` pools, saved and hashed as the `kind::SOUND` section
+  ([sound-instances.md](sound-instances.md)). The sim decides when a sound
+  ends; the host mixer is fed from its events and changes nothing it reads.
+- *Guest boundary.* While tags, units and class state live in guest memory,
+  `sim-bridge/src/sim_sound/` reads them for the table: `levels`, `gate`,
+  `playback`, `promotion`, `ambience`, `clock`, `units` and `mouth`.
+- *Verification.* `h2 sim diff` with `sound.table` in the series.
 
 **Havok world (phase 5).**
 

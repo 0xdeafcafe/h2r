@@ -1,8 +1,8 @@
 # Sound instances: the Rust table
 
-Status: Design, slices 1 to 3 built, slice 4 in progress: `sound-clips` decodes and caches clips; `Sounds`, the chooser, the owners and the looping sounds exist in `sim-sound`; the bridge's entry bodies, the sound phase, `SoundLedger` and the mixer feed (stage D2) are wired at boot behind `impl.sim.sound-events.table` (off), with the guest arm kept until the table has been heard on the owner's machine. Boot's table reads the map's tags (`guest_tags::Snapshot`) and levels (`GuestLevels`) from guest memory; the loop entries run on the table's loops with the `lsnd` reader (`guest_tags::loop_tag`); the start layer runs on the table's rows (`Sounds::starts`, `starts::plan`, `entries::start_layer`). [sound-sim.md](sound-sim.md) states what runs: the engine's own instance pool with a Rust schedule beside it.
-Code: `crates/rewrites/sim-sound/src/{instances,chooser,owners,looping,starts,levels,feed}.rs`, `crates/rewrites/sim-bridge/src/sim_sound/{entries,owner_host,levels,mixer_feed,scene}.rs`, `crates/platform/sound-clips`, `crates/extensions/game/src/sound_feed.rs`. Tests: the same files, named in [Slices](#slices).
-Switch: `impl.sim.sound-events.table`, off until parity; under `impl.sim.sound-events`, which stands down while it is on. The table replaces both that switch and `impl.sim.native.sound` ([switches.md](../runtime/switches.md)).
+Status: Slices 1 to 3 built, slice 4 in progress, slice 5's engine half done (the exact port and its differential oracles are deleted): `sound-clips` decodes and caches clips; `Sounds`, the chooser, the owners and the looping sounds exist in `sim-sound`; the bridge's entry bodies, the sound phase, `SoundLedger` and the mixer feed (stage D2) are wired at boot behind `impl.sim.sound-events.table` (off), with the guest arm kept until the table has been heard on the owner's machine. Boot's table reads the map's tags (`guest_tags::Snapshot`) and levels (`GuestLevels`) from guest memory; the loop entries run on the table's loops with the `lsnd` reader (`guest_tags::loop_tag`); the start layer runs on the table's rows (`Sounds::starts`, `starts::plan`, `entries::start_layer`). [sound-sim.md](sound-sim.md) states what runs: the engine's own instance pool with a Rust schedule beside it.
+Code: `crates/rewrites/sim-sound/src/{instances,chooser,owners,looping,starts,levels,feed}.rs`, `crates/rewrites/sim-bridge/src/sim_sound/{entries,owner_host,levels,gate,playback,promotion,ambience,clock,units,mixer_feed,scene}.rs`, `crates/platform/sound-clips`, `crates/extensions/game/src/sound_feed.rs`. Tests: the same files, named in [Slices](#slices).
+Switch: `impl.sim.sound-events.table`, off until parity; under `impl.sim.sound-events`, which stands down while it is on. The table replaces that switch ([switches.md](../runtime/switches.md)).
 
 ```mermaid
 flowchart LR
@@ -36,7 +36,7 @@ The sim owns every sound as a record in a Rust table: which sounds run, which pe
 
 **E.** 47 functions name the pool global. 46 are sound code in three ranges: the manager (`0x1253d0` to `0x12a810`), the looping sounds (`0x21a250` to `0x21c400`) and the start layer (`0x21d5a0` to `0x21db80`). The one outside is the dialogue finish `0x18c8c0`. Method: `h2 disasm 0x12000 1500000`, lines naming the global, grouped by `h2 analyze --functions`.
 
-**Code.** With `impl.sim.sound-events` on (boot reads it with a default of off, so play runs the guest's frame), `sim_sound::service` implements `SOUND_UPDATE` and never calls the guest's frame, and boot installs `SimSoundEvents::headless()` with a `NullHost` (`crates/apps/boot/src/registration.rs`). So the loops' update (`0x21b0e0`), the channel update (`0x1282d0`, where a channel submits its stream), the voice update (`0x1293f0`) and the manager's DirectSound calls do not run in that arm, and the game is silent (`native_sound_tick.rs` names the frame's calls).
+**Code.** With `impl.sim.sound-events` on (boot reads it with a default of off, so play runs the guest's frame), `sim_sound::service` implements `SOUND_UPDATE` and never calls the guest's frame, and boot installs `SimSoundEvents::headless()` with a `NullHost` (`crates/apps/boot/src/registration.rs`). So the loops' update (`0x21b0e0`), the channel update (`0x1282d0`, where a channel submits its stream), the voice update (`0x1293f0`) and the manager's DirectSound calls do not run in that arm, and the game is silent.
 
 ## The table
 
@@ -94,7 +94,7 @@ A refusal after the slot is taken (`Rejected::NoScale`, `NoPromotion`, `Choose`)
 
 ### Levels
 
-`sim_sound::levels::level` is `0x1251e0` on inputs; `GuestLevels` (`engine::sim_sound::levels`, re-exported as `sim_bridge::sim_sound::levels`) reads them from guest memory and implements `instances::Levels`. It sits in `engine` so the differential runs it on the same memory as the lifted original.
+`sim_sound::levels::level` is `0x1251e0` on inputs; `GuestLevels` (`sim_bridge::sim_sound::levels`) reads them from guest memory and implements `instances::Levels`.
 
 ```text
 lo = scale row +0 + class +0x20        (0x218d70, SSE)
@@ -177,7 +177,7 @@ Retail keeps a pointer to a table of functions per instance. The table is a clos
 
 Order is retail's: `ended` runs with the instance still in the pool (it gets `&Sounds`), and the slot is freed after (`0x127390`). The host is called for `Unit` and `ScriptLine` owners only, a `Start`'s `own` included (`Owner::host`); `None`, `Loop`, `Started` and the start part of `Start` are the table's own. `Reason` is an enum of the engine's reasons: `PlayedOut` (2), `OwnerGone` (3), `Faded` (4), `Superseded` (0xF) and the start failures.
 
-`sim_bridge::sim_sound::owner_host::GuestUnits` implements `OwnerHost` while unit and script state live in guest memory. A line's end runs in Rust over guest memory (`engine::sim_sound::units::line_end`); so does a mouth (`0x18c6a0`, `sim_bridge::unit_mouth`, counted as `sound.mouth_calls`; [The unit mouth](#the-unit-mouth)); the line-table clear is a counted guest write ([Counters](#counters)). They move to the object store when it lands, with no change to `Sounds`.
+`sim_bridge::sim_sound::owner_host::GuestUnits` implements `OwnerHost` while unit and script state live in guest memory. A line's end runs in Rust over guest memory (`sim_bridge::sim_sound::units::line_end`); so does a mouth (`0x18c6a0`, `sim_bridge::unit_mouth`, counted as `sound.mouth_calls`; [The unit mouth](#the-unit-mouth)); the line-table clear is a counted guest write ([Counters](#counters)). They move to the object store when it lands, with no change to `Sounds`.
 
 ## The sound phase
 
@@ -191,7 +191,7 @@ The tick driver runs a 30th phase, `sound`, owned by Rust, after the 29 (`sim_br
 
 ### The unit mouth
 
-`engine::sim_sound::mouth` ports the update over guest memory; the facial sequence is `engine::sim_anim::facial`. `mouth::gate` runs to the extra-info resource's residency, `mouth::finish` the rest. The resource cache's touch (`0x12de70`, flags 2) is Rust where it needs no I/O (`mouth::residency`); a request to submit (`0x12e3a0`), a priority to raise, a blocking wait or a load to relocate is `Residency::Guest`, and `sim_bridge::unit_mouth` calls the guest's `0x12de70` for the answer.
+`sim_bridge::sim_sound::mouth` ports the update over guest memory; the facial sequence is `engine::sim_anim::facial`. `mouth::gate` runs to the extra-info resource's residency, `mouth::finish` the rest. The resource cache's touch (`0x12de70`, flags 2) is Rust where it needs no I/O (`mouth::residency`); a request to submit (`0x12e3a0`), a priority to raise, a blocking wait or a load to relocate is `Residency::Guest`, and `sim_bridge::unit_mouth` calls the guest's `0x12de70` for the answer.
 
 | Step | Address | Rust |
 |---|---|---|
@@ -259,7 +259,7 @@ A sound tag's custom playback row (gestalt `+0x34`, `0x34` bytes, found by `0x18
 | Stop | `start_stop_begin` (stopping, released), `Mode::Stop`, `start_stop_end` (done) | `0x21d360` |
 | Its sound ends | `start_sound_ended(code)`: `0xA` nothing; else `cut` unless 2 (played out), then the stop | `0x21da90`; `0x21db30` passes 1 and gives the sound back its own table |
 
-The bodies are `sim_bridge::sim_sound::entries::start_layer`. Each runs in a frame `0xB0` bytes below its entry `ESP`, which holds the request record a component's admission builds. The tag reads are `engine::sim_sound::playback`, the gate is `engine::sim_sound::gate` and the rule is `engine::sim_sound::promotion`:
+The bodies are `sim_bridge::sim_sound::entries::start_layer`. Each runs in a frame `0xB0` bytes below its entry `ESP`, which holds the request record a component's admission builds. The tag reads are `sim_bridge::sim_sound::playback`, the gate is `sim_bridge::sim_sound::gate` and the rule is `sim_bridge::sim_sound::promotion`:
 
 | Function | Port | Answers |
 |---|---|---|
@@ -312,10 +312,10 @@ The guest keeps calling sound code until its callers are Rust. Each entry below 
 | `0x21d390`, `0x21d630`, `0x21d2c0`, `0x21d360` | `0x18c125`, `0x225da6`, `0x225ea5`, `0x225e42` | the start layer over its rows (`entries::start_layer`): the walk, a run in a mode, a tag start, a stop |
 | `0x126360` `SOUND_STOP_INSTANCE` | `0x166992`, `0x189ee0`, `0x18a380`, `0x22beb5` | `stopping`, then `Fading` over 300 ms (`0x1263e5`) |
 | `0x126400` | `0x159e20` | every instance finished with `Cleared` (reason `0xA`, `0x12646b`) |
-| `0x126660` | `0x18be4b` | the blend of the two background ambience slots (sound globals `+0x1a8`, `0x1c` bytes each) toward the candidates in `eax`, ported (`engine::sim_sound::ambience::blend`); `0x127400` reads the slots |
+| `0x126660` | `0x18be4b` | the blend of the two background ambience slots (sound globals `+0x1a8`, `0x1c` bytes each) toward the candidates in `eax`, ported (`sim_bridge::sim_sound::ambience::blend`); `0x127400` reads the slots |
 | `0x1272c0` | `0x18c0d0` | the environment words (sound globals `+0x1f8` to `+0x204`), ported |
 | `0x125360` | `0x18c57a` | the first mapped user's listener, or 0, ported |
-| `0x125a90` | `0x232087` | the paused byte (`+0x7b`) and the pause time (`+0x80`, `0x3314b0`'s `[[0x411690]]`, `KeTickCount`: `engine::sim_sound::clock::system_time`); the channel calls are the host's |
+| `0x125a90` | `0x232087` | the paused byte (`+0x7b`) and the pause time (`+0x80`, `0x3314b0`'s `[[0x411690]]`, `KeTickCount`: `sim_bridge::sim_sound::clock::system_time`); the channel calls are the host's |
 | `0x125d60` | loaders | nothing: the host mixes on its own thread |
 | `0x127400` `SOUND_LISTENERS_UPDATE` | `0x125c1e`, `0x18c07f` | the guest's camera math, which reads no pool or channel global; the `Scene` reads its listeners in slice 5 |
 | `0x21a250`, `0x219c30` | object sound update `0x18a7b0` | `0x21a250`: `Table::loop_update`, below; `0x219c30`: nothing, the owner's per-listener distances it caches are read by `GuestLevels` at each admission |
@@ -350,9 +350,9 @@ Tag readers with no state (`0x218c60` length, `0x218e50` mouth sample, `0x221810
 | Global | What | Kept in guest memory for |
 |---|---|---|
 | `[0x4e6380]` | sound globals, `0x20c` bytes: on `+0x79`, ambience slots `+0x1b0` and `+0x1cc`, channel count `+0x208` (the classes' sum), `+0x20a` `0x33`, ready `+0x78` | the manager `0x125690` to `0x12af90`, the dialogue `0x189400` to `0x18d670` |
-| `[0x51ebd8]`, `[0x51ebdc]` | companions (`0x40` x `0x1c`) and their default record, seeded `time ^ KeTickCount` | `0x1257b0`, `0x127390`, `0x128ca0`, `native_sound_channel`, `native_sound_tick::seeds` |
-| `[0x502110]` | looping sounds (`0x80` x `0xd4`) | `0x1257b0` (null-checked), `native_sound_loops` |
-| `[0x51ebe0]` | start records (`0x10` x `0x14`) | `0x225b60`, `native_sound_scheduling::start` |
+| `[0x51ebd8]`, `[0x51ebdc]` | companions (`0x40` x `0x1c`) and their default record, seeded `time ^ KeTickCount` | `0x1257b0`, `0x127390`, `0x128ca0` |
+| `[0x502110]` | looping sounds (`0x80` x `0xd4`) | `0x1257b0` (null-checked) |
+| `[0x51ebe0]` | start records (`0x10` x `0x14`) | `0x225b60` |
 | `[0x502114]` | class rows (`[0x44a0d4]` x `0x6c`) | `0x1295e0`, `0x21dde0` to `0x21e050` |
 
 Two subsystems stay guest calls: the sound cache (`0x2185d0`, `0x2186b0`), whose allocator vtables and cache object the cache code reads, and the driver (`0x21e4b0`, `0x21eae0`), `DirectSoundCreate` and the buffers at `[0x51ebe4]` that the per-map init `0x191270`, the pause and Bink read. A driver that does not come up leaves `+0x78` 0, as retail does. Dispose zeroes every global above, marking the class rows invalid first.
@@ -366,7 +366,6 @@ Two subsystems stay guest calls: the sound cache (`0x2185d0`, `0x2186b0`), whose
 | `extensions/game/src/sim_glue/voices.rs` (`sound.voices` series) | pool and channel rows at six observers | deleted; the series is the table's events as `sound.table` (handle, tag, range, permutation, reason) |
 | Dialogue callbacks `0x18c8c0`, `0x18c910`, `0x18c6a0` | pool row for the tag | `GuestUnits` |
 | `sim_bridge::sim_sound::owners` | pool rows, gestalt | deleted with the schedule's `Live` map |
-| `sim_bridge::sim_sound::voice_arm`, `engine/src/native_sound_*` (5,555 lines) and `tests/sim_sound_differential` | whole records, register by register | oracles for slices 2 and 3, then deleted in slice 5 |
 
 ## Clip source
 
@@ -429,7 +428,7 @@ Space 0 sounds (word 0 bits 24 to 27), unknown spaces and world sounds with no l
 | D0 | guest pool; frame replaced by the event service; `NullHost` | none (today) |
 | D1 | `Sounds` owns every instance; entries are Rust; pool global 0 | `sound.pool_reads == 0`, `sound.unported_entries == 0`, `dsound.manager_calls == 0` over one campaign level and one match |
 | D2 | `MixerHost` at boot; the game is heard through the feed | `feed.started == sound.admitted` less `feed.culled`; `feed.clip_refused == 0` on retail maps |
-| D3 | `native_sound_*`, the differential tests, `voice_arm`, `sim_glue/voices.rs` and both switches deleted; the sound core's DirectSound objects (mix-ins, submixes, streams) no longer registered | `dsound.manager_calls` removed with its code; `dsound.calls` names only Bink and voice |
+| D3 | `sim_glue/voices.rs` and both switches deleted; the sound core's DirectSound objects (mix-ins, submixes, streams) no longer registered | `dsound.manager_calls` removed with its code; `dsound.calls` names only Bink and voice |
 
 Bink and voice chat still reach DirectSound after D3. Their cut belongs to [bink-hle.md](../audio/bink-hle.md) and the voice pages.
 
@@ -462,7 +461,7 @@ A refusal never plays or admits something else in its place. An unknown owner re
 
 ## Rules and limits
 
-- `Sounds` reads no guest memory and no device. The bridge reads request records and writes results; the guest state it writes is the ported callees' (`engine::sim_sound::{ambience, clock, playback, promotion, units}`) and `GuestUnits`' line-table clear.
+- `Sounds` reads no guest memory and no device. The bridge reads request records and writes results; the guest state it writes is the ported callees' (`sim_bridge::sim_sound::{ambience, clock, playback, promotion, units}`) and `GuestUnits`' line-table clear.
 - No `HashMap` feeds the save, the hash or an event's order. Walks are in slot order; starts in admission order.
 - A checkpoint revert does not restore `Sounds`: retail's pool lies outside the checkpoint arena. A machine snapshot saves it as its `World` section.
 - Culling under load and the device's own end of a clip do not exist in the sim. A sound the host culled still runs its ticks and its callbacks.
@@ -474,9 +473,9 @@ A refusal never plays or admits something else in its place. An unknown owner re
 |---|---|---|---|---|
 | 1 | `sound-clips` crate | Sonnet | none | built |
 | 2 | Instances, chooser, owners (pure) | Opus | none | built |
-| 3 | Looping sounds on the table (pure) | Opus | 2's types | built; no differential |
+| 3 | Looping sounds on the table (pure) | Opus | 2's types | built |
 | 4 | The flip: entries, sound phase, mixer feed, readers, counters | Opus | 1, 2, 3 | entries, phase, ledger and boot wiring behind the switch; `GuestLevels`; the loop entries and ambience; the start layer; the mixer feed (D2); the readers to build |
-| 5 | Deletions, D3 | Opus | 4 | |
+| 5 | Deletions, D3 | Opus | 4 | engine half deleted: the exact port, its differential oracles and the kernels only it called |
 
 ### 1. `sound-clips`
 
@@ -486,31 +485,28 @@ A refusal never plays or admits something else in its place. An unknown owner re
 
 ### 2. Instances, chooser, owners
 
-- Files: `crates/rewrites/sim-sound/src/{instances,chooser,owners}.rs`, `instances/tests.rs`, `events.rs` (`TableEvent`), `lib.rs`, `Cargo.toml` (`sim-world`); `crates/rewrites/engine/tests/sim_sound_differential/table.rs`.
+- Files: `crates/rewrites/sim-sound/src/{instances,chooser,owners}.rs`, `instances/tests.rs`, `events.rs` (`TableEvent`), `lib.rs`, `Cargo.toml` (`sim-world`).
 - Types slice 3 builds on: `instances::{Sounds, Instance, Request, Options, SourceParams, TagIndex, SoundTags, TagTable, SoundTag, PitchRange, Permutation, Playback, Scale, Rejected, Counters}`, `chooser::{Chooser, History, Pick, pick}`, `owners::{Owner, OwnerHost, NullOwners, Reason, Phase, ramp_done}`, `events::TableEvent`. `Sounds::finish` is the one way an instance ends.
 - Tests: `a_silent_request_takes_the_gain_draw_and_no_slot`, `a_full_pool_stops_after_one_draw`, `an_explicit_selection_draws_no_permutation`, `the_chooser_redraws_past_used_permutations`, `a_full_used_set_keeps_only_the_last`, `a_queued_next_is_taken_without_a_draw`, `a_one_shot_ends_on_its_computed_tick_in_slot_order`, `ended_runs_before_the_slot_is_free`, `a_stop_fades_then_ends_with_faded`, `handles_match_datum_new`, `save_round_trips_instances_and_history`.
-- Differential: `the_table_draws_what_the_engines_admission_draws` runs 4,096 random tags, histories, pool fills and requests through `native_sound_impulse`'s body, with the draws, the chooser, the class lookup and `datum_new` run as the lifted original, and through `Sounds::admit`. It compares the seed after, the handle, the selection, the instance's words and every range's history. It needs the base image (`H2_XBE`, or `disc/default.xbe`).
 - Exit: both green; nothing wired at boot.
 
 ### 3. Looping sounds
 
-- Files: `crates/rewrites/sim-sound/src/looping.rs`, `looping/tests.rs`; `instances.rs` (the loop pool, `SoundTags::looping`). `loops.rs` and `segments.rs` stay: `looping` uses their kernels and the engine ports still call them.
+- Files: `crates/rewrites/sim-sound/src/looping.rs`, `looping/tests.rs`; `instances.rs` (the loop pool, `SoundTags::looping`). `loops.rs` and `segments.rs` stay: `looping` uses their kernels.
 - Tests: `a_loop_plays_in_then_loop_then_out`, `the_alternate_swaps_segments_with_overlap`, `a_detail_sound_starts_on_its_drawn_deadline`, `a_stopped_loop_fades_every_track_instance`, `loops_step_in_slot_order`, `a_track_drops_an_instance_when_it_ends`, `a_loop_is_found_by_tag_and_owner_a_playing_one_first`, `a_new_source_is_where_the_next_segment_plays`, `a_faded_loop_plays_no_out_and_is_freed_once_empty`, `a_loop_with_no_sound_is_freed_at_once`.
-- Differential: `the_loop_step_admits_what_the_engines_update_admits` against `native_sound_loops` over 1,024 random loop states. Not built: the engine's update runs per frame, starts segments from the device's end and places details with listener draws, so it can only be compared once the per-frame track update and detail placement are decided (Not verified).
-- Exit: the unit tests green; the differential with the open items above.
+- Exit: the unit tests green.
 
 ### 4. The flip
 
-- Files: `crates/rewrites/sim-bridge/src/sim_sound.rs` (the store, the snapshot section), `sim_sound/{entries,entries/start_layer,owner_host,request}.rs`, `tick.rs` (phase 30); `crates/hooking/guest-layout/src/points.rs` (the entries' points); `crates/apps/boot/src/registration.rs`; `crates/extensions/game/src/{audio_loops.rs,h1_conversation.rs}`; delete `sim_sound/{owners,voice_arm}.rs`, `extensions/game/src/sim_glue/voices.rs`; `crates/hooking/hooks/src/switches/table.rs` (both switches removed); docs: [sound-sim.md](sound-sim.md) rewritten to the table, [switches.md](../runtime/switches.md), [agent-api.md](../runtime/agent-api.md) (`audio.loops`), [sim-determinism.md](../runtime/sim-determinism.md) (`sound.table`).
+- Files: `crates/rewrites/sim-bridge/src/sim_sound.rs` (the store, the snapshot section), `sim_sound/{entries,entries/start_layer,owner_host,request}.rs`, `tick.rs` (phase 30); `crates/hooking/guest-layout/src/points.rs` (the entries' points); `crates/apps/boot/src/registration.rs`; `crates/extensions/game/src/{audio_loops.rs,h1_conversation.rs}`; delete `sim_sound/owners.rs`, `extensions/game/src/sim_glue/voices.rs`; `crates/hooking/hooks/src/switches/table.rs` (both switches removed); docs: [sound-sim.md](sound-sim.md) rewritten to the table, [switches.md](../runtime/switches.md), [agent-api.md](../runtime/agent-api.md) (`audio.loops`), [sim-determinism.md](../runtime/sim-determinism.md) (`sound.table`).
 - Built: `sim_sound/request.rs` (`read`: the record and arguments into a `Request`, the callback table's finish classified as `Unit` or `ScriptLine`, the start tables `0x44a1c0` and `0x44a1e0` as `Start` and `Started`, any other refused), `sim_sound/owner_host.rs` (`GuestUnits`: the line table clear as a counted write at once; the unit's line end and mouth queued as `UnitCall`s the phase makes after the step), `instances::Levels` (with `refused`), `GuestLevels` at boot, `sim_sound/guest_tags.rs` (`Snapshot`), the mouth call, `0x219430`'s body, `sim_sound/entries.rs` (`ENTRIES`, the bodies, `phase`, `SoundLedger`, `SoundTable` behind `impl.sim.sound-events.table`), phase 30 in `tick::run`, the boot wiring, the start layer's bodies (`entries::start_layer`) with the start owners in `Sounds`, the unrefreshed loops' free, the mixer feed (`mixer_feed.rs`, `scene.rs`, `feed::TableHost`, `game/src/sound_feed.rs`).
 - To build: the snapshot section, the readers, the deletions.
-- Differential: `guest_levels_give_the_lifted_level_bits` runs 8,192 random tags, classes, scale rows, class states and duck states through the lifted `0x1251e0` and through `GuestLevels` on the same memory, and compares the bits.
 - Tests: `every_outside_entry_has_a_rust_body`, `the_table_is_off_by_default_and_needs_the_events_switch`, `a_start_record_is_admitted_into_the_table`, `a_start_refuses_by_name_without_levels`, `a_stop_fades_the_sound_and_stop_all_clears_the_table`, `a_refused_entry_is_counted_by_its_address`, `a_tag_start_admits_its_sound_and_starts_its_loop_on_its_own_handle`, `a_tag_start_stops_its_loop_and_the_walk_frees_it`, `a_sound_start_binds_its_record_and_its_stop_runs_the_starts_stop`, `a_refused_sound_start_frees_its_row`, `the_walk_releases_a_sound_start_whose_unit_is_gone`, `the_start_layer_tables_name_a_start`, `the_sound_phase_runs_after_the_phases_once_per_tick_number` (`tick.rs`), `a_request_record_reads_into_a_request`, `an_unknown_callback_table_refuses_the_request`, `a_unit_line_end_calls_the_unit_once_with_the_tag`, `a_script_line_end_clears_its_slot`, `the_pool_global_is_zero_after_start`, `the_sound_phase_runs_once_per_tick_number`, `the_hash_is_the_same_with_any_host`, `audio_loops_rows_come_from_the_table`, `a_conversation_poll_sees_an_ended_sound_as_gone`, `a_loop_update_starts_keeps_and_stops_the_loop_of_an_owner`, `a_shared_loop_with_a_spatial_source_is_one_for_every_owner`, `a_stop_frees_a_loop_that_holds_no_sound_at_once`, `a_looping_sound_reads_its_tracks_details_and_their_sounds`, `the_ambience_runs_the_guests_blend_with_its_candidates`; the start rows (`starts/tests.rs`): `start_rows_take_datum_new_handles_and_the_pool_holds_sixteen`, `an_admitted_sound_makes_a_sound_start_with_the_requests_word`, `a_stop_marks_the_row_and_the_next_walk_frees_it`, `a_sound_starts_end_reason_sets_cut_and_the_stop_all_does_nothing`, `the_walk_polls_only_a_sound_start_that_is_running`, `the_plan_plays_each_component_in_its_mode`, `a_loop_takes_its_alternate_and_its_tags_word_mask`, `a_dialogue_loop_takes_its_mode_from_the_row`, `save_round_trips_the_start_rows`, `a_start_sounds_end_tells_its_own_owner_and_queues_the_stop`, `the_stop_all_tells_a_start_sounds_owners_nothing`, `a_start_sounds_stop_cuts_the_start_and_gives_the_sound_back`, `a_start_sound_lives_while_its_start_is_not_stopping`, `a_started_sound_follows_its_start_until_the_start_is_done`; the loops (`looping/tests.rs`): `a_tick_runs_its_calls_then_the_loops_update_then_the_ends_as_the_guest_frame_does`, `a_track_sound_plays_at_its_loops_source_as_the_owner_moves_it`, `a_loop_its_owner_left_is_freed_and_its_sounds_play_out`, `a_kept_loop_lives_while_a_sound_of_it_plays`; the feed: `the_service_hands_the_host_the_events_in_the_tables_order_then_the_scene` (`entries/tests.rs`), `a_tags_distances_come_from_its_playback_row_or_its_class` (`guest_tags.rs`), `a_world_source_is_heard_where_it_is_from_the_listener`, `a_listener_source_is_forward_left_up_and_space_0_is_not_positioned` (`feed.rs`), `the_scene_hears_through_the_first_active_listener` (`scene.rs`), `a_start_plays_the_drawn_permutation`, `a_stop_ramps_the_buffer_down_over_the_fade`, `a_played_out_buffer_finishes_then_is_swept`, `a_culled_voice_changes_no_sim_state`, `a_late_clip_starts_at_the_elapsed_offset`, `a_clip_later_than_the_limit_is_dropped_and_counted`, `a_refused_clip_is_counted_and_nothing_else_plays`, `a_moving_source_follows_its_marker`, `a_music_track_streams_from_chunks`, `a_following_segment_queues_on_its_predecessors_stream`, `a_segment_the_sim_starts_early_is_cut_in_by_the_excess_lead`, `clear_takes_every_voice_at_once` (`mixer_feed/tests.rs`).
 - Exit: `h2 sim diff` of the same match twice is identical with `sound.table` in the series; D1's counters hold on a campaign level and a match through `sim.ledger`.
 
 ### 5. Deletions
 
-- Files: `crates/rewrites/sim-bridge/src/sim_sound/mixer_feed.rs` (what the feed does not do yet, below); `crates/extensions/game/src/audio_loops.rs` (the play position from `MixerHost::voice`); `crates/apps/boot/src/registration.rs`; delete `crates/rewrites/engine/src/native_sound_*`, `crates/rewrites/engine/tests/sim_sound_differential`, the sim-sound kernels nothing calls; `crates/platform/dsound` (the sound core's registrations); docs: [dsound.md](../audio/dsound.md), [audio.md](../audio/audio.md), [sim-rewrite.md](sim-rewrite.md) (phase 4).
+- Files: `crates/rewrites/sim-bridge/src/sim_sound/mixer_feed.rs` (what the feed does not do yet, below); `crates/extensions/game/src/audio_loops.rs` (the play position from `MixerHost::voice`); `crates/apps/boot/src/registration.rs`; `crates/platform/dsound` (the sound core's registrations); docs: [dsound.md](../audio/dsound.md), [audio.md](../audio/audio.md), [sim-rewrite.md](sim-rewrite.md) (phase 4).
 - The feed's open items: velocity and Doppler, obstruction and the room send (I3DL2), the propagation delay, the class ceilings and voice priority (`sim_sound::sources::VoicePriority`, `scheduling::CappedSelection`) in place of the first-come limit, a listener per split-screen user, and the detail sounds' placement.
 - Exit: D2's and D3's gates; the game is heard on the owner's machine with `dsound.manager_calls` gone and `feed.clip_refused == 0` on a retail level.
 
@@ -518,11 +514,11 @@ A refusal never plays or admits something else in its place. An unknown owner re
 
 | Label | Fact | Source |
 |---|---|---|
-| E | The admission's order of draws, tests and copies | `0x126000` to `0x126352`; `crates/rewrites/engine/src/native_sound_impulse.rs` is its port |
+| E | The admission's order of draws, tests and copies | `0x126000` to `0x126352` |
 | E | The stop calls the owner's `+0x14`, records the ramp and sets the fade | `0x126360` |
-| E | The finish releases the channel and chunk, calls `+0x10` with owner, handle and reason, then frees | `0x127320`, `0x127390`; `native_sound_sources/completion.rs` |
+| E | The finish releases the channel and chunk, calls `+0x10` with owner, handle and reason, then frees | `0x127320`, `0x127390` |
 | E | `0x18c8c0` reads the instance's tag from the pool and calls the unit; `0x18c910` adds the line-table clear | their bodies |
-| E | The frame's calls, in order | `0x125b40`; `native_sound_tick.rs` names them |
+| E | The frame's calls, in order | `0x125b40` |
 | E | `0x21a250` stamps the loop's `+0x53` with sound globals `+0x7f` and keeps flag bit 1 at `+0x50` bit 1; `0x21b0e0` frees a stale loop through `0x21b070` unless `+0x50` bit 1 and `+0x51` (its sounds) is not 0; the frame adds 1 to `+0x7f` (`0x125cfa`) | `0x21a521`, `0x21abb0`, `0x21b163`, `0x21bc65`, `0x21ae64` |
 | E | A sound's distances: source word 0 bit 2 (bit 3) takes word 13 (14), else tag `+1` bit 2 (bit 3) the class row's `+0x18` (`+0x1c`), else playback `+0` (`+4`) | `0x124fc0`, `0x125010`; `crates/formats/tags/src/defs/ugh_.txt` |
 | E | A world source's position is words 3 to 5 (word 0 byte 2 is 0) or words 3 and 4 at the listener's height (byte 2 is 1); a listener source's is words 3 to 5; the listener's frame is at `+0xc` to `+0x3b` | `0x12abe0`, `0x129aa0` (`0x129c04`, `0x142700`) |
@@ -537,8 +533,8 @@ A refusal never plays or admits something else in its place. An unknown owner re
 - The readers of instance `+0x98`, `+8` and `+0xA0` to `+0xA4`, and the layout of the owner payload at `+0x5C`.
 - Whether `h2 sim` runs initialise the sound manager (globals `+0x78` to `+0x7A`). The sound parity reference run is a local match with a listener either way.
 - That one sound step per tick gives the same draws as retail at 30 frames a second on a map with looping sounds and detail sounds. Once a tick is the parity target.
-- That the game thread's x87 control word is `0x027f` when the pitch draw runs. The differential runs both sides under it; under 53-bit precision the draw equals `f64` arithmetic.
-- That `0x2226b0` (called before the slot) changes nothing the table keeps. The differential stands in for it.
+- That the game thread's x87 control word is `0x027f` when the pitch draw runs. Under 53-bit precision the draw equals `f64` arithmetic; no test compares it with the lifted draw.
+- That `0x2226b0` (called before the slot) changes nothing the table keeps. No test checks it.
 - That every sound a level admits decodes from the host's map files, converted Halo 1 maps and injected tags included.
 - Whether `0x21cc60` can refuse a detail for a reason that is not placement. The table plays every due detail; presentation places it (`0x21ce60`, `0x14dde0`, `0x188dd0`).
 - What the loops lose from retail's per-owner state, which the table does not keep: shared loops' summed positions (`0x21a387` to `0x21a50f`), the owner row's permutation seed (`0x219a90`, `+8`), the inaudible cull that frees a loop (`0x127d00` at `0x21ab8e`), and `0x21a250`'s flag bits 1, 2 and 4 (bit 2 stops the detail sounds, `0x21b6a6`). A stop with outs plays them at once rather than after the playing segment ends (`0x21ab25`).
