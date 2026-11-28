@@ -2,11 +2,14 @@
 //! replay (native-only plan, `nor-8b`; docs/graphics/framescene.md,
 //! "Slice 6"). Each target the frame's ops touch is one [`Declared`]: its
 //! size, how its first use loads it, what the frame does with it and the
-//! ops and slots that do it. The replay still binds what the guest bound;
-//! the declaration is what a graph that owns its targets allocates and
-//! loads in place of those binds.
+//! ops and slots that do it. [`Owned`] is the graph's own set of them:
+//! one surface per declared target, allocated by the graph, kept across
+//! frames while its shape holds, and handed to the replay as the map it
+//! draws on (`draw_display_on`'s `targets`). The view setup's binds and
+//! clears (`render_bridge::view_setup`) name these targets: the scene sink
+//! files them as the [`TargetRef`]s declared here.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Range;
 
 use d3d::scene_sink::{ReplayFrame, ReplayOp};
@@ -64,6 +67,8 @@ pub struct Declared {
     /// the frame names none.
     pub size: Option<(u32, u32)>,
     pub depth: bool,
+    /// Its guest `D3DFORMAT`, from the same descriptor as `size`.
+    pub format: Option<u32>,
     pub load: Load,
     pub uses: Uses,
     /// The ops that touch it, first to last.
@@ -88,7 +93,7 @@ pub fn declare(frame: &ReplayFrame) -> Vec<Declared> {
                 d.slots.insert(at.slot);
                 return;
             }
-            let (size, depth) = describe(frame, target);
+            let (size, depth, format) = describe(frame, target);
             let load = if clears {
                 Load::Clear
             } else if frame.initial.iter().any(|(t, _)| *t == target) {
@@ -96,7 +101,7 @@ pub fn declare(frame: &ReplayFrame) -> Vec<Declared> {
             } else {
                 Load::Keep
             };
-            out.push(Declared { target, size, depth, load, uses, ops: i..i + 1, slots: BTreeSet::from([at.slot]) });
+            out.push(Declared { target, size, depth, format, load, uses, ops: i..i + 1, slots: BTreeSet::from([at.slot]) });
         };
         match op {
             ReplayOp::Bind { colour, depth } => bound = Some((*colour, *depth)),
@@ -134,10 +139,10 @@ pub fn declare(frame: &ReplayFrame) -> Vec<Declared> {
         match out.iter_mut().find(|d| d.target == frame.presented) {
             Some(d) => d.uses = d.uses | Uses::PRESENTED,
             None => {
-                let (size, depth) = describe(frame, frame.presented);
+                let (size, depth, format) = describe(frame, frame.presented);
                 let load = if frame.initial.iter().any(|(t, _)| *t == frame.presented) { Load::Seeded } else { Load::Keep };
                 let end = frame.ops.len();
-                out.push(Declared { target: frame.presented, size, depth, load, uses: Uses::PRESENTED, ops: end..end, slots: BTreeSet::new() });
+                out.push(Declared { target: frame.presented, size, depth, format, load, uses: Uses::PRESENTED, ops: end..end, slots: BTreeSet::new() });
             }
         }
     }
@@ -179,7 +184,7 @@ pub(super) fn op_targets(op: &ReplayOp, bound: &mut Option<(TargetRef, TargetRef
     }
 }
 
-fn describe(frame: &ReplayFrame, target: TargetRef) -> (Option<(u32, u32)>, bool) {
+fn describe(frame: &ReplayFrame, target: TargetRef) -> (Option<(u32, u32)>, bool, Option<u32>) {
     let aux = match target {
         TargetRef::SceneColour => frame.colour.as_ref(),
         TargetRef::SceneDepth => frame.depth.as_ref(),
@@ -187,8 +192,140 @@ fn describe(frame: &ReplayFrame, target: TargetRef) -> (Option<(u32, u32)>, bool
         TargetRef::None => None,
     };
     match aux {
-        Some(a) => (Some((a.width, a.height)), a.depth),
-        None => (None, target == TargetRef::SceneDepth),
+        Some(a) => (Some((a.width, a.height)), a.depth, Some(a.format)),
+        None => (None, target == TargetRef::SceneDepth, None),
+    }
+}
+
+/// What the graph allocates a target as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Shape {
+    pub size: (u32, u32),
+    pub depth: bool,
+    pub format: u32,
+}
+
+impl Shape {
+    /// The shape of `d`; `None` when the frame names no size or format
+    /// for it.
+    pub fn of(d: &Declared) -> Option<Shape> {
+        Some(Shape { size: d.size?, depth: d.depth, format: d.format? })
+    }
+}
+
+/// Makes and frees the graph's surfaces (the backend's).
+pub trait Allocate {
+    type Surface: Copy;
+    /// A surface of `shape` for `target`; `None`: refused.
+    fn allocate(&mut self, target: TargetRef, shape: Shape) -> Option<Self::Surface>;
+    fn release(&mut self, surface: Self::Surface);
+}
+
+/// Why a declared target has no surface this frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Refusal {
+    /// The frame names no size or format for it.
+    Unsized,
+    /// The allocator refused its shape.
+    Allocation,
+}
+
+impl Refusal {
+    pub fn name(self) -> &'static str {
+        match self {
+            Refusal::Unsized => "unsized",
+            Refusal::Allocation => "allocation",
+        }
+    }
+}
+
+/// The view targets the graph owns. Each declared target keeps its surface
+/// from frame to frame while its shape holds; a new shape releases the old
+/// surface and allocates another. A target a frame does not declare is
+/// kept for the next that does (a menu frame between two game frames
+/// drops nothing). A target with no surface is refused by name and
+/// counted, and the frame's map leaves it out: no other surface stands in.
+#[derive(Debug)]
+pub struct Owned<S> {
+    held: BTreeMap<TargetRef, (Shape, S)>,
+    pub made: u64,
+    pub kept: u64,
+    pub released: u64,
+    pub refused: BTreeMap<Refusal, u64>,
+}
+
+impl<S> Default for Owned<S> {
+    fn default() -> Self {
+        Self { held: BTreeMap::new(), made: 0, kept: 0, released: 0, refused: BTreeMap::new() }
+    }
+}
+
+impl<S: Copy> Owned<S> {
+    /// The surfaces for `declared`, made or kept through `alloc`, and the
+    /// targets refused. [`TargetRef::None`] is never declared.
+    pub fn own<A: Allocate<Surface = S>>(
+        &mut self,
+        declared: &[Declared],
+        alloc: &mut A,
+    ) -> (HashMap<TargetRef, S>, Vec<(TargetRef, Refusal)>) {
+        let mut map = HashMap::new();
+        let mut refused = Vec::new();
+        for d in declared {
+            let Some(shape) = Shape::of(d) else {
+                refused.push((d.target, Refusal::Unsized));
+                continue;
+            };
+            match self.held.get(&d.target) {
+                Some((held, surface)) if *held == shape => {
+                    self.kept += 1;
+                    map.insert(d.target, *surface);
+                    continue;
+                }
+                Some((_, surface)) => {
+                    alloc.release(*surface);
+                    self.released += 1;
+                    self.held.remove(&d.target);
+                }
+                None => {}
+            }
+            match alloc.allocate(d.target, shape) {
+                Some(surface) => {
+                    self.made += 1;
+                    self.held.insert(d.target, (shape, surface));
+                    map.insert(d.target, surface);
+                }
+                None => refused.push((d.target, Refusal::Allocation)),
+            }
+        }
+        for (_, r) in &refused {
+            *self.refused.entry(*r).or_default() += 1;
+        }
+        (map, refused)
+    }
+
+    /// The surface held for `target`.
+    pub fn surface(&self, target: TargetRef) -> Option<S> {
+        self.held.get(&target).map(|(_, s)| *s)
+    }
+
+    /// Releases every surface (a device reset, the renderer's end).
+    pub fn release_all<A: Allocate<Surface = S>>(&mut self, alloc: &mut A) {
+        for (_, (_, surface)) in std::mem::take(&mut self.held) {
+            alloc.release(surface);
+            self.released += 1;
+        }
+    }
+
+    /// `render.scene`'s counters: `graph_targets_<made|kept|released>` and
+    /// `graph_targets_refused_<cause>`.
+    pub fn counters(&self) -> Vec<(String, u64)> {
+        let mut out = vec![
+            ("graph_targets_made".to_string(), self.made),
+            ("graph_targets_kept".to_string(), self.kept),
+            ("graph_targets_released".to_string(), self.released),
+        ];
+        out.extend(self.refused.iter().map(|(r, n)| (format!("graph_targets_refused_{}", r.name()), *n)));
+        out
     }
 }
 
@@ -238,6 +375,66 @@ mod tests {
         assert_eq!((d[3].uses, d[3].ops.clone()), (Uses::PRESENTED, 7..7), "presented, never drawn");
         assert!(undeclared(&frame, &d).is_empty());
         assert_eq!(undeclared(&frame, &d[..2]), [(3, snap), (4, snap), (6, snap)], "every op names its target");
+    }
+
+    #[derive(Default)]
+    struct Pool {
+        next: u32,
+        live: Vec<u32>,
+        refuse: Option<TargetRef>,
+    }
+
+    impl Allocate for Pool {
+        type Surface = u32;
+        fn allocate(&mut self, target: TargetRef, _: Shape) -> Option<u32> {
+            if self.refuse == Some(target) {
+                return None;
+            }
+            self.next += 1;
+            self.live.push(self.next);
+            Some(self.next)
+        }
+        fn release(&mut self, surface: u32) {
+            self.live.retain(|s| *s != surface);
+        }
+    }
+
+    /// The graph owns its targets: the same shape keeps its surface into
+    /// the next frame, a new shape gets a new one and frees the old, and a
+    /// target with no size or a refused allocation is named, not stood in
+    /// for.
+    #[test]
+    fn the_graph_owns_its_targets_across_frames() {
+        let colour = AuxTarget { width: 640, height: 480, depth: false, format: D3DFormat::LinA8R8G8B8 as u32 };
+        let depth = AuxTarget { depth: true, format: D3DFormat::LinD24S8 as u32, ..colour };
+        let mut frame = ReplayFrame { presented: TargetRef::SceneColour, colour: Some(colour), depth: Some(depth), ..Default::default() };
+        let clear = Clear { color: Some([0.; 4]), depth: Some(1.), stencil: Some(0) };
+        frame.ops = vec![(at(Slot::Opaque), ReplayOp::Clear { colour: TargetRef::SceneColour, depth: TargetRef::SceneDepth, clear })];
+        let (mut owned, mut pool) = (Owned::default(), Pool::default());
+        let (first, refused) = owned.own(&declare(&frame), &mut pool);
+        assert!(refused.is_empty());
+        assert_eq!(first.len(), 2);
+        let (second, _) = owned.own(&declare(&frame), &mut pool);
+        assert_eq!(second, first, "the same shape keeps its surfaces");
+        assert_eq!((owned.made, owned.kept), (2, 2));
+        frame.colour = Some(AuxTarget { width: 1280, height: 720, ..colour });
+        let (third, _) = owned.own(&declare(&frame), &mut pool);
+        assert_ne!(third[&TargetRef::SceneColour], first[&TargetRef::SceneColour], "a new size, a new surface");
+        assert_eq!(third[&TargetRef::SceneDepth], first[&TargetRef::SceneDepth]);
+        assert_eq!((owned.released, pool.live.len()), (1, 2), "the old colour freed");
+        let menu = ReplayFrame::default();
+        assert!(owned.own(&declare(&menu), &mut pool).0.is_empty());
+        assert_eq!(owned.surface(TargetRef::SceneDepth), Some(first[&TargetRef::SceneDepth]), "a frame that declares none drops none");
+        frame.colour = None;
+        pool.refuse = Some(TargetRef::SceneDepth);
+        frame.depth = Some(AuxTarget { width: 320, ..depth });
+        let (map, refused) = owned.own(&declare(&frame), &mut pool);
+        assert_eq!(refused, [(TargetRef::SceneColour, Refusal::Unsized), (TargetRef::SceneDepth, Refusal::Allocation)]);
+        assert!(map.is_empty(), "nothing stands in");
+        let c: BTreeMap<_, _> = owned.counters().into_iter().collect();
+        assert_eq!((c["graph_targets_refused_unsized"], c["graph_targets_refused_allocation"]), (1, 1));
+        owned.release_all(&mut pool);
+        assert!(pool.live.is_empty());
     }
 
     /// A depth clear that leaves the stencil loads the depth; a seeded
