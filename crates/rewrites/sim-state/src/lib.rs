@@ -110,6 +110,14 @@ pub struct Sphere {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct NodeMatrix(pub [f32; 13]);
 
+/// The object table, the truth for the objects array (the `World`'s
+/// objects store), and its read view: [`PoolMem`] is the table as guest
+/// memory, so [`objects`] and [`object`] read the pool when handed one,
+/// with no other change for a consumer:
+/// `objects(&PoolMem::new(&table))`. The view is a snapshot of the table's
+/// shape; build one per read burst.
+pub use sim_objects::{ObjectTable, PoolMem};
+
 /// Every live object, in slot order. Empty while no map is loaded.
 pub fn objects<M: Mem + ?Sized>(m: &M) -> Result<ObjectIter<'_, M>, Fault> {
     let pool = Objects::read(m)?;

@@ -6681,6 +6681,7 @@ dependencies = [
  "sim-core",
  "sim-effects",
  "sim-ext",
+ "sim-objects",
  "sim-sound",
  "sim-world",
  "simd",
@@ -6735,6 +6736,7 @@ version = "0.1.0"
 dependencies = [
  "guest-layout",
  "sim-core",
+ "sim-world",
 ]
 
 [[package]]

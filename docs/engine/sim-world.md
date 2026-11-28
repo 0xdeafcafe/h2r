@@ -1,8 +1,9 @@
 # The simulation world: pools, save, hash and RNG
 
-Status: `crates/rewrites/sim-world` is built with unit tests. Sound is the
-first subsystem on its pools (`sim_sound::instances::Sounds`): the process's
-`World` (`sim_bridge::world::WORLD`) holds it at boot, and no other store is
+Status: `crates/rewrites/sim-world` is built with unit tests. Sound
+(`sim_sound::instances::Sounds`) and the object table
+(`sim_objects::ObjectTable`) are on its pools: the process's `World`
+(`sim_bridge::world::WORLD`) holds both at boot, and no other store is
 filled.
 
 The native simulation keeps its state in a Rust `World`, and that is the
@@ -77,7 +78,34 @@ writes no section and a save that carries one is refused as `UnknownKind`.
 | Kind | Store | Pools | Held by |
 |---|---|---|---|
 | sound | `sim_sound::instances::Sounds` ([sound-instances.md](sound-instances.md)) | instances (384), loops (128), starts (16), and the chooser | `sim_bridge::sim_sound::entries::SoundTable`, every run; the `World` holds it as `world::SoundStore` |
+| objects | `sim_objects::ObjectTable` (`crates/rewrites/sim-objects/src/table.rs`) | the objects array (capacity from the guest array, 2048 in retail), each slot a header and its body bytes | `sim_bridge::world::OBJECT_TABLE`; the `World` holds it as `world::ObjectStore` |
 | test | `Probe` | one | the unit tests |
+
+### The object table
+
+`ObjectTable` is retail's objects datum array as a `Pool<ObjectRecord>`:
+`alloc` is `datum_new` (`0x16b840`), `delete` is `datum_delete` (`0x16ba40`),
+and a record is the header (flags, type, cluster, body size) and the body
+bytes with the address the guest's object memory pool put them at, which is
+state. `ObjectTable::import` reads the guest array in (its `next_salt` and
+`free_scan_start` too, since the next handle is part of the truth);
+`scatter` writes the pool back to the arena (headers, bitmap, allocation
+state, bodies) for the guest readers that remain.
+
+Readers do not change. `PoolMem` shows the table as guest memory (the
+objects global, the array header, headers, bitmap, and bodies at their
+real addresses), so `sim_objects::Objects`, `sim-state`'s `objects` and
+`object` read the pool when handed `PoolMem::new(&table)`. The guest's own writers (`object_new` `b7b40`, the deletes `b83b0`
+and `b8460`, the memory collection `bf380`, the flag writes) still write the
+arena, so until each is a Rust body the table is filled by `import` and
+nothing drives it. A checkpoint is
+the world's section plus the arena's machine snapshot, taken in one call
+(`SimWorld`'s snapshot section); `ObjectStore::install` puts the decoded
+pool in the table and the arena returns with its snapshot. Tests:
+`slots_and_salts_follow_datum_new`, `import_reads_the_arena_and_scatter_writes_it_back_bit_for_bit`,
+`the_views_read_the_pool_as_they_read_the_arena` (`sim-objects`),
+`the_object_table_reads_as_the_arena_does` (`sim-state`),
+`the_world_saves_the_object_table_and_restores_it_into_its_table` (`sim-bridge`).
 
 A subsystem whose records live here is the truth for them. Where guest code
 still reads that state, `sim-bridge` is the only place that touches guest

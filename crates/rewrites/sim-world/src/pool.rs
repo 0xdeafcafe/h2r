@@ -174,6 +174,52 @@ impl<T> Pool<T> {
         })
     }
 
+    /// The salt the next `alloc` takes (the header's `next_salt`).
+    pub fn next_salt(&self) -> u16 {
+        self.next_salt
+    }
+
+    /// Where `alloc` starts its scan (the header's `free_scan_start`).
+    pub fn free_scan_start(&self) -> u32 {
+        self.free_scan_start
+    }
+
+    /// A pool in the state `parts` describes: the slots below the high
+    /// water as `(salt, record)`, a free slot being `(0, None)`. For a
+    /// pool read out of retail's datum array, whose allocation state
+    /// (`next_salt`, `free_scan_start`) is part of the truth.
+    pub fn from_parts(
+        capacity: u32,
+        next_salt: u16,
+        free_scan_start: u32,
+        parts: Vec<(u16, Option<T>)>,
+    ) -> Result<Self, &'static str> {
+        if next_salt < SALT_FLOOR || next_salt == SALT_END {
+            return Err("next salt out of range");
+        }
+        if parts.len() as u32 > capacity || free_scan_start as usize > parts.len() {
+            return Err("counts exceed the pool");
+        }
+        if parts.iter().any(|(salt, v)| (*salt == 0) != v.is_none()) {
+            return Err("a slot's salt and record disagree");
+        }
+        if parts.last().is_some_and(|(salt, _)| *salt == 0) {
+            return Err("high water sits on a free slot");
+        }
+        if parts[..free_scan_start as usize].iter().any(|(salt, _)| *salt == 0) {
+            return Err("free slot below the scan start");
+        }
+        let active = parts.iter().filter(|(salt, _)| *salt != 0).count() as u32;
+        Ok(Self {
+            capacity,
+            slots: parts.into_iter().map(|(salt, value)| Slot { salt, value }).collect(),
+            free_scan_start,
+            next_salt,
+            active,
+            hash: Cell::new(None),
+        })
+    }
+
     /// Live handles in slot order; collect to mutate while walking.
     pub fn handles(&self) -> Vec<Handle> {
         self.iter().map(|(h, _)| h).collect()

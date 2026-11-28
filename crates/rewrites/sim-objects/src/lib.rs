@@ -2,7 +2,9 @@
 //! (docs/engine/sim-rewrite-objects.md; the guest contract is
 //! docs/engine/object-update.md).
 //!
-//! Guest memory stays the only object table. This crate reads and writes
+//! The object table is a Rust pool ([`table::ObjectTable`], held by the
+//! `World`); guest memory is a scatter of it for the guest readers that
+//! remain. This crate reads and writes
 //! it through typed views over `guest_layout`'s layouts and any
 //! [`guest_layout::Mem`], so the same code runs on the runtime's guest
 //! memory (through `engine::sim_objects`, which owns the guest boundary:
@@ -18,6 +20,7 @@ pub mod events;
 pub mod functions;
 pub mod light;
 pub mod phase;
+pub mod table;
 pub mod unit;
 pub mod view;
 pub mod wake;
@@ -30,4 +33,5 @@ pub mod synth;
 
 pub use defs::{Def, DefTable};
 pub use events::{Damage, Kill, SimEvent};
+pub use table::{ObjectRecord, ObjectTable, PoolMem};
 pub use view::{ObjRef, Objects};
