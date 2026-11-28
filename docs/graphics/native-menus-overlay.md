@@ -104,7 +104,7 @@ Each text, class and model refusal is a `ui_overlay::Gap`: the draw and the firs
 | `button_focus`, `button_class` | the focus accessors or the user's channel not retail's; a button draw slot not retail's |
 | `art_viewport`, `art_image`, `art_texture`, `art_scale`, `art_offset` | the art's viewport not the full canvas, image out of range or empty, image not resident, projection not finite, offset out of range |
 | `draw_class`, `draw_runtime_class`, `draw_custom` | a draw no reader knows; a vtable outside the image's UI tables; a host-drawn picture (`Host::ui_custom_widget`) |
-| `model_view` | an active model scene: the overlay pass draws no `ModelView` (`native_render::overlay`, `refused_model_view`) |
+| `model_view` | an active model scene: no stage draws a planned `ModelView` yet ([Model views](#model-views)) |
 | `model_lights`, `model_names`, `model_name`, `model_rows` | a selection with lights, more than 32 names, a name with no terminator, a scenario with more rows than an `i16` |
 
 ## Bitmap widgets
@@ -181,6 +181,27 @@ A mode is cut only after a guest call of that mode has been checked and matched.
 A checked call's fan is taken on the overlay as usual (`hud_overlay::draw_screen` hands it to `fade::guest_drew`). At the body's return (`0x00040dbf`) its PSDEF words, target, clip, blend, constant, combiner and colour writes are compared with the cut's. Its corners must also cover the clip. A difference sends every later call to the body for the session.
 
 Counters in `render.scene`: `fade_{calls,cut,checked}`, and `scene_kept_fade_<cause>` for a call whose body ran (`fallback`, `mode`, `rect`, `scene`, `target`, `append`, `uncaptured` when the overlay did not take a checked fan, `mismatch`).
+
+## Model views
+
+An active model scene's `ModelView` item carries the camera its view call `0x0002c560` takes and its viewport as the clip. The overlay plan turns it into the render camera record that call fills, and keeps it between the batches in list order, as a blur (`native_render::model_view::PlanModelView`, `OverlayPlan::model_views`). The batch after it does not merge back across it.
+
+| Record field | From |
+|---|---|
+| position, forward, up | the widget's centre and axes (`scene_extract::ui::MODEL_FORWARD`, `MODEL_UP`) |
+| vertical FOV | the clamped FOV the draw passes |
+| viewport (top, left, bottom, right) | the call's left, top, right, bottom: the item's clip |
+| near, far | `0x00467014`, `0x00467018` (`engine::ui_model::VIEW_NEAR`, `VIEW_FAR`), not the game view's |
+
+`0x0002c560` copies the record whole to the render camera `0x004b9da0` and builds its projection at `0x004b9e14`. The plan does not read that projection: the lens is `RenderCamera::projection`'s from the FOV and viewport. `model_view::view_inputs` gives the objects' vertex programs the camera's view-projection rows and clip range, with `c[10]`, `c[11]` mapping clip space to the viewport rather than the canvas. The scissor is the viewport in the target's pixels.
+
+| Counter (`native_ui_overlay_*`) | Counts |
+|---|---|
+| `model_views` | `ModelView` items |
+| `refused_model_view_camera` | a view whose record is not a camera (`model_view_camera`) or whose viewport has no `i16` edges or target pixels (`model_view_clip`) |
+| `refused_model_view` | a planned view: no stage draws one yet |
+
+The widget stays the guest's (`model_view`) until the object stage draws planned views into the overlay's target. Tests: `native_render::model_view::tests::a_widgets_camera_is_the_record_the_guest_fills`, `the_scissor_is_the_records_viewport_in_the_targets_pixels`, `the_view_constants_put_the_axis_on_the_viewports_centre`, `native_render::overlay::tests::a_blur_splits_the_batches_and_carries_its_steps_as_fractions`.
 
 ## The blur under a dialog
 

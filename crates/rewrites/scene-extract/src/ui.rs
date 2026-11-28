@@ -141,9 +141,9 @@ pub const MODEL_UP: [f32; 3] = [0.0, 0.0, 1.0];
 
 impl UiModel {
     /// The view of `objects` (live handles, in the widget's name order)
-    /// from the camera words of `engine::ui_model::Camera`: the centre and
-    /// field of view as `f32` bits, the viewport.
-    pub fn new(objects: Vec<u32>, center: [u32; 3], viewport: [u16; 4], fov: u32) -> Self {
+    /// from the camera words of `engine::ui_model::Camera`: the centre,
+    /// field of view and planes as `f32` bits, the viewport.
+    pub fn new(objects: Vec<u32>, center: [u32; 3], viewport: [u16; 4], fov: u32, planes: [u32; 2]) -> Self {
         UiModel {
             viewport,
             view: OverlayModelView {
@@ -152,6 +152,7 @@ impl UiModel {
                     forward: MODEL_FORWARD,
                     up: MODEL_UP,
                     fov_y: f32::from_bits(fov),
+                    planes: planes.map(f32::from_bits),
                 },
                 objects,
             },
@@ -1231,6 +1232,7 @@ mod tests {
             forward: [0.0, 1.0, 0.0],
             up: [0.0, 0.0, 1.0],
             fov_y: 1.0,
+            planes: [0.0625, 200.0],
         };
         picture.content = UiContent::Model(UiModel {
             viewport: [310, 230, 330, 250],
@@ -1386,7 +1388,7 @@ mod tests {
     #[test]
     fn a_model_widget_is_one_model_view_item() {
         let center = [0.5f32, -2.0, 1.25].map(f32::to_bits);
-        let model = UiModel::new(vec![0xe100_0004, 0xe101_0009], center, [200, 120, 440, 360], 0.75f32.to_bits());
+        let model = UiModel::new(vec![0xe100_0004, 0xe101_0009], center, [200, 120, 440, 360], 0.75f32.to_bits(), [0.0625f32, 200.0].map(f32::to_bits));
         let mut picture = w(7, 0.0, 0);
         picture.rect = [100, -300, -100, 300];
         picture.content = UiContent::Model(model.clone());

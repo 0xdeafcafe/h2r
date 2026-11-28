@@ -706,6 +706,7 @@ const UI_COLUMNS: [&str; Ui::OverlayMenuRevealUnwritten as usize + 1] = [
     "overlay_blurs",
     "overlay_model_views",
     "overlay_refused_model_view",
+    "overlay_refused_model_view_camera",
     "overlay_refused_blur",
     "overlay_hud_tag_quads",
     "overlay_hud_tag_fallback",
@@ -851,8 +852,11 @@ pub enum Ui {
     /// widgets' views.
     OverlayBlurs,
     OverlayModelViews,
-    /// Model views: no stage draws one yet.
+    /// Model views planned with their camera: no stage draws one yet.
     OverlayRefusedModelView,
+    /// Model views with no camera or scissor
+    /// (`native_render::model_view::Refusal`).
+    OverlayRefusedModelViewCamera,
     /// Blurs over a target the GPU cannot copy or sample.
     OverlayRefusedBlur,
     OverlayHudTagQuads,
