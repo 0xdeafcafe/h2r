@@ -9,6 +9,7 @@ pub mod sim_effects;
 pub mod sim_effects_parts;
 pub mod effect_update;
 pub mod sim_objects;
+pub mod sim_object_writers;
 pub mod sim_sound;
 pub mod sim_ext;
 pub mod sim_physics;

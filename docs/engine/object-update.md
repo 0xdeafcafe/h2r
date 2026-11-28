@@ -348,7 +348,7 @@ Slot `+6c`, called by the pose dispatcher `109050` as `(object, s0, s1, s2)`. Bo
 
 ### Walk callouts
 
-The callouts the walks, the per-object updates and the type callbacks make that are bodies of their own, in the walk table (`native_walk::POINTS`). Bodies in `sim_objects::callouts`, `sim_objects::mover_record` (`109660`) and `sim_objects::object_new` (`b7b40`). Calls between them fuse: `b83b0` calls `b8540` and itself, `b8460` itself, `b7b40` calls `108a90` and `b8540`. Every other callee is a guest call. `bb050`, `109660` and `b7b40` use SSE, so they are not `FLOAT_FREE`.
+The callouts the walks, the per-object updates and the type callbacks make that are bodies of their own, in the walk table (`native_walk::POINTS`). Bodies in `sim_objects::callouts`, `sim_objects::mover_record` (`109660`) and `sim_objects::object_new` (`b7b40`). Calls between them fuse: `b83b0` calls `b8540` and itself, `b8460` itself, `b7b40` calls `108a90` and `b8540`. Every other callee is a guest call, but the two table writers below. `bb050`, `109660` and `b7b40` use SSE, so they are not `FLOAT_FREE`.
 
 | Entry | Point | ABI | What it does |
 |---|---|---|---|
@@ -482,3 +482,14 @@ In [object-update-liveness.md](object-update-liveness.md).
 - [live-gamestate.md](../live/live-gamestate.md): unit and weapon offsets.
 - [bots.md](../game/bots.md): the network mode byte.
 - [README.md](README.md): the engine contract format and fault behaviour.
+
+## Table writers
+
+The object table is a Rust pool ([sim-world.md](sim-world.md)), imported from the guest's objects array at the tick's entry and exit (`sim_bridge::tick::run`, `world::import_objects`). The writers on it are `sim_objects::writers`, each installed over its guest function (`sim_bridge::sim_object_writers`, `replaces_guest`) as import, write, scatter, so the arena is authoritative between calls:
+
+| Function | Point | Writer |
+|---|---|---|
+| `b9890` | `OBJECT_DETACH` | `detach_from_parent`: cuts the object out of its parent's child list (`be650`), clears header flag bit 7, parent `+14` and byte `+18` |
+| `bc300` | `OBJECT_BODY_FREE` | `free_object`: clears the header flags, cuts the body's block out of the object memory pool (`[4de2ec]`: free bytes `+30`, tail `+34`, head `+38`; block links `-8`, `-4` before the body) and deletes the datum |
+
+The array is `data_new("object", 2048, 12)` (`b67c0`), so its first salt is `0x626f | 0x8000`. Not yet in Rust: the pool allocation behind `bc280` (`18e2b0`, `18e560`, `18e600`, `18e690`), `object_new`'s datum and body allocation, and the pool's collection `bf380`.

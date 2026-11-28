@@ -679,6 +679,10 @@ points! { ALL;
     OBJECT_DELETE_TREE @ 0x000b_83b0: [fn(object: stack 0, top: stack 1) ret 8], Hot; "docs/engine/object-update.md";
     /// Free a deleted object and its children: detach, unlink, the subsystems' frees, then the datum.
     OBJECT_FREE_TREE @ 0x000b_8460: [fn(object: stack 0, top: stack 1) ret 8], Hot; "docs/engine/object-update.md";
+    /// Detach an object from its parent: cut it from the parent's child list (`be650`), clear header flag bit 7, parent `+14` and byte `+18`.
+    OBJECT_DETACH @ 0x000b_9890: [fn(object: eax) -> eax ret 0], Hot; "docs/engine/object-update.md";
+    /// Free an object's body from the object memory pool and delete its datum.
+    OBJECT_BODY_FREE @ 0x000b_c300: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
     /// The weapons' deferred fire: each weapon with body `+16c` bit 0 through `fd980`.
     WEAPONS_DEFERRED_FIRE @ 0x000f_d910: [fn() ret 0], Hot; "docs/engine/object-update.md";
     /// Object memory collection, finalize's tail.

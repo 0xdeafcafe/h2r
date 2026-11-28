@@ -25,6 +25,7 @@ pub mod unit;
 pub mod view;
 pub mod wake;
 pub mod walk;
+pub mod writers;
 // Slice 4: the bounds arithmetic.
 pub mod bounds;
 

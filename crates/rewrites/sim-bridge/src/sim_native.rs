@@ -105,6 +105,7 @@ impl Feature for SimNative {
         // is no switch and no guest arm (docs/engine/collision-queries.md).
         install_collision(b);
         crate::sim_objects::install(b);
+        crate::sim_object_writers::install(b);
         // Every effect port, always (crate::sim_effects).
         crate::sim_effects::install(b);
         // Phase 7: the seats (crate::sim_seats), and the aim-assist,
