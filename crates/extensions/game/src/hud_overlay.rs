@@ -1200,6 +1200,13 @@ impl d3d::ExternalPass for OverlayPass {
         true
     }
 
+    // The overlay, its assets and the movie frame are the call's own and
+    // immutable; `encode` takes the attachments of the copy it records, so
+    // a kept scene encodes it again on its own.
+    fn replays_scene(&self) -> bool {
+        true
+    }
+
     fn writes(&self) -> d3d::ExternalWrites {
         d3d::ExternalWrites { color: true, depth_stencil: false }
     }
