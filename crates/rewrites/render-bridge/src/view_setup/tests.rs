@@ -283,7 +283,8 @@ fn a_full_push_buffer_asks_for_room() {
     let mut m = mem();
     m.set_u32(DEVICE_AT, PUSH + 0x8000).unwrap();
     let dev = Device::default();
-    apply(&mut m, &dev, &plan_of(&m), STACK).unwrap();
+    let plan = plan_of(&m);
+    apply(&mut m, &dev, &plan, STACK).unwrap();
     assert_eq!(dev.ops()[1], Op::Space(0x200, 0x400));
     assert_eq!(dev.ops()[2], Op::PushViewport(PUSH));
 }
@@ -293,7 +294,8 @@ fn a_full_push_buffer_asks_for_room() {
 fn a_refused_call_leaves_the_rest_to_the_body() {
     let mut m = mem();
     let dev = Device { refuse_states: true, ..Default::default() };
-    assert_eq!(apply(&mut m, &dev, &plan_of(&m), STACK), Err("device"));
+    let plan = plan_of(&m);
+    assert_eq!(apply(&mut m, &dev, &plan, STACK), Err("device"));
     assert!(dev.ops().is_empty());
 }
 
