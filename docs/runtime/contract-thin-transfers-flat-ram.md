@@ -163,6 +163,23 @@ text get it from `h2_direct_indirect`: they run in place (section 4.2).
 Interior entries and code that is not lifted executable code have a 0
 element and go to the runner.
 
+**A call from a Rust handler.** `ExecCtx::call_inline`
+(`crates/runtime/runtime/src/direct.rs`) makes the same call for a Rust
+body that has pushed its return site: steps 1, 3 and 4, the element (or
+`h2rt_thunk`, entered as `host_call`) invoked through `ffi::call_native`,
+then step 6 plus three tests of its own:
+
+| After the callee | Result |
+|---|---|
+| plain return to the site, quiet, a transfer left, no observer opened, dispatch generation unchanged | `Inline::Returned`: one transfer taken, the frame popped, `HLE_COST` charged under the block clock |
+| anything else | `Inline::Leave { transfer, why }`: the frame stays for the hand-up's replay |
+
+A `Fallback` names every leave (`off`, `observer`, `depth`, `not_live`,
+`busy` before the call; `yield`, `fault`, `handed`, `resume_busy`,
+`resume_observed`, `dispatch` after) and `ExecCtx::inline_census`
+counts them per context. The spec and its users are in
+[sim-10x-callouts.md](../perf/sim-10x-callouts.md).
+
 ### 2.4 The runner
 
 **Code.** `Runner::run_inner` (`runner.rs:58-280`) does this for every

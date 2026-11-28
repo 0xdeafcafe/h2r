@@ -51,6 +51,7 @@ pub use continuation::{
 pub use cow::CopyKind;
 pub use coverage::GuestCoverage;
 pub use cpu::CpuAbi;
+pub use direct::{Fallback, Inline, InlineCensus};
 pub use dispatch::Dispatch;
 pub use entry_stats::DispatchCounts;
 pub use exec::{Event, ExecCtx, FaultReport, GuestFrame, Runner, Runtime};

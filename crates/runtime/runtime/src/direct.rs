@@ -68,6 +68,17 @@
 //! past them, the shadow stack stays as the runner would have it, and
 //! `depth` drops to the floor so nothing is replayed twice.
 //!
+//! Calls in place from Rust ([`ExecCtx::call_inline`];
+//! docs/perf/sim-10x-callouts.md). A Rust handler that would return
+//! `CALL target` to the runner and be entered again at the return site
+//! makes the call as a generated caller does instead: the same room and
+//! quiet tests, the same transfer and frame record, the entry table's
+//! handler (or the thunk) invoked in place, and the same test on its
+//! result. A plain return to the site comes back as
+//! [`Inline::Returned`]; anything else, and anything the runner would
+//! have had to look at, is an [`Inline::Leave`] named by a [`Fallback`]
+//! and counted per context ([`ExecCtx::inline_census`]).
+//!
 //! [`Guest::guard_code`]: crate::Guest::guard_code
 //! [`Guest::code_id`]: crate::Guest::code_id
 //! [`Runtime::edit_dispatch`]: crate::Runtime::edit_dispatch
@@ -292,6 +303,8 @@ pub(crate) struct Direct {
     /// the shadow stack: a runner inside the thunk replays and drops only
     /// those above it. 0 outside a thunk.
     floor: u32,
+    /// [`ExecCtx::call_inline`]'s outcomes.
+    census: InlineCensus,
 }
 
 /// `ExecCtx`'s second field: generated code reads
@@ -326,7 +339,7 @@ impl Direct {
         let mut state: Box<DirectState> = unsafe { Box::new_zeroed().assume_init() };
         state.cap = DEFAULT_DEPTH;
         let owned = NonNull::from(Box::leak(state));
-        let mut d = Self { owned, configured_cap: DEFAULT_DEPTH, floor: 0 };
+        let mut d = Self { owned, configured_cap: DEFAULT_DEPTH, floor: 0, census: InlineCensus::default() };
         if let Some(live) = runtime.live() {
             d.install(live);
         }
@@ -346,6 +359,7 @@ impl Direct {
     pub(crate) fn restart(&mut self) {
         self.floor = 0;
         self.configured_cap = DEFAULT_DEPTH;
+        self.census = InlineCensus::default();
         let s = self.state();
         s.budget = 0;
         s.depth = 0;
@@ -481,6 +495,245 @@ fn host_call<const DIAG: bool>(cpu: &mut CpuAbi, ctx: &mut ExecCtx, target: u32)
     }
     ctx.direct.floor = floor;
     out
+}
+
+impl DirectState {
+    /// `h2_direct_indirect` without the room test: what the entry table
+    /// holds for the entry at exactly `pc` (0 for none), or the host-call
+    /// thunk for a target outside the module's text.
+    fn handler_at(&self, pc: u32) -> usize {
+        let off = pc.wrapping_sub(self.text_lo);
+        if off >= self.text_hi.wrapping_sub(self.text_lo) {
+            return h2rt_thunk as GuestFn as usize;
+        }
+        // SAFETY: `live` is set (the caller checked), so `pcmap` covers
+        // `[text_lo, text_hi)` and holds only row indices (registration,
+        // generated.rs), and `live` has an element for each of them and 0
+        // (`Live::new`); both outlive the context (`DirectPtr`).
+        unsafe {
+            let i = *self.pcmap.add(off as usize);
+            if i == 0 {
+                return 0;
+            }
+            (*self.live.add(i as usize)).load(Ordering::Acquire)
+        }
+    }
+}
+
+/// Why [`ExecCtx::call_inline`] left a callout to the runner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fallback {
+    /// Direct calls are off for the context, or the runtime has no entry
+    /// table.
+    Off,
+    /// A return observer is open: the runner's safe points must see the
+    /// call and its return.
+    Observer,
+    /// Direct-call nesting is at the cap ([`ExecCtx::set_direct_call_depth`]).
+    Depth,
+    /// The entry table holds nothing for the target: an interior entry, or
+    /// code that is not lifted and executable.
+    NotLive,
+    /// The safe point before the call would have work (the leave word is
+    /// set), no transfer is left, or a fault is latched.
+    Busy,
+    /// The callee stopped: a blocking call, a preemption, an exit.
+    Yield,
+    /// The callee faulted.
+    Fault,
+    /// The callee handed up a call or jump, or returned somewhere else.
+    Handed,
+    /// The callee returned to the site, but the safe point there would
+    /// have work, no transfer is left, or a fault is latched.
+    ResumeBusy,
+    /// The callee returned to the site with a return observer opened under
+    /// it.
+    ResumeObserved,
+    /// The callee returned to the site after the dispatch tables changed:
+    /// the runner decides who resumes there.
+    Dispatch,
+}
+
+impl Fallback {
+    pub const ALL: [Fallback; 11] = [
+        Fallback::Off,
+        Fallback::Observer,
+        Fallback::Depth,
+        Fallback::NotLive,
+        Fallback::Busy,
+        Fallback::Yield,
+        Fallback::Fault,
+        Fallback::Handed,
+        Fallback::ResumeBusy,
+        Fallback::ResumeObserved,
+        Fallback::Dispatch,
+    ];
+    /// The name counters and reports use.
+    pub fn name(self) -> &'static str {
+        match self {
+            Fallback::Off => "off",
+            Fallback::Observer => "observer",
+            Fallback::Depth => "depth",
+            Fallback::NotLive => "not_live",
+            Fallback::Busy => "busy",
+            Fallback::Yield => "yield",
+            Fallback::Fault => "fault",
+            Fallback::Handed => "handed",
+            Fallback::ResumeBusy => "resume_busy",
+            Fallback::ResumeObserved => "resume_observed",
+            Fallback::Dispatch => "dispatch",
+        }
+    }
+    /// The position in [`Fallback::ALL`].
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
+/// What [`ExecCtx::call_inline`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Inline {
+    /// The callee returned to the site: the guest state is what the
+    /// runner's `RETURN` there leaves. Carry on in Rust at the site.
+    Returned,
+    /// Return `transfer` to the runner unchanged; when the guest later
+    /// returns to the site, the runner enters the caller there through its
+    /// resume registration.
+    Leave { transfer: TransferAbi, why: Fallback },
+}
+
+/// One context's [`ExecCtx::call_inline`] outcomes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct InlineCensus {
+    /// Callouts that returned in place.
+    pub returned: u64,
+    /// Callouts left to the runner, by [`Fallback::index`].
+    pub left: [u64; Fallback::ALL.len()],
+}
+
+impl InlineCensus {
+    /// Callouts left to the runner for `why`.
+    pub fn of(&self, why: Fallback) -> u64 {
+        self.left[why.index()]
+    }
+}
+
+impl ExecCtx {
+    /// Call guest `target` in place from a Rust handler, as a generated
+    /// function's direct call does (h2gen.h `H2_CALL_SLOT_`), and come back
+    /// on a plain return to `site`. The caller has pushed `site` (ESP is
+    /// the return slot), holds no memory guard, and is registered to resume
+    /// at `site`, which is where the runner enters it after a
+    /// [`Inline::Leave`].
+    ///
+    /// The call takes the entry table's handler for `target` (the host-call
+    /// thunk for an overridden entry or a target outside the module's
+    /// text), its transfer from the budget and a direct frame, exactly as a
+    /// generated caller does, so the shadow stack, the budget and the
+    /// frames a hand-up replays are what the runner would have. On
+    /// [`Inline::Returned`] it has also taken the return's transfer and,
+    /// under the block clock, charged [`crate::preempt::HLE_COST`] as the
+    /// runner charges for entering the Rust handler at `site` again.
+    ///
+    /// It never runs a safe point: whenever one would have work, the
+    /// result is [`Inline::Leave`] (see [`Fallback`]), before the call
+    /// with `TransferAbi::call(target, site)` and after it with the
+    /// callee's transfer.
+    pub fn call_inline(&mut self, cpu: &mut CpuAbi, target: u32, site: u32) -> Inline {
+        let out = self.try_inline(cpu, target, site);
+        let census = &mut self.direct.census;
+        match out {
+            Inline::Returned => census.returned += 1,
+            Inline::Leave { why, .. } => census.left[why.index()] += 1,
+        }
+        out
+    }
+
+    /// This context's [`call_inline`](Self::call_inline) outcomes since it
+    /// was made or restarted.
+    pub fn inline_census(&self) -> InlineCensus {
+        self.direct.census
+    }
+
+    fn try_inline(&mut self, cpu: &mut CpuAbi, target: u32, site: u32) -> Inline {
+        let before = |why| Inline::Leave { transfer: TransferAbi::call(target, site), why };
+        if self.direct_ptr.0.is_null() {
+            return before(Fallback::Off);
+        }
+        if !self.return_observers.is_empty() {
+            return before(Fallback::Observer);
+        }
+        let word = self.leave_word();
+        let latched = self.pending_fault.is_some();
+        let s = self.direct.state();
+        if s.live.is_null() {
+            return before(Fallback::Off);
+        }
+        if s.depth >= s.cap || s.depth >= MAX_DEPTH {
+            return before(Fallback::Depth);
+        }
+        let f = s.handler_at(target);
+        if f == 0 {
+            return before(Fallback::NotLive);
+        }
+        if s.budget == 0 || word != 0 || latched {
+            return before(Fallback::Busy);
+        }
+        // h2_direct_enter.
+        let (my, slot) = (s.depth, cpu.esp);
+        s.frames[my as usize] = Frame { kind: abi::CALL, target, resume: site, slot };
+        s.depth = my + 1;
+        s.budget -= 1;
+        let generation = self.runtime.dispatch_generation();
+        cpu.eip = target;
+        let r = if f == h2rt_thunk as GuestFn as usize {
+            self.direct_clear_view();
+            if crate::runner::diagnostics(self) {
+                host_call::<true>(cpu, self, target)
+            } else {
+                host_call::<false>(cpu, self, target)
+            }
+        } else {
+            // SAFETY: the entry table holds only generated handlers, the
+            // thunk and 0 (`Live::value`, `Live::overridden_value`).
+            let f = unsafe { std::mem::transmute::<usize, GuestFn>(f) };
+            crate::ffi::call_native(f, cpu, self, target)
+        };
+        // h2_direct_back; otherwise the frame stays for the hand-up's
+        // replay, as a generated caller leaves it.
+        let after = |why| Inline::Leave { transfer: r, why };
+        let plain = r.kind == abi::RETURN
+            && r.route == abi::RETURN_TARGET
+            && r.target_pc == site
+            && r.event_id == 0
+            && cpu.esp > slot;
+        if !plain {
+            return after(match r.kind {
+                abi::STOP => Fallback::Yield,
+                abi::FAULT => Fallback::Fault,
+                _ => Fallback::Handed,
+            });
+        }
+        let word = self.leave_word();
+        let latched = self.pending_fault.is_some();
+        if self.direct.state().budget == 0 || word != 0 || latched {
+            return after(Fallback::ResumeBusy);
+        }
+        if !self.return_observers.is_empty() {
+            return after(Fallback::ResumeObserved);
+        }
+        if self.runtime.dispatch_generation() != generation {
+            return after(Fallback::Dispatch);
+        }
+        let s = self.direct.state();
+        s.budget -= 1;
+        s.depth = my;
+        if self.runtime.block_clock() {
+            crate::ffi::sync_accesses(self);
+            self.spend_accesses(crate::preempt::HLE_COST);
+        }
+        Inline::Returned
+    }
 }
 
 impl ExecCtx {
