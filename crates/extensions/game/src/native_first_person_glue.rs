@@ -1,7 +1,7 @@
-//! Device host for native first-person arms and weapon. Every item is
-//! planned at the layer-3 call against the device's entry states before its
-//! guest draw is surrendered. The two model calls remain separate external
-//! passes in guest order; their light and transparent neighbours stay on D3D.
+//! Host for native first-person arms and weapon. Every item is planned at
+//! the layer-3 call against the entry draw state before its guest draw is
+//! surrendered. The two model calls are separate frame stages in guest
+//! order.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -15,7 +15,8 @@ use render_bridge::native_first_person::{Dropped, Host, Outcome};
 use render_bridge::native_objects::NativeSet;
 
 use crate::native_first_person_load::{self, MapState, Models};
-use crate::native_world_glue::{ReadMemory, palettes_hold, stage_palettes};
+use crate::native_objects_glue::device_state;
+use crate::native_world_glue::{palettes_hold, stage_palettes};
 
 /// Hook memory as the stream-format reader expects it.
 struct Ro<'a>(&'a dyn GuestMemory);
@@ -33,11 +34,9 @@ struct LayerEntry {
     fog_words: [Option<u32>; 7],
     specular: Option<u32>,
     w_buffered: bool,
-    w_clip: ([f32; 2], bool),
-    view: [[f32; 4]; d3d::VIEW_CONSTANTS],
     /// What the auxiliary state toggle sets for the first person's view,
     /// read at the call (`native_render::aux_depth::read`), and only when
-    /// the device holds it off: an item toggling it draws with these, and
+    /// the draw state holds it off: an item toggling it draws with these, and
     /// skipping its draw leaves what its epilogue would
     /// (`native_objects_glue::aux_depth_at_rest`, layer 3's rule).
     aux: Option<frame_scene::AuxDepth>,
@@ -46,7 +45,7 @@ struct LayerEntry {
     /// (`native_objects_glue::sampled_texaccum`); an item sampling it
     /// refuses without one.
     texaccum: Option<native_render::world_layers::Texaccum>,
-    /// The device's polygon stipple at the call
+    /// The polygon stipple at the call
     /// (`native_objects_glue::device_stipple`), and whether it holds what
     /// a faded record's epilogue leaves
     /// (`native_objects_glue::stipple_at_rest`): every draw masks with its
@@ -55,7 +54,7 @@ struct LayerEntry {
     stipple: Result<Option<[u32; 32]>, ()>,
     stipple_at_rest: bool,
     /// What a flagged shader's prologue uploads from the active
-    /// structure's parameter block, where the device and the engine
+    /// structure's parameter block, where the draw state and the engine
     /// already hold it (`native_objects_glue::structure_at_rest`); an item
     /// uploading it refuses without.
     structure: Option<frame_scene::StructureParameters>,
@@ -65,7 +64,7 @@ struct LayerEntry {
     /// epilogue mode 1; without, a marked record's sets mode 2 and its
     /// epilogue mode 1 (`frame_scene::PartFlags::STENCIL_MARK`).
     stencil_off: Option<bool>,
-    /// Whether the device holds stencil mode 1
+    /// Whether the draw state holds stencil mode 1
     /// (`native_objects_glue::in_stencil_mode_1`): what either bracket's
     /// epilogue leaves, so skipping it is state-neutral only from there.
     stencil_mode_1: bool,
@@ -75,7 +74,7 @@ struct LayerEntry {
 /// docs/editor/realtime-edits.md, "The native refresh") drops the
 /// viewmodels' map state: the next ask starts a new load of map `name`,
 /// whose open reads the edited shaders through the metadata overlay, and
-/// its parts draw on the D3D path until it publishes. Their programs are
+/// its parts are not drawn until it publishes. Their programs are
 /// compiled per model as the load reaches them, so a reload by name is
 /// what rebuilds them.
 fn reload_on_shader_edit(state: &Mutex<Option<MapState>>, name: &str) {
@@ -102,8 +101,7 @@ fn reload_on_shader_edit(state: &Mutex<Option<MapState>>, name: &str) {
 }
 
 /// The installed host: current map generation and this call's entry state.
-pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
-    device: d3d::abi::SharedDevice<B>,
+pub struct Glue {
     state: Arc<Mutex<Option<MapState>>>,
     gpu: (wgpu::Device, wgpu::Queue),
     generation: Mutex<u64>,
@@ -113,7 +111,7 @@ pub struct Glue<B: d3d::backend::Backend + Send + 'static> {
     refreshing: Arc<std::sync::atomic::AtomicBool>,
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+impl Host for Glue {
     fn retire_map(&self) {
         let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let generation = render_bridge::native_map_work::generation();
@@ -140,19 +138,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 .is_some_and(|s| s.name == name.as_ref() && s.map_generation == map_generation)
         };
         let cold = !current(&self.state.lock().unwrap_or_else(|e| e.into_inner()));
-        if (prepare_draw || cold)
-            && !self.device.lock().ok()?
-                .begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem))
-                .ok()?
-        {
-            return None;
-        }
         if cold {
             let _dispatch = timeline::setup::dispatch();
-            let (palettes, formats) = {
-                let device = self.device.lock().ok()?;
-                (stage_palettes(&device, mem), StreamFormats::read(&Ro(mem)))
-            };
+            let (palettes, formats) = (stage_palettes(), StreamFormats::read(&Ro(mem)));
             let mut generation = self.generation.lock().unwrap_or_else(|e| e.into_inner());
             *generation += 1;
             let next = *generation;
@@ -209,28 +197,18 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             .unwrap_or_else(|e| e.into_inner())
             .clone();
         if used.iter().any(Option::is_some) {
-            let device = self.device.lock().ok()?;
-            let now = stage_palettes(&device, mem);
+            let now = stage_palettes();
             if !palettes_hold(&used, &|stage| now[stage].clone()) {
                 return None;
             }
         }
 
         let entry = {
-            let device = self.device.lock().ok()?;
-            let viewport = device.viewport();
-            let read = ReadMemory(mem);
-            if viewport.min_z != 0.0 || viewport.max_z != 1.0 || !crate::native_layers_glue::viewport_clip(&device, &read) {
-                return None;
-            }
             let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
-            let clip = device.depth_clip(&read, native_render::camera::D24_SCALE);
             let stencil_off = mem.u32(native_render::skip::STENCIL_OFF_FLAGS).ok().map(|flags| flags & 0x00ff_ff00 != 0);
-            let stencil_mode_1 = crate::native_objects_glue::in_stencil_mode_1_with(mem, device.stencil_state(&read));
+            let stencil_mode_1 = crate::native_objects_glue::in_stencil_mode_1_with(mem, device_state::stencil());
             let mut states = EntryStates::read(|state| {
-                table
-                    .canonical_to_guest(state.index())
-                    .and_then(|guest| device.render_state(&read, guest))
+                table.canonical_to_guest(state.index()).and_then(device_state::render_state)
             });
             // Inside the stencil-off bracket every part draws with the
             // test off (mode 0), as layer 3's walk takes it.
@@ -242,18 +220,16 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
                 states,
                 stencil_off,
                 stencil_mode_1,
-                fog_words: crate::native_fog_glue::device_fog_words(&device, mem),
-                specular: crate::native_objects_glue::device_specular(&device, mem),
-                w_buffered: clip.w_buffered == Some(true),
-                w_clip: (clip.range, clip.clamp),
-                view: std::array::from_fn(|register| device.constant(register)),
+                fog_words: device_state::fog_words(),
+                specular: crate::native_objects_glue::device_specular(),
+                w_buffered: device_state::w_buffered(),
                 aux: native_render::aux_depth::read(&Ro(mem))
-                    .filter(|aux| crate::native_objects_glue::aux_depth_at_rest(&device, mem, aux)),
-                texaccum: crate::native_objects_glue::sampled_texaccum(&device, mem, true).ok().flatten(),
-                stipple: crate::native_objects_glue::device_stipple(&device, mem),
-                stipple_at_rest: crate::native_objects_glue::stipple_at_rest(&device, mem),
+                    .filter(|aux| crate::native_objects_glue::aux_depth_at_rest(mem, aux)),
+                texaccum: crate::native_objects_glue::sampled_texaccum(mem, true).ok().flatten(),
+                stipple: crate::native_objects_glue::device_stipple(),
+                stipple_at_rest: crate::native_objects_glue::stipple_at_rest(mem),
                 structure: native_render::structure_parameters::read(&Ro(mem))
-                    .filter(|p| crate::native_objects_glue::structure_at_rest(&device, mem, p)),
+                    .filter(|p| crate::native_objects_glue::structure_at_rest(mem, p)),
             }
         };
         if !entry.w_buffered {
@@ -276,15 +252,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     /// The first person's parts from the scene, drawn in slot 10
-    /// (`render_bridge::native_first_person`) by one external pass, as
-    /// the scene's objects draw theirs (`native_objects_glue::draw_walk`):
-    /// the device's entry state read at the call ([`Host::native`] with
+    /// (`render_bridge::native_first_person`) by one frame stage, as the
+    /// scene's objects draw theirs (`native_objects_glue::draw_walk`): the
+    /// entry draw state read at the call ([`Host::native`] with
     /// `prepare_draw`), each part planned from its instance and rows as
-    /// extraction copied them ([`plan_parts`]), the pipelines warmed, the
-    /// pass reserved on the bound attachments and committed while the load
-    /// it was planned against is current. A part the plan refuses is
-    /// `unsupported`; a pass that cannot be reserved drops its parts as
-    /// `reservation`. Nothing is drawn through D3D.
+    /// extraction copied them ([`plan_parts`]), the pipelines warmed, and
+    /// the stage pushed while the load it was planned against is current.
+    /// A part the plan refuses is `unsupported`; a stage that cannot be
+    /// pushed drops its parts as `reservation`.
     fn draw(
         &self,
         mem: &mut dyn GuestMemory,
@@ -337,17 +312,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         };
         let time = native_render::layer_pass::render_time(&Ro(mem));
         let plan = plan_parts(mem, &gpu, scene, parts, &entry, time);
-        let warm = !plan.draws.is_empty() && self.device.lock().ok().and_then(|device| {
-            let (gpu_device, color, depth) = device.external_pipeline_target(&ReadMemory(mem))?;
+        let warm = !plan.draws.is_empty() && (|| {
+            let (gpu_device, color, depth) = crate::native_world_glue::pipeline_target();
             let mut lit = gpu.lit.try_lock().ok()?;
             Some(lit.as_mut()?.prewarm_draws(&gpu_device, color, depth, &plan.draws))
-        }) == Some(true);
+        })() == Some(true);
         settle(plan.refused, plan.draws.len(), warm)
     }
 }
 
 /// What a call's draw comes to: the parts the plan refused are
-/// `unsupported`; the planned ones are drawn when their pass committed,
+/// `unsupported`; the planned ones are drawn when their stage was pushed,
 /// else each is a `reservation` drop.
 fn settle(refused: usize, planned: usize, committed: bool) -> Outcome {
     let mut out = Outcome::default();
@@ -360,11 +335,10 @@ fn settle(refused: usize, planned: usize, committed: bool) -> Outcome {
     out
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
-    /// Reserves one first-person pass of `draws` on the bound attachments
-    /// and commits it, while load `generation` (whose models are `gpu`) is
-    /// the current map's: `false`, and nothing is drawn, when the
-    /// pipelines are still warming or the pass cannot be reserved.
+impl Glue {
+    /// Pushes one first-person stage of `draws` while load `generation`
+    /// (whose models are `gpu`) is the current map's: `false`, and nothing
+    /// is drawn, when the pipelines are still warming or the load moved on.
     fn commit(
         &self,
         mem: &mut dyn GuestMemory,
@@ -373,10 +347,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         entry: &LayerEntry,
         draws: &[(u32, PlannedDraw)],
     ) -> bool {
-        let Ok(mut device) = self.device.lock() else { return false };
-        let Some((gpu_device, color, depth)) = device.external_pipeline_target(&ReadMemory(mem)) else {
-            return false;
-        };
+        let (gpu_device, color, depth) = crate::native_world_glue::pipeline_target();
         let warmed = gpu
             .lit
             .try_lock()
@@ -390,27 +361,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             models: Arc::clone(gpu),
             draws: draws.to_vec(),
             texaccum,
-            view: Some(entry.view),
-            w_clip: entry.w_clip,
         });
         let view = mem
             .u32(engine::render_loop::occlusion::guest::VIEW_INDEX)
             .unwrap_or(u32::MAX);
-        let promise = d3d::ExternalPlan {
-            stage: timeline::native::Stage::FirstPerson,
-            view,
-            ranges: draws.len(),
-            slots: Vec::new(),
-        };
-        let Ok(Some(ready)) = device.prepare_external_bound(
-            &mut crate::native_lights_glue::DeviceMemory(mem),
-            promise,
-            pass,
-            Vec::new(),
-        ) else {
-            return false;
-        };
-        // The load the pass was planned against, held to the commit.
+        // The load the pass was planned against, held to the push.
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !state.as_ref().is_some_and(|state| {
             state.generation == generation
@@ -419,7 +374,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }) {
             return false;
         }
-        ready.commit();
+        native_render::stage::frame_builder().push(native_render::stage::FrameOp::Stage {
+            slot: frame_types::SlotAt { slot: frame_types::Slot::Opaque, view: view as u8 },
+            stage: pass,
+        });
         true
     }
 
@@ -494,16 +452,13 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 }
 
 /// Installs the host beside the other native render stages.
-pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
+pub fn install() {
     *LAYER_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    let Some(gpu) = device.lock().ok().and_then(|d| d.backend.upload_device()) else {
-        return;
-    };
+    let gpu = crate::native_world_glue::upload_device();
     let state = Arc::new(Mutex::new(None));
     *LAYER_SOURCE.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&state));
     render_bridge::native_first_person::set_host(Arc::new(Glue {
         gpu,
-        device: Arc::clone(device),
         state,
         generation: Mutex::new(0),
         entry: Mutex::new(None),
@@ -532,10 +487,7 @@ impl crate::native_layers_glue::LayerModels for Models {
 /// first person's layers (docs/graphics/framescene.md, slice 4): the
 /// ones its layer 3 draws from (its call loads them; this never does),
 /// only while the stage palettes they were expanded through hold.
-pub(crate) fn layer_models<B: d3d::backend::Backend>(
-    device: &d3d::Device<B>,
-    mem: &dyn GuestMemory,
-) -> Option<Arc<dyn crate::native_layers_glue::LayerModels>> {
+pub(crate) fn layer_models(mem: &dyn GuestMemory) -> Option<Arc<dyn crate::native_layers_glue::LayerModels>> {
     let source = LAYER_SOURCE.lock().ok()?.clone()?;
     let mut map_name = [0; 32];
     let name = crate::health::read_map_name(mem, &mut map_name).ok()?;
@@ -553,7 +505,7 @@ pub(crate) fn layer_models<B: d3d::backend::Backend>(
         .unwrap_or_else(|e| e.into_inner())
         .clone();
     if used.iter().any(Option::is_some) {
-        let now = stage_palettes(device, mem);
+        let now = stage_palettes();
         if !palettes_hold(&used, &|stage| now[stage].clone()) {
             return None;
         }
@@ -595,21 +547,21 @@ fn plan_parts(
             let instance = scene.instances.get(part.instance as usize).ok_or("the part's instance is not in the scene")?;
             let model = instance.model;
             if !entry.w_buffered {
-                return Err("the device's draws are not W-buffered".into());
+                return Err("the draws are not W-buffered".into());
             }
             // A record's fade byte: its prologue sets the stipple pattern
             // the byte picks and its epilogue the rest one
             // (`frame_scene::PartFlags::FADE`).
             let faded = part.flags.contains(frame_scene::PartFlags::FADE);
             if faded && !entry.stipple_at_rest {
-                return Err("the record's fade byte, where the device does not hold the rest stipple and a cached fade of one, which its epilogue leaves".into());
+                return Err("the record's fade byte, where the draw state does not hold the rest stipple and a cached fade of one, which its epilogue leaves".into());
             }
             let stipple = crate::native_objects_glue::record_stipple(mem, entry.stipple, part.key.record, faded)
-                .map_err(|()| "the polygon stipple's pattern, which the device's switch or the record's fade does not give exactly")?;
+                .map_err(|()| "the polygon stipple's pattern, which the stipple switch or the record's fade does not give exactly")?;
             // A shader whose prologue uploads the structure's parameter
             // block (`frame_scene::PartFlags::STRUCTURE_PARAMETERS`).
             if part.flags.contains(frame_scene::PartFlags::STRUCTURE_PARAMETERS) && entry.structure.is_none() {
-                return Err("the structure's parameter block, whose upload the device and the engine do not hold".into());
+                return Err("the structure's parameter block, whose upload the draw state and the engine do not hold".into());
             }
             // The stencil brackets the geometry draw's prologue and
             // epilogue make, as layer 3's walk draws them: mode 0 with the
@@ -618,7 +570,7 @@ fn plan_parts(
             let stencil_off = entry.stencil_off.ok_or("the stencil-off flags, which do not read")?;
             let marked = !stencil_off && part.flags.contains(frame_scene::PartFlags::STENCIL_MARK);
             if (stencil_off || marked) && !entry.stencil_mode_1 {
-                return Err("the stencil bracket of the geometry draw, where the device does not hold stencil mode 1, which its epilogue leaves".into());
+                return Err("the stencil bracket of the geometry draw, where the draw state does not hold stencil mode 1, which its epilogue leaves".into());
             }
             let lit = lit.as_ref().ok_or("no first-person model is uploaded")?;
             let mut draw = lit.plan_part_of(model, scene, instance, part, &entry.states, time, entry.structure.as_ref())?;
@@ -630,7 +582,7 @@ fn plan_parts(
             // toggle sets for the first person's view.
             if part.flags.contains(frame_scene::PartFlags::AUX_DEPTH) {
                 draw.aux_depth = Some(
-                    entry.aux.ok_or("the auxiliary depth state, which the device does not hold off")?,
+                    entry.aux.ok_or("the auxiliary depth state, which the draw state does not hold off")?,
                 );
             }
             // A flagged shader's item before the frame's structure target
@@ -681,34 +633,26 @@ struct FirstPersonPass {
     draws: Vec<(u32, PlannedDraw)>,
     /// The texture accumulation target, when a draw samples it.
     texaccum: Option<native_render::world_layers::Texaccum>,
-    view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
-    w_clip: ([f32; 2], bool),
 }
 
-fn weapon_view_inputs(
-    constants: [[f32; 4]; d3d::VIEW_CONSTANTS],
-    request: d3d::ExternalPassRequest,
-    copy: d3d::TargetCopy,
-    size: (u32, u32),
-    w_clip: ([f32; 2], bool),
-) -> ViewInputs {
-    ViewInputs {
-        constants: request.view_constants(copy, constants),
-        guest_size: request.surface_size,
-        size,
-        z_scale: request.z_scale,
-        w_clip: Some(w_clip),
-    }
+/// The view's vertex constants `c[0..18]`, its projection rows widened to
+/// the display's lens.
+fn view_constants() -> [[f32; 4]; 18] {
+    unimplemented!("first person: view constants from the device")
+}
+
+/// The W-buffer clip range and clamp the layer draws with.
+fn depth_clip() -> ([f32; 2], bool) {
+    unimplemented!("first person: depth clip from the device")
 }
 
 impl FirstPersonPass {
-    /// The call's packets for the D3D render pass open on these attachments.
+    /// The call's packets for the frame's open pass on these attachments.
     fn packets(
         &self,
-        target: &d3d::backend::ExternalAttachments,
-        request: d3d::ExternalPassRequest,
-    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
-        let constants = self.view.ok_or("first-person view constants unavailable")?;
+        target: &gfx::external::ExternalAttachments,
+        request: &native_render::stage::ViewInputs,
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
         let mut guard = self.models.lit.lock().unwrap_or_else(|e| e.into_inner());
         let lit = guard
             .as_mut()
@@ -720,8 +664,16 @@ impl FirstPersonPass {
         {
             return Err("planned first-person geometry unavailable");
         }
-        let view = weapon_view_inputs(constants, request, target.copy, target.size, self.w_clip);
-        let texaccum = crate::native_objects_glue::texaccum_level(target, self.texaccum)?;
+        let view = ViewInputs {
+            constants: view_constants(),
+            guest_size: request.surface_size,
+            size: target.size,
+            z_scale: request.z_scale,
+            w_clip: Some(depth_clip()),
+        };
+        if self.texaccum.is_some() {
+            unimplemented!("first person: accumulation level for the stage");
+        }
         let draws = lit.draws(
             &target.device,
             &target.queue,
@@ -730,45 +682,26 @@ impl FirstPersonPass {
             target.depth_format,
             target.size,
             &view,
-            request.projection_factor(target.copy),
+            request.display_projection_factor,
             &self.draws,
-            texaccum,
+            None,
         )?;
         crate::native_layers_glue::clip_packets(draws, request, target.size)
     }
 }
 
-impl d3d::ExternalPass for FirstPersonPass {
-    fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
-        self.view = Some(*constants);
-    }
+impl native_render::stage::Stage for FirstPersonPass {
+    fn name(&self) -> &'static str { "first_person" }
 
-    fn depth_clip(&mut self, clip: d3d::DepthClip) {
-        self.w_clip = (clip.range, clip.clamp);
-    }
-
-    fn sampled(&self) -> Vec<u32> {
-        self.texaccum.iter().map(|target| target.texture).collect()
-    }
-
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites {
-            color: self
-                .draws
-                .iter()
-                .any(|(_, draw)| !draw.state.color_writes.is_empty()),
-            depth_stencil: crate::native_objects_glue::draws_write_depth_stencil(self.draws.iter().map(|(_, draw)| draw)),
-        }
-    }
-
-    /// The draws join the D3D render pass already open on the call's
-    /// attachments: no pass or command buffer of their own.
-    fn record_draws(
+    fn record(
         &mut self,
-        target: &d3d::backend::ExternalAttachments,
-        request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
-        Some(self.packets(target, request))
+        target: &gfx::external::ExternalAttachments,
+        view: &native_render::stage::ViewInputs,
+    ) -> native_render::stage::StageWork {
+        match self.packets(target, view) {
+            Ok(draws) => native_render::stage::StageWork::Draws(draws),
+            Err(why) => unimplemented!("first person: {why}"),
+        }
     }
 }
 
@@ -786,34 +719,5 @@ mod tests {
         assert_eq!(out.dropped, vec![(Dropped::Unsupported, 1), (Dropped::Reservation, 4)]);
         assert_eq!(out.dropped_total(), 5);
         assert_eq!(settle(0, 3, true), Outcome { drawn: 3, dropped: vec![] });
-    }
-
-    #[test]
-    fn weapon_view_preserves_retail_size_in_pixels_at_the_same_height() {
-        let mut constants = [[0.0; 4]; d3d::VIEW_CONSTANTS];
-        constants[..4].copy_from_slice(&[
-            [1.5, 0.0, 0.25, 0.0], [0.0, 2.0, -0.125, 0.0],
-            [0.0, 0.0, 1.0, -0.25], [0.0, 0.0, 1.0, 0.0],
-        ]);
-        let request = d3d::ExternalPassRequest {
-            rect: (0, 0, 640, 480), surface_size: (640, 480),
-            z_scale: 1.0, display_projection_factor: 0.75,
-        };
-        let clip = ([0.125, 100.0], true);
-        let retail = weapon_view_inputs(constants, request, d3d::TargetCopy::Reference, (640, 480), clip);
-        let wide = weapon_view_inputs(constants, request, d3d::TargetCopy::Display, (5120, 2880), clip);
-        assert_eq!(retail.constants, constants);
-        assert_eq!(wide.constants[1..], retail.constants[1..]);
-        assert_eq!(wide.w_clip, retail.w_clip);
-        // For any point on the gun, its projected distance from screen centre
-        // in units of screen height is identical. Includes the lens shift.
-        for x in [-0.5, 0.0, 0.25] {
-            let offset = |row: [f32; 4], width: f32, height: f32| {
-                (row[0] * x + row[2]) * 0.5 * width / height
-            };
-            let a = offset(retail.constants[0], 640.0, 480.0);
-            let b = offset(wide.constants[0], 5120.0, 2880.0);
-            assert!((a - b).abs() < 1e-6);
-        }
     }
 }

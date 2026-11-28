@@ -118,7 +118,7 @@ pub fn spawn_worker(
             let mut opened = match open(&name, palettes.clone(), formats.clone()) {
                 Ok(opened) => opened,
                 Err(e) => {
-                    eprintln!("native-first-person: {name}: map not opened ({e}); first person stays on D3D");
+                    eprintln!("native-first-person: {name}: map not opened ({e}); first person not drawn");
                     return;
                 }
             };
@@ -191,20 +191,20 @@ pub fn spawn_worker(
                         loaded += 1;
                         if hooks::native_verbose() {
                             eprintln!(
-                                "native-first-person: {name}: mode {definition:#010x}: {part_count} lit parts, {nodes} nodes ({loaded} models native, {refused} left to D3D)"
+                                "native-first-person: {name}: mode {definition:#010x}: {part_count} lit parts, {nodes} nodes ({loaded} models native, {refused} left out)"
                             );
                         }
                     }
                     Err(why) => {
                         refused += 1;
                         if hooks::native_verbose() {
-                            eprintln!("native-first-person: {name}: definition {definition:#010x} left to D3D ({why})");
+                            eprintln!("native-first-person: {name}: definition {definition:#010x} left out ({why})");
                         }
                     }
                 }
             }
         }
-        eprintln!("native-first-person: {name}: {loaded} models native, {refused} left to the D3D path");
+        eprintln!("native-first-person: {name}: {loaded} models native, {refused} left out");
     }).ok()?;
     Some(tx)
 }

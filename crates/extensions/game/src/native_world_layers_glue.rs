@@ -1,20 +1,14 @@
-//! Pairs the layer hook with the actual indexed D3D call and state.
+//! The layer hook's context at the guest's indexed draw call: the layer,
+//! geometry and light selection the lights glue reads (`indexed_draw`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use d3d::backend::{
-    DrawAdmission, DrawSnapshot, ExternalAttachments, ExternalDraws, ExternalPass,
-    ExternalPassRequest, ExternalPlan, ExternalSlot, ExternalTarget, ExternalWrites, ResolvedDraw,
-};
 use render_bridge::native_world_layers::{Layer, current};
 use render_bridge::native_sky::{SkyItem, Refusal};
 use native_render::camera::GuestRead;
-use native_render::world_layers::{
-    DRAW_INDEXED_VERTICES, Geometry, Owner, SKY_INDEXED_RETURN, Site, Texaccum,
-};
-use native_render::world_layers_gpu::IndexedPass;
+use native_render::world_layers::{DRAW_INDEXED_VERTICES, Geometry, Owner, SKY_INDEXED_RETURN, Site};
 
 struct Memory<'a>(&'a runtime::Guest);
 
@@ -34,7 +28,7 @@ pub struct DrawContext {
     bsp: Option<u32>,
     pub(crate) generation: u64,
     pub index_count: Option<u32>,
-    /// Original index pointer before the D3D device rebases the draw.
+    /// The call's index pointer, as the guest passed it.
     pub index_address: Option<u32>,
 }
 
@@ -76,7 +70,7 @@ pub fn count_frontend(frame: u64, view: u32, bsp: u32, path: timeline::native::W
     path.count(draws, sections);
 }
 
-/// Clears the context even when the D3D handler returns a fault or calls
+/// Clears the context even when the indexed handler returns a fault or calls
 /// out to the guest before its draw. Such a call re-enters this wrapper.
 struct Restore(Option<DrawContext>);
 
@@ -86,16 +80,10 @@ impl Drop for Restore {
     }
 }
 
-pub fn install<B: d3d::backend::Backend + Send + 'static>(
-    rt: &runtime::Runtime,
-    device: &d3d::abi::SharedDevice<B>,
-) {
+pub fn install(rt: &runtime::Runtime) {
     let switches = hooks::Switches::from_env().unwrap_or_default();
     if !render_bridge::native_world_layers::on(&switches) {
         return;
-    }
-    if let Ok(mut device) = device.lock() {
-        device.add_opaque_world_admission(Arc::new(Admission::default()));
     }
     rt.edit_dispatch(|dispatch| {
         let index = DRAW_INDEXED_VERTICES;
@@ -110,7 +98,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(
                 let mut pool = None;
                 let mut sky = None;
                 let context = (|| {
-                    let frame = crate::d3d_diag::presents() + 1;
+                    let frame = render_bridge::frame_wait::presents() + 1;
                     let current = current();
                     let guest = ctx.memory();
                     let mem = Memory(&guest);
@@ -246,7 +234,7 @@ struct RestoreSky(Option<SkyIssue>);
 impl Drop for RestoreSky {
     fn drop(&mut self) {
         if SKY.replace(self.0.take()).is_some() {
-            // Clipped, unsupported device state, or the device bypassed admission.
+            // The strip's issue went unread.
             render_bridge::native_sky::count("device");
         }
     }
@@ -261,149 +249,8 @@ pub fn indexed_draw() -> Option<DrawContext> {
     DRAW.get()
 }
 
-/// The native model and BSP buffers store complete triangle lists. A
-/// partial emission from the same geometry record cannot use that range.
-pub fn matches_triangle_range(draw: &ResolvedDraw, expected: usize) -> bool {
-    let Some(indices) = draw.indices.as_deref() else { return false };
-    use gfx::vertex::PrimitiveType::{TriangleList, TriangleStrip};
-    match draw.primitive {
-        TriangleList => indices.len() == expected,
-        TriangleStrip => indices.windows(3).filter(|t| {
-            t[0] != t[1] && t[1] != t[2] && t[0] != t[2]
-        }).count() * 3 == expected,
-        _ => false,
-    }
-}
-
-#[derive(Default)]
-struct Admission {
-    cache: crate::native_map::MapIndexedCache,
-}
-
 pub fn owns_scene_world(switches: &hooks::Switches) -> bool {
     render_bridge::native_world_layers::on(switches)
-}
-
-/// Layer 3 can draw a material that never reads the accumulation level.
-fn layer3_texaccum(
-    target: Option<Texaccum>,
-    color_header: u32,
-    textures: [Option<u32>; 4],
-    sampled: [bool; 4],
-) -> Option<Option<Texaccum>> {
-    use native_render::object_program::TEXACCUM_HEADER;
-    if !textures.into_iter().zip(sampled).any(|(header, active)| {
-        active && header == Some(TEXACCUM_HEADER)
-    }) {
-        return Some(None);
-    }
-    let target = target?;
-    (target.texture == TEXACCUM_HEADER && target.surface? != color_header).then_some(Some(target))
-}
-
-impl DrawAdmission for Admission {
-    fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
-        let c = DRAW.get()?;
-        let geometry = c.geometry?;
-        let layer = c.layer;
-        let draw = snapshot.draw;
-        if layer.site != Site::Scene
-            || layer.list == 0
-            || draw.entry != "D3DDevice_DrawIndexedVertices"
-            || c.index_count? as usize != draw.indices.as_ref()?.len()
-        {
-            return None;
-        }
-        let mut slots = Vec::new();
-        let texaccum = match layer.number {
-            1 => {
-                let target = layer.texaccum?;
-                if target.surface? != snapshot.color_header {
-                    return None;
-                }
-                None
-            }
-            3 => {
-                let target = layer3_texaccum(
-                    layer.texaccum, snapshot.color_header, draw.textures, snapshot.sampled_stages,
-                )?;
-                if let Some(target) = target {
-                    // Pin the layer-1 attachment separately from engine
-                    // texture 3. Preflight checks their views on every copy.
-                    slots.push(Some(ExternalSlot { header: target.surface?, written: false }));
-                }
-                target
-            }
-            5 | 7 | 8 => None,
-            _ => return None,
-        };
-        let stage = match geometry.owner {
-            Owner::Cluster(_) | Owner::Placement(_) => timeline::native::Stage::World,
-            Owner::Object { .. } => timeline::native::Stage::Objects,
-        };
-        let pass = IndexedPass::for_section(draw, self.cache.get(), c.frame, texaccum,
-            (c.generation, c.bsp?), geometry, layer.number)?;
-        Some((
-            ExternalPlan {
-                stage,
-                view: layer.view,
-                ranges: 1,
-                slots,
-            },
-            Box::new(Replacement { pass }),
-        ))
-    }
-}
-
-struct Replacement {
-    pass: IndexedPass,
-}
-
-impl ExternalPass for Replacement {
-    fn uses_validated_resources(&self) -> bool {
-        self.pass.uses_validated_resources()
-    }
-
-    fn encode(&mut self, _target: ExternalTarget<'_>) {}
-
-    fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {
-        self.pass.resolved_fallback()
-    }
-
-    fn writes(&self) -> ExternalWrites {
-        self.pass.writes()
-    }
-
-    fn sampled(&self) -> Vec<u32> {
-        self.pass.sampled()
-    }
-
-    fn record_draws(
-        &mut self,
-        target: &ExternalAttachments,
-        request: ExternalPassRequest,
-    ) -> Option<Result<ExternalDraws, &'static str>> {
-        self.pass.record_draws(target, request)
-    }
-}
-
-#[cfg(test)]
-mod admission_tests {
-    use super::*;
-
-    #[test]
-    fn only_live_accumulation_samples_require_a_separate_pinned_level() {
-        let target = Texaccum {
-            texture: native_render::object_program::TEXACCUM_HEADER,
-            surface: Some(20),
-            size: (32, 32),
-        };
-        let textures = [Some(target.texture), Some(30), None, None];
-        assert_eq!(layer3_texaccum(None, 10, textures, [false, true, false, false]), Some(None));
-        assert_eq!(layer3_texaccum(None, 10, textures, [true; 4]), None);
-        assert_eq!(layer3_texaccum(Some(target), 20, textures, [true; 4]), None);
-        assert_eq!(layer3_texaccum(Some(target), 10, textures, [true; 4]), Some(Some(target)));
-    }
 }
 
 #[cfg(test)]

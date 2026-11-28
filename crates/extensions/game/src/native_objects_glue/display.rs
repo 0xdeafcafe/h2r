@@ -4,31 +4,22 @@ use super::*;
 use frame_scene::ItemKey;
 use render_bridge::native_scene_lists::{self, DisplayGeometry, LodDetail};
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+impl Glue {
     pub(super) fn draw_display_models(&self, mem: &mut dyn GuestMemory, view: &View, lod: LodDetail) -> Option<()> {
         let visibility = view.display_visibility.as_ref()?;
         let handles = &visibility.objects;
         let (models, _) = self.load(mem)?;
-        let mut device = self.device.lock().ok()?;
-        if !device.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()?
-            || !model_palettes_hold(&models, &device, mem)
-            || !crate::native_layers_glue::viewport_clip(&device, &crate::native_world_glue::ReadMemory(mem))
-        {
+        if !model_palettes_hold(&models) {
             return None;
         }
-        let entry = LayerEntry::read(&device, mem);
+        let entry = LayerEntry::read();
         if !entry.w_buffered { return None; }
-        let fog = crate::native_fog_glue::device_fog_words(&device, mem);
-        let specular = device_specular(&device, mem);
-        let read = crate::native_world_glue::ReadMemory(mem);
-        let target = device.external_ready(&read, false).ok()?;
+        let fog = device_state::fog_words();
+        let specular = device_specular();
         // A guest camera's objects outside the gather lens's set are drawn
-        // whatever the device's own factor (`scene_step::gather_lens_object`).
-        if !visibility.guest_lens && device.projection_factor_for_target(target.surface_size) >= 1.0 { return None; }
-        let (gpu, color, depth) = device.external_pipeline_target(&read)?;
-        // A part sampling the texture accumulation target needs its level
-        // in place; without one only that object is left out.
-        let levels_in_place = device.samples_levels_in_place();
+        // whatever the view's own factor (`scene_step::gather_lens_object`).
+        if !visibility.guest_lens && projection_factor() >= 1.0 { return None; }
+        let (gpu, color, depth) = crate::native_world_glue::pipeline_target();
         let mut draws = Vec::new();
         {
             let mut gpu_models = models.lit.try_lock().ok()?;
@@ -51,11 +42,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
                         true
                     })
                 });
-                // Each object stands alone: one whose parts do not all plan,
-                // whose pipelines are still compiling, or whose accumulation
-                // level cannot be sampled is left out, and the rest draw.
+                // Each object stands alone: one whose parts do not all plan
+                // or whose pipelines are still compiling is left out, and
+                // the rest draw.
                 if !complete
-                    || (!levels_in_place && draws[start..].iter().any(|(_, d)| d.texaccum))
                     || !lit.prewarm_draws(&gpu, color, depth, &draws[start..])
                 {
                     draws.truncate(start);
@@ -68,25 +58,21 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         } else {
             None
         };
-        let plan = d3d::ExternalPlan {
-            stage: timeline::native::Stage::Objects, view: u32::from(view.key.view),
-            ranges: draws.len(), slots: Vec::new(),
-        };
-        let pass = ObjectsPass {
-            slot: frame_scene::ViewSlot::OpaqueBase, display_only: true, display_draws: None, models, draws, texaccum, view: None, w_clip: None,
-            run: u64::from(device.swap_count()).wrapping_add(1),
-        };
-        device.draw_display_stage(&mut crate::native_lights_glue::DeviceMemory(mem), plan, Box::new(pass))
-            .ok()?.then_some(())
+        push_objects(u32::from(view.key.view), ObjectsPass { slot: frame_scene::ViewSlot::OpaqueBase, models, draws, texaccum });
+        Some(())
     }
 }
 
-/// Plan detail substitutions only for complete objects within one admitted
-/// run. Every original packet remains available for the reference and for
-/// display fallback when the private geometry cannot be drawn.
-pub(super) fn plan_lod<B: d3d::Backend>(
+/// The view's projection factor (display lens over the retail one).
+fn projection_factor() -> f32 {
+    unimplemented!("objects: projection factor from the render scale")
+}
+
+/// Plans detail substitutions, only for complete objects within one run:
+/// the run's draws with each such object's display detail in place of
+/// its own. `None` when nothing changes or a pipeline is still warming.
+pub(super) fn plan_lod(
     models: &Models,
-    device: &d3d::Device<B>,
     mem: &dyn GuestMemory,
     scene: &FrameScene,
     view: &View,
@@ -94,15 +80,14 @@ pub(super) fn plan_lod<B: d3d::Backend>(
     reference: &[(u32, PlannedDraw)],
     lod: LodDetail,
 ) -> Option<Vec<(u32, PlannedDraw)>> {
-    let (entry, w_buffered) = entry_states(device, mem);
+    let (entry, w_buffered) = entry_states(mem);
     let stencil = mem.u32(native_render::skip::STENCIL_OFF_FLAGS).ok()?;
     if !w_buffered || stencil & 0x00ff_ff00 != 0 {
         return None;
     }
-    let fog = crate::native_fog_glue::device_fog_words(device, mem);
-    let specular = device_specular(device, mem);
-    let read = crate::native_world_glue::ReadMemory(mem);
-    let (gpu, color, depth) = device.external_pipeline_target(&read)?;
+    let fog = device_state::fog_words();
+    let specular = device_specular();
+    let (gpu, color, depth) = crate::native_world_glue::pipeline_target();
     let mut lit = models.lit.try_lock().ok()?;
     let lit = lit.as_mut()?;
     let coverage = models.coverage.read().ok()?;
