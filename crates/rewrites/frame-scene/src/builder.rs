@@ -224,6 +224,7 @@ impl SceneBuilder {
             fog: None,
             water: None,
             water_composite: None,
+            ocean: None,
             post: None,
         });
         scene.cluster_gathers.push(None);

@@ -15,19 +15,19 @@
 //! | still | its first definition `[bsp + 0x218]`'s `+0x7c` equal (`ucomiss`) to `[0x0045dbd8]`, 0.0 |
 //! | not drawn | the first argument's byte 0 |
 //!
-//! Past them is the ocean (`0x0003c3ff..0x0003c632`), [`ocean`]'s steps:
+//! Past them is the ocean (`0x0003c3ff..0x0003c632`), [`ocean::run`]:
 //! Rust makes the grid (`engine::ocean_grid`), the gates (the occlusion
 //! query over the native flare query's count pass, [`ocean::gate`]; the
 //! texture block's residency, [`ocean::cache`]), the shader lookup, the
-//! copy `0x0003bea0` into target `0x16`, the alpha clear `0x0003c515`, the
-//! draw state and stream commit ([`ocean::state`]), the indexed quads
-//! natively and the texture stamps, and calls the shader begin as a guest
-//! call, then returns as the body does. The sky pass into target `0x15`
-//! is not made. A step it cannot make is `unimplemented!("water ocean:
+//! copy `0x0003bea0` into target `0x16`, the alpha clear `0x0003c515`,
+//! the draw (the ocean's pass from the map over the frame's record,
+//! [`OceanHost`]) and the texture stamps, then returns as the body does.
+//! No guest helper is called. The sky pass into target `0x15` is not
+//! made. A step it cannot make is `unimplemented!("water ocean:
 //! <cause>")`, or `water ocean copy: <cause>` for the copies; a gate word
 //! that does not read is `water end: unread`.
 
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use engine::memory::{GuestMemory, MemFault};
 
@@ -125,15 +125,29 @@ pub fn counters() -> Vec<(String, u64)> {
     WATER_END.counters().into_iter().chain(WATER_OCEAN.counters()).collect()
 }
 
-/// The guest stack below the call's return address the ocean uses: 64
-/// bytes at `esp - SCRATCH` for the words the draw state stages (the clear
-/// prelude's viewport, the constants), the helpers' frames below
-/// `esp - BODY`.
+/// The guest stack below the call's return address the clear stages its
+/// words in: 64 bytes at `esp - SCRATCH`.
 const SCRATCH: u32 = 0x50;
-const BODY: u32 = 0x80;
 
-/// The ocean's device: the native targets' host and the walk host's
-/// water quads.
+/// The ocean's draw on the device: boot's glue (`native_ocean_glue`).
+pub trait OceanHost: Send + Sync {
+    /// Draws `draw` on the bound target, its quads as the scene holds
+    /// them; `Err` names what it could not make.
+    fn draw(&self, mem: &mut dyn GuestMemory, draw: &ocean::Draw, quads: &frame_scene::late::WaterComposite) -> Result<(), ocean::Cause>;
+}
+
+static OCEAN_HOST: RwLock<Option<Arc<dyn OceanHost>>> = RwLock::new(None);
+
+pub fn set_ocean_host(host: Arc<dyn OceanHost>) {
+    *OCEAN_HOST.write().unwrap_or_else(|e| e.into_inner()) = Some(host);
+}
+
+fn ocean_host() -> Option<Arc<dyn OceanHost>> {
+    OCEAN_HOST.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// The ocean's device: the native targets' host for the clear and the
+/// copy, the scene for the record and [`OceanHost`] for the draw.
 struct Live {
     host: Arc<dyn crate::native_targets::Host>,
     scratch: u32,
@@ -150,9 +164,9 @@ impl ocean::Device for Live {
         self.scratch
     }
 
-    fn draw(&mut self, mem: &mut dyn GuestMemory, indices: u32, count: u32) -> Result<(), ocean::Cause> {
-        let geometry = crate::scene_step::water_composite(&*mem, indices, count).ok_or("quads")?;
-        crate::native_transparents::draw_water(mem, indices, count, geometry).then_some(()).ok_or("draw")
+    fn draw(&mut self, mem: &mut dyn GuestMemory, draw: &ocean::Draw) -> Result<(), ocean::Cause> {
+        let quads = crate::scene_step::set_ocean(&*mem, draw.ocean, draw.indices, draw.count).ok_or("quads")?;
+        ocean_host().ok_or("host")?.draw(mem, draw, &quads)
     }
 
     fn visible(&mut self, mem: &mut dyn GuestMemory, definition: u32) -> Result<bool, ocean::Cause> {
@@ -164,65 +178,27 @@ impl ocean::Device for Live {
     }
 }
 
-fn regs(cpu: &runtime::CpuAbi) -> ocean::Regs {
-    ocean::Regs { eax: cpu.eax, ecx: cpu.ecx, edx: cpu.edx, ebx: cpu.ebx, esi: cpu.esi, edi: cpu.edi, ebp: cpu.ebp }
-}
-
-/// The call's frame: ESP at entry, its return address and the caller's
-/// EBX, ESI, EDI and EBP.
-#[derive(Clone, Copy)]
-struct Frame {
-    esp: u32,
-    ret: u32,
-    saved: ocean::Regs,
-}
-
-/// One ocean step, then the next helper as a guest call whose
-/// continuation steps again, until the return.
-fn drive(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, mut ocean: ocean::Ocean, frame: Frame) -> Result<runtime::TransferAbi, runtime::GuestFault> {
-    let rt = Arc::clone(ctx.runtime());
-    let mut mem = rt.memory();
-    let host = crate::native_targets::host().unwrap_or_else(|| ocean_unported("host"));
-    let mut device = Live { host, scratch: frame.esp.wrapping_sub(SCRATCH), mxcsr: cpu.mxcsr, x87_control: cpu.x87.control };
-    let next = ocean.next(&mut *mem, &mut device, regs(cpu)).unwrap_or_else(|cause| ocean_unported(cause));
-    cpu.mxcsr = device.mxcsr;
-    match next {
-        ocean::Next::Call(call) => {
-            let r = call.regs;
-            (cpu.eax, cpu.ecx, cpu.edx, cpu.ebx, cpu.esi, cpu.edi, cpu.ebp) = (r.eax, r.ecx, r.edx, r.ebx, r.esi, r.edi, r.ebp);
-            cpu.esp = frame.esp.wrapping_sub(BODY);
-            for &arg in call.args.iter().rev() {
-                cpu.esp = cpu.esp.wrapping_sub(4);
-                mem.set_u32(cpu.esp, arg).unwrap_or_else(|_| ocean_unported("unwritable"));
-            }
-            ctx.call_guest_named(cpu, &mut mem, call.target, "render: the water ocean", move |cpu, ctx| drive(cpu, ctx, ocean, frame))
-        }
-        ocean::Next::Return { eax, ecx } => {
-            let s = frame.saved;
-            (cpu.eax, cpu.ecx, cpu.ebx, cpu.esi, cpu.edi, cpu.ebp) = (eax, ecx, s.ebx, s.esi, s.edi, s.ebp);
-            cpu.esp = frame.esp.wrapping_add(4 + ARG_BYTES);
-            Ok(runtime::TransferAbi::ret(frame.ret))
-        }
-    }
-}
-
 fn end_call(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, _addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {
     WATER_END.call();
     let esp = cpu.esp;
     let rt = Arc::clone(ctx.runtime());
-    let mem = rt.memory();
-    let arg = |at: u32| mem.u8(esp.wrapping_add(at)).unwrap_or_else(|_| unported("unread"));
-    let (draw, clear) = (arg(ARG_DRAW), arg(ARG_CLEAR));
+    let mut mem = rt.memory();
+    let arg = |mem: &dyn GuestMemory, at: u32| mem.u8(esp.wrapping_add(at)).unwrap_or_else(|_| unported("unread"));
+    let (draw, clear) = (arg(&*mem, ARG_DRAW), arg(&*mem, ARG_CLEAR));
     let call = water_end(&*mem, draw, clear);
-    let End::Ocean { definition, clear } = call.end else {
-        drop(mem);
-        (cpu.eax, cpu.ecx) = call.registers();
-        return ctx.memory().ret(cpu, ARG_BYTES);
+    (cpu.eax, cpu.ecx) = match call.end {
+        End::Ocean { definition, clear } => {
+            WATER_OCEAN.call();
+            let host = crate::native_targets::host().unwrap_or_else(|| ocean_unported("host"));
+            let mut device = Live { host, scratch: esp.wrapping_sub(SCRATCH), mxcsr: cpu.mxcsr, x87_control: cpu.x87.control };
+            let ended = ocean::run(&mut *mem, &mut device, definition, clear, cpu.ecx).unwrap_or_else(|cause| ocean_unported(cause));
+            cpu.mxcsr = device.mxcsr;
+            (ended.eax, ended.ecx)
+        }
+        _ => call.registers(),
     };
-    WATER_OCEAN.call();
-    let frame = Frame { esp, ret: mem.u32(esp).unwrap_or_else(|_| unported("unread")), saved: regs(cpu) };
     drop(mem);
-    drive(cpu, ctx, ocean::Ocean::new(definition, clear, regs(cpu)), frame)
+    ctx.memory().ret(cpu, ARG_BYTES)
 }
 
 /// Places the water end's implementation (`native-water`'s feature).

@@ -26,7 +26,6 @@ struct Walk<B: d3d::Backend> {
 
 struct IndexedRange<'a> {
     stage: Stage,
-    water: Option<&'a frame_scene::late::WaterComposite>,
     frame: u64,
     view: u32,
     cache: &'a Arc<IndexedCache>,
@@ -34,11 +33,7 @@ struct IndexedRange<'a> {
 
 impl d3d::DrawAdmission for IndexedRange<'_> {
     fn admit(&self, snapshot: &d3d::DrawSnapshot<'_>) -> Option<(d3d::ExternalPlan, Box<dyn d3d::ExternalPass>)> {
-        let pass = if let Some(geometry) = self.water {
-            IndexedPass::water_quads(snapshot.draw, geometry, Arc::clone(self.cache), self.frame)?
-        } else {
-            IndexedPass::new(snapshot.draw, Arc::clone(self.cache), self.frame, None)?
-        };
+        let pass = IndexedPass::new(snapshot.draw, Arc::clone(self.cache), self.frame, None)?;
         Some((d3d::ExternalPlan {
             stage: self.stage,
             view: self.view,
@@ -66,13 +61,12 @@ impl<B: d3d::Backend + Send + 'static> native_transparents::WalkHost for Walk<B>
         &self, mem: &mut dyn engine::memory::GuestMemory, stage: Stage, range: native_transparents::IndexRange,
     ) -> Result<(), ReservationCause> {
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let (primitive, water) = match &range.topology {
-            native_transparents::IndexTopology::List => (PrimitiveType::TriangleList, None),
-            native_transparents::IndexTopology::Strip => (PrimitiveType::TriangleStrip, None),
-            native_transparents::IndexTopology::Water(geometry) => (PrimitiveType::QuadList, Some(geometry)),
+        let primitive = match &range.topology {
+            native_transparents::IndexTopology::List => PrimitiveType::TriangleList,
+            native_transparents::IndexTopology::Strip => PrimitiveType::TriangleStrip,
         };
         let cache = self.cache.get();
-        let candidate = IndexedRange { stage, water, view, frame: crate::d3d_diag::presents() + 1, cache: &cache };
+        let candidate = IndexedRange { stage, view, frame: crate::d3d_diag::presents() + 1, cache: &cache };
         // The device names the first step the draw did not pass.
         let mut device = self.device.lock().map_err(|_| ReservationCause::Error)?;
         match device.try_native_indexed_draw_why(

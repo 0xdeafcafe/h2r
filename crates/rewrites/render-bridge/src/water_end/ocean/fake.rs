@@ -10,7 +10,6 @@ use crate::native_targets::{Bind, Host};
 /// One device call, with the words it read from guest memory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    Guest(u32),
     Clear { flags: u32, colour: u32 },
     Texture { stage: u32, texture: u32 },
     Constants { register: u32, words: Vec<u32> },
@@ -23,7 +22,7 @@ pub enum Event {
     RenderState { slot: u32, value: u32 },
     MakeSpace,
     PushViewport { put: u32 },
-    Draw { indices: u32, count: u32 },
+    Draw(Box<super::Draw>),
     CopyView { target: u32 },
     Restore { writes: usize },
 }

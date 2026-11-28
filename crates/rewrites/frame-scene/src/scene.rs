@@ -214,6 +214,8 @@ pub struct View {
     pub water: Option<WaterState>,
     /// The teardown's indexed quad mesh in the current vertex stream.
     pub water_composite: Option<crate::late::WaterComposite>,
+    /// The water end's ocean.
+    pub ocean: Option<crate::late::Ocean>,
     /// The view's post passes.
     pub post: Option<PostParams>,
 }
