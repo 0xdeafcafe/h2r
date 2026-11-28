@@ -3,7 +3,7 @@
 //! lathes, sweeps and boxes), and its atlas, `content/flood-pod/flood_pod.png`.
 //!
 //! Every position is in model space: world units, +X forward, +Y left, +Z
-//! up, the origin the point of the tip ([`super::RIG`]). A part's vertices
+//! up, the origin the point of the tip ([`super::rig`]). A part's vertices
 //! move with the one node it names.
 
 use anyhow::{Context, Result, bail, ensure};
@@ -13,7 +13,7 @@ use crate::texture::{self, Rgba};
 use crate::atlas::Manifest;
 use std::sync::OnceLock;
 
-use super::{MARKER_IMPACT, NODE_SHELL, PETALS, RIG, petal_node, squad_exit_marker};
+use super::{marker_impact, node_shell, petal_node, petals, rig, squad_exit_marker};
 
 /// The model's name and its atlas's.
 pub const NAME: &str = "flood_pod";
@@ -80,36 +80,37 @@ fn near(a: [f32; 3], b: [f32; 3]) -> bool {
 /// every part on a node the source has and in one of [`regions`].
 pub fn parse(text: &str) -> Result<Source> {
     let s: Source = serde_yaml_ng::from_str(text).context("the pod's source")?;
+    let (petals, shell, rig) = (petals(), node_shell(), rig());
     ensure!(
-        s.nodes.len() == 1 + PETALS,
-        "{}: {} nodes; a pod has the shell and {PETALS} petals",
+        s.nodes.len() == 1 + petals,
+        "{}: {} nodes; a pod has the shell and {petals} petals",
         s.name,
         s.nodes.len()
     );
-    let shell = &s.nodes[0];
+    let root = &s.nodes[0];
     ensure!(
-        shell.name == NODE_SHELL && shell.parent.is_none() && near(shell.at, [0.0; 3]),
-        "{}: node 0 is the root, {NODE_SHELL}, at the origin",
+        root.name == shell && root.parent.is_none() && near(root.at, [0.0; 3]),
+        "{}: node 0 is the root, {shell}, at the origin",
         s.name
     );
-    for k in 0..PETALS {
+    for k in 0..petals {
         let (n, name) = (&s.nodes[1 + k], petal_node(k));
         ensure!(
-            n.name == name && n.parent.as_deref() == Some(NODE_SHELL),
-            "{}: node {} is {name}, a child of {NODE_SHELL}",
+            n.name == name && n.parent.as_deref() == Some(shell),
+            "{}: node {} is {name}, a child of {shell}",
             s.name,
             1 + k
         );
         ensure!(
-            near(n.at, RIG.hinge(k)),
+            near(n.at, rig.hinge(k)),
             "{}: {name} is at {:?}; its hinge is at {:?}",
             s.name,
             n.at,
-            RIG.hinge(k)
+            rig.hinge(k)
         );
     }
-    let mut want = vec![(MARKER_IMPACT.to_owned(), [0.0; 3])];
-    want.extend((0..PETALS).map(|k| (squad_exit_marker(k), RIG.squad_exit(k))));
+    let mut want = vec![(marker_impact().to_owned(), [0.0; 3])];
+    want.extend((0..petals).map(|k| (squad_exit_marker(k), rig.squad_exit(k))));
     for (name, at) in &want {
         let found: Vec<_> = s.markers.iter().filter(|m| m.name == *name).collect();
         let [m] = found.as_slice() else {
@@ -120,8 +121,8 @@ pub fn parse(text: &str) -> Result<Source> {
             );
         };
         ensure!(
-            m.node == NODE_SHELL && near(m.at, *at),
-            "{}: marker {name} is on {} at {:?}; it is on {NODE_SHELL} at {at:?}",
+            m.node == shell && near(m.at, *at),
+            "{}: marker {name} is on {} at {:?}; it is on {shell} at {at:?}",
             s.name,
             m.node,
             m.at

@@ -20,8 +20,14 @@
 //! - [`served`]: which weapon tags a map the game was served holds.
 //! - [`placed`]: which weapon tags the map being played holds.
 //!
-//! Every look shares one rig ([`RIG`]): the same grips, pegs, foot and
-//! piston travel, so the code that poses a rider reads no look.
+//! Every look shares one rig (`rig` in `content/pogo/kit.yaml`, and
+//! `pogo::RIG` for the game that poses a rider): the same grips, pegs, foot
+//! and piston travel, so the code that poses a rider reads no look.
+//!
+//! What is an item's own is data in its folder: the manifest
+//! ([`atlas::Manifest`]) holds its kit version, tag paths, material, region,
+//! bounding sphere, physics sphere, rig, node and marker names and the
+//! weapon class it is held as. The Rust here reads them.
 
 pub mod atlas;
 pub mod flood_pod;
@@ -44,4 +50,4 @@ mod tests;
 /// The maps never asked for: they are not levels.
 pub(crate) const NEVER: [&str; 3] = ["mainmenu", "shared", "single_player_shared"];
 
-pub use pogo::*;
+pub use pogo::{Style, placed};

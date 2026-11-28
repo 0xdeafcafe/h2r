@@ -10,7 +10,7 @@ use map::{CacheType, FourCC, Map, TagId};
 use crate::inject::{self, Given, add_pogo, add_pogo_with};
 use crate::placed::{self, Placed};
 use crate::tests::{check_chain, disc_multiplayer_maps, fixture, fixture_class};
-use crate::{KIT_VERSION, Style};
+use crate::Style;
 
 /// The shared tags and five for each look.
 const KIT_TAGS: u32 = 2 + 5 * 3;
@@ -28,7 +28,7 @@ fn the_kit_goes_into_a_map_and_reads_back() {
     let added = add_pogo_with(&original, "court", &given()).unwrap();
     let map = Map::from_reader(Cursor::new(added.bytes.as_slice())).unwrap();
     assert_eq!(map.header().cache_type, CacheType::Multiplayer);
-    let marker = format!("pogo_kit_v{KIT_VERSION}");
+    let marker = "pogo_kit_v2".to_owned();
     assert_eq!(inject::marker_string(), marker);
     assert!(map.strings().iter().flatten().any(|s| *s == marker));
     // Every tag the map had is still there, by name and datum.

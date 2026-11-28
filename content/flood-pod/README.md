@@ -22,8 +22,9 @@ into a multiplayer map. `h2 flood-pod kit MAP --out FILE` writes such a map
 to open in Studio, and `h2 flood-pod model --out DIR` writes the mesh as an
 OBJ file.
 
-`kit.yaml` is the item manifest (`crates/tools/content-kit`, `atlas`): the atlas size, its regions and the
-pod's triangle limit, read by the kit and checked on load.
+`kit.yaml` is the item manifest (`crates/tools/content-kit`, `atlas`): the atlas size, its regions, the
+pod's triangle limit, its kit version, tag path, material, region, bounding and physics spheres, field of
+view, rig values, and node and marker names, read by the kit and checked on load.
 
 The source is the Pogo Stick's primitive YAML (`content/pogo/README.md`):
 a list of parts, each a `lathe`, a `sweep` or a `box`, on one node. Units

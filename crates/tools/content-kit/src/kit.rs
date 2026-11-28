@@ -16,7 +16,7 @@
 //!   onto a retail template the map has (`h1convert::shad::Library`), with
 //!   our atlas as its base map: [`LAYOUTS`], the first the map can draw.
 //! - **The material.** The `hlmt` and `phmo` name one of the map's global
-//!   materials: [`MATERIAL`] where the map has it.
+//!   materials: the manifest's `material` where the map has it.
 //!
 //! The weapon is inert: no triggers, no barrels, no magazines, no melee
 //! damage, no zoom, no first-person model.
@@ -35,29 +35,18 @@ use tags::anim::AnimationGraph;
 use tags::defs::{self, Defs, Val};
 
 use crate::mesh::{self, Mesh};
+use crate::atlas::Manifest;
 use crate::source::{self, Source};
 use crate::{Style, texture};
 
-/// The bipeds the players are, by tag path: the Spartan and the Elite.
-pub const PLAYER_BIPEDS: [&str; 2] = [
-    r"objects\characters\masterchief\masterchief_mp",
-    r"objects\characters\elite\elite_mp",
-];
-
-/// The weapon class and type the stick takes when both players hold it:
-/// the magnum's.
-pub const PREFERRED_CLASS: (&str, &str) = ("pistol", "hp");
-
-/// The animation mode a unit on foot holds a weapon in.
-pub const MODE_COMBAT: &str = "combat";
+/// The item manifest the stick is built from, `content/pogo/kit.yaml`.
+fn item() -> &'static Manifest {
+    source::manifest()
+}
 
 /// The shader templates the stick can draw with, the first a map has: the
 /// model shader with the black default reflection, then the plain one.
 pub const LAYOUTS: [&Layout; 2] = [&shad::TEX_BUMP_ENV, &shad::TEX_BUMP];
-
-/// The global material the stick is made of, where the map has it; else
-/// the map's first.
-pub const MATERIAL: &str = "hard_metal_thin_hum";
 
 /// `bipd +0x38`: the model reference's datum (`obje.model`).
 const OBJECT_MODEL: usize = 0x38;
@@ -69,23 +58,9 @@ const WEAPON_TYPE: u32 = h1objects::arsenal::WEAPON_TYPE;
 /// `weapon_flags` bit 16: no binocular zoom.
 const NO_BINOCULAR_ZOOM: i64 = 1 << 16;
 
-/// The stick's bounding sphere, model space: its middle and a radius
-/// covering both ends.
-pub const BOUNDING_OFFSET: [f32; 3] = [0.0, 0.059, -0.165];
-pub const BOUNDING_RADIUS: f32 = 0.22;
-/// The physics model's one sphere: on the shaft at the sleeve, a little
-/// wider than it.
-pub const PHYSICS_CENTRE: [f32; 3] = [0.0, 0.059, -0.2];
-pub const PHYSICS_RADIUS: f32 = 0.03;
-/// Kilograms.
-pub const PHYSICS_MASS: f32 = 8.0;
-
-/// The folder the kit's tags are named under.
-pub use pogo::FOLDER;
-
-/// The tag every look shares, by group.
+/// The tag every look shares, by group: the manifest's `tag_path`.
 pub fn shared_path() -> String {
-    format!(r"{FOLDER}\pogo")
+    item().tag_path().to_owned()
 }
 
 /// What a map supplies to the kit.
@@ -125,6 +100,16 @@ impl Shading {
         map: &mut Map<R>,
         meta: &tags::object::Metadata,
     ) -> Result<Shading> {
+        Shading::read_material(map, meta, item().material())
+    }
+
+    /// [`Shading::read_with`] for an item made of `material`: the global
+    /// material of that name where the map has it, else the map's first.
+    pub fn read_material<R: Read + Seek>(
+        map: &mut Map<R>,
+        meta: &tags::object::Metadata,
+        material: &str,
+    ) -> Result<Shading> {
         let library = Library::read(map);
         let layout = LAYOUTS
             .into_iter()
@@ -139,7 +124,7 @@ impl Shading {
             h1convert::materials::global_materials(map, meta).map_err(|e| anyhow!("{e}"))?;
         let index = globals
             .iter()
-            .position(|g| g == MATERIAL)
+            .position(|g| g == material)
             .or(if globals.is_empty() { None } else { Some(0) })
             .context("the map's globals have no materials")?;
         Ok(Shading {
@@ -323,9 +308,10 @@ fn held<R: Read + Seek>(
     let graph = AnimationGraph::read(map, id).map_err(|e| anyhow!("animation graph: {e}"))?;
     let strings = map.strings().to_vec();
     let name = |s: tags::StringId| s.resolve(&strings).ok().flatten().unwrap_or("").to_owned();
-    let combat = graph.modes.iter().any(|m| name(m.name) == MODE_COMBAT);
+    let mode = &item().hold().mode;
+    let combat = graph.modes.iter().any(|m| name(m.name) == *mode);
     for m in &graph.modes {
-        if combat && name(m.name) != MODE_COMBAT {
+        if combat && name(m.name) != *mode {
             continue;
         }
         for c in &m.classes {
@@ -343,13 +329,14 @@ fn held<R: Read + Seek>(
     Ok(())
 }
 
-/// The class to take from what each player graph holds: [`PREFERRED_CLASS`]
-/// when every graph has it, else the first pair, in name order, that every
+/// The class to take from what each player graph holds: the manifest's
+/// `hold.class` when every graph has it, else the first pair, in name order, that every
 /// graph has.
 pub fn choose_class(graphs: &[BTreeSet<(String, String)>]) -> Option<(String, String)> {
     let (first, rest) = graphs.split_first()?;
     let common = |pair: &(String, String)| rest.iter().all(|g| g.contains(pair));
-    let preferred = (PREFERRED_CLASS.0.to_owned(), PREFERRED_CLASS.1.to_owned());
+    let [class, kind] = &item().hold().class;
+    let preferred = (class.clone(), kind.clone());
     if first.contains(&preferred) && common(&preferred) {
         return Some(preferred);
     }
@@ -365,7 +352,7 @@ pub fn player_graphs<R: Read + Seek>(
     map: &mut Map<R>,
 ) -> Result<Vec<(&'static str, BTreeSet<(String, String)>)>> {
     let mut out = Vec::new();
-    for path in PLAYER_BIPEDS {
+    for path in item().hold().bipeds.iter().map(String::as_str) {
         let Some(biped) = map
             .tags()
             .iter()
@@ -394,9 +381,8 @@ pub fn player_class<R: Read + Seek>(map: &mut Map<R>) -> Result<(String, String)
     let graphs = player_graphs(map)?;
     ensure!(
         !graphs.is_empty(),
-        "the map has neither player biped ({} or {})",
-        PLAYER_BIPEDS[0],
-        PLAYER_BIPEDS[1]
+        "the map has none of the player bipeds ({})",
+        item().hold().bipeds.join(" or ")
     );
     let sets: Vec<_> = graphs.iter().map(|(_, s)| s.clone()).collect();
     choose_class(&sets).with_context(|| {
@@ -521,9 +507,9 @@ pub fn model(source: &Source, mesh: &Mesh) -> Result<src::Model> {
         markers,
         nodes,
         regions: vec![src::Region {
-            name: REGION.to_owned(),
+            name: item().region().to_owned(),
             permutations: vec![src::Permutation {
-                name: REGION.to_owned(),
+                name: item().region().to_owned(),
                 flags: 0,
                 lods: [0; 5],
             }],
@@ -551,9 +537,6 @@ pub fn model(source: &Source, mesh: &Mesh) -> Result<src::Model> {
     })
 }
 
-/// The one region and permutation of every stick.
-pub const REGION: &str = "default";
-
 fn def(group: &[u8; 4]) -> Result<&'static defs::StructDef> {
     Defs::builtin()
         .group(FourCC(*group))
@@ -567,8 +550,9 @@ pub fn weapon(facts: &Facts, hlmt: TagId, hud: TagId) -> Result<Block> {
     let mut r = defs::default_record(d);
     let mut set = |path: &str, v: Val| r.set(path, v).map_err(|e| anyhow!("weap {path}: {e}"));
     set("item.obje.object_type", Val::Enum(WEAPON_TYPE))?;
-    set("item.obje.bounding_radius", Val::Float(BOUNDING_RADIUS))?;
-    set("item.obje.bounding_offset", Val::floats(&BOUNDING_OFFSET))?;
+    let bounding = item().bounding();
+    set("item.obje.bounding_radius", Val::Float(bounding.radius))?;
+    set("item.obje.bounding_offset", Val::floats(&bounding.offset))?;
     set("item.obje.model", Val::tag(FourCC(*b"hlmt"), hlmt))?;
     set("weapon_class", Val::text(&facts.class.0))?;
     set("weapon_name", Val::text(&facts.class.1))?;
@@ -653,7 +637,8 @@ pub fn install_shared_at(
             FourCC(*group)
         );
     }
-    let physics = rebuild::sphere_physics(PHYSICS_RADIUS, PHYSICS_CENTRE, PHYSICS_MASS, material)
+    let sphere = item().physics();
+    let physics = rebuild::sphere_physics(sphere.radius, sphere.centre, sphere.mass, material)
         .map_err(|e| anyhow!("phmo: {e}"))?;
     let physics = set.add_tag(FourCC(*b"phmo"), path, TagPayload::Built(physics))?;
     let hud = h1objects::h1hud::nhdt(&[], &[]);
@@ -767,10 +752,10 @@ pub fn install_model(
         physics: Some(shared.physics),
         nodes: hlmt_nodes(&model),
         regions: vec![rebuild::Region {
-            name: REGION.to_owned(),
+            name: item().region().to_owned(),
             collision: -1,
             physics: -1,
-            permutations: vec![(REGION.to_owned(), -1, -1)],
+            permutations: vec![(item().region().to_owned(), -1, -1)],
         }],
         materials: vec![material],
     })

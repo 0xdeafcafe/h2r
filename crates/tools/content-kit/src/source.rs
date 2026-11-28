@@ -4,7 +4,7 @@
 //!
 //! Every position in a source is in model space: the frame node's, world
 //! units, +X forward, +Y left, +Z up, the origin the right grip
-//! ([`crate::RIG`]). A part's vertices move with the one node it names.
+//! (the `rig` of the manifest). A part's vertices move with the one node it names.
 
 use anyhow::{Context, bail, ensure};
 use serde::Deserialize;
@@ -259,30 +259,29 @@ pub fn atlas(style: Style) -> &'static [u8] {
     }
 }
 
-/// Parses and checks a source: two nodes at most, the frame first and the
-/// piston its child, every part and marker on a node the source has, every
-/// region one of [`regions`].
+/// Parses and checks a source: the manifest's nodes in order, at most
+/// (the root first, each next one the child the manifest names), every part
+/// and marker on a node the source has, every region one of [`regions`].
 pub fn parse(text: &str) -> anyhow::Result<Source> {
     let s: Source = serde_yaml_ng::from_str(text).context("the model source")?;
+    let item = manifest();
     ensure!(
-        !s.nodes.is_empty() && s.nodes.len() <= 2,
-        "{}: {} nodes; a stick has the frame and the piston",
+        !s.nodes.is_empty() && s.nodes.len() <= item.nodes.len(),
+        "{}: {} nodes; the manifest has {} ({})",
         s.name,
-        s.nodes.len()
+        s.nodes.len(),
+        item.nodes.len(),
+        item.node_names().join(", ")
     );
-    ensure!(
-        s.nodes[0].name == crate::NODE_FRAME && s.nodes[0].parent.is_none(),
-        "{}: node 0 is the root, {}",
-        s.name,
-        crate::NODE_FRAME
-    );
-    if let Some(p) = s.nodes.get(1) {
+    for (i, (n, want)) in s.nodes.iter().zip(&item.nodes).enumerate() {
         ensure!(
-            p.name == crate::NODE_PISTON && p.parent.as_deref() == Some(crate::NODE_FRAME),
-            "{}: node 1 is {}, a child of {}",
+            n.name == want.name && n.parent == want.parent,
+            "{}: node {i} is {} (parent {:?}), want {} (parent {:?})",
             s.name,
-            crate::NODE_PISTON,
-            crate::NODE_FRAME
+            n.name,
+            n.parent,
+            want.name,
+            want.parent
         );
     }
     for m in &s.markers {

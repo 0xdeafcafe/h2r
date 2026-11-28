@@ -15,7 +15,7 @@ use map::writer::max_metadata_size;
 use map::{CacheType, Map};
 
 use super::kit::{self, Facts, Tags};
-use super::{KIT_VERSION, TAG_PATH};
+use super::{manifest, tag_path};
 
 /// What the kit costs a map.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -51,9 +51,10 @@ pub struct Added {
     pub costs: Costs,
 }
 
-/// The string a map carrying this kit interns.
+/// The string a map carrying this kit interns: the manifest's
+/// `<item>_kit_v<kit_version>`.
 pub fn marker_string() -> String {
-    format!("flood_pod_kit_v{KIT_VERSION}")
+    manifest().marker_string()
 }
 
 /// `original` (the multiplayer map `stem`) with the kit added.
@@ -76,8 +77,9 @@ pub fn add_flood_pod_within(original: &[u8], stem: &str, tag_memory: Option<u32>
     let facts = Facts::read(&mut map).with_context(|| format!("{stem}: the Flood pod"))?;
     let mut set = TagSet::from_map(&mut map).with_context(|| format!("{stem}: its tags"))?;
     ensure!(
-        set.find(map::FourCC(*b"vehi"), TAG_PATH).is_none(),
-        "{stem}: the map already has {TAG_PATH}.vehi"
+        set.find(map::FourCC(*b"vehi"), tag_path()).is_none(),
+        "{stem}: the map already has {}.vehi",
+        tag_path()
     );
     let before = set.slots.len();
     // The map's index gains room for the tags.

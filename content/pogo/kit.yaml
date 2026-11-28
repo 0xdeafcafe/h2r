@@ -1,7 +1,54 @@
 # The Pogo Stick's kit manifest (crates/tools/content-kit, `atlas`): the
-# atlas the three looks share and the regions a part names. The table
-# scripts/pogo-atlas.py paints and content/pogo/README.md lists.
+# atlas the three looks share and the regions a part names (the table
+# scripts/pogo-atlas.py paints and content/pogo/README.md lists), and the
+# rest of what the kit builds the stick from: its version, tag paths, one
+# material and region, bounding sphere, physics sphere, rig, nodes, markers
+# and the weapon class it is held as.
 item: pogo
+kit_version: 2
+folder: objects\weapons\multiplayer\pogo
+tag_path: objects\weapons\multiplayer\pogo\pogo
+material: hard_metal_thin_hum
+region: default
+# The stick's bounding sphere, model space: its middle and a radius covering
+# both ends.
+bounding: { offset: [0.0, 0.059, -0.165], radius: 0.22 }
+# The physics model's one sphere: on the shaft at the sleeve, a little wider
+# than it. Kilograms.
+physics: { centre: [0.0, 0.059, -0.2], radius: 0.03, mass: 8.0 }
+# Where a rider meets the stick, model space, world units: +X forward, +Y
+# left, +Z up, the origin the right grip. `travel` is how far the piston
+# slides up into the sleeve.
+rig:
+  points:
+    grip_right: [0.0, 0.0, 0.0]
+    grip_left: [0.0, 0.118, 0.0]
+    peg_right: [0.0, 0.023, -0.279]
+    peg_left: [0.0, 0.095, -0.279]
+    foot: [0.0, 0.059, -0.361]
+    piston: [0.0, 0.059, -0.200]
+  values:
+    travel: 0.049
+# A source has the frame, then at most the piston, its child.
+nodes:
+  - { name: frame }
+  - { name: piston, parent: frame }
+# The markers every look has, each at the rig point of its name.
+markers:
+  - { name: grip_right, node: frame }
+  - { name: grip_left, node: frame }
+  - { name: peg_right, node: frame }
+  - { name: peg_left, node: frame }
+  - { name: foot, node: piston }
+# A unit takes a weapon only when its animation graph has an `idle` for the
+# weapon's class and type: the stick is held as the magnum, which both
+# player graphs hold.
+hold:
+  bipeds:
+    - objects\characters\masterchief\masterchief_mp
+    - objects\characters\elite\elite_mp
+  class: [pistol, hp]
+  mode: combat
 atlas:
   width: 512
   height: 256

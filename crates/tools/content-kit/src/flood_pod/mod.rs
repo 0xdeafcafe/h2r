@@ -12,9 +12,12 @@
 //! The primitives (lathes, sweeps, boxes), the mesher and the atlas's
 //! `bitm` writer are the Pogo Stick's (`crate::{source, mesh, texture}`).
 //!
-//! The pod has one rig ([`RIG`]): a `shell` node and four `petal` nodes
+//! The pod has one rig ([`rig`]): a `shell` node and four `petal` nodes
 //! hinged on it, which the game turns to open the pod; the model is drawn
-//! shut.
+//! shut. Its values, tag path, version, material and the rest are the
+//! manifest's (`content/flood-pod/kit.yaml`, [`manifest`]).
+
+use crate::atlas::Manifest;
 
 pub mod inject;
 pub mod kit;
@@ -23,33 +26,44 @@ pub mod source;
 #[cfg(test)]
 mod tests;
 
-/// The pod's tags' path, the same for each group.
-pub const TAG_PATH: &str = r"objects\vehicles\flood_pod\flood_pod";
+/// The item manifest the pod is built from, `content/flood-pod/kit.yaml`.
+pub fn manifest() -> &'static Manifest {
+    source::manifest()
+}
 
-/// The kit's version: part of the string (`flood_pod_kit_v<n>`) a map
-/// carrying the kit interns.
-pub const KIT_VERSION: u32 = 1;
+/// The pod's tags' path, the same for each group.
+pub fn tag_path() -> &'static str {
+    manifest().tag_path()
+}
 
 /// The root node: the root bulb, the collar, the sac, the ribs and the
 /// tendrils.
-pub const NODE_SHELL: &str = "shell";
-/// How many petals the shell has, and how many squad exits.
-pub const PETALS: usize = 4;
+pub fn node_shell() -> &'static str {
+    &manifest().nodes[0].name
+}
+
+/// How many petals the shell has, and how many squad exits: the manifest's
+/// nodes after the shell.
+pub fn petals() -> usize {
+    manifest().nodes.len() - 1
+}
 
 /// Petal `k`'s node: `petal_0` on +X, then anticlockwise seen from above
 /// (+Y, -X, -Y).
 pub fn petal_node(k: usize) -> String {
-    format!("petal_{k}")
+    manifest().nodes[1 + k].name.clone()
 }
 
 /// The marker at the point of the tip, where the pod meets the ground:
 /// the model's origin.
-pub const MARKER_IMPACT: &str = "impact";
+pub fn marker_impact() -> &'static str {
+    &manifest().markers[0].name
+}
 
 /// Squad exit `k`'s marker: a place on the ground beside the pod, between
 /// petals `k` and `k + 1`, where a member of the squad is put.
 pub fn squad_exit_marker(k: usize) -> String {
-    format!("squad_exit_{k}")
+    manifest().markers[1 + k].name.clone()
 }
 
 /// Where the pod's moving parts are, model space, world units: +X forward,
@@ -65,12 +79,16 @@ pub struct Rig {
     pub open: f32,
 }
 
-pub const RIG: Rig = Rig {
-    hinge_radius: 0.345,
-    hinge_height: 0.54,
-    exit_radius: 0.75,
-    open: 1.9,
-};
+/// The pod's rig: the manifest's `rig.values`.
+pub fn rig() -> Rig {
+    let m = manifest();
+    Rig {
+        hinge_radius: m.value("hinge_radius"),
+        hinge_height: m.value("hinge_height"),
+        exit_radius: m.value("exit_radius"),
+        open: m.value("open"),
+    }
+}
 
 impl Rig {
     /// The way petal `k` is from the axis: a unit vector on the ground.

@@ -247,7 +247,8 @@ fn read_gives_the_model_its_markers_and_the_first_person_paths() {
         .iter()
         .filter_map(|mk| mk["name"].as_str())
         .collect();
-    for (name, _) in content_kit::MARKERS {
+    for spec in &content_kit::source::manifest().markers {
+        let name = spec.name.as_str();
         assert!(markers.contains(&name), "{name}: {markers:?}");
     }
     let fp = &r["first_person"][0];

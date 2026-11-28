@@ -94,4 +94,4 @@ aliases, the mounted pose's numbers and each trick's
 (docs/game/pogo-stick.md, "The pose"). They are hand-keyed and have not
 been seen in a game; its header documents every field.
 
-`kit.yaml` is the item manifest (`crates/tools/content-kit`, `atlas`): the atlas size and the regions a part names.
+`kit.yaml` is the item manifest (`crates/tools/content-kit`, `atlas`): the atlas size and the regions a part names, and the stick's kit version, tag paths, material, region, bounding and physics spheres, rig points, node and marker names, and the weapon class it is held as. The kit reads them; it holds no stick-specific value of its own.

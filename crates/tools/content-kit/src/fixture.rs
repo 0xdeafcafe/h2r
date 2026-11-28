@@ -37,7 +37,7 @@ pub fn fixture(pad: usize) -> Vec<u8> {
     let globals = {
         let mut names = Block::zeroed(2 * 0xb4);
         names.string_id(0, "soft_organic_flesh");
-        names.string_id(0xb4, kit::MATERIAL);
+        names.string_id(0xb4, crate::source::manifest().material());
         let mut root = Block::zeroed(0x284);
         root.block(0x150, 2, names);
         root

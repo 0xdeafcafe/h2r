@@ -13,7 +13,21 @@ use tags::model::RenderModelGeometry;
 use crate::kit::{self, Facts};
 use crate::mesh::{self, Mesh};
 use crate::source::{self, Source};
-use crate::{MARKERS, NODE_FRAME, NODE_PISTON, RIG, Style, texture};
+use crate::atlas::Manifest;
+use crate::{Style, texture};
+
+/// The stick's manifest, `content/pogo/kit.yaml`.
+fn item() -> &'static Manifest {
+    source::manifest()
+}
+
+fn node_frame() -> &'static str {
+    &item().nodes[0].name
+}
+
+fn node_piston() -> &'static str {
+    &item().nodes[1].name
+}
 
 /// The most triangles and nodes a stick has.
 const MAX_TRIANGLES: usize = 2000;
@@ -98,20 +112,21 @@ fn every_source_has_the_rigs_nodes_and_markers() {
         let s = Source::builtin(style).unwrap();
         assert_eq!(s.name, format!("pogo_{}", style.id()));
         assert_eq!(s.nodes.len(), 2, "{}", s.name);
-        assert_eq!(s.nodes[0].name, NODE_FRAME);
+        assert_eq!(s.nodes[0].name, node_frame());
         assert_eq!(s.nodes[0].at, [0.0; 3]);
-        assert_eq!(s.nodes[1].name, NODE_PISTON);
-        assert_eq!(s.nodes[1].parent.as_deref(), Some(NODE_FRAME));
-        assert_eq!(s.nodes[1].at, RIG.piston, "{}", s.name);
-        assert_eq!(s.markers.len(), MARKERS.len(), "{}", s.name);
-        for (name, node) in MARKERS {
+        assert_eq!(s.nodes[1].name, node_piston());
+        assert_eq!(s.nodes[1].parent.as_deref(), Some(node_frame()));
+        assert_eq!(s.nodes[1].at, item().point("piston"), "{}", s.name);
+        assert_eq!(s.markers.len(), item().markers.len(), "{}", s.name);
+        for spec in &item().markers {
+            let name = spec.name.as_str();
             let m = s
                 .markers
                 .iter()
                 .find(|m| m.name == name)
                 .unwrap_or_else(|| panic!("{}: no marker {name}", s.name));
-            assert_eq!(m.node, node, "{}: {name}", s.name);
-            assert_eq!(Some(m.at), RIG.marker(name), "{}: {name}", s.name);
+            assert_eq!(m.node, spec.node, "{}: {name}", s.name);
+            assert_eq!(m.at, item().point(name), "{}: {name}", s.name);
         }
     }
 }
@@ -228,7 +243,7 @@ fn normals_are_unit_and_triangles_have_area() {
 fn the_piston_passes_into_the_sleeve() {
     for style in Style::ALL {
         let s = Source::builtin(style).unwrap();
-        let piston = s.node(NODE_PISTON).unwrap();
+        let piston = s.node(node_piston()).unwrap();
         let m = mesh::build(&s).unwrap();
         let mut any = false;
         for p in m.parts.iter().filter(|p| p.node == piston) {
@@ -243,7 +258,7 @@ fn the_piston_passes_into_the_sleeve() {
                     v.position
                 );
                 assert!(
-                    z <= RIG.piston[2] - 0.04 + 1e-5,
+                    z <= item().point("piston")[2] - 0.04 + 1e-5,
                     "{}: {:?}",
                     s.name,
                     v.position
@@ -253,7 +268,7 @@ fn the_piston_passes_into_the_sleeve() {
         assert!(any, "{}: no part on the piston", s.name);
         // The foot marker is the piston's lowest point.
         let (lo, _) = m.bounds();
-        assert!((lo[2] - RIG.foot[2]).abs() < 1e-4);
+        assert!((lo[2] - item().point("foot")[2]).abs() < 1e-4);
     }
 }
 
@@ -526,10 +541,10 @@ fn check_model(map: &mut Map<Cursor<Vec<u8>>>, bytes: &[u8], id: TagId, style: S
         .iter()
         .map(|n| n.name.clone().unwrap_or_default())
         .collect();
-    assert_eq!(names, [NODE_FRAME, NODE_PISTON]);
+    assert_eq!(names, [node_frame(), node_piston()]);
     assert_eq!(g.nodes[0].wire.parent_index, -1);
     assert_eq!(g.nodes[1].wire.parent_index, 0);
-    assert_eq!(g.nodes[1].wire.translation, RIG.piston);
+    assert_eq!(g.nodes[1].wire.translation, item().point("piston"));
     assert_eq!(g.sections.len(), 1);
     assert_eq!(g.materials.len(), 1);
     let s = &g.sections[0];
@@ -563,7 +578,7 @@ fn check_model(map: &mut Map<Cursor<Vec<u8>>>, bytes: &[u8], id: TagId, style: S
         word(&tag, 0x58) as usize,
         (word(&tag, 0x5c) - base) as usize,
     );
-    assert_eq!(count, MARKERS.len());
+    assert_eq!(count, item().markers.len());
     for k in 0..count {
         let e = at + k * 0xc;
         let name = tags::StringId(word(&tag, e))
@@ -571,9 +586,11 @@ fn check_model(map: &mut Map<Cursor<Vec<u8>>>, bytes: &[u8], id: TagId, style: S
             .unwrap()
             .unwrap()
             .to_owned();
-        let (_, node) = MARKERS
-            .into_iter()
-            .find(|(n, _)| *n == name)
+        let node = item()
+            .markers
+            .iter()
+            .find(|m| m.name == name)
+            .map(|m| m.node.as_str())
             .expect("a rig marker");
         assert_eq!(word(&tag, e + 4), 1, "{name}: one instance");
         let i = (word(&tag, e + 8) - base) as usize;
@@ -582,7 +599,7 @@ fn check_model(map: &mut Map<Cursor<Vec<u8>>>, bytes: &[u8], id: TagId, style: S
         let local: [f32; 3] = std::array::from_fn(|c| f32::from_bits(word(&tag, i + 4 + 4 * c)));
         let world = mesh::add(local, source.nodes[on].at);
         assert!(
-            close(world, RIG.marker(&name).unwrap(), 1e-6),
+            close(world, item().point(&name), 1e-6),
             "{name}: {world:?}"
         );
     }
@@ -593,7 +610,7 @@ fn kitted() -> (Vec<u8>, [TagId; 3]) {
     let original = fixture(0);
     let mut map = Map::from_reader(Cursor::new(original)).unwrap();
     let facts = Facts::read_with_class(&mut map, fixture_class()).unwrap();
-    assert_eq!(facts.material, (kit::MATERIAL.to_owned(), 1));
+    assert_eq!(facts.material, ("hard_metal_thin_hum".to_owned(), 1));
     assert_eq!(facts.layout.stem, kit::LAYOUTS[0].stem);
     let mut set = TagSet::from_map(&mut map).unwrap();
     let looks = kit::install_all(&mut set, &facts).unwrap();
@@ -630,7 +647,7 @@ fn the_weapon_is_inert_and_held_as_the_class() {
         1 << 16,
         "no binocular zoom, nothing else"
     );
-    assert_eq!(f32::from_bits(word(&weap, 4)), kit::BOUNDING_RADIUS);
+    assert_eq!(f32::from_bits(word(&weap, 4)), item().bounding().radius);
     // Held, it has the map's pistol's first-person view: both elements,
     // each a model and a graph the map has.
     let fp = kit::first_person_of(&mut map, weapons[0]).unwrap();
@@ -753,7 +770,7 @@ fn every_multiplayer_map_holds_the_class() {
         let graphs = kit::player_graphs(&mut map).unwrap_or_else(|e| panic!("{stem}: {e:#}"));
         assert_eq!(
             graphs.len(),
-            kit::PLAYER_BIPEDS.len(),
+            item().hold().bipeds.len(),
             "{stem}: both player bipeds"
         );
         let class = kit::player_class(&mut map).unwrap_or_else(|e| panic!("{stem}: {e:#}"));
@@ -834,6 +851,104 @@ fn manifests_are_the_retired_tables() {
     assert_eq!(source::manifest().max_triangles, None);
     assert_eq!(crate::flood_pod::source::manifest().max_triangles, Some(2000));
 
+    // Every other value is the constant the manifest retired, to the bit.
+    fn bits(v: [f32; 3]) -> [u32; 3] {
+        v.map(f32::to_bits)
+    }
+    let stick = source::manifest();
+    assert_eq!(stick.item, "pogo");
+    assert_eq!(stick.kit_version(), 2);
+    assert_eq!(stick.marker_string(), "pogo_kit_v2");
+    assert_eq!(stick.folder(), ::pogo::FOLDER);
+    assert_eq!(stick.folder(), r"objects\weapons\multiplayer\pogo");
+    assert_eq!(stick.tag_path(), format!(r"{}\pogo", ::pogo::FOLDER));
+    assert_eq!(stick.material(), "hard_metal_thin_hum");
+    assert_eq!(stick.region(), "default");
+    let b = stick.bounding();
+    assert_eq!(bits(b.offset), bits([0.0, 0.059, -0.165]));
+    assert_eq!(b.radius.to_bits(), 0.22_f32.to_bits());
+    let p = stick.physics();
+    assert_eq!(bits(p.centre), bits([0.0, 0.059, -0.2]));
+    assert_eq!(p.radius.to_bits(), 0.03_f32.to_bits());
+    assert_eq!(p.mass.to_bits(), 8.0_f32.to_bits());
+    assert_eq!(stick.field_of_view, None);
+    let rig = ::pogo::RIG;
+    for (name, want) in [
+        ("grip_right", rig.grip_r),
+        ("grip_left", rig.grip_l),
+        ("peg_right", rig.peg_r),
+        ("peg_left", rig.peg_l),
+        ("foot", rig.foot),
+        ("piston", rig.piston),
+    ] {
+        assert_eq!(bits(stick.point(name)), bits(want), "{name}");
+    }
+    assert_eq!(stick.rig.points.len(), 6);
+    assert_eq!(stick.value("travel").to_bits(), rig.travel.to_bits());
+    assert_eq!(stick.rig.values.len(), 1);
+    let nodes: Vec<_> = stick.nodes.iter().map(|n| (n.name.as_str(), n.parent.as_deref())).collect();
+    assert_eq!(nodes, [("frame", None), ("piston", Some("frame"))]);
+    let markers: Vec<_> = stick.markers.iter().map(|m| (m.name.as_str(), m.node.as_str())).collect();
+    assert_eq!(
+        markers,
+        [
+            ("grip_right", "frame"),
+            ("grip_left", "frame"),
+            ("peg_right", "frame"),
+            ("peg_left", "frame"),
+            ("foot", "piston"),
+        ]
+    );
+    let hold = stick.hold();
+    assert_eq!(
+        hold.bipeds,
+        [
+            r"objects\characters\masterchief\masterchief_mp",
+            r"objects\characters\elite\elite_mp",
+        ]
+    );
+    assert_eq!(hold.class, ["pistol", "hp"]);
+    assert_eq!(hold.mode, "combat");
+
+    let pod = crate::flood_pod::manifest();
+    assert_eq!(pod.item, "flood_pod");
+    assert_eq!(pod.kit_version(), 1);
+    assert_eq!(pod.marker_string(), "flood_pod_kit_v1");
+    assert_eq!(crate::flood_pod::inject::marker_string(), "flood_pod_kit_v1");
+    assert_eq!(pod.tag_path(), r"objects\vehicles\flood_pod\flood_pod");
+    assert_eq!(pod.folder, None);
+    assert_eq!(pod.material(), "soft_organic_flesh");
+    assert_eq!(pod.region(), "default");
+    let b = pod.bounding();
+    assert_eq!(bits(b.offset), bits([0.0, 0.0, 0.6]));
+    assert_eq!(b.radius.to_bits(), 1.3_f32.to_bits());
+    let p = pod.physics();
+    assert_eq!(bits(p.centre), bits([0.0, 0.0, 0.38]));
+    assert_eq!(p.radius.to_bits(), 0.38_f32.to_bits());
+    assert_eq!(p.mass.to_bits(), 600.0_f32.to_bits());
+    assert_eq!(pod.field_of_view().to_bits(), 1.221_730_5_f32.to_bits());
+    let rig = crate::flood_pod::rig();
+    assert_eq!(rig.hinge_radius.to_bits(), 0.345_f32.to_bits());
+    assert_eq!(rig.hinge_height.to_bits(), 0.54_f32.to_bits());
+    assert_eq!(rig.exit_radius.to_bits(), 0.75_f32.to_bits());
+    assert_eq!(rig.open.to_bits(), 1.9_f32.to_bits());
+    assert!(pod.rig.points.is_empty());
+    assert_eq!(pod.rig.values.len(), 4);
+    assert_eq!(crate::flood_pod::petals(), 4);
+    assert_eq!(
+        pod.node_names(),
+        ["shell", "petal_0", "petal_1", "petal_2", "petal_3"]
+    );
+    assert!(pod.nodes[1..].iter().all(|n| n.parent.as_deref() == Some("shell")));
+    assert!(pod.nodes[0].parent.is_none());
+    let markers: Vec<_> = pod.markers.iter().map(|m| m.name.as_str()).collect();
+    assert_eq!(
+        markers,
+        ["impact", "squad_exit_0", "squad_exit_1", "squad_exit_2", "squad_exit_3"]
+    );
+    assert!(pod.markers.iter().all(|m| m.node == "shell"));
+    assert!(pod.hold.is_none());
+
     // The check refuses a region off the atlas, a repeat and an overlap.
     let bad = |regions: &str| {
         Manifest::parse(&format!(
@@ -844,4 +959,17 @@ fn manifests_are_the_retired_tables() {
     assert!(bad("    - { name: a, rect: [0, 0, 4, 4] }\n    - { name: a, rect: [4, 0, 8, 4] }\n").is_err());
     assert!(bad("    - { name: a, rect: [0, 0, 4, 4] }\n    - { name: b, rect: [3, 0, 8, 4] }\n").is_err());
     assert!(bad("    - { name: a, rect: [0, 0, 4, 4] }\n    - { name: b, rect: [4, 0, 8, 4] }\n").is_ok());
+
+    // The new sections refuse unknown keys and nodes out of order.
+    let with = |extra: &str| {
+        Manifest::parse(&format!(
+            "item: x\natlas:\n  width: 8\n  height: 8\n  inset: 0.0\n  regions: []\n{extra}"
+        ))
+    };
+    assert!(with("bounding: { offset: [0, 0, 0], radius: 1.0, mass: 2.0 }\n").is_err());
+    assert!(with("rig: { points: {}, values: {}, other: 1 }\n").is_err());
+    assert!(with("nodes:\n  - { name: a, parent: b }\n  - { name: b }\n").is_err());
+    assert!(with("nodes:\n  - { name: a }\n  - { name: a }\n").is_err());
+    assert!(with("nodes:\n  - { name: a }\nmarkers:\n  - { name: m, node: b }\n").is_err());
+    assert!(with("nodes:\n  - { name: a }\nmarkers:\n  - { name: m, node: a }\n").is_ok());
 }

@@ -16,7 +16,7 @@ use super::inject::{self, add_flood_pod, add_flood_pod_within};
 use super::kit::{self, GROUPS};
 use super::source::{self, max_triangles};
 use super::{
-    KIT_VERSION, MARKER_IMPACT, NODE_SHELL, PETALS, RIG, TAG_PATH, petal_node, squad_exit_marker,
+    manifest, marker_impact, node_shell, petal_node, petals, rig, squad_exit_marker, tag_path,
 };
 
 /// The hash `scripts/flood-pod-atlas.py` prints: FNV-1a, 64 bits, over the
@@ -60,26 +60,26 @@ fn edited(from: &str, to: &str) -> String {
 
 #[test]
 fn the_rig_is_four_petals_a_quarter_turn_apart() {
-    assert!(close(RIG.hinge(0), [0.345, 0.0, 0.54], 1e-6));
-    assert!(close(RIG.hinge(1), [0.0, 0.345, 0.54], 1e-6));
-    assert!(close(RIG.hinge(2), [-0.345, 0.0, 0.54], 1e-6));
-    assert!(close(RIG.hinge(3), [0.0, -0.345, 0.54], 1e-6));
-    for k in 0..PETALS {
-        let (d, axis) = (RIG.petal_direction(k), RIG.hinge_axis(k));
+    assert!(close(rig().hinge(0), [0.345, 0.0, 0.54], 1e-6));
+    assert!(close(rig().hinge(1), [0.0, 0.345, 0.54], 1e-6));
+    assert!(close(rig().hinge(2), [-0.345, 0.0, 0.54], 1e-6));
+    assert!(close(rig().hinge(3), [0.0, -0.345, 0.54], 1e-6));
+    for k in 0..petals() {
+        let (d, axis) = (rig().petal_direction(k), rig().hinge_axis(k));
         assert!(mesh::dot(d, axis).abs() < 1e-6, "petal {k}");
         // A right-handed turn about the axis takes up to outward.
         assert!(
             close(mesh::cross(axis, [0.0, 0.0, 1.0]), d, 1e-6),
             "petal {k}"
         );
-        let exit = RIG.squad_exit(k);
+        let exit = rig().squad_exit(k);
         assert_eq!(exit[2], 0.0);
-        assert!((mesh::length(exit) - RIG.exit_radius).abs() < 1e-6);
+        assert!((mesh::length(exit) - rig().exit_radius).abs() < 1e-6);
         // Between this petal and the next.
-        let next = RIG.petal_direction((k + 1) % PETALS);
+        let next = rig().petal_direction((k + 1) % petals());
         assert!(mesh::dot(exit, d) > 0.0 && mesh::dot(exit, next) > 0.0);
     }
-    assert!(RIG.open > std::f32::consts::FRAC_PI_2 && RIG.open < std::f32::consts::PI);
+    assert!(rig().open > std::f32::consts::FRAC_PI_2 && rig().open < std::f32::consts::PI);
 }
 
 #[test]
@@ -89,15 +89,15 @@ fn the_petal_nodes_are_parented_to_the_shell() {
         (s.name.as_str(), s.atlas.as_str()),
         ("flood_pod", "flood_pod")
     );
-    assert_eq!(s.nodes.len(), 1 + PETALS);
-    assert_eq!(s.nodes[0].name, NODE_SHELL);
+    assert_eq!(s.nodes.len(), 1 + petals());
+    assert_eq!(s.nodes[0].name, node_shell());
     assert_eq!(s.nodes[0].parent, None);
     assert_eq!(s.nodes[0].at, [0.0; 3]);
-    for k in 0..PETALS {
+    for k in 0..petals() {
         let n = &s.nodes[1 + k];
         assert_eq!(n.name, petal_node(k));
-        assert_eq!(n.parent.as_deref(), Some(NODE_SHELL));
-        assert!(close(n.at, RIG.hinge(k), 1e-3), "{}: {:?}", n.name, n.at);
+        assert_eq!(n.parent.as_deref(), Some(node_shell()));
+        assert!(close(n.at, rig().hinge(k), 1e-3), "{}: {:?}", n.name, n.at);
     }
 
     let mesh = source::build(&s).unwrap();
@@ -111,24 +111,24 @@ fn the_petal_nodes_are_parented_to_the_shell() {
         links,
         [(-1, 1, -1), (0, -1, 2), (0, -1, 3), (0, -1, 4), (0, -1, -1)]
     );
-    for k in 0..PETALS {
-        assert!(close(model.nodes[1 + k].translation, RIG.hinge(k), 1e-3));
+    for k in 0..petals() {
+        assert!(close(model.nodes[1 + k].translation, rig().hinge(k), 1e-3));
     }
 }
 
 #[test]
 fn the_markers_are_present() {
     let s = source::builtin().unwrap();
-    assert_eq!(s.markers.len(), 1 + PETALS);
-    assert_eq!(s.marker(MARKER_IMPACT), Some([0.0; 3]));
-    for k in 0..PETALS {
+    assert_eq!(s.markers.len(), 1 + petals());
+    assert_eq!(s.marker(marker_impact()), Some([0.0; 3]));
+    for k in 0..petals() {
         let name = squad_exit_marker(k);
         let at = s
             .marker(&name)
             .unwrap_or_else(|| panic!("no marker {name}"));
-        assert!(close(at, RIG.squad_exit(k), 1e-3), "{name}: {at:?}");
+        assert!(close(at, rig().squad_exit(k), 1e-3), "{name}: {at:?}");
     }
-    assert!(s.markers.iter().all(|m| m.node == NODE_SHELL));
+    assert!(s.markers.iter().all(|m| m.node == node_shell()));
 
     // The exits are on the ground, clear of the shut pod's body: no
     // triangle of the root, the collar, the sac or a petal is that far out.
@@ -140,7 +140,7 @@ fn the_markers_are_present() {
         for v in &built.vertices {
             let out = v.position[0].hypot(v.position[1]);
             assert!(
-                out < RIG.exit_radius - 0.2,
+                out < rig().exit_radius - 0.2,
                 "{out} out in {}",
                 part.region()
             );
@@ -222,29 +222,29 @@ fn the_pod_stands_on_its_tip_and_each_petal_is_on_its_side() {
         assert!(lo[a] > -1.0 && hi[a] < 1.0, "{lo:?}..{hi:?}");
     }
     // Everything is inside the object's bounding sphere, shut.
-    let mut petals = [0usize; PETALS];
+    let mut petal_parts = vec![0usize; petals()];
     for p in &m.parts {
         for v in &p.vertices {
-            let from = mesh::length(mesh::sub(v.position, kit::BOUNDING_OFFSET));
-            assert!(from < kit::BOUNDING_RADIUS, "{:?}", v.position);
+            let from = mesh::length(mesh::sub(v.position, manifest().bounding().offset));
+            assert!(from < manifest().bounding().radius, "{:?}", v.position);
         }
         // Node 0 is the shell; node 1 + k is petal k.
         let Some(k) = p.node.checked_sub(1) else {
             continue;
         };
-        petals[k] += 1;
-        let d = RIG.petal_direction(k);
+        petal_parts[k] += 1;
+        let d = rig().petal_direction(k);
         for v in &p.vertices {
             assert!(
-                mesh::dot(v.position, d) > -0.02 && v.position[2] > RIG.hinge_height - 0.06,
+                mesh::dot(v.position, d) > -0.02 && v.position[2] > rig().hinge_height - 0.06,
                 "petal {k}: {:?}",
                 v.position
             );
         }
     }
     assert!(
-        petals.iter().all(|n| *n == petals[0] && *n > 0),
-        "{petals:?}"
+        petal_parts.iter().all(|n| *n == petal_parts[0] && *n > 0),
+        "{petal_parts:?}"
     );
 }
 
@@ -329,14 +329,14 @@ fn check_model(map: &mut Map<Cursor<Vec<u8>>>, bytes: &[u8], id: TagId) {
         .iter()
         .map(|n| n.name.clone().unwrap_or_default())
         .collect();
-    let mut want = vec![NODE_SHELL.to_owned()];
-    want.extend((0..PETALS).map(petal_node));
+    let mut want = vec![node_shell().to_owned()];
+    want.extend((0..petals()).map(petal_node));
     assert_eq!(names, want);
     assert_eq!(g.nodes[0].wire.parent_index, -1);
-    for k in 0..PETALS {
+    for k in 0..petals() {
         let n = &g.nodes[1 + k];
         assert_eq!(n.wire.parent_index, 0, "{}", names[1 + k]);
-        assert!(close(n.wire.translation, RIG.hinge(k), 1e-3));
+        assert!(close(n.wire.translation, rig().hinge(k), 1e-3));
     }
     assert_eq!(g.sections.len(), 1);
     assert_eq!(g.materials.len(), 1);
@@ -371,7 +371,7 @@ fn check_model(map: &mut Map<Cursor<Vec<u8>>>, bytes: &[u8], id: TagId) {
         word(&tag, 0x58) as usize,
         (word(&tag, 0x5c) - base) as usize,
     );
-    assert_eq!(count, 1 + PETALS);
+    assert_eq!(count, 1 + petals());
     let mut seen = Vec::new();
     for k in 0..count {
         let e = at + k * 0xc;
@@ -395,8 +395,8 @@ fn check_model(map: &mut Map<Cursor<Vec<u8>>>, bytes: &[u8], id: TagId) {
         seen.push(name);
     }
     seen.sort();
-    let mut all = vec![MARKER_IMPACT.to_owned()];
-    all.extend((0..PETALS).map(squad_exit_marker));
+    let mut all = vec![marker_impact().to_owned()];
+    all.extend((0..petals()).map(squad_exit_marker));
     all.sort();
     assert_eq!(seen, all);
 }
@@ -416,12 +416,12 @@ fn check_chain(bytes: &[u8], pod: kit::Tags) {
             .tag(id)
             .unwrap_or_else(|e| panic!("no {}: {e}", FourCC(*group)));
         assert_eq!(t.group, FourCC(*group));
-        assert_eq!(t.name.as_deref(), Some(TAG_PATH));
+        assert_eq!(t.name.as_deref(), Some(tag_path()));
     }
     let vehi = map.read_tag_bytes(pod.vehicle).unwrap();
     assert_eq!(word(&vehi, 0) & 0xffff, 1, "the object type is a vehicle's");
     assert_eq!(TagId(word(&vehi, 0x38)), pod.model, "vehi -> hlmt");
-    assert_eq!(f32::from_bits(word(&vehi, 4)), kit::BOUNDING_RADIUS);
+    assert_eq!(f32::from_bits(word(&vehi, 4)), manifest().bounding().radius);
     let hlmt = map.read_tag_bytes(pod.model).unwrap();
     assert_eq!(TagId(word(&hlmt, 4)), pod.render, "hlmt -> mode");
     assert!(holds(&hlmt, pod.physics), "hlmt -> phmo");
@@ -442,7 +442,7 @@ fn the_kit_goes_into_a_map_and_reads_back() {
     let added = add_flood_pod(&original, "court").unwrap();
     let map = Map::from_reader(Cursor::new(added.bytes.as_slice())).unwrap();
     assert_eq!(map.header().cache_type, CacheType::Multiplayer);
-    let marker = format!("flood_pod_kit_v{KIT_VERSION}");
+    let marker = "flood_pod_kit_v1".to_owned();
     assert_eq!(inject::marker_string(), marker);
     assert!(map.strings().iter().flatten().any(|s| *s == marker));
     // Every tag the map had is still there, by name and datum.
@@ -461,7 +461,7 @@ fn the_kit_goes_into_a_map_and_reads_back() {
 fn the_pod_is_made_of_flesh_where_the_map_has_it() {
     let mut map = Map::from_reader(Cursor::new(fixture(0))).unwrap();
     let facts = kit::Facts::read(&mut map).unwrap();
-    assert_eq!(facts.shading.material, (kit::MATERIAL.to_owned(), 0));
+    assert_eq!(facts.shading.material, ("soft_organic_flesh".to_owned(), 0));
 }
 
 #[test]
