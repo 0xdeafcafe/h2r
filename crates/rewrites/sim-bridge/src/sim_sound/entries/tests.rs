@@ -125,9 +125,9 @@ fn every_outside_entry_has_a_rust_body() {
     ours.sort();
     want.sort();
     assert_eq!(ours, want, "ENTRIES is the doc's table");
-    // Under the switch every entry is hooked by the table, and nothing is
-    // with it off.
-    for (spec, on) in [("", false), ("impl.sim.sound-events.table", true), ("-impl.sim.sound-events,impl.sim.sound-events.table", false)] {
+    // Every entry is hooked by the table on every run, the defaults and
+    // a spec that turns everything it can off alike.
+    for spec in ["", "-impl.sim"] {
         let mut r = Registry::new(Switches::parse(spec).unwrap());
         r.add(&SoundTable::new(table(Arc::new(Refusing)))).unwrap();
         let plan = r.build(&Base).unwrap();
@@ -137,17 +137,26 @@ fn every_outside_entry_has_a_rust_body() {
                 c.implement.as_ref().is_some_and(|h| h.label == "sound table")
                     || c.before.iter().any(|h| h.label == "sound table")
             });
-            assert_eq!(hooked, on, "{spec}: {}", e.point.name);
+            assert!(hooked, "{spec}: {}", e.point.name);
         }
     }
 }
 
+/// The table's sounds are the world's sound section: a save carries them
+/// and a restore into another world puts them in that world's table.
 #[test]
-fn the_table_is_off_by_default_and_needs_the_events_switch() {
-    assert!(!on(&Switches::defaults()));
-    assert!(!on(&Switches::parse("").unwrap()));
-    assert!(on(&Switches::parse("impl.sim.sound-events.table").unwrap()));
-    assert!(!on(&Switches::parse("impl.sim.sound-events=off,impl.sim.sound-events.table").unwrap()));
+fn the_world_saves_the_tables_sounds_and_restores_them_into_its_table() {
+    let a = table(Arc::new(Refusing));
+    let request = Request { selection: Some((0, 0)), level: 10.0, ..Request::new(TAG) };
+    lock(&a).sounds.admit(&mut Rng::new(1), &tags(), request, 0).unwrap();
+    let saved = crate::world::with_table(Arc::clone(&a)).save();
+    let b = table(Arc::new(Refusing));
+    let mut world = crate::world::with_table(Arc::clone(&b));
+    assert_ne!(world.save(), saved, "an empty table saves another section");
+    world.restore_into(&saved).unwrap();
+    assert!(!lock(&b).sounds.instances().is_empty());
+    assert_eq!(lock(&b).sounds.encode(), lock(&a).sounds.encode());
+    assert_eq!(world.save(), saved);
 }
 
 #[test]

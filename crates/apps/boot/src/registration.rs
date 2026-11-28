@@ -825,19 +825,14 @@ pub(crate) fn register_late_for_profile(
     features
         .add(&render_bridge::rasterizer::Rasterizer)
         .map_err(|e| anyhow::anyhow!("rasterizer: {e}"))?;
-    // The sound simulation (docs/engine/sound-sim.md).
-    let sound_events = features.switches().implementation(sim_bridge::sim_sound::EVENTS, false);
-    if sound_events {
-        features.add(&sim_bridge::sim_sound::SimSoundEvents::headless())
-            .map_err(|e| anyhow::anyhow!("sound events: {e}"))?;
-    }
-    // The sound table (docs/engine/sound-instances.md): with
-    // impl.sim.sound-events.table its bodies answer every sound entry and
-    // the events arm above stands down; the tick driver runs its phase.
-    if sim_bridge::sim_sound::entries::on(features.switches()) {
-        features.add(&sim_bridge::sim_sound::entries::SoundTable::process())
-            .map_err(|e| anyhow::anyhow!("sound table: {e}"))?;
-    }
+    // The sound table (docs/engine/sound-instances.md): its bodies answer
+    // every sound entry and the tick driver runs its phase. Every run.
+    features.add(&sim_bridge::sim_sound::entries::SoundTable::process())
+        .map_err(|e| anyhow::anyhow!("sound table: {e}"))?;
+    // The World that holds the table's sounds: the snapshot's sim section
+    // (docs/engine/sim-world.md). Every run.
+    features.add(&sim_bridge::world::SimWorld::process())
+        .map_err(|e| anyhow::anyhow!("sim world: {e}"))?;
     // The effects phase in Rust (docs/engine/effects-parts.md): the part arm
     // here, the effect walk in the tick driver below.
     features.add(&sim_bridge::sim_effects_parts::SimEffectsParts)

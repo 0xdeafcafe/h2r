@@ -1,6 +1,5 @@
 //! The sound table's mixer feed at boot (docs/engine/sound-instances.md,
-//! "Mixer feed", stage D2): with `impl.sim.sound-events.table` the table's
-//! sounds play through DirectSound's mixer, decoded from the running map.
+//! "Mixer feed", stage D2): the table's sounds play through DirectSound's mixer, decoded from the running map.
 //!
 //! [`MapClips`] is the feed's clip source: a `ClipSource` over the running
 //! map's gestalt and raw files (`native_map::open`), opened again when the

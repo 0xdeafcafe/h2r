@@ -16,12 +16,12 @@ use std::sync::Arc;
 pub(crate) use super::profiles::{Case, registry};
 use super::profiles::{registry_for_profile, registry_with_film};
 
-/// Every switch that adds hooks, on (the sim's sound events, which hooks
-/// points other features hook, included; the native renderer, the engine leaves,
+/// Every switch that adds hooks, on (the native renderer, the engine leaves,
+/// the sound table,
 /// Forge, the actor capture, Firefight and the creature probe are on by
 /// default; only the diagnostics and `impl.engine=on` are spelled out;
 /// `rules`, on by default too, stays named).
-pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,actor-net,firefight,rules,impl.sim.sound-events";
+pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,actor-net,firefight,rules";
 
 impl Case {
     fn describe(&self) -> String {
@@ -197,10 +197,9 @@ fn the_plan_builds_with_every_hook_switch_on() {
     // Forge is on by default; `-forge` leaves it out.
     assert_builds(&Case::full(ALL_ON));
     assert_builds(&Case::full(&format!("{ALL_ON},-forge")));
-    // The sound table in place of the events arm: every entry it answers,
-    // the listeners' before first among the bots' map swap.
-    assert_builds(&Case::none(&format!("{ALL_ON},impl.sim.sound-events.table")));
-    assert_builds(&Case::full(&format!("{ALL_ON},impl.sim.sound-events.table")));
+    // The sound table on every run: every entry it answers, the
+    // listeners' before first among the bots' map swap.
+    assert_builds(&Case::none(ALL_ON));
 }
 
 /// The biggest plans a test can build, every switch on, leave at least a
