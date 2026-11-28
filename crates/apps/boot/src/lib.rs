@@ -253,8 +253,30 @@ fn run_configured(
     let coalesce_host_ticks = host_light && switches.feature("host-light.tick-pacing", false);
     // `store-maps`: the disc's maps served from the tag store at
     // <data>/tags (docs/engine/asset-store.md, AS2); off until AS2 is
-    // accepted.
-    let store_maps = switches.feature("store-maps", false);
+    // accepted. A disc with no maps of its own (`<data>/disc/`, the copy of
+    // the image's other files) boots with the store's maps, or not at all
+    // (store_status::serve_from_store).
+    let store_maps = {
+        let feature = switches.feature("store-maps", false);
+        let has_maps = store_status::disc_has_maps(&opts.disc);
+        let root = store_status::root(&opts.data_root);
+        let stored = if has_maps {
+            Vec::new()
+        } else {
+            vfs::store_map::status(&root).maps.into_iter().map(|m| m.map).collect()
+        };
+        let stored: Vec<&str> = stored.iter().map(String::as_str).collect();
+        let serve =
+            store_status::serve_from_store(feature, has_maps, &stored, &opts.disc, &root)?;
+        if serve && !feature {
+            log::note(&format!(
+                "disc: {} has no maps; maps\\*.map are served from the store at {}",
+                opts.disc.display(),
+                root.display()
+            ));
+        }
+        serve
+    };
     let replaying = replay.is_some();
     // The game start a film plays from, if it has one (`theater::film_play`).
     let play_start = match &replay {

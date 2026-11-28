@@ -42,9 +42,9 @@ Evidence labels are those of [docs-style.md](../meta/docs-style.md).
 | Mods in Studio: a fork for one map, its revert, a package's diff, **Changed by** in load order and the conflict rows in Problems | `studio::app::mods::{fork, revert, diff, changed_by}`, `asset.fork`, `asset.revert`, `package.diff`, `asset.links`' `changed_by`, `Problems::levels` | built (AS7); on invented maps |
 | A converter's map kept as a level of the store, found by its stem and assembled like a disc level | `workspace::converted::{store_converted, is_stored, marked, levels}`, `<store>/maps/<stem>.converted` | built (AS10, store side); on invented maps; the converters do not call it yet |
 
-What is missing: a boot that reads the executable, movies and fonts from
-`<data>/disc/` and the maps from the store with no disc image open (the
-guest still opens the image); the level tags (`sbsp`, `ltmp`, `scnr`) are lossy in
+What is missing: a boot from the image that serves its maps from the
+store by default (`store-maps` is off; only a disc with no maps, such as
+`<data>/disc/`, takes them from the store); the level tags (`sbsp`, `ltmp`, `scnr`) are lossy in
 the store, so a retail level is its skeleton and cannot be rebuilt from
 tags; with `store-maps` off, packages still reach the game as
 whole-map caches; an asset's
@@ -186,8 +186,13 @@ progress line per map.
   not a map under `<data>/disc/` (about 560 MB, **V** by the directory of
   the owner's image), once per image: `copied.txt` holds the image's
   stamp and is written after the last file, so a stopped copy continues.
-  Decision 1. A boot that reads them instead of the image is not wired
-  (see "What is missing").
+  Decision 1. `h2 run <data>/disc` boots from that copy: a disc
+  directory with no `maps/*.map` serves the maps from the store, as if
+  `store-maps` were on, when the store holds `shared`,
+  `single_player_shared` and `mainmenu`, and refuses to boot naming the
+  ones it lacks otherwise (`boot::store_status::serve_from_store`).
+  Without that, the game finds no `shared.map`, fails the copy into its
+  cache slots and shows its disc error screen.
 - **Other discs.** The Map Pack's maps and the converted Halo 1 levels
   enter the store through the same `store_map`, as the output of their
   `convert` items ("What it replaces").
