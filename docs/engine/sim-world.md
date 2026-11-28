@@ -79,6 +79,7 @@ writes no section and a save that carries one is refused as `UnknownKind`.
 |---|---|---|---|
 | sound | `sim_sound::instances::Sounds` ([sound-instances.md](sound-instances.md)) | instances (384), loops (128), starts (16), and the chooser | `sim_bridge::sim_sound::entries::SoundTable`, every run; the `World` holds it as `world::SoundStore` |
 | objects | `sim_objects::ObjectTable` (`crates/rewrites/sim-objects/src/table.rs`) | the objects array (capacity from the guest array, 2048 in retail), each slot a header and its body bytes | `sim_bridge::world::OBJECT_TABLE`; the `World` holds it as `world::ObjectStore` |
+| scripts | `sim_script::ScriptTable`, holding `hs::vm::VmState` (`crates/rewrites/sim-script/src/table.rs`) | the thread pool (`0x140` slots, salts and allocation cursor kept), each thread's frames, the global cells and the host strings | `sim_script::ScriptRuntime` updates it each tick; the `World` holds it as `sim_script::ScriptStore` |
 | test | `Probe` | one | the unit tests |
 
 ### The object table
