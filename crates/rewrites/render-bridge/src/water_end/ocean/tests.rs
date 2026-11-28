@@ -12,6 +12,7 @@ const BITMAP: u32 = 0x0050_6b00;
 const IMAGES: u32 = 0x0050_6c00;
 const IMPL: u32 = 0x0050_6a00;
 const SCRATCH: u32 = 0x0050_9000;
+const BSP_AT: u32 = 0x0050_5000;
 const DEVICE_AT: u32 = 0x004f_8000;
 const STREAM_AT: u32 = 0x0050_7100;
 const VERTEX_TYPE: u32 = 5;
@@ -52,7 +53,8 @@ fn mem(flags: u32) -> FlatMemory {
     set(BITMAP + 0x48, IMAGES);
     set(DEF + SHADER, SHADER_TAG);
     set(DEF + GEOMETRY, GEO);
-    set(DEF + PASS_WORD, 0x1234);
+    set(BSP, BSP_AT);
+    set(BSP_AT + WATER_COUNT, 1);
     set(GEO + GEOMETRY_STATE, STREAM_AT);
     set(STREAM_AT + 8, 0x0050_7200);
     set(state::DEVICE, DEVICE_AT);
@@ -138,19 +140,19 @@ fn run_with(m: &mut FlatMemory, clear: bool, al: &dyn Fn(u32) -> u32, mut device
     }
 }
 
-/// With both copy bits and the clear byte, the ocean makes the body's
-/// steps in its order: the grid, the gates, the copies, the clear, the
+/// With the copy bit and the clear byte, the ocean makes the body's
+/// steps in its order: the grid, the gates, the copy, the clear, the
 /// draw state, the quads, then a stamp per image.
 #[test]
 fn the_ocean_makes_the_bodys_steps_in_order() {
-    let mut m = mem(1 << COPY_BIT | 1 << PASS_BIT);
+    let mut m = mem(1 << COPY_BIT);
     m.write(state::DECOMPRESSION_PENDING, &[1]).unwrap();
-    let (calls, events, end) = run(&mut m, true, &|t| if t == PASS_SOURCE { 0x0099_0000 } else { 1 });
+    let (calls, events, end) = run(&mut m, true, &|_| 1);
     let mut order: Vec<String> = events.iter().map(kind).collect();
     order.dedup();
     let g = |t: u32| format!("guest {t:#x}");
     let want: Vec<String> = [
-        g(VISIBLE), g(TEXTURE), g(COPY_TARGET), g(PASS_SOURCE), g(PASS_TARGET), "Clear".into(),
+        g(VISIBLE), g(TEXTURE), "CopyView".into(), "Clear".into(),
         "VertexProgram".into(), "Constants".into(), g(STREAM_COMMIT), "Constants".into(), g(SHADER_BEGIN),
         "PushViewport".into(), "StageState".into(), "Registers".into(), "RenderState".into(), "Registers".into(),
         "Texture".into(), "Draw".into(), g(STAMP),
@@ -166,9 +168,9 @@ fn the_ocean_makes_the_bodys_steps_in_order() {
     assert_eq!(by(VISIBLE).regs.eax, DEF);
     assert_eq!(by(VISIBLE).args, vec![DEF]);
     assert_eq!((by(TEXTURE).regs.eax, by(TEXTURE).regs.ecx), (3, DEF + TEXTURE_BLOCK));
-    assert_eq!(by(PASS_SOURCE).args, vec![DEF + PASS_BLOCK]);
-    // 0x0003bd00(definition + 0x84's word, 0x00131ed0's result).
-    assert_eq!(by(PASS_TARGET).args, vec![0x1234, 0x0099_0000]);
+    // The copy into target 0x16 and the frame's flags (0x0003bea0).
+    assert!(events.contains(&Event::CopyView { target: COPY_INTO }));
+    assert_eq!((m.u8(TARGET_COPIED).unwrap(), m.u8(engine::render_loop::layer::DRAW_FLAG).unwrap()), (1, 1));
     assert_eq!(by(STREAM_COMMIT).args, vec![state::STREAMS]);
     assert_eq!(by(STREAM_COMMIT).regs.esi, GEO);
     assert_eq!(by(SHADER_BEGIN).regs.edi, SHADER_TAG);
@@ -233,21 +235,55 @@ fn an_unmasked_grid_exception_is_unimplemented() {
     run_with(&mut m, false, &|_| 1, Recorder { mxcsr: 0x1f80 & !0x80, ..Recorder::new() });
 }
 
-/// The implementation's bits pick the copies; no clear byte, no clear.
+/// The implementation's copy bit picks the copy, once a frame; the clear
+/// byte the clear.
 #[test]
-fn the_shader_flags_pick_the_copies() {
-    let head = |flags: u32, clear: bool| {
-        let (_, events, _) = run(&mut mem(flags), clear, &|_| 1);
+fn the_shader_flags_pick_the_copy() {
+    let head = |m: &mut FlatMemory, clear: bool| {
+        let (_, events, _) = run(m, clear, &|_| 1);
         events.into_iter().take_while(|e| !matches!(e, Event::VertexProgram { .. })).collect::<Vec<_>>()
     };
     use Event::*;
     let gates = [Guest(VISIBLE), Guest(TEXTURE)];
-    assert_eq!(head(0, false), gates);
-    assert_eq!(head(1 << COPY_BIT, false), [&gates[..], &[Guest(COPY_TARGET)]].concat());
-    assert_eq!(
-        head(1 << PASS_BIT, true),
-        [&gates[..], &[Guest(PASS_SOURCE), Guest(PASS_TARGET), Clear { flags: 0x80, colour: 0x00ff_ffff }]].concat()
-    );
+    assert_eq!(head(&mut mem(0), false), gates);
+    let mut m = mem(1 << COPY_BIT);
+    assert_eq!(head(&mut m, false), [&gates[..], &[CopyView { target: COPY_INTO }]].concat());
+    assert_eq!(m.u8(TARGET_COPIED).unwrap(), 1);
+    // The frame's flag is set: the next call makes no copy.
+    let mut copied = mem(1 << COPY_BIT);
+    copied.set_u8(TARGET_COPIED, 1).unwrap();
+    assert_eq!(head(&mut copied, true), [&gates[..], &[Clear { flags: 0x80, colour: 0x00ff_ffff }]].concat());
+}
+
+/// The cause of the first step the ocean cannot make.
+fn cause(m: &mut FlatMemory, device: &mut Recorder) -> Cause {
+    let mut ocean = Ocean::new(DEF, false, Regs::default());
+    loop {
+        match ocean.next(m, device, Regs { eax: 1, ..Regs::default() }) {
+            Ok(Next::Call(_)) => continue,
+            Ok(end) => panic!("{end:?}"),
+            Err(cause) => break cause,
+        }
+    }
+}
+
+/// A copy the device refuses, a copy with no water in the BSP's way, and
+/// the sky pass into target 0x15 are named; a BSP that does not read too.
+#[test]
+fn the_copies_name_what_they_cannot_make() {
+    let refuse = Recorder::new();
+    refuse.host.refuse_copy.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(cause(&mut mem(1 << COPY_BIT), &mut { refuse }), "copy_target");
+    assert_eq!(cause(&mut mem(1 << PASS_BIT), &mut Recorder::new()), "copy_pass");
+    let mut m = mem(1 << COPY_BIT);
+    m.set_u32(BSP, 0x0010_0000).unwrap();
+    assert_eq!(cause(&mut m, &mut Recorder::new()), "unread");
+    // With no water the copy is skipped and the flags still set.
+    let mut m = mem(1 << COPY_BIT);
+    m.set_u32(BSP_AT + WATER_COUNT, 0).unwrap();
+    let (_, events, _) = run(&mut m, false, &|_| 1);
+    assert!(!events.iter().any(|e| matches!(e, Event::CopyView { .. })));
+    assert_eq!(m.u8(TARGET_COPIED).unwrap(), 1);
 }
 
 /// A gate's AL 0 skips to the stamps; a definition with no shader returns

@@ -19,10 +19,11 @@
 //! Rust makes the shader lookup, the alpha clear `0x0003c515`, the draw
 //! state but for the stream commit and the shader begin ([`ocean::state`])
 //! and the indexed quads natively, and calls the body's other helpers (the
-//! grid, the gates, the copies into targets `0x16` and `0x15`, the stream
-//! commit, the shader begin, the texture stamps) as guest calls, then returns as
-//! the body does. A step it cannot make is `unimplemented!("water ocean:
-//! <cause>")`; a gate word that does not read is `water end: unread`.
+//! grid, the gates, the stream commit, the shader begin, the texture
+//! stamps) as guest calls, then returns as the body does. The copy
+//! `0x0003bea0` into target `0x16` is Rust; the sky pass into target
+//! `0x15` is not made. A step it cannot make is `unimplemented!("water
+//! ocean: <cause>")`, or `water ocean copy: <cause>` for the copies; a gate word that does not read is `water end: unread`.
 
 use std::sync::Arc;
 
@@ -108,7 +109,10 @@ pub fn water_end(mem: &dyn GuestMemory, draw: u8, clear: u8) -> Call {
 /// An ocean step the native renderer cannot make: no guest body runs
 /// instead.
 pub fn ocean_unported(cause: &str) -> ! {
-    unimplemented!("water ocean: {cause}")
+    match cause.strip_prefix("copy_") {
+        Some(copy) => unimplemented!("water ocean copy: {copy}"),
+        None => unimplemented!("water ocean: {cause}"),
+    }
 }
 
 pub static WATER_END: crate::native_targets::Arm = crate::native_targets::Arm::new("water_end");
@@ -281,6 +285,12 @@ mod tests {
     #[should_panic(expected = "water ocean: shader_group")]
     fn an_unported_ocean_step_is_named() {
         ocean_unported("shader_group");
+    }
+
+    #[test]
+    #[should_panic(expected = "water ocean copy: pass")]
+    fn an_unported_copy_is_named() {
+        ocean_unported("copy_pass");
     }
 
     #[test]
