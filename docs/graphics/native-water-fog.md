@@ -127,7 +127,7 @@ Nothing restores the cull between draws, so a later unset pass inherits what an 
 
 #### The fog state
 
-`fog_gpu::FogWords`: the effective fog unit of a draw is the implementation's own render states overlaid on the device's (`d3d::nv2a::d3d_fog` over `D3DRS_FOGENABLE`, `FOGCOLOR`, `FOGTABLEMODE`, `FOGSTART`, `FOGEND`, `FOGDENSITY`, `RANGEFOGENABLE`, read through `Device::render_state` as `stencil_state` reads the stencil). The glue resolves it at the layer-16 call and fills the programs' `PixelUniforms::fog` and `fog_color`. Unreadable, the view stays on the D3D path.
+`fog_gpu::FogWords`: the effective fog unit of a draw is the implementation's own render states overlaid on the device's (`d3d::nv2a::d3d_fog` over `D3DRS_FOGENABLE`, `FOGCOLOR`, `FOGTABLEMODE`, `FOGSTART`, `FOGEND`, `FOGDENSITY`, `RANGEFOGENABLE`, read from the guest's render-state shadow, `native_fog_glue::device_fog_words`, as `native_targets_glue::stencil_state` reads the stencil). The glue resolves it at the layer-16 call and fills the programs' `PixelUniforms::fog` and `fog_color`. Unreadable, the view stays on the D3D path.
 
 The vertex side needs nothing: the pass's own program writes `oFog` as the D3D path's does (the translated module is the D3D path's, text for text). The constants check is the world's. A constant outside the view's `c[0..18]`, the instance's, `c[50..52]` and `c[172]` keeps the material on D3D, and uploads by `0x25d50` outside that set show as these refusals.
 
