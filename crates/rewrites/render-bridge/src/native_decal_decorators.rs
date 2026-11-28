@@ -50,8 +50,8 @@ pub const SWITCH: &str = "impl.render.native-decal-decorators";
 
 /// Whether the stage and its cut are placed: with the native renderer,
 /// unless the switch is off.
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
         && switches.feature("impl.render.native-decal-decorators", true)
 }
 

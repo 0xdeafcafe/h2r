@@ -55,8 +55,8 @@ use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-fog";
 /// Whether the native fog is on.
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 /// What draws the fog: boot's glue over the GPU world and the device.

@@ -490,8 +490,8 @@ const ID: &str = "native-light-walk";
 /// The whole-layer route whose entry loop returns zero handlers. An
 /// explicit walk opt-out also leaves the per-light body on its guest
 /// layer calls, as does timing those calls.
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
         && switches.feature(ID, true)
         && !switches.feature(crate::render_timing::ID, false)
 }

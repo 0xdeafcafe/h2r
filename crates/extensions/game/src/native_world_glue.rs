@@ -826,6 +826,7 @@ pub fn install() {
     crate::native_transparents_glue::install(Arc::clone(&state));
     crate::native_fog_glue::install(Arc::clone(&state));
     crate::native_water_glue::install(Arc::clone(&state));
+    crate::native_ocean_glue::install(Arc::clone(&state));
     crate::native_layers_glue::install(Arc::clone(&state));
     crate::native_decorators_glue::install(Arc::clone(&state));
     crate::native_sky_glue::install(Arc::clone(&state));

@@ -38,8 +38,8 @@ pub enum Producer {
     Flare(native_render::flares::Site),
 }
 
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 #[derive(Clone, Debug)]

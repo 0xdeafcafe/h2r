@@ -55,8 +55,8 @@ use hooks::{BuildError, Builder, Feature, Flow, Manifest};
 pub const ID: &str = "native-lights";
 
 /// Whether the native lights are on.
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 /// The light's list, which `RENDER_LIGHT_PASSES` makes current for its

@@ -499,7 +499,7 @@ pub fn cut_read(mem: &mut dyn GuestMemory, host: &dyn Host, state: &mut State, v
 /// Whether the native flare query is placed: with the native renderer
 /// on, unless `native-flare-query=off`.
 pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches) && switches.feature(ID, true)
+    switches.feature(ID, true)
 }
 
 fn original(cpu: &mut runtime::CpuAbi, ctx: &mut runtime::ExecCtx, addr: u32) -> Result<runtime::TransferAbi, runtime::GuestFault> {

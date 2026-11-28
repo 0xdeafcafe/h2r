@@ -230,9 +230,27 @@ fn grid_of(declaration: &[Element], stride: usize, bytes: &[u8], quads: &[[u16; 
     Ok(OceanGrid { key, vertices, indices: quad_triangles(quads) })
 }
 
+/// What the ocean draws into: the frame's attachments, and
+/// `sampled` holding the targets in [`OceanProgram::sampled`]'s order.
+pub struct OceanTarget<'a> {
+    pub device: &'a wgpu::Device,
+    pub queue: &'a wgpu::Queue,
+    pub uploads: &'a gfx::ring::SubmissionUploads,
+    pub encoder: &'a mut wgpu::CommandEncoder,
+    pub color: &'a wgpu::TextureView,
+    pub color_format: wgpu::TextureFormat,
+    pub depth: &'a wgpu::TextureView,
+    pub depth_format: wgpu::TextureFormat,
+    pub viewport: [f32; 4],
+    pub guest_size: (u32, u32),
+    pub size: (u32, u32),
+    pub z_scale: f32,
+    pub sampled: &'a [Option<gfx::external::SampledLevel>],
+}
+
 /// One draw as a recording takes it.
 pub struct OceanDraw<'a> {
-    /// The device's `c[0..18]` and W clip at the issue.
+    /// The view's `c[0..18]` and W clip.
     pub view: [[f32; 4]; crate::program::VIEW_CONSTANTS],
     pub w_clip: Option<([f32; 2], bool)>,
     pub rows: [[f32; 4]; 3],
@@ -404,7 +422,7 @@ impl OceanSet {
     /// Records the draw on `t`'s attachments: its uniforms staged in the
     /// recording's uploads, then one render pass that loads both.
     /// `t.sampled` holds the targets in [`OceanProgram::sampled`]'s order.
-    pub fn record(&mut self, t: &mut d3d::ExternalTarget<'_>, draw: &OceanDraw<'_>) -> Result<(), &'static str> {
+    pub fn record(&mut self, t: &mut OceanTarget<'_>, draw: &OceanDraw<'_>) -> Result<(), &'static str> {
         let sampled = self.program.sampled();
         if t.sampled.len() != sampled.len() || draw.target_sizes.len() != sampled.len() {
             return Err("target");
@@ -428,7 +446,7 @@ impl OceanSet {
             sizes[n] = Some(draw.target_sizes[at]);
         }
         let view = ViewInputs {
-            constants: t.view_constants(draw.view),
+            constants: draw.view,
             guest_size: t.guest_size,
             size: t.size,
             z_scale: t.z_scale,
@@ -448,7 +466,7 @@ impl OceanSet {
         })
         .ok_or("textures")?;
         {
-            let mut uploads = t.encoder_uploads();
+            let mut uploads = gfx::ring::EncoderUploads { device: t.device, queue: t.queue, arena: t.uploads, encoder: t.encoder };
             uploads.write(&self.vertex_buffer, 0, &vertex.to_bytes());
             uploads.write(&self.pixel_buffer, 0, &pixel.to_bytes());
         }

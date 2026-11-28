@@ -268,8 +268,7 @@ pub fn install(
     let hle = with_source(source, mixer);
     // With the native renderer the picture goes to its overlay
     // (`movie_display_glue`), never through the guest's texture.
-    let switches = hooks::Switches::from_env().unwrap_or_default();
-    hle.use_native_display(cfg!(feature = "gpu") && hooks::switches::native_render_on(&switches));
+    hle.use_native_display(cfg!(feature = "gpu"));
     let mut mode = bink_hle::Mode::Skip;
     rt.edit_dispatch(|d| mode = bink_hle::register(d, &hle).0);
     if mode == bink_hle::Mode::Playback && !selection.is_playback() {

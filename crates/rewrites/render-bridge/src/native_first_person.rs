@@ -48,8 +48,8 @@ pub const SLOT: ViewSlot = ViewSlot::FirstPerson;
 /// (1, 3, 8, 20, 7 and 2).
 pub const LATE_LAYER: u8 = 16;
 
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 /// Why a part is not drawn. Each is a named count, never a D3D draw.

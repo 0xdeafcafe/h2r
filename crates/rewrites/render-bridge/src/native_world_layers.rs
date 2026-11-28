@@ -15,8 +15,8 @@ pub const ID: &str = "native-world-layers";
 // The scene view index set by render_game_view (render-loop.md).
 const SCENE_VIEW: u32 = 0x004b_a050;
 
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 #[derive(Clone, Copy, Debug)]

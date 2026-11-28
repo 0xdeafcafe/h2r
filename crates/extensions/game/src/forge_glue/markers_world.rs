@@ -983,15 +983,6 @@ mod gpu {
         batch
     }
 
-    /// `impl.render.native` ([`hooks::switches::NATIVE`]) as the process
-    /// started: the native frame graph may draw the markers.
-    fn native_on() -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| {
-            hooks::switches::native_render_on(&hooks::Switches::from_env().unwrap_or_default())
-        })
-    }
-
     pub fn register(host: &mut crate::Host) {
         host.add_world_line_source(Arc::new(Source));
         crate::forge_glue::nav_world::register(host);
@@ -1050,14 +1041,13 @@ mod gpu {
             // and the lines (with their X-ray look); the window then draws
             // the labels alone, so no line is drawn twice. Off, or while
             // the graph is not drawing, the window draws the lines.
-            let native = native_on();
-            native_render::markers::publish(native.then(|| batch(&groups, eye)));
+            native_render::markers::publish(Some(batch(&groups, eye)));
             if groups.is_empty() {
                 return None;
             }
             let face = crate::superbounce_font::look(guest).face;
             let native_lines =
-                native_render::markers::window_skips_lines(native, native_render::markers::drawn_recently());
+                native_render::markers::window_skips_lines(true, native_render::markers::drawn_recently());
             Some(Arc::new(Sample { groups, face, native_lines }))
         }
     }

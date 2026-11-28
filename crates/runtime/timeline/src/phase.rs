@@ -182,21 +182,6 @@ pub enum Counter {
     MapSlotVfsWaitNs,
     /// Foreground time checking the mounted sources of inactive map slots.
     MapSlotCheckNs,
-    /// Guest calls of D3D entry points that ran, on any thread.
-    D3dEntries,
-    /// Guest draws no native replacement claimed. Nothing counts it now.
-    D3dResidualDraws,
-    /// Push-buffer words `d3d` decoded, counted once per drain. Always on.
-    D3dPushWords,
-    /// Native inline draws (particles) `d3d` resolved in full
-    /// (`Stats::native_inline_full`; docs/graphics/native-particles.md).
-    NativeInlineFull,
-    /// Native inline draws that took a same-state run's fast path.
-    NativeInlineFast,
-    /// Queued native admissions the render thread prepared, and the draws
-    /// in them. Nothing counts them now.
-    QueuedRuns,
-    QueuedRunDraws,
 }
 
 /// Number of [`Counter`]s.
@@ -210,7 +195,7 @@ pub fn counter_columns() -> impl Iterator<Item = (usize, &'static str)> {
 }
 
 impl Counter {
-    pub const ALL: [Counter; 40] = [
+    pub const ALL: [Counter; 33] = [
         Counter::Draws,
         Counter::Submits,
         Counter::Pipelines,
@@ -244,13 +229,6 @@ impl Counter {
         Counter::OrderedWrites,
         Counter::MapSlotVfsWaitNs,
         Counter::MapSlotCheckNs,
-        Counter::D3dEntries,
-        Counter::D3dResidualDraws,
-        Counter::D3dPushWords,
-        Counter::NativeInlineFull,
-        Counter::NativeInlineFast,
-        Counter::QueuedRuns,
-        Counter::QueuedRunDraws,
     ];
 
     pub fn label(self) -> &'static str {
@@ -287,13 +265,6 @@ impl Counter {
             Counter::OrderedWrites => "ordered_writes",
             Counter::MapSlotVfsWaitNs => "map_slot_vfs_wait_ns",
             Counter::MapSlotCheckNs => "map_slot_check_ns",
-            Counter::D3dEntries => "d3d_entries",
-            Counter::D3dResidualDraws => "d3d_residual_draws",
-            Counter::D3dPushWords => "d3d_push_words",
-            Counter::NativeInlineFull => "native_inline_full",
-            Counter::NativeInlineFast => "native_inline_fast",
-            Counter::QueuedRuns => "queued_runs",
-            Counter::QueuedRunDraws => "queued_run_draws",
             Counter::FileIoUs => "file_io_us",
         }
     }

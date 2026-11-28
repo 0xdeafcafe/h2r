@@ -66,10 +66,6 @@ pub fn display_cluster_fog_flags(m: &dyn GuestMemory, id: u16) -> Option<u32> {
 
 pub struct NativeSceneLists;
 
-fn enabled(switches: &Switches) -> bool {
-    hooks::switches::native_render_on(switches)
-}
-
 /// The view's requested geometry detail. The MODE tag numbers its tiers
 /// from coarsest to finest, opposite the "LOD 0" convention in most tools.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -166,11 +162,8 @@ impl Feature for ScaledSceneLists {
         // The guest's view projection and visibility producers, replaced
         // (retire-d3d.md R4); the scene step's shadow arms answer only
         // while it is on.
-        let visibility = hooks::switches::native_visibility_on(b.switches());
+        let visibility = true;
         crate::scene_step::set_native_visibility(visibility);
-        if !enabled(b.switches()) {
-            return Ok(());
-        }
         view_records::install(b, visibility);
         visibility_setup::install(b, visibility);
         engine::light_frusta::arm::set_on(visibility);
@@ -679,12 +672,5 @@ mod tests {
         }
         arm.rescope();
         assert!((0..256).all(|_| !arm.answers()));
-    }
-
-    #[test]
-    fn native_scene_lists_follow_the_master_switch() {
-        for (spec, expected) in [("", true), ("impl.render=off", true)] {
-            assert_eq!(enabled(&Switches::parse(spec).unwrap()), expected);
-        }
     }
 }

@@ -22,8 +22,8 @@ pub const ID: &str = "native-shadows";
 /// The view slot the object shadows draw in: slot 3, then layer 7.
 pub const SLOT: frame_scene::ViewSlot = frame_scene::ViewSlot::ShadowsAndLayer7;
 
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 #[derive(Debug)]

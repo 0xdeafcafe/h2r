@@ -36,8 +36,8 @@ use hooks::{BuildError, Builder, Feature, Manifest};
 
 pub const ID: &str = "native-water";
 /// Whether the native water is on.
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 /// Bit 4 of `0x004b9fe0`: set, `0x0003c3c0(0, 0)` runs instead of the

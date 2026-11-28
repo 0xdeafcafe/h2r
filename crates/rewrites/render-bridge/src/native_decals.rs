@@ -29,8 +29,8 @@ pub const ID: &str = "native-decals";
 
 const CURRENT_MODE: u32 = 0x004c_8790;
 
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 thread_local! {

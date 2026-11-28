@@ -269,8 +269,8 @@ fn walk_range(mem: &mut dyn GuestMemory, stage: Stage, range: IndexRange) -> boo
     result.is_ok()
 }
 
-pub fn on(switches: &hooks::Switches) -> bool {
-    hooks::switches::native_render_on(switches)
+pub fn on(_: &hooks::Switches) -> bool {
+    true
 }
 
 static ACTIVATION: AtomicU64 = AtomicU64::new(1);
