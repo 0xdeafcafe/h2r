@@ -31,8 +31,11 @@ pub fn ledger() -> Ledger {
 
 pub struct TickDriver;
 
-/// The tick: the 29 phases, then with the sound table on the 30th, the
-/// sound phase (`crate::sim_sound::entries::phase`, docs/engine/sound-instances.md,
+/// The tick: the 29 phases, then the node matrices of every object left
+/// with a dirty pose ([`engine::tick_poses`], docs/engine/sim-render-split.md,
+/// "2. Node matrices"), so the frame step reads matrices and never builds
+/// them. Then, with the sound table on, the sound phase
+/// (`crate::sim_sound::entries::phase`, docs/engine/sound-instances.md,
 /// "The sound phase"). It runs once per tick number, so a tick whose
 /// run flag held the count does not step the sounds again.
 pub async fn run(
@@ -42,6 +45,7 @@ pub async fn run(
     sound: Option<crate::sim_sound::entries::Shared>,
 ) -> engine::entry::EntryResult {
     let ret = sim_tick::run_with(cx.clone(), &LEDGER, present, bodies).await?;
+    engine::tick_poses::run(&cx, sim_tick::RECORD_SIZE).await?;
     if let Some(table) = sound {
         crate::sim_sound::entries::phase(&cx, &table).await?;
     }
@@ -194,6 +198,46 @@ mod tests {
         assert_eq!(run.calls.len(), 4 + PHASES.len());
         assert_eq!(run.guest.u32(TIME + 8), Ok(5));
         assert_eq!(run.guest.u32(CLOCK + 0x14), Ok(4));
+    }
+
+    /// After the record's close, the tick builds the node matrices of each
+    /// object still carrying a dirty pose (`engine::tick_poses`): one
+    /// `0x000bd090` call per object, in index order, and none for a clean
+    /// or held one.
+    #[test]
+    fn the_tick_ends_with_the_dirty_poses_built() {
+        use engine::tick_poses::{BODY_FLAGS, DIRTY, HOLD, PARENT};
+        let (pool, slots) = (0x0060_0000, 0x0060_1000);
+        let mut g = guest(5);
+        g.put_u32(points::OBJECTS.base, pool).put_u32(pool + 0x38, 3).put_u32(pool + 0x44, slots);
+        for (i, flags) in [DIRTY, DIRTY | HOLD, DIRTY].into_iter().enumerate() {
+            let (slot, body) = (slots + 12 * i as u32, 0x0061_0000 + 0x100 * i as u32);
+            g.put_u16(slot, 7).put_u32(slot + 8, body);
+            g.put_u32(body + BODY_FLAGS, flags).put_u32(body + PARENT, u32::MAX);
+        }
+        let callee = |c: &engine::entry::GuestCall, m: &mut dyn GuestMemory| {
+            let at = RECORD + sim_tick::RUN_FLAG;
+            match c.target {
+                sim_tick::RECORD_BEFORE | sim_tick::RECORD_AFTER => m.set_u8(at, 1).unwrap(),
+                t if t == points::OBJECT_NODE_MATRICES.base => {
+                    let flags = 0x0061_0000 + 0x100 * (c.args[0] & 0xffff) + BODY_FLAGS;
+                    let v = m.u32(flags).unwrap();
+                    m.set_u32(flags, v & !DIRTY).unwrap();
+                }
+                _ => {}
+            }
+            Regs::default()
+        };
+        let f = |cx: engine::entry::Cx| -> EntryFuture {
+            Box::pin(run(cx, sim_tick::Present::Always, sim_tick::Bodies::NONE, None))
+        };
+        let r = entry::testing::run(&f, g, Regs { esp: STACK, ..Default::default() }, callee);
+        assert_eq!(r.result, Ok(hooks::Ret::new(0, 0)));
+        let after = r.calls.iter().position(|c| c.target == sim_tick::RECORD_AFTER).unwrap();
+        let tail: Vec<_> = r.calls[after + 1..].iter().map(|c| (c.target, c.args.clone())).collect();
+        let bd090 = points::OBJECT_NODE_MATRICES.base;
+        assert_eq!(tail, [(bd090, vec![7 << 16]), (bd090, vec![7 << 16 | 2])]);
+        assert_eq!(engine::tick_poses::plan(&r.guest), Some(vec![]));
     }
 
     /// With the table on, the tick steps the sound phase after the 29 and

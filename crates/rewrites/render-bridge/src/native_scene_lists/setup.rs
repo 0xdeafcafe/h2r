@@ -850,6 +850,44 @@ mod setup_tests {
         assert!(outside_gather_lens(&m, &light, |_| Some(false)).unwrap().is_none(), "a light's view");
     }
 
+    /// The gather-lens fixture reversed (docs/engine/sim-render-split.md,
+    /// "2. Node matrices"). Both objects have a dirty pose and
+    /// pose-dependent sections, and the view lists only the root. The
+    /// tick-end phase plans both, parent first; once it has built them
+    /// (bit 30 cleared, as `0x000bd090` leaves it) the setup draws without
+    /// handing the pose to the guest, and writes neither body's flags nor
+    /// its node matrices (`+0xcc` is slice 8's render scratch).
+    #[test]
+    fn after_the_tick_end_build_the_setup_reads_every_pose_and_writes_none() {
+        use engine::tick_poses::{self, DIRTY};
+        let (mut m, cpu) = fixture();
+        m.put_u32(HLMT + 0xc4, 0b11);
+        for body in [ROOT, CHILD] {
+            m.put_u16(body + 0x112, 0x500).put_u32(body + 4, (1 << 19) | (1 << 24) | DIRTY);
+        }
+        assert!(matches!(setup(&m, &cpu, LodDetail::Retail), Err(Refusal::Palette)), "a dirty pose is the guest's");
+        assert_eq!(tick_poses::plan(&m), Some(vec![ROOT_HANDLE, CHILD_HANDLE]));
+
+        for body in [ROOT, CHILD] {
+            let flags = m.u32(body + 4).unwrap();
+            m.put_u32(body + 4, flags & !DIRTY);
+        }
+        assert_eq!(tick_poses::plan(&m), Some(vec![]));
+        // The flags word and the node matrices (`+0x116`, `+0x114` bytes).
+        let pose = |m: &FakeGuest, body: u32| (m.u32(body + 4).unwrap(), m.bytes(body + 0x200, 0x34).unwrap());
+        let before = [pose(&m, ROOT), pose(&m, CHILD)];
+        let out = setup(&m, &cpu, LodDetail::Retail).unwrap();
+        let touches = |from: u32, len: u32| {
+            out.writes.iter().any(|w| w.addr < from + len && w.addr + w.bytes.slice().len() as u32 > from)
+        };
+        for body in [ROOT, CHILD] {
+            assert!(!touches(body + 4, 4) && !touches(body + 0x200, 0x34), "the frame step builds no pose");
+        }
+        publish(&mut m, out);
+        assert_eq!(m.u32(MAIN_COUNT).unwrap(), 2);
+        assert_eq!([pose(&m, ROOT), pose(&m, CHILD)], before);
+    }
+
     #[test]
     fn private_sections_use_the_current_permutation_and_leave_the_record_list_untouched() {
         let (mut m, _) = fixture();
