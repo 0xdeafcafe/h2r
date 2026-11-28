@@ -194,6 +194,8 @@ mod disc;
 mod extra;
 #[path = "sim_sound_differential/impulse.rs"]
 mod impulse;
+#[path = "sim_sound_differential/gate.rs"]
+mod start_gate;
 #[path = "sim_sound_differential/levels.rs"]
 mod levels;
 #[path = "sim_sound_differential/listener.rs"]
