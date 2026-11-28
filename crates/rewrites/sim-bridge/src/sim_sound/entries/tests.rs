@@ -84,7 +84,7 @@ fn run_body(
 ) -> entry::testing::Run {
     let t = Arc::clone(t);
     let e = entry_of(body);
-    let f = move |cx: Cx| -> EntryFuture { Box::pin(run(cx, Arc::clone(&t), e, Arc::new(AtomicBool::new(false)))) };
+    let f = move |cx: Cx| -> EntryFuture { Box::pin(run(cx, Arc::clone(&t), e)) };
     entry::testing::run(&f, g, regs, callee)
 }
 
@@ -164,7 +164,6 @@ fn create_and_drop_are_the_lifecycle_and_reset_the_table() {
     // The guest's create and dispose are not called: the bodies are
     // `lifecycle`'s (its tests cover the globals). With the count above 1
     // both only count, and each leaves a fresh table.
-    assert!(!Body::Create.calls_original() && !Body::Drop.calls_original());
     for body in [Body::Create, Body::Drop] {
         let t = table(Arc::new(Refusing));
         lock(&t).sounds.admit(&mut Rng::new(1), &tags(), Request { selection: Some((0, 0)), level: 10.0, ..Request::new(TAG) }, 0).unwrap();
@@ -435,11 +434,10 @@ fn a_refused_entry_is_counted_by_its_address() {
     let c = lock(&t).counters();
     assert_eq!(c["sound.refused_entry"], 1);
     assert_eq!(c["sound.refused_entry.0x21d390"], 1);
-    // No body refuses today; one that did would not also call its original.
+    // No body refuses today.
     for e in ENTRIES {
         assert_eq!(e.body.refusal(), None, "{}", e.point.name);
     }
-    assert!(REFUSING.iter().all(|(b, _)| !b.calls_original()));
 }
 
 #[test]

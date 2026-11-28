@@ -19,7 +19,6 @@
 //! run by `crate::tick` after the 29.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -28,7 +27,7 @@ use guest_layout::points::{self, Point};
 use crate::sim_sound::clock::system_time;
 use crate::sim_sound::units;
 use guest_layout::{GuestMemory, MemFault};
-use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
+use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 use sim_sound::chooser;
 use sim_sound::events::TableEvent;
 use sim_sound::feed::{NullTableHost, Scene, TableHost};
@@ -112,7 +111,7 @@ pub enum Body {
     StopAll,
     /// `0x126660`: the blend of the two background ambience slots (sound
     /// globals `+0x1a8`, `0x1c` bytes each) toward the candidates
-    /// ([`crate::sim_sound::ambience::blend`]); the listener math reads
+    /// ([`crate::sim_sound::ambience::blend`]); the listener update reads
     /// the slots.
     Ambience,
     /// `0x1272c0`: the environment words of the sound globals.
@@ -123,7 +122,8 @@ pub enum Body {
     Paused,
     /// `0x125d60`: nothing; the host mixes on its own thread.
     LoadPump,
-    /// `0x127400`: the guest's camera math, which reads no pool.
+    /// `0x127400`: the listener update ([`super::listeners::update`]); the
+    /// unit, attachment and BSP reads stay guest calls.
     Listeners,
     /// `0x21a250`: find or start the loop of a tag on an owner, give it the
     /// source and the sequence, or stop it ([`LoopCall`]).
@@ -147,11 +147,6 @@ impl Body {
     /// ([`REFUSING`]).
     pub fn refusal(self) -> Option<&'static str> {
         REFUSING.iter().find(|(b, _)| *b == self).map(|(_, why)| *why)
-    }
-
-    /// The body calls the guest function it replaces (pool-free work).
-    fn calls_original(self) -> bool {
-        matches!(self, Body::Listeners)
     }
 }
 
@@ -225,7 +220,7 @@ pub struct SoundLedger {
     /// Named refusals ([`Body::refusal`]) by entry address.
     pub refused_entry: BTreeMap<u32, u64>,
     /// Guest calls the bodies make: the sound cache's and the driver's
-    /// create and dispose, the original listener math, and the start gate.
+    /// create and dispose, and the listener update's unit and BSP reads.
     pub entry_guest_calls: u64,
     /// Loop starts the full loop pool refused (`sound.loops_full`).
     pub loops_full: u64,
@@ -943,28 +938,8 @@ fn empty(point: &Point) -> Ret {
     Ret::new(if ret.is_some() { if matches!(ret, Some(points::Loc::Al)) { 0 } else { NONE } } else { 0 }, pop)
 }
 
-/// The guest function a body replaces, run with the hook let through: its
-/// registers and stack arguments passed on as they came.
-async fn original(cx: &Cx, table: &Shared, entry: &Entry, busy: &AtomicBool) -> EntryResult {
-    let pop = match entry.point.sig {
-        points::Sig::Fn { pop, .. } => u32::from(pop),
-        _ => 0,
-    };
-    let mut args = Vec::new();
-    for n in 0..pop / 4 {
-        args.push(cx.arg(n)?);
-    }
-    busy.store(true, Ordering::SeqCst);
-    let e = cx.entry();
-    let call = GuestCall::new(entry.point.base).eax(e.eax).ecx(e.ecx).edx(e.edx).ebx(e.ebx).esi(e.esi).edi(e.edi);
-    let r = cx.call(call.args(args)).await;
-    busy.store(false, Ordering::SeqCst);
-    lock(table).ledger.entry_guest_calls += 1;
-    r.map(|regs| Ret::new(regs.eax, 0))
-}
-
 /// One entry's body.
-pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicBool>) -> EntryResult {
+pub async fn run(cx: Cx, table: Shared, entry: &'static Entry) -> EntryResult {
     if entry.body.refusal().is_some() {
         lock(&table).refuse(entry.point.base);
         return Ok(empty(entry.point));
@@ -984,7 +959,8 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
             Ok(Ret::new(0, 0))
         }
         Body::Listeners => {
-            original(&cx, &table, entry, &busy).await?;
+            let environment = cx.arg(0)? & 0xff != 0;
+            super::listeners::update(&cx, environment).await?;
             Ok(Ret::new(0, 4))
         }
         Body::Ambience => {
@@ -1053,8 +1029,7 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
 }
 
 /// The table's hooks, on every run: every entry in
-/// [`ENTRIES`]. A body that calls its original is a `before` that answers
-/// and lets the inner call through; the rest are implementations. The
+/// [`ENTRIES`]. Each is an implementation. The
 /// tick's phase is `crate::tick`'s.
 pub struct SoundTable {
     table: Shared,
@@ -1084,25 +1059,7 @@ impl Feature for SoundTable {
         b.snapshot(SnapshotPolicy::Stateless);
         for entry in ENTRIES {
             let table = Arc::clone(&self.table);
-            let busy = Arc::new(AtomicBool::new(false));
-            if entry.body.calls_original() {
-                let hook = b.raw().before(entry.point, "sound table", move |call| {
-                    if busy.load(Ordering::SeqCst) {
-                        return Ok(Flow::Continue);
-                    }
-                    let (table, busy) = (Arc::clone(&table), Arc::clone(&busy));
-                    call.answer_async(move |cx| Box::pin(run(cx, table, entry, busy)))
-                });
-                // First on the listeners: the bots' map swap runs around
-                // the inner call, which reaches the camera math.
-                if entry.body == Body::Listeners {
-                    hook.first();
-                }
-            } else {
-                b.raw().implement_async(entry.point, "sound table", move |cx| {
-                    Box::pin(run(cx, Arc::clone(&table), entry, Arc::clone(&busy)))
-                });
-            }
+            b.raw().implement_async(entry.point, "sound table", move |cx| Box::pin(run(cx, Arc::clone(&table), entry)));
         }
         Ok(())
     }
