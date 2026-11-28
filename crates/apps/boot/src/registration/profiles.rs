@@ -408,6 +408,9 @@ pub(crate) fn registry_with_film(
         features
             .add(&sim_bridge::sim_native::SimNative::new(&rt))
             .unwrap();
+        features
+            .add(&sim_bridge::sim_lightmap::LightmapStore)
+            .unwrap();
     }
     super::register_viewer_skips(&mut features, case.light).unwrap();
     if case.light {

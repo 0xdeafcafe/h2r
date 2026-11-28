@@ -765,6 +765,12 @@ fn run_configured(
             vfs.lock().unwrap_or_else(|e| e.into_inner()).rescan_maps();
         }));
     }
+    // The lightmap store reads the loaded map's geometry blocks and
+    // lightmap pixels through the VFS, as the guest's caches would
+    // (docs/engine/sim-render-split.md, "6. Render scratch and stamps").
+    if let Some(vfs) = k.vfs() {
+        hot_glue::install_lightmap_files(vfs);
+    }
     let uses = opts
         .stopgaps
         .then(|| stopgaps::install(&k, &loaded.runtime));
@@ -1558,6 +1564,11 @@ fn run_configured(
     // and the headless host (docs/engine/sim-rewrite.md).
     features
         .add(&sim_bridge::sim_native::SimNative::new(&loaded.runtime))
+        .map_err(anyhow::Error::msg)?;
+    // The simulation's lightmap sample (docs/engine/sim-render-split.md,
+    // "6. Render scratch and stamps"): the tick's effect tint.
+    features
+        .add(&sim_bridge::sim_lightmap::LightmapStore)
         .map_err(anyhow::Error::msg)?;
     registration::register_viewer_skips(&mut features, host_light)?;
     if host_light {

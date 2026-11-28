@@ -298,6 +298,8 @@ const JMAD: u32 = u32::from_be_bytes(*b"jmad");
 /// `jmad` header's animation block pair (docs/formats/animation.md, "Tag layout").
 const ANIMATION_BLOCK: u32 = 0x2c;
 const NHDT: u32 = u32::from_be_bytes(*b"nhdt");
+const LTMP: u32 = u32::from_be_bytes(*b"ltmp");
+const BITM: u32 = u32::from_be_bytes(*b"bitm");
 
 /// The host subscribers of a tag-write notice
 /// (docs/editor/realtime-edits.md, "Realtime coverage", R8), called with
@@ -309,7 +311,9 @@ const NHDT: u32 = u32::from_be_bytes(*b"nhdt");
 ///   a previous array displaced by a move or revert;
 /// * `nhdt`: the HUD kit copies the edited widget records again;
 /// * `weap`, `matg`: aim assist adopts the edited fields as retail;
-/// * `sbsp`: the bots' data is marked stale.
+/// * `sbsp`: the bots' data is marked stale;
+/// * `sbsp`, `ltmp`, `bitm`: the lightmap store (`engine::sim_lightmap`)
+///   loads again at its next sample.
 fn tag_written(g: &mut runtime::Guest, n: &hot_tags::TagWrite) {
     let group = n.group.as_u32();
     render_bridge::native_edits::push(render_bridge::native_edits::Edit::Tag { group, tag: n.tag });
@@ -327,7 +331,11 @@ fn tag_written(g: &mut runtime::Guest, n: &hot_tags::TagWrite) {
         crate::aim_assist::WEAP | crate::aim_assist::MATG => {
             crate::aim_assist::tag_written(&*g, group, n.tag, n.address, n.range.start, n.range.end);
         }
-        SBSP => bots::cache::mark_stale(format!("a live edit wrote sbsp {:#010x}", n.tag)),
+        SBSP => {
+            bots::cache::mark_stale(format!("a live edit wrote sbsp {:#010x}", n.tag));
+            engine::sim_lightmap::invalidate();
+        }
+        LTMP | BITM => engine::sim_lightmap::invalidate(),
         _ => {}
     }
 }
@@ -434,6 +442,50 @@ fn loaded_name(g: &runtime::Guest) -> Result<String, String> {
     Ok(name)
 }
 
+/// The lightmap store's reader of the loaded map
+/// (docs/engine/sim-render-split.md, "6. Render scratch and stamps"): raw
+/// geometry blocks and bitmap levels through the VFS and the raw overlay,
+/// the bytes the guest's caches read.
+pub fn install_lightmap_files(vfs: Arc<Mutex<vfs::Vfs>>) {
+    engine::sim_lightmap::set_raw_files(Box::new(LightmapFiles {
+        glue: RawGlue { vfs: Some(vfs), overlay: vfs::RawOverlay::global().clone() },
+        bound: Vec::new(),
+    }));
+}
+
+/// The reader, with each file selector's path and overlay name taken at
+/// the store's load ([`engine::sim_lightmap::RawFiles::bind`]), so a
+/// block read at its first ask needs no guest.
+struct LightmapFiles {
+    glue: RawGlue,
+    bound: Vec<(ResourceFile, Result<String, String>, String)>,
+}
+
+impl engine::sim_lightmap::RawFiles for LightmapFiles {
+    fn bind(&mut self, g: &runtime::Guest) {
+        self.bound = [
+            ResourceFile::Local,
+            ResourceFile::MainMenu,
+            ResourceFile::Shared,
+            ResourceFile::SinglePlayerShared,
+        ]
+        .into_iter()
+        .map(|file| (file, source_of(g, file), self.glue.name(g, file)))
+        .collect();
+    }
+
+    fn read_raw(&mut self, pointer: u32, size: u32) -> Result<Vec<u8>, String> {
+        let p = map::RawPointer::decode(pointer).ok_or("the raw pointer is 0xffffffff")?;
+        let (_, path, name) = self
+            .bound
+            .iter()
+            .find(|(f, _, _)| *f == p.file)
+            .ok_or("the reader is not bound to a map")?;
+        let (source, own) = self.glue.source_at(path.as_ref().map_err(|e| e.clone())?)?;
+        self.glue.read_from(source, own, name, u64::from(p.offset), size as usize)
+    }
+}
+
 /// `hot_tags::RawFiles` over the VFS and the process's raw overlay.
 struct RawGlue {
     vfs: Option<Arc<Mutex<vfs::Vfs>>>,
@@ -452,7 +504,40 @@ impl RawGlue {
 
     /// The selector's own file: its bytes source and length.
     fn source(&self, g: &runtime::Guest, file: ResourceFile) -> Result<(vfs::FileSource, u64), String> {
-        let path = source_of(g, file)?;
+        self.source_at(&source_of(g, file)?)
+    }
+
+    /// `len` bytes at `offset` of `source` (`own` bytes long), with the raw
+    /// overlay's edits of the file named `name` applied.
+    fn read_from(&self, source: vfs::FileSource, own: u64, name: &str, offset: u64, len: usize) -> Result<Vec<u8>, String> {
+        let mut buf = vec![0u8; len];
+        let inside = own.saturating_sub(offset).min(len as u64) as usize;
+        match source {
+            vfs::FileSource::Host(h) => {
+                let mut f = std::fs::File::open(&h.path).map_err(|e| e.to_string())?;
+                f.seek(SeekFrom::Start(h.offset + offset)).map_err(|e| e.to_string())?;
+                f.read_exact(&mut buf[..inside]).map_err(|e| e.to_string())?;
+            }
+            vfs::FileSource::Memory(b) => {
+                let at = offset as usize;
+                buf[..inside].copy_from_slice(&b[at..at + inside]);
+            }
+            vfs::FileSource::Spliced(f) => {
+                let mut source = f.open().map_err(|e| e.to_string())?;
+                content::patch::Source::read_exact_at(&mut source, offset, &mut buf[..inside])
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        let served = self.overlay.apply(name, offset, &mut buf, inside);
+        if served < len {
+            return Err(format!("{name}: {len} bytes at {offset:#x} run past the file"));
+        }
+        Ok(buf)
+    }
+
+    /// The file at `path`: its bytes source and length.
+    fn source_at(&self, path: &str) -> Result<(vfs::FileSource, u64), String> {
+        let path = path.to_owned();
         let source = {
             let mut vfs = self.vfs()?;
             vfs.file_source(&path)
@@ -499,30 +584,7 @@ impl hot_tags::RawFiles for RawGlue {
 
     fn read(&mut self, g: &runtime::Guest, file: ResourceFile, offset: u64, len: usize) -> Result<Vec<u8>, String> {
         let (source, own) = self.source(g, file)?;
-        let mut buf = vec![0u8; len];
-        let inside = own.saturating_sub(offset).min(len as u64) as usize;
-        match source {
-            vfs::FileSource::Host(h) => {
-                let mut f = std::fs::File::open(&h.path).map_err(|e| e.to_string())?;
-                f.seek(SeekFrom::Start(h.offset + offset)).map_err(|e| e.to_string())?;
-                f.read_exact(&mut buf[..inside]).map_err(|e| e.to_string())?;
-            }
-            vfs::FileSource::Memory(b) => {
-                let at = offset as usize;
-                buf[..inside].copy_from_slice(&b[at..at + inside]);
-            }
-            vfs::FileSource::Spliced(f) => {
-                let mut source = f.open().map_err(|e| e.to_string())?;
-                content::patch::Source::read_exact_at(&mut source, offset, &mut buf[..inside])
-                    .map_err(|e| e.to_string())?;
-            }
-        }
-        let name = self.name(g, file);
-        let served = self.overlay.apply(&name, offset, &mut buf, inside);
-        if served < len {
-            return Err(format!("{name}: {len} bytes at {offset:#x} run past the file"));
-        }
-        Ok(buf)
+        self.read_from(source, own, &self.name(g, file), offset, len)
     }
 
     fn held(&mut self, g: &runtime::Guest, file: ResourceFile, offset: u64, len: u64) -> Vec<(u64, Vec<u8>)> {

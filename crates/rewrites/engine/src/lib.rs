@@ -89,6 +89,8 @@ pub mod effect_update;
 #[cfg(feature = "runtime-glue")]
 pub mod sim_native;
 #[cfg(feature = "runtime-glue")]
+pub mod sim_lightmap;
+#[cfg(feature = "runtime-glue")]
 pub mod sim_objects;
 #[cfg(feature = "runtime-glue")]
 pub mod sim_seats;

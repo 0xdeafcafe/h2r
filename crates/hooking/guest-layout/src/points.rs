@@ -765,6 +765,14 @@ points! { ALL;
     /// The particle systems' per-view update the render reaches from the
     /// object and effect draw paths: their visibility and location stamps.
     PARTICLE_VIEW_UPDATE @ 0x0017_4420: [opaque], Optional; "docs/graphics/native-particles.md";
+    /// The lightmap sample at a collision result: four stack arguments,
+    /// EAX 0 when sampled, `ret 0x10`. It reads the BSP's lightmap through
+    /// the geometry and texture caches; under `impl.sim.lightmap-store`
+    /// the lightmap store and a Rust port answer it.
+    LIGHTMAP_SAMPLE @ 0x000d_1e10: [opaque], Optional; "docs/engine/sim-render-split.md";
+    /// The render-state record of an object: one stack argument (its
+    /// render-state handle); EAX the record's handle or -1, `ret 4`.
+    RENDER_STATE_RECORD @ 0x0003_ddd0: [opaque], Optional; "docs/engine/sim-render-split.md";
     /// A particle location's per-frame move (EBX the location), from the
     /// director's particle update (`0x00176f60` -> `0x00174990` ->
     /// `0x00174a30`): its emitters follow it when its stamp `+0x30` is the
