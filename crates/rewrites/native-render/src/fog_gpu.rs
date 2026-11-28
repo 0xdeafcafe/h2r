@@ -1477,8 +1477,8 @@ pub(crate) mod tests {
         let (selected, view, fogs) = (selected(), view(), fogs());
         let marking = StencilState { reference: 0x80, ..crate::object_state::structure_stencil(0) };
         assert!(
-            gpu.layer_draws(1, &ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &view, &fogs, &marking, &LayerSamples::new()).is_err(),
-            "a stencil that is on needs the attachment's stencil"
+            gpu.layer_draws(1, &ctx.device, F::Rgba8Unorm, F::Depth32Float, (SIZE, SIZE), &selected, &view, &fogs, &marking, &LayerSamples::new()).is_ok(),
+            "no stencil aspect: drawn with the test off, as on D3D"
         );
         let depth_format = F::Depth24PlusStencil8;
         let mut out = Vec::new();

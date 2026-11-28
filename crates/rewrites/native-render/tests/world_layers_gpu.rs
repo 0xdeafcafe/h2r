@@ -905,7 +905,7 @@ fn a_sky_strip_keeps_its_cull_and_each_refusal_is_named() {
     tested.state.render.stencil.func = CompareFunc::Equal;
     tested.state.render.stencil.pass = StencilOp::Keep;
     assert_eq!(admit(&tested), None, "a strip that tests the stencil");
-    let unheld = { let mut d = draw.clone(); d.target.depth_format = None; d };
+    let unheld = { let mut d = draw.clone(); d.target.depth_format = Some(D3DFormat::LinD16); d };
     assert_eq!(admit(&unheld), None, "a mark on a target with no stencil");
     let mut cases: Vec<(&str, ResolvedDraw)> = Vec::new();
     cases.push(("topology", { let mut d = draw.clone(); d.primitive = PrimitiveType::TriangleList; d }));
