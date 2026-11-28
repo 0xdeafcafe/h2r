@@ -168,13 +168,8 @@ pub(crate) mod device_state {
     /// `0x407738 + 16·ECX`).
     pub(crate) const CONSTANTS: u32 = 0x0040_7738;
     pub(crate) const CONSTANT_REGISTERS: usize = 192;
-    /// The stipple pattern `SetStipple` stores in the device (`0x003f8cc0`:
-    /// 32 words at `+0x197c`).
-    pub(crate) const STIPPLE: u32 = 0x197c;
-    /// The program clip range `{min, max}` the game stores in the device,
-    /// and the flags that say it owns it (bit 1), `0x00012da9`.
-    pub(crate) const CLIP_PROGRAM: u32 = 0x1c10;
-    pub(crate) const CLIP_FLAGS: u32 = 0x1c18;
+    /// The guest's MXCSR: nearest, every exception masked.
+    const MXCSR: u32 = 0x1f80;
     /// `D3DZB_USEW`.
     const USEW: u32 = 2;
 
@@ -220,14 +215,15 @@ pub(crate) mod device_state {
         Some(row)
     }
 
-    /// The device object `D3D__pDevice` names.
-    fn device(mem: &dyn GuestMemory) -> Option<u32> {
-        mem.u32(render_bridge::guest_entries::P_DEVICE).ok().filter(|&d| d != 0)
-    }
-
-    /// The polygon stipple pattern the device holds ([`STIPPLE`]).
+    /// The polygon stipple pattern the draws hold. There is no device to
+    /// keep it: `SetStipple` (`0x003f8cc0`) is never answered, and the
+    /// pattern is always the engine's table entry for the fade the game
+    /// caches (`0x004b8494`), which its prologue sets and caches together
+    /// (`opaque_material::stipple`). `None` when the cached fade or the
+    /// table does not read, or the rounding modes pick different entries.
     pub(crate) fn stipple_pattern(mem: &dyn GuestMemory) -> Option<[u32; 32]> {
-        let at = device(mem)?.checked_add(STIPPLE)?;
+        use engine::render_loop::opaque_material::{CACHED_FADE, fade_stipple_table};
+        let at = fade_stipple_table(mem, mem.u32(CACHED_FADE).ok()?, MXCSR)?;
         let mut rows = [0; 32];
         for (n, row) in rows.iter_mut().enumerate() {
             *row = mem.u32(at + 4 * n as u32).ok()?;
@@ -241,16 +237,6 @@ pub(crate) mod device_state {
             return None;
         }
         mem.u32(TEXTURE_STATE + 4 * (stage * STAGE_SLOTS + state)).ok()
-    }
-
-    /// The program clip words `[min, max]` and the clip flags the game
-    /// stores in the device ([`CLIP_PROGRAM`], [`CLIP_FLAGS`]).
-    pub(crate) fn stored_clip(mem: &dyn GuestMemory) -> Option<([u32; 2], u32)> {
-        let d = device(mem)?;
-        Some((
-            [mem.u32(d.checked_add(CLIP_PROGRAM)?).ok()?, mem.u32(d.checked_add(CLIP_PROGRAM + 4)?).ok()?],
-            mem.u32(d.checked_add(CLIP_FLAGS)?).ok()?,
-        ))
     }
 
     /// The fog words the draws inherit, from the shadow
@@ -768,7 +754,7 @@ fn plan_walk(
         matches!(e, Entry::Object { .. })
             && scene.part_at(view, (first + n) as u32).is_some_and(|(_, p)| p.flags.contains(PartFlags::AUX_DEPTH))
     });
-    if aux && !view.aux_depth.is_some_and(|a| aux_depth_at_rest(mem, &a)) {
+    if aux && !view.aux_depth.is_some() && aux_depth_at_rest(mem) {
         return Err(ObjectWalk::State);
     }
     // A part with a fade byte (`frame_scene::PartFlags::FADE`): it draws
@@ -886,15 +872,15 @@ fn plan_walk(
 }
 
 /// Whether the guest holds what the auxiliary state toggle leaves off
-/// (`0x00012d50` with BL 0, `aux.rest_*`): the cached byte 0 and the
-/// program clip range off, stored in the device and owned by the game.
-/// The rows go to `c[0..3]` through the push buffer alone, which nothing
+/// (`0x00012d50` with BL 0, `aux.rest_*`): the cached byte 0. The program
+/// clip range is the pass's own: the host holds the viewport's range as
+/// `aux.rest_clip` and changes it only for a part that toggles the state
+/// (`object_program_gpu::with_aux_depth`), so no device word is read. The
+/// rows go to `c[0..3]` through the push buffer alone, which nothing
 /// reads: no device draws after the toggle, so they hold nothing a skip
-/// could leave otherwise. Every comparison is of the bits.
-pub(crate) fn aux_depth_at_rest(mem: &dyn GuestMemory, aux: &frame_scene::AuxDepth) -> bool {
-    let stored = device_state::stored_clip(mem);
+/// could leave otherwise.
+pub(crate) fn aux_depth_at_rest(mem: &dyn GuestMemory) -> bool {
     mem.u8(native_render::aux_depth::CACHED) == Ok(0)
-        && stored.is_some_and(|(clip, flags)| clip == [aux.rest_clip[0].to_bits(), aux.rest_clip[1].to_bits()] && flags & 2 != 0)
 }
 
 /// The stipple switch, `D3DRS_STIPPLEENABLE` (a deferred state, which D3D
@@ -2016,14 +2002,28 @@ mod tests {
     use super::*;
 
     /// The draw state's words, as the guest's D3D library lays them out:
-    /// the render-state, texture-stage and constant shadows and the
-    /// device object `D3D__pDevice` names.
+    /// the render-state, texture-stage and constant shadows.
     fn draw_state() -> guest_layout::testing::FakeGuest {
-        use render_bridge::guest_entries::{DEVICE, P_DEVICE};
         let mut g = guest_layout::testing::FakeGuest::new();
-        g.map(device_state::TEXTURE_STATE, 0x4000)
-            .map(DEVICE, 0x2000)
-            .put_u32(P_DEVICE, DEVICE);
+        g.map(device_state::TEXTURE_STATE, 0x4000);
+        g
+    }
+
+    /// The engine's stipple table (`0x00487288`, 17 patterns whose rows
+    /// are `0x100 * entry + row`) and the scales that pick an entry:
+    /// `fade * 16` rounds to the entry index. The cached fade is `fade`.
+    fn stipple_state(fade: f32) -> guest_layout::testing::FakeGuest {
+        use engine::render_loop::opaque_material::CACHED_FADE;
+        let mut g = draw_state();
+        g.map(0x0048_7288, 17 * 0x80);
+        for entry in 0..17u32 {
+            for row in 0..32u32 {
+                g.put_u32(0x0048_7288 + 0x80 * entry + 4 * row, 0x100 * entry + row);
+            }
+        }
+        g.put_f32(0x0044_541c, 16.0)
+            .put_f32(engine::light_constants::constant::ONE, 1.0)
+            .put_f32(CACHED_FADE, fade);
         g
     }
 
@@ -2071,37 +2071,39 @@ mod tests {
         assert_eq!(device_state::constant(&g, 192), None);
     }
 
-    /// The stipple pattern and the program clip read the device object's
-    /// fields; with no device named, neither reads.
+    /// The stipple pattern is the table entry for the fade the game
+    /// caches: one at rest (entry 16), a faded record's mid-draw. An
+    /// unread cache or table gives none.
     #[test]
-    fn the_stipple_and_the_stored_clip_read_the_device_object() {
-        use render_bridge::guest_entries::DEVICE;
-        let mut g = draw_state();
-        for row in 0..32 {
-            g.put_u32(DEVICE + 0x197c + 4 * row, 0x100 + row);
-        }
-        g.put_f32(DEVICE + 0x1c10, 0.0).put_f32(DEVICE + 0x1c14, 1000.0).put_u32(DEVICE + 0x1c18, 2);
-        let pattern = device_state::stipple_pattern(&g).unwrap();
-        assert_eq!((pattern[0], pattern[31]), (0x100, 0x11f));
-        assert_eq!(device_state::stored_clip(&g), Some(([0, 1000.0f32.to_bits()], 2)));
-        g.put_u32(render_bridge::guest_entries::P_DEVICE, 0);
-        assert_eq!(device_state::stipple_pattern(&g), None);
-        assert_eq!(device_state::stored_clip(&g), None);
+    fn the_stipple_is_the_table_entry_of_the_cached_fade() {
+        let g = stipple_state(1.0);
+        let rest = device_state::stipple_pattern(&g).unwrap();
+        assert_eq!((rest[0], rest[31]), (0x1000, 0x101f));
+        let half = stipple_state(0.5);
+        let pattern = device_state::stipple_pattern(&half).unwrap();
+        assert_eq!((pattern[0], pattern[31]), (0x800, 0x81f));
+        assert_eq!(device_state::stipple_pattern(&guest_layout::testing::FakeGuest::new()), None);
     }
 
     /// The stipple switch is the shadow's `STIPPLEENABLE`: off, a record
-    /// masks nothing; on, it takes the device's pattern.
+    /// masks nothing; on, it takes the pattern of the cached fade.
     #[test]
     fn the_stipple_switch_reads_the_shadow() {
         use engine::render_loop::states::SHADOW;
-        use render_bridge::guest_entries::DEVICE;
-        let mut g = draw_state();
+        let mut g = stipple_state(1.0);
         let slot = STATE_TABLE.canonical_to_guest(STIPPLE_ENABLE).unwrap();
-        g.put_u32(DEVICE + 0x197c, 0xf0f0);
         assert_eq!(device_stipple(&g), Ok(None));
         g.put_u32(SHADOW + 4 * slot, 1);
-        assert_eq!(device_stipple(&g).map(|p| p.map(|p| p[0])), Ok(Some(0xf0f0)));
+        assert_eq!(device_stipple(&g).map(|p| p.map(|p| p[0])), Ok(Some(0x1000)));
         assert_eq!(device_stipple_after(&g, &[(slot, 0)]), Ok(None), "a restore turning it off");
+    }
+
+    /// The stipple is at rest only with the cache at the engine's one;
+    /// any other fade is a record's mid-draw state.
+    #[test]
+    fn the_stipple_is_at_rest_with_the_cache_at_one() {
+        assert!(stipple_at_rest(&stipple_state(1.0)));
+        assert!(!stipple_at_rest(&stipple_state(0.5)));
     }
 
     /// The fog words are the shadow's fog states, in `FOG_WORD_SLOTS`
@@ -2118,25 +2120,17 @@ mod tests {
         assert_eq!(device_state::fog_words(&g), std::array::from_fn(|n| Some(0x10 + n as u32)));
     }
 
-    /// The auxiliary toggle is at rest with its cached byte 0 and the
-    /// rest clip stored and owned by the game.
+    /// The auxiliary toggle is at rest with its cached byte 0; the clip
+    /// is the pass's own.
     #[test]
-    fn the_aux_toggle_is_at_rest_with_the_stored_clip() {
-        use render_bridge::guest_entries::DEVICE;
+    fn the_aux_toggle_is_at_rest_with_the_cached_byte_off() {
         const CACHED: u32 = native_render::aux_depth::CACHED;
-        let aux = frame_scene::AuxDepth {
-            scale: 1.0, rows: [[0.0; 4]; 4], clip: [0.0, 1.0], rest_rows: [[0.0; 4]; 4], rest_clip: [0.0, 1000.0],
-        };
         let mut g = draw_state();
         g.map(CACHED, 1);
-        g.put_f32(DEVICE + 0x1c10, 0.0).put_f32(DEVICE + 0x1c14, 1000.0).put_u32(DEVICE + 0x1c18, 2);
-        assert!(aux_depth_at_rest(&g, &aux));
-        g.put_u32(DEVICE + 0x1c18, 1);
-        assert!(!aux_depth_at_rest(&g, &aux), "the game does not own the program range");
-        g.put_u32(DEVICE + 0x1c18, 2).put_u8(CACHED, 1);
-        assert!(!aux_depth_at_rest(&g, &aux), "the toggle is on");
-        g.put_u8(CACHED, 0).put_f32(DEVICE + 0x1c14, 500.0);
-        assert!(!aux_depth_at_rest(&g, &aux), "another range");
+        assert!(aux_depth_at_rest(&g));
+        g.put_u8(CACHED, 1);
+        assert!(!aux_depth_at_rest(&g), "the toggle is on");
+        assert!(!aux_depth_at_rest(&guest_layout::testing::FakeGuest::new()), "the byte does not read");
     }
 
     /// A layer's draws run with the `ZENABLE` its first shader begin sets,

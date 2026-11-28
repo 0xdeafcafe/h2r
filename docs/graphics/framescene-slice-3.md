@@ -31,7 +31,7 @@ The open point on bit 14 is what reads the marks (native-renderer.md, "Not verif
 **Bit 11.** The toggle stores the device's program clip range (`+0x1c10`, game-owned through `+0x1c18` bit 1, pushed by `0x003f6190`) as `[near * k, far]` from the game's clip words (`0x00485adc`, `0x00485ae0`), with `k` the constant at `0x004407b8` on and 1.0 off. It builds the view-projection rows from the view at `0x0048568c` (its projection columns through its 3x4 matrix, times `[0x0045dd40] / [0x0048565c]`), all sixteen times `k` on, and uploads them to `c[0..3]` when the byte at `0x0055e6bc` differs from the call's.
 
 - Extraction reads both states once per view (`scene_extract::layout::aux_depth`, the arithmetic in the toggle's order).
-- A run holding an aux-depth part is taken only when the device holds the off state: cached byte 0, `c[0..3]` the rows off, the stored and pushed clip the range off (`boot::native_objects_glue::aux_depth_at_rest`).
+- A run holding an aux-depth part is taken only when the device holds the off state: cached byte 0, `c[0..3]` the rows off, the clip the pass's own range off (the host holds `AuxDepth::rest_clip`; no device word is read) (`native_objects_glue::aux_depth_at_rest`).
 - When the toggle's inputs do not read, the part refuses (`Refusal::AuxState`).
 
 Refused parts count by cause as `native_objects_walk_part_aux_state`, `_part_subparts`, `_part_shader_flag`, `_part_argument`, `_part_program` and `_part_layout` (parts, where `walk_unsupported` counts objects). `render.scene` reports each view's parts by flag (`part_flags`).

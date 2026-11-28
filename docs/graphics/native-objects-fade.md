@@ -19,14 +19,14 @@ Record `+0x1a`. Below `0xff` the prologue `0x0004d640` scales it by `0x0045dbb4`
 
 The pattern masks the draw only while the device's stipple is on. The target mode call `0x00015680` turns it on (mode 1) before layers 1 and 3 outside view kinds 4 to 7, and off (mode 0) before layers 5, 8 and 20 (`0x0002be17`..`0x0002bfef`).
 
-The native draw takes a faded part only where the engine caches a fade of exactly one and the device holds the table's pattern for one (`native_objects_glue::stipple_at_rest`, `opaque_material::rest_stipple_table`). From there every faded record's epilogue puts both back, so skipping the draws leaves what drawing them would.
+No device object holds the pattern: `SetStipple` is never answered, and the pattern a draw holds is the table's entry for the fade the engine caches (`native_objects_glue::device_state::stipple_pattern`, `opaque_material::fade_stipple_table`), since the prologue sets and caches the two together. The native draw takes a faded part only where the engine caches a fade of exactly one (`native_objects_glue::stipple_at_rest`, `opaque_material::rest_stipple_table`). From there every faded record's epilogue puts the cache and the pattern back, so skipping the draws leaves what drawing them would.
 
-Under the device's stipple (`native_objects_glue::device_stipple`) every object draw masks as the guest's would (`record_stipple`):
+Under the stipple the draws hold (`native_objects_glue::device_stipple`) every object draw masks as the guest's would (`record_stipple`):
 
 | Record | Rows |
 |---|---|
 | faded | the prologue's pattern from the rest state (`opaque_material::faded_rows`, run under both precisions and the four rounding modes; the rest rows where the fade is within the tolerance of one) |
-| not faded | the device's pattern |
+| not faded | the held pattern (the cached fade's table entry) |
 | either, every row set | none: the draw masks nothing |
 
 A masked draw carries its rows (`PlannedDraw::stipple`) and draws with its program's stipple variant: the same module with the pixel shader translated with `PixelOptions::stipple` (`object_program::stipple_wgsl`), compiled at its first request and keyed apart in the program's pipelines. Layer 3's walk, the world layers' objects and the first person all take it.

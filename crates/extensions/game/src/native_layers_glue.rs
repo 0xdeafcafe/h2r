@@ -907,8 +907,8 @@ fn plan_objects(
         // An item toggling the auxiliary state: its epilogue leaves the
         // toggle off, so skipping it is state-neutral only when the device
         // already holds it off, as layer 3's walk requires.
-        if let Some(aux) = draws.iter().find_map(|draw| draw.aux_depth)
-            && !*aux_at_rest.get_or_insert_with(|| crate::native_objects_glue::aux_depth_at_rest(mem, &aux))
+        if draws.iter().any(|draw| draw.aux_depth.is_some())
+            && !*aux_at_rest.get_or_insert_with(|| crate::native_objects_glue::aux_depth_at_rest(mem))
         {
             *outcomes.entry("object_aux_depth").or_default() += 1;
             left.item(item.slot, "object_aux_depth");
