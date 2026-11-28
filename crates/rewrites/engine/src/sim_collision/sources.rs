@@ -290,8 +290,9 @@ mod tests {
         g.set_u32(layout::STRUCTURE_BSP, BSP).unwrap();
         let mut active = cpu;
         assert!(location(&mut active, &mut g, &world).unwrap().is_some());
+        // Rounding down: an environment the walk does not run.
         let mut declined = CpuAbi {
-            mxcsr: 0x1f80,
+            mxcsr: 0x3f80,
             ..cpu
         };
         assert!(location(&mut declined, &mut g, &world).unwrap().is_none());

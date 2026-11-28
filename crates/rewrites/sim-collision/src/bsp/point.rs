@@ -25,7 +25,17 @@ impl Bsp {
 
     /// Walk once and also return the intermediates visible at the guest ABI.
     pub fn point_result(&self, node: u32, p: [u32; 3]) -> Result<PointResult, Bail> {
-        let mut fp = Fp::new();
+        self.point_result_with(&mut Fp::new(), node, p)
+    }
+
+    /// [`Bsp::point_result`] in the caller's `fp`: under
+    /// [`Fp::tracked`] it gathers the flags the guest's walk raises.
+    pub fn point_result_with(
+        &self,
+        fp: &mut Fp,
+        node: u32,
+        p: [u32; 3],
+    ) -> Result<PointResult, Bail> {
         let mut index = node & 0x7f_ffff;
         for _ in 0..MAX_DEPTH {
             let n = self.nodes.get(index as usize).ok_or(Bail::Data)?;

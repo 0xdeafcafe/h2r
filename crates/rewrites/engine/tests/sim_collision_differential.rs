@@ -393,7 +393,9 @@ fn entry_cpu(rng: &mut Rng, point: u32) -> CpuAbi {
         ..CpuAbi::default()
     };
     match rng.below(16) {
-        0 => c.mxcsr = 0x1f80,
+        // The live game's MXCSR, PE clear: the kernels answer it and
+        // raise PE as the guest does.
+        0 | 4 | 5 => c.mxcsr = 0x1f80,
         1 | 2 => c.mxcsr = 0x9fe0,
         3 => c.mxcsr = 0x3fa0,
         _ => {}

@@ -24,7 +24,7 @@ mod host;
 mod region;
 
 pub use chain::Chain;
-pub use region::{Checked, checked, checked_env, checked_inputs, host_fast_env};
+pub use region::{Checked, checked, checked_env, checked_guest_env, checked_inputs, host_fast_env};
 
 use crate::lanes::{self, Op, Vec4};
 

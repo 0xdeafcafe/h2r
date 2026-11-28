@@ -255,7 +255,7 @@ impl CollectorCast {
             }
             Resume::Walk => {}
         }
-        if !det::fast_env(cpu.mxcsr)
+        if !det::guest_env(cpu.mxcsr)
             || !det::x87_env(cpu.x87.control, cpu.x87.status, cpu.x87.tag, X87_FREE)
             || Precision::from_control(cpu.x87.control)? != self.precision
         {

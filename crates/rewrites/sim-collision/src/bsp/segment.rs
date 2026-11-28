@@ -130,6 +130,9 @@ pub struct Outcome {
     pub inexact: bool,
     /// Guest addresses of the breakable words the walk read.
     pub mask_reads: Vec<u32>,
+    /// [`Bsp::vector_test_under`]: the guest's MXCSR after the walk's SSE
+    /// arithmetic, PE set when an operation was inexact.
+    pub mxcsr: Option<u32>,
 }
 
 pub mod record {
@@ -254,6 +257,35 @@ impl Bsp {
         t0: u32,
         t1: u32,
     ) -> Result<Outcome, Bail> {
+        self.walk_with(Fp::new(), g, q, node, t0, t1)
+    }
+
+    /// [`Bsp::vector_test`] under the guest's `mxcsr` ([`Fp::tracked`]; it
+    /// must pass `sim_core::det::guest_env`): [`Outcome::mxcsr`] holds the
+    /// MXCSR the guest's walk leaves.
+    pub fn vector_test_under(
+        &self,
+        mxcsr: u32,
+        g: &impl GuestRead,
+        q: &Segment,
+        node: u32,
+        t0: u32,
+        t1: u32,
+    ) -> Result<Outcome, Bail> {
+        let mut out = self.walk_with(Fp::tracked(mxcsr), g, q, node, t0, t1)?;
+        out.mxcsr.get_or_insert(mxcsr);
+        Ok(out)
+    }
+
+    fn walk_with(
+        &self,
+        fp: Fp,
+        g: &impl GuestRead,
+        q: &Segment,
+        node: u32,
+        t0: u32,
+        t1: u32,
+    ) -> Result<Outcome, Bail> {
         if (q.listed as i32) < 0 {
             return Err(Bail::Data);
         }
@@ -261,7 +293,7 @@ impl Bsp {
             bsp: self,
             q,
             g,
-            fp: Fp::new(),
+            fp,
             nodes_left: self.nodes.len(),
             out: Outcome {
                 straight: Some(StraightWalk::default()),
@@ -277,6 +309,7 @@ impl Bsp {
         if !w.fp.exact() {
             return Err(Bail::Float);
         }
+        w.out.mxcsr = w.fp.mxcsr();
         Ok(w.out)
     }
 }

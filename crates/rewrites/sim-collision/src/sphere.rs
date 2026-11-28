@@ -39,9 +39,14 @@ impl Sphere {
     /// The start test comes first. A start strictly inside accepts the
     /// sphere without needing the segment delta.
     pub fn offset(&self, start: [u32; 3]) -> Result<SphereOffset, Bail> {
-        let mut fp = Fp::new();
+        self.offset_with(&mut Fp::new(), start)
+    }
+
+    /// [`Sphere::offset`] in the caller's `fp` ([`Fp::tracked`] gathers
+    /// the guest's flags).
+    pub fn offset_with(&self, fp: &mut Fp, start: [u32; 3]) -> Result<SphereOffset, Bail> {
         let relative = std::array::from_fn(|i| fp.sub(start[i], self.center[i]));
-        let (_, distance_squared) = dot(&mut fp, relative, relative);
+        let (_, distance_squared) = dot(fp, relative, relative);
         let radius_squared = fp.mul(self.radius, self.radius);
         let gap = fp.sub(distance_squared, radius_squared);
         fp.check(gap);
@@ -64,11 +69,15 @@ impl SphereOffset {
     /// Test a segment starting on or outside the sphere. A tangent or a
     /// first contact exactly at the endpoint fails the strict pretest.
     pub fn sweep(&self, delta: [u32; 3]) -> Result<Sweep, Bail> {
-        let mut fp = Fp::new();
-        let (x_product, projection) = dot(&mut fp, delta, self.relative);
+        self.sweep_with(&mut Fp::new(), delta)
+    }
+
+    /// [`SphereOffset::sweep`] in the caller's `fp`.
+    pub fn sweep_with(&self, fp: &mut Fp, delta: [u32; 3]) -> Result<Sweep, Bail> {
+        let (x_product, projection) = dot(fp, delta, self.relative);
         fp.check(projection);
         let quadratic = if det::compare(projection, 0) == Ordering::Less {
-            let (_, length_squared) = dot(&mut fp, delta, delta);
+            let (_, length_squared) = dot(fp, delta, delta);
             let projection_squared = fp.mul(projection, projection);
             let scaled_gap = fp.mul(length_squared, self.gap);
             let discriminant = fp.sub(projection_squared, scaled_gap);

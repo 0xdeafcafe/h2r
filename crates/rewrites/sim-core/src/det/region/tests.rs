@@ -1,4 +1,12 @@
-use super::{checked_env, checked_inputs};
+use super::{checked_env, checked_guest_env, checked_inputs};
+
+#[test]
+fn the_guest_env_takes_pe_clear() {
+    assert!(checked_guest_env(0x1f80) && checked_guest_env(0x1fa0));
+    for unsupported in [0x9f80, 0x1fc0, 0x3f80, 0x1f00] {
+        assert!(!checked_guest_env(unsupported), "mxcsr {unsupported:#x}");
+    }
+}
 
 #[test]
 fn guest_guards_inspect_bits() {
@@ -30,6 +38,19 @@ mod native {
     use crate::det::Chain;
     use std::cmp::Ordering;
     use x87::abi as fp;
+
+    #[test]
+    fn sse_inexact_is_set_by_the_first_inexact_sse_operation() {
+        let seen = checked(|r| {
+            let exact = r.add(1.0, 2.0);
+            let before = r.sse_inexact();
+            let third = r.div(1.0, 3.0);
+            let _ = r.mul(third, 3.0);
+            Some((exact, before, r.sse_inexact()))
+        });
+        assert_eq!(seen, Some((3.0, false, true)));
+        assert_eq!(checked(|r| Some(r.sse_inexact())), Some(false), "each region starts clear");
+    }
 
     #[test]
     fn each_hardware_exception_discards_an_otherwise_good_result() {

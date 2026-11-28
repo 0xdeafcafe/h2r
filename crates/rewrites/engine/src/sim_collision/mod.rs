@@ -33,7 +33,7 @@ use preflight::Outputs;
 use crate::sim_native::Memory;
 use runtime::{CpuAbi, GuestFault, TransferAbi};
 use sim_collision::bsp::NONE;
-pub use sim_collision::{Bail, CollisionWorld, Entry, Stats, VectorParity};
+pub use sim_collision::{Bail, CollisionWorld, Entry, Stats, VectorParity, take_bail};
 use sim_collision::{Consts, Fault, GuestRead, Outcome, Segment};
 use sim_core::Epoch;
 use sim_core::det::{self, Fp};
@@ -108,7 +108,7 @@ struct Plan {
 
 fn vector_env(c: &CpuAbi) -> Result<(), Bail> {
     // Two x87 registers for the matcher's loads; the split needs one.
-    if !det::fast_env(c.mxcsr)
+    if !det::guest_env(c.mxcsr)
         || !det::host_fast_env()
         || !det::x87_env(c.x87.control, c.x87.status, c.x87.tag, 2)
     {
@@ -183,7 +183,7 @@ fn plan_vector(
         prev_kind: 0,
         plane: NONE,
     };
-    let outcome = bsp.vector_test(&m, &q, 0, 0, t1)?;
+    let outcome = bsp.vector_test_under(c.mxcsr, &m, &q, 0, 0, t1)?;
     for &at in &outcome.mask_reads {
         outputs.separate(g, at, 4)?;
     }
@@ -249,7 +249,7 @@ fn plan_context(
         prev_kind: b[ctx::PREV_KIND as usize],
         plane: w(ctx::PLANE),
     };
-    let outcome = bsp.vector_test(&m, &q, node, t0, t1)?;
+    let outcome = bsp.vector_test_under(c.mxcsr, &m, &q, node, t0, t1)?;
     for &at in &outcome.mask_reads {
         outputs.separate(g, at, 4)?;
     }
@@ -278,6 +278,7 @@ fn commit(c: &mut CpuAbi, g: &mut impl Memory, plan: Plan) -> Result<TransferAbi
     if o.inexact {
         c.x87.status |= 0x20;
     }
+    c.mxcsr |= o.mxcsr.unwrap_or(0) & 0x3f;
     c.eax = (c.eax & !0xff) | u32::from(o.hit.is_some());
     // The last flag producer on every return is the epilogue's add to ESP.
     let frame = if plan.context.is_some() { 8 } else { 0x28 };

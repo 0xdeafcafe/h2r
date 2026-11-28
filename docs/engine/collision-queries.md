@@ -151,9 +151,14 @@ the `x87` crate for controls `0x007f`, `0x027f` and `0x037f`.
 
 The bridge first checks the MXCSR and x87 exception masks, the x87 error summary and the reserved precision setting for every native entry. The arithmetic has further requirements.
 
-- MXCSR has every exception masked, rounds to nearest, and already has PE
-  set. PE is sticky, so the kernel's SSE work cannot leave it different
-  from retail's. FTZ and DAZ do not matter because no operand is subnormal.
+- MXCSR has every exception masked and rounds to nearest
+  (`det::guest_env`); PE may be clear, as in the live game's `0x1f80`.
+  The kernels' SSE arithmetic runs in `det::Fp::tracked(mxcsr)` (A, B,
+  C, D and the sphere pretest) or a checked region that samples the
+  host's inexact flag for its SSE operations (`Checked::sse_inexact`, G
+  and H). An answer leaves the MXCSR with PE set when one was inexact,
+  as retail's. FTZ and DAZ do not matter because no operand is subnormal;
+  G and H also need them off (`det::checked_guest_env`).
 - For F: the x87 control word masks every exception, rounds to nearest
   and selects single or double precision (`det::Chain`; extended bails
   `float`), one register below the top is free, and the status word
@@ -351,6 +356,14 @@ the claimed save instructions. It does not prove condition-code liveness
 through every indirect caller or exception path.
 
 ## Bails and stats
+
+A bail in A, B, E, F or the sphere pretest panics
+`collision: <entry>: <reason>` (`sim-bridge` `collision_unhandled`; an
+`env` names the MXCSR and the x87 words); no lifted body runs the call.
+Only `trap` runs the original, for the debugger. C, D, G and H run their
+lifted matcher or contested flood by design and compare at the return,
+but an `env` bail there panics too. Each bail is also the thread's last
+(`sim_collision::take_bail`), which the hook reads for the panic.
 
 | Reason | When |
 |---|---|

@@ -11,6 +11,8 @@ mod status {
     pub type Word = u32;
     // IE, ZE, OE, UE in MXCSR.
     pub const REJECT: Word = 0x1d;
+    // PE in MXCSR.
+    pub const INEXACT: Word = 0x20;
 
     pub fn read() -> Word {
         let mut word = 0u32;
@@ -65,6 +67,8 @@ mod status {
     pub type Word = u64;
     // IOC, DZC, OFC, UFC in FPSR.
     pub const REJECT: Word = 0xf;
+    // IXC in FPSR.
+    pub const INEXACT: Word = 0x10;
 
     pub fn read() -> Word {
         let word;
@@ -127,6 +131,7 @@ mod status {
 mod status {
     pub type Word = u32;
     pub const REJECT: Word = 0;
+    pub const INEXACT: Word = 0;
     pub fn read() -> Word {
         0
     }

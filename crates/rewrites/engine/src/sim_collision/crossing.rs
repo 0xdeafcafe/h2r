@@ -266,6 +266,7 @@ impl Exit {
         if o.inexact {
             cpu.x87.status |= 0x20;
         }
+        cpu.mxcsr |= o.mxcsr.unwrap_or(0) & 0x3f;
         add_flags(&mut cpu, sp.wrapping_sub(outer), outer);
         let _ = finish(&mut cpu, plan.target, layout::VECTOR_ARGS);
         // The frame window: every predicted stack byte, plus a guard below.

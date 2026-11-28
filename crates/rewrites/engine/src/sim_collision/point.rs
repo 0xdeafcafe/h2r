@@ -5,7 +5,7 @@ use crate::sim_native::{logic_flags, sub_flags};
 use runtime::{CpuAbi, GuestFault, TransferAbi};
 use sim_collision::bsp::{NONE, point::PointResult};
 use sim_collision::{Bail, CollisionWorld, Entry, GuestRead};
-use sim_core::det;
+use sim_core::det::{self, Fp};
 
 fn walk<const N: usize>(
     g: &mut impl CollisionMemory,
@@ -14,8 +14,8 @@ fn walk<const N: usize>(
     outputs: &Outputs<N>,
     bsp_addr: u32,
     node: u32,
-) -> Result<(PointResult, (u64, u64)), Bail> {
-    if !det::fast_env(c.mxcsr) || !det::host_fast_env() {
+) -> Result<(PointResult, (u64, u64), u32), Bail> {
+    if !det::guest_env(c.mxcsr) || !det::host_fast_env() {
         return Err(Bail::Env);
     }
     let revision = g.bsp_revision(bsp_addr)?;
@@ -23,7 +23,11 @@ fn walk<const N: usize>(
     let bsp = world.bsp(&m, bsp_addr, || consts(&m))?;
     outputs.check_bsp(g, &bsp)?;
     outputs.separate(g, c.edx, 12)?;
-    Ok((bsp.point_result(node, m.vec3(c.edx)?)?, revision))
+    // The walk's SSE arithmetic under the guest's MXCSR: PE comes out set
+    // when an operation was inexact.
+    let mut fp = Fp::tracked(c.mxcsr);
+    let p = bsp.point_result_with(&mut fp, node, m.vec3(c.edx)?)?;
+    Ok((p, revision, fp.mxcsr().unwrap_or(c.mxcsr)))
 }
 
 fn point_registers(c: &mut CpuAbi, p: PointResult) {
@@ -43,11 +47,12 @@ pub fn point_to_leaf(
 ) -> Result<Option<TransferAbi>, GuestFault> {
     let r = (|| {
         let outputs = Outputs::new(g, c.esp, 8, [])?;
-        let (point, _) = walk(g, c, world, &outputs, c.ecx, c.eax)?;
-        Ok((point, outputs.target))
+        let (point, _, mxcsr) = walk(g, c, world, &outputs, c.ecx, c.eax)?;
+        Ok((point, outputs.target, mxcsr))
     })();
     world.record(Entry::PointToLeaf, &r);
-    let Ok((p, target)) = r else { return Ok(None) };
+    let Ok((p, target, mxcsr)) = r else { return Ok(None) };
+    c.mxcsr = mxcsr;
     g.set_u32(c.esp - 4, c.esi)?;
     g.set_u32(c.esp - 8, c.edi)?;
     point_registers(c, p);
@@ -65,6 +70,8 @@ struct Location {
     index: u16,
     point: Option<PointResult>,
     cluster: Option<Cluster>,
+    /// The MXCSR after the point walk.
+    mxcsr: u32,
 }
 
 fn plan_location(
@@ -82,12 +89,14 @@ fn plan_location(
         index,
         point: None,
         cluster: None,
+        mxcsr: c.mxcsr,
     };
     if active {
         outputs.separate(g, layout::STRUCTURE_BSP, 4)?;
         let bsp_addr = m.u32(layout::STRUCTURE_BSP)?;
-        let (p, revision) = walk(g, c, world, &outputs, bsp_addr, 0)?;
+        let (p, revision, mxcsr) = walk(g, c, world, &outputs, bsp_addr, 0)?;
         loc.point = Some(p);
+        loc.mxcsr = mxcsr;
         if p.leaf != NONE {
             // The leaf is already in [esi] when the guest reads this chain.
             outputs.separate(g, layout::ACTIVE_STRUCTURE, 4)?;
@@ -151,6 +160,8 @@ pub fn location(
         g.set_u16(out + 6, loc.index)?;
         g.set_u32(out, NONE)?;
     }
+    // After A's environment was observed with the entry's MXCSR.
+    c.mxcsr = loc.mxcsr;
     Ok(Some(finish(c, loc.target, 0)))
 }
 

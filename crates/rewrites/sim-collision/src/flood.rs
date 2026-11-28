@@ -595,7 +595,18 @@ impl Topology {
 
     /// Entry G on its own: one checked region around the flood.
     pub fn cluster_flood(&self, g: &impl GuestRead, q: &FloodQuery) -> Result<Flood, Bail> {
-        sim_core::det::checked(|r| Some(self.flood(g, r, q))).unwrap_or(Err(Bail::Float))
+        self.cluster_flood_inexact(g, q).map(|(flood, _)| flood)
+    }
+
+    /// [`Topology::cluster_flood`], and whether one of its SSE operations
+    /// was inexact: the guest set PE (`sim_core::det::Checked::sse_inexact`).
+    pub fn cluster_flood_inexact(
+        &self,
+        g: &impl GuestRead,
+        q: &FloodQuery,
+    ) -> Result<(Flood, bool), Bail> {
+        sim_core::det::checked(|r| Some(self.flood(g, r, q).map(|f| (f, r.sse_inexact()))))
+            .unwrap_or(Err(Bail::Float))
     }
 }
 

@@ -9,6 +9,13 @@ pub fn checked_env(mxcsr: u32) -> bool {
     super::fast_env(mxcsr) && mxcsr & 0x8040 == 0
 }
 
+/// [`checked_env`] with PE sticky or not, as [`super::guest_env`]: the
+/// live game's `0x1f80`. [`Checked::sse_inexact`] says whether the
+/// region's operations would have set it.
+pub fn checked_guest_env(mxcsr: u32) -> bool {
+    checked_env(mxcsr | 0x20)
+}
+
 /// The host control check for range-proved [`super::Fp`] operations:
 /// masked exceptions and nearest rounding. Their operand bounds rule out
 /// anything the host's flush controls could change.
@@ -31,9 +38,34 @@ pub fn checked_inputs(values: &[u32]) -> bool {
 /// The reference is confined to the thread and lifetime of its region.
 pub struct Checked {
     ordinary_results: Cell<bool>,
+    /// An SSE operation ([`Checked::add`] to [`Checked::sqrt`]) was
+    /// inexact.
+    sse_inexact: Cell<bool>,
 }
 
 impl Checked {
+    /// Whether an SSE operation so far was inexact: the guest's `addss`,
+    /// `subss`, `mulss`, `divss` or `sqrtss` set PE. The region's x87
+    /// chains do not count.
+    pub fn sse_inexact(&self) -> bool {
+        self.sse_inexact.get()
+    }
+
+    /// Run one SSE operation, sampling the host's inexact flag until one
+    /// is inexact. Nothing else reads the host's inexact flag inside a
+    /// region, so clearing it first loses nothing.
+    fn sse(&self, op: impl FnOnce() -> f32) -> f32 {
+        if self.sse_inexact.get() {
+            return op();
+        }
+        host::write(host::read() & !host::INEXACT);
+        let value = op();
+        if host::read() & host::INEXACT != 0 {
+            self.sse_inexact.set(true);
+        }
+        value
+    }
+
     fn record32(&self, value: f32) -> f32 {
         let bits = value.to_bits() & 0x7fff_ffff;
         // Hosts can detect tininess before or after rounding. Decline the
@@ -65,26 +97,26 @@ impl Checked {
 
     pub fn add(&self, a: f32, b: f32) -> f32 {
         self.operands(a, b);
-        self.record32(host::add32(a, b))
+        self.record32(self.sse(|| host::add32(a, b)))
     }
     pub fn sub(&self, a: f32, b: f32) -> f32 {
         self.operands(a, b);
-        self.record32(host::sub32(a, b))
+        self.record32(self.sse(|| host::sub32(a, b)))
     }
     pub fn mul(&self, a: f32, b: f32) -> f32 {
         self.operands(a, b);
-        self.record32(host::mul32(a, b))
+        self.record32(self.sse(|| host::mul32(a, b)))
     }
     pub fn div(&self, a: f32, b: f32) -> f32 {
         self.operands(a, b);
-        self.record32(host::div32(a, b))
+        self.record32(self.sse(|| host::div32(a, b)))
     }
 
     pub fn sqrt(&self, value: f32) -> f32 {
         if !checked_inputs(&[value.to_bits()]) {
             self.decline();
         }
-        self.record32(host::sqrt32(value))
+        self.record32(self.sse(|| host::sqrt32(value)))
     }
 
     pub(super) fn narrow(&self, value: f64) -> f32 {
@@ -124,6 +156,7 @@ pub fn checked<T>(kernel: impl FnOnce(&Checked) -> Option<T>) -> Option<T> {
         active.set(true);
         let scope = Checked {
             ordinary_results: Cell::new(true),
+            sse_inexact: Cell::new(false),
         };
         let result = std::hint::black_box(kernel(&scope));
         let ok = host::read() & host::REJECT == 0 && scope.ordinary_results.get();

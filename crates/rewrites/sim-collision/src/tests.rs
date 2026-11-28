@@ -766,3 +766,45 @@ fn steps_follow_the_guest_frames_in_order() {
     assert_eq!(out.steps.len(), 4);
     assert_eq!(out.steps[3], Step::Stop);
 }
+
+/// Under the live MXCSR (PE clear) the point walk is the fast path's and
+/// gathers PE: an exact walk leaves it clear, an inexact one sets it.
+#[test]
+fn the_point_walk_raises_pe_under_the_guest_mxcsr() {
+    use sim_core::det::Fp;
+    let img = image(&wall(0));
+    let bsp = decode(&img);
+    let walk = |p: [f32; 3]| {
+        let mut fp = Fp::tracked(0x1f80);
+        let got = bsp.point_result_with(&mut fp, 0, bits(p)).unwrap();
+        assert_eq!(got, bsp.point_result(0, bits(p)).unwrap());
+        fp.mxcsr()
+    };
+    assert_eq!(walk([-1.0, 0.0, 0.0]), Some(0x1f80), "1 * -1 is exact");
+    assert_eq!(walk([-0.1, 0.0, 0.0]), Some(0x1f80), "a product by 1 is exact");
+    // An inexact plane: (0.6, 0.8, 0) . p - 0.3.
+    let mut b = wall(0);
+    b.planes[0] = [0.6, 0.8, 0.0, 0.3];
+    let img = image(&b);
+    let bsp = decode(&img);
+    let mut fp = Fp::tracked(0x1f80);
+    let got = bsp.point_result_with(&mut fp, 0, bits([0.7, 0.1, 0.0])).unwrap();
+    assert_eq!(got, bsp.point_result(0, bits([0.7, 0.1, 0.0])).unwrap());
+    assert_eq!(fp.mxcsr(), Some(0x1fa0));
+}
+
+/// The segment walk under the live MXCSR: the same outcome as the fast
+/// path's, with the MXCSR it leaves.
+#[test]
+fn the_segment_walk_runs_under_the_guest_mxcsr() {
+    let img = image(&wall(0));
+    let bsp = decode(&img);
+    let q = query([-1.0, 0.0, 0.0], [3.0, 0.0, 0.0], 1);
+    let fast = run(&img, &bsp, &q).unwrap();
+    let live = bsp.vector_test_under(0x1f80, &img, &q, 0, 0, 1.0f32.to_bits()).unwrap();
+    assert_eq!(live.hit, fast.hit);
+    assert_eq!(live.steps, fast.steps);
+    let m = live.mxcsr.expect("the guest's MXCSR");
+    assert_eq!(m & !0x20, 0x1f80, "only PE can be raised");
+    assert_eq!(fast.mxcsr, None);
+}

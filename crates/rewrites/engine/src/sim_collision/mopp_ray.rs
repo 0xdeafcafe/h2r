@@ -140,7 +140,7 @@ fn prepare(
     if g.trapped() {
         return Err(Bail::Trap);
     }
-    if !det::fast_env(c.mxcsr) || !det::x87_env(c.x87.control, c.x87.status, c.x87.tag, X87_FREE) {
+    if !det::guest_env(c.mxcsr) || !det::x87_env(c.x87.control, c.x87.status, c.x87.tag, X87_FREE) {
         return Err(Bail::Env);
     }
     let precision = Precision::from_control(c.x87.control)?;

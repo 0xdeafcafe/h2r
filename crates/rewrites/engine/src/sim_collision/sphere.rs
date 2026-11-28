@@ -6,7 +6,7 @@ use sim_collision::{
     Bail, CollisionWorld, Entry, GuestRead,
     sphere::{Sphere, SphereOffset, Sweep},
 };
-use sim_core::det;
+use sim_core::det::{self, Fp};
 
 const AFTER_OBJECT_SPHERE: u32 = 0x0016_9d3f;
 const FRAME_BYTES: u32 = 12;
@@ -15,10 +15,12 @@ struct Plan {
     radius: u32,
     offset: SphereOffset,
     sweep: Option<([u32; 3], Sweep)>,
+    /// The MXCSR after the pretest's arithmetic.
+    mxcsr: u32,
 }
 
 fn plan(c: &CpuAbi, g: &impl CollisionMemory) -> Result<Plan, Bail> {
-    if !det::fast_env(c.mxcsr) || !det::host_fast_env() {
+    if !det::guest_env(c.mxcsr) || !det::host_fast_env() {
         return Err(Bail::Env);
     }
     let mem = Read(g, (0, 0));
@@ -26,12 +28,13 @@ fn plan(c: &CpuAbi, g: &impl CollisionMemory) -> Result<Plan, Bail> {
         center: mem.vec3(c.eax)?,
         radius: mem.u32(c.esp.wrapping_add(4))?,
     };
-    let offset = sphere.offset(mem.vec3(c.ecx)?)?;
+    let mut fp = Fp::tracked(c.mxcsr);
+    let offset = sphere.offset_with(&mut fp, mem.vec3(c.ecx)?)?;
     let sweep = if offset.contains_start() {
         None
     } else {
         let delta = mem.vec3(c.edx)?;
-        let sweep = offset.sweep(delta)?;
+        let sweep = offset.sweep_with(&mut fp, delta)?;
         // All three direction words are read before the original spills
         // them. The return address remains live after the spills.
         Outputs::new(g, c.esp, FRAME_BYTES, [])?;
@@ -41,6 +44,7 @@ fn plan(c: &CpuAbi, g: &impl CollisionMemory) -> Result<Plan, Bail> {
         radius: sphere.radius,
         offset,
         sweep,
+        mxcsr: fp.mxcsr().unwrap_or(c.mxcsr),
     })
 }
 
@@ -60,6 +64,7 @@ pub fn object_sphere_pretest(
     let planned = plan(c, g);
     world.record(Entry::ObjectSphere, &planned);
     let Ok(plan) = planned else { return Ok(None) };
+    c.mxcsr = plan.mxcsr;
 
     let frame = c.esp.wrapping_sub(FRAME_BYTES);
     let [x, y, z] = plan.offset.relative;

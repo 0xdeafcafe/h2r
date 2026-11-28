@@ -42,7 +42,7 @@ pub use mem::{Fault, GuestRead};
 pub use objects::{Visit, VisitQuery};
 pub use world::{
     CollisionWorld, Entry, EntryStats, RayParity, SourceFingerprint, Stats,
-    VectorParity,
+    VectorParity, take_bail,
 };
 
 /// Why a query was left to the lifted code. Nothing was written.
@@ -50,7 +50,9 @@ pub use world::{
 #[repr(usize)]
 pub enum Bail {
     /// MXCSR or the x87 control and stack outside what the kernels
-    /// reproduce (`sim_core::det::fast_env`, `x87_env`).
+    /// reproduce: MXCSR not masked and round-to-nearest
+    /// (`sim_core::det::guest_env`; PE need not be sticky), or the x87
+    /// outside `x87_env`.
     Env = 0,
     /// An operand off the fast path (`sim_core::det::Fp`).
     Float,

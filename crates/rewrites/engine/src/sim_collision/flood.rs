@@ -13,7 +13,7 @@ use super::{Read, consts, finish, layout};
 use crate::sim_native::{Memory, add_flags, logic_flags};
 use runtime::{CpuAbi, GuestFault, TransferAbi};
 use sim_collision::flood::{Flood, FloodQuery, MAX_CLUSTERS, Topology, TopologyKey};
-use sim_collision::objects::{List, Visit, VisitQuery, object_visit};
+use sim_collision::objects::{List, Visit, VisitQuery, object_visit_inexact};
 use sim_collision::{Bail, CollisionWorld, Entry, GuestRead};
 use sim_core::det::{self, checked_inputs};
 use std::sync::Arc;
@@ -28,8 +28,13 @@ fn x87_ready(c: &CpuAbi) -> bool {
         && c.x87.status & 0x20 != 0
 }
 
+/// `mxcsr` after a region whose SSE operations were `inexact`.
+fn after(mxcsr: u32, inexact: bool) -> u32 {
+    if inexact { mxcsr | 0x20 } else { mxcsr }
+}
+
 fn sse_ready(c: &CpuAbi) -> Result<(), Bail> {
-    if !det::checked_env(c.mxcsr) || !det::host_fast_env() {
+    if !det::checked_guest_env(c.mxcsr) || !det::host_fast_env() {
         return Err(Bail::Env);
     }
     Ok(())
@@ -87,6 +92,8 @@ struct FloodPlan {
     epoch: u32,
     structure: u32,
     flood: Flood,
+    /// The MXCSR after the flood: PE set when an SSE operation was inexact.
+    mxcsr: u32,
 }
 
 /// Entry G, `0x14a5b0`: stack: cluster (`i16`), centre, radius, capacity,
@@ -121,7 +128,7 @@ fn plan_flood(
         marks: layout::CLUSTER_MARKS,
         epoch,
     };
-    let flood = t.cluster_flood(&m, &q)?;
+    let (flood, inexact) = t.cluster_flood_inexact(&m, &q)?;
     let outputs = Outputs::new(
         g,
         sp,
@@ -141,10 +148,12 @@ fn plan_flood(
         epoch,
         structure: t.key().structure,
         flood,
+        mxcsr: after(c.mxcsr, inexact),
     })
 }
 
 fn commit_flood(c: &mut CpuAbi, g: &mut impl Memory, p: FloodPlan) -> Result<TransferAbi, GuestFault> {
+    c.mxcsr = p.mxcsr;
     let f = &p.flood;
     for (k, &cluster) in f.clusters.iter().enumerate() {
         if k < f.written {
@@ -192,6 +201,8 @@ pub struct VisitPlan {
     types: u32,
     radius: u32,
     pub visit: Visit,
+    /// The MXCSR after the visit: PE set when an SSE operation was inexact.
+    pub mxcsr: u32,
 }
 
 /// Entry H, `0x0bb050`: stack: lists, types, location, centre, radius,
@@ -269,7 +280,7 @@ pub fn plan_visit_at(
             },
         ],
     };
-    let visit = object_visit(&m, &q, || t.clone().ok_or(Bail::Data))?;
+    let (visit, inexact) = object_visit_inexact(&m, &q, || t.clone().ok_or(Bail::Data))?;
     let outputs = Outputs::new(
         g,
         sp,
@@ -304,6 +315,7 @@ pub fn plan_visit_at(
         types,
         radius,
         visit,
+        mxcsr: after(c.mxcsr, inexact),
     })
 }
 
@@ -331,6 +343,7 @@ pub fn visit_writes(p: &VisitPlan) -> Vec<(u32, u32, u8)> {
 }
 
 fn commit_visit(c: &mut CpuAbi, g: &mut impl Memory, p: VisitPlan) -> Result<TransferAbi, GuestFault> {
+    c.mxcsr = p.mxcsr;
     let v = &p.visit;
     for (at, value, width) in visit_writes(&p) {
         if width == 1 {

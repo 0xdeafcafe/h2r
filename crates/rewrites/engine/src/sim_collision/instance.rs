@@ -288,7 +288,7 @@ fn predict<G: CollisionMemory>(
         return Ok(prediction);
     }
     if c.eflags & (1 << 10) != 0
-        || !det::fast_env(c.mxcsr)
+        || !det::guest_env(c.mxcsr)
         || !det::host_fast_env()
         || !det::x87_env(c.x87.control, c.x87.status, c.x87.tag, 3)
     {

@@ -99,6 +99,8 @@ pub(super) fn commit(
         c.eax = plan.record & !0xff;
         c.ecx = count;
     }
+    // The walk's SSE arithmetic raised these under the guest's MXCSR.
+    c.mxcsr |= plan.outcome.mxcsr.unwrap_or(0) & 0x3f;
     let locals = if plan.context.is_some() { 8 } else { ctx::SIZE };
     add_flags(c, sp - locals, locals);
     Ok(finish(c, plan.target, layout::VECTOR_ARGS))

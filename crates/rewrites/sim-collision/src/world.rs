@@ -22,6 +22,16 @@ pub(crate) const INDEX_RECORD_BYTES: u64 = slots::RECORD_BYTES;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
+thread_local! {
+    static LAST_BAIL: std::cell::Cell<Option<(Entry, Bail)>> = const { std::cell::Cell::new(None) };
+}
+
+/// The last bail [`CollisionWorld::record`] counted on this thread, and
+/// forget it: the hook that ran a body names it in its panic.
+pub fn take_bail() -> Option<(Entry, Bail)> {
+    LAST_BAIL.take()
+}
+
 /// The guest entries the world monitors (docs/engine/collision-queries.md).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
@@ -689,6 +699,7 @@ impl CollisionWorld {
         match r {
             Ok(_) => self.counters.native[e].fetch_add(1, Ordering::Relaxed),
             Err(why) => {
+                LAST_BAIL.set(Some((entry, *why)));
                 // The lifted fallback may write through the alias into a
                 // cached BSP while its block descriptors remain unchanged.
                 if *why == Bail::Alias {

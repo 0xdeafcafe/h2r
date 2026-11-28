@@ -403,6 +403,23 @@ const COLLISION_INVALIDATE: [(&points::Point, &str); 2] = [
     (&points::BSP_SWITCH, "collision-invalidate-bsp"),
 ];
 
+/// A collision call no Rust body answers: `collision: <entry>: <cause>`.
+/// An environment names the MXCSR and the x87 words.
+fn collision_unhandled(entry: Entry, why: Bail, cpu: &CpuAbi) -> ! {
+    if why == Bail::Env {
+        unimplemented!(
+            "collision: {}: env (mxcsr {:#x}, x87 control {:#x} status {:#x} tag {:#x}, eflags {:#x})",
+            entry.name(),
+            cpu.mxcsr,
+            cpu.x87.control,
+            cpu.x87.status,
+            cpu.x87.tag,
+            cpu.eflags,
+        )
+    }
+    unimplemented!("collision: {}: {}", entry.name(), why.name())
+}
+
 fn install_collision(b: &mut Builder) {
     for (point, entry, body) in COLLISION_ENTRIES {
         b.raw()
@@ -412,26 +429,42 @@ fn install_collision(b: &mut Builder) {
                 }
                 let world: &'static engine::sim_collision::CollisionWorld = &engine::sim_collision::WORLD;
                 world.observe_environment(entry, cpu.mxcsr, cpu.x87.control);
-                if sim::supported(cpu) {
-                    let mut mem = ctx.memory();
-                    if mem.has_trap() {
-                        world.record::<()>(entry, &Err(Bail::Trap));
-                    } else if let Some(transfer) = body(cpu, &mut mem, world)? {
-                        return Ok(transfer);
-                    } else if entry == Entry::InstanceTrace {
-                        let prediction = engine::sim_collision::instance::ReturnPrediction::gather(cpu, &mut *mem, world);
-                        drop(mem);
-                        match prediction {
-                            Ok(p) => {
-                                ctx.observe_guest_return(cpu, 12, move |c, ctx| {
-                                    world.record_instance(p.compare(c, &*ctx.runtime().memory()));
-                                });
-                            }
-                            Err(why) => world.record_instance(Err(why)),
+                let mut mem = ctx.memory();
+                if mem.has_trap() {
+                    // The debugger needs the guest's own access sequence.
+                    world.record::<()>(entry, &Err(Bail::Trap));
+                    drop(mem);
+                    return original(cpu, ctx, addr);
+                }
+                if !sim::supported(cpu) {
+                    world.record::<()>(entry, &Err(Bail::Env));
+                    collision_unhandled(entry, Bail::Env, cpu);
+                }
+                let _ = engine::sim_collision::take_bail();
+                if let Some(transfer) = body(cpu, &mut mem, world)? {
+                    return Ok(transfer);
+                }
+                if let Some((_, why)) = engine::sim_collision::take_bail()
+                    && why != Bail::Trap
+                {
+                    collision_unhandled(entry, why, cpu);
+                }
+                // No bail: a call the body leaves to the guest by design
+                // (a populated instance cluster, compared at its return,
+                // or the sphere pretest from another caller).
+                if entry == Entry::InstanceTrace {
+                    let prediction = engine::sim_collision::instance::ReturnPrediction::gather(cpu, &mut *mem, world);
+                    drop(mem);
+                    match prediction {
+                        Ok(p) => {
+                            ctx.observe_guest_return(cpu, 12, move |c, ctx| {
+                                world.record_instance(p.compare(c, &*ctx.runtime().memory()));
+                            });
                         }
+                        Err(why) => world.record_instance(Err(why)),
                     }
                 } else {
-                    world.record::<()>(entry, &Err(Bail::Env));
+                    drop(mem);
                 }
                 original(cpu, ctx, addr)
             });
@@ -450,6 +483,7 @@ fn install_collision(b: &mut Builder) {
                     return original(cpu, ctx, addr);
                 }
                 let mut g = ctx.memory();
+                let _ = engine::sim_collision::take_bail();
                 // The pending prediction is compared at this call's own
                 // guest return, so each arm owns its comparison.
                 enum Pending {
@@ -473,6 +507,12 @@ fn install_collision(b: &mut Builder) {
                 };
                 if let Some(transfer) = transfer {
                     return Ok(transfer);
+                }
+                // The lifted matcher and contested floods are compared at
+                // their return; a float environment the kernels cannot
+                // run is not left to the guest.
+                if let Some((_, Bail::Env)) = engine::sim_collision::take_bail() {
+                    collision_unhandled(entry, Bail::Env, cpu);
                 }
                 drop(g);
                 if let Some(pending) = pending {

@@ -352,12 +352,15 @@ bytes and fallbacks for each map. See [collision-queries.md](collision-queries.m
 
 1. **Gate.** Run the kernel only when the guest float environment is the
    supported one: MXCSR round-to-nearest, all exceptions masked, FTZ and DAZ
-   off, the precision flag already sticky (`mxcsr & 0x6020 == 0x20`, as the
-   ports require); x87 control all-masked, round-to-nearest, precision
-   control single or double. Otherwise run the original.
+   off, the precision flag sticky or not (`det::guest_env`; the kernel
+   raises PE as the guest's SSE code does); x87 control all-masked,
+   round-to-nearest, precision control single or double. Otherwise the
+   call panics by name (`collision: <entry>: env`).
 2. **Compute, then commit.** The kernel returns `Ok(result)` or `Err(Bail)`
-   before any guest write. On `Bail` the adapter returns "not handled" and
-   the dispatcher runs the lifted body from the untouched entry state.
+   before any guest write. On `Bail` the adapter returns "not handled" from
+   the untouched entry state and the hook panics with the bail's name
+   ([collision-queries.md](collision-queries.md), "Bails and stats"); the
+   parity arms that compare a lifted call at its return run it instead.
 3. **Checked region.** `sim_core::det::checked` clears the host's float
    status flags, runs the kernel, and bails if invalid, divide-by-zero,
    overflow or underflow was raised. With finite inputs (rule 4) that proves

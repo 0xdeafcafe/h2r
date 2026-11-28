@@ -252,7 +252,18 @@ pub fn object_visit(
     q: &VisitQuery,
     topology: impl FnOnce() -> Result<Arc<Topology>, Bail>,
 ) -> Result<Visit, Bail> {
-    checked(|r| Some(visit(g, r, q, topology))).unwrap_or(Err(Bail::Float))
+    object_visit_inexact(g, q, topology).map(|(v, _)| v)
+}
+
+/// [`object_visit`], and whether one of its SSE operations was inexact:
+/// the guest set PE (`sim_core::det::Checked::sse_inexact`).
+pub fn object_visit_inexact(
+    g: &impl GuestRead,
+    q: &VisitQuery,
+    topology: impl FnOnce() -> Result<Arc<Topology>, Bail>,
+) -> Result<(Visit, bool), Bail> {
+    checked(|r| Some(visit(g, r, q, topology).map(|v| (v, r.sse_inexact()))))
+        .unwrap_or(Err(Bail::Float))
 }
 
 fn visit(

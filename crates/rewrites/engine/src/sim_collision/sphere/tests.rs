@@ -56,19 +56,25 @@ fn object_sphere_replays_the_scalar_ports_cpu_and_memory() {
         ([2.0, 0.0, 0.0], [0.0; 3], STACK - 16, [-3.0, 0.0, 0.0], true),
         ([3.0, 3.0, 3.0], [1.0, 2.0, 1.0], DELTA, [-2.2, -1.2, -2.2], true),
     ] {
-        let (mut guest, mut cpu) = fixture(start, center, delta_at, delta);
-        let (mut oracle_guest, mut oracle_cpu) = fixture(start, center, delta_at, delta);
-        let transfer = geometry_test(&mut oracle_cpu, &mut oracle_guest).unwrap();
+        // PE sticky, and the live game's MXCSR with PE clear, which the
+        // port's inexact operations set.
+        for mxcsr in [0x1fa0, 0x1f80] {
+            let (mut guest, mut cpu) = fixture(start, center, delta_at, delta);
+            let (mut oracle_guest, mut oracle_cpu) = fixture(start, center, delta_at, delta);
+            cpu.mxcsr = mxcsr;
+            oracle_cpu.mxcsr = mxcsr;
+            let transfer = geometry_test(&mut oracle_cpu, &mut oracle_guest).unwrap();
 
-        assert_eq!(
-            object_sphere_pretest(&mut cpu, &mut guest, &world).unwrap(),
-            Some(transfer)
-        );
-        assert_eq!(cpu.eax as u8, u8::from(hit));
-        assert_eq!(cpu, oracle_cpu);
-        assert_eq!(bytes(&guest), bytes(&oracle_guest));
+            assert_eq!(
+                object_sphere_pretest(&mut cpu, &mut guest, &world).unwrap(),
+                Some(transfer)
+            );
+            assert_eq!(cpu.eax as u8, u8::from(hit));
+            assert_eq!(cpu, oracle_cpu, "mxcsr {mxcsr:#x}");
+            assert_eq!(bytes(&guest), bytes(&oracle_guest));
+        }
     }
-    assert_eq!(world.stats().entries[Entry::ObjectSphere as usize].native, 7);
+    assert_eq!(world.stats().entries[Entry::ObjectSphere as usize].native, 14);
 }
 
 #[test]
@@ -78,7 +84,8 @@ fn object_sphere_declines_before_changing_cpu_or_memory() {
         let (mut g, mut cpu) = fixture([2.0, 0.0, 0.0], [0.0; 3], DELTA, [-2.0, 0.0, 0.0]);
         match case {
             0 => g.set_u32(STACK, BASE).unwrap(),
-            1 => cpu.mxcsr &= !0x20,
+            // Rounding toward zero; PE clear alone runs (the live MXCSR).
+            1 => cpu.mxcsr |= 0x6000,
             2 => cpu.edx = UNMAPPED,
             3 => g.set_u32(DELTA, 1).unwrap(),
             4 => {
