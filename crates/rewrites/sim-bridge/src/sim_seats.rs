@@ -182,6 +182,35 @@ mod tests {
         }
     }
 
+    /// The phantom action builder's executor (`bot_glue::retail_input`,
+    /// `Builder::on`) keeps an override through `prefer_generated` only
+    /// where its placed chain is context-only (`Chain::render_thread`,
+    /// which `hooks::install::place` marks from). The target update and
+    /// search hold the seat alone, so a phantom runs them in Rust. The
+    /// control update also holds the aim-assist feature's open and close,
+    /// which keep per-player host state and run after the body, so it
+    /// stays the lifted original there.
+    #[test]
+    fn a_phantom_executor_keeps_the_target_seats_and_not_the_control_update() {
+        let on = Switches::defaults().with(&format!("impl.{SEATS}"), true);
+        let mut registry = Registry::new(on);
+        registry.add(&SimNative::for_tests()).unwrap();
+        registry
+            .add(&hooks::from_fn("aim-assist-shape", |b| {
+                b.raw().before(&engine::points::PLAYER_CONTROL_UPDATE, "open", |_| {
+                    Ok(hooks::Flow::Continue)
+                });
+                b.raw().after(&engine::points::PLAYER_CONTROL_UPDATE, "close", |_| Ok(()));
+                Ok(())
+            }))
+            .unwrap();
+        let plan = registry.build(&Base).unwrap();
+        for point in [&engine::points::AIM_TARGET_UPDATE, &engine::points::AIM_TARGET_SEARCH] {
+            assert!(plan.chains[&point.base].render_thread().is_ok(), "{}", point.name);
+        }
+        assert!(plan.chains[&engine::points::PLAYER_CONTROL_UPDATE.base].render_thread().is_err());
+    }
+
     #[test]
     fn the_seats_own_their_points_only_while_the_switch_is_on() {
         let on = Switches::defaults().with(&format!("impl.{SEATS}"), true);

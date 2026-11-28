@@ -91,6 +91,25 @@ has no finer measurement. What the code says it contains:
   view than live: `Dispatch::prefer_generated` turns off every
   non-context override, so the collision and object reads under the
   searches run as lifted code, not as the native ports.
+
+  Which seat ports the builder's executor keeps (**Code**, test
+  `a_phantom_executor_keeps_the_target_seats_and_not_the_control_update`
+  in `crates/rewrites/sim-bridge/src/sim_seats.rs`). An override survives
+  `prefer_generated` only where its whole chain is context-only
+  (`Chain::render_thread`, marked in `hooks::install::place`). All three
+  exist only under `impl.sim.native.seats` (off), so at the default every
+  one is lifted.
+
+  | Entry | Port | In the phantom executor | Why |
+  |---|---|---|---|
+  | `0x1a4900` target update | `sim_seats::targeting::update` | Rust | the seat alone at the point; the body reads only the CPU and the guest |
+  | `0x1a5370` target search | `sim_seats::targeting::search` | Rust | the same |
+  | `0x185be0` control update | `sim_seats::look::update` | lifted | the `aim-assist` feature's open and close sit at the point: per-player host state, and an `after` the fallback cannot resume |
+  | `0x1a50a0` cone | `sim_seats::aim::arm` (`impl.sim.aim-assist`, off) | lifted | the `aim-assist` feature's `after` at the point |
+
+  The look and aim arms also move host proof counters
+  (`device::arm`, `leaf`, `aim::arm` statics), so a phantom call counts
+  towards the live arm's proof. That changes who answers, not the answer.
 - **Kernel faults on a mapping made this tick** (**S**, the suspect).
   `Guest::cow_refresh` replaces the view's RAM with a new
   `mach_vm_remap` each tick, and `freeze_ram` does the same for the
