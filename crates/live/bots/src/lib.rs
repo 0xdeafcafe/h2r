@@ -725,6 +725,7 @@ impl Brain {
             self.map = name;
             self.spots_gen = u64::MAX;
             self.mind.cancel_order("map_changed");
+            self.mind.deadly.clear();
         }
         // The scan of this map's spots lands when the nav worker is done
         // with the map, which can be after the map loads.

@@ -90,7 +90,18 @@ gets 3 tries on Some and 8 on Lots, then the bot gives the spot up.
   an allowlist: getting in, driving or riding a vehicle is never on it).
   The vehicle work's seat pad returns before the fight and roam code, so
   it must call `Mind::drop_glitches` first;
-- a show-off with anyone in view, or within 1.5 s of seeing someone.
+- a show-off with anyone in view, or within 1.5 s of seeing someone;
+- a show-off at a site this bot died at this match (below).
+
+**A show-off that kills.** A death once a show-off has left the ground
+(the run's first jump, `BounceRun::left_ground`, or a show-off route's
+first flight, `Mind::show_off_flown`) rules that site out for the rest
+of the match: `Mind::deadly` keeps the last 8 (`DEADLY_SITES`), matched
+within 0.75 units across and 1 unit up or down, and a map change clears
+it. A death on the walk to the site rules nothing out. The Live games of
+19 to 26 November had 29 bot suicides on Lockout and 8 on Ascension, 7
+of them with a `Bounced` event a tick after, and one bot fell twice in
+one match ([the note](notes/2026-11-28-bot-train-r4.md)).
 
 While a trick runs the mind's own melee, reload, switch and grenades
 wait, and the trigger is the trick's.

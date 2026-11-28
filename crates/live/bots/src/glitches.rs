@@ -630,6 +630,13 @@ impl BounceRun {
         }
     }
 
+    /// Whether a try has left the ground: jumped, in the air, over, or
+    /// settling again after one. A death now came from the bounce, not
+    /// from the walk to it.
+    pub fn left_ground(&self) -> bool {
+        self.tries > 0 || !matches!(self.phase, Phase::Settle { .. })
+    }
+
     /// The same, played by `tune` instead of [`crate::tuning::bounce`]: a
     /// bounce route's own numbers, with a learned line's `drift` and
     /// `still` (`bounce_route::flown`).
