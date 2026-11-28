@@ -8,7 +8,7 @@
 //! | shader, material, `vrtx`, bitmaps | the world's worker, [`load`] |
 //! | compile for the grid stream's format | the first draw, on the guest thread (the format table is guest memory) |
 //! | grid vertices and quads | each draw, uploaded again for a new stream or quad list |
-//! | targets `0x15`, `0x16` | their embedded texture headers (`native_water_glue::target_header`), sampled in place |
+//! | targets `0x15`, `0x16` | the frame graph's surfaces for their roles (`TargetRef::Game`, [`sampled_targets`]), sampled in place ([`native_render::Stage::samples`]) |
 //!
 //! What it cannot make is a named cause (`water ocean: <cause>`), never
 //! a guest draw.
@@ -26,7 +26,7 @@ use render_bridge::water_end::{self, ocean};
 use tags::material::{Material, TextureSource};
 use tags::shader::AnimatedProperty;
 
-use frame_types::Slot;
+use frame_types::{Slot, TargetRef};
 use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, StagePalettes, State, current_ready, };
 
 /// The ocean of one loaded BSP: what its pass compiles from.
@@ -208,11 +208,10 @@ impl water_end::OceanHost for Glue {
         }
         let program = self.program(&ready, data, &*mem, draw.stream.kind)?;
         let grid = self.grid(&program, &*mem, &draw.stream, &quads.quads)?;
-        // The reflection and refraction targets (0x15, 0x16) and the
-        // palettes the stages read come from the frame's targets.
-        if !program.sampled().is_empty() {
-            unimplemented!("ocean: render targets sampled from the frame's targets");
-        }
+        // The reflection and refraction targets (0x15, 0x16): the frame
+        // graph's surfaces for their roles, which the copy and the
+        // reflection drew into before this draw.
+        let (targets, target_sizes) = sampled_targets(&*mem, &program.sampled())?;
         if data.palettes.iter().any(Option::is_some) {
             unimplemented!("ocean: stage palettes from the device");
         }
@@ -223,10 +222,30 @@ impl water_end::OceanHost for Glue {
             rows: draw.ocean.rows.map(|r| r.map(f32::from_bits)),
             structure: draw.ocean.structure,
             time: native_render::layer_pass::render_time(&ReadMemory(&*mem)),
+            targets,
+            target_sizes,
         };
         crate::native_targets_glue::push(&*mem, Slot::AfterLights, pass);
         Ok(())
     }
+}
+
+/// The frame targets of the game targets `targets` (in order) and their
+/// guest sizes: each a live table entry's first surface
+/// (`native_shadows_glue::target_header`) named by its role, else
+/// `target`.
+fn sampled_targets(mem: &dyn GuestMemory, targets: &[u8]) -> Result<(Vec<TargetRef>, Vec<(u32, u32)>), ocean::Cause> {
+    targets
+        .iter()
+        .map(|&t| {
+            let header = crate::native_shadows_glue::target_header(mem, u32::from(t)).ok_or("target")?;
+            match crate::native_targets_glue::target_ref(mem, header, true) {
+                TargetRef::Game(g) => Ok((TargetRef::Game(g), g.size)),
+                _ => Err("target"),
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|v| v.into_iter().unzip())
 }
 
 /// One ocean draw as the render thread records it.
@@ -238,11 +257,19 @@ struct OceanPass {
     rows: [[f32; 4]; 3],
     structure: frame_scene::StructureParameters,
     time: Option<f64>,
+    /// The targets the pass samples, in `OceanProgram::sampled`'s order,
+    /// and their guest sizes.
+    targets: Vec<TargetRef>,
+    target_sizes: Vec<(u32, u32)>,
 }
 
 impl native_render::Stage for OceanPass {
     fn name(&self) -> &'static str {
         "ocean"
+    }
+
+    fn samples(&self) -> Vec<TargetRef> {
+        self.targets.clone()
     }
 
     fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> native_render::StageWork {
@@ -252,6 +279,7 @@ impl native_render::Stage for OceanPass {
         let (device, queue, uploads) = (t.device.clone(), t.queue.clone(), t.uploads.clone());
         let (color, depth, formats) = (t.color.clone(), t.depth.clone(), (t.color_format, t.depth_format));
         let (guest_size, size, z_scale, constants) = (view.guest_size, view.size, view.z_scale, view.constants);
+        let (sampled, target_sizes) = (t.sampled.clone(), self.target_sizes.clone());
         crate::native_targets_glue::encoded(move |encoder| {
             let mut gpu = GPU.lock().unwrap_or_else(|e| e.into_inner());
             if gpu.as_ref().is_none_or(|(d, set)| *d != device || !set.holds(&program)) {
@@ -273,7 +301,7 @@ impl native_render::Stage for OceanPass {
                 structure: &structure,
                 time,
                 grid: &grid,
-                target_sizes: &[],
+                target_sizes: &target_sizes,
             };
             let mut target = OceanTarget {
                 device: &device,
@@ -288,7 +316,7 @@ impl native_render::Stage for OceanPass {
                 guest_size,
                 size,
                 z_scale,
-                sampled: &[],
+                sampled: &sampled,
             };
             if let Err(cause) = set.record(&mut target, &draw) {
                 water_end::ocean_unported(cause);
@@ -317,6 +345,41 @@ mod tests {
         assert_eq!(guest_bytes(&m, 0x1010, 6).unwrap(), [1, 2, 3, 4, 5, 6]);
         assert_eq!(guest_bytes(&m, 0x1010, 0).unwrap(), Vec::<u8>::new());
         assert!(guest_bytes(&m, 0x10fe, 8).is_none(), "past memory");
+    }
+
+    /// Target `n` live, its first surface linear A8R8G8B8 of `w` x `h`.
+    fn live_target(m: &mut FlatMemory, n: u32, (w, h): (u32, u32)) {
+        use render_bridge::native_targets::{TARGET_STRIDE, TARGET_SURFACE, TARGETS};
+        let d = TARGETS + n * TARGET_STRIDE;
+        m.set_u32(d + 0x88, 0x1000).unwrap();
+        m.set_u32(d + 0x78, 1).unwrap();
+        let header = d + TARGET_SURFACE;
+        m.set_u32(header + 0x0c, (0x12 << 8) | (2 << 4)).unwrap();
+        m.set_u32(header + 0x10, (w - 1) | ((h - 1) << 12) | ((w * 4 / 64 - 1) << 24)).unwrap();
+    }
+
+    #[test]
+    fn the_reflection_and_refraction_are_their_roles_frame_targets() {
+        use frame_types::{GameTarget, TargetRole};
+        use render_bridge::native_targets::{TARGET_STRIDE, TARGETS};
+        let mut m = FlatMemory::new(TARGETS, (0x20 * TARGET_STRIDE) as usize);
+        live_target(&mut m, 0x16, (640, 480));
+        live_target(&mut m, 0x15, (512, 256));
+        let game = |n, size| TargetRef::Game(GameTarget { role: TargetRole::Game(n), size, depth: false });
+        let (refs, sizes) = sampled_targets(&m, &[0x16, 0x15]).unwrap();
+        assert_eq!(refs, [game(0x16, (640, 480)), game(0x15, (512, 256))]);
+        assert_eq!(sizes, [(640, 480), (512, 256)]);
+        assert_eq!(sampled_targets(&m, &[]).unwrap(), (Vec::new(), Vec::new()));
+    }
+
+    #[test]
+    fn a_target_not_made_is_the_target_cause() {
+        use render_bridge::native_targets::{TARGET_STRIDE, TARGETS};
+        let mut m = FlatMemory::new(TARGETS, (0x20 * TARGET_STRIDE) as usize);
+        live_target(&mut m, 0x16, (640, 480));
+        assert_eq!(sampled_targets(&m, &[0x16, 0x15]).unwrap_err(), "target");
+        m.set_u8(TARGETS + 0x16 * TARGET_STRIDE + 0x95, 1).unwrap();
+        assert_eq!(sampled_targets(&m, &[0x16]).unwrap_err(), "target", "disabled");
     }
 
     #[test]

@@ -5,11 +5,13 @@
 //! (`frame_scene::WaterState`) and pushes a stage that draws the scene's
 //! copy (`render_bridge::native_water`, `native_fog_glue::commit_late`).
 //!
-//! Sampled render targets use the texture header embedded at `+4` in the
-//! target descriptor (`0x004b4b58`, stride `0x98`). The resolver at
-//! `0x0001dcc0` requires a live surface at `+0x88` and a clear byte at
-//! `+0x95`. Engine texture 5 samples a copy of the bound colour for the
-//! view's own target.
+//! A sampled render target is the frame graph's surface for its role
+//! (`TargetRef::Game`, [`sampled_targets`]), which the stage names
+//! (`native_render::Stage::samples`) and is handed in place. The resolver
+//! of its texture header at `+4` in the target descriptor (`0x004b4b58`,
+//! stride `0x98`), `0x0001dcc0`, requires a live surface at `+0x88` and a
+//! clear byte at `+0x95` ([`target_header`]). Engine texture 5 samples a
+//! copy of the bound colour for the view's own target.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -24,7 +26,7 @@ use native_render::look::{self, Stage};
 use native_render::program::ViewInputs;
 use native_render::water_gpu::{self, Supply, WaterSet, WATER_LAYER};
 use native_render::{Stage as FrameStage, StageWork};
-use frame_types::Slot;
+use frame_types::{Slot, TargetRef, TargetRole};
 use native_render::world::{LightmapKey, Owner, World};
 use frame_scene::LatePart;
 use render_bridge::late_sorted::{Run, RunAt};
@@ -293,16 +295,22 @@ fn part_owner(&(cluster, part): &PartKey) -> (Owner, u8) {
     (Owner::Cluster(u32::from(cluster)), part)
 }
 
-/// The render targets the passes sample (the reflection inputs) must be
-/// live; the frame graph names no target for them yet.
-fn sampled_targets(mem: &dyn GuestMemory, water: &WaterData) -> Result<(), &'static str> {
-    for &t in &water.targets {
-        if target_header(mem, t).is_none() {
-            return Err("target_view");
-        }
-        unimplemented!("water: render target {t} sampled from the frame's targets");
+/// The frame targets of the render targets the passes sample, in
+/// `WaterData::targets`' order: each live ([`target_header`]) and named by
+/// its role's first surface, else `target_view`.
+fn sampled_targets(mem: &dyn GuestMemory, water: &WaterData) -> Result<Vec<TargetRef>, &'static str> {
+    water.targets.iter().map(|&t| frame_target(mem, t)).collect()
+}
+
+/// Render target `t`'s frame target, when it is live.
+fn frame_target(mem: &dyn GuestMemory, t: u32) -> Result<TargetRef, &'static str> {
+    target_header(mem, t).ok_or("target_view")?;
+    let role = TargetRole::Game(u8::try_from(t).map_err(|_| "target_view")?);
+    let header = render_bridge::native_targets::surface(role).ok_or("target_view")?;
+    match crate::native_targets_glue::target_ref(mem, header, true) {
+        r @ TargetRef::Game(_) => Ok(r),
+        _ => Err("target_view"),
     }
-    Ok(())
 }
 
 impl Glue {
@@ -318,7 +326,7 @@ impl Glue {
         if selected.is_empty() || selected.iter().any(|key| !water.part_set.contains_key(key)) {
             return None;
         }
-        sampled_targets(mem, water).ok()?;
+        let targets = sampled_targets(mem, water).ok()?;
         let device_words = crate::native_fog_glue::device_fog_words(mem);
         let Some(materials) = crate::native_fog_glue::resolve_materials(&water.words, &device_words) else {
             unimplemented!("water: fog words a material leaves to the device");
@@ -329,6 +337,7 @@ impl Glue {
             selected,
             fogs: crate::native_fog_glue::late_fogs(&materials),
             samples_view: water.samples_view,
+            targets,
         };
         crate::native_targets_glue::push(&*mem, Slot::AfterLights, pass);
         Some(count)
@@ -389,15 +398,22 @@ impl Glue {
         if water.parts.is_empty() {
             return crate::native_fog_glue::kept(left, "no_parts");
         }
-        if let Err(cause) = sampled_targets(mem, water) {
-            return crate::native_fog_glue::refuse_view(left, WATER_LATE_LAYER, cause);
-        }
+        let targets = match sampled_targets(mem, water) {
+            Ok(targets) => targets,
+            Err(cause) => return crate::native_fog_glue::refuse_view(left, WATER_LATE_LAYER, cause),
+        };
         // The fog state, as the fog's.
         let device_words = crate::native_fog_glue::device_fog_words(mem);
         let Some(materials) = crate::native_fog_glue::resolve_materials(&water.words, &device_words) else {
             unimplemented!("water: fog words a material leaves to the device");
         };
-        let pass = |selected, fogs| WaterViewPass { ready: Arc::clone(&ready), selected, fogs, samples_view: water.samples_view };
+        let pass = |selected, fogs| WaterViewPass {
+            ready: Arc::clone(&ready),
+            selected,
+            fogs,
+            samples_view: water.samples_view,
+            targets: targets.clone(),
+        };
         if !display_clusters.is_empty() {
             let selected = crate::native_fog_glue::display_late_part(mem, display_clusters, &water.part_set, WATER_LATE_LAYER, |_, _| true);
             if let Some(selected) = selected {
@@ -489,6 +505,9 @@ struct WaterViewPass {
     /// Each material's fog unit and colour, resolved at the ask.
     fogs: HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
     samples_view: bool,
+    /// The render targets the passes sample, in `WaterData::targets`'
+    /// order.
+    targets: Vec<TargetRef>,
 }
 
 impl WaterViewPass {
@@ -512,6 +531,10 @@ impl FrameStage for WaterViewPass {
         "water"
     }
 
+    fn samples(&self) -> Vec<TargetRef> {
+        self.targets.clone()
+    }
+
     /// The water's draws join the render pass open on the attachments; a
     /// set that samples the view's own target copies it first, so it
     /// records encoded commands.
@@ -523,16 +546,17 @@ impl FrameStage for WaterViewPass {
             unimplemented!("water: {why}");
         }
         let viewport = [0.0, 0.0, t.size.0 as f32, t.size.1 as f32];
+        let sampled: Vec<Option<wgpu::TextureView>> = t.sampled.iter().map(|l| l.as_ref().map(|l| l.view.clone())).collect();
         let mut guard = self.ready.gpu();
         let Some(gpu) = guard.as_mut() else { unimplemented!("water: world geometry unavailable") };
         let work = if self.samples_view {
             gpu.water_encoded(
                 &t.device, &t.queue, &t.uploads, &t.color, t.color_format, &t.depth, t.depth_format,
-                t.size, viewport, gfx::external::TargetCopy::Display, &self.selected, &[], view, &self.fogs,
+                t.size, viewport, gfx::external::TargetCopy::Display, &self.selected, &sampled, view, &self.fogs,
             )
             .map(StageWork::Encoded)
         } else {
-            gpu.water_draws(&t.device, t.color_format, t.depth_format, t.size, viewport, &self.selected, &[], view, &self.fogs)
+            gpu.water_draws(&t.device, t.color_format, t.depth_format, t.size, viewport, &self.selected, &sampled, view, &self.fogs)
                 .map(StageWork::Draws)
         };
         work.unwrap_or_else(|why| unimplemented!("water: {why}"))
@@ -557,5 +581,19 @@ mod tests {
         mem.set_u8(descriptor + 0x95, 1).unwrap();
         assert_eq!(target_header(&mem, 1), None);
         assert_eq!(target_header(&mem, 2), None);
+    }
+
+    #[test]
+    fn a_sampled_target_is_its_roles_frame_target() {
+        let mut mem = FlatMemory::new(TARGETS, (0x20 * TARGET_STRIDE) as usize);
+        let descriptor = TARGETS + 0x16 * TARGET_STRIDE;
+        assert_eq!(frame_target(&mem, 0x16), Err("target_view"), "not made");
+        mem.set_u32(descriptor + 0x88, 0x1000).unwrap();
+        let header = descriptor + render_bridge::native_targets::TARGET_SURFACE;
+        mem.set_u32(header + 0x0c, (0x12 << 8) | (2 << 4)).unwrap();
+        mem.set_u32(header + 0x10, 639 | (479 << 12) | (39 << 24)).unwrap();
+        let game = frame_types::GameTarget { role: TargetRole::Game(0x16), size: (640, 480), depth: false };
+        assert_eq!(frame_target(&mem, 0x16), Ok(TargetRef::Game(game)));
+        assert_eq!(frame_target(&mem, 0x100), Err("target_view"), "past the table");
     }
 }
