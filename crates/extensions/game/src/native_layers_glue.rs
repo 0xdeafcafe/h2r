@@ -70,9 +70,8 @@
 //!   (`layer_pass::clear_layer_items`). The external pass draws before the
 //!   guest's layer draw, so an item after one the guest keeps is taken only
 //!   when both are order-free and every kept item before it restores what
-//!   it sets (`layer_pass::order_free`, `skip_holds`); else it keeps its
-//!   D3D draw (`order`). One external pass records them, in the list's
-//!   order. On the scene's and the alternate view's layers 1, 2, 5, 7, 8,
+//!   it sets (`layer_pass::order_free`, `skip_holds`); else it is not
+//!   taken (`order`). One stage records them, in the list's order. On the scene's and the alternate view's layers 1, 2, 5, 7, 8,
 //!   17 and 20 (`native_layers::SCENE_ONLY`) each item the pass does not
 //!   draw keeps its guest draw, under the same order rule, and its cause
 //!   goes to the bridge's `Left` (by slot, or for the whole layer), which
@@ -85,12 +84,12 @@
 //!   epilogue leaves mode 1. So with the stencil off the items draw with
 //!   the stencil disabled, and with the stencil off or a marked object
 //!   item taken the device must already hold mode 1; else the layer, or
-//!   the marked items, stay on the D3D path. Layers 2, 5, 7, 8, 17 and 20
+//!   the marked items, are not taken. Layers 2, 5, 7, 8, 17 and 20
 //!   draw under the device's stencil.
-//! - **The pass** ([`LayerViewPass`]): the device's view constants and W
-//!   clip at the issue, then per run of the list `GpuWorld::layer_draws`
-//!   or `LitObjects::draws` in the D3D pass open on the bound
-//!   attachments. A scene view's structure runs are culled on the GPU
+//! - **The pass** ([`LayerViewPass`], a stage pushed at its caller's
+//!   slot): the frame graph's view inputs, then per run of the list
+//!   `GpuWorld::layer_draws` or `LitObjects::draws` in the pass open on
+//!   the bound attachments. A scene view's structure runs are culled on the GPU
 //!   instead (`LayerViewPass::encoded`, `GpuWorld::culled_layer_draws`;
 //!   docs/graphics/native-world.md, "Cull"): recorded as commands, the
 //!   layer cull, then the passes of its segments ([`layer_segments`]). A sorted handler's layer whose passes sample the view's
@@ -122,11 +121,14 @@ use native_render::object_streams::StreamFormats;
 use native_render::camera::RenderCamera;
 use native_render::gpu::PassViewport;
 use native_render::program::ViewInputs;
+use native_render::stage::{FrameOp, Stage, StageWork, frame_builder};
+use frame_types::{Slot, SlotAt};
+use gfx::external::{ExternalAttachments, ExternalDraws, ExternalEncoded, TargetCopy};
 use native_render::world::Owner;
 use render_bridge::late_sorted::{Run, RunAt};
 use render_bridge::native_layers::{Host, LayerCaller, Left, count_for};
 
-use crate::native_fog_glue::{device_fog_words, fog_of};
+use crate::native_fog_glue::fog_of;
 use crate::native_world_glue::{ReadMemory, Ready, State, current_ready, palettes_hold};
 
 // The load moved to native-render, so the editor loads the same layers
@@ -216,12 +218,11 @@ fn copy_point(items: impl IntoIterator<Item = (bool, usize)>) -> Option<usize> {
 }
 
 
-struct Glue<B: d3d::backend::Backend + Send + 'static> {
-    device: d3d::abi::SharedDevice<B>,
+struct Glue {
     state: State,
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+impl Host for Glue {
     fn ask(&self, mem: &mut dyn GuestMemory, layer: u32, caller: LayerCaller, scene: &FrameScene, left: &mut Left) -> Option<native_render::skip::Cleared> {
         self.ask_at(mem, layer, caller, scene, left, None, &mut Run::Refused)
     }
@@ -233,43 +234,31 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 
     fn restore(&self, mem: &mut dyn GuestMemory, writes: &[render_bridge::open_shader::Write]) -> Result<(), &'static str> {
-        let mut device = self.device.lock().map_err(|_| "device")?;
-        restore_list(&mut device, mem, writes)
+        restore_list(mem, writes)
     }
 }
 
-/// The open shader's restore list (`render_bridge::open_shader`) through
-/// `device`, as `0x00018900`'s calls reach it: a simple state through
-/// `SetRenderState_Simple` and the shadow, a deferred one into the dirty
-/// word and the shadow, any other through its setter (the slot
-/// `d3d::abi::RENDER_STATE_SETTERS` gives it). `Err` before any write when
-/// a setter is not one of them (`setter`).
-pub(crate) fn restore_list<B: d3d::backend::Backend>(
-    device: &mut d3d::Device<B>, mem: &mut dyn GuestMemory, writes: &[render_bridge::open_shader::Write],
-) -> Result<(), &'static str> {
+/// The open shader's restore list (`render_bridge::open_shader`), as
+/// `0x00018900`'s calls leave guest memory: a simple state and a deferred
+/// one into the state shadow (a deferred one into the dirty word too).
+/// There is no device state behind them. A write through any other setter
+/// is a named gap.
+pub(crate) fn restore_list(mem: &mut dyn GuestMemory, writes: &[render_bridge::open_shader::Write]) -> Result<(), &'static str> {
     use engine::render_loop::states::{DIRTY, SHADOW};
     use render_bridge::open_shader::Write;
-    let slot = |setter: u32| d3d::abi::RENDER_STATE_SETTERS.iter().find(|e| e.0 == setter).map(|e| e.2);
-    if writes.iter().any(|w| matches!(*w, Write::Setter { setter, .. } if slot(setter).is_none())) {
-        return Err("setter");
+    if writes.iter().any(|w| matches!(w, Write::Setter { .. })) {
+        unimplemented!("layers: restore list write through a render state setter");
     }
     for w in writes {
         let done = match *w {
-            Write::Simple { state, header, value } => device
-                .set_render_state_simple(&mut crate::native_lights_glue::DeviceMemory(mem), header, value)
-                .ok()
-                .and_then(|()| mem.set_u32(SHADOW + 4 * u32::from(state), value).ok()),
+            Write::Simple { state, value, .. } => mem.set_u32(SHADOW + 4 * u32::from(state), value).ok(),
             Write::Deferred { state, mask, value } => mem
                 .u32(DIRTY)
                 .and_then(|dirty| mem.set_u32(DIRTY, dirty | mask))
                 .and_then(|()| mem.set_u32(SHADOW + 4 * u32::from(state), value))
                 .ok(),
-            Write::Setter { setter, value, .. } => slot(setter).and_then(|slot| {
-                device.set_render_state(&mut crate::native_lights_glue::DeviceMemory(mem), slot, value).ok()
-            }),
+            Write::Setter { .. } => None,
         };
-        // A write the device refused after others were made: the
-        // reference then writes the whole list again.
         done.ok_or("write")?;
     }
     Ok(())
@@ -293,10 +282,9 @@ impl FirstCopy {
         render_bridge::open_shader::read(mem).map(Self).map_err(|_| "cached_state")
     }
 
-    /// The cache's restore list through `device`, as `0x00018900` writes
-    /// it; a list the device does not take refuses ([`restore_list`]).
-    fn restore<B: d3d::backend::Backend>(&self, device: &mut d3d::Device<B>, mem: &mut dyn GuestMemory) -> Result<(), &'static str> {
-        self.0.as_ref().map_or(Ok(()), |open| restore_list(device, mem, &open.writes))
+    /// The cache's restore list, as `0x00018900` writes it ([`restore_list`]).
+    fn restore(&self, mem: &mut dyn GuestMemory) -> Result<(), &'static str> {
+        self.0.as_ref().map_or(Ok(()), |open| restore_list(mem, &open.writes))
     }
 
     /// The copy flag, the draw byte and the cleared cache.
@@ -307,12 +295,11 @@ impl FirstCopy {
     }
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+impl Glue {
     /// The layer call's ask (`at` `None`): plans the items, clears the bits
     /// of the leading ones the order rule lets the pass draw, and commits.
-    /// Or one run of the sorted entries from `at` (`render_bridge::late_sorted`,
-    /// docs/graphics/retire-d3d-r5.md, "Layer 2 from the plan"): the
-    /// structure items the plan draws up to the first entry the guest
+    /// Or one run of the sorted entries from `at` (`render_bridge::late_sorted`):
+    /// the structure items the plan draws up to the first entry the guest
     /// keeps, drawn there and set in `run`. A run counts no outcome (the
     /// layer call's ask has), sets no device state but the frame's copy
     /// flag its items' calls would, and plans its items against the device
@@ -424,38 +411,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             *outcomes.entry(why).or_default() += (world + objects) as u64;
             left.all(why);
         };
-        let Ok(mut d) = self.device.lock() else {
-            left.all("device");
-            return None;
-        };
-        if !d.can_external_pass() {
-            refuse_all(&mut outcomes, &mut *left, "device", taken.len(), objects.len());
-            report(&outcomes, 0);
-            return None;
-        }
-        // The layer's draws run W-buffered whatever the device holds at the
-        // call: its first shader begin sets ZENABLE first
-        // (`native_objects_glue::apply_layer_begin_zenable`). Set before
-        // the drain, the objects' W check (`object_w_buffer`) and the
-        // pass's view constants and clip read the state the draws run with.
-        // A run is inside the layer's body, past its begin: it sets
-        // nothing, and its objects read the device as it is.
-        if !running && !objects.is_empty() && crate::native_objects_glue::apply_layer_begin_zenable(&mut d, mem).is_err() {
-            refuse_all(&mut outcomes, &mut *left, "object_layer_begin", taken.len(), objects.len());
-            report(&outcomes, 0);
-            return None;
-        }
-        if !matches!(d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)), Ok(true)) {
-            refuse_all(&mut outcomes, &mut *left, "device", taken.len(), objects.len());
-            report(&outcomes, 0);
-            return None;
-        }
         let read = ReadMemory(mem);
-        if !viewport_clip(&d, &read) {
-            refuse_all(&mut outcomes, &mut *left, "viewport", taken.len(), objects.len());
-            report(&outcomes, 0);
-            return None;
-        }
         // A run's items draw at the next kept entry, with the device as
         // the shader draw's restore of its cached implementation leaves it
         // (`sorted_entries::after_restore`): every check of the run reads
@@ -469,11 +425,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         } else {
             Vec::new()
         };
-        let device = |slot: u32| d.render_state(&read, slot);
+        let device = |slot: u32| crate::native_objects_glue::device_state::render_state(slot);
         let device_state = native_render::sorted_entries::after_restore(&restore, &device);
         // The device's stencil at the layer call (in a run, after the
         // restore), which the items draw under (`layer_pass::item_stencil`);
-        // one that does not read leaves the layer to the D3D path.
+        // one that does not read takes nothing.
         let Some(device_stencil) = crate::native_objects_glue::stencil_with(&device_state) else {
             refuse_all(&mut outcomes, &mut *left, "stencil", taken.len(), objects.len());
             report(&outcomes, 0);
@@ -481,7 +437,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         };
         // The world's sets draw with the palettes the load expanded
         // through.
-        if !taken.is_empty() && !world.is_some_and(|(_, palettes)| palettes_hold(palettes, &|n| d.stage_palette(&read, n))) {
+        if !taken.is_empty() && !world.is_some_and(|(_, palettes)| palettes_hold(palettes, &crate::native_world_glue::stage_palette)) {
             *outcomes.entry("palettes").or_default() += taken.len() as u64;
             taken.drain().for_each(|(slot, _)| left.item(slot, "palettes"));
         }
@@ -514,7 +470,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         let planned = if objects.is_empty() {
             None
         } else {
-            plan_objects(&d, mem, l, caller, scene, pass, &objects, &unmarked, running.then_some(restore.as_slice()), &mut free, &mut outcomes, left)
+            plan_objects(mem, l, caller, scene, pass, &objects, &unmarked, running.then_some(restore.as_slice()), &mut free, &mut outcomes, left)
         };
         let (models, mut object_draws, texaccum) = match planned {
             Some((models, draws, texaccum)) => (Some(models), draws, texaccum),
@@ -542,10 +498,10 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         let stencil = stencil.stencil;
         // Pipelines warmed before any bit is cleared: a set not warm yet
-        // leaves its items to D3D.
+        // leaves its items untaken.
         if !taken.is_empty() {
             let warm = ready.as_ref().and_then(|ready| {
-                ready.with_pipeline_target(&d, mem, |gpu, device, color, depth| {
+                ready.with_pipeline_target(|gpu, device, color, depth| {
                     Some(gpu.prewarm_layer(l, device, color, depth, &stencil))
                 })
             });
@@ -559,9 +515,8 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         if let Some(models) = models.as_ref().filter(|_| !object_draws.is_empty()) {
             let flat: Vec<(u32, PlannedDraw)> = object_draws.values().flat_map(|o| o.draws.iter().cloned()).collect();
-            let warm = d.external_pipeline_target(&ReadMemory(mem)).is_some_and(|(device, color, depth)| {
-                models.lit().try_lock().ok().and_then(|mut lit| lit.as_mut().map(|lit| lit.prewarm_draws(&device, color, depth, &flat))) == Some(true)
-            });
+            let (device, color, depth) = crate::native_world_glue::pipeline_target();
+            let warm = models.lit().try_lock().ok().and_then(|mut lit| lit.as_mut().map(|lit| lit.prewarm_draws(&device, color, depth, &flat))) == Some(true);
             if !warm {
                 *outcomes.entry("object_warming").or_default() += object_draws.len() as u64;
                 object_draws.drain().for_each(|(slot, _)| left.item(slot, "object_warming"));
@@ -572,7 +527,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return None;
         }
         drop(device_state);
-        let device_words = device_fog_words(&d, mem);
+        let device_words = crate::native_objects_glue::device_state::fog_words();
         let mut fogs = HashMap::new();
         if let Some(data) = data {
             for (&material, words) in &data.words {
@@ -583,7 +538,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         }
         if let Some(at) = at {
             let objects = RunObjects { models, draws: object_draws, texaccum };
-            return self.commit_run(&mut d, mem, l, caller, &ready, data, &taken, objects, &fogs, samples, stencil, at, left, run);
+            return self.commit_run(mem, l, caller, &ready, data, &taken, objects, &fogs, samples, stencil, at, left, run);
         }
         let read = ReadMemory(mem);
         let Some(mut preview) = native_render::skip::MaskPreview::new(&read) else {
@@ -673,31 +628,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             return None;
         }
         let view_index = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let stage = match caller {
-            LayerCaller::Scene | LayerCaller::AlternateView => timeline::native::Stage::World,
-            LayerCaller::FirstPerson => timeline::native::Stage::FirstPerson,
-            LayerCaller::Sorted(_) => timeline::native::Stage::Objects,
-        };
-        let copy_slot = match copy_at {
-            Some(_) => match crate::native_shadows_glue::target_header(&*mem, STRUCTURE_COPY_TARGET) {
-                Some(header) => vec![Some(d3d::ExternalSlot { header, written: true })],
-                None => {
-                    left.all("object_shader_flag_target");
-                    return None;
-                }
-            },
-            None => Vec::new(),
-        };
-        let plan = d3d::ExternalPlan { stage, view: view_index, ranges, slots: copy_slot };
-                // The lens the structure is culled by, as layer 3's admission takes
-        // it: the union of both copies' (`native_world_glue`).
         let camera = scene.views.first().map(|v| v.camera);
-        let cull_camera = match (camera, d.external_ready(&ReadMemory(mem), false)) {
-            (Some(camera), Ok(target)) => {
-                Some(native_render::camera::display_camera(camera, d.projection_factor_for_target(target.surface_size)))
-            }
-            _ => None,
-        };
         // Bound only when a surrendered draw samples it.
         let texaccum = texaccum.filter(|_| runs.iter().any(|r| matches!(r, LayerRun::Objects(draws) if draws.iter().any(|(_, draw)| draw.texaccum))));
         let pass = Box::new(LayerViewPass {
@@ -708,27 +639,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             runs,
             samples,
             fogs,
-            view: None,
-            w_clip: None,
-            writes_depth: data.is_some_and(|d| d.writes_depth),
             stencil,
-            run: u64::from(d.swap_count()).wrapping_add(1),
             copy_at,
             camera,
-            cull_camera,
-            token: crate::native_world_glue::view_token(u64::from(d.swap_count()).wrapping_add(1), view_index),
+            token: crate::native_world_glue::view_token(render_bridge::frame_wait::presents() + 1, view_index),
         });
-        // A pass writing the refraction target binds it as a slot, which
-        // no held packet carries.
-        let prepared = if copy_at.is_some() {
-            d.prepare_external_pass(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass)
-        } else {
-            d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
-        };
-        let Some(reservation) = prepared.ok().flatten() else {
-            left.all("reservation");
-            return None;
-        };
         if let Some(ready) = &ready {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, ready)) {
@@ -746,19 +661,19 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             left.all("masks");
             return None;
         }
-        reservation.commit();
+        push(caller, view_index, pass);
         Some(cleared)
     }
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+impl Glue {
     /// A run's draw: the structure items from `at` the plan took and the
     /// sets draw, up to the first entry the guest keeps
     /// (`layer_pass::sorted_layer_run`), reserved, committed and set in
     /// `run`. That entry is named `entry` when nothing else named it.
     #[allow(clippy::too_many_arguments)]
     fn commit_run(
-        &self, d: &mut d3d::Device<B>, mem: &mut dyn GuestMemory, l: u8, caller: LayerCaller, ready: &Option<Arc<Ready>>, data: Option<&LayerData>,
+        &self, mem: &mut dyn GuestMemory, l: u8, caller: LayerCaller, ready: &Option<Arc<Ready>>, data: Option<&LayerData>,
         taken: &HashMap<u32, u32>, objects: RunObjects, fogs: &HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>, samples: LayerSamples,
         stencil: gfx::state::StencilState, at: &RunAt<'_>, left: &mut Left, run: &mut Run,
     ) -> Option<native_render::skip::Cleared> {
@@ -837,23 +752,6 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         // Bound only when a drawn object samples it.
         let texaccum = texaccum.filter(|_| runs.iter().any(|r| matches!(r, LayerRun::Objects(draws) if draws.iter().any(|(_, draw)| draw.texaccum))));
         let view_index = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let stage = match caller {
-            LayerCaller::Scene | LayerCaller::AlternateView => timeline::native::Stage::World,
-            LayerCaller::FirstPerson => timeline::native::Stage::FirstPerson,
-            LayerCaller::Sorted(_) => timeline::native::Stage::Objects,
-        };
-        let slots = match copy_at {
-            Some(_) => match crate::native_shadows_glue::target_header(&*mem, STRUCTURE_COPY_TARGET) {
-                Some(header) => vec![Some(d3d::ExternalSlot { header, written: true })],
-                None => {
-                    left.all("object_shader_flag_target");
-                    *run = Run::Refused;
-                    return None;
-                }
-            },
-            None => Vec::new(),
-        };
-        let plan = d3d::ExternalPlan { stage, view: view_index, ranges, slots };
         let pass = Box::new(LayerViewPass {
             ready: ready.clone(),
             objects: models,
@@ -862,38 +760,20 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             runs,
             samples,
             fogs: fogs.clone(),
-            view: None,
-            w_clip: None,
-            writes_depth: data.is_some_and(|d| d.writes_depth),
             stencil,
-            run: u64::from(d.swap_count()).wrapping_add(1),
             copy_at,
             // Layer 2's sorted runs are not the cull's: drawn unculled.
             camera: None,
-            cull_camera: None,
             token: 0,
         });
-        // The cache's restore list, as `0x00018900` writes it; a list the
-        // device does not take leaves the run to the guest.
+        // The cache's restore list, as `0x00018900` writes it.
         if let Some(first) = &first
-            && let Err(why) = first.restore(d, mem)
+            && let Err(why) = first.restore(mem)
         {
             left.all(why);
             *run = Run::Refused;
             return None;
         }
-        // A pass writing the refraction target binds it as a slot, which
-        // no held packet carries.
-        let prepared = if copy_at.is_some() {
-            d.prepare_external_pass(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass)
-        } else {
-            d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
-        };
-        let Some(reservation) = prepared.ok().flatten() else {
-            left.all("reservation");
-            *run = Run::Refused;
-            return None;
-        };
         if let Some(ready) = ready {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, ready)) {
@@ -907,7 +787,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
             *run = Run::Refused;
             return None;
         }
-        reservation.commit();
+        push(caller, view_index, pass);
         let slots = found.drawn.iter().map(|i| i.slot()).collect();
         *run = Run::Drawn { slots, entries: found.entries, parts: Vec::new() };
         None
@@ -916,11 +796,11 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
 
 /// Plans a layer's object items (`items`, extraction naming no cause)
 /// from `caller`'s models: per item its draws, or a cause counted in
-/// `outcomes`. `None`, every item counted, when the models, the device's
-/// viewport or its W mode leave them all to the D3D path.
+/// `outcomes`. `None`, every item counted, when the models or the W mode
+/// leave them all untaken.
 #[allow(clippy::too_many_arguments)]
-fn plan_objects<B: d3d::backend::Backend>(
-    d: &d3d::Device<B>, mem: &dyn GuestMemory, layer: u8, caller: LayerCaller, scene: &FrameScene, pass: &LayerPass,
+fn plan_objects(
+    mem: &dyn GuestMemory, layer: u8, caller: LayerCaller, scene: &FrameScene, pass: &LayerPass,
     items: &[&LayerItem], stencil: &gfx::state::StencilState, restore: Option<&[(u32, u32)]>, free: &mut HashMap<u32, u32>,
     outcomes: &mut BTreeMap<&'static str, u64>, left: &mut Left,
 ) -> Option<(Arc<dyn LayerModels>, HashMap<u32, ObjectItem>, Option<native_render::world_layers::Texaccum>)> {
@@ -932,8 +812,8 @@ fn plan_objects<B: d3d::backend::Backend>(
         None
     };
     let models = match caller {
-        LayerCaller::Scene | LayerCaller::AlternateView | LayerCaller::Sorted(_) => crate::native_objects_glue::layer_models(d, mem),
-        LayerCaller::FirstPerson => crate::native_first_person_glue::layer_models(d, mem),
+        LayerCaller::Scene | LayerCaller::AlternateView | LayerCaller::Sorted(_) => crate::native_objects_glue::layer_models(mem),
+        LayerCaller::FirstPerson => crate::native_first_person_glue::layer_models(mem),
     };
     let Some(models) = models else { return all("object_models") };
     let read = ReadMemory(mem);
@@ -944,9 +824,9 @@ fn plan_objects<B: d3d::backend::Backend>(
     // buffer its `ZENABLE` sets, the stipple switch it pushes, the fog
     // colour the structure's upload is compared with.
     let restore = restore.unwrap_or(&[]);
-    let device = |slot: u32| d.render_state(&read, slot);
+    let device = |slot: u32| crate::native_objects_glue::device_state::render_state(slot);
     let device_state = native_render::sorted_entries::after_restore(restore, &device);
-    let (entry, w_buffered) = crate::native_objects_glue::entry_states_with(d, mem, &device_state);
+    let (entry, w_buffered) = crate::native_objects_glue::entry_states_with(mem, &device_state);
     let w_buffered = crate::native_objects_glue::w_buffered_after(restore).unwrap_or(w_buffered);
     if !w_buffered {
         return all("object_w_buffer");
@@ -1016,7 +896,7 @@ fn plan_objects<B: d3d::backend::Backend>(
             && texaccum
                 .get_or_insert_with(|| match layer {
                     1 => crate::native_objects_glue::accumulation_target(mem),
-                    _ => crate::native_objects_glue::sampled_texaccum(d, mem, true).ok().flatten(),
+                    _ => crate::native_objects_glue::sampled_texaccum(mem, true).ok().flatten(),
                 })
                 .is_none()
         {
@@ -1028,7 +908,7 @@ fn plan_objects<B: d3d::backend::Backend>(
         // toggle off, so skipping it is state-neutral only when the device
         // already holds it off, as layer 3's walk requires.
         if let Some(aux) = draws.iter().find_map(|draw| draw.aux_depth)
-            && !*aux_at_rest.get_or_insert_with(|| crate::native_objects_glue::aux_depth_at_rest(d, mem, &aux))
+            && !*aux_at_rest.get_or_insert_with(|| crate::native_objects_glue::aux_depth_at_rest(mem, &aux))
         {
             *outcomes.entry("object_aux_depth").or_default() += 1;
             left.item(item.slot, "object_aux_depth");
@@ -1042,7 +922,7 @@ fn plan_objects<B: d3d::backend::Backend>(
                 scene
                     .view_of_pass(pass)
                     .and_then(|v| v.structure_parameters)
-                    .is_some_and(|p| crate::native_objects_glue::structure_at_rest_with(d, mem, &p, fog_words[6]))
+                    .is_some_and(|p| crate::native_objects_glue::structure_at_rest_with(mem, &p, fog_words[6]))
             })
         {
             *outcomes.entry("object_shader_flag").or_default() += 1;
@@ -1056,12 +936,12 @@ fn plan_objects<B: d3d::backend::Backend>(
         // masked by its record's pattern
         // (`native_objects_glue::record_stipple`).
         let faded = item.flags.contains(PartFlags::FADE);
-        if faded && !*stipple_rest.get_or_insert_with(|| crate::native_objects_glue::stipple_at_rest(d, mem)) {
+        if faded && !*stipple_rest.get_or_insert_with(|| crate::native_objects_glue::stipple_at_rest(mem)) {
             *outcomes.entry("object_stipple").or_default() += 1;
             left.item(item.slot, "object_stipple");
             continue;
         }
-        let device_stipple = *stipple.get_or_insert_with(|| crate::native_objects_glue::device_stipple_after(d, mem, restore));
+        let device_stipple = *stipple.get_or_insert_with(|| crate::native_objects_glue::device_stipple_after(restore));
         let Ok(rows) = crate::native_objects_glue::record_stipple(mem, device_stipple, item.key.record, faded) else {
             *outcomes.entry("object_fade").or_default() += 1;
             left.item(item.slot, "object_fade");
@@ -1128,25 +1008,38 @@ impl native_render::camera::GuestRead for Words<'_> {
     }
 }
 
-/// Object items the plan gave back to the D3D path, the first of each
-/// reason logged.
+/// Object items the plan did not take, the first of each reason logged.
 static REASONS: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
 
 fn count_refusal(why: &str) {
     let mut seen = REASONS.lock().unwrap_or_else(|e| e.into_inner());
     let seen = seen.get_or_insert_with(Default::default);
     if seen.len() < 64 && seen.insert(why.to_owned()) {
-        eprintln!("native-layers: an object item keeps its D3D draw: {why} (each reason logged once)");
+        eprintln!("native-layers: an object item is not taken: {why} (each reason logged once)");
     }
 }
 
 /// Installs the host over the world's state (`native_world_glue::install`).
-pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: State) {
-    render_bridge::effects_shadow::geometry::set_answer_host(Some(Arc::new(TransparentAnswer {
-        device: Arc::clone(device),
-        state: Arc::clone(&state),
-    })));
-    render_bridge::native_layers::set_host(Arc::new(Glue { device: Arc::clone(device), state }));
+pub fn install(state: State) {
+    render_bridge::effects_shadow::geometry::set_answer_host(Some(Arc::new(TransparentAnswer { state: Arc::clone(&state) })));
+    render_bridge::native_layers::set_host(Arc::new(Glue { state }));
+}
+
+/// Pushes a layer's pass at its caller's slot: the world's and the first
+/// person's with the opaque scene, a sorted handler's with the
+/// transparents.
+fn push(caller: LayerCaller, view: u32, pass: Box<LayerViewPass>) {
+    let slot = match caller {
+        LayerCaller::Scene | LayerCaller::AlternateView | LayerCaller::FirstPerson => Slot::Opaque,
+        LayerCaller::Sorted(_) => Slot::Transparents,
+    };
+    frame_builder().push(FrameOp::Stage { slot: SlotAt { slot, view: view as u8 }, stage: pass });
+}
+
+/// The display's projection factor: the lens the layer culls and the
+/// objects draw by.
+fn display_factor() -> f32 {
+    unimplemented!("layers: display projection factor from the render scale")
 }
 
 /// R2's geometry answer (`render_bridge::effects_shadow::geometry`): one
@@ -1154,12 +1047,11 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
 /// layer-15 set, as a run of one item (like [`Glue::commit_run`]'s), in
 /// place of the guest's handler `0x00041020`. The set's passes were
 /// compiled at the load from the same tags.
-struct TransparentAnswer<B: d3d::backend::Backend + Send + 'static> {
-    device: d3d::abi::SharedDevice<B>,
+struct TransparentAnswer {
     state: State,
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> render_bridge::effects_shadow::geometry::AnswerHost for TransparentAnswer<B> {
+impl render_bridge::effects_shadow::geometry::AnswerHost for TransparentAnswer {
     fn draw(&self, mem: &mut dyn GuestMemory, r: &render_bridge::effects_shadow::geometry::Request) -> Result<(), &'static str> {
         use native_render::layers_load::TRANSPARENT_LAYER as L;
         if let render_bridge::effects_shadow::geometry::Owner::Object(handle) = r.owner {
@@ -1199,40 +1091,32 @@ impl<B: d3d::backend::Backend + Send + 'static> render_bridge::effects_shadow::g
         if imps.iter().any(|i| i.per_draw_inputs || !i.animated.is_empty()) {
             return Err("per_draw");
         }
-        let mut d = self.device.lock().map_err(|_| "device")?;
-        if !d.can_external_pass() || !matches!(d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)), Ok(true)) {
-            return Err("device");
-        }
         let (stencil, fog) = {
             let read = ReadMemory(mem);
-            if !viewport_clip(&d, &read) {
-                return Err("viewport");
-            }
-            let device_stencil = d.stencil_state(&read).ok_or("stencil")?;
-            if !palettes_hold(palettes, &|n| d.stage_palette(&read, n)) {
+            let device_stencil = crate::native_objects_glue::device_state::stencil().ok_or("stencil")?;
+            if !palettes_hold(palettes, &crate::native_world_glue::stage_palette) {
                 return Err("palettes");
             }
             // Skipping the handler must leave the device as its draws would:
             // what the cached implementation restores, then what each pass
             // sets already holds or is restored (`layer_pass::skip_holds`).
             let restore = native_render::sorted_entries::cached_restore(&read).ok_or("cached_state")?;
-            let device_words = |slot: u32| d.render_state(&read, slot);
+            let device_words = |slot: u32| crate::native_objects_glue::device_state::render_state(slot);
             let device_state = native_render::sorted_entries::after_restore(&restore, &device_words);
             if !imps.iter().all(|i| layer_pass::skip_holds(i, &device_state)) {
                 return Err("state");
             }
-            let words = device_fog_words(&d, &*mem);
+            let words = crate::native_objects_glue::device_state::fog_words();
             let fog = data.words.get(&material).and_then(|w| w.resolve(&words)).map(|w| fog_of(&w)).ok_or("fog")?;
             (layer_pass::item_stencil(L, false, device_stencil, false).stencil, fog)
         };
-        let warm = ready.with_pipeline_target(&d, &*mem, |gpu, device, color, depth| {
+        let warm = ready.with_pipeline_target(|gpu, device, color, depth| {
             Some(gpu.prewarm_layer(L, device, color, depth, &stencil))
         });
         if warm != Some(true) {
             return Err("warming");
         }
         let view_index = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Transparents, view: view_index, ranges: 1, slots: Vec::new() };
         let pass = Box::new(LayerViewPass {
             ready: Some(Arc::clone(&ready)),
             objects: None,
@@ -1241,33 +1125,23 @@ impl<B: d3d::backend::Backend + Send + 'static> render_bridge::effects_shadow::g
             runs: vec![LayerRun::World(vec![part])],
             samples: LayerSamples::new(),
             fogs: HashMap::from([(material, fog)]),
-            view: None,
-            w_clip: None,
-            writes_depth: data.writes_depth,
             stencil,
-            run: u64::from(d.swap_count()).wrapping_add(1),
             copy_at: None,
             camera: None,
-            cull_camera: None,
             token: 0,
         });
-        let reservation = d
-            .prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
-            .ok()
-            .flatten()
-            .ok_or("reservation")?;
         {
             let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
             if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &ready)) {
                 return Err("world_changed");
             }
         }
-        reservation.commit();
+        frame_builder().push(FrameOp::Stage { slot: SlotAt { slot: Slot::Transparents, view: view_index as u8 }, stage: pass });
         Ok(())
     }
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
+impl TransparentAnswer {
     /// An object entry: its layer-15 item from the scene the list's masks
     /// give (the entry's record, part and shader name it), planned like a
     /// sorted run's object (`plan_objects` over the cached restore), drawn
@@ -1294,27 +1168,12 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
         if let Some(why) = item.refusal {
             return Err(why.name());
         }
-        let mut d = self.device.lock().map_err(|_| "device")?;
-        if !d.can_external_pass() {
-            return Err("device");
-        }
-        // The layer's draws run W-buffered whatever the device holds
-        // (`native_objects_glue::apply_layer_begin_zenable`).
-        if crate::native_objects_glue::apply_layer_begin_zenable(&mut d, mem).is_err() {
-            return Err("object_layer_begin");
-        }
-        if !matches!(d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)), Ok(true)) {
-            return Err("device");
-        }
         let (device_stencil, restore) = {
             let read = ReadMemory(&*mem);
-            if !viewport_clip(&d, &read) {
-                return Err("viewport");
-            }
             let restore = native_render::sorted_entries::cached_restore(&read).ok_or("cached_state")?;
             // The stencil as the restore leaves it, as `plan_objects` reads
             // the rest.
-            let device = |slot: u32| d.render_state(&read, slot);
+            let device = |slot: u32| crate::native_objects_glue::device_state::render_state(slot);
             let after = native_render::sorted_entries::after_restore(&restore, &device);
             let device_stencil = crate::native_objects_glue::stencil_with(&after);
             drop(after);
@@ -1323,7 +1182,7 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
         let unmarked = layer_pass::item_stencil(L, pass.stencil_off, device_stencil, false).stencil;
         let (mut free, mut outcomes, mut left) = (HashMap::new(), BTreeMap::new(), Left::default());
         let Some((models, mut planned, texaccum)) =
-            plan_objects(&d, &*mem, L, caller, &scene, pass, &[item], &unmarked, Some(&restore), &mut free, &mut outcomes, &mut left)
+            plan_objects(&*mem, L, caller, &scene, pass, &[item], &unmarked, Some(&restore), &mut free, &mut outcomes, &mut left)
         else {
             return Err(left.layer.unwrap_or("object_models"));
         };
@@ -1349,25 +1208,17 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
         // copies the bound colour into the refraction target, which the
         // pass does before its first draw
         // (`snapshot_gpu::Snapshots::into_target`).
-        let mut slots = Vec::new();
-        let mut copy_at = None;
         let first = if planned.sets_copied { Some(FirstCopy::read(&*mem)?) } else { None };
-        if planned.copies {
-            let header = crate::native_shadows_glue::target_header(&*mem, STRUCTURE_COPY_TARGET).ok_or("object_shader_flag_target")?;
-            slots.push(Some(d3d::ExternalSlot { header, written: true }));
-            copy_at = Some(0);
-        }
+        let copy_at = planned.copies.then_some(0);
         let draws = planned.draws;
         // Bound only when a surrendered draw samples it.
         let texaccum = texaccum.filter(|_| draws.iter().any(|(_, draw)| draw.texaccum));
-        let warm = d.external_pipeline_target(&ReadMemory(&*mem)).is_some_and(|(device, color, depth)| {
-            models.lit().try_lock().ok().and_then(|mut lit| lit.as_mut().map(|lit| lit.prewarm_draws(&device, color, depth, &draws))) == Some(true)
-        });
+        let (device, color, depth) = crate::native_world_glue::pipeline_target();
+        let warm = models.lit().try_lock().ok().and_then(|mut lit| lit.as_mut().map(|lit| lit.prewarm_draws(&device, color, depth, &draws))) == Some(true);
         if !warm {
             return Err("warming");
         }
         let view_index = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Transparents, view: view_index, ranges: draws.len(), slots };
         let pass = Box::new(LayerViewPass {
             ready: None,
             objects: Some(models),
@@ -1376,33 +1227,19 @@ impl<B: d3d::backend::Backend + Send + 'static> TransparentAnswer<B> {
             runs: vec![LayerRun::Objects(draws)],
             samples: LayerSamples::new(),
             fogs: HashMap::new(),
-            view: None,
-            w_clip: None,
-            writes_depth: false,
             stencil,
-            run: u64::from(d.swap_count()).wrapping_add(1),
             copy_at,
             camera: None,
-            cull_camera: None,
             token: 0,
         });
-        // A pass writing the refraction target binds it as a slot, which no
-        // held packet carries.
-        // The cache's restore list, as `0x00018900` writes it; a list the
-        // device does not take leaves the guest's handler.
+        // The cache's restore list, as `0x00018900` writes it.
         if let Some(first) = &first {
-            first.restore(&mut d, mem)?;
+            first.restore(mem)?;
         }
-        let prepared = if copy_at.is_some() {
-            d.prepare_external_pass(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass)
-        } else {
-            d.prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), plan, pass, Vec::new())
-        };
-        let reservation = prepared.ok().flatten().ok_or("reservation")?;
         if first.is_some() && FirstCopy::finish(mem).is_err() {
             return Err("object_target");
         }
-        reservation.commit();
+        frame_builder().push(FrameOp::Stage { slot: SlotAt { slot: Slot::Transparents, view: view_index as u8 }, stage: pass });
         Ok(())
     }
 }
@@ -1413,34 +1250,6 @@ enum LayerRun {
     World(Vec<(Owner, u8)>),
     /// Object pass draws, each with its model.
     Objects(Vec<(u32, PlannedDraw)>),
-}
-
-/// The guest programs apply the viewport transform in their constants. A
-/// single clip equal to the viewport can be reproduced on either target copy.
-pub(crate) fn viewport_clip<B: d3d::backend::Backend>(device: &d3d::Device<B>, read: &ReadMemory<'_>) -> bool {
-    let viewport = device.viewport();
-    device.clip_area(read).ok().flatten().is_some_and(|(clip, rects)| {
-        rects.is_empty() && (viewport.x, viewport.y, viewport.width, viewport.height) == (clip.x, clip.y, clip.width, clip.height)
-    })
-}
-
-pub(crate) fn clip_packets(
-    mut draws: d3d::backend::ExternalDraws, request: d3d::ExternalPassRequest, size: (u32, u32),
-) -> Result<d3d::backend::ExternalDraws, &'static str> {
-    if request.rect != (0, 0, request.surface_size.0, request.surface_size.1) {
-        let scissor = viewport_scissor(request.rect, request.surface_size, size).ok_or("empty layer viewport")?;
-        draws.packets = draws.packets.into_iter().map(|packet| packet.with_scissor(scissor, size)).collect();
-    }
-    Ok(draws)
-}
-
-fn viewport_scissor(
-    (x, y, width, height): (u32, u32, u32, u32), guest: (u32, u32), size: (u32, u32),
-) -> Option<gfx::ScissorRect> {
-    let scale = d3d::scaled::RenderScale::between(guest, size)?;
-    let [x, y, width, height] = scale.rect(x, y, width, height);
-    let rect = gfx::ScissorRect { x, y, width, height }.intersect(gfx::ScissorRect::full(size.0, size.1));
-    (!rect.is_empty()).then_some(rect)
 }
 
 /// One view's replacement of one layer.
@@ -1460,22 +1269,15 @@ struct LayerViewPass {
     /// Each material's fog unit and colour, the device's at the ask under
     /// the material's own words.
     fogs: HashMap<u16, (shaders::psh::fog::Fog, [f32; 4])>,
-    view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
-    w_clip: Option<([f32; 2], bool)>,
-    writes_depth: bool,
     /// The stencil the structure's draws take (`layer_pass::item_stencil`,
     /// `fog_gpu::layer_stencil`).
     stencil: gfx::state::StencilState,
-    run: u64,
     /// The object draw before which the bound colour is copied into the
     /// refraction target, the plan's slot 0 ([`STRUCTURE_COPY_TARGET`]).
     copy_at: Option<usize>,
-    /// The scene view's camera, and the lens its structure is culled by
-    /// on the GPU: the union of the reference and display copies'
-    /// (`display_camera` at the target's projection factor), as layer 3's
-    /// admission takes it. Without them the structure runs draw unculled.
+    /// The scene view's camera: its display lens culls the structure on
+    /// the GPU. Without one the structure runs draw unculled.
     camera: Option<RenderCamera>,
-    cull_camera: Option<RenderCamera>,
     /// This view in this frame (`native_world_glue::view_token`): the
     /// pyramid its layer 3 built, which the structure's cull may read.
     token: u64,
@@ -1485,7 +1287,7 @@ impl LayerViewPass {
     /// Whether the structure runs are culled on the GPU
     /// ([`LayerViewPass::encoded`]), whatever else the layer copies.
     fn culls(&self) -> bool {
-        self.world_runs().next().is_some() && self.cull_camera.is_some() && self.camera.is_some()
+        self.world_runs().next().is_some() && self.camera.is_some()
     }
 
     fn world_runs(&self) -> impl Iterator<Item = &[(Owner, u8)]> {
@@ -1517,72 +1319,26 @@ impl LayerViewPass {
     }
 }
 
-impl d3d::ExternalPass for LayerViewPass {
-    fn batch_key(&self) -> Option<u64> {
-        Some(self.run)
+impl Stage for LayerViewPass {
+    fn name(&self) -> &'static str {
+        "layers"
     }
 
-    fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
-        self.view = Some(*constants);
-    }
-
-    fn depth_clip(&mut self, clip: d3d::DepthClip) {
-        self.w_clip = (clip.w_buffered == Some(true)).then_some((clip.range, clip.clamp));
-    }
-
-    fn sampled(&self) -> Vec<u32> {
-        self.texaccum.iter().map(|target| target.texture).collect()
-    }
-
-    fn prepare_copy(&mut self, _target: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
-        if self.view.is_none() || self.w_clip.is_none() {
-            return Err("layer view constants or W-buffer clip unavailable");
-        }
-        // What the commands copy is checked as they are recorded
-        // (`LayerViewPass::encoded`).
+    /// The layer's draws appended to the pass open on these attachments,
+    /// run by run in the list's order; a layer that samples the view or
+    /// culls on the GPU as commands ([`LayerViewPass::encoded`]).
+    fn record(&mut self, t: &ExternalAttachments, view: &ViewInputs) -> StageWork {
         if self.world_runs().next().is_some() {
-            let ready = self.ready.as_ref().ok_or("world geometry unavailable")?;
-            let mut guard = ready.gpu();
-            let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
-            let set = gpu.layer(self.layer).ok_or("layer materials unavailable")?;
-            if self.world_runs().flatten().any(|&(owner, part)| !set.draws_part(owner, part)) {
-                return Err("a selected layer part did not bind");
+            if let Err(why) = self.parts_bind() {
+                panic!("layers: {why}");
             }
         }
-        Ok(())
-    }
-
-    fn writes(&self) -> d3d::ExternalWrites {
-        let world = self.world_runs().next().is_some()
-            && (self.writes_depth || native_render::fog_gpu::stencil_writes(&self.stencil));
-        d3d::ExternalWrites {
-            color: true,
-            depth_stencil: world || crate::native_objects_glue::draws_write_depth_stencil(self.object_draws()),
-        }
-    }
-
-    /// The layer's draws join the D3D render pass already open on these
-    /// attachments, run by run in the list's order. A refusal here leaves
-    /// the D3D draws. A layer that samples the view is recorded by
-    /// [`d3d::ExternalPass::record_encoded`] instead.
-    fn record_draws(
-        &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalDraws, &'static str>> {
-        if self.samples_view() || self.culls() {
-            return None;
-        }
-        Some(self.record(t, request))
-    }
-
-    /// The copy of the bound colour and the pass that samples it, as
-    /// commands in the frame's open encoder ([`LayerViewPass::encoded`]).
-    fn record_encoded(
-        &mut self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
-        if !self.culls() && !self.samples_view() {
-            return None;
-        }
-        Some(self.encoded(t, request))
+        let work = if self.culls() || self.samples_view() {
+            self.encoded(t, view).map(StageWork::Encoded)
+        } else {
+            self.draws(t, view).map(StageWork::Draws)
+        };
+        work.unwrap_or_else(|why| panic!("layers: {why}"))
     }
 }
 
@@ -1600,7 +1356,7 @@ pub(crate) struct Segment {
 /// order) split where a draw reads the bound colour as the draws before
 /// it left it: each draw sampling the view's own target or layer 1's
 /// accumulation target starts a segment the bound colour is copied
-/// before, as the D3D path's draw reads the attachment it samples, and
+/// before, as the game's draw reads the attachment it samples, and
 /// the draw the frame's structure target copy is made before starts one.
 /// `units` is each draw's: whether it samples the colour, whether the copy
 /// is made before it.
@@ -1643,46 +1399,40 @@ fn load_pass<'a>(
 }
 
 impl LayerViewPass {
-    /// The view inputs of this recording.
-    fn view_inputs(&self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest) -> Result<ViewInputs, &'static str> {
-        let constants = self.view.ok_or("layer view constants unavailable")?;
-        if self.w_clip.is_none() {
-            return Err("layer W-buffer clip unavailable");
+    /// Whether every selected structure part binds in the world's layer set.
+    fn parts_bind(&self) -> Result<(), &'static str> {
+        let ready = self.ready.as_ref().ok_or("world geometry unavailable")?;
+        let mut guard = ready.gpu();
+        let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
+        let set = gpu.layer(self.layer).ok_or("layer materials unavailable")?;
+        if self.world_runs().flatten().any(|&(owner, part)| !set.draws_part(owner, part)) {
+            return Err("a selected layer part did not bind");
         }
-        Ok(ViewInputs {
-            constants: request.view_constants(t.copy, constants),
-            guest_size: request.surface_size,
-            size: t.size,
-            z_scale: request.z_scale,
-            w_clip: self.w_clip,
-        })
+        Ok(())
     }
 
     /// The packets of `runs`, in order: the structure's from the world's
     /// layer set, the objects' with the accumulation target's level.
-    fn record(
-        &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
-    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
-        let view = self.view_inputs(t, request)?;
+    fn draws(&self, t: &ExternalAttachments, view: &ViewInputs) -> Result<ExternalDraws, &'static str> {
         let texaccum = crate::native_objects_glue::texaccum_level(t, self.texaccum)?;
-        let mut out = d3d::backend::ExternalDraws { ranges: 0, packets: Vec::new(), discards: false, writes: Vec::new() };
+        let mut out = ExternalDraws { ranges: 0, packets: Vec::new(), discards: false, writes: Vec::new() };
         for run in &self.runs {
             let draws = match run {
-                LayerRun::World(selected) => self.world_run(t, &view, selected)?,
-                LayerRun::Objects(draws) => self.object_run(t, request, &view, draws, texaccum, None, None)?,
+                LayerRun::World(selected) => self.world_run(t, view, selected)?,
+                LayerRun::Objects(draws) => self.object_run(t, view, draws, texaccum, None, None)?,
             };
             out.ranges += draws.ranges;
             out.packets.extend(draws.packets);
             out.discards |= draws.discards;
             out.writes.extend(draws.writes);
         }
-        clip_packets(out, request, t.size)
+        Ok(out)
     }
 
     /// One run of structure parts, from the world's layer set, unculled.
     fn world_run(
-        &self, t: &d3d::backend::ExternalAttachments, view: &ViewInputs, selected: &[(Owner, u8)],
-    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+        &self, t: &ExternalAttachments, view: &ViewInputs, selected: &[(Owner, u8)],
+    ) -> Result<ExternalDraws, &'static str> {
         let ready = self.ready.as_ref().ok_or("world geometry unavailable")?;
         let mut guard = ready.gpu();
         let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
@@ -1696,12 +1446,12 @@ impl LayerViewPass {
     /// accumulation target, the view copy and the scene copy each binds.
     #[allow(clippy::too_many_arguments)]
     fn object_run(
-        &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest, view: &ViewInputs,
+        &self, t: &ExternalAttachments, view: &ViewInputs,
         draws: &[(u32, PlannedDraw)],
         texaccum: Option<native_render::object_program_gpu::Texaccum<'_>>,
         view_copy: Option<native_render::object_program_gpu::Texaccum<'_>>,
         scene_copy: Option<native_render::object_program_gpu::Texaccum<'_>>,
-    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+    ) -> Result<ExternalDraws, &'static str> {
         let models = self.objects.as_ref().ok_or("layer object geometry unavailable")?;
         let mut lit = models.lit().lock().unwrap_or_else(|e| e.into_inner());
         let lit = lit.as_mut().ok_or("layer object geometry unavailable")?;
@@ -1710,13 +1460,13 @@ impl LayerViewPass {
         }
         lit.draws_with_view(
             &t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, view,
-            request.projection_factor(t.copy), draws, texaccum, view_copy, scene_copy,
+            display_factor(), draws, texaccum, view_copy, scene_copy,
         )
     }
 
     /// The layer as commands: their uniforms' writes; where the structure
     /// is culled on the GPU ([`LayerViewPass::culls`]), the layer cull by
-    /// `cull_camera` (and, where this view's layer 3 built one on this
+    /// the camera's display lens (and, where this view's layer 3 built one on this
     /// target, its pyramid, `GpuWorld::culled_layer_draws`); the scene
     /// copy once (a sorted handler's call, the guest's `0x000352e0` at its
     /// entry); then per segment ([`layer_segments`]) the bound colour
@@ -1727,14 +1477,11 @@ impl LayerViewPass {
     /// attachments with the segment's structure and object draws in the
     /// list's order. A segment starts only at an object draw, so each
     /// structure run lies in one.
-    fn encoded(
-        &self, t: &d3d::backend::ExternalAttachments, request: d3d::ExternalPassRequest,
-    ) -> Result<d3d::backend::ExternalEncoded, &'static str> {
+    fn encoded(&self, t: &ExternalAttachments, view: &ViewInputs) -> Result<ExternalEncoded, &'static str> {
         use native_render::object_program_gpu::Texaccum;
         if t.color.texture().format() != t.color_format {
             return Err("the bound colour's format is not the pass's");
         }
-        let view = self.view_inputs(t, request)?;
         // Per draw (each structure part, each object pass draw): whether it
         // reads the bound colour, whether the structure copy is made
         // before it.
@@ -1760,8 +1507,8 @@ impl LayerViewPass {
         if (needs_scene || self.copy_at.is_some()) && !t.color.texture().usage().contains(wgpu::TextureUsages::TEXTURE_BINDING) {
             return Err("the bound colour cannot be sampled for a snapshot");
         }
-        let target = match self.copy_at {
-            Some(_) => Some(t.slots.first().and_then(Option::as_ref).ok_or("the refraction target unavailable")?),
+        let target: Option<&gfx::external::ExternalColor> = match self.copy_at {
+            Some(_) => unimplemented!("layers: refraction target from the frame graph"),
             None => None,
         };
         let (mut copy, mut scene, mut structure) = (None, None, None);
@@ -1770,12 +1517,12 @@ impl LayerViewPass {
             let mut lit = models.lit().lock().unwrap_or_else(|e| e.into_inner());
             let lit = lit.as_mut().ok_or("layer object geometry unavailable")?;
             if copies_colour {
-                copy = Some(lit.view_copy(&t.device, &t.color, t.copy));
+                copy = Some(lit.view_copy(&t.device, &t.color, TargetCopy::Display));
             }
             // Once for the handler's call: its layers 18 and 21 draw from
             // one downsample, made before they draw.
             if needs_scene {
-                scene = Some(lit.scene_copy(&t.device, &t.color, request.surface_size, t.copy));
+                scene = Some(lit.scene_copy(&t.device, &t.color, view.guest_size, TargetCopy::Display));
             }
             if let Some(target) = target {
                 structure = Some(lit.structure_copy(&t.color, &target.attachment, target.format));
@@ -1789,22 +1536,22 @@ impl LayerViewPass {
             _ => crate::native_objects_glue::texaccum_level(t, self.texaccum)?,
         };
         let view_copy = copy.as_ref().filter(|_| self.object_draws().any(|d| d.view))
-            .map(|c| Texaccum { view: &c.view, guest_size: request.surface_size });
+            .map(|c| Texaccum { view: &c.view, guest_size: view.guest_size });
         let scene_copy = scene.as_ref().map(|c| Texaccum { view: &c.view, guest_size: native_render::object_program::SCENE_COPY_SIZE });
         // The structure runs culled at once, in order, with the dispatch
         // recorded before every pass.
         let (mut culled, dispatch) = if self.culls() {
-            let (camera, cull_camera) = self.camera.zip(self.cull_camera).ok_or("layer camera unavailable")?;
+            let camera = self.camera.ok_or("layer camera unavailable")?;
             let ready = self.ready.as_ref().ok_or("world geometry unavailable")?;
-            let lens = native_render::camera::display_camera(camera, request.projection_factor(t.copy));
-            let [x, y, width, height] = d3d::backend::external_viewport(&request, t.size);
+            let lens = native_render::camera::display_camera(camera, display_factor());
+            let [x, y, width, height] = [0.0, 0.0, t.size.0 as f32, t.size.1 as f32];
             let occlusion = Some((t.depth.texture(), &lens, PassViewport { x, y, width, height }, self.token));
             let world_runs: Vec<&[(Owner, u8)]> = self.world_runs().collect();
             let mut guard = ready.gpu();
             let gpu = guard.as_mut().ok_or("world geometry unavailable")?;
             let (world, dispatch) = gpu.culled_layer_draws(
-                self.layer, &t.uploads, &t.device, &t.queue, t.color_format, t.depth_format, t.size, &world_runs, &view,
-                &self.fogs, &self.stencil, &self.samples, &cull_camera, occlusion,
+                self.layer, &t.uploads, &t.device, &t.queue, t.color_format, t.depth_format, t.size, &world_runs, view,
+                &self.fogs, &self.stencil, &self.samples, &lens, occlusion,
             )?;
             (Some(world.into_iter()), Some(dispatch))
         } else {
@@ -1814,7 +1561,7 @@ impl LayerViewPass {
         let mut recorded = Vec::with_capacity(segments.len());
         let (mut ranges, mut count) = (0, 0);
         for s in &segments {
-            let mut out = d3d::backend::ExternalDraws { ranges: 0, packets: Vec::new(), discards: false, writes: Vec::new() };
+            let mut out = ExternalDraws { ranges: 0, packets: Vec::new(), discards: false, writes: Vec::new() };
             // Each run's draws within the segment, by their unit offsets.
             let mut at = 0usize;
             for run in &self.runs {
@@ -1835,11 +1582,11 @@ impl LayerViewPass {
                         }
                         match culled.as_mut() {
                             Some(world) => world.next().ok_or("a structure run drew nothing")?,
-                            None => self.world_run(t, &view, parts)?,
+                            None => self.world_run(t, view, parts)?,
                         }
                     }
                     LayerRun::Objects(draws) => {
-                        self.object_run(t, request, &view, &draws[from - first..to - first], texaccum, view_copy, scene_copy)?
+                        self.object_run(t, view, &draws[from - first..to - first], texaccum, view_copy, scene_copy)?
                     }
                 };
                 out.ranges += draws.ranges;
@@ -1847,7 +1594,6 @@ impl LayerViewPass {
                 out.discards |= draws.discards;
                 out.writes.extend(draws.writes);
             }
-            let out = clip_packets(out, request, t.size)?;
             if out.discards {
                 return Err("a discarding draw in a layer recorded as commands");
             }
@@ -1888,25 +1634,7 @@ impl LayerViewPass {
                 let _ = gfx::renderer::encode_in_pass(&mut pass, packets);
             }
         };
-        Ok(d3d::backend::ExternalEncoded { ranges, draws: count + snapshots, passes, commands: Box::new(commands) })
-    }
-}
-
-#[cfg(test)]
-mod viewport_tests {
-    use super::*;
-
-    #[test]
-    fn adjacent_views_share_the_same_edge_on_each_copy() {
-        for (size, boundary) in [((10, 8), 3), ((15, 13), 5)] {
-            let top = viewport_scissor((0, 0, 10, 3), (10, 8), size).unwrap();
-            let bottom = viewport_scissor((0, 3, 10, 5), (10, 8), size).unwrap();
-            assert_eq!(top.y, 0);
-            assert_eq!(top.height, boundary);
-            assert_eq!(bottom.y, boundary);
-            assert_eq!(bottom.y + bottom.height, size.1);
-            assert_eq!(bottom.width, size.0);
-        }
+        Ok(ExternalEncoded { ranges, draws: count + snapshots, passes, commands: Box::new(commands) })
     }
 }
 
@@ -1917,56 +1645,39 @@ mod restore_tests {
     use engine::render_loop::states::{DIRTY, SHADOW};
     use render_bridge::open_shader::Write;
 
-    fn device() -> (d3d::Device<d3d::RecordingBackend>, FlatMemory) {
-        let push = d3d::GuestRange { addr: 0x0041_0000, len: 0x10000 };
-        let scratch = d3d::GuestRange { addr: 0x0042_0000, len: 0x1000 };
-        let config = d3d::DeviceConfig::halo2(push, scratch);
-        let mut device = d3d::Device::new(config, d3d::RecordingBackend::default());
-        let mut m = FlatMemory::new(0x0040_0000, 0x18_0000);
-        for slot in 0..d3d::pushbuf::SIMPLE_ENCODE_SLOTS as u32 {
-            m.set_u32(config.layout.simple_encode + 4 * slot, (1 << 18) | (4 * (slot + 1))).unwrap();
-        }
-        let params = scratch.addr + scratch.len;
-        let mut dm = crate::native_lights_glue::DeviceMemory(&mut m);
-        d3d::PresentParameters {
-            width: 32, height: 32, back_buffer_format: gfx::D3DFormat::A8R8G8B8.raw(),
-            back_buffer_count: 1, multisample_type: 0, swap_effect: 0,
-            enable_auto_depth_stencil: false, auto_depth_stencil_format: 0,
-            flags: 0, refresh_rate: 0, presentation_interval: 0,
-            buffer_surface: 0, depth_stencil_surface: 0,
-        }.write(&mut dm, params).unwrap();
-        device.create_device(&mut dm, 0, params, 0).unwrap();
-        (device, m)
+    fn memory() -> FlatMemory {
+        FlatMemory::new(0x0040_0000, 0x18_0000)
     }
 
-    /// The replay writes each entry as `0x00018900`'s call would: the
-    /// simple state's shadow, the deferred state's mask and shadow, the
-    /// setter's slot; a setter the device does not know refuses before
-    /// any write.
+    /// The replay writes each entry as `0x00018900`'s call leaves guest
+    /// memory: the simple state's shadow, the deferred state's mask and
+    /// shadow.
     #[test]
     fn the_open_shaders_restore_writes_each_entry_as_its_call_would() {
-        const CULL_MODE: u32 = 147;
-        let (mut device, mut m) = device();
+        let mut m = memory();
         m.set_u32(DIRTY, 0x1).unwrap();
         let writes = [
             Write::Simple { state: 0x10, header: (1 << 18) | (4 * 0x11), value: 1 },
             Write::Deferred { state: 0x60, mask: 0x20, value: 7 },
-            Write::Setter { state: CULL_MODE as u8, setter: 0x003f_53d0, value: 0x405 },
         ];
-        restore_list(&mut device, &mut m, &writes).unwrap();
+        restore_list(&mut m, &writes).unwrap();
         assert_eq!(m.u32(SHADOW + 0x40).unwrap(), 1);
         assert_eq!(m.u32(SHADOW + 0x180).unwrap(), 7);
         assert_eq!(m.u32(DIRTY).unwrap(), 0x21);
-        assert_eq!(device.render_state(&ReadMemory(&m), CULL_MODE), Some(0x405), "the setter's own slot");
-        let before = m.bytes.clone();
-        let unknown = [writes[1], Write::Setter { state: 0x90, setter: 0x0001_2340, value: 1 }];
-        assert_eq!(restore_list(&mut device, &mut m, &unknown), Err("setter"));
-        assert!(m.bytes == before, "nothing written");
+    }
+
+    /// A write through a setter is a named gap, before any write.
+    #[test]
+    #[should_panic(expected = "layers: restore list write through a render state setter")]
+    fn a_setter_write_is_a_named_gap() {
+        let mut m = memory();
+        let writes = [Write::Setter { state: 147, setter: 0x003f_53d0, value: 0x405 }];
+        let _ = restore_list(&mut m, &writes);
     }
 
     /// A sorted run's item making the frame's first `0x0003bea0` call is
     /// skipped as layer 15's entry is: the cache's restore list written
-    /// through the device before the pass, then with the commit the copy
+    /// before the pass, then with the commit the copy
     /// flag, the draw byte and the cleared cache, so the next entry's
     /// shader draw finds no open shader.
     #[test]
@@ -1975,7 +1686,7 @@ mod restore_tests {
         use engine::render_loop::states::{HEADERS, MASKS};
         use render_bridge::frame_step::layer::{SETUP, SETUP_FLOAT, SETUP_OPEN};
         use render_bridge::open_shader::{DESCRIPTOR_STATES, IMPLEMENTATION_RESTORE, SETUP_DESCRIPTOR};
-        let (mut device, mut m) = device();
+        let mut m = memory();
         let (implementation, descriptor, table) = (0x0050_0000, 0x0050_1000, 0x0050_2000);
         m.set_u32(SETUP + SETUP_OPEN, implementation).unwrap();
         m.set_u32(SETUP + SETUP_DESCRIPTOR, descriptor).unwrap();
@@ -1992,7 +1703,7 @@ mod restore_tests {
         m.set_u32(SETUP_FLOAT, 0x3f80_0000).unwrap();
 
         let first = FirstCopy::read(&m).unwrap();
-        first.restore(&mut device, &mut m).unwrap();
+        first.restore(&mut m).unwrap();
         assert_eq!(m.u32(SHADOW + 0x40).unwrap(), 1, "the simple state");
         assert_eq!(m.u32(SHADOW + 0x180).unwrap(), 7, "the deferred state");
         assert_eq!(m.u32(DIRTY).unwrap() & 0x20, 0x20, "its mask");

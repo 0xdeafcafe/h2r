@@ -12,7 +12,7 @@
 //!   (`native_render::decorators_load::decorator_look`), with the stage
 //!   bitmaps decoded (a palettized one expanded through the device
 //!   palette its stage holds at load, as the world's are). One line says
-//!   how many passes load and why the rest stay on the D3D path.
+//!   how many passes load and why the rest do not.
 //! - **At first sight** ([`Host::prepare`], at the layer-3 call, once per
 //!   load and material): the set's geometry and stream format from guest
 //!   memory (`set_geometry_with`, `object_streams::StreamFormats`). A
@@ -21,22 +21,15 @@
 //!   finished materials from this load. A set that is not resident is
 //!   tried again at the next view.
 //! - **Per view** ([`Host::holds`]): the ready materials whose guest
-//!   draws a skip leaves out without changing a render state the device
-//!   holds at the layer-3 call (`decorators_load::skip_holds`: what the
-//!   pass's draw sets and restores, and `TwoSidedLighting` off, already
-//!   hold).
-//! - **Per view** ([`Host::ask`]): the device's checks (W-buffered, the
-//!   palettes the load expanded still bound, the cull read when a pass
-//!   inherits it), the device's stencil and cull for the pipelines
-//!   (`decorators_gpu::DrawKey`), the skip over a preview
-//!   (`clear_slots`), and the reserved pass, then the masks and the
-//!   commit, as the fog's.
-//! - **The pass** (`DecoratorPass`): the device's view constants and W
-//!   clip at the issue and the pass's pipeline for each copy's formats
-//!   under the view's stencil and cull (the test off on a depth with no
-//!   stencil aspect, as on D3D).
-//!   An unfinished pipeline keeps the slots on D3D. `decorators_gpu::bind`
-//!   and `encode` record after all copies pass.
+//!   draws a skip leaves out without changing a render state held at the
+//!   layer-3 call (`decorators_load::skip_holds`).
+//! - **Per view** ([`Host::ask`]): the stencil and cull for the pipelines
+//!   (`decorators_gpu::DrawKey`), the skip over a preview (`clear_slots`),
+//!   then the masks and the stage pushed at the opaque slot.
+//! - **The pass** (`DecoratorPass`): the view's constants and W clip from
+//!   the frame graph, and the pass's pipeline for the attachments' formats
+//!   under the view's stencil and cull. `decorators_gpu::bind` and
+//!   `encode` record it.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
@@ -51,7 +44,8 @@ use native_render::decorators_load::{
     DECORATOR_CLASSIFICATION, DecoratorLook, SetGeometry, SetRefusal, buffers, compile, decorator_look, set_geometry_with,
     skip_holds, stage_images,
 };
-use native_render::camera::RenderCamera;
+use gfx::external::{ExternalAttachments, ExternalEncoded};
+use native_render::stage::StageWork;
 use native_render::gpu::{Image, PassViewport};
 use native_render::look::{self, Stage};
 use native_render::object_streams::{StreamElement, StreamFormats};
@@ -59,7 +53,7 @@ use native_render::program::ViewInputs;
 use native_render::skip::{Cleared, LIGHTMAP_LAYER};
 use render_bridge::native_decorators::Host;
 
-use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, StagePalettes, State, current_ready, inherited_cull, palettes_hold};
+use crate::native_world_glue::{ReadMemory, Ready, StageDecoder, StageImages, StagePalettes, State, current_ready};
 
 /// The layer the model decorators draw in (`skip::LIGHTMAP_LAYER`), as
 /// the template's layer list numbers it.
@@ -142,7 +136,7 @@ pub fn load<R: Read + Seek>(
     let mut lib = match tags::material::ShaderLibrary::read(map) {
         Ok(lib) => lib,
         Err(e) => {
-            eprintln!("native-decorators: the shader tags do not read ({e}); the D3D path draws the decorators");
+            eprintln!("native-decorators: the shader tags do not read ({e}); no decorator draws");
             return Arc::new(DecoratorLooks {
                 looks,
                 images: StageImages::new(),
@@ -193,7 +187,7 @@ pub fn load<R: Read + Seek>(
         }
     }
     // The lightmap stage's image, once, at the first stage that samples
-    // it; the passes sampling it stay on D3D when it does not load.
+    // it; the passes sampling it do not draw when it does not load.
     let samples = |l: &DecoratorLook| l.look.textures.iter().position(|s| *s == Stage::Lightmap);
     let mut lightmap = None;
     if let Some(stage) = looks.values().filter_map(|l| l.as_ref().ok().and_then(samples)).next() {
@@ -213,7 +207,7 @@ pub fn load<R: Read + Seek>(
     let mut why: Vec<_> = refused.into_iter().collect();
     why.sort();
     eprintln!(
-        "native-decorators: {} decorator shaders, {} of {} layer-3 passes load; on the D3D path: {why:?}",
+        "native-decorators: {} decorator shaders, {} of {} layer-3 passes load; not drawn: {why:?}",
         shaders.len(),
         looks.values().filter(|l| l.is_ok()).count(),
         looks.len(),
@@ -357,12 +351,11 @@ static LOGGED: Mutex<Option<HashSet<String>>> = Mutex::new(None);
 fn log_once(why: &str) {
     let mut logged = LOGGED.lock().unwrap_or_else(|e| e.into_inner());
     if logged.get_or_insert_with(HashSet::new).insert(why.to_owned()) {
-        eprintln!("native-decorators: a material stays on the D3D path: {why}");
+        eprintln!("native-decorators: a material does not draw: {why}");
     }
 }
 
-struct Glue<B: d3d::backend::Backend + Send + 'static> {
-    device: d3d::abi::SharedDevice<B>,
+struct Glue {
     state: State,
     worker: OnceLock<Option<mpsc::SyncSender<MaterialJob>>>,
     /// A live edit's image refresh is running ([`Glue::refresh_edits`]);
@@ -370,7 +363,7 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     refreshing: Arc<AtomicBool>,
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
+impl Glue {
     fn ready(&self, mem: &dyn GuestMemory) -> Option<Arc<Ready>> {
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         current_ready(&state, mem).cloned()
@@ -496,7 +489,7 @@ fn refresh_images(looks: &DecoratorLooks, key: &crate::native_world_glue::BspKey
     queue.submit([]);
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+impl Host for Glue {
     fn prepare(&self, mem: &dyn GuestMemory, materials: &[Material]) -> HashSet<Material> {
         let mut out = HashSet::new();
         let Some(ready) = self.ready(mem) else { return out };
@@ -570,9 +563,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         }
         let Some(load) = self.ready(mem) else { return out };
         let Some(looks) = load.decorators.get() else { return out };
-        let Ok(d) = self.device.lock() else { return out };
-        let read = ReadMemory(mem);
-        let device_state = |slot: u32| d.render_state(&read, slot);
+        let device_state = |slot: u32| crate::native_objects_glue::device_state::render_state(slot);
         for m in ready {
             if matches!(looks.look(m), Some(Ok(look)) if skip_holds(look, &device_state)) {
                 out.insert(*m);
@@ -585,42 +576,17 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         use timeline::native::{Metric, Stage};
         let ready = self.ready(mem)?;
         let looks = ready.decorators.get()?;
-        let writes_depth = {
-            let p = looks.prepared.lock().ok()?;
-            let mut writes_depth = false;
-            for b in &plan.batches {
-                writes_depth |= p.depth.get(&b.material).copied().flatten()?;
-            }
-            writes_depth
-        };
-        let inherits_cull = plan.batches.iter().any(|b| matches!(looks.look(&b.material), Some(Ok(l)) if l.inherits_cull));
-        let mut d = self.device.lock().ok()?;
-        if !d.can_external_pass()
-            || !d.begin_external_boundary(&mut crate::native_lights_glue::DeviceMemory(mem)).ok()?
         {
-            return None;
-        }
-        // The programs write w as depth (`w_buffer`): a view whose draws
-        // store z is the D3D path's.
-        if d.hw().control0.is_some_and(|c| c & d3d::nv2a::CONTROL0_Z_PERSPECTIVE == 0) {
-            return None;
-        }
-        let read = ReadMemory(mem);
-        if !palettes_hold(&looks.palettes, &|n| d.stage_palette(&read, n)) {
-            return None;
-        }
-        // The draw `0x0004e260` sets neither the stencil nor the cull: the
-        // placements draw under the device's (`DrawKey`). One that does
-        // not read keeps the view on the D3D path, as does an unread cull
-        // that a pass inherits.
-        let cull = d.cull_state(&read).map(inherited_cull);
-        let Some(stencil) = d.stencil_state(&read).filter(|_| cull.is_some() || !inherits_cull) else {
-            if !STENCIL.swap(true, Ordering::Relaxed) {
-                eprintln!("native-decorators: layer 3's stencil or inherited cull is unread; the D3D path draws the decorators");
+            // Every batch's material is prepared.
+            let p = looks.prepared.lock().ok()?;
+            for b in &plan.batches {
+                p.depth.get(&b.material).copied().flatten()?;
             }
-            return None;
-        };
-        let draw = DrawKey { stencil, cull };
+        }
+        let inherits_cull = plan.batches.iter().any(|b| matches!(looks.look(&b.material), Some(Ok(l)) if l.inherits_cull));
+        let read = ReadMemory(mem);
+        let draw = layer_draw(inherits_cull);
+
         // The skip over a preview: nothing touches the guest until the
         // reservation has recorded on every copy.
         let planning = timeline::native::Timer::start(Stage::World, Metric::PrepareNs);
@@ -632,26 +598,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             return None;
         }
         let view = mem.u32(engine::render_loop::occlusion::guest::VIEW_INDEX).unwrap_or(u32::MAX);
-        let external = d3d::ExternalPlan { stage: Stage::World, view, ranges, slots: Vec::new() };
-        // The GPU cull's lens, as layer 3's admission takes it (the union
-        // of both copies'), and this view's token for its pyramid.
-        let cull = match (plan.camera, d.external_ready(&ReadMemory(mem), false)) {
-            (Some(camera), Ok(target)) => Some((
-                camera,
-                native_render::camera::display_camera(camera, d.projection_factor_for_target(target.surface_size)),
-            )),
-            _ => None,
-        };
-        let token = crate::native_world_glue::view_token(u64::from(d.swap_count()).wrapping_add(1), view);
-        let pass = Box::new(DecoratorPass {
-            plan, ready: Arc::clone(&ready), view: None, w_clip: None, writes_depth, draw, cull, token,
-        });
+        let token = crate::native_world_glue::view_token(render_bridge::frame_wait::presents() + 1, view);
+        let pass = Box::new(DecoratorPass { plan, ready: Arc::clone(&ready), draw, token });
         drop(planning);
-        let reservation = d
-            .prepare_external_bound(&mut crate::native_lights_glue::DeviceMemory(mem), external, pass, Vec::new())
-            .ok()??;
-        // Keep this load pinned until the masks and the sealed commands
-        // commit.
         let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if !current_ready(&state, mem).is_some_and(|current| Arc::ptr_eq(current, &ready)) {
             return None;
@@ -660,121 +609,105 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
             Stage::World.count(Metric::RefusedMasks, ranges as u64);
             return None;
         }
-        reservation.commit();
+        native_render::stage::frame_builder().push(native_render::stage::FrameOp::Stage {
+            slot: frame_types::SlotAt { slot: frame_types::Slot::Opaque, view: view as u8 },
+            stage: pass,
+        });
         Some(cleared)
     }
 }
 
+/// The stencil and cull the placements draw under at the layer-3 call
+/// (`0x0004e260` sets neither); the cull only when a pass inherits it.
+fn layer_draw(_inherits_cull: bool) -> DrawKey {
+    unimplemented!("decorators: layer-3 stencil and cull from the device")
+}
+
+/// The display's projection factor, the lens the GPU culls by.
+fn display_factor() -> f32 {
+    unimplemented!("decorators: display projection factor from the device")
+}
+
 /// Installs the host over the world's state (`native_world_glue::install`).
-pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, state: State) {
+pub fn install(state: State) {
     render_bridge::native_decorators::set_host(Arc::new(Glue {
-        device: Arc::clone(device),
         state,
         worker: OnceLock::new(),
         refreshing: Arc::default(),
     }));
 }
 
-static STENCIL: AtomicBool = AtomicBool::new(false);
-static NO_VIEW: AtomicBool = AtomicBool::new(false);
-static REFUSED: AtomicBool = AtomicBool::new(false);
 
 /// One view's decorators.
 struct DecoratorPass {
     plan: Plan,
     /// Pin the BSP until the last queued packet releases its GPU materials.
     ready: Arc<Ready>,
-    view: Option<[[f32; 4]; d3d::VIEW_CONSTANTS]>,
-    w_clip: Option<([f32; 2], bool)>,
-    writes_depth: bool,
-    /// The device's stencil and cull at the layer-3 call.
+    /// The stencil and cull at the layer-3 call.
     draw: DrawKey,
-    /// The view's camera and the lens the GPU culls its instances by
-    /// (`GpuWorld::culled_decorators`); without them every instance draws.
-    cull: Option<(RenderCamera, RenderCamera)>,
     /// This view in this frame (`native_world_glue::view_token`).
     token: u64,
 }
 
 impl DecoratorPass {
-    /// Binds the plan's batches on `t`'s device and records them: the
-    /// number of guest draws recorded.
-    fn record(&self, t: d3d::ExternalTarget<'_>, view: &ViewInputs) -> Result<usize, &'static str> {
+    /// Binds the plan's batches on `t`'s device, and the commands that
+    /// draw them over the whole bound attachments.
+    fn encoded(&self, t: &ExternalAttachments, view: &ViewInputs) -> Result<ExternalEncoded, &'static str> {
         let looks = self.ready.decorators.get().ok_or("decorator load unavailable")?;
         let mut gpu = looks.gpu.lock().unwrap_or_else(|e| e.into_inner());
-        let bound = bind(t.device, &mut gpu, &self.plan, view, t.color_format, t.depth_format, self.draw)?;
+        for batch in &self.plan.batches {
+            let material = gpu.get_mut(&batch.material).ok_or("decorator material unavailable")?;
+            if !material.pipeline_ready(&t.device, t.color_format, t.depth_format, self.draw) {
+                return Err("decorator pipeline pending");
+            }
+        }
+        let bound = bind(&t.device, &mut gpu, &self.plan, view, t.color_format, t.depth_format, self.draw)?;
         drop(gpu);
-        // Each instance by its group's sphere, on the GPU; with no GPU
-        // world (none uploaded, so no pyramid either) every one draws.
-        let culled = self.cull.and_then(|(camera, cull_camera)| {
+        let viewport = [0.0, 0.0, t.size.0 as f32, t.size.1 as f32];
+        // Each instance by its group's sphere, on the GPU; with no camera
+        // or no GPU world every one draws.
+        let culled = self.plan.camera.and_then(|camera| {
             let mut world = self.ready.gpu();
             let world = world.as_mut()?;
-            let lens = native_render::camera::display_camera(camera, t.projection_factor());
-            let [x, y, width, height] = t.viewport;
+            let [x, y, width, height] = viewport;
+            let lens = native_render::camera::display_camera(camera, display_factor());
             let occlusion = Some((t.depth.texture(), &lens, PassViewport { x, y, width, height }, self.token));
             let occludable: Vec<bool> = bound.iter().map(|b| b.occludable).collect();
             Some(world.culled_decorators(
-                t.device, t.queue, t.uploads, &self.plan, &occludable, &cull_camera, view, t.size, occlusion,
+                &t.device, &t.queue, &t.uploads, &self.plan, &occludable, &camera, view, t.size, occlusion,
             ))
         });
-        let target = DecoratorTarget {
-            color: t.color,
-            depth: t.depth,
-            stencil: t.depth_format.has_stencil_aspect(),
-            stencil_reference: u32::from(self.draw.stencil.reference),
-            size: t.size,
-            viewport: t.viewport,
-        };
-        encode(t.device, t.queue, t.uploads, &mut *t.encoder, &target, &self.plan, &bound, culled.as_ref())
+        let (device, queue, uploads) = (t.device.clone(), t.queue.clone(), t.uploads.clone());
+        let (color, depth) = (t.color.clone(), t.depth.clone());
+        let stencil = t.depth_format.has_stencil_aspect();
+        let stencil_reference = u32::from(self.draw.stencil.reference);
+        let size = t.size;
+        let plan = self.plan.clone();
+        let ranges = plan.slots.len();
+        let draws = plan.batches.len();
+        Ok(ExternalEncoded {
+            ranges,
+            draws,
+            passes: 1,
+            commands: Box::new(move |encoder| {
+                let target = DecoratorTarget { color: &color, depth: &depth, stencil, stencil_reference, size, viewport };
+                if let Err(why) = encode(&device, &queue, &uploads, encoder, &target, &plan, &bound, culled.as_ref()) {
+                    panic!("decorators: encode: {why}");
+                }
+            }),
+        })
     }
 }
 
-impl d3d::ExternalPass for DecoratorPass {
-    fn view_constants(&mut self, constants: &[[f32; 4]; d3d::VIEW_CONSTANTS]) {
-        self.view = Some(*constants);
+impl native_render::stage::Stage for DecoratorPass {
+    fn name(&self) -> &'static str {
+        "decorators"
     }
 
-    fn depth_clip(&mut self, clip: d3d::DepthClip) {
-        self.w_clip = (clip.w_buffered == Some(true)).then_some((clip.range, clip.clamp));
-    }
-
-    fn prepare_copy(&mut self, t: &d3d::ExternalTarget<'_>) -> Result<(), &'static str> {
-        if self.view.is_none() || self.w_clip.is_none() {
-            return Err("decorator view constants or W-buffer clip unavailable");
-        }
-        let looks = self.ready.decorators.get().ok_or("decorator load unavailable")?;
-        let mut gpu = looks.gpu.lock().map_err(|_| "decorator materials unavailable")?;
-        let mut ready = true;
-        for batch in &self.plan.batches {
-            let material = gpu.get_mut(&batch.material).ok_or("decorator material unavailable")?;
-            ready &= material.pipeline_ready(t.device, t.color_format, t.depth_format, self.draw);
-        }
-        ready.then_some(()).ok_or("decorator pipeline pending")
-    }
-
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites {
-            color: true,
-            depth_stencil: self.writes_depth || native_render::fog_gpu::stencil_writes(&self.draw.stencil),
-        }
-    }
-
-    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
-        let Some(constants) = self.view else {
-            if !NO_VIEW.swap(true, Ordering::Relaxed) {
-                eprintln!("native-decorators: a pass came without the device's view constants; it records nothing");
-            }
-            return 0;
-        };
-        let view = ViewInputs { constants: t.view_constants(constants), guest_size: t.guest_size, size: t.size, z_scale: t.z_scale, w_clip: self.w_clip };
-        match self.record(t, &view) {
-            Ok(n) => n,
-            Err(why) => {
-                if !REFUSED.swap(true, Ordering::Relaxed) {
-                    eprintln!("native-decorators: a pass records nothing: {why}");
-                }
-                0
-            }
+    fn record(&mut self, t: &ExternalAttachments, view: &ViewInputs) -> StageWork {
+        match self.encoded(t, view) {
+            Ok(encoded) => StageWork::Encoded(encoded),
+            Err(why) => panic!("decorators: {why}"),
         }
     }
 }
