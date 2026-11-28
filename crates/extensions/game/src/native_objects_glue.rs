@@ -34,6 +34,7 @@ use crate::native_map::{self, NativeMap};
 use crate::native_world_glue::{Raw, StageDecoder, StageImages, StagePalettes, palettes_hold, scene_load_palettes, stage_palette};
 
 mod display;
+pub(crate) mod model_view;
 mod palette;
 pub(crate) use palette::{palette_counters, palette_ready};
 
@@ -1085,6 +1086,13 @@ impl crate::native_layers_glue::LayerModels for Models {
 /// walk starts the load; this never does), and only while the stage
 /// palettes they were expanded through hold.
 pub(crate) fn layer_models(mem: &dyn GuestMemory) -> Option<Arc<dyn crate::native_layers_glue::LayerModels>> {
+    Some(layer_source_models(mem)?)
+}
+
+/// The current map's resident models, as [`layer_models`] gives them:
+/// `None` until the load has published them, or while the stage palettes
+/// they were expanded through do not hold.
+fn layer_source_models(mem: &dyn GuestMemory) -> Option<Arc<Models>> {
     let source = LAYER_SOURCE.lock().ok()?.clone()?;
     let generation = native_map_work::generation();
     let mut field = [0; 32];

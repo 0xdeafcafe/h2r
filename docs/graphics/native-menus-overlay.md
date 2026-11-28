@@ -182,21 +182,30 @@ A model scene (type 7) is read at the sorted list (`ui_overlay::model::read`) an
 
 `0x0002c560` copies the record whole to the render camera `0x004b9da0` and builds its projection at `0x004b9e14`. That projection is the camera's lens (`OverlayCamera::projection`, the record's `projection_xy`): with the widescreen byte set, its x scale differs from `RenderCamera::projection`'s from the FOV and viewport alone. `model_view::view_inputs` gives the objects' vertex programs the camera's view-projection rows and clip range, with `c[10]`, `c[11]` mapping clip space to the viewport rather than the canvas. The scissor is the viewport in the target's pixels.
 
-`OverlayGpu::prepare_with_objects` draws each planned view in a pass of its own, in its place among the batches, holds and blurs: the target loaded, the overlay's depth target (`OverlayGpu::depth_target`, `OVERLAY_DEPTH`, D24 with stencil, one for each copy's size) cleared to the far plane, and the object stage's packets (`ModelViewObjects`) each scissored to the view. The overlay's own items draw with no depth.
+The record's viewport edges are the low halves of the call's arguments (`model_view::record_viewport`): an edge past `i16` wraps as the 16-bit stores leave it. A viewport with no pixel, in the record or in the target, draws nothing and leaves no view in the plan.
+
+`OverlayGpu::prepare_with_objects` draws each planned view in a pass of its own, in its place among the batches, holds and blurs: the target loaded, the overlay's depth target (`OverlayGpu::depth_target`, `OVERLAY_DEPTH`, D24 with stencil, one for each copy's size) cleared to the far plane, and the object stage's packets (`ModelViewObjects`) each scissored to the view. The overlay's own items draw with no depth. `OverlayGpu::prepare_packets`, which appends to a pass already open with no depth, refuses a plan with a model view.
+
+The object stage is layer 3's object programs (`game::native_objects_glue::model_view`). At the overlay's hook (`hud_overlay::place`) each view's objects plan as the display path plans an object outside the gather: `native_scene_lists::display_model` at the highest detail, then `LitObjects::plan_scene` for each section's parts with the fog their passes take, over the layer-3 entry states.
+
+At record, `model_view::Objects` draws them with the view's constants (`LitObjects::draws` on `OVERLAY_DEPTH`, no display factor: the lens is the widget's own), in the widget's order. An object whose pipelines are still compiling waits a frame; a map whose models are still loading draws no object yet.
 
 What the native code cannot take stops with a named `unimplemented!`; nothing falls back to the game's draw:
 
 | Message | When |
 |---|---|
-| `overlay model view: model_view_camera`, `model_view_clip` | a record that is not a camera; a viewport with no `i16` edges or target pixels |
+| `overlay model view: model_view_camera` | a record that is not a camera (the widget's reader never gives one) |
 | `overlay model view: no object stage` | a pass with no object stage (`NoObjects`) |
+| `ui model: object … has no display records`, `… is not the mounted map's`, `… has no native programs`, `… section … has no native parts` | an object the display planner or the mounted map's programs do not take |
+| `ui model: object … part …: …`, `… its fog does not resolve`, `… samples the accumulation target` | a part `plan_scene` refuses, whose fog does not resolve, or that samples the accumulation target |
+| `objects: render state from the device`, `objects: W-buffer control from the device`, `objects: fog words from the device` | the layer-3 entry states and fog the objects plan over, which have no native owner yet |
 | `ui model: light names` | a selection with lights |
 | `ui model: … object names, past the draw's 32` | more than 32 names |
 | `ui model: a name of 32 bytes with no terminator` | a name that fills its 32 bytes |
 | `ui model: … scenario object names, past an i16` | a scenario with more rows than an `i16` |
 | `ui model: a model widget the overlay did not take` | a model widget the sorted list leaves to the game |
 
-Tests: `native_render::model_view::tests::a_widgets_camera_is_the_record_the_guest_fills`, `a_widgets_lens_is_the_projection_its_call_builds`, `the_scissor_is_the_records_viewport_in_the_targets_pixels`, `the_view_constants_put_the_axis_on_the_viewports_centre`, `native_render::overlay::tests::a_blur_splits_the_batches_and_carries_its_steps_as_fractions`, `native_render::ui_gpu::tests::the_depth_target_is_kept_for_each_copys_size`, `a_model_view_hands_its_objects_its_view_and_draws_over_the_depth`, `scene_extract::ui::tests::a_model_views_lens_is_the_projection_its_call_builds`, `ui_overlay::model::tests::a_live_selection_is_its_view_and_none_is_nothing`.
+Tests: `native_render::model_view::tests::a_widgets_camera_is_the_record_the_guest_fills`, `a_widgets_lens_is_the_projection_its_call_builds`, `the_scissor_is_the_records_viewport_in_the_targets_pixels`, `the_view_constants_put_the_axis_on_the_viewports_centre`, `a_view_that_is_not_a_camera_is_refused_by_name`, `the_records_edges_are_the_arguments_low_halves`, `a_viewport_with_no_pixel_draws_nothing`, `native_render::overlay::tests::a_model_view_with_no_target_pixel_draws_nothing`, `native_render::overlay::tests::a_blur_splits_the_batches_and_carries_its_steps_as_fractions`, `native_render::ui_gpu::tests::the_depth_target_is_kept_for_each_copys_size`, `a_model_view_hands_its_objects_its_view_and_draws_over_the_depth`, `scene_extract::ui::tests::a_model_views_lens_is_the_projection_its_call_builds`, `ui_overlay::model::tests::a_live_selection_is_its_view_and_none_is_nothing`.
 
 ## The blur under a dialog
 
