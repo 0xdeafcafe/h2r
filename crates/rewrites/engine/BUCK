@@ -53,7 +53,6 @@ workspace_library(
         "//crates/rewrites/sim-effects:sim-effects",
         "//crates/rewrites/sim-havok:sim-havok",
         "//crates/rewrites/sim-objects:sim-objects",
-        "//crates/rewrites/sim-sound:sim-sound",
         "//crates/runtime/runtime:runtime",
     ],
 )
@@ -81,7 +80,6 @@ workspace_test(
         "//crates/rewrites/sim-effects:sim-effects",
         "//crates/rewrites/sim-havok:sim-havok",
         "//crates/rewrites/sim-objects:sim-objects",
-        "//crates/rewrites/sim-sound:sim-sound",
         "//crates/runtime/runtime:runtime",
     ],
 )
@@ -109,7 +107,6 @@ workspace_test(
         "//crates/rewrites/sim-effects:sim-effects",
         "//crates/rewrites/sim-havok:sim-havok",
         "//crates/rewrites/sim-objects:sim-objects",
-        "//crates/rewrites/sim-sound:sim-sound",
         "//crates/runtime/runtime:runtime",
         ":engine",
     ],
@@ -138,7 +135,6 @@ workspace_test(
         "//crates/rewrites/sim-effects:sim-effects",
         "//crates/rewrites/sim-havok:sim-havok",
         "//crates/rewrites/sim-objects:sim-objects",
-        "//crates/rewrites/sim-sound:sim-sound",
         "//crates/runtime/runtime:runtime",
         ":engine",
     ],

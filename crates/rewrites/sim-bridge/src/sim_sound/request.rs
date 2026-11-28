@@ -3,7 +3,7 @@
 //!
 //! The record and the four arguments are the ones `0x126000` reads: the
 //! tag, a channel byte, the record, a promotion rule. Field by field the
-//! reads are the native port's (`engine::native_sound_impulse`). The
+//! reads are `0x126000`'s own, in its order. The
 //! callback table at `+0x58` (flag bit 5) is classified into an
 //! [`Owner`]: the unit and script line tables by their finish slot, the
 //! start layer's two tables by address. A table that is none of them

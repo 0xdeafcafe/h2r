@@ -16,8 +16,6 @@
 //!   and `seats.respawn` kernels calls answered (an unported path
 //!   panics, so none has a `declined`); the `seats.leaf.*` arms also count unwatched audits as `declined`. It is
 //!   clean once something answered and nothing declined or mismatched;
-//! * `sound.voices` counts ticks for `checked`, `matched` and `mismatched`
-//!   and voices for `answered` (`sim_bridge::sim_sound::voice_arm::Stats`).
 
 use crate::{Access, Agent};
 use agent_proto::sim_arms::{Arm, SimArms, Subsystem, method};
@@ -35,7 +33,6 @@ use engine::sim_seats::leaf;
 use hooks::Switches;
 use hooks::switches::table::{self, Initial};
 use sim_bridge::shadow::{SHADOW, Shadow};
-use sim_bridge::sim_sound::voice_arm as voices;
 use sim_effects::dispatch::Stats as EffectParts;
 
 /// Registers `sim.arms` on `agent`.
@@ -81,7 +78,6 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
                 arms
             }),
             subsystem(switches, "effects", with_outside(group(engine::sim_effects::GROUP), &sim_bridge::sim_effects::outside())),
-            subsystem(switches, "sound", vec![sound_wire(&voices::stats())]),
             effects_parts(sim_bridge::sim_effects_parts::status(), engine::effect_update::arm::stats()),
         ],
     }
@@ -281,18 +277,6 @@ fn anim_wire(body: &walk::Stats, segments: Vec<(u32, manager::Stats)>) -> Vec<Ar
     arms
 }
 
-/// Sampled ticks with voices are checked; quiet and skipped ticks are not.
-fn sound_wire(s: &voices::Stats) -> Arm {
-    Arm {
-        name: "sound.voices".to_owned(),
-        checked: s.matched + s.mismatched,
-        matched: s.matched,
-        mismatched: s.mismatched,
-        answered: s.answered,
-        declined: s.declined,
-    }
-}
-
 fn collision_arms(s: &world::Stats) -> Vec<Arm> {
     let vector = |name: &str, p: &world::VectorParity| Arm {
         name: name.to_owned(),
@@ -343,14 +327,10 @@ mod tests {
         let shadow = registry();
         let r = read(&Switches::default(), shadow);
         let names: Vec<_> = r.subsystems.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["physics", "objects", "anim", "collision", "seats", "effects", "sound", "effects-parts"]);
+        assert_eq!(names, ["physics", "objects", "anim", "collision", "seats", "effects", "effects-parts"]);
         for s in &r.subsystems {
-            if s.name != "sound" {
-                assert_eq!(s.switch, "", "{}: no switch", s.name);
-                assert!(s.on, "{}: always on", s.name);
-            } else {
-                assert_eq!(s.switch, format!("impl.sim.native.{}", s.name));
-            }
+            assert_eq!(s.switch, "", "{}: no switch", s.name);
+            assert!(s.on, "{}: always on", s.name);
             assert!(!s.clean, "{}", s.name);
             for a in &s.arms {
                 assert_eq!(
@@ -373,11 +353,9 @@ mod tests {
 
     #[test]
     fn the_switch_reads_from_the_features() {
-        let s = Switches::parse("impl.sim.native.sound=on").unwrap();
-        let r = read(&s, registry());
+        let r = read(&Switches::default(), registry());
         assert!(r.subsystems[0].on, "physics");
         assert!(r.subsystems[3].on, "collision");
-        assert!(r.subsystems[6].on, "sound");
     }
 
     #[test]
@@ -450,8 +428,6 @@ mod tests {
         assert_eq!((e.arms[1].answered, e.arms[7].answered, e.arms[7].declined), (9, 6, 0));
         assert_eq!((e.arms[8].checked, e.arms[8].answered, e.arms[8].declined), (0, 2, 1));
         assert!(!e.clean);
-        let v = sound_wire(&voices::Stats { matched: 4, mismatched: 1, quiet: 9, declined: 2, answered: 7, ..Default::default() });
-        assert_eq!((v.checked, v.mismatched, v.answered, v.declined), (5, 1, 7, 2));
     }
 
     #[test]

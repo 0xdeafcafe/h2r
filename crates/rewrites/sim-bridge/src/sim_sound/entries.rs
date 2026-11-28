@@ -25,8 +25,8 @@ use std::time::Instant;
 
 use engine::entry::{Cx, EntryResult, GuestCall, Ret};
 use engine::points::{self, Point};
-use engine::sim_sound::clock::system_time;
-use engine::sim_sound::units;
+use crate::sim_sound::clock::system_time;
+use crate::sim_sound::units;
 use engine::{GuestMemory, MemFault};
 use hooks::{BuildError, Builder, Feature, Flow, Manifest, SnapshotPolicy};
 use sim_sound::chooser;
@@ -61,7 +61,7 @@ pub const CHANNELS: u32 = 0x004e_6378;
 /// `0x18c6a0(owner, payload, tag, range, permutation, seconds)`: the unit's
 /// mouth, ported in [`crate::unit_mouth`]. It tests the unit itself and
 /// reads no payload.
-pub const UNIT_MOUTH: u32 = engine::sim_sound::mouth::UNIT_MOUTH;
+pub const UNIT_MOUTH: u32 = crate::sim_sound::mouth::UNIT_MOUTH;
 /// The stop's fade (`0x1263e5`: 300 ms at instance `+0xb4`).
 pub const STOP_FADE_MS: u32 = 300;
 /// Sound globals: sound on (`+0x78`, `+0x79`, `+0x7a`), paused (`+0x7b`),
@@ -95,7 +95,7 @@ pub enum Body {
     /// `0x125f10`: nothing in the sim; the clip source decodes on demand.
     Prefetch,
     /// `0x21d110`: a start row for the sound's effect, the gate
-    /// ([`engine::sim_sound::gate::start_gate`]) and the rule,
+    /// ([`crate::sim_sound::gate::start_gate`]) and the rule,
     /// [`super::request::read`] and `admit`, then the row's `Mode::Start`
     /// ([`start_layer::start_record`]).
     StartRecord,
@@ -113,7 +113,7 @@ pub enum Body {
     StopAll,
     /// `0x126660`: the blend of the two background ambience slots (sound
     /// globals `+0x1a8`, `0x1c` bytes each) toward the candidates
-    /// ([`engine::sim_sound::ambience::blend`]); the listener math reads
+    /// ([`crate::sim_sound::ambience::blend`]); the listener math reads
     /// the slots.
     Ambience,
     /// `0x1272c0`: the environment words of the sound globals.
@@ -980,7 +980,7 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
         }
         Body::Ambience => {
             let candidates = cx.entry().eax;
-            cx.write(|m| engine::sim_sound::ambience::blend(m, candidates))?;
+            cx.write(|m| crate::sim_sound::ambience::blend(m, candidates))?;
             Ok(Ret::new(0, 0))
         }
         Body::Service => {
@@ -1018,7 +1018,7 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
         Body::Pick => pick(&cx, &table).await,
         Body::PromotionBank => {
             let tag = cx.entry().eax;
-            Ok(Ret::new(cx.read(|m| engine::sim_sound::playback::bank_row(m, tag))?, 0))
+            Ok(Ret::new(cx.read(|m| crate::sim_sound::playback::bank_row(m, tag))?, 0))
         }
         Body::LoopUpdate => {
             let args = [cx.arg(0)?, cx.arg(1)?, cx.arg(2)?, cx.arg(3)?, cx.arg(4)?, cx.arg(5)?, cx.arg(6)?, cx.arg(7)?];

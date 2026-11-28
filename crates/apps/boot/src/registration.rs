@@ -820,8 +820,7 @@ pub(crate) fn register_late_for_profile(
     features
         .add(&hooks::leaves::EngineLeaves)
         .map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
-    // The sound simulation (docs/engine/sound-sim.md) owns the sound entries
-    // the exact port would install, so the port stands down when it is on.
+    // The sound simulation (docs/engine/sound-sim.md).
     let sound_events = features.switches().implementation(sim_bridge::sim_sound::EVENTS, false);
     if sound_events {
         features.add(&sim_bridge::sim_sound::SimSoundEvents::headless())
@@ -833,10 +832,6 @@ pub(crate) fn register_late_for_profile(
     if sim_bridge::sim_sound::entries::on(features.switches()) {
         features.add(&sim_bridge::sim_sound::entries::SoundTable::process())
             .map_err(|e| anyhow::anyhow!("sound table: {e}"))?;
-    }
-    if !sound_events && features.switches().implementation(sim_bridge::sim_sound::SOUND, false) {
-        features.add(&sim_bridge::sim_sound::SimSound)
-            .map_err(|e| anyhow::anyhow!("sound simulation: {e}"))?;
     }
     // The effects phase in Rust (docs/engine/effects-parts.md): the part arm
     // here, the effect walk in the tick driver below.

@@ -6,15 +6,14 @@
 //! (`[0x4e6378]`) are the table's ([`super::entries::Table`]): create
 //! allocates neither and leaves both globals 0, so a guest function that
 //! still reads them faults with its address. Everything else create makes
-//! keeps its guest layout, because guest code and the native ports in
-//! `engine::native_sound_*` still read it:
+//! keeps its guest layout, because guest code still reads it:
 //!
 //! | global | what | readers left |
 //! |---|---|---|
 //! | `[0x4e6380]` | sound globals, `0x20c` bytes | the manager `0x125690` to `0x12af90`, the dialogue `0x189400` to `0x18d670` |
-//! | `[0x51ebd8]`, `[0x51ebdc]` | companion array (`0x40` x `0x1c`) and its default record | `0x1257b0`, `0x127390`, `0x128ca0`, `native_sound_channel`, `native_sound_tick::seeds` |
-//! | `[0x502110]` | looping sounds (`0x80` x `0xd4`) | `0x1257b0` (null-checked), `native_sound_loops` |
-//! | `[0x51ebe0]` | start records (`0x10` x `0x14`) | `0x225b60`, `native_sound_scheduling::start` |
+//! | `[0x51ebd8]`, `[0x51ebdc]` | companion array (`0x40` x `0x1c`) and its default record | `0x1257b0`, `0x127390`, `0x128ca0` |
+//! | `[0x502110]` | looping sounds (`0x80` x `0xd4`) | `0x1257b0` (null-checked) |
+//! | `[0x51ebe0]` | start records (`0x10` x `0x14`) | `0x225b60` |
 //! | `[0x502114]` | class rows (`[0x44a0d4]` x `0x6c`) | `0x1295e0`, `0x21dde0` to `0x21e050` |
 //!
 //! Two pieces stay guest calls, each a subsystem of its own: the sound
@@ -29,7 +28,7 @@ use engine::MemFault;
 use engine::datum::{DatumArray, bitmap_bytes, layout};
 use engine::entry::{Cx, EntryError, GuestCall};
 use engine::points;
-use engine::sim_sound::clock::system_time;
+use crate::sim_sound::clock::system_time;
 
 /// `[0x4e6374]`: create's reference count. Only the first create and the
 /// last drop do any work.

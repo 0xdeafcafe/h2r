@@ -1,7 +1,7 @@
 use super::*;
 use engine::datum::SIGNATURE;
 use engine::entry::{self, EntryFuture, Regs};
-use engine::sim_sound::clock::TICK_COUNT_IMPORT;
+use crate::sim_sound::clock::TICK_COUNT_IMPORT;
 use engine::testing::FakeGuest;
 
 const HEAP: u32 = 0x0080_0000;
