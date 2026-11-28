@@ -26,8 +26,12 @@ pub enum Texture {
     /// `0x000143c0`'s bitmap datum (`u32::MAX`: the rasterizer default)
     /// and image.
     Bitmap { bitmap: u32, image: i32 },
-    /// No texture (engine source 0).
+    /// No texture (engine source 0, or the cleared engine texture 4).
     Empty,
+    /// An engine texture from the rasterizer data (`0x00019530`,
+    /// `crate::screen_look::EngineTexture::Rasterizer`): the bitmap whose
+    /// datum is at `[RASTERIZER] + offset`, and its image.
+    Rasterizer { offset: u32, image: i32 },
 }
 
 /// A material: what the setup leaves on the device.
@@ -48,6 +52,9 @@ pub struct Material {
     /// Vertex constants `(hardware slot, value)`, whole rows, in the
     /// order the setup writes them.
     pub constants: Vec<(usize, [f32; 4])>,
+    /// Vertex attribute defaults `(register, value)` (`SET_VERTEX_DATA4F_M`,
+    /// `0x00018e3b`): what a register the declaration leaves off reads.
+    pub defaults: Vec<(u8, [f32; 4])>,
     /// The vertex program: the `vrtx` datum and the program's index.
     pub program: (u32, u32),
 }
@@ -76,6 +83,10 @@ pub fn resolve(
             None => None,
             Some(Texture::Empty) => Some(None),
             Some(Texture::Bitmap { bitmap, image }) => Some(Some(texture_header(word, *bitmap, *image)?)),
+            Some(Texture::Rasterizer { offset, image }) => {
+                let datum = word(word(RASTERIZER).ok_or(UNREAD)?.wrapping_add(*offset)).ok_or(UNREAD)?;
+                Some(Some(texture_header(word, datum, *image)?))
+            }
         };
     }
     let program = program(word, bytes, m.program.0, m.program.1)?;
@@ -267,6 +278,27 @@ pub(crate) mod tests {
         w.set(0x6000 + 0x1c + 0xc, 8);
         w.set(0x6000 + 0x1c + 0x10, 0x7000);
         w
+    }
+
+    fn material(textures: [Option<Texture>; 4]) -> Material {
+        Material {
+            states: Vec::new(),
+            stages: Vec::new(),
+            combiner: [0; WORDS],
+            combiner_driven: 0,
+            textures,
+            constants: Vec::new(),
+            defaults: Vec::new(),
+            program: (0xe000_0005, 1),
+        }
+    }
+
+    #[test]
+    fn a_rasterizer_engine_texture_binds_the_bitmap_its_data_names() {
+        let w = guest();
+        let m = material([Some(Texture::Rasterizer { offset: 0x64, image: 0 }), Some(Texture::Empty), None, None]);
+        let r = resolve(&m, &|a| w.word(a), &|_, n| Some(vec![0; n])).unwrap();
+        assert_eq!(r.textures, [Some(Some(0xc000)), Some(None), None, None]);
     }
 
     #[test]

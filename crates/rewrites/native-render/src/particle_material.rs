@@ -51,11 +51,16 @@ pub const PROGRAM_BASE: u32 = 7;
 /// `STIPPLEENABLE`, which the setup turns off.
 pub const STIPPLE_ENABLE: u8 = 0x53;
 /// The hardware slot of the implementation's vertex constant 0
-/// (`lea ecx, [edi + 0x12]` at `0x00018eab`).
+/// (`lea ecx, [edi + 0x12]` at `0x00018eab`), which
+/// `tags::material::Register::index` already holds (`c[18 + i]`).
 pub const VERTEX_CONSTANT_BASE: usize = 0x12;
 
 const SHAD: u32 = u32::from_be_bytes(*b"shad");
-const PARTICLE_MODELS: [u32; 2] = [u32::from_be_bytes(*b"PRTM"), u32::from_be_bytes(*b"prt3")];
+const PRT3: u32 = u32::from_be_bytes(*b"prt3");
+const PRTM: u32 = u32::from_be_bytes(*b"PRTM");
+/// The groups the shader begin draws: a `shad`, a particle's embedded
+/// shader, a model particle's `shad`.
+const DRAWN: [u32; 3] = [SHAD, PRT3, PRTM];
 
 /// What the setup reads.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -102,67 +107,63 @@ pub fn read(word: &dyn Fn(u32) -> Option<u32>, esp: u32, eax: u32) -> Option<Inp
 /// A branch the port does not model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refused {
-    /// A `PRTM` or `prt3` in the shader's place: the setup takes its
-    /// template through the tag's own table (`0x00137bd0`).
-    ParticleModel,
-    /// Any other tag that is not a `shad`.
+    /// A tag that is neither a `shad` nor a particle (`prt3`, `PRTM`).
     NotShader,
     /// The device reset `0x0001bbf0` runs first ([`RESET`]).
     Reset,
     /// The shader, its template or pass does not resolve or has no
     /// such layer or pass.
     Tags,
-    /// Animated parameters, which the resolver lists but does not
-    /// evaluate.
-    Animated,
+    /// An animated parameter that does not sample at the draw: the
+    /// [`crate::layer_pass::LayerRefusal`] it gives (an object function's
+    /// input, which the particle provider `0x0055edd8` supplies, a ranged
+    /// curve's second input, an animated render or stage state, a curve
+    /// that does not parse).
+    Animation(&'static str),
     /// The implementation copies the frame first (`0x0003bea0`).
     TargetCopy,
     /// A combiner variant chosen by inputs the draw supplies.
     EngineVariant,
     /// An engine-driven render or stage state.
     EngineState,
-    /// A stage bound from an engine texture or the lightmap.
+    /// A stage bound from the lightmap or an engine texture that is not
+    /// one of the rasterizer data's bitmaps or the cleared stage.
     EngineTexture,
     /// Implementation 0 has no vertex shader.
     NoVertexShader,
-    /// Vertex attribute defaults (`SET_VERTEX_DATA4F_M`, `0x00018e3b`),
-    /// which a material does not carry.
-    VertexDefaults,
-    /// A vertex constant `0x00018eab` writes whole from lanes the
-    /// resolver did not all write: the rest are the setup's buffer's.
+    /// A vertex constant or default `0x00018eab`/`0x00018e3b` writes
+    /// whole from lanes the resolver did not all write: the rest are the
+    /// setup's buffer's.
     VertexConstantLanes,
-    /// A vertex constant from the engine's inputs or a stage's size
-    /// (`0x00019be0`): its value is the draw's, not the tag's.
+    /// A vertex constant from the engine's inputs per draw, or from the
+    /// size of a stage whose size the resolver does not know (an engine
+    /// texture's, `0x00019be0`): its value is the draw's, not the tag's.
     VertexConstantDriven,
 }
 
 impl Refused {
     pub fn name(self) -> &'static str {
         match self {
-            Self::ParticleModel => "particle_model",
             Self::NotShader => "not_shader",
             Self::Reset => "reset",
             Self::Tags => "tags",
-            Self::Animated => "animated",
+            Self::Animation(cause) => cause,
             Self::TargetCopy => "target_copy",
             Self::EngineVariant => "engine_variant",
             Self::EngineState => "engine_state",
             Self::EngineTexture => "engine_texture",
             Self::NoVertexShader => "no_vertex_shader",
-            Self::VertexDefaults => "vertex_defaults",
             Self::VertexConstantLanes => "vertex_constant_lanes",
             Self::VertexConstantDriven => "vertex_constant_driven",
         }
     }
 }
 
-/// Whether the inputs reach `0x00016b90` as modelled: a `shad`, no
+/// Whether the inputs reach `0x00016b90` as modelled: a `shad` or a
+/// particle tag ([`tags::material::ShaderLibrary::drawn_shader`]), no
 /// reset.
 pub fn check(i: &Inputs) -> Result<(), Refused> {
-    if PARTICLE_MODELS.contains(&i.group) {
-        return Err(Refused::ParticleModel);
-    }
-    if i.group != SHAD {
+    if !DRAWN.contains(&i.group) {
         return Err(Refused::NotShader);
     }
     if i.reset {
@@ -227,89 +228,183 @@ fn stage_words(s: &tags::shader::StageStates) -> [(u8, u32); 14] {
     ]
 }
 
-/// The material `0x0023ea80` sets for `i`, the shader resolved by `lib`.
+/// The shader a particle draw's inputs select, resolved from the map:
+/// implementation 0 of the pass, the animated properties of the
+/// postprocess it is drawn from and the inputs it is resolved under.
+/// [`Particle::material`] makes each draw's material from it.
 #[cfg(feature = "gpu")]
-pub fn material(lib: &mut tags::material::ShaderLibrary, i: &Inputs) -> Result<Material, Refused> {
-    use tags::material::{EngineInputs, PassSelection, TextureSource, VectorTarget};
+#[derive(Clone, Debug, PartialEq)]
+pub struct Particle {
+    pub implementation: tags::material::ResolvedImplementation,
+    pub properties: Vec<tags::shader::AnimatedProperty>,
+    pub inputs: tags::material::EngineInputs,
+    pub pass: usize,
+}
+
+/// [`Particle`] for `i` ([`check`] first).
+#[cfg(feature = "gpu")]
+pub fn resolve(lib: &mut tags::material::ShaderLibrary, i: &Inputs) -> Result<Particle, Refused> {
+    use tags::material::PassSelection;
     check(i)?;
-    let id = map::TagId(i.shader);
+    let drawn = lib.drawn_shader(map::TagId(i.shader)).map_err(|_| Refused::Tags)?;
     let selection = PassSelection { lod: 0, layer: i.layer as usize, pass: i.pass as usize, implementation: 0 };
-    let selected = lib.selected_implementation(id, selection, None, None).map_err(|_| Refused::Tags)?;
-    let instance = EngineInputs::for_shader(&lib.shader(id).map_err(|_| Refused::Tags)?);
-    let imp = selected.implementation;
-    if !imp.animated.is_empty() {
-        return Err(Refused::Animated);
-    }
-    if imp.copies_target {
-        return Err(Refused::TargetCopy);
-    }
-    if imp.per_draw_inputs && imp.variant {
-        return Err(Refused::EngineVariant);
-    }
-    let applied = crate::engine_states::apply_static(&imp, &instance).map_err(|_| Refused::EngineState)?;
-    let mut states = vec![(STIPPLE_ENABLE, 0)];
-    states.extend(applied.render_states.iter().map(|s| (s.state, s.value)));
-    let stages = applied
-        .stage_states
-        .iter()
-        .take(4)
-        .enumerate()
-        .flat_map(|(n, s)| stage_words(s).map(|(index, value)| (n as u8, index, value)))
-        .collect();
-    let mut combiner = [0u32; WORDS];
-    for (w, b) in combiner.iter_mut().zip(imp.pixel_shader.chunks_exact(4)) {
-        *w = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
-    }
-    // Constants from the draw's own inputs change per draw: not compared.
-    let mut combiner_driven = 0u64;
-    if imp.per_draw_inputs {
-        for b in imp.vector_bindings.iter().chain(&imp.scalar_bindings) {
-            if let VectorTarget::Pixel { c1, slot, .. } = b.target {
-                combiner_driven |= 1 << constant_word(c1, slot);
+    let selected = lib.selected_drawn(&drawn, selection).map_err(|_| Refused::Tags)?;
+    Ok(Particle {
+        implementation: selected.implementation,
+        properties: drawn.postprocess.properties,
+        inputs: drawn.inputs,
+        pass: i.pass as usize,
+    })
+}
+
+/// The material `0x0023ea80` sets for `i`, the shader resolved by `lib`,
+/// its animation sampled at `time` (the render clock).
+#[cfg(feature = "gpu")]
+pub fn material(lib: &mut tags::material::ShaderLibrary, i: &Inputs, time: Option<f64>) -> Result<Material, Refused> {
+    resolve(lib, i)?.material(i, time)
+}
+
+#[cfg(feature = "gpu")]
+impl Particle {
+    /// The material for the draw whose inputs are `i`: the animated
+    /// parameters sampled at `time` as `0x0001b230` does under the
+    /// particle provider, game-time curves only
+    /// ([`crate::layer_pass::sample_with_frames`]), each animated bitmap
+    /// slot's frame bound as `0x0001b0a0` binds it ([`Texture::Frame`]).
+    pub fn material(&self, i: &Inputs, time: Option<f64>) -> Result<Material, Refused> {
+        use tags::material::{TextureSource, VectorTarget};
+        let base = &self.implementation;
+        if base.copies_target {
+            return Err(Refused::TargetCopy);
+        }
+        if base.per_draw_inputs && base.variant {
+            return Err(Refused::EngineVariant);
+        }
+        let sampled;
+        let (imp, frames) = if self.implementation.animated.is_empty() {
+            (&self.implementation, Default::default())
+        } else {
+            let (out, frames) =
+                crate::layer_pass::sample_with_frames(&self.implementation, &self.properties, time, true, self.pass)
+                    .map_err(|r| Refused::Animation(r.name()))?;
+            sampled = out;
+            (&sampled, frames)
+        };
+        let applied = crate::engine_states::apply_static(imp, &self.inputs).map_err(|_| Refused::EngineState)?;
+        let mut states = vec![(STIPPLE_ENABLE, 0)];
+        states.extend(applied.render_states.iter().map(|s| (s.state, s.value)));
+        let stages = applied
+            .stage_states
+            .iter()
+            .take(4)
+            .enumerate()
+            .flat_map(|(n, s)| stage_words(s).map(|(index, value)| (n as u8, index, value)))
+            .collect();
+        let mut combiner = [0u32; WORDS];
+        for (w, b) in combiner.iter_mut().zip(imp.pixel_shader.chunks_exact(4)) {
+            *w = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+        }
+        // Constants from the draw's own inputs change per draw: not compared.
+        let mut combiner_driven = 0u64;
+        if imp.per_draw_inputs {
+            for b in imp.vector_bindings.iter().chain(&imp.scalar_bindings) {
+                if let VectorTarget::Pixel { c1, slot, .. } = b.target {
+                    combiner_driven |= 1 << constant_word(c1, slot);
+                }
             }
         }
-    }
-    let mut textures = [None; 4];
-    for (out, t) in textures.iter_mut().zip(&imp.textures) {
-        *out = match t.map(|t| t.source) {
-            None | Some(TextureSource::UnsetSlot(_)) => None,
-            Some(TextureSource::Bitmap { bitmap, image, .. }) => Some(Texture::Bitmap { bitmap: bitmap.0, image: image as i32 }),
-            Some(TextureSource::Default) => Some(Texture::Bitmap { bitmap: u32::MAX, image: 0 }),
-            Some(TextureSource::None) => Some(Texture::Empty),
-            Some(TextureSource::Lightmap | TextureSource::Engine(_)) => return Err(Refused::EngineTexture),
-        };
-    }
-    let vrtx = imp.vertex_shader.ok_or(Refused::NoVertexShader)?;
-    if !imp.vertex_defaults.is_empty() {
-        return Err(Refused::VertexDefaults);
-    }
-    let driven = imp.per_draw_inputs
-        && imp.vector_bindings.iter().chain(&imp.scalar_bindings).any(|b| matches!(b.target, VectorTarget::Vertex { .. }));
-    if driven || !imp.dimension_bindings.is_empty() {
-        return Err(Refused::VertexConstantDriven);
-    }
-    // `0x00018eab`: `c[18 + i]` in hardware numbering (`0x003f7230` loads
-    // ECX as the slot), the four lanes of the resolver's row.
-    let mut constants = Vec::with_capacity(imp.vertex_constants.len() + 3);
-    for r in &imp.vertex_constants {
-        if r.origin != tags::material::Origin::Instance {
+        let mut textures = [None; 4];
+        for (n, (out, t)) in textures.iter_mut().zip(&imp.textures).enumerate() {
+            *out = match t.map(|t| t.source) {
+                None | Some(TextureSource::UnsetSlot(_)) => None,
+                Some(TextureSource::Bitmap { bitmap, image, .. }) => Some(match frames[n] {
+                    Some(frame) => frame_texture(imp, n, bitmap.0, frame)?,
+                    None => Texture::Bitmap { bitmap: bitmap.0, image: image as i32 },
+                }),
+                Some(TextureSource::Default) => Some(Texture::Bitmap { bitmap: u32::MAX, image: 0 }),
+                Some(TextureSource::None) => Some(Texture::Empty),
+                Some(TextureSource::Engine(id)) => Some(engine_texture(id)?),
+                Some(TextureSource::Lightmap) => return Err(Refused::EngineTexture),
+            };
+        }
+        let vrtx = imp.vertex_shader.ok_or(Refused::NoVertexShader)?;
+        let driven = imp.per_draw_inputs
+            && imp.vector_bindings.iter().chain(&imp.scalar_bindings).any(|b| matches!(b.target, VectorTarget::Vertex { .. }));
+        if driven {
             return Err(Refused::VertexConstantDriven);
         }
-        if r.written != 0xf {
-            return Err(Refused::VertexConstantLanes);
+        // `0x00019be0`'s size modes: the resolver's value holds the stage's
+        // size where it knows it (stage 0 is 1 by 1).
+        for d in &imp.dimension_bindings {
+            let stage = usize::from(d.stage);
+            let known = stage == 0
+                || imp.textures.get(stage - 1).copied().flatten().is_some_and(|t| {
+                    t.stage_size.is_some() && !matches!(t.source, TextureSource::Engine(_) | TextureSource::Lightmap)
+                });
+            if !known {
+                return Err(Refused::VertexConstantDriven);
+            }
         }
-        constants.push((VERTEX_CONSTANT_BASE + usize::from(r.index), r.value));
+        let whole = |r: &tags::material::Register| if r.written == 0xf { Ok((r.index, r.value)) } else { Err(Refused::VertexConstantLanes) };
+        // `0x00018eab`: `c[18 + i]`, its hardware slot `Register::index`
+        // (`0x003f7230` loads ECX as the slot), the resolver's whole row.
+        let mut constants = Vec::with_capacity(imp.vertex_constants.len() + 3);
+        for r in &imp.vertex_constants {
+            let (index, value) = whole(r)?;
+            constants.push((usize::from(index), value));
+        }
+        constants.extend(i.matrix.iter().enumerate().map(|(n, row)| (MATRIX_SLOT + n, *row)));
+        let defaults = imp.vertex_defaults.iter().map(whole).collect::<Result<_, _>>()?;
+        Ok(Material {
+            states,
+            stages,
+            combiner,
+            combiner_driven,
+            textures,
+            constants,
+            defaults,
+            program: (vrtx.0, u32::from(i.class) + PROGRAM_BASE),
+        })
     }
-    constants.extend(i.matrix.iter().enumerate().map(|(n, row)| (MATRIX_SLOT + n, *row)));
-    Ok(Material {
-        states,
-        stages,
-        combiner,
-        combiner_driven,
-        textures,
-        constants,
-        program: (vrtx.0, u32::from(i.class) + PROGRAM_BASE),
+}
+
+/// The texture `0x0001b0a0` binds at stage `stage`, whose slot holds
+/// `bitmap` and whose frame an animation wrote: the image
+/// [`crate::layer_pass::frame_image`] gives over the slot's image count
+/// (`tags::material::FrameStage::images`), the rasterizer default
+/// (datum -1) where it gives none. A frame that is not finite takes the
+/// CRT's error path (`texture_frame`).
+#[cfg(feature = "gpu")]
+fn frame_texture(imp: &tags::material::ResolvedImplementation, stage: usize, bitmap: u32, frame: f32) -> Result<Texture, Refused> {
+    if !frame.is_finite() {
+        return Err(Refused::Animation("texture_frame"));
+    }
+    let images = imp
+        .animated
+        .iter()
+        .flat_map(|a| &a.stages)
+        .filter(|s| usize::from(s.stage) == stage)
+        .last()
+        .map_or(0, |s| s.images);
+    Ok(match crate::layer_pass::frame_image(frame, images) {
+        Some(image) => Texture::Bitmap { bitmap, image: image as i32 },
+        None => Texture::Bitmap { bitmap: u32::MAX, image: 0 },
     })
+}
+
+/// What engine texture `id` binds on a particle's stage
+/// (`crate::screen_look::engine_texture`): a rasterizer data bitmap (14
+/// its image 0, 15 its image 1, the others image 0), or nothing for the
+/// cleared stage (4). A render target, the view's, the light's or a
+/// texture chosen at run time is the draw's.
+#[cfg(feature = "gpu")]
+fn engine_texture(id: u8) -> Result<Texture, Refused> {
+    use crate::screen_look::EngineTexture;
+    match crate::screen_look::engine_texture(id) {
+        EngineTexture::Rasterizer(offset) => Ok(Texture::Rasterizer { offset, image: i32::from(id == 15) }),
+        EngineTexture::Cleared => Ok(Texture::Empty),
+        _ => Err(Refused::EngineTexture),
+    }
 }
 
 #[cfg(test)]
@@ -347,13 +442,183 @@ mod tests {
     }
 
     #[test]
-    fn only_a_shad_without_reset_reaches_the_shader_setup() {
+    fn a_shad_or_a_particle_without_reset_reaches_the_shader_setup() {
         let w = guest();
         let i = read(&|a| w.word(a), 0x100, 0x500).unwrap();
-        assert_eq!(check(&i), Ok(()));
+        for group in [SHAD, PRT3, PRTM] {
+            assert_eq!(check(&Inputs { group, ..i }), Ok(()));
+        }
         assert_eq!(check(&Inputs { reset: true, ..i }), Err(Refused::Reset));
-        assert_eq!(check(&Inputs { group: PARTICLE_MODELS[1], ..i }), Err(Refused::ParticleModel));
         assert_eq!(check(&Inputs { group: u32::from_be_bytes(*b"bitm"), ..i }), Err(Refused::NotShader));
+    }
+
+    /// What a material's draw takes, past the setup's fixed parts: the
+    /// stage textures, the vertex constants before the view matrix, the
+    /// vertex defaults.
+    #[cfg(feature = "gpu")]
+    type Made = Result<([Option<Texture>; 4], Vec<(usize, [f32; 4])>, Vec<(u8, [f32; 4])>), &'static str>;
+
+    /// Every kind of particle shader implementation the material handles,
+    /// and every kind it names a cause for, at 11 s on the render clock.
+    #[cfg(feature = "gpu")]
+    #[test]
+    fn each_particle_shader_kind_makes_its_material_or_names_its_cause() {
+        use crate::layer_pass::tests::{animated, animated_z, identity, implementation, timed};
+        use tags::material::{
+            AnimationKind, EngineInputs, EngineVertexConstant, FrameStage, InputReads, Origin, Register, StageTexture,
+            TextureSource, VectorBinding, VectorTarget,
+        };
+        let w = guest();
+        let i = read(&|a| w.word(a), 0x100, 0x500).unwrap();
+        let stage = |source, stage_size| Some(StageTexture { source, size: None, stage_size });
+        let bitmap = |image| TextureSource::Bitmap { bitmap: map::TagId(0xe000_0010), image, lod_offset: 0.0 };
+        let c18 = |value| (18usize, value);
+        let zero = [0.0; 4];
+        let size_of_stage_1 = EngineVertexConstant { bank: 1, reg: 0, mode: 5, stage: 1, source: 0 };
+        let frame = |images| {
+            let mut a = animated(AnimationKind::Bitmap, &[(0, 0)]);
+            a.stages = vec![FrameStage { stage: 0, images }];
+            a
+        };
+        type Edit = Box<dyn Fn(&mut Particle)>;
+        let rows: Vec<(&str, Edit, Made)> = vec![
+            ("static", Box::new(|_| {}), Ok(([None; 4], vec![c18(zero)], vec![]))),
+            (
+                "instance bitmap, default and none",
+                Box::new(move |p| {
+                    let t = &mut p.implementation.textures;
+                    (t[0], t[1], t[2]) = (stage(bitmap(1), None), stage(TextureSource::Default, None), stage(TextureSource::None, None));
+                }),
+                Ok((
+                    [
+                        Some(Texture::Bitmap { bitmap: 0xe000_0010, image: 1 }),
+                        Some(Texture::Bitmap { bitmap: u32::MAX, image: 0 }),
+                        Some(Texture::Empty),
+                        None,
+                    ],
+                    vec![c18(zero)],
+                    vec![],
+                )),
+            ),
+            (
+                "rasterizer engine textures and the cleared stage",
+                Box::new(move |p| {
+                    let e = |id| stage(TextureSource::Engine(id), None);
+                    p.implementation.textures = [e(14), e(15), e(1), e(4)];
+                }),
+                Ok((
+                    [
+                        Some(Texture::Rasterizer { offset: 0x14, image: 0 }),
+                        Some(Texture::Rasterizer { offset: 0x14, image: 1 }),
+                        Some(Texture::Rasterizer { offset: 0xc, image: 0 }),
+                        Some(Texture::Empty),
+                    ],
+                    vec![c18(zero)],
+                    vec![],
+                )),
+            ),
+            ("render target engine texture", Box::new(move |p| p.implementation.textures[0] = stage(TextureSource::Engine(20), None)), Err("engine_texture")),
+            ("lightmap", Box::new(move |p| p.implementation.textures[0] = stage(TextureSource::Lightmap, None)), Err("engine_texture")),
+            (
+                "game-time vertex constant",
+                Box::new(|p| {
+                    let (a, properties) = animated_z();
+                    p.implementation.animated = vec![a];
+                    p.properties = properties;
+                }),
+                // 11 s over 4 s wraps to 0.75, mapped onto 0..2.
+                Ok(([None; 4], vec![c18([0.0, 0.0, 1.5, 0.0])], vec![])),
+            ),
+            (
+                "object-function property",
+                Box::new(|p| {
+                    let (a, mut properties) = animated_z();
+                    properties[0].input = 0x1234;
+                    p.implementation.animated = vec![a];
+                    p.properties = properties;
+                }),
+                Err("object_animation"),
+            ),
+            (
+                "animated frame",
+                Box::new(move |p| {
+                    p.implementation.textures[0] = stage(bitmap(0), None);
+                    p.implementation.animated = vec![frame(4)];
+                    p.properties = vec![timed(4.0, identity([0.0, 8.0], 0))];
+                }),
+                // 0.75 of 0..8 is frame 6, image 2 of 4.
+                Ok(([Some(Texture::Bitmap { bitmap: 0xe000_0010, image: 2 }), None, None, None], vec![c18(zero)], vec![])),
+            ),
+            (
+                "animated frame of a slot without images",
+                Box::new(move |p| {
+                    p.implementation.textures[0] = stage(bitmap(0), None);
+                    p.implementation.animated = vec![frame(0)];
+                    p.properties = vec![timed(4.0, identity([0.0, 8.0], 0))];
+                }),
+                Ok(([Some(Texture::Bitmap { bitmap: u32::MAX, image: 0 }), None, None, None], vec![c18(zero)], vec![])),
+            ),
+            ("target copy", Box::new(|p| p.implementation.copies_target = true), Err("target_copy")),
+            (
+                "variant by the draw's inputs",
+                Box::new(|p| {
+                    p.implementation.per_draw_inputs = true;
+                    p.implementation.variant = true;
+                }),
+                Err("engine_variant"),
+            ),
+            (
+                "vertex constant from the draw's inputs",
+                Box::new(|p| {
+                    p.implementation.per_draw_inputs = true;
+                    p.implementation.vector_bindings =
+                        vec![VectorBinding { source: 7, target: VectorTarget::Vertex { bank: 1, reg: 0, components: 7 } }];
+                }),
+                Err("vertex_constant_driven"),
+            ),
+            (
+                "size of a bitmap stage",
+                Box::new(move |p| {
+                    p.implementation.textures[0] = stage(bitmap(0), Some((64, 32)));
+                    p.implementation.dimension_bindings = vec![size_of_stage_1];
+                }),
+                Ok(([Some(Texture::Bitmap { bitmap: 0xe000_0010, image: 0 }), None, None, None], vec![c18(zero)], vec![])),
+            ),
+            (
+                "size of an engine texture",
+                Box::new(move |p| {
+                    p.implementation.textures[0] = stage(TextureSource::Engine(14), None);
+                    p.implementation.dimension_bindings = vec![size_of_stage_1];
+                }),
+                Err("vertex_constant_driven"),
+            ),
+            (
+                "vertex defaults",
+                Box::new(|p| {
+                    p.implementation.vertex_defaults =
+                        vec![Register { index: 3, value: [1.0, 2.0, 0.0, 0.0], written: 0xf, origin: Origin::Instance }];
+                }),
+                Ok(([None; 4], vec![c18(zero)], vec![(3, [1.0, 2.0, 0.0, 0.0])])),
+            ),
+            ("partly written constant", Box::new(|p| p.implementation.vertex_constants[0].written = 0x3), Err("vertex_constant_lanes")),
+            ("no vertex shader", Box::new(|p| p.implementation.vertex_shader = None), Err("no_vertex_shader")),
+        ];
+        for (name, edit, expected) in rows {
+            let mut p = Particle {
+                implementation: implementation(0, InputReads::default(), Vec::new()),
+                properties: Vec::new(),
+                inputs: EngineInputs::default(),
+                pass: 0,
+            };
+            edit(&mut p);
+            let made: Made = p.material(&i, Some(11.0)).map_err(Refused::name).map(|m| {
+                let n = m.constants.len() - 3;
+                assert_eq!(m.constants[n..], i.matrix.iter().enumerate().map(|(k, r)| (MATRIX_SLOT + k, *r)).collect::<Vec<_>>());
+                assert_eq!(m.program, (0xe000_0002, u32::from(i.class) + PROGRAM_BASE));
+                (m.textures, m.constants[..n].to_vec(), m.defaults)
+            });
+            assert_eq!(made, expected, "{name}");
+        }
     }
 
     /// The two records as the disc has them (`0x0043f77a`, `0x0043f78f`).
@@ -418,6 +683,7 @@ mod tests {
         let w = guest();
         let i = Inputs { vertex_override: false, ..read(&|a| w.word(a), 0x100, 0x500).unwrap() };
         let mut lib = tags::material::ShaderLibrary::new(tags::shader::Metadata::new(0x1000, vec![0; 16]), []);
-        assert_eq!(material(&mut lib, &i), Err(Refused::Tags));
+        assert_eq!(material(&mut lib, &i, None), Err(Refused::Tags));
+        assert_eq!(resolve(&mut lib, &Inputs { group: PRT3, ..i }), Err(Refused::Tags));
     }
 }
