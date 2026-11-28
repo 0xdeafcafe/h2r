@@ -230,11 +230,17 @@ impl Glue {
             Some(rect) => rect,
             None => unimplemented!("lights: light scissor from the device"),
         };
-        if draws.iter().any(|p| p.compiled.program.inherits_cull) {
-            unimplemented!("lights: inherited CULLMODE and FRONTFACE from the device");
-        }
+        // A pass that sets no CULLMODE draws with the one the guest's
+        // render-state shadow holds at the light's call.
+        let device = if draws.iter().any(|p| p.compiled.program.inherits_cull) {
+            let cull = crate::native_targets_glue::cull_state(mem)
+                .ok_or(Keep::Unsupported("a light pass inherits a CULLMODE that does not read"))?;
+            Some(crate::native_world_glue::inherited_cull(cull))
+        } else {
+            None
+        };
         let cull = InheritedCull {
-            device: None,
+            device,
             clusters: true,
             placements: false,
         };

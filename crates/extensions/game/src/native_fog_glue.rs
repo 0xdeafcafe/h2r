@@ -268,11 +268,12 @@ pub fn upload_fog(
     set
 }
 
-/// The fog words a device would hold at the layer-16 call, by
-/// [`FOG_WORD_SLOTS`]: none, as there is no device. A material's own
-/// words are the whole fog ([`resolve_materials`]).
-pub fn device_fog_words(_: &dyn GuestMemory) -> [Option<u32>; 7] {
-    [None; 7]
+/// The fog words the draws inherit at the layer-16 call, by
+/// [`FOG_WORD_SLOTS`]: the guest's render-state shadow
+/// (`native_targets_glue::render_state`). A material's own words win
+/// over them ([`resolve_materials`]).
+pub fn device_fog_words(mem: &dyn GuestMemory) -> [Option<u32>; 7] {
+    fog_words_with(&|slot| crate::native_targets_glue::render_state(mem, slot))
 }
 
 /// [`device_fog_words`] from `states`, by guest state slot (a restore
@@ -345,7 +346,7 @@ impl Glue {
         let Some((fog, _)) = ready.fog.get() else { return kept(left, "unloaded") };
         let device_words = device_fog_words(mem);
         let Some(materials) = resolve_materials(&fog.words, &device_words) else {
-            unimplemented!("fog: planar fog words a material leaves to the device");
+            unimplemented!("fog: a planar fog word a material leaves to the render-state shadow does not read");
         };
         let read = ReadMemory(mem);
         let mut samples = fog_gpu::LayerSamples::new();

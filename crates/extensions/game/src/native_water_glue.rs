@@ -321,7 +321,7 @@ impl Glue {
         sampled_targets(mem, water).ok()?;
         let device_words = crate::native_fog_glue::device_fog_words(mem);
         let Some(materials) = crate::native_fog_glue::resolve_materials(&water.words, &device_words) else {
-            unimplemented!("water: fog words a material leaves to the device");
+            unimplemented!("water: a fog word a material leaves to the render-state shadow does not read");
         };
         let count = selected.len();
         let pass = WaterViewPass {
@@ -395,7 +395,7 @@ impl Glue {
         // The fog state, as the fog's.
         let device_words = crate::native_fog_glue::device_fog_words(mem);
         let Some(materials) = crate::native_fog_glue::resolve_materials(&water.words, &device_words) else {
-            unimplemented!("water: fog words a material leaves to the device");
+            unimplemented!("water: a fog word a material leaves to the render-state shadow does not read");
         };
         let pass = |selected, fogs| WaterViewPass { ready: Arc::clone(&ready), selected, fogs, samples_view: water.samples_view };
         if !display_clusters.is_empty() {

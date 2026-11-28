@@ -233,8 +233,10 @@ impl Host for Glue {
         self.retire_stale_bsp();
     }
 
+    /// `SetRenderState_Simple`'s push has no reader: the write is taken
+    /// as made (the caller stores the shadow itself).
     fn try_opaque_simple(&self, _mem: &mut dyn GuestMemory, _header: u32, _value: u32) -> bool {
-        unimplemented!("world: opaque simple state write through the device")
+        true
     }
 
     fn load_bsp(&self, mem: &dyn GuestMemory, bsp: u32) -> bool {
@@ -319,19 +321,19 @@ impl Host for Glue {
         let planning = timeline::native::Timer::start(timeline::native::Stage::World, timeline::native::Metric::ExtractNs);
         // The palettes the load expanded its palettized stage bitmaps
         // through must still be the ones bound.
-        if !palettes_hold(&ready.palettes, &stage_palette) {
+        if !palettes_hold(&ready.palettes, &|s| stage_palette(&*mem, s)) {
             return Err("palettes");
         }
         // The stencil the layer's draws take now, and how its items switch
         // it (`skip::stencil_plan`).
-        let stencil = layer_stencil();
+        let stencil = layer_stencil(&*mem).ok_or("stencil")?;
         let drained_plan = native_render::skip::stencil_plan(&render_bridge::native_world::Mem(mem), native_render::skip::LIGHTMAP_LAYER)
             .ok_or("stencil_plan")?;
         if &drained_plan != plan { return Err("stencil_plan"); }
         let stencil = pass_stencil(&stencil, plan).ok_or("stencil")?;
         // The cull layer 3 starts in: what the passes that do not set
         // `CULLMODE` inherit (`native_render::look::WorldPass::inherits_cull`).
-        let cull = layer_cull().map(inherited_cull);
+        let cull = layer_cull(&*mem).map(inherited_cull);
         let factor = projection_factor();
         let cull_camera = native_render::camera::display_camera(scene_view.camera, factor);
         let frustum = GpuWorld::draw_frustum(&cull_camera.view_projection(), true);
@@ -933,19 +935,23 @@ fn configure_world(
     gpu.set_stencil(stencil);
 }
 
-/// The stencil state layer 3 starts in.
-fn layer_stencil() -> gfx::state::StencilState {
-    unimplemented!("world: layer-3 stencil state from the device")
+/// The stencil state layer 3 starts in: the guest's render-state shadow
+/// (`native_targets_glue::stencil_state`). `None` when it does not read.
+fn layer_stencil(mem: &dyn GuestMemory) -> Option<gfx::state::StencilState> {
+    crate::native_targets_glue::stencil_state(mem)
 }
 
-/// The `CULLMODE` and `FRONTFACE` layer 3 starts in.
-fn layer_cull() -> Option<(gfx::state::CullMode, gfx::state::FrontFace)> {
-    unimplemented!("world: layer-3 cull state from the device")
+/// The `CULLMODE` and `FRONTFACE` layer 3 starts in, from the guest's
+/// render-state shadow (`native_targets_glue::cull_state`).
+fn layer_cull(mem: &dyn GuestMemory) -> Option<(gfx::state::CullMode, gfx::state::FrontFace)> {
+    crate::native_targets_glue::cull_state(mem)
 }
 
-/// The display lens over the retail one, for the one copy drawn.
+/// The display lens over the retail one, for the one copy drawn: the
+/// horizontal factor the present camera's views carry
+/// (`render_glue::ui_state`, as the retail callbacks last set it).
 pub(crate) fn projection_factor() -> f32 {
-    unimplemented!("render: display projection factor from the present camera")
+    crate::render_glue::ui_state().projection_factor
 }
 
 /// The view's rectangle in guest pixels: the whole target, as there is
@@ -1081,30 +1087,32 @@ fn pass_stencil(now: &gfx::state::StencilState, plan: &StencilPlan) -> Option<(g
     Some((*now, plan.marked.clone()))
 }
 
-/// The palette bound at stage `stage` now.
-pub fn stage_palette(_stage: usize) -> Option<Vec<u32>> {
-    unimplemented!("world: stage palettes from the device")
+/// The palette bound at stage `stage` now, as the game records it
+/// (`native_targets_glue::stage_palette`).
+pub fn stage_palette(mem: &dyn GuestMemory, stage: usize) -> Option<Vec<u32>> {
+    crate::native_targets_glue::stage_palette(mem, stage)
 }
 
 /// The palettes bound at stages 0..3 now.
-pub fn stage_palettes() -> StagePalettes {
-    std::array::from_fn(stage_palette)
+pub fn stage_palettes(mem: &dyn GuestMemory) -> StagePalettes {
+    std::array::from_fn(|s| stage_palette(mem, s))
 }
 
 /// Guest pointer to the palette header read by the scene's texture reset (0x00015b70).
-const DEFAULT_SCENE_PALETTE: u32 = 0x0048_4dbc;
+const DEFAULT_SCENE_PALETTE: u32 = crate::native_targets_glue::DEFAULT_PALETTE;
 
 /// A loading/UI boundary may not have the scene's palette bound yet.
 /// The scene reset binds this palette; each native draw still checks its bindings.
 pub fn scene_load_palettes(mem: &dyn GuestMemory) -> StagePalettes {
-    let mut bound = stage_palettes();
+    let mut bound = stage_palettes(mem);
     supply_scene_palette(&mut bound, || palette_entries(mem, mem.u32(DEFAULT_SCENE_PALETTE).ok()?));
     bound
 }
 
-/// The 256 entries of the palette whose header is `header`.
-fn palette_entries(_mem: &dyn GuestMemory, _header: u32) -> Option<Vec<u32>> {
-    unimplemented!("world: palette entries from the palette resource")
+/// The entries of the palette whose header is `header`
+/// (`native_targets_glue::palette_entries`).
+fn palette_entries(mem: &dyn GuestMemory, header: u32) -> Option<Vec<u32>> {
+    crate::native_targets_glue::palette_entries(mem, header)
 }
 
 fn supply_scene_palette(bound: &mut StagePalettes, default: impl FnOnce() -> Option<Vec<u32>>) {

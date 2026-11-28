@@ -13,7 +13,8 @@ pub const PAGE: u32 = 0x0048_5a60;
 pub const LAST_PALETTE: u32 = 0x0046_7000;
 pub const PALETTE_COUNT: u32 = 0x0050_93ac;
 pub const STAGE_PALETTES: u32 = 0x0048_4dc0;
-const PALETTE_HEADERS: u32 = 0x0048_4dd0;
+/// The palette headers `STAGE_PALETTES` indexes, 12 bytes each.
+pub const PALETTE_HEADERS: u32 = 0x0048_4dd0;
 const STAGE: u32 = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

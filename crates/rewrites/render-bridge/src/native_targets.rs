@@ -153,8 +153,9 @@ pub trait Host: Send + Sync {
     fn select_vertex_program(&self, _mem: &mut dyn GuestMemory, _vaf: u32, _address: u32) -> bool {
         false
     }
-    /// Constant register `r` (hardware order, register + 96) as bits.
-    fn constant(&self, _r: usize) -> Option<[u32; 4]> {
+    /// Constant register `r` (hardware order, register + 96) as bits, as
+    /// the guest's constant shadow holds it.
+    fn constant(&self, _mem: &dyn GuestMemory, _r: usize) -> Option<[u32; 4]> {
         None
     }
     /// `D3D_MakeRequestedSpace(minimum, requested)`: the new put.
