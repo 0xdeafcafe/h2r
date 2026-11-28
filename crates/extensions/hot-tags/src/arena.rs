@@ -8,9 +8,8 @@
 //! metadata does.
 //!
 //! **Where.** [`WINDOW`], a range of the HLE reservation
-//! (`kernel::memory::HLE_RESERVED`) no other user maps: the gap between the
-//! NV2A register window's two pages (`d3d::regs::PAGES` at
-//! `boot::d3d_glue::NV2A_BASE`, `0xa0403000` and `0xa0800000`), below
+//! (`kernel::memory::HLE_RESERVED`) no other user maps: from `0xa0403000`
+//! up to `0xa0800000`, below
 //! DirectSound's arena (`dsound::register::ARENA`, from `0xa0800000`) and
 //! above Bink's page (searched upward from `0xa0000000`). The window is
 //! only addresses: pages are mapped as the arena's top grows, in

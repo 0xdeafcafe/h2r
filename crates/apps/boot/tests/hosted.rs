@@ -75,7 +75,7 @@ fn the_host_paces_feeds_and_stops_the_run() {
     let host = boot::Host {
         gfx: None,
         gfx_view: None,
-        render_thread: false,
+        presenter: None,
         host_light: false,
         host_bots: false,
         voice_io: None,
