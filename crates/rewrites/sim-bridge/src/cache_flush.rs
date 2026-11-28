@@ -5,7 +5,7 @@
 //! original's by construction (a site the body does not own).
 
 use engine::native_cache_flush::TABLE;
-use engine::points::cache_wait::WAITS;
+use guest_layout::points::cache_wait::WAITS;
 use hooks::{Builder, Flow};
 use runtime::TransferAbi;
 
@@ -30,7 +30,7 @@ pub(crate) fn install(b: &mut Builder) {
             .context_only();
     }
     // The blocking allocations' wait: the GPU kick and the fence peek are
-    // gone; the yield stays (`engine::points::cache_wait`).
+    // gone; the yield stays (`guest_layout::points::cache_wait`).
     for wait in &WAITS {
         b.raw()
             .before(&wait.site, WAIT_LABEL, move |_| {

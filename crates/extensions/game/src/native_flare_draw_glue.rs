@@ -6,7 +6,7 @@
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use native_render::effect_material::{RASTERIZER, texture_header};
 use native_render::flare_draw_gpu::{Bitmap, FlareDrawGpu, FlareTarget, MASK_DEPTH};
 use native_render::flare_gpu::{self, DepthTest};

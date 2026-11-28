@@ -112,7 +112,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_scene::{FrameScene, LayerItem, LayerOwner, LayerPass, PartFlags};
 use native_render::fog_gpu::{LayerSamples, sampled_constants};
 use native_render::layer_pass::{self, ItemSkip, ListItem};
@@ -288,7 +288,7 @@ impl FirstCopy {
     }
 
     /// The copy flag, the draw byte and the cleared cache.
-    fn finish(mem: &mut dyn GuestMemory) -> Result<(), engine::MemFault> {
+    fn finish(mem: &mut dyn GuestMemory) -> Result<(), guest_layout::memory::MemFault> {
         mem.set_u8(TARGET_COPIED, 1)?;
         mem.set_u8(engine::render_loop::layer::DRAW_FLAG, 1)?;
         render_bridge::frame_step::layer::clear_cache(mem)
@@ -1641,7 +1641,7 @@ impl LayerViewPass {
 #[cfg(test)]
 mod restore_tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
     use engine::render_loop::states::{DIRTY, SHADOW};
     use render_bridge::open_shader::Write;
 

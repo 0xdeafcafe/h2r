@@ -5,7 +5,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_types::Slot;
 use native_render::flare_gpu::{DepthTest, FlareQueryGpu, QueryReadback};
 use render_bridge::native_flare_query::{self, Counts, DeviceResult, Host, Quad};

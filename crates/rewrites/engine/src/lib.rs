@@ -113,16 +113,14 @@ pub mod native_cache_flush;
 pub mod sim_physics;
 
 // The guest boundary and the named points live in guest-layout
-// (docs/dev/crate-structure.md, S2), with the async entries, the override
-// adapters, the locale table and the point shapes; these keep `engine::`
-// paths.
-pub use guest_layout::{abi, datum, entry, handle, locale, memory, point_shapes, points, sound, tags, testing, view};
+// (docs/dev/crate-structure.md, S2); other crates name them there.
+#[allow(unused_imports)]
+use guest_layout::{abi, datum, entry, handle, locale, memory, point_shapes, points, sound, tags, testing, view};
 #[cfg(feature = "runtime-glue")]
-pub use guest_layout::runtime_glue;
-pub use guest_layout::{point_loc, point_ret, point_sig, record};
-
-pub use handle::DatumHandle;
-pub use memory::{FlatMemory, GuestMemory, MemFault};
+#[allow(unused_imports)]
+use guest_layout::runtime_glue;
+#[allow(unused_imports)]
+use guest_layout::{point_loc, point_ret, point_sig, record};
 
 #[cfg(test)]
 mod tests;

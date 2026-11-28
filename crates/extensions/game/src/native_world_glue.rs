@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, RwLock, mpsc};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use render_bridge::native_map_work::{self, Stage as MapStage};
 use render_bridge::native_world::{Host, PartSet};
 use map::{Map, TagId};
@@ -1153,12 +1153,12 @@ impl tags::geometry::RawSource for Raw {
 
 /// Loads the world of map `name`'s BSP whose tag data sits at `bsp`.
 /// The active structure BSP's index in the scenario's BSP block: the
-/// game globals' (`engine::points::GAME_GLOBALS`) `i16` at `+2`, as
+/// game globals' (`guest_layout::points::GAME_GLOBALS`) `i16` at `+2`, as
 /// `0x0011c1b0` and `0x00137d40` index the block with it
 /// (`live_telemetry::layout::GLOBALS_ACTIVE_BSP`). `None` when negative
 /// or unread.
 pub fn active_bsp_index(mem: &dyn GuestMemory) -> Option<u16> {
-    let globals = mem.u32(engine::points::GAME_GLOBALS.base).ok().filter(|&g| g != 0)?;
+    let globals = mem.u32(guest_layout::points::GAME_GLOBALS.base).ok().filter(|&g| g != 0)?;
     u16::try_from(mem.u16(globals + 2).ok()? as i16).ok()
 }
 
@@ -2069,10 +2069,10 @@ mod tests {
 
     #[test]
     fn the_active_bsp_index_reads_the_game_globals() {
-        let mut m = engine::memory::FlatMemory::new(0x0040_0000, 0x0021_0000);
+        let mut m = guest_layout::memory::FlatMemory::new(0x0040_0000, 0x0021_0000);
         assert_eq!(active_bsp_index(&m), None, "no globals yet");
         let globals = 0x0050_0000;
-        m.set_u32(engine::points::GAME_GLOBALS.base, globals).unwrap();
+        m.set_u32(guest_layout::points::GAME_GLOBALS.base, globals).unwrap();
         m.set_u32(globals, 0x0001_0000).unwrap();
         assert_eq!(active_bsp_index(&m), Some(1));
         m.set_u32(globals, 0xffff_0000).unwrap();

@@ -6,7 +6,7 @@
 //! bound targets; with no device those entries are named gaps.
 
 use crate::native_shadow_chain::Chain;
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_types::{Slot, SlotAt};
 use gfx::external::{ExternalAttachments, ExternalEncoded};
 use native_render::{

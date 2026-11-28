@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use native_render::effect_geometry::DynamicCall;
 use native_render::effect_immediate::Site;
 use native_render::flares;

@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use render_bridge::native_hud::{Host, HudTagQuad, HudVertices, UiScope};
 
 struct Glue;

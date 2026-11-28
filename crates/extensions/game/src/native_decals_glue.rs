@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_types::{Slot, SlotAt};
 use gfx::external::{ExternalAttachments, ExternalDraws, TargetCopy};
 use native_render::decal::{VERTEX_SIZE, Vertex, decode_packed};

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use native_render::effect_material::{self, Material, Resolved};
 use native_render::object_streams::StreamFormats;
 use native_render::particle_material::Particle;

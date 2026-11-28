@@ -6,7 +6,7 @@
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use native_render::object_program_gpu::PlannedDraw;
 use native_render::object_state::EntryStates;
 use native_render::object_streams::StreamFormats;

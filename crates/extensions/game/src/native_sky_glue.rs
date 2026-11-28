@@ -18,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Seek};
 use std::sync::{Arc, OnceLock};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use map::{FourCC, Map, TagId};
 use native_render::look::{self, RIGID_CLASSIFICATION, Stage};
 use native_render::sky_material::{SKY_LAYER, SkyConstants, SkyLook, SkySection, evaluate as evaluate_pass};

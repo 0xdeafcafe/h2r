@@ -3,7 +3,7 @@
 
 /// A failed guest access. `addr` is where the access started.
 ///
-/// `engine::MemFault` is this type, so `?` moves faults between views and
+/// `guest_layout::memory::MemFault` is this type, so `?` moves faults between views and
 /// engine code without a conversion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Fault {
@@ -15,7 +15,7 @@ pub struct Fault {
 /// Byte-addressed guest memory a view reads. All or nothing: a read that
 /// faults leaves `buf` unspecified.
 ///
-/// `engine` implements it for `dyn engine::GuestMemory`, its fake guest
+/// `engine` implements it for `dyn guest_layout::memory::GuestMemory`, its fake guest
 /// and its flat memory, so views take what engine code already holds.
 pub trait Mem {
     fn read_bytes(&self, addr: u32, buf: &mut [u8]) -> Result<(), Fault>;

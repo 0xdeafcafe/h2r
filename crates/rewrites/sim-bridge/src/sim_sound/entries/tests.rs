@@ -611,7 +611,7 @@ fn a_tag_start_admits_its_sound_and_starts_its_loop_on_its_own_handle() {
     with_gate(&mut g, true);
     let regs = Regs { ecx: CUSTOM, xmm0: u128::from(2.0f32.to_bits()), ..regs() };
     let r = run_body(&t, Body::StartLayerNew, g, regs, no_calls);
-    let ret = r.result.unwrap();
+    let ret = r.result.as_ref().unwrap().clone();
     assert_eq!(ret.pop, 4);
     let start = Handle::from_raw(ret.eax);
     // The component's record: flags 0x95 with bit 5, the start's table.
@@ -635,7 +635,7 @@ fn a_tag_start_stops_its_loop_and_the_walk_frees_it() {
     with_gate(&mut g, true);
     let r = run_body(&t, Body::StartLayerNew, g.clone(), Regs { ecx: CUSTOM, ..regs() }, no_calls);
     assert_eq!(component_record(&r), (0xb5, STARTED_TABLE));
-    let start = Handle::from_raw(r.result.unwrap().eax);
+    let start = Handle::from_raw(r.result.as_ref().unwrap().eax);
     let looping = lock(&t).sounds.loop_find(LOOP_TAG, start.raw() | OWNER_BIT).unwrap();
     let r = run_body(&t, Body::StartLayerPlay, g.clone(), Regs { ecx: start.raw(), ..regs() }, no_calls);
     assert_eq!(r.result, Ok(Ret::new(0, 0)));
@@ -664,7 +664,7 @@ fn a_sound_start_binds_its_record_and_its_stop_runs_the_starts_stop() {
     g.put_u16(RECORD + 4, 0x0102);
     with_gate(&mut g, true);
     let r = run_body(&t, Body::StartRecord, g.clone(), Regs { eax: RECORD, ..regs() }, no_calls);
-    let sound = Handle::from_raw(r.result.unwrap().eax);
+    let sound = Handle::from_raw(r.result.as_ref().unwrap().eax);
     // The record now names the start's table (`0x21dc60`); then the component's.
     assert_eq!((r.guest.u32(RECORD), r.guest.u32(RECORD + 0x58)), (Ok((1 << 10) | 0x20), Ok(SOUND_TABLE)));
     assert_eq!(component_record(&r), (0xb5, STARTED_TABLE));

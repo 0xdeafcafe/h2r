@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 
 use engine::colour_pass::Parameters;
 use engine::glow::{self as game_glow, BlurArgs, WideArgs, WideDraw};
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::screen_effect::{self, Convolution, Effect};
 use engine::screen_grid::{self, Grid};
 use frame_scene::TargetRole;
@@ -1281,7 +1281,7 @@ mod tests {
     /// entry is made (`0x0001dcf0`).
     #[test]
     fn post_slots_name_the_view_and_table_roles() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let mut m = FlatMemory::new(0x0040_0000, 0x0020_0000);
         m.set_u32(post_feature::TARGET0_COLOUR, 0x0051_0000).unwrap();
         assert_eq!(post_slot(&m, PostTarget::View), Ok(0x0051_0000));
@@ -1310,7 +1310,7 @@ mod tests {
     /// is `LIN_X8R8G8B8`.
     #[test]
     fn the_view_reads_opaque_through_an_x8_texture() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let mut m = FlatMemory::new(0x0001_0000, 0x0060_0000);
         m.write(post_feature::TEXTURE_CASE, &[2]).unwrap();
         m.set_u32(post_feature::TEXTURE_JUMP + 8, 0x0001_4ffc).unwrap();
@@ -1342,7 +1342,7 @@ mod tests {
     /// a template that does not read is `template_skipped`.
     #[test]
     fn a_pass_the_template_skips_is_left_out_and_an_unread_gate_refuses() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let m = FlatMemory::new(0x0010_0000, 0x100);
         let mut one = Effect {
             shader: 0xe001_0005,
@@ -1764,7 +1764,7 @@ mod tests {
     /// its position and taps; a source bound at no size makes none.
     #[test]
     fn a_grid_is_screen_grids_strips() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         use engine::screen_grid::constant as k;
         let mut m = FlatMemory::new(0x0040_0000, 0x0020_0000);
         for (a, v) in [
@@ -1830,7 +1830,7 @@ mod tests {
     /// bound target the table's (`0x0001dd60`'s default without a surface).
     #[test]
     fn a_wide_source_is_its_targets_size() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         use screen_effect::{TARGET_STRIDE, TARGETS};
         let mut m = FlatMemory::new(TARGETS, 0x1000);
         m.set_u32(TARGETS + TARGET_STRIDE + 0x88, 1).unwrap();
@@ -1847,7 +1847,7 @@ mod tests {
     /// calls wait for it, and a new map forgets the last one's.
     #[test]
     fn the_screen_effects_load_per_map_without_the_world() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let named = |name: &str| {
             let mut m = FlatMemory::new(crate::health::CACHE_MAP_NAME, 0x40);
             m.write(crate::health::CACHE_MAP_NAME, name.as_bytes())
@@ -2223,7 +2223,7 @@ mod tests {
 
     #[test]
     fn a_screen_effects_plan_reads_its_words() {
-        use engine::memory::FlatMemory;
+        use guest_layout::memory::FlatMemory;
         let m = FlatMemory::new(0x0060_0000, 0x1000);
         let fp = Fp {
             mxcsr: 0x1f80,

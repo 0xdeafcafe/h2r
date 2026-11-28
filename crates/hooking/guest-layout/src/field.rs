@@ -53,7 +53,7 @@ impl<T: Field, const N: usize> Field for [T; N] {
 }
 
 /// A salted datum handle as the guest stores it: salt in the high half,
-/// index in the low; `0xffffffff` is none. `engine::DatumHandle::from_raw`
+/// index in the low; `0xffffffff` is none. `guest_layout::handle::DatumHandle::from_raw`
 /// takes [`Datum::raw`].
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Datum(pub u32);

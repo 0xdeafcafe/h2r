@@ -1,5 +1,5 @@
 //! A datum array's header: the pools objects, players and most game
-//! state live in (docs/engine/datum_new.md; `engine::datum` is the ported
+//! state live in (docs/engine/datum_new.md; `guest_layout::datum` is the ported
 //! allocator and keeps the full header there).
 
 crate::layout! {

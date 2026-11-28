@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use native_render::particle_compute::Blend;
 use native_render::particle_definition as pd;
 use native_render::particle_mirror::{self as nm, Key};
@@ -256,7 +256,7 @@ pub fn install() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn each_matched_template_has_its_blend_and_others_are_refused_by_name() {

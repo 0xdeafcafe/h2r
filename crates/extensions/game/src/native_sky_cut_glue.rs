@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 
 struct Glue;
 

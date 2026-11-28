@@ -2,6 +2,7 @@
 //! test at each call, as retail's would answer.
 
 use super::*;
+use crate::sim_objects::frame;
 use runtime::guest::Permissions;
 use runtime::TransferAbi;
 

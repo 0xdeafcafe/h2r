@@ -17,7 +17,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use native_render::light_tiles::{self, MAX_RUN, Segment, TileRefusal, TileVolume};
 use native_render::light_tiles_gpu::{self, AlphaRead, LightTiles, LitPass, MAX_SHADOWED, TiledDraw};
 use native_render::program::ViewInputs;

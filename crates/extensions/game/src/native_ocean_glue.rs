@@ -16,7 +16,7 @@
 use std::io::{Read, Seek};
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use map::{Map, TagId};
 use native_render::gpu::Image;
 use native_render::look::{self, Stage};
@@ -339,7 +339,7 @@ pub fn install(state: State) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn guest_bytes_reads_a_tail_shorter_than_a_word() {

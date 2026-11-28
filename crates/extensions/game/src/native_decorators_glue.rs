@@ -36,7 +36,7 @@ use std::io::{Read, Seek};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, mpsc};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use map::{FourCC, Map, TagId};
 use native_render::decorators::{Material, Plan, clear_slots};
 use native_render::decorators_gpu::{DecoratorTarget, DrawKey, MaterialGpu, bind, encode};

@@ -11,7 +11,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_types::{Slot, SlotAt, TargetRef};
 use native_render::{FrameOp, Stage, StageWork, frame_builder};
 use render_bridge::native_targets::{self, Bind, Host};
@@ -335,7 +335,7 @@ mod tests {
     use super::*;
     use engine::render_loop::states::SHADOW;
     use engine::render_loop::world_lightmap::{PALETTE_COUNT, PALETTE_HEADERS, STAGE_PALETTES};
-    use engine::testing::FakeGuest;
+    use guest_layout::testing::FakeGuest;
     use gfx::state::{CompareFunc, CullMode, FrontFace, RenderStateType as R, StencilOp};
 
     /// The guest slot of canonical state `t`.

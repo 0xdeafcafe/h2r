@@ -1,10 +1,10 @@
 //! Named guest globals: a word or a structure at a fixed address in the
 //! base (1.0) image, each with the page that records the evidence.
 //!
-//! This is the one table of global addresses. `engine::points` re-exports
-//! it, so `engine::points::GAME_GLOBALS` and `guest_layout::global::GAME_GLOBALS`
+//! This is the one table of global addresses. `guest_layout::points` re-exports
+//! it, so `guest_layout::points::GAME_GLOBALS` and `guest_layout::global::GAME_GLOBALS`
 //! are the same item; addresses here and hook points there are checked
-//! together for duplicates (`engine::points` tests).
+//! together for duplicates (`guest_layout::points` tests).
 
 /// A named guest global.
 #[derive(Debug, PartialEq, Eq)]

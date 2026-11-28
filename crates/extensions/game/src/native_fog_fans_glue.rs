@@ -9,7 +9,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_types::{Slot, TargetRef};
 use native_render::fog_fans::{FanTarget, FogFansGpu};
 use native_render::glow::PostSurface;

@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use native_render::flare_gpu::DepthTest;
 use native_render::fog_quad::{FogOtherDraw, FogOtherTarget, FogQuadDraw, FogQuadGpu, FogQuadTarget};
 use render_bridge::native_fog_quad::{self, Host};

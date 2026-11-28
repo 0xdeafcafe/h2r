@@ -13,7 +13,7 @@ use std::ops::Range;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use frame_scene::{LayerOwner, LightEntry, Row};
 use map::{Map, TagId};
 use native_render::gpu::Image;

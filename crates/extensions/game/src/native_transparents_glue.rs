@@ -13,13 +13,13 @@ struct Walk {
 }
 
 impl native_transparents::WalkHost for Walk {
-    fn sorted_pools(&self, mem: &dyn engine::memory::GuestMemory) -> Option<Arc<std::collections::BTreeSet<u32>>> {
+    fn sorted_pools(&self, mem: &dyn guest_layout::memory::GuestMemory) -> Option<Arc<std::collections::BTreeSet<u32>>> {
         let state = self.state.lock().ok()?;
         let ready = crate::native_world_glue::current_ready(&state, mem)?;
         Some(Arc::clone(&ready.water.get()?.0.pools))
     }
 
-    fn draw(&self, _: &mut dyn engine::memory::GuestMemory, stage: Stage, range: IndexRange) -> Result<(), ReservationCause> {
+    fn draw(&self, _: &mut dyn guest_layout::memory::GuestMemory, stage: Stage, range: IndexRange) -> Result<(), ReservationCause> {
         unimplemented!("transparents: {stage:?} indexed range of {} indices from the device", range.count)
     }
 }

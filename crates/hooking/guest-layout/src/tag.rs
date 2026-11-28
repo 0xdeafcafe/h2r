@@ -1,5 +1,5 @@
 //! The loaded tag index and its entries (docs/engine/tag_get_checked.md;
-//! `engine::tags` is the ported lookup and keeps the same offsets).
+//! `guest_layout::tags` is the ported lookup and keeps the same offsets).
 
 use crate::field::Datum;
 

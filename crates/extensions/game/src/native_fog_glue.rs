@@ -26,7 +26,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use render_bridge::late_sorted::{Run, RunAt};
 use render_bridge::native_fog::Host;
 use render_bridge::native_layers::Left;

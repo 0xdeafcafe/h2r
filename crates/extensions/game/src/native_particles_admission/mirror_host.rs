@@ -16,7 +16,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::particle_emission::constant::{ANGLE, SPIN};
 use gfx::state::{CompareFunc, DepthBufferMode, RenderState};
 use native_render::particle_compute::Blend;
@@ -269,7 +269,7 @@ pub(super) fn install() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     const BASE: u32 = 0x1000;
     const TAG: u32 = 0x1100;

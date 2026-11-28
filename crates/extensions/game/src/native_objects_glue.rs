@@ -8,7 +8,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use render_bridge::native_map_work;
 use render_bridge::native_objects::Host;
 use map::TagId;
@@ -154,7 +154,7 @@ impl LayerEntry {
 /// state (docs/graphics/native-objects.md, "The entry state"). Each read
 /// is of guest memory; `None` where a word does not read.
 pub(crate) mod device_state {
-    use engine::memory::GuestMemory;
+    use guest_layout::memory::GuestMemory;
     use engine::render_loop::states::SHADOW;
 
     /// Render-state slots in the shadow (`D3D__RenderState`).
@@ -2018,9 +2018,9 @@ mod tests {
     /// The draw state's words, as the guest's D3D library lays them out:
     /// the render-state, texture-stage and constant shadows and the
     /// device object `D3D__pDevice` names.
-    fn draw_state() -> engine::testing::FakeGuest {
+    fn draw_state() -> guest_layout::testing::FakeGuest {
         use render_bridge::guest_entries::{DEVICE, P_DEVICE};
-        let mut g = engine::testing::FakeGuest::new();
+        let mut g = guest_layout::testing::FakeGuest::new();
         g.map(device_state::TEXTURE_STATE, 0x4000)
             .map(DEVICE, 0x2000)
             .put_u32(P_DEVICE, DEVICE);
@@ -2051,7 +2051,7 @@ mod tests {
             assert_eq!(device_state::w_buffered(&g), w, "ZENABLE {zenable}");
             assert_eq!(LayerEntry::read(&g).w_buffered, w);
         }
-        assert!(!device_state::w_buffered(&engine::testing::FakeGuest::new()), "an unread shadow");
+        assert!(!device_state::w_buffered(&guest_layout::testing::FakeGuest::new()), "an unread shadow");
     }
 
     /// Texture-stage states read `D3D__TextureState` as

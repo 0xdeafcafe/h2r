@@ -16,7 +16,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 
-use engine::memory::GuestMemory;
+use guest_layout::memory::GuestMemory;
 use engine::screen_effect::{TARGET_STRIDE, TARGETS};
 use render_bridge::native_water::{Host, PartKey};
 use frame_scene::transparent::DisplayTransparentPart;
@@ -566,7 +566,7 @@ impl FrameStage for WaterViewPass {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::memory::FlatMemory;
+    use guest_layout::memory::FlatMemory;
 
     #[test]
     fn target_header_uses_the_embedded_texture_of_a_live_target() {
