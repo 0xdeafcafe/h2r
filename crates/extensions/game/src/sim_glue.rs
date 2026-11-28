@@ -622,7 +622,7 @@ fn speed(inner: &Inner, s: &State) -> sim_bench::clock::SpeedMeter {
 impl Sim {
     pub fn new(path: PathBuf, matched: Match, report_path: Option<PathBuf>) -> Sim {
         let frame = SimFrame::new(matched.config.render_every)
-            .on_skip(crate::d3d_diag::note_skipped_present);
+            .on_skip(crate::presents::note_skipped_present);
         let created = Instant::now();
         let mut tally = Tally::new();
         let detail = matched.config.detail();

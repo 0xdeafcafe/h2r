@@ -6,6 +6,9 @@ use std::sync::{Arc, Mutex};
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy, points};
 
 use crate::layout_glue::ReadGm;
+/// Frames the frame owner's mailbox may hold ahead of the window.
+const FRAMES_IN_FLIGHT: u64 = 2;
+
 use crate::level_boot::{MODE_CAMPAIGN, MODE_MAINMENU, MODE_MULTIPLAYER, OPT_MODE, active_mode};
 
 pub const ID: &str = "return-to-menu";
@@ -55,10 +58,10 @@ impl Exit {
             return false;
         }
         // The first ordinary render joins any guest render still in
-        // flight. Let the FIFO backend catch up to that point before
+        // flight. Let the frame owner catch up to that point before
         // allowing a publish to replace the loading picture.
         let first = *wait.first_render.get_or_insert(presents);
-        if presents.saturating_sub(first) < d3d::threaded::MAX_FRAMES_IN_FLIGHT {
+        if presents.saturating_sub(first) < FRAMES_IN_FLIGHT {
             return false;
         }
         self.waiting = None;
@@ -119,7 +122,7 @@ impl Feature for ReturnToMenu {
                 if exit
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .rendered(crate::d3d_diag::presents())
+                    .rendered(crate::presents::presents())
                 {
                     show(false);
                 }
@@ -157,7 +160,7 @@ mod tests {
         );
         exit.activated(Some(MODE_MAINMENU));
         assert!(!exit.rendered(21));
-        let last_in_flight = 21 + d3d::threaded::MAX_FRAMES_IN_FLIGHT;
+        let last_in_flight = 21 + FRAMES_IN_FLIGHT;
         assert!(!exit.rendered(last_in_flight - 1));
         assert!(exit.rendered(last_in_flight));
         assert!(
@@ -184,7 +187,7 @@ mod tests {
             active: Some(MODE_MULTIPLAYER),
             waiting: None,
         };
-        let in_flight = d3d::threaded::MAX_FRAMES_IN_FLIGHT;
+        let in_flight = FRAMES_IN_FLIGHT;
         assert!(exit.requested(Some(MODE_MAINMENU)));
         exit.activated(Some(MODE_MAINMENU));
         assert!(!exit.rendered(21));

@@ -1,19 +1,6 @@
 //! What the agent's `render.stats` reads (crates/extensions/agent's `render`): the
 //! frame owner's display-rate loop and the frame-stats window. Each reads as
 //! `null` (or is absent) when it isn't running.
-//!
-//! `render.frame` needs nothing here: the draw diagnostics wrapper
-//! (`d3d_diag`) feeds `agent::render::PROBE` itself.
-
-#[cfg(feature = "gpu")]
-mod e3;
-#[cfg(feature = "gpu")]
-mod private_frame;
-#[cfg(feature = "gpu")]
-pub use private_frame::{OwnedFrame, PrivateFrame};
-
-#[cfg(feature = "gpu")]
-pub use agent::render::private_graph::{display_declined as owner_declined, display_stopped as owner_stopped};
 
 use serde_json::{Value, json};
 

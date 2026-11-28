@@ -224,7 +224,7 @@ impl InputScript {
 
     /// Apply the script before `slice`, at the current present count.
     pub fn step(&self, slice: u64, pad: &input::backend::keyboard::KeyboardMouse) {
-        self.step_at(slice, crate::d3d_diag::presents(), pad);
+        self.step_at(slice, crate::presents::presents(), pad);
     }
 
     fn step_at(&self, slice: u64, frame: u64, pad: &input::backend::keyboard::KeyboardMouse) {

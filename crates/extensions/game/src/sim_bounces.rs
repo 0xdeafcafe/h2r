@@ -406,11 +406,7 @@ fn capture(ring: &mut Ring<Sections>, machine: &mut BootMachine<'_>, key: u64) -
     let Some(rt) = machine.rt else {
         return ForkDone::Failed("this machine has no running guest".into());
     };
-    // The device first: its save writes back to guest RAM.
-    let mut out = machine.film_snapshot_writer(key);
-    if let Some(Err(e)) = machine.capture_film_device(&mut out) {
-        return ForkDone::Busy(format!("d3d: {e}"));
-    }
+    let out = machine.film_snapshot_writer(key);
     let sections = match machine.save_ring_sections(out) {
         Ok(s) => s.into_boxed_slice(),
         Err(e) => return ForkDone::Failed(e),

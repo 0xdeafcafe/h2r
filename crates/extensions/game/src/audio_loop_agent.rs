@@ -198,7 +198,7 @@ impl hooks::Feature for Monitor {
                     }
                     let at = SoundStamp {
                         tick,
-                        present: crate::d3d_diag::presents(),
+                        present: crate::presents::presents(),
                         logical_100ns: o.clock(),
                         elapsed_us: monitor.output.elapsed_us(),
                     };

@@ -19,7 +19,7 @@ pub struct RunOpts {
     pub stopgaps: bool,
     /// Kernel-call trace output (TSV), see trace.rs.
     pub trace: Option<PathBuf>,
-    /// Register crates/platform/d3d's adapters (headless).
+    /// Override the guest's D3D entries and frame wait (`render_glue`).
     pub d3d: bool,
     /// Register crates/platform/bink-hle: playback of the movies installed in
     /// `movies`, skip mode for the rest (movies_glue.rs).
@@ -40,8 +40,8 @@ pub struct RunReport {
     pub kernel_log: Vec<String>,
 }
 
-/// What the run is hosted in. The default is headless: a `RecordingBackend`
-/// (or `H2_BOOT_GFX`), logical-time audio into a `NullSink`, a keyboard pad
+/// What the run is hosted in. The default is headless: no renderer,
+/// logical-time audio into a `NullSink`, a keyboard pad
 /// only `H2_BOOT_INPUT` presses, every kernel call kept in memory, and
 /// `max_slices` as the only stop. A windowed host (`h2 play`, crates/apps/app)
 /// fills these in; see docs/runtime/BOOT.md "Hosted runs".
@@ -60,9 +60,12 @@ pub struct Host {
     /// Opt in to bot support on a light host.
     pub host_bots: bool,
     #[cfg(feature = "gpu")]
-    /// D3D renders here (present hook attached) instead of the headless
-    /// backend; `H2_BOOT_GFX` is then ignored.
-    pub gfx: Option<d3d::GfxBackend>,
+    /// The device the renderer is built on (`crate::render_glue::install_game`).
+    pub gfx: Option<gfx::GfxContext>,
+    #[cfg(feature = "gpu")]
+    /// The window the frame owner presents on. With none, no renderer is
+    /// built.
+    pub presenter: Option<gfx::Presenter>,
     /// Independent desktop observer for re-simulated playerless films.
     #[cfg(feature = "gpu")]
     pub film_view: Option<crate::theater::HostView>,
@@ -70,11 +73,6 @@ pub struct Host {
     /// The display backend and the current physical size for Native resolution.
     /// The first backend keeps the guest's render target dimensions.
     pub gfx_view: Option<DisplayView>,
-    #[cfg(feature = "gpu")]
-    /// Run `gfx`'s work on a render thread (`d3d::ThreadedBackend`,
-    /// docs/graphics/render-thread.md); off in `Host::default()`. Hosts set it from
-    /// [`crate::d3d_glue::render_thread_requested`].
-    pub render_thread: bool,
     #[cfg(feature = "gpu")]
     /// The window runs unpaced: every sealed scene must reach the viewer.
     pub unpaced_display: bool,
@@ -186,8 +184,6 @@ pub type NativeTarget = Arc<dyn Fn() -> settings::NativeTarget + Send + Sync>;
 
 #[cfg(feature = "gpu")]
 pub struct DisplayView {
-    /// Absent when both resolution and lighting are locked to retail.
-    pub backend: Option<d3d::GfxBackend>,
     pub native_target: NativeTarget,
     /// Playback uses the viewer's chosen raster while the guest uses its recorded settings.
     pub viewer_output: Option<NativeSize>,

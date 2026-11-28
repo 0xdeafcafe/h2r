@@ -61,9 +61,9 @@ pub mod coop_look;
 pub mod coop_players;
 pub mod coop_probe;
 pub mod custom_games;
-pub mod d3d_diag;
-pub mod d3d_glue;
 pub mod debug_menu_glue;
+pub mod presents;
+pub mod render_glue;
 pub mod debug_readout;
 pub mod debug_views;
 pub mod dsound_glue;
@@ -217,8 +217,6 @@ pub mod native_post_load;
 #[cfg(feature = "gpu")]
 mod native_refusals;
 #[cfg(feature = "gpu")]
-pub mod native_residual_glue;
-#[cfg(feature = "gpu")]
 pub mod native_sky_cut_glue;
 #[cfg(feature = "gpu")]
 pub mod native_targets_glue;
@@ -240,14 +238,6 @@ pub mod native_world_glue;
 pub(crate) mod relight;
 #[cfg(feature = "gpu")]
 pub mod native_world_layers_glue;
-#[cfg(feature = "gpu")]
-pub mod opaque_streams;
-#[cfg(feature = "gpu")]
-pub mod frame_cutover;
-#[cfg(feature = "gpu")]
-pub mod frame_owner;
-#[cfg(feature = "gpu")]
-pub mod frame_parity;
 #[cfg(feature = "gpu")]
 pub mod scene_glue;
 pub mod new_maps;

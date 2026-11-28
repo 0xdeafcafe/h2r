@@ -93,7 +93,7 @@ impl World {
                 name,
                 value: Rc::clone(value),
                 log: Rc::clone(&self.log),
-                busy: if *name == "d3d" {
+                busy: if *name == "dsound" {
                     Rc::clone(&self.busy)
                 } else {
                     Rc::default()
@@ -348,7 +348,7 @@ fn a_load_that_changes_ram_says_which_mib() {
 #[test]
 fn blockers_are_named_by_owner_and_a_save_waits_them_out() {
     let w = World::new("busy");
-    w.busy.borrow_mut().push("inside Begin/End".into());
+    w.busy.borrow_mut().push("a buffer is locked".into());
     let (a, c, rx) = agent_on(&w);
     let mut m = w.machine(0);
     m.checks = Box::new(|| vec![("bink", "1 movie streams open".to_owned())]);
@@ -363,7 +363,7 @@ fn blockers_are_named_by_owner_and_a_save_waits_them_out() {
     assert_eq!(v["error"]["code"], code::BUSY, "{v}");
     assert_eq!(
         v["error"]["data"]["blockers"],
-        json!(["d3d: inside Begin/End", "bink: 1 movie streams open"])
+        json!(["dsound: a buffer is locked", "bink: 1 movie streams open"])
     );
     assert!(w.take_log().is_empty(), "nothing saved");
     assert!(!w.shelf.store().dir().join("a.h2snap").exists());
@@ -436,6 +436,6 @@ fn the_build_key_follows_switches_and_host_parts() {
         .unwrap();
     let key = |switches: &str, host: &[&str]| build_key("s".into(), switches, &plan, host);
     assert_eq!(key("", &["guest"]), key("", &["guest"]));
-    assert_ne!(key("", &["guest"]).id(), key("", &["guest", "d3d"]).id());
+    assert_ne!(key("", &["guest"]).id(), key("", &["guest", "dsound"]).id());
     assert_ne!(key("a=on", &["guest"]).id(), key("", &["guest"]).id());
 }

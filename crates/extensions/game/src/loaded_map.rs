@@ -18,7 +18,7 @@ pub fn republish(m: &dyn GuestMemory) {
     if let Ok(name) = crate::health::loaded_map_name(m) {
         kernel::level::publish(&name);
         #[cfg(feature = "gpu")]
-        d3d::pipeline_store::set_map(&name);
+        gfx::pipeline_store::set_map(&name);
     }
     publish_file(m);
 }
