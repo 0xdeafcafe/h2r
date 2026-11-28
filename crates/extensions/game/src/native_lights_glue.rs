@@ -2089,6 +2089,15 @@ fn scale_scissor(rect: [u32; 4], guest: (u32, u32), target: (u32, u32)) -> Optio
     Some(scale.rect(x, y, w, h))
 }
 
+/// A light pass's GPU work is still being made, not refused: a pipeline
+/// compiling or a texture group whose gel or bitmap has yet to upload
+/// (`LightSet::draws`, `light_tiles_gpu`: "incomplete GPU resources"), or
+/// a pass whose material its upload worker holds ("light pass busy").
+/// The light draws nothing this frame and draws once they are made.
+fn gpu_pending(why: &str) -> bool {
+    matches!(why, "incomplete GPU resources" | "light pass busy")
+}
+
 /// Resources captured from this BSP and its material variants when the
 /// light is prepared.
 struct RetainedLight {
@@ -2134,7 +2143,7 @@ impl RetainedLight {
                     .compiled
                     .gpu
                     .try_lock()
-                    .map_err(|_| Keep::Unsupported("light material is busy"))?;
+                    .map_err(|_| Keep::Loading("a light material its upload holds"))?;
                 Ok(gpu.retain())
             })
             .collect::<Result<Vec<_>, Keep>>()?;
@@ -2159,8 +2168,7 @@ impl Stage for RunPass {
     fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> StageWork {
         match self.draws(t, view) {
             Ok(draws) => StageWork::Draws(draws),
-            // A pipeline still compiling: nothing this frame.
-            Err("incomplete GPU resources") => StageWork::Draws(gfx::external::ExternalDraws {
+            Err(why) if gpu_pending(why) => StageWork::Draws(gfx::external::ExternalDraws {
                 ranges: 0,
                 packets: Vec::new(),
                 discards: false,
@@ -2248,6 +2256,18 @@ impl RunPass {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pass_whose_gpu_work_is_still_being_made_waits_and_other_refusals_do_not() {
+        assert!(gpu_pending("incomplete GPU resources"));
+        assert!(gpu_pending("light pass busy"));
+        for why in ["no light ranges", "light index range unavailable", "tiled draw lights differ"] {
+            assert!(!gpu_pending(why), "{why}");
+        }
+        // A material its upload worker holds is loading, drawn a frame later.
+        assert!(Keep::Loading("a light material its upload holds").loading());
+        assert!(scene_drawn::<()>(Err(Keep::Loading("a light material its upload holds"))).is_none());
+    }
 
     #[test]
     fn a_scene_light_draws_with_the_constants_of_its_shadow_choice() {
