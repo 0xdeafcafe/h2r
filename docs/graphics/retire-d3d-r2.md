@@ -416,8 +416,7 @@ is the mirror's own: `GpuParticles::mirror`, then one
 | refused while recording | `native-particles` refusals, `Mirror/<cause>` (`texture`, `view_size`, `z_scale`, `view_rows`, `capacity`, `sprites`, `viewport`): the batch does not draw |
 
 A batch's system is made for each recording (its births go through the
-queue, so two batches never share buffers in one submission); the
-pipelines, per colour format, depth format and blend, are kept per device.
+queue, so two batches never share buffers in one submission); the pipelines, per colour format, depth format, blend and stencil, are kept per device.
 
 Tests: `mirror.rs`
 (`a_particle_draws_batched_at_the_draws_return_from_its_state_as_the_callback_leaves_it`,

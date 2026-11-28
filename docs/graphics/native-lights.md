@@ -568,15 +568,7 @@ the layers drawn this way in `scene_first_person_light_layers_alone`
 
 ## The layer draw's return
 
-The layer draw `0x00044550` of layers 10 to 14 returns without its body
-on the opaque block's terms ([retire-d3d.md](retire-d3d.md), "R1's
-remainder") when no item of the list still holds the layer's bit.
-`render.scene` counts `layer_return_<site><layer>_returned` or
-`_guest_<cause>`, the site `light`, `extra` (additional casters), `shadow`
-(an object shadow) or `fplight` (first-person lights)
-(`native_layers::light_site`, over `passes::caller`). The light stage
-clears no bit, so a layer with items keeps the body. Test:
-`the_light_passes_layer_draws_return_or_run_the_guest_counted_by_site_and_cause`.
+The layer draw `0x00044550` of layers 10 to 14 returns without its body on the opaque block's terms ([retire-d3d.md](retire-d3d.md), "R1's remainder") when no item of the list still holds the layer's bit. `render.scene` counts `layer_return_<site><layer>_returned` or `_guest_<cause>`, the site `light`, `extra` (additional casters), `shadow` (an object shadow) or `fplight` (first-person lights) (`native_layers::light_site`, over `passes::caller`). The light stage clears no bit, so a layer with items keeps the body. A layer 12 or 13 drawn from the scene alone is decided at `LAYER_BUILD`, inside the body (`native_lights/walk.rs`): its entry loop is emptied, and the body's begin and end still run. Test: `the_light_passes_layer_draws_return_or_run_the_guest_counted_by_site_and_cause`.
 
 ## Rules and limits
 
