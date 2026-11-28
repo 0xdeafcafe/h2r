@@ -340,11 +340,11 @@ impl Ocean {
             }
             Step::Gates => {
                 if !device.visible(mem, d)? || !cache::resident(mem, d.wrapping_add(TEXTURE_BLOCK))? {
-                    return self.to_stamps(mem, r);
+                    return self.stamps_then_return(mem, r);
                 }
                 let index = word(mem, d.wrapping_add(SHADER))?;
                 if index == u32::MAX {
-                    return self.to_stamps(mem, r);
+                    return self.stamps_then_return(mem, r);
                 }
                 let s = shader(mem, index)?;
                 self.shader = Some(s);
@@ -390,13 +390,13 @@ impl Ocean {
             Step::Draw => {
                 let (count, indices) = (word(mem, r.esi.wrapping_add(QUAD_COUNT))?, word(mem, r.esi.wrapping_add(QUAD_INDICES))?);
                 device.draw(mem, indices, count)?;
-                self.to_stamps(mem, Regs { eax: 1, ..r })
+                self.stamps_then_return(mem, Regs { eax: 1, ..r })
             }
         }
     }
 
     /// The stamps, then the return.
-    fn to_stamps(&mut self, mem: &mut dyn GuestMemory, r: Regs) -> Result<Next, Cause> {
+    fn stamps_then_return(&mut self, mem: &mut dyn GuestMemory, r: Regs) -> Result<Next, Cause> {
         let index = word(mem, self.definition.wrapping_add(SHADER))?;
         if index == u32::MAX {
             return Ok(Next::Return { eax: (index & !0xff) | 1, ecx: r.ecx });

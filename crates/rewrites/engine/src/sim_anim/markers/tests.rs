@@ -219,14 +219,7 @@ fn populated(seed: u64) -> World {
     w
 }
 
-fn ram(g: &Guest) -> &[u8] {
-    let start = g.mappings()[0].physical_start as usize;
-    &g.physical_ram()[start..start + RAM as usize]
-}
 
-fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
-    a.iter().zip(b).position(|(x, y)| x != y)
-}
 
 /// The records the kernel itself builds from the same world.
 fn reference(w: &World) -> Vec<Marker> {

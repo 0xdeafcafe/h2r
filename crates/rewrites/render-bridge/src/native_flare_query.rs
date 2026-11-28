@@ -765,7 +765,7 @@ mod tests {
         assert_eq!(register(&mut m, &mut state, new, &0x1234u32.to_le_bytes()), Ok(Some(0)), "entry 0 is not in use");
         let e = fl::entry_addr(0);
         assert_eq!(m.u32(e).unwrap(), 1 << 1 | 5 << 3);
-        assert_eq!(m.u32(e + 4).unwrap(), 0xff80 | 4 * 4 | 3);
+        assert_eq!(m.u32(e + 4).unwrap(), 0xff80 | (4 * 4) | 3);
         assert_eq!(m.u32(e + 8).unwrap(), 0x1234);
         assert_eq!(m.u32(fl::COUNT).unwrap(), 2);
         m.set_u8(REGISTER_BYTE, 1).unwrap();

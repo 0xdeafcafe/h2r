@@ -274,29 +274,6 @@ fn install_events(b: &mut Builder) {
 /// The tick-entry observer that empties the event buffer.
 const EVENTS_CLEAR: &str = "events: tick";
 
-/// The chains [`install`] adds to a plan: one per body, the curve
-/// evaluator, and the observers at `GAME_TICK`, `DAMAGE_REPORT`,
-/// `PLAYER_KILLED` and `CACHE_TAGS_LOAD`.
-#[cfg(test)]
-pub(crate) fn object_chains() -> usize {
-    table().bodies().len() + 1 + 4
-}
-
-/// `plan` without what [`install`] adds, for a test that installs on a
-/// runtime holding only its own bodies' exports.
-#[cfg(test)]
-pub(crate) fn without_objects(plan: &mut hooks::Plan) {
-    for chain in plan.chains.values_mut() {
-        if chain.implement.as_ref().is_some_and(|h| h.label == OBJECTS) {
-            chain.implement = None;
-        }
-        chain.observe_before.retain(|h| {
-            ![EVENTS_CLEAR, "events: damage", "events: kill", CURVE_ARM_RESET, FUNCTION_ARM_RESET].contains(&h.label)
-        });
-    }
-    plan.chains.retain(|_, c| c.hooks().next().is_some());
-}
-
 /// Install `table`'s bodies under `label`, each call admitted only inside
 /// the table's float environment (else the original runs), for a table
 /// that is not the object update's (`crate::sim_sound`).

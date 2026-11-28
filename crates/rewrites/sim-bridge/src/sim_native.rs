@@ -339,16 +339,6 @@ fn observe_anim_invalidate(b: &mut Builder) {
 /// only path, with no switch (docs/engine/collision-queries.md).
 pub const COLLISION: &str = "sim.native.collision";
 
-/// The chains [`install_collision`] adds to a plan that already holds the
-/// animation invalidation: the map load observer is shared with it.
-#[cfg(test)]
-pub(crate) const COLLISION_CHAINS: usize = COLLISION_ENTRIES.len()
-    + COLLISION_INVALIDATE.len()
-    - 1
-    + COLLISION_PARTIAL.len()
-    + COLLISION_OBSERVED.len()
-    + RAY_PARITY.len();
-
 type CollisionBody = fn(
     &mut CpuAbi,
     &mut Guest,

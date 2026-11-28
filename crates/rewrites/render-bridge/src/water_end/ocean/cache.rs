@@ -89,7 +89,8 @@ pub fn lookup(mem: &mut dyn GuestMemory, image: u32) -> Result<u32, Cause> {
         if handle != u32::MAX {
             let index = handle & 0xffff;
             let entry = word(&*mem, word(&*mem, TEXTURES)?.wrapping_add(0x44))?.wrapping_add(index * 40);
-            touch(mem, word(&*mem, TEXTURE_RESOURCES)?, index)?;
+            let resources = word(&*mem, TEXTURE_RESOURCES)?;
+            touch(mem, resources, index)?;
             if byte(&*mem, entry.wrapping_add(3))? != 0 {
                 texture = entry.wrapping_add(0x14);
                 if n == 0 {

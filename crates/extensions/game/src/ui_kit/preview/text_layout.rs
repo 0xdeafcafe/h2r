@@ -266,7 +266,7 @@ fn measure(
                 None => (i + 1, i + 1, width, End::Wrap),
             };
         }
-        width = a + x + k + width;
+        width += a + x + k;
         count += 1;
         before = Some(c);
         glyph = Some(c);
