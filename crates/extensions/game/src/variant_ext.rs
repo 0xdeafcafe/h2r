@@ -571,7 +571,7 @@ pub const SPEED_FEATURE: &str = "variant-speed";
 /// The variant's movement speed for every player: the engine's own
 /// per-player speed step runs on the multipliers unscaled (so its target,
 /// ramp and clamp are the game's), and what it leaves is scaled before
-/// anything else reads it (docs/game/game-options.md, "Movement speed").
+/// anything else reads it (docs/game/game-options.md, "Our added choices").
 pub struct Speed;
 
 impl hooks::Feature for Speed {

@@ -442,7 +442,7 @@ One lane each. A lane writes code and tests; the coordinator runs them.
 | S1, S2 | The stage's geometry and its map, built `fresh` from a `TagSource` | see the stage page | | the stage loads in the game |
 | W2 | `Layered` and projects: the crate, the `map` item as the project, `fresh` and `onto` builds, the package output, `h2 tags build --project` | `crates/tools/workspace/{Cargo.toml, src/lib.rs, layer.rs, project.rs, build.rs, tests.rs}`, `h1convert/src/scratch.rs` (onto `Layered`) | invented tree and layers: first hit wins; a lossy tag refuses `fresh` by name; `onto` output differs from its base only in changed tags; the stage's project builds the bytes S2 built | `h2 tags build --project content/stage/map.toml` writes the stage package |
 | W3 | Studio's first start and `workspace.*` (built): the start page, the background plan, `tags_root`, status with sizes, `workspace.prune`, the game's `maps.load` rescan | `crates/apps/studio/src/{api/workspace.rs, ui/workspace.rs, app/workspace.rs}`, `studio-proto`, `crates/extensions/game/src/test_maps.rs`, [agent-api.md](agent-api.md), [editor-guide.md](editor-guide.md) | headless: no tree shows the start page; `workspace.extract` on an invented disc; a Git checkout refused; every method's example | a fresh data root extracts from the disc in the window, with progress |
-| W4 | `ContentKit`, `KitRewrite`, the Pogo as the first kit, sources from a directory | `crates/formats/content/src/kit.rs`, `crates/tools/pogo-kit/src/{kit.rs, source.rs, rewrite.rs, inject.rs}`, `crates/apps/boot/src/lib.rs` (the chain), [pogo-stick.md](../game/pogo-stick.md) | baked and directory sources install the same tags; a map holding the kit is skipped; the rewrite's cache key is unchanged for unchanged input | the stage project with `kits = ["stage", "pogo"]` holds the Pogo |
+| W4 | `ContentKit`, `KitRewrite`, the Pogo as the first kit, sources from a directory | `crates/tools/workspace/src/rewrite.rs`, `crates/tools/pogo-kit/src/{kit.rs, source.rs, inject.rs}`, `crates/apps/boot/src/lib.rs` (the chain), [pogo-stick.md](../game/pogo-stick.md) | baked and directory sources install the same tags; a map holding the kit is skipped; the rewrite's cache key is unchanged for unchanged input | the stage project with `kits = ["stage", "pogo"]` holds the Pogo |
 | S3 to S8 | The stage's flow: game methods, `stage.*`, checks | see the stage page | | `stage.run` gives a verdict on the Pogo |
 | W5 | Edit files and Studio's save: the format, `apply`, the journal to edit lines, `doc.open {project}`, `project.*` | `workspace/src/edits.rs`, `studio/src/{api/project.rs, app/project_doc.rs}`, [tag-editing.md](tag-editing.md), [scenario-editor.md](scenario-editor.md) | apply then diff gives the edit back; a stale `was` and a dead path stop with the line; the window's save and the API's write the same file; undo across a save | a field changed in the Tags tool is in the edit file, in the built map and in the paired game |
 | W6 | The incremental cache and its measurements | `workspace/src/cache.rs`, `docs/editor/notes/tag-workspace.md` | a one-tag change rebuilds one tree; a changed layout hash drops that group's entries; cached and uncached builds are the same bytes | the note has the three timings |
@@ -506,8 +506,8 @@ All decided by the owner.
 - From-scratch maps the game has loaded are the converted Halo 1 maps
   only (**Code**, [map-builder.md](../formats/map-builder.md), "Not verified").
 - Every kit adds tags to a `TagSet` and most run as a `vfs::Rewrite`
-  with a cache of their own (**Code**, `crates/tools/pogo-kit/src/rewrite.rs`,
-  `crates/extensions/game/src/ui_kit/inject/rewrite.rs`,
+  with a cache of their own (**Code**, `crates/tools/workspace/src/rewrite.rs`,
+  `crates/extensions/game/src/ui_kit/inject/`,
   `crates/extensions/game/src/campaign_cards.rs`).
 - `tag.import` replaces tags and does not add them (**Code**,
   `crates/apps/studio/src/api/tag_io.rs`).

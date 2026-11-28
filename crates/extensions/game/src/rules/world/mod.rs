@@ -1,5 +1,5 @@
 //! The world API's capability groups in the game
-//! (docs/game/rules-world-api.md, "Code layout"): one module per group.
+//! (docs/game/rules-world-api.md, "The world API"): one module per group.
 
 pub mod audio;
 pub mod body;

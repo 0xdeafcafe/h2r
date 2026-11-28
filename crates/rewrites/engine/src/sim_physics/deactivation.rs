@@ -1,5 +1,5 @@
 //! The deactivation test `0x00316b30` as a take-over arm (`parity`,
-//! docs/engine/havok-deactivation.md). The model is
+//! docs/engine/havok-integrate.md). The model is
 //! `sim_havok::deactivation`: [`capture`] runs it on a journal and holds
 //! the stores and the registers the entry leaves.
 //!

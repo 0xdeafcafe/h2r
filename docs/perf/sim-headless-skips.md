@@ -70,7 +70,7 @@ times (**E**). The fixed scans stay.
 One frame is one tick, so per-frame work costs the same as tick work.
 Running several ticks a frame would thin it out, but the phantoms' pads
 are gathered once per frame and the sound service keeps its own cadence,
-so that is a different match ([sim.md](../runtime/sim.md#per-tick-work)).
+so that is a different match ([sim.md](../runtime/sim-determinism.md#per-tick-work)).
 
 **The phantoms' action build (ours).** At the remote gather
 (`SIMULATION_SLOT_ACTION`, `crates/extensions/game/src/bot_glue.rs`) each

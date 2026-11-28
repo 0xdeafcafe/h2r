@@ -1,5 +1,5 @@
 //! The dev set: the four role tiles and the font atlas as tags
-//! (docs/game/forge-blockout.md, "How it is made").
+//! (docs/game/forge-blockout.md, "The dev textures").
 //!
 //! Each raster of `dev_texture` is a `bitm` ([`crate::texture`]) and a
 //! `shad` on the map's template ([`crate::Facts::layout`]) with the bitmap

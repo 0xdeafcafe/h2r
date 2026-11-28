@@ -271,7 +271,7 @@ impl KitLayout {
 /// offset, then the parent datum at `+8`) and returns null when no tag in
 /// the chain has one; `0x1f90f0` reads the movement row's `+4` at
 /// `0x1f911a` on the actor's first update, so a character without one
-/// faults there (docs/game/firefight.md, "Characters, stage 1").
+/// faults there (docs/game/firefight.md, "The kit").
 pub const UNCHECKED_ROWS: &[(&str, u32)] = &[("movement", 0x5c)];
 
 /// A `char` definition's parent reference datum (the tag reference at

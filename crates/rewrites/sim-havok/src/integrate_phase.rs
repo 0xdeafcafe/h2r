@@ -1,4 +1,4 @@
-//! The integrate phase `0x0030fef0` (docs/engine/havok-deactivation.md,
+//! The integrate phase `0x0030fef0` (docs/engine/havok-integrate.md,
 //! "The integrate phase"): thiscall on the world, one stack argument (the
 //! step `{dt, 1/dt}`), `ret 4`.
 //!

@@ -351,7 +351,7 @@ The host reads each living player's motion and recent fire as slot masks
   (`bots: built the visibility grid for lockout (none yet): ...`); a BSP
   whose `.vis` is current (`vis::current`: this version, the `.bots`
   stamp, its walls) is not built again.
-- **Build.** A row reuses the ordered collision candidates for center
+- **Build.** A row reuses the ordered collision candidates for centre
   rays with the same XY projection and the intersection terms that
   depend only on the ray's origin (`los::BuildRays`). The proof
   precomputes each triangle's plane and edges. It factors the 64
@@ -502,7 +502,7 @@ to find its way back in. The rules:
 |---|---|
 | Teleporter flag position, type and channel | `scnr+0x118`, stride `0x20`, position `+0`, types `7` and `8` at `+0x10`, identifier `+0x14`. See `map::scenario_layout`, `h1convert/src/apply.rs` and the retail checks in `h1convert/tests/h2_scenario.rs`. |
 | Scenery, machine and crate placement | `scnr+0x50`/ `+0x58` (scenery block / palette, strides `0x5c` / `0x28`) and `+0xa8` / `+0xb0` (machine, `0x48` / `0x28`). Palette index `+0`, flags `+4` (bit 0 suppresses automatic placement), position `+8`, yaw `+0x14`, palette datum `+4`. See the object-type table `0x00468630`, palette access `0x000a743b` and `map::scenario_layout`. Crates use the placement at `+0x328` (stride `0x4c`) and palette at `+0x330`. |
-| Lift object identity and travel | The retail machine palette places `power_boost` on Ascension, `grav_colossus` four times on Colossus and `elevator_cyclotron` on Cyclotron. Name patterns for modded placements, the launch direction, travel envelope and exit timing are **[guess]**. The generator scans for a landing that fits a standing biped and checks the path against the BSP. The reverse axis used for Ascension projects onto elevated playable BSP geometry. |
+| Lift object identity and travel | The retail machine palette places `power_boost` on Ascension, `grav_colossus` four times on Colossus and `elevator_cyclotron` on Cyclotron. Name patterns for modded placements, the launch direction, travel envelope and exit timing are **[guess]**. The generator scans for a landing that fits a standing biped and checks the path against the BSP. The reverse axis used for Ascension projects onto raised playable BSP geometry. |
 | Jump and standing clearance | Retail multiplayer Chief has standing height 0.725 and crouch height 0.5. See [superbounce.md](../superbounce.md) and its traces of `0x000df66e`, `0x000dd8e0` and `0x000e2a06`. The sampled arc, shoulder offsets, and takeoff timing are **[guess]**. |
 
 The generator checks headroom at walk-sector centres and portals. The
@@ -651,9 +651,9 @@ in plan respectively. The corpus test checks coverage after regeneration.
 
 A calm sniper or precision gunner can seek a position and face the lane
 it covers. A bot ahead on the scoreboard can hold a nearby vantage.
-Patience extends the wait at a projected return, and a favorite weapon can
+Patience extends the wait at a projected return, and a favourite weapon can
 tip the choice between two nearby pads. A patient long-range gunner or one
-carrying its favorite rifle gives a stronger sightline more weight.
+carrying its favourite rifle gives a stronger sightline more weight.
 Skill and tuned awareness affect how many places and pad locations it
 recognizes, how far it will go, and how accurately it estimates arrival.
 A once-visible enemy can be chased at its last observed position. When an
@@ -893,10 +893,10 @@ difficulty and style.
 | Chattiness | Refreshes radio sightings more often. New targets and urgent help go out immediately | .05–.95 | .12–.90 | .25–.83 | .36–.80 |
 
 The narrower Legendary bands give bots more consistent discipline while
-leaving room for different fighting styles. Favorites are drawn
+leaving room for different fighting styles. Favourites are drawn
 from automatic guns, precision rifles and pistols, shotguns, snipers, splash
 weapons, and swords. Loyalty biases existing pickup choices and can justify
-a short detour for a visible favorite when the bot is calm and free to rearm.
+a short detour for a visible favourite when the bot is calm and free to rearm.
 
 Confidence, tilt, and fear each run from 0 to 1. Enemy kills build confidence,
 with a larger gain as the streak grows. A death breaks the streak, drops
@@ -1704,7 +1704,7 @@ A melee cancel or second BR pull can't precede its nominal opening. The
 sword fly needs X one or two ticks after Y. The plasma overcharge row
 checks the nominal 24-tick hold. These rates measure pad timing. Whether
 the retail engine accepts an attempt depends on the weapon, target,
-movement and host behavior. Super-bounce landings need a physics run.
+movement and host behaviour. Super-bounce landings need a physics run.
 
 | Delivered sequence | Easy | Normal | Heroic | Legendary |
 |---|---:|---:|---:|---:|
@@ -2270,7 +2270,7 @@ counted, a touchdown at or over the link's `need`, and a V's arm only
 from across its bisector. No flight after a bounce has been traced, and
 whether a seam bounces a landing at a chain's speed (8 to 13 units/s
 in, against the 5.3 the measured drops come in at) is open
-([superbounce.md, "What is known about a second bounce"](../superbounce.md#what-is-known-about-a-second-bounce)):
+([superbounce.md, "What is known about a second bounce"](../superbounce-ghosts-medals.md#what-is-known-about-a-second-bounce)):
 `Ballistic::max_speed_in` is where a measured window goes, and until
 then a bot tries chains the game may not file.
 
@@ -2526,7 +2526,7 @@ seen at the Warthog and at the gun, not near the world's origin.
 vehicle's middle (0.3 over its origin) with no lead (a locked rocket
 follows it), and fires only once it has held the vehicle in the reticle
 (the vehicle's apparent size, 0.8 world units, plus the skill's fire
-cone) for the lock time. At infantry nothing changes: fired unlocked, at
+cone) for the lock time. At infantry nothing changes: fired with no lock, at
 the feet for Heroic and Legendary (§3.4). The game's own lock time is not
 traced; the bot assumes 1 s (`lock::LOCK_TICKS`) and adds its margin:
 
@@ -4375,7 +4375,7 @@ lobby never started.
   map status (`0x6e0f0`) and arbitration status (`0x72140`). For a full
   lobby that returns to the party, `live.matchmaking.trace` retains these
   inputs, the guest matchmaking result and the target key release.
-  [Agent API](../../runtime/agent-api.md#matchmaking-transitions)
+  [Agent API](../../runtime/agent-api-host.md#matchmaking-transitions)
 - **Arbitration starts when the lobby fills.** Only a full, map-ready
   lobby reaches `0x71ac2`: it makes the round (`0x73ae0`,
   `XOnlineArbitrationCreateRoundID`) and sets it on the target
@@ -6051,7 +6051,7 @@ Still open:
 - Which font slots draw player names in the lobby, scoreboard and carnage
   report.
 - For objectives, the traced fields and their writers are in §3.7. The
-  outstanding checks are pickup behavior, rotated one-bomb rounds, hill
+  outstanding checks are pickup behaviour, rotated one-bomb rounds, hill
   transitions and capture volumes in play (§11.2).
 - For vehicles (§3.9): verify the rocket launcher's lock time and zoom
   requirement, the units of `O+0x88` (velocity), the Banshee's secondary

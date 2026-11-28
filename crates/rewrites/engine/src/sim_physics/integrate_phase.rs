@@ -1,5 +1,5 @@
 //! The integrate phase `0x0030fef0` as a take-over arm (`parity`,
-//! docs/engine/havok-deactivation.md, "The integrate phase"). The model is
+//! docs/engine/havok-integrate.md, "The integrate phase"). The model is
 //! `sim_havok::integrate_phase`, which runs the deactivation test and the
 //! island integrate of every island in the phase's order on one journal.
 //!

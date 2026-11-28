@@ -66,7 +66,7 @@ The guest builds its projection for 640x480 (builder at `0x0002fb70`, retail wid
 | Networked, lockstep, input tape | the retail terms stay |
 | Menus and HUD | a uniform fit in a centred safe area; background art keeps the full view |
 
-**Highest** requests the finest model tiers at any resolution; the structure walks keep their retail projected sizes and pixel radii. Record both settings with the timings when comparing raster cost with retail geometry choices ([lab benchmarks](../runtime/lab.md#--serve-and-bench)).
+**Highest** requests the finest model tiers at any resolution; the structure walks keep their retail projected sizes and pixel radii. Record both settings with the timings when comparing raster cost with retail geometry choices ([lab benchmarks](../runtime/lab-runs.md#--serve-and-bench)).
 
 ## What the guest can observe
 

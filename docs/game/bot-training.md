@@ -255,7 +255,7 @@ best candidate.
 **The inputs** (measured, in the notes): a four-bot sim process takes 8.5
 ms a tick on Lockout and 14.1 on Waterworks, and 10.4 to 19.5 across twelve
 retail maps ([sim-budget.md](../perf/sim-budget.md),
-[sim.md, "Bot navigation performance"](../runtime/sim.md#bot-navigation-performance)).
+[sim.md, "Bot navigation performance"](../runtime/sim-determinism.md#bot-navigation-performance)).
 A tick is 33.3 ms of play, so one process runs 1.7 to 3.9 times real time.
 One process dirties about 143 MiB; the rest of its 981 MiB peak is the
 shared disc image and code
@@ -291,7 +291,7 @@ and `cpu_percent` from [`host.metrics`](../runtime/agent-api-host.md#hostmetrics
 | A fair pairing | `mode = "arm_swap"` |
 | Means, intervals, the difference of two arms | `sim::compare` |
 | Tuning without a rebuild | `sim::config::BotParams`, `bots::tuning::Tuning` |
-| Hosts beyond one Mac, with a budget | `h2 sim batch --provider cloud`, `sim::batch::Schedule` ([sim.md, "Batches on hosts"](../runtime/sim.md#batches-on-hosts)) |
+| Hosts beyond one Mac, with a budget | `h2 sim batch --provider cloud`, `sim::batch::Schedule` ([sim.md, "Batches on hosts"](../runtime/sim-parallel.md#batches-on-hosts)) |
 | A match to watch | `--upload` and the Clanker Training viewer |
 | The first tick two runs differ | `h2 sim diff` |
 
@@ -311,7 +311,7 @@ and `cpu_percent` from [`host.metrics`](../runtime/agent-api-host.md#hostmetrics
   block from `sim::habits`.
 - **More than one match per boot.** Every run boots a fresh System Link
   host, and snapshots cannot seed a batch
-  ([sim.md §6.2](../runtime/sim.md#62-sharing-guest-ram-with-machine-snapshots)).
+  ([sim.md §6.2](../runtime/sim-metrics.md#62-sharing-guest-ram-with-machine-snapshots)).
   With one-minute matches the boot is over half the cost. The host returns
   to the lobby after the end latch and starts the next match of a list in
   the same process, a report each. This is the largest single gain and has

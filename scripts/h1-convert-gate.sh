@@ -1,6 +1,6 @@
 #!/bin/sh
 # The Halo 1 conversion gate: imports the whole disc into a fresh data root
-# and fails unless every map converted (docs/halo1/parity.md "Conversion gate").
+# and fails unless every map converted (docs/halo1/parity.md "Boot sweep").
 set -eu
 : "${H1_ISO:?path to the Halo 1 disc}" "${H2_DISC:?path to the Halo 2 disc}"
 h2bin=${H2_BIN:-h2}

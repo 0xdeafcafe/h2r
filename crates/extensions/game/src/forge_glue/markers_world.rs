@@ -18,7 +18,7 @@
 //! ([`plate`]).
 //!
 //! A running game's rules script shows the walls of the areas it names
-//! (`show_area`, docs/game/gametype-markers.md, "The boundary in play"):
+//! (`show_area`, docs/game/gametype-markers.md, "In a script"):
 //! the rules runtime publishes them ([`publish_walls`]) and the same
 //! source draws each alone, with no pip and no label ([`draw_walls`]),
 //! whether or not a Forge session has markers.
@@ -411,7 +411,7 @@ static WALLS: Mutex<Vec<Wall>> = Mutex::new(Vec::new());
 static WALLS_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// An area's wall a running script shows in play
-/// (docs/game/gametype-markers.md, "The boundary in play"): the area round
+/// (docs/game/gametype-markers.md, "In a script"): the area round
 /// its centre marker's place, in the colour of a team, or neutral.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Wall {
