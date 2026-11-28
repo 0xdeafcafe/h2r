@@ -145,6 +145,8 @@ rules = ["dep:rules"]
 [dev-dependencies]
 # The fixture generated module, for hooks run through the real Runner.
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
+# The off arm's tests read `impl.render.native=off` (docs/graphics/retire-d3d.md, R9).
+hooks = { path = "../../hooking/hooks", default-features = false, features = ["d3d-reference"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

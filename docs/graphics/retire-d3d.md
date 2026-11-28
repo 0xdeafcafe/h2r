@@ -1,6 +1,6 @@
 # Retiring the guest D3D path
 
-Status: Design. R0 is built. R1, R4, R5, R6, R7, R8 and the parts of earlier stages listed below are partly built; no other slice is built.
+Status: Design. R0 and R9 are built. R1, R4, R5, R6, R7, R8 and the parts of earlier stages listed below are partly built; R9's gate does not pass yet, and no other slice is built.
 Code: `crates/platform/d3d/src` (what is deleted), `crates/rewrites/scene-extract/src` and `crates/rewrites/native-render/src` (what replaces it), `crates/rewrites/render-bridge/src` (the frame step and the census). Tests: named per slice below.
 Switch: `impl.render.native` (on), removed with the crate; `impl.render.native-hud` and `impl.render.native-hud-walk` (on), R6's, removed with the guest HUD walk; R4's producers have `impl.render.native.visibility` (on), which only turns them off. All in [switches.md](../runtime/switches.md).
 
@@ -27,7 +27,8 @@ Switch: `impl.render.native` (on), removed with the crate; `impl.render.native-h
 | R6, the other HUD quads | the training frame, the navpoints' arrows and outlines, the waypoint markers and the indicator are captured and proven as the widgets are | [native-hud-overlay.md](native-hud-overlay.md#bitmap-widgets) |
 | R6, what is kept | every HUD item a producer offers and the overlay does not draw, and every HUD draw no producer offered, is a `scene_kept_overlay_*` count by kind and cause | "R6's remainder" |
 | R7 | the menu frame's widgets, text, fade, bars (strips included), loading screen and blur from the overlay; every menu-frame draw that does not is a `scene_kept_ui_<kind>_<cause>` count in the HUD's register | [retire-d3d-menus.md](retire-d3d-menus.md) |
-| R8 | `0x00223240` as the Rust frame step; the movie's picture decoded to a native texture and drawn from the overlay; a frame with no carried slot published without the guest's present; the frame's finish `0x00013cd0` on the device with no guest entry; the frame wait under `outside_render` | [retire-d3d-display.md](retire-d3d-display.md) |
+| R8 | `0x00223240` as the Rust frame step; the movie's picture decoded to a native texture and drawn from the overlay; a frame with no carried slot published without the guest's present, in the frame step and in the three frame loops outside it; the frame's finish `0x00013cd0` on the device with no guest entry; the frame wait under `outside_render` | [retire-d3d-display.md](retire-d3d-display.md) |
+| R9 | `h2 render gate` over the census corpus; the frame's own calls (`views`, `outside_view`, `frame_loop`, `present`) as registry rows; `impl.render.native=off` built only with `hooks`' `d3d-reference` feature (`boot/d3d-reference`), off by default | "Rules and limits", "The zero gate" |
 
 Each R1 item is taken only where skipping its guest draw leaves the device's render states as drawing it would (a pass whose restore list writes back what it sets included), and on its own wherever drawing it ahead of the items the guest keeps cannot change the frame. [retire-d3d-remainders.md](retire-d3d-remainders.md#r1s-remainder) lists what still reaches the guest's draws. The stages this builds on are in [native-renderer.md](native-renderer.md) and [framescene.md](framescene.md).
 
@@ -109,7 +110,7 @@ these per caller with every stage on: the column "Count" says what exists.
 | Movies: tick `0x00156040`, blit `0x001568d0`, quad `0x00156960` | a texture lock and upload, one quad | the decode without the lock or copy, and the quad as an overlay `MovieFrame` ([retire-d3d-display.md](retire-d3d-display.md#movies)) | the texture's creation at the start and its release at the stop | `native_ui_movie_*` |
 | Alternate view `0x0002c790` (`0x0002c863`, `0x0002c884`, `0x0002c889`), fallback view `0x002232a0` | whatever its scene and UI draw | alternate scene layers 1, 5 and 2 from the layer plan, layer 3 from the world and sorted object stages, first-person layers at their own calls | view setup and finish, refused items | none |
 | Target selection `0x0001cd30` (five base sites `0x0002bde2` to `0x0002bfe3`), clears `0x00014b60` | binds, clears | attachment loads and clipped rectangle plans up to eight rectangles, device binds and title-surface reference transactions | longer rectangle lists, final resource destruction, the viewport reset | none |
-| Frame end `0x00013b90`, `0x00013cd0`; present `0x00013f10` | a target copy and composite (with a screen effect only), the stage, index and shader resets, `Swap` | supported copy and composite fans; the resets (`0x00013cd0`) on the device; a frame with no carried slot's present ([retire-d3d-display.md](retire-d3d-display.md#the-frames-finish)) | refused fans and the tail's setup; a kept frame's present. No caller asks the present's readback | none |
+| Frame end `0x00013b90`, `0x00013cd0`; present `0x00013f10` | a target copy and composite (with a screen effect only), the stage, index and shader resets, `Swap` | supported copy and composite fans; the resets (`0x00013cd0`) on the device; a frame with no carried slot's present, in the frame step and the three frame loops ([retire-d3d-display.md](retire-d3d-display.md#the-final-display)) | refused fans and the tail's setup ([retire-d3d-display.md](retire-d3d-display.md#the-frame-tail)); a kept frame's present. No caller asks the present's readback | `publish_*` |
 | Outside the render call: boot, the resource caches, the sim | `CreateDevice`, `AddRef`, `Release`, `IsBusy`, `BlockOnResource`, fences | none | all of it; about 0.1 call a frame from the sim [d] | 0.1 a frame [d] |
 
 The residual census marks `screen_effects`, `colour_pass`, `screen_effect` and `fade` partial. Each guest producer still runs. Entries inside a colour pass or an individual screen effect count toward that child, so the outer `screen_effects` row excludes those entries. The display gamma ramp belongs to the frame tail.
@@ -220,9 +221,15 @@ site and layer as `render_bridge::entry_census` names it. Work goes to the
 innermost open producer, so the rows sum to `totals`. Callers with no
 point yet (the flares, the untraced `Begin`
 callers, the first person's own entry) fall to the producer around them
-or to `unknown`, and `callers` names their functions. `outside_render` is
-every entry call made with no render frame open (boot, the caches, the
-sim). A draw or entry under no registered producer is `unknown`, and
+or to `unknown`, and `callers` names their functions.
+
+The frame's own
+calls have rows too: `views` (`render_views` `0x0002b5d0`),
+`outside_view` (`0x002232a0`), `frame_loop` (`0x0012b6f0`) and `present`
+(`0x00013f10`, `kept`), so the frame loops outside `0x00223240` file
+their work under a name. `outside_render` is
+every entry call made with no render frame or producer open (boot, the
+caches, the sim). A draw or entry under no registered producer is `unknown`, and
 `unknown` is never folded into a neighbour.
 
 **Cost and switch.** `totals` and `callers` are always available: unarmed,
@@ -418,7 +425,7 @@ D3D entry calls.
 | R6 | `Overlay` stage and the HUD | M | R0 | not measured | text and HUD parity at 1x exact; HUD frames on every weapon and vehicle |
 | R7 | Menus, text, loading, fade, bars, model widgets, the backdrop ([retire-d3d-menus.md](retire-d3d-menus.md)) | L | R6 | not measured; the menu's draws less its 3D view | menu, settings, pregame lobby and loading captures; `scene_kept_ui_*` at zero on them; UI order test |
 | R8 | Movies, frames outside a game view, the final display. `0x00223240` is replaced. Built: the frame step, the movie, the publish, the frame's finish, the frame wait outside the render ([retire-d3d-display.md](retire-d3d-display.md)); not built: the frame tail's setup with a screen effect, the frames outside a game view's own setup, a kept frame's present (it follows R1 to R7's kept counts) | M | R1 to R7 | the rest of `render` and all of `d3d`, `decode` | from boot to gameplay and back to the menu, `d3d_entries` grows only under `outside_render` |
-| R9 | Zero gate: `h2 render gate` (`crates/apps/cli/src/render_gate.rs`) runs the census corpus through `render.residual`; `impl.render.native=off` is behind the `d3d-reference` cargo feature of `hooks`, on by default until the gate passes | S | R8 | none | the gate in "Rules and limits"; the command exits 0 |
+| R9 | Zero gate: `h2 render gate` (`crates/apps/cli/src/render_gate.rs`) runs the census corpus through `render.residual`; `impl.render.native=off` is behind the `d3d-reference` cargo feature of `hooks`, off by default (the off arm's tests and `boot/d3d-reference` turn it on). Built; the gate does not pass while R1 to R8 keep work | S | R8 | none | the gate in "Rules and limits"; the command exits 0 |
 | R10 | Delete `d3d`'s draw path and the backends that replay it | M | R9, a soak the owner sets | build time and about 30,000 lines | the tree builds; the gate corpus against `d3d-reference` |
 | R11 | Delete the crate | M | R10; the decision on non-draw entries below | the last guest D3D call | no `d3d` in `cargo metadata`; boot to menu on the laptop |
 
@@ -524,8 +531,9 @@ weapon and vehicle, with `scene_kept_overlay_*` read beside each.
   cutscene, then each level over 3,000 presents. It prints one table of the
   producers and callers with entries, residual draws or push words left,
   and exits 1 while any producer but `outside_render` has work (or a state
-  cannot be judged). Dropping `d3d-reference` from `hooks`' default
-  features is the flip: the switch is then not read.
+  cannot be judged). `d3d-reference` is not in `hooks`' default
+  features, so a game build does not read the switch; the hash
+  comparison runs against a build with `boot/d3d-reference`.
 - **Not for the removed path:** no stage is patched to claim more on the
   resolved-draw path unless that work survives into its typed form. The
   per-draw admissions are deleted in R10.
