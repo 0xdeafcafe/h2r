@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock, Weak, mpsc};
 
-use d3d::pipeline_store::PipelineStore;
+use gfx::pipeline_store::PipelineStore;
 use gfx::compile::{Compiler, Pending, PendingPipeline, Priority};
 use gfx::pipeline::{PipelineKey, ShaderProgram, create_render_pipeline};
 
@@ -40,7 +40,7 @@ pub fn start(path: Option<PathBuf>) {
     });
 }
 
-/// The native archive's record format (`d3d::pipeline_store` versions every
+/// The native archive's record format (`gfx::pipeline_store` versions every
 /// line): bump it when a fingerprint or a stored descriptor changes meaning.
 const ARCHIVE_VERSION: u32 = 1;
 

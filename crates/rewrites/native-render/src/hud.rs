@@ -468,7 +468,7 @@ pub fn glyph_ring(mem: &dyn GuestRead) -> Option<[u32; GLYPH_RING_WORDS]> {
 }
 
 /// The glyph cache's texels: `LIN_A4R4G4B4`, `GLYPH_SIZE` square, one
-/// level (`0x0001eff0`; `d3d::glyph`, `docs/formats/fonts.md`).
+/// level (`0x0001eff0`; `docs/formats/fonts.md`).
 pub const GLYPH_SIZE: u32 = 256;
 
 /// One corner of a native text quad: where the D3D path's vertex program

@@ -191,8 +191,8 @@ impl HudShader {
     /// The combiner words this draw binds: the implementation's pixel
     /// shader definition with its animated constants sampled at `time`
     /// (the render clock) through the HUD's provider `inputs`, and the
-    /// D3D default final combiner where the definition programs none (as
-    /// `d3d::nv2a::overlay_shader_words` reads the device's).
+    /// D3D default final combiner where the definition programs none
+    /// (`gfx::guest_program::overlay_shader_words` reads them).
     pub fn words(&self, time: Option<f64>, inputs: ObjectInputs<'_>) -> Result<[u32; 60], HudRefusal> {
         let sampled;
         let imp = if self.implementation.animated.is_empty() {

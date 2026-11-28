@@ -324,7 +324,7 @@ impl WaterSet {
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         color: &wgpu::TextureView,
-        copy: d3d::TargetCopy,
+        copy: gfx::external::TargetCopy,
     ) -> wgpu::TextureView {
         let scene = self.scene_copy(device, color, copy);
         scene.record(encoder);
@@ -333,7 +333,7 @@ impl WaterSet {
 
     /// [`WaterSet::make_copy`] without the command, for a recording that
     /// issues it later.
-    pub(crate) fn scene_copy(&mut self, device: &wgpu::Device, color: &wgpu::TextureView, copy: d3d::TargetCopy) -> SceneCopy {
+    pub(crate) fn scene_copy(&mut self, device: &wgpu::Device, color: &wgpu::TextureView, copy: gfx::external::TargetCopy) -> SceneCopy {
         self.scene_copies.take(device, color, copy)
     }
 
@@ -578,7 +578,7 @@ mod tests {
                     let n = if water {
                         gpu.prepare_water(&mut uploads, &camera, &fog);
                         gpu.encode_water(&ctx.device, enc, t.color, F::Rgba8Unorm, depth, F::Depth32Float,
-                            t.size, viewport, d3d::TargetCopy::Display, &selected, &[])
+                            t.size, viewport, gfx::external::TargetCopy::Display, &selected, &[])
                     } else {
                         gpu.prepare_fog(&mut uploads, &camera, &fog, &crate::fog_gpu::LayerSamples::new());
                         gpu.encode_fog(&ctx.device, enc, t.color, F::Rgba8Unorm, depth, F::Depth32Float,
@@ -625,7 +625,7 @@ mod tests {
                 gpu.prepare_water(&mut uploads, &view(), &fogs());
                 let count = gpu.encode_water(
                     &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float,
-                    (SIZE, SIZE), player_viewport(false), d3d::TargetCopy::Display, &[(Owner::Instance(5), 0)], &[],
+                    (SIZE, SIZE), player_viewport(false), gfx::external::TargetCopy::Display, &[(Owner::Instance(5), 0)], &[],
                 );
                 assert_eq!(count, 1);
             }).0
@@ -663,7 +663,7 @@ mod tests {
                     assert!(draws.writes.iter().all(|(buffer, ..)| arena.wrote_in_order(buffer)));
                     let recorded = gpu.encode_water(
                         &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE), player_viewport(split),
-                        d3d::TargetCopy::Display, &selected, &[],
+                        gfx::external::TargetCopy::Display, &selected, &[],
                     );
                     assert_eq!(recorded, 2);
                 }
@@ -692,7 +692,7 @@ mod tests {
                     let commands = gpu
                         .water_encoded(
                             &ctx.device, &ctx.queue, arena, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float,
-                            (SIZE, SIZE), player_viewport(split), d3d::TargetCopy::Display, &selected, &[], &view, &fogs,
+                            (SIZE, SIZE), player_viewport(split), gfx::external::TargetCopy::Display, &selected, &[], &view, &fogs,
                         )
                         .unwrap();
                     assert_eq!((commands.ranges, commands.passes), (2, 1));
@@ -705,7 +705,7 @@ mod tests {
                     gpu.prepare_water(&mut uploads, &view, &fogs);
                     let recorded = gpu.encode_water(
                         &ctx.device, enc, target.color, F::Rgba8Unorm, target.depth.unwrap(), F::Depth32Float, (SIZE, SIZE), player_viewport(split),
-                        d3d::TargetCopy::Display, &selected, &[],
+                        gfx::external::TargetCopy::Display, &selected, &[],
                     );
                     assert_eq!(recorded, 2);
                 }

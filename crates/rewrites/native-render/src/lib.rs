@@ -182,8 +182,6 @@ pub mod snapshot_gpu;
 pub mod subpart_map;
 pub mod weather_scene;
 pub mod world;
-#[cfg(feature = "gpu")]
-pub mod world_layers_gpu;
 
 pub use scene_extract::layout::{
     aux_depth, light_passes, object_lighting, object_nodes, object_walk, objects, post, skip, sky_rows,

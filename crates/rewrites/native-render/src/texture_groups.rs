@@ -5,8 +5,8 @@
 //! group keeps its textures alive. Most views a native draw binds are the
 //! resident textures of the map, the same every frame. Others are new each
 //! frame or each draw: a copy of the frame buffer
-//! (`d3d::Backend::snapshot_surface`) or a depth alias
-//! (`d3d::Backend::depth_alias_texture`) is a new texture at the target's
+//! (a scene copy) or a depth alias
+//! (a depth alias) is a new texture at the target's
 //! size every time, about 20 MB at 2560x1920 (4x render scale). A cache
 //! that only starts over at a group count holds that many of them.
 //!

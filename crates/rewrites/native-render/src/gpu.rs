@@ -1226,8 +1226,7 @@ impl GpuWorld {
     }
 
     /// [`GpuWorld::prepare_water`] and [`GpuWorld::encode_water`] as
-    /// commands for the frame's open encoder (`d3d::ExternalPass::
-    /// record_encoded`): the uniforms staged now and copied into their
+    /// commands for the frame's open encoder (`Stage::record`): the uniforms staged now and copied into their
     /// buffers by the commands, the view copy's scratch texture made now
     /// and filled by them, then the pass. The commands only record, so
     /// they run any number of times.
@@ -1576,7 +1575,7 @@ impl GpuWorld {
         };
         let state = &self.stencil.state;
         p.selected_pipelines(device, color, depth, state, &selection.materials, usage)
-            && selection.spans.iter().all(|&(batch, _, _)| p.lit_batch_binding(batch, d3d::Lighting::Retail).is_some())
+            && selection.spans.iter().all(|&(batch, _, _)| p.lit_batch_binding(batch, crate::lighting::Lighting::Retail).is_some())
             && (selection.texaccum.is_some() || !selection.materials.keys().any(|&m| p.program(m).is_some_and(|p| p.needs_texaccum())))
             && selection.vertices.iter().all(|&(material, instance)| match instance {
                 Some(n) => p.rigid(material, n, color, depth, state).is_some(),
@@ -1701,9 +1700,9 @@ impl GpuWorld {
             (i, first, first + b.draw_count as usize)
         }).collect();
         self.prepare_pipelines(device, color_format, depth_format);
-        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &spans, Slots::Early, d3d::Lighting::Retail);
+        self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &spans, Slots::Early, crate::lighting::Lighting::Retail);
         if self.cull.late(device, encoder, depth, viewport) {
-            self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &spans, Slots::Late, d3d::Lighting::Retail);
+            self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &spans, Slots::Late, crate::lighting::Lighting::Retail);
         }
     }
 
@@ -1715,13 +1714,13 @@ impl GpuWorld {
         selection: &WorldSelection,
     ) -> usize {
         self.encode_selection_lit(encoder, color, color_format, depth, depth_format, viewport, target_size,
-            selection, d3d::Lighting::Retail)
+            selection, crate::lighting::Lighting::Retail)
     }
 
     pub fn encode_selection_lit(
         &mut self, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView, color_format: wgpu::TextureFormat,
         depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
-        selection: &WorldSelection, lighting: d3d::Lighting,
+        selection: &WorldSelection, lighting: crate::lighting::Lighting,
     ) -> usize {
         self.record_spans(encoder, color, color_format, depth, depth_format, viewport, target_size, &selection.spans, Slots::Selected, lighting)
     }
@@ -1737,19 +1736,19 @@ impl GpuWorld {
         &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
         selection: &WorldSelection, view: &ViewInputs,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
-        self.selection_draws_lit(color_format, depth_format, target_size, selection, view, d3d::Lighting::Retail)
+        self.selection_draws_lit(color_format, depth_format, target_size, selection, view, crate::lighting::Lighting::Retail)
     }
 
     pub fn selection_draws_lit(
         &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
-        selection: &WorldSelection, view: &ViewInputs, lighting: d3d::Lighting,
+        selection: &WorldSelection, view: &ViewInputs, lighting: crate::lighting::Lighting,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
         self.selection_draws_bound(color_format, depth_format, target_size, selection, view, lighting, None)
     }
 
     pub fn selection_draws_bound(
         &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
-        selection: &WorldSelection, view: &ViewInputs, lighting: d3d::Lighting,
+        selection: &WorldSelection, view: &ViewInputs, lighting: crate::lighting::Lighting,
         accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>,
     ) -> Result<gfx::external::ExternalDraws, &'static str> {
         self.selection_packets(color_format, depth_format, target_size, selection, view, lighting, accumulation, None)
@@ -1775,7 +1774,7 @@ impl GpuWorld {
     pub fn culled_selection_draws(
         &mut self, uploads: &gfx::ring::SubmissionUploads, device: &wgpu::Device, queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
-        selection: &WorldSelection, view: &ViewInputs, camera: &RenderCamera, lighting: d3d::Lighting,
+        selection: &WorldSelection, view: &ViewInputs, camera: &RenderCamera, lighting: crate::lighting::Lighting,
         accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>,
         occlusion: Option<(&wgpu::Texture, &RenderCamera, PassViewport, u64)>,
     ) -> Result<CulledSelection, &'static str> {
@@ -1864,7 +1863,7 @@ impl GpuWorld {
     #[allow(clippy::too_many_arguments)]
     fn selection_packets(
         &mut self, color_format: wgpu::TextureFormat, depth_format: wgpu::TextureFormat, target_size: (u32, u32),
-        selection: &WorldSelection, view: &ViewInputs, lighting: d3d::Lighting,
+        selection: &WorldSelection, view: &ViewInputs, lighting: crate::lighting::Lighting,
         accumulation: Option<(&wgpu::Device, &wgpu::TextureView)>, culled: Option<(wgpu::Buffer, wgpu::Buffer)>,
     ) -> Result<(gfx::external::ExternalDraws, Vec<gfx::RecordedDraw>, Vec<u32>), &'static str> {
         use crate::program::BatchTextures;
@@ -2014,7 +2013,7 @@ impl GpuWorld {
     fn record_spans(
         &mut self, encoder: &mut wgpu::CommandEncoder, color: &wgpu::TextureView, color_format: wgpu::TextureFormat,
         depth: &wgpu::TextureView, depth_format: wgpu::TextureFormat, viewport: PassViewport, target_size: (u32, u32),
-        spans: &[(usize, usize, usize)], slots: Slots, lighting: d3d::Lighting,
+        spans: &[(usize, usize, usize)], slots: Slots, lighting: crate::lighting::Lighting,
     ) -> usize {
         let has_stencil = depth_format.has_stencil_aspect();
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

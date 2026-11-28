@@ -1051,7 +1051,7 @@ impl LitBufferInput {
 
 /// The vertex format and shader fetch a guest attribute is read with, as
 /// the D3D path reads it with its default (GPU) fetch
-/// (`gfx::repack::AttributeFetch::raw`, `d3d::nv2a::input_fetch`): the
+/// (`gfx::repack::AttributeFetch::raw`, `gfx::guest_program`): the
 /// guest bytes as they are, converted by the vertex unit. Converted on
 /// the CPU instead, normalised shorts can round another way than the
 /// GPU's conversion, and a depth-equal pass (the third pass of 03a's
@@ -1673,7 +1673,7 @@ impl LitObjects {
         if let Some(aux) = &d.aux_depth {
             with_aux_depth(&mut vertex, &mut pixel, aux);
             // This per-part matrix replaced the view upload above.
-            d3d::device::widen_projection_rows(&mut vertex.constants[..4], projection_factor);
+            gfx::guest_program::widen_projection_rows(&mut vertex.constants[..4], projection_factor);
         }
         if let Some(t) = texaccum.filter(|_| d.texaccum) {
             texaccum_dimensions(&mut vertex, &pass.implementation, pass.texaccum, t.guest_size);
@@ -1968,7 +1968,7 @@ impl LitObjects {
                 ).with_blend_constant(d.state.blend_color()));
             }
         }
-        // `ranges` counts the planned draws (`d3d::ExternalPlan::ranges`),
+        // `ranges` counts the planned draws (one per planned draw),
         // however many packets their subparts take.
         Ok(ExternalDraws { ranges: issued.len(), packets, discards, writes: Vec::new() })
     }

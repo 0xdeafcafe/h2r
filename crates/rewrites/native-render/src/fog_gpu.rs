@@ -57,8 +57,7 @@ const FOG_RIGID_PROGRAM: gfx::pipeline::ShaderId = gfx::pipeline::ShaderId(u32::
 /// are the raw `D3DRS` values (`f32` bits for the float states, an
 /// `A8R8G8B8` colour for `FOGCOLOR`); [`FogWords::resolve`] overlays them
 /// on the device's words, and the glue turns the result into the fog
-/// unit with `d3d::nv2a::d3d_fog` (that derivation is `d3d`'s; this
-/// crate does not depend on it).
+/// unit with `gfx::guest_program::d3d_fog`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FogWords {
     pub enable: Option<u32>,
@@ -92,8 +91,8 @@ impl FogWords {
 
     /// The words this pass's fog state resolves to over the device's:
     /// `device[i]` is the device's word at `FOG_WORD_SLOTS[i]`, read
-    /// through `d3d::Device::render_state` at the layer-16 call (`None`
-    /// a slot that does not read; such a view stays on the D3D path).
+    /// from the scene view at the layer-16 call (`None`
+    /// a slot that does not read; such a view is refused).
     pub fn resolve(&self, device: &[Option<u32>; 7]) -> Option<[u32; 7]> {
         let own = [self.enable, self.table_mode, self.start, self.end, self.density, self.range, self.color];
         let mut out = [0u32; 7];
@@ -885,7 +884,7 @@ impl FogSet {
 
     /// The frame's uniforms for every pass, with each material's fog
     /// resolved over the device's words (`fogs`, material by material:
-    /// `FogWords::resolve` through `d3d::nv2a::d3d_fog` in the glue) and
+    /// `FogWords::resolve` through `gfx::guest_program::d3d_fog` in the glue) and
     /// its colour (`psh::argb` of `FOGCOLOR`), written through the
     /// submission's upload arena.
     pub fn prepare(
@@ -921,7 +920,7 @@ impl FogSet {
     /// [`FogSet::draw`]'s selection as packets for the D3D pass already
     /// open on these attachments, and [`FogSet::prepare`]'s bytes for what
     /// they read as writes ahead of them
-    /// (`d3d::backend::ExternalDraws::writes`): one packet per selected
+    /// (`gfx::external::ExternalDraws::writes`): one packet per selected
     /// part per pass in reservation order, with the pass's pipeline, its
     /// uniform group (a placement's at its slot's dynamic offset), the
     /// part's texture group, the pass's blend constant, the part's index
@@ -946,7 +945,7 @@ impl FogSet {
         view: &ViewInputs,
         fogs: &HashMap<u16, (psh::fog::Fog, [f32; 4])>,
         samples: &LayerSamples,
-    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
         let off = gfx::state::StencilState::default();
         self.draws_stencil(cache, vertices, indices, color, depth, target_size, scissor, selected, view, fogs, &off, samples, None)
     }
@@ -972,7 +971,7 @@ impl FogSet {
         device_stencil: &gfx::state::StencilState,
         samples: &LayerSamples,
         mut culled: Option<LayerSlots<'_>>,
-    ) -> Result<d3d::backend::ExternalDraws, &'static str> {
+    ) -> Result<gfx::external::ExternalDraws, &'static str> {
         use gfx::{BoundGroup, RecordedDraw};
         let stencil = layer_stencil(device_stencil, depth);
         let mut packets = Vec::new();
@@ -1073,7 +1072,7 @@ impl FogSet {
             }
         }
         // Conservative: the programs' alpha tests and kill sources discard.
-        Ok(d3d::backend::ExternalDraws { ranges: selected.len(), packets, discards: true, writes })
+        Ok(gfx::external::ExternalDraws { ranges: selected.len(), packets, discards: true, writes })
     }
 
     /// Makes the pipelines for these target formats (before the pass).
@@ -1181,13 +1180,13 @@ pub(crate) mod tests {
 
     pub(crate) fn player_viewport(split: bool) -> [f32; 4] {
         // A guest boundary at 10 / 19 of the screen falls between physical texels.
-        let request = d3d::ExternalPassRequest {
+        let request = gfx::external::ExternalPassRequest {
             rect: if split { (10, 0, 9, 19) } else { (0, 0, 19, 19) },
             surface_size: (19, 19),
             display_projection_factor: 0.75,
             z_scale: 1.0,
         };
-        d3d::external_viewport(&request, (SIZE, SIZE))
+        gfx::external::external_viewport(&request, (SIZE, SIZE))
     }
 
     pub(crate) fn assert_split_images(images: &[(Vec<u8>, Vec<u8>)]) {
