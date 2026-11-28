@@ -97,9 +97,8 @@ pub enum Body {
     /// `0x125f10`: nothing in the sim; the clip source decodes on demand.
     Prefetch,
     /// `0x21d110`: a start row for the sound's effect, the gate (guest) and
-    /// the rule,
-    /// [`super::request::read`] and `admit`, then the row's `Mode::Start`
-    /// ([`start_layer::start_record`]).
+    /// the rule, [`super::request::read`] and `admit`, then the row's
+    /// `Mode::Start` ([`start_layer::start_record`]).
     StartRecord,
     /// `0x21d390`: the start rows' walk ([`start_layer::starts_update`]).
     StartsUpdate,
