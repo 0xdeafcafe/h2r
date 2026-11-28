@@ -11,7 +11,7 @@ simulation memory except through a hook that says so (the clamp global in
 "Field of view").
 
 - **Video** on the main menu's Settings list opens the resolution,
-  frame rate, field of view, lighting, HUD position and LOD distance options.
+  frame rate, field of view, HUD position and LOD distance options.
   See "Video screen" and "Field of view". **Voice**, the next row, opens
   the voice chat options ("Voice screen").
 - The Controls screen has rows for the controller speaker, the Steam
@@ -188,7 +188,6 @@ and **Voice**. Selecting Video opens the display options below.
 | Resolution | Native (render width x height), then fixed sizes at the viewport aspect | `[graphics] resolution` (`"native"` or `"WxH"`) | next frame | `H2_RESOLUTION`, legacy `H2_RENDER_SCALE` |
 | Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | at once | `--fps`, `H2_FPS` |
 | Field of View | 70 to 120 in steps of 5 | `[graphics] fov` | at once | `H2_FOV` |
-| Lighting | Retail, E3 (default Retail). A [BSP review launch](../graphics/relighting-review.md) displays its locked lamp state | `[graphics] lighting` (`"retail"`, `"e3"`) | next frame | `H2_LIGHTING` |
 | HUD Position | Pinned (default), Centred (drawn as `Centered`) | `[graphics] hud_position` (`"pinned"`, `"centered"`) | live | `H2_HUD_POSITION` |
 | LOD Distance | Retail, 0.5x, 1x, 1.5x, 2x, 3x, 4x, Highest (default) | `[graphics] lod_distance` (number, `"retail"` or `"highest"`) | next view | `H2_LOD_DISTANCE` |
 
@@ -225,15 +224,16 @@ fill the viewport. See
 [widescreen projection](../graphics/high-resolution.md#widescreen-projection).
 
 The frame rate applies at the window's next turn (`app::fps::FpsControl`).
-The render thread applies resolution and lighting at a frame boundary
-(`ScaledBackend::follow_resolution`, `ScaledBackend::follow_lighting`).
-See [high resolution](../graphics/high-resolution.md) and
-[E3 lighting](../graphics/e3-lighting-setting.md).
+The render thread applies resolution at a frame boundary
+(`ScaledBackend::follow_resolution`).
+See [high resolution](../graphics/high-resolution.md).
 A locked row shows the variable's value and A
 does nothing. A bad variable is reported and ignored, so the saved value is
 used. Above 30, the frame rate redraws the newest game frame more often
-([high-framerate.md](high-framerate.md)). Headless runs (`h2 run`) have none of it (`H2_LIGHTING=e3`
-works there as a variable).
+([high-framerate.md](high-framerate.md)). Headless runs (`h2 run`) have none of it.
+
+Video has no Lighting row, and no setting or file key selects the lighting:
+the native renderer draws the game's own.
 
 Code: the rows are `Def`s in `crates/extensions/game/src/setting_defs.rs` with a `menu` naming
 the screen; `game::video_screen::model` builds the screen as
@@ -241,11 +241,9 @@ the screen; `game::video_screen::model` builds the screen as
 `ui::extend(List::Settings, 2)` and the speaker row as
 `ui::extend(List::Controls, 6)` ([Settings as a schema](#settings-as-a-schema));
 the hooks registered by `layout_glue::install` ask that model for counts,
-texts and presses. `h2 play` reads the saved frame rate, resolution, lighting, HUD position,
+texts and presses. `h2 play` reads the saved frame rate, resolution, HUD position,
 LOD distance and mute button when no flag or variable sets them. Tests:
-`setting_defs::tests::lighting_is_retail_unless_asked_and_has_a_video_row`
-(default Retail, the row on this screen, live, the file's names, the
-variable's lock) and `video_screen`'s tests for the Video rows, their exact
+`setting_defs::tests::no_setting_selects_the_lighting` and `video_screen`'s tests for the Video rows, their exact
 labels and values, and saving live changes.
 
 ### How the screen is made (Local, static reading of the retail XBE)

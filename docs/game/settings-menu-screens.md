@@ -582,7 +582,7 @@ and which it wants on ([skulls.md](skulls.md)).
 - Which retail option lives in the profile and which in the preferences file,
   and their layouts. Nothing here reads or writes the retail values.
 - Which row-level behaviours only a game run shows: the Video rows apply as
-  the tables say (frame rate, resolution, lighting and LOD distance without a flash or a
+  the tables say (frame rate, resolution and LOD distance without a flash or a
   black frame); the Video and Voice screens return to the native settings
   list with B; in split screen each page opens in the pressing player's
   quarter.

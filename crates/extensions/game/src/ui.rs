@@ -563,7 +563,7 @@ fn restart(label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setting_defs::{ALL, FOV, FPS, HUD_POSITION, LIGHTING, LOD_DISTANCE, PAD_SPEAKER};
+    use crate::setting_defs::{ALL, FOV, FPS, HUD_POSITION, LOD_DISTANCE, PAD_SPEAKER};
     use settings::Value;
 
     fn model(store: Arc<Store>) -> Model {
@@ -605,14 +605,13 @@ mod tests {
                 RowKind::Setting(RESOLUTION.key),
                 RowKind::Setting(FPS.key),
                 RowKind::Setting(FOV.key),
-                RowKind::Setting(LIGHTING.key),
                 RowKind::Setting(HUD_POSITION.key),
                 RowKind::Setting(LOD_DISTANCE.key),
             ]
         );
         assert_eq!(
-            m.count(List::Screen("video"), 5),
-            6,
+            m.count(List::Screen("video"), 6),
+            5,
             "ours, whatever retail says"
         );
         assert_eq!(m.count(List::Controls, 6), 8);

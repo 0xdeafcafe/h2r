@@ -18,7 +18,7 @@ It is not a recovery of Bungie's renderer. Retail has no shadow-volume path ("St
 | [e3-lighting-setting.md](e3-lighting-setting.md) | the Lighting row on the D3D path |
 | [notes/e3-lighting.md](notes/e3-lighting.md) | measurements and research records |
 
-The setting is `[graphics] lighting = "retail" | "e3"`, the Video screen's **Lighting** row ([settings-menu.md](../game/settings-menu.md)), default Retail and live. `H2_LIGHTING` locks it. The history of the cut renderer is in [pstencil-history.md](pstencil-history.md), the Digsite tag set's lights in [pstencil.md](pstencil.md), and the review this design answers in [2026-11-20-e3-lighting.md](../reviews/2026-11-20-e3-lighting.md). No leaked build, source or archive is used for this work, and none may be.
+No setting or Video row selects the lighting ([settings-menu.md](../game/settings-menu.md)). `H2_LIGHTING=e3` at launch reaches the scaled D3D path alone ([e3-lighting-setting.md](e3-lighting-setting.md)). The history of the cut renderer is in [pstencil-history.md](pstencil-history.md), the Digsite tag set's lights in [pstencil.md](pstencil.md), and the review this design answers in [2026-11-20-e3-lighting.md](../reviews/2026-11-20-e3-lighting.md). No leaked build, source or archive is used for this work, and none may be.
 
 Evidence labels (**P**, **C**, **R**, **S**, **Design**, **Estimate**) are defined in [e3-lighting-target.md](e3-lighting-target.md).
 
@@ -205,10 +205,7 @@ On a replayable game view the render thread draws one sealed scene into a privat
   shadowed chosen lights and `cones_kept` those lights left undrawn
   because their cone could not be.
 
-The display worker samples the Lighting row at the frame boundary.
-`settings.set` with `graphics.lighting` changes the mode on a window or GPU
-serve with a settings store. A capture with an explicit mode leaves the
-row untouched.
+No setting selects the mode. A capture names its mode explicitly.
 
 
 ## Budget

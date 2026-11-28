@@ -15,10 +15,10 @@ An `impl.` name is an implementation switch
 
 | Switch | What |
 |---|---|
-| Every setting in `crates/extensions/game/src/setting_defs.rs` | the Settings menu's values; each has its env name there (`H2_FOV`, `H2_LIGHTING`, `H2_SINGLE_COPY`, `H2_PAD_*`, `H2_VOICE_*`, `H2_TOUCH_*`, `H2_STEAM_*`...) |
+| Every setting in `crates/extensions/game/src/setting_defs.rs` | the Settings menu's values; each has its env name there (`H2_FOV`, `H2_SINGLE_COPY`, `H2_PAD_*`, `H2_VOICE_*`, `H2_TOUCH_*`, `H2_STEAM_*`...) |
 | `H2_FPS`, `h2 play --fps` | Window presentation rate. Choose 30 (default), 60, 120 or uncapped. All four use real-time guest pacing in normal play. Above 30 the paced frame owner (`frame-scene.sink`, on by default) draws display frames between sealed scenes ([framescene.md](../graphics/framescene.md), section 7); without it every scene is shown once. |
 | `h2 play --unpaced` | Disables the shell's guest pacing for throughput measurements. A fast host can simulate more than 30 ticks per wall second. |
-| `H2_LIGHTING` | Retail (default) or E3 on the Video row. The startup values `relight-on` and `relight-off` lock the selected lamp state for a [single-BSP review](../graphics/relighting-review.md). The native world stage requires a valid installed bake. Both values request a separate retail readback target. |
+| `H2_LIGHTING` | Not a setting, and no Video row. `relight-on` and `relight-off` at launch select the lamp state of a [single-BSP review](../graphics/relighting-review.md); the native world stage requires a valid installed bake, and the run keeps a separate retail readback target. `retail` and `e3` are read only by the scaled D3D capture path (`d3d::scaled::lighting`, [e3-lighting-setting.md](../graphics/e3-lighting-setting.md)), which FrameScene slice R10 deletes. |
 | `H2_RESOLUTION` | `native` (physical viewport pixels, with a 3840 × 2160 pixel budget in fullscreen, the default) or a fixed `WxH`, each dimension 1–8192. Locks the Video screen's Resolution row. A headless GPU uses 640x480 for Native. |
 | `H2_RENDER_SCALE` | Legacy resolution override from 1 to 6. A value of 2 means 1280x960. `H2_RESOLUTION` takes precedence. |
 | `H2_HUD_POSITION` | `pinned` (default) anchors HUD elements to their screen edges. `centered` uses a centreed safe area. Locks the HUD Position row. |

@@ -211,68 +211,6 @@ pub static SINGLE_COPY: Def = Def {
     menu: None,
 };
 
-/// [`LIGHTING`]'s values.
-pub const LIGHTING_RETAIL: i64 = 0;
-pub const LIGHTING_E3: i64 = 1;
-
-const LIGHTING_RELIGHT_ON: i64 = 2;
-const LIGHTING_RELIGHT_OFF: i64 = 3;
-const RETAIL: Choice = Choice { value: LIGHTING_RETAIL, name: "retail", label: "Retail" };
-const E3: Choice = Choice { value: LIGHTING_E3, name: "e3", label: "E3" };
-
-const LIGHTING_DEF: Def = Def {
-    key: "graphics.lighting",
-    label: "Lighting",
-    help: "The scaled D3D renderer sharpens shadow edges in E3. The native frame renderer \
-           uses the game's retail lighting in both modes. Changes apply at the next frame.",
-    kind: Kind::Choice(&[RETAIL, E3]),
-    default: Value::Int(LIGHTING_RETAIL),
-    env: Some("H2_LIGHTING"),
-    flag: None,
-    aliases: &[],
-    parse_env: None,
-    apply: Apply::Live,
-    scope: Scope::Host,
-    tier: Tier::User,
-    menu: Some(Menu {
-        screen: "video",
-        order: 35,
-    }),
-};
-
-pub static LIGHTING: Def = LIGHTING_DEF;
-
-// Only runs explicitly launched for private BSP review expose these arms.
-// The environment locks the row and its label identifies the active arm.
-static RELIGHT_LIGHTING: Def = Def {
-    kind: Kind::Choice(&[
-        RETAIL,
-        E3,
-        Choice { value: LIGHTING_RELIGHT_ON, name: "relight-on", label: "Baked lamp on" },
-        Choice { value: LIGHTING_RELIGHT_OFF, name: "relight-off", label: "Baked lamp off" },
-    ]),
-    help: "Review the private BSP bake. The launch setting selects the lamp state.",
-    ..LIGHTING_DEF
-};
-
-fn lighting_def(startup: Option<&str>) -> &'static Def {
-    if startup.and_then(d3d::Lighting::relight_from_name).is_some() {
-        &RELIGHT_LIGHTING
-    } else {
-        &LIGHTING
-    }
-}
-
-/// [`LIGHTING`]'s value as the view backend takes it.
-pub fn lighting_of(value: u32) -> d3d::Lighting {
-    match i64::from(value) {
-        LIGHTING_E3 => d3d::Lighting::E3,
-        LIGHTING_RELIGHT_ON => d3d::Lighting::RelightOn,
-        LIGHTING_RELIGHT_OFF => d3d::Lighting::RelightOff,
-        _ => d3d::Lighting::Retail,
-    }
-}
-
 pub static PAD_SPEAKER: Def = Def {
     key: "pad_speaker.enabled",
     label: "Controller Speaker",
@@ -950,7 +888,6 @@ pub static ALL: &[&Def] = &[
     &HUD_POSITION,
     &LOD_DISTANCE,
     &SINGLE_COPY,
-    &LIGHTING,
     &PAD_SPEAKER,
     &PAD_LIGHTBAR,
     &PAD_MUTE,
@@ -1049,10 +986,8 @@ pub static ALL: &[&Def] = &[
 /// ([`crate::voice_settings::use_host_devices`]).
 pub fn defs() -> Vec<&'static Def> {
     let [input, output] = crate::voice_settings::device_defs();
-    let lighting = lighting_def(std::env::var("H2_LIGHTING").ok().as_deref());
     ALL.iter()
         .map(|d| match d.key {
-            k if k == LIGHTING.key => lighting,
             k if k == input.key => input,
             k if k == output.key => output,
             _ => *d,
@@ -1252,7 +1187,6 @@ mod tests {
                 ("H2_STEAM_SPEAKER", "0"),
                 ("H2_STEAM_SENSITIVITY", "8"),
                 ("H2_STEAM_LEFT_PAD", "stick"),
-                ("H2_LIGHTING", "e3"),
                 ("H2_AIM_ASSIST", "strong"),
                 ("H2_TOUCH_LOOK", "7"),
                 ("H2_TOUCH_CROUCH", "hold"),
@@ -1299,7 +1233,6 @@ mod tests {
         assert_eq!(s.get(STEAM_SPEAKER.key), Some(Value::Bool(false)));
         assert_eq!(s.get(STEAM_SENSITIVITY.key), Some(Value::Int(8)));
         assert_eq!(s.get(STEAM_LEFT_PAD.key), Some(Value::Int(LEFT_PAD_STICK)));
-        assert_eq!(s.get(LIGHTING.key), Some(Value::Int(LIGHTING_E3)));
         assert_eq!(
             s.get(LIVE_VISIBILITY.key),
             Some(Value::Int(VISIBILITY_FRIENDS))
@@ -1511,50 +1444,14 @@ mod tests {
         assert_eq!(LOD_DISTANCE.scope, Scope::View);
     }
 
+    /// Lighting is not a setting: the native renderer draws the game's
+    /// own lighting, so no row, file key or variable of ours selects it.
     #[test]
-    fn relight_choices_require_a_startup_arm_and_report_its_name() {
-        assert!(lighting_def(None).parse("relight-on").is_err());
-        for (name, mode) in [("relight-on", d3d::Lighting::RelightOn), ("relight-off", d3d::Lighting::RelightOff)] {
-            let def = lighting_def(Some(name));
-            let (store, problems) = Store::load(&[def], None, &|_| Some(name.into()), &[]);
-            assert!(problems.is_empty(), "{problems:?}");
-            let row = store.state(def.key).unwrap();
-            assert!(row.locked);
-            assert_eq!(def.name(row.shown), name);
-            assert_eq!(lighting_of(store.handle::<u32>(def.key).get()), mode);
-            #[cfg(feature = "gpu")]
-            assert!(!crate::d3d_glue::single_copy(Some(&store), false).unwrap());
+    fn no_setting_selects_the_lighting() {
+        for d in ALL {
+            assert_ne!(d.key, "graphics.lighting");
+            assert_ne!(d.env, Some("H2_LIGHTING"), "{}", d.key);
+            assert_ne!(d.label, "Lighting", "{}", d.key);
         }
-    }
-
-    #[test]
-    fn lighting_is_retail_unless_asked_and_has_a_video_row() {
-        let data = tmp("lighting");
-        let (s, p) = with_env(&data, &[]);
-        assert!(p.is_empty(), "{p:?}");
-        assert_eq!(LIGHTING.default, Value::Int(LIGHTING_RETAIL));
-        assert_eq!(s.get(LIGHTING.key), Some(Value::Int(LIGHTING_RETAIL)));
-        assert_eq!(lighting_of(LIGHTING_RETAIL as u32), d3d::Lighting::Retail);
-        assert_eq!(lighting_of(LIGHTING_E3 as u32), d3d::Lighting::E3);
-        let menu = LIGHTING.menu.expect("a row");
-        assert_eq!(menu.screen, "video");
-        assert!(RESOLUTION.menu.unwrap().order < menu.order);
-        assert_eq!(LIGHTING.apply, Apply::Live, "no restart");
-        // The file takes the names; the variable locks it.
-        std::fs::write(settings::path_in(&data), "[graphics]\nlighting = \"e3\"\n").unwrap();
-        let (s, p) = with_env(&data, &[]);
-        assert!(p.is_empty(), "{p:?}");
-        assert_eq!(s.get(LIGHTING.key), Some(Value::Int(LIGHTING_E3)));
-        assert!(!s.state(LIGHTING.key).unwrap().locked);
-        let (s, _) = with_env(&data, &[("H2_LIGHTING", "retail")]);
-        assert_eq!(s.get(LIGHTING.key), Some(Value::Int(LIGHTING_RETAIL)));
-        assert!(s.state(LIGHTING.key).unwrap().locked);
-        let (s, p) = with_env(&data, &[("H2_LIGHTING", "stencil")]);
-        assert_eq!(p.len(), 1, "{p:?}");
-        assert_eq!(
-            s.get(LIGHTING.key),
-            Some(Value::Int(LIGHTING_E3)),
-            "the file's"
-        );
     }
 }
