@@ -332,6 +332,24 @@ impl FrameSink {
         )
     }
 
+    /// Publishes a frame the frame owner presented ([`gfx::Presenter::sink`]):
+    /// opaque, with this sink's frame marks, counted as a made frame.
+    /// Errors are printed (first ten) and the frame is skipped.
+    pub fn submit_presented(&mut self, view: &wgpu::TextureView, size: (u32, u32)) {
+        let marks = self.mark_source.as_mut().map_or(FrameMarks::Raw, |source| source());
+        match self.submit_encoded(size, true, view, None, [0., 0., 1., 1.], marks, |_| Ok(())) {
+            Ok(_) => {
+                self.shared.made.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(e) => {
+                self.hook_errors += 1;
+                if self.hook_errors <= 10 {
+                    eprintln!("app: presented frame: {e}");
+                }
+            }
+        }
+    }
+
     /// Publishes a gfx colour surface: the D3D back buffer on `Swap`.
     /// Resolves MSAA first, like `gfx::surface::present_surface`.
     pub fn submit_surface(

@@ -47,7 +47,7 @@ use crate::encode::{self, DepthPlane, EncodeError};
 /// Channel order of host colour readbacks.
 pub use crate::encode::HostPixelOrder;
 use crate::format::{D3DFormat, Layout, TexelFormat};
-use crate::presenter::{Frame, Presenter, RenderTarget};
+use crate::presenter::RenderTarget;
 use crate::texture::TextureError;
 use crate::translate::Capabilities;
 
@@ -1079,38 +1079,6 @@ impl Swapchain {
         }
         shown
     }
-}
-
-/// Presents `surface` (single-sample image) to the window frame, stretching
-/// to the window size, and honours `FINISH`.
-pub fn present_surface(
-    ctx: &GfxContext,
-    store: &SurfaceStore,
-    blitter: &mut Blitter,
-    presenter: &Presenter,
-    frame: Frame,
-    surface: SurfaceId,
-    flags: SwapFlags,
-) -> Result<(), SurfaceError> {
-    let s = store.typed(surface, SurfaceKind::Color)?;
-    let target = presenter.target(&frame);
-    let mut enc = ctx.device.create_command_encoder(&Default::default());
-    store.resolve_msaa(&mut enc, surface)?;
-    let opaque = !matches!(s.desc.format.texel(), TexelFormat::A8R8G8B8 | TexelFormat::A1R5G5B5 | TexelFormat::A4R4G4B4);
-    blitter.blit(
-        ctx,
-        &mut enc,
-        &s.view,
-        target.color,
-        target.color_format,
-        BlitOptions { linear: true, force_opaque: opaque, ..Default::default() },
-    );
-    ctx.queue.submit([enc.finish()]);
-    if flags.is_finish() {
-        let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
-    }
-    presenter.present(ctx, frame);
-    Ok(())
 }
 
 #[cfg(test)]

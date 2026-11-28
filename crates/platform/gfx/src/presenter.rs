@@ -104,17 +104,29 @@ pub enum Acquired {
 
 /// A frame being drawn. Get its [`RenderTarget`] from [`Presenter::target`],
 /// record into it, then hand it back to [`Presenter::present`].
-pub struct Frame {
-    surface_texture: wgpu::SurfaceTexture,
-    color_view: wgpu::TextureView,
+pub struct Frame(FrameOf);
+
+enum FrameOf {
+    Surface { surface_texture: wgpu::SurfaceTexture, color_view: wgpu::TextureView },
+    /// A [`Presenter::sink`]'s frame: its offscreen target.
+    Sink,
 }
 
-/// Presents to a window surface.
-pub struct Presenter {
-    surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
-    depth_view: wgpu::TextureView,
+/// Where a [`Presenter::sink`] hands each finished frame: the colour view
+/// and its size, on the presenter's device, after its work is submitted.
+pub type Publish = Box<dyn FnMut(&GfxContext, &wgpu::TextureView, (u32, u32)) + Send>;
+
+/// Presents to a window surface, or hands each frame to a sink that
+/// composites it there (the app shell's frame channel).
+pub struct Presenter(Out);
+
+enum Out {
+    Window { surface: wgpu::Surface<'static>, config: wgpu::SurfaceConfiguration, depth_view: wgpu::TextureView },
+    Sink { target: OffscreenTarget, publish: Publish },
 }
+
+/// The format a sink's offscreen target draws in.
+pub const SINK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 impl Presenter {
     /// Configures `surface` for `size` physical pixels.
@@ -144,17 +156,30 @@ impl Presenter {
         };
         surface.configure(&ctx.device, &config);
         let depth_view = create_depth(&ctx.device, size, wgpu::TextureUsages::empty());
-        Ok(Self { surface, config, depth_view })
+        Ok(Self(Out::Window { surface, config, depth_view }))
     }
 
-    /// The surface's colour format (what pipelines must target).
+    /// Draws each frame into an offscreen target of `size` pixels and hands
+    /// it to `publish` at [`Presenter::present`].
+    pub fn sink(ctx: &GfxContext, size: (u32, u32), publish: Publish) -> Self {
+        let size = (size.0.max(1), size.1.max(1));
+        Self(Out::Sink { target: OffscreenTarget::new(&ctx.device, size, SINK_FORMAT), publish })
+    }
+
+    /// The colour format (what pipelines must target).
     pub fn format(&self) -> wgpu::TextureFormat {
-        self.config.format
+        match &self.0 {
+            Out::Window { config, .. } => config.format,
+            Out::Sink { .. } => SINK_FORMAT,
+        }
     }
 
     /// Current size in pixels.
     pub fn size(&self) -> (u32, u32) {
-        (self.config.width, self.config.height)
+        match &self.0 {
+            Out::Window { config, .. } => (config.width, config.height),
+            Out::Sink { target, .. } => target.size,
+        }
     }
 
     /// Reconfigures for a new size. Zero sizes (minimised) are ignored.
@@ -162,22 +187,31 @@ impl Presenter {
         if size.0 == 0 || size.1 == 0 || size == self.size() {
             return;
         }
-        self.config.width = size.0;
-        self.config.height = size.1;
-        self.surface.configure(&ctx.device, &self.config);
-        self.depth_view = create_depth(&ctx.device, size, wgpu::TextureUsages::empty());
+        match &mut self.0 {
+            Out::Window { surface, config, depth_view } => {
+                config.width = size.0;
+                config.height = size.1;
+                surface.configure(&ctx.device, config);
+                *depth_view = create_depth(&ctx.device, size, wgpu::TextureUsages::empty());
+            }
+            Out::Sink { target, .. } => *target = OffscreenTarget::new(&ctx.device, size, SINK_FORMAT),
+        }
     }
 
     /// Gets the next frame, reconfiguring the surface if it was lost.
     pub fn acquire(&mut self, ctx: &GfxContext) -> Result<Acquired, GfxError> {
         use wgpu::CurrentSurfaceTexture as C;
-        match self.surface.get_current_texture() {
+        let (surface, config) = match &self.0 {
+            Out::Window { surface, config, .. } => (surface, config),
+            Out::Sink { .. } => return Ok(Acquired::Frame(Frame(FrameOf::Sink))),
+        };
+        match surface.get_current_texture() {
             C::Success(t) | C::Suboptimal(t) => {
                 let color_view = t.texture.create_view(&Default::default());
-                Ok(Acquired::Frame(Frame { surface_texture: t, color_view }))
+                Ok(Acquired::Frame(Frame(FrameOf::Surface { surface_texture: t, color_view })))
             }
             C::Outdated | C::Lost => {
-                self.surface.configure(&ctx.device, &self.config);
+                surface.configure(&ctx.device, config);
                 Ok(Acquired::Skip)
             }
             C::Timeout | C::Occluded => Ok(Acquired::Skip),
@@ -187,18 +221,26 @@ impl Presenter {
 
     /// The render target for an acquired frame.
     pub fn target<'a>(&'a self, frame: &'a Frame) -> RenderTarget<'a> {
-        RenderTarget {
-            color: &frame.color_view,
-            color_format: self.config.format,
-            depth: Some(&self.depth_view),
-            depth_format: Some(DEPTH_FORMAT),
-            size: self.size(),
-            samples: 1,
+        match (&self.0, &frame.0) {
+            (Out::Window { config, depth_view, .. }, FrameOf::Surface { color_view, .. }) => RenderTarget {
+                color: color_view,
+                color_format: config.format,
+                depth: Some(depth_view),
+                depth_format: Some(DEPTH_FORMAT),
+                size: (config.width, config.height),
+                samples: 1,
+            },
+            (Out::Sink { target, .. }, FrameOf::Sink) => target.target(),
+            _ => unreachable!("presenter: a frame from another presenter"),
         }
     }
 
-    /// Presents a finished frame.
-    pub fn present(&self, ctx: &GfxContext, frame: Frame) {
-        ctx.queue.present(frame.surface_texture);
+    /// Presents a finished frame: the window's, or the sink's publish.
+    pub fn present(&mut self, ctx: &GfxContext, frame: Frame) {
+        match (&mut self.0, frame.0) {
+            (Out::Window { .. }, FrameOf::Surface { surface_texture, .. }) => ctx.queue.present(surface_texture),
+            (Out::Sink { target, publish }, FrameOf::Sink) => publish(ctx, &target.color_view, target.size),
+            _ => unreachable!("presenter: a frame from another presenter"),
+        }
     }
 }

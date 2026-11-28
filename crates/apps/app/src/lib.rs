@@ -371,13 +371,19 @@ impl GuestHost {
         self.sink.another().into_present_hook()
     }
 
-    /// The window's presenter for the frame owner, with `marks` giving the
-    /// editor data of each frame. The shell owns the window surface and
-    /// composites its overlays on it; handing it to the render thread is
-    /// not built yet.
+    /// The frame owner's presenter, with `marks` giving the editor data of
+    /// each frame. The shell owns the window surface and composites its
+    /// overlays on it, so the presenter draws each frame offscreen at the
+    /// window's drawable size and publishes it on the shell's frame channel
+    /// ([`FrameSink::submit_presented`]).
     pub fn presenter(&mut self, marks: fn() -> overlay::marks::FrameMarks) -> gfx::Presenter {
-        let _ = marks;
-        unimplemented!("app: the shell hands its window surface to the frame owner as a gfx::Presenter")
+        let mut sink = self.sink.another().with_frame_marks(marks);
+        let size = self.native_size.get().drawable;
+        gfx::Presenter::sink(
+            &self.gfx,
+            size,
+            Box::new(move |_ctx, view, size| sink.submit_presented(view, size)),
+        )
     }
 
     /// A sink for frames that are not gfx surfaces (CPU pixels, other views).
