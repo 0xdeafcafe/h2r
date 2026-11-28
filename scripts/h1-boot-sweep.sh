@@ -6,8 +6,7 @@
 #   H2_DISC=halo2.iso H2_IMAGE=<image dir> H2_DATA=<data root> scripts/h1-boot-sweep.sh [stem...]
 #
 # With no stem it takes every `*.converted` marker under $H2_DATA/tags/maps
-# that is a Halo 1 level. Row: stem, state (ok, boot, panic), the render
-# residual, the sim ledger's loop count, the sim arms, the first panic line.
+# that is a Halo 1 level. Row: stem, state (ok, boot, panic), the sim ledger's loop count, the sim arms, the first panic line.
 set -eu
 : "${H2_DISC:?path to the Halo 2 disc}" "${H2_IMAGE:?prebuilt image directory}"
 : "${H2_DATA:?data root with the imported tag store}"
@@ -41,7 +40,7 @@ else
 fi
 [ -n "$stems" ] || { printf 'No stored Halo 1 levels under %s/tags/maps: run h2 import halo1\n' "$H2_DATA" >&2; exit 1; }
 printf 'Boot sweep logs: %s\n' "$work"
-printf 'stem\tstate\tresidual\tledger_loops\tarms\tfirst_panic\n'
+printf 'stem\tstate\tledger_loops\tarms\tfirst_panic\n'
 failed=0
 for stem in $stems; do
     variant=${stem##*_}
@@ -64,7 +63,7 @@ for stem in $stems; do
     env $env_set "$h2bin" serve "$H2_DISC" --out "$H2_IMAGE" --data "$H2_DATA" --settings "$work/settings" \
         --no-halo1 --no-mappack --socket "$socket" >"$log" 2>&1 &
     pid=$!
-    state=ok residual=- loops=- arms=-
+    state=ok loops=- arms=-
     ask() { "$h2bin" agent "$@" --socket "$socket" 2>&1; }
     # Wait for the socket, then for the level and its first ticks.
     n=0
@@ -73,7 +72,6 @@ for stem in $stems; do
         n=$((n + 1))
     done
     if ask session.wait "{\"until\":{\"phase\":\"gameplay\",\"map_ticks\":$ticks},\"timeout_ms\":300000}" >"$work/$stem.wait" 2>&1; then
-        residual=$(ask render.residual '{}' | tr -d '\n' | cut -c1-120)
         loops=$(ask sim.ledger '{}' | sed -n 's/.*"loops": *\([0-9]*\).*/\1/p' | head -1)
         arms=$(ask sim.arms '{}' | tr -d '\n' | cut -c1-120)
     else
@@ -84,7 +82,7 @@ for stem in $stems; do
         [ "$state" = ok ] && state=panic
     fi
     [ "$state" = ok ] || failed=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$stem" "$state" "$residual" "${loops:--}" "$arms" "${panic:--}"
+    printf '%s\t%s\t%s\t%s\t%s\n' "$stem" "$state" "${loops:--}" "$arms" "${panic:--}"
     stop
     rm -f "$socket"
 done

@@ -318,7 +318,7 @@ The registry rows of the five producers change to `native`. The resolved-draw li
 
 - Every step table against a running game: the differentials of L1 to L8 are the first check.
 - Whether any guest code between two frames reads the first-person table or a light's records.
-- The time the three entries cost with the bodies in place, per slice (`h2 lab`, the `dynamic_lights` and `light_passes` rows of `render.residual`).
+- The time the three entries cost with the bodies in place, per slice (`h2 lab`).
 - Pixel parity of a typed first-person light and of a typed object shadow.
 
 ## Related

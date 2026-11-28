@@ -73,7 +73,6 @@ connection to hold `session.claim`.
 | `render.compare`, `render.capture`, `render.scene`, `render.view.current`, `sim.hashes` | read | [FrameScene checks](agent-api-render-checks.md#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.spawn_view`, `render.view` | act | [FrameScene checks](agent-api-render-checks.md#framescene-checks-compare-capture-scene-parity-hashes) |
 | `render.parity` | act | [FrameScene checks](agent-api-render-checks.md#framescene-checks-compare-capture-scene-parity-hashes) |
-| `render.residual` | read | [Residual D3D work](agent-api-render-checks.md#renderresidual-residual-d3d-work) |
 | `render.particles.refusals` | read | [`render.particles.refusals`](agent-api-render.md#renderparticlesrefusals) |
 | `render.overrides`, `render.programs` | read | [`edit` and hot `render`](agent-api-edit.md#edit-and-hot-render-live-tag-and-shader-changes) |
 | `render.reload`, `render.dump`, `render.param`, `render.toggle` | act | [`edit` and hot `render`](agent-api-edit.md#edit-and-hot-render-live-tag-and-shader-changes) |
@@ -407,10 +406,6 @@ In [agent-api-render.md](agent-api-render.md#rendercoop_look).
 
 In [agent-api-render.md](agent-api-render-checks.md#framescene-checks-compare-capture-scene-parity-hashes).
 
-### `render.residual`: residual D3D work
-
-In [agent-api-render.md](agent-api-render-checks.md#renderresidual-residual-d3d-work).
-
 ## Load timeline
 
 In [agent-api-host.md](agent-api-host.md#load-timeline).
@@ -683,8 +678,8 @@ tests), `crates/extensions/agent/src/trace/tests.rs`, `crates/extensions/agent/s
   `trace`/`flight` recorder against a running game.
 - `shadow.*` and `scripts/shadow-gate.sh` against the disc: the tests run
   over synthetic code and memory.
-- `render.compare`, `render.capture`, `render.scene`, `render.parity`,
-  `render.residual` and `sim.hashes` against a running game.
+- `render.compare`, `render.capture`, `render.scene`, `render.parity`
+  and `sim.hashes` against a running game.
 - `render.picture` against a running game, and its readback's cost to the
   game's frame time: the tests use a synthetic frame source.
 - `maps.test.*` against a running game: the build, the slot and the

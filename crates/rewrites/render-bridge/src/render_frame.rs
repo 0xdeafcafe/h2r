@@ -14,8 +14,7 @@
 //!    0: a loading frame does not present.
 //!
 //! [`next`] is that order as data; [`RenderFrame`] runs it, each step a
-//! guest call. The frame wait is outside the render for `render.residual`
-//! ([`crate::residual_census::frame_wait`]). Nothing here draws: the steps' own replacements (the views'
+//! guest call. Nothing here draws: the steps' own replacements (the views'
 //! stages, the overlay's producers, the movie's display) are where the
 //! frame goes native. At the present, [`publish`] shows a frame whose
 //! every slot drew from the scene in place of the guest's present, and

@@ -361,7 +361,7 @@ The world layers (`cut::LAYER_CUTS`) do not meet rule 1 yet. An item their pass 
 
 Causes: [native-world-walk.md](native-world-walk.md), "What the scene cannot draw keeps its guest draw".
 
-A replaced entry is a **cut**: `render_bridge::cut::CUTS` lists it by its `residual_census::REGISTRY` row name and entry, and its hook returns the entry's ABI result to the caller without running the guest body. No switch brings the body back; it survives only as a test oracle.
+A replaced entry is a **cut**: `render_bridge::cut::CUTS` lists it by its row name and entry, and its hook returns the entry's ABI result to the caller without running the guest body. No switch brings the body back; it survives only as a test oracle.
 
 - The hook first runs `frame_step::before` for the producer, which makes the 5.2 writes the body made, in `frame_step::ROWS` order (guest order: the seed, the effects word, the stamps and residency requests inside the views, then `render_views`' frame counter and one-shot byte, then the present counter). The frame owner runs the `Step::Frame` rows once per frame.
 - The rows for the seed, effects word and stamps are empty until the slice that cuts their writer fills them.

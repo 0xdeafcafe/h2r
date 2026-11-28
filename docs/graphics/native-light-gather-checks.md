@@ -37,7 +37,7 @@ Each light taken from a hand-off is checked against guest memory once its lists 
 
 L8 counts one `native_scene_lists_typed_light_passes_native` per committed dynamic sequence and `native_scene_lists_typed_first_person_native` per committed final first-person slot; the `_fallback` and reason columns count refused typed offers. On the layer route, `native_scene_lists_light_additional_casters_native` counts an empty additional-caster loop and its `_fallback` a loop left to the guest.
 
-`render.scene` reports the filter and layer draws ([agent-api.md](../runtime/agent-api.md)). The producers of `render.residual` are `dynamic_lights`, `light_passes`, `object_shadows`, `object_shadow` and `first_person` (`render_bridge::residual_census`).
+`render.scene` reports the filter and layer draws ([agent-api.md](../runtime/agent-api.md)).
 
 ## L1: the model and the built leaves
 
@@ -92,7 +92,7 @@ L8 counts one `native_scene_lists_typed_light_passes_native` per committed dynam
 
 - **Differentials.** The seeded XBE differentials cover sphere bounds, empty additional-caster loops and the layer and target state a following guest light reads, including the draw byte when layer 13 is masked in but the current light only reaches layer 12. The opacity differential checks both forms of the target-1 bind and the following view restore. The first-person exit differential checks earlier-slot refusals and the final slot's return registers, stack and surviving memory.
 - **Graph and fixture.** Graph tests check each site's draw order and late refusal. The mixed GPU fixture compares a diffuse/specular pair beside guest draws against all-D3D pixels, including a late specular refusal.
-- **Gate.** Check the per-site native and fallback counts above and compare lit interiors with `render.parity` at 1x and 4x. The gate for retiring the guest producers is zero `light_passes` and `object_shadow` entries across the corpus in `render.residual`. L9 depends on the remaining shadow and gel paths and this gate.
+- **Gate.** Check the per-site native and fallback counts above and compare lit interiors with `render.parity` at 1x and 4x. L9 depends on the remaining shadow and gel paths and this gate.
 
 ## Related
 

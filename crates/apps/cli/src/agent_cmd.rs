@@ -101,11 +101,6 @@ or a short form:
                          switches and stalls: stall and settle times, and the
                          bytes read, uploads and compiles in each; a stall
                          going on now as `current`
-  residual N [top K]     render.residual: arm a window of N presents (1 to
-                         3600), wait for it, and print it with `per_frame`
-                         (its totals over N): what the guest front-end still
-                         asks d3d to do, by producer and by caller (K rows
-                         each, 50; 1 to 500)
   fallbacks [N]          profile.fallbacks: the N (20) fallback interpreter
                          entry addresses that interpreted most, with their
                          function, hits and instructions
@@ -281,11 +276,6 @@ pub fn run(args: Vec<String>) -> Result<()> {
         }
         "frame" => {
             let v = frame(&mut c, &rest)?;
-            println!("{}", serde_json::to_string_pretty(&v)?);
-            Ok(())
-        }
-        "residual" => {
-            let v = residual(&mut c, &rest)?;
             println!("{}", serde_json::to_string_pretty(&v)?);
             Ok(())
         }
@@ -552,59 +542,6 @@ fn frame(c: &mut Client, words: &[String]) -> Result<Value> {
             );
         }
         std::thread::sleep(Duration::from_millis(20));
-    }
-}
-
-/// `residual N [top K]`'s arming params and the `top` to read with.
-fn residual_params(words: &[String]) -> Result<(Value, Option<u64>)> {
-    let usage = "residual N [top K]: N presents, 1 to 3600; K rows, 1 to 500";
-    let frames: u64 = words.get(1).context(usage)?.parse().context(usage)?;
-    let top = match (words.get(2).map(String::as_str), words.get(3)) {
-        (None, _) => None,
-        (Some("top"), Some(k)) => Some(k.parse::<u64>().context(usage)?),
-        _ => bail!("{usage}"),
-    };
-    if words.len() > 4 {
-        bail!("{usage}");
-    }
-    Ok((json!({"arm": {"frames": frames}}), top))
-}
-
-/// `render.residual`: arms a window, waits for it to finish, and reads it
-/// with each total divided by its presents as `per_frame`.
-fn residual(c: &mut Client, words: &[String]) -> Result<Value> {
-    let (arm, top) = residual_params(words)?;
-    let frames = arm["arm"]["frames"].as_u64().unwrap_or(1);
-    let read = match top {
-        Some(k) => json!({"top": k}),
-        None => json!({}),
-    };
-    let before = call(c, method::RENDER_RESIDUAL, json!({}))?["window"].clone();
-    call(c, method::RENDER_RESIDUAL, arm)?;
-    // A present every 16 ms at 60 fps; leave room for slow frames.
-    let wait = Duration::from_secs(30) + Duration::from_millis(100 * frames);
-    let deadline = std::time::Instant::now() + wait;
-    loop {
-        let mut r = call(c, method::RENDER_RESIDUAL, read.clone())?;
-        if r["state"] == "done" && r["window"] != before {
-            let n = r["window"]["frames"].as_f64().filter(|&n| n > 0.0).unwrap_or(1.0);
-            let per: Option<serde_json::Map<String, Value>> = r["totals"].as_object().map(|t| {
-                t.iter()
-                    .filter_map(|(k, v)| Some((k.clone(), json!(v.as_f64()? / n))))
-                    .collect()
-            });
-            if let Some(per) = per {
-                r["per_frame"] = Value::Object(per);
-            }
-            return Ok(r);
-        }
-        if std::time::Instant::now() > deadline {
-            bail!(
-                "residual: the window of {frames} presents did not finish within {} s (a paused or loading game presents nothing)",
-                wait.as_secs()
-            );
-        }
-        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -1165,17 +1102,6 @@ mod tests {
                 "max_draws": 50
             })
         );
-        assert_eq!(
-            residual_params(&words("residual 600")).unwrap(),
-            (json!({"arm": {"frames": 600}}), None)
-        );
-        assert_eq!(
-            residual_params(&words("residual 900 top 500")).unwrap(),
-            (json!({"arm": {"frames": 900}}), Some(500))
-        );
-        for bad in ["residual", "residual x", "residual 9 top", "residual 9 rows 3", "residual 9 top 3 more"] {
-            assert!(residual_params(&words(bad)).is_err(), "{bad}");
-        }
         for bad in [
             "frame loud",
             "frame snap",

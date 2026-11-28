@@ -86,8 +86,7 @@ h2 agent faults
   ([native-particles.md](../graphics/native-particles.md)). They are
   always on: an integer add into the calling thread's frame, or one relaxed
   load when frame stats are off
-  ([retire-d3d.md](../graphics/retire-d3d.md), slice R0;
-  [`render.residual`](agent-api-render-checks.md#renderresidual-residual-d3d-work) breaks them down).
+  ([retire-d3d.md](../graphics/retire-d3d.md), slice R0).
   For inactive map slots, `map_slot_vfs_wait_ns` times the render-frame hook
   acquiring the shared VFS and `map_slot_check_ns` times its checks for
   changed source files after acquisition. A slot check runs at most twice a
@@ -752,7 +751,3 @@ additional display-rate replays reuse the guest frame.
 ### FrameScene checks: compare, capture, scene, parity, hashes
 
 In [agent-api-render-checks.md](agent-api-render-checks.md#framescene-checks-compare-capture-scene-parity-hashes).
-
-### `render.residual`: residual D3D work
-
-In [agent-api-render-checks.md](agent-api-render-checks.md#renderresidual-residual-d3d-work).
