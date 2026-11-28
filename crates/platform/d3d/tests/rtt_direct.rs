@@ -10,9 +10,6 @@ use crate::common::*;
 use d3d::{Device, Event, GfxBackend, GuestMemory, RecordingBackend, SparseMemory, UploadPolicy};
 use gfx::vertex::fvf;
 
-const RS_ALPHABLENDENABLE: u32 = 59;
-const RS_SRCBLEND: u32 = 62;
-const RS_DESTBLEND: u32 = 63;
 const RECTS: u32 = MISC + 0x7100;
 
 /// Two 32x32 textures with a level each: A linear (`LIN_A8R8G8B8`, pitch

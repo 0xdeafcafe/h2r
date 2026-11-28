@@ -20,7 +20,6 @@ use gfx::GfxContext;
 use gfx::surface::HostPixelOrder;
 
 const L: GuestLayout = GuestLayout::HALO2;
-const RECTS: u32 = MISC + 0x7100;
 const FRAME_TEX: u32 = MISC + 0x7200;
 
 fn r(x1: i32, y1: i32, x2: i32, y2: i32) -> Rect {
@@ -111,12 +110,6 @@ fn scissor_region_exclusive_keeps_what_the_rectangles_leave() {
         tuples(&scissor_region((0, 0, 32, 32), &[r(0, 0, 32, 16)], true)),
         [(0, 16, 32, 16)]
     );
-}
-
-fn rects(m: &mut SparseMemory, list: &[[u32; 4]]) {
-    for (i, w) in list.iter().flatten().enumerate() {
-        m.write_u32(RECTS + 4 * i as u32, *w).unwrap();
-    }
 }
 
 fn quad<B: d3d::Backend>(d: &mut Device<B>, m: &mut SparseMemory, color: u32) {

@@ -8,6 +8,7 @@
 //! the GPU tests skip without an adapter.
 
 use crate::common::*;
+use d3d::GuestMemory;
 use d3d::abi::Regs;
 use d3d::hw::method as hw;
 use d3d::scaled::ScaledBackend;
@@ -813,12 +814,6 @@ fn shadow_answers<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory) -> [Vec<u
         m.read_vec(0x8000_0000 | SMAP_COLOR_DATA, SMAP_LEN).unwrap(),
         m.read_vec(0x0040_4000, 0x5000).unwrap(),
     ]
-}
-
-fn e3(ctx: &GfxContext, scale: u32) -> Scaled {
-    let mut b = scaled(ctx, scale);
-    b.set_lighting(d3d::Lighting::E3);
-    b
 }
 
 /// Whether guest point `(x, y)` of the frame is in the caster's shadow:
