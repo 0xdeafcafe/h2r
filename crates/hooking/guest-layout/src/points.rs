@@ -1101,6 +1101,15 @@ points! { ALL;
     /// `ret` (its tail jump to `D3DDevice_SetPixelShader`).
     /// `render_bridge::native_targets` implements it.
     RENDER_FRAME_FINISH @ 0x0001_3cd0: [fn() ret 0]; "docs/graphics/retire-d3d-display.md";
+    /// The view setup: the view's `0x298` bytes into the render context
+    /// `0x00485600`, the stencil off, the transform constants, the view's
+    /// target, clear and viewport, the fill mode, the draw state's reset
+    /// and the fog. `ret 4`. `render_bridge::view_setup` implements it.
+    RENDER_VIEW_SETUP @ 0x0001_32d0: [fn(view: stack 0) ret 4]; "docs/graphics/retire-d3d-display.md";
+    /// The view end at the tail of each view: the alpha-only clear, the
+    /// view stack's pop and the setup and camera of the view left. No
+    /// arguments, `ret`. `render_bridge::view_setup` implements it.
+    RENDER_VIEW_END @ 0x0001_3c20: [fn() ret 0]; "docs/graphics/retire-d3d-display.md";
     /// The frame outside a game view: the menus, the loading screen and
     /// the movie, through `0x0002c8a0`. No arguments, `ret`. Called by the
     /// frame step and the map load's two frame loops (`0x00163a1a`,
