@@ -317,8 +317,8 @@ pub(crate) fn registry_with_film(
         )
         .unwrap();
     }
-    // Boot's render stream: every rendering session but lockstep's.
-    if !case.light && !case.lockstep {
+    // Boot's render stream: every rendering session, lockstep's included.
+    if !case.light {
         crate::render_rng::install(&mut features).unwrap();
     }
     let lockstep = lockstep_glue::Config {
