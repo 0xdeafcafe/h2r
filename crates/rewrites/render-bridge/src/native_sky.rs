@@ -172,6 +172,15 @@ pub fn before_sky(mem: &mut dyn GuestMemory, generation: u64) -> SkyTurn {
     turn
 }
 
+/// The cut drawn on the bound target outside the scene's sky pass: the
+/// ocean's reflection (`water_end::ocean::reflection`), with the arm's
+/// readiness not asked. `Err` names why nothing was drawn (`host` with no
+/// cut host).
+pub fn draw_cut(mem: &mut dyn GuestMemory) -> Result<usize, &'static str> {
+    let host = CUT_HOST.lock().unwrap_or_else(|e| e.into_inner()).clone().ok_or("host")?;
+    host.draw(mem)
+}
+
 /// At `0x0003ede0`'s return, when the guest ran.
 pub fn after_sky() {
     if let Some(host) = CUT_HOST.lock().unwrap_or_else(|e| e.into_inner()).clone() {

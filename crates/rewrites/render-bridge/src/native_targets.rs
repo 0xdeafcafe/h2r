@@ -167,6 +167,11 @@ pub trait Host: Send + Sync {
         None
     }
     /// `D3DDevice_SetViewport(viewport)`. `false`: refused.
+    /// The width and height of the surface at `header`, as
+    /// `D3DSurface_GetDesc` gives them; `None` when it does not read.
+    fn surface_size(&self, _mem: &dyn GuestMemory, _header: u32) -> Option<(u32, u32)> {
+        None
+    }
     fn viewport(&self, _mem: &mut dyn GuestMemory, _viewport: u32) -> bool {
         false
     }

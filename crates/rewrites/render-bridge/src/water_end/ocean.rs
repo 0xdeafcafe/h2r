@@ -11,7 +11,7 @@
 //! | gate `0x0012de70`, the texture block's residency | Rust ([`cache::resident`]); a closed gate goes to the stamps |
 //! | the shader `[definition + 4]` to its implementation's flags `+0x118` | Rust ([`shader`]) |
 //! | copy `0x0003bea0` (bit 20) | Rust ([`first_copy`]): the frame's first call restores the open shader, copies the bound colour into `Game(0x16)` through [`Host::copy_view`](crate::native_targets::Host::copy_view) and sets the frame's flags |
-//! | pass `0x00131ed0`, `0x0003bd00` (bit 19) | not made: the sky drawn into `Game(0x15)`, `copy_pass` |
+//! | pass `0x00131ed0`, `0x0003bd00` (bit 19) | Rust ([`reflection::pass`]): the sky drawn into `Game(0x15)` from the camera mirrored about the water's height |
 //! | alpha clear `0x0003c515` | `native_targets::cut_clear(0x10, 0x00ffffff, 0, 0)` on the bound target |
 //! | the draw state, shader begin `0x0001bbf0`, quads `0x0001c8a0` | [`Device::draw`]: the native ocean program from the map over the frame's record ([`Draw`], `frame_scene::late::Ocean`) |
 //! | stamps `0x0003bcb0` | Rust per image ([`stamps`], [`cache::stamp`]) |
@@ -22,7 +22,8 @@
 //!
 //! What the stage cannot make is a cause, `unimplemented!("water ocean:
 //! <cause>")`, or for the copies `unimplemented!("water ocean copy:
-//! <cause>")` (`copy_cache`, `copy_restore`, `copy_target`, `copy_pass`):
+//! <cause>")` (`copy_cache`, `copy_restore`, `copy_target`, and the
+//! reflection's, [`reflection`]):
 //! `unread`, `unwritable`, `shader_group` (a shader of group
 //! `MTRP` or `3trp`, whose template is a virtual call), `host`, `clear`,
 //! `structure` (the upload's float model refused), `quads` (no keyed
@@ -47,6 +48,7 @@ use crate::native_targets::Host;
 
 pub mod cache;
 pub mod gate;
+pub mod reflection;
 #[cfg(test)]
 mod fake;
 
@@ -128,6 +130,9 @@ pub trait Device {
     /// The gate `0x0003c270(definition)`: whether the ocean is seen
     /// ([`gate::visible`] over the native flare query).
     fn visible(&mut self, mem: &mut dyn GuestMemory, definition: u32) -> Result<bool, Cause>;
+    /// The sky `0x0003ede0` on the bound target with the device's view
+    /// (the reflection's, [`reflection::pass`]): the native sky's cut.
+    fn sky(&mut self, mem: &mut dyn GuestMemory) -> Result<(), Cause>;
     /// The caller's MXCSR, which the grid's sticky flags land in, and its
     /// x87 control word.
     fn fp(&mut self) -> (&mut u32, u16);
@@ -218,10 +223,10 @@ fn first_copy(mem: &mut dyn GuestMemory, device: &dyn Device) -> Result<(), Caus
     }
     let host = device.host();
     let open = crate::open_shader::read(&*mem).map_err(|_| "copy_cache")?;
-    if let Some(open) = &open {
-        if !host.restore(mem, &open.writes) {
-            return Err("copy_restore");
-        }
+    if let Some(open) = &open
+        && !host.restore(mem, &open.writes)
+    {
+        return Err("copy_restore");
     }
     let bsp = word(mem, BSP)?;
     if word(mem, bsp.wrapping_add(WATER_COUNT))? as i32 > 0 && !host.copy_view(mem, COPY_INTO) {
@@ -306,12 +311,12 @@ pub fn run(mem: &mut dyn GuestMemory, device: &mut dyn Device, definition: u32, 
         return stamps_then_return(mem, d, ecx);
     }
     let s = shader(mem, index)?;
-    // The pass into target 0x15 draws the sky; the copy goes first.
+    // The copy into target 0x16 goes first, then the reflection into 0x15.
     if s.copies() {
         first_copy(mem, device)?;
     }
     if s.passes() {
-        return Err("copy_pass");
+        reflection::pass(mem, device, d)?;
     }
     if clear {
         let (host, scratch) = (device.host(), device.scratch());
