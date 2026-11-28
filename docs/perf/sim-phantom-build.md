@@ -109,8 +109,8 @@ has no finer measurement. What the code says it contains:
   | `0x185be0` control update | `sim_seats::look::update` | lifted | the `aim-assist` feature's open and close sit at the point: per-player host state, and an `after` the fallback cannot resume |
   | `0x1a50a0` cone | `sim_seats::aim::arm` | lifted | the `aim-assist` feature's `after` at the point |
 
-  The look and aim arms also move host proof counters
-  (`device::arm` and `leaf` statics, and `aim::arm`'s answered count), so a
+  The leaf and aim arms also move host proof counters
+  (`leaf` statics and `aim::arm`'s answered count), so a
   phantom call counts towards the live arm's proof. That changes who answers, not the answer.
 - **Kernel faults on a mapping made this tick** (**S**, the suspect).
   `Guest::cow_refresh` replaces the view's RAM with a new

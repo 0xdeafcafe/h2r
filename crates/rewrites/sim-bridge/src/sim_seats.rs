@@ -4,20 +4,19 @@
 //!
 //! Every entry in `engine::sim_seats::SEATS` gets its point and its
 //! return sites. At either, the body runs one segment. A body that
-//! declines is on a path not ported yet (a float environment it does not
+//! declines is on a path not ported (a float environment it does not
 //! assume, an aliased or unmapped operand, a resource type an edited
-//! image can name): that is a named, counted error ([`stats`],
-//! `seats.<name>` in `sim.arms`, logged the first time each map), and the
-//! lifted body runs that one segment. A transfer anywhere else is the
+//! image can name): that is `unimplemented!("seats: <seat>: ...")`, and no
+//! lifted body runs in its place. A transfer anywhere else is the
 //! original's by construction (a site the body does not own). The camera
 //! is one of the entries; the whole prediction walk is another, which
 //! owns the point the light host's resource trim used to hook.
 //!
 //! [`crate::sim_native::SimNative`] calls [`install`]: the bodies hold no
 //! state, so the feature's snapshot policy does not change. The bound
-//! controller's device read runs through its kernel arm
-//! (`engine::sim_seats::device::arm`), and the bodies' leaf callees
-//! through theirs (`engine::sim_seats::leaf`); both reset at map load
+//! controller's device read is the kernel `engine::sim_seats::device`,
+//! laid down by the control update's body; the bodies' leaf callees run
+//! through their arms (`engine::sim_seats::leaf`), reset at map load
 //! ([`DEVICE_RESET`]). The phantom seats' action builder stays in the
 //! generated code (the bodies decline it); the phantom executor runs it
 //! in Rust.
@@ -28,8 +27,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The label every seat installs under.
 pub const SEATS: &str = "sim.native.seats";
-/// The device and leaf arms' reset at map load, with the seats' counters.
-pub const DEVICE_RESET: &str = "seats: reset the device and leaf arms";
+/// The leaf arms' reset at map load, with the seats' counters.
+pub const DEVICE_RESET: &str = "seats: reset the leaf arms";
 
 /// Whether a seat owns the point at `addr`: the per-function port there
 /// stands down.
@@ -39,49 +38,31 @@ pub fn owns(addr: u32) -> bool {
 
 const N: usize = sim_seats::SEATS.len();
 static ANSWERED: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
-static DECLINED: [AtomicU64; N] = [const { AtomicU64::new(0) }; N];
 
-/// One seat's counters since the map loaded.
+/// One seat's segments since the map loaded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Stats {
     pub name: &'static str,
     /// Segments the body ran.
     pub answered: u64,
-    /// Segments on an unported path, which the lifted body ran.
-    pub declined: u64,
 }
 
 pub fn stats() -> Vec<Stats> {
     sim_seats::SEATS
         .iter()
         .enumerate()
-        .map(|(i, seat)| Stats {
-            name: seat.name,
-            answered: ANSWERED[i].load(Ordering::Relaxed),
-            declined: DECLINED[i].load(Ordering::Relaxed),
-        })
+        .map(|(i, seat)| Stats { name: seat.name, answered: ANSWERED[i].load(Ordering::Relaxed) })
         .collect()
 }
 
 fn reset_stats() {
-    for c in ANSWERED.iter().chain(&DECLINED) {
+    for c in &ANSWERED {
         c.store(0, Ordering::Relaxed);
-    }
-}
-
-/// Count seat `i`'s unported path, and say so the first time each map.
-fn declined(i: usize, pc: u32) {
-    if DECLINED[i].fetch_add(1, Ordering::Relaxed) == 0 {
-        eprintln!(
-            "sim: seat {}: unported path at {pc:#x}; the lifted body runs it (counted in sim.arms)",
-            sim_seats::SEATS[i].name
-        );
     }
 }
 
 pub(crate) fn install(b: &mut Builder) {
     b.raw().observe_before(&engine::points::CACHE_TAGS_LOAD, DEVICE_RESET, |_| {
-        sim_seats::device::arm::reset();
         sim_seats::leaf::reset();
         reset_stats();
     });
@@ -94,13 +75,13 @@ pub(crate) fn install(b: &mut Builder) {
                 let site = pc != point.base && sites.contains(&pc);
                 if pc == point.base || site {
                     let mut mem = ctx.memory();
-                    if let Some(transfer) = run(cpu, &mut mem, pc)? {
-                        ANSWERED[i].fetch_add(1, Ordering::Relaxed);
-                        return Ok(transfer);
-                    }
-                    declined(i, pc);
+                    let Some(transfer) = run(cpu, &mut mem, pc)? else {
+                        unimplemented!("seats: {}: unported path at {pc:#x}", sim_seats::SEATS[i].name);
+                    };
+                    ANSWERED[i].fetch_add(1, Ordering::Relaxed);
+                    return Ok(transfer);
                 }
-                crate::sim_objects::original(cpu, ctx, pc, site)
+                crate::sim_objects::original(cpu, ctx, pc, false)
             })
             .resumes(sites)
             .context_only();
