@@ -500,6 +500,9 @@ pub struct QuadDrawer {
     programs: HashMap<(ProgramKey, bool, FragmentRaster), Program>,
     compiled: HashMap<Arc<str>, Compiled>,
     sampler: Option<wgpu::Sampler>,
+    /// [`sampler_descriptor`] repeating, for a stage [`PostRaster::wrap`]
+    /// names.
+    wrap_sampler: Option<wgpu::Sampler>,
 }
 
 impl QuadDrawer {
@@ -638,6 +641,19 @@ impl QuadDrawer {
             }
         };
         let sampler = self.sampler.get_or_insert_with(|| device.create_sampler(&sampler_descriptor())).clone();
+        let wrap_sampler = self
+            .wrap_sampler
+            .get_or_insert_with(|| {
+                let repeat = wgpu::AddressMode::Repeat;
+                device.create_sampler(&wgpu::SamplerDescriptor {
+                    label: Some("native glow wrap"),
+                    address_mode_u: repeat,
+                    address_mode_v: repeat,
+                    address_mode_w: repeat,
+                    ..sampler_descriptor()
+                })
+            })
+            .clone();
         if self.compiled.len() == Self::PROGRAMS && !self.compiled.contains_key(&program.wgsl) {
             self.compiled.clear();
         }
@@ -705,7 +721,7 @@ impl QuadDrawer {
             });
             entries.push(wgpu::BindGroupEntry {
                 binding: 2 * n as u32 + 1,
-                resource: wgpu::BindingResource::Sampler(&sampler),
+                resource: wgpu::BindingResource::Sampler(if raster.wrap[n] { &wrap_sampler } else { &sampler }),
             });
         }
         let textures = device.create_bind_group(&wgpu::BindGroupDescriptor {
