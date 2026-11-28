@@ -64,8 +64,6 @@ pub const UNIT_MOUTH: u32 = 0x0018_c6a0;
 /// `0x126c30(eax = record, tag, &channel, _) -> al`: the start gate. It
 /// reads the class state and no pool (`h2 disasm 0x126c30`).
 pub const START_GATE: u32 = 0x0012_6c30;
-/// `0x126ec0(ecx = tag, &rule) -> eax`: the promotion rule, 0 to start.
-pub const START_RULE: u32 = 0x0012_6ec0;
 /// The stop's fade (`0x1263e5`: 300 ms at instance `+0xb4`).
 pub const STOP_FADE_MS: u32 = 300;
 /// Sound globals: sound on (`+0x78`, `+0x79`, `+0x7a`), paused (`+0x7b`),

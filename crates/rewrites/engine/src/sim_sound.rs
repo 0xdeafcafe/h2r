@@ -8,6 +8,7 @@ use std::sync::LazyLock;
 pub mod clock;
 pub mod levels;
 pub mod playback;
+pub mod promotion;
 pub mod units;
 
 pub static TABLE: LazyLock<Table> = LazyLock::new(|| {

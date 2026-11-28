@@ -304,10 +304,6 @@ fn start(levels: Arc<dyn Levels + Send + Sync>, gate: u32) -> (Shared, entry::te
                 m.set_u32(c.args[1], 3).unwrap();
                 Regs { eax: gate, ..Default::default() }
             }
-            START_RULE => {
-                m.set_u32(c.args[0], u32::MAX).unwrap();
-                Regs::default()
-            }
             other => panic!("unexpected call {other:#x}"),
         }
     });
@@ -331,10 +327,6 @@ fn a_start_record_is_admitted_into_the_table() {
             m.set_u32(c.args[1], 3).unwrap();
             Regs { eax: 1, ..Default::default() }
         }
-        START_RULE => {
-            m.set_u32(c.args[0], u32::MAX).unwrap();
-            Regs::default()
-        }
         other => panic!("unexpected call {other:#x}"),
     });
     let handle = r.result.unwrap().eax;
@@ -344,8 +336,34 @@ fn a_start_record_is_admitted_into_the_table() {
     assert_eq!((i.tag, i.start, i.options.channel), (TAG, 4, 3));
     assert_eq!(t.ledger.draws, 2, "the gain and pitch draws");
     assert_ne!(r.guest.u32(SEEDS + 4), Ok(0x1234_5678), "the seed word moved");
-    assert_eq!(t.ledger.entry_guest_calls, 2);
+    assert_eq!(t.ledger.entry_guest_calls, 1, "the gate");
     assert!(t.sounds.starts().is_empty());
+}
+
+#[test]
+fn a_start_in_its_promotions_cooldown_is_refused_by_the_rule_in_rust() {
+    let t = table(Arc::new(Flat(10.0)));
+    let mut g = with_tag(guest(4));
+    record(&mut g);
+    // Promotion 0: one enabled rule, threshold 5, active and cooling down
+    // to clock 50; the clock is 10.
+    let (p, rules, counters) = (TAGS + 0x900, TAGS + 0xa00, TAGS + 0xb00);
+    g.put_u8(SOUND_DEF + 0xc, 0).put_u32(GESTALT, GESTALT_AT).put_u32(GESTALT_AT + 0x4c, p);
+    g.put_u32(p, 1).put_u32(p + 4, rules).put_u32(p + 8, 1).put_u32(p + 0xc, counters);
+    g.put_u32(p + 0x10, 0).put_u32(p + 0x18, 50);
+    g.put_u16(rules + 2, 1).put_u32(rules + 8, 5);
+    g.put_u32(GLOBALS + 0x84, 10);
+    let r = run_body(&t, Body::StartRecord, g, Regs { eax: RECORD, ..regs() }, |c, m| match c.target {
+        START_GATE => {
+            m.set_u32(c.args[1], 3).unwrap();
+            Regs { eax: 1, ..Default::default() }
+        }
+        other => panic!("unexpected call {other:#x}"),
+    });
+    assert_eq!(r.result.unwrap().eax, NONE);
+    assert!(lock(&t).sounds.instances().is_empty());
+    assert_eq!(r.guest.u32(p + 0x14), Ok(10), "the rule kept the clock it saw");
+    assert_eq!(lock(&t).ledger.refused_unreadable, 0);
 }
 
 #[test]
@@ -558,8 +576,8 @@ fn with_effect(g: &mut FakeGuest, parts: &[(u32, TagIndex, f32, u32)]) {
     }
 }
 
-/// The start layer's guest calls: every gate open, no rule. The gates'
-/// records' flags, in order.
+/// The start layer's guest calls: every gate open. The gates' records'
+/// flags, in order.
 fn start_layer_guest(gates: &mut Vec<(u32, u32)>, open: bool) -> impl FnMut(&GuestCall, &mut dyn GuestMemory) -> Regs + '_ {
     move |c, m| match c.target {
         START_GATE => {
@@ -567,10 +585,6 @@ fn start_layer_guest(gates: &mut Vec<(u32, u32)>, open: bool) -> impl FnMut(&Gue
             gates.push((m.u32(record).unwrap(), m.u32(record + 0x58).unwrap()));
             m.set_u32(c.args[1], 3).unwrap();
             Regs { eax: u32::from(open), ..Default::default() }
-        }
-        START_RULE => {
-            m.set_u32(c.args[0], u32::MAX).unwrap();
-            Regs::default()
         }
         other => panic!("unexpected call {other:#x}"),
     }
