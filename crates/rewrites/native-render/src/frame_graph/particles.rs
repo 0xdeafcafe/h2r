@@ -439,6 +439,37 @@ mod tests {
     }
 
     #[test]
+    fn the_stage_plans_each_blend_as_its_template_pass_sets_it() {
+        use crate::particle_compute::Program;
+        use wgpu::{BlendFactor as F, ColorWrites as W};
+        let sprite = bitmap(2);
+        let systems = Blend::ALL.into_iter().map(|blend| System { blend, ..system(&sprite, 1) }).collect();
+        let placed = stages(&Arc::new(Set { systems }), &scene(), &frame());
+        assert_eq!(placed.len(), 2);
+        // (blend, SRCBLEND, DESTBLEND, COLORWRITEENABLE, program, alpha
+        // test, the W-buffered entry), from each pass's implementation 0.
+        let want = [
+            (Blend::Alpha, F::SrcAlpha, F::OneMinusSrcAlpha, W::COLOR, Program::Plain, true, "fs_w_tested"),
+            (Blend::Additive, F::SrcAlpha, F::One, W::COLOR, Program::Plain, false, "fs_w"),
+            (Blend::MultiplyAdd, F::One, F::OneMinusSrcAlpha, W::COLOR, Program::ColourAlpha, true, "fs_w_colour_alpha_tested"),
+            (Blend::Glass, F::One, F::OneMinusSrcAlpha, W::ALL, Program::OwnAlpha, false, "fs_w_own_alpha"),
+        ];
+        for (_, p) in &placed {
+            let blends: Vec<Blend> = p.stage.set.systems.iter().map(|s| s.blend).collect();
+            assert_eq!(blends, Blend::ALL, "each system keeps its blend");
+        }
+        for (blend, src, dst, mask, program, test, entry) in want {
+            let plan = blend.plan();
+            for c in [plan.blend.color, plan.blend.alpha] {
+                assert_eq!((c.src_factor, c.dst_factor, c.operation), (src, dst, wgpu::BlendOperation::Add), "{blend:?}");
+            }
+            assert_eq!((plan.write_mask, plan.program, plan.alpha_test), (mask, program, test), "{blend:?}");
+            assert_eq!(plan.fragments[1], entry, "{blend:?}: the stage's draw is W-buffered");
+            assert_eq!(plan.fragments[0], entry.replacen("fs_w", "fs", 1), "{blend:?}");
+        }
+    }
+
+    #[test]
     fn no_system_no_pass() {
         let (scene, frame) = (scene(), frame());
         assert!(stages(&Arc::new(Set::default()), &scene, &frame).is_empty(), "no system");

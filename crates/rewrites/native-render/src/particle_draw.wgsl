@@ -60,9 +60,47 @@ fn sprite_colour(in: Out) -> vec4<f32> {
     return mix(a, b, in.blend) * in.colour;
 }
 
+// The final combiner of each particle pass (particle_compute.rs
+// `Program`): 0 the sprite times the colour, 1 its rgb times the colour's
+// alpha, 2 its rgb times its own alpha.
+fn shaded(in: Out, program: u32) -> vec4<f32> {
+    let s = sprite_colour(in);
+    if (program == 1u) {
+        return vec4<f32>(s.rgb * in.colour.a, s.a);
+    }
+    if (program == 2u) {
+        return vec4<f32>(s.rgb * s.a, s.a);
+    }
+    return s;
+}
+
+// D3D's alpha test as the passes set it: ALPHAFUNC greater, ALPHAREF 1,
+// on the 8-bit alpha.
+fn alpha_tested(c: vec4<f32>) -> vec4<f32> {
+    if (round(clamp(c.a, 0.0, 1.0) * 255.0) <= 1.0) {
+        discard;
+    }
+    return c;
+}
+
 @fragment
 fn fs(in: Out) -> @location(0) vec4<f32> {
-    return sprite_colour(in);
+    return shaded(in, 0u);
+}
+
+@fragment
+fn fs_tested(in: Out) -> @location(0) vec4<f32> {
+    return alpha_tested(shaded(in, 0u));
+}
+
+@fragment
+fn fs_colour_alpha_tested(in: Out) -> @location(0) vec4<f32> {
+    return alpha_tested(shaded(in, 1u));
+}
+
+@fragment
+fn fs_own_alpha(in: Out) -> @location(0) vec4<f32> {
+    return shaded(in, 2u);
 }
 
 struct Stored {
@@ -73,11 +111,9 @@ struct Stored {
 // The W-buffered draw: the depth tested is the guest's W-buffer value, as
 // its programs store it (cull_gpu.rs `DepthModel::program`): W held to
 // the clip range (out of it culled, or clamped), floored for an integer
-// format, over the full scale.
-@fragment
-fn fs_w(in: Out) -> Stored {
-    // Sampled first, in uniform control flow.
-    let colour = sprite_colour(in);
+// format, over the full scale. `colour` is sampled first, in uniform
+// control flow.
+fn w_stored(in: Out, colour: vec4<f32>) -> Stored {
     let flags = u32(view.depth.w);
     var w = in.w;
     if (w < view.depth.y || w > view.depth.z) {
@@ -93,4 +129,24 @@ fn fs_w(in: Out) -> Stored {
     out.colour = colour;
     out.depth = clamp(w / view.depth.x, 0.0, 1.0);
     return out;
+}
+
+@fragment
+fn fs_w(in: Out) -> Stored {
+    return w_stored(in, shaded(in, 0u));
+}
+
+@fragment
+fn fs_w_tested(in: Out) -> Stored {
+    return w_stored(in, alpha_tested(shaded(in, 0u)));
+}
+
+@fragment
+fn fs_w_colour_alpha_tested(in: Out) -> Stored {
+    return w_stored(in, alpha_tested(shaded(in, 1u)));
+}
+
+@fragment
+fn fs_w_own_alpha(in: Out) -> Stored {
+    return w_stored(in, shaded(in, 2u));
 }

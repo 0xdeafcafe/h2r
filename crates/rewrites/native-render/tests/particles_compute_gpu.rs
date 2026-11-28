@@ -417,3 +417,23 @@ fn the_draw_count_comes_from_the_gpu_buffer() {
     assert_eq!(pixel(1, 1), [0, 0, 0, 255], "clear outside A");
     assert_eq!(pixel(56, SIZE / 2), [0, 0, 0, 255], "B, past the GPU's count, not drawn");
 }
+
+#[test]
+fn every_blend_builds_its_draw_plain_and_w_buffered() {
+    let Ok(ctx) = gfx::GfxContext::headless() else {
+        eprintln!("no wgpu adapter; skipping");
+        return;
+    };
+    for blend in Blend::ALL {
+        let scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let _plain = ParticleDraw::new(&ctx.device, wgpu::TextureFormat::Rgba8Unorm, None, blend);
+        let _w = ParticleDraw::w_buffered(
+            &ctx.device,
+            wgpu::TextureFormat::Rgba8Unorm,
+            wgpu::TextureFormat::Depth24PlusStencil8,
+            blend,
+        );
+        let error = pollster::block_on(scope.pop());
+        assert!(error.is_none(), "{blend:?}: {error:?}");
+    }
+}

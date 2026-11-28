@@ -279,11 +279,82 @@ impl GpuParticles {
     }
 }
 
-/// How a system's particles blend into the target.
+/// How a system's particles blend into the target: one a particle shader
+/// template whose pass the draw matches exactly (docs/graphics/native-particles.md,
+/// "Templates"). Each is that pass's implementation 0 (vertex shader
+/// `particle`): its pixel program, render states and colour mask.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Blend {
+    /// `particle_alpha_blend` (`effect_shader_alphablend`): `SRCALPHA`,
+    /// `INVSRCALPHA`, alpha test greater than 1.
     Alpha,
+    /// `particle_additive` (`effect_shader_additive`): `SRCALPHA`, `ONE`.
     Additive,
+    /// `particle_alpha_multiply_add` (`effect_shader_alpha_multiply_add`):
+    /// the final combiner's colour times the vertex colour's alpha, then
+    /// `ONE`, `INVSRCALPHA`, alpha test greater than 1.
+    MultiplyAdd,
+    /// `particle_alpha_test_no_lighting_fixed_for_glass`
+    /// (`particle_alphatest_fixed_for_glass`): the colour times its own
+    /// alpha, then `ONE`, `INVSRCALPHA`, alpha written too.
+    Glass,
+}
+
+/// What the final combiner does to the sprite times the colour (`s`):
+/// the pixel programs differ only there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Program {
+    /// `rgb = s.rgb`, `a = s.a`.
+    Plain,
+    /// `rgb = s.rgb * colour.a` (`t0.rgb * v1.a`), `a = s.a`.
+    ColourAlpha,
+    /// `rgb = s.rgb * s.a` (`r0.rgb * r0.a`), `a = s.a`.
+    OwnAlpha,
+}
+
+/// A blend's pipeline: D3D's `SRCBLEND`/`DESTBLEND`/`BLENDOP` on colour
+/// and alpha alike, `COLORWRITEENABLE`, the program and `ALPHATESTENABLE`
+/// (`ALPHAFUNC` greater, `ALPHAREF` 1). Every one has `ZWRITEENABLE` off
+/// and `CULLMODE` none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DrawPlan {
+    pub blend: wgpu::BlendState,
+    pub write_mask: wgpu::ColorWrites,
+    pub program: Program,
+    pub alpha_test: bool,
+    /// The fragment entry points (particle_draw.wgsl): `[fs, fs_w]`, the
+    /// W-buffered one second.
+    pub fragments: [&'static str; 2],
+}
+
+impl Blend {
+    pub const ALL: [Blend; 4] = [Blend::Alpha, Blend::Additive, Blend::MultiplyAdd, Blend::Glass];
+
+    /// The pipeline the draw builds for this blend.
+    pub fn plan(self) -> DrawPlan {
+        use wgpu::{BlendFactor as F, ColorWrites as W};
+        let add = |src_factor, dst_factor| {
+            let c = wgpu::BlendComponent { src_factor, dst_factor, operation: wgpu::BlendOperation::Add };
+            wgpu::BlendState { color: c, alpha: c }
+        };
+        let (blend, write_mask, program, alpha_test, fragments) = match self {
+            Blend::Alpha => {
+                (add(F::SrcAlpha, F::OneMinusSrcAlpha), W::COLOR, Program::Plain, true, ["fs_tested", "fs_w_tested"])
+            }
+            Blend::Additive => (add(F::SrcAlpha, F::One), W::COLOR, Program::Plain, false, ["fs", "fs_w"]),
+            Blend::MultiplyAdd => (
+                add(F::One, F::OneMinusSrcAlpha),
+                W::COLOR,
+                Program::ColourAlpha,
+                true,
+                ["fs_colour_alpha_tested", "fs_w_colour_alpha_tested"],
+            ),
+            Blend::Glass => {
+                (add(F::One, F::OneMinusSrcAlpha), W::ALL, Program::OwnAlpha, false, ["fs_own_alpha", "fs_w_own_alpha"])
+            }
+        };
+        DrawPlan { blend, write_mask, program, alpha_test, fragments }
+    }
 }
 
 /// The draw pipeline for one target format and blend.
@@ -300,7 +371,7 @@ pub struct DrawBinding {
 impl ParticleDraw {
     /// `depth`: the pass's depth format, tested (less-equal), never written.
     pub fn new(device: &wgpu::Device, color: wgpu::TextureFormat, depth: Option<wgpu::TextureFormat>, blend: Blend) -> Self {
-        Self::with_fragment(device, color, depth, blend, "fs")
+        Self::with_fragment(device, color, depth, blend, false)
     }
 
     /// The draw into a guest W-buffer of `depth`'s format: the depth each
@@ -309,7 +380,7 @@ impl ParticleDraw {
     /// not the clip's z (docs/graphics/retire-d3d-r2.md, "R2's particle
     /// mirror").
     pub fn w_buffered(device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, blend: Blend) -> Self {
-        Self::with_fragment(device, color, Some(depth), blend, "fs_w")
+        Self::with_fragment(device, color, Some(depth), blend, true)
     }
 
     fn with_fragment(
@@ -317,20 +388,11 @@ impl ParticleDraw {
         color: wgpu::TextureFormat,
         depth: Option<wgpu::TextureFormat>,
         blend: Blend,
-        fragment: &str,
+        w_buffered: bool,
     ) -> Self {
         let module = module(device, "particle draw", include_str!("particle_draw.wgsl"));
-        let blend = match blend {
-            Blend::Alpha => wgpu::BlendState::ALPHA_BLENDING,
-            Blend::Additive => wgpu::BlendState {
-                color: wgpu::BlendComponent {
-                    src_factor: wgpu::BlendFactor::SrcAlpha,
-                    dst_factor: wgpu::BlendFactor::One,
-                    operation: wgpu::BlendOperation::Add,
-                },
-                alpha: wgpu::BlendComponent::OVER,
-            },
-        };
+        let plan = blend.plan();
+        let fragment = plan.fragments[usize::from(w_buffered)];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("particle draw"),
             layout: None,
@@ -355,8 +417,8 @@ impl ParticleDraw {
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: color,
-                    blend: Some(blend),
-                    write_mask: wgpu::ColorWrites::ALL,
+                    blend: Some(plan.blend),
+                    write_mask: plan.write_mask,
                 })],
             }),
             multiview_mask: None,

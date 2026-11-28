@@ -518,11 +518,11 @@ the system's current buffer, the `View` uniform (clip from world, the
 billboard's right and up) and the sprite texture, and records one
 `draw_indirect` at `args::DRAW`. The vertex shader expands six corners with
 the D3D diagonal, scales by size, turns by rotation and samples both frame
-windows; `Blend::Alpha` or `Blend::Additive`, depth tested, never written.
+windows; the system's `Blend` ([Templates](#templates)), depth tested, never written.
 `ParticleDraw::w_buffered` tests the guest's W-buffer instead of the clip's
 z: the `View`'s `w_row` and `depth` (full scale, clip range, floor and
 clamp flags) give each fragment the depth the guest's programs store
-(`fs_w`, [R2's particle mirror](retire-d3d-r2.md#r2s-particle-mirror)).
+(`fs_w` and its program variants, [R2's particle mirror](retire-d3d-r2.md#r2s-particle-mirror)).
 
 #### Walking a system's particles
 
@@ -566,9 +566,8 @@ The host builds a system from the `prt3` tag and its bitmap in guest
 memory (`mirror_host::build`: `Definition` and sprites) once a map, and
 keeps a refusal by definition and bitmap for `Host::refused`, so a system
 that does not build costs one lookup a walk after its first. The blend
-comes from the tag's shader template (`particle_alpha_blend` alpha,
-`particle_additive` additive) and the sprites' image from the running
-map, found by its tag data address (`SpriteBitmap`, one a bitmap and
+comes from the tag's shader template ([Templates](#templates)) and the
+sprites' image from the running map, found by its tag data address (`SpriteBitmap`, one a bitmap and
 image).
 
 Counters, `layer_plan_15_particle_walk_<outcome>`:
@@ -576,7 +575,7 @@ Counters, `layer_plan_15_particle_walk_<outcome>`:
 | Outcome | Counts |
 |---|---|
 | `taken`, `particles` | walks answered, and their births |
-| `refused_<name>` | the walk's, the mirror's or the host's refusal: `fault`, `no_host`, `no_bitmap`, `tag_unread`, `bitmap_unread`, `sprite_pages`, `map_name`, `map_unopened`, `template`, `template_unnamed`, `bitmap_tag`, `bitmap_decode`, or `particle_definition`'s |
+| `refused_<name>` | the walk's, the mirror's or the host's refusal: `fault`, `no_host`, `no_bitmap`, `tag_unread`, `bitmap_unread`, `sprite_pages`, `map_name`, `map_unopened`, `template_<part>` (a template not drawn, by its path's last part), `template_unnamed`, `bitmap_tag`, `bitmap_decode`, or `particle_definition`'s |
 | `other_callback` | walks with another callback, left to the guest |
 | `write_fault` | a block write that faulted after the host took the batches |
 | `unpublished`, `unbuilt` | batches dropped unsealed, and batches whose system a map change let go |
@@ -624,6 +623,40 @@ Particles are visual only. A system's state is in its own buffers; nothing
 reads or writes the sim arena or enters its hash. The CPU evaluator is a
 test (`tests/particles_compute_gpu/reference.rs`), not a runtime path.
 
+#### Templates
+
+A `prt3` names its shader template (`+0x0c`, a `stem`). Each particle
+template has one pass, and implementation 0 of it (vertex shader
+`particle`) is the sprite draw. The draw matches a template only when that
+pass's pixel program is the sprite pair mixed by the frame blend, times
+the vertex colour, with no constant, engine texture or second bitmap;
+then its final combiner, render states and colour mask are the
+pipeline's (`Blend::plan`, `native_particle_systems::TEMPLATES`).
+
+| Template (`transparent\`) | Pass | `Blend` | Blend, mask | Final colour | Alpha test |
+|---|---|---|---|---|---|
+| `particle_alpha_blend` | `effect_shader_alphablend` | `Alpha` | `SRCALPHA`, `INVSRCALPHA`; RGB | `s` | greater than 1 |
+| `particle_additive` | `effect_shader_additive` | `Additive` | `SRCALPHA`, `ONE`; RGB | `s` | none |
+| `particle_alpha_multiply_add` | `effect_shader_alpha_multiply_add` | `MultiplyAdd` | `ONE`, `INVSRCALPHA`; RGB | `s.rgb * colour.a` | greater than 1 |
+| `particle_alpha_test_no_lighting_fixed_for_glass` | `particle_alphatest_fixed_for_glass` | `Glass` | `ONE`, `INVSRCALPHA`; RGBA | `s.rgb * s.a` | none |
+
+`s` is the sprite times the colour; its alpha is the output's. The blend
+op is add, colour and alpha take the same factors, `ZWRITEENABLE` is off
+and `CULLMODE` none on all four. The test is in the fragment
+(`alpha_tested`, on the 8-bit alpha).
+
+Refused by name, and why:
+
+| Template | What the draw lacks |
+|---|---|
+| `particle_additive_tint` | its final combiner mixes `s` with the sprite's fourth power blended towards the sprite by the colour, by `c0.a`, a constant from the particle's parameters |
+| `particle_plasma` | its own vertex shader, `c0` and `c1`, and a second bitmap from slot 1 |
+| `particle\particle_alpha_blend_distortion` | vertex shader `particle_distortion` and engine texture 23 (the frame) |
+| `particle_alpha_test_no_lighting`, `particle\particle_alpha_test` (`particle_alphatest`) | depth written, render state `0x9e`, and `ALPHAREF` left as the last draw set it |
+
+The table comes from the disc's `shared` and `single_player_shared`
+passes read through Studio (`tag.read` on each `stem` and `spas`).
+
 #### The frame graph's particle stage
 
 The frame graph draws GPU particle systems in each game view's slot 9
@@ -638,7 +671,7 @@ Rust, published at the scene's seal (`native_particle_walk`,
 |---|---|
 | `bitmap` | the bitmap tag's datum and decoded image (`SpriteBitmap`), uploaded once a device while published |
 | `definition`, `sprites` | `particle_definition::definition` then `particle_mirror::owned`; the bitmap's sprite table |
-| `blend` | `Blend::Alpha` or `Blend::Additive` |
+| `blend` | the template's `Blend` ([Templates](#templates)) |
 | `births` | the frame's particles as `Spawn`s, in the guest's order; past `MAX_CAPACITY` dropped |
 
 | Step | What it does |
@@ -671,7 +704,7 @@ the stage draws.
 - Sorted and direct beams, a lens with changing occlusion, a light volume or trail, both material-strip callbacks, and a weather BSP in line and point modes.
 - Query results and weather and beam simulation state equal to the D3D baseline; refused point draws keep their D3D receipts.
 - Timings: warm p50 and p95 with diagnostics off.
-- GPU particle systems: the walk's answer and the frame graph's particle stage on a running game (which walks are taken, against the D3D draw), that the guest's bitmap pointer is the map tag's data address, that the two templates are every particle's, a `Definition` from a disc particle tag, the mirror's game host and that class 0's quad is `ParticleDraw`'s view-facing one; update and draw cost at 1k, 10k and 65k particles.
+- GPU particle systems: the walk's answer and the frame graph's particle stage on a running game (which walks are taken, against the D3D draw), that the guest's bitmap pointer is the map tag's data address, which templates the menu and levels refuse by name, a `Definition` from a disc particle tag, the mirror's game host and that class 0's quad is `ParticleDraw`'s view-facing one; update and draw cost at 1k, 10k and 65k particles.
 
 ## Related
 

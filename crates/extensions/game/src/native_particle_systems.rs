@@ -30,9 +30,14 @@ use tags::effects::particle::Particle;
 use crate::native_map::NativeMap;
 use crate::native_particles_admission::mirror_host::{self, Definitions};
 
-/// The two particle templates and the blend each draws with.
-pub const ALPHA_TEMPLATE: &str = "shaders\\shader_templates\\transparent\\particle_alpha_blend";
-pub const ADDITIVE_TEMPLATE: &str = "shaders\\shader_templates\\transparent\\particle_additive";
+/// The particle templates the draw matches exactly, with the blend each
+/// draws with (docs/graphics/native-particles.md, "Templates").
+pub const TEMPLATES: [(&str, Blend); 4] = [
+    ("shaders\\shader_templates\\transparent\\particle_alpha_blend", Blend::Alpha),
+    ("shaders\\shader_templates\\transparent\\particle_additive", Blend::Additive),
+    ("shaders\\shader_templates\\transparent\\particle_alpha_multiply_add", Blend::MultiplyAdd),
+    ("shaders\\shader_templates\\transparent\\particle_alpha_test_no_lighting_fixed_for_glass", Blend::Glass),
+];
 
 /// A built system: all of it but the frame's tint, size and births.
 struct Part {
@@ -92,17 +97,32 @@ impl tags::effects::Memory for Guest<'_> {
     }
 }
 
-/// The blend of a particle drawn with the template named `name`; another
-/// template is refused (`template`), as is one with no name.
+/// The blend of a particle drawn with the template named `name`. Another
+/// template is refused by its name's last part (`template_<part>`), one
+/// with no name as `template_unnamed`.
 pub fn blend(name: Option<&str>) -> Result<Blend, &'static str> {
     let name = name.ok_or("template_unnamed")?;
-    if name.eq_ignore_ascii_case(ALPHA_TEMPLATE) {
-        Ok(Blend::Alpha)
-    } else if name.eq_ignore_ascii_case(ADDITIVE_TEMPLATE) {
-        Ok(Blend::Additive)
-    } else {
-        Err("template")
+    TEMPLATES
+        .iter()
+        .find(|(t, _)| name.eq_ignore_ascii_case(t))
+        .map(|&(_, b)| b)
+        .ok_or_else(|| refused_template(name))
+}
+
+/// `template_<the name's last path part>`, lowercase, made once a name
+/// for the process: a refusal is a `&'static str` and the disc has a few
+/// dozen templates.
+fn refused_template(name: &str) -> &'static str {
+    static NAMES: Mutex<Vec<&'static str>> = Mutex::new(Vec::new());
+    let part = name.rsplit(['\\', '/']).next().unwrap_or(name);
+    let wanted = format!("template_{}", part.to_ascii_lowercase());
+    let mut names = NAMES.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&n) = names.iter().find(|n| **n == wanted) {
+        return n;
     }
+    let n: &'static str = Box::leak(wanted.into_boxed_str());
+    names.push(n);
+    n
 }
 
 /// The image every sprite of the bitmap at `bitmap` cuts from (sprite
@@ -239,11 +259,24 @@ mod tests {
     use engine::memory::FlatMemory;
 
     #[test]
-    fn the_two_particle_templates_have_their_blends_and_others_are_refused() {
-        assert_eq!(blend(Some(ALPHA_TEMPLATE)), Ok(Blend::Alpha));
-        assert_eq!(blend(Some(&ADDITIVE_TEMPLATE.to_uppercase())), Ok(Blend::Additive));
-        assert_eq!(blend(Some("shaders\\shader_templates\\opaque\\tex_bump")), Err("template"));
+    fn each_matched_template_has_its_blend_and_others_are_refused_by_name() {
+        let t = |part: &str| format!("shaders\\shader_templates\\transparent\\{part}");
+        assert_eq!(blend(Some(&t("particle_alpha_blend"))), Ok(Blend::Alpha));
+        assert_eq!(blend(Some(&t("particle_additive").to_uppercase())), Ok(Blend::Additive));
+        assert_eq!(blend(Some(&t("particle_alpha_multiply_add"))), Ok(Blend::MultiplyAdd));
+        assert_eq!(blend(Some(&t("particle_alpha_test_no_lighting_fixed_for_glass"))), Ok(Blend::Glass));
+        for part in ["particle_additive_tint", "particle_plasma", "particle_alpha_test_no_lighting"] {
+            assert_eq!(blend(Some(&t(part))), Err(format!("template_{part}").as_str()), "{part}");
+        }
+        assert_eq!(
+            blend(Some("shaders\\shader_templates\\particle\\Particle_Alpha_Blend_Distortion")),
+            Err("template_particle_alpha_blend_distortion"),
+            "the last part, lowercase, not the transparent one of that name"
+        );
+        let a = blend(Some(&t("particle_plasma"))).unwrap_err();
+        assert!(std::ptr::eq(a, blend(Some(&t("particle_plasma"))).unwrap_err()), "one name a template");
         assert_eq!(blend(None), Err("template_unnamed"));
+        assert_eq!(TEMPLATES.map(|(_, b)| b), Blend::ALL, "every blend has its template");
     }
 
     #[test]
@@ -254,7 +287,7 @@ mod tests {
         assert_eq!(r.get(1, (2, 3)), Some("input_the_gpu_lacks_12"));
         assert_eq!(r.get(1, (2, 4)), None, "another bitmap is another system");
         assert_eq!(r.get(2, (2, 3)), None, "a new map's addresses are its own");
-        r.keep(2, (5, 6), "template");
+        r.keep(2, (5, 6), "template_particle_plasma");
         assert_eq!(r.get(2, (2, 3)), None, "the last map's let go");
     }
 
