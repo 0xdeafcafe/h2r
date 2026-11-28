@@ -8,7 +8,8 @@
 //! header, 64 bytes, little-endian
 //!    0   8  "H2FILM4!"
 //!    8   u16 version (4), u16 flags (bit 0 unused, bit 1 sealed,
-//!           bit 2 begins at a start point, bit 3 holds a game start)
+//!           bit 2 begins at a start point, bit 3 holds a game start,
+//!           bit 4 holds a machine tape)
 //!   12   u8 ticks per second, u8 seat limit (16), u16 ticks per chunk (256)
 //!   16  16  film id (the first 16 bytes of the SHA-256 of its text id)
 //!   32   u32 length in ticks, u32 stored bytes of the seed
@@ -52,11 +53,16 @@ pub const FLAG_SEALED: u16 = 2;
 pub const FLAG_START_POINT: u16 = 4;
 /// The file holds its game's start ([`crate::start`]).
 pub const FLAG_GAME_START: u16 = 8;
+/// The file holds a client's machine tape ([`crate::tape`]).
+pub const FLAG_TAPE: u16 = 16;
 const KIND_TICKS: u8 = 0;
 const KIND_START: u8 = 2;
 const KIND_TAIL: u8 = 3;
 const KIND_GAME: u8 = 4;
 const KIND_EXTENSION: u8 = 5;
+const KIND_TAPE: u8 = 6;
+/// The most a stored tape block can take.
+const TAPE_STORED: u64 = crate::tape::MAX_BLOCK_BYTES as u64 + (crate::tape::MAX_BLOCK_BYTES as u64 >> 7) + 1024;
 /// The most bytes one extension record holds, inflated.
 pub const MAX_EXTENSION_BYTES: usize = 1 << 20;
 /// The most extension records a film holds.
@@ -162,7 +168,7 @@ impl Head {
             "film file names a dictionary this build lacks"
         );
         let flags = u16::from_le_bytes([b[10], b[11]]);
-        ensure!(flags >> 4 == 0, "film file has unknown flags");
+        ensure!(flags >> 5 == 0, "film file has unknown flags");
         Ok(Self {
             flags,
             ticks_per_second: b[12],
@@ -224,6 +230,7 @@ impl<W: Write + Seek> FilmWriter<W> {
         digest: u64,
         seats: &[Option<[u8; ACTION_BYTES]>; SEATS],
     ) -> Result<()> {
+        ensure!(self.head.flags & FLAG_TAPE == 0, "a film takes no tick after its tape");
         // A full chunk stays open until the next tick, so a seat record can
         // still follow the 256th.
         if self.encoder.ticks() == CHUNK_TICKS {
@@ -339,6 +346,25 @@ impl<W: Write + Seek> FilmWriter<W> {
         Ok(())
     }
 
+    /// A client's machine tape ([`crate::tape`]), as blocks after the
+    /// ticks written so far, which closes the last chunk: the film takes no
+    /// tick after it. The recorder writes a client game's tape once, when
+    /// it seals the game.
+    pub fn tape(&mut self, tape: &crate::tape::Tape) -> Result<()> {
+        if tape.is_empty() {
+            return Ok(());
+        }
+        if self.encoder.ticks() > 0 {
+            self.close_chunk()?;
+        }
+        for block in tape.blocks()? {
+            let frame = zstd::bulk::compress(&block, 3)?;
+            self.block(KIND_TAPE, &frame)?;
+        }
+        self.head.flags |= FLAG_TAPE;
+        Ok(())
+    }
+
     fn block(&mut self, kind: u8, payload: &[u8]) -> Result<()> {
         self.out.write_all(&[kind])?;
         self.out
@@ -415,6 +441,9 @@ pub struct FilmReader<R: Read + Seek> {
     pub game_starts: Vec<Block>,
     /// The extension records, in update order.
     pub extensions: Vec<ExtensionBlock>,
+    /// The machine tape's blocks, in file order: (offset of the stored
+    /// frame, its length) ([`FilmReader::tape`]).
+    pub tape_blocks: Vec<(u64, u32)>,
 }
 
 fn read_exact_at<R: Read + Seek>(input: &mut R, at: u64, buf: &mut [u8]) -> Result<()> {
@@ -462,6 +491,7 @@ impl<R: Read + Seek> FilmReader<R> {
         let mut game_starts = Vec::new();
         let mut extensions: Vec<ExtensionBlock> = Vec::new();
         let mut extension_bytes = 0u64;
+        let mut tape_blocks = Vec::new();
         let mut tail = None;
         let mut at = seed_end;
         let mut prefix = [0u8; 5];
@@ -542,6 +572,10 @@ impl<R: Read + Seek> FilmReader<R> {
                         len: stored - EXTENSION_PREFIX,
                     });
                 }
+                KIND_TAPE => {
+                    ensure!(u64::from(stored) <= TAPE_STORED, "film tape block is too large");
+                    tape_blocks.push((body, stored));
+                }
                 _ => bail!("film block of unknown kind {kind}"),
             }
             at = body + u64::from(stored);
@@ -600,7 +634,28 @@ impl<R: Read + Seek> FilmReader<R> {
             start_points,
             game_starts,
             extensions,
+            tape_blocks,
         })
+    }
+
+    /// Whose game the film is ([`crate::tape::Role`]).
+    pub fn role(&self) -> crate::tape::Role {
+        self.seed.header.role
+    }
+
+    /// The machine tape, both streams from index 0; empty for a film with
+    /// none (every film that is not a client's).
+    pub fn tape(&mut self) -> Result<crate::tape::Tape> {
+        let mut tape = crate::tape::Tape::default();
+        for (index, &(offset, stored)) in self.tape_blocks.clone().iter().enumerate() {
+            let mut frame = vec![0u8; stored as usize];
+            read_exact_at(&mut self.input, offset, &mut frame)?;
+            let block = zstd::bulk::decompress(&frame, crate::tape::MAX_BLOCK_BYTES)
+                .with_context(|| format!("film tape block {index} does not inflate"))?;
+            tape.push_block(&block)
+                .with_context(|| format!("film tape block {index}"))?;
+        }
+        Ok(tape)
     }
 
     /// How many tick chunks the file holds.
@@ -925,6 +980,10 @@ pub fn being_written(film: &Path) -> bool {
 pub fn share_copy<W: Write + Seek>(film: &Path, out: W) -> Result<W> {
     let mut reader = FilmReader::open(File::open(film)?)?;
     ensure!(reader.sealed, "only a sealed film is shared");
+    ensure!(
+        reader.tape_blocks.is_empty(),
+        "a client film is not shared: its tape holds this machine's network traffic"
+    );
     let mut copy = FilmWriter::new(out, &reader.seed.shared(), reader.ticks_per_second)?;
     for block in reader.start_points.clone() {
         let frame = reader.read_block(&block)?;

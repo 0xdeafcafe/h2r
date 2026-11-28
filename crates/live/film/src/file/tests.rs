@@ -804,3 +804,63 @@ fn a_player_asks_for_the_records_before_each_update_and_the_features_they_name()
     );
     assert!(actions.extensions_at(258).unwrap().is_empty());
 }
+
+fn client_tape() -> crate::tape::Tape {
+    use crate::tape::{Answer, Call, PadRead, Returned};
+    let recv = |n: u8| Call {
+        entry: 0x003cd22b,
+        args: vec![0x100, 0x8000, 64, 0, 0x9000, 0x9010],
+        answer: Answer::Return(Returned {
+            value: 2,
+            writes: vec![(0x8000, vec![n, n]), (0x9000, vec![2, 0, 0x0c, 0x02])],
+            ..Returned::default()
+        }),
+    };
+    crate::tape::Tape {
+        calls: (0..5000u32).map(|i| recv(i as u8)).collect(),
+        pads: vec![PadRead { handle: 4, status: 0, packet: [1; crate::tape::PACKET] }],
+    }
+}
+
+#[test]
+fn a_client_film_keeps_its_role_and_tape() {
+    let mut seed = seed();
+    seed.header.role = crate::tape::Role::SystemLinkClient;
+    let mut w = FilmWriter::new(Cursor::new(Vec::new()), &seed, 30).unwrap();
+    for tick in 1..=10 {
+        w.push_tick(TICK_DIGEST, tick, &seats(tick)).unwrap();
+    }
+    let tape = client_tape();
+    w.tape(&tape).unwrap();
+    let bytes = w.finish().unwrap().into_inner();
+    let mut r = FilmReader::open(Cursor::new(&bytes)).unwrap();
+    assert_eq!(r.role(), crate::tape::Role::SystemLinkClient);
+    assert!(r.flags & FLAG_TAPE != 0);
+    assert_eq!(r.length_ticks, 10);
+    // 5000 calls are two call blocks; the pad reads are a third.
+    assert_eq!(r.tape_blocks.len(), 3);
+    assert_eq!(r.tape().unwrap(), tape);
+}
+
+#[test]
+fn a_film_from_before_tapes_opens_with_no_tape_and_as_local() {
+    let bytes = film(40);
+    let mut r = FilmReader::open(Cursor::new(&bytes)).unwrap();
+    assert_eq!(r.role(), crate::tape::Role::Local);
+    assert!(r.tape_blocks.is_empty() && r.tape().unwrap().is_empty());
+    // A seed written before roles has no `role` member and reads as local.
+    let json = serde_json::to_value(&seed().header).unwrap();
+    assert!(json.get("role").is_none());
+}
+
+#[test]
+fn a_client_film_is_not_shared() {
+    let dir = Temp::new();
+    let path = dir.0.join("client.h2film");
+    let mut w = FilmWriter::new(File::create(&path).unwrap(), &seed(), 30).unwrap();
+    w.push_tick(TICK_DIGEST, 1, &seats(1)).unwrap();
+    w.tape(&client_tape()).unwrap();
+    w.finish().unwrap();
+    let error = share_copy(&path, Cursor::new(Vec::new())).unwrap_err().to_string();
+    assert!(error.contains("client film is not shared"), "{error}");
+}

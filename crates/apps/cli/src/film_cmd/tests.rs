@@ -32,6 +32,7 @@ fn header(version: u32, length_ticks: u64) -> film::Header {
         telemetry_hooks: None,
         render_hooks: None,
         inputs_in_film: false,
+        role: Default::default(),
         live_service: false,
         features: String::new(),
         player_features: false,
