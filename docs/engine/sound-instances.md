@@ -36,7 +36,7 @@ The sim owns every sound as a record in a Rust table: which sounds run, which pe
 
 **E.** 47 functions name the pool global. 46 are sound code in three ranges: the manager (`0x1253d0` to `0x12a810`), the looping sounds (`0x21a250` to `0x21c400`) and the start layer (`0x21d5a0` to `0x21db80`). The one outside is the dialogue finish `0x18c8c0`. Method: `h2 disasm 0x12000 1500000`, lines naming the global, grouped by `h2 analyze --functions`.
 
-**Code.** With `impl.sim.sound-events` on (the switch table's default), `sim_sound::service` implements `SOUND_UPDATE` and never calls the guest's frame, and boot installs `SimSoundEvents::headless()` with a `NullHost` (`crates/apps/boot/src/registration.rs`). So the loops' update, the channels and the manager's DirectSound calls do not run in that arm.
+**Code.** With `impl.sim.sound-events` on (boot reads it with a default of off, so play runs the guest's frame), `sim_sound::service` implements `SOUND_UPDATE` and never calls the guest's frame, and boot installs `SimSoundEvents::headless()` with a `NullHost` (`crates/apps/boot/src/registration.rs`). So the loops' update (`0x21b0e0`), the channel update (`0x1282d0`, where a channel submits its stream), the voice update (`0x1293f0`) and the manager's DirectSound calls do not run in that arm, and the game is silent (`native_sound_tick.rs` names the frame's calls).
 
 ## The table
 
@@ -464,7 +464,7 @@ A refusal never plays or admits something else in its place. An unknown owner re
 | E | The finish releases the channel and chunk, calls `+0x10` with owner, handle and reason, then frees | `0x127320`, `0x127390`; `native_sound_sources/completion.rs` |
 | E | `0x18c8c0` reads the instance's tag from the pool and calls the unit; `0x18c910` adds the line-table clear | their bodies |
 | E | The frame's calls, in order | `0x125b40`; `native_sound_tick.rs` names them |
-| Code | The table default of `impl.sim.sound-events` is on | `crates/hooking/hooks/src/switches/table.rs` |
+| Code | Boot reads `impl.sim.sound-events` with a default of off; the table's `On` is not consulted (`Switches::implementation`) | `crates/apps/boot/src/registration.rs`, `crates/hooking/hooks/src/switches.rs` |
 | S | The pool lies outside the checkpoint arena (it is built by `0x11cc20` beside the arena at `0x510800`) | compare `[SOUND_INSTANCES]` with `arena_base` on a running game |
 | S | Two owner tables exist | `sound.refused_unknown_owner` staying 0 over the campaign |
 
@@ -478,7 +478,6 @@ A refusal never plays or admits something else in its place. An unknown owner re
 - That the game thread's x87 control word is `0x027f` when the pitch draw runs. The differential runs both sides under it; under 53-bit precision the draw equals `f64` arithmetic.
 - That `0x2226b0` (called before the slot) changes nothing the table keeps. The differential stands in for it.
 - That every sound a level admits decodes from the host's map files, converted Halo 1 maps and injected tags included.
-- Whether the game is silent today with `impl.sim.sound-events` on. The code says the manager's sounds are.
 - Whether `0x21cc60` can refuse a detail for a reason that is not placement. The table plays every due detail; presentation places it (`0x21ce60`, `0x14dde0`, `0x188dd0`).
 - What the loops lose from retail's per-owner state, which the table does not keep: shared loops' summed positions (`0x21a387` to `0x21a50f`), the owner row's permutation seed (`0x219a90`, `+8`), the inaudible cull that frees a loop (`0x127d00` at `0x21ab8e`), and `0x21a250`'s flag bits 1, 2 and 4 (bit 2 stops the detail sounds, `0x21b6a6`). A stop with outs plays them at once rather than after the playing segment ends (`0x21ab25`).
 - Which code makes a dialogue start (kind 2). No function in `0x21d110` to `0x21dd30` writes kind 2; `0x21d5a0` never updates one and `0x21db80` takes its source from `0x18cbc0`.

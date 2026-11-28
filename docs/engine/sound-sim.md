@@ -2,7 +2,7 @@
 
 Status: Partly built. The schedule, the events, the host feed and the instance-based guest hooks are written; the mixer's clip source is open, and `h2 sim diff` is identical with the switch off and on ([note](notes/2026-11-27-sound-events-parity.md)).
 Code: `crates/rewrites/sim-sound/src/{events,schedule,feed}.rs`, `crates/rewrites/sim-bridge/src/sim_sound.rs`, `crates/rewrites/sim-bridge/src/sim_sound/{mixer_feed,owners}.rs`. Tests: the same files (`sound_phase_ledger_is_zero`, `script_wait_ends_on_computed_tick`, `null_sink_host_hash_equals_audible`, and the schedule's unit tests).
-Switch: `impl.sim.sound-events` (on), listed in [switches.md](../runtime/switches.md).
+Switch: `impl.sim.sound-events`, off in play (boot reads it with a default of off), listed in [switches.md](../runtime/switches.md). With it on the game is silent: see [sound-instances.md](sound-instances.md), "DirectSound cut", stage D0.
 
 A sound started in the sim is a record: id, source, tag, start tick and an end tick computed from the engine's own instance for it. There are no voices, channels, priorities or culling in the sim. The host mixer is fed from the sim's events and cannot change anything the sim reads. The rule that must hold: the sim's sound state, [`Schedule::hash`], is the same with any host or none.
 
