@@ -57,7 +57,7 @@ uses = ["formats", "recompiler", "runtime", "platform", "hooking"]
 crates = [
     "engine", "frame-scene", "hud-kit-core", "native-render", "render-bridge",
     "scene-extract", "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-effects", "sim-objects", "sim-sound",
-    "scene-extract", "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-effects", "sim-ext", "sim-objects", "sim-script", "sim-sound",
+    "scene-extract", "sim-anim", "sim-bridge", "sim-collision", "sim-core", "sim-effects", "sim-objects", "sim-script", "sim-sound",
     "sim-state",
 ]
 # Guest-free: these take typed values and may use only `formats`,
@@ -65,7 +65,7 @@ crates = [
 # lifted code. `scene-extract` is not: it is the one render crate that
 # reads guest offsets, through `engine`, to fill a FrameScene.
 guest_free = ["frame-scene", "hud-kit-core", "native-render", "sim-anim", "sim-collision", "sim-core"]
-guest_free = ["frame-scene", "hud-kit-core", "native-render", "sim-anim", "sim-collision", "sim-core", "sim-ext", "sim-script"]
+guest_free = ["frame-scene", "hud-kit-core", "native-render", "sim-anim", "sim-collision", "sim-core", "sim-script"]
 
 [live]
 about = "Live, co-op transport, bots, films, cloud saves, the dedicated host's data, the service itself (another session owns this domain)"
