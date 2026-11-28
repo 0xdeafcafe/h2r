@@ -99,7 +99,6 @@ connection to hold `session.claim`.
 | `audio.play` | act | [`audio.play`](agent-api-input.md#audioplay) |
 | `recording.play` | act | [`recording.play`](agent-api-input.md#recordingplay) |
 | `hs.threads`, `hs.globals`, `hs.player_actions` | read | [HaloScript state](agent-api-input.md#haloscript-state) |
-| `hs.parity` | read | [HaloScript parity](agent-api-input.md#hsparity) |
 | `hs.eval` | read | [`hs.eval`](agent-api-input.md#hseval) |
 | `input.pad`, `release`, `record`, `replay`, `stop` | act | [`input`](agent-api-input.md#input-act-like-a-player) |
 | `input.state`, `input.host` | read | [`input`](agent-api-input.md#input-act-like-a-player) |
@@ -495,10 +494,6 @@ In [agent-api-input.md](agent-api-input.md#recordingplay).
 ## HaloScript state
 
 In [agent-api-input.md](agent-api-input.md#haloscript-state).
-
-### `hs.parity`
-
-In [agent-api-input.md](agent-api-input.md#hsparity).
 
 ### `hs.eval`
 

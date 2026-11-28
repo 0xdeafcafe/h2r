@@ -15,20 +15,6 @@ pub fn install(agent: &Agent) {
     agent.add_game_method("hs.threads", Access::Read, |_, ctx| ctx.with_guest(|m| threads(m)));
     agent.add_game_method("hs.player_actions", Access::Read, |_, ctx| ctx.with_guest(|m| player_actions(m)));
     agent.add_game_method("hs.globals", Access::Read, |_, ctx| ctx.with_guest(|m| globals(m)));
-    agent.add_game_method(agent_proto::hs::PARITY, Access::Read, |params, _| {
-        if !params.is_null() && !params.as_object().is_some_and(|p| p.is_empty()) {
-            return Err(RpcError::new(code::INVALID_PARAMS, "hs.parity takes no parameters"));
-        }
-        let checks = sim_bridge::sim_native::hs_parity::stats().into_iter().map(|(name, s)| {
-            (name.to_owned(), agent_proto::hs::Check {
-                matched: s.matched,
-                mismatched: s.mismatched,
-                declined: s.declined,
-                first: s.first,
-            })
-        }).collect();
-        Ok(json!(agent_proto::hs::Parity { switch: "impl.sim.native.hs".to_owned(), checks }))
-    });
     crate::hs_eval::install(agent);
 }
 
@@ -132,39 +118,6 @@ fn globals(m: &dyn GuestMemory) -> Result<Value, RpcError> {
 mod tests {
     use super::*;
     use engine::testing::FakeGuest;
-
-    #[test]
-    fn parity_is_readable_without_a_map_and_refuses_parameters() {
-        use std::sync::mpsc::sync_channel;
-        use std::time::Duration;
-
-        struct NoMap;
-        impl crate::Reader for NoMap {
-            fn status(&mut self) -> crate::GameStatus { crate::GameStatus::default() }
-            fn objects(&mut self) -> Result<Vec<agent_proto::Object>, String> { Ok(Vec::new()) }
-        }
-
-        let agent = Agent::new();
-        install(&agent);
-        let (sender, replies) = sync_channel(1);
-        let connection = agent.connect(sender);
-        let call = |params| {
-            let request = json!({"jsonrpc":"2.0", "id":1, "method":"hs.parity", "params":params});
-            agent.submit(connection, &request.to_string());
-            agent.between_slices(&mut NoMap, 0);
-            serde_json::from_str::<Value>(&replies.recv_timeout(Duration::from_secs(5)).unwrap()).unwrap()
-        };
-
-        let reply = call(json!({}));
-        let parity: agent_proto::hs::Parity = serde_json::from_value(reply["result"].clone()).unwrap();
-        assert_eq!(parity.switch, "impl.sim.native.hs");
-        let expected = sim_bridge::sim_native::hs_parity::stats();
-        assert_eq!(parity.checks.len(), expected.len());
-        for (name, _) in expected {
-            assert!(parity.checks.contains_key(name), "{name}");
-        }
-        assert_eq!(call(json!({"reset":true}))["error"]["code"], code::INVALID_PARAMS);
-    }
 
     #[test]
     fn player_actions_distinguish_a_press_from_a_script_claim() {

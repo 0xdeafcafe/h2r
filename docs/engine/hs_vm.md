@@ -1,9 +1,8 @@
 # HaloScript VM (`hs::vm`)
 
 Status: Partly built. The recompiled interpreter drives campaign scripts.
-The Rust VM predicts supported script executions and checks individual VM
-operations against the guest under the [HaloScript switch](../runtime/switches.md).
-`hs.parity` reports the results. Campaign run parity and promotion are open.
+The Rust VM is checked against the lifted guest by a test-only differential
+(see Validation). Campaign run parity and promotion are open.
 
 `crates/formats/hs/src/vm` runs a decoded `hs::Scenario` against the
 XBE's `hs::Catalog` and an `Engine` trait. Rust owns thread frames,
@@ -225,34 +224,6 @@ leaves the others running:
 - null casts and null evaluators;
 - argument type mismatches, which the guest would read as garbage;
 - an initialiser that sleeps.
-
-## Live comparison
-
-The HaloScript arm in `crates/rewrites/sim-bridge/src/sim_native.rs` installs
-read-only observers when the image exports the map initialiser and all five
-execution entries below (the scheduler itself is Rust, above). An incomplete image lists the missing entries at
-startup. A declined comparison leaves the call out of the match count.
-
-| Counter | Guest entry | What Rust compares |
-|---|---|---|
-| `thread` | execute `0x00209850` | An ordinary script starting at its root frame. A separate `Vm` runs the same scalar expression to completion or its first self-sleep, seeded with the live globals it reaches; a sleep scales its duration with the live tick rate, and the caller's x87 rounding must be nearest for the conversion's `fistp`. The observer compares the frame chain (parent, expression and cursor of each frame), the top frame, the wake state, the result bits and those globals. |
-| `evaluator` | evaluate `0x002099f0` | A literal or scenario-global atom and its cast into the destination, or the parent's destination, new frame, expression and first-entry flag for a call. |
-| `dispatch` | evaluate arguments `0x00209d50` | The signature of the builtin selected by the expression, the argument block pointer, next argument and frame cursor, and the child frame for a nested call. |
-| `globals` | read `0x00209bc0` | The checkpointed cell and the returned value. External reads account for narrow stores, null bindings and the guest's empty-string pointer. |
-| `global_store` | write back `0x0020a490` | The declared bytes of a bound scalar external after a store. Object marking and object-list traversal still require a guest-backed engine. |
-
-The whole-thread check accepts up to 64 node visits, including static
-script calls. It reads the active definition, nodes, signatures and global
-types against the cached map program before using it. Map initialisation
-discards the cache. External bindings, engine calls and the thread-facing
-builtins (`sleep` with a named script target, `sleep_forever`,
-`sleep_until`, `wake`, `begin_random`) lie outside this check. The
-individual VM comparisons also observe calls made by those scripts.
-
-Read [`hs.parity`](../runtime/agent-api-input.md#hsparity) before and after a
-campaign encounter. A counter needs observed matches to establish coverage.
-Record the change in each counter and the first mismatch. The guest still
-supplies the answer on every call, including a mismatch.
 
 ## Validation
 

@@ -196,11 +196,9 @@ What each phase of [sim-rewrite.md](sim-rewrite.md) takes over: its data, its en
 
 **AI, actors, pathfinding and HaloScript (campaign; slot set by census B).**
 
-- *HaloScript.* Under `impl.sim.native.hs` the [Rust VM](hs_vm.md#live-comparison)
-  compares supported whole threads, scheduling order, expression results,
-  global cells and builtin argument dispatch against the guest. The guest
-  is authoritative. Promotion requires engine-call and suspension coverage
-  plus campaign arena-hash parity through the verification ladder.
+- *HaloScript.* The [Rust VM](hs_vm.md) runs the scheduler. Engine-call and
+  suspension coverage and campaign arena-hash parity remain through the
+  verification ladder.
 - *Pathfinding.* `crates/formats/pathfind` decodes and generates the data.
 - *AI.* `AI_TARGET_SCORE` `265d30` is already a named hot point.
 - *Order.* Set by the phase 0 campaign census, not guessed here.

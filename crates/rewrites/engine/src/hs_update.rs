@@ -47,8 +47,7 @@ pub struct Stats {
     /// Updates with scripts on.
     pub passes: u64,
     /// Threads handed to the lifted `HS_THREAD_EXECUTE`: the VM itself is
-    /// not ported yet (`impl.sim.native.hs` compares it), so each is a
-    /// counted guest call.
+    /// not ported yet, so each is a counted guest call.
     pub executed: u64,
 }
 
