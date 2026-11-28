@@ -14,8 +14,7 @@
 //! machines, controls and light fixtures run first, the machine update
 //! `1152e0`, the crate update `11bce0` and the creature update `118700`
 //! and post-physics update `118b80` (slice 11). The dispatchers call them
-//! in Rust. On by default with `impl.sim.native.objects.walk`;
-//! `sim_bridge::sim_objects` installs [`TABLE`] when
+//! in Rust, with no switch: `sim_bridge::sim_objects` installs [`TABLE`] when
 //! `impl.sim.native.objects` is off (on, every body is installed and these
 //! with them), or [`WITHOUT_AIM`] when the animation subsystem owns the aim
 //! update `c7840`.

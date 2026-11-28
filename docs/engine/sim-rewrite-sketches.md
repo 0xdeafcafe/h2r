@@ -73,7 +73,7 @@ What each phase of [sim-rewrite.md](sim-rewrite.md) takes over: its data, its en
 
 **Objects and units update (phase 3).**
 
-- *Orchestration.* With `impl.sim.native.objects.walk` (on), the walk
+- *Orchestration.* The walk
   table `engine::sim_objects::native_walk` runs the pre-physics `b6f10`
   and post-physics `b7060` walks, `bc470` and `bc820` with `bd090` per
   object, the type dispatchers, the wake leaves, and the unit `+0x40`

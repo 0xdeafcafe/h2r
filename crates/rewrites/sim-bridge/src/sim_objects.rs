@@ -1,8 +1,8 @@
 //! `impl.sim.native.objects`: the object update, phase 3 of the simulation
 //! rewrite (docs/engine/object-update.md; design
 //! docs/engine/sim-rewrite-objects.md). Default off. With it off, the
-//! walks and the per-object updates still run in Rust
-//! (`impl.sim.native.objects.walk`, on; [`install_walk`]).
+//! walks and the per-object updates still run in Rust, always
+//! ([`install_walk`]).
 //!
 //! Every body in `engine::sim_objects::BODIES` gets its entry and its
 //! return sites. At either, with the float environment the bodies assume,
@@ -29,7 +29,7 @@
 //! driver runs, the evaluator answers once proven and is compared until
 //! then, and on one call in 64 after.
 //!
-//! With [`OBJECTS`] off and [`WALK`] on (the default), only the walks
+//! With [`OBJECTS`] off (the default), only the walks
 //! `b6f10`, `b7060` and `b7150`, the per-object updates `bc470` and
 //! `bc820` with `bd090`, the type dispatchers, the wake leaves, and the
 //! unit (`c6b30`), biped (`dd360`, `dd990`), weapon (`fdfb0`), item
@@ -73,19 +73,15 @@ pub fn functions_on(switches: &hooks::Switches) -> bool {
     on(switches) && switches.feature(FUNCTIONS, false)
 }
 
-/// The walks in Rust (docs/engine/object-update.md, "The walks in
-/// Rust"): on by default; it follows `impl.sim.native.objects` and
-/// `impl.sim.native` when either is set, so `-impl.sim.native` runs the
-/// guest's walks.
-pub const WALK: &str = "impl.sim.native.objects.walk";
-
 /// The label of the walk table's implementations.
 pub const WALK_LABEL: &str = "sim.native.objects.walk";
 
-/// Whether the walk table is installed on its own: [`WALK`] on and
-/// [`OBJECTS`] off (on, every body is installed, these among them).
+/// Whether the walk table is installed on its own (docs/engine/object-update.md,
+/// "The walks in Rust"): always, unless [`OBJECTS`] is on and installs
+/// every body, these among them. No switch runs the guest's walks; a body
+/// the Rust refuses is counted and the guest runs that call.
 pub fn walk_on(switches: &hooks::Switches) -> bool {
-    !on(switches) && switches.implementation("sim.native.objects.walk", true)
+    !on(switches)
 }
 
 /// Whether the per-function port at `addr` stands down: a body installed
@@ -364,6 +360,19 @@ pub(crate) fn walk_chains() -> usize {
 #[cfg(test)]
 pub(crate) fn walk_chains_without_aim() -> usize {
     native_walk::WITHOUT_AIM.bodies().len() + 1
+}
+
+/// `plan` without what [`install_walk`] adds, for a test that installs on
+/// a runtime holding only its own bodies' exports.
+#[cfg(test)]
+pub(crate) fn without_walk(plan: &mut hooks::Plan) {
+    for chain in plan.chains.values_mut() {
+        if chain.implement.as_ref().is_some_and(|h| h.label == WALK_LABEL) {
+            chain.implement = None;
+        }
+        chain.observe_before.retain(|h| h.label != EVENTS_CLEAR);
+    }
+    plan.chains.retain(|_, c| c.hooks().next().is_some());
 }
 
 pub(crate) fn install_table(
@@ -667,12 +676,12 @@ mod tests {
     }
 
     #[test]
-    fn the_walk_table_is_on_by_default_and_gives_way_to_the_objects_switch() {
+    fn the_walk_table_always_installs_and_gives_way_to_the_objects_switch() {
         let objects_on = || Switches::defaults().with(&format!("impl.{OBJECTS}"), true);
         assert!(walk_on(&Switches::defaults()));
         assert!(!walk_on(&objects_on()), "the objects switch installs every body instead");
-        for off in [WALK, "impl.sim.native.objects", "impl.sim.native", "impl.sim"] {
-            assert!(!walk_on(&Switches::defaults().with(off, false)), "-{off}");
+        for off in ["impl.sim.native.objects", "impl.sim.native", "impl.sim"] {
+            assert!(walk_on(&Switches::defaults().with(off, false)), "-{off}");
         }
         let mut registry = Registry::new(Switches::defaults());
         registry.add(&SimNative::for_tests()).unwrap();

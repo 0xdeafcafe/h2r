@@ -34,7 +34,7 @@ the same, so the guest cannot tell which ran.
 
 `bd090` runs natively as the register-level port
 `engine::sim_physics::node_matrices` (as the body `sim_objects::pose`
-in the walk table, on by default, or under `impl.sim.native.objects`; or
+in the walk table, always, or under `impl.sim.native.objects`; or
 under `impl.sim.native_pose_matrix`). At the
 loop's entry (`bd50c`, node count above 1, `esi` 1) it calls
 `engine::sim_anim::skeleton::walk`, and runs its own per-node loop `nodes`

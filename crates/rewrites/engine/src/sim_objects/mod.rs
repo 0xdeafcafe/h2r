@@ -3,7 +3,7 @@
 //! docs/engine/object-update.md). Every body runs under
 //! `impl.sim.native.objects` (default off); the walks, the per-object
 //! updates and the multiplayer types' callbacks ([`native_walk::TABLE`])
-//! also run alone, on by default (`impl.sim.native.objects.walk`).
+//! also run alone, always.
 //! `sim_bridge::sim_objects` installs both.
 //!
 //! A ported function is a [`Body`]: retail-site arms over the retail stack
@@ -63,7 +63,7 @@ mod unit_rest;
 // (`biped::post`).
 mod biped;
 // The walks, the per-object updates and the multiplayer types' callbacks
-// in Rust, on by default (`impl.sim.native.objects.walk`).
+// in Rust, always.
 pub mod native_walk;
 
 use crate::points::{self, Point};
