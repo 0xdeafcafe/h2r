@@ -89,7 +89,7 @@ At guest admission, `GpuWorld::prewarm_fog` and `prewarm_water` request the pipe
 | The fog register | not refused: the pass supplies it |
 | A pass that leaves blend to the previous draw while writing colour, or inherits depth writes while depth is enabled | stays on D3D |
 
-The pipeline state must be the implementation's own (`pass_state`'s rule except its `Fog` refusal, the fog words taken out of the decode). `CULLMODE` is the exception, below.
+The pipeline state must be the implementation's own (`pass_state`'s rule; the fog words decode to no pipeline state). `CULLMODE` is the exception, below.
 
 #### Planar combiner inputs
 

@@ -121,8 +121,6 @@ pub enum StateRefusal {
     Unset(&'static str),
     /// A value `gfx` does not decode.
     Invalid { state: u8, value: u32 },
-    /// Fixed-function fog (the native pass has none).
-    Fog,
     /// The stencil test, set by the pass itself, where the native pass
     /// that would draw it takes only the device's: the screen, shadow,
     /// water and layer 1 and 3 geometry passes. The world layers', the
@@ -192,9 +190,13 @@ fn decode_states(states: &[RenderStateValue], source: StateSource) -> Result<Pas
     if !live_object_state && !has(RenderStateType::ZWriteEnable) && !depth_off {
         return Err(StateRefusal::Unset("ZWRITEENABLE"));
     }
-    if rs.fog_enable && !live_object_state {
-        return Err(StateRefusal::Fog);
-    }
+    // The fog words (`FOGENABLE` and the fog unit's, `fog_gpu::FogWords`)
+    // are not the pipeline's: the NV2A applies fog only where a combiner
+    // reads the fog register, and every native builder programs its own
+    // final combiner. A builder that draws a fog read feeds the register
+    // per view (the world layers' `FogWords`, the screen passes'
+    // `PostRaster::fog`); the others refuse the read
+    // (`program::pixel_parity`).
     let stencil = if live_object_state { None } else { own_stencil(&rs, &has)? };
     let depth_offset = depth_offset(&rs, &has)?;
     if live_object_state && depth_offset.is_some() {
@@ -482,7 +484,8 @@ mod tests {
             Err(StateRefusal::Unset("ZWRITEENABLE")),
             "the depth buffer on"
         );
-        assert_eq!(with(v(RenderStateType::FogEnable, 1)), Err(StateRefusal::Fog));
+        let fog = with(v(RenderStateType::FogEnable, 1)).expect("fog is the combiner's, not the pipeline's");
+        assert_eq!(fog, pass_state(&base).unwrap(), "the fog words change no pipeline state");
         assert_eq!(with(v(RenderStateType::StencilEnable, 1)), Err(StateRefusal::Unset("STENCILFUNC")));
         assert_eq!(with(v(RenderStateType::StencilRef, 3)), Err(StateRefusal::Unset("STENCILENABLE")));
         let bad = v(RenderStateType::SrcBlend, 0x1234);

@@ -765,7 +765,10 @@ mod tests {
             &[(R::AlphaBlendEnable, 1), (R::SrcBlend, BlendFactor::One.xbox_value()), (R::DestBlend, BlendFactor::One.xbox_value())],
         );
         assert_eq!(refusal(blended), Refusal::Blended);
-        assert_eq!(refusal(opaque(implementation(0, true), &[(R::FogEnable, 1)])), Refusal::State(StateRefusal::Fog));
+        assert!(
+            layer3_pass(&material(3, vec![vec![opaque(implementation(0, true), &[(R::FogEnable, 1)])]])).is_ok(),
+            "fog the combiner does not read draws nothing"
+        );
         // Engine-driven states from a draw's input (scalar 3) or past the
         // tables.
         let mut engine = opaque(implementation(0, true), &[]);
