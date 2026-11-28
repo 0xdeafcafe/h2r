@@ -37,101 +37,10 @@ pub fn counter_name(outcome: &str) -> String {
         "sky_plan_admitted".to_owned()
     } else if let Some(why) = outcome.strip_prefix("dropped_") {
         format!("scene_dropped_sky_{why}")
-    } else if outcome.starts_with("rows_") || outcome.starts_with("plan_") || outcome.starts_with("geometry_") || outcome.starts_with("cut_") {
+    } else if outcome.starts_with("plan_") || outcome.starts_with("geometry_") || outcome.starts_with("cut_") {
         format!("sky_{outcome}")
     } else {
         format!("scene_kept_sky_{outcome}")
-    }
-}
-
-/// The rows arm (docs/graphics/retire-d3d-r5.md, "The sky's node rows"):
-/// the guest's rows answer, and the rows made from the sky's transform
-/// (`scene_extract::layout::sky_rows`) are compared with them at every
-/// strip until [`ROWS_TO_ANSWER`] have matched with none differing; then
-/// the made rows are the ones the cut may draw, one strip in
-/// [`ROWS_SAMPLE`] still compared, and any difference returns the rows to
-/// the guest until the next BSP. Counted `sky_rows_<outcome>`: `exact`,
-/// `close`, `differ`, `declined_<why>`, `skipped` (not sampled), with
-/// `sky_rows_answering` the strips at which the made rows answer.
-pub const ROWS_TO_ANSWER: u64 = 256;
-pub const ROWS_SAMPLE: u64 = 64;
-
-#[derive(Debug, Default)]
-struct RowsArm {
-    generation: u64,
-    matched: u64,
-    strips: u64,
-    stopped: bool,
-}
-
-static ROWS: Mutex<RowsArm> = Mutex::new(RowsArm { generation: 0, matched: 0, strips: 0, stopped: false });
-
-/// Whether this strip's rows are compared: every strip until the arm
-/// answers, then one in [`ROWS_SAMPLE`]. A new `generation` (BSP) starts
-/// the arm again.
-pub fn rows_compared(generation: u64) -> bool {
-    let mut arm = ROWS.lock().unwrap_or_else(|e| e.into_inner());
-    if arm.generation != generation {
-        *arm = RowsArm { generation, ..RowsArm::default() };
-    }
-    arm.strips += 1;
-    let answering = !arm.stopped && arm.matched >= ROWS_TO_ANSWER;
-    !answering || arm.strips % ROWS_SAMPLE == 0
-}
-
-/// Records one strip's comparison (`Ok` the outcome of
-/// `sky_rows::compare`, `Err` why no rows were made; `None` not
-/// compared) and answers whether the made rows answer at this strip.
-pub fn rows_outcome(outcome: Option<Result<&'static str, &'static str>>) -> bool {
-    let mut arm = ROWS.lock().unwrap_or_else(|e| e.into_inner());
-    let name = match outcome {
-        None => "skipped".to_owned(),
-        Some(Ok(matched @ ("exact" | "close"))) => {
-            arm.matched += 1;
-            matched.to_owned()
-        }
-        Some(Ok(other)) => {
-            arm.stopped = true;
-            other.to_owned()
-        }
-        Some(Err(why)) => {
-            // A strip it cannot make is the guest's; the arm does not answer it.
-            let mut o = OUTCOMES.lock().unwrap_or_else(|e| e.into_inner());
-            *o.entry(declined_name(why)).or_default() += 1;
-            return false;
-        }
-    };
-    let answers = !arm.stopped && arm.matched >= ROWS_TO_ANSWER;
-    drop(arm);
-    let mut o = OUTCOMES.lock().unwrap_or_else(|e| e.into_inner());
-    *o.entry(row_name(&name)).or_default() += 1;
-    if answers {
-        *o.entry("rows_answering").or_default() += 1;
-    }
-    answers
-}
-
-/// The outcome key of a rows outcome (`counter_name` makes it
-/// `sky_rows_<outcome>`).
-fn row_name(outcome: &str) -> &'static str {
-    match outcome {
-        "exact" => "rows_exact",
-        "close" => "rows_close",
-        "differ" => "rows_differ",
-        _ => "rows_skipped",
-    }
-}
-
-fn declined_name(why: &'static str) -> &'static str {
-    match why {
-        "site" => "rows_declined_site",
-        "sky" => "rows_declined_sky",
-        "rest" => "rows_declined_rest",
-        "palette" => "rows_declined_palette",
-        "node" => "rows_declined_node",
-        "blend" => "rows_declined_blend",
-        "map" => "rows_declined_map",
-        _ => "rows_declined_constants",
     }
 }
 
@@ -173,8 +82,8 @@ pub fn count_geometry(outcome: &'static str) {
 
 /// The cut's arm (docs/graphics/retire-d3d-r5.md, "The sky's cut"): the
 /// guest's sky pass is passed over for the rest of a BSP once
-/// [`CUT_TO_ANSWER`] strips in a row have had the made rows answering and
-/// the look and geometry from the load matching; one strip that does not
+/// [`CUT_TO_ANSWER`] strips in a row have had the look and geometry from
+/// the load matching; one strip that does not
 /// stops it until the next BSP. Counted `sky_cut_<outcome>`: `waiting`,
 /// `ready`, `stopped`.
 pub const CUT_TO_ANSWER: u64 = 256;
@@ -283,7 +192,7 @@ fn dropped_name(why: &'static str) -> &'static str {
     }
 }
 
-/// Records one strip (`all`: rows, look and geometry all the plan's) and
+/// Records one strip (`all`: look and geometry both the plan's) and
 /// answers whether the cut's arm is ready for this BSP.
 pub fn cut_outcome(generation: u64, all: bool) -> bool {
     let mut arm = CUT.lock().unwrap_or_else(|e| e.into_inner());
@@ -359,7 +268,7 @@ mod tests {
         let before = read("scene_kept_sky_range");
         count("range");
         assert_eq!(read("scene_kept_sky_range"), before + 1);
-        assert!(counters().iter().all(|(k, _)| k == "sky_plan_admitted" || k.starts_with("scene_kept_sky_") || k.starts_with("sky_rows_") || k.starts_with("sky_plan_") || k.starts_with("sky_geometry_") || k.starts_with("sky_cut_") || k.starts_with("scene_dropped_sky_")));
+        assert!(counters().iter().all(|(k, _)| k == "sky_plan_admitted" || k.starts_with("scene_kept_sky_") || k.starts_with("sky_plan_") || k.starts_with("sky_geometry_") || k.starts_with("sky_cut_") || k.starts_with("scene_dropped_sky_")));
         let before = read("sky_geometry_window");
         count_geometry("window");
         assert_eq!(read("sky_geometry_window"), before + 1);
@@ -393,32 +302,6 @@ mod tests {
         assert!((0..256).all(|_| !cut_takes(ready)));
         assert_eq!(counter_name("dropped_device"), "scene_dropped_sky_device");
         assert!(SkyTurn::Dropped.passes_over() && SkyTurn::Drawn.passes_over() && !SkyTurn::Guest.passes_over());
-    }
-
-    /// The made rows answer after enough matching strips, are then sampled,
-    /// and one difference returns them to the guest until the next BSP.
-    #[test]
-    fn the_rows_arm_answers_after_its_matches_and_stops_at_a_difference() {
-        let read = |name: &str| counters().into_iter().find(|(k, _)| k == name).map_or(0, |(_, n)| n);
-        let generation = 0xfeed_0001;
-        for _ in 0..ROWS_TO_ANSWER - 1 {
-            assert!(rows_compared(generation));
-            assert!(!rows_outcome(Some(Ok("exact"))));
-        }
-        let declined = read("sky_rows_declined_palette");
-        assert!(rows_compared(generation));
-        assert!(!rows_outcome(Some(Err("palette"))), "a strip it cannot make is the guest's");
-        assert_eq!(read("sky_rows_declined_palette"), declined + 1);
-        assert!(rows_compared(generation));
-        assert!(rows_outcome(Some(Ok("close"))), "answers from the last match");
-        let compared = (0..ROWS_SAMPLE).filter(|_| rows_compared(generation)).count();
-        assert_eq!(compared, 1, "one strip in the sample once answering");
-        assert!(!rows_outcome(Some(Ok("differ"))));
-        assert!(rows_compared(generation), "stopped: every strip is compared again");
-        assert!(!rows_outcome(Some(Ok("exact"))), "stopped until the next BSP");
-        assert!(rows_compared(generation + 1));
-        assert!(!rows_outcome(Some(Ok("exact"))), "a new BSP starts again");
-        assert!(counters().iter().any(|(k, _)| k == "sky_rows_exact"));
     }
 
     #[test]

@@ -81,8 +81,8 @@ impl d3d::DrawAdmission for ResidualDraws {
         // from the load's snapshots.
         let resident = issue.geometry.as_ref().map_err(|why| *why).and_then(|(section, part)| section.resident(*part, draw));
         native_sky::count_geometry(resident.as_ref().map_or_else(|why| *why, |_| "matched"));
-        // The cut's arm: rows, look and geometry all the plan's.
-        native_sky::cut_outcome(call.generation, issue.rows && issue.look.as_ref().is_ok_and(|look| look.check(draw) == "matched")
+        // The cut's arm: look and geometry both the plan's.
+        native_sky::cut_outcome(call.generation, issue.look.as_ref().is_ok_and(|look| look.check(draw) == "matched")
             && resident.is_ok());
         let constants = issue.constants;
         let item = issue.item.as_ref().ok().cloned();

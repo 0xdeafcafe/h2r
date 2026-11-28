@@ -159,9 +159,9 @@ draw's. Causes, as `scene_kept_sky_<cause>`: `unloaded`, `shader`,
 
 ## The sky's node rows
 
-The rows arm (`scene_extract::layout::sky_rows`, `native_sky::rows_outcome`)
-makes the strip's rows from the sky's transform and compares them with the
-guest's (`SkyItem::rows`) at the strip.
+The cut makes each strip's rows from the sky's transform
+(`scene_extract::layout::sky_rows::rows_of`); nothing compares them with
+the guest's.
 
 | Step | Guest | Made from |
 |---|---|---|
@@ -170,12 +170,6 @@ guest's (`SkyItem::rows`) at the strip.
 | Node | `0x0003ebd0`'s loop, `0x00142a60` | the rest matrix plus `[0x004687a4]`, under the sky matrix |
 | Rows | `0x001376c0` | under the node's inverse bind (`mode` node `+0x28`), three rows |
 
-| Arm state | What happens |
-|---|---|
-| Comparing | every strip; the guest's rows draw |
-| Answering | after 256 matches (`exact`, or `close`: within `1e-5` relative, the x87's trigonometry) and no difference; one strip in 64 compared |
-| Stopped | at a difference, until the next BSP |
-
 A section with no single node (`SECTION_NODE` -1) takes its node map's
 palette as `0x00137800` builds it (from `0x0003e380`, detail level 4):
 every node's rows, then the sky group's compound nodes (`mode +0x38`,
@@ -183,9 +177,7 @@ group `byte mode +0x3c + 4`), each the weighted sum of up to four of the
 matrices so far (`m·w + sum`, the fourth weight `1 - sum`), then the loaded
 section's (`+0x34`) node map (`+0x64`) over them. A model with flag bit 2
 (one matrix) is declined, `palette`; a group or record that does not read,
-`blend`; a node map that does not read or names a matrix not made, `map`. Counters: `sky_rows_{exact,close,differ,skipped,answering}`,
-`sky_rows_declined_<why>`. The strip draws the guest's rows in every state
-until the cut.
+`blend`; a node map that does not read or names a matrix not made, `map`.
 
 ## The sky's program and textures
 
