@@ -706,6 +706,21 @@ mod tests {
             m.set_u32(a, v).unwrap();
         }
         m.set_u8(TEXTURE_ENTRIES + 3, u8::from(loaded)).unwrap();
+        if !loaded {
+            // The level's read is queued, not done.
+            crate::texture_io::init(&mut m);
+            let id = crate::texture_io::queue(&mut m, crate::texture_io::Request {
+                handle: 1,
+                offset: 0,
+                size: 0x200,
+                dest: 0x0055_0000,
+                loaded_at: TEXTURE_ENTRIES + 3,
+                priority: 2,
+            })
+            .unwrap()
+            .unwrap();
+            m.set_u32(TEXTURE_ENTRIES + 0xc, id).unwrap();
+        }
         m.set_u16(lg::LAYERS + 2 * lg::LAYER_STRIDE, 2).unwrap();
         (m, record)
     }
@@ -736,10 +751,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "fog fans: texture_request: 0x0012ca6f")]
-    fn a_read_to_wait_for_panics_with_its_cause() {
+    fn a_level_still_loading_binds_nothing_that_frame() {
         let (mut m, _) = streaming_mem(false);
-        turn(&mut m, Setup::Layers, ESP, MXCSR, CONTROL, Some(&Drawn::default()));
+        let host = Drawn::default();
+        assert_eq!(turn(&mut m, Setup::Layers, ESP, MXCSR, CONTROL, Some(&host)), Turn::Return);
+        assert!(host.0.lock().unwrap().is_empty());
     }
 
     #[test]

@@ -447,6 +447,8 @@ NotSupported becomes a diagnostic stop. Pre-I/O validation failures leave the
 IO_STATUS_BLOCK untouched. DUPLICATE_CLOSE_SOURCE cleanup failures do not turn
 a published successful duplicate into an error. Native VFS handles never enter guest RAM.
 
+`Kernel::read_at(guest_handle, offset, out)` is one positioned read through a guest file handle, the VFS read `NtReadFile` makes without the guest call or the file position: the native texture streaming reads (`render-bridge`'s `texture_io::pump`) use it.
+
 FILE_SYNCHRONOUS_IO_NONALERT and FILE_SYNCHRONOUS_IO_ALERT are admitted and
 behave the same: every transfer completes on the host thread without a guest
 wait, so no alert or APC can interrupt it. Asynchronous file objects (neither

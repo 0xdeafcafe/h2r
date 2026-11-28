@@ -47,7 +47,7 @@ way, by an `implement` at `PLANAR_FOG_OTHER_SETUP`.
 | The block (`planar_fog::other_combiner`) | two combiner stages and the texture shader: modes `0x2621` (2D, dot product, dot ST), dot mapping `0x44` (HILO 1) | `0x00025e50`, then `0x0001ccf0` |
 | The attributes | per corner: the position at the clip far, attributes 1 and 4 the rectangle's lerp, 2 and 3 the near and far planes `[k / range, 0, -start / range, 0]` | `0x00026812` |
 | Stage 0 (`FogQuadGpu::record_other`) | the bound depth's D24S8 words as LIN A8R8G8B8, made by a prepass from the depth view into an RGBA8 copy | target 3 of `0x00014bc0` |
-| Stage 2 (`fog_quad::ramp_texture`) | image 0 of the rasterizer's ramp bitmap, or of its default, decoded as a decal bitmap. A header past the cache's stamp, or one not streamed (`+0x0f` bit 1 clear), is taken at once; otherwise it is the texture cache's `0x00012310` with LOD 0 in Rust (`texture_cache::header`), as `0x000143c0` asks for it. A header of 0 binds no ramp: the strip is not drawn that frame, the depth word is written. A ramp that needs a disc read panics `fog quad: texture_request: <cause>` | `0x000143c0`, `0x00012310`, `0x0012ccf0`, `0x0012ce00` |
+| Stage 2 (`fog_quad::ramp_texture`) | image 0 of the rasterizer's ramp bitmap, or of its default, decoded as a decal bitmap. A header past the cache's stamp, or one not streamed (`+0x0f` bit 1 clear), is taken at once; otherwise it is the texture cache's `0x00012310` with LOD 0 in Rust (`texture_cache::header`), as `0x000143c0` asks for it. A header of 0 binds no ramp: the strip is not drawn that frame, the depth word is written. A ramp whose read is queued and not done is not resident yet (no ramp, no strip that frame); a ramp the cache holds no slot for panics `fog quad: texture_request: <cause>` | `0x000143c0`, `0x00012310`, `0x0012ccf0`, `0x0012ce00` |
 | The draw | one strip through `QuadDrawer::grid_program`, its depth the clip far tested greater unless `[0x0048575d]` is set, the planar fog's blend | the fan's `Begin(7)` .. `End` |
 
 ### The plate (kind 1)
@@ -90,7 +90,7 @@ Every path the cut does not draw is `unimplemented!("fog quad: <cause>")`:
 |---|---|
 | `other_placed` | the device did not take the other setup's pass |
 | `ramp_unread`, `ramp_unbound`, `ramp_image` | the ramp bitmap does not read, binds nothing, or has no image 0 |
-| `texture_request: <cause>`, `texture_unread` | the texture cache would queue, raise or wait for the ramp's disc read through the async I/O pool's kernel mutex (`0x0012d5a0`, `0x00120ce0`, `0x0012ca6f`; `texture_cache.rs`), or its fields do not read |
+| `texture_request: <cause>`, `texture_unread` | the texture cache would take a slot for the ramp's level (`0x0012d5a0`, the ring allocator `0x0013d370`; `texture_cache.rs`), or its fields do not read |
 | `other_depth_binding`, `other_combiner`, `depth_clip`, `ramp` | the depth view cannot be sampled, the block does not translate, a tested strip has no clip, or the fog strip has no ramp |
 | `host` | no host is installed |
 | `placed` | the device did not take the pass |

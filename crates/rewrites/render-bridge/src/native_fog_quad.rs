@@ -410,6 +410,21 @@ mod tests {
             m.set_u32(a, v).unwrap();
         }
         m.set_u8(TEXTURE_ENTRIES + 3, u8::from(loaded)).unwrap();
+        if !loaded {
+            // The level's read is queued, not done.
+            crate::texture_io::init(&mut m);
+            let id = crate::texture_io::queue(&mut m, crate::texture_io::Request {
+                handle: 1,
+                offset: 0,
+                size: 0x200,
+                dest: 0x0055_0000,
+                loaded_at: TEXTURE_ENTRIES + 3,
+                priority: 2,
+            })
+            .unwrap()
+            .unwrap();
+            m.set_u32(TEXTURE_ENTRIES + 0xc, id).unwrap();
+        }
         m
     }
 
@@ -439,10 +454,11 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "fog quad: texture_request: 0x0012ca6f")]
-    fn a_ramp_read_to_wait_for_panics_with_its_cause() {
+    fn a_ramp_still_loading_draws_no_strip_that_frame() {
         let mut m = streaming_mem(false);
-        turn_other(&mut m, ESP, MXCSR, CONTROL, Some(&Draws::default()));
+        let host = Draws::default();
+        assert_eq!(turn_other(&mut m, ESP, MXCSR, CONTROL, Some(&host)), Turn::Return);
+        assert!(host.2.lock().unwrap().is_empty());
     }
 
     #[test]

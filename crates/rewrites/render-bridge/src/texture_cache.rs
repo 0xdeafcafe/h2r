@@ -19,22 +19,27 @@
 //! in its order, `comiss` as Rust's ordered comparisons (a NaN compares
 //! false either way, as the guest's branches take it).
 //!
+//! A level whose read is queued and not done is not resident yet: the
+//! entry's `+3` is 0, a wait or a higher priority raises the read
+//! ([`texture_io::raise`], `0x00120ce0`), and the answer is no texture
+//! (the held header, the last loaded level, or the type's default stand in,
+//! as the guest's request does). [`texture_io::pump`] finishes the read
+//! through the kernel's file model.
+//!
 //! What the request cannot do from guest memory is `Err`:
 //!
 //! | Cause | Why |
 //! |---|---|
-//! | [`QUEUE_READ`] | a level with no cache entry: `0x0012d5a0` allocates one (`0x0013d370`) and queues its read (`0x00213760` → `0x001a0f10`), which takes the async I/O pool's kernel mutex (`0x001208b0` → `WaitForSingleObject` `0x002d63fa`) |
-//! | [`RAISE_PRIORITY`] | an entry not loaded asked at a higher priority: `0x00120ce0` raises its read under the same kernel mutex |
-//! | [`WAIT_READ`] | an entry not loaded asked to wait: `0x0012ca6f` raises its read (`0x00120ce0`) then yields (`SwitchToThread` `0x002d2084`) until the I/O worker loads it |
+//! | [`ALLOCATE_SLOT`] | a level with no cache entry: `0x0012d5a0` takes a slot for it (`0x0013d370`, a ring allocator with an eviction sweep) before it queues the read (`0x00213760`, [`texture_io::queue`]) |
+//! | `texture_unread`, `texture_unwritable` | guest memory does not read or write |
 
+use crate::texture_io;
 use engine::memory::GuestMemory;
 
 /// Why the cache's get cannot finish in Rust.
 pub type Cause = &'static str;
 
-pub const QUEUE_READ: Cause = "texture_request: 0x0012d5a0 queues the read on the async I/O pool (kernel mutex 0x002d63fa)";
-pub const RAISE_PRIORITY: Cause = "texture_request: 0x00120ce0 raises the read's priority under the I/O pool's kernel mutex 0x002d63fa";
-pub const WAIT_READ: Cause = "texture_request: 0x0012ca6f waits for the read (0x00120ce0, SwitchToThread 0x002d2084)";
+pub const ALLOCATE_SLOT: Cause = "texture_request: 0x0012d5a0 takes a cache slot for the level (the ring allocator 0x0013d370 and its eviction sweep)";
 const UNREAD: Cause = "texture_unread";
 const UNWRITABLE: Cause = "texture_unwritable";
 
@@ -319,17 +324,22 @@ pub fn level_request(mem: &mut dyn GuestMemory, image: u32, n: u32, ask: Ask) ->
     }
     let handle = word(&*mem, slot(image, 0x28, n))?;
     if handle == u32::MAX {
-        return Err(QUEUE_READ);
+        return Err(ALLOCATE_SLOT);
     }
     let entry = entry(mem, handle)?;
     if loaded(&*mem, entry)? {
         return Ok(entry.wrapping_add(0x14));
     }
+    // The read is queued (`entry + 0xc` its id) and not done: the level
+    // is not resident yet. A wait raises it to priority 7 (`0x0012ca6f`)
+    // and does not block; a higher priority than the read's is stored
+    // and raised (`0x0012ca9c`). [`crate::texture_io::pump`] finishes it.
+    let id = word(&*mem, entry.wrapping_add(0xc))?;
     if ask.wait {
-        return Err(WAIT_READ);
-    }
-    if ask.priority as i32 > word(&*mem, entry.wrapping_add(8))? as i32 {
-        return Err(RAISE_PRIORITY);
+        texture_io::raise(mem, id, 7)?;
+    } else if ask.priority as i32 > word(&*mem, entry.wrapping_add(8))? as i32 {
+        set(mem, entry.wrapping_add(8), ask.priority)?;
+        texture_io::raise(mem, id, ask.priority)?;
     }
     Ok(0)
 }
@@ -465,6 +475,7 @@ mod tests {
         m.set_f32(LEVEL_ONE, 1.0).unwrap();
         m.set_f32(LEVEL_TWO, 2.0).unwrap();
         m.set_f32(IMAGE + 0x58, 4.0).unwrap();
+        texture_io::init(&mut m);
         m
     }
 
@@ -478,6 +489,29 @@ mod tests {
         m.set_u32(slot(IMAGE, 0x34, n), size).unwrap();
         m.set_u32(slot(IMAGE, 0x28, n), 0xabcd_0000 | index).unwrap();
         m.set_u8(entry_at(index) + 3, u8::from(is_loaded)).unwrap();
+    }
+
+    /// Level `n` with data in cache entry `index` whose read is queued at
+    /// `priority` and not done; its id.
+    fn loading(m: &mut FlatMemory, n: u32, index: u32, size: u32, priority: u32) -> u32 {
+        level(m, n, index, size, false);
+        let read = texture_io::Request {
+            handle: 1,
+            offset: 0x1000 * index,
+            size,
+            dest: 0x0054_0000,
+            loaded_at: entry_at(index) + 3,
+            priority,
+        };
+        let id = texture_io::queue(m, read).unwrap().unwrap();
+        m.set_u32(entry_at(index) + 0xc, id).unwrap();
+        m.set_u32(entry_at(index) + 8, priority).unwrap();
+        id
+    }
+
+    /// The priority of the queued read `id`.
+    fn priority_of(m: &FlatMemory, id: u32) -> u32 {
+        m.u32(texture_io::NODES + (id & 0xff) * texture_io::NODE_SIZE).unwrap()
     }
 
     /// The header the image holds, over 64x32x1 pixels of format word 5.
@@ -635,14 +669,46 @@ mod tests {
         let mut m = mem();
         m.set_u32(slot(IMAGE, 0x1c, 0), 0).unwrap();
         m.set_u32(slot(IMAGE, 0x34, 0), 0x100).unwrap();
-        assert_eq!(header(&mut m, IMAGE, 0.0), Err(QUEUE_READ));
+        assert_eq!(header(&mut m, IMAGE, 0.0), Err(ALLOCATE_SLOT));
     }
 
     #[test]
-    fn an_entry_not_loaded_is_waited_for() {
+    fn an_entry_loading_is_not_resident_yet_and_its_read_is_raised() {
         let mut m = mem();
-        level(&mut m, 0, 3, 0x100, false);
-        assert_eq!(header(&mut m, IMAGE, 0.0), Err(WAIT_READ));
+        let id = loading(&mut m, 0, 3, 0x100, 2);
+        // The wait raises the read to priority 7 and answers no texture.
+        assert_eq!(header(&mut m, IMAGE, 0.0), Ok(0));
+        assert_eq!(priority_of(&m, id), 7);
+        assert_eq!(m.u8(entry_at(3) + 3).unwrap(), 0);
+    }
+
+    #[test]
+    fn a_read_completes_through_the_file_source_and_is_then_resident() {
+        let mut m = mem();
+        let id = loading(&mut m, 0, 3, 0x100, 2);
+        assert_eq!(header(&mut m, IMAGE, 0.0), Ok(0));
+        let mut file = |handle: u32, offset: u32, out: &mut [u8]| -> Result<usize, texture_io::Cause> {
+            assert_eq!((handle, offset, out.len()), (1, 0x3000, 0x100));
+            out.fill(0xab);
+            Ok(out.len())
+        };
+        assert_eq!(texture_io::pump(&mut m, &mut file), Ok(1));
+        assert!(!texture_io::pending(&m, id).unwrap());
+        assert_eq!(m.u8(0x0054_0000).unwrap(), 0xab);
+        let texture = entry_at(3) + 0x14;
+        assert_eq!(header(&mut m, IMAGE, 0.0), Ok(texture));
+        assert_eq!(m.u32(IMAGE + 0x50).unwrap(), texture);
+    }
+
+    #[test]
+    fn an_evicted_read_stays_not_resident() {
+        let mut m = mem();
+        let id = loading(&mut m, 0, 3, 0x100, 2);
+        assert_eq!(texture_io::cancel(&mut m, id), Ok(true));
+        assert_eq!(header(&mut m, IMAGE, 0.0), Ok(0));
+        let mut file = |_: u32, _: u32, _: &mut [u8]| -> Result<usize, texture_io::Cause> { panic!("no read queued") };
+        assert_eq!(texture_io::pump(&mut m, &mut file), Ok(0));
+        assert_eq!(m.u8(entry_at(3) + 3).unwrap(), 0);
     }
 
     #[test]
@@ -650,15 +716,19 @@ mod tests {
         let mut m = mem();
         holding(&mut m);
         m.set_u32(IMAGE + 0x5c, 0x0004_0001).unwrap();
-        level(&mut m, 0, 3, 0x100, false);
-        m.set_u32(entry_at(3) + 8, 2).unwrap();
+        let id = loading(&mut m, 0, 3, 0x100, 2);
         assert_eq!(request(&mut m, IMAGE, 3, 0.0), Ok(IMAGE + 0x5c));
+        assert_eq!(priority_of(&m, id), 2);
         // A lower priority read is raised.
         m.set_u32(entry_at(3) + 8, 1).unwrap();
-        assert_eq!(request(&mut m, IMAGE, 3, 0.0), Err(RAISE_PRIORITY));
-        // `+0x0e` bit 7 keeps the wait.
+        m.set_u32(texture_io::NODES + (id & 0xff) * texture_io::NODE_SIZE, 1).unwrap();
+        assert_eq!(request(&mut m, IMAGE, 3, 0.0), Ok(IMAGE + 0x5c));
+        assert_eq!(m.u32(entry_at(3) + 8).unwrap(), 2);
+        assert_eq!(priority_of(&m, id), 2);
+        // `+0x0e` bit 7 keeps the wait: the read goes to priority 7.
         m.set_u8(IMAGE + 0xe, 0x80).unwrap();
-        assert_eq!(request(&mut m, IMAGE, 3, 0.0), Err(WAIT_READ));
+        assert_eq!(request(&mut m, IMAGE, 3, 0.0), Ok(IMAGE + 0x5c));
+        assert_eq!(priority_of(&m, id), 7);
         // A LOD at the image's bound takes the held header at once.
         m.set_u32(slot(IMAGE, 0x28, 0), u32::MAX).unwrap();
         assert_eq!(request(&mut m, IMAGE, 3, 4.0), Ok(IMAGE + 0x5c));
@@ -681,14 +751,14 @@ mod tests {
     fn the_pins_take_the_last_level_loaded() {
         let mut m = mem();
         m.set_u32(PIN_COUNT, 2).unwrap();
-        level(&mut m, 0, 3, 0x100, false);
-        m.set_u32(entry_at(3) + 8, 7).unwrap();
+        loading(&mut m, 0, 3, 0x100, 7);
         level(&mut m, 1, 4, 0x800, true);
         assert_eq!(request(&mut m, IMAGE, 3, 0.0), Ok(entry_at(4) + 0x14));
         assert_eq!(m.u8(DEFAULTED).unwrap(), 0);
-        // A pin mode of 1 pins format 3 alone: the read is waited for.
+        // A pin mode of 1 pins format 3 alone: the read is waited for (not
+        // resident yet) and the loaded level stands in.
         m.set_u32(PIN_MODE, 1).unwrap();
-        assert_eq!(request(&mut m, IMAGE, 3, 0.0), Err(WAIT_READ));
+        assert_eq!(request(&mut m, IMAGE, 3, 0.0), Ok(entry_at(4) + 0x14));
     }
 
     #[test]
@@ -706,14 +776,15 @@ mod tests {
         let mut m = mem();
         m.set_u32(PIN_COUNT, 2).unwrap();
         level(&mut m, 0, 3, 0x100, true);
-        level(&mut m, 1, 4, 0x800, false);
-        m.set_u32(entry_at(4) + 8, 7).unwrap();
+        let id = loading(&mut m, 1, 4, 0x800, 7);
         // LOD 1 by `[0x0046883c]`: level 1 is asked and the loaded level
         // 0 is taken after.
         m.set_u8(LOD_ONE, 1).unwrap();
         assert_eq!(request(&mut m, IMAGE, 3, 0.0), Ok(entry_at(3) + 0x14));
         m.set_u32(entry_at(4) + 8, 1).unwrap();
-        assert_eq!(request(&mut m, IMAGE, 3, 0.0), Err(RAISE_PRIORITY));
+        assert_eq!(request(&mut m, IMAGE, 3, 0.0), Ok(entry_at(3) + 0x14));
+        assert_eq!(m.u32(entry_at(4) + 8).unwrap(), 2);
+        assert_eq!(priority_of(&m, id), 2);
         m.set_u8(LOD_ONE, 0).unwrap();
         assert_eq!(request(&mut m, IMAGE, 3, 0.0), Ok(entry_at(3) + 0x14));
     }
