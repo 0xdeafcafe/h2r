@@ -26,17 +26,6 @@ const LIGHTING_TYPE: u8 = 0x30;
 const STREAMS: usize = 16;
 const VAF_BYTES: usize = STREAMS * 16;
 
-fn xbox_type(format: Attribute) -> u32 {
-    match format {
-        Attribute::Float(n) => u32::from(n) * 16 + 2,
-        Attribute::PByte(n) => u32::from(n) * 16 + 4,
-        Attribute::Short(n) => u32::from(n) * 16 + 5,
-        Attribute::NormShort(n) => u32::from(n) * 16 + 1,
-        Attribute::NormPacked3 => 0x16,
-        Attribute::Colour => 0x40,
-    }
-}
-
 #[derive(Clone, Copy)]
 struct Stream {
     /// The descriptor is mutable (especially placement lightmap buckets).
@@ -98,7 +87,7 @@ fn add_format(bytes: &[u8; STREAM_FORMAT_SIZE], slot: usize, registers: &[i8; 21
                     let base = register as usize * 16;
                     encode_word(vaf, base, slot as u32);
                     encode_word(vaf, base + 4, offset);
-                    encode_word(vaf, base + 8, xbox_type(attr));
+                    encode_word(vaf, base + 8, attr.xbox_type());
                 }
                 offset = offset.wrapping_add(attr.size() as u32);
             }
