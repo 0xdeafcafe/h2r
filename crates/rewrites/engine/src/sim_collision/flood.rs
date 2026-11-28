@@ -13,28 +13,28 @@ use super::{Read, consts, finish, layout};
 use crate::sim_native::{Memory, add_flags, logic_flags};
 use runtime::{CpuAbi, GuestFault, TransferAbi};
 use sim_collision::flood::{Flood, FloodQuery, MAX_CLUSTERS, Topology, TopologyKey};
-use sim_collision::objects::{List, Visit, VisitQuery, object_visit_inexact};
-use sim_collision::{Bail, CollisionWorld, Entry, GuestRead, Inexact};
-use sim_core::det::{self, checked_inputs};
+use sim_collision::objects::{List, Visit, VisitQuery, object_visit_guest};
+use sim_collision::{Bail, CollisionWorld, Entry, GuestRead, Raised};
+use sim_core::det;
 use std::sync::Arc;
 
 pub mod spatial;
 
-/// The x87 state the flood's sequences reproduce: masked, nearest, single
-/// or double precision and two free registers. PE may be clear: the
-/// commit sets it when a sequence rounds ([`x87_after`]).
+/// The x87 state the flood's sequences run under: every exception masked,
+/// any precision and rounding, two free registers. The commit sets the
+/// flags the sequences raise ([`x87_after`]).
 fn x87_ready(c: &CpuAbi) -> bool {
-    det::x87_env(c.x87.control, c.x87.status, c.x87.tag, 2) && c.x87.control & 0x300 != 0x300
+    det::x87_env(c.x87.control, c.x87.status, c.x87.tag, 2)
 }
 
-/// `mxcsr` after a region whose SSE operations were `inexact`.
-fn after(mxcsr: u32, inexact: Inexact) -> u32 {
-    if inexact.sse { mxcsr | 0x20 } else { mxcsr }
+/// `mxcsr` after a region that `raised` these flags.
+fn after(mxcsr: u32, raised: Raised) -> u32 {
+    mxcsr | (raised.mxcsr & 0x3f)
 }
 
-/// The x87 status word after a region whose x87 sequences were `inexact`.
-fn x87_after(status: u16, inexact: Inexact) -> u16 {
-    if inexact.x87 { status | 0x20 } else { status }
+/// The x87 status word after a region that `raised` these flags.
+fn x87_after(status: u16, raised: Raised) -> u16 {
+    status | (raised.x87 & 0x3f)
 }
 
 fn sse_ready(c: &CpuAbi) -> Result<(), Bail> {
@@ -96,7 +96,7 @@ struct FloodPlan {
     epoch: u32,
     structure: u32,
     flood: Flood,
-    /// The MXCSR after the flood: PE set when an SSE operation was inexact.
+    /// The MXCSR after the flood, with the flags its SSE operations raised.
     mxcsr: u32,
     /// The x87 status after the flood: PE set when a sequence rounded.
     x87_status: u16,
@@ -134,7 +134,7 @@ fn plan_flood(
         marks: layout::CLUSTER_MARKS,
         epoch,
     };
-    let (flood, inexact) = t.cluster_flood_inexact(&m, &q)?;
+    let (flood, raised) = t.cluster_flood_guest(&m, &q, c.mxcsr)?;
     let outputs = Outputs::new(
         g,
         sp,
@@ -154,8 +154,8 @@ fn plan_flood(
         epoch,
         structure: t.key().structure,
         flood,
-        mxcsr: after(c.mxcsr, inexact),
-        x87_status: x87_after(c.x87.status, inexact),
+        mxcsr: after(c.mxcsr, raised),
+        x87_status: x87_after(c.x87.status, raised),
     })
 }
 
@@ -209,7 +209,7 @@ pub struct VisitPlan {
     types: u32,
     radius: u32,
     pub visit: Visit,
-    /// The MXCSR after the visit: PE set when an SSE operation was inexact.
+    /// The MXCSR after the visit, with the flags its SSE operations raised.
     pub mxcsr: u32,
     /// The x87 status after the visit: PE set when a flood sequence rounded.
     pub x87_status: u16,
@@ -253,9 +253,8 @@ pub fn plan_visit_at(
     };
     let [lists, types, location, centre_at, radius, out, capacity] = args;
     // The graph is needed only when the visit floods.
-    let floods = cluster != u16::MAX
-        && checked_inputs(&[radius, zero])
-        && f32::from_bits(radius) > f32::from_bits(zero);
+    // `comiss radius, zero; jbe`: unordered does not flood.
+    let floods = cluster != u16::MAX && f32::from_bits(radius) > f32::from_bits(zero);
     let t = if floods && x87_ready(c) {
         Some(topology(g, world)?)
     } else {
@@ -290,7 +289,7 @@ pub fn plan_visit_at(
             },
         ],
     };
-    let (visit, inexact) = object_visit_inexact(&m, &q, || t.clone().ok_or(Bail::Data))?;
+    let (visit, raised) = object_visit_guest(&m, &q, c.mxcsr, || t.clone().ok_or(Bail::Data))?;
     let outputs = Outputs::new(
         g,
         sp,
@@ -325,8 +324,8 @@ pub fn plan_visit_at(
         types,
         radius,
         visit,
-        mxcsr: after(c.mxcsr, inexact),
-        x87_status: x87_after(c.x87.status, inexact),
+        mxcsr: after(c.mxcsr, raised),
+        x87_status: x87_after(c.x87.status, raised),
     })
 }
 

@@ -76,6 +76,7 @@ fn ray(image: &[u8], case: &Case) -> Result<Ray, Bail> {
         from: case.from.map(f32::to_bits),
         to: case.to.map(f32::to_bits),
         precision: Precision::from_control(case.control)?,
+        mxcsr: 0x1fa0,
         constants: Constants {
             zero: image_word(image, layout::ZERO),
             one: image_word(image, layout::ONE),

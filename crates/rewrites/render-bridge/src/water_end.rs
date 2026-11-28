@@ -173,6 +173,13 @@ impl ocean::Device for Live {
         crate::native_flare_query::with_host(|host, state| ocean::gate::visible(mem, host, state, definition)).unwrap_or(Err("flare_host"))
     }
 
+    fn sky(&mut self, mem: &mut dyn GuestMemory) -> Result<(), ocean::Cause> {
+        crate::native_sky::draw_cut(mem).map(|_| ()).map_err(|why| {
+            eprintln!("water ocean: the reflection's sky drew nothing ({why})");
+            "copy_sky"
+        })
+    }
+
     fn fp(&mut self) -> (&mut u32, u16) {
         (&mut self.mxcsr, self.x87_control)
     }
@@ -270,9 +277,9 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "water ocean copy: pass")]
+    #[should_panic(expected = "water ocean copy: sky")]
     fn an_unported_copy_is_named() {
-        ocean_unported("copy_pass");
+        ocean_unported("copy_sky");
     }
 
     #[test]

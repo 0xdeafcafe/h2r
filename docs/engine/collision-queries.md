@@ -136,8 +136,8 @@ compare:
 
 ## Floats
 
-A, B, C, D and the sphere pretest run their SSE arithmetic and compares
-in `sim_core::det::Fp::guest(mxcsr)`, for any operand. An operation whose
+Every entry runs its SSE arithmetic and compares in
+`sim_core::det::Fp::guest(mxcsr)`, for any operand. An operation whose
 operands are zero or of magnitude in `[2^-63, 2^63)` takes the host
 result, which rounds once under nearest-even on both host architectures;
 every other one (NaN, infinity, subnormal, huge) runs on the `simd`
@@ -148,14 +148,33 @@ set do (`jb` and `jbe` taken, `ja` and `jae` not; `bsp::non_negative`,
 `bsp::above`, the sphere's tests). The `sim-collision` tests
 `the_walks_run_operands_off_the_fast_path_under_the_guest_state` and
 `guest_state_runs_exceptional_inputs_as_the_compares_branch` cover a
-plane component of `1e-30` and NaN inputs. `Fp::new` keeps the
-exact-or-decline rule (`float`) for E and J.
+plane component of `1e-30` and NaN inputs. A `ucomiss; lahf; test ah,
+44h; jnp` (141590's scale tests, J's parallel test) goes through
+`Fp::ucomiss`: only an ordered equal takes it, and only a signalling NaN
+raises IE. `Fp::new` keeps the exact-or-decline rule (`float`) for the
+read-only callers outside the entries.
 
-The matcher's projection row is decided once per BSP: it takes absolute
-values and compares them in x87, which raises no flag on zero, normal or
-infinite components. A NaN or subnormal component makes the row `BAD`
-(`data`). A packed ring test stands only when it raised no flag the walk
-had not; otherwise the scalar test runs in guest order.
+x87 sequences run on `sim_core::det::X87` under the guest's control
+word: a value the host holds exactly stays an `f64` on the host path,
+with inexactness from an error-free transform; anything else (NaN,
+infinity, subnormal, near overflow, extended precision, rounding other
+than nearest) runs on the `x87` crate's model. `Chain` values in a
+`det::checked_guest(mxcsr, control, ..)` region use it, so F, G and H
+take any operand and every precision control. E, I and J call it
+directly for their `fld; fabs; fcomip`, `fdivr` and `fistp` steps.
+
+The matcher's projection row (`bsp::pick`, the same sequence as
+`0x00120850`) is decided once per BSP for any normal: the absolute
+values go through x87 `fld; fabs; fstp`, then `fcomip` and `comiss`,
+unordered counting as below. A NaN or subnormal component raises IE or
+DE each time the matcher runs; `Ref::flags` records which, and the
+matcher raises them into the MXCSR and the x87 status word under the
+guest's state (`Bsp::vector_test_under`). `Bsp::vector_test` declines
+such a reference (`float`). The `sim-collision` tests
+`nan_and_subnormal_normals_get_the_guest_row_and_its_flags` and
+`the_matcher_raises_a_subnormal_normal_under_the_guest_state` cover it.
+A packed ring test stands only when it raised no flag the walk had not;
+otherwise the scalar test runs in guest order.
 
 The split's divide, sign change and binary32 store can round.
 `det::x87_neg_quotient_under(control, a, b)` takes operands off the
@@ -175,21 +194,17 @@ The bridge first checks the MXCSR and x87 exception masks, the x87 error summary
 
 - MXCSR has every exception masked and rounds to nearest
   (`det::guest_env`); PE may be clear, as in the live game's `0x1f80`.
-  The kernels' SSE arithmetic runs in `det::Fp::guest(mxcsr)` (A, B, C,
-  D and the sphere pretest; FTZ and DAZ act as the MXCSR says) or a
-  checked region that samples the host's inexact flag for its SSE
-  operations (`Checked::sse_inexact`, G and H, which need FTZ and DAZ off,
-  `det::checked_guest_env`). An answer leaves the MXCSR with the flags
+  The kernels' SSE arithmetic runs in `det::Fp::guest(mxcsr)` (FTZ and
+  DAZ act as the MXCSR says); G and H run theirs in a
+  `det::checked_guest` region, whose operations off the checked path
+  take the `simd` model. An answer leaves the MXCSR with the flags
   retail's instructions raise.
-- For F and G: the x87 control word masks every exception, rounds to
-  nearest and selects single or double precision (`det::Chain`; extended
-  bails `float`), and one (F) or two (G) registers below the top are
-  free. PE may be clear. A chain's arithmetic, `fst m32` and `fistp`
-  sample the host's inexact flag (`Checked::x87_inexact`), and the
-  commit sets the status word's PE when one rounded, as retail does. The
-  adapters model nothing else of the status word.
-- E, I and J leave both PE flags as they found them: their walks'
-  inexactness is not tracked.
+- For E, F, G, H, I and J: the x87 control word masks every exception
+  and rounds to nearest, in any precision (`det::x87_env`), and the
+  registers the sequence pushes are free. PE may be clear. Their x87
+  steps run on `det::X87`, and the commit ORs the exception flags they
+  raised into the status word (`Raised`, `Prediction::x87`,
+  `Plan::x87`), as retail does.
 - For the C and D candidate adapters: the x87 control word masks every exception,
   rounds to nearest and does not use the reserved precision setting; the
   status word has no error summary; and at least two registers below the
@@ -201,11 +216,11 @@ Invalid, divide-by-zero, overflow and underflow decline the result. The
 operand guard accepts normals and signed zeros. The result guard also
 declines the smallest normal to cover differences in tininess detection.
 `det::Chain` keeps a single- or double-precision x87 working value
-through arithmetic, comparison and conversion. Reserved and extended
-precision decline general chains.
-F runs its six conversions as chains inside one checked region: an
-operand that is not zero or normal, a non-normal result, or a value
-`fistp` cannot represent bails `float`.
+through arithmetic, comparison and conversion. Outside a guest region,
+reserved and extended precision decline general chains. F runs its six
+conversions as chains in one `checked_guest` region
+(`Corners::convert_guest`): a value `fistp` cannot represent stores the
+indefinite `0x80000000` and raises IE, as the guest does.
 
 `collision.stats` reports the complete MXCSR and x87 control words
 observed at A–E, including calls declined at dispatch. Differences between
@@ -387,7 +402,7 @@ hook reads for the panic.
 | Reason | When |
 |---|---|
 | `env` | MXCSR or the x87 environment is outside the checks above |
-| `float` | E or J: an arithmetic operand outside `Fp::new`'s range; F–I: an operand or result a checked region declines |
+| `float` | a read-only caller outside the entries (`Fp::new`, `Bsp::vector_test`) met an operand off the exact path |
 | `fault` | an unreadable input, unwritable output or unusable stack range |
 | `data` | invalid block sizes or indices, a ring that cannot be decoded, a walk exceeding the available node count, or an epoch change during decode; for F, a bad program size, a reached trap, a `guest_only` program, or an inverted or far box |
 | `depth` | the walk went deeper than 256 levels, or F's query nests more than 256 self-calls |

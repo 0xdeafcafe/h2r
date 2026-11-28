@@ -105,9 +105,10 @@ fn structure_liquid_and_reference_order_match_the_lifted_query() {
             for generation in [0x6123_abcd, u32::MAX] {
                 let m = fixture(image, wall, flags, generation);
                 let before = m.overlay.clone();
+                // PE already sticky, then clear: J's flags are the guest's.
                 let cpu = CpuAbi {
                     esp: STACK,
-                    mxcsr: 0x1fa0,
+                    mxcsr: if generation == u32::MAX { 0x1f80 } else { 0x1fa0 },
                     ..CpuAbi::xbox_thread()
                 };
                 let world = CollisionWorld::new(&EPOCH);
@@ -165,6 +166,8 @@ fn structure_liquid_and_reference_order_match_the_lifted_query() {
                     (returned.esp, returned.ebx, returned.ebp, returned.esi, returned.edi),
                     "{label}: callee-saved"
                 );
+                assert_eq!(nc.mxcsr, returned.mxcsr, "{label}: MXCSR");
+                assert_eq!(nc.x87.status & 0x20, returned.x87.status & 0x20, "{label}: x87 PE");
                 let dead = (STACK - 0x10000, STACK + 4 + 0x18);
                 for at in nm.touched(&guest, STACK, dead).into_iter().chain(STACK + 4..STACK + 8) {
                     assert_eq!(nm.get(at), guest.get(at), "{label}: byte {at:#x}");

@@ -160,6 +160,10 @@ impl Host for Targets {
         unimplemented!("targets: viewport push fragment")
     }
 
+    fn surface_size(&self, mem: &dyn GuestMemory, header: u32) -> Option<(u32, u32)> {
+        self.device.lock().ok()?.surface_size(&crate::native_world_glue::ReadMemory(mem), header)
+    }
+
     fn viewport(&self, mem: &mut dyn GuestMemory, at: u32) -> bool {
         let mut b = self.bound();
         for i in 0..6 {

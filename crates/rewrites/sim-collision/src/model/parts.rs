@@ -2,7 +2,7 @@
 use super::transform;
 use crate::instance::PlacementMatrix;
 use crate::{Bail, GuestRead, Hit, Outcome, Segment, bsp::NONE};
-use sim_core::det::{self, Fp};
+use sim_core::det::Fp;
 use std::cmp::Ordering;
 
 const UNIT: u32 = 0x0045_dbc0;
@@ -67,6 +67,7 @@ impl Model {
     /// previous part's best fraction. A hit overwrites the part identifier.
     pub(super) fn ray<G: GuestRead>(
         &self,
+        fp: &mut Fp,
         g: &mut G,
         start: [u32; 3],
         delta: [u32; 3],
@@ -105,20 +106,20 @@ impl Model {
                 let node = g.u8(part)?;
                 let matrix =
                     transform::matrix(g, self.matrices.wrapping_add(0x34 * u32::from(node)))?;
-                let mut fp = Fp::new();
-                let (local_start, local_delta) = transform::local_ray(matrix, one, start, delta)?;
-                fp.check(fraction);
-                if !fp.exact() {
-                    return Err(Bail::Float);
-                }
-                if det::compare(fraction, 0) == Ordering::Less {
+                let (local_start, local_delta) =
+                    transform::local_ray_with(fp, matrix, one, start, delta);
+                // Ordered tests: a NaN fraction is neither clamped.
+                if fp.comiss(fraction, 0) == Some(Ordering::Less) {
                     fraction = 0;
                 }
-                let t1 = if det::compare(fraction, one) == Ordering::Greater {
+                let t1 = if fp.comiss(fraction, one) == Some(Ordering::Greater) {
                     one
                 } else {
                     fraction
                 };
+                if !fp.exact() {
+                    return Err(Bail::Float);
+                }
                 let outcome = visit(
                     g,
                     PartRay {
@@ -216,7 +217,7 @@ mod tests {
         };
         let mut visits = 0;
         let winner = model
-            .ray(&mut image, start, delta, 9, &mut |_, part| {
+            .ray(&mut Fp::new(), &mut image, start, delta, 9, &mut |_, part| {
                 assert_eq!(part.bsp, parts + 4 + visits * 0x44);
                 assert_eq!(part.query.flags, 9);
                 assert_eq!(part.query.delta, [0.5, 1., 1.5].map(f32::to_bits));
@@ -243,7 +244,7 @@ mod tests {
         image.put(model.states, &[0]);
         assert!(
             model
-                .ray(&mut image, start, delta, 9, &mut |_, _| panic!(
+                .ray(&mut Fp::new(), &mut image, start, delta, 9, &mut |_, _| panic!(
                     "inactive permutation"
                 ))
                 .unwrap()
@@ -253,7 +254,7 @@ mod tests {
         image.put(model.states, &[1]);
         image.put(regions + 4, &[16]);
         assert!(matches!(
-            model.ray(&mut image, start, delta, 9, &mut |_, _| panic!(
+            model.ray(&mut Fp::new(), &mut image, start, delta, 9, &mut |_, _| panic!(
                 "invalid region"
             )),
             Err(Bail::Data)

@@ -143,6 +143,8 @@ pub fn populated(
         wrote?;
     }
     c.eax = (c.eax & !0xff) | u32::from(hit);
+    c.mxcsr = p.prediction.mxcsr;
+    c.x87.status |= p.prediction.x87;
     Ok(Some(finish(c, p.target, 12)))
 }
 

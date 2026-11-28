@@ -127,6 +127,15 @@ impl Device for Recorder {
         self.host.push(Event::Visible);
         Ok(self.visible)
     }
+    fn sky(&mut self, _mem: &mut dyn GuestMemory) -> Result<(), Cause> {
+        // The constants the device holds: the last upload's.
+        let constants = self.host.events.lock().unwrap().iter().rev().find_map(|e| match e {
+            Event::Constants { register: 0, words } => Some(words.clone()),
+            _ => None,
+        });
+        self.host.push(Event::Sky { constants: constants.unwrap_or_default() });
+        Ok(())
+    }
     fn fp(&mut self) -> (&mut u32, u16) {
         (&mut self.mxcsr, 0x027f)
     }
@@ -278,13 +287,15 @@ fn the_shader_flags_pick_the_copy() {
 
 
 /// A copy the device refuses, a copy with no water in the BSP's way, and
-/// the sky pass into target 0x15 are named; a BSP that does not read too.
+/// a reflection target that is not live are named; a BSP that does not
+/// read too.
 #[test]
 fn the_copies_name_what_they_cannot_make() {
     let refuse = Recorder::new();
     refuse.host.refuse_copy.store(true, std::sync::atomic::Ordering::Relaxed);
     assert_eq!(cause(&mut mem(1 << COPY_BIT), &mut { refuse }), "copy_target");
-    assert_eq!(cause(&mut mem(1 << PASS_BIT), &mut Recorder::new()), "copy_pass");
+    // Target 0x15 not live: the reflection is named.
+    assert_eq!(cause(&mut mem(1 << PASS_BIT), &mut Recorder::new()), "copy_reflection");
     let mut m = mem(1 << COPY_BIT);
     m.set_u32(BSP, 0x0010_0000).unwrap();
     assert_eq!(cause(&mut m, &mut Recorder::new()), "unread");
@@ -356,3 +367,5 @@ fn unmade_steps_are_named() {
     m.set_u32(TAGS, 0x0010_0000).unwrap();
     assert_eq!(shader(&m, SHADER_TAG), Err("unread"));
 }
+
+mod reflection;

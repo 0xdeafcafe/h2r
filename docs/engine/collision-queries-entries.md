@@ -149,10 +149,11 @@ ends as `(p - origin) * root_scale` in packed binary32. `RayWalk` walks the
 bytecode the world holds for the code pointer (the same `Tree` and
 revision as F) and yields each interpreter call (`Event::Enter`: pc, frame,
 segment) and each terminal key; the caller passes the fraction the VM
-holds before each step. It replays the original's float sequences in the
-guest's x87 precision (single or double; extended declines) and bails
-`float` on any operand or result off the exact path (NaN, infinity,
-subnormal, an underflowed product or quotient).
+holds before each step. It replays the original's float sequences for
+any operand: the x87 ones on `det::X87` under the guest's control word
+(single, double or extended), the packed SSE ones on `Fp::guest`.
+`RayWalk::raised` holds the MXCSR and x87 flags they raised; the bridge
+writes them back after each step.
 
 I runs in Rust (`engine::sim_collision::mopp_ray::CollectorCast`, driven
 by `sim_bridge::sim_native::mopp_ray`):
@@ -239,9 +240,10 @@ A flood with no portal test (a cluster with no portals, or one whose far
 neighbours are all marked) and a visit of location cluster −1 replay
 registers, scratch stack words, flags and output writes. Every other
 call writes the list, the marks, the generations and active bytes, the
-return register and both PE flags. The portal test's x87 sequences set
-the status word's PE when one rounds (`Checked::x87_inexact`), so a flood
-needs no PE on entry.
+return register and the flags the walk raised in the MXCSR and the x87
+status word (`cluster_flood_guest`, `object_visit_guest`). Any operand
+runs, a NaN centre or radius branching as the guest's unordered compares
+do, so a flood needs no PE on entry.
 
 ### Entry J - whole segment query
 
@@ -259,8 +261,14 @@ object bits J sets in place), and the epoch, marks and cleared active
 byte of each flood, instance trace and object visit it ran, sets AL to
 the hit and returns `ret 0x18`. None of E, G, H or the sphere pretest
 runs below it. `collision.trace` runs the same planner read-only and
-returns the ordered mark lists. Both decline on unsupported arithmetic
-or data. See the
+returns the ordered mark lists.
+
+The plan's float work runs on one
+`query::Env` (`Fp::guest` under the caller's MXCSR, `det::X87` under its
+x87 control word) for any operand: the liquid test's `fabs; fcomip`, the
+relocation's `fdivr` and every SSE step, with the sub-entries' flags
+folded in. The commit writes the MXCSR and ORs the x87 flags into the
+status word. Both decline on unsupported data. See the
 [query order](sim-rewrite-collision.md#54-the-collision-query-entry-j-e) and the
 [agent methods](../runtime/agent-api-checks.md#collision-the-native-collision-world).
 

@@ -510,6 +510,15 @@ impl<G: GuestRead> Walk<'_, G> {
                 continue;
             }
             let [u_axis, v_axis] = self.bsp.row_axes(rf.row)?;
+            // A NaN or subnormal normal: the pick raises its flags each
+            // time, which only the guest's state records.
+            if rf.flags != 0 {
+                if self.x87_control.is_none() {
+                    return Err(Bail::Float);
+                }
+                self.fp.raise(u32::from(rf.flags & 3));
+                self.out.x87_flags |= u16::from(rf.flags >> 4);
+            }
             let (s, d) = (self.q.start, self.q.delta);
             let fp = &mut self.fp;
             let point: [u32; 3] = std::array::from_fn(|k| {

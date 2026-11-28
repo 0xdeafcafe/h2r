@@ -455,6 +455,31 @@ fn conversion_bails_off_the_checked_path() {
     assert_eq!(c.lo, [-1; 3]);
 }
 
+/// Under the guest's control word nothing on the checked path's list
+/// declines: each runs as the guest's x87 does.
+#[test]
+fn guest_conversion_runs_what_the_checked_path_declines() {
+    let one = 1.0f32.to_bits();
+    let ok = [one; 3];
+    let convert = |min: [u32; 3], control| Corners::convert_guest(min, ok, [0; 3], one, control).unwrap();
+    // On the checked path both agree, PE clear.
+    let plain = Corners::convert(ok, ok, [0; 3], one, DOUBLE).unwrap();
+    assert_eq!(convert(ok, DOUBLE), (plain, 0));
+    // Extended precision and round down run.
+    assert_eq!(convert(ok, 0x037f).0, plain);
+    assert_eq!(convert(ok, 0x067f).0, plain);
+    // A NaN or out-of-range value stores the indefinite, minus one, with IE.
+    for bad in [f32::NAN.to_bits(), f32::INFINITY.to_bits(), 3.0e9f32.to_bits()] {
+        let (c, flags) = convert([bad, one, one], DOUBLE);
+        assert_eq!(c.lo[0], i32::MIN.wrapping_sub(1), "{bad:#x}");
+        assert_ne!(flags & 1, 0, "{bad:#x}");
+    }
+    // A subnormal loads with DE and converts to zero, minus one.
+    let (c, flags) = convert([1, one, one], DOUBLE);
+    assert_eq!(c.lo[0], -1);
+    assert_ne!(flags & 2, 0);
+}
+
 const CODE: u32 = 0x2000;
 
 fn image_with(code: &Code) -> Image {

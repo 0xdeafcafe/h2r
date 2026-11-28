@@ -312,4 +312,52 @@ mod native {
             Some(Ordering::Greater)
         );
     }
+
+    #[test]
+    fn a_guest_region_models_what_the_checked_path_declines() {
+        use super::super::checked_guest;
+        // SSE: an overflow and a NaN operand run on the model and raise
+        // OE/PE and IE; a subnormal operand DE. Nothing declines.
+        let got = checked_guest(0x1f80, 0x027f, |r| {
+            let big = r.mul(f32::MAX, 2.0);
+            let nan = r.add(f32::NAN, 1.0);
+            let tiny = r.mul(f32::from_bits(1), 1.0);
+            let order = r.comiss(f32::NAN, 0.0, false);
+            Some((big.to_bits(), nan.is_nan(), tiny.to_bits(), order, r.mxcsr()))
+        });
+        let (big, nan, tiny, order, mxcsr) = got.expect("a guest region never declines on a value");
+        assert_eq!(big, f32::INFINITY.to_bits());
+        assert!(nan);
+        assert_eq!(tiny, 1);
+        assert_eq!(order, None);
+        let m = mxcsr.unwrap();
+        assert_eq!(m & 0x3f, 0x01 | 0x02 | 0x08 | 0x20, "IE, DE, OE and PE: {m:#x}");
+
+        // x87: a chain off the checked path and its store match the model.
+        let (bits, flags, int) = checked_guest(0x1f80, 0x027f, |r| {
+            let a = Chain::load(r, 0x027f, 1.0e-30)?;
+            let b = Chain::load(r, 0x027f, 1.0e-30)?;
+            let product = a * b;
+            let stored = product.store();
+            let int = Chain::load(r, 0x027f, f32::INFINITY)?.integer()?;
+            Some((stored.to_bits(), r.x87_flags(), int))
+        })
+        .unwrap();
+        let mut s = fp::X87Abi {
+            control: 0x027f,
+            tag: 0xffff,
+            ..Default::default()
+        };
+        fp::ld_f32(&mut s, 1.0e-30f32.to_bits());
+        fp::arith(&mut s, fp::arith_op::MUL, 0, fp::src_kind::F32, u64::from(1.0e-30f32.to_bits()));
+        let (_, store) = fp::st_f32(&s, 0);
+        fp::store_commit(&mut s, store.status, true);
+        fp::ld_f32(&mut s, f32::INFINITY.to_bits());
+        let (_, fist) = fp::st_i32(&s, 0);
+        fp::store_commit(&mut s, fist.status, true);
+        assert_eq!(bits, store.value);
+        assert_eq!(int, fist.value);
+        assert_eq!(flags, s.status & 0x3f);
+        assert_eq!(int, i32::MIN);
+    }
 }

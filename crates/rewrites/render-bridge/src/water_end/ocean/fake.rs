@@ -11,6 +11,9 @@ use crate::native_targets::{Bind, Host};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     Clear { flags: u32, colour: u32 },
+    Bind { colour: u32, depth: u32 },
+    Viewport { words: Vec<u32> },
+    Sky { constants: Vec<u32> },
     Texture { stage: u32, texture: u32 },
     Constants { register: u32, words: Vec<u32> },
     Registers { register: u32, words: Vec<u32> },
@@ -43,16 +46,27 @@ impl Fake {
     }
 }
 
-fn read(mem: &dyn GuestMemory, at: u32, n: u32) -> Vec<u32> {
+pub fn read(mem: &dyn GuestMemory, at: u32, n: u32) -> Vec<u32> {
     (0..n).map(|i| mem.u32(at + 4 * i).unwrap()).collect()
 }
+
+/// The size every surface has.
+pub const SURFACE: (u32, u32) = (512, 256);
 
 /// The put [`Fake::push_viewport`] advances by.
 pub const PUSH: u32 = 0x28;
 
 impl Host for Fake {
-    fn bind(&self, _mem: &mut dyn GuestMemory, _bind: Bind, _colour: u32, _depth: u32) -> bool {
-        false
+    fn bind(&self, _mem: &mut dyn GuestMemory, _bind: Bind, colour: u32, depth: u32) -> bool {
+        self.push(Event::Bind { colour, depth });
+        true
+    }
+    fn surface_size(&self, _mem: &dyn GuestMemory, header: u32) -> Option<(u32, u32)> {
+        (header != 0).then_some(SURFACE)
+    }
+    fn viewport(&self, mem: &mut dyn GuestMemory, at: u32) -> bool {
+        self.push(Event::Viewport { words: read(&*mem, at, 6) });
+        true
     }
     fn clear(&self, _mem: &mut dyn GuestMemory, flags: u32, colour: u32, _z: u32, _stencil: u32) -> bool {
         self.push(Event::Clear { flags, colour });
