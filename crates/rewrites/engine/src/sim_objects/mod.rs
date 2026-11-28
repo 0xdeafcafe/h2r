@@ -35,6 +35,7 @@ mod projectile;
 // Slice 11, the projectile step `f8eb0` (x87 and `xmm` lane).
 pub(crate) mod projectile_step;
 mod scenery;
+mod slot_pose;
 pub(crate) mod sse;
 // Slice 4: the post-update shell.
 mod bounds;
@@ -247,6 +248,9 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::BIPED_PHYSICS_INPUT, sites: &biped::INPUT_SITES, run: biped::physics_input },
     Body { point: &points::BIPED_LANDING_UPDATE, sites: &[], run: biped::landing_update },
     Body { point: &points::BIPED_CONTACT_UPDATE, sites: &biped::CONTACT_SITES, run: biped::contact_update },
+    // The pose slot callees: `vehi` and `devi` slot `+6c` (`slot_pose`).
+    Body { point: &points::VEHICLE_POSE, sites: &slot_pose::VEHICLE_SITES, run: slot_pose::vehicle_pose },
+    Body { point: &points::DEVICE_POSE, sites: &slot_pose::DEVICE_SITES, run: slot_pose::device_pose },
 ];
 
 /// The bodies [`drive`] runs and fuses, indexed by entry and site.
