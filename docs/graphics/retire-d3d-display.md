@@ -186,7 +186,7 @@ A kept frame runs the guest's `0x00013f10(0, 0)` as before. Every outcome is cou
 
 | Guest | Rust |
 |---|---|
-| `0x0001fd20` | the guest's call, EAX 0 (it has no D3D entry) |
+| `0x0001fd20` | `fade_record::update`, EAX 0: every write and register as the guest's body makes them, the stack slots and x87 marks included. The x87 blends run on the x87 crate's model under the caller's control word, the SSE under its MXCSR with x86's NaN rules and sticky flags; an operand either cannot make exactly panics (`x87`, `simd`) |
 | no record, or `+0xa4` at or below `[0x0045dbd8]` | return |
 | `0x0001dc40`, `0x0001de20`: target `0x12` | never allocated; the cache's drain does not run |
 | the copy `0x000351a0` | an `OverlayKind::Hold` of texture `0x12`: the bound target copied whole into a texture of its size and format, kept across frames in the overlay's residency (`ui_gpu::OverlayResidency::hold`), one per target copy |
@@ -206,6 +206,8 @@ No guest body of the tail runs. A tail it does not cover panics, named `frame_ta
 | `unread` | a word that does not read |
 
 `frame_tail_calls`, `frame_tail_native`, `frame_tail_copies` and `frame_tail_composites` count the tails. `frame_tail_refused_pass` counts a pass the host did not place (a pending copy is then refused as `0x0001fcd0` refuses it); `frame_tail_refused_hold` a copy with no texture or over a target that cannot be copied, `frame_tail_refused_held` a composite whose held texture or combiner the GPU did not take.
+| `x87`, `simd` | `0x0001fd20`'s x87 or SSE meets an operand or mode its model cannot make exactly (an unmasked exception, a NaN beside a denormal, a tiny inexact product) |
+| `memory` | `0x0001fd20` reads or writes an unmapped word |
 
 **S**: that nothing else reads target `0x12`; that the state the guest's copy and composite leave (texture stage 0, the stage caches, the viewport) is not read before the next frame sets its own; that a fade whose copy was native is not composited by a kept tail (it would sample target `0x12`, never filled).
 
