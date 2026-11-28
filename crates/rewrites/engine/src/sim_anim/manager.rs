@@ -235,4 +235,73 @@ mod tests {
         assert_eq!(g.u32(sp - 12).unwrap(), 0xfeedbeef);
         assert_eq!(g.u32(sp - 16).unwrap(), 0xfeedbeef);
     }
+
+    /// Map a body's text the way the XBE loader does: one mapping per page.
+    fn loader_text(g: &mut Guest, entry: u32) {
+        let body = lookup(entry).unwrap();
+        let mut page = entry & !0xfff;
+        while page < body.end {
+            g.map_zeroed(page, 0x1000, Permissions::RX).unwrap();
+            page += 0x1000;
+        }
+        assert!(g.mappings().len() >= 2, "{entry:#x}'s text crosses a page");
+    }
+
+    #[test]
+    fn base_pose_entry_runs_from_text_in_two_page_mappings() {
+        // Ascension: `anim ANIM_MANAGER_0x1c6f60: fault at 0x1c6f60`. Its
+        // text 1c6f60..1c70f7 crosses 0x1c7000.
+        let (entry, track, resume) = (0x1c6f60, 0x1daea0, 0x1c6f8c);
+        let mut g = Guest::new();
+        loader_text(&mut g, entry);
+        let (channel, tags, sp) = (0x10000, 0x10100, 0x10800);
+        g.map_zeroed(channel, 0x1000, Permissions::RW).unwrap();
+        g.map_zeroed(points::TAG_ENTRIES.base, 4, Permissions::RW).unwrap();
+        g.set_u32(points::TAG_ENTRIES.base, tags).unwrap();
+        g.set_u32(tags + 2 * 16 + 8, 0x5000).unwrap();
+        g.set_u32(channel, 0x0001_0002).unwrap();
+        g.set_u32(channel + 4, 0x77).unwrap();
+        let mut c = CpuAbi { ebx: channel, esp: sp, edi: 0xed1, ..Default::default() };
+        assert_eq!(run(&mut c, &mut g, entry).unwrap(), Some(TransferAbi::call(track, resume)));
+        assert_eq!((c.esp, c.edx, c.edi), (sp - 20, 0x5000, u32::MAX));
+        assert_eq!(g.u32(sp - 20).unwrap(), resume);
+        assert_eq!(g.u32(sp - 16).unwrap(), 0x77);
+        assert_eq!(g.u32(sp - 12).unwrap(), 0xed1);
+    }
+
+    #[test]
+    fn find_transition_entry_runs_from_text_in_two_page_mappings() {
+        // 03a_oldmombasa: `anim ANIM_MANAGER_0x1ccda0: fault at 0x1ccda0`.
+        // Its text 1ccda0..1cd070 crosses 0x1cd000. With transitions off
+        // (0x46fbf5 clear) it clears both outputs and returns.
+        let entry = 0x1ccda0;
+        let (sp, found, best) = (0x10800, 0x10900, 0x10a00);
+        let setup = |with_flags: bool| {
+            let mut g = Guest::new();
+            loader_text(&mut g, entry);
+            if with_flags {
+                g.map_zeroed(0x46f000, 0x1000, Permissions::READ).unwrap();
+            }
+            g.map_zeroed(0x10000, 0x1000, Permissions::RW).unwrap();
+            g.set_u32(sp, 0x1234).unwrap();
+            g.set_u32(sp + 4, best).unwrap();
+            g.set_u32(sp + 0x10, found).unwrap();
+            g.set_u8(found, 0xaa).unwrap();
+            g
+        };
+        let mut g = setup(true);
+        let mut c = CpuAbi { esp: sp, esi: 0x55, ..Default::default() };
+        assert_eq!(run(&mut c, &mut g, entry).unwrap(), Some(TransferAbi::ret(0x1234)));
+        assert_eq!((c.esp, c.esi), (sp + 20, 0x55));
+        assert_eq!((g.u8(found).unwrap(), g.u32(best).unwrap()), (0, u32::MAX));
+        // A load the plan cannot make is named, and nothing is stored.
+        let mut g = setup(false);
+        let mut c = CpuAbi { esp: sp, ..Default::default() };
+        let before = c;
+        assert_eq!(run(&mut c, &mut g, entry).unwrap(), None);
+        assert_eq!(c, before);
+        assert_eq!(g.u8(found).unwrap(), 0xaa);
+        let why = crate::sim_native::Decline::Read { addr: 0x46fbf5, len: 1 };
+        assert_eq!(crate::sim_native::take_decline(), Some((entry, why)));
+    }
 }
