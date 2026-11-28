@@ -282,7 +282,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           campaign levels and its multiplayer maps, into the data
                           root `h2 play` reads; `h2 play` does it by itself when
                           halo1.iso is next to the disc (docs/halo1/campaign.md)
-  parity <h1.iso> <converted.map> <case> <socket>   compare a running level with its Halo 1 source
+  parity <h1.iso> <data root> <case> <socket>   compare a running level with its Halo 1 source
   h1 info <iso|map> [map] Halo 1 map header, tag index and tag counts by group
   h1 tags <iso|map> [map] [--group G]
                           Halo 1 map's tags (docs/halo1/map-format.md)

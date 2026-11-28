@@ -44,7 +44,7 @@ impl Table {
 
 struct Case {
     client: Client,
-    h2: map::Map<File>,
+    h2: map::Map<tags::repo::StoreFile>,
     h1: H1Map,
     rules: Rules,
     h2_sandbox: bool,
@@ -185,6 +185,34 @@ impl Case {
     }
 }
 
+/// The stored level a case compares: the import's stem in the tag store
+/// (`tags::repo::converted::halo1_mp_stem`, `halo1_campaign_stem`).
+fn stem(case: &str) -> String {
+    use tags::repo::converted::{halo1_campaign_stem, halo1_mp_stem};
+    match case {
+        "bloodgulch-h1" => halo1_mp_stem("h1_bloodgulch", "h1"),
+        "bloodgulch-h2" => halo1_mp_stem("h1_bloodgulch", "h2"),
+        "a30" => halo1_campaign_stem("a30", "h1"),
+        _ => unimplemented!("parity: no stored level for case {case}"),
+    }
+}
+
+/// Opens the level `stem` that `h2 import halo1` stored under
+/// `<data>/tags`, checking its marker against the stored file. A missing or
+/// stale level is an error naming the stem: the import has not run.
+fn open_level(data: &Path, stem: &str) -> Result<map::Map<tags::repo::StoreFile>> {
+    use tags::repo::{StoreFile, converted::{marked, verified}};
+    let root = data.join("tags");
+    let mark = marked(&root, stem)
+        .with_context(|| format!("{stem}: not in the store at {}; run h2 import halo1", root.display()))?;
+    ensure!(
+        verified(&root, &mark, "halo1").is_some(),
+        "{stem}: the stored level does not match its marker; run h2 import halo1"
+    );
+    let file = StoreFile::open(&root, stem).with_context(|| format!("{stem}: open the stored level"))?;
+    Ok(map::Map::from_reader(file)?)
+}
+
 pub fn run(args: Vec<String>) -> Result<()> {
     let (args, phase) = match args.split_last() {
         Some((s, rest)) if matches!(s.as_str(), "--round-only" | "--objects-only") => {
@@ -192,9 +220,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
         }
         _ => (args.as_slice(), "all"),
     };
-    let [iso_path, map_path, case, socket] = args else {
+    let [iso_path, data, case, socket] = args else {
         bail!(
-            "usage: h2 parity <halo1.iso> <converted.map> <bloodgulch-h1|bloodgulch-h2|a30> <serve socket> [--round-only|--objects-only]"
+            "usage: h2 parity <halo1.iso> <data root> <bloodgulch-h1|bloodgulch-h2|a30> <serve socket> [--round-only|--objects-only]"
         )
     };
     let (mp, h2_sandbox, name) = match case.as_str() {
@@ -203,6 +231,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "a30" => (false, false, "a30"),
         _ => bail!("unknown parity case {case}"),
     };
+    let h2 = open_level(Path::new(data), &stem(case))?;
     let mut iso = xiso::Xiso::open(BufReader::new(File::open(iso_path)?))?;
     let disc = h1map::disc::Disc::open(&mut iso)?;
     let entry = iso.find("default.xbe")?;
@@ -210,7 +239,6 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let h1 = H1Map::from_reader(Cursor::new(
         iso.read(disc.map(name).context("source map absent")?)?,
     ))?;
-    let h2 = map::Map::open(map_path)?;
     ensure!(
         h2.header().cache_type
             == if mp {
@@ -326,4 +354,58 @@ pub fn run(args: Vec<String>) -> Result<()> {
         c.table.rows
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{io::Read, path::PathBuf};
+    use tags::repo::skeleton::{EXTENTS_EXT, Extents, SKEL_EXT, Skeleton};
+
+    fn store(root: &Path, stem: &str, bytes: &[u8]) {
+        let maps = root.join("maps");
+        std::fs::create_dir_all(&maps).unwrap();
+        let len = bytes.len() as u64;
+        let file = content::Sha256::of(bytes).to_string();
+        let skeleton = Skeleton { len, ranges: vec![(0, len)], bytes: bytes.to_vec() };
+        let extents = Extents { len, file: file.clone(), extents: Vec::new() };
+        std::fs::write(maps.join(format!("{stem}.{SKEL_EXT}")), skeleton.encode().unwrap()).unwrap();
+        std::fs::write(maps.join(format!("{stem}.{EXTENTS_EXT}")), extents.to_text()).unwrap();
+        std::fs::write(
+            tags::repo::converted::marker_path(root, stem),
+            format!("converter halo1\nfile {file}\n"),
+        )
+        .unwrap();
+    }
+
+    fn data(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("h2-parity-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn the_cases_name_the_stems_the_import_writes() {
+        assert_eq!(stem("bloodgulch-h1"), "h1_bloodgulch_h1");
+        assert_eq!(stem("bloodgulch-h2"), "h1_bloodgulch_h2");
+        assert_eq!(stem("a30"), "halo1_campaign_a30_h1");
+    }
+
+    #[test]
+    fn a_stored_level_opens_by_stem_and_a_missing_one_names_the_import() {
+        let dir = data("open");
+        let bytes: Vec<u8> = (0..0x1000u32).map(|i| (i as u8).wrapping_mul(3) ^ 0x5a).collect();
+        store(&dir.join("tags"), "halo1_campaign_a30_h1", &bytes);
+        let mut file = tags::repo::StoreFile::open(&dir.join("tags"), "halo1_campaign_a30_h1").unwrap();
+        let mut read = Vec::new();
+        file.read_to_end(&mut read).unwrap();
+        assert_eq!(read, bytes);
+        // The fixture is not a map, so the open reaches the map reader and fails there.
+        let e = open_level(&dir, "halo1_campaign_a30_h1").err().unwrap();
+        assert!(!format!("{e:#}").contains("h2 import halo1"), "{e:#}");
+        let e = open_level(&dir, "h1_bloodgulch_h1").err().unwrap();
+        assert!(format!("{e:#}").contains("h2 import halo1"), "{e:#}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

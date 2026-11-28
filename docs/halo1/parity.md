@@ -10,9 +10,11 @@ missing bot fails the case. The command returns non-zero on failure.
 ## Coordinator run
 
 Use the integrated desktop `h2` on PATH, its matching prebuilt game image,
-and the data root containing the freshly imported campaign and both
-multiplayer variants. Run from the repository root. Replace the image and
-data paths with the integration build's directories.
+and the data root `h2 import halo1` wrote to. The parity runner opens each
+level from the import's tag store (`<data>/tags`) by stem, so a plain import
+is enough: there are no `.map` files to produce. Run from the repository
+root. Replace the image and data paths with the integration build's
+directories.
 
 ```sh
 H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" \
@@ -26,48 +28,61 @@ weapon, animation and hit probes. This keeps bot input and incoming fire out
 of the weapon and hit measurements. a30 uses a normal-difficulty campaign
 serve with the Halo 1 assets. The script prints its log directory and returns
 failure if any pass fails. It uses its own sockets, settings and snapshot
-directory, stops each child on exit, and disables automatic disc imports.
+directory, stops each child on exit, and disables automatic disc imports. It
+stops with a named error when a stored level it needs is missing.
+
+| Case | Stored level (stem) | Serve environment |
+|---|---|---|
+| `bloodgulch-h1` | `h1_bloodgulch_h1` | `H2_LEVEL=h1_bloodgulch H2_HALO1_SANDBOX=h1` |
+| `bloodgulch-h2` | `h1_bloodgulch_h2` | `H2_LEVEL=h1_bloodgulch H2_HALO1_SANDBOX=h2` |
+| `a30` | `halo1_campaign_a30_h1` | `H2_LEVEL=a30 H2_HALO1_SANDBOX=h1` |
 
 For example, these are the serve and runner commands for a single solo pass.
-Use different terminals with the same environment. `H2_MAP_DIR` must contain
-a `coagulation.map` symlink to the chosen Blood Gulch file. The script makes
-this link and checks that the file exists.
+Use different terminals with the same environment.
 
 ```sh
-H2_OPT=2 H2_LEVEL=coagulation H2_MAP_DIR="$OVERRIDE" \
+H2_OPT=2 H2_LEVEL=h1_bloodgulch H2_HALO1_SANDBOX=h1 \
 h2 serve "$H2_DISC" --out "$H2_IMAGE" --data "$H2_DATA" --settings "$SETTINGS" \
   --no-halo1 --no-mappack --socket "$SOCKET"
 ```
 
 ```sh
-h2 parity "$H1_ISO" "$H2_DATA/maps/h1_bloodgulch/h1/h1_bloodgulch.map" \
-  bloodgulch-h1 "$SOCKET" --objects-only
+h2 parity "$H1_ISO" "$H2_DATA" bloodgulch-h1 "$SOCKET" --objects-only
 ```
 
-For the second sandbox use `h2/h1_bloodgulch.map` and `bloodgulch-h2`.
-For round timing the script supplies `H2_SIM` with a two-seat match file and
-uses `--round-only`. For campaign use `H2_LEVEL=a30 H2_DIFFICULTY=normal`,
-unset `H2_MAP_DIR` and `H2_SIM`, and pass
-`$H2_DATA/campaigns/halo1/a30.map a30` to the runner. Without a phase switch
-the runner performs all checks applicable to the map on the supplied socket.
+The runner's second argument is the data root. It opens the case's stem
+(`parity::stem`) from the store, checking the level's marker against the
+stored file (`parity::open_level`). For the second sandbox use `h2` and
+`bloodgulch-h2`. For round timing the script supplies `H2_SIM` with a
+two-seat match file and uses `--round-only`. Without a phase switch the
+runner performs all checks applicable to the map on the supplied socket.
 Before changing state it checks the cache name, cache type, live weapon
 datums and names, and the multiplayer player's biped.
 
-## Conversion gate
+## Boot sweep
 
-`scripts/h1-convert-gate.sh` imports the Halo 1 disc with `h2 import halo1
---force` into a fresh data root under `$TMPDIR`, so no earlier output can
-stand in for a failed map, and deletes the root on exit. It exits non-zero
-unless the import's summary line says `0 failed` and `46 converted` (ten
-levels, 13 multiplayer maps in two sandboxes, ten Halo 2-assets variants),
-and prints the import's own lines so a failure names its map and reason.
-The landing gate runs it for a diff under `crates/tools/h1*` or
-`crates/apps/cli/src/h1_import.rs`.
+`scripts/h1-boot-sweep.sh` boots every Halo 1 level in the store, one
+headless serve on the fast tier each, and prints one tab-separated row per
+level:
+
+| Column | Source |
+|---|---|
+| `stem` | the store's `*.converted` marker (`halo1_campaign_<level>_<h1\|h2>` or `h1_<map>_<h1\|h2>`) |
+| `state` | `ok`; `boot` when `session.wait` for `gameplay` at `SWEEP_TICKS` map ticks (600) failed; `panic` when the serve log holds a panic or `unimplemented!` line |
+| `residual` | `render.residual` |
+| `ledger_loops` | `sim.ledger` `loops` |
+| `arms` | `sim.arms` |
+| `first_panic` | the first panic line of the serve log |
 
 ```sh
-H1_ISO="$PWD/disc/halo1.iso" H2_DISC="$PWD/disc/halo2.iso" \
-scripts/h1-convert-gate.sh
+H2_DISC="$PWD/disc/halo2.iso" H2_IMAGE="/path/to/prebuilt-image" \
+H2_DATA="/path/to/installed-data" scripts/h1-boot-sweep.sh [stem...]
 ```
+
+A campaign stem boots with `H2_LEVEL=<level>` and `H2_HALO1_ASSETS`
+`halo1` (`_h1`) or `halo2` (`_h2`); a multiplayer stem with
+`H2_LEVEL=<map>` and `H2_HALO1_SANDBOX`. The script exits non-zero if any
+row is not `ok`.
 
 ## What is measured
 

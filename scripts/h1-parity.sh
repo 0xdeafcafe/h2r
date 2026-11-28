@@ -1,8 +1,9 @@
 #!/bin/sh
-# Run by the coordinator after h2, the game image and the maps are ready.
+# Run by the coordinator after h2, the game image and `h2 import halo1` are
+# ready. It reads the import's levels from the tag store under $H2_DATA/tags.
 set -eu
 : "${H1_ISO:?path to the Halo 1 disc}" "${H2_DISC:?path to the Halo 2 disc}"
-: "${H2_IMAGE:?prebuilt image directory}" "${H2_DATA:?installed converted maps}"
+: "${H2_IMAGE:?prebuilt image directory}" "${H2_DATA:?data root with the imported tag store}"
 h2bin=${H2_BIN:-h2}
 work=$(mktemp -d "${TMPDIR:?}/parity.XXXXXX")
 pid=
@@ -16,9 +17,9 @@ stop() {
 trap 'stop' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-mkdir "$work/maps" "$work/settings"
+mkdir "$work/settings"
 cat > "$work/round.toml" <<'TOML'
-map = "coagulation"
+map = "h1_bloodgulch"
 game_type = "slayer"
 pace = "realtime"
 score_limit = 50
@@ -52,16 +53,17 @@ trial() {
     stop
 }
 printf 'Parity serve logs: %s\n' "$work"
+stored() {
+    [ -r "$H2_DATA/tags/maps/$1.converted" ] || { printf 'Missing stored level %s: run h2 import halo1\n' "$1" >&2; exit 1; }
+}
 for sandbox in h1 h2; do
-    file="$H2_DATA/maps/h1_bloodgulch/$sandbox/h1_bloodgulch.map"
-    [ -r "$file" ] || { printf 'Missing %s\n' "$file" >&2; exit 1; }
-    # Give this disc slot the exact variant, even when both use one cache name.
-    ln -sf "$(cd "$(dirname "$file")" && pwd)/$(basename "$file")" "$work/maps/coagulation.map"
-    export H2_MAP_DIR="$work/maps" H2_LEVEL=coagulation
-    trial "bloodgulch-$sandbox" "$file" --round-only
-    trial "bloodgulch-$sandbox" "$file" --objects-only
+    stored "h1_bloodgulch_$sandbox"
+    # The sandbox setting picks which stored variant the serve plays.
+    export H2_HALO1_SANDBOX=$sandbox H2_LEVEL=h1_bloodgulch
+    trial "bloodgulch-$sandbox" "$H2_DATA" --round-only
+    trial "bloodgulch-$sandbox" "$H2_DATA" --objects-only
 done
-unset H2_MAP_DIR
-export H2_LEVEL=a30
-trial a30 "$H2_DATA/campaigns/halo1/a30.map" --objects-only
+stored halo1_campaign_a30_h1
+export H2_HALO1_SANDBOX=h1 H2_LEVEL=a30
+trial a30 "$H2_DATA" --objects-only
 exit "$failed"
