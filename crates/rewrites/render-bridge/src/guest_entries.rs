@@ -30,12 +30,6 @@ use runtime::{CpuAbi, Dispatch, ExecCtx, GuestFault, TransferAbi};
 
 use crate::device_state;
 
-/// The guest's own device object (`D3D__Device`), whose address the game
-/// keeps at [`P_DEVICE`].
-pub const DEVICE: u32 = 0x0040_4fe0;
-/// `D3D__pDevice`.
-pub const P_DEVICE: u32 = 0x0040_7488;
-
 /// Each entry: address, name, calling convention.
 pub const ENTRIES: &[(u32, &str, &str)] = &[
     (0x003f5240, "Direct3D_CreateDevice", "EAX = BehaviorFlags, ECX = ppDevice, [esp+4] = pPresentationParameters; ret 4"),

@@ -224,7 +224,7 @@ impl Host for Glue {
                 specular: crate::native_objects_glue::device_specular(mem),
                 w_buffered: device_state::w_buffered(mem),
                 aux: native_render::aux_depth::read(&Ro(mem))
-                    .filter(|aux| crate::native_objects_glue::aux_depth_at_rest(mem, aux)),
+                    .filter(|_| crate::native_objects_glue::aux_depth_at_rest(mem)),
                 texaccum: crate::native_objects_glue::sampled_texaccum(mem, true).ok().flatten(),
                 stipple: crate::native_objects_glue::device_stipple(mem),
                 stipple_at_rest: crate::native_objects_glue::stipple_at_rest(mem),

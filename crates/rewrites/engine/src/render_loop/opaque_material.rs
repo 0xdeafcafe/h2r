@@ -123,10 +123,18 @@ pub fn stipple_table(m: &dyn GuestMemory, byte: u8, fcw: u16, mxcsr: u32) -> Res
 /// different entries (the scaled one is not a whole number) or the
 /// arithmetic does not run.
 pub fn rest_stipple_table(m: &dyn GuestMemory, mxcsr: u32) -> Option<u32> {
+    fade_stipple_table(m, m.u32(crate::light_constants::constant::ONE).ok()?, mxcsr)
+}
+
+/// The table entry the pattern for the cached fade `fade` (f32 bits, as
+/// `0x004b8494` holds it) is: [`stipple`]'s lookup (`fade` times the
+/// table scale, converted to an integer, held to 0..=16) under each of
+/// the four x87 rounding modes. `None` when the modes pick different
+/// entries or the arithmetic does not run.
+pub fn fade_stipple_table(m: &dyn GuestMemory, fade: u32, mxcsr: u32) -> Option<u32> {
     const TABLE_SCALE: u32 = 0x0044_541c;
     const TABLE: u32 = 0x0048_7288;
-    let one = m.u32(crate::light_constants::constant::ONE).ok()?;
-    let scaled = Sse { mxcsr }.mul(one, m.u32(TABLE_SCALE).ok()?).ok()?;
+    let scaled = Sse { mxcsr }.mul(fade, m.u32(TABLE_SCALE).ok()?).ok()?;
     let mut picked = None;
     for rounding in 0..4u16 {
         let mut x = X87::new(0x027f | rounding << 10);
@@ -185,6 +193,20 @@ pub fn faded_rows(m: &dyn GuestMemory, byte: u8, rest: &[u32; 32], mxcsr: u32) -
 mod stipple_tests {
     use super::*;
     use guest_layout::testing::FakeGuest;
+
+    /// The entry a cached fade selects: the rest entry for the engine's
+    /// one, and none where the rounding modes disagree.
+    #[test]
+    fn a_cached_fade_selects_its_table_entry_in_every_rounding_mode() {
+        let mut m = FakeGuest::new();
+        m.put_f32(0x0044_541c, 16.0).put_f32(crate::light_constants::constant::ONE, 1.0);
+        assert_eq!(fade_stipple_table(&m, 1.0f32.to_bits(), 0x1f80), Some(0x0048_7288 + 0x80 * 16));
+        assert_eq!(fade_stipple_table(&m, 0.5f32.to_bits(), 0x1f80), Some(0x0048_7288 + 0x80 * 8));
+        assert_eq!(fade_stipple_table(&m, 2.0f32.to_bits(), 0x1f80), Some(0x0048_7288 + 0x80 * 16), "held to 16");
+        assert_eq!(rest_stipple_table(&m, 0x1f80), fade_stipple_table(&m, 1.0f32.to_bits(), 0x1f80));
+        m.put_f32(0x0044_541c, 2.0);
+        assert_eq!(fade_stipple_table(&m, 1.25f32.to_bits(), 0x1f80), None, "2.5 rounds two ways");
+    }
 
     #[test]
     fn record_fade_and_tail_use_their_own_threshold_and_rounding() {
