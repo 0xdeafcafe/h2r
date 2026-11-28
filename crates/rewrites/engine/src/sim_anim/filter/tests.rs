@@ -342,13 +342,19 @@ fn ram(g: &Guest) -> Vec<u8> {
     g.physical_ram()[start..start + RAM as usize].to_vec()
 }
 
-/// A decline writes nothing and changes no register.
+/// A decline writes nothing and changes no register, and the call panics
+/// with the reason; no guest call runs.
 fn declines(k: &Case, edit: impl FnOnce(&mut CpuAbi, &mut Guest), why: Decline) {
     let (mut c, mut g) = machine(k);
     edit(&mut c, &mut g);
     let (cpu, mem) = (c, ram(&g));
     assert_eq!(plan(&c, &g, SITE).err(), Some(why), "{why:?}");
-    assert!(!with(true, || run(&mut c, &mut g, SITE)).unwrap());
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = with(true, || run(&mut c, &mut g, SITE));
+    }))
+    .expect_err("a decline panics");
+    let message = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(message.ends_with(&format!("anim filter: {}", why.name())), "{why:?}: {message}");
     assert_eq!(c, cpu);
     assert!(ram(&g) == mem, "RAM written on a decline");
 }

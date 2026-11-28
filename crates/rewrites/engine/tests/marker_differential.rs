@@ -11,8 +11,9 @@
 //! the entry (the pushed arguments and the family's frames), the
 //! callee-saved registers, `esp`, the next pc, MXCSR and the x87 control,
 //! status and tag words. Each case runs on host lanes and on the scalar
-//! loop; both must match the guest. Declined calls (the port then makes
-//! the guest call) match too, by running the same lifted code.
+//! loop; both must match the guest. A declined call panics `anim marker:
+//! <reason>` in the port (no guest call runs); the test counts it and
+//! skips the comparison.
 //!
 //! This file is its own test binary (Cargo.toml): it flips the marker
 //! kernel's process-global switch on, which the stubbed port differential
@@ -340,15 +341,25 @@ fn case(rng: &mut Rng, n: u32, c: &mut CpuAbi, m: &mut Ram<'_>) -> bool {
 
 /// Run the port on `(c, m)` and continue lifted from its transfer; then
 /// compare with the guest run from the entry. `false` when the kernel
-/// declined (the port made the guest call; the comparison still holds).
+/// declined (the port panicked `anim marker: <reason>`; nothing to compare).
 fn check(oracle: &mut Oracle<'_>, c: &CpuAbi, m: &Ram<'_>, case: &str) -> bool {
     let mut reference: Option<(Cpu, Ram<'_>)> = None;
     let mut native = false;
     for (simd, label) in [(true, "host lanes"), (false, "scalar")] {
         let (mut nc, mut nm) = (*c, m.clone());
-        let transfer = sim::with_simd(simd, || sim::marker::transforms(&mut nc, &mut nm)).unwrap();
+        let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sim::with_simd(simd, || sim::marker::transforms(&mut nc, &mut nm)).unwrap()
+        }));
+        let transfer = match run {
+            Ok(t) => t,
+            Err(panic) => {
+                let message = panic.downcast_ref::<String>().map_or("", String::as_str);
+                assert!(message.contains("anim marker: "), "{case} {label}: {message}");
+                return false;
+            }
+        };
         // The kernel's handoff is the continuation at `b8ded`; anything
-        // else (the guest call, the scan bail, the fallback) declined.
+        // else (the scan bail, the fallback) did not fill.
         native = transfer == TransferAbi::resume(adapter::AFTER_MARKERS);
         let mut got = ir_cpu(&nc);
         oracle.run(&mut got, &mut nm, transfer.target_pc);

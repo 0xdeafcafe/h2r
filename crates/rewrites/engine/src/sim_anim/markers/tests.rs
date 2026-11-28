@@ -311,24 +311,19 @@ fn a_model_without_groups_fills_nothing() {
     fills(&w);
 }
 
-/// A declined call leaves the port exactly as it is with the kernel off:
-/// the same CPU, the same RAM, the same guest `1d8f50` call.
+/// A declined call panics `anim marker: <reason>` at the port; no guest
+/// `1d8f50` call runs.
 fn declines(w: &World, edit: impl Fn(&mut CpuAbi, &mut Guest), why: Decline) {
     let _guard = SWITCH.lock().unwrap();
-    set_enabled(false);
-    let (mut off_cpu, mut off) = machine(w);
-    edit(&mut off_cpu, &mut off);
-    let off_result = crate::sim_native::marker::transforms(&mut off_cpu, &mut off).unwrap();
     set_enabled(true);
-    take_last_decline();
     let (mut cpu, mut g) = machine(w);
     edit(&mut cpu, &mut g);
-    let on = crate::sim_native::marker::transforms(&mut cpu, &mut g).unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = crate::sim_native::marker::transforms(&mut cpu, &mut g);
+    }));
     set_enabled(false);
-    assert_eq!(take_last_decline(), Some(why), "{why:?}");
-    assert_eq!(cpu, off_cpu, "{why:?}");
-    assert_eq!(first_difference(ram(&off), ram(&g)), None, "{why:?}");
-    assert_eq!(on, off_result, "{why:?}");
+    let message = panic.expect_err("a decline panics").downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(message.ends_with(&format!("anim marker: {}", why.name())), "{why:?}: {message}");
 }
 
 const MODEL_MARKERS: u32 = 0x001d_8f50;

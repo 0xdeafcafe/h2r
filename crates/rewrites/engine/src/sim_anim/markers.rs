@@ -17,8 +17,8 @@
 //! `b8ded`, and everything the family writes below the arguments stays
 //! unwritten: nothing outside it reads those bytes.
 //!
-//! It declines before writing anything (the port makes the guest call)
-//! when MXCSR is not masked, nearest and PE-sticky, when the kernel
+//! It declines before writing anything, and the port panics with
+//! `anim marker: <reason>` (no guest call runs) when MXCSR is not masked, nearest and PE-sticky, when the kernel
 //! leaves the fast path, when the model has more groups than the port's
 //! scan bound without a match, when the group has more instances than
 //! the kernel gathers, when a read faults, or when the output overlaps a
@@ -61,7 +61,7 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Why the kernel declined the call; the port makes the guest call.
+/// Why the kernel declined the call; the port panics with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
     /// MXCSR not masked, nearest and PE-sticky, or an operand off the
@@ -75,6 +75,19 @@ pub enum Decline {
     Count,
     /// The output overlaps a range the call reads.
     Alias,
+}
+
+impl Decline {
+    /// The reason as the panic names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Decline::Float => "float",
+            Decline::Fault => "fault",
+            Decline::Scan => "scan",
+            Decline::Count => "count",
+            Decline::Alias => "alias",
+        }
+    }
 }
 
 /// Call counts since start, for timing.
@@ -233,18 +246,15 @@ fn scatter(c: &mut CpuAbi, g: &mut impl Memory, p: &Plan) -> Result<TransferAbi,
 }
 
 /// The marker fill, entered where the port would call `1d8f50`.
-/// `Ok(None)`: declined, nothing written; the port makes the guest call.
+/// `Ok(None)`: the kernel is switched off; the port makes the guest call.
+/// A decline panics `anim marker: <reason>`.
 pub fn run(c: &mut CpuAbi, g: &mut impl Memory) -> Result<Option<TransferAbi>, GuestFault> {
     if !enabled() {
         return Ok(None);
     }
     match fill(c, g)? {
         Ok(transfer) => Ok(Some(transfer)),
-        Err(_why) => {
-            #[cfg(test)]
-            LAST_DECLINE.with(|last| last.set(Some(_why)));
-            Ok(None)
-        }
+        Err(why) => unimplemented!("anim marker: {}", why.name()),
     }
 }
 
@@ -255,18 +265,6 @@ pub fn fill(c: &mut CpuAbi, g: &mut impl Memory) -> Result<Result<TransferAbi, D
         Ok(plan) => scatter(c, g, &plan).map(Ok),
         Err(why) => Ok(Err(why)),
     }
-}
-
-// The tests enter through the port, which calls [`run`] partway through:
-// the last decline on this thread names the reason the kernel gave.
-#[cfg(test)]
-thread_local! {
-    static LAST_DECLINE: std::cell::Cell<Option<Decline>> = const { std::cell::Cell::new(None) };
-}
-
-#[cfg(test)]
-fn take_last_decline() -> Option<Decline> {
-    LAST_DECLINE.with(|last| last.take())
 }
 
 #[cfg(test)]

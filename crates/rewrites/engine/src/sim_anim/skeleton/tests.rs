@@ -206,9 +206,8 @@ fn declines(c: &Case, edit: impl Fn(&mut CpuAbi, &mut Guest), why: Decline) {
     edit(&mut before_cpu, &mut before);
     let (mut cpu, mut g) = machine(c);
     edit(&mut cpu, &mut g);
-    let was = stats().declined[why as usize];
+    assert_eq!(plan(&cpu, &g).err(), Some(why));
     assert!(!walk(&mut cpu, &mut g).unwrap(), "{why:?}");
-    assert!(stats().declined[why as usize] > was, "{why:?}");
     assert_eq!(cpu, before_cpu, "{why:?}");
     assert_eq!(first_difference(ram(&before), ram(&g)), None, "{why:?}");
 }

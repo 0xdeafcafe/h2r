@@ -93,9 +93,9 @@ with each `s`-product and each sum one rounded binary32 operation.
 
 ## Rules and limits
 
-The fill declines, writing nothing (the port makes the guest `1d8f50`
-call, and the comparison still holds because both sides then run the
-same lifted code), when:
+The fill declines, writing nothing, and the port panics
+`anim marker: <reason>` (no guest `1d8f50` call runs; the guest call is
+the path of the switched-off kernel), when:
 
 - MXCSR is not masked, round-to-nearest and PE-sticky (`det::fast_env`),
   or any operand of any operation is off the fast path (`Float`);
@@ -103,7 +103,7 @@ same lifted code), when:
   (`Fault`; the window is read eagerly, so a read the guest would not
   make can only decline, never change a result);
 - the model has more groups than the port's scan bound (256) and none
-  matched (`Scan`; the port resumes the lifted scan);
+  matched (`Scan`);
 - the group has more instances than the kernel gathers, 4096 (`Count`);
 - the output overlaps a range the call reads, as virtual addresses
   (`Alias`; the guest interleaves its writes with those reads).

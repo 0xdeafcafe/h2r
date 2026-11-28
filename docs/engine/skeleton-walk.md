@@ -18,7 +18,7 @@ Code: `crates/rewrites/sim-anim/src/skeleton.rs` (`build_matrices`, `pose`,
 (`object_node_matrices`),
 `crates/rewrites/engine/tests/sim_anim_graph_differential.rs`.
 `bd090`'s walk always runs in Rust, with no switch; a walk it declines
-is a counted `Decline` and runs the port's per-node loop.
+is a `Decline` and runs the port's per-node loop (Rust, no guest call).
 The graph walk is native only too.
 
 Phase 1b of the [simulation rewrite](sim-rewrite.md). `bd090` turns an
@@ -99,8 +99,7 @@ before anything reads them.
   body; nothing else calls it.
 - Writes nothing outside the loop's own write set: the matrices of posed
   nodes, `[55ebb4]` and `[55ebb0]`, and the 16 bytes below `esp`.
-- `engine::sim_anim::skeleton::stats()` counts walks, nodes posed and
-  declines by reason.
+- `engine::sim_anim::skeleton::stats()` counts walks and nodes posed.
 - The pose and composition entries (`OBJECT_POSE_MATRIX`,
   `OBJECT_TRANSFORM_COMPOSE`) and their ports stay: other
   callers, among them `1dd1c0`, still reach them.
@@ -254,8 +253,7 @@ that is not mapped declines a call the guest would complete.
 - Run parity: `h2 sim diff` against the lifted build at the defaults
   (the walk table runs `bd090`), identical `state_hashes_v1`; the
   cross-architecture arm.
-- The decline rate on real skeletons (`stats()`), and the time saved per
-  tick on Waterworks.
+- The time saved per tick on Waterworks.
 - The graph walk in a run: `anim.graph_walk`, over the sim-budget matches and a campaign
   level, without a decline panic. Its callers and call rate per tick are not measured.
 

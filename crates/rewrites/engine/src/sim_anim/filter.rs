@@ -27,8 +27,8 @@
 //! and `cl`, `xmm0` to `xmm4`, `xmm6` and `xmm7`; and the flags of its
 //! closing `add esp, 0Ch`.
 //!
-//! It declines before writing anything (the port makes the guest call)
-//! when a read faults, when an emulated instruction would deliver an
+//! It declines before writing anything, and the caller panics with
+//! `anim filter: <reason>` (no guest call runs) when a read faults, when an emulated instruction would deliver an
 //! unmasked exception, or when stack or output stores alias the inputs
 //! used to plan the call or its instructions.
 use crate::light_constants::X87;
@@ -104,7 +104,7 @@ pub fn enabled() -> bool {
     ENABLED.load(Ordering::Relaxed)
 }
 
-/// Why the kernel declined the call; the port makes the guest call.
+/// Why the kernel declined the call; the caller panics with it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Decline {
     /// A guest read faulted.
@@ -113,6 +113,17 @@ pub enum Decline {
     Float,
     /// Stack or output storage aliases a gathered input or the body's instructions.
     Alias,
+}
+
+impl Decline {
+    /// The reason as the panic names it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Decline::Fault => "fault",
+            Decline::Float => "float",
+            Decline::Alias => "alias",
+        }
+    }
 }
 
 /// Call counts since start, for timing.
@@ -567,8 +578,8 @@ fn scatter(c: &mut CpuAbi, g: &mut impl Memory, p: &Plan) -> Result<(), GuestFau
 /// The call to `11eed0` that returns to `site`, with its arguments
 /// already on the stack at `esp`. `Ok(true)`: the kernel made the call
 /// — the stack is popped past the arguments and the caller carries on at
-/// `site`. `Ok(false)`: declined, nothing written; the caller makes the
-/// guest call.
+/// `site`. `Ok(false)`: the kernel is switched off; the caller makes the
+/// guest call. A decline panics `anim filter: <reason>`.
 pub fn run(c: &mut CpuAbi, g: &mut impl Memory, site: u32) -> Result<bool, GuestFault> {
     let mut counts = Stats::default();
     let result = run_counted(c, g, site, &mut counts)?;
@@ -586,8 +597,9 @@ pub(crate) fn run_counted(
     if !enabled() {
         return Ok(false);
     }
-    let Ok(plan) = plan(c, g, site) else {
-        return Ok(false);
+    let plan = match plan(c, g, site) {
+        Ok(p) => p,
+        Err(why) => unimplemented!("anim filter: {}", why.name()),
     };
     scatter(c, g, &plan)?;
     counts.native += 1;
