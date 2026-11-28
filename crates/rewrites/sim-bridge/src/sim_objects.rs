@@ -579,13 +579,12 @@ mod tests {
         // A site is not an entry: the port there is not displaced by it.
         assert!(!owns_in(true, t, PRE_SITES[0]));
         // The slice 1 bodies own the walks while the switch is on, and the
-        // walk table owns them by default.
+        // walk table owns them otherwise: it always installs.
         let on = Switches::defaults().with(&format!("impl.{OBJECTS}"), true);
         assert!(owns(&on, points::OBJECTS_PRE_PHYSICS.base));
         assert!(owns(&Switches::defaults(), points::OBJECTS_PRE_PHYSICS.base));
         assert!(owns(&Switches::defaults(), points::UNIT_UPDATE.base));
         assert!(owns(&Switches::defaults(), points::ITEM_UPDATE.base));
-        assert!(!owns(&Switches::defaults().with("impl.sim.native", false), points::OBJECTS_PRE_PHYSICS.base));
     }
 
     #[test]

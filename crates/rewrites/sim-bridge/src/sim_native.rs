@@ -820,7 +820,11 @@ mod tests {
             let switches = Switches::defaults().with("impl.sim.native.anim", true);
             let mut registry = Registry::new(switches);
             registry.add(&SimNative::new(&rt)).unwrap();
-            let plan = registry.build(&Base).unwrap();
+            let mut plan = registry.build(&Base).unwrap();
+            // Only the animation manager is under test: the objects walk and the
+            // tick's effects phase always install but need their own originals.
+            crate::sim_objects::without_walk(&mut plan);
+            plan.chains.remove(&points::GAME_TICK.base);
             let installed = plan.chains.get(&graph.entry).and_then(|c| c.implement.as_ref());
             assert_eq!(installed.is_some(), have_last);
             if let Some(graph_hook) = installed {
