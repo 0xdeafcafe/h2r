@@ -125,8 +125,8 @@ pub enum StateRefusal {
     Fog,
     /// The stencil test, set by the pass itself, where the native pass
     /// that would draw it takes only the device's: the screen, shadow,
-    /// decorator, water and layer 1 and 3 geometry passes. The world
-    /// layers' and the lights' passes draw their own
+    /// water and layer 1 and 3 geometry passes. The world layers', the
+    /// lights' and the decorators' passes draw their own
     /// ([`PassState::stencil`]). No `shad` pass on the retail maps sets
     /// one (docs/graphics/e3-lighting.md, "Stencil: every use, named").
     Stencil,

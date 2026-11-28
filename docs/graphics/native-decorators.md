@@ -117,7 +117,7 @@ A view's instances are culled on the GPU before they draw (`GpuWorld::culled_dec
 |---|---|
 | Inputs | The view, each batch's range, index range and whether it is occludable, each instance's sphere and `v11..v15`, staged and copied in draw order |
 | Frustum | `Frustum::sides` of the lens layer 3's admission takes (the union of both copies'): a sphere outside a side plane is culled |
-| Pyramid | For a batch whose pipeline draws nothing where hidden (`gpu::depth_hides`: a `Less`, `LessEqual` or `Equal` test, no stencil write on depth fail), the sphere's box against the pyramid this view's layer 3 built on the target, read under the same token rule as the later world layers ([native-world.md](native-world.md), "Cull") |
+| Pyramid | For a batch whose pipeline draws nothing where hidden (`gpu::depth_hides`: a `Less`, `LessEqual` or `Equal` test, no stencil write on depth fail, no polygon offset), the sphere's box against the pyramid this view's layer 3 built on the target, read under the same token rule as the later world layers ([native-world.md](native-world.md), "Cull") |
 | Compaction | One thread per batch walks its instances in the guest's order and copies the kept ones to the front of the batch's range, so the draw keeps the guest's order |
 | Draw | Per batch, the compacted range as the instance buffer and one `draw_indexed_indirect` of its slot |
 
@@ -152,6 +152,8 @@ The state rule (`Host::holds`, `decorators_load::skip_holds`) exists because of 
 A material is therefore kept only when the restore list, every state of the pass's list the restore list does not write back (at the value the draw sets, `DecoratorLook::leaves`) and `TwoSidedLighting` off already hold at the call. The world layers' items follow the same rule (`layer_pass::skip_holds`).
 
 The host reserves one external pass as the fog's does. The device must be W-buffered, the stage palettes the load expanded palettized stage bitmaps through must still be bound (`palettes_hold`), the device's stencil must read, and so must its cull when a planned pass leaves the cull to the device. The draw `0x0004e260` sets neither, so the pipelines draw under the stencil and cull the device holds at the layer-3 call (`decorators_gpu::DrawKey`; the stencil through `fog_gpu::layer_stencil`, its reference set on the pass).
+
+A pass that sets its own stencil draws it, with its own reference per batch (`Bound::stencil_reference`). A pass's polygon offset is drawn in its fragments' W depth (`pass_state::DepthOffset`).
 
 Layer 3's bit is cleared on every planned item through a preview (`clear_slots`, all or nothing: each slot an item of build `0x0004de20` with the bit set). With each mask the preview writes the geometry cache stamps the item's build would have made (`layout::decorators::build_stamps`: `0x0012de70`'s resident path, the frame's stamp `[[0x004e649c] + 0x38]` into entry `u16[info + 0x20]`'s `+0x14` of the table `[[[0x004e649c] + 0x64] + 0x44]`, `0x18` bytes an entry, for the placement's geometry record and the set's geometry).
 
