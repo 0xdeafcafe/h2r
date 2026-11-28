@@ -930,7 +930,8 @@ fn aim_assist_matches_lifted() {
                 gpr: [0x1234_5678, 0, 0x00fe_3420, 0x7b1c, STACK, 0x00aa_bbcc, 0, 0x0e37],
                 eip: points::AIM_ASSIST_PARAMS.base,
                 eflags: 0x2,
-                mxcsr: 0x1fa0,
+                // The live game's MXCSR (PE clear) on half the cases.
+                mxcsr: if case % 2 == 0 { 0x1f80 } else { 0x1fa0 },
                 ..Default::default()
             };
             for (i, reg) in cpu.xmm.iter_mut().enumerate() {
@@ -1088,7 +1089,8 @@ fn device_start(ram: &FlatMemory, case: u32, control: u16) -> (FlatMemory, Cpu) 
         gpr: [0x1234_5678, 0x9876_5432, 0, 0x7b1c, STACK, 0x00aa_bbcc, 0x5151, 0x0e37],
         eip: points::PLAYER_CONTROL_UPDATE.base,
         eflags: 0x2,
-        mxcsr: 0x1fa0,
+        // The live game's MXCSR (PE clear) on half the cases.
+        mxcsr: if case % 2 == 0 { 0x1f80 } else { 0x1fa0 },
         ..Default::default()
     };
     for (i, reg) in cpu.xmm.iter_mut().enumerate() {
@@ -1268,7 +1270,8 @@ fn seat_leaves_match_lifted() {
                     gpr: [0x1234_5678, 0x9876_5432, 0x00fe_3420, 0x7b1c, STACK, 0x00aa_bbcc, 0x5151, 0x0e37],
                     eip: l.target(),
                     eflags: 0x2,
-                    mxcsr: 0x1fa0,
+                    // The live game's MXCSR (PE clear) on half the cases.
+                    mxcsr: if case % 2 == 0 { 0x1f80 } else { 0x1fa0 },
                     ..Default::default()
                 };
                 for (i, reg) in cpu.xmm.iter_mut().enumerate() {
@@ -1292,6 +1295,7 @@ fn seat_leaves_match_lifted() {
                 assert_eq!(gprs(&regs), gprs(&want), "{why}: eax ecx edx ebx ebp esi edi");
                 assert_eq!(regs.esp, want.esp, "{why}: esp");
                 assert_eq!(regs.xmm, want.xmm, "{why}: xmm");
+                assert_eq!(regs.mxcsr, want.mxcsr, "{why}: mxcsr");
                 assert_eq!(
                     (regs.x87.st, regs.x87.tag, regs.x87.status, regs.x87.control),
                     (want.x87.st, want.x87.tag, want.x87.status, want.x87.control),

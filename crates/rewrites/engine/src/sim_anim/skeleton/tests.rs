@@ -37,6 +37,7 @@ impl Rng {
 }
 
 /// One synthetic skeleton at the loop's entry.
+#[derive(Clone)]
 struct Case {
     count: u32,
     parents: Vec<i16>,
@@ -150,11 +151,18 @@ fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
 /// The loop and the kernel from the same state; both must agree, and the
 /// kernel must not decline.
 fn equal(c: &Case) {
+    equal_with(c, |_, _| {});
+}
+
+/// [`equal`] after `edit` on both states.
+fn equal_with(c: &Case, edit: impl Fn(&mut CpuAbi, &mut Guest)) {
     for simd in [true, false] {
         sim_core::lanes::with(simd, || {
             let (mut loop_cpu, mut loop_g) = machine(c);
+            edit(&mut loop_cpu, &mut loop_g);
             nodes(&mut loop_cpu, &mut loop_g).unwrap();
             let (mut cpu, mut g) = machine(c);
+            edit(&mut cpu, &mut g);
             assert!(walk(&mut cpu, &mut g).unwrap(), "count {} seed {:#x} declined", c.count, c.seed);
             if let Some(at) = first_difference(ram(&loop_g), ram(&g)) {
                 panic!("count {} seed {:#x} simd {simd}: RAM differs at {at:#x}", c.count, c.seed);
@@ -212,18 +220,34 @@ fn declines(c: &Case, edit: impl Fn(&mut CpuAbi, &mut Guest), why: Decline) {
     assert_eq!(first_difference(ram(&before), ram(&g)), None, "{why:?}");
 }
 
+/// The walk runs under the guest's MXCSR, whatever it holds, and leaves
+/// the loop's flags: the live game's `0x1f80` (PE clear) comes out with
+/// PE set, as the loop's.
 #[test]
-fn walks_outside_the_fast_path_decline_untouched() {
+fn the_walk_equals_the_loop_under_any_masked_mxcsr() {
+    // The live MXCSR; rounding toward zero.
+    for mxcsr in [0x1f80, 0x7fa0] {
+        for seed in 1..4u64 {
+            equal(&Case { mxcsr, ..case(33, seed) });
+        }
+    }
+    let c = Case { mxcsr: 0x1f80, keep: vec![0], ..case(10, 5) };
+    let (mut cpu, mut g) = machine(&c);
+    assert!(walk(&mut cpu, &mut g).unwrap());
+    assert_eq!(cpu.mxcsr, 0x1fa0);
+    // Operands off the fast range take the SSE model: a denormal in a
+    // posed node's quaternion, and an infinity in a dead lane of XMM1,
+    // which the first pose adds.
+    equal_with(&c, |_, g| g.set_u32(ORIENTATIONS + 0x20 * 3 + 4, 1).unwrap());
+    equal_with(&c, |cpu, _| cpu.xmm[1][12..].copy_from_slice(&0x7f80_0000u32.to_le_bytes()));
+}
+
+#[test]
+fn walks_the_guest_cannot_run_decline_untouched() {
     let mut c = case(10, 5);
     c.keep = vec![0];
-    // PE not yet sticky; rounding toward zero.
-    for mxcsr in [0x1f80, 0x7fa0] {
-        declines(&Case { mxcsr, ..case(10, 5) }, |_, _| {}, Decline::Float);
-    }
-    // A denormal in a posed node's quaternion.
-    declines(&c, |_, g| g.set_u32(ORIENTATIONS + 0x20 * 3 + 4, 1).unwrap(), Decline::Float);
-    // An infinity in a dead lane of XMM1, which the first pose adds.
-    declines(&c, |cpu, _| cpu.xmm[1][12..].copy_from_slice(&0x7f80_0000u32.to_le_bytes()), Decline::Float);
+    // PE unmasked: the first inexact operation would be `#XM`.
+    declines(&Case { mxcsr: 0x0f80, ..c.clone() }, |_, _| {}, Decline::Float);
     // A parent past the matrices, and a negative one.
     for parent in [10u16, 0xffff] {
         declines(&c, move |_, g| g.set_u16(NODE_ARRAY + 0x60 * 4 + PARENT, parent).unwrap(), Decline::Parent);

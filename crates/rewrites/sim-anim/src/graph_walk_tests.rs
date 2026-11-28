@@ -2,7 +2,9 @@
 //! order, the declines, and the walk against the two leaves called one
 //! node at a time in that order. The guest-memory equivalence against the
 //! register-level reference is in `engine::sim_anim::graph_walk`'s tests.
-use crate::graph_walk::{GraphNode, GraphWalk, NONE, QUEUE, graph_matrices, graph_order};
+use crate::graph_walk::{
+    GraphNode, GraphWalk, NONE, QUEUE, graph_matrices, graph_matrices_guest, graph_order,
+};
 use crate::kernel::{Record, Unsupported};
 use crate::skeleton::{Constants, compose, pose};
 use sim_core::det::Fp;
@@ -302,4 +304,27 @@ fn bad_parents_short_inputs_and_off_path_operands_decline() {
         graph_matrices(&k, &locals, &chain, &odd_root, zero, &mut out),
         Err(Unsupported)
     );
+}
+
+/// Under the live MXCSR (PE clear) the walk is the fast path's, and the
+/// MXCSR comes out with PE set; an unmasked PE refuses.
+#[test]
+fn the_guest_walk_runs_under_the_live_mxcsr() {
+    let mut rng = Rng(0x0a1d_face);
+    let k = k();
+    let nodes = tree(&mut rng, 9);
+    let locals: Vec<Record> = (0..9).map(|_| rng.record()).collect();
+    let start: Vec<NodeMatrix> = (0..9).map(|_| rng.matrix()).collect();
+    let root = rng.matrix();
+    let mut fast = start.clone();
+    let want = graph_matrices(&k, &locals, &nodes, &root, [[0; 4]; 8], &mut fast).unwrap();
+    for mxcsr in [0x1f80, 0x1fa0] {
+        let mut got = start.clone();
+        let walk = graph_matrices_guest(mxcsr, &k, &locals, &nodes, &root, [[0; 4]; 8], &mut got);
+        assert_eq!(walk, Ok((want.clone(), 0x1fa0)), "{mxcsr:#x}");
+        assert_eq!(got, fast, "{mxcsr:#x}");
+    }
+    let mut got = start.clone();
+    let refused = graph_matrices_guest(0x0f80, &k, &locals, &nodes, &root, [[0; 4]; 8], &mut got);
+    assert_eq!(refused, Err(Unsupported));
 }

@@ -194,6 +194,19 @@ pub const ACQUIRED_CLASS_2: u32 = 0x10;
 
 /// `1a50a0` on `input`.
 pub fn cone(input: &Input<'_>, magnify: &mut impl Magnify) -> Answer {
+    cone_with(&mut Fp::new(), input, magnify)
+}
+
+/// [`cone`] under the guest's `mxcsr` ([`Fp::tracked`]; it must pass
+/// [`sim_core::det::guest_env`]): the answer and the MXCSR after it, PE
+/// raised when an operation was inexact.
+pub fn cone_tracked(input: &Input<'_>, mxcsr: u32, magnify: &mut impl Magnify) -> (Answer, u32) {
+    let mut fp = Fp::tracked(mxcsr);
+    let answer = cone_with(&mut fp, input, magnify);
+    (answer, fp.mxcsr().unwrap_or(mxcsr))
+}
+
+fn cone_with(fp: &mut Fp, input: &Input<'_>, magnify: &mut impl Magnify) -> Answer {
     let Some([primary, secondary]) = input.hands else {
         return Answer::Unarmed(Unarmed::NoUnit);
     };
@@ -206,9 +219,8 @@ pub fn cone(input: &Input<'_>, magnify: &mut impl Magnify) -> Answer {
         return Answer::Unarmed(Unarmed::Unzoomed);
     }
     let one = input.one;
-    let mut fp = Fp::new();
     fp.check(one);
-    let Some(z1) = zoom(&mut fp, one, input.zoom, &first.aim.zoom, magnify) else {
+    let Some(z1) = zoom(fp, one, input.zoom, &first.aim.zoom, magnify) else {
         return Answer::Inexact;
     };
     let a = first.aim;
@@ -220,7 +232,7 @@ pub fn cone(input: &Input<'_>, magnify: &mut impl Magnify) -> Answer {
         pull_range: fp.mul(a.pull_range, z1.magnification),
         ..Cone::default()
     };
-    let widest = wider(&mut fp, a.bend_angle, a.cone_angle);
+    let widest = wider(fp, a.bend_angle, a.cone_angle);
     let bend1 = fp.mul(widest, inv1);
     cone.bend = bend1;
     let flags = if tracking(&first) {
@@ -248,7 +260,7 @@ pub fn cone(input: &Input<'_>, magnify: &mut impl Magnify) -> Answer {
         ]),
         Hand::Held(second) => {
             let b = second.aim;
-            let Some(z2) = zoom(&mut fp, one, input.zoom, &b.zoom, magnify) else {
+            let Some(z2) = zoom(fp, one, input.zoom, &b.zoom, magnify) else {
                 return Answer::Inexact;
             };
             let inv2 = fp.div(one, z2.magnification);
@@ -256,12 +268,12 @@ pub fn cone(input: &Input<'_>, magnify: &mut impl Magnify) -> Answer {
             cone.second_cone_range = b.cone_range;
             let pull1 = cone.pull_angle;
             let pull2 = fp.mul(b.pull_angle, inv2);
-            cone.pull_angle = larger(&mut fp, pull1, pull2);
+            cone.pull_angle = larger(fp, pull1, pull2);
             let range2 = fp.mul(b.pull_range, z2.magnification);
-            cone.pull_range = larger(&mut fp, cone.pull_range, range2);
-            let widest = wider(&mut fp, b.bend_angle, b.cone_angle);
+            cone.pull_range = larger(fp, cone.pull_range, range2);
+            let widest = wider(fp, b.bend_angle, b.cone_angle);
             let bend2 = fp.mul(widest, inv2);
-            cone.bend = larger(&mut fp, bend1, bend2);
+            cone.bend = larger(fp, bend1, bend2);
             Lanes([
                 Lane::Whole(cone.bend),
                 Lane::Whole(bend1),

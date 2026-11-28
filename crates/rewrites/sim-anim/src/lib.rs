@@ -46,13 +46,13 @@ pub mod store;
 
 pub use clip::{Channel, Clip, Layout, Shape, Sizes, Stream, Which};
 pub use codec::{Frame, RotOp, VecOp, Vector};
-pub use graph_walk::{GraphNode, GraphWalk, graph_matrices, graph_order};
+pub use graph_walk::{GraphNode, GraphWalk, graph_matrices, graph_matrices_guest, graph_order};
 pub use kernel::{Effects, Mode, Ops, Record, Refusal, Request, Secondary, Unsupported, sample};
 pub use markers::{
     Constants as MarkerConstants, Marker, Selection, basis, find_group, model_markers, select,
 };
 pub use palette::{Overlay, Palette, build as build_palette};
-pub use skeleton::{Constants, Walk, build_matrices};
+pub use skeleton::{Constants, Walk, build_matrices, build_matrices_guest};
 pub use store::ClipStore;
 
 #[cfg(test)]

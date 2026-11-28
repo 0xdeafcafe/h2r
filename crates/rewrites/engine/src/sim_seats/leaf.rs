@@ -228,6 +228,9 @@ pub struct Effect {
     pub edi: u32,
     pub xmm0: [u8; 16],
     pub xmm1: [u8; 16],
+    /// The MXCSR after the leaf: the entry's, with the flags its SSE
+    /// arithmetic raised.
+    pub mxcsr: u32,
     pub x87: Option<(X87State, u32, u32)>,
     pub writes: [Option<(u32, u32)>; 6],
     /// Laid down before `writes`. Held inline, so an effect with none
@@ -259,6 +262,7 @@ impl Effect {
             edi: c.edi,
             xmm0: c.xmm[0],
             xmm1: c.xmm[1],
+            mxcsr: c.mxcsr,
             x87: None,
             writes: [None; 6],
             block: None,
@@ -336,6 +340,7 @@ pub fn apply(
     c.edi = e.edi;
     c.xmm[0] = e.xmm0;
     c.xmm[1] = e.xmm1;
+    c.mxcsr = e.mxcsr;
     if let Some((x, pc, operand)) = e.x87 {
         let mut model = load_fpu(c);
         model.0.st = x.st;
@@ -367,6 +372,8 @@ pub fn at_site(c: &CpuAbi, m: &impl Memory, pc: u32) {
         Some("eax ecx edx")
     } else if c.xmm[0] != e.xmm0 || c.xmm[1] != e.xmm1 {
         Some("xmm0 xmm1")
+    } else if c.mxcsr != e.mxcsr {
+        Some("mxcsr")
     } else if e
         .x87
         .is_some_and(|(x, ..)| (x.st, x.tag, x.status) != (c.x87.st, c.x87.tag, c.x87.status))
@@ -464,17 +471,19 @@ fn visible(c: &CpuAbi, m: &impl Memory, e: &mut Effect) -> std::result::Result<(
         return Ok(());
     }
     // The tick's rank threshold: `cvtsi2ss`, `mulss`, then `fld; fistp`
-    // under the caller's x87 control word.
-    if !det::fast_env(c.mxcsr) || !det::host_fast_env() || c.x87.control & 0x3f != 0x3f {
+    // under the caller's x87 control word. The `mulss` raises PE when
+    // inexact, whatever the MXCSR held.
+    if !det::guest_env(c.mxcsr) || !det::host_fast_env() || c.x87.control & 0x3f != 0x3f {
         return Err(Decline::Float);
     }
     let ticks = word(TICKS)?;
     let count = i32::from(m.u16(ticks.wrapping_add(2)).map_err(|_| Decline::Fault)? as i16);
-    let mut fp = Fp::new();
+    let mut fp = Fp::tracked(c.mxcsr);
     let product = fp.mul(det::from_int(count), word(RANK_SCALE)?);
     if !fp.exact() {
         return Err(Decline::Float);
     }
+    e.mxcsr = fp.mxcsr().unwrap_or(c.mxcsr);
     e.xmm0[..4].copy_from_slice(&product.to_le_bytes());
     let mut x = load_fpu(c);
     x.fld(product).map_err(|_| Decline::Float)?;
@@ -645,7 +654,9 @@ fn submit(c: &CpuAbi, m: &impl Memory, e: &mut Effect) -> std::result::Result<()
     if overlap(ctrl, 0x10, rec, 0x28) || overlap(block.wrapping_add(8), 2, ctrl, 0x10) {
         return Err(Decline::Fault);
     }
-    if !det::fast_env(c.mxcsr) || !det::host_fast_env() {
+    // Only `comiss` against zero: it raises nothing on the operands
+    // `check_compared` admits, so PE need not be sticky.
+    if !det::guest_env(c.mxcsr) || !det::host_fast_env() {
         return Err(Decline::Float);
     }
     let mut fp = Fp::new();

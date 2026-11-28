@@ -194,18 +194,26 @@ fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
 /// The reference and the body from the same state; both must agree, and
 /// the body must not decline.
 fn equal(c: &Case) {
+    equal_with(c, |_, _| {});
+}
+
+/// [`equal`] after `edit` on both states.
+fn equal_with(c: &Case, edit: impl Fn(&mut CpuAbi, &mut Guest)) {
     for simd in [true, false] {
         sim_core::lanes::with(simd, || {
             let (mut ref_cpu, mut ref_g) = machine(c);
+            edit(&mut ref_cpu, &mut ref_g);
             let want = reference(&mut ref_cpu, &mut ref_g).unwrap();
             let (mut cpu, mut g) = machine(c);
+            edit(&mut cpu, &mut g);
             let label = format!("count {} seed {:#x} simd {simd}", c.count, c.seed);
             let got = run(&mut cpu, &mut g)
                 .unwrap()
                 .unwrap_or_else(|why| panic!("{label}: declined: {why:?}"));
             assert_eq!(got, want, "{label}");
             if let Some(at) = first_difference(ram(&ref_g), ram(&g)) {
-                let (entry, sim) = machine(c);
+                let (mut entry, mut sim) = machine(c);
+                edit(&mut entry, &mut sim);
                 let o = plan(&entry, &sim).unwrap();
                 panic!(
                     "{label}: RAM differs at {at:#x} ({})",
@@ -342,27 +350,36 @@ fn declines(c: &Case, edit: impl Fn(&mut CpuAbi, &mut Guest), why: Decline) {
     assert_eq!(first_difference(ram(&before), ram(&g)), None, "{why:?}");
 }
 
+/// The walk runs under the guest's MXCSR, whatever it holds, and returns
+/// the reference's flags: 03a_oldmombasa's `0x1f80` (PE clear) comes out
+/// with PE set.
 #[test]
-fn calls_outside_the_fast_path_decline_untouched() {
+fn the_body_equals_the_reference_under_any_masked_mxcsr() {
+    let _s = serial();
+    // The live MXCSR; rounding toward zero.
+    for mxcsr in [0x1f80, 0x7fa0] {
+        for seed in 1..4u64 {
+            equal(&Case { mxcsr, ..case(31, seed) });
+        }
+    }
+    let c = Case { mxcsr: 0x1f80, ..case(10, 6) };
+    let (mut cpu, mut g) = machine(&c);
+    run(&mut cpu, &mut g).unwrap().unwrap();
+    assert_eq!(cpu.mxcsr, 0x1fa0);
+    // Operands off the fast range take the SSE model: a denormal in node
+    // 0's quaternion (node 0 is always visited), and an infinity in a dead
+    // lane of XMM1, which the first pose adds.
+    equal_with(&c, |_, g| g.set_u32(RECORDS + 4, 1).unwrap());
+    equal_with(&c, |cpu, _| cpu.xmm[1][12..].copy_from_slice(&0x7f80_0000u32.to_le_bytes()));
+}
+
+#[test]
+fn calls_the_guest_cannot_run_decline_untouched() {
     let _s = serial();
     let c = case(10, 6);
     let def = |i: u32, field: u32| NODE_ARRAY + 0x20 * i + field;
-    // PE not yet sticky; rounding toward zero.
-    for mxcsr in [0x1f80, 0x7fa0] {
-        declines(&Case { mxcsr, ..c.clone() }, |_, _| {}, Decline::Float);
-    }
-    // A denormal in node 0's quaternion: node 0 is always visited.
-    declines(
-        &c,
-        |_, g| g.set_u32(RECORDS + 4, 1).unwrap(),
-        Decline::Float,
-    );
-    // An infinity in a dead lane of XMM1, which the first pose adds.
-    declines(
-        &c,
-        |cpu, _| cpu.xmm[1][12..].copy_from_slice(&0x7f80_0000u32.to_le_bytes()),
-        Decline::Float,
-    );
+    // PE unmasked: the first inexact operation would be `#XM`.
+    declines(&Case { mxcsr: 0x0f80, ..c.clone() }, |_, _| {}, Decline::Float);
     // A link past the nodes, a negative one other than -1, and a cycle
     // that fills the queue.
     declines(

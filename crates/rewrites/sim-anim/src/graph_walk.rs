@@ -95,12 +95,40 @@ pub fn graph_matrices(
     xmm: [Vec4; 8],
     out: &mut [NodeMatrix],
 ) -> Result<GraphWalk, Unsupported> {
+    graph_with(Fp::new(), k, locals, nodes, root, xmm, out).map(|(walk, _)| walk)
+}
+
+/// [`graph_matrices`] under the guest's `mxcsr`, as `1dd1c0`'s SSE code
+/// runs whatever the MXCSR holds ([`Fp::guest`]): the walk and the MXCSR
+/// after it, with every flag an operation raised. Declines on the same
+/// input faults, and on an operation whose exception the MXCSR unmasks.
+pub fn graph_matrices_guest(
+    mxcsr: u32,
+    k: &Constants,
+    locals: &[Record],
+    nodes: &[GraphNode],
+    root: &NodeMatrix,
+    xmm: [Vec4; 8],
+    out: &mut [NodeMatrix],
+) -> Result<(GraphWalk, u32), Unsupported> {
+    let (walk, fp) = graph_with(Fp::guest(mxcsr), k, locals, nodes, root, xmm, out)?;
+    Ok((walk, fp.mxcsr().unwrap_or(mxcsr)))
+}
+
+fn graph_with(
+    mut fp: Fp,
+    k: &Constants,
+    locals: &[Record],
+    nodes: &[GraphNode],
+    root: &NodeMatrix,
+    xmm: [Vec4; 8],
+    out: &mut [NodeMatrix],
+) -> Result<(GraphWalk, Fp), Unsupported> {
     let count = out.len();
     if count == 0 || locals.len() < count || nodes.len() < count {
         return Err(Unsupported);
     }
     let queue = graph_order(&nodes[..count])?;
-    let mut fp = Fp::new();
     let mut regs = xmm;
     let mut posed = NodeMatrix::default();
     for &n in &queue {
@@ -121,11 +149,12 @@ pub fn graph_matrices(
         regs = r;
     }
     if fp.exact() {
-        Ok(GraphWalk {
+        let walk = GraphWalk {
             queue,
             posed,
             xmm: regs,
-        })
+        };
+        Ok((walk, fp))
     } else {
         Err(Unsupported)
     }
