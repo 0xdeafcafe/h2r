@@ -124,7 +124,7 @@ pub(super) struct Update {
 }
 
 /// The most simulation updates one tick can apply and the film keep.
-const MAX_UPDATES: usize = 16;
+pub(super) const MAX_UPDATES: usize = 16;
 
 #[derive(Default)]
 pub(super) struct Capture {
