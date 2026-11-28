@@ -63,6 +63,8 @@ pub mod firefight;
 pub mod rules;
 pub mod fov_row;
 pub mod render_rng;
+// The flare state held by the render between frames (docs/engine/sim-render-split.md, slice 6).
+pub mod flare_store;
 #[cfg(feature = "gpu")]
 pub mod render_aspect;
 /// Without a window (the headless host) the UI lays out at the guest's
