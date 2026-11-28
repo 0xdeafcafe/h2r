@@ -101,6 +101,9 @@ pub struct Ready {
     /// compiled layer-6 passes, their supplies and the parts the water
     /// pass draws.
     pub water: OnceLock<(Arc<crate::native_water_glue::WaterData>, StagePalettes)>,
+    /// The BSP ocean of this load (`native_ocean_glue`): what its layer-3
+    /// pass compiles from, or why it cannot.
+    pub ocean: OnceLock<Arc<Result<crate::native_ocean_glue::OceanData, String>>>,
     /// The scene's layers 1, 2, 5, 7, 8, 17 and 20 of this load
     /// (`native_layers_glue`), when `frame-scene.layers` is placed.
     pub layers: OnceLock<(Arc<crate::native_layers_glue::LayersView>, StagePalettes)>,
@@ -1048,6 +1051,7 @@ pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::Sha
     crate::native_transparents_glue::install(device, Arc::clone(&state));
     crate::native_fog_glue::install(device, Arc::clone(&state));
     crate::native_water_glue::install(device, Arc::clone(&state));
+    crate::native_ocean_glue::install(device, Arc::clone(&state));
     crate::native_layers_glue::install(device, Arc::clone(&state));
     crate::native_decorators_glue::install(device, Arc::clone(&state));
     crate::native_sky_glue::install(Arc::clone(&state));
@@ -1669,7 +1673,7 @@ fn load_ready(
         retire: Some(retire), opaque, part_bounds, bsp_tag: Some(bsp_tag), gpu: Mutex::new(Some(gpu)), parts: Arc::new(parts), section_parts,
         layer3, pages: page_set,
         upload_device: Some((device.clone(), queue.clone())), palettes: decoder.used().clone(),
-        fog: OnceLock::new(), water: OnceLock::new(), layers: OnceLock::new(),
+        fog: OnceLock::new(), water: OnceLock::new(), ocean: OnceLock::new(), layers: OnceLock::new(),
         decorators: OnceLock::new(), sky: OnceLock::new(), lights: OnceLock::new(),
         lightmaps: lightmap_bitmap.map(|bitmap| (bitmap, lightmap_palettes.clone())),
     }))) { return Ok(()); }
@@ -1733,6 +1737,16 @@ fn load_ready(
         }
         empty
     };
+    if !key.current() { return Ok(()); }
+
+    {
+        let _scope = mem_watch::scope("native.ocean.load");
+        if let Some(ocean) = crate::native_ocean_glue::load(&mut map, &mut files, bsp_tag, &mut stage_images, &mut decoder)
+            && !send(StageReady::Ocean(Arc::new(ocean)))
+        {
+            return Ok(());
+        }
+    }
     if !key.current() { return Ok(()); }
 
     if render_bridge::native_layers::placed() {

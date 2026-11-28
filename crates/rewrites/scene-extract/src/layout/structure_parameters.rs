@@ -54,9 +54,15 @@ pub fn uploads(mem: &dyn GuestRead) -> Option<bool> {
 /// What the prologue uploads for the active structure's block; `None`
 /// when it has none, a word does not read or the arithmetic stops.
 pub fn read(mem: &dyn GuestRead) -> Option<StructureParameters> {
-    let words = Words(mem);
-    let block = upload::block(&words).ok()??;
-    let u = upload::upload(&words, block, FCW, MXCSR).ok()?;
+    let block = upload::block(&Words(mem)).ok()??;
+    of(mem, block)
+}
+
+/// What `0x0003bf00` uploads for the parameter block `block` (the water
+/// end's ocean passes its definition); `None` when a word does not read
+/// or the arithmetic stops.
+pub fn of(mem: &dyn GuestRead, block: u32) -> Option<StructureParameters> {
+    let u = upload::upload(&Words(mem), block, FCW, MXCSR).ok()?;
     Some(StructureParameters {
         bump_env: u.bump_env,
         constants: u.constants,
@@ -66,18 +72,18 @@ pub fn read(mem: &dyn GuestRead) -> Option<StructureParameters> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::testing::Mem;
 
     const BSP: u32 = 0x0061_0000;
-    const BLOCK: u32 = 0x0060_0000;
+    pub(crate) const BLOCK: u32 = 0x0060_0000;
     const UP: u32 = 0x0062_0000;
 
     /// Synthetic words for every input of the upload: the view along y,
     /// up along z, the block's point at `+0x34` (3, 4, 5) and its fog
     /// colour (1, 0.5, 0).
-    fn guest() -> Mem {
+    pub(crate) fn guest() -> Mem {
         let mut m = Mem::default();
         m.w(upload::ACTIVE_BSP, BSP);
         m.w(BSP + upload::BSP_PARAMETER_COUNT, 1);

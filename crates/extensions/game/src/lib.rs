@@ -233,6 +233,8 @@ pub mod native_flare_query_glue;
 #[cfg(feature = "gpu")]
 pub mod native_transparents_glue;
 #[cfg(feature = "gpu")]
+pub mod native_ocean_glue;
+#[cfg(feature = "gpu")]
 pub mod native_water_glue;
 #[cfg(feature = "gpu")]
 pub mod native_world_glue;

@@ -14,6 +14,7 @@ pub(super) enum StageReady {
     Lights(Arc<LightsWorld>, Box<LightSet>),
     Fog(Arc<FogView>, StagePalettes, FogSet),
     Water(Arc<WaterData>, StagePalettes, Box<WaterSet>),
+    Ocean(Arc<Result<crate::native_ocean_glue::OceanData, String>>),
     Layers(Arc<LayersView>, StagePalettes, Vec<(u8, FogSet)>),
     Decorators(Arc<DecoratorLooks>),
     Sky(Arc<crate::native_sky_glue::SkyMaterials>),
@@ -95,6 +96,9 @@ impl MapState {
                         gpu.set_layer(layer, set);
                     }
                     let _ = ready.layers.set((view, palettes));
+                }
+                Ok(StageReady::Ocean(ocean)) => {
+                    let _ = ready.ocean.set(ocean);
                 }
                 Ok(StageReady::Decorators(view)) => {
                     let _ = ready.decorators.set(view);

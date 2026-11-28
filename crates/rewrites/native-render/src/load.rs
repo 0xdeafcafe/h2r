@@ -58,6 +58,27 @@ pub fn scenario_bsps<R: Read + Seek>(map: &mut Map<R>) -> Result<Vec<(TagId, Opt
         .collect())
 }
 
+/// The shader of the BSP's first water definition (`+0x214` the count,
+/// `+0x218` the elements; the definition's `+4` the shader, as the water
+/// end `0x0003c3ff` reads it), or `None` for a BSP with no water.
+pub fn ocean_shader<R: Read + Seek>(map: &mut Map<R>, bsp: TagId) -> Result<Option<TagId>, Error> {
+    let location = map.tag(bsp)?.location.ok_or("BSP has no payload")?;
+    let bytes = map.read_tag_bytes(bsp)?;
+    let view = TagView::new(&bytes, location.address);
+    ocean_shader_of(&view)
+}
+
+fn ocean_shader_of(view: &TagView<'_>) -> Result<Option<TagId>, Error> {
+    let pair = view.at(0x214, 8)?;
+    let word = |b: &[u8], o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
+    if word(pair, 0) == 0 {
+        return Ok(None);
+    }
+    let first = view.range(word(pair, 4), 8)?;
+    let shader = word(first, 4);
+    Ok((shader != u32::MAX).then_some(TagId(shader)))
+}
+
 /// Per BSP material, its shader.
 pub fn bsp_shaders<R: Read + Seek>(map: &mut Map<R>, bsp: TagId) -> Result<Vec<TagId>, Error> {
     let tag = map.tag(bsp)?.clone();
@@ -559,6 +580,23 @@ pub fn base_map<R: Read + Seek>(map: &mut Map<R>, shader: TagId) -> Option<TagId
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ocean_shader_is_the_first_water_definitions() {
+        const AT: u32 = 0x1000;
+        let mut bytes = vec![0u8; 0x240];
+        let put = |b: &mut Vec<u8>, o: usize, v: u32| b[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        assert_eq!(ocean_shader_of(&TagView::new(&bytes, AT)).unwrap(), None, "no definitions");
+        put(&mut bytes, 0x214, 2);
+        put(&mut bytes, 0x218, AT + 0x220);
+        put(&mut bytes, 0x224, 0xe1a0_0042);
+        put(&mut bytes, 0x22c, 0x0bad_0001);
+        assert_eq!(ocean_shader_of(&TagView::new(&bytes, AT)).unwrap(), Some(TagId(0xe1a0_0042)));
+        put(&mut bytes, 0x224, u32::MAX);
+        assert_eq!(ocean_shader_of(&TagView::new(&bytes, AT)).unwrap(), None, "a null shader");
+        put(&mut bytes, 0x218, AT + 0x23c);
+        assert!(ocean_shader_of(&TagView::new(&bytes, AT)).is_err(), "past the payload");
+    }
 
     /// A P8 page's levels go through the palette, largest first; a
     /// cube face past the first and a level that is not half the last

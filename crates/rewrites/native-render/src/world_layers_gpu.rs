@@ -453,8 +453,6 @@ pub struct IndexedPass {
     recorded: std::sync::atomic::AtomicBool,
     sky: Option<SkyRows>,
     draw: Arc<ResolvedDraw>,
-    /// The guest quad packet when the native pass expands its topology.
-    original_quad: Option<Arc<ResolvedDraw>>,
     cache: Arc<Cache>,
     frame: u64,
     // Eligibility is fixed at guest extraction even if the render FIFO
@@ -527,24 +525,6 @@ impl IndexedPass {
         pass.sorted_pool = true;
         pass.lens = Some(lens);
         Ok(pass)
-    }
-
-    /// Expand the indexed water composite using the Xbox quad diagonal.
-    /// Preserve vertex order within each quad, including repeated indices.
-    pub fn water_quads(draw: &ResolvedDraw, geometry: &frame_scene::late::WaterComposite, cache: Arc<Cache>, frame: u64) -> Option<Self> {
-        if draw.primitive != PrimitiveType::QuadList {
-            return None;
-        }
-        let triangles = geometry.triangles(draw.indices.as_ref()?)?;
-        let mut native = draw.clone();
-        native.primitive = PrimitiveType::TriangleList;
-        native.indices = Some(triangles.into());
-        let mut pass = Self::new(&native, cache, frame, None)?;
-        pass.original_quad = Some(Arc::new(draw.clone()));
-        // A standalone range like a sorted layer's: a replay records it
-        // again from the packet and the texture views captured with it.
-        pass.sorted_layer = true;
-        Some(pass)
     }
 
     /// Layer 15, one material pass of one section part. The live pass
@@ -656,7 +636,6 @@ impl IndexedPass {
             recorded: Default::default(),
             sky: None,
             draw: Arc::new(draw.clone()),
-            original_quad: None,
             fetch: cache.fetch,
             cache,
             frame,
@@ -1235,7 +1214,7 @@ impl ExternalPass for IndexedPass {
     fn encode(&mut self, _target: ExternalTarget<'_>) {}
 
     fn resolved_fallback(&self) -> Option<Arc<ResolvedDraw>> {
-        Some(Arc::clone(self.original_quad.as_ref().unwrap_or(&self.draw)))
+        Some(Arc::clone(&self.draw))
     }
 
     fn with_draw(&self, draw: Arc<ResolvedDraw>) -> Option<Box<dyn ExternalPass>> {
@@ -1245,22 +1224,12 @@ impl ExternalPass for IndexedPass {
         if draw.streams.len() != self.draw.streams.len() || self.sky.as_ref().is_some_and(|rows| rows.holds(&draw).is_err()) {
             return None;
         }
-        // A retargeted original quad needs its expanded index stream too.
-        let (draw, original_quad) = if self.original_quad.is_some() {
-            let mut native = (*draw).clone();
-            native.primitive = self.draw.primitive;
-            native.indices = self.draw.indices.clone();
-            (Arc::new(native), Some(draw))
-        } else {
-            (draw, None)
-        };
         Some(Box::new(Self {
             sorted_pool: self.sorted_pool,
             lens: self.lens,
             recorded: Default::default(),
             sky: self.sky.clone(),
             draw,
-            original_quad,
             cache: Arc::clone(&self.cache),
             frame: self.frame,
             extracted_frame: self.extracted_frame,
@@ -1357,14 +1326,6 @@ mod tests {
         assert_eq!(section_charge(0, SECTION_BYTES - 8, 9), None);
         assert_eq!(section_charge(SECTION_WINDOWS, 0, 8), None);
         assert_eq!(section_charge(0, 0, SECTION_BYTES + 1), None);
-    }
-
-    #[test]
-    fn water_quads_keep_the_indexed_corners_and_diagonal() {
-        let water = frame_scene::late::WaterComposite { quads: vec![[17, 10, 14, 21], [12, 12, 11, 13]] };
-        assert_eq!(water.triangles(&[7, 0, 4, 11, 2, 2, 1, 3]).unwrap(),
-            [7, 0, 4, 7, 4, 11, 2, 2, 1, 2, 1, 3]);
-        assert_eq!(water.triangles(&[1, 3, 9]), None);
     }
 
     #[test]
