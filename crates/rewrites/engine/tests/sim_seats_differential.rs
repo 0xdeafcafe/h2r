@@ -1754,7 +1754,7 @@ fn respawn_ready_and_its_callees_match_lifted() {
         gpr[7] = RS_EVENT;
         let m = respawn::Mem::new(&g);
         let got = respawn::announcement(&m, slot, RS_EVENT, kind);
-        let found = got.map(|r| r.eax != 0).unwrap_or(false);
+        let found = got.as_ref().map(|r| r.eax != 0).unwrap_or(false);
         let o = rs_check(&format!("{why}: 19df10 kind {kind}"), &mut find, 0x0019_df10, gpr, &[kind], &mem, got.map(|r| (r, m.writes())));
         tally("19df10", if found { "found" } else { o });
 
