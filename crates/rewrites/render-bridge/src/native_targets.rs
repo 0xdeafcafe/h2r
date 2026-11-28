@@ -235,38 +235,72 @@ pub fn counters() -> Vec<(String, u64)> {
 }
 
 /// Halo's render-target table (`0x004b4b58`, stride `0x98`): entry `n`'s
-/// texture header at `+4`, its surface header at `+0x18` (`0x0001dcf0`).
+/// texture header at `+4`, its surfaces at `+0x18 + 0x18 * level` for
+/// each level below its count `+0x78` (`0x0001dcf0` the first,
+/// `0x0001dd20` any).
 pub const TARGETS: u32 = 0x004b_4b58;
 pub const TARGET_STRIDE: u32 = 0x98;
 pub const TARGET_TEXTURE: u32 = 4;
 pub const TARGET_SURFACE: u32 = 0x18;
-/// The entries [`role`] names. **S**: that the table has no more (the
-/// highest the code names is `0x1b`).
+pub const TARGET_LEVEL_STRIDE: u32 = 0x18;
+/// The surfaces an entry has room for before its count at `+0x78`.
+pub const TARGET_LEVELS: u32 = 4;
+/// The entries [`role`] names. The target select `0x00014bc0` names
+/// entries up to `0x1b` (Code, its tables `0x00014f30` and `0x00014ed0`).
 pub const TARGET_COUNT: u32 = 0x20;
 
-/// The role of the surface at `header` (`parent` its texture for a level,
-/// else 0), the device's role table (`d3d::DeviceConfig::roles`;
-/// docs/graphics/retire-d3d-display.md, "The graph's targets"): a table
-/// entry's surface is `Game(n)`, a level of its texture `GameLevel(n)`.
-/// The swap chain's buffers and depth are the device's own
+/// The globals the target select `0x00014bc0` reads a target from besides
+/// the table and the device's own buffers (`0x0050935c`, `0x00509360`,
+/// `0x00509364`), with the select's indices (Code `0x00014be5..0x00014d1c`):
+///
+/// | Global | Index | Made by |
+/// |---|---|---|
+/// | `0x00509370` | 3 | `0x00014600`: a colour surface over the depth buffer's memory |
+/// | `0x00509378`, `0x00509380` | `0x10`/`0x1d`, `0x11` | `0x00014850`: level 0 of the 64 x 64 textures `0x00509374`, `0x0050937c` (`0x000158f0`, `0x003fb7a0`) |
+/// | `0x00509384` | 9 | `0x00014850`: the static surface `0x00484f50`, over entry 9's memory |
+/// | `0x00509390` to `0x005093a4`, depth `0x005093a8` | `0x21` to `0x26` | no code names them as written |
+pub const TARGET_SLOTS: [u32; 10] =
+    [0x0050_9370, 0x0050_9378, 0x0050_9380, 0x0050_9384, 0x0050_9390, 0x0050_9394, 0x0050_9398, 0x0050_939c, 0x0050_93a0, 0x0050_93a4];
+/// The depth the select binds with `0x00509390` to `0x005093a4`.
+pub const TARGET_SLOT_DEPTH: u32 = 0x0050_93a8;
+
+/// The role of the surface at `header`, the device's role table
+/// (`d3d::DeviceConfig::roles`; docs/graphics/retire-d3d-display.md, "The
+/// graph's targets"), `word` a reader of guest words: a table entry's
+/// first surface is `Game(n)`, its others `GameLevel`; a header one of
+/// [`TARGET_SLOTS`] (or [`TARGET_SLOT_DEPTH`]) holds is `Slot` of that
+/// global. The swap chain's buffers and depth are the device's own
 /// (`Display`, `DisplayDepth`). Anything else has none.
-pub fn role(header: u32, parent: u32) -> Option<frame_types::TargetRole> {
-    let entry = |at: u32, field: u32| {
-        let off = at.checked_sub(TARGETS + field)?;
-        (off % TARGET_STRIDE == 0 && off / TARGET_STRIDE < TARGET_COUNT).then_some((off / TARGET_STRIDE) as u8)
-    };
-    if parent != 0 {
-        return entry(parent, TARGET_TEXTURE).map(frame_types::TargetRole::GameLevel);
+pub fn role(header: u32, word: &dyn Fn(u32) -> Option<u32>) -> Option<frame_types::TargetRole> {
+    use frame_types::TargetRole;
+    if let Some(off) = header.checked_sub(TARGETS + TARGET_SURFACE) {
+        let (n, within) = (off / TARGET_STRIDE, off % TARGET_STRIDE);
+        let level = within / TARGET_LEVEL_STRIDE;
+        if n < TARGET_COUNT && within % TARGET_LEVEL_STRIDE == 0 && level < TARGET_LEVELS {
+            return Some(match level {
+                0 => TargetRole::Game(n as u8),
+                l => TargetRole::GameLevel { target: n as u8, level: l as u8 },
+            });
+        }
     }
-    entry(header, TARGET_SURFACE).map(frame_types::TargetRole::Game)
+    if header == 0 {
+        return None;
+    }
+    TARGET_SLOTS.into_iter().chain([TARGET_SLOT_DEPTH]).find(|g| word(*g) == Some(header)).map(TargetRole::Slot)
 }
 
 /// The surface header of `role`, [`role`]'s inverse for a table entry's
-/// surface: the frame graph's surface for that role is the one the
+/// surfaces: the frame graph's surface for that role is the one the
 /// device holds for the header. `None` for any other role.
 pub fn surface(role: frame_types::TargetRole) -> Option<u32> {
+    use frame_types::TargetRole;
+    let at = |n: u8, level: u8| {
+        (u32::from(n) < TARGET_COUNT && u32::from(level) < TARGET_LEVELS)
+            .then(|| TARGETS + TARGET_STRIDE * u32::from(n) + TARGET_SURFACE + TARGET_LEVEL_STRIDE * u32::from(level))
+    };
     match role {
-        frame_types::TargetRole::Game(n) if u32::from(n) < TARGET_COUNT => Some(TARGETS + TARGET_STRIDE * u32::from(n) + TARGET_SURFACE),
+        TargetRole::Game(n) => at(n, 0),
+        TargetRole::GameLevel { target, level } if level > 0 => at(target, level),
         _ => None,
     }
 }
@@ -459,27 +493,39 @@ mod tests {
     use super::*;
     use engine::memory::FlatMemory;
 
-    /// The table's entries have the same role in every frame; a level of
-    /// an entry's texture is that entry's level; nothing else has one.
+    /// The table's entries and the select's globals have the same role
+    /// in every frame; nothing else has one.
     #[test]
-    fn a_game_target_is_named_by_its_table_entry() {
+    fn a_game_target_is_named_by_its_table_entry_or_its_global() {
         use frame_types::TargetRole;
-        let surface = |n: u32| TARGETS + TARGET_STRIDE * n + TARGET_SURFACE;
-        let texture = |n: u32| TARGETS + TARGET_STRIDE * n + TARGET_TEXTURE;
-        assert_eq!(role(surface(0), 0), Some(TargetRole::Game(0)));
-        assert_eq!(role(surface(0x12), 0), Some(TargetRole::Game(0x12)), "the freeze frame's target");
-        assert_eq!(role(surface(0x1b), 0), Some(TargetRole::Game(0x1b)));
-        assert_eq!(role(surface(0x12), texture(0x12)), Some(TargetRole::GameLevel(0x12)));
-        assert_eq!(role(0x0123_4560, texture(7)), Some(TargetRole::GameLevel(7)), "a level is its texture's");
-        assert_eq!(role(surface(1) + 4, 0), None, "inside an entry");
-        assert_eq!(role(surface(TARGET_COUNT), 0), None, "past the table");
-        assert_eq!(role(TARGETS, 0), None);
-        assert_eq!(role(0x0123_4560, 0x0123_4000), None, "another texture's level");
-        for n in [0u8, 3, 0x13, 0x1b] {
-            assert_eq!(super::surface(TargetRole::Game(n)).map(|h| role(h, 0)), Some(Some(TargetRole::Game(n))));
+        let none = |_: u32| -> Option<u32> { None };
+        let surface = |n: u32, level: u32| TARGETS + TARGET_STRIDE * n + TARGET_SURFACE + TARGET_LEVEL_STRIDE * level;
+        assert_eq!(role(surface(0, 0), &none), Some(TargetRole::Game(0)));
+        assert_eq!(role(surface(0x12, 0), &none), Some(TargetRole::Game(0x12)), "the freeze frame's target");
+        assert_eq!(role(surface(0x1b, 0), &none), Some(TargetRole::Game(0x1b)));
+        assert_eq!(role(surface(0xd, 3), &none), Some(TargetRole::GameLevel { target: 0xd, level: 3 }), "a cube map's face");
+        assert_eq!(role(surface(1, 0) + 4, &none), None, "inside a header");
+        assert_eq!(role(surface(1, TARGET_LEVELS), &none), None, "the count, not a surface");
+        assert_eq!(role(surface(TARGET_COUNT, 0), &none), None, "past the table");
+        assert_eq!(role(TARGETS, &none), None);
+        // Ascension's boot: level 0 of the 64 x 64 texture at 0x00509374.
+        let (heap, depth_alias) = (0x1000_0c90, 0x1000_1000);
+        let globals = |at: u32| match at {
+            0x0050_9378 => Some(heap),
+            0x0050_9370 => Some(depth_alias),
+            0x0050_9384 => Some(0x0048_4f50),
+            _ => Some(0),
+        };
+        assert_eq!(role(heap, &globals), Some(TargetRole::Slot(0x0050_9378)));
+        assert_eq!(role(depth_alias, &globals), Some(TargetRole::Slot(0x0050_9370)));
+        assert_eq!(role(0x0048_4f50, &globals), Some(TargetRole::Slot(0x0050_9384)));
+        assert_eq!(role(0x1000_2000, &globals), None, "a header no global holds");
+        assert_eq!(role(0, &globals), None, "an unset global names nothing");
+        for r in [TargetRole::Game(0), TargetRole::Game(0x13), TargetRole::GameLevel { target: 0xd, level: 2 }] {
+            assert_eq!(super::surface(r).map(|h| role(h, &none)), Some(Some(r)));
         }
         assert_eq!(super::surface(TargetRole::Game(TARGET_COUNT as u8)), None);
-        assert_eq!(super::surface(TargetRole::GameLevel(3)), None);
+        assert_eq!(super::surface(TargetRole::Slot(0x0050_9378)), None);
     }
 
     #[derive(Default)]
