@@ -1,18 +1,18 @@
-# Native post: the colour pass glow and the call transaction
+# Native post: the colour pass glow and the screen effects
 
-Status: Partly built. The glow draws natively; pixel identity with D3D needs a live check.
-Code: `crates/rewrites/render-bridge/src/native_post.rs`, `crates/extensions/game/src/native_post_glue.rs`, `crates/rewrites/native-render/src/glow.rs`, `crates/rewrites/engine/src/colour_pass.rs`, `glow.rs`, `crates/platform/d3d` (`Device::swallow`). Tests: `crates/rewrites/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `crates/rewrites/render-bridge/tests/native_post.rs`, `crates/platform/d3d/tests/swallow.rs`, `swallow_carry.rs`.
+Status: Built. The colour pass and the screen effect are Rust; pixel identity with the guest's draws needs a live check.
+Code: `crates/rewrites/render-bridge/src/native_post.rs`, `crates/extensions/game/src/native_post_glue.rs`, `crates/rewrites/native-render/src/glow.rs`, `screen_gpu.rs`, `crates/rewrites/engine/src/colour_pass.rs`, `glow.rs`, `screen_effect.rs`. Tests: `crates/rewrites/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `crates/rewrites/render-bridge/tests/native_post.rs`, the glue's `post_slots_name_the_view_and_table_roles`, `a_calls_ranges_and_slots_are_its_strips_and_targets`, `a_screen_pass_rasters_from_its_template` (`native_post_glue.rs`).
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
-The guest's colour pass `0x000214f0` and every screen effect run their own code. The host plans the draws they would make, the device holds the guest's quads back (`Device::swallow`), and the native renderer draws the plan in their place. Each call commits one complete replacement or draws all its originals. The call order is in [native-post-frame.md](native-post-frame.md); the screen effects are in [native-screen-effects.md](native-screen-effects.md).
+The colour pass `0x000214f0` and the screen effect `0x0002d140` are implemented in Rust (`hooks` `implement`): no guest body runs. Each body makes the guest's choices and its guest-visible writes, and the host draws what the guest would as one native pass on the frame graph's targets. A call the body or the host does not cover panics, `post: <cause>`. The call order is in [native-post-frame.md](native-post-frame.md); the screen effects' plan is in [native-screen-effects.md](native-screen-effects.md).
 
 ```mermaid
 flowchart LR
-  A[entry hook: plan + arm swallow] --> B[guest runs its setters and draws]
-  B --> C[device resolves + holds each draw]
-  C --> D{return: full planned sequence?}
-  D -- yes --> E[native passes record, commit as Stage::Post]
-  D -- no / refused --> F[replay held packets in order]
+  C[0x000214f0 / 0x0002d140] --> B[Rust body: plan, guest writes]
+  B --> H[host: native pass, slots by role]
+  H --> D[Device::prepare_external_pass, Stage::Post]
+  D --> G[graph surfaces: view, Game 1, 7, 8, 0x19..0x1b]
+  B -->|not covered| P["panic post: cause"]
 ```
 
 ## What the native post draws
@@ -34,63 +34,79 @@ It is two passes, a glow:
 
 - `0x00020f30` writes the blur's combiner (eight stages with the fifth argument above 0, else three; `0x00131ed0` packs its colour and the local `y` sets a `<< 24` word) and selects it (the device's `+0x924`, `+0x928`, `+0x92c` = the block, `0x003fa3d0`).
 - Then up to `ceil(first argument)` steps (about 3.99: four) each bind the last result to stages 0..3 and draw four taps into the other buffer (7 and 8 in turn). The spread is `fraction * scale`, and the scale grows by `1 - g + g * [0x0045dc0c]` per step (`g` the fourth argument, 0.25). The last buffer drawn is returned.
-- At infinity (or past 2^24, where `i + 1` is `i`) the loop never ends. The port stops after `engine::glow::MAX_BLUR_STEPS` (64) with `Error::Unbounded`, so the glue leaves such a call to D3D.
+- At infinity (or past 2^24, where `i + 1` is `i`) the loop never ends. The port stops after `engine::glow::MAX_BLUR_STEPS` (64) with `Error::Unbounded`, a `post: glow: blur` panic.
 
 The quad draw `0x00034a90` (eleven arguments, `ret 0x2c`) takes the target (`0x00014bc0` unless -1), `0x000142f0` with the second argument unless -1, and the colour write mask (third, `0x1010101`). It sets Z off (or mode 2 with the first byte), Z bias 0, Z write off, cull none and stencil off, with two more simple states by the byte (S: alpha test; `0x203`/`0x204` by the sign of the sixth argument). Per tap (the ninth argument: 4 or 1) it takes an offset from the word tables at `0x00485af4`/`0x00485b04` over the source's size (`0x0001dd60`), or the screen rectangle `0x004b9dd0..`, and the spread (seventh). The quad goes through `0x0001c590` and `0x00034420`.
 
 The numbers are ported: `engine::colour_pass` (the arguments and parameters), `engine::glow` (`pass_a`, `pass_b`, `blur_combiner`: the three 60-word blocks; `blur`: each step's source, target and spread, and the result).
 
-## Post admission
+## The bodies
 
-A call whose plan needs an unsupported input or an unavailable live target uses D3D.
+`render_bridge::native_post`:
 
-| Effect | Native admission |
+| Call | Rust body | Returns |
+|---|---|---|
+| `0x000214f0`, seven words, `ret 0x1c` | `colour_pass`: the scene step's arguments, `colour_pass::parameters`, the override record's pending reset (`Parameters::write_reset`, `0x00021533..0x0002156a`); when the parameters draw, the glow through `Host::glow` | to the caller, its registers kept |
+| `0x0002d140`, EAX and four words, `ret 0x10` | `screen_effect`: the four values to `0x004c19b0` (`0x0002d140..0x0002d16a`, on every call), then `Host::screen_effect` | EAX -1 from the end (`0x0002db4d`), else the datum |
+
+`Host::screen_effect` (the glue) plans the call (`engine::screen_effect::plan`). A plan of `None` is the guest's return at once (EAX -1, an empty window, another view's target): nothing more is written. Otherwise it makes the body's writes in the guest's order:
+
+| Guest | Rust |
 |---|---|
-| Colour pass glow | The plan reads the view size and each blur target's dimensions independently. The window, combiners and blur steps must plan successfully. Each matched quad uses the live blend, blend constant, channel write mask, winding, cull, front fill and scissor. A colour-only draw accepts inherited depth and stencil settings when they have no effect |
-| Screen strips into target 0 or target 1 | All drawn layer-15 passes must have loaded programs and supported bindings. A target 1 read requires an earlier write in the same call. Framebuffer stages may read stored alpha and X8 alpha in the same pass. A resolved side-target input needs no framebuffer copy |
-| Kept convolution | Emits no draws. Its result names the pass's target |
-| Blur and wide convolutions | The quads or grids must plan successfully and match the live attachments. Each uses the live raster state |
-| Template pass skipped by `0x00016610` | The host leaves that pass and its convolutions out of the plan. An unreadable gate refuses the call |
-| Layer 17 | `frame-scene.layers` ([framescene.md](framescene.md), slice 4): its structure and object items from the scene's plan, as layers 1, 5, 7, 8 and 20 (`layer_pass::BLOOM_LAYER`) |
-| `0x0002df00`, `0x0002dd30` | Carried: the D3D draws, or an owned frame's replay of them with its own counts |
+| `0x0002d26e..0x0002d344`: targets 1, `0x19`, `0x1a`, `0x1b`'s sizes saved (0 without a surface or with a hidden size) | `native_post::save_sizes` |
+| `0x0002d49f`, before each pass's template gate: target 1 at the pass's size; `0x0002da3e`, `0x0002da47`, past a drawn pass's gate: each drawn convolution's two stand-ins at its size (`0x0001ddd0`: the table's `+0x80`, `+0x84` and both headers' size words `+0x14`, `+0x28`, zero unless `+0x94`) | `resizes`, `native_post::resize` |
+| the drawn passes | one native pass ([below](#the-native-passes)) |
+| `0x0002dae8..0x0002db5a`: 1, `0x19` and `0x1b` given their saved sizes, `0x19` again with `0x1a`'s (`0x1a` keeps the call's), `[0x004670bc]` set, `0x00016b10` on the template cache `0x00485b48`, the results `0x00485a78`/`7c` -1 | `native_post::end_writes` |
 
-Post admission uses the packet's decoded raster state. Inherited fog, flat shading and two-sided lighting can be omitted when the planned and live combiners are both independent of their inputs. A combiner with an implicit final stage can depend on inherited fog and specular state.
+The glow is covered where the guest draws it: the view's target `[0x004858b8]` is target 0, its colour `[0x0050935c]` is the bound one (`[0x0051f3f4]`), and `[0x004858b4]` is -1, so `0x00014bc0` at the end binds the target the call came in with (`glow_covered`).
 
-Rejected state words in unused texture stages and fixed-function texture operations do not affect a programmable post draw. A live depth or stencil operation requires the original depth attachment.
+**S**: the guest's state-cache writes inside the bodies (the combiner block `0x00484f68`, the stage table `0x00404de8`, the dirty bits `0x00407490`, the bound sizes `0x00485af4`/`0x00485b04`) are left as they came in, as the device's state is, so the two agree; nothing reads them before setting them. The wide convolution's small-size flag `[0x0055e6c5]` is not written.
 
-The glow and screen effects share one pipeline translation for colour writes, blending, facing, culling, front fill and depth clamp. A quad strip keeps the guest fan's winding and diagonal. Each scissor is scaled from the destination's guest size to its physical copy, and a convolution grid uses the raster its strips share.
+## The native passes
 
-The combiner translator generates variants for the live alpha comparison and polygon stipple. The reference byte and mask rows are per-draw uniforms, and stipple uses guest pixel cells on each physical copy. Screen strips also carry the live W clip range and window-depth scale.
+Each is one `Device::prepare_external_pass` of `Stage::Post`, committed at the call, and records again on any copy (`replays_scene`), so a scene that keeps the frame replays it on the display's attachments ([framescene.md](framescene.md), slice 5).
 
-## The post hooks
+**The slots by role.** A pass names its slots by what they are to the game (`PostTarget`): the view, target 0's colour `[0x0050935c]`, or `TargetRole::Game(n)`, the surface header `+0x18` of entry `n` of Halo's table. The device resolves each through `surface_for` and the role table, so the pass draws on the frame graph's surface for that role ([retire-d3d-display.md](retire-d3d-display.md#the-graphs-targets)). An entry that is not made (no surface, a hidden size, no levels) is an `Err`.
 
-`feature::native_post`: the glow draws after layer 17 and before the screen effects. The entry hooks pass guest arguments, MXCSR and the x87 control word to the host. The guest runs all its setters and its tail with either draw path.
-
-## The call transaction
-
-`d3d::Device::swallow` holds a call's draws and either commits a native replacement or replays them.
-
-| Phase | Rule |
+| Pass | Slots |
 |---|---|
-| Arm | drains previously queued pushes. The active guest frame is identified by its entry, entry ESP, caller's return address and live return continuation; D3D entries must stay inside that frame |
-| Match | each draw supplies a primitive, count, emitter and colour slot. A layer-15 strip must come from the `D3DDevice_End` return site `0x0002d8b2`. Glow quads and convolution draws use the pushed path |
-| Hold | the device resolves each original at its usual draw boundary and keeps the packet, binding handles, textures and stream bytes. The first draw into a slot pins the host surface and its guest resource identity |
-| Replay triggers | a pixel observation or resource operation that depends on held writes; a competing external stage or draw scope before it prepares its own recording; a mismatch, extra draw, interruption or early return |
-| Commit | the return continuation drains remaining pushed draws and requires the full planned sequence. The last matched draw supplies the primary target and viewport even if the guest tail restored its state. The backend keeps each copy's commands cancellable until all copies have recorded the expected ranges; a failed encode discards them and replays the originals |
+| Glow (`GlowPass`) | 0 the view, 1 `Game(7)`, 2 `Game(8)`, all written |
+| Screen call (`ScreenPass`) | 1 the view (written when a pass draws into it), 2 `Game(1)` when a pass draws into it, 3 to 5 `Game(0x19)` to `Game(0x1b)` for each stand-in a convolution draws into or reads |
 
-Target switches and direct RTT samples proceed while their bindings preserve access to the held surfaces. Gel comparison uses a read-only observer that runs after the last matched guest draw.
+The screen call's resizes are made before its slots resolve, so target 1 and the stand-ins are the graph's surfaces at the call's sizes; one target sized twice in a call is an `Err`. A pass's ranges are its strips and each convolution's quad or grid strips (`screen_ranges`); the glow's are its quads.
 
-The glow and the screen effects record again on any copy once `validate` has frozen their raster (`replays_scene`), so the return commits them as a carried scene stage of `Stage::Post`. Behind a render thread that takes scene stages the stage is queued (`queue_scene_stage`), so the game thread does not wait; one it cannot record is dropped and counted, and Post stands down to sealing every copy (`prepare_carried_stage`, then `commit_carried_stage`, [`scene_stage`](../../crates/platform/d3d/src/scene_stage.rs)).
+**The raster from the plan.** No guest draw is resolved, so the raster state is the plan's:
 
-Under a scene sink that keeps the frame for the display's replay (two-copy mode), the sink retains it as a `ReplayOp::Stage` and the display copy records it again at window resolution ([framescene.md](framescene.md), slice 5). A carried stage has no entry textures, so the glow reads its down-sample's entry from the view's slot, through an alpha-one copy (`OpaqueEntry`) where the guest read the view as `X8`. A pass that does not record again, a guest reference request or a refused carry goes through `prepare_external` with the first packet's entry textures. A replaying sink declines that, and the packets replay.
+| Draw | Raster |
+|---|---|
+| Glow quads | each quad's blend (`Blend`, the composite's; none for the down-sample and the blur), every channel written (`0x00034a90`'s `0x01010101`), no cull, alpha test or scissor |
+| Template strips | the pass's own states (`ScreenProgram::state`: blend, blend constant, writes, alpha test, facing, cull, depth clamp) |
+| Convolution quads and grids | no blend, every channel written |
+| A view read | as `X8` (alpha one) where the texture `0x00014f60` binds for target 0 (`native_post::target_texture`: its case byte `[0x00015154 + n]`, the case's code at `[0x00015114]`) is `LIN_X8R8G8B8` (`reads_opaque`) |
 
-The call validates live packet state and attachments each time. Under render scaling, a replacement that uses a reference-only intermediate together with a live display target falls back, so A/B runs start at `H2_RENDER_SCALE=1`.
+**S**: the states the quad draw and the template do not set (fog, flat shading, two-sided lighting, stipple) are the defaults; the live fog register is not fed (the program's, fog off).
 
-Tests: `d3d/tests/swallow.rs` compares the original packets at every mismatch position and across target switches, and checks same-shape draws from a different End caller. GPU tests compare both colour attachments after a failed encode and check that a successful replacement writes the intermediate back to the guest. `d3d/tests/swallow_carry.rs` checks the carried commit under a replaying sink (one commit, one retained stage, no replayed packet), the packets of a pass that does not record again, the guest reference's decline, and complete reference and display copies. The screen renderer's GPU test covers masked writes and pixels preserved between partial passes into a BGRA intermediate.
+## What panics
+
+Every case the guest would draw and the native pass does not panics, `post: <cause>`:
+
+| Cause | When |
+|---|---|
+| `host` | no host installed |
+| `colour pass args`, `screen effect args`, `screen effect values` | a stack word or the values do not read |
+| `colour pass parameters (..)`, `colour pass reset (..)` | `colour_pass::parameters` fails, or the reset does not write |
+| `glow target`, `glow bound` | the glow is not covered ([above](#the-bodies)) |
+| `glow: <cause>` | the plan (`pass_a`, `blur_combiner`, `blur`, `pass_b`, a blur that copies its result), the view's texture, a slot, the device refusing the pass |
+| `glow on the graph's targets: <refusal>` | the GPU refuses a copy (`glow::Refused`) |
+| `scope_zoom` | a HUD screen effect of a converted Halo 1 scope-zoom profile, whose profile the plan does not read |
+| `screen effect: <cause>` | the plan, the saved sizes, `template_skipped` (a gate that does not read), a target sized twice, a missing piece (`template_pass`, `pass_target`, `view_target`, `blur`, `wide`, `stand_ins`), the view's texture, a slot, `template_restore` (a template cache with restore states, `0x00018900`, a D3D call), the device refusing the pass |
+| `screen effect <entry> on the graph's targets: <refusal>` | the GPU refuses a copy (`screen_gpu::ScreenRefused`) |
+
+While a map's screen effects load (`EffectsSlot`, on a thread of their own) a call makes its guest writes and draws nothing, counted `post_screen_effect_loading`. `render.scene` reports `post_colour_calls`, `post_colour_glows`, `post_screen_effect_calls` and `post_screen_effect_ended` (`native_post::counters`).
 
 ## The colour pass
 
-The host (`boot::native_post_glue`) plans the pass through the swallow. Bit-equality with the lifted original is tested: `engine::colour_pass` (`arguments`: the caller's half with `0x000137a0`'s curves; `parameters`: the callee's override record and clamps; `pack_colour`: `0x00131e50`; `Parameters::colours`: the two combiner colours) by `engine/tests/colour_pass_differential.rs`, and `engine::glow` (the three combiner blocks, and the blur's steps with the device calls stubbed) by `engine/tests/glow_differential.rs`.
+The host (`game::native_post_glue`) plans the glow (`plan`). Bit-equality with the lifted original is tested: `engine::colour_pass` (`arguments`: the caller's half with `0x000137a0`'s curves; `parameters`: the callee's override record and clamps; `pack_colour`: `0x00131e50`; `Parameters::colours`: the two combiner colours) by `engine/tests/colour_pass_differential.rs`, and `engine::glow` (the three combiner blocks, and the blur's steps with the device calls stubbed) by `engine/tests/glow_differential.rs`.
 
 ### The quad
 
@@ -112,10 +128,10 @@ The callback gives attribute 0 as the rectangle's lerp (`0x000350e0`, z and w fr
 | `Plan::quad` | gives each quad its corners and per-stage offsets and scales |
 | `VERTEX` | the screen shader for them |
 | `program` | compiles a block through `shaders::psh` with its stages linear (`tex_scale` one over the guest size) and fog off |
-| `GpuGlow::encode` | draws a plan's quads into live targets 7 and 8 and the view's colour, using each attachment's format and loading its existing pixels |
+| `GpuGlow::prepare` | draws a plan's quads into targets 7 and 8 and the view's colour on the graph's surfaces, using each attachment's format and loading its existing pixels |
 | `Blend` | the composite's blend from `0x000222d0`'s states: source `ONE` or `INVDESTCOLOR` by the sixth argument, destination `ONE` unless the seventh's byte is set, alpha alike |
 
-The down-sample and blur draw with blending off: `0x00034a90`'s `0x000142f0(10)` sets `NV097_SET_BLEND_ENABLE` (`0x00040304`) to 0 for them, and the game's code runs while only its quads are dropped. Tests are in `glow::tests` (the taps of the down-sample and the composite, the blend, a block's module, the frame's words). S: the D3D path's pixel centres match a quad whose corners are the window's (the frame A/B shows it).
+The down-sample and blur draw with blending off: `0x00034a90`'s `0x000142f0(10)` sets `NV097_SET_BLEND_ENABLE` (`0x00040304`) to 0 for them. Tests are in `glow::tests` (the taps of the down-sample and the composite, the blend, a block's module, the frame's words). S: the D3D path's pixel centres match a quad whose corners are the window's (the frame A/B shows it).
 
 ## Related
 

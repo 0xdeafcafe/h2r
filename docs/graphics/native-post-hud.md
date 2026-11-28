@@ -1,7 +1,7 @@
 # Native renderer stage 5: post and HUD
 
 Status: Partly built. The colour-pass glow, the scenario screen effects, layer 17's items, lens-flare colour and visibility fans, and the UI and HUD draw natively. Pixel parity with D3D needs a live check.
-Code: `crates/rewrites/render-bridge/src/native_post.rs`, `native_hud.rs`, `native_hud/hud_overlay.rs`, `crates/extensions/game/src/hud_overlay.rs`, `crates/extensions/game/src/native_post_glue.rs`, `native_post_load.rs`, `native_hud_glue.rs`, `crates/rewrites/scene-extract/src/layout/post.rs`, `glow.rs`, `screen_look.rs`, `screen_gpu.rs`, `hud.rs`, `ui_gpu.rs`, `crates/rewrites/engine/src/colour_pass.rs`, `glow.rs`, `screen_effects.rs`, `screen_grid.rs`, `function_eval.rs`. Tests: `crates/rewrites/render-bridge/tests/native_post.rs`, `native_hud.rs`, `crates/rewrites/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `screen_effects_differential.rs`, `screen_grid_differential.rs`, `crates/platform/d3d/tests/swallow.rs`, `swallow_carry.rs`.
+Code: `crates/rewrites/render-bridge/src/native_post.rs`, `native_hud.rs`, `native_hud/hud_overlay.rs`, `crates/extensions/game/src/hud_overlay.rs`, `crates/extensions/game/src/native_post_glue.rs`, `native_post_load.rs`, `native_hud_glue.rs`, `crates/rewrites/scene-extract/src/layout/post.rs`, `glow.rs`, `screen_look.rs`, `screen_gpu.rs`, `hud.rs`, `ui_gpu.rs`, `crates/rewrites/engine/src/colour_pass.rs`, `glow.rs`, `screen_effects.rs`, `screen_grid.rs`, `function_eval.rs`. Tests: `crates/rewrites/render-bridge/tests/native_post.rs`, `native_hud.rs`, `crates/rewrites/engine/tests/colour_pass_differential.rs`, `glow_differential.rs`, `screen_effects_differential.rs`, `screen_grid_differential.rs`.
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md).
 
 Part of [native-renderer.md](native-renderer.md).
@@ -13,7 +13,7 @@ Stage 5 is everything the game draws after a view's scene: the glow and the scre
 | Piece | Page | Taken at |
 |---|---|---|
 | Call order, hook points | [native-post-frame.md](native-post-frame.md) | `render_screen_effects` `0x00013870` and the view's tail |
-| Colour pass glow, admission, the call transaction | [native-post.md](native-post.md) | `0x000214f0`, swallowed by `d3d::Device::swallow` |
+| Colour pass glow, screen effect bodies, native passes | [native-post.md](native-post.md) | `0x000214f0`, `0x0002d140`, Rust bodies |
 | Scenario screen effects, convolutions | [native-screen-effects.md](native-screen-effects.md) | `0x0002d140` |
 | UI and HUD draw primitives, producers, fallback | [native-ui-producers.md](native-ui-producers.md) | the sorted widget call `0x00235445`, the quad producers |
 | HUD bitmaps, text, glyph pages | [native-hud-overlay.md](native-hud-overlay.md) | the shader quad `0x0022a664` |
@@ -61,17 +61,17 @@ Taken at their producers with the guest's own state: [native-menus-overlay.md](n
 
 The Kawase blur `0x000211a0` called from `0x00235756`, drawn as the overlay's `Blur` item: [native-menus-overlay.md](native-menus-overlay.md#the-blur-under-a-dialog).
 
-### Post admission
+### What panics
 
-What each post effect needs to commit natively: [native-post.md](native-post.md#post-admission).
+Every post call the native passes do not cover: [native-post.md](native-post.md#what-panics).
 
 ### The post hooks
 
-`feature::native_post` hooks: [native-post.md](native-post.md#the-post-hooks).
+`feature::native_post` bodies: [native-post.md](native-post.md#the-bodies).
 
-### The call transaction
+### The native passes
 
-`d3d::Device::swallow`, replay and the carried scene stage: [native-post.md](native-post.md#the-call-transaction).
+Slots by role and the raster from the plan: [native-post.md](native-post.md#the-native-passes).
 
 ### The colour pass
 
@@ -93,7 +93,7 @@ device type. `h1_cinematics` reads the campaign's globals into `Params` at
 
 ## Rules and limits
 
-- Each post call commits one complete replacement or draws all its originals. A plan with an unsupported input or an unavailable live target uses D3D for that call.
+- Each post call is one native pass; a plan with an unsupported input panics, `post: <cause>`.
 - Under render scaling, a replacement that uses a reference-only intermediate together with a live display target falls back.
 - Screen-effect residency follows the loaded effect set, including its feedback copies and convolution programs. The screen and glow drawers cap the raster variants they retain per program. The UI draw cache follows the active device and caps its shader and pipeline variants.
 - `0x0002df00` and `0x0002dd30` separate flare colour from visibility. The native flare stage records eligible colour and counted visibility fans. The tests' counts are answered through `GetVisibilityTestResult` from the backend's counter ([d3d.md](d3d.md), "Visibility tests"), and an owned frame's graph replays the counted draws and installs its counts under the guest's tickets ([framescene.md](framescene.md), slice 6).

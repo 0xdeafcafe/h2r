@@ -132,7 +132,7 @@ fn counters(sink: bool) -> BTreeMap<String, u64> {
         .chain(render_bridge::render_frame::publish::counters())
         .collect();
     #[cfg(feature = "gpu")]
-    counts.extend(crate::native_post_glue::refusal_counters());
+    counts.extend(crate::native_post_glue::counters());
     #[cfg(feature = "gpu")]
     counts.extend(native_render::world_layers_gpu::pool_recording_counters());
     #[cfg(feature = "gpu")]

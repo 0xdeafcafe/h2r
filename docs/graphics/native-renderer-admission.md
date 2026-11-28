@@ -190,8 +190,8 @@ unsealed reservations, except the commits of native producers it carries
 needs retained inputs to record the operation on its own attachments, and a
 one-shot pass carries no replay command.
 
-A swallowed post call whose pass records again (the glow and the screen
-effects, once their raster is frozen) commits as a carried scene stage
+A swallowed call whose pass records again (the dialog blur, the shadow
+filter, once their raster is frozen) commits as a carried scene stage
 (`Device::swallow_commit`, `prepare_carried_stage`, `commit_carried_stage`).
 The sink retains it as a `ReplayOp::Stage`, so it is not declined.
 
