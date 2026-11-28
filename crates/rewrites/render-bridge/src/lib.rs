@@ -98,6 +98,7 @@ pub mod guest_entries;
 pub mod game_random;
 pub mod render_frame;
 pub mod producers;
+pub mod rasterizer;
 #[cfg(feature = "native-render")]
 pub mod render_loop;
 pub mod render_timing;

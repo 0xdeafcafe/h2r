@@ -5,17 +5,18 @@
 //! overridden, and [`answer`] says how each one answers:
 //!
 //! - **Resources and fences**, reached outside the frame by the resource
-//!   caches: `Direct3D_CreateDevice`, `D3DResource_AddRef` and `Release`,
-//!   `D3DResource_IsBusy`, `D3D_BlockOnResource`, `D3D_SetFence`,
-//!   `D3D_BlockOnTime`.
+//!   caches: `D3DResource_AddRef` and `Release`, `D3DResource_IsBusy`,
+//!   `D3D_BlockOnResource`, `D3D_SetFence`, `D3D_BlockOnTime`. No device
+//!   is made: the start-up that called `Direct3D_CreateDevice` is Rust
+//!   ([`crate::rasterizer`]), so that entry is a gap.
 //! - **State setters**: the `SetRenderState_*` and `SetTextureState_*`
 //!   entries store their value in the guest's own state arrays, which game
 //!   code reads back, and push nothing ([`crate::device_state`]).
 //! - **The frame's end**: `D3DDevice_Swap` is the frame step's seal
 //!   ([`crate::frame_wait::swapped`]); `CDevice_KickOff` has no push buffer
-//!   to hand over; the device teardown has nothing to free (this
-//!   `CreateDevice` allocates nothing, and `SetTexture`/`SetPalette` never
-//!   bind); `PersistDisplay` has no display to keep.
+//!   to hand over; the device teardown has nothing to free (no device is
+//!   made, and `SetTexture`/`SetPalette` never bind); `PersistDisplay` has
+//!   no display to keep.
 //! - **Gaps**: every other entry panics with its name and caller. They
 //!   draw, or write the push buffer, or build GPU state a draw reads; their
 //!   callers' draws belong to native stages, so a call that still reaches
@@ -153,7 +154,6 @@ fn set_gamma(ramp: [u8; 768]) {
 /// What an entry does: answer with `eax` and pop `cleanup` bytes, or panic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Answer {
-    CreateDevice,
     AddRef,
     Release,
     Return { eax: Option<u32>, cleanup: u32 },
@@ -172,7 +172,6 @@ fn answer(addr: u32) -> Answer {
         return Answer::State(s);
     }
     match addr {
-        0x003f_5240 => Answer::CreateDevice,
         0x003f_b600 => Answer::AddRef,
         0x003f_b640 => Answer::Release,
         // D3DResource_IsBusy: never busy.
@@ -191,13 +190,13 @@ fn answer(addr: u32) -> Answer {
         0x003f_c530 => Answer::Return { eax: None, cleanup: 0 },
         // D3DDevice_PersistDisplay: S_OK, no display surface to keep.
         0x003f_8ad0 => Answer::Return { eax: Some(0), cleanup: 0 },
-        // D3DDevice_SetPalette (from `rasterizer_initialize` 0x12560, the
-        // scene reset 0x15b70, the lightmap bind 0x15c90, 0x445d0): the
-        // native draws read the game's own palette cache (`0x484dc0`,
+        // D3DDevice_SetPalette (from the scene reset 0x15b70, the lightmap
+        // bind 0x15c90, 0x445d0): the native draws read the game's own
+        // palette cache (`0x484dc0`,
         // `game::native_targets_glue::stage_palette_header`), never D3D's.
         0x003f_84d0 => Answer::Return { eax: None, cleanup: 4 },
-        // D3DDevice_SetShaderConstantMode (once, from 0x12560): the native
-        // renderer has no constant-mode switch to set.
+        // D3DDevice_SetShaderConstantMode: its one caller, 0x12560, is
+        // `crate::rasterizer`, which leaves it out.
         0x003f_6e10 => Answer::Return { eax: None, cleanup: 0 },
         0x003f_f5c6 => Answer::Gamma,
         _ => Answer::Gap,
@@ -224,14 +223,6 @@ fn call(
 ) -> Result<TransferAbi, GuestFault> {
     let mut mem = ctx.memory();
     let (eax, cleanup) = match answer {
-        Answer::CreateDevice => {
-            // ECX = ppDevice; S_OK. The device object is the guest's own.
-            mem.set_u32(P_DEVICE, DEVICE)?;
-            if cpu.ecx != 0 {
-                mem.set_u32(cpu.ecx, DEVICE)?;
-            }
-            (Some(0), 4)
-        }
         Answer::AddRef | Answer::Release => {
             // stdcall(this): the count is the low 16 bits of `Common`.
             let this = mem.u32(cpu.esp.wrapping_add(4))?;
@@ -312,8 +303,9 @@ mod tests {
     #[test]
     fn the_rest_are_named_gaps() {
         let gaps: Vec<&str> = ENTRIES.iter().filter(|e| answer(e.0) == Answer::Gap).map(|e| e.1).collect();
-        assert_eq!(gaps.len(), 88 - 7 - 35 - 4 - 3, "{gaps:?}");
+        assert_eq!(gaps.len(), 88 - 6 - 35 - 4 - 3, "{gaps:?}");
         for name in [
+            "Direct3D_CreateDevice",
             "D3D_MakeRequestedSpace",
             "D3DDevice_Begin",
             "D3DDevice_End",

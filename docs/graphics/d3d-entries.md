@@ -1,7 +1,7 @@
 # D3D entries reached from game code
 
 Status: Built. Reference for the D3D functions game code calls, as compiled in the retail image, and how `render_bridge::guest_entries` answers each.
-Code: `crates/rewrites/render-bridge/src/guest_entries.rs` (`ENTRIES`, `answer`), `crates/rewrites/render-bridge/src/device_state.rs`. Tests: the modules' own.
+Code: `crates/rewrites/render-bridge/src/guest_entries.rs` (`ENTRIES`, `answer`), `crates/rewrites/render-bridge/src/device_state.rs`, `crates/rewrites/render-bridge/src/rasterizer.rs`. Tests: the modules' own, `crates/rewrites/render-bridge/src/rasterizer/tests.rs`.
 Switch: none. Part of [d3d.md](d3d.md).
 
 ## Inventory: entries reached from game code
@@ -14,7 +14,7 @@ what they do; names with an address in them are descriptive only. Status is
 [Render-state and texture-state setters](#render-state-and-texture-state-setters)),
 "seal" (`Swap`: the frame step's seal, `frame_wait::swapped`), "answer"
 (answers with no device: resources, fences, `KickOff`, the teardown,
-`PersistDisplay`), "gap" (panics with its name and caller; its callers'
+`PersistDisplay`; no device is made), "gap" (panics with its name and caller; its callers'
 draws belong to native stages) or "native" (not overridden; the original
 runs).
 
@@ -24,7 +24,7 @@ The notes under the table record what each retail body does.
 
 | address | entry | matched | convention (as compiled) | calls / caller fns | status |
 |---|---|---|---|---|---|
-| `0x3f5240` | `Direct3D_CreateDevice` | yes | EAX = `BehaviorFlags`, ECX = ppDevice, [esp+4] = pPresentationParameters; ret 4 | 2 / 2 | answer |
+| `0x3f5240` | `Direct3D_CreateDevice` | yes | EAX = `BehaviorFlags`, ECX = ppDevice, [esp+4] = pPresentationParameters; ret 4 | 2 / 2 | gap (both callers are Rust: [Start-up and shutdown](#start-up-and-shutdown)) |
 | `0x3f52f0` | `D3DDevice_SetRenderState_EdgeAntiAlias` | yes | stdcall(Value); ret 4; guest slot 151 | 9 / 4 | store |
 | `0x3f5330` | `D3DDevice_SetRenderState_ShadowFunc` | yes | stdcall(Value); ret 4; guest slot 156 | 11 / 6 | store |
 | `0x3f5370` | `D3DDevice_SetRenderState_FogColor` | yes | stdcall(Value); ret 4; guest slot 138 | 11 / 6 | store |
@@ -277,6 +277,57 @@ Notes on the table:
     (`0x3fc720`, called at `0x3fc5cb`) before the texture, palette and
     stream releases, and clears both device fields. The releases are one
     staged set too: a teardown that stops changes no reference.
+
+## Start-up and shutdown
+
+The game functions between `game_main` (`0x12190`) and a D3D entry at
+start-up and shutdown are Rust (`render_bridge::rasterizer`, feature
+`rasterizer`, every run): each is an `implement` hook marked
+`replaces_guest`, so its body never runs. They write what the game and
+the native renderer read and leave out what only fed the device. No
+device is made: `D3D__pDevice` (`0x407488`) stays 0, so game code that
+still reads a device field faults at that field's offset.
+
+| Function | Kept | Dropped |
+|---|---|---|
+| `0x12420` boot display | `0x123b0`; `[0x5093b0]` back to 0 | the first `Swap(0)`; the device's release (`0x3fc530`, `D3D__pDevice`) |
+| `0x12490` boot device | `[0x509350]` = 1; `[0x5093b0]`; the `0x47ffd8` table to `0x484ce8` | `CreateDevice` and its parameters |
+| `0x12560` rasterizer | every game call in order; `[0x4670bc]`, `[0x484dd0]`, `[0x51f408]`, the view words `0x4b72b4..0x4b72c0`, the game-state record `[0x50934c]`, `[0x485a88]`; the state words below | `[0x40864c]`, `[0x408648]` (push-buffer sizes); `SetPalette` x4; `SetShaderConstantMode`; the pushes of `SetRenderState_Simple`; the dirty word `[0x407490]` |
+| `0x128c0` game device (also from `0x137f2e`) | the mode words `0x485ac8..0x485ad0` (a kind past 2 becomes 1); [the surfaces](#the-devices-surfaces); `[0x5093b0]`; the table copy; `[0x485acc]` clamped to 0..5; `[0x467008]`, `[0x46700c]` = -1; `[0x5093bc]` = 1 | `CreateDevice` / `Reset` and their parameters |
+| `0x14600` frame buffers (also from `0x12b9e`, `0x137f33`) | `0x50935c`, `0x509360`, `0x509364` the surfaces; the textures `0x509354`, `0x509358` over back and display, `0x509368`, `0x50936c` over the depth; `0x509370` the back buffer's header over the depth's `Data` | `AddRef`; the allocations (the headers are the feature's) |
+| `0x18900` state block (from `0x16b10` and two more) | each entry's slot of `D3D__RenderState`; a state from `0x88` stores what its setter (`[0x4038d8 + 4 * state]`) stores | the pushes; the dirty word |
+| `0x1d0e0` default textures | the 2D, volume and cube textures (`0x158f0`, `0x15a60`, `0x159b0`) and their checker texels (`0x0f00`, `0xf0f0`) | `BlockOnResource`; the lock (`0x3fdbc0`: its face offset is ported) |
+| `0x1d3f0` palette | `0x15b10`'s palette, its colours copied from the source | `BlockOnTime` |
+| `0x141c0` shutdown | the fade record cleared; `0x1e310`, `0x1f2b0`, `0x12c190`, `0x12d970`; `[0x5093b0]`, `[0x509350]` = 0 | the device's release |
+| `0x14980`, `0x14a60`, `0x1d2a0` | the globals cleared | `Release` (the memory of `0x14850`'s and `0x1d0e0`'s textures is not freed; only the shutdown drops them) |
+| `0x1359d0` cache block | `0x12c770`; `+0x50` cleared; the frees (`0x3312fa`) | `Release` of `+0x50` |
+
+The state words (`D3D__RenderState` `0x407498`, `D3D__TextureState`
+`0x404dd0`) are kept: game code reads them back and the native draws take
+their state from them. `0x12560`'s stores are `ZEnable` = 2 (slot 143),
+its own words after each `Simple` (`0x407598` = 1, `0x40757c` = `0x203`,
+`0x4075dc`, `0x407588` = 0, `0x407580` = `0x204`, `0x40758c`, `0x407584` = 0,
+`0x407590` = 1, `0x407594` = 0, `0x4075c0` = `0x8006`, `0x407608` = 1,
+`0x407630` = 0, `0x407634` = 1), `ZBias` 0 and stage `s`'s
+`TEXCOORDINDEX` = `s`.
+
+### The device's surfaces
+
+Three headers in the feature's guest block, written by `0x128c0`:
+
+| Header | Global | `Data` | Format | Role |
+|---|---|---|---|---|
+| back buffer | `0x50935c` | `0x0C000000` | `LIN_A8R8G8B8` | the scene's colour |
+| display surface | `0x509360` | `0x0E000000` | `LIN_A8R8G8B8` | the scene's colour |
+| depth buffer | `0x509364` | `0x0D000000` | `LIN_D24S8`, `LIN_F24S8` when `[0x485ac8]`'s byte is set | `DisplayDepth` |
+
+Each is sized by the window `0x16a30` leaves (`right - left` by
+`bottom - top`, linear, four bytes a texel). The `Data` words name no RAM,
+so a CPU read through one faults. None has a game role
+(`native_targets::role`), so the frame graph takes each as the scene's own
+target (`game::native_targets_glue::target_ref`). `[0x5093b0]`, the game's
+device pointer, holds the block's address: game code only tests it
+(`0x12063` fails the start-up while it is 0).
 
 ## Render-state and texture-state setters
 

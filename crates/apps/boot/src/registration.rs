@@ -820,6 +820,11 @@ pub(crate) fn register_late_for_profile(
     features
         .add(&hooks::leaves::EngineLeaves)
         .map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
+    // The rasterizer's start-up and shutdown with no device
+    // (docs/graphics/d3d-entries.md, "Start-up and shutdown"): every run.
+    features
+        .add(&render_bridge::rasterizer::Rasterizer)
+        .map_err(|e| anyhow::anyhow!("rasterizer: {e}"))?;
     // The sound simulation (docs/engine/sound-sim.md) owns the sound entries
     // the exact port would install, so the port stands down when it is on.
     let sound_events = features.switches().implementation(sim_bridge::sim_sound::EVENTS, false);
