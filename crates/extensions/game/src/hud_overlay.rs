@@ -998,7 +998,7 @@ pub fn place<B: d3d::Backend + Send + 'static>(
         // The run draws with the layout rule the placed draw sits in: the
         // same fit the guest's own draws carry at this point in the frame.
         let fit = d.ui_fit().map(|f| f.transform);
-        let pass = OverlayPass { overlay, assets: Some(assets), movie: None, fit };
+        let pass = OverlayPass { overlay, assets: Some(assets), movie: None, fit, tail: false };
         matches!(
             d.external_pass_now(&mut crate::native_lights_glue::DeviceMemory(mem), Box::new(pass)),
             Ok(true)
@@ -1017,7 +1017,25 @@ pub fn place_movie<B: d3d::Backend + Send + 'static>(
 ) -> bool {
     device.lock().ok().is_some_and(|mut d| {
         let fit = d.ui_fit().map(|f| f.transform);
-        let pass = OverlayPass { overlay: Arc::new(overlay), assets: None, movie: Some(movie), fit };
+        let pass = OverlayPass { overlay: Arc::new(overlay), assets: None, movie: Some(movie), fit, tail: false };
+        matches!(
+            d.external_pass_now(&mut crate::native_lights_glue::DeviceMemory(mem), Box::new(pass)),
+            Ok(true)
+        )
+    })
+}
+
+/// The frame tail's freeze frame (`render_bridge::frame_tail`): its hold
+/// and composite placed at this point in the frame over the bound target,
+/// unfitted (the guest's quads are the window's, in the target's pixels).
+/// Whether it was placed.
+pub fn place_tail<B: d3d::Backend + Send + 'static>(
+    device: &d3d::abi::SharedDevice<B>,
+    mem: &mut dyn GuestMemory,
+    overlay: Overlay,
+) -> bool {
+    device.lock().ok().is_some_and(|mut d| {
+        let pass = OverlayPass { overlay: Arc::new(overlay), assets: None, movie: None, fit: None, tail: true };
         matches!(
             d.external_pass_now(&mut crate::native_lights_glue::DeviceMemory(mem), Box::new(pass)),
             Ok(true)
@@ -1101,6 +1119,8 @@ struct OverlayPass {
     /// The movie frame the list's movie item shows, uploaded first.
     movie: Option<native_render::overlay::MovieImage>,
     fit: Option<[f32; 4]>,
+    /// The frame tail's: its refusals are counted as the tail's.
+    tail: bool,
 }
 
 impl d3d::ExternalPass for OverlayPass {
@@ -1123,6 +1143,14 @@ impl d3d::ExternalPass for OverlayPass {
             // (`refused_movie`).
             residency.sync_movie(t.device, t.queue, movie);
         }
+        // A hold copies into a texture of this copy's size and format,
+        // made the first time; what it holds stays for later frames.
+        let target = t.color.texture();
+        for item in &self.overlay.items {
+            if let Some(hold) = self.overlay.hold_of(item) {
+                residency.hold(t.device, hold, target.size(), target.format());
+            }
+        }
         // Only a fitted pass moves its items: an unfitted one plans the
         // shared items as they are, with no copy a frame.
         let fitted = self.fit.map(|fit| {
@@ -1144,6 +1172,12 @@ impl d3d::ExternalPass for OverlayPass {
             (encoded.commands)(&mut *t.encoder);
             if t.copy == d3d::TargetCopy::Display {
                 native_render::ui_gpu::count_overlay(&stats);
+                if self.tail && stats.refused_hold != 0 {
+                    render_bridge::frame_tail::refused("hold");
+                }
+                if self.tail && stats.refused_texture + stats.refused_material != 0 {
+                    render_bridge::frame_tail::refused("held");
+                }
             }
         }
     }

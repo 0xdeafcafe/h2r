@@ -1,7 +1,7 @@
 # Retiring D3D: movies, frames outside a game view and the display (R8)
 
-Status: Partly built. The frame step, the movie's picture, the publish (in the frame step and the three frame loops outside it) and the frame's finish are native, and the frame wait calls no D3D entry; the frame tail's setup, the frames outside a game view's own setup and a frame with a carried slot keep the guest's D3D calls, each under a named `render.residual` row.
-Code: `crates/rewrites/render-bridge/src/render_frame.rs` (the frame step), `native_targets.rs` (the finish), `render_frame/publish.rs`, `d3d::Device::publish` and `game::d3d_glue::SinkDrain` (the publish), `crates/platform/bink-hle/src/display.rs` and `crates/rewrites/render-bridge/src/native_movie.rs` (the movie), `crates/extensions/game/src/movie_display_glue.rs` and `hud_overlay::place_movie` (the glue), `render_frame::loop_present` (the frame loops' present), `residual_census::REGISTRY` (the rows). Tests: in each, `the_frame_finish_makes_no_d3d_entry` (`native_targets.rs`), `the_frame_wait_is_outside_the_render` and `the_frames_own_calls_are_named_rows_inside_and_outside_the_frame_step` (`residual_census.rs`), `a_loop_frame_from_the_scene_is_published_with_no_d3d_entry` (`render_frame.rs`), `a_native_display_takes_the_picture_and_leaves_the_guest_texture_alone` (`crates/platform/bink-hle/tests/synthetic.rs`) and `a_published_frame_presents_with_the_frame_steps_ramp_and_the_next_vblank_reports_its_swap` (`crates/platform/d3d/tests/round7.rs`).
+Status: Partly built. The frame step, the movie's picture, the publish (in the frame step and the three frame loops outside it), the frame tail and the frame's finish are native, and the frame wait calls no D3D entry; a frame tail it does not cover, the frames outside a game view's own setup and a frame with a carried slot keep the guest's D3D calls, each under a named `render.residual` row.
+Code: `crates/rewrites/render-bridge/src/render_frame.rs` (the frame step), `native_targets.rs` (the finish), `render_frame/publish.rs`, `d3d::Device::publish` and `game::d3d_glue::SinkDrain` (the publish), `crates/platform/bink-hle/src/display.rs` and `crates/rewrites/render-bridge/src/native_movie.rs` (the movie), `crates/extensions/game/src/movie_display_glue.rs` and `hud_overlay::place_movie` (the glue), `render_frame::loop_present` (the frame loops' present), `frame_tail.rs` with `hud_overlay::place_tail` and `frame_scene::OverlayKind::Hold` (the frame tail), `residual_census::REGISTRY` (the rows). Tests: in each, `the_frame_finish_makes_no_d3d_entry` (`native_targets.rs`), `a_frame_with_a_screen_effect_makes_no_d3d_entry` and `uncovered_tails_are_refused_by_name` (`frame_tail.rs`), `a_held_texture_survives_into_the_next_frame` (`native-render/src/ui_gpu.rs`), `the_frame_wait_is_outside_the_render` and `the_frames_own_calls_are_named_rows_inside_and_outside_the_frame_step` (`residual_census.rs`), `a_loop_frame_from_the_scene_is_published_with_no_d3d_entry` (`render_frame.rs`), `a_native_display_takes_the_picture_and_leaves_the_guest_texture_alone` (`crates/platform/bink-hle/tests/synthetic.rs`) and `a_published_frame_presents_with_the_frame_steps_ramp_and_the_next_vblank_reports_its_swap` (`crates/platform/d3d/tests/round7.rs`).
 Switch: `impl.render.native` (on), listed in [switches.md](../runtime/switches.md). Off, the frame is the guest's and the movie fills and draws the guest's texture.
 
 Slice R8 of [retire-d3d.md](retire-d3d.md). `render_frame_and_present` `0x00223240` is Rust: the frame step calls each part of the guest's frame in its order, so each part goes native in place. The exit: from boot to gameplay and back to the menu, `render.residual`'s `d3d_entries` grow only under `outside_render`. R7 owns the menus, R6 the HUD; R8 takes the frame itself, the movie, and what neither draws.
@@ -127,7 +127,7 @@ A kept frame runs the guest's `0x00013f10(0, 0)` as before. Every outcome is cou
 - The frame step holds a named continuation across each guest call of the frame, as `sim-frame` does.
 - A published frame skips `0x003f9df0(1, 1)`. **S**: that nothing sets another back buffer scale for the next frame to inherit.
 - Without a kernel clock, the vertical blanks a published swap counts (`Device::set_vblanks_per_swap`) are delivered at the next `Swap`'s return, not at the publish.
-- The frame tail `0x00013b90` runs inside `render_views` before the present, and does nothing unless `0x0001fd20` returns a record with `+0xa4` above `[0x0045dbd8]`. With one, its native copy and composite fans file nothing, a refused fan carries `overlay` and keeps the frame, and its setup is the guest's ([below](#the-frame-tail)).
+- The frame tail `0x00013b90` runs inside `render_views` before the present, and does nothing unless `0x0001fd20` returns a record with `+0xa4` above `[0x0045dbd8]`. A native tail's overlay files nothing; a kept tail's native fans file nothing, and a refused fan carries `overlay` and keeps the frame ([below](#the-frame-tail)).
 
 ## The frame tail
 
@@ -141,7 +141,33 @@ A kept frame runs the guest's `0x00013f10(0, 0)` as before. Every outcome is cou
 | `+0xa0` set, target `0x12` live (`0x0001de20`) | the copy `0x000351a0([0x004858b8], 0x12)`, then `0x0001fd00` (`+0xa0` = 0); refused: `0x0001fcd0` (the record zeroed, `[0x004b569d]` = 1 when `[0x004b5690]` is set) | the target switch `0x00014bc0` (through the native select `0x0001cd30`, then `0x003fdb20` and `SetViewport` `0x003f8100`), `SetTexture` through `0x00014f60`, render states `0x000222d0` (`0x3b`, `0x3c`, `0x90`), `0x003f59b0(0)`, `0x003f53d0(0)`, the combiner `0x0001ccf0`, the vertex program `0x0001c590`, then `0x00034a90`'s states and fan |
 | always, after | the composite `0x00022070(+0xa4, +0xa8)`: an alpha from both through `0x00372d48` (`pow`), packed `<< 24` into the PSDEF constant `0x00485014`; target `0x12` over `[0x004858b8]` with blend mode 7 | `SetTexture`, the combiner, `0x00034a90`'s states and fan |
 
-What replaces it: `0x00013b90` in Rust with the native renderer. `0x0001fd20` stays the guest's (it has no D3D entry); the copy is an overlay item that takes the target drawn so far into a held texture (as a blur takes it into scratch, `native_render::ui_gpu`), kept in the overlay's residency across frames as a movie's picture is; the composite is a quad over the canvas sampling it with the guest's alpha and blend. Target `0x12` is then never allocated, so `0x0001dc40` and its drain do not run; the copy's success is `0x0001fd00`'s write, a refusal `0x0001fcd0`'s, counted. **S**: that nothing else reads target `0x12`. Not built.
+`render_bridge::frame_tail` implements `0x00013b90` (`RENDER_FRAME_TAIL`, placed by `native_targets`) with no guest D3D entry:
+
+| Guest | Rust |
+|---|---|
+| `0x0001fd20` | the guest's call, EAX 0 (it has no D3D entry) |
+| no record, or `+0xa4` at or below `[0x0045dbd8]` | return |
+| `0x0001dc40`, `0x0001de20`: target `0x12` | never allocated; the cache's drain does not run |
+| the copy `0x000351a0` | an `OverlayKind::Hold` of texture `0x12`: the bound target copied whole into a texture of its size and format, kept across frames in the overlay's residency (`ui_gpu::OverlayResidency::hold`), one per target copy |
+| `0x0001fd00`, `0x0001fcd0` | the same writes: a placed pass is the copy's success, a pass the host did not place its refusal |
+| the composite `0x00022070` | a quad over Halo's window `0x004b9dd0` sampling `OverlayTexture::Held`, each corner its own pixel; the guest's combiner block (`frame_tail::composite_words`, alpha from `frame_tail::composite_alpha`), blend mode 7, all four channels written |
+
+`hud_overlay::place_tail` places the list as one unfitted overlay pass over the bound target. A frame with no copy samples the texture an earlier frame kept.
+
+A tail it does not cover runs the guest's body, counted `scene_kept_frame_tail_<cause>` in `render.scene`:
+
+| Cause | When |
+|---|---|
+| `host` | no host installed |
+| `target` | `[0x004858b8]` is not target 0, or target 0's colour `[0x0050935c]` is not the bound one (the select's cache `[0x0051f3f4]`) |
+| `size` | target 0 has no size |
+| `window` | the window is empty or outside target 0 |
+| `blend` | blend mode 7 is past the tables or names the constant colour |
+| `unread` | a word that does not read |
+
+`frame_tail_calls`, `frame_tail_native`, `frame_tail_copies` and `frame_tail_composites` count the rest. `frame_tail_refused_pass` counts a pass the host did not place (a pending copy is then refused as `0x0001fcd0` refuses it); `frame_tail_refused_hold` a copy with no texture or over a target that cannot be copied, `frame_tail_refused_held` a composite whose held texture or combiner the GPU did not take.
+
+**S**: that nothing else reads target `0x12`; that the state the guest's copy and composite leave (texture stage 0, the stage caches, the viewport) is not read before the next frame sets its own; that a fade whose copy was native is not composited by a kept tail (it would sample target `0x12`, never filled).
 
 ## The frame's finish
 
@@ -159,7 +185,8 @@ Each step is a no-op once made, so a cut stopped part way runs the guest body, w
 ## Not verified
 
 - A movie on screen with the native display: its placement against the guest's draw at 1x and at render scale.
-- That `d3d_entries` grow only under `outside_render` from boot to gameplay and back (the R8 exit); it needs R1 to R7, the frame tail and the frames outside a game view's own setup.
+- That `d3d_entries` grow only under `outside_render` from boot to gameplay and back (the R8 exit); it needs R1 to R7 and the frames outside a game view's own setup.
+- The frame tail in a game: a screen effect's freeze frame on screen against the guest's, at 1x and at render scale, and `frame_tail_native` against `frame_tail_calls`.
 - A frame loop's published frame on screen, and its `loop_published` against `loop_presents` over a map load.
 - The frame's finish in a game: `frame_finish_cut` against `frame_finish_calls`, and that a `release` is rare.
 - How many frames publish in a game: the `publish_*` counters over the census corpus.

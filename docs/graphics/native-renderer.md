@@ -482,12 +482,12 @@ counted once; runtime counts depend on visibility and admissions):
 | Alternate view | view setup `0x0002c863`, UI call `0x0002c884`, view finish `0x0002c889` |
 | Outside game views | the frame step's call of `0x002232a0`, 2 frame-finish calls, the present `0x00013f10` |
 
-The frame tail at `0x00013b90` conditionally copies the view target and
-composites it. The bridge scopes each helper by its caller and drains pending
-draws at entry and return. Its four-vertex pushed fans use the native
-screen-space pass with the resolved shader, textures, viewport and target.
+The frame tail at `0x00013b90` copies the view target and composites it, in
+Rust over the overlay ([retire-d3d-display.md](retire-d3d-display.md#the-frame-tail)).
+A tail it does not cover runs the guest's body, each helper scoped by its caller,
+its pushed fans drawn by the native screen-space pass.
 
-Refused draws, the tail's setup and a kept frame's `Swap` use the guest path;
+Refused draws, a kept tail's setup and a kept frame's `Swap` use the guest path;
 the finish `0x00013cd0` is Rust ([retire-d3d-display.md](retire-d3d-display.md#the-frames-finish)).
 
 The five base target sites are `0x0002bde2`, `0x0002be83`, `0x0002bf0e`,
