@@ -154,8 +154,40 @@ fn the_live_mxcsr_reads_as_the_fast_path_and_raises_pe() {
     d.k.scale = f(0.3);
     let fast = read(&d, &mut Host).unwrap();
     assert_eq!(fast.rates[0], f(1.1 * 0.3));
-    assert_eq!(read_tracked(&d, 0x1f80, &mut Host), Some((fast, 0x1fa0)));
-    assert_eq!(read_tracked(&d, 0x1fa0, &mut Host), Some((fast, 0x1fa0)));
+    assert_eq!(read_guest(&d, 0x1f80, &mut Host), Some((fast, 0x1fa0)));
+    assert_eq!(read_guest(&d, 0x1fa0, &mut Host), Some((fast, 0x1fa0)));
+}
+
+/// Off the exact range the read is the SSE model's, as the guest's
+/// `mulss` runs it: a quiet NaN rate propagates and raises nothing.
+#[test]
+fn an_operand_off_the_exact_range_reads_as_the_guest_runs_it() {
+    let mut d = device();
     d.rates[0] = 0x7fc0_0000;
-    assert_eq!(read_tracked(&d, 0x1f80, &mut Host), None, "off the exact range");
+    let (out, mxcsr) = read_guest(&d, 0x1fa0, &mut Host).unwrap();
+    assert_eq!(out.rates[0], 0x7fc0_0000);
+    assert_eq!(mxcsr, 0x1fa0);
+}
+
+/// Only an unmasked exception declines: a signalling NaN under IM clear.
+#[test]
+fn an_unmasked_exception_declines() {
+    let mut d = device();
+    d.rates[0] = 0x7f80_0001;
+    assert_eq!(read_guest(&d, 0x1f00, &mut Host), None);
+    assert!(read_guest(&d, 0x1f80, &mut Host).is_some(), "masked, IE is raised and the read goes on");
+}
+
+/// A rounding mode off nearest rounds as the MXCSR says.
+#[test]
+fn the_mxcsr_rounding_mode_rounds_the_rates() {
+    let mut d = device();
+    d.rates[0] = f(1.1);
+    d.k.scale = f(0.3);
+    let exact = f64::from(1.1f32) * f64::from(0.3f32);
+    let nearest = exact as f32;
+    let toward_zero = if f64::from(nearest) > exact { f32::from_bits(nearest.to_bits() - 1) } else { nearest };
+    let (out, mxcsr) = read_guest(&d, 0x7f80, &mut Host).unwrap();
+    assert_eq!(out.rates[0], toward_zero.to_bits());
+    assert_eq!(mxcsr & 0x20, 0x20, "inexact");
 }

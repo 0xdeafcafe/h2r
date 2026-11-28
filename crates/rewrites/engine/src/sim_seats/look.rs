@@ -103,10 +103,7 @@ fn at(base: u32, offset: u32) -> u32 {
 // stores. In particular, units that do not take the biped input path resume
 // at the original selector before any input was consumed.
 fn declined(pc: u32) -> GuestFault {
-    GuestFault {
-        addr: pc, len: 1, access: runtime::guest::Access::Execute,
-        reason: runtime::guest::FaultReason::InvalidBuffer,
-    }
+    crate::sim_native::refuse(pc, crate::sim_native::Decline::Boundary)
 }
 
 pub fn update(cpu: &mut CpuAbi, ram: &mut impl SegmentMemory, pc: u32) -> Checked {
@@ -160,7 +157,7 @@ fn control_step(c: &mut CpuAbi, m: &mut impl Memory, pc: u32) -> Result {
 /// Unbound users still zero the action and collect any script input.
 fn enter(c: &mut CpuAbi, m: &mut impl Memory) -> Result {
     if c.eflags & (1 << 10) != 0 {
-        return Err(declined(UPDATE));
+        return Err(crate::sim_native::refuse(UPDATE, crate::sim_native::Decline::Direction));
     }
     let frame = c.esp.wrapping_sub(0xe0);
     let settings = m.u32(at(m.u32(SETTINGS)?, 0xf4))?;

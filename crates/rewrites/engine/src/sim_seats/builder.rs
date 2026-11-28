@@ -110,18 +110,13 @@ fn logic32(c: &mut CpuAbi, v: u32) {
 
 // Hand the point back to the original with nothing written.
 fn declined(pc: u32) -> GuestFault {
-    GuestFault {
-        addr: pc,
-        len: 1,
-        access: runtime::guest::Access::Execute,
-        reason: runtime::guest::FaultReason::InvalidBuffer,
-    }
+    crate::sim_native::refuse(pc, crate::sim_native::Decline::Boundary)
 }
 
 type Unit = std::result::Result<(), GuestFault>;
 
 fn forward(c: &CpuAbi, pc: u32) -> Unit {
-    if c.eflags & DF != 0 { Err(declined(pc)) } else { Ok(()) }
+    if c.eflags & DF != 0 { Err(crate::sim_native::refuse(pc, crate::sim_native::Decline::Direction)) } else { Ok(()) }
 }
 
 /// `rep stosd` / `rep movsd` with the direction flag clear: `ecx` words.
@@ -473,7 +468,7 @@ fn grenade_walk(c: &mut CpuAbi, m: &mut impl Memory, sp: u32) -> Result {
         }
         steps += 1;
         if steps >= SLOT_WALK {
-            return Err(declined(0x186cc3));
+            return Err(crate::sim_native::unported(0x186cc3, "the weapon slot walk passes its bound"));
         }
     }
     // 0x186ce9

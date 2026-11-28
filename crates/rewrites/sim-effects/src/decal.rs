@@ -77,10 +77,12 @@ impl Inputs {
     pub fn edi(&self) -> u32 {
         if self.gated() { self.position_ptr } else { self.source }
     }
-    /// The x87 helpers cannot refuse: no exception pending and all six
-    /// masked. The arm answers only then.
-    pub fn quiet_fpu(&self) -> bool {
-        self.fpu.status & SW_ES == 0 && self.fpu.control & 0x3f == 0x3f
+    /// An x87 exception is pending at entry: the arm's first draw would
+    /// take `#MF`. Otherwise the draws run under the control word as it
+    /// stands, and refuse only where an unmasked exception is raised
+    /// ([`crate::random::Refused`]).
+    pub fn fpu_pending(&self) -> bool {
+        self.fpu.status & SW_ES != 0
     }
 
     /// Step 1's registers (`EAX`, `ECX`, `EDX`, `EBX`, `ESI`, `EDI`) and

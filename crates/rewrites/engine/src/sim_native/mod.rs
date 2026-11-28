@@ -21,7 +21,7 @@ pub mod stream;
 pub mod unit;
 
 pub use collision::{geometry_test, point_to_leaf};
-pub use plan::{Decline, SegmentMemory, take_decline};
+pub use plan::{Decline, SegmentMemory, decline, refuse, take_decline, unported};
 #[cfg(any(test, feature = "differential"))]
 pub use lanes::with as with_simd;
 pub use lanes::{enabled as simd_enabled, set_enabled as set_simd};

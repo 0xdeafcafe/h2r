@@ -342,8 +342,11 @@ pub fn subjects(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Boundary {
 /// `19df10 (player: eax, event: edi, kind)`, `ret 4`, whole: the kernel's
 /// answer in `eax`, `ecx` and `edx`, the argument popped.
 pub fn row_answer(c: &mut CpuAbi, g: &mut Guest, pc: u32) -> Boundary {
-    if pc != ROW || !crate::sim_native::supported(c) {
-        return Ok(None);
+    if pc != ROW {
+        return crate::sim_native::decline(pc, crate::sim_native::Decline::Boundary);
+    }
+    if !crate::sim_native::supported(c) {
+        return crate::sim_native::decline(pc, crate::sim_native::Decline::Float);
     }
     let m = crate::sim_seats::respawn::Mem::new(g);
     let kind = g.u32(at(c.esp, 4))?;

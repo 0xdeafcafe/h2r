@@ -46,12 +46,7 @@ fn logic32(c: &mut CpuAbi, v: u32) {
 }
 
 fn declined(pc: u32) -> GuestFault {
-    GuestFault {
-        addr: pc,
-        len: 1,
-        access: runtime::guest::Access::Execute,
-        reason: runtime::guest::FaultReason::InvalidBuffer,
-    }
+    crate::sim_native::refuse(pc, crate::sim_native::Decline::Boundary)
 }
 
 /// One body segment.
@@ -73,7 +68,7 @@ fn step(c: &mut CpuAbi, m: &mut impl Memory, pc: u32) -> Result {
                 return leave(c, m);
             }
             if c.ebx > LIST {
-                return Err(declined(pc));
+                return Err(crate::sim_native::unported(pc, "more objects than the search record holds"));
             }
             push(c, m, c.edi)?;
             walk(c, m, false)
@@ -195,7 +190,7 @@ fn walk(c: &mut CpuAbi, m: &mut impl Memory, mut next: bool) -> Result {
                 continue;
             }
             0x1512de => continue,
-            _ => return Err(declined(0x15126c)),
+            _ => return Err(crate::sim_native::unported(0x15126c, "an object type the walk does not take")),
         };
         let player = m.u32(at(sp, 0x120))?;
         if test == WEAPON_TEST || test == VEHICLE_TEST {

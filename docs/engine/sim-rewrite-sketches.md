@@ -260,15 +260,26 @@ its own), and every read is the kernel's:
 A blocked read that skips the walk (a unit that is not a biped) goes on
 to `0x1865cc` in the body. The guest's read never runs.
 
-The cone, the device read and the `visible` and `submit` leaves run under
-the guest's MXCSR when it is masked and rounds to nearest, PE sticky or
-not (`det::guest_env`); the live game runs at `0x1f80`, PE clear. Their
+The cone and the `visible` and `submit` leaves run under the guest's
+MXCSR when it is masked and rounds to nearest, PE sticky or not
+(`det::guest_env`); the live game runs at `0x1f80`, PE clear. Their
 arithmetic is `Fp::tracked`: the fast path's results and operand range,
 with PE raised in the answer's MXCSR when an operation was inexact.
 `float` is any other MXCSR, or an operand off the fast path.
-`bound_control_matches_lifted` (`engine/tests/sim_seats_differential.rs`)
-puts the applied answer against the lifted original with its real `24590`
-and `pow`.
+
+The device read takes the guest's float state as it stands:
+
+| State | Model |
+|---|---|
+| MXCSR (masks, rounding, DAZ/FTZ) | `Fp::guest` (`device::read_guest`): the host's result on the fast path, the SSE model off it, flags raised into the answer's MXCSR |
+| x87 control word (precision, rounding, masks) | the arm's x87 model, loaded from the CPU |
+
+Its `float` is an unmasked SSE exception, an x87 exception pending at
+entry or left pending by a step (the guest's `#MF`), or a step the x87
+model refuses. `bound_control_matches_lifted`
+(`engine/tests/sim_seats_differential.rs`) puts the applied answer against
+the lifted original with its real `24590` and `pow`, over five x87
+control words and an MXCSR that rounds down.
 
 *The leaf callees.* Eight guest functions the seat bodies call, which read
 only what their registers name, are kernels in

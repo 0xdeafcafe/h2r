@@ -17,12 +17,13 @@
 //! - blocked, the wanted buttons this frame did not press are dropped
 //!   ([`select`]) and the rest's state is recopied.
 //!
-//! SSE arithmetic goes through [`Fp`] (exact or inexact: the arm declines
-//! an inexact read). The x87 pieces (the speed, `pow`, the magnitudes and
+//! SSE arithmetic goes through [`Fp`]: [`read`] is exact or declines, and
+//! the arm's [`read_guest`] runs under the guest's MXCSR, modelled off the
+//! fast path, so it declines only an unmasked exception. The x87 pieces (the speed, `pow`, the magnitudes and
 //! the hypot) go through [`Fpu`], which the arm runs on the x87 model so
 //! their stack, tag and status are retail's.
 
-use sim_core::det::{self, Fp};
+use sim_core::det::Fp;
 use std::cmp::Ordering;
 
 pub mod arm;
@@ -174,10 +175,11 @@ pub struct Outcome {
     pub path: Path,
 }
 
+/// `comiss a, b; ja`: under [`Fp::guest`] the compare raises what it
+/// would (IE for a NaN, DE for a subnormal), and only an unmasked one
+/// refuses; unordered is not above.
 fn above(fp: &mut Fp, a: u32, b: u32) -> bool {
-    fp.check_compared(a);
-    fp.check_compared(b);
-    det::compare(a, b) == Ordering::Greater
+    fp.comiss(a, b) == Some(Ordering::Greater)
 }
 
 /// The device read, or `None` when an operand left the exact range or
@@ -186,11 +188,12 @@ pub fn read(d: &Device, fpu: &mut impl Fpu) -> Option<Outcome> {
     read_with(&mut Fp::new(), d, fpu)
 }
 
-/// [`read`] under the guest's `mxcsr` ([`Fp::tracked`]; it must pass
-/// [`det::guest_env`]): the outcome and the MXCSR after it, PE raised
-/// when an operation was inexact.
-pub fn read_tracked(d: &Device, mxcsr: u32, fpu: &mut impl Fpu) -> Option<(Outcome, u32)> {
-    let mut fp = Fp::tracked(mxcsr);
+/// [`read`] under the guest's `mxcsr`, whatever it holds ([`Fp::guest`]):
+/// the outcome and the MXCSR after it, with the flags the operations
+/// raised. `None` only on an unmasked SSE exception or an x87 step the
+/// model refuses.
+pub fn read_guest(d: &Device, mxcsr: u32, fpu: &mut impl Fpu) -> Option<(Outcome, u32)> {
+    let mut fp = Fp::guest(mxcsr);
     let outcome = read_with(&mut fp, d, fpu)?;
     Some((outcome, fp.mxcsr().unwrap_or(mxcsr)))
 }
@@ -237,7 +240,7 @@ fn vehicle(
     }
     // `ucomiss` against zero, then `lahf; test ah, 0x44; jnp`: only an
     // equal exponent skips `pow`.
-    fp.check_compared(s.exponent);
+    let _ = fp.ucomiss(s.exponent, 0);
     if s.exponent & 0x7fff_ffff != 0 {
         t = fpu.pow(t, s.exponent)?;
         last = Last::Pow;

@@ -93,6 +93,14 @@ pub enum Decline {
     LogFull { addr: u32 },
     /// The body's own fault (an operation it does not model).
     Body { addr: u32, len: u32, access: Access, reason: FaultReason },
+    /// The direction flag is set: the body's string and stack moves
+    /// assume it clear.
+    Direction,
+    /// The x87 rounding control is not round-to-nearest.
+    Rounding { control: u16 },
+    /// The body reached a path it does not port, named by `what`
+    /// ([`refuse`]).
+    Unported { addr: u32, what: &'static str },
 }
 
 impl std::fmt::Display for Decline {
@@ -109,6 +117,9 @@ impl std::fmt::Display for Decline {
             Self::Body { addr, len, access, reason } => {
                 write!(f, "{access:?} of {len} bytes at {addr:#010x}: {reason:?}")
             }
+            Self::Direction => write!(f, "the direction flag is set"),
+            Self::Rounding { control } => write!(f, "x87 rounding control {:#x} is not nearest", control & 0xc00),
+            Self::Unported { addr, what } => write!(f, "unported path at {addr:#x}: {what}"),
         }
     }
 }
@@ -119,6 +130,37 @@ thread_local! {
 
 fn note_decline(pc: u32, why: Decline) {
     LAST_DECLINE.with(|last| last.set(Some((pc, why))));
+}
+
+thread_local! {
+    /// The decline a segment body named with [`refuse`], and the fault it
+    /// returned with it.
+    static REFUSED: std::cell::Cell<Option<(GuestFault, Decline)>> = const { std::cell::Cell::new(None) };
+}
+
+/// A guard ahead of a segment declines at `pc`: nothing runs, and the
+/// seat's panic names `why` ([`take_decline`]).
+pub fn decline<T>(pc: u32, why: Decline) -> Result<Option<T>, GuestFault> {
+    note_decline(pc, why);
+    Ok(None)
+}
+
+/// A segment body refuses the shape at `addr`: the fault it returns, with
+/// `why` recorded so the segment's decline names it rather than the bare
+/// fault.
+pub fn refuse(addr: u32, why: Decline) -> GuestFault {
+    let fault = GuestFault { addr, len: 1, access: Access::Execute, reason: FaultReason::InvalidOperation };
+    REFUSED.with(|r| r.set(Some((fault.clone(), why))));
+    fault
+}
+
+/// A segment body reached a path it does not port ([`Decline::Unported`]).
+pub fn unported(addr: u32, what: &'static str) -> GuestFault {
+    refuse(addr, Decline::Unported { addr, what })
+}
+
+fn take_refused(fault: &GuestFault) -> Option<Decline> {
+    REFUSED.with(std::cell::Cell::take).and_then(|(f, why)| (f == *fault).then_some(why))
 }
 
 /// The last segment this thread declined: its `pc` and why. Taken once.
@@ -482,6 +524,7 @@ pub(crate) fn segment<const N: usize, M: SegmentMemory>(
     body: impl FnOnce(&mut runtime::CpuAbi, &mut Plan<'_, M, N>, u32) -> super::Result,
 ) -> Result<Option<runtime::TransferAbi>, GuestFault> {
     let mut log = Log::new();
+    REFUSED.with(|r| r.set(None));
     let mut plan = match Plan::for_segment(ram, &mut log, cpu, pc, text, sites) {
         Ok(plan) => plan,
         Err(why) => {
@@ -493,7 +536,8 @@ pub(crate) fn segment<const N: usize, M: SegmentMemory>(
     let transfer = match body(&mut next, &mut plan, pc) {
         Ok(transfer) => transfer,
         Err(fault) => {
-            note_decline(pc, plan.explain(&fault));
+            let why = take_refused(&fault).unwrap_or_else(|| plan.explain(&fault));
+            note_decline(pc, why);
             return Ok(None);
         }
     };
@@ -758,17 +802,28 @@ mod tests {
         fn never(_: &mut CpuAbi, _: &mut Plan<'_, Guest, 2>) -> Result {
             unreachable!("the plan declines before the body")
         }
+        fn path(_: &mut CpuAbi, _: &mut Plan<'_, Guest, 2>) -> Result {
+            Err(unported(AT + 2, "a vehicle seat"))
+        }
+        // A refusal the body caught is not its reason either.
+        fn caught(_: &mut CpuAbi, g: &mut Plan<'_, Guest, 2>) -> Result {
+            let _ = refuse(AT + 2, Decline::Direction);
+            g.set_u16(0x50010, 1)?;
+            Ok(TransferAbi::ret(0))
+        }
         let mut ram = Guest::new();
         ram.map(AT, PAGE, 0x10000, Permissions::RWX).unwrap();
         ram.map(0x50000, PAGE, 0x20000, Permissions::READ).unwrap();
         let cpu = CpuAbi::default();
-        let cases: [(u32, Body, Decline); 6] = [
+        let cases: [(u32, Body, Decline); 8] = [
             (AT, read, Decline::Read { addr: 0x90000, len: 4 }),
             (AT, write, Decline::Write { addr: 0x50010, len: 2 }),
             (AT + 8, own_text, Decline::TextWrite { addr: AT + 12, len: 4 }),
             (AT, full, Decline::LogFull { addr: 0x40108 }),
             (AT, own_fault, Decline::Body { addr: AT, len: 0, access: Access::Execute, reason: FaultReason::InvalidOperation }),
             (AT + 4, never, Decline::Boundary),
+            (AT, path, Decline::Unported { addr: AT + 2, what: "a vehicle seat" }),
+            (AT, caught, Decline::Write { addr: 0x50010, len: 2 }),
         ];
         for (pc, body, why) in cases {
             assert_eq!(declined(&mut ram, cpu, pc, body), Some((pc, why)), "{why}");
@@ -777,5 +832,16 @@ mod tests {
         assert_eq!(declined(&mut ram, float, AT, never), Some((AT, Decline::Float)));
         ram.install_trap(4);
         assert_eq!(declined(&mut ram, cpu, AT, never), Some((AT, Decline::Trap)));
+    }
+
+    #[test]
+    fn a_guard_records_its_decline() {
+        let none: std::result::Result<Option<()>, GuestFault> = decline(AT, Decline::Direction);
+        assert_eq!(none, Ok(None));
+        assert_eq!(take_decline(), Some((AT, Decline::Direction)));
+        assert_eq!(
+            Decline::Rounding { control: 0x27f | 0xc00 }.to_string(),
+            "x87 rounding control 0xc00 is not nearest"
+        );
     }
 }

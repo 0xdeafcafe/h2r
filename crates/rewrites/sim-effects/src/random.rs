@@ -25,42 +25,52 @@ pub const fn next(seed: u32) -> u32 {
     seed.wrapping_mul(0x0019_660d).wrapping_add(0x3c6e_f35f)
 }
 
-/// An x87 step would fault or stop (an unmasked exception, or one already
-/// pending): the guest answers.
+/// An x87 step faults or stops: an exception already pending (`#MF` at the
+/// first waiting instruction), or one the control word leaves unmasked.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Refused;
 
-fn ok(code: u32) -> Result<u32, Refused> {
-    if code & status::MASK == status::OK { Ok(code) } else { Err(Refused) }
+/// One step's code, then the state it left. An unmasked pre-computation
+/// exception reports `OK` with only the status word changed, ES set
+/// (`x87::abi`): the guest's next waiting instruction takes `#MF`, so the
+/// step refuses there.
+fn ok_in(s: &X87Abi, code: u32) -> Result<u32, Refused> {
+    if code & status::MASK == status::OK && s.status & abi::SW_ES == 0 { Ok(code) } else { Err(Refused) }
+}
+
+/// Run one x87 step on `s` and check it ([`ok_in`]).
+fn step(s: &mut X87Abi, run: impl FnOnce(&mut X87Abi) -> u32) -> Result<u32, Refused> {
+    let code = run(s);
+    ok_in(s, code)
 }
 
 /// `0x259a0`: one draw, its value left in `ST0`. Returns the new seed.
 pub fn unit(s: &mut X87Abi, seed: u32, scale: u32) -> Result<u32, Refused> {
     let seed = next(seed);
-    ok(abi::ld_int(s, i64::from(seed >> 16)))?;
-    ok(abi::arith(s, arith_op::MUL, 0, src_kind::F32, u64::from(scale)))?;
+    step(s, |s| abi::ld_int(s, i64::from(seed >> 16)))?;
+    step(s, |s| abi::arith(s, arith_op::MUL, 0, src_kind::F32, u64::from(scale)))?;
     Ok(seed)
 }
 
 /// `0x259d0(lo, hi)`: one draw scaled to `[lo, hi)`, left in `ST0`.
 pub fn range(s: &mut X87Abi, seed: u32, scale: u32, lo: u32, hi: u32) -> Result<u32, Refused> {
     let seed = unit(s, seed, scale)?;
-    ok(abi::ld_f32(s, hi))?;
-    ok(abi::arith(s, arith_op::SUB, 0, src_kind::F32, u64::from(lo)))?;
-    ok(abi::arith(s, arith_op::MUL | ARITH_POP, 1, src_kind::ST, 0))?;
-    ok(abi::arith(s, arith_op::ADD, 0, src_kind::F32, u64::from(lo)))?;
+    step(s, |s| abi::ld_f32(s, hi))?;
+    step(s, |s| abi::arith(s, arith_op::SUB, 0, src_kind::F32, u64::from(lo)))?;
+    step(s, |s| abi::arith(s, arith_op::MUL | ARITH_POP, 1, src_kind::ST, 0))?;
+    step(s, |s| abi::arith(s, arith_op::ADD, 0, src_kind::F32, u64::from(lo)))?;
     Ok(seed)
 }
 
 /// `fstp st(0)`: drop the draw.
 pub fn drop_top(s: &mut X87Abi) -> Result<(), Refused> {
-    ok(abi::st_st(s, 0, true)).map(|_| ())
+    step(s, |s| abi::st_st(s, 0, true)).map(|_| ())
 }
 
 /// `fstp dword`: the draw as an `f32`, popped.
 pub fn store_f32(s: &mut X87Abi) -> Result<u32, Refused> {
     let (code, store) = abi::st_f32(s, 0);
-    ok(code)?;
+    ok_in(s, code)?;
     abi::store_commit(s, store.status, true);
     Ok(store.value)
 }
@@ -68,9 +78,8 @@ pub fn store_f32(s: &mut X87Abi) -> Result<u32, Refused> {
 /// `fld [limit]; fcomip st, st(1); fstp st(0)` after [`unit`]: whether the
 /// arm goes on (`jbe` not taken: `limit` above the draw, ordered).
 pub fn below(s: &mut X87Abi, limit: u32) -> Result<bool, Refused> {
-    ok(abi::ld_f32(s, limit))?;
-    let flags = abi::cmp(s, 0, src_kind::ST, 1, 1, true);
-    ok(flags)?;
+    step(s, |s| abi::ld_f32(s, limit))?;
+    let flags = step(s, |s| abi::cmp(s, 0, src_kind::ST, 1, 1, true))?;
     drop_top(s)?;
     Ok(flags & (abi::EFL_CF | abi::EFL_ZF) == 0)
 }
@@ -117,5 +126,21 @@ mod tests {
     fn a_pending_exception_is_refused() {
         let mut s = X87Abi { status: abi::SW_ES | abi::H2_FP_IE, ..fpu() };
         assert_eq!(unit(&mut s, 0, SCALE_BITS), Err(Refused));
+    }
+
+    /// An exception the control word leaves unmasked refuses at the step
+    /// that raises it; masked, the same draw goes on.
+    #[test]
+    fn an_unmasked_exception_is_refused_where_it_is_raised() {
+        let nan = 0x7f80_0001; // a signalling NaN: IE at its load
+        let mut masked = fpu();
+        assert!(range(&mut masked, 0, SCALE_BITS, 0, nan).is_ok());
+        let mut unmasked = X87Abi { control: 0x027e, ..fpu() };
+        assert_eq!(range(&mut unmasked, 0, SCALE_BITS, 0, nan), Err(Refused));
+        // Unmasked but not raised: an ordinary draw is the masked one's.
+        let (mut a, mut b) = (fpu(), X87Abi { control: 0x027e, ..fpu() });
+        let two = 2.0f32.to_bits();
+        assert_eq!(range(&mut a, 0, SCALE_BITS, 0, two), range(&mut b, 0, SCALE_BITS, 0, two));
+        assert_eq!(a.st, b.st);
     }
 }

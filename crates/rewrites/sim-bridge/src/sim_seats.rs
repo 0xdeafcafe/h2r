@@ -6,8 +6,9 @@
 //! return sites. At either, the body runs one segment. A body that
 //! declines is on a path not ported (a float environment it does not
 //! assume, an aliased or unmapped operand, a resource type an edited
-//! image can name): that is `unimplemented!("seats: <seat>: ...")`, and no
-//! lifted body runs in its place. A transfer anywhere else is the
+//! image can name): it records the `engine::sim_native::Decline`, and the
+//! seat panics with it, `unimplemented!("seats: <seat>: <why> at <pc>")`.
+//! No lifted body runs in its place. A transfer anywhere else is the
 //! original's by construction (a site the body does not own). The camera
 //! is one of the entries; the whole prediction walk is another, which
 //! owns the point the light host's resource trim used to hook.
@@ -61,6 +62,15 @@ fn reset_stats() {
     }
 }
 
+/// Why a body declined at `pc`: the decline it recorded
+/// (`engine::sim_native::Decline`). Every body records one.
+fn cause(pc: u32) -> String {
+    match engine::sim_native::take_decline() {
+        Some((at, why)) => format!("{why} at {at:#x}"),
+        None => format!("no decline recorded at {pc:#x}"),
+    }
+}
+
 pub(crate) fn install(b: &mut Builder) {
     b.raw().observe_before(&engine::points::CACHE_TAGS_LOAD, DEVICE_RESET, |_| {
         sim_seats::leaf::reset();
@@ -75,10 +85,10 @@ pub(crate) fn install(b: &mut Builder) {
                 let site = pc != point.base && sites.contains(&pc);
                 if pc == point.base || site {
                     let mut mem = ctx.memory();
+                    // A decline an earlier body left untaken is not this one's.
+                    let _ = engine::sim_native::take_decline();
                     let Some(transfer) = run(cpu, &mut mem, pc)? else {
-                        let cause = engine::sim_native::take_decline()
-                            .map_or_else(|| format!("unported path at {pc:#x}"), |(at, why)| format!("{why} at {at:#x}"));
-                        unimplemented!("seats: {}: {cause}", sim_seats::SEATS[i].name);
+                        unimplemented!("seats: {}: {}", sim_seats::SEATS[i].name, cause(pc));
                     };
                     ANSWERED[i].fetch_add(1, Ordering::Relaxed);
                     return Ok(transfer);

@@ -7,7 +7,6 @@ use crate::sim_native::{Memory, Result as TransferResult, plan};
 use crate::sim_objects::alu::cmp16;
 use crate::sim_physics::{arithmetic, byte, logic, pop, push};
 use crate::tags::{TAG_ENTRIES_GLOBAL, entry_layout};
-use runtime::guest::{Access, FaultReason};
 use runtime::{CpuAbi, Guest, GuestFault, TransferAbi};
 
 const ENTRY: u32 = points::PREDICT_RESOURCES.base;
@@ -134,14 +133,10 @@ impl Prediction {
             }
             // An edited jump table can name another block. Replay the
             // untouched entry/return selector in the original.
-            _ => return Err(decline(target)),
+            _ => return Err(crate::sim_native::unported(target, "an edited jump table names another block")),
         };
         ram.call(cpu, callee, resume).map(Some)
     }
-}
-
-fn decline(addr: u32) -> GuestFault {
-    GuestFault { addr, len: 1, access: Access::Execute, reason: FaultReason::InvalidOperation }
 }
 
 fn finish(cpu: &mut CpuAbi, ram: &impl Memory) -> TransferResult {
@@ -207,7 +202,7 @@ fn step(cpu: &mut CpuAbi, ram: &mut impl Memory, pc: u32) -> TransferResult {
         }
         next_request = true;
     }
-    Err(decline(pc))
+    Err(crate::sim_native::unported(pc, "more than 512 resource entries in one segment"))
 }
 
 pub fn run(cpu: &mut CpuAbi, ram: &mut Guest, pc: u32) -> Result<Option<TransferAbi>, GuestFault> {
