@@ -17,7 +17,6 @@ const RETAIL_BITMAPS: u32 = 0x0053_1000;
 const RETAIL_TEXTS: u32 = 0x0053_2000;
 const REGION: (u32, u32) = (0x0056_0000, REGION_LEN);
 const POINTS: (u32, u32) = (0x0057_0000, POINTS_LEN);
-const SP: u32 = 0x0054_0000;
 const GLOBALS: u32 = 0x0054_1000;
 
 fn memory() -> FlatMemory {
@@ -220,7 +219,7 @@ fn shown_values(fill: f32) -> impl Fn(usize, &str) -> Option<Value> {
 }
 
 /// The gate shows a kit widget at its value, in its modes, in a style
-/// the runtime draws; a retail widget or another caller is not answered.
+/// the runtime draws; a retail widget is not answered.
 #[test]
 fn the_gate_answers_kit_widgets_only() {
     let mut m = memory();
@@ -228,20 +227,17 @@ fn the_gate_answers_kit_widgets_only() {
     let t = install(&mut m, &hud, &c);
     let meter = t.widgets[0].address;
     let text = t.widgets[1].address;
-    m.set_u32(SP, GATE_RETURNS[0]).unwrap();
     let on = shown_values(1.0);
-    assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), Some(true));
+    assert_eq!(gate(&m, meter, 0, &t, &on).unwrap(), Some(true));
     let hidden = |_: usize, _: &str| Some(Value::hidden());
-    assert_eq!(gate(&m, SP, meter + 8, &t, &hidden).unwrap(), Some(false));
+    assert_eq!(gate(&m, meter, 0, &t, &hidden).unwrap(), Some(false));
     let inactive = |_: usize, _: &str| Some(Value::shown().styled(Style::Inactive));
-    assert_eq!(gate(&m, SP, meter + 8, &t, &inactive).unwrap(), Some(false));
-    assert_eq!(gate(&m, SP, RETAIL_BITMAPS + 8, &t, &on).unwrap(), None);
+    assert_eq!(gate(&m, meter, 0, &t, &inactive).unwrap(), Some(false));
+    assert_eq!(gate(&m, RETAIL_BITMAPS, 0, &t, &on).unwrap(), None);
     // Split screen: the text has no half offset.
     m.set_u16(GLOBALS + 8, 2).unwrap();
-    assert_eq!(gate(&m, SP, text + 8, &t, &on).unwrap(), Some(false));
-    assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), Some(true));
-    m.set_u32(SP, 0x1234).unwrap();
-    assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), None);
+    assert_eq!(gate(&m, text, 0, &t, &on).unwrap(), Some(false));
+    assert_eq!(gate(&m, meter, 0, &t, &on).unwrap(), Some(true));
 }
 
 /// The records the motion tracker draws from are where the root points:
@@ -265,7 +261,7 @@ fn the_kept_records_follow_the_root() {
 /// For a user in monitor mode a retail widget is not drawn, the player's
 /// copy or a weapon's, but the motion tracker's is left to the game, as
 /// are the kit's own widgets (the kit's gate answers them) and every
-/// widget of another user; another caller is not answered.
+/// widget of another user.
 #[test]
 fn a_monitor_user_draws_no_retail_widget_but_the_motion_tracker() {
     let mut m = memory();
@@ -277,7 +273,6 @@ fn a_monitor_user_draws_no_retail_widget_but_the_motion_tracker() {
     let (shield, tracker) = (copy, copy + records::BITMAP_SIZE as u32);
     let weapon = 0x0055_0000;
     let meter = t.widgets[0].address;
-    m.set_u32(SP, GATE_RETURNS[1]).unwrap();
     let off = 1 << 1;
     for (widget, answer) in [
         (shield, Some(false)),
@@ -286,13 +281,11 @@ fn a_monitor_user_draws_no_retail_widget_but_the_motion_tracker() {
         (tracker, None),
         (meter, None),
     ] {
-        assert_eq!(retail_gate(&m, SP, widget + 8, &t, off, 1).unwrap(), answer, "{widget:#x}");
-        assert_eq!(retail_gate(&m, SP, widget + 8, &t, off, 0).unwrap(), None, "user 0 {widget:#x}");
+        assert_eq!(retail_gate(widget, &t, off, 1), answer, "{widget:#x}");
+        assert_eq!(retail_gate(widget, &t, off, 0), None, "user 0 {widget:#x}");
     }
-    assert_eq!(retail_gate(&m, SP, shield + 8, &t, 0, 1).unwrap(), None);
-    assert_eq!(retail_gate(&m, SP, shield + 8, &t, u32::MAX, USERS).unwrap(), None);
-    m.set_u32(SP, 0x1234).unwrap();
-    assert_eq!(retail_gate(&m, SP, shield + 8, &t, off, 1).unwrap(), None);
+    assert_eq!(retail_gate(shield, &t, 0, 1), None);
+    assert_eq!(retail_gate(shield, &t, u32::MAX, USERS), None);
 }
 
 /// `Handle::retail` turns one user's retail widgets off and on again,
@@ -310,8 +303,8 @@ fn retail_is_per_user() {
 }
 
 /// A widget whose element gives way to word D bits is hidden while the
-/// game's word D (the gate's third stack argument) has one, and shown at
-/// its value otherwise; a widget without such bits ignores the word.
+/// walk's word D has one, and shown at its value otherwise; a widget
+/// without such bits ignores the word.
 #[test]
 fn the_gate_gives_way_to_word_d() {
     let mut m = memory();
@@ -321,19 +314,12 @@ fn the_gate_gives_way_to_word_d() {
     let meter = t.widgets[0].address;
     assert_eq!(t.widgets[0].hide_d, 0x400);
     assert_eq!(t.widgets[1].hide_d, 0);
-    m.set_u32(SP, GATE_RETURNS[1]).unwrap();
     let on = shown_values(1.0);
-    assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), Some(true));
-    m.set_u32(SP + 12, 0x0401).unwrap();
-    assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), Some(false));
-    m.set_u32(SP + 12, 0x0001).unwrap();
-    assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), Some(true));
-    // The high half of the argument is not word D.
-    m.set_u32(SP + 12, 0x0400_0000).unwrap();
-    assert_eq!(gate(&m, SP, meter + 8, &t, &on).unwrap(), Some(true));
-    m.set_u32(SP + 12, 0x0400).unwrap();
+    assert_eq!(gate(&m, meter, 0, &t, &on).unwrap(), Some(true));
+    assert_eq!(gate(&m, meter, 0x0401, &t, &on).unwrap(), Some(false));
+    assert_eq!(gate(&m, meter, 0x0001, &t, &on).unwrap(), Some(true));
     let text = t.widgets[1].address;
-    assert_eq!(gate(&m, SP, text + 8, &t, &on).unwrap(), Some(true));
+    assert_eq!(gate(&m, text, 0x0400, &t, &on).unwrap(), Some(true));
 }
 
 /// Publishing stamps a moving value that changed, from the fill it was
@@ -380,50 +366,25 @@ fn a_moving_value_is_stamped_on_change_and_drawn_on_its_curve() {
     );
 }
 
-/// The effects hook scales a kit bitmap widget's two basis factors by
-/// its scale, at the bitmap draw's call only; a retail widget, another
-/// call, or a factor that is no positive number is left.
+/// A kit bitmap widget's basis factors are its scale; a retail widget or
+/// a text has none, and a factor that is no number is left at 1.
 #[test]
-fn the_effects_hook_scales_the_basis() {
+fn the_scale_answers_a_kit_bitmap_widget_only() {
     let mut m = memory();
     let (hud, c) = hud();
     let t = install(&mut m, &hud, &c);
-    let frame = SP + 0x400;
-    let set = |m: &mut FlatMemory, widget: u32| {
-        m.set_u32(SP, EFFECTS_RETURN).unwrap();
-        m.set_u32(frame + FRAME_WIDGET, widget).unwrap();
-        m.set_f32(frame + BASIS[0], 1.0).unwrap();
-        m.set_f32(frame + BASIS[1], 0.5).unwrap();
-    };
     let swell = |_: usize, _: &str| [1.12f32, 1.3];
-    let basis = |m: &FlatMemory| {
-        [
-            m.f32(frame + BASIS[0]).unwrap(),
-            m.f32(frame + BASIS[1]).unwrap(),
-        ]
-    };
-    set(&mut m, t.widgets[0].address);
-    assert!(scale_basis(&mut m, SP, frame, &t, &swell).unwrap());
-    assert_eq!(basis(&m), [1.12, 0.65]);
-    // Its own size: seen, nothing written.
-    set(&mut m, t.widgets[0].address);
-    assert!(scale_basis(&mut m, SP, frame, &t, &|_, _| [1.0, 1.0]).unwrap());
-    assert_eq!(basis(&m), [1.0, 0.5]);
-    // A retail widget, another call, a text.
-    set(&mut m, RETAIL_BITMAPS);
-    assert!(!scale_basis(&mut m, SP, frame, &t, &swell).unwrap());
-    assert_eq!(basis(&m), [1.0, 0.5]);
-    set(&mut m, t.widgets[0].address);
-    m.set_u32(SP, SPRITE_RETURN).unwrap();
-    assert!(!scale_basis(&mut m, SP, frame, &t, &swell).unwrap());
-    set(&mut m, t.widgets[1].address);
-    assert!(!scale_basis(&mut m, SP, frame, &t, &swell).unwrap());
-    // A factor the frame does not hold as a positive number.
-    set(&mut m, t.widgets[0].address);
-    m.set_f32(frame + BASIS[1], f32::NAN).unwrap();
-    assert!(scale_basis(&mut m, SP, frame, &t, &swell).unwrap());
-    assert_eq!(m.f32(frame + BASIS[0]).unwrap(), 1.12);
-    assert!(m.f32(frame + BASIS[1]).unwrap().is_nan());
+    assert_eq!(scale_factors(t.widgets[0].address, &t, &swell), Some([1.12, 1.3]));
+    // Its own size: seen, nothing to scale.
+    assert_eq!(scale_factors(t.widgets[0].address, &t, &|_, _| [1.0, 1.0]), Some([1.0, 1.0]));
+    // A retail widget, a text.
+    assert_eq!(scale_factors(RETAIL_BITMAPS, &t, &swell), None);
+    assert_eq!(scale_factors(t.widgets[1].address, &t, &swell), None);
+    // A factor that is not a number; a negative one closes to nothing.
+    assert_eq!(
+        scale_factors(t.widgets[0].address, &t, &|_, _| [f32::NAN, -1.0]),
+        Some([1.0, 0.0])
+    );
 }
 
 /// `hud_input1` is the fill through the meter's ramp, the rest 0.
@@ -432,44 +393,25 @@ fn the_input_is_the_fill_through_the_ramp() {
     let mut m = memory();
     let (hud, c) = hud();
     let t = install(&mut m, &hud, &c);
-    let out = SP + 0x100;
-    m.set_u32(SP, INPUT_RETURNS[0]).unwrap();
-    m.set_u32(SP + 8, t.widgets[0].address + 4).unwrap();
-    m.set_u32(SP + 12, out).unwrap();
-    m.fill(out, 16, 0xff).unwrap();
-    assert!(inputs(&mut m, SP, &t, &shown_values(0.5)).unwrap());
-    assert_eq!(m.f32(out).unwrap(), 0.5);
-    for k in 1..4 {
-        assert_eq!(m.u32(out + 4 * k).unwrap(), 0);
-    }
-    assert!(inputs(&mut m, SP, &t, &shown_values(1.0)).unwrap());
-    assert_eq!(m.f32(out).unwrap(), 0.75);
+    let meter = t.widgets[0].address;
+    assert_eq!(inputs(meter, &t, &shown_values(0.5)), Some([0.5, 0.0, 0.0, 0.0]));
+    assert_eq!(inputs(meter, &t, &shown_values(1.0)), Some([0.75, 0.0, 0.0, 0.0]));
     // A retail widget passes through.
-    m.set_u32(SP + 8, RETAIL_BITMAPS + 4).unwrap();
-    assert!(!inputs(&mut m, SP, &t, &shown_values(1.0)).unwrap());
+    assert_eq!(inputs(RETAIL_BITMAPS, &t, &shown_values(1.0)), None);
 }
 
-/// The string hook writes the value's text in UTF-16 with its zero, the
-/// element's engine font, and the inputs to the material's.
+/// The string is the value's text in UTF-16, cut with its zero, and the
+/// element's engine font.
 #[test]
 fn the_string_is_the_values_text_in_its_font() {
     let mut m = memory();
     let (hud, c) = hud();
     let t = install(&mut m, &hud, &c);
-    let (values, out, font) = (SP + 0x100, SP + 0x200, SP + 0x300);
-    m.set_u32(SP, STRING_RETURN).unwrap();
-    m.set_u32(SP + 8, values).unwrap();
-    m.set_u32(SP + 12, out).unwrap();
-    m.set_u32(SP + 16, font).unwrap();
-    m.set_f32(values, 3.0).unwrap();
     let text = t.widgets[1].address;
-    assert!(string(&mut m, SP, text, &t, &shown_values(0.0)).unwrap());
-    let mut got = [0; 6];
-    m.read(out, &mut got).unwrap();
-    assert_eq!(got, [b'4', 0, b'2', 0, 0, 0]);
-    assert_eq!(m.u32(font).unwrap(), 8);
-    assert_eq!(m.f32(MATERIAL_INPUTS).unwrap(), 3.0);
-    assert!(!string(&mut m, SP, t.widgets[0].address, &t, &shown_values(0.0)).unwrap());
+    let (units, font) = string(&m, text, &t, &shown_values(0.0)).unwrap().unwrap();
+    assert_eq!(units, [u16::from(b'4'), u16::from(b'2')]);
+    assert_eq!(font, 8);
+    assert_eq!(string(&m, t.widgets[0].address, &t, &shown_values(0.0)).unwrap(), None);
     assert_eq!(utf16("abc", 2), vec![b'a', 0, 0, 0], "cut with its zero");
 }
 
@@ -485,24 +427,16 @@ fn a_gauges_string_is_the_character_for_its_fill() {
         steps: 6,
         size: (6, 16),
     });
-    let (values, out, font) = (SP + 0x100, SP + 0x200, SP + 0x300);
-    m.set_u32(SP, STRING_RETURN).unwrap();
-    m.set_u32(SP + 8, values).unwrap();
-    m.set_u32(SP + 12, out).unwrap();
-    m.set_u32(SP + 16, font).unwrap();
     let text = t.widgets[1].address;
     let at = |fill: f32| move |_: usize, _: &str| Some(Value { text: "42".into(), ..Value::fill(fill) });
     for (fill, unit) in [(0.0, 0xe2c0u16), (0.5, 0xe2c3), (1.0, 0xe2c6)] {
-        assert!(string(&mut m, SP, text, &t, &at(fill)).unwrap());
-        let mut got = [0; 4];
-        m.read(out, &mut got).unwrap();
-        let [lo, hi] = unit.to_le_bytes();
-        assert_eq!(got, [lo, hi, 0, 0], "{fill}");
+        let (units, _) = string(&m, text, &t, &at(fill)).unwrap().unwrap();
+        assert_eq!(units, [unit], "{fill}");
     }
 }
 
-/// A crop narrows the sprite's bounds; the sprite hook reads the bitmap's
-/// sequence and gives its image and size with the narrowed bounds, a
+/// A crop narrows the sprite's bounds; the sprite is the bitmap's
+/// sequence's image and size with the narrowed bounds, a
 /// sequence without sprites included (the charge meter drew all 92
 /// columns of its strip while such sequences were left to the game).
 #[test]
@@ -549,22 +483,11 @@ fn the_crop_narrows_the_sprite() {
     }
     m.set_u16(images + 0x74 + 4, 128).unwrap();
     m.set_u16(images + 0x74 + 6, 8).unwrap();
-    let (bounds, image, width, height) = (SP + 0x100, SP + 0x200, SP + 0x204, SP + 0x208);
-    m.set_u32(SP, SPRITE_RETURN).unwrap();
-    m.set_u32(SP + 8, image).unwrap();
-    m.set_u32(SP + 12, width).unwrap();
-    m.set_u32(SP + 16, height).unwrap();
     let meter = t.widgets[0].address;
-    assert!(crop_sprite(&mut m, SP, meter, bounds, &t).unwrap());
-    let b: Vec<f32> = (0..4).map(|i| m.f32(bounds + 4 * i).unwrap()).collect();
-    assert_eq!(b, [0.36, 0.72, 0.0, 1.0]);
+    let sprite = |m: &FlatMemory, widget: u32| crop_sprite(m, widget, &t).unwrap();
     assert_eq!(
-        [
-            m.u32(image).unwrap(),
-            m.u32(width).unwrap(),
-            m.u32(height).unwrap()
-        ],
-        [1, 128, 8]
+        sprite(&m, meter),
+        Some(Sprite { image: 1, width: 128, height: 8, bounds: [0.36, 0.72, 0.0, 1.0] })
     );
     // A sequence with no sprites draws its first image whole (the disc's
     // battery strip, 92 by 8): the crop narrows the whole image, so the
@@ -573,21 +496,13 @@ fn the_crop_narrows_the_sprite() {
     m.set_u16(seqs + 0x20, 0).unwrap();
     m.set_u16(images + 4, 92).unwrap();
     m.set_u16(images + 6, 8).unwrap();
-    assert!(crop_sprite(&mut m, SP, meter, bounds, &t).unwrap());
-    let b: Vec<f32> = (0..4).map(|i| m.f32(bounds + 4 * i).unwrap()).collect();
-    assert_eq!(b, [0.5, 1.0, 0.0, 1.0]);
     assert_eq!(
-        [
-            m.u32(image).unwrap(),
-            m.u32(width).unwrap(),
-            m.u32(height).unwrap()
-        ],
-        [0, 92, 8]
+        sprite(&m, meter),
+        Some(Sprite { image: 0, width: 92, height: 8, bounds: [0.5, 1.0, 0.0, 1.0] })
     );
     // Its first image is its own `first_image`.
     m.set_u16(seqs + 0x20, 1).unwrap();
-    assert!(crop_sprite(&mut m, SP, meter, bounds, &t).unwrap());
-    assert_eq!(m.u32(image).unwrap(), 1);
+    assert_eq!(sprite(&m, meter).map(|s| s.image), Some(1));
     assert_eq!(
         sprite_pick(&m, bitmap, 0).unwrap(),
         Some((1, [0.0, 1.0, 0.0, 1.0]))
@@ -604,12 +519,10 @@ fn the_crop_narrows_the_sprite() {
     // An image the bitmap does not have is left to the game.
     m.set_u16(seqs + 0x20, 2).unwrap();
     assert_eq!(sprite_pick(&m, bitmap, 0).unwrap(), None);
-    assert!(!crop_sprite(&mut m, SP, meter, bounds, &t).unwrap());
+    assert_eq!(sprite(&m, meter), None);
     m.set_u16(seqs + 0x20, 0).unwrap();
-    // An uncropped widget, or another caller, is left to the game.
-    assert!(!crop_sprite(&mut m, SP, t.widgets[1].address, bounds, &t).unwrap());
-    m.set_u32(SP, 0x1234).unwrap();
-    assert!(!crop_sprite(&mut m, SP, meter, bounds, &t).unwrap());
+    // An uncropped widget is left to the game.
+    assert_eq!(sprite(&m, t.widgets[1].address), None);
 }
 
 /// The prompt fields as `0x0024ca1d` leaves them.

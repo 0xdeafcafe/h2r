@@ -306,7 +306,7 @@ pub fn hidden() -> Values {
 /// on it (docs/game/superbounce.md, "Lock-on").
 pub const AUTOAIMED: u8 = 18;
 /// The widget loop's return from a bitmap widget's inputs (E
-/// `0x0013a532`; `hud_kit::INPUT_RETURNS`): the reticles are bitmaps.
+/// `0x0013a532`): the reticles are bitmaps.
 pub const BITMAP_INPUTS_RETURN: u32 = 0x0013_a61c;
 
 /// The lock holds this tick: the reticle reads autoaimed.
@@ -486,7 +486,7 @@ impl hooks::Feature for SuperbounceHud {
             .on_tick("superbounce hud: values", move |_| lock(&hud).tick());
         // Nothing is drawn over the reticle while the lock holds, and the
         // game's own is not turned red: an after hook on
-        // HUD_WIDGET_INPUTS would put a guest hook on the HUD.
+        // the walk's inputs would put a guest hook on the HUD.
         // [`reticle_lock_now`] says whether it holds.
         Ok(())
     }

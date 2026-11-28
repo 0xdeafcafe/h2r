@@ -322,8 +322,8 @@ lists the HUDs that use the grenade row's next pill. Its states are `idle`,
   `retail` check draw it over the motion tracker alone
   (`preview::monitor_retail`). Its feature turns the retail widgets of
   its user off while the monitor is up, `Handle::retail(user, shown)`.
-- Guest points hooked: `HUD_WIDGET_GATE`, `HUD_WIDGET_INPUTS`,
-  `HUD_WIDGET_STRING`, `HUD_WIDGET_SPRITE`, `HUD_WIDGET_EFFECTS`,
+- The Rust walk's override seam (gate, inputs, string, sprite, scale;
+  `render_bridge::native_hud::seam`) and the guest points
   `HUD_INTERACTION_VISIBLE`,
   `GAME_ACTIVATE`, `GAME_TICK`, and the string lookup `0x001a0180`
   through `community_variants`' override.
@@ -372,9 +372,7 @@ particular:
 
 - That the kit's copied widget blocks draw as the retail ones do, and
   the kit's after them, on the D3D path and the native HUD pass.
-- The gate's, inputs', string's and sprite's return addresses as the
-  only calls the hooks answer, and that narrowing the sprite's bounds at
-  `HUD_WIDGET_SPRITE` narrows the quad (the quad's size taken from the
+- That narrowing the sprite's bounds at the seam narrows the quad (the quad's size taken from the
   bounds times the image's size).
 - That `player_globals +8` is the count of local views the HUD's screen
   mode follows.

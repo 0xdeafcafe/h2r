@@ -16,27 +16,26 @@
 //!    root held is kept at the head of our memory ([`Header`]), so a
 //!    second install puts it back first and leaves one copy, a machine
 //!    snapshot included.
-//! 2. **Gate** (`HUD_WIDGET_GATE`): a kit widget is drawn while its value
+//! 2. **Gate**: a kit widget is drawn while its value
 //!    is shown, in a style the runtime draws ([`draws`]), in a screen mode
 //!    its place has, and none of its element's `hide_when_d` bits is set
 //!    in the game's word D. For a local user in monitor mode
 //!    ([`Handle::retail`]) every other widget, the retail ones of the
 //!    player's and the weapon's `nhdt`, is hidden but the motion tracker
 //!    ([`retail_gate`], `model::MONITOR_KEEPS`).
-//! 3. **Inputs** (`HUD_WIDGET_INPUTS`): `hud_input1` is
+//! 3. **Inputs**: `hud_input1` is
 //!    `records::Widget::input` of the value's fill.
 //!
 //! A value with a `motion` moves on wall time: [`Handle::publish`] stamps
 //! a changed one with the time and the fill it was showing
 //! (`motion::restamp`), and the gate and inputs read it at the
 //! milliseconds since (`motion::animate`), each drawn frame. The
-//! **effects** hook (`HUD_WIDGET_EFFECTS`) scales a kit widget's basis by
-//! `motion::scale_at` ([`scale_basis`]); until that hook has been seen for
-//! a kit widget ([`EFFECTS_SEEN`]) the ending is the plain one.
-//! 4. **String** (`HUD_WIDGET_STRING`): the value's text, in the
-//!    element's font.
-//! 5. **Crop** (`HUD_WIDGET_SPRITE`): a cropped widget's sprite bounds are
-//!    narrowed to its crop ([`crop_sprite`]).
+//! **scale** answer ([`scale_factors`]) scales a kit widget's basis by
+//! `motion::scale_at`; until it has been asked for a kit widget
+//! ([`EFFECTS_SEEN`]) the ending is the plain one.
+//! 4. **String**: the value's text, in the element's font.
+//! 5. **Crop**: a cropped widget's sprite bounds are narrowed to its crop
+//!    ([`crop_sprite`]).
 //! 6. **Channels**: the prompt through the user's prompt fields while the
 //!    game shows no prompt of its own ([`show_prompt`]); the training text
 //!    through the scripted training slot and the string lookup
@@ -52,8 +51,9 @@
 //!    ([`tag_written`]) copies the edited retail records into the copies
 //!    the root points at ([`recopy`]).
 //!
-//! The draw hooks are `context_only` and read one shared table, so they
-//! run on the render thread.
+//! Gate, inputs, string, crop and scale are answers at the Rust walk's
+//! override seam (`render_bridge::native_hud::seam`, docs/graphics/native-hud-overlay.md,
+//! "The override seam"); they read one shared table, on the render thread.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard};
@@ -72,6 +72,7 @@ use hud_kit_core::model::{
 };
 use hud_kit_core::motion::{self, Motion};
 use hud_kit_core::records::{self, Compiled, WidgetKind};
+use hud_kit_core::walk::Sprite;
 use hud_kit_core::world::{Pose, Shape};
 
 use crate::h1_particle_physics::fault;
@@ -92,17 +93,8 @@ pub const POINTS_LEN: u32 = 0x4000;
 const NHDT: u32 = u32::from_be_bytes(*b"nhdt");
 const BITM: u32 = u32::from_be_bytes(*b"bitm");
 
-/// The return addresses of the widget loop's calls (E `0x0013a532`): the
-/// gate's, the inputs' (bitmap, text), the string's, the sprite's.
-pub const GATE_RETURNS: [u32; 2] = [0x0013_a602, 0x0013_a659];
-pub const INPUT_RETURNS: [u32; 2] = [0x0013_a61c, 0x0013_a673];
-pub const STRING_RETURN: u32 = 0x0022_aa5b;
-pub const SPRITE_RETURN: u32 = 0x0022_b03a;
-/// Where the text draw publishes a widget's four inputs to the HUD
-/// material (E `0x0022a895`..`0x0022a8a3`).
-pub const MATERIAL_INPUTS: u32 = 0x004e_6980;
-/// The UTF-16 units the string hook writes at most, its zero included
-/// (S: the buffer's size is not read; the retail strings are short).
+/// The UTF-16 units a kit string has at most, its zero included
+/// (S: the retail strings are short).
 pub const STRING_UNITS: usize = 0x80;
 
 /// The user HUD states (`[0x005023f4] + user * 0x4e0`): the prompt's text
@@ -262,7 +254,7 @@ pub type Stamps = Vec<(&'static str, Instant)>;
 
 /// Set once the effects hook has met a kit widget at the bitmap draw's
 /// call: the game calls it for a widget with an empty effects block, so
-/// the scale ([`scale_basis`]) applies. Until then a motion's ending is
+/// the scale ([`scale_factors`]) applies. Until then a motion's ending is
 /// the plain one (`motion::shown_at` unscaled): a bar that would close
 /// with no scale to close it goes where the close would start.
 pub static EFFECTS_SEEN: AtomicBool = AtomicBool::new(false);
@@ -1162,52 +1154,40 @@ pub fn install_records(
     Ok(table)
 }
 
-// ---- the draw hooks ----
+// ---- the walk's seam ----
 
-/// The gate's answer for the widget whose state is at `state` (EAX), when
-/// it is a kit widget: [`shown`], and hidden while the game's word D (the
-/// call's third stack argument) has a bit of the widget's `hide_d`.
+/// The gate's answer for kit widget `widget` (a bitmap or text of the
+/// walk), when it is the kit's: [`shown`], and hidden while the walk's
+/// word D has a bit of the widget's `hide_d`.
 pub fn gate(
     mem: &dyn GuestMemory,
-    sp: u32,
-    state: u32,
+    widget: u32,
+    word_d: u16,
     table: &Table,
     values: &dyn Fn(usize, &str) -> Option<Value>,
 ) -> Result<Option<bool>, MemFault> {
-    let widget = state.wrapping_sub(8);
-    if !GATE_RETURNS.contains(&mem.u32(sp)?) {
-        return Ok(None);
-    }
     let Some(w) = table.at(widget) else {
         return Ok(None);
     };
-    if w.hide_d != 0 && (mem.u32(sp + 12)? as u16) & w.hide_d != 0 {
+    if w.hide_d != 0 && word_d & w.hide_d != 0 {
         return Ok(Some(false));
     }
     Ok(Some(shown(w, values(w.hud, w.id).as_ref(), mode(mem)?)))
 }
 
-/// The gate's answer for a widget that is not the kit's (the widget at
-/// `state` less 8, EAX), for local user `user` ([`draw_user`]) when its
-/// bit of `off` is set (its retail widgets are off, [`Handle::retail`]):
-/// hidden, unless it is a record the motion tracker draws from
-/// ([`Table::kept`]). `None` passes it to the game's own gate.
-pub fn retail_gate(
-    mem: &dyn GuestMemory,
-    sp: u32,
-    state: u32,
-    table: &Table,
-    off: u32,
-    user: u32,
-) -> Result<Option<bool>, MemFault> {
-    if user >= USERS || off & (1 << user) == 0 || !GATE_RETURNS.contains(&mem.u32(sp)?) {
-        return Ok(None);
+/// The gate's answer for a widget that is not the kit's, for local user
+/// `user` ([`draw_user`]) when its bit of `off` is set (its retail
+/// widgets are off, [`Handle::retail`]): hidden, unless it is a record
+/// the motion tracker draws from ([`Table::kept`]). `None` leaves it to
+/// the game's own gate.
+pub fn retail_gate(widget: u32, table: &Table, off: u32, user: u32) -> Option<bool> {
+    if user >= USERS || off & (1 << user) == 0 {
+        return None;
     }
-    let widget = state.wrapping_sub(8);
     if table.at(widget).is_some() || table.kept.contains(&widget) {
-        return Ok(None);
+        return None;
     }
-    Ok(Some(false))
+    Some(false)
 }
 
 /// The addresses the game draws the kept retail bitmap records from
@@ -1227,67 +1207,30 @@ pub fn kept_records(mem: &dyn GuestMemory, roots: &[(u32, Vec<u32>)]) -> Result<
     Ok(out)
 }
 
-/// The effects call's return in the bitmap widget draw (E `0x0022b198`):
-/// the call `h1_hud_text::weapon`'s split-screen scale answers too.
-pub const EFFECTS_RETURN: u32 = 0x0022_b19d;
-/// The draw's basis factors, across and down, in its frame (EBP): what
-/// the effects then apply to (`h1_hud_text::weapon`'s `split_basis`
-/// writes the same two; S: `+0` across, `+0x34` down, as the x basis's x
-/// and the y basis's y).
-pub const BASIS: [u32; 2] = [0x00, 0x34];
-/// Where the draw's frame holds the widget.
-pub const FRAME_WIDGET: u32 = 0x78;
-
-/// At the effects call (`sp` at its return, `frame` the draw's EBP): a
-/// kit widget's basis factors times its `scale`, about its registration
-/// point. True for a kit widget at this call (the hook is seen), whatever
-/// its scale; a factor that is not a positive finite number is left.
-pub fn scale_basis(
-    mem: &mut dyn GuestMemory,
-    sp: u32,
-    frame: u32,
+/// A kit bitmap widget's basis factors, across and down: its `scale`,
+/// applied to the walk's basis about its registration point before the
+/// widget's effects. `Some` for a kit bitmap widget whatever its scale
+/// (the walk applies it, and [`EFFECTS_SEEN`] is set); a factor that is
+/// not finite is left as 1.
+pub fn scale_factors(
+    widget: u32,
     table: &Table,
     scale: &dyn Fn(usize, &str) -> [f32; 2],
-) -> Result<bool, MemFault> {
-    if mem.u32(sp)? != EFFECTS_RETURN {
-        return Ok(false);
-    }
-    let widget = mem.u32(frame.wrapping_add(FRAME_WIDGET))?;
-    let Some(w) = table.at(widget).filter(|w| w.kind == WidgetKind::Bitmap) else {
-        return Ok(false);
-    };
-    let s = scale(w.hud, w.id);
-    if s != [1.0, 1.0] {
-        for (at, k) in BASIS.into_iter().zip(s) {
-            let f = mem.f32(frame + at)?;
-            if f.is_finite() && f > 0.0 && k.is_finite() {
-                mem.set_f32(frame + at, f * k.max(0.0))?;
-            }
-        }
-    }
-    Ok(true)
+) -> Option<[f32; 2]> {
+    let w = table.at(widget).filter(|w| w.kind == WidgetKind::Bitmap)?;
+    Some(scale(w.hud, w.id).map(|k| if k.is_finite() { k.max(0.0) } else { 1.0 }))
 }
 
 /// `hud_input1` for a kit widget: its value's fill through
 /// `records::Widget::input`, the other three 0.
 pub fn inputs(
-    mem: &mut dyn GuestMemory,
-    sp: u32,
+    widget: u32,
     table: &Table,
     values: &dyn Fn(usize, &str) -> Option<Value>,
-) -> Result<bool, MemFault> {
-    if !INPUT_RETURNS.contains(&mem.u32(sp)?) {
-        return Ok(false);
-    }
-    let widget = mem.u32(sp + 8)?.wrapping_sub(4);
-    let Some(w) = table.at(widget) else {
-        return Ok(false);
-    };
+) -> Option<[f32; 4]> {
+    let w = table.at(widget)?;
     let fill = values(w.hud, w.id).map_or(0.0, |v| v.fill);
-    let out = mem.u32(sp + 12)?;
-    mem.set_f32(out, w.widget.input(fill))?;
-    mem.fill(out + 4, 12, 0)?;
-    Ok(true)
+    Some([w.widget.input(fill), 0.0, 0.0, 0.0])
 }
 
 /// UTF-16 of `text`, cut to `units` with its zero.
@@ -1299,38 +1242,30 @@ pub fn utf16(text: &str, units: usize) -> Vec<u8> {
         .collect()
 }
 
-/// A kit text widget's string and font: a text's is its value's text, a
-/// gauge's the character of its picture for the value's fill as it draws
-/// now (`records::Widget::text`).
+/// A kit text widget's string and engine font: a text's is its value's
+/// text, a gauge's the character of its picture for the value's fill as
+/// it draws now (`records::Widget::text`); at most [`STRING_UNITS`] units
+/// less one.
 pub fn string(
-    mem: &mut dyn GuestMemory,
-    sp: u32,
+    mem: &dyn GuestMemory,
     widget: u32,
     table: &Table,
     values: &dyn Fn(usize, &str) -> Option<Value>,
-) -> Result<bool, MemFault> {
-    if mem.u32(sp)? != STRING_RETURN {
-        return Ok(false);
-    }
+) -> Result<Option<(Vec<u16>, i16)>, MemFault> {
     let Some(w) = table.at(widget).filter(|w| w.kind == WidgetKind::Text) else {
-        return Ok(false);
+        return Ok(None);
     };
     let text = values(w.hud, w.id)
         .map(|v| w.widget.text(&v))
         .unwrap_or_default();
-    let font = w.font[mode(&*mem)?.index()];
+    let font = w.font[mode(mem)?.index()];
     let font = if font < 0 {
         hud_kit_core::model::Font::Hud.engine()
     } else {
         font
     };
-    let out = mem.u32(sp + 12)?;
-    mem.write(out, &utf16(&text, STRING_UNITS))?;
-    mem.set_u32(mem.u32(sp + 16)?, font as u32)?;
-    let mut four = [0; 16];
-    mem.read(mem.u32(sp + 8)?, &mut four)?;
-    mem.write(MATERIAL_INPUTS, &four)?;
-    Ok(true)
+    let units = text.encode_utf16().take(STRING_UNITS - 1).collect();
+    Ok(Some((units, font)))
 }
 
 /// `[l, r, t, b]` narrowed to `crop` (`[u0, u1, v0, v1]` of it).
@@ -1384,35 +1319,29 @@ pub fn sprite_pick(
 /// are such images: drawn uncropped they are 92 and 103 pixels wide, not
 /// 27). An image the bitmap does not have is left to the game.
 pub fn crop_sprite(
-    mem: &mut dyn GuestMemory,
-    sp: u32,
+    mem: &dyn GuestMemory,
     widget: u32,
-    bounds: u32,
     table: &Table,
-) -> Result<bool, MemFault> {
-    if mem.u32(sp)? != SPRITE_RETURN {
-        return Ok(false);
-    }
+) -> Result<Option<Sprite>, MemFault> {
     let Some(crop) = table.at(widget).and_then(|w| w.widget.crop) else {
-        return Ok(false);
+        return Ok(None);
     };
     let datum = mem.u32(widget + records::bitmap::BITMAP as u32 + 4)?;
-    let Some(bitmap) = tag_get_checked(&*mem, DatumHandle(datum), GroupTag(BITM))? else {
-        return Ok(false);
+    let Some(bitmap) = tag_get_checked(mem, DatumHandle(datum), GroupTag(BITM))? else {
+        return Ok(None);
     };
-    let at = mode(&*mem)?.index() as u32;
+    let at = mode(mem)?.index() as u32;
     let seq = mem.u8(widget + records::bitmap::SEQUENCES as u32 + at)? as i8;
-    let Some((image, b)) = sprite_pick(&*mem, bitmap, seq)? else {
-        return Ok(false);
+    let Some((image, b)) = sprite_pick(mem, bitmap, seq)? else {
+        return Ok(None);
     };
     let data = mem.u32(bitmap + 0x48)? + 0x74 * image;
-    for (i, v) in narrow(b, crop).iter().enumerate() {
-        mem.set_f32(bounds + 4 * i as u32, *v)?;
-    }
-    mem.set_u32(mem.u32(sp + 8)?, image)?;
-    mem.set_u32(mem.u32(sp + 12)?, u32::from(mem.u16(data + 4)?))?;
-    mem.set_u32(mem.u32(sp + 16)?, u32::from(mem.u16(data + 6)?))?;
-    Ok(true)
+    Ok(Some(Sprite {
+        image: image as i32,
+        width: i32::from(mem.u16(data + 4)?),
+        height: i32::from(mem.u16(data + 6)?),
+        bounds: narrow(b, crop),
+    }))
 }
 
 // ---- the channels ----
@@ -1885,127 +1814,16 @@ impl hooks::Feature for HudKit {
             .after_feature(crate::skulls_custom::FEATURE)
             .after_feature(crate::map_select::FEATURE)
             .after_feature(HOST_LOBBY);
-        // The widget hooks share their points with `h1_hud_text`'s, and the
-        // two never answer the same widget: the kit answers only a widget
-        // inside its own memory ([`in_region`], then its draw table), and
-        // `h1_hud_text` only a converted Halo 1 widget, marked by its
-        // byte `+0x1b` (0xe0 plus a screen index), which the kit's
-        // compiler leaves 0 (the state's pad byte) and which lives in the
-        // converted nhdt's own blocks, not ours. Each passes the other's
-        // widgets through, so the order between them only has to exist.
-        // A kit widget's draw is changed at these hooks: it stays the
-        // guest's (docs/graphics/native-hud-overlay.md, "The walk in Rust").
+        // The walk's seam is shared with `h1_hud_text`'s, and the two never
+        // answer the same widget: the kit answers only a widget inside its
+        // own memory ([`in_region`], then its draw table), and `h1_hud_text`
+        // only a converted Halo 1 widget, marked by its byte `+0x1b` (0xe0
+        // plus a screen index), which the kit's compiler leaves 0 (the
+        // state's pad byte) and which lives in the converted nhdt's own
+        // blocks, not ours. Rank 0 is `h1_hud_text`'s, so its answers come
+        // first (docs/graphics/native-hud-overlay.md, "The override seam").
         #[cfg(feature = "desktop-runtime")]
-        render_bridge::native_hud::walk::add_foreign(|_, widget| in_region(widget));
-        b.raw()
-            .before(&points::HUD_WIDGET_GATE, "hud kit: gate", move |c| {
-                // A retail widget costs two loads and this one while no
-                // user is in monitor mode.
-                let off = RETAIL_OFF.load(Ordering::Relaxed);
-                if off == 0 && !in_region(c.cpu.eax.wrapping_sub(8)) {
-                    return Ok(Flow::Continue);
-                }
-                let table = read(&TABLE);
-                let mem = c.ctx.memory();
-                let user = draw_user(&*mem);
-                let values = |h: usize, id: &str| value(h, user, id);
-                let mut answer = gate(&*mem, c.cpu.esp, c.cpu.eax, &table, &values).map_err(fault)?;
-                if answer.is_none() {
-                    answer = retail_gate(&*mem, c.cpu.esp, c.cpu.eax, &table, off, user).map_err(fault)?;
-                }
-                drop(mem);
-                match answer {
-                    Some(show) => {
-                        c.cpu.eax = u32::from(show);
-                        c.ret(12).map(Flow::Return)
-                    }
-                    None => Ok(Flow::Continue),
-                }
-            })
-            .context_only()
-            .after_feature(crate::h1_hud_text::FEATURE);
-        b.raw()
-            .before(&points::HUD_WIDGET_INPUTS, "hud kit: inputs", move |c| {
-                let table = read(&TABLE);
-                if table.widgets.is_empty() {
-                    return Ok(Flow::Continue);
-                }
-                let user = draw_user(&*c.ctx.memory());
-                let values = |h: usize, id: &str| value(h, user, id);
-                if inputs(&mut *c.ctx.memory(), c.cpu.esp, &table, &values).map_err(fault)? {
-                    return c.ret(12).map(Flow::Return);
-                }
-                Ok(Flow::Continue)
-            })
-            .context_only()
-            .after_feature(crate::h1_hud_text::FEATURE);
-        b.raw()
-            .before(&points::HUD_WIDGET_STRING, "hud kit: string", move |c| {
-                if !in_region(c.cpu.ebx) {
-                    return Ok(Flow::Continue);
-                }
-                let table = read(&TABLE);
-                let user = draw_user(&*c.ctx.memory());
-                let values = |h: usize, id: &str| value(h, user, id);
-                if string(&mut *c.ctx.memory(), c.cpu.esp, c.cpu.ebx, &table, &values)
-                    .map_err(fault)?
-                {
-                    return c.ret(16).map(Flow::Return);
-                }
-                Ok(Flow::Continue)
-            })
-            .context_only()
-            .after_feature(crate::h1_hud_text::FEATURE);
-        b.raw()
-            .before(&points::HUD_WIDGET_SPRITE, "hud kit: crop", move |c| {
-                if !in_region(c.cpu.ecx) {
-                    return Ok(Flow::Continue);
-                }
-                let table = read(&TABLE);
-                if crop_sprite(
-                    &mut *c.ctx.memory(),
-                    c.cpu.esp,
-                    c.cpu.ecx,
-                    c.cpu.eax,
-                    &table,
-                )
-                .map_err(fault)?
-                {
-                    return c.ret(16).map(Flow::Return);
-                }
-                Ok(Flow::Continue)
-            })
-            .context_only()
-            .after_feature(crate::h1_hud_text::FEATURE);
-        b.raw()
-            .before(&points::HUD_WIDGET_EFFECTS, "hud kit: scale", move |c| {
-                // Only the bitmap draw's call, and only a widget in
-                // the kit's memory: two loads for a retail one.
-                let user = {
-                    let mem = c.ctx.memory();
-                    if mem.u32(c.cpu.esp)? != EFFECTS_RETURN
-                        || !in_region(mem.u32(c.cpu.ebp.wrapping_add(FRAME_WIDGET))?)
-                    {
-                        return Ok(Flow::Continue);
-                    }
-                    draw_user(&*mem)
-                };
-                let table = read(&TABLE);
-                let seen = scale_basis(
-                    &mut *c.ctx.memory(),
-                    c.cpu.esp,
-                    c.cpu.ebp,
-                    &table,
-                    &|h, id| scale(h, user, id),
-                )
-                .map_err(fault)?;
-                if seen {
-                    EFFECTS_SEEN.store(true, Ordering::Relaxed);
-                }
-                Ok(Flow::Continue)
-            })
-            .context_only()
-            .after_feature(crate::h1_hud_text::FEATURE);
+        render_bridge::native_hud::seam::register(1, "hud-kit", Arc::new(KitSeam));
         b.raw()
             .before(
                 &points::HUD_INTERACTION_VISIBLE,
@@ -2032,6 +1850,90 @@ impl hooks::Feature for HudKit {
             .context_only()
             .after_feature(crate::h1_hud_text::FEATURE);
         Ok(())
+    }
+}
+
+/// The kit's answers at the Rust walk's override seam.
+#[cfg(feature = "desktop-runtime")]
+struct KitSeam;
+
+#[cfg(feature = "desktop-runtime")]
+impl render_bridge::native_hud::seam::Seam for KitSeam {
+    fn gate(
+        &self,
+        mem: &dyn GuestMemory,
+        at: &render_bridge::native_hud::seam::At,
+    ) -> Result<Option<bool>, MemFault> {
+        // A retail widget costs two loads and this one while no user is in
+        // monitor mode.
+        let off = RETAIL_OFF.load(Ordering::Relaxed);
+        if off == 0 && !in_region(at.widget) {
+            return Ok(None);
+        }
+        let table = read(&TABLE);
+        let user = draw_user(mem);
+        let values = |h: usize, id: &str| value(h, user, id);
+        match gate(mem, at.widget, at.word_d, &table, &values)? {
+            Some(shown) => Ok(Some(shown)),
+            None => Ok(retail_gate(at.widget, &table, off, user)),
+        }
+    }
+
+    fn inputs(
+        &self,
+        mem: &dyn GuestMemory,
+        at: &render_bridge::native_hud::seam::At,
+    ) -> Result<Option<[f32; 4]>, MemFault> {
+        if !in_region(at.widget) {
+            return Ok(None);
+        }
+        let table = read(&TABLE);
+        let user = draw_user(mem);
+        Ok(inputs(at.widget, &table, &|h, id| value(h, user, id)))
+    }
+
+    fn string(
+        &self,
+        mem: &dyn GuestMemory,
+        at: &render_bridge::native_hud::seam::At,
+        _: &[f32; 4],
+    ) -> Result<Option<render_bridge::native_hud::seam::Text>, MemFault> {
+        if !in_region(at.widget) {
+            return Ok(None);
+        }
+        let table = read(&TABLE);
+        let user = draw_user(mem);
+        let answer = string(mem, at.widget, &table, &|h, id| value(h, user, id))?;
+        Ok(answer.map(|(units, font)| render_bridge::native_hud::seam::Text { units, font }))
+    }
+
+    fn sprite(
+        &self,
+        mem: &dyn GuestMemory,
+        at: &render_bridge::native_hud::seam::At,
+    ) -> Result<Option<Sprite>, MemFault> {
+        if !in_region(at.widget) {
+            return Ok(None);
+        }
+        crop_sprite(mem, at.widget, &read(&TABLE))
+    }
+
+    fn scale(
+        &self,
+        mem: &dyn GuestMemory,
+        at: &render_bridge::native_hud::seam::At,
+    ) -> Result<Option<[f32; 2]>, MemFault> {
+        // Only a widget in the kit's memory: two loads for a retail one.
+        if !in_region(at.widget) {
+            return Ok(None);
+        }
+        let user = draw_user(mem);
+        let table = read(&TABLE);
+        let seen = scale_factors(at.widget, &table, &|h, id| scale(h, user, id));
+        if seen.is_some() {
+            EFFECTS_SEEN.store(true, Ordering::Relaxed);
+        }
+        Ok(seen)
     }
 }
 

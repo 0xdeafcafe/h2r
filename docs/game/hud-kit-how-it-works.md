@@ -356,12 +356,12 @@ does the rest:
    edit overlaps into its copy again
    ([realtime-edits.md](../editor/realtime-edits.md), "Realtime
    coverage"; test `an_edited_retail_record_is_copied_again`).
-2. **Gate** (`HUD_WIDGET_GATE`, before, at the widget loop's two calls):
+2. **Gate** (the Rust walk's seam, `render_bridge::native_hud::seam`):
    a widget in the kit's memory is drawn while its value is shown, in a
    style the runtime draws, in a screen mode its place has (one local
    view fullscreen, two half, more quarter: `player_globals +8`), and
-   none of its element's `hide_when_d` bits is set in the game's word D,
-   the gate's third stack argument (`[esp+12]`, its low 16 bits). The
+   none of its element's `hide_when_d` bits is set in the walk's word D
+   (the game's state word D, its low 16 bits). The
    retail gate is skipped for it; a retail widget costs two loads and
    one more, of the monitor users' bits. For a local user in monitor
    mode (`Handle::retail(user, false)`) every widget that is not the
@@ -382,32 +382,30 @@ does the rest:
    `0x0019186a`; `hud_kit::draw_user`): that user's own values if it has
    them, else the shared ones (`hud_kit::values_for`). The channels read
    the shared values alone.
-3. **Inputs** (`HUD_WIDGET_INPUTS`, before): `hud_input1` is
+3. **Inputs** (the seam): `hud_input1` is
    `records::Widget::input(fill)`, the other three 0.
 
    The gate and the inputs read a value with a motion as it draws now:
    `Handle::publish` stamps a changed one with a host `Instant`
    (`hud_kit::stamp_values`, through `motion::restamp`), and
    `hud_kit::animated` puts it on its curve at the milliseconds since.
-4. **Scale** (`HUD_WIDGET_EFFECTS`, `0x0022bcaf`, before, at the bitmap
-   draw's call, return `0x0022b19d`): a kit bitmap widget's basis
-   factors in the draw's frame, `[ebp]` across and `[ebp+0x34]` down (the
-   two `h1_hud_text::weapon`'s split-screen scale writes; S: which is
-   which), are multiplied by `motion::scale_at`; the widget is
-   `[ebp+0x78]` (`hud_kit::scale_basis`). A factor that is not a positive
-   number is left. The first time the hook meets a kit widget it sets
-   `hud_kit::EFFECTS_SEEN`: the game does call it for a widget with an
-   empty effects block, and the scale applies. Until then the curves run
+4. **Scale** (the seam, before the widget's effects `0x0022bcaf`): a kit
+   bitmap widget's basis factors, across and down (the two
+   `h1_hud_text::weapon`'s split-screen scale sets), are multiplied by
+   `motion::scale_at` (`hud_kit::scale_factors`). A factor that is not a
+   number is left at 1. The first time the seam is asked for a kit
+   widget it sets `hud_kit::EFFECTS_SEEN`: the effects run for a widget
+   with an empty effects block, and the scale applies. Until then the curves run
    unscaled and the ending is the plain one (sweep, blink, gone at
    430 ms); a crop-based close was not chosen, as it would need the
    sprite hook to narrow from both sides.
-5. **String** (`HUD_WIDGET_STRING`, before): the value's text, UTF-16, in
-   the element's engine font for the mode, and the four inputs copied to
-   the HUD material's (`0x004e6980`), as the text draw does. A gauge's
+5. **String** (the seam): the value's text, UTF-16, in the element's
+   engine font for the mode; the walk writes the four inputs to the HUD
+   material's (`0x004e6980`), as the text draw does. A gauge's
    text is the one character of its picture for the value's fill as it
    draws now (`records::Widget::text`), so an eased fill sweeps through
    the steps at any frame rate.
-6. **Crop** (`HUD_WIDGET_SPRITE`, before): for a cropped widget the hook
+6. **Crop** (the seam's sprite): for a cropped widget the seam
    picks the sprite as the game does (`hud_kit::sprite_pick`: the mode's
    sequence and its first sprite; a sequence with no sprites, its
    `first_image` whole; no such sequence, image 0 whole; then the

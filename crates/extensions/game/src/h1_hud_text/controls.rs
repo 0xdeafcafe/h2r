@@ -3,7 +3,7 @@
 
 use guest_layout::entry::{Cx, EntryError, GuestCall, Ret};
 use guest_layout::memory::{GuestMemory, MemFault};
-use guest_layout::points::{HS_UNUSED_EVALUATOR, HUD_SENSOR_DRAW, HUD_WIDGET_GATE};
+use guest_layout::points::{HS_UNUSED_EVALUATOR, HUD_SENSOR_DRAW};
 use hooks::{Builder, Flow};
 
 use h1_contract::hud::{
@@ -99,20 +99,27 @@ fn sensor_hidden(mem: &dyn GuestMemory) -> Result<bool, MemFault> {
     Ok(mem.u32(tag + CONTROL_FLAGS)? & SENSOR != 0)
 }
 
-/// Whether a script hides any widget: the gate's answer is then changed
-/// at the hook below.
-fn scripted(mem: &dyn GuestMemory) -> Result<bool, MemFault> {
-    let Some(tag) = mission_hud(mem)? else {
-        return Ok(false);
-    };
-    Ok(mem.u32(tag + CONTROL_FLAGS)? != 0)
+/// The scripted widget visibility at the Rust walk's seam.
+#[cfg(feature = "desktop-runtime")]
+struct ControlsSeam;
+
+#[cfg(feature = "desktop-runtime")]
+impl render_bridge::native_hud::seam::Seam for ControlsSeam {
+    fn gate(
+        &self,
+        mem: &dyn GuestMemory,
+        at: &render_bridge::native_hud::seam::At,
+    ) -> Result<Option<bool>, MemFault> {
+        // The widget's state (`+8`) is the guest gate's argument.
+        Ok(widget_hidden(mem, at.widget + 8).unwrap_or(false).then_some(false))
+    }
 }
 
 pub(super) fn register(b: &mut Builder) {
-    // While a script hides widgets the walk and its widgets stay the
-    // guest's (docs/graphics/native-hud-overlay.md, "The walk in Rust").
+    // The scripted widget visibility is the Rust walk's gate answer
+    // (docs/graphics/native-hud-overlay.md, "The override seam").
     #[cfg(feature = "desktop-runtime")]
-    render_bridge::native_hud::walk::add_foreign(|mem, _| scripted(mem).unwrap_or(false));
+    render_bridge::native_hud::seam::register(0, "h1-controls", std::sync::Arc::new(ControlsSeam));
     b.raw().before(
         &HS_UNUSED_EVALUATOR,
         "evaluate the scripted HUD controls",
@@ -143,24 +150,6 @@ pub(super) fn register(b: &mut Builder) {
             c.answer_async(move |cx| Box::pin(eval(cx, tag, slot, bit, invert)))
         },
     ).last();
-    b.raw()
-        .before(
-            &HUD_WIDGET_GATE,
-            "apply the scripted widget visibility",
-            |c| {
-                let state = c.cpu.eax;
-                let hidden = {
-                    let mem = c.ctx.memory();
-                    widget_hidden(&*mem, state).unwrap_or(false)
-                };
-                if hidden {
-                    c.cpu.eax = 0;
-                    return c.ret(12).map(Flow::Return);
-                }
-                Ok(Flow::Continue)
-            },
-        )
-        .context_only();
     b.raw()
         .before(
             &HUD_SENSOR_DRAW,

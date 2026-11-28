@@ -6,7 +6,7 @@
 //! and the composite at `HUD_SENSOR_COMPOSITE`, bit for bit, in order.
 //!
 //! The guest draws the sensor. Every call is checked until one differs,
-//! which keeps the sensor unchecked for the map; [`walk::PROOF_DRAWS`]
+//! which keeps the sensor unchecked for the map; [`PROOF_DRAWS`]
 //! matching calls in a row prove it (`sensor_proven`), the list a Rust
 //! draw of the sensor starts from.
 
@@ -14,7 +14,81 @@ use std::cell::RefCell;
 
 use engine::hud_sensor::{Blip, Sensor};
 
-use super::walk::{self, Arm, Proof};
+use std::collections::HashMap;
+use std::sync::{LazyLock, Mutex};
+
+use super::walk;
+
+/// Matching calls that prove the sensor.
+pub const PROOF_DRAWS: u32 = 8;
+/// A proven sensor's calls the guest still checks: one in this many.
+pub const RECHECK: u32 = 64;
+
+/// Whose a sensor draw is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm {
+    /// The guest draws it, unchecked: a call of it differed on this map.
+    Guest,
+    /// The guest draws it and the call is checked.
+    Shadow,
+    /// Proven, and not one of the rechecked.
+    Own,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Proof {
+    clean: u32,
+    failed: bool,
+    /// Calls since it was proven, for the recheck.
+    seen: u32,
+}
+
+impl Proof {
+    pub fn arm(&mut self) -> Arm {
+        if self.failed {
+            return Arm::Guest;
+        }
+        if self.clean < PROOF_DRAWS {
+            return Arm::Shadow;
+        }
+        self.seen = self.seen.wrapping_add(1);
+        if self.seen % RECHECK == 0 { Arm::Shadow } else { Arm::Own }
+    }
+
+    /// Whether Rust draws it, asked without counting a call.
+    pub fn proven(&self) -> bool {
+        !self.failed && self.clean >= PROOF_DRAWS
+    }
+
+    /// A checked call's answer. True when this one proved the sensor.
+    pub fn checked(&mut self, matched: bool) -> bool {
+        if !matched {
+            self.failed = true;
+            return false;
+        }
+        self.clean = self.clean.saturating_add(1);
+        self.clean == PROOF_DRAWS
+    }
+}
+
+#[derive(Default)]
+struct Proofs {
+    generation: Option<u64>,
+    /// By the local user.
+    users: HashMap<u32, Proof>,
+}
+
+static PROOFS: LazyLock<Mutex<Proofs>> = LazyLock::new(Mutex::default);
+
+/// The proof of local user `user`'s sensor draws, kept for the map.
+fn sensor_proof<T>(user: u32, f: impl FnOnce(&mut Proof) -> T) -> T {
+    let mut s = PROOFS.lock().unwrap_or_else(|e| e.into_inner());
+    let generation = crate::native_map_work::generation();
+    if s.generation != Some(generation) {
+        *s = Proofs { generation: Some(generation), ..Proofs::default() };
+    }
+    f(s.users.entry(user).or_default())
+}
 
 /// The return address of the HUD render's call of `HUD_SENSOR_DRAW`.
 pub const DRAW_RETURN: u32 = 0x0013_968a;
@@ -50,7 +124,7 @@ pub fn enter(user: u32, point: Option<[i16; 2]>, expected: Option<Expected>) -> 
         walk::count("sensor_read");
         return false;
     };
-    if walk::sensor_proof(user, Proof::arm) == Arm::Guest {
+    if sensor_proof(user, Proof::arm) == Arm::Guest {
         walk::count("sensor_guest");
         return false;
     }
@@ -118,7 +192,7 @@ pub fn leave() {
     match verdict(&call) {
         None => {
             walk::count("sensor_matched");
-            if walk::sensor_proof(call.user, |p| p.checked(true)) {
+            if sensor_proof(call.user, |p| p.checked(true)) {
                 walk::count("sensor_proven");
             }
         }
@@ -131,7 +205,7 @@ pub fn leave() {
                 "blips" => "sensor_differed_blips",
                 _ => "sensor_differed_composite",
             });
-            walk::sensor_proof(call.user, |p| p.checked(false));
+            sensor_proof(call.user, |p| p.checked(false));
         }
     }
 }
@@ -165,13 +239,13 @@ mod tests {
     }
 
     fn proven(user: u32) -> bool {
-        walk::sensor_proof(user, |p| p.proven())
+        sensor_proof(user, |p| p.proven())
     }
 
     #[test]
     fn the_sensors_draws_are_proven_by_matching_calls_in_a_row() {
         let user = 0xe0;
-        for n in 0..walk::PROOF_DRAWS {
+        for n in 0..PROOF_DRAWS {
             assert!(!proven(user), "call {n}");
             assert!(call(user, POINT, Some(&sensor())), "call {n}");
         }
@@ -186,7 +260,7 @@ mod tests {
         let mut other = sensor();
         other.blips.swap(0, 1);
         assert!(call(user, POINT, Some(&other)));
-        for _ in 0..2 * walk::PROOF_DRAWS {
+        for _ in 0..2 * PROOF_DRAWS {
             assert!(!call(user, POINT, Some(&sensor())));
         }
         assert!(!proven(user));
@@ -234,7 +308,7 @@ mod tests {
         // Draws outside a checked call are not the sensor's.
         super::blip(blip(9));
         assert!(!checking());
-        for _ in 2..walk::PROOF_DRAWS {
+        for _ in 2..PROOF_DRAWS {
             assert!(call(user, POINT, Some(&sensor())));
         }
         assert!(proven(user), "the skipped call counted for neither side");

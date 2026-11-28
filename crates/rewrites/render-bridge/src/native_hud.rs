@@ -12,6 +12,7 @@ pub mod hud_overlay;
 pub mod kept;
 pub mod modal_blur;
 mod screen_draw;
+pub mod seam;
 pub mod sensor;
 pub mod strings;
 mod ui;
@@ -23,7 +24,6 @@ use std::sync::{Arc, Mutex};
 use guest_layout::memory::GuestMemory;
 use guest_layout::points;
 use runtime::abi::TransferAbi;
-use scene_extract::hud;
 use scene_extract::hud::walk::Kind;
 use timeline::native::{Metric, Stage, Ui};
 
@@ -114,8 +114,6 @@ fn walk_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
 /// The shader quad at [`HUD_QUAD_SETUP`]: a HUD widget's quad the host
 /// draws from its Rust material, its setup and draw left out.
 fn setup_quad(mem: &mut dyn GuestMemory, frame: u32, colour: u32) -> bool {
-    // A shadowed widget's quad is checked against Rust's layout first.
-    walk::observe(mem, frame);
     // A menu shader bitmap's quad (type 9) is predicted as a HUD one is.
     let Some(at) = hud_overlay::tag_quad(mem, frame).or_else(|| hud_overlay::menu_shader_quad(mem, frame)) else {
         return false;
@@ -367,13 +365,13 @@ fn argument(mem: &dyn GuestMemory, esp: u32, n: u32) -> Option<u32> {
     mem.u32(esp.checked_add(4 + 4 * n)?).ok()
 }
 
-/// A proven widget's draw: the host's quads, then the globals the
-/// guest's draw would leave.
-fn own_widget(mem: &mut dyn GuestMemory, widget: &WalkWidget, last: &[(u32, u32)]) -> bool {
+/// A widget's draw: the host's quads, then the globals the guest's draw
+/// would leave. A host that does not draw it panics.
+fn own_widget(mem: &mut dyn GuestMemory, widget: &WalkWidget, last: &[(u32, u32)]) {
     let drawn = host().is_some_and(|host| host.rust_hud_widget(mem, widget));
     walk::owned(drawn);
     if !drawn {
-        return false;
+        unimplemented!("hud walk: the host did not draw a bitmap widget (shader {:#x})", widget.shader);
     }
     for &(at, word) in last {
         if mem.write(at, &word.to_le_bytes()).is_err() {
@@ -383,19 +381,19 @@ fn own_widget(mem: &mut dyn GuestMemory, widget: &WalkWidget, last: &[(u32, u32)
     Ui::OverlayHudRustDrawn.count_n(widget.quads.len() as u64);
     Stage::Ui.count(Metric::BuildsSkipped, widget.quads.len() as u64);
     ui::record(true);
-    true
 }
 
-/// A proven text widget's draw: the host's glyph quads.
-fn own_text(mem: &mut dyn GuestMemory, text: &WalkText) -> bool {
+/// A text widget's draw: the host's glyph quads. A host that does not
+/// draw it panics.
+fn own_text(mem: &mut dyn GuestMemory, text: &WalkText) {
     let drawn = host().is_some_and(|host| host.rust_hud_text(mem, text));
     walk::owned_text(drawn);
-    if drawn {
-        Ui::OverlayHudTextQuads.count_n(text.quads.len() as u64);
-        Stage::Ui.count(Metric::BuildsSkipped, text.quads.len() as u64);
-        ui::record(true);
+    if !drawn {
+        unimplemented!("hud walk: the host did not draw a text widget (shader {:#x})", text.shader);
     }
-    drawn
+    Ui::OverlayHudTextQuads.count_n(text.quads.len() as u64);
+    Stage::Ui.count(Metric::BuildsSkipped, text.quads.len() as u64);
+    ui::record(true);
 }
 
 /// A string's draw: the host's text runs. One it does not draw panics.
@@ -456,130 +454,51 @@ fn place_screen_quads(b: &mut Builder) {
     }).context_only();
 }
 
-/// A walk Rust loops ([`walk::plan_loop`]): each widget shown is laid
-/// out and drawn in the guest's order, after the widgets before it.
-/// False when a widget is not Rust's to draw: the guest loops, and its
-/// draws of the widgets already drawn are left out ([`walk::done`]).
-fn own_loop(mem: &mut dyn GuestMemory, fp: walk::Fp, player: u32, record: u32, shown: &[(Kind, u32, [f32; 4])]) -> bool {
-    for &(kind, widget, inputs) in shown {
-        let drawn = match kind {
-            Kind::Screen => false,
-            Kind::Bitmap => match walk::own_bitmap(&*mem, fp, player, record, widget, &inputs) {
-                Some((laid, last)) => own_widget(mem, &laid, &last),
-                None => false,
-            },
-            Kind::Text => {
-                let fonts = host().and_then(|host| host.ui_text(&*mem));
-                match walk::own_text(&*mem, fp, fonts.as_deref(), record, widget, &inputs) {
-                    Some(text) => own_text(mem, &text),
-                    None => false,
+/// One walk of a definition ([`walk::enter`]): each widget shown is laid
+/// out and drawn in the guest's order, after the widgets before it. A
+/// screen-effect widget is its effect's guest call, which Rust does not
+/// make: it panics.
+fn own_walk(mem: &mut dyn GuestMemory, fp: walk::Fp, walked: &walk::Walk) {
+    for &(kind, widget, inputs) in &walked.shown {
+        match kind {
+            Kind::Screen => unimplemented!("hud walk: screen-effect widget {widget:#x} is shown; its effect is a guest call"),
+            Kind::Bitmap => {
+                if let Some((laid, last)) = walk::bitmap(&*mem, fp, walked, widget, &inputs) {
+                    own_widget(mem, &laid, &last);
                 }
             }
-        };
-        if !drawn {
-            walk::gave_back();
-            return false;
+            Kind::Text => {
+                let fonts = host().and_then(|host| host.ui_text(&*mem));
+                if let Some(text) = walk::text(&*mem, fp, fonts.as_deref(), walked, widget, &inputs) {
+                    own_text(mem, &text);
+                }
+            }
         }
-        walk::drew(kind, widget);
     }
     walk::looped();
-    true
 }
 
-/// The definitions' walks in Rust ([`definitions`]), at `HUD_DEFINITIONS`:
-/// each definition the record names, in the guest's order, by Rust's own
-/// loop. `Ok` when every one was Rust's; otherwise `Err` with the step the
-/// guest resumes at, its walk handed over.
-fn own_definitions(mem: &mut dyn GuestMemory, fp: walk::Fp, user: u32, record: u32, walks: &[hud::walk::DefinitionWalk]) -> Result<(), usize> {
-    for w in walks {
-        walk::enter(&*mem, w.datum, user, record, w.slot);
-        let owned = match walk::plan_loop() {
-            walk::LoopPlan::Guest => false,
-            walk::LoopPlan::Own(shown) => own_loop(mem, fp, user, record, &shown),
-        };
-        if !owned {
-            definitions::hand_off(w.datum, w.slot);
-            return Err(w.step);
-        }
-        walk::leave();
-    }
-    Ok(())
-}
-
-/// `HUD_DEFINITIONS`' hooks: the order's check at the return, and Rust's
-/// walks once the order is proven.
+/// `HUD_DEFINITIONS`' hook: the definitions the record names, walked in
+/// the guest's order by Rust's own walks, and the body left out.
 fn place_definitions(b: &mut Builder) {
     b.raw().before(&points::HUD_DEFINITIONS, "native_hud_definitions", |c| {
         let rt = Arc::clone(c.ctx.runtime());
         let (user, record) = (c.cpu.edi, c.cpu.esi);
-        let walks = {
-            let mem = rt.memory();
-            hud::record(&*mem, record).and_then(|r| hud::walk::definitions(&r))
-        };
-        let definitions::Plan::Own(walks) = definitions::enter(user, record, walks) else {
-            return Ok(Flow::Continue);
-        };
-        // A walk handed back resumes the body at its step: each step the
-        // record names past the first needs its resume site.
-        let resumable = walks.iter().skip(1).all(|w| {
-            definitions::RESUME[w.step].is_some_and(|(pc, _)| rt.read_dispatch(|d| d.has_resume(pc)))
-        });
-        if !resumable {
-            walk::count("definitions_resume");
-            definitions::leave();
-            return Ok(Flow::Continue);
-        }
         let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
-        // The body's frame for a resume: the caller's EBX pushed
-        // (`0x001394be`), written before anything is drawn.
-        let Some(frame) = c.cpu.esp.checked_sub(4) else { return Ok(Flow::Continue) };
-        let caller_ebx = c.cpu.ebx.to_le_bytes();
-        let step = {
+        {
             let mut mem = rt.memory();
-            if mem.write(frame, caller_ebx).is_err() {
-                walk::count("definitions_frame");
-                definitions::leave();
-                return Ok(Flow::Continue);
-            }
+            let walks = definitions::walks(&*mem, record);
             // The body's first write (`0x001394bf`).
-            let ui = mem.u32(definitions::UI).ok().filter(|&ui| ui != 0);
-            let Some(at) = ui.and_then(|ui| ui.checked_add(definitions::UI_RECORD)) else {
-                walk::count("definitions_read");
-                definitions::leave();
-                return Ok(Flow::Continue);
-            };
-            if mem.write(at, record.to_le_bytes()).is_err() {
-                walk::count("definitions_read");
-                definitions::leave();
-                return Ok(Flow::Continue);
+            if let Err(what) = definitions::bind(&mut *mem, record) {
+                unimplemented!("hud definitions: {what} did not read for the record at {record:#x}");
             }
-            own_definitions(&mut *mem, fp, user, record, &walks)
-        };
-        let step = match step {
-            Ok(()) => {
-                definitions::owned();
-                return c.ret(0).map(Flow::Return);
+            for w in &walks {
+                let walked = walk::enter(&*mem, w.datum, user, record, w.slot);
+                own_walk(&mut *mem, fp, &walked);
             }
-            Err(step) => step,
-        };
-        // The first walk the record names: the body runs from its entry,
-        // and walks nothing before it.
-        if Some(step) == walks.first().map(|w| w.step) {
-            return Ok(Flow::Continue);
         }
-        // Every step past the first has its site (`resumable`); the frame
-        // holds the caller's EBX, and EBX is what the step's code expects.
-        let Some((pc, ebx)) = definitions::RESUME[step] else { unreachable!("step {step} past the first has a resume site") };
-        c.cpu.esp = frame;
-        if let Some(ebx) = ebx {
-            c.cpu.ebx = ebx;
-        }
-        Ok(Flow::Return(TransferAbi::resume(pc)))
+        c.ret(0).map(Flow::Return)
     }).context_only().optional();
-    b.raw().after(&points::HUD_DEFINITIONS, "native_hud_definitions_leave", |_| {
-        definitions::leave();
-        Ok(())
-    }).optional();
 }
 
 /// The motion sensor's check ([`sensor`]): Rust's point and draws at the
@@ -670,122 +589,24 @@ fn place_blips(b: &mut Builder) {
     }).context_only().optional();
 }
 
-/// The walk's hooks ([`walk`]): Rust's selection and, once proven, its
-/// loop at the walk's entry; the guest's widget calls for the check; and
-/// each widget's draw.
+/// The walk's hook ([`walk`]): Rust's walk of the definition at `HUD_WALK`,
+/// the guest's walk left out.
 fn place_walk(b: &mut Builder) {
-    b.raw().before(&points::HUD_WALK, "native_hud_walk_enter", |c| {
+    b.raw().before(&points::HUD_WALK, "native_hud_walk", |c| {
         let rt = Arc::clone(c.ctx.runtime());
-        let owned = {
+        {
             let mut mem = rt.memory();
             let esp = c.cpu.esp;
             let (Some(player), Some(record), Some(slot)) = (argument(&*mem, esp, 0), argument(&*mem, esp, 1), argument(&*mem, esp, 2)) else {
-                return Ok(Flow::Continue);
+                unimplemented!("hud walk: the walk's arguments did not read (esp {esp:#x})");
             };
-            definitions::walked(record, c.cpu.eax, slot);
-            // Rust's walk of the definitions handed this one over: its
-            // entry ran there, and the guest walks it.
-            if definitions::take_hand_off(record, c.cpu.eax, slot) {
-                return Ok(Flow::Continue);
-            }
-            walk::enter(&*mem, c.cpu.eax, player, record, slot);
             let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
-            match walk::plan_loop() {
-                walk::LoopPlan::Guest => false,
-                walk::LoopPlan::Own(shown) => own_loop(&mut *mem, fp, player, record, &shown),
-            }
-        };
-        if !owned {
-            return Ok(Flow::Continue);
+            let walked = walk::enter(&*mem, c.cpu.eax, player, record, slot);
+            own_walk(&mut *mem, fp, &walked);
         }
         // The walk is left out: its widgets are drawn.
         c.ret(12).map(Flow::Return)
     }).context_only().optional();
-    b.raw().after(&points::HUD_WALK, "native_hud_walk_leave", |_| {
-        walk::leave();
-        Ok(())
-    }).optional();
-    b.raw().before(&points::HUD_SCREEN_WIDGET, "native_hud_walk_screen", |c| {
-        let rt = Arc::clone(c.ctx.runtime());
-        let mut mem = rt.memory();
-        let (Some(player), Some(inputs)) = (argument(&*mem, c.cpu.esp, 0), argument(&*mem, c.cpu.esp, 1)) else {
-            return Ok(Flow::Continue);
-        };
-        walk::called(&*mem, Kind::Screen, c.cpu.eax, inputs);
-        let walk::ScreenPlan::Own(draw) = walk::plan_screen(&*mem, player, c.cpu.eax, inputs) else {
-            return Ok(Flow::Continue);
-        };
-        // The body is left out: the guest runs the call alone, on the
-        // frame the body would have built, and returns through its tail.
-        let saved = walk::Saved { ebp: c.cpu.ebp, ebx: c.cpu.ebx, edi: c.cpu.edi, esi: c.cpu.esi };
-        let Some((esp, ebp)) = walk::call_frame(&mut *mem, c.cpu.esp, saved, &draw) else {
-            return Ok(Flow::Continue);
-        };
-        c.cpu.esp = esp;
-        c.cpu.ebp = ebp;
-        c.cpu.eax = draw.effect;
-        c.cpu.eip = points::SCREEN_EFFECT.base;
-        Ok(Flow::Return(TransferAbi::call(points::SCREEN_EFFECT.base, walk::SCREEN_CALL_RETURN)))
-    }).context_only().optional();
-    b.raw().after(&points::HUD_SCREEN_WIDGET, "native_hud_walk_screen_done", |_| {
-        walk::finish_screen();
-        Ok(())
-    }).optional();
-    b.raw().before(&points::HUD_TEXT_WIDGET, "native_hud_walk_text", |c| {
-        let rt = Arc::clone(c.ctx.runtime());
-        let owned = {
-            let mut mem = rt.memory();
-            let esp = c.cpu.esp;
-            let (Some(record), Some(widget), Some(inputs)) = (argument(&*mem, esp, 1), argument(&*mem, esp, 2), argument(&*mem, esp, 3)) else {
-                return Ok(Flow::Continue);
-            };
-            walk::called(&*mem, Kind::Text, widget, inputs);
-            if walk::done(Kind::Text, widget) {
-                true
-            } else {
-                let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
-                let fonts = host().and_then(|host| host.ui_text(&*mem));
-                match walk::plan_text(&*mem, fp, fonts.as_deref(), record, widget, inputs) {
-                    walk::TextPlan::Guest => false,
-                    walk::TextPlan::Own(text) => own_text(&mut *mem, &text),
-                }
-            }
-        };
-        if !owned {
-            return Ok(Flow::Continue);
-        }
-        c.ret(16).map(Flow::Return)
-    }).context_only().optional();
-    b.raw().before(&points::HUD_BITMAP_WIDGET, "native_hud_walk_bitmap", |c| {
-        let rt = Arc::clone(c.ctx.runtime());
-        let owned = {
-            let mut mem = rt.memory();
-            let esp = c.cpu.esp;
-            let arguments = (argument(&*mem, esp, 0), argument(&*mem, esp, 1), argument(&*mem, esp, 2), argument(&*mem, esp, 3));
-            let (Some(player), Some(record), Some(widget), Some(inputs)) = arguments else {
-                return Ok(Flow::Continue);
-            };
-            walk::called(&*mem, Kind::Bitmap, widget, inputs);
-            if walk::done(Kind::Bitmap, widget) {
-                true
-            } else {
-                let fp = walk::Fp { mxcsr: c.cpu.mxcsr, control: c.cpu.x87.control };
-                match walk::plan(&*mem, fp, player, record, widget, inputs) {
-                    walk::Plan::Guest => false,
-                    walk::Plan::Own(laid, last) => own_widget(&mut *mem, &laid, &last),
-                }
-            }
-        };
-        if !owned {
-            return Ok(Flow::Continue);
-        }
-        c.ret(16).map(Flow::Return)
-    }).context_only().optional();
-    b.raw().after(&points::HUD_BITMAP_WIDGET, "native_hud_walk_bitmap_done", |c| {
-        let rt = Arc::clone(c.ctx.runtime());
-        walk::finish(&*rt.memory());
-        Ok(())
-    }).optional();
 }
 
 pub struct NativeHud;

@@ -337,7 +337,7 @@ brackets on the floor and the readout's fall row
 (`superbounce_hud::reticle_lock_now` says whether it holds).
 The game's own reticle is not turned red and no guest hook is involved:
 turning it red through its widget inputs needs a hook after the HUD's
-widget input call (`HUD_WIDGET_INPUTS`, `0x0013ad48`), which puts a
+widget input call (`0x0013ad48`), which puts a
 guest hook on the HUD. The tested
 pieces of that route stay (`superbounce_hud::autoaim_entry`,
 `autoaim_exit`; input 18 is the unit's "autoaimed" input by Assembly's

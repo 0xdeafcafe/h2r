@@ -8,6 +8,7 @@ use guest_layout::points;
 use guest_layout::tags::GroupTag;
 use guest_layout::view::{Tags, objects};
 use hooks::{BuildError, Builder, Flow};
+use hud_kit_core::walk::Sprite;
 use tags::weapon_hud as input;
 
 use super::flash;
@@ -19,8 +20,6 @@ const TYPES: u32 = 19;
 // Two rows per user: their personal weapon and their vehicle's weapon.
 const ROW: u32 = 4 + TYPES * 4;
 const INACTIVE: u32 = u32::MAX;
-const BITMAP_GATE: u32 = 0x0013_a602;
-const TEXT_GATE: u32 = 0x0013_a659;
 
 #[derive(Default)]
 struct Magazine {
@@ -307,16 +306,16 @@ fn warning_start(
     Ok(INACTIVE)
 }
 
-// Read the arguments of the enclosing 0x13a532 draw only at its verified calls.
+// Whether the walk's gate hides `widget` of local user `user` with weapon
+// record `ws` (0 when its slot has none).
 fn hidden(
     mem: &dyn GuestMemory,
     widget: u32,
     ws: u32,
-    sp: u32,
-    bp: u32,
+    user: u32,
     rows: u32,
 ) -> Result<bool, MemFault> {
-    if !matches!(mem.u32(sp)?, BITMAP_GATE | TEXT_GATE) || !marked(mem, widget)? {
+    if !marked(mem, widget)? {
         return Ok(false);
     }
     let screen = mem.u8(widget + 0x1b)? - input::SCREEN;
@@ -326,7 +325,6 @@ fn hidden(
             return Ok(true);
         }
     }
-    let user = mem.u32(bp + 8)?;
     if ws == 0 || user >= USERS {
         return Ok(true);
     }
@@ -382,15 +380,16 @@ fn number(
     })
 }
 
-fn supply(mem: &mut dyn GuestMemory, sp: u32, ws: u32) -> Result<bool, MemFault> {
-    if !matches!(mem.u32(sp)?, 0x0013_a61c | 0x0013_a673) {
-        return Ok(false);
+fn supply(
+    mem: &dyn GuestMemory,
+    widget: u32,
+    user: u32,
+    ws: u32,
+) -> Result<Option<[f32; 4]>, MemFault> {
+    if !marked(mem, widget)? {
+        return Ok(None);
     }
-    let selectors = mem.u32(sp + 8)?;
-    if !marked(mem, selectors - 4)? {
-        return Ok(false);
-    }
-    let user = mem.u32(sp + 4)?;
+    let selectors = widget + 4;
     let mut inputs = [0u8; 4];
     mem.read(selectors, &mut inputs)?;
     let [kind, a, b, c] = inputs;
@@ -425,13 +424,11 @@ fn supply(mem: &mut dyn GuestMemory, sp: u32, ws: u32) -> Result<bool, MemFault>
         | input::SECOND_RESERVE
         | input::SECOND_LOADED
         | input::HEAT_BYTE => number(mem, ws, user, kind, selectors)?,
-        _ => return Ok(false),
+        _ => return Ok(None),
     };
-    let out = mem.u32(sp + 12)?;
-    mem.set_f32(out, value)?;
-    mem.fill(out + 4, 12, 0)?;
-    Ok(true)
+    Ok(Some([value, 0.0, 0.0, 0.0]))
 }
+
 
 fn target_text(value: f32, digits: u8, fraction: u8, flags: u8) -> String {
     if !value.is_finite() {
@@ -451,35 +448,30 @@ fn target_text(value: f32, digits: u8, fraction: u8, flags: u8) -> String {
     text
 }
 
-fn format_text(mem: &mut dyn GuestMemory, sp: u32, widget: u32) -> Result<bool, MemFault> {
-    if mem.u32(sp)? != 0x0022_aa5b || !marked(mem, widget)? {
-        return Ok(false);
+// The string of a range or elevation readout, as UTF-16, from the
+// widget's inputs.
+fn format_text(
+    mem: &dyn GuestMemory,
+    widget: u32,
+    values: &[f32; 4],
+) -> Result<Option<Vec<u16>>, MemFault> {
+    if !marked(mem, widget)? {
+        return Ok(None);
     }
     if !matches!(mem.u8(widget + 4)?, input::RANGE | input::ELEVATION) {
-        return Ok(false);
+        return Ok(None);
     }
-    let values = mem.u32(sp + 8)?;
     let text = target_text(
-        mem.f32(values)?,
+        values[0],
         mem.u8(widget + 6)?,
         mem.u8(widget + 5)?,
         mem.u8(widget + 7)?,
     );
-    let bytes: Vec<u8> = text
-        .encode_utf16()
-        .chain([0])
-        .flat_map(u16::to_le_bytes)
-        .collect();
-    mem.write(mem.u32(sp + 12)?, &bytes)?;
-    mem.set_u32(mem.u32(sp + 16)?, 6)?; // the converted widget's font is 0 in every mode
-    // 0x22a895..0x22a8a3 publishes the same four inputs to the HUD material.
-    let mut values_copy = [0; 16];
-    mem.read(values, &mut values_copy)?;
-    mem.write(0x004e_6980, &values_copy)?;
-    Ok(true)
+    Ok(Some(text.encode_utf16().collect()))
 }
 
-// The bitmap routine saves the real caller's EBP at +0x68 (0x22aff2).
+// The bitmap routine saves the real caller's EBP at +0x68 (0x22aff2): the
+// shader-draw tint (`tint`) reads the walk's user and weapon from it.
 fn draw_owner(mem: &dyn GuestMemory, frame: u32) -> Result<Option<(u32, u32)>, MemFault> {
     if mem.u32(frame + 0x6c)? != 0x0013_a62a {
         return Ok(None);
@@ -563,34 +555,25 @@ pub(super) fn colour(
 
 // A crosshair's split-screen factor multiplies both native basis axes
 // before the authored per-axis effect (0x22b055, 0x22b198).
-fn split_basis(mem: &mut dyn GuestMemory, sp: u32, frame: u32) -> Result<(), MemFault> {
-    if mem.u32(sp)? != 0x0022_b19d {
-        return Ok(());
-    }
-    let widget = mem.u32(frame + 0x78)?;
+fn split_basis(mem: &dyn GuestMemory, widget: u32) -> Result<Option<[f32; 2]>, MemFault> {
     if marked(mem, widget)? && mem.u8(widget + 0x33)? != 0 && split_screen(mem)? {
-        mem.set_f32(frame, 0.5)?;
-        mem.set_f32(frame + 0x34, 0.5)?;
+        return Ok(Some([0.5, 0.5]));
     }
-    Ok(())
+    Ok(None)
 }
 
 // Resolve a source sprite within the converted native sequence. Direct image
 // overlays and level-specific zoom copies already have exactly one image.
 fn select_sprite(
-    mem: &mut dyn GuestMemory,
-    sp: u32,
-    frame: u32,
+    mem: &dyn GuestMemory,
     widget: u32,
-    bounds: u32,
+    user: u32,
+    ws: u32,
     rows: u32,
-) -> Result<bool, MemFault> {
-    if mem.u32(sp)? != 0x0022_b03a || !marked(mem, widget)? {
-        return Ok(false);
+) -> Result<Option<Sprite>, MemFault> {
+    if !marked(mem, widget)? || user >= USERS || ws == 0 {
+        return Ok(None);
     }
-    let Some((user, ws)) = draw_owner(mem, frame)? else {
-        return Ok(false);
-    };
     let index = if mem.u8(widget + 4)? == input::WARNING {
         let period = mem.u16(widget + 0x62)? as i16;
         if period <= 0 {
@@ -602,11 +585,11 @@ fn select_sprite(
     } else if let Some(p) = aim_profile(mem, widget)? {
         let flags = mem.u8(p + 1)?;
         if mem.u8(p)? != 0 || flags & 2 != 0 {
-            return Ok(false);
+            return Ok(None);
         }
         u32::from(flags & 1 == 0 && acquired(mem, user)?)
     } else {
-        return Ok(false);
+        return Ok(None);
     };
     let Some(bitmap) = Tags.get(
         mem,
@@ -614,25 +597,87 @@ fn select_sprite(
         GroupTag::from_chars(*b"bitm"),
     )?
     else {
-        return Ok(false);
+        return Ok(None);
     };
     // Every mode of a converted bitmap names the source sequence.
     let seq = u32::from(mem.u8(widget + 0x30)?);
     let seq = mem.u32(bitmap + 0x40)? + 0x3c * seq;
     let count = mem.u32(seq + 0x34)?;
     if count == 0 {
-        return Ok(false);
+        return Ok(None);
     }
     let sprite = mem.u32(seq + 0x38)? + 0x20 * (index % count);
     let image = u32::from(mem.u16(sprite)?);
     let data = mem.u32(bitmap + 0x48)? + 0x74 * image;
-    let mut uv = [0; 16];
-    mem.read(sprite + 8, &mut uv)?;
-    mem.write(bounds, &uv)?;
-    mem.set_u32(mem.u32(sp + 8)?, image)?;
-    mem.set_u32(mem.u32(sp + 12)?, u32::from(mem.u16(data + 4)?))?;
-    mem.set_u32(mem.u32(sp + 16)?, u32::from(mem.u16(data + 6)?))?;
-    Ok(true)
+    let mut bounds = [0f32; 4];
+    for (i, b) in bounds.iter_mut().enumerate() {
+        *b = mem.f32(sprite + 8 + 4 * i as u32)?;
+    }
+    Ok(Some(Sprite {
+        image: image as i32,
+        width: i32::from(mem.u16(data + 4)?),
+        height: i32::from(mem.u16(data + 6)?),
+        bounds,
+    }))
+}
+
+/// The converted weapon widgets' answers at the Rust walk's seam.
+#[cfg(feature = "desktop-runtime")]
+struct WeaponSeam {
+    rows: u32,
+}
+
+#[cfg(feature = "desktop-runtime")]
+impl render_bridge::native_hud::seam::Seam for WeaponSeam {
+    fn gate(
+        &self,
+        mem: &dyn GuestMemory,
+        at: &render_bridge::native_hud::seam::At,
+    ) -> Result<Option<bool>, MemFault> {
+        let ws = at.weapon.unwrap_or(0);
+        Ok(hidden(mem, at.widget, ws, at.player, self.rows)?.then_some(false))
+    }
+
+    fn inputs(
+        &self,
+        mem: &dyn GuestMemory,
+        at: &render_bridge::native_hud::seam::At,
+    ) -> Result<Option<[f32; 4]>, MemFault> {
+        let Some(ws) = at.weapon else {
+            return Ok(None);
+        };
+        supply(mem, at.widget, at.player, ws)
+    }
+
+    fn string(
+        &self,
+        mem: &dyn GuestMemory,
+        at: &render_bridge::native_hud::seam::At,
+        inputs: &[f32; 4],
+    ) -> Result<Option<render_bridge::native_hud::seam::Text>, MemFault> {
+        // The converted widget's font is 0 in every mode: engine font 6.
+        Ok(format_text(mem, at.widget, inputs)?
+            .map(|units| render_bridge::native_hud::seam::Text { units, font: 6 }))
+    }
+
+    fn sprite(
+        &self,
+        mem: &dyn GuestMemory,
+        at: &render_bridge::native_hud::seam::At,
+    ) -> Result<Option<Sprite>, MemFault> {
+        let Some(ws) = at.weapon else {
+            return Ok(None);
+        };
+        select_sprite(mem, at.widget, at.player, ws, self.rows)
+    }
+
+    fn scale(
+        &self,
+        mem: &dyn GuestMemory,
+        at: &render_bridge::native_hud::seam::At,
+    ) -> Result<Option<[f32; 2]>, MemFault> {
+        split_basis(mem, at.widget)
+    }
 }
 
 pub(super) fn register(b: &mut Builder) -> Result<u32, BuildError> {
@@ -663,90 +708,15 @@ pub(super) fn register(b: &mut Builder) -> Result<u32, BuildError> {
         "sample weapon warning conditions",
         move |c| sample(&mut *c.ctx.memory(), rows).map_err(fault),
     );
-    // A marked widget's draw is changed at these hooks: it stays the
-    // guest's (docs/graphics/native-hud-overlay.md, "The walk in Rust").
+    // A marked widget's gate, inputs, string, scale and sprite are answered
+    // at the Rust walk's seam (docs/graphics/native-hud-overlay.md, "The
+    // override seam").
     #[cfg(feature = "desktop-runtime")]
-    render_bridge::native_hud::walk::add_foreign(|mem, widget| marked(mem, widget).unwrap_or(true));
-    b.raw()
-        .before(
-            &points::HUD_WIDGET_GATE,
-            "gate source weapon widgets",
-            move |c| {
-                let hide = hidden(
-                    &*c.ctx.memory(),
-                    c.cpu.eax.wrapping_sub(8),
-                    c.cpu.ecx,
-                    c.cpu.esp,
-                    c.cpu.ebp,
-                    rows,
-                )
-                .map_err(fault)?;
-                if hide {
-                    c.cpu.eax = 0;
-                    return c.ret(12).map(Flow::Return);
-                }
-                Ok(Flow::Continue)
-            },
-        )
-        .context_only();
-    b.raw()
-        .before(
-            &points::HUD_WIDGET_INPUTS,
-            "read source weapon inputs",
-            |c| {
-                let supplied = supply(&mut *c.ctx.memory(), c.cpu.esp, c.cpu.ecx).map_err(fault)?;
-                if supplied {
-                    return c.ret(12).map(Flow::Return);
-                }
-                Ok(Flow::Continue)
-            },
-        )
-        .context_only();
-    b.raw()
-        .before(
-            &points::HUD_WIDGET_STRING,
-            "format source range and elevation",
-            |c| {
-                let formatted =
-                    format_text(&mut *c.ctx.memory(), c.cpu.esp, c.cpu.ebx).map_err(fault)?;
-                if formatted {
-                    return c.ret(16).map(Flow::Return);
-                }
-                Ok(Flow::Continue)
-            },
-        )
-        .context_only();
-    b.raw()
-        .before(
-            &points::HUD_WIDGET_EFFECTS,
-            "scale split-screen crosshairs",
-            |c| {
-                split_basis(&mut *c.ctx.memory(), c.cpu.esp, c.cpu.ebp).map_err(fault)?;
-                Ok(Flow::Continue)
-            },
-        )
-        .context_only();
-    b.raw()
-        .before(
-            &points::HUD_WIDGET_SPRITE,
-            "select the source crosshair frame",
-            move |c| {
-                let selected = select_sprite(
-                    &mut *c.ctx.memory(),
-                    c.cpu.esp,
-                    c.cpu.ebp,
-                    c.cpu.ecx,
-                    c.cpu.eax,
-                    rows,
-                )
-                .map_err(fault)?;
-                if selected {
-                    return c.ret(16).map(Flow::Return);
-                }
-                Ok(Flow::Continue)
-            },
-        )
-        .context_only();
+    render_bridge::native_hud::seam::register(
+        0,
+        "h1-weapon",
+        std::sync::Arc::new(WeaponSeam { rows }),
+    );
     Ok(rows)
 }
 
@@ -811,45 +781,52 @@ mod tests {
     #[test]
     fn inputs_use_the_source_ramp_and_whole_magazines() {
         let mut mem = FlatMemory::new(0x1000, 0x2000);
-        let (sp, widget, ws, out) = (0x1100, 0x1200, 0x1300, 0x1400);
-        mem.set_u32(sp, 0x0013_a61c).unwrap();
-        mem.set_u32(sp + 8, widget + 4).unwrap();
-        mem.set_u32(sp + 12, out).unwrap();
+        let (widget, ws) = (0x1200, 0x1300);
         mem.set_u8(widget + 0x1b, input::SCREEN + 2).unwrap();
         mem.write(widget + 4, &[input::METER + 1, 0, 60, 1])
             .unwrap();
         mem.set_u16(ws + 6, 4).unwrap();
-        assert!(supply(&mut mem, sp, ws).unwrap());
-        assert_eq!(mem.f32(out).unwrap(), 241.0 / 255.0);
+        assert_eq!(
+            supply(&mem, widget, 0, ws).unwrap(),
+            Some([241.0 / 255.0, 0.0, 0.0, 0.0])
+        );
         mem.write(widget + 4, &[input::MAGAZINES, 0x30, 2, 1])
             .unwrap();
         mem.set_u16(ws + 6, 29).unwrap();
         mem.set_u16(ws + 0xa, 10).unwrap();
-        assert!(supply(&mut mem, sp, ws).unwrap());
-        assert_eq!(mem.f32(out).unwrap(), 2.0);
+        assert_eq!(
+            supply(&mem, widget, 0, ws).unwrap(),
+            Some([2.0, 0.0, 0.0, 0.0])
+        );
         mem.set_u8(widget + 0x1b, 0).unwrap();
-        assert!(!supply(&mut mem, sp, ws).unwrap());
+        assert_eq!(supply(&mem, widget, 0, ws).unwrap(), None);
     }
 
     #[test]
-    fn split_size_uses_the_native_axes_and_keeps_the_anchor() {
+    fn split_size_scales_both_native_axes() {
         let mut mem = FlatMemory::new(0, (points::PLAYER_GLOBALS.base + 4) as usize);
-        let (sp, frame, widget) = (0x200, 0x300, 0x400);
+        let widget = 0x400;
         mem.set_u32(points::PLAYER_GLOBALS.base, 0x100).unwrap();
         mem.set_u16(0x108, 2).unwrap();
-        mem.set_u32(sp, 0x0022_b19d).unwrap();
-        mem.set_u32(frame + 0x78, widget).unwrap();
         mem.set_u8(widget + 0x1b, input::SCREEN).unwrap();
         mem.set_u8(widget + 0x33, 1).unwrap();
-        mem.set_f32(frame + 0x48, 91.0).unwrap();
-        split_basis(&mut mem, sp, frame).unwrap();
-        assert_eq!(mem.f32(frame).unwrap(), 0.5);
-        assert_eq!(mem.f32(frame + 0x34).unwrap(), 0.5);
-        assert_eq!(mem.f32(frame + 0x48).unwrap(), 91.0);
+        assert_eq!(split_basis(&mem, widget).unwrap(), Some([0.5, 0.5]));
         mem.set_u8(widget + 0x33, 0).unwrap();
-        mem.set_f32(frame, 1.0).unwrap();
-        split_basis(&mut mem, sp, frame).unwrap();
-        assert_eq!(mem.f32(frame).unwrap(), 1.0);
+        assert_eq!(split_basis(&mem, widget).unwrap(), None);
+    }
+
+    #[test]
+    fn range_text_comes_from_the_widgets_inputs() {
+        let mut mem = FlatMemory::new(0x1000, 0x200);
+        let widget = 0x1100;
+        mem.set_u8(widget + 0x1b, input::SCREEN).unwrap();
+        mem.write(widget + 4, &[input::RANGE, 3, 4, 3]).unwrap();
+        let units = format_text(&mem, widget, &[-12.875, 0.0, 0.0, 0.0])
+            .unwrap()
+            .unwrap();
+        assert_eq!(String::from_utf16(&units).unwrap(), "-0012.875");
+        mem.set_u8(widget + 0x1b, 0).unwrap();
+        assert_eq!(format_text(&mem, widget, &[1.0; 4]).unwrap(), None);
     }
 
     #[test]

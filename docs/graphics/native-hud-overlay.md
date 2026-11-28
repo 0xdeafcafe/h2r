@@ -102,22 +102,19 @@ Counters (`render.stats`, `native_ui_overlay_hud_rust_*`): `drawn`, `refused`; a
 
 ## The walk in Rust
 
-The guest's walk of a HUD definition (`0x0013a532`) is ported to `hud_kit_core::walk`, with no guest types; `scene_extract::hud` reads what it needs. A bitmap widget (`0x0022aff1`) or text widget (`0x0022aa16`) is laid out and drawn by Rust and its guest draw is left out. A screen-effect widget (`0x0022b8e2`) is laid out by Rust and the guest runs its call of `0x0002d140` alone.
+The guest's walk of a HUD definition (`0x0013a532`) is ported to `hud_kit_core::walk`, with no guest types; `scene_extract::hud` reads what it needs. A bitmap widget (`0x0022aff1`) or text widget (`0x0022aa16`) is laid out and drawn by Rust; the guest's walk and its widget draws never run.
 
-A definition's loop is Rust's from its first walk: the walk is left out and its widgets are drawn in order. Once the order of the definitions is proven, Rust walks every definition the record names and the guest's walk of them is left out ([the definitions in Rust](#the-definitions-in-rust)).
+Every walk is Rust's: at `HUD_WALK` the widgets shown are laid out and drawn in order, and at `HUD_DEFINITIONS` Rust walks every definition the record names ([the definitions in Rust](#the-definitions-in-rust)). What Rust does not lay out is a named panic.
 
 ```mermaid
 flowchart LR
   W[HUD_WALK 0x0013a532] --> S[Rust: state words, gate, inputs = shown list]
+  Q[override seam] -.->|gate, inputs| S
   S --> O[Rust loop: lay out, draw, next]
-  O --> R[return: guest walk left out]
-  O -->|a widget is not Rust's| G
-  W -->|a feature's widget, or a screen effect| G[guest loop: gate, inputs, widget draw]
-  G --> B[HUD_BITMAP_WIDGET 0x0022aff1]
-  S --> B
-  B --> L[Rust layout: sprite, anchor, effects, quads, globals]
+  Q -.->|string, sprite, scale| L
+  O --> L[Rust layout: sprite, anchor, effects, quads, globals]
   L --> H[rust_hud_widget: Rust material, one pass, the anchor's fit]
-  H --> X[return: guest draw left out]
+  H --> R[return: guest walk left out]
 ```
 
 | Part | Guest | Rust |
@@ -131,7 +128,7 @@ flowchart LR
 | Effects | `0x0022bcaf` | `engine::hud_effects::apply`, on the SSE and x87 models |
 | Bitmap widget | `0x0022aff1`: mirrors, the meter, list and colour types, its globals at `0x004e6978`..`0x004e69b0` | `walk::bitmap_widget` |
 | Quad vertices | `0x0022a664` to its setup | `walk::vertices` |
-| Screen-effect widget | `0x0022b8e2` to its call of `0x0002d140` | `walk::screen_widget`; `native_hud::walk::call_frame` writes the body's frame and the call |
+| Screen-effect widget | `0x0022b8e2` to its call of `0x0002d140` | `walk::screen_widget` works the call out; no Rust walk makes it, and a walk that shows one panics |
 | Text place | `0x0022aa16` to its string | `walk::text_widget` |
 | String | `0x0022a871`: the table's string; the named input through `_ftol` as `%d`, `0%d`, `00%d`; or the name of the record's player (`+0x228` while `+0x224` is set, through `0x0016bae0`), else nothing | `hud_overlay::localized`, `walk::number_text`, `hud::player_name` |
 | Measure | `0x0013e9c0` in 0, 0, 1000, 1000; its callback `0x0013e8e0` | `UiText::shape`, `walk::text_bounds` |
@@ -141,21 +138,20 @@ flowchart LR
 
 | Rule | Why |
 |---|---|
-| Rust draws a bitmap widget only when `walk::shown` selected it with the inputs the guest's loop gives it (`unselected`) | the loop's gate and input hooks (the HUD kit, a converted Halo 1 HUD) stay in force |
-| A widget is Rust's from its first draw (`walk::arm` is always `Arm::Own`) | the guest's draw is a device draw, which is deleted |
+| Rust draws what `walk::enter` selected, with the inputs it worked out; a feature's gate and inputs are the override seam's ([the override seam](#the-override-seam)) | the HUD kit and a converted Halo 1 HUD change what a widget shows |
 | The widget's shader must predict ([the material in Rust](#the-material-in-rust)); its quads are one overlay pass or none, and one that is not drawn panics by name (`hud: a widget's pass is not placed`) | a half-drawn widget is never shown |
 | The pass draws under `render_aspect::hud_group_fit` at the widget's anchor and its point, then the enclosing fit is set back | the placement rule is the guest group's (`canvas_fit`) |
-| Rust writes the globals the guest's draw would leave | the next guest quad's shader reads them |
-| Left to the guest: a widget another feature changes at its hooks (`feature`: `walk::add_foreign`), emblem types 1 and 2 (`emblem`), an anchor past the centre (`anchor`), an effect input that is not read (`effect`), an image whose texture `0x0003bcb0` would fetch (`texture`), vertices outside the capture's check (`vertices`), a failed read (`read`) | each is something the guest's draw reads or does that the layout does not |
+| Rust writes the globals the guest's draw would leave | the next quad's shader reads them |
+| A widget whose image has no texture (`0x0003bcb0` would fetch none) draws nothing (`texture`), as does one with no bitmap, shader or image (`empty`) | the guest's draw makes no quad |
+| Panics by name: emblem types 1 and 2 (`emblem`), an anchor past the centre (`anchor`), an effect input that is not read (`effect`), vertices outside the capture's check (`vertices`), a failed read (`read`), a host that does not draw the widget | each is something the layout does not do |
 
-Text and screen-effect widgets take the bitmap widget's rules, with these differences:
+A text widget takes the bitmap widget's rules:
 
-| Widget | Checked | Drawn |
-|---|---|---|
-| Text | nothing: a widget laid out and selected is Rust's at its draw (`walk::plan_text`), and an unproven text widget does not hold the loop. The guest's draw would run the string draw, which is Rust's ([strings](#strings)) | `Host::rust_hud_text`: runs over the host's glyph pages (`OverlayTexture::Glyphs`) by the shader's words, the quad's colour as diffuse (`hud_native::build_text`, `hud_overlay::place_text`). The shader is proven on the guest's glyph captures (`hud_native::check_text`: words, state, stages) |
-| Screen effect | the guest's one call at `SCREEN_EFFECT`: effect, values, 3 by 3, the grid and the globals | `call_frame`: the saved registers, grid, globals and the call's words on the guest's stack, then `0x0002d140` entered with the return `0x0022bbc0`, whose code leaves the widget. The post draws the effect ([native-post-hud.md](native-post-hud.md)) |
+| Widget | Drawn |
+|---|---|
+| Text | `Host::rust_hud_text`: runs over the host's glyph pages (`OverlayTexture::Glyphs`) by the shader's words, the quad's colour as diffuse (`hud_native::build_text`, `hud_overlay::place_text`). The shader is proven on the guest's glyph captures (`hud_native::check_text`: words, state, stages). The string draw is Rust's ([strings](#strings)) |
 
-Text left to the guest: a name that is not read (`name`), a number whose input is not read or is past an `i32` (`number`), a string with a character a handler that is not read replaces (`string`: a session's or variant's name, a clock), one the fonts do not shape (`shape`: `menu_text::shape`'s characters and the button glyphs), a font byte past 1 (`font`), a colour outside 0..1 (`colour`), no host fonts (`text_fonts`). The font renderer's own state (`0x004e73a0`..) is not written by a Rust-drawn string (**S**: every string draw sets it first).
+Text that panics by name: a name that is not read (`name`), a number whose input is not read or is past an `i32` (`number`), a string with a character a handler that is not read replaces (`string`: a session's or variant's name, a clock), one the fonts do not shape (`shape`: `menu_text::shape`'s characters and the button glyphs), a font byte past 1 (`font`), a colour outside 0..1 (`colour`), no host fonts (`text_fonts`). The font renderer's own state (`0x004e73a0`..) is not written by a Rust-drawn string (**S**: every string draw sets it first).
 
 The string draw's changes (`0x0022d2ee`) are `hud_overlay::substituted`:
 
@@ -171,46 +167,55 @@ The string draw's changes (`0x0022d2ee`) are `hud_overlay::substituted`:
 
 Menus shape through `UiText::shape`, which takes no button glyph: only a caller that checks the glyph quads against the guest's uses `shape_buttons`.
 
-The loop (`walk::plan_loop` at `HUD_WALK`, `native_hud::own_loop`):
+The loop (`walk::enter` at `HUD_WALK`, `native_hud::own_walk`):
 
 | Rule | Why |
 |---|---|
-| A definition's loop is Rust's from its first walk | no guest draw is left to prove it |
-| The guest loops when a feature has a widget in the definition or a script hides HUD widgets (`loop_feature`), a screen effect is shown (`loop_screen`: its call is the guest's) | the gate and input hooks stay in force; a feature's widget and a screen effect's call are the guest's (left to a later lane) |
+| A walk is Rust's: no guest loop runs | no guest draw is left to prove it |
+| A definition or record that does not read, a text with no host fonts, a screen-effect widget shown or a widget the host does not draw panics by name (`hud walk: ...`) | a mismatch is never drawn from the guest |
 | Each widget is laid out after the widgets before it are drawn and their globals written | a layout reads what the earlier draws leave |
-| A widget that is not laid out, draws nothing or the host does not take gives the loop back (`loop_gave_back`): the guest's walk runs and its draws of the widgets already drawn are left out (`walk::done`) | no widget is drawn twice or dropped |
 
-Hooks (`native_hud::place_walk`, feature `native-hud`, all optional): `HUD_WALK`, `HUD_SCREEN_WIDGET` and `HUD_BITMAP_WIDGET`, each before and after, and `HUD_TEXT_WIDGET` before. No other feature hooks these points, so they need no order. The quad check runs inside `native_hud_rust_quad` at `HUD_QUAD_SETUP` and the call check inside `native_post_screen_effect` at `SCREEN_EFFECT`, each before the draw is offered.
+Hooks (`native_hud::place_walk`, feature `native-hud`, optional): `HUD_WALK` before. The quad hooks run inside `native_hud_rust_quad` at `HUD_QUAD_SETUP`.
 
-Counters (`render.scene`, `native_ui_overlay_hud_walk_*`): `loop_owned` and the loop's above; `drawn`, `proven`, `shadow_matched`, `shadow_differed`, each refusal above; the same with `screen_` before them, and each text refusal with `text_` (`screen_called` for `drawn`; `text_refused` and `screen_refused` beside a layout refusal's cause); and `selection_matched`, `selection_differed`, `selection_foreign` (the guest's widget calls of one walk against `walk::shown`; `foreign` when the definition has another feature's widget).
+Counters (`render.scene`, `native_ui_overlay_hud_walk_*`): `loop_owned`, `drawn`, `host`, `text_drawn`, `text_host`, `empty`, `texture`, `text_empty`.
+
+### The override seam
+
+A feature that changes what a widget shows answers at `native_hud::seam` instead of hooking the guest's helpers (`HUD_WIDGET_GATE`, `_INPUTS`, `_STRING`, `_SPRITE`, `_EFFECTS`), which a Rust walk never calls. A seam is registered under a name and a rank (`seam::register`); the first answer by rank wins and the walk's own is the fallback.
+
+| Question | Asked | The walk's own answer | Features |
+|---|---|---|---|
+| `gate` | each bitmap and text widget in the definition, with the walk's player, weapon record and word D | `walk::gate` | the HUD kit (its widgets, and the monitor mode's hiding of retail ones), Halo 1's weapon widgets and scripted widget visibility |
+| `inputs` | each widget shown | `walk::inputs` | the kit (the fill), Halo 1's weapon inputs |
+| `string` | a text widget laid out, with its inputs | the string table, the number or the name | the kit (the value's text, the element's font), Halo 1's range and elevation readouts |
+| `sprite` | a bitmap widget laid out; the answer replaces the bitmap's pick through `walk::Art::sprite` | `walk::sprite` | the kit's crop, Halo 1's warning and aim frames |
+| `scale` | a bitmap widget laid out; factors on the basis' axes before its effects | none | the kit's motion scale, Halo 1's split-screen crosshair |
+
+Rank 0 is Halo 1's (`h1_hud_text`), rank 1 the kit's: their widgets never overlap, and the kit's monitor-mode gate hides any other widget, so Halo 1's answer comes first. A read a seam makes that faults panics, named for the seam. The panel tint and flash colours of Halo 1's widgets (`h1_hud_text::tint`) still hook the guest's shader draw, which a Rust-drawn widget does not run.
 
 ### The definitions in Rust
 
-The HUD render (`0x0013954b`) fills the player's HUD record and calls `0x001394b9` (`points::HUD_DEFINITIONS`, ESI the record, EDI the user), which writes the record to `[0x00510c4c] + 0x1bc` and walks each definition the record names through `HUD_WALK` (Code, `h2 disasm 0x001394b9`). `hud_kit_core::walk::definitions` gives the same walks in the same order; `native_hud::definitions` keeps the proof.
+The HUD render (`0x0013954b`) fills the player's HUD record and calls `0x001394b9` (`points::HUD_DEFINITIONS`, ESI the record, EDI the user), which writes the record to `[0x00510c4c] + 0x1bc` and walks each definition the record names through `HUD_WALK` (Code, `h2 disasm 0x001394b9`). `hud_kit_core::walk::definitions` gives the same walks in the same order; `native_hud::definitions` reads them.
 
-| Step | Record word | Slot | Resume site |
-|---|---|---|---|
-| 0 | 5 | 3 | the entry |
-| 1 | 2 | 4 | `0x001394d8` |
-| 2 | 3 | 1 | `0x001394e8` |
-| 3 | 4 | 2 | `0x001394f8` |
-| 4 | 5 | 3 | `0x00139508` |
-| 5 | 6 | 0 | `0x00139518` |
-| 6 | 0 | 0 | `0x0013952a` |
-| 7 | 1 | 0 | `0x00139539` |
+| Step | Record word | Slot |
+|---|---|---|
+| 0 | 5 | 3 |
+| 1 | 2 | 4 |
+| 2 | 3 | 1 |
+| 3 | 4 | 2 |
+| 4 | 5 | 3 |
+| 5 | 6 | 0 |
+| 6 | 0 | 0 |
+| 7 | 1 | 0 |
 
 A word of -1 names no definition and is skipped.
 
 | Rule | Why |
 |---|---|
-| The order is proven by 8 calls whose guest walks of the record were Rust's list: datum and slot, in order (`definitions_proven`), kept per local user for the map | Rust walks the definitions only where its order has been the guest's |
-| One proven call in 64 is the guest's, and every walk of it is checked as a loop's recheck is (`definitions::rechecking`) | a later difference is caught, and the walks' rechecks hold without the guest's calls |
-| A call whose walks differ keeps the order on the guest for the map (`definitions_differed`) | as a loop's walk |
-| Rust writes the record to `[0x00510c4c] + 0x1bc`, then walks each definition with its own loop (`plan_loop`, `own_loop`); with every one Rust's, the body is left out (`definitions_owned`) | the walks read nothing else the body sets |
-| A walk that is not Rust's or gives its loop back is handed to the guest (`definitions_gave_back`): the body resumes at that step's site, the caller's EBX pushed and EBX as the step's code has it, and the walk's entry keeps what Rust did of it (`definitions::take_hand_off`) | no walk is run twice or dropped |
-| With a step past the first whose site is not a resume (`definitions_resume`), a record or the UI globals that do not read (`definitions_read`), or a stack that does not take the frame (`definitions_frame`), the guest walks them | Rust starts only what it can hand back |
+| Rust writes the record to `[0x00510c4c] + 0x1bc` (`definitions::bind`), walks each definition with its own walk (`walk::enter`, `own_walk`) and leaves the body out | the walks read nothing else the body sets |
+| A record or the UI globals that do not read panic by name | no guest body runs to walk them |
 
-Hooks (`native_hud::place_definitions`, with `place_walk`): `HUD_DEFINITIONS` before and after. Counters as the walk's (`native_ui_overlay_hud_walk_definitions_*`): `owned`, `matched`, `proven`, `differed`, `guest` (a call after one differed), `gave_back` and the refusals above.
+Hooks (`native_hud::place_definitions`, with `place_walk`): `HUD_DEFINITIONS` before.
 
 ### The motion sensor in Rust
 
@@ -332,7 +337,7 @@ A text run's combiner (`Combiner::TextureAlpha`) samples coverage alone, so a co
 - That any retail HUD shader proves: the corners are predicted from the quad's own vertices with no vertex program, the sampler from the tag's stage states as D3D values, the blend from the implementation's states over `gfx`'s defaults. `mismatch_*` names the first part that differs.
 - That an overlay pass (`OverlayPass`) places a quad on the same pixels as the widget pass: it does not snap positions to sixteenths (`raster_position`).
 
-- That any retail widget's Rust layout proves (`shadow_differed` and `screen_shadow_differed` count one that does not), that a text widget's Rust layout is the guest's (it is drawn unchecked), and that `selection_differed` stays at zero on retail definitions.
+- That every retail widget's Rust layout is the one the game shows: no `hud walk:` panic on retail definitions, and the HUD kit's and a converted Halo 1 HUD's widgets show what their seam answers.
 - That the image has `HUD_DEFINITIONS`' resume sites (`definitions_resume` counts a call without them), and that the HUD render reads nothing `0x001394b9` leaves in EAX or the walks leave in memory beyond their widgets' globals (**S**: `0x001395fa` pushes `[ebp-4]` next).
 - That the walk's caller reads nothing the walk leaves in a register (**S**: `0x001394b9` loads EAX after each call), and that a widget drawing nothing writes no global (the loop gives such a widget back to the guest).
 - That a button glyph proves: a coloured glyph magnified in its page takes each pixel's colour unfiltered, and `text_layout::lines` breaks where `0x0013fd20` does for the characters `shape` takes.

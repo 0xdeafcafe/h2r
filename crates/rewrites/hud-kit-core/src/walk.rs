@@ -422,6 +422,9 @@ pub struct Art {
     pub shield_colour: [u32; 3],
     /// The list type's second colour (`[0x00468718]` points at it).
     pub list_colour: [u32; 3],
+    /// A sprite that replaces the bitmap's own pick (`0x0022ae21`): what a
+    /// feature that changes a widget's art gives the draw.
+    pub sprite: Option<Sprite>,
 }
 
 /// One call of the shader quad `0x0022a664`.
@@ -495,7 +498,13 @@ pub fn bitmap_widget(
         return Ok(None);
     }
     let sequence = i32::from(w[0x30 + mode] as i8);
-    let Some(sprite) = sprite(bitmap, sequence, art.user_state)? else { return Ok(None) };
+    let sprite = match art.sprite {
+        Some(given) => given,
+        None => match sprite(bitmap, sequence, art.user_state)? {
+            Some(picked) => picked,
+            None => return Ok(None),
+        },
+    };
     let point = anchor_point(anchor, screen, aim)?;
     let [mut left, mut right, mut top, mut bottom] = sprite.bounds;
     let offset = 0x34 + 4 * mode;

@@ -117,6 +117,7 @@ pub fn art(mem: &dyn GuestMemory, user: u32) -> Option<Art> {
         meter: [mem.f32(player).ok()?, mem.f32(player.checked_add(4)?).ok()?],
         shield_colour: colour(SHIELD_COLOUR)?,
         list_colour: colour(LIST_COLOUR)?,
+        sprite: None,
     })
 }
 

@@ -11,7 +11,7 @@ fn session() -> Session {
 }
 
 fn art() -> Art {
-    Art { user_state: false, meter: [0.0, 0.0], shield_colour: [1.0f32.to_bits(); 3], list_colour: [0.5f32.to_bits(); 3] }
+    Art { user_state: false, meter: [0.0, 0.0], shield_colour: [1.0f32.to_bits(); 3], list_colour: [0.5f32.to_bits(); 3], sprite: None }
 }
 
 /// A record with a frag grenade selected, unzoomed, full shield.
