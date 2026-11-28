@@ -19,15 +19,20 @@
 //! epoch the job carries, which clears its filter state in the `Synth`.
 //!
 //! `prepare_job` then `Synth::mix` gives the same samples as `render_split`
-//! (`deferred_mix_equals_the_inline_render`). Taps ([`Mixer::set_taps`]) are
-//! filled by the sample half, so a mixer with taps does not defer
+//! (`deferred_mix_equals_the_inline_render`). Taps ([`Mixer::set_taps`]) feed
+//! guest memory (the XHV voice rings), so they are filled in the state half:
+//! a voice whose bins reach only tapped bins is filtered, routed and tapped
+//! there, in order, and left out of the job (`a_tap_only_voice_is_tapped_in_the_state_half`).
+//! A voice that also reaches another bin, a mix-in on a tapped bin, or a
+//! tapped voice on the side output makes the block mix inline
 //! ([`Mixer::can_defer`]).
 
 use std::collections::BTreeMap;
 use std::ops::Range;
 
-use super::{Bus, MixInId, Mixer, Route, STARVE_WINDOW_MS, route_voice, to_side};
-use crate::dsound::{BufferId, Listener, StreamId, VoiceParams, mb_to_gain};
+use super::{Bus, MixInId, Mixer, Route, STARVE_WINDOW_MS, begin_taps, route_voice, to_side};
+use crate::dsound::{BufferId, Listener, StreamId, VoiceOutput, VoiceParams, mb_to_gain};
+use crate::route::{self, Dest};
 use crate::fx::FxState;
 use crate::hrtf::Hrtf;
 use crate::reverb::{I3dl2Listener, Reverb};
@@ -117,9 +122,48 @@ impl MixJob {
 
 impl Mixer {
     /// Whether [`prepare_job`](Self::prepare_job) can stand in for a render:
-    /// not while bins are tapped, which the sample half would have to fill.
+    /// with no taps always; with taps, when every voice that reaches a tapped
+    /// bin reaches nothing else (see the module docs), so the state half can
+    /// fill the taps by itself.
     pub fn can_defer(&self) -> bool {
-        self.taps.is_empty()
+        if self.taps.is_empty() {
+            return true;
+        }
+        let tapped = |bin: u32| self.taps.iter().any(|t| t.bin == bin);
+        !self
+            .mix_ins
+            .values()
+            .any(|m| tapped(m.input_bin()) || self.tap_use(m.params()) != TapUse::Not)
+            && self
+                .buffers
+                .values()
+                .filter(|b| b.is_playing())
+                .all(|b| self.tap_use(b.params()) != TapUse::Mixed)
+            && self
+                .streams
+                .values()
+                .filter(|s| s.is_audible())
+                .all(|s| self.tap_use(s.params()) != TapUse::Mixed)
+    }
+
+    /// How `p`'s mix bins meet the tapped bins.
+    fn tap_use(&self, p: &VoiceParams) -> TapUse {
+        let Some(bins) = &p.mix_bins else {
+            return TapUse::Not;
+        };
+        let (mut tapped, mut other) = (false, false);
+        for &(bin, _) in bins {
+            match route::dest(bin) {
+                Dest::Dropped => {}
+                Dest::Send(b) if self.taps.iter().any(|t| t.bin == b) => tapped = true,
+                _ => other = true,
+            }
+        }
+        match (tapped, other) {
+            (false, _) => TapUse::Not,
+            (true, false) if p.output == VoiceOutput::Main => TapUse::Only,
+            _ => TapUse::Mixed,
+        }
     }
 
     /// The state half of [`render_split`](Self::render_split) for `frames`
@@ -127,7 +171,7 @@ impl Mixer {
     /// and returns what the sample half needs. `side` says a side output will
     /// be mixed. Call only when [`can_defer`](Self::can_defer).
     pub fn prepare_job(&mut self, frames: usize, side: bool) -> MixJob {
-        debug_assert!(self.can_defer(), "taps are filled by the sample half");
+        debug_assert!(self.can_defer(), "a voice on a tap and elsewhere mixes inline");
         let rate = self.sample_rate;
         let mut scratch = std::mem::take(&mut self.scratch);
         scratch.resize(frames * 2, 0.0);
@@ -145,6 +189,12 @@ impl Mixer {
             buses: Vec::with_capacity(order.len()),
             pcm: Vec::new(),
         };
+        let master = job.master;
+        let environment = job.environment;
+        let mut taps = std::mem::take(&mut self.taps);
+        begin_taps(&mut taps, frames, rate as usize);
+        let mut direct = std::mem::take(&mut self.direct);
+        direct.resize(frames * 2, 0.0);
         let ids: Vec<BufferId> = self
             .buffers
             .iter()
@@ -153,6 +203,7 @@ impl Mixer {
             .collect();
         for id in ids {
             scratch.fill(0.0);
+            let tap_only = self.tap_use(self.buffers[&id].params()) == TapUse::Only;
             let b = self.buffers.get_mut(&id).expect("listed above");
             let params = b.params().clone();
             b.set_doppler_pitch(
@@ -165,6 +216,25 @@ impl Mixer {
             b.render(&mut scratch, rate, (1.0, 1.0));
             let produced = (b.fx_clock() - c0) as usize;
             let channels = b.format().channels() as usize;
+            if tap_only {
+                b.apply_fx(&mut scratch[..produced * 2], c0, rate);
+                let mut cx = Route {
+                    listener: &self.listener,
+                    direct: &mut direct,
+                    room: &mut [],
+                    distance_reverb: self.distance_reverb,
+                    environment,
+                    rate,
+                    master,
+                    buses: &mut [],
+                    taps: &mut taps,
+                    frames,
+                    reverb_in: None,
+                };
+                let src = &scratch[..produced * 2];
+                route_voice(&mut cx, &params, channels, src, &mut b.fx_state, &mut [], None);
+                continue;
+            }
             let fx = b.fx_state.clone();
             job.push_voice(
                 Key::Buffer(id),
@@ -184,6 +254,7 @@ impl Mixer {
         let window = STARVE_WINDOW_MS * u64::from(rate) / 1000;
         for id in ids {
             scratch.fill(0.0);
+            let tap_only = self.tap_use(self.streams[&id].params()) == TapUse::Only;
             let s = self.streams.get_mut(&id).expect("listed above");
             if let Some(at) = s.dry_at.take() {
                 let gap = self.clock.saturating_sub(at);
@@ -207,6 +278,27 @@ impl Mixer {
                 // Ran out: dry from the first frame it did not fill.
                 s.dry_at = Some(self.clock + produced as u64);
             }
+            if tap_only {
+                s.apply_fx(&mut scratch[..produced * 2], c0, rate);
+                let mut cx = Route {
+                    listener: &self.listener,
+                    direct: &mut direct,
+                    room: &mut [],
+                    distance_reverb: self.distance_reverb,
+                    environment,
+                    rate,
+                    master,
+                    buses: &mut [],
+                    taps: &mut taps,
+                    frames,
+                    reverb_in: None,
+                };
+                let src = &scratch[..produced * 2];
+                if !route_voice(&mut cx, &params, channels, src, &mut s.fx_state, &mut [], None) {
+                    self.health.unrouted_frames += produced as u64;
+                }
+                continue;
+            }
             let fx = s.fx_state.clone();
             job.push_voice(
                 Key::Stream(id),
@@ -228,10 +320,23 @@ impl Mixer {
             });
             mix.advance_clock(frames as u64);
         }
+        self.taps = taps;
+        self.direct = direct;
         self.scratch = scratch;
         self.clock += frames as u64;
         job
     }
+}
+
+/// How a voice's bins meet the tapped bins.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TapUse {
+    /// None of them is tapped.
+    Not,
+    /// Tapped bins and bins nothing hears, on the main output.
+    Only,
+    /// Tapped bins and anything else (or the side output).
+    Mixed,
 }
 
 /// A voice's filter state on the sample side.
@@ -601,11 +706,68 @@ mod tests {
         }
     }
 
+    /// The scene plus the XHV voice rings' shape: two looping voices whose
+    /// only bin is a tapped FX send (one a stream, one a buffer), at their
+    /// own volumes.
+    fn tapped_scene() -> Mixer {
+        let (mut m, _) = scene();
+        m.set_taps(&[0x1b, 0x1c]);
+        let id = m.add_buffer(buffer(260.0));
+        let b = m.buffer_mut(id).unwrap();
+        b.set_mix_bins(Some(vec![(0x1b, -300), (3, 0)]));
+        b.play(true);
+        let sid = m.add_stream(crate::dsound::Stream::new(WaveFormat::pcm16(1, RATE).unwrap()).unwrap());
+        m.stream_mut(sid)
+            .unwrap()
+            .set_mix_bins(Some(vec![(0x1c, -602)]));
+        m.stream_mut(sid).unwrap().submit(&sine(BLOCK * 4, 600.0)).unwrap();
+        m
+    }
+
     #[test]
-    fn taps_keep_a_mixer_inline() {
+    fn a_tap_only_voice_is_tapped_in_the_state_half() {
+        let mut inline = tapped_scene();
+        let mut split = tapped_scene();
+        assert!(split.can_defer(), "voices that reach only tapped bins defer");
+        let mut synth = Synth::new();
+        for block in 0..8 {
+            let mut a = vec![9.0; BLOCK * 2];
+            inline.render(&mut a);
+            let job = split.prepare_job(BLOCK, false);
+            // The ring's input is final before the sample half runs.
+            for bin in [0x1b, 0x1c] {
+                assert_eq!(inline.take_tap(bin), split.take_tap(bin), "tap {bin:#x}, block {block}");
+            }
+            let mut b = vec![7.0; BLOCK * 2];
+            synth.mix(job, &mut b, None);
+            assert_eq!(a, b, "main, block {block}");
+        }
+        assert_eq!(
+            inline.stream_health().unrouted_frames,
+            split.stream_health().unrouted_frames
+        );
+    }
+
+    #[test]
+    fn a_voice_on_a_tap_and_elsewhere_keeps_a_mixer_inline() {
         let mut m = Mixer::new(RATE);
-        assert!(m.can_defer());
         m.set_taps(&[0x20]);
-        assert!(!m.can_defer());
+        assert!(m.can_defer(), "no voice, nothing to fill");
+        let id = m.add_buffer(buffer(300.0));
+        m.buffer_mut(id).unwrap().set_mix_bins(Some(vec![(0x20, 0)]));
+        m.buffer_mut(id).unwrap().play(true);
+        assert!(m.can_defer());
+        m.buffer_mut(id)
+            .unwrap()
+            .set_mix_bins(Some(vec![(0x20, 0), (0, 0)]));
+        assert!(!m.can_defer(), "also on the speakers");
+        m.buffer_mut(id).unwrap().set_mix_bins(Some(vec![(0x20, 0)]));
+        m.buffer_mut(id).unwrap().set_output(VoiceOutput::Both);
+        assert!(!m.can_defer(), "also on the side output");
+        m.buffer_mut(id).unwrap().set_output(VoiceOutput::Main);
+        let mut bus = MixIn::new(0x20);
+        bus.play();
+        m.add_mix_in(bus);
+        assert!(!m.can_defer(), "a mix-in reads the tapped bin");
     }
 }

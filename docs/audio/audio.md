@@ -48,7 +48,12 @@ second half touches: per-voice filter memory, per-mix-in HRTF history and the
 reverb tail. A voice restart (`FxState::reset`) bumps an epoch the job
 carries, which clears that voice's memory in the `Synth`. Prepare then mix
 gives the same samples as `render_split` (`deferred_mix_equals_the_inline_render`).
-A mixer with bin taps does not defer (`Mixer::can_defer`).
+Bin taps (the XHV voice rings, which land in guest memory) are filled by the
+first half: a voice whose bins reach only tapped bins is filtered, routed and
+tapped in `prepare_job` and left out of the job
+(`a_tap_only_voice_is_tapped_in_the_state_half`). A voice that also reaches
+another bin or the side output, or a mix-in on a tapped bin, does not defer
+(`Mixer::can_defer`).
 
 `mix_thread::MixThread` runs a `Synth` on a worker: `submit(Work)` queues a
 block, a bounded FIFO (64 blocks) makes the producer wait rather than drop,

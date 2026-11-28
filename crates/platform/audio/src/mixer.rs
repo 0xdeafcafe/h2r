@@ -114,6 +114,19 @@ pub struct Mixer {
     pub(crate) taps: Vec<Tap>,
 }
 
+/// Makes room in each tap for a render of `frames` frames (zeros, the
+/// render's sends are added to the last `frames`), keeping at most `cap`
+/// frames (one second) of what nobody took.
+pub(crate) fn begin_taps(taps: &mut [Tap], frames: usize, cap: usize) {
+    for t in taps {
+        let keep = cap.saturating_sub(frames.min(cap));
+        if t.samples.len() > keep {
+            t.samples.drain(..t.samples.len() - keep);
+        }
+        t.samples.resize(t.samples.len() + frames.min(cap), 0.0);
+    }
+}
+
 /// A captured bin: the mono sum of every send to it, one sample per frame
 /// rendered, waiting for [`Mixer::take_tap`].
 #[derive(Debug)]
@@ -483,15 +496,8 @@ impl Mixer {
             .reverb
             .as_ref()
             .is_some_and(|r| !r.params().is_silent());
-        let cap = rate as usize;
         let mut taps = std::mem::take(&mut self.taps);
-        for t in &mut taps {
-            let keep = cap.saturating_sub(frames.min(cap));
-            if t.samples.len() > keep {
-                t.samples.drain(..t.samples.len() - keep);
-            }
-            t.samples.resize(t.samples.len() + frames.min(cap), 0.0);
-        }
+        begin_taps(&mut taps, frames, rate as usize);
         let mut rin = std::mem::take(&mut self.reverb_in);
         let mut direct = std::mem::take(&mut self.direct);
         direct.resize(frames * 2, 0.0);
