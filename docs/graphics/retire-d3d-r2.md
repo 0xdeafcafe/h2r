@@ -374,7 +374,7 @@ Tests: `mirror.rs`
 Built (**Code**): the material each handler's setup leaves on the device,
 made in Rust as data (`native_render::effect_material::Material`): the
 state every cut setup's draws take
-(`game/src/native_particles_admission/material_proof.rs`).
+(`game/src/native_particles_admission/material_proof.rs`). The routines: [notes/2026-11-28-particle-routines.md](notes/2026-11-28-particle-routines.md).
 
 | | Particles | Contrails |
 |---|---|---|
