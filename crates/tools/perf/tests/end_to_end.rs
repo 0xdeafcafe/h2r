@@ -67,28 +67,6 @@ fn hot_loops_run_through_generated_code() {
     }
 }
 
-#[test]
-fn pushbuf_frame_drains_every_quad() {
-    let mut s = perf::pushbuf::PushbufFrame::default();
-    assert!(matches!(s.prepare(&ctx()).unwrap(), Prepared::Ready));
-    for _ in 0..3 {
-        let m = s.measure().unwrap();
-        assert!(m.value > 0.0);
-        assert_eq!(m.extra["quads"], 50.0);
-    }
-}
-
-#[test]
-fn the_pushbuf_scenario_records_d3d_timeline_spans() {
-    // Recording is process-global; this is the only test here using it.
-    let mut s = perf::pushbuf::PushbufFrame::default();
-    s.prepare(&ctx()).unwrap();
-    timeline::start(timeline::Config::all());
-    s.measure().unwrap();
-    let t = timeline::stop();
-    assert!(t.count("KickOff") >= 1, "{} events", t.len());
-}
-
 /// Profile the ALU loop: most on-CPU samples land in generated code, are
 /// charged to the loop's guest function, and name instructions inside it.
 #[cfg(target_os = "macos")]

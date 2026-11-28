@@ -82,7 +82,6 @@ timeline = { path = "../../runtime/timeline" }
 app = { path = "../app", optional = true }
 debug-menu = { path = "../../extensions/debug-menu", optional = true }
 lockstep = { path = "../../extensions/lockstep", optional = true }
-d3d = { path = "../../platform/d3d", default-features = false, optional = true }
 kernel = { workspace = true, optional = true }
 input = { path = "../../platform/input", default-features = false, optional = true }
 # The controller-speaker settings and side output (play_cmd).
@@ -196,7 +195,6 @@ desktop = [
     "dep:objc2-app-kit",
     "dep:debug-menu",
     "dep:lockstep",
-    "dep:d3d",
     "dep:kernel",
     "dep:input",
     "dep:dsound",

@@ -1,7 +1,7 @@
 //! Hot iteration on the agent API (docs/graphics/hot-iteration.md):
 //! `edit.*` (live tag edits through the runtime's memory) and `render.*`
 //! (the host renderer's WGSL overrides, parameters and toggles, on
-//! `hot_render::global()`, which `d3d::nv2a` reads once a frame).
+//! `hot_render::global()`, which the renderer reads once a frame).
 //!
 //! Overrides come from `$H2_RENDER_OVERRIDES`, else the cache directory's
 //! `render-overrides`, watched for changes. Tag names come from the loaded

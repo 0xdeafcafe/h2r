@@ -61,7 +61,6 @@ font = { path = "../../formats/font" }
 variants = { path = "../../formats/variants" }
 anyhow.workspace = true
 libloading = { workspace = true }
-d3d = { path = "../../platform/d3d", default-features = false }
 gfx = { path = "../../platform/gfx", default-features = false }
 png = { workspace = true }
 # The native post's A/B readback (native_post_glue).
@@ -133,7 +132,7 @@ perf = { path = "../../tools/perf", optional = true }
 ui-fixture = []
 default = ["gpu", "movie-playback", "local-io", "test-maps", "rules"]
 desktop-runtime = ["render-bridge/native-render", "recomp/desktop-runtime"]
-gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render", "dep:hud-edit"]
+gpu = ["desktop-runtime", "gfx/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render", "dep:hud-edit"]
 movie-playback = ["desktop-runtime", "bink-hle/playback", "dep:movies"]
 local-io = ["desktop-runtime", "dep:voice", "dsound/playback"]
 perf = ["dep:perf"]
@@ -148,8 +147,6 @@ rules = ["dep:rules"]
 [dev-dependencies]
 # The fixture generated module, for hooks run through the real Runner.
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
-# The off arm's tests read `impl.render.native=off` (docs/graphics/retire-d3d.md, R9).
-hooks = { path = "../../hooking/hooks", default-features = false, features = ["d3d-reference"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

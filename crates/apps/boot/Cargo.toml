@@ -50,7 +50,6 @@ font = { path = "../../formats/font" }
 variants = { path = "../../formats/variants" }
 anyhow.workspace = true
 libloading = { workspace = true }
-d3d = { path = "../../platform/d3d", default-features = false }
 gfx = { path = "../../platform/gfx", default-features = false }
 png = { workspace = true }
 # The native post's A/B readback (native_post_glue).
@@ -110,7 +109,7 @@ forge-nav = { path = "../../tools/forge-nav", optional = true }
 [features]
 default = ["gpu", "movie-playback", "local-io", "test-maps", "rules"]
 desktop-runtime = ["render-bridge/native-render", "recomp/desktop-runtime", "game/desktop-runtime"]
-gpu = ["desktop-runtime", "gfx/gpu", "d3d/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render", "game/gpu"]
+gpu = ["desktop-runtime", "gfx/gpu", "agent/render-overrides", "dep:wgpu", "dep:native-render", "dep:shaders", "dep:hot-render", "game/gpu"]
 movie-playback = ["desktop-runtime", "bink-hle/playback", "dep:movies", "game/movie-playback"]
 local-io = ["desktop-runtime", "dep:voice", "dsound/playback", "game/local-io"]
 perf = ["dep:perf", "game/perf"]
@@ -120,15 +119,10 @@ test-maps = ["game/test-maps", "dep:scenario-edit", "dep:firefight-kit", "dep:fo
 # The rules host runtime (docs/game/rules-engine.md); on at run time
 # unless H2_FEATURES=-rules.
 rules = ["game/rules"]
-# The D3D draw path as the reference arm: `impl.render.native=off` is read
-# (docs/graphics/retire-d3d.md, R9). Not in a default build.
-d3d-reference = ["hooks/d3d-reference"]
 
 [dev-dependencies]
 # The fixture generated module, for hooks run through the real Runner.
 runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
-# The off arm's tests read `impl.render.native=off` (docs/graphics/retire-d3d.md, R9).
-hooks = { path = "../../hooking/hooks", default-features = false, features = ["d3d-reference"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }

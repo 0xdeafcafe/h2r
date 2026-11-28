@@ -220,7 +220,7 @@ struct NoDevice;
 #[cfg(feature = "gpu")]
 impl crate::render_aspect::UiLayoutSink for NoDevice {
     fn set_projection_factor(&self, _: f32) {}
-    fn set_fit(&self, _: &mut runtime::Guest, _: Option<d3d::backend::UiFit>) {}
+    fn set_fit(&self, _: &mut runtime::Guest, _: Option<gfx::external::UiFit>) {}
 }
 
 pub(crate) fn registry_for_profile(case: &Case, profile: film::RenderHooks) -> hooks::Registry {
@@ -332,15 +332,11 @@ pub(crate) fn registry_with_film(
         replay: None,
     };
     let lockstep_on = lockstep.enabled();
-    #[cfg(feature = "gpu")]
-    let protected = crate::d3d_glue::protected_readbacks(live.is_some(), film.is_some(), lockstep_on);
     let mut late = register_late_for_profile(
         &mut features,
         LateInputs {
             #[cfg(feature = "gpu")]
-            view: windowed.then_some(&crate::d3d_glue::DrawingView { scale_stats: None }),
-            #[cfg(feature = "gpu")]
-            d3d_display: !protected,
+            output: windowed.then(|| std::sync::Arc::new(|| crate::setting_defs::GUEST_FRAME) as crate::run_opts::NativeSize),
             #[cfg(feature = "gpu")]
             viewer_lod: None,
             #[cfg(feature = "gpu")]

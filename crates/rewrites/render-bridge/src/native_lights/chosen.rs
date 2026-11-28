@@ -8,7 +8,7 @@
 //! structure its bounds meet, with the constants extraction made for it
 //! without a shadow (`LightCandidate::constants`, `unshadowed`). The host
 //! records each as a scene stage of E3 alone
-//! (`d3d::ExternalPass::lighting_only`): the frame graph draws it in an
+//! (`native_render::Stage::lighting_only`): the frame graph draws it in an
 //! E3 frame and skips it in any other, so the scene and the guest's own
 //! work are the same whatever the mode.
 //!
@@ -19,7 +19,7 @@
 //! the content flagged no-shadow. Its parts then take the shadowed
 //! implementations, which read layer 11's term from the destination
 //! alpha, and its pass names the light
-//! (`d3d::ExternalPass::cone_shadow`) so the frame graph writes the cone's
+//! (its stage's cone shadow) so the frame graph writes the cone's
 //! term there just before it.
 //!
 //! A light is left undrawn, and counted unread, when its candidate holds

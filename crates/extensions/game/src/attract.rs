@@ -234,7 +234,7 @@ impl Attract {
                     .u32(UI_LAST_INPUT.base)?
                     .max(m.u32(UI_ATTRACT_RESET.base)?),
                 due,
-                present: crate::d3d_diag::presents(),
+                present: crate::presents::presents(),
                 wrapper_block: wrapper_block(&m),
             }
         };

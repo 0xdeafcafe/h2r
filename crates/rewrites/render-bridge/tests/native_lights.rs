@@ -5,17 +5,6 @@ use hooks::{Registry, Switches};
 use render_bridge::native_lights::{self, NativeLights};
 
 #[test]
-fn the_master_switch_off_places_nothing() {
-    let mut r = Registry::new(Switches::parse("impl.render.native=off").unwrap());
-    r.add(&NativeLights).unwrap();
-    let plan = r.build(&Base).unwrap();
-    let text = plan.text();
-    assert!(!text.contains("native_lights"), "{text}");
-    // Nothing placed, nothing held: no snapshot blocker.
-    assert!(plan.snapshot_blockers().is_empty());
-}
-
-#[test]
 fn its_chains_run_on_the_render_thread() {
     let mut r = Registry::new(Switches::parse("").unwrap());
     assert!(r.add(&NativeLights).unwrap());
@@ -121,7 +110,6 @@ fn light_walk_follows_the_master_switch_with_context_only_chains() {
     use native_lights::walk::{self, NativeLightWalk};
     for (spec, enabled) in [
         ("", true),
-        ("impl.render.native=off", false),
         ("impl.render=off", true),
     ] {
         let switches = Switches::parse(spec).unwrap();

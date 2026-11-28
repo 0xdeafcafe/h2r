@@ -41,7 +41,6 @@ workspace_library(
     tree = ":lib-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/d3d:d3d",
         "//crates/platform/gfx:gfx",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -79,7 +78,6 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/d3d:d3d",
         "//crates/platform/gfx:gfx",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -117,7 +115,6 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/d3d:d3d",
         "//crates/platform/gfx:gfx",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -156,7 +153,6 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/d3d:d3d",
         "//crates/platform/gfx:gfx",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",
@@ -195,7 +191,6 @@ workspace_test(
     tree = ":test-tree",
     version = "0.1.0",
     deps = [
-        "//crates/platform/d3d:d3d",
         "//crates/platform/gfx:gfx",
         "//crates/recompiler/emit:emit",
         "//crates/recompiler/ir:ir",

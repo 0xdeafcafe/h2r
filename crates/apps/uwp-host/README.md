@@ -4,7 +4,7 @@ The Xbox (UWP, Dev Mode) app: a CoreApplication view that runs the game into a c
 
 ## Where it sits
 
-`apps`. On Windows it uses `h2host`, `app`, `d3d` and `vfs`; elsewhere it has only the packaging helpers. Nothing depends on it.
+`apps`. On Windows it uses `h2host`, `app`, `gfx` and `vfs`; elsewhere it has only the packaging helpers. Nothing depends on it.
 
 ## Layout
 

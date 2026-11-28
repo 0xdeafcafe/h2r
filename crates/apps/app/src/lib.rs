@@ -5,8 +5,8 @@
 //! on a worker thread with a [`GuestHost`]. The guest side uses the host
 //! for everything platform-shaped:
 //!
-//! * [`GuestHost::gfx_context`] is the device to build `d3d::GfxBackend` on,
-//!   and [`GuestHost::present_hook`] the closure for `GfxBackend::on_present`;
+//! * [`GuestHost::gfx_context`] is the device to build the renderer on,
+//!   and [`GuestHost::presenter`] the window's presenter for its frame owner;
 //! * [`GuestHost::take_input`] is the `InputManager` (keyboard, mouse and
 //!   pads) to build `xapi::Xapi` on, and [`pump_input`] runs one input frame;
 //! * [`GuestHost::mixer`] is the `audio::Mixer` the output device plays, to
@@ -355,20 +355,29 @@ impl GuestHost {
         move |src| size.display_size(src)
     }
 
-    /// The device every guest GPU object must live on: build
-    /// `d3d::GfxBackend::new(host.gfx_context())` from it. Each call returns
+    /// The device every GPU object must live on: the renderer is built
+    /// on it. Each call returns
     /// another handle to the same instance, adapter, device and queue.
     pub fn gfx_context(&self) -> GfxContext {
         share_context(&self.gfx)
     }
 
-    /// The closure for `d3d::GfxBackend::on_present`. Each call makes a new
+    /// A frame sink's present hook for gfx surfaces. Each call makes a new
     /// sink on the same channel.
     pub fn present_hook(
         &self,
     ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
     {
         self.sink.another().into_present_hook()
+    }
+
+    /// The window's presenter for the frame owner, with `marks` giving the
+    /// editor data of each frame. The shell owns the window surface and
+    /// composites its overlays on it; handing it to the render thread is
+    /// not built yet.
+    pub fn presenter(&mut self, marks: fn() -> overlay::marks::FrameMarks) -> gfx::Presenter {
+        let _ = marks;
+        unimplemented!("app: the shell hands its window surface to the frame owner as a gfx::Presenter")
     }
 
     /// A sink for frames that are not gfx surfaces (CPU pixels, other views).

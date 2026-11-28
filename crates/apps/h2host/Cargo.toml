@@ -26,7 +26,6 @@ settings = { path = "../../formats/settings" }
 live-hle = { path = "../../live/live-hle" }
 live-proto.workspace = true
 cloud-saves.workspace = true
-d3d = { path = "../../platform/d3d" }
 audio = { path = "../../platform/audio" }
 # GameController only: no gilrs or IOKit HID on tvOS or iOS.
 app = { path = "../app", default-features = false, features = ["game-controller"] }

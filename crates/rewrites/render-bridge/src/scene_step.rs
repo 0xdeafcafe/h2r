@@ -17,7 +17,7 @@
 //! instead of reading the guest themselves, at the same points and from
 //! the same reads. Nothing here writes guest memory.
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Instant;
 
@@ -143,10 +143,6 @@ struct GatherObjects {
 
 static STEP: Mutex<Option<Step>> = Mutex::new(None);
 static PRESENT_READY: AtomicBool = AtomicBool::new(false);
-/// The object shadow being drawn: its index in the open scene's
-/// `object_shadows`, or [`NO_SHADOW`] ([`object_shadow_at`]).
-static SHADOW_AT: AtomicU32 = AtomicU32::new(NO_SHADOW);
-const NO_SHADOW: u32 = u32::MAX;
 static LAST: Mutex<Option<Arc<FrameScene>>> = Mutex::new(None);
 static SEALED: AtomicU64 = AtomicU64::new(0);
 static UNSEALED: AtomicU64 = AtomicU64::new(0);
@@ -388,7 +384,6 @@ fn begin_step(step: &mut Step, m: &Ro<'_>) {
     step.light_view = None;
     step.light_open = false;
     step.shadow_open = false;
-    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
 }
 
 /// `render_views`' entry: a new scene. `present` samples the image the
@@ -965,24 +960,6 @@ pub fn light_entry() {
         step.light_open = false;
         step.shadow_open = false;
     });
-    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
-}
-
-/// The object shadow whose guest ops are being recorded: its index in the
-/// open scene's `object_shadows`, from its `0x00032350` call until its
-/// layer 11 ends ([`object_shadow_end`]), the next shadow or light, or the
-/// scene's end. The scene sink marks each shadow's ops with it
-/// (`d3d::SceneSink::with_object_shadows`) so the frame graph can find
-/// them; the marks draw nothing (docs/graphics/e3-lighting.md, L5).
-pub fn object_shadow_at() -> Option<u32> {
-    let at = SHADOW_AT.load(Ordering::Relaxed);
-    (at != NO_SHADOW).then_some(at)
-}
-
-/// An object shadow's layer 11 (its receivers) ends: the ops after it are
-/// not the shadow's.
-pub fn object_shadow_end() {
-    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
 }
 
 /// An object shadow `0x00032350` of the open view begins, with its call's
@@ -992,7 +969,6 @@ pub fn object_shadow_end() {
 /// branch.
 pub fn object_shadow(mem: &dyn GuestMemory, identity: Option<[u32; 2]>) {
     with_step(|step| step.shadow_open = false);
-    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
     let Some(identity) = identity else { return };
     if view(mem).is_none() {
         return;
@@ -1003,9 +979,6 @@ pub fn object_shadow(mem: &dyn GuestMemory, identity: Option<[u32; 2]>) {
         step.light_open = false;
         let pushed = step.builder.push_object_shadow(identity, creature);
         step.shadow_open = pushed.is_ok();
-        if let Ok(at) = pushed {
-            SHADOW_AT.store(at, Ordering::Relaxed);
-        }
         if !step.shadow_open {
             REFUSED.fetch_add(1, Ordering::Relaxed);
         }
@@ -1040,7 +1013,6 @@ pub(crate) fn object_shadow_groups(
     weight: Option<f32>,
     filter: Option<frame_scene::ShadowFilter>,
 ) -> bool {
-    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
     with_step(|step| {
         if !step.shadow_open || step.builder.view().is_none() {
             return false;
@@ -1412,7 +1384,8 @@ fn part_event(e: sim_effects::scene::PartEvent) -> frame_scene::effect::PartEven
 
 /// After `render_frame_and_present`: seal and publish the scene.
 pub fn seal() {
-    SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
+    // The guest's `Swap`, for the vblank record (`crate::frame_wait`).
+    crate::frame_wait::swapped();
     // The frame's GPU particle systems, published before the frame graph
     // plans this scene's slot 9 (docs/graphics/native-particles.md).
     crate::native_particle_walk::frame_end();
@@ -1462,7 +1435,6 @@ fn reset_timeline(why: Cut) {
         step.builder.discard(why);
         step.visibility_lens = VisibilityLens::Retail;
         step.tick = None;
-        SHADOW_AT.store(NO_SHADOW, Ordering::Relaxed);
         LAST.lock().unwrap_or_else(|e| e.into_inner()).take();
     });
     let observer = *OBSERVER.lock().unwrap_or_else(|e| e.into_inner());
@@ -1489,10 +1461,7 @@ pub fn forget() {
     visibility_arms_new_map();
     *LIGHT_VISIBILITY_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner()) = None;
     *VIEW_RECORD_FIRST_MISMATCH.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    crate::entry_census::forget();
     crate::effects_shadow::forget();
-    crate::residual_census::forget();
-    crate::carried_slots::forget();
     crate::native_hud::ui_overlay::forget();
 }
 
@@ -1610,7 +1579,7 @@ fn keep_complete_clusters(clusters: &mut Vec<u16>, complete: impl Fn(u16) -> Opt
 /// with the guest's: the cluster and object sets with `guest`'s lists, the
 /// frusta with the guest's region windows (mode 0). An arm answers its
 /// part after [`shadow::PROVEN_AFTER`] clean samples while
-/// `impl.render.native.visibility` is on, and falls back to the guest for
+/// visibility is on, and falls back to the guest for
 /// the map on any difference. A frame no arm needs computes nothing,
 /// unless the display supplement wants the retail sets. A refusal (no
 /// record: `scene_visibility_declined_record`; or the computation's
@@ -1768,8 +1737,8 @@ fn visibility_arm(
 
 /// The main view's shadow arms, in [`Kind::ALL`]'s order
 /// (`scene_extract::visibility::shadow`), and
-/// `impl.render.native.visibility` (docs/runtime/switches.md): off, the
-/// arms compare their samples and never answer.
+/// whether they answer: off, the arms compare their samples and never
+/// answer.
 ///
 /// [`Kind::ALL`]: scene_extract::visibility::shadow::Kind::ALL
 struct VisibilityArms {
@@ -2413,25 +2382,11 @@ impl Feature for FrameSceneStep {
             .optional();
         b.raw()
             .observe_after(&points::RENDER_FRAME, "frame_scene_seal", |_| seal());
-        // The census of the entries slices 4 and 5 replace: an option,
-        // since its exit observers give those entries an after part.
-        if b.switches().feature(crate::entry_census::ID, false) {
-            crate::entry_census::install(b);
-            // render.residual's producers ride the same option
-            // (docs/graphics/retire-d3d.md, "New method: render.residual").
-            crate::residual_census::install(b);
-        }
         // R2's shadow arm: the sorted dispatch's state made in Rust and
         // compared with the guest's (docs/graphics/retire-d3d.md, "R2's
         // shadow arm"); on unless `frame-scene.effects-shadow=off`.
         if b.switches().feature(crate::effects_shadow::ID, true) {
             crate::effects_shadow::install(b);
-        }
-        // The slot of the frame the guest's D3D work is in, for the
-        // device's scene sink (slice 6): on unless `frame-scene.sink=off`,
-        // since a paced display's frame owner draws from it.
-        if b.switches().feature(crate::carried_slots::ID, true) {
-            crate::carried_slots::install(b);
         }
         Ok(())
     }
@@ -2545,71 +2500,6 @@ mod tests {
     fn the_step_is_on_with_the_native_renderer_only() {
         let on = |spec| hooks::switches::native_render_on(&hooks::Switches::parse(spec).unwrap());
         assert!(on(""));
-        assert!(!on("impl.render.native=off"));
-    }
-
-    #[test]
-    fn the_entry_census_is_placed_only_with_its_option() {
-        let text = |spec| {
-            let mut r = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
-            assert!(r.add(&FrameSceneStep::default()).unwrap());
-            r.build(&hooks::plan::Base).unwrap().text()
-        };
-        let off = text("");
-        assert!(!off.contains("entry_census"), "{off}");
-        assert!(
-            off.contains("frame_scene_post"),
-            "the post passes are extracted with or without it\n{off}"
-        );
-        let on = text("frame-scene.census");
-        assert!(!off.contains("residual_census"), "{off}");
-        for label in [
-            "residual_census_frame",
-            "residual_census_frame_end",
-            "residual_census_layer",
-            "residual_census_layer_end",
-            "residual_census_game_view",
-            "residual_census_hud_end",
-            "residual_census_light_passes_end",
-            "residual_census_frame_tail_end",
-            "entry_census_layer",
-            "entry_census_layer_end",
-            "entry_census_light_passes_end",
-            "entry_census_object_shadow",
-            "entry_census_screen_effects_end",
-            "entry_census_colour_pass_end",
-            "entry_census_screen_effect_end",
-            "entry_census_animation_get",
-            "entry_census_particle_update",
-        ] {
-            assert!(on.contains(label), "{label}\n{on}");
-        }
-    }
-
-    #[test]
-    fn the_carried_slots_are_placed_unless_their_option_is_off() {
-        let text = |spec| {
-            let mut r = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
-            assert!(r.add(&FrameSceneStep::default()).unwrap());
-            r.build(&hooks::plan::Base).unwrap().text()
-        };
-        let off = text("frame-scene.sink=off");
-        assert!(!off.contains("carried_slot"), "{off}");
-        let on = text("");
-        for label in [
-            "carried_slot_frame",
-            "carried_slot_frame_end",
-            "carried_slot_game_view",
-            "carried_slot_game_view_end",
-            "carried_slot_lights",
-            "carried_slot_lights_end",
-            "carried_slot_transparents",
-            "carried_slot_post_end",
-            "carried_slot_hud",
-            "carried_slot_views_end",
-        ] {
-            assert!(on.contains(label), "{label}\n{on}");
-        }
     }
 
     #[test]

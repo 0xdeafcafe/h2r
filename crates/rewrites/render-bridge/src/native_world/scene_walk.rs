@@ -292,7 +292,7 @@ mod tests {
 
     #[test]
     fn the_master_switch_gates_the_walk() {
-        for (switches, on) in [("", true), ("impl.render.native=off", false)] {
+        for (switches, on) in [("", true)] {
             assert_eq!(crate::native_world::on(&hooks::Switches::parse(switches).unwrap()), on);
         }
     }

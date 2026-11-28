@@ -22,8 +22,6 @@ use super::profiles::{registry_for_profile, registry_with_film};
 /// default; only the diagnostics and `impl.engine=on` are spelled out;
 /// `rules`, on by default too, stays named).
 pub(crate) const ALL_ON: &str = "impl.engine=on,render-timing,actor-net,firefight,rules,impl.sim.sound-events";
-/// Added to [`ALL_ON`]: the native renderer (on by default) off.
-pub(crate) const NATIVE_OFF: &str = "impl.render.native=off";
 
 impl Case {
     fn describe(&self) -> String {
@@ -168,7 +166,6 @@ fn lod_distance_requires_a_gpu_profile_and_a_drawing_view() {
     // The guest chooser still runs when either set of native replacements
     // is switched off. Disabling the LOD feature disables both adapters.
     for (switches, enabled) in [
-        (NATIVE_OFF, true),
         ("-native-scene-lists", true),
         ("-lod-distance", false),
     ] {
@@ -191,14 +188,12 @@ fn the_plan_builds_with_default_switches() {
     assert_builds(&Case::full(""));
 }
 
-/// Every switch that adds hooks on (the census in a second build, and the
-/// native renderer off in a third), with everything a test can supply.
+/// Every switch that adds hooks on (the census in a second build), with everything a test can supply.
 #[test]
 fn the_plan_builds_with_every_hook_switch_on() {
     assert_builds(&Case::none(ALL_ON));
     assert_builds(&Case::full(ALL_ON));
     assert_builds(&Case::full(&format!("{ALL_ON},render-census")));
-    assert_builds(&Case::full(&format!("{ALL_ON},{NATIVE_OFF}")));
     // Forge is on by default; `-forge` leaves it out.
     assert_builds(&Case::full(ALL_ON));
     assert_builds(&Case::full(&format!("{ALL_ON},-forge")));
@@ -214,9 +209,8 @@ fn the_plan_builds_with_every_hook_switch_on() {
 #[test]
 fn the_biggest_plans_leave_room_in_the_guest_arena() {
     use hooks::arena::ARENA_SIZE;
-    let native_off = format!("{ALL_ON},{NATIVE_OFF}");
     let forge = format!("{ALL_ON},forge");
-    for switches in [ALL_ON, native_off.as_str(), forge.as_str()] {
+    for switches in [ALL_ON, forge.as_str()] {
         let mut case = Case::full(switches);
         case.coop_live = true;
         let plan = plan(&case).unwrap();
@@ -509,8 +503,7 @@ fn the_full_case_plans_every_feature_boot_adds_outside_the_registration_function
 #[test]
 fn the_light_host_with_the_dedicated_lobby_plans_with_no_refusal() {
     let mut failures = Vec::new();
-    let native_off = format!("{ALL_ON},{NATIVE_OFF}");
-    for switches in ["", ALL_ON, native_off.as_str()] {
+    for switches in ["", ALL_ON] {
         for bits in 0u32..(1 << 4) {
             let mut case = Case::full(switches);
             case.light = true;
@@ -702,9 +695,8 @@ fn sweep_cases_for(switches: &str) -> Vec<Case> {
 
 /// The cases the sweep builds: the covering rows under each switch set.
 fn sweep_cases() -> Vec<Case> {
-    let native_off = format!("{ALL_ON},{NATIVE_OFF}");
     let forge = format!("{ALL_ON},forge");
-    ["", ALL_ON, native_off.as_str(), forge.as_str()]
+    ["", ALL_ON, forge.as_str()]
         .into_iter()
         .flat_map(sweep_cases_for)
         .collect()
@@ -1236,26 +1228,18 @@ fn a_default_play_fits_the_guest_camera_and_renders_on_its_own_stream() {
 }
 
 /// The native renderer replaces the guest's view projection and its
-/// visibility producers; `impl.render.native.visibility=off` leaves them
-/// to the guest (docs/graphics/native-visibility.md).
+/// visibility producers (docs/graphics/native-visibility.md).
 #[cfg(feature = "gpu")]
 #[test]
-fn the_view_projection_is_native_unless_its_switch_is_off() {
+fn the_view_projection_is_native() {
     let profile = super::compiled_render_hooks();
     if profile != film::RenderHooks::Gpu {
         return;
     }
     let on = registry_for_profile(&Case::full(""), profile);
     assert_eq!(hooked_at(on, "VIEW_PROJECTION_BUILD"), ["native-scene-lists"]);
-    let off = Case::full("impl.render.native.visibility=off");
     let on = registry_for_profile(&Case::full(""), profile);
     assert_eq!(hooked_at(on, "VISIBILITY_SETUP"), ["native-scene-lists"]);
-    assert!(hooked_at(registry_for_profile(&off, profile), "VIEW_PROJECTION_BUILD").is_empty());
-    // The setup's arm still compares its samples with the switch off: at its
-    // own entry and at the entry of each producer the gather calls next.
-    for point in ["VISIBILITY_SETUP", "VIEW_SPHERE_REGIONS", "VIEW_PVS_REGIONS"] {
-        assert_eq!(hooked_at(registry_for_profile(&off, profile), point), ["native-scene-lists"], "{point}");
-    }
 }
 
 /// Every rendering session holds the flare state in the render's store,

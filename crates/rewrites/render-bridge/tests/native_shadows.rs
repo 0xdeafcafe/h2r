@@ -9,7 +9,7 @@ use render_bridge::{
     cut::{self, CUTS},
     native_lights::{NativeLights, SceneGroup},
     native_shadows::{self, Entry, Host, Layer, NativeShadows},
-    residual_census::{self, Status},
+    producers::{self, Status},
 };
 
 /// The host is one global: tests that set it take turns.
@@ -102,7 +102,7 @@ fn object_shadows_draw_before_layer_7() {
     assert_eq!((cut.entry, cut.pop), (0x0003_35e0, 4));
     assert!(cut::OWN_PRODUCER.contains(&"object_shadows"));
     cut::check(CUTS).unwrap();
-    let row = &residual_census::REGISTRY[residual_census::row("object_shadows").unwrap()];
+    let row = &producers::REGISTRY[producers::row("object_shadows").unwrap()];
     assert_eq!(row.status, Status::Native);
     // Slot 3 holds the shadows, then layer 7; the lights follow in slot 4.
     assert_eq!(native_shadows::SLOT, ViewSlot::ShadowsAndLayer7);
@@ -112,11 +112,7 @@ fn object_shadows_draw_before_layer_7() {
 }
 
 #[test]
-fn the_master_switch_off_places_nothing_and_on_shares_a_typed_sorted_hook_with_lights() {
-    let mut off = Registry::new(Switches::parse("impl.render.native=off").unwrap());
-    off.add(&NativeShadows).unwrap();
-    assert!(off.build(&Base).unwrap().chains.is_empty());
-
+fn on_shares_a_typed_sorted_hook_with_lights() {
     let switches = Switches::parse("").unwrap();
     let mut r = Registry::new(switches);
     r.add(&NativeLights).unwrap();

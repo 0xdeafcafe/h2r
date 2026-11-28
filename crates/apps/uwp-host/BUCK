@@ -47,7 +47,6 @@ workspace_library(
         "config//os:windows": [
             "//crates/apps/app:app",
             "//crates/apps/h2host:h2host",
-            "//crates/platform/d3d:d3d",
             "//crates/runtime/vfs:vfs",
             "//third-party/rust:windows",
             "//third-party/rust:windows-core",
@@ -75,7 +74,6 @@ workspace_test(
         "config//os:windows": [
             "//crates/apps/app:app",
             "//crates/apps/h2host:h2host",
-            "//crates/platform/d3d:d3d",
             "//crates/runtime/vfs:vfs",
             "//third-party/rust:windows",
             "//third-party/rust:windows-core",
@@ -103,7 +101,6 @@ workspace_binary(
         "config//os:windows": [
             "//crates/apps/app:app",
             "//crates/apps/h2host:h2host",
-            "//crates/platform/d3d:d3d",
             "//crates/runtime/vfs:vfs",
             "//third-party/rust:windows",
             "//third-party/rust:windows-core",
@@ -132,7 +129,6 @@ workspace_test(
         "config//os:windows": [
             "//crates/apps/app:app",
             "//crates/apps/h2host:h2host",
-            "//crates/platform/d3d:d3d",
             "//crates/runtime/vfs:vfs",
             "//third-party/rust:windows",
             "//third-party/rust:windows-core",
@@ -164,7 +160,6 @@ workspace_test(
         "config//os:windows": [
             "//crates/apps/app:app",
             "//crates/apps/h2host:h2host",
-            "//crates/platform/d3d:d3d",
             "//crates/runtime/vfs:vfs",
             "//third-party/rust:windows",
             "//third-party/rust:windows-core",

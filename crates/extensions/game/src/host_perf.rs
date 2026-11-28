@@ -127,7 +127,7 @@ pub fn start(render_thread: bool) {
     *STATE.lock().unwrap_or_else(|e| e.into_inner()) = Some(State {
         render_thread,
         cpus,
-        last: mark(crate::d3d_diag::presents()),
+        last: mark(crate::presents::presents()),
     });
 }
 

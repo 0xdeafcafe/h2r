@@ -50,8 +50,7 @@ pub const STAGE_COMMITTED: u32 = 0x0051_f3c8;
 pub const FINISH_UNSET: u32 = 0x0046_7004;
 pub const FINISH_CLEARED: u32 = 0x0040_8338;
 pub const DEVICE: u32 = 0x0040_7488;
-/// The device's index buffer and base vertex (`d3d::layout::field`'s
-/// `BASE_VERTEX`).
+/// The guest device's index buffer and base vertex (`BASE_VERTEX`).
 pub const DEVICE_INDICES: u32 = 0x7a0;
 pub const DEVICE_BASE_VERTEX: u32 = 0x1c;
 /// A resource's device references: `+0x80000` each, live while any bit
@@ -100,7 +99,7 @@ pub trait Host: Send + Sync {
     fn bind(&self, mem: &mut dyn GuestMemory, bind: Bind, colour: u32, depth: u32) -> bool;
     /// `D3DDevice_Clear(0, null, flags, colour, z, stencil)`. `false`: refused.
     fn clear(&self, mem: &mut dyn GuestMemory, flags: u32, colour: u32, z: u32, stencil: u32) -> bool;
-    /// The device's bound target (`d3d::Device::bound_target`).
+    /// The bound target.
     fn bound(&self) -> Option<[u32; 8]>;
     /// `D3DDevice_SetTexture(stage, texture)`. `false`: refused.
     fn texture(&self, _mem: &mut dyn GuestMemory, _stage: u32, _texture: u32) -> bool {
@@ -119,7 +118,7 @@ pub trait Host: Send + Sync {
     fn simple_state(&self, _mem: &mut dyn GuestMemory, _header: u32, _value: u32) -> bool {
         false
     }
-    /// What guest render-state slot `slot` holds (`d3d::Device::render_state`).
+    /// What guest render-state slot `slot` holds.
     fn stored_state(&self, _mem: &dyn GuestMemory, _slot: u32) -> Option<u32> {
         None
     }
@@ -265,7 +264,7 @@ pub const TARGET_SLOTS: [u32; 10] =
 pub const TARGET_SLOT_DEPTH: u32 = 0x0050_93a8;
 
 /// The role of the surface at `header`, the device's role table
-/// (`d3d::DeviceConfig::roles`; docs/graphics/retire-d3d-display.md, "The
+/// (docs/graphics/retire-d3d-display.md, "The
 /// graph's targets"), `word` a reader of guest words: a table entry's
 /// first surface is `Game(n)`, its others `GameLevel`; a header one of
 /// [`TARGET_SLOTS`] (or [`TARGET_SLOT_DEPTH`]) holds is `Slot` of that

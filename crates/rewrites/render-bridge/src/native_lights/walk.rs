@@ -905,12 +905,10 @@ mod tests {
     }
 
     #[test]
-    fn the_whole_layer_route_requires_the_walk_and_untimed_native_rendering() {
+    fn the_whole_layer_route_requires_the_walk_untimed() {
         use hooks::Switches;
         assert!(on(&Switches::default()));
-        for switch in [ID, hooks::switches::NATIVE] {
-            assert!(!on(&Switches::default().with(switch, false)));
-        }
+        assert!(!on(&Switches::default().with(ID, false)));
         assert!(!on(
             &Switches::default().with(crate::render_timing::ID, true)
         ));

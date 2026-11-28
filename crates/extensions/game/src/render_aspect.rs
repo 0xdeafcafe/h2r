@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use d3d::backend::{PixelRect, UiFit};
+use gfx::external::{PixelRect, UiFit};
 use engine::{GuestMemory, points};
 use hooks::{Builder, Feature, Flow, Manifest};
 use points::render_aspect::{
@@ -18,32 +18,12 @@ use points::ui_render::{ITEM_CALL, RECT_SUBMIT_RETURN, SCREEN_QUAD_READY};
 type Size = Arc<dyn Fn() -> (u32, u32) + Send + Sync>;
 type Position = Arc<dyn Fn() -> u32 + Send + Sync>;
 
-/// One installed rendering device. The drain pins the layout to each draw
-/// before its packet moves to the GPU thread or becomes a native UI pass.
+/// Where the UI layout goes (`crate::render_glue::UiLayout`): the native UI
+/// items read it.
 pub trait UiLayoutSink: Send + Sync {
     fn set_projection_factor(&self, factor: f32);
     fn set_camera_projection_factor(&self, _: f32) { self.set_projection_factor(1.0); }
     fn set_fit(&self, guest: &mut runtime::Guest, fit: Option<UiFit>);
-}
-
-impl<B: d3d::Backend + Send> UiLayoutSink for Mutex<d3d::Device<B>> {
-    fn set_projection_factor(&self, factor: f32) {
-        self.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .set_projection_factor(factor);
-    }
-    fn set_camera_projection_factor(&self, factor: f32) {
-        self.lock().unwrap_or_else(|e| e.into_inner()).set_camera_projection_factor(factor);
-    }
-    fn set_fit(&self, guest: &mut runtime::Guest, fit: Option<UiFit>) {
-        if let Err(err) = self
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .set_ui_fit(&mut d3d::runtime_glue::GuestAdapter::new(guest), fit)
-        {
-            eprintln!("render-aspect: draining the UI draw boundary: {err}");
-        }
-    }
 }
 
 struct RenderAspect {

@@ -8,7 +8,7 @@ use engine::memory::{FlatMemory, GuestMemory};
 use hooks::{Registry, Remap, Switches, from_fn};
 use render_bridge::cut::{self, CUTS, Cut, Refused};
 use render_bridge::frame_step::{self, Addrs, Owner, ROWS, Step};
-use render_bridge::residual_census::{self, REGISTRY, Status};
+use render_bridge::producers::{self, REGISTRY, Status};
 use runtime::exec::HARNESS_EXIT;
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, Dispatch, Event, ExecCtx, Guest, Runner, Runtime};
@@ -172,7 +172,7 @@ fn the_cut_table_names_every_registry_producer() {
     for r in ROWS {
         if let Owner::Producers(names) = r.owner {
             for n in names {
-                assert!(residual_census::row(n).is_some(), "{n} is not a registry row");
+                assert!(producers::row(n).is_some(), "{n} is not a registry row");
             }
         }
     }
@@ -249,7 +249,7 @@ fn object_setup_makes_the_guests_residency_requests() {
     // The object setup is not cut: a call its build refuses (a light
     // sample due, a menu's model view, a locked pose) runs the guest body.
     assert!(CUTS.iter().all(|c| c.name != "object_setup"));
-    let row = residual_census::row("object_setup").expect("a registry row");
+    let row = producers::row("object_setup").expect("a registry row");
     assert_eq!(REGISTRY[row].status, Status::Partial);
     assert!(cut::OWN_PRODUCER.iter().all(|n| CUTS.iter().any(|c| c.name == *n)));
     assert!(CUTS.iter().any(|c| c.name == "object_shadows" && c.entry == 0x0003_35e0 && c.pop == 4));

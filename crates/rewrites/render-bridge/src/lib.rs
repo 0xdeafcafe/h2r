@@ -1,10 +1,7 @@
-//! The guest side of the native renderer until FrameScene replaces it:
-//! the stage hooks, admissions and D3D glue (docs/graphics/framescene.md).
+//! The guest side of the native renderer: the frame step, its stage
+//! hooks, the guest D3D entries and the frame wait
+//! (docs/graphics/framescene.md).
 
-#[cfg(feature = "native-render")]
-pub mod carried_slots;
-#[cfg(feature = "native-render")]
-pub mod entry_census;
 #[cfg(feature = "native-render")]
 pub mod effect_materials;
 #[cfg(feature = "native-render")]
@@ -84,10 +81,11 @@ pub mod native_world_layers;
 pub mod open_shader;
 pub mod cut;
 pub mod frame_step;
+pub mod frame_wait;
+pub mod guest_entries;
 pub mod game_random;
-pub mod render_census;
 pub mod render_frame;
-pub mod residual_census;
+pub mod producers;
 #[cfg(feature = "native-render")]
 pub mod render_loop;
 pub mod render_timing;

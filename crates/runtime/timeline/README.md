@@ -9,7 +9,7 @@ stats.
 
 ## Where it sits
 
-Domain `runtime`; no dependencies, so the runtime, kernel, `d3d` and `gfx`
+Domain `runtime`; no dependencies, so the runtime, kernel and `gfx`
 can all call it. `hooks`, `agent`, `perf`, `render-bridge`, `native-render`
 and `live-telemetry` use it too.
 

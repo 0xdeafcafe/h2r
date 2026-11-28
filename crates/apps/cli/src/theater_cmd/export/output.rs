@@ -105,7 +105,7 @@ impl Output {
             mp4.write_frame(size, self.fps, rgba, &self.scratch.0)?;
         } else {
             let path = self.scratch.0.join(frame_name(self.frames));
-            boot::d3d_glue::write_png(&path, rgba, width, height)?;
+            boot::render_glue::write_png(&path, rgba, width, height)?;
         }
         self.frames += 1;
         Ok(())

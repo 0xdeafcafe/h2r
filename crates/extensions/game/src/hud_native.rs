@@ -331,8 +331,7 @@ pub fn build(p: &Predicted, at: &HudTagQuad, size: [u32; 2], clip: ClipRect) -> 
 /// from the overlay (the setup and the draw are then left out). An
 /// unproven shader, the recheck's quad, a quad that does not predict or
 /// a pass that is not placed is left to the guest.
-pub fn draw<B: d3d::Backend + Send + 'static>(
-    device: &d3d::abi::SharedDevice<B>,
+pub fn draw(
     mem: &mut dyn GuestMemory,
     at: &HudTagQuad,
     vertices: &HudVertices,
@@ -352,7 +351,7 @@ pub fn draw<B: d3d::Backend + Send + 'static>(
     let Some((size, clip)) = placed else { return false };
     let Ok(p) = predict(mem, at, vertices) else { return false };
     let Some(overlay) = build(&p, at, size, clip) else { return false };
-    crate::hud_overlay::place_hud(device, mem, overlay)
+    crate::hud_overlay::place_hud(mem, overlay)
 }
 
 /// A text shader's material for a glyph draw: what [`Predicted`] holds
@@ -460,20 +459,13 @@ pub fn build_text(m: &TextMaterial, text: &WalkText, size: [u32; 2], clip: ClipR
     Some(overlay)
 }
 
-/// Sets the device's UI fit to `fit`: whether it holds.
-fn set_fit<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>, mem: &mut dyn GuestMemory, fit: Option<d3d::backend::UiFit>) -> bool {
-    device.lock().ok().is_some_and(|mut d| {
-        d.set_ui_fit(&mut crate::native_lights_glue::DeviceMemory(mem), fit).is_ok() && d.ui_fit() == fit
-    })
-}
 
 /// A text widget laid out in Rust (`render_bridge::native_hud::walk`),
 /// all of it or none: its globals written, its shader's material read,
 /// and its glyph quads placed as one pass over the host's glyph pages
 /// under the fit of the widget's anchor group. Its shader must be proven
 /// on its glyph quads ([`check_text`]).
-pub fn draw_text<B: d3d::Backend + Send + 'static>(
-    device: &d3d::abi::SharedDevice<B>,
+pub fn draw_text(
     mem: &mut dyn GuestMemory,
     text: &WalkText,
 ) -> bool {
@@ -494,16 +486,13 @@ pub fn draw_text<B: d3d::Backend + Send + 'static>(
     let Ok(m) = predict_text(mem, text.shader) else { return false };
     let Some(overlay) = build_text(&m, text, size, clip) else { return false };
     let group = crate::render_aspect::hud_group_fit(text.anchor, text.point);
-    let Some(enclosing) = device.lock().ok().map(|d| d.ui_fit()) else { return false };
-    if let Some(fit) = group
-        && !set_fit(device, mem, fit)
-    {
-        set_fit(device, mem, enclosing);
-        return false;
+    let enclosing = crate::hud_overlay::ui_fit();
+    if let Some(fit) = group {
+        crate::hud_overlay::set_ui_fit(fit);
     }
-    let drawn = crate::hud_overlay::place_text(device, mem, overlay, frame_scene::ViewSlot::Hud);
-    if group.is_some() && !set_fit(device, mem, enclosing) {
-        eprintln!("hud walk: the enclosing HUD fit was not restored after a text widget");
+    let drawn = crate::hud_overlay::place_text(mem, overlay, frame_scene::ViewSlot::Hud);
+    if group.is_some() {
+        crate::hud_overlay::set_ui_fit(enclosing);
     }
     drawn
 }
@@ -521,26 +510,15 @@ pub fn build_string(run: &StringRun, size: [u32; 2], clip: ClipRect) -> Option<O
     Some(overlay)
 }
 
-/// A proven string laid out in Rust, all of it or none: its runs placed
-/// as one pass over the host's glyph pages, on the bound target inside
-/// the area a draw recorded now would write (one rectangle), under the
-/// fit the guest's draws carry here. A target or clip that does not read
-/// leaves the string to the guest.
-pub fn draw_string<B: d3d::Backend + Send + 'static>(
-    device: &d3d::abi::SharedDevice<B>,
+/// A proven string laid out in Rust: its runs placed as one pass over the
+/// host's glyph pages ([`build_string`]), on the bound target inside its
+/// clip area. Neither has a source without the device yet.
+pub fn draw_string(
     mem: &mut dyn GuestMemory,
     run: &StringRun,
 ) -> bool {
-    let placed = device.lock().ok().and_then(|d| {
-        let m = crate::native_lights_glue::DeviceMemory(&mut *mem);
-        let (w, h) = d.target_extent(&m).ok()?;
-        let (clip, rects) = d.clip_area(&m).ok()??;
-        rects.is_empty().then_some(([w, h], ClipRect { x: clip.x, y: clip.y, width: clip.width, height: clip.height }))
-    });
-    let Some((size, clip)) = placed else { return false };
-    let Some(overlay) = build_string(run, size, clip) else { return false };
-    let slot = if render_bridge::native_hud::kept::in_hud() { frame_scene::ViewSlot::Hud } else { frame_scene::ViewSlot::Ui };
-    crate::hud_overlay::place_text(device, mem, overlay, slot)
+    let _ = (mem, run, build_string);
+    unimplemented!("hud: the string's bound target extent and clip area from the device")
 }
 
 /// A bitmap widget laid out in Rust (`render_bridge::native_hud::walk`),
@@ -549,8 +527,7 @@ pub fn draw_string<B: d3d::Backend + Send + 'static>(
 /// the widget's anchor group. Its shader must be proven; a quad that
 /// does not predict or a pass that is not placed leaves the widget to
 /// the guest, which writes the same globals again.
-pub fn draw_widget<B: d3d::Backend + Send + 'static>(
-    device: &d3d::abi::SharedDevice<B>,
+pub fn draw_widget(
     mem: &mut dyn GuestMemory,
     widget: &WalkWidget,
 ) -> bool {
@@ -584,21 +561,13 @@ pub fn draw_widget<B: d3d::Backend + Send + 'static>(
     // The group's fit, as the guest's anchor call sets it for its quads
     // (`render_aspect`), and the enclosing one back after them.
     let group = crate::render_aspect::hud_group_fit(widget.anchor, widget.point);
-    let set = |mem: &mut dyn GuestMemory, fit| {
-        device.lock().ok().is_some_and(|mut d| {
-            d.set_ui_fit(&mut crate::native_lights_glue::DeviceMemory(mem), fit).is_ok() && d.ui_fit() == fit
-        })
-    };
-    let Some(enclosing) = device.lock().ok().map(|d| d.ui_fit()) else { return false };
-    if let Some(fit) = group
-        && !set(mem, fit)
-    {
-        set(mem, enclosing);
-        return false;
+    let enclosing = crate::hud_overlay::ui_fit();
+    if let Some(fit) = group {
+        crate::hud_overlay::set_ui_fit(fit);
     }
-    let drawn = crate::hud_overlay::place_hud(device, mem, all);
-    if group.is_some() && !set(mem, enclosing) {
-        eprintln!("hud walk: the enclosing HUD fit was not restored after a widget");
+    let drawn = crate::hud_overlay::place_hud(mem, all);
+    if group.is_some() {
+        crate::hud_overlay::set_ui_fit(enclosing);
     }
     drawn
 }

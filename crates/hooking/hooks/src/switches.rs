@@ -107,70 +107,20 @@ impl Switches {
     }
 }
 
-/// The native GPU renderer's one switch: on unless `H2_FEATURES` says
-/// `impl.render.native=off`, which turns off every native stage, scene
-/// walk, scene list and the native UI together. Looked up exactly: the
-/// `impl.render` group does not reach it.
-pub const NATIVE: &str = "impl.render.native";
-
-/// Whether the native renderer ([`NATIVE`]) is on. Without the
-/// `d3d-reference` cargo feature the switch is not read: the D3D path is not
-/// built by default (docs/graphics/retire-d3d.md, R9), so it is always on.
-pub fn native_render_on(switches: &Switches) -> bool {
-    #[cfg(feature = "d3d-reference")]
-    {
-        switches.feature(NATIVE, true)
-    }
-    #[cfg(not(feature = "d3d-reference"))]
-    {
-        let _ = switches;
-        true
-    }
+/// Whether the native renderer is on: always, as there is no other path.
+/// Callers drop the check as their files are next touched.
+pub fn native_render_on(_: &Switches) -> bool {
+    true
 }
 
-/// The Rust view projection and visibility producers (slice R4 of
-/// docs/graphics/retire-d3d.md): on with the native renderer unless
-/// `impl.render.native.visibility=off`, which leaves the guest's
-/// `0x0002fb70` and its portal, sphere and potentially-visible-set
-/// producers running. The scene step's differential runs either way.
-pub const NATIVE_VISIBILITY: &str = "impl.render.native.visibility";
-
-/// Whether the Rust visibility producers ([`NATIVE_VISIBILITY`]) are on.
-pub fn native_visibility_on(switches: &Switches) -> bool {
-    native_render_on(switches) && switches.feature(NATIVE_VISIBILITY, true)
+/// Whether the Rust visibility producers are on: always.
+pub fn native_visibility_on(_: &Switches) -> bool {
+    true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(not(feature = "d3d-reference"))]
-    #[test]
-    fn without_the_d3d_reference_feature_the_native_switch_is_not_read() {
-        let on = |spec| native_render_on(&Switches::parse(spec).unwrap());
-        assert!(on(""));
-        assert!(on("impl.render.native=off"));
-        assert!(native_visibility_on(&Switches::parse("impl.render.native=off").unwrap()));
-    }
-
-    #[cfg(feature = "d3d-reference")]
-    #[test]
-    fn the_native_master_switch_is_looked_up_exactly() {
-        let on = |spec| native_render_on(&Switches::parse(spec).unwrap());
-        assert!(on(""));
-        assert!(on("impl.render=off"));
-        assert!(!on("impl.render.native=off"));
-    }
-
-    #[cfg(feature = "d3d-reference")]
-    #[test]
-    fn the_visibility_switch_only_turns_the_rust_producers_off() {
-        let on = |spec| native_visibility_on(&Switches::parse(spec).unwrap());
-        assert!(on(""));
-        assert!(!on("impl.render.native.visibility=off"));
-        assert!(!on("impl.render.native=off"), "the master switch takes it along");
-        assert!(on("impl.render.native=on"));
-    }
 
     #[test]
     fn parse_and_lookup() {

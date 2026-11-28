@@ -204,7 +204,7 @@ fn save(picture: Picture, path: &Path, tick: u64) -> Result<Value, RpcError> {
         fs::create_dir_all(parent)?;
         let file = File::options().write(true).create_new(true).open(&path)?;
         if let Err(error) =
-            crate::d3d_glue::encode_png(BufWriter::new(file), &picture.rgba, width, height)
+            crate::render_glue::encode_png(BufWriter::new(file), &picture.rgba, width, height)
         {
             let _ = fs::remove_file(&path);
             return Err(error);

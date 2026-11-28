@@ -11,7 +11,7 @@
 //! ([`parts`]), each posed by its node rows. The host draws each light's
 //! layers 12 and 13 over those parts from the light's constants and each
 //! part's material, as a scene stage of E3 alone
-//! (`d3d::ExternalPass::lighting_only`).
+//! (`native_render::Stage::lighting_only`).
 //!
 //! The constants are the candidate's unshadowed set, with the flags
 //! retail's pass sets ([`flags`]): bit 0 for a spherical volume, bit 1

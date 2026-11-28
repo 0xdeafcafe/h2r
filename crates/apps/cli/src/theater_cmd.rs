@@ -351,7 +351,7 @@ fn child_with_start(
                 controller.attach_input(input);
             }
             let native: boot::run_opts::NativeTarget = std::sync::Arc::new(window.native_target());
-            let raster = boot::d3d_glue::output_size(Some(&settings), native)?;
+            let raster = boot::render_glue::output_size(Some(&settings), native)?;
             let film_media = export::media(
                 media_options,
                 dir,

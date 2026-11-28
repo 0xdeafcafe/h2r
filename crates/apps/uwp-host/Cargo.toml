@@ -27,7 +27,7 @@ h2host = { path = "../h2host", features = ["perf"] }
 # gilrs, whose Windows backend is Windows.Gaming.Input (the UWP pad API).
 app = { path = "../app", default-features = false, features = ["gamepads"] }
 vfs.workspace = true
-d3d = { path = "../../platform/d3d" }
+gfx = { path = "../../platform/gfx" }
 windows-core = "0.62"
 windows-numerics = "0.3"
 windows = { version = "0.62", features = [

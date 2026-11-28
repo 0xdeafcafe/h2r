@@ -14,17 +14,13 @@ use hooks::{Registry, Switches};
 use render_bridge::cut::{self, CUTS};
 use render_bridge::native_first_person::{self, Dropped, Host, NativeFirstPerson, Outcome};
 use render_bridge::native_objects::{NativeSet, SetPart};
-use render_bridge::residual_census::{self, REGISTRY, Status};
+use render_bridge::producers::{self, REGISTRY, Status};
 
 const MODEL: u32 = 0xe200_0001;
 const SHADER: u32 = 0x10;
 
 #[test]
 fn the_plan_places_the_cut_when_on() {
-    let mut off = Registry::new(Switches::parse("impl.render.native=off").unwrap());
-    off.add(&NativeFirstPerson).unwrap();
-    assert!(!off.build(&Base).unwrap().text().contains("native_first_person"));
-
     let mut on = Registry::new(Switches::defaults());
     on.add(&NativeFirstPerson).unwrap();
     let plan = on.build(&Base).unwrap();
@@ -44,7 +40,7 @@ fn the_cut_row_is_in_the_table_and_the_census() {
     let row = CUTS.iter().find(|c| c.name == "first_person").expect("a cut row");
     assert_eq!((row.entry, row.pop, row.abi_result), (0x0003_fdf0, 4, 1));
     assert!(cut::OWN_PRODUCER.contains(&"first_person"));
-    let census = &REGISTRY[residual_census::row("first_person").unwrap()];
+    let census = &REGISTRY[producers::row("first_person").unwrap()];
     // Cut from the first frame: no held check runs the body.
     assert_eq!((census.entry, census.status), (0x0003_fdf0, Status::Native));
 }

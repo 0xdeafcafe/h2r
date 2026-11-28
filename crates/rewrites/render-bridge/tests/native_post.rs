@@ -21,15 +21,14 @@ fn placed(switches: &str) -> Option<hooks::plan::Plan> {
 
 #[test]
 fn the_master_switch_places_it() {
-    assert!(placed("impl.render.native=off").is_none(), "off: nothing");
     assert!(placed("").is_some(), "on by default");
     assert!(placed("render-timing").is_some(), "the call still runs: timing is fine");
 }
 
-/// Off or on, it holds nothing a load must drop: never a blocker.
+/// It holds nothing a load must drop: never a blocker.
 #[test]
-fn its_snapshot_policy_is_stateless_on_or_off() {
-    for switches in ["impl.render.native=off", ""] {
+fn its_snapshot_policy_is_stateless() {
+    for switches in [""] {
         let mut r = Registry::new(Switches::parse(switches).unwrap());
         assert!(r.add(&NativePost).unwrap());
         let plan = r.build(&Base).unwrap();

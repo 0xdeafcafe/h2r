@@ -338,29 +338,15 @@ fn hosted(
     store: Arc<settings::Store>,
     steam: Option<input::steam_pad::SteamPads>,
 ) -> boot::Host {
-    let configure = |gfx: d3d::GfxBackend| {
-        // As for `h2 run`: passes are merged under the loose rule
-        // (docs/graphics/graphics.md).
-        // Build last run's pipelines ahead of time (H2_PIPELINE_CACHE;
-        // docs/graphics/graphics.md).
-        match d3d::pipeline_store::default_path() {
-            Some(path) => gfx.with_pipeline_cache(path),
-            None => gfx,
-        }
-    };
     let native_target: boot::run_opts::NativeTarget = Arc::new(host.native_target());
-    let (gfx, view) = boot::d3d_glue::window_targets(
-        &store,
-        native_target, host.display_size(),
-        || configure(d3d::GfxBackend::new(host.gfx_context())),
-        || {
-            let present = host
-                .frame_sink()
-                .with_frame_marks(mark_frame)
-                .into_present_hook();
-            configure(d3d::GfxBackend::new(host.gfx_context()).on_present(present))
-        },
-    );
+    let view = boot::run_opts::DisplayView {
+        native_target,
+        viewer_output: None,
+        viewer_lod: None,
+        display_size: Arc::new(host.display_size()),
+    };
+    let gfx = host.gfx_context();
+    let presenter = host.presenter(mark_frame);
     let input = host.take_input();
     let keyboard = host.keyboard().cloned();
     let (pad_speaker, pad_hid, _speaker_setting) = pad_speaker(audio, &store, steam.as_ref());
@@ -377,10 +363,8 @@ fn hosted(
         host_light: false,
         host_bots: false,
         gfx: Some(gfx),
+        presenter: Some(presenter),
         gfx_view: Some(view),
-        // The backend's work on a render thread unless H2_RENDER_THREAD=0, as
-        // for `h2 run` (docs/graphics/render-thread.md).
-        render_thread: render_thread(std::env::var("H2_RENDER_THREAD").ok().as_deref()),
         unpaced_display: host.pace_policy() == app::PacePolicy::Unpaced,
         audio_sink: Some(audio_sink(audio)),
         voice_io: Some(voice::host::HostVoiceIo::opener()),
@@ -869,9 +853,7 @@ pub(crate) fn run_with_theater(
     let watermark = watermark_on(no_watermark, std::env::var("H2_WATERMARK").ok().as_deref());
     if watermark {
         config.watermark = Some(
-            play_watermark(render_thread(
-                std::env::var("H2_RENDER_THREAD").ok().as_deref(),
-            ))
+            play_watermark()
             .with_full(watermark_full(std::env::var("H2_WATERMARK").ok().as_deref())),
         );
     }
@@ -1182,15 +1164,11 @@ fn debug_menu_on(env: Option<&str>) -> bool {
     env.is_none_or(|v| v.trim() != "0")
 }
 
-/// `h2 play`'s watermark: how the renderer runs, and the map the game has
-/// loaded (the file-open record until the first game starts).
-fn play_watermark(render_thread: bool) -> app::Watermark {
+/// `h2 play`'s watermark: the renderer, and the map the game has loaded
+/// (the file-open record until the first game starts).
+fn play_watermark() -> app::Watermark {
     app::Watermark::new()
-        .with_note(if render_thread {
-            "render thread on"
-        } else {
-            "render thread off"
-        })
+        .with_note("native renderer")
         .with_map(kernel::level::last_map)
 }
 
@@ -1243,9 +1221,9 @@ fn follow_banner(path: PathBuf) -> app::Banner {
 
 fn mark_frame() -> app::overlay::marks::FrameMarks {
     use app::overlay::marks::{FrameMarks, ImageSamples, MarkCameraSource, ProjectedMarks};
-    use d3d::present_camera::{Present, ViewShift};
+    use gfx::present_camera::{Present, ViewShift};
 
-    let project = |image: Arc<d3d::present_camera::Image>,
+    let project = |image: Arc<gfx::present_camera::Image>,
                    reference,
                    shifts: &[ViewShift],
                    source: MarkCameraSource| {
@@ -1269,7 +1247,7 @@ fn mark_frame() -> app::overlay::marks::FrameMarks {
         })))
     };
 
-    match d3d::present_camera::current() {
+    match gfx::present_camera::current() {
         Some(Present::Guest { image: Some(image), reference }) => {
             match project(image, reference, &[], MarkCameraSource::Tick) {
                 Ok(sample) => FrameMarks::Guest(sample),
@@ -1294,18 +1272,18 @@ fn mark_frame() -> app::overlay::marks::FrameMarks {
 }
 
 /// Each view's mark camera, moved by its shift where a made frame drew it
-/// with another camera than the image's own (`d3d::present_camera`).
+/// with another camera than the image's own (`gfx::present_camera`).
 fn mark_cameras(
-    views: &[Option<d3d::present_camera::View>; 4],
+    views: &[Option<gfx::present_camera::View>; 4],
     reference: bool,
-    shifts: &[d3d::present_camera::ViewShift],
+    shifts: &[gfx::present_camera::ViewShift],
 ) -> Option<app::overlay::marks::MarkCameras> {
     let count = views.iter().flatten().count();
     let cameras = views.map(|slot| {
         let view = slot?;
         let mut camera = mark_camera(view, reference)?;
         if let Some(shift) =
-            d3d::present_camera::ViewShift::find(shifts, camera.viewport, count)
+            gfx::present_camera::ViewShift::find(shifts, camera.viewport, count)
         {
             camera.view_projection = shift.apply(camera.view_projection);
         }
@@ -1315,7 +1293,7 @@ fn mark_cameras(
 }
 
 fn mark_camera(
-    view: d3d::present_camera::View,
+    view: gfx::present_camera::View,
     reference: bool,
 ) -> Option<app::overlay::marks::MarkCamera> {
     let (width, height) = boot::setting_defs::GUEST_FRAME;
@@ -1460,12 +1438,6 @@ fn restart_in_place() -> Option<boot::game_code::Restart> {
     None
 }
 
-/// Whether `h2 play` renders on a render thread, from `H2_RENDER_THREAD`
-/// (the same rule as `h2 run`'s).
-fn render_thread(value: Option<&str>) -> bool {
-    boot::d3d_glue::render_thread_from(value)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1490,7 +1462,7 @@ mod tests {
 
     #[test]
     fn made_frames_move_the_mark_camera_by_their_shift() {
-        use d3d::present_camera::ViewShift;
+        use gfx::present_camera::ViewShift;
         let view = test_mark_view();
         let plain = mark_cameras(&[Some(view), None, None, None], false, &[]).unwrap()[0].unwrap();
         // The frame drew the view one unit further along +y.
@@ -1510,9 +1482,9 @@ mod tests {
         assert_eq!(moved.viewport, plain.viewport);
     }
 
-    fn test_mark_view() -> d3d::present_camera::View {
-        d3d::present_camera::View {
-            camera: d3d::present_camera::Camera {
+    fn test_mark_view() -> gfx::present_camera::View {
+        gfx::present_camera::View {
+            camera: gfx::present_camera::Camera {
                 position: [0.0; 3],
                 forward: [1.0, 0.0, 0.0],
                 up: [0.0, 0.0, 1.0],
@@ -1593,15 +1565,6 @@ mod tests {
             .unwrap()
             .join("UDATA")
             .join("4D530064")
-    }
-
-    #[test]
-    fn h2_render_thread_is_on_unless_zero() {
-        assert!(render_thread(None), "on when unset");
-        assert!(!render_thread(Some("0")), "H2_RENDER_THREAD=0 turns it off");
-        for v in ["1", "", "true", "yes", "2", " 0"] {
-            assert!(render_thread(Some(v)), "{v:?}");
-        }
     }
 
     fn some(s: &str) -> Option<String> {
@@ -1749,7 +1712,7 @@ mod tests {
 
     #[test]
     fn the_full_level_puts_the_games_lines_above_the_live_numbers() {
-        let wm = play_watermark(true);
+        let wm = play_watermark();
         let (full, lines) = wm.readout_handles();
         *lines.lock().unwrap() = vec!["pos 1.00 2.00 3.00".into()];
         // Off, whatever the game left is not shown.
@@ -1757,18 +1720,16 @@ mod tests {
         full.store(true, std::sync::atomic::Ordering::Relaxed);
         let live = wm.panels(None, "metal").live;
         assert_eq!(live[0], "pos 1.00 2.00 3.00");
-        assert_eq!(live.last().unwrap(), "metal, render thread on");
+        assert_eq!(live.last().unwrap(), "metal, native renderer");
     }
 
     #[test]
-    fn the_play_watermark_names_the_render_thread() {
-        let wm = play_watermark(true);
+    fn the_play_watermark_names_the_renderer() {
+        let wm = play_watermark();
         assert!(wm.visible());
         let p = wm.panels(None, "metal");
         assert_eq!(p.label[0], "h2recomp development build");
-        assert_eq!(p.live.last().unwrap(), "metal, render thread on");
-        let off = play_watermark(false).panels(None, "metal");
-        assert_eq!(off.live.last().unwrap(), "metal, render thread off");
+        assert_eq!(p.live.last().unwrap(), "metal, native renderer");
     }
 
     #[test]

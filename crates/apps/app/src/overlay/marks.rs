@@ -24,7 +24,7 @@ pub enum MarkCameraSource {
     Tick,
     /// An in-between frame the host made at `fraction`. `shifted`: some
     /// view was drawn with another camera than the marks' image, and the
-    /// cameras here were moved onto it (`d3d::present_camera`).
+    /// cameras here were moved onto it (`gfx::present_camera`).
     Made { fraction: f32, shifted: bool },
 }
 

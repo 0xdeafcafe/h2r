@@ -91,8 +91,8 @@ impl Transition {
 const LOADING_SIZE: (u32, u32) = (640, 480);
 
 /// The present flags of a frame the host made between the guest's presents
-/// (`d3d::Backend::present_replay` presents with 0; a guest `Swap` never
-/// does, `D3DDevice_Swap` turns 0 into 5).
+/// (presents with 0; a guest `Swap` never does, `D3DDevice_Swap` turns 0
+/// into 5).
 pub const MADE_FRAME_FLAGS: u32 = 0;
 
 /// The return-to-menu picture: opaque black, as the console shows between a
@@ -384,9 +384,9 @@ impl FrameSink {
         )
     }
 
-    /// Turns this sink into the closure `d3d::GfxBackend::on_present` takes:
+    /// Turns this sink into a present hook for gfx surfaces:
     /// `FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static`.
-    /// The `GfxBackend` must be built on [`crate::GuestHost::gfx_context`] (the
+    /// The surfaces must live on [`crate::GuestHost::gfx_context`] (the
     /// shell's device). Errors are printed (first ten) and the frame is
     /// skipped; presentation never stops the guest.
     pub fn into_present_hook(

@@ -84,7 +84,7 @@ pub(crate) const LEGACY_SCALE: settings::LegacyScale = settings::LegacyScale {
     key: "graphics.render_scale",
     env: "H2_RENDER_SCALE",
     frame: GUEST_FRAME,
-    max: d3d::MAX_SCALE,
+    max: gfx::external::MAX_SCALE,
 };
 
 pub static RESOLUTION: Def = Def {

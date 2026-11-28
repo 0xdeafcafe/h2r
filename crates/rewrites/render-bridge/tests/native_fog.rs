@@ -99,7 +99,7 @@ fn draw(m: &mut FlatMemory) {
 
 #[test]
 fn the_plan_orders_it_inside_render_timing_and_the_world() {
-    let switches = "impl.render.native=on,render-timing=on";
+    let switches = "render-timing=on";
     let mut r = Registry::new(Switches::parse(switches).unwrap());
     assert!(r.add(&render_bridge::render_timing::RenderTiming::new()).unwrap());
     assert!(r.add(&render_bridge::native_world::NativeWorld).unwrap());
@@ -116,7 +116,7 @@ fn the_plan_orders_it_inside_render_timing_and_the_world() {
 
 #[test]
 fn its_layer_draw_chain_runs_on_the_render_thread() {
-    let mut r = Registry::new(Switches::parse("impl.render.native=on").unwrap());
+    let mut r = Registry::new(Switches::parse("").unwrap());
     assert!(r.add(&NativeFog).unwrap());
     let plan = r.build(&Base).unwrap();
     let chain = plan
@@ -129,11 +129,8 @@ fn its_layer_draw_chain_runs_on_the_render_thread() {
 }
 
 #[test]
-fn it_is_on_by_default_and_the_master_switch_turns_it_off() {
+fn it_is_on_by_default() {
     assert!(native_fog::on(&Switches::parse("").unwrap()));
-    let mut r = Registry::new(Switches::parse("impl.render.native=off").unwrap());
-    assert!(r.add(&NativeFog).unwrap());
-    assert!(!r.build(&Base).unwrap().text().contains("native_fog"));
 }
 
 #[test]

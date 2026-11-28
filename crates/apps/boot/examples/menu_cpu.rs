@@ -47,19 +47,18 @@ fn main() -> anyhow::Result<()> {
     let host = boot::Host {
         trace_limit: Some(4096),
         between_slices: Some(Box::new(move |_| {
-            let n = boot::d3d_diag::presents();
+            let n = boot::presents::presents();
             if n >= 480 && start.is_none() {
                 assert_eq!(n, 480, "measurement must start at present 480");
                 start = Some((
                     Instant::now(),
                     cpu_seconds().expect("process CPU clock"),
                     thread_cpu_seconds().expect("thread CPU clock"),
-                    d3d::threaded::total_waits(),
                 ));
             }
             if n >= 560 {
                 assert_eq!(n, 560, "measurement must stop at present 560");
-                let (wall, cpu, thread, waits0) = start.expect("window start");
+                let (wall, cpu, thread) = start.expect("window start");
                 let seconds = wall.elapsed().as_secs_f64();
                 let used = cpu_seconds().expect("process CPU clock") - cpu;
                 let guest = thread_cpu_seconds().expect("thread CPU clock") - thread;
@@ -69,18 +68,6 @@ fn main() -> anyhow::Result<()> {
                     used * 1000.0 / 80.0,
                     guest * 1000.0 / 80.0
                 );
-                let w = d3d::threaded::total_waits();
-                if w.busy > waits0.busy {
-                    let ms = |a: std::time::Duration, b: std::time::Duration| (a - b).as_secs_f64() * 1000.0 / 80.0;
-                    println!(
-                        "MENU_RENDER_THREAD reads_per_frame={:.2} read_wait_ms_per_frame={:.3} throttles={} throttle_wait_ms_per_frame={:.3} render_busy_ms_per_frame={:.3}",
-                        (w.reads - waits0.reads) as f64 / 80.0,
-                        ms(w.read_wait, waits0.read_wait),
-                        w.throttles - waits0.throttles,
-                        ms(w.throttle_wait, waits0.throttle_wait),
-                        ms(w.busy, waits0.busy)
-                    );
-                }
                 return false;
             }
             true
@@ -93,7 +80,7 @@ fn main() -> anyhow::Result<()> {
         &opts,
         host,
     )?;
-    let measured = report.outcome == "HostStop" && boot::d3d_diag::presents() == 560;
+    let measured = report.outcome == "HostStop" && boot::presents::presents() == 560;
     anyhow::ensure!(
         measured,
         "incomplete menu run: {} ({})",

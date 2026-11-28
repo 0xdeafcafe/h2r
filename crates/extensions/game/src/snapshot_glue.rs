@@ -10,9 +10,8 @@
 //!
 //! A save runs only when nothing anywhere is live: the machine is
 //! quiescent (`Machine::quiescent`), every feature's policy says so, and
-//! every host subsystem's blockers are empty (d3d, dsound and its output,
+//! every host subsystem's blockers are empty (dsound and its output,
 //! XAPI, a Bink movie, Xbox Live). It writes the parts in [`SAVE_ORDER`]:
-//! the device first (it writes render targets back into guest RAM), then
 //! the audio, then guest RAM and the TSC, the kernel and its threads,
 //! XAPI with the input tap's cursor, and the feature sections; last a
 //! `ramhash` section, `lockstep::hash_guest` of the RAM saved. Feature
@@ -74,15 +73,15 @@ pub trait Part {
     }
 }
 
-/// The device first: its save writes guest memory. Guest RAM after every
+/// Guest RAM after every
 /// part that may write it.
-pub const SAVE_ORDER: [&str; 8] = [
-    "d3d", "dsound", "audioout", "wma", "guest", "kernel", "xapi", "features",
+pub const SAVE_ORDER: [&str; 7] = [
+    "dsound", "audioout", "wma", "guest", "kernel", "xapi", "features",
 ];
 /// Guest RAM first. The kernel precedes dsound (its pins adopt the loaded
 /// kernel's references); features last, over a loaded machine.
-pub const LOAD_ORDER: [&str; 8] = [
-    "guest", "kernel", "d3d", "dsound", "audioout", "wma", "xapi", "features",
+pub const LOAD_ORDER: [&str; 7] = [
+    "guest", "kernel", "dsound", "audioout", "wma", "xapi", "features",
 ];
 
 /// `lockstep::hash_guest` of the RAM saved.
@@ -325,7 +324,6 @@ pub fn build_key(stamp: String, switches: &str, plan: &hooks::Plan, host: &[&str
 pub struct Host<'a> {
     pub editor_agent: Option<&'a agent::Agent>,
     pub rt: &'a runtime::Runtime,
-    pub d3d: Option<&'a dyn crate::d3d_glue::DeviceSnapshot>,
     pub audio: Option<&'a crate::dsound_glue::Audio>,
     pub xapi: Option<&'a crate::xapi_glue::Shared>,
     pub bink: Option<&'a bink_hle::BinkHle>,
@@ -336,9 +334,6 @@ impl Host<'_> {
     /// The parts this run has, for the build key.
     pub fn names(&self) -> Vec<&'static str> {
         let mut names = vec!["guest", "kernel"];
-        if self.d3d.is_some() {
-            names.push("d3d");
-        }
         if let Some(a) = self.audio {
             names.extend(["dsound", "audioout"]);
             if a.wma.is_some() {
@@ -403,9 +398,6 @@ impl Host<'_> {
     fn device_parts(&self) -> Vec<Box<dyn Part + '_>> {
         let mut parts: Vec<Box<dyn Part + '_>> = Vec::new();
         parts.push(Box::new(GuestPart(self.rt)));
-        if let Some(d) = self.d3d {
-            parts.push(Box::new(D3dPart(d, self.rt)));
-        }
         if let Some(a) = self.audio {
             parts.push(Box::new(DsoundPart(a)));
             parts.push(Box::new(AudioOutPart(a)));
@@ -476,29 +468,12 @@ impl BootMachine<'_> {
         })
     }
 
-    /// The device section of a fork's save (`sim_bounces`), saved first.
-    /// The caller can drop the writer or continue into a full snapshot
-    /// after success.
-    pub(crate) fn capture_film_device(
-        &mut self,
-        out: &mut SnapshotWriter,
-    ) -> Option<Result<(), String>> {
-        self.parts
-            .iter_mut()
-            .find(|part| part.name() == "d3d")
-            .map(|part| part.save(out))
-    }
-
-    /// Complete a fork's in-memory save around the device section the
-    /// caller saved first. RAM belongs to the page pool
+    /// Complete a fork's in-memory save. RAM belongs to the page pool
     /// (`sim_bounces/ring.rs`).
     pub(crate) fn save_ring_sections(&mut self, mut out: SnapshotWriter) -> Result<Vec<u8>, String> {
         let rt = self.rt.ok_or("ring capture needs a running guest")?;
         check_names(&self.parts)?;
         for name in SAVE_ORDER {
-            if name == "d3d" {
-                continue;
-            }
             if let Some(p) = self.parts.iter_mut().find(|p| p.name() == name) {
                 if name == "guest" {
                     snapshot::guest::save_layout(&mut out, &rt.memory()).map_err(err)?;
@@ -791,38 +766,6 @@ impl Part for KernelPart<'_> {
         let apply = self.prepared.take().ok_or("kernel restore was not prepared")?;
         apply(self.m);
         Ok(())
-    }
-}
-
-/// `d3d`.
-struct D3dPart<'a>(
-    &'a dyn crate::d3d_glue::DeviceSnapshot,
-    &'a runtime::Runtime,
-);
-
-impl Part for D3dPart<'_> {
-    fn name(&self) -> &'static str {
-        "d3d"
-    }
-    fn blockers(&self) -> Vec<String> {
-        self.0.blockers()
-    }
-    fn film_load_blockers(&self) -> Vec<String> {
-        self.0.film_load_blockers()
-    }
-    fn save(&mut self, out: &mut SnapshotWriter) -> Result<(), String> {
-        if crate::sim_bounces::in_fork() {
-            self.0.save_film(self.1, out)
-        } else {
-            self.0.save(self.1, out)
-        }
-    }
-    fn load(&mut self, snapshot: &Snapshot<'_>) -> Result<(), String> {
-        if crate::sim_bounces::in_fork() {
-            self.0.load_film(self.1, snapshot)
-        } else {
-            self.0.load(snapshot)
-        }
     }
 }
 

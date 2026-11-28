@@ -1,5 +1,4 @@
-//! Retail scene list production, on with the native renderer
-//! (`impl.render.native`, on by default). A builder reads under the
+//! Retail scene list production, on with the native renderer. A builder reads under the
 //! guest-memory guard and proposes all its writes before any output
 //! becomes visible.
 mod display_swap;
@@ -165,8 +164,8 @@ impl Feature for ScaledSceneLists {
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
         b.snapshot(hooks::SnapshotPolicy::Stateless);
         // The guest's view projection and visibility producers, replaced
-        // unless `impl.render.native.visibility=off` (retire-d3d.md R4);
-        // the scene step's shadow arms answer only while it is on.
+        // (retire-d3d.md R4); the scene step's shadow arms answer only
+        // while it is on.
         let visibility = hooks::switches::native_visibility_on(b.switches());
         crate::scene_step::set_native_visibility(visibility);
         if !enabled(b.switches()) {
@@ -684,7 +683,7 @@ mod tests {
 
     #[test]
     fn native_scene_lists_follow_the_master_switch() {
-        for (spec, expected) in [("", true), ("impl.render.native=off", false), ("impl.render=off", true)] {
+        for (spec, expected) in [("", true), ("impl.render=off", true)] {
             assert_eq!(enabled(&Switches::parse(spec).unwrap()), expected);
         }
     }

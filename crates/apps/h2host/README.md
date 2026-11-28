@@ -4,7 +4,7 @@ The Rust half of the tvOS and iOS apps: a static library that the UIKit hosts ca
 
 ## Where it sits
 
-`apps`. Uses `boot`, `app`, `d3d`, `audio`, `input`, `vfs`, `xiso`, `kernel`, `settings`, `live-hle`, `live-proto` and `cloud-saves`. Used by `uwp-host`.
+`apps`. Uses `boot`, `app`, `audio`, `input`, `vfs`, `xiso`, `kernel`, `settings`, `live-hle`, `live-proto` and `cloud-saves`. Used by `uwp-host`.
 
 ## Layout
 

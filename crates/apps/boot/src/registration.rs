@@ -724,16 +724,12 @@ pub enum AgentSource {
     Socket(PathBuf),
 }
 
-/// What [`register_late`] needs: the registrations after the host's d3d,
-/// audio and input are in.
+/// What [`register_late`] needs: the registrations after the host's
+/// render, audio and input are in.
 pub struct LateInputs<'a> {
-    /// The effective resolution source of the backend drawing this run.
+    /// The renderer's output size now, when one draws this run.
     #[cfg(feature = "gpu")]
-    pub view: Option<&'a crate::d3d_glue::DrawingView>,
-    /// Single-copy rendering: the guest's own D3D draws render the display,
-    /// so they take the draw-boundary geometry swap.
-    #[cfg(feature = "gpu")]
-    pub d3d_display: bool,
+    pub output: Option<crate::run_opts::NativeSize>,
     #[cfg(feature = "gpu")]
     pub viewer_lod: Option<settings::Setting<u32>>,
     #[cfg(feature = "gpu")]
@@ -863,13 +859,6 @@ pub(crate) fn register_late_for_profile(
     features
         .add(&render_bridge::render_timing::RenderTiming::new())
         .map_err(|e| anyhow::anyhow!("render timing: {e}"))?;
-    // Which pages the render front-end writes and the sim reads, when
-    // H2_FEATURES has render-census (off by default;
-    // docs/graphics/notes/pipelined-render.md).
-    let census = render_bridge::render_census::RenderCensus::new()
-        .with_region(crate::d3d_glue::PUSH_BASE, crate::d3d_glue::PUSH_BASE + crate::d3d_glue::PUSH_LEN, "push_buffer")
-        .with_region(crate::d3d_glue::SCRATCH_BASE, crate::d3d_glue::SCRATCH_BASE + 0x1000, "d3d_scratch");
-    features.add(&census).map_err(|e| anyhow::anyhow!("render census: {e}"))?;
     // The frame step leaves the game-state arena as it found it, under
     // impl.sim.frame-guard (off; docs/engine/sim-render-split.md, "The proof").
     features
@@ -879,11 +868,10 @@ pub(crate) fn register_late_for_profile(
     if render_hooks == film::RenderHooks::Gpu {
         use render_bridge::native_scene_lists::NativeSceneLists;
 
-        let view_scale = if let Some(view) = i.view {
+        let view_scale = if let Some(output) = i.output.clone() {
             let lod = crate::lod_distance::LodDistance::new(
-                i.settings.as_deref(), view.scale_stats.clone(), i.viewer_lod,
+                i.settings.as_deref(), Some(output), i.viewer_lod,
             )?;
-            let lod = lod.with_d3d_display(i.d3d_display);
             features.add(&lod).map_err(|e| anyhow::anyhow!("LOD distance: {e}"))?;
             lod.view_scale()
         } else {
@@ -900,19 +888,17 @@ pub(crate) fn register_late_for_profile(
             })
             .map_err(|e| anyhow::anyhow!("frame scene: {e}"))?;
         // The static world on the native GPU renderer
-        // (on by default, H2_FEATURES=impl.render.native=off turns it
-        // off; docs/graphics/native-renderer.md). Its layer-draw observer
+        // (on by default; docs/graphics/native-renderer.md). Its layer-draw observer
         // runs after render-timing's. The world reads its map and resources
         // through the VFS (native_map).
         features
             .add(&render_bridge::native_world::NativeWorld::with_display_fade(
                 view_scale,
-                i.d3d_display,
+                false,
             ))
             .map_err(|e| anyhow::anyhow!("native world: {e}"))?;
         // Planar fog, layer 16, on the native GPU renderer
-        // (on by default since 2026-11-20; H2_FEATURES=impl.render.native=off
-        // turns it off for the comparison against the D3D path;
+        // (on by default since 2026-11-20;
         // docs/graphics/native-water-fog.md, "Stage 4b"). Its layer-draw
         // observer sits inside render-timing's and the world's; the fog
         // materials load with the world (native_world_glue's worker,
@@ -928,7 +914,7 @@ pub(crate) fn register_late_for_profile(
             .add(&render_bridge::native_layers::NativeLayers)
             .map_err(|e| anyhow::anyhow!("native layers: {e}"))?;
         // Water edge blend (layer 6) and the water, camouflage and hologram
-        // census. The layer observer follows impl.render.native.
+        // census. The layer observer is always on.
         features
             .add(&render_bridge::native_water::NativeWater)
             .map_err(|e| anyhow::anyhow!("native water: {e}"))?;
@@ -941,8 +927,6 @@ pub(crate) fn register_late_for_profile(
             .map_err(|e| anyhow::anyhow!("native decorators: {e}"))?;
         // Objects' render models on the native GPU renderer, skinned on the
         // GPU (on by default since 2026-11-20;
-        // H2_FEATURES=impl.render.native=off turns it off for the
-        // comparison against the D3D path;
         // docs/graphics/native-objects.md, stage 2). Its observers on the
         // layer draw sit inside render-timing's and the world's; the models
         // load per map through native_objects_glue.
@@ -950,9 +934,7 @@ pub(crate) fn register_late_for_profile(
             .add(&render_bridge::native_objects::NativeObjects::with_lod_scale(view_scale))
             .map_err(|e| anyhow::anyhow!("native objects: {e}"))?;
         // The first-person arms and weapon on the native GPU renderer
-        // (on by default since 2026-11-20;
-        // H2_FEATURES=impl.render.native=off turns it off for
-        // the comparison against the D3D path): both 0x0003fdf0 layer-3
+        // (on by default since 2026-11-20): both 0x0003fdf0 layer-3
         // draws, with the light and transparent calls
         // between and after them left in guest order.
         features
@@ -972,8 +954,7 @@ pub(crate) fn register_late_for_profile(
             .add(&render_bridge::native_transparents::NativeTransparents)
             .map_err(|e| anyhow::anyhow!("native transparents: {e}"))?;
         // Dynamic decals in their seven observed pass positions
-        // (on by default since 2026-11-20; H2_FEATURES=impl.render.native=off
-        // turns them off for the comparison against the D3D path;
+        // (on by default since 2026-11-20;
         // docs/graphics/native-decals-research.md). Only a fully resolved callback
         // is replaced; all others keep their D3D draws.
         features
@@ -988,8 +969,7 @@ pub(crate) fn register_late_for_profile(
             .add(&render_bridge::native_particles::NativeParticles)
             .map_err(|e| anyhow::anyhow!("native particles: {e}"))?;
         // The dynamic lights on the native GPU renderer
-        // (on by default since 2026-11-20; H2_FEATURES=impl.render.native=off
-        // turns them off for the comparison against the D3D path;
+        // (on by default since 2026-11-20;
         // docs/graphics/native-lights.md, stage 4): a context-only skip on
         // each light's passes, in the game's light order. Its host
         // (native_lights_glue) does the device side of a skipped light's tail
@@ -1018,8 +998,7 @@ pub(crate) fn register_late_for_profile(
     #[cfg(feature = "gpu")]
     if render_hooks == film::RenderHooks::Gpu {
         // The view's post passes on the native GPU renderer
-        // (on by default since 2026-11-20; H2_FEATURES=impl.render.native=off
-        // turns them off for the comparison against the D3D path;
+        // (on by default since 2026-11-20;
         // docs/graphics/native-post-hud.md, stage 5): a context-only hook at
         // the colour pass's entry. Its host (native_post_glue, installed with
         // the world's) plans the glow, has the device drop exactly its quads
@@ -1059,7 +1038,6 @@ pub(crate) fn register_late_for_profile(
             .add(&render_bridge::native_fog_fans::NativeFogFans)
             .map_err(|e| anyhow::anyhow!("native fog fans: {e}"))?;
         // Native UI producers and the ordered menu, HUD and loading callbacks.
-        // impl.render.native=off returns these draws to the ordinary device path.
         features
             .add(&render_bridge::native_hud::NativeHud)
             .map_err(|e| anyhow::anyhow!("native hud: {e}"))?;

@@ -22,12 +22,6 @@ runtime-test-probe = { path = "../../runtime/runtime/test-probe" }
 
 [features]
 default = []
-# `impl.render.native=off`: the D3D draw path kept as the reference
-# (docs/graphics/retire-d3d.md, R9). Without it the switch is not read and
-# the native renderer is always on. Off by default; the tests of the off
-# arm turn it on as a dev-dependency, and `boot/d3d-reference` builds a
-# game with it.
-d3d-reference = []
 
 [lints]
 workspace = true

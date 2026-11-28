@@ -3,7 +3,7 @@
 //! submits, written out as Chrome trace-event JSON that Perfetto
 //! (<https://ui.perfetto.dev>) and `chrome://tracing` open directly.
 //!
-//! The crate has no dependencies so the runtime, the kernel, d3d and gfx
+//! The crate has no dependencies so the runtime, the kernel and gfx
 //! can all call it. Every hook is one relaxed atomic load and a branch
 //! while recording is off; nothing allocates, locks or reads the clock
 //! until [`start`] has switched a category on. See `docs/perf/profiling.md`.
