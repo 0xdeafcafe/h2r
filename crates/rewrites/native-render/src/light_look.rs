@@ -347,9 +347,7 @@ pub fn animated_light_look(
             Some(TextureSource::Lightmap) => return Err(LightRefusal::Lightmap),
         };
     }
-    let state = pass_state(&applied.render_states)
-        .and_then(crate::pass_state::PassState::no_depth_offset)
-        .map_err(LightRefusal::State)?;
+    let state = pass_state(&applied.render_states).map_err(LightRefusal::State)?;
     let look = LightLook {
         layer,
         pass: pass.pass,
@@ -527,6 +525,9 @@ fn compile(
     {
         return Err(format!("light vertex program reads unsupplied c[{c}]"));
     }
+    // The pass's polygon offset is its fragments' (`frame_pixel` keeps it).
+    let mut pixel = t.pixel;
+    crate::pass_state::DepthOffset::apply(look.state.depth_offset, &mut pixel);
     let words = microcode[4..4 + 16 * vs.instructions.len()]
         .chunks_exact(4)
         .map(|w| u32::from_le_bytes([w[0], w[1], w[2], w[3]]))
@@ -545,7 +546,7 @@ fn compile(
         dims: t.dims,
         signed: t.signed,
         vertex: t.vertex,
-        pixel: t.pixel,
+        pixel,
         colours: look.vector_bindings.clone(),
         state: look.state,
     })
@@ -1081,6 +1082,32 @@ mod tests {
                 .unwrap_err()
                 .contains("frame constants")
         );
+    }
+
+    #[test]
+    fn a_light_pass_draws_its_polygon_offset_in_its_fragments() {
+        use gfx::state::RenderStateType as R;
+        use tags::shader::RenderStateValue;
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t: R| (0..=255u8).find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t)).unwrap();
+        let mut imp = implementation(0, TextureSource::Engine(9));
+        imp.render_states.extend([
+            RenderStateValue { state: slot(R::SolidOffsetEnable), value: 1 },
+            RenderStateValue { state: slot(R::PolygonOffsetZOffset), value: (-2.0f32).to_bits() },
+            RenderStateValue { state: slot(R::PolygonOffsetZSlopeScale), value: 0.5f32.to_bits() },
+        ]);
+        let look = light_look(&material(DIFFUSE_LAYER, vec![imp]), DIFFUSE_LAYER, 0).expect("not refused");
+        let offset = crate::pass_state::DepthOffset { units: -2.0, slope: 0.5 };
+        assert_eq!(look.state.depth_offset, Some(offset));
+
+        let mut look = sphere_look();
+        look.state.depth_offset = Some(offset);
+        let p = compile_light(&look, &light_program()).expect("compiles");
+        assert_eq!((p.pixel.depth[1], p.pixel.depth[2]), (-2.0, 0.5));
+        let (_, pixel) = colour_uniforms(&p, [1.0; 3], [1.0; 3]);
+        assert_eq!((pixel.depth[1], pixel.depth[2]), (-2.0, 0.5), "the colours keep it");
+        let plain = compile_light(&sphere_look(), &light_program()).unwrap();
+        assert_eq!((plain.pixel.depth[1], plain.pixel.depth[2]), (0.0, 0.0));
     }
 
     #[test]
