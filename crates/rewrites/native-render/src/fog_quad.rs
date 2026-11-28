@@ -111,6 +111,7 @@ pub fn blend_constant(argb: u32) -> [f64; 4] {
 /// | the rasterizer's bitmap `[[0x00485a80] + 0x14]` at stage 2, clamp, linear | the decoded bitmap ([`ramp_texture`]'s header), stage scale 1 (the dots are its normalised coordinates) |
 /// | W-buffered `GL_GREATER`, no depth write, or no test with `[0x0048575d]` set | [`FogOtherDraw::depth_test`]: the strip's stored depth tested `Greater` against the bound depth |
 /// | the planar fog's blend, constant `0x00ffffff` | [`blend`] with [`blend_constant`] |
+/// | the weather plate's block when `0x0003a5c0` returns true: stage 0 alone, W-buffered `GL_LEQUAL` unless its depth was held | [`FogOtherDraw::plate`]: no ramp, the strip tested `LessEqual` |
 #[derive(Clone, Debug, PartialEq)]
 pub struct FogOtherDraw {
     pub combiner: [u32; WORDS],
@@ -121,6 +122,9 @@ pub struct FogOtherDraw {
     pub z: f32,
     pub w: f32,
     pub depth_test: bool,
+    /// The weather plate's block (`engine::planar_fog::Other::Plate`):
+    /// stage 0 alone, tested less or equal.
+    pub plate: bool,
 }
 
 impl FogOtherDraw {
@@ -136,7 +140,7 @@ impl FogOtherDraw {
             return Err(Shape::NotRectangle);
         }
         let at = |n: usize| ([p[n][0], p[n][1]], t[n]);
-        Ok(Self { combiner, strip: [at(0), at(1), at(3), at(2)], z: p[0][2], w: p[0][3], depth_test })
+        Ok(Self { combiner, strip: [at(0), at(1), at(3), at(2)], z: p[0][2], w: p[0][3], depth_test, plate: false })
     }
 }
 
@@ -314,7 +318,9 @@ fn fs_main(@builtin(position) at: vec4f) -> @location(0) vec4f {
         pub depth: &'a wgpu::TextureView,
         pub guest: (u32, u32),
         pub z_scale: f32,
-        pub ramp: &'a wgpu::TextureView,
+        /// Stage 2's ramp; `None` for the plate, which samples stage 0
+        /// alone.
+        pub ramp: Option<&'a wgpu::TextureView>,
     }
 
     /// The fan's blend: the constant's factor on colour and alpha (the
@@ -440,13 +446,18 @@ fn fs_main(@builtin(position) at: vec4f) -> @location(0) vec4f {
                     Some(r)
                 }
             };
+            if !draw.plate && t.ramp.is_none() {
+                return Err("ramp");
+            }
             let words = self.words.record(t.device, encoder, t.depth)?;
             // Stage 0 in the target's guest pixels, stage 2 in the ramp's
-            // normalised coordinates.
+            // normalised coordinates; the plate samples stage 0 alone.
+            let ramp_scale = (!draw.plate).then_some((1, 1));
             let program = self
                 .quads
-                .grid_program(&draw.combiner, [Some(t.guest), None, Some((1, 1)), None])
+                .grid_program(&draw.combiner, [Some(t.guest), None, ramp_scale, None])
                 .map_err(|_| "other_combiner")?;
+            let compare = if draw.plate { wgpu::CompareFunction::LessEqual } else { wgpu::CompareFunction::Greater };
             let strip: Vec<StripVertex> = draw
                 .strip
                 .iter()
@@ -468,8 +479,8 @@ fn fs_main(@builtin(position) at: vec4f) -> @location(0) vec4f {
                     bytemuck::bytes_of(&frame),
                     Some(std::slice::from_ref(&strip)),
                     (PostSurface { view: t.color, guest_size: t.guest }, t.color_format, raster),
-                    reference.map(|_| QuadDepth { view: t.depth, compare: wgpu::CompareFunction::Greater }),
-                    [Some(&words), None, Some(t.ramp), None],
+                    reference.map(|_| QuadDepth { view: t.depth, compare }),
+                    [Some(&words), None, t.ramp.filter(|_| !draw.plate), None],
                 )?
                 .ok_or("empty")?;
             command.record(encoder);

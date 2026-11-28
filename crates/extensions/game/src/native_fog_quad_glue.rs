@@ -74,8 +74,9 @@ fn programs(device: &wgpu::Device) -> std::sync::MutexGuard<'static, Option<(wgp
 
 struct FogOtherPass {
     draw: FogOtherDraw,
-    /// Image 0 of the rasterizer's ramp bitmap, decoded when issued.
-    ramp: Arc<DecalBitmap>,
+    /// Image 0 of the rasterizer's ramp bitmap, decoded when issued;
+    /// `None` for the weather plate's block, which samples stage 0 alone.
+    ramp: Option<Arc<DecalBitmap>>,
     /// The device's depth test when issued; the strips test only when
     /// `[0x0048575d]` is 0 (`FogOtherDraw::depth_test`).
     test: Option<DepthTest>,
@@ -100,7 +101,7 @@ impl d3d::ExternalPass for FogOtherPass {
             (true, Some(test)) => Some(test),
             (true, None) => native_fog_quad::unported("depth_clip"),
         };
-        let ramp = texture_view(t.device, t.queue, &self.ramp);
+        let ramp = self.ramp.as_ref().map(|b| texture_view(t.device, t.queue, b));
         let mut gpu = programs(t.device);
         let Some((_, pass)) = gpu.as_mut() else { return 0 };
         let target = FogOtherTarget {
@@ -112,7 +113,7 @@ impl d3d::ExternalPass for FogOtherPass {
             depth: t.depth,
             guest: t.guest_size,
             z_scale: t.z_scale,
-            ramp: &ramp,
+            ramp: ramp.as_ref(),
         };
         match pass.record_other(target, t.encoder, &self.draw, test) {
             Ok(_) => 1,
@@ -133,9 +134,10 @@ impl<B: d3d::Backend + Send + 'static> Host for Draw<B> {
     }
 
     fn draw_other(&self, mem: &mut dyn GuestMemory, draw: &FogOtherDraw) -> bool {
-        let header = native_render::fog_quad::ramp_texture(&|a| mem.u32(a).ok()).unwrap_or_else(|why| native_fog_quad::unported(why));
+        let header = (!draw.plate)
+            .then(|| native_render::fog_quad::ramp_texture(&|a| mem.u32(a).ok()).unwrap_or_else(|why| native_fog_quad::unported(why)));
         let Ok(mut device) = self.device.lock() else { return false };
-        let ramp = decode_bitmap(&*mem, header, device.config().address_map).unwrap_or_else(|why| native_fog_quad::unported(why));
+        let ramp = header.map(|h| decode_bitmap(&*mem, h, device.config().address_map).unwrap_or_else(|why| native_fog_quad::unported(why)));
         let pass = FogOtherPass { draw: draw.clone(), ramp, test: None };
         matches!(device.external_pass_now(&mut DeviceMemory(mem), Box::new(pass)), Ok(true))
     }

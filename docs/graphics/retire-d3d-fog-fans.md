@@ -60,7 +60,7 @@ What a fan cannot draw panics: `host`, `placed`, `bitmap` (not loaded), `weather
 
 The fans (**Code**, `h2 disasm`). Each fan is four vertices of the rectangle `0x00034420` makes (its first argument 0: the window `0x00485648`, or the whole target for targets `0x12`/`0x14`), attributes 15 down to 0 asked of the callback, 0 the position. All three setups bind the vertex program `0x0001c590` (`[[[0x00485a80] + 0x5c] + 0x64]`), which passes the position in pixels through (**S**, as for the fog quad).
 
-The layers' composite with the branch byte clear calls the weather plate's placement `0x0003a5c0` (`stdcall`, nine arguments, `ret 24h`); when it returns true the setup binds target `0x13` at stage 1 (clamp, linear) and the fan draws with the plate's state, and when false the setup takes the set branch. The composite's call (`0x00026e89`..`0x00026ef0`) is the only one ported (`PlateArgs::fog`):
+The layers' composite with the branch byte clear calls the weather plate's placement `0x0003a5c0` (`stdcall`, nine arguments, `ret 24h`); when it returns true the setup binds target `0x13` at stage 1 (clamp, linear) and the fan draws with the plate's state, and when false the setup takes the set branch. Two calls are ported: the composite's (`0x00026e89`..`0x00026ef0`, `PlateArgs::fog`), below, and the other planar fog setup's (kind 1, `PlateArgs::planar`, [retire-d3d-fog-quad.md](retire-d3d-fog-quad.md)). The composite's:
 
 | Argument | Value |
 |---|---|

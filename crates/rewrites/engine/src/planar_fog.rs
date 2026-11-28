@@ -247,10 +247,11 @@ pub fn quad(mem: &dyn GuestMemory, mxcsr: u32, x87_control: u16, rect_at: u32) -
 /// The setup of view modes 1, 4 and 5 (`0x00025e50`, `h2 disasm 0x25e50
 /// 470`), as the native pass draws its fan.
 ///
-/// With [`other::PLATE`] equal to 0 it first asks `0x0003a5c0` (the
-/// weather plate's placement, not read: [`Other::Plate`]). Otherwise it
-/// writes the clip far to the depth word, selects the view's target,
-/// binds target 3 (the depth buffer's `D24S8` words as `LIN_A8R8G8B8`,
+/// With [`other::PLATE`] equal to 0 it first asks the weather plate's
+/// placement `0x0003a5c0` (kind 1, `crate::fog_fans::PlateArgs::planar`):
+/// true returns AL 1 at once, so the fan draws the plate's block and state
+/// ([`Other::Plate`]). Otherwise, or on false, it writes the clip far to
+/// the depth word, selects the view's target, binds target 3 (the depth buffer's `D24S8` words as `LIN_A8R8G8B8`,
 /// `0x00014f60`) at stage 0 and the rasterizer's bitmap
 /// `[[0x00485a80] + 0x14]` (image 0, `0x000143c0`) at stage 2, sets the
 /// planar fog's blend (`STATES`' blend rows), cull, stencil and alpha test
@@ -288,8 +289,12 @@ pub mod other {
 /// What the other setup does this call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Other {
-    /// [`other::PLATE`] is 0: the plate `0x0003a5c0` is asked first.
-    Plate,
+    /// [`other::PLATE`] is 0 and the plate `0x0003a5c0` returned true: its
+    /// block (`crate::fog_fans::WeatherPlate`) over target 3 at stage 0,
+    /// the planar fog quad's blend, W-buffered less or equal unless the
+    /// plate held its depth to the limit (`depth_test` false), the fan at
+    /// the depth it wrote. The depth word is the plate's, written already.
+    Plate(OtherQuad),
     /// The fan, drawn by the main path.
     Quad(OtherQuad),
 }
@@ -366,14 +371,23 @@ fn plane(mem: &dyn GuestMemory, sse: &mut Sse, start: u32, end: u32) -> Result<[
 
 /// `0x00025e50` for the fan whose rectangle is at `rect_at`, under the
 /// call's MXCSR and x87 control word.
-pub fn other(mem: &dyn GuestMemory, mxcsr: u32, x87_control: u16, rect_at: u32) -> Result<Other, Error> {
+///
+/// `mem` takes the plate's depth write when it is asked and returns true.
+pub fn other(mem: &mut dyn GuestMemory, mxcsr: u32, x87_control: u16, rect_at: u32) -> Result<Other, Error> {
     use crate::planar_fog::other as o;
     let mut sse = Sse { mxcsr };
     let zero = mem.u32(global::ZERO)?;
     let plate = mem.u32(o::PLATE)?;
     if sse.equal(plate, zero)? {
-        return Ok(Other::Plate);
+        let args = crate::fog_fans::PlateArgs::planar(&*mem)?;
+        if let Some(p) = crate::fog_fans::weather_plate_placement(mem, mxcsr, x87_control, &args)? {
+            // 0x00026515: AL 1, the corners at the plate's depth word.
+            let depth = crate::fog_fans::callback_depth(mem)?;
+            let (rect, positions, coordinates) = other_corners(&*mem, &mut sse, rect_at, depth)?;
+            return Ok(Other::Plate(OtherQuad { combiner: p.combiner, depth, rect, positions, coordinates, depth_test: !p.z_off }));
+        }
     }
+    let mem = &*mem;
     let one = mem.u32(screen_grid::constant::ONE)?;
     let (mix, amount) = (mem.u32(o::MIX)?, mem.u32(o::AMOUNT)?);
     // 0x000260e2..0x000263a5: each product, then each lane, clamped to
@@ -413,16 +427,27 @@ pub fn other(mem: &dyn GuestMemory, mxcsr: u32, x87_control: u16, rect_at: u32) 
         pack(fog)?,
     );
     let depth = mem.u32(global::CLIP_FAR)?;
+    let (rect, positions, coordinates) = other_corners(mem, &mut sse, rect_at, depth)?;
+    let depth_test = mem.u8(o::NO_DEPTH_TEST)? == 0;
+    Ok(Other::Quad(OtherQuad { combiner, depth, rect, positions, coordinates, depth_test }))
+}
+
+/// The other setup's fan corners (`0x00026710`) at `depth`: positions at
+/// the depth, attributes 1 and 4 the rectangle's lerp, 2 and 3 the planes.
+#[allow(clippy::type_complexity)]
+fn other_corners(mem: &dyn GuestMemory, sse: &mut Sse, rect_at: u32, depth: u32) -> Result<([u32; 4], [[u32; 4]; 4], [[[u32; 4]; 4]; 4]), Error> {
+    use crate::planar_fog::other as o;
+    let one = mem.u32(screen_grid::constant::ONE)?;
     let mut rect = [0; 4];
     for (i, r) in rect.iter_mut().enumerate() {
         *r = mem.u32(rect_at.wrapping_add(4 * i as u32))?;
     }
-    let near = plane(mem, &mut sse, o::NEAR_START, o::NEAR_END)?;
-    let far = plane(mem, &mut sse, o::FAR_START, o::FAR_END)?;
+    let near = plane(mem, sse, o::NEAR_START, o::NEAR_END)?;
+    let far = plane(mem, sse, o::FAR_START, o::FAR_END)?;
     let (mut positions, mut coordinates) = ([[0; 4]; 4], [[[0; 4]; 4]; 4]);
     for (n, [u, v]) in CORNER_UV.into_iter().enumerate() {
         let uv = [if u { one } else { 0 }, if v { one } else { 0 }];
-        positions[n] = screen_grid::position(mem, &mut sse, &rect, uv, depth)?;
+        positions[n] = screen_grid::position(mem, sse, &rect, uv, depth)?;
         // 0x00026812: attributes 1 and 4, the rectangle's lerp, z 0, w 1.
         let [left, right, top, bottom] = rect;
         let x = sse.sub(right, left)?;
@@ -434,8 +459,7 @@ pub fn other(mem: &dyn GuestMemory, mxcsr: u32, x87_control: u16, rect_at: u32) 
         let lerp = [x, y, 0, one];
         coordinates[n] = [lerp, near, far, lerp];
     }
-    let depth_test = mem.u8(o::NO_DEPTH_TEST)? == 0;
-    Ok(Other::Quad(OtherQuad { combiner, depth, rect, positions, coordinates, depth_test }))
+    Ok((rect, positions, coordinates))
 }
 
 #[cfg(test)]
@@ -555,19 +579,88 @@ mod tests {
         m
     }
 
+    /// [`other_mem`] with the plate's word 0 and its constants: the first
+    /// plane 0.25 to 0.75 over a scale of 1, slope 2 (`n` 1), limit 0.1.
+    fn plate_mem() -> FlatMemory {
+        use crate::fog_fans::plate_global as p;
+        let mut m = other_mem();
+        let f = |m: &mut FlatMemory, a: u32, v: f32| m.set_f32(a, v).unwrap();
+        for (a, v) in [
+            (other::PLATE, 0.0),
+            (p::CAP_KIND1, 128.0),
+            (p::RESCALE, 256.0),
+            (p::UNRESCALE, 1.0 / 256.0),
+            (p::FIXED, 65536.0),
+            (p::UNFIXED, 1.0 / 65536.0),
+            (p::HALF, 0.5),
+            (p::LIMIT, 0.1),
+            (p::KIND1_DIV, 2.0),
+            (p::KIND1_DIV_HIGH, 4.0),
+        ] {
+            f(&mut m, a, v);
+        }
+        m
+    }
+
     #[test]
     fn the_other_setup_asks_the_plate_when_its_word_is_zero() {
+        let mut m = plate_mem();
+        assert!(matches!(other(&mut m, MXCSR, CONTROL, 0x0050_0000).unwrap(), Other::Plate(_)));
+        // The plate's false (an empty range) falls into the main path.
+        m.set_f32(other::NEAR_END, 0.25).unwrap();
+        m.set_f32(global::DEPTH, 0.0).unwrap();
+        assert!(matches!(other(&mut m, MXCSR, CONTROL, 0x0050_0000).unwrap(), Other::Quad(_)));
+        assert_eq!(m.u32(global::DEPTH).unwrap(), 0);
         let mut m = other_mem();
-        m.set_f32(other::PLATE, 0.0).unwrap();
-        assert_eq!(other(&m, MXCSR, CONTROL, 0x0050_0000).unwrap(), Other::Plate);
         m.set_f32(other::PLATE, f32::NAN).unwrap();
-        assert!(matches!(other(&m, MXCSR, CONTROL, 0x0050_0000).unwrap(), Other::Quad(_)));
+        assert!(matches!(other(&mut m, MXCSR, CONTROL, 0x0050_0000).unwrap(), Other::Quad(_)));
+    }
+
+    #[test]
+    fn the_plates_kind_1_block_is_the_planar_fog_through_its_slope() {
+        let mut m = plate_mem();
+        let Other::Plate(q) = other(&mut m, MXCSR, CONTROL, 0x0050_0000).unwrap() else { panic!("the plate") };
+        let w = &q.combiner;
+        // Stage 0 alone, the common words.
+        assert_eq!((w[53], w[54], w[0], w[26]), (0x1_1108, 1, 0x0820_0000, 0x40));
+        // The near end 16384 / 65536: low 0, high 64.
+        assert_eq!((w[11], w[12]), (0, 0x4000_0000));
+        // 2 * 256 / 2 held to 255; 2 * 0.5 = 1.
+        assert_eq!(w[24], 0xff00_0001);
+        assert_eq!((w[4], w[30], w[31], w[32]), (0x1d20_1d00, 0xd00, 0xd00, 0x10d00));
+        // No negative near end: the start, so its alpha, is 0.
+        assert_eq!(w[23], 0);
+        // The amount 2 held to 1, 0.25 * 2 three times.
+        assert_eq!(w[16], 255 << 24 | 128 << 16 | 128 << 8 | 128);
+        // Density 0.5, colour 1, 0.5, 0.25, twice.
+        assert_eq!((w[17], w[43]), (128 << 24 | 255 << 16 | 128 << 8 | 64, 128 << 24 | 255 << 16 | 128 << 8 | 64));
+        assert_eq!((w[7], w[8], w[9], w[40], w[51]), (0x1114_1d05, 0x0114_000f, 0x1d04_1c00, 0x0134_1134, 0x45));
+        // The result 1 * 0.25, above the limit: written, tested.
+        assert_eq!(q.depth, 0.25f32.to_bits());
+        assert_eq!(m.u32(global::DEPTH).unwrap(), q.depth);
+        assert!(q.depth_test);
+        assert_eq!(q.coordinates[2][0].map(f32::from_bits), [640.0, 480.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn a_negative_near_end_starts_the_plate_and_its_held_depth_drops_the_test() {
+        let mut m = plate_mem();
+        // -0.25 to 0.25: slope 2, the start -2 * -0.25 = 0.5, the near end 0.
+        m.set_f32(other::NEAR_START, -0.25).unwrap();
+        m.set_f32(other::NEAR_END, 0.25).unwrap();
+        let Other::Plate(q) = other(&mut m, MXCSR, CONTROL, 0x0050_0000).unwrap() else { panic!("the plate") };
+        // (1 / 1) / 2 / (2 / 2) * 0.5 = 0.25: 63.75 to 64.
+        assert_eq!(q.combiner[23], 64 << 24);
+        assert_eq!(q.combiner[11] | q.combiner[12], 0);
+        // The result 0 is held to the limit, which turns the test off.
+        assert_eq!(q.depth, 0.1f32.to_bits());
+        assert!(!q.depth_test);
     }
 
     #[test]
     fn the_other_block_is_the_texture_shader_fog_with_clamped_constants() {
-        let m = other_mem();
-        let Other::Quad(q) = other(&m, MXCSR, CONTROL, 0x0050_0000).unwrap() else { panic!("a quad") };
+        let mut m = other_mem();
+        let Other::Quad(q) = other(&mut m, MXCSR, CONTROL, 0x0050_0000).unwrap() else { panic!("a quad") };
         let w = &q.combiner;
         assert_eq!((w[53], w[54], w[55]), (0x0001_1004, 0x2621, 0x44));
         // (1 - 0.25) * 0.5, then 0.25 * 2 three times: 0.375, 0.5.
@@ -584,8 +677,8 @@ mod tests {
 
     #[test]
     fn the_other_fans_attributes_are_the_lerp_and_the_two_planes() {
-        let m = other_mem();
-        let Other::Quad(q) = other(&m, MXCSR, CONTROL, 0x0050_0000).unwrap() else { panic!("a quad") };
+        let mut m = other_mem();
+        let Other::Quad(q) = other(&mut m, MXCSR, CONTROL, 0x0050_0000).unwrap() else { panic!("a quad") };
         let f = |v: [u32; 4]| v.map(f32::from_bits);
         assert_eq!(f(q.coordinates[2][0]), [640.0, 480.0, 0.0, 1.0]);
         assert_eq!(f(q.coordinates[2][3]), [640.0, 480.0, 0.0, 1.0]);

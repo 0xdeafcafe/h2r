@@ -16,15 +16,16 @@
 //! at its own entry ([`turn_other`]): its texture-shader fog
 //! (`engine::planar_fog::other`) drawn by [`Host::draw_other`]
 //! (`native_render::fog_quad::FogOtherDraw`), the depth word written, AL
-//! 0, so its fan draws nothing.
+//! 0, so its fan draws nothing. With `[0x0048578c]` 0 it asks the weather
+//! plate `0x0003a5c0` first (`engine::fog_fans::weather_plate_placement`,
+//! kind 1); when that returns true the strip draws the plate's block
+//! (`FogOtherDraw::plate`) and the depth word is the plate's.
 //!
 //! What the cuts cannot draw is `unimplemented!("fog quad: <cause>")`: no
 //! host, a pass the device does not place (`placed`, `other_placed`), a
 //! fan that is not one quad (`fan_shape`, `fan_unfinite`), an operand the
 //! SSE or x87 model refuses (`simd`, `x87`), an unreadable input
-//! (`unread`), a quad placed but not recorded ([`unported`]), and the
-//! other setup's plate path (`other_plate`: `[0x0048578c]` is 0, so it
-//! asks `0x0003a5c0` first, which is not read).
+//! (`unread`), and a quad placed but not recorded ([`unported`]).
 
 use std::sync::{Arc, Mutex};
 
@@ -127,19 +128,21 @@ pub fn turn_other(mem: &mut dyn GuestMemory, esp: u32, mxcsr: u32, x87_control: 
     let Some(rect_at) = quad_call(&*mem, esp) else {
         return Turn::Guest;
     };
-    let quad = match pf::other(&*mem, mxcsr, x87_control, rect_at).unwrap_or_else(|e| unported(cause(e))) {
-        pf::Other::Plate => unported("other_plate (0x0003a5c0)"),
-        pf::Other::Quad(q) => q,
+    // The plate writes its own depth word when it returns true.
+    let (quad, plate) = match pf::other(mem, mxcsr, x87_control, rect_at).unwrap_or_else(|e| unported(cause(e))) {
+        pf::Other::Plate(q) => (q, true),
+        pf::Other::Quad(q) => (q, false),
     };
     let host = host.unwrap_or_else(|| unported("host"));
     let positions = quad.positions.map(|p| p.map(f32::from_bits));
     let coordinates = quad.coordinates.map(|v| v.map(|c| c.map(f32::from_bits)));
     let draw = FogOtherDraw::from_fan(quad.combiner, positions, coordinates, quad.depth_test)
+        .map(|d| FogOtherDraw { plate, ..d })
         .unwrap_or_else(|shape| unported(shape.cause()));
     if !host.draw_other(mem, &draw) {
         unported("other_placed");
     }
-    if pf::gate_writes(mem).is_err() {
+    if !plate && pf::gate_writes(mem).is_err() {
         unported("depth_write");
     }
     Turn::Return
@@ -344,11 +347,33 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "fog quad: other_plate")]
-    fn the_other_setups_plate_panics() {
+    fn the_other_setups_plate_draws_its_block_at_its_depth() {
+        use engine::fog_fans::plate_global as p;
+        use engine::planar_fog::other as o;
         let mut m = other_mem();
-        m.set_f32(engine::planar_fog::other::PLATE, 0.0).unwrap();
-        turn_other(&mut m, ESP, MXCSR, CONTROL, Some(&Draws::default()));
+        for (a, v) in [
+            (o::PLATE, 0.0),
+            (o::NEAR_START, 0.25),
+            (o::NEAR_END, 0.75),
+            (o::DEPTH_SCALE, 1.0),
+            (p::CAP_KIND1, 128.0),
+            (p::RESCALE, 256.0),
+            (p::FIXED, 65536.0),
+            (p::UNFIXED, 1.0 / 65536.0),
+            (p::HALF, 0.5),
+            (p::LIMIT, 0.1),
+            (p::KIND1_DIV, 2.0),
+        ] {
+            m.set_f32(a, v).unwrap();
+        }
+        let host = Draws::default();
+        assert_eq!(turn_other(&mut m, ESP, MXCSR, CONTROL, Some(&host)), Turn::Return);
+        let drawn = host.2.lock().unwrap().clone();
+        assert_eq!(drawn.len(), 1);
+        assert!(drawn[0].plate && drawn[0].depth_test);
+        assert_eq!(drawn[0].combiner[54], 1);
+        // The plate's depth word, not the gate's clip far.
+        assert_eq!(m.u32(global::DEPTH).unwrap(), 0.25f32.to_bits());
     }
 
     #[test]

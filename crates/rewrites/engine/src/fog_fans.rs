@@ -371,6 +371,16 @@ pub const WEATHER_PLATE: u32 = 0x0003_a5c0;
 
 /// `0x0003a5c0`'s image constants and globals.
 pub mod plate_global {
+    /// Kind 1's cap (the jump table at `0x0003b88c`, case `0x0003a62d`).
+    pub const CAP_KIND1: u32 = 0x0045_dc90;
+    /// Kind 1's divisors by the slope's power of two `n`
+    /// (`0x0003b0a1`..`0x0003b0db`): the first for `n` above 0 and `n`
+    /// 5, the second for `n` above 5.
+    pub const KIND1_DIV: u32 = 0x0045_dc0c;
+    pub const KIND1_DIV_HIGH: u32 = 0x0045_dc10;
+    /// The other planar fog setup's block (`0x00025e84`), read at
+    /// `+0x1c`..`+0x28` and `+0x5c`..`+0x68` by kind 1.
+    pub const PLANAR_BLOCK: u32 = 0x0048_574c;
     /// 1.0.
     pub const ONE: u32 = 0x0045_dbc0;
     /// The scale the depths are divided by and the result multiplied by
@@ -390,14 +400,18 @@ pub mod plate_global {
     pub const LIMIT: u32 = 0x0048_5658;
 }
 
-/// The block the layers' composite builds on its stack for the plate
-/// (`0x00026e73`..`0x00026eec`): the fog's density and amount, its colour,
-/// and at `+0x14` whether `dl` is clear (the fan goes into target 3).
+/// The plate's block: for kind 2 the one the layers' composite builds on
+/// its stack (`0x00026e73`..`0x00026eec`): the fog's density and amount,
+/// its colour, and at `+0x14` whether `dl` is clear (the fan goes into
+/// target 3). For kind 1 the planar fog's at [`plate_global::PLANAR_BLOCK`]:
+/// density `+0x68`, amount `+0x28`, colour `+0x5c`, `first` `+0x1c`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PlateBlock {
     pub density: u32,
     pub amount: u32,
     pub colour: [u32; 3],
+    /// Kind 1's three `f32`s times the amount; 0 for kind 2.
+    pub first: [u32; 3],
     pub target3: bool,
 }
 
@@ -423,6 +437,7 @@ impl PlateArgs {
             density: mem.u32(layers_global::DENSITY)?,
             amount: mem.u32(global::AMOUNT)?,
             colour: [lane(0)?, lane(1)?, lane(2)?],
+            first: [0; 3],
             target3: mem.u8(global::FLAG_DL)? == 0,
         };
         Ok(Self {
@@ -435,15 +450,40 @@ impl PlateArgs {
         })
     }
 
-    /// Why these arguments are not the path ported, `None` for the
-    /// composite's. Kinds 0, 1 and 3, the other flags (argument 7 set
-    /// skips the device setup, `0x0003a7c9`) and no result are other
-    /// callers'.
+    /// The other planar fog setup's call (`0x00025e68`..`0x00025e89`),
+    /// with [`crate::planar_fog::other::PLATE`] 0: kind 1, flags 0, the
+    /// planar block, the first plane's range, the result into the depth
+    /// word.
+    pub fn planar(mem: &dyn GuestMemory) -> Result<Self, MemFault> {
+        use crate::planar_fog::other as o;
+        let at = |o: u32| mem.u32(plate_global::PLANAR_BLOCK + o);
+        let block = PlateBlock {
+            density: at(0x68)?,
+            amount: at(0x28)?,
+            colour: [at(0x5c)?, at(0x60)?, at(0x64)?],
+            first: [at(0x1c)?, at(0x20)?, at(0x24)?],
+            target3: false,
+        };
+        Ok(Self {
+            block,
+            near: mem.u32(o::NEAR_START)?,
+            far: mem.u32(o::NEAR_END)?,
+            kind: 1,
+            flags: [0; 4],
+            result: crate::planar_fog::global::DEPTH,
+        })
+    }
+
+    /// Why these arguments are not a path ported, `None` for the
+    /// composite's (kind 2, flags 0, 0, 1, 0) and the planar fog's (kind
+    /// 1, flags 0). Kinds 0 and 3, the other flags (argument 7 set skips
+    /// the device setup, `0x0003a7c9`) and no result are other callers'.
     pub fn unported(&self) -> Option<String> {
-        if self.kind != 2 {
+        if self.kind != 1 && self.kind != 2 {
             return Some(format!("kind {}", self.kind));
         }
-        if self.flags != [0, 0, 1, 0] {
+        let flags = if self.kind == 2 { [0, 0, 1, 0] } else { [0; 4] };
+        if self.flags != flags {
             return Some(format!("flags {:?}", self.flags));
         }
         if self.result == 0 {
@@ -454,13 +494,16 @@ impl PlateArgs {
 }
 
 /// What `0x0003a5c0` leaves when it returns true: where the fan draws
-/// (the view's target, or target 3 when the block's byte is set), the
-/// 60-word block it builds at `0x00484f68` and the depth it wrote.
+/// (the view's target, or target 3 when kind 2's byte is set), the
+/// 60-word block it builds at `0x00484f68`, the depth it wrote, and
+/// whether that depth was held to the limit, which turns the depth test
+/// off (`0x0003b864`, state `0x8f` 0).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WeatherPlate {
     pub dest: LayersDest,
     pub combiner: [u32; WORDS],
     pub depth: u32,
+    pub z_off: bool,
 }
 
 /// `fld dword a; fmul dword b` (or `a` alone), `fstp qword`, `floor`
@@ -538,8 +581,14 @@ pub fn weather_plate_placement(mem: &mut dyn GuestMemory, mxcsr: u32, x87_contro
     let mut near = sse.mul(inv, args.near)?;
     let mut far = sse.mul(inv, args.far)?;
     let big = sse.mul(far, rescale)?;
-    // Kind 2: `al` 1, so a small range is rescaled.
-    let rescaled = !sse.below(one, big)?;
+    // The kind's switch (0x0003a618): kind 1 `al` 0 and `bl` 1, its own
+    // cap; kind 2 `al` 1, so a small range is rescaled, and `bl` 0.
+    let (rescales, bl, cap) = match args.kind {
+        1 => (false, true, mem.u32(g::CAP_KIND1)?),
+        _ => (true, false, cap),
+    };
+    let small = !sse.below(one, big)?;
+    let rescaled = rescales && small;
     if rescaled {
         near = sse.mul(near, rescale)?;
         far = big;
@@ -562,10 +611,24 @@ pub fn weather_plate_placement(mem: &mut dyn GuestMemory, mxcsr: u32, x87_contro
         if rescaled {
             return Ok(None);
         }
+        // Arguments 4 and 5 are 0 on both calls; argument 6 keeps the
+        // near end, else false (0x0003a71c..0x0003a761).
+        if args.flags[2] == 0 {
+            return Ok(None);
+        }
     }
-    // Kind 2's `bl` is clear and argument 5 is 0: a negative near end fails.
+    // A negative near end: with `bl` (kind 1) the start is `-slope * near`
+    // in [0, 1] and the near end 0 (0x0003a779..0x0003a7bc); without it
+    // (kind 2, argument 5 0) false.
+    let mut start = 0;
+    let mut near = near;
     if sse.above(0, near)? {
-        return Ok(None);
+        if !bl {
+            return Ok(None);
+        }
+        let p = sse.mul(slope, near)?;
+        start = clamp01(sse.sub(0, p)?);
+        near = 0;
     }
     let target = mem.u16(composite_global::VIEW_TARGET)? as i16;
 
@@ -591,8 +654,6 @@ pub fn weather_plate_placement(mem: &mut dyn GuestMemory, mxcsr: u32, x87_contro
         }
     }
     let byte_scale = mem.u32(composite_global::SCALE)?;
-    let density = alpha_byte(args.block.density, byte_scale, x87_control)?;
-    let amount = alpha_byte(args.block.amount, byte_scale, x87_control)?;
     let hi = floor_byte(x87_control, scaled_over(x87_control, slope, rescale, 1 << n)?)?;
     let half = {
         let mut x = X87::new(x87_control);
@@ -601,10 +662,7 @@ pub fn weather_plate_placement(mem: &mut dyn GuestMemory, mxcsr: u32, x87_contro
         x.fstp_m32()?
     };
     let lo = floor_byte(x87_control, half)?;
-    let level = |over: u32, under: u32| -> u32 {
-        let x = if n > over { 0x20 } else if n <= under { 0 } else { 0x10 };
-        x << 12 | 0xd00
-    };
+    // 0x0003a9f3: the block cleared, then the words both kinds take.
     let mut w = [0u32; WORDS];
     for (i, x) in [
         (11, low << 24),
@@ -627,6 +685,48 @@ pub fn weather_plate_placement(mem: &mut dyn GuestMemory, mxcsr: u32, x87_contro
         (48, 0xc00),
         (3, 0xdd20_2df1),
         (29, 0xd00),
+        (54, 1), // texture modes: stage 0 2D
+    ] {
+        w[i] = x;
+    }
+    let dest = if args.kind == 1 {
+        kind1_words(&mut w, &*mem, &mut sse, x87_control, &args.block, [slope, start], n, byte_scale, hi << 24 | lo)?;
+        LayersDest::View(target)
+    } else {
+        kind2_words(&mut w, x87_control, args, rescaled, n, byte_scale, hi << 24 | lo, target)?
+    };
+    let mut depth = sse.mul(scale, near)?;
+    if rescaled {
+        depth = sse.mul(depth, mem.u32(g::UNRESCALE)?)?;
+    }
+    let limit = mem.u32(g::LIMIT)?;
+    let z_off = !sse.below(limit, depth)?;
+    if z_off {
+        depth = limit;
+    }
+    mem.set_u32(args.result, depth)?;
+    Ok(Some(WeatherPlate { dest, combiner: w, depth, z_off }))
+}
+
+/// Kind 2's words (0x0003b29f..0x0003b545) and where its fan draws.
+#[allow(clippy::too_many_arguments)]
+fn kind2_words(
+    w: &mut [u32; WORDS],
+    x87_control: u16,
+    args: &PlateArgs,
+    rescaled: bool,
+    n: u32,
+    byte_scale: u32,
+    slope_bytes: u32,
+    target: i16,
+) -> Result<LayersDest, Error> {
+    let density = alpha_byte(args.block.density, byte_scale, x87_control)?;
+    let amount = alpha_byte(args.block.amount, byte_scale, x87_control)?;
+    let level = |over: u32, under: u32| -> u32 {
+        let x = if n > over { 0x20 } else if n <= under { 0 } else { 0x10 };
+        x << 12 | 0xd00
+    };
+    for (i, x) in [
         // Kind 2 (0x0003b331..0x0003b4f2).
         (54, 0x21), // texture modes: stages 0 and 1 2D
         (14, if rescaled { 0x7f00_00ff } else { 0 }),
@@ -640,7 +740,7 @@ pub fn weather_plate_placement(mem: &mut dyn GuestMemory, mxcsr: u32, x87_contro
         (50, 0xd00),
         (5, (if n > 6 { 0x20 } else { 0 }) | 0x0d20_0d00),
         (31, level(5, 4)),
-        (24, hi << 24 | lo),
+        (24, slope_bytes),
         (6, 0x1d12_0c02),
         (7, 0x1d0d_0d20),
         (33, 0x4d00),
@@ -648,7 +748,7 @@ pub fn weather_plate_placement(mem: &mut dyn GuestMemory, mxcsr: u32, x87_contro
     ] {
         w[i] = x;
     }
-    let dest = if args.block.target3 {
+    Ok(if args.block.target3 {
         // 0x0003b506: target 3, blue alone, blend off; no final constant.
         w[8] = 0x1d;
         w[9] = 0;
@@ -658,17 +758,75 @@ pub fn weather_plate_placement(mem: &mut dyn GuestMemory, mxcsr: u32, x87_contro
         w[8] = 0x1d01_0000;
         w[9] = 0x1d00;
         LayersDest::View(target)
+    })
+}
+
+/// Kind 1's words (`0x0003ae64`..`0x0003b291`): the planar block's
+/// amount and its `first` lanes times it, and its density and colour,
+/// each in [0, 1]; the start over the slope's scale as an alpha byte; the
+/// final constant the density and colour. Its states are the planar fog
+/// quad's (`crate::planar_fog::STATES`: blend, W-buffered less or equal,
+/// no depth write) and its texture modes the common stage 0 alone.
+#[allow(clippy::too_many_arguments)]
+fn kind1_words(
+    w: &mut [u32; WORDS],
+    mem: &dyn GuestMemory,
+    sse: &mut Sse,
+    x87_control: u16,
+    block: &PlateBlock,
+    [slope, start]: [u32; 2],
+    n: u32,
+    byte_scale: u32,
+    slope_bytes: u32,
+) -> Result<(), Error> {
+    use plate_global as g;
+    let pack = |v: [u32; 4]| crate::colour_pass::pack_colour(v, byte_scale, x87_control);
+    let amount = clamp01(block.amount);
+    let mut lit = [amount, 0, 0, 0];
+    for (l, &f) in lit[1..].iter_mut().zip(&block.first) {
+        *l = clamp01(sse.mul(f, block.amount)?);
+    }
+    let fog = [clamp01(block.density), clamp01(block.colour[0]), clamp01(block.colour[1]), clamp01(block.colour[2])];
+    // 0x0003b0a1..0x0003b11b: ((1 / a) / b) / (slope / 2^n) * start.
+    let one = mem.u32(g::ONE)?;
+    let div = mem.u32(g::KIND1_DIV)?;
+    let a = if n > 5 { mem.u32(g::KIND1_DIV_HIGH)? } else if n > 4 { div } else { one };
+    let b = if n > 0 { div } else { one };
+    let mut t = sse.div(one, a)?;
+    t = sse.div(t, b)?;
+    let power = sse.int(1 << n)?;
+    let scaled = sse.div(slope, power)?;
+    t = sse.div(t, scaled)?;
+    t = sse.mul(t, start)?;
+    let fog_word = pack(fog)?;
+    let level = |over: u32, under: u32| -> u32 {
+        let x = if n > over { 0x20 } else if n <= under { 0 } else { 0x10 };
+        x << 12 | 0xd00
     };
-    let mut depth = sse.mul(scale, near)?;
-    if rescaled {
-        depth = sse.mul(depth, mem.u32(g::UNRESCALE)?)?;
+    for (i, x) in [
+        (0, 0x0820_0000),
+        (26, 0x40),
+        (4, (if n > 3 { 0x20 } else { 0 }) | 0x1d20_1d00),
+        (30, level(2, 1)),
+        (23, alpha_byte(clamp01(t), byte_scale, x87_control)?),
+        (5, 0x1d20_1220),
+        (31, level(5, 4)),
+        (16, pack(lit)?),
+        (24, slope_bytes),
+        (40, 0x0134_1134),
+        (51, 0x45),
+        (6, 0x1d12_0c02),
+        (32, (if n > 0 { 0x10 } else { 0 }) << 12 | 0xd00),
+        (17, fog_word),
+        (7, 0x1114_1d05),
+        (33, 0xc00),
+        (8, 0x0114_000f),
+        (9, 0x1d04_1c00),
+        (43, fog_word),
+    ] {
+        w[i] = x;
     }
-    let limit = mem.u32(g::LIMIT)?;
-    if !sse.below(limit, depth)? {
-        depth = limit;
-    }
-    mem.set_u32(args.result, depth)?;
-    Ok(Some(WeatherPlate { dest, combiner: w, depth }))
+    Ok(())
 }
 
 /// The layers' composite's corners (`0x00027520`) at the callback's
@@ -1038,10 +1196,14 @@ mod tests {
         let a = PlateArgs::fog(&m).unwrap();
         assert_eq!((a.kind, a.flags, a.result), (2, [0, 0, 1, 0], composite_global::DEPTH));
         assert_eq!((a.near, a.far), (24.0f32.to_bits(), 1048.0f32.to_bits()));
-        assert_eq!(a.block, PlateBlock { density: 1.0f32.to_bits(), amount: 0.5f32.to_bits(), colour: [1.0f32.to_bits(), 0.5f32.to_bits(), 0.25f32.to_bits()], target3: false });
+        assert_eq!(a.block, PlateBlock { density: 1.0f32.to_bits(), amount: 0.5f32.to_bits(), colour: [1.0f32.to_bits(), 0.5f32.to_bits(), 0.25f32.to_bits()], first: [0; 3], target3: false });
         assert_eq!(PlateArgs { kind: 3, ..a }.unported().as_deref(), Some("kind 3"));
         assert_eq!(PlateArgs { flags: [0, 0, 1, 1], ..a }.unported().as_deref(), Some("flags [0, 0, 1, 1]"));
         assert_eq!(PlateArgs { result: 0, ..a }.unported().as_deref(), Some("no result"));
+        // The planar fog's call: kind 1, flags 0, its block and range.
+        let p = PlateArgs::planar(&m).unwrap();
+        assert_eq!((p.kind, p.flags, p.result, p.unported()), (1, [0; 4], crate::planar_fog::global::DEPTH, None));
+        assert_eq!(PlateArgs { flags: [0, 0, 1, 0], ..p }.unported().as_deref(), Some("flags [0, 0, 1, 0]"));
     }
 
     #[test]
