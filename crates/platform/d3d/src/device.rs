@@ -5171,6 +5171,13 @@ impl<B: Backend> Device<B> {
         Ok(s)
     }
 
+    /// The width and height of the surface at `header`, for a pass that
+    /// names its target ([`crate::ExternalTargets`]) rather than drawing
+    /// into the bound one.
+    pub fn surface_size(&self, mem: &dyn GuestMemory, header: u32) -> Option<(u32, u32)> {
+        self.header_desc(mem, header).ok().map(|d| (d.width, d.height))
+    }
+
     fn header_desc(&self, mem: &dyn GuestMemory, header: u32) -> Result<TextureDesc, D3dError> {
         let h = PixelContainer::read(mem, header)?;
         crate::texdesc::from_header(h.format, h.size)

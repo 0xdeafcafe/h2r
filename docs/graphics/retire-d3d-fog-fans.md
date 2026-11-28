@@ -52,7 +52,7 @@ Every fan has alpha test, cull, stencil and depth test off. The corners (attribu
 
 `native_render::fog_fans::FogFansGpu` draws a fan as one four-vertex strip (the fan's corners `(0, 0)`, `(0, 1)`, `(1, 1)`, `(1, 0)`, the last two swapped) through `QuadDrawer::grid_raster` with the block translated as the post's are. A target stage's coordinates are its guest pixels, a bitmap's normalised; `PostRaster::wrap` gives a stage the repeating sampler. A fan into target 3 that samples target 3 samples a copy made just before it.
 
-The targets reach the device as slots by surface header: slot 0 the fan's target, written; each sampled target once, read. A game target is `native_targets::surface(Game(n))`, the view's target 0 its colour `[0x0050935c]`; the device holds the frame graph's surface for each role. A bitmap stage is the texture header `0x000143c0` binds, resolved before the setup's first write (`stage_texture`, `effect_material::texture_cached`):
+The targets reach the device as slots by surface header: slot 0 the fan's target, written; each sampled target once, read. The setup's own target select (`0x00014bc0`) is cut, so the pass names the fan's target rather than the one bound: the host drains the queue (`begin_external_boundary`) and commits one step at that target, its whole surface the rect, with nothing rebound (`prepare_external_sequence`, `ExternalTargets`, `Device::surface_size`). A game target is `native_targets::surface(Game(n))`, the view's target 0 its colour `[0x0050935c]`; the device holds the frame graph's surface for each role. A bitmap stage is the texture header `0x000143c0` binds, resolved before the setup's first write (`stage_texture`, `effect_material::texture_cached`):
 
 | Step | What |
 |---|---|
@@ -64,7 +64,7 @@ The targets reach the device as slots by surface header: slot 0 the fan's target
 
 The host decodes the header from guest memory (`native_decals_glue::decode_bitmap`), as the fog quad's ramp is ([retire-d3d-fog-quad.md](retire-d3d-fog-quad.md)).
 
-What a fan cannot draw panics: `host`, `placed`, `texture_unbound`, `texture_unread`, `texture_stack`, `texture_stream`, the decode's (`texture_resource`, `texture_format`, ...), `bitmap_linear`, `weather plate <cause>` (a plate call other than the composite's: `kind <n>`, `flags [..]`, `no result`), `composite into target <n>` (a view target other than 0, whose surface `0x00014bc0` picks by its own table), `fan_unfinite`, `fan_slots`, `simd`, `x87`, `unread`, and the GPU's (`fan_size`, `fan_stage`, `fan_combiner`, `fan_snapshot`).
+What a fan cannot draw panics: `host`, the placement's (`placed_lock`, `placed_callback`: a guest push-buffer callback pending, `placed_header`, `placed_refused`, `placed_device`), `texture_unbound`, `texture_unread`, `texture_stack`, `texture_stream`, the decode's (`texture_resource`, `texture_format`, ...), `bitmap_linear`, `weather plate <cause>` (a plate call other than the composite's: `kind <n>`, `flags [..]`, `no result`), `composite into target <n>` (a view target other than 0, whose surface `0x00014bc0` picks by its own table), `fan_unfinite`, `fan_slots`, `simd`, `x87`, `unread`, and the GPU's (`fan_size`, `fan_stage`, `fan_combiner`, `fan_snapshot`).
 
 ## Interfaces
 
