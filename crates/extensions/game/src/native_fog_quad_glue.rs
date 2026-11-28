@@ -1,6 +1,6 @@
 //! The host of `render_bridge::native_fog_quad`: the planar fog's screen
-//! quad placed on the shared device where the guest's fan `0x00034420`
-//! would draw, over the bound view colour and depth, and the other setup's
+//! quad as a stage where the guest's fan `0x00034420` would draw, over the
+//! bound view colour and depth, and the other setup's
 //! texture-shader fog (view modes 1, 4 and 5) over the same targets with
 //! the rasterizer's ramp bitmap (docs/graphics/retire-d3d-fog-quad.md).
 
@@ -12,55 +12,20 @@ use native_render::fog_quad::{FogOtherDraw, FogOtherTarget, FogQuadDraw, FogQuad
 use render_bridge::native_fog_quad::{self, Host};
 
 use crate::native_decals_glue::{DecalBitmap, decode_bitmap, texture_view};
-use crate::native_lights_glue::DeviceMemory;
+use crate::native_targets_glue::{encoded, push};
+use frame_types::Slot;
+use native_render::program::ViewInputs;
+use native_render::{Stage, StageWork};
 
 /// The quad's programs on the device last recorded with.
 static GPU: Mutex<Option<(wgpu::Device, FogQuadGpu)>> = Mutex::new(None);
 
-struct FogQuadPass {
-    draw: FogQuadDraw,
-    /// The W clip a W-buffered draw issued now takes; the setup sets
-    /// `ZEnable(2)`, so the fan is W-buffered whatever the device holds.
-    test: Option<DepthTest>,
-}
-
-impl d3d::ExternalPass for FogQuadPass {
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites { color: true, depth_stencil: false }
-    }
-
-    fn depth_clip(&mut self, clip: d3d::DepthClip) {
-        self.test = Some(DepthTest { w_buffered: true, range: clip.range, clamp: clip.clamp });
-    }
-
-    // Its numbers are the call's and its depth test is frozen at the bind
-    // (after the device asks this), so a scene replay can record it again
-    // on its attachments.
-    fn replays_scene(&self) -> bool {
-        true
-    }
-
-    /// Drawn on every copy (the reference and the display).
-    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
-        let Some(test) = self.test else {
-            native_fog_quad::unported("depth_clip");
-        };
-        let mut gpu = programs(t.device);
-        let Some((_, pass)) = gpu.as_mut() else { return 0 };
-        let target = FogQuadTarget {
-            device: t.device,
-            queue: t.queue,
-            uploads: t.uploads,
-            color: t.color,
-            color_format: t.color_format,
-            depth: t.depth,
-            guest: t.guest_size,
-            z_scale: t.z_scale,
-        };
-        match pass.record(target, t.encoder, &self.draw, test) {
-            Ok(_) => 1,
-            Err(why) => native_fog_quad::unported(why),
-        }
+/// The W clip a W-buffered draw takes: the setup sets `ZEnable(2)`, so
+/// the fans are W-buffered whatever was bound.
+fn w_test(view: &ViewInputs) -> DepthTest {
+    match view.w_clip {
+        Some((range, clamp)) => DepthTest { w_buffered: true, range, clamp },
+        None => DepthTest { w_buffered: true, range: [0.0, f32::MAX], clamp: false },
     }
 }
 
@@ -73,88 +38,98 @@ fn programs(device: &wgpu::Device) -> std::sync::MutexGuard<'static, Option<(wgp
     gpu
 }
 
+struct FogQuadPass {
+    draw: Arc<FogQuadDraw>,
+}
+
+impl Stage for FogQuadPass {
+    fn name(&self) -> &'static str {
+        "fog quad"
+    }
+
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &ViewInputs) -> StageWork {
+        let (draw, test, guest, z_scale) = (Arc::clone(&self.draw), w_test(view), view.guest_size, view.z_scale);
+        let (device, queue, uploads, color, color_format, depth) =
+            (t.device.clone(), t.queue.clone(), t.uploads.clone(), t.color.clone(), t.color_format, t.depth.clone());
+        encoded(move |encoder| {
+            let mut gpu = programs(&device);
+            let Some((_, pass)) = gpu.as_mut() else { return };
+            let target = FogQuadTarget {
+                device: &device,
+                queue: &queue,
+                uploads: &uploads,
+                color: &color,
+                color_format,
+                depth: &depth,
+                guest,
+                z_scale,
+            };
+            if let Err(why) = pass.record(target, encoder, &draw, test) {
+                native_fog_quad::unported(why);
+            }
+        })
+    }
+}
+
 struct FogOtherPass {
-    draw: FogOtherDraw,
+    draw: Arc<FogOtherDraw>,
     /// Image 0 of the rasterizer's ramp bitmap, decoded when issued;
     /// `None` for the weather plate's block, which samples stage 0 alone.
     ramp: Option<Arc<DecalBitmap>>,
-    /// The device's depth test when issued; the strips test only when
-    /// `[0x0048575d]` is 0 (`FogOtherDraw::depth_test`).
-    test: Option<DepthTest>,
 }
 
-impl d3d::ExternalPass for FogOtherPass {
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites { color: true, depth_stencil: false }
+impl Stage for FogOtherPass {
+    fn name(&self) -> &'static str {
+        "fog other"
     }
 
-    fn depth_clip(&mut self, clip: d3d::DepthClip) {
-        self.test = Some(DepthTest { w_buffered: true, range: clip.range, clamp: clip.clamp });
-    }
-
-    fn replays_scene(&self) -> bool {
-        true
-    }
-
-    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
-        let test = match (self.draw.depth_test, self.test) {
-            (false, _) => None,
-            (true, Some(test)) => Some(test),
-            (true, None) => native_fog_quad::unported("depth_clip"),
-        };
-        let ramp = self.ramp.as_ref().map(|b| texture_view(t.device, t.queue, b));
-        let mut gpu = programs(t.device);
-        let Some((_, pass)) = gpu.as_mut() else { return 0 };
-        let target = FogOtherTarget {
-            device: t.device,
-            queue: t.queue,
-            uploads: t.uploads,
-            color: t.color,
-            color_format: t.color_format,
-            depth: t.depth,
-            guest: t.guest_size,
-            z_scale: t.z_scale,
-            ramp: ramp.as_ref(),
-        };
-        match pass.record_other(target, t.encoder, &self.draw, test) {
-            Ok(_) => 1,
-            Err(why) => native_fog_quad::unported(why),
-        }
+    /// The strips test depth only when `[0x0048575d]` is 0
+    /// (`FogOtherDraw::depth_test`).
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &ViewInputs) -> StageWork {
+        let test = self.draw.depth_test.then(|| w_test(view));
+        let ramp = self.ramp.as_ref().map(|b| texture_view(&t.device, &t.queue, b));
+        let (draw, guest, z_scale) = (Arc::clone(&self.draw), view.guest_size, view.z_scale);
+        let (device, queue, uploads, color, color_format, depth) =
+            (t.device.clone(), t.queue.clone(), t.uploads.clone(), t.color.clone(), t.color_format, t.depth.clone());
+        encoded(move |encoder| {
+            let mut gpu = programs(&device);
+            let Some((_, pass)) = gpu.as_mut() else { return };
+            let target = FogOtherTarget {
+                device: &device,
+                queue: &queue,
+                uploads: &uploads,
+                color: &color,
+                color_format,
+                depth: &depth,
+                guest,
+                z_scale,
+                ramp: ramp.as_ref(),
+            };
+            if let Err(why) = pass.record_other(target, encoder, &draw, test) {
+                native_fog_quad::unported(why);
+            }
+        })
     }
 }
 
-struct Draw<B: d3d::Backend + Send + 'static> {
-    device: d3d::abi::SharedDevice<B>,
-}
+struct Draw;
 
-impl<B: d3d::Backend + Send + 'static> Host for Draw<B> {
+impl Host for Draw {
     fn draw(&self, mem: &mut dyn GuestMemory, draw: &FogQuadDraw) -> bool {
-        let Ok(mut device) = self.device.lock() else { return false };
-        let pass = FogQuadPass { draw: draw.clone(), test: None };
-        matches!(device.external_stage_now(&mut DeviceMemory(mem), None, plan(), Box::new(pass)), Ok(true))
+        push(&*mem, Slot::AfterLights, FogQuadPass { draw: Arc::new(draw.clone()) });
+        true
     }
 
     fn draw_other(&self, mem: &mut dyn GuestMemory, draw: &FogOtherDraw) -> bool {
         // The bridge resolves stage 2's header (`FogOtherDraw::ramp`), asking
         // the guest's texture cache when it streams; 0 for the plate.
-        let header = (draw.ramp != 0).then_some(draw.ramp);
-        let Ok(mut device) = self.device.lock() else { return false };
-        let ramp = header.map(|h| decode_bitmap(&*mem, h, device.config().address_map).unwrap_or_else(|why| native_fog_quad::unported(why)));
-        let pass = FogOtherPass { draw: draw.clone(), ramp, test: None };
-        matches!(device.external_stage_now(&mut DeviceMemory(mem), None, plan(), Box::new(pass)), Ok(true))
+        let ramp = (draw.ramp != 0)
+            .then(|| decode_bitmap(&*mem, draw.ramp).unwrap_or_else(|why| native_fog_quad::unported(why)));
+        push(&*mem, Slot::AfterLights, FogOtherPass { draw: Arc::new(draw.clone()), ramp });
+        true
     }
 }
 
-/// Either pass as a fog scene stage over the bound targets
-/// (`d3d::Device::external_stage_now`): a replaying scene sink keeps it
-/// typed and records it again, where it refuses an untyped pass.
-fn plan() -> d3d::ExternalPlan {
-    d3d::ExternalPlan { stage: timeline::native::Stage::Fog, view: 0, ranges: 1, slots: Vec::new() }
-}
-
-pub fn install<B: d3d::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    if !hooks::Switches::from_env().is_ok_and(|s| native_fog_quad::on(&s)) {
-        return;
-    }
-    native_fog_quad::set_host(Arc::new(Draw { device: Arc::clone(device) }));
+pub fn install() {
+    native_fog_quad::set_host(Arc::new(Draw));
 }

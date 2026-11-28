@@ -6,7 +6,6 @@
 //! Spartan in the page's model widget.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 
 use engine::memory::GuestMemory;
@@ -194,54 +193,50 @@ struct Pass {
     renderer: Arc<Mutex<Renderer>>,
 }
 
-impl d3d::ExternalPass for Pass {
-    fn colour_only(&self) -> bool {
-        true
+impl native_render::Stage for Pass {
+    fn name(&self) -> &'static str {
+        "monitor model"
     }
 
-    fn writes(&self) -> d3d::ExternalWrites {
-        d3d::ExternalWrites {
-            color: true,
-            depth_stencil: false,
-        }
-    }
-
-    fn encode(&mut self, t: d3d::ExternalTarget<'_>) {
-        let mut r = self.renderer.lock().unwrap_or_else(|e| e.into_inner());
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> native_render::StageWork {
+        let renderer = Arc::clone(&self.renderer);
+        let mut r = renderer.lock().unwrap_or_else(|e| e.into_inner());
         let r = &mut *r;
-        if r.showcase.as_ref().is_none_or(|(d, _)| d != t.device) {
-            r.showcase = Some((t.device.clone(), Showcase::new(t.device, t.queue)));
+        if r.showcase.as_ref().is_none_or(|(d, _)| *d != t.device) {
+            r.showcase = Some((t.device.clone(), Showcase::new(&t.device, &t.queue)));
             r.mesh = None;
         }
         let (_, showcase) = r.showcase.as_mut().expect("made above");
         let key = Arc::as_ptr(&self.asset) as usize;
         if r.mesh != Some(key) {
-            showcase.set_mesh(t.device, t.queue, &self.asset.mesh, &self.asset.body.bases);
+            showcase.set_mesh(&t.device, &t.queue, &self.asset.mesh, &self.asset.body.bases);
             r.mesh = Some(key);
         }
-        let [x, y, w, h] = super::canvas_rect(self.bounds, t.guest_size);
-        let sx = t.size.0 as f32 / t.guest_size.0.max(1) as f32;
-        let sy = t.size.1 as f32 / t.guest_size.1.max(1) as f32;
+        let guest = view.guest_size;
+        let [x, y, w, h] = super::canvas_rect(self.bounds, guest);
+        let sx = t.size.0 as f32 / guest.0.max(1) as f32;
+        let sy = t.size.1 as f32 / guest.1.max(1) as f32;
         let Some(fit) = Fit::of([x * sx, y * sy, w * sx, h * sy]) else {
-            return;
+            unimplemented!("monitor model: an empty picture box");
         };
         let look = showcase::Look {
             // The monitor turns slowly, a full turn in the sway's period
             // times four, so a viewer sees all of it.
-            yaw: (self.seconds / (showcase::SWAY_SECONDS / 4.0)).fract() as f32
-                * std::f32::consts::TAU,
+            yaw: (self.seconds / (showcase::SWAY_SECONDS / 4.0)).fract() as f32 * std::f32::consts::TAU,
             tint: super::showcase_tint(self.highlight),
             silhouette: false,
             glyph: false,
         };
-        if showcase.draw(t.device, &mut *t.encoder, fit.width, fit.height, &look) {
-            showcase.composite(t.device, &mut *t.encoder, t.color, t.color_format, fit.rect, 1.0);
-        }
+        let (device, color, color_format) = (t.device.clone(), t.color.clone(), t.color_format);
+        crate::native_targets_glue::encoded(move |encoder| {
+            let mut r = renderer.lock().unwrap_or_else(|e| e.into_inner());
+            let Some((_, showcase)) = r.showcase.as_mut() else { return };
+            if showcase.draw(&device, encoder, fit.width, fit.height, &look) {
+                showcase.composite(&device, encoder, &color, color_format, fit.rect, 1.0);
+            }
+        })
     }
 }
-
-/// Said once: the pass could not be queued.
-static REFUSED: AtomicBool = AtomicBool::new(false);
 
 /// The seconds since the page first showed a monitor: the turn's clock.
 static SINCE: Mutex<Option<std::time::Instant>> = Mutex::new(None);
@@ -256,8 +251,7 @@ fn active_screen(_mem: &dyn GuestMemory) -> Option<String> {
 /// pixels): when the profile's saved look is a monitor this machine has
 /// loaded, queue its picture in the widget's right share, beside the
 /// Spartan the game draws. Any other look, or none, adds nothing.
-pub fn appearance_view<B: d3d::backend::Backend + Send + 'static>(
-    device: &d3d::abi::SharedDevice<B>,
+pub fn appearance_view(
     mem: &mut dyn GuestMemory,
     bounds: [u16; 4],
     view: &frame_scene::OverlayModelView,
@@ -309,14 +303,7 @@ pub fn appearance_view<B: d3d::backend::Backend + Send + 'static>(
         seconds: f64::from(seconds),
         renderer: Arc::clone(&RENDERER),
     };
-    let Ok(mut d) = device.lock() else { return };
-    if let Err(e) = d.external_pass_now(
-        &mut crate::native_lights_glue::DeviceMemory(mem),
-        Box::new(pass),
-    ) && !REFUSED.swap(true, Ordering::Relaxed)
-    {
-        eprintln!("monitor model: the page's picture was refused: {e:?}");
-    }
+    crate::native_targets_glue::push(&*mem, frame_types::Slot::Overlay, pass);
 }
 
 #[cfg(test)]

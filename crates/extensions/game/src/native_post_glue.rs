@@ -5,13 +5,15 @@
 //! targets while the calls' guest bodies do not run
 //! (`render_bridge::native_post`).
 //!
-//! Each pass names its slots by what they are to the game
-//! ([`PostTarget`]): the view (target 0's colour) or a role of Halo's
-//! target table (`frame_scene::TargetRole::Game`). The device resolves
-//! them to the graph's surfaces (`d3d::Device::surface_for`, the role
-//! table). Raster state is the plan's: the glow's blend, a template
-//! pass's own states (`ScreenProgram::state`). What a call needs that is
-//! not drawn natively is an `Err` the feature panics with, `post: <cause>`.
+//! Each pass is a stage at the frame's transparents slot
+//! (`native_render::Stage`), drawn on the frame's colour. A target the
+//! call names by its role in Halo's target table
+//! (`frame_scene::TargetRole::Game`: target 1, the stand-ins, the glow's
+//! levels 7 and 8) has no frame target yet and panics by name
+//! ([`frame_target`]). Raster state is the plan's: the glow's blend, a
+//! template pass's own states (`ScreenProgram::state`). What a call needs
+//! that is not drawn natively is an `Err` the feature panics with,
+//! `post: <cause>`.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,18 +24,19 @@ use engine::memory::GuestMemory;
 use engine::screen_effect::{self, Convolution, Effect};
 use engine::screen_grid::{self, Grid};
 use frame_scene::TargetRole;
+use frame_types::Slot;
 use map::TagId;
 use native_render::camera::GuestRead;
 use native_render::glow::{self, Blend, Draw, GlowTarget, GpuGlow, Plan, Surface};
 use native_render::screen_gpu::{
     self, ConvolutionDraw, ConvolutionGrid, Dest, QuadFrame, ScreenConvolution, ScreenDraw,
-    ScreenKey, ScreenTarget, PostRaster, StripVertex,
+    PostRaster, ScreenKey, ScreenTarget, StripVertex,
 };
-use native_render::screen_look::{CombinerInputs, ScreenStage};
+use native_render::screen_look::ScreenStage;
+use native_render::{Stage, StageWork};
 use render_bridge::native_post::{self as post_feature, Fp, Host, ScreenEffect};
 use render_bridge::scope_zoom_hud;
 
-use crate::native_lights_glue::DeviceMemory;
 use crate::native_map;
 use crate::native_post_load::ScreenEffects;
 
@@ -580,28 +583,26 @@ pub enum PostTarget {
     Role(TargetRole),
 }
 
-/// The surface header of `t` for the device, written or only read;
-/// `Err` for a table entry that is not made (no surface, a hidden size,
-/// no levels: `0x0001dcf0` returns none) or a role the table does not
-/// hold.
-pub fn post_slot(mem: &dyn GuestMemory, t: PostTarget, written: bool) -> Result<d3d::ExternalSlot, String> {
-    let header = match t {
+/// The surface header of `t`; `Err` for a table entry that is not made
+/// (no surface, a hidden size, no levels: `0x0001dcf0` returns none) or a
+/// role the table does not hold.
+pub fn post_slot(mem: &dyn GuestMemory, t: PostTarget) -> Result<u32, String> {
+    match t {
         PostTarget::View => mem
             .u32(post_feature::TARGET0_COLOUR)
             .ok()
             .filter(|&h| h != 0)
-            .ok_or("the view's colour surface")?,
+            .ok_or("the view's colour surface".into()),
         PostTarget::Bound => mem
             .u32(render_bridge::native_targets::CACHE_COLOUR)
             .ok()
             .filter(|&h| h != 0)
-            .ok_or("the bound colour surface")?,
+            .ok_or("the bound colour surface".into()),
         PostTarget::Role(TargetRole::Game(n)) => {
-            target_level_surface(mem, u32::from(n)).ok_or(format!("target {n:#x} is not made"))?
+            target_level_surface(mem, u32::from(n)).ok_or(format!("target {n:#x} is not made"))
         }
-        PostTarget::Role(role) => return Err(format!("{role:?} is no post target")),
-    };
-    Ok(d3d::ExternalSlot { header, written })
+        PostTarget::Role(role) => Err(format!("{role:?} is no post target")),
+    }
 }
 
 /// Whether the view reads as `X8` (alpha one) where a pass samples Halo's
@@ -649,14 +650,6 @@ pub fn screen_slot_targets(call: &ScreenCall) -> [Option<(PostTarget, bool)>; 6]
         }
     }
     slots
-}
-
-/// [`screen_slot_targets`] as the device's slots.
-fn screen_slots(mem: &dyn GuestMemory, call: &ScreenCall) -> Result<Vec<Option<d3d::ExternalSlot>>, String> {
-    screen_slot_targets(call)
-        .into_iter()
-        .map(|s| s.map(|(t, written)| post_slot(mem, t, written)).transpose())
-        .collect()
 }
 
 /// The glow's slots: the bound colour (the view's target, which the body binds first) 0, target 7 1, target 8 2.
@@ -712,48 +705,15 @@ fn target_level_surface(mem: &dyn GuestMemory, index: u32) -> Option<u32> {
     descriptor.checked_add(0x18)
 }
 
-fn slot(slots: &[Option<d3d::ExternalColor>], slot: usize) -> Option<&d3d::ExternalColor> {
-    slots.get(slot)?.as_ref()
+/// The frame target behind a role of Halo's target table. The frame has
+/// none for the post yet.
+fn frame_target(target: PostTarget) -> glow::PostSurface<'static> {
+    unimplemented!("post: {target:?} from the frame's targets")
 }
 
-/// What a post pass prepares against on one target copy: the copy's
-/// device, queue and arena, its slots and stages, and the request's depth
-/// scale. Read from an `ExternalTarget` (`record_ranges`) or an
-/// `ExternalAttachments` (`record_encoded`) alike.
-struct PostCopy<'a> {
-    device: &'a wgpu::Device,
-    queue: &'a wgpu::Queue,
-    uploads: &'a gfx::ring::SubmissionUploads,
-    slots: &'a [Option<d3d::ExternalColor>],
-    stages: [Option<&'a wgpu::TextureView>; 4],
-    z_scale: f32,
-}
-
-impl<'a> PostCopy<'a> {
-    fn of_target(t: &d3d::ExternalTarget<'a>) -> Self {
-        Self {
-            device: t.device,
-            queue: t.queue,
-            uploads: t.uploads,
-            slots: t.slots,
-            stages: t.stages,
-            z_scale: t.z_scale,
-        }
-    }
-
-    fn of_attachments(
-        t: &'a d3d::backend::ExternalAttachments,
-        request: d3d::ExternalPassRequest,
-    ) -> Self {
-        Self {
-            device: &t.device,
-            queue: &t.queue,
-            uploads: &t.uploads,
-            slots: &t.slots,
-            stages: t.stages.each_ref().map(Option::as_ref),
-            z_scale: request.z_scale,
-        }
-    }
+/// The frame's colour as the post's surface, at the guest's size.
+fn frame_colour<'a>(t: &'a gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> glow::PostSurface<'a> {
+    glow::PostSurface { view: &t.color, guest_size: view.guest_size }
 }
 
 struct ScreenPass {
@@ -797,11 +757,12 @@ impl ScreenPass {
         self.effects.program(self.call.egor, key.1, key.2)
     }
 
-    /// The call on one copy, prepared: the cache's lock is released when
-    /// this returns; the commands hold their own handles.
+    /// The call on the frame's colour, prepared: the cache's lock is
+    /// released when this returns; the commands hold their own handles.
     fn prepare(
         &self,
-        t: PostCopy<'_>,
+        t: &gfx::external::ExternalAttachments,
+        view: &native_render::program::ViewInputs,
     ) -> Result<screen_gpu::ScreenCommands, screen_gpu::ScreenRefused> {
         let mut screens = self.effects.screens.lock().unwrap_or_else(|e| e.into_inner());
         let mut draws = Vec::new();
@@ -825,19 +786,16 @@ impl ScreenPass {
             ScreenStage::Bitmap { bitmap, image } => images.get(&(bitmap, image)).cloned(),
             _ => None,
         };
-        let bound = slot(t.slots, SLOT_BOUND as usize).map(glow::PostSurface::from);
-        let target1 = slot(t.slots, SLOT_TARGET1 as usize).map(glow::PostSurface::from);
-        let convolutions = std::array::from_fn(|i| {
-            slot(t.slots, usize::from(SLOT_STAND_INS) + i).map(glow::PostSurface::from)
-        });
+        let slots = screen_slot_targets(&self.call);
+        let role = |i: u8| slots[usize::from(i)].map(|(t, _)| frame_target(t));
         let target = ScreenTarget {
-            device: t.device,
-            queue: t.queue,
-            uploads: t.uploads,
-            color: bound,
-            target1,
-            convolutions,
-            z_scale: t.z_scale,
+            device: &t.device,
+            queue: &t.queue,
+            uploads: &t.uploads,
+            color: Some(frame_colour(t, view)),
+            target1: role(SLOT_TARGET1),
+            convolutions: std::array::from_fn(|i| role(SLOT_STAND_INS + i as u8)),
+            z_scale: view.z_scale,
         };
         screens
             .prepare(target, &draws, self.call.frame.as_ref(), &mut stage_image)
@@ -849,246 +807,22 @@ impl ScreenPass {
     }
 }
 
-impl d3d::ExternalPass for ScreenPass {
-    fn colour_only(&self) -> bool {
-        true
+impl Stage for ScreenPass {
+    fn name(&self) -> &'static str {
+        "post: screen effect"
     }
 
-    // The call, its values and its raster are the pass's own, and every
-    // source is a slot or the view's copy made in the recording. So a
-    // scene replay can record it again on its attachments
-    // (docs/graphics/framescene.md, slice 5).
-    fn replays_scene(&self) -> bool {
-        true
-    }
-
-    fn encode(&mut self, _: d3d::ExternalTarget<'_>) {}
-
-    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
-        match self.prepare(PostCopy::of_target(&t)) {
-            Ok(commands) => {
-                commands.record(t.encoder);
-                commands.ranges()
-            }
-            Err(error) => self.refused(error),
-        }
-    }
-
-    // Target 1, the stand-ins and the view's feedback copy are targets
-    // of the call's own: its passes go in the frame's open encoder.
-    fn record_encoded(
-        &mut self,
-        t: &d3d::backend::ExternalAttachments,
-        request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
-        Some(match self.prepare(PostCopy::of_attachments(t, request)) {
-            Ok(commands) => Ok(d3d::backend::ExternalEncoded {
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> StageWork {
+        match self.prepare(t, view) {
+            Ok(commands) => StageWork::Encoded(gfx::external::ExternalEncoded {
                 ranges: commands.ranges(),
                 draws: commands.draws(),
                 passes: commands.passes(),
-                commands: Box::new(move |encoder: &mut wgpu::CommandEncoder| {
-                    commands.record(encoder)
-                }),
+                commands: Box::new(move |encoder: &mut wgpu::CommandEncoder| commands.record(encoder)),
             }),
             Err(error) => self.refused(error),
-        })
-    }
-}
-
-pub(crate) fn check_bound_source(
-    original: &d3d::SwallowOriginal<'_>,
-    stage: usize,
-    slot: Option<u8>,
-    slots: &[Option<d3d::SwallowTarget>],
-    opaque_entry: bool,
-) -> Result<(), String> {
-    let target = slot
-        .and_then(|i| slots.get(usize::from(i)))
-        .copied()
-        .flatten();
-    let info = original.draw.texture_info[stage];
-    let extras = original.draw.extras[stage];
-    if let (Some(target), Some(info)) = (target, info)
-        && original.source_data[stage] == Some(target.data)
-        && target.size == (info.width, info.height)
-        && info.levels == 1
-        && extras.color_key_op == 0
-        && extras.color_sign == 0
-        && extras.alpha_kill == 0
-        && info.kind == gfx::texture::TextureKind::D2
-        && (matches!(
-            info.format,
-            gfx::D3DFormat::LinA8R8G8B8 | gfx::D3DFormat::A8R8G8B8
-        ) || (opaque_entry && info.format == gfx::D3DFormat::LinX8R8G8B8))
-    {
-        return Ok(());
-    }
-    Err(format!(
-        "live source for stage {stage} differs from post slot {slot:?} ({info:?})"
-    ))
-}
-
-// A colour-only recording can omit a bound depth attachment if all fragments
-// pass and neither depth nor stencil can be changed.
-fn post_needs_depth(state: &gfx::RenderState, format: Option<wgpu::TextureFormat>) -> bool {
-    use gfx::state::{CompareFunc, DepthBufferMode, StencilOp};
-
-    let Some(format) = format else { return false };
-    let depth_active = state.depth_mode != DepthBufferMode::Disabled
-        && (state.depth_write || state.depth_func != CompareFunc::Always);
-    let stencil = &state.stencil;
-    let stencil_active = format.has_stencil_aspect()
-        && stencil.enable
-        && (stencil.func != CompareFunc::Always
-            || (stencil.write_mask != 0 && stencil.pass != StencilOp::Keep));
-    depth_active || stencil_active
-}
-
-// The ordinary programmable path consumes these same decoded defaults when
-// a render word fails to decode. Only sampled-stage sampler defaults can
-// differ from the native template's static state.
-fn post_sampler_default_is_uncertain(draw: &d3d::ResolvedDraw) -> bool {
-    use d3d::state::BadState;
-    use gfx::state::TextureStageStateType as S;
-    let sampled = draw.sampled_texture_stages();
-    draw.state.bad.iter().any(|bad| match *bad {
-        BadState::Render { .. } => false,
-        BadState::Stage { stage, state, .. } => {
-            sampled.get(stage as usize).copied().unwrap_or(false)
-                && matches!(S::from_index(state),
-                    S::AddressU | S::AddressV | S::AddressW | S::MagFilter
-                    | S::MinFilter | S::MipFilter | S::MipMapLodBias
-                    | S::MaxMipLevel | S::MaxAnisotropy | S::BorderColor)
-        }
-    })
-}
-
-fn check_combiner_raster(
-    state: &gfx::RenderState,
-    two_sided: bool,
-    inputs: CombinerInputs,
-) -> Result<(), &'static str> {
-    if state.fog_enable && inputs.fog {
-        return Err("the post combiner reads live fog");
-    }
-    if inputs.colours {
-        if state.shade_mode == gfx::state::ShadeMode::Flat {
-            return Err("the post combiner reads flat-shaded vertex colours");
-        }
-        if two_sided {
-            return Err("the post combiner reads two-sided vertex colours");
         }
     }
-    Ok(())
-}
-
-fn live_combiner_inputs(draw: &d3d::ResolvedDraw) -> CombinerInputs {
-    let Some(def) = draw.shader.pixel_shader.as_deref() else {
-        return CombinerInputs { colours: true, fog: true };
-    };
-    CombinerInputs::read(&d3d::nv2a::guest_def(
-        def,
-        &draw.shader.combiner_state,
-        draw.raw.render[d3d::state::slot::PS_TEXTURE_MODES as usize],
-        draw.shader.final_combiner_latch,
-    ))
-}
-
-/// The template supplies shader code. Colour state can be inherited from
-/// the previous draw or applied by the template wrapper outside that code.
-fn post_raster(
-    draw: &d3d::ResolvedDraw,
-    planned_inputs: Option<CombinerInputs>,
-) -> Result<PostRaster, &'static str> {
-    use gfx::state::{CompareFunc, FillMode};
-    let state = &draw.state.render;
-    let alpha_test = (state.alpha_test_enable && state.alpha_func != CompareFunc::Always)
-        .then(|| (d3d::nv2a::alpha_func(state.alpha_func), state.alpha_ref));
-    if post_needs_depth(state, draw.target.depth_format.and_then(gfx::format::depth_format_to_wgpu)) {
-        return Err("the post draw requires its live depth/stencil attachment");
-    }
-    // Build 5849's STIPPLEENABLE and TWOSIDEDLIGHTING slots.
-    const STIPPLE_ENABLE: usize = 83;
-    const TWO_SIDED_LIGHTING: usize = 141;
-    let stipple = state.fill_mode == FillMode::Solid
-        && draw.hw.stipple_control.unwrap_or(draw.raw.render[STIPPLE_ENABLE]) != 0;
-    if planned_inputs.is_none() && stipple {
-        return Err("the colour quad requires the polygon stipple mask");
-    }
-    let two_sided = draw.raw.render[TWO_SIDED_LIGHTING] != 0;
-    if let Some(planned) = planned_inputs {
-        // A planned combiner's fog register is the live draw's, fed into
-        // its uniforms (`PostRaster::fog`): live fog refuses nothing.
-        let fed = |inputs: CombinerInputs| CombinerInputs { fog: false, ..inputs };
-        check_combiner_raster(state, two_sided, fed(planned))?;
-        if two_sided || state.shade_mode == gfx::state::ShadeMode::Flat {
-            check_combiner_raster(state, two_sided, fed(live_combiner_inputs(draw)))?;
-        }
-        if post_sampler_default_is_uncertain(draw) {
-            return Err("the post draw has an invalid sampled-stage sampler state");
-        }
-    } else {
-        check_combiner_raster(state, two_sided, CombinerInputs { colours: true, fog: true })?;
-        if !draw.state.bad.is_empty() {
-            return Err("the colour quad requires a rejected guest state");
-        }
-    }
-    // The post pipelines use the host translator's front fill. The other
-    // colour-quad clients build fixed solid pipelines.
-    if planned_inputs.is_none()
-        && (state.fill_mode != FillMode::Solid || state.back_fill_mode != FillMode::Solid)
-    {
-        return Err("the colour quad requires solid front and back fill");
-    }
-    if draw.ui_fit.is_some() || draw.retail_constants.is_some() {
-        return Err("the post draw requires copy-specific projection");
-    }
-    let clip = draw
-        .clip
-        .filter(|_| draw.clip_rects.is_empty())
-        .ok_or("the screen clip is disjoint or empty")?;
-    let primitive = gfx::translate::primitive_state(
-        state,
-        wgpu::PrimitiveTopology::TriangleStrip,
-        gfx::translate::Capabilities::from_features(wgpu::Features::empty()),
-    );
-    let z_scale = gfx::format::d3dz_max(draw.target.depth_format);
-    Ok(PostRaster {
-        alpha_test,
-        stipple: stipple.then_some(draw.hw.stipple_pattern),
-        z_scale: Some(z_scale),
-        w_clip: d3d::hw::w_buffered(draw).then(|| d3d::hw::w_clip_range(&draw.hw, z_scale)),
-        blend: gfx::translate::blend_state(state),
-        blend_constant: gfx::translate::blend_constant(state),
-        writes: gfx::translate::color_writes(state.color_write),
-        front_face: primitive.front_face,
-        cull: primitive.cull_mode,
-        depth_clamp: d3d::hw::draw_clamps_depth(draw),
-        fill: state.fill_mode,
-        opaque_view: [false; 4],
-        clip: (!clip.is_whole(draw.target.width, draw.target.height)).then_some([
-            clip.x,
-            clip.y,
-            clip.width,
-            clip.height,
-        ]),
-        fog: planned_inputs.map(|_| d3d::nv2a::draw_fog(draw)),
-        wrap: [false; 4],
-    })
-}
-
-pub(crate) fn matches_colour_state(
-    draw: &d3d::ResolvedDraw,
-    blend: Option<wgpu::BlendState>,
-    writes: wgpu::ColorWrites,
-    alpha: Option<(wgpu::CompareFunction, u8)>,
-) -> bool {
-    let state = &draw.state.render;
-    let live_alpha = (state.alpha_test_enable && state.alpha_func != gfx::state::CompareFunc::Always)
-        .then(|| (gfx::translate::compare_function(state.alpha_func), state.alpha_ref));
-    live_alpha == alpha && post_raster(draw, None).is_ok_and(|r| {
-        r.blend == blend && r.writes == writes && r.cull.is_none() && r.clip.is_none()
-    })
 }
 
 /// The native glow, recorded against the call's view and blur levels.
@@ -1101,79 +835,52 @@ struct GlowPass {
     entry: Arc<Mutex<OpaqueEntry>>,
 }
 
-impl d3d::ExternalPass for GlowPass {
-    fn colour_only(&self) -> bool {
-        true
-    }
-
-    // The plan and the entry's format are the call's own, and a copy
-    // given no entry textures reads the view from its own slot. So a
-    // scene replay can record it again on its attachments
-    // (docs/graphics/framescene.md, slice 5).
-    fn replays_scene(&self) -> bool {
-        true
-    }
-
-    fn encode(&mut self, _: d3d::ExternalTarget<'_>) {}
-
-    fn record_ranges(&mut self, t: d3d::ExternalTarget<'_>) -> usize {
-        let recording = self.prepare(PostCopy::of_target(&t));
-        recording.record(t.encoder);
-        self.plan.draws.len()
+impl Stage for GlowPass {
+    fn name(&self) -> &'static str {
+        "post: glow"
     }
 
     // The blur levels are targets of the glow's own: its quads go in the
-    // frame's open encoder.
-    fn record_encoded(
-        &mut self,
-        t: &d3d::backend::ExternalAttachments,
-        request: d3d::ExternalPassRequest,
-    ) -> Option<Result<d3d::backend::ExternalEncoded, &'static str>> {
-        let recording = self.prepare(PostCopy::of_attachments(t, request));
-        Some(Ok(d3d::backend::ExternalEncoded {
+    // frame's encoder.
+    fn record(&mut self, t: &gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> StageWork {
+        let recording = self.prepare(t, view);
+        StageWork::Encoded(gfx::external::ExternalEncoded {
             ranges: self.plan.draws.len(),
             draws: recording.passes(),
             passes: recording.passes(),
             commands: Box::new(move |encoder: &mut wgpu::CommandEncoder| recording.record(encoder)),
-        }))
+        })
     }
 }
 
 impl GlowPass {
-    /// The plan's quads on one copy, prepared, with the plan's raster
-    /// (each quad's blend, every channel written: `0x00034a90`'s
-    /// `0x01010101`). A copy the GPU cannot record panics: there is no
+    /// The plan's quads on the frame's colour, prepared, with the plan's
+    /// raster (each quad's blend, every channel written: `0x00034a90`'s
+    /// `0x01010101`). A recording the GPU cannot make panics: there is no
     /// guest draw behind it. The cache's lock is released when this
     /// returns.
     ///
-    /// The down-sample's entry reads the view: through the copy's stage
-    /// textures when it has them (the device's resolved inputs, with
-    /// the `X8` alpha already one), else from the view's own slot, made
-    /// opaque first where the guest reads it as `X8`. A carried scene
-    /// stage and its replay have no stage textures.
-    fn prepare(&self, t: PostCopy<'_>) -> GlowRecording {
-        let view = slot(t.slots, 0).unwrap_or_else(|| post_feature::unhandled("glow: no view slot"));
+    /// The down-sample's entry reads the view from the frame's colour,
+    /// made opaque first where the guest reads it as `X8`.
+    fn prepare(&self, t: &gfx::external::ExternalAttachments, view: &native_render::program::ViewInputs) -> GlowRecording {
+        let colour = frame_colour(t, view);
         let opaque = self.opaque_entry;
-        let intermediates = [1, 2].map(|i| slot(t.slots, i).map(glow::PostSurface::from));
-        let given = t.stages.iter().any(Option::is_some);
-        let entry = (!given && opaque.contains(&true))
-            .then(|| self.entry.lock().unwrap_or_else(|e| e.into_inner()).copy(t.device, &view.attachment));
-        let entry_sources = if given {
-            t.stages
-        } else {
-            std::array::from_fn(|n| {
-                Some(match (&entry, opaque[n]) {
-                    (Some(copy), true) => &copy.view,
-                    _ => &view.attachment,
-                })
+        let intermediates = [GLOW_TARGETS[1], GLOW_TARGETS[2]].map(|r| Some(frame_target(r)));
+        let entry = opaque
+            .contains(&true)
+            .then(|| self.entry.lock().unwrap_or_else(|e| e.into_inner()).copy(&t.device, colour.view));
+        let entry_sources = std::array::from_fn(|n| {
+            Some(match (&entry, opaque[n]) {
+                (Some(copy), true) => &copy.view,
+                _ => colour.view,
             })
-        };
+        });
         let result = self.gpu.lock().unwrap_or_else(|e| e.into_inner()).prepare(
             GlowTarget {
-                device: t.device,
-                queue: t.queue,
-                uploads: t.uploads,
-                color: view.into(),
+                device: &t.device,
+                queue: &t.queue,
+                uploads: &t.uploads,
+                color: colour,
                 entry_sources,
                 intermediates,
             },
@@ -1181,7 +888,7 @@ impl GlowPass {
         );
         match result {
             Ok(commands) => GlowRecording { entry, commands },
-            Err(error) => post_feature::unhandled(format!("glow on the graph's targets: {error:?}")),
+            Err(error) => post_feature::unhandled(format!("glow on the frame's targets: {error:?}")),
         }
     }
 }
@@ -1206,9 +913,8 @@ impl GlowRecording {
     }
 }
 
-/// The view as an `X8` read sees it, for a copy with no stage textures:
-/// the view copied, then the copy's alpha set to one, as the device's
-/// framebuffer snapshot of an `X8` level does.
+/// The view as an `X8` read sees it: the view copied, then the copy's
+/// alpha set to one.
 struct EntryCopy {
     source: wgpu::Texture,
     texture: wgpu::Texture,
@@ -1348,8 +1054,7 @@ impl OpaqueEntry {
     }
 }
 
-struct Glue<B: d3d::backend::Backend + Send + 'static> {
-    device: d3d::abi::SharedDevice<B>,
+struct Glue {
     gpu: Arc<Mutex<GpuGlow>>,
     /// The glow's opaque entry copies ([`OpaqueEntry`]).
     entry: Arc<Mutex<OpaqueEntry>>,
@@ -1358,7 +1063,7 @@ struct Glue<B: d3d::backend::Backend + Send + 'static> {
     effects: Arc<Mutex<EffectsSlot>>,
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
+impl Host for Glue {
     fn retire_map(&self) {
         let retired = self.effects.lock().unwrap_or_else(|e| e.into_inner())
             .take_stale(render_bridge::native_map_work::generation());
@@ -1373,18 +1078,14 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
         let opaque = reads_opaque(&*mem, view)?;
         let entry = plan.draws.first().ok_or("the glow has no down-sample")?;
         let opaque_entry = std::array::from_fn(|n| opaque && entry.stages[n] == Some(Surface::View));
-        let slots = GLOW_TARGETS
-            .into_iter()
-            .map(|t| post_slot(&*mem, t, true).map(Some))
-            .collect::<Result<Vec<_>, _>>()?;
-        let ranges = plan.draws.len();
         let pass = GlowPass {
             opaque_entry,
             plan,
             gpu: Arc::clone(&self.gpu),
             entry: Arc::clone(&self.entry),
         };
-        self.commit(mem, ranges, slots, Box::new(pass))
+        crate::native_targets_glue::push(&*mem, Slot::Transparents, pass);
+        Ok(())
     }
 
     fn screen_effect(&self, mem: &mut dyn GuestMemory, call: ScreenEffect, fp: Fp) -> Result<bool, String> {
@@ -1410,30 +1111,7 @@ impl<B: d3d::backend::Backend + Send + 'static> Host for Glue<B> {
     }
 }
 
-impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
-    /// Places `pass` at this point in the frame over `slots`, with
-    /// `ranges` guest ranges; `Err` when the device does not take it.
-    fn commit(
-        &self,
-        mem: &mut dyn GuestMemory,
-        ranges: usize,
-        slots: Vec<Option<d3d::ExternalSlot>>,
-        pass: Box<dyn d3d::ExternalPass>,
-    ) -> Result<(), String> {
-        let mut device = self.device.lock().map_err(|_| "the device's lock")?;
-        let plan = d3d::ExternalPlan { stage: timeline::native::Stage::Post, view: 0, ranges, slots };
-        // A typed scene stage: a replaying sink keeps it, where it refuses
-        // a post pass that reaches a plain reservation.
-        match device.reserve_scene_stage(&mut DeviceMemory(mem), plan, pass) {
-            Ok(Some(reservation)) => {
-                reservation.commit();
-                Ok(())
-            }
-            Ok(None) => Err("the device did not take the pass".into()),
-            Err(error) => Err(format!("the device: {error}")),
-        }
-    }
-
+impl Glue {
     /// The drawn passes of `effect`, called with `values`, as one native
     /// pass. While the map's effects load nothing is drawn (counted
     /// `post_screen_effect_loading`).
@@ -1467,10 +1145,9 @@ impl<B: d3d::backend::Backend + Send + 'static> Glue<B> {
         };
         let call = screen_call(&effect, egor, values, depth, frame, &grid).ok_or(Missing::Wide.name())?;
         let opaque = reads_opaque(&*mem, 0)?;
-        let slots = screen_slots(&*mem, &call)?;
-        let ranges = screen_ranges(&call);
         let pass = ScreenPass::new(effects, call, opaque)?;
-        self.commit(mem, ranges, slots, Box::new(pass))
+        crate::native_targets_glue::push(&*mem, Slot::Transparents, pass);
+        Ok(())
     }
 
     /// The loaded map's screen effects: `None` until they load, the first
@@ -1585,12 +1262,10 @@ fn load_effects(name: &str) -> Result<ScreenEffects, native_render::load::Error>
     Ok(crate::native_post_load::load(&mut map, &mut files))
 }
 
-/// Installs the host over `device`. It loads each map's screen effects
-/// itself ([`EffectsSlot`]).
-pub fn install<B: d3d::backend::Backend + Send + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    crate::native_cinematic_glue::install(device);
+/// Installs the host. It loads each map's screen effects itself
+/// ([`EffectsSlot`]).
+pub fn install() {
     render_bridge::native_post::set_host(Arc::new(Glue {
-        device: Arc::clone(device),
         gpu: Arc::new(Mutex::new(GpuGlow::new())),
         entry: Arc::new(Mutex::new(OpaqueEntry::default())),
         effects: Arc::new(Mutex::new(EffectsSlot::default())),
@@ -1609,27 +1284,26 @@ mod tests {
         use engine::memory::FlatMemory;
         let mut m = FlatMemory::new(0x0040_0000, 0x0020_0000);
         m.set_u32(post_feature::TARGET0_COLOUR, 0x0051_0000).unwrap();
-        let view = post_slot(&m, PostTarget::View, true).unwrap();
-        assert_eq!((view.header, view.written), (0x0051_0000, true));
+        assert_eq!(post_slot(&m, PostTarget::View), Ok(0x0051_0000));
         let role = PostTarget::Role(TargetRole::Game(7));
-        assert!(post_slot(&m, role, true).is_err(), "target 7 not made");
+        assert!(post_slot(&m, role).is_err(), "target 7 not made");
         let e = glow::TARGETS + 7 * glow::TARGET_STRIDE;
         m.set_u32(e + 0x88, 0x0052_0000).unwrap();
         m.set_u32(e + 0x78, 1).unwrap();
-        let slot = post_slot(&m, role, false).unwrap();
-        assert_eq!(slot.header, e + 0x18);
-        assert_eq!(render_bridge::native_targets::role(slot.header, &|_| None), Some(TargetRole::Game(7)), "the role it names");
+        let header = post_slot(&m, role).unwrap();
+        assert_eq!(header, e + 0x18);
+        assert_eq!(render_bridge::native_targets::role(header, &|_| None), Some(TargetRole::Game(7)), "the role it names");
         m.write(e + 0x95, &[1]).unwrap();
-        assert!(post_slot(&m, role, false).is_err(), "a hidden size");
-        assert!(post_slot(&m, PostTarget::Role(TargetRole::DisplayDepth), false).is_err());
+        assert!(post_slot(&m, role).is_err(), "a hidden size");
+        assert!(post_slot(&m, PostTarget::Role(TargetRole::DisplayDepth)).is_err());
         // The glow's view is the bound colour, whichever target the view's is.
         assert_eq!(GLOW_TARGETS[0], PostTarget::Bound);
         m.set_u32(render_bridge::native_targets::CACHE_COLOUR, 0x0053_0000).unwrap();
-        assert_eq!(post_slot(&m, PostTarget::Bound, true).unwrap().header, 0x0053_0000);
+        assert_eq!(post_slot(&m, PostTarget::Bound).unwrap(), 0x0053_0000);
         assert_eq!(GLOW_TARGETS[1], PostTarget::Role(TargetRole::Game(glow::TARGET_DOWN as u8)));
         assert_eq!(GLOW_TARGETS[2], PostTarget::Role(TargetRole::Game(glow::TARGET_OTHER as u8)));
         m.set_u32(post_feature::TARGET0_COLOUR, 0).unwrap();
-        assert!(post_slot(&m, PostTarget::View, true).is_err(), "no view surface");
+        assert!(post_slot(&m, PostTarget::View).is_err(), "no view surface");
     }
 
     /// The view reads as `X8` where the texture `0x00014f60` binds for it
@@ -2579,77 +2253,6 @@ mod tests {
                 .unwrap_err()
                 .starts_with("unreadable screen values")
         );
-    }
-
-    #[test]
-    fn colour_only_quads_keep_effective_depth_and_stencil_operations() {
-        use gfx::state::{CompareFunc, StencilOp};
-        let mut state = gfx::RenderState::default();
-        let depth = Some(wgpu::TextureFormat::Depth24PlusStencil8);
-        assert!(!post_needs_depth(&state, None));
-        assert!(post_needs_depth(&state, depth));
-        state.depth_write = false;
-        assert!(post_needs_depth(&state, depth));
-        state.depth_func = CompareFunc::Always;
-        state.stencil.enable = true;
-        assert!(!post_needs_depth(&state, depth));
-        state.stencil.pass = StencilOp::Replace;
-        assert!(post_needs_depth(&state, depth));
-        state.stencil.write_mask = 0;
-        assert!(!post_needs_depth(&state, depth));
-        state.stencil.func = CompareFunc::Equal;
-        assert!(post_needs_depth(&state, depth));
-        assert!(!post_needs_depth(&state, Some(wgpu::TextureFormat::Depth16Unorm)));
-    }
-
-    #[test]
-    fn inherited_shader_raster_state_only_matters_for_inputs_the_combiner_reads() {
-        use gfx::state::ShadeMode;
-        use shaders::PixelShaderDef;
-        use shaders::psh::bits::{REG_FOG, REG_T0, REG_V1R0_SUM, final_efg, inputs};
-
-        let state = gfx::RenderState {
-            fog_enable: true,
-            shade_mode: ShadeMode::Flat,
-            ..Default::default()
-        };
-        let combiner = |source| CombinerInputs::read(&PixelShaderDef {
-            final_inputs_abcd: inputs(0, 0, 0, source),
-            final_inputs_efg: final_efg(0, 0, REG_T0, 0),
-            ..Default::default()
-        });
-        assert_eq!(check_combiner_raster(&state, true, combiner(REG_T0)), Ok(()));
-        assert_eq!(check_combiner_raster(&state, true, combiner(REG_FOG)), Err("the post combiner reads live fog"));
-        assert_eq!(check_combiner_raster(&state, true, combiner(REG_V1R0_SUM)), Err("the post combiner reads flat-shaded vertex colours"));
-        let smooth = gfx::RenderState { shade_mode: ShadeMode::Gouraud, ..state };
-        assert_eq!(check_combiner_raster(&smooth, true, combiner(REG_V1R0_SUM)), Err("the post combiner reads two-sided vertex colours"));
-        assert_eq!(check_combiner_raster(&state, true, CombinerInputs::read(&PixelShaderDef::default())), Err("the post combiner reads live fog"));
-    }
-
-    #[test]
-    fn every_pass_is_colour_only_and_records_again() {
-        use d3d::ExternalPass;
-        let plan = Plan {
-            window: [0.0; 4],
-            signs: [0.0; 2],
-            view: (640, 480),
-            down: (160, 120),
-            other: (160, 120),
-            draws: vec![],
-        };
-        let glow = GlowPass {
-            opaque_entry: [false; 4],
-            plan,
-            gpu: Arc::new(Mutex::new(GpuGlow::new())),
-            entry: Arc::default(),
-        };
-        assert!(glow.colour_only(), "the composite binds no depth");
-        assert!(glow.replays_scene(), "the plan is the call's own");
-        let effects = Arc::new(crate::native_post_load::ScreenEffects::default());
-        let call = ScreenCall { egor: EGOR, passes: Vec::new(), values: [0; 4], frame: None };
-        let screen = ScreenPass::new(effects, call, false).unwrap();
-        assert!(screen.colour_only(), "the screen passes bind no depth");
-        assert!(screen.replays_scene());
     }
 
     /// A screen pass's raster is its template's states, the view read as

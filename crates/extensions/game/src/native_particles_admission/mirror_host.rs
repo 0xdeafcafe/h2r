@@ -3,46 +3,37 @@
 //! (`render_bridge::effects_shadow::mirror`) drawn as one GPU particle
 //! system through `ParticleDraw`, at the particle draw's return.
 //!
-//! The batch draws under the cut setup: through the device's supplied
-//! draw (`Device::try_native_supplied_draw`) with the material held at the
-//! cut, so the draw the admission is offered carries the setup's texture,
-//! render state and the view's constants. Its pass is the mirror's own:
-//! the births evaluated on the GPU (`GpuParticles::mirror`), then one
-//! W-buffered `ParticleDraw` into the bound colour and depth, with the
-//! view from the guest's view constants and the stage 0 texture as the
-//! sprite.
+//! The batch draws under the cut setup's held material. Its state is the
+//! material's guest render words, which no native stage translates yet,
+//! so a batch's draw panics by name; [`state`] and [`view`] are what that
+//! stage's `ParticleDraw` takes.
 //!
 //! A system's `Definition` is built from its `prt3` tag and its bitmap's
 //! sprite sequences once a map ([`Definitions`]). Every refusal is a named
 //! cause: `accepts`' are `scene_kept_15_particle_mirror_<cause>` (the
-//! particle keeps its direct draw), `draw`'s are
-//! `layer_plan_15_effects_shadow_mirror_dropped_<cause>`.
+//! particle keeps its direct draw).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use d3d::{DrawAdmission, DrawSnapshot, ExternalPass, ExternalPlan, ExternalTarget, ExternalWrites, VIEW_CONSTANTS};
 use engine::memory::GuestMemory;
 use engine::particle_emission::constant::{ANGLE, SPIN};
 use gfx::state::{CompareFunc, DepthBufferMode, RenderState};
-use gfx::vertex::PrimitiveType;
-use native_render::particle_compute::{self as pc, Blend, GpuParticles, ParticleCompute, ParticleDraw};
+use native_render::particle_compute::Blend;
 use native_render::particle_definition::{self as pd, Image, Sheet};
-use native_render::particle_mirror::{self as nm, Key};
-use native_render::particle_system::{Definition, MAX_CAPACITY, Spawn, Sprite, View, depth};
+use native_render::particle_mirror::Key;
+use native_render::particle_system::{Definition, Sprite, View, depth};
+use native_render::program::VIEW_CONSTANTS;
 use render_bridge::effect_materials::Kind;
 use render_bridge::effects_shadow::mirror::{Batch, MirrorHost};
 use tags::effects::function::Tables;
 use tags::effects::particle::Particle;
 use tags::effects::{Ctx, EffectTag};
-use timeline::native::Stage;
-use wgpu::util::DeviceExt;
 
-use super::{REFUSALS, material_proof, particle_capture};
-use crate::native_lights_glue::DeviceMemory;
+use super::material_proof::{self, Held};
 
 /// A system's tag-built parts: its definition (the tag's; the callback's
-/// tint and size are the [`Key`]'s, [`nm::owned`]) and its sprites.
+/// tint and size are the [`Key`]'s, [`native_render::particle_mirror::owned`]) and its sprites.
 #[derive(Debug, PartialEq)]
 pub(crate) struct Built {
     pub definition: Definition,
@@ -150,13 +141,13 @@ pub(crate) fn build(m: &dyn GuestMemory, key: &Key) -> Result<Built, &'static st
 /// Whether particles of `key` can be mirrored with `held` the cut
 /// setup's material: there is one (`uncut` otherwise: the setup ran,
 /// and the direct draw draws from it), and the system builds.
-pub(super) fn accepted(
-    held: Option<Arc<d3d::SuppliedState>>,
+pub(super) fn accepted<H>(
+    held: Option<Arc<H>>,
     definitions: &Mutex<Definitions>,
     generation: u64,
     m: &dyn GuestMemory,
     key: &Key,
-) -> Result<(Arc<d3d::SuppliedState>, Arc<Built>), &'static str> {
+) -> Result<(Arc<H>, Arc<Built>), &'static str> {
     let held = held.ok_or("uncut")?;
     let built = definitions.lock().unwrap_or_else(|e| e.into_inner()).get(generation, key, || build(m, key))?;
     Ok((held, built))
@@ -165,7 +156,7 @@ pub(super) fn accepted(
 /// The blend of the cut setup's `render` state as `ParticleDraw` has it,
 /// or why it is not one `ParticleDraw` draws: its depth is tested
 /// less-equal and never written, it writes every channel, and it has no
-/// alpha test. Its stencil is drawn as it is ([`MirrorPass::stencil`]).
+/// alpha test. Its stencil is drawn as it is.
 pub(super) fn state(render: &RenderState) -> Result<Blend, &'static str> {
     if render.depth_mode == DepthBufferMode::Disabled {
         return Err("depth_off");
@@ -247,205 +238,16 @@ pub(super) fn view(
     Ok(View { clip_from_world, right, up, w_row: rw, depth: [z_scale, range[0], range[1], flags as f32] })
 }
 
-/// The pipelines and sampler of one wgpu device.
-struct Gpu {
-    device: wgpu::Device,
-    compute: ParticleCompute,
-    sampler: wgpu::Sampler,
-    draws: HashMap<(wgpu::TextureFormat, wgpu::TextureFormat, Blend, wgpu::StencilState), ParticleDraw>,
-}
-
-type GpuSlot = Arc<Mutex<Option<Gpu>>>;
-
-fn gpu_for<'a>(slot: &'a mut Option<Gpu>, device: &wgpu::Device) -> &'a mut Gpu {
-    if slot.as_ref().is_none_or(|g| &g.device != device) {
-        *slot = Some(Gpu {
-            device: device.clone(),
-            compute: ParticleCompute::new(device),
-            sampler: device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("particle mirror"),
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                ..Default::default()
-            }),
-            draws: HashMap::new(),
-        });
-    }
-    slot.as_mut().expect("made above")
-}
-
-/// One batch's pass: its system's births evaluated, then drawn.
-struct MirrorPass {
-    draw: Arc<d3d::ResolvedDraw>,
-    definition: Definition,
-    built: Arc<Built>,
-    spawns: Vec<Spawn>,
-    blend: Blend,
-    /// The supplied draw's stencil, test and write, as the guest's draw
-    /// would take it (`fog_gpu::layer_stencil`; off without a stencil
-    /// aspect).
-    stencil: gfx::state::StencilState,
-    clamp: bool,
-    gpu: GpuSlot,
-}
-
-impl MirrorPass {
-    fn record(&mut self, t: ExternalTarget<'_>) -> Result<(), &'static str> {
-        let texture = t.stages[0].ok_or("texture")?;
-        let constants = t.view_constants(std::array::from_fn(|r| self.draw.shader.constants[r]));
-        let range = d3d::hw::w_clip_range(&self.draw.hw, t.z_scale);
-        let view = view(&constants, t.guest_size, t.z_scale, range, self.clamp)?;
-        let mut slot = self.gpu.lock().unwrap_or_else(|e| e.into_inner());
-        let gpu = gpu_for(&mut slot, t.device);
-        let mut system =
-            GpuParticles::new(t.device, &gpu.compute, &self.definition, &self.built.sprites, self.spawns.len() as u32)
-                .map_err(|r| match r {
-                    pc::Refused::Capacity => "capacity",
-                    pc::Refused::Sprites => "sprites",
-                })?;
-        system.emit(&self.spawns);
-        system.mirror(&gpu.compute, t.queue, &mut *t.encoder);
-        let buffer = t.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("particle mirror view"),
-            contents: view.as_bytes(),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let stencil = native_render::fog_gpu::layer_stencil(&self.stencil, t.depth_format);
-        let draw = gpu
-            .draws
-            .entry((t.color_format, t.depth_format, self.blend, stencil.clone()))
-            .or_insert_with(|| ParticleDraw::w_buffered_stencil(t.device, t.color_format, t.depth_format, self.blend, stencil));
-        let binding = draw.bind(t.device, &system, &buffer, texture, &gpu.sampler);
-        let (w, h) = t.size;
-        let [vx, vy, vw, vh] = t.viewport;
-        let x0 = (vx.max(0.0) as u32).min(w);
-        let y0 = (vy.max(0.0) as u32).min(h);
-        let x1 = ((vx + vw).ceil().max(0.0) as u32).min(w);
-        let y1 = ((vy + vh).ceil().max(0.0) as u32).min(h);
-        if x1 <= x0 || y1 <= y0 {
-            return Err("viewport");
-        }
-        let ops = wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store };
-        let mut pass = t.encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("particle mirror"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: t.color,
-                depth_slice: None,
-                resolve_target: None,
-                ops,
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: t.depth,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store }),
-                stencil_ops: t.depth_format.has_stencil_aspect().then_some(wgpu::Operations {
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                }),
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        pass.set_viewport(0.0, 0.0, w as f32, h as f32, 0.0, 1.0);
-        pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
-        pass.set_stencil_reference(u32::from(self.stencil.reference));
-        draw.draw(&mut pass, &system, &binding);
-        Ok(())
-    }
-}
-
-impl ExternalPass for MirrorPass {
-    fn writes(&self) -> ExternalWrites {
-        ExternalWrites { color: true, depth_stencil: native_render::fog_gpu::stencil_writes(&self.stencil) }
-    }
-
-    fn prepare_copy(&mut self, t: &ExternalTarget<'_>) -> Result<(), &'static str> {
-        if t.stages[0].is_none() {
-            return Err("particle mirror: no sprite texture");
-        }
-        Ok(())
-    }
-
-    fn record_ranges(&mut self, t: ExternalTarget<'_>) -> usize {
-        match self.record(t) {
-            Ok(()) => 1,
-            Err(why) => {
-                REFUSALS.count("Mirror", why);
-                0
-            }
-        }
-    }
-}
-
-/// Why a supplied draw's snapshot is not the mirror's pass, or its blend:
-/// it has both targets, is W-buffered, has no clip rectangles, and its
-/// state is one `ParticleDraw` draws ([`state`]).
-pub(super) fn admits(snapshot: &DrawSnapshot<'_>) -> Result<Blend, &'static str> {
-    let d = snapshot.draw;
-    if snapshot.color_header == 0 {
-        return Err("no_colour");
-    }
-    if snapshot.depth_header == 0 || d.target.depth_format.is_none() {
-        return Err("no_depth");
-    }
-    if !d.clip_rects.is_empty() {
-        return Err("clip_rects");
-    }
-    if !d3d::hw::w_buffered(d) {
-        return Err("z_buffered");
-    }
-    state(&d.state.render)
-}
-
-/// The batch's pass, given to the supplied draw's admission.
-struct Admit {
-    pass: Mutex<Option<(Definition, Arc<Built>, Vec<Spawn>)>>,
-    gpu: GpuSlot,
-    refused: Mutex<Option<&'static str>>,
-}
-
-impl DrawAdmission for Admit {
-    fn admit(&self, snapshot: &DrawSnapshot<'_>) -> Option<(ExternalPlan, Box<dyn ExternalPass>)> {
-        let (definition, built, spawns) = self.pass.lock().unwrap_or_else(|e| e.into_inner()).take()?;
-        let stencil = snapshot.draw.state.render.stencil;
-        let blend = match admits(snapshot) {
-            Ok(b) => b,
-            Err(why) => {
-                *self.refused.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
-                return None;
-            }
-        };
-        let pass = MirrorPass {
-            draw: Arc::new(snapshot.draw.clone()),
-            definition,
-            built,
-            spawns,
-            blend,
-            stencil,
-            clamp: d3d::hw::draw_clamps_depth(snapshot.draw),
-            gpu: Arc::clone(&self.gpu),
-        };
-        Some((ExternalPlan { stage: Stage::Particles, view: 4, ranges: 1, slots: Vec::new() }, Box::new(pass)))
-    }
-}
-
 /// The game's [`MirrorHost`].
-pub(super) struct Glue<B: d3d::backend::Backend + 'static> {
-    device: d3d::abi::SharedDevice<B>,
+#[derive(Default)]
+struct Glue {
     definitions: Mutex<Definitions>,
     /// The cut setup's material the last accepted particle was taken
     /// under, and its key: the batch of that key draws from it.
-    setup: Mutex<Option<(Key, Arc<d3d::SuppliedState>)>>,
-    gpu: GpuSlot,
+    setup: Mutex<Option<(Key, Arc<Held>)>>,
 }
 
-impl<B: d3d::backend::Backend + 'static> Glue<B> {
-    pub(super) fn new(device: d3d::abi::SharedDevice<B>) -> Self {
-        Self { device, definitions: Mutex::default(), setup: Mutex::new(None), gpu: Arc::default() }
-    }
-}
-
-impl<B: d3d::backend::Backend + 'static> MirrorHost for Glue<B> {
+impl MirrorHost for Glue {
     fn accepts(&self, m: &dyn GuestMemory, key: &Key) -> Result<(), &'static str> {
         let generation = render_bridge::native_map_work::generation();
         let (held, _) = accepted(material_proof::held(Kind::Particle), &self.definitions, generation, m, key)?;
@@ -453,36 +255,15 @@ impl<B: d3d::backend::Backend + 'static> MirrorHost for Glue<B> {
         Ok(())
     }
 
-    fn draw(&self, m: &mut dyn GuestMemory, batch: &Batch) -> Result<(), &'static str> {
-        let setup = match &*self.setup.lock().unwrap_or_else(|e| e.into_inner()) {
-            Some((key, s)) if *key == batch.key => Arc::clone(s),
-            _ => return Err("uncut"),
-        };
-        if batch.spawns.len() > MAX_CAPACITY as usize {
-            return Err("capacity");
-        }
-        let generation = render_bridge::native_map_work::generation();
-        let (_, built) = accepted(Some(Arc::clone(&setup)), &self.definitions, generation, &*m, &batch.key)?;
-        let admit = Admit {
-            pass: Mutex::new(Some((nm::owned(&built.definition, &batch.key), built, batch.spawns.clone()))),
-            gpu: Arc::clone(&self.gpu),
-            refused: Mutex::new(None),
-        };
-        let data = particle_capture::corner_bytes().to_vec();
-        let outcome = match self.device.lock() {
-            Ok(mut device) => device
-                .try_native_supplied_draw(&mut DeviceMemory(m), PrimitiveType::QuadList, data, &[None; 16], &setup, &admit)
-                .unwrap_or(Err("device_error")),
-            Err(_) => Err("device_lock"),
-        };
-        outcome.map_err(|cause| admit.refused.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or(cause))
+    fn draw(&self, _: &mut dyn GuestMemory, batch: &Batch) -> Result<(), &'static str> {
+        unimplemented!("particle mirror: {} births of {:#x} drawn from the cut material's render words", batch.spawns.len(), batch.key.definition)
     }
 }
 
-/// Installs the mirror's host on `device` (with the native particle
-/// path's, `super::install`).
-pub(super) fn install<B: d3d::backend::Backend + 'static>(device: &d3d::abi::SharedDevice<B>) {
-    render_bridge::effects_shadow::mirror::set_host(Arc::new(Glue::new(device.clone())));
+/// Installs the mirror's host (with the native particle path's,
+/// `super::install`).
+pub(super) fn install() {
+    render_bridge::effects_shadow::mirror::set_host(Arc::new(Glue::default()));
 }
 
 #[cfg(test)]
@@ -525,9 +306,9 @@ mod tests {
     fn a_particle_without_a_cut_setup_or_whose_tag_does_not_build_is_refused_by_name() {
         let m = FlatMemory::new(BASE, 0x1000);
         let defs = Mutex::new(Definitions::default());
-        let supplied = Arc::new(d3d::SuppliedState::default());
+        let supplied = Arc::new(());
         let k = key(TAG, 0);
-        assert_eq!(accepted(None, &defs, 1, &m, &k).err(), Some("uncut"));
+        assert_eq!(accepted::<()>(None, &defs, 1, &m, &k).err(), Some("uncut"));
         // The tag reads, but the image's values are outside this memory.
         let got = accepted(Some(supplied.clone()), &defs, 1, &m, &k);
         assert_eq!(got.err(), Some("unreadable"));
