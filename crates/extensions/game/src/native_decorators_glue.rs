@@ -563,7 +563,7 @@ impl Host for Glue {
         }
         let Some(load) = self.ready(mem) else { return out };
         let Some(looks) = load.decorators.get() else { return out };
-        let device_state = |slot: u32| crate::native_objects_glue::device_state::render_state(slot);
+        let device_state = |slot: u32| crate::native_objects_glue::device_state::render_state(mem, slot);
         for m in ready {
             if matches!(looks.look(m), Some(Ok(look)) if skip_holds(look, &device_state)) {
                 out.insert(*m);

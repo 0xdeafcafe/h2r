@@ -425,7 +425,7 @@ impl Glue {
         } else {
             Vec::new()
         };
-        let device = |slot: u32| crate::native_objects_glue::device_state::render_state(slot);
+        let device = |slot: u32| crate::native_objects_glue::device_state::render_state(&*mem, slot);
         let device_state = native_render::sorted_entries::after_restore(&restore, &device);
         // The device's stencil at the layer call (in a run, after the
         // restore), which the items draw under (`layer_pass::item_stencil`);
@@ -527,7 +527,7 @@ impl Glue {
             return None;
         }
         drop(device_state);
-        let device_words = crate::native_objects_glue::device_state::fog_words();
+        let device_words = crate::native_objects_glue::device_state::fog_words(&*mem);
         let mut fogs = HashMap::new();
         if let Some(data) = data {
             for (&material, words) in &data.words {
@@ -824,7 +824,7 @@ fn plan_objects(
     // buffer its `ZENABLE` sets, the stipple switch it pushes, the fog
     // colour the structure's upload is compared with.
     let restore = restore.unwrap_or(&[]);
-    let device = |slot: u32| crate::native_objects_glue::device_state::render_state(slot);
+    let device = |slot: u32| crate::native_objects_glue::device_state::render_state(&*mem, slot);
     let device_state = native_render::sorted_entries::after_restore(restore, &device);
     let (entry, w_buffered) = crate::native_objects_glue::entry_states_with(mem, &device_state);
     let w_buffered = crate::native_objects_glue::w_buffered_after(restore).unwrap_or(w_buffered);
@@ -941,7 +941,7 @@ fn plan_objects(
             left.item(item.slot, "object_stipple");
             continue;
         }
-        let device_stipple = *stipple.get_or_insert_with(|| crate::native_objects_glue::device_stipple_after(restore));
+        let device_stipple = *stipple.get_or_insert_with(|| crate::native_objects_glue::device_stipple_after(mem, restore));
         let Ok(rows) = crate::native_objects_glue::record_stipple(mem, device_stipple, item.key.record, faded) else {
             *outcomes.entry("object_fade").or_default() += 1;
             left.item(item.slot, "object_fade");
@@ -1093,7 +1093,7 @@ impl render_bridge::effects_shadow::geometry::AnswerHost for TransparentAnswer {
         }
         let (stencil, fog) = {
             let read = ReadMemory(mem);
-            let device_stencil = crate::native_objects_glue::device_state::stencil().ok_or("stencil")?;
+            let device_stencil = crate::native_objects_glue::device_state::stencil(&*mem).ok_or("stencil")?;
             if !palettes_hold(palettes, &|s| crate::native_world_glue::stage_palette(&*mem, s)) {
                 return Err("palettes");
             }
@@ -1101,12 +1101,12 @@ impl render_bridge::effects_shadow::geometry::AnswerHost for TransparentAnswer {
             // what the cached implementation restores, then what each pass
             // sets already holds or is restored (`layer_pass::skip_holds`).
             let restore = native_render::sorted_entries::cached_restore(&read).ok_or("cached_state")?;
-            let device_words = |slot: u32| crate::native_objects_glue::device_state::render_state(slot);
+            let device_words = |slot: u32| crate::native_objects_glue::device_state::render_state(&*mem, slot);
             let device_state = native_render::sorted_entries::after_restore(&restore, &device_words);
             if !imps.iter().all(|i| layer_pass::skip_holds(i, &device_state)) {
                 return Err("state");
             }
-            let words = crate::native_objects_glue::device_state::fog_words();
+            let words = crate::native_objects_glue::device_state::fog_words(&*mem);
             let fog = data.words.get(&material).and_then(|w| w.resolve(&words)).map(|w| fog_of(&w)).ok_or("fog")?;
             (layer_pass::item_stencil(L, false, device_stencil, false).stencil, fog)
         };
@@ -1173,7 +1173,7 @@ impl TransparentAnswer {
             let restore = native_render::sorted_entries::cached_restore(&read).ok_or("cached_state")?;
             // The stencil as the restore leaves it, as `plan_objects` reads
             // the rest.
-            let device = |slot: u32| crate::native_objects_glue::device_state::render_state(slot);
+            let device = |slot: u32| crate::native_objects_glue::device_state::render_state(&*mem, slot);
             let after = native_render::sorted_entries::after_restore(&restore, &device);
             let device_stencil = crate::native_objects_glue::stencil_with(&after);
             drop(after);
