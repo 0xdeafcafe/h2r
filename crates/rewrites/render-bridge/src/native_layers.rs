@@ -630,16 +630,20 @@ pub(crate) fn forget_pending() {
 }
 
 /// The site prefix of a layer draw that can return: `""` the opaque
-/// block's of the scene, `alt` the alternate view's, `fp` the first
-/// person's; `light`, `extra`, `shadow` and `fplight` the light passes'
+/// block's and R5's layers 2 and 17 of the scene and the sorted handlers'
+/// 18, 19 and 21, `alt` the alternate view's, `fp` the first person's; `light`, `extra`, `shadow` and `fplight` the light passes'
 /// and shadow layers' of a light, its additional casters, an object
 /// shadow and the first-person lights ([`light_site`]); `None` for every
 /// other call of the layer draw.
 pub fn return_site(layer: u32, ret: u32) -> Option<&'static str> {
-    if crate::frame_step::layer::LIGHT_LAYERS.contains(&layer) {
+    use crate::frame_step::layer::{LATE_LAYERS, LAYERS, LIGHT_LAYERS};
+    if LIGHT_LAYERS.contains(&layer) {
         return light_site(layer, ret);
     }
-    if !crate::frame_step::layer::LAYERS.contains(&layer) {
+    if LATE_LAYERS.contains(&layer) && caller(layer, ret).is_some_and(|c| matches!(c, LayerCaller::Sorted(_))) {
+        return Some("");
+    }
+    if !LAYERS.contains(&layer) && !LATE_LAYERS.contains(&layer) {
         return None;
     }
     match layer_site(layer, ret) {
@@ -1285,8 +1289,53 @@ mod tests {
         let before = returns();
         assert!(!layer_return(&mut mem, 0x0004_1ffd, false), "a light pass's");
         mem.set_u32(fl::CURRENT_LAYER, 2).unwrap();
-        assert!(!layer_return(&mut mem, 0x0002_c060, false), "layer 2 is not the opaque block's");
+        assert!(!layer_return(&mut mem, 0x0002_c30b, false), "layer 2 from layer 17's site");
+        mem.set_u32(fl::CURRENT_LAYER, 18).unwrap();
+        assert!(!layer_return(&mut mem, 0x0002_c060, false), "layer 18 from no sorted handler");
         assert_eq!(returns(), before);
+    }
+
+    /// R5's layers return as the opaque block's do: the scene's 2 and 17,
+    /// the alternate view's and first person's 2, and the sorted
+    /// handlers' 18, 19 and 21, once no item holds the bit; an item kept
+    /// runs the body, counted by its kind.
+    #[test]
+    fn r5s_layer_draws_return_when_every_item_is_native() {
+        use crate::frame_step::layer as fl;
+        use engine::memory::FlatMemory;
+        let get = |k: &str| counters().into_iter().find(|(n, _)| n == k).map_or(0, |(_, v)| v);
+        let mut mem = FlatMemory::new(0x0045_0000, 0x7_0000);
+        let (list, items) = (0x004a_0000, 0x004a_0100);
+        mem.set_u32(fl::CURRENT_LIST, list).unwrap();
+        mem.set_u32(list + 4, 1).unwrap();
+        mem.set_u32(list + 0x14, items).unwrap();
+        mem.set_u32(items, fl::GEOMETRY_BUILD).unwrap();
+        mem.set_u32(items + 0xc, 3 << 8).unwrap();
+        mem.set_u32(fl::RENDER_RECORDS + 3 * 0x20 + 4, 0xe000_0003).unwrap();
+        for (layer, ret, site) in [
+            (2, 0x0002_c060, ""),
+            (2, 0x0002_bda8, "alt"),
+            (2, 0x0004_0289, "fp"),
+            (17, 0x0002_c30b, ""),
+            (18, 0x0004_2015, ""),
+            (19, 0x0004_205f, ""),
+            (21, 0x0004_2721, ""),
+        ] {
+            assert_eq!(return_site(layer, ret), Some(site), "{layer} at {ret:#x}");
+            mem.set_u32(fl::CURRENT_LAYER, layer).unwrap();
+            mem.set_u32(items + 0x10, 0).unwrap();
+            mem.set_u32(fl::DRAWN_LAYER, layer).unwrap();
+            let returned = get(&format!("layer_return_{site}{layer}_returned"));
+            assert!(layer_return(&mut mem, ret, false), "{layer} at {ret:#x}");
+            assert_eq!(get(&format!("layer_return_{site}{layer}_returned")), returned + 1);
+            assert_eq!(mem.u32(fl::DRAWN_LAYER).unwrap(), u32::MAX, "the body's writes made");
+            mem.set_u32(items + 0x10, 1 << layer).unwrap();
+            let object = get(&format!("layer_return_{site}{layer}_guest_object"));
+            assert!(!layer_return(&mut mem, ret, false), "{layer}: an item kept runs the body");
+            assert_eq!(get(&format!("layer_return_{site}{layer}_guest_object")), object + 1);
+        }
+        assert_eq!(return_site(17, 0x0002_bda8), None, "the alternate view has no layer 17");
+        assert_eq!(return_site(21, 0x0004_2015), None, "21 is the hologram's");
     }
 
     /// Every item a layer call's guest body draws is one `scene_kept_*`

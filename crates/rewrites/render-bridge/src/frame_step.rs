@@ -173,6 +173,12 @@ pub mod layer {
     /// The light passes' and the shadow layers' (`native_lights`,
     /// `native_shadows`): the same body runs for them.
     pub const LIGHT_LAYERS: [u32; 5] = [10, 11, 12, 13, 14];
+    /// R5's layers taken from the scene (`native_layers`): the scene's,
+    /// the alternate view's and the first person's layer 2, the scene's
+    /// layer 17, and the sorted handlers' camouflage 18 and 19 and
+    /// hologram 21. The same body runs for them: each is in the draw mask
+    /// `0x00bffdee` with no condition of its own.
+    pub const LATE_LAYERS: [u32; 5] = [2, 17, 18, 19, 21];
     /// The current layer the draw reads.
     pub const CURRENT_LAYER: u32 = 0x0046_7130;
     /// The current list the draw reads.

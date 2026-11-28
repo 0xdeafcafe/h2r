@@ -80,9 +80,9 @@ fn state(seed: u64, keep_bit: u32) -> (FlatMemory, u32) {
     for b in m.bytes.iter_mut() {
         *b = r.next() as u8;
     }
-    // The opaque block's layers and the light passes' and shadow layers'
-    // share the body.
-    let layers: Vec<u32> = layer::LAYERS.iter().chain(&layer::LIGHT_LAYERS).copied().collect();
+    // The opaque block's layers, the light passes' and shadow layers' and
+    // R5's late layers share the body.
+    let layers: Vec<u32> = layer::LAYERS.iter().chain(&layer::LIGHT_LAYERS).chain(&layer::LATE_LAYERS).copied().collect();
     let layer = layers[r.below(layers.len() as u32) as usize];
     m.set_u32(layer::CURRENT_LAYER, layer).unwrap();
     m.set_u32(layer::CURRENT_LIST, LIST).unwrap();
@@ -114,7 +114,7 @@ fn state(seed: u64, keep_bit: u32) -> (FlatMemory, u32) {
 
 #[test]
 fn a_returned_layer_draw_leaves_the_words_the_guest_body_leaves() {
-    let (mut returned, mut lights) = (0, 0);
+    let (mut returned, mut lights, mut late) = (0, 0, 0);
     for seed in 0..2_000 {
         let (start, layer) = state(seed, 0);
         let mut model = FlatMemory { base: start.base, bytes: start.bytes.clone() };
@@ -127,6 +127,7 @@ fn a_returned_layer_draw_leaves_the_words_the_guest_body_leaves() {
                 assert!(model.bytes == ours.bytes, "seed {seed}: the words differ from the body's");
                 returned += 1;
                 lights += u32::from(layer::LIGHT_LAYERS.contains(&layer));
+                late += u32::from(layer::LATE_LAYERS.contains(&layer));
             }
             Err(call) => {
                 assert_eq!(got, Err(Keep::OpenShader), "seed {seed}: the body calls {call}");
@@ -136,6 +137,7 @@ fn a_returned_layer_draw_leaves_the_words_the_guest_body_leaves() {
     }
     assert!(returned > 1_000, "most seeds return: {returned}");
     assert!(lights > 200, "the light passes' and shadow layers' too: {lights}");
+    assert!(late > 200, "R5's late layers too: {late}");
 }
 
 #[test]
