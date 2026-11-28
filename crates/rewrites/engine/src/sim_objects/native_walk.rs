@@ -3,7 +3,8 @@
 //! per-object updates `bc470` and `bc820` with the node matrices `bd090`,
 //! the four type dispatchers, the wake leaves, the early-mover wake
 //! `109580`, the leaves `bd090` calls (`b8bd0`, `bf5a0`, `bfc90`, `bff10`,
-//! `bfe80`, `bfed0`, `bfe20`, `b6780`), and the type callbacks of the
+//! `bfe80`, `bfed0`, `bfe20`, `b6780`), the typed object lookup `badc0`
+//! the type trees call, and the type callbacks of the
 //! objects a multiplayer game has: the unit update `c6b30` with its tree
 //! (slices 6a, 6b and 6c), the biped update `dd360` and post-physics update
 //! `dd990` with the ported part of their trees (slices 7a and 7b), the
@@ -41,7 +42,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The walk bodies: the three walks, the per-object updates, `bd090`, the
 /// type dispatchers, the wake leaves, the early-mover wake and the leaves
-/// `bd090` calls (`getters`). [`TABLE`] holds these and [`TYPES`].
+/// `bd090` calls and the typed object lookup `badc0` (`getters`).
+/// [`TABLE`] holds these and [`TYPES`].
 pub const POINTS: &[&Point] = &[
     &points::OBJECTS_PRE_PHYSICS,
     &points::OBJECTS_POST_PHYSICS,
@@ -66,6 +68,7 @@ pub const POINTS: &[&Point] = &[
     &points::NODE_MASK_TRIM,
     &points::NODE_MASK_SET,
     &points::ANIMATION_VALID,
+    &points::OBJECT_GET_TYPED,
 ];
 
 /// The type callbacks in [`TABLE`]: the `unit` descriptor's slot `+40`
@@ -177,6 +180,7 @@ pub const FLOAT_FREE: &[u32] = &[
     points::NODE_MASK_TRIM.base,
     points::NODE_MASK_SET.base,
     points::ANIMATION_VALID.base,
+    points::OBJECT_GET_TYPED.base,
 ];
 
 /// The entries whose hooks never transfer to their own guest body: the

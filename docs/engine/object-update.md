@@ -86,6 +86,9 @@ entry or site of a table body at pc
 | `bfed0` | `NODE_MASK_TRIM` | `eax` bit count, `esi` mask | words past the count cleared, the partial word masked |
 | `bfe20` | `NODE_MASK_SET` | `eax` word, `cl` bit, `dl` set | the bit set or cleared |
 | `b6780` | `ANIMATION_VALID` | `eax` record | `eax` 1 when dword `+68`, dword `+0` and word `+6` are all not none |
+| `badc0` | `OBJECT_GET_TYPED` | `eax` object, stack 0 type bits; `ret 4` | `eax` the body when the handle is not none, its index is below the high-water mark `+38` (signed), its salt is not 0 and equals the handle's high half, and bit `[datum+3]` of the type bits is set; else 0. The flags are the last `test`'s |
+
+  `badc0` is not a `bd090` callee: the item, weapon, projectile, biped post-update and after-root bodies call it, and so do guest callers and the effect and sound bodies, which reach it through its hook.
 
   Seven callees stay guest calls: `e1670` (calls `1ec640`, float), `1d3920` (component nodes, a large frame and a long body), `16d940` (the orientation seed, an `xmm` loop), `bdb60` (the animation, calls `13e530` and more), `1c6440` (calls `1daea0`), `a98b0` and `a9940` (the motion position and basis, each a large body). None is a leaf of the small kind.
 - **Refusals:** `float_env` is the only one. It is per call: one object's `bd090`, one unit's `c6b30` or one weapon's `fdfb0` is the guest's, the walk, the update and the dispatcher around it stay Rust. A callee that changes the float environment and returns to a type callback's site refuses the rest of that call.

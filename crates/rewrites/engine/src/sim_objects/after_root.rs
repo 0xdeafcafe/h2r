@@ -1,5 +1,5 @@
 //! The after-root slot `+70` callees the dispatcher `1090d0` calls
-//! (docs/engine/object-update.md, "Slot callees"): `unit` (`112dc0`) and
+//! (docs/engine/object-update-bodies-core.md): `unit` (`112dc0`) and
 //! `scen` (`10a390`).
 //!
 //! **`(object: stack 0, matrix: stack 1)`; `ret 8`.** Both save `esi` (the

@@ -18,12 +18,13 @@
 //! | `bfed0` | `eax` bit count, `esi` mask | words past the count cleared, the partial word masked |
 //! | `bfe20` | `eax` word, `cl` bit, `dl` set | that bit set or cleared |
 //! | `b6780` | `eax` record | `eax` 1 when `+68`, `+0` and word `+6` are all not none |
+//! | `badc0` | `eax` object, `[esp+4]` type bits; `ret 4` | `eax` the body when the handle is live and its type (datum `+3`) has its bit set, else 0 |
 
 use super::alu::cmp16;
 use super::{Cx, Next, Result, unowned};
-use crate::datum::layout::DATA;
+use crate::datum::layout::{DATA, ELEMENT_SIZE, HIGH_WATER};
 use crate::points;
-use crate::sim_physics::{arithmetic, byte, logic};
+use crate::sim_physics::{arithmetic, byte, logic, pop, push};
 use runtime::{CpuAbi, Guest};
 
 const NONE: u32 = u32::MAX;
@@ -278,6 +279,65 @@ pub(super) fn animation_valid(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
     Ok(Next::Ret { pop: 0 })
 }
 
+/// `badc0 (object: eax, types: stack 0) -> eax`; `ret 4`. The datum is
+/// found when the handle is not none, its index is below the high-water
+/// mark (a signed compare), its salt word is not 0 and equals the handle's
+/// high half; its body is answered when bit `[datum+3]` of `types` is set.
+/// The flags are those of the last `test`: of the datum (none found) or of
+/// the type bit.
+pub(super) fn object_get_typed(cx: &mut Cx<'_>, pc: u32) -> Result<Next> {
+    let (c, g) = (&mut *cx.cpu, &mut *cx.g);
+    if pc != points::OBJECT_GET_TYPED.base {
+        return Err(unowned(pc));
+    }
+    push(c, g, c.esi)?;
+    push(c, g, c.edi)?;
+    let handle = c.eax;
+    c.esi = handle;
+    c.edi = 0;
+    'found: {
+        if handle == NONE {
+            break 'found;
+        }
+        c.edx = g.u32(points::OBJECTS.base)?;
+        let high = ld(g, c.edx, HIGH_WATER)?;
+        c.eax = high;
+        c.ecx = handle & 0xffff;
+        if (c.ecx as i32) >= (high as i32) {
+            break 'found;
+        }
+        let datum = ld(g, c.edx, ELEMENT_SIZE)?.wrapping_mul(c.ecx).wrapping_add(ld(g, c.edx, DATA)?);
+        c.eax = datum;
+        let salt = u32::from(g.u16(datum)?);
+        c.ecx = (c.ecx & !0xffff) | salt;
+        if salt == 0 {
+            break 'found;
+        }
+        c.ecx = salt as u16 as i16 as i32 as u32;
+        c.esi = ((handle as i32) >> 16) as u32;
+        if c.ecx != c.esi {
+            break 'found;
+        }
+        c.edi = datum;
+    }
+    c.eax = 0;
+    logic(c, c.edi, 1 << 31);
+    if c.edi != 0 {
+        let kind = g.u8(at(c.edi, 3))?;
+        c.ecx = byte(c.ecx, kind);
+        c.edx = 1u32 << (kind & 31);
+        // `test [esp+0c], edx`: the type bits past the two pushes.
+        let types = ld(g, c.esp, 0xc)?;
+        logic(c, types & c.edx, 1 << 31);
+        if types & c.edx != 0 {
+            c.eax = ld(g, c.edi, 8)?;
+        }
+    }
+    c.edi = pop(c, g)?;
+    c.esi = pop(c, g)?;
+    Ok(Next::Ret { pop: 4 })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,5 +408,62 @@ mod tests {
         cpu.eax = MASK;
         animation_valid(&mut Cx { cpu: &mut cpu, g: &mut g }, points::ANIMATION_VALID.base).unwrap();
         assert_eq!(cpu.eax, 0);
+    }
+
+    /// The object pool at `0x0057_0200`: header, two 12-byte datums at
+    /// `+0x100` (slot 1 salt `0x8201`, type 3; slot 0 free), high-water 2.
+    fn pool(g: &mut Guest) -> u32 {
+        let header = 0x0057_0200;
+        g.set_u32(points::OBJECTS.base, header).unwrap();
+        g.set_u32(header + ELEMENT_SIZE, 12).unwrap();
+        g.set_u32(header + HIGH_WATER, 2).unwrap();
+        g.set_u32(header + DATA, header + 0x100).unwrap();
+        let slot1 = header + 0x100 + 12;
+        g.set_u16(slot1, 0x8201).unwrap();
+        g.set_u8(slot1 + 3, 3).unwrap();
+        g.set_u32(slot1 + 8, 0x0057_0400).unwrap();
+        slot1
+    }
+
+    fn typed(g: &mut Guest, handle: u32, types: u32) -> CpuAbi {
+        g.map_zeroed(points::OBJECTS.base & !0xfff, 0x1000, Permissions::RW).ok();
+        pool(g);
+        g.set_u32(STACK + 4, types).unwrap();
+        let mut cpu = CpuAbi { esp: STACK, eax: handle, ecx: 0x1111, edx: 0x2222, esi: 0x3333, edi: 0x4444, ..Default::default() };
+        let next = object_get_typed(&mut Cx { cpu: &mut cpu, g }, points::OBJECT_GET_TYPED.base).unwrap();
+        assert_eq!(next, Next::Ret { pop: 4 });
+        assert_eq!((cpu.esp, cpu.esi, cpu.edi), (STACK, 0x3333, 0x4444));
+        cpu
+    }
+
+    #[test]
+    fn a_typed_get_answers_the_body_of_a_live_handle_whose_type_bit_is_set() {
+        let (_, mut g) = guest();
+        let cpu = typed(&mut g, 0x8201_0001, 1 << 3);
+        assert_eq!((cpu.eax, cpu.ecx, cpu.edx), (0x0057_0400, 0xffff_8203, 8));
+        assert_eq!(cpu.eflags & 0x40, 0, "the type bit tested set");
+        let cpu = typed(&mut g, 0x8201_0001, u32::MAX);
+        assert_eq!(cpu.eax, 0x0057_0400);
+    }
+
+    #[test]
+    fn a_typed_get_answers_0_for_none_a_stale_salt_a_free_slot_a_slot_past_the_mark_or_another_type() {
+        let (_, mut g) = guest();
+        // None: nothing read, `ecx` and `edx` kept.
+        let cpu = typed(&mut g, NONE, u32::MAX);
+        assert_eq!((cpu.eax, cpu.ecx, cpu.edx), (0, 0x1111, 0x2222));
+        assert_eq!(cpu.eflags & 0x40, 0x40);
+        // Past the high-water mark: `ecx` the index.
+        let cpu = typed(&mut g, 0x8201_0002, u32::MAX);
+        assert_eq!((cpu.eax, cpu.ecx, cpu.edx), (0, 2, 0x0057_0200));
+        // A free slot (salt 0) and a stale salt.
+        let cpu = typed(&mut g, 0x8200_0000, u32::MAX);
+        assert_eq!((cpu.eax, cpu.ecx), (0, 0));
+        let cpu = typed(&mut g, 0x8202_0001, u32::MAX);
+        assert_eq!((cpu.eax, cpu.ecx), (0, 0xffff_8201));
+        // Another type: the datum found, the bit clear.
+        let cpu = typed(&mut g, 0x8201_0001, !(1 << 3));
+        assert_eq!((cpu.eax, cpu.ecx, cpu.edx), (0, 0xffff_8203, 8));
+        assert_eq!(cpu.eflags & 0x40, 0x40);
     }
 }

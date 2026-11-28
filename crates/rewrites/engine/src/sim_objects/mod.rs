@@ -140,6 +140,8 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::NODE_MASK_TRIM, sites: &[], run: getters::mask_trim },
     Body { point: &points::NODE_MASK_SET, sites: &[], run: getters::mask_set },
     Body { point: &points::ANIMATION_VALID, sites: &[], run: getters::animation_valid },
+    // The typed object lookup every type tree calls.
+    Body { point: &points::OBJECT_GET_TYPED, sites: &[], run: getters::object_get_typed },
     // Slice 3: function values, the imports and change colours
     // (`functions`).
     Body { point: &points::OBJECT_FUNCTION_VALUE, sites: &functions::value::VALUE_SITES, run: functions::value::value },

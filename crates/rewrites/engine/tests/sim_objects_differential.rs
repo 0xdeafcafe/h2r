@@ -293,6 +293,12 @@ fn entry(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
     if let Some(reg) = reg {
         cpu.gpr[reg] = object(case);
     }
+    if root == points::OBJECT_GET_TYPED.base {
+        // The typed lookup: a pool handle, none, a stale salt or a slot
+        // past every high-water mark, with type bits from none to all.
+        cpu.gpr[0] = [object(case), u32::MAX, object(case) ^ 0x0001_0000, handle(SLOTS - 1)][case as usize % 4];
+        word(g, STACK + 4, [u32::MAX, 0, 1 << (case % 13), !(1 << (case % 13)), 0x1fff][case as usize % 5]);
+    }
     if function_root(root) {
         function_entry(g, cpu, root, case);
     }
@@ -498,7 +504,6 @@ fn answer(cpu: &mut Cpu, g: &mut Guest, target: u32, n: usize, case: u32) {
     slice_6c_answer(cpu, g, target, n, case);
     slice_7a_answer(cpu, g, target, n, case);
     slice_7b_answer(cpu, g, &at_call, target, n, case);
-    after_root_answer(cpu, target, n, case);
     cpu.gpr[4] = sp + 4 + cleanup(target);
     cpu.eip = ret;
 }
@@ -920,6 +925,14 @@ fn type_post_update_dispatch() {
 #[test]
 fn type_pose_dispatch() {
     transcripts(&points::OBJECT_TYPE_POSE, 13);
+}
+
+/// The typed object lookup `badc0`, entered directly over the pool
+/// ([`entry`] picks the handle and the type bits by case) and reached
+/// from the item, weapon, projectile, biped and after-root trees.
+#[test]
+fn typed_lookup() {
+    transcripts(&points::OBJECT_GET_TYPED, 40);
 }
 
 /// The pose slot callees `f0f50` (`vehi`) and `107000` (`devi`), entered
@@ -1488,9 +1501,8 @@ fn the_harness_sees_a_difference() {
 /// Every guest function a slice 11 body calls, with the bytes its `ret`
 /// pops (docs/engine/object-update.md, "Slice 11 bodies").
 const SLICE_11_CALLEES: &[(u32, u32)] = &[
-    // Item `10b4d0`.
+    // Item `10b4d0` (the typed lookup `badc0` is a body).
     (0x184000, 0),
-    (0xbadc0, 4),
     // `b8bd0` (`ret 4`) is in `FUNCTION_CALLOUTS`.
     (0x142570, 4),
     (0x10d710, 8),
@@ -2939,8 +2951,8 @@ fn unit_idle_test() {
 // every root, comparing the float state at every callout.
 
 /// Every guest function `fdfb0` calls, with the bytes its `ret` pops
-/// (docs/engine/object-update.md, "Slice 9 body"). `1cb710`, `1daea0`
-/// and `badc0` are slice 11's.
+/// (docs/engine/object-update.md, "Slice 9 body"). `1cb710` and
+/// `1daea0` are slice 11's; `badc0` is a body.
 const SLICE_9_CALLEES: &[(u32, u32)] = &[
     (0x101690, 4),
     (0xd1490, 0),
@@ -4179,10 +4191,11 @@ fn type_update_dispatch_reaches_the_biped() {
 
 /// Every guest function a slice 7b body calls that no table above lists,
 /// with the bytes its `ret` pops (docs/engine/object-update.md, "Slice 7b
-/// bodies"). `1ec500`, `d6660`, `1c4b00`, `1d1c10`, `1e5a60`, `1e68a0`
-/// and `badc0` are slice 11's, `d7b80`, `b9b90` and `ba160` slice 10's,
+/// bodies"). `1ec500`, `d6660`, `1c4b00`, `1d1c10`, `1e5a60` and
+/// `1e68a0` are slice 11's, `d7b80`, `b9b90` and `ba160` slice 10's,
 /// `1201a0` slice 6a's, `d66d0` the damage update's; `baf80`, `ba1d0`,
-/// `b7740`, `b9dd0`, `b7360`, `bba20`, `1469f0` and `e4050` are bodies.
+/// `b7740`, `b9dd0`, `b7360`, `bba20`, `1469f0`, `e4050` and `badc0` are
+/// bodies.
 const SLICE_7B_CALLEES: &[(u32, u32)] = &[
     // The post-update `dd990`.
     (0x1efb40, 4),
@@ -4257,8 +4270,8 @@ const POST_CONTACT_COUNT: u32 = 3;
 /// range, at the count, past it) and an object through `ecx`; the
 /// velocity `ba160` and the rigid-body query `1d0870` fill their vectors;
 /// the actor scale `25aad0` its float; the shape `1efd80` answers one
-/// whose surfaces are [`POST_SURFACE_FLAGS`]; `badc0` answers none once in
-/// three.
+/// whose surfaces are [`POST_SURFACE_FLAGS`]. The typed lookup `badc0`
+/// is a body: it answers from the pool.
 fn slice_7b_answer(cpu: &mut Cpu, g: &mut Guest, at_call: &[u32; 8], target: u32, n: usize, case: u32) {
     if !BIPED_POST.with(std::cell::Cell::get) {
         return;
@@ -4267,11 +4280,6 @@ fn slice_7b_answer(cpu: &mut Cpu, g: &mut Guest, at_call: &[u32; 8], target: u32
     let sp = at_call[4];
     match target {
         0x1ec500 | 0x1d1c10 | 0x1efb40 | 0x1cfdf0 | 0x1fb6f0 | 0xe4770 | 0x1e68a0 => cpu.gpr[0] = k % 2,
-        0xbadc0 => {
-            if k % 3 == 0 {
-                cpu.gpr[0] = 0;
-            }
-        }
         0x1697c0 => {
             cpu.gpr[0] = u32::from(k % 3 != 0);
             let out = g.u32(sp + 0x18).unwrap();
@@ -4636,20 +4644,10 @@ fn undressed(_: &mut Guest, _: u32) {}
 /// dispatcher's second argument).
 const AFTER_ROOT_MATRIX: u32 = PHASE + 0x100;
 
-std::thread_local! {
-    /// Set while the after-root slot roots run: `badc0` then answers none
-    /// once in three.
-    static AFTER_ROOT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-fn after_root_answer(cpu: &mut Cpu, target: u32, n: usize, case: u32) {
-    if target == 0xbadc0 && AFTER_ROOT.with(std::cell::Cell::get) && (n as u32 + case) % 3 == 0 {
-        cpu.gpr[0] = 0;
-    }
-}
-
-/// The parent handle each slot callee reads (none, or a live slot), the
-/// parent's root node matrix and the matrix argument, varied by `case`.
+/// The parent handle each slot callee reads (none, or a pool slot, which
+/// the typed lookup `badc0` finds live or not by the case's high-water
+/// mark), the parent's root node matrix and the matrix argument, varied
+/// by `case`.
 fn dress_after_root(g: &mut Guest, case: u32) {
     let body = RECORDS + BODY * (object(case) & 0xffff);
     let parent = [NONE, handle(3), handle(7), handle(1)][case as usize % 4];
@@ -4668,9 +4666,7 @@ fn dress_after_root(g: &mut Guest, case: u32) {
 
 #[test]
 fn after_root_slots() {
-    AFTER_ROOT.with(|b| b.set(true));
     for point in [&points::UNIT_AFTER_ROOT, &points::SCENERY_AFTER_ROOT] {
         dressed_with(point, 8, dress_after_root);
     }
-    AFTER_ROOT.with(|b| b.set(false));
 }
