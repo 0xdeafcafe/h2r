@@ -635,6 +635,22 @@ points! { ALL;
     OBJECT_WAKE_FOR_POST @ 0x000b_ba20: [fn(object: eax) ret 0], Hot; "docs/engine/object-update.md";
     /// Wake the bipeds, vehicles and creatures in an object's subtree.
     OBJECT_WAKE_CHILDREN @ 0x000b_c7b0: [fn(object: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    /// The node matrix record of an object's model: `+116` of its render model plus `0x34` per node.
+    OBJECT_NODE_MATRIX @ 0x000b_8bd0: [fn(object: eax, node: stack 0) -> eax ret 4], Hot; "docs/engine/object-update.md";
+    /// Whether the object's render model names an animation graph (`+12a` not none).
+    OBJECT_HAS_ANIMATION @ 0x000b_f5a0: [fn(object: eax) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// Whether the object is attached to something (`+b3` nonzero on its body).
+    OBJECT_ATTACHED @ 0x000b_fc90: [fn(object: ecx) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// Whether all eight words of a node mask are zero.
+    NODE_MASK_EMPTY @ 0x000b_ff10: [fn(mask: ecx) -> al ret 0], Hot; "docs/engine/object-update.md";
+    /// Invert a node mask (eight words; the last keeps its low byte).
+    NODE_MASK_INVERT @ 0x000b_fe80: [fn(mask: eax) ret 0], Hot; "docs/engine/object-update.md";
+    /// Clear a node mask's words and bits past `count` bits; the mask is in `esi`.
+    NODE_MASK_TRIM @ 0x000b_fed0: [fn(count: eax, mask: esi) ret 0], Hot; "docs/engine/object-update.md";
+    /// Set or clear one bit of a node mask word (`cl` the bit, `dl` set or clear).
+    NODE_MASK_SET @ 0x000b_fe20: [fn(word: eax, bit: ecx, on: edx) ret 0], Hot; "docs/engine/object-update.md";
+    /// Whether an animation record is set: dword `+68`, dword `+0` and word `+6` are all not none.
+    ANIMATION_VALID @ 0x000b_6780: [fn(record: eax) -> eax ret 0], Hot; "docs/engine/object-update.md";
     /// Wake what an early mover's sphere touches.
     OBJECT_EARLY_MOVER_WAKE @ 0x0010_9580: [fn(mover: stack 0) ret 4], Hot; "docs/engine/object-update.md";
     // Slice 3 of docs/engine/sim-rewrite-objects.md: function values and change colours.

@@ -41,7 +41,7 @@ The tag-function curve evaluator `13b390` runs as an arm: the idiomatic kernel `
 
 | In Rust | The guest's |
 |---|---|
-| walks (`native_walk::POINTS`): the walks `b6f10` and `b7060`, the per-object updates `bc470` and `bc820`, the node matrices `bd090`, the four type dispatchers, the wake leaves, the early-mover wake `109580` | finalize `b7150`, damage `d5de0`, change colours `be8e0`, the rest of the post-update shell (`bc5e0`, `bdef0`, `bef30`, `be1d0`), functions, lights |
+| walks (`native_walk::POINTS`): the walks `b6f10` and `b7060`, the per-object updates `bc470` and `bc820`, the node matrices `bd090`, the four type dispatchers, the wake leaves, the early-mover wake `109580`, the eight leaves `bd090` calls (below) | finalize `b7150`, damage `d5de0`, change colours `be8e0`, the rest of the post-update shell (`bc5e0`, `bdef0`, `bef30`, `be1d0`), functions, lights |
 | type callbacks (`native_walk::TYPES`): the biped update `dd360` (slot `+40`) and post-physics update `dd990` (slot `+44`) with every body of slices 7a and 7b, the weapon update `fdfb0` (slot `+40`, slice 9) | the unit level of a biped (`c6b30` and its tree), the unit leaves the biped tree calls (`cba50`, `111650`), the item level of a weapon (`10b4d0`), every other type's callbacks |
 
 Bipeds and weapons first because a multiplayer game is mostly them:
@@ -60,8 +60,22 @@ entry or site of a table body at pc
                                                  caller's Rust frame resumes at its site
 ```
 
-- **Answers:** the Rust runs every segment it is given. Nothing is predicted or compared; the disc differential harness is the proof, in `crates/rewrites/engine/tests/sim_objects_differential.rs`, at the default float environment and with flush to zero and denormals as zero: `walk_table_roots` (the four walk roots over the walk table) and `walk_table_types` (the roots `fdfb0`, `dd360` and `dd990` over their dressings, and the two dispatchers over a biped, with every body outside the table a callout).
-- **Float-free bodies:** the walks, the updates, the dispatchers and the wake leaves make no float instruction, so `Table::float_free` marks them and `Table::supports_at` lets them run whatever MXCSR and the x87 hold. `bd090` and the type callbacks check `engine::sim_objects::supported`.
+- **Answers:** the Rust runs every segment it is given. Nothing is predicted or compared; the disc differential harness is the proof, in `crates/rewrites/engine/tests/sim_objects_differential.rs`, at the default float environment and with flush to zero and denormals as zero: `walk_table_roots` (the four walk roots over the walk table) and `walk_table_types` (the roots `fdfb0`, `dd360` and `dd990` over their dressings, and the two dispatchers over a biped, with every body outside the table a callout); `walk_table_getters` and `node_matrix_getters` run each `bd090` leaf as a root over the dressed pool, against the lifted original's registers, flags and memory.
+- **Float-free bodies:** the walks, the updates, the dispatchers, the wake leaves and the `bd090` leaves make no float instruction, so `Table::float_free` marks them and `Table::supports_at` lets them run whatever MXCSR and the x87 hold. `bd090` and the type callbacks check `engine::sim_objects::supported`.
+- **The `bd090` leaves** (`engine::sim_objects::getters`): `bd090` calls up to 15 guest functions per object. Eight are small leaves that call nothing and make no float instruction, so each is a table body and `bd090` and the guest's own callers reach it without a guest call. Each returns the registers, flags and memory retail does (`ebx` and `edi` that `bfed0` pushes and pops return unchanged); `bfed0` honours the direction flag as its `rep stosd` does.
+
+| Entry | Point | In | Out |
+|---|---|---|---|
+| `b8bd0` | `OBJECT_NODE_MATRIX` | `eax` object, stack 0 node (i16); `ret 4` | `eax` the node's matrix in the render model's node block |
+| `bf5a0` | `OBJECT_HAS_ANIMATION` | `eax` object | `al` 1 when body word `+12a` is not `ffff` |
+| `bfc90` | `OBJECT_ATTACHED` | `ecx` object | `al` 1 when the object is not none and body `+b3` is not 0 |
+| `bff10` | `NODE_MASK_EMPTY` | `ecx` mask | `al` 1 when all eight words are 0 |
+| `bfe80` | `NODE_MASK_INVERT` | `eax` mask | words inverted, the last masked to its low byte |
+| `bfed0` | `NODE_MASK_TRIM` | `eax` bit count, `esi` mask | words past the count cleared, the partial word masked |
+| `bfe20` | `NODE_MASK_SET` | `eax` word, `cl` bit, `dl` set | the bit set or cleared |
+| `b6780` | `ANIMATION_VALID` | `eax` record | `eax` 1 when dword `+68`, dword `+0` and word `+6` are all not none |
+
+  Seven callees stay guest calls: `e1670` (calls `1ec640`, float), `1d3920` (component nodes, a large frame and a long body), `16d940` (the orientation seed, an `xmm` loop), `bdb60` (the animation, calls `13e530` and more), `1c6440` (calls `1daea0`), `a98b0` and `a9940` (the motion position and basis, each a large body). None is a leaf of the small kind.
 - **Refusals:** `float_env` is the only one. It is per call: one object's `bd090` or one weapon's `fdfb0` is the guest's, the walk, the update and the dispatcher around it stay Rust. A callee that changes the float environment and returns to a type callback's site refuses the rest of that call.
 - **Shared points:** a type callback another feature hooks too is guarded (`Table::guard`, through `HookRef::when_shared`), so the dispatcher's call goes through the chain and that feature's hooks run around the body. No feature hooks one today.
 - **Replaced:** the hooks at `b6f10`, `b7060`, `bc470` and `bc820` never reach their guest bodies, so they carry `replaces_guest` (`native_walk::REPLACES_GUEST`). Each resumes at its sites, so `Plan::replaced` keeps their bodies lifted ([lift-pruning.md](../lifter/lift-pruning.md#the-replaced-list)). The dispatchers and wake leaves are not marked: the site-less leaves would leave the lift, and `-impl.sim.native` would then refuse to boot.

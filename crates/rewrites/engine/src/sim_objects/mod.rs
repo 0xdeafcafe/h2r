@@ -41,6 +41,7 @@ mod scenery;
 pub(crate) mod sse;
 // Slice 4: the post-update shell.
 mod bounds;
+mod getters;
 mod pose;
 mod post;
 mod transform;
@@ -127,6 +128,16 @@ pub const BODIES: &[Body] = &[
     Body { point: &points::OBJECT_WAKE_FOR_POST, sites: &[], run: wake::wake_for_post },
     Body { point: &points::OBJECT_WAKE_CHILDREN, sites: &[], run: wake::wake_children },
     Body { point: &points::OBJECT_EARLY_MOVER_WAKE, sites: &wake::EARLY_MOVER_SITES, run: wake::early_mover_wake },
+    // The leaves `bd090` calls: the node matrix address, the animation and
+    // attachment tests and the node-mask operations (`getters`).
+    Body { point: &points::OBJECT_NODE_MATRIX, sites: &[], run: getters::node_matrix },
+    Body { point: &points::OBJECT_HAS_ANIMATION, sites: &[], run: getters::has_animation },
+    Body { point: &points::OBJECT_ATTACHED, sites: &[], run: getters::attached },
+    Body { point: &points::NODE_MASK_EMPTY, sites: &[], run: getters::mask_empty },
+    Body { point: &points::NODE_MASK_INVERT, sites: &[], run: getters::mask_invert },
+    Body { point: &points::NODE_MASK_TRIM, sites: &[], run: getters::mask_trim },
+    Body { point: &points::NODE_MASK_SET, sites: &[], run: getters::mask_set },
+    Body { point: &points::ANIMATION_VALID, sites: &[], run: getters::animation_valid },
     // Slice 3: function values, the imports and change colours
     // (`functions`).
     Body { point: &points::OBJECT_FUNCTION_VALUE, sites: &functions::value::VALUE_SITES, run: functions::value::value },

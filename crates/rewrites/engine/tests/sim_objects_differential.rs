@@ -927,8 +927,9 @@ fn early_mover_wake() {
 }
 
 /// The walks in Rust as installed by default (`native_walk::TABLE`): the
-/// walks, the per-object updates, `bd090` and the biped and weapon
-/// callbacks fused, every other type callback a callout. Again under
+/// walks, the per-object updates, `bd090` with the leaves it calls
+/// (`walk_table_getters` runs them over the dressed pool) and the biped and
+/// weapon callbacks fused, every other type callback a callout. Again under
 /// flush to zero and denormals as zero, outside the float environment:
 /// every walk body but `bd090` still runs, and `bd090` and the type
 /// callbacks are the lifted original's (the `float_env` refusal), resumed
@@ -2011,6 +2012,95 @@ fn shell_dress(g: &mut Guest, case: u32) {
     }
 }
 
+/// The leaves `bd090` calls (`engine::sim_objects::getters`), each a root
+/// of its own over the shell's pool.
+const GETTERS: &[&points::Point] = &[
+    &points::OBJECT_NODE_MATRIX,
+    &points::OBJECT_HAS_ANIMATION,
+    &points::OBJECT_ATTACHED,
+    &points::NODE_MASK_EMPTY,
+    &points::NODE_MASK_INVERT,
+    &points::NODE_MASK_TRIM,
+    &points::NODE_MASK_SET,
+    &points::ANIMATION_VALID,
+];
+
+fn getter_root(root: u32) -> bool {
+    GETTERS.iter().any(|p| p.base == root)
+}
+
+/// The cases the getter roots run: enough for `bfed0`'s counts.
+const GETTER_CASES: u32 = 12;
+
+/// The registers, stack and memory a getter root is called with, varied by
+/// `case`: object handles live and none, nodes either side of zero, masks
+/// empty, full and with one word set, bit counts across word edges, and
+/// records with each field none in turn. Registers the leaf does not read
+/// hold the harness's garbage, and the high bytes of `ecx` and `edx` are
+/// set where the leaf reads only `cl` or `dl`.
+fn getter_arguments(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
+    let object = object(case);
+    let body = g.u32(DATA + 12 * (object & 0xffff) + 8).unwrap();
+    let mask = SHELL_OUT;
+    // Words of a mask, seeded from the case.
+    fn seed(g: &mut Guest, mask: u32, f: &dyn Fn(u32) -> u32) {
+        for i in 0..8 {
+            word(g, mask + 4 * i, f(i));
+        }
+    }
+    match root {
+        r if r == points::OBJECT_NODE_MATRIX.base => {
+            cpu.gpr[0] = object;
+            word(g, STACK + 4, 0xabcd_0000 | [0, 1, 3, 0xffff, 0x7fff, 2, 0x8000, 5][case as usize % 8]);
+        }
+        r if r == points::OBJECT_HAS_ANIMATION.base => {
+            cpu.gpr[0] = object;
+            g.set_u16(body + 0x12a, if case % 2 == 0 { 0xffff } else { case as u16 }).unwrap();
+        }
+        r if r == points::OBJECT_ATTACHED.base => {
+            cpu.gpr[1] = if case % 5 == 4 { NONE } else { object };
+            byte(g, body + 0xb3, [0, 1, 0xff, 2, 0x80][case as usize % 5]);
+        }
+        r if r == points::NODE_MASK_EMPTY.base => {
+            cpu.gpr[1] = mask;
+            // None set, then each word in turn, then all.
+            seed(g, mask, &|i| match case {
+                0 => 0,
+                1..=8 => u32::from(i == case - 1) << (case % 32),
+                _ => 0x8000_0000,
+            });
+        }
+        r if r == points::NODE_MASK_INVERT.base => {
+            cpu.gpr[0] = mask;
+            seed(g, mask, &|i| (i + case).wrapping_mul(0x9e37_79b9) ^ 0x0102_0304);
+        }
+        r if r == points::NODE_MASK_TRIM.base => {
+            let counts = [0, 1, 31, 32, 33, 255, 256, 257, 100, -5i32, 224, 7];
+            cpu.gpr[0] = counts[case as usize % counts.len()] as u32;
+            cpu.gpr[6] = mask;
+            // Both directions of the fill.
+            if case % 4 == 3 {
+                cpu.eflags |= 0x400;
+            }
+            seed(g, mask, &|i| 0xffff_ffff ^ (i << 3) ^ case);
+        }
+        r if r == points::NODE_MASK_SET.base => {
+            let bit = [0, 5, 31, 32, 33, 63][case as usize % 6];
+            cpu.gpr[0] = mask + 4 * (case % 3);
+            cpu.gpr[1] = 0x1200_0000 | bit;
+            cpu.gpr[2] = 0x3400_0000 | [1, 0, 0xff, 0x100, 2, 0][(case / 2) as usize % 6];
+            seed(g, mask, &|i| 0x0f0f_0f0f_u32.rotate_left(i + case));
+        }
+        r if r == points::ANIMATION_VALID.base => {
+            cpu.gpr[0] = mask;
+            word(g, mask + 0x68, if case % 4 == 1 { NONE } else { 7 });
+            word(g, mask, if case % 4 == 2 { NONE } else { 9 });
+            g.set_u16(mask + 6, if case % 4 == 3 { 0xffff } else { 4 }).unwrap();
+        }
+        _ => unreachable!("not a getter"),
+    }
+}
+
 /// The arguments of a slice 4 root: the object, and the stack and
 /// register arguments each takes, varied by `case`.
 fn shell_arguments(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
@@ -2055,6 +2145,7 @@ fn shell_arguments(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
             cpu.gpr[1] = if case % 3 == 2 { 0 } else { SHELL_OUT };
             word(g, STACK + 4, if case % 2 == 1 { 0 } else { SHELL_OUT + 0x10 });
         }
+        r if getter_root(r) => getter_arguments(g, cpu, r, case),
         _ => {}
     }
 }
@@ -2063,8 +2154,13 @@ fn shell_arguments(g: &mut Guest, cpu: &mut Cpu, root: u32, case: u32) {
 /// arguments; the float state is compared like every root's (see
 /// [`FLOAT_OPT_OUT`]).
 fn shell(point: &points::Point, cases: u32) {
+    shell_in(point, cases, &sim_objects::TABLE, None);
+}
+
+/// [`shell`] with `table`'s bodies fused and every other callee a
+/// callout, every run starting with `mxcsr` when given.
+fn shell_in(point: &points::Point, cases: u32, table: &Table, mxcsr: Option<u32>) {
     let Some((image, ram)) = image() else { return };
-    let table: &Table = &*sim_objects::TABLE;
     let mut code = image.original();
     code.prime(point.base);
     for body in table.bodies() {
@@ -2078,6 +2174,9 @@ fn shell(point: &points::Point, cases: u32) {
         h.case = case;
         let fresh = || {
             let (mut cpu, mut g) = start(ram, point.base, case);
+            if let Some(mxcsr) = mxcsr {
+                cpu.mxcsr = mxcsr;
+            }
             shell_dress(&mut g, case);
             shell_arguments(&mut g, &mut cpu, point.base, case);
             (cpu, g)
@@ -2400,6 +2499,31 @@ fn object_node_matrices() {
 fn object_transform_setters() {
     for point in [&points::OBJECT_SET_TRANSFORM, &points::OBJECT_SET_VELOCITY] {
         shell(point, 6);
+    }
+}
+
+/// The leaves `bd090` calls, each run over the dressed pool as a root, with
+/// every body of the table fused: registers, flags and memory against the
+/// lifted original's.
+#[test]
+fn node_matrix_getters() {
+    for point in GETTERS {
+        shell(point, GETTER_CASES);
+    }
+}
+
+/// The same leaves, and `bd090` and `bc820` over them, as the walk table
+/// installs them: only the walk table's bodies in Rust. Again under flush
+/// to zero and denormals as zero, where `bd090` is the lifted original's
+/// and its calls to the leaves are the Rust's.
+#[test]
+fn walk_table_getters() {
+    let table: &Table = &engine::sim_objects::native_walk::TABLE;
+    let outside = 0x1f80 | 0x8040;
+    for point in GETTERS.iter().copied().chain([&points::OBJECT_NODE_MATRICES, &points::OBJECT_POST_UPDATE]) {
+        for mxcsr in [None, Some(outside)] {
+            shell_in(point, GETTER_CASES, table, mxcsr);
+        }
     }
 }
 

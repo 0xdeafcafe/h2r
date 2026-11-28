@@ -1,14 +1,15 @@
 //! The walks in Rust (docs/engine/object-update.md, "The walks in Rust"):
 //! pre-physics `b6f10`, post-physics `b7060`, the per-object updates
 //! `bc470` and `bc820` with the node matrices `bd090`, the four type
-//! dispatchers, the wake leaves and the early-mover wake `109580`, and the
-//! type callbacks of the objects a multiplayer game has most of: the biped
-//! update `dd360` and post-physics update `dd990` with the ported part of
-//! their trees (slices 7a and 7b), and the weapon update `fdfb0` (slice
-//! 9). The dispatchers call them in Rust. On by default with
-//! `impl.sim.native.objects.walk`; `sim_bridge::sim_objects` installs
-//! [`TABLE`] when `impl.sim.native.objects` is off (on, every body is
-//! installed and these with them).
+//! dispatchers, the wake leaves, the early-mover wake `109580`, the leaves
+//! `bd090` calls (`b8bd0`, `bf5a0`, `bfc90`, `bff10`, `bfe80`, `bfed0`,
+//! `bfe20`, `b6780`), and the type callbacks of the objects a multiplayer
+//! game has most of: the biped update `dd360` and post-physics update
+//! `dd990` with the ported part of their trees (slices 7a and 7b), and the
+//! weapon update `fdfb0` (slice 9). The dispatchers call them in Rust. On by
+//! default with `impl.sim.native.objects.walk`; `sim_bridge::sim_objects`
+//! installs [`TABLE`] when `impl.sim.native.objects` is off (on, every
+//! body is installed and these with them).
 //!
 //! The Rust body answers every segment; nothing is compared. A body the
 //! Rust cannot take for one call is a [`Refusal`]: the guest runs that
@@ -33,8 +34,8 @@ use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The walk bodies: the two walks, the per-object updates, `bd090`, the
-/// type dispatchers, the wake leaves and the early-mover wake. [`TABLE`]
-/// holds these and [`TYPES`].
+/// type dispatchers, the wake leaves, the early-mover wake and the leaves
+/// `bd090` calls (`getters`). [`TABLE`] holds these and [`TYPES`].
 pub const POINTS: &[&Point] = &[
     &points::OBJECTS_PRE_PHYSICS,
     &points::OBJECTS_POST_PHYSICS,
@@ -50,6 +51,14 @@ pub const POINTS: &[&Point] = &[
     &points::OBJECT_WAKE_FOR_POST,
     &points::OBJECT_WAKE_CHILDREN,
     &points::OBJECT_EARLY_MOVER_WAKE,
+    &points::OBJECT_NODE_MATRIX,
+    &points::OBJECT_HAS_ANIMATION,
+    &points::OBJECT_ATTACHED,
+    &points::NODE_MASK_EMPTY,
+    &points::NODE_MASK_INVERT,
+    &points::NODE_MASK_TRIM,
+    &points::NODE_MASK_SET,
+    &points::ANIMATION_VALID,
 ];
 
 /// The type callbacks in [`TABLE`]: the `bipd` descriptor's slots `+40`
@@ -97,6 +106,14 @@ pub const FLOAT_FREE: &[u32] = &[
     points::OBJECT_WAKE_FOR_POST.base,
     points::OBJECT_WAKE_CHILDREN.base,
     points::OBJECT_EARLY_MOVER_WAKE.base,
+    points::OBJECT_NODE_MATRIX.base,
+    points::OBJECT_HAS_ANIMATION.base,
+    points::OBJECT_ATTACHED.base,
+    points::NODE_MASK_EMPTY.base,
+    points::NODE_MASK_INVERT.base,
+    points::NODE_MASK_TRIM.base,
+    points::NODE_MASK_SET.base,
+    points::ANIMATION_VALID.base,
 ];
 
 /// The entries whose hooks never transfer to their own guest body: the
