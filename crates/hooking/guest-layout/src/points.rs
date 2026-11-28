@@ -661,6 +661,21 @@ points! { ALL;
     ANIMATION_VALID @ 0x000b_6780: [fn(record: eax) -> eax ret 0], Hot; "docs/engine/object-update.md";
     /// Wake what an early mover's sphere touches.
     OBJECT_EARLY_MOVER_WAKE @ 0x0010_9580: [fn(mover: stack 0) ret 4], Hot; "docs/engine/object-update.md";
+    // The walks' callouts in Rust (docs/engine/object-update.md, "Walk callouts").
+    /// The type new dispatch: each ancestry slot `+2c` of the object's descriptor, `(object, a, b)`, the AND of the results.
+    OBJECT_TYPE_NEW @ 0x0010_8a90: [fn(object: ebx, a: stack 0, b: stack 1) -> al ret 8], Hot; "docs/engine/object-update.md";
+    /// Delete an object and its children: `OBJECT_DELETE`, the eight delete callbacks at `468664`, then each child.
+    OBJECT_DELETE_TREE @ 0x000b_83b0: [fn(object: stack 0, top: stack 1) ret 8], Hot; "docs/engine/object-update.md";
+    /// Free a deleted object and its children: detach, unlink, the subsystems' frees, then the datum.
+    OBJECT_FREE_TREE @ 0x000b_8460: [fn(object: stack 0, top: stack 1) ret 8], Hot; "docs/engine/object-update.md";
+    /// The weapons' deferred fire: each weapon with body `+16c` bit 0 through `fd980`.
+    WEAPONS_DEFERRED_FIRE @ 0x000f_d910: [fn() ret 0], Hot; "docs/engine/object-update.md";
+    /// Object memory collection, finalize's tail.
+    OBJECTS_COLLECT @ 0x000b_f380: [fn() ret 0], Hot; "docs/engine/object-update.md";
+    /// The early-mover record of list index `index` for `mover`.
+    OBJECT_EARLY_MOVER_RECORD @ 0x0010_9660: [fn(index: ecx, mover: eax) ret 0], Hot; "docs/engine/object-update.md";
+    /// Apply a pending replicated transform (body `+d8` bit 0).
+    OBJECT_REPLICATED_TRANSFORM @ 0x000a_9570: [fn(object: eax) ret 0], Hot; "docs/engine/object-update.md";
     // Slice 3 of docs/engine/sim-rewrite-objects.md: function values and change colours.
     /// Evaluate one function export of an object's definition.
     OBJECT_FUNCTION_EVALUATE @ 0x000b_a8c0: [fn(record: eax, object: stack 0, value: stack 1) -> al ret 8], Hot; "docs/engine/object-update.md";

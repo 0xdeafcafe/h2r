@@ -99,10 +99,11 @@ fn slice_one_bodies_form_a_table_that_owns_their_entries_and_sites() {
     ] {
         assert!(TABLE.owns(point.base), "{}", point.name);
     }
-    // Callouts that stay guest are not bodies.
-    for callout in [0xfd910, 0xbf380, 0xb83b0, 0x109660, 0x320560, 0xbb050] {
-        assert!(TABLE.at(callout).is_none(), "{callout:#x}");
+    // The walks' callouts are bodies; the stack probe stays guest.
+    for callout in CALLOUTS {
+        assert!(TABLE.owns(callout), "{callout:#x}");
     }
+    assert!(TABLE.at(0x320560).is_none());
     // Driving an address no body owns is an execute fault, not a guess.
     let (mut cpu, mut g) = guest();
     let fault = drive(&mut cpu, &mut g, &TABLE, OUTER.base).unwrap_err();
@@ -156,6 +157,15 @@ fn pool(g: &mut Guest, slots: &[(u16, u16, u8, u8)]) {
     g.set_u32(ARRAY + 0x38, high).unwrap();
 }
 
+/// The walks' callouts (`callouts`, `mover_record`, `object_new`).
+const CALLOUTS: [u32; 10] = [0xa9570, 0x108a90, 0xfd910, 0xb8540, 0xb83b0, 0xb8460, 0xbf380, 0xbb050, 0x109660, 0xb7b40];
+
+/// [`TABLE`] without the walks' callouts: finalize's own segments, each
+/// callout a true one.
+fn walks_alone() -> Table {
+    Table::new(BODIES.iter().filter(|b| !CALLOUTS.contains(&b.point.base))).unwrap()
+}
+
 /// Return from a true callout that pops `cleanup` argument bytes.
 fn returned(cpu: &mut CpuAbi, g: &Guest, cleanup: u32) -> u32 {
     let site = frame::pop(cpu, g).unwrap();
@@ -171,7 +181,7 @@ fn finalize_clears_defer_deletes_and_records_each_deletion() {
     // Slot 0 deferred, 1 marked for deletion, 2 free, 3 both.
     pool(&mut g, &[(0, 0x8000, 0x21, 6), (1, 0x8001, 0x11, 2), (3, 0x8003, 0x31, 5)]);
     events::clear();
-    let t = &*TABLE;
+    let t = &walks_alone();
     let fin = crate::points::OBJECTS_FINALIZE.base;
     // Pass A, then the deferred weapon fire.
     let out = drive(&mut cpu, &mut g, t, fin).unwrap();
@@ -216,7 +226,7 @@ fn finalize_passes_over_a_run_of_idle_slots_with_retail_registers() {
         .collect();
     pool(&mut g, &slots);
     ::sim_objects::events::clear();
-    let t = &*TABLE;
+    let t = &walks_alone();
     let fin = crate::points::OBJECTS_FINALIZE.base;
     let out = drive(&mut cpu, &mut g, t, fin).unwrap();
     assert_eq!(out, TransferAbi::call(0xfd910, 0xb71a0));

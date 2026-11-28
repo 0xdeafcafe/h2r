@@ -29,7 +29,7 @@ mod objects;
 mod object_update;
 pub(crate) mod node_matrices;
 pub(crate) mod spatial;
-mod visit;
+pub(crate) mod visit;
 pub(crate) mod unit_aim;
 mod weld;
 mod weapon_slots;
