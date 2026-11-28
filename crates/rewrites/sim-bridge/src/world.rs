@@ -312,6 +312,8 @@ mod tests {
         world.restore_into(&saved).unwrap();
         assert_eq!(lock_lights(&b).encode(), lock_lights(&a).encode());
         assert_eq!(world.save(), saved);
+    }
+
     /// The players state is the world's players section: a save carries it,
     /// a restore into another world puts it in that world's state, and the
     /// next handle after the restore is the one the saved state would hand
