@@ -155,7 +155,7 @@ pub enum LoopError {
     Full,
 }
 
-/// The mixer clock on `tick`, in milliseconds (`sim_bridge::sim_sound::clock_ms`).
+/// The mixer clock on `tick`, in milliseconds: what the engine advances from the wall clock (`0x126a34`), at 30 ticks a second.
 pub fn clock_ms(tick: u32) -> i32 {
     (u64::from(tick) * 1000 / 30) as i32
 }

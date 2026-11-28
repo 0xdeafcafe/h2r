@@ -59,7 +59,6 @@ mod film_state;
 pub mod hosted;
 pub mod spatial;
 mod state_hash;
-pub(crate) mod voices;
 
 /// The engine's shared random seed: a pointer to the struct whose first
 /// word it is.
@@ -1607,9 +1606,6 @@ impl hooks::Feature for SimMetrics {
                 && self.sim.matched.config.detail().tally() == Detail::Full
                 && self.sim.matched.config.components != Some(false)
         });
-        if let Some(hle) = &audio {
-            voices::install(b, hle);
-        }
         let start_audio = audio.clone();
         let me = Arc::clone(&self.sim);
         b.game().on_start("sim: match start", move |o| {

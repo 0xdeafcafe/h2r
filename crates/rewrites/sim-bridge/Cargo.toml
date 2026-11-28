@@ -21,8 +21,10 @@ engine = { path = "../engine", features = ["runtime-glue"] }
 lifted = { path = "../../runtime/lifted" }
 # The extension records the checkpoint hooks move (sim_ext.rs).
 sim-ext.workspace = true
-# The sound schedule, events and the host feed trait (sim_sound.rs).
+# The sound table and the host feed trait (sim_sound/entries.rs).
 sim-sound.workspace = true
+# The World that holds the sound table and is the snapshot section (world.rs).
+sim-world.workspace = true
 # The effect part split, damage chain and visual events (sim_effects_parts.rs).
 sim-effects.workspace = true
 # The guest's x87 state the coln and decal draws run on (sim_effects_parts.rs).

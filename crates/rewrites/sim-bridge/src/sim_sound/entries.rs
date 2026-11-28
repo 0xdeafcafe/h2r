@@ -3,9 +3,9 @@
 //! "Counters").
 //!
 //! [`ENTRIES`] is the doc's table: one [`Entry`] per guest function a
-//! caller outside the sound code reaches, each with its [`Body`]. Under
-//! `impl.sim.sound-events.table` ([`on`]) [`SoundTable`] installs every
-//! body, and nothing behind them is reached: the starts read the request
+//! caller outside the sound code reaches, each with its [`Body`].
+//! [`SoundTable`] installs every body on every run, and nothing behind
+//! them is reached: the starts read the request
 //! record ([`super::request::read`]) and admit into [`Sounds`], the start
 //! layer runs its rows ([`start_layer`]), the stop
 //! and the stop-all walk end sounds in the table, the chooser entries run
@@ -45,17 +45,16 @@ use super::request::RequestError;
 
 pub mod start_layer;
 
-/// The table's sub-switch, without its `impl.` prefix. Off until `h2 sim
-/// diff` parity; it runs only under `impl.sim.sound-events`.
-pub const TABLE: &str = "sim.sound-events.table";
-const ID: &str = "impl.sim.sound-events.table";
-
-/// The table path is on: the events arm's switch and the sub-switch.
-pub fn on(switches: &hooks::Switches) -> bool {
-    switches.implementation(super::EVENTS, true) && switches.implementation(TABLE, false)
-}
+const ID: &str = "sim-sound-table";
 
 const NONE: u32 = u32::MAX;
+/// The seconds the mouth is told a line has run (`0x12a5c6`): the
+/// playback ratio of the channel's format times the run's wall-clock
+/// step. The sim has no wall-clock step, so it is the sim time elapsed,
+/// the engine's value at ratio 1.
+fn line_seconds(ticks: u32) -> f32 {
+    ticks as f32 / 30.0
+}
 /// `[0x4e6378]`: the channel array the create body leaves 0.
 pub const CHANNELS: u32 = 0x004e_6378;
 /// `0x18c6a0(owner, payload, tag, range, permutation, seconds)`: the unit's
@@ -281,6 +280,16 @@ impl Table {
         self.host = host;
     }
 
+    /// A restored world's sounds ([`crate::world::SoundStore`]): the
+    /// events not yet heard and the host's voices belong to the run that
+    /// was left, and the phase runs again on the restored tick.
+    pub fn restore(&mut self, sounds: Sounds) {
+        self.sounds = sounds;
+        self.outbox.clear();
+        self.last_phase = None;
+        self.host.clear();
+    }
+
     fn reset(&mut self) {
         self.sounds = Sounds::new();
         self.outbox.clear();
@@ -440,7 +449,7 @@ async fn unit_calls(cx: &Cx, table: &Shared, calls: Vec<UnitCall>) -> Result<(),
                     lock(table).ledger.refused_unreadable += 1;
                     continue;
                 };
-                let seconds = super::owners::seconds(ticks).to_bits();
+                let seconds = line_seconds(ticks).to_bits();
                 let range = i32::from(selection.range) as u32;
                 crate::unit_mouth::run(cx, [object, 0, tag.0, range, permutation, seconds]).await?;
                 lock(table).ledger.mouth_calls += 1;
@@ -1043,7 +1052,7 @@ pub async fn run(cx: Cx, table: Shared, entry: &'static Entry, busy: Arc<AtomicB
     }
 }
 
-/// The table's hooks (`impl.sim.sound-events.table`): every entry in
+/// The table's hooks, on every run: every entry in
 /// [`ENTRIES`]. A body that calls its original is a `before` that answers
 /// and lets the inner call through; the rest are implementations. The
 /// tick's phase is `crate::tick`'s.
@@ -1064,15 +1073,15 @@ impl SoundTable {
 
 impl Feature for SoundTable {
     fn manifest(&self) -> Manifest {
-        Manifest::new(ID, "Sound table: the sound entries over the Rust table").doc("docs/engine/sound-instances.md")
+        Manifest::new(ID, "Sound table: the sound entries over the Rust table")
+            .always_on()
+            .doc("docs/engine/sound-instances.md")
     }
 
     fn build(&self, b: &mut Builder) -> Result<(), BuildError> {
-        // The table is not saved yet: a snapshot restores no sound.
+        // The table's sounds are the world's sound store, saved in the
+        // world's section (`crate::world::SimWorld`).
         b.snapshot(SnapshotPolicy::Stateless);
-        if !on(b.switches()) {
-            return Ok(());
-        }
         for entry in ENTRIES {
             let table = Arc::clone(&self.table);
             let busy = Arc::new(AtomicBool::new(false));

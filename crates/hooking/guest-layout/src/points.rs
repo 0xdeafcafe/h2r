@@ -2156,8 +2156,8 @@ points! { ALL;
     SOUND_OWNER_USER @ 0x0018_d4f0: [fn(object: stack 0, kind: stack 1, user: stack 2) ret 12]; "docs/game/bots.md";
     /// Start a spatial sound at an object marker. Returns the sound instance.
     SOUND_START_AT_MARKER @ 0x0018_91d0: [fn(marker: eax, object: esi, parameters: stack 0) -> eax ret 4]; "docs/game/ai-networking.md";
-    // The sound manager's outside entries: each has a Rust body under
-    // `impl.sim.sound-events.table` (docs/engine/sound-instances.md, "Entries").
+    // The sound manager's outside entries: each has a Rust body on every
+    // run (docs/engine/sound-instances.md, "Entries").
     /// Make the sound manager: globals, the instance pool, channels, loops, the start layer.
     SOUND_MANAGER_CREATE @ 0x0012_53d0: [fn() ret 0]; "docs/engine/sound-instances.md";
     /// Drop the sound manager: every global back to 0.

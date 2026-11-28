@@ -43,7 +43,7 @@ pub const AS_SEEN: &str = "particles age as if seen";
 /// The tick: the 29 phases, then the node matrices of every object left
 /// with a dirty pose ([`engine::tick_poses`], docs/engine/sim-render-split.md,
 /// "2. Node matrices"), so the frame step reads matrices and never builds
-/// them. Then, with the sound table on, the sound phase
+/// them. Then the sound phase
 /// (`crate::sim_sound::entries::phase`, docs/engine/sound-instances.md,
 /// "The sound phase"). It runs once per tick number, so a tick whose
 /// run flag held the count does not step the sounds again.
@@ -51,13 +51,11 @@ pub async fn run(
     cx: engine::entry::Cx,
     present: sim_tick::Present,
     bodies: sim_tick::Bodies,
-    sound: Option<crate::sim_sound::entries::Shared>,
+    sound: crate::sim_sound::entries::Shared,
 ) -> engine::entry::EntryResult {
     let ret = sim_tick::run_with(cx.clone(), &LEDGER, present, bodies).await?;
     engine::tick_poses::run(&cx, sim_tick::RECORD_SIZE).await?;
-    if let Some(table) = sound {
-        crate::sim_sound::entries::phase(&cx, &table).await?;
-    }
+    crate::sim_sound::entries::phase(&cx, &sound).await?;
     Ok(ret)
 }
 
@@ -77,7 +75,7 @@ impl Feature for TickDriver {
         b.snapshot(SnapshotPolicy::Stateless);
         let present = crate::present::mode(b.switches());
         let bodies = BODIES;
-        let sound = crate::sim_sound::entries::on(b.switches()).then(|| Arc::clone(&crate::sim_sound::entries::SHARED));
+        let sound = Arc::clone(&crate::sim_sound::entries::SHARED);
         b.raw().implement_async(&points::GAME_TICK, "tick driver", move |cx| -> EntryFuture {
             Box::pin(run(cx, present, bodies, sound.clone()))
         });
@@ -241,8 +239,9 @@ mod tests {
             }
             Regs::default()
         };
-        let f = |cx: engine::entry::Cx| -> EntryFuture {
-            Box::pin(run(cx, sim_tick::Present::Always, sim_tick::Bodies::NONE, None))
+        let table = Arc::new(Mutex::new(crate::sim_sound::entries::Table::guest()));
+        let f = move |cx: engine::entry::Cx| -> EntryFuture {
+            Box::pin(run(cx, sim_tick::Present::Always, sim_tick::Bodies::NONE, Arc::clone(&table)))
         };
         let r = entry::testing::run(&f, g, Regs { esp: STACK, ..Default::default() }, callee);
         assert_eq!(r.result, Ok(hooks::Ret::new(0, 0)));
@@ -253,7 +252,7 @@ mod tests {
         assert_eq!(engine::tick_poses::plan(&r.guest), Some(vec![]));
     }
 
-    /// With the table on, the tick steps the sound phase after the 29 and
+    /// The tick steps the sound phase after the 29 and
     /// once per tick number: a tick whose close held the count does not
     /// step it again.
     #[test]
@@ -275,19 +274,13 @@ mod tests {
         for _ in 0..2 {
             let t = Arc::clone(&table);
             let f = move |cx: engine::entry::Cx| -> EntryFuture {
-                Box::pin(run(cx, sim_tick::Present::Always, sim_tick::Bodies::NONE, Some(Arc::clone(&t))))
+                Box::pin(run(cx, sim_tick::Present::Always, sim_tick::Bodies::NONE, Arc::clone(&t)))
             };
             let r = entry::testing::run(&f, g.clone(), regs, callee);
             assert_eq!(r.result, Ok(hooks::Ret::new(0, 0)));
             assert_eq!(r.calls.last().map(|c| c.target), Some(sim_tick::RECORD_AFTER), "the phase makes no guest call");
         }
         assert_eq!(lock(&table).ledger.phase_runs, 1, "tick 5 twice steps once");
-        let on = |spec: &str| {
-            let mut r = hooks::Registry::new(hooks::Switches::parse(spec).unwrap());
-            r.add(&TickDriver).unwrap();
-            r.build(&hooks::Base).is_ok()
-        };
-        assert!(on("") && on("impl.sim.sound-events.table"));
     }
 
     /// The ledger's phase table is at or under `tick-ledger.toml` for
