@@ -669,7 +669,7 @@ impl FirstPersonPass {
             &self.draws,
             None,
         )?;
-        crate::native_layers_glue::clip_packets(draws, request, target.size)
+        Ok(draws)
     }
 }
 

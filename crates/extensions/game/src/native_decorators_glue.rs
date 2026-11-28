@@ -625,7 +625,7 @@ fn layer_draw(_inherits_cull: bool) -> DrawKey {
 
 /// The display's projection factor, the lens the GPU culls by.
 fn display_factor() -> f32 {
-    unimplemented!("decorators: display projection factor from the device")
+    crate::native_world_glue::projection_factor()
 }
 
 /// Installs the host over the world's state (`native_world_glue::install`).

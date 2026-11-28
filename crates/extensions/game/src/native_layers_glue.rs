@@ -1039,7 +1039,7 @@ fn push(caller: LayerCaller, view: u32, pass: Box<LayerViewPass>) {
 /// The display's projection factor: the lens the layer culls and the
 /// objects draw by.
 fn display_factor() -> f32 {
-    unimplemented!("layers: display projection factor from the render scale")
+    crate::native_world_glue::projection_factor()
 }
 
 /// R2's geometry answer (`render_bridge::effects_shadow::geometry`): one

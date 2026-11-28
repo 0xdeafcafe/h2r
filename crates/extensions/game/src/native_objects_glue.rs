@@ -1898,7 +1898,7 @@ impl ObjectsPass {
         let view = ViewInputs { size: t.size, ..*request };
         let draws = lit.draws(&t.device, &t.queue, &t.uploads, t.color_format, t.depth_format, t.size, &view,
             crate::native_world_glue::projection_factor(), &self.draws, None)?;
-        crate::native_layers_glue::clip_packets(draws, request, t.size)
+        Ok(draws)
     }
 }
 

@@ -65,7 +65,7 @@ impl Glue {
 
 /// The view's projection factor (display lens over the retail one).
 fn projection_factor() -> f32 {
-    unimplemented!("objects: projection factor from the render scale")
+    crate::native_world_glue::projection_factor()
 }
 
 /// Plans detail substitutions, only for complete objects within one run:

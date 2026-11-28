@@ -978,12 +978,7 @@ impl native_render::stage::Stage for WorldPass {
         let occlusion = Some((t.depth.texture(), &lens, PassViewport { x, y, width, height }, self.token));
         let culled = gpu.culled_selection_draws(&t.uploads, &t.device, &t.queue, t.color_format, t.depth_format, t.size,
             selection, &view, &self.cull_camera, t.lighting, None, occlusion);
-        let encoded = culled.and_then(|culled| {
-            let draws = crate::native_layers_glue::clip_packets(culled.draws, request, t.size)?;
-            let late = gfx::external::ExternalDraws { ranges: 0, packets: culled.late, discards: true, writes: Vec::new() };
-            let late = crate::native_layers_glue::clip_packets(late, request, t.size)?.packets;
-            Ok(encoded_world(t, draws, late, culled.dispatch))
-        });
+        let encoded = culled.map(|culled| encoded_world(t, culled.draws, culled.late, culled.dispatch));
         match encoded {
             Ok(e) => native_render::stage::StageWork::Encoded(e),
             Err(why) => unimplemented!("world: {why}"),
