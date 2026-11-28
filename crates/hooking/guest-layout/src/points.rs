@@ -1909,6 +1909,16 @@ points! { ALL;
     /// each bound local user. Reads slowdown and follow at
     /// `0x18622b` and calls the aim-assist search `0x1a4900` at `0x1861a1`.
     PLAYER_CONTROL_UPDATE @ 0x0018_5be0: [fn(user: stack 0, controller: edx) ret 0x14]; "docs/game/aim-assist.md";
+    /// One bound local user's action (stdcall): the control update, the
+    /// input-block, weapon, grenade and zoom state, the interaction
+    /// search and the 0x5c-byte action at `out`. `0x1870a0` calls it for
+    /// each bound local user, and the phantom action build for each
+    /// phantom.
+    PLAYER_ACTION_BUILD @ 0x0018_6ab0: [fn(player: stack 0, dt: stack 1, dt2: stack 2, out: stack 3) ret 0x10]; "docs/perf/sim-phantom-build.md";
+    /// The weapons, vehicles, bipeds and controls in reach of the
+    /// player's unit, tested into the 0xc-byte record at `out`; under
+    /// `0x186ab0` (`0x186f0a`).
+    PLAYER_INTERACTION_SEARCH @ 0x0015_1110: [fn(player: stack 0, out: stack 1) ret 8]; "docs/perf/sim-phantom-build.md";
     /// Gather script action-test flags and consume the controls claimed by a script.
     PLAYER_ACTION_TEST_UPDATE @ 0x0018_7b30: [fn(packet: ecx, actions: eax) ret 0]; "docs/halo1/script-builtins.md";
     /// The aim-assist parameters of a unit's held weapons, from the weapon

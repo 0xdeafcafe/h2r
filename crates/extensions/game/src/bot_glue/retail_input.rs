@@ -12,6 +12,10 @@
 //! The input stage (the bind, the look rates, the pad read and the remap)
 //! runs in Rust (`engine::sim_seats::input`) under `impl.sim.phantom-input`
 //! ([`stage_for`]); a piece that refuses runs its guest entry instead.
+//!
+//! The builder `0x186ab0` itself, the interaction search under it and the
+//! seats under those run in Rust under `impl.sim.phantom-body`
+//! ([`body_for`], [`body`]); a segment that declines runs the original.
 use anyhow::Result;
 use bots::phantom::{SeatInput, session::at::ACTION_SIZE};
 use engine::sim_seats::input::{self as seat_input, Refusal};
@@ -25,6 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 mod animation;
+mod body;
 use animation::AnimationRead;
 
 /// Game-thread nanoseconds in [`Builder::sample`] since the process
@@ -154,6 +159,12 @@ pub(super) fn stage_for(switches: &hooks::Switches) -> Stage {
     }
 }
 
+/// Whether `impl.sim.phantom-body` runs the builder's body in Rust: on
+/// unless it is off.
+pub(super) fn body_for(switches: &hooks::Switches) -> bool {
+    switches.implementation("sim.phantom-body", true)
+}
+
 /// Input-stage pieces that refused and ran their guest entry.
 static REFUSED: AtomicU64 = AtomicU64::new(0);
 
@@ -234,6 +245,8 @@ pub(super) struct Builder {
     stage: Stage,
     /// Input-stage refusals already said.
     refused: BTreeSet<Refusal>,
+    /// The builder's body runs in Rust ([`Builder::with_body`]).
+    body: bool,
     /// Alias path: the stack window of the tick's first gather.
     stack: Vec<(u32, Box<[u8; STACK_PAGE as usize]>)>,
     /// Check mode: the same seats built on the other path with the guest
@@ -249,13 +262,16 @@ pub(super) async fn gather(
     workspace: u32,
     path: Path,
     stage: Stage,
+    body: bool,
     cpu: CpuAbi,
     seat: SeatInput,
     cx: &engine::entry::Cx,
 ) -> Option<[u8; ACTION_SIZE]> {
     let attempt = |refresh| {
         let mut guard = input.lock().unwrap_or_else(|e| e.into_inner());
-        let builder = guard.get_or_insert_with(|| Builder::new(main, workspace, path, stage));
+        let builder = guard.get_or_insert_with(|| {
+            Builder::new(main, workspace, path, stage).with_body(main, body)
+        });
         if refresh {
             builder.restart();
         }
@@ -366,9 +382,26 @@ impl Builder {
             path,
             stage,
             refused: BTreeSet::new(),
+            body: false,
             stack: Vec::new(),
             other: None,
         }
+    }
+
+    /// With `on`, the executor runs the builder `0x186ab0`, the
+    /// interaction search and the seats under them in Rust ([`body`]).
+    /// The check mode's reference arm keeps the guest's; where the path
+    /// and stage alone gave it none (a flat-RAM image with the guest
+    /// input stage), it gets one on the same path.
+    fn with_body(mut self, main: &Runtime, on: bool) -> Self {
+        if on && !self.body {
+            self.exec.runtime().edit_dispatch(body::install);
+            self.body = true;
+            if check_mode() && self.other.is_none() {
+                self.other = Some(Box::new(Self::on(main, self.workspace, self.path, Stage::Guest)));
+            }
+        }
+        self
     }
 
     /// The next seat starts from live RAM, on both paths in check mode.
@@ -406,11 +439,13 @@ impl Builder {
             let n = MISMATCHES.fetch_add(1, Ordering::Relaxed) + 1;
             if n <= 8 {
                 eprintln!(
-                    "phantoms: the {:?} ({:?} input) and {:?} ({:?} input) builds differ for player {} at tick {} (mismatch {n})",
+                    "phantoms: the {:?} ({:?} input, Rust body {}) and {:?} ({:?} input, Rust body {}) builds differ for player {} at tick {} (mismatch {n})",
                     self.path,
                     self.stage,
+                    self.body,
                     other.path,
                     other.stage,
+                    other.body,
                     seat.player.index(),
                     seat.tick
                 );
@@ -788,15 +823,19 @@ mod tests {
     #[test]
     fn retail_input_binds_the_requested_seat_and_keeps_its_history_private() {
         // The Rust input stage refuses here (the fixture maps none of the
-        // image's constants), so every piece runs its stand-in.
+        // image's constants), so every piece runs its stand-in. The Rust
+        // body declines at the builder's entry (its first read faults), so
+        // the builder's stand-in answers with the body on too.
         for path in [Path::Alias, Path::View] {
             for stage in [Stage::Guest, Stage::Rust] {
-                binds_the_requested_seat_on(path, stage);
+                for with_body in [false, true] {
+                    binds_the_requested_seat_on(path, stage, with_body);
+                }
             }
         }
     }
 
-    fn binds_the_requested_seat_on(path: Path, stage: Stage) {
+    fn binds_the_requested_seat_on(path: Path, stage: Stage, with_body: bool) {
         const USERS: u32 = 0x550000;
         const CONTROLS: u32 = USERS + 0x100;
         const PLAYER: u32 = USERS + 0x400;
@@ -874,7 +913,8 @@ mod tests {
             .unwrap();
         }
         let main = Runtime::new(g, d);
-        let mut builder = Builder::new(&main, WORK, path, stage);
+        let mut builder = Builder::new(&main, WORK, path, stage).with_body(&main, with_body);
+        let declined = body::DECLINED.load(Ordering::Relaxed);
         for (tick, reset, count) in [(1, true, 1), (2, false, 2), (9, true, 1)] {
             let seat = SeatInput {
                 player,
@@ -913,6 +953,9 @@ mod tests {
         );
         let refused = (stage == Stage::Rust).then_some(Refusal::Memory);
         assert_eq!(builder.refused.first().copied(), refused, "{path:?}, {stage:?}");
+        if with_body {
+            assert!(body::DECLINED.load(Ordering::Relaxed) >= declined + 3, "{path:?}, {stage:?}");
+        }
     }
 }
 
@@ -1359,5 +1402,13 @@ mod stage_tests {
         assert_eq!(parse(""), Stage::Rust);
         assert_eq!(parse("-impl.sim.phantom-input"), Stage::Guest);
         assert_eq!(parse("-impl.sim"), Stage::Guest, "through its parent");
+    }
+
+    #[test]
+    fn the_switch_runs_the_body_in_rust_by_default() {
+        let parse = |spec: &str| body_for(&hooks::Switches::parse(spec).unwrap());
+        assert!(parse(""));
+        assert!(!parse("-impl.sim.phantom-body"));
+        assert!(!parse("-impl.sim"), "through its parent");
     }
 }
