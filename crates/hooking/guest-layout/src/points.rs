@@ -943,6 +943,12 @@ points! { ALL;
     /// A local player's announcement of an event: the row's HUD text and
     /// the announcer sound. `GAME_EVENT_SHOW` reaches it for the event's
     /// player.
+    /// The event's player's announcement row, by the event's subjects in
+    /// order, announced through `GAME_EVENT_ANNOUNCE`.
+    GAME_EVENT_SUBJECTS @ 0x0019_de80: [fn(event: eax, player: esi) ret 0]; "docs/engine/sim-rewrite-sketches.md";
+    /// The first announcement row of the event type's block that matches
+    /// the event, the kind and the player, or 0.
+    GAME_EVENT_ROW @ 0x0019_df10: [fn(player: eax, event: edi, kind: stack 0) -> eax ret 4]; "docs/engine/sim-rewrite-sketches.md";
     GAME_EVENT_ANNOUNCE @ 0x0019_e890: [fn(player: eax, row: ecx, event: stack 0) ret 4]; "docs/engine/sim-rewrite-sketches.md";
     /// The per-tick slot `+0x48` that CTF and Assault share (vtable
     /// `0x459d18`). Their capture scoring `0x242e00` runs from the

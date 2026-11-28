@@ -340,46 +340,49 @@ event (scratch, never applied), and the timer, the fade and the update word
 address is written back as it is (so a fault lands none). Registers are
 left as retail leaves them.
 
-*The announcement.* A death event that reaches `19e890` past its early
-exits (a local player's HUD text and announcer) is a call from the retail
-frame, not part of the prediction:
+*The calls.* A death event that reaches further guest systems is a call
+from the retail frame, not part of the prediction. `Mem::call` records the
+first one; the gate writes its frame and event and calls it with `15de0a`
+as the return:
+
+| Call | When | Target |
+|---|---|---|
+| `Announce` | `19e890` past its early exits (a local player's HUD text and announcer) | `19e890 (player: eax, row: ecx, event)` |
+| `Event` | a host's message (`b5a70`, network state 4 or 5), or an event naming no player (`19eb30`, player `-1`; `15dd40` never builds one) | `19eb90 (event: eax)`, the whole event |
 
 ```mermaid
 flowchart LR
-  entry[15dd40 entry] --> k[kernel] -- no announcement --> ret[apply, ret]
-  k -- Mem::announced --> frame[write the gate's frame and event] --> call[call 19e890, return 15de0a]
-  call --> seat[seat sim.seats.event_announce] --> resume[15de0a: respawn::resume] --> ret2[decrement, fade, a7840, stagger, ret]
+  entry[15dd40 entry] --> k[kernel] -- no call --> ret[apply, ret]
+  k -- Mem::call --> frame[write the gate's frame and event] --> call[call 19e890 or 19eb90, return 15de0a]
+  call --> seat[the event seats] --> resume[15de0a: respawn::resume] --> ret2[decrement, fade, a7840, stagger, ret]
 ```
 
 The post, `19eb30`, `19de80` and `19df10` write nothing on the way, and
-`15de0a` reloads `eax`, `ecx` and `edx`, so the call goes straight to
-`19e890` with `15de0a` as its return address. The seat
-(`engine/src/sim_seats/announce.rs`) runs the body over the retail frame;
-its callees stay guest calls:
+`15de0a` reloads `eax`, `ecx` and `edx`, so either call goes straight from
+the gate's frame. Each target is a seat over the retail frame, its callees
+guest calls:
 
-| Step | Callee |
-|---|---|
-| the row's text `+0xc` and, with flag bit 0, `+0x1c` | `1a0180` (the string), `19e0f0` (formatted with the event) |
-| one line or two | `24cbee`, `24caac` |
-| the timed text `+0x14` for `[row + 0x18]` seconds | `1a0180`, `19e0f0`, `24cc73`; the tick product's `cvtsi2ss`, `mulss`, `fld` and `fistp` in Rust |
-| the announcer | `19e770 (event)` |
-
-The paths that reach further guest systems are not ported yet. Each is
-`unimplemented!("seats: respawn-ready: <decline>")`; no lifted body runs
-in its place:
-
-| Decline | Where | The guest goes on to |
+| Seat | Body | Guest calls |
 |---|---|---|
-| `post` | `b5a70`, network state 4 or 5 | `8b4d0`, the event message (virtual sends, an allocator) |
-| `every-player` | `19eb30`, event player `-1` | the iterator `19f240`; `15dd40` never builds such an event |
-| `fault` | any read, or a seconds divisor of 0 | the whole call |
+| `sim.seats.event_post` `19eb90` | nothing on a client (mode 4); else the send, then the show | `a7c50`, `19eb30` (seats) |
+| `sim.seats.event_send` `a7c50` | mode 5: the event copied to the frame, its three player words cut to 16 bits | `b5a70`, the network message |
+| `sim.seats.event_show` `19eb30` | the event's player, or every player | `19de80` (seat), the iterator `19f240` |
+| `sim.seats.event_subjects` `19de80` | the row by subjects in order | `19df10`, `19e890` (seats) |
+| `sim.seats.event_row` `19df10` | the kernel's `announcement`, whole; arithmetic flags left undefined | none |
+| `sim.seats.event_announce` `19e890` | the row's text and timed text, one line or two, the announcer | `1a0180`, `19e0f0`, `24cbee`, `24caac`, `24cc73`, `19e770` |
+
+The event seats run for every caller of `19eb90`, not only the gate
+(`engine/src/sim_seats/event.rs`, `engine/src/sim_seats/announce.rs`).
+A read that faults, or a seconds divisor of 0 (`idiv` at `15de24`), is
+returned as the guest's fault; nothing panics.
 
 `sim.arms` reports `seats.respawn`, its calls answered.
 `respawn_ready_and_its_callees_match_lifted` puts the body and each callee
-against the lifted functions, checks each decline by the original reaching
-the decline's address, and for an announcement checks the frame at the
-call against the original's and runs `15de0a` against the lifted gate from
-the same state. The seat's own test is `sim_seats::announce`'s.
+against the lifted functions, checks each recorded call by the original
+reaching the same system (`19e90d`, `8b4d0` or `19f240`), and for a call
+from the gate checks the frame at the call against the original's and runs
+`15de0a` against the lifted gate from the same state. The seats' own tests
+are `sim_seats::event`'s and `sim_seats::announce`'s.
 
 *The pickup scan.* `1508e0` (`PLAYER_PICKUP_SCAN`, `ret 4`, the argument a
 player index) is called by `players_after` for each player. It is the seat

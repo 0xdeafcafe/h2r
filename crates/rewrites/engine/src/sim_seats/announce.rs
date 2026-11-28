@@ -1,6 +1,6 @@
 //! A local player's event announcement `19e890` (`GAME_EVENT_ANNOUNCE`,
 //! `player: eax, row: ecx, event: stack 0`, `ret 4`), a seat body over the
-//! retail frame (docs/engine/sim-rewrite-sketches.md, "The respawn gate").
+//! retail frame (docs/engine/sim-rewrite-sketches.md, "Seats and rules (phase 7): kernels").
 //! The respawn countdown reaches it for a local player's death event.
 //!
 //! | Step | Guest | Body |

@@ -1595,15 +1595,6 @@ fn rs_call(code: &mut lifted::Original, entry: u32, gpr: [u32; 8], args: &[u32],
     cpu
 }
 
-fn rs_stop(d: engine::sim_seats::respawn::Decline) -> u32 {
-    use engine::sim_seats::respawn::Decline;
-    match d {
-        Decline::Post => RS_POST_AT,
-        Decline::EveryPlayer => RS_EVERY_AT,
-        Decline::Fault => panic!("a fault in the respawn world"),
-    }
-}
-
 /// One countdown callee's port against the lifted original from the same
 /// registers, stack arguments and memory: `eax`, `ecx`, `edx` as the port
 /// says, the rest as they came, the arguments popped, the port's writes and
@@ -1616,15 +1607,12 @@ fn rs_check(
     gpr: [u32; 8],
     args: &[u32],
     mem: &FlatMemory,
-    got: Result<(engine::sim_seats::respawn::Regs, engine::sim_seats::respawn::Writes), engine::sim_seats::respawn::Decline>,
+    got: Result<(engine::sim_seats::respawn::Regs, engine::sim_seats::respawn::Writes), runtime::GuestFault>,
 ) -> &'static str {
     let mut want_mem = mem.clone();
     let cpu = rs_call(code, entry, gpr, args, &mut want_mem);
     let (r, writes) = match got {
-        Err(d) => {
-            assert_eq!(cpu.eip, rs_stop(d), "{why}: declined {d:?}; the original went elsewhere");
-            return d.name();
-        }
+        Err(f) => panic!("{why}: a fault in the respawn world: {f}"),
         Ok(got) => got,
     };
     assert_eq!(cpu.eip, EXIT, "{why}: the port answered; the original stopped at {:#x}", cpu.eip);
@@ -1644,17 +1632,36 @@ fn rs_check(
     if writes.is_empty() { "answered" } else { "wrote" }
 }
 
-/// A callee port that reached the announcement `19e890` past its early
-/// exits (`respawn::Mem::announced`): the original reaches the same point.
-fn rs_announced(why: &str, code: &mut lifted::Original, entry: u32, gpr: [u32; 8], args: &[u32], mem: &FlatMemory) -> &'static str {
+/// The stop the original reaches for a call the gate makes from the
+/// retail frame (`respawn::Mem::call`), and its outcome's name.
+fn rs_stop(call: &engine::sim_seats::respawn::Call, at: u32) -> Option<&'static str> {
+    use engine::sim_seats::respawn::Target;
+    match (call.target, at) {
+        (Target::Announce { .. }, RS_ANNOUNCE_AT) => Some("announce"),
+        (Target::Event, RS_POST_AT) => Some("post"),
+        (Target::Event, RS_EVERY_AT) => Some("every-player"),
+        _ => None,
+    }
+}
+
+/// A callee port that recorded a call for the gate: the original reaches
+/// the same guest system.
+fn rs_called(
+    why: &str,
+    code: &mut lifted::Original,
+    entry: u32,
+    gpr: [u32; 8],
+    args: &[u32],
+    mem: &FlatMemory,
+    call: &engine::sim_seats::respawn::Call,
+) -> &'static str {
     let cpu = rs_call(code, entry, gpr, args, &mut mem.clone());
-    assert_eq!(cpu.eip, RS_ANNOUNCE_AT, "{why}: the port announces; the original stopped at {:#x}", cpu.eip);
-    "announce"
+    rs_stop(call, cpu.eip).unwrap_or_else(|| panic!("{why}: the port calls {:?}; the original stopped at {:#x}", call.target, cpu.eip))
 }
 
 #[test]
 fn respawn_ready_and_its_callees_match_lifted() {
-    use engine::sim_seats::respawn::{self, Decline, Regs};
+    use engine::sim_seats::respawn::{self, Regs};
     let Some((image, ram)) = image() else { return };
     let mut gate = at(image, points::PLAYER_RESPAWN_READY.base);
     let mut part = at(image, 0x0015_8a50);
@@ -1731,7 +1738,10 @@ fn respawn_ready_and_its_callees_match_lifted() {
         gpr[2] = RS_EVENT;
         let m = respawn::Mem::new(&g);
         let got = respawn::event_post(&m, Regs { edx: RS_EVENT, ..regs3 }, STACK);
-        let o = rs_check(&format!("{why}: a7c50"), &mut post, 0x000a_7c50, gpr, &[], &mem, got.map(|r| (r, m.writes())));
+        let o = match m.call() {
+            Some(call) => rs_called(&format!("{why}: a7c50"), &mut post, 0x000a_7c50, gpr, &[], &mem, &call),
+            None => rs_check(&format!("{why}: a7c50"), &mut post, 0x000a_7c50, gpr, &[], &mem, got.map(|r| (r, m.writes()))),
+        };
         tally("a7c50", o);
 
         let kind = rng.pick(&[0u32, 1, 2, 3, 4]);
@@ -1750,8 +1760,8 @@ fn respawn_ready_and_its_callees_match_lifted() {
         gpr[1] = row;
         let m = respawn::Mem::new(&g);
         let got = respawn::announce(&m, slot, row, RS_EVENT);
-        let o = if m.announced().is_some() {
-            rs_announced(&format!("{why}: 19e890"), &mut announce, 0x0019_e890, gpr, &[RS_EVENT], &mem)
+        let o = if let Some(call) = m.call() {
+            rs_called(&format!("{why}: 19e890"), &mut announce, 0x0019_e890, gpr, &[RS_EVENT], &mem, &call)
         } else {
             rs_check(&format!("{why}: 19e890"), &mut announce, 0x0019_e890, gpr, &[RS_EVENT], &mem, got.map(|r| (r, m.writes())))
         };
@@ -1762,8 +1772,8 @@ fn respawn_ready_and_its_callees_match_lifted() {
         gpr[6] = slot;
         let m = respawn::Mem::new(&g);
         let got = respawn::announce_player(&m, RS_EVENT, slot);
-        let o = if m.announced().is_some() {
-            rs_announced(&format!("{why}: 19de80"), &mut subjects, 0x0019_de80, gpr, &[], &mem)
+        let o = if let Some(call) = m.call() {
+            rs_called(&format!("{why}: 19de80"), &mut subjects, 0x0019_de80, gpr, &[], &mem, &call)
         } else {
             rs_check(&format!("{why}: 19de80"), &mut subjects, 0x0019_de80, gpr, &[], &mem, got.map(|r| (r, m.writes())))
         };
@@ -1773,8 +1783,8 @@ fn respawn_ready_and_its_callees_match_lifted() {
         gpr[7] = RS_EVENT;
         let m = respawn::Mem::new(&g);
         let got = respawn::announce_event(&m, RS_EVENT);
-        let o = if m.announced().is_some() {
-            rs_announced(&format!("{why}: 19eb30"), &mut walk, 0x0019_eb30, gpr, &[], &mem)
+        let o = if let Some(call) = m.call() {
+            rs_called(&format!("{why}: 19eb30"), &mut walk, 0x0019_eb30, gpr, &[], &mem, &call)
         } else {
             rs_check(&format!("{why}: 19eb30"), &mut walk, 0x0019_eb30, gpr, &[], &mem, got.map(|r| (r, m.writes())))
         };
@@ -1784,8 +1794,8 @@ fn respawn_ready_and_its_callees_match_lifted() {
         gpr[0] = RS_EVENT;
         let m = respawn::Mem::new(&g);
         let got = respawn::death_event(&m, Regs { eax: RS_EVENT, ..regs3 }, STACK, RS_EVENT);
-        let o = if m.announced().is_some() {
-            rs_announced(&format!("{why}: 19eb90"), &mut death, 0x0019_eb90, gpr, &[], &mem)
+        let o = if let Some(call) = m.call() {
+            rs_called(&format!("{why}: 19eb90"), &mut death, 0x0019_eb90, gpr, &[], &mem, &call)
         } else {
             rs_check(&format!("{why}: 19eb90"), &mut death, 0x0019_eb90, gpr, &[], &mem, got.map(|r| (r, m.writes())))
         };
@@ -1798,30 +1808,36 @@ fn respawn_ready_and_its_callees_match_lifted() {
         let mut cpu_regs = abi_cpu(&Cpu { gpr, eip: points::PLAYER_RESPAWN_READY.base, eflags: 0x2, mxcsr: 0x1fa0, ..Default::default() });
         let timer = mem.read_u32(RS_DATA + (slot & 0xffff) * RS_STRIDE + 0x164).unwrap_or(0) as i32;
         match respawn::predict(&cpu_regs, &g) {
-            Err(Decline::Fault) => panic!("{why}: declined fault"),
-            Err(d) => {
-                let want = rs_call(&mut gate, points::PLAYER_RESPAWN_READY.base, gpr, &[], &mut mem.clone());
-                assert_eq!(want.eip, rs_stop(d), "{why}: 15dd40 declined {d:?}; the original went elsewhere");
-                tally("15dd40", d.name());
-            }
-            Ok(prediction) if prediction.announce.is_some() => {
+            Err(f) => panic!("{why}: a fault in the respawn world: {f}"),
+            Ok(prediction) if prediction.call.is_some() => {
+                let call = prediction.call.unwrap();
                 // The call to the announcement from the retail frame, then
                 // the rest of the gate from `15de0a` against the lifted
                 // gate from the same state.
                 let mut native = respawn_guest(&mem);
                 let t = respawn::apply(&prediction, &mut cpu_regs, &mut native).unwrap();
-                assert_eq!((t.target_pc, t.resume_pc), (points::GAME_EVENT_ANNOUNCE.base, respawn::RESUME), "{why}");
+                let (target, below) = match call.target {
+                    respawn::Target::Announce { .. } => (points::GAME_EVENT_ANNOUNCE.base, 0x3c),
+                    respawn::Target::Event => (points::GAME_EVENT_POST.base, 0x38),
+                };
+                assert_eq!((t.target_pc, t.resume_pc), (target, respawn::RESUME), "{why}");
                 let mut stopped = mem.clone();
                 let want = rs_call(&mut gate, points::PLAYER_RESPAWN_READY.base, gpr, &[], &mut stopped);
-                assert_eq!(want.eip, RS_ANNOUNCE_AT, "{why}: 15dd40 announces; the original stopped at {:#x}", want.eip);
+                let outcome = rs_stop(&call, want.eip)
+                    .unwrap_or_else(|| panic!("{why}: 15dd40 calls {:?}; the original stopped at {:#x}", call.target, want.eip));
                 let start = native.mappings()[0].physical_start as usize;
                 let frame = (STACK - 0x34) as usize..STACK as usize;
                 assert_eq!(native.physical_ram()[start..][frame.clone()], stopped.bytes[frame], "{why}: the gate's frame at the call");
                 let sp = cpu_regs.esp;
-                assert_eq!((sp, native.u32(sp).unwrap(), native.u32(sp + 4).unwrap()), (STACK - 0x3c, respawn::RESUME, STACK - 0x24), "{why}");
-                // Back from `19e890`: `ret 4`.
+                assert_eq!((sp, native.u32(sp).unwrap()), (STACK - below, respawn::RESUME), "{why}");
+                if below == 0x3c {
+                    assert_eq!(native.u32(sp + 4).unwrap(), STACK - 0x24, "{why}: the event argument");
+                } else {
+                    assert_eq!(cpu_regs.eax, STACK - 0x24, "{why}: the event in eax");
+                }
+                // Back from the call: `ret 4` or `ret`.
                 let mut back = cpu_regs;
-                back.esp = sp + 8;
+                back.esp = STACK - 0x34;
                 back.eip = respawn::RESUME;
                 let mut flat = mem.clone();
                 flat.bytes.copy_from_slice(&native.physical_ram()[start..start + RAM]);
@@ -1834,14 +1850,14 @@ fn respawn_ready_and_its_callees_match_lifted() {
                 };
                 lifted::code::run_until(&mut tail, &mut lifted_cpu, &mut flat, 1_000_000, |c| c.eip == EXIT)
                     .unwrap_or_else(|e| panic!("{why}: {e}"));
-                let t = respawn::resume(&mut back, &mut native);
+                let t = respawn::resume(&mut back, &mut native).unwrap();
                 assert_eq!(t.target_pc, EXIT, "{why}");
                 assert_eq!(gprs(&back), gprs(&abi_cpu(&lifted_cpu)), "{why}: 15de0a eax ecx edx ebx esp ebp esi edi");
                 let live = &native.physical_ram()[start..start + RAM];
                 let dead = (STACK - 0x1_0000) as usize..STACK as usize;
                 assert_eq!(first_outside(&flat.bytes, live, &dead), None, "{why}: 15de0a first differing byte");
                 answered += 1;
-                tally("15dd40", "announce");
+                tally("15dd40", outcome);
             }
             Ok(prediction) => {
                 answered += 1;

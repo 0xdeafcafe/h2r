@@ -11,14 +11,12 @@
 //! the skipped phases at 0 calls and 0 ns.
 //!
 //! **The seat kernels** answer two guest functions, always, with no
-//! switch and no guest arm. A call a kernel cannot answer is
-//! `unimplemented!("seats: <kernel>: <cause>")`, by its `Decline`; no
-//! lifted body runs in its place:
+//! switch and no guest arm:
 //!
-//! | Point | Kernel | Unported paths |
+//! | Point | Kernel | What it does not answer itself |
 //! |---|---|---|
-//! | `AIM_ASSIST_PARAMS` `1a50a0` | `engine::sim_seats::aim::arm` over `sim_objects::aim_assist` | `float`, `triggers`, `fault` |
-//! | `PLAYER_RESPAWN_READY` `15dd40` | `engine::sim_seats::respawn` (the gate, its callees, the countdown with `a7840` and `19eb90`; a local player's announcement is a call to the seat `19e890`, resumed at `15de0a`) | `post` (a host's event message), `every-player`, `fault` |
+//! | `AIM_ASSIST_PARAMS` `1a50a0` | `engine::sim_seats::aim::arm` over `sim_objects::aim_assist` | `float`, `triggers`, `fault`: `unimplemented!("seats: aim-assist: <cause>")` |
+//! | `PLAYER_RESPAWN_READY` `15dd40` | `engine::sim_seats::respawn` (the gate, its callees, the countdown with `a7840` and `19eb90`) | a death event that needs the announcement, a host's message or every player is a call from the retail frame (`19e890`, or `19eb90` itself, both seats), resumed at `15de0a`; a fault is the guest's, returned |
 //!
 //! Their counters are `seats.aim` and `seats.respawn` in `sim.arms`. The
 //! pickup scan `1508e0` is a seat (`engine::sim_seats::player_objects`).
@@ -61,10 +59,10 @@ pub(crate) fn install(b: &mut Builder) {
     b.raw()
         .implement(&points::PLAYER_RESPAWN_READY, RESPAWN, move |cpu, ctx, pc| {
             if pc == points::PLAYER_RESPAWN_READY.base {
-                return Ok(respawn::enter(cpu, &mut ctx.memory()));
+                return respawn::enter(cpu, &mut ctx.memory());
             }
             if pc == respawn::RESUME {
-                return Ok(respawn::resume(cpu, &mut ctx.memory()));
+                return respawn::resume(cpu, &mut ctx.memory());
             }
             crate::sim_objects::original(cpu, ctx, pc, false)
         })
