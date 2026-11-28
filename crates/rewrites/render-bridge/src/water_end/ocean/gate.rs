@@ -48,6 +48,8 @@ impl GuestRead for Ro<'_> {
     }
 }
 
+/// The guest's float 1.0 (`[0x0045dbc0]`).
+const ONE: u32 = 0x0045_dbc0;
 fn word(mem: &dyn GuestMemory, at: u32) -> Result<u32, Cause> {
     mem.u32(at).map_err(|_| "unread")
 }
@@ -109,7 +111,7 @@ pub fn visible(mem: &mut dyn GuestMemory, host: &dyn flare::Host, state: &mut fl
         let ended = word(&*mem, bits)? & (1 << (index & 31)) != 0;
         let byte = f32::from(mem.u8(at + 3).map_err(|_| "unread")?);
         let x = byte * float(&*mem, BYTE_SCALE)?;
-        let one = float(&*mem, super::state::ONE)?;
+        let one = float(&*mem, ONE)?;
         // `comiss`: below 0 is 0; above one (ordered) is one.
         let fraction = if 0.0 > x { 0.0 } else if x > one { one } else { x };
         read = Some((ended, fraction));
