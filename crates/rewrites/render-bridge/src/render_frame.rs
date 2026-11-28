@@ -35,6 +35,7 @@ use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
 
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
 
+pub mod blit;
 pub mod publish;
 
 pub const ID: &str = "render-frame";

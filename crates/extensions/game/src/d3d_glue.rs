@@ -1963,6 +1963,23 @@ impl<B: d3d::backend::Backend + Send + 'static> render_bridge::render_frame::pub
         let mut d = self.device.lock().map_err(|_| "the device lock is poisoned".to_owned())?;
         d.publish(&mut SinkMem(mem), gamma).map(|_| ()).map_err(|e| e.to_string())
     }
+
+    /// `0x00013d80`'s image drawn from the overlay over the back buffer,
+    /// the frame's last pass before the present. Without the GPU overlay
+    /// nothing places it, and the guest's present draws it.
+    fn blit(
+        &self,
+        mem: &mut dyn engine::memory::GuestMemory,
+        blit: &render_bridge::render_frame::blit::Blit,
+    ) -> Result<(), &'static str> {
+        #[cfg(feature = "gpu")]
+        return crate::hud_overlay::place_blit(&self.device, mem, blit);
+        #[cfg(not(feature = "gpu"))]
+        {
+            let _ = (mem, blit);
+            Err("host")
+        }
+    }
 }
 
 #[cfg(feature = "desktop-runtime")]

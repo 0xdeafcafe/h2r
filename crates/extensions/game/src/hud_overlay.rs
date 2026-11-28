@@ -1026,6 +1026,40 @@ pub fn place_movie<B: d3d::Backend + Send + 'static>(
     })
 }
 
+/// The present's back-buffer blit (`render_bridge::render_frame::blit`):
+/// its picture uploaded and drawn over the whole back buffer, unfitted
+/// (the guest writes the back buffer's own pixels). Refused as `target`
+/// when the bound colour is not the device's back buffer (the pass draws
+/// into the bound one), `pass` when the device does not take it.
+pub fn place_blit<B: d3d::Backend + Send + 'static>(
+    device: &d3d::abi::SharedDevice<B>,
+    mem: &mut dyn GuestMemory,
+    blit: &render_bridge::render_frame::blit::Blit,
+) -> Result<(), &'static str> {
+    use render_bridge::render_frame::blit;
+    let picture = native_render::overlay::MovieImage {
+        movie: blit::PICTURE,
+        frame: blit.frame(),
+        width: blit.size[0],
+        height: blit.size[1],
+        bgra: Arc::from(blit.bgra.as_slice()),
+    };
+    let overlay = Arc::new(blit::overlay(blit));
+    let back = mem
+        .u32(render_bridge::native_targets::DEVICE)
+        .and_then(|d| mem.u32(d.wrapping_add(d3d::layout::device_field::BACK_BUFFER)))
+        .map_err(|_| "target")?;
+    let mut d = device.lock().map_err(|_| "pass")?;
+    if back == 0 || d.bound_target()[0] != back {
+        return Err("target");
+    }
+    let pass = OverlayPass { overlay, assets: None, movie: Some(picture), fit: None, tail: false };
+    match d.external_pass_now(&mut crate::native_lights_glue::DeviceMemory(mem), Box::new(pass)) {
+        Ok(true) => Ok(()),
+        _ => Err("pass"),
+    }
+}
+
 /// The frame tail's freeze frame (`render_bridge::frame_tail`): its hold
 /// and composite placed at this point in the frame over the bound target,
 /// unfitted (the guest's quads are the window's, in the target's pixels).

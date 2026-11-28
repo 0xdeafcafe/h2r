@@ -68,6 +68,22 @@ A draw that is not placed shows nothing, since no guest texture is behind it. Ea
 
 `0x002232a0` draws what is not a game view: the menus, the loading screen and the movie. The tick `0x00156040` has two callers, `0x0002bc31` and `0x0002c99d` (**Code**; **S**: which views they sit in). Its draws are the overlay producers' ([native-post-hud.md](native-post-hud.md#the-fade-the-bars-and-the-loading-screen), [native-menus-overlay.md](native-menus-overlay.md)) and the movie's. Its own setup (the target, the clear, the viewport, through `0x0002c8a0`) is the guest's, through `d3d`.
 
+The `views`, `outside_view` and `frame_loop` rows reach D3D only through two shared calls, so cutting those two cuts all three (**Code**):
+
+| Call | Callers | What it does | D3D entries |
+|---|---|---|---|
+| `0x000132d0(view)`, `ret 4`: the view setup | `0x0002c990` (`0x0002c8a0`), `0x0002cafd` (`0x0002ca00`), `0x00013c60` (the view end), and `0x0002bc1b`, `0x0002c755`, `0x0002c863` in the game views | copies the view's `0x298` bytes to the render context `0x00485600`; `[0x004858b8]` = `0x12` for view kind `+2` = 1, else 0 | none |
+| | | `0x00015370` (BX the kind, a seven-way switch): case 0 `[0x004b843c]` = 0 | `SetRenderState_StencilEnable(0)` (the other six cases not read) |
+| | | `[0x005093b4]` = `0x901`, `[0x005093b8]` = `0x900`; `0x00012fa0` (ECX `+0x18`, EAX `+0x8c`, byte `+7`, word `+2`) | `0x00012d50`, `SetVertexShaderConstantNotInlineFast` |
+| | | with `+8` set: the target switch `0x00014bc0(1, [0x004858b8], 0)` and the clear `0x00014b60` (colour flags 1, or `0x61` with `0x00131ed0(0x0048560c)` when `[0x004670cd]` is 0; Z 1.0); else the switch alone | the native select and clear, then `0x003fdb20`, `SetViewport` |
+| | | five words pushed straight into the push buffer: method `0x1af0`, count 4, `0`, `[0x0045dbbc]`, `[0x0045dbc0]`, `[0x0045e3b0]` | the raw push (`MakeRequestedSpace` when full) |
+| | | `[0x004b8428]` = `0x1b02` | `SetRenderState_FillMode(0x1b02)` |
+| | | `0x00016b10` (ESI `0x00485b48`): its record reset, `0x00018900` when `+0x24` is set | `0x00018900`'s (not read) |
+| | | with `+0x26c` set: `0x48` words from `+0x14c` to `0x0048574c`, then `0x00025a10` | `SetRenderState_FogColor`, `SetVertexShaderConstantNotInlineFast`, `0x00027aa0`'s |
+| `0x00013c20()`, `ret`: the view end | the tail of each caller above (`0x0002bc36`, `0x0002bcb8`, `0x0002c76e`, `0x0002c889`, `0x0002c9e4`, `0x0002cb0f`) | with `[0x004ba04c]` above 1, `D3DDevice_Clear(0, 0, 0x80, 0, 1.0, 0)` (alpha only); pops the view stack `[0x0046701c]` and, a view left, runs `0x000132d0` for it, then its camera (`0x0002f970`, `0x0002fd90`) | `Clear`, and the setup's |
+
+Neither is cut: each is a guest body today, and the rows stay `d3d` until both are.
+
 Three frame loops run outside `0x00223240` (**Code**):
 
 | Loop | View | Then |
@@ -93,7 +109,7 @@ At step 4 the frame step asks the publish (`render_frame::publish::present`) fir
 
 | Guest | What | The publish |
 |---|---|---|
-| `0x00013d80` | with `[0x005093c8]` set, a border round the rectangle at `0x005093c0` on the back buffer | kept |
+| `0x00013d80` | with an image `[0x005093c8]` set, its CPU blit into the rectangle at `0x005093c0` of the back buffer ([below](#the-back-buffers-blit)) | one overlay picture over the back buffer |
 | `0x003f9df0(1, 1)`, `Swap(0)`, `0x003f9df0(1, 1)` | the back buffer scale and the swap | `d3d::Device::publish`: the back buffer to the backend with the frame step's ramp, the swap counted |
 | `0x00014110..0x00014194` | `[0x00485acc]` against `[0x00467008]`, byte `[0x00485ad0]` against `[0x0046700c]`; when either differs, the TV encoder option, the flicker filter `0x003f8c70` and the latch | kept |
 | `0x00014196..0x000141ae` | the present counter `0x00485aa0`, 64-bit, +1 | `engine::render_loop::tick_writes::present_counter` |
@@ -103,8 +119,8 @@ present step
   host's open frame (SceneSink, after the push buffer drains)
     a slot with a guest op ........ kept: publish_kept_<slot>
     a write with no slot .......... kept: publish_kept_untracked
-  border flag set ................. kept: publish_kept_border
   TV option or flicker changed .... kept: publish_kept_display
+  blit not placed ................. kept: publish_kept_border_<cause>
   no host ......................... kept: publish_kept_host
   host's present fails ............ kept: publish_failed
   otherwise ....................... publish_native, 0x00013f10 skipped
@@ -118,6 +134,20 @@ A kept frame runs the guest's `0x00013f10(0, 0)` as before. Every outcome is cou
 - **The gamma ramp.** The frame step reads the ramp the brightness update (`0x00012c71..0x00012d08`) last loaded into the miniport: device `[0x00407488]`, miniport `+0x1c28`, ramp `+0x1dc + 0x300 * [+0x7e4]`. An all-zero ramp is none loaded. The device's own copy (`Device::gamma_ramp`) is not used for a published frame.
 - **The frame wait** is step 3 and runs before the publish either way.
 - **Readbacks.** None is asked: the present's four callers (`0x00223296`, `0x0012b784`, `0x00163a28`, `0x00163adb`, **Code**) all push `(0, 0)`, so its surface lock and copy (`0x00013f21..0x000140e4`) never run. The other three are the frame loops [above](#frames-outside-a-game-view), published the same way.
+
+### The back buffer's blit
+
+`0x00013d50` (the disc-error screen's three calls, `0x002134ef..0x0021359d`) sets an image of one byte a pixel `[0x005093c8]`, its rectangle `0x005093c0` (top, left, bottom, right, 16 bits each) and a scale `[0x005093cc]` (`0x55`). The present's `0x00013d80` (**Code** `0x00013d80..0x00013f0e`) then locks the back buffer and writes each byte times the scale, clamped to 0..255, into all four bytes of its pixel, when the rectangle is inside 640 x 480.
+
+`render_frame::blit::read` makes the same pixels as a BGRA picture; `blit::overlay` draws it as one `MovieFrame` item over the 640 x 480 canvas, point-sampled, no blend (picture id `0x00013d80`, its frame a hash of the texels so the upload moves only with the picture). The publish asks `Publish::blit` after the display check, so a kept frame leaves the whole blit to the guest; the host (`hud_overlay::place_blit`) places it unfitted over the bound target. Counted `publish_blit_native`; not placed, the frame keeps the guest's present, `publish_kept_border_<cause>`:
+
+| Cause | When |
+|---|---|
+| `host` | no GPU overlay |
+| `target` | the bound colour is not the device's back buffer `[device + 0x1a14]` |
+| `pass` | the device did not take the pass |
+
+**S**: that the guest's own checks on the back buffer (its size against `width * height * 4`, the lock) always pass, since the device's back buffer is the linear guest-size one.
 
 ## Rules and limits
 
