@@ -1,8 +1,8 @@
 # In-place callouts from Rust bodies
 
-Status: Design. Not built.
-Code: this spec adds `ExecCtx::call_inline` to `crates/runtime/runtime/src/exec.rs` and uses it in `crates/rewrites/engine/src/sim_objects/mod.rs` (`drive`). Tests: `crates/runtime/runtime/tests/generated.rs`, `crates/rewrites/sim-bridge/src/sim_objects.rs`.
-Switch: `impl.sim.native.inline-callouts` (proposed, default off; on with `impl.sim.native.objects` once its parity run is clean).
+Status: Built; not measured.
+Code: `ExecCtx::call_inline` in `crates/runtime/runtime/src/direct.rs`; used by `drive_in_place` in `crates/rewrites/sim-bridge/src/sim_objects.rs` (the walk table and the objects table). Tests: `crates/runtime/runtime/tests/inline_callouts.rs`.
+Switch: none of its own. A context with direct calls off (`ExecCtx::enable_direct_calls(false)`, coverage on) leaves every callout to the runner as `off`.
 
 A Rust body that replaces a guest function often has to call guest code
 that is still lifted. The object bodies do it by returning a `CALL`
@@ -48,7 +48,7 @@ pub enum Inline {
     /// to `site` leaves. Continue in Rust.
     Returned,
     /// Give this transfer to the runner. The body returns it unchanged.
-    Leave(TransferAbi),
+    Leave { transfer: TransferAbi, why: Fallback },
 }
 
 impl ExecCtx {
@@ -86,29 +86,43 @@ In order, mirroring a generated direct call (`H2_CALL_SLOT_`,
    guest later returns to `site`, the runner enters the body through its
    resume registration, which is the path every callout takes today.
 
+The fallbacks, by `Fallback::name`:
+
+| Name | When | Leaves with |
+|---|---|---|
+| `off` | direct calls off for the context, or no entry table | the `CALL` |
+| `observer` | a return observer is open | the `CALL` |
+| `depth` | nesting at the cap | the `CALL` |
+| `not_live` | the element is 0 | the `CALL` |
+| `busy` | leave word set, no transfer left, or a fault latched | the `CALL` |
+| `yield` | the callee stopped | its `STOP` |
+| `fault` | the callee faulted | its `FAULT` |
+| `handed` | a `CALL` or `JUMP` handed up, or a return elsewhere | that transfer |
+| `resume_busy` | back at the site, but leave word set, no transfer left or a fault latched | the `RETURN` |
+| `resume_observed` | back at the site with an observer opened under the callee | the `RETURN` |
+| `dispatch` | back at the site after `edit_dispatch` (the body may be disabled there) | the `RETURN` |
+
+`ExecCtx::inline_census` counts each per context; the walk counts them
+per body too (`native_walk::Stats::inline` and `left`).
+
 `call_inline` never runs a safe point. An interrupt, an expired slice or
 a parked context is a non-zero leave word, and a non-zero word is a
 `Leave`. So no snapshot, thread switch or interrupt delivery ever happens
 with the body's Rust frame live below it, and bodies stay stateless
 across guest calls in every case that reaches the runner.
 
-### `drive`
+### `drive_in_place`
 
-`sim_objects::drive` takes the context instead of a `Guest`:
+`sim_bridge::sim_objects::drive_in_place` wraps the hook's `drive`:
 
 ```
 loop:
-  guard = ctx.memory()                 // held across fused bodies
-  next = body.run(cx(cpu, guard), pc)
-  match next:
-    Call{target, site}: push site
-        if fused(target): pc = target; continue          // as built
-        drop(guard)
-        match ctx.call_inline(cpu, target, site):
-            Returned if supported(cpu) && table.resumes(site): pc = site; continue
-            Returned: return resume_original(site)       // float environment changed under us
-            Leave(t): return t
-    Ret / Tail: as built
+  if !admit(cpu, pc): return original(pc)       // float environment; a site resumes the original
+  t = drive(cpu, ctx.memory(), pc)              // guard held across fused bodies
+  if t is not CALL to a body site: return t
+  match ctx.call_inline(cpu, t.target, t.site):
+      Returned: pc = site; continue             // admit runs again: the callee may change MXCSR
+      Leave { transfer, .. }: return transfer
 ```
 
 The body's obligations are the callout contract it already keeps (retail
@@ -134,9 +148,9 @@ check when it re-enters the closure at `site`.
   safe points do nothing.
 - **Block clock.** Under `Runtime::block_clock` the runner charges
   `HLE_COST` each time it invokes a Rust handler, so a body re-entered at
-  a site is charged again. `drive` charges `HLE_COST` at each `Returned`
-  to keep the clock equal. Under the access clock there is nothing to
-  charge.
+  a site is charged again. `call_inline` charges `HLE_COST` at each
+  `Returned` to keep the clock equal. Under the access clock there is
+  nothing to charge.
 
 So `h2 sim diff` between the arms prints nothing with arena hashes on,
 and `H2_LOCKSTEP` whole-RAM hashes match.
@@ -145,14 +159,13 @@ and `H2_LOCKSTEP` whole-RAM hashes match.
 
 | Caller | Use |
 |---|---|
-| `engine::sim_objects::drive` | every true callout of an object body |
+| `sim_bridge::sim_objects::drive_in_place` | every true callout of a walk or object body to one of its sites |
 | `runtime::tier` (`h2t_call_out`) | a tier function's call to non-tier code |
 | `engine::sim_tick` (lane R1 of sim-10x.md) | the tick driver's call of each phase |
 | Other overrides | may use it where they return `CALL` and are registered to resume at the site; `ExecCtx::call_guest` stays the way to call guest code with a Rust continuation |
 
-`H2_ENTRY_STATS` counts a handler entered by `call_inline` as `inline`,
-beside `thunk` and the runner entries, so a census shows callouts moving
-from the runner column.
+`H2_ENTRY_STATS` does not see a handler `call_inline` enters; the
+census does.
 
 ## Rules and limits
 
@@ -160,8 +173,9 @@ from the runner column.
   model the callee needs the gate; under flat RAM the guard is a mutex
   the callee's own HLE calls would deadlock on.
 - `site` must be a resume the installer registered for the body
-  (`implement(..).resumes(sites)`). `call_inline` asserts it in debug
-  builds; a `Leave` to an unregistered site would strand the guest.
+  (`implement(..).resumes(sites)`); `drive_in_place` calls in place only
+  to `Table::resumes` sites. A `Leave` to an unregistered site would
+  strand the guest.
 - The depth cap bounds host stack use: body, callee, a thunk under it and
   a body under that all count.
 - It adds no yield points and removes none.
@@ -170,40 +184,27 @@ from the runner column.
 
 ## Tests
 
-In `crates/runtime/runtime/tests/generated.rs`, on the synthetic module
-the direct-call tests use:
+`crates/runtime/runtime/tests/inline_callouts.rs`, on an entry-table
+module of Rust handlers in the generated shape, every case run as the
+segment path and in place, the final registers, memory, event, observer
+calls and transfer count compared:
 
-- `inline_call_returns_to_the_site`: a Rust override calls a generated
-  leaf with `call_inline`; zero runner iterations after the first; the
-  transfer count equals the same program with the switch off.
-- `inline_call_leaves_when_the_word_is_set`: with a preemption requested
-  before the call, the result is `Leave(CALL)` and the run's transfers
-  and final CPU equal the off arm's.
-- `inline_callee_that_blocks_resumes_at_the_site`: the callee makes a
-  blocking kernel call; the override's resume registration runs it at
-  `site` after the wake.
-- `inline_callee_handing_up_keeps_frames`: a callee that hands up a
-  `CALL` leaves the frame record for the runner's replay; the event
-  backtrace equals the off arm's.
-- `transfer_limit_fires_on_the_same_transfer`, both arms, the limit set
-  inside the callee and at its return.
-- `inline_under_the_block_clock_charges_like_the_runner`.
+- `a_body_calling_a_lifted_function_in_place_ends_as_the_segment_path_does`:
+  one `Returned`; the call and return are 2 direct transfers.
+- `a_body_calling_an_overridden_entry_goes_through_the_thunk_in_place`.
+- `the_transfer_limit_falls_on_the_same_transfer`: limits 1 to 5;
+  `busy` and `resume_busy` at 1 and 2.
+- `each_fallback_is_named_and_ends_as_the_segment_path_does`: `off`,
+  `observer`, `depth`, `not_live`, `yield`, `fault`, `handed`,
+  `dispatch` (the callee disables the body; the original resumes).
 
-In `crates/rewrites/sim-bridge/src/sim_objects.rs`:
-`a_body_resumes_at_its_sites_on_the_real_guest_stack` runs in both modes
-with the same calls, registers and stack; a new case disables the body
-during a callout (`set_enabled`) and checks the original finishes the
-frame from `site`.
+The sim-bridge tests run the bodies on a runtime without an entry table,
+so their callouts leave as `off`, the path every callout took before.
 
-`crates/rewrites/engine/tests/sim_objects_differential.rs` does not
-change: it compares bodies at their transfers and does not go through the
-runtime.
-
-Run proof, by the coordinator: `h2 sim diff` of
-`impl.sim.native.objects` with the switch on against off, arena hashes
-on, Lockout and Waterworks, 9,000 ticks; then `H2_ENTRY_STATS` on both
-arms (runner entries per tick must fall by about the `inline` count) and
-three timed medians each (sim-10x.md, M2).
+Run proof, by the coordinator: `h2 sim diff` with direct calls on
+against `enable_direct_calls(false)` on the sim context, arena hashes on,
+Lockout and Waterworks, 9,000 ticks; then the walk's `inline` and `left`
+counts and three timed medians each (sim-10x.md, M2).
 
 ## Evidence
 

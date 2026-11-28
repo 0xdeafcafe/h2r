@@ -391,7 +391,9 @@ impl Table {
         matches!(self.at(addr), Some((_, Role::Entry)))
     }
 
-    fn resumes(&self, addr: u32) -> bool {
+    /// Whether `addr` is a return site of a body: the installer registers
+    /// the body to resume there.
+    pub fn resumes(&self, addr: u32) -> bool {
         matches!(self.at(addr), Some((_, Role::Site)))
     }
 }

@@ -79,7 +79,8 @@ entry or site of a table body at pc
 - **Refusals:** `float_env` is the only one. It is per call: one object's `bd090` or one weapon's `fdfb0` is the guest's, the walk, the update and the dispatcher around it stay Rust. A callee that changes the float environment and returns to a type callback's site refuses the rest of that call.
 - **Shared points:** a type callback another feature hooks too is guarded (`Table::guard`, through `HookRef::when_shared`), so the dispatcher's call goes through the chain and that feature's hooks run around the body. No feature hooks one today.
 - **Replaced:** the hooks at `b6f10`, `b7060`, `bc470` and `bc820` never reach their guest bodies, so they carry `replaces_guest` (`native_walk::REPLACES_GUEST`). Each resumes at its sites, so `Plan::replaced` keeps their bodies lifted ([lift-pruning.md](../lifter/lift-pruning.md#the-replaced-list)). The dispatchers and wake leaves are not marked: the site-less leaves would leave the lift, and `-impl.sim.native` would then refuse to boot.
-- **Counters:** `native_walk::stats`, per body: segments the Rust ran and calls refused by reason. `sim.arms` reports one arm per body, `objects.walk.<entry>` (`answered` the segments, `declined` the refusals).
+- **Callouts:** a call from a table body to the guest is made in place (`sim_bridge::sim_objects::drive_in_place`, `ExecCtx::call_inline`) and the Rust carries on at the site; the runtime leaves it to the runner, by a named fallback, when the runner would have work ([sim-10x-callouts.md](../perf/sim-10x-callouts.md)).
+- **Counters:** `native_walk::stats`, per body: segments the Rust ran, calls refused by reason, callouts back in place (`inline`) and callouts left to the runner by fallback (`left`). `sim.arms` reports one arm per body, `objects.walk.<entry>` (`answered` the segments, `declined` the refusals).
 
 ## Evidence labels
 

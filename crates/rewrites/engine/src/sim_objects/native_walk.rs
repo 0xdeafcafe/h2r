@@ -21,15 +21,17 @@
 //!
 //! **Other types.** Only [`POINTS`] and [`TYPES`] are in [`TABLE`]: the
 //! unit level of a biped (`c6b30` and its tree), the item level of a
-//! weapon (`10b4d0`), the other types' callbacks, damage, functions, the rest of the
-//! post-update shell, lights and finalize `b7150` are calls to the guest,
-//! through the runtime, as any callout. So are the two unit leaves the
-//! biped tree calls, the direction clamp `cba50` and the animation state
-//! `111650`.
+//! weapon (`10b4d0`), the other types' callbacks, damage, functions, the
+//! rest of the post-update shell, lights and finalize `b7150` are calls to
+//! the guest. So are the two unit leaves the biped tree calls, the
+//! direction clamp `cba50` and the animation state `111650`. Each is made
+//! in place when the runtime can (`runtime::ExecCtx::call_inline`, from
+//! `sim_bridge::sim_objects`), else through the runner, counted either
+//! way ([`callout`]).
 
 use super::{BODIES, Body, Table};
 use crate::points::{self, Point};
-use runtime::{CpuAbi, Guest, TransferAbi};
+use runtime::{CpuAbi, Fallback, Guest, TransferAbi};
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -161,11 +163,18 @@ pub struct Stats {
     pub segments: u64,
     /// Calls or resumes the guest ran, by [`Refusal::ALL`] position.
     pub refused: [u64; Refusal::ALL.len()],
+    /// True callouts from the body that the runtime made in place and that
+    /// came back to their site in Rust (`runtime::ExecCtx::call_inline`).
+    pub inline: u64,
+    /// True callouts left to the runner, by [`Fallback::ALL`] position.
+    pub left: [u64; Fallback::ALL.len()],
 }
 
 struct Counters {
     segments: Vec<AtomicU64>,
     refused: Vec<[AtomicU64; Refusal::ALL.len()]>,
+    inline: Vec<AtomicU64>,
+    left: Vec<[AtomicU64; Fallback::ALL.len()]>,
 }
 
 static COUNTERS: LazyLock<Counters> = LazyLock::new(|| {
@@ -173,6 +182,8 @@ static COUNTERS: LazyLock<Counters> = LazyLock::new(|| {
     Counters {
         segments: (0..n).map(|_| AtomicU64::new(0)).collect(),
         refused: (0..n).map(|_| std::array::from_fn(|_| AtomicU64::new(0))).collect(),
+        inline: (0..n).map(|_| AtomicU64::new(0)).collect(),
+        left: (0..n).map(|_| std::array::from_fn(|_| AtomicU64::new(0))).collect(),
     }
 });
 
@@ -194,6 +205,17 @@ pub fn refused(pc: u32, why: Refusal) {
     }
 }
 
+/// One true callout of the body that resumes at `site`: made in place and
+/// back in Rust (`None`), or left to the runner for `why`.
+pub fn callout(site: u32, left: Option<Fallback>) {
+    if let Some(i) = TABLE.index(site) {
+        match left {
+            None => COUNTERS.inline[i].fetch_add(1, Ordering::Relaxed),
+            Some(why) => COUNTERS.left[i][why.index()].fetch_add(1, Ordering::Relaxed),
+        };
+    }
+}
+
 /// Every body's counters, in [`TABLE`] order.
 pub fn stats() -> Vec<Stats> {
     TABLE
@@ -204,6 +226,8 @@ pub fn stats() -> Vec<Stats> {
             entry: body.point.base,
             segments: COUNTERS.segments[i].load(Ordering::Relaxed),
             refused: std::array::from_fn(|r| COUNTERS.refused[i][r].load(Ordering::Relaxed)),
+            inline: COUNTERS.inline[i].load(Ordering::Relaxed),
+            left: std::array::from_fn(|r| COUNTERS.left[i][r].load(Ordering::Relaxed)),
         })
         .collect()
 }

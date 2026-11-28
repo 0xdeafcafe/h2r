@@ -47,7 +47,7 @@ use hooks::Builder;
 use engine::points;
 use engine::sim_objects::native_walk::{self, Refusal};
 use engine::sim_objects::{self as objects, Table, damage};
-use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
+use runtime::{CpuAbi, ExecCtx, Fallback, Guest, GuestFault, Inline, TransferAbi};
 
 /// The switch, without its `impl.` prefix, and the label of the bodies'
 /// implementations.
@@ -172,15 +172,72 @@ fn install_walk(b: &mut Builder) {
 }
 
 /// One entry or site of a walk-table body at `pc`: the Rust runs it and
-/// every body it reaches; a refused one is the guest's.
+/// every body it reaches, and carries on after each true callout the
+/// runtime makes in place ([`drive_in_place`]); a refused one is the
+/// guest's. Each callout is counted ([`native_walk::callout`]).
 fn walk_segment(cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32, sites: &[u32]) -> Result<TransferAbi, GuestFault> {
     let table: &'static Table = &native_walk::TABLE;
-    if table.supports_at(pc, cpu) {
-        let mut mem = ctx.memory();
-        return objects::drive_with(cpu, &mut mem, table, pc, native_walk::segment);
+    drive_in_place(
+        cpu,
+        ctx,
+        table,
+        pc,
+        sites.contains(&pc),
+        |cpu, pc| {
+            let ok = table.supports_at(pc, cpu);
+            if !ok {
+                native_walk::refused(pc, Refusal::FloatEnv);
+            }
+            ok
+        },
+        |cpu, g, pc| objects::drive_with(cpu, g, table, pc, native_walk::segment),
+        native_walk::callout,
+    )
+}
+
+/// Run `drive` from `pc` (an entry, or a site when `site`) under a memory
+/// guard, then make the true callout it ends with in place
+/// (`ExecCtx::call_inline`, docs/perf/sim-10x-callouts.md) and carry on
+/// at its site, until a transfer leaves for the runner: a return or tail
+/// jump out of the table, or a callout the runtime left to it (`note`
+/// hears each callout's site and why). Where `admit` refuses the Rust at
+/// `pc` the original runs, at its resume when `pc` is a site: as the
+/// runner would have entered this hook at the site and been refused.
+/// Only a call to a body site is made in place, so the runner's resume
+/// registration is the one a fallback returns through.
+fn drive_in_place(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    table: &Table,
+    mut pc: u32,
+    mut site: bool,
+    mut admit: impl FnMut(&CpuAbi, u32) -> bool,
+    mut drive: impl FnMut(&mut CpuAbi, &mut Guest, u32) -> objects::Result<TransferAbi>,
+    mut note: impl FnMut(u32, Option<Fallback>),
+) -> Result<TransferAbi, GuestFault> {
+    loop {
+        if !admit(cpu, pc) {
+            return original(cpu, ctx, pc, site);
+        }
+        let transfer = {
+            let mut mem = ctx.memory();
+            drive(cpu, &mut *mem, pc)?
+        };
+        let at = transfer.resume_pc;
+        if transfer.kind != runtime::abi::CALL || !table.resumes(at) {
+            return Ok(transfer);
+        }
+        match ctx.call_inline(cpu, transfer.target_pc, at) {
+            Inline::Returned => {
+                note(at, None);
+                (pc, site) = (at, true);
+            }
+            Inline::Leave { transfer, why } => {
+                note(at, Some(why));
+                return Ok(transfer);
+            }
+        }
     }
-    native_walk::refused(pc, Refusal::FloatEnv);
-    original(cpu, ctx, pc, sites.contains(&pc))
 }
 
 /// The tag-function curve evaluator `13b390` (`FUNCTION_EVALUATE`): the
@@ -288,11 +345,19 @@ fn install_table_with(
         b.raw()
             .implement(point, label, move |cpu, ctx, pc| {
                 let site = pc != point.base && body.sites.contains(&pc);
-                if (pc == point.base || site) && table.supports(cpu) {
-                    let mut mem = ctx.memory();
-                    return drive(cpu, &mut mem, table, pc, &crate::shadow::SHADOW, arm);
+                if pc != point.base && !site {
+                    return original(cpu, ctx, pc, site);
                 }
-                original(cpu, ctx, pc, site)
+                drive_in_place(
+                    cpu,
+                    ctx,
+                    table,
+                    pc,
+                    site,
+                    |cpu, _| table.supports(cpu),
+                    |cpu, g, pc| drive(cpu, g, table, pc, &crate::shadow::SHADOW, arm),
+                    |_, _| {},
+                )
             })
             .resumes(body.sites)
             .generated_resumes(generated_sites(point.base))

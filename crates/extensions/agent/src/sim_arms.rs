@@ -459,7 +459,7 @@ mod tests {
         let c = collision_arms(&stats);
         assert_eq!(c.len(), 7);
         assert_eq!((c[0].checked, c[6].checked, c[6].mismatched), (2, 1, 1));
-        let w = walk_wire(vec![native_walk::Stats { entry: 0xbd090, segments: 4, refused: [2] }]);
+        let w = walk_wire(vec![native_walk::Stats { entry: 0xbd090, segments: 4, refused: [2], ..Default::default() }]);
         assert_eq!(w[0].name, "objects.walk.000bd090");
         assert_eq!((w[0].checked, w[0].mismatched, w[0].answered, w[0].declined), (0, 0, 4, 2));
         let e = effects_parts(

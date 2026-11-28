@@ -183,7 +183,7 @@ follow [meta/docs-style.md](meta/docs-style.md).
 - [sim-attribution.md](perf/sim-attribution.md): every sample of that Waterworks sim given an owner, the runtime share split, and the rewrite phase order it implies
 - [sim-10x.md](perf/sim-10x.md): one sim match at 10 to 20 times real time: the Lockout budget, every lever ranked, the lanes, the ceiling of each step and the measurements that confirm or kill each
 - [sim-10x-tier.md](perf/sim-10x-tier.md): spec for the sim tier in the image: roots, journaled segments, the exact clock, call-outs and the fallback to the reference image
-- [sim-10x-callouts.md](perf/sim-10x-callouts.md): spec for `ExecCtx::call_inline`: a Rust body calls lifted code in place and leaves to the runner only when the runner has work
+- [sim-10x-callouts.md](perf/sim-10x-callouts.md): `ExecCtx::call_inline`: a Rust body calls lifted code in place and leaves to the runner only when the runner has work
 - [sim-headless-skips.md](perf/sim-headless-skips.md): what a headless sim still computes for a screen, a speaker or a local player, what the title already skips for a phantom roster, and each candidate skip classed for game state, films and the viewer
 - [sim-phantom-build.md](perf/sim-phantom-build.md): the phantoms' action build call by call, where its 1.15 ms goes, and the design that runs it on live RAM with an undo journal
 - [sim-light.md](perf/sim-light.md): RAM, disk and setup time per headless match: why mapped reads never fire in a sim, the levers ranked, and the lanes for a warm N:, frozen slots and lean reports
