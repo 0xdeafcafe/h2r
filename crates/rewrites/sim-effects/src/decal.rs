@@ -15,14 +15,10 @@
 //!
 //! Rust's answer makes the leaf calls in this order and the draws between
 //! them on a copy of the entry's x87 state, so the stream's order is
-//! retail's. The audit is staged ([`Plan`]): at `0x177d10`'s entry the
-//! gate's draw and the call; at its return the step 3 draw is predicted;
-//! at `0x17e670`'s entry the call and the stream; at the switch's return a
-//! part the guest gated out.
+//! retail's.
 
 use x87::abi::{SW_ES, X87Abi};
 
-use crate::arm::Prediction;
 use crate::random::{self, Refused};
 
 pub const NEAR: u32 = 0x0017_2750;
@@ -124,108 +120,6 @@ impl Inputs {
     }
 }
 
-/// The arm's staged prediction for one decal part.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Plan {
-    pub inputs: Inputs,
-    /// The stream's seed at entry.
-    pub seed: u32,
-    /// `0x177d10` was reached and matched, and whether the gate drew
-    /// before it.
-    pub placed: bool,
-    pub gate_drew: bool,
-    /// The step 3 draw from what `0x177d10` left: the seed after it and
-    /// the `f32`.
-    pub draw: Option<(u32, u32)>,
-}
-
-/// The guest at `0x177d10`'s or `0x17e670`'s entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Seen<const A: usize> {
-    pub seed: u32,
-    pub args: [u32; A],
-    pub regs: [u32; 6],
-}
-
-fn diff<const A: usize>(args: [u32; A], regs: [u32; 6], seen: &Seen<A>, base: usize) -> Option<usize> {
-    let want = args.iter().chain(&regs);
-    let got = seen.args.iter().chain(&seen.regs);
-    want.zip(got).position(|(a, b)| a != b).map(|i| base + i)
-}
-
-impl Plan {
-    pub fn new(inputs: Inputs) -> Plan {
-        Plan { inputs, seed: inputs.seed, placed: false, gate_drew: false, draw: None }
-    }
-
-    /// At `0x177d10`'s entry: compare, and on a match note the stage.
-    pub fn place(&mut self, seen: &Seen<9>) -> Option<usize> {
-        let at = self.place_difference(seen);
-        if at.is_none() {
-            self.placed = true;
-            self.gate_drew = seen.seed != self.seed;
-        }
-        at
-    }
-
-    /// At `0x177d10`'s entry. 0: the stream is not where the gate leaves
-    /// it (no draw when not gated or when `0x172750` said near; one draw
-    /// Rust's gate lets on). 1 to 9 the arguments, 10 to 15 the registers.
-    pub fn place_difference(&self, seen: &Seen<9>) -> Option<usize> {
-        let i = &self.inputs;
-        let drew = i.gated() && seen.seed == random::next(self.seed) && {
-            let mut fpu = i.fpu;
-            matches!(i.gate(&mut fpu, self.seed), Ok((_, true)))
-        };
-        if seen.seed != self.seed && !drew {
-            return Some(0);
-        }
-        diff(i.place_args(), i.place_regs(), seen, 1)
-    }
-
-    /// At `0x177d10`'s return: the step 3 draw from the seed it left.
-    /// The gate's draw, if any, ran first on the same x87 state.
-    pub fn predict_draw(&mut self, seed_now: u32) -> Result<(), Refused> {
-        let i = self.inputs;
-        let mut fpu = i.fpu;
-        if self.gate_drew {
-            i.gate(&mut fpu, self.seed)?;
-        }
-        self.draw = Some(i.draw(&mut fpu, seed_now)?);
-        Ok(())
-    }
-
-    /// At `0x17e670`'s entry. 16 the stream, 17 to 22 the arguments, 23 to
-    /// 28 the registers; 29: the draw was never predicted. `decals` is the
-    /// guest's `[0x510c78]`.
-    pub fn create_difference(&self, seen: &Seen<6>, decals: u32) -> Option<usize> {
-        let i = &self.inputs;
-        let Some((seed, f)) = self.draw else { return Some(29) };
-        if seen.seed != seed {
-            return Some(16);
-        }
-        diff(i.create_args(f), i.create_regs(decals), seen, 17)
-    }
-
-    /// At the switch's return, for a part that never reached `0x177d10`:
-    /// the guest gated it out, so `0x172750` was near-false and the gate's
-    /// draw stopped it. 30: Rust's gate would have gone on, or the stream
-    /// or `EAX` differ.
-    pub fn gated_out_difference(&self, seed_now: u32, eax: u32) -> Option<usize> {
-        let i = &self.inputs;
-        let mut fpu = i.fpu;
-        let stop = i.gated() && matches!(i.gate(&mut fpu, self.seed), Ok((_, false)));
-        let seed = random::next(self.seed);
-        (!(stop && seed_now == seed && eax == seed >> 16)).then_some(30)
-    }
-}
-
-impl Prediction for Plan {
-    fn first_difference(&self, seen: &Plan) -> Option<usize> {
-        (self != seen).then_some(0)
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -264,33 +158,5 @@ pub(crate) mod tests {
         let ungated = Inputs { flags: 0x10, ..i };
         assert!(!ungated.gated());
         assert_eq!((ungated.edi(), ungated.near_regs()[1] & 0xff), (i.source, 1));
-    }
-
-    /// Each stage accepts what the guest's arm leaves and names a stream
-    /// the gate could not have left.
-    #[test]
-    fn the_stages_follow_the_stream() {
-        let i = inputs();
-        let mut plan = Plan::new(i);
-        let seen = |seed| Seen { seed, args: i.place_args(), regs: i.place_regs() };
-        // Near (no draw), or far and the first draw from 0 (about 0.24)
-        // under the limit 0.5: both reach 0x177d10.
-        assert_eq!(plan.place_difference(&seen(0)), None);
-        assert_eq!(plan.place(&seen(random::next(0))), None);
-        assert!(plan.placed && plan.gate_drew);
-        assert_eq!(plan.place_difference(&seen(5)), Some(0));
-        let strict = Plan::new(Inputs { limit: 0.1f32.to_bits(), ..i });
-        assert_eq!(strict.place_difference(&seen(random::next(0))), Some(0), "the gate stops that draw");
-        assert_eq!(strict.gated_out_difference(random::next(0), random::next(0) >> 16), None);
-        assert_eq!(plan.gated_out_difference(random::next(0), random::next(0) >> 16), Some(30));
-        // 0x177d10 drew once more; the step 3 draw follows from there.
-        let after = random::next(random::next(0));
-        plan.predict_draw(after).unwrap();
-        let (seed, f) = plan.draw.unwrap();
-        assert_eq!(seed, random::next(after));
-        assert_eq!(f32::from_bits(f), (seed >> 16) as f32 / 65536.0);
-        let create = Seen { seed, args: i.create_args(f), regs: i.create_regs(9) };
-        assert_eq!(plan.create_difference(&create, 9), None);
-        assert_eq!(plan.create_difference(&Seen { seed: 1, ..create }, 9), Some(16));
     }
 }

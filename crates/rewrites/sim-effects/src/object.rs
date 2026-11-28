@@ -15,13 +15,8 @@
 //!    and `0xa7870(object)`.
 //!
 //! Every draw is in a leaf, so Rust making the calls in this order with
-//! these registers keeps the stream's order. The arm checks steps 3 and 5
-//! and the leaf arguments in two stages: at `0x177d10`'s entry
-//! ([`Plan::place_difference`]) and at `0x177f60`'s
-//! ([`Plan::velocity_difference`]), with the sums predicted at
-//! `0x177d10`'s return ([`sums`]).
+//! these registers keeps the stream's order; [`sums`] is step 5.
 
-use crate::arm::Prediction;
 use crate::sound::Unmasked;
 
 /// The leaves, in call order.
@@ -150,60 +145,6 @@ pub fn sums(mxcsr: u32, offset: [u32; 3], placed: [u32; 3]) -> Result<[u32; 3], 
     Ok(out)
 }
 
-/// What the guest holds at a checked leaf's entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Seen<const W: usize, const A: usize> {
-    pub words: [u32; W],
-    pub args: [u32; A],
-    pub regs: [u32; 6],
-}
-
-pub type PlaceSeen = Seen<9, 9>;
-pub type VelocitySeen = Seen<3, 4>;
-
-fn diff<const W: usize, const A: usize>(want: &Seen<W, A>, got: &Seen<W, A>, base: usize) -> Option<usize> {
-    let w = want.words.iter().chain(&want.args).chain(&want.regs);
-    let g = got.words.iter().chain(&got.args).chain(&got.regs);
-    w.zip(g).position(|(a, b)| a != b).map(|i| base + i)
-}
-
-/// The arm's prediction for one object part, filled in as the guest runs.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Plan {
-    pub inputs: Inputs,
-    /// The step 5 sums, once `0x177d10` has returned.
-    pub sums: Option<[u32; 3]>,
-    /// Step 4 was checked.
-    pub placed: bool,
-}
-
-impl Plan {
-    pub fn new(inputs: Inputs) -> Plan {
-        Plan { inputs, sums: None, placed: false }
-    }
-
-    /// At `0x177d10`'s entry: 0 to 8 the copies, 9 to 17 the arguments, 18
-    /// to 23 the registers.
-    pub fn place_difference(&self, seen: &PlaceSeen) -> Option<usize> {
-        let i = &self.inputs;
-        diff(&PlaceSeen { words: i.copies(), args: i.place_args(), regs: i.place_regs() }, seen, 0)
-    }
-
-    /// At `0x177f60`'s entry: 24 to 26 the sums, 27 to 30 the arguments,
-    /// 31 to 36 the registers. 37: the sums were never predicted.
-    pub fn velocity_difference(&self, seen: &VelocitySeen) -> Option<usize> {
-        let i = &self.inputs;
-        let Some(sums) = self.sums else { return Some(37) };
-        diff(&VelocitySeen { words: sums, args: i.velocity_args(), regs: i.velocity_regs() }, seen, 24)
-    }
-}
-
-impl Prediction for Plan {
-    fn first_difference(&self, seen: &Plan) -> Option<usize> {
-        (self != seen).then_some(0)
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -246,25 +187,7 @@ pub(crate) mod tests {
         // Two NaNs: addss keeps the first operand's (the effect's) payload.
         let (a, b) = (0x7fc0_0001, 0x7fc0_0002);
         assert_eq!(sums(0x1f80, [a, one, one], [b, one, one]).unwrap()[0], a);
-        // An unmasked exception leaves the part to the guest.
+        // An unmasked exception is refused.
         assert_eq!(sums(0x1f80 & !0x0080, [0x7f80_0001, one, one], [one; 3]), Err(Unmasked));
-    }
-
-    #[test]
-    fn both_stages_name_where_they_differ() {
-        let i = inputs();
-        let mut plan = Plan::new(i);
-        let place = PlaceSeen { words: i.copies(), args: i.place_args(), regs: i.place_regs() };
-        assert_eq!(plan.place_difference(&place), None);
-        let mut off = place;
-        off.args[1] ^= 4;
-        assert_eq!(plan.place_difference(&off), Some(10));
-        let velocity = VelocitySeen { words: [1, 2, 3], args: i.velocity_args(), regs: i.velocity_regs() };
-        assert_eq!(plan.velocity_difference(&velocity), Some(37));
-        plan.sums = Some([1, 2, 3]);
-        assert_eq!(plan.velocity_difference(&velocity), None);
-        let mut off = velocity;
-        off.regs[4] = 0;
-        assert_eq!(plan.velocity_difference(&off), Some(24 + 3 + 4 + 4));
     }
 }

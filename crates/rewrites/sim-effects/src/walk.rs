@@ -125,9 +125,6 @@ pub struct Stats {
     pub culled: u64,
     pub retired: u64,
     pub updated: u64,
-    /// Refusals: the header could not be read at the phase's start, so the
-    /// guest phase ran instead.
-    pub declined_fault: u64,
 }
 
 impl Stats {

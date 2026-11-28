@@ -11,7 +11,6 @@
 //!
 //! Both put the scale in `XMM0` (`movss`, the upper lanes zero).
 
-use crate::arm::Prediction;
 
 pub const CREATE: u32 = 0x000c_0350;
 /// Where the switch calls it from, on the object and at a point.
@@ -68,19 +67,6 @@ impl Call {
     }
 }
 
-impl Prediction for Call {
-    /// 0 to 3 the arguments, 4 to 9 the registers, 10 the scale; 11 the
-    /// other path.
-    fn first_difference(&self, seen: &Call) -> Option<usize> {
-        if self.on_object != seen.on_object {
-            return Some(11);
-        }
-        let want = self.args.iter().chain(&self.regs).chain(std::iter::once(&self.xmm0));
-        let got = seen.args.iter().chain(&seen.regs).chain(std::iter::once(&seen.xmm0));
-        want.zip(got).position(|(a, b)| a != b)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,8 +99,6 @@ mod tests {
             assert!(!p.on_object);
             assert_eq!(p.args, [0xe100_0004, u32::MAX, u32::MAX, 0x0062_0000]);
             assert_eq!(p.regs, [0x6c69_6768, 0xe100_0004, 0x1100, 0x0063_0000, i.object, 0x0063_0010]);
-            assert_eq!(on.first_difference(&p), Some(11));
         }
-        assert_eq!(on.first_difference(&Call { xmm0: 0, ..on }), Some(10));
     }
 }

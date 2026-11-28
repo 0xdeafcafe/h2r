@@ -8,7 +8,6 @@
 
 use x87::abi::X87Abi;
 
-use crate::arm::Prediction;
 use crate::random::{self, Refused};
 
 /// Everything the arm reads.
@@ -48,23 +47,6 @@ impl Call {
     }
 }
 
-impl Prediction for Call {
-    /// 0 the seed, 1 `EAX`, 2 the x87 registers, status word and tags
-    /// (not the instruction and data pointers, which the helpers leave to
-    /// generated code); 3 a different part.
-    fn first_difference(&self, seen: &Call) -> Option<usize> {
-        if (self.entry, self.seed_at) != (seen.entry, seen.seed_at) {
-            return Some(3);
-        }
-        let fpu = |f: &X87Abi| (f.st, f.status, f.tag);
-        [self.seed, self.eax]
-            .iter()
-            .zip(&[seen.seed, seen.eax])
-            .position(|(a, b)| a != b)
-            .or((fpu(&self.fpu) != fpu(&seen.fpu)).then_some(2))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,7 +67,5 @@ mod tests {
         assert_eq!((c.seed, c.eax, c.ecx, c.edx), (random::next(7), random::next(7) >> 16, 0x0070_0004, i.hi));
         assert_eq!((c.fpu.status & x87::abi::SW_TOP, c.fpu.tag), (fpu.status & x87::abi::SW_TOP, fpu.tag));
         assert_ne!(c.fpu.st, fpu.st, "the freed registers hold the draw, as retail's do");
-        let seen = Call { seed: c.seed ^ 1, ..c };
-        assert_eq!(c.first_difference(&seen), Some(0));
     }
 }
