@@ -633,7 +633,11 @@ mod tests {
         };
         assert_eq!(result, Ok(Ret::new(1, 0)));
         assert_eq!(polls, 4, "three calls, then the finish");
-        assert_eq!(withs.load(Ordering::Relaxed), 2, "the body's write and read only");
+        assert_eq!(
+            withs.load(Ordering::Relaxed),
+            2,
+            "the body's write and read only"
+        );
     }
 
     #[test]
