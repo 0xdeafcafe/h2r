@@ -521,8 +521,7 @@ fn state_without_fog(states: &[RenderStateValue], geometry: bool) -> Result<Pass
         .copied()
         .filter(|s| !FOG_WORD_SLOTS.contains(&u32::from(s.state)))
         .collect();
-    let state = if geometry { crate::pass_state::geometry_pass_state(&without) } else { pass_state(&without) };
-    state.and_then(PassState::no_depth_offset)
+    if geometry { crate::pass_state::geometry_pass_state(&without) } else { pass_state(&without) }
 }
 
 /// Whether `states` set `CULLMODE` (build 5849's slots).
@@ -648,7 +647,10 @@ impl FogProgram {
         rigid_microcode: Option<&[u8]>,
     ) -> Result<Self, String> {
         world_constants_read(&pass.look, microcode)?;
-        let program = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
+        let mut program = compile_pass(&pass.look, microcode, pass.state.alpha_test)?;
+        // The pass's polygon offset is its fragments' (`frame_pixel` keeps
+        // it under the frame's depth scale).
+        crate::pass_state::DepthOffset::apply(pass.state.depth_offset, &mut program.pixel);
         shaders::vsh::Program::parse(microcode).map_err(|e| format!("vertex program: {e:?}"))?;
         let rigid = rigid_microcode
             .map(|code| crate::program::compile_pass_rigid(&pass.look, pass.state.alpha_test, code))
@@ -1662,6 +1664,29 @@ mod selection_tests {
         assert_eq!(passes[0].look.textures[0], Stage::Bitmap { bitmap, image: 0 });
         assert_eq!(passes[0].look.textures[1], Stage::Bitmap { bitmap, image: 1 });
         assert!(crate::water_gpu::water_passes(&water, None).is_err());
+    }
+
+    #[test]
+    fn a_layer_pass_draws_its_polygon_offset_in_its_fragments() {
+        use gfx::state::RenderStateType as R;
+        let table = RenderStateTable::for_build(HALO2_BUILD);
+        let slot = |t: R| {
+            (0..=255u8).find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t)).expect("a 5849 slot")
+        };
+        let word = |t: R, value: u32| RenderStateValue { state: slot(t), value };
+        let pass = imp(0, &[
+            state(CULL_MODE, CW),
+            word(R::SolidOffsetEnable, 1),
+            word(R::PolygonOffsetZOffset, (-8.0f32).to_bits()),
+            word(R::PolygonOffsetZSlopeScale, 1.0f32.to_bits()),
+        ]);
+        let pass = layer_passes(&material(16, vec![vec![pass]]), 16).unwrap().remove(0);
+        assert_eq!(pass.state.depth_offset, Some(crate::pass_state::DepthOffset { units: -8.0, slope: 1.0 }));
+        let program = FogProgram::compile(&pass, &super::tests::cluster_code()).unwrap();
+        assert_eq!((program.program.pixel.depth[1], program.program.pixel.depth[2]), (-8.0, 1.0));
+        let plain = layer_passes(&material(16, vec![vec![imp(0, &[state(CULL_MODE, CW)])]]), 16).unwrap().remove(0);
+        let plain = FogProgram::compile(&plain, &super::tests::cluster_code()).unwrap();
+        assert_eq!((plain.program.pixel.depth[1], plain.program.pixel.depth[2]), (0.0, 0.0));
     }
 
     #[test]
