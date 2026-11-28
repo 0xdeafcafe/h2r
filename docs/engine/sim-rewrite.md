@@ -456,6 +456,22 @@ point around it. The steps, the phase owners, the presentation phases
 (`impl.sim.present`), the ledger (`sim.ledger`, the ratchet that only falls)
 and the proof are in [sim-rewrite-tick.md](sim-rewrite-tick.md).
 
+## AI: the port plan
+
+`ai_update` `0x1c83c0`, tick phase 3, is Rust (`engine/src/ai_update.rs`);
+its seven systems are still lifted, one guest call each. Under them sit 326
+functions no other phase reaches: about 272k lifted C lines, 85 leaves, 18
+indirect sites, 208k of it the actor update `0x1e2f50` (all listed in
+[notes/2026-11-28-ai-function-list.md](notes/2026-11-28-ai-function-list.md)).
+A case a port can't take yet is `unimplemented!("ai: <cause>")`.
+
+| Step | Port | Held by |
+|---|---|---|
+| 1 | the small systems whole: `1c81c0`, `20fb30`, teardown `1e3240`, `293830`, `268510` | a differential per system, as `ai_update_matches_lifted` |
+| 2 | the actor update's leaves (datum and field reads such as `26be00`) | a differential per leaf |
+| 3 | squads `201c80`, then `1e2f50` one callee subtree per slice, its behaviour vtables named per target | the same |
+| 4 | the actor and squad arrays leave guest memory (section 2's rule) | the sim ladder |
+
 ## 6. Threading inside a tick
 
 ```mermaid

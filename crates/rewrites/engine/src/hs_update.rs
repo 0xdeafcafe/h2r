@@ -1,5 +1,5 @@
 //! Tick phase 8, the HaloScript update `0x00209310` (`SCRIPT_UPDATE`), in
-//! Rust (docs/engine/hs_vm.md, "The scheduler"; docs/engine/sim-rewrite.md,
+//! Rust (docs/engine/hs_vm.md, "Threads"; docs/engine/sim-rewrite.md,
 //! "The tick driver"). The scheduler is Rust's; each thread it picks still
 //! runs in the lifted `HS_THREAD_EXECUTE` `0x209850`, one guest call per
 //! thread, counted in [`Stats::executed`].
