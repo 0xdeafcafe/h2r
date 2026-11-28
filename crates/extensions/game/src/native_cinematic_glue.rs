@@ -35,10 +35,9 @@ impl d3d::ExternalPass for Pass {
             size: t.size,
             display: t.copy == d3d::TargetCopy::Display,
         };
-        let video = self.request.map.as_deref().map(|map| Video {
-            map,
-            images: &|| video_images(map),
-        });
+        let map = self.request.map.as_deref();
+        let images = || map.and_then(video_images);
+        let video = map.map(|map| Video { map, images: &images });
         self.cache
             .lock()
             .unwrap_or_else(|e| e.into_inner())

@@ -54,6 +54,12 @@ test distinguishes the layouts.
 | CPU queries use the same bitmap/palette indices | E `0x000d16d0`, `0x000d2f90`, `0x001362b0`; palette entry lookup at `0x00015cd0` |
 | Packed colour word to RGB | E `0x00131bb0`: R bits 16..23, G 8..15, B 0..7, each divided by 255 |
 
+A render info entry with a page and palette `-1` names a **colour page**:
+the converted Halo 1 pages, `R5G6B5` (or `A8R8G8B8`, `X8R8G8B8`), sampled
+as stored. The native world keys it `LightmapKey { palette: None }` and
+decodes it direct (`native_render::load::decode_lightmap`). A P8 page with
+palette `-1`, or a colour page with a palette, panics by name.
+
 A P8 lightmap is an **index texture**. For an integer texel index `i`, its
 colour is `palette[i]`; a palette is not an extra image to multiply into the
 sample. Filtering belongs after palette expansion. A conventional diffuse

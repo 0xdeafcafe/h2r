@@ -35,7 +35,7 @@ fn camera() -> RenderCamera {
     }
 }
 
-const PAGE: LightmapKey = LightmapKey { page: 0, palette: 0 };
+const PAGE: LightmapKey = LightmapKey { page: 0, palette: Some(0) };
 
 /// Cluster 0 as `first`, cluster 1 a fixed wall to the side.
 fn world(first: &SectionInput) -> World {

@@ -218,7 +218,7 @@ The structure writer does not copy those pages. A Halo 2 cluster samples
 one page and a Halo 1 cluster's surfaces sample several, so
 `h1convert::clusters` builds a page per lit cluster from pieces of the
 Halo 1 pages (`h1_assets::bitmaps::atlas`) and writes the render info
-entry `{page, -1}`; unlit clusters keep `{-1, -1}`. The design is in
+entry `{page, -1}`, which the native world decodes direct as a colour page ([lighting.md](../formats/lighting.md)); unlit clusters keep `{-1, -1}`. The design is in
 [multiplayer.md](multiplayer.md), "Lightmap"; the target layouts are in
 [lighting.md](../formats/lighting.md) and
 [structure-bsp.md](../formats/structure-bsp.md). Pages are R5G6B5, never

@@ -101,8 +101,9 @@ pub use frame_scene::Owner;
 pub struct LightmapKey {
     /// Image index in the group's lightmap bitmap.
     pub page: u16,
-    /// Palette index in the group.
-    pub palette: u8,
+    /// Palette index in the group; `None` (render info palette `-1`) for
+    /// a colour page, decoded direct (the converted Halo 1 pages).
+    pub palette: Option<u8>,
 }
 
 /// One drawn part, placed in the world.
@@ -810,7 +811,7 @@ mod tests {
         }
     }
 
-    const PAGE: Option<LightmapKey> = Some(LightmapKey { page: 2, palette: 1 });
+    const PAGE: Option<LightmapKey> = Some(LightmapKey { page: 2, palette: Some(1) });
 
     #[test]
     fn the_tangent_frame_and_lighting_vector_turn_with_the_placement() {
@@ -1104,7 +1105,7 @@ mod tests {
     #[test]
     fn draws_sort_into_batches_by_material_and_page() {
         let mut b = WorldBuilder::new();
-        let other = LightmapKey { page: 0, palette: 0 };
+        let other = LightmapKey { page: 0, palette: Some(0) };
         b.add_section(Owner::Cluster(0), &quad(5, false, true), &Placement::IDENTITY, PAGE);
         b.add_section(Owner::Cluster(1), &quad(1, false, true), &Placement::IDENTITY, PAGE);
         b.add_section(Owner::Cluster(2), &quad(5, false, true), &Placement::IDENTITY, PAGE);

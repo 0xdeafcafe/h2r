@@ -168,11 +168,14 @@ pub fn program_lighting_vector(word: u32) -> [f32; 3] {
     tags::geometry::unpack_normpacked3(word)
 }
 
+/// The page a cluster's or instance's render info names: none for page
+/// `-1` (unlit), a colour page for palette `-1` (the converted Halo 1
+/// pages, docs/halo1/bitmaps.md).
 fn key(info: Option<&LightmapRenderInfo>) -> Option<LightmapKey> {
     let info = info?;
     Some(LightmapKey {
         page: u16::try_from(info.bitmap_index).ok()?,
-        palette: u8::try_from(info.palette_index).ok()?,
+        palette: u8::try_from(info.palette_index).ok(),
     })
 }
 
@@ -407,23 +410,56 @@ pub fn expand_page(indices: &[u8], palette: &[u32; 256]) -> Vec<u8> {
         .collect()
 }
 
-/// A P8 lightmap page decoded and expanded through `palette` to RGBA8,
-/// with its mip chain. `refuse_linear` refuses a linear (unswizzled)
-/// page, whose coordinates the game gives in texels.
+/// The palette `key` names in a group's `palettes`: `None` for a colour
+/// page, an error for an index past the block.
+pub fn page_palette(palettes: &[[u32; 256]], key: LightmapKey) -> Result<Option<&[u32; 256]>, String> {
+    key.palette
+        .map(|n| palettes.get(usize::from(n)).ok_or_else(|| "no such lightmap palette".to_owned()))
+        .transpose()
+}
+
+/// A lightmap page decoded to RGBA8, with its mip chain: a P8 page
+/// expanded through `palette`, a colour page (palette `-1`, the converted
+/// Halo 1 pages: `R5G6B5`, `A8R8G8B8`, `X8R8G8B8`) decoded direct.
+/// `refuse_linear` refuses a linear (unswizzled) page, whose coordinates
+/// the game gives in texels.
+///
+/// # Panics
+///
+/// A P8 page with no palette, and a colour page with one: the render info
+/// and the bitmap disagree.
 pub fn decode_lightmap(
     image: &tags::Image,
-    palette: &[u32; 256],
+    palette: Option<&[u32; 256]>,
     files: &mut assets::ResourceFiles,
     refuse_linear: bool,
 ) -> Result<Image, String> {
-    if image.format != tags::PixelFormat::P8 {
-        return Err(format!("unsupported lightmap format {:?}", image.format));
+    use tags::PixelFormat as F;
+    match (image.format, palette) {
+        (F::P8, Some(_)) | (F::Rgb565 | F::Argb8888 | F::Xrgb8888, None) => {}
+        (F::P8, None) => unimplemented!("lightmap: a P8 page with palette -1"),
+        (f @ (F::Rgb565 | F::Argb8888 | F::Xrgb8888), Some(_)) => {
+            unimplemented!("lightmap: a {f:?} colour page with a palette")
+        }
+        (f, _) => return Err(format!("unsupported lightmap format {f:?}")),
     }
     let decoded = assets::decode_image(image, files).map_err(|e| e.to_string())?;
     if refuse_linear && decoded.desc.format.layout() == gfx::format::Layout::Linear {
         return Err("linear lightmap coordinates are in texels".into());
     }
-    expand_levels(decoded.levels, palette).ok_or_else(|| "no usable lightmap mip levels".into())
+    match palette {
+        Some(palette) => expand_levels(decoded.levels, palette),
+        None => colour_levels(decoded.levels),
+    }
+    .ok_or_else(|| "no usable lightmap mip levels".into())
+}
+
+/// A colour page's decoded levels (already RGBA8), largest first, as one
+/// image with its mip chain.
+pub fn colour_levels(levels: Vec<assets::Level>) -> Option<Image> {
+    let mut levels: Vec<_> = levels.into_iter().filter(|l| l.face == 0 && l.depth <= 1).collect();
+    levels.sort_by_key(|l| l.level);
+    Image::from_levels(levels.into_iter().map(|l| (l.width, l.height, l.rgba)).collect())
 }
 
 /// A P8 page's decoded levels (the index in every channel) through
@@ -580,6 +616,66 @@ mod tests {
         }
     }
 
+    /// A 2x2 linear page of `format` at offset 0 of the shared resource
+    /// file, 128 bytes (pitch 64).
+    fn page_image(format: tags::PixelFormat) -> tags::Image {
+        use tags::wire::{BinaryRecord, Flags16};
+        let mut wire = tags::records::BitmapImage::decode(&[0u8; tags::records::BitmapImage::SIZE]).unwrap();
+        wire.flags = Flags16(0x10);
+        let lod = tags::ResourceRange { pointer: map::RawPointer { file: map::ResourceFile::Shared, offset: 0 }, size: 128 };
+        tags::Image {
+            format,
+            kind: tags::TextureKind::D2,
+            dimensions: [2, 2, 1],
+            mip_count: 0,
+            lods: [Some(lod), None, None],
+            low_detail: None,
+            wire,
+        }
+    }
+
+    /// A converted Halo 1 page (`R5G6B5`, render info palette -1) decodes
+    /// direct, its colour as the format holds it.
+    #[test]
+    fn a_colour_page_decodes_without_a_palette() {
+        // Red, green, blue, white: 0xf800, 0x07e0, 0x001f, 0xffff.
+        let row = [0x00, 0xf8, 0xe0, 0x07];
+        let mut bytes = row.to_vec();
+        bytes.resize(64, 0);
+        bytes.extend([0x1f, 0x00, 0xff, 0xff]);
+        bytes.resize(128, 0);
+        let path = std::env::temp_dir().join(format!("native-render-colour-page-{}.bin", std::process::id()));
+        std::fs::write(&path, &bytes).unwrap();
+        let mut files = assets::ResourceFiles::new();
+        files.set(map::ResourceFile::Shared, assets::Region { path: path.clone(), base: 0, length: 128 }).unwrap();
+        let page = decode_lightmap(&page_image(tags::PixelFormat::Rgb565), None, &mut files, false);
+        std::fs::remove_file(path).unwrap();
+        let page = page.unwrap();
+        assert_eq!((page.width, page.height), (2, 2));
+        assert_eq!(page.rgba, [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 255, 255]].concat());
+    }
+
+    #[test]
+    #[should_panic(expected = "lightmap: a P8 page with palette -1")]
+    fn a_p8_page_without_a_palette_panics() {
+        let _ = decode_lightmap(&page_image(tags::PixelFormat::P8), None, &mut assets::ResourceFiles::new(), false);
+    }
+
+    #[test]
+    #[should_panic(expected = "lightmap: a Rgb565 colour page with a palette")]
+    fn a_colour_page_with_a_palette_panics() {
+        let _ = decode_lightmap(&page_image(tags::PixelFormat::Rgb565), Some(&[0; 256]), &mut assets::ResourceFiles::new(), false);
+    }
+
+    #[test]
+    fn a_key_finds_its_palette() {
+        let palettes = [[1u32; 256], [2; 256]];
+        let key = |palette| LightmapKey { page: 0, palette };
+        assert_eq!(page_palette(&palettes, key(None)), Ok(None));
+        assert_eq!(page_palette(&palettes, key(Some(1))), Ok(Some(&[2; 256])));
+        assert!(page_palette(&palettes, key(Some(2))).is_err());
+    }
+
     #[test]
     fn a_page_expands_through_its_palette() {
         let mut palette = [0u32; 256];
@@ -589,15 +685,16 @@ mod tests {
     }
 
     #[test]
-    fn render_info_without_a_page_or_palette_is_unlit() {
+    fn render_info_without_a_page_is_unlit_and_without_a_palette_is_colour() {
         let info = |bitmap_index, palette_index| LightmapRenderInfo {
             bitmap_index,
             palette_index,
             unknown_3: 0,
         };
-        assert_eq!(key(Some(&info(3, 2))), Some(LightmapKey { page: 3, palette: 2 }));
+        assert_eq!(key(Some(&info(3, 2))), Some(LightmapKey { page: 3, palette: Some(2) }));
         assert_eq!(key(Some(&info(-1, 2))), None);
-        assert_eq!(key(Some(&info(3, -1))), None);
+        // Palette -1 is a colour page (the converted Halo 1 pages).
+        assert_eq!(key(Some(&info(3, -1))), Some(LightmapKey { page: 3, palette: None }));
         assert_eq!(key(None), None);
     }
 

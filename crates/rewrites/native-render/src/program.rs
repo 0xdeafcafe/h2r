@@ -3313,9 +3313,9 @@ mod tests {
         };
         let page = LightmapKey {
             page: 1,
-            palette: 2,
+            palette: Some(2),
         };
-        let other = LightmapKey { palette: 3, ..page };
+        let other = LightmapKey { palette: Some(3), ..page };
         let batch = |material, lightmap| crate::world::Batch {
             material,
             lightmap: Some(lightmap),
@@ -3510,7 +3510,7 @@ mod tests {
         };
         let page = LightmapKey {
             page: 0,
-            palette: 0,
+            palette: Some(0),
         };
         let world = World {
             batches: vec![crate::world::Batch {
@@ -3591,7 +3591,7 @@ mod tests {
         };
         let page = LightmapKey {
             page: 0,
-            palette: 0,
+            palette: Some(0),
         };
         let batch = |material| crate::world::Batch {
             material,
@@ -3820,7 +3820,7 @@ mod tests {
         };
         let page = LightmapKey {
             page: 3,
-            palette: 1,
+            palette: Some(1),
         };
         let mut b = WorldBuilder::new();
         b.add_section(
@@ -3867,7 +3867,7 @@ mod tests {
         assert!(
             set.page_textures(LightmapKey {
                 page: 3,
-                palette: 2
+                palette: Some(2)
             })
             .is_empty(),
             "another palette is another page"
@@ -3936,7 +3936,7 @@ mod tests {
         };
         let key = LightmapKey {
             page: 0,
-            palette: 0,
+            palette: Some(0),
         };
         let page = Some(key);
         let mut b = WorldBuilder::new();
@@ -5480,7 +5480,7 @@ mod tests {
         use crate::world::{Owner, PartInput, Placement, SectionInput, WorldBuilder};
         let page = LightmapKey {
             page: 1,
-            palette: 0,
+            palette: Some(0),
         };
         let section = |material, lit: bool, lighting: bool| SectionInput {
             source: None,
@@ -5528,6 +5528,10 @@ mod tests {
             &Placement::IDENTITY,
             Some(page),
         );
+        // A colour page (render info palette -1, the converted Halo 1
+        // pages) is a page like any other.
+        let colour = LightmapKey { page: 2, palette: None };
+        b.add_section(Owner::Cluster(4), &section(4, true, true), &Placement::IDENTITY, Some(colour));
         let world = b.finish();
         // The per-pixel lightmap program: every register, the lightmap at
         // stage 3.
@@ -5541,6 +5545,7 @@ mod tests {
             Err("a part's lightmap page does not decode".to_string())
         };
         assert_eq!(world_fit(&world, 1, &p, &all), Ok(()));
+        assert_eq!(world_fit(&world, 4, &p, &|k| if k == colour { Ok(()) } else { Err(format!("{k:?}")) }), Ok(()));
         assert!(part_fit(&world.draws[1], p.inputs, &p, &all).is_ok());
         assert!(part_fit(&world.draws[2], p.inputs, &p, &all).is_err());
         assert!(part_fit(&world.draws[2], p.inputs & !(1 << 5), &p, &all).is_ok());

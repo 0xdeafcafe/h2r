@@ -4,7 +4,7 @@ use native_render::world::{Owner, PartInput, Placement, SectionInput, WorldBuild
 
 const PAGE: LightmapKey = LightmapKey {
     page: 0,
-    palette: 0,
+    palette: Some(0),
 };
 
 /// A unit quad in the xy plane at height `z`, lit by [`PAGE`] when `lit`.

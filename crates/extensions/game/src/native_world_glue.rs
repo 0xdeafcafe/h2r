@@ -613,13 +613,20 @@ fn decode_pages<R: std::io::Read + std::io::Seek>(
         });
     let mut out = Vec::new();
     for page in edited {
+        let image = read
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|b| b.images.get(usize::from(page)).ok_or_else(|| "no such lightmap bitmap page".to_owned()));
+        // A colour page (the converted Halo 1 pages) has no palette.
+        if image.as_ref().is_ok_and(|i| i.format != tags::PixelFormat::P8) {
+            let decoded = image.and_then(|i| decode_lightmap(i, None, files, true));
+            out.push((LightmapKey { page, palette: None }, decoded));
+            continue;
+        }
         for (n, palette) in palettes.iter().enumerate() {
             let Ok(palette_index) = u8::try_from(n) else { break };
-            let decoded = read.as_ref().map_err(Clone::clone).and_then(|b| {
-                let image = b.images.get(usize::from(page)).ok_or("no such lightmap bitmap page")?;
-                decode_lightmap(image, palette, files, true)
-            });
-            out.push((LightmapKey { page, palette: palette_index }, decoded));
+            let decoded = image.clone().and_then(|i| decode_lightmap(i, Some(palette), files, true));
+            out.push((LightmapKey { page, palette: Some(palette_index) }, decoded));
         }
     }
     out
@@ -728,7 +735,7 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
             Ok(pixels) => {
                 if let Err(why) = gpu.rewrite_page(queue, *page, pixels) {
                     eprintln!(
-                        "native-world: {} BSP {}: lightmap page {} palette {} keeps its pixels until the map reloads ({why:?})",
+                        "native-world: {} BSP {}: lightmap page {} palette {:?} keeps its pixels until the map reloads ({why:?})",
                         key.map, key.index, page.page, page.palette
                     );
                 }
@@ -737,7 +744,7 @@ fn refresh_world(key: &BspKey, ready: &Ready, edits: &[render_bridge::native_edi
             // D3D path draws what used it.
             Err(why) if !gpu.page_textures(*page).is_empty() => {
                 eprintln!(
-                    "native-world: {} BSP {}: lightmap page {} palette {} does not decode ({why}); it keeps its pixels",
+                    "native-world: {} BSP {}: lightmap page {} palette {:?} does not decode ({why}); it keeps its pixels",
                     key.map, key.index, page.page, page.palette
                 );
             }
@@ -1524,7 +1531,7 @@ fn load_ready(
             if !key.current() { return Ok(()); }
             let page = bitmap.as_ref().map_err(Clone::clone).and_then(|b| {
                 let image = b.images.get(usize::from(page_key.page)).ok_or("no such lightmap bitmap page")?;
-                let palette = lightmap_palettes.get(usize::from(page_key.palette)).ok_or("no such lightmap palette")?;
+                let palette = native_render::load::page_palette(&lightmap_palettes, page_key)?;
                 decode_lightmap(image, palette, &mut files, true)
             });
             match page {

@@ -286,7 +286,7 @@ impl NativeLoad {
             let image = bitmap
                 .as_ref()
                 .and_then(|b| b.images.get(usize::from(k.page)))
-                .zip(loaded.palettes.get(usize::from(k.palette)))
+                .zip(load::page_palette(&loaded.palettes, k).ok())
                 .and_then(|(image, palette)| {
                     load::decode_lightmap(image, palette, files, false).ok()
                 });

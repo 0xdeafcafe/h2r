@@ -80,7 +80,7 @@ fn the_world_draws_lit_with_the_games_w_depth() {
         eprintln!("no wgpu adapter; skipping");
         return;
     };
-    let page = LightmapKey { page: 0, palette: 0 };
+    let page = LightmapKey { page: 0, palette: Some(0) };
     let mut b = WorldBuilder::new();
     b.add_section(Owner::Cluster(0), &wall(10.0, 0), &Placement::IDENTITY, Some(page));
     // Behind the camera: culled.
@@ -207,7 +207,7 @@ fn selected_and_indirect_world_draws_match_for_both_cameras_at_both_scales_in_on
     use wgpu::{TextureFormat as F, TextureUsages as U};
     let Ok(ctx) = gfx::GfxContext::headless() else { return };
     let mut b = WorldBuilder::new();
-    let page = Some(LightmapKey { page: 0, palette: 0 });
+    let page = Some(LightmapKey { page: 0, palette: Some(0) });
     b.add_section(Owner::Cluster(0), &wall(10.0, 0), &Placement::IDENTITY, page);
     b.add_section(Owner::Cluster(1), &wall(-10.0, 1), &Placement::IDENTITY, page);
     let mut world = GpuWorld::new(&ctx.device, &ctx.queue, b.finish(), &mut |m| {

@@ -400,7 +400,7 @@ impl Scene {
             .into_iter()
             .filter_map(|k| {
                 let image = bitmap.as_ref()?.images.get(usize::from(k.page))?;
-                let palette = loaded.palettes.get(usize::from(k.palette))?;
+                let palette = load::page_palette(&loaded.palettes, k).ok()?;
                 Some((
                     k,
                     load::decode_lightmap(image, palette, &mut raw.0, false).ok()?,
