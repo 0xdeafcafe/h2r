@@ -53,13 +53,15 @@ pub async fn run(
     bodies: sim_tick::Bodies,
     sound: crate::sim_sound::entries::Shared,
 ) -> guest_layout::entry::EntryResult {
-    // The World holds the tick's live objects: read in at the entry and
+    // The World holds the tick's live objects and players: read in at the entry and
     // again at the exit. The guest's phases still write the arena
     // (creates, deletes, bodies) between the two; a scatter of the entry's
     // table at the exit would undo them, so the exit imports.
     cx.read(|m| crate::world::import_objects(m, &crate::world::OBJECT_TABLE));
+    cx.read(|m| crate::world::import_players(m, &crate::world::PLAYERS_STATE));
     let ret = sim_tick::run_with(cx.clone(), &LEDGER, present, bodies).await?;
     cx.read(|m| crate::world::import_objects(m, &crate::world::OBJECT_TABLE));
+    cx.read(|m| crate::world::import_players(m, &crate::world::PLAYERS_STATE));
     engine::tick_poses::run(&cx, sim_tick::RECORD_SIZE).await?;
     crate::sim_sound::entries::phase(&cx, &sound).await?;
     Ok(ret)
