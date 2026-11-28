@@ -16,6 +16,7 @@
 pub mod aim_assist;
 pub mod damage;
 pub mod defs;
+pub mod effects;
 pub mod events;
 pub mod functions;
 pub mod light;
@@ -37,5 +38,6 @@ pub mod synth;
 pub use defs::{Def, DefTable};
 pub use events::{Damage, Kill, SimEvent};
 pub use table::{ImportError, ObjectRecord, ObjectTable, PoolMem};
+pub use effects::{EffectRecord, EffectTable};
 pub use lights::{LightRecord, LightTable};
 pub use view::{ObjRef, Objects};

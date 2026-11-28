@@ -9,7 +9,7 @@ use std::any::Any;
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 use hooks::{BuildError, Builder, Feature, Manifest, SnapshotPolicy};
-use sim_objects::{LightTable, ObjectTable};
+use sim_objects::{EffectTable, LightTable, ObjectTable};
 use sim_players::PlayersState;
 use sim_script::{ScriptStore, Shared as SharedScripts};
 use sim_havok::heap::Heap;
@@ -67,6 +67,7 @@ pub fn import_objects(m: &(impl guest_layout::Mem + ?Sized), objects: &Mutex<Obj
     };
     *lock_objects(objects) = table;
     import_lights(m, &LIGHT_TABLE);
+    import_effects(m, &EFFECT_TABLE);
 }
 
 /// The shared light table: the pool is the truth for the lights array, and
@@ -114,6 +115,54 @@ impl Store for LightStore {
     fn install(&mut self, state: Box<dyn Any + Send>) {
         if let Ok(table) = state.downcast::<LightTable>() {
             *lock_lights(&self.0) = *table;
+        }
+    }
+}
+
+/// The shared effect table: the pool is the truth for the effects array
+/// (`[4ea93c]`), and the world saves it in its effects section.
+pub type SharedEffects = Arc<Mutex<EffectTable>>;
+
+/// The process's effect table.
+pub static EFFECT_TABLE: LazyLock<SharedEffects> = LazyLock::new(SharedEffects::default);
+
+pub fn lock_effects(t: &Mutex<EffectTable>) -> MutexGuard<'_, EffectTable> {
+    t.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Read the guest's effects array into `effects`, as [`import_lights`]
+/// does for the lights: no map loaded leaves an empty table.
+pub fn import_effects(m: &(impl guest_layout::Mem + ?Sized), effects: &Mutex<EffectTable>) {
+    let table = match EffectTable::import(m) {
+        Ok(Some(t)) => t,
+        Ok(None) | Err(sim_objects::ImportError::Fault(_)) => EffectTable::default(),
+        Err(e) => panic!("effects: the guest's effects array is corrupt: {e:?}"),
+    };
+    *lock_effects(effects) = table;
+}
+
+/// The effect table as the world's effects store, like [`LightStore`].
+pub struct EffectStore(pub SharedEffects);
+
+impl Store for EffectStore {
+    fn kind(&self) -> u16 {
+        kind::EFFECTS
+    }
+    fn version(&self) -> u16 {
+        EffectTable::VERSION
+    }
+    fn encode(&self) -> Vec<u8> {
+        lock_effects(&self.0).encode()
+    }
+    fn section_hash(&self) -> u64 {
+        lock_effects(&self.0).section_hash()
+    }
+    fn decode(&self, version: u16, body: &[u8]) -> Result<Box<dyn Any + Send>, RestoreError> {
+        Ok(Box::new(lock_effects(&self.0).decode(version, body)?))
+    }
+    fn install(&mut self, state: Box<dyn Any + Send>) {
+        if let Ok(table) = state.downcast::<EffectTable>() {
+            *lock_effects(&self.0) = *table;
         }
     }
 }
@@ -264,11 +313,11 @@ pub fn with_tables(sounds: Shared, objects: SharedObjects) -> World {
 
 /// A world that holds `sounds`, `objects`, `lights` and `players` as its stores.
 pub fn with_stores(sounds: Shared, objects: SharedObjects, lights: SharedLights, players: SharedPlayers) -> World {
-    with_all_stores(sounds, objects, lights, players, SharedScripts::default(), SharedHeap::default())
+    with_all_stores(sounds, objects, lights, players, SharedScripts::default(), SharedHeap::default(), SharedEffects::default())
 }
 
 /// A world that holds every store: `sounds`, `objects`, `lights`,
-/// `players`, `scripts` and `heap`.
+/// `players`, `scripts`, `heap` and `effects`.
 pub fn with_all_stores(
     sounds: Shared,
     objects: SharedObjects,
@@ -276,9 +325,11 @@ pub fn with_all_stores(
     players: SharedPlayers,
     scripts: SharedScripts,
     heap: SharedHeap,
+    effects: SharedEffects,
 ) -> World {
     let mut w = World::new(1);
     w.attach(Box::new(ScriptStore(scripts))).expect("a world without one takes the scripts store");
+    w.attach(Box::new(EffectStore(effects))).expect("a world without one takes the effects store");
     w.attach(Box::new(LightStore(lights))).expect("a world without one takes the lights store");
     w.attach(Box::new(PlayersStore(players))).expect("a world without one takes the players store");
     w.attach(Box::new(ObjectStore(objects))).expect("an empty world takes the objects store");
@@ -298,6 +349,7 @@ pub static WORLD: LazyLock<Mutex<World>> = LazyLock::new(|| {
         Arc::clone(&PLAYERS_STATE),
         Arc::clone(&SCRIPT_TABLE),
         Arc::clone(&HAVOK_HEAP),
+        Arc::clone(&EFFECT_TABLE),
     ))
 });
 
@@ -427,9 +479,9 @@ mod tests {
         bytes[..4].copy_from_slice(&HEAP_SIZE.to_le_bytes());
         bytes[0x40] = 7;
         let a = Arc::new(Mutex::new(Heap { globals: [0x0080_0000, 0, 2, 0, 0, 0], bytes }));
-        let saved = with_all_stores(sounds(), SharedObjects::default(), SharedLights::default(), SharedPlayers::default(), SharedScripts::default(), Arc::clone(&a)).save();
+        let saved = with_all_stores(sounds(), SharedObjects::default(), SharedLights::default(), SharedPlayers::default(), SharedScripts::default(), Arc::clone(&a), SharedEffects::default()).save();
         let b = SharedHeap::default();
-        let mut world = with_all_stores(sounds(), SharedObjects::default(), SharedLights::default(), SharedPlayers::default(), SharedScripts::default(), Arc::clone(&b));
+        let mut world = with_all_stores(sounds(), SharedObjects::default(), SharedLights::default(), SharedPlayers::default(), SharedScripts::default(), Arc::clone(&b), SharedEffects::default());
         assert_ne!(world.save(), saved);
         world.restore_into(&saved).unwrap();
         assert_eq!(*lock_heap(&b), *lock_heap(&a));
