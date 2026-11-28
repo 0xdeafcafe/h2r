@@ -79,6 +79,13 @@ impl PassState {
         self.stencil.unwrap_or(*device)
     }
 
+    /// The stencil reference the pass's draws set over the device's: its
+    /// own stencil's when it turns the test on. `None`: the device's (a
+    /// pass with the test off reads none).
+    pub fn own_stencil_reference(&self) -> Option<u32> {
+        self.stencil.filter(|s| s.enable).map(|s| u32::from(s.reference))
+    }
+
     /// Whether the pass writes depth, or the stencil it sets itself
     /// (`fog_gpu::stencil_writes`).
     pub fn writes_depth_stencil(&self) -> bool {
@@ -405,6 +412,9 @@ mod tests {
         };
         assert_eq!(s.stencil, Some(want));
         assert_eq!(s.stencil_under(&device), want, "the pass's own over the device's");
+        assert_eq!(s.own_stencil_reference(), Some(0x80));
+        assert_eq!(off.own_stencil_reference(), None, "the test off reads no reference");
+        assert_eq!(pass_state(&base).unwrap().own_stencil_reference(), None, "the device's");
         for n in 1..own.len() - base.len() {
             let mut missing = own.clone();
             missing.remove(base.len() + n);

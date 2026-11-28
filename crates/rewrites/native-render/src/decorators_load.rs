@@ -140,8 +140,9 @@ pub fn decorator_look(
     // sets the page to -1, `0x0004e277`): [`stage_images`].
     let mut look = look::implementation_look(p.pass, imp).map_err(|r| format!("{r:?}"))?;
     look.stage_states = applied.stage_states;
+    // The draw sets no stencil (`decorators_gpu::DrawKey`): a pass that
+    // sets its own draws it, with its reference.
     let state = geometry_pass_state(&applied.render_states)
-        .and_then(PassState::device_stencil_only)
         .map_err(|r| format!("render states: {r:?}"))?;
     let (microcode, semantics) =
         program(look.vertex_shader).ok_or("the vrtx has no classification-1 program")?;
@@ -636,6 +637,52 @@ pub(crate) mod tests {
             e.contains("engine-driven states") && e.contains("PerDraw"),
             "{e}"
         );
+    }
+
+    /// The draw sets no stencil, so a pass that sets its own draws it.
+    #[test]
+    fn a_pass_that_sets_its_own_stencil_draws_it() {
+        use gfx::state::{CompareFunc, RenderStateType as R, StencilOp};
+        use tags::material::{EngineInputs, ResolvedLayer, ResolvedPass};
+        use tags::shader::RenderStateValue;
+        let table = gfx::xdk::RenderStateTable::for_build(gfx::xdk::HALO2_BUILD);
+        let slot = |t| {
+            (0..=255u8)
+                .find(|&s| R::from_guest_index(&table, u32::from(s)) == Some(t))
+                .expect("a 5849 slot")
+        };
+        let rs = |t, value| RenderStateValue { state: slot(t), value };
+        let imp = crate::engine_states::tests::implementation(
+            vec![
+                rs(R::AlphaBlendEnable, 0),
+                rs(R::ZWriteEnable, 1),
+                rs(R::StencilEnable, 1),
+                rs(R::StencilFunc, CompareFunc::Equal.xbox_value()),
+                rs(R::StencilRef, 0x40),
+                rs(R::StencilMask, 0xff),
+                rs(R::StencilWriteMask, 0),
+                rs(R::StencilFail, StencilOp::Keep.xbox_value()),
+                rs(R::StencilZFail, StencilOp::Keep.xbox_value()),
+                rs(R::StencilPass, StencilOp::Keep.xbox_value()),
+            ],
+            0,
+        );
+        let material = TagMaterial {
+            shader: TagId(0xe000_0100),
+            template: TagId(0xe000_0101),
+            inputs: EngineInputs::default(),
+            layers: vec![ResolvedLayer {
+                lod: 0,
+                layer: 3,
+                passes: vec![ResolvedPass { index: 0, pass: TagId(0xe000_0200), implementations: vec![imp] }],
+            }],
+        };
+        let mut program = |_: TagId| Some((code(None), vec![0]));
+        let look = decorator_look(&material, 0, 3, 0, &mut program).expect("not refused");
+        let own = look.state.stencil.expect("its own stencil");
+        assert_eq!((own.enable, own.func, own.reference), (true, CompareFunc::Equal, 0x40));
+        assert_eq!(look.state.own_stencil_reference(), Some(0x40));
+        assert!(look.state.writes_depth_stencil(), "the depth write");
     }
 
     /// A placement's guest draw is skipped only where what it leaves set

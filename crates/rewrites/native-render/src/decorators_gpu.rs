@@ -64,6 +64,10 @@ pub struct Bound {
     /// Its fragments draw nothing where the depth hides them
     /// (`gpu::depth_hides`): the cull may test it against the pyramid.
     pub occludable: bool,
+    /// The reference of the stencil the pass sets itself
+    /// ([`PassState::stencil`](crate::pass_state::PassState::stencil)),
+    /// over the target's; `None`: the device's.
+    pub stencil_reference: Option<u32>,
 }
 
 /// The device's state at the layer-3 call that a material's pipeline
@@ -142,11 +146,11 @@ pub fn encode(
     });
     pass.set_viewport(0.0, 0.0, target.size.0 as f32, target.size.1 as f32, 0.0, 1.0);
     pass.set_scissor_rect(sx, sy, sw, sh);
-    if target.stencil {
-        pass.set_stencil_reference(target.stencil_reference);
-    }
     let span = plan.instance_bytes().len() as u64;
     for (k, (batch, b)) in plan.batches.iter().zip(bound).enumerate() {
+        if target.stencil {
+            pass.set_stencil_reference(b.stencil_reference.unwrap_or(target.stencil_reference));
+        }
         pass.set_pipeline(&b.pipeline);
         pass.set_blend_constant(b.blend_constant);
         for (group, g) in b.bind_groups.iter().enumerate() {
@@ -313,7 +317,7 @@ impl MaterialGpu {
     fn pipeline(
         &mut self, device: &wgpu::Device, color: wgpu::TextureFormat, depth: wgpu::TextureFormat, draw: DrawKey,
     ) -> Option<&Arc<PendingPipeline>> {
-        let stencil = crate::fog_gpu::layer_stencil(&draw.stencil, depth);
+        let stencil = crate::fog_gpu::layer_stencil(&self.program.state.stencil_under(&draw.stencil), depth);
         let cull = if self.program.inherits_cull { Some(draw.cull?) } else { None };
         Some(self.formats.entry((color, depth, draw)).or_insert_with(|| {
             let state = &self.program.state;
@@ -347,9 +351,16 @@ impl MaterialGpu {
         self.program.inherits_cull
     }
 
-    /// Whether the pass writes depth.
+    /// Whether the pass writes depth, or the stencil it sets itself
+    /// (`PassState::writes_depth_stencil`).
     pub fn writes_depth(&self) -> bool {
-        self.program.state.depth_write
+        self.program.state.writes_depth_stencil()
+    }
+
+    /// The stencil reference the pass's draws take over the device's
+    /// (`PassState::own_stencil_reference`).
+    pub fn stencil_reference(&self) -> Option<u32> {
+        self.program.state.own_stencil_reference()
     }
 
     /// Whether the pass's fragments draw nothing where the depth hides
@@ -360,7 +371,7 @@ impl MaterialGpu {
         if self.program.state.depth_offset.is_some() {
             return false;
         }
-        let stencil = crate::fog_gpu::layer_stencil(&draw.stencil, depth);
+        let stencil = crate::fog_gpu::layer_stencil(&self.program.state.stencil_under(&draw.stencil), depth);
         let (_, (_, compare)) = pipeline_state(Some(&self.program.state), None);
         crate::gpu::depth_hides(compare, &stencil)
     }
@@ -424,6 +435,7 @@ pub fn bind(
             indices: m.indices.clone(),
             blend_constant: m.program.state.blend_constant,
             occludable,
+            stencil_reference: m.stencil_reference(),
         });
     }
     Ok(out)
@@ -574,7 +586,7 @@ struct Out { @builtin(position) pos: vec4f, @location(0) c: vec4f }
         let arena = gfx::ring::UploadPool::default().begin();
         let bound = [Bound {
             pipeline, bind_groups: Vec::new(), streams: vec![(vertices, 0)], indices, blend_constant: wgpu::Color::BLACK,
-            occludable: false,
+            occludable: false, stencil_reference: None,
         }];
         let target = DecoratorTarget {
             color: &cv, depth: &dv, stencil: false, stencil_reference: 0, size: (SIZE, SIZE),
