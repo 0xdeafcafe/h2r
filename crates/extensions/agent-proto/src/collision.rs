@@ -55,8 +55,6 @@ pub struct TraceResult {
 /// `collision.stats`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Stats {
-    /// The switch the entries are installed under.
-    pub switch: String,
     /// One per monitored entry in contract order.
     pub entries: Vec<EntryStats>,
     /// Decode attempts since start and the number that failed.

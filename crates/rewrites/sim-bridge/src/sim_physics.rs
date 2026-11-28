@@ -10,27 +10,18 @@ static COMMIT_SITES: [u32; 1] = [engine::sim_physics::contact_commit::WALK_SITE]
 
 pub struct NativePhysics;
 
-/// `impl.sim.native.physics`: the Havok world step, phase 5 of the
-/// simulation rewrite (docs/engine/sim-rewrite-havok.md). The step
-/// wrapper and the island collide replay the retail frame at their resume
-/// sites, the world phases and most leaves between them stay guest code,
-/// and the kernels they absorb run as capture arms
-/// (`engine::sim_physics::parity`): the broadphase batch update and the
+/// The Havok world step, phase 5 of the simulation rewrite
+/// (docs/engine/sim-rewrite-havok.md), with no switch. The step wrapper
+/// and the island collide replay the retail frame at their resume sites,
+/// and the kernels they absorb answer every call they cover
+/// (`engine::sim_physics::parity`): the broadphase batch update, the
 /// island integrate, the integrate phase, the deactivation test, the
 /// structure polygon builder, the convex agent's process call, the
-/// closest-feature query and the add-point call answer
-/// calls themselves once proven, with one call in `AUDIT_EVERY` still
-/// compared with the guest (the integrate's guest answer is its frame
-/// replay); the two unconstrained-motion methods and
-/// the integer MOPP box query are compared with the guest at every call.
-/// Retires the per-function `native_havok_solver`,
-/// `native_havok_support_vertices`, `native_havok_weld` and
-/// `native_mopp_box` switches.
+/// closest-feature query, the add-point call and the contact commit. A
+/// call a kernel cannot take is counted by reason. The two
+/// unconstrained-motion methods and the integer MOPP box query are
+/// compared with the guest at every call. The label names the hooks.
 pub const PHYSICS: &str = "sim.native.physics";
-
-fn physics_on(switches: &hooks::Switches) -> bool {
-    switches.implementation(PHYSICS, false)
-}
 
 impl Feature for NativePhysics {
     fn manifest(&self) -> Manifest {
@@ -75,9 +66,7 @@ impl Feature for NativePhysics {
                     .after_feature("sim-observer-resources");
             }
         }
-        if physics_on(b.switches()) {
-            install_physics(b);
-        }
+        install_physics(b);
         Ok(())
     }
 }
@@ -393,10 +382,9 @@ fn install_physics(b: &mut Builder) {
         })
         .context_only()
         .optional();
-    // The compare-only arms: the guest answers each call, and the
-    // prediction is compared with what it left. The MOPP box arm observes
-    // phase 2's entry, which runs guest while the collision switch is off
-    // and natively when it is on; both compare.
+    // The compare-only arms: the call runs, and the prediction is compared
+    // with what it left. The MOPP box arm observes phase 2's entry, which
+    // the native collision world answers (sim_native::install_collision).
     let pose = &points::HAVOK_MOTION_POSE;
     b.raw()
         .observe_before(pose, "physics-motion-pose-begin", move |o| {
@@ -477,12 +465,11 @@ mod tests {
 
     #[test]
     fn physics_installs_the_world_entries_and_the_capture_arms() {
-        let mut registry = hooks::Registry::new(
-            hooks::Switches::defaults().with("impl.sim.native.physics", true),
-        );
+        let mut registry = hooks::Registry::new(hooks::Switches::parse("-impl.sim.native").unwrap());
         registry.add(&super::NativePhysics).unwrap();
         let plan = registry.build(&hooks::Base).unwrap();
-        // The per-function ports stay off: only the physics switch is on.
+        // The per-function ports stay off, and `-impl.sim.native` leaves
+        // the physics entries in place: they have no switch.
         for port in PORTS {
             assert!(!plan.chains.contains_key(&port.point.base), "{} installed", port.switch);
         }

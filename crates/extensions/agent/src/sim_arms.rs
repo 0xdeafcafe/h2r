@@ -63,14 +63,14 @@ fn read(switches: &Switches, shadow: &Shadow) -> SimArms {
     };
     SimArms {
         subsystems: vec![
-            subsystem(switches, "physics", physics_arms()),
+            native("physics", physics_arms()),
             subsystem(switches, "objects", {
                 let mut arms = vec![objects_wire(objects::status()), function_wire(function::status())];
                 arms.extend(walk_wire(native_walk::stats()));
                 arms
             }),
             subsystem(switches, "anim", anim_wire(&walk::arm_stats(), &walk::stats(), manager::stats())),
-            subsystem(switches, "collision", collision_arms(&world::stats())),
+            native("collision", collision_arms(&world::stats())),
             subsystem(switches, "seats", {
                 let mut arms = group(sim_bridge::sim_seats::GROUP);
                 arms.push(aim_wire(aim::status()));
@@ -93,6 +93,11 @@ fn subsystem(switches: &Switches, name: &str, arms: Vec<Arm>) -> Subsystem {
     let default = table::get(&switch).is_some_and(|s| s.initial == Initial::On);
     let on = switches.implementation(&switch["impl.".len()..], default);
     verdict(name, switch, on, arms)
+}
+
+/// A subsystem that is always native, with no switch (`switch` empty).
+fn native(name: &str, arms: Vec<Arm>) -> Subsystem {
+    verdict(name, String::new(), true, arms)
 }
 
 fn verdict(name: &str, switch: String, on: bool, arms: Vec<Arm>) -> Subsystem {
@@ -364,10 +369,12 @@ mod tests {
         let r = read(&Switches::default(), shadow);
         let names: Vec<_> = r.subsystems.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, ["physics", "objects", "anim", "collision", "seats", "effects", "sound", "effects-parts"]);
-        assert_eq!(r.subsystems[7].switch, "", "no switch");
-        assert!(r.subsystems[7].on, "always on");
+        for i in [0, 3, 7] {
+            assert_eq!(r.subsystems[i].switch, "", "{}: no switch", r.subsystems[i].name);
+            assert!(r.subsystems[i].on, "{}: always on", r.subsystems[i].name);
+        }
         for s in &r.subsystems {
-            if s.name != "effects-parts" {
+            if !["physics", "collision", "effects-parts"].contains(&s.name.as_str()) {
                 assert_eq!(s.switch, format!("impl.sim.native.{}", s.name));
             }
             assert!(!s.clean, "{}", s.name);
@@ -393,10 +400,10 @@ mod tests {
 
     #[test]
     fn the_switch_reads_from_the_features() {
-        let s = Switches::parse("impl.sim.native.physics=on").unwrap();
+        let s = Switches::parse("impl.sim.native.objects=on").unwrap();
         let r = read(&s, registry());
-        assert!(r.subsystems[0].on);
-        assert!(!r.subsystems[1].on);
+        assert!(r.subsystems[1].on);
+        assert!(!r.subsystems[2].on);
     }
 
     #[test]

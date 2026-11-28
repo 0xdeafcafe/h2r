@@ -29,9 +29,10 @@ use crate::{
     skulls_mp, snapshot_probe, telemetry, touch_glue, ui, ui_back, ui_watch, variant_ext, variant_page, variant_weapons, xapi_glue,
 };
 
-/// The three subsystems measured together on a light host. Resolve each
-/// default through the ordinary implementation hierarchy so a group or leaf
-/// override wins, and a new subsystem only joins after its own parity gate.
+/// The subsystems measured together on a light host; collision is always
+/// native. Resolve each default through the ordinary implementation
+/// hierarchy so a group or leaf override wins, and a new subsystem only
+/// joins after its own parity gate.
 pub(crate) fn profile_switches(mut switches: hooks::Switches, light: bool) -> hooks::Switches {
     if light {
         // The lobby's background map copy, several steps a frame
@@ -41,11 +42,7 @@ pub(crate) fn profile_switches(mut switches: hooks::Switches, light: bool) -> ho
         switches = switches.with(map_copy::LOBBY, lobby);
     }
     if light && switches.feature("host-light-native", false) {
-        for subsystem in [
-            sim_bridge::sim_native::ANIM,
-            sim_bridge::sim_native::COLLISION,
-            sim_bridge::sim_objects::OBJECTS,
-        ] {
+        for subsystem in [sim_bridge::sim_native::ANIM, sim_bridge::sim_objects::OBJECTS] {
             let enabled = switches.implementation(subsystem, true);
             switches = switches.with(&format!("impl.{subsystem}"), enabled);
         }

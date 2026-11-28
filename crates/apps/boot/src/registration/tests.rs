@@ -875,25 +875,21 @@ fn light_native_subsystems_follow_the_profile_and_explicit_overrides() {
         &COLLISION_LOCATION,
         &OBJECT_FUNCTION_VALUE,
     ];
+    // The collision location is always native: no switch removes it.
     for (light, spec, expected) in [
-        (true, "", [false; 3]),
-        (false, "host-light-native", [false; 3]),
+        (true, "", [false, true, false]),
+        (false, "host-light-native", [false, true, false]),
         (true, "host-light-native", [true; 3]),
         (
             true,
             "-host-light-native,impl.sim.native.anim",
-            [true, false, false],
+            [true, true, false],
         ),
-        (
-            true,
-            "host-light-native,-impl.sim.native.collision",
-            [true, false, true],
-        ),
-        (true, "host-light-native,-impl.sim.native", [false; 3]),
+        (true, "host-light-native,-impl.sim.native", [false, true, false]),
         (
             true,
             "host-light-native,-impl.sim,impl.sim.native.objects",
-            [false, false, true],
+            [false, true, true],
         ),
     ] {
         let switches = super::profile_switches(hooks::Switches::parse(spec).unwrap(), light);

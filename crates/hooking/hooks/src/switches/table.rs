@@ -42,7 +42,7 @@ pub struct Switch {
 
 /// The most rows the table may hold. Raise it only with a reason in the
 /// commit; lower it when a switch goes.
-pub const BUDGET: usize = 41;
+pub const BUDGET: usize = 39;
 
 use Initial::{Group, Off, On};
 
@@ -96,8 +96,6 @@ pub const TABLE: &[Switch] = &[
         "the parent of the subsystem rewrites (lane rules): each child goes when its subsystem defaults on"),
     sw("impl.sim.native.anim", Off, "sim", "2026-11-20",
         "animation sampling (sim-anim): on in the lane that lands it, then deleted"),
-    sw("impl.sim.native.collision", Off, "sim", "2026-11-20",
-        "collision queries (sim-collision): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.hs", Off, "sim", "2026-11-25",
         "HaloScript VM: retire after the campaign parity and timing ladder"),
     sw("impl.sim.native.objects", Off, "sim", "2026-11-20",
@@ -106,8 +104,6 @@ pub const TABLE: &[Switch] = &[
         "seats and rules (sim-seats): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.sound", Off, "sim", "2026-11-25",
         "phase 4 sound simulation: promote after voice, arena and timing parity"),
-    sw("impl.sim.native.physics", Off, "sim", "2026-11-25",
-        "the Havok world step (sim-havok, docs/engine/sim-rewrite-havok.md): on in the lane that lands it, then deleted"),
     sw("impl.sim.native.effects", Off, "sim", "2026-11-25",
         "effects, particles, contrails and decals (engine::sim_effects): on in the lane that lands it, then deleted"),
     sw("impl.sim.present", On, "sim", "2026-11-27",
