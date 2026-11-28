@@ -563,6 +563,7 @@ the layers drawn this way in `scene_first_person_light_layers_alone`
   name (`LightRefusal::AnimationSample`) and the guest's passes draw the
   light; the shadow layers' passes are not sampled. Test: `an_animated_pass_is_refused_unless_sampled_and_then_compiles_from_its_baseline`
   (`light_look.rs`).
+- **Stencil.** Layers 11, 14, 12 and 13 each follow stencil mode 0, so their passes draw with the test off. A light pass whose implementation sets a stencil state of its own is refused (`pass_state::StateRefusal::Stencil`, `LightRefusal::State`); no pass on the disc sets one ([e3-lighting.md](e3-lighting.md), "Stencil: every use, named"). Elsewhere a depth with no stencil aspect draws with the test off, as on D3D (`fog_gpu::layer_stencil`), and object, first-person, decal and sky draws take the stencil they are given ([native-objects-first-person.md](native-objects-first-person.md), "Host").
 - **Shadows.** Layer 10's casters draw into a depth texture of our own from the light's projection (`0x00048ee0`, ported as a pure function), as [native-shadows.md](native-shadows.md) describes. Applying the shadow term inside the light's own pass (`GREATER`, one tap as the D3D path's), instead of layer 11's alpha marks, is not built; layers 10, 11 and 14 are the shadow stage's or D3D's, in their place before layers 12 and 13.
 
 ## The layer draw's return
@@ -588,7 +589,6 @@ clears no bit, so a layer with items keeps the body. Test:
 
 - Real-map admission counts and pixel parity for mixed gathered models, placements and BSP parts whose base draw stays on D3D.
 - A first-person light's layers 12 and 13 drawn from the scene against its handlers' draws (pixel parity over the first-person weapon in a lit room), and that the view's target the dynamic lights recorded is the one the first-person layers draw on (a different one refuses, `light view target changed`).
-
 - A shadowed light's layers 12 and 13 drawn natively over its D3D or shadow-stage layers 10, 11 and 14 (pixel parity on a scene with one).
 - An object entry's layers 12 and 13 drawn from the scene against its handler's draw (`render.compare` on a scene with a lit object); that the sorted entry's classification is the one the model parts are built for (`classification` from the section's `+0x14`), and that the light frame needs no per-object transform.
 - Pixel parity at equal presents, with render scale 1 and 2, with the lights stage on and off (`impl.render.native=off`). Captures from a run with zero native submissions establish no light coverage, and a scene with zero shader-gel admissions says nothing about the target-13 binding.
